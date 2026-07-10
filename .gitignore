@@ -1,0 +1,96 @@
+# Operating-system and editor artifacts
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/
+.vscode/*.log
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+
+# Python bytecode, tooling, and packaging output
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+dist/
+
+# ROS 2 / colcon output
+/build/
+/install/
+/log/
+/ros2_ws/build/
+/ros2_ws/install/
+/ros2_ws/log/
+**/.colcon/
+
+# Isaac Sim caches, logs, crash dumps, and generated output
+/isaac_sim/.cache/
+/isaac_sim/cache/
+/isaac_sim/log/
+/isaac_sim/logs/
+/isaac_sim/outputs/
+/isaac_sim/generated/
+/isaac_sim/**/crashdumps/
+/isaac_sim/**/*.log
+*.dmp
+
+# ROS bags and generated experiment data. A fixtures/ directory is the only
+# versioned-data exception; keep fixtures small and deterministic.
+/rosbag2_*/
+/*.db3
+/*.mcap
+
+/data/bags/*
+!/data/bags/.gitkeep
+!/data/bags/fixtures/
+!/data/bags/fixtures/**
+
+/data/trajectories/*
+!/data/trajectories/.gitkeep
+!/data/trajectories/fixtures/
+!/data/trajectories/fixtures/**
+
+/data/metrics/*
+!/data/metrics/.gitkeep
+!/data/metrics/fixtures/
+!/data/metrics/fixtures/**
+
+/data/reports/*
+!/data/reports/.gitkeep
+!/data/reports/fixtures/
+!/data/reports/fixtures/**
+
+/data/experiment_runs/*
+!/data/experiment_runs/.gitkeep
+!/data/experiment_runs/fixtures/
+!/data/experiment_runs/fixtures/**
+
+# Generated maps and pose graphs are ignored by default. Curated large maps
+# must be managed with Git LFS or an external artifact store.
+/data/maps/occupancy/*
+!/data/maps/occupancy/.gitkeep
+!/data/maps/occupancy/fixtures/
+!/data/maps/occupancy/fixtures/**
+
+/data/maps/posegraphs/*
+!/data/maps/posegraphs/.gitkeep
+!/data/maps/posegraphs/fixtures/
+!/data/maps/posegraphs/fixtures/**
