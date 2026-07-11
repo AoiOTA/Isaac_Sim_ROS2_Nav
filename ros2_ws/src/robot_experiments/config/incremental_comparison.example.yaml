@@ -1,0 +1,21 @@
+# Copy this file beside a generated report, replace every null/path placeholder,
+# and record timings measured with the same start/stop definition.
+schema_version: 1
+comparison:
+  baseline_map: ../../../../data/maps/occupancy/warehouse_v1.yaml
+  full_remap_map: ../../../../data/maps/occupancy/warehouse_v2_full.yaml
+  incremental_map: ../../../../data/maps/occupancy/warehouse_v2_incremental.yaml
+  timing_sec:
+    full_mapping: null
+    incremental_mapping: null
+  changed_regions:
+    - id: replace_with_measured_region
+      # Map/world metres: [minimum_x, minimum_y, maximum_x, maximum_y].
+      bounds_m: [null, null, null, null]
+  thresholds:
+    minimum_time_improvement_percent: 30.0
+    minimum_reference_overlap_percent: 95.0
+    minimum_changed_cell_count: 1
+    minimum_changed_cell_recall_percent: 95.0
+    minimum_changed_region_agreement_percent: 95.0
+    maximum_old_region_regression_percent: 1.0
