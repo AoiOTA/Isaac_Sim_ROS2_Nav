@@ -7,10 +7,14 @@ name = "isaac-sim-ros2-nav"
 version = "0.1.0"
 description = "Engineering tools for the Isaac Sim and ROS 2 navigation workspace"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+license = { text = "Apache-2.0" }
+dependencies = [
+  "PyYAML>=6,<7",
+]
 
 [project.optional-dependencies]
 dev = [
+  "jsonschema>=4.21,<5",
   "pytest>=7.4,<9",
 ]
 
