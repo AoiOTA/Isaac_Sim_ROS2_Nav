@@ -6,6 +6,20 @@
 
 > 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、Reset、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的最终 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；所有成功轮次均满足 GT 终点、停车和运行时观测门槛。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
+## 文档导航
+
+第一次使用建议先看前两项：
+
+| 文档 | 适合什么时候看 |
+| --- | --- |
+| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、导航、建图、实验和排障。 |
+| [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
+| [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
+| [`docs/calibration.md`](docs/calibration.md) | 修改地图、出生点、传感器外参或动态障碍坐标时。 |
+| [`docs/verification.md`](docs/verification.md) | 判断某项能力是否真正验证，以及了解当前未验收边界时。 |
+| [`docs/development.md`](docs/development.md) | 开发、测试、调试和准备 Git 提交时。 |
+| [`plan.md`](plan.md) | 需要完整设计背景、技术选型、指标公式和最终验收目标时。 |
+
 ## 系统契约
 
 - USD/PhysX 是唯一物理模型；URDF/Xacro 只用于 ROS RobotModel、结构描述和真机迁移。
@@ -260,7 +274,7 @@ isaac_sim/   Stage、项目 USD overlay、传感器、OmniGraph、Reset、GT 和
 ros2_ws/     描述、感知、Wheel Odom、EKF、SLAM、Nav2、bringup 和实验节点
 data/        Git LFS 地图基线，以及 bag、轨迹、指标和报告的本地输出边界
 scripts/     预检、资产导入、构建、测试、启动和地图保存入口
-docs/        开发、接口和验收文档
+docs/        使用手册、逐文件索引、开发、接口、标定和验收文档
 ```
 
 ## Git 管理
