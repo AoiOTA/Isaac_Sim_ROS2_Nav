@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
-source_ros
+source_ros --require-workspace
+acquire_instance_lock map_save "map save"
 
 version="${1:-}"
 [[ -n "${version}" ]] || die "usage: $0 MAP_VERSION"
