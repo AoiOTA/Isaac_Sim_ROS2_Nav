@@ -1,0 +1,11 @@
+# Contract for an optional external CropBox-style self filter. It is deliberately
+# disabled in the baseline. When enabled, that node must remove points inside
+# the robot envelope and publish /lidar/points_scan without changing timestamps.
+self_filter:
+  enabled: false
+  input_topic: /lidar/points_raw
+  output_topic: /lidar/points_scan
+  target_frame: base_link
+  negative: true
+  min_xyz: [-0.28, -0.23, -0.05]
+  max_xyz: [0.31, 0.23, 0.55]
