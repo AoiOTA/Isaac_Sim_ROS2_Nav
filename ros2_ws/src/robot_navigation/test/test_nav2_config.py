@@ -1,0 +1,71 @@
+from pathlib import Path
+
+import yaml
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _config():
+    return yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'nav2_params.yaml').read_text())
+
+
+def _params(config, node):
+    return config[node]['ros__parameters']
+
+
+def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
+    config = _config()
+    planner = _params(config, 'planner_server')['GridBased']
+    controller = _params(config, 'controller_server')['FollowPath']
+    local = config['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = config['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    assert planner['plugin'] == 'nav2_smac_planner::SmacPlanner2D'
+    assert controller['plugin'] == 'nav2_mppi_controller::MPPIController'
+    assert controller['motion_model'] == 'DiffDrive'
+    assert controller['time_steps'] == 40
+    assert controller['batch_size'] == 1500
+    assert controller['transform_tolerance'] >= 0.5
+    assert local['rolling_window'] is True
+    # Nav2 Jazzy declares these two parameters as integers.
+    assert type(local['width']) is int
+    assert type(local['height']) is int
+    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'inflation_layer']
+    assert 'voxel_layer' not in local
+    assert 'voxel_layer' not in global_costmap
+    assert local['obstacle_layer']['scan']['topic'] == '/scan'
+    assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
+
+
+def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
+    config = _config()
+    navigator = _params(config, 'bt_navigator')
+    controller = _params(config, 'controller_server')
+    behavior = _params(config, 'behavior_server')
+    smoother = _params(config, 'velocity_smoother')
+    collision = _params(config, 'collision_monitor')
+
+    assert controller['enable_stamped_cmd_vel'] is False
+    assert controller['goal_checker']['xy_goal_tolerance'] < 0.25
+    assert behavior['enable_stamped_cmd_vel'] is False
+    assert smoother['enable_stamped_cmd_vel'] is False
+    assert collision['enable_stamped_cmd_vel'] is False
+    assert smoother['velocity_timeout'] > 0.0
+    assert collision['source_timeout'] > 0.0
+    assert navigator['default_server_timeout'] >= 500
+    assert collision['cmd_vel_in_topic'] == '/cmd_vel_smoothed'
+    assert collision['cmd_vel_out_topic'] == '/cmd_vel'
+    assert collision['observation_sources'] == ['scan']
+    assert set(collision['polygons']) == {
+        'StopZone', 'SlowdownZone', 'ApproachZone'}
+
+    launch_source = (
+        PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text()
+    assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in launch_source
+    assert "package='nav2_velocity_smoother'" in launch_source
+    assert "package='nav2_collision_monitor'" in launch_source
