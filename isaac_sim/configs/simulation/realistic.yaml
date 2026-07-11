@@ -1,0 +1,7 @@
+schema_version: 1
+odometry_mode: realistic
+isaac_publish_odom: false
+isaac_publish_odom_tf: false
+ekf_publish_tf: true
+wheel_odom_publish_tf: false
+isaac_publish_structure_tf: true

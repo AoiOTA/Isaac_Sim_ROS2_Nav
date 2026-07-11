@@ -1,0 +1,3 @@
+# NVIDIA schema layers are imported locally from the asset pack.
+*.usd
+!.gitignore

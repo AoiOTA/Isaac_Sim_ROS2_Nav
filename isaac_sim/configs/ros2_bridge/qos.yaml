@@ -1,0 +1,32 @@
+schema_version: 1
+profiles:
+  clock:
+    reliability: best_effort
+    durability: volatile
+    history: keep_last
+    depth: 1
+  sensor_data:
+    reliability: best_effort
+    durability: volatile
+    history: keep_last
+    depth: 5
+  command:
+    reliability: reliable
+    durability: volatile
+    history: keep_last
+    depth: 1
+  state:
+    reliability: reliable
+    durability: volatile
+    history: keep_last
+    depth: 10
+  tf:
+    reliability: reliable
+    durability: volatile
+    history: keep_last
+    depth: 100
+  static_tf:
+    reliability: reliable
+    durability: transient_local
+    history: keep_last
+    depth: 1

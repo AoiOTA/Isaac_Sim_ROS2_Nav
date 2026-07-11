@@ -1,0 +1,72 @@
+# Stage-13 project template. Every CUSTOM_ROBOT_* variable is deliberately
+# required so a Jackal path cannot be reused silently during migration.
+schema_version: 1
+asset_root: ${ISAAC_ASSET_ROOT}
+
+environment:
+  # Keep the generated custom Stage separate from the committed Jackal Stage,
+  # which already authors a Jackal reference.
+  project_stage: ${PROJECT_ROOT}/data/runtime/custom_robot_navigation_scene.usda
+  source_asset: ${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
+  composition: sublayer
+
+robot:
+  asset_path: ${CUSTOM_ROBOT_USD}
+  default_prim: ${CUSTOM_ROBOT_DEFAULT_PRIM}
+  runtime_prim_path: /World/Robots/CustomRobot
+  articulation_root: /World/Robots/CustomRobot
+  base_link_prim: /World/Robots/CustomRobot/base_link
+  wheel_joints:
+    - front_left_wheel_joint
+    - front_right_wheel_joint
+    - rear_left_wheel_joint
+    - rear_right_wheel_joint
+  front_wheel_joints: [front_left_wheel_joint, front_right_wheel_joint]
+  rear_wheel_joints: [rear_left_wheel_joint, rear_right_wheel_joint]
+
+simulation:
+  physics_hz: 60
+  rendering_hz: 60
+  expected_physics_scene: /PhysicsScene
+  headless: false
+  renderer: RaytracedLighting
+  navigation_mode: mapping
+  odometry_mode: ideal
+  structure_tf_source: isaac
+  max_frames: 0
+
+spawn:
+  poses_file: ${PROJECT_ROOT}/isaac_sim/configs/spawn_poses.yaml
+  selected: mapping_start
+
+ros2:
+  domain_id: 0
+  rmw_implementation: rmw_fastrtps_cpp
+  namespace: ""
+
+ground_truth:
+  enabled: false
+  frame_id: map
+  child_frame_id: ground_truth_base_link
+  odom_topic: /ground_truth/odom
+  path_topic: /ground_truth/path
+  odom_hz: 60
+  path_hz: 10
+
+extensions:
+  - isaacsim.core.nodes
+  - isaacsim.robot.wheeled_robots.nodes
+  - isaacsim.ros2.bridge
+  - isaacsim.ros2.nodes
+  - isaacsim.sensors.experimental.physics
+  - isaacsim.sensors.physics.nodes
+  - isaacsim.sensors.experimental.rtx
+
+files:
+  robot: ${PROJECT_ROOT}/isaac_sim/configs/robots/custom_robot.yaml
+  lidar: ${CUSTOM_ROBOT_LIDAR_CONFIG}
+  imu: ${CUSTOM_ROBOT_IMU_CONFIG}
+  camera: ${CUSTOM_ROBOT_CAMERA_CONFIG}
+  topics: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/topics.yaml
+  qos: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/qos.yaml
+  dynamic_obstacles: ${PROJECT_ROOT}/isaac_sim/configs/experiments/dynamic.yaml

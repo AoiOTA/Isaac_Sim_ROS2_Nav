@@ -1,0 +1,11 @@
+schema_version: 1
+enabled: false
+parent_prim: /World/Robots/Jackal/base_link/camera_link
+publish_rate: 30.0
+stereo_baseline: 0.120
+left:
+  optical_frame: camera_left_optical_frame
+  sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_left_link/camera_left_optical_frame/camera_left_sensor
+right:
+  optical_frame: camera_right_optical_frame
+  sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_right_link/camera_right_optical_frame/camera_right_sensor

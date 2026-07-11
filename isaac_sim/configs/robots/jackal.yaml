@@ -1,0 +1,73 @@
+schema_version: 1
+name: jackal
+wheel_radius: 0.098
+wheel_width: 0.040
+geometric_track_width: 0.37559
+wheelbase: 0.262
+base_mass: 17.0
+wheel_mass: 0.477
+nominal_total_mass: 18.908
+physics:
+  # The command watchdog owns stationary braking. Extra joint friction causes
+  # a low-speed dead zone that prevents Nav2's initial commands from moving the
+  # platform, so leave the wheel joints free while the articulation is awake.
+  sleep_threshold: 0.005
+  stabilization_threshold: 0.001
+  wheel_static_friction_effort: 0.0
+  wheel_dynamic_friction_effort: 0.0
+  wheel_viscous_friction_coefficient: 0.0
+  idle_brake_command_timeout_sec: 0.25
+  idle_brake_command_deadband: 0.001
+wheel_joints:
+  front_left: front_left_wheel_joint
+  front_right: front_right_wheel_joint
+  rear_left: rear_left_wheel_joint
+  rear_right: rear_right_wheel_joint
+controller:
+  wheel_radius: 0.098
+  wheel_distance: 0.37559
+  max_linear_speed: 1.0
+  max_angular_speed: 1.5
+  max_wheel_speed: 15.0
+  max_acceleration: 0.75
+  max_deceleration: 1.0
+  max_angular_acceleration: 2.0
+frames:
+  base: base_link
+  lidar: lidar_link
+  imu: imu_link
+  camera: camera_link
+static_transforms:
+  - parent: base_link
+    child: lidar_link
+    translation: [0.120, 0.000, 0.333]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - parent: base_link
+    child: imu_link
+    translation: [0.012, 0.002, 0.067]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - parent: base_link
+    child: camera_link
+    translation: [0.247, 0.000, 0.218]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - parent: camera_link
+    child: camera_left_link
+    translation: [0.0, 0.060, 0.0]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - parent: camera_link
+    child: camera_right_link
+    translation: [0.0, -0.060, 0.0]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - parent: camera_left_link
+    child: camera_left_optical_frame
+    translation: [0.0, 0.0, 0.0]
+    rotation_xyzw: [-0.5, 0.5, -0.5, 0.5]
+  - parent: camera_right_link
+    child: camera_right_optical_frame
+    translation: [0.0, 0.0, 0.0]
+    rotation_xyzw: [-0.5, 0.5, -0.5, 0.5]
+footprint:
+  - [0.255, 0.210]
+  - [0.255, -0.210]
+  - [-0.230, -0.210]
+  - [-0.230, 0.210]

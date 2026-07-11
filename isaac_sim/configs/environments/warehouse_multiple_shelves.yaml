@@ -1,0 +1,8 @@
+schema_version: 1
+name: warehouse_multiple_shelves
+asset_path: /home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
+composition: sublayer
+expected_root_prims: [/Root, /PhysicsScene, /NavMesh]
+expected_physics_scene: /PhysicsScene
+meters_per_unit: 1.0
+up_axis: Z

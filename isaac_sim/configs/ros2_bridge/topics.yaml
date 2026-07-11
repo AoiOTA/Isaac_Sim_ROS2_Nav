@@ -1,0 +1,16 @@
+schema_version: 1
+clock: /clock
+pointcloud: /lidar/points_raw
+imu: /imu/data
+joint_states: /joint_states
+odom: /odom
+cmd_vel: /cmd_vel
+ground_truth_odom: /ground_truth/odom
+ground_truth_path: /ground_truth/path
+tf: /tf
+tf_static: /tf_static
+frames:
+  odom: odom
+  base: base_link
+  lidar: lidar_link
+  imu: imu_link
