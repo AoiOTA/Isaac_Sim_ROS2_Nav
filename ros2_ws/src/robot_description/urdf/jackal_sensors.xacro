@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="fixed_frame" params="prefix parent child xyz rpy:='0 0 0'">
+    <link name="${prefix}${child}"/>
+    <joint name="${prefix}${child}_joint" type="fixed">
+      <origin xyz="${xyz}" rpy="${rpy}"/>
+      <parent link="${prefix}${parent}"/>
+      <child link="${prefix}${child}"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="jackal_sensors" params="prefix:=''">
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="base_link" child="lidar_link"
+      xyz="0.120 0.000 0.333"/>
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="base_link" child="imu_link"
+      xyz="0.012 0.002 0.067"/>
+
+    <!-- Match the project-owned jackal_nav.usda overlay. -->
+    <xacro:property name="camera_mount_xyz" value="0.247 0.000 0.218"/>
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="base_link" child="camera_link"
+      xyz="${camera_mount_xyz}"/>
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="camera_link" child="camera_left_link"
+      xyz="0 0.060 0"/>
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="camera_link" child="camera_right_link"
+      xyz="0 -0.060 0"/>
+
+    <!-- REP-103 optical frame: x right, y down, z forward. -->
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="camera_left_link"
+      child="camera_left_optical_frame" xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679"/>
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="camera_right_link"
+      child="camera_right_optical_frame" xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679"/>
+  </xacro:macro>
+</robot>

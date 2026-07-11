@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="jackal_wheel" params="prefix name x y">
+    <link name="${prefix}${name}_wheel_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0"/>
+        <mass value="0.477"/>
+        <inertia ixx="0.000286" ixy="0" ixz="0"
+                 iyy="0.002290" iyz="0" izz="0.002290"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+        <geometry>
+          <cylinder radius="0.098" length="0.040"/>
+        </geometry>
+        <material name="jackal_tire">
+          <color rgba="0.08 0.08 0.08 1"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="1.57079632679 0 0"/>
+        <geometry>
+          <cylinder radius="0.098" length="0.040"/>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}${name}_wheel_joint" type="continuous">
+      <origin xyz="${x} ${y} 0.0345" rpy="0 0 0"/>
+      <parent link="${prefix}base_link"/>
+      <child link="${prefix}${name}_wheel_link"/>
+      <axis xyz="0 1 0"/>
+      <dynamics damping="0.05" friction="0.0"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="jackal_base" params="prefix:=''">
+    <link name="${prefix}base_link">
+      <inertial>
+        <origin xyz="0 0 0.10" rpy="0 0 0"/>
+        <mass value="17.0"/>
+        <inertia ixx="0.25" ixy="0" ixz="0"
+                 iyy="0.35" iyz="0" izz="0.45"/>
+      </inertial>
+      <visual>
+        <origin xyz="0.0125 0 0.14" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.485 0.420 0.220"/>
+        </geometry>
+        <material name="jackal_body">
+          <color rgba="0.12 0.18 0.22 1"/>
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0.0125 0 0.14" rpy="0 0 0"/>
+        <geometry>
+          <box size="0.485 0.420 0.220"/>
+        </geometry>
+      </collision>
+    </link>
+
+    <xacro:jackal_wheel prefix="${prefix}" name="front_left" x="0.131" y="0.187795"/>
+    <xacro:jackal_wheel prefix="${prefix}" name="front_right" x="0.131" y="-0.187795"/>
+    <xacro:jackal_wheel prefix="${prefix}" name="rear_left" x="-0.131" y="0.187795"/>
+    <xacro:jackal_wheel prefix="${prefix}" name="rear_right" x="-0.131" y="-0.187795"/>
+  </xacro:macro>
+</robot>

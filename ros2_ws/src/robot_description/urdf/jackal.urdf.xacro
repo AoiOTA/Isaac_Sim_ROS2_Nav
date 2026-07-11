@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="jackal">
+  <xacro:arg name="prefix" default=""/>
+
+  <xacro:include filename="jackal_base.xacro"/>
+  <xacro:include filename="jackal_sensors.xacro"/>
+
+  <xacro:jackal_base prefix="$(arg prefix)"/>
+  <xacro:jackal_sensors prefix="$(arg prefix)"/>
+</robot>
