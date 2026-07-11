@@ -8,6 +8,7 @@ versioned, while generated contents are ignored by default.
 | --- | --- |
 | `maps/occupancy/` | Saved occupancy-grid images and metadata |
 | `maps/posegraphs/` | SLAM Toolbox pose graphs and serialized state |
+| `maps/manifests/` | Small, reviewable integrity/provenance records for map versions |
 | `bags/` | ROS 2 bag recordings |
 | `trajectories/` | Estimated and ground-truth trajectories |
 | `metrics/` | Per-run and aggregate metric output |
@@ -32,18 +33,37 @@ warehouse asset.
 ## Maps and pose graphs
 
 Generated maps are ignored by default. Large curated maps and pose graphs must
-use Git LFS or an external artifact store rather than ordinary Git history. To
-adopt Git LFS for selected formats, first agree on the formats and repository
-policy, narrow the corresponding root ignore rule, and create and commit the
-resulting `.gitattributes`, for example:
+use Git LFS or an external artifact store rather than ordinary Git history. The
+validated `warehouse_v1` bundle is the repository baseline: its large
+`.posegraph` is tracked by Git LFS, while the matching OccupancyGrid and `.data`
+file are regular Git artifacts. Hydrate it after cloning:
 
 ```bash
 git lfs install
-git lfs track "data/maps/**/*.pgm"
-git lfs track "data/maps/**/*.posegraph"
+git lfs pull
+./scripts/preflight.sh
 ```
 
 For externally stored artifacts, commit only a small manifest containing the
 artifact URI, checksum, byte size, format/version, creation scenario, and map to
 USD alignment metadata. Verify the checksum after retrieval before running an
 experiment.
+
+The current repository baseline is described by
+`data/maps/manifests/warehouse_v1.yaml`. It records the byte size and SHA256 of
+the OccupancyGrid (`.yaml`/`.pgm`) and serialized Pose Graph
+(`.posegraph`/`.data`), plus map dimensions, origin, source environment, and the
+Map/USD calibration pair. Those four generated files are one indivisible
+version: do not mix artifacts from different mapping runs. `preflight.sh`
+rejects missing, unhydrated, size-mismatched, or checksum-mismatched baseline
+files. New generated versions remain local until deliberately curated and
+added to the manifest/LFS policy.
+
+Localization and Navigation consume both halves of that version for different
+purposes: `nav2_map_server` serves the saved `.yaml`/`.pgm` pair as the immutable
+`/map`, while SLAM Toolbox loads `.posegraph`/`.data` to estimate and publish
+`map -> odom`. `scripts/run_ros.sh` derives
+`maps/occupancy/<posegraph-basename>.yaml` when `map_file` is omitted, so matching
+basenames are the normal convention. Pass `map_file:=...` explicitly for a
+deliberate nonmatching name; never substitute SLAM Toolbox's diagnostic
+`/slam_toolbox/map` for the saved OccupancyGrid in a navigation run.

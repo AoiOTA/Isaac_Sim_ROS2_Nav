@@ -83,14 +83,22 @@ dist/
 !/data/experiment_runs/fixtures/
 !/data/experiment_runs/fixtures/**
 
+# Runtime-composed stages (for example the custom-robot migration profile).
+/data/runtime/
+
 # Generated maps and pose graphs are ignored by default. Curated large maps
 # must be managed with Git LFS or an external artifact store.
 /data/maps/occupancy/*
 !/data/maps/occupancy/.gitkeep
 !/data/maps/occupancy/fixtures/
 !/data/maps/occupancy/fixtures/**
+!/data/maps/occupancy/warehouse_v1.yaml
+!/data/maps/occupancy/warehouse_v1.pgm
+!/data/maps/occupancy/warehouse_v1_preview.png
 
 /data/maps/posegraphs/*
 !/data/maps/posegraphs/.gitkeep
 !/data/maps/posegraphs/fixtures/
 !/data/maps/posegraphs/fixtures/**
+!/data/maps/posegraphs/warehouse_v1.posegraph
+!/data/maps/posegraphs/warehouse_v1.data
