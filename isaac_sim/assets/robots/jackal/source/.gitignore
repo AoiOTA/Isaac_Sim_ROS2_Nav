@@ -1,0 +1,4 @@
+# NVIDIA binary runtime assets. Use ../../../../tools/import_assets.py.
+*.usd
+configuration/
+!.gitignore

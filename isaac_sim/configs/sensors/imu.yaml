@@ -1,0 +1,13 @@
+schema_version: 1
+enabled: true
+sensor_prim: /World/Robots/Jackal/base_link/imu_link/imu_sensor
+frame_id: imu_link
+topic_name: /imu/data
+publish_rate: 60.0
+read_gravity: true
+use_latest_data: false
+filter_widths:
+  linear_acceleration: 1
+  angular_velocity: 1
+  orientation: 1
+qos_profile: sensor_data

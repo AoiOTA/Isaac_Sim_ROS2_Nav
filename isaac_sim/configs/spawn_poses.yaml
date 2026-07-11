@@ -1,0 +1,17 @@
+schema_version: 1
+spawn_poses:
+  mapping_start:
+    usd:
+      # Measured resting base-link height on the warehouse floor.  Starting at
+      # 0.10 m caused a long gravity/contact settling transient and backward
+      # odometry creep.
+      position: [4.0, 0.0, 0.0635]
+      yaw_deg: 0.0
+    map:
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      # Calibrated against the warehouse_v1 pose graph on 2026-07-10.  A
+      # reset mapping run reported map->odom = [0, 0, 0] at this USD pose.
+      calibrated: true
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 5.0

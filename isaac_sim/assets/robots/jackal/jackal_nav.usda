@@ -1,0 +1,75 @@
+#usda 1.0
+(
+    defaultPrim = "jackal"
+    metersPerUnit = 1
+    subLayers = [
+        @./source/jackal_original.usd@
+    ]
+    upAxis = "Z"
+)
+
+over "jackal"
+{
+    over "base_link"
+    {
+        over "sick_lms1xx_lidar_frame" (
+            active = false
+        )
+        {
+        }
+
+        over "com_frame" (
+            active = false
+        )
+        {
+        }
+
+        over "bumblebee_stereo_camera_frame" (
+            active = false
+        )
+        {
+        }
+
+        def Xform "lidar_link"
+        {
+            double3 xformOp:translate = (0.120, 0.000, 0.333)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Xform "imu_link"
+        {
+            double3 xformOp:translate = (0.012, 0.002, 0.067)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+
+        def Xform "camera_link"
+        {
+            double3 xformOp:translate = (0.247, 0.000, 0.218)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Xform "camera_left_link"
+            {
+                double3 xformOp:translate = (0.000, 0.060, 0.000)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Xform "camera_left_optical_frame"
+                {
+                    quatf xformOp:orient = (0.5, -0.5, 0.5, -0.5)
+                    uniform token[] xformOpOrder = ["xformOp:orient"]
+                }
+            }
+
+            def Xform "camera_right_link"
+            {
+                double3 xformOp:translate = (0.000, -0.060, 0.000)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Xform "camera_right_optical_frame"
+                {
+                    quatf xformOp:orient = (0.5, -0.5, 0.5, -0.5)
+                    uniform token[] xformOpOrder = ["xformOp:orient"]
+                }
+            }
+        }
+    }
+}

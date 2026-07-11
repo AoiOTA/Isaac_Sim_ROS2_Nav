@@ -1,0 +1,5 @@
+schema_version: 1
+seed: 3001
+enabled: false
+base_posegraph: ""
+changed_regions: []

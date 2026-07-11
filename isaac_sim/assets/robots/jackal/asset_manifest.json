@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "asset_pack": "Isaac Sim Assets 6.0",
+  "source_root_hint": "/home/lyb/isaacsim_assets/Assets/Isaac/6.0",
+  "license_notice": "NVIDIA binary assets are imported locally and are not tracked by this repository.",
+  "files": [
+    {
+      "source": "Isaac/Robots/Clearpath/Jackal/jackal.usd",
+      "destination": "source/jackal_original.usd",
+      "sha256": "be499d8ed3c83deff8a1ce43dc2976ba2b1a8cc66eae80360a19f6d8bb8720ec"
+    },
+    {
+      "source": "Isaac/Robots/Clearpath/Jackal/configuration/jackal_robot_schema.usd",
+      "destination": "source/configuration/jackal_robot_schema.usd",
+      "sha256": "9c5097f0601f133b75629b5cec953ba49a0f1304b23562b1ab18fcaacb6677fb"
+    },
+    {
+      "source": "Isaac/Robots/Clearpath/Jackal/configuration/jackal_robot_schema.usd",
+      "destination": "configuration/jackal_robot_schema.usd",
+      "sha256": "9c5097f0601f133b75629b5cec953ba49a0f1304b23562b1ab18fcaacb6677fb"
+    }
+  ]
+}

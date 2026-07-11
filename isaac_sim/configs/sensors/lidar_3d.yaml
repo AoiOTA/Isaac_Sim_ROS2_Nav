@@ -1,0 +1,12 @@
+schema_version: 1
+enabled: true
+sensor_prim: /World/Robots/Jackal/base_link/lidar_link/rtx_lidar
+config: XT32_SD10
+variant: null
+tick_rate: 10.0
+accumulate_outputs: true
+render_product_resolution: [128, 128]
+topic_name: /lidar/points_raw
+frame_id: lidar_link
+type: point_cloud
+qos_profile: sensor_data

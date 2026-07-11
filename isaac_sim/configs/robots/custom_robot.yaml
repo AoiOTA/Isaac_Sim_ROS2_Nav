@@ -1,0 +1,47 @@
+# Stage-13 migration template. Nulls and the empty footprint are intentional:
+# runtime validation must fail until values are measured from the real asset.
+schema_version: 1
+name: custom_robot
+wheel_radius: null
+wheel_width: null
+geometric_track_width: null
+wheelbase: null
+base_mass: null
+wheel_mass: null
+nominal_total_mass: null
+physics:
+  sleep_threshold: null
+  stabilization_threshold: null
+  wheel_static_friction_effort: null
+  wheel_dynamic_friction_effort: null
+  wheel_viscous_friction_coefficient: null
+  idle_brake_command_timeout_sec: null
+  idle_brake_command_deadband: null
+wheel_joints:
+  front_left: front_left_wheel_joint
+  front_right: front_right_wheel_joint
+  rear_left: rear_left_wheel_joint
+  rear_right: rear_right_wheel_joint
+controller:
+  wheel_radius: null
+  wheel_distance: null
+  max_linear_speed: null
+  max_angular_speed: null
+  max_wheel_speed: null
+  max_acceleration: null
+  max_deceleration: null
+  max_angular_acceleration: null
+frames:
+  base: base_link
+  lidar: lidar_link
+  imu: imu_link
+  camera: camera_link
+static_transforms:
+  - {parent: base_link, child: lidar_link, translation: null, rotation_xyzw: null}
+  - {parent: base_link, child: imu_link, translation: null, rotation_xyzw: null}
+  - {parent: base_link, child: camera_link, translation: null, rotation_xyzw: null}
+  - {parent: camera_link, child: camera_left_link, translation: null, rotation_xyzw: null}
+  - {parent: camera_link, child: camera_right_link, translation: null, rotation_xyzw: null}
+  - {parent: camera_left_link, child: camera_left_optical_frame, translation: null, rotation_xyzw: null}
+  - {parent: camera_right_link, child: camera_right_optical_frame, translation: null, rotation_xyzw: null}
+footprint: []

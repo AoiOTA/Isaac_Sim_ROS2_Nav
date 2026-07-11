@@ -1,0 +1,29 @@
+schema_version: 1
+seed: 20260710
+enabled: false
+obstacles:
+  - id: crossing_box
+    shape: cube
+    size: [0.50, 0.50, 1.00]
+    mass: 20.0
+    # With the calibrated mapping_start map pose at [0, 0, 0], this is the
+    # map-frame x=2 m crossing recorded by robot_experiments/config/dynamic.yaml.
+    start: [6.0, -3.0, 0.50]
+    end: [6.0, 3.0, 0.50]
+    # A 15 s one-way traversal creates a measurable blocking interval while
+    # leaving enough clear time for reactive MPPI navigation to proceed.
+    speed: 0.40
+    phase_jitter: 0.50
+    repeat: false
+  - id: cart_proxy_b
+    shape: cube
+    size: [0.80, 0.50, 1.00]
+    mass: 30.0
+    # A second moving object exercises multi-obstacle authoring outside the
+    # crossing baseline's verified centerline route.
+    # map [4, 1.8] -> [1, 1.8], transformed by the spawn USD offset.
+    start: [8.0, 1.8, 0.50]
+    end: [5.0, 1.8, 0.50]
+    speed: 0.30
+    phase_jitter: 0.50
+    repeat: false
