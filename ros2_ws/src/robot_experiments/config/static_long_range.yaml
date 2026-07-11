@@ -1,0 +1,33 @@
+schema_version: 1
+scenario:
+  id: static_warehouse_long_range
+  type: static
+  spawn_pose_name: mapping_start
+  map_version: warehouse_v1
+  posegraph_version: warehouse_v1
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+  simulation:
+    physics_dt: 0.0166666667
+    rtf: 1.0
+  runs:
+    seeds: [1201]
+    timeout_sec: 60.0
+  goal:
+    frame_id: map
+    position: [3.0, 0.0]
+    yaw_deg: 0.0
+    require_orientation: true
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 10.0
+    require_safety_observations: true
+  obstacles:
+    layout_id: warehouse_multiple_shelves_v1
+    static: []
+    trajectories: []

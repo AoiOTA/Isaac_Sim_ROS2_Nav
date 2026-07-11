@@ -1,0 +1,12 @@
+schema_version: 1
+spawn_poses:
+  mapping_start:
+    usd:
+      position: [0.0, 0.0, 0.15]
+      yaw_deg: 0.0
+    map:
+      calibrated: false
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 5.0
