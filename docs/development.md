@@ -1,5 +1,9 @@
 # Development guide
 
+第一次使用项目请先阅读 [`user_manual.md`](user_manual.md)；不确定一个文件
+属于哪一层或会影响哪些模块时，先查 [`repository_index.md`](repository_index.md)，
+再修改源码或配置。
+
 ## Supported environment
 
 The baseline environment is:

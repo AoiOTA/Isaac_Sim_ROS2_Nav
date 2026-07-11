@@ -68,6 +68,22 @@ rules to place large binary maps in ordinary Git history.
 See `data/README.md` for the data lifecycle and `docs/development.md` for build
 and test commands.
 
+## Documentation maintenance
+
+Keep the operator documentation synchronized with the code:
+
+- update `docs/user_manual.md` when a command, startup sequence, required
+  argument, expected result, or troubleshooting procedure changes;
+- update `docs/repository_index.md` whenever a tracked file is added, removed,
+  renamed, or changes responsibility;
+- keep `README.md` as the short GitHub entrypoint and link detailed procedures
+  instead of duplicating them there;
+- keep runtime claims in `docs/verification.md` evidence-backed and separate
+  smoke results from statistical acceptance.
+
+Before a documentation handoff, compare `git ls-files` with the backticked file
+rows in `docs/repository_index.md` so every tracked file remains indexed.
+
 ## Pull-request and handoff checklist
 
 - The diff addresses one phase or one clearly bounded prerequisite.
