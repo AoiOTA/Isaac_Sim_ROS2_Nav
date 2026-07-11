@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
+set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
@@ -15,7 +15,8 @@ case "${operation}" in
   *) die "unsupported operation: ${operation}" ;;
 esac
 
-source_ros
+source_ros --require-workspace
+acquire_instance_lock ros "ROS stack"
 export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim/configs/spawn_poses.yaml}"
 
 launch_args=("$@")
