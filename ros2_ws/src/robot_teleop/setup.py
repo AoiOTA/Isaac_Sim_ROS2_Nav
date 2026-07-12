@@ -4,7 +4,7 @@ import os
 from setuptools import find_packages, setup
 
 
-package_name = 'robot_bringup'
+package_name = 'robot_teleop'
 
 setup(
     name=package_name,
@@ -14,20 +14,19 @@ setup(
         ('share/ament_index/resource_index/packages',
          ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
-        (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
+        (os.path.join('share', package_name, 'config'),
+         glob('config/*.yaml')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='AoiOTA',
     maintainer_email='liang_yibo@hdu.edu.cn',
-    description='Validated ROS-side mode orchestration for Isaac Sim navigation.',
+    description='Deadman-protected W/A/S/D keyboard control for mapping.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'initial_pose_policy = robot_bringup.initial_pose_policy:main',
-            'nav2_activation_gate = robot_bringup.activation_gate:main',
+            'keyboard_teleop = robot_teleop.keyboard_teleop:main',
         ],
     },
 )

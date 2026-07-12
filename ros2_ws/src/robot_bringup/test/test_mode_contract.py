@@ -111,7 +111,12 @@ def test_stable_operation_launch_entries_delegate_to_core_contract():
         for argument in (
                 'robot_description_file',
                 'wheel_odometry_params_file',
-                'nav2_params_file'):
+                'nav2_params_file',
+                'interactive',
+                'use_rviz',
+                'rviz_config',
+                'use_teleop',
+                'project_root'):
             assert argument in source
 
 
@@ -160,9 +165,42 @@ def test_incremental_and_localization_modes_include_initial_pose():
     mapping_start = core_source.index(
         "if selection.operation in {'mapping', 'incremental_mapping'}:")
     incremental_start = core_source.index(
-        "if selection.operation == 'incremental_mapping':", mapping_start)
+        "if (selection.operation == 'incremental_mapping'", mapping_start)
     localization_start = core_source.index('    else:', incremental_start)
     initial_pose = core_source.index("'initial_pose.launch.py'")
     assert incremental_start < initial_pose < localization_start
     assert "'spawn_poses_file'" in core_source
     assert "'spawn_pose_name'" in core_source
+
+
+def test_initial_pose_source_is_forwarded_and_rviz_disables_auto_publisher():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    core_source = (launch_dir / 'ros_stack.launch.py').read_text()
+    assert "initial_pose_source not in {'auto', 'rviz'}" in core_source
+    assert "if initial_pose_source == 'auto':" in core_source
+    assert "'initial_pose_source': initial_pose_source" in core_source
+    assert "executable='initial_pose_policy'" in core_source
+    setup_source = (PACKAGE_ROOT / 'setup.py').read_text()
+    assert 'initial_pose_policy = robot_bringup.initial_pose_policy:main' \
+        in setup_source
+    for operation in (
+            'incremental_mapping', 'localization', 'navigation'):
+        source = (
+            launch_dir / f'{operation}_bringup.launch.py').read_text()
+        assert "DeclareLaunchArgument('initial_pose_source'" in source
+        assert "'initial_pose_source': LaunchConfiguration(" in source
+
+
+def test_core_launch_manages_rviz_and_mapping_only_teleop():
+    source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py'
+    ).read_text(encoding='utf-8')
+
+    assert 'resolve_interactive_selection' in source
+    assert "project_root / 'scripts' / 'run_rviz.sh'" in source
+    assert "project_root / 'scripts' / 'run_teleop.sh'" in source
+    assert 'teleop_terminal_command' in source
+    assert "DeclareLaunchArgument(\n            'interactive'" in source
+    assert "DeclareLaunchArgument(\n            'use_rviz'" in source
+    assert "DeclareLaunchArgument(\n            'rviz_config'" in source
+    assert "DeclareLaunchArgument(\n            'use_teleop'" in source

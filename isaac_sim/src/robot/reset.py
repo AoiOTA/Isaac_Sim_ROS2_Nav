@@ -61,6 +61,16 @@ class ResetManager:
     def reset(self, request: ResetRequest) -> None:
         """Execute a reset in a fixed order; every subsystem hook is mandatory."""
 
+        # Validate everything that can be checked without side effects before
+        # pausing or teleporting the robot.  Localization resets must never
+        # discover an unknown/uncalibrated map pose after physical state moved.
+        self.spawn_manager.get(request.pose_name)
+        if request.navigation_mode == "localization":
+            self.spawn_manager.get_map_pose(
+                request.pose_name,
+                purpose="localization reset",
+            )
+
         self.simulation.pause()
         try:
             self.hooks.send_zero_velocity()
@@ -76,4 +86,5 @@ class ResetManager:
                 self.hooks.publish_map_initial_pose(request.pose_name)
         except Exception as exc:
             raise ResetError(f"reset failed before simulation resume: {exc}") from exc
-        self.simulation.play()
+        finally:
+            self.simulation.play()

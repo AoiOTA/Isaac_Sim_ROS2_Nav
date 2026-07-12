@@ -3,14 +3,18 @@ from pathlib import Path
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, EmitEvent
-from launch.actions import IncludeLaunchDescription, LogInfo, OpaqueFunction
+from launch.actions import ExecuteProcess, IncludeLaunchDescription, LogInfo
+from launch.actions import OpaqueFunction
 from launch.actions import RegisterEventHandler, SetEnvironmentVariable
+from launch.actions import TimerAction
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
+from robot_bringup.interactive_policy import resolve_interactive_selection
+from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_robot_runtime_files
 
@@ -43,8 +47,27 @@ def _launch_setup(context):
     )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
+    initial_pose_source = LaunchConfiguration(
+        'initial_pose_source').perform(context).strip().lower()
+    if initial_pose_source not in {'auto', 'rviz'}:
+        raise RuntimeError('initial_pose_source must be auto or rviz')
+    if (selection.operation == 'incremental_mapping'
+            and initial_pose_source != 'auto'):
+        raise RuntimeError(
+            'incremental_mapping requires initial_pose_source=auto')
     description_share = Path(
         get_package_share_directory('robot_description'))
+    try:
+        interactive = resolve_interactive_selection(
+            operation=selection.operation,
+            interactive=LaunchConfiguration('interactive').perform(context),
+            use_rviz=LaunchConfiguration('use_rviz').perform(context),
+            rviz_config=LaunchConfiguration('rviz_config').perform(context),
+            use_teleop=LaunchConfiguration('use_teleop').perform(context),
+            robot_description_share=description_share,
+        )
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
     odometry_share = Path(get_package_share_directory('robot_odometry'))
     navigation_share = Path(get_package_share_directory('robot_navigation'))
     runtime_files = validate_robot_runtime_files(
@@ -66,8 +89,19 @@ def _launch_setup(context):
         'ROS stack mode: '
         f'operation={selection.operation}, '
         f'odometry={selection.odometry_mode}, '
-        f'structure_tf={selection.structure_tf_source}'
+        f'structure_tf={selection.structure_tf_source}, '
+        f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}'
     ))]
+
+    actions.append(Node(
+        package='robot_bringup',
+        executable='initial_pose_policy',
+        name='initial_pose_policy',
+        output='screen',
+        parameters=[{
+            'initial_pose_source': initial_pose_source,
+        }],
+    ))
 
     actions.append(_include(
         'robot_description',
@@ -83,14 +117,23 @@ def _launch_setup(context):
         },
     ))
 
-    actions.append(_include(
+    perception = _include(
         'robot_perception',
         'lidar_processing.launch.py',
         {
             'use_sim_time': use_sim_time,
             'use_self_filter': use_self_filter,
         },
-    ))
+    )
+    if interactive.use_rviz:
+        # RViz display constructors briefly use their default Reliable sensor
+        # QoS before the saved Best Effort properties are applied. Starting
+        # the Best Effort /scan publisher only after the config is loaded
+        # avoids a misleading one-shot incompatibility warning while keeping
+        # the final endpoint QoS unchanged.
+        actions.append(TimerAction(period=1.5, actions=[perception]))
+    else:
+        actions.append(perception)
 
     if selection.odometry_mode == 'realistic':
         actions.extend([
@@ -119,7 +162,8 @@ def _launch_setup(context):
                 'posegraph_file': selection.posegraph_prefix,
             },
         ))
-        if selection.operation == 'incremental_mapping':
+        if (selection.operation == 'incremental_mapping'
+                and initial_pose_source == 'auto'):
             actions.append(_include(
                 'robot_experiments',
                 'initial_pose.launch.py',
@@ -142,7 +186,9 @@ def _launch_setup(context):
                     'map_file': selection.occupancy_map_file,
                 },
             ),
-            _include(
+        ])
+        if initial_pose_source == 'auto':
+            actions.append(_include(
                 'robot_experiments',
                 'initial_pose.launch.py',
                 {
@@ -151,9 +197,9 @@ def _launch_setup(context):
                     'spawn_pose_name': LaunchConfiguration(
                         'spawn_pose_name').perform(context),
                     'wait_for_odom_to_base_tf': 'true',
+                    'stay_alive_for_reseed': 'true',
                 },
-            ),
-        ])
+            ))
 
     if selection.operation == 'navigation':
         actions.append(_include(
@@ -177,7 +223,10 @@ def _launch_setup(context):
             output='screen',
             parameters=[
                 str(gate_config),
-                {'use_sim_time': use_sim_time},
+                {
+                    'use_sim_time': use_sim_time,
+                    'initial_pose_source': initial_pose_source,
+                },
             ],
         )
         actions.extend([
@@ -188,6 +237,45 @@ def _launch_setup(context):
                     function=_shutdown_if_gate_exited)],
             )),
         ])
+
+    if interactive.use_rviz or interactive.use_teleop:
+        project_root_value = LaunchConfiguration(
+            'project_root').perform(context).strip()
+        if not project_root_value:
+            raise RuntimeError(
+                'PROJECT_ROOT is required for managed RViz/Teleop; use '
+                'scripts/run_ros.sh or pass project_root:=<repository>')
+        project_root = Path(project_root_value).expanduser().resolve()
+        if interactive.use_rviz:
+            run_rviz = project_root / 'scripts' / 'run_rviz.sh'
+            if not run_rviz.is_file():
+                raise RuntimeError(f'RViz launcher not found: {run_rviz}')
+            actions.insert(1, ExecuteProcess(
+                cmd=[
+                    str(run_rviz),
+                    selection.operation,
+                    interactive.rviz_config,
+                ],
+                output='screen',
+            ))
+        if interactive.use_teleop:
+            run_teleop = project_root / 'scripts' / 'run_teleop.sh'
+            terminal_wrapper = (
+                project_root / 'scripts' / 'run_teleop_terminal.sh')
+            if not run_teleop.is_file():
+                raise RuntimeError(
+                    f'Mapping teleop launcher not found: {run_teleop}')
+            if not terminal_wrapper.is_file():
+                raise RuntimeError(
+                    f'Teleop terminal wrapper not found: {terminal_wrapper}')
+            try:
+                terminal_command = teleop_terminal_command(run_teleop)
+            except ValueError as exc:
+                raise RuntimeError(str(exc)) from exc
+            actions.append(ExecuteProcess(
+                cmd=[str(terminal_wrapper), *terminal_command],
+                output='screen',
+            ))
     return actions
 
 
@@ -220,6 +308,31 @@ def generate_launch_description():
                 'ISAAC_NAV_SPAWN_POSES')),
         DeclareLaunchArgument(
             'spawn_pose_name', default_value='mapping_start'),
+        DeclareLaunchArgument(
+            'initial_pose_source',
+            default_value='auto',
+            description='auto or rviz (localization/navigation only)'),
+        DeclareLaunchArgument(
+            'interactive',
+            default_value='true',
+            description='false disables RViz and keyboard Teleop'),
+        DeclareLaunchArgument(
+            'use_rviz',
+            default_value='true',
+            description='launch the operation-specific RViz workflow'),
+        DeclareLaunchArgument(
+            'rviz_config',
+            default_value='auto',
+            description='auto or a custom .rviz path'),
+        DeclareLaunchArgument(
+            'use_teleop',
+            default_value='auto',
+            description='auto, true, or false; only Mapping may enable it'),
+        DeclareLaunchArgument(
+            'project_root',
+            default_value=EnvironmentVariable(
+                'PROJECT_ROOT', default_value=''),
+            description='repository root used by managed interaction scripts'),
         DeclareLaunchArgument('use_self_filter', default_value='false'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         SetEnvironmentVariable(

@@ -1,0 +1,197 @@
+from types import SimpleNamespace
+
+import pytest
+
+from robot_experiments.initial_pose_publisher import (
+    InitialPosePublisher,
+    PostResetScanBarrier,
+)
+
+
+def test_post_reset_scan_requires_new_stamp_close_to_current_clock():
+    barrier = PostResetScanBarrier(clock_tolerance_sec=0.5)
+    barrier.arm(30.0)
+
+    assert not barrier.observe_scan(28.0)
+    assert not barrier.observe_scan(30.0)
+    assert not barrier.ready
+    barrier.observe_clock(30.2)
+    assert barrier.observe_scan(30.1)
+    assert barrier.ready
+
+
+def test_clock_rollback_does_not_accept_stale_high_epoch_scans():
+    barrier = PostResetScanBarrier(clock_tolerance_sec=0.5)
+    barrier.arm(30.0)
+    assert barrier.observe_clock(0.1)
+    barrier.arm(0.1)
+
+    assert not barrier.observe_scan(28.0)
+    assert not barrier.observe_scan(28.1)
+    assert not barrier.observe_scan(0.1)
+    barrier.observe_clock(0.2)
+    assert barrier.observe_scan(0.2)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"clock_tolerance_sec": 0.0},
+        {"clock_tolerance_sec": 0.5, "rollback_tolerance_sec": -1.0},
+    ],
+)
+def test_post_reset_scan_barrier_rejects_invalid_configuration(kwargs):
+    with pytest.raises(ValueError):
+        PostResetScanBarrier(**kwargs)
+
+
+class FakeTimer:
+    def __init__(self):
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+
+
+class FakeLogger:
+    def __init__(self):
+        self.messages = []
+        self.warnings = []
+
+    def info(self, message):
+        self.messages.append(message)
+
+    def warning(self, message):
+        self.warnings.append(message)
+
+
+def test_ordinary_reseed_preserves_runtime_manual_override():
+    timer = FakeTimer()
+    logger = FakeLogger()
+    statuses = []
+    node = SimpleNamespace(
+        _manual_override=True,
+        complete=False,
+        failure="old failure",
+        _timer=timer,
+        _set_status=statuses.append,
+        get_logger=lambda: logger,
+    )
+
+    result = InitialPosePublisher._rearm(
+        node,
+        "simulation clock rollback",
+        force_calibrated=False,
+        barrier_stamp_s=0.1,
+    )
+
+    assert not result
+    assert node._manual_override
+    assert node.complete
+    assert node.failure is None
+    assert timer.cancelled
+    assert statuses == ["manual_override"]
+
+
+def test_physical_reset_is_the_only_rearm_that_clears_manual_override():
+    timer = SimpleNamespace(reset=lambda: None)
+    tf_buffer = SimpleNamespace(clear=lambda: None)
+    scan_barrier = PostResetScanBarrier(clock_tolerance_sec=0.5)
+    statuses = []
+    node = SimpleNamespace(
+        _manual_override=True,
+        _published=4,
+        complete=True,
+        failure="old failure",
+        _last_clock=SimpleNamespace(sec=2, nanosec=0),
+        _clock_ready_at=None,
+        _scan_ready_at=1.0,
+        _started_at=0.0,
+        _scan_barrier=scan_barrier,
+        _tf_buffer=tf_buffer,
+        _timer=timer,
+        _set_status=statuses.append,
+        get_logger=lambda: FakeLogger(),
+    )
+
+    result = InitialPosePublisher._rearm(
+        node,
+        "physical simulation reset event",
+        force_calibrated=True,
+        barrier_stamp_s=0.2,
+    )
+
+    assert result
+    assert not node._manual_override
+    assert not node.complete
+    assert node.failure is None
+    assert not scan_barrier.ready
+    assert scan_barrier.barrier_stamp_s == pytest.approx(0.2)
+    assert statuses == ["waiting_scan"]
+
+
+def _pose_message(*, frame="map", x=1.0, y=2.0, z=0.0, qz=0.0, qw=1.0):
+    return SimpleNamespace(
+        header=SimpleNamespace(frame_id=frame),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=x, y=y, z=z),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=qz, w=qw),
+            )
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        (_pose_message(frame="odom"), "frame_id must be 'map'"),
+        (_pose_message(x=float("nan")), "must be finite"),
+        (_pose_message(qz=0.0, qw=0.5), "must be normalized"),
+    ],
+)
+def test_invalid_manual_pose_never_claims_initial_pose_ownership(
+    message, expected
+):
+    logger = FakeLogger()
+    node = SimpleNamespace(
+        _map_frame="map",
+        _manual_override=False,
+        _matches_calibrated_pose=lambda _message: False,
+        _manual_pose_error=lambda candidate: (
+            InitialPosePublisher._manual_pose_error(node, candidate)
+        ),
+        get_logger=lambda: logger,
+    )
+
+    InitialPosePublisher._initial_pose_callback(node, message)
+
+    assert not node._manual_override
+    assert expected in logger.warnings[0]
+
+
+def test_valid_map_pose_can_claim_manual_ownership():
+    logger = FakeLogger()
+    statuses = []
+    timer = FakeTimer()
+    node = SimpleNamespace(
+        _map_frame="map",
+        _manual_override=False,
+        complete=False,
+        failure="old",
+        _timer=timer,
+        _matches_calibrated_pose=lambda _message: False,
+        _manual_pose_error=lambda candidate: (
+            InitialPosePublisher._manual_pose_error(node, candidate)
+        ),
+        _set_status=statuses.append,
+        get_logger=lambda: logger,
+    )
+
+    InitialPosePublisher._initial_pose_callback(node, _pose_message())
+
+    assert node._manual_override
+    assert node.complete
+    assert node.failure is None
+    assert timer.cancelled
+    assert statuses == ["manual_override"]

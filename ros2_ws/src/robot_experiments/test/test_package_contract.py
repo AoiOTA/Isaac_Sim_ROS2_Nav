@@ -93,6 +93,18 @@ def test_initial_pose_contract_waits_for_clock_and_uses_reliable_qos():
     assert "ReliabilityPolicy.RELIABLE" in source
     assert "require_calibrated=True" in source
     assert "wait_for_odom_to_base_tf" in source
-    assert "lookup_transform(self._odom_frame, self._base_frame" in source
+    assert "lookup_transform(" in source
+    assert "self._odom_frame, self._base_frame, Time()" in source
     assert "wait_for_map_to_odom_tf" not in source
     assert "publish_count" in source
+    assert "Buffer(node=self)" in source
+    assert '"/initial_pose/reseed"' in source
+    assert "_initial_pose_callback" in source
+    assert "external /initialpose accepted" in source
+    assert "simulation clock rollback" in source
+    assert "stay_alive_for_reseed" in source
+    assert '"/scan"' in source
+    assert '"/simulation/reset_event"' in source
+    assert '"/initial_pose/status"' in source
+    assert "PostResetScanBarrier" in source
+    assert "manual RViz initial pose remains authoritative" in source
