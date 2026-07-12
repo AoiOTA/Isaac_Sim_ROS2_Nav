@@ -48,5 +48,16 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'mode': 'localization'" in localization_source
     assert "('.posegraph', '.data')" in localization_source
     assert 'return [slam_node, activate, configure]' in mapping_source
-    assert 'activate_map' in localization_source
-    assert 'configure_map' in localization_source
+    assert "package='nav2_lifecycle_manager'" in localization_source
+    assert "name='lifecycle_manager_localization'" in localization_source
+    assert "'node_names': ['map_server', 'slam_toolbox']" \
+        in localization_source
+    assert "'use_lifecycle_manager': True" in localization_source
+    assert 'EmitEvent' not in localization_source
+    assert 'ChangeState' not in localization_source
+
+
+def test_localization_package_declares_single_lifecycle_owner_dependency():
+    package = (PACKAGE_ROOT / 'package.xml').read_text(encoding='utf-8')
+
+    assert package.count('<exec_depend>nav2_lifecycle_manager</exec_depend>') == 1
