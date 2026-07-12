@@ -101,7 +101,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         'Global Costmap': '/global_costmap/costmap',
         'Local Costmap': '/local_costmap/costmap',
         'Global Plan': '/plan',
-        'Local Plan': '/local_plan',
+        'Local Plan': '/transformed_global_plan',
         'Global Footprint': '/global_costmap/published_footprint',
         'Local Footprint': '/local_costmap/published_footprint',
         'Stop Zone': '/collision_monitor/stop_zone',
@@ -117,6 +117,8 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert tools.count('rviz_default_plugins/SetInitialPose') == 1
     assert 'rviz_default_plugins/SetGoal' not in tools
     assert '/goal_pose' not in (RVIZ_ROOT / 'navigation.rviz').read_text(
+        encoding='utf-8')
+    assert '/local_plan' not in (RVIZ_ROOT / 'navigation.rviz').read_text(
         encoding='utf-8')
 
 
