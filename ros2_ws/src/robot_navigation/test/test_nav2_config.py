@@ -26,8 +26,10 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert planner['plugin'] == 'nav2_smac_planner::SmacPlanner2D'
     assert controller['plugin'] == 'nav2_mppi_controller::MPPIController'
     assert controller['motion_model'] == 'DiffDrive'
-    assert controller['time_steps'] == 40
-    assert controller['batch_size'] == 1500
+    assert controller['time_steps'] == 20
+    assert controller['model_dt'] == 0.10
+    assert controller['batch_size'] == 1000
+    assert controller['time_steps'] * controller['model_dt'] == 2.0
     assert controller['transform_tolerance'] >= 0.5
     assert local['rolling_window'] is True
     # Nav2 Jazzy declares these two parameters as integers.
@@ -51,6 +53,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     collision = _params(config, 'collision_monitor')
 
     assert controller['enable_stamped_cmd_vel'] is False
+    assert controller['controller_frequency'] == 10.0
     assert controller['goal_checker']['xy_goal_tolerance'] < 0.25
     assert behavior['enable_stamped_cmd_vel'] is False
     assert smoother['enable_stamped_cmd_vel'] is False
