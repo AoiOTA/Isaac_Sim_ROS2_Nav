@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
+original_args=("$@")
+
 usage() {
   cat <<'EOF'
 usage: run_rviz.sh mapping|incremental_mapping|localization|navigation [config]
@@ -49,6 +51,7 @@ source_ros --require-workspace
 require_command ros2
 require_command realpath
 require_command rviz2
+ensure_dedicated_process_group "${original_args[@]}"
 acquire_instance_lock rviz "RViz"
 
 if (($# == 1)); then
