@@ -1,7 +1,7 @@
 # Verification status
 
 This is an evidence ledger, not a claim that every acceptance item in
-`plan.md` is complete. Results below were observed on 2026-07-10 and 2026-07-11
+`plan.md` is complete. Results below were observed on 2026-07-10 through 2026-07-12
 with Isaac Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090.
 Generated Kit logs and raw experiment captures remain outside normal Git
 history. The curated `warehouse_v1` map bundle is versioned; its large
@@ -24,16 +24,36 @@ history. The curated `warehouse_v1` map bundle is versioned; its large
 | Localization + Ground Truth | The saved Pose Graph loaded in multiple Ideal sessions and one Realistic session. All 13 final runs passed the runner's post-reset map/base alignment and GT freshness gates | Ideal/Realistic runtime alignment exercised; three independent cold starts per mode with quantified pose spread remain pending |
 | Immutable navigation map | In Localization/Navigation, `map_server` was active and the only `/map` publisher at `398 x 606`, while SLAM Toolbox published its changing diagnostic grid only on `/slam_toolbox/map`; Nav2 consumed the saved transient-local map | publisher isolation verified and used by the final dynamic batch |
 | Nav2 activation | Activation waited for latched `/map`, fresh non-zero `/clock`, fresh `/scan` and `/odom`, and stable, freshly stamped `map -> odom`; lifecycle activation completed. The gate remains alive after `STARTUP`, eliminating the prior process-exit handler race | readiness/lifecycle smoke verified |
+| Transactional Reset recovery | A live Navigation reset returned success only after its queued reset/clear futures resolved and emitted one recovery epoch. The gate logged one ordered cancel/pause/clear/reseed/wait/resume sequence; all six Nav2 managed nodes returned active with no duplicate transition. Unit tests also inject old futures, timeout/service failures, overlapping resets, and stale scan epochs | live auto-reseed recovery verified; destructive service-failure runtime injection remains pending |
+| RViz workflows | `mapping.rviz`, `localization.rviz`, and `navigation.rviz` each loaded under Xvfb for eight seconds with no plugin/config error. The integrated Mapping launch opened managed RViz, loaded final Best-Effort sensor QoS before `/scan`, and shut down without orphan RViz processes | all three configs load-tested; extended manual GUI sessions across every display toggle are not a soak |
+| Mapping Teleop | A real PTY run produced `+0.30 m/s` on W, returned to zero after the 0.18-second deadman, and Q logged a final zero. The integrated Mapping launch started the separate terminal and its wrapper stopped the identity-checked node on top-level shutdown; no Teleop/ROS/RViz process remained | input/deadman/shutdown smoke verified; not a human full-map driving acceptance |
+| RViz navigation interaction | Navigation config contains the official Navigation 2 panel and GoalTool, SetInitialPose, dual costmaps, paths, footprints, and collision zones; config tests reject a project `/goal_pose` bridge and lock topic/QoS values. Live Nav2 goals completed through the same action server used by the panel | plugin/config and action path verified; final click-by-click human acceptance was bounded to config/load and navigation smoke |
 | Ideal NavigateToPose | Final static batch: 4/4 at `[1, 0, 0°]`, GT errors `0.178–0.188 m`; long-range run: 1/1 at `[3, 0, 0°]`, GT path `2.807 m`, error `0.193 m`. Every run returned Nav2 status 4 and met the final-still gate | deterministic smoke/recovery evidence; not the plan's multi-goal statistical matrix |
 | Realistic odometry | `/wheel/odom` and EKF `/odom` both observed at about `45 Hz`; `/odom` had one publisher (`ekf_filter_node`) | Wheel Odom + IMU + EKF ownership smoke verified |
 | Realistic Navigation + Reset | Four Realistic static runs succeeded after repeated Wheel Odom/EKF resets; GT errors were `0.175–0.187 m`, odom path lengths `0.818–0.831 m`, final linear speeds about `-0.0015 m/s`, and every run met the still gate. `/odom` had exactly one publisher, `ekf_filter_node` | 4/4 deterministic smoke verified; broader drift and varied-goal statistics not run |
 | TF structure | All seven configured static sensor/camera pairs and dynamic wheel links were observed; Ideal and Realistic `odom -> base_link` ownership matched the selected mode | checked runtime snapshots; always recheck after mode changes |
 | Dynamic navigation | Two physical one-shot obstacles (crossing and oncoming) were verified against the ROS scenario by enabled state, SHA256, IDs, shape, dimensions, transformed endpoints, duration, and `repeat`. The final 4-seed batch succeeded 4/4 with GT errors `0.168–0.186 m`, final still state, and collision/localization/TF observations | one deterministic two-obstacle baseline verified; not the required diverse dynamic matrix or a true-contact test |
 | Experiment contracts | Static, dynamic, and Realistic final batches wrote strict CSV/JSON reports; static uses the fixed warehouse with `static: []`, dynamic verifies its physical contract, and the navigation runner rejects incremental workflow descriptors | baseline batches executed; full statistical matrix remains pending |
+| Runtime hygiene | `preflight.sh` passed with Jazzy, Domain 42, Fast DDS, map hashes/LFS, assets, GPU, three RViz files and Teleop package. Safe cleanup removed stale registered metadata and current-user Fast DDS SHM only after stopping the CLI daemon and proving no Fast DDS mapping remained | normal and dry-run paths tested; the diagnostic process list may also show the IDE/Codex process because its working directory is the repository, but it is never a managed kill target |
 
 The measured RTX and ROS rates are wall-time observations from one run. They are
 useful regression baselines, not confidence intervals or performance guarantees
 for another GPU, renderer, or workload.
+
+## 2026-07-12 MPPI comparison
+
+The same headless Isaac Ideal Localization session, `warehouse_v1`, and map goal `[3.0, 0.0]` were used while the host CPU governor was `powersave`. Durations below are comparable navigation log spans, not universal wall-time guarantees.
+
+| Controller / MPPI | Localization processing | Outcome | Missed-control evidence |
+| --- | --- | --- | --- |
+| 20 Hz, 40×0.05 s, batch 1500 | every scan, 0.10 s minimum | succeeded, about 15.14 s | 9 warnings; worst observed achieved rate 4.615 Hz |
+| 20 Hz, 40×0.05 s, batch 1000 | every scan, 0.10 s minimum | succeeded, about 16.32 s | 5 warnings; worst 4.285 Hz |
+| 20 Hz, 40×0.05 s, batch 750 | every scan, 0.10 s minimum | succeeded, about 15.72 s | 12 warnings; worst 4.285 Hz |
+| 10 Hz, 20×0.10 s, batch 1000 | every scan, 0.10 s minimum | succeeded, about 5.86 s | 3 warnings |
+| **10 Hz, 20×0.10 s, batch 1000** | **every second scan, 0.20 s minimum** | **succeeded, about 5.75 s** | **0 warnings; `/cmd_vel_nav` 10.000 Hz, maximum observed interval about 0.182 s** |
+| 20 Hz, 40×0.05 s, batch 1000 | every second scan, 0.20 s minimum | succeeded, about 18.23 s | many warnings (approximately 18), maximum command interval about 0.323 s, and stale-scan safety stops |
+
+The selected row preserves a two-second MPPI horizon while reducing per-cycle work and SLAM contention. Collision Monitor still subscribes to the original nominal 10 Hz `/scan`; `throttle_scans` changes SLAM Toolbox processing, not the safety sensor stream. The 20 Hz retest with reduced localization load was still worse, so the final default was chosen from measured behavior rather than batch size alone.
 
 ## Nav2 1.3.12 Smac inflation diagnostic
 
@@ -57,13 +77,17 @@ facts remain unchanged.
 
 ## Automated test evidence
 
-The final delivery verification on 2026-07-11 recorded:
+The final delivery verification on 2026-07-12 recorded:
 
 - preflight: PASS, including `warehouse_v1` size/SHA256 and Git LFS hydration;
-- ROS build: 8 packages completed;
-- root/pure suite: 162 passed, 3 Isaac-marked tests deselected;
-- ROS colcon suite: 180 tests, 0 errors, 0 failures, 0 skipped;
-- Isaac/USD marker suite: 3 passed, 34 non-Isaac tests deselected.
+- ROS build: 9 packages completed;
+- root/pure suite: 289 passed, 5 Isaac/ROS-marked tests deselected;
+- ROS colcon suite: 292 tests, 0 errors, 0 failures, 0 skipped;
+- Isaac/USD marker suite: 3 passed, 45 non-Isaac tests deselected;
+- the two real-rclpy activation-gate integration cases passed in 20 consecutive loops (40 case executions total);
+- all three RViz configs passed seven structural/QoS assertions and independent Xvfb load smokes;
+- repository index set comparison covered all 227 deliverable files with zero missing or extra entries;
+- `git diff --check` passed.
 
 Re-run the same gates after any change; terminal output is authoritative if
 counts change as tests are added:
@@ -99,7 +123,7 @@ With an Ideal Mapping pair running:
   --headless
 
 # terminal B
-./scripts/run_ros.sh mapping odometry_mode:=ideal
+./scripts/run_ros.sh mapping odometry_mode:=ideal interactive:=false
 ```
 
 Capture timing, frames, and ownership:
@@ -126,7 +150,7 @@ For Realistic Mapping, restart both processes with the same odometry selection:
   --mode realistic \
   --headless
 
-./scripts/run_ros.sh mapping odometry_mode:=realistic
+./scripts/run_ros.sh mapping odometry_mode:=realistic interactive:=false
 ```
 
 Then require one `/odom` publisher (EKF), observe both odometry streams, and
@@ -147,7 +171,8 @@ do not infer readiness solely from `success: true`.
 
 For a manual reproduction of the final Ideal static baseline, start the
 localization-mode Isaac/ROS pair shown in `README.md`, wait for the activation
-gate to report completion, and send the same map-frame goal:
+gate to report completion, and use the official RViz Nav2 GoalTool to drag a
+goal near `[1.0, 0.0, 0°]`. For a scriptable equivalent:
 
 ```bash
 ros2 action send_goal /navigate_to_pose \
