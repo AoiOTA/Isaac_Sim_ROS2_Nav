@@ -19,6 +19,8 @@ def test_mapping_and_localization_configs_have_exclusive_semantics():
     assert mapping['use_map_saver'] is True
     assert localization['mode'] == 'localization'
     assert 'use_map_saver' not in localization
+    assert localization['throttle_scans'] == 2
+    assert localization['minimum_time_interval'] == 0.20
     for params in (mapping, localization):
         assert params['map_frame'] == 'map'
         assert params['odom_frame'] == 'odom'
