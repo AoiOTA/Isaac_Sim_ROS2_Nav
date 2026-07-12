@@ -24,6 +24,7 @@ def generate_launch_description():
             DeclareLaunchArgument("wait_for_odom_to_base_tf", default_value="true"),
             DeclareLaunchArgument("publish_count", default_value="5"),
             DeclareLaunchArgument("publish_period_sec", default_value="0.5"),
+            DeclareLaunchArgument("stay_alive_for_reseed", default_value="true"),
             Node(
                 package="robot_experiments",
                 executable="initial_pose_publisher",
@@ -43,6 +44,10 @@ def generate_launch_description():
                         ),
                         "publish_period_sec": ParameterValue(
                             LaunchConfiguration("publish_period_sec"), value_type=float
+                        ),
+                        "stay_alive_for_reseed": ParameterValue(
+                            LaunchConfiguration("stay_alive_for_reseed"),
+                            value_type=bool,
                         ),
                     }
                 ],

@@ -361,7 +361,7 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
         )
         reset_manager = ResetManager(runtime, spawn_manager, hooks)
         reset_bridge.bind(reset_manager)
-        reset_manager.reset(
+        startup_reset = reset_bridge.start_reset(
             ResetRequest(
                 pose_name=config.spawn.selected,
                 navigation_mode=config.simulation.navigation_mode,
@@ -369,6 +369,11 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
                 random_seed=dynamic_scenario.seed,
             )
         )
+        if startup_reset.finished and startup_reset.errors:
+            raise RuntimeError(
+                "startup reset transaction failed: "
+                f"{startup_reset.errors}"
+            )
 
         max_frames = config.simulation.max_frames
         frame = 0
@@ -383,6 +388,11 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
         while app.is_running() and (max_frames == 0 or frame < max_frames):
             app.update()
             rclpy.spin_once(node, timeout_sec=0.0)
+            if startup_reset.finished and startup_reset.errors:
+                raise RuntimeError(
+                    "startup reset transaction failed: "
+                    f"{startup_reset.errors}"
+                )
             simulation_time = float(SimulationManager.get_simulation_time())
             dynamic_manager.update(simulation_time)
             collision_monitor.update(simulation_time)

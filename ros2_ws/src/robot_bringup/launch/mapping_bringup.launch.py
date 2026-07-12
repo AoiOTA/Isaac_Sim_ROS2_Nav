@@ -4,7 +4,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 
 
 def generate_launch_description():
@@ -20,6 +20,14 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
+        DeclareLaunchArgument('interactive', default_value='true'),
+        DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument('rviz_config', default_value='auto'),
+        DeclareLaunchArgument('use_teleop', default_value='auto'),
+        DeclareLaunchArgument(
+            'project_root',
+            default_value=EnvironmentVariable(
+                'PROJECT_ROOT', default_value='')),
         DeclareLaunchArgument('use_self_filter', default_value='false'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         IncludeLaunchDescription(
@@ -35,6 +43,11 @@ def generate_launch_description():
                 'wheel_odometry_params_file': LaunchConfiguration(
                     'wheel_odometry_params_file'),
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),
+                'interactive': LaunchConfiguration('interactive'),
+                'use_rviz': LaunchConfiguration('use_rviz'),
+                'rviz_config': LaunchConfiguration('rviz_config'),
+                'use_teleop': LaunchConfiguration('use_teleop'),
+                'project_root': LaunchConfiguration('project_root'),
                 'use_self_filter': LaunchConfiguration('use_self_filter'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
             }.items(),

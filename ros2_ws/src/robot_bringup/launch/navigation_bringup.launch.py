@@ -28,6 +28,15 @@ def generate_launch_description():
                 'ISAAC_NAV_SPAWN_POSES', default_value='')),
         DeclareLaunchArgument(
             'spawn_pose_name', default_value='mapping_start'),
+        DeclareLaunchArgument('initial_pose_source', default_value='auto'),
+        DeclareLaunchArgument('interactive', default_value='true'),
+        DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument('rviz_config', default_value='auto'),
+        DeclareLaunchArgument('use_teleop', default_value='auto'),
+        DeclareLaunchArgument(
+            'project_root',
+            default_value=EnvironmentVariable(
+                'PROJECT_ROOT', default_value='')),
         DeclareLaunchArgument('use_self_filter', default_value='false'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         IncludeLaunchDescription(
@@ -46,6 +55,13 @@ def generate_launch_description():
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
+                'initial_pose_source': LaunchConfiguration(
+                    'initial_pose_source'),
+                'interactive': LaunchConfiguration('interactive'),
+                'use_rviz': LaunchConfiguration('use_rviz'),
+                'rviz_config': LaunchConfiguration('rviz_config'),
+                'use_teleop': LaunchConfiguration('use_teleop'),
+                'project_root': LaunchConfiguration('project_root'),
                 'use_self_filter': LaunchConfiguration('use_self_filter'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
             }.items(),

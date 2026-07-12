@@ -2,9 +2,24 @@ nav2_activation_gate:
   ros__parameters:
     use_sim_time: true
     startup_timeout: 30.0
+    recovery_timeout: 30.0
+    recovery_service_timeout: 3.0
     check_period: 0.10
     freshness_timeout: 0.50
     tf_stable_duration: 1.00
     tf_translation_tolerance: 0.05
     tf_yaw_tolerance: 0.0523598776
+    clock_jump_tolerance: 5.0
+    max_attempts: 3
+    retry_initial_backoff: 0.50
+    retry_maximum_backoff: 2.00
     lifecycle_service: /lifecycle_manager_navigation/manage_nodes
+    managed_nodes:
+      - controller_server
+      - planner_server
+      - behavior_server
+      - velocity_smoother
+      - collision_monitor
+      - bt_navigator
+    initial_pose_source: auto
+    initial_pose_reseed_service: /initial_pose/reseed

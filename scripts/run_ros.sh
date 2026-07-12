@@ -16,6 +16,11 @@ case "${operation}" in
 esac
 
 source_ros --require-workspace
+if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; then
+  if runtime_lock_is_held teleop; then
+    die "stop the Mapping teleop before starting ${operation}; it must not publish /cmd_vel in this mode"
+  fi
+fi
 acquire_instance_lock ros "ROS stack"
 export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim/configs/spawn_poses.yaml}"
 

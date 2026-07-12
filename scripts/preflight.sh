@@ -14,7 +14,11 @@ require_command colcon
 require_command flock
 require_command nvidia-smi
 require_command python3
+require_command realpath
 require_command timeout
+require_executable "${PROJECT_ROOT}/scripts/run_rviz.sh"
+require_executable "${PROJECT_ROOT}/scripts/run_teleop.sh"
+require_executable "${PROJECT_ROOT}/scripts/run_teleop_terminal.sh"
 
 "${ISAAC_PYTHON}" -c 'from importlib.metadata import version; assert version("isaacsim") == "6.0.1.0"; print("Isaac Sim", version("isaacsim"))'
 
@@ -24,7 +28,7 @@ for package in nav2_bringup nav2_mppi_controller nav2_smac_planner \
   nav2_rviz_plugins pointcloud_to_laserscan robot_localization rviz2 xacro \
   robot_bringup robot_description robot_experiments \
   robot_localization_config robot_mapping robot_navigation robot_odometry \
-  robot_perception; do
+  robot_perception robot_teleop; do
   ros2 pkg prefix "${package}" >/dev/null
 done
 
@@ -35,6 +39,13 @@ grep -q 'name="nav2_rviz_plugins/GoalTool"' "${nav2_plugin_xml}" \
   || die "Jazzy Nav2 GoalTool plugin is unavailable: ${nav2_plugin_xml}"
 grep -q 'name="nav2_rviz_plugins/Navigation 2"' "${nav2_plugin_xml}" \
   || die "Jazzy Nav2 Navigation 2 panel is unavailable: ${nav2_plugin_xml}"
+
+description_prefix="$(ros2 pkg prefix robot_description)"
+for config_name in mapping.rviz localization.rviz navigation.rviz; do
+  require_file "${description_prefix}/share/robot_description/rviz/${config_name}"
+done
+teleop_prefix="$(ros2 pkg prefix robot_teleop)"
+require_file "${teleop_prefix}/share/robot_teleop/config/teleop.yaml"
 
 MAP_MANIFEST="${PROJECT_ROOT}/data/maps/manifests/warehouse_v1.yaml"
 require_file "${MAP_MANIFEST}"

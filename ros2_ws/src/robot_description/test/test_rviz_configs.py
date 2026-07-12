@@ -1,0 +1,126 @@
+from pathlib import Path
+
+import pytest
+import yaml
+
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+RVIZ_ROOT = PACKAGE_ROOT / 'rviz'
+
+
+def _config(name):
+    return yaml.safe_load(
+        (RVIZ_ROOT / name).read_text(encoding='utf-8'))
+
+
+def _displays(config):
+    result = []
+
+    def visit(display):
+        result.append(display)
+        for child in display.get('Displays', []):
+            visit(child)
+
+    for display in config['Visualization Manager']['Displays']:
+        visit(display)
+    return result
+
+
+def _named(config, name):
+    return next(item for item in _displays(config) if item.get('Name') == name)
+
+
+def _assert_topic(display, topic, *, reliability, durability):
+    configured = display['Topic']
+    assert configured['Value'] == topic
+    assert configured['Reliability Policy'] == reliability
+    assert configured['Durability Policy'] == durability
+
+
+@pytest.mark.parametrize(
+    'name', ['mapping.rviz', 'localization.rviz', 'navigation.rviz'])
+def test_every_workflow_has_map_frame_robot_tf_and_sensor_qos(name):
+    config = _config(name)
+    manager = config['Visualization Manager']
+
+    assert manager['Global Options']['Fixed Frame'] == 'map'
+    classes = {item['Class'] for item in _displays(config)}
+    assert 'rviz_default_plugins/RobotModel' in classes
+    assert 'rviz_default_plugins/TF' in classes
+    _assert_topic(
+        _named(config, 'LaserScan'),
+        '/scan',
+        reliability='Best Effort',
+        durability='Volatile',
+    )
+    _assert_topic(
+        _named(config, 'Raw LiDAR PointCloud2'),
+        '/lidar/points_raw',
+        reliability='Best Effort',
+        durability='Volatile',
+    )
+    assert _named(config, 'Raw LiDAR PointCloud2')['Enabled'] is False
+
+
+def test_mapping_workflow_uses_live_map_and_no_navigation_goal_tool():
+    config = _config('mapping.rviz')
+    _assert_topic(
+        _named(config, 'Mapping Map'),
+        '/map',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    panel_classes = {panel['Class'] for panel in config['Panels']}
+    tool_classes = {
+        tool['Class'] for tool in config['Visualization Manager']['Tools']}
+    assert 'slam_toolbox::SlamToolboxPlugin' in panel_classes
+    assert 'nav2_rviz_plugins/Navigation 2' not in panel_classes
+    assert 'nav2_rviz_plugins/GoalTool' not in tool_classes
+
+
+def test_localization_workflow_has_static_and_diagnostic_maps_and_pose_tool():
+    config = _config('localization.rviz')
+    _assert_topic(
+        _named(config, 'Static Map'),
+        '/map',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    diagnostic = _named(config, 'SLAM Toolbox Diagnostic Map')
+    assert diagnostic['Topic']['Value'] == '/slam_toolbox/map'
+    assert diagnostic['Enabled'] is False
+    pose_tool = next(
+        tool for tool in config['Visualization Manager']['Tools']
+        if tool['Class'] == 'rviz_default_plugins/SetInitialPose')
+    assert pose_tool['Topic']['Value'] == '/initialpose'
+
+
+def test_navigation_workflow_has_complete_official_nav2_interaction():
+    config = _config('navigation.rviz')
+    expected_topics = {
+        'Global Costmap': '/global_costmap/costmap',
+        'Local Costmap': '/local_costmap/costmap',
+        'Global Plan': '/plan',
+        'Local Plan': '/local_plan',
+        'Global Footprint': '/global_costmap/published_footprint',
+        'Local Footprint': '/local_costmap/published_footprint',
+        'Stop Zone': '/collision_monitor/stop_zone',
+        'Slowdown Zone': '/collision_monitor/slowdown_zone',
+    }
+    for display_name, topic in expected_topics.items():
+        assert _named(config, display_name)['Topic']['Value'] == topic
+
+    panels = [panel['Class'] for panel in config['Panels']]
+    tools = [tool['Class'] for tool in config['Visualization Manager']['Tools']]
+    assert panels.count('nav2_rviz_plugins/Navigation 2') == 1
+    assert tools.count('nav2_rviz_plugins/GoalTool') == 1
+    assert tools.count('rviz_default_plugins/SetInitialPose') == 1
+    assert 'rviz_default_plugins/SetGoal' not in tools
+    assert '/goal_pose' not in (RVIZ_ROOT / 'navigation.rviz').read_text(
+        encoding='utf-8')
+
+
+def test_robot_description_cmake_installs_all_rviz_configs():
+    cmake = (PACKAGE_ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
+    assert 'install(DIRECTORY' in cmake
+    assert 'rviz' in cmake
