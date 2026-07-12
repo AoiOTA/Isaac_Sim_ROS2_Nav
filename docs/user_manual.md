@@ -57,11 +57,10 @@ flowchart LR
 
 ## 3. 环境与目录约定
 
-远程仓库名中的 `Issac` 是现有 GitHub 仓库名。为避免它与项目内统一使用的
-`Isaac` 目录名混淆，第一次下载时建议显式指定本地目录：
+GitHub canonical 仓库名与项目目录统一使用 `Isaac`。第一次下载时执行：
 
 ```bash
-git clone git@github.com:AoiOTA/Issac_Sim_ROS2_Nav.git Isaac_Sim_ROS2_Nav
+git clone git@github.com:AoiOTA/Isaac_Sim_ROS2_Nav.git Isaac_Sim_ROS2_Nav
 cd Isaac_Sim_ROS2_Nav
 export PROJECT_ROOT="$PWD"
 ```
