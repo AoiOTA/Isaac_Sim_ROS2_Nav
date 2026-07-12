@@ -62,6 +62,26 @@ project/robot profile through `ISAAC_NAV_PROJECT_CONFIG`; see the
 [custom-robot contract](../isaac_sim/assets/robots/custom_robot/README.md) for
 the fail-fast calibration workflow.
 
+## Interactive workflow contract
+
+All four top-level bringups expose the same interaction arguments:
+
+| Argument | Default | Contract |
+| --- | --- | --- |
+| `interactive` | `true` | `false` disables both RViz and Teleop regardless of their individual values. |
+| `use_rviz` | `true` | Launch exactly one managed RViz process with the operation-specific config. |
+| `rviz_config` | `auto` | Select `mapping.rviz`, `localization.rviz`, or `navigation.rviz`; an explicit path must exist. |
+| `use_teleop` | `auto` | Enable only for `mapping` and `incremental_mapping`; explicit true in Localization/Navigation is rejected. |
+| `initial_pose_source` | `auto` | `auto` owns calibrated reseeding; `rviz` gives ownership to valid `/initialpose` input. Incremental Mapping requires `auto`. |
+
+The three RViz configurations are mode contracts, not cosmetic presets:
+
+- Mapping shows the live SLAM `/map` and enables the SLAM Toolbox panel.
+- Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled diagnostic overlay, and provides `SetInitialPose`.
+- Navigation additionally loads the official `nav2_rviz_plugins/Navigation 2` panel and `GoalTool`, dual costmaps, paths, footprints, and Collision Monitor zones. It sends Nav2 actions directly; there is no project `/goal_pose` bridge.
+
+Managed RViz/Teleop processes use the same environment and PID registry as the main scripts. Mapping Teleop publishes Reliable/Volatile `/cmd_vel` at 20 Hz, stops after 0.18 seconds without a key event using a monotonic wall clock, clamps commands to 1.0 m/s and 1.5 rad/s, and publishes a final zero on every normal/signal/EOF exit. Navigation's command chain remains the sole owner in its mode.
+
 ## Topic and service contract
 
 | Name | Type | Producer/owner | Consumer or purpose | Expected frame/rate |
@@ -78,7 +98,9 @@ the fail-fast calibration workflow.
 | `/slam_toolbox/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Localization/Navigation | diagnostics only; never a Nav2 static-map input | `map`; scan-rasterized localization view |
 | `/wheel/odom` | `nav_msgs/msg/Odometry` | `wheel_odometry` | EKF | Realistic only; `odom`/`base_link` |
 | `/odom` | `nav_msgs/msg/Odometry` | Isaac in Ideal; EKF in Realistic | SLAM, Nav2, experiments | `odom`/`base_link`; exactly one publisher |
-| `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node or Isaac Reset | SLAM Toolbox localization | `map`; never publish an uncalibrated pose |
+| `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node/Isaac Reset in `auto`, or RViz in `rviz` | SLAM Toolbox localization | `map`; Reliable + Volatile; invalid frame/non-finite/non-normalized manual poses are ignored |
+| `/initial_pose/status` | `std_msgs/msg/String` | calibrated initial-pose node | operator and recovery diagnostics | transient-local state such as waiting clock/scan/TF, complete, or manual override |
+| `/simulation/initial_pose_source` | `std_msgs/msg/String` | `initial_pose_policy` | Isaac Reset and ROS recovery contract | transient-local `auto` or `rviz` |
 | `/ground_truth/odom` | `nav_msgs/msg/Odometry` | optional Isaac GT recorder | metrics only | `map`/`ground_truth_base_link`, configured 60 Hz |
 | `/ground_truth/path` | `nav_msgs/msg/Path` | optional Isaac GT recorder | metrics/visualization only | `map`, configured 10 Hz |
 | `/simulation/collision` | `std_msgs/msg/Bool` | Isaac chassis contact sensor | experiment safety metric | about 20 Hz; instantaneous contact state |
@@ -86,6 +108,7 @@ the fail-fast calibration workflow.
 | `/simulation/reset_event` | `std_msgs/msg/Empty` | Isaac Reset bridge | Wheel Odom and reset observers | one event per Reset |
 | `/simulation/localization_seeded` | `std_msgs/msg/Empty` | Isaac Reset bridge | experiment reset gate | emitted after a post-reset `/scan` triggers `/initialpose` |
 | `/simulation/reset` | `std_srvs/srv/Trigger` | Isaac Reset bridge | operator/experiment runner | deterministic reset request |
+| `/initial_pose/reseed` | `std_srvs/srv/Trigger` | calibrated initial-pose node | Activation Gate reset recovery | arm calibrated pose after a post-request scan; preserves valid manual ownership |
 
 The PointCloud-to-LaserScan projection uses `base_link` as its target frame,
 height `[0.05, 0.50] m`, range `[0.30, 25.0] m`, a full `[-pi, pi]` field of
@@ -117,6 +140,8 @@ purpose is to change the map.
 These are the explicit Isaac graph profiles. ROS package publishers and
 subscriptions retain their own node-specific QoS. Topic discovery alone is not
 proof of compatibility; use `ros2 topic info --verbose <topic>` when debugging.
+
+The committed RViz configs explicitly bind map-like topics (`/map`, both costmaps) as Reliable + Transient Local. Sensor streams (`/scan`, `/lidar/points_raw`) are Best Effort + Volatile. This distinction is regression-tested. The top-level interactive launch starts RViz before delaying perception by 1.5 seconds so the saved sensor QoS is applied before the `/scan` publisher appears; this avoids a misleading one-shot constructor warning without changing the final graph.
 
 ## TF ownership
 
@@ -176,30 +201,20 @@ The Isaac node declares these runtime parameters:
 | `navigation_mode` | running Isaac mode: `mapping` or `localization` |
 | `odometry_mode` | running mode: `ideal` or `realistic` |
 
-A Reset executes in this fixed order:
+A Reset is a non-blocking ROS service transaction with one active generation at a time. Overlapping requests are rejected. It executes in this fixed order:
 
-1. Pause physics and publish zero velocity.
-2. Recreate/clear controller state.
-3. Apply the selected USD Pose and zero chassis/joint velocity and targets.
-4. Reset Ideal odometry, or publish the reset event and queue Wheel Odom plus
-   EKF resets in Realistic mode.
-5. Clear Ground Truth path and collision latch/state.
-6. Restore deterministic dynamic-obstacle phases from `reset_seed`.
-7. Queue available global/local Costmap clear services.
-8. Step physics once; in `localization` mode, record the current simulation-time
-   barrier and schedule the calibrated Map Pose, then resume.
-9. Ignore cached scans at or before the barrier. On the first `/scan` stamped
-   strictly after it, publish `/initialpose` and then
-   `/simulation/localization_seeded`.
+1. Validate the named spawn and required Map calibration before pausing.
+2. Pause physics and publish zero velocity.
+3. Recreate/clear controller state, apply the USD Pose, and zero chassis/joint velocity and targets.
+4. Reset Ideal odometry, or submit Wheel Odom and EKF reset requests in Realistic mode.
+5. Clear Ground Truth path, collision state, and deterministic dynamic-obstacle phase.
+6. Submit available global/local Costmap clear requests.
+7. Step physics once and always resume the timeline, including exception paths.
+8. Await every submitted ROS future under steady-wall-time deadlines. A submitted call that fails or times out fails the Trigger; a service unavailable before submission is reported as skipped so the continuously running recovery gate can handle its layer. Stale callbacks carry a generation and cannot complete a newer transaction.
+9. Only after the transaction succeeds, publish `/simulation/reset_event` and return `success: true`.
+10. In Localization with `initial_pose_source=auto`, arm a simulation-clock evidence barrier, ignore old/high-epoch cached scans, and publish the calibrated `/initialpose` plus `/simulation/localization_seeded` on the first valid post-reset scan. With source `rviz`, automatic publication remains disabled.
 
-Unavailable ROS-side reset services produce warnings and are best-effort. A
-successful Trigger response therefore means the synchronous simulation reset
-completed and available downstream requests were queued; clients must still
-wait for `/simulation/localization_seeded`, fresh `/odom`, and a newly stamped,
-stable `map -> odom`. The experiment runner snapshots the TF timestamp after the
-seed event and requires a strictly newer transform, fresh post-event odometry
-and Ground Truth samples, and spawn-aligned `map -> base_link` before sending a
-goal.
+A successful Trigger response therefore means the physical reset and all submitted downstream reset/clear calls completed, not merely that they were queued. It still does not prove localization readiness. Clients must wait for the appropriate automatic seed or new RViz pose, fresh `/odom`, and a newly stamped, stable `map -> odom`. The experiment runner additionally requires fresh post-event Ground Truth and spawn-aligned `map -> base_link` before dispatching a goal.
 
 ## Navigation activation contract
 
@@ -215,14 +230,42 @@ disabled. It activates them only after all of these are true:
 - the Nav2 lifecycle management service is available.
 
 Current tolerances are 0.5 seconds of input freshness, `0.05 m` translation,
-and `3°` yaw over the TF stability window, with a 30-second startup timeout.
-Re-reading the same cached TF does not renew its freshness. A simulation-time
-rollback clears the accumulated TF stability state.
+and `3°` yaw over the TF stability window, with 30-second startup/recovery
+timeouts. Re-reading the same cached TF does not renew its freshness. A
+simulation-time rollback, excessive forward jump, or explicit reset event
+starts a new readiness epoch, clears the TF buffer/stability evidence, and
+invalidates callbacks from the old generation.
 
-After a successful lifecycle `STARTUP`, the activation gate remains alive and
-cancels only its readiness timer. The launch shutdown handler therefore cannot
-race normal activation by interpreting successful gate completion as a process
-failure; an actual gate process exit still shuts down the composed stack.
+Before every transition the gate atomically snapshots all six managed Nav2
+states and rejects duplicate node names. It is the sole lifecycle owner. Calls
+carry a generation/token pair, are guarded by one lock, and use at most three
+attempts with bounded exponential backoff; an old future cannot advance the new
+epoch.
+
+After a successful lifecycle `STARTUP`, the activation gate remains alive.
+On reset it cancels active navigation, pauses managed nodes, clears global and
+local costmaps, calls calibrated reseed in `auto` mode or waits for a new RViz
+pose in `rviz` mode, rebuilds readiness evidence, and resumes the stack. A
+recovery service failure blocks resume rather than silently activating an
+inconsistent stack. An actual gate process exit shuts down the composed stack.
+
+## Navigation control performance contract
+
+The committed MPPI configuration is based on the same Isaac Sim 6.0.1 headless
+Ideal three-metre goal, not an arbitrary reduction:
+
+| Parameter | Value | Reason |
+| --- | --- | --- |
+| `controller_frequency` | 10 Hz | Completed the measured goal with no missed-control warnings. |
+| `FollowPath.time_steps` | 20 | Combined with `model_dt` keeps the prediction horizon at two seconds. |
+| `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
+| `FollowPath.batch_size` | 1000 | Reduces per-cycle sampling cost while preserving successful navigation. |
+| Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
+
+The 20 Hz/40×0.05/1500 baseline and tested 20 Hz reduced batches repeatedly
+missed their deadline on this workstation. Velocity Smoother remains at 20 Hz;
+the controller's prediction cadence and the final smoothed command cadence are
+separate contracts. Re-tune only with comparable runtime evidence.
 
 ## Experiment scenario contract
 

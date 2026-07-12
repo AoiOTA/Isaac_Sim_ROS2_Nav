@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、Reset、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的最终 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；所有成功轮次均满足 GT 终点、停车和运行时观测门槛。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；2026-07-12 又完成了交互工作流、Reset 恢复和 MPPI 负载对照，最终 10 Hz/2 s 预测窗组合无控制周期超时。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 ## 文档导航
 
@@ -15,9 +15,11 @@
 | [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、导航、建图、实验和排障。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
 | [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
 | [`docs/calibration.md`](docs/calibration.md) | 修改地图、出生点、传感器外参或动态障碍坐标时。 |
 | [`docs/verification.md`](docs/verification.md) | 判断某项能力是否真正验证，以及了解当前未验收边界时。 |
 | [`docs/development.md`](docs/development.md) | 开发、测试、调试和准备 Git 提交时。 |
+| [`docs/rviz_workflow_upgrade_plan.md`](docs/rviz_workflow_upgrade_plan.md) | 回溯本轮 RViz/Teleop/Lifecycle/性能升级的冻结设计和完成状态时。 |
 | [`plan.md`](plan.md) | 需要完整设计背景、技术选型、指标公式和最终验收目标时。 |
 
 ## 系统契约
@@ -107,7 +109,7 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 ./scripts/run_ros.sh mapping odometry_mode:=ideal
 ```
 
-使用 `/cmd_vel` 缓慢完成旋转、走廊覆盖和闭环后，同时保存 OccupancyGrid 与序列化 Pose Graph：
+命令会自动打开 Mapping RViz 和独立安全 Teleop 终端。使用 `W/A/S/D` 或方向键缓慢完成旋转、走廊覆盖和闭环；超过 0.18 秒无按键会自动停车，`Space` 立即停车，`Q` 安全退出。随后同时保存 OccupancyGrid 与序列化 Pose Graph：
 
 ```bash
 ./scripts/save_map.sh warehouse_v1
@@ -176,6 +178,8 @@ ros2 run robot_experiments incremental_map_compare \
   posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
 ```
 
+`run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用官方 Nav2 Navigation 2 面板和 GoalTool：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；日常操作不需要 CLI 发布 `/goal_pose` 或另写桥接节点。Localization/Navigation 默认从已标定出生点自动播种，需人工定位时传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop用于无头实验。
+
 Realistic 模式把 `odometry_mode` 改为 `realistic`。两端都会拒绝各自已知的不合法组合，但进程之间没有自动握手；操作者仍须保证 `odometry_mode` 和 `structure_tf_source` 成对一致，并用 Topic/TF introspection 确认唯一所有权。
 
 Localization 和 Navigation 同时使用两种同版本地图工件：SLAM Toolbox 从
@@ -185,7 +189,7 @@ Localization 和 Navigation 同时使用两种同版本地图工件：SLAM Toolb
 基名推导 `data/maps/occupancy/<basename>.yaml`，文件不存在时立即失败；工件名不一致时须显式传入 `map_file:=...`。SLAM Toolbox 的实时扫描栅格图只发布在
 `/slam_toolbox/map`，用于诊断而不进入 Nav2，从而避免移动物体固化为静态地图残影。
 
-Navigation 不会立即激活 Nav2。Activation Gate 会先等待 Map Server 的 transient-local `/map`、非零且新鲜的 `/clock`、新鲜的 `/scan` 和 `/odom`，以及连续稳定且时间戳新鲜的 `map → odom`，然后才请求 Nav2 lifecycle `STARTUP`。Gate 在成功后保持存活，避免正常激活与 launch 的进程退出关联处理发生竞态。
+Navigation 不会立即激活 Nav2。Activation Gate 会先等待 Map Server 的 transient-local `/map`、非零且新鲜的 `/clock`、新鲜的 `/scan` 和 `/odom`，以及连续稳定且时间戳新鲜的 `map → odom`，然后才请求 Nav2 lifecycle `STARTUP`。Gate 是唯一 Lifecycle 管理者并持续存活；Reset 后按暂停、清 Costmap、重新播种/等待 RViz 位姿、readiness、恢复的顺序执行，旧异步回调由代次令牌隔离。
 
 最终回归在固定 `/map` 架构下完成：Ideal 1 m 静态 4/4（GT 误差 `0.178–0.188 m`），Ideal 3 m 长距离 1/1（GT 路径 `2.807 m`、误差 `0.193 m`），Realistic 1 m 静态 4/4（GT 误差 `0.175–0.187 m`）。所有轮次 Nav2 状态为成功、最终静止门满足；Realistic `/odom` 运行时只有 `ekf_filter_node` 一个发布者。这些是确定性 smoke/recovery 证据，不是计划中多起终点与多布局的统计验收。
 
@@ -238,7 +242,7 @@ ros2 param set /isaac_navigation_sim reset_pose_name mapping_start
 ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
 ```
 
-Reset 会按固定顺序停车、清控制器、恢复 USD Pose、重置里程计/GT 路径/碰撞状态/动态障碍，并请求清 Costmap。Localization 模式不会在同步 Reset 回调中立即发布 `/initialpose`：桥接器记录 Reset 仿真时间，只在收到时间戳严格晚于该屏障的首帧 `/scan` 后发布已标定位姿，随后发布 `/simulation/localization_seeded`。Trigger 成功只表示同步动作已完成或下游服务已排队；自动实验还会等待该 seed 事件、严格更新的 `map → odom`、出生点对齐的 `map → base_link` 以及重置后新鲜的 `/odom`/Ground Truth，不能把服务返回本身当成系统已恢复的证据。无有效非零命令时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，有效低速命令仍能唤醒车体。
+Reset 会按固定顺序停车、清控制器、恢复 USD Pose、重置里程计/GT 路径/碰撞状态/动态障碍，并等待已排队的 Wheel/EKF/Costmap 请求。Trigger 只在事务完成后返回成功，失败不会伪造 reset event；重叠请求会被拒绝。Localization 的自动初始位姿只接受 Reset 后的新鲜 `/scan`，随后发布 `/simulation/localization_seeded`；RViz 初始位姿模式则等待新的人工输入。Navigation Gate 还会等待严格更新且稳定的 `map → odom` 和新鲜 `/odom` 后恢复 Lifecycle，因此服务返回不能等同于系统已经可接收目标。无有效非零命令时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，有效低速命令仍能唤醒车体。
 
 ## 测试
 
@@ -267,6 +271,16 @@ ros2 run tf2_tools view_frames
 
 完整的已验证结果、复现命令和剩余验收项见 [`docs/verification.md`](docs/verification.md)。
 
+运行异常时先执行只读诊断；确认旧会话已停止后再做受控清理：
+
+```bash
+./scripts/diagnose.sh
+./scripts/clean_runtime.sh --dry-run
+./scripts/clean_runtime.sh --dds-shm
+```
+
+清理器只处理 PID 元数据和命令身份均匹配的本项目进程。DDS SHM 清理还会先证明没有进程仍在使用 Fast DDS；详细判断见 [`docs/troubleshooting.md`](docs/troubleshooting.md)。
+
 ## 目录
 
 ```text
@@ -274,7 +288,7 @@ isaac_sim/   Stage、项目 USD overlay、传感器、OmniGraph、Reset、GT 和
 ros2_ws/     描述、感知、Wheel Odom、EKF、SLAM、Nav2、bringup 和实验节点
 data/        Git LFS 地图基线，以及 bag、轨迹、指标和报告的本地输出边界
 scripts/     预检、资产导入、构建、测试、启动和地图保存入口
-docs/        使用手册、逐文件索引、开发、接口、标定和验收文档
+docs/        使用手册、逐文件索引、排障、开发、接口、标定、升级方案和验收文档
 ```
 
 ## Git 管理
