@@ -88,6 +88,7 @@ dist/
 
 # Generated maps and pose graphs are ignored by default. Curated large maps
 # must be managed with Git LFS or an external artifact store.
+/data/maps/.staging/
 /data/maps/occupancy/*
 !/data/maps/occupancy/.gitkeep
 !/data/maps/occupancy/fixtures/

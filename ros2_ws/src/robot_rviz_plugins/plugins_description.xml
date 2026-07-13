@@ -1,0 +1,9 @@
+<library path="robot_rviz_plugins">
+  <class name="robot_rviz_plugins/Navigation 2 Safe"
+         type="robot_rviz_plugins::Nav2Panel"
+         base_class_type="rviz_common::Panel">
+    <description>
+      Project-owned Nav2 panel with cooperative QThread and QFuture shutdown.
+    </description>
+  </class>
+</library>

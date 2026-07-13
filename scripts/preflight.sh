@@ -32,7 +32,7 @@ for package in nav2_bringup nav2_mppi_controller nav2_smac_planner \
   nav2_rviz_plugins pointcloud_to_laserscan robot_localization rviz2 xacro \
   robot_bringup robot_description robot_experiments \
   robot_localization_config robot_mapping robot_navigation robot_odometry \
-  robot_perception robot_teleop; do
+  robot_perception robot_rviz_plugins robot_slam_solver robot_teleop; do
   ros2 pkg prefix "${package}" >/dev/null
 done
 
@@ -41,8 +41,13 @@ nav2_plugin_xml="${nav2_rviz_prefix}/share/nav2_rviz_plugins/plugins_description
 require_file "${nav2_plugin_xml}"
 grep -q 'name="nav2_rviz_plugins/GoalTool"' "${nav2_plugin_xml}" \
   || die "Jazzy Nav2 GoalTool plugin is unavailable: ${nav2_plugin_xml}"
-grep -q 'name="nav2_rviz_plugins/Navigation 2"' "${nav2_plugin_xml}" \
-  || die "Jazzy Nav2 Navigation 2 panel is unavailable: ${nav2_plugin_xml}"
+
+robot_rviz_prefix="$(ros2 pkg prefix robot_rviz_plugins)"
+robot_rviz_plugin_xml="${robot_rviz_prefix}/share/robot_rviz_plugins/plugins_description.xml"
+require_file "${robot_rviz_plugin_xml}"
+grep -q 'name="robot_rviz_plugins/Navigation 2 Safe"' \
+  "${robot_rviz_plugin_xml}" \
+  || die "project shutdown-safe Navigation 2 panel is unavailable: ${robot_rviz_plugin_xml}"
 
 description_prefix="$(ros2 pkg prefix robot_description)"
 for config_name in mapping.rviz localization.rviz navigation.rviz; do
@@ -53,32 +58,9 @@ require_file "${teleop_prefix}/share/robot_teleop/config/teleop.yaml"
 
 MAP_MANIFEST="${PROJECT_ROOT}/data/maps/manifests/warehouse_v1.yaml"
 require_file "${MAP_MANIFEST}"
-python3 - "${PROJECT_ROOT}" "${MAP_MANIFEST}" <<'PY'
-import hashlib
-from pathlib import Path
-import sys
-
-import yaml
-
-project_root = Path(sys.argv[1])
-manifest = yaml.safe_load(Path(sys.argv[2]).read_text(encoding="utf-8"))
-entries = [
-    *manifest["occupancy_grid"]["files"],
-    *manifest["pose_graph"]["files"],
-]
-for entry in entries:
-    path = project_root / entry["path"]
-    if not path.is_file():
-        raise SystemExit(f"missing curated map artifact: {path}")
-    if path.read_bytes().startswith(b"version https://git-lfs.github.com/spec/v1"):
-        raise SystemExit(f"Git LFS artifact is not hydrated: {path}; run git lfs pull")
-    if path.stat().st_size != entry["bytes"]:
-        raise SystemExit(f"map artifact size mismatch: {path}")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
-    if digest != entry["sha256"]:
-        raise SystemExit(f"map artifact SHA256 mismatch: {path}")
-print(f"map baseline: {manifest['map_version']} (integrity verified)")
-PY
+ros2 run robot_bringup map_manifest verify \
+  --project-root "${PROJECT_ROOT}" \
+  --manifest "${MAP_MANIFEST}"
 
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
 

@@ -2,6 +2,7 @@
 """Publish robot_description without claiming any TF ownership."""
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -29,14 +30,22 @@ class RobotDescriptionPublisher(Node):
 def main(args=None):
     """Run the description-only publisher."""
     rclpy.init(args=args)
-    node = RobotDescriptionPublisher()
+    node = None
     try:
+        node = RobotDescriptionPublisher()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
+    except RuntimeError as error:
+        # A launch-wide SIGINT may invalidate the context between the
+        # executor readiness check and WaitSet construction. Treat only that
+        # shutdown race as a normal exit; preserve live-context failures.
+        if rclpy.ok() or 'context is not valid' not in str(error):
+            raise
     finally:
-        if rclpy.ok():
+        if node is not None:
             node.destroy_node()
+        if rclpy.ok():
             rclpy.shutdown()
 
 

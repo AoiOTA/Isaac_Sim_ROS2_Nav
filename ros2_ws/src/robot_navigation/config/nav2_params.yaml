@@ -73,7 +73,10 @@ controller_server:
       temperature: 0.30
       gamma: 0.015
       motion_model: DiffDrive
-      visualize: false
+      # Required for MPPI's real local trajectory (/optimal_trajectory) and
+      # transformed reference path. Candidate markers remain lazy unless the
+      # heavyweight /trajectories topic has an explicit subscriber.
+      visualize: true
       regenerate_noises: true
       critics: [ConstraintCritic, CostCritic, GoalCritic,
                 GoalAngleCritic, PathAlignCritic, PathFollowCritic,

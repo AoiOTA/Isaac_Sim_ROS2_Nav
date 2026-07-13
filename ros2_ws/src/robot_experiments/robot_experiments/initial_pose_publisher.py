@@ -8,6 +8,7 @@ import time
 
 from geometry_msgs.msg import PoseWithCovarianceStamped
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -493,7 +494,7 @@ def main(args=None) -> None:
                 rclpy.spin_once(node, timeout_sec=0.1)
             if node.failure is not None:
                 raise RuntimeError(node.failure)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node is not None:

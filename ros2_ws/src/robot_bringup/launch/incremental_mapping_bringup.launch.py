@@ -17,6 +17,7 @@ def generate_launch_description():
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
+        DeclareLaunchArgument('map_manifest_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
@@ -61,6 +62,8 @@ def generate_launch_description():
                 'structure_tf_source': LaunchConfiguration(
                     'structure_tf_source'),
                 'posegraph_file': LaunchConfiguration('posegraph_file'),
+                'map_manifest_file': LaunchConfiguration(
+                    'map_manifest_file'),
                 'ceres_num_threads': LaunchConfiguration(
                     'ceres_num_threads'),
                 'robot_description_file': LaunchConfiguration(

@@ -69,6 +69,10 @@ def test_spawn_reset_zeros_all_robot_state_and_gates_map_pose():
     map_pose = manager.get_map_pose("mapping_start", purpose="test localization")
     assert map_pose.position_stddev_m == pytest.approx(0.05)
     assert map_pose.yaw_stddev_deg == pytest.approx(5.0)
+    assert map_pose.map_version == "warehouse_v1"
+    assert map_pose.map_bundle_sha256 == (
+        "88b91be7fb0afe4364851c59dc3466f560017df5acc5405f3ab590729ded9bac"
+    )
 
     uncalibrated = replace(
         poses["mapping_start"],
@@ -105,6 +109,28 @@ def test_reset_manager_executes_every_hook_in_fixed_order():
 def test_invalid_reset_request_is_rejected():
     with pytest.raises(ResetError, match="non-negative"):
         ResetRequest("mapping_start", "mapping", "ideal", -1)
+
+
+def test_localization_reset_pose_is_immutable_manifest_bound_profile():
+    parameters = {
+        "reset_seed": SimpleNamespace(value=0),
+        "reset_pose_name": SimpleNamespace(value="other_map_pose"),
+        "navigation_mode": SimpleNamespace(value="localization"),
+        "odometry_mode": SimpleNamespace(value="ideal"),
+    }
+    bridge = SimpleNamespace(
+        node=SimpleNamespace(get_parameter=parameters.__getitem__),
+        _configured_navigation_mode="localization",
+        _configured_odometry_mode="ideal",
+        _default_pose_name="mapping_start",
+    )
+
+    with pytest.raises(ResetServiceError, match="bound to the map manifest"):
+        ResetServiceBridge._read_request(bridge)
+
+    parameters["reset_pose_name"].value = "mapping_start"
+    request = ResetServiceBridge._read_request(bridge)
+    assert request.pose_name == "mapping_start"
 
 
 def test_reset_manager_resumes_timeline_when_a_hook_fails():
@@ -260,6 +286,17 @@ class FakeFuture:
             callback(self)
 
 
+class CancellableFakeFuture(FakeFuture):
+    def __init__(self):
+        super().__init__()
+        self.cancelled = False
+
+    def cancel(self):
+        self.cancelled = True
+        self.complete()
+        return True
+
+
 class FakeCompletion(FakeFuture):
     def __init__(self, *, executor=None):
         super().__init__()
@@ -388,6 +425,45 @@ def test_successful_transaction_emits_event_before_initial_pose_policy():
 
     assert events == ["reset_event", "arm"]
     assert bridge._deferred_initial_pose_name == "mapping_start"
+
+
+def test_close_cancels_active_reset_without_emitting_epoch_event():
+    events = []
+    pending = CancellableFakeFuture()
+    bridge = SimpleNamespace(
+        _closed=False,
+        _active_transaction=None,
+        _pending_futures={pending},
+        _initial_pose_republisher=SimpleNamespace(
+            cancel=lambda: events.append("pose_cancel")
+        ),
+        _deferred_initial_pose_name="mapping_start",
+        _reset_event_publisher=FakePublisher(events),
+        _EmptyMessage=lambda: object(),
+        _apply_initial_pose_policy=lambda: events.append("arm"),
+    )
+    transaction = _ResetTransaction(
+        generation=11,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(
+            bridge, tx
+        ),
+    )
+    transaction.timeout_timer = FakeTimer()
+    transaction.add_call("costmap", pending)
+    transaction.seal()
+    bridge._active_transaction = transaction
+
+    ResetServiceBridge.close(bridge)
+    ResetServiceBridge.close(bridge)
+
+    assert bridge._closed
+    assert pending.cancelled
+    assert transaction.finished
+    assert transaction.timeout_timer.cancelled
+    assert any("shutdown" in error for error in transaction.errors)
+    assert events == ["pose_cancel", "pose_cancel"]
+    assert bridge._pending_futures == set()
 
 
 def test_startup_reset_returns_pending_transaction_without_blocking():
