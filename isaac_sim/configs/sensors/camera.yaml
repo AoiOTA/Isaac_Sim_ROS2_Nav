@@ -1,11 +1,66 @@
-schema_version: 1
-enabled: false
-parent_prim: /World/Robots/Jackal/base_link/camera_link
-publish_rate: 30.0
-stereo_baseline: 0.120
-left:
-  optical_frame: camera_left_optical_frame
-  sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_left_link/camera_left_optical_frame/camera_left_sensor
-right:
-  optical_frame: camera_right_optical_frame
-  sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_right_link/camera_right_optical_frame/camera_right_sensor
+schema_version: 2
+enabled: true
+default_profile: monitoring
+primary_camera: front
+
+profiles:
+  "off":
+    enabled: false
+  monitoring:
+    enabled: true
+    width: 640
+    height: 360
+    publish_rate_hz: 15.0
+  standard:
+    enabled: true
+    width: 640
+    height: 480
+    publish_rate_hz: 20.0
+  high_quality:
+    enabled: true
+    width: 1280
+    height: 720
+    publish_rate_hz: 30.0
+
+cameras:
+  front:
+    enabled: true
+    sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_front_link/camera_front_optical_frame/camera_front_sensor
+    link_frame: camera_front_link
+    optical_frame: camera_front_optical_frame
+    node_namespace: /camera/front
+    rgb:
+      enabled: true
+      topic_name: image_raw
+      encoding: rgb8
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    camera_info:
+      enabled: true
+      topic_name: camera_info
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    depth:
+      enabled: false
+      topic_name: depth/image_raw
+      qos_profile: camera_sensor_data
+      queue_size: 1
+    clipping_range_m:
+      near: 0.05
+      far: 100.0
+    optics:
+      projection: perspective
+      focal_length_mm: 24.0
+      horizontal_aperture_mm: 21.0
+      vertical_aperture_mode: match_profile_aspect_ratio
+      focus_distance_m: 4.0
+    exposure:
+      enabled: true
+      time_s: 0.02
+      responsivity: 1.10267
+      f_stop: 5.0
+    rviz:
+      enabled: true
+      transport: raw
+      reliability: best_effort
+      queue_size: 2

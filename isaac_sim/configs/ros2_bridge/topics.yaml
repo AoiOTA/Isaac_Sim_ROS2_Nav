@@ -7,6 +7,8 @@ odom: /odom
 cmd_vel: /cmd_vel
 ground_truth_odom: /ground_truth/odom
 ground_truth_path: /ground_truth/path
+camera_front_image: /camera/front/image_raw
+camera_front_info: /camera/front/camera_info
 tf: /tf
 tf_static: /tf_static
 frames:
@@ -14,3 +16,5 @@ frames:
   base: base_link
   lidar: lidar_link
   imu: imu_link
+  camera_front: camera_front_link
+  camera_front_optical: camera_front_optical_frame
