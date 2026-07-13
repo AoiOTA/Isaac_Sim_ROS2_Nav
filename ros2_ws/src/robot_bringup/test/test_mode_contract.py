@@ -204,3 +204,31 @@ def test_core_launch_manages_rviz_and_mapping_only_teleop():
     assert "DeclareLaunchArgument(\n            'use_rviz'" in source
     assert "DeclareLaunchArgument(\n            'rviz_config'" in source
     assert "DeclareLaunchArgument(\n            'use_teleop'" in source
+
+
+def test_mapping_launches_forward_all_runtime_teleop_speed_arguments():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    argument_defaults = {
+        'teleop_linear_speed': '0.50',
+        'teleop_angular_speed': '0.80',
+        'teleop_linear_speed_step': '0.05',
+        'teleop_angular_speed_step': '0.10',
+        'teleop_min_linear_speed': '0.10',
+        'teleop_min_angular_speed': '0.20',
+        'teleop_max_linear_speed': '1.00',
+        'teleop_max_angular_speed': '1.50',
+    }
+    core = (launch_dir / 'ros_stack.launch.py').read_text(encoding='utf-8')
+    for name, default in argument_defaults.items():
+        assert name in core
+        assert f"'{name}', default_value='{default}'" in core
+        for operation in ('mapping', 'incremental_mapping'):
+            wrapper = (
+                launch_dir / f'{operation}_bringup.launch.py'
+            ).read_text(encoding='utf-8')
+            assert f"'{name}', default_value='{default}'" in wrapper
+            assert f"'{name}': LaunchConfiguration(" in wrapper
+
+    assert 'Mapping Teleop is running in a separate terminal.' in core
+    assert 'Click the window titled "Isaac Nav Mapping Teleop"' in core
+    assert 'before pressing W/A/S/D or the arrow keys.' in core

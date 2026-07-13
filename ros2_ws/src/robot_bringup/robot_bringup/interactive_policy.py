@@ -92,9 +92,14 @@ def resolve_interactive_selection(
     )
 
 
-def teleop_terminal_command(run_teleop, find_executable=shutil.which):
+def teleop_terminal_command(
+        run_teleop, arguments=(), find_executable=shutil.which):
     """Return a foreground terminal command that owns the teleop child."""
     run_teleop = str(Path(run_teleop))
+    arguments = tuple(str(argument) for argument in arguments)
+    if any(not argument or '\x00' in argument for argument in arguments):
+        raise ValueError('teleop terminal arguments must be non-empty strings')
+    teleop_command = [run_teleop, *arguments]
     candidates = (
         (
             'gnome-terminal',
@@ -103,7 +108,7 @@ def teleop_terminal_command(run_teleop, find_executable=shutil.which):
                 '--wait',
                 '--title=Isaac Nav Mapping Teleop',
                 '--',
-                run_teleop,
+                *teleop_command,
             ],
         ),
         (
@@ -113,7 +118,7 @@ def teleop_terminal_command(run_teleop, find_executable=shutil.which):
                 '-T',
                 'Isaac Nav Mapping Teleop',
                 '-e',
-                run_teleop,
+                *teleop_command,
             ],
         ),
         (
@@ -124,7 +129,7 @@ def teleop_terminal_command(run_teleop, find_executable=shutil.which):
                 '-p',
                 'tabtitle=Isaac Nav Mapping Teleop',
                 '-e',
-                run_teleop,
+                *teleop_command,
             ],
         ),
     )
