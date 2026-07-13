@@ -452,6 +452,11 @@ def _load_lidar(path) -> dict[str, Any]:
     data["render_product_resolution"] = require_vector(
         data["render_product_resolution"], 2, context="lidar.render_product_resolution"
     )
+    if tuple(data["render_product_resolution"]) != (1.0, 1.0):
+        raise SensorConfigError(
+            "RTX LiDAR render_product_resolution must be [1, 1] under "
+            "the Isaac Sim 6.0 multi-tick contract"
+        )
     return data
 
 

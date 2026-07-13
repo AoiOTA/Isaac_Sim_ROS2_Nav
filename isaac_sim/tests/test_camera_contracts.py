@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
-from isaac_sim.apps.navigation_sim import _parser
+from isaac_sim.apps.navigation_sim import _parser, _simulation_app_config
 from isaac_sim.graphs.camera_graph import (
     camera_graph_spec,
     validate_camera_ros_contract,
@@ -173,3 +173,13 @@ def test_camera_cli_accepts_only_named_profiles():
     ).camera_profile == "standard"
     with pytest.raises(SystemExit):
         parser.parse_args(["--camera-profile", "turbo"])
+
+
+def test_simulation_app_enables_supported_multitick_sensor_settings_early():
+    launch = _simulation_app_config(_config())
+
+    assert launch["multi_gpu"] is False
+    assert launch["extra_args"] == [
+        "--/rtx/hydra/supportMultiTickRate=true",
+        "--/persistent/simulation/minFrameRate=60",
+    ]

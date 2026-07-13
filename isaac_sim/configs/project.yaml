@@ -29,6 +29,8 @@ simulation:
   navigation_mode: mapping
   odometry_mode: ideal
   structure_tf_source: isaac
+  pacing_mode: realtime
+  target_realtime_factor: 1.0
   max_frames: 0
 
 spawn:
