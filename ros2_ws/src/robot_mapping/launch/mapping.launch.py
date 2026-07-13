@@ -48,6 +48,7 @@ def _launch_setup(context):
         name='slam_toolbox',
         namespace='',
         output='screen',
+        sigterm_timeout='15.0',
         parameters=[
             LaunchConfiguration('mapping_params_file'),
             {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from .configuration import (
     ConfigurationError,
@@ -31,6 +32,8 @@ class SpawnPose:
     map_calibrated: bool
     position_stddev_m: float
     yaw_stddev_deg: float
+    map_version: str | None = None
+    map_bundle_sha256: str | None = None
 
 
 def load_spawn_pose(
@@ -56,6 +59,23 @@ def load_spawn_pose(
         raise ConfigurationError(
             f"spawn pose {pose_name!r} has no calibrated map pose; refusing localization"
         )
+    map_version = map_pose.get("map_version")
+    map_bundle_sha256 = map_pose.get("map_bundle_sha256")
+    if calibrated:
+        if not isinstance(map_version, str) or not re.fullmatch(
+            r"[A-Za-z0-9._-]+", map_version
+        ):
+            raise ConfigurationError(
+                f"spawn_poses.{pose_name}.map.map_version is required for a "
+                "calibrated pose"
+            )
+        if not isinstance(map_bundle_sha256, str) or not re.fullmatch(
+            r"[0-9a-f]{64}", map_bundle_sha256
+        ):
+            raise ConfigurationError(
+                f"spawn_poses.{pose_name}.map.map_bundle_sha256 must bind a "
+                "calibrated pose to one map bundle"
+            )
     position_stddev = require_finite(
         map_pose.get("position_stddev_m", 0.05),
         f"spawn_poses.{pose_name}.map.position_stddev_m",
@@ -83,4 +103,6 @@ def load_spawn_pose(
         map_calibrated=calibrated,
         position_stddev_m=position_stddev,
         yaw_stddev_deg=yaw_stddev,
+        map_version=map_version,
+        map_bundle_sha256=map_bundle_sha256,
     )

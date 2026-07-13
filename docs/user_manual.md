@@ -119,7 +119,7 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 | Isaac 6.0 资产 | 必须包含 Warehouse 与 Clearpath Jackal，默认根目录见上节。 |
 | ROS 2 Jazzy | 默认安装到 `/opt/ros/jazzy`。 |
 | Git LFS | 下载仓库中的大 Pose Graph。 |
-| `colcon`、`rosdep` | 解析 ROS 依赖和构建十个工作区包。 |
+| `colcon`、`rosdep` | 解析 ROS 依赖和构建十一个工作区包。 |
 | Python 3.12、PyYAML、pytest、jsonschema | 运行配置解析、单元测试和实验报告。 |
 | `gnome-terminal`、`xterm` 或 `konsole` | 可选；自动弹出 Mapping Teleop 终端需要其中一个。 |
 
@@ -149,29 +149,7 @@ git lfs install
 git lfs pull
 ```
 
-### 4.3 环境预检
-
-```bash
-./scripts/preflight.sh
-```
-
-成功时最后应看到：
-
-```text
-map baseline: warehouse_v1 (integrity verified)
-preflight: PASS
-```
-
-预检会检查：
-
-- Isaac Sim 版本是否为 `6.0.1.0`；
-- 官方 Warehouse/Jackal 资产是否存在；
-- ROS Jazzy、Nav2、SLAM Toolbox 等包是否存在；
-- NVIDIA GPU 是否可见；
-- `warehouse_v1` 四个地图文件的大小和 SHA256 是否匹配 manifest；
-- Git LFS 文件是否已经真正下载。
-
-### 4.4 导入 Jackal 本地依赖
+### 4.3 导入 Jackal 本地依赖
 
 ```bash
 ./scripts/import_assets.sh
@@ -179,13 +157,39 @@ preflight: PASS
 
 该命令从本机 Isaac 资产目录复制项目运行所需的 Jackal 文件，并校验 SHA256。它不会修改官方资产，也不会把 NVIDIA 原始资产提交到 Git。
 
-### 4.5 构建 ROS 工作区
+### 4.4 构建 ROS 工作区
 
 ```bash
 ./scripts/build_ros2.sh
 ```
 
-成功时应显示工作区中的十个包全部 `finished` 且没有 `failed`，其中包括项目自己的 `robot_slam_solver` Ceres 插件。构建产物位于 `ros2_ws/build/`、`install/`、`log/`，这些目录不会进入 Git。
+成功时应显示工作区中的十一个包全部 `finished` 且没有 `failed`，其中包括项目自己的 `robot_slam_solver` Ceres 插件和提供安全关闭 Nav2 面板的 `robot_rviz_plugins`。构建产物位于 `ros2_ws/build/`、`install/`、`log/`，这些目录不会进入 Git。
+
+### 4.5 环境预检
+
+第一次 clone 必须先完成上面的构建，因为 `preflight.sh` 会 source `ros2_ws/install/setup.bash` 并检查本仓库安装出的 ROS package：
+
+```bash
+./scripts/preflight.sh
+```
+
+成功时应看到地图校验和最终结果：
+
+```text
+map manifest verified: warehouse_v1 bundle=88b91be7fb0afe4364851c59dc3466f560017df5acc5405f3ab590729ded9bac
+preflight: PASS
+```
+
+预检会检查：
+
+- Isaac Sim 版本是否为 `6.0.1.0`；
+- 官方 Warehouse/Jackal 资产是否存在；
+- ROS Jazzy、Nav2、SLAM Toolbox 和本仓库十一个 package 是否可见；
+- 安全关闭 Nav2 面板、RViz 配置和运行脚本是否已安装；
+- NVIDIA GPU 是否可见；
+- `warehouse_v1` 四个地图文件的大小和 SHA256 是否匹配 manifest；
+- Git LFS 文件是否已经真正下载；
+- 受管 runtime lock、重复 ROS 节点和 Fast DDS SHM 是否存在明显冲突。
 
 ### 4.6 运行测试
 
@@ -266,7 +270,7 @@ data/maps/occupancy/warehouse_v1.yaml
 Nav2 lifecycle activation completed
 ```
 
-启动命令会自动打开 `navigation.rviz`。不要在上述日志出现前发送导航目标；Activation Gate 正在等待 `/map`、`/clock`、`/scan`、`/odom` 和稳定的 `map → odom`。RViz 左侧应能看到静态地图、LaserScan、机器人、全局/局部 Costmap、全局/局部路径、Footprint 和 Collision Monitor 区域，右侧应有官方 **Navigation 2** 面板。
+启动命令会自动打开 `navigation.rviz`。不要在上述日志出现前发送导航目标；Activation Gate 正在等待 `/map`、`/clock`、`/scan`、`/odom` 和稳定的 `map → odom`。RViz 左侧应能看到静态地图、LaserScan、机器人、全局/局部 Costmap、全局/局部路径、Footprint 和 Collision Monitor 区域，右侧应有 **Navigation 2** 面板。目标工具仍使用 Nav2 官方 `GoalTool`；面板由本仓库的 `robot_rviz_plugins/Navigation 2 Safe` 提供，功能与当前工作流一致，并在退出时先停止其线程和异步 future。
 
 默认使用 `nav2_profile:=stable`：控制频率 `10 Hz`、MPPI `batch_size=750`、`20 × 0.10 s = 2 s` 预测窗。需要在同一台机器上做更高 MPPI 采样量对照时，选择仍保持 `10 Hz/2 s`、但 `batch_size=1000` 的性能 profile：
 
@@ -277,7 +281,9 @@ Nav2 lifecycle activation completed
   posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
 ```
 
-`nav2_profile_params_file:=/absolute/path/overlay.yaml` 是矩阵测试/自定义 overlay 入口，日常运行不要随意替换基线。SLAM Ceres 默认请求 `ceres_num_threads:=12`；可在启动命令中显式覆盖。插件会拒绝小于 1 的值；请求值超过机器硬件并发数时会明确告警、自动降到可用线程数，并把节点参数回写为实际值。修改这两项后应使用第 17 节的 Profiler 重新采样，不能只凭“感觉更快”判断。
+`nav2_profile_params_file:=/absolute/path/overlay.yaml` 是矩阵测试/自定义 overlay 入口，日常运行不要随意替换基线。overlay 必须提供正数 `controller_frequency`、`model_dt`，以及正整数 `time_steps`、`batch_size`；还必须满足 `1 / controller_frequency <= model_dt`。例如 `model_dt=0.10 s` 时 8 Hz 会在创建 ROS 节点前被拒绝，而不是等 `controller_server` 运行后崩溃。
+
+SLAM Ceres 默认请求 `ceres_num_threads:=12`；可在启动命令中显式覆盖。插件会拒绝小于 1 的值；请求值超过机器硬件并发数时会明确告警、自动降到可用线程数，并把节点参数回写为实际值。修改这两项后应使用第 17 节的 Profiler 重新采样，不能只凭“感觉更快”判断。
 
 ### 5.3 在 RViz 中发送目标
 
@@ -287,7 +293,7 @@ Nav2 lifecycle activation completed
 4. 在地图可通行区域按住鼠标左键，从目标位置拖出朝向后松开；
 5. 观察青色全局路径、粉色局部路径和 Costmap，等待面板显示完成。
 
-该 RViz 配置使用官方 `nav2_rviz_plugins/GoalTool` 和 Navigation 2 面板，目标直接进入 Nav2 Action；没有额外的 `/goal_pose` 转换节点，也不需要第三个终端。
+该 RViz 配置使用官方 `nav2_rviz_plugins/GoalTool` 和仓库自带的安全关闭 Navigation 2 面板，目标直接进入 Nav2 Action；没有额外的 `/goal_pose` 转换节点，也不需要第三个终端。
 
 成功标准：面板最终状态成功，机器人停车，局部/全局路径没有持续振荡。Nav2 goal checker 的位置容差是 `0.20 m`，所以机器人不会精确停在数学坐标点。自动实验另用 Ground Truth 检查 `0.25 m` 的成功阈值；这是评价门槛，不是 Nav2 的 goal checker 配置。
 
@@ -301,7 +307,31 @@ ros2 action send_goal /navigate_to_pose \
   --feedback
 ```
 
-### 5.4 自动位姿与 RViz 手动位姿
+### 5.4 看懂 Local Plan
+
+发送目标后，RViz 中默认启用的粉色 **Local Plan** 不是全局路径的别名，而是 MPPI 当前选中的真实局部最优轨迹：
+
+```text
+/plan                    全局规划器输出的全局路径
+/optimal_trajectory      MPPI 选中的局部最优轨迹，RViz 默认显示
+/transformed_global_plan MPPI 使用的局部参考路径，RViz 默认关闭
+/trajectories            MPPI 候选轨迹 MarkerArray，RViz 默认关闭
+```
+
+稳定和性能 profile 都使用 `20 × 0.10 s` 的预测窗，因此一次正常的 `/optimal_trajectory` 消息应包含 20 个 pose，frame 为 `odom`。这个 topic 只在控制器处理活动目标时持续更新；没有目标时 `ros2 topic hz` 等不到消息是正常现象。
+
+在发送目标后检查：
+
+```bash
+source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+ros2 topic info /optimal_trajectory --verbose
+ros2 topic echo /optimal_trajectory --once
+ros2 topic hz /optimal_trajectory
+```
+
+做性能采样时保持 **MPPI Candidate Trajectories** 关闭。`/trajectories` 是更重的候选集合，可在短时调试时手工打开，但会改变订阅关系和运行负载，不能把打开前后的 profile 当作同一条件。若只看到橙色参考路径而没有粉色 Local Plan，先确认订阅的是 `/optimal_trajectory`，再检查目标是否仍处于执行状态和 `controller_server` 是否 Active。
+
+### 5.5 自动位姿与 RViz 手动位姿
 
 默认 `initial_pose_source:=auto`：系统从 `spawn_poses.yaml` 读取已标定 Map Pose，等新鲜 `/scan` 和 TF 后自动发布 `/initialpose`。这是固定出生点的推荐方式。
 
@@ -316,11 +346,22 @@ ros2 action send_goal /navigate_to_pose \
 
 然后在 RViz 点击 **2D Pose Estimate**，在地图上拖出机器人实际朝向。该模式不会被自动标定位姿覆盖；每次 `/simulation/reset` 后，Activation Gate 会暂停 Nav2，并等待你重新在 RViz 给出位姿后再恢复。
 
-### 5.5 停止系统
+### 5.6 安全停止系统
 
-先在终端 B 按 `Ctrl+C`，让顶层 launch 请求 RViz、Nav2 和它管理的子进程退出；确认终端返回后，再在终端 A 按 `Ctrl+C` 停 Isaac。不要直接关闭终端窗口，也不要先杀 launch leader 后遗留子进程。
+先在终端 B 对 `run_ros.sh` 按一次 `Ctrl+C`，等待终端完整返回，再在终端 A 对 `run_isaac.sh` 按一次 `Ctrl+C`。不要直接关闭终端窗口，也不要用 `pkill` 绕开脚本。
 
-当前退出阶段仍有一个需要诚实区分的边界：部分运行周期中，SLAM Toolbox 可能在 ROS context 已关闭后创建 timer，打印 `Couldn't initialize rcl timer handle: context not valid`/`terminate called`；RViz 插件也可能以 `exit code -6` 结束。它们发生在关闭阶段，不等同于此前导航失败，但同样不能算“干净退出已通过”。出现时保存终端/ROS 日志，运行 `diagnose.sh` 检查是否有受管进程残留，并以 `clean_runtime.sh` 完成安全收尾；不要忽略后直接宣称 shutdown 验收通过。
+`run_ros.sh` 不是简单地把信号直接广播给所有 ROS 进程。它把 launch 放在独立进程组中，并在收到退出信号后保持 ROS context 可用，按操作执行 Lifecycle 关闭：Navigation 先关闭 navigation manager，再关闭 localization manager；Localization 只关闭 localization manager；Mapping/Incremental Mapping 依次对 SLAM Toolbox 执行 deactivate、cleanup、shutdown。完整 Lifecycle 序列共用 20 秒总期限，完成后才向 launch 进程组发送 `SIGINT`，并对后续等待设置有界的 INT→TERM→KILL 升级。正常只按一次并等待；只有确认流程卡住时才按第二次强制 TERM，第三次会立即终止该受管 launch 组。
+
+正常关闭时应看到类似：
+
+```text
+[INFO] requesting ordered navigation lifecycle shutdown
+ordered shutdown: navigation lifecycle manager: PASS (...)
+ordered shutdown: localization lifecycle manager: PASS (...)
+[INFO] stopping ROS launch process group ... with SIGINT
+```
+
+若任一步显示 `WARN`，或日志仍出现 `process has died`、`exit code -6`、`context not valid`、`QThread: Destroyed while thread is still running`，这一轮不能记为“干净关闭通过”。先保存日志并用下面的诊断/清理入口确认残留；不要因为导航目标此前成功就忽略退出失败。
 
 若终端意外关闭或下次启动提示已有实例，执行：
 
@@ -468,12 +509,14 @@ camera_front_optical_frame
 
 Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、队列深度 2，并共享仿真时间戳。可选 profile 定义在 `isaac_sim/configs/sensors/camera.yaml`：
 
-| Profile | 分辨率 | 发布率 | 适用场景 |
+| Profile | 配置分辨率 | 配置发布率 | 适用场景 |
 | --- | ---: | ---: | --- |
 | `off` | 无 | 0 | 最大化仿真/导航性能；不创建 Camera publisher。 |
 | `monitoring` | 640×360 | 15 Hz | GUI 默认值，日常监看与导航。 |
 | `standard` | 640×480 | 20 Hz | 更高纵向视野/常规录制。 |
 | `high_quality` | 1280×720 | 30 Hz | 图像质量验收；GPU/CPU/带宽负载最高。 |
+
+表中的发布率是配置目标，不是对任意机器的实测保证。Camera 的墙钟 Hz 会同时受 GPU、渲染负载和 RTF 影响；尤其 `high_quality` 不能只因配置写着 30 Hz 就在报告中声称实测达到 30 Hz。用本节末尾的 topic 检查做快速观察，用第 17.3 节 Profiler 的稳态窗口记录结论。
 
 不传 `--camera-profile` 时，GUI Isaac 默认 `monitoring`，`--headless` 默认 `off`。因此 headless 下想看图像必须显式启用；反之做纯导航性能基线时应显式写 `off`，让运行命令本身可回溯：
 
@@ -581,30 +624,52 @@ Teleop 只能在 Mapping/Incremental Mapping 使用。脚本会拒绝在 Localiz
 
 ### 9.3 保存地图
 
-使用新的版本名，脚本拒绝覆盖已有文件：
+保持 Mapping/Incremental Mapping 正在运行，在另一个已配置 ROS 环境的终端使用新的版本名；版本名只允许字母、数字、点、下划线和连字符，脚本拒绝覆盖任何同名工件：
 
 ```bash
+cd "$PROJECT_ROOT"
 ./scripts/save_map.sh warehouse_v2
 ```
 
-`save_map.sh` 可以在另一个已 source 工作区的终端执行；如果你刚从仓库根打开新终端，先运行：
+`save_map.sh` 会自行加载统一的 ROS 环境和工作区；后面直接使用 `ros2` 命令时才需要在该终端 source `setup_ros_env.sh`。
 
-```bash
-source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
-```
+保存过程是事务式的：先在 `data/maps/.staging/` 调用 Map Saver 和 SLAM Toolbox 序列化，确认四个非空工件后创建 manifest；随后发布四个工件、按暂存 manifest 重新校验，最后才原子发布 manifest。manifest 是这次地图保存的 commit marker；任一步失败或被中断时，脚本会删除本轮的暂存/部分目标，不留下看似完整的版本。
 
-会生成四个不可拆分的文件：
+成功后会生成五个同版本文件：
 
 ```text
 data/maps/occupancy/warehouse_v2.yaml
 data/maps/occupancy/warehouse_v2.pgm
 data/maps/posegraphs/warehouse_v2.posegraph
 data/maps/posegraphs/warehouse_v2.data
+data/maps/manifests/warehouse_v2.yaml
 ```
 
-`save_map.sh` 当前只生成这四个运行工件，不会自动把新版本提升为仓库基线。要长期保留时，还需为同一版本补充 `data/maps/manifests/<version>.yaml` 中的来源、尺寸、SHA256 和标定记录；大型 `.posegraph` 应通过 Git LFS 管理。`warehouse_v1` 的 manifest 是当前 `preflight.sh` 校验的发布基线。
+立即独立复核一次：
 
-新地图不能直接沿用旧 Map Pose。请按照 [`calibration.md`](calibration.md) 重新测量 `spawn_poses.yaml` 中 USD Pose 对应的 Map X/Y/yaw，完成至少三次冷启动重复性检查后再把 `calibrated` 设为 `true`。地图环境、OccupancyGrid、Pose Graph、manifest、出生点 Map Pose 和动态障碍坐标是同一个版本关系，任何一项变化都要重新验证其余各项。
+```bash
+source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+ros2 run robot_bringup map_manifest verify \
+  --project-root "$PROJECT_ROOT" \
+  --manifest "$PROJECT_ROOT/data/maps/manifests/warehouse_v2.yaml"
+```
+
+校验器会检查 manifest 固定路径和 schema、拒绝纯点版本名和任意父级符号链接、核对四个工件的固定相对路径/大小/SHA256、bundle SHA256、Git LFS 指针和路径逃逸、Occupancy YAML 对 PGM 的绑定，以及 PGM 尺寸、正数 resolution 和 origin 的一致性。任一文件被替换、缺失或与版本混用都会让 saved-map 模式在创建 ROS 节点前失败。
+
+`save_map.sh` 创建的 manifest 故意是 `calibration.calibrated: false`。它已经是完整可校验的地图版本，但还不是可自动播种初始位姿的发布基线。要先人工检查定位，可使用：
+
+```bash
+./scripts/run_ros.sh localization \
+  odometry_mode:=ideal \
+  initial_pose_source:=rviz \
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
+```
+
+`run_ros.sh` 会从 Pose Graph 基名自动推导 `warehouse_v2.yaml` 的 Occupancy map 和 manifest；也可用 `map_file:=...`、`map_manifest_file:=...` 显式指定，但三者版本必须完全匹配。进入 RViz 后用 **2D Pose Estimate** 给出真实初始位姿。
+
+新地图不能直接沿用旧 Map Pose。`initial_pose_source:=auto` 会检查 manifest 是否已标定、标定的 spawn profile、manifest bundle SHA256、`spawn_poses.yaml` 中的 `map_version`/`map_bundle_sha256`，以及两边 USD position/yaw、Map position/yaw、位置/航向标准差的逐值一致性；只保留旧 hash 却修改坐标也会被拒绝。Incremental Mapping 又要求 `initial_pose_source:=auto`，因此也必须先完成标定，不能拿未标定的新版本直接继续增量建图。
+
+请按照 [`calibration.md`](calibration.md) 重新测量 `spawn_poses.yaml` 中 USD Pose 对应的 Map X/Y/yaw，完成至少三次冷启动重复性检查后，再同步更新 manifest 的 calibration 字段和 `spawn_poses.yaml` 中同名 pose 的 Map 绑定。完成后重新运行上面的 `map_manifest verify`，再分别冷启动 Localization/Navigation 验证 auto。大型 `.posegraph` 应通过 Git LFS 管理；`warehouse_v1` 是当前 `preflight.sh` 自动校验的仓库发布基线。
 
 ## 10. 确定性 Reset
 
@@ -615,6 +680,10 @@ ros2 param set /isaac_navigation_sim reset_seed 4242
 ros2 param set /isaac_navigation_sim reset_pose_name mapping_start
 ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
 ```
+
+Localization 的 `reset_pose_name` 已在启动时绑定到当前 Manifest 的
+`spawn_pose_profile`，只能保持该值；运行中切换到另一个地图的 pose 会在移动机器人
+前被拒绝。Mapping 没有自动 Map 初始位姿发布，仍可选择其配置中已有的 USD pose。
 
 Reset 是一个异步事务，但 Trigger 只有在物理复位以及所有已排队的 Wheel Odom、EKF、Costmap 清理请求完成后才返回 `success: true`。事务会清零控制和轮速、恢复 USD Pose、重置里程计/GT/碰撞/动态障碍，最后发布带代次语义的 `/simulation/reset_event`；重叠 Reset 请求会被拒绝。
 
@@ -629,6 +698,92 @@ Trigger 成功表示“复位事务已提交完成”，仍不表示定位已经
 默认 `initial_pose_source:=auto` 会在 Reset 后自动重播标定位姿；`rviz` 模式会保留人工所有权并等待新的 **2D Pose Estimate**。Lifecycle 操作由唯一的 Activation Gate 管理，失败会有限退避重试，旧异步回调不能跨 Reset 代次污染新状态。
 
 自动实验 runner 会自动执行这些门控；启用 Ground Truth 的实验还会额外等待 Reset 后的新鲜 GT。普通手工导航默认不启用 GT，不需要等待 GT 话题。手工操作时以 `Nav2 lifecycle recovery completed`（或等价恢复完成日志）为准，不要在 Trigger 返回后立刻发送目标。
+
+### 10.1 用 `/scan_fault` 验证 Collision Monitor
+
+`scan_fault_bridge` 是只供安全测试使用的 opt-in 工具。默认导航仍让 Collision Monitor 直接订阅 `/scan`；只启动 bridge、只向 control topic 发命令，都不会改变默认导航。完整测试必须同时完成两件事：启动 `/scan → /scan_fault` bridge，并让本轮 Navigation 的 Collision Monitor 改订 `/scan_fault`。
+
+先准备一个临时 Nav2 overlay。不要修改仓库默认参数；复制稳定 profile：
+
+```bash
+cp "$PROJECT_ROOT/ros2_ws/src/robot_navigation/config/nav2_stable.yaml" \
+  /tmp/isaac_nav_scan_fault.yaml
+```
+
+用编辑器在文件末尾追加以下顶层配置（保留原有 `controller_server` 内容）：
+
+```yaml
+collision_monitor:
+  ros__parameters:
+    scan:
+      topic: /scan_fault
+```
+
+然后按下面的终端顺序运行：
+
+```bash
+# 终端 A：正常启动 Isaac
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh --headless \
+  --navigation-mode localization \
+  --mode ideal \
+  --camera-profile off
+
+# 终端 B：先启动故障桥
+source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+ros2 launch robot_experiments scan_fault_bridge.launch.py
+
+# 终端 C：让本轮 Collision Monitor 消费故障桥输出
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation \
+  interactive:=false \
+  odometry_mode:=ideal \
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1" \
+  nav2_profile_params_file:=/tmp/isaac_nav_scan_fault.yaml
+```
+
+等待 Navigation 激活后，在已 source 的终端 D 先确认接线和状态：
+
+```bash
+ros2 param get /collision_monitor scan.topic
+ros2 topic info /scan_fault --verbose
+ros2 topic echo /scan_fault/status --once
+```
+
+第一条必须返回 `/scan_fault`。状态是带 Transient Local 的 JSON 字符串，`state.epoch` 表示当前 Reset 代次。可使用以下命令逐项注入；一次只激活一种故障：
+
+```bash
+# 丢掉接下来的 1 帧；计数归零后自动恢复 normal
+ros2 topic pub --once /scan_fault/control std_msgs/msg/String \
+  "data: '{\"command\":\"drop_next\",\"count\":1,\"epoch\":0}'"
+
+# 暂停转发 0.3 秒；时间到后自动恢复 normal
+ros2 topic pub --once /scan_fault/control std_msgs/msg/String \
+  "data: '{\"command\":\"pause_for\",\"seconds\":0.3,\"epoch\":0}'"
+
+# 持续丢弃，直到 resume 或 Reset
+ros2 topic pub --once /scan_fault/control std_msgs/msg/String \
+  "data: '{\"command\":\"drop_all\",\"epoch\":0}'"
+
+# 恢复正常转发；normal 与 resume 等价
+ros2 topic pub --once /scan_fault/control std_msgs/msg/String \
+  "data: '{\"command\":\"resume\",\"epoch\":0}'"
+
+# 保留 Scan 但替换为不存在的 TF frame，直到 resume 或 Reset
+ros2 topic pub --once /scan_fault/control std_msgs/msg/String \
+  "data: '{\"command\":\"replace_frame_id\",\"frame_id\":\"missing_scan_frame\",\"epoch\":0}'"
+```
+
+在活动导航目标期间，单帧/短暂停顿用于观察系统能否容忍有限缺帧；`drop_all` 或无效 frame 持续超过 Collision Monitor 的 `source_timeout=0.40 s` 后，应让其把命令链降为零速。测试时在机器人周围留出安全空间，并同时观察终端日志、`/collision_monitor_state` 和 `/cmd_vel`；不要只凭 RViz 动画像素判断是否停车。执行 `resume` 后，新的有效 Scan 应恢复正常来源状态。
+
+上例的 `0` 只适用于刚启动且尚未 Reset 的 bridge；每条命令都必须把刚从 status 读出的当前 `epoch` 放入命令，例如 `{"command":"drop_all","epoch":2}`。Reset 前排队、Reset 后才送达的旧 epoch 命令会被拒绝。任何 `/simulation/reset_event` 或 Scan 时间戳回退都会开启新 epoch、清除活动故障并恢复 `normal`：
+
+```bash
+ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
+ros2 topic echo /scan_fault/status --once
+```
+
+确认 `state.mode` 为 `normal` 且 epoch 已增加。测试结束先对终端 C 的 `run_ros.sh` 按一次 `Ctrl+C` 并等待有序关闭，再对终端 B 的独立 bridge 按 `Ctrl+C`，最后停止 Isaac。bridge 不属于 `run_ros.sh` 的受管进程组，不能忘记单独退出。
 
 ## 11. 运行静态自动实验
 
@@ -875,10 +1030,10 @@ source ./scripts/setup_ros_env.sh
 Profiler 会统一记录：
 
 - `/clock` 实测 RTF（仿真时间/稳态墙钟时间）和时间回退代次；
-- 点云、Scan、IMU、Joint State、各级 Odom、路径、三段速度命令和 Camera 的实际 Hz、消息年龄、时间戳异常与消息负载吞吐估算；
+- 点云、Scan、IMU、Joint State、各级 Odom、全局 `/plan`、真实 Local Plan `/optimal_trajectory`、三段速度命令和 Camera 的实际 Hz、消息年龄、时间戳异常与消息负载吞吐估算；
 - `map → odom → base_link` 及 LiDAR/IMU/Camera 静态链的 TF 延迟；
 - Image/CameraInfo 精确时间戳配对情况；
-- 受管 Isaac/ROS 进程组 CPU、RSS，主机 CPU/负载与 NVIDIA GPU 状态；
+- 受管 Isaac/ROS 进程 CPU、RSS（ROS supervisor 会归集其已认证进程组与同 UID 后代），主机 CPU/负载与 NVIDIA GPU 状态；报告会识别 `run_ros.sh` 的 operation。若采样首尾的进程身份集合变化，CPU 百分比会明确为 `null` 并列出新增/消失成员，不用错误差分冒充有效结果；
 - Nav2/SLAM 参数快照、当前 Nav2 profile、Ceres 线程数和运行期间关键日志计数。
 
 用相同路径、目标、Camera profile、主机电源策略和采样窗口比较两次 profile；否则差异不能归因于单个参数。报告目录默认被 Git 忽略，若要提交结论，应把摘要和运行条件写入 `docs/verification.md`，不要直接提交一批临时 JSON。
@@ -1006,6 +1161,32 @@ Nav2 Jazzy 1.3.12 对当前 2D radius 模式会打印已知误诊。只要版本
 - 独立 `run_camera_view.sh` 与模式 RViz 共用单实例锁，先关闭已有 RViz 或在 ROS 启动时传 `use_rviz:=false`；
 - 仍异常时保存 `diagnose.sh` 与 `profile_runtime.sh` 输出，再检查画面方向、遮挡和 Camera TF。
 
+### 18.12 saved-map 启动时报 manifest 或 calibration 错误
+
+先对本轮版本执行独立校验：
+
+```bash
+source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+ros2 run robot_bringup map_manifest verify \
+  --project-root "$PROJECT_ROOT" \
+  --manifest "$PROJECT_ROOT/data/maps/manifests/<版本>.yaml"
+```
+
+- `size mismatch`、`SHA256 mismatch` 或 `bundle SHA256 mismatch`：四件套被修改或混用了不同版本；不要手工改 hash 掩盖问题，应恢复同一次保存产生的工件；
+- `unhydrated Git LFS pointer`：执行 `git lfs pull`；
+- `posegraph_file/map_file does not match map manifest`：启动参数混用了版本；让三个基名一致；
+- `map ... is uncalibrated`：新保存地图的正常保护；Localization/Navigation 先用 `initial_pose_source:=rviz`，按 `calibration.md` 完成绑定后才启用 auto；
+- `map_bundle_sha256 does not match`：manifest 与 `spawn_poses.yaml` 不是同一地图 bundle，禁止复用旧 Map Pose。
+
+### 18.13 `/scan_fault` 命令似乎没有效果
+
+- 默认 Navigation 订阅 `/scan`，这是预期安全行为；确认本轮显式 overlay 让 `ros2 param get /collision_monitor scan.topic` 返回 `/scan_fault`；
+- 确认 bridge 终端仍在运行，`/scan_fault` publisher 是 `scan_fault_bridge`；
+- 读取 `/scan_fault/status`，若 `ok:false` 查看 `error`，常见原因是 JSON 字段错误、数值非法或 epoch 过期；
+- `drop_next` 完成和 `pause_for` 到时会自动回到 `normal`，不能用稍后的 status 反推命令从未执行；
+- Reset 会主动清除故障并增加 epoch；这是代次隔离，不是 bridge 丢失状态；
+- 测试后删除 `/tmp/isaac_nav_scan_fault.yaml` 即可，不要把故障 overlay 设成日常默认 profile。
+
 ## 19. 修改配置时应该改哪里
 
 | 需求 | 优先修改 |
@@ -1052,7 +1233,7 @@ docs: clarify realistic navigation workflow
 第一次使用只做一次：
 
 1. `git lfs pull`，安装外部依赖并运行 `rosdep install`；
-2. `preflight.sh → import_assets.sh → build_ros2.sh → test.sh --with-isaac`；
+2. `import_assets.sh → build_ros2.sh → preflight.sh → test.sh --with-isaac`；
 3. 先按第 5 节完成一次 `warehouse_v1` Ideal 导航，再尝试 Realistic、建图或实验。
 
 日常运行按固定顺序：
@@ -1069,7 +1250,7 @@ docs: clarify realistic navigation workflow
 
 ## 22. 当前能力边界
 
-仓库当前已经完成并运行验证了 Ideal/Realistic 导航、固定地图定位、前置 RGB Camera/CameraInfo 发布、动态双障碍基线、多轮事务式 Reset、Lifecycle 自动恢复、三套模式 RViz 与 Camera-only RViz、Mapping 安全 Teleop 和实验报告。MPPI 在当前工作站实测采用稳定的 10 Hz/2 s 预测窗配置。但下面内容仍需要真实实验或外部资产：
+仓库当前为 Ideal/Realistic 导航、固定地图定位、前置 RGB Camera/CameraInfo、动态障碍、事务式 Reset、Lifecycle 恢复、三套模式 RViz、Camera-only RViz、Mapping 安全 Teleop、运行时 Profiler 和实验报告提供了完整入口与自动合同检查。代码存在、构建通过或 topic 能发布都不等于整套运行时验收已经完成；每一项实际跑过的环境、命令、指标和限制以 [`verification.md`](verification.md) 为准。当前发布的 MPPI stable/performance 都保持 `10 Hz`、`20 × 0.10 s` 预测窗，但下面内容仍需要真实实验或外部资产：
 
 - 计划中的 200 次多起终点/多布局静态统计；
 - 多类型动态障碍总体成功率；

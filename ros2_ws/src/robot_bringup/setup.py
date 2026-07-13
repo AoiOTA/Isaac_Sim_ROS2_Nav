@@ -17,7 +17,7 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
     ],
-    install_requires=['setuptools'],
+    install_requires=['setuptools', 'PyYAML'],
     zip_safe=True,
     maintainer='AoiOTA',
     maintainer_email='liang_yibo@hdu.edu.cn',
@@ -27,7 +27,9 @@ setup(
     entry_points={
         'console_scripts': [
             'initial_pose_policy = robot_bringup.initial_pose_policy:main',
+            'map_manifest = robot_bringup.map_manifest:main',
             'nav2_activation_gate = robot_bringup.activation_gate:main',
+            'ordered_shutdown = robot_bringup.ordered_shutdown:main',
         ],
     },
 )

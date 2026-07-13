@@ -280,6 +280,7 @@ def run(
     sensors = None
     camera_graph_paths: tuple[str, ...] = ()
     node = None
+    reset_bridge = None
     rclpy_started = False
     try:
         _enable_extensions(app, config.extensions)
@@ -503,6 +504,14 @@ def run(
             except Exception as exc:
                 print(
                     f"warning: failed to release Camera resources cleanly: {exc}",
+                    file=sys.stderr,
+                )
+        if reset_bridge is not None:
+            try:
+                reset_bridge.close()
+            except Exception as exc:
+                print(
+                    f"warning: failed to close reset bridge cleanly: {exc}",
                     file=sys.stderr,
                 )
         if node is not None:

@@ -363,7 +363,7 @@ declare -A expected_presence=(
   [/odom]=1
   [/lidar/points_raw]=1
 )
-for topic in /map /odom /cmd_vel /wheel/odom /transformed_global_plan \
+for topic in /map /odom /cmd_vel /wheel/odom /optimal_trajectory \
   /camera/front/image_raw /camera/front/camera_info; do
   count="$(publisher_count "${topic}")"
   if [[ ! "${count}" =~ ^[0-9]+$ ]]; then

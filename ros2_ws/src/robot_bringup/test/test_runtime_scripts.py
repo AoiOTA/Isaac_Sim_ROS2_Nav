@@ -3,11 +3,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
 
 import pytest
+import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -17,6 +19,8 @@ CLEAN_RUNTIME = REPOSITORY_ROOT / 'scripts' / 'clean_runtime.sh'
 PERFORMANCE_MODE = REPOSITORY_ROOT / 'scripts' / 'performance_mode.sh'
 RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
+RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
+SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
 
 
@@ -541,3 +545,336 @@ def test_ros_launcher_blocks_mapping_teleop_in_navigation_modes():
         encoding='utf-8')
     assert 'runtime_lock_is_held teleop' in source
     assert 'stop the Mapping teleop before starting' in source
+
+
+def test_ros_launcher_supervises_ordered_shutdown_before_sigint():
+    source = RUN_ROS.read_text(encoding='utf-8')
+    helper = 'python3 -m robot_bringup.ordered_shutdown'
+    launch = 'setsid -- ros2 launch robot_bringup'
+    relay = 'signal_launch_group INT'
+
+    assert helper in source
+    assert launch in source
+    assert relay in source
+    assert source.index(helper) < source.index(relay)
+    assert "trap 'ordered_stop INT' INT" in source
+    assert "trap 'ordered_stop TERM' TERM" in source
+    assert "trap 'force_stop TERM' TERM" in source
+    assert 'wait_for_launch_group_exit "${shutdown_int_checks}"' in source
+    assert 'signal_launch_group KILL' in source
+    assert "trap '' INT TERM HUP\n  log_info" not in source
+
+
+def test_ros_supervisor_second_signal_forces_stubborn_launch_group(tmp_path):
+    project = tmp_path / 'project'
+    scripts = project / 'scripts'
+    scripts_lib = scripts / 'lib'
+    scripts_lib.mkdir(parents=True)
+    shutil.copy2(RUN_ROS, scripts / 'run_ros.sh')
+    shutil.copy2(COMMON, scripts_lib / 'common.sh')
+    workspace_setup = project / 'ros2_ws/install/setup.bash'
+    workspace_setup.parent.mkdir(parents=True)
+    workspace_setup.write_text(
+        'export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    ros_setup = tmp_path / 'ros_setup.bash'
+    ros_setup.write_text('export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$1" == launch ]]; then
+  printf '%s\n' "$$" >"${FAKE_LAUNCH_PID_FILE}"
+  trap '' INT TERM HUP
+  while true; do sleep 1; done
+fi
+exit 99
+''',
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    fake_python = fake_bin / 'python3'
+    fake_python.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$$" >"${FAKE_HELPER_PID_FILE}"
+sleep 30
+''',
+        encoding='utf-8',
+    )
+    fake_python.chmod(0o755)
+    launch_pid_file = tmp_path / 'launch.pid'
+    helper_pid_file = tmp_path / 'helper.pid'
+    environment = _environment(
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+        ROS_SETUP=str(ros_setup),
+        ISAAC_NAV_RUNTIME_DIR=str(tmp_path / 'runtime'),
+        ISAAC_NAV_SHUTDOWN_INT_CHECKS='3',
+        ISAAC_NAV_SHUTDOWN_TERM_CHECKS='3',
+        FAKE_LAUNCH_PID_FILE=str(launch_pid_file),
+        FAKE_HELPER_PID_FILE=str(helper_pid_file),
+    )
+    process = subprocess.Popen(
+        [str(scripts / 'run_ros.sh'), 'mapping'],
+        cwd=project,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    try:
+        deadline = time.monotonic() + 4.0
+        while time.monotonic() < deadline:
+            if launch_pid_file.exists() and os.getpgid(process.pid) == process.pid:
+                break
+            time.sleep(0.02)
+        assert launch_pid_file.exists()
+        launch_pid = int(launch_pid_file.read_text(encoding='utf-8'))
+
+        os.killpg(process.pid, signal.SIGINT)
+        deadline = time.monotonic() + 3.0
+        while not helper_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert helper_pid_file.exists()
+
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=4.0)
+        with pytest.raises(ProcessLookupError):
+            os.kill(launch_pid, 0)
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=3.0)
+
+
+def test_saved_map_launcher_derives_and_requires_version_manifest():
+    source = RUN_ROS.read_text(encoding='utf-8')
+    assert 'if [[ "${operation}" != "mapping" ]]' in source
+    assert 'map_manifest_file:=*' in source
+    assert '/data/maps/manifests/$(basename "${posegraph_prefix}").yaml' \
+        in source
+    assert 'launch_args+=("map_manifest_file:=${map_manifest_file}")' \
+        in source
+
+
+def test_save_map_publishes_verified_manifest_after_all_four_artifacts():
+    source = SAVE_MAP.read_text(encoding='utf-8')
+    assert 'data/maps/.staging/${version}.XXXXXX' in source
+    assert 'ros2 run robot_bringup map_manifest create' in source
+    assert 'ros2 run robot_bringup map_manifest verify' in source
+    first_artifact_publish = source.index(
+        'publish_no_clobber "${staged_occupancy}.yaml" "${occupancy}.yaml"')
+    last_artifact_publish = source.index(
+        'publish_no_clobber "${staged_posegraph}.data" "${posegraph}.data"')
+    bundle_verify = source.index(
+        'ros2 run robot_bringup map_manifest verify')
+    manifest_publish = source.index(
+        'publish_no_clobber "${staged_manifest}" "${manifest}"')
+    assert first_artifact_publish < last_artifact_publish
+    assert last_artifact_publish < bundle_verify < manifest_publish
+    assert '"calibrated": False' not in source  # owned by the strict generator
+
+
+def _prepare_fake_map_save_project(tmp_path):
+    project = tmp_path / 'project'
+    scripts = project / 'scripts'
+    scripts_lib = scripts / 'lib'
+    scripts_lib.mkdir(parents=True)
+    shutil.copy2(SAVE_MAP, scripts / 'save_map.sh')
+    shutil.copy2(COMMON, scripts_lib / 'common.sh')
+    workspace_setup = project / 'ros2_ws/install/setup.bash'
+    workspace_setup.parent.mkdir(parents=True)
+    workspace_setup.write_text(
+        'export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    ros_setup = tmp_path / 'ros_setup.bash'
+    ros_setup.write_text('export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$1 $2 $3" == "run nav2_map_server map_saver_cli" ]]; then
+  prefix="$5"
+  printf 'image: %s.pgm\nresolution: 0.05\norigin: [0, 0, 0]\n' \
+    "$(basename "${prefix}")" >"${prefix}.yaml"
+  printf 'P5\n1 1\n255\n\\0' >"${prefix}.pgm"
+  printf 'occupancy_saved\n' >>"${FAKE_EVENT_LOG}"
+  exit 0
+fi
+if [[ "$1 $2" == "service call" ]]; then
+  service_request="${5}"
+  prefix="${service_request#*filename: \\\'}"
+  prefix="${prefix%%\\\'*}"
+  printf posegraph >"${prefix}.posegraph"
+  printf data >"${prefix}.data"
+  printf 'posegraph_serialized\n' >>"${FAKE_EVENT_LOG}"
+  printf 'response: result=%s\n' "${FAKE_SERIALIZE_RESULT:-0}"
+  exit 0
+fi
+if [[ "$1 $2 $3" == "run robot_bringup map_manifest" ]]; then
+  shift 3
+  if [[ "$1" == verify ]]; then
+    version="${FAKE_MAP_VERSION}"
+    root="${FAKE_PROJECT_ROOT}"
+    test -s "${root}/data/maps/occupancy/${version}.yaml"
+    test -s "${root}/data/maps/occupancy/${version}.pgm"
+    test -s "${root}/data/maps/posegraphs/${version}.posegraph"
+    test -s "${root}/data/maps/posegraphs/${version}.data"
+    test ! -e "${root}/data/maps/manifests/${version}.yaml"
+    printf 'bundle_verified_before_manifest\n' >>"${FAKE_EVENT_LOG}"
+	else
+	  if [[ -n "${FAKE_CONCURRENT_TARGET:-}" ]]; then
+	    mkdir -p "$(dirname "${FAKE_CONCURRENT_TARGET}")"
+	    printf external >"${FAKE_CONCURRENT_TARGET}"
+	  fi
+	  printf 'manifest_created_in_staging\n' >>"${FAKE_EVENT_LOG}"
+	fi
+  exec python3 -m robot_bringup.map_manifest "$@"
+fi
+printf 'unexpected fake ros2 command: %s\n' "$*" >&2
+exit 99
+''',
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    fake_ln = fake_bin / 'ln'
+    fake_ln.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+/usr/bin/ln "$@"
+target="${@: -1}"
+if [[ -n "${FAKE_SIGNAL_AFTER_LINK:-}" \
+      && "${target}" == "${FAKE_SIGNAL_AFTER_LINK}" ]]; then
+  kill -TERM "${PPID}"
+fi
+''',
+        encoding='utf-8',
+    )
+    fake_ln.chmod(0o755)
+    environment = _environment(
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+        PYTHONPATH=(
+            f'{PACKAGE_ROOT}:{os.environ.get("PYTHONPATH", "")}'),
+        ROS_SETUP=str(ros_setup),
+        ISAAC_NAV_RUNTIME_DIR=str(tmp_path / 'runtime'),
+        FAKE_EVENT_LOG=str(tmp_path / 'events.log'),
+        FAKE_PROJECT_ROOT=str(project),
+        FAKE_MAP_VERSION='contract_v2',
+    )
+    return project, environment
+
+
+def test_save_map_transaction_manifest_last_and_failure_cleanup(tmp_path):
+    project, environment = _prepare_fake_map_save_project(tmp_path)
+    script = project / 'scripts/save_map.sh'
+    result = subprocess.run(
+        [str(script), 'contract_v2'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    manifest_path = project / 'data/maps/manifests/contract_v2.yaml'
+    document = yaml.safe_load(manifest_path.read_text(encoding='utf-8'))
+    assert document['calibration']['calibrated'] is False
+    assert document['calibration']['spawn_pose_profile'] is None
+    assert document['calibration']['bundle_sha256'] is None
+    assert (tmp_path / 'events.log').read_text(encoding='utf-8').splitlines() == [
+        'occupancy_saved',
+        'posegraph_serialized',
+        'manifest_created_in_staging',
+        'bundle_verified_before_manifest',
+    ]
+    assert not any((project / 'data/maps/.staging').iterdir())
+
+    failed_tmp = tmp_path / 'failed-fixture'
+    failed_tmp.mkdir()
+    project, failed_environment = _prepare_fake_map_save_project(failed_tmp)
+    failed_environment['FAKE_SERIALIZE_RESULT'] = '1'
+    failed = subprocess.run(
+        [str(project / 'scripts/save_map.sh'), 'contract_v2'],
+        cwd=failed_tmp,
+        env=failed_environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert failed.returncode != 0
+    assert 'pose-graph serialization failure' in failed.stderr
+    assert not list((project / 'data/maps/occupancy').glob('contract_v2.*'))
+    assert not list((project / 'data/maps/posegraphs').glob('contract_v2.*'))
+    assert not (project / 'data/maps/manifests/contract_v2.yaml').exists()
+    assert not any((project / 'data/maps/.staging').iterdir())
+
+
+def test_save_map_preserves_artifact_created_during_serialization(tmp_path):
+    project, environment = _prepare_fake_map_save_project(tmp_path)
+    concurrent = project / 'data/maps/occupancy/contract_v2.pgm'
+    environment['FAKE_CONCURRENT_TARGET'] = str(concurrent)
+
+    result = subprocess.run(
+        [str(project / 'scripts/save_map.sh'), 'contract_v2'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert 'refusing to overwrite concurrently-created' in result.stderr
+    assert concurrent.read_text(encoding='utf-8') == 'external'
+    assert not (project / 'data/maps/occupancy/contract_v2.yaml').exists()
+    assert not list((project / 'data/maps/posegraphs').glob('contract_v2.*'))
+    assert not (project / 'data/maps/manifests/contract_v2.yaml').exists()
+    assert not any((project / 'data/maps/.staging').iterdir())
+
+
+def test_save_map_rolls_back_manifest_if_signal_arrives_after_link(tmp_path):
+    project, environment = _prepare_fake_map_save_project(tmp_path)
+    manifest = project / 'data/maps/manifests/contract_v2.yaml'
+    environment['FAKE_SIGNAL_AFTER_LINK'] = str(manifest)
+
+    result = subprocess.run(
+        [str(project / 'scripts/save_map.sh'), 'contract_v2'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 130
+    assert not list((project / 'data/maps/occupancy').glob('contract_v2.*'))
+    assert not list((project / 'data/maps/posegraphs').glob('contract_v2.*'))
+    assert not manifest.exists()
+    assert not any((project / 'data/maps/.staging').iterdir())
+
+
+def test_save_map_rejects_symlinked_storage_directory(tmp_path):
+    project, environment = _prepare_fake_map_save_project(tmp_path)
+    maps = project / 'data/maps'
+    maps.mkdir(parents=True)
+    external = tmp_path / 'external_manifests'
+    external.mkdir()
+    (maps / 'manifests').symlink_to(external, target_is_directory=True)
+
+    result = subprocess.run(
+        [str(project / 'scripts/save_map.sh'), 'contract_v2'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert 'traverses a symbolic link' in result.stderr
+    assert not any(external.iterdir())

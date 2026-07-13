@@ -12,6 +12,7 @@ from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
 from rclpy.clock import Clock as RclpyClock
 from rclpy.clock import ClockType
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.qos import ReliabilityPolicy
@@ -957,14 +958,18 @@ class Nav2ActivationGate(Node):
 def main(args=None):
     """Run the persistent Nav2 activation and time-recovery gate."""
     rclpy.init(args=args)
-    node = Nav2ActivationGate()
+    node = None
     try:
+        node = Nav2ActivationGate()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
-        if rclpy.ok():
+        # The default rclpy SIGINT handler may invalidate the context before
+        # spin() returns.  Always destroy timers, clients and pending futures.
+        if node is not None:
             node.destroy_node()
+        if rclpy.ok():
             rclpy.shutdown()
 
 

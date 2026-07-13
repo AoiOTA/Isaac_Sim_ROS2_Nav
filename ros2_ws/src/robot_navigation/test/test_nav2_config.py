@@ -31,6 +31,7 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert planner['plugin'] == 'nav2_smac_planner::SmacPlanner2D'
     assert controller['plugin'] == 'nav2_mppi_controller::MPPIController'
     assert controller['motion_model'] == 'DiffDrive'
+    assert controller['visualize'] is True
     assert controller['time_steps'] == 20
     assert controller['model_dt'] == 0.10
     assert controller['batch_size'] == 1000
@@ -77,6 +78,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in launch_source
     assert "package='nav2_velocity_smoother'" in launch_source
     assert "package='nav2_collision_monitor'" in launch_source
+    assert launch_source.count("sigterm_timeout='15.0'") == 7
 
 
 def test_nav2_profiles_are_small_overlays_with_valid_mppi_horizons():

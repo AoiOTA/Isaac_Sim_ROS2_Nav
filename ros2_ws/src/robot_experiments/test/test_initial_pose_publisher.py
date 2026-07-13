@@ -1,7 +1,9 @@
 from types import SimpleNamespace
 
 import pytest
+from rclpy.executors import ExternalShutdownException
 
+import robot_experiments.initial_pose_publisher as initial_pose_module
 from robot_experiments.initial_pose_publisher import (
     InitialPosePublisher,
     PostResetScanBarrier,
@@ -195,3 +197,43 @@ def test_valid_map_pose_can_claim_manual_ownership():
     assert node.failure is None
     assert timer.cancelled
     assert statuses == ["manual_override"]
+
+
+@pytest.mark.parametrize(
+    ("exception", "should_raise"),
+    [
+        (ExternalShutdownException(), False),
+        (RuntimeError("unexpected publisher failure"), True),
+    ],
+)
+def test_main_only_swallows_expected_external_shutdown(
+    monkeypatch, exception, should_raise
+):
+    events = []
+    node = SimpleNamespace(
+        _stay_alive=True,
+        destroy_node=lambda: events.append("destroy"),
+    )
+    monkeypatch.setattr(
+        initial_pose_module, "InitialPosePublisher", lambda: node
+    )
+    monkeypatch.setattr(
+        initial_pose_module.rclpy, "init", lambda args=None: events.append("init")
+    )
+    monkeypatch.setattr(
+        initial_pose_module.rclpy,
+        "spin",
+        lambda _node: (_ for _ in ()).throw(exception),
+    )
+    monkeypatch.setattr(initial_pose_module.rclpy, "ok", lambda: True)
+    monkeypatch.setattr(
+        initial_pose_module.rclpy, "shutdown", lambda: events.append("shutdown")
+    )
+
+    if should_raise:
+        with pytest.raises(RuntimeError, match="unexpected publisher failure"):
+            initial_pose_module.main()
+    else:
+        initial_pose_module.main()
+
+    assert events == ["init", "destroy", "shutdown"]

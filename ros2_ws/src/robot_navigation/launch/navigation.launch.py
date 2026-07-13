@@ -38,6 +38,7 @@ def generate_launch_description():
             executable='controller_server',
             name='controller_server',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
@@ -46,6 +47,7 @@ def generate_launch_description():
             executable='planner_server',
             name='planner_server',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
         ),
         Node(
@@ -53,6 +55,7 @@ def generate_launch_description():
             executable='behavior_server',
             name='behavior_server',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
@@ -61,6 +64,7 @@ def generate_launch_description():
             executable='bt_navigator',
             name='bt_navigator',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
         ),
         Node(
@@ -68,6 +72,7 @@ def generate_launch_description():
             executable='velocity_smoother',
             name='velocity_smoother',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
@@ -76,6 +81,7 @@ def generate_launch_description():
             executable='collision_monitor',
             name='collision_monitor',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
         ),
         Node(
@@ -83,6 +89,7 @@ def generate_launch_description():
             executable='lifecycle_manager',
             name='lifecycle_manager_navigation',
             output='screen',
+            sigterm_timeout='15.0',
             parameters=[
                 {'use_sim_time': use_sim_time},
                 {'autostart': autostart},

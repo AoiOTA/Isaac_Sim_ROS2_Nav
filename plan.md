@@ -14,6 +14,39 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 该路径及原始系统目标来自现有方案。
 
+## 0. 修订说明与当前状态（2026-07-13）
+
+本文最初是项目从零搭建时的完整设计方案，后续章节仍保留当时的目标、SOP 和最终统计验收标准，便于回溯为什么采用当前架构。它不是“所有目标均已验收”的声明；第一次使用仓库请先看 [`docs/user_manual.md`](docs/user_manual.md)，逐文件理解请看 [`docs/repository_index.md`](docs/repository_index.md)，当前实测证据和明确边界以 [`docs/verification.md`](docs/verification.md) 为准。
+
+当前实现相对原方案又完成了以下可靠性升级：
+
+- 四个地图工件由严格 Manifest 和 bundle hash 绑定，`save_map.sh` 事务式保存、Manifest 最后提交；
+- 前置 RGB Camera 支持 `off/monitoring/standard/high_quality` profile、Image/CameraInfo、TF、Camera-only 与集成 RViz；
+- MPPI 真正局部轨迹使用 `/optimal_trajectory`，控制器参数在创建 ROS 节点前校验时间离散约束；
+- `/scan_fault` 提供丢包、暂停和错误 Frame 注入，Reset 会恢复正常模式并隔离旧代次命令；
+- Runtime Profiler 统计受管 ROS 进程树以及 RTF、Topic Age、TF Lag、CPU/GPU；
+- ROS 监督脚本按 Lifecycle 顺序关闭 Nav2/定位节点，RViz 使用安全退出面板。
+
+原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
+
+| 原阶段 | 当前实现状态 | 已有实机/仿真证据 | 仍未覆盖的边界 |
+| --- | --- | --- | --- |
+| 1 Jackal 物理底盘 | 已实现 | 官方 Warehouse + 项目 Jackal 可启动，唯一 PhysicsScene、固定出生点与 Reset 已运行 | 更换场景后的全资产复验 |
+| 2 `/cmd_vel` 控制 | 已实现 | Teleop、Nav2、停车与 Reset 路径已运行 | 不同地面材料和载荷的系统辨识 |
+| 3 `/clock` | 已实现 | RTF/频率/消息年龄已由 Profiler 实测 | 长时间压力运行 |
+| 4 TF 与 Ideal Odom | 已实现 | Ideal 导航、Reset、TF freshness 已运行 | 计划中的全部长时统计矩阵 |
+| 5 LiDAR 与 `/scan` | 已实现 | 正常扫描及丢包/暂停/错误 Frame 故障矩阵已运行 | 更广传感器噪声与遮挡矩阵 |
+| 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |
+| 7 Nav2 | 已实现 | 1 m/3 m smoke、MPPI 10/15 Hz 参数矩阵和真实局部轨迹已运行 | 多终点、多布局的完整统计 |
+| 8 Ground Truth | 已实现 | smoke 报告已记录终点误差与 GT 路径 | 200 次统计验收 |
+| 9 Realistic Odom | 已实现 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查 | 更复杂滑移/噪声矩阵 |
+| 10 动态避障 | 已实现基线 | 当前固定世界的 4-seed 基线为 4/4 | 不能外推为多类障碍 90% 广义避障率 |
+| 11 自动实验 | 已实现框架 | Reset、场景契约和 smoke 批次可重复运行 | 完整 200 次矩阵未执行 |
+| 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 没有真实 `warehouse_v2`，未证明 changed-region 时间改善 ≥30% |
+| 13 自定义机器人 | 仅迁移模板 | 配置入口和 fail-fast 契约有自动测试 | 没有真实自定义 USD，不能声称完成迁移 |
+
+Camera 的 `monitoring` 与 `high_quality` 已完成 headless 发布采样；前向画面、非镜像/非倒置、无大面积自遮挡和转弯后的视角变化已通过实际截图目视确认，集成 RViz 已实际运行。`standard` profile 尚无独立实机性能报告，完整 GUI 人因/布局验收也没有用一次启动替代。详细矩阵、数字和限制见 [`docs/runtime_reliability_and_performance_upgrade_plan.md`](docs/runtime_reliability_and_performance_upgrade_plan.md) 与 [`docs/verification.md`](docs/verification.md)。
+
 ---
 
 # 第一部分：需求理解和关键约束
@@ -748,16 +781,17 @@ translation: [0.012, 0.002, 0.067]
 
 ### 相机
 
-目标结构：
+历史设计以双目 Frame 为主；当前交付把 `front` 定义为唯一默认发布的机器人第一视角，同时保留未启用的左右 Frame 供后续双目扩展。实际结构为：
 
 ```text
 camera_link
+├── camera_front_link
+│   └── camera_front_optical_frame
+│       └── camera_front_sensor   # 当前唯一默认启用的 Camera
 ├── camera_left_link
 │   └── camera_left_optical_frame
-│       └── camera_left_sensor
 └── camera_right_link
     └── camera_right_optical_frame
-        └── camera_right_sensor
 ```
 
 ROS 普通 Frame：
@@ -776,7 +810,7 @@ y 下
 z 前
 ```
 
-原双目基线为 `0.120 m`。
+原双目 Frame 的基线仍为 `0.120 m`，但当前没有把左右 Camera 当作已实现的 Stereo/Depth 发布链。前置 Camera 的运行时契约是 `/camera/front/image_raw`、`/camera/front/camera_info` 和 `camera_front_optical_frame`。
 
 ## 4.5 修改后的机器人结构
 
@@ -790,12 +824,13 @@ z 前
 │   ├── imu_link
 │   │   └── imu_sensor
 │   └── camera_link
+│       ├── camera_front_link
+│       │   └── camera_front_optical_frame
+│       │       └── camera_front_sensor
 │       ├── camera_left_link
 │       │   └── camera_left_optical_frame
-│       │       └── camera_left_sensor
 │       └── camera_right_link
 │           └── camera_right_optical_frame
-│               └── camera_right_sensor
 ├── front_left_wheel_link
 ├── front_right_wheel_link
 ├── rear_left_wheel_link
@@ -2407,6 +2442,8 @@ failure_reason:
 ---
 
 # 第十四部分：分阶段开发计划和验收标准
+
+以下内容保留原始阶段目标和严格验收门槛，不应仅凭代码存在就勾选完成。每阶段截至 2026-07-13 的“实现/实测/边界”结论见本文开头的 **0. 修订说明与当前状态**；尤其阶段 10 的 90% 广义动态避障率、阶段 11 的完整统计矩阵、阶段 12 的真实 changed-region 30% 改善和阶段 13 的真实机器人迁移仍未验收。
 
 ## 阶段 1：Jackal 物理底盘验证
 
