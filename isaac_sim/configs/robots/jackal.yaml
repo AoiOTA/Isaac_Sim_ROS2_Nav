@@ -51,6 +51,14 @@ static_transforms:
     translation: [0.247, 0.000, 0.218]
     rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
   - parent: camera_link
+    child: camera_front_link
+    translation: [0.0, 0.0, 0.0]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+  - parent: camera_front_link
+    child: camera_front_optical_frame
+    translation: [0.0, 0.0, 0.0]
+    rotation_xyzw: [-0.5, 0.5, -0.5, 0.5]
+  - parent: camera_link
     child: camera_left_link
     translation: [0.0, 0.060, 0.0]
     rotation_xyzw: [0.0, 0.0, 0.0, 1.0]

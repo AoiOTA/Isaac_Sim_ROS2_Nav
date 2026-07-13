@@ -3,12 +3,79 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fractions import Fraction
 
 from isaac_sim.src.config import SimulationConfig
 
 
 class PhysicsSetupError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class PacingPlan:
+    """Separate fixed simulation dt from the wall-clock loop rate limit."""
+
+    mode: str
+    timeline_hz: float
+    wall_loop_hz: float | None
+    target_realtime_factor: float
+
+
+def pacing_plan(config: SimulationConfig) -> PacingPlan:
+    if config.pacing_mode == "realtime":
+        return PacingPlan(
+            mode="realtime",
+            timeline_hz=config.rendering_hz,
+            wall_loop_hz=(
+                config.rendering_hz * config.target_realtime_factor
+            ),
+            target_realtime_factor=config.target_realtime_factor,
+        )
+    if config.pacing_mode == "unbounded":
+        return PacingPlan(
+            mode="unbounded",
+            timeline_hz=config.rendering_hz,
+            wall_loop_hz=None,
+            target_realtime_factor=config.target_realtime_factor,
+        )
+    raise PhysicsSetupError(
+        f"unsupported pacing mode after configuration validation: "
+        f"{config.pacing_mode}"
+    )
+
+
+def prepare_pacing(config: SimulationConfig) -> PacingPlan:
+    """Seed Kit/Fabric timing before opening the project Stage."""
+
+    import carb.settings
+    import omni.timeline
+
+    plan = pacing_plan(config)
+    settings = carb.settings.get_settings()
+    settings.set_bool("/app/player/useFixedTimeStepping", True)
+    settings.set_bool(
+        "/app/runLoops/main/rateLimitEnabled",
+        plan.wall_loop_hz is not None,
+    )
+    if plan.wall_loop_hz is not None:
+        settings.set_float(
+            "/app/runLoops/main/rateLimitFrequency",
+            plan.wall_loop_hz,
+        )
+    period = Fraction(1.0 / plan.timeline_hz).limit_denominator(1_000_000)
+    settings.set_int(
+        "/app/settings/fabricDefaultSimPeriodNumerator",
+        period.numerator,
+    )
+    settings.set_int(
+        "/app/settings/fabricDefaultSimPeriodDenominator",
+        period.denominator,
+    )
+    omni.timeline.get_timeline_interface().set_target_framerate(
+        plan.wall_loop_hz or plan.timeline_hz
+    )
+    return plan
 
 
 def find_all_physics_scenes(stage):
@@ -101,6 +168,7 @@ class PhysicsSetup:
         self.config = config
 
     def apply(self, stage, app) -> IsaacSimulationRuntime:
+        plan = prepare_pacing(self.config)
         scenes = find_all_physics_scenes(stage)
         if len(scenes) == 0:
             scene_prim = _create_physics_scene(stage, self.config.expected_physics_scene)
@@ -118,11 +186,31 @@ class PhysicsSetup:
         validate_up_axis(stage, "Z")
         _configure_scene(scene_prim, self.config.physics_hz)
 
+        from isaacsim.core.rendering_manager import RenderingManager
         from isaacsim.core.simulation_manager import SimulationManager
 
-        SimulationManager.set_physics_dt(1.0 / self.config.physics_hz, physics_scene=scene_path)
+        SimulationManager.setup_simulation(dt=1.0 / self.config.physics_hz)
+        import carb.settings
         import omni.timeline
 
         timeline = omni.timeline.get_timeline_interface()
-        timeline.set_target_framerate(self.config.rendering_hz)
+        settings = carb.settings.get_settings()
+        settings.set_bool("/app/player/useFixedTimeStepping", True)
+        settings.set_bool(
+            "/app/runLoops/main/rateLimitEnabled",
+            plan.wall_loop_hz is not None,
+        )
+        # Isaac Sim 6.0 couples RunLoop, Timeline time codes, and its manual
+        # loop runner here. Setting only targetFramerate leaves the Stage at
+        # its previous timeCodesPerSecond and can advance simulation at ~2x.
+        RenderingManager.set_dt(1.0 / plan.timeline_hz)
+        timeline.set_play_every_frame(
+            plan.mode == "unbounded" or plan.target_realtime_factor > 1.0
+        )
+        if plan.wall_loop_hz is not None:
+            settings.set_float(
+                "/app/runLoops/main/rateLimitFrequency",
+                plan.wall_loop_hz,
+            )
+            timeline.set_target_framerate(plan.wall_loop_hz)
         return IsaacSimulationRuntime(app)

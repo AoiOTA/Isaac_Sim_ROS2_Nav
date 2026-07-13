@@ -17,6 +17,7 @@ def generate_launch_description():
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
+        DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
@@ -32,6 +33,20 @@ def generate_launch_description():
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('rviz_config', default_value='auto'),
         DeclareLaunchArgument('use_teleop', default_value='auto'),
+        DeclareLaunchArgument('teleop_linear_speed', default_value='0.50'),
+        DeclareLaunchArgument('teleop_angular_speed', default_value='0.80'),
+        DeclareLaunchArgument(
+            'teleop_linear_speed_step', default_value='0.05'),
+        DeclareLaunchArgument(
+            'teleop_angular_speed_step', default_value='0.10'),
+        DeclareLaunchArgument(
+            'teleop_min_linear_speed', default_value='0.10'),
+        DeclareLaunchArgument(
+            'teleop_min_angular_speed', default_value='0.20'),
+        DeclareLaunchArgument(
+            'teleop_max_linear_speed', default_value='1.00'),
+        DeclareLaunchArgument(
+            'teleop_max_angular_speed', default_value='1.50'),
         DeclareLaunchArgument(
             'project_root',
             default_value=EnvironmentVariable(
@@ -46,6 +61,8 @@ def generate_launch_description():
                 'structure_tf_source': LaunchConfiguration(
                     'structure_tf_source'),
                 'posegraph_file': LaunchConfiguration('posegraph_file'),
+                'ceres_num_threads': LaunchConfiguration(
+                    'ceres_num_threads'),
                 'robot_description_file': LaunchConfiguration(
                     'robot_description_file'),
                 'wheel_odometry_params_file': LaunchConfiguration(
@@ -59,6 +76,22 @@ def generate_launch_description():
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'rviz_config': LaunchConfiguration('rviz_config'),
                 'use_teleop': LaunchConfiguration('use_teleop'),
+                'teleop_linear_speed': LaunchConfiguration(
+                    'teleop_linear_speed'),
+                'teleop_angular_speed': LaunchConfiguration(
+                    'teleop_angular_speed'),
+                'teleop_linear_speed_step': LaunchConfiguration(
+                    'teleop_linear_speed_step'),
+                'teleop_angular_speed_step': LaunchConfiguration(
+                    'teleop_angular_speed_step'),
+                'teleop_min_linear_speed': LaunchConfiguration(
+                    'teleop_min_linear_speed'),
+                'teleop_min_angular_speed': LaunchConfiguration(
+                    'teleop_min_angular_speed'),
+                'teleop_max_linear_speed': LaunchConfiguration(
+                    'teleop_max_linear_speed'),
+                'teleop_max_angular_speed': LaunchConfiguration(
+                    'teleop_max_angular_speed'),
                 'project_root': LaunchConfiguration('project_root'),
                 'use_self_filter': LaunchConfiguration('use_self_filter'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),

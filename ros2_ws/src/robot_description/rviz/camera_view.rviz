@@ -1,0 +1,106 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+    Property Tree Widget:
+      Expanded:
+        - /Global Options1
+        - /Robot Front Camera1
+      Splitter Ratio: 0.50
+  - Class: rviz_common/Views
+    Name: Views
+    Splitter Ratio: 0.50
+  - Class: rviz_common/Time
+    Experimental: false
+    Name: Time
+    SyncMode: 0
+    SyncSource: Robot Front Camera
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Robot Front Camera
+      Normalize Range: false
+      Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/front/image_raw
+      Transport Hint: raw
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Filter (blacklist): ""
+      Filter (whitelist): "camera_front"
+      Frame Timeout: 15
+      Frames:
+        All Enabled: true
+        base_link:
+          Value: true
+        camera_front_link:
+          Value: true
+        camera_front_optical_frame:
+          Value: true
+      Marker Scale: 0.25
+      Name: Camera TF
+      Show Arrows: true
+      Show Axes: true
+      Show Names: true
+      Tree: {}
+      Update Interval: 0
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 25; 25; 28
+    Fixed Frame: camera_front_optical_frame
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 2
+      Enable Stereo Rendering:
+        Value: false
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0
+      Focal Shape Fixed Size: true
+      Focal Shape Size: 0.05
+      Invert Z Axis: false
+      Name: Camera Frame
+      Near Clip Distance: 0.01
+      Pitch: 0.4
+      Target Frame: camera_front_optical_frame
+      Value: Orbit (rviz_default_plugins)
+      Yaw: 0
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Hide Left Dock: false
+  Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd00000003000000000000000000000000fc0200000003fc00000000ffffffff0000004001000024fa000000020200000003fb000000100044006900730070006c0061007900730100000000ffffffff0000001b00fffffffb000000180053006c0061006d00200054006f006f006c0062006f00780100000000ffffffff0000001b00fffffffb00000018004e0061007600690067006100740069006f006e002000320100000000ffffffff0000001b00fffffffb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000000ffffffff0000001b00fffffffb0000001200530065006c0065006300740069006f006e0100000000ffffffff0000001b00ffffff000000010000000000000000fc0200000002fb000000240052006f0062006f0074002000460072006f006e0074002000430061006d0065007200610100000000ffffffff0000001b00fffffffb0000000a005600690065007700730100000000ffffffff0000001b00ffffff000000030000000000000000fc0100000001fb0000000800540069006d00650100000000ffffffff0000004200ffffff000000000000000000000004000000040000000800000008fc00000000
+  Robot Front Camera:
+    collapsed: false
+  Time:
+    collapsed: false
+  Views:
+    collapsed: false
+  Width: 1440
+  X: 100
+  Y: 60

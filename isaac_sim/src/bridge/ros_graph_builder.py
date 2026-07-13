@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from isaac_sim.graphs.camera_graph import build_camera_graphs
 from isaac_sim.graphs.control_graph import build_control_graph
 from isaac_sim.graphs.odometry_graph import build_odometry_graph
 from isaac_sim.graphs.sensor_graph import build_sensor_graphs
@@ -17,6 +18,7 @@ class RosGraphHandles:
     sensors: tuple[object, object]
     tf: object | None
     odometry: object | None
+    cameras: tuple[object, ...]
 
 
 class RosGraphBuilder:
@@ -43,4 +45,5 @@ class RosGraphBuilder:
                 else None
             ),
             odometry=odometry,
+            cameras=build_camera_graphs(self.config, self.sensors.cameras),
         )

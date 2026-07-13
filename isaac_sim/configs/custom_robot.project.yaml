@@ -33,6 +33,8 @@ simulation:
   navigation_mode: mapping
   odometry_mode: ideal
   structure_tf_source: isaac
+  pacing_mode: realtime
+  target_realtime_factor: 1.0
   max_frames: 0
 
 spawn:
@@ -40,7 +42,7 @@ spawn:
   selected: mapping_start
 
 ros2:
-  domain_id: 0
+  domain_id: 42
   rmw_implementation: rmw_fastrtps_cpp
   namespace: ""
 

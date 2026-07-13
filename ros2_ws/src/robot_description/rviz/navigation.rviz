@@ -97,6 +97,10 @@ Visualization Manager:
           Value: true
         camera_link:
           Value: true
+        camera_front_link:
+          Value: true
+        camera_front_optical_frame:
+          Value: true
         camera_left_link:
           Value: true
         camera_right_link:
@@ -142,7 +146,7 @@ Visualization Manager:
       Class: rviz_default_plugins/Map
       Color Scheme: map
       Draw Behind: false
-      Enabled: false
+      Enabled: true
       Name: SLAM Toolbox Diagnostic Map
       Topic:
         Depth: 1
@@ -158,7 +162,7 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /slam_toolbox/map_updates
       Use Timestamp: false
-      Value: false
+      Value: true
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Axis: Z
@@ -313,7 +317,7 @@ Visualization Manager:
             Filter size: 10
             History Policy: Keep Last
             Reliability Policy: Reliable
-            Value: /local_plan
+            Value: /transformed_global_plan
           Value: true
         - Alpha: 1
           Class: rviz_default_plugins/Polygon
@@ -414,6 +418,21 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: Collision Monitor
+    - Class: rviz_default_plugins/Image
+      Enabled: true
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Robot Front Camera
+      Normalize Range: false
+      Topic:
+        Depth: 2
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /camera/front/image_raw
+      Transport Hint: raw
+      Value: true
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
@@ -507,6 +526,9 @@ Window Geometry:
   Height: 1000
   Hide Left Dock: false
   Hide Right Dock: false
+  QMainWindow State: 000000ff00000000fd00000003000000000000000000000000fc0200000003fc00000000ffffffff0000004001000024fa000000020200000003fb000000100044006900730070006c0061007900730100000000ffffffff0000001b00fffffffb000000180053006c0061006d00200054006f006f006c0062006f00780100000000ffffffff0000001b00fffffffb00000018004e0061007600690067006100740069006f006e002000320100000000ffffffff0000001b00fffffffb0000001e0054006f006f006c002000500072006f00700065007200740069006500730100000000ffffffff0000001b00fffffffb0000001200530065006c0065006300740069006f006e0100000000ffffffff0000001b00ffffff000000010000000000000000fc0200000002fb000000240052006f0062006f0074002000460072006f006e0074002000430061006d0065007200610100000000ffffffff0000001b00fffffffb0000000a005600690065007700730100000000ffffffff0000001b00ffffff000000030000000000000000fc0100000001fb0000000800540069006d00650100000000ffffffff0000004200ffffff000000000000000000000004000000040000000800000008fc00000000
+  Robot Front Camera:
+    collapsed: false
   Navigation 2:
     collapsed: false
   Selection:

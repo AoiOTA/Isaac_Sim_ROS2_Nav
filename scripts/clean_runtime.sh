@@ -50,6 +50,50 @@ process_command() {
   tr '\0' ' ' <"/proc/${pid}/cmdline"
 }
 
+process_start_ticks() {
+  local pid="$1"
+  [[ -r "/proc/${pid}/stat" ]] || return 1
+  awk '{print $22}' "/proc/${pid}/stat"
+}
+
+process_environment_value() {
+  local pid="$1"
+  local key="$2"
+  [[ -r "/proc/${pid}/environ" ]] || return 1
+  tr '\0' '\n' <"/proc/${pid}/environ" \
+    | sed -n "s/^${key}=//p" \
+    | head -n 1
+}
+
+process_group_members() {
+  local process_group="$1"
+  ps -eo pid=,pgid=,stat= | awk -v wanted="${process_group}" '
+    $2 == wanted && $3 !~ /^Z/ { print $1 }
+  '
+}
+
+process_group_is_running() {
+  local process_group="$1"
+  [[ -n "$(process_group_members "${process_group}")" ]]
+}
+
+registered_group_is_safe() {
+  local process_group="$1"
+  local recorded_root="$2"
+  local member member_root member_uid found=false
+  while IFS= read -r member; do
+    [[ -n "${member}" ]] || continue
+    found=true
+    member_uid="$(stat -c '%u' "/proc/${member}" 2>/dev/null || true)"
+    member_root="$(process_environment_value "${member}" PROJECT_ROOT || true)"
+    if [[ "${member_uid}" != "${UID}" || "${member_root}" != "${recorded_root}" ]]; then
+      log_warn "refusing process group ${process_group}: member ${member} identity mismatch"
+      return 1
+    fi
+  done < <(process_group_members "${process_group}")
+  [[ "${found}" == true ]]
+}
+
 matches_registered_component() {
   local component="$1"
   local command_line="$2"
@@ -83,6 +127,17 @@ wait_for_exit() {
   return 1
 }
 
+wait_for_group_exit() {
+  local process_group="$1"
+  local attempts="$2"
+  local index
+  for ((index = 0; index < attempts; index++)); do
+    process_group_is_running "${process_group}" || return 0
+    sleep 0.1
+  done
+  return 1
+}
+
 process_is_running() {
   local pid="$1"
   local state
@@ -94,39 +149,85 @@ process_is_running() {
 
 stop_registered_component() {
   local component="$1"
-  local pid_file pid recorded_root command_line
+  local pid_file pid recorded_root command_line process_group
+  local leader_start_ticks recorded_boot_id current_boot_id actual_start_ticks
+  local leader_running=false group_mode=false
   pid_file="$(runtime_pid_file "${component}")"
   [[ -r "${pid_file}" ]] || return 0
   pid="$(metadata_value "${pid_file}" pid)"
   recorded_root="$(metadata_value "${pid_file}" project_root)"
+  process_group="$(metadata_value "${pid_file}" process_group)"
+  leader_start_ticks="$(metadata_value "${pid_file}" leader_start_ticks)"
+  recorded_boot_id="$(metadata_value "${pid_file}" boot_id)"
 
-  if [[ ! "${pid}" =~ ^[0-9]+$ ]] || ! process_is_running "${pid}"; then
-    log_warn "removing stale ${component} metadata: ${pid_file}"
-    [[ "${dry_run}" == true ]] || rm -f -- "${pid_file}"
-    return 0
-  fi
   if [[ "${recorded_root}" != "${PROJECT_ROOT}" ]]; then
     log_warn "refusing ${component} pid ${pid}: metadata belongs to ${recorded_root:-unknown}"
     return 1
   fi
-  command_line="$(process_command "${pid}" || true)"
-  if ! matches_registered_component "${component}" "${command_line}"; then
-    log_warn "refusing ${component} pid ${pid}: command identity mismatch: ${command_line:-unreadable}"
-    return 1
+  if [[ "${pid}" =~ ^[0-9]+$ ]] && process_is_running "${pid}"; then
+    leader_running=true
+    command_line="$(process_command "${pid}" || true)"
+    if ! matches_registered_component "${component}" "${command_line}"; then
+      log_warn "refusing ${component} pid ${pid}: command identity mismatch: ${command_line:-unreadable}"
+      return 1
+    fi
+    if [[ -n "${leader_start_ticks}" ]]; then
+      actual_start_ticks="$(process_start_ticks "${pid}" || true)"
+      if [[ "${actual_start_ticks}" != "${leader_start_ticks}" ]]; then
+        log_warn "refusing ${component} pid ${pid}: process start identity mismatch"
+        return 1
+      fi
+    fi
   fi
 
-  if [[ "${dry_run}" == true ]]; then
-    log_info "would stop ${component} pid ${pid}: ${command_line}"
+  if [[ "${process_group}" =~ ^[0-9]+$ \
+        && "${process_group}" == "${pid}" \
+        && "${recorded_boot_id}" != "" ]]; then
+    current_boot_id="$(< /proc/sys/kernel/random/boot_id)"
+    if [[ "${recorded_boot_id}" != "${current_boot_id}" ]]; then
+      log_warn "refusing ${component} group ${process_group}: metadata is from another boot"
+      return 1
+    fi
+    if process_group_is_running "${process_group}"; then
+      registered_group_is_safe "${process_group}" "${recorded_root}" || return 1
+      group_mode=true
+    fi
+  fi
+
+  if [[ "${leader_running}" == false && "${group_mode}" == false ]]; then
+    log_warn "removing stale ${component} metadata: ${pid_file}"
+    [[ "${dry_run}" == true ]] || rm -f -- "${pid_file}"
     return 0
   fi
 
-  log_info "stopping ${component} pid ${pid} with SIGINT"
-  kill -INT "${pid}"
-  if ! wait_for_exit "${pid}" 30; then
-    log_warn "${component} pid ${pid} ignored SIGINT; sending SIGTERM"
-    kill -TERM "${pid}" 2>/dev/null || true
-    wait_for_exit "${pid}" 20 \
-      || die "${component} pid ${pid} did not stop; refusing SIGKILL"
+  if [[ "${dry_run}" == true ]]; then
+    if [[ "${group_mode}" == true ]]; then
+      log_info "would stop ${component} process group ${process_group} (leader pid ${pid})"
+    else
+      log_info "would stop ${component} pid ${pid}: ${command_line}"
+    fi
+    return 0
+  fi
+
+  if [[ "${group_mode}" == true ]]; then
+    log_info "stopping ${component} process group ${process_group} with SIGINT"
+    kill -INT -- "-${process_group}"
+    if ! wait_for_group_exit "${process_group}" 100; then
+      log_warn "${component} group ${process_group} did not finish after SIGINT; sending SIGTERM"
+      kill -TERM -- "-${process_group}" 2>/dev/null || true
+      wait_for_group_exit "${process_group}" 50 \
+        || die "${component} group ${process_group} did not stop; refusing SIGKILL"
+    fi
+  else
+    log_warn "${component} uses legacy PID-only metadata; descendants cannot be verified"
+    log_info "stopping ${component} pid ${pid} with SIGINT"
+    kill -INT "${pid}"
+    if ! wait_for_exit "${pid}" 100; then
+      log_warn "${component} pid ${pid} ignored SIGINT; sending SIGTERM"
+      kill -TERM "${pid}" 2>/dev/null || true
+      wait_for_exit "${pid}" 50 \
+        || die "${component} pid ${pid} did not stop; refusing SIGKILL"
+    fi
   fi
   rm -f -- "${pid_file}"
 }
@@ -136,7 +237,8 @@ list_project_processes() {
   local matches
   matches="$(ps -eo pid=,user=,args= | awk -v root="${PROJECT_ROOT}" -v self="$$" '
     $1 != self && $0 !~ /clean_runtime[.]sh/ && $0 !~ /awk -v root=/ &&
-    (index($0, root) || $0 ~ /ros2 launch robot_bringup/ ||
+    (index($0, root "/isaac_sim/apps/navigation_sim.py") ||
+    $0 ~ /ros2 launch robot_bringup/ ||
     $0 ~ /robot_teleop.*keyboard_teleop/ || $0 ~ /(^|[[:space:]])rviz2([[:space:]]|$)/) {
       print
     }

@@ -3,7 +3,11 @@ keyboard_teleop:
     cmd_vel_topic: /cmd_vel
     publish_rate_hz: 20.0
     command_timeout_sec: 0.18
-    linear_speed: 0.30
-    angular_speed: 0.60
+    linear_speed: 0.50
+    angular_speed: 0.80
+    min_linear_speed: 0.10
+    min_angular_speed: 0.20
     max_linear_speed: 1.00
     max_angular_speed: 1.50
+    linear_speed_step: 0.05
+    angular_speed_step: 0.10

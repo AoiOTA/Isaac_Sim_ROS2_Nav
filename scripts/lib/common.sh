@@ -112,10 +112,37 @@ runtime_lock_file() {
   printf '%s/%s.lock\n' "${ISAAC_NAV_RUNTIME_DIR}" "${component}"
 }
 
+current_process_group() {
+  local pid="${1:-$$}"
+  ps -o pgid= -p "${pid}" | tr -d '[:space:]'
+}
+
+ensure_dedicated_process_group() {
+  local current_group
+  require_command ps
+  require_command setsid
+  current_group="$(current_process_group "$$")"
+  [[ "${current_group}" =~ ^[0-9]+$ ]] \
+    || die "cannot determine process group for pid $$"
+
+  if [[ "${current_group}" == "$$" ]]; then
+    export ISAAC_NAV_DEDICATED_PROCESS_GROUP=1
+    return 0
+  fi
+  if [[ "${ISAAC_NAV_DEDICATED_PROCESS_GROUP:-}" == 1 ]]; then
+    die "failed to create a dedicated process group for pid $$ (pgid ${current_group})"
+  fi
+
+  # A dedicated group lets clean_runtime stop every launch child after the
+  # ros2/Isaac/RViz leader exits. Re-exec preserves the PID and lock identity.
+  export ISAAC_NAV_DEDICATED_PROCESS_GROUP=1
+  exec setsid -- "$0" "$@"
+}
+
 acquire_instance_lock() {
   local component="$1"
   local label="${2:-${component}}"
-  local lock_file pid_file lock_fd
+  local lock_file pid_file lock_fd process_group start_ticks boot_id
   prepare_runtime_directory
   lock_file="$(runtime_lock_file "${component}")"
   pid_file="$(runtime_pid_file "${component}")"
@@ -129,8 +156,16 @@ acquire_instance_lock() {
     die "${label} is already running (recorded pid: ${recorded_pid})"
   fi
 
+  process_group="$(current_process_group "$$")"
+  [[ "${process_group}" =~ ^[0-9]+$ ]] \
+    || die "cannot determine process group for pid $$"
+  start_ticks="$(awk '{print $22}' "/proc/$$/stat")"
+  boot_id="$(< /proc/sys/kernel/random/boot_id)"
   {
     printf 'pid=%s\n' "$$"
+    printf 'process_group=%s\n' "${process_group}"
+    printf 'leader_start_ticks=%s\n' "${start_ticks}"
+    printf 'boot_id=%s\n' "${boot_id}"
     printf 'component=%s\n' "${component}"
     printf 'project_root=%s\n' "${PROJECT_ROOT}"
     printf 'started_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"

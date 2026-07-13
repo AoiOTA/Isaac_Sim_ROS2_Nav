@@ -16,7 +16,20 @@ from launch_ros.actions import Node
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import validate_mode
+from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_robot_runtime_files
+
+
+_TELEOP_SPEED_ARGUMENTS = (
+    ('teleop_linear_speed', 'linear_speed'),
+    ('teleop_angular_speed', 'angular_speed'),
+    ('teleop_linear_speed_step', 'linear_speed_step'),
+    ('teleop_angular_speed_step', 'angular_speed_step'),
+    ('teleop_min_linear_speed', 'min_linear_speed'),
+    ('teleop_min_angular_speed', 'min_angular_speed'),
+    ('teleop_max_linear_speed', 'max_linear_speed'),
+    ('teleop_max_angular_speed', 'max_angular_speed'),
+)
 
 
 def _shutdown_if_gate_exited(context):
@@ -70,6 +83,18 @@ def _launch_setup(context):
         raise RuntimeError(str(exc)) from exc
     odometry_share = Path(get_package_share_directory('robot_odometry'))
     navigation_share = Path(get_package_share_directory('robot_navigation'))
+    nav2_profile = validate_nav2_profile(
+        LaunchConfiguration('nav2_profile').perform(context))
+    requested_nav2_overlay = LaunchConfiguration(
+        'nav2_profile_params_file').perform(context).strip()
+    nav2_profile_params_file = Path(requested_nav2_overlay).expanduser() \
+        if requested_nav2_overlay else (
+            navigation_share / 'config' / f'nav2_{nav2_profile}.yaml')
+    if not nav2_profile_params_file.is_file() or nav2_profile_params_file.suffix \
+            not in {'.yaml', '.yml'}:
+        raise RuntimeError(
+            'nav2_profile_params_file must be an existing YAML file: '
+            f'{nav2_profile_params_file}')
     runtime_files = validate_robot_runtime_files(
         description_file=(
             LaunchConfiguration('robot_description_file').perform(context)
@@ -90,7 +115,8 @@ def _launch_setup(context):
         f'operation={selection.operation}, '
         f'odometry={selection.odometry_mode}, '
         f'structure_tf={selection.structure_tf_source}, '
-        f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}'
+        f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
+        f'nav2_profile={nav2_profile}'
     ))]
 
     actions.append(Node(
@@ -160,6 +186,8 @@ def _launch_setup(context):
             {
                 'use_sim_time': use_sim_time,
                 'posegraph_file': selection.posegraph_prefix,
+                'ceres_num_threads': LaunchConfiguration(
+                    'ceres_num_threads').perform(context),
             },
         ))
         if (selection.operation == 'incremental_mapping'
@@ -184,6 +212,8 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'posegraph_file': selection.posegraph_prefix,
                     'map_file': selection.occupancy_map_file,
+                    'ceres_num_threads': LaunchConfiguration(
+                        'ceres_num_threads').perform(context),
                 },
             ),
         ])
@@ -209,6 +239,7 @@ def _launch_setup(context):
                 'use_sim_time': use_sim_time,
                 'autostart': 'false',
                 'nav2_params_file': runtime_files.nav2_params_file,
+                'nav2_profile_params_file': str(nav2_profile_params_file),
             },
         ))
         gate_config = (
@@ -268,14 +299,31 @@ def _launch_setup(context):
             if not terminal_wrapper.is_file():
                 raise RuntimeError(
                     f'Teleop terminal wrapper not found: {terminal_wrapper}')
+            teleop_arguments = []
+            for launch_name, parameter_name in _TELEOP_SPEED_ARGUMENTS:
+                value = LaunchConfiguration(launch_name).perform(
+                    context).strip()
+                if not value:
+                    raise RuntimeError(f'{launch_name} must not be empty')
+                teleop_arguments.append(f'{parameter_name}:={value}')
             try:
-                terminal_command = teleop_terminal_command(run_teleop)
+                terminal_command = teleop_terminal_command(
+                    run_teleop,
+                    arguments=teleop_arguments,
+                )
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
-            actions.append(ExecuteProcess(
-                cmd=[str(terminal_wrapper), *terminal_command],
-                output='screen',
-            ))
+            actions.extend([
+                ExecuteProcess(
+                    cmd=[str(terminal_wrapper), *terminal_command],
+                    output='screen',
+                ),
+                LogInfo(msg=(
+                    'Mapping Teleop is running in a separate terminal.\n'
+                    'Click the window titled "Isaac Nav Mapping Teleop"\n'
+                    'before pressing W/A/S/D or the arrow keys.'
+                )),
+            ])
     return actions
 
 
@@ -294,11 +342,20 @@ def generate_launch_description():
             default_value='isaac',
             description='isaac or rsp'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
+        DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'nav2_profile',
+            default_value='stable',
+            description='stable or performance Nav2 parameter overlay'),
+        DeclareLaunchArgument(
+            'nav2_profile_params_file',
+            default_value='',
+            description='explicit benchmark/custom Nav2 overlay YAML'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
@@ -328,6 +385,20 @@ def generate_launch_description():
             'use_teleop',
             default_value='auto',
             description='auto, true, or false; only Mapping may enable it'),
+        DeclareLaunchArgument('teleop_linear_speed', default_value='0.50'),
+        DeclareLaunchArgument('teleop_angular_speed', default_value='0.80'),
+        DeclareLaunchArgument(
+            'teleop_linear_speed_step', default_value='0.05'),
+        DeclareLaunchArgument(
+            'teleop_angular_speed_step', default_value='0.10'),
+        DeclareLaunchArgument(
+            'teleop_min_linear_speed', default_value='0.10'),
+        DeclareLaunchArgument(
+            'teleop_min_angular_speed', default_value='0.20'),
+        DeclareLaunchArgument(
+            'teleop_max_linear_speed', default_value='1.00'),
+        DeclareLaunchArgument(
+            'teleop_max_angular_speed', default_value='1.50'),
         DeclareLaunchArgument(
             'project_root',
             default_value=EnvironmentVariable(

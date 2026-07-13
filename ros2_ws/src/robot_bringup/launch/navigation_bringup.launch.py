@@ -17,11 +17,14 @@ def generate_launch_description():
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
+        DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
+        DeclareLaunchArgument('nav2_profile', default_value='stable'),
+        DeclareLaunchArgument('nav2_profile_params_file', default_value=''),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
@@ -47,12 +50,17 @@ def generate_launch_description():
                 'structure_tf_source': LaunchConfiguration(
                     'structure_tf_source'),
                 'posegraph_file': LaunchConfiguration('posegraph_file'),
+                'ceres_num_threads': LaunchConfiguration(
+                    'ceres_num_threads'),
                 'map_file': LaunchConfiguration('map_file'),
                 'robot_description_file': LaunchConfiguration(
                     'robot_description_file'),
                 'wheel_odometry_params_file': LaunchConfiguration(
                     'wheel_odometry_params_file'),
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),
+                'nav2_profile': LaunchConfiguration('nav2_profile'),
+                'nav2_profile_params_file': LaunchConfiguration(
+                    'nav2_profile_params_file'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(

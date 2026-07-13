@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；2026-07-12 又完成了交互工作流、Reset 恢复和 MPPI 负载对照，最终 10 Hz/2 s 预测窗组合无控制周期超时。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态：Stage、LiDAR/IMU/前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套模式 RViz 与 Camera-only RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；2026-07-12 又完成了交互工作流、Reset 恢复和 MPPI 负载对照，最终 10 Hz/2 s 预测窗组合无控制周期超时。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计、全 Camera profile 长时矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 ## 文档导航
 
@@ -12,7 +12,7 @@
 
 | 文档 | 适合什么时候看 |
 | --- | --- |
-| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、导航、建图、实验和排障。 |
+| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、性能采样和排障。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
 | [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
