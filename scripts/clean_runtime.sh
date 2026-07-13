@@ -237,7 +237,8 @@ list_project_processes() {
   local matches
   matches="$(ps -eo pid=,user=,args= | awk -v root="${PROJECT_ROOT}" -v self="$$" '
     $1 != self && $0 !~ /clean_runtime[.]sh/ && $0 !~ /awk -v root=/ &&
-    (index($0, root) || $0 ~ /ros2 launch robot_bringup/ ||
+    (index($0, root "/isaac_sim/apps/navigation_sim.py") ||
+    $0 ~ /ros2 launch robot_bringup/ ||
     $0 ~ /robot_teleop.*keyboard_teleop/ || $0 ~ /(^|[[:space:]])rviz2([[:space:]]|$)/) {
       print
     }
@@ -326,7 +327,7 @@ clean_fastdds_shm() {
 
 log_info "runtime cleanup start (dry_run=${dry_run}, dds_shm=${clean_dds_shm})"
 cleanup_failed=false
-for component in teleop ros rviz isaac; do
+for component in teleop rviz ros isaac; do
   stop_registered_component "${component}" || cleanup_failed=true
 done
 list_project_processes

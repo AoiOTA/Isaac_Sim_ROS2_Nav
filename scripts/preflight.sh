@@ -20,6 +20,8 @@ require_executable "${PROJECT_ROOT}/scripts/run_rviz.sh"
 require_executable "${PROJECT_ROOT}/scripts/run_teleop.sh"
 require_executable "${PROJECT_ROOT}/scripts/run_teleop_terminal.sh"
 require_executable "${PROJECT_ROOT}/scripts/run_camera_view.sh"
+require_executable "${PROJECT_ROOT}/scripts/profile_runtime.sh"
+require_executable "${PROJECT_ROOT}/scripts/performance_mode.sh"
 require_executable "${PROJECT_ROOT}/scripts/setup_ros_env.sh"
 
 "${ISAAC_PYTHON}" -c 'from importlib.metadata import version; assert version("isaacsim") == "6.0.1.0"; print("Isaac Sim", version("isaacsim"))'

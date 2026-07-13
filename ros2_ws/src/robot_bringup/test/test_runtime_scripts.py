@@ -14,6 +14,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
 COMMON = REPOSITORY_ROOT / 'scripts' / 'lib' / 'common.sh'
 CLEAN_RUNTIME = REPOSITORY_ROOT / 'scripts' / 'clean_runtime.sh'
+PERFORMANCE_MODE = REPOSITORY_ROOT / 'scripts' / 'performance_mode.sh'
 RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
@@ -419,6 +420,77 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
     assert 'rm -' not in diagnose
     assert 'kill -INT' not in diagnose
     assert 'kill -TERM' not in diagnose
+    cleanup = CLEAN_RUNTIME.read_text(encoding='utf-8')
+    assert 'for component in teleop rviz ros isaac' in cleanup
+
+
+def test_performance_mode_enable_is_transactional_and_restore_is_exact(
+        tmp_path):
+    cpu_root = tmp_path / 'cpu'
+    state_dir = tmp_path / 'state'
+    policies = {
+        'cpu0': ('powersave', 'balance_performance'),
+        'cpu1': ('schedutil', 'power'),
+    }
+    for cpu, (governor, epp) in policies.items():
+        cpufreq = cpu_root / cpu / 'cpufreq'
+        cpufreq.mkdir(parents=True)
+        (cpufreq / 'scaling_governor').write_text(
+            governor, encoding='utf-8')
+        (cpufreq / 'energy_performance_preference').write_text(
+            epp, encoding='utf-8')
+        (cpufreq / 'scaling_driver').write_text(
+            'test_driver', encoding='utf-8')
+    environment = _environment(
+        ISAAC_NAV_CPU_SYSFS_ROOT=str(cpu_root),
+        ISAAC_NAV_PERFORMANCE_STATE_DIR=str(state_dir),
+        ISAAC_NAV_PERFORMANCE_BACKEND='sysfs',
+    )
+
+    enabled = subprocess.run(
+        [str(PERFORMANCE_MODE), 'enable'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert enabled.returncode == 0, enabled.stderr
+    assert (state_dir / 'performance_mode.state').is_file()
+    for cpu in policies:
+        cpufreq = cpu_root / cpu / 'cpufreq'
+        assert (cpufreq / 'scaling_governor').read_text() == 'performance'
+        assert (
+            cpufreq / 'energy_performance_preference'
+        ).read_text() == 'performance'
+
+    repeated = subprocess.run(
+        [str(PERFORMANCE_MODE), 'enable'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert repeated.returncode != 0
+    assert 'run restore before enable' in repeated.stderr
+
+    restored = subprocess.run(
+        [str(PERFORMANCE_MODE), 'restore'],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert restored.returncode == 0, restored.stderr
+    assert not (state_dir / 'performance_mode.state').exists()
+    for cpu, (governor, epp) in policies.items():
+        cpufreq = cpu_root / cpu / 'cpufreq'
+        assert (cpufreq / 'scaling_governor').read_text() == governor
+        assert (
+            cpufreq / 'energy_performance_preference'
+        ).read_text() == epp
 
 
 @pytest.mark.parametrize(
