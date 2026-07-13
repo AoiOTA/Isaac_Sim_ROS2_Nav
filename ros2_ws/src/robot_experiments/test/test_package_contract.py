@@ -10,7 +10,14 @@ import yaml
 PACKAGE_ROOT = Path(__file__).parents[1]
 
 
-@pytest.mark.parametrize("filename", ["initial_pose.launch.py", "experiment.launch.py"])
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "initial_pose.launch.py",
+        "experiment.launch.py",
+        "scan_fault_bridge.launch.py",
+    ],
+)
 def test_launch_files_define_generate_launch_description(filename):
     source = (PACKAGE_ROOT / "launch" / filename).read_text()
     tree = ast.parse(source)
@@ -64,6 +71,18 @@ def test_incremental_map_comparison_has_an_installed_cli():
         "incremental_map_compare = "
         "robot_experiments.incremental_map_compare:main"
     ) in setup_source
+
+
+def test_scan_fault_bridge_has_an_installed_cli_and_opt_in_output():
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "scan_fault_bridge = robot_experiments.scan_fault_bridge:main"
+        in setup_source
+    )
+    launch_source = (PACKAGE_ROOT / "launch" / "scan_fault_bridge.launch.py").read_text()
+    assert 'default_value="/scan"' in launch_source
+    assert 'default_value="/scan_fault"' in launch_source
+    assert 'default_value="/simulation/reset_event"' in launch_source
 
 
 def test_runner_has_no_publishers_or_control_and_localization_topics():

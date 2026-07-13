@@ -27,7 +27,7 @@ TOPIC_NAMES = {
     "wheel_odom": "/wheel/odom",
     "odom": "/odom",
     "global_plan": "/plan",
-    "local_plan": "/transformed_global_plan",
+    "local_plan": "/optimal_trajectory",
     "cmd_vel_nav": "/cmd_vel_nav",
     "cmd_vel_smoothed": "/cmd_vel_smoothed",
     "cmd_vel": "/cmd_vel",
@@ -609,11 +609,43 @@ def _proc_stat(pid: int) -> dict[str, Any]:
     return {
         "pid": pid,
         "state": fields[0],
+        "parent_pid": int(fields[1]),
         "process_group": int(fields[2]),
         "cpu_ticks": int(fields[11]) + int(fields[12]),
         "start_ticks": int(fields[19]),
         "rss_pages": int(fields[21]),
+        "uid": Path(f"/proc/{pid}").stat().st_uid,
     }
+
+
+def _registered_process_members(
+    processes: dict[int, dict[str, Any]],
+    *,
+    leader_pid: int,
+    process_group: int,
+    include_descendants: bool,
+    owner_uid: int,
+) -> list[dict[str, Any]]:
+    """Select the registered PGID plus authenticated supervisor descendants."""
+    selected = {
+        pid for pid, process in processes.items()
+        if process["process_group"] == process_group
+    }
+    if include_descendants:
+        children: dict[int, list[int]] = defaultdict(list)
+        for pid, process in processes.items():
+            if process["uid"] == owner_uid:
+                children[process["parent_pid"]].append(pid)
+        pending = [leader_pid]
+        descendants = {leader_pid}
+        while pending:
+            parent = pending.pop()
+            for child in children.get(parent, []):
+                if child not in descendants:
+                    descendants.add(child)
+                    pending.append(child)
+        selected.update(descendants)
+    return [processes[pid] for pid in sorted(selected)]
 
 
 def _registered_process_snapshot(runtime_dir: Path) -> dict[str, Any]:
@@ -636,7 +668,7 @@ def _registered_process_snapshot(runtime_dir: Path) -> dict[str, Any]:
                 raise OSError("runtime metadata belongs to another boot")
             if process_group != pid:
                 raise OSError("runtime does not have a dedicated process group")
-            members = []
+            processes = {}
             for process_path in Path("/proc").iterdir():
                 if not process_path.name.isdigit():
                     continue
@@ -644,12 +676,8 @@ def _registered_process_snapshot(runtime_dir: Path) -> dict[str, Any]:
                     stat = _proc_stat(int(process_path.name))
                 except (OSError, ValueError, IndexError):
                     continue
-                if stat["process_group"] == process_group:
-                    members.append(stat)
-            leader = next(
-                (member for member in members if member["pid"] == pid),
-                None,
-            )
+                processes[stat["pid"]] = stat
+            leader = processes.get(pid)
             if leader is None or leader["state"] == "Z":
                 raise OSError(f"registered leader {pid} is not running")
             expected_start = values.get("leader_start_ticks")
@@ -658,6 +686,22 @@ def _registered_process_snapshot(runtime_dir: Path) -> dict[str, Any]:
                 and int(expected_start) != leader["start_ticks"]
             ):
                 raise OSError("registered leader identity changed")
+            component = values.get("component", metadata.stem)
+            if component != metadata.stem:
+                raise OSError("runtime component identity changed")
+            authenticated_supervisor = (
+                component == "ros"
+                and values.get("boot_id") == boot_id
+                and expected_start is not None
+                and leader["uid"] == os.geteuid()
+            )
+            members = _registered_process_members(
+                processes,
+                leader_pid=pid,
+                process_group=process_group,
+                include_descendants=authenticated_supervisor,
+                owner_uid=leader["uid"],
+            )
             states = {
                 state: sum(member["state"] == state for member in members)
                 for state in sorted({member["state"] for member in members})
@@ -675,6 +719,16 @@ def _registered_process_snapshot(runtime_dir: Path) -> dict[str, Any]:
                 "member_count": len(active_members),
                 "member_pids": sorted(
                     member["pid"] for member in active_members
+                ),
+                "member_cpu_seconds": {
+                    f"{member['pid']}:{member['start_ticks']}": (
+                        member["cpu_ticks"] / ticks_per_second
+                    )
+                    for member in active_members
+                },
+                "aggregation": (
+                    "process_group_and_descendants"
+                    if authenticated_supervisor else "process_group"
                 ),
                 "zombie_member_count": len(zombie_members),
                 "zombie_member_pids": sorted(
@@ -715,6 +769,24 @@ def _registered_process_cmdlines(runtime_dir: Path) -> dict[str, list[str]]:
     return result
 
 
+def _infer_ros_operation(arguments: list[str]) -> str | None:
+    prefix = "operation:="
+    explicit = next(
+        (item[len(prefix):] for item in arguments if item.startswith(prefix)),
+        None,
+    )
+    if explicit:
+        return explicit
+    operations = {"mapping", "incremental_mapping", "localization", "navigation"}
+    for index, item in enumerate(arguments[:-1]):
+        if Path(item).name == "run_ros.sh" and arguments[index + 1] in operations:
+            return arguments[index + 1]
+    for item in arguments:
+        if item.endswith("_bringup.launch.py"):
+            return Path(item).name.removesuffix("_bringup.launch.py")
+    return None
+
+
 def _runtime_metadata(
     project_root: Path,
     runtime_dir: Path,
@@ -753,12 +825,7 @@ def _runtime_metadata(
         headless = True
     elif "--no-headless" in isaac:
         headless = False
-    operation = launch_option(ros, "operation")
-    if operation is None:
-        for item in ros:
-            if item.endswith("_bringup.launch.py"):
-                operation = Path(item).name.removesuffix("_bringup.launch.py")
-                break
+    operation = _infer_ros_operation(ros)
     posegraph_file = launch_option(ros, "posegraph_file")
     map_file = launch_option(ros, "map_file")
     posegraph_version = (
@@ -818,18 +885,31 @@ def _process_delta(
         first = before.get(component, {})
         last = after.get(component, {})
         cpu_delta = None
+        first_member_cpu = first.get("member_cpu_seconds")
+        last_member_cpu = last.get("member_cpu_seconds")
+        member_set_stable = False
+        removed_members: list[str] = []
+        added_members: list[str] = []
+        if isinstance(first_member_cpu, dict) and isinstance(last_member_cpu, dict):
+            first_identities = set(first_member_cpu)
+            last_identities = set(last_member_cpu)
+            member_set_stable = first_identities == last_identities
+            removed_members = sorted(first_identities - last_identities)
+            added_members = sorted(last_identities - first_identities)
         if (
             elapsed_s > 0.0
-            and isinstance(first.get("cpu_seconds"), (int, float))
-            and isinstance(last.get("cpu_seconds"), (int, float))
+            and member_set_stable
             and first.get("pid") == last.get("pid")
             and first.get("process_group") == last.get("process_group")
             and first.get("leader_start_ticks")
             == last.get("leader_start_ticks")
         ):
-            cpu_delta = 100.0 * (
-                last["cpu_seconds"] - first["cpu_seconds"]
-            ) / elapsed_s
+            member_deltas = [
+                last_member_cpu[identity] - first_member_cpu[identity]
+                for identity in sorted(first_member_cpu)
+            ]
+            if all(delta >= 0.0 for delta in member_deltas):
+                cpu_delta = 100.0 * sum(member_deltas) / elapsed_s
         result[component] = {
             "pid": last.get("pid", first.get("pid")),
             "process_group": last.get(
@@ -844,6 +924,12 @@ def _process_delta(
             "member_pids": last.get(
                 "member_pids", first.get("member_pids", [])
             ),
+            "aggregation": last.get(
+                "aggregation", first.get("aggregation")
+            ),
+            "cpu_sample_member_set_stable": member_set_stable,
+            "cpu_sample_removed_members": removed_members,
+            "cpu_sample_added_members": added_members,
             "zombie_member_count": last.get(
                 "zombie_member_count", first.get("zombie_member_count", 0)
             ),

@@ -13,5 +13,7 @@ spawn_poses:
       # Calibrated against the warehouse_v1 pose graph on 2026-07-10.  A
       # reset mapping run reported map->odom = [0, 0, 0] at this USD pose.
       calibrated: true
+      map_version: warehouse_v1
+      map_bundle_sha256: 88b91be7fb0afe4364851c59dc3466f560017df5acc5405f3ab590729ded9bac
       position_stddev_m: 0.05
       yaw_stddev_deg: 5.0

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
@@ -50,7 +51,7 @@ def main(args=None) -> None:
     try:
         node = InitialPosePolicyPublisher()
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         if node is not None:

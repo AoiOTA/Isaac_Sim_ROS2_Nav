@@ -80,13 +80,28 @@ process_group_is_running() {
 registered_group_is_safe() {
   local process_group="$1"
   local recorded_root="$2"
-  local member member_root member_uid found=false
+  local member member_command member_cwd member_root member_uid found=false
   while IFS= read -r member; do
     [[ -n "${member}" ]] || continue
     found=true
     member_uid="$(stat -c '%u' "/proc/${member}" 2>/dev/null || true)"
     member_root="$(process_environment_value "${member}" PROJECT_ROOT || true)"
-    if [[ "${member_uid}" != "${UID}" || "${member_root}" != "${recorded_root}" ]]; then
+    if [[ "${member_uid}" != "${UID}" ]]; then
+      log_warn "refusing process group ${process_group}: member ${member} identity mismatch"
+      return 1
+    fi
+    if [[ "${member_root}" == "${recorded_root}" ]]; then
+      continue
+    fi
+
+    # Bash does not expose variables exported after its own exec through
+    # /proc/<pid>/environ.  The ROS supervisor is intentionally a persistent
+    # shell, so authenticate it by the recorded project cwd and script path.
+    member_command="$(process_command "${member}" || true)"
+    member_cwd="$(readlink -f "/proc/${member}/cwd" 2>/dev/null || true)"
+    if [[ "${member_cwd}" != "${recorded_root}" \
+          || ("${member_command}" != *"${recorded_root}/scripts/run_ros.sh"* \
+              && "${member_command}" != *" scripts/run_ros.sh "*) ]]; then
       log_warn "refusing process group ${process_group}: member ${member} identity mismatch"
       return 1
     fi
@@ -102,7 +117,9 @@ matches_registered_component() {
       [[ "${command_line}" == *"${PROJECT_ROOT}/isaac_sim/apps/navigation_sim.py"* ]]
       ;;
     ros)
-      [[ "${command_line}" == *"ros2"*"launch"*"robot_bringup"* ]]
+      [[ "${command_line}" == *"ros2"*"launch"*"robot_bringup"* \
+        || "${command_line}" == *"${PROJECT_ROOT}/scripts/run_ros.sh"* \
+        || "${command_line}" == *" scripts/run_ros.sh "* ]]
       ;;
     rviz)
       [[ "${command_line}" == *"rviz2"* ]]

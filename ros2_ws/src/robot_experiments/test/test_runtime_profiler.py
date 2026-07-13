@@ -13,8 +13,10 @@ from robot_experiments.runtime_profiler import (
     TOPIC_NAMES,
     _cpu_utilization,
     _gpu_delta,
+    _infer_ros_operation,
     _process_delta,
     _proc_stat,
+    _registered_process_members,
     _registered_process_snapshot,
     camera_stamp_report,
     distribution,
@@ -159,6 +161,10 @@ def test_registered_process_cpu_delta_uses_one_core_percent():
             "pid": 10,
             "process_group": 10,
             "member_count": 2,
+            "member_pids": [10, 11],
+            "member_cpu_seconds": {"10:100": 1.0, "11:110": 2.0},
+            "aggregation": "process_group",
+            "leader_start_ticks": 100,
             "cpu_seconds": 3.0,
             "rss_bytes": 100,
         },
@@ -168,7 +174,11 @@ def test_registered_process_cpu_delta_uses_one_core_percent():
         "isaac": {
             "pid": 10,
             "process_group": 10,
-            "member_count": 3,
+            "member_count": 2,
+            "member_pids": [10, 11],
+            "member_cpu_seconds": {"10:100": 2.0, "11:110": 4.0},
+            "aggregation": "process_group",
+            "leader_start_ticks": 100,
             "cpu_seconds": 5.0,
             "rss_bytes": 200,
             "state": "R",
@@ -177,11 +187,54 @@ def test_registered_process_cpu_delta_uses_one_core_percent():
     }
 
     report = _process_delta(before, after, 4.0)
-    assert report["isaac"]["cpu_percent_one_core"] == pytest.approx(50.0)
+    assert report["isaac"]["cpu_percent_one_core"] == pytest.approx(75.0)
     assert report["isaac"]["rss_bytes"] == 200
     assert report["isaac"]["process_group"] == 10
-    assert report["isaac"]["member_count"] == 3
+    assert report["isaac"]["member_count"] == 2
+    assert report["isaac"]["aggregation"] == "process_group"
+    assert report["isaac"]["cpu_sample_member_set_stable"] is True
     assert report["stale"]["cpu_percent_one_core"] is None
+
+
+def test_registered_process_cpu_delta_is_withheld_when_members_change():
+    identity = {
+        "pid": 10,
+        "process_group": 10,
+        "leader_start_ticks": 100,
+        "aggregation": "process_group_and_descendants",
+    }
+    before = {
+        "ros": {
+            **identity,
+            "member_cpu_seconds": {"10:100": 1.0, "11:110": 2.0},
+        }
+    }
+    after = {
+        "ros": {
+            **identity,
+            "member_cpu_seconds": {"10:100": 2.0, "12:120": 0.5},
+        }
+    }
+
+    report = _process_delta(before, after, 2.0)["ros"]
+
+    assert report["cpu_percent_one_core"] is None
+    assert report["cpu_sample_member_set_stable"] is False
+    assert report["cpu_sample_removed_members"] == ["11:110"]
+    assert report["cpu_sample_added_members"] == ["12:120"]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (["bash", "/repo/scripts/run_ros.sh", "navigation"], "navigation"),
+        (["ros2", "launch", "robot_bringup", "mapping_bringup.launch.py"], "mapping"),
+        (["ros2", "launch", "pkg", "x.py", "operation:=localization"], "localization"),
+        (["bash", "/repo/scripts/run_ros.sh", "invalid"], None),
+    ],
+)
+def test_runtime_operation_infers_supervisor_and_launch_cmdlines(arguments, expected):
+    assert _infer_ros_operation(arguments) == expected
 
 
 def test_registered_process_snapshot_aggregates_dedicated_group(tmp_path: Path):
@@ -230,9 +283,88 @@ def test_registered_process_snapshot_aggregates_dedicated_group(tmp_path: Path):
         assert report["leader_start_ticks"] == snapshot["start_ticks"]
         assert report["member_count"] >= 2
         assert process.pid in report["member_pids"]
+        assert report["member_cpu_seconds"]
     finally:
         os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=5.0)
+
+
+def test_registered_members_add_same_user_descendants_without_unrelated_processes():
+    def process(pid, parent, group, uid=1000):
+        return {
+            "pid": pid,
+            "parent_pid": parent,
+            "process_group": group,
+            "uid": uid,
+        }
+
+    processes = {
+        100: process(100, 1, 100),
+        101: process(101, 100, 100),
+        200: process(200, 100, 200),
+        201: process(201, 200, 200),
+        300: process(300, 1, 300),
+        400: process(400, 100, 400, uid=2000),
+        401: process(401, 400, 400),
+    }
+
+    members = _registered_process_members(
+        processes,
+        leader_pid=100,
+        process_group=100,
+        include_descendants=True,
+        owner_uid=1000,
+    )
+
+    assert {member["pid"] for member in members} == {100, 101, 200, 201}
+
+
+def test_registered_ros_supervisor_aggregates_cross_pgid_descendants(
+        tmp_path: Path):
+    child_pid_file = tmp_path / "launch.pid"
+    process = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            f'setsid bash -c "sleep 30 & wait" & '
+            f'echo $! > "{child_pid_file}"; wait',
+        ],
+        start_new_session=True,
+    )
+    unrelated = subprocess.Popen(["sleep", "30"], start_new_session=True)
+    try:
+        deadline = time.monotonic() + 2.0
+        while not child_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        snapshot = _proc_stat(process.pid)
+        (tmp_path / "ros.pid").write_text(
+            "\n".join([
+                f"pid={process.pid}",
+                f"process_group={process.pid}",
+                f"leader_start_ticks={snapshot['start_ticks']}",
+                "boot_id=" + Path(
+                    "/proc/sys/kernel/random/boot_id"
+                ).read_text(encoding="utf-8").strip(),
+                "component=ros",
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        report = _registered_process_snapshot(tmp_path)["ros"]
+
+        assert report["aggregation"] == "process_group_and_descendants"
+        assert child_pid in report["member_pids"]
+        assert unrelated.pid not in report["member_pids"]
+        assert report["member_count"] >= 3
+    finally:
+        for child in (process, unrelated):
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=5.0)
+        unrelated.wait(timeout=5.0)
 
 
 def test_cpu_and_gpu_deltas_are_explicit():

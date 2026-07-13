@@ -86,7 +86,7 @@ def test_mapping_workflow_uses_live_map_and_no_navigation_goal_tool():
     panel_classes = {panel['Class'] for panel in config['Panels']}
     tool_classes = {
         tool['Class'] for tool in config['Visualization Manager']['Tools']}
-    assert 'slam_toolbox::SlamToolboxPlugin' in panel_classes
+    assert 'slam_toolbox::SlamToolboxPlugin' not in panel_classes
     assert 'nav2_rviz_plugins/Navigation 2' not in panel_classes
     assert 'nav2_rviz_plugins/GoalTool' not in tool_classes
 
@@ -114,7 +114,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         'Global Costmap': '/global_costmap/costmap',
         'Local Costmap': '/local_costmap/costmap',
         'Global Plan': '/plan',
-        'Local Plan': '/transformed_global_plan',
+        'Local Plan': '/optimal_trajectory',
         'Global Footprint': '/global_costmap/published_footprint',
         'Local Footprint': '/local_costmap/published_footprint',
         'Stop Zone': '/collision_monitor/stop_zone',
@@ -125,7 +125,8 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
 
     panels = [panel['Class'] for panel in config['Panels']]
     tools = [tool['Class'] for tool in config['Visualization Manager']['Tools']]
-    assert panels.count('nav2_rviz_plugins/Navigation 2') == 1
+    assert panels.count('robot_rviz_plugins/Navigation 2 Safe') == 1
+    assert 'nav2_rviz_plugins/Navigation 2' not in panels
     assert tools.count('nav2_rviz_plugins/GoalTool') == 1
     assert tools.count('rviz_default_plugins/SetInitialPose') == 1
     assert 'rviz_default_plugins/SetGoal' not in tools
@@ -133,6 +134,9 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         encoding='utf-8')
     assert '/local_plan' not in (RVIZ_ROOT / 'navigation.rviz').read_text(
         encoding='utf-8')
+    assert _named(config, 'Transformed Reference Plan')['Topic'][
+        'Value'] == '/transformed_global_plan'
+    assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is False
 
 
 def test_robot_description_cmake_installs_all_rviz_configs():

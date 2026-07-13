@@ -258,11 +258,13 @@ class ResetServiceBridge:
         self._simulation_time = simulation_time
         self._configured_navigation_mode = navigation_mode
         self._configured_odometry_mode = odometry_mode
+        self._default_pose_name = default_pose_name
         self._callback_group = ReentrantCallbackGroup()
         self._steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._Future = Future
         self._transaction_generation = 0
         self._active_transaction: _ResetTransaction | None = None
+        self._closed = False
         self._initial_pose_source: str | None = None
         self._deferred_initial_pose_name: str | None = None
 
@@ -404,6 +406,16 @@ class ResetServiceBridge:
                 f"configured={self._configured_odometry_mode!r}, "
                 f"requested={odometry_mode!r}"
             )
+        if (
+            self._configured_navigation_mode == "localization"
+            and pose_name != self._default_pose_name
+        ):
+            raise ResetServiceError(
+                "reset_pose_name is bound to the map manifest at startup and "
+                "is immutable in localization mode: "
+                f"configured={self._default_pose_name!r}, "
+                f"requested={pose_name!r}"
+            )
         return ResetRequest(pose_name, navigation_mode, odometry_mode, seed)
 
     def start_reset(self, reset_request: ResetRequest) -> _ResetTransaction:
@@ -414,6 +426,8 @@ class ResetServiceBridge:
         await the ROS client futures.
         """
 
+        if getattr(self, "_closed", False):
+            raise ResetServiceError("ResetServiceBridge is closed")
         if self._manager is None:
             raise ResetServiceError("ResetManager is not bound")
         if self._active_transaction is not None:
@@ -450,6 +464,34 @@ class ResetServiceBridge:
         else:
             transaction.seal()
         return transaction
+
+    def close(self) -> None:
+        """Cancel reset work before the owning ROS node/context is destroyed."""
+
+        if self._closed:
+            return
+        self._closed = True
+        self._initial_pose_republisher.cancel()
+        self._deferred_initial_pose_name = None
+
+        transaction = self._active_transaction
+        if transaction is not None and not transaction.finished:
+            transaction.record_error(
+                "shutdown", "reset cancelled during process shutdown"
+            )
+            for _, future in transaction.calls:
+                if future.done():
+                    continue
+                cancel = getattr(future, "cancel", None)
+                if callable(cancel):
+                    cancel()
+            transaction._finish(force=True)
+
+        for future in tuple(self._pending_futures):
+            cancel = getattr(future, "cancel", None)
+            if callable(cancel) and not future.done():
+                cancel()
+        self._pending_futures.clear()
 
     async def _reset_callback(self, request: Any, response: Any) -> Any:
         del request

@@ -95,3 +95,15 @@ def test_description_only_mode_does_not_use_a_tf_broadcaster():
     assert "DeclareLaunchArgument(\n            'publish_tf'" in launch_source
     assert "'xacro_file'" in launch_source
     assert "xacro_file = LaunchConfiguration('xacro_file')" in launch_source
+
+
+def test_description_publisher_treats_external_shutdown_as_clean_exit():
+    publisher_source = (
+        PACKAGE_ROOT / 'scripts' / 'robot_description_publisher.py').read_text()
+    assert 'except (KeyboardInterrupt, ExternalShutdownException):' \
+        in publisher_source
+    assert 'except RuntimeError as error:' in publisher_source
+    assert "'context is not valid' not in str(error)" in publisher_source
+    assert 'raise' in publisher_source
+    assert publisher_source.index('node.destroy_node()') \
+        < publisher_source.index('rclpy.shutdown()')

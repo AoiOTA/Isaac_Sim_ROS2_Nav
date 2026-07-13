@@ -58,6 +58,8 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'use_lifecycle_manager': True" in localization_source
     assert 'EmitEvent' not in localization_source
     assert 'ChangeState' not in localization_source
+    assert mapping_source.count("sigterm_timeout='15.0'") == 1
+    assert localization_source.count("sigterm_timeout='15.0'") == 3
     for source in (mapping_source, localization_source):
         assert "DeclareLaunchArgument('ceres_num_threads', default_value='12')" \
             in source

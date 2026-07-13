@@ -17,6 +17,7 @@ from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
+from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
 
 
@@ -49,6 +50,14 @@ def _include(package, launch_file, arguments):
 
 
 def _launch_setup(context):
+    initial_pose_source = LaunchConfiguration(
+        'initial_pose_source').perform(context).strip().lower()
+    if initial_pose_source not in {'auto', 'rviz'}:
+        raise RuntimeError('initial_pose_source must be auto or rviz')
+    project_root_value = LaunchConfiguration(
+        'project_root').perform(context).strip()
+    spawn_poses_file = LaunchConfiguration(
+        'spawn_poses_file').perform(context).strip()
     selection = validate_mode(
         operation=LaunchConfiguration('operation').perform(context),
         odometry_mode=LaunchConfiguration('odometry_mode').perform(context),
@@ -57,13 +66,16 @@ def _launch_setup(context):
         posegraph_file=LaunchConfiguration('posegraph_file').perform(context),
         map_file=LaunchConfiguration('map_file').perform(context),
         check_posegraph_files=True,
+        map_manifest_file=LaunchConfiguration(
+            'map_manifest_file').perform(context),
+        project_root=project_root_value,
+        initial_pose_source=initial_pose_source,
+        spawn_poses_file=spawn_poses_file,
+        spawn_pose_name=LaunchConfiguration(
+            'spawn_pose_name').perform(context),
     )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
-    initial_pose_source = LaunchConfiguration(
-        'initial_pose_source').perform(context).strip().lower()
-    if initial_pose_source not in {'auto', 'rviz'}:
-        raise RuntimeError('initial_pose_source must be auto or rviz')
     if (selection.operation == 'incremental_mapping'
             and initial_pose_source != 'auto'):
         raise RuntimeError(
@@ -90,11 +102,12 @@ def _launch_setup(context):
     nav2_profile_params_file = Path(requested_nav2_overlay).expanduser() \
         if requested_nav2_overlay else (
             navigation_share / 'config' / f'nav2_{nav2_profile}.yaml')
-    if not nav2_profile_params_file.is_file() or nav2_profile_params_file.suffix \
-            not in {'.yaml', '.yml'}:
+    try:
+        nav2_controller_profile = validate_nav2_profile_params_file(
+            nav2_profile_params_file)
+    except ValueError as exc:
         raise RuntimeError(
-            'nav2_profile_params_file must be an existing YAML file: '
-            f'{nav2_profile_params_file}')
+            f'invalid nav2_profile_params_file: {exc}') from exc
     runtime_files = validate_robot_runtime_files(
         description_file=(
             LaunchConfiguration('robot_description_file').perform(context)
@@ -116,7 +129,12 @@ def _launch_setup(context):
         f'odometry={selection.odometry_mode}, '
         f'structure_tf={selection.structure_tf_source}, '
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
-        f'nav2_profile={nav2_profile}'
+        f'nav2_profile={nav2_profile}, '
+        f'controller_frequency='
+        f'{nav2_controller_profile.controller_frequency:g}Hz, '
+        f'model_dt={nav2_controller_profile.model_dt:g}s, '
+        f'map_version={selection.map_version or "none"}, '
+        f'map_bundle={selection.map_bundle_sha256 or "none"}'
     ))]
 
     actions.append(Node(
@@ -270,8 +288,6 @@ def _launch_setup(context):
         ])
 
     if interactive.use_rviz or interactive.use_teleop:
-        project_root_value = LaunchConfiguration(
-            'project_root').perform(context).strip()
         if not project_root_value:
             raise RuntimeError(
                 'PROJECT_ROOT is required for managed RViz/Teleop; use '
@@ -287,6 +303,12 @@ def _launch_setup(context):
                     selection.operation,
                     interactive.rviz_config,
                 ],
+                # run_ros.sh is itself a process-group supervisor.  Managed
+                # RViz must create its own group instead of inheriting the
+                # supervisor's recursion guard through ros2 launch.
+                additional_env={
+                    'ISAAC_NAV_DEDICATED_PROCESS_GROUP': '0',
+                },
                 output='screen',
             ))
         if interactive.use_teleop:
@@ -344,6 +366,12 @@ def generate_launch_description():
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'map_manifest_file',
+            default_value='',
+            description=(
+                'strict map bundle manifest; derived from posegraph_file '
+                'when omitted')),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),

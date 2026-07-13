@@ -48,6 +48,7 @@ def _launch_setup(context):
         name='map_server',
         namespace='',
         output='screen',
+        sigterm_timeout='15.0',
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'yaml_filename': map_file,
@@ -59,6 +60,7 @@ def _launch_setup(context):
         name='slam_toolbox',
         namespace='',
         output='screen',
+        sigterm_timeout='15.0',
         parameters=[
             LaunchConfiguration('localization_params_file'),
             {
@@ -83,6 +85,7 @@ def _launch_setup(context):
         name='lifecycle_manager_localization',
         namespace='',
         output='screen',
+        sigterm_timeout='15.0',
         parameters=[{
             'use_sim_time': LaunchConfiguration('use_sim_time'),
             'autostart': autostart,

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import math
 from pathlib import Path
+import re
 from typing import Protocol, Sequence
 
 from isaac_sim.src.yaml_utils import (
@@ -34,6 +35,8 @@ class MapSpawnPose:
     calibrated: bool
     position_stddev_m: float
     yaw_stddev_deg: float
+    map_version: str | None
+    map_bundle_sha256: str | None
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,8 @@ def load_spawn_poses(path: str | Path) -> dict[str, SpawnPose]:
                 "calibrated",
                 "position_stddev_m",
                 "yaw_stddev_deg",
+                "map_version",
+                "map_bundle_sha256",
             },
             context=f"spawn_poses.{name}.map",
         )
@@ -97,6 +102,27 @@ def load_spawn_poses(path: str | Path) -> dict[str, SpawnPose]:
         calibrated = map_pose["calibrated"]
         if not isinstance(calibrated, bool):
             raise YamlConfigError(f"spawn_poses.{name}.map.calibrated must be boolean")
+        map_version = map_pose.get("map_version")
+        map_bundle_sha256 = map_pose.get("map_bundle_sha256")
+        if calibrated:
+            if (
+                not isinstance(map_version, str)
+                or len(map_version) > 64
+                or re.fullmatch(r"[A-Za-z0-9._-]+", map_version) is None
+                or not any(character != "." for character in map_version)
+            ):
+                raise YamlConfigError(
+                    f"spawn_poses.{name}.map.map_version must identify the "
+                    "calibrated map"
+                )
+            if (
+                not isinstance(map_bundle_sha256, str)
+                or re.fullmatch(r"[0-9a-f]{64}", map_bundle_sha256) is None
+            ):
+                raise YamlConfigError(
+                    f"spawn_poses.{name}.map.map_bundle_sha256 must bind the "
+                    "calibrated map bundle"
+                )
         position_stddev_m = require_number(
             map_pose.get("position_stddev_m", 0.05),
             context=f"spawn_poses.{name}.map.position_stddev_m",
@@ -121,6 +147,8 @@ def load_spawn_poses(path: str | Path) -> dict[str, SpawnPose]:
                 calibrated=calibrated,
                 position_stddev_m=position_stddev_m,
                 yaw_stddev_deg=yaw_stddev_deg,
+                map_version=map_version,
+                map_bundle_sha256=map_bundle_sha256,
             ),
         )
     return parsed
