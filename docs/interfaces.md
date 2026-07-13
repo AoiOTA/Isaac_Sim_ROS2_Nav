@@ -6,18 +6,28 @@ interface proposed in `plan.md`.
 
 ## Mode pairing
 
-| ROS operation | Isaac `--navigation-mode` | SLAM executable | Pose Graph requirement | Occupancy map requirement | Nav2 |
-| --- | --- | --- | --- | --- | --- |
-| `mapping` | `mapping` | `async_slam_toolbox_node` | must be empty | must be empty | off |
-| `incremental_mapping` | `mapping` | `async_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | must be empty | off |
-| `localization` | `localization` | `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | off |
-| `navigation` | `localization` | `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | readiness-gated |
+| ROS operation | Isaac `--navigation-mode` | SLAM executable | Saved-map input | Nav2 |
+| --- | --- | --- | --- | --- |
+| `mapping` | `mapping` | `async_slam_toolbox_node` | none; Pose Graph and OccupancyGrid inputs are rejected, and no manifest is consumed | off |
+| `incremental_mapping` | `mapping` | `async_slam_toolbox_node` | one verified four-artifact manifest bundle; OccupancyGrid is not an input | off |
+| `localization` | `localization` | `localization_slam_toolbox_node` | one verified four-artifact manifest bundle | off |
+| `navigation` | `localization` | `localization_slam_toolbox_node` | one verified four-artifact manifest bundle | readiness-gated |
 
-`incremental_mapping`, `localization`, and `navigation` also require a measured
-Map Pose with `map.calibrated: true`. Baseline mapping is the only operation
-that intentionally permits an uncalibrated Map Pose. `localization` and
-`navigation` additionally require `map_file`; they reject a missing or
-nonexistent OccupancyGrid YAML before launch.
+Every saved-map operation requires one strict manifest at
+`data/maps/manifests/<map_version>.yaml`. The manifest binds the OccupancyGrid
+YAML/PGM and Pose Graph `.posegraph`/`.data` as one indivisible bundle.
+`localization` and `navigation` additionally require `map_file`; they reject a
+missing or nonexistent OccupancyGrid YAML before launch. Baseline `mapping`
+does not consume an existing map and therefore has no manifest input.
+
+Automatic initial pose is a stronger contract than merely having four files.
+For `initial_pose_source=auto`, the manifest must be calibrated, its
+`calibration.spawn_pose_profile` must equal `spawn_pose_name`, and the selected
+entry in `spawn_poses.yaml` must repeat the exact `map_version` and
+`map_bundle_sha256`. `incremental_mapping` requires `auto`, so it also requires
+this calibration. `localization` and `navigation` may use an uncalibrated new
+bundle only with `initial_pose_source=rviz`, in which case the operator owns the
+pose and must provide a new valid **2D Pose Estimate** after every Reset.
 
 The ROS `posegraph_file` argument is normalized to a prefix, so all of the
 following refer to the same serialized map:
@@ -34,6 +44,10 @@ of silently turning into an incremental run. For `localization` and
 `data/maps/occupancy/<posegraph-basename>.yaml` when `map_file` is omitted. Pass
 `map_file:=/path/to/map.yaml` explicitly when the basenames differ. The inferred
 or explicit file must exist; inference never falls back to a live SLAM map.
+The script likewise derives
+`data/maps/manifests/<posegraph-basename>.yaml` when `map_manifest_file` is
+omitted. An explicit Pose Graph or OccupancyGrid path must resolve to the exact
+artifact named by that manifest; cross-version mixing fails before nodes start.
 
 Structure TF ownership is also a two-process contract:
 
@@ -76,9 +90,19 @@ All four top-level bringups expose the same interaction arguments:
 
 The three RViz configurations are mode contracts, not cosmetic presets:
 
-- Mapping shows the live SLAM `/map` and enables the SLAM Toolbox panel.
+- Mapping shows the live SLAM `/map`. It intentionally does not load the SLAM
+  Toolbox lifecycle panel; lifecycle ownership stays outside RViz.
 - Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled diagnostic overlay, and provides `SetInitialPose`.
-- Navigation additionally loads the official `nav2_rviz_plugins/Navigation 2` panel and `GoalTool`, dual costmaps, paths, footprints, and Collision Monitor zones. It sends Nav2 actions directly; there is no project `/goal_pose` bridge.
+- Navigation loads the project-owned
+  `robot_rviz_plugins/Navigation 2 Safe` panel and the official Nav2
+  `GoalTool`, plus dual costmaps, paths, footprints, and Collision Monitor
+  zones. The safe panel preserves the official action interface while owning
+  and joining its QThread/QtConcurrent work during close. It sends Nav2 actions
+  directly; there is no project `/goal_pose` bridge.
+- Mapping, Localization, and Navigation include an Image display for
+  `/camera/front/image_raw` using raw transport and Best Effort/Volatile depth
+  2. A Camera `off` profile therefore produces a deliberate `No Image` state,
+  not a graph error. `camera_view.rviz` is the camera-only layout.
 
 Managed RViz/Teleop processes use the same environment and PID registry as the main scripts. Mapping Teleop publishes Reliable/Volatile `/cmd_vel` at 20 Hz, stops after 0.18 seconds without a key event using a monotonic wall clock, clamps commands to 1.0 m/s and 1.5 rad/s, and publishes a final zero on every normal/signal/EOF exit. Navigation's command chain remains the sole owner in its mode.
 
@@ -93,11 +117,20 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/joint_states` | `sensor_msgs/msg/JointState` | Isaac | Wheel Odom and RobotModel | simulator tick |
 | `/imu/data` | `sensor_msgs/msg/Imu` | Isaac | EKF in Realistic mode | `imu_link`, configured 60 Hz |
 | `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | pointcloud-to-laserscan | `lidar_link`, nominal 10 Hz |
-| `/scan` | `sensor_msgs/msg/LaserScan` | `pointcloud_to_laserscan` | SLAM Toolbox, costmaps, Collision Monitor | `base_link`, nominal 10 Hz, 720 bins |
+| `/scan` | `sensor_msgs/msg/LaserScan` | `pointcloud_to_laserscan` | SLAM Toolbox, costmaps, production Collision Monitor; optional scan-fault bridge input | `base_link`, nominal 10 Hz, 720 bins; Best Effort + Volatile |
+| `/scan_fault` | `sensor_msgs/msg/LaserScan` | opt-in `scan_fault_bridge` | Collision Monitor only when a safety-test parameter overlay explicitly selects it | unchanged scan or test-only frame override; Best Effort + Volatile |
+| `/scan_fault/control` | `std_msgs/msg/String` | safety-test operator/runner | `scan_fault_bridge` JSON command input | Reliable + Volatile; every command must carry the current epoch |
+| `/scan_fault/status` | `std_msgs/msg/String` | opt-in `scan_fault_bridge` | safety-test evidence and automation | transient-local JSON snapshot, plus periodic/event updates |
 | `/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Mapping; `nav2_map_server` in Localization/Navigation | map inspection in Mapping; activation gate and global costmap in Navigation | `map`; reliable, transient local; exactly one mode-appropriate publisher |
 | `/slam_toolbox/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Localization/Navigation | diagnostics only; never a Nav2 static-map input | `map`; scan-rasterized localization view |
 | `/wheel/odom` | `nav_msgs/msg/Odometry` | `wheel_odometry` | EKF | Realistic only; `odom`/`base_link` |
 | `/odom` | `nav_msgs/msg/Odometry` | Isaac in Ideal; EKF in Realistic | SLAM, Nav2, experiments | `odom`/`base_link`; exactly one publisher |
+| `/plan` | `nav_msgs/msg/Path` | Nav2 Planner Server | RViz and profiler global-plan evidence | `map`; Navigation only |
+| `/optimal_trajectory` | `nav_msgs/msg/Path` | MPPI Controller Server | RViz **Local Plan** and runtime profiler | selected local trajectory in `odom`; Navigation only, nominal controller rate; Reliable + Volatile |
+| `/transformed_global_plan` | `nav_msgs/msg/Path` | MPPI Controller Server | optional transformed-reference diagnostic | reference path in the controller frame, not the local plan; Reliable + Volatile |
+| `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | opt-in candidate-sample visualization | Reliable + Volatile, expensive/lazy; committed RViz display is disabled and creates no subscription |
+| `/camera/front/image_raw` | `sensor_msgs/msg/Image` | Isaac front Camera graph | RViz or external perception/recording only | `camera_front_optical_frame`, `rgb8`; profile rate/resolution; Best Effort + Volatile, depth 2 |
+| `/camera/front/camera_info` | `sensor_msgs/msg/CameraInfo` | same Isaac Render Product as Image | camera calibration consumers and profiler pairing | same frame, simulated stamp and QoS as Image; Best Effort + Volatile, depth 2 |
 | `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node/Isaac Reset in `auto`, or RViz in `rviz` | SLAM Toolbox localization | `map`; Reliable + Volatile; invalid frame/non-finite/non-normalized manual poses are ignored |
 | `/initial_pose/status` | `std_msgs/msg/String` | calibrated initial-pose node | operator and recovery diagnostics | transient-local state such as waiting clock/scan/TF, complete, or manual override |
 | `/simulation/initial_pose_source` | `std_msgs/msg/String` | `initial_pose_policy` | Isaac Reset and ROS recovery contract | transient-local `auto` or `rviz` |
@@ -105,8 +138,8 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/ground_truth/path` | `nav_msgs/msg/Path` | optional Isaac GT recorder | metrics/visualization only | `map`, configured 10 Hz |
 | `/simulation/collision` | `std_msgs/msg/Bool` | Isaac chassis contact sensor | experiment safety metric | about 20 Hz; instantaneous contact state |
 | `/collision_monitor_state` | `nav2_msgs/msg/CollisionMonitorState` | Nav2 Collision Monitor | experiment lock/stop metric | Navigation only |
-| `/simulation/reset_event` | `std_msgs/msg/Empty` | Isaac Reset bridge | Wheel Odom and reset observers | one event per Reset |
-| `/simulation/localization_seeded` | `std_msgs/msg/Empty` | Isaac Reset bridge | experiment reset gate | emitted after a post-reset `/scan` triggers `/initialpose` |
+| `/simulation/reset_event` | `std_msgs/msg/Empty` | Isaac Reset bridge | Wheel Odom, Activation Gate, scan-fault bridge and reset observers | Reliable + Volatile; one event after each successful transaction, and the recovery-epoch boundary |
+| `/simulation/localization_seeded` | `std_msgs/msg/Empty` | Isaac Reset bridge | experiment reset gate | Reliable + Volatile; emitted after a post-reset `/scan` triggers `/initialpose` |
 | `/simulation/reset` | `std_srvs/srv/Trigger` | Isaac Reset bridge | operator/experiment runner | deterministic reset request |
 | `/initial_pose/reseed` | `std_srvs/srv/Trigger` | calibrated initial-pose node | Activation Gate reset recovery | arm calibrated pose after a post-request scan; preserves valid manual ownership |
 
@@ -126,12 +159,133 @@ localization from being persisted as a static-map ghost in Nav2. Mapping and
 incremental mapping retain SLAM Toolbox ownership of `/map` because their
 purpose is to change the map.
 
+## Map manifest and calibration identity
+
+A saved map is committed only as this fixed layout:
+
+```text
+data/maps/manifests/<version>.yaml
+data/maps/occupancy/<version>.yaml
+data/maps/occupancy/<version>.pgm
+data/maps/posegraphs/<version>.posegraph
+data/maps/posegraphs/<version>.data
+```
+
+The manifest records the byte count and lowercase SHA256 of all four artifacts,
+then hashes their ordered role/path/size/content identities into one
+`bundle_sha256`. Validation rejects unknown schema fields, unsafe or overlong
+versions（包括纯点保留名）、absolute/cross-version paths、任意父级 symlink 和 path escapes、unhydrated
+Git LFS pointers, size/hash/bundle mismatches, and incomplete bundles. It also
+proves that the OccupancyGrid YAML names exactly the manifested PGM and that the
+YAML 的正数 resolution/origin and PGM dimensions match the manifest metadata. A valid
+individual file is therefore not sufficient evidence for a valid map.
+
+`scripts/save_map.sh <version>` is transactional and refuses every overwrite.
+It saves all four artifacts in `data/maps/.staging`, creates an uncalibrated
+manifest there, uses same-filesystem no-clobber hard links to publish and verify
+the four artifacts, and atomically publishes the manifest last. The manifest is
+the commit marker: an interrupted or failed transaction removes only inodes
+owned by that transaction, preserving any same-name file created concurrently
+instead of exposing a half-written version or deleting another writer's data. A
+newly saved bundle deliberately has
+`calibration.calibrated: false`; saving a map is not calibration.
+
+Calibration binds two documents to the same identity:
+
+- the manifest names `spawn_pose_profile`, repeats its own `bundle_sha256`, and
+  records the calibration time/method and measured poses;
+- `spawn_poses.yaml` marks that profile calibrated and repeats the identical
+  `map_version` and `map_bundle_sha256` beside its Map Pose;
+- both documents must also match the exact USD position/yaw、Map position/yaw
+  and position/yaw standard deviations. Keeping an old hash while editing a
+  pose is rejected.
+
+Changing any of the four artifacts creates a different bundle. Do not edit a
+hash to make a modified bundle look calibrated, copy a Map Pose across versions,
+or reuse an old manifest. Generate a new version, verify it, measure its
+calibration, and update both sides of the binding.
+
+## Camera stream contract
+
+The front Camera is an optional observation stream. It is not consumed by SLAM,
+EKF, Nav2, Collision Monitor, Reset, or the activation gate. `--camera-profile`
+selects one of these strict profiles before Kit starts:
+
+| Profile | Resolution | Configured target rate | Contract |
+| --- | ---: | ---: | --- |
+| `off` | none | 0 Hz | create no Camera/Render Product/ROS publishers |
+| `monitoring` | 640×360 | 15 Hz | GUI default and normal navigation observation |
+| `standard` | 640×480 | 20 Hz | intermediate observation/recording load |
+| `high_quality` | 1280×720 | 30 Hz | visual-quality run; not the navigation performance baseline |
+
+When the CLI option is omitted, GUI mode resolves to `monitoring` and headless
+mode resolves to `off`. Rates in the table are configured targets, not wall-time
+guarantees: GPU load and RTF determine the observed rate.
+
+One SensorFactory-owned Render Product feeds both
+`/camera/front/image_raw` (`rgb8`) and `/camera/front/camera_info`. Both helpers
+use simulation time, `camera_front_optical_frame`, raw sensor semantics, and the
+same Keep Last / depth 2 / Best Effort / Volatile QoS. Best Effort delivery means
+consumer-side counts can differ; synchronize Image and CameraInfo by header
+stamp and record mismatches instead of assuming every arrival is paired. Camera
+graph destruction precedes Render Product release, including shutdown and
+profile teardown.
+
+## Local-plan visualization contract
+
+MPPI `FollowPath.visualize` is enabled so the controller publishes its selected
+trajectory as `/optimal_trajectory` (`nav_msgs/msg/Path`). This is the only
+Topic named **Local Plan** in the committed RViz and profiler contracts. A real
+navigation run produces it in `odom` at approximately the controller rate.
+
+`/transformed_global_plan` is the global reference path transformed into the
+controller frame; it is useful for comparison but is not the chosen local
+trajectory. `/trajectories` is the heavyweight MarkerArray of candidate MPPI
+samples. Its publisher is lazy, the committed RViz display is disabled, and the
+normal graph must have no `/trajectories` subscriber. Enable it only for a
+short, explicit controller-debug session.
+
+## Collision freshness and scan-fault test interface
+
+The production Collision Monitor consumes `/scan` directly. Its command chain
+is `/cmd_vel_nav -> /cmd_vel_smoothed -> /cmd_vel`, and only its output owns the
+final Navigation `/cmd_vel`. The committed freshness boundary is
+`source_timeout: 0.40 s`, with `transform_tolerance: 0.20 s`: a sustained scan
+outage or a scan whose frame cannot transform to `base_link` is invalid input
+and must stop the robot. One or two missing nominal 10 Hz samples remain inside
+the timeout and are not by themselves proof of a safety fault.
+
+`scan_fault_bridge` is an opt-in verification adapter, never a production
+dependency. A complete fault test must both launch `/scan -> /scan_fault` and
+provide a temporary Nav2 parameter overlay that selects `/scan_fault` for the
+Collision Monitor. Starting the bridge alone leaves production Navigation on
+`/scan`.
+
+The Reliable/Volatile `/scan_fault/control` payload is one JSON object. Supported
+commands are:
+
+```json
+{"command":"drop_next","count":2,"epoch":0}
+{"command":"pause_for","seconds":0.6,"epoch":0}
+{"command":"drop_all","epoch":0}
+{"command":"replace_frame_id","frame_id":"missing_scan_frame","epoch":0}
+{"command":"resume","epoch":0}
+```
+
+`resume` is accepted as an alias for canonical mode `normal`. Only one fault
+mode is active at a time. `/scan_fault/status` is Reliable/Transient Local and reports event/result,
+mode, current epoch, command sequence, active fields, and total/per-epoch
+received/forwarded/dropped counters. A successful `/simulation/reset_event` or
+a scan timestamp rollback opens a new epoch, clears the active fault and
+per-epoch counters, and rejects a delayed command that names the old epoch.
+
 ## Isaac-side QoS profiles
 
 | Profile | Reliability | Durability | History/depth | Used by |
 | --- | --- | --- | --- | --- |
 | `clock` | best effort | volatile | keep last / 1 | `/clock` |
 | `sensor_data` | best effort | volatile | keep last / 5 | point cloud, IMU |
+| `camera_sensor_data` | best effort | volatile | keep last / 2 | front RGB Image and CameraInfo |
 | `command` | reliable | volatile | keep last / 1 | `/cmd_vel` subscription |
 | `state` | reliable | volatile | keep last / 10 | JointState, Ideal `/odom` |
 | `tf` | reliable | volatile | keep last / 100 | Isaac dynamic TF |
@@ -197,7 +351,7 @@ The Isaac node declares these runtime parameters:
 | Parameter | Meaning |
 | --- | --- |
 | `reset_seed` | non-negative dynamic-obstacle random seed |
-| `reset_pose_name` | key in `spawn_poses.yaml` |
+| `reset_pose_name` | key in `spawn_poses.yaml`; immutable in Localization because it is bound to the startup Manifest profile |
 | `navigation_mode` | running Isaac mode: `mapping` or `localization` |
 | `odometry_mode` | running mode: `ideal` or `realistic` |
 
@@ -213,6 +367,17 @@ A Reset is a non-blocking ROS service transaction with one active generation at 
 8. Await every submitted ROS future under steady-wall-time deadlines. A submitted call that fails or times out fails the Trigger; a service unavailable before submission is reported as skipped so the continuously running recovery gate can handle its layer. Stale callbacks carry a generation and cannot complete a newer transaction.
 9. Only after the transaction succeeds, publish `/simulation/reset_event` and return `success: true`.
 10. In Localization with `initial_pose_source=auto`, arm a simulation-clock evidence barrier, ignore old/high-epoch cached scans, and publish the calibrated `/initialpose` plus `/simulation/localization_seeded` on the first valid post-reset scan. With source `rviz`, automatic publication remains disabled.
+
+A Reset has two related identities. The Isaac bridge increments an internal
+transaction `generation` when it accepts a request; async callbacks from another
+generation cannot complete it, overlapping transactions are rejected, and a
+failed/timed-out generation emits no reset event. The reliable, volatile
+`/simulation/reset_event` emitted by a successful transaction is the public
+recovery-epoch boundary. Activation Gate clears TF/readiness and invalidates old
+async tokens, Wheel Odom resets its integrator, the scan-fault bridge clears its
+fault and increments its epoch, and profilers split time-series evidence at a
+clock rollback. Because the event is Volatile, observers must subscribe before
+calling Reset; late subscribers cannot infer that an event occurred.
 
 A successful Trigger response therefore means the physical reset and all submitted downstream reset/clear calls completed, not merely that they were queued. It still does not prove localization readiness. Clients must wait for the appropriate automatic seed or new RViz pose, fresh `/odom`, and a newly stamped, stable `map -> odom`. The experiment runner additionally requires fresh post-event Ground Truth and spawn-aligned `map -> base_link` before dispatching a goal.
 
@@ -249,23 +414,64 @@ pose in `rviz` mode, rebuilds readiness evidence, and resumes the stack. A
 recovery service failure blocks resume rather than silently activating an
 inconsistent stack. An actual gate process exit shuts down the composed stack.
 
+## Ordered shutdown and process ownership
+
+`scripts/run_ros.sh` is the ROS process-group supervisor, not a transparent
+alias for `ros2 launch`. It keeps the launch child in a separate `setsid`
+session so terminal `SIGINT`, `SIGTERM`, or `SIGHUP` reaches the supervisor while
+Lifecycle services and executors are still alive. The supervisor then invokes
+`robot_bringup.ordered_shutdown` with a private ROS Context and
+SingleThreadedExecutor, using one 20-second global deadline for the complete
+Lifecycle sequence:
+
+| Operation | Ordered Lifecycle responsibility |
+| --- | --- |
+| Navigation | shut down Navigation manager first, then Localization manager |
+| Localization | shut down Localization manager |
+| Mapping / Incremental Mapping | deactivate, clean up, then shut down SLAM Toolbox |
+
+After those requests complete—or are reported as explicit warnings—the
+supervisor sends `SIGINT` to the launch child process group and waits for it.
+The wait is bounded: a second stop signal interrupts the helper and forces
+`SIGTERM`; after the configured grace windows the supervisor escalates its own
+authenticated launch group to `SIGKILL`, so it cannot wait forever on a stuck
+child.
+This final signal owns ordinary node, activation-gate, and managed
+RViz/Teleop-process teardown. The Navigation RViz config uses the
+project-owned safe panel so its ROS thread and Qt futures are cooperatively
+interrupted and joined before the ROS context disappears. Integrated RViz also
+creates its own registered process group rather than inheriting the supervisor
+recursion guard.
+
+The contract applies only when the supervisor receives the signal. Directly
+killing the `ros2 launch` child, a lifecycle manager, or RViz bypasses some or
+all of the ordering. `clean_runtime.sh` is the authenticated recovery entrypoint
+for a lost terminal: it validates PID, boot, start-time, UID, project root and
+process-group identity before signaling the registered supervisor. The external
+cleaner itself refuses `SIGKILL`; the already-authenticated supervisor alone may
+use that final escalation for the exact launch group it created. Neither path
+may be replaced with broad `pkill` commands.
+
 ## Navigation control performance contract
 
-The committed MPPI configuration is based on the same Isaac Sim 6.0.1 headless
-Ideal three-metre goal, not an arbitrary reduction:
+The two committed MPPI overlays share the measured control timing and differ
+only in sample count:
 
-| Parameter | Value | Reason |
-| --- | --- | --- |
-| `controller_frequency` | 10 Hz | Completed the measured goal with no missed-control warnings. |
-| `FollowPath.time_steps` | 20 | Combined with `model_dt` keeps the prediction horizon at two seconds. |
-| `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
-| `FollowPath.batch_size` | 1000 | Reduces per-cycle sampling cost while preserving successful navigation. |
-| Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
+| Parameter | `stable` | `performance` | Contract |
+| --- | ---: | ---: | --- |
+| `controller_frequency` | 10 Hz | 10 Hz | control period is exactly `model_dt` |
+| `FollowPath.time_steps` | 20 | 20 | two-second prediction horizon |
+| `FollowPath.model_dt` | 0.10 s | 0.10 s | preserves MPPI control-sequence shifting |
+| `FollowPath.batch_size` | 750 | 1000 | stable keeps more compute headroom; performance evaluates more samples |
+| Localization `throttle_scans` | 2 | 2 | SLAM processes every second scan; Collision Monitor still receives every `/scan` |
 
-The 20 Hz/40×0.05/1500 baseline and tested 20 Hz reduced batches repeatedly
-missed their deadline on this workstation. Velocity Smoother remains at 20 Hz;
-the controller's prediction cadence and the final smoothed command cadence are
-separate contracts. Re-tune only with comparable runtime evidence.
+Profile validation runs before Nav2 nodes start. Values must be finite and
+positive, steps/batch must be positive integers, and controller period
+`1 / controller_frequency` must not exceed `model_dt`. A configuration such as
+8 Hz with `model_dt=0.10 s` fails fast instead of starting a controller that
+cannot satisfy the MPPI timing invariant. Velocity Smoother remains at 20 Hz;
+controller prediction cadence and final smoothed-command cadence are separate
+contracts. Re-tune only with comparable runtime evidence.
 
 ## Experiment scenario contract
 

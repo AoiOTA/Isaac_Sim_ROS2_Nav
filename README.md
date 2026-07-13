@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态：Stage、LiDAR/IMU/前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套模式 RViz 与 Camera-only RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；2026-07-12 又完成了交互工作流、Reset 恢复和 MPPI 负载对照，最终 10 Hz/2 s 预测窗组合无控制周期超时。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计、全 Camera profile 长时矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态（2026-07-13）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新可靠性升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、顺序 Lifecycle Shutdown 和安全退出的 Navigation 2 面板。Camera `monitoring`/`high_quality` 已完成 headless 发布性能采样，前向画面方向与转弯变化已用实际截图目视确认，集成 RViz 也已实际启动验证；`standard` 仍只有配置与自动契约覆盖，不能写成已完成实机性能验收。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计、真实 `warehouse_v2` changed-region 的 30% 增量改善基准和真实自定义机器人迁移仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 ## 文档导航
 
@@ -20,6 +20,7 @@
 | [`docs/verification.md`](docs/verification.md) | 判断某项能力是否真正验证，以及了解当前未验收边界时。 |
 | [`docs/development.md`](docs/development.md) | 开发、测试、调试和准备 Git 提交时。 |
 | [`docs/rviz_workflow_upgrade_plan.md`](docs/rviz_workflow_upgrade_plan.md) | 回溯本轮 RViz/Teleop/Lifecycle/性能升级的冻结设计和完成状态时。 |
+| [`docs/runtime_reliability_and_performance_upgrade_plan.md`](docs/runtime_reliability_and_performance_upgrade_plan.md) | 回溯地图 Manifest、Camera、MPPI/Ceres、故障注入、Profiler 与有序退出的设计、实测结果和未验收边界时。 |
 | [`plan.md`](plan.md) | 需要完整设计背景、技术选型、指标公式和最终验收目标时。 |
 
 ## 系统契约
@@ -34,6 +35,7 @@
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
 - 感知基线为 `/lidar/points_raw → pointcloud_to_laserscan → /scan`；默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
+- 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
 
 完整 Topic、QoS、TF 所有权和 Reset 契约见 [`docs/interfaces.md`](docs/interfaces.md)。
 
@@ -69,6 +71,29 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 ```
 
 两个终端必须使用相同的值。
+
+## 五分钟快速启动
+
+完成首次设置后，可先用仓库自带的 `warehouse_v1` 跑通最小导航闭环。GUI 默认启用 `monitoring` Camera；这里显式写出 profile，便于日志和性能报告回溯。
+
+```bash
+# 终端 A：Isaac、Ideal Odom、前向 Camera
+cd /你的实际路径/Isaac_Sim_ROS2_Nav
+./scripts/run_isaac.sh \
+  --navigation-mode localization \
+  --mode ideal \
+  --camera-profile monitoring
+
+# 终端 B：地图定位、Nav2、集成 RViz
+cd /你的实际路径/Isaac_Sim_ROS2_Nav
+./scripts/run_ros.sh navigation \
+  odometry_mode:=ideal \
+  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+```
+
+等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 Navigation 2 Goal 工具拖出目标。右侧 **Robot Front Camera** 应显示机器人前向画面；若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。停止时在启动 ROS 的终端按一次 Ctrl+C；监督脚本会先按 Navigation/Localization 顺序关闭 Lifecycle，再终止其余 ROS 子进程。
+
+如果这一步失败，先运行 `./scripts/preflight.sh` 和 `./scripts/diagnose.sh`，然后按 [`docs/user_manual.md`](docs/user_manual.md) 的逐步流程排查。Camera profile、地图保存、Reset、故障注入和性能采样的完整命令也都在使用手册中。
 
 ## 运行模式
 
@@ -115,7 +140,7 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 ./scripts/save_map.sh warehouse_v1
 ```
 
-当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并记录了初始位姿不确定度。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前仍须把四个工件视为不可混用的同一版本。
+`save_map.sh` 先在暂存目录生成 OccupancyGrid 与序列化 Pose Graph，逐项验证后再安装四个工件，最后原子发布 Manifest；任一步失败都会回滚，不留下“半套新地图”。当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并绑定对应 Manifest bundle。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件、路径逃逸以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前必须把四个工件和 Manifest 视为不可混用的同一版本。
 
 标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
 
@@ -178,7 +203,7 @@ ros2 run robot_experiments incremental_map_compare \
   posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
 ```
 
-`run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用官方 Nav2 Navigation 2 面板和 GoalTool：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；日常操作不需要 CLI 发布 `/goal_pose` 或另写桥接节点。Localization/Navigation 默认从已标定出生点自动播种，需人工定位时传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop用于无头实验。
+`run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用官方 GoalTool 和仓库内安全关闭版 Navigation 2 面板：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；日常操作不需要 CLI 发布 `/goal_pose` 或另写桥接节点。局部轨迹显示读取 MPPI 真正输出的 `/optimal_trajectory`，`/transformed_global_plan` 是控制器参考路径，默认不订阅体量更大的候选集 `/trajectories`。Localization/Navigation 默认从已标定出生点自动播种；Manifest 或出生点 bundle 未标定时，`auto` 会 fail fast，需传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop，用于无头实验。
 
 Realistic 模式把 `odometry_mode` 改为 `realistic`。两端都会拒绝各自已知的不合法组合，但进程之间没有自动握手；操作者仍须保证 `odometry_mode` 和 `structure_tf_source` 成对一致，并用 Topic/TF introspection 确认唯一所有权。
 
