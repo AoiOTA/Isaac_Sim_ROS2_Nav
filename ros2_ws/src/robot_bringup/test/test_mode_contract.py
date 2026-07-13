@@ -67,11 +67,13 @@ def test_posegraph_pair_is_checked_and_extension_is_normalized(tmp_path):
         'rsp',
         str(prefix) + '.posegraph',
         str(occupancy_map),
+        check_posegraph_files=False,
     )
     assert selection.posegraph_prefix == str(prefix)
     assert selection.occupancy_map_file == str(occupancy_map)
     incremental = validate_mode(
-        'incremental_mapping', 'ideal', 'isaac', str(prefix))
+        'incremental_mapping', 'ideal', 'isaac', str(prefix),
+        check_posegraph_files=False)
     assert incremental.posegraph_prefix == str(prefix)
     assert posegraph_prefix(str(prefix) + '.data') == str(prefix)
 
@@ -170,8 +172,8 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
         in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
     assert "DeclareLaunchArgument('nav2_profile_params_file', default_value='')" \
         in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
-    assert 'nav2_profile_params_file must be an existing YAML file' \
-        in core_source
+    assert 'validate_nav2_profile_params_file(' in core_source
+    assert 'invalid nav2_profile_params_file:' in core_source
 
 
 def test_incremental_and_localization_modes_include_initial_pose():
@@ -195,6 +197,8 @@ def test_initial_pose_source_is_forwarded_and_rviz_disables_auto_publisher():
     assert "if initial_pose_source == 'auto':" in core_source
     assert "'initial_pose_source': initial_pose_source" in core_source
     assert "executable='initial_pose_policy'" in core_source
+    assert "DeclareLaunchArgument(\n            'map_manifest_file'" \
+        in core_source
     setup_source = (PACKAGE_ROOT / 'setup.py').read_text()
     assert 'initial_pose_policy = robot_bringup.initial_pose_policy:main' \
         in setup_source
@@ -204,6 +208,8 @@ def test_initial_pose_source_is_forwarded_and_rviz_disables_auto_publisher():
             launch_dir / f'{operation}_bringup.launch.py').read_text()
         assert "DeclareLaunchArgument('initial_pose_source'" in source
         assert "'initial_pose_source': LaunchConfiguration(" in source
+        assert "DeclareLaunchArgument('map_manifest_file'" in source
+        assert "'map_manifest_file': LaunchConfiguration(" in source
 
 
 def test_core_launch_manages_rviz_and_mapping_only_teleop():
@@ -213,6 +219,7 @@ def test_core_launch_manages_rviz_and_mapping_only_teleop():
 
     assert 'resolve_interactive_selection' in source
     assert "project_root / 'scripts' / 'run_rviz.sh'" in source
+    assert "'ISAAC_NAV_DEDICATED_PROCESS_GROUP': '0'" in source
     assert "project_root / 'scripts' / 'run_teleop.sh'" in source
     assert 'teleop_terminal_command' in source
     assert "DeclareLaunchArgument(\n            'interactive'" in source
@@ -262,3 +269,11 @@ def test_mapping_launches_forward_all_runtime_teleop_speed_arguments():
     assert 'Mapping Teleop is running in a separate terminal.' in core
     assert 'Click the window titled "Isaac Nav Mapping Teleop"' in core
     assert 'before pressing W/A/S/D or the arrow keys.' in core
+
+
+def test_stack_does_not_try_to_order_shutdown_after_sigint_broadcast():
+    source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py'
+    ).read_text(encoding='utf-8')
+    assert 'OnShutdown' not in source
+    assert "'robot_bringup.ordered_shutdown'" not in source

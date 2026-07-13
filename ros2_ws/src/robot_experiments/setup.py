@@ -28,6 +28,7 @@ setup(
             "incremental_map_compare = robot_experiments.incremental_map_compare:main",
             "initial_pose_publisher = robot_experiments.initial_pose_publisher:main",
             "runtime_profiler = robot_experiments.runtime_profiler:main",
+            "scan_fault_bridge = robot_experiments.scan_fault_bridge:main",
         ],
     },
 )

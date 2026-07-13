@@ -105,3 +105,16 @@ def test_ros_adapter_relies_on_rclpy_builtin_sim_time_parameter():
     )
     with open(source, encoding='utf-8') as source_file:
         assert "declare_parameter('use_sim_time'" not in source_file.read()
+
+
+def test_ros_adapter_treats_external_shutdown_as_clean_exit():
+    source = (
+        __file__.replace('test/test_kinematics.py', '')
+        + 'robot_odometry/wheel_odometry_node.py'
+    )
+    with open(source, encoding='utf-8') as source_file:
+        source_text = source_file.read()
+    assert 'except (KeyboardInterrupt, ExternalShutdownException):' \
+        in source_text
+    assert source_text.index('node.destroy_node()') \
+        < source_text.index('rclpy.shutdown()')
