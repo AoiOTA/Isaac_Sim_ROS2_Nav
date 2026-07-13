@@ -15,6 +15,8 @@ _STRUCTURE_EDGES = (
     ("base_link", "lidar_link"),
     ("base_link", "imu_link"),
     ("base_link", "camera_link"),
+    ("camera_link", "camera_front_link"),
+    ("camera_front_link", "camera_front_optical_frame"),
     ("camera_link", "camera_left_link"),
     ("camera_link", "camera_right_link"),
     ("camera_left_link", "camera_left_optical_frame"),
@@ -28,7 +30,8 @@ def load_static_transforms(path: str | Path):
     if not isinstance(transforms, list) or len(transforms) != len(
             _STRUCTURE_EDGES):
         raise ValueError(
-            "robot.static_transforms must contain exactly seven entries")
+            "robot.static_transforms must contain exactly the documented "
+            f"{len(_STRUCTURE_EDGES)} entries")
     result = []
     observed = []
     for index, transform in enumerate(transforms):

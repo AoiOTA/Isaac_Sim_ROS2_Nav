@@ -64,8 +64,12 @@ def lidar_graph_spec(config: ProjectConfig, render_product_path: str) -> GraphSp
         ("PointCloudConfig.outputs:selectedMetadata", "PointCloudPublisher.inputs:selectedMetadata"),
     )
     values = (
-        ("PointCloudConfig.inputs:outputIntensity", True),
-        ("PointCloudConfig.inputs:outputTimestamp", True),
+        # Navigation consumes XYZ only. Per-point intensity/timestamp metadata
+        # nearly doubles the local DDS payload and is not used by the
+        # PointCloud2-to-LaserScan chain; the PointCloud2 header still carries
+        # the simulation timestamp.
+        ("PointCloudConfig.inputs:outputIntensity", False),
+        ("PointCloudConfig.inputs:outputTimestamp", False),
         ("PointCloudPublisher.inputs:renderProductPath", render_product_path),
         ("PointCloudPublisher.inputs:type", "point_cloud"),
         ("PointCloudPublisher.inputs:topicName", topics["pointcloud"]),

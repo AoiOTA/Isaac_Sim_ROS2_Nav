@@ -10,7 +10,9 @@ from launch_ros.actions import Node, SetParameter
 def generate_launch_description():
     package_share = Path(get_package_share_directory('robot_navigation'))
     default_config = package_share / 'config' / 'nav2_params.yaml'
+    default_profile = package_share / 'config' / 'nav2_stable.yaml'
     params_file = LaunchConfiguration('nav2_params_file')
+    profile_params_file = LaunchConfiguration('nav2_profile_params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     lifecycle_nodes = [
@@ -27,6 +29,8 @@ def generate_launch_description():
         DeclareLaunchArgument('autostart', default_value='false'),
         DeclareLaunchArgument(
             'nav2_params_file', default_value=str(default_config)),
+        DeclareLaunchArgument(
+            'nav2_profile_params_file', default_value=str(default_profile)),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetParameter('use_sim_time', use_sim_time),
         Node(
@@ -34,7 +38,7 @@ def generate_launch_description():
             executable='controller_server',
             name='controller_server',
             output='screen',
-            parameters=[params_file],
+            parameters=[params_file, profile_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
         Node(
@@ -42,14 +46,14 @@ def generate_launch_description():
             executable='planner_server',
             name='planner_server',
             output='screen',
-            parameters=[params_file],
+            parameters=[params_file, profile_params_file],
         ),
         Node(
             package='nav2_behaviors',
             executable='behavior_server',
             name='behavior_server',
             output='screen',
-            parameters=[params_file],
+            parameters=[params_file, profile_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
         Node(
@@ -57,14 +61,14 @@ def generate_launch_description():
             executable='bt_navigator',
             name='bt_navigator',
             output='screen',
-            parameters=[params_file],
+            parameters=[params_file, profile_params_file],
         ),
         Node(
             package='nav2_velocity_smoother',
             executable='velocity_smoother',
             name='velocity_smoother',
             output='screen',
-            parameters=[params_file],
+            parameters=[params_file, profile_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
         Node(
@@ -72,7 +76,7 @@ def generate_launch_description():
             executable='collision_monitor',
             name='collision_monitor',
             output='screen',
-            parameters=[params_file],
+            parameters=[params_file, profile_params_file],
         ),
         Node(
             package='nav2_lifecycle_manager',

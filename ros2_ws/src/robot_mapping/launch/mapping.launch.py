@@ -36,6 +36,11 @@ def _launch_setup(context):
                 + ', '.join(missing))
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
+    try:
+        ceres_num_threads = int(
+            LaunchConfiguration('ceres_num_threads').perform(context))
+    except ValueError as exc:
+        raise RuntimeError('ceres_num_threads must be an integer') from exc
 
     slam_node = LifecycleNode(
         package='slam_toolbox',
@@ -50,6 +55,7 @@ def _launch_setup(context):
                 'use_lifecycle_manager': False,
                 'mode': 'mapping',
                 'map_file_name': prefix,
+                'ceres_num_threads': ceres_num_threads,
             },
         ],
         remappings=[('scan', '/scan')],
@@ -88,6 +94,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument(
             'mapping_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(

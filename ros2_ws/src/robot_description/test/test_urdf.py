@@ -27,6 +27,8 @@ def test_required_links_and_joints_are_present():
         'lidar_link',
         'imu_link',
         'camera_link',
+        'camera_front_link',
+        'camera_front_optical_frame',
         'camera_left_link',
         'camera_right_link',
         'camera_left_optical_frame',
@@ -66,6 +68,8 @@ def test_sensor_and_optical_joints_are_fixed():
         'lidar_link_joint',
         'imu_link_joint',
         'camera_link_joint',
+        'camera_front_link_joint',
+        'camera_front_optical_frame_joint',
         'camera_left_link_joint',
         'camera_right_link_joint',
         'camera_left_optical_frame_joint',
@@ -73,7 +77,8 @@ def test_sensor_and_optical_joints_are_fixed():
     }
     assert all(joints[name].attrib['type'] == 'fixed' for name in expected)
 
-    for name in ('camera_left_optical_frame_joint',
+    for name in ('camera_front_optical_frame_joint',
+                 'camera_left_optical_frame_joint',
                  'camera_right_optical_frame_joint'):
         origin = joints[name].find('origin')
         assert origin is not None

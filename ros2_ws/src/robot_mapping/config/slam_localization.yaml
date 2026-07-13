@@ -1,7 +1,8 @@
 slam_toolbox:
   ros__parameters:
     use_sim_time: true
-    solver_plugin: solver_plugins::CeresSolver
+    solver_plugin: robot_slam_solver::ConfigurableCeresSolver
+    ceres_num_threads: 12
     ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
     ceres_preconditioner: SCHUR_JACOBI
     ceres_trust_strategy: LEVENBERG_MARQUARDT

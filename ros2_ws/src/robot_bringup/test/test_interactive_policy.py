@@ -133,6 +133,28 @@ def test_teleop_prefers_waiting_gnome_terminal():
     ]
 
 
+def test_teleop_terminal_forwards_speed_overrides_without_shell_parsing():
+    command = teleop_terminal_command(
+        '/project/scripts/run_teleop.sh',
+        arguments=(
+            'linear_speed:=0.45',
+            'angular_speed:=0.75',
+        ),
+        find_executable=lambda name: (
+            '/usr/bin/gnome-terminal' if name == 'gnome-terminal' else None),
+    )
+
+    assert command == [
+        '/usr/bin/gnome-terminal',
+        '--wait',
+        '--title=Isaac Nav Mapping Teleop',
+        '--',
+        '/project/scripts/run_teleop.sh',
+        'linear_speed:=0.45',
+        'angular_speed:=0.75',
+    ]
+
+
 def test_teleop_falls_back_to_xterm():
     command = teleop_terminal_command(
         '/project/scripts/run_teleop.sh',

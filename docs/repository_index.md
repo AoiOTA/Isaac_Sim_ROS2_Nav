@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 227 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 249 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏；这个口径同时包含已跟踪文件和本轮已完成、等待纳入提交的新文件。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -15,6 +15,7 @@
 | `CONTRIBUTING.md` | 代码贡献、分支、提交消息、验证和数据管理约定。 |
 | `LICENSE` | 项目源码的 Apache-2.0 许可证文本。 |
 | `README.md` | GitHub 首页：项目能力、运行入口、验证状态以及主要文档导航。 |
+| `THIRD_PARTY_NOTICES.md` | 仓库级第三方代码声明；指出可配置 Ceres solver 源自 Slam Toolbox、采用 LGPL-2.1-only，并链接包内溯源和许可证。 |
 | `plan.md` | 原始完整设计方案、技术选型、实施 SOP、实验指标和分阶段验收标准；用于理解“为什么这样设计”。 |
 | `pyproject.toml` | Python 3.12 项目元数据、PyYAML/开发依赖及 pytest 搜索路径和 marker 配置。 |
 
@@ -30,6 +31,7 @@
 | `docs/development.md` | 开发环境、调试命令、测试方式、运行探针和提交/数据纪律。 |
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
+| `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
 
 ## 3. 数据目录
 
@@ -67,6 +69,10 @@
 | `scripts/save_map.sh` | 原子保存 OccupancyGrid 和 Pose Graph，拒绝覆盖同名版本并清理失败的半成品。 |
 | `scripts/diagnose.sh` | 只读收集环境、受管进程、ROS 图、Lifecycle、QoS、TF、仿真时间、DDS SHM、CPU governor 和近期错误。 |
 | `scripts/clean_runtime.sh` | 依据受管 PID 元数据安全停止本项目进程；可在无 Fast DDS 使用者时清理当前用户的残留 SHM。 |
+| `scripts/setup_ros_env.sh` | 给新终端 source 的统一 ROS 环境入口；校验项目、Jazzy、Domain 42、Fast DDS 和工作区安装，可选安全重启 ROS daemon。 |
+| `scripts/performance_mode.sh` | 可逆的主机性能策略工具；记录原 governor/EPP 状态，提供 status、enable、restore，并输出温度/GPU 功耗提醒。 |
+| `scripts/profile_runtime.sh` | 运行 `runtime_profiler` 的命令行包装器；统一持续时间、预热、标签和原子 JSON 报告路径。 |
+| `scripts/run_camera_view.sh` | 单独启动前视 RGB 相机 RViz 界面；复用项目 ROS 环境、受管进程组和 RViz 单实例锁。 |
 
 ## 5. Isaac Sim 包入口与主程序
 
@@ -131,6 +137,7 @@
 | `isaac_sim/graphs/odometry_graph.py` | Ideal 模式的 `/odom` 和 `odom → base_link` 发布图。 |
 | `isaac_sim/graphs/sensor_graph.py` | `/clock`、JointState、IMU、RTX LiDAR PointCloud2 等传感器发布图。 |
 | `isaac_sim/graphs/tf_graph.py` | 轮子动态 TF 与传感器/相机静态 TF 图；从所选 robot YAML 读取外参。 |
+| `isaac_sim/graphs/camera_graph.py` | 校验集中式 Camera Topic/QoS/frame 契约，用同一 Render Product 构建 RGB 与 CameraInfo 发布图，并负责先销毁图后释放渲染资源。 |
 
 ## 11. Isaac 配置和通用工具
 
@@ -206,10 +213,11 @@
 | `isaac_sim/tests/test_idle_brake.py` | 测试命令死区、超时停车、低速唤醒和 sim-time 行为。 |
 | `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 顺序、fresh-scan initial pose 和重复 seed。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 测试动态障碍解析、有限数、repeat、轨迹推进和 Reset。 |
+| `isaac_sim/tests/test_camera_contracts.py` | 测试相机 profile 默认值、严格 schema、RGB/CameraInfo 同源时间戳/QoS、CLI 选择和 Render Product 幂等释放。 |
 
 ## 18. ROS 工作区总览
 
-`ros2_ws/src/` 包含 9 个包：
+`ros2_ws/src/` 包含 10 个包：
 
 | 包 | 职责 |
 | --- | --- |
@@ -218,6 +226,7 @@
 | **robot_odometry** | 四轮编码器运动学和 `/wheel/odom`。 |
 | **robot_localization_config** | IMU+Wheel Odom 的 EKF。 |
 | **robot_mapping** | SLAM Toolbox Mapping/Localization 和 Map Server。 |
+| **robot_slam_solver** | 独立的可配置线程 Ceres ScanSolver 插件；不修改系统 `/opt/ros`，包内 LGPL-2.1-only。 |
 | **robot_navigation** | Nav2 planner/controller/costmap/safety。 |
 | **robot_experiments** | 初始位姿、Reset runner、场景、指标和报告。 |
 | **robot_bringup** | 模式验证、组合 launch 和 Nav2 readiness gate。 |
@@ -237,6 +246,7 @@
 | `ros2_ws/src/robot_description/rviz/mapping.rviz` | Mapping/Incremental Mapping 专用界面：实时地图、LaserScan、RobotModel、TF、Odom 与 SLAM Toolbox 面板。 |
 | `ros2_ws/src/robot_description/rviz/localization.rviz` | Localization 专用界面：固定 `/map`、可选 `/slam_toolbox/map` 诊断层、扫描、里程计和 2D Pose Estimate。 |
 | `ros2_ws/src/robot_description/rviz/navigation.rviz` | Navigation 完整界面：Nav2 面板/GoalTool、双 Costmap、全局/局部路径、Footprint、Collision Monitor 区域和可选 MPPI/GT。 |
+| `ros2_ws/src/robot_description/rviz/camera_view.rviz` | 独立的前视 Camera RViz 布局；显示 RGB 图像及必要的机器人/TF 上下文，供单独观察相机链路。 |
 | `ros2_ws/src/robot_description/test/test_urdf.py` | 展开 Xacro，检查必需 link/joint、轮轴、传感器固定关节、禁用导航/GT frame 和 description-only TF 所有权。 |
 | `ros2_ws/src/robot_description/test/test_rviz_configs.py` | 解析三套 RViz YAML，锁定模式 Topic、插件、显示开关以及 Map/Sensor QoS。 |
 
@@ -288,17 +298,33 @@
 | `ros2_ws/src/robot_mapping/launch/localization.launch.py` | 启动 Map Server 和 Localization SLAM；`/map` 固定，SLAM 诊断图重映射。 |
 | `ros2_ws/src/robot_mapping/test/test_mapping_modes.py` | 检查两个模式的 executable、参数互斥、Map Server 和话题隔离。 |
 
-## 24. `robot_navigation`
+## 24. `robot_slam_solver`
+
+| 文件 | 用途 |
+| --- | --- |
+| `ros2_ws/src/robot_slam_solver/CMakeLists.txt` | 构建并安装 `configurable_ceres_solver_plugin`、头文件、许可证和 NOTICE，向 Slam Toolbox 导出 pluginlib 描述并注册契约测试。 |
+| `ros2_ws/src/robot_slam_solver/package.xml` | solver 包元数据、LGPL-2.1-only 声明，以及 Ceres、Eigen、Boost、pluginlib、rclcpp 和 Slam Toolbox 依赖。 |
+| `ros2_ws/src/robot_slam_solver/solver_plugins.xml` | pluginlib 类注册表；把 `robot_slam_solver::ConfigurableCeresSolver` 声明为 `karto::ScanSolver` 实现。 |
+| `ros2_ws/src/robot_slam_solver/LICENSE` | 该独立 solver 包及其派生源码适用的完整 GNU LGPL 2.1 许可证文本。 |
+| `ros2_ws/src/robot_slam_solver/NOTICE.md` | 记录上游 Slam Toolbox 2.8.5 仓库、精确 commit、原文件 SHA256 以及本地命名和线程参数修改。 |
+| `ros2_ws/src/robot_slam_solver/include/robot_slam_solver/ceres_solver.hpp` | 可配置 Ceres solver 类声明；实现 Karto `ScanSolver` 的图节点、约束、求解、修正和 lifecycle 配置接口。 |
+| `ros2_ws/src/robot_slam_solver/include/robot_slam_solver/ceres_utils.hpp` | Ceres 二维位姿图优化辅助实现：角度 manifold、旋转矩阵、残差项和约束哈希。 |
+| `ros2_ws/src/robot_slam_solver/src/ceres_solver.cpp` | solver 插件实现；声明并校验 `ceres_num_threads`，维护 Karto 图约束并调用 Ceres 求解，取代上游硬编码 50 线程。 |
+| `ros2_ws/src/robot_slam_solver/test/test_solver_contract.py` | 锁定可配置线程、硬编码移除、pluginlib 类、硬件并发上限、上游 commit 和 LGPL 文件存在性。 |
+
+## 25. `robot_navigation`
 
 | 文件 | 用途 |
 | --- | --- |
 | `ros2_ws/src/robot_navigation/CMakeLists.txt` | 安装 Nav2 配置/launch并注册测试。 |
 | `ros2_ws/src/robot_navigation/package.xml` | Nav2 planner/controller/behavior/smoother/collision monitor/lifecycle 依赖。 |
-| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用实测稳定的 10 Hz、2 秒窗和 1000 批次。 |
-| `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点；默认不 autostart，等待外部 readiness gate。 |
+| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的公共参数基线；运行 profile 只覆盖经验证的控制器差异。 |
+| `ros2_ws/src/robot_navigation/config/nav2_stable.yaml` | 稳定运行 profile：10 Hz Controller、20 步、0.10 s 模型步长和 750 条 MPPI 采样，优先降低实时竞争。 |
+| `ros2_ws/src/robot_navigation/config/nav2_performance.yaml` | 性能运行 profile：保持 10 Hz/0.10 s 时序一致并把 MPPI 批次提高到 1000；15 Hz 只保留为基准矩阵候选。 |
+| `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点；按“公共参数 + profile overlay”加载配置，默认不 autostart，等待外部 readiness gate。 |
 | `ros2_ws/src/robot_navigation/test/test_nav2_config.py` | 检查插件、Footprint、inflation、话题链、2D obstacle layer 和安全参数。 |
 
-## 25. `robot_experiments` 包装文件与配置
+## 26. `robot_experiments` 包装文件与配置
 
 | 文件 | 用途 |
 | --- | --- |
@@ -313,7 +339,7 @@
 | `ros2_ws/src/robot_experiments/config/incremental_mapping.yaml` | 增量建图工作流描述符；NavigateToPose runner 会明确拒绝它。 |
 | `ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml` | 三地图离线比较模板；路径、耗时、真实变化矩形为必填占位。 |
 
-## 26. `robot_experiments` 运行代码
+## 27. `robot_experiments` 运行代码
 
 | 文件 | 用途 |
 | --- | --- |
@@ -326,10 +352,11 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/incremental_map_compare.py` | 离线加载三张 Map Server YAML/PGM，按世界坐标比较耗时、变化恢复和旧区退化。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/runtime_profiler.py` | 运行时观测器：采集 RTF、Topic 频率/延迟/吞吐、TF lag、Camera 时间戳配对、Nav2/SLAM 参数、日志告警和受管进程 CPU/RSS/GPU，原子输出 JSON。 |
 | `ros2_ws/src/robot_experiments/launch/initial_pose.launch.py` | 把 spawn pose、持续监听和扫描/TF 恢复参数传给 initial pose publisher。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 启动 experiment runner并传入场景、出生点、输出目录和可选配置 override。 |
 
-## 27. `robot_experiments` 测试
+## 28. `robot_experiments` 测试
 
 | 文件 | 用途 |
 | --- | --- |
@@ -342,8 +369,9 @@
 | `ros2_ws/src/robot_experiments/test/test_package_contract.py` | 检查安装入口、配置/launch 文件和 reset/dynamic contract 关键代码存在。 |
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
+| `ros2_ws/src/robot_experiments/test/test_runtime_profiler.py` | 测试 profiler 的 Topic/TF 覆盖、RTF 回钟与停滞、百分位、Camera stamp 多重集配对、进程组统计和 GPU delta。 |
 
-## 28. `robot_bringup` 配置与入口
+## 29. `robot_bringup` 配置与入口
 
 | 文件 | 用途 |
 | --- | --- |
@@ -359,7 +387,7 @@
 | `ros2_ws/src/robot_bringup/launch/navigation_bringup.launch.py` | Localization + Nav2 + readiness gate 顶层入口。 |
 | `ros2_ws/src/robot_bringup/launch/ros_stack.launch.py` | 四种入口共享组合器；校验模式/文件，包含描述、感知、odom、SLAM/Nav2，并受管启动模式专用 RViz 与 Mapping Teleop。 |
 
-## 29. `robot_bringup` 代码与测试
+## 30. `robot_bringup` 代码与测试
 
 | 文件 | 用途 |
 | --- | --- |
@@ -379,7 +407,7 @@
 | `ros2_ws/src/robot_bringup/test/test_interactive_policy.py` | 覆盖三套 RViz 选择、headless 行为、Teleop 模式禁令和终端命令。 |
 | `ros2_ws/src/robot_bringup/test/test_runtime_scripts.py` | 用隔离运行目录测试统一环境、单实例锁、安全清理以及 RViz/Teleop 启动脚本。 |
 
-## 30. `robot_teleop`
+## 31. `robot_teleop`
 
 | 文件 | 用途 |
 | --- | --- |
@@ -394,7 +422,7 @@
 | `ros2_ws/src/robot_teleop/test/test_safety.py` | 覆盖键位、边界值、超时停车、时间回退和关闭幂等性。 |
 | `ros2_ws/src/robot_teleop/test/test_teleop_package_contract.py` | 检查配置、安装入口、终端按键解码和安全默认值；唯一模块名保证全工作区 pytest 可收集。 |
 
-## 31. 修改文件时的依赖关系
+## 32. 修改文件时的依赖关系
 
 常见改动不是只改一个文件：
 

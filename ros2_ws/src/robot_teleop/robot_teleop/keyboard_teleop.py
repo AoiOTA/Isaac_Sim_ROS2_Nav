@@ -17,6 +17,7 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.qos import ReliabilityPolicy
 
 from robot_teleop.safety import MotionCommand
+from robot_teleop.safety import SpeedFeedback
 from robot_teleop.safety import TeleopConfig
 from robot_teleop.safety import TeleopController
 from robot_teleop.safety import TeleopRuntime
@@ -24,9 +25,19 @@ from robot_teleop.safety import TeleopRuntime
 
 HELP = """
 Isaac Nav - Mapping Teleop
+  This window must have keyboard focus. Click the window titled
+  "Isaac Nav Mapping Teleop" before using any control key.
+
   W / Up       forward          S / Down     reverse
   A / Left     turn left        D / Right    turn right
   Space        stop now         Q / Ctrl+C/D stop and exit
+
+  + / =        increase linear and angular target speeds
+  -            decrease linear and angular target speeds
+  ] / [        increase / decrease linear target speed
+  . / ,        increase / decrease angular target speed
+  0            restore configured default target speeds
+  H / ?        show this help and the current target speeds
 
 Hold or repeat a motion key. The wall-time deadman stops the robot within
 0.20 seconds if key events stop. This node is only for Mapping and
@@ -57,6 +68,19 @@ def decode_keypresses(data: bytes) -> list[str]:
             keys.append('unknown')
         index += 1
     return keys
+
+
+def format_speed_feedback(feedback: SpeedFeedback) -> str:
+    """Format one bounded target-speed update for the raw terminal."""
+    label = 'Default speeds restored' if feedback.kind == 'reset' \
+        else 'Target speeds'
+    message = (
+        f'{label}: linear={feedback.linear_speed:.2f} m/s, '
+        f'angular={feedback.angular_speed:.2f} rad/s'
+    )
+    if feedback.limits:
+        message += '; limit reached: ' + ', '.join(feedback.limits)
+    return message
 
 
 class RawTerminal:
@@ -102,10 +126,14 @@ class KeyboardTeleopNode(Node):
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('publish_rate_hz', 20.0)
         self.declare_parameter('command_timeout_sec', 0.18)
-        self.declare_parameter('linear_speed', 0.30)
-        self.declare_parameter('angular_speed', 0.60)
+        self.declare_parameter('linear_speed', 0.50)
+        self.declare_parameter('angular_speed', 0.80)
+        self.declare_parameter('min_linear_speed', 0.10)
+        self.declare_parameter('min_angular_speed', 0.20)
         self.declare_parameter('max_linear_speed', 1.00)
         self.declare_parameter('max_angular_speed', 1.50)
+        self.declare_parameter('linear_speed_step', 0.05)
+        self.declare_parameter('angular_speed_step', 0.10)
 
         self.publish_rate_hz = float(
             self.get_parameter('publish_rate_hz').value)
@@ -119,10 +147,18 @@ class KeyboardTeleopNode(Node):
         config = TeleopConfig(
             linear_speed=float(self.get_parameter('linear_speed').value),
             angular_speed=float(self.get_parameter('angular_speed').value),
+            min_linear_speed=float(
+                self.get_parameter('min_linear_speed').value),
+            min_angular_speed=float(
+                self.get_parameter('min_angular_speed').value),
             max_linear_speed=float(
                 self.get_parameter('max_linear_speed').value),
             max_angular_speed=float(
                 self.get_parameter('max_angular_speed').value),
+            linear_speed_step=float(
+                self.get_parameter('linear_speed_step').value),
+            angular_speed_step=float(
+                self.get_parameter('angular_speed_step').value),
             command_timeout_sec=float(
                 self.get_parameter('command_timeout_sec').value),
         )
@@ -153,6 +189,7 @@ def _run(node: KeyboardTeleopNode) -> None:
     next_publish = time.monotonic()
     last_displayed: MotionCommand | None = None
     print(HELP, flush=True)
+    print(format_speed_feedback(node.runtime.speed_feedback()), flush=True)
 
     with RawTerminal(sys.stdin) as terminal:
         while rclpy.ok():
@@ -163,6 +200,14 @@ def _run(node: KeyboardTeleopNode) -> None:
                 if node.runtime.handle_key(key, time.monotonic()):
                     should_exit = True
                     break
+                feedback = node.runtime.take_feedback()
+                if feedback is not None:
+                    if feedback.kind == 'help':
+                        print('\r\n' + HELP, flush=True)
+                    print(
+                        '\r\n' + format_speed_feedback(feedback),
+                        flush=True,
+                    )
             if should_exit:
                 return
 
