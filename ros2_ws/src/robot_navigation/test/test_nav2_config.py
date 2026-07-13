@@ -11,6 +11,11 @@ def _config():
         (PACKAGE_ROOT / 'config' / 'nav2_params.yaml').read_text())
 
 
+def _profile(name):
+    return yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / f'nav2_{name}.yaml').read_text())
+
+
 def _params(config, node):
     return config[node]['ros__parameters']
 
@@ -72,3 +77,23 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in launch_source
     assert "package='nav2_velocity_smoother'" in launch_source
     assert "package='nav2_collision_monitor'" in launch_source
+
+
+def test_nav2_profiles_are_small_overlays_with_valid_mppi_horizons():
+    stable = _profile('stable')
+    performance = _profile('performance')
+    assert set(stable) == {'controller_server'}
+    assert set(performance) == {'controller_server'}
+
+    stable_controller = _params(stable, 'controller_server')
+    performance_controller = _params(performance, 'controller_server')
+    assert stable_controller['controller_frequency'] == 10.0
+    assert stable_controller['FollowPath']['batch_size'] == 750
+    assert performance_controller['controller_frequency'] == 10.0
+    assert performance_controller['FollowPath']['batch_size'] == 1000
+    for profile in (stable, performance):
+        controller = _params(profile, 'controller_server')['FollowPath']
+        assert controller['model_dt'] == 0.10
+        assert controller['time_steps'] in {15, 20}
+        assert controller['time_steps'] * controller['model_dt'] >= 1.5
+    assert _params(_config(), 'collision_monitor')['source_timeout'] == 0.40

@@ -35,6 +35,11 @@ def _launch_setup(context):
             'map_file is required for immutable navigation map serving')
     if not Path(map_file).is_file():
         raise RuntimeError(f'occupancy map YAML does not exist: {map_file}')
+    try:
+        ceres_num_threads = int(
+            LaunchConfiguration('ceres_num_threads').perform(context))
+    except ValueError as exc:
+        raise RuntimeError('ceres_num_threads must be an integer') from exc
 
     autostart = LaunchConfiguration('autostart')
     map_node = LifecycleNode(
@@ -61,6 +66,7 @@ def _launch_setup(context):
                 'use_lifecycle_manager': True,
                 'mode': 'localization',
                 'map_file_name': prefix,
+                'ceres_num_threads': ceres_num_threads,
             },
         ],
         # SLAM Toolbox owns localization TF only.  Its scan-rasterized map is
@@ -94,6 +100,7 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('autostart', default_value='true'),
+        DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument(
             'localization_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(

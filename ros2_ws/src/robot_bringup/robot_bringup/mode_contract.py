@@ -8,6 +8,7 @@ OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
 ODOMETRY_MODES = frozenset({'ideal', 'realistic'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
+NAV2_PROFILES = frozenset({'stable', 'performance'})
 
 
 @dataclass(frozen=True)
@@ -62,6 +63,13 @@ def posegraph_prefix(value):
         if normalized.endswith(suffix):
             return normalized[:-len(suffix)]
     return normalized
+
+
+def validate_nav2_profile(value):
+    """Normalize the bounded Nav2 overlay selected at launch."""
+    profile = value.strip().lower()
+    _require_choice('nav2_profile', profile, NAV2_PROFILES)
+    return profile
 
 
 def validate_mode(

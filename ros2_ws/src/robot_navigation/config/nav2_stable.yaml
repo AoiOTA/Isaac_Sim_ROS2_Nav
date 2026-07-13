@@ -1,0 +1,7 @@
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    FollowPath:
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 750

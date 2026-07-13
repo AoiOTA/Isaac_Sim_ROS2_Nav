@@ -278,7 +278,10 @@ collision_monitor:
     cmd_vel_out_topic: /cmd_vel
     state_topic: /collision_monitor_state
     transform_tolerance: 0.20
-    source_timeout: 0.50
+    # Monitoring-camera benchmark: Scan P99 age 0.182 s. This permits two
+    # missing 10 Hz frames plus 0.10 s scheduling margin, while a sustained
+    # outage still stops the command chain within 0.40 s.
+    source_timeout: 0.40
     base_shift_correction: true
     stop_pub_timeout: 1.0
     polygons: [StopZone, SlowdownZone, ApproachZone]

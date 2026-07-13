@@ -420,6 +420,12 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
     assert 'rm -' not in diagnose
     assert 'kill -INT' not in diagnose
     assert 'kill -TERM' not in diagnose
+    assert (
+        'for candidate in incremental_mapping mapping localization navigation'
+        in diagnose
+    )
+    assert 'Isaac/ROS pair is incomplete' in diagnose
+    assert 'nav2_profile="unavailable"' in diagnose
     cleanup = CLEAN_RUNTIME.read_text(encoding='utf-8')
     assert 'for component in teleop rviz ros isaac' in cleanup
 
