@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import hashlib
+import math
 import os
 from pathlib import Path
 import sys
@@ -94,6 +95,16 @@ def _parser() -> argparse.ArgumentParser:
         help="stop after N render updates (0 means unlimited)",
     )
     parser.add_argument(
+        "--pacing-mode",
+        choices=("realtime", "unbounded"),
+        help="wall-clock pacing; unbounded must be selected explicitly",
+    )
+    parser.add_argument(
+        "--target-rtf",
+        type=float,
+        help="target simulation-time / steady-wall-time ratio in realtime mode",
+    )
+    parser.add_argument(
         "--validate-only",
         action="store_true",
         help="validate files, USD composition, contracts, and calibration without starting Kit",
@@ -131,6 +142,14 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         if args.max_steps < 0:
             raise ValueError("--max-steps must be non-negative")
         os.environ["ISAAC_NAV__SIMULATION__MAX_FRAMES"] = str(args.max_steps)
+    if args.pacing_mode is not None:
+        os.environ["ISAAC_NAV__SIMULATION__PACING_MODE"] = args.pacing_mode
+    if args.target_rtf is not None:
+        if not math.isfinite(args.target_rtf) or args.target_rtf <= 0.0:
+            raise ValueError("--target-rtf must be positive")
+        os.environ["ISAAC_NAV__SIMULATION__TARGET_REALTIME_FACTOR"] = str(
+            args.target_rtf
+        )
 
 
 def validate_configuration(
@@ -224,6 +243,21 @@ def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     app.update()
 
 
+def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
+    return {
+        "headless": config.simulation.headless,
+        "renderer": config.simulation.renderer,
+        "multi_gpu": False,
+        "extra_args": [
+            "--/rtx/hydra/supportMultiTickRate=true",
+            (
+                "--/persistent/simulation/minFrameRate="
+                f"{int(round(config.simulation.physics_hz))}"
+            ),
+        ],
+    }
+
+
 def run(
     config: ProjectConfig,
     selected_pose: object,
@@ -239,12 +273,7 @@ def run(
         # SimulationApp otherwise forwards this application's argparse flags
         # to Kit as if they were native settings.
         sys.argv = [sys.argv[0]]
-        app = SimulationApp(
-            {
-                "headless": config.simulation.headless,
-                "renderer": config.simulation.renderer,
-            }
-        )
+        app = SimulationApp(_simulation_app_config(config))
     finally:
         sys.argv = original_argv
     runtime = None
@@ -255,9 +284,19 @@ def run(
     try:
         _enable_extensions(app, config.extensions)
 
+        from isaac_sim.src.stage.physics_setup import (
+            PhysicsSetup,
+            prepare_pacing,
+        )
+
+        prepare_pacing(config.simulation)
+
         # Runtime composition uses omni.usd so sensors and OmniGraph operate on
         # exactly the same Stage object.
         stage = SceneComposer(config).compose(save=False)
+        # Configure coherent Timeline/RunLoop/Fabric periods before the first
+        # post-composition app update creates Fabric history caches.
+        runtime = PhysicsSetup(config.simulation).apply(stage, app)
         app.update()
         validate_composed_stage(config, stage)
 
@@ -302,13 +341,11 @@ def run(
         from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
         from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
         from isaac_sim.src.sensors.sensor_factory import SensorFactory
-        from isaac_sim.src.stage.physics_setup import PhysicsSetup
         from isaacsim.core.simulation_manager import SimulationManager
 
         articulation_settings = load_articulation_physics_config(
             config.files.robot
         )
-        runtime = PhysicsSetup(config.simulation).apply(stage, app)
         sensors = SensorFactory(
             config,
             camera_profile=camera_selection.profile.name,
@@ -420,6 +457,8 @@ def run(
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, dynamic={dynamic_scenario.enabled}, "
             f"camera={camera_selection.profile.name}, "
+            f"pacing={config.simulation.pacing_mode}, "
+            f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
@@ -501,6 +540,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, "
             f"camera={camera_selection.profile.name}, "
+            f"pacing={config.simulation.pacing_mode}, "
+            f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"dynamic_obstacles={dynamic_scenario.enabled}, {calibration})"
         )
         return 0

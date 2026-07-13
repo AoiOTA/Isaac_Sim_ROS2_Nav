@@ -8,6 +8,7 @@ from this module.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import os
 import re
@@ -46,7 +47,12 @@ def _required(value: Mapping[str, Any], key: str, name: str) -> Any:
 
 
 def _positive_number(value: Any, name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+    ):
         raise ConfigError(f"{name} must be a positive number")
     return float(value)
 
@@ -126,6 +132,8 @@ class SimulationConfig:
     navigation_mode: str
     odometry_mode: str
     structure_tf_source: str
+    pacing_mode: str
+    target_realtime_factor: float
     max_frames: int
 
 
@@ -269,6 +277,8 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
         "navigation_mode",
         "odometry_mode",
         "structure_tf_source",
+        "pacing_mode",
+        "target_realtime_factor",
         "max_frames",
     }
     _expect_keys(data, allowed, "simulation")
@@ -289,6 +299,11 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
             "ideal odometry requires Isaac-owned structure TF; "
             "structure_tf_source=rsp is valid only in realistic mode"
         )
+    pacing_mode = _required(data, "pacing_mode", "simulation")
+    if pacing_mode not in {"realtime", "unbounded"}:
+        raise ConfigError(
+            "simulation.pacing_mode must be realtime or unbounded"
+        )
     max_frames = _required(data, "max_frames", "simulation")
     if isinstance(max_frames, bool) or not isinstance(max_frames, int) or max_frames < 0:
         raise ConfigError("simulation.max_frames must be a non-negative integer")
@@ -308,6 +323,11 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
         navigation_mode=navigation_mode,
         odometry_mode=odometry_mode,
         structure_tf_source=structure_tf_source,
+        pacing_mode=pacing_mode,
+        target_realtime_factor=_positive_number(
+            _required(data, "target_realtime_factor", "simulation"),
+            "simulation.target_realtime_factor",
+        ),
         max_frames=max_frames,
     )
 
