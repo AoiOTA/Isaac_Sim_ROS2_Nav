@@ -19,6 +19,18 @@ from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_robot_runtime_files
 
 
+_TELEOP_SPEED_ARGUMENTS = (
+    ('teleop_linear_speed', 'linear_speed'),
+    ('teleop_angular_speed', 'angular_speed'),
+    ('teleop_linear_speed_step', 'linear_speed_step'),
+    ('teleop_angular_speed_step', 'angular_speed_step'),
+    ('teleop_min_linear_speed', 'min_linear_speed'),
+    ('teleop_min_angular_speed', 'min_angular_speed'),
+    ('teleop_max_linear_speed', 'max_linear_speed'),
+    ('teleop_max_angular_speed', 'max_angular_speed'),
+)
+
+
 def _shutdown_if_gate_exited(context):
     """Stop the stack on gate failure without re-emitting global shutdown."""
     if context.is_shutdown:
@@ -268,14 +280,31 @@ def _launch_setup(context):
             if not terminal_wrapper.is_file():
                 raise RuntimeError(
                     f'Teleop terminal wrapper not found: {terminal_wrapper}')
+            teleop_arguments = []
+            for launch_name, parameter_name in _TELEOP_SPEED_ARGUMENTS:
+                value = LaunchConfiguration(launch_name).perform(
+                    context).strip()
+                if not value:
+                    raise RuntimeError(f'{launch_name} must not be empty')
+                teleop_arguments.append(f'{parameter_name}:={value}')
             try:
-                terminal_command = teleop_terminal_command(run_teleop)
+                terminal_command = teleop_terminal_command(
+                    run_teleop,
+                    arguments=teleop_arguments,
+                )
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
-            actions.append(ExecuteProcess(
-                cmd=[str(terminal_wrapper), *terminal_command],
-                output='screen',
-            ))
+            actions.extend([
+                ExecuteProcess(
+                    cmd=[str(terminal_wrapper), *terminal_command],
+                    output='screen',
+                ),
+                LogInfo(msg=(
+                    'Mapping Teleop is running in a separate terminal.\n'
+                    'Click the window titled "Isaac Nav Mapping Teleop"\n'
+                    'before pressing W/A/S/D or the arrow keys.'
+                )),
+            ])
     return actions
 
 
@@ -328,6 +357,20 @@ def generate_launch_description():
             'use_teleop',
             default_value='auto',
             description='auto, true, or false; only Mapping may enable it'),
+        DeclareLaunchArgument('teleop_linear_speed', default_value='0.50'),
+        DeclareLaunchArgument('teleop_angular_speed', default_value='0.80'),
+        DeclareLaunchArgument(
+            'teleop_linear_speed_step', default_value='0.05'),
+        DeclareLaunchArgument(
+            'teleop_angular_speed_step', default_value='0.10'),
+        DeclareLaunchArgument(
+            'teleop_min_linear_speed', default_value='0.10'),
+        DeclareLaunchArgument(
+            'teleop_min_angular_speed', default_value='0.20'),
+        DeclareLaunchArgument(
+            'teleop_max_linear_speed', default_value='1.00'),
+        DeclareLaunchArgument(
+            'teleop_max_angular_speed', default_value='1.50'),
         DeclareLaunchArgument(
             'project_root',
             default_value=EnvironmentVariable(
