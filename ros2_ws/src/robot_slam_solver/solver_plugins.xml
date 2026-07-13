@@ -1,0 +1,10 @@
+<library path="configurable_ceres_solver_plugin">
+  <class
+    name="robot_slam_solver::ConfigurableCeresSolver"
+    type="robot_slam_solver::ConfigurableCeresSolver"
+    base_class_type="karto::ScanSolver">
+    <description>
+      Slam Toolbox 2.8.5 Ceres solver with validated ceres_num_threads.
+    </description>
+  </class>
+</library>

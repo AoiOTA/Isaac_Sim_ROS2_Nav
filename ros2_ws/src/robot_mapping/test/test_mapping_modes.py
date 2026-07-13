@@ -22,6 +22,9 @@ def test_mapping_and_localization_configs_have_exclusive_semantics():
     assert localization['throttle_scans'] == 2
     assert localization['minimum_time_interval'] == 0.20
     for params in (mapping, localization):
+        assert params['solver_plugin'] == (
+            'robot_slam_solver::ConfigurableCeresSolver')
+        assert params['ceres_num_threads'] == 12
         assert params['map_frame'] == 'map'
         assert params['odom_frame'] == 'odom'
         assert params['base_frame'] == 'base_link'
@@ -55,9 +58,14 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'use_lifecycle_manager': True" in localization_source
     assert 'EmitEvent' not in localization_source
     assert 'ChangeState' not in localization_source
+    for source in (mapping_source, localization_source):
+        assert "DeclareLaunchArgument('ceres_num_threads', default_value='12')" \
+            in source
+        assert "'ceres_num_threads': ceres_num_threads" in source
 
 
 def test_localization_package_declares_single_lifecycle_owner_dependency():
     package = (PACKAGE_ROOT / 'package.xml').read_text(encoding='utf-8')
 
     assert package.count('<exec_depend>nav2_lifecycle_manager</exec_depend>') == 1
+    assert '<exec_depend>robot_slam_solver</exec_depend>' in package

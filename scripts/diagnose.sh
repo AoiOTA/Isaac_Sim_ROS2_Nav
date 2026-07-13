@@ -309,7 +309,7 @@ isaac_command="$(registered_command isaac || true)"
 ros_command="$(registered_command ros || true)"
 rviz_command="$(registered_command rviz || true)"
 operation=""
-for candidate in mapping incremental_mapping localization navigation; do
+for candidate in incremental_mapping mapping localization navigation; do
   if [[ "${ros_command}" == *"${candidate}_bringup.launch.py"* ]]; then
     operation="${candidate}"
     break
@@ -333,11 +333,24 @@ elif [[ "${runtime_mode}" == headless ]]; then
 else
   camera_profile="monitoring"
 fi
-if [[ -n "${isaac_command}" ]]; then
+nav2_profile="unavailable"
+ceres_num_threads="unavailable"
+if [[ -n "${ros_command}" ]]; then
+  nav2_profile="stable"
+  if [[ "${ros_command}" =~ nav2_profile:=([^[:space:]]+) ]]; then
+    nav2_profile="${BASH_REMATCH[1]}"
+  fi
+  ceres_num_threads="12"
+  if [[ "${ros_command}" =~ ceres_num_threads:=([^[:space:]]+) ]]; then
+    ceres_num_threads="${BASH_REMATCH[1]}"
+  fi
+fi
+if [[ -n "${isaac_command}" && -n "${ros_command}" ]]; then
   summary_result PASS "runtime modes" \
-    "operation=${operation:-none}, odom=${odometry_mode}, tf=${structure_tf_source}, pacing=${pacing_mode}, ${runtime_mode}, camera=${camera_profile}"
+    "operation=${operation:-none}, odom=${odometry_mode}, tf=${structure_tf_source}, pacing=${pacing_mode}, ${runtime_mode}, camera=${camera_profile}, nav2=${nav2_profile}, ceres_threads=${ceres_num_threads}"
 else
-  summary_result WARN "runtime modes" "Isaac is not registered"
+  summary_result WARN "runtime modes" \
+    "Isaac/ROS pair is incomplete; operation=${operation:-none}, nav2=${nav2_profile}, ceres_threads=${ceres_num_threads}"
 fi
 if [[ -n "${rviz_command}" ]]; then
   summary_result PASS "RViz camera display" \

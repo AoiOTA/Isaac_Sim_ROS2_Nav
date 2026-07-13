@@ -3,11 +3,19 @@ from pathlib import Path
 import pytest
 from robot_bringup.mode_contract import posegraph_prefix
 from robot_bringup.mode_contract import validate_mode
+from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_robot_runtime_files
 import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_nav2_profiles_are_bounded_and_normalized():
+    assert validate_nav2_profile(' Stable ') == 'stable'
+    assert validate_nav2_profile('PERFORMANCE') == 'performance'
+    with pytest.raises(ValueError, match='nav2_profile'):
+        validate_nav2_profile('benchmark-custom')
 
 
 def test_three_tf_ownership_modes_are_accepted():
@@ -157,6 +165,13 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
     assert "executable='nav2_activation_gate'" in core_source
     assert "DeclareLaunchArgument('autostart', default_value='false')" \
         in nav_source
+    assert "parameters=[params_file, profile_params_file]" in nav_source
+    assert "DeclareLaunchArgument('nav2_profile', default_value='stable')" \
+        in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
+    assert "DeclareLaunchArgument('nav2_profile_params_file', default_value='')" \
+        in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
+    assert 'nav2_profile_params_file must be an existing YAML file' \
+        in core_source
 
 
 def test_incremental_and_localization_modes_include_initial_pose():
@@ -204,6 +219,21 @@ def test_core_launch_manages_rviz_and_mapping_only_teleop():
     assert "DeclareLaunchArgument(\n            'use_rviz'" in source
     assert "DeclareLaunchArgument(\n            'rviz_config'" in source
     assert "DeclareLaunchArgument(\n            'use_teleop'" in source
+
+
+def test_all_bringup_wrappers_forward_configurable_ceres_threads():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    core = (launch_dir / 'ros_stack.launch.py').read_text(encoding='utf-8')
+    assert "DeclareLaunchArgument('ceres_num_threads', default_value='12')" \
+        in core
+    for operation in (
+            'mapping', 'incremental_mapping', 'localization', 'navigation'):
+        wrapper = (
+            launch_dir / f'{operation}_bringup.launch.py'
+        ).read_text(encoding='utf-8')
+        assert "DeclareLaunchArgument('ceres_num_threads', default_value='12')" \
+            in wrapper
+        assert "'ceres_num_threads': LaunchConfiguration(" in wrapper
 
 
 def test_mapping_launches_forward_all_runtime_teleop_speed_arguments():

@@ -799,6 +799,11 @@ def _runtime_metadata(
         "runtime_mode": "headless" if headless else "gui",
         "camera_profile": camera_profile,
         "camera_rviz_enabled": "rviz" in commands,
+        "nav2_profile": launch_option(ros, "nav2_profile") or "stable",
+        "nav2_profile_params_file": launch_option(
+            ros, "nav2_profile_params_file"
+        ),
+        "ceres_num_threads": launch_option(ros, "ceres_num_threads") or "12",
         "registered_process_cmdlines": commands,
     }
 
@@ -1295,7 +1300,12 @@ def _runtime_ros_snapshot(node: Any, timeout_s: float = 1.5) -> dict[str, Any]:
             lifecycle[name] = "unavailable"
 
     parameter_requests = {
-        "controller_server": ("controller_frequency",),
+        "controller_server": (
+            "controller_frequency",
+            "FollowPath.batch_size",
+            "FollowPath.time_steps",
+            "FollowPath.model_dt",
+        ),
         "slam_toolbox": ("solver_plugin", "ceres_num_threads"),
         "collision_monitor": ("scan.source_timeout",),
         "velocity_smoother": ("smoothing_frequency",),
