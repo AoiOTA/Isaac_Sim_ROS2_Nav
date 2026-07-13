@@ -86,5 +86,11 @@ def test_topic_and_qos_contracts_are_absolute_and_encoded():
     qos = load_qos_profiles(ROOT / "isaac_sim/configs/ros2_bridge/qos.yaml")
     assert topics["pointcloud"] == "/lidar/points_raw"
     assert topics["frames"]["base"] == "base_link"
+    assert topics["camera_front_image"] == "/camera/front/image_raw"
+    assert topics["camera_front_info"] == "/camera/front/camera_info"
+    assert topics["frames"]["camera_front_optical"] == (
+        "camera_front_optical_frame"
+    )
     assert '"reliability":"bestEffort"' in qos["sensor_data"]
+    assert '"depth":2' in qos["camera_sensor_data"]
     assert '"durability":"transientLocal"' in qos["static_tf"]

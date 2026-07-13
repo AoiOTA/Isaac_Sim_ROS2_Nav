@@ -23,13 +23,20 @@
       prefix="${prefix}" parent="base_link" child="camera_link"
       xyz="${camera_mount_xyz}"/>
     <xacro:fixed_frame
+      prefix="${prefix}" parent="camera_link" child="camera_front_link"
+      xyz="0 0 0"/>
+    <xacro:fixed_frame
+      prefix="${prefix}" parent="camera_front_link"
+      child="camera_front_optical_frame" xyz="0 0 0"
+      rpy="-1.57079632679 0 -1.57079632679"/>
+    <xacro:fixed_frame
       prefix="${prefix}" parent="camera_link" child="camera_left_link"
       xyz="0 0.060 0"/>
     <xacro:fixed_frame
       prefix="${prefix}" parent="camera_link" child="camera_right_link"
       xyz="0 -0.060 0"/>
 
-    <!-- REP-103 optical frame: x right, y down, z forward. -->
+    <!-- REP-103 optical frames: x right, y down, z forward. -->
     <xacro:fixed_frame
       prefix="${prefix}" parent="camera_left_link"
       child="camera_left_optical_frame" xyz="0 0 0"

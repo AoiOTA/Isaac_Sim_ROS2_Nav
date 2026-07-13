@@ -40,7 +40,7 @@ spawn:
   selected: mapping_start
 
 ros2:
-  domain_id: 0
+  domain_id: 42
   rmw_implementation: rmw_fastrtps_cpp
   namespace: ""
 

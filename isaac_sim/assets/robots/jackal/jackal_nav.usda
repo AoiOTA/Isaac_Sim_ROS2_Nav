@@ -47,6 +47,18 @@ over "jackal"
             double3 xformOp:translate = (0.247, 0.000, 0.218)
             uniform token[] xformOpOrder = ["xformOp:translate"]
 
+            def Xform "camera_front_link"
+            {
+                double3 xformOp:translate = (0.000, 0.000, 0.000)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+
+                def Xform "camera_front_optical_frame"
+                {
+                    quatf xformOp:orient = (0.5, -0.5, 0.5, -0.5)
+                    uniform token[] xformOpOrder = ["xformOp:orient"]
+                }
+            }
+
             def Xform "camera_left_link"
             {
                 double3 xformOp:translate = (0.000, 0.060, 0.000)

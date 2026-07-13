@@ -39,7 +39,13 @@ from isaac_sim.src.robot.spawn_pose_manager import (
 from isaac_sim.src.robot.articulation_runtime import (
     load_articulation_physics_config,
 )
-from isaac_sim.src.sensors.sensor_factory import _load_camera, _load_imu, _load_lidar
+from isaac_sim.src.sensors.sensor_factory import (
+    CAMERA_PROFILE_NAMES,
+    _load_camera,
+    _load_imu,
+    _load_lidar,
+    resolve_camera_selection,
+)
 from isaac_sim.src.stage.asset_validator import validate_robot_articulation
 from isaac_sim.src.stage.asset_validator import validate_sensor_frames
 from isaac_sim.src.stage.physics_setup import (
@@ -98,6 +104,15 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="enable or disable the configured deterministic dynamic obstacle set",
     )
+    parser.add_argument(
+        "--camera-profile",
+        choices=CAMERA_PROFILE_NAMES,
+        default=None,
+        help=(
+            "front RGB Camera profile; default is monitoring in GUI and off "
+            "in headless mode"
+        ),
+    )
     return parser
 
 
@@ -118,7 +133,10 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         os.environ["ISAAC_NAV__SIMULATION__MAX_FRAMES"] = str(args.max_steps)
 
 
-def validate_configuration(config: ProjectConfig) -> tuple[object, object]:
+def validate_configuration(
+    config: ProjectConfig,
+    camera_profile: str | None = None,
+) -> tuple[object, object, object]:
     """Validate configuration without importing USD/Kit modules."""
 
     config.require_runtime_paths()
@@ -135,7 +153,11 @@ def validate_configuration(config: ProjectConfig) -> tuple[object, object]:
 
     lidar = _load_lidar(config.files.lidar)
     imu = _load_imu(config.files.imu)
-    _load_camera(config.files.camera)
+    camera_selection = resolve_camera_selection(
+        _load_camera(config.files.camera),
+        camera_profile,
+        headless=config.simulation.headless,
+    )
     load_articulation_physics_config(config.files.robot)
     specifications = [
         control_graph_spec(config),
@@ -155,7 +177,7 @@ def validate_configuration(config: ProjectConfig) -> tuple[object, object]:
         config.simulation.structure_tf_source,
     )
     dynamic_scenario = load_dynamic_scenario(config.files.dynamic_obstacles)
-    return selected_pose, dynamic_scenario
+    return selected_pose, dynamic_scenario, camera_selection
 
 
 def validate_composed_stage(config: ProjectConfig, stage: object) -> None:
@@ -180,13 +202,15 @@ def validate_composed_stage(config: ProjectConfig, stage: object) -> None:
     validate_sensor_frames(stage, config.robot.base_link_prim)
 
 
-def validate_project(config: ProjectConfig) -> tuple[object, object]:
+def validate_project(config: ProjectConfig) -> tuple[object, object, object]:
     """Perform complete validation for the no-Kit ``--validate-only`` path."""
 
-    selected_pose, dynamic_scenario = validate_configuration(config)
+    selected_pose, dynamic_scenario, camera_selection = validate_configuration(
+        config
+    )
     stage = SceneComposer(config).compose(save=False)
     validate_composed_stage(config, stage)
-    return selected_pose, dynamic_scenario
+    return selected_pose, dynamic_scenario, camera_selection
 
 
 def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
@@ -200,7 +224,12 @@ def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     app.update()
 
 
-def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) -> None:
+def run(
+    config: ProjectConfig,
+    selected_pose: object,
+    dynamic_scenario: object,
+    camera_selection: object,
+) -> None:
     configure_process_environment(config)
 
     from isaacsim import SimulationApp
@@ -219,6 +248,8 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
     finally:
         sys.argv = original_argv
     runtime = None
+    sensors = None
+    camera_graph_paths: tuple[str, ...] = ()
     node = None
     rclpy_started = False
     try:
@@ -278,7 +309,10 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
             config.files.robot
         )
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
-        sensors = SensorFactory(config).create_all()
+        sensors = SensorFactory(
+            config,
+            camera_profile=camera_selection.profile.name,
+        ).create_all()
         dynamic_manager = DynamicObstacleManager(stage, dynamic_scenario)
         collision_monitor = CollisionMonitor(config.robot.base_link_prim, node)
         runtime.reset()
@@ -305,9 +339,11 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
 
         from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
 
-        graph_references: dict[str, object] = {
-            "all": RosGraphBuilder(config, sensors).build()
-        }
+        graph_handles = RosGraphBuilder(config, sensors).build()
+        graph_references: dict[str, object] = {"all": graph_handles}
+        camera_graph_paths = tuple(
+            camera.graph_path for camera in sensors.cameras
+        )
 
         from isaac_sim.src.bridge.reset_service import ResetServiceBridge
         from isaac_sim.src.ground_truth.recorder import GroundTruthRecorder
@@ -383,6 +419,7 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
             f"odometry={config.simulation.odometry_mode}, "
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, dynamic={dynamic_scenario.enabled}, "
+            f"camera={camera_selection.profile.name}, "
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
@@ -406,6 +443,29 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
                 runtime.stop()
             except Exception as exc:
                 print(f"warning: failed to stop simulation cleanly: {exc}", file=sys.stderr)
+        if camera_graph_paths:
+            try:
+                from isaac_sim.graphs.camera_graph import destroy_camera_graphs
+
+                destroy_camera_graphs(camera_graph_paths)
+                # Camera Helper writer detach is queued by graph destruction.
+                # Drain Kit work before deleting its Render Product owner.
+                app.update()
+                app.update()
+            except Exception as exc:
+                print(
+                    f"warning: failed to destroy Camera graphs cleanly: {exc}",
+                    file=sys.stderr,
+                )
+        if sensors is not None:
+            try:
+                sensors.close_camera_resources()
+                app.update()
+            except Exception as exc:
+                print(
+                    f"warning: failed to release Camera resources cleanly: {exc}",
+                    file=sys.stderr,
+                )
         if node is not None:
             node.destroy_node()
         if rclpy_started:
@@ -421,7 +481,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
     configure_process_environment(config)
-    selected_pose, dynamic_scenario = validate_configuration(config)
+    selected_pose, dynamic_scenario, camera_selection = validate_configuration(
+        config, args.camera_profile
+    )
     if args.dynamic_obstacles is not None:
         dynamic_scenario = replace(
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
@@ -438,10 +500,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"odometry={config.simulation.odometry_mode}, "
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, "
+            f"camera={camera_selection.profile.name}, "
             f"dynamic_obstacles={dynamic_scenario.enabled}, {calibration})"
         )
         return 0
-    run(config, selected_pose, dynamic_scenario)
+    run(config, selected_pose, dynamic_scenario, camera_selection)
     return 0
 
 
