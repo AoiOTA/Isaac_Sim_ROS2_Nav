@@ -60,6 +60,19 @@ def test_every_workflow_has_map_frame_robot_tf_and_sensor_qos(name):
         durability='Volatile',
     )
     assert _named(config, 'Raw LiDAR PointCloud2')['Enabled'] is False
+    _assert_topic(
+        _named(config, 'Robot Front Camera'),
+        '/camera/front/image_raw',
+        reliability='Best Effort',
+        durability='Volatile',
+    )
+    assert _named(config, 'Robot Front Camera')['Topic']['Depth'] == 2
+    assert _named(config, 'Robot Front Camera')['Enabled'] is True
+    assert _named(config, 'Robot Front Camera')['Normalize Range'] is False
+    assert _named(config, 'Robot Front Camera')['Transport Hint'] == 'raw'
+    window = config['Window Geometry']
+    assert window['Robot Front Camera']['collapsed'] is False
+    assert len(window['QMainWindow State']) > 100
 
 
 def test_mapping_workflow_uses_live_map_and_no_navigation_goal_tool():
@@ -126,3 +139,17 @@ def test_robot_description_cmake_installs_all_rviz_configs():
     cmake = (PACKAGE_ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
     assert 'install(DIRECTORY' in cmake
     assert 'rviz' in cmake
+
+
+def test_dedicated_camera_view_uses_front_image_and_optical_frame():
+    config = _config('camera_view.rviz')
+
+    _assert_topic(
+        _named(config, 'Robot Front Camera'),
+        '/camera/front/image_raw',
+        reliability='Best Effort',
+        durability='Volatile',
+    )
+    assert config['Visualization Manager']['Global Options'][
+        'Fixed Frame'] == 'camera_front_optical_frame'
+    assert _named(config, 'Robot Front Camera')['Enabled'] is True
