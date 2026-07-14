@@ -110,7 +110,9 @@ def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec
         ("PublishRGB.inputs:queueSize", camera.rgb.queue_size),
         ("PublishRGB.inputs:qosProfile", contract.qos_profile),
         ("PublishRGB.inputs:useSystemTime", False),
-        ("PublishRGB.inputs:resetSimulationTimeOnStop", False),
+        # Match the installed Isaac Sim 6.0.1 ros2.nodes 1.18.13 helper
+        # default so every RTX publisher uses one simulation-time epoch policy.
+        ("PublishRGB.inputs:resetSimulationTimeOnStop", True),
         ("PublishCameraInfo.inputs:enabled", True),
         (
             "PublishCameraInfo.inputs:renderProductPath",
@@ -122,7 +124,7 @@ def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec
         ("PublishCameraInfo.inputs:queueSize", camera.camera_info.queue_size),
         ("PublishCameraInfo.inputs:qosProfile", contract.qos_profile),
         ("PublishCameraInfo.inputs:useSystemTime", False),
-        ("PublishCameraInfo.inputs:resetSimulationTimeOnStop", False),
+        ("PublishCameraInfo.inputs:resetSimulationTimeOnStop", True),
     )
     return GraphSpec(camera.graph_path, nodes, connections, values)
 

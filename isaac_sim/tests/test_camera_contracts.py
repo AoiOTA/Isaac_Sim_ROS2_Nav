@@ -320,6 +320,10 @@ def test_camera_graph_publishes_rgb_and_info_from_one_render_product():
     assert values["PublishRGB.inputs:type"] == "rgb"
     assert values["PublishRGB.inputs:useSystemTime"] is False
     assert values["PublishCameraInfo.inputs:useSystemTime"] is False
+    assert values["PublishRGB.inputs:resetSimulationTimeOnStop"] is True
+    assert (
+        values["PublishCameraInfo.inputs:resetSimulationTimeOnStop"] is True
+    )
     assert values["PublishRGB.inputs:frameId"] == contract.optical_frame
     assert values["PublishCameraInfo.inputs:frameId"] == contract.optical_frame
     assert values["PublishRGB.inputs:queueSize"] == 2
