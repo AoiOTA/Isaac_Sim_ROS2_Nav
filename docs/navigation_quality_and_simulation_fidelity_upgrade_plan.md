@@ -3133,8 +3133,25 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   对称标准 Cylinder；真实 180 步启动中 `customGeometry` 警告为 0。32/4 与 32/16
   保持直行/停车等价，32/4 的 high-tier 左右旋转更高、Reset latency 无 16 的
   9.07 秒离群点，且 TGS 警告从 1 降为 0，因此冻结 solver `32/4`。低速左右转向
-  不对称、接触材料、Joint Axis、有效轮距、SimplePlane/Realistic A/B、仿真时间
-  15 分钟门仍未完成，第三阶段尚未退出。
+  不对称、接触材料、有效轮距和 SimplePlane/Realistic A/B 尚未完成，第三阶段
+  仍未退出。
+- 第三阶段时间进度：确认安装版 ROS 2 helper 默认
+  `resetSimulationTimeOnStop=true`；项目此前显式 false 会选择 monotonic 查询，
+  且本轮日志中该查询与相邻 Fabric 样本缺失同时出现。false 的 30 分钟基线三类
+  计数为 `93 / 0 / 93`；改为 true 后，
+  Camera Off、Monitoring 短窗及 900 秒 headless soak 均为 `0 / 0 / 0`，长跑
+  `/clock` 51130 样本、点云 8523 样本均无重复/回退。14 次事务 Reset 的
+  Clock/Odom/JointState 也无回退，因此已采用 true；真正 Timeline Stop→Play 和
+  GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成。
+- 第三阶段轮地审计：官方源与项目原始 Jackal SHA256 一致；四轮 Joint Axis、
+  局部旋转、位置、Cylinder 轴和控制器 `[left,right]` 映射完全对称，静态证据不
+  支持“某侧反轴”。几何轮距 `0.37559 m` 与 USD 轮心一致，但五份 32/4 报告拟合
+  总体有效轮距约 `1.0124 m`，且低速左右非线性明显，不能只靠单一轮距修复。
+  Warehouse 地面没有显式材质绑定，轮材质仅为 scalar `0.2/0.2`；公开通用刚体
+  USD/API 未发现各向异性摩擦。Warehouse 的 friction correlation/offset 阈值
+  `.00025/.0004` 又比安装版 schema fallback `.025/.04` 小 100 倍，下一步必须先
+  做单轮正负速度验证、阈值 A/B、显式材质 A/B，再做锁定输入的 SimplePlane/
+  Warehouse 和有效轮距标定。
 - 证据纪律：调参 JSON 继续由 Git 忽略，摘要、命令、报告 SHA256、失败样本和边界
   回填到 `docs/verification.md`；正式统计必须在 clean commit、冻结输入和独立输出
   集合上重跑，不混入上述调参样本。
@@ -3142,4 +3159,5 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   只在有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致时发布，
   且文档明确这不是 PhysX 引擎内部状态直接读回。真实错误环境标签负向用例在
   创建运动 `/cmd_vel` publisher 前失败，正确 Warehouse + Ideal 再次完成 14/14；
-  这轮日志仍有 24 次仿真时间单调查询警告，因此第三阶段继续留在时间根因诊断。
+  该历史运行的 24 次单调查询警告现已由上面的独立长时 A/B 定位，不能再当成
+  当前 true 配置的警告计数。

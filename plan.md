@@ -14,7 +14,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 该路径及原始系统目标来自现有方案。
 
-## 0. 修订说明与当前状态（2026-07-13）
+## 0. 修订说明与当前状态（2026-07-14）
 
 本文最初是项目从零搭建时的完整设计方案，后续章节仍保留当时的目标、SOP 和最终统计验收标准，便于回溯为什么采用当前架构。它不是“所有目标均已验收”的声明；第一次使用仓库请先看 [`docs/user_manual.md`](docs/user_manual.md)，逐文件理解请看 [`docs/repository_index.md`](docs/repository_index.md)，当前实测证据和明确边界以 [`docs/verification.md`](docs/verification.md) 为准。
 
@@ -33,7 +33,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 | --- | --- | --- | --- |
 | 1 Jackal 物理底盘 | 已实现 | 官方 Warehouse + 项目 Jackal 可启动，唯一 PhysicsScene、固定出生点与 Reset 已运行 | 更换场景后的全资产复验 |
 | 2 `/cmd_vel` 控制 | 已实现 | Teleop、Nav2、停车与 Reset 路径已运行 | 不同地面材料和载荷的系统辨识 |
-| 3 `/clock` | 已实现 | RTF/频率/消息年龄已由 Profiler 实测 | 长时间压力运行 |
+| 3 `/clock` | 已实现，RTX helper 时间策略已对齐供应商默认 | 15 分钟 headless soak 中 `/clock` 51130 样本无重复/回退，三类 Kit 时间样本警告均为 0；Camera Monitoring 短窗同样为 0 | 真正 Timeline Stop→Play 与 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵 |
 | 4 TF 与 Ideal Odom | 已实现 | Ideal 导航、Reset、TF freshness 已运行 | 计划中的全部长时统计矩阵 |
 | 5 LiDAR 与 `/scan` | 已实现 | 正常扫描及丢包/暂停/错误 Frame 故障矩阵已运行 | 更广传感器噪声与遮挡矩阵 |
 | 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |

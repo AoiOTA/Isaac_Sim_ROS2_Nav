@@ -143,6 +143,14 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/simulation/reset` | `std_srvs/srv/Trigger` | Isaac Reset bridge | operator/experiment runner | deterministic reset request |
 | `/initial_pose/reseed` | `std_srvs/srv/Trigger` | calibrated initial-pose node | Activation Gate reset recovery | arm calibrated pose after a post-request scan; preserves valid manual ownership |
 
+All Isaac publishers use simulation time. The RTX LiDAR, RGB, and CameraInfo
+helpers explicitly keep the Isaac Sim 6.0.1 vendor default
+`resetSimulationTimeOnStop=true`; they must not switch to system time or use a
+different epoch policy from `/clock`. `/simulation/reset` is pause → one physics
+step → play, so it preserves the current Timeline epoch. A real Timeline
+Stop→Play may start a new epoch and must be treated as a lifecycle boundary;
+cross-epoch PointCloud/Image samples are not a supported continuity contract.
+
 The PointCloud-to-LaserScan projection uses `base_link` as its target frame,
 height `[0.05, 0.50] m`, range `[0.30, 25.0] m`, a full `[-pi, pi]` field of
 view, and a `0.5°` angular increment. The optional self filter is disabled by
