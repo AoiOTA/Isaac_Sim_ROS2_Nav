@@ -79,6 +79,7 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
     assert help_result.returncode == 0, help_result.stderr
     assert '--environment Warehouse|SimplePlane|all' in help_result.stdout
     assert '--repeats N' in help_result.stdout
+    assert '--robot-config FILE' in help_result.stdout
     assert '--output-dir DIR' in help_result.stdout
     assert '36' in help_result.stdout
 
@@ -96,6 +97,26 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
           '--output-dir', '/tmp/out'),
          '--repeats must be an integer in [1, 100]'),
         (('--repeats', '1'), '--output-dir is required'),
+        (('--robot-config',), '--robot-config requires a value'),
+        (
+            ('--robot-config', '', '--output-dir', '/tmp/out'),
+            '--robot-config requires a non-empty value',
+        ),
+        (
+            ('--output-dir', '/tmp/out\rhidden'),
+            '--output-dir must not contain tabs, carriage returns, or '
+            'newlines',
+        ),
+        (
+            (
+                '--robot-config',
+                '/tmp/robot.yaml\rhidden',
+                '--output-dir',
+                '/tmp/out',
+            ),
+            '--robot-config must not contain tabs, carriage returns, or '
+            'newlines',
+        ),
         (('--unknown',), 'unknown contact A/B argument'),
     ],
 )
@@ -131,6 +152,160 @@ def test_contact_ab_matrix_locks_the_ordered_inputs_and_runtime_modes():
     )
     assert '"${SCRIPT_DIR}/run_motion_baseline.sh"' in source
     assert '--odometry-mode ideal' in source
+
+
+def test_explicit_robot_config_must_be_canonical_absolute_regular_file(
+    tmp_path,
+):
+    function = _shell_function_source('validate_robot_config_path')
+    robot = tmp_path / 'robot.yaml'
+    robot.write_text('schema_version: 2\n', encoding='utf-8')
+    linked = tmp_path / 'robot-link.yaml'
+    linked.symlink_to(robot)
+    directory = tmp_path / 'directory'
+    directory.mkdir()
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{function}\n'
+        f'validate_robot_config_path {str(robot)!r}\n'
+        f'if validate_robot_config_path {str(linked)!r}; then exit 91; fi\n'
+        f'if validate_robot_config_path {str(directory)!r}; then exit 92; fi\n'
+        'if validate_robot_config_path relative.yaml; then exit 93; fi\n'
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'canonical absolute regular file' in result.stderr
+
+
+@pytest.mark.parametrize(
+    'index_flag',
+    ('--skip-worktree', '--assume-unchanged'),
+)
+def test_tracked_input_matches_head_even_when_index_hides_change(
+    tmp_path,
+    index_flag,
+):
+    repository = tmp_path / 'repository'
+    repository.mkdir()
+    protocol = repository / 'protocol.yaml'
+    subprocess.run(
+        ['git', 'init', '-q'],
+        cwd=repository,
+        check=True,
+    )
+    protocol.write_text('committed: true\n', encoding='utf-8')
+    subprocess.run(['git', 'add', 'protocol.yaml'], cwd=repository, check=True)
+    subprocess.run(
+        [
+            'git',
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.invalid',
+            'commit',
+            '-qm',
+            'fixture',
+        ],
+        cwd=repository,
+        check=True,
+    )
+    function = _shell_function_source('require_tracked_input')
+    assert 'git hash-object --no-filters -- "${path}"' in function
+    unchanged = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'PROJECT_ROOT={str(repository)!r}\n'
+        'die() { printf "%s\\n" "$*" >&2; exit 64; }\n'
+        f'{function}\n'
+        f'require_tracked_input {str(protocol)!r}\n'
+    )
+    assert unchanged.returncode == 0, unchanged.stderr
+
+    subprocess.run(
+        ['git', 'update-index', index_flag, 'protocol.yaml'],
+        cwd=repository,
+        check=True,
+    )
+    protocol.write_text('committed: false\n', encoding='utf-8')
+    hidden_status = subprocess.run(
+        ['git', 'status', '--porcelain'],
+        cwd=repository,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert hidden_status.stdout == ''
+    changed = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'PROJECT_ROOT={str(repository)!r}\n'
+        'die() { printf "%s\\n" "$*" >&2; exit 64; }\n'
+        f'{function}\n'
+        f'require_tracked_input {str(protocol)!r}\n'
+    )
+    assert changed.returncode != 0
+    assert 'does not match the committed HEAD blob' in changed.stderr
+
+
+def test_tracked_input_rejects_symlink_type_from_head(tmp_path):
+    repository = tmp_path / 'repository'
+    repository.mkdir()
+    target = repository / 'target.yaml'
+    target.write_text('target: true\n', encoding='utf-8')
+    protocol = repository / 'protocol.yaml'
+    protocol.symlink_to(target.name)
+    subprocess.run(['git', 'init', '-q'], cwd=repository, check=True)
+    subprocess.run(['git', 'add', '.'], cwd=repository, check=True)
+    subprocess.run(
+        [
+            'git',
+            '-c',
+            'user.name=Test',
+            '-c',
+            'user.email=test@example.invalid',
+            'commit',
+            '-qm',
+            'fixture',
+        ],
+        cwd=repository,
+        check=True,
+    )
+    function = _shell_function_source('require_tracked_input')
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'PROJECT_ROOT={str(repository)!r}\n'
+        'die() { printf "%s\\n" "$*" >&2; exit 64; }\n'
+        f'{function}\n'
+        f'require_tracked_input {str(protocol)!r}\n'
+    )
+    assert result.returncode != 0
+    assert 'committed regular file' in result.stderr
+
+
+def test_explicit_robot_config_is_the_only_additional_runtime_override():
+    source = SCRIPT.read_text(encoding='utf-8')
+    contract = _shell_function_source('project_runtime_contract')
+    assert 'ISAAC_NAV__FILES__ROBOT' in contract
+    launch = source[
+        source.index('launch_isaac() {'):
+        source.index('launch_motion_runner() {')
+    ]
+    clear_position = launch.index('clear_inherited_config_overrides')
+    project_position = launch.index('export ISAAC_NAV_PROJECT_CONFIG=')
+    contact_position = launch.index(
+        'export ISAAC_NAV__FILES__CONTACT_PROFILE='
+    )
+    robot_position = launch.index('export ISAAC_NAV__FILES__ROBOT=')
+    assert (
+        clear_position < project_position < contact_position < robot_position
+    )
+    nested_exports = [
+        line.strip()
+        for line in launch.splitlines()
+        if line.strip().startswith('export ISAAC_NAV__')
+    ]
+    assert nested_exports == [
+        'export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"',
+        'export ISAAC_NAV__FILES__ROBOT="${robot_config}"',
+    ]
 
 
 def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
@@ -220,6 +395,17 @@ def test_contact_ab_matrix_clears_untrusted_nested_overrides_dynamically():
     assert result.returncode == 0, result.stderr
 
 
+def test_tsv_safe_strips_all_record_separators_dynamically():
+    function = _shell_function_source('tsv_safe')
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'{function}\n'
+        "[[ \"$(tsv_safe $'one\\rtwo\\tthree\\nfour')\" "
+        '== "one two three four" ]]\n'
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_contact_ab_matrix_reinstates_only_explicit_isaac_overrides():
     source = SCRIPT.read_text(encoding='utf-8')
     launch = source[
@@ -240,9 +426,12 @@ def test_contact_ab_matrix_reinstates_only_explicit_isaac_overrides():
 
 def test_contact_ab_matrix_locks_batch_identity_and_hashed_evidence():
     source = SCRIPT.read_text(encoding='utf-8')
+    lock = _shell_function_source('lock_batch_identity')
     assert "rev-parse --verify 'HEAD^{commit}'" in source
     assert 'symbolic-ref --quiet --short HEAD' in source
     assert 'locked_input_paths=(' in source
+    assert '"${robot_config}"' in lock
+    assert 'batch_robot_config_sha256' in lock
     assert 'batch_profile_hashes_json' in source
     run_one = source[
         source.index('run_one_condition() {'):
@@ -290,7 +479,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     isaac_log = tmp_path / 'isaac.log'
     runner_log = tmp_path / 'runner.log'
     manifest.write_text(
-        '\t'.join(f'column_{index}' for index in range(31)) + '\n'
+        '\t'.join(f'column_{index}' for index in range(40)) + '\n'
     )
     report.write_text('{"result":"success"}\n', encoding='utf-8')
     isaac_log.write_text('isaac stopped\n', encoding='utf-8')
@@ -313,6 +502,15 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         'batch_warehouse_project_sha256': 'c' * 64,
         'simple_plane_config': '/repo/simple.yaml',
         'batch_simple_plane_project_sha256': 'd' * 64,
+        'robot_config_selection': 'explicit_cli',
+        'robot_config': '/repo/robot.yaml',
+        'batch_robot_config_sha256': '9' * 64,
+        'robot_kinematics_profile_id': 'jackal_candidate_v1',
+        'robot_kinematics_lifecycle': 'experimental',
+        'robot_wheel_radius': '0.098',
+        'robot_wheel_width': '0.08',
+        'robot_geometric_track_width': '0.37559',
+        'robot_effective_track_width': '1.012',
         'current_project_config': '/repo/simple.yaml',
         'current_project_sha256': 'd' * 64,
         'current_profile_path': '/repo/legacy.yaml',
@@ -342,7 +540,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     lines = manifest.read_text(encoding='utf-8').splitlines()
     assert len(lines) == 2
     fields = lines[1].split('\t')
-    assert len(fields) == 31
+    assert len(fields) == 40
     assert fields[8] == hashlib.sha256(report.read_bytes()).hexdigest()
     assert fields[10] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
     assert fields[12] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
@@ -350,6 +548,12 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     assert fields[16] == 'b' * 64
     assert fields[18] == 'c' * 64
     assert fields[20] == 'd' * 64
+    assert fields[21] == 'explicit_cli'
+    assert fields[22] == '/repo/robot.yaml'
+    assert fields[23] == '9' * 64
+    assert fields[24] == 'jackal_candidate_v1'
+    assert fields[25] == 'experimental'
+    assert fields[26:30] == ['0.098', '0.08', '0.37559', '1.012']
 
 
 def test_output_path_symlink_rejection_runs_before_realpath_dynamically(
@@ -519,6 +723,15 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'batch_warehouse_project_sha256': 'c' * 64,
         'simple_plane_config': '/repo/simple.yaml',
         'batch_simple_plane_project_sha256': 'd' * 64,
+        'robot_config_selection': 'explicit_cli',
+        'robot_config': '/repo/robot.yaml',
+        'batch_robot_config_sha256': '9' * 64,
+        'robot_kinematics_profile_id': 'jackal_candidate_v1',
+        'robot_kinematics_lifecycle': 'experimental',
+        'robot_wheel_radius': '0.098',
+        'robot_wheel_width': '0.08',
+        'robot_geometric_track_width': '0.37559',
+        'robot_effective_track_width': '1.012',
         'physics_dir': '/repo/physics',
         'batch_profile_hashes_json': json.dumps(
             profile_hashes, sort_keys=True, separators=(',', ':')
@@ -542,6 +755,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
+    assert document['schema_version'] == 2
     assert document['actual_counts']['analysis_included_reports'] == 12
     assert document['evidence']['manifest'] == {
         'path': str(manifest),
@@ -552,6 +766,19 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'sha256': analysis_sha256,
     }
     assert set(document['evidence']) == {'manifest', 'analysis'}
+    assert document['locked_protocol_inputs']['robot_config'] == {
+        'selection': 'explicit_cli',
+        'path': '/repo/robot.yaml',
+        'sha256': '9' * 64,
+        'kinematics': {
+            'profile_id': 'jackal_candidate_v1',
+            'lifecycle': 'experimental',
+            'wheel_radius_m': 0.098,
+            'wheel_width_m': 0.08,
+            'geometric_track_width_m': 0.37559,
+            'effective_track_width_m': 1.012,
+        },
+    }
     assert not list(tmp_path.glob('.batch_summary.json.*.tmp'))
 
 
