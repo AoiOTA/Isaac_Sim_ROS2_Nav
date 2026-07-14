@@ -167,10 +167,11 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 
 | 参数组 | 内容 |
 | --- | --- |
-| `runtime_provenance.schema_version` | 当前严格 schema，值为 `3`；schema v1/v2 的旧本机报告只作历史证据，不符合当前 runner 契约 |
+| `runtime_provenance.schema_version` | 当前新运行严格要求整数 `4`；schema v3 报告仍可由离线分析器复核，但不能与 v4 样本混入同一正式统计；v1/v2 只作历史证据 |
 | `runtime_provenance.robot.config.*` | 实际 robot YAML 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.asset.*` | 实际项目 robot USD Overlay 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.solver.*` | 有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致的 position、velocity iterations，以及 `stage_articulation_usd_readback_verified=true` |
+| `runtime_provenance.robot.kinematics.*` | schema-v2 robot YAML 中的 profile ID、lifecycle、轮径、轮宽、几何轮距、有效轮距，以及完整 controller 合同已校验的只读布尔值；Realistic Wheel Odom 会用 robot 文件 SHA256 和这些数值做启动前握手 |
 | `runtime_provenance.environment.id` | 项目配置中的规范、path-safe 环境标识；底盘报告的调用方标签必须精确匹配 |
 | `runtime_provenance.environment.project_stage.*` | 项目环境 Stage 路径与 SHA256 |
 | `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
@@ -185,7 +186,12 @@ SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整
 PhysX 引擎内部状态 introspection；引擎行为必须另由受控 A/B、运动数据和警告日志
 验证。Git
 object ID 必须为 40 或 64 位十六进制。正式 runner 在字段缺失、类型不符、里程计
-模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。
+模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。Wheel Odom
+同样先读取 `/isaac_navigation_sim` 的 v4 参数；服务超时、robot path/SHA、profile、
+lifecycle、轮径/轮宽/几何轮距/有效轮距或 controller 校验标志任一不匹配时，进程
+非零退出，并且不会先创建 `/wheel/odom` publisher、JointState subscription、Reset
+service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，避免留下没有
+里程计来源的 EKF、SLAM 或 Nav2 半栈。
 `git.dirty=true` 不是自动失败：输入
 文件哈希仍精确绑定被测内容，但正式冻结报告应在 clean commit 上重跑。
 

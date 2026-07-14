@@ -25,16 +25,16 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；新矩阵证明证据链和 Reset 合同可靠，但 SimplePlane 原地旋转中心漂移 `0.297–0.350 m`、角速度平均误差 `60.1%–69.0%`，六 Profile 全部未过计划 8.7，Realistic 和候选有效轮距 A/B 仍未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v3 均已实现；真实 Warehouse 单轮诊断 8/8 硬门通过；两环境正式接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 批次 `success` 只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过；threshold/材质只形成下一轮因果候选，不能冻结 Profile 或把约 `1.012 m` 直接写回控制器 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v4 均已实现；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手；真实 Warehouse 单轮诊断 8/8 硬门通过；两环境正式接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 既有正式矩阵仍是历史 v3 且可单独复核；新 v4 与 v3 禁止混批。稳定有效轮距仍是保持行为的 `0.37559 m`，不是物理标定；批次 `success` 也只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
 | Ceres | 8/12/16/20 线程均完成 3 m 目标且控制 missed=0；保留 12 线程默认值 | 20 线程的 RTF、Scan 和 TF 延迟更差，不能据线程数推断性能更高 |
 | Camera / RViz | Camera schema v3 的严格配置、per-Prim USD authoring 与 headless 属性读回已完成；旧 schema 下 Off/Monitoring/HQ 有运行报告 | v3 尚未重跑真实静止/运动图像、RTF/GPU；`standard` 未运行，旧 HQ 约 15 Hz 不能冒充新配置验收 |
-| Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在实时报告中成立 | 本轮 12 秒报告结束时目标仍 active，没有记录该目标最终结果 |
+| Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在历史实时报告中成立；新契约用真实 rclpy 覆盖匹配、SHA 错配和 Isaac 服务超时，并在 Wheel Odom 退出时关闭整套 Realistic launch | 新 schema-v4 握手尚未完成一轮冻结候选的真实 Isaac+ROS Realistic 导航；本轮 12 秒历史报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
 | Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
-| 自动测试 | 2026-07-14 provenance schema v2 冻结点执行过完整门：root 517 passed/8 deselected、ROS 483/483、Isaac marker 6 passed，`test.sh --with-isaac` exit 0；schema v3 的 provenance/report/package 定向集合另有 69 passed，ROS 工作区重建通过 | 历史完整门不能外推到当前 schema v3 工作树；第三至第十三阶段仍在实施，代码冻结和最终正式统计前必须再次重跑完整门 |
+| 自动测试 | 代码提交 `dd58c63` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `901 passed / 1 skipped / 23 deselected`，ROS `721 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `21 passed / 230 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
 
 ## Map Manifest 与标定
 
@@ -321,6 +321,61 @@ count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 run
 `+0.035/-0.076 rad/s`，不能据此声称 skid-steer 动力学已完成。一次长时间空闲后
 首段 Reset recovery 超时被保留为失败报告；全新 Isaac 进程立即复跑 14/14
 成功，当前不放宽 30 秒或静止阈值，后续 soak/Reset 矩阵继续观察。
+
+### Robot kinematics 单一来源零行为迁移（2026-07-14）
+
+提交 `dd58c63e305eee2257f3afeb4d53ccbd9e2ff3ec` 完成运动学契约迁移。稳定
+`jackal.yaml` 从 schema v1 升为 v2，新增
+`kinematics_profile_id=jackal_legacy_geometric_v1`、
+`lifecycle=stable_baseline` 和独立 `effective_track_width`。稳定值仍为：
+
+| 字段 | 迁移前实际输入 | 迁移后稳定输入 | 行为结论 |
+| --- | ---: | ---: | --- |
+| wheel radius | `0.098 m` | `0.098 m` | 不变 |
+| geometric track width | `0.37559 m` | `0.37559 m` | USD/URDF 物理轮心不变 |
+| controller wheel distance | `0.37559 m` | `effective_track_width=0.37559 m` | Control Graph 数值不变 |
+| Wheel Odom track width | `0.37559 m` 的独立 YAML/Python 副本 | 同一 robot YAML 的 `effective_track_width=0.37559 m` | 积分数值不变，副本删除 |
+
+迁移后的失败关闭链如下：
+
+- robot loader 拒绝重复/未知/缺失键、旧 schema、非法 profile/lifecycle、非唯一或
+  非法 joint、非正/非有限几何与质量，以及不满足
+  `nominal_total_mass = base_mass + 4 × wheel_mass` 的文件；
+- Isaac DifferentialController 使用有效轮距，四个 Controller jointNames 从 robot
+  YAML 派生，并与 project config 中的三组镜像 exact 比较；
+- Robot Description 只用几何轮距布置轮心，从同一 YAML 传入实际 joint 名；非空
+  visual link prefix 也不会改写 JointState 名。当前惯量张量仍是 Jackal 基线，因此
+  不兼容的轮径、轮宽或质量会被明确拒绝，而不是冒充通用自定义机器人模型；
+- runtime provenance 升为 v4，发布 robot path/原始字节 SHA256、profile、lifecycle、
+  轮径、轮宽、几何/有效轮距及 controller 合同标志；新 motion runner 只产 v4，
+  历史 v3 只能离线单批复核；
+- Realistic Wheel Odom 在创建 `/wheel/odom`、JointState/Reset subscription、Reset
+  service 或 timer 前读取并逐项比对 Isaac v4 参数；超时或错配时非零退出，
+  OnProcessExit 随后关闭当前 Realistic launch；
+- Contact A/B 的 v4 有效轮距计算使用每份 provenance 与所选 robot 一致的真实轮径，
+  不再硬编码 `0.098 m`；历史 v3 仍锁定 canonical 半径，v3/v4 不得混批，输出记录
+  本批真实 schema。
+
+实际验证命令和结果：
+
+```text
+./scripts/build_ros2.sh
+  11 packages finished
+
+./scripts/preflight.sh
+  preflight: PASS
+
+./scripts/test.sh --with-isaac
+  root: 901 passed, 1 skipped, 23 deselected
+  ROS: 721 tests, 0 errors, 0 failures, 1 skipped
+  Isaac/USD: 21 passed, 230 deselected
+```
+
+`shellcheck` 未安装是唯一 skip。preflight 另报告 300 个 Fast DDS SHM 工件和
+20 个非 performance governor 核心；这些是后续性能实验必须记录/清理的主机状态，
+不是本轮契约测试失败。此迁移没有把拟合的约 `1.012 m` 写入 stable，也没有产生新
+物理通过结论；多速度候选、SimplePlane/Warehouse、Realistic 和接触拓扑 A/B 仍是
+第三阶段下一步。
 
 ### 可逆接触 Profile 与 SimplePlane 隔离基线（2026-07-14）
 
