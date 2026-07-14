@@ -35,6 +35,15 @@ COMPLETE_MATRIX_PROFILES = (
     "threshold_corr_0p025_offset_0p04",
     "explicit_material",
 )
+COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES = (
+    ("SimplePlane", "simple_plane_only1_v1"),
+    ("Warehouse", "warehouse_combined32_v1"),
+    ("Warehouse", "warehouse_plane_only1_v1"),
+)
+_SHIPPED_TOPOLOGY_ENVIRONMENTS = {
+    topology: environment
+    for environment, topology in COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES
+}
 CANONICAL_WHEEL_RADIUS_M = 0.098
 
 _MOTION_PROFILE_ID = "jackal_skid_steer_ab_v1"
@@ -98,6 +107,9 @@ _RUNTIME_PROVENANCE_KEYS = {
     "simulation",
     "contact",
     "git",
+}
+_RUNTIME_PROVENANCE_V5_KEYS = _RUNTIME_PROVENANCE_KEYS | {
+    "ground_topology",
 }
 _RESULT_SEGMENT_KEYS = {
     "segment_id",
@@ -165,9 +177,12 @@ class InputRecord:
     canonical_sha256: str
     runtime_provenance_schema: int
     environment_id: str
+    ground_topology_id: str | None
     contact_profile_id: str
     global_lock: dict[str, Any]
     environment_lock: dict[str, Any]
+    topology_lock: dict[str, Any] | None
+    topology_ab_contact_lock: dict[str, Any] | None
     profile_lock: dict[str, Any]
     contact_lock: dict[str, Any]
     segments: dict[str, dict[str, float]]
@@ -752,7 +767,14 @@ def _identity_locks(
     report: Mapping[str, Any],
     provenance: Mapping[str, Any],
     configuration: Mapping[str, Any],
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[
+    dict[str, Any],
+    dict[str, Any],
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any],
+    dict[str, Any],
+]:
     robot = _mapping(provenance.get("robot"), "runtime_provenance.robot")
     environment = _mapping(
         provenance.get("environment"), "runtime_provenance.environment"
@@ -776,20 +798,90 @@ def _identity_locks(
         ),
         "motion_configuration": dict(configuration),
     }
-    environment_lock = {
+    environment_lock: dict[str, Any] = {
         "environment": {
             key: environment[key]
             for key in sorted(environment)
             if key != "composed_root_layer_sha256"
         },
-        # These are project/environment discovery contracts, not contact
-        # profile variables.  They must remain identical across profiles in a
-        # given environment, while Warehouse and SimplePlane legitimately
-        # have different ground topology.
-        "collider_contract": contact["collider_contract"],
-        "wheel_colliders": contact["wheel_colliders"],
-        "ground_colliders": contact["ground_colliders"],
     }
+    topology_lock: dict[str, Any] | None = None
+    topology_ab_contact_lock: dict[str, Any] | None = None
+    if provenance.get("schema_version") == 5:
+        collider_contract = _mapping(
+            contact.get("collider_contract"),
+            "runtime_provenance.contact.collider_contract",
+        )
+        environment_lock.update(
+            {
+                "wheel_collider_contract": {
+                    "wheel_joint_names": collider_contract[
+                        "wheel_joint_names"
+                    ],
+                    "wheel_expected_count": collider_contract[
+                        "wheel_expected_count"
+                    ],
+                },
+                "wheel_colliders": contact["wheel_colliders"],
+            }
+        )
+        topology = _mapping(
+            provenance.get("ground_topology"),
+            "runtime_provenance.ground_topology",
+        )
+        environment_lock["ground_source_contract"] = {
+            "source_asset_path": topology["source_asset_path"],
+            "source_asset_sha256": topology["source_asset_sha256"],
+            "source_colliders": topology["source_colliders"],
+            "source_collider_count": topology["source_collider_count"],
+            "source_collider_paths_sha256": topology[
+                "source_collider_paths_sha256"
+            ],
+        }
+        topology_specific_keys = {
+            "profile_path",
+            "profile_sha256",
+            "profile_id",
+            "environment_id",
+            "operation",
+            "overlay_sha256",
+            "target_colliders",
+            "target_collider_count",
+            "target_collider_paths_sha256",
+            "disabled_colliders",
+            "disabled_collider_count",
+            "disabled_collider_paths_sha256",
+            "stage_usd_readback_verified",
+        }
+        topology_lock = {
+            "ground_topology": {
+                key: topology[key]
+                for key in sorted(topology_specific_keys)
+            },
+            "ground_collider_contract": {
+                "ground_required_prim_paths": collider_contract[
+                    "ground_required_prim_paths"
+                ],
+                "ground_semantic_classes": collider_contract[
+                    "ground_semantic_classes"
+                ],
+                "ground_expected_enabled_count": collider_contract[
+                    "ground_expected_enabled_count"
+                ],
+            },
+            "ground_colliders": contact["ground_colliders"],
+        }
+    else:
+        # Historical v3/v4 reports predate an explicit topology identity.  The
+        # discovered ground contract therefore remains part of their
+        # environment lock and cannot be varied inside one environment.
+        environment_lock.update(
+            {
+                "collider_contract": contact["collider_contract"],
+                "wheel_colliders": contact["wheel_colliders"],
+                "ground_colliders": contact["ground_colliders"],
+            }
+        )
     profile_lock = {
         "profile_path": contact["profile_path"],
         "profile_sha256": contact["profile_sha256"],
@@ -798,6 +890,21 @@ def _identity_locks(
         "explicit_materials": contact["explicit_materials"],
         "thresholds_authored": contact["thresholds_authored"],
     }
+    if provenance.get("schema_version") == 5:
+        # A topology A/B may change only the topology overlay and the exact
+        # ground collider/binding path set.  Scene thresholds, wheel-side
+        # evidence, and material values must remain identical for the same
+        # environment/contact profile across every topology condition.
+        topology_ab_contact_lock = {
+            "profile": profile_lock,
+            "scene": contact["scene"],
+            "wheel_bindings": contact["wheel_bindings"],
+            "wheel_material": contact["wheel_material"],
+            "ground_material": contact["ground_material"],
+            "stage_usd_readback_verified": contact[
+                "stage_usd_readback_verified"
+            ],
+        }
     # The anonymous identifier embeds a process-specific address and is not an
     # identity.  Its canonical content hash is stable within an env/profile
     # group and is deliberately locked along with collider/binding evidence.
@@ -812,7 +919,14 @@ def _identity_locks(
     contact_lock["composed_root_layer_sha256"] = environment[
         "composed_root_layer_sha256"
     ]
-    return global_lock, environment_lock, profile_lock, contact_lock
+    return (
+        global_lock,
+        environment_lock,
+        topology_lock,
+        topology_ab_contact_lock,
+        profile_lock,
+        contact_lock,
+    )
 
 
 def _validated_record(
@@ -836,17 +950,25 @@ def _validated_record(
             f"{location}.profile_id must be {_MOTION_PROFILE_ID!r}"
         )
     provenance = _mapping(report.get("runtime_provenance"), f"{location}.runtime_provenance")
-    _exact_keys(provenance, _RUNTIME_PROVENANCE_KEYS, f"{location}.runtime_provenance")
     provenance_schema = provenance.get("schema_version")
     if (
         isinstance(provenance_schema, bool)
         or not isinstance(provenance_schema, int)
-        or provenance_schema not in {3, 4}
+        or provenance_schema not in {3, 4, 5}
     ):
         raise ConfigurationError(
             f"{location}.runtime_provenance.schema_version must be integer "
-            "3 or 4"
+            "3, 4, or 5"
         )
+    _exact_keys(
+        provenance,
+        (
+            _RUNTIME_PROVENANCE_V5_KEYS
+            if provenance_schema == 5
+            else _RUNTIME_PROVENANCE_KEYS
+        ),
+        f"{location}.runtime_provenance",
+    )
     try:
         validate_runtime_provenance(provenance)
     except ReportValidationError as exc:
@@ -950,9 +1072,36 @@ def _validated_record(
         )
         for index, specification in enumerate(_SEGMENT_SPECS)
     }
-    global_lock, environment_lock, profile_lock, contact_lock = _identity_locks(
-        report, provenance, configuration
-    )
+    (
+        global_lock,
+        environment_lock,
+        topology_lock,
+        topology_ab_contact_lock,
+        profile_lock,
+        contact_lock,
+    ) = _identity_locks(report, provenance, configuration)
+    ground_topology_id = None
+    if provenance_schema == 5:
+        topology = _mapping(
+            provenance.get("ground_topology"),
+            f"{location}.runtime_provenance.ground_topology",
+        )
+        ground_topology_id = _string(
+            topology.get("profile_id"),
+            f"{location}.runtime_provenance.ground_topology.profile_id",
+        )
+        shipped_environment = _SHIPPED_TOPOLOGY_ENVIRONMENTS.get(
+            ground_topology_id
+        )
+        if (
+            shipped_environment is not None
+            and environment_id != shipped_environment
+        ):
+            raise ConfigurationError(
+                f"{location} shipped ground topology/environment pair is "
+                f"invalid: {environment_id}::{ground_topology_id}; expected "
+                f"{shipped_environment}::{ground_topology_id}"
+            )
     contact_profile_id = _string(
         contact.get("profile_id"),
         f"{location}.runtime_provenance.contact.profile_id",
@@ -963,9 +1112,12 @@ def _validated_record(
         canonical_sha256=canonical_sha256,
         runtime_provenance_schema=provenance_schema,
         environment_id=environment_id,
+        ground_topology_id=ground_topology_id,
         contact_profile_id=contact_profile_id,
         global_lock=global_lock,
         environment_lock=environment_lock,
+        topology_lock=topology_lock,
+        topology_ab_contact_lock=topology_ab_contact_lock,
         profile_lock=profile_lock,
         contact_lock=contact_lock,
         segments=metrics,
@@ -1028,7 +1180,7 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
         record.segments["rotate_right_360"]["effective_track_m"]
         for record in records
     ]
-    return {
+    summary = {
         "environment_id": first.environment_id,
         "contact_profile_id": first.contact_profile_id,
         "contact_contract": first.contact_lock,
@@ -1098,6 +1250,10 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
             "right": _distribution(effective_right, "effective_track.right"),
         },
     }
+    if first.ground_topology_id is not None:
+        summary["ground_topology_id"] = first.ground_topology_id
+        summary["ground_topology_contract"] = first.topology_lock
+    return summary
 
 
 def analyse_contact_ab(
@@ -1106,10 +1262,11 @@ def analyse_contact_ab(
     *,
     min_repeats: int = 3,
     expected_environments: Sequence[str] = (),
+    expected_topologies: Sequence[str] = (),
     expected_profiles: Sequence[str] = (),
     require_complete_matrix: bool = False,
 ) -> dict[str, object]:
-    """Validate, group, and summarize one schema-3 or schema-4 batch."""
+    """Validate and summarize one homogeneous schema-3, -4, or -5 batch."""
     radius = _positive(wheel_radius_m, "wheel_radius_m")
     if (
         isinstance(min_repeats, bool)
@@ -1122,13 +1279,22 @@ def analyse_contact_ab(
     selected_environments = _identifier_values(
         expected_environments, "expected_environments"
     )
+    selected_topologies = _identifier_values(
+        expected_topologies, "expected_topologies"
+    )
+    explicit_topology_selection = bool(selected_topologies)
     selected_profiles = _identifier_values(expected_profiles, "expected_profiles")
     if require_complete_matrix:
-        if selected_environments or selected_profiles:
+        if selected_environments or selected_topologies or selected_profiles:
             raise ConfigurationError(
                 "require_complete_matrix cannot be combined with expected selectors"
             )
         selected_environments = COMPLETE_MATRIX_ENVIRONMENTS
+        selected_topologies = tuple(
+            topology
+            for _environment, topology
+            in COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES
+        )
         selected_profiles = COMPLETE_MATRIX_PROFILES
 
     resolved = [Path(path).expanduser().resolve() for path in report_paths]
@@ -1188,6 +1354,17 @@ def analyse_contact_ab(
             )
         if selected_profiles and record.contact_profile_id not in selected_profiles:
             reasons.append(_exclusion("unexpected_profile", record.contact_profile_id))
+        if (
+            selected_topologies
+            and record.ground_topology_id is not None
+            and record.ground_topology_id not in selected_topologies
+        ):
+            reasons.append(
+                _exclusion(
+                    "unexpected_ground_topology",
+                    record.ground_topology_id,
+                )
+            )
         if reasons:
             exclusions.append({**base, "reasons": reasons})
             continue
@@ -1211,6 +1388,11 @@ def analyse_contact_ab(
             f"A/B batch: observed {sorted(provenance_schemas)}"
         )
     runtime_provenance_schema = next(iter(provenance_schemas))
+    if runtime_provenance_schema != 5 and explicit_topology_selection:
+        raise ConfigurationError(
+            "expected_topologies requires runtime provenance schema 5; "
+            f"observed schema {runtime_provenance_schema}"
+        )
 
     reference_lock = included[0].global_lock
     for record in included[1:]:
@@ -1220,6 +1402,8 @@ def analyse_contact_ab(
                 f"{record.path} differs from {included[0].path}"
             )
     environment_references: dict[str, InputRecord] = {}
+    topology_references: dict[tuple[str, str], InputRecord] = {}
+    topology_ab_contact_references: dict[tuple[str, str], InputRecord] = {}
     profile_references: dict[str, InputRecord] = {}
     for record in included:
         environment_reference = environment_references.setdefault(
@@ -1233,6 +1417,48 @@ def analyse_contact_ab(
                 f"{record.environment_id}: {record.path} differs from "
                 f"{environment_reference.path}"
             )
+        if runtime_provenance_schema == 5:
+            if record.ground_topology_id is None or record.topology_lock is None:
+                raise ConfigurationError(
+                    f"schema-5 report {record.path} lacks a topology identity lock"
+                )
+            topology_key = (
+                record.environment_id,
+                record.ground_topology_id,
+            )
+            topology_reference = topology_references.setdefault(
+                topology_key,
+                record,
+            )
+            if _canonical(record.topology_lock) != _canonical(
+                topology_reference.topology_lock
+            ):
+                raise ConfigurationError(
+                    "ground topology contract mismatch for "
+                    f"{topology_key[0]}::{topology_key[1]}: "
+                    f"{record.path} differs from {topology_reference.path}"
+                )
+            if record.topology_ab_contact_lock is None:
+                raise ConfigurationError(
+                    f"schema-5 report {record.path} lacks a topology A/B "
+                    "contact invariant lock"
+                )
+            contact_ab_key = (
+                record.environment_id,
+                record.contact_profile_id,
+            )
+            contact_ab_reference = topology_ab_contact_references.setdefault(
+                contact_ab_key,
+                record,
+            )
+            if _canonical(record.topology_ab_contact_lock) != _canonical(
+                contact_ab_reference.topology_ab_contact_lock
+            ):
+                raise ConfigurationError(
+                    "topology A/B contact invariant mismatch for "
+                    f"{contact_ab_key[0]}::{contact_ab_key[1]}: "
+                    f"{record.path} differs from {contact_ab_reference.path}"
+                )
         profile_reference = profile_references.setdefault(
             record.contact_profile_id, record
         )
@@ -1244,62 +1470,144 @@ def analyse_contact_ab(
                 f"{record.contact_profile_id}: {record.path} differs from "
                 f"{profile_reference.path}"
             )
-    grouped: dict[tuple[str, str], list[InputRecord]] = {}
+    grouped: dict[tuple[str, ...], list[InputRecord]] = {}
     for record in included:
-        grouped.setdefault(
-            (record.environment_id, record.contact_profile_id), []
-        ).append(record)
+        group_key = (
+            (
+                record.environment_id,
+                record.ground_topology_id,
+                record.contact_profile_id,
+            )
+            if runtime_provenance_schema == 5
+            else (record.environment_id, record.contact_profile_id)
+        )
+        if any(value is None for value in group_key):
+            raise ConfigurationError(
+                f"schema-5 report {record.path} lacks a ground topology id"
+            )
+        grouped.setdefault(tuple(group_key), []).append(record)
     for group_key, records in grouped.items():
         reference_contact = records[0].contact_lock
         for record in records[1:]:
             if _canonical(record.contact_lock) != _canonical(reference_contact):
                 raise ConfigurationError(
                     "contact contract mismatch within group "
-                    f"{group_key[0]}::{group_key[1]}"
+                    + "::".join(group_key)
                 )
         if len(records) < min_repeats:
             raise ConfigurationError(
-                f"group {group_key[0]}::{group_key[1]} requires at least "
+                f"group {'::'.join(group_key)} requires at least "
                 f"{min_repeats} unique report contents; observed {len(records)}"
             )
 
     observed_groups = set(grouped)
-    required_groups: set[tuple[str, str]] = set()
-    if selected_environments and selected_profiles:
-        required_groups = {
-            (environment, profile)
-            for environment in selected_environments
-            for profile in selected_profiles
-        }
-    elif selected_environments:
-        missing_environments = set(selected_environments) - {
-            environment for environment, _ in observed_groups
-        }
-        if missing_environments:
-            raise ConfigurationError(
-                f"expected environments are missing: {sorted(missing_environments)}"
+    required_groups: set[tuple[str, ...]] = set()
+    if runtime_provenance_schema == 5:
+        observed_environments = {group[0] for group in observed_groups}
+        observed_topologies = {group[1] for group in observed_groups}
+        observed_profiles = {group[2] for group in observed_groups}
+        observed_pairs = {(group[0], group[1]) for group in observed_groups}
+        required_pairs: set[tuple[str, str]]
+        if selected_topologies:
+            required_pairs = set()
+            for topology in selected_topologies:
+                environment = _SHIPPED_TOPOLOGY_ENVIRONMENTS.get(topology)
+                if environment is None:
+                    if len(selected_environments) != 1:
+                        raise ConfigurationError(
+                            "an unknown expected topology requires exactly one "
+                            f"expected environment: {topology}"
+                        )
+                    environment = selected_environments[0]
+                if (
+                    selected_environments
+                    and environment not in selected_environments
+                ):
+                    raise ConfigurationError(
+                        "expected environment/topology selectors are "
+                        f"incompatible: {environment}::{topology}"
+                    )
+                required_pairs.add((environment, topology))
+            missing_pairs = required_pairs - observed_pairs
+            if missing_pairs:
+                raise ConfigurationError(
+                    "expected environment/topology pairs are missing: "
+                    + ", ".join(
+                        f"{environment}::{topology}"
+                        for environment, topology in sorted(missing_pairs)
+                    )
+                )
+        else:
+            required_pairs = {
+                pair
+                for pair in observed_pairs
+                if not selected_environments
+                or pair[0] in selected_environments
+            }
+        if selected_environments:
+            missing_environments = (
+                set(selected_environments) - observed_environments
             )
-    elif selected_profiles:
-        missing_profiles = set(selected_profiles) - {
-            profile for _, profile in observed_groups
-        }
-        if missing_profiles:
-            raise ConfigurationError(
-                f"expected profiles are missing: {sorted(missing_profiles)}"
-            )
+            if missing_environments:
+                raise ConfigurationError(
+                    "expected environments are missing: "
+                    f"{sorted(missing_environments)}"
+                )
+        if selected_profiles:
+            required_groups = {
+                (environment, topology, profile)
+                for environment, topology in required_pairs
+                for profile in selected_profiles
+            }
+            missing_profiles = set(selected_profiles) - observed_profiles
+            if missing_profiles:
+                raise ConfigurationError(
+                    f"expected profiles are missing: {sorted(missing_profiles)}"
+                )
+        if selected_topologies:
+            missing_topologies = set(selected_topologies) - observed_topologies
+            if missing_topologies:
+                raise ConfigurationError(
+                    "expected ground topologies are missing: "
+                    f"{sorted(missing_topologies)}"
+                )
+    else:
+        if selected_environments and selected_profiles:
+            required_groups = {
+                (environment, profile)
+                for environment in selected_environments
+                for profile in selected_profiles
+            }
+        elif selected_environments:
+            missing_environments = set(selected_environments) - {
+                environment for environment, _profile in observed_groups
+            }
+            if missing_environments:
+                raise ConfigurationError(
+                    "expected environments are missing: "
+                    f"{sorted(missing_environments)}"
+                )
+        elif selected_profiles:
+            missing_profiles = set(selected_profiles) - {
+                profile for _environment, profile in observed_groups
+            }
+            if missing_profiles:
+                raise ConfigurationError(
+                    f"expected profiles are missing: {sorted(missing_profiles)}"
+                )
     missing_groups = sorted(required_groups - observed_groups)
     if missing_groups:
         raise ConfigurationError(
             "required contact A/B groups are missing: "
-            + ", ".join(f"{environment}::{profile}" for environment, profile in missing_groups)
+            + ", ".join("::".join(group) for group in missing_groups)
         )
     matrix_complete = not missing_groups
     group_summaries = {
-        f"{environment}::{profile}": _group_summary(records)
-        for (environment, profile), records in sorted(grouped.items())
+        "::".join(group): _group_summary(records)
+        for group, records in sorted(grouped.items())
     }
     report = {
-        "schema_version": 1,
+        "schema_version": 2 if runtime_provenance_schema == 5 else 1,
         "report_type": "contact_ab_analysis",
         "analysis_valid": not exclusions and matrix_complete,
         "method": {
@@ -1322,6 +1630,19 @@ def analyse_contact_ab(
             environment_id: reference.environment_lock
             for environment_id, reference in sorted(environment_references.items())
         },
+        **(
+            {
+                "topology_contracts": {
+                    f"{environment_id}::{topology_id}": (
+                        reference.topology_lock
+                    )
+                    for (environment_id, topology_id), reference
+                    in sorted(topology_references.items())
+                }
+            }
+            if runtime_provenance_schema == 5
+            else {}
+        ),
         "profile_contracts": {
             profile_id: reference.profile_lock
             for profile_id, reference in sorted(profile_references.items())
@@ -1333,6 +1654,11 @@ def analyse_contact_ab(
             ),
             "required_git_dirty": False,
             "expected_environments": list(selected_environments),
+            **(
+                {"expected_topologies": list(selected_topologies)}
+                if runtime_provenance_schema == 5
+                else {}
+            ),
             "expected_profiles": list(selected_profiles),
             "require_complete_matrix": require_complete_matrix,
         },
@@ -1343,6 +1669,11 @@ def analyse_contact_ab(
                     "sha256": record.sha256,
                     "canonical_sha256": record.canonical_sha256,
                     "environment_id": record.environment_id,
+                    **(
+                        {"ground_topology_id": record.ground_topology_id}
+                        if runtime_provenance_schema == 5
+                        else {}
+                    ),
                     "contact_profile_id": record.contact_profile_id,
                 }
                 for record in included
@@ -1358,15 +1689,13 @@ def analyse_contact_ab(
         "matrix": {
             "complete": matrix_complete,
             "required_groups": [
-                f"{environment}::{profile}"
-                for environment, profile in sorted(required_groups)
+                "::".join(group) for group in sorted(required_groups)
             ],
             "observed_groups": [
-                f"{environment}::{profile}"
-                for environment, profile in sorted(observed_groups)
+                "::".join(group) for group in sorted(observed_groups)
             ],
             "missing_groups": [
-                f"{environment}::{profile}" for environment, profile in missing_groups
+                "::".join(group) for group in missing_groups
             ],
         },
         "groups": group_summaries,
@@ -1399,16 +1728,33 @@ def _positive_integer(value: str) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("reports", nargs="+", help="schema-3 motion report JSON files")
-    parser.add_argument("--wheel-radius", required=True, type=float, help="wheel radius in metres")
-    parser.add_argument("--output", required=True, help="strict atomic JSON output path")
+    parser.add_argument(
+        "reports",
+        nargs="+",
+        help="homogeneous schema-3, -4, or -5 motion report JSON files",
+    )
+    parser.add_argument(
+        "--wheel-radius",
+        required=True,
+        type=float,
+        help="wheel radius in metres",
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="strict atomic JSON output path",
+    )
     parser.add_argument("--min-repeats", type=_positive_integer, default=3)
     parser.add_argument("--expected-environment", action="append", default=[])
+    parser.add_argument("--expected-topology", action="append", default=[])
     parser.add_argument("--expected-profile", action="append", default=[])
     parser.add_argument(
         "--require-complete-matrix",
         action="store_true",
-        help="require Warehouse/SimplePlane x all six shipped contact profiles",
+        help=(
+            "require the shipped environment/contact matrix; schema 5 also "
+            "requires all three legal environment/topology pairs"
+        ),
     )
     return parser
 
@@ -1422,6 +1768,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.wheel_radius,
             min_repeats=arguments.min_repeats,
             expected_environments=arguments.expected_environment,
+            expected_topologies=arguments.expected_topology,
             expected_profiles=arguments.expected_profile,
             require_complete_matrix=arguments.require_complete_matrix,
         )

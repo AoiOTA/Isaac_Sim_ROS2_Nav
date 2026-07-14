@@ -10,6 +10,7 @@ import pytest
 from robot_experiments.configuration import ConfigurationError
 from robot_experiments.contact_ab_analysis import (
     COMPLETE_MATRIX_ENVIRONMENTS,
+    COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES,
     COMPLETE_MATRIX_PROFILES,
     analyse_contact_ab,
     main,
@@ -196,6 +197,98 @@ def _upgrade_runtime_provenance_to_v4(report):
     return report
 
 
+def _collider_paths_sha256(paths):
+    canonical = json.dumps(
+        sorted(paths),
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _upgrade_runtime_provenance_to_v5(report, topology=None):
+    _upgrade_runtime_provenance_to_v4(report)
+    provenance = report["runtime_provenance"]
+    provenance["schema_version"] = 5
+    environment = provenance["environment"]["id"]
+    if topology is None:
+        topology = (
+            "simple_plane_only1_v1"
+            if environment == "SimplePlane"
+            else "warehouse_combined32_v1"
+        )
+    expected_environment = {
+        "simple_plane_only1_v1": "SimplePlane",
+        "warehouse_combined32_v1": "Warehouse",
+        "warehouse_plane_only1_v1": "Warehouse",
+    }[topology]
+    assert environment == expected_environment
+
+    contact = provenance["contact"]
+    source_colliders = sorted(contact["ground_colliders"])
+    plane = "/Root/GroundPlane/CollisionPlane"
+    if topology == "warehouse_plane_only1_v1":
+        target_colliders = [plane]
+        operation = "disable_non_target_colliders"
+    else:
+        target_colliders = list(source_colliders)
+        operation = "preserve_source_colliders"
+    disabled_colliders = sorted(
+        set(source_colliders) - set(target_colliders)
+    )
+    contact["ground_colliders"] = target_colliders
+    contact["ground_bindings"] = [
+        binding
+        for binding in contact["ground_bindings"]
+        if binding["collider_path"] in set(target_colliders)
+    ]
+    contact["collider_contract"].update(
+        {
+            "ground_required_prim_paths": [plane],
+            "ground_semantic_classes": (
+                ["floor_decal"]
+                if topology == "warehouse_combined32_v1"
+                else []
+            ),
+            "ground_expected_enabled_count": len(target_colliders),
+        }
+    )
+    contact["overlay_sha256"] = hashlib.sha256(
+        f"{environment}:{topology}:{contact['profile_id']}".encode("utf-8")
+    ).hexdigest()
+    source_asset = provenance["environment"]["source_asset"]
+    provenance["ground_topology"] = {
+        "profile_path": f"/repo/configs/ground_topologies/{topology}.yaml",
+        "profile_sha256": hashlib.sha256(topology.encode("utf-8")).hexdigest(),
+        "profile_id": topology,
+        "environment_id": environment,
+        "operation": operation,
+        "source_asset_path": source_asset["path"],
+        "source_asset_sha256": source_asset["sha256"],
+        "overlay_identifier": f"anon:0x456:ground_topology_{topology}.usda",
+        "overlay_sha256": hashlib.sha256(
+            f"overlay:{topology}".encode("utf-8")
+        ).hexdigest(),
+        "source_colliders": source_colliders,
+        "source_collider_count": len(source_colliders),
+        "source_collider_paths_sha256": _collider_paths_sha256(
+            source_colliders
+        ),
+        "target_colliders": target_colliders,
+        "target_collider_count": len(target_colliders),
+        "target_collider_paths_sha256": _collider_paths_sha256(
+            target_colliders
+        ),
+        "disabled_colliders": disabled_colliders,
+        "disabled_collider_count": len(disabled_colliders),
+        "disabled_collider_paths_sha256": _collider_paths_sha256(
+            disabled_colliders
+        ),
+        "stage_usd_readback_verified": True,
+    }
+    return report
+
+
 def _segment(
     specification: tuple[str, str, float, float, float],
     *,
@@ -372,6 +465,29 @@ def _three_reports(
     ]
 
 
+def _three_v5_reports(
+    directory: Path,
+    *,
+    environment: str = "Warehouse",
+    topology: str = "warehouse_combined32_v1",
+    contact_profile: str = "legacy_baseline",
+) -> list[Path]:
+    return [
+        _write(
+            directory / f"{environment}_{topology}_{contact_profile}_{index}.json",
+            _upgrade_runtime_provenance_to_v5(
+                _report(
+                    environment=environment,
+                    contact_profile=contact_profile,
+                    scale=scale,
+                ),
+                topology,
+            ),
+        )
+        for index, scale in enumerate((0.98, 1.0, 1.02))
+    ]
+
+
 def test_three_repeats_produce_audited_group_metrics(tmp_path):
     """Three unique reports produce every required group summary."""
     paths = _three_reports(tmp_path)
@@ -507,6 +623,200 @@ def test_v4_wheel_radius_is_selected_from_and_locked_to_provenance(tmp_path):
         "robot",
     ):
         analyse_contact_ab(paths, RADIUS_M)
+
+
+def test_v5_separates_ground_topology_from_environment_and_contact(tmp_path):
+    combined = _three_v5_reports(tmp_path / "combined")
+    plane_only = _three_v5_reports(
+        tmp_path / "plane_only",
+        topology="warehouse_plane_only1_v1",
+    )
+
+    report = analyse_contact_ab(
+        [*combined, *plane_only],
+        RADIUS_M,
+        expected_environments=("Warehouse",),
+        expected_topologies=(
+            "warehouse_combined32_v1",
+            "warehouse_plane_only1_v1",
+        ),
+        expected_profiles=("legacy_baseline",),
+    )
+
+    assert report["schema_version"] == 2
+    assert report["analysis_valid"] is True
+    assert report["selection_policy"][
+        "required_runtime_provenance_schema"
+    ] == 5
+    assert report["counts"]["groups"] == 2
+    assert set(report["groups"]) == {
+        "Warehouse::warehouse_combined32_v1::legacy_baseline",
+        "Warehouse::warehouse_plane_only1_v1::legacy_baseline",
+    }
+    assert set(report["topology_contracts"]) == {
+        "Warehouse::warehouse_combined32_v1",
+        "Warehouse::warehouse_plane_only1_v1",
+    }
+    assert "ground_colliders" not in report["environment_contracts"][
+        "Warehouse"
+    ]
+    plane_group = report["groups"][
+        "Warehouse::warehouse_plane_only1_v1::legacy_baseline"
+    ]
+    assert plane_group["ground_topology_id"] == (
+        "warehouse_plane_only1_v1"
+    )
+    assert plane_group["ground_topology_contract"]["ground_topology"][
+        "target_collider_count"
+    ] == 1
+
+
+def test_v5_topology_identity_drift_is_fatal_within_one_topology(tmp_path):
+    paths = _three_v5_reports(tmp_path)
+    document = json.loads(paths[1].read_text(encoding="utf-8"))
+    document["runtime_provenance"]["ground_topology"][
+        "overlay_sha256"
+    ] = "6" * 64
+    _write(paths[1], document)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="ground topology contract mismatch",
+    ):
+        analyse_contact_ab(paths, RADIUS_M)
+
+
+def test_v5_rejects_a_shipped_topology_in_the_wrong_environment(tmp_path):
+    legal = _three_v5_reports(tmp_path / "legal")
+    forged = _three_v5_reports(
+        tmp_path / "forged",
+        environment="SimplePlane",
+        topology="simple_plane_only1_v1",
+    )
+    for path in forged:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        topology = document["runtime_provenance"]["ground_topology"]
+        topology["profile_id"] = "warehouse_combined32_v1"
+        topology["profile_path"] = (
+            "/repo/configs/ground_topologies/"
+            "warehouse_combined32_v1.yaml"
+        )
+        topology["profile_sha256"] = "6" * 64
+        _write(path, document)
+
+    report = analyse_contact_ab([*legal, *forged], RADIUS_M)
+
+    assert report["analysis_valid"] is False
+    assert report["counts"]["excluded_reports"] == 3
+    assert all(
+        "shipped ground topology/environment pair is invalid"
+        in item["reasons"][0]["detail"]
+        for item in report["selection"]["excluded"]
+    )
+
+
+def test_v5_topology_ab_locks_contact_inputs_outside_topology(tmp_path):
+    combined = _three_v5_reports(tmp_path / "combined")
+    plane_only = _three_v5_reports(
+        tmp_path / "plane_only",
+        topology="warehouse_plane_only1_v1",
+    )
+    for path in plane_only:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["runtime_provenance"]["contact"]["scene"][
+            "friction_offset_threshold"
+        ] = 0.123
+        _write(path, document)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="topology A/B contact invariant mismatch",
+    ):
+        analyse_contact_ab([*combined, *plane_only], RADIUS_M)
+
+
+def test_v5_source_collider_discovery_is_locked_across_topologies(tmp_path):
+    combined = _three_v5_reports(tmp_path / "combined")
+    plane_only = _three_v5_reports(
+        tmp_path / "plane_only",
+        topology="warehouse_plane_only1_v1",
+    )
+    for path in plane_only:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        topology = document["runtime_provenance"]["ground_topology"]
+        removed = topology["disabled_colliders"][-1]
+        replace_source = [
+            collider
+            for collider in topology["source_colliders"]
+            if collider != removed
+        ]
+        replace_disabled = [
+            collider
+            for collider in topology["disabled_colliders"]
+            if collider != removed
+        ]
+        topology["source_colliders"] = replace_source
+        topology["source_collider_count"] = len(replace_source)
+        topology["source_collider_paths_sha256"] = _collider_paths_sha256(
+            replace_source
+        )
+        topology["disabled_colliders"] = replace_disabled
+        topology["disabled_collider_count"] = len(replace_disabled)
+        topology["disabled_collider_paths_sha256"] = _collider_paths_sha256(
+            replace_disabled
+        )
+        _write(path, document)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="environment contract mismatch",
+    ):
+        analyse_contact_ab([*combined, *plane_only], RADIUS_M)
+
+
+def test_v5_env_profile_selectors_cross_observed_topologies(tmp_path):
+    combined_legacy = _three_v5_reports(tmp_path / "combined_legacy")
+    plane_explicit = _three_v5_reports(
+        tmp_path / "plane_explicit",
+        topology="warehouse_plane_only1_v1",
+        contact_profile="explicit_material",
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="required contact A/B groups are missing",
+    ):
+        analyse_contact_ab(
+            [*combined_legacy, *plane_explicit],
+            RADIUS_M,
+            expected_environments=("Warehouse",),
+            expected_profiles=("legacy_baseline", "explicit_material"),
+        )
+
+
+def test_v5_cannot_mix_with_v4_and_topology_selectors_reject_history(
+    tmp_path,
+):
+    v5_paths = _three_v5_reports(tmp_path / "v5")
+    v4 = _write(
+        tmp_path / "v4.json",
+        _upgrade_runtime_provenance_to_v4(_report(scale=1.03)),
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match=r"mixed runtime provenance schemas.*\[4, 5\]",
+    ):
+        analyse_contact_ab([*v5_paths, v4], RADIUS_M)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="expected_topologies requires runtime provenance schema 5",
+    ):
+        analyse_contact_ab(
+            _three_reports(tmp_path / "historical"),
+            RADIUS_M,
+            expected_topologies=("warehouse_combined32_v1",),
+        )
 
 
 def test_environment_and_cross_environment_profile_contracts_are_fatal(tmp_path):
@@ -866,6 +1176,38 @@ def test_complete_matrix_requires_twelve_groups_with_three_unique_reports(tmp_pa
     assert report["analysis_valid"] is True
     assert len(report["groups"]) == 12
     assert report["matrix"]["complete"] is True
+    assert report["matrix"]["missing_groups"] == []
+
+
+def test_v5_complete_matrix_requires_eighteen_legal_topology_groups(tmp_path):
+    paths = []
+    for environment, topology in COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES:
+        for profile in COMPLETE_MATRIX_PROFILES:
+            paths.extend(
+                _three_v5_reports(
+                    tmp_path / environment / topology / profile,
+                    environment=environment,
+                    topology=topology,
+                    contact_profile=profile,
+                )
+            )
+
+    report = analyse_contact_ab(
+        paths,
+        RADIUS_M,
+        require_complete_matrix=True,
+    )
+
+    assert report["schema_version"] == 2
+    assert report["analysis_valid"] is True
+    assert report["counts"] == {
+        "input_reports": 54,
+        "included_reports": 54,
+        "excluded_reports": 0,
+        "groups": 18,
+    }
+    assert report["matrix"]["complete"] is True
+    assert len(report["matrix"]["required_groups"]) == 18
     assert report["matrix"]["missing_groups"] == []
 
 
