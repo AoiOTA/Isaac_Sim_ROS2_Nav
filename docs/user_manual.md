@@ -1576,8 +1576,10 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
   样本子集成立。停止证据分别保存 Odom 与 JointState 的连续静止样本、时间跨度与 freshness，
   两路都满足合同后才能确认；报告还保存 Reset generation/三路接收水位、非法消息计数、
   命令与停止样本记账，以及起终姿态、路程、位移分解和模 `2π` 航向一致性。任一时间、
-  统计或几何关系不能由原始证据重算都会失败关闭。历史 report schema 1/2 仍可读，但不
-  具备 v2 方向门所需的完整证据。
+  统计或几何关系不能由原始证据重算都会失败关闭。schema 3 的 `output_file` 必须精确等于
+  当前报告的 canonical absolute path，因此生成后不能单独移动、复制到别处或改名；
+  `started_at_utc/completed_at_utc` 必须是有时区的 UTC 且按先后排序。历史 report schema
+  1/2 仍可读，但不具备 v2 方向门所需的完整证据。
 - `analysis.json`：把全部报告作为一个数据集重新验证；v5 以合法
   environment/topology pair × 六 profile 形成组，baseline/all 分别要求 12/18 个完整组，
   单一环境/拓扑也必须包含六 profile，且每组重复数不少于 `--repeats`。当前 v5
@@ -1657,6 +1659,12 @@ JointState closed window 方向合同成立。整段命令窗口只作描述，�
 验证 raw/canonical SHA、全局批次身份、Reset epoch、时间与样本记账、双路停止证据、
 姿态/位移/航向几何和稳态分布子集关系，再重算 physical acceptance。因此原报告必须与
 analysis 一起保留；缺文件、替换 source、协调伪造 N/A 或 wheel PASS 都会失败关闭。
+
+成功 schema-3 报告的 `safety` 必须且只能包含五项：
+`exclusive_non_reset_cmd_vel_owner_enforced=true`、非空且排序去重的
+`authorized_reset_safety_publishers`、正整数 `cmd_vel_subscription_count`、
+`safe_zero_burst_attempted=true`，以及与 motion 配置完全一致的 `zero_publish_count`。
+字段缺失、多余、类型伪装或零速 burst 未尝试都会使离线验证失败。
 
 当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
 script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯一 skip 是本机
