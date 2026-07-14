@@ -859,13 +859,14 @@ def test_environment_specific_overlay_bytes_are_not_cross_environment_locked(tmp
     assert set(report["profile_contracts"]) == {"legacy_baseline"}
 
 
-def test_composed_root_hash_is_locked_per_environment_profile_group(tmp_path):
-    """Profile-authored Stage composition may vary, but repeats cannot drift."""
+def test_historical_composed_root_hash_keeps_profile_group_scope(tmp_path):
+    """Do not reinterpret the published v3/v4 offline grouping contract."""
     legacy = _three_reports(tmp_path / "legacy")
     explicit = _three_reports(
         tmp_path / "explicit",
         contact_profile="explicit_material",
     )
+
     for path in explicit:
         document = json.loads(path.read_text(encoding="utf-8"))
         document["runtime_provenance"]["environment"][
@@ -876,20 +877,51 @@ def test_composed_root_hash_is_locked_per_environment_profile_group(tmp_path):
     analysis = analyse_contact_ab([*legacy, *explicit], RADIUS_M)
 
     assert analysis["analysis_valid"] is True
-    assert "composed_root_layer_sha256" not in analysis["environment_contracts"][
-        "Warehouse"
-    ]["environment"]
-    assert analysis["groups"]["Warehouse::explicit_material"]["contact_contract"][
-        "composed_root_layer_sha256"
-    ] == "4" * 64
+    assert "composed_root_layer_sha256" not in analysis[
+        "environment_contracts"
+    ]["Warehouse"]["environment"]
+    assert analysis["groups"]["Warehouse::explicit_material"][
+        "contact_contract"
+    ]["composed_root_layer_sha256"] == "4" * 64
 
-    drifted = json.loads(explicit[1].read_text(encoding="utf-8"))
-    drifted["runtime_provenance"]["environment"][
+
+@pytest.mark.parametrize("treatment", ["contact", "topology"])
+def test_v5_composed_root_hash_is_locked_across_session_treatments(
+    tmp_path,
+    treatment,
+):
+    """Schema-v5 Session-layer treatments cannot change RootLayer bytes."""
+    baseline = _three_v5_reports(tmp_path / "baseline")
+    if treatment == "contact":
+        changed = _three_v5_reports(
+            tmp_path / "changed",
+            contact_profile="explicit_material",
+        )
+    else:
+        changed = _three_v5_reports(
+            tmp_path / "changed",
+            topology="warehouse_plane_only1_v1",
+        )
+
+    analysis = analyse_contact_ab([*baseline, *changed], RADIUS_M)
+    assert analysis["analysis_valid"] is True
+    assert analysis["environment_contracts"]["Warehouse"]["environment"][
         "composed_root_layer_sha256"
-    ] = "5" * 64
-    _write(explicit[1], drifted)
-    with pytest.raises(ConfigurationError, match="contact contract mismatch"):
-        analyse_contact_ab([*legacy, *explicit], RADIUS_M)
+    ] == "e" * 64
+    assert all(
+        "composed_root_layer_sha256" not in group["contact_contract"]
+        for group in analysis["groups"].values()
+    )
+
+    for path in changed:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["runtime_provenance"]["environment"][
+            "composed_root_layer_sha256"
+        ] = "4" * 64
+        _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="environment contract mismatch"):
+        analyse_contact_ab([*baseline, *changed], RADIUS_M)
 
 
 def test_exact_six_segment_protocol_is_fail_closed(tmp_path):
