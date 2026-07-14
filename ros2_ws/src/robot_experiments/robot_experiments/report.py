@@ -33,6 +33,10 @@ REPRODUCIBILITY_FIELDS = (
     "failure_reason",
 )
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PRIM_PATH_PATTERN = re.compile(
+    r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_LOWERCASE_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _PROFILE_FLAGS = {
     "legacy_baseline": (False, False),
     "threshold_only": (False, True),
@@ -57,6 +61,31 @@ _CONTACT_KEYS = {
     "wheel_material",
     "ground_material",
     "stage_usd_readback_verified",
+}
+_GROUND_TOPOLOGY_KEYS = {
+    "profile_path",
+    "profile_sha256",
+    "profile_id",
+    "environment_id",
+    "operation",
+    "source_asset_path",
+    "source_asset_sha256",
+    "overlay_identifier",
+    "overlay_sha256",
+    "source_colliders",
+    "source_collider_count",
+    "source_collider_paths_sha256",
+    "target_colliders",
+    "target_collider_count",
+    "target_collider_paths_sha256",
+    "disabled_colliders",
+    "disabled_collider_count",
+    "disabled_collider_paths_sha256",
+    "stage_usd_readback_verified",
+}
+_GROUND_TOPOLOGY_OPERATIONS = {
+    "preserve_source_colliders",
+    "disable_non_target_colliders",
 }
 
 
@@ -154,6 +183,59 @@ def _validate_sha256(value: Any, location: str) -> None:
         raise ReportValidationError(
             f"{location} must be a SHA256 hex digest"
         ) from exc
+
+
+def _validate_lowercase_sha256(value: Any, location: str) -> str:
+    if not isinstance(value, str) or not _LOWERCASE_SHA256_PATTERN.fullmatch(
+        value
+    ):
+        raise ReportValidationError(
+            f"{location} must be a lowercase SHA256 hex digest"
+        )
+    return value
+
+
+def _canonical_path_sha256(paths: list[str]) -> str:
+    canonical = json.dumps(
+        sorted(paths),
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _ground_topology_path_sequence(
+    value: Any,
+    location: str,
+    *,
+    allow_empty: bool,
+) -> list[str]:
+    if not isinstance(value, list):
+        raise ReportValidationError(f"{location} must be a JSON list")
+    if not allow_empty and not value:
+        raise ReportValidationError(f"{location} must not be empty")
+    if not all(
+        isinstance(path, str) and _PRIM_PATH_PATTERN.fullmatch(path)
+        for path in value
+    ):
+        raise ReportValidationError(
+            f"{location} must contain valid absolute USD prim paths"
+        )
+    if value != sorted(value):
+        raise ReportValidationError(f"{location} must be sorted")
+    if len(set(value)) != len(value):
+        raise ReportValidationError(f"{location} must contain unique paths")
+    return value
+
+
+def _topology_count(value: Any, location: str, *, allow_zero: bool) -> int:
+    minimum = 0 if allow_zero else 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ReportValidationError(
+            f"{location} must be a {qualifier} integer"
+        )
+    return value
 
 
 def decode_hashed_contact_snapshot(
@@ -600,6 +682,176 @@ def _validate_contact_provenance(contact: Mapping[str, Any]) -> None:
             )
 
 
+def _validate_ground_topology_provenance(
+    topology: Mapping[str, Any],
+    environment: Mapping[str, Any],
+    contact: Mapping[str, Any],
+) -> None:
+    location = "runtime_provenance.ground_topology"
+    if set(topology) != _GROUND_TOPOLOGY_KEYS:
+        raise ReportValidationError(
+            f"{location} keys must be exactly "
+            f"{sorted(_GROUND_TOPOLOGY_KEYS)}"
+        )
+
+    _absolute_file_path(topology["profile_path"], f"{location}.profile_path")
+    _validate_lowercase_sha256(
+        topology["profile_sha256"],
+        f"{location}.profile_sha256",
+    )
+    profile_id = _required_string(
+        topology["profile_id"],
+        f"{location}.profile_id",
+    )
+    if not _IDENTIFIER_PATTERN.fullmatch(profile_id):
+        raise ReportValidationError(f"{location}.profile_id must be path-safe")
+
+    environment_id = _required_string(
+        topology["environment_id"],
+        f"{location}.environment_id",
+    )
+    if not _IDENTIFIER_PATTERN.fullmatch(environment_id):
+        raise ReportValidationError(
+            f"{location}.environment_id must be path-safe"
+        )
+    if environment_id != environment["id"]:
+        raise ReportValidationError(
+            f"{location}.environment_id must match runtime environment"
+        )
+
+    operation = _required_string(
+        topology["operation"],
+        f"{location}.operation",
+    )
+    if operation not in _GROUND_TOPOLOGY_OPERATIONS:
+        raise ReportValidationError(
+            f"{location}.operation must be one of "
+            f"{sorted(_GROUND_TOPOLOGY_OPERATIONS)}"
+        )
+
+    source_asset_path = _absolute_file_path(
+        topology["source_asset_path"],
+        f"{location}.source_asset_path",
+    )
+    source_asset_sha256 = _validate_lowercase_sha256(
+        topology["source_asset_sha256"],
+        f"{location}.source_asset_sha256",
+    )
+    environment_source = environment["source_asset"]
+    if source_asset_path != environment_source["path"]:
+        raise ReportValidationError(
+            f"{location}.source_asset_path must match runtime environment"
+        )
+    if not hmac.compare_digest(
+        source_asset_sha256,
+        environment_source["sha256"],
+    ):
+        raise ReportValidationError(
+            f"{location}.source_asset_sha256 must match runtime environment"
+        )
+
+    overlay_identifier = _required_string(
+        topology["overlay_identifier"],
+        f"{location}.overlay_identifier",
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise ReportValidationError(
+            f"{location}.overlay_identifier must identify an anonymous layer"
+        )
+    _validate_lowercase_sha256(
+        topology["overlay_sha256"],
+        f"{location}.overlay_sha256",
+    )
+    if topology["stage_usd_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{location}.stage_usd_readback_verified must be true"
+        )
+
+    path_sets: dict[str, list[str]] = {}
+    counts: dict[str, int] = {}
+    for name, allow_empty in (
+        ("source", False),
+        ("target", False),
+        ("disabled", True),
+    ):
+        paths = _ground_topology_path_sequence(
+            topology[f"{name}_colliders"],
+            f"{location}.{name}_colliders",
+            allow_empty=allow_empty,
+        )
+        count = _topology_count(
+            topology[f"{name}_collider_count"],
+            f"{location}.{name}_collider_count",
+            allow_zero=allow_empty,
+        )
+        if count != len(paths):
+            raise ReportValidationError(
+                f"{location}.{name}_collider_count must match "
+                f"{name}_colliders"
+            )
+        recorded_sha256 = _validate_lowercase_sha256(
+            topology[f"{name}_collider_paths_sha256"],
+            f"{location}.{name}_collider_paths_sha256",
+        )
+        actual_sha256 = _canonical_path_sha256(paths)
+        if not hmac.compare_digest(recorded_sha256, actual_sha256):
+            raise ReportValidationError(
+                f"{location}.{name}_collider_paths_sha256 does not match "
+                "the canonical sorted path list"
+            )
+        path_sets[name] = paths
+        counts[name] = count
+
+    source = set(path_sets["source"])
+    target = set(path_sets["target"])
+    disabled = set(path_sets["disabled"])
+    if target & disabled:
+        raise ReportValidationError(
+            f"{location} target and disabled collider sets must be disjoint"
+        )
+    if target | disabled != source:
+        raise ReportValidationError(
+            f"{location} target and disabled collider sets must partition source"
+        )
+
+    if operation == "preserve_source_colliders":
+        if target != source or disabled:
+            raise ReportValidationError(
+                f"{location} preserve_source_colliders requires target equal "
+                "source and an empty disabled set"
+            )
+    elif not target < source or disabled != source - target:
+        raise ReportValidationError(
+            f"{location} disable_non_target_colliders requires target to be a "
+            "true source subset and disabled to equal source minus target"
+        )
+
+    ground_colliders = contact["ground_colliders"]
+    if path_sets["target"] != ground_colliders:
+        raise ReportValidationError(
+            f"{location}.target_colliders must equal "
+            "runtime_provenance.contact.ground_colliders"
+        )
+    contract = contact["collider_contract"]
+    if counts["target"] != contract["ground_expected_enabled_count"]:
+        raise ReportValidationError(
+            f"{location}.target_collider_count must equal the contact "
+            "ground_expected_enabled_count"
+        )
+    required_ground = set(contract["ground_required_prim_paths"])
+    if not required_ground.issubset(target):
+        raise ReportValidationError(
+            f"{location}.target_colliders must contain all contact required "
+            "ground prim paths"
+        )
+    semantic_classes = contract["ground_semantic_classes"]
+    if not semantic_classes and required_ground != target:
+        raise ReportValidationError(
+            f"{location} contact ground selectors without semantic classes "
+            "must enumerate the complete target set"
+        )
+
+
 def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     """Validate the Isaac-startup snapshot embedded in a diagnostic report."""
 
@@ -608,6 +860,15 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     _validate_json_value(provenance, "runtime_provenance")
     if provenance.get("verified") is not True:
         raise ReportValidationError("runtime_provenance must be runtime-verified")
+    schema_version = provenance.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in {3, 4, 5}
+    ):
+        raise ReportValidationError(
+            "runtime_provenance.schema_version must be integer 3, 4, or 5"
+        )
     expected_root_keys = {
         "verified",
         "schema_version",
@@ -617,24 +878,17 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         "contact",
         "git",
     }
+    if schema_version == 5:
+        expected_root_keys.add("ground_topology")
     if set(provenance) != expected_root_keys:
         raise ReportValidationError(
             "runtime_provenance keys must be exactly "
             f"{sorted(expected_root_keys)}"
         )
-    schema_version = provenance.get("schema_version")
-    if (
-        isinstance(schema_version, bool)
-        or not isinstance(schema_version, int)
-        or schema_version not in {3, 4}
-    ):
-        raise ReportValidationError(
-            "runtime_provenance.schema_version must be integer 3 or 4"
-        )
 
     robot = _required_mapping(provenance, "robot", "runtime_provenance")
     robot_keys = {"config", "asset", "solver"}
-    if schema_version == 4:
+    if schema_version in {4, 5}:
         robot_keys.add("kinematics")
     if set(robot) != robot_keys:
         raise ReportValidationError(
@@ -688,7 +942,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
             "stage_articulation_usd_readback_verified must be true"
         )
 
-    if schema_version == 4:
+    if schema_version in {4, 5}:
         kinematics = _required_mapping(
             robot, "kinematics", "runtime_provenance.robot"
         )
@@ -831,6 +1085,17 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         "runtime_provenance",
     )
     _validate_contact_provenance(contact)
+    if schema_version == 5:
+        ground_topology = _required_mapping(
+            provenance,
+            "ground_topology",
+            "runtime_provenance",
+        )
+        _validate_ground_topology_provenance(
+            ground_topology,
+            environment,
+            contact,
+        )
 
     git = _required_mapping(provenance, "git", "runtime_provenance")
     if set(git) != {"commit", "branch", "dirty"}:

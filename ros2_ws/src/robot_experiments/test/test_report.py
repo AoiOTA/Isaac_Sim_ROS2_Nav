@@ -130,6 +130,86 @@ def valid_runtime_provenance_v4():
     return provenance
 
 
+def canonical_path_sha256(paths):
+    payload = json.dumps(
+        sorted(paths),
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def valid_runtime_provenance_v5():
+    provenance = valid_runtime_provenance_v4()
+    provenance["schema_version"] = 5
+    source_colliders = [
+        "/Root/GroundPlane/CollisionPlane",
+        "/Root/SM_floor_decal_01/SM_floor_decal_01",
+        "/Root/SM_floor_decal_02/SM_floor_decal_02",
+    ]
+    target_colliders = [source_colliders[0]]
+    disabled_colliders = source_colliders[1:]
+    provenance["ground_topology"] = {
+        "profile_path": (
+            "/repo/isaac_sim/configs/ground_topologies/"
+            "test_warehouse_target1_v1.yaml"
+        ),
+        "profile_sha256": "3" * 64,
+        "profile_id": "test_warehouse_target1_v1",
+        "environment_id": "Warehouse",
+        "operation": "disable_non_target_colliders",
+        "source_asset_path": "/assets/warehouse.usd",
+        "source_asset_sha256": "d" * 64,
+        "overlay_identifier": (
+            "anon:0x456:ground_topology_test_warehouse_target1_v1.usda"
+        ),
+        "overlay_sha256": "4" * 64,
+        "source_colliders": source_colliders,
+        "source_collider_count": len(source_colliders),
+        "source_collider_paths_sha256": canonical_path_sha256(
+            source_colliders
+        ),
+        "target_colliders": target_colliders,
+        "target_collider_count": len(target_colliders),
+        "target_collider_paths_sha256": canonical_path_sha256(
+            target_colliders
+        ),
+        "disabled_colliders": disabled_colliders,
+        "disabled_collider_count": len(disabled_colliders),
+        "disabled_collider_paths_sha256": canonical_path_sha256(
+            disabled_colliders
+        ),
+        "stage_usd_readback_verified": True,
+    }
+    return provenance
+
+
+def replace_topology_paths(topology, name, paths):
+    topology[f"{name}_colliders"] = paths
+    topology[f"{name}_collider_count"] = len(paths)
+    topology[f"{name}_collider_paths_sha256"] = canonical_path_sha256(paths)
+
+
+def valid_preserve_runtime_provenance_v5():
+    provenance = valid_runtime_provenance_v5()
+    topology = provenance["ground_topology"]
+    target_colliders = topology["target_colliders"]
+    topology["profile_path"] = (
+        "/repo/isaac_sim/configs/ground_topologies/"
+        "test_warehouse_combined1_v1.yaml"
+    )
+    topology["profile_sha256"] = "5" * 64
+    topology["profile_id"] = "test_warehouse_combined1_v1"
+    topology["operation"] = "preserve_source_colliders"
+    topology["overlay_identifier"] = (
+        "anon:0x457:ground_topology_test_warehouse_combined1_v1.usda"
+    )
+    topology["overlay_sha256"] = "6" * 64
+    replace_topology_paths(topology, "source", target_colliders)
+    replace_topology_paths(topology, "disabled", [])
+    return provenance
+
+
 def valid_manifest():
     return {
         "scenario_id": "static_a",
@@ -188,6 +268,17 @@ def test_validate_manifest_requires_verified_dynamic_runtime_contract():
 def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
     validate_runtime_provenance(valid_runtime_provenance())
     validate_runtime_provenance(valid_runtime_provenance_v4())
+    validate_runtime_provenance(valid_runtime_provenance_v5())
+
+
+@pytest.mark.parametrize("bad_version", [True, 3.0, "5", None, 2, 6])
+def test_validate_runtime_provenance_requires_exact_integer_schema_version(
+    bad_version,
+):
+    provenance = valid_runtime_provenance()
+    provenance["schema_version"] = bad_version
+    with pytest.raises(ReportValidationError, match="integer 3, 4, or 5"):
+        validate_runtime_provenance(provenance)
 
 
 @pytest.mark.parametrize(
@@ -208,6 +299,199 @@ def test_validate_runtime_provenance_v4_rejects_bad_kinematics(
     provenance = valid_runtime_provenance_v4()
     provenance["robot"]["kinematics"][field] = bad_value
     with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_accepts_preserved_topology():
+    validate_runtime_provenance(valid_preserve_runtime_provenance_v5())
+
+
+@pytest.mark.parametrize(
+    ("version", "mutation"),
+    [
+        (3, "kinematics"),
+        (4, "ground_topology"),
+        (5, "missing_kinematics"),
+        (5, "missing_ground_topology"),
+    ],
+)
+def test_validate_runtime_provenance_rejects_version_field_confusion(
+    version, mutation
+):
+    if version == 3:
+        provenance = valid_runtime_provenance()
+        provenance["robot"]["kinematics"] = deepcopy(
+            valid_runtime_provenance_v4()["robot"]["kinematics"]
+        )
+    elif version == 4:
+        provenance = valid_runtime_provenance_v4()
+        provenance["ground_topology"] = deepcopy(
+            valid_runtime_provenance_v5()["ground_topology"]
+        )
+    else:
+        provenance = valid_runtime_provenance_v5()
+        if mutation == "missing_kinematics":
+            del provenance["robot"]["kinematics"]
+        else:
+            del provenance["ground_topology"]
+
+    with pytest.raises(ReportValidationError, match="keys must be exactly"):
+        validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value", "message"),
+    [
+        ("profile_path", "relative.yaml", "absolute path"),
+        ("profile_sha256", "A" * 64, "lowercase SHA256"),
+        ("profile_id", "bad/id", "path-safe"),
+        ("environment_id", "SimplePlane", "match runtime environment"),
+        ("operation", [], "non-empty string"),
+        ("operation", "hide_prims", "operation must be one of"),
+        ("source_asset_path", "/assets/other.usd", "match runtime environment"),
+        ("source_asset_sha256", "e" * 64, "match runtime environment"),
+        ("overlay_identifier", "saved.usda", "anonymous layer"),
+        ("overlay_sha256", "B" * 64, "lowercase SHA256"),
+        ("stage_usd_readback_verified", False, "must be true"),
+    ],
+)
+def test_validate_runtime_provenance_v5_rejects_bad_topology_identity(
+    field, bad_value, message
+):
+    provenance = valid_runtime_provenance_v5()
+    provenance["ground_topology"][field] = bad_value
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_requires_exact_topology_keys():
+    provenance = valid_runtime_provenance_v5()
+    provenance["ground_topology"]["unversioned_note"] = "not allowed"
+    with pytest.raises(ReportValidationError, match="keys must be exactly"):
+        validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("tuple", "JSON list"),
+        ("unsorted", "must be sorted"),
+        ("duplicate", "unique paths"),
+        ("relative", "valid absolute USD prim paths"),
+        ("count", "count must match"),
+        ("bool_count", "positive integer"),
+        ("hash", "canonical sorted path list"),
+    ],
+)
+def test_validate_runtime_provenance_v5_rejects_bad_topology_path_evidence(
+    mutation, message
+):
+    provenance = valid_runtime_provenance_v5()
+    topology = provenance["ground_topology"]
+    if mutation == "tuple":
+        topology["source_colliders"] = tuple(topology["source_colliders"])
+    elif mutation == "unsorted":
+        topology["source_colliders"] = list(
+            reversed(topology["source_colliders"])
+        )
+    elif mutation == "duplicate":
+        topology["source_colliders"] = [
+            topology["source_colliders"][0],
+            topology["source_colliders"][0],
+        ]
+    elif mutation == "relative":
+        topology["source_colliders"] = ["Root/not_absolute"]
+    elif mutation == "count":
+        topology["source_collider_count"] += 1
+    elif mutation == "bool_count":
+        topology["source_collider_count"] = True
+    else:
+        topology["source_collider_paths_sha256"] = "0" * 64
+
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_rejects_overlapping_topology_sets():
+    provenance = valid_runtime_provenance_v5()
+    topology = provenance["ground_topology"]
+    overlap = sorted(
+        topology["disabled_colliders"] + topology["target_colliders"]
+    )
+    replace_topology_paths(topology, "disabled", overlap)
+    with pytest.raises(ReportValidationError, match="must be disjoint"):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_requires_topology_source_partition():
+    provenance = valid_runtime_provenance_v5()
+    topology = provenance["ground_topology"]
+    replace_topology_paths(
+        topology,
+        "disabled",
+        topology["disabled_colliders"][:-1],
+    )
+    with pytest.raises(ReportValidationError, match="must partition source"):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_enforces_topology_operation_contract():
+    provenance = valid_runtime_provenance_v5()
+    provenance["ground_topology"]["operation"] = "preserve_source_colliders"
+    with pytest.raises(ReportValidationError, match="target equal source"):
+        validate_runtime_provenance(provenance)
+
+    provenance = valid_preserve_runtime_provenance_v5()
+    provenance["ground_topology"]["operation"] = (
+        "disable_non_target_colliders"
+    )
+    with pytest.raises(ReportValidationError, match="true source subset"):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_locks_topology_to_contact_target():
+    provenance = valid_runtime_provenance_v5()
+    topology = provenance["ground_topology"]
+    replacement_target = [topology["disabled_colliders"][0]]
+    replacement_disabled = sorted(
+        set(topology["source_colliders"]) - set(replacement_target)
+    )
+    replace_topology_paths(topology, "target", replacement_target)
+    replace_topology_paths(topology, "disabled", replacement_disabled)
+    with pytest.raises(ReportValidationError, match="must equal.*ground_colliders"):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_requires_selectors_to_cover_target():
+    provenance = valid_runtime_provenance_v5()
+    provenance["contact"]["collider_contract"][
+        "ground_required_prim_paths"
+    ] = ["/Root/NotInTopology"]
+    with pytest.raises(ReportValidationError, match="missing required paths"):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_v5_rejects_incomplete_path_only_selector():
+    provenance = valid_runtime_provenance_v5()
+    topology = provenance["ground_topology"]
+    source = topology["source_colliders"]
+    topology["operation"] = "preserve_source_colliders"
+    replace_topology_paths(topology, "target", source)
+    replace_topology_paths(topology, "disabled", [])
+
+    contact = provenance["contact"]
+    contact["ground_colliders"] = source
+    contact["collider_contract"]["ground_expected_enabled_count"] = len(source)
+    contact["collider_contract"]["ground_semantic_classes"] = []
+    contact["ground_bindings"] = [
+        {
+            "collider_path": path,
+            "direct_physics_material_path": None,
+            "effective_physics_material_path": None,
+        }
+        for path in source
+    ]
+    with pytest.raises(ReportValidationError, match="complete target set"):
         validate_runtime_provenance(provenance)
 
 
@@ -242,7 +526,7 @@ def test_decode_hashed_contact_snapshot_requires_canonical_verified_json():
 @pytest.mark.parametrize(
     ("path", "bad_value", "message"),
     [
-        (("schema_version",), 2, "integer 3 or 4"),
+        (("schema_version",), 2, "integer 3, 4, or 5"),
         (("robot", "config", "sha256"), "g" * 64, "SHA256"),
         (("robot", "solver", "velocity_iterations"), True, "integer"),
         (("robot", "solver", "velocity_iterations"), 0, "integer"),
