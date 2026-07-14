@@ -17,6 +17,9 @@ sampling:
   publish_rate_hz: 20.0
   command_wall_timeout_sec: 30.0
   max_sample_age_sec: 0.5
+  # DDS may deliver Odom/JointState for the current 60 Hz physics tick before
+  # the matching /clock callback. Accept one bounded callback-phase lead only.
+  max_future_skew_sec: 0.02
   zero_publish_count: 10
   zero_publish_interval_sec: 0.02
 

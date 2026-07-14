@@ -122,6 +122,10 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert "_reset_recovery_diagnostic" in source
     assert "longest_stationary_duration_sec" in source
     assert "wheel_abs_speed_radps" in source
+    assert "max_future_skew_sec" in source
+    assert "coherent_without_time_progress" in source
+    assert "boundary_clock_ns" in source
+    assert "_coherent_group_ready" in source
     assert "AsyncParameterClient" in source
     assert "runtime_provenance" in source
     assert "validate_runtime_provenance" in source

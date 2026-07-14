@@ -215,7 +215,7 @@
 | `isaac_sim/src/bridge/__init__.py` | ROS Bridge 子包标记。 |
 | `isaac_sim/src/bridge/ros_graph_builder.py` | 按选定模式组合控制、传感器、里程计和结构 TF Graph。 |
 | `isaac_sim/src/bridge/tf_ownership.py` | 计算并拒绝 Ideal/Realistic、Isaac/RSP 之间的重复 TF 所有权组合。 |
-| `isaac_sim/src/bridge/reset_service.py` | 非阻塞 `/simulation/reset` 事务：防重入、等待 Wheel/EKF/Costmap futures、发布代次 reset event，并按初始位姿策略处理 fresh-scan 自动播种；Localization 拒绝运行时切换 Manifest 未授权 pose，退出时取消未完成 future 与重播器。 |
+| `isaac_sim/src/bridge/reset_service.py` | 非阻塞 `/simulation/reset` 事务：防重入、等待 Wheel/EKF/Costmap futures，在 event commit 前冻结 generation/`boundary_clock_ns` 并准备初始位姿策略，成功响应末尾发布版本化 `reset_metadata_v1` JSON；Localization 拒绝运行时切换 Manifest 未授权 pose，退出时取消未完成 future 与重播器。 |
 
 ## 15. Isaac 实验与 Ground Truth
 
@@ -250,7 +250,7 @@
 | `isaac_sim/tests/test_scan_projection.py` | 检查 Isaac LiDAR 与 ROS LaserScan 投影参数的 frame/range/角度契约。 |
 | `isaac_sim/tests/test_ground_truth_transforms.py` | 测试 `map_T_usd` 与 Pose 变换数学。 |
 | `isaac_sim/tests/test_idle_brake.py` | 测试命令死区、超时停车、低速唤醒和 sim-time 行为。 |
-| `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 顺序、fresh-scan initial pose 和重复 seed。 |
+| `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 事务/commit 顺序、非法 boundary 不发布 event、initial-pose 失败不形成 event/响应分裂、版本化响应 metadata、fresh-scan initial pose 和重复 seed。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 测试动态障碍解析、有限数、repeat、轨迹推进和 Reset。 |
 | `isaac_sim/tests/test_camera_contracts.py` | 测试相机 profile 默认值、严格 schema、RGB/CameraInfo 同源时间戳/QoS、CLI 选择和 Render Product 幂等释放。 |
 | `isaac_sim/tests/test_contact_setup.py` | Isaac/USD 定向测试接触 profile schema、精确 wheel/ground 解析、semantic class 全匹配、匿名层可逆性、threshold/显式材质 authoring、binding/readback 和失败清理。 |
@@ -400,7 +400,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault.py` | 无 ROS 依赖的 LaserScan 故障状态机；实现丢包/暂停/frame 替换/恢复/计数，并强制每条命令携带当前 epoch，彻底隔离 Reset 前排队的旧命令。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault_bridge.py` | ROS adapter：把 `/scan` 按显式 JSON 命令转发到 `/scan_fault`，发布 transient-local 状态，并在 reset event 或时间戳回退时清除旧故障。仅用于 Collision Monitor 安全验证。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline.py` | 与 ROS 解耦的底盘诊断配置解析与指标核心；严格校验运动方向/限幅，计算路程、横向漂移、航向、四轮方向、停止响应和时间戳完整性。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动 provenance，每段运动前 Reset，等待新鲜 Clock/Odom/JointState 和稳定静止，按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行配置中的默认 14 段或 A/B 6 段命令；Reset recovery timeout 会保留三路 wall/sim age、Odom/四轮速度、门限、逐门违规计数、峰值与最长静止窗，所有退出路径尝试零速 burst并原子写入含运行态证据的报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动 provenance，每段运动前 Reset，严格解析版本化 generation/boundary trailer，锁存 event→response 窗口逐 Topic 历史最大 stamp，并按三路独立 sequence/receive/credited 高水位消费 Clock/Odom/JointState 相干组，以 stale/future-skew/wall/速度门阻止旧 epoch、单流复用、断流、覆盖式回退与已知运动跨窗；按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行默认 14 段或 A/B 6 段命令；timeout/成功报告保留 wall/sim age、逐门违规、全窗 extrema/峰值和最长静止窗，所有退出路径尝试零速 burst 并原子写报告。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/contact_ab_analysis.py` | 严格离线 contact A/B 聚合 CLI；只接受 canonical Jackal 六段协议和 `0.098 m` 轮径，按实际时间戳重算期望/误差，交叉验证四轮期望方向、主导均值、deadband 两侧 `mixed` 瞬态、逐轮/总标志与 collider joint，使用规范化 JSON SHA 去重，并以全矩阵、环境、profile/组分层锁定 schema v3 provenance（profile 可变的 composed root 在环境/profile 组内锁定）；输出分布、对称性、停止时延和有效轮距但不自动排名。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/effective_track_analysis.py` | 离线有效轮距拟合 CLI；按输入文件 SHA256 和调用方指定的 runtime provenance 精确筛选成功 motion 报告，只接受左右纯旋转的有限数/正确符号样本，分别输出过原点 yaw-response OLS、direct OLS、TLS 及按侧/速度档/报告的审计结果。 |
 | `ros2_ws/src/robot_experiments/launch/initial_pose.launch.py` | 把 spawn pose、持续监听和扫描/TF 恢复参数传给 initial pose publisher。 |
@@ -424,7 +424,7 @@
 | `ros2_ws/src/robot_experiments/test/test_runtime_profiler.py` | 测试 profiler 的 Topic/TF 覆盖、RTF 回钟与停滞、百分位、Camera stamp 多重集配对、进程组统计和 GPU delta。 |
 | `ros2_ws/src/robot_experiments/test/test_scan_fault.py` | 纯单元测试故障数量边界、定时暂停、持续丢流、frame 替换、非法命令、时间戳回退和 Reset epoch。 |
 | `ros2_ws/src/robot_experiments/test/test_scan_fault_bridge_integration.py` | 用真实 rclpy/DDS 节点验证故障控制 Topic、scan 转发、状态发布、Reset 清理和旧 epoch 命令拒绝。 |
-| `ros2_ws/src/robot_experiments/test/test_motion_baseline.py` | 覆盖三档/圆弧配置、运动符号、漂移/航向/轮向/停止指标、deadband 瞬态、Reset recovery 逐门诊断、时间戳异常、报告有限数约束和启动脚本独占 `/cmd_vel` 契约。 |
+| `ros2_ws/src/robot_experiments/test/test_motion_baseline.py` | 覆盖三档/圆弧配置、运动符号、漂移/航向/轮向/停止指标、deadband 瞬态、Reset metadata/boundary、旧队列拒绝、三流相干组、Clock-only 缺流、逐 Topic 回退/高水位、跨 Topic 一帧回调相位、逐门诊断、报告有限数约束和启动脚本独占 `/cmd_vel` 契约。 |
 | `ros2_ws/src/robot_experiments/test/test_contact_ab_analysis.py` | 覆盖真实 tick overshoot、实际时长派生量、六段/四轮方向、真实纯旋转 `mixed` 瞬态接受、反向均值/越界范围/伪造逐轮与总标志拒绝、motion/contact joint 交叉门、canonical digest 去重、三层 environment/profile/group 锁、跨环境 overlay 例外、完整 12 组矩阵、统计/时间戳溢出、原子 JSON 与 CLI `0/1/2`。 |
 | `ros2_ws/src/robot_experiments/test/test_effective_track_analysis.py` | 覆盖有效轮距三种拟合、左右/速度档分组、输入/内容去重、rotation 符号门、provenance include/exclude 审计、原子 JSON 和 CLI 返回码。 |
 
