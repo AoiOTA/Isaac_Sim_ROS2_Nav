@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import math
 import signal
@@ -35,6 +37,7 @@ from .motion_baseline import (
     load_motion_baseline_config,
 )
 from .report import (
+    ReportValidationError,
     configuration_sha256,
     decode_hashed_contact_snapshot,
     validate_runtime_provenance,
@@ -72,6 +75,8 @@ _RUNTIME_PROVENANCE_PARAMETER_NAMES = (
     "runtime_provenance.simulation.physics_hz",
     "runtime_provenance.contact.json",
     "runtime_provenance.contact.sha256",
+    "runtime_provenance.ground_topology.json",
+    "runtime_provenance.ground_topology.sha256",
     "runtime_provenance.git.commit",
     "runtime_provenance.git.branch",
     "runtime_provenance.git.dirty",
@@ -107,6 +112,76 @@ def _json_object_without_duplicate_keys(
             raise ValueError(f"duplicate JSON key: {key}")
         value[key] = item
     return value
+
+
+def _decode_hashed_ground_topology_snapshot(
+    payload: object,
+    expected_sha256: object,
+) -> dict[str, Any]:
+    """Verify Isaac's canonical ground-topology JSON parameter pair."""
+    location = "runtime_provenance.ground_topology"
+    if not isinstance(payload, str):
+        raise ReportValidationError(f"{location}.json must be a string")
+    if (
+        not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+        or any(
+            character not in "0123456789abcdefABCDEF"
+            for character in expected_sha256
+        )
+    ):
+        raise ReportValidationError(
+            f"{location}.sha256 must be a SHA256 hex digest"
+        )
+    actual_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual_sha256, expected_sha256):
+        raise ReportValidationError(f"{location} JSON SHA256 mismatch")
+
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON constant {token}")
+
+    try:
+        decoded = json.loads(
+            payload,
+            parse_constant=reject_constant,
+            object_pairs_hook=_json_object_without_duplicate_keys,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReportValidationError(
+            f"{location}.json must be valid JSON: {exc}"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise ReportValidationError(f"{location}.json root must be a mapping")
+    try:
+        canonical = json.dumps(
+            decoded,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ReportValidationError(
+            f"{location}.json must be strict JSON: {exc}"
+        ) from exc
+    if canonical != payload:
+        raise ReportValidationError(
+            f"{location}.json must be canonical strict JSON"
+        )
+    return decoded
+
+
+def _require_live_runtime_provenance_schema(schema_version: object) -> int:
+    """Accept only the current live handshake; old schemas stay offline-only."""
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != 5
+    ):
+        raise RuntimeError(
+            "Isaac runtime provenance schema must be integer 5 for new "
+            "motion reports"
+        )
+    return schema_version
 
 
 def _parse_reset_response_metadata(message: object) -> tuple[int, int]:
@@ -501,16 +576,9 @@ class MotionBaselineRunner(Node):
         def value(suffix: str) -> object:
             return values[f"runtime_provenance.{suffix}"]
 
-        schema_version = value("schema_version")
-        if (
-            isinstance(schema_version, bool)
-            or not isinstance(schema_version, int)
-            or schema_version != 4
-        ):
-            raise RuntimeError(
-                "Isaac runtime provenance schema must be integer 4 for new "
-                "motion reports"
-            )
+        schema_version = _require_live_runtime_provenance_schema(
+            value("schema_version")
+        )
         provenance = {
             "verified": True,
             "schema_version": schema_version,
@@ -579,6 +647,10 @@ class MotionBaselineRunner(Node):
             "contact": decode_hashed_contact_snapshot(
                 value("contact.json"),
                 value("contact.sha256"),
+            ),
+            "ground_topology": _decode_hashed_ground_topology_snapshot(
+                value("ground_topology.json"),
+                value("ground_topology.sha256"),
             ),
             "git": {
                 "commit": value("git.commit"),
