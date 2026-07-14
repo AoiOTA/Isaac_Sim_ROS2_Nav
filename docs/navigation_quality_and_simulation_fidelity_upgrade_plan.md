@@ -3149,9 +3149,13 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   总体有效轮距约 `1.0124 m`，且低速左右非线性明显，不能只靠单一轮距修复。
   Warehouse 地面没有显式材质绑定，轮材质仅为 scalar `0.2/0.2`；公开通用刚体
   USD/API 未发现各向异性摩擦。Warehouse 的 friction correlation/offset 阈值
-  `.00025/.0004` 又比安装版 schema fallback `.025/.04` 小 100 倍，下一步必须先
-  做单轮正负速度验证、阈值 A/B、显式材质 A/B，再做锁定输入的 SimplePlane/
-  Warehouse 和有效轮距标定。
+  `.00025/.0004` 又比安装版 schema fallback `.025/.04` 小 100 倍。现在已新增可逆
+  `legacy/threshold-only/explicit-material` 匿名 session profile、独立 SimplePlane、
+  精确 4 wheel/32 Warehouse ground collider 读回和 2×2 threshold 配置。clean
+  schema v3 Warehouse 单轮正负诊断 8/8 通过，normal/contact/friction/body 方向硬门
+  全部为真；clean motion 报告 14/14 通过并把 profile、overlay、scene、collider、
+  binding、material 与 Git 身份绑定。下一步仍必须完成每个 threshold 点、显式材质、
+  SimplePlane/Warehouse 和候选有效轮距的锁定输入多次 A/B，不能据工具可用直接冻结。
 - 证据纪律：调参 JSON 继续由 Git 忽略，摘要、命令、报告 SHA256、失败样本和边界
   回填到 `docs/verification.md`；正式统计必须在 clean commit、冻结输入和独立输出
   集合上重跑，不混入上述调参样本。
