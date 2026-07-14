@@ -152,7 +152,8 @@ matches_registered_component() {
       [[ "${command_line}" == *"robot_teleop"*"keyboard_teleop"* ]]
       ;;
     motion_baseline)
-      [[ "${command_line}" == *"/lib/robot_experiments/motion_baseline_runner"* ]]
+      [[ "${command_line}" == *"/lib/robot_experiments/motion_baseline_runner"* \
+        || "${command_line}" == *"/bin/ros2 run robot_experiments motion_baseline_runner"* ]]
       ;;
     *)
       return 1
@@ -317,6 +318,7 @@ list_project_processes() {
     $1 != self && $0 !~ /clean_runtime[.]sh/ && $0 !~ /awk -v root=/ &&
     (index($0, root "/isaac_sim/apps/navigation_sim.py") ||
     $0 ~ /ros2 launch robot_bringup/ ||
+    $0 ~ /\/bin\/ros2 run robot_experiments motion_baseline_runner/ ||
     $0 ~ /\/lib\/robot_experiments\/motion_baseline_runner/ ||
     $0 ~ /robot_teleop.*keyboard_teleop/ || $0 ~ /(^|[[:space:]])rviz2([[:space:]]|$)/) {
       print

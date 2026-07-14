@@ -214,7 +214,8 @@ runtime_component_command_matches() {
         || "${command_line}" == *" scripts/run_teleop.sh "* ]]
       ;;
     motion_baseline)
-      [[ "${command_line}" == *"/lib/robot_experiments/motion_baseline_runner"* ]]
+      [[ "${command_line}" == *"/lib/robot_experiments/motion_baseline_runner"* \
+        || "${command_line}" == *"/bin/ros2 run robot_experiments motion_baseline_runner"* ]]
       ;;
     isaac)
       [[ "${command_line}" == *"${PROJECT_ROOT}/isaac_sim/apps/navigation_sim.py"* ]]
