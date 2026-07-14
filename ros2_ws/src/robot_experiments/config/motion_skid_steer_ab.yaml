@@ -1,0 +1,80 @@
+schema_version: 1
+profile_id: jackal_skid_steer_ab_v1
+
+topics:
+  cmd_vel: /cmd_vel
+  clock: /clock
+  odom: /odom
+  joint_states: /joint_states
+
+reset:
+  service: /simulation/reset
+  service_timeout_sec: 15.0
+  recovery_timeout_sec: 30.0
+  settle_duration_sec: 0.5
+
+sampling:
+  publish_rate_hz: 20.0
+  command_wall_timeout_sec: 30.0
+  max_sample_age_sec: 0.5
+  zero_publish_count: 10
+  zero_publish_interval_sec: 0.02
+
+limits:
+  max_abs_linear_mps: 1.0
+  max_abs_angular_radps: 1.5
+  max_segment_duration_sec: 20.0
+
+stop:
+  linear_velocity_threshold_mps: 0.02
+  angular_velocity_threshold_radps: 0.05
+  wheel_velocity_threshold_radps: 0.20
+  stable_duration_sec: 0.5
+  timeout_sec: 10.0
+
+wheels:
+  front_left: front_left_wheel_joint
+  front_right: front_right_wheel_joint
+  rear_left: rear_left_wheel_joint
+  rear_right: rear_right_wheel_joint
+
+# Canonical SimplePlane/Warehouse comparison from the navigation-quality plan.
+# Every segment starts from the named reset pose; duration is derived from the
+# requested command-space angle or distance where the plan specifies one.
+segments:
+  - id: rotate_left_360
+    motion: rotate_left
+    tier: ab
+    linear_x_mps: 0.0
+    angular_z_radps: 0.4
+    duration_sec: 15.707963267948966
+  - id: rotate_right_360
+    motion: rotate_right
+    tier: ab
+    linear_x_mps: 0.0
+    angular_z_radps: -0.4
+    duration_sec: 15.707963267948966
+  - id: forward_3m
+    motion: forward
+    tier: ab
+    linear_x_mps: 0.5
+    angular_z_radps: 0.0
+    duration_sec: 6.0
+  - id: backward_2m
+    motion: backward
+    tier: ab
+    linear_x_mps: -0.3
+    angular_z_radps: 0.0
+    duration_sec: 6.666666666666667
+  - id: arc_left_5s
+    motion: arc_left
+    tier: ab
+    linear_x_mps: 0.4
+    angular_z_radps: 0.4
+    duration_sec: 5.0
+  - id: arc_right_5s
+    motion: arc_right
+    tier: ab
+    linear_x_mps: 0.4
+    angular_z_radps: -0.4
+    duration_sec: 5.0
