@@ -91,6 +91,159 @@ def _diagnostic_json_safe(value: Any) -> Any:
     return value
 
 
+def _json_object_without_duplicate_keys(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON key: {key}")
+        value[key] = item
+    return value
+
+
+def _parse_reset_response_metadata(message: object) -> tuple[int, int]:
+    text = str(message)
+    marker = "; reset_metadata_v1="
+    _, separator, payload = text.rpartition(marker)
+    if not separator:
+        raise RuntimeError(
+            "simulation Reset response lacks the versioned metadata trailer"
+        )
+    try:
+        metadata = json.loads(
+            payload, object_pairs_hook=_json_object_without_duplicate_keys
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            "simulation Reset metadata trailer is not valid JSON"
+        ) from exc
+    expected_keys = {"schema_version", "generation", "boundary_clock_ns"}
+    if not isinstance(metadata, dict) or set(metadata) != expected_keys:
+        raise RuntimeError(
+            "simulation Reset metadata trailer has an invalid schema"
+        )
+    schema_version = metadata["schema_version"]
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise RuntimeError(
+            "simulation Reset metadata schema_version must be an integer"
+        )
+    if schema_version != 1:
+        raise RuntimeError("unsupported simulation Reset metadata schema")
+    generation = metadata["generation"]
+    boundary_clock_ns = metadata["boundary_clock_ns"]
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or isinstance(boundary_clock_ns, bool)
+        or not isinstance(boundary_clock_ns, int)
+    ):
+        raise RuntimeError(
+            "simulation Reset generation/boundary_clock_ns must be integers"
+        )
+    if generation <= 0:
+        raise RuntimeError("simulation Reset generation must be positive")
+    if boundary_clock_ns < 0:
+        raise RuntimeError(
+            "simulation Reset boundary_clock_ns must be non-negative"
+        )
+    return generation, boundary_clock_ns
+
+
+def _coherent_group_ready(
+    current_sequences: tuple[int, int, int],
+    credited_sequences: tuple[int, int, int],
+) -> bool:
+    return all(
+        current > credited
+        for current, credited in zip(
+            current_sequences, credited_sequences, strict=True
+        )
+    )
+
+
+def _post_reset_observation_ns(
+    *,
+    boundary_clock_ns: int,
+    clock_ns: int | None,
+    odom_stamp_ns: int | None,
+    joint_stamp_ns: int | None,
+) -> int | None:
+    stamps = (clock_ns, odom_stamp_ns, joint_stamp_ns)
+    if any(stamp is None for stamp in stamps):
+        return None
+    concrete = tuple(int(stamp) for stamp in stamps if stamp is not None)
+    if any(stamp <= boundary_clock_ns for stamp in concrete):
+        return None
+    return min(concrete)
+
+
+def _timestamp_regression_topics(
+    current_stamps_ns: tuple[int, int, int],
+    high_watermarks_ns: tuple[int, int, int],
+) -> tuple[str, ...]:
+    names = ("clock", "odom", "joint_states")
+    return tuple(
+        name
+        for name, current, high_watermark in zip(
+            names,
+            current_stamps_ns,
+            high_watermarks_ns,
+            strict=True,
+        )
+        if current < high_watermark
+    )
+
+
+def _update_stationary_window(
+    *,
+    observation_ns: int | None,
+    last_observation_ns: int | None,
+    stationary_since_ns: int | None,
+    gates_passed: bool,
+) -> tuple[int | None, int | None, int, str]:
+    """Advance a settle window only for a newer coherent stream group."""
+    if observation_ns is None:
+        if not gates_passed:
+            return None, last_observation_ns, 0, "blocked"
+        return (
+            stationary_since_ns,
+            last_observation_ns,
+            0,
+            "waiting_for_observation",
+        )
+    if last_observation_ns is not None:
+        if observation_ns < last_observation_ns:
+            return (
+                None,
+                last_observation_ns,
+                0,
+                "observation_regression",
+            )
+        if observation_ns == last_observation_ns:
+            if not gates_passed:
+                return None, last_observation_ns, 0, "blocked"
+            return (
+                stationary_since_ns,
+                last_observation_ns,
+                0,
+                "waiting_for_observation",
+            )
+    if not gates_passed:
+        # A moving coherent group clears the settle window, but its timestamp
+        # still becomes the monotonic high-watermark.  Otherwise a later
+        # out-of-order stationary group could be credited across known motion.
+        return None, observation_ns, 0, "blocked"
+    if stationary_since_ns is None or observation_ns < stationary_since_ns:
+        stationary_since_ns = observation_ns
+    return (
+        stationary_since_ns,
+        observation_ns,
+        observation_ns - stationary_since_ns,
+        "advanced",
+    )
+
+
 def _yaw_from_quaternion(quaternion: Any) -> float:
     values = (quaternion.x, quaternion.y, quaternion.z, quaternion.w)
     if not all(math.isfinite(float(value)) for value in values):
@@ -189,6 +342,9 @@ class MotionBaselineRunner(Node):
         self._last_clock_received_wall: float | None = None
         self._last_odom_received_wall: float | None = None
         self._last_joint_received_wall: float | None = None
+        self._reset_wait_stamp_high_watermarks_ns: dict[
+            str, int | None
+        ] | None = None
         self._session_timestamps = {
             "clock": TimestampTracker(),
             "odom": TimestampTracker(),
@@ -209,9 +365,22 @@ class MotionBaselineRunner(Node):
         if self._active_timestamps is not None:
             self._active_timestamps[topic].observe(stamp_ns)
 
+    def _observe_reset_wait_timestamp(self, topic: str, stamp_ns: int) -> None:
+        """Retain callback maxima while a Reset Trigger response is pending."""
+        high_watermarks = self._reset_wait_stamp_high_watermarks_ns
+        if high_watermarks is None:
+            return
+        high_watermark = high_watermarks[topic]
+        high_watermarks[topic] = (
+            stamp_ns
+            if high_watermark is None
+            else max(high_watermark, stamp_ns)
+        )
+
     def _clock_callback(self, message: Clock) -> None:
         stamp = _stamp_ns(message.clock)
         self._observe_timestamp("clock", stamp)
+        self._observe_reset_wait_timestamp("clock", stamp)
         self._clock_ns = stamp
         self._clock_sequence += 1
         self._last_clock_received_wall = time.monotonic()
@@ -233,6 +402,7 @@ class MotionBaselineRunner(Node):
             if self._active_odom is not None:
                 self._active_invalid["odom"] += 1
             return
+        self._observe_reset_wait_timestamp("odom", stamp)
         self._latest_odom = sample
         self._odom_sequence += 1
         self._last_odom_received_wall = time.monotonic()
@@ -265,6 +435,7 @@ class MotionBaselineRunner(Node):
             if self._active_joints is not None:
                 self._active_invalid["joint_states"] += 1
             return
+        self._observe_reset_wait_timestamp("joint_states", stamp)
         self._latest_joint = sample
         self._joint_sequence += 1
         self._last_joint_received_wall = time.monotonic()
@@ -516,19 +687,45 @@ class MotionBaselineRunner(Node):
                 # Shutdown can invalidate the context between the check and publish.
                 break
 
-    def _streams_fresh(self) -> bool:
-        if (
-            self._clock_ns is None
-            or self._latest_odom is None
-            or self._latest_joint is None
-        ):
-            return False
+    def _stream_sim_ages_ns(self) -> dict[str, int | None]:
+        clock_ns = self._clock_ns
+        return {
+            "odom": (
+                None
+                if clock_ns is None or self._latest_odom is None
+                else clock_ns - self._latest_odom.stamp_ns
+            ),
+            "joint_states": (
+                None
+                if clock_ns is None or self._latest_joint is None
+                else clock_ns - self._latest_joint.stamp_ns
+            ),
+        }
+
+    def _stream_freshness_gate_status(self) -> dict[str, bool]:
+        ages_ns = self._stream_sim_ages_ns()
         max_age_ns = round(
             self._config.sampling.max_sample_age_sec * NANOSECONDS_PER_SECOND
         )
-        odom_age = self._clock_ns - self._latest_odom.stamp_ns
-        joint_age = self._clock_ns - self._latest_joint.stamp_ns
-        return 0 <= odom_age <= max_age_ns and 0 <= joint_age <= max_age_ns
+        max_future_skew_ns = round(
+            self._config.sampling.max_future_skew_sec * NANOSECONDS_PER_SECOND
+        )
+        gates: dict[str, bool] = {}
+        for topic, age_ns in ages_ns.items():
+            gates[f"{topic}_not_stale"] = (
+                age_ns is not None and age_ns <= max_age_ns
+            )
+            gates[f"{topic}_not_too_far_ahead"] = (
+                age_ns is not None and age_ns >= -max_future_skew_ns
+            )
+        return gates
+
+    def _streams_fresh(self) -> bool:
+        # The three DDS subscriptions are not an atomic snapshot. Odom or
+        # JointState for the current physics tick may be handled before the
+        # matching /clock callback, so accept only the explicitly bounded
+        # callback-phase lead while retaining the independent stale bound.
+        return all(self._stream_freshness_gate_status().values())
 
     def _wall_streams_fresh(self) -> bool:
         now = time.monotonic()
@@ -545,7 +742,15 @@ class MotionBaselineRunner(Node):
 
     def _stationary_gate_status(self) -> dict[str, bool]:
         stop = self._config.stop
-        gates = {"streams_fresh": self._streams_fresh()}
+        freshness_gates = self._stream_freshness_gate_status()
+        gates = {
+            "streams_fresh": all(freshness_gates.values()),
+            **{
+                f"stream:{name}": passed
+                for name, passed in freshness_gates.items()
+            },
+            "wall_streams_fresh": self._wall_streams_fresh(),
+        }
         odom = self._latest_odom
         joint = self._latest_joint
         gates["odom_linear_speed"] = (
@@ -572,6 +777,11 @@ class MotionBaselineRunner(Node):
     def _reset_recovery_diagnostic(
         self,
         barriers: tuple[int, int, int],
+        credited_sequences: tuple[int, int, int],
+        credited_stamp_high_watermarks_ns: tuple[int, int, int],
+        received_stamp_high_watermarks_ns: tuple[int, int, int],
+        reset_generation: int,
+        boundary_clock_ns: int,
         observation_counts: dict[str, int],
         violation_counts: dict[str, int],
         peak_observed: dict[str, object],
@@ -587,7 +797,36 @@ class MotionBaselineRunner(Node):
             "odom": self._last_odom_received_wall,
             "joint_states": self._last_joint_received_wall,
         }
+        sim_ages_ns = self._stream_sim_ages_ns()
+        sim_stamps_ns = [
+            stamp
+            for stamp in (
+                clock_ns,
+                None if odom is None else odom.stamp_ns,
+                None if joint is None else joint.stamp_ns,
+            )
+            if stamp is not None
+        ]
         diagnostic: dict[str, object] = {
+            "reset_epoch": {
+                "generation": reset_generation,
+                "boundary_clock_ns": boundary_clock_ns,
+                "credited_sequences": {
+                    "clock": credited_sequences[0],
+                    "odom": credited_sequences[1],
+                    "joint_states": credited_sequences[2],
+                },
+                "credited_stamp_high_watermarks_ns": {
+                    "clock": credited_stamp_high_watermarks_ns[0],
+                    "odom": credited_stamp_high_watermarks_ns[1],
+                    "joint_states": credited_stamp_high_watermarks_ns[2],
+                },
+                "received_stamp_high_watermarks_ns": {
+                    "clock": received_stamp_high_watermarks_ns[0],
+                    "odom": received_stamp_high_watermarks_ns[1],
+                    "joint_states": received_stamp_high_watermarks_ns[2],
+                },
+            },
             "sequence_barriers": {
                 "clock": barriers[0],
                 "odom": barriers[1],
@@ -609,17 +848,19 @@ class MotionBaselineRunner(Node):
             },
             "clock_ns": clock_ns,
             "sim_age_sec": {
-                "odom": (
+                topic: (
                     None
-                    if clock_ns is None or odom is None
-                    else (clock_ns - odom.stamp_ns) / NANOSECONDS_PER_SECOND
-                ),
-                "joint_states": (
-                    None
-                    if clock_ns is None or joint is None
-                    else (clock_ns - joint.stamp_ns) / NANOSECONDS_PER_SECOND
-                ),
+                    if age_ns is None
+                    else age_ns / NANOSECONDS_PER_SECOND
+                )
+                for topic, age_ns in sim_ages_ns.items()
             },
+            "sim_timestamp_span_sec": (
+                None
+                if len(sim_stamps_ns) < 3
+                else (max(sim_stamps_ns) - min(sim_stamps_ns))
+                / NANOSECONDS_PER_SECOND
+            ),
             "streams_fresh": self._streams_fresh(),
             "wall_streams_fresh": self._wall_streams_fresh(),
             "observation_counts": dict(observation_counts),
@@ -635,6 +876,12 @@ class MotionBaselineRunner(Node):
                 ),
                 "wheel_speed_radps": (
                     self._config.stop.wheel_velocity_threshold_radps
+                ),
+                "max_sample_age_sec": (
+                    self._config.sampling.max_sample_age_sec
+                ),
+                "max_future_skew_sec": (
+                    self._config.sampling.max_future_skew_sec
                 ),
             },
         }
@@ -670,11 +917,6 @@ class MotionBaselineRunner(Node):
         self.safe_stop()
         self._assert_command_channel_uncontended()
         before_clock = self._clock_ns
-        barriers = (
-            self._clock_sequence,
-            self._odom_sequence,
-            self._joint_sequence,
-        )
         started = time.monotonic()
         reset = self._config.reset
         if not self._reset_client.wait_for_service(
@@ -682,27 +924,99 @@ class MotionBaselineRunner(Node):
         ):
             self._raise_if_shutdown()
             raise RuntimeError(f"reset service unavailable: {reset.service}")
-        future = self._reset_client.call_async(Trigger.Request())
-        if not self._wait_future(
-            future, time.monotonic() + reset.service_timeout_sec
-        ):
-            raise TimeoutError("simulation Reset response timed out")
-        response = future.result()
-        response_wall = time.monotonic()
+        self._reset_wait_stamp_high_watermarks_ns = {
+            "clock": None,
+            "odom": None,
+            "joint_states": None,
+        }
+        try:
+            future = self._reset_client.call_async(Trigger.Request())
+            if not self._wait_future(
+                future, time.monotonic() + reset.service_timeout_sec
+            ):
+                raise TimeoutError("simulation Reset response timed out")
+            response = future.result()
+            response_wall = time.monotonic()
+            reset_wait_stamp_high_watermarks_ns = tuple(
+                self._reset_wait_stamp_high_watermarks_ns[topic]
+                for topic in ("clock", "odom", "joint_states")
+            )
+        finally:
+            self._reset_wait_stamp_high_watermarks_ns = None
         if response is None or not response.success:
             message = "no response" if response is None else response.message
             raise RuntimeError(f"simulation Reset failed: {message}")
 
+        reset_generation, boundary_clock_ns = _parse_reset_response_metadata(
+            response.message
+        )
+        # Sequence watermarks prevent sample reuse. The service-provided
+        # simulation-time boundary separately rejects messages that entered a
+        # DDS queue before the completed reset epoch but were handled later.
+        barriers = (
+            self._clock_sequence,
+            self._odom_sequence,
+            self._joint_sequence,
+        )
+        credited_sequences = barriers
+        barrier_stamps_ns = (
+            self._clock_ns,
+            (
+                None
+                if self._latest_odom is None
+                else self._latest_odom.stamp_ns
+            ),
+            (
+                None
+                if self._latest_joint is None
+                else self._latest_joint.stamp_ns
+            ),
+        )
+        barrier_stamp_high_watermarks_ns = tuple(
+            max(
+                boundary_clock_ns,
+                boundary_clock_ns if stamp is None else stamp,
+                (
+                    boundary_clock_ns
+                    if wait_stamp is None
+                    else wait_stamp
+                ),
+            )
+            for stamp, wait_stamp in zip(
+                barrier_stamps_ns,
+                reset_wait_stamp_high_watermarks_ns,
+                strict=True,
+            )
+        )
+        credited_stamp_high_watermarks_ns = barrier_stamp_high_watermarks_ns
+        received_sequences = barriers
+        received_stamp_high_watermarks_ns = barrier_stamp_high_watermarks_ns
         recovery_deadline = time.monotonic() + reset.recovery_timeout_sec
         stationary_since_ns: int | None = None
+        # No settle interval may begin before the latest evidence already
+        # processed while the Trigger response was in flight.  The streams can
+        # differ by one callback phase, so use the maximum barrier watermark
+        # as the conservative observation floor.
+        last_observation_ns: int | None = max(
+            barrier_stamp_high_watermarks_ns
+        )
         longest_stationary_duration_ns = 0
         observation_counts = {
-            "sequence_not_fresh": 0,
+            "coherent_group_not_ready": 0,
+            "pre_boundary_group": 0,
             "not_stationary": 0,
             "stationary": 0,
+            "coherent_without_time_progress": 0,
+            "observation_regression": 0,
+            "receive_timestamp_regression": 0,
+            "coherent_timestamp_regression": 0,
         }
-        gate_names = (
-            "streams_fresh",
+        gate_names = tuple(self._stationary_gate_status())
+        immediate_gate_names = (
+            "wall_streams_fresh",
+            *(
+                name for name in gate_names if name.startswith("stream:")
+            ),
             "odom_linear_speed",
             "odom_angular_speed",
             *(f"wheel:{name}" for name in self._config.wheels.ordered_names),
@@ -714,6 +1028,10 @@ class MotionBaselineRunner(Node):
             "wheel_abs_speed_radps": {
                 name: 0.0 for name in self._config.wheels.ordered_names
             },
+            "sim_age_sec": {
+                "odom": {"minimum": None, "maximum": None},
+                "joint_states": {"minimum": None, "maximum": None},
+            },
         }
         publish_period = 1.0 / self._config.sampling.publish_rate_hz
         next_publish = 0.0
@@ -723,15 +1041,72 @@ class MotionBaselineRunner(Node):
                 self._publish(0.0, 0.0)
                 next_publish = now + publish_period
             self._spin_once(min(0.05, recovery_deadline - now))
-            fresh_sequences = (
-                self._clock_sequence > barriers[0]
-                and self._odom_sequence > barriers[1]
-                and self._joint_sequence > barriers[2]
+            current_sequences = (
+                self._clock_sequence,
+                self._odom_sequence,
+                self._joint_sequence,
             )
-            if not fresh_sequences:
-                observation_counts["sequence_not_fresh"] += 1
+            current_receive_stamps_ns = (
+                self._clock_ns,
+                (
+                    None
+                    if self._latest_odom is None
+                    else self._latest_odom.stamp_ns
+                ),
+                (
+                    None
+                    if self._latest_joint is None
+                    else self._latest_joint.stamp_ns
+                ),
+            )
+            receive_regression_topics: list[str] = []
+            next_received_high_watermarks = list(
+                received_stamp_high_watermarks_ns
+            )
+            for index, topic in enumerate(
+                ("clock", "odom", "joint_states")
+            ):
+                if current_sequences[index] <= received_sequences[index]:
+                    continue
+                stamp_ns = current_receive_stamps_ns[index]
+                assert stamp_ns is not None
+                if stamp_ns < received_stamp_high_watermarks_ns[index]:
+                    observation_counts["receive_timestamp_regression"] += 1
+                    key = f"receive_timestamp_regression:{topic}"
+                    violation_counts[key] = violation_counts.get(key, 0) + 1
+                    receive_regression_topics.append(topic)
+                else:
+                    next_received_high_watermarks[index] = stamp_ns
+            received_sequences = current_sequences
+            received_stamp_high_watermarks_ns = tuple(
+                next_received_high_watermarks
+            )
+            if receive_regression_topics:
+                if (
+                    stationary_since_ns is not None
+                    and last_observation_ns is not None
+                ):
+                    longest_stationary_duration_ns = max(
+                        longest_stationary_duration_ns,
+                        max(0, last_observation_ns - stationary_since_ns),
+                    )
                 stationary_since_ns = None
-                continue
+            sim_age_extrema = peak_observed["sim_age_sec"]
+            assert isinstance(sim_age_extrema, dict)
+            for topic, age_ns in self._stream_sim_ages_ns().items():
+                if age_ns is None:
+                    continue
+                age_sec = age_ns / NANOSECONDS_PER_SECOND
+                topic_extrema = sim_age_extrema[topic]
+                assert isinstance(topic_extrema, dict)
+                minimum = topic_extrema["minimum"]
+                maximum = topic_extrema["maximum"]
+                topic_extrema["minimum"] = (
+                    age_sec if minimum is None else min(float(minimum), age_sec)
+                )
+                topic_extrema["maximum"] = (
+                    age_sec if maximum is None else max(float(maximum), age_sec)
+                )
             if self._latest_odom is not None:
                 peak_observed["odom_linear_speed_mps"] = max(
                     float(peak_observed["odom_linear_speed_mps"]),
@@ -754,32 +1129,163 @@ class MotionBaselineRunner(Node):
                         abs(velocities[name]),
                     )
             gate_status = self._stationary_gate_status()
-            if not all(gate_status.values()):
+            if not _coherent_group_ready(
+                current_sequences, credited_sequences
+            ):
+                observation_counts["coherent_group_not_ready"] += 1
+                immediate_blockers = [
+                    name
+                    for name in immediate_gate_names
+                    if not gate_status[name]
+                ]
+                if immediate_blockers:
+                    observation_counts["not_stationary"] += 1
+                    for name in immediate_blockers:
+                        violation_counts[name] += 1
+                    if (
+                        stationary_since_ns is not None
+                        and last_observation_ns is not None
+                    ):
+                        longest_stationary_duration_ns = max(
+                            longest_stationary_duration_ns,
+                            max(
+                                0,
+                                last_observation_ns - stationary_since_ns,
+                            ),
+                        )
+                    stationary_since_ns = None
+                continue
+
+            # Consume every stream watermark exactly once, including invalid
+            # pre-boundary or incoherent groups, so queued data cannot be
+            # recombined indefinitely with a later callback.
+            credited_sequences = current_sequences
+            odom_stamp_ns = (
+                None if self._latest_odom is None else self._latest_odom.stamp_ns
+            )
+            joint_stamp_ns = (
+                None if self._latest_joint is None else self._latest_joint.stamp_ns
+            )
+            observation_ns = _post_reset_observation_ns(
+                boundary_clock_ns=boundary_clock_ns,
+                clock_ns=self._clock_ns,
+                odom_stamp_ns=odom_stamp_ns,
+                joint_stamp_ns=joint_stamp_ns,
+            )
+            if observation_ns is None:
+                observation_counts["pre_boundary_group"] += 1
+                if (
+                    stationary_since_ns is not None
+                    and last_observation_ns is not None
+                ):
+                    longest_stationary_duration_ns = max(
+                        longest_stationary_duration_ns,
+                        max(0, last_observation_ns - stationary_since_ns),
+                    )
+                stationary_since_ns = None
+                continue
+
+            assert self._clock_ns is not None
+            assert odom_stamp_ns is not None
+            assert joint_stamp_ns is not None
+            current_stamps_ns = (
+                self._clock_ns,
+                odom_stamp_ns,
+                joint_stamp_ns,
+            )
+            required_stamp_high_watermarks_ns = tuple(
+                max(credited, received)
+                for credited, received in zip(
+                    credited_stamp_high_watermarks_ns,
+                    received_stamp_high_watermarks_ns,
+                    strict=True,
+                )
+            )
+            regression_topics = _timestamp_regression_topics(
+                current_stamps_ns,
+                required_stamp_high_watermarks_ns,
+            )
+            if regression_topics:
+                observation_counts["coherent_timestamp_regression"] += 1
+                for topic in regression_topics:
+                    key = f"coherent_timestamp_regression:{topic}"
+                    violation_counts[key] = violation_counts.get(key, 0) + 1
+                if (
+                    stationary_since_ns is not None
+                    and last_observation_ns is not None
+                ):
+                    longest_stationary_duration_ns = max(
+                        longest_stationary_duration_ns,
+                        max(0, last_observation_ns - stationary_since_ns),
+                    )
+                stationary_since_ns = None
+                credited_stamp_high_watermarks_ns = (
+                    required_stamp_high_watermarks_ns
+                )
+                continue
+            credited_stamp_high_watermarks_ns = current_stamps_ns
+
+            previous_stationary_since_ns = stationary_since_ns
+            previous_observation_ns = last_observation_ns
+            (
+                stationary_since_ns,
+                last_observation_ns,
+                settled_ns,
+                window_status,
+            ) = _update_stationary_window(
+                observation_ns=observation_ns,
+                last_observation_ns=last_observation_ns,
+                stationary_since_ns=stationary_since_ns,
+                gates_passed=all(gate_status.values()),
+            )
+            if window_status == "blocked":
                 observation_counts["not_stationary"] += 1
                 for gate, passed in gate_status.items():
                     if not passed:
                         violation_counts[gate] += 1
-                if stationary_since_ns is not None and self._clock_ns is not None:
+                if previous_stationary_since_ns is not None:
                     longest_stationary_duration_ns = max(
                         longest_stationary_duration_ns,
-                        self._clock_ns - stationary_since_ns,
+                        max(
+                            0,
+                            (
+                                previous_observation_ns
+                                - previous_stationary_since_ns
+                                if previous_observation_ns is not None
+                                else 0
+                            ),
+                        ),
                     )
-                stationary_since_ns = None
+                continue
+            if window_status == "waiting_for_observation":
+                observation_counts["coherent_without_time_progress"] += 1
+                continue
+            if window_status == "observation_regression":
+                observation_counts["observation_regression"] += 1
+                if (
+                    previous_stationary_since_ns is not None
+                    and previous_observation_ns is not None
+                ):
+                    longest_stationary_duration_ns = max(
+                        longest_stationary_duration_ns,
+                        max(
+                            0,
+                            previous_observation_ns
+                            - previous_stationary_since_ns,
+                        ),
+                    )
                 continue
             observation_counts["stationary"] += 1
-            assert self._clock_ns is not None
-            if stationary_since_ns is None:
-                stationary_since_ns = self._clock_ns
-            if self._clock_ns < stationary_since_ns:
-                stationary_since_ns = self._clock_ns
-            settled_ns = self._clock_ns - stationary_since_ns
             if settled_ns >= round(
                 reset.settle_duration_sec * NANOSECONDS_PER_SECOND
             ):
+                assert self._clock_ns is not None
                 after_clock = self._clock_ns
                 return {
                     "service": reset.service,
                     "response_message": str(response.message),
+                    "reset_generation": reset_generation,
+                    "reset_boundary_clock_ns": boundary_clock_ns,
                     "service_latency_wall_sec": response_wall - started,
                     "recovery_latency_wall_sec": time.monotonic() - response_wall,
                     "clock_before_ns": before_clock,
@@ -787,18 +1293,46 @@ class MotionBaselineRunner(Node):
                     "clock_rollback_observed": (
                         before_clock is not None and after_clock < before_clock
                     ),
-                    "fresh_clock_received": self._clock_sequence > barriers[0],
-                    "fresh_odom_received": self._odom_sequence > barriers[1],
-                    "fresh_joint_states_received": self._joint_sequence > barriers[2],
+                    "fresh_clock_received": credited_sequences[0] > barriers[0],
+                    "fresh_odom_received": credited_sequences[1] > barriers[1],
+                    "fresh_joint_states_received": (
+                        credited_sequences[2] > barriers[2]
+                    ),
                     "stationary_settle_duration_sec": reset.settle_duration_sec,
+                    "recovery_observation_counts": dict(observation_counts),
+                    "recovery_violation_counts": dict(violation_counts),
+                    "recovery_peak_observed": _diagnostic_json_safe(
+                        peak_observed
+                    ),
+                    "credited_stamp_high_watermarks_ns": {
+                        "clock": credited_stamp_high_watermarks_ns[0],
+                        "odom": credited_stamp_high_watermarks_ns[1],
+                        "joint_states": (
+                            credited_stamp_high_watermarks_ns[2]
+                        ),
+                    },
+                    "received_stamp_high_watermarks_ns": {
+                        "clock": received_stamp_high_watermarks_ns[0],
+                        "odom": received_stamp_high_watermarks_ns[1],
+                        "joint_states": received_stamp_high_watermarks_ns[2],
+                    },
+                    "longest_stationary_duration_sec": max(
+                        longest_stationary_duration_ns, settled_ns
+                    )
+                    / NANOSECONDS_PER_SECOND,
                 }
-        if stationary_since_ns is not None and self._clock_ns is not None:
+        if stationary_since_ns is not None and last_observation_ns is not None:
             longest_stationary_duration_ns = max(
                 longest_stationary_duration_ns,
-                self._clock_ns - stationary_since_ns,
+                max(0, last_observation_ns - stationary_since_ns),
             )
         diagnostic = self._reset_recovery_diagnostic(
             barriers,
+            credited_sequences,
+            credited_stamp_high_watermarks_ns,
+            received_stamp_high_watermarks_ns,
+            reset_generation,
+            boundary_clock_ns,
             observation_counts,
             violation_counts,
             peak_observed,

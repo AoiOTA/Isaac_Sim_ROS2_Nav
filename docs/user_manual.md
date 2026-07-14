@@ -1316,6 +1316,25 @@ JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback
 仍符合命令时接受。`all_directions_match` 必须严格等于四个逐轮标志的逻辑合取；
 反向、静止、伪造标志、零均值或符号错误，以及直行/倒车/圆弧中的 `mixed` 仍会失败关闭。
 
+每个 motion 段的 Reset 成功响应末尾都必须带可机器解析的
+`reset_metadata_v1` JSON trailer。它给出 Reset generation，以及 Isaac 在发布
+reset event 前记录的 `boundary_clock_ns`；缺失、旧版本、自由文本伪造或非法字段都会
+失败关闭。runner 在收到响应后建立 Clock/Odom/JointState sequence barrier，随后只接受
+“三路 sequence 都越过上一已记账水位，且三路 timestamp 都严格晚于服务端 boundary”的
+相干组。boundary 到 Trigger 响应传输期间已经产生、但满足这些条件的样本可合法使用；
+响应前已排队且 timestamp 不晚于 boundary 的旧消息即使随后才执行 callback 也会被丢弃。
+runner 会锁存这段响应等待窗口内每个 Topic 的最大 timestamp，即使较新样本后来被回退
+callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barrier 高水位的最大值，不能
+从已知运动证据之前开始累计。
+
+三个 DDS Topic 没有跨 Topic 回调顺序；同一 60 Hz physics tick 的 Odom/JointState
+允许比最近处理的 `/clock` 最多领先 `0.02 s`，超过此值仍失败，旧样本继续受
+`0.5 s` 上限约束。逐流 stale/future-skew、wall age 和真实底盘/轮速门在每个 callback
+后都会检查并可立即清空静止窗；只有三路都提供新证据的相干组才以三者 timestamp
+最小值推进 0.5 秒连续静止窗。每个 Topic 的 timestamp 高水位也独立单调，任一路回退
+都会重新开始窗口。因此正常一帧回调重排不会伪造 Reset 超时，Clock 单独推进不能复用
+旧 Odom/JointState，真实运动、积压、断流、回退或过远未来时间戳仍会清空窗口。
+
 输出名称不含时间随机量，例如
 `001_simple_plane_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
 分别保存 Isaac 与 runner 日志。成功目录根部有三份总证据：

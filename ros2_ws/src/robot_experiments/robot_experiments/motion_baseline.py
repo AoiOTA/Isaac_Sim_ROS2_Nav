@@ -89,6 +89,7 @@ class SamplingSettings:
     publish_rate_hz: float
     command_wall_timeout_sec: float
     max_sample_age_sec: float
+    max_future_skew_sec: float
     zero_publish_count: int
     zero_publish_interval_sec: float
 
@@ -260,6 +261,7 @@ def _parse_sampling(value: Any) -> SamplingSettings:
         "publish_rate_hz",
         "command_wall_timeout_sec",
         "max_sample_age_sec",
+        "max_future_skew_sec",
         "zero_publish_count",
         "zero_publish_interval_sec",
     }
@@ -267,13 +269,18 @@ def _parse_sampling(value: Any) -> SamplingSettings:
     missing = sorted(required - set(mapping))
     if missing:
         raise ConfigurationError(f"sampling is missing keys: {', '.join(missing)}")
-    return SamplingSettings(
+    settings = SamplingSettings(
         publish_rate_hz=_positive(mapping["publish_rate_hz"], "sampling.publish_rate_hz"),
         command_wall_timeout_sec=_positive(
             mapping["command_wall_timeout_sec"], "sampling.command_wall_timeout_sec"
         ),
         max_sample_age_sec=_positive(
             mapping["max_sample_age_sec"], "sampling.max_sample_age_sec"
+        ),
+        max_future_skew_sec=_positive(
+            mapping["max_future_skew_sec"],
+            "sampling.max_future_skew_sec",
+            allow_zero=True,
         ),
         zero_publish_count=_positive_integer(
             mapping["zero_publish_count"], "sampling.zero_publish_count"
@@ -284,6 +291,12 @@ def _parse_sampling(value: Any) -> SamplingSettings:
             allow_zero=True,
         ),
     )
+    if settings.max_future_skew_sec > min(settings.max_sample_age_sec, 0.05):
+        raise ConfigurationError(
+            "sampling.max_future_skew_sec must not exceed 0.05 seconds or "
+            "sampling.max_sample_age_sec"
+        )
+    return settings
 
 
 def _parse_stop(value: Any) -> StopSettings:

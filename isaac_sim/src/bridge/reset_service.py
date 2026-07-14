@@ -8,6 +8,7 @@ side-effects and makes the reset callback straightforward to unit test.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import math
 from typing import Any, Callable
 
@@ -34,6 +35,7 @@ class _ResetTransaction:
     finished: bool = False
     timed_out: bool = False
     timeout_timer: Any | None = None
+    boundary_clock_ns: int | None = None
     _pending: int = 0
 
     def add_call(self, label: str, future: Any) -> None:
@@ -514,7 +516,9 @@ class ResetServiceBridge:
         summary = (
             f"pose={reset_request.pose_name}, seed={reset_request.random_seed}, "
             f"odometry={reset_request.odometry_mode}, "
-            f"generation={transaction.generation}"
+            f"generation={transaction.generation}, "
+            "boundary_clock_ns="
+            f"{transaction.boundary_clock_ns}"
         )
         if transaction.errors:
             response.message = (
@@ -530,7 +534,17 @@ class ResetServiceBridge:
             )
             response.message = (
                 f"simulation reset transaction complete: {summary}{skipped}; "
-                "reset_event emitted after all queued ROS reset calls completed"
+                "reset_event emitted after all queued ROS reset calls completed; "
+                "reset_metadata_v1="
+                + json.dumps(
+                    {
+                        "boundary_clock_ns": transaction.boundary_clock_ns,
+                        "generation": transaction.generation,
+                        "schema_version": 1,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
             )
             self.node.get_logger().info(response.message)
         return response
@@ -551,10 +565,31 @@ class ResetServiceBridge:
 
         # This event is the recovery epoch boundary.  It must be emitted only
         # after every queued wheel/EKF/costmap reset future has resolved.
-        self._reset_event_publisher.publish(self._EmptyMessage())
-        if transaction.initial_pose_name is not None:
-            self._deferred_initial_pose_name = transaction.initial_pose_name
-            self._apply_initial_pose_policy()
+        try:
+            boundary_time_s = float(self._simulation_time())
+            if not math.isfinite(boundary_time_s) or boundary_time_s < 0.0:
+                raise ResetServiceError(
+                    "reset boundary simulation time must be finite and "
+                    "non-negative"
+                )
+            transaction.boundary_clock_ns = round(
+                boundary_time_s * 1_000_000_000
+            )
+            if transaction.initial_pose_name is not None:
+                self._deferred_initial_pose_name = transaction.initial_pose_name
+                # Prepare every potentially failing policy operation before
+                # the reset event commit point.  Once the event is visible,
+                # no later exception may turn the Trigger response into a
+                # failure.
+                self._apply_initial_pose_policy(
+                    barrier_time_s=boundary_time_s
+                )
+            self._reset_event_publisher.publish(self._EmptyMessage())
+        except Exception:
+            self._initial_pose_republisher.cancel()
+            self._deferred_initial_pose_name = None
+            transaction.boundary_clock_ns = None
+            raise
 
     def send_zero_velocity(self) -> None:
         self._cmd_vel_publisher.publish(self._Twist())
@@ -643,7 +678,9 @@ class ResetServiceBridge:
             )
         self._apply_initial_pose_policy()
 
-    def _apply_initial_pose_policy(self) -> None:
+    def _apply_initial_pose_policy(
+        self, *, barrier_time_s: float | None = None
+    ) -> None:
         if self._initial_pose_source == "rviz":
             self._initial_pose_republisher.cancel()
             self._deferred_initial_pose_name = None
@@ -654,12 +691,21 @@ class ResetServiceBridge:
         ):
             return
         pose_name = self._deferred_initial_pose_name
-        self._deferred_initial_pose_name = None
-        barrier = float(self._simulation_time())
+        barrier = (
+            float(self._simulation_time())
+            if barrier_time_s is None
+            else float(barrier_time_s)
+        )
+        if not math.isfinite(barrier) or barrier < 0.0:
+            raise ResetServiceError(
+                "initial pose barrier simulation time must be finite and "
+                "non-negative"
+            )
         self._initial_pose_republisher.schedule(
             pose_name,
             after_stamp_s=barrier,
         )
+        self._deferred_initial_pose_name = None
 
     def _scan_callback(self, message: Any) -> None:
         stamp = message.header.stamp

@@ -534,8 +534,21 @@ shell 没有加载项目 Domain。环境标签不一致时，以
 新的 Clock/Odom/JointState 并连续静止。保留失败 JSON，核对三路 Topic Hz、当前
 底盘/轮速和 Isaac reset 日志；当前 runner 会把 `diagnostic` 追加到 timeout，列出
 三路 sequence、wall/simulation age、Odom 线/角速度、四轮绝对速度、各门限、观察
-次数、逐门违规计数、恢复窗峰值和最长连续静止时间。先用这些字段区分 Topic
-freshness 与真实未静止，不要先
+次数、逐门违规计数、恢复窗峰值和最长连续静止时间。由于三个 DDS Topic 没有
+跨 Topic 到达顺序保证，Odom/JointState 可比同一 physics tick 的 `/clock` 回调先到；
+runner 只接受配置中 `max_future_skew_sec=0.02` 的有界相位差，真正落后仍受
+`max_sample_age_sec=0.5` 限制。Reset 成功响应末尾必须有版本化
+`reset_metadata_v1` JSON；其中的 generation 和服务端 `boundary_clock_ns` 把响应后
+处理、但实际产生于旧 Reset epoch 的排队消息排除。runner 在收到响应后重建三路
+sequence barrier，并要求 Clock/Odom/JointState 都越过各自上次已记账水位、三路
+timestamp 都严格晚于 boundary。逐流时间门、wall age 和速度门每个 callback 都检查；
+event 到 Trigger 响应之间每个 Topic 的历史最大 timestamp 会被锁存，静止观察下界取
+三路 barrier 高水位最大值，后续较旧 callback 不能覆盖这段已知运动/时间证据；
+连续静止时长只由三路都有新证据的相干组按最小 timestamp 推进，任一 Topic 回退、
+Clock 单独推进、真实断流或积压都不能跨缺口记账。诊断中的
+`stream:*_not_stale`、`stream:*_not_too_far_ahead`、`wall_streams_fresh` 以及全窗
+`peak_observed.sim_age_sec` 可区分正常一帧回调重排、正向积压和真实断流。先用这些
+字段区分 Topic freshness 与真实未静止，不要先
 放宽 30 秒 recovery 或速度阈值。若全新 Isaac
 进程立即复跑成功，把旧样本分类为启动/长空闲瞬态并继续 soak 复现；若连续复现，
 应按逐阈值诊断定位并修复物理或 Reset，不得删除失败样本。

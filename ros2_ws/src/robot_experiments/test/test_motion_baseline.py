@@ -21,7 +21,14 @@ from robot_experiments.motion_baseline import (
     expected_wheel_directions,
     load_motion_baseline_config,
 )
-from robot_experiments.motion_baseline_runner import MotionBaselineRunner
+from robot_experiments.motion_baseline_runner import (
+    MotionBaselineRunner,
+    _coherent_group_ready,
+    _parse_reset_response_metadata,
+    _post_reset_observation_ns,
+    _timestamp_regression_topics,
+    _update_stationary_window,
+)
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
@@ -93,6 +100,7 @@ def test_skid_steer_ab_profile_matches_the_plan_commands_exactly():
 
     assert config.profile_id == "jackal_skid_steer_ab_v1"
     assert config.sampling.command_wall_timeout_sec == pytest.approx(90.0)
+    assert config.sampling.max_future_skew_sec == pytest.approx(0.02)
     assert [segment.segment_id for segment in config.segments] == [
         "rotate_left_360",
         "rotate_right_360",
@@ -150,6 +158,12 @@ def test_skid_steer_ab_profile_matches_the_plan_commands_exactly():
             "within \\[10, 100\\]",
         ),
         (
+            lambda document: document["sampling"].update(
+                max_future_skew_sec=0.051
+            ),
+            "max_future_skew_sec must not exceed",
+        ),
+        (
             lambda document: document["wheels"].update(
                 rear_right=document["wheels"]["front_right"]
             ),
@@ -161,6 +175,14 @@ def test_configuration_rejects_ambiguous_or_unsafe_profiles(tmp_path, mutate, ma
     path = _write_config(tmp_path, mutate)
     with pytest.raises(ConfigurationError, match=match):
         load_motion_baseline_config(path)
+
+
+def test_configuration_allows_strict_zero_future_skew(tmp_path):
+    path = _write_config(
+        tmp_path,
+        lambda document: document["sampling"].update(max_future_skew_sec=0.0),
+    )
+    assert load_motion_baseline_config(path).sampling.max_future_skew_sec == 0.0
 
 
 def test_timestamp_tracker_counts_receipt_order_regressions_and_duplicates():
@@ -357,6 +379,567 @@ def test_rotation_direction_classification_preserves_deadband_transients(
     assert front_left["speed_radps"]["mean"] < -STOP.wheel_velocity_threshold_radps
 
 
+def _reset_success_message(
+    *, generation: int = 7, boundary_clock_ns: int = 1_000_000_000
+) -> str:
+    metadata = json.dumps(
+        {
+            "boundary_clock_ns": boundary_clock_ns,
+            "generation": generation,
+            "schema_version": 1,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        "simulation reset transaction complete: pose=mapping_start; "
+        "reset_event emitted after all queued ROS reset calls completed; "
+        f"reset_metadata_v1={metadata}"
+    )
+
+
+def test_reset_response_metadata_requires_anchored_versioned_trailer():
+    message = (
+        "pose=generation=999,boundary_clock_ns=0; "
+        + _reset_success_message(generation=7, boundary_clock_ns=1_250_000_000)
+    )
+    assert _parse_reset_response_metadata(message) == (7, 1_250_000_000)
+    assert _parse_reset_response_metadata(
+        _reset_success_message(generation=1, boundary_clock_ns=0)
+    ) == (1, 0)
+
+    old_injectable_message = (
+        "simulation reset transaction complete: "
+        "pose=boundary_clock_ns=0, generation=12; reset_event emitted"
+    )
+    with pytest.raises(RuntimeError, match="versioned metadata trailer"):
+        _parse_reset_response_metadata(old_injectable_message)
+
+
+@pytest.mark.parametrize(
+    "payload,match",
+    [
+        ("not-json", "valid JSON"),
+        (json.dumps({"schema_version": 1}), "invalid schema"),
+        (
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "generation": 1,
+                    "boundary_clock_ns": 0,
+                }
+            ),
+            "unsupported",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": True,
+                    "generation": 1,
+                    "boundary_clock_ns": 0,
+                }
+            ),
+            "schema_version must be an integer",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1.0,
+                    "generation": 1,
+                    "boundary_clock_ns": 0,
+                }
+            ),
+            "schema_version must be an integer",
+        ),
+        (
+            '{"schema_version":2,"schema_version":1,'
+            '"generation":1,"boundary_clock_ns":0}',
+            "valid JSON",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "generation": 0,
+                    "boundary_clock_ns": 0,
+                }
+            ),
+            "must be positive",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "generation": True,
+                    "boundary_clock_ns": 0,
+                }
+            ),
+            "must be integers",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "generation": 1,
+                    "boundary_clock_ns": -1,
+                }
+            ),
+            "must be non-negative",
+        ),
+        (
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "generation": 1,
+                    "boundary_clock_ns": 1.5,
+                }
+            ),
+            "must be integers",
+        ),
+    ],
+)
+def test_reset_response_metadata_fails_closed(payload, match):
+    with pytest.raises(RuntimeError, match=match):
+        _parse_reset_response_metadata(
+            f"reset complete; reset_metadata_v1={payload}"
+        )
+
+
+def test_coherent_group_requires_new_evidence_from_all_three_streams():
+    credited = (10, 20, 30)
+    assert _coherent_group_ready((11, 20, 30), credited) is False
+    assert _coherent_group_ready((11, 21, 30), credited) is False
+    assert _coherent_group_ready((99, 20, 30), credited) is False
+    assert _coherent_group_ready((11, 21, 31), credited) is True
+
+    credited = (11, 21, 31)
+    assert _coherent_group_ready((99, 21, 31), credited) is False
+    assert _coherent_group_ready((99, 22, 31), credited) is False
+    assert _coherent_group_ready((99, 22, 32), credited) is True
+    with pytest.raises(ValueError):
+        _coherent_group_ready((1, 2), (0, 0, 0))
+
+
+def test_post_reset_observation_requires_every_stamp_after_boundary():
+    boundary = 1_000_000_000
+    assert _post_reset_observation_ns(
+        boundary_clock_ns=boundary,
+        clock_ns=boundary + 3,
+        odom_stamp_ns=boundary + 2,
+        joint_stamp_ns=boundary + 1,
+    ) == boundary + 1
+    for stamps in (
+        (None, boundary + 1, boundary + 1),
+        (boundary, boundary + 1, boundary + 1),
+        (boundary + 1, boundary - 1, boundary + 1),
+        (boundary + 1, boundary + 1, boundary),
+    ):
+        assert _post_reset_observation_ns(
+            boundary_clock_ns=boundary,
+            clock_ns=stamps[0],
+            odom_stamp_ns=stamps[1],
+            joint_stamp_ns=stamps[2],
+        ) is None
+
+
+def test_per_topic_timestamp_regression_cannot_hide_behind_aggregate_minimum():
+    high_watermarks = (1_100_000_000, 1_110_000_000, 1_100_000_000)
+    current = (1_120_000_000, 1_105_000_000, 1_120_000_000)
+    assert _timestamp_regression_topics(current, high_watermarks) == ("odom",)
+    assert _timestamp_regression_topics(
+        (1_120_000_000, 1_120_000_000, 1_120_000_000),
+        high_watermarks,
+    ) == ()
+
+
+def test_stream_freshness_accepts_one_tick_callback_phase_only():
+    """A bounded sensor-first DDS callback is coherent, not a stale stream."""
+    runner = object.__new__(MotionBaselineRunner)
+    runner._clock_ns = 2_000_000_000
+    runner._latest_odom = OdomSample(
+        2_016_666_667,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    runner._latest_joint = JointSample.from_mapping(
+        2_000_000_000,
+        {name: 0.0 for name in WHEELS.ordered_names},
+    )
+    now = time.monotonic()
+    runner._last_clock_received_wall = now
+    runner._last_odom_received_wall = now
+    runner._last_joint_received_wall = now
+    runner._config = SimpleNamespace(
+        sampling=SimpleNamespace(
+            max_sample_age_sec=0.5,
+            max_future_skew_sec=0.02,
+        ),
+        stop=STOP,
+        wheels=WHEELS,
+    )
+
+    assert runner._stream_sim_ages_ns()["odom"] == -16_666_667
+    assert runner._streams_fresh() is True
+    assert runner._latest_stationary() is True
+
+    runner._latest_odom = OdomSample(
+        2_020_000_001,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    assert runner._streams_fresh() is False
+    assert runner._stream_freshness_gate_status()[
+        "odom_not_too_far_ahead"
+    ] is False
+
+    runner._latest_odom = OdomSample(
+        2_000_000_000,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
+    runner._latest_joint = JointSample.from_mapping(
+        1_499_999_999,
+        {name: 0.0 for name in WHEELS.ordered_names},
+    )
+    assert runner._streams_fresh() is False
+    assert runner._stream_freshness_gate_status()[
+        "joint_states_not_stale"
+    ] is False
+
+
+def test_stationary_window_advances_on_clock_and_motion_resets_it():
+    """Coherent groups advance a window; a real motion gate failure does not."""
+    stationary, last_clock, settled, status = _update_stationary_window(
+        observation_ns=1_100_000_000,
+        last_observation_ns=1_000_000_000,
+        stationary_since_ns=None,
+        gates_passed=True,
+    )
+    assert (stationary, last_clock, settled, status) == (
+        1_100_000_000,
+        1_100_000_000,
+        0,
+        "advanced",
+    )
+
+    stationary, last_clock, settled, status = _update_stationary_window(
+        observation_ns=1_100_000_000,
+        last_observation_ns=last_clock,
+        stationary_since_ns=stationary,
+        gates_passed=True,
+    )
+    assert stationary == 1_100_000_000
+    assert settled == 0
+    assert status == "waiting_for_observation"
+
+    stationary, last_clock, settled, status = _update_stationary_window(
+        observation_ns=1_100_000_000,
+        last_observation_ns=last_clock,
+        stationary_since_ns=stationary,
+        gates_passed=False,
+    )
+    assert stationary is None
+    assert settled == 0
+    assert status == "blocked"
+
+    stationary, last_clock, settled, status = _update_stationary_window(
+        observation_ns=1_200_000_000,
+        last_observation_ns=last_clock,
+        stationary_since_ns=stationary,
+        gates_passed=True,
+    )
+    assert stationary == 1_200_000_000
+    assert status == "advanced"
+    stationary, last_clock, settled, status = _update_stationary_window(
+        observation_ns=1_700_000_000,
+        last_observation_ns=last_clock,
+        stationary_since_ns=stationary,
+        gates_passed=True,
+    )
+    assert settled == 500_000_000
+    assert status == "advanced"
+
+
+def test_stationary_window_never_recredits_time_across_motion_or_regression():
+    stationary, high_watermark, _, status = _update_stationary_window(
+        observation_ns=1_000_000_000,
+        last_observation_ns=900_000_000,
+        stationary_since_ns=None,
+        gates_passed=True,
+    )
+    assert status == "advanced"
+
+    stationary, high_watermark, _, status = _update_stationary_window(
+        observation_ns=1_400_000_000,
+        last_observation_ns=high_watermark,
+        stationary_since_ns=stationary,
+        gates_passed=False,
+    )
+    assert (stationary, high_watermark, status) == (
+        None,
+        1_400_000_000,
+        "blocked",
+    )
+
+    stationary, high_watermark, settled, status = _update_stationary_window(
+        observation_ns=1_100_000_000,
+        last_observation_ns=high_watermark,
+        stationary_since_ns=stationary,
+        gates_passed=True,
+    )
+    assert (stationary, high_watermark, settled, status) == (
+        None,
+        1_400_000_000,
+        0,
+        "observation_regression",
+    )
+
+    stationary, high_watermark, settled, status = _update_stationary_window(
+        observation_ns=1_600_000_000,
+        last_observation_ns=high_watermark,
+        stationary_since_ns=stationary,
+        gates_passed=True,
+    )
+    assert (stationary, high_watermark, settled, status) == (
+        1_600_000_000,
+        1_600_000_000,
+        0,
+        "advanced",
+    )
+
+
+def test_reset_recovery_uses_post_boundary_interleaved_coherent_groups():
+    boundary = 1_000_000_000
+    tick_ns = 16_666_667
+    events: list[tuple[str, int]] = [
+        # These callbacks were queued before the service response.  Sequence
+        # numbers are new, but the service boundary must reject the samples.
+        ("odom", boundary),
+        ("clock", boundary),
+        ("joint", boundary),
+    ]
+    # Odom reaches the response-window high while Clock/Joint lag by one tick.
+    # Per-topic watermarks pass, but min(stamps) is before known movement and
+    # must be rejected by the conservative observation floor.
+    events.extend(
+        [
+            ("odom", boundary + 10 * tick_ns),
+            ("clock", boundary + 9 * tick_ns),
+            ("joint", boundary + 9 * tick_ns),
+        ]
+    )
+    first_tick = boundary + tick_ns
+    events.extend(
+        [("odom", first_tick), ("clock", first_tick), ("joint", first_tick)]
+    )
+    # Clock alone advances beyond max_sample_age_sec.  It must neither credit
+    # the same Odom/Joint samples nor let the later catch-up bridge the gap.
+    for tick in range(2, 33):
+        events.append(("clock", boundary + tick * tick_ns))
+    catch_up_tick = boundary + 32 * tick_ns
+    events.extend([("odom", catch_up_tick), ("joint", catch_up_tick)])
+    orders = (
+        ("joint", "odom", "clock"),
+        ("clock", "joint", "odom"),
+        ("odom", "clock", "joint"),
+    )
+    for tick in range(33, 82):
+        stamp_ns = boundary + tick * tick_ns
+        if tick == 40:
+            # A short Odom regression is overwritten before Clock/Joint make
+            # the group coherent.  The receive-level latch must still break
+            # the settle window.
+            events.extend(
+                [
+                    ("odom", boundary + 38 * tick_ns),
+                    ("odom", stamp_ns),
+                    ("clock", stamp_ns),
+                    ("joint", stamp_ns),
+                ]
+            )
+        elif tick == 50:
+            # A later moving sample raises Odom's receive high-watermark.
+            # A regressed stationary sample then completes the coherent group;
+            # that group must be consumed and rejected rather than credited.
+            events.extend(
+                [
+                    ("odom_moving", stamp_ns),
+                    ("clock", stamp_ns),
+                    ("odom", boundary + 49 * tick_ns + 1),
+                    ("joint", stamp_ns),
+                ]
+            )
+        else:
+            events.extend((topic, stamp_ns) for topic in orders[tick % 3])
+
+    response = SimpleNamespace(
+        success=True,
+        message=_reset_success_message(
+            generation=7, boundary_clock_ns=boundary
+        ),
+    )
+
+    class FakeFuture:
+        def result(self):
+            return response
+
+    class FakeResetClient:
+        @staticmethod
+        def wait_for_service(timeout_sec):
+            assert timeout_sec == pytest.approx(1.0)
+            return True
+
+        @staticmethod
+        def call_async(request):
+            del request
+            return FakeFuture()
+
+    runner = object.__new__(MotionBaselineRunner)
+    runner._config = SimpleNamespace(
+        reset=SimpleNamespace(
+            service="/simulation/reset",
+            service_timeout_sec=1.0,
+            recovery_timeout_sec=1.0,
+            settle_duration_sec=0.5,
+        ),
+        sampling=SimpleNamespace(
+            publish_rate_hz=20.0,
+            max_sample_age_sec=0.5,
+            max_future_skew_sec=0.02,
+        ),
+        stop=STOP,
+        wheels=WHEELS,
+    )
+    runner._reset_client = FakeResetClient()
+    runner._clock_sequence = 0
+    runner._odom_sequence = 0
+    runner._joint_sequence = 0
+    runner._clock_ns = boundary - tick_ns
+    runner._latest_odom = OdomSample(
+        boundary - tick_ns, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+    )
+    runner._latest_joint = JointSample.from_mapping(
+        boundary - tick_ns,
+        {name: 0.0 for name in WHEELS.ordered_names},
+    )
+    received_wall = time.monotonic()
+    runner._last_clock_received_wall = received_wall
+    runner._last_odom_received_wall = received_wall
+    runner._last_joint_received_wall = received_wall
+    runner._assert_command_channel_uncontended = lambda: None
+    runner.safe_stop = lambda: None
+    runner._publish = lambda linear, angular: None
+
+    def wait_future(future, deadline):
+        del future
+        assert deadline > time.monotonic()
+        # The service event is already committed, but its response has not yet
+        # reached the client.  A moving post-boundary Odom callback handled in
+        # this window belongs to the sequence barrier and must still seed the
+        # receive timestamp high-watermark.
+        stamp_ns = boundary + 10 * tick_ns
+        runner._observe_reset_wait_timestamp("odom", stamp_ns)
+        runner._latest_odom = OdomSample(
+            stamp_ns, 0.0, 0.0, 0.0, 0.03, 0.0, 0.0
+        )
+        runner._odom_sequence += 1
+        runner._last_odom_received_wall = time.monotonic()
+        # The latest callback at response time is older and stationary.  The
+        # scoped Reset-wait maximum must retain the overwritten moving stamp.
+        regressed_stamp_ns = boundary + tick_ns
+        runner._observe_reset_wait_timestamp("odom", regressed_stamp_ns)
+        runner._latest_odom = OdomSample(
+            regressed_stamp_ns, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        )
+        runner._odom_sequence += 1
+        runner._last_odom_received_wall = time.monotonic()
+        return True
+
+    runner._wait_future = wait_future
+
+    event_index = 0
+
+    def spin_once(timeout_sec):
+        nonlocal event_index
+        assert timeout_sec >= 0.0
+        assert event_index < len(events), "Reset recovered without enough evidence"
+        topic, stamp_ns = events[event_index]
+        event_index += 1
+        now = time.monotonic()
+        if topic == "clock":
+            runner._clock_ns = stamp_ns
+            runner._clock_sequence += 1
+            runner._last_clock_received_wall = now
+        elif topic.startswith("odom"):
+            runner._latest_odom = OdomSample(
+                stamp_ns,
+                0.0,
+                0.0,
+                0.0,
+                0.03 if topic == "odom_moving" else 0.0,
+                0.0,
+                0.0,
+            )
+            runner._odom_sequence += 1
+            runner._last_odom_received_wall = now
+        else:
+            runner._latest_joint = JointSample.from_mapping(
+                stamp_ns,
+                {name: 0.0 for name in WHEELS.ordered_names},
+            )
+            runner._joint_sequence += 1
+            runner._last_joint_received_wall = now
+
+    runner._spin_once = spin_once
+
+    report = runner._reset_and_wait()
+
+    assert event_index == len(events)
+    assert report["reset_generation"] == 7
+    assert report["reset_boundary_clock_ns"] == boundary
+    assert report["fresh_clock_received"] is True
+    assert report["fresh_odom_received"] is True
+    assert report["fresh_joint_states_received"] is True
+    assert report["recovery_observation_counts"]["pre_boundary_group"] == 1
+    assert report["recovery_observation_counts"]["observation_regression"] == 1
+    assert report["recovery_observation_counts"]["stationary"] == 49
+    assert (
+        report["recovery_observation_counts"]["receive_timestamp_regression"]
+        == 13
+    )
+    assert (
+        report["recovery_violation_counts"][
+            "receive_timestamp_regression:odom"
+        ]
+        == 4
+    )
+    assert (
+        report["recovery_violation_counts"][
+            "coherent_timestamp_regression:odom"
+        ]
+        == 2
+    )
+    assert report["recovery_violation_counts"]["odom_linear_speed"] > 0
+    assert report["recovery_violation_counts"]["stream:odom_not_stale"] > 0
+    assert (
+        report["recovery_violation_counts"]["stream:joint_states_not_stale"]
+        > 0
+    )
+    assert report["longest_stationary_duration_sec"] == pytest.approx(0.5)
+
+
 def test_reset_recovery_diagnostic_identifies_freshness_and_motion_blockers():
     """A Reset timeout retains the exact stream ages and velocity gates."""
     runner = object.__new__(MotionBaselineRunner)
@@ -387,13 +970,21 @@ def test_reset_recovery_diagnostic_identifies_freshness_and_motion_blockers():
     runner._last_odom_received_wall = now - 0.1
     runner._last_joint_received_wall = now - 0.1
     runner._config = SimpleNamespace(
-        sampling=SimpleNamespace(max_sample_age_sec=0.5),
+        sampling=SimpleNamespace(
+            max_sample_age_sec=0.5,
+            max_future_skew_sec=0.02,
+        ),
         stop=STOP,
         wheels=WHEELS,
     )
 
     diagnostic = runner._reset_recovery_diagnostic(
         (7, 8, 9),
+        (8, 9, 10),
+        (2_000_000_000, 1_400_000_000, 1_900_000_000),
+        (2_000_000_000, 1_400_000_000, 1_900_000_000),
+        3,
+        1_000_000_000,
         {"sequence_not_fresh": 1, "not_stationary": 2, "stationary": 3},
         {
             "streams_fresh": 2,
@@ -421,9 +1012,11 @@ def test_reset_recovery_diagnostic_identifies_freshness_and_motion_blockers():
     assert diagnostic["terminal_blockers"] == [
         "odom_angular_speed",
         "odom_linear_speed",
+        "stream:odom_not_stale",
         "streams_fresh",
         f"wheel:{WHEELS.front_left}",
     ]
+    assert diagnostic["sim_timestamp_span_sec"] == pytest.approx(0.6)
     assert diagnostic["violation_counts"]["odom_linear_speed"] == 2
     assert diagnostic["peak_observed"]["odom_linear_speed_mps"] == 0.1
     assert diagnostic["longest_stationary_duration_sec"] == 0.25
@@ -458,13 +1051,21 @@ def test_reset_recovery_diagnostic_remains_strict_json_after_float_overflow():
     runner._last_odom_received_wall = now
     runner._last_joint_received_wall = now
     runner._config = SimpleNamespace(
-        sampling=SimpleNamespace(max_sample_age_sec=0.5),
+        sampling=SimpleNamespace(
+            max_sample_age_sec=0.5,
+            max_future_skew_sec=0.02,
+        ),
         stop=STOP,
         wheels=WHEELS,
     )
 
     diagnostic = runner._reset_recovery_diagnostic(
         (1, 1, 1),
+        (2, 2, 2),
+        (2_000_000_000, 2_000_000_000, 2_000_000_000),
+        (2_000_000_000, 2_000_000_000, 2_000_000_000),
+        4,
+        1_000_000_000,
         {"sequence_not_fresh": 0, "not_stationary": 1, "stationary": 0},
         {"odom_linear_speed": 1},
         {"odom_linear_speed_mps": math.inf},

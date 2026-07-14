@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -406,13 +408,14 @@ def test_timeout_failure_does_not_emit_reset_event_or_arm_initial_pose():
     cancelled = []
     bridge = SimpleNamespace(
         _active_transaction=None,
+        _simulation_time=lambda: 12.5,
         _reset_event_publisher=FakePublisher(events),
         _EmptyMessage=lambda: object(),
         _initial_pose_republisher=SimpleNamespace(
             cancel=lambda: cancelled.append("cancel")
         ),
         _deferred_initial_pose_name="old",
-        _apply_initial_pose_policy=lambda: events.append("arm"),
+        _apply_initial_pose_policy=lambda **_: events.append("arm"),
     )
     transaction = _ResetTransaction(
         generation=9,
@@ -435,15 +438,33 @@ def test_timeout_failure_does_not_emit_reset_event_or_arm_initial_pose():
     assert transaction.timeout_timer.cancelled
 
 
-def test_successful_transaction_emits_event_before_initial_pose_policy():
+def test_successful_transaction_prepares_policy_before_epoch_event_commit():
     events = []
+
+    class RecordingRepublisher:
+        @staticmethod
+        def schedule(pose_name, *, after_stamp_s):
+            assert pose_name == "mapping_start"
+            assert after_stamp_s == pytest.approx(12.5)
+            events.append("schedule")
+
+        @staticmethod
+        def cancel():
+            events.append("cancel")
+
     bridge = SimpleNamespace(
         _active_transaction=None,
+        _simulation_time=lambda: 12.5,
         _reset_event_publisher=FakePublisher(events),
         _EmptyMessage=lambda: object(),
-        _initial_pose_republisher=SimpleNamespace(cancel=lambda: None),
+        _initial_pose_republisher=RecordingRepublisher(),
+        _initial_pose_source="auto",
         _deferred_initial_pose_name=None,
-        _apply_initial_pose_policy=lambda: events.append("arm"),
+    )
+    bridge._apply_initial_pose_policy = (
+        lambda **kwargs: ResetServiceBridge._apply_initial_pose_policy(
+            bridge, **kwargs
+        )
     )
     transaction = _ResetTransaction(
         generation=10,
@@ -455,8 +476,84 @@ def test_successful_transaction_emits_event_before_initial_pose_policy():
     transaction.timeout_timer = FakeTimer()
     transaction.seal()
 
-    assert events == ["reset_event", "arm"]
-    assert bridge._deferred_initial_pose_name == "mapping_start"
+    assert events == ["schedule", "reset_event"]
+    assert bridge._deferred_initial_pose_name is None
+    assert transaction.boundary_clock_ns == 12_500_000_000
+
+
+@pytest.mark.parametrize("boundary_time_s", [math.nan, math.inf, -0.1])
+def test_invalid_reset_boundary_never_emits_epoch_event(boundary_time_s):
+    events = []
+    bridge = SimpleNamespace(
+        _active_transaction=None,
+        _simulation_time=lambda: boundary_time_s,
+        _reset_event_publisher=FakePublisher(events),
+        _EmptyMessage=lambda: object(),
+        _initial_pose_republisher=SimpleNamespace(cancel=lambda: None),
+        _deferred_initial_pose_name=None,
+        _apply_initial_pose_policy=lambda **_: events.append("arm"),
+    )
+    transaction = _ResetTransaction(
+        generation=12,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(
+            bridge, tx
+        ),
+    )
+    bridge._active_transaction = transaction
+
+    transaction.seal()
+
+    assert events == []
+    assert transaction.boundary_clock_ns is None
+    assert any("boundary simulation time" in error for error in transaction.errors)
+
+
+def test_initial_pose_policy_failure_happens_before_epoch_event_commit():
+    events = []
+
+    class PartiallyFailingRepublisher:
+        @staticmethod
+        def schedule(pose_name, *, after_stamp_s):
+            assert pose_name == "mapping_start"
+            assert after_stamp_s == pytest.approx(12.5)
+            events.append("schedule_attempt")
+            raise RuntimeError("cannot arm initial pose")
+
+        @staticmethod
+        def cancel():
+            events.append("cancel")
+
+    bridge = SimpleNamespace(
+        _active_transaction=None,
+        _simulation_time=lambda: 12.5,
+        _reset_event_publisher=FakePublisher(events),
+        _EmptyMessage=lambda: object(),
+        _initial_pose_republisher=PartiallyFailingRepublisher(),
+        _initial_pose_source="auto",
+        _deferred_initial_pose_name=None,
+    )
+    bridge._apply_initial_pose_policy = (
+        lambda **kwargs: ResetServiceBridge._apply_initial_pose_policy(
+            bridge, **kwargs
+        )
+    )
+    transaction = _ResetTransaction(
+        generation=13,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(
+            bridge, tx
+        ),
+        initial_pose_name="mapping_start",
+    )
+    bridge._active_transaction = transaction
+
+    transaction.seal()
+
+    assert events == ["schedule_attempt", "cancel"]
+    assert transaction.boundary_clock_ns is None
+    assert bridge._deferred_initial_pose_name is None
+    assert any("cannot arm initial pose" in error for error in transaction.errors)
 
 
 def test_close_cancels_active_reset_without_emitting_epoch_event():
@@ -472,7 +569,7 @@ def test_close_cancels_active_reset_without_emitting_epoch_event():
         _deferred_initial_pose_name="mapping_start",
         _reset_event_publisher=FakePublisher(events),
         _EmptyMessage=lambda: object(),
-        _apply_initial_pose_policy=lambda: events.append("arm"),
+        _apply_initial_pose_policy=lambda **_: events.append("arm"),
     )
     transaction = _ResetTransaction(
         generation=11,
@@ -584,6 +681,7 @@ def test_reset_service_response_waits_for_transaction_completion(errors):
         errors=errors,
         skipped=[],
         generation=12,
+        boundary_clock_ns=None if errors else 12_500_000_000,
     )
     bridge = SimpleNamespace(
         _manager=object(),
@@ -600,6 +698,19 @@ def test_reset_service_response_waits_for_transaction_completion(errors):
     assert result is response
     assert events[0] == "futures_complete"
     assert response.success is (not errors)
+    assert (
+        "boundary_clock_ns=None" if errors else "boundary_clock_ns=12500000000"
+    ) in response.message
+    if errors:
+        assert "; reset_metadata_v1=" not in response.message
+    else:
+        marker = "; reset_metadata_v1="
+        metadata = json.loads(response.message.rpartition(marker)[2])
+        assert metadata == {
+            "boundary_clock_ns": 12_500_000_000,
+            "generation": 12,
+            "schema_version": 1,
+        }
     assert events[1] == (
         "response_failure" if errors else "response_success"
     )
