@@ -24,8 +24,8 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | --- | --- | --- |
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
-| 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean schema v3 的 SimplePlane 六 Profile 单轮批处理也完成 6/6 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；SimplePlane 当前每组只有 1 次链路烟测，低速左右转向仍不对称，Warehouse/Realistic、接触材料与有效轮距正式 A/B 尚未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v3 均已实现；真实 Warehouse 单轮诊断 8/8 硬门通过；clean commit `d7710b7` 的 Reset epoch 修复后 SimplePlane 六 Profile 烟测为 6/6、36/36 Reset 成功、聚合纳入 6/排除 0 | 六 Profile 目前各 1 次，只证明批处理、身份锁、Reset 恢复与严格分析链路；Warehouse、每组至少 3 次、Realistic 与候选轮距运动 A/B 均未完成，不能冻结材质、threshold 或 `1.0124 m` |
+| 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；新矩阵证明证据链和 Reset 合同可靠，但 SimplePlane 原地旋转中心漂移 `0.297–0.350 m`、角速度平均误差 `60.1%–69.0%`，六 Profile 全部未过计划 8.7，Realistic 和候选有效轮距 A/B 仍未完成 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v3 均已实现；真实 Warehouse 单轮诊断 8/8 硬门通过；两环境正式接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 批次 `success` 只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过；threshold/材质只形成下一轮因果候选，不能冻结 Profile 或把约 `1.012 m` 直接写回控制器 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -487,7 +487,70 @@ runner 日志共 18 个文件全部返回 `OK`。根证据哈希为：
 
 这次 `--repeats 1` 只验收六 Profile 串行启动、运行态 provenance、报告结构、
 聚合身份锁和失败保留机制。每组样本数为 1，不能估计方差、排名或选择材质；计划
-要求的 SimplePlane/Warehouse 每组至少 3 次正式矩阵仍未完成。
+当时要求的 SimplePlane/Warehouse 每组至少 3 次正式矩阵仍未完成；随后已在下一节
+从新目录执行，不能把本节 smoke 样本混入该正式矩阵。
+
+### SimplePlane/Warehouse 六 Profile × 三重复正式接触矩阵（2026-07-14）
+
+在 clean commit `0500f9eebd71836977e466484cad828715bb8228` 上从空目录执行：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment all \
+  --repeats 3 \
+  --output-dir data/reports/contact_ab/skid_steer_v1_0500f9e
+```
+
+矩阵按 SimplePlane→Warehouse、六 Profile、repeat 1/2/3 的固定顺序启动 36 个独立
+Isaac 进程。36/36 run、216/216 motion segment、216/216 Reset 均完成；12 个
+环境×Profile group 各有三个唯一样本，严格聚合 `analysis_valid=true`、matrix
+complete、纳入 36、排除 0。36 份报告、36 份 Isaac 日志和 36 份 runner 日志共
+108 个 Manifest checksum 经独立 `sha256sum --check --strict` 全部通过，离线重新聚合
+与 `analysis.json` 完全相等。根证据哈希为：
+
+| 文件 | SHA256 |
+| --- | --- |
+| `manifest.tsv` | `f38bdbdfcd2a7a9b1fe53fe8dcdf3bb6af07993f45a1f75859a158ea372eb7df` |
+| `analysis.json` | `e8095612eb792a9751c0233c55aca0d18c4cb3bd1f4fb631bd2b4b4da75791ea` |
+| `batch_summary.json` | `f22c0079b1a4597163e9e6ab383473e0a320405928e53153f4b1e7f7165c3185` |
+
+Reset metadata/generation/boundary、水位和三路 freshness 为 216/216；每个进程的
+generation 为 2–7。服务 latency 为 `0.1547–0.1917 s`、均值 `0.1694 s`；恢复
+latency 为 `0.5278–0.6071 s`、均值 `0.5427 s`。恢复期最大 Odom 线/角速度和轮速
+分别为 `0.000432 m/s`、`0.000847 rad/s`、`0.0089 rad/s`，均低于
+`0.02/0.05/0.2` 门。119 个 pre-boundary group 与 105 个 JointState receive
+timestamp regression 均被拒绝；coherent/observation regression、stale、future、
+wall freshness 和物理速度 violation 为 0，运动段内三路 timestamp 也全部单调唯一。
+
+上面的结果只说明证据链、Reset 恢复、停止和批处理合同通过。按方案 8.7 对空旷
+SimplePlane + Ideal 的 36 个纯旋转段重新计算，物理验收明确失败：
+
+| 物理门 | 结果 | 结论 |
+| --- | --- | --- |
+| 直行 3 m 横向偏差 `≤0.05 m` | 最坏 `0.001911 m` | 18/18 PASS |
+| 倒车 2 m 横向偏差 `≤0.08 m` | 最坏 `0.001144 m` | 18/18 PASS |
+| 原地旋转中心漂移 `≤0.10 m` | `0.297486–0.350392 m` | 36/36 FAIL |
+| 左右旋转漂移差 `≤20%` | SimplePlane 六组按 `abs(L-R) / max(L,R)` 为 `11.22%–14.19%` | 6/6 PASS；Warehouse 不属于空旷平面门且六组均 FAIL |
+| 段内平均角速度误差 `≤10%` | `60.10%–69.05%` | 36/36 FAIL |
+| 零命令后 0.5 s 接近零 | 216/216 均形成 0.5 s 连续静止窗；确认 `0.5167–0.5667 s` | PASS |
+| 四轮速度方向符合契约 | 非旋转 144/144 段全匹配；纯旋转 72/72 段有短暂 `mixed`，主导平均符号正确 | 仍需独立 8-trial 单轮硬门，不能无条件签字 |
+
+六 Profile 的 yaw gain 只有 `0.2406–0.3461`；threshold 和当前显式材质对直线、
+圆弧以及欠转的影响都很小，不能把某个 Profile 写成赢家。Profile
+`threshold_corr_0p025_offset_0p04`（correlation `0.025`、offset `0.04`）的跨环境总体有效轮距最接近
+`1.012 m`，但 SimplePlane 左右方向仍相差约 20%，只能作为下一轮探索初值。
+SimplePlane 六组左右漂移差通过，Warehouse 六组为 `28.93%–37.62%`，全部失败；
+Warehouse 的旋转不稳定集中在左转支路，应先隔离 31 个 floor-decal collider 与
+GroundPlane、补两环境单轮诊断，再做 60/120 Hz、CCD、stabilization 的单变量筛选。
+有效轮距必须用 `w=±0.2/±0.4/±0.8 rad/s`、两环境、每方向至少三次重新拟合，之后
+才能同步控制器与 Wheel Odom 并进入 Realistic A/B。
+
+72 个纯旋转段的每轮主导平均轮速符号正确，但都含短暂 `mixed`，因此
+`all_directions_match=false`；分析器只在最小/最大跨 deadband、逐轮布尔一致且平均
+符号正确时纳入。该例外不能替代独立 8-trial 单轮方向硬门。Isaac 日志无
+Traceback、Error、Reset timeout、BVH、simulation-time、customGeometry 或 TGS
+命中，但仍有 645 条 Hydra/Semantics/Timeline/USD/`frictionType` 等 warning 噪声，
+后续需单独清理或建立有来源的 allowlist。
 
 ### 单轮正/负方向真实诊断（2026-07-14）
 
@@ -922,7 +985,7 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 | Clean schema v3 wheel direction | Warehouse + legacy：8/8 trial、全部硬门通过，Git dirty false；报告 SHA256 `f63ec096...a9de` |
 | Clean schema v3 motion provenance | Warehouse + Ideal + legacy：14/14 complete，三路时间戳无重复/回退，Git dirty false；报告 SHA256 `8532187c...0f23` |
 | Effective-track 定向测试 | fitter + package contract：30 passed；五报告探索拟合完成，但 contact/provenance 身份不足以冻结参数 |
-| Contact A/B 聚合与 Reset 诊断 | `robot_experiments` 当前完整包 251 passed；批处理/runtime 集合 56 passed、1 个 shellcheck 环境项 skipped；SimplePlane 六 Profile 烟测 6/6、分析纳入 6/排除 0 |
+| Contact A/B 聚合与 Reset 诊断 | `robot_experiments` 当前完整包 271 passed；批处理/runtime 集合 56 passed、1 个 shellcheck 环境项 skipped；两环境六 Profile × 三重复为 36/36、216 次 Reset 成功、分析纳入 36/排除 0；计划 8.7 原地旋转物理门仍 FAIL |
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
 | Repository index set comparison | 当前 305 个交付路径对 305 个索引路径，集合差分无输出 |
@@ -946,7 +1009,7 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 | 能力 | 当前边界 |
 | --- | --- |
 | 真实 `warehouse_v2` | 四工件与 Manifest 已登记并通过完整性校验；来源日志、Stage 对齐、出生点标定、长距离路线和正式导航均未完成 |
-| 底盘物理 A/B | 改动前与标准 Cylinder 下 Warehouse + Ideal 32/4、32/16 已完成；SimplePlane 六 Profile 各 1 次严格烟测完成，接触工具与 effective-track fitter 已具备；但每组至少 3 次、Warehouse/Realistic、候选有效轮距和低速转向不对称的正式 A/B 尚未完成 |
+| 底盘物理 A/B | 改动前与标准 Cylinder 下 Warehouse + Ideal 32/4、32/16 已完成；clean `0500f9e` 的 SimplePlane/Warehouse 六 Profile × 三重复正式矩阵及 strict fitter 已完成；但六 Profile 均未通过中心漂移/角速度门，Realistic、候选有效轮距、多角速度、接触拓扑和 solver 单变量 A/B 尚未完成 |
 | Camera Standard | schema v3 的 `640x480 @ 20 Hz` 组合未运行；不存在可外推的新配置性能数据 |
 | Camera High Quality 频率 | 约 15 Hz 是 schema v3 前历史基线；v3 配置目标 30 Hz 尚未实测，不能写成已达到或已失败 |
 | Camera 人工 GUI 验收 | schema v3 前抓帧做过方向检查；v3 静止/运动清晰度与用户 click-by-click、面板布局、视觉体验均未验收 |

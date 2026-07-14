@@ -3132,9 +3132,9 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 - 第三阶段当前进度：四个 obsolete 官方轮 collider 已由项目 Overlay 停用并替换为
   对称标准 Cylinder；真实 180 步启动中 `customGeometry` 警告为 0。32/4 与 32/16
   保持直行/停车等价，32/4 的 high-tier 左右旋转更高、Reset latency 无 16 的
-  9.07 秒离群点，且 TGS 警告从 1 降为 0，因此冻结 solver `32/4`。低速左右转向
-  不对称、接触材料、有效轮距和 SimplePlane/Realistic A/B 尚未完成，第三阶段
-  仍未退出。
+  9.07 秒离群点，且 TGS 警告从 1 降为 0，因此冻结 solver `32/4`。SimplePlane/
+  Warehouse 接触矩阵已完成但物理门失败；低速左右转向不对称、接触拓扑、有效轮距
+  和 Realistic A/B 尚未闭合，第三阶段仍未退出。
 - 第三阶段时间进度：确认安装版 ROS 2 helper 默认
   `resetSimulationTimeOnStop=true`；项目此前显式 false 会选择 monotonic 查询，
   且本轮日志中该查询与相邻 Fabric 样本缺失同时出现。false 的 30 分钟基线三类
@@ -3154,8 +3154,22 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   精确 4 wheel/32 Warehouse ground collider 读回和 2×2 threshold 配置。clean
   schema v3 Warehouse 单轮正负诊断 8/8 通过，normal/contact/friction/body 方向硬门
   全部为真；clean motion 报告 14/14 通过并把 profile、overlay、scene、collider、
-  binding、material 与 Git 身份绑定。下一步仍必须完成每个 threshold 点、显式材质、
-  SimplePlane/Warehouse 和候选有效轮距的锁定输入多次 A/B，不能据工具可用直接冻结。
+  binding、material 与 Git 身份绑定。clean commit `0500f9e` 上已经完成每个 threshold
+  点、显式材质和 legacy 在 SimplePlane/Warehouse 的三次锁定输入重复：36/36 run、
+  216/216 段、216/216 Reset 成功，12 个 group 各 3 次，分析纳入 36/排除 0；
+  Manifest/analysis/summary SHA256 分别为 `f38bdbdf...b7df`、`e8095612...91ea`、
+  `f22c0079...3185`。但空旷 SimplePlane 的 36 个纯旋转段中心漂移为
+  `0.297486–0.350392 m`、平均角速度误差为 `60.10%–69.05%`，全部未通过
+  8.7 的 `0.10 m/10%` 门。六 Profile 对严重欠转均无决定性改善；P11 的约
+  `1.012 m` 只作为多速度拟合初值，不能直接冻结。下一步必须先做两环境单轮重复、
+  Warehouse GroundPlane/floor-decal collider 拓扑隔离、多角速度有效轮距及
+  60/120 Hz、CCD、stabilization 单变量 A/B，之后再做 Ideal/Realistic 复验；
+  第三阶段仍未退出。
+- 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
+  216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
+  轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均
+  被 coherent epoch 门拒绝，运动段内无时间戳回退。该 PASS 只属于证据链、Reset、
+  停止和聚合合同，不得改写成底盘物理 PASS。
 - 证据纪律：调参 JSON 继续由 Git 忽略，摘要、命令、报告 SHA256、失败样本和边界
   回填到 `docs/verification.md`；正式统计必须在 clean commit、冻结输入和独立输出
   集合上重跑，不混入上述调参样本。
