@@ -95,6 +95,7 @@
 | `scripts/profile_runtime.sh` | 运行 `runtime_profiler` 的命令行包装器；统一持续时间、预热、标签和原子 JSON 报告路径。 |
 | `scripts/run_camera_view.sh` | 单独启动前视 RGB 相机 RViz 界面；复用项目 ROS 环境、受管进程组和 RViz 单实例锁。 |
 | `scripts/run_motion_baseline.sh` | 非交互底盘运动诊断入口；要求独占非 Reset `/cmd_vel` 运动命令，校验 Navigation/Collision Monitor/Teleop 未运行，按环境与里程计模式命名严格 JSON 报告，并用单实例锁纳入安全清理。 |
+| `scripts/run_contact_ab_matrix.sh` | 接触模型严格串行 A/B 入口；冻结 Git/协议输入，清除继承的嵌套配置覆盖，按 SimplePlane→Warehouse、六 profile、repeat 的确定顺序独立启动 Isaac 与 committed skid-steer runner；逐轮验证 schema v3 和六段报告，最终执行跨轮三层身份锁/完整矩阵聚合，冻结含 report/双日志 SHA 的 manifest，并原子写 `analysis.json` 与绑定两份证据 SHA 的 batch summary；清理只信号本会话认证进程组。 |
 | `scripts/run_wheel_direction_diagnostic.sh` | 独占 Isaac 进程的四轮正/负方向诊断入口；选择项目/诊断 YAML、复用 Isaac 单实例锁，并启动不依赖 ROS 图的 standalone 物理测试，原子输出成功或失败 JSON。 |
 
 ## 5. Isaac Sim 包入口与主程序
@@ -370,7 +371,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `ros2_ws/src/robot_experiments/package.xml` | 实验 ROS 包元数据及 Nav2 action、TF、lifecycle、YAML 等依赖。 |
-| `ros2_ws/src/robot_experiments/setup.py` | 安装配置/launch并注册 experiment runner、initial pose、incremental comparator、runtime profiler、底盘 motion baseline、离线 effective-track fitter 与 opt-in scan fault bridge CLI。 |
+| `ros2_ws/src/robot_experiments/setup.py` | 安装配置/launch并注册 experiment runner、initial pose、incremental comparator、runtime profiler、底盘 motion baseline、严格 contact A/B 聚合器、离线 effective-track fitter 与 opt-in scan fault bridge CLI。 |
 | `ros2_ws/src/robot_experiments/setup.cfg` | Python ROS 可执行文件安装规则和 flake8 配置。 |
 | `ros2_ws/src/robot_experiments/resource/robot_experiments` | ament resource index 标记。 |
 | `ros2_ws/src/robot_experiments/config/scenario.schema.yaml` | Static/Dynamic/Incremental 场景 YAML 的结构、类型和必需字段定义。 |
@@ -399,7 +400,8 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault.py` | 无 ROS 依赖的 LaserScan 故障状态机；实现丢包/暂停/frame 替换/恢复/计数，并强制每条命令携带当前 epoch，彻底隔离 Reset 前排队的旧命令。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault_bridge.py` | ROS adapter：把 `/scan` 按显式 JSON 命令转发到 `/scan_fault`，发布 transient-local 状态，并在 reset event 或时间戳回退时清除旧故障。仅用于 Collision Monitor 安全验证。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline.py` | 与 ROS 解耦的底盘诊断配置解析与指标核心；严格校验运动方向/限幅，计算路程、横向漂移、航向、四轮方向、停止响应和时间戳完整性。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动 provenance，每段运动前 Reset，等待新鲜 Clock/Odom/JointState 和稳定静止，按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行 14 段命令；所有退出路径尝试零速 burst并原子写入含运行态证据的报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动 provenance，每段运动前 Reset，等待新鲜 Clock/Odom/JointState 和稳定静止，按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行配置中的默认 14 段或 A/B 6 段命令；所有退出路径尝试零速 burst并原子写入含运行态证据的报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/contact_ab_analysis.py` | 严格离线 contact A/B 聚合 CLI；只接受 canonical Jackal 六段协议和 `0.098 m` 轮径，按实际时间戳重算期望/误差，交叉验证四轮方向与 collider joint，使用规范化 JSON SHA 去重，并以全矩阵、环境、profile/组分层锁定 schema v3 provenance；输出分布、对称性、停止时延和有效轮距但不自动排名。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/effective_track_analysis.py` | 离线有效轮距拟合 CLI；按输入文件 SHA256 和调用方指定的 runtime provenance 精确筛选成功 motion 报告，只接受左右纯旋转的有限数/正确符号样本，分别输出过原点 yaw-response OLS、direct OLS、TLS 及按侧/速度档/报告的审计结果。 |
 | `ros2_ws/src/robot_experiments/launch/initial_pose.launch.py` | 把 spawn pose、持续监听和扫描/TF 恢复参数传给 initial pose publisher。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 启动 experiment runner并传入场景、出生点、输出目录和可选配置 override。 |
@@ -416,13 +418,14 @@
 | `ros2_ws/src/robot_experiments/test/test_metrics.py` | 测试成功/失败原因、路径、角度、率和时间改善指标。 |
 | `ros2_ws/src/robot_experiments/test/test_report.py` | 测试 manifest 必需字段、有限数/hash、CSV/JSON 原子替换、严格底盘 JSON 和输出路径安全。 |
 | `ros2_ws/src/robot_experiments/test/test_incremental_map_compare.py` | 用合成 PGM 测试变化恢复、旧区退化、阈值 override 和 CLI 返回码。 |
-| `ros2_ws/src/robot_experiments/test/test_package_contract.py` | 检查实验安装入口、配置/launch 文件、reset/dynamic contract 以及底盘诊断入口/安全清理集成。 |
+| `ros2_ws/src/robot_experiments/test/test_package_contract.py` | 检查实验安装入口（含 contact A/B analyzer）、配置/launch 文件、reset/dynamic contract 以及底盘诊断入口/安全清理集成。 |
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
 | `ros2_ws/src/robot_experiments/test/test_runtime_profiler.py` | 测试 profiler 的 Topic/TF 覆盖、RTF 回钟与停滞、百分位、Camera stamp 多重集配对、进程组统计和 GPU delta。 |
 | `ros2_ws/src/robot_experiments/test/test_scan_fault.py` | 纯单元测试故障数量边界、定时暂停、持续丢流、frame 替换、非法命令、时间戳回退和 Reset epoch。 |
 | `ros2_ws/src/robot_experiments/test/test_scan_fault_bridge_integration.py` | 用真实 rclpy/DDS 节点验证故障控制 Topic、scan 转发、状态发布、Reset 清理和旧 epoch 命令拒绝。 |
 | `ros2_ws/src/robot_experiments/test/test_motion_baseline.py` | 覆盖三档/圆弧配置、运动符号、漂移/航向/轮向/停止指标、时间戳异常、报告有限数约束和启动脚本独占 `/cmd_vel` 契约。 |
+| `ros2_ws/src/robot_experiments/test/test_contact_ab_analysis.py` | 覆盖真实 tick overshoot、实际时长派生量、六段/四轮方向和 motion/contact joint 交叉门、canonical digest 去重、三层 environment/profile/group 锁、跨环境 overlay 例外、完整 12 组矩阵、统计/时间戳溢出、原子 JSON 与 CLI `0/1/2`。 |
 | `ros2_ws/src/robot_experiments/test/test_effective_track_analysis.py` | 覆盖有效轮距三种拟合、左右/速度档分组、输入/内容去重、rotation 符号门、provenance include/exclude 审计、原子 JSON 和 CLI 返回码。 |
 
 ## 29. `robot_bringup` 配置与入口
@@ -465,6 +468,7 @@
 | `ros2_ws/src/robot_bringup/test/test_initial_pose_policy.py` | 测试 `auto`/`rviz` 规范化和非法策略拒绝。 |
 | `ros2_ws/src/robot_bringup/test/test_interactive_policy.py` | 覆盖模式专用 RViz 选择、headless 行为、Teleop 模式禁令和终端命令。 |
 | `ros2_ws/src/robot_bringup/test/test_runtime_scripts.py` | 用隔离运行目录测试统一环境、单实例锁、安全清理、ROS supervisor 顺序退出、地图事务/manifest，以及独立/顽固 RViz、Teleop 进程组的认证升级和元数据保留。 |
+| `ros2_ws/src/robot_bringup/test/test_contact_ab_matrix_script.py` | 检查 contact A/B 参数/顺序/输入锁、继承 override 清理、schema v3 readiness、严格报告门、symlink/Git-ignore 输出边界、manifest 原子行与最终 hash、未注册进程不误杀/不阻塞，以及跨轮 analysis 和 batch summary 的计数与证据 SHA 绑定。 |
 
 ## 31. `robot_rviz_plugins`
 

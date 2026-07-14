@@ -1266,6 +1266,100 @@ flags 和 `stage_usd_readback_verified=true`；旧 v1/v2 报告不会冒充当�
 正式 A/B 仍必须要求 `.runtime_provenance.git.dirty == false`、环境/solver/profile
 完全匹配，并保留每个输入 JSON、SHA256 和 Kit 日志；仅凭输出文件名仍不构成证据。
 
+需要完整执行这组隔离矩阵时，使用严格串行入口，不要手工开 36 组终端：
+
+```bash
+cd "$PROJECT_ROOT"
+
+./scripts/run_contact_ab_matrix.sh \
+  --environment all \
+  --repeats 3 \
+  --output-dir data/reports/contact_ab/skid_steer_v1
+```
+
+`--environment` 默认是 `all`，也可只取 `SimplePlane` 或 `Warehouse`；
+`--repeats` 默认是 `3`，取值范围是 `1..100`；`--output-dir` 必填且必须为空，已有
+证据不会被覆盖。仓库内路径还必须已被 Git ignore（推荐继续放在
+`data/reports/`），也可使用仓库外的绝对路径；路径本身或任一已有祖先是 symlink
+时会直接拒绝。默认严格顺序是：先 `SimplePlane`、后 `Warehouse`；每个环境依次运行
+`legacy_baseline`、四个 threshold 2×2 profile、`explicit_material`；最后才展开
+repeat，所以默认共启动 36 个互相独立的 Isaac 进程。若只想做一轮 SimplePlane
+烟测，可使用：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment SimplePlane \
+  --repeats 1 \
+  --output-dir data/reports/contact_ab/simple_plane_smoke
+```
+
+批处理只接受 attached branch 上的干净 Git worktree，并在整批开始时冻结 HEAD、
+branch、运动配置、两个项目配置和六个 profile 的 SHA256；每轮前后都会重新检查。
+它还从所选项目 YAML 解析 robot config/asset、project Stage 和 source asset 的真实
+路径与 SHA256。Warehouse source 是 `${ISAAC_ASSET_ROOT}` 下的 NVIDIA 外部资产，
+不是 Git 文件，但同样会在本批输入中锁定。启动子进程前会清掉调用者遗留的全部
+`ISAAC_NAV__*` 嵌套覆盖，只恢复当前 project/contact 两项，避免 30 Hz 或临时 robot
+配置混进正式矩阵。
+
+每轮启动命令固定为 headless、unbounded、Mapping、Ideal、Camera off；当前 schema
+v3 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
+固定 CLI 合同，文档不把它们冒充成报告 provenance。能由只读参数证明的项目会
+逐项核对：schema v3、robot config/asset、solver `32/4` 与 Stage readback、60 Hz、
+Mapping/Ideal、真实环境 project/source、Git commit/branch/dirty，以及 contact canonical
+JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback。runner 退出后
+会从当前 workspace source 调用严格分析器复验六段结构、实际时间戳、四轮方向和同一组
+环境/profile/motion 身份。
+
+输出名称不含时间随机量，例如
+`001_simple_plane_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
+分别保存 Isaac 与 runner 日志。成功目录根部有三份总证据：
+
+- `manifest.tsv`：每轮 31 列输入、状态、路径，以及 report/Isaac log/runner log 的
+  最终 SHA256；所有轮完成后改为只读并冻结 hash。
+- `analysis.json`：把全部报告作为一个数据集重新验证；`all` 必须满足两环境 × 六
+  profile 完整矩阵，单环境也必须包含六 profile，且每组重复数不少于 `--repeats`。
+- `batch_summary.json`：记录 Git/协议输入、预期/实际计数，并绑定已冻结 manifest 和
+  analysis 的路径及 SHA256；不存在自引用 hash。
+
+分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat，并分三层锁定
+全矩阵、同环境、同 profile/同组输入。yaw gain 和位移误差按物理时钟的
+`observed_duration_sec` 计算，不按理想配置时长；Jackal 轮半径只接受 `0.098 m`。
+输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
+最终选择仍需结合两环境指标与工程约束。
+
+快速核对成功证据：
+
+```bash
+RUN=data/reports/contact_ab/skid_steer_v1
+jq '{result, environments, repeats, expected_counts, actual_counts, evidence}' \
+  "$RUN/batch_summary.json"
+jq '{valid: .analysis_valid, counts, matrix, groups: (.groups | keys)}' \
+  "$RUN/analysis.json"
+sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
+```
+
+若需要重新审计复制来的报告，而不是重新跑 Isaac，可直接使用安装后的离线 CLI：
+
+```bash
+source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
+
+ros2 run robot_experiments contact_ab_analysis \
+  --wheel-radius 0.098 \
+  --min-repeats 3 \
+  --require-complete-matrix \
+  --output /tmp/contact_ab_analysis.json \
+  data/reports/contact_ab/skid_steer_v1/reports/*.json
+```
+
+返回码 `0` 表示完整审计有效；`2` 表示已原子写出审计文件但存在明确 exclusion；`1`
+表示输入/合同致命错误，不能使用该聚合。不要用 `2` 的报告挑选 profile。
+
+任一轮或最终聚合失败都会立即返回非零并保留当前证据。清理只作用于本脚本启动且
+重新通过 PID、PGID、start ticks、项目根和 session 身份认证的进程组，按
+`SIGINT → SIGTERM → SIGKILL` 有界升级；身份不一致时会拒绝发送信号，不使用
+`pkill`，也不会对未认证的活进程执行无期限 `wait`。失败目录不能直接续写，排除
+原因后换一个空输出目录重跑，避免把两次实验拼成同一清单。
+
 ### 17.6 运行四轮正/负方向诊断
 
 `run_wheel_direction_diagnostic.sh` 回答一个比 motion baseline 更窄的问题：四个
