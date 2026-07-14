@@ -1558,15 +1558,31 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
   最终 SHA256；其中 `robot_config_selection` 为 `project_default` 或 `explicit_cli`，
   并逐行记录 robot canonical path、SHA256、profile、lifecycle、轮径、轮宽、几何轮距
   和有效轮距，并新增每轮 topology ID/path/SHA256。所有轮完成后改为只读并冻结 hash。
+- `reports/*.json`：新生成的 motion report 顶层 `schema_version=2`，但其中
+  `configuration.schema_version=1` 不变。每段 `actual_velocity.steady_state_window` 精确
+  表示命令时间区间的后半段，保存该窗口 Odom 的 `angular_z_radps` 分布；历史 report
+  schema 1 仍可读，但没有这个机器门观测窗口。
 - `analysis.json`：把全部报告作为一个数据集重新验证；v5 以合法
   environment/topology pair × 六 profile 形成组，baseline/all 分别要求 12/18 个完整组，
-  单一环境/拓扑也必须包含六 profile，且每组重复数不少于 `--repeats`。
-- `batch_summary.json`：当前 summary `schema_version=3`；记录
+  单一环境/拓扑也必须包含六 profile，且每组重复数不少于 `--repeats`。当前 v5
+  analysis 为 `schema_version=3`，并包含 schema 1、policy
+  `skid_steer_plan_8_7_v1` 的 `physical_acceptance`；历史 v3/v4 analysis 仍为 schema 1。
+- `batch_summary.json`：当前合同为 `schema_version=4`；记录
   `ground_topology_selection`、精确 `environment_topology_pairs`，并在
   `locked_protocol_inputs.robot_config` 中记录 selection、path、SHA256 和完整 kinematics，
   在 `locked_protocol_inputs.ground_topology_profiles` 中记录本批 topology 的环境、路径
   与 SHA256；同时记录 Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和 analysis 的
-  路径及 SHA256；不存在自引用 hash。
+  路径及 SHA256；不存在自引用 hash。`result="success"` 表示证据采集、身份、矩阵和
+  聚合闭合，不表示底盘物理通过；物理结论另看
+  `physical_acceptance.all_applicable_groups_passed` 以及
+  `applicable_groups/not_applicable_groups/passing_groups/failed_groups`。
+
+版本边界不能混淆：RootLayer 修复后的 clean `d5840ed` 12-run 机制烟测早于这次机器
+硬门升级，保存的是 v5 analysis schema 2 与 batch-summary schema 3，不含
+`physical_acceptance`。它的 Warehouse、repeat=1、motion report schema 1 也都不满足
+当前物理门适用条件；即使只读重新审计也应是 N/A，不能写成 `0/12 fail`，更不能回填
+历史文件。当前合同定向测试已经完成，但仍没有 clean commit 全门、真实新 schema
+smoke 或正式 54-run/18-group 实跑证据。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
@@ -1595,6 +1611,30 @@ environment/topology/contact 组内锁定它。跨 treatment 的显式不变量�
 最终选择仍需结合两环境指标与工程约束。这里接受可证明的纯旋转 `mixed`，只是区分
 “短暂反向瞬态”和“主导轮速方向错误”，不会把方向检查降级为只看一个布尔字段。
 
+`physical_acceptance` 不是均值排行，而是计划 8.7 的适用性门加逐重复硬门。一个
+group 只有同时满足 runtime provenance schema 5、环境 `SimplePlane`、topology
+`simple_plane_only1_v1`、Ideal odometry、至少 3 个唯一 repeat、全部 motion report
+schema 2 才适用。其他 group 写 `applicable=false`、`passed=null` 和非空
+`not_applicable_reasons`；它们进入 `not_applicable_groups`，不会进入 passing/failed。
+若没有任何适用 group，`all_applicable_groups_passed` 为 `null`。
+
+每个适用 group 的每个 repeat 都分别检查：前进/后退横漂绝对值不超过
+`0.05/0.08 m`；左/右旋转中心漂移各不超过 `0.10 m`；
+`abs(left-right)/max(left,right)` 不超过 `0.20`（两者均为零时为零）；左/右旋转的
+实际 `actual_velocity.steady_state_window.angular_z_radps.mean` 相对目标角速度的
+`abs(actual-commanded)/abs(commanded)` 各不超过 `0.10`，不使用 yaw gain；配置的
+稳定时长至少 `0.5 s`，六段的确认静止窗各不短于该配置值；配置的线速、角速、轮速
+停止阈值分别不高于 `0.02 m/s`、`0.05 rad/s`、`0.20 rad/s`；六段四轮方向合同成立。
+任何 repeat 的任何一项失败都会让该适用 group 失败，不能用其他重复的较好结果抵消，
+也不会自动选择 profile。
+
+当前完整 contact analyzer 测试文件为 `116 passed`，motion baseline 为 `66 passed`，matrix
+script `42 passed / 1 skipped`；唯一 skip 是本机缺少 `shellcheck`。这只证明工作树中的
+定向合同。同一 dirty worktree 的 `./scripts/test.sh` 为 exit 0：root
+`1061 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、861 tests、0 errors、
+0 failures、1 skipped。它们不等于 clean/frozen 证据；提交后仍须运行 clean commit
+`--with-isaac`，并补真实新 schema smoke 和正式矩阵。
+
 快速核对成功证据：
 
 ```bash
@@ -1604,12 +1644,45 @@ jq '{schema_version, result, environments, repeats,
      environment_topology_pairs,
      robot: .locked_protocol_inputs.robot_config,
      topologies: .locked_protocol_inputs.ground_topology_profiles,
-     expected_counts, actual_counts, evidence}' \
+     expected_counts, actual_counts,
+     evidence_success: (.result == "success"),
+     physical_acceptance, evidence}' \
   "$RUN/batch_summary.json"
-jq '{valid: .analysis_valid, counts, matrix, groups: (.groups | keys)}' \
+jq '{schema_version, valid: .analysis_valid, counts, matrix,
+     groups: (.groups | keys),
+     physical_acceptance: {
+       schema_version: .physical_acceptance.schema_version,
+       policy_id: .physical_acceptance.policy_id,
+       evaluation_basis: .physical_acceptance.evaluation_basis,
+       ranking_policy: .physical_acceptance.ranking_policy,
+       applicability: .physical_acceptance.applicability,
+       steady_state_measurement_basis:
+         .physical_acceptance.steady_state_measurement_basis,
+       thresholds: .physical_acceptance.thresholds,
+       all_applicable_groups_passed:
+         .physical_acceptance.all_applicable_groups_passed,
+       applicable_groups: .physical_acceptance.applicable_groups,
+       not_applicable_groups: .physical_acceptance.not_applicable_groups,
+       passing_groups: .physical_acceptance.passing_groups,
+       failed_groups: .physical_acceptance.failed_groups
+     }}' \
+  "$RUN/analysis.json"
+jq '(.physical_acceptance.groups // {}) | to_entries[]
+    | select((.value.applicable == false) or (.value.passed == false))
+    | {group: .key, applicable: .value.applicable,
+       passed: .value.passed,
+       not_applicable_reasons: .value.not_applicable_reasons,
+       failed_checks: .value.failed_checks,
+       repeat_results: .value.repeat_results}' \
   "$RUN/analysis.json"
 sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
 ```
+
+第一条 `jq` 命令看到 `result="success"` 时仍必须继续看
+`physical_acceptance.all_applicable_groups_passed`；前者是证据成功，后者才是适用
+group 的物理硬门结果。还必须检查 `not_applicable_groups`，避免把未覆盖条件误当通过。
+对历史 schema 2/3 批次，`physical_acceptance` 会是 `null`，只能按历史合同审计，
+不能补写或推断通过/失败。
 
 若需要重新审计复制来的历史报告，而不是重新跑 Isaac，可直接使用安装后的离线 CLI；
 `--wheel-radius` 对 v4/v5 必须改成该批 provenance 中记录的值，三种 schema 要分开
