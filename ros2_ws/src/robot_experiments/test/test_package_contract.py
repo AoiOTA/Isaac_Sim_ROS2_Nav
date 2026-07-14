@@ -82,6 +82,15 @@ def test_effective_track_analysis_has_an_installed_cli():
     ) in setup_source
 
 
+def test_contact_ab_analysis_has_an_installed_cli():
+    """The offline contact A/B analyser is installed as a console script."""
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "contact_ab_analysis = "
+        "robot_experiments.contact_ab_analysis:main"
+    ) in setup_source
+
+
 def test_motion_baseline_has_an_installed_cli_and_safe_launch_contract():
     setup_source = (PACKAGE_ROOT / "setup.py").read_text()
     assert (
