@@ -151,6 +151,30 @@ default and changes the projection input only when explicitly enabled.
 Ground Truth is evaluation-only. It publishes no TF and must not be remapped
 into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 
+### Isaac runtime provenance parameters
+
+`/isaac_navigation_sim` 在 Stage 组合和校验后、任何实验命令前发布一组只读
+`runtime_provenance.*` 参数。底盘 runner 必须从参数服务读取并验证它们，不能用
+报告进程当前工作树的哈希替代 Isaac 启动快照：
+
+| 参数组 | 内容 |
+| --- | --- |
+| `runtime_provenance.schema_version` | 当前严格 schema，值为 `1` |
+| `runtime_provenance.robot.config.*` | 实际 robot YAML 的绝对路径与 SHA256 |
+| `runtime_provenance.robot.asset.*` | 实际项目 robot USD Overlay 的绝对路径与 SHA256 |
+| `runtime_provenance.robot.solver.*` | Stage/Articulation 实际 position、velocity iterations |
+| `runtime_provenance.environment.project_stage.*` | 项目环境 Stage 路径与 SHA256 |
+| `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
+| `runtime_provenance.environment.asset_root/version` | Isaac 资产根与版本目录名 |
+| `runtime_provenance.environment.composed_root_layer_sha256` | 包含运行时 reference/sublayer/solver authoring 的组合根 Layer 摘要 |
+| `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz |
+| `runtime_provenance.git.*` | Isaac 启动瞬间的 commit、branch、dirty 布尔值 |
+
+SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整数；Git object
+ID 必须为 40 或 64 位十六进制。正式 runner 在字段缺失、类型不符或里程计模式
+不一致时必须在首个非零 `/cmd_vel` 前失败。`git.dirty=true` 不是自动失败：输入
+文件哈希仍精确绑定被测内容，但正式冻结报告应在 clean commit 上重跑。
+
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
 serves the immutable saved OccupancyGrid. SLAM Toolbox still owns localization
 and `map -> odom`, but its scan-rasterized map output is remapped to

@@ -1149,9 +1149,22 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、solver、仿真模式和 Git commit/branch/dirty，runner 会在创建命令 publisher 前读取和严格校验；字段缺失、哈希非法或 `--odometry-mode` 与运行态不一致都会失败关闭。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
-当前已经跑过一次 `Warehouse + Ideal` 的底盘物理参数改动前基线，14/14 段完整采集且三个 Topic 的时间戳没有重复或回退；同时也暴露了旋转响应偏低、左右不对称和轮向混合等问题。原始 JSON 属于本机忽略输出，不会随 clone 下载；可复核摘要和 SHA256 见 [`verification.md`](verification.md)。SimplePlane 与 Realistic 对照尚未完成，因此这次采集不是物理参数验收。
+快速核对某次报告是否真的是目标配置：
+
+```bash
+jq '{result, verified: .runtime_provenance.verified,
+     solver: .runtime_provenance.robot.solver,
+     robot: .runtime_provenance.robot.config.sha256,
+     asset: .runtime_provenance.robot.asset.sha256,
+     git: .runtime_provenance.git}' \
+  data/reports/motion/<report>.json
+sha256sum isaac_sim/configs/robots/jackal.yaml \
+  isaac_sim/assets/robots/jackal/jackal_nav.usda
+```
+
+当前已经完成 `Warehouse + Ideal` 的改动前基线，以及项目标准 Cylinder 下 TGS 32/4 与 32/16 的隔离 A/B；三份成功报告都是 14/14 段。32/4 保持直行/停车、改善 high-tier 左右旋转、避免 32/16 的 TGS 警告和 Reset latency 离群点，因此成为冻结 solver 值。低速转向仍明显左右不对称，SimplePlane、Realistic、接触材料和有效轮距对照尚未完成，所以这不是完整 skid-steer 物理验收。原始 JSON 属于本机忽略输出，不会随 clone 下载；可复核摘要和 SHA256 见 [`verification.md`](verification.md)。
 
 停止顺序是：等待 motion runner 自己退出；Realistic 时对终端 B 按一次 `Ctrl+C` 并等待 ROS 有序关闭；最后停止 Isaac。中途按 `Ctrl+C` 会触发零速 burst 后退出，但信号中断可能来不及生成报告；先确认 runner 已退出且 `/cmd_vel` 回零，再停止仿真。需要完整 JSON 时重新运行全部 14 段，不要把中断样本当成成功报告。
 
