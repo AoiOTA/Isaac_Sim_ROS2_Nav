@@ -82,6 +82,7 @@ ros2 pkg prefix robot_teleop
 先确认是否真的有一个正在使用的会话：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 ./scripts/diagnose.sh
 ./scripts/clean_runtime.sh --dry-run
 ```
@@ -358,7 +359,8 @@ publisher 是 Controller Server，消息类型是 `nav_msgs/msg/Path`、frame �
 
 **症状：** RViz 显示 `No Image`；两个 Camera Topic 没有 publisher；出现
 QoS incompatibility；Image 与 CameraInfo 数量/时间戳不匹配；画面速率低于
-profile 配置；分辨率、frame 或画面方向不对。
+profile 配置；分辨率、frame 或画面方向不对；静止画面失焦、运动画面拖影，
+或低分辨率画面出现明显的 DLSS 上采样模糊。
 
 **检查：**
 
@@ -377,19 +379,25 @@ ros2 run tf2_ros tf2_echo base_link camera_front_optical_frame
 publisher；其他 profile 应各有且仅有 1 个 Isaac publisher。两者应使用
 `camera_front_optical_frame`、Best Effort/Volatile、depth 2，Image encoding
 为 `rgb8`。GUI 默认 `monitoring`，headless 默认 `off`。
+同时确认 `camera.yaml` 是 schema v3：`optics.f_stop=0.0` 与
+`exposure.f_stop` 分离，`render_product.anti_aliasing=rtxaa`，Motion Blur、DoF
+和 Auto Exposure 均为 `false`。
 
 **常见原因：** headless 未显式传 `--camera-profile`；误选 `off`；RViz 用了
 Reliable 或 compressed transport；旧 Isaac 实例造成重复 publisher；GPU/渲染
 负载或 RTF 低使实际墙钟速率达不到 15/20/30 Hz 配置目标；消费者按到达序号
 而不是 header stamp 配对 Best Effort 消息；只改了 Camera YAML、Topic 或 TF
-契约的一侧。
+契约的一侧；仍使用把光学 f-stop 与曝光 f-stop 混在一起的 schema v2；或只改
+UI viewport 的全局 AA，而没有给 CameraFront RenderProduct 写局部 RTX 设置。
 
 **修复：** 正常停止 Isaac，在原来的完整启动命令中显式加入
 `--camera-profile monitoring` 后重启；不要因此改变原有 navigation/odometry
 mode。RViz 使用 raw transport、Best Effort/Volatile depth 2。性能不足时从
 `high_quality` 降到 `monitoring`，并用 Profiler 记录 RTF、实际 Hz、age 和
 Image/CameraInfo stamp 配对。方向、曝光、遮挡必须实际看图，不能只看 Topic。
-重复 publisher 先通过受管清理停止旧实例。
+重复 publisher 先通过受管清理停止旧实例。模糊问题应修改并验证 Camera schema
+v3 的局部配置，不要借机改变 UI viewport 的全局渲染策略；代码和配置测试通过
+后仍要抓取真实静止/运动图像验收。
 
 **禁止操作：** 不要把 profile 的目标 Hz 当成实测结论，不要为了消除 RViz
 提示把传感器改成 Reliable，不要把 Camera 接入 SLAM/Nav2/Collision Monitor，
@@ -412,11 +420,11 @@ ros2 lifecycle get /controller_server  # Navigation 尚在时
 ```
 
 正常 `scripts/run_ros.sh` 日志会先打印按模式执行的
-`ordered shutdown: <step>: PASS`（失败时是明确 `WARN`），完整序列共用 20 秒
-总期限，之后才停止 launch
-process group。Navigation
-使用 `robot_rviz_plugins/Navigation 2 Safe`；受管 ROS 与 RViz 各有经过身份验证
-的 PID/process-group 元数据。
+`ordered shutdown: <step>: PASS`（失败时是明确 `WARN`）。完整关闭共用 20 秒
+总期限，Lifecycle helper 默认最多使用 10 秒并保留最后 1 秒；随后本会话认证的
+launch、RViz、Teleop 和 helper 独立进程组按 INT→TERM→KILL 有界停止。Navigation
+使用只观察 Lifecycle 的 `robot_rviz_plugins/Navigation 2 Safe`；受管组件都有
+PID/PGID、start ticks、boot ID、项目根和 session 元数据。
 
 **常见原因：** 手工 `ros2 launch` 绕过 supervisor；直接 kill 了 launch
 child、Lifecycle manager 或 RViz；工作空间没有重建，仍加载上游旧 Nav2 panel；
@@ -427,14 +435,16 @@ child、Lifecycle manager 或 RViz；工作空间没有重建，仍加载上游�
 终端按一次 Ctrl+C 并等待：Navigation 先关 Navigation manager 再关
 Localization manager；Localization 关其 manager；Mapping 依次 deactivate、
 cleanup、shutdown SLAM Toolbox。终端已丢失时先 dry-run，再执行
-`./scripts/clean_runtime.sh --dds-shm`；清理器会向 supervisor 发信号并验证
-身份。一次 Ctrl+C 走正常顺序；确认卡住时第二次会中断 helper 并强制 TERM，
-监督器再按有界等待升级它自己创建的精确 launch 组。若某步是 WARN，保留完整
-日志并检查对应服务，而不是假定干净退出。
+`./scripts/clean_runtime.sh`；只有还需清理 Fast DDS SHM 且确认没有使用者时才加
+`--dds-shm`。清理器会逐个认证遗留的 Isaac/ROS/RViz/Teleop/底盘诊断组，并在每个
+信号阶段复核身份。一次 Ctrl+C 走正常顺序；确认卡住时第二次会中断 helper 并对
+本会话组请求 TERM，第三次才请求 KILL。若某步是 WARN，保留完整日志并检查对应
+服务，而不是假定干净退出。
 
 **禁止操作：** 不要直接 `kill` launch 子进程、手工乱发 lifecycle transition、
-删除 PID 文件、`pkill -f ros`/`pkill python`、发送 SIGKILL，或在仍有 Fast DDS
-进程时清空 `/dev/shm`。
+删除 PID 文件、`pkill -f ros`/`pkill python`、手工向未认证 PID/PGID 发送
+SIGKILL，或在仍有 Fast DDS 进程时清空 `/dev/shm`。只有项目监督器/清理器通过
+身份复核后的最终有界 KILL 属于安全契约。
 
 ## 14. Profiler 报告为空、CPU 统计异常或性能模式不可复现
 

@@ -52,19 +52,21 @@ Start from the fixed USD pose in Ideal mode:
 
 Collect the full route slowly, include rotations and loop closure, inspect the
 result for tearing or duplicated walls, then save both representations with one
-version:
+new version. Do not overwrite a tracked baseline while it may still be needed
+for comparison or rollback:
 
 ```bash
-./scripts/save_map.sh warehouse_v1
+MAP_VERSION="warehouse_$(date +%Y%m%d_%H%M%S)"
+./scripts/save_map.sh "$MAP_VERSION"
 ```
 
 The following four files are one logical version and must be retained together:
 
 ```text
-data/maps/occupancy/warehouse_v1.yaml
-data/maps/occupancy/warehouse_v1.pgm
-data/maps/posegraphs/warehouse_v1.posegraph
-data/maps/posegraphs/warehouse_v1.data
+data/maps/occupancy/$MAP_VERSION.yaml
+data/maps/occupancy/$MAP_VERSION.pgm
+data/maps/posegraphs/$MAP_VERSION.posegraph
+data/maps/posegraphs/$MAP_VERSION.data
 ```
 
 Do not calibrate against an OccupancyGrid from one run and a Pose Graph from
@@ -89,6 +91,7 @@ recorded as truth.
 Point both processes at the same temporary source:
 
 ```bash
+export MAP_VERSION=warehouse_YYYYMMDD_HHMMSS  # use the value saved in step 1
 export ISAAC_NAV__SPAWN__POSES_FILE=/tmp/spawn_poses_calibration.yaml
 export ISAAC_NAV_SPAWN_POSES=/tmp/spawn_poses_calibration.yaml
 
@@ -98,12 +101,12 @@ export ISAAC_NAV_SPAWN_POSES=/tmp/spawn_poses_calibration.yaml
 # terminal B
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PWD/data/maps/posegraphs/$MAP_VERSION"
 ```
 
 Localization needs both representations from step 1. With the matching
-`warehouse_v1` basename shown above, `run_ros.sh` infers
-`data/maps/occupancy/warehouse_v1.yaml`; use an explicit
+`$MAP_VERSION` basename shown above, `run_ros.sh` infers the matching file under
+`data/maps/occupancy/`; use an explicit
 `map_file:=/path/to/map.yaml` argument if the OccupancyGrid and Pose Graph names
 differ. The Map Server publishes that saved grid on `/map`, while SLAM Toolbox
 loads the Pose Graph to publish `map -> odom`; its diagnostic grid is isolated
