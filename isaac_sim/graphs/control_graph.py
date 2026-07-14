@@ -58,7 +58,7 @@ def control_graph_spec(config: ProjectConfig) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
     nodes = (
-        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("SubscribeTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
         ("BreakLinear", "omni.graph.nodes.BreakVector3"),
         ("BreakAngular", "omni.graph.nodes.BreakVector3"),
@@ -67,14 +67,14 @@ def control_graph_spec(config: ProjectConfig) -> GraphSpec:
         ("RearController", "isaacsim.core.nodes.IsaacArticulationController"),
     )
     connections = (
-        ("OnPlaybackTick.outputs:tick", "SubscribeTwist.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "SubscribeTwist.inputs:execIn"),
         ("SubscribeTwist.outputs:execOut", "DifferentialController.inputs:execIn"),
         ("SubscribeTwist.outputs:linearVelocity", "BreakLinear.inputs:tuple"),
         ("SubscribeTwist.outputs:angularVelocity", "BreakAngular.inputs:tuple"),
         ("BreakLinear.outputs:x", "DifferentialController.inputs:linearVelocity"),
         ("BreakAngular.outputs:z", "DifferentialController.inputs:angularVelocity"),
-        ("OnPlaybackTick.outputs:tick", "FrontController.inputs:execIn"),
-        ("OnPlaybackTick.outputs:tick", "RearController.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "FrontController.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "RearController.inputs:execIn"),
         ("DifferentialController.outputs:velocityCommand", "FrontController.inputs:velocityCommand"),
         ("DifferentialController.outputs:velocityCommand", "RearController.inputs:velocityCommand"),
     )

@@ -66,7 +66,7 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
     base = config.robot.base_link_prim
     static_transforms = load_static_transforms(config.files.robot)
     nodes = (
-        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
         ("ComputeWheelTF", "isaacsim.core.nodes.IsaacComputeTransformTree"),
         ("WheelTF", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
@@ -75,7 +75,7 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
         for node, _, _, _, _ in static_transforms
     )
     connections: list[tuple[str, str]] = [
-        ("OnPlaybackTick.outputs:tick", "ComputeWheelTF.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "ComputeWheelTF.inputs:execIn"),
         ("ComputeWheelTF.outputs:execOut", "WheelTF.inputs:execIn"),
         ("ComputeWheelTF.outputs:parentFrames", "WheelTF.inputs:parentFrames"),
         ("ComputeWheelTF.outputs:childFrames", "WheelTF.inputs:childFrames"),
@@ -84,7 +84,7 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
         ("ReadSimTime.outputs:simulationTime", "WheelTF.inputs:timeStamp"),
     ]
     for node in tuple(item[0] for item in static_transforms):
-        connections.append(("OnPlaybackTick.outputs:tick", f"{node}.inputs:execIn"))
+        connections.append(("OnPhysicsStep.outputs:step", f"{node}.inputs:execIn"))
         connections.append(("ReadSimTime.outputs:simulationTime", f"{node}.inputs:timeStamp"))
     values: tuple[tuple[str, object], ...] = (
         ("ComputeWheelTF.inputs:parentPrim", TargetPaths((base,))),

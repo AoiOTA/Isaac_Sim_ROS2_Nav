@@ -468,7 +468,7 @@ def run(
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
-            app.update()
+            runtime.update()
             rclpy.spin_once(node, timeout_sec=0.0)
             if startup_reset.finished and startup_reset.errors:
                 raise RuntimeError(

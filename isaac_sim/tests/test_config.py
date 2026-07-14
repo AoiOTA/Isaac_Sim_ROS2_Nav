@@ -10,7 +10,7 @@ from isaac_sim.src.robot.articulation_runtime import (
     load_articulation_physics_config,
 )
 from isaac_sim.src.sensors.sensor_factory import _load_lidar
-from isaac_sim.src.stage.physics_setup import pacing_plan
+from isaac_sim.src.stage.physics_setup import FramePacer, pacing_plan
 from isaac_sim.graphs.sensor_graph import lidar_graph_spec
 
 
@@ -95,6 +95,36 @@ def test_realtime_and_unbounded_pacing_keep_fixed_simulation_dt():
     assert realtime.target_realtime_factor == 1.0
     assert unbounded.timeline_hz == 60.0
     assert unbounded.wall_loop_hz is None
+
+
+def test_frame_pacer_limits_rate_without_catch_up_bursts():
+    now = [0.0]
+    sleeps: list[float] = []
+
+    def clock() -> float:
+        return now[0]
+
+    def sleep(duration: float) -> None:
+        sleeps.append(duration)
+        now[0] += duration
+
+    pacer = FramePacer(60.0, clock=clock, sleep=sleep)
+    pacer.wait_after_frame()
+    assert sleeps == [pytest.approx(1.0 / 60.0)]
+
+    # A frame that exceeded its deadline resets cadence instead of issuing a
+    # burst of unpaced physics frames.
+    now[0] += 1.0
+    pacer.wait_after_frame()
+    assert len(sleeps) == 1
+    pacer.wait_after_frame()
+    assert sleeps[-1] == pytest.approx(1.0 / 60.0)
+
+
+def test_unbounded_frame_pacer_never_sleeps():
+    sleeps: list[float] = []
+    FramePacer(None, sleep=sleeps.append).wait_after_frame()
+    assert sleeps == []
 
 
 @pytest.mark.parametrize(

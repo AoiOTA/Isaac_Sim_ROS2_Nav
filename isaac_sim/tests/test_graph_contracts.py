@@ -8,6 +8,7 @@ from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
+from isaac_sim.graphs.spec import graph_pipeline_kind
 from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
 from isaac_sim.src.bridge.tf_ownership import (
     TfOwnershipError,
@@ -42,6 +43,11 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     for spec in specs:
         spec.validate()
         assert "ground_truth" not in repr(spec).lower()
+    for spec in (specs[0], specs[1], specs[3]):
+        assert "omni.graph.action.OnPlaybackTick" not in dict(spec.nodes).values()
+        assert "isaacsim.core.nodes.OnPhysicsStep" in dict(spec.nodes).values()
+        assert graph_pipeline_kind(spec) == "on_demand"
+    assert graph_pipeline_kind(specs[2]) == "execution"
     dt_values = [value for name, value in specs[0].values if name.endswith("inputs:dt")]
     assert dt_values == [pytest.approx(1.0 / 60.0)]
     sensor_nodes = dict(specs[1].nodes)
@@ -75,6 +81,7 @@ def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
         "ComputeWheelTF.outputs:parentFrames",
         "WheelTF.inputs:parentFrames",
     ) in spec.connections
+    assert graph_pipeline_kind(spec) == "on_demand"
 
 
 def test_tf_ownership_requires_exactly_one_publisher():
