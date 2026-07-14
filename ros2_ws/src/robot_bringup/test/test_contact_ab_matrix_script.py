@@ -78,6 +78,7 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
     help_result = _run('--help')
     assert help_result.returncode == 0, help_result.stderr
     assert '--environment Warehouse|SimplePlane|all' in help_result.stdout
+    assert '--ground-topology baseline|all|ID' in help_result.stdout
     assert '--repeats N' in help_result.stdout
     assert '--robot-config FILE' in help_result.stdout
     assert '--output-dir DIR' in help_result.stdout
@@ -98,6 +99,31 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
          '--repeats must be an integer in [1, 100]'),
         (('--repeats', '1'), '--output-dir is required'),
         (('--robot-config',), '--robot-config requires a value'),
+        (('--ground-topology',), '--ground-topology requires a value'),
+        (
+            ('--ground-topology', 'unknown', '--output-dir', '/tmp/out'),
+            '--ground-topology must be baseline, all',
+        ),
+        (
+            (
+                '--environment',
+                'SimplePlane',
+                '--ground-topology',
+                'warehouse_combined32_v1',
+                '--output-dir',
+                '/tmp/out',
+            ),
+            '--ground-topology ID must match the selected --environment',
+        ),
+        (
+            (
+                '--ground-topology',
+                'simple_plane_only1_v1',
+                '--output-dir',
+                '/tmp/out',
+            ),
+            '--ground-topology ID must match the selected --environment',
+        ),
         (
             ('--robot-config', '', '--output-dir', '/tmp/out'),
             '--robot-config requires a non-empty value',
@@ -126,6 +152,99 @@ def test_contact_ab_matrix_rejects_ambiguous_arguments(arguments, message):
     assert message in result.stderr
 
 
+@pytest.mark.parametrize(
+    (
+        'environment_selection',
+        'topology_selection',
+        'expected_pairs',
+        'expected_default_runs',
+        'expected_default_groups',
+    ),
+    [
+        (
+            'all',
+            'baseline',
+            [
+                ('SimplePlane', 'simple_plane_only1_v1'),
+                ('Warehouse', 'warehouse_combined32_v1'),
+            ],
+            36,
+            12,
+        ),
+        (
+            'all',
+            'all',
+            [
+                ('SimplePlane', 'simple_plane_only1_v1'),
+                ('Warehouse', 'warehouse_combined32_v1'),
+                ('Warehouse', 'warehouse_plane_only1_v1'),
+            ],
+            54,
+            18,
+        ),
+        (
+            'Warehouse',
+            'all',
+            [
+                ('Warehouse', 'warehouse_combined32_v1'),
+                ('Warehouse', 'warehouse_plane_only1_v1'),
+            ],
+            36,
+            12,
+        ),
+        (
+            'SimplePlane',
+            'all',
+            [('SimplePlane', 'simple_plane_only1_v1')],
+            18,
+            6,
+        ),
+        (
+            'Warehouse',
+            'warehouse_plane_only1_v1',
+            [('Warehouse', 'warehouse_plane_only1_v1')],
+            18,
+            6,
+        ),
+    ],
+)
+def test_ground_topology_selection_produces_only_legal_pairs(
+    environment_selection,
+    topology_selection,
+    expected_pairs,
+    expected_default_runs,
+    expected_default_groups,
+):
+    function = _shell_function_source('select_ground_topology_pairs')
+    environments = (
+        ['SimplePlane', 'Warehouse']
+        if environment_selection == 'all'
+        else [environment_selection]
+    )
+    environment_words = ' '.join(environments)
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'environment_selection={environment_selection!r}\n'
+        f'ground_topology_selection={topology_selection!r}\n'
+        f'environments=({environment_words})\n'
+        'declare -ag matrix_environment_ids=()\n'
+        'declare -ag matrix_ground_topology_ids=()\n'
+        f'{function}\n'
+        'select_ground_topology_pairs\n'
+        'for index in "${!matrix_environment_ids[@]}"; do\n'
+        '  printf "%s\\t%s\\n" "${matrix_environment_ids[index]}" '
+        '"${matrix_ground_topology_ids[index]}"\n'
+        'done\n'
+    )
+    assert result.returncode == 0, result.stderr
+    observed_pairs = [
+        tuple(line.split('\t')) for line in result.stdout.splitlines()
+    ]
+    assert observed_pairs == expected_pairs
+    assert len(observed_pairs) * 6 * 3 == expected_default_runs
+    assert len(observed_pairs) * 6 == expected_default_groups
+
+
 def test_contact_ab_matrix_locks_the_ordered_inputs_and_runtime_modes():
     source = SCRIPT.read_text(encoding='utf-8')
     profiles = [
@@ -143,6 +262,7 @@ def test_contact_ab_matrix_locks_the_ordered_inputs_and_runtime_modes():
     assert 'isaac_sim/configs/simple_plane.project.yaml' in source
     assert 'isaac_sim/configs/project.yaml' in source
     assert 'for environment_id in "${environments[@]}"' in source
+    assert 'for pair_index in "${!matrix_environment_ids[@]}"' in source
     assert 'for profile_index in "${!profile_ids[@]}"' in source
     assert 'for ((repeat = 1; repeat <= repeats; repeat++))' in source
     assert '"${SCRIPT_DIR}/run_isaac.sh"' in source
@@ -280,7 +400,7 @@ def test_tracked_input_rejects_symlink_type_from_head(tmp_path):
     assert 'committed regular file' in result.stderr
 
 
-def test_explicit_robot_config_is_the_only_additional_runtime_override():
+def test_only_explicit_matrix_inputs_are_reinstated_as_runtime_overrides():
     source = SCRIPT.read_text(encoding='utf-8')
     contract = _shell_function_source('project_runtime_contract')
     assert 'ISAAC_NAV__FILES__ROBOT' in contract
@@ -294,8 +414,15 @@ def test_explicit_robot_config_is_the_only_additional_runtime_override():
         'export ISAAC_NAV__FILES__CONTACT_PROFILE='
     )
     robot_position = launch.index('export ISAAC_NAV__FILES__ROBOT=')
+    topology_position = launch.index(
+        'export ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE='
+    )
     assert (
-        clear_position < project_position < contact_position < robot_position
+        clear_position
+        < project_position
+        < contact_position
+        < topology_position
+        < robot_position
     )
     nested_exports = [
         line.strip()
@@ -304,6 +431,7 @@ def test_explicit_robot_config_is_the_only_additional_runtime_override():
     ]
     assert nested_exports == [
         'export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"',
+        'export ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE="${ground_topology_path}"',
         'export ISAAC_NAV__FILES__ROBOT="${robot_config}"',
     ]
 
@@ -313,10 +441,13 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'status --porcelain --untracked-files=normal' in source
     assert 'ls-files --error-unmatch' in source
     assert 'runtime_provenance.schema_version' in source
-    assert '"${schema}" != 4' in source
+    assert '"${schema}" != 5' in source
     assert 'runtime_provenance.environment.id' in source
     assert 'runtime_provenance.contact.json' in source
     assert 'runtime_provenance.contact.sha256' in source
+    assert 'runtime_provenance.ground_topology.json' in source
+    assert 'runtime_provenance.ground_topology.sha256' in source
+    assert 'ground_topology_readiness_matches' in source
     assert 'profile_sha256' in source
     assert 'stage_usd_readback_verified' in source
     assert 'motion_skid_steer_ab.yaml' in source
@@ -355,6 +486,7 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'runtime_provenance.simulation.navigation_mode' in source
     assert 'runtime_provenance.simulation.odometry_mode' in source
     assert 'analyse_contact_ab(' in source
+    assert 'expected_topologies=(ground_topology_id,)' in source
     assert '[path],\n        wheel_radius,' in source
     assert 'analyse_contact_ab(report_paths, wheel_radius,' in source
     assert 'analyse_contact_ab(report_paths, 0.098' not in source
@@ -373,6 +505,77 @@ def test_ros_parameter_boolean_contract_matches_jazzy_cli_output():
         'if ros_parameter_boolean_matches true true; then exit 91; fi\n'
         'if ros_parameter_boolean_matches false false; then exit 92; fi\n'
         'if ros_parameter_boolean_matches True false; then exit 93; fi\n'
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_ground_topology_readiness_requires_canonical_hashed_profile_contract():
+    function = _shell_function_source('ground_topology_readiness_matches')
+    profile_path = (
+        REPOSITORY_ROOT
+        / 'isaac_sim/configs/ground_topologies/simple_plane_only1_v1.yaml'
+    )
+    profile_sha256 = hashlib.sha256(profile_path.read_bytes()).hexdigest()
+    source_asset_sha256 = (
+        '63aa9b6b2ed4025aecc373e1c6442fa460f3ed8c670c7dbf0e9de2b41da322f3'
+    )
+    collider = '/Root/GroundPlane/CollisionPlane'
+    collider_sha256 = (
+        '093b0b40e3e87c6102b5e60ab009a27b36b45428ac4e61f424ea89d054448e3f'
+    )
+    topology = {
+        'profile_path': str(profile_path),
+        'profile_sha256': profile_sha256,
+        'profile_id': 'simple_plane_only1_v1',
+        'environment_id': 'SimplePlane',
+        'operation': 'preserve_source_colliders',
+        'source_asset_path': '/repo/simple.usda',
+        'source_asset_sha256': source_asset_sha256,
+        'overlay_identifier': 'anon:ground-topology',
+        'overlay_sha256': 'a' * 64,
+        'source_colliders': [collider],
+        'source_collider_count': 1,
+        'source_collider_paths_sha256': collider_sha256,
+        'target_colliders': [collider],
+        'target_collider_count': 1,
+        'target_collider_paths_sha256': collider_sha256,
+        'disabled_colliders': [],
+        'disabled_collider_count': 0,
+        'disabled_collider_paths_sha256': (
+            '4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945'
+        ),
+        'stage_usd_readback_verified': True,
+    }
+    payload = json.dumps(
+        topology, sort_keys=True, separators=(',', ':'), allow_nan=False
+    )
+    payload_sha256 = hashlib.sha256(payload.encode()).hexdigest()
+    contact_payload = json.dumps(
+        {'ground_colliders': [collider]},
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    arguments = [
+        payload,
+        payload_sha256,
+        contact_payload,
+        'simple_plane_only1_v1',
+        str(profile_path),
+        profile_sha256,
+        'SimplePlane',
+        '/repo/simple.usda',
+        source_asset_sha256,
+    ]
+    quoted = ' '.join(repr(value) for value in arguments)
+    bad_arguments = list(arguments)
+    bad_arguments[1] = '0' * 64
+    bad_quoted = ' '.join(repr(value) for value in bad_arguments)
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'PROJECT_ROOT={str(REPOSITORY_ROOT)!r}\n'
+        f'{function}\n'
+        f'ground_topology_readiness_matches {quoted}\n'
+        f'if ground_topology_readiness_matches {bad_quoted}; then exit 91; fi\n'
     )
     assert result.returncode == 0, result.stderr
 
@@ -433,6 +636,9 @@ def test_contact_ab_matrix_locks_batch_identity_and_hashed_evidence():
     assert '"${robot_config}"' in lock
     assert 'batch_robot_config_sha256' in lock
     assert 'batch_profile_hashes_json' in source
+    assert 'batch_ground_topology_hashes_json' in source
+    assert 'ground_topology_path "${topology_id}"' in lock
+    assert 'locked_input_paths+=("${topology_path}")' in lock
     run_one = source[
         source.index('run_one_condition() {'):
         source.index('reject_symlink_path_components() {')
@@ -479,7 +685,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     isaac_log = tmp_path / 'isaac.log'
     runner_log = tmp_path / 'runner.log'
     manifest.write_text(
-        '\t'.join(f'column_{index}' for index in range(40)) + '\n'
+        '\t'.join(f'column_{index}' for index in range(43)) + '\n'
     )
     report.write_text('{"result":"success"}\n', encoding='utf-8')
     isaac_log.write_text('isaac stopped\n', encoding='utf-8')
@@ -515,6 +721,9 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         'current_project_sha256': 'd' * 64,
         'current_profile_path': '/repo/legacy.yaml',
         'current_profile_sha256': 'e' * 64,
+        'current_ground_topology_id': 'simple_plane_only1_v1',
+        'current_ground_topology_path': '/repo/simple_plane_only1_v1.yaml',
+        'current_ground_topology_sha256': '8' * 64,
         'batch_profile_hashes_json': '{"legacy_baseline":"digest"}',
         'current_project_stage': '/repo/simple-stage.usda',
         'current_project_stage_sha256': 'f' * 64,
@@ -540,7 +749,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     lines = manifest.read_text(encoding='utf-8').splitlines()
     assert len(lines) == 2
     fields = lines[1].split('\t')
-    assert len(fields) == 40
+    assert len(fields) == 43
     assert fields[8] == hashlib.sha256(report.read_bytes()).hexdigest()
     assert fields[10] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
     assert fields[12] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
@@ -554,6 +763,11 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     assert fields[24] == 'jackal_candidate_v1'
     assert fields[25] == 'experimental'
     assert fields[26:30] == ['0.098', '0.08', '0.37559', '1.012']
+    assert fields[34:37] == [
+        'simple_plane_only1_v1',
+        '/repo/simple_plane_only1_v1.yaml',
+        '8' * 64,
+    ]
 
 
 def test_output_path_symlink_rejection_runs_before_realpath_dynamically(
@@ -659,11 +873,10 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
     finalizer = _shell_function_source('finalize_contact_analysis')
     assert 'from robot_experiments.contact_ab_analysis import (' in finalizer
     assert '"min_repeats": repeats' in finalizer
-    assert 'arguments["require_complete_matrix"] = True' in finalizer
-    assert 'arguments["expected_environments"] = (environment_selection,)' \
-        in finalizer
-    assert 'arguments["expected_profiles"] = COMPLETE_MATRIX_PROFILES' \
-        in finalizer
+    assert '"expected_environments": selected_environments' in finalizer
+    assert '"expected_topologies": selected_topologies' in finalizer
+    assert '"expected_profiles": COMPLETE_MATRIX_PROFILES' in finalizer
+    assert 'row.get("ground_topology_id")' in finalizer
     assert 'analysis.get("analysis_valid") is not True' in finalizer
     assert 'counts.get("excluded_reports") != 0' in finalizer
     assert 'counts.get("included_reports") != expected_runs' in finalizer
@@ -712,6 +925,17 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assignments = {
         'output_dir': tmp_path,
         'environment_selection': 'SimplePlane',
+        'ground_topology_selection': 'baseline',
+        'batch_environment_topology_pairs_json': json.dumps(
+            [
+                {
+                    'environment_id': 'SimplePlane',
+                    'ground_topology_id': 'simple_plane_only1_v1',
+                }
+            ],
+            sort_keys=True,
+            separators=(',', ':'),
+        ),
         'repeats': '2',
         'expected_conditions': '12',
         'expected_groups': '6',
@@ -736,6 +960,12 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'batch_profile_hashes_json': json.dumps(
             profile_hashes, sort_keys=True, separators=(',', ':')
         ),
+        'ground_topology_dir': '/repo/ground_topologies',
+        'batch_ground_topology_hashes_json': json.dumps(
+            {'simple_plane_only1_v1': '7' * 64},
+            sort_keys=True,
+            separators=(',', ':'),
+        ),
         'manifest': manifest,
         'frozen_manifest_sha256': manifest_sha256,
         'analysis_path': analysis,
@@ -755,7 +985,14 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
-    assert document['schema_version'] == 2
+    assert document['schema_version'] == 3
+    assert document['ground_topology_selection'] == 'baseline'
+    assert document['environment_topology_pairs'] == [
+        {
+            'environment_id': 'SimplePlane',
+            'ground_topology_id': 'simple_plane_only1_v1',
+        }
+    ]
     assert document['actual_counts']['analysis_included_reports'] == 12
     assert document['evidence']['manifest'] == {
         'path': str(manifest),
@@ -778,6 +1015,13 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'geometric_track_width_m': 0.37559,
             'effective_track_width_m': 1.012,
         },
+    }
+    assert document['locked_protocol_inputs']['ground_topology_profiles'] == {
+        'simple_plane_only1_v1': {
+            'environment_id': 'SimplePlane',
+            'path': '/repo/ground_topologies/simple_plane_only1_v1.yaml',
+            'sha256': '7' * 64,
+        }
     }
     assert not list(tmp_path.glob('.batch_summary.json.*.tmp'))
 
