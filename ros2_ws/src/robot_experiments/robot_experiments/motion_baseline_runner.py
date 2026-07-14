@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import json
 import math
-from pathlib import Path
 import signal
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from geometry_msgs.msg import Twist
@@ -72,6 +73,22 @@ _RUNTIME_PROVENANCE_PARAMETER_NAMES = (
 
 def _stamp_ns(stamp: Any) -> int:
     return int(stamp.sec) * NANOSECONDS_PER_SECOND + int(stamp.nanosec)
+
+
+def _diagnostic_json_safe(value: Any) -> Any:
+    """Keep derived overflow evidence without emitting invalid JSON numbers."""
+    if isinstance(value, float) and not math.isfinite(value):
+        if math.isnan(value):
+            return "non_finite:nan"
+        return "non_finite:+inf" if value > 0.0 else "non_finite:-inf"
+    if isinstance(value, dict):
+        return {
+            str(key): _diagnostic_json_safe(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_diagnostic_json_safe(item) for item in value]
+    return value
 
 
 def _yaw_from_quaternion(quaternion: Any) -> float:
@@ -526,26 +543,127 @@ class MotionBaselineRunner(Node):
             for stamp in stamps
         )
 
-    def _latest_stationary(self) -> bool:
-        if not self._streams_fresh():
-            return False
-        assert self._latest_odom is not None
-        assert self._latest_joint is not None
+    def _stationary_gate_status(self) -> dict[str, bool]:
         stop = self._config.stop
-        velocities = self._latest_joint.velocity_map()
-        return (
-            math.hypot(
-                self._latest_odom.linear_x_mps,
-                self._latest_odom.linear_y_mps,
-            )
+        gates = {"streams_fresh": self._streams_fresh()}
+        odom = self._latest_odom
+        joint = self._latest_joint
+        gates["odom_linear_speed"] = (
+            odom is not None
+            and math.hypot(odom.linear_x_mps, odom.linear_y_mps)
             <= stop.linear_velocity_threshold_mps
-            and abs(self._latest_odom.angular_z_radps)
-            <= stop.angular_velocity_threshold_radps
-            and all(
-                abs(velocities[name]) <= stop.wheel_velocity_threshold_radps
-                for name in self._config.wheels.ordered_names
-            )
         )
+        gates["odom_angular_speed"] = (
+            odom is not None
+            and abs(odom.angular_z_radps)
+            <= stop.angular_velocity_threshold_radps
+        )
+        velocities = {} if joint is None else joint.velocity_map()
+        for name in self._config.wheels.ordered_names:
+            gates[f"wheel:{name}"] = (
+                name in velocities
+                and abs(velocities[name]) <= stop.wheel_velocity_threshold_radps
+            )
+        return gates
+
+    def _latest_stationary(self) -> bool:
+        return all(self._stationary_gate_status().values())
+
+    def _reset_recovery_diagnostic(
+        self,
+        barriers: tuple[int, int, int],
+        observation_counts: dict[str, int],
+        violation_counts: dict[str, int],
+        peak_observed: dict[str, object],
+        longest_stationary_duration_ns: int,
+    ) -> dict[str, object]:
+        """Describe the exact freshness or motion gate blocking Reset recovery."""
+        now = time.monotonic()
+        clock_ns = self._clock_ns
+        odom = self._latest_odom
+        joint = self._latest_joint
+        wall_received = {
+            "clock": self._last_clock_received_wall,
+            "odom": self._last_odom_received_wall,
+            "joint_states": self._last_joint_received_wall,
+        }
+        diagnostic: dict[str, object] = {
+            "sequence_barriers": {
+                "clock": barriers[0],
+                "odom": barriers[1],
+                "joint_states": barriers[2],
+            },
+            "sequence_current": {
+                "clock": self._clock_sequence,
+                "odom": self._odom_sequence,
+                "joint_states": self._joint_sequence,
+            },
+            "fresh_sequences": {
+                "clock": self._clock_sequence > barriers[0],
+                "odom": self._odom_sequence > barriers[1],
+                "joint_states": self._joint_sequence > barriers[2],
+            },
+            "wall_age_sec": {
+                topic: None if received is None else max(0.0, now - received)
+                for topic, received in wall_received.items()
+            },
+            "clock_ns": clock_ns,
+            "sim_age_sec": {
+                "odom": (
+                    None
+                    if clock_ns is None or odom is None
+                    else (clock_ns - odom.stamp_ns) / NANOSECONDS_PER_SECOND
+                ),
+                "joint_states": (
+                    None
+                    if clock_ns is None or joint is None
+                    else (clock_ns - joint.stamp_ns) / NANOSECONDS_PER_SECOND
+                ),
+            },
+            "streams_fresh": self._streams_fresh(),
+            "wall_streams_fresh": self._wall_streams_fresh(),
+            "observation_counts": dict(observation_counts),
+            "violation_counts": dict(violation_counts),
+            "peak_observed": peak_observed,
+            "longest_stationary_duration_sec": (
+                longest_stationary_duration_ns / NANOSECONDS_PER_SECOND
+            ),
+            "thresholds": {
+                "linear_speed_mps": self._config.stop.linear_velocity_threshold_mps,
+                "angular_speed_radps": (
+                    self._config.stop.angular_velocity_threshold_radps
+                ),
+                "wheel_speed_radps": (
+                    self._config.stop.wheel_velocity_threshold_radps
+                ),
+            },
+        }
+        if odom is not None:
+            diagnostic["odom"] = {
+                "stamp_ns": odom.stamp_ns,
+                "linear_speed_mps": math.hypot(
+                    odom.linear_x_mps, odom.linear_y_mps
+                ),
+                "angular_speed_radps": abs(odom.angular_z_radps),
+            }
+        if joint is not None:
+            velocities = joint.velocity_map()
+            diagnostic["joint_states"] = {
+                "stamp_ns": joint.stamp_ns,
+                "wheel_abs_speed_radps": {
+                    name: abs(velocities[name])
+                    for name in self._config.wheels.ordered_names
+                },
+            }
+        terminal_gates = self._stationary_gate_status()
+        diagnostic["terminal_gates"] = terminal_gates
+        diagnostic["terminal_blockers"] = sorted(
+            gate for gate, passed in terminal_gates.items() if not passed
+        )
+        diagnostic["stationary_now"] = all(terminal_gates.values())
+        safe_diagnostic = _diagnostic_json_safe(diagnostic)
+        assert isinstance(safe_diagnostic, dict)
+        return safe_diagnostic
 
     def _reset_and_wait(self) -> dict[str, object]:
         self._assert_command_channel_uncontended()
@@ -577,6 +695,26 @@ class MotionBaselineRunner(Node):
 
         recovery_deadline = time.monotonic() + reset.recovery_timeout_sec
         stationary_since_ns: int | None = None
+        longest_stationary_duration_ns = 0
+        observation_counts = {
+            "sequence_not_fresh": 0,
+            "not_stationary": 0,
+            "stationary": 0,
+        }
+        gate_names = (
+            "streams_fresh",
+            "odom_linear_speed",
+            "odom_angular_speed",
+            *(f"wheel:{name}" for name in self._config.wheels.ordered_names),
+        )
+        violation_counts = {name: 0 for name in gate_names}
+        peak_observed: dict[str, object] = {
+            "odom_linear_speed_mps": 0.0,
+            "odom_angular_speed_radps": 0.0,
+            "wheel_abs_speed_radps": {
+                name: 0.0 for name in self._config.wheels.ordered_names
+            },
+        }
         publish_period = 1.0 / self._config.sampling.publish_rate_hz
         next_publish = 0.0
         while time.monotonic() < recovery_deadline:
@@ -590,9 +728,45 @@ class MotionBaselineRunner(Node):
                 and self._odom_sequence > barriers[1]
                 and self._joint_sequence > barriers[2]
             )
-            if not fresh_sequences or not self._latest_stationary():
+            if not fresh_sequences:
+                observation_counts["sequence_not_fresh"] += 1
                 stationary_since_ns = None
                 continue
+            if self._latest_odom is not None:
+                peak_observed["odom_linear_speed_mps"] = max(
+                    float(peak_observed["odom_linear_speed_mps"]),
+                    math.hypot(
+                        self._latest_odom.linear_x_mps,
+                        self._latest_odom.linear_y_mps,
+                    ),
+                )
+                peak_observed["odom_angular_speed_radps"] = max(
+                    float(peak_observed["odom_angular_speed_radps"]),
+                    abs(self._latest_odom.angular_z_radps),
+                )
+            if self._latest_joint is not None:
+                velocities = self._latest_joint.velocity_map()
+                wheel_peaks = peak_observed["wheel_abs_speed_radps"]
+                assert isinstance(wheel_peaks, dict)
+                for name in self._config.wheels.ordered_names:
+                    wheel_peaks[name] = max(
+                        float(wheel_peaks[name]),
+                        abs(velocities[name]),
+                    )
+            gate_status = self._stationary_gate_status()
+            if not all(gate_status.values()):
+                observation_counts["not_stationary"] += 1
+                for gate, passed in gate_status.items():
+                    if not passed:
+                        violation_counts[gate] += 1
+                if stationary_since_ns is not None and self._clock_ns is not None:
+                    longest_stationary_duration_ns = max(
+                        longest_stationary_duration_ns,
+                        self._clock_ns - stationary_since_ns,
+                    )
+                stationary_since_ns = None
+                continue
+            observation_counts["stationary"] += 1
             assert self._clock_ns is not None
             if stationary_since_ns is None:
                 stationary_since_ns = self._clock_ns
@@ -618,9 +792,27 @@ class MotionBaselineRunner(Node):
                     "fresh_joint_states_received": self._joint_sequence > barriers[2],
                     "stationary_settle_duration_sec": reset.settle_duration_sec,
                 }
+        if stationary_since_ns is not None and self._clock_ns is not None:
+            longest_stationary_duration_ns = max(
+                longest_stationary_duration_ns,
+                self._clock_ns - stationary_since_ns,
+            )
+        diagnostic = self._reset_recovery_diagnostic(
+            barriers,
+            observation_counts,
+            violation_counts,
+            peak_observed,
+            longest_stationary_duration_ns,
+        )
         raise TimeoutError(
             "Reset recovery timed out waiting for fresh /clock, /odom, "
-            "/joint_states and a stationary chassis"
+            "/joint_states and a stationary chassis; diagnostic="
+            + json.dumps(
+                diagnostic,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
         )
 
     def _execute_command(self, segment: MotionSegment) -> tuple[int, int, int]:

@@ -119,6 +119,9 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert "_raise_keyboard_interrupt" in source
     assert "call_async(Trigger.Request())" in source
     assert "fresh /clock, /odom" in source
+    assert "_reset_recovery_diagnostic" in source
+    assert "longest_stationary_duration_sec" in source
+    assert "wheel_abs_speed_radps" in source
     assert "AsyncParameterClient" in source
     assert "runtime_provenance" in source
     assert "validate_runtime_provenance" in source

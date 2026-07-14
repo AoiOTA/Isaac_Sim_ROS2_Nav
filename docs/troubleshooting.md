@@ -520,7 +520,7 @@ ros2 topic echo /odom --once --field twist.twist
 ros2 topic echo /joint_states --once --field velocity
 ```
 
-当前严格 runtime provenance schema 是 v2；solver 必须包含
+当前严格 runtime provenance schema 是 v3；solver 必须包含
 `stage_articulation_usd_readback_verified=true`。看到 schema v1 或旧字段
 `stage_runtime_readback_verified`，说明连接了旧 Isaac/旧 ROS 安装产物，不能靠手改
 JSON 兼容；应停止两端、重新构建并按 Isaac→ROS 顺序冷启动。
@@ -532,9 +532,13 @@ shell 没有加载项目 Domain。环境标签不一致时，以
 实际项目配置为准；不要只改报告名冒充 A/B，必须让 `--environment` 精确匹配，或
 同时建立正确的环境项目配置、源资产和规范 ID。Reset Trigger 成功只证明事务响应完成；runner 仍要求
 新的 Clock/Odom/JointState 并连续静止。保留失败 JSON，核对三路 Topic Hz、当前
-底盘/轮速和 Isaac reset 日志；不要先放宽 30 秒 recovery 或速度阈值。若全新 Isaac
+底盘/轮速和 Isaac reset 日志；当前 runner 会把 `diagnostic` 追加到 timeout，列出
+三路 sequence、wall/simulation age、Odom 线/角速度、四轮绝对速度、各门限、观察
+次数、逐门违规计数、恢复窗峰值和最长连续静止时间。先用这些字段区分 Topic
+freshness 与真实未静止，不要先
+放宽 30 秒 recovery 或速度阈值。若全新 Isaac
 进程立即复跑成功，把旧样本分类为启动/长空闲瞬态并继续 soak 复现；若连续复现，
-应给 runner 增加逐阈值诊断后修物理或 Reset，不得删除失败样本。
+应按逐阈值诊断定位并修复物理或 Reset，不得删除失败样本。
 
 ### 14.2 RTX helper 时间样本警告
 
