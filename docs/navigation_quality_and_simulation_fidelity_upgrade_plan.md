@@ -3192,11 +3192,14 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   `simple_plane_only1_v1`、`warehouse_combined32_v1` 与
   `warehouse_plane_only1_v1`；后者从同一 Warehouse 32-collider source 精确禁用 31
   个非 GroundPlane collider。随后 provenance schema v5、ROS live consumer 和严格
-  analyzer 把 environment/topology/contact 拆成独立身份与三层 A/B 锁；Stage 应用、
+  analyzer 把 environment/topology/contact 拆成独立身份与分层 A/B 锁：global、
+  environment、environment+topology、environment+contact 和最终三元组；Stage 应用、
   fresh readback、canonical hash、非法配对和完整 18 组统计合同均有自动测试。提交
   `a1056c3` 已让严格批处理按 `baseline/all/ID` 选择合法 pair：历史口径 36-run/12-group，
-  全 topology 口径 54-run/18-group，并锁定 topology HEAD blob 与 schema-v5 证据。真实
-  Warehouse 32-vs-1 motion 矩阵尚未运行，因此第三阶段仍未退出。
+  全 topology 口径 54-run/18-group，并锁定 topology HEAD blob 与 schema-v5 证据。
+  clean `a85828f` 已执行 Warehouse 32-vs-1 × 六 contact profile × 每格一次的 12-run
+  机制烟测，并暴露、修复 runtime-derived RootLayer 摘要的锁定作用域；正式每组三重复的
+  54-run/18-group 全 topology 矩阵仍未运行，因此第三阶段仍未退出。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均

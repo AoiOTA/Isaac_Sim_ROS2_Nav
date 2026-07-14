@@ -176,7 +176,7 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 | `runtime_provenance.environment.project_stage.*` | 项目环境 Stage 路径与 SHA256 |
 | `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
 | `runtime_provenance.environment.asset_root/version` | Isaac 资产根与版本目录名 |
-| `runtime_provenance.environment.composed_root_layer_sha256` | `Stage.GetRootLayer().ExportToString()` 的 SHA256，绑定项目 RootLayer 中的 reference/sublayer/solver 等内容；topology/contact 写在独立 SessionLayer，不包含在此摘要中，schema-v5 A/B 按环境跨全部 treatment 锁定它。两个匿名 treatment 层分别由各自 `overlay_sha256` 绑定 |
+| `runtime_provenance.environment.composed_root_layer_sha256` | runtime 初始化后 `Stage.GetRootLayer().ExportToString()` 的 SHA256。topology/contact 的直接 opinion 位于 SessionLayer 下的两个独立匿名 sublayer，不会原样进入该导出；但 PhysX/runtime 初始化可按 treatment 在 RootLayer 形成派生 opinion，所以分析器在最终 environment/topology/contact 组内锁定该摘要，而不把它误当作跨 treatment 环境常量。跨 treatment 不变量由显式环境/topology/contact 锁和两个匿名层的 `overlay_sha256` 约束 |
 | `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz |
 | `runtime_provenance.ground_topology.json/.sha256` | canonical strict JSON 与其原始 UTF-8 SHA256；完整对象锁定 topology profile path/id/hash、environment、operation、source asset path/hash、匿名 overlay/hash、source/target/disabled collider 的排序路径、数量、集合 hash 和 `stage_usd_readback_verified=true` |
 | `runtime_provenance.contact.json/.sha256` | canonical strict JSON 与其原始 UTF-8 SHA256；锁定 contact profile/mode/hash、匿名 overlay、PhysicsScene、wheel/ground collider、binding、材质和 Stage readback；ground collider 必须精确等于 topology target |

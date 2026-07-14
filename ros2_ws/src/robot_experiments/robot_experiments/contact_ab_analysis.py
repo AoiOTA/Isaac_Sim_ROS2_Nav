@@ -798,20 +798,17 @@ def _identity_locks(
         ),
         "motion_configuration": dict(configuration),
     }
-    provenance_schema = provenance.get("schema_version")
-    if provenance_schema == 5:
-        # Schema v5 hashes Stage.GetRootLayer().  Ground-topology and contact
-        # overlays live under GetSessionLayer(), so they cannot legitimately
-        # change this environment/root identity.
-        locked_environment = dict(environment)
-    else:
-        # Keep the published v3/v4 offline grouping contract stable for
-        # already-recorded historical batches.
-        locked_environment = {
-            key: environment[key]
-            for key in sorted(environment)
-            if key != "composed_root_layer_sha256"
-        }
+    # The root-layer digest is captured after physics/runtime initialization.
+    # Although topology/contact author their direct opinions in SessionLayer,
+    # downstream initialization can author treatment-dependent derived
+    # opinions into RootLayer.  Lock that digest inside the final treatment
+    # group, while the explicit cross-treatment locks below continue to guard
+    # every invariant input.  This is also the published v3/v4 scope.
+    locked_environment = {
+        key: environment[key]
+        for key in sorted(environment)
+        if key != "composed_root_layer_sha256"
+    }
     environment_lock: dict[str, Any] = {
         "environment": locked_environment,
     }
@@ -916,17 +913,17 @@ def _identity_locks(
             ],
         }
     # The anonymous identifier embeds a process-specific address and is not an
-    # identity.  Its canonical content hash is stable within an env/profile
-    # group and is deliberately locked along with collider/binding evidence.
+    # identity.  Its canonical content hash is stable within the final
+    # environment/topology/profile group and is deliberately locked along with
+    # collider/binding evidence.
     contact_lock = {
         key: contact[key]
         for key in sorted(contact)
         if key != "overlay_identifier"
     }
-    if provenance_schema != 5:
-        contact_lock["composed_root_layer_sha256"] = environment[
-            "composed_root_layer_sha256"
-        ]
+    contact_lock["composed_root_layer_sha256"] = environment[
+        "composed_root_layer_sha256"
+    ]
     return (
         global_lock,
         environment_lock,
