@@ -25,7 +25,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；历史矩阵证明证据链和 Reset 合同可靠，且描述性中心漂移 `0.297–0.350 m`、旧整段角速度误差 `60.1%–69.0%` 暴露严重欠转，但这些 schema-1 报告没有当前稳态窗口，计划 8.7 verdict 为 N/A；Realistic 和候选有效轮距 A/B 仍未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；当前 motion/analysis/physical/summary 为 schema 3/4/2/5，Odom 与 JointState 都有严格后半段窗口，44 列 manifest 锁逐轮 report schema；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手 | clean `d5840ed` 已闭合 Warehouse 12-run 历史机制烟测，clean `190f357` 闭合旧 schema-2 SimplePlane 六 profile × 一次 smoke；两份 ETW 原始筛选暴露旧整段方向合同缺口，`0.989 m` 的描述指标最好。v2 定向、非 Isaac 全测试和 clean `0484b72` build/preflight/`--with-isaac` 全门已通过；schema-3 实跑仍待执行。批次 `success` 只表示证据采集、身份、矩阵和聚合闭合，不是物理门通过 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；当前 motion/analysis/physical/summary 为 schema 3/4/2/5，Odom 与 JointState 都有严格后半段窗口，44 列 manifest 锁逐轮 report schema；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手 | clean `d5840ed` 已闭合 Warehouse 12-run 历史机制烟测，clean `190f357` 闭合旧 schema-2 SimplePlane 六 profile × 一次 smoke；clean `22a7746` 又闭合 `0.989 m` schema-3 六 profile × 一次 smoke。v2 定向、非 Isaac 全测试和 clean `0484b72` build/preflight/`--with-isaac` 全门已通过；正式三重复仍待执行。批次 `success` 只表示证据采集、身份、矩阵和聚合闭合，不是物理门通过 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -700,7 +700,8 @@ preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
 `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
 0 failures / 1 skipped，Isaac `32 passed / 250 deselected`。preflight 如实记录 422 个
 Fast DDS SHM 工件和 20 个非 performance governor 的非阻塞警告。clean `190f357` 的历史
-schema-2 smoke 见下节；schema-3 clean smoke 与正式 54-run/18-group 矩阵仍未执行。
+schema-2 smoke 与 clean `22a7746` 的 schema-3 smoke 见下文；正式三重复和
+54-run/18-group 矩阵仍未执行。
 
 ### 历史 v1/schema-2 SimplePlane 真实机制烟测（2026-07-15）
 
@@ -771,10 +772,69 @@ JointState window 与 physical schema-2 方向叶设计，旧报告不得事后�
 | `1.012 m` legacy | `8.61% / 0.34%` | `0.03247 / 0.01829 m` | `43.67%` | yaw/绝对漂移进入门，但不对称失败 |
 | `0.989 m` legacy | `2.95% / 0.02%` | `0.05302 / 0.05871 m` | `9.70%` | 除未认证稳态轮向外，其余 17 项单次推演均在门内 |
 
-`0.989 m` 因而是 schema-3 clean smoke 的首选，仍必须重新采集六 profile，并至少执行
-每组三个唯一 repeat。其 arc 稳态 yaw 仍只有约 `+0.096/-0.111 rad/s`（命令
+`0.989 m` 因而被选作下节 schema-3 clean smoke；首轮六 profile 已重新采集，但仍必须
+执行每组三个唯一 repeat。其 arc 稳态 yaw 仍只有约 `+0.096/-0.111 rad/s`（命令
 `±0.4`），不属于现有 18 项硬门但属于尚未解决的运动逼真度边界；即使正式 8.7 PASS，
 也不能写成圆弧动态已经完全标定。
+
+### schema-3 SimplePlane 0.989 m 六 Profile 真实烟测（2026-07-15）
+
+在 clean `22a77465b1a2c8c9c685683cfe829d46bc08ac48` 上执行：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment SimplePlane \
+  --ground-topology simple_plane_only1_v1 \
+  --repeats 1 \
+  --robot-config \
+    isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml \
+  --output-dir \
+    data/reports/contact_ab/simple_plane_etw_0p989_schema5_screen_22a7746
+```
+
+这是当前 v2 合同的首个真实 schema-3 批次。结果为 6/6 run、36/36 segment complete、
+analysis 6 included / 0 excluded / 6 groups、matrix complete，脚本 exit 0。六份 report
+均为 schema 3，runtime provenance 均为 schema 5、`verified=true`、Git dirty false；
+`analysis.json` 为 schema 4，`physical_acceptance` 为 schema 2 / policy
+`skid_steer_plan_8_7_v2`，`batch_summary.json` 为 schema 5、`result=success`。44 列
+manifest 有 6 行且 mode `0444`，逐行 status `success`、report schema `3`。严格 accounting
+以 `expected_repeats=1` 重读原报告并通过。
+
+证据 SHA256：
+
+| 工件 | SHA256 |
+| --- | --- |
+| `manifest.tsv` | `2468d024780034dda9251928a8d881d2db5828c7036f710de509a41c8d7d447a` |
+| `analysis.json` | `ebe612d7dfc9799fbb8f6bdc0dbe49cf8745b02411827b5ec4bd22aedd311881` |
+| `batch_summary.json` | `fa2042dc8eee87d9f7a9fd8c75244a7906ac78c3aa97c13e394ec8fbb2761297` |
+
+物理结论严格为 0 applicable / 6 N/A / 0 passing / 0 failed，
+`all_applicable_groups_passed=null`；六组唯一原因都是
+`fewer_than_3_unique_repeats`。这不是物理 PASS。把每份单次观察仅作下一轮排序投影时，
+结果如下；“投影通过”表示这一次落在全部 18 个 v2 叶边界内，不改变正式 N/A：
+
+| Profile | 左/右中心漂移 | 漂移不对称 | 左/右稳态 yaw 误差 | 稳态轮向 | 单次投影 |
+| --- | ---: | ---: | ---: | --- | --- |
+| `legacy_baseline` | `0.03513 / 0.07092 m` | `50.46%` | `6.39% / 1.26%` | 6 段全匹配 | FAIL：不对称 |
+| `threshold_corr_0p00025_offset_0p0004` | `0.03513 / 0.11679 m` | `69.92%` | `6.39% / 0.68%` | 6 段全匹配 | FAIL：右漂移、不对称 |
+| `threshold_corr_0p025_offset_0p0004` | `0.02511 / 0.08822 m` | `71.53%` | `6.54% / 0.49%` | 6 段全匹配 | FAIL：不对称 |
+| `threshold_corr_0p00025_offset_0p04` | `0.05302 / 0.05871 m` | `9.70%` | `2.95% / 0.02%` | 6 段全匹配 | 投影通过 |
+| `threshold_corr_0p025_offset_0p04` | `0.02511 / 0.04467 m` | `43.78%` | `6.54% / 0.53%` | 6 段全匹配 | FAIL：不对称 |
+| `explicit_material` | `0.05302 / 0.08723 m` | `39.22%` | `2.95% / 1.07%` | 6 段全匹配 | FAIL：不对称 |
+
+六份报告的前进横漂绝对值为 `0.000005–0.001577 m`，后退为
+`0.000045–0.001176 m`；36 段双流静止证据时长为 `0.500000–0.516667 s`。Clock、Odom、
+JointState 的 regression/duplicate 和 Odom/JointState invalid message 总数都为 0。
+36 个稳态轮向窗口全部匹配；整段描述窗口则如实保留 18 个启动期 mismatch，证明新合同
+没有通过删除瞬态来伪造整段结果。六组 arc 稳态 yaw 仍约为
+`+0.0961/-0.1109..-0.1110 rad/s`，远低于命令 `±0.4 rad/s`，仍是未进入 18 项硬门的
+运动逼真度缺口。
+
+六份 Isaac 日志的 Kit `[Error]`、Fatal/Traceback/Segfault 为 0，runner 的
+error/failure 模式为 0；Kit warning 共 108 行。每份 Isaac 日志仍各有一组非致命 gRPC
+protobuf `E0000/W0000`，合计各 6 条，不能写成“零错误”。同一 `legacy_baseline` 的单次
+不对称从旧筛选的 `9.70%` 变为本批 `50.46%`，进一步说明不能用 repeat=1 冻结参数；
+下一步必须执行 SimplePlane/only1 六 profile × 三个唯一 repeat。
 
 ### SimplePlane 六 Profile 严格批处理烟测（2026-07-14）
 
@@ -1396,7 +1456,8 @@ build、preflight、`./scripts/test.sh --with-isaac` 均 exit 0，root 为
 稀疏/单流陈旧停止证据、Reset 水位与命令次序、样本记账、姿态/航向几何、方向
 counts/extrema/矩/稳态子集伪造、协调全局身份或 schema→N/A、wheel FAIL→PASS、
 partial manifest、配置 JSON 类型混淆、asset/solver/simulation/UTC 时间篡改，以及早期
-双日志删除/hash/symlink 篡改。schema-3 clean smoke 与正式矩阵仍待执行。
+双日志删除/hash/symlink 篡改。clean `22a7746` 的 schema-3 repeat=1 smoke 已闭合；正式
+三重复和完整矩阵仍待执行。
 
 | Gate | 最近证据 |
 | --- | --- |
@@ -1416,11 +1477,11 @@ partial manifest、配置 JSON 类型混淆、asset/solver/simulation/UTC 时间
 | Clean schema v3 wheel direction | Warehouse + legacy：8/8 trial、全部硬门通过，Git dirty false；报告 SHA256 `f63ec096...a9de` |
 | Clean schema v3 motion provenance | Warehouse + Ideal + legacy：14/14 complete，三路时间戳无重复/回退，Git dirty false；报告 SHA256 `8532187c...0f23` |
 | Effective-track 定向测试 | fitter + package contract：30 passed；五报告探索拟合完成，但 contact/provenance 身份不足以冻结参数 |
-| Contact A/B 聚合与 Reset 诊断 | clean `c210150`、`2cd0788`、`190f357` 的历史证据按原 schema 保留；当前 v2 合同 analyzer/motion/matrix 为 `217/92/45 passed`（matrix 1 skipped），三份合并 `354 passed / 1 skipped`，clean `0484b72` build/preflight/`--with-isaac` 全门通过。schema-3 clean smoke 与正式 54-run 仍待执行 |
+| Contact A/B 聚合与 Reset 诊断 | clean `c210150`、`2cd0788`、`190f357` 的历史证据按原 schema 保留；当前 v2 合同 analyzer/motion/matrix 为 `217/92/45 passed`（matrix 1 skipped），三份合并 `354 passed / 1 skipped`，clean `0484b72` build/preflight/`--with-isaac` 全门通过；clean `22a7746` schema-3 smoke 为 6/6 run、36/36 段、六组 repeat=1 N/A。正式三重复与 54-run 仍待执行 |
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
 | Repository index set comparison | 当前 318 个 Git 跟踪路径对 318 个索引路径，集合差分无输出 |
-| Markdown 相对链接 | README、`plan.md` 与 10 个 `docs/*.md` 共 78 个本地链接，当前缺失为 0 |
+| Markdown 相对链接 | README、`plan.md` 与 10 个 `docs/*.md` 共 79 个本地链接，当前缺失为 0 |
 | `git diff --check` | 当前 PASS；代码冻结和提交前再执行一次最终审计 |
 
 推荐最终命令：

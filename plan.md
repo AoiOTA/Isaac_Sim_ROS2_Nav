@@ -64,8 +64,13 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
   `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
   0 failures / 1 skipped，Isaac `32 passed / 250 deselected`；预检另有 422 个 Fast DDS
-  SHM 工件和 20 个非 performance governor 的非阻塞环境警告。schema-3 真实 smoke
-  仍待执行。此前在 clean `190f357` 完成
+  SHM 工件和 20 个非 performance governor 的非阻塞环境警告。随后在 clean `22a7746`
+  完成 `0.989 m` + SimplePlane/only1 的首个 schema-3 六 profile × 一次真实 smoke：
+  6/6 run、36/36 段、analysis 6 included / 0 excluded / 6 groups、44 列 manifest 和
+  summary schema 5 全部闭合；六组都只因 repeat=1 记 N/A。36 段稳态轮向 0 mismatch，
+  整段描述窗口则诚实保留 18 个 mismatch。单次投影只有
+  `threshold_corr_0p00025_offset_0p04` 同时落在全部 18 项边界内，不能替代三重复。
+  此前在 clean `190f357` 完成
   SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
   72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
   schema 2/3/4，六组都只因少于 3 个 repeat 而 N/A。正式 54-run/18-group 实跑仍未执行。
@@ -74,7 +79,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   因圆弧整段 `mixed` 被验证器排除，不能形成正式 verdict；这正是上面 schema-3 稳态
   方向合同的触发证据。描述性指标中 `0.989 m` 的左右稳态 yaw 误差为
   `2.95%/0.02%`、中心漂移 `0.0530/0.0587 m`、不对称 `9.70%`，明显优于 `1.012 m`
-  的不对称 `43.67%`，因此是 schema-3 重跑首选。两者都没有覆盖 stable，也尚未完成
+  的不对称 `43.67%`，因此成为上述 schema-3 smoke 首选。两者都没有覆盖 stable，也尚未完成
   三重复、两环境、多速度、全拓扑或 Realistic 物理 A/B。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
