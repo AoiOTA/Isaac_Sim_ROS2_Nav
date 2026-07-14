@@ -42,7 +42,7 @@
 | `docs/calibration.md` | USD Pose 与 Map Pose 的标定、复测、版本化和动态障碍坐标重对齐流程。 |
 | `docs/verification.md` | 证据台账：已通过的运行/测试结果、已知 Nav2 诊断以及尚未验收的范围。 |
 | `docs/development.md` | 开发环境、调试命令、测试方式、运行探针和提交/数据纪律。 |
-| `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
+| `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RTX helper 时间样本、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
 | `docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md` | 当前导航质量与仿真保真度升级的唯一执行计划；冻结物理/时间/传感器、底盘运动、Warehouse V2、场景矩阵及最终静态/动态统计验收顺序。 |

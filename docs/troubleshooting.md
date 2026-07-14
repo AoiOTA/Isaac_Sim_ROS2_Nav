@@ -536,6 +536,48 @@ shell 没有加载项目 Domain。环境标签不一致时，以
 进程立即复跑成功，把旧样本分类为启动/长空闲瞬态并继续 soak 复现；若连续复现，
 应给 runner 增加逐阈值诊断后修物理或 Reset，不得删除失败样本。
 
+### 14.2 RTX helper 时间样本警告
+
+**症状：** Kit 日志重复出现 `getSimulationTimeMonotonicAtTime`、
+`getSimulationTimeAtTime` 或 `No adjacent samples found`；ROS 消息仍在发布，但
+点云时间可能来自失败后的当前仿真时间 fallback。
+
+当前仓库把 RTX LiDAR、RGB 和 CameraInfo helper 的
+`resetSimulationTimeOnStop` 显式设为 true。这是安装版 Isaac Sim 6.0.1
+`isaacsim.ros2.nodes` 1.18.13 的默认策略；false 会请求跨 Timeline Stop 的
+monotonic 路径。项目 `/simulation/reset` 只做 pause → 单步 → play，不执行
+Timeline Stop，所以它不会因为该设置自行创建新 epoch。
+
+**检查：** 先保存原始日志，不要边运行边改开关。把三类警告分别计数，并生成
+包含 `/clock`、点云、Odom、JointState 和 TF age 的统一报告：
+
+```bash
+KIT_LOG=/absolute/path/to/kit_YYYYMMDD_HHMMSS.log
+rg -c --include-zero 'getSimulationTimeMonotonicAtTime' "$KIT_LOG"
+rg -c --include-zero 'getSimulationTimeAtTime' "$KIT_LOG"
+rg -c --include-zero 'No adjacent samples' "$KIT_LOG"
+./scripts/profile_runtime.sh \
+  --warmup 10 --duration 900 \
+  --label timing_reproduction \
+  --output data/reports/runtime/timing_reproduction.json
+```
+
+同时记录 Camera Off/Monitoring、LiDAR 开关、GUI/headless、realtime/unbounded、
+physics Hz、`update_fabric`、Stop→Play 与 Reset 时刻。当前可复核基线中，false
+在至少 30 分钟内为 `93 / 0 / 93`，true 的 15 分钟 headless 和 Camera
+Monitoring 短窗均为 `0 / 0 / 0`；详细日志哈希见
+[`verification.md`](verification.md#rtx-helper-时间策略与-ab)。
+
+**判读：** Profiler 的 Topic `future_stamps` 以“最新收到的 `/clock` 回调”为
+参考。同一物理步内几十微秒的 IMU/Joint lead 可能只是回调顺序，仍须与 stamp
+回退、TF future 和 PointCloud age 分开看；不能用 Kit 警告为 0 掩盖真正的
+Odom/TF 离群点。
+
+**禁止操作：** 不要打开 `useSystemTime` 逃离 ROS 仿真时钟，不要把
+`accumulate_outputs` 设为 false（本项目 90 秒实验曾升至 2860 次警告），不要
+吞日志或只删 warning。若只在真正 Stop→Play 后复现，必须保留跨 epoch 的点云
+header、消息年龄和旧 DDS 样本证据，再修生命周期边界。
+
 ## 15. 异常退出后仍有进程
 
 ```bash

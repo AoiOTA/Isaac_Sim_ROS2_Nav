@@ -1322,6 +1322,33 @@ ros2 run robot_bringup map_manifest verify \
 - Reset 会主动清除故障并增加 epoch；这是代次隔离，不是 bridge 丢失状态；
 - 测试后删除 `/tmp/isaac_nav_scan_fault.yaml` 即可，不要把故障 overlay 设成日常默认 profile。
 
+### 18.14 Isaac 日志出现 `getSimulationTimeMonotonicAtTime`
+
+当前仓库已让 RTX LiDAR、RGB 和 CameraInfo publisher 使用 Isaac Sim 6.0.1
+供应商默认的 `resetSimulationTimeOnStop=true`。已测 Camera Off、Monitoring 和
+15 分钟 headless 窗口中，`getSimulationTimeMonotonicAtTime`、
+`getSimulationTimeAtTime`、`No adjacent samples found` 均为 0。若新运行又出现：
+
+1. 不要把 `useSystemTime` 打开；它会让传感器脱离 ROS 仿真时钟；
+2. 不要把 LiDAR `accumulate_outputs` 改成 false；该尝试曾把约 90 秒的警告增至
+   2860 次；
+3. 保存本轮完整 Kit 日志，并记录 Camera profile、GUI/headless、pacing mode、
+   physics Hz、Reset/Stop 时刻和当前提交；
+4. 用下面命令分别计数，不能只搜其中一类：
+
+```bash
+KIT_LOG=/absolute/path/to/kit_YYYYMMDD_HHMMSS.log
+rg -c --include-zero 'getSimulationTimeMonotonicAtTime' "$KIT_LOG"
+rg -c --include-zero 'getSimulationTimeAtTime' "$KIT_LOG"
+rg -c --include-zero 'No adjacent samples' "$KIT_LOG"
+```
+
+`/simulation/reset` 是 pause → 单步 → play，不会触发 Timeline Stop 的时间 epoch
+重置。若问题只在 GUI 的 Stop→Play 后出现，应按
+[`troubleshooting.md`](troubleshooting.md#142-rtx-helper-时间样本警告) 保留点云
+header、消息年龄和旧 DDS 样本证据，不要只以日志不再打印作为修复依据。完整 A/B
+与已知边界见 [`verification.md`](verification.md#物理步同步发布与时间警告2026-07-14)。
+
 ## 19. 修改配置时应该改哪里
 
 | 需求 | 优先修改 |

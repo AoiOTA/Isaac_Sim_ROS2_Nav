@@ -23,7 +23,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | 范围 | 当前结论 | 证据边界 |
 | --- | --- | --- |
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
-| 物理步与传感器时间 | OnPhysicsStep 发布的 8 秒短窗中 Clock/IMU/Joint/Odom 为 56.40 Hz、点云 9.51 Hz，所有观测 Topic 均无重复/回退/future stamp | RTF 为 0.940；`getSimulationTimeMonotonicAtTime` 仍偶发，Reset 前后、15 分钟和完整 A/B 尚未完成 |
+| 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；报告已绑定实际文件哈希、Stage-authored solver USD 值、组合 Stage 与 Git 启动快照 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；低速左右转向仍不对称，SimplePlane、Realistic、接触材料与有效轮距 A/B 尚未完成 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
@@ -117,14 +117,72 @@ Mapping、Ideal、Camera Off 的 profiler 短窗为 8 秒（warmup 1 秒）；�
 | `/lidar/points_raw` | 77 | `9.506 Hz` / `100.0000 ms` | duplicate/rollback/future 均 0 |
 | `odom -> base_link` | 161 lookups | P99 lag `16.667 ms` | lookup failure/future 均 0 |
 
-测得 RTF `0.9401`。这证明短窗内不再把同一物理状态重复发布为多条 ROS 消息，
-但不等于阶段 1 完成：默认 LiDAR `accumulate_outputs=true` 的两个约 140/190 秒
-日志仍分别出现 11/23 次 `getSimulationTimeMonotonicAtTime`。临时把
-`accumulate_outputs=false` 后，90 秒内反而升至 2860 次，因此保留默认 true。
-另一个临时候选 `resetSimulationTimeOnStop=true` 在 90 秒无 Reset 的窗口中为 0 次，
-但尚未验证 Reset 前后 PointCloud/Clock epoch 与消息年龄，不能接受；候选已撤回。
-仍需完成 Reset 前后、GUI/headless、realtime/unbounded、60/120 Hz 和至少 15 分钟
-A/B，才能决定最终修复并宣称警告消除。
+测得 RTF `0.9401`。这证明该短窗内不再把同一物理状态重复发布为多条 ROS
+消息，但不能单独证明 RTX helper 的时间警告已经消除。
+
+### RTX helper 时间策略与 A/B
+
+默认 `accumulate_outputs=true` 继续保留。此前临时改成 false 后，约 90 秒内
+`getSimulationTimeMonotonicAtTime` 从短窗偶发升至 2860 次，因此该参数不是修复
+方向。当前安装的 Isaac Sim 6.0.1 `isaacsim.ros2.nodes` 版本为 `1.18.13`；其
+changelog 记录 `1.5.3` 已把 Camera、CameraInfo 和 RTX LiDAR helper 的
+`resetSimulationTimeOnStop` 默认值改成 true，安装版 OGN 定义也仍以 true 为
+默认。本项目此前显式覆盖为 false，现已让三个 RTX publisher 与供应商默认以及
+直接 `/clock`/Odom 时间节点使用同一 epoch 策略。
+
+本机 Kit 日志中，三项计数依次表示
+`getSimulationTimeMonotonicAtTime`、`getSimulationTimeAtTime` 和
+`No adjacent samples found`：
+
+| `resetSimulationTimeOnStop` / 运行条件 | 可复核活跃窗口 | 三类计数 | 证据 |
+| --- | ---: | ---: | --- |
+| `false`；GUI、realtime、60 Hz、Camera Monitoring | 至少 `30m14.728s` | `93 / 0 / 93` | `kit_20260714_115620.log`，SHA256 `c0ffac901c13ccf163ad1db4660382b15d84e394296617cd3677c66320744947` |
+| `true`；headless、realtime、60 Hz、Camera Off，含事务 Reset | `2m17.761s` | `0 / 0 / 0` | `kit_20260714_155906.log`，SHA256 `95c695b5e9283ef1584df37be8e69df35d2f9d61122af008ca45b451de5b91d1` |
+| `true`；headless、realtime、60 Hz、Camera Monitoring | `2m08.637s` | `0 / 0 / 0` | `kit_20260714_160142.log`，SHA256 `28c42283c5250e2556a9e178e2dea64247964e8fc45eddc38d5c2056be07cca3` |
+| `true`；headless、realtime、60 Hz、Camera Off | profiler `15m00.000s`；Kit `16m51.385s` | `0 / 0 / 0` | `kit_20260714_160458.log`，SHA256 `3e7f4a4169552b48ba6112f9f9140b887d8dfa5060e3eb3d03f8e1e1423f4558` |
+
+false 基线从第二次 `onResume` 到最后一条活动传感器记录，日志没有正常退出记录，
+所以 `30m14.728s` 只是可证明的运行下界。三组短窗和长跑都来自 dirty 工作树；
+开关标签由当时工作树与命令记录重建，而非日志内的属性快照。因此它们是可信的
+工程 A/B，但不会冒充 clean-commit 的完整受控矩阵。
+
+false 路径中的 monotonic 查询与 `No adjacent samples found` 93 次一一成对，而
+所有 true 运行均为 0。结合供应商默认值和 helper 行为，当前根因判断是：false
+要求跨 Timeline Stop 使用单调时间，RTX writer 对有限 Fabric 时间样本历史的查询
+会偶发越界。SimulationManager 对应实现是发行版二进制，仓库无法做完整源码证明，
+所以该根因按“日志与供应商接口共同支持的推断”记录，而不是伪装成源码定论。
+
+### 15 分钟时间完整性与 Reset
+
+长跑报告 `/tmp/timing_vendor_true_15min_off.json` 被 Git 忽略，SHA256 为
+`160dcc5d32b09348725cbea98ffa5f8d281192d0aea73bcf93790501e7cd9aa2`；报告绑定
+分支 `codex/navigation-quality-fidelity`、提交 `343b0227dc56753b47394bdb75b8fcf638673865`
+并明确标记 dirty。900.000185 秒窗口测得 RTF `0.947079`：
+
+| Topic | Samples / Wall Hz | Duplicate / Regression / future | 补充 |
+| --- | --- | --- | --- |
+| `/clock` | `51130 / 56.8103 Hz` | `0 / 0 / 0` | 51130 个 RTF 样本全部唯一，epoch rollback 0 |
+| `/lidar/points_raw` | `8523 / 9.4695 Hz` | `0 / 0 / 0` | P99 age `16.667 ms`，max `100 ms` |
+| `/odom` | `51129 / 56.8092 Hz` | `0 / 0 / 1` | 单个未解释 lead 为 `233.333 ms`，聚合报告不能定位其阶段或原因 |
+| `/imu/data` | `51130 / 56.8103 Hz` | `0 / 0 / 20822` | “future”按最新收到的 `/clock` 回调计算，最大 lead 仅 `28.483 us` |
+| `/joint_states` | `51130 / 56.8103 Hz` | `0 / 0 / 4354` | 同一回调顺序指标，最大 lead `28.483 us` |
+
+这里如实保留 profiler 的 future 计数：IMU/Joint 的最大 lead 只有 28.483 微秒，
+反映同一物理步内 ROS 回调到达顺序，并不是 stamp 回退；Odom 有一个 233.333 ms
+离群点，仍需在最终时间矩阵中复查，不能被 `0 / 0 / 0` Kit 警告计数掩盖。
+
+`data/reports/motion/reset_time_true_warehouse_ideal.json` 另记录 Warehouse、Ideal、
+60 Hz 下 14/14 段成功运行，SHA256
+`fbee8661880ee704f2f654cc8a57d494d7ab0c47502faeeafa67d219ba8de49d`。
+14 次 `/simulation/reset` 后均收到新 `/clock`、`/joint_states` 和 `/odom`；三者
+样本数分别为 3299、3303、3289，duplicate/regression 全为 0。项目 Reset 是
+pause → 单步 → play，不执行 Timeline Stop，因此 true 不会在该事务中创建新 epoch。
+
+据此已采用 `resetSimulationTimeOnStop=true` 作为项目修复：它与当前供应商默认值
+一致，并在已测 headless/Camera Off、headless/Camera Monitoring 和 15 分钟窗口内
+消除了三类 Kit 时间样本警告。第三阶段仍未退出：真正 Timeline Stop→Play 的点云
+header/消息年龄/旧 DDS 样本隔离，以及 LiDAR 开关、`update_fabric`、GUI/headless、
+realtime/unbounded、60/120 Hz 的完整矩阵尚未完成，不能外推成所有组合均已验收。
 
 ## 底盘运动基线（2026-07-14）
 
