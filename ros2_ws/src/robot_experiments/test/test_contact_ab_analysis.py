@@ -181,6 +181,21 @@ def _runtime_provenance(
     }
 
 
+def _upgrade_runtime_provenance_to_v4(report):
+    provenance = report["runtime_provenance"]
+    provenance["schema_version"] = 4
+    provenance["robot"]["kinematics"] = {
+        "profile_id": "jackal_legacy_geometric_v1",
+        "lifecycle": "stable_baseline",
+        "wheel_radius_m": RADIUS_M,
+        "wheel_width_m": 0.040,
+        "geometric_track_width_m": 0.37559,
+        "effective_track_width_m": 0.37559,
+        "controller_contract_verified": True,
+    }
+    return report
+
+
 def _segment(
     specification: tuple[str, str, float, float, float],
     *,
@@ -366,6 +381,9 @@ def test_three_repeats_produce_audited_group_metrics(tmp_path):
     assert report["schema_version"] == 1
     assert report["report_type"] == "contact_ab_analysis"
     assert report["analysis_valid"] is True
+    assert report["selection_policy"][
+        "required_runtime_provenance_schema"
+    ] == 3
     assert report["selection"]["excluded"] == []
     group = report["groups"]["Warehouse::legacy_baseline"]
     assert group["repeat_count"] == 3
@@ -431,6 +449,64 @@ def test_global_lock_and_group_contact_contract_mismatches_are_fatal(tmp_path):
     overlay_path = _write(tmp_path / "different_overlay.json", different_overlay)
     with pytest.raises(ConfigurationError, match="contact contract mismatch"):
         analyse_contact_ab([*paths, overlay_path], RADIUS_M)
+
+
+def test_v4_is_auditable_but_cannot_mix_with_historical_v3(tmp_path):
+    v4_paths = [
+        _write(
+            tmp_path / f"v4_{index}.json",
+            _upgrade_runtime_provenance_to_v4(_report(scale=scale)),
+        )
+        for index, scale in enumerate((0.99, 1.0, 1.01), start=1)
+    ]
+    report = analyse_contact_ab(v4_paths, RADIUS_M)
+    assert report["analysis_valid"] is True
+    assert report["selection_policy"][
+        "required_runtime_provenance_schema"
+    ] == 4
+    assert report["locked_inputs"]["robot"]["kinematics"][
+        "effective_track_width_m"
+    ] == 0.37559
+
+    historical_v3 = _write(
+        tmp_path / "historical_v3.json", _report(scale=1.02)
+    )
+    with pytest.raises(
+        ConfigurationError,
+        match=r"mixed runtime provenance schemas.*\[3, 4\]",
+    ):
+        analyse_contact_ab([*v4_paths, historical_v3], RADIUS_M)
+
+
+def test_v4_wheel_radius_is_selected_from_and_locked_to_provenance(tmp_path):
+    candidate_radius = 0.1
+    paths = []
+    for index, scale in enumerate((0.99, 1.0, 1.01), start=1):
+        document = _upgrade_runtime_provenance_to_v4(
+            _report(scale=scale)
+        )
+        document["runtime_provenance"]["robot"]["kinematics"][
+            "wheel_radius_m"
+        ] = candidate_radius
+        paths.append(_write(tmp_path / f"candidate_{index}.json", document))
+
+    report = analyse_contact_ab(paths, candidate_radius)
+
+    assert report["analysis_valid"] is True
+    assert report["locked_inputs"]["wheel_radius_m"] == candidate_radius
+    assert report["locked_inputs"]["robot"]["kinematics"][
+        "wheel_radius_m"
+    ] == candidate_radius
+    assert report["selection_policy"][
+        "required_runtime_provenance_schema"
+    ] == 4
+
+    with pytest.raises(
+        ConfigurationError,
+        match="runtime provenance wheel_radius_m does not match the selected "
+        "robot",
+    ):
+        analyse_contact_ab(paths, RADIUS_M)
 
 
 def test_environment_and_cross_environment_profile_contracts_are_fatal(tmp_path):
@@ -934,9 +1010,13 @@ def test_arc_metric_is_named_displacement_not_drift(tmp_path):
 
 
 @pytest.mark.parametrize("radius", (0.1, 0.097999, True, float("nan")))
-def test_wheel_radius_is_the_canonical_jackal_value(tmp_path, radius):
-    """The analyzer cannot silently rescale effective-track evidence."""
+def test_historical_v3_wheel_radius_is_the_canonical_jackal_value(
+    tmp_path,
+    radius,
+):
+    """Historical v3 evidence cannot silently rescale effective track."""
     with pytest.raises(
-        ConfigurationError, match="canonical Jackal radius|must be a finite number"
+        ConfigurationError,
+        match="canonical Jackal wheel radius|must be a finite number",
     ):
         analyse_contact_ab(_three_reports(tmp_path), radius)

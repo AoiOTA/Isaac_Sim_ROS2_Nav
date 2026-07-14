@@ -1,10 +1,13 @@
 # Stage-13 migration template. Nulls and the empty footprint are intentional:
 # runtime validation must fail until values are measured from the real asset.
-schema_version: 1
+schema_version: 2
 name: custom_robot
+kinematics_profile_id: null
+lifecycle: null
 wheel_radius: null
 wheel_width: null
 geometric_track_width: null
+effective_track_width: null
 wheelbase: null
 base_mass: null
 wheel_mass: null
@@ -25,8 +28,6 @@ wheel_joints:
   rear_left: rear_left_wheel_joint
   rear_right: rear_right_wheel_joint
 controller:
-  wheel_radius: null
-  wheel_distance: null
   max_linear_speed: null
   max_angular_speed: null
   max_wheel_speed: null

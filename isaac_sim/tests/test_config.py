@@ -258,7 +258,10 @@ def test_custom_project_template_requires_real_asset_inputs():
 
 def test_custom_robot_runtime_template_uses_the_live_schema():
     custom = ROOT / "isaac_sim/configs/robots/custom_robot.yaml"
-    with pytest.raises(ValueError, match="robot.controller.*must be numeric"):
+    with pytest.raises(
+        ValueError,
+        match="robot.kinematics_profile_id must match",
+    ):
         from isaac_sim.graphs.control_graph import load_controller_config
 
         load_controller_config(custom)

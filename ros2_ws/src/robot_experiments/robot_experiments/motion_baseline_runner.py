@@ -52,6 +52,13 @@ _RUNTIME_PROVENANCE_PARAMETER_NAMES = (
     "runtime_provenance.robot.solver.velocity_iterations",
     "runtime_provenance.robot.solver."
     "stage_articulation_usd_readback_verified",
+    "runtime_provenance.robot.kinematics.profile_id",
+    "runtime_provenance.robot.kinematics.lifecycle",
+    "runtime_provenance.robot.kinematics.wheel_radius_m",
+    "runtime_provenance.robot.kinematics.wheel_width_m",
+    "runtime_provenance.robot.kinematics.geometric_track_width_m",
+    "runtime_provenance.robot.kinematics.effective_track_width_m",
+    "runtime_provenance.robot.kinematics.controller_contract_verified",
     "runtime_provenance.environment.id",
     "runtime_provenance.environment.project_stage.path",
     "runtime_provenance.environment.project_stage.sha256",
@@ -494,9 +501,19 @@ class MotionBaselineRunner(Node):
         def value(suffix: str) -> object:
             return values[f"runtime_provenance.{suffix}"]
 
+        schema_version = value("schema_version")
+        if (
+            isinstance(schema_version, bool)
+            or not isinstance(schema_version, int)
+            or schema_version != 4
+        ):
+            raise RuntimeError(
+                "Isaac runtime provenance schema must be integer 4 for new "
+                "motion reports"
+            )
         provenance = {
             "verified": True,
-            "schema_version": value("schema_version"),
+            "schema_version": schema_version,
             "robot": {
                 "config": {
                     "path": value("robot.config.path"),
@@ -516,6 +533,25 @@ class MotionBaselineRunner(Node):
                     "stage_articulation_usd_readback_verified": value(
                         "robot.solver."
                         "stage_articulation_usd_readback_verified"
+                    ),
+                },
+                "kinematics": {
+                    "profile_id": value("robot.kinematics.profile_id"),
+                    "lifecycle": value("robot.kinematics.lifecycle"),
+                    "wheel_radius_m": value(
+                        "robot.kinematics.wheel_radius_m"
+                    ),
+                    "wheel_width_m": value(
+                        "robot.kinematics.wheel_width_m"
+                    ),
+                    "geometric_track_width_m": value(
+                        "robot.kinematics.geometric_track_width_m"
+                    ),
+                    "effective_track_width_m": value(
+                        "robot.kinematics.effective_track_width_m"
+                    ),
+                    "controller_contract_verified": value(
+                        "robot.kinematics.controller_contract_verified"
                     ),
                 },
             },

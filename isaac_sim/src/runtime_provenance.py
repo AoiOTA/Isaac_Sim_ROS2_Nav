@@ -10,6 +10,8 @@ from pathlib import Path
 import subprocess
 from typing import Any, Mapping
 
+from isaac_sim.src.robot.kinematics_config import load_robot_config_contract
+
 
 class RuntimeProvenanceError(RuntimeError):
     """Raised when a runtime input cannot be bound to reproducible evidence."""
@@ -583,8 +585,16 @@ def capture_runtime_provenance(
         stage,
         contact_snapshot,
     )
+    try:
+        robot_contract = load_robot_config_contract(config.files.robot)
+    except (OSError, ValueError) as exc:
+        raise RuntimeProvenanceError(
+            "runtime robot kinematics/controller contract is invalid: "
+            f"{exc}"
+        ) from exc
+    kinematics = robot_contract.kinematics
     return {
-        "schema_version": 3,
+        "schema_version": 4,
         "robot": {
             "config": {
                 "path": str(config.files.robot),
@@ -598,6 +608,19 @@ def capture_runtime_provenance(
                 "position_iterations": articulation_usd_solver_iterations[0],
                 "velocity_iterations": articulation_usd_solver_iterations[1],
                 "stage_articulation_usd_readback_verified": True,
+            },
+            "kinematics": {
+                "profile_id": kinematics.kinematics_profile_id,
+                "lifecycle": kinematics.lifecycle,
+                "wheel_radius_m": kinematics.wheel_radius,
+                "wheel_width_m": kinematics.wheel_width,
+                "geometric_track_width_m": (
+                    kinematics.geometric_track_width
+                ),
+                "effective_track_width_m": (
+                    kinematics.effective_track_width
+                ),
+                "controller_contract_verified": True,
             },
         },
         "environment": {
@@ -655,6 +678,27 @@ def runtime_provenance_parameters(
         "stage_articulation_usd_readback_verified": robot["solver"][
             "stage_articulation_usd_readback_verified"
         ],
+        "runtime_provenance.robot.kinematics.profile_id": robot[
+            "kinematics"
+        ]["profile_id"],
+        "runtime_provenance.robot.kinematics.lifecycle": robot[
+            "kinematics"
+        ]["lifecycle"],
+        "runtime_provenance.robot.kinematics.wheel_radius_m": robot[
+            "kinematics"
+        ]["wheel_radius_m"],
+        "runtime_provenance.robot.kinematics.wheel_width_m": robot[
+            "kinematics"
+        ]["wheel_width_m"],
+        "runtime_provenance.robot.kinematics.geometric_track_width_m": robot[
+            "kinematics"
+        ]["geometric_track_width_m"],
+        "runtime_provenance.robot.kinematics.effective_track_width_m": robot[
+            "kinematics"
+        ]["effective_track_width_m"],
+        "runtime_provenance.robot.kinematics.controller_contract_verified": (
+            robot["kinematics"]["controller_contract_verified"]
+        ),
         "runtime_provenance.environment.id": environment["id"],
         "runtime_provenance.environment.project_stage.path": environment[
             "project_stage"

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from isaac_sim.src.bridge.tf_ownership import (
     validate_tf_publishers,
 )
 from isaac_sim.src.config import load_project_config
+from isaac_sim.src.yaml_utils import YamlConfigError
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,6 +67,35 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
         "ReadJointState.outputs:jointNames",
         "PublishJointState.inputs:jointNames",
     ) in specs[1].connections
+
+
+def test_control_graph_uses_top_level_radius_and_effective_track_width():
+    spec = control_graph_spec(_config())
+    values = dict(spec.values)
+
+    assert values["DifferentialController.inputs:wheelRadius"] == 0.098
+    assert values["DifferentialController.inputs:wheelDistance"] == 0.37559
+    assert values["FrontController.inputs:jointNames"] == [
+        "front_left_wheel_joint",
+        "front_right_wheel_joint",
+    ]
+    assert values["RearController.inputs:jointNames"] == [
+        "rear_left_wheel_joint",
+        "rear_right_wheel_joint",
+    ]
+
+
+def test_control_graph_rejects_project_joint_targets_that_diverge_from_robot_yaml():
+    config = _config()
+    project_robot = replace(
+        config.robot,
+        wheel_joints=("project_fl", "project_fr", "project_rl", "project_rr"),
+        front_wheel_joints=("project_fl", "project_fr"),
+        rear_wheel_joints=("project_rl", "project_rr"),
+    )
+
+    with pytest.raises(YamlConfigError, match="ProjectConfig robot joint targets"):
+        control_graph_spec(replace(config, robot=project_robot))
 
 
 def test_static_sensor_frames_use_raw_tf_and_no_world_frame():

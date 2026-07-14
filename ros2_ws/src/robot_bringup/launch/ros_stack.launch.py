@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
@@ -19,6 +20,7 @@ from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
+from robot_odometry.robot_profile import load_robot_profile
 
 
 _TELEOP_SPEED_ARGUMENTS = (
@@ -56,6 +58,41 @@ def _launch_setup(context):
         raise RuntimeError('initial_pose_source must be auto or rviz')
     project_root_value = LaunchConfiguration(
         'project_root').perform(context).strip()
+    requested_robot_config = LaunchConfiguration(
+        'robot_config_file').perform(context).strip()
+    if requested_robot_config:
+        robot_config_path = Path(requested_robot_config).expanduser()
+    else:
+        if not project_root_value:
+            raise RuntimeError(
+                'robot_config_file is required when project_root is empty')
+        robot_config_path = (
+            Path(project_root_value).expanduser()
+            / 'isaac_sim/configs/robots/jackal.yaml'
+        )
+    try:
+        robot_profile = load_robot_profile(robot_config_path)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(f'invalid robot_config_file: {exc}') from exc
+    robot_config_file = str(robot_profile.source)
+    isaac_node_name = LaunchConfiguration(
+        'isaac_node_name').perform(context).strip()
+    if not isaac_node_name:
+        raise RuntimeError('isaac_node_name must not be empty')
+    raw_handshake_timeout = LaunchConfiguration(
+        'kinematics_handshake_timeout_sec').perform(context).strip()
+    try:
+        handshake_timeout_value = float(raw_handshake_timeout)
+    except ValueError as exc:
+        raise RuntimeError(
+            'kinematics_handshake_timeout_sec must be a finite positive '
+            'number') from exc
+    if (not math.isfinite(handshake_timeout_value)
+            or handshake_timeout_value <= 0.0):
+        raise RuntimeError(
+            'kinematics_handshake_timeout_sec must be a finite positive '
+            'number')
+    handshake_timeout = format(handshake_timeout_value, '.17g')
     spawn_poses_file = LaunchConfiguration(
         'spawn_poses_file').perform(context).strip()
     selection = validate_mode(
@@ -133,6 +170,8 @@ def _launch_setup(context):
         f'controller_frequency='
         f'{nav2_controller_profile.controller_frequency:g}Hz, '
         f'model_dt={nav2_controller_profile.model_dt:g}s, '
+        f'robot_profile={robot_profile.profile_id}, '
+        f'robot_config_sha256={robot_profile.sha256}, '
         f'map_version={selection.map_version or "none"}, '
         f'map_bundle={selection.map_bundle_sha256 or "none"}'
     ))]
@@ -158,6 +197,7 @@ def _launch_setup(context):
                 else 'false'
             ),
             'xacro_file': runtime_files.description_file,
+            'robot_config_file': robot_config_file,
         },
     ))
 
@@ -188,6 +228,9 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'wheel_odometry_params_file': (
                         runtime_files.wheel_odometry_params_file),
+                    'robot_config_file': robot_config_file,
+                    'isaac_node_name': isaac_node_name,
+                    'kinematics_handshake_timeout_sec': handshake_timeout,
                 },
             ),
             _include(
@@ -373,6 +416,16 @@ def generate_launch_description():
                 'strict map bundle manifest; derived from posegraph_file '
                 'when omitted')),
         DeclareLaunchArgument('robot_description_file', default_value=''),
+        DeclareLaunchArgument(
+            'robot_config_file',
+            default_value='',
+            description=(
+                'schema v2 robot YAML; defaults to the repository Jackal '
+                'profile under project_root')),
+        DeclareLaunchArgument(
+            'isaac_node_name', default_value='/isaac_navigation_sim'),
+        DeclareLaunchArgument(
+            'kinematics_handshake_timeout_sec', default_value='10.0'),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),

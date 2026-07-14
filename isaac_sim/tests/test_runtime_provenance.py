@@ -17,6 +17,14 @@ from isaac_sim.src.runtime_provenance import (
 )
 
 
+JACKAL_CONFIG = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "robots"
+    / "jackal.yaml"
+)
+
+
 class _RootLayer:
     def ExportToString(self) -> str:
         return "#usda 1.0\ndef Xform \"World\" {}\n"
@@ -171,7 +179,7 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
     source_asset = tmp_path / "warehouse.usd"
     contact_profile = tmp_path / "legacy_baseline.yaml"
     for path, content in (
-        (robot_config, b"physics: {}\n"),
+        (robot_config, JACKAL_CONFIG.read_bytes()),
         (robot_asset, b"#usda 1.0\n"),
         (project_stage, b"#usda 1.0\n"),
         (source_asset, b"PXR-USDC"),
@@ -227,8 +235,8 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
     )
     parameters = runtime_provenance_parameters(provenance)
 
-    assert provenance["schema_version"] == 3
-    assert parameters["runtime_provenance.schema_version"] == 3
+    assert provenance["schema_version"] == 4
+    assert parameters["runtime_provenance.schema_version"] == 4
     assert provenance["robot"]["config"]["sha256"] == file_sha256(
         robot_config
     )
@@ -237,6 +245,20 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         "velocity_iterations": 4,
         "stage_articulation_usd_readback_verified": True,
     }
+    assert provenance["robot"]["kinematics"] == {
+        "profile_id": "jackal_legacy_geometric_v1",
+        "lifecycle": "stable_baseline",
+        "wheel_radius_m": 0.098,
+        "wheel_width_m": 0.040,
+        "geometric_track_width_m": 0.37559,
+        "effective_track_width_m": 0.37559,
+        "controller_contract_verified": True,
+    }
+    for name, value in provenance["robot"]["kinematics"].items():
+        assert (
+            parameters[f"runtime_provenance.robot.kinematics.{name}"]
+            == value
+        )
     assert provenance["environment"]["id"] == "Warehouse"
     assert (
         parameters["runtime_provenance.environment.id"] == "Warehouse"
@@ -358,7 +380,8 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
     project_stage = tmp_path / "project.usda"
     source_asset = tmp_path / "source.usd"
     contact_profile = tmp_path / "legacy_baseline.yaml"
-    for path in (robot_config, robot_asset, project_stage, source_asset):
+    robot_config.write_bytes(JACKAL_CONFIG.read_bytes())
+    for path in (robot_asset, project_stage, source_asset):
         path.write_bytes(b"input")
     contact_profile.write_text(
         "schema_version: 1\nid: legacy-baseline\nmode: legacy_baseline\n",

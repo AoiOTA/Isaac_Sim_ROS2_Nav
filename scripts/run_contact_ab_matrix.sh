@@ -97,6 +97,12 @@ robot_config=""
 robot_asset=""
 robot_config_sha256=""
 robot_asset_sha256=""
+robot_kinematics_profile_id=""
+robot_kinematics_lifecycle=""
+robot_wheel_radius=""
+robot_wheel_width=""
+robot_geometric_track_width=""
+robot_effective_track_width=""
 warehouse_project_stage=""
 warehouse_project_stage_sha256=""
 warehouse_source_asset=""
@@ -147,6 +153,7 @@ import sys
 repository_root, asset_root, project_path = sys.argv[1:]
 sys.path.insert(0, repository_root)
 from isaac_sim.src.config import load_project_config
+from isaac_sim.src.robot.kinematics_config import load_robot_config_contract
 
 # Do not pass os.environ here: inherited ISAAC_NAV__* values are untrusted
 # nested YAML overrides.  Only interpolation inputs are needed to resolve the
@@ -155,12 +162,19 @@ config = load_project_config(
     project_path,
     {"PROJECT_ROOT": repository_root, "ISAAC_ASSET_ROOT": asset_root},
 )
+kinematics = load_robot_config_contract(config.files.robot).kinematics
 values = (
     config.environment.identifier,
     str(config.files.robot),
     str(config.robot.asset_path),
     str(config.environment.project_stage),
     str(config.environment.source_asset),
+    kinematics.kinematics_profile_id,
+    kinematics.lifecycle,
+    str(kinematics.wheel_radius),
+    str(kinematics.wheel_width),
+    str(kinematics.geometric_track_width),
+    str(kinematics.effective_track_width),
 )
 if any("\t" in value or "\n" in value for value in values):
     raise SystemExit("runtime contract paths must not contain tabs or newlines")
@@ -171,6 +185,9 @@ PY
 load_runtime_contracts() {
   local warehouse_contract simple_plane_contract
   local warehouse_id simple_plane_id simple_robot_config simple_robot_asset
+  local simple_kinematics_profile_id simple_kinematics_lifecycle
+  local simple_wheel_radius simple_wheel_width
+  local simple_geometric_track_width simple_effective_track_width
   local runtime_input
   warehouse_contract="$(project_runtime_contract "${warehouse_config}")" \
     || die "cannot resolve the committed Warehouse runtime contract"
@@ -180,16 +197,29 @@ load_runtime_contracts() {
   IFS=$'\t' read -r \
     warehouse_id robot_config robot_asset \
     warehouse_project_stage warehouse_source_asset \
+    robot_kinematics_profile_id robot_kinematics_lifecycle \
+    robot_wheel_radius robot_wheel_width \
+    robot_geometric_track_width robot_effective_track_width \
     <<<"${warehouse_contract}"
   IFS=$'\t' read -r \
     simple_plane_id simple_robot_config simple_robot_asset \
     simple_plane_project_stage simple_plane_source_asset \
+    simple_kinematics_profile_id simple_kinematics_lifecycle \
+    simple_wheel_radius simple_wheel_width \
+    simple_geometric_track_width simple_effective_track_width \
     <<<"${simple_plane_contract}"
   [[ "${warehouse_id}" == Warehouse && "${simple_plane_id}" == SimplePlane ]] \
     || die "project runtime environment identifiers are not canonical"
   [[ "${simple_robot_config}" == "${robot_config}" \
         && "${simple_robot_asset}" == "${robot_asset}" ]] \
     || die "Warehouse and SimplePlane must use the same robot inputs"
+  [[ "${simple_kinematics_profile_id}" == "${robot_kinematics_profile_id}" \
+        && "${simple_kinematics_lifecycle}" == "${robot_kinematics_lifecycle}" \
+        && "${simple_wheel_radius}" == "${robot_wheel_radius}" \
+        && "${simple_wheel_width}" == "${robot_wheel_width}" \
+        && "${simple_geometric_track_width}" == "${robot_geometric_track_width}" \
+        && "${simple_effective_track_width}" == "${robot_effective_track_width}" ]] \
+    || die "Warehouse and SimplePlane robot kinematics contracts differ"
   for runtime_input in \
       "${robot_config}" "${robot_asset}" \
       "${warehouse_project_stage}" "${warehouse_source_asset}" \
@@ -712,6 +742,10 @@ wait_for_isaac_ready() {
   local deadline schema environment_id contact_json contact_sha256
   local actual_robot_config actual_robot_config_sha256
   local actual_robot_asset actual_robot_asset_sha256
+  local actual_kinematics_profile actual_kinematics_lifecycle
+  local actual_wheel_radius actual_wheel_width
+  local actual_geometric_track_width actual_effective_track_width
+  local controller_contract_verified
   local solver_position solver_velocity solver_readback physics_hz
   local navigation_mode odometry_mode
   local project_stage project_stage_sha256 source_asset source_asset_sha256
@@ -726,7 +760,7 @@ wait_for_isaac_ready() {
       isaac "${owned_pids[isaac]}" "${owned_groups[isaac]}" \
       "${owned_start_ticks[isaac]}" || return 1
     schema="$(ros_parameter runtime_provenance.schema_version || true)"
-    if [[ "${schema}" != 3 ]]; then
+    if [[ "${schema}" != 4 ]]; then
       sleep 0.2
       continue
     fi
@@ -748,6 +782,31 @@ wait_for_isaac_ready() {
     )"
     actual_robot_asset_sha256="$(
       ros_parameter runtime_provenance.robot.asset.sha256 || true
+    )"
+    actual_kinematics_profile="$(
+      ros_parameter runtime_provenance.robot.kinematics.profile_id || true
+    )"
+    actual_kinematics_lifecycle="$(
+      ros_parameter runtime_provenance.robot.kinematics.lifecycle || true
+    )"
+    actual_wheel_radius="$(
+      ros_parameter runtime_provenance.robot.kinematics.wheel_radius_m || true
+    )"
+    actual_wheel_width="$(
+      ros_parameter runtime_provenance.robot.kinematics.wheel_width_m || true
+    )"
+    actual_geometric_track_width="$(
+      ros_parameter \
+        runtime_provenance.robot.kinematics.geometric_track_width_m || true
+    )"
+    actual_effective_track_width="$(
+      ros_parameter \
+        runtime_provenance.robot.kinematics.effective_track_width_m || true
+    )"
+    controller_contract_verified="$(
+      ros_parameter \
+        runtime_provenance.robot.kinematics.controller_contract_verified \
+        || true
     )"
     solver_position="$(
       ros_parameter runtime_provenance.robot.solver.position_iterations \
@@ -797,6 +856,12 @@ wait_for_isaac_ready() {
           && "${actual_robot_config_sha256}" == "${robot_config_sha256}" \
           && "${actual_robot_asset}" == "${robot_asset}" \
           && "${actual_robot_asset_sha256}" == "${robot_asset_sha256}" \
+          && "${actual_kinematics_profile}" == "${robot_kinematics_profile_id}" \
+          && "${actual_kinematics_lifecycle}" == "${robot_kinematics_lifecycle}" \
+          && "${actual_wheel_radius}" == "${robot_wheel_radius}" \
+          && "${actual_wheel_width}" == "${robot_wheel_width}" \
+          && "${actual_geometric_track_width}" == "${robot_geometric_track_width}" \
+          && "${actual_effective_track_width}" == "${robot_effective_track_width}" \
           && "${solver_position}" == 32 \
           && "${solver_velocity}" == 4 \
           && "${project_stage}" == "${current_project_stage}" \
@@ -809,6 +874,8 @@ wait_for_isaac_ready() {
           && "${provenance_commit}" == "${batch_git_commit}" \
           && "${provenance_branch}" == "${batch_git_branch}" ]] \
         && ros_parameter_boolean_matches "${solver_readback}" true \
+        && ros_parameter_boolean_matches \
+          "${controller_contract_verified}" true \
         && ros_parameter_boolean_matches "${provenance_dirty}" false \
         && contact_readiness_matches \
           "${contact_json}" "${contact_sha256}" \
@@ -831,7 +898,8 @@ launch_isaac() {
     clear_inherited_config_overrides
     export ISAAC_NAV_PROJECT_CONFIG="${project_config}"
     export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"
-    # Schema-v3 provenance verifies mapping/ideal/60 Hz below.  It does not
+    # Schema-v4 provenance verifies mapping/ideal/60 Hz and kinematics below.
+    # It does not
     # currently expose headless, pacing, or camera selection, so those remain
     # a pinned CLI launch contract and are not misreported as provenance locks.
     exec "${SCRIPT_DIR}/run_isaac.sh" \
@@ -877,7 +945,10 @@ verify_motion_report() {
     "${robot_config}" "${robot_config_sha256}" \
     "${robot_asset}" "${robot_asset_sha256}" \
     "${current_project_stage}" "${current_project_stage_sha256}" \
-    "${current_source_asset}" "${current_source_asset_sha256}" <<'PY'
+    "${current_source_asset}" "${current_source_asset_sha256}" \
+    "${robot_kinematics_profile_id}" "${robot_kinematics_lifecycle}" \
+    "${robot_wheel_radius}" "${robot_wheel_width}" \
+    "${robot_geometric_track_width}" "${robot_effective_track_width}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -891,6 +962,9 @@ robot_config, robot_config_sha256 = sys.argv[11:13]
 robot_asset, robot_asset_sha256 = sys.argv[13:15]
 project_stage, project_stage_sha256 = sys.argv[15:17]
 source_asset, source_asset_sha256 = sys.argv[17:19]
+kinematics_profile_id, kinematics_lifecycle = sys.argv[19:21]
+wheel_radius, wheel_width = map(float, sys.argv[21:23])
+geometric_track_width, effective_track_width = map(float, sys.argv[23:25])
 if not path.is_file():
     raise SystemExit("motion report is missing")
 try:
@@ -910,7 +984,7 @@ except ImportError as exc:
 try:
     analysis = analyse_contact_ab(
         [path],
-        0.098,
+        wheel_radius,
         min_repeats=1,
         expected_environments=(environment_id,),
         expected_profiles=(profile_id,),
@@ -933,6 +1007,8 @@ environment = provenance.get("environment", {})
 robot = provenance.get("robot", {})
 simulation = provenance.get("simulation", {})
 git = provenance.get("git", {})
+if provenance.get("schema_version") != 4:
+    raise SystemExit("runtime provenance schema must be integer 4")
 if environment.get("id") != environment_id:
     raise SystemExit("runtime provenance environment mismatch")
 if git.get("dirty") is not False:
@@ -945,6 +1021,17 @@ expected_robot_inputs = {
 }
 if any(robot.get(name) != value for name, value in expected_robot_inputs.items()):
     raise SystemExit("runtime provenance robot input mismatch")
+expected_kinematics = {
+    "profile_id": kinematics_profile_id,
+    "lifecycle": kinematics_lifecycle,
+    "wheel_radius_m": wheel_radius,
+    "wheel_width_m": wheel_width,
+    "geometric_track_width_m": geometric_track_width,
+    "effective_track_width_m": effective_track_width,
+    "controller_contract_verified": True,
+}
+if robot.get("kinematics") != expected_kinematics:
+    raise SystemExit("runtime provenance robot kinematics mismatch")
 solver = robot.get("solver", {})
 if (
     solver.get("position_iterations") != 32
@@ -1203,7 +1290,8 @@ finalize_contact_analysis() {
   python3 - \
     "${PROJECT_ROOT}" "${manifest}" "${analysis_path}" \
     "${environment_selection}" "${repeats}" \
-    "${expected_conditions}" "${expected_groups}" <<'PY'
+    "${expected_conditions}" "${expected_groups}" \
+    "${robot_wheel_radius}" <<'PY'
 import csv
 import hashlib
 from pathlib import Path
@@ -1217,10 +1305,12 @@ import sys
     repeats_text,
     expected_runs_text,
     expected_groups_text,
+    wheel_radius_text,
 ) = sys.argv[1:]
 repeats = int(repeats_text)
 expected_runs = int(expected_runs_text)
 expected_groups = int(expected_groups_text)
+wheel_radius = float(wheel_radius_text)
 manifest_path = Path(manifest_name)
 output_path = Path(output_name)
 
@@ -1262,7 +1352,7 @@ elif environment_selection in {"Warehouse", "SimplePlane"}:
     arguments["expected_profiles"] = COMPLETE_MATRIX_PROFILES
 else:
     raise SystemExit("unknown batch environment selection")
-analysis = analyse_contact_ab(report_paths, 0.098, **arguments)
+analysis = analyse_contact_ab(report_paths, wheel_radius, **arguments)
 counts = analysis.get("counts", {})
 selection = analysis.get("selection", {})
 if analysis.get("analysis_valid") is not True:

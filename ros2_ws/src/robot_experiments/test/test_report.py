@@ -115,6 +115,21 @@ def valid_runtime_provenance():
     }
 
 
+def valid_runtime_provenance_v4():
+    provenance = valid_runtime_provenance()
+    provenance["schema_version"] = 4
+    provenance["robot"]["kinematics"] = {
+        "profile_id": "jackal_legacy_geometric_v1",
+        "lifecycle": "stable_baseline",
+        "wheel_radius_m": 0.098,
+        "wheel_width_m": 0.040,
+        "geometric_track_width_m": 0.37559,
+        "effective_track_width_m": 0.37559,
+        "controller_contract_verified": True,
+    }
+    return provenance
+
+
 def valid_manifest():
     return {
         "scenario_id": "static_a",
@@ -172,6 +187,28 @@ def test_validate_manifest_requires_verified_dynamic_runtime_contract():
 
 def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
     validate_runtime_provenance(valid_runtime_provenance())
+    validate_runtime_provenance(valid_runtime_provenance_v4())
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value", "message"),
+    [
+        ("profile_id", "bad/id", "path-safe"),
+        ("lifecycle", "promoted", "unsupported"),
+        ("wheel_radius_m", True, "finite positive"),
+        ("wheel_width_m", math.nan, "NaN or infinity"),
+        ("geometric_track_width_m", 0.0, "finite positive"),
+        ("effective_track_width_m", -1.0, "finite positive"),
+        ("controller_contract_verified", False, "must be true"),
+    ],
+)
+def test_validate_runtime_provenance_v4_rejects_bad_kinematics(
+    field, bad_value, message
+):
+    provenance = valid_runtime_provenance_v4()
+    provenance["robot"]["kinematics"][field] = bad_value
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
 
 
 def test_decode_hashed_contact_snapshot_requires_canonical_verified_json():
@@ -205,7 +242,7 @@ def test_decode_hashed_contact_snapshot_requires_canonical_verified_json():
 @pytest.mark.parametrize(
     ("path", "bad_value", "message"),
     [
-        (("schema_version",), 2, "must be 3"),
+        (("schema_version",), 2, "integer 3 or 4"),
         (("robot", "config", "sha256"), "g" * 64, "SHA256"),
         (("robot", "solver", "velocity_iterations"), True, "integer"),
         (("robot", "solver", "velocity_iterations"), 0, "integer"),
