@@ -1445,13 +1445,21 @@ stabilization on
 | 停止判定配置 | 线速度阈值 `≤ 0.02 m/s`、角速度阈值 `≤ 0.05 rad/s`、轮速阈值 `≤ 0.20 rad/s` |
 | 四轮速度方向 | 六段全部符合配置契约 |
 
-机器判定使用 policy `skid_steer_plan_8_7_v1`。motion report 顶层 schema 2 保持
-`configuration.schema_version=1`，并在 `actual_velocity.steady_state_window` 保存命令
-时间区间后半段的实际角速度分布；旋转门读取该窗口的 `angular_z_radps.mean`，不再用
-yaw gain。v5 离线分析结果为 analysis schema 3，内嵌 `physical_acceptance` schema 1。
+机器判定使用 policy `skid_steer_plan_8_7_v2`。motion report 顶层 schema 3 保持
+`configuration.schema_version=1`，并为 Odom 与 JointState 分别保存命令区间后半段的
+closed window。两窗都要求至少两个严格递增样本，首尾延迟和最大相邻间隔受 canonical
+profile 的 `max_sample_age_sec=0.5` 约束；停止确认也必须由新鲜、连续且同时静止的 Odom
+与 JointState 双流证据共同成立。分析器核对 Reset generation/三路接收水位、命令与停止
+样本记账、时间/非法消息/安全状态、起终姿态—路程—位移—模 `2π` 航向几何、deadband、
+方向计数和分布矩可行性，并证明稳态角速度分布确为整段命令分布的样本子集。旋转门读取
+Odom 窗口的 `angular_z_radps.mean`，四轮方向门读取 JointState 窗口；整段轮向只作描述。
+v5 离线结果为 analysis schema 4，内嵌 `physical_acceptance` schema 2；44 列 manifest
+逐行绑定规范化且类型严格的运动配置、report/selection、robot asset/kinematics/solver、
+Mapping/Ideal/60 Hz、Git、环境、唯一证据 path/hash 与 UTC 时间区间，batch-summary
+schema 5 冻结同一批次身份和最终证据。
 
 机器门只适用于同时满足 runtime provenance schema 5、`SimplePlane`、
-`simple_plane_only1_v1`、Ideal、每组至少 3 个唯一 repeat、全部 motion report schema 2
+`simple_plane_only1_v1`、Ideal、每组至少 3 个唯一 repeat、全部 motion report schema 3
 的 group。其他 group 必须写 `applicable=false`、`passed=null` 和非空原因，进入
 `not_applicable_groups`，不得伪造为物理失败。对适用 group，每个 repeat 的每项检查都
 单独计算，任一失败即判定整个 group 失败，不能用均值掩盖最差重复，也不自动排名或
@@ -1459,14 +1467,16 @@ yaw gain。v5 离线分析结果为 analysis schema 3，内嵌 `physical_accepta
 `passing_groups/failed_groups` 精确划分适用 group；没有适用 group 时
 `all_applicable_groups_passed=null`。
 
-batch-summary schema 4 的 `result=success` 只表示证据采集、身份、矩阵与聚合闭合；
+batch-summary schema 5 的 `result=success` 只表示证据采集、身份、矩阵与聚合闭合；
 物理结论必须另读 `physical_acceptance.all_applicable_groups_passed` 及上述四个列表。
-合同已经实现，完整 analyzer 测试文件为 `116 passed`，motion baseline `66 passed`、matrix
-script `42 passed / 1 skipped`（缺少 `shellcheck`）。clean `2cd0788` 的 build、preflight
+v2 合同定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
+`45 passed / 1 skipped`，合并为 `354 passed / 1 skipped`（缺少 `shellcheck`）；clean
+全门和 schema-3 真实 smoke 待代码
+冻结后执行。旧 v1 合同曾在 clean `2cd0788` 完成 build、preflight
 和 `./scripts/test.sh --with-isaac` 均 exit 0：root `1076 passed / 1 skipped /
 34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，Isaac
 `32 passed / 250 deselected`。clean `190f357` 的 SimplePlane/only1 六 profile × 一次
-重复真实新 schema smoke 为 6/6 run、36/36 段、analysis 6/0/6、summary schema 4
+重复历史 schema-2 smoke 为 6/6 run、36/36 段、analysis 6/0/6、summary schema 4
 `result=success`；六组只因少于 3 个 repeat 而 N/A。正式每组三重复的 54-run/18-group
 全 topology 矩阵仍待执行。历史
 `d5840ed` 12-run 保存的是 analysis schema 2、batch-summary schema 3，且 Warehouse、
@@ -3242,18 +3252,25 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   repeat=1 的历史 schema 2/3 机制烟测。其 Warehouse、repeat=1 与旧 motion report
   schema 1 都使计划 8.7 物理判定为 N/A，不能记成 `0/12 fail`；正式每组三重复的
   54-run/18-group 全 topology 矩阵仍未运行，因此第三阶段仍未退出。
-- 第三阶段物理机器门：motion report schema 2（configuration 仍为 1）已提供命令区间
-  后半段 `steady_state_window`；v5 analysis schema 3、`physical_acceptance` schema 1/
-  policy `skid_steer_plan_8_7_v1` 和 batch-summary schema 4 已实现。旋转门按该窗口实际
-  angular-z mean 相对命令角速度的绝对误差比例判定，不再用 yaw gain。机器 verdict
+- 第三阶段物理机器门：motion report schema 3（configuration 仍为 1）已提供 Odom 与
+  JointState 的命令后半段 closed window、双流连续停止证据、Reset epoch/接收水位、
+  样本记账和可重算姿态/航向几何；v5 analysis schema 4、`physical_acceptance`
+  schema 2 / policy `skid_steer_plan_8_7_v2`、44 列 manifest 和 batch-summary schema 5
+  已实现。旋转门按 Odom 窗口实际 angular-z mean 判定；方向门按 24 个稳态轮向观察
+  判定，真实不匹配会形成 physical FAIL，不再被误作 invalid evidence。机器 verdict
   只适用于 provenance 5 + SimplePlane/only1 + Ideal + 每组至少 3 个唯一 repeat +
-  motion report schema 2；其他组为 `passed=null` 的 N/A。summary 的证据 `success` 与
+  motion report schema 3；其他组为 `passed=null` 的 N/A。summary 的证据 `success` 与
   `all_applicable_groups_passed` 及 applicable/not-applicable/passing/failed 四类 group
-  必须分别读取。当前完整 analyzer 测试文件为 `116 passed`，motion baseline `66 passed`、
-  matrix script `42 passed / 1 skipped`（缺少 `shellcheck`）。clean `2cd0788` 的 build、
+  必须分别读取。公共 accounting 会重新读取 selection 原报告，校验双 SHA、完整批次
+  身份、Reset/时间/停止/姿态/分布证据，再重算 physical acceptance。44 列逐行合同另锁
+  规范化 motion 配置、robot asset/kinematics/solver、Mapping/Ideal/60 Hz、Git、唯一证据
+  path/hash 和 UTC 时间区间。当前定向套件为 analyzer `217 passed`、motion baseline
+  `92 passed`、matrix `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（缺少
+  `shellcheck`）；v2 clean 全门待执行。
+  旧 v1 合同在 clean `2cd0788` 的 build、
   preflight 和 `./scripts/test.sh --with-isaac` 均 exit 0：root `1076 passed / 1 skipped /
   34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，Isaac
-  `32 passed / 250 deselected`。clean `190f357` 的真实新 schema smoke 已完成 6/6 run、
+  `32 passed / 250 deselected`。clean `190f357` 的历史 schema-2 smoke 已完成 6/6 run、
   36/36 段和六组 repeat=1 N/A；正式 54-run 实跑仍待完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和

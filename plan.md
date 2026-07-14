@@ -41,27 +41,41 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   analysis schema 2、batch-summary schema 3；Kit `[Error]` 为 0，但 12 份 Isaac 日志
   各有一条非致命 absl `E0000`，因此不能写成“零错误”。正式每组三重复的
   54-run/18-group 全拓扑批次仍未执行。
-- 导航质量升级计划 8.7 的机器硬门已实现：新 motion report 顶层为 schema 2，
-  `configuration.schema_version` 仍为 1；`actual_velocity.steady_state_window` 固定取
-  命令区间后半段。v5 analysis 为 schema 3，并嵌入 schema 1、policy
-  `skid_steer_plan_8_7_v1` 的 `physical_acceptance`；旋转门用该窗口实际
-  `angular_z_radps.mean` 相对目标角速度的绝对误差比例 `≤0.10`，不再用 yaw gain。
+- 导航质量升级计划 8.7 的 v2 机器硬门已实现：新 motion report 顶层为 schema 3，
+  `configuration.schema_version` 仍为 1。Odom 与 JointState 都保存命令后半段 closed
+  window，至少两个严格递增样本，并对首尾覆盖、最大间隔、deadband、方向样本计数和
+  分布执行 fail-closed 复核；稳态角速度分布还必须能由整段 Odom 分布的真实样本子集
+  实现。每段停车证据要求 Odom/JointState 在同一命令后区间内持续静止、样本新鲜且总
+  count 足以同时覆盖命令窗和停车窗；Reset recovery watermark 必须先于命令和段内首
+  样本。起止 pose 会重算净位移、纵横向位移、轨迹下界和旋转漂移，端点 yaw 与累计
+  yaw 也须按 `2*pi` 自洽。整段轮向只作描述，稳态 mixed/stationary/opposite 会作为
+  valid evidence 纳入并使物理方向门失败。v5 analysis/physical/summary 分别为 schema
+  4/2/5，policy 为 `skid_steer_plan_8_7_v2`，manifest 为 44 列并锁定逐轮 report schema。
   机器判定只适用于 runtime provenance 5 + `SimplePlane` +
-  `simple_plane_only1_v1` + Ideal + 每组至少 3 个唯一 repeat + motion report schema 2；
-  其他组记录 `applicable=false`、`passed=null` 和原因，不计作失败。顶层分别列出
-  `applicable_groups`、`not_applicable_groups`、`passing_groups`、`failed_groups`，总判定读
-  `all_applicable_groups_passed`。batch-summary schema 4 的证据 `result=success` 与物理
-  verdict 分开。完整 analyzer 测试文件为 `116 passed`，motion baseline `66 passed`、matrix
-  script `42 passed / 1 skipped`（缺少 `shellcheck`）。clean `2cd0788` 上三条全门均
+  `simple_plane_only1_v1` + Ideal + 每组至少 3 个唯一 repeat + motion report schema 3；
+  旧 schema 1/2 以 `motion_report_schema_not_3` 记 N/A。公共 accounting 会重新读取
+  selection 原报告、复核 raw/canonical SHA、全局身份和每个 physical 叶并重算完整
+  acceptance。批次 summary 还会逐行语义核对 44 列、报告路径/时间、规范化 motion YAML
+  （类型严格）、robot asset/kinematics/solver、Mapping/Ideal/60 Hz、环境、topology、
+  contact、Git 和三类证据 hash，不能靠协调改写 schema、N/A、方向叶或运行身份伪造
+  verdict。当前定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
+  `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（唯一 skip 为缺少
+  `shellcheck`）；clean 全门和
+  schema-3 真实 smoke 尚待本次代码冻结后执行。旧 v1 合同已在 clean `2cd0788` 上三条全门均
   exit 0：build 11 packages，preflight PASS，root `1076 passed / 1 skipped /
   34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，
   Isaac `32 passed / 250 deselected`；预检另有 396 个 Fast DDS SHM 工件和 20 个
   非 performance governor 的非阻塞环境警告。随后在 clean `190f357` 完成
-  SimplePlane/only1 × 六 profile × 一次的真实新 schema smoke：6/6 run、36/36 段、
+  SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
   72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
   schema 2/3/4，六组都只因少于 3 个 repeat 而 N/A。正式 54-run/18-group 实跑仍未执行。
-- `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件；
-  两者都没有覆盖 stable，也尚未完成两环境、多速度、拓扑或 Realistic 物理 A/B。
+- `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件，并在
+  clean `8d1c5f4` / `05fdba7` 各采集过一份 SimplePlane + legacy 原始筛选。旧 schema 2
+  因圆弧整段 `mixed` 被验证器排除，不能形成正式 verdict；这正是上面 schema-3 稳态
+  方向合同的触发证据。描述性指标中 `0.989 m` 的左右稳态 yaw 误差为
+  `2.95%/0.02%`、中心漂移 `0.0530/0.0587 m`、不对称 `9.70%`，明显优于 `1.012 m`
+  的不对称 `43.67%`，因此是 schema-3 重跑首选。两者都没有覆盖 stable，也尚未完成
+  三重复、两环境、多速度、全拓扑或 Realistic 物理 A/B。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 
