@@ -120,8 +120,8 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `isaac_sim/configs/project.yaml` | 默认 Jackal 项目总配置；串联环境、机器人、仿真模式、出生点、ROS、GT 和所有子配置文件。 |
-| `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；要求显式环境变量提供真实 USD、defaultPrim 和传感器配置。 |
+| `isaac_sim/configs/project.yaml` | 默认 Jackal 项目总配置；用规范 `environment.id` 串联环境、机器人、仿真模式、出生点、ROS、GT 和所有子配置文件。 |
+| `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；保留显式环境 ID，并要求环境变量提供真实 USD、defaultPrim 和传感器配置。 |
 | `isaac_sim/configs/spawn_poses.yaml` | 出生点唯一真源；同时保存物理 USD Pose、Map Pose、不确定度，以及自动初始位姿必须匹配的地图版本和 bundle SHA256。 |
 | `isaac_sim/configs/environments/warehouse_multiple_shelves.yaml` | 官方 Warehouse 资产路径、组合方式和预期关键 Prim 的小型描述。 |
 
@@ -165,8 +165,8 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/__init__.py` | Isaac 核心源码包标记。 |
-| `isaac_sim/src/config.py` | 严格解析总配置、环境变量替换、嵌套 override、模式组合和必需路径。 |
-| `isaac_sim/src/runtime_provenance.py` | Isaac 启动时流式哈希实际机器人/环境输入、组合根 Layer 和 Git revision/dirty 状态，并扁平化为只读 ROS 参数，供实验报告绑定真实运行态。 |
+| `isaac_sim/src/config.py` | 严格解析总配置、path-safe 规范环境 ID、环境变量替换、嵌套 override、模式组合和必需路径。 |
+| `isaac_sim/src/runtime_provenance.py` | Isaac 启动时流式哈希实际机器人/环境输入、组合根 Layer 和 Git revision/dirty，交叉校验 Stage solver 与初始化后 Articulation wrapper 的 USD 后端读回，并以 schema v2 扁平化为只读 ROS 参数；它绑定实际 USD 输入，不声称直接读取 PhysX 引擎内部状态。 |
 | `isaac_sim/src/yaml_utils.py` | 通用 YAML mapping、字段、数值、向量和未知 key 校验函数。 |
 
 ## 12. Isaac Stage 管理
@@ -184,7 +184,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/robot/__init__.py` | 机器人运行时子包标记。 |
-| `isaac_sim/src/robot/articulation_runtime.py` | 严格解析含 `[1,255]` solver counts 的 Jackal 物理配置，在 Stage/运行时应用 solver、sleep/stabilization/DOF 参数，控制/读取关节并处理 sleep/wake。 |
+| `isaac_sim/src/robot/articulation_runtime.py` | 严格解析含 `[1,255]` solver counts 的 Jackal 物理配置，通过初始化后的实验 Articulation API 写入 solver、sleep/stabilization/DOF 参数，仅对 USD solver 做交叉读回校验，并负责关节控制/读取及 sleep/wake。 |
 | `isaac_sim/src/robot/joint_validator.py` | 验证四个 wheel joint 的存在、分组、方向映射和 DOF 顺序。 |
 | `isaac_sim/src/robot/spawn_pose_manager.py` | 读取/校验命名 USD/Map Pose；已标定 Pose 必须携带合法 map version 与 bundle SHA256，并向 Reset 提供 Pose 查询。 |
 | `isaac_sim/src/robot/reset.py` | ResetManager 物理事务：预校验出生点/标定，暂停、停控、恢复 Pose、清速度、重置子系统，并在失败路径也恢复 timeline。 |

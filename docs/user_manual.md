@@ -1149,12 +1149,16 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、solver、仿真模式和 Git commit/branch/dirty，runner 会在创建命令 publisher 前读取和严格校验；字段缺失、哈希非法或 `--odometry-mode` 与运行态不一致都会失败关闭。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、仿真模式和 Git commit/branch/dirty。schema v2 的 solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致，字段为 `stage_articulation_usd_readback_verified=true`；该 API 只证明 USD 输入一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前读取和严格校验；旧 schema v1、字段缺失、哈希非法、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。当前 `isaac_sim/configs/project.yaml` 的规范环境 ID 是 `Warehouse`；未来的 SimplePlane 项目配置必须显式写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
 快速核对某次报告是否真的是目标配置：
 
 ```bash
-jq '{result, verified: .runtime_provenance.verified,
+jq '{result, schema: .runtime_provenance.schema_version,
+     verified: .runtime_provenance.verified,
+     environment: .runtime_provenance.environment.id,
+     usd_solver_verified:
+       .runtime_provenance.robot.solver.stage_articulation_usd_readback_verified,
      solver: .runtime_provenance.robot.solver,
      robot: .runtime_provenance.robot.config.sha256,
      asset: .runtime_provenance.robot.asset.sha256,

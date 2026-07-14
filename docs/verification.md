@@ -24,7 +24,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | --- | --- | --- |
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 发布的 8 秒短窗中 Clock/IMU/Joint/Odom 为 56.40 Hz、点云 9.51 Hz，所有观测 Topic 均无重复/回退/future stamp | RTF 为 0.940；`getSimulationTimeMonotonicAtTime` 仍偶发，Reset 前后、15 分钟和完整 A/B 尚未完成 |
-| 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；报告已绑定实际文件、solver、组合 Stage 与 Git 运行态指纹 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；低速左右转向仍不对称，SimplePlane、Realistic、接触材料与有效轮距 A/B 尚未完成 |
+| 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；报告已绑定实际文件哈希、Stage-authored solver USD 值、组合 Stage 与 Git 启动快照 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；低速左右转向仍不对称，SimplePlane、Realistic、接触材料与有效轮距 A/B 尚未完成 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -33,7 +33,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在实时报告中成立 | 本轮 12 秒报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
 | Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
-| 自动测试 | 2026-07-14 当前工作树已执行完整门：root 508 passed/6 deselected、ROS 480/480、Isaac marker 4 passed，`test.sh --with-isaac` exit 0 | 这只证明当前代码回归门通过；第三至第十三阶段仍在实施，后续代码冻结和最终正式统计前必须再次重跑 |
+| 自动测试 | 2026-07-14 provenance schema v2 加固后的当前工作树已执行完整门：root 517 passed/8 deselected、ROS 483/483、Isaac marker 6 passed，`test.sh --with-isaac` exit 0 | 这只证明当前代码回归门通过；第三至第十三阶段仍在实施，后续代码冻结和最终正式统计前必须再次重跑 |
 
 ## Map Manifest 与标定
 
@@ -177,10 +177,13 @@ velocity iterations 改为 16 的 `kit_20260714_144438.log` 仍无
 `customGeometry`，但精确复现一次 TGS `more than 4 velocity iterations`
 警告。由此把 collider 迁移与 solver 警告分开归因。
 
-两次完整 14 段报告都由 Isaac 启动时发布并由 runner fail-closed 校验
-`runtime_provenance`，包含机器人 YAML/USD、项目 Stage、Warehouse 源资产、组合
-根 Layer 的 SHA256、32/4 或 32/16、运行模式，以及 Git commit/branch/dirty。
-本机忽略报告及 SHA256 为：
+最初两次完整 14 段 A/B 报告已包含机器人 YAML/USD、项目 Stage、Warehouse 源
+资产、组合根 Layer、运行模式和 Git 指纹；但发布前只复制 robot YAML 中的 solver
+值，且 runner 只核对 odometry，没有执行初始化后 Articulation wrapper 的第二次
+USD 读取，也允许调用方把 Warehouse 误标为 SimplePlane。其运动数据和日志仍可
+用于 solver A/B，因为 Stage 属性、唯一改变量与警告均有独立证据；但这些 schema
+v1 本机忽略报告只保留为历史 A/B 证据，不满足当前 schema v2 runner 契约。
+报告及 SHA256 为：
 
 - 32/4：`candidate_supported_cylinder_tgs4_provenance_retry_warehouse_ideal.json`，
   `ce40c395f30950f0b82055ea4698084099d2ac412c6b1152ab4e2fa57fbe4bb7`；
@@ -195,6 +198,51 @@ velocity iterations 改为 16 的 `kit_20260714_144438.log` 仍无
   `bf870a06c9b974eea2607dd7f33bb536eb930f2a7795ed07f25def792b150a8a`，
   且 `customGeometry|more than 4 velocity` 在对应
   `kit_20260714_145327.log` 中均为 0 次。
+
+审查后已把门禁强化为：项目配置必须提供 path-safe `environment.id`；solver 属性
+缺失时必须以 USD `int` 创建；Isaac 初始化 Articulation wrapper 后通过其 USD 后端
+读回 solver，并要求它与有效 Stage 的两个属性完全一致，之后才创建 ROS 节点和
+发布只读参数。该非弃用 API 证明的是组合 USD 输入一致，不是 PhysX 引擎内部状态
+直接读回；32/4 与 32/16 的行为差异仍以隔离 A/B、运动数据和警告日志为证。
+runner 同时强制 `--environment`、`--odometry-mode` 与运行态匹配，并在创建运动
+`/cmd_vel` publisher 前完成所有校验。
+
+schema v1 加固后同一工作树的真实 Warehouse + Ideal 复跑
+`effective_readback_warehouse_ideal.json` 为 14/14 成功，报告 SHA256
+`1aa6cb187a977473b7078fe4e18ced0a7109a1d2428169a25dab58dd954d273c`；其中
+`environment.id=Warehouse`、solver `32/4`、
+`stage_runtime_readback_verified=true`（schema v1 旧字段），Clock/Odom/JointState 分别记录
+5512/5504/5521 个样本且 duplicate/regression 均为 0。对应
+`kit_20260714_152558.log` 的 `customGeometry` 与 TGS `more than 4 velocity`
+均为 0；`getSimulationTimeMonotonicAtTime` 仍有 24 次，所以仿真时间问题没有被
+掩盖或宣称解决。
+
+schema v1 的负向实跑把同一 Isaac 故意标为 `SimplePlane`：
+`provenance_environment_mismatch_verified.json` 以 exit 1 失败，报告 SHA256
+`2929f500de389ec309df81907d646e24ca69ca202d80e9b22d3b11594a998c36`，并保留
+已验证的实际 `Warehouse` 与 Stage/Articulation USD 32/4。失败前后 `/cmd_vel` publisher
+count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 runner
+`cmd_vel_subscription_count=0`，证明错误标签没有获得运动命令所有权。
+
+当前 schema v2 已用中性文件名重新实跑。正确 Warehouse + Ideal 报告
+`usd_provenance_v2_warehouse_ideal.json` 为 14/14 成功，SHA256 为
+`7411bafef1ed644f74a0418ee3390e7c2f39f65675ac36c9a89bb6dd1dbc8560`；报告记录
+`schema_version=2`、`environment.id=Warehouse`、solver `32/4` 和
+`stage_articulation_usd_readback_verified=true`。Clock/Odom/JointState 分别为
+3536/3527/3540 个样本，duplicate/regression 均为 0；robot config、overlay 和
+组合根 Layer SHA256 分别为
+`270ba5db751895f7faa5cb099a3385ff16d01c64525016d7a906a87f51423932`、
+`bf870a06c9b974eea2607dd7f33bb536eb930f2a7795ed07f25def792b150a8a` 和
+`1a4f79b5d893f60a165b4d711435162966d0dba3d2334e05b6be593be23dc0fb`。
+
+同一进程的 schema v2 负向报告
+`usd_provenance_v2_environment_mismatch.json` 以 exit 1 失败，SHA256 为
+`4d26487606577919879a107122bb6710370596198a68c0a3d86e22f1b7c68a49`；失败报告
+保留 verified Warehouse、USD 32/4 和新字段，runner 的
+`cmd_vel_subscription_count=0`，退出后系统仍只有 Isaac Reset 安全 publisher。
+对应 `kit_20260714_154544.log` 在干净停止前的 `customGeometry` 与 TGS
+`more than 4 velocity` 均为 0；`getSimulationTimeMonotonicAtTime` 仍有 23 次，
+所以 schema 加固没有掩盖尚未解决的仿真时间问题。
 
 | 指标 | 32/4 | 32/16 | 结论 |
 | --- | ---: | ---: | --- |
@@ -534,17 +582,17 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 
 2026-07-14 当前工作树已在标准 Cylinder、TGS 32/4、运行时 provenance 和本文档
 更新后执行完整三条门。构建、预检和 `test.sh --with-isaac` 均 exit 0；预检仍如实
-报告 265 个 Fast DDS SHM 遗留工件和 CPU governor 非 performance 的环境警告，
+报告 275 个 Fast DDS SHM 遗留工件和 CPU governor 非 performance 的环境警告，
 资产、地图、GPU 与其余门通过。下表是本批冻结点的真实证据；第三至第十三阶段
 继续修改后，最终正式统计前仍必须重新执行，不能把本批通过外推为整个 Goal 完成。
 
 | Gate | 最近证据 |
 | --- | --- |
-| `./scripts/preflight.sh` | 2026-07-14 PASS；资产/地图/GPU 通过，另有 265 个 Fast DDS SHM 遗留工件和 CPU governor 非 performance 的非阻塞环境警告 |
+| `./scripts/preflight.sh` | 2026-07-14 PASS；资产/地图/GPU 通过，另有 275 个 Fast DDS SHM 遗留工件和 CPU governor 非 performance 的非阻塞环境警告 |
 | `./scripts/build_ros2.sh` | 2026-07-14：11 packages build completed，exit 0 |
-| `./scripts/test.sh --with-isaac` 的 pure/root suite | 2026-07-14：514 collected，508 passed，6 deselected |
-| ROS `colcon test` | 2026-07-14：480 tests，0 errors，0 failures，0 skipped |
-| Isaac/USD marker suite | 2026-07-14：4 passed，77 deselected |
+| `./scripts/test.sh --with-isaac` 的 pure/root suite | 2026-07-14：525 collected，517 passed，8 deselected |
+| ROS `colcon test` | 2026-07-14：483 tests，0 errors，0 failures，0 skipped |
+| Isaac/USD marker suite | 2026-07-14：89 collected，6 passed，83 deselected |
 | RViz config/load smoke | 结构测试包含在 454 个 root tests；安全 Panel 20/20 历史循环及本轮 Off/Monitoring/HQ 实跑组合见上文 |
 | `robot_rviz_plugins` production-only build | 独立 `-DBUILD_TESTING=OFF` configure/build/install PASS |
 | 2026-07-14 Camera 定向测试 | Camera contracts 15 passed；Camera/config 定向集合 27 passed；`isaac_sim/tests` 69 passed、3 skipped |
@@ -552,7 +600,7 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
 | Repository index set comparison | 当前拟提交的 282 个路径对 282 个索引路径，集合差分无输出 |
-| Markdown 相对链接 | README 与 10 个 `docs/*.md` 当前缺失链接为 0 |
+| Markdown 相对链接 | README、`plan.md` 与 10 个 `docs/*.md` 共 72 个本地链接，当前缺失为 0 |
 | `git diff --check` | 当前 PASS；代码冻结和提交前再执行一次最终审计 |
 
 推荐最终命令：

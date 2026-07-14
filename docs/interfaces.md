@@ -159,10 +159,11 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 
 | 参数组 | 内容 |
 | --- | --- |
-| `runtime_provenance.schema_version` | 当前严格 schema，值为 `1` |
+| `runtime_provenance.schema_version` | 当前严格 schema，值为 `2`；schema v1 的旧本机报告只作历史证据，不符合当前 runner 契约 |
 | `runtime_provenance.robot.config.*` | 实际 robot YAML 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.asset.*` | 实际项目 robot USD Overlay 的绝对路径与 SHA256 |
-| `runtime_provenance.robot.solver.*` | Stage/Articulation 实际 position、velocity iterations |
+| `runtime_provenance.robot.solver.*` | 有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致的 position、velocity iterations，以及 `stage_articulation_usd_readback_verified=true` |
+| `runtime_provenance.environment.id` | 项目配置中的规范、path-safe 环境标识；底盘报告的调用方标签必须精确匹配 |
 | `runtime_provenance.environment.project_stage.*` | 项目环境 Stage 路径与 SHA256 |
 | `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
 | `runtime_provenance.environment.asset_root/version` | Isaac 资产根与版本目录名 |
@@ -170,9 +171,14 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 | `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz |
 | `runtime_provenance.git.*` | Isaac 启动瞬间的 commit、branch、dirty 布尔值 |
 
-SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整数；Git object
-ID 必须为 40 或 64 位十六进制。正式 runner 在字段缺失、类型不符或里程计模式
-不一致时必须在首个非零 `/cmd_vel` 前失败。`git.dirty=true` 不是自动失败：输入
+SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整数，且 Stage
+属性与初始化后 Articulation USD 读回不一致时 Isaac 自身拒绝启动参数服务。该
+公开非弃用 API 的后端是 USD，所以此字段证明被测组合 Stage 输入一致，不等价于
+PhysX 引擎内部状态 introspection；引擎行为必须另由受控 A/B、运动数据和警告日志
+验证。Git
+object ID 必须为 40 或 64 位十六进制。正式 runner 在字段缺失、类型不符、里程计
+模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。
+`git.dirty=true` 不是自动失败：输入
 文件哈希仍精确绑定被测内容，但正式冻结报告应在 clean commit 上重跑。
 
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
