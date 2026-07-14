@@ -1365,15 +1365,36 @@ v3 仅保留为历史离线审计格式。
 ```bash
 cd "$PROJECT_ROOT"
 
+# 使用项目 YAML 选择的默认 stable robot（robot_config_selection=project_default）
 ./scripts/run_contact_ab_matrix.sh \
   --environment all \
   --repeats 3 \
   --output-dir data/reports/contact_ab/skid_steer_v1
 ```
 
+要对版本化候选执行同一正式矩阵，必须通过 `--robot-config` 显式选择；以下示例可直接
+复制运行 `0.989 m` 候选。测试 `1.012 m` 候选时，只把变量中的文件名和输出目录改为
+`jackal_etw_1p012_v1.yaml` 与另一个全新目录：
+
+```bash
+cd "$PROJECT_ROOT"
+CANDIDATE="$(realpath -e -- \
+  "$PROJECT_ROOT/isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml")"
+
+./scripts/run_contact_ab_matrix.sh \
+  --environment all \
+  --repeats 3 \
+  --robot-config "$CANDIDATE" \
+  --output-dir data/reports/contact_ab/jackal_etw_0p989_v1
+```
+
 `--environment` 默认是 `all`，也可只取 `SimplePlane` 或 `Warehouse`；
-`--repeats` 默认是 `3`，取值范围是 `1..100`；`--output-dir` 必填且必须为空，已有
-证据不会被覆盖。仓库内路径还必须已被 Git ignore（推荐继续放在
+`--repeats` 默认是 `3`，取值范围是 `1..100`；不传 `--robot-config` 时选择两个项目
+YAML 共同声明的默认 robot，传入时其值必须是仓库内 canonical absolute regular file：
+不能是相对路径、symlink 或目录，必须被 Git 跟踪并在 `HEAD` 中是普通 blob，且当前
+工作树原始字节必须与该 `HEAD` blob 完全一致。整批仍只接受 attached branch 上的
+clean worktree，所以不能用未提交或局部改写的候选。`--output-dir` 必填且必须为空，已有
+证据不会被覆盖。仓库内输出路径还必须已被 Git ignore（推荐继续放在
 `data/reports/`），也可使用仓库外的绝对路径；路径本身或任一已有祖先是 symlink
 时会直接拒绝。默认严格顺序是：先 `SimplePlane`、后 `Warehouse`；每个环境依次运行
 `legacy_baseline`、四个 threshold 2×2 profile、`explicit_material`；最后才展开
@@ -1389,13 +1410,15 @@ repeat，所以默认共启动 36 个互相独立的 Isaac 进程。若只想做
   --output-dir data/reports/contact_ab/simple_plane_smoke
 ```
 
-批处理只接受 attached branch 上的干净 Git worktree，并在整批开始时冻结 HEAD、
-branch、运动配置、两个项目配置和六个 profile 的 SHA256；每轮前后都会重新检查。
+批处理在整批开始时冻结 HEAD、branch、运动配置、两个项目配置、所选 robot config
+和六个 contact profile 的 SHA256；每轮前后都会重新检查。
 它还从所选项目 YAML 解析 robot config/asset、project Stage 和 source asset 的真实
 路径与 SHA256。Warehouse source 是 `${ISAAC_ASSET_ROOT}` 下的 NVIDIA 外部资产，
 不是 Git 文件，但同样会在本批输入中锁定。启动子进程前会清掉调用者遗留的全部
-`ISAAC_NAV__*` 嵌套覆盖，只恢复当前 project/contact 两项，避免 30 Hz 或临时 robot
-配置混进正式矩阵。
+`ISAAC_NAV__*` 嵌套覆盖，只恢复本轮唯一允许的 project、contact 和已锁定 robot
+三项；即使使用项目默认 robot，也会显式恢复同一规范路径，避免 30 Hz 或另一个临时
+robot 配置混进正式矩阵。CLI 显式选择时两个项目必须解析为同一 robot asset、profile、
+lifecycle、轮径、轮宽、几何轮距和有效轮距，否则在启动 Isaac 前失败关闭。
 
 每轮启动命令固定为 headless、unbounded、Mapping、Ideal、Camera off；当前 schema
 v4 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
@@ -1446,12 +1469,16 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
     └── <run_id>.runner.log
 ```
 
-- `manifest.tsv`：每轮 31 列输入、状态、路径，以及 report/Isaac log/runner log 的
-  最终 SHA256；所有轮完成后改为只读并冻结 hash。
+- `manifest.tsv`：每轮 40 列输入、状态、路径，以及 report/Isaac log/runner log 的
+  最终 SHA256；其中 `robot_config_selection` 为 `project_default` 或 `explicit_cli`，
+  并逐行记录 robot canonical path、SHA256、profile、lifecycle、轮径、轮宽、几何轮距
+  和有效轮距。所有轮完成后改为只读并冻结 hash。
 - `analysis.json`：把全部报告作为一个数据集重新验证；`all` 必须满足两环境 × 六
   profile 完整矩阵，单环境也必须包含六 profile，且每组重复数不少于 `--repeats`。
-- `batch_summary.json`：记录 Git/协议输入、预期/实际计数，并绑定已冻结 manifest 和
-  analysis 的路径及 SHA256；不存在自引用 hash。
+- `batch_summary.json`：当前 summary `schema_version=2`；在
+  `locked_protocol_inputs.robot_config` 中记录 selection、path、SHA256 和完整 kinematics，
+  同时记录 Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和 analysis 的
+  路径及 SHA256；不存在自引用 hash。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
@@ -1477,7 +1504,9 @@ contact overlay 一起在同一“环境 + profile”组内锁定，任何 repea
 
 ```bash
 RUN=data/reports/contact_ab/skid_steer_v1
-jq '{result, environments, repeats, expected_counts, actual_counts, evidence}' \
+jq '{schema_version, result, environments, repeats,
+     robot: .locked_protocol_inputs.robot_config,
+     expected_counts, actual_counts, evidence}' \
   "$RUN/batch_summary.json"
 jq '{valid: .analysis_valid, counts, matrix, groups: (.groups | keys)}' \
   "$RUN/analysis.json"

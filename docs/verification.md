@@ -395,9 +395,16 @@ Wheel Odom parser 分别读到 `0.989/1.012 m`，而两份候选渲染出的 URD
 
 clean `ab909b4` 的 11 包 build、preflight 和全门结果为上表最新计数。这里的 PASS
 只证明候选身份、解析链、固定惯量边界和零几何差异；尚未执行候选的两环境、多速度、
-接触拓扑或 Realistic 物理 A/B，不能据此把任一值升级为 stable。正式接触矩阵脚本
-当前也仍需增加显式 `--robot-config` 及输入哈希锁，完成前不得手工拼接样本冒充正式
-批次。
+接触拓扑或 Realistic 物理 A/B，不能据此把任一值升级为 stable。
+
+提交 `4b55f90` 已给正式接触矩阵增加 `--robot-config FILE`：显式输入必须是仓库内
+canonical absolute regular file、被 Git 跟踪、在 `HEAD` 中是普通 blob，且工作树原始
+字节与该 blob 一致；默认和显式 robot 都进入批次哈希锁。Isaac 子进程清除继承的
+`ISAAC_NAV__*` 后只恢复 project/contact/robot 三项，40 列 manifest 与 schema-v2
+batch summary 都记录 robot 选择来源、路径、SHA256、profile/lifecycle 和完整运动学。
+该提交的 contact matrix 静态/契约定向验证为 `31 passed, 1 skipped`，唯一 skip 是
+本机未安装 `shellcheck`。这只验收参数、信任边界、override、manifest/summary 和失败
+关闭合同；尚未用任一候选执行真实物理矩阵，不能把静态 PASS 当作候选标定证据。
 
 ### 可逆接触 Profile 与 SimplePlane 隔离基线（2026-07-14）
 

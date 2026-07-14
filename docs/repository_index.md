@@ -95,7 +95,7 @@
 | `scripts/profile_runtime.sh` | 运行 `runtime_profiler` 的命令行包装器；统一持续时间、预热、标签和原子 JSON 报告路径。 |
 | `scripts/run_camera_view.sh` | 单独启动前视 RGB 相机 RViz 界面；复用项目 ROS 环境、受管进程组和 RViz 单实例锁。 |
 | `scripts/run_motion_baseline.sh` | 非交互底盘运动诊断入口；要求独占非 Reset `/cmd_vel` 运动命令，校验 Navigation/Collision Monitor/Teleop 未运行，按环境与里程计模式命名严格 JSON 报告，并用单实例锁纳入安全清理。 |
-| `scripts/run_contact_ab_matrix.sh` | 接触模型严格串行 A/B 入口；冻结 Git/协议输入，清除继承的嵌套配置覆盖，按 SimplePlane→Warehouse、六 profile、repeat 的确定顺序独立启动 Isaac 与 committed skid-steer runner；逐轮验证 schema v4、完整 kinematics 身份、六段报告、四轮主导符号及纯旋转 `mixed` 瞬态内部一致性，最终执行跨轮三层身份锁/完整矩阵聚合，冻结含 report/双日志 SHA 的 manifest，并原子写 `analysis.json` 与绑定两份证据 SHA 的 batch summary；清理只信号本会话认证进程组。输出目录结构和阅读顺序见使用手册第 17.5 节。 |
+| `scripts/run_contact_ab_matrix.sh` | 接触模型严格串行 A/B 入口；默认使用项目 robot，也可用 `--robot-config FILE` 选择仓库内 canonical/tracked/与 HEAD blob 原始字节一致的版本化候选，并把 robot 路径、SHA256、profile/lifecycle 与完整运动学冻结到 40 列 manifest 和 schema-v2 batch summary。脚本清除继承的嵌套配置覆盖，只恢复 project/contact/robot，按 SimplePlane→Warehouse、六 profile、repeat 的确定顺序独立启动 Isaac 与 committed skid-steer runner；逐轮验证 schema v4、完整 kinematics 身份、六段报告、四轮主导符号及纯旋转 `mixed` 瞬态内部一致性，最终执行跨轮三层身份锁/完整矩阵聚合，原子写 `analysis.json` 并绑定两份冻结证据 SHA；清理只信号本会话认证进程组。输出目录结构和阅读顺序见使用手册第 17.5 节。 |
 | `scripts/run_wheel_direction_diagnostic.sh` | 独占 Isaac 进程的四轮正/负方向诊断入口；选择项目/诊断 YAML、复用 Isaac 单实例锁，并启动不依赖 ROS 图的 standalone 物理测试，原子输出成功或失败 JSON。 |
 
 ## 5. Isaac Sim 包入口与主程序
@@ -475,7 +475,7 @@
 | `ros2_ws/src/robot_bringup/test/test_initial_pose_policy.py` | 测试 `auto`/`rviz` 规范化和非法策略拒绝。 |
 | `ros2_ws/src/robot_bringup/test/test_interactive_policy.py` | 覆盖模式专用 RViz 选择、headless 行为、Teleop 模式禁令和终端命令。 |
 | `ros2_ws/src/robot_bringup/test/test_runtime_scripts.py` | 用隔离运行目录测试统一环境、单实例锁、安全清理、ROS supervisor 顺序退出、地图事务/manifest，以及独立/顽固 RViz、Teleop 进程组的认证升级和元数据保留。 |
-| `ros2_ws/src/robot_bringup/test/test_contact_ab_matrix_script.py` | 检查 contact A/B 参数/顺序/输入锁、继承 override 清理、schema v4 与完整 kinematics readiness、严格报告门、symlink/Git-ignore 输出边界、manifest 原子行与最终 hash、未注册进程不误杀/不阻塞，以及跨轮 analysis 和 batch summary 的计数与证据 SHA 绑定。 |
+| `ros2_ws/src/robot_bringup/test/test_contact_ab_matrix_script.py` | 检查 contact A/B 参数/顺序/输入锁、显式 robot 的 absolute/canonical/regular/tracked/HEAD 字节一致门、只恢复 project/contact/robot 的 override 合同、schema v4 与完整 kinematics readiness、严格报告门、symlink/Git-ignore 输出边界、40 列 manifest 原子行与最终 hash、未注册进程不误杀/不阻塞，以及跨轮 analysis 和 schema-v2 batch summary 的 robot 身份、计数与证据 SHA 绑定。 |
 
 ## 31. `robot_rviz_plugins`
 
