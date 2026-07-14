@@ -14,7 +14,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 该路径及原始系统目标来自现有方案。
 
-## 0. 修订说明与当前状态（2026-07-14）
+## 0. 修订说明与当前状态（2026-07-15）
 
 本文最初是项目从零搭建时的完整设计方案，后续章节仍保留当时的目标、SOP 和最终统计验收标准，便于回溯为什么采用当前架构。它不是“所有目标均已验收”的声明；第一次使用仓库请先看 [`docs/user_manual.md`](docs/user_manual.md)，逐文件理解请看 [`docs/repository_index.md`](docs/repository_index.md)，当前实测证据和明确边界以 [`docs/verification.md`](docs/verification.md) 为准。
 
@@ -27,9 +27,14 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 - Runtime Profiler 统计受管 ROS 进程树以及 RTF、Topic Age、TF Lag、CPU/GPU；
 - ROS 监督脚本按 Lifecycle 顺序关闭 Nav2/定位节点，RViz 使用安全退出面板。
 - Jackal robot YAML 已升级为 schema v2 单一运动学真源，显式区分几何/有效轮距并
-  统一 wheel joint；runtime provenance v4 与 Realistic Wheel Odom 启动握手会锁定
+  统一 wheel joint；runtime provenance v5 与 Realistic Wheel Odom 启动握手会锁定
   文件路径、原始字节 SHA256、profile/lifecycle 和运动学数值，稳定 profile 保持原
   `0.37559 m` 控制行为，尚不代表有效轮距已经标定。
+- SimplePlane 1-collider、Warehouse 32-collider 与 Warehouse plane-only 1-collider
+  已成为版本化、可逆的 ground-topology profile；schema v5 还锁定源资产、匿名
+  overlay、source/target/disabled 精确集合并要求 contact ground target 一致。USD
+  应用/读回和离线分组合同已验证；严格矩阵入口可按三个合法 pair 生成 54-run/18-group
+  全拓扑批次，真实 32-vs-1 运动 A/B 尚未执行。
 - `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件；
   两者都没有覆盖 stable，也尚未完成两环境、多速度、拓扑或 Realistic 物理 A/B。
 
@@ -45,7 +50,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 | 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |
 | 7 Nav2 | 已实现 | 1 m/3 m smoke、MPPI 10/15 Hz 参数矩阵和真实局部轨迹已运行 | 多终点、多布局的完整统计 |
 | 8 Ground Truth | 已实现 | smoke 报告已记录终点误差与 GT 路径 | 200 次统计验收 |
-| 9 Realistic Odom | 已实现；运动学配置已收敛到 schema-v2 robot YAML，启动前做 provenance v4 失败关闭握手 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查；握手匹配、SHA 错配和服务超时由真实 rclpy 集成测试覆盖 | 新契约仍需在冻结候选上做完整 Realistic 物理复验及更复杂滑移/噪声矩阵 |
+| 9 Realistic Odom | 已实现；运动学配置已收敛到 schema-v2 robot YAML，启动前做 provenance v5 失败关闭握手 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查；握手匹配、SHA 错配和服务超时由真实 rclpy 集成测试覆盖 | 新契约仍需在冻结候选上做完整 Realistic 物理复验及更复杂滑移/噪声矩阵 |
 | 10 动态避障 | 已实现基线 | 当前固定世界的 4-seed 基线为 4/4 | 不能外推为多类障碍 90% 广义避障率 |
 | 11 自动实验 | 已实现框架 | Reset、场景契约和 smoke 批次可重复运行 | 完整 200 次矩阵未执行 |
 | 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 没有真实 `warehouse_v2`，未证明 changed-region 时间改善 ≥30% |
@@ -2449,7 +2454,7 @@ failure_reason:
 
 # 第十四部分：分阶段开发计划和验收标准
 
-以下内容保留原始阶段目标和严格验收门槛，不应仅凭代码存在就勾选完成。每阶段截至 2026-07-13 的“实现/实测/边界”结论见本文开头的 **0. 修订说明与当前状态**；尤其阶段 10 的 90% 广义动态避障率、阶段 11 的完整统计矩阵、阶段 12 的真实 changed-region 30% 改善和阶段 13 的真实机器人迁移仍未验收。
+以下内容保留原始阶段目标和严格验收门槛，不应仅凭代码存在就勾选完成。每阶段截至 2026-07-15 的“实现/实测/边界”结论见本文开头的 **0. 修订说明与当前状态**；尤其阶段 10 的 90% 广义动态避障率、阶段 11 的完整统计矩阵、阶段 12 的真实 changed-region 30% 改善和阶段 13 的真实机器人迁移仍未验收。
 
 ## 阶段 1：Jackal 物理底盘验证
 

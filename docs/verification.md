@@ -1,6 +1,6 @@
 # 最终验证台账
 
-本文件记录仓库当前实现的可复核证据。截至 2026-07-14，本轮运行环境为
+本文件记录仓库当前实现的可复核证据。截至 2026-07-15，本轮运行环境为
 Ubuntu 24.04、Isaac Sim 6.0.1.0、ROS 2 Jazzy、Fast DDS、Nav2 1.3.12、
 RTX 4090，ROS Domain 为 `42`。
 
@@ -25,13 +25,13 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；新矩阵证明证据链和 Reset 合同可靠，但 SimplePlane 原地旋转中心漂移 `0.297–0.350 m`、角速度平均误差 `60.1%–69.0%`，六 Profile 全部未过计划 8.7，Realistic 和候选有效轮距 A/B 仍未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v4 均已实现；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手；真实 Warehouse 单轮诊断 8/8 硬门通过；两环境正式接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 既有正式矩阵仍是历史 v3 且可单独复核；新 v4 与 v3 禁止混批。稳定有效轮距仍是保持行为的 `0.37559 m`，不是物理标定；批次 `success` 也只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手；真实 Warehouse 单轮诊断 8/8 硬门通过；历史两环境接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 既有正式矩阵仍是历史 v3 且可单独复核；v5 会把环境、topology、contact 分开锁定，v3/v4/v5 禁止混批。ground topology 的 USD 应用/读回已验证，但 32-vs-1 的真实运动 A/B 尚未执行。稳定有效轮距仍是保持行为的 `0.37559 m`，不是物理标定；批次 `success` 也只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
 | Ceres | 8/12/16/20 线程均完成 3 m 目标且控制 missed=0；保留 12 线程默认值 | 20 线程的 RTF、Scan 和 TF 延迟更差，不能据线程数推断性能更高 |
 | Camera / RViz | Camera schema v3 的严格配置、per-Prim USD authoring 与 headless 属性读回已完成；旧 schema 下 Off/Monitoring/HQ 有运行报告 | v3 尚未重跑真实静止/运动图像、RTF/GPU；`standard` 未运行，旧 HQ 约 15 Hz 不能冒充新配置验收 |
-| Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在历史实时报告中成立；新契约用真实 rclpy 覆盖匹配、SHA 错配和 Isaac 服务超时，并在 Wheel Odom 退出时关闭整套 Realistic launch | 新 schema-v4 握手尚未完成一轮冻结候选的真实 Isaac+ROS Realistic 导航；本轮 12 秒历史报告结束时目标仍 active，没有记录该目标最终结果 |
+| Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在历史实时报告中成立；新契约用真实 rclpy 覆盖 schema-v5 匹配、SHA 错配和 Isaac 服务超时，并在 Wheel Odom 退出时关闭整套 Realistic launch | 新 schema-v5 握手尚未完成一轮冻结候选的真实 Isaac+ROS Realistic 导航；本轮 12 秒历史报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
 | Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
 | 自动测试 | clean 代码提交 `ab909b4` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `907 passed / 1 skipped / 23 deselected`，ROS `725 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `21 passed / 232 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
@@ -244,7 +244,7 @@ velocity iterations 改为 16 的 `kit_20260714_144438.log` 仍无
 值，且 runner 只核对 odometry，没有执行初始化后 Articulation wrapper 的第二次
 USD 读取，也允许调用方把 Warehouse 误标为 SimplePlane。其运动数据和日志仍可
 用于 solver A/B，因为 Stage 属性、唯一改变量与警告均有独立证据；但这些 schema
-v1 本机忽略报告只保留为历史 A/B 证据，不满足当前 schema v2 runner 契约。
+v1 本机忽略报告只保留为历史 A/B 证据，不满足随后引入的 schema v2 runner 契约。
 报告及 SHA256 为：
 
 - 32/4：`candidate_supported_cylinder_tgs4_provenance_retry_warehouse_ideal.json`，
@@ -286,7 +286,7 @@ schema v1 的负向实跑把同一 Isaac 故意标为 `SimplePlane`：
 count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 runner
 `cmd_vel_subscription_count=0`，证明错误标签没有获得运动命令所有权。
 
-当前 schema v2 已用中性文件名重新实跑。正确 Warehouse + Ideal 报告
+随后 schema v2 已用中性文件名重新实跑。正确 Warehouse + Ideal 报告
 `usd_provenance_v2_warehouse_ideal.json` 为 14/14 成功，SHA256 为
 `7411bafef1ed644f74a0418ee3390e7c2f39f65675ac36c9a89bb6dd1dbc8560`；报告记录
 `schema_version=2`、`environment.id=Warehouse`、solver `32/4` 和
@@ -322,7 +322,7 @@ count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 run
 首段 Reset recovery 超时被保留为失败报告；全新 Isaac 进程立即复跑 14/14
 成功，当前不放宽 30 秒或静止阈值，后续 soak/Reset 矩阵继续观察。
 
-### Robot kinematics 单一来源零行为迁移（2026-07-14）
+### Robot kinematics 单一来源零行为迁移（2026-07-15）
 
 提交 `dd58c63e305eee2257f3afeb4d53ccbd9e2ff3ec` 完成运动学契约迁移。稳定
 `jackal.yaml` 从 schema v1 升为 v2，新增
@@ -346,11 +346,11 @@ count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 run
 - Robot Description 只用几何轮距布置轮心，从同一 YAML 传入实际 joint 名；非空
   visual link prefix 也不会改写 JointState 名。当前惯量张量仍是 Jackal 基线，因此
   不兼容的轮径、轮宽或质量会被明确拒绝，而不是冒充通用自定义机器人模型；
-- runtime provenance 升为 v4，发布 robot path/原始字节 SHA256、profile、lifecycle、
-  轮径、轮宽、几何/有效轮距及 controller 合同标志；新 motion runner 只产 v4，
-  历史 v3 只能离线单批复核；
-- Realistic Wheel Odom 在创建 `/wheel/odom`、JointState/Reset subscription、Reset
-  service 或 timer 前读取并逐项比对 Isaac v4 参数；超时或错配时非零退出，
+- `dd58c63` 提交当时 runtime provenance 升为 v4，发布 robot path/原始字节 SHA256、
+  profile、lifecycle、轮径、轮宽、几何/有效轮距及 controller 合同标志；当时的
+  motion runner 只产 v4，历史 v3 只能离线单批复核；后续 live 链已统一升级到 v5；
+- `dd58c63` 提交当时 Realistic Wheel Odom 在创建 `/wheel/odom`、JointState/Reset
+  subscription、Reset service 或 timer 前读取并逐项比对 Isaac v4 参数；超时或错配时非零退出，
   OnProcessExit 随后关闭当前 Realistic launch；
 - Contact A/B 的 v4 有效轮距计算使用每份 provenance 与所选 robot 一致的真实轮径，
   不再硬编码 `0.098 m`；历史 v3 仍锁定 canonical 半径，v3/v4 不得混批，输出记录
@@ -377,7 +377,7 @@ count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 run
 物理通过结论；多速度候选、SimplePlane/Warehouse、Realistic 和接触拓扑 A/B 仍是
 第三阶段下一步。
 
-### 版本化有效轮距实验候选（2026-07-14）
+### 版本化有效轮距实验候选（2026-07-15）
 
 提交 `ab909b4` 在不修改 stable 的前提下新增两个完整、自包含、可按原始字节哈希的
 schema-v2 候选：
@@ -458,6 +458,72 @@ Kit log SHA256: c0cefb0b603a9fd6bd5916a26c8592b46bc8ee4271b5297d16ad2618a2502ca6
 `[Error]` 为 0，`getSimulationTimeMonotonicAtTime`、TGS、obsolete
 `customGeometry` 和 contact filter/API mismatch 均为 0。该实跑证明 v3 发布/传输/
 解码链可用；它仍只是一个 legacy 条件，不能代替后续接触矩阵。
+
+### Ground collider topology 与 provenance v5（2026-07-15）
+
+提交 `6897712` 新增三个 schema-v1 topology profile：
+
+| Profile | 环境 | Source / Target / Disabled | 操作 |
+| --- | --- | ---: | --- |
+| `simple_plane_only1_v1` | SimplePlane | `1 / 1 / 0` | 保留源 collider |
+| `warehouse_combined32_v1` | Warehouse | `32 / 32 / 0` | 保留源 collider |
+| `warehouse_plane_only1_v1` | Warehouse | `32 / 1 / 31` | 只禁用非目标 collider |
+
+Profile 锁定源资产原始字节 SHA256、三组精确路径数量和 canonical 路径集合 hash。
+实现只在匿名 session overlay 中 author plane-only 所需的 31 条
+`physics:collisionEnabled=false`；combined 与 SimplePlane 不 author collider 属性。
+应用后重新读取 Stage，检查 overlay 没有额外 Prim、metadata、attribute 或其他 opinion，
+并验证 source 是 target 与 disabled 的无交集精确并集。切换 profile 会先移除旧层，
+源 Warehouse/SimplePlane USD 不会被修改。该提交定向验证为纯 Python `240 passed`、
+Isaac/USD `30 passed`，其中包括匿名层内容 hash 稳定、31 个精确 disable opinion、
+combined→plane-only→combined 可逆，以及额外 Prim/metadata fail-closed。
+
+随后 `3d1f891`、`899690b`、`835afb2`、`dc31164` 把启动链升级为 runtime provenance
+schema v5。生产者发布独立的 `ground_topology.json/.sha256`，并在发布前无条件从
+当前 Stage 重新 capture topology/contact；传入的 SceneComposer 快照只能与 fresh
+readback canonical 全量一致。离线 validator 验证 exact key、有限值、三个集合的
+数量/hash/partition/operation 以及 contact ground target。motion runner 完整校验
+canonical topology/contact JSON 与 SHA；Realistic Wheel Odom 只握手 schema、robot
+config path/SHA 和七个 kinematics/controller 字段，两者的 live 握手都只接受整数
+schema 5。A/B analyzer 的 v5 分组键为
+`environment::topology::contact_profile`：同环境锁完整 environment（包括只导出
+`Stage.GetRootLayer()`、不包含 SessionLayer treatment 的 RootLayer SHA）、wheel
+collider 和 source collider；同 environment+topology 锁 profile/operation/overlay SHA/
+target/disabled/readback 与 contact ground selector/list；同一 environment+contact
+跨 topology 锁 profile、scene、wheel bindings、wheel/ground material 和 readback，
+允许 treatment 所需的 ground bindings/path 改变；三元组内锁除进程地址型
+`overlay_identifier` 外的完整 contact。历史 v3/v4 保留已发布的旧锁层并可分别离线
+审计，但与 v5 互相禁止混批。
+
+定向证据为 runtime provenance `20 passed / 2 skipped`（无 PXR 的普通 Python 环境）、
+真实 Isaac/PXR producer 集成用例 `2 passed / 20 deselected`、report/motion/package
+`167 passed`、contact analyzer `59 passed`。提交 `6897712` 的 `30 passed` 只证明
+ground-topology overlay 核心及其可逆性；新增的两个 producer fresh-readback 用例由
+该 PXR marker 定向运行独立复验。这里的 PASS 证明配置、overlay、读回、传输和统计隔离
+合同成立，**尚未**产生 Warehouse 32-collider 与 plane-only 1-collider 的真实运动
+报告，不能声称 plane-only 改善转向或有效轮距。
+
+PXR 定向命令为：
+
+```bash
+source scripts/lib/common.sh
+ISAAC_SITE_PACKAGES="$("$ISAAC_PYTHON" -c \
+  'import site; print(site.getsitepackages()[0])')"
+PYTHONPATH="$ISAAC_SITE_PACKAGES:${PYTHONPATH:-}" \
+  python3 -m pytest -q isaac_sim/tests/test_runtime_provenance.py -m isaac
+```
+
+提交 `a1056c3` 将严格批处理入口扩展为 topology 维度。默认 `baseline` 保留
+SimplePlane/only1 + Warehouse/combined32 的 `36 runs / 12 groups`；显式 `all` 只展开
+三个合法 environment/topology pair，为 `54 runs / 18 groups`，不会生成非法笛卡尔积。
+脚本把 topology profile 加入 clean-HEAD blob/hash 锁，子进程只恢复
+project/topology/contact/robot 四个受信覆盖，readiness 与单轮报告都验证 schema v5、
+canonical topology JSON/SHA、源资产/三组 collider/readback 和 contact target。输出升级为
+43 列 manifest、analysis schema 2 与 batch-summary schema 3。定向脚本验证为
+`42 passed / 1 skipped`，唯一 skip 是本机未安装 `shellcheck`。后续加固还让 profile/
+topology 摘要直接序列化第一次 HEAD/hash 锁定值，并逐行核对冻结 Manifest 的 topology
+ID/path/SHA，阻断瞬态二次读盘造成的证据分叉；这仍只是批处理合同验证，
+54 次真实 Isaac topology 矩阵尚未执行。
 
 ### SimplePlane 六 Profile 严格批处理烟测（2026-07-14）
 
@@ -1069,11 +1135,11 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 | Clean schema v3 wheel direction | Warehouse + legacy：8/8 trial、全部硬门通过，Git dirty false；报告 SHA256 `f63ec096...a9de` |
 | Clean schema v3 motion provenance | Warehouse + Ideal + legacy：14/14 complete，三路时间戳无重复/回退，Git dirty false；报告 SHA256 `8532187c...0f23` |
 | Effective-track 定向测试 | fitter + package contract：30 passed；五报告探索拟合完成，但 contact/provenance 身份不足以冻结参数 |
-| Contact A/B 聚合与 Reset 诊断 | `robot_experiments` 当前完整包 271 passed；批处理/runtime 集合 56 passed、1 个 shellcheck 环境项 skipped；两环境六 Profile × 三重复为 36/36、216 次 Reset 成功、分析纳入 36/排除 0；计划 8.7 原地旋转物理门仍 FAIL |
+| Contact A/B 聚合与 Reset 诊断 | `robot_experiments` 当前完整包 350 passed；批处理/runtime 定向集合 77 passed、1 个 shellcheck 环境项 skipped；两环境六 Profile × 三重复为 36/36、216 次 Reset 成功、分析纳入 36/排除 0；计划 8.7 原地旋转物理门仍 FAIL |
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
-| Repository index set comparison | 当前 305 个交付路径对 305 个索引路径，集合差分无输出 |
-| Markdown 相对链接 | README、`plan.md` 与 10 个 `docs/*.md` 共 72 个本地链接，当前缺失为 0 |
+| Repository index set comparison | 当前 318 个 Git 跟踪路径对 318 个索引路径，集合差分无输出 |
+| Markdown 相对链接 | README、`plan.md` 与 10 个 `docs/*.md` 共 78 个本地链接，当前缺失为 0 |
 | `git diff --check` | 当前 PASS；代码冻结和提交前再执行一次最终审计 |
 
 推荐最终命令：

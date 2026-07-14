@@ -17,7 +17,7 @@
 | 修改参数 | 本索引对应配置行 | 同包的 `test/`、`docs/development.md` |
 | 保存或切换地图 | `scripts/save_map.sh` | `ros2_ws/src/robot_bringup/robot_bringup/map_manifest.py`、`data/maps/manifests/`、`docs/calibration.md` |
 | 做导航/性能实验 | `scripts/profile_runtime.sh` | `ros2_ws/src/robot_experiments/robot_experiments/runtime_profiler.py`、`docs/verification.md` |
-| 做底盘物理诊断 | `scripts/run_wheel_direction_diagnostic.sh`、`scripts/run_motion_baseline.sh` | `isaac_sim/configs/diagnostics/wheel_direction.yaml`、`isaac_sim/configs/physics/`、`robot_experiments/effective_track_analysis.py` |
+| 做底盘物理诊断 | `scripts/run_wheel_direction_diagnostic.sh`、`scripts/run_motion_baseline.sh` | `isaac_sim/configs/ground_topologies/`、`isaac_sim/configs/physics/`、`isaac_sim/configs/diagnostics/wheel_direction.yaml`、`ros2_ws/src/robot_experiments/robot_experiments/effective_track_analysis.py` |
 | 遇到启动、TF、QoS 或退出问题 | `scripts/diagnose.sh` | `docs/troubleshooting.md`、`scripts/clean_runtime.sh` |
 
 ## 1. 顶层文件
@@ -95,7 +95,7 @@
 | `scripts/profile_runtime.sh` | 运行 `runtime_profiler` 的命令行包装器；统一持续时间、预热、标签和原子 JSON 报告路径。 |
 | `scripts/run_camera_view.sh` | 单独启动前视 RGB 相机 RViz 界面；复用项目 ROS 环境、受管进程组和 RViz 单实例锁。 |
 | `scripts/run_motion_baseline.sh` | 非交互底盘运动诊断入口；要求独占非 Reset `/cmd_vel` 运动命令，校验 Navigation/Collision Monitor/Teleop 未运行，按环境与里程计模式命名严格 JSON 报告，并用单实例锁纳入安全清理。 |
-| `scripts/run_contact_ab_matrix.sh` | 接触模型严格串行 A/B 入口；默认使用项目 robot，也可用 `--robot-config FILE` 选择仓库内 canonical/tracked/与 HEAD blob 原始字节一致的版本化候选，并把 robot 路径、SHA256、profile/lifecycle 与完整运动学冻结到 40 列 manifest 和 schema-v2 batch summary。脚本清除继承的嵌套配置覆盖，只恢复 project/contact/robot，按 SimplePlane→Warehouse、六 profile、repeat 的确定顺序独立启动 Isaac 与 committed skid-steer runner；逐轮验证 schema v4、完整 kinematics 身份、六段报告、四轮主导符号及纯旋转 `mixed` 瞬态内部一致性，最终执行跨轮三层身份锁/完整矩阵聚合，原子写 `analysis.json` 并绑定两份冻结证据 SHA；清理只信号本会话认证进程组。输出目录结构和阅读顺序见使用手册第 17.5 节。 |
+| `scripts/run_contact_ab_matrix.sh` | 接触/ground-topology 严格串行 A/B 入口；在默认 `--environment all` 下，`--ground-topology baseline` 保持 SimplePlane-only1 + Warehouse-combined32 的 36-run/12-group 历史口径，`all` 展开三个合法 environment/topology pair 的 54-run/18-group 矩阵，显式 ID 必须匹配单一环境。默认使用项目 robot，也可用 `--robot-config FILE` 选择仓库内 canonical/tracked/与 HEAD blob 原始字节一致的版本化候选；robot、topology 和六个 contact profile 都进入跨轮 HEAD/hash 锁。脚本清除继承的嵌套覆盖，只恢复 project/topology/contact/robot，逐轮验证 schema-v5 topology/contact canonical JSON、Stage readback、target 交叉门、完整 kinematics、六段/轮向报告，并写入 43 列 manifest、analysis schema-v2 和 batch-summary schema-v3；最终绑定冻结 manifest/analysis SHA，清理只信号本会话认证进程组。输出结构和阅读顺序见使用手册第 17.5 节。 |
 | `scripts/run_wheel_direction_diagnostic.sh` | 独占 Isaac 进程的四轮正/负方向诊断入口；选择项目/诊断 YAML、复用 Isaac 单实例锁，并启动不依赖 ROS 图的 standalone 物理测试，原子输出成功或失败 JSON。 |
 
 ## 5. Isaac Sim 包入口与主程序
@@ -104,8 +104,8 @@
 | --- | --- |
 | `isaac_sim/__init__.py` | Isaac 项目 Python 包标记及顶层说明。 |
 | `isaac_sim/apps/__init__.py` | standalone 应用子包标记。 |
-| `isaac_sim/apps/navigation_sim.py` | Isaac 主入口：解析模式、Camera、realtime/unbounded 节流与目标 RTF CLI，加载配置、组合 Stage、创建传感器/图并运行仿真；退出时按 Camera graph、Reset bridge、ROS node/context 的依赖顺序释放资源。 |
-| `isaac_sim/apps/wheel_direction_diagnostic.py` | standalone 单轮物理诊断适配器；在每个轮上分别施加 `+1/-1 rad/s`，采集精确地面过滤接触、法向力/摩擦、轮底速度与底盘响应，执行 8 个 fail-closed trial，并在 SimulationApp 关闭前持久化严格 JSON。 |
+| `isaac_sim/apps/navigation_sim.py` | Isaac 主入口：解析模式、Camera、realtime/unbounded 节流与目标 RTF CLI，加载配置、通过 `SceneComposer` 组合 Stage，并把 composer 的 topology/contact 快照交给 schema-v5 provenance 做当前 Stage 再读回一致性校验；随后创建传感器/图并运行仿真，退出时按 Camera graph、Reset bridge、ROS node/context 的依赖顺序释放资源。 |
+| `isaac_sim/apps/wheel_direction_diagnostic.py` | standalone 四轮逐轮物理诊断应用；在每个轮上分别施加 `+1/-1 rad/s`，采集 topology target 精确过滤的地面接触、法向力/摩擦、轮底速度与底盘响应，执行 8 个 fail-closed trial，并把 composer topology/contact 快照绑定进 schema-v5 provenance 后、在 SimulationApp 关闭前持久化严格 JSON。 |
 
 ## 6. Isaac USD 与资产
 
@@ -126,9 +126,9 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `isaac_sim/configs/project.yaml` | 默认 Jackal/Warehouse 项目总配置；用规范 `environment.id` 串联环境、机器人、仿真模式、出生点、ROS、GT 和所有子配置，严格声明 ground collider 的必需 Prim、semantic class、期望数量及默认 `legacy_baseline` 接触 profile。 |
-| `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；保留显式环境/ground collider/contact profile 契约，并要求环境变量提供真实 USD、defaultPrim 和传感器配置。 |
-| `isaac_sim/configs/simple_plane.project.yaml` | SimplePlane 隔离项目配置；使用独立源环境/组合根、规范 `environment.id=SimplePlane`、唯一 ground collider 和同一 Jackal/传感器基线，防止 Warehouse subLayer 污染 A/B。 |
+| `isaac_sim/configs/project.yaml` | 默认 Jackal/Warehouse 项目总配置；用规范 `environment.id` 串联环境、机器人、仿真模式、出生点、ROS、GT 和所有子配置。`environment.ground_colliders` 锁定源资产的 32 个 collider 发现契约，`files.ground_topology_profile` 默认选择 `warehouse_combined32_v1` 作为有效目标集合，接触 profile 默认仍为 `legacy_baseline`。 |
+| `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；保留显式 Warehouse source-ground resolver、默认 `warehouse_combined32_v1` topology 和 contact profile 契约，并要求环境变量提供真实机器人 USD、defaultPrim 和传感器配置。 |
+| `isaac_sim/configs/simple_plane.project.yaml` | SimplePlane 隔离项目配置；使用独立源环境/组合根、规范 `environment.id=SimplePlane`、唯一源 collider，并固定选择 `simple_plane_only1_v1` topology 和同一 Jackal/传感器基线，防止 Warehouse subLayer 污染 A/B。 |
 | `isaac_sim/configs/spawn_poses.yaml` | 出生点唯一真源；同时保存物理 USD Pose、Map Pose、不确定度，以及自动初始位姿必须匹配的地图版本和 bundle SHA256。 |
 | `isaac_sim/configs/environments/warehouse_multiple_shelves.yaml` | 官方 Warehouse 资产路径、组合方式和预期关键 Prim 的小型描述。 |
 
@@ -142,6 +142,9 @@
 | `isaac_sim/configs/robots/custom_robot.yaml` | 与运行时同为 schema v2 的 fail-fast 模板；profile/lifecycle、几何/有效轮距等 `null` 表示真实机器人尚未测量，不能伪造默认值。 |
 | `isaac_sim/configs/simulation/ideal.yaml` | Ideal 模式与 TF 发布所有权的配置快照；当前运行时不读取此文件。 |
 | `isaac_sim/configs/simulation/realistic.yaml` | Realistic 模式与 TF 发布所有权的配置快照；当前运行时不读取此文件。 |
+| `isaac_sim/configs/ground_topologies/simple_plane_only1_v1.yaml` | SimplePlane 的版本化 topology schema-v1；按源资产 SHA256 与 canonical collider-path hash 锁定唯一 Plane，`preserve_source_colliders` 保持 source=target=1、disabled=0。 |
+| `isaac_sim/configs/ground_topologies/warehouse_combined32_v1.yaml` | Warehouse 组合地面基线 topology schema-v1；锁定官方源资产 SHA256、Plane + 31 个 `floor_decal` 的 32-collider 集合，`preserve_source_colliders` 保持 source=target=32、disabled=0。 |
+| `isaac_sim/configs/ground_topologies/warehouse_plane_only1_v1.yaml` | Warehouse Plane-only A/B topology schema-v1；从同一个冻结的 32-collider source 精确保留唯一 Plane，并声明 `disable_non_target_colliders`、target=1、disabled=31 及各集合 canonical path hash。 |
 | `isaac_sim/configs/physics/legacy_baseline.yaml` | 接触对照基线；不 author scene threshold 或新材质，只读回组合 Stage 原有有效值。 |
 | `isaac_sim/configs/physics/threshold_corr_0p00025_offset_0p0004.yaml` | 仅 author patch-friction scene threshold 的 2×2 矩阵点：correlation `0.00025 m`、offset `0.0004 m`。 |
 | `isaac_sim/configs/physics/threshold_corr_0p00025_offset_0p04.yaml` | 仅 author patch-friction scene threshold 的 2×2 矩阵点：correlation `0.00025 m`、offset `0.04 m`。 |
@@ -181,8 +184,8 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/__init__.py` | Isaac 核心源码包标记。 |
-| `isaac_sim/src/config.py` | 严格解析总配置、path-safe 规范环境 ID、ground collider 解析契约、接触 profile 路径、环境变量替换、嵌套 override、模式组合和必需路径。 |
-| `isaac_sim/src/runtime_provenance.py` | Isaac 启动时流式哈希实际机器人/环境输入、组合根 Layer 和 Git revision/dirty，交叉校验 Stage solver 与初始化后 Articulation wrapper 的 USD 后端读回；schema v4 还发布严格 robot kinematics/controller 身份，并核对 contact profile、匿名 overlay、scene、collider、binding 与材质读回，以 canonical JSON + SHA256 发布完整接触快照。它绑定实际 USD 输入，不声称直接读取 PhysX 引擎内部状态。 |
+| `isaac_sim/src/config.py` | 严格解析总配置、path-safe 规范环境 ID、source ground-collider 发现契约、必需的 ground-topology/contact profile 路径、环境变量替换、嵌套 override、模式组合和必需路径；topology target 的有效 collider 集合不在这里重复声明。 |
+| `isaac_sim/src/runtime_provenance.py` | Isaac 启动时流式哈希实际机器人/环境/ground-topology/contact 输入、`Stage.GetRootLayer()`（不含 SessionLayer treatment）和 Git revision/dirty，交叉校验 Stage solver 与初始化后 Articulation wrapper 的 USD 后端读回。schema v5 在 v4 的 robot kinematics/controller 与完整 contact 身份之上新增严格 19 字段 `ground_topology`：重读当前 Stage，验证 profile/源资产、匿名 overlay、source/target/disabled 精确分区与 USD readback，并拒绝 composer 提供的陈旧 topology/contact 快照；同时要求 contact ground 集合等于 topology target，以各自 canonical JSON + SHA256 ROS 参数发布。它绑定实际 USD 输入，不声称直接读取 PhysX 引擎内部状态。 |
 | `isaac_sim/src/yaml_utils.py` | 通用严格 YAML loader；拒绝重复 mapping key，并提供 mapping、字段、数值、向量和未知 key 校验函数。 |
 
 ## 12. Isaac Stage 管理
@@ -191,10 +194,11 @@
 | --- | --- |
 | `isaac_sim/src/stage/__init__.py` | Stage 子包标记。 |
 | `isaac_sim/src/stage/stage_loader.py` | 创建/打开项目 Stage，管理 Sublayer、Reference、Xform 和保存。 |
-| `isaac_sim/src/stage/scene_composer.py` | 按“唯一环境 Sublayer + 机器人 Reference”组合最终 Stage，在物理启动前 author 配置化 articulation solver iterations，并把所选接触 profile 应用到匿名 session sublayer 后立即读回验证。 |
+| `isaac_sim/src/stage/scene_composer.py` | 按“唯一环境 Sublayer + 机器人 Reference”组合最终 Stage，在物理启动前 author 配置化 articulation solver iterations；随后先应用并保存 ground-topology 匿名 session-layer 快照，再让接触 profile 只作用于该 topology 的已验证 target 集合，并保存 contact 快照供 provenance 复核。 |
 | `isaac_sim/src/stage/physics_setup.py` | 查找并校验唯一 PhysicsScene，设置重力、固定时间步和 PhysX 参数，并提供基于稳态墙钟的 `FramePacer`：realtime 模式按目标 RTF 节流，unbounded 模式明确取消节流。 |
 | `isaac_sim/src/stage/asset_validator.py` | 检查 defaultPrim、依赖、关键 Prim、传感器 frame、Articulation、wheel joint/碰撞和 GT 隔离。 |
-| `isaac_sim/src/stage/contact_setup.py` | 严格、可逆的接触 profile 实现；精确解析 4 个 wheel collider 与环境 ground collider，在匿名 session layer author threshold/显式材质和 physics-purpose binding，完整读回 scene、材质、binding、hash，任何歧义或不一致都会清理临时层并失败。 |
+| `isaac_sim/src/stage/ground_topology.py` | 严格、可逆的 ground-collider topology 核心：解析 schema-v1 profile，按原始字节 SHA256、selector、数量和 canonical path hash 从只读源资产解析 source/target/disabled；只在唯一匿名 session sublayer 对 disabled 集合 author 精确的 `physics:collisionEnabled=false`，拒绝额外 Prim/property/metadata opinion，并从有效 Stage 读回全部 collider 状态、overlay hash 和分区证据；切换或失败会移除旧 topology 层并恢复原 edit target。 |
+| `isaac_sim/src/stage/contact_setup.py` | 严格、可逆的接触 profile 实现；精确解析 4 个 wheel collider，并重新验证已应用 ground topology 后只消费其 target collider 集合，在独立匿名 session layer author threshold/显式材质和 physics-purpose binding，完整读回 scene、材质、binding、hash，任何歧义或不一致都会清理临时层并失败。 |
 
 ## 13. Isaac 机器人运行时
 
@@ -247,7 +251,7 @@
 | `isaac_sim/tests/test_config.py` | 测试项目/机器人配置 schema、环境变量 override、模式组合和 custom fail-fast。 |
 | `isaac_sim/tests/test_asset_paths.py` | 测试资产 manifest、项目 overlay 只引用本地导入以及路径可复现性。 |
 | `isaac_sim/tests/test_stage_composition.py` | Isaac/USD marker 测试：Stage 组合、唯一 PhysicsScene、solver authoring、旧 collider inactive、新 Cylinder 尺寸/轴向/对称性/材质和 articulation 结构。 |
-| `isaac_sim/tests/test_runtime_provenance.py` | 测试流式文件 SHA256、clean/dirty Git 快照，以及机器人/环境/solver/组合 Layer 到 ROS 参数的完整映射。 |
+| `isaac_sim/tests/test_runtime_provenance.py` | 测试流式文件 SHA256、clean/dirty Git 快照、机器人/环境/solver/组合 Layer，以及 schema-v5 combined32/plane-only topology 和 contact 到 ROS 参数的完整映射；同时覆盖 composer 快照的 fresh Stage 重读、陈旧/篡改拒绝和 topology target/contact ground 交叉门。 |
 | `isaac_sim/tests/test_kinematics_config.py` | 覆盖 robot schema v2 exact-key、重复键、旧 schema、profile/lifecycle、joint 名/唯一性、几何/质量/总质量、bool/NaN/Infinity/非正数、controller 旧重复字段，以及稳定 Control Graph 数值不变。 |
 | `isaac_sim/tests/test_graph_contracts.py` | 测试 Topic/QoS、控制/传感器/TF Graph 节点连接和 GT 隔离。 |
 | `isaac_sim/tests/test_joint_mapping.py` | 测试四轮 joint 分组和控制顺序。 |
@@ -257,7 +261,9 @@
 | `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 事务/commit 顺序、非法 boundary 不发布 event、initial-pose 失败不形成 event/响应分裂、版本化响应 metadata、fresh-scan initial pose 和重复 seed。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 测试动态障碍解析、有限数、repeat、轨迹推进和 Reset。 |
 | `isaac_sim/tests/test_camera_contracts.py` | 测试相机 profile 默认值、严格 schema、RGB/CameraInfo 同源时间戳/QoS、CLI 选择和 Render Product 幂等释放。 |
-| `isaac_sim/tests/test_contact_setup.py` | Isaac/USD 定向测试接触 profile schema、精确 wheel/ground 解析、semantic class 全匹配、匿名层可逆性、threshold/显式材质 authoring、binding/readback 和失败清理。 |
+| `isaac_sim/tests/test_ground_topology_config.py` | 纯 Python 锁定三份 topology schema-v1 catalog、source/target/disabled 数量与 hash、canonical collider-path 编码、exact/duplicate/type/操作不变量，以及默认 Warehouse/SimplePlane project 选择的稳定 topology 和 plane-only 可替换路径。 |
+| `isaac_sim/tests/test_ground_topology.py` | Isaac/USD 定向验证 combined32 零行为 overlay、plane-only 精确禁用 31 个 collider、匿名层内容 hash 稳定、可逆切换、唯一 marker、无额外 authored opinion、源资产 hash/Stage readback 失败门和 edit-target/overlay 清理。 |
+| `isaac_sim/tests/test_contact_setup.py` | Isaac/USD 定向测试接触 profile schema、精确 wheel 解析、topology target ground 消费、project source resolver 一致性、匿名层可逆性、threshold/显式材质 authoring、binding/readback 和失败清理。 |
 | `isaac_sim/tests/test_wheel_direction_diagnostic.py` | 单元/契约测试单轮正负矩阵、接触与力方向、自由轮 advisory、法向力 API 一致性、对称性、严格 JSON、standalone app 以及启动脚本的独占/持久化约束。 |
 
 ## 18. ROS 工作区总览
@@ -317,13 +323,13 @@
 | `ros2_ws/src/robot_odometry/resource/robot_odometry` | ament resource index 标记。 |
 | `ros2_ws/src/robot_odometry/robot_odometry/__init__.py` | 包入口，重新导出核心里程计 dataclass 和计算类。 |
 | `ros2_ws/src/robot_odometry/robot_odometry/kinematics.py` | 纯 Python 四轮滑移转向积分、joint 映射、时间间隔和协方差计算；运动学参数必须由已验证 profile 显式注入，不含 Jackal 默认副本。 |
-| `ros2_ws/src/robot_odometry/robot_odometry/robot_profile.py` | 按原始字节哈希并严格解析 schema-v2 robot YAML，校验几何/质量/总质量、controller 与四个唯一 joint，构造轮侧运动学身份；随后校验 Isaac provenance v4 的十个 path/hash/profile/lifecycle/数值/布尔参数。 |
-| `ros2_ws/src/robot_odometry/robot_odometry/wheel_odometry_node.py` | 启动前先用 Isaac 参数服务做 fail-closed 运动学握手；成功后才订阅 `/joint_states`、发布 `/wheel/odom`、创建 Reset/service/timer；不发布 TF，失败时非零退出。 |
+| `ros2_ws/src/robot_odometry/robot_odometry/robot_profile.py` | 按原始字节哈希并严格解析 schema-v2 robot YAML，校验几何/质量/总质量、controller 与四个唯一 joint，构造轮侧运动学身份；随后对 Isaac provenance 的十个 path/hash/profile/lifecycle/数值/布尔运动学参数做 exact-key 握手，并只接受当前在线 schema v5（此处不替代完整 topology/contact 报告校验）。 |
+| `ros2_ws/src/robot_odometry/robot_odometry/wheel_odometry_node.py` | 启动前先用 Isaac 参数服务做 fail-closed schema-v5 运动学握手；成功后才订阅 `/joint_states`、发布 `/wheel/odom`、创建 Reset/service/timer；不发布 TF，失败时非零退出。 |
 | `ros2_ws/src/robot_odometry/config/wheel_odometry.yaml` | 仅保存频率、积分间隔、frame 和协方差；轮径、有效轮距与 joint 名由 robot YAML 唯一提供。 |
 | `ros2_ws/src/robot_odometry/launch/wheel_odometry.launch.py` | 启动节点并显式转发 robot config、Isaac 节点名、握手 timeout 与可替换运行参数 YAML；Wheel Odom 任意退出都会触发当前 Realistic launch 的受管 Shutdown，正常全局关闭时不重复发事件。 |
 | `ros2_ws/src/robot_odometry/test/test_kinematics.py` | 测试显式运动学注入、直行、旋转、角度 wrap、时间异常、Reset、joint 输入，以及节点端点受握手门控制。 |
-| `ros2_ws/src/robot_odometry/test/test_robot_profile.py` | 覆盖 schema-v2 robot loader、原始字节 SHA、exact/duplicate/finite/joint/controller 门及 provenance v4 十参数的逐项篡改拒绝。 |
-| `ros2_ws/src/robot_odometry/test/test_kinematics_handshake_integration.py` | 用真实 rclpy 参数服务验证匹配时创建 `/wheel/odom`、SHA 不匹配时不创建业务端点、Isaac 缺席超时及构造失败后的 rclpy 清理。 |
+| `ros2_ws/src/robot_odometry/test/test_robot_profile.py` | 覆盖 schema-v2 robot loader、原始字节 SHA、exact/duplicate/finite/joint/controller 门，以及在线 provenance v5 十参数逐项篡改、旧 v4、配置加载后字节变化与参数集合增删的拒绝。 |
+| `ros2_ws/src/robot_odometry/test/test_kinematics_handshake_integration.py` | 用真实 rclpy schema-v5 参数服务验证匹配时创建 `/wheel/odom`、SHA 不匹配时不创建业务端点、Isaac 缺席超时及构造失败后的 rclpy 清理。 |
 
 ## 22. `robot_localization_config`
 
@@ -399,7 +405,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/spawn_poses.py` | ROS 侧读取命名 USD/Map Pose并要求已标定。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scenario.py` | 场景 dataclass/loader、导航场景门、Isaac 动态运行时和物理几何契约校验。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/metrics.py` | 单轮成功判定、路径长度、角度 wrap、避障率和增量时间改善等纯指标函数。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema、Isaac 运行态 provenance、哈希和严格 JSON 值校验，配置 SHA256、单轮 CSV/JSON 报告，以及底盘诊断原子写入。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest、哈希和严格 JSON 值校验，配置 SHA256、单轮 CSV/JSON 与底盘诊断原子写入；离线 runtime-provenance validator 精确接受历史 schema v3、v4 和当前 v5，只有 v5 必须携带 19 字段 ground-topology 身份，验证环境/源资产绑定、sorted unique collider path/count/hash、source=target⊎disabled、操作不变量，以及 topology target 与 contact ground 列表/数量相等、selector 契约兼容。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/incremental_map_compare.py` | 离线加载三张 Map Server YAML/PGM，按世界坐标比较耗时、变化恢复和旧区退化。 |
@@ -407,8 +413,8 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault.py` | 无 ROS 依赖的 LaserScan 故障状态机；实现丢包/暂停/frame 替换/恢复/计数，并强制每条命令携带当前 epoch，彻底隔离 Reset 前排队的旧命令。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault_bridge.py` | ROS adapter：把 `/scan` 按显式 JSON 命令转发到 `/scan_fault`，发布 transient-local 状态，并在 reset event 或时间戳回退时清除旧故障。仅用于 Collision Monitor 安全验证。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline.py` | 与 ROS 解耦的底盘诊断配置解析与指标核心；严格校验运动方向/限幅，计算路程、横向漂移、航向、四轮方向、停止响应和时间戳完整性。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动 provenance，每段运动前 Reset，严格解析版本化 generation/boundary trailer，锁存 event→response 窗口逐 Topic 历史最大 stamp，并按三路独立 sequence/receive/credited 高水位消费 Clock/Odom/JointState 相干组，以 stale/future-skew/wall/速度门阻止旧 epoch、单流复用、断流、覆盖式回退与已知运动跨窗；按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行默认 14 段或 A/B 6 段命令；timeout/成功报告保留 wall/sim age、逐门违规、全窗 extrema/峰值和最长静止窗，所有退出路径尝试零速 burst 并原子写报告。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/contact_ab_analysis.py` | 严格离线 contact A/B 聚合 CLI；按实际时间戳重算 canonical Jackal 六段协议的期望/误差，交叉验证四轮期望方向、主导均值、deadband 两侧 `mixed` 瞬态、逐轮/总标志与 collider joint，并用规范化 JSON SHA 去重。历史 v3 单批只接受 canonical `0.098 m` 轮径；v4 单批从 provenance 锁定实际 robot 轮径和运动学身份，v3/v4 不得混算。输出分布、对称性、停止时延和有效轮距但不自动排名。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动参数，只接受当前在线 provenance schema v5，校验 canonical contact JSON/SHA 和新增 canonical ground-topology JSON/SHA，再调用完整 report validator；每段运动前 Reset，严格解析版本化 generation/boundary trailer，锁存 event→response 窗口逐 Topic 历史最大 stamp，并按三路独立 sequence/receive/credited 高水位消费 Clock/Odom/JointState 相干组，以 stale/future-skew/wall/速度门阻止旧 epoch、单流复用、断流、覆盖式回退与已知运动跨窗；按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行默认 14 段或 A/B 6 段命令；timeout/成功报告保留 wall/sim age、逐门违规、全窗 extrema/峰值和最长静止窗，所有退出路径尝试零速 burst 并原子写报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/contact_ab_analysis.py` | 严格离线 contact A/B 聚合 CLI；按实际时间戳重算 canonical Jackal 六段协议的期望/误差，交叉验证四轮期望方向、主导均值、deadband 两侧 `mixed` 瞬态、逐轮/总标志与 collider joint，并用规范化 JSON SHA 去重。单批 provenance 必须同 schema：历史 v3 只接受 canonical `0.098 m` 轮径，v4/v5 从 provenance 锁定实际 robot 轮径和运动学；v3/v4 仍按 `environment::contact_profile` 分组且完整矩阵为 12 组。v5 按合法的 `environment::ground_topology::contact_profile` 三元组分组：按环境锁 RootLayer SHA、source 发现和 wheel collider；按 environment+topology 锁 profile/operation/`overlay_sha256`/target/disabled/readback 与 contact ground selector/list，进程地址型 topology `overlay_identifier` 不进入锁；同 environment+contact 跨 topology 锁 profile、scene、wheel bindings、wheel/ground material 和 readback，允许 ground bindings/path 随 topology 变化；组内锁除进程地址型 contact `overlay_identifier` 外的完整 contact。完整矩阵为 3 个合法 environment/topology 对 × 6 profile = 18 组。输出 v5 analysis schema 2（历史为 1）的分布、对称性、停止时延和有效轮距，但不自动排名。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/effective_track_analysis.py` | 离线有效轮距拟合 CLI；按输入文件 SHA256 和调用方指定的 runtime provenance 精确筛选成功 motion 报告，只接受左右纯旋转的有限数/正确符号样本，分别输出过原点 yaw-response OLS、direct OLS、TLS 及按侧/速度档/报告的审计结果。 |
 | `ros2_ws/src/robot_experiments/launch/initial_pose.launch.py` | 把 spawn pose、持续监听和扫描/TF 恢复参数传给 initial pose publisher。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 启动 experiment runner并传入场景、出生点、输出目录和可选配置 override。 |
@@ -423,16 +429,16 @@
 | `ros2_ws/src/robot_experiments/test/fixtures/spawn_poses_uncalibrated.yaml` | 未标定出生点 fixture，用于验证 fail-fast。 |
 | `ros2_ws/src/robot_experiments/test/test_configuration.py` | 测试三种场景解析、schema、相对路径、静/动态契约和真实物理配置一致性。 |
 | `ros2_ws/src/robot_experiments/test/test_metrics.py` | 测试成功/失败原因、路径、角度、率和时间改善指标。 |
-| `ros2_ws/src/robot_experiments/test/test_report.py` | 测试 manifest 必需字段、有限数/hash、CSV/JSON 原子替换、严格底盘 JSON 和输出路径安全。 |
+| `ros2_ws/src/robot_experiments/test/test_report.py` | 测试 manifest 必需字段、有限数/hash、CSV/JSON 原子替换、严格底盘 JSON 和输出路径安全；覆盖 provenance v3/v4/v5 exact schema，及 v5 topology 19 字段、类型/path/hash、分区/操作、环境 source 与 contact target/selector 交叉门。 |
 | `ros2_ws/src/robot_experiments/test/test_incremental_map_compare.py` | 用合成 PGM 测试变化恢复、旧区退化、阈值 override 和 CLI 返回码。 |
-| `ros2_ws/src/robot_experiments/test/test_package_contract.py` | 检查实验安装入口（含 contact A/B analyzer）、配置/launch 文件、reset/dynamic contract 以及底盘诊断入口/安全清理集成。 |
+| `ros2_ws/src/robot_experiments/test/test_package_contract.py` | 检查实验安装入口（含 contact A/B analyzer）、配置/launch 文件、reset/dynamic contract、底盘诊断入口/安全清理集成，并直接锁定 Isaac provenance producer 与 motion-runner consumer 的完整 ROS 参数名集合一致。 |
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
 | `ros2_ws/src/robot_experiments/test/test_runtime_profiler.py` | 测试 profiler 的 Topic/TF 覆盖、RTF 回钟与停滞、百分位、Camera stamp 多重集配对、进程组统计和 GPU delta。 |
 | `ros2_ws/src/robot_experiments/test/test_scan_fault.py` | 纯单元测试故障数量边界、定时暂停、持续丢流、frame 替换、非法命令、时间戳回退和 Reset epoch。 |
 | `ros2_ws/src/robot_experiments/test/test_scan_fault_bridge_integration.py` | 用真实 rclpy/DDS 节点验证故障控制 Topic、scan 转发、状态发布、Reset 清理和旧 epoch 命令拒绝。 |
-| `ros2_ws/src/robot_experiments/test/test_motion_baseline.py` | 覆盖三档/圆弧配置、运动符号、漂移/航向/轮向/停止指标、deadband 瞬态、Reset metadata/boundary、旧队列拒绝、三流相干组、Clock-only 缺流、逐 Topic 回退/高水位、跨 Topic 一帧回调相位、逐门诊断、报告有限数约束和启动脚本独占 `/cmd_vel` 契约。 |
-| `ros2_ws/src/robot_experiments/test/test_contact_ab_analysis.py` | 覆盖真实 tick overshoot、实际时长派生量、六段/四轮方向、真实纯旋转 `mixed` 瞬态接受、反向均值/越界范围/伪造逐轮与总标志拒绝、motion/contact joint 交叉门、canonical digest 去重、三层 environment/profile/group 锁、跨环境 overlay 例外、完整 12 组矩阵、统计/时间戳溢出、原子 JSON 与 CLI `0/1/2`。 |
+| `ros2_ws/src/robot_experiments/test/test_motion_baseline.py` | 覆盖 canonical ground-topology JSON/SHA 解码与类型/hash/非严格 JSON 拒绝、在线 schema v5 强制门和完整 topology 注入；并覆盖三档/圆弧配置、运动符号、漂移/航向/轮向/停止指标、deadband 瞬态、Reset metadata/boundary、旧队列拒绝、三流相干组、Clock-only 缺流、逐 Topic 回退/高水位、跨 Topic 一帧回调相位、逐门诊断、报告有限数约束和启动脚本独占 `/cmd_vel` 契约。 |
+| `ros2_ws/src/robot_experiments/test/test_contact_ab_analysis.py` | 覆盖真实 tick overshoot、实际时长派生量、六段/四轮方向、真实纯旋转 `mixed` 瞬态接受、反向均值/越界范围/伪造逐轮与总标志拒绝、motion/contact joint 交叉门、canonical digest 去重；锁定历史 v3/v4 与 v5 不混算、合法 environment/topology 配对、环境 source 锁、topology 漂移门、跨 topology contact 不变量、三元分组选择器、历史完整 12 组与 v5 完整 18 组矩阵，以及统计/时间戳溢出、原子 JSON 与 CLI `0/1/2`。 |
 | `ros2_ws/src/robot_experiments/test/test_effective_track_analysis.py` | 覆盖有效轮距三种拟合、左右/速度档分组、输入/内容去重、rotation 符号门、provenance include/exclude 审计、原子 JSON 和 CLI 返回码。 |
 
 ## 29. `robot_bringup` 配置与入口
@@ -475,7 +481,7 @@
 | `ros2_ws/src/robot_bringup/test/test_initial_pose_policy.py` | 测试 `auto`/`rviz` 规范化和非法策略拒绝。 |
 | `ros2_ws/src/robot_bringup/test/test_interactive_policy.py` | 覆盖模式专用 RViz 选择、headless 行为、Teleop 模式禁令和终端命令。 |
 | `ros2_ws/src/robot_bringup/test/test_runtime_scripts.py` | 用隔离运行目录测试统一环境、单实例锁、安全清理、ROS supervisor 顺序退出、地图事务/manifest，以及独立/顽固 RViz、Teleop 进程组的认证升级和元数据保留。 |
-| `ros2_ws/src/robot_bringup/test/test_contact_ab_matrix_script.py` | 检查 contact A/B 参数/顺序/输入锁、显式 robot 的 absolute/canonical/regular/tracked/HEAD 字节一致门、只恢复 project/contact/robot 的 override 合同、schema v4 与完整 kinematics readiness、严格报告门、symlink/Git-ignore 输出边界、40 列 manifest 原子行与最终 hash、未注册进程不误杀/不阻塞，以及跨轮 analysis 和 schema-v2 batch summary 的 robot 身份、计数与证据 SHA 绑定。 |
+| `ros2_ws/src/robot_bringup/test/test_contact_ab_matrix_script.py` | 检查 contact/topology A/B CLI 的 baseline/all/显式 ID 合法 pair 与 36/54 cardinality、显式 robot/topology 的 absolute/canonical/regular/tracked/HEAD 字节一致门、只恢复 project/topology/contact/robot 的 override 合同、schema-v5 canonical topology/contact readiness、严格单轮报告门、symlink/Git-ignore 输出边界、43 列 manifest 原子行与最终 hash、未注册进程不误杀/不阻塞，以及跨轮 analysis 和 schema-v3 batch summary 的 topology/robot 身份、计数与证据 SHA 绑定。 |
 
 ## 31. `robot_rviz_plugins`
 
@@ -515,6 +521,7 @@
 | 传感器外参 | Isaac robot YAML static TF、Xacro sensors、投影高度、Map Pose/地图 |
 | 出生点 | `spawn_poses.yaml`、Map Pose 标定、GT 变换、动态障碍 USD↔Map 坐标 |
 | 动态障碍 | Isaac physical `dynamic.yaml` 与 ROS scenario `dynamic.yaml` |
+| 地面碰撞拓扑 | 所选 `isaac_sim/configs/ground_topologies/*.yaml`、project 的 `files.ground_topology_profile` 与 source `environment.ground_colliders`、`SceneComposer` 的 topology→contact 顺序、schema-v5 producer/report/motion 门，以及 contact A/B 的 environment/topology/profile 三元分组；Wheel Odom 要求精确 schema v5 并校验 robot/kinematics 子集，不解析 topology JSON |
 | 接触 threshold/材质 | 所选 `isaac_sim/configs/physics/*.yaml`、项目 `files.contact_profile`、ground collider 契约、SimplePlane/Warehouse 同输入 motion A/B 与运行态 provenance |
 | 有效轮距 | 先用同 provenance 的 motion 报告运行 `effective_track_analysis`，把候选保存为独立 schema-v2 robot YAML，再让 Isaac DifferentialController 与 Realistic Wheel Odom 通过同一文件/握手选择它并重跑左右、分档及 Realistic 验证；有效轮距不改变 URDF 几何，拟合值也不能直接覆盖稳定配置 |
 | Nav2 footprint/速度 | `nav2_params.yaml`、Collision Monitor polygons和验证场景 |

@@ -504,9 +504,13 @@ Realistic 模式不使用 Isaac Ideal Odom。轮关节状态先生成 `/wheel/od
 
 两端默认都选择
 `isaac_sim/configs/robots/jackal.yaml`。ROS 在创建 Wheel Odom 的 Topic、Reset
-service 和 timer 前，会读取 `/isaac_navigation_sim` 的只读 provenance v4 参数，
+service 和 timer 前，会读取 `/isaac_navigation_sim` 的只读 provenance v5 参数，
 并逐项比对 robot 文件的规范路径、原始字节 SHA256、profile、lifecycle、轮径、
-轮宽、几何轮距、有效轮距和 controller 校验标志。Isaac 尚未就绪、参数服务超时或
+轮宽、几何轮距、有效轮距和 controller 校验标志，同时要求运行态 schema 精确为
+v5，避免连接仍发布旧合同的 Isaac。Wheel Odom 不重复实现完整 topology/contact
+报告校验；Isaac producer 已 fresh 读取并验证当前 Stage，motion runner 验证两对
+序列化 JSON/SHA 并调用 report validator，离线 validator 负责报告内的解码结构。
+Isaac 尚未就绪、参数服务超时或
 任一值不一致时，Wheel Odom 非零退出并让当前 Realistic ROS launch 受管关闭；此时
 没有 `/wheel/odom` 是正确门禁，不是再启动一个手工 publisher 或单独重启 EKF 的
 理由。
@@ -1232,7 +1236,9 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、仿真模式和 Git commit/branch/dirty。schema v4 的 solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 还记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志。接触门把 profile 路径/SHA256、匿名 overlay SHA256、PhysicsScene threshold、精确 wheel/ground collider、physics-purpose binding 和材质读回编码为 canonical JSON，并用独立 SHA256 参数传给 runner。该 API 只证明 USD 输入一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验；v1/v2 或当前启动链路中的 v3、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。历史 v3 报告仍可单独离线复核，但不能与 v4 样本混入一份正式统计。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、`Stage.GetRootLayer()` 摘要、仿真模式和 Git commit/branch/dirty；该 RootLayer 摘要不包含 SessionLayer 中有意变化的 topology/contact treatment。当前 live 启动链只接受 schema v5：solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志；`ground_topology` 另以 canonical JSON + SHA256 锁定 topology profile、源资产、匿名 overlay、source/target/disabled collider 精确集合与 Stage 读回；`contact` 再锁定 profile、PhysicsScene threshold、精确 wheel/目标 ground collider、physics-purpose binding 和材质读回。contact 的 ground 集合必须严格等于 topology target，不能靠两个彼此无关的参数声称运行了某个拓扑。
+
+这套 API 证明的是当前 USD Stage 输入与读回一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验两对 canonical JSON 参数；schema v1/v2/v3/v4、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。历史 schema v3/v4 报告仍可各自单独离线复核，但 v3、v4、v5 不能混入同一份正式统计。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数或地面拓扑自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、拓扑、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
 快速核对某次报告是否真的是目标配置：
 
@@ -1245,6 +1251,15 @@ jq '{result, schema: .runtime_provenance.schema_version,
      solver: .runtime_provenance.robot.solver,
      robot: .runtime_provenance.robot.config.sha256,
      asset: .runtime_provenance.robot.asset.sha256,
+     ground_topology: {
+       id: .runtime_provenance.ground_topology.profile_id,
+       operation: .runtime_provenance.ground_topology.operation,
+       profile_sha256: .runtime_provenance.ground_topology.profile_sha256,
+       overlay_sha256: .runtime_provenance.ground_topology.overlay_sha256,
+       source_count: .runtime_provenance.ground_topology.source_collider_count,
+       target_count: .runtime_provenance.ground_topology.target_collider_count,
+       disabled_count: .runtime_provenance.ground_topology.disabled_collider_count,
+       readback: .runtime_provenance.ground_topology.stage_usd_readback_verified},
      contact: {
        id: .runtime_provenance.contact.profile_id,
        mode: .runtime_provenance.contact.profile_mode,
@@ -1252,6 +1267,9 @@ jq '{result, schema: .runtime_provenance.schema_version,
        overlay_sha256: .runtime_provenance.contact.overlay_sha256,
        wheel_colliders: (.runtime_provenance.contact.wheel_colliders | length),
        ground_colliders: (.runtime_provenance.contact.ground_colliders | length),
+       matches_topology_target:
+         (.runtime_provenance.contact.ground_colliders ==
+          .runtime_provenance.ground_topology.target_colliders),
        readback: .runtime_provenance.contact.stage_usd_readback_verified},
      git: .runtime_provenance.git}' \
   data/reports/motion/<report>.json
@@ -1274,6 +1292,28 @@ Reset 和聚合完整性全部通过，但空旷平面原地旋转中心漂移�
 
 ### 17.5 选择接触 Profile 并做隔离 A/B
 
+这一节有两个彼此独立的实验维度：
+
+- **Ground topology** 决定哪些环境 collider 参与碰撞；
+- **Contact profile** 决定 PhysicsScene threshold、轮胎/地面材质与 binding。
+
+先固定一个维度，再改变另一个维度，才能把结果归因到单个输入。仓库提供三个不可
+变更语义的 topology profile：
+
+| Topology ID | 合法环境 | Source → Target | 用途 |
+| --- | --- | --- | --- |
+| `simple_plane_only1_v1` | `SimplePlane` | 1 → 1，保留唯一解析平面 | 空旷隔离基线 |
+| `warehouse_combined32_v1` | `Warehouse` | 32 → 32，保留 GroundPlane 与 31 个 floor-decal collider | Warehouse 默认/历史行为基线 |
+| `warehouse_plane_only1_v1` | `Warehouse` | 32 → 1，在匿名层禁用 31 个非目标 collider | 只隔离 Warehouse 地面 collider 拓扑，不改源资产 |
+
+Topology YAML 同时锁定环境 ID、源资产 SHA256、source/target/disabled 的精确数量、
+规范路径集合 hash 和操作类型。`SceneComposer` 在 PhysX 初始化前创建匿名 session
+overlay；`warehouse_plane_only1_v1` 只 author 31 条
+`physics:collisionEnabled=false`，不会改 NVIDIA Warehouse 文件，也不会给目标 collider
+写多余意见。应用后会重新读取 Stage 并检查 overlay 中没有额外 Prim、metadata 或属性；
+失败时移除临时层并终止启动。切回 `warehouse_combined32_v1` 会清掉旧 topology layer，
+恢复源 Stage 的 32 个 collider，因此不需要也不允许手工修改 USD。
+
 接触 Profile 用于把“场景 patch-friction threshold”“轮胎/地面显式材质”和其他
 底盘参数分开比较。默认
 [`project.yaml`](../isaac_sim/configs/project.yaml) 选择
@@ -1286,12 +1326,13 @@ Reset 和聚合完整性全部通过，但空旷平面原地旋转中心漂移�
 | `threshold_corr_*.yaml` 四个文件 | 只改变 correlation distance 与 offset threshold 的 2×2 组合 | 低速转向是否主要受 patch-friction threshold 影响？ |
 | `explicit_material.yaml` | 保持 legacy threshold，并给四轮与全部 ground collider 显式绑定不同材质 | 结果是否依赖资产继承材质或缺失的地面材质？ |
 
-Profile 在 PhysX 初始化前写入匿名 USD session layer，不修改 Warehouse、SimplePlane
+Contact profile 在 PhysX 初始化前写入另一个匿名 USD session layer，不修改 Warehouse、SimplePlane
 或 Jackal 源文件。每次应用后会重新读取 scene 属性、材质、combine mode、
 physics-purpose binding、四个 wheel collider 和全部 ground collider；任何数量、
-semantic class、Prim、binding 或数值不一致都会删除临时层并让启动失败。Warehouse
-配置要求精确解析 32 个 ground collider，SimplePlane 要求精确解析 1 个；“找到
-几个看起来像地面的 Prim”不算通过。
+semantic class、Prim、binding 或数值不一致都会删除临时层并让启动失败。这里的
+ground collider 不是永远固定为环境 source：它必须严格跟随已验证 topology 的 target，
+所以 Warehouse combined 是 32，Warehouse plane-only 与 SimplePlane 都是 1；“找到几个
+看起来像地面的 Prim”不算通过。
 
 先只验证两个项目配置能够被解析：
 
@@ -1304,13 +1345,16 @@ ISAAC_NAV_PROJECT_CONFIG="$PROJECT_ROOT/isaac_sim/configs/simple_plane.project.y
   ./scripts/run_isaac.sh --validate-only
 ```
 
-选择 Profile 使用嵌套环境变量 override。下面是 Warehouse + Ideal 的单次运动
+选择 topology/contact profile 使用嵌套环境变量 override。下面是 Warehouse 默认
+`warehouse_combined32_v1` + Ideal 的单次运动
 采集；每个 A/B 条件都必须停止 Isaac 并启动新进程，不能在同一进程内改环境变量
 后沿用旧的 PhysX 状态：
 
 ```bash
 # 终端 A：PROFILE 每轮只取一个值
 PROFILE=legacy_baseline
+TOPOLOGY=warehouse_combined32_v1
+ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE="$PROJECT_ROOT/isaac_sim/configs/ground_topologies/${TOPOLOGY}.yaml" \
 ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PROFILE}.yaml" \
   ./scripts/run_isaac.sh --headless \
     --navigation-mode mapping \
@@ -1322,7 +1366,7 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
   --environment Warehouse \
   --odometry-mode ideal \
   --config "$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml" \
-  --output "data/reports/motion/${PROFILE}_warehouse_ideal.json"
+  --output "data/reports/motion/${TOPOLOGY}_${PROFILE}_warehouse_ideal.json"
 ```
 
 把同一运动配置移到隔离平面时，只替换项目配置和报告中的真实环境 ID：
@@ -1330,7 +1374,9 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
 ```bash
 # 终端 A
 PROFILE=legacy_baseline
+TOPOLOGY=simple_plane_only1_v1
 ISAAC_NAV_PROJECT_CONFIG="$PROJECT_ROOT/isaac_sim/configs/simple_plane.project.yaml" \
+ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE="$PROJECT_ROOT/isaac_sim/configs/ground_topologies/${TOPOLOGY}.yaml" \
 ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PROFILE}.yaml" \
   ./scripts/run_isaac.sh --headless \
     --navigation-mode mapping \
@@ -1342,8 +1388,15 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
   --environment SimplePlane \
   --odometry-mode ideal \
   --config "$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml" \
-  --output "data/reports/motion/${PROFILE}_simple_plane_ideal.json"
+  --output "data/reports/motion/${TOPOLOGY}_${PROFILE}_simple_plane_ideal.json"
 ```
+
+要做 Warehouse collider 单变量 A/B，保持 robot、contact profile、motion、solver 和
+Git commit 全部不变，只把 `TOPOLOGY` 分别设为 `warehouse_combined32_v1` 与
+`warehouse_plane_only1_v1`，每个条件用全新 Isaac 进程至少重复三次。不要把
+`simple_plane_only1_v1` 填到 Warehouse，也不要把任一 Warehouse profile 填到
+SimplePlane；profile 内的 `environment_id` 会在 `SceneComposer` 组合过程中、PhysX
+初始化前失败关闭。
 
 [`simple_plane.project.yaml`](../isaac_sim/configs/simple_plane.project.yaml)
 使用独立的源环境和组合根 Stage；`SceneComposer` 会拒绝额外环境 sublayer，所以它
@@ -1351,16 +1404,22 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
 solver `32/4`、运动配置、physics Hz、pacing、Camera、环境和 Git 状态，每个条件至少
 重复三次，再比较左右/速度档。
 
-提交 `84c397c` 曾把 motion runtime provenance 升级为 schema v3。runner 在创建
-`/cmd_vel` publisher 前读取 contact canonical JSON 与独立 SHA256，重新校验 profile
-路径/hash、匿名 overlay、scene readback、collider contract、binding、材质、mode
-flags 和 `stage_usd_readback_verified=true`；旧 v1/v2 报告不会冒充当前运行输入。
-正式 A/B 仍必须要求 `.runtime_provenance.git.dirty == false`、环境/solver/profile
-完全匹配，并保留每个输入 JSON、SHA256 和 Kit 日志；仅凭输出文件名仍不构成证据。
-当前生产者和新 runner 已进一步使用 schema v4，把 robot kinematics 写入身份锁；
-v3 仅保留为历史离线审计格式。
+提交 `84c397c` 曾把 motion runtime provenance 升级为 schema v3，后续 schema v4
+加入 robot kinematics。当前生产者发布 schema v5，motion runner 和 Realistic Wheel
+Odom 的 live 握手只接受整数 v5；生产者在原有 contact canonical JSON/SHA256 之外发布
+独立的 ground-topology canonical JSON/SHA256，motion runner 会完整读取并校验两者，
+Wheel Odom 则校验 schema、robot config path/SHA 与七个 kinematics/controller 字段。
+生产者即使收到 `SceneComposer` 保存的快照，也会在发布前重新读取当前 Stage，并对
+topology/contact snapshot 做 canonical 全量比较，拒绝会改变这两份快照的 compose 后
+漂移。正式 A/B 必须要求 `.runtime_provenance.git.dirty == false`，并在正确锁层内保持
+环境/solver/robot 与非 treatment 输入一致；topology/contact treatment 本身只允许按
+实验选择有意变化，
+并保留每个输入 JSON、SHA256 和 Kit 日志；仅凭输出文件名仍不构成证据。schema v3/v4
+只保留为历史离线审计格式，不能连接当前 live runner，也不能与 v5 混批。
 
-需要完整执行这组隔离矩阵时，使用严格串行入口，不要手工开 36 组终端：
+需要完整执行这组隔离矩阵时，使用严格串行入口。默认 `baseline` topology 选择保持
+历史口径：SimplePlane 使用唯一 Plane，Warehouse 使用 combined32；不要手工开 36
+个进程或逐轮终端：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -1368,12 +1427,27 @@ cd "$PROJECT_ROOT"
 # 使用项目 YAML 选择的默认 stable robot（robot_config_selection=project_default）
 ./scripts/run_contact_ab_matrix.sh \
   --environment all \
+  --ground-topology baseline \
   --repeats 3 \
   --output-dir data/reports/contact_ab/skid_steer_v1
 ```
 
-要对版本化候选执行同一正式矩阵，必须通过 `--robot-config` 显式选择；以下示例可直接
-复制运行 `0.989 m` 候选。测试 `1.012 m` 候选时，只把变量中的文件名和输出目录改为
+要正式比较 Warehouse combined32 与 plane-only，使用 `all`。它展开三个合法
+environment/topology pair，而不是把两个环境和三个 topology 做非法笛卡尔积；默认
+三重复共 54 个独立 Isaac 进程、18 个统计组：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment all \
+  --ground-topology all \
+  --repeats 3 \
+  --output-dir data/reports/contact_ab/ground_topology_v1
+```
+
+要对版本化候选执行 baseline 口径的同类锁定矩阵，必须通过 `--robot-config` 显式选择；
+以下示例可直接复制运行 `0.989 m` 候选。若要把 topology 也作为 treatment，则把
+`--ground-topology baseline` 改为 `all`，并使用另一个全新输出目录。测试 `1.012 m`
+候选时，只把变量中的文件名和输出目录改为
 `jackal_etw_1p012_v1.yaml` 与另一个全新目录：
 
 ```bash
@@ -1383,22 +1457,28 @@ CANDIDATE="$(realpath -e -- \
 
 ./scripts/run_contact_ab_matrix.sh \
   --environment all \
+  --ground-topology baseline \
   --repeats 3 \
   --robot-config "$CANDIDATE" \
   --output-dir data/reports/contact_ab/jackal_etw_0p989_v1
 ```
 
-`--environment` 默认是 `all`，也可只取 `SimplePlane` 或 `Warehouse`；
-`--repeats` 默认是 `3`，取值范围是 `1..100`；不传 `--robot-config` 时选择两个项目
+`--environment` 默认是 `all`，也可只取 `SimplePlane` 或 `Warehouse`。
+`--ground-topology` 默认 `baseline`；`all` 选择当前环境范围内全部合法 pair，也可
+显式写一个完整 ID。显式 ID 必须和单一 `--environment` 匹配；例如
+`--environment all --ground-topology warehouse_plane_only1_v1` 会失败关闭，不会静默
+丢掉 SimplePlane。`--repeats` 默认是 `3`，取值范围是 `1..100`；不传 `--robot-config` 时选择两个项目
 YAML 共同声明的默认 robot，传入时其值必须是仓库内 canonical absolute regular file：
 不能是相对路径、symlink 或目录，必须被 Git 跟踪并在 `HEAD` 中是普通 blob，且当前
 工作树原始字节必须与该 `HEAD` blob 完全一致。整批仍只接受 attached branch 上的
 clean worktree，所以不能用未提交或局部改写的候选。`--output-dir` 必填且必须为空，已有
 证据不会被覆盖。仓库内输出路径还必须已被 Git ignore（推荐继续放在
 `data/reports/`），也可使用仓库外的绝对路径；路径本身或任一已有祖先是 symlink
-时会直接拒绝。默认严格顺序是：先 `SimplePlane`、后 `Warehouse`；每个环境依次运行
-`legacy_baseline`、四个 threshold 2×2 profile、`explicit_material`；最后才展开
-repeat，所以默认共启动 36 个互相独立的 Isaac 进程。若只想做一轮 SimplePlane
+时会直接拒绝。pair 的严格顺序是：SimplePlane/only1、Warehouse/combined32、
+Warehouse/plane-only（最后一项只在 topology=`all` 时出现）；每个 pair 依次运行
+`legacy_baseline`、四个 threshold 2×2 profile、`explicit_material`，最后才展开
+repeat。baseline 默认共启动 36 个互相独立的 Isaac 进程，topology=`all` 则为 54。
+若只想做一轮 SimplePlane
 烟测，可使用下列命令。它仍会按顺序运行六个 profile，即启动六个独立 Isaac 进程；
 每组只有一次 repeat，因此只验证批处理链路和严格报告门，不能替代每组至少三次的
 正式 A/B：
@@ -1406,29 +1486,34 @@ repeat，所以默认共启动 36 个互相独立的 Isaac 进程。若只想做
 ```bash
 ./scripts/run_contact_ab_matrix.sh \
   --environment SimplePlane \
+  --ground-topology baseline \
   --repeats 1 \
   --output-dir data/reports/contact_ab/simple_plane_smoke
 ```
 
-批处理在整批开始时冻结 HEAD、branch、运动配置、两个项目配置、所选 robot config
-和六个 contact profile 的 SHA256；每轮前后都会重新检查。
+批处理在整批开始时冻结 HEAD、branch、运动配置、两个项目配置、所选 robot config、
+本批选中的全部 topology profile 和六个 contact profile 的 SHA256；每轮前后都会
+重新检查。
 它还从所选项目 YAML 解析 robot config/asset、project Stage 和 source asset 的真实
 路径与 SHA256。Warehouse source 是 `${ISAAC_ASSET_ROOT}` 下的 NVIDIA 外部资产，
 不是 Git 文件，但同样会在本批输入中锁定。启动子进程前会清掉调用者遗留的全部
-`ISAAC_NAV__*` 嵌套覆盖，只恢复本轮唯一允许的 project、contact 和已锁定 robot
-三项；即使使用项目默认 robot，也会显式恢复同一规范路径，避免 30 Hz 或另一个临时
+`ISAAC_NAV__*` 嵌套覆盖，只恢复本轮唯一允许的 project、ground topology、contact
+和已锁定 robot 四项；即使使用项目默认 robot，也会显式恢复同一规范路径，避免
+30 Hz、错误 topology 或另一个临时
 robot 配置混进正式矩阵。CLI 显式选择时两个项目必须解析为同一 robot asset、profile、
 lifecycle、轮径、轮宽、几何轮距和有效轮距，否则在启动 Isaac 前失败关闭。
 
 每轮启动命令固定为 headless、unbounded、Mapping、Ideal、Camera off；当前 schema
-v4 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
+v5 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
 固定 CLI 合同，文档不把它们冒充成报告 provenance。能由只读参数证明的项目会
-逐项核对：schema v4、robot config/asset、robot profile/lifecycle/轮径/轮宽/几何与
+逐项核对：schema v5、robot config/asset、robot profile/lifecycle/轮径/轮宽/几何与
 有效轮距、controller contract、solver `32/4` 与 Stage readback、60 Hz、
-Mapping/Ideal、真实环境 project/source、Git commit/branch/dirty，以及 contact canonical
-JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback。runner 退出后
+Mapping/Ideal、真实环境 project/source、Git commit/branch/dirty，ground-topology
+canonical JSON/SHA256 中的 profile/environment/source/overlay/三组 collider/hash/
+readback，以及 contact canonical JSON/SHA256 中的 profile 路径、ID、mode、文件
+SHA256、Stage readback 和与 topology target 的一致性。runner 退出后
 会从当前 workspace source 调用严格分析器复验六段结构、实际时间戳、四轮方向和同一组
-环境/profile/motion 身份。四轮的 `expected_direction` 必须由六段协议独立重算；通常
+environment/topology/contact-profile/motion 身份。四轮的 `expected_direction` 必须由六段协议独立重算；通常
 实测方向必须与它相同。纯旋转允许保留生产者报告的 `mixed` 瞬态，但只在最小/最大
 轮速分别越过配置 deadband 两侧、逐轮 `direction_matches=false`、平均轮速的主导方向
 仍符合命令时接受。`all_directions_match` 必须严格等于四个逐轮标志的逻辑合取；
@@ -1454,7 +1539,7 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
 旧 Odom/JointState，真实运动、积压、断流、回退或过远未来时间戳仍会清空窗口。
 
 输出名称不含时间随机量，例如
-`001_simple_plane_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
+`001_simple_plane_simple_plane_only1_v1_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
 分别保存 Isaac 与 runner 日志。成功目录根部有三份总证据：
 
 ```text
@@ -1469,33 +1554,41 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
     └── <run_id>.runner.log
 ```
 
-- `manifest.tsv`：每轮 40 列输入、状态、路径，以及 report/Isaac log/runner log 的
+- `manifest.tsv`：每轮 43 列输入、状态、路径，以及 report/Isaac log/runner log 的
   最终 SHA256；其中 `robot_config_selection` 为 `project_default` 或 `explicit_cli`，
   并逐行记录 robot canonical path、SHA256、profile、lifecycle、轮径、轮宽、几何轮距
-  和有效轮距。所有轮完成后改为只读并冻结 hash。
-- `analysis.json`：把全部报告作为一个数据集重新验证；`all` 必须满足两环境 × 六
-  profile 完整矩阵，单环境也必须包含六 profile，且每组重复数不少于 `--repeats`。
-- `batch_summary.json`：当前 summary `schema_version=2`；在
+  和有效轮距，并新增每轮 topology ID/path/SHA256。所有轮完成后改为只读并冻结 hash。
+- `analysis.json`：把全部报告作为一个数据集重新验证；v5 以合法
+  environment/topology pair × 六 profile 形成组，baseline/all 分别要求 12/18 个完整组，
+  单一环境/拓扑也必须包含六 profile，且每组重复数不少于 `--repeats`。
+- `batch_summary.json`：当前 summary `schema_version=3`；记录
+  `ground_topology_selection`、精确 `environment_topology_pairs`，并在
   `locked_protocol_inputs.robot_config` 中记录 selection、path、SHA256 和完整 kinematics，
-  同时记录 Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和 analysis 的
+  在 `locked_protocol_inputs.ground_topology_profiles` 中记录本批 topology 的环境、路径
+  与 SHA256；同时记录 Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和 analysis 的
   路径及 SHA256；不存在自引用 hash。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
-环境/Profile 的运动统计。单轮细节看 `reports/`，故障根因看同名两份日志。只有全部
+environment/topology/Profile 的运动统计。单轮细节看 `reports/`，故障根因看同名两份日志。只有全部
 轮次成功后才生成 `analysis.json` 和 `batch_summary.json`，并把 `manifest.tsv` 冻结
 为只读。失败目录通常只有部分 manifest、报告和日志；缺少两个聚合文件是失败关闭的
 预期行为，不是文件丢失。失败目录不得续跑，也不得把其中的部分样本混入新批次。
 
-分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat，并分三层锁定
-全矩阵、同环境、同 profile/同组输入。yaw gain 和位移误差按物理时钟的
+分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat。v5 分别锁定
+全矩阵 robot/motion、同环境的 RootLayer SHA 与 source collider 发现合同、同 topology 的
+operation/target/disabled、同 environment+contact profile 跨 topology 不应变化的
+scene、wheel bindings、wheel material、ground material 和 readback，以及三元组内
+除进程专用 `overlay_identifier` 外的完整 contact；ground bindings/path 会随 topology
+target 合法变化。因此不能一边切换 topology，一边悄悄改变摩擦或轮侧输入。yaw gain 和位移误差按物理时钟的
 `observed_duration_sec` 计算，不按理想配置时长。历史 schema-v3 报告只接受
-canonical Jackal `0.098 m` 轮径；schema-v4 报告则要求 CLI/矩阵脚本使用的轮径与
+canonical Jackal `0.098 m` 轮径；schema-v4/v5 报告则要求 CLI/矩阵脚本使用的轮径与
 每份 provenance 中的实际 robot 轮径完全一致，因此候选值不会被静默按 `0.098 m`
-计算。v3 与 v4 不能混入同一批分析。
-项目 Stage、源资产和 collider 拓扑在同环境跨 profile 锁定；
-`composed_root_layer_sha256` 可能随 profile 有意 author 的 Stage 接触意见变化，因此与
-contact overlay 一起在同一“环境 + profile”组内锁定，任何 repeat 漂移仍会失败关闭。
+计算。v3、v4、v5 不能混入同一批分析。非法的 shipped environment/topology pair 会
+作为 `invalid_runtime_provenance` 排除；完整矩阵缺任一合法三元组同样失败关闭。
+`composed_root_layer_sha256` 只摘要 RootLayer，不包含 SessionLayer treatment；v5 在
+同环境跨 topology/contact 锁定它，匿名层内容分别由 topology/contact 的
+`overlay_sha256` 锁定。历史 v3/v4 保留其既有离线分组合同，不被 v5 重新解释。
 输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
 最终选择仍需结合两环境指标与工程约束。这里接受可证明的纯旋转 `mixed`，只是区分
 “短暂反向瞬态”和“主导轮速方向错误”，不会把方向检查降级为只看一个布尔字段。
@@ -1505,7 +1598,10 @@ contact overlay 一起在同一“环境 + profile”组内锁定，任何 repea
 ```bash
 RUN=data/reports/contact_ab/skid_steer_v1
 jq '{schema_version, result, environments, repeats,
+     topology_selection: .ground_topology_selection,
+     environment_topology_pairs,
      robot: .locked_protocol_inputs.robot_config,
+     topologies: .locked_protocol_inputs.ground_topology_profiles,
      expected_counts, actual_counts, evidence}' \
   "$RUN/batch_summary.json"
 jq '{valid: .analysis_valid, counts, matrix, groups: (.groups | keys)}' \
@@ -1513,8 +1609,9 @@ jq '{valid: .analysis_valid, counts, matrix, groups: (.groups | keys)}' \
 sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
 ```
 
-若需要重新审计复制来的历史 v3 报告，而不是重新跑 Isaac，可直接使用安装后的离线
-CLI；`--wheel-radius` 对 v4 必须改成该批 provenance 中记录的值：
+若需要重新审计复制来的历史报告，而不是重新跑 Isaac，可直接使用安装后的离线 CLI；
+`--wheel-radius` 对 v4/v5 必须改成该批 provenance 中记录的值，三种 schema 要分开
+执行：
 
 ```bash
 source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
@@ -1827,6 +1924,7 @@ header、消息年龄和旧 DDS 样本证据，不要只以日志不再打印作
 | 改 Camera profile/光学/曝光 | `isaac_sim/configs/sensors/camera.yaml`；同步 Camera contract 与 RViz 测试。 |
 | 改点云投影高度和角度 | `ros2_ws/src/robot_perception/config/pointcloud_to_laserscan.yaml` |
 | 改轮径/轮距 | 只修改所选 schema-v2 robot YAML；`geometric_track_width` 只描述 USD/URDF 几何，`effective_track_width` 同时驱动 Isaac DifferentialController 与 Realistic Wheel Odom。不要在 Wheel Odom YAML 或 Xacro 再复制数值；实验候选必须让 Isaac 与 ROS 的 `robot_config_file` 指向同一文件并重跑 A/B。 |
+| 改 ground collider 拓扑 | 新建版本化 `isaac_sim/configs/ground_topologies/*.yaml`，同步项目 `files.ground_topology_profile`、schema-v5 provenance/analyzer 测试并重跑同环境单变量 A/B。不要直接编辑 Warehouse/SimplePlane 源 USD，也不要原地修改已有 `_v1` profile。 |
 | 改接触 threshold/材质 | `isaac_sim/configs/physics/*.yaml`；用 `ISAAC_NAV__FILES__CONTACT_PROFILE` 选择，并重跑 SimplePlane/Warehouse 隔离 A/B。不要直接改源 USD。 |
 | 查 wheel joint 正负方向 | 先运行 `scripts/run_wheel_direction_diagnostic.sh`，查看硬门与 advisory；不要靠手工持续发布 `/cmd_vel` 猜方向。 |
 | 拟合有效轮距 | 用 `robot_experiments effective_track_analysis` 分析同 provenance 的 motion 报告；把候选做成独立 robot YAML，并让 Isaac/ROS 同时选择它后重跑验证。工具不会自动写配置，也不能把拟合均值直接提升为稳定值。 |

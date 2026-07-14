@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态（2026-07-14）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、物理步同步 ROS 发布、顺序 Lifecycle Shutdown、只观察 Lifecycle 的安全 Navigation 2 面板，以及独占 `/cmd_vel` 的底盘运动诊断。Jackal 项目 Overlay 已停用四个带 obsolete `customGeometry` 的只读轮胎 collider，改用对称标准 Cylinder；TGS 32/4 与 32/16 的 Warehouse + Ideal 隔离 A/B 支持冻结 32/4。运动报告会绑定实际加载的机器人、规范环境 ID、仿真模式与 Git 指纹，solver 还必须通过 Stage 属性和初始化后 Articulation wrapper 的 USD 后端读回交叉校验；这不是 PhysX 引擎内部状态的直接读回，实际行为由隔离 A/B 和警告日志另行验证。机器人配置已升级为 schema v2：几何轮距与控制/Wheel Odom 使用的有效轮距是两个显式字段，Isaac、ROS Wheel Odom 和 Xacro 由同一 robot YAML 驱动；runtime provenance v4 会发布精确运动学身份，Realistic Wheel Odom 在身份、SHA256 和数值全部匹配前不会创建 `/wheel/odom`。稳定基线的两种轮距目前仍同为 `0.37559 m`，这次迁移不改变控制行为，也不表示有效轮距已标定。错误环境标签会在创建运动命令 publisher 前失败。低速左右转向不对称、SimplePlane/Realistic 对照及接触材料/有效轮距仍未验收。旧 Camera 配置下的 `monitoring`/`high_quality` 已有 headless 性能与截图基线；2026-07-14 的 Camera schema v3 已完成严格配置、USD API 写入和 headless 属性读回，但新配置的真实静止/运动画质、RTF 和 GPU 仍待复测，不能沿用旧截图冒充验收。`warehouse_v1` 是可自动播种的发布基线；`warehouse_v2` 四工件已由 Manifest 登记，其中大型 `.posegraph` 由 Git LFS 管理，但来源日志缺失、运行对齐未验证且尚未标定，不能当作已验收地图。完整静态/动态统计、Warehouse V2 标定与路线矩阵及真实自定义机器人迁移仍未完成。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态（2026-07-15）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、物理步同步 ROS 发布、顺序 Lifecycle Shutdown、只观察 Lifecycle 的安全 Navigation 2 面板，以及独占 `/cmd_vel` 的底盘运动诊断。Jackal 项目 Overlay 已停用四个带 obsolete `customGeometry` 的只读轮胎 collider，改用对称标准 Cylinder；TGS 32/4 与 32/16 的 Warehouse + Ideal 隔离 A/B 支持冻结 32/4。地面碰撞拓扑现已拆成三个版本化、可逆 Profile：SimplePlane 1-collider、Warehouse 原始 32-collider 和 Warehouse plane-only 1-collider；源资产、匿名 overlay、source/target/disabled 集合与 contact target 由 runtime provenance v5 绑定，但真实 32-vs-1 运动 A/B 尚未完成。运动报告还会绑定实际加载的机器人、规范环境 ID、仿真模式与 Git 指纹，solver 必须通过 Stage 属性和初始化后 Articulation wrapper 的 USD 后端读回交叉校验；这不是 PhysX 引擎内部状态的直接读回，实际行为由隔离 A/B 和警告日志另行验证。机器人配置已升级为 schema v2：几何轮距与控制/Wheel Odom 使用的有效轮距是两个显式字段，Isaac、ROS Wheel Odom 和 Xacro 由同一 robot YAML 驱动；Realistic Wheel Odom 在精确 schema v5、robot config path/SHA 和七个 kinematics/controller 字段全部匹配前不会创建 `/wheel/odom`。稳定基线的两种轮距目前仍同为 `0.37559 m`，这次迁移不改变控制行为，也不表示有效轮距已标定。环境不匹配的 topology profile 会在 Isaac 组合 Stage 时失败；错误的运动报告环境标签会在 motion runner 创建命令 publisher 前失败。低速左右转向不对称、Realistic 对照及接触拓扑/材料/有效轮距仍未验收。旧 Camera 配置下的 `monitoring`/`high_quality` 已有 headless 性能与截图基线；2026-07-14 的 Camera schema v3 已完成严格配置、USD API 写入和 headless 属性读回，但新配置的真实静止/运动画质、RTF 和 GPU 仍待复测，不能沿用旧截图冒充验收。`warehouse_v1` 是可自动播种的发布基线；`warehouse_v2` 四工件已由 Manifest 登记，其中大型 `.posegraph` 由 Git LFS 管理，但来源日志缺失、运行对齐未验证且尚未标定，不能当作已验收地图。完整静态/动态统计、Warehouse V2 标定与路线矩阵及真实自定义机器人迁移仍未完成。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 > 阶段 3 另提供 `0.989/1.012 m` 两个版本化 `experimental_candidate`，只用于后续
 > 两环境、多速度、拓扑和 Realistic A/B；它们尚未验收，不会覆盖稳定配置。
@@ -30,6 +30,8 @@
 ## 系统契约
 
 - USD/PhysX 是唯一物理模型；URDF/Xacro 只用于 ROS RobotModel、结构描述和真机迁移。
+- 环境 ground collider 必须由与环境匹配的版本化 topology profile 选择；任何禁用
+  只进入匿名 session overlay，不修改 NVIDIA 或项目源 USD。
 - 主 TF 树固定为 `map → odom → base_link`，不发布 ROS `world` frame。
 - Mapping 与 Localization 严格互斥，因为二者都拥有 `map → odom`。
 - Localization/Navigation 中由 `nav2_map_server` 唯一发布保存的静态 `/map`；

@@ -167,7 +167,7 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 
 | 参数组 | 内容 |
 | --- | --- |
-| `runtime_provenance.schema_version` | 当前新运行严格要求整数 `4`；schema v3 报告仍可由离线分析器复核，但不能与 v4 样本混入同一正式统计；v1/v2 只作历史证据 |
+| `runtime_provenance.schema_version` | 当前 live motion/Wheel Odom 严格要求整数 `5`；schema v3/v4 报告仍可各自由离线分析器复核，但 v3、v4、v5 不能混入同一正式统计；v1/v2 只作历史证据 |
 | `runtime_provenance.robot.config.*` | 实际 robot YAML 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.asset.*` | 实际项目 robot USD Overlay 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.solver.*` | 有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致的 position、velocity iterations，以及 `stage_articulation_usd_readback_verified=true` |
@@ -176,8 +176,10 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 | `runtime_provenance.environment.project_stage.*` | 项目环境 Stage 路径与 SHA256 |
 | `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
 | `runtime_provenance.environment.asset_root/version` | Isaac 资产根与版本目录名 |
-| `runtime_provenance.environment.composed_root_layer_sha256` | contact profile 应用后捕获、包含运行时 reference/sublayer/solver/contact authoring 的组合根 Layer 摘要；A/B 聚合按“环境 + profile”组锁定，同环境跨 profile 可因有意 treatment 不同，同组 repeat 不得漂移 |
+| `runtime_provenance.environment.composed_root_layer_sha256` | `Stage.GetRootLayer().ExportToString()` 的 SHA256，绑定项目 RootLayer 中的 reference/sublayer/solver 等内容；topology/contact 写在独立 SessionLayer，不包含在此摘要中，schema-v5 A/B 按环境跨全部 treatment 锁定它。两个匿名 treatment 层分别由各自 `overlay_sha256` 绑定 |
 | `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz |
+| `runtime_provenance.ground_topology.json/.sha256` | canonical strict JSON 与其原始 UTF-8 SHA256；完整对象锁定 topology profile path/id/hash、environment、operation、source asset path/hash、匿名 overlay/hash、source/target/disabled collider 的排序路径、数量、集合 hash 和 `stage_usd_readback_verified=true` |
+| `runtime_provenance.contact.json/.sha256` | canonical strict JSON 与其原始 UTF-8 SHA256；锁定 contact profile/mode/hash、匿名 overlay、PhysicsScene、wheel/ground collider、binding、材质和 Stage readback；ground collider 必须精确等于 topology target |
 | `runtime_provenance.git.*` | Isaac 启动瞬间的 commit、branch、dirty 布尔值 |
 
 SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整数，且 Stage
@@ -186,9 +188,13 @@ SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整
 PhysX 引擎内部状态 introspection；引擎行为必须另由受控 A/B、运动数据和警告日志
 验证。Git
 object ID 必须为 40 或 64 位十六进制。正式 runner 在字段缺失、类型不符、里程计
-模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。Wheel Odom
-同样先读取 `/isaac_navigation_sim` 的 v4 参数；服务超时、robot path/SHA、profile、
-lifecycle、轮径/轮宽/几何轮距/有效轮距或 controller 校验标志任一不匹配时，进程
+模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。两对 JSON
+参数都必须是 canonical、无重复 key、无 NaN/Infinity，且 digest 必须与原始 UTF-8
+字节匹配。职责边界如下：Isaac producer fresh capture 当前 Stage、验证 topology/contact
+语义，并把 SceneComposer 快照仅作为对应 snapshot 的 canonical 漂移比较；motion runner
+验证两对序列化 JSON/SHA 后调用 report validator；report validator 验证报告内已解码
+结构。Wheel Odom 只请求 schema=5、robot config path/SHA 和七个 kinematics/controller
+字段，不解析 topology/contact JSON。服务超时或上述运动学字段任一不匹配时，进程
 非零退出，并且不会先创建 `/wheel/odom` publisher、JointState subscription、Reset
 service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，避免留下没有
 里程计来源的 EKF、SLAM 或 Nav2 半栈。
