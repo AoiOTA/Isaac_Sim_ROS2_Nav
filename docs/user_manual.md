@@ -1229,6 +1229,7 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
 ./scripts/run_motion_baseline.sh \
   --environment Warehouse \
   --odometry-mode ideal \
+  --config "$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml" \
   --output "data/reports/motion/${PROFILE}_warehouse_ideal.json"
 ```
 
@@ -1248,6 +1249,7 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
 ./scripts/run_motion_baseline.sh \
   --environment SimplePlane \
   --odometry-mode ideal \
+  --config "$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml" \
   --output "data/reports/motion/${PROFILE}_simple_plane_ideal.json"
 ```
 

@@ -380,6 +380,7 @@
 | `ros2_ws/src/robot_experiments/config/incremental_mapping.yaml` | 增量建图工作流描述符；NavigateToPose runner 会明确拒绝它。 |
 | `ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml` | 三地图离线比较模板；路径、耗时、真实变化矩形为必填占位。 |
 | `ros2_ws/src/robot_experiments/config/motion_baseline.yaml` | Jackal 低/中/高三档前进、后退、左右原地转向及左右 5 秒圆弧的确定性底盘诊断配置；集中定义 Reset、停止门、轮 joint、命令限幅和采样要求。 |
+| `ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml` | SimplePlane/Warehouse 锁定输入 A/B 协议；精确执行左右命令空间 360°、前进 3 m、倒车 2 m 及左右 5 s 圆弧，每段独立 Reset。 |
 
 ## 27. `robot_experiments` 运行代码
 

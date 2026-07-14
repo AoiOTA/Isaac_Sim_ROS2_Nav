@@ -23,6 +23,9 @@ from robot_experiments.motion_baseline import (
 
 PACKAGE_ROOT = Path(__file__).parents[1]
 CONFIG_PATH = PACKAGE_ROOT / "config" / "motion_baseline.yaml"
+SKID_STEER_AB_CONFIG_PATH = (
+    PACKAGE_ROOT / "config" / "motion_skid_steer_ab.yaml"
+)
 WHEELS = WheelLayout(
     front_left="front_left_wheel_joint",
     front_right="front_right_wheel_joint",
@@ -80,6 +83,34 @@ def test_installed_profile_is_strict_three_tier_and_arc_ab_matrix():
     assert len(set(config.wheels.ordered_names)) == 4
     assert config.topics.cmd_vel == "/cmd_vel"
     assert config.reset.service == "/simulation/reset"
+
+
+def test_skid_steer_ab_profile_matches_the_plan_commands_exactly():
+    config = load_motion_baseline_config(SKID_STEER_AB_CONFIG_PATH)
+
+    assert config.profile_id == "jackal_skid_steer_ab_v1"
+    assert [segment.segment_id for segment in config.segments] == [
+        "rotate_left_360",
+        "rotate_right_360",
+        "forward_3m",
+        "backward_2m",
+        "arc_left_5s",
+        "arc_right_5s",
+    ]
+    commands = [
+        (segment.linear_x_mps, segment.angular_z_radps, segment.duration_sec)
+        for segment in config.segments
+    ]
+    assert commands == pytest.approx(
+        [
+            (0.0, 0.4, 2.0 * math.pi / 0.4),
+            (0.0, -0.4, 2.0 * math.pi / 0.4),
+            (0.5, 0.0, 3.0 / 0.5),
+            (-0.3, 0.0, 2.0 / 0.3),
+            (0.4, 0.4, 5.0),
+            (0.4, -0.4, 5.0),
+        ]
+    )
 
 
 @pytest.mark.parametrize(
