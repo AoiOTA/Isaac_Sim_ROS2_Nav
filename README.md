@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态（2026-07-13）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新可靠性升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、顺序 Lifecycle Shutdown 和安全退出的 Navigation 2 面板。Camera `monitoring`/`high_quality` 已完成 headless 发布性能采样，前向画面方向与转弯变化已用实际截图目视确认，集成 RViz 也已实际启动验证；`standard` 仍只有配置与自动契约覆盖，不能写成已完成实机性能验收。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计、真实 `warehouse_v2` changed-region 的 30% 增量改善基准和真实自定义机器人迁移仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态（2026-07-14）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、物理步同步 ROS 发布、顺序 Lifecycle Shutdown、只观察 Lifecycle 的安全 Navigation 2 面板，以及独占 `/cmd_vel` 的底盘运动诊断。旧 Camera 配置下的 `monitoring`/`high_quality` 已有 headless 性能与截图基线；2026-07-14 的 Camera schema v3 已完成严格配置、USD API 写入和 headless 属性读回，但新配置的真实静止/运动画质、RTF 和 GPU 仍待复测，不能沿用旧截图冒充验收。`warehouse_v1` 是可自动播种的发布基线；`warehouse_v2` 四工件已由 Manifest 登记，其中大型 `.posegraph` 由 Git LFS 管理，但来源日志缺失、运行对齐未验证且尚未标定，不能当作已验收地图。完整静态/动态统计、Warehouse V2 标定与路线矩阵、SimplePlane/Warehouse 和 Ideal/Realistic 底盘 A/B、物理参数冻结及真实自定义机器人迁移仍未完成。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 ## 文档导航
 
@@ -12,7 +12,7 @@
 
 | 文档 | 适合什么时候看 |
 | --- | --- |
-| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、性能采样和排障。 |
+| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、底盘诊断、性能采样、排障和 Git 回溯。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
 | [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
@@ -21,6 +21,7 @@
 | [`docs/development.md`](docs/development.md) | 开发、测试、调试和准备 Git 提交时。 |
 | [`docs/rviz_workflow_upgrade_plan.md`](docs/rviz_workflow_upgrade_plan.md) | 回溯本轮 RViz/Teleop/Lifecycle/性能升级的冻结设计和完成状态时。 |
 | [`docs/runtime_reliability_and_performance_upgrade_plan.md`](docs/runtime_reliability_and_performance_upgrade_plan.md) | 回溯地图 Manifest、Camera、MPPI/Ceres、故障注入、Profiler 与有序退出的设计、实测结果和未验收边界时。 |
+| [`docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md`](docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md) | 查看当前导航质量、物理/时间/传感器保真度、Warehouse V2 和最终静态/动态统计的执行顺序与验收门。 |
 | [`plan.md`](plan.md) | 需要完整设计背景、技术选型、指标公式和最终验收目标时。 |
 
 ## 系统契约
@@ -56,12 +57,12 @@
 ```bash
 git lfs install
 git lfs pull
-./scripts/preflight.sh
 ./scripts/import_assets.sh
 ./scripts/build_ros2.sh
+./scripts/preflight.sh
 ```
 
-资产导入只在本地复制 Jackal 的最小运行依赖，并校验来源和 SHA256。NVIDIA 二进制资产被 Git 忽略；仓库只管理项目自有的 USD overlay、manifest 和导入工具。
+先按 [`docs/user_manual.md`](docs/user_manual.md) 安装 ROS/Python 依赖，再执行上述顺序；干净 clone 在资产导入和 ROS 构建之前运行 `preflight.sh` 会按设计失败。资产导入只在本地复制 Jackal 的最小运行依赖，并校验来源和 SHA256。NVIDIA 二进制资产被 Git 忽略；仓库只管理项目自有的 USD overlay、manifest 和导入工具。
 
 默认使用：
 
@@ -137,10 +138,11 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 命令会自动打开 Mapping RViz 和独立安全 Teleop 终端。使用 `W/A/S/D` 或方向键缓慢完成旋转、走廊覆盖和闭环；超过 0.18 秒无按键会自动停车，`Space` 立即停车，`Q` 安全退出。随后同时保存 OccupancyGrid 与序列化 Pose Graph：
 
 ```bash
-./scripts/save_map.sh warehouse_v1
+MAP_VERSION="warehouse_mapping_$(date -u +%Y%m%dT%H%M%SZ)"
+./scripts/save_map.sh "$MAP_VERSION"
 ```
 
-`save_map.sh` 先在暂存目录生成 OccupancyGrid 与序列化 Pose Graph，逐项验证后再安装四个工件，最后原子发布 Manifest；任一步失败都会回滚，不留下“半套新地图”。当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并绑定对应 Manifest bundle。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件、路径逃逸以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前必须把四个工件和 Manifest 视为不可混用的同一版本。
+`save_map.sh` 先在暂存目录生成 OccupancyGrid 与序列化 Pose Graph，逐项验证后再安装四个工件，最后原子发布 Manifest；任一步失败都会回滚，不留下“半套新地图”。脚本严格禁止覆盖，仓库已有的 `warehouse_v1`/`warehouse_v2` 不能再作为保存目标；请保留上面的新 `MAP_VERSION`，供后续校验和标定使用。当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并绑定对应 Manifest bundle。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件、路径逃逸以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前必须把四个工件和 Manifest 视为不可混用的同一版本。
 
 标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
 
@@ -161,7 +163,8 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 该模式会启动 async SLAM Toolbox、加载旧 Pose Graph，并在 `/clock` 与 `odom → base_link` 就绪后发布已标定 `/initialpose`。完成变化区域采集后用新的版本名保存，禁止覆盖基线：
 
 ```bash
-./scripts/save_map.sh warehouse_v2
+INCREMENTAL_VERSION="warehouse_incremental_$(date -u +%Y%m%dT%H%M%SZ)"
+./scripts/save_map.sh "$INCREMENTAL_VERSION"
 ```
 
 提交的 `incremental_mapping.yaml` 是建图工作流描述符，不是导航试验；`NavigateToPose` runner 会显式拒绝它。增量试验必须使用上述 bringup、保存新地图，再显式对比工件。当前只验证了模式校验和启动编排，尚未用真实变化区域证明“耗时改善不少于 30%”。
@@ -169,6 +172,7 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 保存基线、完整重建和增量更新三张地图后，复制并填写严格比较模板，再生成 JSON 证据报告：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 cp ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml \
   data/reports/incremental_comparison.yaml
 # 填写三张地图、同口径耗时和真实 Map 坐标矩形范围后：
@@ -262,6 +266,7 @@ Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag
 运行中的 Isaac 节点提供 Trigger 服务。先设置种子与出生点，再调用 Reset：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 ros2 param set /isaac_navigation_sim reset_seed 4242
 ros2 param set /isaac_navigation_sim reset_pose_name mapping_start
 ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
@@ -281,6 +286,7 @@ Reset 会按固定顺序停车、清控制器、恢复 USD Pose、重置里程�
 针对运行中系统的验收检查包括：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 ros2 topic hz /clock
 ros2 topic hz /lidar/points_raw
 ros2 topic hz /scan
@@ -311,7 +317,7 @@ ros2 run tf2_tools view_frames
 ```text
 isaac_sim/   Stage、项目 USD overlay、传感器、OmniGraph、Reset、GT 和场景编排
 ros2_ws/     描述、感知、Wheel Odom、EKF、SLAM、Nav2、bringup 和实验节点
-data/        Git LFS 地图基线，以及 bag、轨迹、指标和报告的本地输出边界
+data/        地图 bundle（精选 `.posegraph` 走 Git LFS），以及 bag、轨迹、指标和报告的本地输出边界
 scripts/     预检、资产导入、构建、测试、启动和地图保存入口
 docs/        使用手册、逐文件索引、排障、开发、接口、标定、升级方案和验收文档
 ```
@@ -322,7 +328,8 @@ docs/        使用手册、逐文件索引、排障、开发、接口、标定�
 
 ```bash
 git log --oneline --decorate --graph
-git show --stat <commit>
+COMMIT_SHA="$(git rev-parse HEAD)"
+git show --stat "$COMMIT_SHA"
 ```
 
 具体约定见 [`CONTRIBUTING.md`](CONTRIBUTING.md)、[`docs/development.md`](docs/development.md) 和 [`data/README.md`](data/README.md)。

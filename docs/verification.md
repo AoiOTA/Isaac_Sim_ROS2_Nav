@@ -1,6 +1,6 @@
 # 最终验证台账
 
-本文件记录仓库当前实现的可复核证据。截至 2026-07-13，本轮运行环境为
+本文件记录仓库当前实现的可复核证据。截至 2026-07-14，本轮运行环境为
 Ubuntu 24.04、Isaac Sim 6.0.1.0、ROS 2 Jazzy、Fast DDS、Nav2 1.3.12、
 RTX 4090，ROS Domain 为 `42`。
 
@@ -22,16 +22,18 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 
 | 范围 | 当前结论 | 证据边界 |
 | --- | --- | --- |
-| Map Manifest | `warehouse_v1` 四工件、逐文件哈希、bundle 哈希和标定绑定通过真实仓库校验 | 未生成或运行真实 `warehouse_v2`；未标定 v2 行为来自测试夹具 |
+| Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
+| 物理步与传感器时间 | OnPhysicsStep 发布的 8 秒短窗中 Clock/IMU/Joint/Odom 为 56.40 Hz、点云 9.51 Hz，所有观测 Topic 均无重复/回退/future stamp | RTF 为 0.940；`getSimulationTimeMonotonicAtTime` 仍偶发，Reset 前后、15 分钟和完整 A/B 尚未完成 |
+| 底盘运动基线 | Warehouse + Ideal 底盘物理参数改动前基线 14/14 段完整采集，Clock/Odom/JointState 均无重复或回退 | 原地转向/圆弧响应偏低且轮向混合；SimplePlane/Warehouse、Ideal/Realistic 完整 A/B 尚未完成 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
 | Ceres | 8/12/16/20 线程均完成 3 m 目标且控制 missed=0；保留 12 线程默认值 | 20 线程的 RTF、Scan 和 TF 延迟更差，不能据线程数推断性能更高 |
-| Camera / RViz | Off、Monitoring×RViz Off/On、High Quality×RViz On 已运行；Monitoring/HQ 的 RGB、CameraInfo、导航控制均有报告 | `standard` 未运行；HQ 配置目标 30 Hz，但 RGB 实测约 15 Hz 仿真时间频率；最终人工 GUI 易用性验收未完成 |
+| Camera / RViz | Camera schema v3 的严格配置、per-Prim USD authoring 与 headless 属性读回已完成；旧 schema 下 Off/Monitoring/HQ 有运行报告 | v3 尚未重跑真实静止/运动图像、RTF/GPU；`standard` 未运行，旧 HQ 约 15 Hz 不能冒充新配置验收 |
 | Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在实时报告中成立 | 本轮 12 秒报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
-| Ordered shutdown | ROS 监督器先发 Lifecycle Shutdown，再向独立 launch 进程组转发信号；重复 Navigation 和一次 Mapping 实跑均干净退出 | 新监督器的“每模式/每相机 Profile/目标执行中各连续 5 次”完整矩阵未单独归档，暂不宣称全部验收 |
-| 完整自动测试 | `./scripts/test.sh --with-isaac` exit 0：root 454 passed/5 deselected；ROS 445/445；Isaac marker 3 passed | 详细精确计数见“自动测试证据” |
+| Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
+| 自动测试 | 2026-07-13 全量门基线为 root 454 passed/5 deselected、ROS 445/445、Isaac marker 3 passed；2026-07-14 新增能力另有定向测试 | 当前工作分支仍在实施阶段；所有代码冻结后必须重新执行完整 `./scripts/test.sh --with-isaac`，不能把旧全量计数当作最终门 |
 
 ## Map Manifest 与标定
 
@@ -73,9 +75,107 @@ PGM 尺寸以及 resolution/origin 不一致。`save_map.sh` 的自动测试夹�
 “staging -> 四工件发布 -> bundle 校验 -> Manifest 最后发布”的事务顺序，
 并验证 Pose Graph 序列化失败时不留下半成品。
 
-测试夹具创建了一个未标定的 `warehouse_v2`：`initial_pose_source=auto` 会在
-节点启动前失败，而 `initial_pose_source=rviz` 允许进入人工初始位姿流程。
-这证明的是契约实现，**不是**真实 Warehouse v2 已建图、已标定或已导航。
+### `warehouse_v2` 待标定候选 bundle
+
+2026-07-14 从本机被忽略的遗留工件恢复并登记了真实四工件 bundle。实际执行同一
+`map_manifest verify` 命令得到：
+
+```text
+map manifest verified: warehouse_v2 bundle=75d7df63a9feddeeb4d38053ed18d4b04603bdc6045ea191e7c689b0b98168d4
+```
+
+| 角色 | 路径 | 字节数 | SHA256 |
+| --- | --- | ---: | --- |
+| Occupancy YAML | `data/maps/occupancy/warehouse_v2.yaml` | 136 | `32d19866a29efd1d880ee046b934695d5999aa1ac9f0219924857b1272680067` |
+| Occupancy PGM | `data/maps/occupancy/warehouse_v2.pgm` | 242815 | `2dbaadc6e4534767bcf939f9342024c84f11db1b4efd4591b86f0c6ebe7f6ce7` |
+| Pose Graph | `data/maps/posegraphs/warehouse_v2.posegraph` | 37008280 | `b8799ad00fb4db997bef4c8aaf83a2efb5e47c1bee706f5aebdd9348012da264` |
+| Pose Graph data | `data/maps/posegraphs/warehouse_v2.data` | 4865034 | `80fde603db5b06755d468184d3f897632c7ee165e5cd417e6ab1aa422ce3b347` |
+
+其中只有大型 `.posegraph` 由 Git LFS 管理；preview PNG 不属于四工件 bundle。
+Manifest 明确记录 `provenance: recovered_ignored_local_artifacts`、
+`runtime_alignment_verified: false` 和 `calibrated: false`。因此校验通过只证明文件
+没有缺失、混版或篡改，**不证明**它已和当前 Warehouse Stage、出生点或障碍结构
+对齐。`initial_pose_source=auto` 会在启动前拒绝该 bundle；`rviz` 路径允许人工
+播种，但按当前证据政策只用于对齐检查，不能计入正式统计。尚未完成重复冷启动
+标定、长距离路线或任何 v2 正式导航统计。
+
+## 物理步同步发布与时间警告（2026-07-14）
+
+Isaac ROS 图已从渲染/播放 tick 改为物理步触发，realtime 主循环使用 `FramePacer`
+限制墙钟节奏且每个 app frame 只推进一个固定物理步。真实 headless Warehouse、
+Mapping、Ideal、Camera Off 的 profiler 短窗为 8 秒（warmup 1 秒）；原始本机报告
+`/tmp/timing_physics_step_2.json` 被忽略，SHA256：
+`dc01911c4844dbbffc0b239b5e92f7717c20a0d862c8df5705494d158ef7aff9`。报告元数据
+记录基线提交 `c445136` 且工作区 dirty；被测物理步实现随后提交为 `2a33c57`。
+
+| Topic/TF | Samples | Wall Hz / Stamp period | 时间完整性 |
+| --- | ---: | --- | --- |
+| `/clock` | 452 | `56.404 Hz` / `16.6667 ms` | duplicate/rollback/future 均 0 |
+| `/imu/data` | 452 | `56.409 Hz` / `16.6667 ms` | duplicate/rollback/future 均 0 |
+| `/joint_states` | 452 | `56.405 Hz` / `16.6667 ms` | duplicate/rollback/future 均 0 |
+| `/odom` | 452 | `56.399 Hz` / `16.6667 ms` | duplicate/rollback/future 均 0 |
+| `/lidar/points_raw` | 77 | `9.506 Hz` / `100.0000 ms` | duplicate/rollback/future 均 0 |
+| `odom -> base_link` | 161 lookups | P99 lag `16.667 ms` | lookup failure/future 均 0 |
+
+测得 RTF `0.9401`。这证明短窗内不再把同一物理状态重复发布为多条 ROS 消息，
+但不等于阶段 1 完成：默认 LiDAR `accumulate_outputs=true` 的两个约 140/190 秒
+日志仍分别出现 11/23 次 `getSimulationTimeMonotonicAtTime`。临时把
+`accumulate_outputs=false` 后，90 秒内反而升至 2860 次，因此保留默认 true。
+另一个临时候选 `resetSimulationTimeOnStop=true` 在 90 秒无 Reset 的窗口中为 0 次，
+但尚未验证 Reset 前后 PointCloud/Clock epoch 与消息年龄，不能接受；候选已撤回。
+仍需完成 Reset 前后、GUI/headless、realtime/unbounded、60/120 Hz 和至少 15 分钟
+A/B，才能决定最终修复并宣称警告消除。
+
+## 底盘运动基线（2026-07-14）
+
+真实 Warehouse、Ideal Odom、Camera Off 下执行：
+
+```bash
+./scripts/run_motion_baseline.sh \
+  --environment Warehouse \
+  --odometry-mode ideal \
+  --output data/reports/motion/baseline_warehouse_before.json
+```
+
+报告使用 `jackal_three_tier_motion_v1`，配置 SHA256 为
+`be1c26709c6839e38147318f5fb41bdc234d510141505f12a7bf34b37712c7e3`；原始 JSON
+按数据策略被 Git 忽略，本机文件 SHA256 为
+`07f83f0232de021d1d71817f6452bf33633bbc689eb29e763248ada8ac4cccb2`。
+14/14 段均为 `complete`，最终 `result=success`；这只表示采集完整，不是物理验收
+PASS。
+
+| 命令组 | 实际平均响应 | 平移/横向漂移 |
+| --- | --- | --- |
+| 直行 `±0.15 m/s` | `+0.140 / -0.141 m/s` | 横向漂移绝对值小于 `0.001 mm` |
+| 直行 `±0.35 m/s` | `+0.304 / -0.305 m/s` | 横向漂移绝对值小于 `0.002 mm` |
+| 直行 `±0.60 m/s` | `+0.472 / -0.472 m/s` | 横向漂移绝对值小于 `0.004 mm` |
+| 原地转向 `±0.30 rad/s` | `+0.114 / -0.076 rad/s` | `0.0267 / 0.0367 m` |
+| 原地转向 `±0.65 rad/s` | `+0.194 / -0.216 rad/s` | `0.0540 / 0.0551 m` |
+| 原地转向 `±1.00 rad/s` | `+0.338 / -0.273 rad/s` | `0.0664 / 0.0831 m` |
+| 圆弧 `0.40 m/s, ±0.40 rad/s` | 线速度 `0.370 / 0.375 m/s`，角速度仅 `+0.033 / -0.034 rad/s` | 轮向检查不通过 |
+
+Clock、Odom、JointState 的 session 统计均为 `duplicate_count=0`、
+`regression_count=0`；停止 onset 为 `0.0167–0.0500 s`，连续静止确认在
+`0.5167–0.5500 s`。所有原地转向段及两段圆弧的四轮方向检查均出现
+`mixed`/不匹配。这些结果把“转向慢、左右不对称、旋转漂移”从主观现象变成了
+可复现基线，也说明底层物理问题尚未解决。SimplePlane 与 Realistic 对照、轮胎/
+Collider/Joint/有效轮距修复后的同配置复跑仍是阶段 3 的阻塞验收项。
+
+## Nav2 1.3.12 Smac inflation diagnostic
+
+`SmacPlanner2D` 配置阶段会打印通用的
+`Inflation layer either not found or inflation is not set sufficiently` ERROR。对本仓库
+固定的 Nav2 1.3.12 `SmacPlanner2D` 2D radius 路径，这是上游诊断误报：该版本的
+[`SmacPlanner2D` 源码](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_smac_planner/src/smac_planner_2d.cpp#L113-L118)
+以 radius mode 和 `possible_collision_cost=0.0` 调用共享 collision checker，而
+[`GridCollisionChecker` 源码](https://github.com/ros-navigation/navigation2/blob/1.3.12/nav2_smac_planner/src/collision_checker.cpp#L45-L68)
+会先对非正值打印 ERROR，再从 radius mode 分支返回。
+
+本项目 Local/Global Costmap 都包含 `nav2_costmap_2d::InflationLayer`，配置半径
+`0.55 m`，大于带 padding 的 Jackal footprint 约 `0.34 m` 外接半径；其后的实际
+1 m Ideal 目标也完成了规划与执行。只有在 Nav2 版本、Planner、Footprint、插件和
+inflation 参数均未改变时，才能把这条消息分类为已知误诊；任一条件变化都必须
+重新调查，不能把所有 inflation ERROR 一概忽略。
 
 ## Collision Monitor 与 `scan_fault`
 
@@ -193,6 +293,28 @@ CLI/metadata（`ceres_num_threads="8"`）；其余性能值来自实时 Topic/TF
 
 ## Camera、RViz 与导航组合
 
+> 2026-07-14 起 Camera 使用 schema v3（分离光学/曝光 f-stop，并在
+> CameraFront RenderProduct 局部启用 RTXAA、关闭 Motion Blur/DoF，同时关闭
+> Camera Auto Exposure）。下表是该改动之前的历史运行数据，只保留为性能基线，
+> 不能作为新清晰度配置的真实图像验收证据。
+
+### Camera schema v3/API authoring 证据（2026-07-14）
+
+- 本机 Isaac Sim 6.0.1 的 `omni.usd.schema.render_settings.rtx 1.0.2`
+  `generatedSchema.usda`/`plugInfo.json` 确认：Auto Exposure API 只能应用到
+  `Camera`；AA、Motion Blur、DoF API 只能应用到 `RenderProduct`；对应属性类型
+  分别是 `bool`、`token`、`bool`、`bool`。
+- `pytest -q isaac_sim/tests/test_camera_contracts.py`：`15 passed`；严格 schema
+  漂移、光学/曝光拆分、per-Prim API/属性名和类型均有定向测试。
+- Headless SimulationApp 冒烟检查成功加载 RTX schema 扩展，并在内存 Camera/
+  RenderProduct Prim 上读回
+  `auto_exposure=false, aa=rtxaa, motion_blur=false, dof=false`；进程正常退出且无
+  Isaac/Kit 残留。
+
+这组证据只证明配置解析和 USD authoring 闭环。它没有创建并观察真实仓库画面，
+也没有重新测量 Image Hz、RTF、GPU 或静止/运动清晰度，因此 Camera 视觉验收
+仍为待办。
+
 Profile 的配置目标是：Monitoring `640x360 @ 15 Hz`，Standard
 `640x480 @ 20 Hz`，High Quality `1280x720 @ 30 Hz`。下面把目标与测量值
 分开列出。`Image sim Hz` 由图像 Header stamp period P50 换算；`Image wall Hz`
@@ -288,10 +410,12 @@ Reset Trigger 的 `success: true` 只表示已提交的物理重置和下游服�
 
 ## Ordered shutdown 与 RViz 安全退出
 
-当前 `scripts/run_ros.sh` 是顶层监督器：它通过 `setsid` 把 `ros2 launch` 放入
-独立进程组。收到 INT/TERM/HUP 后，监督器先运行私有 rclpy Context 和
-SingleThreadedExecutor 的 `robot_bringup.ordered_shutdown`，再向 launch 进程组
-转发 SIGINT 并等待退出。
+当前 `scripts/run_ros.sh` 是顶层监督器。`ros2 launch`、集成 RViz、Mapping
+Teleop 和 ordered-lifecycle helper 分别运行在独立进程组；监督器只接受 PID/
+PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本会话组。
+收到 INT/TERM/HUP 后，它先运行私有 rclpy Context/Executor 的
+`robot_bringup.ordered_shutdown`，随后对全部已认证组执行有界
+`SIGINT -> SIGTERM -> SIGKILL`，没有全局 `pkill`。
 
 顺序契约为：
 
@@ -300,10 +424,14 @@ SingleThreadedExecutor 的 `robot_bringup.ordered_shutdown`，再向 launch 进�
 - Localization：只关闭 Localization manager；
 - Mapping/Incremental Mapping：依次向 SLAM Toolbox 发送 deactivate、cleanup、
   shutdown transition；
-- 每个握手的默认完整超时为 20 秒；RViz 使用仓库内安全 Nav2 Panel，避免退出时
-  callback/Future/Context 竞态。
+- 一次关闭的默认**总 deadline** 是 20 秒；Lifecycle helper 最多使用其中 10 秒，
+  并为进程组升级和元数据清理保留最后 1 秒，不是每个握手各有 20 秒；
+- 第二次停止请求直接对仍认证的组请求 TERM，第三次才请求 KILL；元数据删除函数
+  在组仍可见时会拒绝删除，RViz 子进程也不会继承实例锁 FD；
+- RViz 使用仓库内只观察 Lifecycle 的安全 Nav2 Panel，避免与 Activation Gate
+  争夺所有权，并协作清理 callback/Future/Context。
 
-实际证据：
+历史真实运行证据（早于本次 session-auth/顽固后代加固）包括：
 
 - 12 个 MPPI 与 4 个 Ceres 新进程运行均以该监督器有序退出，没有 Controller
   `-6`、未等待协程或残留 ROS/RViz 进程；
@@ -314,21 +442,30 @@ SingleThreadedExecutor 的 `robot_bringup.ordered_shutdown`，再向 launch 进�
   竞态，修复后用同一组合复跑明确 clean；
 - Realistic 首轮退出暴露了 `wheel_odometry` 未处理的
   `ExternalShutdownException`，修复后复跑明确 clean；
-- 最终 `clean_runtime.sh` 检查项目受管进程为 `none`；
 - 安全 RViz Panel 在监督器改造前另做了 Navigation、Mapping、Localization、
   Camera View 各 5 次（20/20）启动/退出测试；该数据验证 Panel 本身，但不能
-  冒充新监督器的跨模式 20 次矩阵。
+  冒充当前监督器的跨模式矩阵。
 
-尚未单独归档“新监督器下每个模式、Camera Off/Monitoring/High Quality、目标
-执行中各连续 5 次”的完整矩阵，也没有独立的 Render Product 泄漏计数报告。
-因此当前结论是重复 smoke 通过，不能把计划第 21/26.7 节的全部 shutdown 矩阵
-标为最终完成。
+当前实现的自动证据为：
+
+- `robot_bringup` runtime 脚本定向测试 `34 passed`，包级测试 `176 passed`；
+- 独立 PGID RViz 可被 `clean_runtime` 认证、RViz leader 退出但顽固后代仍持锁、
+  顽固 Teleop wrapper 三个对抗用例连续执行 5 轮全部通过；
+- 测试覆盖 leader 已是 PGID 时仍重执行环境/默认信号、关闭 RViz 子进程锁 FD、
+  PGID+start-ticks 防复用、逐阶段元数据/成员复核，以及只有组消失才删元数据；
+- 五个改动脚本 `bash -n`、`git diff --check` 均通过，测试结束无假进程残留。
+
+当前代码还没有真实执行 N19 要求的 RViz 连续 10 轮，也没有覆盖当前实现下的
+每个模式、Camera profile、active goal 和 Render Product 泄漏矩阵。因此结论只能
+是“进程组安全契约和对抗自动测试通过”；不能把旧真实 smoke、旧 Panel 20/20 或
+新假进程测试拼成当前真实退出验收。
 
 ## 发布前审查回归
 
-最终三路只读审查没有发现 P0，但发现了地图发布、进程退出和输入边界的阻塞项。
-修复后针对性测试与全量测试均重新执行，不能把审查前结果当作最终结果。新增回归
-明确覆盖：
+2026-07-13 当轮发布前的三路只读审查没有发现 P0，但发现了地图发布、进程退出和
+输入边界阻塞项；当时代码冻结后已完成针对性与全量重跑。其后新增的 Camera v3、
+物理步发布、底盘诊断、Warehouse V2 和 session-auth 退出加固当前只有定向证据，
+仍须在最终冻结后重跑完整门。历史新增回归包括：
 
 - `save_map.sh` no-clobber hard-link 发布、并发同名工件保留、Manifest 链接后的
   信号窗口回滚、父目录 symlink 和纯点版本拒绝；
@@ -342,28 +479,35 @@ SingleThreadedExecutor 的 `robot_bringup.ordered_shutdown`，再向 launch 进�
 - `robot_rviz_plugins` 在 `BUILD_TESTING=OFF` 且不查找测试依赖时独立配置、编译和
   安装成功。
 
-## 自动测试证据
+## 自动测试证据与当前重跑边界
 
-最终交付在所有代码修改结束后执行了 `./scripts/test.sh --with-isaac`，命令
-exit 0。以下是本轮最终计数，不沿用旧版本：
+2026-07-13 的可靠性升级基线曾在当时代码冻结后执行
+`./scripts/test.sh --with-isaac` 并 exit 0。下表的全量计数属于该提交阶段的可复核
+历史门，不是 2026-07-14 当前工作分支的最终门；Camera v3、物理步发布、底盘
+诊断、Warehouse V2 和后续退出修复合入后，最终交付必须重新执行完整三条命令。
 
-| Gate | 最终结果 |
+| Gate | 最近证据 |
 | --- | --- |
-| `./scripts/preflight.sh` | PASS，包括仓库环境、资产和 `warehouse_v1` Manifest/LFS 检查 |
-| `./scripts/build_ros2.sh` | 11 packages build completed |
-| `./scripts/test.sh --with-isaac` 的 pure/root suite | 459 collected：454 passed，5 deselected |
-| ROS `colcon test` | 11 packages，445 tests，0 errors，0 failures，0 skipped |
-| Isaac/USD marker suite | 61 collected：3 passed，58 deselected |
+| `./scripts/preflight.sh` | 2026-07-13 PASS，包括仓库环境、资产和 `warehouse_v1` Manifest/LFS 检查 |
+| `./scripts/build_ros2.sh` | 2026-07-14 底盘诊断变更后 11 packages build completed；最终冻结后仍须重跑 |
+| `./scripts/test.sh --with-isaac` 的 pure/root suite | 2026-07-13：459 collected，454 passed，5 deselected |
+| ROS `colcon test` | 2026-07-13：11 packages，445 tests，0 errors，0 failures，0 skipped |
+| Isaac/USD marker suite | 2026-07-13：61 collected，3 passed，58 deselected |
 | RViz config/load smoke | 结构测试包含在 454 个 root tests；安全 Panel 20/20 历史循环及本轮 Off/Monitoring/HQ 实跑组合见上文 |
 | `robot_rviz_plugins` production-only build | 独立 `-DBUILD_TESTING=OFF` configure/build/install PASS |
-| Repository index set comparison | 267 个交付路径对 267 个索引路径，集合差分无输出 |
-| `git diff --check` | PASS；全工作树、未跟踪源码和文档在提交前再执行一次最终审计 |
+| 2026-07-14 Camera 定向测试 | Camera contracts 15 passed；Camera/config 定向集合 27 passed；`isaac_sim/tests` 69 passed、3 skipped |
+| 2026-07-14 底盘诊断定向测试 | 48 passed；真实 Warehouse + Ideal 14/14 段完整采集 |
+| 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
+| Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
+| Repository index set comparison | 当前 280 个 Git 跟踪路径对 280 个索引路径，集合差分无输出 |
+| Markdown 相对链接 | README 与 `docs/*.md` 当前缺失链接为 0 |
+| `git diff --check` | 当前 PASS；代码冻结和提交前再执行一次最终审计 |
 
 推荐最终命令：
 
 ```bash
-./scripts/preflight.sh
 ./scripts/build_ros2.sh
+./scripts/preflight.sh
 ./scripts/test.sh --with-isaac
 ```
 
@@ -375,10 +519,11 @@ exit 0。以下是本轮最终计数，不沿用旧版本：
 
 | 能力 | 当前边界 |
 | --- | --- |
-| 真实 `warehouse_v2` | 未建图、未生成四工件、未标定、未运行导航；只有临时测试夹具验证 uncalibrated 契约 |
-| Camera Standard | `640x480 @ 20 Hz` 组合未运行 |
-| Camera High Quality 频率 | 配置目标 30 Hz，RGB 实测约 15 Hz 仿真时间频率，目标未达到 |
-| Camera 人工 GUI 验收 | 抓帧方向检查已做，但用户 click-by-click、面板布局和视觉体验验收未完成 |
+| 真实 `warehouse_v2` | 四工件与 Manifest 已登记并通过完整性校验；来源日志、Stage 对齐、出生点标定、长距离路线和正式导航均未完成 |
+| 底盘物理 A/B | 只有 Warehouse + Ideal 底盘物理参数改动前 14 段基线；SimplePlane、Realistic 与修复后对照尚未完成 |
+| Camera Standard | schema v3 的 `640x480 @ 20 Hz` 组合未运行；不存在可外推的新配置性能数据 |
+| Camera High Quality 频率 | 约 15 Hz 是 schema v3 前历史基线；v3 配置目标 30 Hz 尚未实测，不能写成已达到或已失败 |
+| Camera 人工 GUI 验收 | schema v3 前抓帧做过方向检查；v3 静止/运动清晰度与用户 click-by-click、面板布局、视觉体验均未验收 |
 | GPU Camera 增量 | 并发另一个用户 Isaac Sim，当前共享 GPU 快照不能做独占增量结论 |
 | Realistic 本轮目标结果 | 报告结束时目标 active；不得写成该报告 succeeded |
 | Localization 冷启动统计 | 未完成 Ideal/Realistic 各 3 次独立冷启动及 Map Pose 离散度量化 |
@@ -387,7 +532,7 @@ exit 0。以下是本轮最终计数，不沿用旧版本：
 | Incremental-map 收益 | 尚无真实 changed-region 三地图对照及至少 30% 收益证据 |
 | Long-duration soak | 未记录长时间稳定性结果 |
 | Custom robot | 只有参数化迁移契约和模板，没有真实自定义 USD、标定和全链路验收 |
-| 完整 Shutdown 矩阵 | 新监督器的所有模式/Profile/active-goal 连续 5 次矩阵未单独归档 |
+| 完整 Shutdown 矩阵 | 当前 session-auth 监督器尚未完成 N19 真实 RViz 连续 10 轮；所有模式/Profile/active-goal 各连续 5 次矩阵也未归档 |
 
 以上固定目标运行可以作为回归、Reset 隔离、控制稳定性和资源竞争基线，但不能
 把 16/16 调参 Goal、历史 4/4 Realistic 或 4/4 动态 smoke 外推成一般性的

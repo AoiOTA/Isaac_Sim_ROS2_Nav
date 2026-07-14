@@ -1167,6 +1167,30 @@ summary.md
 - GUI/RViz 人工矩阵单独记录；
 - 未运行的项目明确标为“未验收”，不得写 PASS。
 
+### 6.4 实施回填：首个底盘运动基线（2026-07-14）
+
+已新增并真实执行 `run_motion_baseline.sh` 的 Warehouse + Ideal 底盘物理参数改动前基线。固定
+配置包含低/中/高三档前进、后退、左右原地转向，以及左右各 5 秒圆弧，共 14 段；
+每段前执行 Reset，独占非 Reset `/cmd_vel`，记录 Odom、JointState、Clock、轮向、
+停止响应和漂移。14/14 段采集完整，原始本机报告为
+`data/reports/motion/baseline_warehouse_before.json`（按策略忽略），文件 SHA256：
+`07f83f0232de021d1d71817f6452bf33633bbc689eb29e763248ada8ac4cccb2`。
+
+当前证据结论：
+
+- 三档直行实际平均速度约为命令的 `93%`、`87%`、`79%`，前后方向接近对称，
+  横向漂移接近零；
+- 原地转向实际平均角速度只达到命令的约 `25%–38%`（左右/档位不同），平移漂移
+  随命令升高到 `0.0831 m`；
+- 两段圆弧命令 `±0.40 rad/s`，实际平均角速度只有约 `±0.034 rad/s`；
+- 所有原地转向和圆弧段均出现轮速方向 `mixed`/不匹配；
+- Clock、Odom、JointState 的 session 重复和回退计数均为 0；停止 onset
+  `0.0167–0.0500 s`，连续静止确认 `0.5167–0.5500 s`。
+
+这份报告建立了问题基线，不是修复验收。SimplePlane + Ideal、Warehouse +
+Realistic、SimplePlane + Realistic，以及物理修复后的同配置复跑尚未完成；这些
+样本齐全前不得冻结 skid-steer 参数或声称转向/漂移问题解决。
+
 ---
 
 ## 7. 阶段 1：修复仿真时间与传感器链
@@ -1232,6 +1256,27 @@ Codex 必须查阅 Isaac Sim 6.0.1 当前安装版本的官方 API/设置，不�
 - 动态障碍的位置随时间连续；
 - `/scan` 时间戳单调；
 - SLAM 和 Costmap 不因旋转产生虚假障碍带。
+
+### 7.3.1 实施回填：物理步短窗与警告 A/B（2026-07-14）
+
+已完成代码侧第一轮：Clock、IMU、JointState、Ideal Odom、TF 和控制图改为物理步
+触发，主循环用 `FramePacer` 在 realtime 下节流且每帧只推进一个固定 physics
+step；Motion BVH 通过当前 Isaac SimulationApp 设置在 Kit 启动前启用，旧
+JointState/TF target 字段和 LiDAR `fullScan` 弃用写入也已移除。
+
+真实 headless Warehouse、Ideal、Camera Off 的 8 秒 profiler 窗口测得 RTF
+`0.9401`；Clock/IMU/Joint/Odom 各 452 样本、约 `56.40 Hz`、stamp 周期
+`16.6667 ms`，PointCloud 77 样本、`9.506 Hz`、stamp 周期 `100 ms`；所有这些
+Topic 的 duplicate/rollback/future 均为 0，`odom -> base_link` P99 lag
+`16.667 ms`。本机忽略报告 `/tmp/timing_physics_step_2.json` 的 SHA256 为
+`dc01911c4844dbbffc0b239b5e92f7717c20a0d862c8df5705494d158ef7aff9`。
+
+阶段仍为**部分完成**：默认 LiDAR 累积输出在约 140/190 秒日志中仍有 11/23 次
+`getSimulationTimeMonotonicAtTime`；关闭累积输出后 90 秒增至 2860 次，已排除为
+修复方向。临时 `resetSimulationTimeOnStop=true` 在无 Reset 的 90 秒窗口为 0 次，
+但 Reset 前后 PointCloud/Clock epoch 尚未测量，候选已撤回。完整 7.1 A/B、至少
+15 分钟 soak、旋转时真实 Scan 视觉和动态障碍连续性都未完成，不得把物理步短窗
+或 Motion BVH 设置等同于阶段 1 验收通过。
 
 ### 7.4 Mapping Costmap 误警告
 
@@ -1979,14 +2024,20 @@ optics:
   projection: perspective
   focal_length_mm: 24.0
   horizontal_aperture_mm: 21.0
-  focus_distance_m: 2.0
-  f_stop: 16.0
+  focus_distance_m: 4.0
+  f_stop: 0.0
 
 exposure:
   enabled: true
-  time_s: 0.005
-  responsivity: <calibrated>
-  f_stop: <exposure value if API requires>
+  auto_exposure_enabled: false
+  time_s: 0.02
+  responsivity: 1.10267
+  f_stop: 5.0
+
+render_product:
+  anti_aliasing: rtxaa
+  motion_blur_enabled: false
+  depth_of_field_enabled: false
 ```
 
 Schema、加载器、测试同步修改。
@@ -2047,6 +2098,13 @@ navigation:
 - CameraInfo 与实际分辨率一致；
 - monitoring RTF 不显著下降；
 - high_quality 的实际频率明确记录，不把配置 30 Hz 当作实测。
+
+实施状态（2026-07-14）：Camera schema 已升级为 v3，光学
+`optics.f_stop=0.0` 与手动曝光 `exposure.f_stop` 已拆分；CameraFront
+RenderProduct 已按本机 Isaac Sim 6.0.1 的 RTX schema 显式使用 RTXAA，并关闭
+Motion Blur 和 DoF，Camera Prim 显式关闭 Auto Exposure。严格解析与定向单元
+测试已有代码证据，但静止/运动真实抓帧、清晰度、RTF 和 high_quality 实际频率
+仍待运行时验收，不能据此状态宣称 Camera 视觉质量已通过。
 
 ---
 
@@ -2406,6 +2464,15 @@ Codex 必须先检查当前仓库中 `warehouse_v2` 的真实状态，不得假�
 10. 未标定时必须使用 `initial_pose_source:=rviz`，不得静默套用 `warehouse_v1` 的标定结果。
 
 如果 `warehouse_v2` 目前只存在本地工作树、运行输出目录或未追踪文件中，必须先明确记录其路径、来源和是否应纳入 Git/LFS，不得直接覆盖现有 `warehouse_v1`。
+
+实施状态（2026-07-14）：已从本机遗留输出恢复 Occupancy YAML/PGM、Pose Graph/
+`.data` 四工件并登记 `warehouse_v2.yaml` Manifest；逐文件 size/SHA256 与 bundle
+SHA256 已通过真实仓库 `map_manifest verify`，大型 `.posegraph` 已纳入 Git LFS。
+Manifest 如实记录原始建图命令未知、运行时对齐未验证、`calibrated: false`，所以
+`auto` 仍被契约拒绝；`rviz` 路径允许人工播种，但当前只用于对齐检查而不能计入
+正式统计。第 8 项 Spawn/Map Pose 标定、
+物理场景一致性、长距离路线和正式导航均未完成；四工件“可校验”不得写成地图
+“可验收”。
 
 #### 20.2.2 物理场景与地图一致性
 

@@ -5,7 +5,7 @@
 > 适用环境：Ubuntu 24.04、ROS 2 Jazzy、Isaac Sim 6.0.1、RTX 4090
 > 文档性质：实现计划、问题复现记录、设计约束、测试矩阵和验收标准
 > 状态：核心实现与自动测试已完成，实机矩阵已回填；仍保留明确的未验收边界
-> 最近回填：2026-07-13
+> 最近回填：2026-07-14
 
 ---
 
@@ -19,13 +19,13 @@
 | 2 环境一致性 | 已实现 | Shell source-only、Domain/RMW、daemon 参数测试 | 新终端 Topic/Service 可见性与项目环境诊断已运行 | 不替代用户机器上的 DDS/网络专项诊断 |
 | 3 运行时可观测性 | 已实现 | Profiler 采集、聚合、元数据与边界测试 | 已采集 RTF、Topic Hz/Age、TF Lag、受管进程树 CPU/GPU；ROS 进程统计包含监督器跨进程组后代 | 长时间压力与多主机 DDS 未执行 |
 | 4 Teleop | 已实现 | 按键、动态调速、上下限、deadman 与最终零速度测试 | Mapping 交互启动链已运行 | 完整人因体验仍依赖操作者键盘/终端环境 |
-| 5 Camera 最小闭环 | 已实现 | Schema、profile、Prim、Render Product、Image/CameraInfo、TF、QoS、Reset 与清理测试 | `monitoring`、`high_quality` headless 发布已采样；实际截图确认前向、非倒置/非镜像、无遮挡及转弯画面变化 | `standard` 只有配置/契约覆盖；不声称三种启用 profile 均有实机性能报告 |
-| 6 Camera 集成 RViz | 已实现 | 三种模式 RViz 与 Camera-only 配置测试 | 集成 RViz 已实际启动且相机订阅存在；另有实际 Camera 图像截图检查 | 一次实机启动不等于完整 GUI 布局、缩放和多显示器人因验收 |
+| 5 Camera 最小闭环 | 已实现，schema v3 待视觉复验 | Schema、profile、Prim、Render Product、Image/CameraInfo、TF、QoS、Reset 与清理测试；v3 的 per-Prim RTX API 已 headless 读回 | `monitoring`、`high_quality` 发布性能与截图属于 schema v3 之前的历史基线 | v3 尚未重新抓取静止/运动真实图像或测 RTF/GPU；`standard` 也无独立实机性能报告 |
+| 6 Camera 集成 RViz | 已实现，现有实测为历史基线 | 三种模式 RViz 与 Camera-only 配置测试 | 旧 Camera 配置下集成 RViz 已实际启动且相机订阅存在，并做过图像截图检查 | v3 改动后仍需重跑真实 RViz 画质；一次启动也不等于完整 GUI 人因验收 |
 | 7 时序、TF、Reset、Collision | 已实现 | 时间戳、QoS、Reset 代次和 `/scan_fault` 单元/集成测试 | 正常、单/双丢包、持续断流、错误 Frame、恢复和 Reset 清理矩阵已运行；Camera Reset 前后时间戳继续前进 | 更长时间随机故障/网络拥塞矩阵未执行 |
 | 8 MPPI/Ceres | 已实现并冻结日常 profile | 参数硬约束与 Nav2 配置测试；8 Hz 非法组合在创建节点前 fail fast | MPPI：10/15 Hz 各 6 组均导航成功且控制周期 missed=0；Ceres 8/12/16/20 线程均实际采样 | 15 Hz 与 `model_dt=0.1 s` 不匹配序列移位语义，故产品 profile 保持 10 Hz；Camera 全 profile 交叉长时矩阵未执行 |
-| 9 地图 Manifest | 已实现 | 四工件、hash/size/LFS、路径逃逸、bundle、事务回滚和标定绑定测试 | `warehouse_v1` Manifest 实际校验；临时未标定 v2 夹具验证 `auto` 拒绝、`rviz` 允许 | 没有制作真实 `warehouse_v2`，不能声称 changed-region 或标定后导航通过 |
-| 10 RViz/Lifecycle/Shutdown | 已实现 | 安全面板、Future/Context 清理、有序关闭与脚本测试 | Navigation/Mapping 等实际会话已完成干净关闭，集成 RViz 退出无已知崩溃 | 仍不把所有 Camera profile × 活跃目标 × 连续五轮写成已全矩阵验收 |
-| 11 完整验证与文档 | 进行到交付边界 | Python/ROS 全量回归已有通过批次，末轮改动另有目标回归 | Headless、集成 RViz、Camera 截图、MPPI/Ceres、Collision、地图契约均有实际证据 | 200 次静态统计、广义动态障碍统计、真实 v2、自定义机器人和完整 GUI 人因验收不在已完成证据内 |
+| 9 地图 Manifest | 已实现 | 四工件、hash/size/LFS、路径逃逸、bundle、事务回滚和标定绑定测试 | `warehouse_v1` 与真实 `warehouse_v2` Manifest/bundle 均通过仓库校验；v2 保持 `auto` 拒绝、`rviz` 人工播种 | v2 来源日志缺失、Stage 对齐未验证且未标定，不能声称 changed-region、长距离或导航通过 |
+| 10 RViz/Lifecycle/Shutdown | 当前加固已实现，真实复验待补 | session-auth 进程组、Future/Context、有序关闭与升级测试：runtime 34 passed、bringup 176 passed、3 个顽固组用例连续 5 轮通过 | Navigation/Mapping/RViz 干净退出是前一版监督器的历史证据 | 当前实现尚未完成 N19 真实 10 轮，也未完成所有 Camera profile × 活跃目标 × 连续五轮矩阵 |
+| 11 完整验证与文档 | 进行到交付边界 | Python/ROS 全量回归已有通过批次，末轮改动另有目标回归 | Headless、旧 Camera/RViz、MPPI/Ceres、Collision，以及 v1/v2 地图完整性均有实际证据 | 200 次静态统计、广义动态障碍统计、v2 对齐/标定/导航、Camera v3 视觉复验、自定义机器人和完整 GUI 人因验收仍未完成 |
 
 冻结的日常 Nav2 profile 为：`stable = 10 Hz, batch_size 750, time_steps 20, model_dt 0.1 s`；`performance = 10 Hz, batch_size 1000, time_steps 20, model_dt 0.1 s`。二者都保持 2 秒预测窗。Camera profile 有 `off/monitoring/standard/high_quality` 四种配置，但配置目标频率不等于任意机器上的实测频率。
 
@@ -400,9 +400,9 @@ Invalid frame ID "odom"
 
 ### 6.6 warehouse_v2 保存成功但导航失败
 
-这是升级前的用户复现场景，不表示当前仓库已经交付一套真实 `warehouse_v2`。OccupancyGrid 和 Pose Graph 即使都保存成功，仍可能没有完成该地图专属的 Map Pose 标定或四工件一致性验证。
+这是升级前的用户复现场景。当前仓库已经登记一套从遗留本地工件恢复的真实 `warehouse_v2`，但 OccupancyGrid 和 Pose Graph 即使保存并通过完整性校验，仍可能没有完成该地图专属的 Stage 对齐、Map Pose 标定或物理结构一致性验证。
 
-当前实现通过 Manifest bundle 和出生点绑定，避免任意新版本无条件复用 `warehouse_v1` 自动初始位姿。临时未标定 v2 夹具已经验证 `auto` fail fast、`rviz` 允许人工播种；真实 changed-region `warehouse_v2` 的制作、标定和导航仍是未完成验收项。
+当前实现通过 Manifest bundle 和出生点绑定，避免任意新版本无条件复用 `warehouse_v1` 自动初始位姿。真实 v2 四工件和 Manifest 已校验，但 Manifest 如实保持 `runtime_alignment_verified: false`、`calibrated: false`：`auto` fail fast，`rviz` 路径允许人工播种，但按当前证据政策只用于对齐检查。其来源复核、Stage 对齐、标定、changed-region/长距离路线和导航仍是未完成验收项。
 
 ### 6.7 Controller 错过 10 Hz
 
@@ -510,7 +510,7 @@ exit code -6
 
 本轮开始前，Camera 配置处于关闭状态，只有左右 Camera Frame/Prim 预留，没有可用 Render Product、RGB/CameraInfo 发布、频率/QoS、RViz 显示、性能基准或诊断闭环。
 
-截至 2026-07-13，当前实现已经完成：
+截至 2026-07-14，当前实现已经完成：
 
 - 严格 Camera Schema 和 `off/monitoring/standard/high_quality` profile；
 - 唯一默认前置 Camera Prim、Render Product 和启动期 profile 选择；
@@ -519,9 +519,10 @@ exit code -6
 - `camera_front_link` 与 `camera_front_optical_frame`；
 - Camera-only RViz，以及 Mapping/Localization/Navigation 集成面板；
 - diagnose、Profiler、Reset 后唯一 Publisher 与清理契约；
-- headless `monitoring`/`high_quality` 实测和实际画面方向/转弯截图检查。
+- schema v3 将光学/曝光 f-stop 分离，在 CameraFront RenderProduct 局部使用 RTXAA、关闭 Motion Blur/DoF，并在 Camera Prim 关闭 Auto Exposure；对应 USD 属性已 headless 读回；
+- schema v3 之前已有 headless `monitoring`/`high_quality` 性能实测和画面方向/转弯截图历史基线。
 
-边界同样需要写清：`standard` 尚未做独立实机性能采样；真实自定义机器人没有资产，因此只有参数化迁移入口和 fail-fast 模板；集成 RViz 已实际运行，但没有把所有显示器布局和长期人工视觉体验写成已完整验收。
+边界同样需要写清：schema v3 尚未重新抓取真实静止/运动画面，也未复测 Image Hz、RTF、GPU；不能用旧截图声称新配置清晰度通过。`standard` 尚未做独立实机性能采样；真实自定义机器人没有资产，因此只有参数化迁移入口和 fail-fast 模板；旧配置下集成 RViz 已实际运行，但没有把所有显示器布局和长期人工视觉体验写成已完整验收。
 
 ---
 
@@ -778,7 +779,7 @@ Isaac Nav Mapping Teleop
 将旧 Camera 配置升级为严格 Schema。示例：
 
 ```yaml
-schema_version: 2
+schema_version: 3
 
 enabled: true
 default_profile: monitoring
@@ -810,7 +811,7 @@ cameras:
   front:
     enabled: true
 
-    sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_front_link/camera_front_sensor
+    sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_front_link/camera_front_optical_frame/camera_front_sensor
 
     link_frame: camera_front_link
     optical_frame: camera_front_optical_frame
@@ -821,19 +822,19 @@ cameras:
       enabled: true
       topic_name: image_raw
       encoding: rgb8
-      qos_profile: sensor_data
+      qos_profile: camera_sensor_data
       queue_size: 2
 
     camera_info:
       enabled: true
       topic_name: camera_info
-      qos_profile: sensor_data
+      qos_profile: camera_sensor_data
       queue_size: 2
 
     depth:
       enabled: false
       topic_name: depth/image_raw
-      qos_profile: sensor_data
+      qos_profile: camera_sensor_data
       queue_size: 1
 
     clipping_range_m:
@@ -844,14 +845,21 @@ cameras:
       projection: perspective
       focal_length_mm: 24.0
       horizontal_aperture_mm: 21.0
-      vertical_aperture_mm: 16.0
+      vertical_aperture_mode: match_profile_aspect_ratio
       focus_distance_m: 4.0
+      f_stop: 0.0
 
     exposure:
       enabled: true
+      auto_exposure_enabled: false
       time_s: 0.02
       responsivity: 1.10267
       f_stop: 5.0
+
+    render_product:
+      anti_aliasing: rtxaa
+      motion_blur_enabled: false
+      depth_of_field_enabled: false
 
     rviz:
       enabled: true
@@ -885,7 +893,8 @@ Camera Prim 应作为机器人固定传感器，不能成为独立动态刚体�
 └── base_link
     └── camera_link
         └── camera_front_link
-            └── camera_front_sensor
+            └── camera_front_optical_frame
+                └── camera_front_sensor
 ```
 
 要求：
@@ -1992,7 +2001,7 @@ calibration:
 
 Camera 不影响地图标定，但 Camera 画面可用于人工判断机器人朝向，不得代替正式坐标标定。
 
-截至本次回填，随仓库交付且实际通过完整校验的是 `warehouse_v1`。`warehouse_v2` 仅作为工作流示例和临时测试夹具名称；没有真实 v2 工件，不能据此声称已完成标定、导航或 30% 增量改善。
+截至本次回填，`warehouse_v1` 与从遗留本地输出恢复的 `warehouse_v2` 四工件均随仓库登记并通过 Manifest 完整性校验。只有 v1 具备自动初始位姿标定；v2 的来源日志、Stage 对齐和 Map Pose 标定缺失，因此仍不能据此声称已完成导航、长距离矩阵或 30% 增量改善。
 
 ---
 
@@ -2269,7 +2278,7 @@ docs/development.md
 
 ### 阶段 5：Camera 最小闭环
 
-状态：已实现并完成自动契约测试；`monitoring`/`high_quality` 已实测，`standard` 尚无独立实机性能报告。
+状态：schema v3 已实现、完成自动契约与 headless USD 属性读回；`monitoring`/`high_quality` 实测属于 v3 前历史基线，v3 真实画质/性能与 `standard` 独立实机报告均待补。
 
 - Camera Schema；
 - Camera Prim；
@@ -2315,7 +2324,7 @@ docs/development.md
 
 ### 阶段 9：地图标定
 
-状态：Manifest 与 `auto/rviz` 门禁已实现并测试；只有 `warehouse_v1` 是真实交付地图，`warehouse_v2` 仍是未完成实景工作流。
+状态：Manifest 与 `auto/rviz` 门禁已实现并测试；v1 是已标定发布地图，v2 真实四工件已登记/校验但来源、Stage 对齐、标定和导航仍未完成。
 
 - Manifest；
 - auto/rviz；
@@ -2323,7 +2332,9 @@ docs/development.md
 
 ### 阶段 10：RViz/Lifecycle/Shutdown
 
-状态：已实现并有自动测试和实际干净退出；不把尚未执行的所有 Camera/活跃目标连续组合写成已全矩阵通过。
+状态：当前 session-auth + INT→TERM→KILL 加固已实现并通过 runtime 34、bringup
+176 及 3 个顽固组用例连续 5 轮；实际干净退出来自前一版监督器，不能冒充当前
+实现的 N19。真实 RViz 10 轮和 Camera/active-goal 完整矩阵仍待执行。
 
 - Local Plan；
 - Camera；
@@ -2333,7 +2344,7 @@ docs/development.md
 
 ### 阶段 11：完整验证
 
-状态：已完成当前交付范围的自动回归、headless 和关键 GUI/Camera 实测；200 次统计、真实 v2、自定义机器人及完整 GUI 人因验收仍明确保留。
+状态：已有历史全量回归、headless 和旧 Camera 关键 GUI 实测；Camera v3 视觉复验、200 次统计、v2 对齐/标定/导航、自定义机器人及完整 GUI 人因验收仍明确保留。
 
 - 自动测试；
 - Isaac/USD；
@@ -2501,7 +2512,7 @@ Camera Monitoring + Teleop 动态调速。
 
 ### 26.5 warehouse_v2
 
-状态：只完成契约验证。临时未标定夹具验证 `auto` 拒绝、`rviz` 允许；真实 `warehouse_v2` 不存在，因此“标定后 auto/导航成功”未验收。
+状态：真实四工件与 Manifest 已登记并通过 hash/size/bundle 校验；Manifest 保持未标定，验证 `auto` 拒绝、`rviz` 允许。来源日志、Stage 对齐和标定缺失，因此“标定后 auto/导航成功”未验收。
 
 - 未标定 auto 失败；
 - 未标定 rviz 成功；
@@ -2522,7 +2533,9 @@ Camera Monitoring + Teleop 动态调速。
 
 ### 26.7 Shutdown
 
-状态：Camera Off、Camera 启用、RViz 和实际 Navigation/Mapping 会话已有干净退出；尚未宣称下列每种组合都各自完成连续 5 次。
+状态：Camera Off/On、RViz 和实际 Navigation/Mapping 会话已有前一版监督器的
+干净退出历史；当前加固只有自动/对抗进程证据，尚未执行真实 N19 连续 10 轮，也
+未完成下列每种组合各连续 5 次。
 
 - Camera Off；
 - Camera Monitoring；
@@ -2564,18 +2577,18 @@ Camera Monitoring + Teleop 动态调速。
 
 12 线程保留为日常默认，是在资源竞争和稳定性之间的保守选择；20 线程样本的 RTF 与 TF 尾延迟明显变差。
 
-### 27.3 Camera 发布性能（Headless）
+### 27.3 Camera 发布性能（schema v3 前 Headless 历史基线）
 
 | Profile | 配置目标 | 实测 RGB wall Hz | RTF | Image P99 Age | GPU 利用率 | GPU 功耗 | 显存口径 |
 |---|---|---:|---:|---:|---:|---:|---|
 | monitoring | 640×360 @ 15 Hz | 13.457 | 0.937057 | 16.667 ms | 约 36% | 约 111 W | Isaac 约 3086 MiB |
 | high_quality | 1280×720 @ 30 Hz | 15.820 | 0.930090 | 33.000 ms | 约 43% | 约 128 W | 系统总计约 4499 MiB |
 
-两次运行的 Image/CameraInfo publisher 均为 1，配对比率分别为 1.0 和约 0.9958，未观察到时间戳回退或 future stamp。`high_quality` 的配置目标是 30 Hz，但本机实测墙钟仅 15.82 Hz，绝不能写成“已达到 30 Hz”。`standard` 没有独立实机性能采样。集成 RViz 已实际运行并显示 Camera，但这里没有用一次 GUI 启动推导长期 GPU/控制器性能。
+这些数值采自 schema v3 之前，只保留作历史性能基线，不能代表新 RTXAA/无 Motion Blur/DoF/Auto Exposure 配置。两次运行的 Image/CameraInfo publisher 均为 1，配对比率分别为 1.0 和约 0.9958，未观察到时间戳回退或 future stamp。`high_quality` 的配置目标是 30 Hz，但本机历史实测墙钟仅 15.82 Hz，绝不能写成“已达到 30 Hz”。`standard` 没有独立实机性能采样；schema v3 的真实画质、频率、RTF 和 GPU 必须重测。
 
 ### 27.4 尚未生成的结果
 
-- 真实 `warehouse_v2`：没有工件、标定或导航报告；
+- 真实 `warehouse_v2`：已有四工件与完整性校验，但没有来源/Stage 对齐、标定或导航报告；
 - 自定义机器人：只有模板，没有真实 USD/惯量/轮参数验证；
 - Camera `standard` 长时报告；
 - 200 次静态统计、多布局动态障碍统计以及所有 Camera × RViz × Goal 的完整交叉矩阵。
@@ -2794,14 +2807,14 @@ RViz exit code -6
 
 GUI 中必须人工判断的内容，例如相机朝向、画面是否被机器人外壳遮挡、RViz 面板大小和视觉体验，可以列为最终人工验收项，但必须提供明确步骤和截图清单。
 
-### 31.1 截至 2026-07-13 的结论
+### 31.1 截至 2026-07-14 的结论
 
 | 结论 | 项目 |
 |---|---|
-| 已完成 | 环境脚本、Teleop 动态调速、Profiler、MPPI 参数校验与实测、Scan/TF/Collision 故障恢复、真实 `/optimal_trajectory`、Lifecycle、Manifest/标定门禁、Camera RGB/CameraInfo/TF/Profile/Reset、Camera-only 与集成 RViz、安全退出、自动测试和 headless 关键矩阵 |
-| 已有实际视觉证据但仍有限定 | 实际截图确认 Camera 前向、非倒置/非镜像、无遮挡和转弯变化；集成 RViz 已实际运行。尚未因此宣称所有显示器布局、缩放、长时间观看体验均通过 |
-| 部分完成 | Camera 性能已覆盖 `monitoring`/`high_quality` headless，未覆盖 `standard`；Shutdown 有多类实际干净退出，未覆盖所有 profile × 活跃目标各连续 5 次；Realistic 有既有 smoke，未完成本轮 Camera 全交叉矩阵 |
-| 明确未完成 | 真实 `warehouse_v2` 制作/标定/changed-region 30% 改善、200 次静态统计、多布局动态障碍统计、真实自定义机器人迁移、完整 GUI 人因验收 |
+| 已完成 | 环境脚本、Teleop 动态调速、Profiler、MPPI 参数校验与实测、Scan/TF/Collision 故障恢复、真实 `/optimal_trajectory`、Lifecycle、Manifest/标定门禁、Camera RGB/CameraInfo/TF/Profile/Reset，以及 v1/v2 四工件完整性校验；当前退出加固完成自动/对抗测试 |
+| 已有历史视觉证据但仍有限定 | schema v3 前截图确认 Camera 前向、非倒置/非镜像、无遮挡和转弯变化；旧配置下集成 RViz 已实际运行。这些证据不能替代 v3 真实画质复验，也不能证明所有 GUI 人因场景通过 |
+| 部分完成 | Camera v3 配置/属性读回已完成，但真实画质/性能待重测且 `standard` 无独立报告；Shutdown 的真实 clean 证据属于前版，当前加固未跑 N19 10 轮和 profile × active-goal 矩阵；v2 已有工件但未对齐/标定/导航 |
+| 明确未完成 | `warehouse_v2` 来源/Stage 对齐/标定/changed-region 与长距离导航、200 次静态统计、多布局动态障碍统计、真实自定义机器人迁移、Camera v3 视觉验收和完整 GUI 人因验收 |
 | 发布步骤 | Git commit、push、merge 以最终仓库历史为准；计划文档本身不预先宣称远端操作成功 |
 
-因此，本轮核心可靠性和 Camera 功能可以按已验证范围交付，但不能抹掉上表的长期验收边界，也不能把临时 v2 夹具、`standard` 配置或自定义机器人模板写成真实实机完成项。
+因此，本轮核心可靠性和 Camera 功能只能按已验证范围描述，不能抹掉上表的长期验收边界，也不能把 v2 完整性校验、Camera v3 配置、`standard` profile 或自定义机器人模板写成真实运行验收完成项。

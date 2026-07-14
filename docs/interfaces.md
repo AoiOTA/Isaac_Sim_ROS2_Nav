@@ -231,6 +231,20 @@ stamp and record mismatches instead of assuming every arrival is paired. Camera
 graph destruction precedes Render Product release, including shutdown and
 profile teardown.
 
+Camera schema v3 separates the USD optical aperture from manual exposure:
+`optics.f_stop=0.0` disables optical depth of field for the machine-vision
+camera, while `exposure.f_stop` remains an independent exposure value. Each
+enabled CameraFront RenderProduct applies
+`OmniRtxPostDebugSettingsAPI_1` (`omni:rtx:post:aa:op=rtxaa`, token),
+`OmniRtxPostMotionBlurAPI_1`
+(`omni:rtx:post:motionblur:enabled=false`, bool), and
+`OmniRtxPostDofAPI_1` (`omni:rtx:post:dof:enabled=false`, bool). The Camera
+prim applies `OmniRtxCameraAutoExposureAPI_1`
+(`omni:rtx:autoExposure:enabled=false`, bool). These are per-prim contracts;
+the sensor factory does not mutate the interactive viewport's global renderer
+settings. They are implementation evidence, not a substitute for real rendered
+image inspection.
+
 ## Local-plan visualization contract
 
 MPPI `FollowPath.visualize` is enabled so the controller publishes its selected
@@ -417,12 +431,15 @@ inconsistent stack. An actual gate process exit shuts down the composed stack.
 ## Ordered shutdown and process ownership
 
 `scripts/run_ros.sh` is the ROS process-group supervisor, not a transparent
-alias for `ros2 launch`. It keeps the launch child in a separate `setsid`
-session so terminal `SIGINT`, `SIGTERM`, or `SIGHUP` reaches the supervisor while
-Lifecycle services and executors are still alive. The supervisor then invokes
+alias for `ros2 launch`. The launch child, integrated RViz, Mapping Teleop, and
+ordered-lifecycle helper use separate process groups. Their metadata and live
+members must match the project root and `ISAAC_NAV_SESSION_ID` created by this
+supervisor. Terminal `SIGINT`, `SIGTERM`, or `SIGHUP` therefore reaches the
+supervisor while Lifecycle services and executors are still alive. It invokes
 `robot_bringup.ordered_shutdown` with a private ROS Context and
-SingleThreadedExecutor, using one 20-second global deadline for the complete
-Lifecycle sequence:
+SingleThreadedExecutor. One global shutdown deadline defaults to 20 seconds;
+the helper may use at most 10 seconds of the remaining budget and reserves the
+last second for process-group escalation and metadata cleanup:
 
 | Operation | Ordered Lifecycle responsibility |
 | --- | --- |
@@ -431,26 +448,26 @@ Lifecycle sequence:
 | Mapping / Incremental Mapping | deactivate, clean up, then shut down SLAM Toolbox |
 
 After those requests complete—or are reported as explicit warnings—the
-supervisor sends `SIGINT` to the launch child process group and waits for it.
-The wait is bounded: a second stop signal interrupts the helper and forces
-`SIGTERM`; after the configured grace windows the supervisor escalates its own
-authenticated launch group to `SIGKILL`, so it cannot wait forever on a stuck
-child.
-This final signal owns ordinary node, activation-gate, and managed
-RViz/Teleop-process teardown. The Navigation RViz config uses the
-project-owned safe panel so its ROS thread and Qt futures are cooperatively
-interrupted and joined before the ROS context disappears. Integrated RViz also
-creates its own registered process group rather than inheriting the supervisor
-recursion guard.
+supervisor sends `SIGINT` to every authenticated launch/RViz/Teleop/helper group
+and waits. Remaining groups receive `SIGTERM` and then `SIGKILL`, with identity
+revalidation before every phase. A second terminal stop request skips to TERM;
+a third requests KILL. Metadata deletion refuses to remove a still-live group,
+and cached PGIDs are pinned to the original leader start ticks while that
+leader exists. The Navigation RViz config uses the project-owned observer-only
+safe panel so its ROS thread and Qt futures are cooperatively interrupted and
+joined; integrated RViz also has its own registered group and closes inherited
+instance-lock file descriptors in the child.
 
-The contract applies only when the supervisor receives the signal. Directly
-killing the `ros2 launch` child, a lifecycle manager, or RViz bypasses some or
-all of the ordering. `clean_runtime.sh` is the authenticated recovery entrypoint
-for a lost terminal: it validates PID, boot, start-time, UID, project root and
-process-group identity before signaling the registered supervisor. The external
-cleaner itself refuses `SIGKILL`; the already-authenticated supervisor alone may
-use that final escalation for the exact launch group it created. Neither path
-may be replaced with broad `pkill` commands.
+The ordered contract applies when the supervisor receives the signal. Directly
+killing a launch child, lifecycle manager, or RViz bypasses some or all of the
+ordering. `clean_runtime.sh` is the cross-session recovery entrypoint for a lost
+terminal: for each registered Isaac/ROS/RViz/Teleop/motion-baseline component it
+validates PID/PGID, boot ID, leader start ticks, UID, project root, command, and
+every live group member. It then revalidates before its own bounded
+INT→TERM→KILL phases and retains metadata if a group remains visible. This
+recovery path does not require the current shell to possess the old session ID.
+Neither path may be replaced with manual broad `pkill` or unverified `kill`
+commands.
 
 ## Navigation control performance contract
 
