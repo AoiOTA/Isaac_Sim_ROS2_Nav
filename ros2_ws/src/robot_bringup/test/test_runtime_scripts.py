@@ -468,7 +468,33 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
     cleanup = CLEAN_RUNTIME.read_text(encoding='utf-8')
     assert 'for component in motion_baseline teleop rviz ros isaac' in cleanup
     assert '/lib/robot_experiments/motion_baseline_runner' in cleanup
+    assert '/bin/ros2 run robot_experiments motion_baseline_runner' in cleanup
     assert '${PROJECT_ROOT}/scripts/run_rviz.sh' in cleanup
+
+
+def test_motion_baseline_identity_accepts_ros2_run_leader_only():
+    """The authenticated leader is ros2 while the installed node is its child."""
+    command = (
+        '/usr/bin/python3 /opt/ros/jazzy/bin/ros2 run robot_experiments '
+        'motion_baseline_runner --ros-args'
+    )
+    wrong_package = command.replace('robot_experiments', 'other_package')
+    result = subprocess.run(
+        [
+            'bash',
+            '-c',
+            'source scripts/lib/common.sh\n'
+            f'runtime_component_command_matches motion_baseline {command!r}\n'
+            'if runtime_component_command_matches motion_baseline '
+            f'{wrong_package!r}; then exit 91; fi\n',
+        ],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_performance_mode_enable_is_transactional_and_restore_is_exact(
