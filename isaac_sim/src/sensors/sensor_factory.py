@@ -48,6 +48,13 @@ class CameraStream:
 
 
 @dataclass(frozen=True)
+class CameraRenderSettings:
+    anti_aliasing: str
+    motion_blur_enabled: bool
+    depth_of_field_enabled: bool
+
+
+@dataclass(frozen=True)
 class CameraDefinition:
     name: str
     enabled: bool
@@ -64,10 +71,13 @@ class CameraDefinition:
     horizontal_aperture_mm: float
     vertical_aperture_mode: str
     focus_distance_m: float
+    optics_f_stop: float
     exposure_enabled: bool
+    auto_exposure_enabled: bool
     exposure_time_s: float
     exposure_responsivity: float
     exposure_f_stop: float
+    render_product: CameraRenderSettings
     rviz_enabled: bool
     rviz_transport: str
     rviz_reliability: str
@@ -184,6 +194,13 @@ def _require_string(value: Any, *, context: str) -> str:
     return value.strip()
 
 
+def _require_nonnegative_number(value: Any, *, context: str) -> float:
+    result = require_number(value, context=context)
+    if result < 0.0:
+        raise SensorConfigError(f"{context} must be non-negative")
+    return result
+
+
 def _load_camera_stream(
     value: Any,
     *,
@@ -265,6 +282,7 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         "clipping_range_m",
         "optics",
         "exposure",
+        "render_product",
         "rviz",
     }
     data = _require_mapping(value, keys, context=f"camera.cameras.{name}")
@@ -330,6 +348,7 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
             "horizontal_aperture_mm",
             "vertical_aperture_mode",
             "focus_distance_m",
+            "f_stop",
         },
         context=f"camera.cameras.{name}.optics",
     )
@@ -349,9 +368,51 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         )
 
     exposure = _require_mapping(
-        data["exposure"], {"enabled", "time_s", "responsivity", "f_stop"},
+        data["exposure"],
+        {
+            "enabled",
+            "auto_exposure_enabled",
+            "time_s",
+            "responsivity",
+            "f_stop",
+        },
         context=f"camera.cameras.{name}.exposure"
     )
+    auto_exposure_enabled = _require_bool(
+        exposure["auto_exposure_enabled"],
+        context=f"camera.cameras.{name}.exposure.auto_exposure_enabled",
+    )
+    if auto_exposure_enabled:
+        raise SensorConfigError(
+            "front machine-vision Camera must keep auto exposure disabled"
+        )
+
+    render_product = _require_mapping(
+        data["render_product"],
+        {"anti_aliasing", "motion_blur_enabled", "depth_of_field_enabled"},
+        context=f"camera.cameras.{name}.render_product",
+    )
+    anti_aliasing = _require_string(
+        render_product["anti_aliasing"],
+        context=f"camera.cameras.{name}.render_product.anti_aliasing",
+    )
+    motion_blur_enabled = _require_bool(
+        render_product["motion_blur_enabled"],
+        context=f"camera.cameras.{name}.render_product.motion_blur_enabled",
+    )
+    depth_of_field_enabled = _require_bool(
+        render_product["depth_of_field_enabled"],
+        context=f"camera.cameras.{name}.render_product.depth_of_field_enabled",
+    )
+    if (
+        anti_aliasing != "rtxaa"
+        or motion_blur_enabled
+        or depth_of_field_enabled
+    ):
+        raise SensorConfigError(
+            "front machine-vision Camera RenderProduct must use RTXAA with "
+            "motion blur and depth of field disabled"
+        )
     rviz = _require_mapping(
         data["rviz"], {"enabled", "transport", "reliability", "queue_size"},
         context=f"camera.cameras.{name}.rviz"
@@ -393,9 +454,14 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
             context=f"camera.cameras.{name}.optics.focus_distance_m",
             positive=True,
         ),
+        optics_f_stop=_require_nonnegative_number(
+            optics["f_stop"],
+            context=f"camera.cameras.{name}.optics.f_stop",
+        ),
         exposure_enabled=_require_bool(
             exposure["enabled"], context=f"camera.cameras.{name}.exposure.enabled"
         ),
+        auto_exposure_enabled=auto_exposure_enabled,
         exposure_time_s=require_number(
             exposure["time_s"], context=f"camera.cameras.{name}.exposure.time_s",
             positive=True,
@@ -408,6 +474,11 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         exposure_f_stop=require_number(
             exposure["f_stop"], context=f"camera.cameras.{name}.exposure.f_stop",
             positive=True,
+        ),
+        render_product=CameraRenderSettings(
+            anti_aliasing=anti_aliasing,
+            motion_blur_enabled=motion_blur_enabled,
+            depth_of_field_enabled=depth_of_field_enabled,
         ),
         rviz_enabled=_require_bool(
             rviz["enabled"], context=f"camera.cameras.{name}.rviz.enabled"
@@ -500,8 +571,8 @@ def _load_camera(path) -> CameraConfig:
     }
     reject_unknown(data, allowed, context="camera config")
     require_keys(data, allowed, context="camera config")
-    if data["schema_version"] != 2:
-        raise SensorConfigError("camera schema_version must be 2")
+    if data["schema_version"] != 3:
+        raise SensorConfigError("camera schema_version must be 3")
 
     raw_profiles = _require_mapping(
         data["profiles"], set(CAMERA_PROFILE_NAMES), context="camera.profiles"
@@ -567,6 +638,91 @@ def resolve_camera_selection(
         )
     camera = config.cameras[config.primary_camera] if profile.enabled else None
     return CameraSelection(profile=profile, camera=camera)
+
+
+def _rtx_quality_contract(
+    definition: CameraDefinition,
+) -> dict[str, tuple[tuple[str, str, str, object], ...]]:
+    """Return the per-Prim RTX API/attribute contract without importing Kit.
+
+    Isaac Sim 6.0.1's render-settings schema limits auto exposure to Camera
+    prims, while AA, motion blur, and DoF are RenderProduct APIs. Keeping this
+    split explicit prevents a sensor profile from mutating the UI viewport's
+    global renderer settings.
+    """
+
+    return {
+        "camera": (
+            (
+                "OmniRtxCameraAutoExposureAPI_1",
+                "omni:rtx:autoExposure:enabled",
+                "bool",
+                definition.auto_exposure_enabled,
+            ),
+        ),
+        "render_product": (
+            (
+                "OmniRtxPostDebugSettingsAPI_1",
+                "omni:rtx:post:aa:op",
+                "token",
+                definition.render_product.anti_aliasing,
+            ),
+            (
+                "OmniRtxPostMotionBlurAPI_1",
+                "omni:rtx:post:motionblur:enabled",
+                "bool",
+                definition.render_product.motion_blur_enabled,
+            ),
+            (
+                "OmniRtxPostDofAPI_1",
+                "omni:rtx:post:dof:enabled",
+                "bool",
+                definition.render_product.depth_of_field_enabled,
+            ),
+        ),
+    }
+
+
+def _author_rtx_quality_contract(
+    camera_prim: object,
+    render_product_prim: object,
+    definition: CameraDefinition,
+) -> None:
+    """Author Camera/RenderProduct-local RTX quality controls."""
+
+    from pxr import Sdf
+
+    value_types = {
+        "bool": Sdf.ValueTypeNames.Bool,
+        "token": Sdf.ValueTypeNames.Token,
+    }
+    targets = {
+        "camera": camera_prim,
+        "render_product": render_product_prim,
+    }
+    for target_name, attributes in _rtx_quality_contract(definition).items():
+        prim = targets[target_name]
+        schemas = list(dict.fromkeys(item[0] for item in attributes))
+        for schema_name in schemas:
+            prim.AddAppliedSchema(schema_name)
+        applied = {str(schema) for schema in prim.GetAppliedSchemas()}
+        missing = sorted(set(schemas) - applied)
+        if missing:
+            raise SensorConfigError(
+                f"failed to apply {target_name} RTX schemas: {missing}"
+            )
+        for _, attribute_name, type_name, value in attributes:
+            attribute = prim.GetAttribute(attribute_name)
+            expected_type = value_types[type_name]
+            if not attribute.IsValid() or attribute.GetTypeName() != expected_type:
+                raise SensorConfigError(
+                    f"{target_name} RTX schema did not provide "
+                    f"{attribute_name} as {type_name}"
+                )
+            if not attribute.Set(value):
+                raise SensorConfigError(
+                    f"failed to author {target_name} RTX attribute {attribute_name}"
+                )
 
 
 class SensorFactory:
@@ -722,7 +878,9 @@ class SensorFactory:
             camera_schema.CreateClippingRangeAttr().Set(
                 Gf.Vec2f(*definition.clipping_range_m)
             )
-            camera_schema.CreateFStopAttr().Set(definition.exposure_f_stop)
+            # USD Camera fStop controls the physical aperture/DoF. It is not
+            # the exposure f-stop; 0.0 is the machine-vision pinhole default.
+            camera_schema.CreateFStopAttr().Set(definition.optics_f_stop)
             if definition.exposure_enabled:
                 camera_schema.CreateExposureTimeAttr().Set(
                     definition.exposure_time_s
@@ -742,12 +900,25 @@ class SensorFactory:
                 render_vars=["LdrColor"],
             )
             render_product_path = str(render_product.path)
-            if not render_product_path or not stage.GetPrimAtPath(
-                render_product_path
-            ).IsValid():
+            render_product_prim = (
+                stage.GetPrimAtPath(render_product_path)
+                if render_product_path
+                else None
+            )
+            if (
+                not render_product_path
+                or render_product_prim is None
+                or not render_product_prim.IsValid()
+                or render_product_prim.GetTypeName() != "RenderProduct"
+            ):
                 raise SensorConfigError(
                     "front Camera render product creation returned an invalid path"
                 )
+            _author_rtx_quality_contract(
+                camera_prim,
+                render_product_prim,
+                definition,
+            )
         except Exception:
             if render_product is not None:
                 destroy = getattr(render_product, "destroy", None)
