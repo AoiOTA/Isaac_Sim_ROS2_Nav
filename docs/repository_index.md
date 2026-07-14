@@ -137,6 +137,8 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/configs/robots/jackal.yaml` | Jackal schema-v2 单一运动学真源：显式 profile/lifecycle、轮径/轮宽、几何轮距、有效轮距、质量、物理参数、控制限幅、Footprint、joint/frame 和七条静态 TF。稳定基线的几何/有效轮距暂同为 `0.37559 m`。 |
+| `isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml` | 有效轮距 `0.989 m` 的不可变 v1 实验候选；从 clean 接触矩阵 Warehouse 指定 Profile 均值舍入，只允许与 stable 在 profile ID、lifecycle 和有效轮距三项不同，尚未通过物理验收。 |
+| `isaac_sim/configs/robots/experimental/jackal_etw_1p012_v1.yaml` | 有效轮距 `1.012 m` 的不可变 v1 实验候选；从 clean 接触矩阵指定 Profile 的两环境等权均值舍入，只允许与 stable 在 profile ID、lifecycle 和有效轮距三项不同，尚未通过物理验收。 |
 | `isaac_sim/configs/robots/custom_robot.yaml` | 与运行时同为 schema v2 的 fail-fast 模板；profile/lifecycle、几何/有效轮距等 `null` 表示真实机器人尚未测量，不能伪造默认值。 |
 | `isaac_sim/configs/simulation/ideal.yaml` | Ideal 模式与 TF 发布所有权的配置快照；当前运行时不读取此文件。 |
 | `isaac_sim/configs/simulation/realistic.yaml` | Realistic 模式与 TF 发布所有权的配置快照；当前运行时不读取此文件。 |

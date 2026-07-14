@@ -30,6 +30,8 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   统一 wheel joint；runtime provenance v4 与 Realistic Wheel Odom 启动握手会锁定
   文件路径、原始字节 SHA256、profile/lifecycle 和运动学数值，稳定 profile 保持原
   `0.37559 m` 控制行为，尚不代表有效轮距已经标定。
+- `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件；
+  两者都没有覆盖 stable，也尚未完成两环境、多速度、拓扑或 Realistic 物理 A/B。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 

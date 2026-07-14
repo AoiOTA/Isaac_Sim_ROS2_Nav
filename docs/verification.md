@@ -34,7 +34,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在历史实时报告中成立；新契约用真实 rclpy 覆盖匹配、SHA 错配和 Isaac 服务超时，并在 Wheel Odom 退出时关闭整套 Realistic launch | 新 schema-v4 握手尚未完成一轮冻结候选的真实 Isaac+ROS Realistic 导航；本轮 12 秒历史报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
 | Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
-| 自动测试 | 代码提交 `dd58c63` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `901 passed / 1 skipped / 23 deselected`，ROS `721 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `21 passed / 230 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
+| 自动测试 | clean 代码提交 `ab909b4` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `907 passed / 1 skipped / 23 deselected`，ROS `725 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `21 passed / 232 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
 
 ## Map Manifest 与标定
 
@@ -366,9 +366,9 @@ count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 run
   preflight: PASS
 
 ./scripts/test.sh --with-isaac
-  root: 901 passed, 1 skipped, 23 deselected
-  ROS: 721 tests, 0 errors, 0 failures, 1 skipped
-  Isaac/USD: 21 passed, 230 deselected
+  root: 907 passed, 1 skipped, 23 deselected
+  ROS: 725 tests, 0 errors, 0 failures, 1 skipped
+  Isaac/USD: 21 passed, 232 deselected
 ```
 
 `shellcheck` 未安装是唯一 skip。preflight 另报告 300 个 Fast DDS SHM 工件和
@@ -376,6 +376,28 @@ count 都只有 Isaac 自己的 Reset 安全 publisher（1），报告中的 run
 不是本轮契约测试失败。此迁移没有把拟合的约 `1.012 m` 写入 stable，也没有产生新
 物理通过结论；多速度候选、SimplePlane/Warehouse、Realistic 和接触拓扑 A/B 仍是
 第三阶段下一步。
+
+### 版本化有效轮距实验候选（2026-07-14）
+
+提交 `ab909b4` 在不修改 stable 的前提下新增两个完整、自包含、可按原始字节哈希的
+schema-v2 候选：
+
+| Profile | `effective_track_width` | 来源 | 文件 SHA256 |
+| --- | ---: | --- | --- |
+| `jackal_etw_0p989_v1` | `0.989 m` | clean `0500f9e` 接触矩阵 Warehouse `threshold_corr_0p025_offset_0p0004` mean `0.989336019045897 m` 的三位舍入 | `2b8860141964be5a7e40cbee830d2e24c27acc7db82599b47e41186519781e3e` |
+| `jackal_etw_1p012_v1` | `1.012 m` | 同一矩阵 `threshold_corr_0p025_offset_0p04` 的 SimplePlane/Warehouse mean `1.0140121078344426/1.0100307720240023 m` 等权均值 `1.0120214399292224 m` 的三位舍入；亦接近历史 yaw-response OLS `1.0124019295 m` | `5fc56206f06797dc206a68e0966094fb1652b2d8aeba76f3e7dc4c698f3d1a7c` |
+
+两文件均标记 `experimental_candidate`；相对 stable 的 YAML 语义差异集合严格等于
+`{kinematics_profile_id, lifecycle, effective_track_width}`。轮径、轮宽、质量、
+几何轮距、joint、solver `32/4`、控制限幅和外参完全不变；Isaac Control Graph 与
+Wheel Odom parser 分别读到 `0.989/1.012 m`，而两份候选渲染出的 URDF 与 stable
+字节等价。v1 文件不得原地修改，后续值必须版本递增。
+
+clean `ab909b4` 的 11 包 build、preflight 和全门结果为上表最新计数。这里的 PASS
+只证明候选身份、解析链、固定惯量边界和零几何差异；尚未执行候选的两环境、多速度、
+接触拓扑或 Realistic 物理 A/B，不能据此把任一值升级为 stable。正式接触矩阵脚本
+当前也仍需增加显式 `--robot-config` 及输入哈希锁，完成前不得手工拼接样本冒充正式
+批次。
 
 ### 可逆接触 Profile 与 SimplePlane 隔离基线（2026-07-14）
 

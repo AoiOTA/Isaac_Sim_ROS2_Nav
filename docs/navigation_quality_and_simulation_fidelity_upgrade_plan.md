@@ -3180,6 +3180,12 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   provenance v4 和启动握手约束。稳定有效轮距仍为 `0.37559 m`，只是保持旧控制值；
   约 `1.012 m` 尚未写回。11 包构建、preflight、root/ROS/Isaac 全门通过，但这些
   结构证据不代替多速度、两环境和 Realistic 物理 A/B，第三阶段仍未退出。
+- 第三阶段候选入口：提交 `ab909b4` 新增不可变
+  `jackal_etw_0p989_v1/1p012_v1`，分别取 clean 接触矩阵 Warehouse 候选均值及
+  两环境等权均值的三位舍入。两者均为 `experimental_candidate`，与 stable 只差
+  profile/lifecycle/有效轮距，URDF 字节等价；clean 11 包 build、preflight、
+  root `907`、ROS `725`、Isaac/USD `21` 全门通过。尚未做真实候选 A/B，也未开放
+  正式矩阵的受信任 robot 选择，因此不能冻结或覆盖 `0.37559 m` stable。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均
