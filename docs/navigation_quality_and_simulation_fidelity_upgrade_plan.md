@@ -1474,7 +1474,10 @@ v2 合同定向套件为 analyzer `217 passed`、motion baseline `92 passed`、m
 合同在 clean `0484b72` 的 build（11 packages）、preflight 和
 `./scripts/test.sh --with-isaac` 均 exit 0：root `1206 passed / 1 skipped /
 34 deselected`，ROS 11 packages / 1006 tests / 0 errors / 0 failures / 1 skipped，Isaac
-`32 passed / 250 deselected`。schema-3 真实 smoke 仍待执行。clean `190f357` 的
+`32 passed / 250 deselected`。clean `22a7746` 又完成 `0.989 m` + SimplePlane/only1 的
+schema-3 六 profile × 一次真实 smoke：6/6 run、36/36 段、analysis 6/0/6、44 列
+manifest 与 summary schema 5 闭合；六组只因 repeat=1 而 N/A。36 段稳态轮向全部匹配，
+整段描述窗口保留 18 个启动期 mismatch。clean `190f357` 的
 SimplePlane/only1 六 profile × 一次
 重复历史 schema-2 smoke 为 6/6 run、36/36 段、analysis 6/0/6、summary schema 4
 `result=success`；六组只因少于 3 个 repeat 而 N/A。正式每组三重复的 54-run/18-group
@@ -3269,8 +3272,9 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   `shellcheck`）；当前 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight 和
   `./scripts/test.sh --with-isaac` 均 exit 0：root `1206 passed / 1 skipped /
   34 deselected`，ROS 11 packages / 1006 tests / 0 errors / 0 failures / 1 skipped，Isaac
-  `32 passed / 250 deselected`。clean `190f357` 的历史 schema-2 smoke 已完成 6/6 run、
-  36/36 段和六组 repeat=1 N/A；正式 54-run 实跑仍待完成。
+  `32 passed / 250 deselected`。clean `22a7746` 的 `0.989 m` schema-3 六 profile smoke
+  已完成 6/6 run、36/36 段、analysis 6/0/6 和六组 repeat=1 N/A；clean `190f357` 的
+  历史 schema-2 smoke 也按原合同保留。正式三重复与 54-run 实跑仍待完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均

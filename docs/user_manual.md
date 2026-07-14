@@ -1671,7 +1671,12 @@ script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯�
 缺少 `shellcheck`。当前 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight
 和 `./scripts/test.sh --with-isaac` 均为 exit 0：root
 `1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
-0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `190f357`
+0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `22a7746` 又完成
+`0.989 m`、SimplePlane/only1、六 profile × 一次的首个 schema-3 真实 smoke：6/6 run、
+36/36 段、analysis 6 included / 0 excluded / 6 groups，summary schema 5
+`result=success`；六组只因 repeat=1 而 N/A。完整路径、SHA、日志和逐 profile 描述指标见
+[`verification.md`](verification.md#schema-3-simpleplane-0989-m-六-profile-真实烟测2026-07-15)。
+它证明使用手册中的当前证据链可以真实运行，不是三重复物理结论。clean `190f357`
 历史 smoke 另完成 6/6 run、36/36 段和六组 N/A 记账，但其工件版本仍是
 motion 2 / analysis 3 / physical 1 / summary 4 / manifest 43 列。它证明当时冻结代码的
 报告链闭合；正式 v2 矩阵仍待执行，不能据此宣称底盘物理通过。

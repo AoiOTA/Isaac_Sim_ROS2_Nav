@@ -297,7 +297,10 @@ script `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`；唯一 skip �
 `shellcheck`。当前 v2 合同已在 clean `0484b72` 完成 build 11 packages、preflight PASS
 和 `./scripts/test.sh --with-isaac` exit 0：root
 `1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
-0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `190f357` 的历史
+0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `22a7746` 的
+`0.989 m` SimplePlane/only1 schema-3 六 profile × 一次真实 smoke 也已闭合：6/6 report、
+36/36 segment、analysis 6/0/6、physical 0 applicable / 6 N/A、44 列 manifest 和 summary
+schema 5 均通过；唯一 N/A 原因是 `fewer_than_3_unique_repeats`。clean `190f357` 的历史
 SimplePlane/only1 六 profile 一次重复烟测为 6/6 run、36/36 段、analysis 6 included /
 0 excluded / 6 groups、summary schema 4 `result=success`；六组都只因 repeat=1 而 N/A。
 正式 schema 3 / v2 的 54-run/18-group 矩阵仍待完成。
