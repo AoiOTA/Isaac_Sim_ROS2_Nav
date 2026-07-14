@@ -513,8 +513,19 @@ service 和 timer 前，会读取 `/isaac_navigation_sim` 的只读 provenance v
 
 实验 robot YAML 必须在两端显式选择同一绝对路径。例如：
 
+仓库已提供两个只用于第三阶段 A/B 的候选：
+
+| 文件 | 有效轮距 | 来源与状态 |
+| --- | ---: | --- |
+| `isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml` | `0.989 m` | clean 接触矩阵 Warehouse 候选均值的三位舍入；未验收 |
+| `isaac_sim/configs/robots/experimental/jackal_etw_1p012_v1.yaml` | `1.012 m` | clean 接触矩阵两环境等权均值的三位舍入；接近历史多速度拟合，未验收 |
+
+它们的 `lifecycle` 都是 `experimental_candidate`。不要把文件名中的数值理解成已经
+标定，也不要原地修改 v1；若实验产生新候选，应复制为新 profile ID 和 v2 文件，
+让旧报告中的路径/SHA256 仍可回溯。
+
 ```bash
-CANDIDATE=/absolute/path/to/candidate.yaml
+CANDIDATE="$PROJECT_ROOT/isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml"
 
 # 终端 A
 ISAAC_NAV__FILES__ROBOT="$CANDIDATE" \
