@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import json
 import math
 import time
@@ -8,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+import robot_experiments.motion_baseline_runner as motion_baseline_runner
 from robot_experiments.configuration import ConfigurationError
 from robot_experiments.motion_baseline import (
     JointSample,
@@ -24,11 +26,14 @@ from robot_experiments.motion_baseline import (
 from robot_experiments.motion_baseline_runner import (
     MotionBaselineRunner,
     _coherent_group_ready,
+    _decode_hashed_ground_topology_snapshot,
     _parse_reset_response_metadata,
     _post_reset_observation_ns,
+    _require_live_runtime_provenance_schema,
     _timestamp_regression_topics,
     _update_stationary_window,
 )
+from robot_experiments.report import ReportValidationError
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
@@ -42,6 +47,146 @@ WHEELS = WheelLayout(
     rear_left="rear_left_wheel_joint",
     rear_right="rear_right_wheel_joint",
 )
+
+
+def test_ground_topology_parameter_pair_decodes_canonical_verified_json():
+    topology = {
+        "operation": "disable_selected_colliders",
+        "target": {"collider_count": 1},
+    }
+    payload = json.dumps(
+        topology,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    assert _decode_hashed_ground_topology_snapshot(payload, digest) == topology
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        ('{"a":1,"a":2}', "duplicate JSON key"),
+        ('{"b":2, "a":1}', "canonical strict JSON"),
+        ('{"value":NaN}', "non-finite JSON constant"),
+        ('{"value":1e400}', "strict JSON"),
+        ("[]", "root must be a mapping"),
+    ],
+)
+def test_ground_topology_parameter_pair_rejects_invalid_json(payload, message):
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    with pytest.raises(ReportValidationError, match=message):
+        _decode_hashed_ground_topology_snapshot(payload, digest)
+
+
+def test_ground_topology_parameter_pair_rejects_hash_mismatch():
+    payload = '{"operation":"keep_all"}'
+
+    with pytest.raises(ReportValidationError, match="JSON SHA256 mismatch"):
+        _decode_hashed_ground_topology_snapshot(payload, "0" * 64)
+
+
+@pytest.mark.parametrize("payload", [None, 123, {}, []])
+def test_ground_topology_parameter_pair_requires_string_payload(payload):
+    with pytest.raises(ReportValidationError, match="json must be a string"):
+        _decode_hashed_ground_topology_snapshot(payload, "0" * 64)
+
+
+@pytest.mark.parametrize(
+    "digest",
+    [None, 123, "short", "g" * 64, "a" * 63, "a" * 65],
+)
+def test_ground_topology_parameter_pair_requires_sha256_digest(digest):
+    with pytest.raises(ReportValidationError, match="SHA256 hex digest"):
+        _decode_hashed_ground_topology_snapshot("{}", digest)
+
+
+@pytest.mark.parametrize("schema_version", [4, 5.0, True, None])
+def test_live_motion_report_requires_exact_runtime_schema_v5(schema_version):
+    with pytest.raises(RuntimeError, match="schema must be integer 5"):
+        _require_live_runtime_provenance_schema(schema_version)
+
+
+def test_live_motion_report_accepts_runtime_schema_v5():
+    assert _require_live_runtime_provenance_schema(5) == 5
+
+
+def test_motion_runner_reads_and_validates_top_level_ground_topology(monkeypatch):
+    names = motion_baseline_runner._RUNTIME_PROVENANCE_PARAMETER_NAMES
+    topology = {"operation": "keep_all", "target": {"collider_count": 32}}
+    topology_payload = json.dumps(
+        topology,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    values = {name: None for name in names}
+    values.update(
+        {
+            "runtime_provenance.schema_version": 5,
+            "runtime_provenance.environment.id": "Warehouse",
+            "runtime_provenance.simulation.odometry_mode": "ground_truth",
+            "runtime_provenance.contact.json": "{}",
+            "runtime_provenance.contact.sha256": hashlib.sha256(
+                b"{}"
+            ).hexdigest(),
+            "runtime_provenance.ground_topology.json": topology_payload,
+            "runtime_provenance.ground_topology.sha256": hashlib.sha256(
+                topology_payload.encode("utf-8")
+            ).hexdigest(),
+        }
+    )
+
+    class ParameterClient:
+        requested_names = None
+
+        def wait_for_services(self, *, timeout_sec):
+            assert timeout_sec == pytest.approx(1.0)
+            return True
+
+        def get_parameters(self, requested_names):
+            self.requested_names = tuple(requested_names)
+            return SimpleNamespace(
+                result=lambda: SimpleNamespace(
+                    values=[values[name] for name in requested_names]
+                )
+            )
+
+    validated = []
+    client = ParameterClient()
+    runner = SimpleNamespace(
+        _config=SimpleNamespace(
+            reset=SimpleNamespace(service_timeout_sec=1.0)
+        ),
+        _isaac_parameter_client=client,
+        _wait_future=lambda future, deadline: True,
+        _raise_if_shutdown=lambda: None,
+        _runtime_provenance={"verified": False},
+        _odometry_mode="ground_truth",
+        _environment_id="Warehouse",
+    )
+    monkeypatch.setattr(
+        motion_baseline_runner,
+        "parameter_value_to_python",
+        lambda value: value,
+    )
+    monkeypatch.setattr(
+        motion_baseline_runner,
+        "validate_runtime_provenance",
+        validated.append,
+    )
+
+    MotionBaselineRunner._read_runtime_provenance(runner)
+
+    assert client.requested_names == names
+    assert runner._runtime_provenance["schema_version"] == 5
+    assert runner._runtime_provenance["ground_topology"] == topology
+    assert validated == [runner._runtime_provenance]
+
+
 STOP = StopSettings(
     linear_velocity_threshold_mps=0.02,
     angular_velocity_threshold_radps=0.05,

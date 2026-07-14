@@ -8,6 +8,58 @@ import yaml
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+
+
+def _literal_tuple_assignment(source, name):
+    tree = ast.parse(source)
+    assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        )
+    )
+    assert isinstance(assignment.value, ast.Tuple)
+    return tuple(ast.literal_eval(item) for item in assignment.value.elts)
+
+
+def _literal_return_mapping_keys(source, function_name):
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    assert isinstance(returns[0].value, ast.Dict)
+    return tuple(ast.literal_eval(key) for key in returns[0].value.keys)
+
+
+def test_runtime_provenance_producer_and_consumer_parameter_sets_match():
+    producer_source = (
+        REPOSITORY_ROOT / "isaac_sim" / "src" / "runtime_provenance.py"
+    ).read_text(encoding="utf-8")
+    consumer_source = (
+        PACKAGE_ROOT
+        / "robot_experiments"
+        / "motion_baseline_runner.py"
+    ).read_text(encoding="utf-8")
+    produced = _literal_return_mapping_keys(
+        producer_source,
+        "runtime_provenance_parameters",
+    )
+    consumed = _literal_tuple_assignment(
+        consumer_source,
+        "_RUNTIME_PROVENANCE_PARAMETER_NAMES",
+    )
+
+    assert len(produced) == len(set(produced))
+    assert len(consumed) == len(set(consumed))
+    assert set(produced) == set(consumed)
 
 
 @pytest.mark.parametrize(
@@ -131,7 +183,10 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert "validate_runtime_provenance" in source
     assert '"runtime_provenance.contact.json"' in source
     assert '"runtime_provenance.contact.sha256"' in source
+    assert '"runtime_provenance.ground_topology.json"' in source
+    assert '"runtime_provenance.ground_topology.sha256"' in source
     assert "decode_hashed_contact_snapshot" in source
+    assert "_decode_hashed_ground_topology_snapshot" in source
     assert "environment label does not match Isaac runtime provenance" in source
     provenance_reader = source.split("def _read_runtime_provenance", 1)[1].split(
         "def _begin_segment_capture", 1
