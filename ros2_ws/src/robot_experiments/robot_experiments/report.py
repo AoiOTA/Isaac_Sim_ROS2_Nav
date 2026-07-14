@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Any, Callable, Mapping, TextIO
 
@@ -30,6 +31,7 @@ REPRODUCIBILITY_FIELDS = (
     "result",
     "failure_reason",
 )
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class ReportValidationError(ValueError):
@@ -137,8 +139,8 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     if provenance.get("verified") is not True:
         raise ReportValidationError("runtime_provenance must be runtime-verified")
     schema_version = provenance.get("schema_version")
-    if isinstance(schema_version, bool) or schema_version != 1:
-        raise ReportValidationError("runtime_provenance.schema_version must be 1")
+    if isinstance(schema_version, bool) or schema_version != 2:
+        raise ReportValidationError("runtime_provenance.schema_version must be 2")
 
     robot = _required_mapping(provenance, "robot", "runtime_provenance")
     for name in ("config", "asset"):
@@ -167,10 +169,23 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
                 f"runtime_provenance.robot.solver.{name} must be an integer "
                 "in [1, 255]"
             )
+    if solver.get("stage_articulation_usd_readback_verified") is not True:
+        raise ReportValidationError(
+            "runtime_provenance.robot.solver."
+            "stage_articulation_usd_readback_verified must be true"
+        )
 
     environment = _required_mapping(
         provenance, "environment", "runtime_provenance"
     )
+    environment_id = _required_string(
+        environment.get("id"),
+        "runtime_provenance.environment.id",
+    )
+    if not _IDENTIFIER_PATTERN.fullmatch(environment_id):
+        raise ReportValidationError(
+            "runtime_provenance.environment.id must be a path-safe identifier"
+        )
     for name in ("project_stage", "source_asset"):
         input_file = _required_mapping(
             environment, name, "runtime_provenance.environment"

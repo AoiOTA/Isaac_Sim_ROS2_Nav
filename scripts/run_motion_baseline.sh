@@ -19,8 +19,9 @@ be running and exposing Reset, /clock, /odom, and /joint_states. Navigation,
 Collision Monitor, and Teleop must be stopped because this diagnostic
 exclusively owns /cmd_vel.
 
-MODE must be ideal or realistic. ID should identify the actual stage, for
-example SimplePlane or Warehouse, so A/B reports cannot be confused.
+MODE must be ideal or realistic. ID must exactly match the running Isaac
+project's environment.id (for example SimplePlane or Warehouse); mismatches
+fail before the diagnostic creates its motion command publisher.
 EOF
 }
 

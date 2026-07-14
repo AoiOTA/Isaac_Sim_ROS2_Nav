@@ -21,6 +21,11 @@ pytestmark = [
 from isaac_sim.src.config import load_project_config  # noqa: E402
 from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager  # noqa: E402
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario  # noqa: E402
+from isaac_sim.src.robot.articulation_runtime import (  # noqa: E402
+    ArticulationRuntimeError,
+    author_articulation_solver_iterations,
+    load_articulation_physics_config,
+)
 from isaac_sim.src.stage.asset_validator import validate_robot_articulation  # noqa: E402
 from isaac_sim.src.stage.asset_validator import validate_sensor_frames  # noqa: E402
 from isaac_sim.src.stage.physics_setup import find_all_physics_scenes  # noqa: E402
@@ -72,17 +77,21 @@ def test_composed_stage_has_exactly_one_expected_physics_scene():
 
 
 def test_project_overlay_uses_supported_symmetric_wheel_colliders_and_tgs_counts():
-    from pxr import Gf, Usd, UsdGeom, UsdPhysics
+    from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
     config = _config()
     stage = SceneComposer(config).compose(save=False)
     root = stage.GetPrimAtPath(config.robot.articulation_root)
-    assert root.GetAttribute(
+    position_iterations = root.GetAttribute(
         "physxArticulation:solverPositionIterationCount"
-    ).Get() == 32
-    assert root.GetAttribute(
+    )
+    velocity_iterations = root.GetAttribute(
         "physxArticulation:solverVelocityIterationCount"
-    ).Get() == 4
+    )
+    assert position_iterations.GetTypeName() == Sdf.ValueTypeNames.Int
+    assert velocity_iterations.GetTypeName() == Sdf.ValueTypeNames.Int
+    assert position_iterations.Get() == 32
+    assert velocity_iterations.Get() == 4
 
     cache = UsdGeom.XformCache(Usd.TimeCode.Default())
     wheel_positions = {}
@@ -170,6 +179,54 @@ def test_project_overlay_uses_supported_symmetric_wheel_colliders_and_tgs_counts
     assert front_left[2] == pytest.approx(rear_right[2])
     assert front_left[0] - rear_left[0] == pytest.approx(0.262)
     assert front_left[1] - front_right[1] == pytest.approx(0.37559)
+
+
+def test_solver_authoring_creates_int_attributes_when_they_are_absent():
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    root = UsdGeom.Xform.Define(stage, "/World/Robot").GetPrim()
+    UsdPhysics.ArticulationRootAPI.Apply(root)
+    assert not root.GetAttribute(
+        "physxArticulation:solverPositionIterationCount"
+    ).IsValid()
+    assert not root.GetAttribute(
+        "physxArticulation:solverVelocityIterationCount"
+    ).IsValid()
+
+    settings = load_articulation_physics_config(
+        ROOT / "isaac_sim/configs/robots/jackal.yaml"
+    )
+    author_articulation_solver_iterations(stage, "/World/Robot", settings)
+
+    for name, expected in (
+        ("physxArticulation:solverPositionIterationCount", 32),
+        ("physxArticulation:solverVelocityIterationCount", 4),
+    ):
+        attribute = root.GetAttribute(name)
+        assert attribute.GetTypeName() == Sdf.ValueTypeNames.Int
+        assert attribute.Get() == expected
+
+
+def test_solver_authoring_rejects_an_existing_wrong_usd_type():
+    from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    root = UsdGeom.Xform.Define(stage, "/World/Robot").GetPrim()
+    UsdPhysics.ArticulationRootAPI.Apply(root)
+    root.CreateAttribute(
+        "physxArticulation:solverPositionIterationCount",
+        Sdf.ValueTypeNames.UInt,
+    ).Set(32)
+    settings = load_articulation_physics_config(
+        ROOT / "isaac_sim/configs/robots/jackal.yaml"
+    )
+
+    with pytest.raises(
+        ArticulationRuntimeError,
+        match="solverPositionIterationCount.*must use USD int",
+    ):
+        author_articulation_solver_iterations(stage, "/World/Robot", settings)
 
 
 def test_dynamic_obstacle_reset_restarts_scenario_time():

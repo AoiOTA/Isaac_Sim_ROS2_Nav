@@ -62,22 +62,84 @@ def git_metadata(root: str | Path) -> dict[str, object]:
     }
 
 
+def _solver_iteration_pair(
+    values: object,
+    *,
+    location: str,
+) -> tuple[int, int]:
+    if not isinstance(values, (list, tuple)) or len(values) != 2:
+        raise RuntimeProvenanceError(
+            f"{location} must contain position and velocity solver counts"
+        )
+    counts: list[int] = []
+    for name, value in zip(("position", "velocity"), values):
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 255
+        ):
+            raise RuntimeProvenanceError(
+                f"{location}.{name} must be an integer in [1, 255]"
+            )
+        counts.append(value)
+    return counts[0], counts[1]
+
+
+def stage_articulation_solver_iterations(
+    stage: Any,
+    articulation_root: str,
+) -> tuple[int, int]:
+    """Read solver counts from the effective composed Stage attributes."""
+
+    prim = stage.GetPrimAtPath(articulation_root)
+    if not prim or not prim.IsValid():
+        raise RuntimeProvenanceError(
+            f"runtime provenance articulation root is invalid: {articulation_root}"
+        )
+    values = []
+    for name in (
+        "physxArticulation:solverPositionIterationCount",
+        "physxArticulation:solverVelocityIterationCount",
+    ):
+        attribute = prim.GetAttribute(name)
+        if not attribute or not attribute.IsValid():
+            raise RuntimeProvenanceError(
+                f"runtime provenance solver attribute is missing: {name}"
+            )
+        values.append(attribute.Get())
+    return _solver_iteration_pair(values, location="stage solver")
+
+
 def capture_runtime_provenance(
     config: Any,
-    articulation_settings: Any,
     stage: Any,
     *,
+    articulation_usd_solver_iterations: tuple[int, int],
     repository_root: str | Path,
 ) -> dict[str, object]:
     """Capture the effective files and in-memory Stage loaded by Isaac."""
 
+    stage_solver_iterations = stage_articulation_solver_iterations(
+        stage,
+        config.robot.articulation_root,
+    )
+    articulation_usd_solver_iterations = _solver_iteration_pair(
+        articulation_usd_solver_iterations,
+        location="initialized articulation USD readback solver",
+    )
+    if stage_solver_iterations != articulation_usd_solver_iterations:
+        raise RuntimeProvenanceError(
+            "Stage and initialized articulation USD solver readback disagree: "
+            f"stage={stage_solver_iterations}, "
+            f"articulation_usd={articulation_usd_solver_iterations}"
+        )
     root_layer_source = stage.GetRootLayer().ExportToString()
     if not isinstance(root_layer_source, str) or not root_layer_source:
         raise RuntimeProvenanceError(
             "composed Stage root layer could not be exported"
         )
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "robot": {
             "config": {
                 "path": str(config.files.robot),
@@ -88,15 +150,13 @@ def capture_runtime_provenance(
                 "sha256": file_sha256(config.robot.asset_path),
             },
             "solver": {
-                "position_iterations": (
-                    articulation_settings.solver_position_iterations
-                ),
-                "velocity_iterations": (
-                    articulation_settings.solver_velocity_iterations
-                ),
+                "position_iterations": articulation_usd_solver_iterations[0],
+                "velocity_iterations": articulation_usd_solver_iterations[1],
+                "stage_articulation_usd_readback_verified": True,
             },
         },
         "environment": {
+            "id": config.environment.identifier,
             "project_stage": {
                 "path": str(config.environment.project_stage),
                 "sha256": file_sha256(config.environment.project_stage),
@@ -141,6 +201,11 @@ def runtime_provenance_parameters(
         "runtime_provenance.robot.solver.velocity_iterations": robot["solver"][
             "velocity_iterations"
         ],
+        "runtime_provenance.robot.solver."
+        "stage_articulation_usd_readback_verified": robot["solver"][
+            "stage_articulation_usd_readback_verified"
+        ],
+        "runtime_provenance.environment.id": environment["id"],
         "runtime_provenance.environment.project_stage.path": environment[
             "project_stage"
         ]["path"],
