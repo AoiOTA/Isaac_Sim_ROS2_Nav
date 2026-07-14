@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from fractions import Fraction
+import math
+import time
+from typing import Callable
 
 from isaac_sim.src.config import SimulationConfig
 
@@ -20,6 +23,40 @@ class PacingPlan:
     timeline_hz: float
     wall_loop_hz: float | None
     target_realtime_factor: float
+
+
+@dataclass
+class FramePacer:
+    """Pace one fixed simulation step per Kit application frame."""
+
+    rate_hz: float | None
+    clock: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
+    _deadline: float | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        if self.rate_hz is not None and (
+            not math.isfinite(self.rate_hz) or self.rate_hz <= 0.0
+        ):
+            raise PhysicsSetupError("frame pacing rate must be finite and positive")
+
+    def reset(self) -> None:
+        self._deadline = None
+
+    def wait_after_frame(self) -> None:
+        if self.rate_hz is None:
+            return
+        now = self.clock()
+        if self._deadline is None:
+            self._deadline = now
+        self._deadline += 1.0 / self.rate_hz
+        remaining = self._deadline - now
+        if remaining > 0.0:
+            self.sleep(remaining)
+        else:
+            # A slow frame must lower RTF, not trigger a burst of catch-up
+            # frames with multiple physics steps back-to-back.
+            self._deadline = now
 
 
 def pacing_plan(config: SimulationConfig) -> PacingPlan:
@@ -123,11 +160,13 @@ class IsaacSimulationRuntime:
     """Concrete lifecycle port around SimulationManager and omni.timeline."""
 
     app: object
+    wall_loop_hz: float | None
 
     def __post_init__(self) -> None:
         import omni.timeline
 
         self._timeline = omni.timeline.get_timeline_interface()
+        self._pacer = FramePacer(self.wall_loop_hz)
 
     def reset(self) -> None:
         """Reset first, warm physics, then pause for articulation/spawn setup."""
@@ -139,28 +178,37 @@ class IsaacSimulationRuntime:
         self.app.update()
         self._timeline.pause()
         self.app.update()
+        self._pacer.reset()
 
     def pause(self) -> None:
         self._timeline.pause()
         self.app.update()
+        self._pacer.reset()
 
     def play(self) -> None:
         self._timeline.play()
         self.app.update()
+        self._pacer.reset()
 
     def stop(self) -> None:
         self._timeline.stop()
         self.app.update()
+        self._pacer.reset()
 
     def step(self, *, render: bool) -> None:
         from isaacsim.core.simulation_manager import SimulationManager
 
         SimulationManager.step(steps=1, update_fabric=False)
         if render:
-            self.app.update()
+            # Render without allowing the live Timeline to add another physics
+            # step. Reset transactions normally use render=False.
+            from isaacsim.core.rendering_manager import RenderingManager
+
+            RenderingManager.render()
 
     def update(self) -> None:
         self.app.update()
+        self._pacer.wait_after_frame()
 
 
 class PhysicsSetup:
@@ -204,13 +252,13 @@ class PhysicsSetup:
         # loop runner here. Setting only targetFramerate leaves the Stage at
         # its previous timeCodesPerSecond and can advance simulation at ~2x.
         RenderingManager.set_dt(1.0 / plan.timeline_hz)
-        timeline.set_play_every_frame(
-            plan.mode == "unbounded" or plan.target_realtime_factor > 1.0
-        )
+        # One Kit frame is the sole owner of one fixed physics step. Realtime
+        # and accelerated pacing differ only in wall-clock frame cadence.
+        timeline.set_play_every_frame(True)
         if plan.wall_loop_hz is not None:
             settings.set_float(
                 "/app/runLoops/main/rateLimitFrequency",
                 plan.wall_loop_hz,
             )
             timeline.set_target_framerate(plan.wall_loop_hz)
-        return IsaacSimulationRuntime(app)
+        return IsaacSimulationRuntime(app, plan.wall_loop_hz)

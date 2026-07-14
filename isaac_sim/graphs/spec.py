@@ -46,6 +46,17 @@ class GraphSpec:
             raise GraphSpecError("ROS frame 'world' is forbidden")
 
 
+def graph_pipeline_kind(spec: GraphSpec) -> str:
+    """Return the Isaac evaluator contract required by an event graph."""
+
+    if any(
+        node_type == "isaacsim.core.nodes.OnPhysicsStep"
+        for _, node_type in spec.nodes
+    ):
+        return "on_demand"
+    return "execution"
+
+
 def materialize_graph(spec: GraphSpec):
     """Create a graph with Isaac Sim imports delayed until this call."""
 
@@ -64,8 +75,18 @@ def materialize_graph(spec: GraphSpec):
         return value
 
     keys = og.Controller.Keys
+    graph_config: dict[str, object] = {"graph_path": spec.path}
+    if graph_pipeline_kind(spec) == "on_demand":
+        # OnPhysicsStep is an event source and Isaac Sim 6.0.1 rejects it in
+        # the default execution evaluator. The vendor's own ROS Clock test
+        # uses the on-demand pipeline for this exact topology.
+        graph_config["pipeline_stage"] = (
+            og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND
+        )
+    else:
+        graph_config["evaluator_name"] = "execution"
     graph, nodes, _, _ = og.Controller.edit(
-        {"graph_path": spec.path, "evaluator_name": "execution"},
+        graph_config,
         {
             keys.CREATE_NODES: list(spec.nodes),
             keys.CONNECT: list(spec.connections),

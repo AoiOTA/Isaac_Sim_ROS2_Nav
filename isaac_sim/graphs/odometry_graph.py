@@ -13,16 +13,16 @@ def ideal_odometry_graph_spec(config: ProjectConfig) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
     nodes = (
-        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
         ("ComputeOdometry", "isaacsim.core.nodes.IsaacComputeOdometry"),
         ("PublishOdometry", "isaacsim.ros2.bridge.ROS2PublishOdometry"),
         ("PublishOdomTF", "isaacsim.ros2.bridge.ROS2PublishRawTransformTree"),
     )
     connections = (
-        ("OnPlaybackTick.outputs:tick", "ComputeOdometry.inputs:execIn"),
-        ("OnPlaybackTick.outputs:tick", "PublishOdometry.inputs:execIn"),
-        ("OnPlaybackTick.outputs:tick", "PublishOdomTF.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "ComputeOdometry.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "PublishOdometry.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "PublishOdomTF.inputs:execIn"),
         ("ReadSimTime.outputs:simulationTime", "PublishOdometry.inputs:timeStamp"),
         ("ReadSimTime.outputs:simulationTime", "PublishOdomTF.inputs:timeStamp"),
         ("ComputeOdometry.outputs:position", "PublishOdometry.inputs:position"),
