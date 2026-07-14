@@ -10,6 +10,8 @@ base_mass: null
 wheel_mass: null
 nominal_total_mass: null
 physics:
+  solver_position_iterations: null
+  solver_velocity_iterations: null
   sleep_threshold: null
   stabilization_threshold: null
   wheel_static_friction_effort: null

@@ -20,6 +20,8 @@ class ArticulationRuntimeError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArticulationPhysicsConfig:
+    solver_position_iterations: int
+    solver_velocity_iterations: int
     sleep_threshold: float
     stabilization_threshold: float
     wheel_static_friction_effort: float
@@ -37,6 +39,8 @@ def load_articulation_physics_config(
     if not isinstance(physics, dict):
         raise ArticulationRuntimeError("robot.physics must be a mapping")
     fields = {
+        "solver_position_iterations",
+        "solver_velocity_iterations",
         "sleep_threshold",
         "stabilization_threshold",
         "wheel_static_friction_effort",
@@ -47,6 +51,19 @@ def load_articulation_physics_config(
     }
     reject_unknown(physics, fields, context="robot.physics")
     require_keys(physics, fields, context="robot.physics")
+
+    def positive_integer(name: str) -> int:
+        value = physics[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 255
+        ):
+            raise ArticulationRuntimeError(
+                f"robot.physics.{name} must be an integer in [1, 255]"
+            )
+        return value
+
     static_friction = require_number(
         physics["wheel_static_friction_effort"],
         context="robot.physics.wheel_static_friction_effort",
@@ -68,6 +85,12 @@ def load_articulation_physics_config(
             "wheel static friction effort must be at least dynamic friction effort"
         )
     return ArticulationPhysicsConfig(
+        solver_position_iterations=positive_integer(
+            "solver_position_iterations"
+        ),
+        solver_velocity_iterations=positive_integer(
+            "solver_velocity_iterations"
+        ),
         sleep_threshold=require_number(
             physics["sleep_threshold"],
             context="robot.physics.sleep_threshold",
@@ -133,6 +156,10 @@ class ArticulationRuntime:
     def configure_stability(
         self, settings: ArticulationPhysicsConfig
     ) -> None:
+        self.articulation.set_solver_iteration_counts(
+            [settings.solver_position_iterations],
+            [settings.solver_velocity_iterations],
+        )
         self.articulation.set_sleep_thresholds([settings.sleep_threshold])
         self.articulation.set_stabilization_thresholds(
             [settings.stabilization_threshold]
@@ -192,3 +219,40 @@ class ArticulationRuntime:
     def wake_up(self) -> None:
         interface, stage_id, body_path = self._physx_body_handle()
         interface.wake_up(stage_id, body_path)
+
+
+def author_articulation_solver_iterations(
+    stage: object,
+    articulation_root: str,
+    settings: ArticulationPhysicsConfig,
+) -> None:
+    """Author effective solver counts before PhysX parses the composed Stage."""
+
+    from pxr import Sdf, UsdPhysics
+
+    prim = stage.GetPrimAtPath(articulation_root)
+    if not prim or not prim.IsValid() or not prim.HasAPI(
+        UsdPhysics.ArticulationRootAPI
+    ):
+        raise ArticulationRuntimeError(
+            "articulation root is invalid or lacks ArticulationRootAPI: "
+            f"{articulation_root}"
+        )
+    values = {
+        "physxArticulation:solverPositionIterationCount": (
+            Sdf.ValueTypeNames.UInt,
+            settings.solver_position_iterations,
+        ),
+        "physxArticulation:solverVelocityIterationCount": (
+            Sdf.ValueTypeNames.UInt,
+            settings.solver_velocity_iterations,
+        ),
+    }
+    for name, (value_type, value) in values.items():
+        attribute = prim.GetAttribute(name)
+        if not attribute:
+            attribute = prim.CreateAttribute(name, value_type)
+        if not attribute.Set(value):
+            raise ArticulationRuntimeError(
+                f"failed to author {name}={value} on {articulation_root}"
+            )
