@@ -1,0 +1,52 @@
+schema_version: 1
+map_version: warehouse_v2
+created_at: '2026-07-14T01:43:13+00:00'
+availability: local_generated
+artifact_policy: manifest_commits_four_artifact_bundle
+bundle_sha256: 75d7df63a9feddeeb4d38053ed18d4b04603bdc6045ea191e7c689b0b98168d4
+source:
+  provenance: recovered_ignored_local_artifacts
+  artifact_mtime_local: '2026-07-12T12:40:00+08:00'
+  original_mapping_command: unknown
+  expected_environment_asset: Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
+  expected_project_stage: isaac_sim/assets/environments/navigation_scene.usda
+  runtime_alignment_verified: false
+occupancy_grid:
+  resolution_m: 0.05
+  width_cells: 400
+  height_cells: 607
+  origin:
+  - -14.463
+  - -12.263
+  - 0.0
+  files:
+  - role: yaml
+    path: data/maps/occupancy/warehouse_v2.yaml
+    bytes: 136
+    sha256: 32d19866a29efd1d880ee046b934695d5999aa1ac9f0219924857b1272680067
+  - role: image
+    path: data/maps/occupancy/warehouse_v2.pgm
+    bytes: 242815
+    sha256: 2dbaadc6e4534767bcf939f9342024c84f11db1b4efd4591b86f0c6ebe7f6ce7
+pose_graph:
+  prefix: data/maps/posegraphs/warehouse_v2
+  files:
+  - role: posegraph
+    path: data/maps/posegraphs/warehouse_v2.posegraph
+    bytes: 37008280
+    sha256: b8799ad00fb4db997bef4c8aaf83a2efb5e47c1bee706f5aebdd9348012da264
+  - role: data
+    path: data/maps/posegraphs/warehouse_v2.data
+    bytes: 4865034
+    sha256: 80fde603db5b06755d468184d3f897632c7ee165e5cd417e6ab1aa422ce3b347
+calibration:
+  calibrated: false
+  spawn_pose_profile: null
+  bundle_sha256: null
+  calibrated_at: null
+  calibration_method: null
+notes:
+- The four generated artifacts are one indivisible map bundle.
+- Auto initial pose is disabled until this exact bundle is calibrated.
+- The original mapping log was not present when these ignored local artifacts
+  were recovered; environment alignment and provenance require runtime verification.
