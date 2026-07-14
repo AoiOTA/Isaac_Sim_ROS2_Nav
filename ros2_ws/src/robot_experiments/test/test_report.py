@@ -11,6 +11,7 @@ from robot_experiments.report import (
     configuration_sha256,
     validate_manifest,
     write_run_report,
+    write_strict_json_report,
 )
 
 
@@ -98,6 +99,16 @@ def test_report_atomically_replaces_existing_files(tmp_path):
     second["failure_reason"] = "timed_out"
     write_run_report(second, tmp_path, "same-run")
     assert json.loads((tmp_path / "same-run.json").read_text())["result"] == "failure"
+
+
+def test_generic_strict_json_report_is_atomic_and_rejects_nonfinite_values(tmp_path):
+    destination = tmp_path / "motion.json"
+    assert write_strict_json_report({"result": "success"}, destination) == destination
+    assert json.loads(destination.read_text()) == {"result": "success"}
+    with pytest.raises(ReportValidationError, match="NaN or infinity"):
+        write_strict_json_report({"metric": math.nan}, destination)
+    assert json.loads(destination.read_text()) == {"result": "success"}
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 @pytest.mark.parametrize("stem", ["", ".", "..", "../escape", "nested/run"])

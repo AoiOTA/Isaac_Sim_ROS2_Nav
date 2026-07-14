@@ -1,0 +1,125 @@
+schema_version: 1
+profile_id: jackal_three_tier_motion_v1
+
+topics:
+  cmd_vel: /cmd_vel
+  clock: /clock
+  odom: /odom
+  joint_states: /joint_states
+
+reset:
+  service: /simulation/reset
+  service_timeout_sec: 15.0
+  recovery_timeout_sec: 30.0
+  settle_duration_sec: 0.5
+
+sampling:
+  publish_rate_hz: 20.0
+  command_wall_timeout_sec: 30.0
+  max_sample_age_sec: 0.5
+  zero_publish_count: 10
+  zero_publish_interval_sec: 0.02
+
+limits:
+  max_abs_linear_mps: 1.0
+  max_abs_angular_radps: 1.5
+  max_segment_duration_sec: 20.0
+
+stop:
+  linear_velocity_threshold_mps: 0.02
+  angular_velocity_threshold_radps: 0.05
+  wheel_velocity_threshold_radps: 0.20
+  stable_duration_sec: 0.5
+  timeout_sec: 10.0
+
+wheels:
+  front_left: front_left_wheel_joint
+  front_right: front_right_wheel_joint
+  rear_left: rear_left_wheel_joint
+  rear_right: rear_right_wheel_joint
+
+segments:
+  - id: forward_low
+    motion: forward
+    tier: low
+    linear_x_mps: 0.15
+    angular_z_radps: 0.0
+    duration_sec: 2.0
+  - id: backward_low
+    motion: backward
+    tier: low
+    linear_x_mps: -0.15
+    angular_z_radps: 0.0
+    duration_sec: 2.0
+  - id: rotate_left_low
+    motion: rotate_left
+    tier: low
+    linear_x_mps: 0.0
+    angular_z_radps: 0.30
+    duration_sec: 2.0
+  - id: rotate_right_low
+    motion: rotate_right
+    tier: low
+    linear_x_mps: 0.0
+    angular_z_radps: -0.30
+    duration_sec: 2.0
+  - id: forward_nominal
+    motion: forward
+    tier: nominal
+    linear_x_mps: 0.35
+    angular_z_radps: 0.0
+    duration_sec: 2.0
+  - id: backward_nominal
+    motion: backward
+    tier: nominal
+    linear_x_mps: -0.35
+    angular_z_radps: 0.0
+    duration_sec: 2.0
+  - id: rotate_left_nominal
+    motion: rotate_left
+    tier: nominal
+    linear_x_mps: 0.0
+    angular_z_radps: 0.65
+    duration_sec: 2.0
+  - id: rotate_right_nominal
+    motion: rotate_right
+    tier: nominal
+    linear_x_mps: 0.0
+    angular_z_radps: -0.65
+    duration_sec: 2.0
+  - id: forward_high
+    motion: forward
+    tier: high
+    linear_x_mps: 0.60
+    angular_z_radps: 0.0
+    duration_sec: 2.0
+  - id: backward_high
+    motion: backward
+    tier: high
+    linear_x_mps: -0.60
+    angular_z_radps: 0.0
+    duration_sec: 2.0
+  - id: rotate_left_high
+    motion: rotate_left
+    tier: high
+    linear_x_mps: 0.0
+    angular_z_radps: 1.00
+    duration_sec: 2.0
+  - id: rotate_right_high
+    motion: rotate_right
+    tier: high
+    linear_x_mps: 0.0
+    angular_z_radps: -1.00
+    duration_sec: 2.0
+  - id: arc_left_ab
+    motion: arc_left
+    tier: ab
+    linear_x_mps: 0.40
+    angular_z_radps: 0.40
+    duration_sec: 5.0
+  - id: arc_right_ab
+    motion: arc_right
+    tier: ab
+    linear_x_mps: 0.40
+    angular_z_radps: -0.40
+    duration_sec: 5.0

@@ -162,3 +162,23 @@ def write_run_report(
     _atomic_text_write(json_path, write_json)
     _atomic_text_write(csv_path, write_csv)
     return json_path, csv_path
+
+
+def write_strict_json_report(
+    document: Mapping[str, Any],
+    output_path: str | os.PathLike[str],
+) -> Path:
+    """Atomically write any mapping after enforcing strict JSON values."""
+    if not isinstance(document, Mapping):
+        raise ReportValidationError("JSON report root must be a mapping")
+    _validate_json_value(document, "report")
+    destination = Path(output_path).expanduser()
+    if not destination.name or destination.name in {".", ".."}:
+        raise ValueError("output_path must name a JSON report file")
+
+    def write_json(stream: TextIO) -> None:
+        json.dump(document, stream, indent=2, sort_keys=True, allow_nan=False)
+        stream.write("\n")
+
+    _atomic_text_write(destination, write_json)
+    return destination
