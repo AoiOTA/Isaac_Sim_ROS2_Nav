@@ -1434,15 +1434,41 @@ stabilization on
 
 在空旷平面、Ideal Ground Truth 下：
 
-| 测试 | 门槛 |
+| 测试 | 机器门槛 |
 |---|---|
-| 直行 3 m 横向偏差 | ≤ 0.05 m，或记录最终可实现值并说明 |
-| 倒车 2 m 横向偏差 | ≤ 0.08 m |
-| 原地旋转 360° 中心漂移 | ≤ 0.10 m |
-| 左右旋转漂移差 | ≤ 20% |
-| 目标角速度稳态误差 | ≤ 10% |
-| 零命令后 0.5 s 线/角速度 | 接近零且无持续爬行 |
-| 四轮速度方向 | 全部符合配置契约 |
+| 直行 3 m 横向偏差绝对值 | `≤ 0.05 m` |
+| 倒车 2 m 横向偏差绝对值 | `≤ 0.08 m` |
+| 左/右原地旋转 360° 中心漂移 | 每个方向均 `≤ 0.10 m` |
+| 左右旋转漂移差 | `abs(left-right) / max(left,right) ≤ 0.20`；两者均为零时按 `0` 处理 |
+| 左/右稳态角速度误差 | 命令区间后半段实际 `angular_z_radps.mean` 相对目标角速度的 `abs(actual-commanded)/abs(commanded) ≤ 0.10` |
+| 六个运动段零命令后的静止窗 | 配置的稳定时长 `≥ 0.5 s`，且每段确认的连续静止窗 `≥` 该配置值 |
+| 停止判定配置 | 线速度阈值 `≤ 0.02 m/s`、角速度阈值 `≤ 0.05 rad/s`、轮速阈值 `≤ 0.20 rad/s` |
+| 四轮速度方向 | 六段全部符合配置契约 |
+
+机器判定使用 policy `skid_steer_plan_8_7_v1`。motion report 顶层 schema 2 保持
+`configuration.schema_version=1`，并在 `actual_velocity.steady_state_window` 保存命令
+时间区间后半段的实际角速度分布；旋转门读取该窗口的 `angular_z_radps.mean`，不再用
+yaw gain。v5 离线分析结果为 analysis schema 3，内嵌 `physical_acceptance` schema 1。
+
+机器门只适用于同时满足 runtime provenance schema 5、`SimplePlane`、
+`simple_plane_only1_v1`、Ideal、每组至少 3 个唯一 repeat、全部 motion report schema 2
+的 group。其他 group 必须写 `applicable=false`、`passed=null` 和非空原因，进入
+`not_applicable_groups`，不得伪造为物理失败。对适用 group，每个 repeat 的每项检查都
+单独计算，任一失败即判定整个 group 失败，不能用均值掩盖最差重复，也不自动排名或
+选择 profile。`applicable_groups/not_applicable_groups` 精确划分所有 group，
+`passing_groups/failed_groups` 精确划分适用 group；没有适用 group 时
+`all_applicable_groups_passed=null`。
+
+batch-summary schema 4 的 `result=success` 只表示证据采集、身份、矩阵与聚合闭合；
+物理结论必须另读 `physical_acceptance.all_applicable_groups_passed` 及上述四个列表。
+合同已经实现，完整 analyzer 测试文件为 `116 passed`，motion baseline `66 passed`、matrix
+script `42 passed / 1 skipped`（缺少 `shellcheck`）；同一 dirty worktree 的
+`./scripts/test.sh` 为 exit 0，root `1061 passed / 1 skipped / 34 deselected`，ROS 为
+11 packages、861 tests、0 errors、0 failures、1 skipped。但还没有 clean commit
+`--with-isaac` 全门、真实新 schema smoke 或正式每组三重复的 54-run/18-group 全
+topology 矩阵。历史
+`d5840ed` 12-run 保存的是 analysis schema 2、batch-summary schema 3，且 Warehouse、
+repeat=1、motion report schema 1 均不满足适用性；它是机制证据，不能写成 `0/12 fail`。
 
 如果不能达到，禁止进入“最终 Nav2 参数冻结”。
 
@@ -3143,8 +3169,9 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   对称标准 Cylinder；真实 180 步启动中 `customGeometry` 警告为 0。32/4 与 32/16
   保持直行/停车等价，32/4 的 high-tier 左右旋转更高、Reset latency 无 16 的
   9.07 秒离群点，且 TGS 警告从 1 降为 0，因此冻结 solver `32/4`。SimplePlane/
-  Warehouse 接触矩阵已完成但物理门失败；低速左右转向不对称、接触拓扑、有效轮距
-  和 Realistic A/B 尚未闭合，第三阶段仍未退出。
+  Warehouse 历史接触矩阵已完成；其旧 motion report 没有稳态窗口，当前物理 gate
+  verdict 为 N/A，不能沿用旧整段均值写成通过或失败。低速左右转向不对称、接触拓扑、
+  有效轮距和 Realistic A/B 尚未闭合，第三阶段仍未退出。
 - 第三阶段时间进度：确认安装版 ROS 2 helper 默认
   `resetSimulationTimeOnStop=true`；项目此前显式 false 会选择 monotonic 查询，
   且本轮日志中该查询与相邻 Fabric 样本缺失同时出现。false 的 30 分钟基线三类
@@ -3169,8 +3196,10 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   216/216 段、216/216 Reset 成功，12 个 group 各 3 次，分析纳入 36/排除 0；
   Manifest/analysis/summary SHA256 分别为 `f38bdbdf...b7df`、`e8095612...91ea`、
   `f22c0079...3185`。但空旷 SimplePlane 的 36 个纯旋转段中心漂移为
-  `0.297486–0.350392 m`、平均角速度误差为 `60.10%–69.05%`，全部未通过
-  8.7 的 `0.10 m/10%` 门。六 Profile 对严重欠转均无决定性改善；P11 的约
+  `0.297486–0.350392 m`，旧整段平均角速度误差为 `60.10%–69.05%`；这些描述值
+  超过当时的 `0.10 m/10%` 探索阈值，但报告为 schema 1，没有后半命令稳态窗口，
+  所以当前 8.7 机器 verdict 为 N/A，不得写成正式 FAIL。六 Profile 对严重欠转均无
+  决定性改善；P11 的约
   `1.012 m` 只作为多速度拟合初值，不能直接冻结。下一步必须先做两环境单轮重复、
   Warehouse GroundPlane/floor-decal collider 拓扑隔离、多角速度有效轮距及
   60/120 Hz、CCD、stabilization 单变量 A/B，之后再做 Ideal/Realistic 复验；
@@ -3197,9 +3226,33 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   fresh readback、canonical hash、非法配对和完整 18 组统计合同均有自动测试。提交
   `a1056c3` 已让严格批处理按 `baseline/all/ID` 选择合法 pair：历史口径 36-run/12-group，
   全 topology 口径 54-run/18-group，并锁定 topology HEAD blob 与 schema-v5 证据。
-  clean `a85828f` 已执行 Warehouse 32-vs-1 × 六 contact profile × 每格一次的 12-run
-  机制烟测，并暴露、修复 runtime-derived RootLayer 摘要的锁定作用域；正式每组三重复的
+  clean `a85828f` 的 Warehouse 32-vs-1 × 六 contact profile × 每格一次 12-run
+  机制烟测暴露了 runtime-derived RootLayer 摘要的锁定作用域问题；该批 12 个进程
+  虽完成，但严格 analyzer 按旧合同失败关闭，没有生成 analysis/summary，不能记为批次
+  成功。修复后的 clean `d5840ed` 重跑已闭合 12/12 run、72/72 段及 144/144
+  manifest 路径/hash 对，冻结根证据为 manifest
+  `a31acc23fa5c4c029ba09b938d417a1ce08d053d4928e271631dcc816634bdcf`、analysis
+  `3c39c1593dcdd5cf19d3678410bd734531ebf662ab5600bb588ec2d0301babc9`、summary
+  `92e136a8cb968859b72976977a4c129d19813ba897c67807661d695543011852`。Root SHA
+  按 combined32 六份、plane-only legacy/explicit/两个 `0.00025` profile 四份、
+  plane-only 两个 `0.025` profile 两份形成 `6/4/2` 分布；Kit `[Error]` 为 0，但
+  12 份 Isaac 日志各保留一条非致命 absl `E0000`，不得写成“零错误”。该批仍是
+  repeat=1 的历史 schema 2/3 机制烟测。其 Warehouse、repeat=1 与旧 motion report
+  schema 1 都使计划 8.7 物理判定为 N/A，不能记成 `0/12 fail`；正式每组三重复的
   54-run/18-group 全 topology 矩阵仍未运行，因此第三阶段仍未退出。
+- 第三阶段物理机器门：motion report schema 2（configuration 仍为 1）已提供命令区间
+  后半段 `steady_state_window`；v5 analysis schema 3、`physical_acceptance` schema 1/
+  policy `skid_steer_plan_8_7_v1` 和 batch-summary schema 4 已实现。旋转门按该窗口实际
+  angular-z mean 相对命令角速度的绝对误差比例判定，不再用 yaw gain。机器 verdict
+  只适用于 provenance 5 + SimplePlane/only1 + Ideal + 每组至少 3 个唯一 repeat +
+  motion report schema 2；其他组为 `passed=null` 的 N/A。summary 的证据 `success` 与
+  `all_applicable_groups_passed` 及 applicable/not-applicable/passing/failed 四类 group
+  必须分别读取。当前完整 analyzer 测试文件为 `116 passed`，motion baseline `66 passed`、
+  matrix script `42 passed / 1 skipped`（缺少 `shellcheck`）；这些仍不是 clean commit
+  全门。同一 dirty worktree 的 `./scripts/test.sh` 为 exit 0，root
+  `1061 passed / 1 skipped / 34 deselected`，ROS 11 packages / 861 tests / 0 errors /
+  0 failures / 1 skipped；clean commit `--with-isaac`、真实新 schema smoke 和正式
+  54-run 实跑仍待完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均

@@ -34,8 +34,29 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   已成为版本化、可逆的 ground-topology profile；schema v5 还锁定源资产、匿名
   overlay、source/target/disabled 精确集合并要求 contact ground target 一致。USD
   应用/读回和离线分组合同已验证；严格矩阵入口可按三个合法 pair 生成 54-run/18-group
-  全拓扑批次。clean `a85828f` 已执行 Warehouse 32-vs-1、六 contact profile、每格一次
-  的 12-run 机制烟测；正式每组三重复的 54-run/18-group 全拓扑批次仍未执行。
+  全拓扑批次。RootLayer 锁作用域修复后的 clean `d5840ed` 已完成 Warehouse 32-vs-1、
+  六 contact profile、每格一次的 12-run 机制烟测：12/12 run、72/72 段和 144/144
+  路径/hash 对均闭合，Root SHA 分布为 combined32 六份、plane-only legacy/explicit/
+  两个 `0.00025` profile 四份、plane-only 两个 `0.025` profile 两份。该历史批次保存
+  analysis schema 2、batch-summary schema 3；Kit `[Error]` 为 0，但 12 份 Isaac 日志
+  各有一条非致命 absl `E0000`，因此不能写成“零错误”。正式每组三重复的
+  54-run/18-group 全拓扑批次仍未执行。
+- 导航质量升级计划 8.7 的机器硬门已实现：新 motion report 顶层为 schema 2，
+  `configuration.schema_version` 仍为 1；`actual_velocity.steady_state_window` 固定取
+  命令区间后半段。v5 analysis 为 schema 3，并嵌入 schema 1、policy
+  `skid_steer_plan_8_7_v1` 的 `physical_acceptance`；旋转门用该窗口实际
+  `angular_z_radps.mean` 相对目标角速度的绝对误差比例 `≤0.10`，不再用 yaw gain。
+  机器判定只适用于 runtime provenance 5 + `SimplePlane` +
+  `simple_plane_only1_v1` + Ideal + 每组至少 3 个唯一 repeat + motion report schema 2；
+  其他组记录 `applicable=false`、`passed=null` 和原因，不计作失败。顶层分别列出
+  `applicable_groups`、`not_applicable_groups`、`passing_groups`、`failed_groups`，总判定读
+  `all_applicable_groups_passed`。batch-summary schema 4 的证据 `result=success` 与物理
+  verdict 分开。完整 analyzer 测试文件为 `116 passed`，motion baseline `66 passed`、matrix
+  script `42 passed / 1 skipped`（缺少 `shellcheck`）；dirty-worktree
+  `./scripts/test.sh` 也为 exit 0，root `1061 passed / 1 skipped / 34 deselected`，ROS
+  11 packages / 861 tests / 0 errors / 0 failures / 1 skipped。这些仍不是 clean/frozen
+  证据；提交后须重跑 clean commit `--with-isaac`，也仍缺真实新 schema smoke 和正式
+  54-run/18-group 实跑。
 - `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件；
   两者都没有覆盖 stable，也尚未完成两环境、多速度、拓扑或 Realistic 物理 A/B。
 
