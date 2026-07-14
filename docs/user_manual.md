@@ -1576,8 +1576,8 @@ environment/topology/Profile 的运动统计。单轮细节看 `reports/`，故�
 预期行为，不是文件丢失。失败目录不得续跑，也不得把其中的部分样本混入新批次。
 
 分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat。v5 分别锁定
-全矩阵 robot/motion、同环境的 environment/source collider 发现合同、同 topology 的
-operation/target/disabled、同 environment+contact profile 跨 topology 不应变化的
+全矩阵 robot/motion、按 contact profile ID 跨环境/topology 的 path/SHA/id/mode/flags、
+同环境的 environment/source collider 发现合同、同 topology 的 operation/target/disabled、同 environment+contact profile 跨 topology 不应变化的
 scene、wheel bindings、wheel material、ground material 和 readback，以及三元组内
 除进程专用 `overlay_identifier` 外的完整 contact；ground bindings/path 会随 topology
 target 合法变化。因此不能一边切换 topology，一边悄悄改变摩擦或轮侧输入。yaw gain 和位移误差按物理时钟的
