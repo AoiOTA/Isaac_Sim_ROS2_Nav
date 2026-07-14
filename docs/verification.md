@@ -487,7 +487,8 @@ canonical topology/contact JSON 与 SHA；Realistic Wheel Odom 只握手 schema�
 config path/SHA 和七个 kinematics/controller 字段，两者的 live 握手都只接受整数
 schema 5。A/B analyzer 的 v5 分组键为
 `environment::topology::contact_profile`：同环境锁除 runtime-derived RootLayer SHA
-外的完整 environment、wheel collider 和 source collider；同 environment+topology 锁 profile/operation/overlay SHA/
+外的完整 environment、wheel collider 和 source collider；另按 contact profile ID
+跨环境/topology 锁 profile path/SHA/id/mode/flags；同 environment+topology 锁 profile/operation/overlay SHA/
 target/disabled/readback 与 contact ground selector/list；同一 environment+contact
 跨 topology 锁 profile、scene、wheel bindings、wheel/ground material 和 readback，
 允许 treatment 所需的 ground bindings/path 改变；三元组内锁 runtime 初始化后的
@@ -564,7 +565,7 @@ combined32 六份报告均读回 `32 source / 32 target / 0 disabled`，plane-on
 topology/contact 的直接 opinion 只位于 SessionLayer 下两个匿名 sublayer，后续 runtime
 仍可能在 RootLayer 形成 treatment-dependent 派生 opinion。修复把 RootLayer SHA 从
 跨 treatment 的 environment lock 移到最终 environment/topology/contact 组内；global、
-environment、environment+topology、environment+contact 的显式输入锁全部保留。定向
+environment、跨环境 profile、environment+topology、environment+contact 的显式输入锁全部保留。定向
 analyzer 回归为 `59 passed`；对原始 12 份报告只读离线重聚合得到
 `analysis_valid=true`、`12 input / 12 included / 0 excluded / 12 groups`，所选 12 组子矩阵完整。
 

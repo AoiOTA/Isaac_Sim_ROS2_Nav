@@ -3193,7 +3193,7 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   `warehouse_plane_only1_v1`；后者从同一 Warehouse 32-collider source 精确禁用 31
   个非 GroundPlane collider。随后 provenance schema v5、ROS live consumer 和严格
   analyzer 把 environment/topology/contact 拆成独立身份与分层 A/B 锁：global、
-  environment、environment+topology、environment+contact 和最终三元组；Stage 应用、
+  environment、跨环境 profile、environment+topology、environment+contact 和最终三元组；Stage 应用、
   fresh readback、canonical hash、非法配对和完整 18 组统计合同均有自动测试。提交
   `a1056c3` 已让严格批处理按 `baseline/all/ID` 选择合法 pair：历史口径 36-run/12-group，
   全 topology 口径 54-run/18-group，并锁定 topology HEAD blob 与 schema-v5 证据。
