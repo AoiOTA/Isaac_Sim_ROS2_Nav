@@ -639,6 +639,11 @@ def test_contact_ab_matrix_locks_batch_identity_and_hashed_evidence():
     assert 'batch_ground_topology_hashes_json' in source
     assert 'ground_topology_path "${topology_id}"' in lock
     assert 'locked_input_paths+=("${topology_path}")' in lock
+    assert 'profile_hash_arguments' in lock
+    assert 'topology_hash_arguments' in lock
+    assert 'locked_input_hashes[${profile_path}]' in lock
+    assert 'locked_input_hashes[${topology_path}]' in lock
+    assert '.read_bytes()' not in lock
     run_one = source[
         source.index('run_one_condition() {'):
         source.index('reject_symlink_path_components() {')
@@ -653,6 +658,80 @@ def test_contact_ab_matrix_locks_batch_identity_and_hashed_evidence():
     assert 'warehouse_project_config_sha256' in source
     assert 'simple_plane_project_config_sha256' in source
     assert 'append_manifest_line_atomically' in source
+
+
+def test_locked_topology_hash_map_never_rereads_mutated_file(tmp_path):
+    function = _shell_function_source('lock_batch_identity')
+    physics_dir = tmp_path / 'physics'
+    topology_dir = tmp_path / 'topologies'
+    physics_dir.mkdir()
+    topology_dir.mkdir()
+    profile_ids = (
+        'legacy_baseline',
+        'threshold_corr_0p00025_offset_0p0004',
+        'threshold_corr_0p025_offset_0p0004',
+        'threshold_corr_0p00025_offset_0p04',
+        'threshold_corr_0p025_offset_0p04',
+        'explicit_material',
+    )
+    for profile_id in profile_ids:
+        (physics_dir / f'{profile_id}.yaml').write_text(
+            f'{profile_id}\n', encoding='utf-8'
+        )
+    topology_id = 'simple_plane_only1_v1'
+    topology_path = topology_dir / f'{topology_id}.yaml'
+    topology_path.write_text('topology-a\n', encoding='utf-8')
+    expected_digest = hashlib.sha256(topology_path.read_bytes()).hexdigest()
+    fixed_inputs = {
+        name: tmp_path / f'{name}.yaml'
+        for name in ('motion', 'warehouse', 'simple_plane', 'robot')
+    }
+    for name, path in fixed_inputs.items():
+        path.write_text(f'{name}\n', encoding='utf-8')
+    robot_digest = hashlib.sha256(
+        fixed_inputs['robot'].read_bytes()
+    ).hexdigest()
+    profile_array = ' '.join(repr(profile_id) for profile_id in profile_ids)
+    harness = (
+        'set -Eeuo pipefail\n'
+        f'{function}\n'
+        f'physics_dir={str(physics_dir)!r}\n'
+        f'ground_topology_dir={str(topology_dir)!r}\n'
+        f'topology_path={str(topology_path)!r}\n'
+        f'motion_config={str(fixed_inputs["motion"])!r}\n'
+        f'warehouse_config={str(fixed_inputs["warehouse"])!r}\n'
+        f'simple_plane_config={str(fixed_inputs["simple_plane"])!r}\n'
+        f'robot_config={str(fixed_inputs["robot"])!r}\n'
+        f'robot_config_sha256={robot_digest!r}\n'
+        f'profile_ids=({profile_array})\n'
+        f'matrix_ground_topology_ids=({topology_id!r})\n'
+        "matrix_environment_ids=('SimplePlane')\n"
+        'declare -a locked_input_paths=()\n'
+        'declare -A locked_input_hashes=()\n'
+        "git_commit() { printf '%040d\\n' 1; }\n"
+        "git_branch() { printf 'codex/test\\n'; }\n"
+        'require_tracked_input() { return 0; }\n'
+        'ground_topology_path() { '
+        'printf "%s/%s.yaml\\n" "${ground_topology_dir}" "$1"; }\n'
+        'die() { printf "%s\\n" "$*" >&2; return 1; }\n'
+        'sha256_file() {\n'
+        '  local digest\n'
+        '  digest="$(sha256sum "$1" | awk \'{print $1}\')"\n'
+        '  if [[ "$1" == "${topology_path}" ]]; then\n'
+        "    printf 'topology-b\\n' >\"$1\"\n"
+        '  fi\n'
+        '  printf "%s\\n" "${digest}"\n'
+        '}\n'
+        'lock_batch_identity\n'
+        'actual="$(python3 -c \'import json,sys; '
+        'print(json.loads(sys.argv[1])["simple_plane_only1_v1"])\' '
+        '"${batch_ground_topology_hashes_json}")"\n'
+        f'[[ "${{actual}}" == {expected_digest!r} ]]\n'
+        f'[[ "$(sha256sum "${{topology_path}}" | awk \'{{print $1}}\')" '
+        f'!= {expected_digest!r} ]]\n'
+    )
+    result = _bash_harness(harness)
+    assert result.returncode == 0, result.stderr
 
 
 def test_manifest_append_is_complete_and_atomic_dynamically(tmp_path):
@@ -901,7 +980,24 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     function = _shell_function_source('write_batch_summary')
     manifest = tmp_path / 'manifest.tsv'
     analysis = tmp_path / 'analysis.json'
-    manifest.write_text('header\nrow\n', encoding='utf-8')
+    manifest_header = (
+        'environment',
+        'ground_topology_id',
+        'ground_topology_profile_path',
+        'ground_topology_profile_sha256',
+    )
+    manifest_row = (
+        'SimplePlane',
+        'simple_plane_only1_v1',
+        '/repo/ground_topologies/simple_plane_only1_v1.yaml',
+        '7' * 64,
+    )
+    manifest.write_text(
+        '\t'.join(manifest_header)
+        + '\n'
+        + ('\t'.join(manifest_row) + '\n') * 12,
+        encoding='utf-8',
+    )
     analysis.write_text(
         '{"counts":{"excluded_reports":0,"groups":6,'
         '"included_reports":12}}\n',
@@ -1024,6 +1120,34 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         }
     }
     assert not list(tmp_path.glob('.batch_summary.json.*.tmp'))
+
+    # The frozen file digest alone is insufficient: the summary must bind
+    # every row's topology identity to the originally locked hash map.
+    summary.unlink()
+    mismatched_row = (*manifest_row[:-1], '6' * 64)
+    manifest.write_text(
+        '\t'.join(manifest_header)
+        + '\n'
+        + ('\t'.join(mismatched_row) + '\n') * 12,
+        encoding='utf-8',
+    )
+    assignments['frozen_manifest_sha256'] = hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest()
+    mismatched_assignments = '\n'.join(
+        f'{name}={str(value)!r}' for name, value in assignments.items()
+    )
+    mismatch_result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{function}\n'
+        f'{mismatched_assignments}\n'
+        'write_batch_summary 12 12\n'
+    )
+    assert mismatch_result.returncode != 0
+    assert 'manifest row 1 ground-topology identity mismatch' \
+        in mismatch_result.stderr
+    assert not summary.exists()
 
 
 def test_shellcheck_when_available():
