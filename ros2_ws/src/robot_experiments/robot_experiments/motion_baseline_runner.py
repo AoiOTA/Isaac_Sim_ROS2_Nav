@@ -1549,7 +1549,7 @@ class MotionBaselineRunner(Node):
 
     def _base_report(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "diagnostic": "four_wheel_chassis_motion_baseline",
             "profile_id": self._config.profile_id,
             "environment_id": self._environment_id,

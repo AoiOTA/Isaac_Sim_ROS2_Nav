@@ -114,6 +114,34 @@ def test_live_motion_report_accepts_runtime_schema_v5():
     assert _require_live_runtime_provenance_schema(5) == 5
 
 
+def test_base_motion_report_uses_schema_v2_while_configuration_stays_v1():
+    runner = object.__new__(MotionBaselineRunner)
+    runner._config = load_motion_baseline_config(CONFIG_PATH)
+    runner._environment_id = "Warehouse"
+    runner._odometry_mode = "ideal"
+    runner._config_path = CONFIG_PATH
+    runner._config_hash = "0" * 64
+    runner._output_path = Path("/tmp/motion-report.json")
+    runner._started_at = SimpleNamespace(
+        isoformat=lambda: "2026-07-15T00:00:00+00:00"
+    )
+    runner._runtime_provenance = {"verified": False}
+    runner._segments = []
+    runner._session_timestamps = {
+        "clock": TimestampTracker(),
+        "odom": TimestampTracker(),
+        "joint_states": TimestampTracker(),
+    }
+    runner._authorized_reset_publishers = set()
+    runner._publisher = None
+    runner._safe_stop_attempted = False
+
+    report = runner._base_report()
+
+    assert report["schema_version"] == 2
+    assert report["configuration"]["schema_version"] == 1
+
+
 def test_motion_runner_reads_and_validates_top_level_ground_topology(monkeypatch):
     names = motion_baseline_runner._RUNTIME_PROVENANCE_PARAMETER_NAMES
     topology = {"operation": "keep_all", "target": {"collider_count": 32}}
@@ -435,6 +463,98 @@ def test_forward_analysis_records_pose_drift_velocity_wheels_and_stop_time():
     assert result["stopping"]["stationary_onset_after_command_sec"] == pytest.approx(0.2)
     assert result["wheels"]["all_directions_match"] is True
     json.dumps(result, allow_nan=False)
+
+
+def test_motion_analysis_uses_only_final_half_for_steady_state_yaw_rate():
+    start = 1_000_000_000
+    end = 4_000_000_001
+    boundary = start + (end - start) // 2
+    odom = [
+        OdomSample(start, 0, 0, 0, 0, 0, 9.0),
+        OdomSample(boundary - 1, 0, 0, 0, 0, 0, 8.0),
+        OdomSample(boundary, 0, 0, 0, 0, 0, 0.4),
+        OdomSample(end, 0, 0, 0, 0, 0, 0.6),
+        OdomSample(end + 100_000_000, 0, 0, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 0, 0, 0, 0, 0, 0),
+    ]
+    moving_wheels = (-3.0, 3.0, -3.0, 3.0)
+    joints = [
+        _joint(start, moving_wheels),
+        _joint(boundary - 1, moving_wheels),
+        _joint(boundary, moving_wheels),
+        _joint(end, moving_wheels),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+    segment = MotionSegment("left", "rotate_left", "test", 0, 0.5, 3)
+
+    result = analyse_motion_segment(
+        segment,
+        start,
+        end,
+        odom,
+        joints,
+        WHEELS,
+        STOP,
+        command_publish_count=60,
+        timestamp_integrity={},
+    )
+
+    window = result["actual_velocity"]["steady_state_window"]
+    assert window == {
+        "schema_version": 1,
+        "definition": "final_half_of_command_interval",
+        "start_stamp_ns": boundary,
+        "end_stamp_ns": end,
+        "observed_duration_sec": pytest.approx(
+            (end - boundary) / 1_000_000_000
+        ),
+        "sample_count": 2,
+        "angular_z_radps": {
+            "sample_count": 2,
+            "mean": pytest.approx(0.5),
+            "mean_abs": pytest.approx(0.5),
+            "minimum": pytest.approx(0.4),
+            "maximum": pytest.approx(0.6),
+            "peak_abs": pytest.approx(0.6),
+            "rmse": pytest.approx(math.sqrt((0.4**2 + 0.6**2) / 2)),
+        },
+    }
+    assert result["actual_velocity"]["angular_z_radps"]["mean"] != pytest.approx(
+        window["angular_z_radps"]["mean"]
+    )
+
+
+def test_motion_analysis_rejects_empty_final_half_steady_state_window():
+    start = 1_000_000_000
+    end = 3_000_000_000
+    boundary = start + (end - start) // 2
+    odom = [
+        OdomSample(start, 0, 0, 0, 0.5, 0, 0),
+        OdomSample(boundary - 1, 0.4, 0, 0, 0.5, 0, 0),
+        OdomSample(end + 100_000_000, 0.4, 0, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 0.4, 0, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (5, 5, 5, 5)),
+        _joint(end, (5, 5, 5, 5)),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+    segment = MotionSegment("forward", "forward", "test", 0.5, 0, 2)
+
+    with pytest.raises(ValueError, match="steady-state window"):
+        analyse_motion_segment(
+            segment,
+            start,
+            end,
+            odom,
+            joints,
+            WHEELS,
+            STOP,
+            command_publish_count=40,
+            timestamp_integrity={},
+        )
 
 
 def test_rotation_analysis_unwraps_yaw_and_flags_wrong_wheel_direction():

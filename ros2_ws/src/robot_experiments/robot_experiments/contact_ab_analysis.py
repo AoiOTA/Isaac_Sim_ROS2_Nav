@@ -166,6 +166,106 @@ _ACTUAL_VELOCITY_KEYS = {
     "linear_speed_mps",
     "angular_z_radps",
 }
+_STEADY_STATE_WINDOW_KEYS = {
+    "schema_version",
+    "definition",
+    "start_stamp_ns",
+    "end_stamp_ns",
+    "observed_duration_sec",
+    "sample_count",
+    "angular_z_radps",
+}
+_VELOCITY_DISTRIBUTION_KEYS = {
+    "sample_count",
+    "mean",
+    "mean_abs",
+    "minimum",
+    "maximum",
+    "peak_abs",
+    "rmse",
+}
+_PHYSICAL_ACCEPTANCE_POLICY_ID = "skid_steer_plan_8_7_v1"
+_PHYSICAL_ACCEPTANCE_THRESHOLDS = {
+    "forward_abs_lateral_drift_max_m": 0.05,
+    "backward_abs_lateral_drift_max_m": 0.08,
+    "rotation_center_drift_max_m": 0.10,
+    "rotation_center_drift_asymmetry_ratio_max": 0.20,
+    "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
+    "stop_stable_duration_min_sec": 0.5,
+    "stop_linear_velocity_threshold_max_mps": 0.02,
+    "stop_angular_velocity_threshold_max_radps": 0.05,
+    "stop_wheel_velocity_threshold_max_radps": 0.20,
+}
+_PHYSICAL_ACCEPTANCE_APPLICABILITY = {
+    "required_runtime_provenance_schema": 5,
+    "required_environment_id": "SimplePlane",
+    "required_ground_topology_id": "simple_plane_only1_v1",
+    "required_odometry_mode": "ideal",
+    "minimum_unique_repeats_per_group": 3,
+}
+_PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS = (
+    "actual_velocity.steady_state_window.angular_z_radps.mean over the "
+    "final_half_of_command_interval window"
+)
+_PHYSICAL_STEADY_STATE_LEAF_BASIS = (
+    "actual_velocity.steady_state_window.angular_z_radps.mean"
+)
+_PHYSICAL_MAXIMUM_CHECK_THRESHOLDS = {
+    "forward_abs_lateral_drift_m": "forward_abs_lateral_drift_max_m",
+    "backward_abs_lateral_drift_m": "backward_abs_lateral_drift_max_m",
+    "rotate_left_center_drift_m": "rotation_center_drift_max_m",
+    "rotate_right_center_drift_m": "rotation_center_drift_max_m",
+    "rotation_center_drift_asymmetry_ratio": (
+        "rotation_center_drift_asymmetry_ratio_max"
+    ),
+    "stop_config.linear_velocity_threshold_mps": (
+        "stop_linear_velocity_threshold_max_mps"
+    ),
+    "stop_config.angular_velocity_threshold_radps": (
+        "stop_angular_velocity_threshold_max_radps"
+    ),
+    "stop_config.wheel_velocity_threshold_radps": (
+        "stop_wheel_velocity_threshold_max_radps"
+    ),
+}
+_PHYSICAL_MINIMUM_CHECK_THRESHOLDS = {
+    "stop_config.stable_duration_sec": "stop_stable_duration_min_sec",
+}
+_PHYSICAL_YAW_RATE_CHECK_SEGMENTS = {
+    "rotate_left_mean_yaw_rate_absolute_error_fraction": "rotate_left_360",
+    "rotate_right_mean_yaw_rate_absolute_error_fraction": "rotate_right_360",
+}
+_PHYSICAL_STOP_WINDOW_CHECK_SEGMENTS = {
+    f"stop_window.{segment_id}": segment_id
+    for segment_id, *_ in _SEGMENT_SPECS
+}
+_PHYSICAL_ACCEPTANCE_CHECK_IDS = frozenset(
+    {
+        *_PHYSICAL_MAXIMUM_CHECK_THRESHOLDS,
+        *_PHYSICAL_MINIMUM_CHECK_THRESHOLDS,
+        *_PHYSICAL_YAW_RATE_CHECK_SEGMENTS,
+        *_PHYSICAL_STOP_WINDOW_CHECK_SEGMENTS,
+        "wheel_direction_contract",
+    }
+)
+
+
+def _physical_maximum_passed(observed: float, limit: float) -> bool:
+    return observed <= limit or math.isclose(
+        observed,
+        limit,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
+
+
+def _physical_minimum_passed(observed: float, limit: float) -> bool:
+    return observed >= limit or math.isclose(
+        observed,
+        limit,
+        rel_tol=1e-12,
+        abs_tol=1e-12,
+    )
 
 
 @dataclass(frozen=True)
@@ -175,8 +275,10 @@ class InputRecord:
     path: str
     sha256: str
     canonical_sha256: str
+    report_schema_version: int
     runtime_provenance_schema: int
     environment_id: str
+    odometry_mode: str
     ground_topology_id: str | None
     contact_profile_id: str
     global_lock: dict[str, Any]
@@ -185,6 +287,8 @@ class InputRecord:
     topology_ab_contact_lock: dict[str, Any] | None
     profile_lock: dict[str, Any]
     contact_lock: dict[str, Any]
+    physical_stop_contract: dict[str, float] | None
+    physical_yaw_rate_metrics: dict[str, dict[str, float]] | None
     segments: dict[str, dict[str, float]]
 
 
@@ -571,8 +675,9 @@ def _segment_metrics(
     wheel_layout: Mapping[str, str],
     wheel_radius_m: float,
     direction_deadband_radps: float,
+    report_schema_version: int,
     location: str,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], float | None]:
     segment_id, motion, linear, angular, duration = specification
     _exact_keys(segment, _RESULT_SEGMENT_KEYS, location)
     if segment.get("segment_id") != segment_id or segment.get("motion") != motion:
@@ -645,7 +750,13 @@ def _segment_metrics(
         segment.get("actual_velocity"), f"{location}.actual_velocity"
     )
     _exact_keys(
-        actual_velocity, _ACTUAL_VELOCITY_KEYS, f"{location}.actual_velocity"
+        actual_velocity,
+        (
+            _ACTUAL_VELOCITY_KEYS | {"steady_state_window"}
+            if report_schema_version == 2
+            else _ACTUAL_VELOCITY_KEYS
+        ),
+        f"{location}.actual_velocity",
     )
     for velocity_name in _ACTUAL_VELOCITY_KEYS:
         distribution = _mapping(
@@ -655,6 +766,79 @@ def _segment_metrics(
         _finite(
             distribution.get("mean"),
             f"{location}.actual_velocity.{velocity_name}.mean",
+        )
+    steady_state_mean_yaw_rate: float | None = None
+    if report_schema_version == 2:
+        steady_state_window = _mapping(
+            actual_velocity.get("steady_state_window"),
+            f"{location}.actual_velocity.steady_state_window",
+        )
+        steady_location = f"{location}.actual_velocity.steady_state_window"
+        _exact_keys(
+            steady_state_window,
+            _STEADY_STATE_WINDOW_KEYS,
+            steady_location,
+        )
+        _exact_integer(
+            steady_state_window.get("schema_version"),
+            1,
+            f"{steady_location}.schema_version",
+        )
+        if (
+            steady_state_window.get("definition")
+            != "final_half_of_command_interval"
+        ):
+            raise ConfigurationError(
+                f"{steady_location}.definition must be "
+                "'final_half_of_command_interval'"
+            )
+        steady_start_stamp = start_stamp + (end_stamp - start_stamp) // 2
+        _exact_integer(
+            steady_state_window.get("start_stamp_ns"),
+            steady_start_stamp,
+            f"{steady_location}.start_stamp_ns",
+        )
+        _exact_integer(
+            steady_state_window.get("end_stamp_ns"),
+            end_stamp,
+            f"{steady_location}.end_stamp_ns",
+        )
+        steady_duration = (end_stamp - steady_start_stamp) / 1_000_000_000
+        _exact_number(
+            steady_state_window.get("observed_duration_sec"),
+            steady_duration,
+            f"{steady_location}.observed_duration_sec",
+        )
+        steady_sample_count = _positive_integer_value(
+            steady_state_window.get("sample_count"),
+            f"{steady_location}.sample_count",
+        )
+        steady_angular = _mapping(
+            steady_state_window.get("angular_z_radps"),
+            f"{steady_location}.angular_z_radps",
+        )
+        _exact_keys(
+            steady_angular,
+            _VELOCITY_DISTRIBUTION_KEYS,
+            f"{steady_location}.angular_z_radps",
+        )
+        distribution_sample_count = _positive_integer_value(
+            steady_angular.get("sample_count"),
+            f"{steady_location}.angular_z_radps.sample_count",
+        )
+        if distribution_sample_count != steady_sample_count:
+            raise ConfigurationError(
+                f"{steady_location}.angular_z_radps.sample_count must match "
+                f"{steady_location}.sample_count"
+            )
+        for metric_name in _VELOCITY_DISTRIBUTION_KEYS - {"sample_count"}:
+            _finite(
+                steady_angular.get(metric_name),
+                f"{steady_location}.angular_z_radps.{metric_name}",
+            )
+        steady_state_mean_yaw_rate = _finite(
+            steady_angular.get("mean"),
+            f"{steady_location}.angular_z_radps.mean",
         )
     _validate_wheel_directions(
         segment,
@@ -760,7 +944,7 @@ def _segment_metrics(
             wheel_differential / measured_yaw_rate,
             f"{location}.effective_track_m",
         )
-    return metrics
+    return metrics, steady_state_mean_yaw_rate
 
 
 def _identity_locks(
@@ -943,7 +1127,15 @@ def _validated_record(
 ) -> InputRecord:
     location = f"report {source_path}"
     _exact_keys(report, _REPORT_KEYS, location)
-    _exact_integer(report.get("schema_version"), 1, f"{location} schema_version")
+    report_schema_version = report.get("schema_version")
+    if (
+        isinstance(report_schema_version, bool)
+        or not isinstance(report_schema_version, int)
+        or report_schema_version not in {1, 2}
+    ):
+        raise ConfigurationError(
+            f"{location} schema_version must be integer 1 or 2"
+        )
     if report.get("result") != "success":
         raise ConfigurationError(f"{location}.result must be 'success'")
     if report.get("failure_reason") != "" or report.get("failed_segments") != []:
@@ -1019,7 +1211,11 @@ def _validated_record(
     simulation = _mapping(
         provenance.get("simulation"), f"{location}.runtime_provenance.simulation"
     )
-    if report.get("odometry_mode") != simulation.get("odometry_mode"):
+    odometry_mode = _string(
+        simulation.get("odometry_mode"),
+        f"{location}.runtime_provenance.simulation.odometry_mode",
+    )
+    if report.get("odometry_mode") != odometry_mode:
         raise ConfigurationError(f"{location} odometry label/provenance mismatch")
     configuration = _mapping(report.get("configuration"), f"{location}.configuration")
     _validate_configured_segments(configuration, f"{location}.configuration")
@@ -1039,6 +1235,25 @@ def _validated_record(
         stop_configuration.get("wheel_velocity_threshold_radps"),
         f"{location}.configuration.stop.wheel_velocity_threshold_radps",
     )
+    physical_stop_contract = None
+    if provenance_schema == 5:
+        physical_stop_contract = {
+            "stable_duration_sec": _nonnegative(
+                stop_configuration.get("stable_duration_sec"),
+                f"{location}.configuration.stop.stable_duration_sec",
+            ),
+            "linear_velocity_threshold_mps": _nonnegative(
+                stop_configuration.get("linear_velocity_threshold_mps"),
+                f"{location}.configuration.stop."
+                "linear_velocity_threshold_mps",
+            ),
+            "angular_velocity_threshold_radps": _nonnegative(
+                stop_configuration.get("angular_velocity_threshold_radps"),
+                f"{location}.configuration.stop."
+                "angular_velocity_threshold_radps",
+            ),
+            "wheel_velocity_threshold_radps": direction_deadband_radps,
+        }
     contact = _mapping(
         provenance.get("contact"), f"{location}.runtime_provenance.contact"
     )
@@ -1066,17 +1281,37 @@ def _validated_record(
     raw_segments = _sequence(report.get("segments"), f"{location}.segments")
     if len(raw_segments) != len(_SEGMENT_SPECS):
         raise ConfigurationError(f"{location}.segments must contain exactly 6 segments")
-    metrics = {
-        specification[0]: _segment_metrics(
+    metrics: dict[str, dict[str, float]] = {}
+    steady_state_mean_yaw_rates: dict[str, float] = {}
+    for index, specification in enumerate(_SEGMENT_SPECS):
+        segment_id = specification[0]
+        segment_metrics, steady_state_mean_yaw_rate = _segment_metrics(
             _mapping(raw_segments[index], f"{location}.segments[{index}]"),
             specification,
             wheel_layout,
             wheel_radius_m,
             direction_deadband_radps,
-            f"{location}.segments[{index}]({specification[0]})",
+            report_schema_version,
+            f"{location}.segments[{index}]({segment_id})",
         )
-        for index, specification in enumerate(_SEGMENT_SPECS)
-    }
+        metrics[segment_id] = segment_metrics
+        if steady_state_mean_yaw_rate is not None:
+            steady_state_mean_yaw_rates[segment_id] = (
+                steady_state_mean_yaw_rate
+            )
+    physical_yaw_rate_metrics = None
+    if provenance_schema == 5 and report_schema_version == 2:
+        physical_yaw_rate_metrics = {}
+        for segment_id, motion, _linear, angular, _duration in _SEGMENT_SPECS:
+            if motion not in {"rotate_left", "rotate_right"}:
+                continue
+            mean_yaw_rate = steady_state_mean_yaw_rates[segment_id]
+            physical_yaw_rate_metrics[segment_id] = {
+                "commanded_yaw_rate_radps": angular,
+                "steady_state_mean_yaw_rate_radps": mean_yaw_rate,
+                "absolute_error_fraction": abs(mean_yaw_rate - angular)
+                / abs(angular),
+            }
     (
         global_lock,
         environment_lock,
@@ -1115,8 +1350,10 @@ def _validated_record(
         path=str(source_path),
         sha256=source_sha256,
         canonical_sha256=canonical_sha256,
+        report_schema_version=report_schema_version,
         runtime_provenance_schema=provenance_schema,
         environment_id=environment_id,
+        odometry_mode=odometry_mode,
         ground_topology_id=ground_topology_id,
         contact_profile_id=contact_profile_id,
         global_lock=global_lock,
@@ -1125,6 +1362,8 @@ def _validated_record(
         topology_ab_contact_lock=topology_ab_contact_lock,
         profile_lock=profile_lock,
         contact_lock=contact_lock,
+        physical_stop_contract=physical_stop_contract,
+        physical_yaw_rate_metrics=physical_yaw_rate_metrics,
         segments=metrics,
     )
 
@@ -1198,6 +1437,7 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
                 "path": record.path,
                 "sha256": record.sha256,
                 "canonical_sha256": record.canonical_sha256,
+                "report_schema_version": record.report_schema_version,
             }
             for record in records
         ],
@@ -1259,9 +1499,1323 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
         },
     }
     if first.ground_topology_id is not None:
+        summary["runtime_provenance_schema"] = (
+            first.runtime_provenance_schema
+        )
+        summary["odometry_mode"] = first.odometry_mode
         summary["ground_topology_id"] = first.ground_topology_id
         summary["ground_topology_contract"] = first.topology_lock
     return summary
+
+
+def _physical_repeat_result(
+    record: InputRecord,
+    repeat_index: int,
+) -> dict[str, Any]:
+    """Evaluate one schema-v5 report against every plan 8.7 hard gate."""
+
+    stop = record.physical_stop_contract
+    yaw_rate_metrics = record.physical_yaw_rate_metrics
+    if stop is None or yaw_rate_metrics is None:
+        raise ConfigurationError(
+            f"schema-5 report {record.path} lacks a physical acceptance contract"
+        )
+    thresholds = _PHYSICAL_ACCEPTANCE_THRESHOLDS
+    checks: dict[str, dict[str, Any]] = {}
+
+    def maximum(check_id: str, observed: float, limit: float) -> None:
+        checks[check_id] = {
+            "observed": observed,
+            "maximum": limit,
+            "passed": _physical_maximum_passed(observed, limit),
+        }
+
+    def minimum(check_id: str, observed: float, limit: float) -> None:
+        checks[check_id] = {
+            "observed": observed,
+            "minimum": limit,
+            "passed": _physical_minimum_passed(observed, limit),
+        }
+
+    maximum(
+        "forward_abs_lateral_drift_m",
+        abs(record.segments["forward_3m"]["lateral_drift_m"]),
+        thresholds["forward_abs_lateral_drift_max_m"],
+    )
+    maximum(
+        "backward_abs_lateral_drift_m",
+        abs(record.segments["backward_2m"]["lateral_drift_m"]),
+        thresholds["backward_abs_lateral_drift_max_m"],
+    )
+    left_center = record.segments["rotate_left_360"]["center_drift_m"]
+    right_center = record.segments["rotate_right_360"]["center_drift_m"]
+    maximum(
+        "rotate_left_center_drift_m",
+        left_center,
+        thresholds["rotation_center_drift_max_m"],
+    )
+    maximum(
+        "rotate_right_center_drift_m",
+        right_center,
+        thresholds["rotation_center_drift_max_m"],
+    )
+    symmetry_denominator = max(left_center, right_center)
+    symmetry_ratio = (
+        0.0
+        if symmetry_denominator == 0.0
+        else abs(left_center - right_center) / symmetry_denominator
+    )
+    maximum(
+        "rotation_center_drift_asymmetry_ratio",
+        symmetry_ratio,
+        thresholds["rotation_center_drift_asymmetry_ratio_max"],
+    )
+    for side, segment_id in (
+        ("left", "rotate_left_360"),
+        ("right", "rotate_right_360"),
+    ):
+        yaw_rate = yaw_rate_metrics[segment_id]
+        check_id = f"rotate_{side}_mean_yaw_rate_absolute_error_fraction"
+        maximum(
+            check_id,
+            yaw_rate["absolute_error_fraction"],
+            thresholds[
+                "rotation_mean_yaw_rate_absolute_error_fraction_max"
+            ],
+        )
+        checks[check_id].update(
+            {
+                "commanded_yaw_rate_radps": yaw_rate[
+                    "commanded_yaw_rate_radps"
+                ],
+                "steady_state_mean_yaw_rate_radps": yaw_rate[
+                    "steady_state_mean_yaw_rate_radps"
+                ],
+                "steady_state_measurement_basis": (
+                    _PHYSICAL_STEADY_STATE_LEAF_BASIS
+                ),
+            }
+        )
+    minimum(
+        "stop_config.stable_duration_sec",
+        stop["stable_duration_sec"],
+        thresholds["stop_stable_duration_min_sec"],
+    )
+    maximum(
+        "stop_config.linear_velocity_threshold_mps",
+        stop["linear_velocity_threshold_mps"],
+        thresholds["stop_linear_velocity_threshold_max_mps"],
+    )
+    maximum(
+        "stop_config.angular_velocity_threshold_radps",
+        stop["angular_velocity_threshold_radps"],
+        thresholds["stop_angular_velocity_threshold_max_radps"],
+    )
+    maximum(
+        "stop_config.wheel_velocity_threshold_radps",
+        stop["wheel_velocity_threshold_radps"],
+        thresholds["stop_wheel_velocity_threshold_max_radps"],
+    )
+    for segment_id, *_ in _SEGMENT_SPECS:
+        onset = record.segments[segment_id]["stop_onset_sec"]
+        confirmed = record.segments[segment_id]["stop_confirmed_sec"]
+        observed_duration = confirmed - onset
+        check_id = f"stop_window.{segment_id}"
+        checks[check_id] = {
+            # Reaching this evaluator proves _segment_metrics already required
+            # the producer's stopped flag to be exactly true.
+            "stopped": True,
+            "stationary_onset_sec": onset,
+            "confirmed_sec": confirmed,
+            "observed_stable_duration_sec": observed_duration,
+            "required_stable_duration_sec": stop["stable_duration_sec"],
+            "passed": _physical_minimum_passed(
+                observed_duration,
+                stop["stable_duration_sec"],
+            ),
+        }
+    checks["wheel_direction_contract"] = {
+        "validated_segment_count": len(_SEGMENT_SPECS),
+        "validated_by": "strict_motion_report_validator",
+        "passed": True,
+    }
+    failed_checks = sorted(
+        check_id
+        for check_id, check in checks.items()
+        if check["passed"] is not True
+    )
+    return {
+        "repeat_index": repeat_index,
+        "report_path": record.path,
+        "report_sha256": record.sha256,
+        "canonical_sha256": record.canonical_sha256,
+        "passed": not failed_checks,
+        "checks": checks,
+        "failed_checks": failed_checks,
+    }
+
+
+def _physical_acceptance(
+    grouped: Mapping[tuple[str, ...], Sequence[InputRecord]],
+) -> dict[str, Any]:
+    """Build a non-ranking, every-repeat schema-v1 plan 8.7 verdict."""
+
+    applicability = dict(_PHYSICAL_ACCEPTANCE_APPLICABILITY)
+    group_results: dict[str, dict[str, Any]] = {}
+    applicable_groups: list[str] = []
+    not_applicable_groups: list[str] = []
+    passing_groups: list[str] = []
+    failed_groups: list[str] = []
+    for group_key, records in sorted(grouped.items()):
+        group_id = "::".join(group_key)
+        first = records[0]
+        not_applicable_reasons = []
+        if any(record.report_schema_version != 2 for record in records):
+            not_applicable_reasons.append("motion_report_schema_not_2")
+        if first.runtime_provenance_schema != 5:
+            not_applicable_reasons.append(
+                "runtime_provenance_schema_not_5"
+            )
+        if first.environment_id != "SimplePlane":
+            not_applicable_reasons.append("environment_not_SimplePlane")
+        if first.ground_topology_id != "simple_plane_only1_v1":
+            not_applicable_reasons.append(
+                "ground_topology_not_simple_plane_only1_v1"
+            )
+        if first.odometry_mode != "ideal":
+            not_applicable_reasons.append("odometry_mode_not_ideal")
+        if len(records) < 3:
+            not_applicable_reasons.append(
+                "fewer_than_3_unique_repeats"
+            )
+        if not_applicable_reasons:
+            not_applicable_groups.append(group_id)
+            group_results[group_id] = {
+                "applicable": False,
+                "passed": None,
+                "not_applicable_reasons": not_applicable_reasons,
+                "repeat_count": len(records),
+                "checks": {},
+                "failed_checks": [],
+                "repeat_results": [],
+            }
+            continue
+        applicable_groups.append(group_id)
+        repeat_results = [
+            _physical_repeat_result(record, repeat_index)
+            for repeat_index, record in enumerate(
+                sorted(records, key=lambda item: item.path),
+                start=1,
+            )
+        ]
+        check_ids = sorted(repeat_results[0]["checks"])
+        checks = {
+            check_id: {
+                "passed_repeats": sum(
+                    result["checks"][check_id]["passed"] is True
+                    for result in repeat_results
+                ),
+                "failed_repeats": sum(
+                    result["checks"][check_id]["passed"] is not True
+                    for result in repeat_results
+                ),
+                "all_repeats_passed": all(
+                    result["checks"][check_id]["passed"] is True
+                    for result in repeat_results
+                ),
+            }
+            for check_id in check_ids
+        }
+        failed_checks = sorted(
+            check_id
+            for check_id, check in checks.items()
+            if check["all_repeats_passed"] is not True
+        )
+        passed = not failed_checks
+        group_results[group_id] = {
+            "applicable": True,
+            "passed": passed,
+            "not_applicable_reasons": [],
+            "repeat_count": len(repeat_results),
+            "checks": checks,
+            "failed_checks": failed_checks,
+            "repeat_results": repeat_results,
+        }
+        (passing_groups if passed else failed_groups).append(group_id)
+    return {
+        "schema_version": 1,
+        "policy_id": _PHYSICAL_ACCEPTANCE_POLICY_ID,
+        "evaluation_basis": "every_repeat",
+        "ranking_policy": "none; pass/fail only",
+        "applicability": applicability,
+        "steady_state_measurement_basis": (
+            _PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS
+        ),
+        "thresholds": dict(_PHYSICAL_ACCEPTANCE_THRESHOLDS),
+        "groups": group_results,
+        "applicable_groups": applicable_groups,
+        "not_applicable_groups": not_applicable_groups,
+        "passing_groups": passing_groups,
+        "failed_groups": failed_groups,
+        "all_applicable_groups_passed": (
+            None if not applicable_groups else not failed_groups
+        ),
+    }
+
+
+def _validated_physical_repeat_check_outcomes(
+    checks: Mapping[str, Any],
+    location: str,
+) -> dict[str, bool]:
+    """Recompute every physical leaf from its immutable policy semantics."""
+
+    for raw_check_id in checks:
+        check_id = _string(raw_check_id, f"{location} check id")
+        if check_id != raw_check_id:
+            raise ConfigurationError(
+                f"{location} check ids must not contain surrounding whitespace"
+            )
+    _exact_keys(checks, set(_PHYSICAL_ACCEPTANCE_CHECK_IDS), location)
+    outcomes: dict[str, bool] = {}
+
+    def exact_passed(
+        check_id: str,
+        check: Mapping[str, Any],
+        expected: bool,
+        check_location: str,
+    ) -> None:
+        actual = check.get("passed")
+        if not isinstance(actual, bool):
+            raise ConfigurationError(
+                f"{check_location}.passed must be a boolean"
+            )
+        if actual is not expected:
+            raise ConfigurationError(
+                f"{check_location}.passed contradicts its observed value and limit"
+            )
+        outcomes[check_id] = actual
+
+    for check_id, threshold_id in _PHYSICAL_MAXIMUM_CHECK_THRESHOLDS.items():
+        check_location = f"{location}.{check_id}"
+        check = _mapping(checks.get(check_id), check_location)
+        _exact_keys(check, {"observed", "maximum", "passed"}, check_location)
+        observed = _nonnegative(
+            check.get("observed"), f"{check_location}.observed"
+        )
+        maximum = _nonnegative(
+            check.get("maximum"), f"{check_location}.maximum"
+        )
+        _exact_number(
+            maximum,
+            _PHYSICAL_ACCEPTANCE_THRESHOLDS[threshold_id],
+            f"{check_location}.maximum",
+        )
+        exact_passed(
+            check_id,
+            check,
+            _physical_maximum_passed(observed, maximum),
+            check_location,
+        )
+
+    for check_id, threshold_id in _PHYSICAL_MINIMUM_CHECK_THRESHOLDS.items():
+        check_location = f"{location}.{check_id}"
+        check = _mapping(checks.get(check_id), check_location)
+        _exact_keys(check, {"observed", "minimum", "passed"}, check_location)
+        observed = _nonnegative(
+            check.get("observed"), f"{check_location}.observed"
+        )
+        minimum = _nonnegative(
+            check.get("minimum"), f"{check_location}.minimum"
+        )
+        _exact_number(
+            minimum,
+            _PHYSICAL_ACCEPTANCE_THRESHOLDS[threshold_id],
+            f"{check_location}.minimum",
+        )
+        exact_passed(
+            check_id,
+            check,
+            _physical_minimum_passed(observed, minimum),
+            check_location,
+        )
+
+    yaw_limit = _PHYSICAL_ACCEPTANCE_THRESHOLDS[
+        "rotation_mean_yaw_rate_absolute_error_fraction_max"
+    ]
+    for check_id, segment_id in _PHYSICAL_YAW_RATE_CHECK_SEGMENTS.items():
+        check_location = f"{location}.{check_id}"
+        check = _mapping(checks.get(check_id), check_location)
+        _exact_keys(
+            check,
+            {
+                "observed",
+                "maximum",
+                "passed",
+                "commanded_yaw_rate_radps",
+                "steady_state_mean_yaw_rate_radps",
+                "steady_state_measurement_basis",
+            },
+            check_location,
+        )
+        command = _finite(
+            check.get("commanded_yaw_rate_radps"),
+            f"{check_location}.commanded_yaw_rate_radps",
+        )
+        expected_command = _SEGMENT_BY_ID[segment_id][3]
+        _exact_number(
+            command,
+            expected_command,
+            f"{check_location}.commanded_yaw_rate_radps",
+        )
+        steady_mean = _finite(
+            check.get("steady_state_mean_yaw_rate_radps"),
+            f"{check_location}.steady_state_mean_yaw_rate_radps",
+        )
+        observed = _nonnegative(
+            check.get("observed"), f"{check_location}.observed"
+        )
+        recomputed_error = abs(steady_mean - command) / abs(command)
+        _exact_number(
+            observed,
+            recomputed_error,
+            f"{check_location}.observed",
+        )
+        maximum = _nonnegative(
+            check.get("maximum"), f"{check_location}.maximum"
+        )
+        _exact_number(maximum, yaw_limit, f"{check_location}.maximum")
+        if (
+            check.get("steady_state_measurement_basis")
+            != _PHYSICAL_STEADY_STATE_LEAF_BASIS
+        ):
+            raise ConfigurationError(
+                f"{check_location}.steady_state_measurement_basis must be "
+                f"{_PHYSICAL_STEADY_STATE_LEAF_BASIS!r}"
+            )
+        exact_passed(
+            check_id,
+            check,
+            _physical_maximum_passed(observed, maximum),
+            check_location,
+        )
+
+    stable_check = _mapping(
+        checks.get("stop_config.stable_duration_sec"),
+        f"{location}.stop_config.stable_duration_sec",
+    )
+    stable_duration = _nonnegative(
+        stable_check.get("observed"),
+        f"{location}.stop_config.stable_duration_sec.observed",
+    )
+    for check_id in _PHYSICAL_STOP_WINDOW_CHECK_SEGMENTS:
+        check_location = f"{location}.{check_id}"
+        check = _mapping(checks.get(check_id), check_location)
+        _exact_keys(
+            check,
+            {
+                "stopped",
+                "stationary_onset_sec",
+                "confirmed_sec",
+                "observed_stable_duration_sec",
+                "required_stable_duration_sec",
+                "passed",
+            },
+            check_location,
+        )
+        if check.get("stopped") is not True:
+            raise ConfigurationError(f"{check_location}.stopped must be true")
+        onset = _nonnegative(
+            check.get("stationary_onset_sec"),
+            f"{check_location}.stationary_onset_sec",
+        )
+        confirmed = _nonnegative(
+            check.get("confirmed_sec"),
+            f"{check_location}.confirmed_sec",
+        )
+        if confirmed < onset:
+            raise ConfigurationError(
+                f"{check_location}.confirmed_sec must not precede onset"
+            )
+        observed_duration = _nonnegative(
+            check.get("observed_stable_duration_sec"),
+            f"{check_location}.observed_stable_duration_sec",
+        )
+        _exact_number(
+            observed_duration,
+            confirmed - onset,
+            f"{check_location}.observed_stable_duration_sec",
+        )
+        required_duration = _nonnegative(
+            check.get("required_stable_duration_sec"),
+            f"{check_location}.required_stable_duration_sec",
+        )
+        _exact_number(
+            required_duration,
+            stable_duration,
+            f"{check_location}.required_stable_duration_sec",
+        )
+        exact_passed(
+            check_id,
+            check,
+            _physical_minimum_passed(
+                observed_duration,
+                required_duration,
+            ),
+            check_location,
+        )
+
+    wheel_location = f"{location}.wheel_direction_contract"
+    wheel_check = _mapping(
+        checks.get("wheel_direction_contract"), wheel_location
+    )
+    _exact_keys(
+        wheel_check,
+        {"validated_segment_count", "validated_by", "passed"},
+        wheel_location,
+    )
+    _exact_integer(
+        wheel_check.get("validated_segment_count"),
+        len(_SEGMENT_SPECS),
+        f"{wheel_location}.validated_segment_count",
+    )
+    if wheel_check.get("validated_by") != "strict_motion_report_validator":
+        raise ConfigurationError(
+            f"{wheel_location}.validated_by must be "
+            "'strict_motion_report_validator'"
+        )
+    if wheel_check.get("passed") is not True:
+        raise ConfigurationError(f"{wheel_location}.passed must be true")
+    outcomes["wheel_direction_contract"] = True
+    return outcomes
+
+
+def validate_physical_acceptance_accounting(
+    analysis: Mapping[str, Any],
+    expected_repeats: int,
+) -> None:
+    """Fail closed when a schema-v1 physical verdict loses repeat evidence."""
+
+    if (
+        isinstance(expected_repeats, bool)
+        or not isinstance(expected_repeats, int)
+        or expected_repeats <= 0
+    ):
+        raise ConfigurationError("expected_repeats must be a positive integer")
+    analysis_mapping = _mapping(analysis, "analysis")
+    _exact_integer(
+        analysis_mapping.get("schema_version"),
+        3,
+        "analysis.schema_version",
+    )
+    selection_policy = _mapping(
+        analysis_mapping.get("selection_policy"),
+        "analysis.selection_policy",
+    )
+    selection_runtime_provenance_schema = selection_policy.get(
+        "required_runtime_provenance_schema"
+    )
+    _exact_integer(
+        selection_runtime_provenance_schema,
+        5,
+        "analysis.selection_policy.required_runtime_provenance_schema",
+    )
+    raw_expected_profiles = _sequence(
+        selection_policy.get("expected_profiles"),
+        "analysis.selection_policy.expected_profiles",
+    )
+    selected_profiles = [
+        _string(
+            profile_id,
+            f"analysis.selection_policy.expected_profiles[{index}]",
+        )
+        for index, profile_id in enumerate(raw_expected_profiles)
+    ]
+    if len(selected_profiles) != len(set(selected_profiles)):
+        raise ConfigurationError(
+            "analysis.selection_policy.expected_profiles must be unique"
+        )
+    locked_inputs = _mapping(
+        analysis_mapping.get("locked_inputs"),
+        "analysis.locked_inputs",
+    )
+    locked_simulation = _mapping(
+        locked_inputs.get("simulation"),
+        "analysis.locked_inputs.simulation",
+    )
+    locked_odometry_mode = _string(
+        locked_simulation.get("odometry_mode"),
+        "analysis.locked_inputs.simulation.odometry_mode",
+    )
+    analysis_groups = _mapping(analysis_mapping.get("groups"), "analysis.groups")
+    acceptance = _mapping(
+        analysis_mapping.get("physical_acceptance"),
+        "analysis.physical_acceptance",
+    )
+    _exact_keys(
+        acceptance,
+        {
+            "schema_version",
+            "policy_id",
+            "evaluation_basis",
+            "ranking_policy",
+            "applicability",
+            "steady_state_measurement_basis",
+            "thresholds",
+            "groups",
+            "applicable_groups",
+            "not_applicable_groups",
+            "passing_groups",
+            "failed_groups",
+            "all_applicable_groups_passed",
+        },
+        "analysis.physical_acceptance",
+    )
+    _exact_integer(
+        acceptance.get("schema_version"),
+        1,
+        "analysis.physical_acceptance.schema_version",
+    )
+    for field, expected in (
+        ("policy_id", _PHYSICAL_ACCEPTANCE_POLICY_ID),
+        ("evaluation_basis", "every_repeat"),
+        ("ranking_policy", "none; pass/fail only"),
+        (
+            "steady_state_measurement_basis",
+            _PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS,
+        ),
+    ):
+        if acceptance.get(field) != expected:
+            raise ConfigurationError(
+                f"analysis.physical_acceptance.{field} must be {expected!r}"
+            )
+    applicability_contract = _mapping(
+        acceptance.get("applicability"),
+        "analysis.physical_acceptance.applicability",
+    )
+    _exact_keys(
+        applicability_contract,
+        set(_PHYSICAL_ACCEPTANCE_APPLICABILITY),
+        "analysis.physical_acceptance.applicability",
+    )
+    if _canonical(applicability_contract) != _canonical(
+        _PHYSICAL_ACCEPTANCE_APPLICABILITY
+    ):
+        raise ConfigurationError(
+            "analysis.physical_acceptance.applicability does not match the "
+            "plan 8.7 policy"
+        )
+    thresholds_contract = _mapping(
+        acceptance.get("thresholds"),
+        "analysis.physical_acceptance.thresholds",
+    )
+    _exact_keys(
+        thresholds_contract,
+        set(_PHYSICAL_ACCEPTANCE_THRESHOLDS),
+        "analysis.physical_acceptance.thresholds",
+    )
+    for threshold_id, expected in _PHYSICAL_ACCEPTANCE_THRESHOLDS.items():
+        _exact_number(
+            thresholds_contract.get(threshold_id),
+            expected,
+            f"analysis.physical_acceptance.thresholds.{threshold_id}",
+        )
+    acceptance_groups = _mapping(
+        acceptance.get("groups"),
+        "analysis.physical_acceptance.groups",
+    )
+
+    def group_names(groups: Mapping[Any, Any], location: str) -> set[str]:
+        names: set[str] = set()
+        for name in groups:
+            parsed = _string(name, f"{location} group id")
+            if parsed != name:
+                raise ConfigurationError(
+                    f"{location} group ids must not contain surrounding whitespace"
+                )
+            names.add(parsed)
+        return names
+
+    analysis_group_ids = group_names(analysis_groups, "analysis.groups")
+    acceptance_group_ids = group_names(
+        acceptance_groups,
+        "analysis.physical_acceptance.groups",
+    )
+    if analysis_group_ids != acceptance_group_ids:
+        raise ConfigurationError(
+            "physical acceptance groups must exactly match analysis groups"
+        )
+
+    selection = _mapping(
+        analysis_mapping.get("selection"),
+        "analysis.selection",
+    )
+    _exact_keys(
+        selection,
+        {"included", "excluded"},
+        "analysis.selection",
+    )
+    if selection.get("excluded") != []:
+        raise ConfigurationError("analysis.selection.excluded must be an empty list")
+    included = _sequence(
+        selection.get("included"),
+        "analysis.selection.included",
+    )
+    expected_included_count = len(analysis_group_ids) * expected_repeats
+    if len(included) != expected_included_count:
+        raise ConfigurationError(
+            "analysis.selection.included count must equal analysis groups times "
+            "expected_repeats"
+        )
+    selection_by_group: dict[
+        str,
+        set[tuple[str, str, str, int, str, str, str]],
+    ] = {}
+    selection_identities: set[
+        tuple[str, str, str, int, str, str, str]
+    ] = set()
+    selection_paths: set[str] = set()
+    selection_raw_hashes: set[str] = set()
+    selection_canonical_hashes: set[str] = set()
+    for index, raw_included in enumerate(included):
+        included_location = f"analysis.selection.included[{index}]"
+        item = _mapping(raw_included, included_location)
+        _exact_keys(
+            item,
+            {
+                "path",
+                "sha256",
+                "canonical_sha256",
+                "report_schema_version",
+                "environment_id",
+                "ground_topology_id",
+                "contact_profile_id",
+            },
+            included_location,
+        )
+        path = _string(item.get("path"), f"{included_location}.path")
+        raw_hash = _sha256(
+            item.get("sha256"), f"{included_location}.sha256"
+        )
+        canonical_hash = _sha256(
+            item.get("canonical_sha256"),
+            f"{included_location}.canonical_sha256",
+        )
+        report_schema_version = item.get("report_schema_version")
+        if (
+            isinstance(report_schema_version, bool)
+            or not isinstance(report_schema_version, int)
+            or report_schema_version not in {1, 2}
+        ):
+            raise ConfigurationError(
+                f"{included_location}.report_schema_version must be integer 1 or 2"
+            )
+        environment_id = _string(
+            item.get("environment_id"),
+            f"{included_location}.environment_id",
+        )
+        ground_topology_id = _string(
+            item.get("ground_topology_id"),
+            f"{included_location}.ground_topology_id",
+        )
+        contact_profile_id = _string(
+            item.get("contact_profile_id"),
+            f"{included_location}.contact_profile_id",
+        )
+        group_id = "::".join(
+            (environment_id, ground_topology_id, contact_profile_id)
+        )
+        if group_id not in analysis_group_ids:
+            raise ConfigurationError(
+                f"{included_location} resolves to unknown group {group_id!r}"
+            )
+        identity = (
+            path,
+            raw_hash,
+            canonical_hash,
+            report_schema_version,
+            environment_id,
+            ground_topology_id,
+            contact_profile_id,
+        )
+        selection_identities.add(identity)
+        selection_paths.add(path)
+        selection_raw_hashes.add(raw_hash)
+        selection_canonical_hashes.add(canonical_hash)
+        selection_by_group.setdefault(group_id, set()).add(identity)
+    if not all(
+        len(values) == expected_included_count
+        for values in (
+            selection_identities,
+            selection_paths,
+            selection_raw_hashes,
+            selection_canonical_hashes,
+        )
+    ):
+        raise ConfigurationError(
+            "analysis.selection.included must have unique identities, paths, "
+            "raw SHA256 values, and canonical SHA256 values"
+        )
+    if set(selection_by_group) != analysis_group_ids or any(
+        len(identities) != expected_repeats
+        for identities in selection_by_group.values()
+    ):
+        raise ConfigurationError(
+            "analysis.selection.included must exactly cover every analysis group"
+        )
+    observed_selection_profiles = {
+        identity[6] for identity in selection_identities
+    }
+    if selected_profiles and set(selected_profiles) != observed_selection_profiles:
+        raise ConfigurationError(
+            "analysis.selection_policy.expected_profiles must exactly match "
+            "selected contact profiles"
+        )
+
+    matrix = _mapping(analysis_mapping.get("matrix"), "analysis.matrix")
+    _exact_keys(
+        matrix,
+        {"complete", "required_groups", "observed_groups", "missing_groups"},
+        "analysis.matrix",
+    )
+    if matrix.get("complete") is not True:
+        raise ConfigurationError("analysis.matrix.complete must be true")
+    if matrix.get("missing_groups") != []:
+        raise ConfigurationError("analysis.matrix.missing_groups must be empty")
+
+    def matrix_group_list(field: str) -> list[str]:
+        location = f"analysis.matrix.{field}"
+        raw = _sequence(matrix.get(field), location)
+        parsed = [
+            _string(group_id, f"{location}[{index}]")
+            for index, group_id in enumerate(raw)
+        ]
+        if len(parsed) != len(set(parsed)) or parsed != sorted(parsed):
+            raise ConfigurationError(
+                f"{location} must contain unique, sorted group ids"
+            )
+        return parsed
+
+    observed_matrix_groups = matrix_group_list("observed_groups")
+    if observed_matrix_groups != sorted(analysis_group_ids):
+        raise ConfigurationError(
+            "analysis.matrix.observed_groups must exactly match analysis groups"
+        )
+    required_matrix_groups = matrix_group_list("required_groups")
+    expected_required_matrix_groups = (
+        sorted(analysis_group_ids) if selected_profiles else []
+    )
+    if required_matrix_groups != expected_required_matrix_groups:
+        raise ConfigurationError(
+            "analysis.matrix.required_groups contradicts selection_policy and "
+            "observed groups"
+        )
+
+    def unique_name_list(field: str) -> tuple[list[str], set[str]]:
+        location = f"analysis.physical_acceptance.{field}"
+        raw = _sequence(acceptance.get(field), location)
+        parsed = [
+            _string(value, f"{location}[{index}]")
+            for index, value in enumerate(raw)
+        ]
+        if len(parsed) != len(set(parsed)):
+            raise ConfigurationError(f"{location} must contain unique group ids")
+        unknown = set(parsed) - acceptance_group_ids
+        if unknown:
+            raise ConfigurationError(
+                f"{location} contains unknown groups: {sorted(unknown)}"
+            )
+        return parsed, set(parsed)
+
+    applicable_list, applicable = unique_name_list("applicable_groups")
+    not_applicable_list, not_applicable = unique_name_list(
+        "not_applicable_groups"
+    )
+    passing_list, passing = unique_name_list("passing_groups")
+    failed_list, failed = unique_name_list("failed_groups")
+    if (
+        applicable & not_applicable
+        or applicable | not_applicable != acceptance_group_ids
+    ):
+        raise ConfigurationError(
+            "applicable_groups and not_applicable_groups must uniquely and "
+            "exactly partition physical acceptance groups"
+        )
+    if passing & failed or passing | failed != applicable:
+        raise ConfigurationError(
+            "passing_groups and failed_groups must uniquely and exactly "
+            "partition applicable_groups"
+        )
+
+    def failed_check_list(value: Any, location: str) -> list[str]:
+        raw = _sequence(value, location)
+        parsed = [
+            _string(check_id, f"{location}[{index}]")
+            for index, check_id in enumerate(raw)
+        ]
+        if len(parsed) != len(set(parsed)):
+            raise ConfigurationError(f"{location} must contain unique check ids")
+        if parsed != sorted(parsed):
+            raise ConfigurationError(f"{location} must be sorted")
+        return parsed
+
+    calculated_applicable: list[str] = []
+    calculated_not_applicable: list[str] = []
+    calculated_passing: list[str] = []
+    calculated_failed: list[str] = []
+    for group_id in sorted(analysis_group_ids):
+        analysis_group = _mapping(
+            analysis_groups.get(group_id),
+            f"analysis.groups.{group_id}",
+        )
+        acceptance_group = _mapping(
+            acceptance_groups.get(group_id),
+            f"analysis.physical_acceptance.groups.{group_id}",
+        )
+        acceptance_location = (
+            f"analysis.physical_acceptance.groups.{group_id}"
+        )
+        _exact_keys(
+            acceptance_group,
+            {
+                "applicable",
+                "passed",
+                "not_applicable_reasons",
+                "repeat_count",
+                "checks",
+                "failed_checks",
+                "repeat_results",
+            },
+            acceptance_location,
+        )
+        _exact_integer(
+            analysis_group.get("repeat_count"),
+            expected_repeats,
+            f"analysis.groups.{group_id}.repeat_count",
+        )
+        _exact_integer(
+            acceptance_group.get("repeat_count"),
+            expected_repeats,
+            f"{acceptance_location}.repeat_count",
+        )
+        input_reports = _sequence(
+            analysis_group.get("input_reports"),
+            f"analysis.groups.{group_id}.input_reports",
+        )
+        if len(input_reports) != expected_repeats:
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.input_reports must contain "
+                f"exactly {expected_repeats} reports"
+            )
+        expected_report_identities: set[tuple[str, str, str]] = set()
+        expected_paths: set[str] = set()
+        expected_raw_hashes: set[str] = set()
+        expected_canonical_hashes: set[str] = set()
+        group_report_identities: set[tuple[str, str, str, int]] = set()
+        report_schema_versions: list[int] = []
+        for index, raw_report in enumerate(input_reports):
+            report_location = (
+                f"analysis.groups.{group_id}.input_reports[{index}]"
+            )
+            report = _mapping(raw_report, report_location)
+            _exact_keys(
+                report,
+                {
+                    "path",
+                    "sha256",
+                    "canonical_sha256",
+                    "report_schema_version",
+                },
+                report_location,
+            )
+            path = _string(report.get("path"), f"{report_location}.path")
+            raw_hash = _sha256(
+                report.get("sha256"), f"{report_location}.sha256"
+            )
+            canonical_hash = _sha256(
+                report.get("canonical_sha256"),
+                f"{report_location}.canonical_sha256",
+            )
+            report_schema_version = report.get("report_schema_version")
+            if (
+                isinstance(report_schema_version, bool)
+                or not isinstance(report_schema_version, int)
+                or report_schema_version not in {1, 2}
+            ):
+                raise ConfigurationError(
+                    f"{report_location}.report_schema_version must be integer "
+                    "1 or 2"
+                )
+            report_schema_versions.append(report_schema_version)
+            group_report_identities.add(
+                (path, raw_hash, canonical_hash, report_schema_version)
+            )
+            expected_report_identities.add((path, raw_hash, canonical_hash))
+            expected_paths.add(path)
+            expected_raw_hashes.add(raw_hash)
+            expected_canonical_hashes.add(canonical_hash)
+        if not all(
+            len(values) == expected_repeats
+            for values in (
+                expected_report_identities,
+                expected_paths,
+                expected_raw_hashes,
+                expected_canonical_hashes,
+            )
+        ):
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.input_reports must have unique "
+                "paths, raw SHA256 values, and canonical SHA256 values"
+            )
+        if len(group_report_identities) != expected_repeats:
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.input_reports must have unique "
+                "report schema-bound identities"
+            )
+
+        runtime_provenance_schema = analysis_group.get(
+            "runtime_provenance_schema"
+        )
+        if (
+            isinstance(runtime_provenance_schema, bool)
+            or not isinstance(runtime_provenance_schema, int)
+            or runtime_provenance_schema not in {3, 4, 5}
+        ):
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.runtime_provenance_schema must "
+                "be integer 3, 4, or 5"
+            )
+        if runtime_provenance_schema != selection_runtime_provenance_schema:
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.runtime_provenance_schema must "
+                "match analysis.selection_policy"
+            )
+        environment_id = _string(
+            analysis_group.get("environment_id"),
+            f"analysis.groups.{group_id}.environment_id",
+        )
+        ground_topology_id = _string(
+            analysis_group.get("ground_topology_id"),
+            f"analysis.groups.{group_id}.ground_topology_id",
+        )
+        odometry_mode = _string(
+            analysis_group.get("odometry_mode"),
+            f"analysis.groups.{group_id}.odometry_mode",
+        )
+        if odometry_mode != locked_odometry_mode:
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.odometry_mode must match "
+                "analysis.locked_inputs.simulation.odometry_mode"
+            )
+        contact_profile_id = _string(
+            analysis_group.get("contact_profile_id"),
+            f"analysis.groups.{group_id}.contact_profile_id",
+        )
+        expected_group_id = "::".join(
+            (environment_id, ground_topology_id, contact_profile_id)
+        )
+        if group_id != expected_group_id:
+            raise ConfigurationError(
+                f"analysis group id {group_id!r} contradicts its environment, "
+                "ground topology, and contact profile identity"
+            )
+        group_selection_identities = {
+            (
+                path,
+                raw_hash,
+                canonical_hash,
+                report_schema_version,
+                environment_id,
+                ground_topology_id,
+                contact_profile_id,
+            )
+            for (
+                path,
+                raw_hash,
+                canonical_hash,
+                report_schema_version,
+            ) in group_report_identities
+        }
+        if group_selection_identities != selection_by_group[group_id]:
+            raise ConfigurationError(
+                f"analysis.groups.{group_id}.input_reports and identity fields "
+                "must exactly match analysis.selection.included"
+            )
+        expected_reasons: list[str] = []
+        if any(version != 2 for version in report_schema_versions):
+            expected_reasons.append("motion_report_schema_not_2")
+        if runtime_provenance_schema != 5:
+            expected_reasons.append("runtime_provenance_schema_not_5")
+        if environment_id != "SimplePlane":
+            expected_reasons.append("environment_not_SimplePlane")
+        if ground_topology_id != "simple_plane_only1_v1":
+            expected_reasons.append(
+                "ground_topology_not_simple_plane_only1_v1"
+            )
+        if odometry_mode != "ideal":
+            expected_reasons.append("odometry_mode_not_ideal")
+        if len(expected_report_identities) < 3:
+            expected_reasons.append("fewer_than_3_unique_repeats")
+        expected_applicable = not expected_reasons
+
+        applicable_value = acceptance_group.get("applicable")
+        if not isinstance(applicable_value, bool):
+            raise ConfigurationError(
+                f"{acceptance_location}.applicable must be a boolean"
+            )
+        if applicable_value is not expected_applicable:
+            raise ConfigurationError(
+                f"{acceptance_location}.applicable contradicts analysis group "
+                "identity"
+            )
+        if applicable_value is not (group_id in applicable):
+            raise ConfigurationError(
+                f"{acceptance_location}.applicable disagrees with the top-level "
+                "applicability partition"
+            )
+        reasons = _sequence(
+            acceptance_group.get("not_applicable_reasons"),
+            f"{acceptance_location}.not_applicable_reasons",
+        )
+        parsed_reasons = [
+            _string(reason, f"{acceptance_location}.not_applicable_reasons")
+            for reason in reasons
+        ]
+        if len(parsed_reasons) != len(set(parsed_reasons)):
+            raise ConfigurationError(
+                f"{acceptance_location}.not_applicable_reasons must be unique"
+            )
+        if parsed_reasons != expected_reasons:
+            raise ConfigurationError(
+                f"{acceptance_location}.not_applicable_reasons contradicts "
+                "analysis group identity"
+            )
+        group_checks = _mapping(
+            acceptance_group.get("checks"),
+            f"{acceptance_location}.checks",
+        )
+        group_failed_checks = failed_check_list(
+            acceptance_group.get("failed_checks"),
+            f"{acceptance_location}.failed_checks",
+        )
+        repeat_results = _sequence(
+            acceptance_group.get("repeat_results"),
+            f"{acceptance_location}.repeat_results",
+        )
+
+        if not applicable_value:
+            calculated_not_applicable.append(group_id)
+            if acceptance_group.get("passed") is not None:
+                raise ConfigurationError(
+                    f"{acceptance_location}.passed must be null when not applicable"
+                )
+            if not parsed_reasons:
+                raise ConfigurationError(
+                    f"{acceptance_location}.not_applicable_reasons must be non-empty"
+                )
+            if group_checks or group_failed_checks or repeat_results:
+                raise ConfigurationError(
+                    f"{acceptance_location} not-applicable evidence must have "
+                    "empty checks, failed_checks, and repeat_results"
+                )
+            continue
+
+        calculated_applicable.append(group_id)
+        if parsed_reasons:
+            raise ConfigurationError(
+                f"{acceptance_location}.not_applicable_reasons must be empty "
+                "when applicable"
+            )
+        group_passed = acceptance_group.get("passed")
+        if not isinstance(group_passed, bool):
+            raise ConfigurationError(
+                f"{acceptance_location}.passed must be a boolean when applicable"
+            )
+        if len(repeat_results) != expected_repeats:
+            raise ConfigurationError(
+                f"{acceptance_location}.repeat_results must contain exactly "
+                f"{expected_repeats} results"
+            )
+
+        observed_report_identities: set[tuple[str, str, str]] = set()
+        observed_paths: set[str] = set()
+        observed_raw_hashes: set[str] = set()
+        observed_canonical_hashes: set[str] = set()
+        repeated_checks: list[dict[str, bool]] = []
+        expected_check_ids = set(_PHYSICAL_ACCEPTANCE_CHECK_IDS)
+        for position, raw_repeat in enumerate(repeat_results, start=1):
+            repeat_location = f"{acceptance_location}.repeat_results[{position - 1}]"
+            repeat = _mapping(raw_repeat, repeat_location)
+            _exact_keys(
+                repeat,
+                {
+                    "repeat_index",
+                    "report_path",
+                    "report_sha256",
+                    "canonical_sha256",
+                    "passed",
+                    "checks",
+                    "failed_checks",
+                },
+                repeat_location,
+            )
+            _exact_integer(
+                repeat.get("repeat_index"),
+                position,
+                f"{repeat_location}.repeat_index",
+            )
+            path = _string(
+                repeat.get("report_path"), f"{repeat_location}.report_path"
+            )
+            raw_hash = _sha256(
+                repeat.get("report_sha256"),
+                f"{repeat_location}.report_sha256",
+            )
+            canonical_hash = _sha256(
+                repeat.get("canonical_sha256"),
+                f"{repeat_location}.canonical_sha256",
+            )
+            observed_report_identities.add((path, raw_hash, canonical_hash))
+            observed_paths.add(path)
+            observed_raw_hashes.add(raw_hash)
+            observed_canonical_hashes.add(canonical_hash)
+            repeat_checks = _mapping(
+                repeat.get("checks"), f"{repeat_location}.checks"
+            )
+            check_outcomes = _validated_physical_repeat_check_outcomes(
+                repeat_checks,
+                f"{repeat_location}.checks",
+            )
+            expected_repeat_failures = sorted(
+                check_id
+                for check_id, passed_value in check_outcomes.items()
+                if not passed_value
+            )
+            repeat_failures = failed_check_list(
+                repeat.get("failed_checks"),
+                f"{repeat_location}.failed_checks",
+            )
+            if repeat_failures != expected_repeat_failures:
+                raise ConfigurationError(
+                    f"{repeat_location}.failed_checks disagrees with repeat checks"
+                )
+            repeat_passed = repeat.get("passed")
+            if not isinstance(repeat_passed, bool):
+                raise ConfigurationError(
+                    f"{repeat_location}.passed must be a boolean"
+                )
+            if repeat_passed is not (not expected_repeat_failures):
+                raise ConfigurationError(
+                    f"{repeat_location}.passed disagrees with repeat checks"
+                )
+            repeated_checks.append(check_outcomes)
+
+        if not all(
+            len(values) == expected_repeats
+            for values in (
+                observed_report_identities,
+                observed_paths,
+                observed_raw_hashes,
+                observed_canonical_hashes,
+            )
+        ):
+            raise ConfigurationError(
+                f"{acceptance_location}.repeat_results must have unique paths, "
+                "raw SHA256 values, and canonical SHA256 values"
+            )
+        if observed_report_identities != expected_report_identities:
+            raise ConfigurationError(
+                f"{acceptance_location}.repeat_results must exactly cover "
+                f"analysis.groups.{group_id}.input_reports"
+            )
+
+        if set(group_checks) != expected_check_ids:
+            raise ConfigurationError(
+                f"{acceptance_location}.checks must exactly cover repeat check ids"
+            )
+        recomputed_group_failures: list[str] = []
+        for check_id in sorted(expected_check_ids):
+            check_location = f"{acceptance_location}.checks.{check_id}"
+            summary = _mapping(group_checks.get(check_id), check_location)
+            _exact_keys(
+                summary,
+                {"passed_repeats", "failed_repeats", "all_repeats_passed"},
+                check_location,
+            )
+            passed_repeats = sum(
+                outcomes[check_id] for outcomes in repeated_checks
+            )
+            failed_repeats = expected_repeats - passed_repeats
+            _exact_integer(
+                summary.get("passed_repeats"),
+                passed_repeats,
+                f"{check_location}.passed_repeats",
+            )
+            _exact_integer(
+                summary.get("failed_repeats"),
+                failed_repeats,
+                f"{check_location}.failed_repeats",
+            )
+            all_repeats_passed = summary.get("all_repeats_passed")
+            if not isinstance(all_repeats_passed, bool):
+                raise ConfigurationError(
+                    f"{check_location}.all_repeats_passed must be a boolean"
+                )
+            expected_all_passed = failed_repeats == 0
+            if all_repeats_passed is not expected_all_passed:
+                raise ConfigurationError(
+                    f"{check_location}.all_repeats_passed disagrees with repeat "
+                    "checks"
+                )
+            if not expected_all_passed:
+                recomputed_group_failures.append(check_id)
+        if group_failed_checks != recomputed_group_failures:
+            raise ConfigurationError(
+                f"{acceptance_location}.failed_checks disagrees with group checks"
+            )
+        expected_group_passed = not recomputed_group_failures
+        if group_passed is not expected_group_passed:
+            raise ConfigurationError(
+                f"{acceptance_location}.passed disagrees with group checks"
+            )
+        (
+            calculated_passing
+            if expected_group_passed
+            else calculated_failed
+        ).append(group_id)
+        if (group_id in passing) is not expected_group_passed:
+            raise ConfigurationError(
+                f"{acceptance_location}.passed disagrees with passing_groups and "
+                "failed_groups"
+            )
+
+    for field, observed, expected in (
+        ("applicable_groups", applicable_list, calculated_applicable),
+        (
+            "not_applicable_groups",
+            not_applicable_list,
+            calculated_not_applicable,
+        ),
+        ("passing_groups", passing_list, calculated_passing),
+        ("failed_groups", failed_list, calculated_failed),
+    ):
+        if observed != expected:
+            raise ConfigurationError(
+                f"analysis.physical_acceptance.{field} contradicts recomputed "
+                "group semantics"
+            )
+    top_verdict = acceptance.get("all_applicable_groups_passed")
+    expected_top_verdict: bool | None = (
+        None if not calculated_applicable else not calculated_failed
+    )
+    if expected_top_verdict is None:
+        if top_verdict is not None:
+            raise ConfigurationError(
+                "all_applicable_groups_passed must be null when no group applies"
+            )
+    elif not isinstance(top_verdict, bool) or top_verdict is not expected_top_verdict:
+        raise ConfigurationError(
+            "all_applicable_groups_passed disagrees with applicable group verdicts"
+        )
 
 
 def analyse_contact_ab(
@@ -1615,7 +3169,7 @@ def analyse_contact_ab(
         for group, records in sorted(grouped.items())
     }
     report = {
-        "schema_version": 2 if runtime_provenance_schema == 5 else 1,
+        "schema_version": 3 if runtime_provenance_schema == 5 else 1,
         "report_type": "contact_ab_analysis",
         "analysis_valid": not exclusions and matrix_complete,
         "method": {
@@ -1676,6 +3230,7 @@ def analyse_contact_ab(
                     "path": record.path,
                     "sha256": record.sha256,
                     "canonical_sha256": record.canonical_sha256,
+                    "report_schema_version": record.report_schema_version,
                     "environment_id": record.environment_id,
                     **(
                         {"ground_topology_id": record.ground_topology_id}
@@ -1706,6 +3261,11 @@ def analyse_contact_ab(
                 "::".join(group) for group in missing_groups
             ],
         },
+        **(
+            {"physical_acceptance": _physical_acceptance(grouped)}
+            if runtime_provenance_schema == 5
+            else {}
+        ),
         "groups": group_summaries,
     }
     _canonical(report)

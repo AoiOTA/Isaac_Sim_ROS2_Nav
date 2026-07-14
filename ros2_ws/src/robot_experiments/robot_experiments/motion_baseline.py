@@ -756,6 +756,14 @@ def analyse_motion_segment(
         raise ValueError("no odometry samples overlap the command interval")
     if not command_joints:
         raise ValueError("no joint-state samples overlap the command interval")
+    steady_state_start_ns = start_ns + (end_ns - start_ns) // 2
+    steady_state_odom = [
+        sample
+        for sample in command_odom
+        if steady_state_start_ns <= sample.stamp_ns <= end_ns
+    ]
+    if not steady_state_odom:
+        raise ValueError("no odometry samples overlap the steady-state window")
     for sample in command_joints:
         missing = sorted(set(wheels.ordered_names) - set(sample.velocity_map()))
         if missing:
@@ -852,6 +860,20 @@ def analyse_motion_segment(
             "angular_z_radps": _distribution(
                 sample.angular_z_radps for sample in command_odom
             ),
+            "steady_state_window": {
+                "schema_version": 1,
+                "definition": "final_half_of_command_interval",
+                "start_stamp_ns": steady_state_start_ns,
+                "end_stamp_ns": end_ns,
+                "observed_duration_sec": (
+                    end_ns - steady_state_start_ns
+                )
+                / NANOSECONDS_PER_SECOND,
+                "sample_count": len(steady_state_odom),
+                "angular_z_radps": _distribution(
+                    sample.angular_z_radps for sample in steady_state_odom
+                ),
+            },
         },
         "stopping": stop.as_dict(),
         "wheels": {
