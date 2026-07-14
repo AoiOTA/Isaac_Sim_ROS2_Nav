@@ -11,29 +11,36 @@ original_args=("$@")
 usage() {
   cat <<'EOF'
 usage: run_contact_ab_matrix.sh [--environment Warehouse|SimplePlane|all]
+                                [--ground-topology baseline|all|ID]
                                 [--repeats N] [--robot-config FILE]
                                 --output-dir DIR
 
 Run the committed skid-steer motion A/B protocol in strict serial order.
-The default environment is all (SimplePlane, then Warehouse), and the
-default repeat count is 3: 2 environments x 6 contact profiles x 3 = 36
-independent Isaac processes. DIR must be empty and is never overwritten.
+The default environment is all (SimplePlane, then Warehouse), the default
+ground topology is baseline (one committed default per environment), and the
+default repeat count is 3: 2 environment/topology pairs x 6 contact profiles
+x 3 = 36 independent Isaac processes.  --ground-topology all selects every
+legal pair (3 pairs for --environment all, producing 54 default runs).  A
+specific topology ID requires its one matching --environment.  DIR must be
+empty and is never overwritten.
 By default the committed robot selected by the project configuration is used.
 FILE selects a committed robot contract by canonical absolute path.
 EOF
 }
 
 environment_selection="all"
+ground_topology_selection="baseline"
 repeats=3
 output_dir=""
 robot_config_argument=""
 robot_config_option_seen=false
 while (($#)); do
   case "$1" in
-    --environment|--repeats|--output-dir|--robot-config)
+    --environment|--ground-topology|--repeats|--output-dir|--robot-config)
       (($# >= 2)) || die "$1 requires a value"
       case "$1" in
         --environment) environment_selection="$2" ;;
+        --ground-topology) ground_topology_selection="$2" ;;
         --repeats) repeats="$2" ;;
         --output-dir) output_dir="$2" ;;
         --robot-config)
@@ -60,6 +67,73 @@ case "${environment_selection}" in
   all) environments=(SimplePlane Warehouse) ;;
   *) die "--environment must be Warehouse, SimplePlane, or all" ;;
 esac
+
+declare -ag matrix_environment_ids=()
+declare -ag matrix_ground_topology_ids=()
+
+select_ground_topology_pairs() {
+  local environment_id
+  matrix_environment_ids=()
+  matrix_ground_topology_ids=()
+  case "${ground_topology_selection}" in
+    baseline)
+      for environment_id in "${environments[@]}"; do
+        matrix_environment_ids+=("${environment_id}")
+        case "${environment_id}" in
+          SimplePlane)
+            matrix_ground_topology_ids+=(simple_plane_only1_v1)
+            ;;
+          Warehouse)
+            matrix_ground_topology_ids+=(warehouse_combined32_v1)
+            ;;
+          *) return 1 ;;
+        esac
+      done
+      ;;
+    all)
+      for environment_id in "${environments[@]}"; do
+        case "${environment_id}" in
+          SimplePlane)
+            matrix_environment_ids+=(SimplePlane)
+            matrix_ground_topology_ids+=(simple_plane_only1_v1)
+            ;;
+          Warehouse)
+            matrix_environment_ids+=(Warehouse Warehouse)
+            matrix_ground_topology_ids+=(
+              warehouse_combined32_v1
+              warehouse_plane_only1_v1
+            )
+            ;;
+          *) return 1 ;;
+        esac
+      done
+      ;;
+    simple_plane_only1_v1)
+      [[ "${environment_selection}" == SimplePlane ]] || return 2
+      matrix_environment_ids+=(SimplePlane)
+      matrix_ground_topology_ids+=(simple_plane_only1_v1)
+      ;;
+    warehouse_combined32_v1|warehouse_plane_only1_v1)
+      [[ "${environment_selection}" == Warehouse ]] || return 2
+      matrix_environment_ids+=(Warehouse)
+      matrix_ground_topology_ids+=("${ground_topology_selection}")
+      ;;
+    *) return 3 ;;
+  esac
+}
+
+selection_status=0
+select_ground_topology_pairs || selection_status=$?
+if ((selection_status != 0)); then
+  if ((selection_status == 2)); then
+    die "--ground-topology ID must match the selected --environment"
+  fi
+  die "--ground-topology must be baseline, all, simple_plane_only1_v1, warehouse_combined32_v1, or warehouse_plane_only1_v1"
+fi
+(( ${#matrix_environment_ids[@]} == ${#matrix_ground_topology_ids[@]} )) \
+  || die "internal environment/ground-topology pair selection mismatch"
+(( ${#matrix_environment_ids[@]} > 0 )) \
+  || die "ground-topology selection produced no legal pairs"
 [[ "${repeats}" =~ ^[1-9][0-9]*$ ]] \
   || die "--repeats must be a positive integer"
 if ((${#repeats} > 3)); then
@@ -105,6 +179,7 @@ motion_config="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/motion_skid_
 warehouse_config="${PROJECT_ROOT}/isaac_sim/configs/project.yaml"
 simple_plane_config="${PROJECT_ROOT}/isaac_sim/configs/simple_plane.project.yaml"
 physics_dir="${PROJECT_ROOT}/isaac_sim/configs/physics"
+ground_topology_dir="${PROJECT_ROOT}/isaac_sim/configs/ground_topologies"
 manifest=""
 batch_git_commit=""
 batch_git_branch=""
@@ -113,6 +188,8 @@ batch_warehouse_project_sha256=""
 batch_simple_plane_project_sha256=""
 batch_robot_config_sha256=""
 batch_profile_hashes_json=""
+batch_ground_topology_hashes_json=""
+batch_environment_topology_pairs_json=""
 
 robot_config=""
 robot_config_selection="project_default"
@@ -333,7 +410,7 @@ load_runtime_contracts() {
 }
 
 lock_batch_identity() {
-  local profile_id profile_path
+  local profile_id profile_path topology_id topology_path
   batch_git_commit="$(git_commit)" \
     || die "contact A/B requires an attached Git HEAD"
   batch_git_branch="$(git_branch)" \
@@ -346,6 +423,11 @@ lock_batch_identity() {
   )
   for profile_id in "${profile_ids[@]}"; do
     locked_input_paths+=("${physics_dir}/${profile_id}.yaml")
+  done
+  for topology_id in "${matrix_ground_topology_ids[@]}"; do
+    topology_path="$(ground_topology_path "${topology_id}")" \
+      || die "cannot resolve selected ground topology: ${topology_id}"
+    locked_input_paths+=("${topology_path}")
   done
   for profile_path in "${locked_input_paths[@]}"; do
     require_tracked_input "${profile_path}"
@@ -376,6 +458,43 @@ profiles = {
 print(json.dumps(profiles, sort_keys=True, separators=(",", ":")))
 PY
   )" || die "cannot serialize locked contact profile hashes"
+  batch_ground_topology_hashes_json="$(
+    python3 - "${ground_topology_dir}" \
+      "${matrix_ground_topology_ids[@]}" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+directory = Path(sys.argv[1])
+profiles = {
+    profile_id: hashlib.sha256(
+        (directory / f"{profile_id}.yaml").read_bytes()
+    ).hexdigest()
+    for profile_id in sys.argv[2:]
+}
+print(json.dumps(profiles, sort_keys=True, separators=(",", ":")))
+PY
+  )" || die "cannot serialize locked ground-topology profile hashes"
+  batch_environment_topology_pairs_json="$(
+    python3 - "${#matrix_environment_ids[@]}" \
+      "${matrix_environment_ids[@]}" \
+      "${matrix_ground_topology_ids[@]}" <<'PY'
+import json
+import sys
+
+count = int(sys.argv[1])
+environments = sys.argv[2:2 + count]
+topologies = sys.argv[2 + count:]
+if len(environments) != count or len(topologies) != count:
+    raise SystemExit("environment/topology pair argument count mismatch")
+pairs = [
+    {"environment_id": environment, "ground_topology_id": topology}
+    for environment, topology in zip(environments, topologies, strict=True)
+]
+print(json.dumps(pairs, sort_keys=True, separators=(",", ":")))
+PY
+  )" || die "cannot serialize selected environment/topology pairs"
 }
 
 verify_batch_identity() {
@@ -426,6 +545,15 @@ environment_slug() {
   esac
 }
 
+ground_topology_path() {
+  case "$1" in
+    simple_plane_only1_v1|warehouse_combined32_v1|warehouse_plane_only1_v1)
+      printf '%s/%s.yaml\n' "${ground_topology_dir}" "$1"
+      ;;
+    *) return 1 ;;
+  esac
+}
+
 tsv_safe() {
   local value="$1"
   value="${value//$'\t'/ }"
@@ -456,6 +584,9 @@ current_project_config=""
 current_project_sha256=""
 current_profile_path=""
 current_profile_sha256=""
+current_ground_topology_id=""
+current_ground_topology_path=""
+current_ground_topology_sha256=""
 current_project_stage=""
 current_project_stage_sha256=""
 current_source_asset=""
@@ -524,7 +655,7 @@ append_current_manifest() {
     )" || return 1
   fi
   if ! printf -v row \
-    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(tsv_safe "${current_run_id}")" \
     "$(tsv_safe "${current_environment}")" \
     "$(tsv_safe "${current_profile_id}")" \
@@ -559,6 +690,9 @@ append_current_manifest() {
     "${current_project_sha256}" \
     "$(tsv_safe "${current_profile_path}")" \
     "${current_profile_sha256}" \
+    "$(tsv_safe "${current_ground_topology_id}")" \
+    "$(tsv_safe "${current_ground_topology_path}")" \
+    "${current_ground_topology_sha256}" \
     "$(tsv_safe "${batch_profile_hashes_json}")" \
     "$(tsv_safe "${current_project_stage}")" \
     "${current_project_stage_sha256}" \
@@ -836,6 +970,158 @@ if any(contact.get(key) != value for key, value in expected.items()):
 PY
 }
 
+ground_topology_readiness_matches() {
+  local payload="$1"
+  local payload_sha256="$2"
+  local contact_payload="$3"
+  local expected_profile_id="$4"
+  local expected_profile_path="$5"
+  local expected_profile_sha256="$6"
+  local expected_environment="$7"
+  local expected_source_asset="$8"
+  local expected_source_asset_sha256="$9"
+  python3 - \
+    "${PROJECT_ROOT}" "${payload}" "${payload_sha256}" \
+    "${contact_payload}" "${expected_profile_id}" \
+    "${expected_profile_path}" "${expected_profile_sha256}" \
+    "${expected_environment}" "${expected_source_asset}" \
+    "${expected_source_asset_sha256}" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+
+(
+    repository_root,
+    payload,
+    payload_sha256,
+    contact_payload,
+    profile_id,
+    profile_path,
+    profile_sha256,
+    environment_id,
+    source_asset_path,
+    source_asset_sha256,
+) = sys.argv[1:]
+sys.path.insert(0, repository_root)
+from isaac_sim.src.stage.ground_topology import load_ground_topology_profile
+
+try:
+    topology = json.loads(payload)
+    contact = json.loads(contact_payload)
+    canonical = json.dumps(
+        topology, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+except (TypeError, ValueError):
+    raise SystemExit(1)
+if canonical != payload:
+    raise SystemExit(1)
+if hashlib.sha256(payload.encode("utf-8")).hexdigest() != payload_sha256:
+    raise SystemExit(1)
+expected_keys = {
+    "profile_path",
+    "profile_sha256",
+    "profile_id",
+    "environment_id",
+    "operation",
+    "source_asset_path",
+    "source_asset_sha256",
+    "overlay_identifier",
+    "overlay_sha256",
+    "source_colliders",
+    "source_collider_count",
+    "source_collider_paths_sha256",
+    "target_colliders",
+    "target_collider_count",
+    "target_collider_paths_sha256",
+    "disabled_colliders",
+    "disabled_collider_count",
+    "disabled_collider_paths_sha256",
+    "stage_usd_readback_verified",
+}
+if set(topology) != expected_keys:
+    raise SystemExit(1)
+profile = load_ground_topology_profile(profile_path)
+expected_identity = {
+    "profile_path": str(Path(profile_path).resolve()),
+    "profile_sha256": profile_sha256,
+    "profile_id": profile_id,
+    "environment_id": environment_id,
+    "operation": profile.operation,
+    "source_asset_path": str(Path(source_asset_path).resolve()),
+    "source_asset_sha256": source_asset_sha256,
+    "stage_usd_readback_verified": True,
+}
+if any(topology.get(key) != value for key, value in expected_identity.items()):
+    raise SystemExit(1)
+if (
+    profile.identifier != profile_id
+    or profile.environment_id != environment_id
+    or profile.sha256 != profile_sha256
+    or profile.source_asset_sha256 != source_asset_sha256
+):
+    raise SystemExit(1)
+sha_pattern = re.compile(r"^[0-9a-f]{64}$")
+prim_path_pattern = re.compile(
+    r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+if (
+    not isinstance(topology["overlay_identifier"], str)
+    or not topology["overlay_identifier"].startswith("anon:")
+    or not isinstance(topology["overlay_sha256"], str)
+    or not sha_pattern.fullmatch(topology["overlay_sha256"])
+):
+    raise SystemExit(1)
+
+collider_sets = {}
+for name, specification in (
+    ("source", profile.source),
+    ("target", profile.target),
+    ("disabled", profile.disabled),
+):
+    paths = topology[f"{name}_colliders"]
+    count = topology[f"{name}_collider_count"]
+    digest = topology[f"{name}_collider_paths_sha256"]
+    if (
+        not isinstance(paths, list)
+        or not all(
+            isinstance(path, str) and prim_path_pattern.fullmatch(path)
+            for path in paths
+        )
+        or paths != sorted(paths)
+        or len(set(paths)) != len(paths)
+        or isinstance(count, bool)
+        or not isinstance(count, int)
+        or count != len(paths)
+        or count != specification.collider_count
+        or digest != specification.collider_paths_sha256
+        or digest
+        != hashlib.sha256(
+            json.dumps(paths, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    ):
+        raise SystemExit(1)
+    required = set(getattr(specification, "required_prim_paths", ()))
+    if not required.issubset(paths):
+        raise SystemExit(1)
+    collider_sets[name] = set(paths)
+
+source = collider_sets["source"]
+target = collider_sets["target"]
+disabled = collider_sets["disabled"]
+if target & disabled or target | disabled != source:
+    raise SystemExit(1)
+if profile.operation == "preserve_source_colliders":
+    if target != source or disabled:
+        raise SystemExit(1)
+elif not target < source or disabled != source - target:
+    raise SystemExit(1)
+if contact.get("ground_colliders") != topology["target_colliders"]:
+    raise SystemExit(1)
+PY
+}
+
 wait_for_isaac_ready() {
   local expected_environment="$1"
   local profile_id="$2"
@@ -844,6 +1130,7 @@ wait_for_isaac_ready() {
   local profile_sha256="$5"
   local timeout_seconds="${ISAAC_NAV_CONTACT_AB_READY_TIMEOUT_SECONDS:-180}"
   local deadline schema environment_id contact_json contact_sha256
+  local ground_topology_json ground_topology_sha256
   local actual_robot_config actual_robot_config_sha256
   local actual_robot_asset actual_robot_asset_sha256
   local actual_kinematics_profile actual_kinematics_lifecycle
@@ -864,7 +1151,7 @@ wait_for_isaac_ready() {
       isaac "${owned_pids[isaac]}" "${owned_groups[isaac]}" \
       "${owned_start_ticks[isaac]}" || return 1
     schema="$(ros_parameter runtime_provenance.schema_version || true)"
-    if [[ "${schema}" != 4 ]]; then
+    if [[ "${schema}" != 5 ]]; then
       sleep 0.2
       continue
     fi
@@ -874,6 +1161,12 @@ wait_for_isaac_ready() {
     contact_json="$(ros_parameter runtime_provenance.contact.json || true)"
     contact_sha256="$(
       ros_parameter runtime_provenance.contact.sha256 || true
+    )"
+    ground_topology_json="$(
+      ros_parameter runtime_provenance.ground_topology.json || true
+    )"
+    ground_topology_sha256="$(
+      ros_parameter runtime_provenance.ground_topology.sha256 || true
     )"
     actual_robot_config="$(
       ros_parameter runtime_provenance.robot.config.path || true
@@ -984,7 +1277,14 @@ wait_for_isaac_ready() {
         && contact_readiness_matches \
           "${contact_json}" "${contact_sha256}" \
           "${profile_id}" "${profile_mode}" \
-          "${profile_path}" "${profile_sha256}"; then
+          "${profile_path}" "${profile_sha256}" \
+        && ground_topology_readiness_matches \
+          "${ground_topology_json}" "${ground_topology_sha256}" \
+          "${contact_json}" "${current_ground_topology_id}" \
+          "${current_ground_topology_path}" \
+          "${current_ground_topology_sha256}" \
+          "${expected_environment}" "${current_source_asset}" \
+          "${current_source_asset_sha256}"; then
       return 0
     fi
     sleep 0.2
@@ -995,15 +1295,17 @@ wait_for_isaac_ready() {
 launch_isaac() {
   local project_config="$1"
   local profile_path="$2"
-  local log_path="$3"
+  local ground_topology_path="$3"
+  local log_path="$4"
   (
     close_instance_lock_fds_for_child
     unset ISAAC_NAV_DEDICATED_PROCESS_GROUP
     clear_inherited_config_overrides
     export ISAAC_NAV_PROJECT_CONFIG="${project_config}"
     export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"
+    export ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE="${ground_topology_path}"
     export ISAAC_NAV__FILES__ROBOT="${robot_config}"
-    # Schema-v4 provenance verifies mapping/ideal/60 Hz and kinematics below.
+    # Schema-v5 provenance verifies mapping/ideal/60 Hz and kinematics below.
     # It does not
     # currently expose headless, pacing, or camera selection, so those remain
     # a pinned CLI launch contract and are not misreported as provenance locks.
@@ -1041,11 +1343,16 @@ verify_motion_report() {
   local profile_mode="$4"
   local profile_path="$5"
   local profile_sha256="$6"
-  local motion_sha256="$7"
+  local ground_topology_id="$7"
+  local ground_topology_path="$8"
+  local ground_topology_sha256="$9"
+  local motion_sha256="${10}"
   python3 - \
     "${PROJECT_ROOT}" "${report_path}" "${environment_id}" \
     "${profile_id}" "${profile_mode}" \
-    "${profile_path}" "${profile_sha256}" "${motion_sha256}" \
+    "${profile_path}" "${profile_sha256}" \
+    "${ground_topology_id}" "${ground_topology_path}" \
+    "${ground_topology_sha256}" "${motion_sha256}" \
     "${batch_git_commit}" "${batch_git_branch}" \
     "${robot_config}" "${robot_config_sha256}" \
     "${robot_asset}" "${robot_asset_sha256}" \
@@ -1060,16 +1367,19 @@ import sys
 
 repository_root = Path(sys.argv[1])
 path = Path(sys.argv[2])
+sys.path.insert(0, str(repository_root))
 environment_id, profile_id, profile_mode = sys.argv[3:6]
-profile_path, profile_sha256, motion_sha256 = sys.argv[6:9]
-git_commit, git_branch = sys.argv[9:11]
-robot_config, robot_config_sha256 = sys.argv[11:13]
-robot_asset, robot_asset_sha256 = sys.argv[13:15]
-project_stage, project_stage_sha256 = sys.argv[15:17]
-source_asset, source_asset_sha256 = sys.argv[17:19]
-kinematics_profile_id, kinematics_lifecycle = sys.argv[19:21]
-wheel_radius, wheel_width = map(float, sys.argv[21:23])
-geometric_track_width, effective_track_width = map(float, sys.argv[23:25])
+profile_path, profile_sha256 = sys.argv[6:8]
+ground_topology_id, ground_topology_path, ground_topology_sha256 = sys.argv[8:11]
+motion_sha256 = sys.argv[11]
+git_commit, git_branch = sys.argv[12:14]
+robot_config, robot_config_sha256 = sys.argv[14:16]
+robot_asset, robot_asset_sha256 = sys.argv[16:18]
+project_stage, project_stage_sha256 = sys.argv[18:20]
+source_asset, source_asset_sha256 = sys.argv[20:22]
+kinematics_profile_id, kinematics_lifecycle = sys.argv[22:24]
+wheel_radius, wheel_width = map(float, sys.argv[24:26])
+geometric_track_width, effective_track_width = map(float, sys.argv[26:28])
 if not path.is_file():
     raise SystemExit("motion report is missing")
 try:
@@ -1092,6 +1402,7 @@ try:
         wheel_radius,
         min_repeats=1,
         expected_environments=(environment_id,),
+        expected_topologies=(ground_topology_id,),
         expected_profiles=(profile_id,),
     )
 except Exception as exc:
@@ -1108,12 +1419,13 @@ if report.get("config_sha256") != motion_sha256:
     raise SystemExit("motion config SHA256 mismatch")
 provenance = report.get("runtime_provenance", {})
 contact = provenance.get("contact", {})
+ground_topology = provenance.get("ground_topology", {})
 environment = provenance.get("environment", {})
 robot = provenance.get("robot", {})
 simulation = provenance.get("simulation", {})
 git = provenance.get("git", {})
-if provenance.get("schema_version") != 4:
-    raise SystemExit("runtime provenance schema must be integer 4")
+if provenance.get("schema_version") != 5:
+    raise SystemExit("runtime provenance schema must be integer 5")
 if environment.get("id") != environment_id:
     raise SystemExit("runtime provenance environment mismatch")
 if git.get("dirty") is not False:
@@ -1168,16 +1480,64 @@ expected_contact = {
 }
 if any(contact.get(key) != value for key, value in expected_contact.items()):
     raise SystemExit("runtime provenance contact profile mismatch")
+
+from isaac_sim.src.stage.ground_topology import load_ground_topology_profile
+
+topology_profile = load_ground_topology_profile(ground_topology_path)
+expected_topology_identity = {
+    "profile_path": ground_topology_path,
+    "profile_sha256": ground_topology_sha256,
+    "profile_id": ground_topology_id,
+    "environment_id": environment_id,
+    "operation": topology_profile.operation,
+    "source_asset_path": source_asset,
+    "source_asset_sha256": source_asset_sha256,
+    "stage_usd_readback_verified": True,
+}
+if any(
+    ground_topology.get(key) != value
+    for key, value in expected_topology_identity.items()
+):
+    raise SystemExit("runtime provenance ground topology identity mismatch")
+if (
+    topology_profile.identifier != ground_topology_id
+    or topology_profile.environment_id != environment_id
+    or topology_profile.sha256 != ground_topology_sha256
+    or topology_profile.source_asset_sha256 != source_asset_sha256
+):
+    raise SystemExit("ground topology profile contract mismatch")
+for name, specification in (
+    ("source", topology_profile.source),
+    ("target", topology_profile.target),
+    ("disabled", topology_profile.disabled),
+):
+    paths = ground_topology.get(f"{name}_colliders")
+    if (
+        ground_topology.get(f"{name}_collider_count")
+        != specification.collider_count
+        or ground_topology.get(f"{name}_collider_paths_sha256")
+        != specification.collider_paths_sha256
+        or not isinstance(paths, list)
+        or not set(getattr(specification, "required_prim_paths", ())).issubset(
+            paths
+        )
+    ):
+        raise SystemExit(
+            f"runtime provenance ground topology {name} contract mismatch"
+        )
+if ground_topology.get("target_colliders") != contact.get("ground_colliders"):
+    raise SystemExit("ground topology target/contact ground mismatch")
 PY
 }
 
 run_one_condition() {
   local sequence="$1"
   local environment_id="$2"
-  local profile_id="$3"
-  local profile_mode="$4"
-  local repeat="$5"
-  local slug project_config profile_path runner_status
+  local ground_topology_id="$3"
+  local profile_id="$4"
+  local profile_mode="$5"
+  local repeat="$6"
+  local slug project_config profile_path topology_path runner_status
 
   slug="$(environment_slug "${environment_id}")" || {
     current_failure_reason="environment_slug_failed"
@@ -1190,8 +1550,22 @@ run_one_condition() {
     return 1
   }
   profile_path="${physics_dir}/${profile_id}.yaml"
-  if ! printf -v current_run_id '%03d_%s_%s_r%02d' \
-      "${sequence}" "${slug}" "${profile_id}" "${repeat}"; then
+  topology_path="$(ground_topology_path "${ground_topology_id}")" || {
+    current_failure_reason="ground_topology_path_resolution_failed"
+    return 1
+  }
+  case "${environment_id}:${ground_topology_id}" in
+    SimplePlane:simple_plane_only1_v1|\
+      Warehouse:warehouse_combined32_v1|\
+      Warehouse:warehouse_plane_only1_v1) ;;
+    *)
+      current_failure_reason="illegal_environment_ground_topology_pair"
+      return 1
+      ;;
+  esac
+  if ! printf -v current_run_id '%03d_%s_%s_%s_r%02d' \
+      "${sequence}" "${slug}" "${ground_topology_id}" \
+      "${profile_id}" "${repeat}"; then
     current_failure_reason="run_id_format_failed"
     return 1
   fi
@@ -1206,6 +1580,9 @@ run_one_condition() {
   current_project_sha256="${locked_input_hashes[${project_config}]}"
   current_profile_path="${profile_path}"
   current_profile_sha256="${locked_input_hashes[${profile_path}]}"
+  current_ground_topology_id="${ground_topology_id}"
+  current_ground_topology_path="${topology_path}"
+  current_ground_topology_sha256="${locked_input_hashes[${topology_path}]}"
   case "${environment_id}" in
     Warehouse)
       current_project_stage="${warehouse_project_stage}"
@@ -1238,7 +1615,8 @@ run_one_condition() {
   fi
   log_info "contact A/B ${current_run_id}: starting Isaac"
   if ! launch_isaac \
-      "${project_config}" "${profile_path}" "${current_isaac_log}"; then
+      "${project_config}" "${profile_path}" "${topology_path}" \
+      "${current_isaac_log}"; then
     current_failure_reason="isaac_registration_failed"
     return 1
   fi
@@ -1281,6 +1659,8 @@ run_one_condition() {
       "${current_report}" "${environment_id}" \
       "${profile_id}" "${profile_mode}" \
       "${profile_path}" "${current_profile_sha256}" \
+      "${ground_topology_id}" "${topology_path}" \
+      "${current_ground_topology_sha256}" \
       "${batch_motion_sha256}"; then
     current_failure_reason="motion_report_verification_failed"
     return 1
@@ -1362,7 +1742,7 @@ prepare_output_directory() {
 initialize_manifest() {
   local header temporary
   manifest="${output_dir}/manifest.tsv"
-  header=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
+  header=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
   temporary="$(mktemp "${manifest}.tmp.XXXXXX")" \
     || die "cannot create manifest temporary file"
   if ! printf '%s\n' "${header}" >"${temporary}" \
@@ -1394,11 +1774,13 @@ finalize_contact_analysis() {
   }
   python3 - \
     "${PROJECT_ROOT}" "${manifest}" "${analysis_path}" \
-    "${environment_selection}" "${repeats}" \
+    "${environment_selection}" "${ground_topology_selection}" \
+    "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
     "${robot_wheel_radius}" <<'PY'
 import csv
 import hashlib
+import json
 from pathlib import Path
 import sys
 
@@ -1407,6 +1789,8 @@ import sys
     manifest_name,
     output_name,
     environment_selection,
+    ground_topology_selection,
+    selected_pairs_json,
     repeats_text,
     expected_runs_text,
     expected_groups_text,
@@ -1418,6 +1802,13 @@ expected_groups = int(expected_groups_text)
 wheel_radius = float(wheel_radius_text)
 manifest_path = Path(manifest_name)
 output_path = Path(output_name)
+selected_pairs_data = json.loads(selected_pairs_json)
+selected_pairs = {
+    (pair["environment_id"], pair["ground_topology_id"])
+    for pair in selected_pairs_data
+}
+if not selected_pairs or len(selected_pairs) != len(selected_pairs_data):
+    raise SystemExit("selected environment/topology pairs must be unique")
 
 # Use the committed workspace source explicitly; the install tree may be stale.
 source_root = Path(repository_root) / "ros2_ws/src/robot_experiments"
@@ -1445,18 +1836,37 @@ for row_index, row in enumerate(rows, start=1):
     actual_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
     if row.get("report_sha256") != actual_sha256:
         raise SystemExit(f"manifest row {row_index} report SHA256 mismatch")
+    row_pair = (row.get("environment"), row.get("ground_topology_id"))
+    if row_pair not in selected_pairs:
+        raise SystemExit(
+            f"manifest row {row_index} has an unselected environment/topology pair"
+        )
     report_paths.append(report_path)
 if len(set(report_paths)) != expected_runs:
     raise SystemExit("manifest report paths must be unique")
 
-arguments = {"min_repeats": repeats}
-if environment_selection == "all":
-    arguments["require_complete_matrix"] = True
-elif environment_selection in {"Warehouse", "SimplePlane"}:
-    arguments["expected_environments"] = (environment_selection,)
-    arguments["expected_profiles"] = COMPLETE_MATRIX_PROFILES
-else:
+if environment_selection not in {"all", "Warehouse", "SimplePlane"}:
     raise SystemExit("unknown batch environment selection")
+if ground_topology_selection not in {
+    "baseline",
+    "all",
+    "simple_plane_only1_v1",
+    "warehouse_combined32_v1",
+    "warehouse_plane_only1_v1",
+}:
+    raise SystemExit("unknown batch ground-topology selection")
+selected_environments = tuple(
+    dict.fromkeys(pair["environment_id"] for pair in selected_pairs_data)
+)
+selected_topologies = tuple(
+    dict.fromkeys(pair["ground_topology_id"] for pair in selected_pairs_data)
+)
+arguments = {
+    "min_repeats": repeats,
+    "expected_environments": selected_environments,
+    "expected_topologies": selected_topologies,
+    "expected_profiles": COMPLETE_MATRIX_PROFILES,
+}
 analysis = analyse_contact_ab(report_paths, wheel_radius, **arguments)
 counts = analysis.get("counts", {})
 selection = analysis.get("selection", {})
@@ -1482,7 +1892,8 @@ write_batch_summary() {
   }
   python3 - \
     "${batch_summary_path}" \
-    "${environment_selection}" "${repeats}" \
+    "${environment_selection}" "${ground_topology_selection}" \
+    "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
     "${successful_rows}" "${manifest_rows}" \
     "${batch_git_commit}" "${batch_git_branch}" \
@@ -1497,6 +1908,7 @@ write_batch_summary() {
     "${robot_geometric_track_width}" \
     "${robot_effective_track_width}" \
     "${physics_dir}" "${batch_profile_hashes_json}" \
+    "${ground_topology_dir}" "${batch_ground_topology_hashes_json}" \
     "${manifest}" "${frozen_manifest_sha256}" \
     "${analysis_path}" "${analysis_sha256}" <<'PY'
 import hashlib
@@ -1509,6 +1921,8 @@ import tempfile
 (
     output_name,
     environment_selection,
+    ground_topology_selection,
+    environment_topology_pairs_json,
     repeats_text,
     expected_runs_text,
     expected_groups_text,
@@ -1533,6 +1947,8 @@ import tempfile
     robot_effective_track_width_text,
     physics_directory,
     profile_hashes_json,
+    ground_topology_directory,
+    ground_topology_hashes_json,
     manifest_name,
     manifest_sha256,
     analysis_name,
@@ -1573,22 +1989,59 @@ profiles = {
     }
     for profile_id, digest in sorted(profile_hashes.items())
 }
-selected_environments = (
-    ["SimplePlane", "Warehouse"]
-    if environment_selection == "all"
-    else [environment_selection]
+environment_topology_pairs = json.loads(environment_topology_pairs_json)
+ground_topology_hashes = json.loads(ground_topology_hashes_json)
+if (
+    not isinstance(environment_topology_pairs, list)
+    or not environment_topology_pairs
+    or not isinstance(ground_topology_hashes, dict)
+    or not ground_topology_hashes
+):
+    raise SystemExit("locked ground-topology selection is empty or invalid")
+selected_environments = list(
+    dict.fromkeys(
+        pair["environment_id"] for pair in environment_topology_pairs
+    )
 )
+selected_topologies = list(
+    dict.fromkeys(
+        pair["ground_topology_id"] for pair in environment_topology_pairs
+    )
+)
+if set(selected_topologies) != set(ground_topology_hashes):
+    raise SystemExit("locked ground-topology hashes do not match selected pairs")
+if expected_groups != len(environment_topology_pairs) * 6:
+    raise SystemExit("expected group count does not match selected topology pairs")
+topology_environments = {
+    pair["ground_topology_id"]: pair["environment_id"]
+    for pair in environment_topology_pairs
+}
+ground_topology_profiles = {
+    topology_id: {
+        "environment_id": topology_environments[topology_id],
+        "path": str(
+            Path(ground_topology_directory) / f"{topology_id}.yaml"
+        ),
+        "sha256": digest,
+    }
+    for topology_id, digest in sorted(ground_topology_hashes.items())
+}
 summary = {
-    "schema_version": 2,
+    "schema_version": 3,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
     "environment_selection": environment_selection,
+    "ground_topology_selection": ground_topology_selection,
     "environments": selected_environments,
+    "ground_topologies": selected_topologies,
+    "environment_topology_pairs": environment_topology_pairs,
     "repeats": int(repeats_text),
     "expected_counts": {
         "runs": expected_runs,
         "groups": expected_groups,
         "environments": len(selected_environments),
+        "environment_topology_pairs": len(environment_topology_pairs),
+        "ground_topologies": len(selected_topologies),
         "profiles": 6,
     },
     "actual_counts": {
@@ -1629,6 +2082,7 @@ summary = {
             },
         },
         "contact_profiles": profiles,
+        "ground_topology_profiles": ground_topology_profiles,
     },
     "evidence": {
         "manifest": {"path": str(manifest_path), "sha256": manifest_sha256},
@@ -1671,6 +2125,11 @@ require_file "${simple_plane_config}"
 for profile_id in "${profile_ids[@]}"; do
   require_file "${physics_dir}/${profile_id}.yaml"
 done
+for topology_id in "${matrix_ground_topology_ids[@]}"; do
+  topology_path="$(ground_topology_path "${topology_id}")" \
+    || die "cannot resolve selected ground topology: ${topology_id}"
+  require_file "${topology_path}"
+done
 require_clean_git
 if [[ "${robot_config_option_seen}" == true ]]; then
   validate_robot_config_path "${robot_config_argument}" \
@@ -1682,6 +2141,11 @@ require_tracked_input "${warehouse_config}"
 require_tracked_input "${simple_plane_config}"
 for profile_id in "${profile_ids[@]}"; do
   require_tracked_input "${physics_dir}/${profile_id}.yaml"
+done
+for topology_id in "${matrix_ground_topology_ids[@]}"; do
+  topology_path="$(ground_topology_path "${topology_id}")" \
+    || die "cannot resolve selected ground topology: ${topology_id}"
+  require_tracked_input "${topology_path}"
 done
 
 source_ros --require-workspace
@@ -1700,12 +2164,14 @@ prepare_output_directory
 initialize_manifest
 
 sequence=0
-for environment_id in "${environments[@]}"; do
+for pair_index in "${!matrix_environment_ids[@]}"; do
+  environment_id="${matrix_environment_ids[pair_index]}"
+  topology_id="${matrix_ground_topology_ids[pair_index]}"
   for profile_index in "${!profile_ids[@]}"; do
     for ((repeat = 1; repeat <= repeats; repeat++)); do
       sequence=$((sequence + 1))
       if ! run_one_condition \
-          "${sequence}" "${environment_id}" \
+          "${sequence}" "${environment_id}" "${topology_id}" \
           "${profile_ids[profile_index]}" \
           "${profile_modes[profile_index]}" "${repeat}"; then
         die "contact A/B failed closed at ${current_run_id}: ${current_failure_reason}"
@@ -1714,8 +2180,8 @@ for environment_id in "${environments[@]}"; do
   done
 done
 
-expected_conditions=$((${#environments[@]} * ${#profile_ids[@]} * repeats))
-expected_groups=$((${#environments[@]} * ${#profile_ids[@]}))
+expected_conditions=$((${#matrix_environment_ids[@]} * ${#profile_ids[@]} * repeats))
+expected_groups=$((${#matrix_environment_ids[@]} * ${#profile_ids[@]}))
 successful_rows="$(
   awk -F $'\t' 'NR > 1 && $6 == "success" {count++} END {print count + 0}' \
     "${manifest}"
