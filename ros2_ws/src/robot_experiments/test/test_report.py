@@ -1,4 +1,5 @@
 import csv
+from copy import deepcopy
 import hashlib
 import json
 import math
@@ -10,9 +11,48 @@ from robot_experiments.report import (
     ReportValidationError,
     configuration_sha256,
     validate_manifest,
+    validate_runtime_provenance,
     write_run_report,
     write_strict_json_report,
 )
+
+
+def valid_runtime_provenance():
+    return {
+        "verified": True,
+        "schema_version": 1,
+        "robot": {
+            "config": {"path": "/repo/jackal.yaml", "sha256": "a" * 64},
+            "asset": {"path": "/repo/jackal_nav.usda", "sha256": "b" * 64},
+            "solver": {
+                "position_iterations": 32,
+                "velocity_iterations": 4,
+            },
+        },
+        "environment": {
+            "project_stage": {
+                "path": "/repo/navigation_scene.usda",
+                "sha256": "c" * 64,
+            },
+            "source_asset": {
+                "path": "/assets/warehouse.usd",
+                "sha256": "d" * 64,
+            },
+            "asset_root": "/assets/Isaac/6.0",
+            "asset_version": "6.0",
+            "composed_root_layer_sha256": "e" * 64,
+        },
+        "simulation": {
+            "navigation_mode": "mapping",
+            "odometry_mode": "ideal",
+            "physics_hz": 60.0,
+        },
+        "git": {
+            "commit": "f" * 40,
+            "branch": "codex/navigation-quality-fidelity",
+            "dirty": True,
+        },
+    }
 
 
 def valid_manifest():
@@ -68,6 +108,42 @@ def test_validate_manifest_requires_verified_dynamic_runtime_contract():
     manifest["dynamic_runtime_contract"]["verified"] = False
     with pytest.raises(ReportValidationError, match="runtime-verified"):
         validate_manifest(manifest)
+
+
+def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
+    validate_runtime_provenance(valid_runtime_provenance())
+
+
+@pytest.mark.parametrize(
+    ("path", "bad_value", "message"),
+    [
+        (("robot", "config", "sha256"), "g" * 64, "SHA256"),
+        (("robot", "solver", "velocity_iterations"), True, "integer"),
+        (("robot", "solver", "velocity_iterations"), 0, "integer"),
+        (("robot", "solver", "velocity_iterations"), 256, "integer"),
+        (("environment", "source_asset", "path"), "", "non-empty"),
+        (("simulation", "physics_hz"), 0.0, "positive"),
+        (("git", "commit"), "z" * 40, "Git object id"),
+        (("git", "dirty"), "false", "boolean"),
+    ],
+)
+def test_validate_runtime_provenance_rejects_bad_evidence(
+    path, bad_value, message
+):
+    provenance = deepcopy(valid_runtime_provenance())
+    cursor = provenance
+    for key in path[:-1]:
+        cursor = cursor[key]
+    cursor[path[-1]] = bad_value
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_requires_runtime_verification():
+    provenance = valid_runtime_provenance()
+    provenance["verified"] = False
+    with pytest.raises(ReportValidationError, match="runtime-verified"):
+        validate_runtime_provenance(provenance)
 
 
 @pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])

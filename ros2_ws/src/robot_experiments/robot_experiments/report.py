@@ -102,6 +102,138 @@ def validate_manifest(manifest: Mapping[str, Any]) -> None:
         ) from exc
 
 
+def _required_mapping(
+    value: Mapping[str, Any], key: str, location: str
+) -> Mapping[str, Any]:
+    child = value.get(key)
+    if not isinstance(child, Mapping):
+        raise ReportValidationError(f"{location}.{key} must be a mapping")
+    return child
+
+
+def _required_string(value: Any, location: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ReportValidationError(f"{location} must be a non-empty string")
+    return value
+
+
+def _validate_sha256(value: Any, location: str) -> None:
+    if not isinstance(value, str) or len(value) != 64:
+        raise ReportValidationError(f"{location} must be a SHA256 hex digest")
+    try:
+        int(value, 16)
+    except ValueError as exc:
+        raise ReportValidationError(
+            f"{location} must be a SHA256 hex digest"
+        ) from exc
+
+
+def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
+    """Validate the Isaac-startup snapshot embedded in a diagnostic report."""
+
+    if not isinstance(provenance, Mapping):
+        raise ReportValidationError("runtime_provenance must be a mapping")
+    _validate_json_value(provenance, "runtime_provenance")
+    if provenance.get("verified") is not True:
+        raise ReportValidationError("runtime_provenance must be runtime-verified")
+    schema_version = provenance.get("schema_version")
+    if isinstance(schema_version, bool) or schema_version != 1:
+        raise ReportValidationError("runtime_provenance.schema_version must be 1")
+
+    robot = _required_mapping(provenance, "robot", "runtime_provenance")
+    for name in ("config", "asset"):
+        input_file = _required_mapping(
+            robot, name, "runtime_provenance.robot"
+        )
+        _required_string(
+            input_file.get("path"),
+            f"runtime_provenance.robot.{name}.path",
+        )
+        _validate_sha256(
+            input_file.get("sha256"),
+            f"runtime_provenance.robot.{name}.sha256",
+        )
+    solver = _required_mapping(
+        robot, "solver", "runtime_provenance.robot"
+    )
+    for name in ("position_iterations", "velocity_iterations"):
+        count = solver.get(name)
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or not 1 <= count <= 255
+        ):
+            raise ReportValidationError(
+                f"runtime_provenance.robot.solver.{name} must be an integer "
+                "in [1, 255]"
+            )
+
+    environment = _required_mapping(
+        provenance, "environment", "runtime_provenance"
+    )
+    for name in ("project_stage", "source_asset"):
+        input_file = _required_mapping(
+            environment, name, "runtime_provenance.environment"
+        )
+        _required_string(
+            input_file.get("path"),
+            f"runtime_provenance.environment.{name}.path",
+        )
+        _validate_sha256(
+            input_file.get("sha256"),
+            f"runtime_provenance.environment.{name}.sha256",
+        )
+    _required_string(
+        environment.get("asset_root"),
+        "runtime_provenance.environment.asset_root",
+    )
+    _required_string(
+        environment.get("asset_version"),
+        "runtime_provenance.environment.asset_version",
+    )
+    _validate_sha256(
+        environment.get("composed_root_layer_sha256"),
+        "runtime_provenance.environment.composed_root_layer_sha256",
+    )
+
+    simulation = _required_mapping(
+        provenance, "simulation", "runtime_provenance"
+    )
+    for name in ("navigation_mode", "odometry_mode"):
+        _required_string(
+            simulation.get(name),
+            f"runtime_provenance.simulation.{name}",
+        )
+    physics_hz = simulation.get("physics_hz")
+    if (
+        isinstance(physics_hz, bool)
+        or not isinstance(physics_hz, (int, float))
+        or not math.isfinite(float(physics_hz))
+        or physics_hz <= 0
+    ):
+        raise ReportValidationError(
+            "runtime_provenance.simulation.physics_hz must be positive"
+        )
+
+    git = _required_mapping(provenance, "git", "runtime_provenance")
+    commit = git.get("commit")
+    if not isinstance(commit, str) or len(commit) not in {40, 64}:
+        raise ReportValidationError(
+            "runtime_provenance.git.commit must be a Git object id"
+        )
+    try:
+        int(commit, 16)
+    except ValueError as exc:
+        raise ReportValidationError(
+            "runtime_provenance.git.commit must be a Git object id"
+        ) from exc
+    _required_string(git.get("branch"), "runtime_provenance.git.branch")
+    if not isinstance(git.get("dirty"), bool):
+        raise ReportValidationError(
+            "runtime_provenance.git.dirty must be boolean"
+        )
+
+
 def _atomic_text_write(path: Path, writer: Callable[[TextIO], None]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(

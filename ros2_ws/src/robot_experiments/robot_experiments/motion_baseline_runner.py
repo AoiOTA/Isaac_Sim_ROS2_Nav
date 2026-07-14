@@ -14,6 +14,8 @@ from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.parameter import parameter_value_to_python
+from rclpy.parameter_client import AsyncParameterClient
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import JointState
@@ -31,7 +33,35 @@ from .motion_baseline import (
     detect_stopping,
     load_motion_baseline_config,
 )
-from .report import configuration_sha256, write_strict_json_report
+from .report import (
+    configuration_sha256,
+    validate_runtime_provenance,
+    write_strict_json_report,
+)
+
+
+_RUNTIME_PROVENANCE_PARAMETER_NAMES = (
+    "runtime_provenance.schema_version",
+    "runtime_provenance.robot.config.path",
+    "runtime_provenance.robot.config.sha256",
+    "runtime_provenance.robot.asset.path",
+    "runtime_provenance.robot.asset.sha256",
+    "runtime_provenance.robot.solver.position_iterations",
+    "runtime_provenance.robot.solver.velocity_iterations",
+    "runtime_provenance.environment.project_stage.path",
+    "runtime_provenance.environment.project_stage.sha256",
+    "runtime_provenance.environment.source_asset.path",
+    "runtime_provenance.environment.source_asset.sha256",
+    "runtime_provenance.environment.asset_root",
+    "runtime_provenance.environment.asset_version",
+    "runtime_provenance.environment.composed_root_layer_sha256",
+    "runtime_provenance.simulation.navigation_mode",
+    "runtime_provenance.simulation.odometry_mode",
+    "runtime_provenance.simulation.physics_hz",
+    "runtime_provenance.git.commit",
+    "runtime_provenance.git.branch",
+    "runtime_provenance.git.dirty",
+)
 
 
 def _stamp_ns(stamp: Any) -> int:
@@ -118,6 +148,14 @@ class MotionBaselineRunner(Node):
         self._reset_client = self.create_client(
             Trigger, self._config.reset.service
         )
+        self._isaac_parameter_client = AsyncParameterClient(
+            self,
+            str(
+                self.declare_parameter(
+                    "isaac_node_name", "/isaac_navigation_sim"
+                ).value
+            ),
+        )
 
         self._clock_ns: int | None = None
         self._clock_sequence = 0
@@ -141,6 +179,7 @@ class MotionBaselineRunner(Node):
         self._started_at = datetime.now(timezone.utc)
         self._safe_stop_attempted = False
         self._authorized_reset_publishers: set[str] = set()
+        self._runtime_provenance: dict[str, object] = {"verified": False}
 
     def _observe_timestamp(self, topic: str, stamp_ns: int) -> None:
         self._session_timestamps[topic].observe(stamp_ns)
@@ -231,6 +270,91 @@ class MotionBaselineRunner(Node):
             if predicate():
                 return True
         return bool(predicate())
+
+    def _read_runtime_provenance(self) -> None:
+        timeout_sec = self._config.reset.service_timeout_sec
+        if not self._isaac_parameter_client.wait_for_services(
+            timeout_sec=timeout_sec
+        ):
+            self._raise_if_shutdown()
+            raise RuntimeError("Isaac runtime provenance services are unavailable")
+        future = self._isaac_parameter_client.get_parameters(
+            list(_RUNTIME_PROVENANCE_PARAMETER_NAMES)
+        )
+        if not self._wait_future(
+            future, time.monotonic() + timeout_sec
+        ):
+            raise TimeoutError("reading Isaac runtime provenance timed out")
+        response = future.result()
+        if response is None or len(response.values) != len(
+            _RUNTIME_PROVENANCE_PARAMETER_NAMES
+        ):
+            raise RuntimeError("Isaac returned incomplete runtime provenance")
+        values = {
+            name: parameter_value_to_python(value)
+            for name, value in zip(
+                _RUNTIME_PROVENANCE_PARAMETER_NAMES, response.values
+            )
+        }
+
+        def value(suffix: str) -> object:
+            return values[f"runtime_provenance.{suffix}"]
+
+        provenance = {
+            "verified": True,
+            "schema_version": value("schema_version"),
+            "robot": {
+                "config": {
+                    "path": value("robot.config.path"),
+                    "sha256": value("robot.config.sha256"),
+                },
+                "asset": {
+                    "path": value("robot.asset.path"),
+                    "sha256": value("robot.asset.sha256"),
+                },
+                "solver": {
+                    "position_iterations": value(
+                        "robot.solver.position_iterations"
+                    ),
+                    "velocity_iterations": value(
+                        "robot.solver.velocity_iterations"
+                    ),
+                },
+            },
+            "environment": {
+                "project_stage": {
+                    "path": value("environment.project_stage.path"),
+                    "sha256": value("environment.project_stage.sha256"),
+                },
+                "source_asset": {
+                    "path": value("environment.source_asset.path"),
+                    "sha256": value("environment.source_asset.sha256"),
+                },
+                "asset_root": value("environment.asset_root"),
+                "asset_version": value("environment.asset_version"),
+                "composed_root_layer_sha256": value(
+                    "environment.composed_root_layer_sha256"
+                ),
+            },
+            "simulation": {
+                "navigation_mode": value("simulation.navigation_mode"),
+                "odometry_mode": value("simulation.odometry_mode"),
+                "physics_hz": value("simulation.physics_hz"),
+            },
+            "git": {
+                "commit": value("git.commit"),
+                "branch": value("git.branch"),
+                "dirty": value("git.dirty"),
+            },
+        }
+        validate_runtime_provenance(provenance)
+        runtime_odometry = provenance["simulation"]["odometry_mode"]
+        if runtime_odometry != self._odometry_mode:
+            raise RuntimeError(
+                "odometry label does not match Isaac runtime provenance: "
+                f"requested={self._odometry_mode}, runtime={runtime_odometry}"
+            )
+        self._runtime_provenance = provenance
 
     def _begin_segment_capture(self) -> None:
         self._active_timestamps = {
@@ -579,6 +703,7 @@ class MotionBaselineRunner(Node):
             "started_at_utc": self._started_at.isoformat(),
             "completed_at_utc": datetime.now(timezone.utc).isoformat(),
             "configuration": self._config.as_dict(),
+            "runtime_provenance": self._runtime_provenance,
             "segments": list(self._segments),
             "timestamp_integrity": {
                 name: tracker.as_dict()
@@ -601,8 +726,9 @@ class MotionBaselineRunner(Node):
 
     def run_all(self) -> dict[str, object]:
         fatal_error: Exception | None = None
-        self._create_command_publisher()
         try:
+            self._read_runtime_provenance()
+            self._create_command_publisher()
             if not self._wait_until(
                 lambda: self._clock_ns is not None
                 and self._clock_ns > 0

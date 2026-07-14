@@ -102,11 +102,20 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert "_raise_keyboard_interrupt" in source
     assert "call_async(Trigger.Request())" in source
     assert "fresh /clock, /odom" in source
+    assert "AsyncParameterClient" in source
+    assert "runtime_provenance" in source
+    assert "validate_runtime_provenance" in source
     run_segment = source.split("def _run_segment", 1)[1].split(
         "def _base_report", 1
     )[0]
     assert run_segment.index("reset_report = self._reset_and_wait()") < run_segment.index(
         "self._begin_segment_capture()"
+    )
+    run_all = source.split("def run_all", 1)[1].split(
+        "def _raise_keyboard_interrupt", 1
+    )[0]
+    assert run_all.index("self._read_runtime_provenance()") < run_all.index(
+        "self._create_command_publisher()"
     )
 
 
