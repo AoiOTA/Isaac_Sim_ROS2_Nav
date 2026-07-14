@@ -108,7 +108,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/assets/environments/navigation_scene.usda` | 项目场景 overlay；定义 `/World` 下的机器人和项目 Prim。官方 Warehouse 由 `SceneComposer` 按环境配置在运行时作为 subLayer 注入。 |
-| `isaac_sim/assets/robots/jackal/jackal_nav.usda` | 项目 Jackal 入口 USD；通过 subLayer 引入本地导入的官方 Jackal，并覆盖/补充导航传感器 frame。 |
+| `isaac_sim/assets/robots/jackal/jackal_nav.usda` | 项目 Jackal 入口 USD；通过 subLayer 引入本地导入的官方 Jackal，覆盖/补充导航传感器 frame，并停用带 obsolete `customGeometry` 的四个官方轮 collider、提供对称标准 Cylinder；不修改 NVIDIA 源文件。 |
 | `isaac_sim/assets/robots/jackal/asset_manifest.json` | 官方 Jackal 源文件到本地目标文件的清单与 SHA256。 |
 | `isaac_sim/assets/robots/jackal/README.md` | Jackal 资产组合方式、导入边界和禁止直接提交官方文件的说明。 |
 | `isaac_sim/assets/robots/jackal/source/.gitignore` | 忽略导入到 `source/` 的官方 Jackal 二进制/文本资产。 |
@@ -166,6 +166,7 @@
 | --- | --- |
 | `isaac_sim/src/__init__.py` | Isaac 核心源码包标记。 |
 | `isaac_sim/src/config.py` | 严格解析总配置、环境变量替换、嵌套 override、模式组合和必需路径。 |
+| `isaac_sim/src/runtime_provenance.py` | Isaac 启动时流式哈希实际机器人/环境输入、组合根 Layer 和 Git revision/dirty 状态，并扁平化为只读 ROS 参数，供实验报告绑定真实运行态。 |
 | `isaac_sim/src/yaml_utils.py` | 通用 YAML mapping、字段、数值、向量和未知 key 校验函数。 |
 
 ## 12. Isaac Stage 管理
@@ -174,7 +175,7 @@
 | --- | --- |
 | `isaac_sim/src/stage/__init__.py` | Stage 子包标记。 |
 | `isaac_sim/src/stage/stage_loader.py` | 创建/打开项目 Stage，管理 Sublayer、Reference、Xform 和保存。 |
-| `isaac_sim/src/stage/scene_composer.py` | 按“环境 Sublayer + 机器人 Reference”组合最终 Stage，并保持项目层为 edit target。 |
+| `isaac_sim/src/stage/scene_composer.py` | 按“环境 Sublayer + 机器人 Reference”组合最终 Stage，在物理启动前 author 配置化 articulation solver iterations，并保持项目层为 edit target。 |
 | `isaac_sim/src/stage/physics_setup.py` | 查找并校验唯一 PhysicsScene，设置重力、固定时间步和 PhysX 参数，并提供基于稳态墙钟的 `FramePacer`：realtime 模式按目标 RTF 节流，unbounded 模式明确取消节流。 |
 | `isaac_sim/src/stage/asset_validator.py` | 检查 defaultPrim、依赖、关键 Prim、传感器 frame、Articulation、wheel joint/碰撞和 GT 隔离。 |
 
@@ -183,7 +184,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/robot/__init__.py` | 机器人运行时子包标记。 |
-| `isaac_sim/src/robot/articulation_runtime.py` | 获取 Jackal articulation、应用物理参数、控制/读取关节并处理 sleep/wake。 |
+| `isaac_sim/src/robot/articulation_runtime.py` | 严格解析含 `[1,255]` solver counts 的 Jackal 物理配置，在 Stage/运行时应用 solver、sleep/stabilization/DOF 参数，控制/读取关节并处理 sleep/wake。 |
 | `isaac_sim/src/robot/joint_validator.py` | 验证四个 wheel joint 的存在、分组、方向映射和 DOF 顺序。 |
 | `isaac_sim/src/robot/spawn_pose_manager.py` | 读取/校验命名 USD/Map Pose；已标定 Pose 必须携带合法 map version 与 bundle SHA256，并向 Reset 提供 Pose 查询。 |
 | `isaac_sim/src/robot/reset.py` | ResetManager 物理事务：预校验出生点/标定，暂停、停控、恢复 Pose、清速度、重置子系统，并在失败路径也恢复 timeline。 |
@@ -226,7 +227,8 @@
 | `isaac_sim/tests/conftest.py` | 把项目根加入测试导入路径。 |
 | `isaac_sim/tests/test_config.py` | 测试项目/机器人配置 schema、环境变量 override、模式组合和 custom fail-fast。 |
 | `isaac_sim/tests/test_asset_paths.py` | 测试资产 manifest、项目 overlay 只引用本地导入以及路径可复现性。 |
-| `isaac_sim/tests/test_stage_composition.py` | Isaac/USD marker 测试：Stage 组合、唯一 PhysicsScene、defaultPrim 和 articulation 结构。 |
+| `isaac_sim/tests/test_stage_composition.py` | Isaac/USD marker 测试：Stage 组合、唯一 PhysicsScene、solver authoring、旧 collider inactive、新 Cylinder 尺寸/轴向/对称性/材质和 articulation 结构。 |
+| `isaac_sim/tests/test_runtime_provenance.py` | 测试流式文件 SHA256、clean/dirty Git 快照，以及机器人/环境/solver/组合 Layer 到 ROS 参数的完整映射。 |
 | `isaac_sim/tests/test_graph_contracts.py` | 测试 Topic/QoS、控制/传感器/TF Graph 节点连接和 GT 隔离。 |
 | `isaac_sim/tests/test_joint_mapping.py` | 测试四轮 joint 分组和控制顺序。 |
 | `isaac_sim/tests/test_scan_projection.py` | 检查 Isaac LiDAR 与 ROS LaserScan 投影参数的 frame/range/角度契约。 |
@@ -371,7 +373,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/spawn_poses.py` | ROS 侧读取命名 USD/Map Pose并要求已标定。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scenario.py` | 场景 dataclass/loader、导航场景门、Isaac 动态运行时和物理几何契约校验。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/metrics.py` | 单轮成功判定、路径长度、角度 wrap、避障率和增量时间改善等纯指标函数。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema 校验、配置 SHA256、单轮 CSV/JSON 报告，以及底盘诊断严格 JSON 的原子写入。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema、Isaac 运行态 provenance、哈希和严格 JSON 值校验，配置 SHA256、单轮 CSV/JSON 报告，以及底盘诊断原子写入。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/incremental_map_compare.py` | 离线加载三张 Map Server YAML/PGM，按世界坐标比较耗时、变化恢复和旧区退化。 |
@@ -379,7 +381,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault.py` | 无 ROS 依赖的 LaserScan 故障状态机；实现丢包/暂停/frame 替换/恢复/计数，并强制每条命令携带当前 epoch，彻底隔离 Reset 前排队的旧命令。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scan_fault_bridge.py` | ROS adapter：把 `/scan` 按显式 JSON 命令转发到 `/scan_fault`，发布 transient-local 状态，并在 reset event 或时间戳回退时清除旧故障。仅用于 Collision Monitor 安全验证。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline.py` | 与 ROS 解耦的底盘诊断配置解析与指标核心；严格校验运动方向/限幅，计算路程、横向漂移、航向、四轮方向、停止响应和时间戳完整性。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；每段运动前 Reset，等待新鲜 Clock/Odom/JointState 和稳定静止，按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行 14 段命令；所有退出路径尝试零速 burst，完整运行及进入采集循环后的受理异常原子写报告，启动期冲突/无订阅者与信号中断不保证报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/motion_baseline_runner.py` | 底盘诊断 ROS 节点；在创建命令 publisher 前 fail-closed 读取 Isaac 启动 provenance，每段运动前 Reset，等待新鲜 Clock/Odom/JointState 和稳定静止，按 Trigger 服务所有权只放行唯一 Reset 零速 publisher，独占其余 `/cmd_vel` 执行 14 段命令；所有退出路径尝试零速 burst并原子写入含运行态证据的报告。 |
 | `ros2_ws/src/robot_experiments/launch/initial_pose.launch.py` | 把 spawn pose、持续监听和扫描/TF 恢复参数传给 initial pose publisher。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 启动 experiment runner并传入场景、出生点、输出目录和可选配置 override。 |
 | `ros2_ws/src/robot_experiments/launch/scan_fault_bridge.launch.py` | opt-in 故障桥 launch；暴露输入、输出、控制、状态、Reset Topic 与状态周期参数，生产导航默认不启动。 |

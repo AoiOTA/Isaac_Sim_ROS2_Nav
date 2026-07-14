@@ -502,6 +502,31 @@ start/end snapshot 写成连续平均，不要比较不同 Camera/RViz/目标/�
 不要修改报告 JSON 掩盖缺失数据，不要让 benchmark 启动器隐式 sudo/改电源
 策略，也不要测试结束后把主机永久留在性能模式。
 
+### 14.1 底盘报告缺少运行态指纹或 Reset recovery 超时
+
+**症状：** motion baseline 在首段前失败；报告中
+`runtime_provenance.verified=false`；或错误为 `Reset recovery timed out`。
+
+先确认 Isaac 已经启动且与脚本处于相同 Domain，再检查启动快照：
+
+```bash
+source scripts/lib/common.sh
+source_ros --require-workspace
+ros2 param dump /isaac_navigation_sim
+jq '{result, failure_reason, runtime_provenance, segments}' \
+  data/reports/motion/<report>.json
+ros2 topic echo /odom --once --field twist.twist
+ros2 topic echo /joint_states --once --field velocity
+```
+
+`run_motion_baseline.sh` 不负责启动 Isaac；`/cmd_vel` 没有订阅者时拒绝运行是正确
+门禁。provenance 缺字段通常表示 ROS 工作区未重建、连接了旧 Isaac 进程，或查询
+shell 没有加载项目 Domain。Reset Trigger 成功只证明事务响应完成；runner 仍要求
+新的 Clock/Odom/JointState 并连续静止。保留失败 JSON，核对三路 Topic Hz、当前
+底盘/轮速和 Isaac reset 日志；不要先放宽 30 秒 recovery 或速度阈值。若全新 Isaac
+进程立即复跑成功，把旧样本分类为启动/长空闲瞬态并继续 soak 复现；若连续复现，
+应给 runner 增加逐阈值诊断后修物理或 Reset，不得删除失败样本。
+
 ## 15. 异常退出后仍有进程
 
 ```bash

@@ -5,7 +5,7 @@
 > 适用仓库：`AoiOTA/Isaac_Sim_ROS2_Nav`
 > 适用环境：Ubuntu 24.04、ROS 2 Jazzy、Isaac Sim 6.0.1.0、RTX 4090、Fast DDS、ROS_DOMAIN_ID=42
 > 文档性质：新增的专项实施计划、问题复现记录、根因验证方案、参数调优方案、测试矩阵与验收标准
-> 执行方式：在当前 Codex Goal 和当前仓库基础上继续，不重新初始化项目，不推翻现有架构，不覆盖已有计划文档
+> 执行方式：在当前 Codex Goal 和当前仓库基础上继续，不重新初始化项目，不推翻现有架构，不覆盖已有计划文档；本文全部阶段属于同一个不可拆分的 Goal，必须一次性连续执行到全部验收、文档回填、提交与推送完成后才停止；不得在任何阶段边界触发 Goal 模式暂停、挂起或等待 `/goal resume`
 
 ---
 
@@ -19,7 +19,7 @@
 docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 ```
 
-然后严格按照本文的阶段顺序实施、测试、回填和提交。
+然后将本文所有阶段视为同一个不可拆分的 Goal，严格按照阶段依赖顺序连续实施、测试、修复、复测、回填、提交和推送。阶段只是执行顺序和内部里程碑，不是需要用户逐阶段确认的独立 Goal。除非遇到无法通过代码、配置、测试重试或现有权限解决的真实外部阻塞，否则不得在任一阶段结束后停止、暂停、挂起、结束当前执行轮次、等待用户回复、要求用户输入“继续”或 `/goal resume`、只汇报阶段进度或把剩余阶段留到下一轮；不得触发 Goal 模式的阶段完成暂停、检查点暂停、handoff、yield 或等待恢复状态，必须在同一连续执行上下文中立即调用下一阶段所需工具和命令，直至本文全部阶段、测试矩阵、正式统计、文档回填、提交与推送全部完成。
 
 本轮任务的核心不是“让测试通过”，而是解决已经在真实 Isaac Sim + ROS 2 运行中复现的以下问题：
 
@@ -39,6 +39,10 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 Codex 必须遵守：
 
 - 先检查当前分支、工作树、最近提交和已合并改动，保留用户现有修改；
+- 本文所有阶段必须在同一个 Goal 运行中自动串联完成，不得拆成多个 Goal、多个需要用户确认的阶段性任务或后续待办，也不得使用会在阶段完成后自动暂停并等待 `/goal resume` 的分阶段 Goal、子 Goal 或检查点机制；
+- 完成某一阶段后，只能记录阶段结果、提交必要的中间 Commit 并立即进入下一阶段，不得停止、暂停、挂起、结束当前执行轮次，或请求用户再次发送“继续”或 `/goal resume`；
+- 阶段内出现测试失败、指标不达标、回归或可修复警告时，必须在同一 Goal 中诊断、修改、重建和复测，不能把失败作为提前结束理由；
+- 只有全部阶段和验收项完成，或出现确实需要用户凭据、硬件操作、外部资产且无法绕过的真实外部阻塞时才允许停止；外部阻塞必须提供完整证据和最小解阻动作；
 - 不直接修改 NVIDIA 官方资产源文件；
 - 机器人和环境物理修复通过项目 Overlay、项目配置和项目代码完成；
 - 不覆盖 `plan.md`；
@@ -75,7 +79,7 @@ Codex 必须遵守：
 9. `refactor: migrate deprecated Isaac graph interfaces`
 10. `docs: record runtime evidence and final verification`
 
-不得在没有测试结果的情况下把所有改动压成一个难以审查的大提交。
+不得在没有测试结果的情况下把所有改动压成一个难以审查的大提交。独立提交只用于版本控制、审查和回滚，不代表阶段结束后可以停止、暂停或等待 `/goal resume`；每次中间提交完成后必须在同一连续执行中继续执行下一阶段，直到整个 Goal 全部完成。
 
 ---
 
@@ -1167,30 +1171,6 @@ summary.md
 - GUI/RViz 人工矩阵单独记录；
 - 未运行的项目明确标为“未验收”，不得写 PASS。
 
-### 6.4 实施回填：首个底盘运动基线（2026-07-14）
-
-已新增并真实执行 `run_motion_baseline.sh` 的 Warehouse + Ideal 底盘物理参数改动前基线。固定
-配置包含低/中/高三档前进、后退、左右原地转向，以及左右各 5 秒圆弧，共 14 段；
-每段前执行 Reset，独占非 Reset `/cmd_vel`，记录 Odom、JointState、Clock、轮向、
-停止响应和漂移。14/14 段采集完整，原始本机报告为
-`data/reports/motion/baseline_warehouse_before.json`（按策略忽略），文件 SHA256：
-`07f83f0232de021d1d71817f6452bf33633bbc689eb29e763248ada8ac4cccb2`。
-
-当前证据结论：
-
-- 三档直行实际平均速度约为命令的 `93%`、`87%`、`79%`，前后方向接近对称，
-  横向漂移接近零；
-- 原地转向实际平均角速度只达到命令的约 `25%–38%`（左右/档位不同），平移漂移
-  随命令升高到 `0.0831 m`；
-- 两段圆弧命令 `±0.40 rad/s`，实际平均角速度只有约 `±0.034 rad/s`；
-- 所有原地转向和圆弧段均出现轮速方向 `mixed`/不匹配；
-- Clock、Odom、JointState 的 session 重复和回退计数均为 0；停止 onset
-  `0.0167–0.0500 s`，连续静止确认 `0.5167–0.5500 s`。
-
-这份报告建立了问题基线，不是修复验收。SimplePlane + Ideal、Warehouse +
-Realistic、SimplePlane + Realistic，以及物理修复后的同配置复跑尚未完成；这些
-样本齐全前不得冻结 skid-steer 参数或声称转向/漂移问题解决。
-
 ---
 
 ## 7. 阶段 1：修复仿真时间与传感器链
@@ -1256,27 +1236,6 @@ Codex 必须查阅 Isaac Sim 6.0.1 当前安装版本的官方 API/设置，不�
 - 动态障碍的位置随时间连续；
 - `/scan` 时间戳单调；
 - SLAM 和 Costmap 不因旋转产生虚假障碍带。
-
-### 7.3.1 实施回填：物理步短窗与警告 A/B（2026-07-14）
-
-已完成代码侧第一轮：Clock、IMU、JointState、Ideal Odom、TF 和控制图改为物理步
-触发，主循环用 `FramePacer` 在 realtime 下节流且每帧只推进一个固定 physics
-step；Motion BVH 通过当前 Isaac SimulationApp 设置在 Kit 启动前启用，旧
-JointState/TF target 字段和 LiDAR `fullScan` 弃用写入也已移除。
-
-真实 headless Warehouse、Ideal、Camera Off 的 8 秒 profiler 窗口测得 RTF
-`0.9401`；Clock/IMU/Joint/Odom 各 452 样本、约 `56.40 Hz`、stamp 周期
-`16.6667 ms`，PointCloud 77 样本、`9.506 Hz`、stamp 周期 `100 ms`；所有这些
-Topic 的 duplicate/rollback/future 均为 0，`odom -> base_link` P99 lag
-`16.667 ms`。本机忽略报告 `/tmp/timing_physics_step_2.json` 的 SHA256 为
-`dc01911c4844dbbffc0b239b5e92f7717c20a0d862c8df5705494d158ef7aff9`。
-
-阶段仍为**部分完成**：默认 LiDAR 累积输出在约 140/190 秒日志中仍有 11/23 次
-`getSimulationTimeMonotonicAtTime`；关闭累积输出后 90 秒增至 2860 次，已排除为
-修复方向。临时 `resetSimulationTimeOnStop=true` 在无 Reset 的 90 秒窗口为 0 次，
-但 Reset 前后 PointCloud/Clock epoch 尚未测量，候选已撤回。完整 7.1 A/B、至少
-15 分钟 soak、旋转时真实 Scan 视觉和动态障碍连续性都未完成，不得把物理步短窗
-或 Motion BVH 设置等同于阶段 1 验收通过。
 
 ### 7.4 Mapping Costmap 误警告
 
@@ -2024,20 +1983,14 @@ optics:
   projection: perspective
   focal_length_mm: 24.0
   horizontal_aperture_mm: 21.0
-  focus_distance_m: 4.0
-  f_stop: 0.0
+  focus_distance_m: 2.0
+  f_stop: 16.0
 
 exposure:
   enabled: true
-  auto_exposure_enabled: false
-  time_s: 0.02
-  responsivity: 1.10267
-  f_stop: 5.0
-
-render_product:
-  anti_aliasing: rtxaa
-  motion_blur_enabled: false
-  depth_of_field_enabled: false
+  time_s: 0.005
+  responsivity: <calibrated>
+  f_stop: <exposure value if API requires>
 ```
 
 Schema、加载器、测试同步修改。
@@ -2098,13 +2051,6 @@ navigation:
 - CameraInfo 与实际分辨率一致；
 - monitoring RTF 不显著下降；
 - high_quality 的实际频率明确记录，不把配置 30 Hz 当作实测。
-
-实施状态（2026-07-14）：Camera schema 已升级为 v3，光学
-`optics.f_stop=0.0` 与手动曝光 `exposure.f_stop` 已拆分；CameraFront
-RenderProduct 已按本机 Isaac Sim 6.0.1 的 RTX schema 显式使用 RTXAA，并关闭
-Motion Blur 和 DoF，Camera Prim 显式关闭 Auto Exposure。严格解析与定向单元
-测试已有代码证据，但静止/运动真实抓帧、清晰度、RTF 和 high_quality 实际频率
-仍待运行时验收，不能据此状态宣称 Camera 视觉质量已通过。
 
 ---
 
@@ -2464,15 +2410,6 @@ Codex 必须先检查当前仓库中 `warehouse_v2` 的真实状态，不得假�
 10. 未标定时必须使用 `initial_pose_source:=rviz`，不得静默套用 `warehouse_v1` 的标定结果。
 
 如果 `warehouse_v2` 目前只存在本地工作树、运行输出目录或未追踪文件中，必须先明确记录其路径、来源和是否应纳入 Git/LFS，不得直接覆盖现有 `warehouse_v1`。
-
-实施状态（2026-07-14）：已从本机遗留输出恢复 Occupancy YAML/PGM、Pose Graph/
-`.data` 四工件并登记 `warehouse_v2.yaml` Manifest；逐文件 size/SHA256 与 bundle
-SHA256 已通过真实仓库 `map_manifest verify`，大型 `.posegraph` 已纳入 Git LFS。
-Manifest 如实记录原始建图命令未知、运行时对齐未验证、`calibrated: false`，所以
-`auto` 仍被契约拒绝；`rviz` 路径允许人工播种，但当前只用于对齐检查而不能计入
-正式统计。第 8 项 Spawn/Map Pose 标定、
-物理场景一致性、长距离路线和正式导航均未完成；四工件“可校验”不得写成地图
-“可验收”。
 
 #### 20.2.2 物理场景与地图一致性
 
@@ -3036,6 +2973,15 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 
 为本轮唯一专项执行计划。先确认该文件已经包含 2026-07-14 新增的 Warehouse V2 长距离静态/动态避障、RViz 受管退出和 Local Plan 可视化补充，再检查当前 main、工作树、最近提交和现有三份计划文档的实施状态。
 
+本次请求是一个完整、不可拆分、一次性执行到底的 Codex Goal。下面十三个阶段只是同一 Goal 内部的依赖顺序，不是十三次独立 Goal，也不是逐阶段等待用户确认的检查点。必须在一次 Goal 执行中自动连续完成第一至第十三阶段；完成某一阶段后，只在内部记录结果、完成必要的测试和中间提交，然后立即进入下一阶段。不得停止、暂停、挂起、结束当前执行轮次或把执行权交还给用户，不得触发 Goal 模式的阶段完成暂停、检查点暂停、handoff、yield 或等待恢复状态，不得询问我是否继续，不得要求我再次发送“继续”或 `/goal resume`，不得把阶段总结当作最终答复，也不得把剩余阶段改写为后续任务、建议或待办事项。
+
+若测试失败、指标未达到、警告未消除或出现回归，必须留在同一 Goal 中继续诊断、修改、重建、复测和迭代，直到通过该阶段的退出条件后自动进入下一阶段。允许创建中间 Commit、阶段性报告和临时实验 Profile，但完成这些动作后必须在同一连续执行中继续，不得因此暂停 Goal 或等待 `/goal resume`。只有以下两种情况允许结束本 Goal：
+
+1. 第一至第十三阶段、N01-N21 全部适用测试、正式统计、文档回填、最终提交和推送全部完成，并输出唯一一次最终总报告；
+2. 出现必须由用户提供凭据、执行硬件操作、补充不可获取外部资产或处理平台强制中断的真实外部阻塞，且已经穷尽仓库内可行的替代方案，并提供完整证据、已完成项、未完成项和最小解阻动作。
+
+不得把“某一阶段完成”“单元测试通过”“某个场景成功”或“已给出下一阶段计划”作为停止条件。
+
 本轮重点不是再次整理项目，而是基于真实运行现象，系统修复并验证：
 
 1. 空旷环境导航实际轨迹弯曲、回绕和反复纠偏；
@@ -3064,7 +3010,7 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 24. RViz 中 MPPI Candidate Trajectories 可以显示，但 Local Plan 不显示；
 25. 必须恢复 `/optimal_trajectory` 的真实发布、QoS、TF 和 RViz 可视化契约，Candidate Trajectories 不得替代 Local Plan。
 
-严格按方案阶段执行：
+以下十三个阶段必须在同一个 Goal 中按顺序连续执行，全部完成前不得停止：
 
 第一阶段：检查当前仓库、工作树、warehouse_v2 地图四工件、Manifest、LFS、Spawn/Map 标定和现有运行证据。不得假定 warehouse_v2 已经完整可用。
 
@@ -3091,6 +3037,8 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 第十二阶段：完成 N01-N21 测试矩阵。N01-N10 保留为 Smoke/底层回归；N11-N19 为 warehouse_v2 长距离、Local Plan 和退出专项；N20 为不少于 100 次静态正式统计；N21 为不少于 100 次动态正式统计。调参样本不得混入正式验收样本。
 
 第十三阶段：参数冻结后重新执行全部正式统计。不得选择性删除失败样本，不得只重复简单场景，不得通过极低速度、禁用 Collision Monitor 或缩小安全距离换取成功率。
+
+阶段衔接规则：每完成一个阶段，立即执行该阶段要求的构建、测试、真实运行验证和文档回填；若通过，必须在同一连续执行上下文中自动进入下一阶段，不得暂停 Goal、结束当前执行轮次或等待 `/goal resume`；若失败，留在当前阶段修复并重试。不得将任何阶段拆分成新的 Goal、后续对话任务、待办事项或需要用户再次确认的操作。阶段性汇报只能作为内部进度记录，不能作为结束当前 Goal、触发阶段暂停或要求恢复执行的答复。
 
 保留以下架构约束：
 
@@ -3141,7 +3089,7 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 - docs/repository_index.md
 - README.md
 
-最终提交和推送前，给出：
+全部十三个阶段、全部必需测试、正式统计和文档回填均完成后，执行最终提交和推送，并在唯一的最终答复中给出：
 
 1. 根因表；
 2. 逐文件修改清单；
@@ -3164,3 +3112,26 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 19. Commit/PR 信息。
 
 不要把“能够跑到目标”当作导航质量完成。最终目标是在 warehouse_v2 的长距离复杂路线中，在满足安全和统计指标的前提下，机器人能够准确到达目标、稳定停车，并平滑、连续地完成静态与动态避障。
+
+在上述全部内容完成、验证、回填、提交并推送之前，不得结束、暂停或挂起本 Goal，不得在阶段边界把执行权交还给用户，也不得输出要求用户再次输入“继续”或 `/goal resume` 的阶段性最终答复。
+
+---
+
+## 2026-07-14 连续执行台账（当前工作树）
+
+- 第一阶段审计：`warehouse_v2` 四工件/Manifest/LFS 完整性已验证，但
+  `runtime_alignment_verified=false`、`calibrated=false`，因此仍不可用于自动播种
+  或正式统计；该边界保持不变。
+- 第二阶段底层基线：Warehouse + Ideal 改动前 14 段已保留；本轮又完成项目标准
+  Cylinder 下 32/4 与 32/16 各 14 段隔离 A/B，并新增 Isaac 启动 provenance，
+  后续报告可以绑定实际输入而不再只哈希 motion YAML。短距离 Nav2、三级 cmd_vel、
+  Local Plan 与 RViz 进程树的既有基线仍按验证台账保留。
+- 第三阶段当前进度：四个 obsolete 官方轮 collider 已由项目 Overlay 停用并替换为
+  对称标准 Cylinder；真实 180 步启动中 `customGeometry` 警告为 0。32/4 与 32/16
+  保持直行/停车等价，32/4 的 high-tier 左右旋转更高、Reset latency 无 16 的
+  9.07 秒离群点，且 TGS 警告从 1 降为 0，因此冻结 solver `32/4`。低速左右转向
+  不对称、接触材料、Joint Axis、有效轮距、SimplePlane/Realistic A/B、仿真时间
+  15 分钟门仍未完成，第三阶段尚未退出。
+- 证据纪律：调参 JSON 继续由 Git 忽略，摘要、命令、报告 SHA256、失败样本和边界
+  回填到 `docs/verification.md`；正式统计必须在 clean commit、冻结输入和独立输出
+  集合上重跑，不混入上述调参样本。
