@@ -1330,6 +1330,9 @@ JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback
 分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat，并分三层锁定
 全矩阵、同环境、同 profile/同组输入。yaw gain 和位移误差按物理时钟的
 `observed_duration_sec` 计算，不按理想配置时长；Jackal 轮半径只接受 `0.098 m`。
+项目 Stage、源资产和 collider 拓扑在同环境跨 profile 锁定；
+`composed_root_layer_sha256` 可能随 profile 有意 author 的 Stage 接触意见变化，因此与
+contact overlay 一起在同一“环境 + profile”组内锁定，任何 repeat 漂移仍会失败关闭。
 输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
 最终选择仍需结合两环境指标与工程约束。这里接受可证明的纯旋转 `mixed`，只是区分
 “短暂反向瞬态”和“主导轮速方向错误”，不会把方向检查降级为只看一个布尔字段。

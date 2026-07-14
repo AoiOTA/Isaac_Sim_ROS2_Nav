@@ -472,6 +472,39 @@ def test_environment_specific_overlay_bytes_are_not_cross_environment_locked(tmp
     assert set(report["profile_contracts"]) == {"legacy_baseline"}
 
 
+def test_composed_root_hash_is_locked_per_environment_profile_group(tmp_path):
+    """Profile-authored Stage composition may vary, but repeats cannot drift."""
+    legacy = _three_reports(tmp_path / "legacy")
+    explicit = _three_reports(
+        tmp_path / "explicit",
+        contact_profile="explicit_material",
+    )
+    for path in explicit:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["runtime_provenance"]["environment"][
+            "composed_root_layer_sha256"
+        ] = "4" * 64
+        _write(path, document)
+
+    analysis = analyse_contact_ab([*legacy, *explicit], RADIUS_M)
+
+    assert analysis["analysis_valid"] is True
+    assert "composed_root_layer_sha256" not in analysis["environment_contracts"][
+        "Warehouse"
+    ]["environment"]
+    assert analysis["groups"]["Warehouse::explicit_material"]["contact_contract"][
+        "composed_root_layer_sha256"
+    ] == "4" * 64
+
+    drifted = json.loads(explicit[1].read_text(encoding="utf-8"))
+    drifted["runtime_provenance"]["environment"][
+        "composed_root_layer_sha256"
+    ] = "5" * 64
+    _write(explicit[1], drifted)
+    with pytest.raises(ConfigurationError, match="contact contract mismatch"):
+        analyse_contact_ab([*legacy, *explicit], RADIUS_M)
+
+
 def test_exact_six_segment_protocol_is_fail_closed(tmp_path):
     """A command mutation is excluded with the affected segment identified."""
     paths = _three_reports(tmp_path)
