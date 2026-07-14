@@ -103,9 +103,9 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 | ROS 操作 | Isaac `--navigation-mode` | Pose Graph | OccupancyGrid YAML | Map Pose 标定 |
 | --- | --- | --- | --- | --- |
 | `mapping` | `mapping` | 禁止传入 | 禁止传入 | 不要求 |
-| `incremental_mapping` | `mapping` | 必须存在 `.posegraph` 和 `.data` | 禁止传入 | 必须 |
-| `localization` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 必须 |
-| `navigation` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 必须 |
+| `incremental_mapping` | `mapping` | 必须存在 `.posegraph` 和 `.data` | 禁止传入 | 仅允许 `auto`；exact bundle 与出生点必须已标定，未标定地图不得进入增量建图 |
+| `localization` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 正式统计必须使用已标定 `auto`；`rviz` 仅用于人工对齐/诊断 |
+| `navigation` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 正式统计必须使用已标定 `auto`；`rviz` 仅用于人工对齐/诊断 |
 
 里程计模式在两端都使用 `ideal` 或 `realistic`。结构 TF 默认由 Isaac 发布；Realistic 模式也支持改由 Robot State Publisher 发布，但必须在两端同时显式选择 `structure_tf_source:=rsp`。Ideal + RSP 会被拒绝，Isaac 与 RSP 不能同时拥有结构 TF。
 
@@ -251,7 +251,7 @@ ros2 launch robot_experiments experiment.launch.py \
   output_directory:="$PWD/data/experiment_runs/dynamic_smoke"
 ```
 
-Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。`repeat: false` 表示单程到达终点后保持，`repeat: true` 表示沿同一路径往返；两侧都必须显式填写且一致。当前横穿与对向两个单程障碍的 4-seed 基线已 4/4 成功，GT 终点误差为 `0.168–0.186 m`，每轮均看到 Collision Monitor、碰撞状态、定位状态和 `map → odom`，且最终静止。静态 smoke 仍只使用固定仓库、显式 `static: []`；这些 4 个 seed 是同一世界的确定性重复，不是多布局统计。完整 200 次静态矩阵和多类动态避障率仍需执行。
+Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。`repeat: false` 表示单程到达终点后保持，`repeat: true` 表示沿同一路径往返；两侧都必须显式填写且一致。当前横穿与对向两个单程障碍的 4-seed 基线已 4/4 成功，GT 终点误差为 `0.168–0.186 m`，每轮均看到 Collision Monitor、碰撞状态、定位状态和 `map → odom`，且最终静止。静态 smoke 仍只使用固定仓库、显式 `static: []`；这些 4 个 seed 是同一世界的确定性重复，不是多布局统计，也不得计入 N20/N21。参数冻结后仍须在已对齐、已标定的 `warehouse_v2` 上分别完成静态不少于 100 次、动态不少于 100 次正式统计。
 
 `/simulation/collision` 来自底盘物理接触传感器；`/collision_monitor_state` 来自 Nav2 Collision Monitor。Ground Truth 只在显式启用且 Map Pose 已标定时发布，不发布 TF，也不进入控制链。
 
@@ -298,7 +298,10 @@ ros2 lifecycle get /map_server
 ros2 run tf2_tools view_frames
 ```
 
-统计阈值、场景数量和失败判定以 [`plan.md`](plan.md) 第十二、十四部分为准。单元测试或一次 smoke run 不能替代 200 次静态障碍实验等统计验收。
+统计阈值、场景数量和失败判定以
+[`docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md`](docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md)
+为准。单元测试或一次 smoke run 不能替代参数冻结后的 `warehouse_v2` 静态
+不少于 100 次（N20）和动态不少于 100 次（N21）正式统计。
 
 完整的已验证结果、复现命令和剩余验收项见 [`docs/verification.md`](docs/verification.md)。
 

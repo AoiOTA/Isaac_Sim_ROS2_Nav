@@ -66,6 +66,14 @@ cd Isaac_Sim_ROS2_Nav
 export PROJECT_ROOT="$PWD"
 ```
 
+如果尚未配置 GitHub SSH Key，改用 HTTPS：
+
+```bash
+git clone https://github.com/AoiOTA/Isaac_Sim_ROS2_Nav.git Isaac_Sim_ROS2_Nav
+cd Isaac_Sim_ROS2_Nav
+export PROJECT_ROOT="$PWD"
+```
+
 如果已经下载了仓库，进入实际仓库根目录后再设置变量；不要直接照抄一个不存在
 的绝对路径：
 
@@ -120,6 +128,7 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 | Isaac 6.0 资产 | 必须包含 Warehouse 与 Clearpath Jackal，默认根目录见上节。 |
 | ROS 2 Jazzy | 默认安装到 `/opt/ros/jazzy`。 |
 | Git LFS | 下载仓库中的大 Pose Graph。 |
+| `jq`、`ripgrep` | 阅读 JSON 证据和按路径/关键字检索源码、日志。 |
 | `colcon`、`rosdep` | 解析 ROS 依赖和构建十一个工作区包。 |
 | Python 3.12、PyYAML、pytest、jsonschema | 运行配置解析、单元测试和实验报告。 |
 | `gnome-terminal`、`xterm` 或 `konsole` | 可选；自动弹出 Mapping Teleop 终端需要其中一个。 |
@@ -127,6 +136,7 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 先安装 ROS Jazzy 与 Isaac Sim，再让 `rosdep` 根据当前 `package.xml` 安装 ROS/C++ 依赖；它会包含 Nav2、SLAM Toolbox、robot_localization、Ceres、RViz 和消息包：
 
 ```bash
+sudo apt install git-lfs jq ripgrep
 source /opt/ros/jazzy/setup.bash
 rosdep update
 rosdep install --from-paths ros2_ws/src --ignore-src -r -y
@@ -866,7 +876,10 @@ ros2 launch robot_experiments experiment.launch.py \
   output_directory:="$PROJECT_ROOT/data/experiment_runs/static_run"
 ```
 
-当前 `static.yaml` 会在同一固定仓库中运行 4 个 seed。它是 Reset/导航 smoke，不是 200 次多布局统计。
+当前 `static.yaml` 是 `warehouse_v1`、固定 1 m 目标、4 seed 的 Reset/导航
+smoke，只用于检查自动实验链路，不得计入 N20。正式 N20 必须先完成
+`warehouse_v2` 运行时对齐与 Map Pose 标定，建立 WS01–WS08 长距离静态场景并冻结
+参数，再在全新输出批次中完成不少于 100 次独立运行。
 
 结果目录中每轮都有：
 
@@ -914,6 +927,10 @@ isaac_sim/configs/experiments/dynamic.yaml
 ros2_ws/src/robot_experiments/config/dynamic.yaml
 ```
 
+当前 `dynamic.yaml` 同样只是 `warehouse_v1` 的 4-seed crossing/oncoming 基线，
+不得计入 N21。正式 N21 必须在已标定的 `warehouse_v2` 上覆盖 WD01–WD10 动态
+场景，并完成不少于 100 次独立运行。
+
 ## 13. 长距离 smoke
 
 使用与静态实验相同的 Isaac/ROS 启动方式，只替换场景文件：
@@ -926,6 +943,8 @@ ros2 launch robot_experiments experiment.launch.py \
 ```
 
 当前目标为 Map 坐标 `[3.0, 0.0]`，用于覆盖比 1 m smoke 更长的规划和控制链。
+该文件仍是 `warehouse_v1`、单 seed 的链路 smoke，不是 Warehouse V2 的 15–30 m
+长距离路线，也不得计入 N20/N21。
 
 ## 14. 增量建图与离线比较
 
@@ -1176,7 +1195,16 @@ sha256sum isaac_sim/configs/robots/jackal.yaml \
   isaac_sim/assets/robots/jackal/jackal_nav.usda
 ```
 
-当前已经完成 `Warehouse + Ideal` 的改动前基线，以及项目标准 Cylinder 下 TGS 32/4 与 32/16 的隔离 A/B；三份成功报告都是 14/14 段。32/4 保持直行/停车、改善 high-tier 左右旋转、避免 32/16 的 TGS 警告和 Reset latency 离群点，因此成为冻结 solver 值。低速转向仍明显左右不对称，SimplePlane、Realistic、接触材料和有效轮距对照尚未完成，所以这不是完整 skid-steer 物理验收。原始 JSON 属于本机忽略输出，不会随 clone 下载；可复核摘要和 SHA256 见 [`verification.md`](verification.md)。
+当前已经完成 `Warehouse + Ideal` 的改动前基线，以及项目标准 Cylinder 下 TGS
+32/4 与 32/16 的隔离 A/B；三份成功报告都是 14/14 段。32/4 保持直行/停车、
+改善 high-tier 左右旋转、避免 32/16 的 TGS 警告和 Reset latency 离群点，因此成为
+冻结 solver 值。clean commit `0500f9e` 上还完成了 SimplePlane/Warehouse × 六
+Profile × 每组 3 次、共 36 个独立 Isaac 进程的正式接触矩阵：证据链、216 次
+Reset 和聚合完整性全部通过，但空旷平面原地旋转中心漂移仍为
+`0.297–0.350 m`，角速度平均误差仍为 `60.1%–69.0%`，没有任何 Profile 达到
+计划 8.7 的物理门。因此接触 threshold/材质尚未冻结，Realistic 和候选有效轮距
+对照仍需继续。这不是完整 skid-steer 物理验收。原始 JSON 属于本机忽略输出，不会
+随 clone 下载；可复核摘要和 SHA256 见 [`verification.md`](verification.md)。
 
 停止顺序是：等待 motion runner 自己退出；Realistic 时对终端 B 按一次 `Ctrl+C` 并等待 ROS 有序关闭；最后停止 Isaac。中途按 `Ctrl+C` 会触发零速 burst 后退出，但信号中断可能来不及生成报告；先确认 runner 已退出且 `/cmd_vel` 回零，再停止仿真。需要完整 JSON 时重新运行全部 14 段，不要把中断样本当成成功报告。
 
@@ -1339,12 +1367,31 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
 `001_simple_plane_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
 分别保存 Isaac 与 runner 日志。成功目录根部有三份总证据：
 
+```text
+<output-dir>/
+├── manifest.tsv
+├── analysis.json
+├── batch_summary.json
+├── reports/
+│   └── <run_id>.json
+└── logs/
+    ├── <run_id>.isaac.log
+    └── <run_id>.runner.log
+```
+
 - `manifest.tsv`：每轮 31 列输入、状态、路径，以及 report/Isaac log/runner log 的
   最终 SHA256；所有轮完成后改为只读并冻结 hash。
 - `analysis.json`：把全部报告作为一个数据集重新验证；`all` 必须满足两环境 × 六
   profile 完整矩阵，单环境也必须包含六 profile，且每组重复数不少于 `--repeats`。
 - `batch_summary.json`：记录 Git/协议输入、预期/实际计数，并绑定已冻结 manifest 和
   analysis 的路径及 SHA256；不存在自引用 hash。
+
+阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
+hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
+环境/Profile 的运动统计。单轮细节看 `reports/`，故障根因看同名两份日志。只有全部
+轮次成功后才生成 `analysis.json` 和 `batch_summary.json`，并把 `manifest.tsv` 冻结
+为只读。失败目录通常只有部分 manifest、报告和日志；缺少两个聚合文件是失败关闭的
+预期行为，不是文件丢失。失败目录不得续跑，也不得把其中的部分样本混入新批次。
 
 分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat，并分三层锁定
 全矩阵、同环境、同 profile/同组输入。yaw gain 和位移误差按物理时钟的
@@ -1816,10 +1863,11 @@ git pull --ff-only origin main
 
 仓库当前为 Ideal/Realistic 导航、固定地图定位、前置 RGB Camera/CameraInfo、动态障碍、事务式 Reset、Lifecycle 恢复、三套模式 RViz、Camera-only RViz、Mapping 安全 Teleop、底盘运动诊断、运行时 Profiler 和实验报告提供了完整入口与自动合同检查。代码存在、构建通过或 topic 能发布都不等于整套运行时验收已经完成；每一项实际跑过的环境、命令、指标和限制以 [`verification.md`](verification.md) 为准。当前发布的 MPPI stable/performance 都保持 `10 Hz`、`20 × 0.10 s` 预测窗，但下面内容仍需要真实实验或外部资产：
 
-- 计划中的 200 次多起终点/多布局静态统计；
-- 多类型动态障碍总体成功率；
+- `warehouse_v2` 与当前 Stage/出生点的运行时对齐、重复冷启动标定和长距离路线/
+  场景验证；
+- 参数冻结后，`warehouse_v2` 静态正式统计不少于 100 次（N20）；
+- 参数冻结后，`warehouse_v2` 动态正式统计不少于 100 次（N21）；
 - 真实 changed-region 的增量建图 30% 改善证明；
-- `warehouse_v2` 与当前 Stage/出生点的运行时对齐、标定和正式路线/场景验证；
 - SimplePlane/Warehouse、Ideal/Realistic 的完整底盘运动 A/B 以及据此冻结的物理参数；
 - 长时间 soak；
 - 全 Camera profile 的长期资源/性能矩阵与逐档人工画质验收；

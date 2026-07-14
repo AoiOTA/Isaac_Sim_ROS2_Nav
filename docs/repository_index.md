@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文按完整路径逐项解释当前交付源码：既覆盖 `git ls-files` 返回的已跟踪文件，也覆盖本轮已经完成、准备随提交纳入 Git 的新增源码。这里不写容易失效的“文件总数”；维护者应使用文末的集合核对命令确认覆盖率。
+本文按完整路径逐项解释当前 Git 跟踪的交付源码。这里不写容易失效的“文件总数”；维护者应使用文末的集合核对命令确认覆盖率。
 
 构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。根目录下的 `.tmp_runtime/` 是本轮参数矩阵和故障注入产生的临时证据目录，也不是交付源码，不能提交。`ros2_ws/build/`、`ros2_ws/install/`、`ros2_ws/log/` 同理；受管进程的 PID/锁/会话元数据默认位于 `/tmp/isaac_sim_ros2_nav_${UID}/`，在仓库外且只允许当前 UID 访问。
 
@@ -95,7 +95,7 @@
 | `scripts/profile_runtime.sh` | 运行 `runtime_profiler` 的命令行包装器；统一持续时间、预热、标签和原子 JSON 报告路径。 |
 | `scripts/run_camera_view.sh` | 单独启动前视 RGB 相机 RViz 界面；复用项目 ROS 环境、受管进程组和 RViz 单实例锁。 |
 | `scripts/run_motion_baseline.sh` | 非交互底盘运动诊断入口；要求独占非 Reset `/cmd_vel` 运动命令，校验 Navigation/Collision Monitor/Teleop 未运行，按环境与里程计模式命名严格 JSON 报告，并用单实例锁纳入安全清理。 |
-| `scripts/run_contact_ab_matrix.sh` | 接触模型严格串行 A/B 入口；冻结 Git/协议输入，清除继承的嵌套配置覆盖，按 SimplePlane→Warehouse、六 profile、repeat 的确定顺序独立启动 Isaac 与 committed skid-steer runner；逐轮验证 schema v3、六段报告、四轮主导符号及纯旋转 `mixed` 瞬态内部一致性，最终执行跨轮三层身份锁/完整矩阵聚合，冻结含 report/双日志 SHA 的 manifest，并原子写 `analysis.json` 与绑定两份证据 SHA 的 batch summary；清理只信号本会话认证进程组。 |
+| `scripts/run_contact_ab_matrix.sh` | 接触模型严格串行 A/B 入口；冻结 Git/协议输入，清除继承的嵌套配置覆盖，按 SimplePlane→Warehouse、六 profile、repeat 的确定顺序独立启动 Isaac 与 committed skid-steer runner；逐轮验证 schema v3、六段报告、四轮主导符号及纯旋转 `mixed` 瞬态内部一致性，最终执行跨轮三层身份锁/完整矩阵聚合，冻结含 report/双日志 SHA 的 manifest，并原子写 `analysis.json` 与绑定两份证据 SHA 的 batch summary；清理只信号本会话认证进程组。输出目录结构和阅读顺序见使用手册第 17.5 节。 |
 | `scripts/run_wheel_direction_diagnostic.sh` | 独占 Isaac 进程的四轮正/负方向诊断入口；选择项目/诊断 YAML、复用 Isaac 单实例锁，并启动不依赖 ROS 图的 standalone 物理测试，原子输出成功或失败 JSON。 |
 
 ## 5. Isaac Sim 包入口与主程序
@@ -215,7 +215,7 @@
 | `isaac_sim/src/bridge/__init__.py` | ROS Bridge 子包标记。 |
 | `isaac_sim/src/bridge/ros_graph_builder.py` | 按选定模式组合控制、传感器、里程计和结构 TF Graph。 |
 | `isaac_sim/src/bridge/tf_ownership.py` | 计算并拒绝 Ideal/Realistic、Isaac/RSP 之间的重复 TF 所有权组合。 |
-| `isaac_sim/src/bridge/reset_service.py` | 非阻塞 `/simulation/reset` 事务：防重入、等待 Wheel/EKF/Costmap futures，在 event commit 前冻结 generation/`boundary_clock_ns` 并准备初始位姿策略，成功响应末尾发布版本化 `reset_metadata_v1` JSON；Localization 拒绝运行时切换 Manifest 未授权 pose，退出时取消未完成 future 与重播器。 |
+| `isaac_sim/src/bridge/reset_service.py` | 非阻塞 `/simulation/reset` 事务：防重入、等待 Wheel/EKF/Costmap futures，在 event commit 前冻结 generation/`boundary_clock_ns` 并准备初始位姿策略，成功 Trigger 响应末尾附带版本化 `reset_metadata_v1` JSON trailer；Localization 拒绝运行时切换 Manifest 未授权 pose，退出时取消未完成 future 与重播器。 |
 
 ## 15. Isaac 实验与 Ground Truth
 
