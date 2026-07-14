@@ -1149,7 +1149,7 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、仿真模式和 Git commit/branch/dirty。schema v2 的 solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致，字段为 `stage_articulation_usd_readback_verified=true`；该 API 只证明 USD 输入一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前读取和严格校验；旧 schema v1、字段缺失、哈希非法、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。当前 `isaac_sim/configs/project.yaml` 的规范环境 ID 是 `Warehouse`；未来的 SimplePlane 项目配置必须显式写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、仿真模式和 Git commit/branch/dirty。schema v3 的 solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；接触门还把 profile 路径/SHA256、匿名 overlay SHA256、PhysicsScene threshold、精确 wheel/ground collider、physics-purpose binding 和材质读回编码为 canonical JSON，并用独立 SHA256 参数传给 runner。该 API 只证明 USD 输入一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验；旧 schema v1/v2、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
 快速核对某次报告是否真的是目标配置：
 
@@ -1162,6 +1162,14 @@ jq '{result, schema: .runtime_provenance.schema_version,
      solver: .runtime_provenance.robot.solver,
      robot: .runtime_provenance.robot.config.sha256,
      asset: .runtime_provenance.robot.asset.sha256,
+     contact: {
+       id: .runtime_provenance.contact.profile_id,
+       mode: .runtime_provenance.contact.profile_mode,
+       profile_sha256: .runtime_provenance.contact.profile_sha256,
+       overlay_sha256: .runtime_provenance.contact.overlay_sha256,
+       wheel_colliders: (.runtime_provenance.contact.wheel_colliders | length),
+       ground_colliders: (.runtime_provenance.contact.ground_colliders | length),
+       readback: .runtime_provenance.contact.stage_usd_readback_verified},
      git: .runtime_provenance.git}' \
   data/reports/motion/<report>.json
 sha256sum isaac_sim/configs/robots/jackal.yaml \
@@ -1172,7 +1180,197 @@ sha256sum isaac_sim/configs/robots/jackal.yaml \
 
 停止顺序是：等待 motion runner 自己退出；Realistic 时对终端 B 按一次 `Ctrl+C` 并等待 ROS 有序关闭；最后停止 Isaac。中途按 `Ctrl+C` 会触发零速 burst 后退出，但信号中断可能来不及生成报告；先确认 runner 已退出且 `/cmd_vel` 回零，再停止仿真。需要完整 JSON 时重新运行全部 14 段，不要把中断样本当成成功报告。
 
-### 17.5 单项 ROS 检查
+### 17.5 选择接触 Profile 并做隔离 A/B
+
+接触 Profile 用于把“场景 patch-friction threshold”“轮胎/地面显式材质”和其他
+底盘参数分开比较。默认
+[`project.yaml`](../isaac_sim/configs/project.yaml) 选择
+`legacy_baseline`；它不会把新 threshold 或材质写入 Stage，只保留并读回组合资产
+原本的有效值。仓库提供三类 Profile：
+
+| Profile | 实际作用 | 适合回答的问题 |
+| --- | --- | --- |
+| `legacy_baseline.yaml` | 不 author threshold/材质 | 当前资产原始行为是什么？ |
+| `threshold_corr_*.yaml` 四个文件 | 只改变 correlation distance 与 offset threshold 的 2×2 组合 | 低速转向是否主要受 patch-friction threshold 影响？ |
+| `explicit_material.yaml` | 保持 legacy threshold，并给四轮与全部 ground collider 显式绑定不同材质 | 结果是否依赖资产继承材质或缺失的地面材质？ |
+
+Profile 在 PhysX 初始化前写入匿名 USD session layer，不修改 Warehouse、SimplePlane
+或 Jackal 源文件。每次应用后会重新读取 scene 属性、材质、combine mode、
+physics-purpose binding、四个 wheel collider 和全部 ground collider；任何数量、
+semantic class、Prim、binding 或数值不一致都会删除临时层并让启动失败。Warehouse
+配置要求精确解析 32 个 ground collider，SimplePlane 要求精确解析 1 个；“找到
+几个看起来像地面的 Prim”不算通过。
+
+先只验证两个项目配置能够被解析：
+
+```bash
+cd "$PROJECT_ROOT"
+
+./scripts/run_isaac.sh --validate-only
+
+ISAAC_NAV_PROJECT_CONFIG="$PROJECT_ROOT/isaac_sim/configs/simple_plane.project.yaml" \
+  ./scripts/run_isaac.sh --validate-only
+```
+
+选择 Profile 使用嵌套环境变量 override。下面是 Warehouse + Ideal 的单次运动
+采集；每个 A/B 条件都必须停止 Isaac 并启动新进程，不能在同一进程内改环境变量
+后沿用旧的 PhysX 状态：
+
+```bash
+# 终端 A：PROFILE 每轮只取一个值
+PROFILE=legacy_baseline
+ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PROFILE}.yaml" \
+  ./scripts/run_isaac.sh --headless \
+    --navigation-mode mapping \
+    --mode ideal \
+    --camera-profile off
+
+# 终端 B：等待 Isaac ready
+./scripts/run_motion_baseline.sh \
+  --environment Warehouse \
+  --odometry-mode ideal \
+  --output "data/reports/motion/${PROFILE}_warehouse_ideal.json"
+```
+
+把同一运动配置移到隔离平面时，只替换项目配置和报告中的真实环境 ID：
+
+```bash
+# 终端 A
+PROFILE=legacy_baseline
+ISAAC_NAV_PROJECT_CONFIG="$PROJECT_ROOT/isaac_sim/configs/simple_plane.project.yaml" \
+ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PROFILE}.yaml" \
+  ./scripts/run_isaac.sh --headless \
+    --navigation-mode mapping \
+    --mode ideal \
+    --camera-profile off
+
+# 终端 B
+./scripts/run_motion_baseline.sh \
+  --environment SimplePlane \
+  --odometry-mode ideal \
+  --output "data/reports/motion/${PROFILE}_simple_plane_ideal.json"
+```
+
+[`simple_plane.project.yaml`](../isaac_sim/configs/simple_plane.project.yaml)
+使用独立的源环境和组合根 Stage；`SceneComposer` 会拒绝额外环境 sublayer，所以它
+不是“把报告标签写成 SimplePlane、实际仍跑 Warehouse”。A/B 必须锁定 robot USD、
+solver `32/4`、运动配置、physics Hz、pacing、Camera、环境和 Git 状态，每个条件至少
+重复三次，再比较左右/速度档。
+
+提交 `84c397c` 已把 motion runtime provenance 升级为 schema v3。runner 在创建
+`/cmd_vel` publisher 前读取 contact canonical JSON 与独立 SHA256，重新校验 profile
+路径/hash、匿名 overlay、scene readback、collider contract、binding、材质、mode
+flags 和 `stage_usd_readback_verified=true`；旧 v1/v2 报告不会冒充当前运行输入。
+正式 A/B 仍必须要求 `.runtime_provenance.git.dirty == false`、环境/solver/profile
+完全匹配，并保留每个输入 JSON、SHA256 和 Kit 日志；仅凭输出文件名仍不构成证据。
+
+### 17.6 运行四轮正/负方向诊断
+
+`run_wheel_direction_diagnostic.sh` 回答一个比 motion baseline 更窄的问题：四个
+wheel joint 分别收到正/负目标时，实际轮速、轮底表面运动、地面摩擦和底盘运动的
+方向是否一致。它不是 Nav2 测试，也不需要 ROS 栈；它会自行启动一个独占的 Isaac
+standalone 进程。先正常停止其他 Isaac 实例，再运行：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_wheel_direction_diagnostic.sh \
+  --output data/reports/physics/wheel_direction_warehouse.json
+```
+
+默认是 headless + unbounded，但物理步仍固定为 `1/60 s`。人工观察可加
+`--no-headless --pacing-mode realtime`。默认诊断 YAML 明确绑定 Warehouse；若把
+项目换成 SimplePlane 而不同时提供匹配的诊断 YAML，环境 ID/ground anchor 门会在
+运动前拒绝运行，这是预期保护。
+
+诊断按固定顺序执行 8 个 trial：四个轮各自 `+1 rad/s`、`-1 rad/s`。每个 trial
+只给一个 DOF 非零目标，其余三个目标保持零；Reset 使用 pause/pose/step/play，
+不会用 Timeline Stop。正式硬门包括：
+
+- 目标速度读回及 active wheel 实际速度/符号；
+- 精确 ground filter 的接触覆盖、法向力和两套法向力 API 一致性；
+- 轮底切向速度与期望前进方向相反；
+- 摩擦力、摩擦冲量和底盘速度/位移与期望方向一致；
+- 8 个 trial 完整且全部通过。
+
+零目标的自由轮可能被底盘和地面机械耦合带动，所以其实际 p95 轮速只作为
+`advisories.inactive_wheel_motion`，不会掩盖真正的“目标泄漏”硬门。正负摩擦幅值
+比也只是 symmetry advisory；诊断成功不等于接触材质、低速左右对称或有效轮距已
+冻结。
+
+无论物理 gate 成功还是失败，进入运行阶段后工具都会在 SimulationApp 关闭前原子
+写 JSON；配置加载或环境 ID 在进入运行阶段前失败时可能还没有报告。快速检查：
+
+```bash
+jq '{result,
+     provenance_schema: .runtime_provenance.schema_version,
+     environment: .runtime_provenance.environment.id,
+     contact_profile: .bindings.contact_profile.profile_id,
+     ground_filter_count: .runtime_measurement.ground_contact_filter_count,
+     contact_ready_steps: .contact_readiness.steps,
+     failed_trials: .cross_trial.failed_trials,
+     warnings: .cross_trial.warnings,
+     trials: [.trials[] | {
+       trial_id,
+       passed: .summary.passed,
+       gates: .summary.gates,
+       advisories: .summary.advisories
+     }]}' \
+  data/reports/physics/wheel_direction_warehouse.json
+```
+
+报告还包含项目/诊断 YAML SHA256、Git 快照、robot/solver provenance、四轮 collider、
+ground actor、ContactReportAPI、contact Profile snapshot、固定 dt、逐步原始样本和
+正负 symmetry advisory。原始报告体积较大，默认不提交 Git；把摘要、报告 SHA256
+和 Kit 日志 SHA256 回填到验证台账。
+
+### 17.7 从 Motion 报告拟合有效轮距
+
+`effective_track_analysis` 是离线审计工具。它从 motion baseline 的纯原地旋转段
+读取四轮平均角速度和实际 yaw rate，计算
+`wheel_radius × (right_rate - left_rate)`，再分别给出过原点 yaw-response OLS、
+direct OLS 和 TLS。它不会自动修改 Jackal 或 Wheel Odom 配置。
+
+构建并 source 工作区后，明确列出互不重复的报告：
+
+```bash
+source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+
+REPORTS=(
+  "$PROJECT_ROOT/data/reports/motion/run_01.json"
+  "$PROJECT_ROOT/data/reports/motion/run_02.json"
+  "$PROJECT_ROOT/data/reports/motion/run_03.json"
+)
+ASSET_SHA=$(sha256sum \
+  "$PROJECT_ROOT/isaac_sim/assets/robots/jackal/jackal_nav.usda" \
+  | awk '{print $1}')
+
+ros2 run robot_experiments effective_track_analysis \
+  "${REPORTS[@]}" \
+  --wheel-radius 0.098 \
+  --require-provenance 'verified=true' \
+  --require-provenance 'environment.id="Warehouse"' \
+  --require-provenance 'robot.solver.position_iterations=32' \
+  --require-provenance 'robot.solver.velocity_iterations=4' \
+  --require-provenance "robot.asset.sha256=\"${ASSET_SHA}\"" \
+  --min-included-reports 3 \
+  --fail-on-excluded \
+  --output "$PROJECT_ROOT/data/reports/physics/effective_track_warehouse.json"
+```
+
+`--require-provenance` 的路径相对于输入报告的 `runtime_provenance`，值按 JSON scalar
+解析；对环境、solver、robot asset 和后续接触快照分别加门，而不是只比较文件名。
+工具会拒绝重复路径、重复内容、NaN/Infinity、缺失左右方向、零 yaw/轮差、命令或
+测量符号错误的旋转数据。非旋转段会列在 `excluded_segments`；失败报告、provenance
+不匹配或非法报告会进入 `selection.excluded`。`--fail-on-excluded` 仍先写完整审计
+JSON，再以状态码 `2` 退出；配置/拟合错误返回 `1`，全部满足返回 `0`。
+
+输出包含输入文件绝对路径与 SHA256、include/exclude 理由、三种 overall 拟合、
+left/right、low/nominal/high 和逐报告拟合。若三种估计、左右两侧或不同速度档差异
+很大，应先解释接触与滑移，不要挑一个“看起来顺眼”的数写回配置。当前五报告探索
+结果和为什么还不能冻结 `1.0124 m` 见
+[`verification.md`](verification.md#有效轮距离线拟合2026-07-14)。
+
+### 17.8 单项 ROS 检查
 
 需要单独观察时再使用：
 
@@ -1357,6 +1555,9 @@ header、消息年龄和旧 DDS 样本证据，不要只以日志不再打印作
 | 改 Camera profile/光学/曝光 | `isaac_sim/configs/sensors/camera.yaml`；同步 Camera contract 与 RViz 测试。 |
 | 改点云投影高度和角度 | `ros2_ws/src/robot_perception/config/pointcloud_to_laserscan.yaml` |
 | 改轮径/轮距 | Isaac robot YAML 与 `ros2_ws/src/robot_odometry/config/wheel_odometry.yaml` 同步修改 |
+| 改接触 threshold/材质 | `isaac_sim/configs/physics/*.yaml`；用 `ISAAC_NAV__FILES__CONTACT_PROFILE` 选择，并重跑 SimplePlane/Warehouse 隔离 A/B。不要直接改源 USD。 |
+| 查 wheel joint 正负方向 | 先运行 `scripts/run_wheel_direction_diagnostic.sh`，查看硬门与 advisory；不要靠手工持续发布 `/cmd_vel` 猜方向。 |
+| 拟合有效轮距 | 用 `robot_experiments effective_track_analysis` 分析同 provenance 的 motion 报告；候选值须再同步 Isaac/ROS 配置并重跑验证，工具不会自动写配置。 |
 | 改 Footprint/速度/代价地图 | `ros2_ws/src/robot_navigation/config/nav2_params.yaml` |
 | 改 MPPI 稳定/性能基线 | `ros2_ws/src/robot_navigation/config/nav2_stable.yaml` 或 `ros2_ws/src/robot_navigation/config/nav2_performance.yaml`；必须重新 profile。 |
 | 改出生点 | `isaac_sim/configs/spawn_poses.yaml`，随后重做标定 |
