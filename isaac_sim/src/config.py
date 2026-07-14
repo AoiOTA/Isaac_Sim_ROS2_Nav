@@ -23,6 +23,9 @@ class ConfigError(ValueError):
 
 _ENV_PATTERN = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PRIM_PATH_PATTERN = re.compile(
+    r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
 
 
 def project_root() -> Path:
@@ -62,6 +65,13 @@ def _absolute_prim(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.startswith("/") or "//" in value:
         raise ConfigError(f"{name} must be an absolute USD prim path")
     return value
+
+
+def _strict_prim_path(value: Any, name: str) -> str:
+    path = _absolute_prim(value, name)
+    if not _PRIM_PATH_PATTERN.fullmatch(path):
+        raise ConfigError(f"{name} must be a valid absolute USD prim path")
+    return path
 
 
 def _expand_string(value: str, env: Mapping[str, str]) -> str:
@@ -105,11 +115,21 @@ def _apply_nested_overrides(data: dict[str, Any], env: Mapping[str, str]) -> Non
 
 
 @dataclass(frozen=True)
+class GroundColliderResolverConfig:
+    """Strict recipe for resolving the colliders that act as ground."""
+
+    required_prim_paths: tuple[str, ...]
+    semantic_classes: tuple[str, ...]
+    expected_enabled_count: int
+
+
+@dataclass(frozen=True)
 class EnvironmentConfig:
     identifier: str
     project_stage: Path
     source_asset: Path
     composition: str
+    ground_colliders: GroundColliderResolverConfig
 
 
 @dataclass(frozen=True)
@@ -172,6 +192,7 @@ class ConfigFiles:
     topics: Path
     qos: Path
     dynamic_obstacles: Path
+    contact_profile: Path
 
 
 @dataclass(frozen=True)
@@ -202,6 +223,7 @@ class ProjectConfig:
                 self.files.topics,
                 self.files.qos,
                 self.files.dynamic_obstacles,
+                self.files.contact_profile,
             )
             if not path.exists()
         ]
@@ -214,7 +236,13 @@ def _parse_environment(raw: Any) -> EnvironmentConfig:
     data = _expect_mapping(raw, "environment")
     _expect_keys(
         data,
-        {"id", "project_stage", "source_asset", "composition"},
+        {
+            "id",
+            "project_stage",
+            "source_asset",
+            "composition",
+            "ground_colliders",
+        },
         "environment",
     )
     identifier = _required(data, "id", "environment")
@@ -228,11 +256,84 @@ def _parse_environment(raw: Any) -> EnvironmentConfig:
     composition = _required(data, "composition", "environment")
     if composition != "sublayer":
         raise ConfigError("environment.composition must be 'sublayer'")
+    ground_data = _expect_mapping(
+        _required(data, "ground_colliders", "environment"),
+        "environment.ground_colliders",
+    )
+    _expect_keys(
+        ground_data,
+        {
+            "required_prim_paths",
+            "semantic_classes",
+            "expected_enabled_count",
+        },
+        "environment.ground_colliders",
+    )
+    required_paths_raw = _required(
+        ground_data,
+        "required_prim_paths",
+        "environment.ground_colliders",
+    )
+    if not isinstance(required_paths_raw, list) or not required_paths_raw:
+        raise ConfigError(
+            "environment.ground_colliders.required_prim_paths must be a "
+            "non-empty list"
+        )
+    required_paths = tuple(
+        _strict_prim_path(
+            value,
+            "environment.ground_colliders.required_prim_paths",
+        )
+        for value in required_paths_raw
+    )
+    if len(set(required_paths)) != len(required_paths):
+        raise ConfigError(
+            "environment.ground_colliders.required_prim_paths must not "
+            "contain duplicates"
+        )
+    semantic_classes_raw = _required(
+        ground_data,
+        "semantic_classes",
+        "environment.ground_colliders",
+    )
+    if not isinstance(semantic_classes_raw, list) or not all(
+        isinstance(value, str) and _IDENTIFIER_PATTERN.fullmatch(value)
+        for value in semantic_classes_raw
+    ):
+        raise ConfigError(
+            "environment.ground_colliders.semantic_classes must be a list "
+            "of path-safe identifiers"
+        )
+    semantic_classes = tuple(semantic_classes_raw)
+    if len(set(semantic_classes)) != len(semantic_classes):
+        raise ConfigError(
+            "environment.ground_colliders.semantic_classes must not contain "
+            "duplicates"
+        )
+    expected_count = _required(
+        ground_data,
+        "expected_enabled_count",
+        "environment.ground_colliders",
+    )
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < len(required_paths)
+    ):
+        raise ConfigError(
+            "environment.ground_colliders.expected_enabled_count must be an "
+            "integer no smaller than the required path count"
+        )
     return EnvironmentConfig(
         identifier=identifier,
         project_stage=Path(_required(data, "project_stage", "environment")).resolve(),
         source_asset=Path(_required(data, "source_asset", "environment")).resolve(),
         composition=composition,
+        ground_colliders=GroundColliderResolverConfig(
+            required_prim_paths=required_paths,
+            semantic_classes=semantic_classes,
+            expected_enabled_count=expected_count,
+        ),
     )
 
 
@@ -394,7 +495,16 @@ def _parse_ground_truth(raw: Any) -> GroundTruthConfig:
 
 def _parse_files(raw: Any) -> ConfigFiles:
     data = _expect_mapping(raw, "files")
-    allowed = {"robot", "lidar", "imu", "camera", "topics", "qos", "dynamic_obstacles"}
+    allowed = {
+        "robot",
+        "lidar",
+        "imu",
+        "camera",
+        "topics",
+        "qos",
+        "dynamic_obstacles",
+        "contact_profile",
+    }
     _expect_keys(data, allowed, "files")
     return ConfigFiles(**{key: Path(_required(data, key, "files")).resolve() for key in sorted(allowed)})
 

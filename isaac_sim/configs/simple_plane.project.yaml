@@ -1,26 +1,22 @@
-# Stage-13 project template. Every CUSTOM_ROBOT_* variable is deliberately
-# required so a Jackal path cannot be reused silently during migration.
 schema_version: 1
 asset_root: ${ISAAC_ASSET_ROOT}
 
 environment:
-  id: Warehouse
-  # Keep the generated custom Stage separate from the committed Jackal Stage,
-  # which already authors a Jackal reference.
-  project_stage: ${PROJECT_ROOT}/data/runtime/custom_robot_navigation_scene.usda
-  source_asset: ${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
+  id: SimplePlane
+  project_stage: ${PROJECT_ROOT}/isaac_sim/assets/environments/simple_plane_navigation_scene.usda
+  source_asset: ${PROJECT_ROOT}/isaac_sim/assets/environments/simple_plane.usda
   composition: sublayer
   ground_colliders:
     required_prim_paths: [/Root/GroundPlane/CollisionPlane]
-    semantic_classes: [floor_decal]
-    expected_enabled_count: 32
+    semantic_classes: []
+    expected_enabled_count: 1
 
 robot:
-  asset_path: ${CUSTOM_ROBOT_USD}
-  default_prim: ${CUSTOM_ROBOT_DEFAULT_PRIM}
-  runtime_prim_path: /World/Robots/CustomRobot
-  articulation_root: /World/Robots/CustomRobot
-  base_link_prim: /World/Robots/CustomRobot/base_link
+  asset_path: ${PROJECT_ROOT}/isaac_sim/assets/robots/jackal/jackal_nav.usda
+  default_prim: jackal
+  runtime_prim_path: /World/Robots/Jackal
+  articulation_root: /World/Robots/Jackal
+  base_link_prim: /World/Robots/Jackal/base_link
   wheel_joints:
     - front_left_wheel_joint
     - front_right_wheel_joint
@@ -33,7 +29,7 @@ simulation:
   physics_hz: 60
   rendering_hz: 60
   expected_physics_scene: /PhysicsScene
-  headless: false
+  headless: true
   renderer: RaytracedLighting
   navigation_mode: mapping
   odometry_mode: ideal
@@ -71,10 +67,10 @@ extensions:
   - omni.usd.schema.render_settings.rtx
 
 files:
-  robot: ${PROJECT_ROOT}/isaac_sim/configs/robots/custom_robot.yaml
-  lidar: ${CUSTOM_ROBOT_LIDAR_CONFIG}
-  imu: ${CUSTOM_ROBOT_IMU_CONFIG}
-  camera: ${CUSTOM_ROBOT_CAMERA_CONFIG}
+  robot: ${PROJECT_ROOT}/isaac_sim/configs/robots/jackal.yaml
+  lidar: ${PROJECT_ROOT}/isaac_sim/configs/sensors/lidar_3d.yaml
+  imu: ${PROJECT_ROOT}/isaac_sim/configs/sensors/imu.yaml
+  camera: ${PROJECT_ROOT}/isaac_sim/configs/sensors/camera.yaml
   topics: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/topics.yaml
   qos: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/qos.yaml
   dynamic_obstacles: ${PROJECT_ROOT}/isaac_sim/configs/experiments/dynamic.yaml

@@ -67,6 +67,16 @@ def test_default_project_contract_loads_strictly():
     assert config.schema_version == 1
     assert config.environment.identifier == "Warehouse"
     assert config.environment.composition == "sublayer"
+    assert config.environment.ground_colliders.required_prim_paths == (
+        "/Root/GroundPlane/CollisionPlane",
+    )
+    assert config.environment.ground_colliders.semantic_classes == (
+        "floor_decal",
+    )
+    assert config.environment.ground_colliders.expected_enabled_count == 32
+    assert config.files.contact_profile == (
+        ROOT / "isaac_sim/configs/physics/legacy_baseline.yaml"
+    )
     assert config.simulation.expected_physics_scene == "/PhysicsScene"
     assert config.simulation.structure_tf_source == "isaac"
     assert config.simulation.pacing_mode == "realtime"
@@ -195,6 +205,41 @@ def test_environment_id_must_be_path_safe(value):
             CONFIG,
             _environment(ISAAC_NAV__ENVIRONMENT__ID=value),
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("REQUIRED_PRIM_PATHS", "[]", "non-empty list"),
+        ("REQUIRED_PRIM_PATHS", "[relative]", "absolute USD prim path"),
+        ("SEMANTIC_CLASSES", "[bad/id]", "path-safe identifiers"),
+        ("EXPECTED_ENABLED_COUNT", "true", "integer no smaller"),
+        ("EXPECTED_ENABLED_COUNT", "0", "integer no smaller"),
+    ],
+)
+def test_ground_collider_resolver_schema_is_strict(field, value, message):
+    with pytest.raises(ConfigError, match=message):
+        load_project_config(
+            CONFIG,
+            _environment(
+                **{
+                    "ISAAC_NAV__ENVIRONMENT__GROUND_COLLIDERS__"
+                    f"{field}": value
+                }
+            ),
+        )
+
+
+def test_simple_plane_uses_an_independent_project_stage():
+    warehouse = load_project_config(CONFIG, _environment())
+    simple = load_project_config(
+        ROOT / "isaac_sim/configs/simple_plane.project.yaml",
+        _environment(),
+    )
+    assert simple.environment.identifier == "SimplePlane"
+    assert simple.environment.project_stage.is_file()
+    assert simple.environment.project_stage != warehouse.environment.project_stage
+    assert simple.environment.ground_colliders.expected_enabled_count == 1
 
 
 def test_ideal_rsp_tf_ownership_is_rejected():

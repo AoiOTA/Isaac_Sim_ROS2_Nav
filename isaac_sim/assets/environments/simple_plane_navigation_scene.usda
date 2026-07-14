@@ -1,0 +1,33 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# Independent project Stage for SimplePlane contact calibration.  Keeping it
+# separate from navigation_scene.usda prevents Warehouse Sublayer opinions from
+# leaking into controlled A/B experiments.
+def Xform "World"
+{
+    def Xform "Robots"
+    {
+        def Xform "Jackal" (
+            prepend references = @../robots/jackal/jackal_nav.usda@
+        )
+        {
+        }
+    }
+
+    def Xform "Graphs"
+    {
+    }
+
+    def Xform "DynamicObstacles"
+    {
+    }
+
+    def Xform "ExperimentMarkers"
+    {
+    }
+}
