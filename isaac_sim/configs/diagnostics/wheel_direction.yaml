@@ -1,0 +1,38 @@
+schema_version: 1
+environment_id: Warehouse
+
+# The official Simple_Warehouse asset uses an infinite Plane for physics.  Its
+# sibling CollisionMesh is visualization-only and has no CollisionAPI.
+ground_collision_prim: /Root/GroundPlane/CollisionPlane
+
+protocol:
+  command_rad_s: 1.0
+  settle_steps: 30
+  baseline_steps: 12
+  drive_steps: 30
+  recovery_steps: 12
+  contact_ready_consecutive_steps: 15
+  contact_ready_timeout_steps: 180
+  max_contact_count: 128
+
+# These gates establish wheel/joint direction only.  They deliberately do not
+# freeze tire material, skid-steer symmetry, or effective track width.
+thresholds:
+  target_tolerance_rad_s: 0.0001
+  active_rate_min_rad_s: 0.75
+  active_rate_sign_fraction_min: 0.95
+  # Actual zero-target wheels remain mechanically coupled through the chassis
+  # and ground.  Their rate is evidence, not a command-isolation hard gate.
+  inactive_rate_p95_advisory_max_rad_s: 0.10
+  contact_coverage_min: 0.80
+  normal_force_median_min_n: 1.0
+  spin_velocity_opposition_min_m_s: 0.04
+  friction_force_signed_median_min_n: 0.05
+  friction_impulse_signed_min_ns: 0.002
+  body_delta_velocity_signed_min_m_s: 0.0005
+  body_displacement_signed_min_m: 0.0002
+  normal_force_consistency_abs_tolerance_n: 0.5
+  normal_force_consistency_relative_tolerance: 0.25
+  normal_force_consistency_fraction_min: 0.80
+  symmetry_ratio_min: 0.5
+  symmetry_ratio_max: 2.0
