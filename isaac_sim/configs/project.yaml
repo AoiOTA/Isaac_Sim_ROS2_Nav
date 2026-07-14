@@ -61,6 +61,7 @@ extensions:
   - isaacsim.sensors.experimental.physics
   - isaacsim.sensors.physics.nodes
   - isaacsim.sensors.experimental.rtx
+  - omni.usd.schema.render_settings.rtx
 
 files:
   robot: ${PROJECT_ROOT}/isaac_sim/configs/robots/jackal.yaml

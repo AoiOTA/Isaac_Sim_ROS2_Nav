@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import yaml
@@ -15,7 +17,9 @@ from isaac_sim.src.sensors.sensor_factory import (
     CAMERA_PROFILE_NAMES,
     CameraRuntime,
     SensorConfigError,
+    _author_rtx_quality_contract,
     _load_camera,
+    _rtx_quality_contract,
     resolve_camera_selection,
 )
 
@@ -55,8 +59,10 @@ def _camera_runtime(camera_config, profile="monitoring", render_product=None):
 
 
 def test_camera_schema_profiles_and_front_contract_load_strictly():
-    camera = _load_camera(_config().files.camera)
+    config = _config()
+    camera = _load_camera(config.files.camera)
 
+    assert "omni.usd.schema.render_settings.rtx" in config.extensions
     assert tuple(camera.profiles) == CAMERA_PROFILE_NAMES
     assert camera.default_profile == "monitoring"
     assert camera.primary_camera == "front"
@@ -84,6 +90,132 @@ def test_camera_schema_profiles_and_front_contract_load_strictly():
     assert front.rgb.encoding == "rgb8"
     assert front.rgb.queue_size == front.camera_info.queue_size == 2
     assert front.depth.enabled is False
+    assert front.optics_f_stop == pytest.approx(0.0)
+    assert front.exposure_f_stop == pytest.approx(5.0)
+    assert front.auto_exposure_enabled is False
+    assert front.render_product.anti_aliasing == "rtxaa"
+    assert front.render_product.motion_blur_enabled is False
+    assert front.render_product.depth_of_field_enabled is False
+
+
+def test_camera_rtx_quality_contract_is_per_prim_and_machine_vision_safe():
+    camera = _load_camera(_config().files.camera).cameras["front"]
+
+    assert _rtx_quality_contract(camera) == {
+        "camera": (
+            (
+                "OmniRtxCameraAutoExposureAPI_1",
+                "omni:rtx:autoExposure:enabled",
+                "bool",
+                False,
+            ),
+        ),
+        "render_product": (
+            (
+                "OmniRtxPostDebugSettingsAPI_1",
+                "omni:rtx:post:aa:op",
+                "token",
+                "rtxaa",
+            ),
+            (
+                "OmniRtxPostMotionBlurAPI_1",
+                "omni:rtx:post:motionblur:enabled",
+                "bool",
+                False,
+            ),
+            (
+                "OmniRtxPostDofAPI_1",
+                "omni:rtx:post:dof:enabled",
+                "bool",
+                False,
+            ),
+        ),
+    }
+
+
+def test_camera_rtx_quality_authoring_uses_schema_types_and_local_prims(
+    monkeypatch,
+):
+    bool_type = object()
+    token_type = object()
+    pxr = ModuleType("pxr")
+    pxr.Sdf = type(
+        "Sdf",
+        (),
+        {
+            "ValueTypeNames": type(
+                "ValueTypeNames",
+                (),
+                {"Bool": bool_type, "Token": token_type},
+            )
+        },
+    )
+    monkeypatch.setitem(sys.modules, "pxr", pxr)
+
+    class Attribute:
+        def __init__(self, value_type):
+            self.value_type = value_type
+            self.value = None
+
+        def IsValid(self):
+            return True
+
+        def GetTypeName(self):
+            return self.value_type
+
+        def Set(self, value):
+            self.value = value
+            return True
+
+    class Prim:
+        def __init__(self, attributes):
+            self.schemas = []
+            self.attributes = {
+                name: Attribute(value_type)
+                for name, value_type in attributes.items()
+            }
+
+        def AddAppliedSchema(self, schema):
+            self.schemas.append(schema)
+
+        def GetAttribute(self, name):
+            return self.attributes[name]
+
+        def GetAppliedSchemas(self):
+            return self.schemas
+
+    camera_prim = Prim({"omni:rtx:autoExposure:enabled": bool_type})
+    render_product_prim = Prim(
+        {
+            "omni:rtx:post:aa:op": token_type,
+            "omni:rtx:post:motionblur:enabled": bool_type,
+            "omni:rtx:post:dof:enabled": bool_type,
+        }
+    )
+    definition = _load_camera(_config().files.camera).cameras["front"]
+
+    _author_rtx_quality_contract(camera_prim, render_product_prim, definition)
+
+    assert camera_prim.schemas == ["OmniRtxCameraAutoExposureAPI_1"]
+    auto_exposure = camera_prim.attributes["omni:rtx:autoExposure:enabled"]
+    assert auto_exposure.value_type is bool_type
+    assert auto_exposure.value is False
+    assert render_product_prim.schemas == [
+        "OmniRtxPostDebugSettingsAPI_1",
+        "OmniRtxPostMotionBlurAPI_1",
+        "OmniRtxPostDofAPI_1",
+    ]
+    assert (
+        render_product_prim.attributes["omni:rtx:post:aa:op"].value_type
+        is token_type
+    )
+    assert render_product_prim.attributes["omni:rtx:post:aa:op"].value == "rtxaa"
+    for name in (
+        "omni:rtx:post:motionblur:enabled",
+        "omni:rtx:post:dof:enabled",
+    ):
+        assert render_product_prim.attributes[name].value_type is bool_type
+        assert render_product_prim.attributes[name].value is False
 
 
 def test_camera_defaults_are_gui_monitoring_and_headless_off():
@@ -114,6 +246,57 @@ def test_camera_schema_rejects_profile_drift_and_unknown_keys(tmp_path):
     unknown.write_text(yaml.safe_dump(source), encoding="utf-8")
     with pytest.raises(ValueError, match="unknown .* keys"):
         _load_camera(unknown)
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (
+            lambda source: source.update(schema_version=2),
+            "schema_version must be 3",
+        ),
+        (
+            lambda source: source["cameras"]["front"]["optics"].update(
+                f_stop=-1.0
+            ),
+            "optics.f_stop must be non-negative",
+        ),
+        (
+            lambda source: source["cameras"]["front"]["exposure"].update(
+                auto_exposure_enabled=True
+            ),
+            "auto exposure disabled",
+        ),
+        (
+            lambda source: source["cameras"]["front"]["render_product"].update(
+                anti_aliasing="dlss"
+            ),
+            "must use RTXAA",
+        ),
+        (
+            lambda source: source["cameras"]["front"]["render_product"].update(
+                motion_blur_enabled=True
+            ),
+            "must use RTXAA",
+        ),
+        (
+            lambda source: source["cameras"]["front"]["render_product"].update(
+                depth_of_field_enabled=True
+            ),
+            "must use RTXAA",
+        ),
+    ],
+)
+def test_camera_schema_rejects_ambiguous_or_blurring_render_settings(
+    tmp_path, mutate, message
+):
+    source = yaml.safe_load(_config().files.camera.read_text(encoding="utf-8"))
+    mutate(source)
+    path = tmp_path / "invalid_camera.yaml"
+    path.write_text(yaml.safe_dump(source), encoding="utf-8")
+
+    with pytest.raises((SensorConfigError, ValueError), match=message):
+        _load_camera(path)
 
 
 def test_camera_graph_publishes_rgb_and_info_from_one_render_product():
