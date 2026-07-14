@@ -16,6 +16,20 @@ from isaac_sim.src.yaml_utils import YamlConfigError
 
 ROOT = Path(__file__).resolve().parents[2]
 JACKAL = ROOT / "isaac_sim/configs/robots/jackal.yaml"
+EXPERIMENTAL_ROBOTS = (
+    (
+        ROOT
+        / "isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml",
+        "jackal_etw_0p989_v1",
+        0.989,
+    ),
+    (
+        ROOT
+        / "isaac_sim/configs/robots/experimental/jackal_etw_1p012_v1.yaml",
+        "jackal_etw_1p012_v1",
+        1.012,
+    ),
+)
 ROBOT_CONFIG_FIELDS = {
     "schema_version",
     "name",
@@ -84,6 +98,37 @@ def test_jackal_kinematics_contract_is_explicit_and_behavior_preserving():
         "rear_left_wheel_joint",
         "rear_right_wheel_joint",
     )
+
+
+@pytest.mark.parametrize(
+    ("candidate_path", "profile_id", "effective_track_width"),
+    EXPERIMENTAL_ROBOTS,
+)
+def test_effective_track_candidates_only_change_declared_experimental_fields(
+    candidate_path, profile_id, effective_track_width
+):
+    stable = yaml.safe_load(JACKAL.read_text(encoding="utf-8"))
+    candidate = yaml.safe_load(candidate_path.read_text(encoding="utf-8"))
+    allowed_differences = {
+        "kinematics_profile_id",
+        "lifecycle",
+        "effective_track_width",
+    }
+
+    assert candidate.keys() == stable.keys()
+    for key in stable.keys() - allowed_differences:
+        assert candidate[key] == stable[key]
+    assert candidate["kinematics_profile_id"] == profile_id
+    assert candidate["lifecycle"] == "experimental_candidate"
+    assert candidate["effective_track_width"] == effective_track_width
+
+    contract = load_robot_config_contract(candidate_path)
+    assert contract.kinematics.kinematics_profile_id == profile_id
+    assert contract.kinematics.lifecycle == "experimental_candidate"
+    assert contract.kinematics.effective_track_width == effective_track_width
+    assert load_controller_config(candidate_path)[
+        "effective_track_width"
+    ] == effective_track_width
 
 
 def test_kinematics_contract_rejects_unknown_top_level_keys(tmp_path):

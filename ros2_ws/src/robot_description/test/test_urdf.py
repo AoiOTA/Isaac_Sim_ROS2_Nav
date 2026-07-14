@@ -13,6 +13,8 @@ REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
 XACRO_FILE = PACKAGE_ROOT / 'urdf' / 'jackal.urdf.xacro'
 ROBOT_CONFIG_FILE = (
     REPOSITORY_ROOT / 'isaac_sim' / 'configs' / 'robots' / 'jackal.yaml')
+EXPERIMENTAL_ROBOT_DIR = (
+    REPOSITORY_ROOT / 'isaac_sim' / 'configs' / 'robots' / 'experimental')
 PHYSICAL_GEOMETRY_KEYS = (
     'wheel_radius',
     'wheel_width',
@@ -186,6 +188,18 @@ def test_effective_track_width_does_not_change_rendered_urdf(tmp_path):
 
     baseline_xml = ET.tostring(_robot_root(baseline_file))
     candidate_xml = ET.tostring(_robot_root(candidate_file))
+    assert candidate_xml == baseline_xml
+
+
+@pytest.mark.parametrize(
+    'filename',
+    ('jackal_etw_0p989_v1.yaml', 'jackal_etw_1p012_v1.yaml'),
+)
+def test_shipped_effective_track_candidates_preserve_stable_urdf(filename):
+    baseline_xml = ET.tostring(_robot_root(ROBOT_CONFIG_FILE))
+    candidate_xml = ET.tostring(
+        _robot_root(EXPERIMENTAL_ROBOT_DIR / filename))
+
     assert candidate_xml == baseline_xml
 
 
