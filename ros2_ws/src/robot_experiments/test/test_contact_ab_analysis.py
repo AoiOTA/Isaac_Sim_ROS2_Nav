@@ -257,7 +257,11 @@ def _segment(
                     "direction": "positive" if rate > 0 else "negative",
                     "expected_direction": "positive" if rate > 0 else "negative",
                     "direction_matches": True,
-                    "speed_radps": {"mean": rate},
+                    "speed_radps": {
+                        "mean": rate,
+                        "minimum": rate,
+                        "maximum": rate,
+                    },
                 }
                 for name, rate in rates.items()
             },
@@ -310,7 +314,7 @@ def _report(
             "reset": {},
             "sampling": {},
             "limits": {},
-            "stop": {},
+            "stop": {"wheel_velocity_threshold_radps": 0.2},
             "wheels": WHEELS,
             "segments": configuration_segments,
         },
@@ -571,6 +575,146 @@ def test_wheel_direction_contract_is_fail_closed(
     reason = report["selection"]["excluded"][0]["reasons"][0]
     assert reason["code"] == "invalid_motion_protocol"
     assert expected_detail in reason["detail"]
+
+
+def test_rotation_accepts_internally_consistent_mixed_transient(tmp_path):
+    """Pure rotation may retain a deadband-crossing transient with a dominant sign."""
+    paths = _three_reports(tmp_path)
+    report_with_transient = _report(scale=1.03)
+    wheels = report_with_transient["segments"][0]["wheels"]
+    wheel = wheels["per_wheel"][WHEELS["front_left"]]
+    wheel["direction"] = "mixed"
+    wheel["direction_matches"] = False
+    wheel["speed_radps"].update({"minimum": -4.2, "maximum": 0.31})
+    wheels["all_directions_match"] = False
+    transient_path = _write(tmp_path / "rotation_mixed_transient.json", report_with_transient)
+
+    analysis = analyse_contact_ab([*paths, transient_path], RADIUS_M)
+
+    assert analysis["counts"]["included_reports"] == 4
+    assert analysis["selection"]["excluded"] == []
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_detail"),
+    (
+        ("non_rotation", "only valid for a pure rotation"),
+        ("zero_mean", "mean sign"),
+        ("missing_negative_range", "cross both sides"),
+        ("missing_positive_range", "cross both sides"),
+        ("flag_true", "direction_matches is inconsistent"),
+        ("aggregate_true", "all_directions_match is inconsistent"),
+    ),
+)
+def test_mixed_wheel_direction_contract_remains_fail_closed(
+    tmp_path, mutation, expected_detail
+):
+    """Mixed evidence is accepted only when every producer invariant is provable."""
+    paths = _three_reports(tmp_path)
+    wrong = _report(scale=1.03)
+    segment_index = 2 if mutation == "non_rotation" else 0
+    wheels = wrong["segments"][segment_index]["wheels"]
+    wheel = wheels["per_wheel"][WHEELS["front_left"]]
+    wheel["direction"] = "mixed"
+    wheel["direction_matches"] = False
+    wheels["all_directions_match"] = False
+    if segment_index == 0:
+        wheel["speed_radps"].update({"minimum": -4.2, "maximum": 0.31})
+    else:
+        wheel["speed_radps"].update({"minimum": -0.31, "maximum": 5.3})
+    if mutation == "zero_mean":
+        wheel["speed_radps"]["mean"] = 0.0
+    elif mutation == "missing_negative_range":
+        wheel["speed_radps"]["minimum"] = -0.19
+        wheel["speed_radps"]["mean"] = -0.1
+    elif mutation == "missing_positive_range":
+        wheel["speed_radps"]["maximum"] = 0.19
+    elif mutation == "flag_true":
+        wheel["direction_matches"] = True
+    elif mutation == "aggregate_true":
+        wheels["all_directions_match"] = True
+    wrong_path = _write(tmp_path / f"wrong_mixed_{mutation}.json", wrong)
+
+    analysis = analyse_contact_ab([*paths, wrong_path], RADIUS_M)
+
+    reason = analysis["selection"]["excluded"][0]["reasons"][0]
+    assert reason["code"] == "invalid_motion_protocol"
+    assert expected_detail in reason["detail"]
+
+
+@pytest.mark.parametrize(
+    ("mutation", "bad_value", "expected_detail"),
+    (
+        ("opposite_extreme", 0.31, "reported negative direction classification"),
+        ("non_string_direction", [], ".direction must be a string"),
+    ),
+)
+def test_reported_direction_must_match_speed_extrema(
+    tmp_path, mutation, bad_value, expected_detail
+):
+    """Reported direction cannot contradict the producer's extrema classification."""
+    paths = _three_reports(tmp_path)
+    wrong = _report(scale=1.03)
+    wheel = wrong["segments"][0]["wheels"]["per_wheel"][WHEELS["front_left"]]
+    if mutation == "opposite_extreme":
+        wheel["speed_radps"]["maximum"] = bad_value
+    else:
+        wheel["direction"] = bad_value
+        wheel["direction_matches"] = False
+        wrong["segments"][0]["wheels"]["all_directions_match"] = False
+    wrong_path = _write(tmp_path / f"wrong_direction_{mutation}.json", wrong)
+
+    analysis = analyse_contact_ab([*paths, wrong_path], RADIUS_M)
+
+    reason = analysis["selection"]["excluded"][0]["reasons"][0]
+    assert reason["code"] == "invalid_motion_protocol"
+    assert expected_detail in reason["detail"]
+
+
+def test_zero_direction_deadband_matches_producer_configuration(tmp_path):
+    """The producer permits a zero direction deadband, so the audit does too."""
+    paths = _three_reports(tmp_path)
+    for path in paths:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["configuration"]["stop"]["wheel_velocity_threshold_radps"] = 0.0
+        _write(path, document)
+
+    analysis = analyse_contact_ab(paths, RADIUS_M)
+
+    assert analysis["analysis_valid"] is True
+    assert analysis["counts"]["included_reports"] == 3
+
+
+def test_speed_mean_range_allows_producer_roundoff(tmp_path):
+    """A producer-computed mean may exceed an equal endpoint by one float ulp."""
+    paths = _three_reports(tmp_path)
+    rounded = _report(scale=1.03)
+    wheel = rounded["segments"][0]["wheels"]["per_wheel"][WHEELS["front_right"]]
+    samples = [0.4, 0.4, 0.4]
+    producer_mean = sum(samples) / len(samples)
+    assert producer_mean > max(samples)
+    wheel["speed_radps"].update(
+        {"mean": producer_mean, "minimum": min(samples), "maximum": max(samples)}
+    )
+    rounded_path = _write(tmp_path / "producer_roundoff.json", rounded)
+
+    analysis = analyse_contact_ab([*paths, rounded_path], RADIUS_M)
+
+    assert analysis["counts"]["included_reports"] == 4
+    assert analysis["selection"]["excluded"] == []
+
+
+def test_no_valid_reports_error_includes_first_exclusion_detail(tmp_path):
+    """A failed one-report smoke gives the actionable protocol reason."""
+    wrong = _report()
+    wrong["segments"][0]["wheels"]["all_directions_match"] = False
+    wrong_path = _write(tmp_path / "only_invalid_report.json", wrong)
+
+    with pytest.raises(
+        ConfigurationError,
+        match=r"first exclusion \[invalid_motion_protocol\].*all_directions_match",
+    ):
+        analyse_contact_ab([wrong_path], RADIUS_M)
 
 
 def test_motion_and_contact_wheel_joint_contracts_must_match(tmp_path):

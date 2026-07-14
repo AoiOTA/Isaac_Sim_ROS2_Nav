@@ -424,18 +424,23 @@ def _validate_wheel_directions(
     segment: Mapping[str, Any],
     wheel_layout: Mapping[str, str],
     motion: str,
+    direction_deadband_radps: float,
     location: str,
 ) -> None:
     wheels = _mapping(segment.get("wheels"), f"{location}.wheels")
     _exact_keys(wheels, {"all_directions_match", "per_wheel"}, f"{location}.wheels")
-    if wheels.get("all_directions_match") is not True:
-        raise ConfigurationError(f"{location}.wheels.all_directions_match must be true")
+    aggregate_matches = wheels.get("all_directions_match")
+    if not isinstance(aggregate_matches, bool):
+        raise ConfigurationError(
+            f"{location}.wheels.all_directions_match must be a boolean"
+        )
     per_wheel = _mapping(wheels.get("per_wheel"), f"{location}.wheels.per_wheel")
     expected = _expected_wheel_directions(motion, wheel_layout)
     if set(per_wheel) != set(expected):
         raise ConfigurationError(
             f"{location}.wheels.per_wheel must exactly match configured wheels"
         )
+    per_wheel_matches: list[bool] = []
     for joint_name, expected_direction in expected.items():
         wheel = _mapping(
             per_wheel.get(joint_name), f"{location}.wheels.{joint_name}"
@@ -443,19 +448,36 @@ def _validate_wheel_directions(
         _exact_keys(
             wheel, _WHEEL_REPORT_KEYS, f"{location}.wheels.{joint_name}"
         )
-        if wheel.get("direction_matches") is not True:
-            raise ConfigurationError(
-                f"{location}.wheels.{joint_name}.direction_matches must be true"
-            )
         if wheel.get("expected_direction") != expected_direction:
             raise ConfigurationError(
                 f"{location}.wheels.{joint_name}.expected_direction must be "
                 f"{expected_direction!r}"
             )
-        if wheel.get("direction") != expected_direction:
+        direction = wheel.get("direction")
+        direction_matches = wheel.get("direction_matches")
+        if not isinstance(direction, str):
+            raise ConfigurationError(
+                f"{location}.wheels.{joint_name}.direction must be a string"
+            )
+        if not isinstance(direction_matches, bool):
+            raise ConfigurationError(
+                f"{location}.wheels.{joint_name}.direction_matches must be a boolean"
+            )
+        computed_direction_matches = direction == expected_direction
+        if direction_matches is not computed_direction_matches:
+            raise ConfigurationError(
+                f"{location}.wheels.{joint_name}.direction_matches is inconsistent "
+                "with direction and expected_direction"
+            )
+        if direction not in {expected_direction, "mixed"}:
             raise ConfigurationError(
                 f"{location}.wheels.{joint_name}.direction must be "
-                f"{expected_direction!r}"
+                f"{expected_direction!r}, or 'mixed' for a pure rotation"
+            )
+        if direction == "mixed" and motion not in {"rotate_left", "rotate_right"}:
+            raise ConfigurationError(
+                f"{location}.wheels.{joint_name}.direction 'mixed' is only valid "
+                "for a pure rotation"
             )
         speeds = _mapping(
             wheel.get("speed_radps"),
@@ -474,6 +496,57 @@ def _validate_wheel_directions(
                 f"{location}.wheels.{joint_name}.speed_radps.mean sign must "
                 f"match {expected_direction!r} direction"
             )
+        minimum = _finite(
+            speeds.get("minimum"),
+            f"{location}.wheels.{joint_name}.speed_radps.minimum",
+        )
+        maximum = _finite(
+            speeds.get("maximum"),
+            f"{location}.wheels.{joint_name}.speed_radps.maximum",
+        )
+        mean_below_minimum = mean_speed < minimum and not math.isclose(
+            mean_speed, minimum, rel_tol=1e-12, abs_tol=1e-12
+        )
+        mean_above_maximum = mean_speed > maximum and not math.isclose(
+            mean_speed, maximum, rel_tol=1e-12, abs_tol=1e-12
+        )
+        if minimum > maximum or mean_below_minimum or mean_above_maximum:
+            raise ConfigurationError(
+                f"{location}.wheels.{joint_name}.speed_radps must satisfy "
+                "minimum <= mean <= maximum"
+            )
+        if direction == "mixed":
+            if (
+                minimum >= -direction_deadband_radps
+                or maximum <= direction_deadband_radps
+            ):
+                raise ConfigurationError(
+                    f"{location}.wheels.{joint_name}.speed_radps mixed range must "
+                    "cross both sides of the direction deadband"
+                )
+        elif expected_direction == "positive":
+            if (
+                minimum < -direction_deadband_radps
+                or maximum <= direction_deadband_radps
+            ):
+                raise ConfigurationError(
+                    f"{location}.wheels.{joint_name}.speed_radps range contradicts "
+                    "the reported positive direction classification"
+                )
+        elif (
+            minimum >= -direction_deadband_radps
+            or maximum > direction_deadband_radps
+        ):
+            raise ConfigurationError(
+                f"{location}.wheels.{joint_name}.speed_radps range contradicts "
+                "the reported negative direction classification"
+            )
+        per_wheel_matches.append(direction_matches)
+    if aggregate_matches is not all(per_wheel_matches):
+        raise ConfigurationError(
+            f"{location}.wheels.all_directions_match is inconsistent with "
+            "per-wheel direction_matches"
+        )
 
 
 def _segment_metrics(
@@ -481,6 +554,7 @@ def _segment_metrics(
     specification: tuple[str, str, float, float, float],
     wheel_layout: Mapping[str, str],
     wheel_radius_m: float,
+    direction_deadband_radps: float,
     location: str,
 ) -> dict[str, float]:
     segment_id, motion, linear, angular, duration = specification
@@ -566,7 +640,13 @@ def _segment_metrics(
             distribution.get("mean"),
             f"{location}.actual_velocity.{velocity_name}.mean",
         )
-    _validate_wheel_directions(segment, wheel_layout, motion, location)
+    _validate_wheel_directions(
+        segment,
+        wheel_layout,
+        motion,
+        direction_deadband_radps,
+        location,
+    )
     yaw_change = _finite(yaw.get("change_rad"), f"{location}.yaw.change_rad")
     expected_yaw = _finite(
         angular * observed_duration, f"{location}.yaw.expected_change_calculated"
@@ -782,6 +862,13 @@ def _validated_record(
     }
     if len(set(wheel_layout.values())) != 4:
         raise ConfigurationError(f"{location}.configuration.wheels must be unique")
+    stop_configuration = _mapping(
+        configuration.get("stop"), f"{location}.configuration.stop"
+    )
+    direction_deadband_radps = _nonnegative(
+        stop_configuration.get("wheel_velocity_threshold_radps"),
+        f"{location}.configuration.stop.wheel_velocity_threshold_radps",
+    )
     contact = _mapping(
         provenance.get("contact"), f"{location}.runtime_provenance.contact"
     )
@@ -815,6 +902,7 @@ def _validated_record(
             specification,
             wheel_layout,
             wheel_radius_m,
+            direction_deadband_radps,
             f"{location}.segments[{index}]({specification[0]})",
         )
         for index, specification in enumerate(_SEGMENT_SPECS)
@@ -1066,7 +1154,14 @@ def analyse_contact_ab(
             continue
         included.append(record)
     if not included:
-        raise ConfigurationError("no valid contact A/B reports remain after selection")
+        message = "no valid contact A/B reports remain after selection"
+        if exclusions and exclusions[0].get("reasons"):
+            first_reason = exclusions[0]["reasons"][0]
+            message += (
+                f"; first exclusion [{first_reason.get('code', 'unknown')}]: "
+                f"{first_reason.get('detail', 'no detail')}"
+            )
+        raise ConfigurationError(message)
 
     reference_lock = included[0].global_lock
     for record in included[1:]:
