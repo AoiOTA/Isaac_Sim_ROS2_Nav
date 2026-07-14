@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 import subprocess
 from types import SimpleNamespace
@@ -68,6 +69,59 @@ class _Prim:
         return self._attributes[name]
 
 
+def _contact_snapshot(profile_path: Path) -> dict[str, object]:
+    wheel_colliders = [
+        f"/World/Robot/wheel_{index}/collider" for index in range(4)
+    ]
+    ground_colliders = ["/World/Ground/Collision"]
+    wheel_material_path = "/World/Looks/WheelPhysics"
+    return {
+        "profile_path": str(profile_path.resolve()),
+        "profile_sha256": file_sha256(profile_path),
+        "profile_id": "legacy-baseline",
+        "profile_mode": "legacy_baseline",
+        "overlay_identifier": "anon:0x123:contact_legacy-baseline.usda",
+        "overlay_sha256": "1" * 64,
+        "explicit_materials": False,
+        "thresholds_authored": False,
+        "scene": {
+            "physics_scene_path": "/PhysicsScene",
+            "friction_correlation_distance": 0.00025,
+            "friction_offset_threshold": 0.0004,
+            "friction_type": "patch",
+        },
+        "wheel_colliders": wheel_colliders,
+        "ground_colliders": ground_colliders,
+        "wheel_bindings": [
+            {
+                "collider_path": path,
+                "direct_physics_material_path": wheel_material_path,
+                "effective_physics_material_path": wheel_material_path,
+            }
+            for path in wheel_colliders
+        ],
+        "ground_bindings": [
+            {
+                "collider_path": ground_colliders[0],
+                "direct_physics_material_path": None,
+                "effective_physics_material_path": None,
+            }
+        ],
+        "wheel_material": {
+            "material_path": wheel_material_path,
+            "static_friction": 0.2,
+            "dynamic_friction": 0.2,
+            "restitution": 0.0,
+            "friction_combine_mode": None,
+            "restitution_combine_mode": None,
+            "friction_combine_mode_authored": False,
+            "restitution_combine_mode_authored": False,
+        },
+        "ground_material": None,
+        "stage_usd_readback_verified": True,
+    }
+
+
 def _git(repository: Path, *arguments: str) -> None:
     subprocess.run(
         ["git", "-C", str(repository), *arguments],
@@ -107,38 +161,63 @@ def test_git_metadata_captures_revision_branch_and_dirty_state(tmp_path):
     assert git_metadata(repository)["dirty"] is True
 
 
-def test_capture_flattens_the_effective_robot_environment_and_stage(tmp_path):
+def test_capture_flattens_the_effective_robot_environment_and_stage(
+    tmp_path, monkeypatch
+):
     repository = _repository(tmp_path)
     robot_config = tmp_path / "jackal.yaml"
     robot_asset = tmp_path / "jackal_nav.usda"
     project_stage = tmp_path / "navigation_scene.usda"
     source_asset = tmp_path / "warehouse.usd"
+    contact_profile = tmp_path / "legacy_baseline.yaml"
     for path, content in (
         (robot_config, b"physics: {}\n"),
         (robot_asset, b"#usda 1.0\n"),
         (project_stage, b"#usda 1.0\n"),
         (source_asset, b"PXR-USDC"),
+        (
+            contact_profile,
+            b"schema_version: 1\nid: legacy-baseline\nmode: legacy_baseline\n",
+        ),
     ):
         path.write_bytes(content)
     asset_root = tmp_path / "6.0"
     asset_root.mkdir()
     config = SimpleNamespace(
-        files=SimpleNamespace(robot=robot_config),
+        files=SimpleNamespace(
+            robot=robot_config,
+            contact_profile=contact_profile,
+        ),
         robot=SimpleNamespace(
             asset_path=robot_asset,
             articulation_root="/World/Robot",
+            wheel_joints=("fl", "fr", "rl", "rr"),
         ),
         environment=SimpleNamespace(
             identifier="Warehouse",
             project_stage=project_stage,
             source_asset=source_asset,
+            ground_colliders=SimpleNamespace(
+                required_prim_paths=("/World/Ground/Collision",),
+                semantic_classes=(),
+                expected_enabled_count=1,
+            ),
         ),
         asset_root=asset_root,
         simulation=SimpleNamespace(
             navigation_mode="mapping",
             odometry_mode="ideal",
             physics_hz=60.0,
+            expected_physics_scene="/PhysicsScene",
         ),
+    )
+    from isaac_sim.src.stage import contact_setup
+
+    expected_contact_snapshot = _contact_snapshot(contact_profile)
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, config: expected_contact_snapshot,
     )
     provenance = capture_runtime_provenance(
         config,
@@ -148,8 +227,8 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(tmp_path):
     )
     parameters = runtime_provenance_parameters(provenance)
 
-    assert provenance["schema_version"] == 2
-    assert parameters["runtime_provenance.schema_version"] == 2
+    assert provenance["schema_version"] == 3
+    assert parameters["runtime_provenance.schema_version"] == 3
     assert provenance["robot"]["config"]["sha256"] == file_sha256(
         robot_config
     )
@@ -180,6 +259,24 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(tmp_path):
         == hashlib.sha256(_RootLayer().ExportToString().encode()).hexdigest()
     )
     assert parameters["runtime_provenance.git.dirty"] is False
+    contact_json = parameters["runtime_provenance.contact.json"]
+    assert isinstance(contact_json, str)
+    assert contact_json == json.dumps(
+        provenance["contact"],
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    assert parameters["runtime_provenance.contact.sha256"] == hashlib.sha256(
+        contact_json.encode("utf-8")
+    ).hexdigest()
+    assert provenance["contact"]["collider_contract"] == {
+        "wheel_joint_names": ["fl", "fr", "rl", "rr"],
+        "wheel_expected_count": 4,
+        "ground_required_prim_paths": ["/World/Ground/Collision"],
+        "ground_semantic_classes": [],
+        "ground_expected_enabled_count": 1,
+    }
 
 
 def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
@@ -214,4 +311,95 @@ def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
             _Stage((32, 4)),
             articulation_usd_solver_iterations=(32, 16),
             repository_root=repository,
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda snapshot: snapshot.update(profile_path="/wrong/profile.yaml"),
+            "profile path",
+        ),
+        (
+            lambda snapshot: snapshot.update(profile_sha256="0" * 64),
+            "profile SHA256",
+        ),
+        (
+            lambda snapshot: snapshot["scene"].update(
+                physics_scene_path="/WrongScene"
+            ),
+            "PhysicsScene",
+        ),
+        (
+            lambda snapshot: snapshot.update(
+                ground_colliders=["/World/Ground/Other"]
+            ),
+            "required ground collider",
+        ),
+        (
+            lambda snapshot: snapshot.update(
+                stage_usd_readback_verified=False
+            ),
+            "readback",
+        ),
+        (
+            lambda snapshot: snapshot.update(explicit_materials=0),
+            "flags must be boolean",
+        ),
+    ],
+)
+def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
+    tmp_path, mutation, message
+):
+    repository = _repository(tmp_path)
+    robot_config = tmp_path / "robot.yaml"
+    robot_asset = tmp_path / "robot.usda"
+    project_stage = tmp_path / "project.usda"
+    source_asset = tmp_path / "source.usd"
+    contact_profile = tmp_path / "legacy_baseline.yaml"
+    for path in (robot_config, robot_asset, project_stage, source_asset):
+        path.write_bytes(b"input")
+    contact_profile.write_text(
+        "schema_version: 1\nid: legacy-baseline\nmode: legacy_baseline\n",
+        encoding="utf-8",
+    )
+    config = SimpleNamespace(
+        files=SimpleNamespace(
+            robot=robot_config,
+            contact_profile=contact_profile,
+        ),
+        robot=SimpleNamespace(
+            asset_path=robot_asset,
+            articulation_root="/World/Robot",
+            wheel_joints=("fl", "fr", "rl", "rr"),
+        ),
+        environment=SimpleNamespace(
+            identifier="Warehouse",
+            project_stage=project_stage,
+            source_asset=source_asset,
+            ground_colliders=SimpleNamespace(
+                required_prim_paths=("/World/Ground/Collision",),
+                semantic_classes=(),
+                expected_enabled_count=1,
+            ),
+        ),
+        asset_root=tmp_path,
+        simulation=SimpleNamespace(
+            navigation_mode="mapping",
+            odometry_mode="ideal",
+            physics_hz=60.0,
+            expected_physics_scene="/PhysicsScene",
+        ),
+    )
+    snapshot = _contact_snapshot(contact_profile)
+    mutation(snapshot)
+
+    with pytest.raises(RuntimeProvenanceError, match=message):
+        capture_runtime_provenance(
+            config,
+            _Stage(),
+            articulation_usd_solver_iterations=(32, 4),
+            repository_root=repository,
+            contact_snapshot=snapshot,
         )
