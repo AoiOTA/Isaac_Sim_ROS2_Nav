@@ -1236,7 +1236,7 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、`Stage.GetRootLayer()` 摘要、仿真模式和 Git commit/branch/dirty；该 RootLayer 摘要不包含 SessionLayer 中有意变化的 topology/contact treatment。当前 live 启动链只接受 schema v5：solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志；`ground_topology` 另以 canonical JSON + SHA256 锁定 topology profile、源资产、匿名 overlay、source/target/disabled collider 精确集合与 Stage 读回；`contact` 再锁定 profile、PhysicsScene threshold、精确 wheel/目标 ground collider、physics-purpose binding 和材质读回。contact 的 ground 集合必须严格等于 topology target，不能靠两个彼此无关的参数声称运行了某个拓扑。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、runtime 初始化后的 `Stage.GetRootLayer()` 摘要、仿真模式和 Git commit/branch/dirty。topology/contact 的直接 opinion 位于 SessionLayer 下的两个独立匿名 sublayer，不会原样进入 RootLayer 导出；但初始化可形成随 treatment 变化的派生 RootLayer opinion，所以该摘要按最终实验组锁定。当前 live 启动链只接受 schema v5：solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志；`ground_topology` 另以 canonical JSON + SHA256 锁定 topology profile、源资产、匿名 overlay、source/target/disabled collider 精确集合与 Stage 读回；`contact` 再锁定 profile、PhysicsScene threshold、精确 wheel/目标 ground collider、physics-purpose binding 和材质读回。contact 的 ground 集合必须严格等于 topology target，不能靠两个彼此无关的参数声称运行了某个拓扑。
 
 这套 API 证明的是当前 USD Stage 输入与读回一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验两对 canonical JSON 参数；schema v1/v2/v3/v4、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。历史 schema v3/v4 报告仍可各自单独离线复核，但 v3、v4、v5 不能混入同一份正式统计。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数或地面拓扑自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、拓扑、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
@@ -1307,8 +1307,8 @@ Reset 和聚合完整性全部通过，但空旷平面原地旋转中心漂移�
 | `warehouse_plane_only1_v1` | `Warehouse` | 32 → 1，在匿名层禁用 31 个非目标 collider | 只隔离 Warehouse 地面 collider 拓扑，不改源资产 |
 
 Topology YAML 同时锁定环境 ID、源资产 SHA256、source/target/disabled 的精确数量、
-规范路径集合 hash 和操作类型。`SceneComposer` 在 PhysX 初始化前创建匿名 session
-overlay；`warehouse_plane_only1_v1` 只 author 31 条
+规范路径集合 hash 和操作类型。`SceneComposer` 在 PhysX 初始化前向 SessionLayer
+插入 topology 专用匿名 sublayer；`warehouse_plane_only1_v1` 只 author 31 条
 `physics:collisionEnabled=false`，不会改 NVIDIA Warehouse 文件，也不会给目标 collider
 写多余意见。应用后会重新读取 Stage 并检查 overlay 中没有额外 Prim、metadata 或属性；
 失败时移除临时层并终止启动。切回 `warehouse_combined32_v1` 会清掉旧 topology layer，
@@ -1326,7 +1326,7 @@ overlay；`warehouse_plane_only1_v1` 只 author 31 条
 | `threshold_corr_*.yaml` 四个文件 | 只改变 correlation distance 与 offset threshold 的 2×2 组合 | 低速转向是否主要受 patch-friction threshold 影响？ |
 | `explicit_material.yaml` | 保持 legacy threshold，并给四轮与全部 ground collider 显式绑定不同材质 | 结果是否依赖资产继承材质或缺失的地面材质？ |
 
-Contact profile 在 PhysX 初始化前写入另一个匿名 USD session layer，不修改 Warehouse、SimplePlane
+Contact profile 在 PhysX 初始化前写入 SessionLayer 下另一个独立匿名 sublayer，不修改 Warehouse、SimplePlane
 或 Jackal 源文件。每次应用后会重新读取 scene 属性、材质、combine mode、
 physics-purpose binding、四个 wheel collider 和全部 ground collider；任何数量、
 semantic class、Prim、binding 或数值不一致都会删除临时层并让启动失败。这里的
@@ -1576,7 +1576,7 @@ environment/topology/Profile 的运动统计。单轮细节看 `reports/`，故�
 预期行为，不是文件丢失。失败目录不得续跑，也不得把其中的部分样本混入新批次。
 
 分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat。v5 分别锁定
-全矩阵 robot/motion、同环境的 RootLayer SHA 与 source collider 发现合同、同 topology 的
+全矩阵 robot/motion、同环境的 environment/source collider 发现合同、同 topology 的
 operation/target/disabled、同 environment+contact profile 跨 topology 不应变化的
 scene、wheel bindings、wheel material、ground material 和 readback，以及三元组内
 除进程专用 `overlay_identifier` 外的完整 contact；ground bindings/path 会随 topology
@@ -1586,9 +1586,11 @@ canonical Jackal `0.098 m` 轮径；schema-v4/v5 报告则要求 CLI/矩阵脚�
 每份 provenance 中的实际 robot 轮径完全一致，因此候选值不会被静默按 `0.098 m`
 计算。v3、v4、v5 不能混入同一批分析。非法的 shipped environment/topology pair 会
 作为 `invalid_runtime_provenance` 排除；完整矩阵缺任一合法三元组同样失败关闭。
-`composed_root_layer_sha256` 只摘要 RootLayer，不包含 SessionLayer treatment；v5 在
-同环境跨 topology/contact 锁定它，匿名层内容分别由 topology/contact 的
-`overlay_sha256` 锁定。历史 v3/v4 保留其既有离线分组合同，不被 v5 重新解释。
+`composed_root_layer_sha256` 摘要 runtime 初始化后的 RootLayer，不直接包含
+SessionLayer opinion，但可包含随 treatment 产生的派生 opinion；因此 v5 在最终
+environment/topology/contact 组内锁定它。跨 treatment 的显式不变量仍由上述分层锁
+约束，匿名层内容分别由 topology/contact 的 `overlay_sha256` 锁定。历史 v3/v4
+保留其既有离线分组合同，不被 v5 重新解释。
 输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
 最终选择仍需结合两环境指标与工程约束。这里接受可证明的纯旋转 `mixed`，只是区分
 “短暂反向瞬态”和“主导轮速方向错误”，不会把方向检查降级为只看一个布尔字段。

@@ -886,11 +886,11 @@ def test_historical_composed_root_hash_keeps_profile_group_scope(tmp_path):
 
 
 @pytest.mark.parametrize("treatment", ["contact", "topology"])
-def test_v5_composed_root_hash_is_locked_across_session_treatments(
+def test_v5_composed_root_hash_is_locked_per_treatment_group(
     tmp_path,
     treatment,
 ):
-    """Schema-v5 Session-layer treatments cannot change RootLayer bytes."""
+    """Runtime-derived RootLayer bytes may vary, but group repeats may not."""
     baseline = _three_v5_reports(tmp_path / "baseline")
     if treatment == "contact":
         changed = _three_v5_reports(
@@ -903,16 +903,6 @@ def test_v5_composed_root_hash_is_locked_across_session_treatments(
             topology="warehouse_plane_only1_v1",
         )
 
-    analysis = analyse_contact_ab([*baseline, *changed], RADIUS_M)
-    assert analysis["analysis_valid"] is True
-    assert analysis["environment_contracts"]["Warehouse"]["environment"][
-        "composed_root_layer_sha256"
-    ] == "e" * 64
-    assert all(
-        "composed_root_layer_sha256" not in group["contact_contract"]
-        for group in analysis["groups"].values()
-    )
-
     for path in changed:
         document = json.loads(path.read_text(encoding="utf-8"))
         document["runtime_provenance"]["environment"][
@@ -920,7 +910,22 @@ def test_v5_composed_root_hash_is_locked_across_session_treatments(
         ] = "4" * 64
         _write(path, document)
 
-    with pytest.raises(ConfigurationError, match="environment contract mismatch"):
+    analysis = analyse_contact_ab([*baseline, *changed], RADIUS_M)
+    assert analysis["analysis_valid"] is True
+    assert "composed_root_layer_sha256" not in analysis[
+        "environment_contracts"
+    ]["Warehouse"]["environment"]
+    assert {
+        group["contact_contract"]["composed_root_layer_sha256"]
+        for group in analysis["groups"].values()
+    } == {"e" * 64, "4" * 64}
+
+    drifted = json.loads(changed[1].read_text(encoding="utf-8"))
+    drifted["runtime_provenance"]["environment"][
+        "composed_root_layer_sha256"
+    ] = "5" * 64
+    _write(changed[1], drifted)
+    with pytest.raises(ConfigurationError, match="contact contract mismatch"):
         analyse_contact_ab([*baseline, *changed], RADIUS_M)
 
 

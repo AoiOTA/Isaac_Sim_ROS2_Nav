@@ -25,7 +25,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；新矩阵证明证据链和 Reset 合同可靠，但 SimplePlane 原地旋转中心漂移 `0.297–0.350 m`、角速度平均误差 `60.1%–69.0%`，六 Profile 全部未过计划 8.7，Realistic 和候选有效轮距 A/B 仍未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手；真实 Warehouse 单轮诊断 8/8 硬门通过；历史两环境接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 既有正式矩阵仍是历史 v3 且可单独复核；v5 会把环境、topology、contact 分开锁定，v3/v4/v5 禁止混批。ground topology 的 USD 应用/读回已验证，但 32-vs-1 的真实运动 A/B 尚未执行。稳定有效轮距仍是保持行为的 `0.37559 m`，不是物理标定；批次 `success` 也只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手；真实 Warehouse 单轮诊断 8/8 硬门通过；历史两环境接触矩阵 12 组均有三次重复，严格聚合纳入 36/排除 0 | 既有正式矩阵仍是历史 v3 且可单独复核；v5 会把环境、topology、contact 分开锁定，v3/v4/v5 禁止混批。clean `a85828f` 已完成 Warehouse 32-vs-1 × 六 contact profile × 每格一次的 12-run 机制烟测，但正式每组三重复的 54-run/18-group 全拓扑批次仍未执行。稳定有效轮距仍是保持行为的 `0.37559 m`，不是物理标定；批次 `success` 也只表示报告、身份、Reset、停止和聚合合同通过，不是物理门通过 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -415,7 +415,7 @@ correlation distance `0.00025/0.025 m` 与 offset threshold `0.0004/0.04 m` 的
 2×2 矩阵；显式材质固定 wheel `0.2/0.2/0.0`、ground `0.5/0.5/0.0`，两个
 combine mode 均为 `average`。
 
-所有修改只进入匿名 session layer；应用后重新解析和读回有效 Stage，失败会移除
+所有修改只进入 SessionLayer 下的独立匿名 sublayer；应用后重新解析和读回有效 Stage，失败会移除
 临时层。定向 USD 验证确认：
 
 - Warehouse 精确解析 4 个启用 wheel collider、32 个 ground collider，配置的
@@ -470,7 +470,7 @@ Kit log SHA256: c0cefb0b603a9fd6bd5916a26c8592b46bc8ee4271b5297d16ad2618a2502ca6
 | `warehouse_plane_only1_v1` | Warehouse | `32 / 1 / 31` | 只禁用非目标 collider |
 
 Profile 锁定源资产原始字节 SHA256、三组精确路径数量和 canonical 路径集合 hash。
-实现只在匿名 session overlay 中 author plane-only 所需的 31 条
+实现只在 SessionLayer 下的 topology 专用匿名 sublayer 中 author plane-only 所需的 31 条
 `physics:collisionEnabled=false`；combined 与 SimplePlane 不 author collider 属性。
 应用后重新读取 Stage，检查 overlay 没有额外 Prim、metadata、attribute 或其他 opinion，
 并验证 source 是 target 与 disabled 的无交集精确并集。切换 profile 会先移除旧层，
@@ -486,13 +486,16 @@ readback canonical 全量一致。离线 validator 验证 exact key、有限值�
 canonical topology/contact JSON 与 SHA；Realistic Wheel Odom 只握手 schema、robot
 config path/SHA 和七个 kinematics/controller 字段，两者的 live 握手都只接受整数
 schema 5。A/B analyzer 的 v5 分组键为
-`environment::topology::contact_profile`：同环境锁完整 environment（包括只导出
-`Stage.GetRootLayer()`、不包含 SessionLayer treatment 的 RootLayer SHA）、wheel
-collider 和 source collider；同 environment+topology 锁 profile/operation/overlay SHA/
+`environment::topology::contact_profile`：同环境锁除 runtime-derived RootLayer SHA
+外的完整 environment、wheel collider 和 source collider；同 environment+topology 锁 profile/operation/overlay SHA/
 target/disabled/readback 与 contact ground selector/list；同一 environment+contact
 跨 topology 锁 profile、scene、wheel bindings、wheel/ground material 和 readback，
-允许 treatment 所需的 ground bindings/path 改变；三元组内锁除进程地址型
-`overlay_identifier` 外的完整 contact。历史 v3/v4 保留已发布的旧锁层并可分别离线
+允许 treatment 所需的 ground bindings/path 改变；三元组内锁 runtime 初始化后的
+RootLayer SHA，以及除进程地址型 `overlay_identifier` 外的完整 contact。topology/contact
+的直接 opinion 位于 SessionLayer 下的两个独立匿名 sublayer，但初始化
+可形成 treatment-dependent 的 RootLayer 派生 opinion，`a85828f` 真实机制烟测因此证明
+不能把该摘要误锁为跨 treatment 常量。历史 v3/v4
+保留已发布的旧锁层并可分别离线
 审计，但与 v5 互相禁止混批。
 
 定向证据为 runtime provenance `20 passed / 2 skipped`（无 PXR 的普通 Python 环境）、
@@ -500,8 +503,10 @@ target/disabled/readback 与 contact ground selector/list；同一 environment+c
 `167 passed`、contact analyzer `59 passed`。提交 `6897712` 的 `30 passed` 只证明
 ground-topology overlay 核心及其可逆性；新增的两个 producer fresh-readback 用例由
 该 PXR marker 定向运行独立复验。这里的 PASS 证明配置、overlay、读回、传输和统计隔离
-合同成立，**尚未**产生 Warehouse 32-collider 与 plane-only 1-collider 的真实运动
-报告，不能声称 plane-only 改善转向或有效轮距。
+合同成立。后续 clean `a85828f` 机制烟测已产生 Warehouse combined32 与 plane-only1
+各六个 contact profile 的 12 份真实 schema-v5 成功报告；但每条件只有一次，且当次
+聚合因错误地把 runtime-derived RootLayer SHA 当作跨 treatment 环境常量而失败关闭，
+不能声称 plane-only 改善转向或有效轮距。完整失败证据和修复见下文。
 
 PXR 定向命令为：
 
@@ -523,7 +528,52 @@ canonical topology JSON/SHA、源资产/三组 collider/readback 和 contact tar
 `42 passed / 1 skipped`，唯一 skip 是本机未安装 `shellcheck`。后续加固还让 profile/
 topology 摘要直接序列化第一次 HEAD/hash 锁定值，并逐行核对冻结 Manifest 的 topology
 ID/path/SHA，阻断瞬态二次读盘造成的证据分叉；这仍只是批处理合同验证，
-54 次真实 Isaac topology 矩阵尚未执行。
+54 次正式、每组三重复的真实 Isaac topology 矩阵尚未执行。
+
+### Warehouse 32-vs-1 真实机制烟测与 RootLayer 锁修复（2026-07-15）
+
+在 clean commit `a85828f` 上执行：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment Warehouse \
+  --ground-topology all \
+  --repeats 1 \
+  --output-dir data/reports/contact_ab/ground_topology_smoke_a85828f
+```
+
+脚本实际启动 12 个独立 Isaac 进程：`warehouse_combined32_v1` 与
+`warehouse_plane_only1_v1` 各配六个 contact profile。12 份报告均为
+`result=success`、provenance schema 5、`verified=true`、`git.dirty=false`；72 个运动段
+全部为 `result=complete`。43 列冻结 Manifest 共 12 行且全部 `success`，SHA256 为
+`1fc6d8a56979334471274a052865c510d15543c4828a800ba6a37fea8f886345`。逐行回算报告、
+Isaac log、runner log 与九类锁定输入共 144 次 SHA256，结果为 `0 missing / 0 mismatch`。
+combined32 六份报告均读回 `32 source / 32 target / 0 disabled`，plane-only1 六份均为
+`32 / 1 / 31`，USD readback 全部通过。
+
+旧 analyzer 在 12 个进程完成后按设计失败关闭，错误为
+`environment contract mismatch for Warehouse: report 007 differs from 001`，因此失败目录
+没有生成 `analysis.json` 或 `batch_summary.json`，也没有事后回填或改写。递归比较证明
+两个报告唯一不同的环境字段是 `composed_root_layer_sha256`。实际观察到三种值：
+
+- combined32 六个 profile：`1a4f79b5d893f60a165b4d711435162966d0dba3d2334e05b6be593be23dc0fb`；
+- plane-only1 的其余四个 profile：`b96c794f348ef63109b1aeba190471317e3435112532e81142f667fe2d7531a9`；
+- plane-only1 的 correlation `0.025` profile：`b1b475d80ad7345452f90857a65206b331343fe6294e6bdb06eb38c5a5d40ac8`。
+
+根因是该摘要在 PhysicsSetup、传感器、Reset 与 Articulation 初始化之后捕获；即使
+topology/contact 的直接 opinion 只位于 SessionLayer 下两个匿名 sublayer，后续 runtime
+仍可能在 RootLayer 形成 treatment-dependent 派生 opinion。修复把 RootLayer SHA 从
+跨 treatment 的 environment lock 移到最终 environment/topology/contact 组内；global、
+environment、environment+topology、environment+contact 的显式输入锁全部保留。定向
+analyzer 回归为 `59 passed`；对原始 12 份报告只读离线重聚合得到
+`analysis_valid=true`、`12 input / 12 included / 0 excluded / 12 groups`，所选 12 组子矩阵完整。
+
+这批每格只有一次，不能估计方差、排名 profile 或作 topology 因果结论。描述性均值中，
+combined32→plane-only1 的左/右旋转中心漂移为 `0.21350→0.22344 m` /
+`0.33907→0.33888 m`，yaw gain 为 `0.31165→0.30508` / `0.26082→0.26113`，
+有效轮距为 `0.93421→0.95026 m` / `1.06220→1.05974 m`；方向混合，且两种 topology
+的 yaw gain 都远低于 `1`。因此该批只证明真实机制、证据链与修复方向；正式结论必须
+来自 clean 冻结提交上的每组三重复 54-run/18-group 全 topology 矩阵。
 
 ### SimplePlane 六 Profile 严格批处理烟测（2026-07-14）
 
@@ -1115,9 +1165,11 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 2026-07-15 在 clean 提交 `567b8d1` 上重新执行完整三条门。构建、预检和
 `test.sh --with-isaac` 均 exit 0；预检仍如实报告 294 个 Fast DDS SHM 遗留工件和
 20 个 CPU core governor 非 performance 的环境警告，资产、地图、GPU 与其余门通过。
-这次全门已覆盖 schema v5、三个 topology profile、严格 topology 矩阵、RootLayer
-锁层和两份新文档；它仍不能替代真实 skid-steer/topology、Realistic 导航或
-Warehouse V2 正式统计。最终正式统计前还须在最终参数冻结点再次执行完整门。
+这次全门已覆盖当时的 schema v5、三个 topology profile、严格 topology 矩阵、
+RootLayer 锁层和两份新文档；随后真实 topology smoke 证伪了当时把 RootLayer SHA
+当作跨 treatment 常量的作用域。当前 per-treatment-group 修复已有 analyzer
+`59 passed` 和保留报告离线重聚合 `12 included / 0 excluded / 12 groups`，提交后仍须
+重跑完整三条门。单元门也不能替代 Realistic 导航或 Warehouse V2 正式统计。
 
 | Gate | 最近证据 |
 | --- | --- |

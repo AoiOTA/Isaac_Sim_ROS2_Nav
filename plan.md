@@ -34,7 +34,8 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   已成为版本化、可逆的 ground-topology profile；schema v5 还锁定源资产、匿名
   overlay、source/target/disabled 精确集合并要求 contact ground target 一致。USD
   应用/读回和离线分组合同已验证；严格矩阵入口可按三个合法 pair 生成 54-run/18-group
-  全拓扑批次，真实 32-vs-1 运动 A/B 尚未执行。
+  全拓扑批次。clean `a85828f` 已执行 Warehouse 32-vs-1、六 contact profile、每格一次
+  的 12-run 机制烟测；正式每组三重复的 54-run/18-group 全拓扑批次仍未执行。
 - `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件；
   两者都没有覆盖 stable，也尚未完成两环境、多速度、拓扑或 Realistic 物理 A/B。
 
