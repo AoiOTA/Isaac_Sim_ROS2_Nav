@@ -7,6 +7,7 @@ import pytest
 from robot_odometry.kinematics import covariance_from_diagonal
 from robot_odometry.kinematics import WheelOdometry
 from robot_odometry.kinematics import WheelOdometryConfig
+from robot_odometry.robot_profile import load_robot_profile
 import yaml
 
 
@@ -17,11 +18,37 @@ NAMES = [
     'rear_right_wheel_joint',
 ]
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+EXPERIMENTAL_ROBOT_DIR = (
+    REPOSITORY_ROOT / 'isaac_sim' / 'configs' / 'robots' / 'experimental')
 
 
 def test_integrator_requires_an_explicit_robot_kinematics_profile():
     with pytest.raises(TypeError):
         WheelOdometryConfig(max_integration_step=0.25)
+
+
+@pytest.mark.parametrize(
+    ('filename', 'profile_id', 'effective_track_width'),
+    (
+        ('jackal_etw_0p989_v1.yaml', 'jackal_etw_0p989_v1', 0.989),
+        ('jackal_etw_1p012_v1.yaml', 'jackal_etw_1p012_v1', 1.012),
+    ),
+)
+def test_experimental_effective_track_profiles_are_valid_wheel_odom_inputs(
+        filename, profile_id, effective_track_width):
+    profile = load_robot_profile(EXPERIMENTAL_ROBOT_DIR / filename)
+
+    assert profile.profile_id == profile_id
+    assert profile.lifecycle == 'experimental_candidate'
+    assert profile.wheel_radius_m == pytest.approx(0.098)
+    assert profile.geometric_track_width_m == pytest.approx(0.37559)
+    assert profile.effective_track_width_m == pytest.approx(
+        effective_track_width)
+    assert profile.left_joint_names == (
+        'front_left_wheel_joint', 'rear_left_wheel_joint')
+    assert profile.right_joint_names == (
+        'front_right_wheel_joint', 'rear_right_wheel_joint')
 
 
 def _integrator(max_step=0.25):
