@@ -129,26 +129,42 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 | ROS 2 Jazzy | 默认安装到 `/opt/ros/jazzy`。 |
 | Git LFS | 下载仓库中的大 Pose Graph。 |
 | `jq`、`ripgrep` | 阅读 JSON 证据和按路径/关键字检索源码、日志。 |
-| `colcon`、`rosdep` | 解析 ROS 依赖和构建十一个工作区包。 |
+| `ros-dev-tools`（含 `colcon`、`rosdep`） | 解析 ROS 依赖和构建十一个工作区包。 |
 | Python 3.12、PyYAML、pytest、jsonschema | 运行配置解析、单元测试和实验报告。 |
 | `gnome-terminal`、`xterm` 或 `konsole` | 可选；自动弹出 Mapping Teleop 终端需要其中一个。 |
 
-先安装 ROS Jazzy 与 Isaac Sim，再让 `rosdep` 根据当前 `package.xml` 安装 ROS/C++ 依赖；它会包含 Nav2、SLAM Toolbox、robot_localization、Ceres、RViz 和消息包：
+先按 ROS 官方流程配置 Jazzy 的 APT 软件源并安装 ROS 与 Isaac Sim，再安装完整开发工具，
+然后让 `rosdep` 根据当前 `package.xml` 安装 ROS/C++ 依赖；它会包含 Nav2、SLAM
+Toolbox、robot_localization、Ceres、RViz 和消息包。全新机器还要且只要初始化一次
+系统级 rosdep source：
 
 ```bash
-sudo apt install git-lfs jq ripgrep
+sudo apt update
+sudo apt install ros-dev-tools git-lfs jq ripgrep python3-venv
 source /opt/ros/jazzy/setup.bash
+
+if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then
+  sudo rosdep init
+fi
 rosdep update
 rosdep install --from-paths ros2_ws/src --ignore-src -r -y
 ```
 
-仓库级 Python 开发依赖定义在 `pyproject.toml`。如果当前 Python 还不能导入 `pytest`、`yaml` 和 `jsonschema`，在你用于测试的 Python 3.12 环境中安装：
+仓库级 Python 开发依赖定义在 `pyproject.toml`。Ubuntu 24.04 的系统 Python 受
+PEP 668 保护，不要直接向它执行 `pip install`。在仓库根目录创建被 `.gitignore`
+排除的虚拟环境，并允许它读取系统安装的 ROS Python 包：
 
 ```bash
-python3 -m pip install -e '.[dev]'
+cd "$PROJECT_ROOT"
+python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e '.[dev]'
 ```
 
-Isaac Sim 的 Python 环境不必另装 pytest；`scripts/test.sh --with-isaac` 会优先复用其 USD/Isaac 模块。不要用 `pip` 替换 ROS 自带的 `rclpy`。
+以后在新的开发终端运行 Python 测试前先执行 `source "$PROJECT_ROOT/.venv/bin/activate"`。
+Isaac Sim 的 Python 环境不必另装 pytest；`scripts/test.sh --with-isaac` 会优先复用其
+USD/Isaac 模块。不要在虚拟环境中用 `pip` 安装或替换 ROS 自带的 `rclpy`。
 
 ### 4.2 拉取 Git LFS 地图
 
@@ -470,13 +486,17 @@ Localization 不启动 Nav2，也不会打开 Mapping Teleop；它只用于观�
 
 Realistic 模式不使用 Isaac Ideal Odom。轮关节状态先生成 `/wheel/odom`，再与 IMU 进入 EKF，最终由 `ekf_filter_node` 唯一发布 `/odom` 和 `odom → base_link`。
 
+先启动终端 A，并等待日志明确出现 `Isaac navigation simulation ready:`；看到这行后
+才能启动终端 B。不要让两个命令同时冷启动：Wheel Odom 的 provenance 握手只等待
+10 秒，而 Isaac 首次加载通常更久，超时会按设计关闭整套 Realistic ROS launch。
+
 ```bash
 # 终端 A
 ./scripts/run_isaac.sh \
   --navigation-mode localization \
   --mode realistic
 
-# 终端 B
+# 等终端 A 出现 "Isaac navigation simulation ready:" 后，再在终端 B 执行
 ./scripts/run_ros.sh navigation \
   odometry_mode:=realistic \
   posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
@@ -500,7 +520,7 @@ CANDIDATE=/absolute/path/to/candidate.yaml
 ISAAC_NAV__FILES__ROBOT="$CANDIDATE" \
   ./scripts/run_isaac.sh --navigation-mode localization --mode realistic
 
-# 终端 B
+# 等终端 A 出现 "Isaac navigation simulation ready:" 后，再在终端 B 执行
 ./scripts/run_ros.sh navigation \
   odometry_mode:=realistic \
   robot_config_file:="$CANDIDATE" \
