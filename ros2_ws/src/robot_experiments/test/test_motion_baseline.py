@@ -89,6 +89,7 @@ def test_skid_steer_ab_profile_matches_the_plan_commands_exactly():
     config = load_motion_baseline_config(SKID_STEER_AB_CONFIG_PATH)
 
     assert config.profile_id == "jackal_skid_steer_ab_v1"
+    assert config.sampling.command_wall_timeout_sec == pytest.approx(90.0)
     assert [segment.segment_id for segment in config.segments] == [
         "rotate_left_360",
         "rotate_right_360",

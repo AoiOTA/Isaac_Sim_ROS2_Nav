@@ -15,7 +15,9 @@ reset:
 
 sampling:
   publish_rate_hz: 20.0
-  command_wall_timeout_sec: 30.0
+  # A 15.7 s simulated rotation may run below 0.5 RTF while rendering RTX
+  # contact-rich Warehouse frames; keep the wall bound explicit but generous.
+  command_wall_timeout_sec: 90.0
   max_sample_age_sec: 0.5
   zero_publish_count: 10
   zero_publish_interval_sec: 0.02
