@@ -766,6 +766,9 @@ The related behavior changed recently, please consult the changelog.
 ```
 
 必须记录实际 articulation solver iteration 值，并进行 4 次与当前值的 A/B 测试。
+当前非弃用公开 getter 的 backend 为 USD，因此现阶段只把它记为 authored USD
+输入证据；PhysX 消费差异由 32/4、32/16 的 TGS 警告和运动 A/B 证明。找到真正的
+engine getter 前，不得宣称已直接读回 PhysX 内部 solver 值。
 
 ### RTX LiDAR Motion BVH
 
@@ -3135,3 +3138,8 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 - 证据纪律：调参 JSON 继续由 Git 忽略，摘要、命令、报告 SHA256、失败样本和边界
   回填到 `docs/verification.md`；正式统计必须在 clean commit、冻结输入和独立输出
   集合上重跑，不混入上述调参样本。
+- provenance 审查加固：项目环境现在有规范 `environment.id`；schema v2 solver
+  只在有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致时发布，
+  且文档明确这不是 PhysX 引擎内部状态直接读回。真实错误环境标签负向用例在
+  创建运动 `/cmd_vel` publisher 前失败，正确 Warehouse + Ideal 再次完成 14/14；
+  这轮日志仍有 24 次仿真时间单调查询警告，因此第三阶段继续留在时间根因诊断。
