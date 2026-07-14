@@ -756,8 +756,8 @@ accounting validator 以 `expected_repeats=1` 复核通过。
 失败根因不是 Isaac 崩溃。两份 report 都是 6/6 segment complete，runtime provenance
 schema 5、`verified=true`、Git dirty false；Kit `[Error]`、Fatal/Traceback/Segfault 均为
 0，但每份日志仍各有一组非致命 gRPC protobuf `E0000/W0000`。旧 report 只保存整段
-JointState 的样本数、mean-abs、peak-abs、RMSE 与方向分类，没有可认证的 JointState
-稳态窗口；候选轮距降低了圆弧内侧目标轮速，少量越过 `±0.2 rad/s`
+JointState 的样本数、minimum/maximum、mean、mean-abs、peak-abs、RMSE 与方向分类，
+没有可认证的 JointState 稳态窗口；候选轮距降低了圆弧内侧目标轮速，少量越过 `±0.2 rad/s`
 deadband 的反向值就把整段分类成 `mixed`。旧 analyzer 又只允许纯旋转出现 mixed，
 因此把真实观察误作 invalid protocol；它既不能证明反向只发生在启动期，也不能形成
 正常的 physical direction FAIL。这一证据缺口直接触发了上节的 schema-3 closed
