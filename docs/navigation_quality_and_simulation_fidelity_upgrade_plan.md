@@ -252,9 +252,10 @@ controller:
 当前 robot schema 已把物理几何轮距与控制/轮速里程计使用的有效轮距拆成两个显式
 字段。稳定 profile 为保持行为不变，暂把二者都设为 `0.37559 m`；这只是迁移基线，
 不是有效轮距已标定。Isaac DifferentialController、Robot Description 和 Realistic
-Wheel Odom 都从同一个 robot YAML 取得对应字段及 wheel joint，runtime provenance
-v4 负责发布 path/SHA/profile/lifecycle/数值身份，Wheel Odom 只有在启动前逐项握手
-成功后才创建业务端点。后续候选必须保存为独立 `experimental_candidate` profile，
+Wheel Odom 都从同一个 robot YAML 取得对应字段及 wheel joint。runtime provenance
+v5 负责发布 path/SHA/profile/lifecycle/数值身份；motion runner 还完整校验 canonical
+topology/contact JSON 与 SHA，Wheel Odom 则握手 schema、robot path/SHA 和七个
+kinematics/controller 字段，只有启动前逐项匹配后才创建业务端点。后续候选必须保存为独立 `experimental_candidate` profile，
 不得直接覆盖 stable。
 
 ---
@@ -3129,7 +3130,7 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 
 ---
 
-## 2026-07-14 连续执行台账（当前工作树）
+## 2026-07-14–15 连续执行台账（当前工作树）
 
 - 第一阶段审计：`warehouse_v2` 四工件/Manifest/LFS 完整性已验证，但
   `runtime_alignment_verified=false`、`calibrated=false`，因此仍不可用于自动播种
@@ -3177,15 +3178,25 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
 - 第三阶段运动学契约进度：提交 `dd58c63` 完成零行为迁移。schema-v2 robot YAML
   现在是轮径、轮宽、几何/有效轮距、wheel joint 和质量的单一真源；Control Graph、
   Robot Description、Realistic Wheel Odom 与 contact 分析都经过 exact-key、SHA256、
-  provenance v4 和启动握手约束。稳定有效轮距仍为 `0.37559 m`，只是保持旧控制值；
+  provenance v5 和启动握手约束。稳定有效轮距仍为 `0.37559 m`，只是保持旧控制值；
   约 `1.012 m` 尚未写回。11 包构建、preflight、root/ROS/Isaac 全门通过，但这些
   结构证据不代替多速度、两环境和 Realistic 物理 A/B，第三阶段仍未退出。
 - 第三阶段候选入口：提交 `ab909b4` 新增不可变
   `jackal_etw_0p989_v1/1p012_v1`，分别取 clean 接触矩阵 Warehouse 候选均值及
   两环境等权均值的三位舍入。两者均为 `experimental_candidate`，与 stable 只差
   profile/lifecycle/有效轮距，URDF 字节等价；clean 11 包 build、preflight、
-  root `907`、ROS `725`、Isaac/USD `21` 全门通过。尚未做真实候选 A/B，也未开放
-  正式矩阵的受信任 robot 选择，因此不能冻结或覆盖 `0.37559 m` stable。
+  root `907`、ROS `725`、Isaac/USD `21` 全门通过。提交 `4b55f90` 已给正式矩阵增加
+  受信任的 `--robot-config FILE` 选择和 HEAD-blob 字节锁，但尚未用任一候选执行真实
+  A/B，因此不能冻结或覆盖 `0.37559 m` stable。
+- 第三阶段地面拓扑入口：提交 `6897712` 增加版本化、匿名层、可逆的
+  `simple_plane_only1_v1`、`warehouse_combined32_v1` 与
+  `warehouse_plane_only1_v1`；后者从同一 Warehouse 32-collider source 精确禁用 31
+  个非 GroundPlane collider。随后 provenance schema v5、ROS live consumer 和严格
+  analyzer 把 environment/topology/contact 拆成独立身份与三层 A/B 锁；Stage 应用、
+  fresh readback、canonical hash、非法配对和完整 18 组统计合同均有自动测试。提交
+  `a1056c3` 已让严格批处理按 `baseline/all/ID` 选择合法 pair：历史口径 36-run/12-group，
+  全 topology 口径 54-run/18-group，并锁定 topology HEAD blob 与 schema-v5 证据。真实
+  Warehouse 32-vs-1 motion 矩阵尚未运行，因此第三阶段仍未退出。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均

@@ -520,9 +520,11 @@ ros2 topic echo /odom --once --field twist.twist
 ros2 topic echo /joint_states --once --field velocity
 ```
 
-当前新运行严格要求 runtime provenance schema v4；solver 必须包含
-`stage_articulation_usd_readback_verified=true`，robot 还必须包含完整
-`kinematics`。schema v3 报告可以离线复核，但不能连接当前 motion runner 或与 v4
+当前新运行严格要求 runtime provenance schema v5；solver 必须包含
+`stage_articulation_usd_readback_verified=true`，robot 必须包含完整 `kinematics`，
+并且 `ground_topology.json/.sha256` 与 `contact.json/.sha256` 两对参数都要通过
+canonical JSON、hash、Stage readback 和 topology-target/contact-ground 交叉校验。
+schema v3/v4 报告可以各自离线复核，但不能连接当前 motion runner，也不能与 v5
 混入正式统计。看到 schema v1/v2 或旧字段
 `stage_runtime_readback_verified`，说明连接了旧 Isaac/旧 ROS 安装产物，不能靠手改
 JSON 兼容；应停止两端、重新构建并按 Isaac→ROS 顺序冷启动。
@@ -535,6 +537,16 @@ schema-v2 robot YAML：默认均为 `isaac_sim/configs/robots/jackal.yaml`；实
 `robot.config.path/sha256`、profile、lifecycle、轮径、轮宽、几何/有效轮距。握手
 失败时 `/wheel/odom` 不存在且当前 Realistic ROS launch 随后整体关闭，是预期的失败
 关闭行为。
+
+若错误包含 `ground topology`、`stale or differs`、`source partition` 或
+`contact ground colliders must match ground topology target`，不要只改报告 JSON 或
+profile ID。先核对项目 `files.ground_topology_profile` 是否与规范环境匹配：
+SimplePlane 只能使用 `simple_plane_only1_v1`，Warehouse 可使用
+`warehouse_combined32_v1` 或 `warehouse_plane_only1_v1`；再确认 topology YAML、源
+资产以及 compose 后会反映到 topology/contact fresh snapshot 的 Stage 状态没有被其他
+扩展修改。该 fresh 比较不覆盖任意无关 Stage 变更。正式矩阵还要求 profile 是 clean
+HEAD 中的普通 blob，工作树字节必须一致。需要回到 Warehouse 默认行为时选择
+`warehouse_combined32_v1` 并冷启动新 Isaac，不要手工把 31 个 collider 重新打开。
 
 `run_motion_baseline.sh` 不负责启动 Isaac；`/cmd_vel` 没有订阅者时拒绝运行是正确
 门禁。provenance 缺字段通常表示 ROS 工作区未重建、连接了旧 Isaac 进程，或查询
