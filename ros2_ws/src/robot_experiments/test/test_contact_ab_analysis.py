@@ -230,6 +230,251 @@ def _upgrade_motion_report_to_v2(report):
     return report
 
 
+def _constant_speed_distribution(value, sample_count):
+    magnitude = abs(value)
+    return {
+        "sample_count": sample_count,
+        "mean": value,
+        "mean_abs": magnitude,
+        "minimum": value,
+        "maximum": value,
+        "peak_abs": magnitude,
+        "rmse": magnitude,
+    }
+
+
+def _upgrade_motion_report_to_v3(report):
+    _upgrade_motion_report_to_v2(report)
+    report["schema_version"] = 3
+    report["configuration"]["sampling"]["max_sample_age_sec"] = 0.5
+    report["configuration"]["sampling"]["zero_publish_count"] = 5
+    report["configuration"]["reset"] = {
+        "service": "/simulation/reset",
+        "service_timeout_sec": 5.0,
+        "recovery_timeout_sec": 30.0,
+        "settle_duration_sec": 0.5,
+    }
+    deadband = report["configuration"]["stop"][
+        "wheel_velocity_threshold_radps"
+    ]
+    session_timestamp_counts = {
+        "clock": 0,
+        "odom": 0,
+        "joint_states": 0,
+    }
+    for segment_index, segment in enumerate(report["segments"], start=1):
+        command = segment["command"]
+        start_stamp = command["start_stamp_ns"]
+        end_stamp = command["end_stamp_ns"]
+        steady_start_stamp = start_stamp + (end_stamp - start_stamp) // 2
+        steady_duration = (end_stamp - steady_start_stamp) / 1_000_000_000
+        steady_sample_count = math.ceil(steady_duration / 0.25) + 1
+        maximum_gap = steady_duration / (steady_sample_count - 1)
+        command_sample_count = steady_sample_count * 2 - 1
+        total_sample_count = command_sample_count + 2
+        segment["sample_counts"].update(
+            {
+                "odom_command": command_sample_count,
+                "odom_total": total_sample_count,
+                "joint_states_command": command_sample_count,
+                "joint_states_total": total_sample_count,
+            }
+        )
+        odom_command_count = command_sample_count
+        for velocity_name, distribution in list(
+            segment["actual_velocity"].items()
+        ):
+            if velocity_name == "steady_state_window":
+                continue
+            segment["actual_velocity"][velocity_name] = (
+                _constant_speed_distribution(
+                    distribution["mean"], odom_command_count
+                )
+            )
+        yaw_window = segment["actual_velocity"]["steady_state_window"]
+        mean_yaw_rate = yaw_window["angular_z_radps"]["mean"]
+        yaw_window.update(
+            {
+                "boundary_semantics": "closed_interval",
+                "sample_count": steady_sample_count,
+                "first_sample_stamp_ns": steady_start_stamp,
+                "last_sample_stamp_ns": end_stamp,
+                "maximum_inter_sample_gap_sec": maximum_gap,
+                "angular_z_radps": _constant_speed_distribution(
+                    mean_yaw_rate, steady_sample_count
+                ),
+            }
+        )
+        whole_sample_count = segment["sample_counts"]["joint_states_command"]
+        steady_per_wheel = {}
+        for joint_name, wheel in segment["wheels"]["per_wheel"].items():
+            speed = wheel["speed_radps"]["mean"]
+            wheel["speed_radps"] = _constant_speed_distribution(
+                speed, whole_sample_count
+            )
+            direction = wheel["direction"]
+            steady_per_wheel[joint_name] = {
+                "direction": direction,
+                "expected_direction": wheel["expected_direction"],
+                "direction_matches": wheel["direction_matches"],
+                "direction_sample_counts": {
+                    "positive_above_deadband": (
+                        steady_sample_count if speed > deadband else 0
+                    ),
+                    "negative_below_deadband": (
+                        steady_sample_count if speed < -deadband else 0
+                    ),
+                    "within_deadband": (
+                        steady_sample_count
+                        if -deadband <= speed <= deadband
+                        else 0
+                    ),
+                },
+                "speed_radps": _constant_speed_distribution(
+                    speed, steady_sample_count
+                ),
+            }
+        segment["wheels"]["steady_state_window"] = {
+            "schema_version": 1,
+            "definition": "final_half_of_command_interval",
+            "boundary_semantics": "closed_interval",
+            "start_stamp_ns": steady_start_stamp,
+            "end_stamp_ns": end_stamp,
+            "observed_duration_sec": steady_duration,
+            "sample_count": steady_sample_count,
+            "first_sample_stamp_ns": steady_start_stamp,
+            "last_sample_stamp_ns": end_stamp,
+            "maximum_inter_sample_gap_sec": maximum_gap,
+            "classification_deadband_radps": deadband,
+            "all_directions_match": all(
+                wheel["direction_matches"]
+                for wheel in steady_per_wheel.values()
+            ),
+            "per_wheel": steady_per_wheel,
+        }
+        stop_start_stamp = end_stamp + 50_000_000
+        stop_end_stamp = end_stamp + 550_000_000
+        segment["stopping"]["stationary_evidence"] = {
+            "schema_version": 1,
+            "definition": (
+                "dual_stream_continuously_stationary_after_zero_command"
+            ),
+            "boundary_semantics": "closed_interval",
+            "start_stamp_ns": stop_start_stamp,
+            "end_stamp_ns": stop_end_stamp,
+            "observed_duration_sec": 0.5,
+            "max_sample_age_sec": 0.5,
+            "streams": {
+                source: {
+                    "sample_count": 2,
+                    "first_sample_stamp_ns": stop_start_stamp,
+                    "last_sample_stamp_ns": stop_end_stamp,
+                    "maximum_inter_sample_gap_sec": 0.5,
+                }
+                for source in ("odom", "joint_states")
+            },
+        }
+        segment["invalid_message_counts"] = {
+            "odom": 0,
+            "joint_states": 0,
+        }
+        segment["timestamp_integrity"] = {
+            source: {
+                "sample_count": total_sample_count,
+                "first_stamp_ns": start_stamp,
+                "last_stamp_ns": stop_end_stamp,
+                "regression_count": 0,
+                "duplicate_count": 0,
+                "monotonic_unique": True,
+            }
+            for source in ("clock", "odom", "joint_states")
+        }
+        segment["reset"] = {
+            "service": "/simulation/reset",
+            "response_message": (
+                "simulation reset transaction complete; "
+                f"reset_metadata_v1={segment_index}:0"
+            ),
+            "reset_generation": segment_index,
+            "reset_boundary_clock_ns": 0,
+            "service_latency_wall_sec": 0.01,
+            "recovery_latency_wall_sec": 0.1,
+            "clock_before_ns": 1_000_000_000,
+            "clock_after_ns": 100_000_000,
+            "clock_rollback_observed": True,
+            "fresh_clock_received": True,
+            "fresh_odom_received": True,
+            "fresh_joint_states_received": True,
+            "stationary_settle_duration_sec": 0.5,
+            "recovery_observation_counts": {
+                "coherent_group_not_ready": 0,
+                "pre_boundary_group": 0,
+                "not_stationary": 0,
+                "stationary": 2,
+                "coherent_without_time_progress": 0,
+                "observation_regression": 0,
+                "receive_timestamp_regression": 0,
+                "coherent_timestamp_regression": 0,
+            },
+            "recovery_violation_counts": {
+                "streams_fresh": 0,
+                "stream:odom_not_stale": 0,
+                "stream:odom_not_too_far_ahead": 0,
+                "stream:joint_states_not_stale": 0,
+                "stream:joint_states_not_too_far_ahead": 0,
+                "wall_streams_fresh": 0,
+                "odom_linear_speed": 0,
+                "odom_angular_speed": 0,
+                **{f"wheel:{joint_name}": 0 for joint_name in WHEELS.values()},
+            },
+            "recovery_peak_observed": {
+                "odom_linear_speed_mps": 0.0,
+                "odom_angular_speed_radps": 0.0,
+                "wheel_abs_speed_radps": {
+                    joint_name: 0.0 for joint_name in WHEELS.values()
+                },
+                "sim_age_sec": {
+                    source: {"minimum": 0.0, "maximum": 0.01}
+                    for source in ("odom", "joint_states")
+                },
+            },
+            "credited_stamp_high_watermarks_ns": {
+                "clock": 100_000_000,
+                "odom": 100_000_000,
+                "joint_states": 100_000_000,
+            },
+            "received_stamp_high_watermarks_ns": {
+                "clock": 100_000_000,
+                "odom": 100_000_000,
+                "joint_states": 100_000_000,
+            },
+            "longest_stationary_duration_sec": 0.5,
+        }
+        for source in session_timestamp_counts:
+            session_timestamp_counts[source] += total_sample_count
+    report["timestamp_integrity"] = {
+        source: {
+            "sample_count": sample_count,
+            "first_stamp_ns": 1_000_000_000,
+            "last_stamp_ns": report["segments"][-1]["timestamp_integrity"][
+                source
+            ]["last_stamp_ns"],
+            "regression_count": len(report["segments"]) - 1,
+            "duplicate_count": 0,
+            "monotonic_unique": False,
+        }
+        for source, sample_count in session_timestamp_counts.items()
+    }
+    report["safety"] = {
+        "exclusive_non_reset_cmd_vel_owner_enforced": True,
+        "authorized_reset_safety_publishers": ["/isaac_navigation_sim"],
+        "cmd_vel_subscription_count": 1,
+        "safe_zero_burst_attempted": True,
+        "zero_publish_count": 5,
+    }
+    return report
+
+
 def _collider_paths_sha256(paths):
     canonical = json.dumps(
         sorted(paths),
@@ -243,9 +488,11 @@ def _upgrade_runtime_provenance_to_v5(
     report,
     topology=None,
     *,
-    report_schema_version=2,
+    report_schema_version=3,
 ):
-    if report_schema_version == 2:
+    if report_schema_version == 3:
+        _upgrade_motion_report_to_v3(report)
+    elif report_schema_version == 2:
         _upgrade_motion_report_to_v2(report)
     else:
         assert report_schema_version == 1
@@ -377,7 +624,12 @@ def _segment(
             "expected_longitudinal_displacement_m": linear * observed_duration,
             "longitudinal_error_m": longitudinal - linear * observed_duration,
             "lateral_displacement_m": lateral,
-            "lateral_drift_m": lateral if motion in {"forward", "backward"} else None,
+            "lateral_drift_m": (
+                lateral
+                if motion
+                in {"forward", "backward", "rotate_left", "rotate_right"}
+                else None
+            ),
             "translation_drift_m": (
                 math.hypot(longitudinal, lateral)
                 if motion in {"rotate_left", "rotate_right"}
@@ -491,6 +743,7 @@ def _report(
 
 def _write(path: Path, report: dict[str, object]) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
+    report["output_file"] = str(path.resolve())
     path.write_text(json.dumps(report, sort_keys=True), encoding="utf-8")
     return path
 
@@ -521,7 +774,7 @@ def _three_v5_reports(
     topology: str = "warehouse_combined32_v1",
     contact_profile: str = "legacy_baseline",
     odometry_mode: str = "ideal",
-    report_schema_version: int = 2,
+    report_schema_version: int = 3,
 ) -> list[Path]:
     return [
         _write(
@@ -562,9 +815,16 @@ def _set_yaw_gain(segment, gain):
     segment["yaw"]["change_rad"] = measured
     segment["yaw"]["error_rad"] = measured - expected
     segment["pose"]["end"]["yaw_rad"] = measured
-    segment["actual_velocity"]["angular_z_radps"]["mean"] = (
-        segment["command"]["angular_z_radps"] * gain
-    )
+    whole_distribution = segment["actual_velocity"]["angular_z_radps"]
+    whole_rate = segment["command"]["angular_z_radps"] * gain
+    if "sample_count" in whole_distribution:
+        whole_distribution.update(
+            _constant_speed_distribution(
+                whole_rate, whole_distribution["sample_count"]
+            )
+        )
+    else:
+        whole_distribution["mean"] = whole_rate
     steady_state_window = segment["actual_velocity"].get(
         "steady_state_window"
     )
@@ -581,6 +841,96 @@ def _set_yaw_gain(segment, gain):
                 "rmse": abs(steady_rate),
             }
         )
+
+
+def _set_pose_displacements(segment, *, longitudinal=None, lateral=None):
+    pose = segment["pose"]
+    start = pose["start"]
+    current_longitudinal = pose["longitudinal_displacement_m"]
+    current_lateral = pose["lateral_displacement_m"]
+    longitudinal = (
+        current_longitudinal if longitudinal is None else longitudinal
+    )
+    lateral = current_lateral if lateral is None else lateral
+    yaw = start["yaw_rad"]
+    delta_x = math.cos(yaw) * longitudinal - math.sin(yaw) * lateral
+    delta_y = math.sin(yaw) * longitudinal + math.cos(yaw) * lateral
+    pose["end"]["x_m"] = start["x_m"] + delta_x
+    pose["end"]["y_m"] = start["y_m"] + delta_y
+    net = math.hypot(delta_x, delta_y)
+    pose["trajectory_length_m"] = abs(longitudinal) + abs(lateral)
+    pose["net_displacement_m"] = net
+    pose["longitudinal_displacement_m"] = longitudinal
+    pose["longitudinal_error_m"] = (
+        longitudinal - pose["expected_longitudinal_displacement_m"]
+    )
+    pose["lateral_displacement_m"] = lateral
+    if segment["motion"] in {
+        "forward",
+        "backward",
+        "rotate_left",
+        "rotate_right",
+    }:
+        pose["lateral_drift_m"] = lateral
+    else:
+        pose["lateral_drift_m"] = None
+    pose["translation_drift_m"] = (
+        net
+        if segment["motion"] in {"rotate_left", "rotate_right"}
+        else None
+    )
+
+
+def _set_schema3_wheel_classification(
+    segment,
+    joint_name,
+    direction,
+    *,
+    steady,
+):
+    container = (
+        segment["wheels"]["steady_state_window"]
+        if steady
+        else segment["wheels"]
+    )
+    wheel = container["per_wheel"][joint_name]
+    sample_count = wheel["speed_radps"]["sample_count"]
+    if direction == "positive":
+        distribution = _constant_speed_distribution(1.0, sample_count)
+        positive, negative, within = sample_count, 0, 0
+    elif direction == "negative":
+        distribution = _constant_speed_distribution(-1.0, sample_count)
+        positive, negative, within = 0, sample_count, 0
+    elif direction == "stationary":
+        distribution = _constant_speed_distribution(0.0, sample_count)
+        positive, negative, within = 0, 0, sample_count
+    else:
+        assert direction == "mixed"
+        positive = sample_count // 2
+        negative = sample_count - positive
+        within = 0
+        distribution = {
+            "sample_count": sample_count,
+            "mean": (positive - negative) / sample_count,
+            "mean_abs": 1.0,
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "peak_abs": 1.0,
+            "rmse": 1.0,
+        }
+    wheel["direction"] = direction
+    wheel["direction_matches"] = direction == wheel["expected_direction"]
+    wheel["speed_radps"] = distribution
+    if steady:
+        wheel["direction_sample_counts"] = {
+            "positive_above_deadband": positive,
+            "negative_below_deadband": negative,
+            "within_deadband": within,
+        }
+    container["all_directions_match"] = all(
+        observation["direction_matches"]
+        for observation in container["per_wheel"].values()
+    )
 
 
 def test_three_repeats_produce_audited_group_metrics(tmp_path):
@@ -739,7 +1089,7 @@ def test_v5_separates_ground_topology_from_environment_and_contact(tmp_path):
         expected_profiles=("legacy_baseline",),
     )
 
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["analysis_valid"] is True
     assert report["selection_policy"][
         "required_runtime_provenance_schema"
@@ -776,11 +1126,12 @@ def test_v5_physical_acceptance_is_every_repeat_and_non_ranking(tmp_path):
     acceptance = report["physical_acceptance"]
     group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
     group = acceptance["groups"][group_id]
-    assert acceptance["schema_version"] == 1
-    assert acceptance["policy_id"] == "skid_steer_plan_8_7_v1"
+    assert acceptance["schema_version"] == 2
+    assert acceptance["policy_id"] == "skid_steer_plan_8_7_v2"
     assert acceptance["evaluation_basis"] == "every_repeat"
     assert acceptance["ranking_policy"] == "none; pass/fail only"
     assert acceptance["applicability"] == {
+        "required_motion_report_schema": 3,
         "required_runtime_provenance_schema": 5,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
@@ -789,6 +1140,10 @@ def test_v5_physical_acceptance_is_every_repeat_and_non_ranking(tmp_path):
     }
     assert acceptance["steady_state_measurement_basis"] == (
         "actual_velocity.steady_state_window.angular_z_radps.mean over the "
+        "final_half_of_command_interval window"
+    )
+    assert acceptance["wheel_direction_measurement_basis"] == (
+        "wheels.steady_state_window.per_wheel[*].direction_matches over the "
         "final_half_of_command_interval window"
     )
     assert acceptance["thresholds"] == {
@@ -820,24 +1175,86 @@ def test_v5_physical_acceptance_is_every_repeat_and_non_ranking(tmp_path):
     )
     assert report["groups"][group_id]["runtime_provenance_schema"] == 5
     assert report["groups"][group_id]["odometry_mode"] == "ideal"
-    assert all(
-        result["checks"]["wheel_direction_contract"] == {
-            "validated_segment_count": 6,
-            "validated_by": "strict_motion_report_validator",
-            "passed": True,
+    for result in group["repeat_results"]:
+        wheel_check = result["checks"]["wheel_direction_contract"]
+        assert wheel_check["steady_state_window_schema_version"] == 1
+        assert wheel_check["validated_segment_count"] == 6
+        assert wheel_check["validated_wheel_observation_count"] == 24
+        assert set(wheel_check["segments"]) == {
+            segment_id for segment_id, *_ in SEGMENTS
         }
-        for result in group["repeat_results"]
-    )
+        assert wheel_check["failed_observations"] == []
+        assert wheel_check["passed"] is True
     assert report["method"]["ranking_policy"].startswith("none;")
     assert "best_profile" not in json.dumps(report)
+
+
+def test_schema3_first_half_mixed_evidence_is_included_but_steady_gate_passes(
+    tmp_path,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    changed = json.loads(paths[0].read_text(encoding="utf-8"))
+    _set_schema3_wheel_classification(
+        changed["segments"][0],
+        WHEELS["front_left"],
+        "mixed",
+        steady=False,
+    )
+    _write(paths[0], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    group = next(iter(report["physical_acceptance"]["groups"].values()))
+    assert report["counts"]["included_reports"] == 3
+    assert report["selection"]["excluded"] == []
+    assert group["passed"] is True
+    assert all(
+        result["checks"]["wheel_direction_contract"]["passed"] is True
+        for result in group["repeat_results"]
+    )
+
+
+@pytest.mark.parametrize("observed_direction", ("mixed", "positive", "stationary"))
+def test_schema3_steady_direction_mismatch_is_included_and_fails_gate(
+    tmp_path,
+    observed_direction,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    changed = json.loads(paths[1].read_text(encoding="utf-8"))
+    _set_schema3_wheel_classification(
+        changed["segments"][0],
+        WHEELS["front_left"],
+        observed_direction,
+        steady=True,
+    )
+    _write(paths[1], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    group = next(iter(report["physical_acceptance"]["groups"].values()))
+    assert report["counts"]["included_reports"] == 3
+    assert report["selection"]["excluded"] == []
+    assert group["passed"] is False
+    assert group["failed_checks"] == ["wheel_direction_contract"]
+    failed_repeat = next(
+        result
+        for result in group["repeat_results"]
+        if result["checks"]["wheel_direction_contract"]["passed"] is False
+    )
+    wheel_check = failed_repeat["checks"]["wheel_direction_contract"]
+    assert wheel_check["failed_observations"] == [
+        f"rotate_left_360::{WHEELS['front_left']}"
+    ]
+    assert failed_repeat["failed_checks"] == ["wheel_direction_contract"]
 
 
 def test_v5_physical_acceptance_rejects_one_repeat_not_the_mean(tmp_path):
     paths = _three_physical_acceptance_reports(tmp_path)
     changed = json.loads(paths[1].read_text(encoding="utf-8"))
     forward = changed["segments"][2]
-    forward["pose"]["lateral_displacement_m"] = 0.051
-    forward["pose"]["lateral_drift_m"] = 0.051
+    _set_pose_displacements(forward, lateral=0.051)
     _write(paths[1], changed)
 
     report = analyse_contact_ab(paths, RADIUS_M)
@@ -878,15 +1295,15 @@ def test_v5_physical_acceptance_includes_exact_boundaries_and_zero_symmetry(
     for path in paths:
         document = json.loads(path.read_text(encoding="utf-8"))
         forward = document["segments"][2]
-        forward["pose"]["lateral_displacement_m"] = 0.05
-        forward["pose"]["lateral_drift_m"] = 0.05
+        _set_pose_displacements(forward, lateral=0.05)
         backward = document["segments"][3]
-        backward["pose"]["lateral_displacement_m"] = -0.08
-        backward["pose"]["lateral_drift_m"] = -0.08
+        _set_pose_displacements(backward, lateral=-0.08)
         for index, gain in ((0, 0.90), (1, 1.10)):
-            document["segments"][index]["pose"][
-                "translation_drift_m"
-            ] = center_drift
+            _set_pose_displacements(
+                document["segments"][index],
+                longitudinal=0.0,
+                lateral=center_drift,
+            )
             _set_yaw_gain(document["segments"][index], gain)
         _write(path, document)
 
@@ -924,9 +1341,20 @@ def test_v5_physical_acceptance_uses_steady_state_yaw_rate_not_yaw_gain(
 ):
     paths = _three_physical_acceptance_reports(tmp_path)
     changed = json.loads(paths[1].read_text(encoding="utf-8"))
-    changed["segments"][0]["actual_velocity"]["steady_state_window"][
+    yaw_distribution = changed["segments"][0]["actual_velocity"][
+        "steady_state_window"
+    ]["angular_z_radps"]
+    yaw_distribution.update(
+        _constant_speed_distribution(0.2, yaw_distribution["sample_count"])
+    )
+    full_yaw_distribution = changed["segments"][0]["actual_velocity"][
         "angular_z_radps"
-    ]["mean"] = 0.2
+    ]
+    full_yaw_distribution.update(
+        _constant_speed_distribution(
+            0.2, full_yaw_distribution["sample_count"]
+        )
+    )
     _write(paths[1], changed)
 
     report = analyse_contact_ab(paths, RADIUS_M)
@@ -953,14 +1381,16 @@ def test_v5_physical_acceptance_uses_steady_state_yaw_rate_not_yaw_gain(
     }
 
 
-def test_v5_schema1_motion_reports_are_aggregated_but_gate_is_not_applicable(
+@pytest.mark.parametrize("report_schema_version", (1, 2))
+def test_v5_legacy_motion_reports_are_aggregated_but_gate_is_not_applicable(
     tmp_path,
+    report_schema_version,
 ):
     paths = _three_v5_reports(
         tmp_path,
         environment="SimplePlane",
         topology="simple_plane_only1_v1",
-        report_schema_version=1,
+        report_schema_version=report_schema_version,
     )
 
     report = analyse_contact_ab(paths, RADIUS_M)
@@ -971,11 +1401,11 @@ def test_v5_schema1_motion_reports_are_aggregated_but_gate_is_not_applicable(
     assert {
         item["report_schema_version"]
         for item in report["groups"][group_id]["input_reports"]
-    } == {1}
+    } == {report_schema_version}
     assert acceptance["groups"][group_id]["applicable"] is False
     assert acceptance["groups"][group_id]["passed"] is None
     assert acceptance["groups"][group_id]["not_applicable_reasons"] == [
-        "motion_report_schema_not_2"
+        "motion_report_schema_not_3"
     ]
     assert acceptance["all_applicable_groups_passed"] is None
 
@@ -996,7 +1426,7 @@ def test_v5_schema1_motion_reports_are_aggregated_but_gate_is_not_applicable(
         "unknown_distribution_key",
     ),
 )
-def test_v2_motion_report_steady_state_window_is_strict(tmp_path, mutation):
+def test_v3_motion_report_yaw_steady_state_window_is_strict(tmp_path, mutation):
     path = _three_physical_acceptance_reports(tmp_path)[0]
     document = json.loads(path.read_text(encoding="utf-8"))
     actual_velocity = document["segments"][0]["actual_velocity"]
@@ -1027,6 +1457,611 @@ def test_v2_motion_report_steady_state_window_is_strict(tmp_path, mutation):
     _write(path, document)
 
     with pytest.raises(ConfigurationError, match="steady_state_window"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "start",
+        "end",
+        "duration",
+        "count",
+        "deadband",
+        "direction_sample_counts",
+        "distribution",
+        "classification",
+        "expected_direction",
+        "direction_matches",
+        "aggregate",
+    ),
+)
+def test_schema3_wheel_steady_state_window_is_fail_closed(tmp_path, mutation):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    window = document["segments"][0]["wheels"]["steady_state_window"]
+    wheel = window["per_wheel"][WHEELS["front_left"]]
+    if mutation == "start":
+        window["start_stamp_ns"] += 1
+    elif mutation == "end":
+        window["end_stamp_ns"] -= 1
+    elif mutation == "duration":
+        window["observed_duration_sec"] += 0.001
+    elif mutation == "count":
+        window["sample_count"] += 1
+    elif mutation == "deadband":
+        window["classification_deadband_radps"] += 0.001
+    elif mutation == "direction_sample_counts":
+        counts = wheel["direction_sample_counts"]
+        counts["negative_below_deadband"] = 0
+        counts["positive_above_deadband"] = window["sample_count"]
+    elif mutation == "distribution":
+        wheel["speed_radps"]["sample_count"] += 1
+    elif mutation == "classification":
+        wheel["direction"] = "positive"
+        wheel["direction_matches"] = False
+        window["all_directions_match"] = False
+    elif mutation == "expected_direction":
+        wheel["expected_direction"] = "positive"
+        wheel["direction_matches"] = False
+        window["all_directions_match"] = False
+    elif mutation == "direction_matches":
+        wheel["direction_matches"] = False
+        window["all_directions_match"] = False
+    else:
+        assert mutation == "aggregate"
+        window["all_directions_match"] = False
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="steady_state_window"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize("stream", ("odom", "wheel"))
+@pytest.mark.parametrize("gap_case", ("below_average", "above_span"))
+def test_schema3_steady_window_gap_must_be_mathematically_feasible(
+    tmp_path, stream, gap_case
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    segment = document["segments"][0]
+    window = (
+        segment["actual_velocity"]["steady_state_window"]
+        if stream == "odom"
+        else segment["wheels"]["steady_state_window"]
+    )
+    span = (
+        window["last_sample_stamp_ns"] - window["first_sample_stamp_ns"]
+    ) / 1_000_000_000
+    average = span / (window["sample_count"] - 1)
+    window["maximum_inter_sample_gap_sec"] = (
+        average / 2.0 if gap_case == "below_average" else span + 0.001
+    )
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="maximum_inter_sample_gap"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "max_sample_age",
+        "unknown_sample_count",
+        "nonpositive_sample_count",
+        "total_below_command",
+        "full_odom_count",
+        "full_wheel_count",
+        "steady_odom_exceeds_command",
+        "steady_wheel_exceeds_command",
+    ),
+)
+def test_schema3_sampling_counts_are_bound_to_the_fixed_protocol(
+    tmp_path, mutation
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    segment = document["segments"][0]
+    counts = segment["sample_counts"]
+    if mutation == "max_sample_age":
+        document["configuration"]["sampling"]["max_sample_age_sec"] = 0.5001
+    elif mutation == "unknown_sample_count":
+        counts["unlocked"] = 1
+    elif mutation == "nonpositive_sample_count":
+        counts["odom_command"] = 0
+    elif mutation == "total_below_command":
+        counts["odom_total"] = counts["odom_command"] - 1
+    elif mutation == "full_odom_count":
+        segment["actual_velocity"]["linear_x_mps"]["sample_count"] += 1
+    elif mutation == "full_wheel_count":
+        segment["wheels"]["per_wheel"][WHEELS["front_left"]][
+            "speed_radps"
+        ]["sample_count"] += 1
+    elif mutation == "steady_odom_exceeds_command":
+        segment["actual_velocity"]["steady_state_window"]["sample_count"] = (
+            counts["odom_command"] + 1
+        )
+    else:
+        assert mutation == "steady_wheel_exceeds_command"
+        segment["wheels"]["steady_state_window"]["sample_count"] = (
+            counts["joint_states_command"] + 1
+        )
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    (
+        ("output_path", "canonical source path"),
+        ("invalid_started", "ISO-8601"),
+        ("naive_started", "must be UTC"),
+        ("non_utc_completed", "must be UTC"),
+        ("reversed", "precedes started_at_utc"),
+    ),
+)
+def test_schema3_report_path_and_time_identity_is_fail_closed(
+    tmp_path, mutation, message
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "output_path":
+        document["output_file"] = "/reports/forged.json"
+    elif mutation == "invalid_started":
+        document["started_at_utc"] = "not-a-time"
+    elif mutation == "naive_started":
+        document["started_at_utc"] = "2026-07-14T00:00:00"
+    elif mutation == "non_utc_completed":
+        document["completed_at_utc"] = "2026-07-14T08:01:00+08:00"
+    else:
+        assert mutation == "reversed"
+        document["started_at_utc"] = "2026-07-14T00:02:00+00:00"
+        document["completed_at_utc"] = "2026-07-14T00:01:00+00:00"
+    path.write_text(json.dumps(document, sort_keys=True), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match=message):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "forward_endpoint",
+        "rotation_endpoint",
+        "endpoint_shape",
+        "trajectory_shorter_than_net",
+    ),
+)
+def test_pose_metrics_are_bound_to_finite_endpoints(tmp_path, mutation):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "forward_endpoint":
+        document["segments"][2]["pose"]["end"]["y_m"] += 10.0
+    elif mutation == "rotation_endpoint":
+        document["segments"][0]["pose"]["end"]["x_m"] += 10.0
+    elif mutation == "endpoint_shape":
+        document["segments"][2]["pose"]["start"]["unlocked"] = 0.0
+    else:
+        assert mutation == "trajectory_shorter_than_net"
+        document["segments"][2]["pose"]["trajectory_length_m"] = 0.0
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="pose"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_pose_endpoint_yaw_must_match_reported_yaw_change_modulo_turn(tmp_path):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["segments"][2]["pose"]["end"]["yaw_rad"] = 1.234
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="endpoint yaw"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_steady_distribution_must_be_a_full_window_subset(tmp_path):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    distribution = document["segments"][0]["actual_velocity"][
+        "angular_z_radps"
+    ]
+    distribution.update(
+        _constant_speed_distribution(0.01, distribution["sample_count"])
+    )
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="subset|extrema"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_total_counts_cover_command_and_stop_windows(tmp_path):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    segment = document["segments"][0]
+    for source in ("odom", "joint_states"):
+        total_key = f"{source}_total"
+        command_count = segment["sample_counts"][f"{source}_command"]
+        removed = segment["sample_counts"][total_key] - command_count
+        segment["sample_counts"][total_key] = command_count
+        segment["timestamp_integrity"][source]["sample_count"] = command_count
+        document["timestamp_integrity"][source]["sample_count"] -= removed
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="command and stationary"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "invalid_nonzero",
+        "invalid_unknown",
+        "timestamp_unknown",
+        "timestamp_regression",
+        "timestamp_duplicate",
+        "timestamp_count_mismatch",
+        "monotonic_contradiction",
+        "steady_outside_tracker",
+        "top_count_too_small",
+        "top_monotonic_contradiction",
+    ),
+)
+def test_schema3_timestamp_and_invalid_evidence_is_fail_closed(
+    tmp_path, mutation
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    segment = document["segments"][0]
+    odom_tracker = segment["timestamp_integrity"]["odom"]
+    if mutation == "invalid_nonzero":
+        segment["invalid_message_counts"]["odom"] = 1
+    elif mutation == "invalid_unknown":
+        segment["invalid_message_counts"]["unlocked"] = 0
+    elif mutation == "timestamp_unknown":
+        odom_tracker["unlocked"] = 0
+    elif mutation == "timestamp_regression":
+        odom_tracker["regression_count"] = 1
+        odom_tracker["monotonic_unique"] = False
+    elif mutation == "timestamp_duplicate":
+        odom_tracker["duplicate_count"] = 1
+        odom_tracker["monotonic_unique"] = False
+    elif mutation == "timestamp_count_mismatch":
+        odom_tracker["sample_count"] += 1
+    elif mutation == "monotonic_contradiction":
+        odom_tracker["monotonic_unique"] = False
+    elif mutation == "steady_outside_tracker":
+        odom_tracker["last_stamp_ns"] = segment["actual_velocity"][
+            "steady_state_window"
+        ]["last_sample_stamp_ns"] - 1
+    elif mutation == "top_count_too_small":
+        document["timestamp_integrity"]["odom"]["sample_count"] = 1
+    else:
+        assert mutation == "top_monotonic_contradiction"
+        document["timestamp_integrity"]["odom"]["monotonic_unique"] = True
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "not_mapping",
+        "unknown_key",
+        "owner_false",
+        "zero_burst_false",
+        "no_subscription",
+        "wrong_zero_count",
+        "empty_reset_publishers",
+        "duplicate_reset_publishers",
+    ),
+)
+def test_schema3_safety_evidence_is_fail_closed(tmp_path, mutation):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    safety = document["safety"]
+    if mutation == "not_mapping":
+        document["safety"] = "garbage"
+    elif mutation == "unknown_key":
+        safety["unlocked"] = True
+    elif mutation == "owner_false":
+        safety["exclusive_non_reset_cmd_vel_owner_enforced"] = False
+    elif mutation == "zero_burst_false":
+        safety["safe_zero_burst_attempted"] = False
+    elif mutation == "no_subscription":
+        safety["cmd_vel_subscription_count"] = 0
+    elif mutation == "wrong_zero_count":
+        safety["zero_publish_count"] += 1
+    elif mutation == "empty_reset_publishers":
+        safety["authorized_reset_safety_publishers"] = []
+    else:
+        assert mutation == "duplicate_reset_publishers"
+        safety["authorized_reset_safety_publishers"] *= 2
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_key",
+        "wrong_service",
+        "boolean_generation",
+        "fresh_false",
+        "wrong_settle",
+        "boundary_not_followed",
+        "received_below_credited",
+        "rollback_contradiction",
+        "observation_unknown",
+        "duplicate_generation",
+        "violation_unknown",
+        "peak_unknown",
+        "command_before_recovery",
+        "tracker_before_received",
+    ),
+)
+def test_schema3_reset_evidence_is_fail_closed(tmp_path, mutation):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    segment = document["segments"][0]
+    reset = segment["reset"]
+    if mutation == "missing_key":
+        del reset["response_message"]
+    elif mutation == "wrong_service":
+        reset["service"] = "/another/reset"
+    elif mutation == "boolean_generation":
+        reset["reset_generation"] = True
+    elif mutation == "fresh_false":
+        reset["fresh_joint_states_received"] = False
+    elif mutation == "wrong_settle":
+        reset["stationary_settle_duration_sec"] = 0.499
+    elif mutation == "boundary_not_followed":
+        reset["reset_boundary_clock_ns"] = reset["clock_after_ns"]
+    elif mutation == "received_below_credited":
+        reset["received_stamp_high_watermarks_ns"]["odom"] = (
+            reset["credited_stamp_high_watermarks_ns"]["odom"] - 1
+        )
+    elif mutation == "rollback_contradiction":
+        reset["clock_rollback_observed"] = False
+    elif mutation == "observation_unknown":
+        reset["recovery_observation_counts"]["unlocked"] = 0
+    elif mutation == "duplicate_generation":
+        document["segments"][1]["reset"]["reset_generation"] = reset[
+            "reset_generation"
+        ]
+    elif mutation == "violation_unknown":
+        reset["recovery_violation_counts"]["garbage"] = 0
+    elif mutation == "peak_unknown":
+        reset["recovery_peak_observed"]["garbage"] = True
+    elif mutation == "command_before_recovery":
+        after = segment["command"]["start_stamp_ns"] + 1
+        reset["clock_before_ns"] = after + 1
+        reset["clock_after_ns"] = after
+        reset["clock_rollback_observed"] = True
+        reset["credited_stamp_high_watermarks_ns"]["clock"] = after
+        reset["received_stamp_high_watermarks_ns"]["clock"] = after
+    else:
+        assert mutation == "tracker_before_received"
+        reset["received_stamp_high_watermarks_ns"]["odom"] = (
+            segment["timestamp_integrity"]["odom"]["first_stamp_ns"] + 1
+        )
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_evidence",
+        "wrong_boundary",
+        "end_mismatch",
+        "sample_count_one",
+        "gap_above_limit",
+        "first_before_window",
+        "last_not_after_start",
+        "wrong_max_age",
+    ),
+)
+def test_schema3_stationary_evidence_is_fail_closed(tmp_path, mutation):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    stopping = document["segments"][0]["stopping"]
+    evidence = stopping["stationary_evidence"]
+    stream = evidence["streams"]["odom"]
+    if mutation == "missing_evidence":
+        del stopping["stationary_evidence"]
+    elif mutation == "wrong_boundary":
+        evidence["boundary_semantics"] = "open_interval"
+    elif mutation == "end_mismatch":
+        evidence["end_stamp_ns"] -= 1
+    elif mutation == "sample_count_one":
+        stream["sample_count"] = 1
+    elif mutation == "gap_above_limit":
+        stream["maximum_inter_sample_gap_sec"] = 0.501
+    elif mutation == "first_before_window":
+        stream["first_sample_stamp_ns"] = evidence["start_stamp_ns"] - 1
+    elif mutation == "last_not_after_start":
+        stream["last_sample_stamp_ns"] = evidence["start_stamp_ns"]
+    else:
+        assert mutation == "wrong_max_age"
+        evidence["max_sample_age_sec"] = 0.499
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+@pytest.mark.parametrize(
+    "mutation", ("within_with_positive_extrema", "all_positive_min", "all_negative_max")
+)
+def test_schema3_direction_counts_must_be_feasible_for_extrema(
+    tmp_path, mutation
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    window = document["segments"][0]["wheels"]["steady_state_window"]
+    joint_name = (
+        WHEELS["front_left"]
+        if mutation == "all_negative_max"
+        else WHEELS["front_right"]
+    )
+    wheel = window["per_wheel"][joint_name]
+    sample_count = window["sample_count"]
+    if mutation == "within_with_positive_extrema":
+        wheel["direction_sample_counts"] = {
+            "positive_above_deadband": sample_count - 1,
+            "negative_below_deadband": 0,
+            "within_deadband": 1,
+        }
+    elif mutation == "all_positive_min":
+        wheel["speed_radps"]["minimum"] = 0.0
+    else:
+        wheel["speed_radps"]["maximum"] = 0.0
+    _write(path, document)
+
+    with pytest.raises(
+        ConfigurationError, match="direction_sample_counts|impossible"
+    ):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_direction_counts_must_be_feasible_for_reported_moments(
+    tmp_path,
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    window = document["segments"][2]["wheels"]["steady_state_window"]
+    wheel = window["per_wheel"][WHEELS["front_left"]]
+    sample_count = window["sample_count"]
+    assert sample_count == 13
+    wheel["direction_sample_counts"] = {
+        "positive_above_deadband": 1,
+        "negative_below_deadband": 0,
+        "within_deadband": sample_count - 1,
+    }
+    # These moments uniquely require twelve 1.0 samples and one 0.0 sample,
+    # which is the opposite of the claimed direction buckets.
+    wheel["speed_radps"] = {
+        "sample_count": sample_count,
+        "mean": 12.0 / sample_count,
+        "mean_abs": 12.0 / sample_count,
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "peak_abs": 1.0,
+        "rmse": math.sqrt(12.0 / sample_count),
+    }
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="reported mean moment"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_direction_counts_jointly_constrain_abs_and_square_moments(
+    tmp_path,
+):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    window = document["segments"][2]["wheels"]["steady_state_window"]
+    wheel = window["per_wheel"][WHEELS["front_left"]]
+    sample_count = window["sample_count"]
+    assert sample_count == 13
+    wheel["direction_sample_counts"] = {
+        "positive_above_deadband": 1,
+        "negative_below_deadband": 0,
+        "within_deadband": sample_count - 1,
+    }
+    # The moments encode [1.0, 0.21, 0.0 x 11].  The 0.21 sample is above
+    # the 0.2 deadband, so no distribution with only one positive bucket can
+    # realize both the reported absolute and square sums.
+    wheel["speed_radps"] = {
+        "sample_count": sample_count,
+        "mean": 1.21 / sample_count,
+        "mean_abs": 1.21 / sample_count,
+        "minimum": 0.0,
+        "maximum": 1.0,
+        "peak_abs": 1.0,
+        "rmse": math.sqrt(1.0441 / sample_count),
+    }
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="jointly realize"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_distribution_moments_must_be_feasible_for_extrema(tmp_path):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    distribution = document["segments"][0]["actual_velocity"][
+        "steady_state_window"
+    ]["angular_z_radps"]
+    distribution.update(
+        {
+            "mean": 0.4,
+            "mean_abs": 0.4,
+            "minimum": -100.0,
+            "maximum": 100.0,
+            "peak_abs": 100.0,
+            "rmse": 0.4,
+        }
+    )
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="impossible"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_distribution_moments_must_be_jointly_feasible(tmp_path):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    distribution = document["segments"][0]["actual_velocity"][
+        "steady_state_window"
+    ]["angular_z_radps"]
+    sample_count = distribution["sample_count"]
+    distribution.update(
+        {
+            "mean": 0.4,
+            "mean_abs": 0.4,
+            "minimum": -1.0,
+            "maximum": 1.0,
+            "peak_abs": 1.0,
+            "rmse": 0.5,
+        }
+    )
+    assert sample_count > 2
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="interior"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_schema3_distribution_moments_respect_asymmetric_extrema(tmp_path):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    distribution = document["segments"][0]["actual_velocity"]["linear_y_mps"]
+    sample_count = 65
+    distribution.update(
+        {
+            "sample_count": sample_count,
+            "mean": 5.4 / sample_count,
+            "mean_abs": 7.4 / sample_count,
+            "minimum": -1.0,
+            "maximum": 0.1,
+            "peak_abs": 1.0,
+            "rmse": math.sqrt(3.01 / sample_count),
+        }
+    )
+    document["segments"][0]["sample_counts"]["odom_command"] = sample_count
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="interior moments"):
         analyse_contact_ab([path], RADIUS_M, min_repeats=1)
 
 
@@ -1157,7 +2192,7 @@ def test_physical_acceptance_accounting_rejects_applicable_tampering(
             {
                 "applicable": False,
                 "passed": None,
-                "not_applicable_reasons": ["motion_report_schema_not_2"],
+                "not_applicable_reasons": ["motion_report_schema_not_3"],
                 "checks": {},
                 "failed_checks": [],
                 "repeat_results": [],
@@ -1299,6 +2334,232 @@ def test_physical_acceptance_accounting_rejects_required_group_shrink(
         )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_segment",
+        "missing_wheel",
+        "direction",
+        "expected_direction",
+        "direction_matches",
+        "failed_observations",
+        "passed",
+    ),
+)
+def test_physical_accounting_rejects_wheel_leaf_tampering(tmp_path, mutation):
+    report = analyse_contact_ab(
+        _three_physical_acceptance_reports(tmp_path),
+        RADIUS_M,
+    )
+    document = json.loads(json.dumps(report))
+    group_id = document["physical_acceptance"]["applicable_groups"][0]
+    wheel_check = document["physical_acceptance"]["groups"][group_id][
+        "repeat_results"
+    ][0]["checks"]["wheel_direction_contract"]
+    segment = wheel_check["segments"]["rotate_left_360"]
+    observation = segment["per_wheel"][WHEELS["front_left"]]
+    if mutation == "missing_segment":
+        del wheel_check["segments"]["rotate_left_360"]
+    elif mutation == "missing_wheel":
+        del segment["per_wheel"][WHEELS["front_left"]]
+    elif mutation == "direction":
+        observation["direction"] = "positive"
+    elif mutation == "expected_direction":
+        observation["expected_direction"] = "positive"
+    elif mutation == "direction_matches":
+        observation["direction_matches"] = False
+    elif mutation == "failed_observations":
+        wheel_check["failed_observations"] = [
+            f"rotate_left_360::{WHEELS['front_left']}"
+        ]
+    else:
+        assert mutation == "passed"
+        wheel_check["passed"] = False
+
+    with pytest.raises(ConfigurationError):
+        validate_physical_acceptance_accounting(
+            document,
+            expected_repeats=3,
+        )
+
+
+@pytest.mark.parametrize(
+    ("identity_field", "repeat_field"),
+    (("sha256", "report_sha256"), ("canonical_sha256", "canonical_sha256")),
+)
+def test_physical_accounting_revalidates_source_hashes(
+    tmp_path, identity_field, repeat_field
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    document = analyse_contact_ab(paths, RADIUS_M)
+    group_id = document["physical_acceptance"]["applicable_groups"][0]
+    target_path = str(paths[0].resolve())
+    selection = next(
+        item
+        for item in document["selection"]["included"]
+        if item["path"] == target_path
+    )
+    group_report = next(
+        item
+        for item in document["groups"][group_id]["input_reports"]
+        if item["path"] == target_path
+    )
+    repeat = next(
+        item
+        for item in document["physical_acceptance"]["groups"][group_id][
+            "repeat_results"
+        ]
+        if item["report_path"] == target_path
+    )
+    selection[identity_field] = "0" * 64
+    group_report[identity_field] = "0" * 64
+    repeat[repeat_field] = "0" * 64
+
+    with pytest.raises(ConfigurationError, match="source report"):
+        validate_physical_acceptance_accounting(document, expected_repeats=3)
+
+
+def test_physical_accounting_rejects_coordinated_source_global_lock_change(
+    tmp_path,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    document = analyse_contact_ab(paths, RADIUS_M)
+    target_path = str(paths[0].resolve())
+    changed = json.loads(paths[0].read_text(encoding="utf-8"))
+    changed["runtime_provenance"]["git"]["commit"] = "e" * 40
+    _write(paths[0], changed)
+    content = paths[0].read_bytes()
+    raw_sha256 = hashlib.sha256(content).hexdigest()
+    canonical_sha256 = hashlib.sha256(
+        json.dumps(
+            json.loads(content),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    group_id = document["physical_acceptance"]["applicable_groups"][0]
+    selection = next(
+        item
+        for item in document["selection"]["included"]
+        if item["path"] == target_path
+    )
+    group_report = next(
+        item
+        for item in document["groups"][group_id]["input_reports"]
+        if item["path"] == target_path
+    )
+    repeat = next(
+        item
+        for item in document["physical_acceptance"]["groups"][group_id][
+            "repeat_results"
+        ]
+        if item["report_path"] == target_path
+    )
+    selection.update(
+        {"sha256": raw_sha256, "canonical_sha256": canonical_sha256}
+    )
+    group_report.update(
+        {"sha256": raw_sha256, "canonical_sha256": canonical_sha256}
+    )
+    repeat.update(
+        {
+            "report_sha256": raw_sha256,
+            "canonical_sha256": canonical_sha256,
+        }
+    )
+
+    with pytest.raises(ConfigurationError, match="global identity"):
+        validate_physical_acceptance_accounting(document, expected_repeats=3)
+
+
+def test_physical_accounting_requires_original_source_reports(tmp_path):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    report = analyse_contact_ab(paths, RADIUS_M)
+    paths[0].unlink()
+
+    with pytest.raises(ConfigurationError, match="canonical regular report file"):
+        validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+
+def test_physical_accounting_rejects_coordinated_schema_not_applicable_forgery(
+    tmp_path,
+):
+    report = analyse_contact_ab(
+        _three_physical_acceptance_reports(tmp_path), RADIUS_M
+    )
+    document = json.loads(json.dumps(report))
+    acceptance = document["physical_acceptance"]
+    group_id = acceptance["applicable_groups"][0]
+    for item in document["selection"]["included"]:
+        item["report_schema_version"] = 2
+    for item in document["groups"][group_id]["input_reports"]:
+        item["report_schema_version"] = 2
+    acceptance["groups"][group_id].update(
+        {
+            "applicable": False,
+            "passed": None,
+            "not_applicable_reasons": ["motion_report_schema_not_3"],
+            "checks": {},
+            "failed_checks": [],
+            "repeat_results": [],
+        }
+    )
+    acceptance["applicable_groups"] = []
+    acceptance["not_applicable_groups"] = [group_id]
+    acceptance["passing_groups"] = []
+    acceptance["failed_groups"] = []
+    acceptance["all_applicable_groups_passed"] = None
+
+    with pytest.raises(ConfigurationError, match="identity no longer matches"):
+        validate_physical_acceptance_accounting(document, expected_repeats=3)
+
+
+def test_physical_accounting_rejects_coordinated_wheel_fail_to_pass_forgery(
+    tmp_path,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    changed = json.loads(paths[1].read_text(encoding="utf-8"))
+    joint_name = WHEELS["front_left"]
+    _set_schema3_wheel_classification(
+        changed["segments"][0], joint_name, "positive", steady=True
+    )
+    _write(paths[1], changed)
+    document = analyse_contact_ab(paths, RADIUS_M)
+    acceptance = document["physical_acceptance"]
+    group_id = acceptance["applicable_groups"][0]
+    group = acceptance["groups"][group_id]
+    repeat = next(
+        item
+        for item in group["repeat_results"]
+        if "wheel_direction_contract" in item["failed_checks"]
+    )
+    check = repeat["checks"]["wheel_direction_contract"]
+    observation = check["segments"]["rotate_left_360"]["per_wheel"][
+        joint_name
+    ]
+    observation["direction"] = observation["expected_direction"]
+    observation["direction_matches"] = True
+    check["segments"]["rotate_left_360"]["all_directions_match"] = True
+    check["failed_observations"] = []
+    check["passed"] = True
+    repeat["failed_checks"] = []
+    repeat["passed"] = True
+    group["checks"]["wheel_direction_contract"] = {
+        "passed_repeats": 3,
+        "failed_repeats": 0,
+        "all_repeats_passed": True,
+    }
+    group["failed_checks"] = []
+    group["passed"] = True
+    acceptance["passing_groups"] = [group_id]
+    acceptance["failed_groups"] = []
+    acceptance["all_applicable_groups_passed"] = True
+
+    with pytest.raises(ConfigurationError, match="revalidated source reports"):
+        validate_physical_acceptance_accounting(document, expected_repeats=3)
+
+
 def test_v5_physical_acceptance_requires_ideal_odometry(tmp_path):
     paths = _three_physical_acceptance_reports(
         tmp_path,
@@ -1369,6 +2630,11 @@ def test_v5_physical_acceptance_rejects_unsafe_stop_configuration(
     for path in paths:
         document = json.loads(path.read_text(encoding="utf-8"))
         document["configuration"]["stop"][field] = value
+        if field == "wheel_velocity_threshold_radps":
+            for segment in document["segments"]:
+                segment["wheels"]["steady_state_window"][
+                    "classification_deadband_radps"
+                ] = value
         _write(path, document)
 
     report = analyse_contact_ab(paths, RADIUS_M)
@@ -1392,6 +2658,14 @@ def test_v5_physical_acceptance_rejects_short_stop_window_in_one_repeat(
     stopping["confirmed_after_command_sec"] = (
         stopping["stationary_onset_after_command_sec"] + 0.499
     )
+    stationary_evidence = stopping["stationary_evidence"]
+    stationary_evidence["end_stamp_ns"] = (
+        changed["segments"][5]["command"]["end_stamp_ns"] + 549_000_000
+    )
+    stationary_evidence["observed_duration_sec"] = 0.499
+    for stream in stationary_evidence["streams"].values():
+        stream["last_sample_stamp_ns"] = stationary_evidence["end_stamp_ns"]
+        stream["maximum_inter_sample_gap_sec"] = 0.499
     _write(paths[2], changed)
 
     report = analyse_contact_ab(paths, RADIUS_M)
@@ -1698,6 +2972,7 @@ def test_tick_overshoot_drives_expected_yaw_and_gain(tmp_path):
         segment["yaw"]["expected_change_rad"] = expected
         segment["yaw"]["change_rad"] = expected * expected_gain
         segment["yaw"]["error_rad"] = segment["yaw"]["change_rad"] - expected
+        segment["pose"]["end"]["yaw_rad"] = segment["yaw"]["change_rad"]
         _write(path, document)
 
     report = analyse_contact_ab(paths, RADIUS_M)
@@ -1974,7 +3249,7 @@ def test_v5_complete_matrix_requires_eighteen_legal_topology_groups(tmp_path):
     )
     validate_physical_acceptance_accounting(report, expected_repeats=3)
 
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["analysis_valid"] is True
     assert report["counts"] == {
         "input_reports": 54,
@@ -2055,8 +3330,8 @@ def test_duplicate_content_cannot_satisfy_minimum_repeats(tmp_path):
 @pytest.mark.parametrize(
     ("mutation", "expected_detail"),
     (
-        ("report_float", "schema_version must be integer 1 or 2"),
-        ("report_bool", "schema_version must be integer 1 or 2"),
+        ("report_float", "schema_version must be integer 1, 2, or 3"),
+        ("report_bool", "schema_version must be integer 1, 2, or 3"),
         ("config_float", "configuration.schema_version"),
         ("runtime_float", "runtime_provenance.schema_version"),
         ("runtime_bool", "runtime_provenance.schema_version"),
@@ -2100,8 +3375,7 @@ def test_extreme_finite_samples_that_overflow_statistics_are_configuration_error
         document = json.loads(path.read_text())
         value = 1e308 if index != 1 else -1e308
         segment = document["segments"][2]
-        segment["pose"]["lateral_displacement_m"] = value
-        segment["pose"]["lateral_drift_m"] = value
+        _set_pose_displacements(segment, lateral=value)
         _write(path, document)
 
     with pytest.raises(ConfigurationError, match="statistics"):

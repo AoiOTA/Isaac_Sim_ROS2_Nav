@@ -114,7 +114,7 @@ def test_live_motion_report_accepts_runtime_schema_v5():
     assert _require_live_runtime_provenance_schema(5) == 5
 
 
-def test_base_motion_report_uses_schema_v2_while_configuration_stays_v1():
+def test_base_motion_report_uses_schema_v3_while_configuration_stays_v1():
     runner = object.__new__(MotionBaselineRunner)
     runner._config = load_motion_baseline_config(CONFIG_PATH)
     runner._environment_id = "Warehouse"
@@ -138,7 +138,7 @@ def test_base_motion_report_uses_schema_v2_while_configuration_stays_v1():
 
     report = runner._base_report()
 
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["configuration"]["schema_version"] == 1
 
 
@@ -407,14 +407,122 @@ def test_stop_detection_requires_chassis_and_all_four_wheels_to_stay_still():
         _joint(end + 200_000_000, (0, 0, 0, 0)),
         _joint(end + 700_000_000, (0, 0, 0, 0)),
     ]
-    result = detect_stopping(end, odom, joints, WHEELS, STOP)
+    result = detect_stopping(end, odom, joints, WHEELS, STOP, 0.5)
     assert result.stopped is True
     assert result.stationary_onset_after_command_sec == pytest.approx(0.2)
     assert result.confirmed_after_command_sec == pytest.approx(0.7)
 
     not_stopped = copy.copy(joints)
     not_stopped[-1] = _joint(end + 700_000_000, (0, 0, 0, 0.3))
-    assert detect_stopping(end, odom, not_stopped, WHEELS, STOP).stopped is False
+    assert (
+        detect_stopping(end, odom, not_stopped, WHEELS, STOP, 0.5).stopped
+        is False
+    )
+
+
+@pytest.mark.parametrize("starved_source", ("odom", "joint_states"))
+def test_stop_detection_rejects_a_single_stale_stream(starved_source):
+    end = 3_000_000_000
+    odom = [
+        OdomSample(end + 100_000_000, 0, 0, 0, 0, 0, 0),
+        OdomSample(end + 700_000_000, 0, 0, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 700_000_000, (0, 0, 0, 0)),
+    ]
+    if starved_source == "odom":
+        odom = odom[:1]
+    else:
+        joints = joints[:1]
+
+    result = detect_stopping(end, odom, joints, WHEELS, STOP, 0.5)
+
+    assert result.stopped is False
+    assert result.stationary_evidence is None
+
+
+def test_stop_detection_records_dual_stream_stationary_evidence():
+    end = 3_000_000_000
+    odom = [
+        OdomSample(end + offset, 0, 0, 0, 0, 0, 0)
+        for offset in (100_000_000, 350_000_000, 700_000_000)
+    ]
+    joints = [
+        _joint(end + offset, (0, 0, 0, 0))
+        for offset in (100_000_000, 400_000_000, 700_000_000)
+    ]
+
+    result = detect_stopping(end, odom, joints, WHEELS, STOP, 0.5)
+
+    assert result.stopped is True
+    assert result.stationary_evidence == {
+        "schema_version": 1,
+        "definition": "dual_stream_continuously_stationary_after_zero_command",
+        "boundary_semantics": "closed_interval",
+        "start_stamp_ns": end + 100_000_000,
+        "end_stamp_ns": end + 700_000_000,
+        "observed_duration_sec": pytest.approx(0.6),
+        "max_sample_age_sec": pytest.approx(0.5),
+        "streams": {
+            "odom": {
+                "sample_count": 3,
+                "first_sample_stamp_ns": end + 100_000_000,
+                "last_sample_stamp_ns": end + 700_000_000,
+                "maximum_inter_sample_gap_sec": pytest.approx(0.35),
+            },
+            "joint_states": {
+                "sample_count": 3,
+                "first_sample_stamp_ns": end + 100_000_000,
+                "last_sample_stamp_ns": end + 700_000_000,
+                "maximum_inter_sample_gap_sec": pytest.approx(0.3),
+            },
+        },
+    }
+
+
+def test_stop_detection_restarts_after_a_gap_larger_than_sample_age():
+    end = 3_000_000_000
+    odom = [
+        OdomSample(end + offset, 0, 0, 0, 0, 0, 0)
+        for offset in (100_000_000, 700_000_000)
+    ]
+    joints = [
+        _joint(end + offset, (0, 0, 0, 0))
+        for offset in (100_000_000, 700_000_000)
+    ]
+
+    result = detect_stopping(end, odom, joints, WHEELS, STOP, 0.5)
+
+    assert result.stopped is False
+
+
+def test_stop_detection_supports_regular_asynchronous_streams():
+    end = 3_000_000_000
+    odom = [
+        OdomSample(end + offset, 0, 0, 0, 0, 0, 0)
+        for offset in (100_000_000, 300_000_000, 500_000_000, 700_000_000)
+    ]
+    joints = [
+        _joint(end + offset, (0, 0, 0, 0))
+        for offset in (200_000_000, 400_000_000, 600_000_000, 800_000_000)
+    ]
+
+    result = detect_stopping(end, odom, joints, WHEELS, STOP, 0.5)
+
+    assert result.stopped is True
+    evidence = result.stationary_evidence
+    assert evidence is not None
+    assert evidence["start_stamp_ns"] == end + 200_000_000
+    assert evidence["end_stamp_ns"] == end + 700_000_000
+    streams = evidence["streams"]
+    assert streams["odom"]["first_sample_stamp_ns"] == end + 300_000_000
+    assert streams["joint_states"]["first_sample_stamp_ns"] == end + 200_000_000
+
+
+def test_stop_detection_rejects_boolean_sample_age():
+    with pytest.raises(ValueError, match="finite number"):
+        detect_stopping(0, [], [], WHEELS, STOP, True)
 
 
 def test_forward_analysis_records_pose_drift_velocity_wheels_and_stop_time():
@@ -444,6 +552,7 @@ def test_forward_analysis_records_pose_drift_velocity_wheels_and_stop_time():
         WHEELS,
         STOP,
         command_publish_count=41,
+        max_sample_age_sec=1.0,
         timestamp_integrity={
             "clock": {"regression_count": 0, "duplicate_count": 0},
             "odom": {"regression_count": 0, "duplicate_count": 0},
@@ -497,6 +606,7 @@ def test_motion_analysis_uses_only_final_half_for_steady_state_yaw_rate():
         WHEELS,
         STOP,
         command_publish_count=60,
+        max_sample_age_sec=2.0,
         timestamp_integrity={},
     )
 
@@ -504,12 +614,18 @@ def test_motion_analysis_uses_only_final_half_for_steady_state_yaw_rate():
     assert window == {
         "schema_version": 1,
         "definition": "final_half_of_command_interval",
+        "boundary_semantics": "closed_interval",
         "start_stamp_ns": boundary,
         "end_stamp_ns": end,
         "observed_duration_sec": pytest.approx(
             (end - boundary) / 1_000_000_000
         ),
         "sample_count": 2,
+        "first_sample_stamp_ns": boundary,
+        "last_sample_stamp_ns": end,
+        "maximum_inter_sample_gap_sec": pytest.approx(
+            (end - boundary) / 1_000_000_000
+        ),
         "angular_z_radps": {
             "sample_count": 2,
             "mean": pytest.approx(0.5),
@@ -523,9 +639,68 @@ def test_motion_analysis_uses_only_final_half_for_steady_state_yaw_rate():
     assert result["actual_velocity"]["angular_z_radps"]["mean"] != pytest.approx(
         window["angular_z_radps"]["mean"]
     )
+    wheel_window = result["wheels"]["steady_state_window"]
+    assert set(wheel_window) == {
+        "schema_version",
+        "definition",
+        "boundary_semantics",
+        "start_stamp_ns",
+        "end_stamp_ns",
+        "observed_duration_sec",
+        "sample_count",
+        "first_sample_stamp_ns",
+        "last_sample_stamp_ns",
+        "maximum_inter_sample_gap_sec",
+        "classification_deadband_radps",
+        "all_directions_match",
+        "per_wheel",
+    }
+    assert wheel_window["schema_version"] == 1
+    assert wheel_window["definition"] == "final_half_of_command_interval"
+    assert wheel_window["boundary_semantics"] == "closed_interval"
+    assert wheel_window["start_stamp_ns"] == boundary
+    assert wheel_window["end_stamp_ns"] == end
+    assert wheel_window["observed_duration_sec"] == pytest.approx(
+        (end - boundary) / 1_000_000_000
+    )
+    assert wheel_window["sample_count"] == 2
+    assert wheel_window["first_sample_stamp_ns"] == boundary
+    assert wheel_window["last_sample_stamp_ns"] == end
+    assert wheel_window["maximum_inter_sample_gap_sec"] == pytest.approx(
+        (end - boundary) / 1_000_000_000
+    )
+    assert wheel_window["classification_deadband_radps"] == pytest.approx(
+        STOP.wheel_velocity_threshold_radps
+    )
+    assert wheel_window["all_directions_match"] is True
+    front_left = wheel_window["per_wheel"][WHEELS.front_left]
+    assert set(front_left) == {
+        "direction",
+        "expected_direction",
+        "direction_matches",
+        "speed_radps",
+        "direction_sample_counts",
+    }
+    assert front_left["direction"] == "negative"
+    assert front_left["expected_direction"] == "negative"
+    assert front_left["direction_matches"] is True
+    assert front_left["direction_sample_counts"] == {
+        "positive_above_deadband": 0,
+        "negative_below_deadband": 2,
+        "within_deadband": 0,
+    }
+    assert front_left["speed_radps"] == {
+        "sample_count": 2,
+        "mean": pytest.approx(-3.0),
+        "mean_abs": pytest.approx(3.0),
+        "minimum": pytest.approx(-3.0),
+        "maximum": pytest.approx(-3.0),
+        "peak_abs": pytest.approx(3.0),
+        "rmse": pytest.approx(3.0),
+    }
 
 
-def test_motion_analysis_rejects_empty_final_half_steady_state_window():
+def test_motion_analysis_rejects_empty_final_half_odom_steady_state_window():
     start = 1_000_000_000
     end = 3_000_000_000
     boundary = start + (end - start) // 2
@@ -553,8 +728,267 @@ def test_motion_analysis_rejects_empty_final_half_steady_state_window():
             WHEELS,
             STOP,
             command_publish_count=40,
+            max_sample_age_sec=1.0,
             timestamp_integrity={},
         )
+
+
+def test_motion_analysis_rejects_empty_final_half_joint_steady_state_window():
+    start = 1_000_000_000
+    end = 3_000_000_000
+    boundary = start + (end - start) // 2
+    odom = [
+        OdomSample(start, 0, 0, 0, 0.5, 0, 0),
+        OdomSample(boundary, 0.5, 0, 0, 0.5, 0, 0),
+        OdomSample(end, 1.0, 0, 0, 0.5, 0, 0),
+        OdomSample(end + 100_000_000, 1.0, 0, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 1.0, 0, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (5, 5, 5, 5)),
+        _joint(boundary - 1, (5, 5, 5, 5)),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="no joint-state samples overlap the steady-state window",
+    ):
+        analyse_motion_segment(
+            MotionSegment("forward", "forward", "test", 0.5, 0, 2),
+            start,
+            end,
+            odom,
+            joints,
+            WHEELS,
+            STOP,
+            command_publish_count=40,
+            max_sample_age_sec=1.0,
+            timestamp_integrity={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("steady_stamps", "message"),
+    (
+        ((2_000_000_000,), "at least two samples"),
+        (
+            (2_600_000_000, 3_000_000_000),
+            "first odometry steady-state sample",
+        ),
+        (
+            (2_000_000_000, 2_400_000_000),
+            "last odometry steady-state sample",
+        ),
+        (
+            (2_000_000_000, 2_800_000_000, 3_000_000_000),
+            "steady-state sample gap",
+        ),
+        (
+            (2_000_000_000, 2_000_000_000, 3_000_000_000),
+            "timestamps must be strictly increasing",
+        ),
+        (
+            (2_000_000_000, 2_700_000_000, 2_500_000_000, 3_000_000_000),
+            "timestamps must be strictly increasing",
+        ),
+    ),
+)
+def test_odom_steady_state_window_rejects_sparse_or_nonmonotonic_evidence(
+    steady_stamps,
+    message,
+):
+    start = 1_000_000_000
+    end = 3_000_000_000
+    odom = [
+        OdomSample(start, 0, 0, 0, 0, 0, 0),
+        *(
+            OdomSample(stamp, 0, 0, 0, 0, 0, 0.4)
+            for stamp in steady_stamps
+        ),
+        OdomSample(end + 100_000_000, 0, 0, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 0, 0, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (-3, 3, -3, 3)),
+        _joint(2_000_000_000, (-3, 3, -3, 3)),
+        _joint(2_500_000_000, (-3, 3, -3, 3)),
+        _joint(end, (-3, 3, -3, 3)),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        analyse_motion_segment(
+            MotionSegment("left", "rotate_left", "test", 0, 0.4, 2),
+            start,
+            end,
+            odom,
+            joints,
+            WHEELS,
+            STOP,
+            command_publish_count=40,
+            max_sample_age_sec=0.5,
+            timestamp_integrity={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("steady_stamps", "message"),
+    (
+        ((2_000_000_000,), "at least two samples"),
+        (
+            (2_600_000_000, 3_000_000_000),
+            "first joint-state steady-state sample",
+        ),
+        (
+            (2_000_000_000, 2_400_000_000),
+            "last joint-state steady-state sample",
+        ),
+        (
+            (2_000_000_000, 2_800_000_000, 3_000_000_000),
+            "steady-state sample gap",
+        ),
+    ),
+)
+def test_wheel_steady_state_window_rejects_sparse_evidence(
+    steady_stamps,
+    message,
+):
+    start = 1_000_000_000
+    end = 3_000_000_000
+    odom = [
+        OdomSample(start, 0, 0, 0, 0.5, 0, 0),
+        OdomSample(2_000_000_000, 0.5, 0, 0, 0.5, 0, 0),
+        OdomSample(2_500_000_000, 0.75, 0, 0, 0.5, 0, 0),
+        OdomSample(end, 1.0, 0, 0, 0.5, 0, 0),
+        OdomSample(end + 100_000_000, 1.0, 0, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 1.0, 0, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (5, 5, 5, 5)),
+        *(_joint(stamp, (5, 5, 5, 5)) for stamp in steady_stamps),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        analyse_motion_segment(
+            MotionSegment("forward", "forward", "test", 0.5, 0, 2),
+            start,
+            end,
+            odom,
+            joints,
+            WHEELS,
+            STOP,
+            command_publish_count=40,
+            max_sample_age_sec=0.5,
+            timestamp_integrity={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("max_sample_age_sec", "message"),
+    (
+        (True, "finite number"),
+        (False, "finite number"),
+        ("0.5", "finite number"),
+        (float("nan"), "finite"),
+        (float("inf"), "finite"),
+        (-float("inf"), "finite"),
+        (0, "positive"),
+        (-0.1, "positive"),
+    ),
+)
+def test_motion_analysis_rejects_invalid_max_sample_age(
+    max_sample_age_sec,
+    message,
+):
+    start = 1_000_000_000
+    boundary = 2_000_000_000
+    end = 3_000_000_000
+    odom = [
+        OdomSample(start, 0, 0, 0, 0.5, 0, 0),
+        OdomSample(boundary, 0.5, 0, 0, 0.5, 0, 0),
+        OdomSample(end, 1.0, 0, 0, 0.5, 0, 0),
+        OdomSample(end + 100_000_000, 1.0, 0, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 1.0, 0, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (5, 5, 5, 5)),
+        _joint(boundary, (5, 5, 5, 5)),
+        _joint(end, (5, 5, 5, 5)),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        analyse_motion_segment(
+            MotionSegment("forward", "forward", "test", 0.5, 0, 2),
+            start,
+            end,
+            odom,
+            joints,
+            WHEELS,
+            STOP,
+            command_publish_count=40,
+            max_sample_age_sec=max_sample_age_sec,
+            timestamp_integrity={},
+        )
+
+
+def test_wheel_steady_state_window_excludes_first_half_mixed_transient():
+    start = 1_000_000_000
+    end = 3_000_000_000
+    boundary = start + (end - start) // 2
+    odom = [
+        OdomSample(start, 0, 0, 0, 0.4, 0, 0.4),
+        OdomSample(boundary, 0.4, 0, 0.4, 0.4, 0, 0.4),
+        OdomSample(end, 0.8, 0, 0.8, 0.4, 0, 0.4),
+        OdomSample(end + 100_000_000, 0.8, 0, 0.8, 0, 0, 0),
+        OdomSample(end + 600_000_000, 0.8, 0, 0.8, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (-0.5, 5.0, 2.0, 5.0)),
+        _joint(boundary - 1, (-0.4, 5.0, 2.0, 5.0)),
+        _joint(
+            boundary,
+            (STOP.wheel_velocity_threshold_radps, 5.0, 2.0, 5.0),
+        ),
+        _joint(end, (1.7, 5.0, 2.0, 5.0)),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    result = analyse_motion_segment(
+        MotionSegment("arc", "arc_left", "test", 0.4, 0.4, 2),
+        start,
+        end,
+        odom,
+        joints,
+        WHEELS,
+        STOP,
+        command_publish_count=40,
+        max_sample_age_sec=1.0,
+        timestamp_integrity={},
+    )
+
+    whole = result["wheels"]
+    assert whole["per_wheel"][WHEELS.front_left]["direction"] == "mixed"
+    assert whole["all_directions_match"] is False
+    steady = whole["steady_state_window"]
+    assert steady["sample_count"] == 2
+    assert steady["per_wheel"][WHEELS.front_left]["direction"] == "positive"
+    assert steady["per_wheel"][WHEELS.front_left]["direction_matches"] is True
+    assert steady["per_wheel"][WHEELS.front_left][
+        "direction_sample_counts"
+    ] == {
+        "positive_above_deadband": 1,
+        "negative_below_deadband": 0,
+        "within_deadband": 1,
+    }
+    assert steady["all_directions_match"] is True
 
 
 def test_rotation_analysis_unwraps_yaw_and_flags_wrong_wheel_direction():
@@ -584,6 +1018,7 @@ def test_rotation_analysis_unwraps_yaw_and_flags_wrong_wheel_direction():
         WHEELS,
         STOP,
         command_publish_count=20,
+        max_sample_age_sec=0.5,
         timestamp_integrity={},
     )
     assert result["yaw"]["change_rad"] == pytest.approx(
@@ -634,6 +1069,7 @@ def test_rotation_direction_classification_preserves_deadband_transients(
         WHEELS,
         STOP,
         command_publish_count=20,
+        max_sample_age_sec=0.5,
         timestamp_integrity={},
     )
 
@@ -1349,12 +1785,14 @@ def test_arc_analysis_keeps_intended_lateral_displacement_distinct_from_drift():
     end = 6_000_000_000
     odom = [
         OdomSample(start, 0, 0, 0, 0.4, 0, 0.4),
+        OdomSample(3_500_000_000, 0.45, 0.7, 1.0, 0.4, 0, 0.4),
         OdomSample(end, 0.9, 1.4, 2.0, 0.4, 0, 0.4),
         OdomSample(end + 100_000_000, 0.9, 1.4, 2.0, 0, 0, 0),
         OdomSample(end + 600_000_000, 0.9, 1.4, 2.0, 0, 0, 0),
     ]
     joints = [
         _joint(start, (3, 5, 3, 5)),
+        _joint(3_500_000_000, (3, 5, 3, 5)),
         _joint(end, (3, 5, 3, 5)),
         _joint(end + 100_000_000, (0, 0, 0, 0)),
         _joint(end + 600_000_000, (0, 0, 0, 0)),
@@ -1369,6 +1807,7 @@ def test_arc_analysis_keeps_intended_lateral_displacement_distinct_from_drift():
         WHEELS,
         STOP,
         command_publish_count=100,
+        max_sample_age_sec=2.5,
         timestamp_integrity={},
     )
     assert result["pose"]["lateral_displacement_m"] == pytest.approx(1.4)
@@ -1390,5 +1829,6 @@ def test_analysis_rejects_missing_command_samples_instead_of_inventing_metrics()
             WHEELS,
             STOP,
             command_publish_count=1,
+            max_sample_age_sec=1.0,
             timestamp_integrity={},
         )

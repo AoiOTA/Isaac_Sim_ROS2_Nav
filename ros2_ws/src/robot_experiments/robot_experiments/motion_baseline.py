@@ -651,8 +651,9 @@ class StopDetection:
     stopped: bool
     stationary_onset_after_command_sec: float | None
     confirmed_after_command_sec: float | None
+    stationary_evidence: Mapping[str, object] | None
 
-    def as_dict(self) -> dict[str, bool | float | None]:
+    def as_dict(self) -> dict[str, object]:
         return asdict(self)
 
 
@@ -662,9 +663,35 @@ def detect_stopping(
     joint_samples: Sequence[JointSample],
     wheels: WheelLayout,
     settings: StopSettings,
+    max_sample_age_sec: float,
 ) -> StopDetection:
-    """Find the first continuously stationary interval after the zero command."""
+    """Find a dual-stream, continuously evidenced stationary interval."""
     end_ns = _stamp_ns(command_end_ns, "command_end_ns")
+    if isinstance(max_sample_age_sec, bool) or not isinstance(
+        max_sample_age_sec, (int, float)
+    ):
+        raise ValueError("max_sample_age_sec must be a finite number")
+    sample_age_limit = _finite_number(
+        max_sample_age_sec, "max_sample_age_sec"
+    )
+    if sample_age_limit <= 0.0:
+        raise ValueError("max_sample_age_sec must be positive")
+    max_sample_age_ns = round(
+        sample_age_limit * NANOSECONDS_PER_SECOND
+    )
+    for source, samples in (
+        ("odometry", odom_samples),
+        ("joint-state", joint_samples),
+    ):
+        stamps = [sample.stamp_ns for sample in samples]
+        if any(
+            current <= previous
+            for previous, current in zip(stamps, stamps[1:])
+        ):
+            raise ValueError(
+                f"{source} stop-detection timestamps must be strictly increasing"
+            )
+
     events: list[tuple[int, int, object]] = []
     events.extend(
         (sample.stamp_ns, 0, sample)
@@ -680,23 +707,50 @@ def detect_stopping(
     latest_odom: OdomSample | None = None
     latest_joint: JointSample | None = None
     stationary_since_ns: int | None = None
+    supporting_stamps: dict[str, list[int]] = {
+        "odom": [],
+        "joint_states": [],
+    }
     stable_ns = round(settings.stable_duration_sec * NANOSECONDS_PER_SECOND)
     required_wheels = set(wheels.ordered_names)
+
+    def clear_candidate() -> None:
+        nonlocal stationary_since_ns, supporting_stamps
+        stationary_since_ns = None
+        supporting_stamps = {"odom": [], "joint_states": []}
+
+    def start_candidate(stamp_ns: int) -> None:
+        nonlocal stationary_since_ns, supporting_stamps
+        assert latest_odom is not None
+        assert latest_joint is not None
+        stationary_since_ns = stamp_ns
+        supporting_stamps = {
+            "odom": [latest_odom.stamp_ns],
+            "joint_states": [latest_joint.stamp_ns],
+        }
+
     for stamp, simultaneous in groupby(events, key=lambda item: item[0]):
         # Apply every message at one timestamp before evaluating stillness.  An
         # odometry message must not confirm a stop immediately before a wheel
         # message at the same simulation instant reports continued motion.
+        updated_sources: set[str] = set()
         for _, event_type, sample in simultaneous:
             if event_type == 0:
                 assert isinstance(sample, OdomSample)
                 latest_odom = sample
+                updated_sources.add("odom")
             else:
                 assert isinstance(sample, JointSample)
                 latest_joint = sample
+                updated_sources.add("joint_states")
         stationary = False
         if latest_odom is not None and latest_joint is not None:
             velocities = latest_joint.velocity_map()
-            stationary = required_wheels <= set(velocities) and (
+            streams_fresh = (
+                stamp - latest_odom.stamp_ns <= max_sample_age_ns
+                and stamp - latest_joint.stamp_ns <= max_sample_age_ns
+            )
+            stationary = streams_fresh and required_wheels <= set(velocities) and (
                 math.hypot(
                     latest_odom.linear_x_mps, latest_odom.linear_y_mps
                 )
@@ -709,21 +763,98 @@ def detect_stopping(
                 )
             )
         if not stationary:
-            stationary_since_ns = None
+            clear_candidate()
             continue
         if stationary_since_ns is None:
-            stationary_since_ns = stamp
-        if stamp - stationary_since_ns >= stable_ns:
+            start_candidate(stamp)
+        else:
+            latest_stamps = {
+                "odom": latest_odom.stamp_ns,
+                "joint_states": latest_joint.stamp_ns,
+            }
+            continuity_broken = any(
+                source in updated_sources
+                and latest_stamps[source] - supporting_stamps[source][-1]
+                > max_sample_age_ns
+                for source in supporting_stamps
+            )
+            if continuity_broken:
+                start_candidate(stamp)
+            else:
+                for source in updated_sources:
+                    current = latest_stamps[source]
+                    if current > supporting_stamps[source][-1]:
+                        supporting_stamps[source].append(current)
+
+        assert stationary_since_ns is not None
+        supported_through_ns = min(
+            latest_odom.stamp_ns, latest_joint.stamp_ns
+        )
+        if supported_through_ns - stationary_since_ns < stable_ns:
+            continue
+        window_stamps = {
+            source: [
+                sample_stamp
+                for sample_stamp in stamps
+                if stationary_since_ns
+                <= sample_stamp
+                <= supported_through_ns
+            ]
+            for source, stamps in supporting_stamps.items()
+        }
+        if any(len(stamps) < 2 for stamps in window_stamps.values()):
+            continue
+        if all(
+            max(
+                current - previous
+                for previous, current in zip(stamps, stamps[1:])
+            )
+            <= max_sample_age_ns
+            for stamps in window_stamps.values()
+        ):
+
+            def stream_evidence(stamps: Sequence[int]) -> dict[str, object]:
+                maximum_gap_ns = max(
+                    current - previous
+                    for previous, current in zip(stamps, stamps[1:])
+                )
+                return {
+                    "sample_count": len(stamps),
+                    "first_sample_stamp_ns": stamps[0],
+                    "last_sample_stamp_ns": stamps[-1],
+                    "maximum_inter_sample_gap_sec": (
+                        maximum_gap_ns / NANOSECONDS_PER_SECOND
+                    ),
+                }
+
             return StopDetection(
                 stopped=True,
                 stationary_onset_after_command_sec=(
                     stationary_since_ns - end_ns
                 )
                 / NANOSECONDS_PER_SECOND,
-                confirmed_after_command_sec=(stamp - end_ns)
+                confirmed_after_command_sec=(supported_through_ns - end_ns)
                 / NANOSECONDS_PER_SECOND,
+                stationary_evidence={
+                    "schema_version": 1,
+                    "definition": (
+                        "dual_stream_continuously_stationary_after_zero_command"
+                    ),
+                    "boundary_semantics": "closed_interval",
+                    "start_stamp_ns": stationary_since_ns,
+                    "end_stamp_ns": supported_through_ns,
+                    "observed_duration_sec": (
+                        supported_through_ns - stationary_since_ns
+                    )
+                    / NANOSECONDS_PER_SECOND,
+                    "max_sample_age_sec": sample_age_limit,
+                    "streams": {
+                        source: stream_evidence(stamps)
+                        for source, stamps in window_stamps.items()
+                    },
+                },
             )
-    return StopDetection(False, None, None)
+    return StopDetection(False, None, None, None)
 
 
 def analyse_motion_segment(
@@ -736,6 +867,7 @@ def analyse_motion_segment(
     stop_settings: StopSettings,
     *,
     command_publish_count: int,
+    max_sample_age_sec: float,
     timestamp_integrity: Mapping[str, Mapping[str, object]],
 ) -> dict[str, object]:
     """Build one strict-JSON-compatible motion segment result."""
@@ -745,6 +877,15 @@ def analyse_motion_segment(
         raise ValueError("command_end_ns must be later than command_start_ns")
     if isinstance(command_publish_count, bool) or command_publish_count <= 0:
         raise ValueError("command_publish_count must be positive")
+    if isinstance(max_sample_age_sec, bool) or not isinstance(
+        max_sample_age_sec, (int, float)
+    ):
+        raise ValueError("max_sample_age_sec must be a finite number")
+    sample_age_limit = _finite_number(
+        max_sample_age_sec, "max_sample_age_sec"
+    )
+    if sample_age_limit <= 0.0:
+        raise ValueError("max_sample_age_sec must be positive")
 
     command_odom = [
         sample for sample in odom_samples if start_ns <= sample.stamp_ns <= end_ns
@@ -762,8 +903,92 @@ def analyse_motion_segment(
         for sample in command_odom
         if steady_state_start_ns <= sample.stamp_ns <= end_ns
     ]
+    steady_state_joints = [
+        sample
+        for sample in command_joints
+        if steady_state_start_ns <= sample.stamp_ns <= end_ns
+    ]
     if not steady_state_odom:
         raise ValueError("no odometry samples overlap the steady-state window")
+    if len(steady_state_odom) < 2:
+        raise ValueError(
+            "odometry steady-state window requires at least two samples"
+        )
+    if not steady_state_joints:
+        raise ValueError("no joint-state samples overlap the steady-state window")
+    if len(steady_state_joints) < 2:
+        raise ValueError(
+            "joint-state steady-state window requires at least two samples"
+        )
+    steady_odom_stamps = [sample.stamp_ns for sample in steady_state_odom]
+    if any(
+        current <= previous
+        for previous, current in zip(
+            steady_odom_stamps, steady_odom_stamps[1:]
+        )
+    ):
+        raise ValueError(
+            "odometry steady-state window timestamps must be strictly increasing"
+        )
+    first_odom_lag_sec = (
+        steady_odom_stamps[0] - steady_state_start_ns
+    ) / NANOSECONDS_PER_SECOND
+    last_odom_lag_sec = (
+        end_ns - steady_odom_stamps[-1]
+    ) / NANOSECONDS_PER_SECOND
+    maximum_odom_gap_sec = max(
+        current - previous
+        for previous, current in zip(
+            steady_odom_stamps, steady_odom_stamps[1:]
+        )
+    ) / NANOSECONDS_PER_SECOND
+    if first_odom_lag_sec > sample_age_limit:
+        raise ValueError(
+            "first odometry steady-state sample exceeds max_sample_age_sec"
+        )
+    if last_odom_lag_sec > sample_age_limit:
+        raise ValueError(
+            "last odometry steady-state sample exceeds max_sample_age_sec"
+        )
+    if maximum_odom_gap_sec > sample_age_limit:
+        raise ValueError(
+            "odometry steady-state sample gap exceeds max_sample_age_sec"
+        )
+
+    steady_joint_stamps = [sample.stamp_ns for sample in steady_state_joints]
+    if any(
+        current <= previous
+        for previous, current in zip(
+            steady_joint_stamps, steady_joint_stamps[1:]
+        )
+    ):
+        raise ValueError(
+            "joint-state steady-state window timestamps must be strictly increasing"
+        )
+    first_joint_lag_sec = (
+        steady_joint_stamps[0] - steady_state_start_ns
+    ) / NANOSECONDS_PER_SECOND
+    last_joint_lag_sec = (
+        end_ns - steady_joint_stamps[-1]
+    ) / NANOSECONDS_PER_SECOND
+    maximum_joint_gap_sec = max(
+        current - previous
+        for previous, current in zip(
+            steady_joint_stamps, steady_joint_stamps[1:]
+        )
+    ) / NANOSECONDS_PER_SECOND
+    if first_joint_lag_sec > sample_age_limit:
+        raise ValueError(
+            "first joint-state steady-state sample exceeds max_sample_age_sec"
+        )
+    if last_joint_lag_sec > sample_age_limit:
+        raise ValueError(
+            "last joint-state steady-state sample exceeds max_sample_age_sec"
+        )
+    if maximum_joint_gap_sec > sample_age_limit:
+        raise ValueError(
+            "joint-state steady-state sample gap exceeds max_sample_age_sec"
+        )
     for sample in command_joints:
         missing = sorted(set(wheels.ordered_names) - set(sample.velocity_map()))
         if missing:
@@ -784,29 +1009,61 @@ def analyse_motion_segment(
     pure_or_straight = segment.motion in REQUIRED_MOTION_KINDS
     pure_rotation = segment.motion in {"rotate_left", "rotate_right"}
 
-    wheel_report: dict[str, object] = {}
     expected_directions = expected_wheel_directions(segment.motion, wheels)
-    for name in wheels.ordered_names:
-        values = [sample.velocity_map()[name] for sample in command_joints]
-        direction = _classify_direction(
-            values, stop_settings.wheel_velocity_threshold_radps
+
+    def wheel_direction_report(
+        samples: Sequence[JointSample],
+        *,
+        include_sample_counts: bool = False,
+    ) -> tuple[dict[str, object], bool]:
+        report: dict[str, object] = {}
+        for name in wheels.ordered_names:
+            values = [sample.velocity_map()[name] for sample in samples]
+            direction = _classify_direction(
+                values, stop_settings.wheel_velocity_threshold_radps
+            )
+            wheel: dict[str, object] = {
+                "direction": direction,
+                "expected_direction": expected_directions[name],
+                "direction_matches": direction == expected_directions[name],
+                "speed_radps": _distribution(values),
+            }
+            if include_sample_counts:
+                deadband = stop_settings.wheel_velocity_threshold_radps
+                wheel["direction_sample_counts"] = {
+                    "positive_above_deadband": sum(
+                        value > deadband for value in values
+                    ),
+                    "negative_below_deadband": sum(
+                        value < -deadband for value in values
+                    ),
+                    "within_deadband": sum(
+                        -deadband <= value <= deadband for value in values
+                    ),
+                }
+            report[name] = wheel
+        all_directions_match = all(
+            bool(wheel["direction_matches"])
+            for wheel in report.values()
+            if isinstance(wheel, Mapping)
         )
-        wheel_report[name] = {
-            "direction": direction,
-            "expected_direction": expected_directions[name],
-            "direction_matches": direction == expected_directions[name],
-            "speed_radps": _distribution(values),
-        }
+        return report, all_directions_match
+
+    wheel_report, direction_matches = wheel_direction_report(command_joints)
+    steady_wheel_report, steady_direction_matches = wheel_direction_report(
+        steady_state_joints,
+        include_sample_counts=True,
+    )
 
     stop = detect_stopping(
-        end_ns, odom_samples, joint_samples, wheels, stop_settings
+        end_ns,
+        odom_samples,
+        joint_samples,
+        wheels,
+        stop_settings,
+        sample_age_limit,
     )
     trajectory_points = [(sample.x_m, sample.y_m) for sample in command_odom]
-    direction_matches = all(
-        bool(report["direction_matches"])
-        for report in wheel_report.values()
-        if isinstance(report, Mapping)
-    )
     return {
         "segment_id": segment.segment_id,
         "motion": segment.motion,
@@ -863,6 +1120,7 @@ def analyse_motion_segment(
             "steady_state_window": {
                 "schema_version": 1,
                 "definition": "final_half_of_command_interval",
+                "boundary_semantics": "closed_interval",
                 "start_stamp_ns": steady_state_start_ns,
                 "end_stamp_ns": end_ns,
                 "observed_duration_sec": (
@@ -870,6 +1128,9 @@ def analyse_motion_segment(
                 )
                 / NANOSECONDS_PER_SECOND,
                 "sample_count": len(steady_state_odom),
+                "first_sample_stamp_ns": steady_odom_stamps[0],
+                "last_sample_stamp_ns": steady_odom_stamps[-1],
+                "maximum_inter_sample_gap_sec": maximum_odom_gap_sec,
                 "angular_z_radps": _distribution(
                     sample.angular_z_radps for sample in steady_state_odom
                 ),
@@ -879,6 +1140,26 @@ def analyse_motion_segment(
         "wheels": {
             "all_directions_match": direction_matches,
             "per_wheel": wheel_report,
+            "steady_state_window": {
+                "schema_version": 1,
+                "definition": "final_half_of_command_interval",
+                "boundary_semantics": "closed_interval",
+                "start_stamp_ns": steady_state_start_ns,
+                "end_stamp_ns": end_ns,
+                "observed_duration_sec": (
+                    end_ns - steady_state_start_ns
+                )
+                / NANOSECONDS_PER_SECOND,
+                "sample_count": len(steady_state_joints),
+                "first_sample_stamp_ns": steady_joint_stamps[0],
+                "last_sample_stamp_ns": steady_joint_stamps[-1],
+                "maximum_inter_sample_gap_sec": maximum_joint_gap_sec,
+                "classification_deadband_radps": (
+                    stop_settings.wheel_velocity_threshold_radps
+                ),
+                "all_directions_match": steady_direction_matches,
+                "per_wheel": steady_wheel_report,
+            },
         },
         "timestamp_integrity": {
             name: dict(report) for name, report in timestamp_integrity.items()
