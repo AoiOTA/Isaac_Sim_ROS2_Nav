@@ -40,6 +40,10 @@ from isaac_sim.src.robot.spawn_pose_manager import (
 from isaac_sim.src.robot.articulation_runtime import (
     load_articulation_physics_config,
 )
+from isaac_sim.src.runtime_provenance import (
+    capture_runtime_provenance,
+    runtime_provenance_parameters,
+)
 from isaac_sim.src.sensors.sensor_factory import (
     CAMERA_PROFILE_NAMES,
     _load_camera,
@@ -305,6 +309,15 @@ def run(
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
         app.update()
         validate_composed_stage(config, stage)
+        articulation_settings = load_articulation_physics_config(
+            config.files.robot
+        )
+        runtime_provenance = capture_runtime_provenance(
+            config,
+            articulation_settings,
+            stage,
+            repository_root=PROJECT_ROOT,
+        )
 
         import rclpy
         from rcl_interfaces.msg import ParameterDescriptor
@@ -335,12 +348,15 @@ def run(
             [obstacle.obstacle_id for obstacle in dynamic_scenario.obstacles],
             read_only,
         )
+        for name, value in runtime_provenance_parameters(
+            runtime_provenance
+        ).items():
+            node.declare_parameter(name, value, read_only)
 
         from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
         from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
         from isaac_sim.src.robot.articulation_runtime import (
             ArticulationRuntime,
-            load_articulation_physics_config,
         )
         from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
         from isaac_sim.src.robot.idle_brake import IdleBrake
@@ -349,9 +365,6 @@ def run(
         from isaac_sim.src.sensors.sensor_factory import SensorFactory
         from isaacsim.core.simulation_manager import SimulationManager
 
-        articulation_settings = load_articulation_physics_config(
-            config.files.robot
-        )
         sensors = SensorFactory(
             config,
             camera_profile=camera_selection.profile.name,
