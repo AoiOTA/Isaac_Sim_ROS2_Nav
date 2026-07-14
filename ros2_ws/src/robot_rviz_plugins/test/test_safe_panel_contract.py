@@ -20,6 +20,21 @@ def test_initial_thread_has_cooperative_shutdown():
     assert 'rclcpp::ok()' in header
     assert 'requestInterruption()' in source
     assert 'wait()' in source
+    assert 'while (rclcpp::ok() && !isInterruptionRequested())' in header
+    assert 'navigationUnknown' in header
+    assert 'localizationUnknown' in header
+
+
+def test_panel_only_observes_lifecycle_managers():
+    header = (PACKAGE_ROOT / 'include' / 'robot_rviz_plugins'
+              / 'nav2_panel.hpp').read_text(encoding='utf-8')
+    source = (PACKAGE_ROOT / 'src' / 'nav2_panel.cpp').read_text(
+        encoding='utf-8')
+    assert 'Activation Gate is the' in header
+    assert 'Lifecycle managed' in source
+    assert 'status_node_' in header
+    for operation in ('::startup,', '::pause,', '::resume,', '::reset,'):
+        assert operation not in source
 
 
 def test_panel_owns_qtconcurrent_tasks_and_guards_timer_spin():
