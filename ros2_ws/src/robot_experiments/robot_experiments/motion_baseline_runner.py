@@ -35,6 +35,7 @@ from .motion_baseline import (
 )
 from .report import (
     configuration_sha256,
+    decode_hashed_contact_snapshot,
     validate_runtime_provenance,
     write_strict_json_report,
 )
@@ -61,6 +62,8 @@ _RUNTIME_PROVENANCE_PARAMETER_NAMES = (
     "runtime_provenance.simulation.navigation_mode",
     "runtime_provenance.simulation.odometry_mode",
     "runtime_provenance.simulation.physics_hz",
+    "runtime_provenance.contact.json",
+    "runtime_provenance.contact.sha256",
     "runtime_provenance.git.commit",
     "runtime_provenance.git.branch",
     "runtime_provenance.git.dirty",
@@ -349,6 +352,10 @@ class MotionBaselineRunner(Node):
                 "odometry_mode": value("simulation.odometry_mode"),
                 "physics_hz": value("simulation.physics_hz"),
             },
+            "contact": decode_hashed_contact_snapshot(
+                value("contact.json"),
+                value("contact.sha256"),
+            ),
             "git": {
                 "commit": value("git.commit"),
                 "branch": value("git.branch"),

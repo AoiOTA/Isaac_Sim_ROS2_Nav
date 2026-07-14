@@ -10,6 +10,7 @@ from robot_experiments.report import (
     REPRODUCIBILITY_FIELDS,
     ReportValidationError,
     configuration_sha256,
+    decode_hashed_contact_snapshot,
     validate_manifest,
     validate_runtime_provenance,
     write_run_report,
@@ -18,9 +19,14 @@ from robot_experiments.report import (
 
 
 def valid_runtime_provenance():
+    wheel_colliders = [
+        f"/World/Robot/wheel_{index}/collider" for index in range(4)
+    ]
+    ground_colliders = ["/Root/GroundPlane/CollisionPlane"]
+    wheel_material_path = "/World/Looks/WheelPhysics"
     return {
         "verified": True,
-        "schema_version": 2,
+        "schema_version": 3,
         "robot": {
             "config": {"path": "/repo/jackal.yaml", "sha256": "a" * 64},
             "asset": {"path": "/repo/jackal_nav.usda", "sha256": "b" * 64},
@@ -48,6 +54,58 @@ def valid_runtime_provenance():
             "navigation_mode": "mapping",
             "odometry_mode": "ideal",
             "physics_hz": 60.0,
+        },
+        "contact": {
+            "profile_path": "/repo/isaac_sim/configs/physics/legacy_baseline.yaml",
+            "profile_sha256": "1" * 64,
+            "profile_id": "legacy-baseline",
+            "profile_mode": "legacy_baseline",
+            "overlay_identifier": "anon:0x123:contact_legacy-baseline.usda",
+            "overlay_sha256": "2" * 64,
+            "explicit_materials": False,
+            "thresholds_authored": False,
+            "scene": {
+                "physics_scene_path": "/PhysicsScene",
+                "friction_correlation_distance": 0.00025,
+                "friction_offset_threshold": 0.0004,
+                "friction_type": "patch",
+            },
+            "collider_contract": {
+                "wheel_joint_names": ["fl", "fr", "rl", "rr"],
+                "wheel_expected_count": 4,
+                "ground_required_prim_paths": ground_colliders,
+                "ground_semantic_classes": [],
+                "ground_expected_enabled_count": 1,
+            },
+            "wheel_colliders": wheel_colliders,
+            "ground_colliders": ground_colliders,
+            "wheel_bindings": [
+                {
+                    "collider_path": path,
+                    "direct_physics_material_path": wheel_material_path,
+                    "effective_physics_material_path": wheel_material_path,
+                }
+                for path in wheel_colliders
+            ],
+            "ground_bindings": [
+                {
+                    "collider_path": ground_colliders[0],
+                    "direct_physics_material_path": None,
+                    "effective_physics_material_path": None,
+                }
+            ],
+            "wheel_material": {
+                "material_path": wheel_material_path,
+                "static_friction": 0.2,
+                "dynamic_friction": 0.2,
+                "restitution": 0.0,
+                "friction_combine_mode": None,
+                "restitution_combine_mode": None,
+                "friction_combine_mode_authored": False,
+                "restitution_combine_mode_authored": False,
+            },
+            "ground_material": None,
+            "stage_usd_readback_verified": True,
         },
         "git": {
             "commit": "f" * 40,
@@ -116,10 +174,38 @@ def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
     validate_runtime_provenance(valid_runtime_provenance())
 
 
+def test_decode_hashed_contact_snapshot_requires_canonical_verified_json():
+    contact = valid_runtime_provenance()["contact"]
+    payload = json.dumps(
+        contact,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    assert decode_hashed_contact_snapshot(payload, digest) == contact
+
+    with pytest.raises(ReportValidationError, match="SHA256 mismatch"):
+        decode_hashed_contact_snapshot(payload + " ", digest)
+    with pytest.raises(ReportValidationError, match="canonical strict JSON"):
+        pretty = json.dumps(contact, indent=2, sort_keys=True)
+        decode_hashed_contact_snapshot(
+            pretty,
+            hashlib.sha256(pretty.encode("utf-8")).hexdigest(),
+        )
+    with pytest.raises(ReportValidationError, match="valid JSON"):
+        invalid = "{not-json}"
+        decode_hashed_contact_snapshot(
+            invalid,
+            hashlib.sha256(invalid.encode("utf-8")).hexdigest(),
+        )
+
+
 @pytest.mark.parametrize(
     ("path", "bad_value", "message"),
     [
-        (("schema_version",), 1, "must be 2"),
+        (("schema_version",), 2, "must be 3"),
         (("robot", "config", "sha256"), "g" * 64, "SHA256"),
         (("robot", "solver", "velocity_iterations"), True, "integer"),
         (("robot", "solver", "velocity_iterations"), 0, "integer"),
@@ -136,6 +222,24 @@ def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
         (("environment", "id"), "bad/id", "path-safe"),
         (("environment", "source_asset", "path"), "", "non-empty"),
         (("simulation", "physics_hz"), 0.0, "positive"),
+        (("contact", "profile_path"), "relative.yaml", "absolute path"),
+        (("contact", "profile_sha256"), "g" * 64, "SHA256"),
+        (("contact", "overlay_identifier"), "saved.usda", "anonymous"),
+        (
+            ("contact", "stage_usd_readback_verified"),
+            False,
+            "must be true",
+        ),
+        (
+            ("contact", "scene", "physics_scene_path"),
+            "PhysicsScene",
+            "absolute prim path",
+        ),
+        (
+            ("contact", "collider_contract", "wheel_expected_count"),
+            3,
+            "must be 4",
+        ),
         (("git", "commit"), "z" * 40, "Git object id"),
         (("git", "dirty"), "false", "boolean"),
     ],
@@ -156,6 +260,69 @@ def test_validate_runtime_provenance_requires_runtime_verification():
     provenance = valid_runtime_provenance()
     provenance["verified"] = False
     with pytest.raises(ReportValidationError, match="runtime-verified"):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_rejects_tampered_collider_and_binding_sets():
+    provenance = valid_runtime_provenance()
+    provenance["contact"]["ground_colliders"] = [
+        "/Root/GroundPlane/CollisionPlane",
+        "/Root/GroundPlane/CollisionPlane",
+    ]
+    with pytest.raises(ReportValidationError, match="unique"):
+        validate_runtime_provenance(provenance)
+
+    provenance = valid_runtime_provenance()
+    provenance["contact"]["wheel_bindings"][0]["collider_path"] = (
+        "/World/Robot/not_a_wheel/collider"
+    )
+    with pytest.raises(ReportValidationError, match="one-to-one"):
+        validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    ("mode", "explicit", "thresholds", "message"),
+    [
+        ("legacy_baseline", True, False, "legacy_baseline"),
+        ("threshold_only", False, False, "threshold_only"),
+        ("explicit_material", False, True, "explicit_material"),
+    ],
+)
+def test_validate_runtime_provenance_rejects_mode_flag_disagreement(
+    mode, explicit, thresholds, message
+):
+    provenance = valid_runtime_provenance()
+    contact = provenance["contact"]
+    contact["profile_mode"] = mode
+    contact["explicit_materials"] = explicit
+    contact["thresholds_authored"] = thresholds
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+def test_validate_runtime_provenance_requires_explicit_binding_material_evidence():
+    provenance = valid_runtime_provenance()
+    contact = provenance["contact"]
+    contact["profile_mode"] = "explicit_material"
+    contact["explicit_materials"] = True
+    contact["thresholds_authored"] = True
+    contact["ground_material"] = deepcopy(contact["wheel_material"])
+    contact["ground_material"]["material_path"] = "/World/Looks/GroundPhysics"
+    contact["ground_material"]["static_friction"] = 0.5
+    contact["ground_material"]["dynamic_friction"] = 0.5
+    for material in (contact["wheel_material"], contact["ground_material"]):
+        material["friction_combine_mode"] = "average"
+        material["restitution_combine_mode"] = "average"
+        material["friction_combine_mode_authored"] = True
+        material["restitution_combine_mode_authored"] = True
+    contact["ground_bindings"][0]["direct_physics_material_path"] = (
+        "/World/Looks/WrongGroundPhysics"
+    )
+    contact["ground_bindings"][0]["effective_physics_material_path"] = (
+        "/World/Looks/GroundPhysics"
+    )
+
+    with pytest.raises(ReportValidationError, match="direct binding"):
         validate_runtime_provenance(provenance)
 
 

@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import hmac
 import json
 import math
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 import tempfile
 from typing import Any, Callable, Mapping, TextIO
 
@@ -32,6 +33,31 @@ REPRODUCIBILITY_FIELDS = (
     "failure_reason",
 )
 _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PROFILE_FLAGS = {
+    "legacy_baseline": (False, False),
+    "threshold_only": (False, True),
+    "explicit_material": (True, True),
+}
+_COMBINE_MODES = {"average", "min", "multiply", "max"}
+_CONTACT_KEYS = {
+    "profile_path",
+    "profile_sha256",
+    "profile_id",
+    "profile_mode",
+    "overlay_identifier",
+    "overlay_sha256",
+    "explicit_materials",
+    "thresholds_authored",
+    "scene",
+    "collider_contract",
+    "wheel_colliders",
+    "ground_colliders",
+    "wheel_bindings",
+    "ground_bindings",
+    "wheel_material",
+    "ground_material",
+    "stage_usd_readback_verified",
+}
 
 
 class ReportValidationError(ValueError):
@@ -130,6 +156,450 @@ def _validate_sha256(value: Any, location: str) -> None:
         ) from exc
 
 
+def decode_hashed_contact_snapshot(
+    payload: object,
+    expected_sha256: object,
+) -> dict[str, Any]:
+    """Verify and decode the canonical contact JSON exposed by Isaac."""
+
+    if not isinstance(payload, str):
+        raise ReportValidationError(
+            "runtime_provenance.contact.json must be a string"
+        )
+    _validate_sha256(
+        expected_sha256,
+        "runtime_provenance.contact.sha256",
+    )
+    actual_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(actual_sha256, expected_sha256):
+        raise ReportValidationError(
+            "runtime_provenance.contact JSON SHA256 mismatch"
+        )
+
+    def reject_constant(token: str) -> None:
+        raise ValueError(f"non-finite JSON constant {token}")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key {key!r}")
+            result[key] = value
+        return result
+
+    try:
+        decoded = json.loads(
+            payload,
+            parse_constant=reject_constant,
+            object_pairs_hook=reject_duplicate_keys,
+        )
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ReportValidationError(
+            f"runtime_provenance.contact.json must be valid JSON: {exc}"
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise ReportValidationError(
+            "runtime_provenance.contact.json root must be a mapping"
+        )
+    canonical = json.dumps(
+        decoded,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    if canonical != payload:
+        raise ReportValidationError(
+            "runtime_provenance.contact.json must be canonical strict JSON"
+        )
+    return decoded
+
+
+def _absolute_file_path(value: Any, location: str) -> str:
+    path = _required_string(value, location)
+    if not Path(path).is_absolute():
+        raise ReportValidationError(f"{location} must be an absolute path")
+    return path
+
+
+def _absolute_prim_path(value: Any, location: str) -> str:
+    path = _required_string(value, location)
+    if not path.startswith("/") or path == "/" or "//" in path:
+        raise ReportValidationError(
+            f"{location} must be an absolute prim path"
+        )
+    return path
+
+
+def _finite_nonnegative(value: Any, location: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or float(value) < 0.0
+    ):
+        raise ReportValidationError(
+            f"{location} must be a finite non-negative number"
+        )
+    return float(value)
+
+
+def _string_sequence(
+    value: Any,
+    location: str,
+    *,
+    allow_empty: bool,
+) -> list[str]:
+    if not isinstance(value, (list, tuple)):
+        raise ReportValidationError(f"{location} must be a list")
+    values = [
+        _required_string(item, f"{location}[{index}]")
+        for index, item in enumerate(value)
+    ]
+    if not allow_empty and not values:
+        raise ReportValidationError(f"{location} must not be empty")
+    if len(set(values)) != len(values):
+        raise ReportValidationError(f"{location} must contain unique values")
+    return values
+
+
+def _prim_path_sequence(
+    value: Any,
+    location: str,
+    *,
+    expected_count: int | None = None,
+) -> list[str]:
+    values = _string_sequence(value, location, allow_empty=False)
+    paths = [
+        _absolute_prim_path(path, f"{location}[{index}]")
+        for index, path in enumerate(values)
+    ]
+    if expected_count is not None and len(paths) != expected_count:
+        raise ReportValidationError(
+            f"{location} must contain exactly {expected_count} paths"
+        )
+    return paths
+
+
+def _validate_contact_material(
+    value: Any,
+    location: str,
+) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ReportValidationError(f"{location} must be a mapping or null")
+    required = {
+        "material_path",
+        "static_friction",
+        "dynamic_friction",
+        "restitution",
+        "friction_combine_mode",
+        "restitution_combine_mode",
+        "friction_combine_mode_authored",
+        "restitution_combine_mode_authored",
+    }
+    if set(value) != required:
+        raise ReportValidationError(
+            f"{location} keys must be exactly {sorted(required)}"
+        )
+    _absolute_prim_path(value["material_path"], f"{location}.material_path")
+    static_friction = _finite_nonnegative(
+        value["static_friction"],
+        f"{location}.static_friction",
+    )
+    dynamic_friction = _finite_nonnegative(
+        value["dynamic_friction"],
+        f"{location}.dynamic_friction",
+    )
+    if dynamic_friction > static_friction:
+        raise ReportValidationError(
+            f"{location}.dynamic_friction must not exceed static_friction"
+        )
+    restitution = _finite_nonnegative(
+        value["restitution"],
+        f"{location}.restitution",
+    )
+    if restitution > 1.0:
+        raise ReportValidationError(f"{location}.restitution must be in [0, 1]")
+    for name in ("friction_combine_mode", "restitution_combine_mode"):
+        combine_mode = value[name]
+        if combine_mode is not None and (
+            not isinstance(combine_mode, str)
+            or combine_mode not in _COMBINE_MODES
+        ):
+            raise ReportValidationError(
+                f"{location}.{name} must be null or a supported combine mode"
+            )
+    for name in (
+        "friction_combine_mode_authored",
+        "restitution_combine_mode_authored",
+    ):
+        if not isinstance(value[name], bool):
+            raise ReportValidationError(f"{location}.{name} must be boolean")
+    return value
+
+
+def _validate_contact_bindings(
+    value: Any,
+    location: str,
+    collider_paths: list[str],
+    material: Mapping[str, Any] | None,
+    *,
+    explicit: bool,
+) -> None:
+    if not isinstance(value, (list, tuple)) or len(value) != len(collider_paths):
+        raise ReportValidationError(
+            f"{location} must contain one binding per collider"
+        )
+    required = {
+        "collider_path",
+        "direct_physics_material_path",
+        "effective_physics_material_path",
+    }
+    seen: list[str] = []
+    direct_paths: list[str | None] = []
+    effective_paths: list[str | None] = []
+    for index, binding in enumerate(value):
+        child_location = f"{location}[{index}]"
+        if not isinstance(binding, Mapping) or set(binding) != required:
+            raise ReportValidationError(
+                f"{child_location} must contain collider, direct, and "
+                "effective material paths"
+            )
+        seen.append(
+            _absolute_prim_path(
+                binding["collider_path"],
+                f"{child_location}.collider_path",
+            )
+        )
+        for name, destination in (
+            ("direct_physics_material_path", direct_paths),
+            ("effective_physics_material_path", effective_paths),
+        ):
+            path = binding[name]
+            destination.append(
+                None
+                if path is None
+                else _absolute_prim_path(path, f"{child_location}.{name}")
+            )
+    if set(seen) != set(collider_paths) or len(set(seen)) != len(seen):
+        raise ReportValidationError(
+            f"{location} must have a one-to-one collider mapping"
+        )
+    material_path = None if material is None else material["material_path"]
+    if material_path is None:
+        if any(path is not None for path in effective_paths):
+            raise ReportValidationError(
+                f"{location} effective binding requires material evidence"
+            )
+    elif set(effective_paths) != {material_path}:
+        raise ReportValidationError(
+            f"{location} effective binding does not match material evidence"
+        )
+    if explicit and set(direct_paths) != {material_path}:
+        raise ReportValidationError(
+            f"{location} direct binding does not match explicit material"
+        )
+
+
+def _validate_contact_provenance(contact: Mapping[str, Any]) -> None:
+    location = "runtime_provenance.contact"
+    if set(contact) != _CONTACT_KEYS:
+        raise ReportValidationError(
+            f"{location} keys must be exactly {sorted(_CONTACT_KEYS)}"
+        )
+    _absolute_file_path(contact["profile_path"], f"{location}.profile_path")
+    _validate_sha256(contact["profile_sha256"], f"{location}.profile_sha256")
+    profile_id = _required_string(contact["profile_id"], f"{location}.profile_id")
+    if not _IDENTIFIER_PATTERN.fullmatch(profile_id):
+        raise ReportValidationError(f"{location}.profile_id must be path-safe")
+    profile_mode = contact["profile_mode"]
+    if not isinstance(profile_mode, str) or profile_mode not in _PROFILE_FLAGS:
+        raise ReportValidationError(
+            f"{location}.profile_mode must be one of {sorted(_PROFILE_FLAGS)}"
+        )
+    overlay_identifier = _required_string(
+        contact["overlay_identifier"],
+        f"{location}.overlay_identifier",
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise ReportValidationError(
+            f"{location}.overlay_identifier must identify an anonymous layer"
+        )
+    _validate_sha256(contact["overlay_sha256"], f"{location}.overlay_sha256")
+    if contact["stage_usd_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{location}.stage_usd_readback_verified must be true"
+        )
+    flags = (contact["explicit_materials"], contact["thresholds_authored"])
+    if not all(isinstance(flag, bool) for flag in flags):
+        raise ReportValidationError(f"{location} profile flags must be boolean")
+    if flags != _PROFILE_FLAGS[profile_mode]:
+        raise ReportValidationError(
+            f"{location} flags disagree with {profile_mode} mode"
+        )
+
+    scene = _required_mapping(contact, "scene", location)
+    scene_keys = {
+        "physics_scene_path",
+        "friction_correlation_distance",
+        "friction_offset_threshold",
+        "friction_type",
+    }
+    if set(scene) != scene_keys:
+        raise ReportValidationError(
+            f"{location}.scene keys must be exactly {sorted(scene_keys)}"
+        )
+    _absolute_prim_path(
+        scene["physics_scene_path"],
+        f"{location}.scene.physics_scene_path",
+    )
+    _finite_nonnegative(
+        scene["friction_correlation_distance"],
+        f"{location}.scene.friction_correlation_distance",
+    )
+    _finite_nonnegative(
+        scene["friction_offset_threshold"],
+        f"{location}.scene.friction_offset_threshold",
+    )
+    if scene["friction_type"] is not None:
+        _required_string(
+            scene["friction_type"],
+            f"{location}.scene.friction_type",
+        )
+
+    contract = _required_mapping(contact, "collider_contract", location)
+    contract_keys = {
+        "wheel_joint_names",
+        "wheel_expected_count",
+        "ground_required_prim_paths",
+        "ground_semantic_classes",
+        "ground_expected_enabled_count",
+    }
+    if set(contract) != contract_keys:
+        raise ReportValidationError(
+            f"{location}.collider_contract keys must be exactly "
+            f"{sorted(contract_keys)}"
+        )
+    wheel_expected_count = contract["wheel_expected_count"]
+    if (
+        isinstance(wheel_expected_count, bool)
+        or not isinstance(wheel_expected_count, int)
+        or wheel_expected_count != 4
+    ):
+        raise ReportValidationError(
+            f"{location}.collider_contract.wheel_expected_count must be 4"
+        )
+    wheel_joint_names = _string_sequence(
+        contract["wheel_joint_names"],
+        f"{location}.collider_contract.wheel_joint_names",
+        allow_empty=False,
+    )
+    if len(wheel_joint_names) != wheel_expected_count:
+        raise ReportValidationError(
+            f"{location}.collider_contract.wheel_joint_names must contain 4 names"
+        )
+    ground_expected_count = contract["ground_expected_enabled_count"]
+    if (
+        isinstance(ground_expected_count, bool)
+        or not isinstance(ground_expected_count, int)
+        or ground_expected_count < 1
+    ):
+        raise ReportValidationError(
+            f"{location}.collider_contract.ground_expected_enabled_count "
+            "must be a positive integer"
+        )
+    required_ground = _prim_path_sequence(
+        contract["ground_required_prim_paths"],
+        f"{location}.collider_contract.ground_required_prim_paths",
+    )
+    if len(required_ground) > ground_expected_count:
+        raise ReportValidationError(
+            f"{location}.collider_contract has more required ground paths "
+            "than its expected count"
+        )
+    semantic_classes = _string_sequence(
+        contract["ground_semantic_classes"],
+        f"{location}.collider_contract.ground_semantic_classes",
+        allow_empty=True,
+    )
+    if any(not _IDENTIFIER_PATTERN.fullmatch(value) for value in semantic_classes):
+        raise ReportValidationError(
+            f"{location}.collider_contract.ground_semantic_classes "
+            "must be path-safe"
+        )
+
+    wheel_colliders = _prim_path_sequence(
+        contact["wheel_colliders"],
+        f"{location}.wheel_colliders",
+        expected_count=wheel_expected_count,
+    )
+    ground_colliders = _prim_path_sequence(
+        contact["ground_colliders"],
+        f"{location}.ground_colliders",
+        expected_count=ground_expected_count,
+    )
+    missing_ground = sorted(set(required_ground) - set(ground_colliders))
+    if missing_ground:
+        raise ReportValidationError(
+            f"{location}.ground_colliders is missing required paths: "
+            f"{missing_ground}"
+        )
+
+    wheel_material = _validate_contact_material(
+        contact["wheel_material"],
+        f"{location}.wheel_material",
+    )
+    ground_material = _validate_contact_material(
+        contact["ground_material"],
+        f"{location}.ground_material",
+    )
+    explicit = profile_mode == "explicit_material"
+    if explicit and (wheel_material is None or ground_material is None):
+        raise ReportValidationError(
+            f"{location} explicit_material mode requires two material snapshots"
+        )
+    _validate_contact_bindings(
+        contact["wheel_bindings"],
+        f"{location}.wheel_bindings",
+        wheel_colliders,
+        wheel_material,
+        explicit=explicit,
+    )
+    _validate_contact_bindings(
+        contact["ground_bindings"],
+        f"{location}.ground_bindings",
+        ground_colliders,
+        ground_material,
+        explicit=explicit,
+    )
+    if explicit:
+        assert wheel_material is not None
+        assert ground_material is not None
+        for material, group in (
+            (wheel_material, "wheel"),
+            (ground_material, "ground"),
+        ):
+            for combine in ("friction", "restitution"):
+                if (
+                    material[f"{combine}_combine_mode"] not in _COMBINE_MODES
+                    or material[f"{combine}_combine_mode_authored"] is not True
+                ):
+                    raise ReportValidationError(
+                        f"{location}.{group}_material explicit {combine} "
+                        "combine mode must be authored"
+                    )
+        if (
+            wheel_material["friction_combine_mode"]
+            != ground_material["friction_combine_mode"]
+            or wheel_material["restitution_combine_mode"]
+            != ground_material["restitution_combine_mode"]
+        ):
+            raise ReportValidationError(
+                f"{location} explicit material combine modes must agree"
+            )
+
+
 def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     """Validate the Isaac-startup snapshot embedded in a diagnostic report."""
 
@@ -139,8 +609,8 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     if provenance.get("verified") is not True:
         raise ReportValidationError("runtime_provenance must be runtime-verified")
     schema_version = provenance.get("schema_version")
-    if isinstance(schema_version, bool) or schema_version != 2:
-        raise ReportValidationError("runtime_provenance.schema_version must be 2")
+    if isinstance(schema_version, bool) or schema_version != 3:
+        raise ReportValidationError("runtime_provenance.schema_version must be 3")
 
     robot = _required_mapping(provenance, "robot", "runtime_provenance")
     for name in ("config", "asset"):
@@ -229,6 +699,13 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         raise ReportValidationError(
             "runtime_provenance.simulation.physics_hz must be positive"
         )
+
+    contact = _required_mapping(
+        provenance,
+        "contact",
+        "runtime_provenance",
+    )
+    _validate_contact_provenance(contact)
 
     git = _required_mapping(provenance, "git", "runtime_provenance")
     commit = git.get("commit")

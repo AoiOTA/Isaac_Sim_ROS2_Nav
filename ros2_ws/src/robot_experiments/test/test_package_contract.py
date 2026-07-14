@@ -113,6 +113,9 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert "AsyncParameterClient" in source
     assert "runtime_provenance" in source
     assert "validate_runtime_provenance" in source
+    assert '"runtime_provenance.contact.json"' in source
+    assert '"runtime_provenance.contact.sha256"' in source
+    assert "decode_hashed_contact_snapshot" in source
     assert "environment label does not match Isaac runtime provenance" in source
     provenance_reader = source.split("def _read_runtime_provenance", 1)[1].split(
         "def _begin_segment_capture", 1
