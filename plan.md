@@ -56,8 +56,10 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   exit 0：build 11 packages，preflight PASS，root `1076 passed / 1 skipped /
   34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，
   Isaac `32 passed / 250 deselected`；预检另有 396 个 Fast DDS SHM 工件和 20 个
-  非 performance governor 的非阻塞环境警告。仍缺真实新 schema smoke 和正式
-  54-run/18-group 实跑。
+  非 performance governor 的非阻塞环境警告。随后在 clean `190f357` 完成
+  SimplePlane/only1 × 六 profile × 一次的真实新 schema smoke：6/6 run、36/36 段、
+  72/72 Manifest 路径/hash 闭合；motion/analysis/summary 分别为 schema 2/3/4，六组
+  都只因少于 3 个 repeat 而 N/A。正式 54-run/18-group 实跑仍未执行。
 - `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件；
   两者都没有覆盖 stable，也尚未完成两环境、多速度、拓扑或 Realistic 物理 A/B。
 

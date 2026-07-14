@@ -1465,7 +1465,9 @@ batch-summary schema 4 的 `result=success` 只表示证据采集、身份、矩
 script `42 passed / 1 skipped`（缺少 `shellcheck`）。clean `2cd0788` 的 build、preflight
 和 `./scripts/test.sh --with-isaac` 均 exit 0：root `1076 passed / 1 skipped /
 34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，Isaac
-`32 passed / 250 deselected`。真实新 schema smoke 与正式每组三重复的 54-run/18-group
+`32 passed / 250 deselected`。clean `190f357` 的 SimplePlane/only1 六 profile × 一次
+重复真实新 schema smoke 为 6/6 run、36/36 段、analysis 6/0/6、summary schema 4
+`result=success`；六组只因少于 3 个 repeat 而 N/A。正式每组三重复的 54-run/18-group
 全 topology 矩阵仍待执行。历史
 `d5840ed` 12-run 保存的是 analysis schema 2、batch-summary schema 3，且 Warehouse、
 repeat=1、motion report schema 1 均不满足适用性；它是机制证据，不能写成 `0/12 fail`。
@@ -3251,7 +3253,8 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   matrix script `42 passed / 1 skipped`（缺少 `shellcheck`）。clean `2cd0788` 的 build、
   preflight 和 `./scripts/test.sh --with-isaac` 均 exit 0：root `1076 passed / 1 skipped /
   34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，Isaac
-  `32 passed / 250 deselected`；真实新 schema smoke 和正式 54-run 实跑仍待完成。
+  `32 passed / 250 deselected`。clean `190f357` 的真实新 schema smoke 已完成 6/6 run、
+  36/36 段和六组 repeat=1 N/A；正式 54-run 实跑仍待完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均

@@ -1581,8 +1581,9 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
 硬门升级，保存的是 v5 analysis schema 2 与 batch-summary schema 3，不含
 `physical_acceptance`。它的 Warehouse、repeat=1、motion report schema 1 也都不满足
 当前物理门适用条件；即使只读重新审计也应是 N/A，不能写成 `0/12 fail`，更不能回填
-历史文件。当前合同定向测试已经完成，但仍没有 clean commit 全门、真实新 schema
-smoke 或正式 54-run/18-group 实跑证据。
+历史文件。当前合同已在 clean `2cd0788` 通过全门；clean `190f357` 的
+SimplePlane/only1 六 profile × 一次重复真实新 schema smoke 也已闭合，但因每组只有
+1 个 repeat，六组都正确记为 N/A。它不是正式 54-run/18-group 实跑证据。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
@@ -1632,8 +1633,9 @@ schema 2 才适用。其他 group 写 `applicable=false`、`passed=null` 和非�
 script `42 passed / 1 skipped`；唯一 skip 是本机缺少 `shellcheck`。clean `2cd0788` 的
 `./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
 34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
-为 `32 passed / 250 deselected`。这证明冻结代码合同与构建门闭合，但仍须补真实新 schema
-smoke 和正式矩阵，不能据此宣称底盘物理通过。
+为 `32 passed / 250 deselected`。clean `190f357` 的真实新 schema smoke 另完成 6/6 run、
+36/36 段和六组 N/A 记账。这证明冻结代码合同、构建门和真实报告链闭合；正式矩阵仍待
+执行，不能据此宣称底盘物理通过。
 
 快速核对成功证据：
 

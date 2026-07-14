@@ -207,8 +207,8 @@ service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，�
 描述单份运行时报告的身份；下面的 analysis schema 描述离线聚合结果，二者的版本号
 不能互相替代。
 
-当前合同已实现，并已在 clean `2cd0788` 通过全门；真实新 schema smoke 和正式矩阵
-实跑仍待完成：
+当前合同已实现，并已在 clean `2cd0788` 通过全门；clean `190f357` 的真实新 schema
+SimplePlane 一次重复烟测也已闭合，正式矩阵仍待完成：
 
 | 工件 | schema | 合同 |
 | --- | ---: | --- |
@@ -263,8 +263,10 @@ runtime schema 和全局 odometry 锁交叉核对；缺检查、伪布尔值或�
 script `42 passed / 1 skipped`，唯一 skip 是本机缺少 `shellcheck`。clean `2cd0788` 的
 `./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
 34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
-为 `32 passed / 250 deselected`。build 11 packages、preflight PASS；仍须补真实新 schema
-smoke 与正式 54-run/18-group 矩阵。
+为 `32 passed / 250 deselected`。build 11 packages、preflight PASS。clean `190f357` 的
+SimplePlane/only1 六 profile 一次重复烟测为 6/6 run、36/36 段、analysis 6 included /
+0 excluded / 6 groups、summary schema 4 `result=success`；六组都只因 repeat=1 而 N/A。
+正式 54-run/18-group 矩阵仍待完成。
 
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
 serves the immutable saved OccupancyGrid. SLAM Toolbox still owns localization
