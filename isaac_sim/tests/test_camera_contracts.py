@@ -179,6 +179,7 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
     launch = _simulation_app_config(_config())
 
     assert launch["multi_gpu"] is False
+    assert launch["enable_motion_bvh"] is True
     assert launch["extra_args"] == [
         "--/rtx/hydra/supportMultiTickRate=true",
         "--/persistent/simulation/minFrameRate=60",

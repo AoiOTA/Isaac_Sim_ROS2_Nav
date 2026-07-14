@@ -56,6 +56,7 @@ def test_default_project_contract_loads_strictly():
     lidar_values = dict(lidar_graph_spec(config, "/Render/Test").values)
     assert lidar_values["PointCloudConfig.inputs:outputIntensity"] is False
     assert lidar_values["PointCloudConfig.inputs:outputTimestamp"] is False
+    assert lidar_values["PointCloudPublisher.inputs:fullScan"] is False
 
 
 def test_nested_environment_overrides_are_typed():
