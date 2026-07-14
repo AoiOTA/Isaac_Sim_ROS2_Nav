@@ -34,7 +34,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在历史实时报告中成立；新契约用真实 rclpy 覆盖 schema-v5 匹配、SHA 错配和 Isaac 服务超时，并在 Wheel Odom 退出时关闭整套 Realistic launch | 新 schema-v5 握手尚未完成一轮冻结候选的真实 Isaac+ROS Realistic 导航；本轮 12 秒历史报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
 | Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
-| 自动测试 | clean 代码提交 `567b8d1` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `1016 passed / 1 skipped / 34 deselected`，ROS `816 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `32 passed / 250 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
+| 自动测试 | clean 代码提交 `c210150` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `1016 passed / 1 skipped / 34 deselected`，ROS `816 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `32 passed / 250 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
 
 ## Map Manifest 与标定
 
@@ -1163,18 +1163,18 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 
 ## 自动测试证据与当前重跑边界
 
-2026-07-15 在 clean 提交 `567b8d1` 上重新执行完整三条门。构建、预检和
-`test.sh --with-isaac` 均 exit 0；预检仍如实报告 294 个 Fast DDS SHM 遗留工件和
+2026-07-15 在 clean 提交 `c210150` 上重新执行完整三条门。该提交包含
+per-treatment-group RootLayer 锁修复及完整锁层文档；构建、预检和
+`test.sh --with-isaac` 均 exit 0。预检仍如实报告 342 个 Fast DDS SHM 遗留工件和
 20 个 CPU core governor 非 performance 的环境警告，资产、地图、GPU 与其余门通过。
-这次全门已覆盖当时的 schema v5、三个 topology profile、严格 topology 矩阵、
-RootLayer 锁层和两份新文档；随后真实 topology smoke 证伪了当时把 RootLayer SHA
-当作跨 treatment 常量的作用域。当前 per-treatment-group 修复已有 analyzer
-`59 passed` 和保留报告离线重聚合 `12 included / 0 excluded / 12 groups`，提交后仍须
-重跑完整三条门。单元门也不能替代 Realistic 导航或 Warehouse V2 正式统计。
+这次全门覆盖 schema v5、三个 topology profile、严格 topology 矩阵和修正后的
+RootLayer 锁作用域；保留报告只读离线重聚合仍为
+`12 included / 0 excluded / 12 groups`。单元门也不能替代正式 54-run topology、
+Realistic 导航或 Warehouse V2 正式统计。
 
 | Gate | 最近证据 |
 | --- | --- |
-| `./scripts/preflight.sh` | 2026-07-15 PASS；资产/地图/GPU 通过，另有 294 个 Fast DDS SHM 遗留工件和 20 个 CPU core governor 非 performance 的非阻塞环境警告 |
+| `./scripts/preflight.sh` | 2026-07-15 PASS；资产/地图/GPU 通过，另有 342 个 Fast DDS SHM 遗留工件和 20 个 CPU core governor 非 performance 的非阻塞环境警告 |
 | `./scripts/build_ros2.sh` | 2026-07-15：11 packages build completed，exit 0 |
 | `./scripts/test.sh --with-isaac` 的 pure/root suite | 2026-07-15：1051 collected，1016 passed，1 skipped，34 deselected |
 | ROS `colcon test` | 2026-07-15：816 tests，0 errors，0 failures，1 skipped |
