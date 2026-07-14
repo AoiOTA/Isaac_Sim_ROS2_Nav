@@ -37,6 +37,14 @@ require_directory "${dds_proc_root}"
 if [[ "${dds_proc_root}" != "/proc" && "${shm_root}" == "/dev/shm" ]]; then
   die "a test DDS proc root may only be used with a non-system SHM root"
 fi
+clean_int_checks="${ISAAC_NAV_CLEAN_INT_CHECKS:-100}"
+clean_term_checks="${ISAAC_NAV_CLEAN_TERM_CHECKS:-50}"
+clean_kill_checks="${ISAAC_NAV_CLEAN_KILL_CHECKS:-20}"
+for check_setting in clean_int_checks clean_term_checks clean_kill_checks; do
+  check_value="${!check_setting}"
+  [[ "${check_value}" =~ ^[1-9][0-9]*$ ]] \
+    || die "${check_setting} must be a positive integer"
+done
 
 metadata_value() {
   local file="$1"
@@ -75,6 +83,20 @@ process_group_members() {
 process_group_is_running() {
   local process_group="$1"
   [[ -n "$(process_group_members "${process_group}")" ]]
+}
+
+metadata_identity_is_unchanged() {
+  local pid_file="$1"
+  local pid="$2"
+  local process_group="$3"
+  local leader_start_ticks="$4"
+  local recorded_boot_id="$5"
+  local recorded_root="$6"
+  [[ "$(metadata_value "${pid_file}" pid)" == "${pid}" \
+    && "$(metadata_value "${pid_file}" process_group)" == "${process_group}" \
+    && "$(metadata_value "${pid_file}" leader_start_ticks)" == "${leader_start_ticks}" \
+    && "$(metadata_value "${pid_file}" boot_id)" == "${recorded_boot_id}" \
+    && "$(metadata_value "${pid_file}" project_root)" == "${recorded_root}" ]]
 }
 
 registered_group_is_safe() {
@@ -122,10 +144,15 @@ matches_registered_component() {
         || "${command_line}" == *" scripts/run_ros.sh "* ]]
       ;;
     rviz)
-      [[ "${command_line}" == *"rviz2"* ]]
+      [[ "${command_line}" == *"rviz2"* \
+        || "${command_line}" == *"${PROJECT_ROOT}/scripts/run_rviz.sh"* \
+        || "${command_line}" == *" scripts/run_rviz.sh "* ]]
       ;;
     teleop)
       [[ "${command_line}" == *"robot_teleop"*"keyboard_teleop"* ]]
+      ;;
+    motion_baseline)
+      [[ "${command_line}" == *"/lib/robot_experiments/motion_baseline_runner"* ]]
       ;;
     *)
       return 1
@@ -228,24 +255,58 @@ stop_registered_component() {
 
   if [[ "${group_mode}" == true ]]; then
     log_info "stopping ${component} process group ${process_group} with SIGINT"
-    kill -INT -- "-${process_group}"
-    if ! wait_for_group_exit "${process_group}" 100; then
+    metadata_identity_is_unchanged \
+      "${pid_file}" "${pid}" "${process_group}" "${leader_start_ticks}" \
+      "${recorded_boot_id}" "${recorded_root}" || return 1
+    kill -INT -- "-${process_group}" 2>/dev/null || true
+    if ! wait_for_group_exit "${process_group}" "${clean_int_checks}"; then
       log_warn "${component} group ${process_group} did not finish after SIGINT; sending SIGTERM"
+      metadata_identity_is_unchanged \
+        "${pid_file}" "${pid}" "${process_group}" "${leader_start_ticks}" \
+        "${recorded_boot_id}" "${recorded_root}" || return 1
+      registered_group_is_safe "${process_group}" "${recorded_root}" || return 1
       kill -TERM -- "-${process_group}" 2>/dev/null || true
-      wait_for_group_exit "${process_group}" 50 \
-        || die "${component} group ${process_group} did not stop; refusing SIGKILL"
+      if ! wait_for_group_exit "${process_group}" "${clean_term_checks}"; then
+        log_warn "${component} group ${process_group} ignored SIGTERM; sending SIGKILL"
+        metadata_identity_is_unchanged \
+          "${pid_file}" "${pid}" "${process_group}" "${leader_start_ticks}" \
+          "${recorded_boot_id}" "${recorded_root}" || return 1
+        registered_group_is_safe "${process_group}" "${recorded_root}" || return 1
+        kill -KILL -- "-${process_group}" 2>/dev/null || true
+        wait_for_group_exit "${process_group}" "${clean_kill_checks}" || {
+          log_warn "${component} group ${process_group} is still visible after SIGKILL"
+          return 1
+        }
+      fi
     fi
   else
     log_warn "${component} uses legacy PID-only metadata; descendants cannot be verified"
     log_info "stopping ${component} pid ${pid} with SIGINT"
-    kill -INT "${pid}"
-    if ! wait_for_exit "${pid}" 100; then
+    kill -INT "${pid}" 2>/dev/null || true
+    if ! wait_for_exit "${pid}" "${clean_int_checks}"; then
       log_warn "${component} pid ${pid} ignored SIGINT; sending SIGTERM"
+      [[ "$(process_start_ticks "${pid}" || true)" == "${leader_start_ticks}" ]] \
+        || return 1
       kill -TERM "${pid}" 2>/dev/null || true
-      wait_for_exit "${pid}" 50 \
-        || die "${component} pid ${pid} did not stop; refusing SIGKILL"
+      if ! wait_for_exit "${pid}" "${clean_term_checks}"; then
+        log_warn "${component} pid ${pid} ignored SIGTERM; sending SIGKILL"
+        [[ "$(process_start_ticks "${pid}" || true)" == "${leader_start_ticks}" ]] \
+          || return 1
+        kill -KILL "${pid}" 2>/dev/null || true
+        wait_for_exit "${pid}" "${clean_kill_checks}" || {
+          log_warn "${component} pid ${pid} is still visible after SIGKILL"
+          return 1
+        }
+      fi
     fi
   fi
+  # The authenticated owner may have completed its own EXIT cleanup while we
+  # were waiting.  An absent file is already the desired result; a replacement
+  # file must still be refused.
+  [[ -e "${pid_file}" ]] || return 0
+  metadata_identity_is_unchanged \
+    "${pid_file}" "${pid}" "${process_group}" "${leader_start_ticks}" \
+    "${recorded_boot_id}" "${recorded_root}" || return 1
   rm -f -- "${pid_file}"
 }
 
@@ -256,6 +317,7 @@ list_project_processes() {
     $1 != self && $0 !~ /clean_runtime[.]sh/ && $0 !~ /awk -v root=/ &&
     (index($0, root "/isaac_sim/apps/navigation_sim.py") ||
     $0 ~ /ros2 launch robot_bringup/ ||
+    $0 ~ /\/lib\/robot_experiments\/motion_baseline_runner/ ||
     $0 ~ /robot_teleop.*keyboard_teleop/ || $0 ~ /(^|[[:space:]])rviz2([[:space:]]|$)/) {
       print
     }
@@ -344,7 +406,7 @@ clean_fastdds_shm() {
 
 log_info "runtime cleanup start (dry_run=${dry_run}, dds_shm=${clean_dds_shm})"
 cleanup_failed=false
-for component in teleop rviz ros isaac; do
+for component in motion_baseline teleop rviz ros isaac; do
   stop_registered_component "${component}" || cleanup_failed=true
 done
 list_project_processes
