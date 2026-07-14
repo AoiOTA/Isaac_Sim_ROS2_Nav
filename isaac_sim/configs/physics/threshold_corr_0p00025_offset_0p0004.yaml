@@ -1,0 +1,6 @@
+schema_version: 1
+id: threshold_corr_0p00025_offset_0p0004
+mode: threshold_only
+scene:
+  friction_correlation_distance: 0.00025
+  friction_offset_threshold: 0.0004

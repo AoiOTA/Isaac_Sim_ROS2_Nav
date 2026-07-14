@@ -6,6 +6,13 @@ environment:
   project_stage: ${PROJECT_ROOT}/isaac_sim/assets/environments/navigation_scene.usda
   source_asset: ${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
   composition: sublayer
+  ground_colliders:
+    # The visual floor-tile meshes are disabled in the NVIDIA asset.  The
+    # infinite Plane and 31 enabled floor-decal meshes are the complete ground
+    # contact set and are resolved without editing the source layer.
+    required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+    semantic_classes: [floor_decal]
+    expected_enabled_count: 32
 
 robot:
   asset_path: ${PROJECT_ROOT}/isaac_sim/assets/robots/jackal/jackal_nav.usda
@@ -72,3 +79,4 @@ files:
   topics: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/topics.yaml
   qos: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/qos.yaml
   dynamic_obstacles: ${PROJECT_ROOT}/isaac_sim/configs/experiments/dynamic.yaml
+  contact_profile: ${PROJECT_ROOT}/isaac_sim/configs/physics/legacy_baseline.yaml
