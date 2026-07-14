@@ -25,7 +25,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；历史矩阵证明证据链和 Reset 合同可靠，且描述性中心漂移 `0.297–0.350 m`、旧整段角速度误差 `60.1%–69.0%` 暴露严重欠转，但这些 schema-1 报告没有当前稳态窗口，计划 8.7 verdict 为 N/A；Realistic 和候选有效轮距 A/B 仍未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；当前 motion/analysis/physical/summary 为 schema 3/4/2/5，Odom 与 JointState 都有严格后半段窗口，44 列 manifest 锁逐轮 report schema；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手 | clean `d5840ed` 已闭合 Warehouse 12-run 历史机制烟测，clean `190f357` 闭合旧 schema-2 SimplePlane 六 profile × 一次 smoke；两份 ETW 原始筛选暴露旧整段方向合同缺口，`0.989 m` 的描述指标最好。v2 定向与非 Isaac 全测试已通过，但 clean commit 全门和 schema-3 实跑仍待执行。批次 `success` 只表示证据采集、身份、矩阵和聚合闭合，不是物理门通过 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；当前 motion/analysis/physical/summary 为 schema 3/4/2/5，Odom 与 JointState 都有严格后半段窗口，44 列 manifest 锁逐轮 report schema；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手 | clean `d5840ed` 已闭合 Warehouse 12-run 历史机制烟测，clean `190f357` 闭合旧 schema-2 SimplePlane 六 profile × 一次 smoke；两份 ETW 原始筛选暴露旧整段方向合同缺口，`0.989 m` 的描述指标最好。v2 定向、非 Isaac 全测试和 clean `0484b72` build/preflight/`--with-isaac` 全门已通过；schema-3 实跑仍待执行。批次 `success` 只表示证据采集、身份、矩阵和聚合闭合，不是物理门通过 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -694,12 +694,12 @@ schema 2/N/A、把真实 wheel FAIL 改成 PASS、篡改 source/hash/全局身�
 
 当前定向结果为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
 script `45 passed / 1 skipped`，合并为 `354 passed / 1 skipped`；唯一 skip 是缺少
-`shellcheck`。新代码工作树上的 `./scripts/test.sh` 也 exit 0：root
+`shellcheck`。当前 v2 合同已在 clean
+`0484b72741bfb5cd8a0866ca2631b15b2d2909fc` 完成三条正式门：build 11 packages、
+preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
 `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
-0 failures / 1 skipped。上述仍不是 clean commit gate；clean `2cd0788` 的旧 v1 合同
-build/preflight/`./scripts/test.sh --with-isaac` 均 exit 0；root pytest
-`1076 passed / 1 skipped / 34 deselected`，ROS 11 packages / 876 tests / 0 errors /
-0 failures / 1 skipped，Isaac `32 passed / 250 deselected`。clean `190f357` 的历史
+0 failures / 1 skipped，Isaac `32 passed / 250 deselected`。preflight 如实记录 422 个
+Fast DDS SHM 工件和 20 个非 performance governor 的非阻塞警告。clean `190f357` 的历史
 schema-2 smoke 见下节；schema-3 clean smoke 与正式 54-run/18-group 矩阵仍未执行。
 
 ### 历史 v1/schema-2 SimplePlane 真实机制烟测（2026-07-15）
@@ -1388,24 +1388,24 @@ preflight PASS；`./scripts/test.sh --with-isaac` 的 root suite 为
 governor 的非阻塞环境警告。历史 schema-2 smoke 见上文“历史 v1/schema-2 SimplePlane
 真实机制烟测”；正式 54-run/18-group 矩阵仍待执行。
 
-随后本轮 v2 方向合同工作树完成 motion/analysis/physical/summary `3/4/2/5` 与 44 列
-manifest 升级。三份定向文件合并为 `354 passed / 1 skipped`；`./scripts/test.sh`
-exit 0，root 为 `1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、
-1006 tests、0 errors、0 failures、1 skipped。新增负测已复现并关闭 impossible gap、
+随后本轮 v2 方向合同完成 motion/analysis/physical/summary `3/4/2/5` 与 44 列
+manifest 升级。三份定向文件合并为 `354 passed / 1 skipped`；在 clean `0484b72` 上，
+build、preflight、`./scripts/test.sh --with-isaac` 均 exit 0，root 为
+`1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
+0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。新增负测已复现并关闭 impossible gap、
 稀疏/单流陈旧停止证据、Reset 水位与命令次序、样本记账、姿态/航向几何、方向
 counts/extrema/矩/稳态子集伪造、协调全局身份或 schema→N/A、wheel FAIL→PASS、
 partial manifest、配置 JSON 类型混淆、asset/solver/simulation/UTC 时间篡改，以及早期
-双日志删除/hash/symlink 篡改。该证据来自尚未提交工作树，只能证明当前代码
-定向与非 Isaac 门闭合；仍需 clean commit 上重新执行 build/preflight/`--with-isaac`。
+双日志删除/hash/symlink 篡改。schema-3 clean smoke 与正式矩阵仍待执行。
 
 | Gate | 最近证据 |
 | --- | --- |
-| clean `2cd0788` `./scripts/test.sh --with-isaac` | exit 0；root `1076 passed / 1 skipped / 34 deselected`；ROS 11 packages、876 tests、0 errors、0 failures、1 skipped；Isaac `32 passed / 250 deselected`；唯一 skip 为缺少 `shellcheck` |
+| clean `0484b72` `./scripts/test.sh --with-isaac` | exit 0；root `1206 passed / 1 skipped / 34 deselected`；ROS 11 packages、1006 tests、0 errors、0 failures、1 skipped；Isaac `32 passed / 250 deselected`；唯一 skip 为缺少 `shellcheck` |
 | 当前 v2 schema 定向测试 | contact analyzer `217 passed`；motion baseline `92 passed`；matrix script `45 passed / 1 skipped`；合并 `354 passed / 1 skipped`（缺少 `shellcheck`） |
-| `./scripts/preflight.sh` | clean `2cd0788`，2026-07-15 PASS；资产/地图/GPU 通过，另有 396 个 Fast DDS SHM 遗留工件和 20 个 CPU core governor 非 performance 的非阻塞环境警告 |
-| `./scripts/build_ros2.sh` | clean `2cd0788`，2026-07-15：11 packages build completed，exit 0 |
-| `./scripts/test.sh --with-isaac` 的 pure/root suite | clean `2cd0788`：1111 collected，1076 passed，1 skipped，34 deselected |
-| ROS `colcon test` | clean `2cd0788`：876 tests，0 errors，0 failures，1 skipped |
+| `./scripts/preflight.sh` | clean `0484b72`，2026-07-15 PASS；资产/地图/GPU 通过，另有 422 个 Fast DDS SHM 遗留工件和 20 个 CPU core governor 非 performance 的非阻塞环境警告 |
+| `./scripts/build_ros2.sh` | clean `0484b72`，2026-07-15：11 packages build completed，exit 0 |
+| `./scripts/test.sh --with-isaac` 的 pure/root suite | clean `0484b72`：1241 collected，1206 passed，1 skipped，34 deselected |
+| ROS `colcon test` | clean `0484b72`：1006 tests，0 errors，0 failures，1 skipped |
 | Isaac/USD marker suite | 2026-07-15：282 collected，32 passed，250 deselected |
 | RViz config/load smoke | 结构测试包含在当前 pure/root suite；安全 Panel 20/20 历史循环及本轮 Off/Monitoring/HQ 实跑组合见上文 |
 | `robot_rviz_plugins` production-only build | 独立 `-DBUILD_TESTING=OFF` configure/build/install PASS |
@@ -1416,7 +1416,7 @@ partial manifest、配置 JSON 类型混淆、asset/solver/simulation/UTC 时间
 | Clean schema v3 wheel direction | Warehouse + legacy：8/8 trial、全部硬门通过，Git dirty false；报告 SHA256 `f63ec096...a9de` |
 | Clean schema v3 motion provenance | Warehouse + Ideal + legacy：14/14 complete，三路时间戳无重复/回退，Git dirty false；报告 SHA256 `8532187c...0f23` |
 | Effective-track 定向测试 | fitter + package contract：30 passed；五报告探索拟合完成，但 contact/provenance 身份不足以冻结参数 |
-| Contact A/B 聚合与 Reset 诊断 | clean `c210150`、`2cd0788`、`190f357` 的历史证据按原 schema 保留；当前 v2 合同 analyzer/motion/matrix 为 `217/92/45 passed`（matrix 1 skipped），三份合并 `354 passed / 1 skipped`。上一轮非 Isaac 全门已过；schema-3 clean smoke 与正式 54-run 仍待执行 |
+| Contact A/B 聚合与 Reset 诊断 | clean `c210150`、`2cd0788`、`190f357` 的历史证据按原 schema 保留；当前 v2 合同 analyzer/motion/matrix 为 `217/92/45 passed`（matrix 1 skipped），三份合并 `354 passed / 1 skipped`，clean `0484b72` build/preflight/`--with-isaac` 全门通过。schema-3 clean smoke 与正式 54-run 仍待执行 |
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
 | Repository index set comparison | 当前 318 个 Git 跟踪路径对 318 个索引路径，集合差分无输出 |

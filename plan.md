@@ -60,12 +60,12 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   contact、Git 和三类证据 hash，不能靠协调改写 schema、N/A、方向叶或运行身份伪造
   verdict。当前定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
   `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（唯一 skip 为缺少
-  `shellcheck`）；clean 全门和
-  schema-3 真实 smoke 尚待本次代码冻结后执行。旧 v1 合同已在 clean `2cd0788` 上三条全门均
-  exit 0：build 11 packages，preflight PASS，root `1076 passed / 1 skipped /
-  34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，
-  Isaac `32 passed / 250 deselected`；预检另有 396 个 Fast DDS SHM 工件和 20 个
-  非 performance governor 的非阻塞环境警告。随后在 clean `190f357` 完成
+  `shellcheck`）。当前 v2 合同已在 clean `0484b72` 上完成三条全门：build 11 packages，
+  preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
+  `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
+  0 failures / 1 skipped，Isaac `32 passed / 250 deselected`；预检另有 422 个 Fast DDS
+  SHM 工件和 20 个非 performance governor 的非阻塞环境警告。schema-3 真实 smoke
+  仍待执行。此前在 clean `190f357` 完成
   SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
   72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
   schema 2/3/4，六组都只因少于 3 个 repeat 而 N/A。正式 54-run/18-group 实跑仍未执行。

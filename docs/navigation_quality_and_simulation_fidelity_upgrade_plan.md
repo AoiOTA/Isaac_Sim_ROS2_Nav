@@ -1470,12 +1470,12 @@ schema 5 冻结同一批次身份和最终证据。
 batch-summary schema 5 的 `result=success` 只表示证据采集、身份、矩阵与聚合闭合；
 物理结论必须另读 `physical_acceptance.all_applicable_groups_passed` 及上述四个列表。
 v2 合同定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
-`45 passed / 1 skipped`，合并为 `354 passed / 1 skipped`（缺少 `shellcheck`）；clean
-全门和 schema-3 真实 smoke 待代码
-冻结后执行。旧 v1 合同曾在 clean `2cd0788` 完成 build、preflight
-和 `./scripts/test.sh --with-isaac` 均 exit 0：root `1076 passed / 1 skipped /
-34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，Isaac
-`32 passed / 250 deselected`。clean `190f357` 的 SimplePlane/only1 六 profile × 一次
+`45 passed / 1 skipped`，合并为 `354 passed / 1 skipped`（缺少 `shellcheck`）。当前 v2
+合同在 clean `0484b72` 的 build（11 packages）、preflight 和
+`./scripts/test.sh --with-isaac` 均 exit 0：root `1206 passed / 1 skipped /
+34 deselected`，ROS 11 packages / 1006 tests / 0 errors / 0 failures / 1 skipped，Isaac
+`32 passed / 250 deselected`。schema-3 真实 smoke 仍待执行。clean `190f357` 的
+SimplePlane/only1 六 profile × 一次
 重复历史 schema-2 smoke 为 6/6 run、36/36 段、analysis 6/0/6、summary schema 4
 `result=success`；六组只因少于 3 个 repeat 而 N/A。正式每组三重复的 54-run/18-group
 全 topology 矩阵仍待执行。历史
@@ -3266,10 +3266,9 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   规范化 motion 配置、robot asset/kinematics/solver、Mapping/Ideal/60 Hz、Git、唯一证据
   path/hash 和 UTC 时间区间。当前定向套件为 analyzer `217 passed`、motion baseline
   `92 passed`、matrix `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（缺少
-  `shellcheck`）；v2 clean 全门待执行。
-  旧 v1 合同在 clean `2cd0788` 的 build、
-  preflight 和 `./scripts/test.sh --with-isaac` 均 exit 0：root `1076 passed / 1 skipped /
-  34 deselected`，ROS 11 packages / 876 tests / 0 errors / 0 failures / 1 skipped，Isaac
+  `shellcheck`）；当前 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight 和
+  `./scripts/test.sh --with-isaac` 均 exit 0：root `1206 passed / 1 skipped /
+  34 deselected`，ROS 11 packages / 1006 tests / 0 errors / 0 failures / 1 skipped，Isaac
   `32 passed / 250 deselected`。clean `190f357` 的历史 schema-2 smoke 已完成 6/6 run、
   36/36 段和六组 repeat=1 N/A；正式 54-run 实跑仍待完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；

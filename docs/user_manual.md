@@ -1668,10 +1668,10 @@ analysis 一起保留；缺文件、替换 source、协调伪造 N/A 或 wheel P
 
 当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
 script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯一 skip 是本机
-缺少 `shellcheck`。clean `2cd0788` 的
-`./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
-34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
-为 `32 passed / 250 deselected`；这是上一版合同的 clean 全门记录。clean `190f357`
+缺少 `shellcheck`。当前 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight
+和 `./scripts/test.sh --with-isaac` 均为 exit 0：root
+`1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
+0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `190f357`
 历史 smoke 另完成 6/6 run、36/36 段和六组 N/A 记账，但其工件版本仍是
 motion 2 / analysis 3 / physical 1 / summary 4 / manifest 43 列。它证明当时冻结代码的
 报告链闭合；正式 v2 矩阵仍待执行，不能据此宣称底盘物理通过。
