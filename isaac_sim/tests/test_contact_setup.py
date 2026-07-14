@@ -26,6 +26,7 @@ from isaac_sim.src.stage.contact_setup import (  # noqa: E402
     load_contact_profile,
 )
 from isaac_sim.src.stage.physics_setup import find_all_physics_scenes  # noqa: E402
+from isaac_sim.src.stage.ground_topology import GroundTopologyError  # noqa: E402
 from isaac_sim.src.stage.scene_composer import SceneComposer  # noqa: E402
 
 
@@ -333,7 +334,7 @@ def test_scene_composer_rejects_stale_environment_sublayers(tmp_path):
         SceneComposer(contaminated).compose(save=False)
 
 
-def test_ground_resolver_count_mismatch_fails_closed():
+def test_ground_source_resolver_count_mismatch_fails_closed():
     config = _config()
     invalid = replace(
         config,
@@ -345,11 +346,11 @@ def test_ground_resolver_count_mismatch_fails_closed():
             ),
         ),
     )
-    with pytest.raises(ContactSetupError, match="resolver count mismatch"):
+    with pytest.raises(GroundTopologyError, match="source resolver mismatch"):
         SceneComposer(invalid).compose(save=False)
 
 
-def test_ground_resolver_requires_every_configured_semantic_class():
+def test_ground_source_resolver_requires_exact_semantic_classes():
     config = _config()
     invalid = replace(
         config,
@@ -362,5 +363,5 @@ def test_ground_resolver_requires_every_configured_semantic_class():
             ),
         ),
     )
-    with pytest.raises(ContactSetupError, match="semantic class mismatch"):
+    with pytest.raises(GroundTopologyError, match="source resolver mismatch"):
         SceneComposer(invalid).compose(save=False)

@@ -11,6 +11,7 @@ from isaac_sim.src.robot.articulation_runtime import (
 )
 from isaac_sim.src.stage.asset_validator import dependency_report, validate_default_prim, validate_prim
 from isaac_sim.src.stage.contact_setup import apply_contact_profile
+from isaac_sim.src.stage.ground_topology import apply_ground_topology
 from isaac_sim.src.stage.stage_loader import (
     create_or_open_project_stage,
     ensure_reference,
@@ -42,6 +43,7 @@ def _require_exclusive_environment_sublayer(root_layer, source_asset) -> None:
 class SceneComposer:
     def __init__(self, config: ProjectConfig):
         self.config = config
+        self.ground_topology_snapshot = None
         self.contact_snapshot = None
 
     def compose(self, *, save: bool = False):
@@ -76,6 +78,7 @@ class SceneComposer:
             load_articulation_physics_config(config.files.robot),
         )
         validate_prim(stage, config.robot.base_link_prim, "Xform")
+        self.ground_topology_snapshot = apply_ground_topology(stage, config)
         self.contact_snapshot = apply_contact_profile(stage, config)
         if save:
             save_stage(stage)

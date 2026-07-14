@@ -192,6 +192,7 @@ class ConfigFiles:
     topics: Path
     qos: Path
     dynamic_obstacles: Path
+    ground_topology_profile: Path
     contact_profile: Path
 
 
@@ -223,6 +224,7 @@ class ProjectConfig:
                 self.files.topics,
                 self.files.qos,
                 self.files.dynamic_obstacles,
+                self.files.ground_topology_profile,
                 self.files.contact_profile,
             )
             if not path.exists()
@@ -503,6 +505,7 @@ def _parse_files(raw: Any) -> ConfigFiles:
         "topics",
         "qos",
         "dynamic_obstacles",
+        "ground_topology_profile",
         "contact_profile",
     }
     _expect_keys(data, allowed, "files")

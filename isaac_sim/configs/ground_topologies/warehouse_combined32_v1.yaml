@@ -1,0 +1,21 @@
+schema_version: 1
+id: warehouse_combined32_v1
+environment_id: Warehouse
+operation: preserve_source_colliders
+
+source:
+  asset_sha256: eb27e4bad446bba981b81c27529a284dfb55a30adc01eaadb80bb0fe997a0dc0
+  required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+  semantic_classes: [floor_decal]
+  collider_count: 32
+  collider_paths_sha256: e616741f500b267739c9fe04eb9115e22796053ddec4c079a87baed39f7c13be
+
+target:
+  required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+  semantic_classes: [floor_decal]
+  collider_count: 32
+  collider_paths_sha256: e616741f500b267739c9fe04eb9115e22796053ddec4c079a87baed39f7c13be
+
+disabled:
+  collider_count: 0
+  collider_paths_sha256: 4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945
