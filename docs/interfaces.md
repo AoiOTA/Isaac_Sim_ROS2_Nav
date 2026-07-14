@@ -167,7 +167,7 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 
 | 参数组 | 内容 |
 | --- | --- |
-| `runtime_provenance.schema_version` | 当前严格 schema，值为 `2`；schema v1 的旧本机报告只作历史证据，不符合当前 runner 契约 |
+| `runtime_provenance.schema_version` | 当前严格 schema，值为 `3`；schema v1/v2 的旧本机报告只作历史证据，不符合当前 runner 契约 |
 | `runtime_provenance.robot.config.*` | 实际 robot YAML 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.asset.*` | 实际项目 robot USD Overlay 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.solver.*` | 有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致的 position、velocity iterations，以及 `stage_articulation_usd_readback_verified=true` |
@@ -175,7 +175,7 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 | `runtime_provenance.environment.project_stage.*` | 项目环境 Stage 路径与 SHA256 |
 | `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
 | `runtime_provenance.environment.asset_root/version` | Isaac 资产根与版本目录名 |
-| `runtime_provenance.environment.composed_root_layer_sha256` | 包含运行时 reference/sublayer/solver authoring 的组合根 Layer 摘要 |
+| `runtime_provenance.environment.composed_root_layer_sha256` | contact profile 应用后捕获、包含运行时 reference/sublayer/solver/contact authoring 的组合根 Layer 摘要；A/B 聚合按“环境 + profile”组锁定，同环境跨 profile 可因有意 treatment 不同，同组 repeat 不得漂移 |
 | `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz |
 | `runtime_provenance.git.*` | Isaac 启动瞬间的 commit、branch、dirty 布尔值 |
 

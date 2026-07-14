@@ -776,7 +776,11 @@ def _identity_locks(
         "motion_configuration": dict(configuration),
     }
     environment_lock = {
-        "environment": dict(environment),
+        "environment": {
+            key: environment[key]
+            for key in sorted(environment)
+            if key != "composed_root_layer_sha256"
+        },
         # These are project/environment discovery contracts, not contact
         # profile variables.  They must remain identical across profiles in a
         # given environment, while Warehouse and SimplePlane legitimately
@@ -801,6 +805,12 @@ def _identity_locks(
         for key in sorted(contact)
         if key != "overlay_identifier"
     }
+    # The exported composed root reflects the exact environment/profile Stage
+    # composition. Contact profiles may intentionally change it, while
+    # repeats of the same environment/profile must remain byte-identical.
+    contact_lock["composed_root_layer_sha256"] = environment[
+        "composed_root_layer_sha256"
+    ]
     return global_lock, environment_lock, profile_lock, contact_lock
 
 
