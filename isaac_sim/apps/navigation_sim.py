@@ -303,7 +303,8 @@ def run(
 
         # Runtime composition uses omni.usd so sensors and OmniGraph operate on
         # exactly the same Stage object.
-        stage = SceneComposer(config).compose(save=False)
+        composer = SceneComposer(config)
+        stage = composer.compose(save=False)
         # Configure coherent Timeline/RunLoop/Fabric periods before the first
         # post-composition app update creates Fabric history caches.
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
@@ -352,6 +353,8 @@ def run(
                 articulation_usd_solver_iterations
             ),
             repository_root=PROJECT_ROOT,
+            ground_topology_snapshot=composer.ground_topology_snapshot,
+            contact_snapshot=composer.contact_snapshot,
         )
 
         import rclpy

@@ -1001,6 +1001,8 @@ def run(
             stage,
             articulation_usd_solver_iterations=solver_readback,
             repository_root=PROJECT_ROOT,
+            ground_topology_snapshot=composer.ground_topology_snapshot,
+            contact_snapshot=composer.contact_snapshot,
         )
         report["bindings"] = {
             "articulation_root": config.robot.articulation_root,

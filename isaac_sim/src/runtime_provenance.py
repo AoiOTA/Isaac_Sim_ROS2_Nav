@@ -37,6 +37,27 @@ _CONTACT_SNAPSHOT_KEYS = {
     "ground_material",
     "stage_usd_readback_verified",
 }
+_GROUND_TOPOLOGY_SNAPSHOT_KEYS = {
+    "profile_path",
+    "profile_sha256",
+    "profile_id",
+    "environment_id",
+    "operation",
+    "source_asset_path",
+    "source_asset_sha256",
+    "overlay_identifier",
+    "overlay_sha256",
+    "source_colliders",
+    "source_collider_count",
+    "source_collider_paths_sha256",
+    "target_colliders",
+    "target_collider_count",
+    "target_collider_paths_sha256",
+    "disabled_colliders",
+    "disabled_collider_count",
+    "disabled_collider_paths_sha256",
+    "stage_usd_readback_verified",
+}
 _PROFILE_FLAGS = {
     "legacy_baseline": (False, False),
     "threshold_only": (False, True),
@@ -191,6 +212,21 @@ def _finite_nonnegative(value: object, *, location: str) -> float:
     return float(value)
 
 
+def _nonnegative_integer(
+    value: object,
+    *,
+    location: str,
+    allow_zero: bool,
+) -> int:
+    minimum = 0 if allow_zero else 1
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise RuntimeProvenanceError(
+            f"{location} must be a {qualifier} integer"
+        )
+    return value
+
+
 def _path_list(
     value: object,
     *,
@@ -335,9 +371,217 @@ def _binding_snapshots(
         )
 
 
+def _capture_ground_topology_provenance(
+    config: Any,
+    stage: Any,
+    ground_topology_snapshot: object | None,
+) -> tuple[dict[str, object], Any]:
+    try:
+        from isaac_sim.src.stage.ground_topology import (
+            capture_ground_topology_snapshot,
+            collider_paths_sha256,
+            load_ground_topology_profile,
+        )
+
+        profile = load_ground_topology_profile(
+            config.files.ground_topology_profile
+        )
+        captured = capture_ground_topology_snapshot(stage, config)
+        if ground_topology_snapshot is not None:
+            supplied = ground_topology_snapshot
+            if hasattr(supplied, "to_dict") and callable(supplied.to_dict):
+                supplied = supplied.to_dict()
+            fresh = captured
+            if hasattr(fresh, "to_dict") and callable(fresh.to_dict):
+                fresh = fresh.to_dict()
+            if _canonical_json(
+                supplied,
+                location="supplied ground topology snapshot",
+            ) != _canonical_json(
+                fresh,
+                location="fresh ground topology Stage readback",
+            ):
+                raise RuntimeProvenanceError(
+                    "supplied ground topology snapshot is stale or differs "
+                    "from the current Stage readback"
+                )
+    except Exception as exc:
+        raise RuntimeProvenanceError(
+            f"failed to capture effective Stage ground topology: {exc}"
+        ) from exc
+    if hasattr(captured, "to_dict") and callable(captured.to_dict):
+        captured = captured.to_dict()
+    if not isinstance(captured, Mapping):
+        raise RuntimeProvenanceError(
+            "runtime ground topology snapshot must be a mapping"
+        )
+    snapshot = json.loads(
+        _canonical_json(captured, location="runtime ground topology snapshot")
+    )
+    if set(snapshot) != _GROUND_TOPOLOGY_SNAPSHOT_KEYS:
+        raise RuntimeProvenanceError(
+            "runtime ground topology snapshot keys must be exactly "
+            f"{sorted(_GROUND_TOPOLOGY_SNAPSHOT_KEYS)}"
+        )
+
+    expected_profile_path = str(
+        Path(config.files.ground_topology_profile).expanduser().resolve()
+    )
+    if snapshot["profile_path"] != expected_profile_path:
+        raise RuntimeProvenanceError(
+            "runtime ground topology profile path does not match config: "
+            f"expected={expected_profile_path}, "
+            f"actual={snapshot['profile_path']}"
+        )
+    expected_profile_sha256 = file_sha256(
+        config.files.ground_topology_profile
+    )
+    if (
+        snapshot["profile_sha256"] != expected_profile_sha256
+        or snapshot["profile_sha256"] != profile.sha256
+    ):
+        raise RuntimeProvenanceError(
+            "runtime ground topology profile SHA256 does not match config"
+        )
+    expected_identity = (
+        profile.identifier,
+        profile.environment_id,
+        profile.operation,
+    )
+    actual_identity = (
+        snapshot["profile_id"],
+        snapshot["environment_id"],
+        snapshot["operation"],
+    )
+    if actual_identity != expected_identity:
+        raise RuntimeProvenanceError(
+            "runtime ground topology profile identity does not match config: "
+            f"expected={expected_identity}, actual={actual_identity}"
+        )
+    if snapshot["environment_id"] != config.environment.identifier:
+        raise RuntimeProvenanceError(
+            "runtime ground topology environment does not match project config"
+        )
+
+    expected_source_path = str(
+        Path(config.environment.source_asset).expanduser().resolve()
+    )
+    if snapshot["source_asset_path"] != expected_source_path:
+        raise RuntimeProvenanceError(
+            "runtime ground topology source asset path does not match config: "
+            f"expected={expected_source_path}, "
+            f"actual={snapshot['source_asset_path']}"
+        )
+    expected_source_sha256 = file_sha256(config.environment.source_asset)
+    if (
+        snapshot["source_asset_sha256"] != expected_source_sha256
+        or snapshot["source_asset_sha256"] != profile.source_asset_sha256
+    ):
+        raise RuntimeProvenanceError(
+            "runtime ground topology source asset SHA256 does not match config"
+        )
+
+    overlay_identifier = _nonempty_string(
+        snapshot["overlay_identifier"],
+        location="runtime ground topology overlay identifier",
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise RuntimeProvenanceError(
+            "runtime ground topology overlay identifier must name an "
+            "anonymous layer"
+        )
+    _sha256_digest(
+        snapshot["overlay_sha256"],
+        location="runtime ground topology overlay SHA256",
+    )
+    if snapshot["stage_usd_readback_verified"] is not True:
+        raise RuntimeProvenanceError(
+            "runtime ground topology Stage USD readback must be verified"
+        )
+
+    source_resolver = config.environment.ground_colliders
+    expected_source_contract = (
+        tuple(profile.source.required_prim_paths),
+        tuple(profile.source.semantic_classes),
+        profile.source.collider_count,
+    )
+    actual_source_contract = (
+        tuple(source_resolver.required_prim_paths),
+        tuple(source_resolver.semantic_classes),
+        source_resolver.expected_enabled_count,
+    )
+    if actual_source_contract != expected_source_contract:
+        raise RuntimeProvenanceError(
+            "runtime ground topology source collider contract does not match "
+            f"project config: expected={expected_source_contract}, "
+            f"actual={actual_source_contract}"
+        )
+
+    collider_sets: dict[str, list[str]] = {}
+    for name, spec, allow_zero in (
+        ("source", profile.source, False),
+        ("target", profile.target, False),
+        ("disabled", profile.disabled, True),
+    ):
+        count_key = f"{name}_collider_count"
+        paths_key = f"{name}_colliders"
+        sha256_key = f"{name}_collider_paths_sha256"
+        count = _nonnegative_integer(
+            snapshot[count_key],
+            location=f"runtime ground topology {name} collider count",
+            allow_zero=allow_zero,
+        )
+        paths = _path_list(
+            snapshot[paths_key],
+            location=f"runtime ground topology {name} colliders",
+            expected_count=count,
+        )
+        if paths != sorted(paths):
+            raise RuntimeProvenanceError(
+                f"runtime ground topology {name} colliders must be sorted"
+            )
+        declared_sha256 = _sha256_digest(
+            snapshot[sha256_key],
+            location=f"runtime ground topology {name} collider paths SHA256",
+        )
+        actual_sha256 = collider_paths_sha256(paths)
+        if (
+            count != spec.collider_count
+            or declared_sha256 != spec.collider_paths_sha256
+            or declared_sha256 != actual_sha256
+        ):
+            raise RuntimeProvenanceError(
+                f"runtime ground topology {name} collider set does not match "
+                "the profile and canonical path hash"
+            )
+        required_paths = getattr(spec, "required_prim_paths", ())
+        missing_required = sorted(set(required_paths) - set(paths))
+        if missing_required:
+            raise RuntimeProvenanceError(
+                f"runtime ground topology {name} collider set is missing "
+                f"required paths: {missing_required}"
+            )
+        collider_sets[name] = paths
+
+    source_set = set(collider_sets["source"])
+    target_set = set(collider_sets["target"])
+    disabled_set = set(collider_sets["disabled"])
+    if (
+        target_set & disabled_set
+        or target_set | disabled_set != source_set
+    ):
+        raise RuntimeProvenanceError(
+            "runtime ground topology target and disabled colliders must form "
+            "an exact disjoint partition of source colliders"
+        )
+    return snapshot, profile
+
+
 def _capture_contact_provenance(
     config: Any,
     stage: Any,
+    ground_topology: Mapping[str, Any],
+    ground_topology_profile: Any,
     contact_snapshot: object | None,
 ) -> dict[str, object]:
     try:
@@ -347,11 +591,25 @@ def _capture_contact_provenance(
         )
 
         profile = load_contact_profile(config.files.contact_profile)
-        captured = (
-            capture_contact_profile_snapshot(stage, config)
-            if contact_snapshot is None
-            else contact_snapshot
-        )
+        captured = capture_contact_profile_snapshot(stage, config)
+        if contact_snapshot is not None:
+            supplied = contact_snapshot
+            if hasattr(supplied, "to_dict") and callable(supplied.to_dict):
+                supplied = supplied.to_dict()
+            fresh = captured
+            if hasattr(fresh, "to_dict") and callable(fresh.to_dict):
+                fresh = fresh.to_dict()
+            if _canonical_json(
+                supplied,
+                location="supplied contact snapshot",
+            ) != _canonical_json(
+                fresh,
+                location="fresh contact Stage readback",
+            ):
+                raise RuntimeProvenanceError(
+                    "supplied contact snapshot is stale or differs from the "
+                    "current Stage readback"
+                )
     except Exception as exc:
         raise RuntimeProvenanceError(
             f"failed to capture effective Stage contact profile: {exc}"
@@ -465,8 +723,8 @@ def _capture_contact_provenance(
         raise RuntimeProvenanceError(
             "runtime contact config must contain four unique wheel joints"
         )
-    ground_config = config.environment.ground_colliders
-    ground_expected_count = ground_config.expected_enabled_count
+    topology_ground_colliders = list(ground_topology["target_colliders"])
+    ground_expected_count = ground_topology["target_collider_count"]
     wheel_colliders = _path_list(
         snapshot["wheel_colliders"],
         location="runtime contact wheel colliders",
@@ -477,13 +735,10 @@ def _capture_contact_provenance(
         location="runtime contact ground colliders",
         expected_count=ground_expected_count,
     )
-    missing_required = sorted(
-        set(ground_config.required_prim_paths) - set(ground_colliders)
-    )
-    if missing_required:
+    if ground_colliders != topology_ground_colliders:
         raise RuntimeProvenanceError(
-            "runtime contact is missing required ground collider paths: "
-            f"{missing_required}"
+            "runtime contact ground colliders do not match the readback-verified "
+            "ground topology target"
         )
 
     wheel_material = _material_snapshot(
@@ -543,9 +798,11 @@ def _capture_contact_provenance(
         "wheel_joint_names": wheel_joints,
         "wheel_expected_count": 4,
         "ground_required_prim_paths": list(
-            ground_config.required_prim_paths
+            ground_topology_profile.target.required_prim_paths
         ),
-        "ground_semantic_classes": list(ground_config.semantic_classes),
+        "ground_semantic_classes": list(
+            ground_topology_profile.target.semantic_classes
+        ),
         "ground_expected_enabled_count": ground_expected_count,
     }
     return snapshot
@@ -557,6 +814,7 @@ def capture_runtime_provenance(
     *,
     articulation_usd_solver_iterations: tuple[int, int],
     repository_root: str | Path,
+    ground_topology_snapshot: object | None = None,
     contact_snapshot: object | None = None,
 ) -> dict[str, object]:
     """Capture the effective files and in-memory Stage loaded by Isaac."""
@@ -580,9 +838,18 @@ def capture_runtime_provenance(
         raise RuntimeProvenanceError(
             "composed Stage root layer could not be exported"
         )
+    ground_topology, ground_topology_profile = (
+        _capture_ground_topology_provenance(
+            config,
+            stage,
+            ground_topology_snapshot,
+        )
+    )
     contact = _capture_contact_provenance(
         config,
         stage,
+        ground_topology,
+        ground_topology_profile,
         contact_snapshot,
     )
     try:
@@ -594,7 +861,7 @@ def capture_runtime_provenance(
         ) from exc
     kinematics = robot_contract.kinematics
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "robot": {
             "config": {
                 "path": str(config.files.robot),
@@ -644,6 +911,7 @@ def capture_runtime_provenance(
             "odometry_mode": config.simulation.odometry_mode,
             "physics_hz": config.simulation.physics_hz,
         },
+        "ground_topology": ground_topology,
         "contact": contact,
         "git": git_metadata(repository_root),
     }
@@ -657,6 +925,10 @@ def runtime_provenance_parameters(
     robot = provenance["robot"]
     environment = provenance["environment"]
     simulation = provenance["simulation"]
+    ground_topology_json = _canonical_json(
+        provenance["ground_topology"],
+        location="runtime ground topology provenance",
+    )
     contact_json = _canonical_json(
         provenance["contact"],
         location="runtime contact provenance",
@@ -724,6 +996,10 @@ def runtime_provenance_parameters(
         ],
         "runtime_provenance.simulation.odometry_mode": simulation["odometry_mode"],
         "runtime_provenance.simulation.physics_hz": simulation["physics_hz"],
+        "runtime_provenance.ground_topology.json": ground_topology_json,
+        "runtime_provenance.ground_topology.sha256": hashlib.sha256(
+            ground_topology_json.encode("utf-8")
+        ).hexdigest(),
         "runtime_provenance.contact.json": contact_json,
         "runtime_provenance.contact.sha256": hashlib.sha256(
             contact_json.encode("utf-8")
