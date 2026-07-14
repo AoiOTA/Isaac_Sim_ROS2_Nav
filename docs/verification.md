@@ -351,8 +351,25 @@ combine mode 均为 `average`。
 路径/hash、匿名 overlay、scene、collider contract、binding、材质与 mode flags 做
 Stage 读回校验，再以 canonical JSON + SHA256 只读参数发布；runner 在创建运动命令
 publisher 前重新验 hash、解码并执行同等级结构校验。定向 provenance/report/package
-集合为 69 passed。该实现消除了“报告不携带 contact 身份”的代码缺口，但在 clean
-commit 上产生新的真实 schema v3 报告前，历史 v1/v2 报告仍不能作为正式接触 A/B。
+集合为 69 passed。随后在 clean commit
+`088bfda7812eae9c73da62ca3f6e6eae010e40c6` 上运行 Warehouse + Ideal +
+`legacy_baseline`，14/14 motion 段全部 `complete`：
+
+```text
+report: /tmp/motion_v3_clean_warehouse_legacy_01.json
+report SHA256: 8532187c6e4a3dc4667412320c05241863a3280959d88ab55eee3cf0ac9a0f23
+Kit log: kit_20260714_175441.log
+Kit log SHA256: c0cefb0b603a9fd6bd5916a26c8592b46bc8ee4271b5297d16ad2618a2502ca6
+```
+
+报告为 `schema_version=3`、`git.dirty=false`、solver `32/4`；contact 读回为
+`legacy_baseline`、4 个 wheel collider、32 个 ground collider、匿名 overlay SHA256
+`1a6561d7db0df2086521ad4744c1acdaa70d5c4442e3786f8f40e9e70228d95e`，且
+`stage_usd_readback_verified=true`。Clock/Odom/JointState 分别记录
+`3529/3518/3533` 个样本，三者 duplicate/regression 均为 0。Kit 日志 28 条 warning、
+`[Error]` 为 0，`getSimulationTimeMonotonicAtTime`、TGS、obsolete
+`customGeometry` 和 contact filter/API mismatch 均为 0。该实跑证明 v3 发布/传输/
+解码链可用；它仍只是一个 legacy 条件，不能代替后续接触矩阵。
 
 ### 单轮正/负方向真实诊断（2026-07-14）
 
@@ -392,6 +409,22 @@ diagnostic 文件尚未提交；后来代码才以 `cf27605` 固化。它可以�
 方向行为和报告门，但不是 clean-commit 最终冻结证据。正式验收必须在最终代码与
 provenance 契约冻结后用 clean Git 重新运行；单轮成功也不等于低速左右对称、接触
 材料或有效轮距已经解决。
+
+schema v3 合入并提交文档后，已在上述 clean commit `088bfda` 重新执行同一诊断。
+新报告 `/tmp/wheel_direction_diagnostic_final_v3.json` 仍为 8/8、所有硬门为真，且
+contact 快照为 `legacy_baseline`、4 wheel/32 ground、Stage readback true、Git
+dirty false：
+
+```text
+report SHA256: f63ec096d382b74952ccc15d13c59f24093e62b83cd725f525d0eb73d43da9de
+Kit log: kit_20260714_175309.log
+Kit log SHA256: 48c46980606c055f28de6feb6da6cec099cf0f74a392d23717f50095ecbaa9ae
+```
+
+被动车轮 advisory 与四轮正负摩擦对称比和上一轮数值一致。Kit 日志仍是 15 条
+warning（含 6 条 `getMaterialFromInternalFaceIndex ... 0xFFFFFFFF`），`[Error]`、
+ContactReportAPI 缺失和 filter mismatch 均为 0；因此 clean v3 证据解决了报告身份
+边界，但没有消除或掩盖上游 PhysX material-face warning。
 
 ### 有效轮距离线拟合（2026-07-14）
 
@@ -768,6 +801,8 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 | 2026-07-14 既有底盘诊断定向测试 | 48 passed；真实 Warehouse + Ideal 14/14 段完整采集 |
 | Contact Profile/Stage 定向测试 | `test_contact_setup.py + test_stage_composition.py -m isaac`：21 passed |
 | Wheel direction 定向测试 | `test_wheel_direction_diagnostic.py`：22 passed；真实 Warehouse 8/8 trial 硬门通过，但报告 Git dirty |
+| Clean schema v3 wheel direction | Warehouse + legacy：8/8 trial、全部硬门通过，Git dirty false；报告 SHA256 `f63ec096...a9de` |
+| Clean schema v3 motion provenance | Warehouse + Ideal + legacy：14/14 complete，三路时间戳无重复/回退，Git dirty false；报告 SHA256 `8532187c...0f23` |
 | Effective-track 定向测试 | fitter + package contract：30 passed；五报告探索拟合完成，但 contact/provenance 身份不足以冻结参数 |
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
