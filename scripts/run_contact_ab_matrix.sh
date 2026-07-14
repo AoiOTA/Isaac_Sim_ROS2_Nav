@@ -411,6 +411,7 @@ load_runtime_contracts() {
 
 lock_batch_identity() {
   local profile_id profile_path topology_id topology_path
+  local -a profile_hash_arguments=() topology_hash_arguments=()
   batch_git_commit="$(git_commit)" \
     || die "contact A/B requires an attached Git HEAD"
   batch_git_branch="$(git_branch)" \
@@ -441,38 +442,44 @@ lock_batch_identity() {
   [[ "${batch_robot_config_sha256}" == "${robot_config_sha256}" ]] \
     || die "selected robot config changed while batch identity was locked"
   robot_config_sha256="${batch_robot_config_sha256}"
-  batch_profile_hashes_json="$(python3 - "${physics_dir}" \
-    "${profile_ids[@]}" <<'PY'
-import hashlib
+  for profile_id in "${profile_ids[@]}"; do
+    profile_path="${physics_dir}/${profile_id}.yaml"
+    profile_hash_arguments+=(
+      "${profile_id}" "${locked_input_hashes[${profile_path}]}"
+    )
+  done
+  batch_profile_hashes_json="$(python3 - \
+    "${profile_hash_arguments[@]}" <<'PY'
 import json
-from pathlib import Path
 import sys
 
-directory = Path(sys.argv[1])
-profiles = {
-    profile_id: hashlib.sha256(
-        (directory / f"{profile_id}.yaml").read_bytes()
-    ).hexdigest()
-    for profile_id in sys.argv[2:]
-}
+arguments = sys.argv[1:]
+if len(arguments) % 2:
+    raise SystemExit("contact profile hash argument count mismatch")
+profiles = dict(zip(arguments[::2], arguments[1::2], strict=True))
+if len(profiles) * 2 != len(arguments):
+    raise SystemExit("contact profile identifiers must be unique")
 print(json.dumps(profiles, sort_keys=True, separators=(",", ":")))
 PY
   )" || die "cannot serialize locked contact profile hashes"
+  for topology_id in "${matrix_ground_topology_ids[@]}"; do
+    topology_path="$(ground_topology_path "${topology_id}")" \
+      || die "cannot resolve selected ground topology: ${topology_id}"
+    topology_hash_arguments+=(
+      "${topology_id}" "${locked_input_hashes[${topology_path}]}"
+    )
+  done
   batch_ground_topology_hashes_json="$(
-    python3 - "${ground_topology_dir}" \
-      "${matrix_ground_topology_ids[@]}" <<'PY'
-import hashlib
+    python3 - "${topology_hash_arguments[@]}" <<'PY'
 import json
-from pathlib import Path
 import sys
 
-directory = Path(sys.argv[1])
-profiles = {
-    profile_id: hashlib.sha256(
-        (directory / f"{profile_id}.yaml").read_bytes()
-    ).hexdigest()
-    for profile_id in sys.argv[2:]
-}
+arguments = sys.argv[1:]
+if len(arguments) % 2:
+    raise SystemExit("ground-topology hash argument count mismatch")
+profiles = dict(zip(arguments[::2], arguments[1::2], strict=True))
+if len(profiles) * 2 != len(arguments):
+    raise SystemExit("ground-topology identifiers must be unique")
 print(json.dumps(profiles, sort_keys=True, separators=(",", ":")))
 PY
   )" || die "cannot serialize locked ground-topology profile hashes"
@@ -1911,6 +1918,7 @@ write_batch_summary() {
     "${ground_topology_dir}" "${batch_ground_topology_hashes_json}" \
     "${manifest}" "${frozen_manifest_sha256}" \
     "${analysis_path}" "${analysis_sha256}" <<'PY'
+import csv
 import hashlib
 import json
 import os
@@ -2026,6 +2034,29 @@ ground_topology_profiles = {
     }
     for topology_id, digest in sorted(ground_topology_hashes.items())
 }
+selected_pairs = {
+    (pair["environment_id"], pair["ground_topology_id"])
+    for pair in environment_topology_pairs
+}
+with manifest_path.open("r", encoding="utf-8", newline="") as stream:
+    manifest_documents = list(csv.DictReader(stream, delimiter="\t", strict=True))
+if len(manifest_documents) != expected_runs:
+    raise SystemExit("frozen manifest row count does not match expected runs")
+for row_index, row in enumerate(manifest_documents, start=1):
+    topology_id = row.get("ground_topology_id")
+    expected_topology_path = str(
+        Path(ground_topology_directory) / f"{topology_id}.yaml"
+    )
+    if (
+        (row.get("environment"), topology_id) not in selected_pairs
+        or topology_id not in ground_topology_hashes
+        or row.get("ground_topology_profile_path") != expected_topology_path
+        or row.get("ground_topology_profile_sha256")
+        != ground_topology_hashes[topology_id]
+    ):
+        raise SystemExit(
+            f"manifest row {row_index} ground-topology identity mismatch"
+        )
 summary = {
     "schema_version": 3,
     "report_type": "contact_ab_batch_summary",
