@@ -235,18 +235,27 @@ ApproachZone:
 ### 2.3 当前机器人基线
 
 ```yaml
+schema_version: 2
+kinematics_profile_id: jackal_legacy_geometric_v1
+lifecycle: stable_baseline
 wheel_radius: 0.098
+wheel_width: 0.040
 geometric_track_width: 0.37559
+effective_track_width: 0.37559
 wheelbase: 0.262
 
 controller:
-  wheel_radius: 0.098
-  wheel_distance: 0.37559
   max_linear_speed: 1.0
   max_angular_speed: 1.5
 ```
 
-目前 `wheel_distance` 直接等于几何轮距，没有单独的滑移转向有效轮距标定值。
+当前 robot schema 已把物理几何轮距与控制/轮速里程计使用的有效轮距拆成两个显式
+字段。稳定 profile 为保持行为不变，暂把二者都设为 `0.37559 m`；这只是迁移基线，
+不是有效轮距已标定。Isaac DifferentialController、Robot Description 和 Realistic
+Wheel Odom 都从同一个 robot YAML 取得对应字段及 wheel joint，runtime provenance
+v4 负责发布 path/SHA/profile/lifecycle/数值身份，Wheel Odom 只有在启动前逐项握手
+成功后才创建业务端点。后续候选必须保存为独立 `experimental_candidate` profile，
+不得直接覆盖 stable。
 
 ---
 
@@ -3165,6 +3174,12 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   Warehouse GroundPlane/floor-decal collider 拓扑隔离、多角速度有效轮距及
   60/120 Hz、CCD、stabilization 单变量 A/B，之后再做 Ideal/Realistic 复验；
   第三阶段仍未退出。
+- 第三阶段运动学契约进度：提交 `dd58c63` 完成零行为迁移。schema-v2 robot YAML
+  现在是轮径、轮宽、几何/有效轮距、wheel joint 和质量的单一真源；Control Graph、
+  Robot Description、Realistic Wheel Odom 与 contact 分析都经过 exact-key、SHA256、
+  provenance v4 和启动握手约束。稳定有效轮距仍为 `0.37559 m`，只是保持旧控制值；
+  约 `1.012 m` 尚未写回。11 包构建、preflight、root/ROS/Isaac 全门通过，但这些
+  结构证据不代替多速度、两环境和 Realistic 物理 A/B，第三阶段仍未退出。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均

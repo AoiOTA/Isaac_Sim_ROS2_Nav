@@ -482,6 +482,39 @@ Realistic 模式不使用 Isaac Ideal Odom。轮关节状态先生成 `/wheel/od
   posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
 ```
 
+两端默认都选择
+`isaac_sim/configs/robots/jackal.yaml`。ROS 在创建 Wheel Odom 的 Topic、Reset
+service 和 timer 前，会读取 `/isaac_navigation_sim` 的只读 provenance v4 参数，
+并逐项比对 robot 文件的规范路径、原始字节 SHA256、profile、lifecycle、轮径、
+轮宽、几何轮距、有效轮距和 controller 校验标志。Isaac 尚未就绪、参数服务超时或
+任一值不一致时，Wheel Odom 非零退出并让当前 Realistic ROS launch 受管关闭；此时
+没有 `/wheel/odom` 是正确门禁，不是再启动一个手工 publisher 或单独重启 EKF 的
+理由。
+
+实验 robot YAML 必须在两端显式选择同一绝对路径。例如：
+
+```bash
+CANDIDATE=/absolute/path/to/candidate.yaml
+
+# 终端 A
+ISAAC_NAV__FILES__ROBOT="$CANDIDATE" \
+  ./scripts/run_isaac.sh --navigation-mode localization --mode realistic
+
+# 终端 B
+./scripts/run_ros.sh navigation \
+  odometry_mode:=realistic \
+  robot_config_file:="$CANDIDATE" \
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+```
+
+不要只改 Wheel Odom 参数文件：它现在只保存发布频率、积分间隔、frame 和协方差，
+不再复制轮径、轮距或 joint 名。
+
+当前 ROS Xacro 保留的是 Jackal 已验证惯量张量，因此实验有效轮距可以独立变化且不会
+改动 URDF；若同时改变轮径、轮宽、底盘质量或轮质量，Description 会明确拒绝启动，
+直到为新机器人提供与几何/质量一致的惯量模型。不要通过删除这个门让一个 Jackal
+惯量冒充自定义机器人。
+
 检查唯一所有权：
 
 ```bash
@@ -1168,7 +1201,7 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、仿真模式和 Git commit/branch/dirty。schema v3 的 solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；接触门还把 profile 路径/SHA256、匿名 overlay SHA256、PhysicsScene threshold、精确 wheel/ground collider、physics-purpose binding 和材质读回编码为 canonical JSON，并用独立 SHA256 参数传给 runner。该 API 只证明 USD 输入一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验；旧 schema v1/v2、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、组合根 Layer、仿真模式和 Git commit/branch/dirty。schema v4 的 solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 还记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志。接触门把 profile 路径/SHA256、匿名 overlay SHA256、PhysicsScene threshold、精确 wheel/ground collider、physics-purpose binding 和材质读回编码为 canonical JSON，并用独立 SHA256 参数传给 runner。该 API 只证明 USD 输入一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验；v1/v2 或当前启动链路中的 v3、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。历史 v3 报告仍可单独离线复核，但不能与 v4 样本混入一份正式统计。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
 快速核对某次报告是否真的是目标配置：
 
@@ -1287,12 +1320,14 @@ ISAAC_NAV__FILES__CONTACT_PROFILE="$PROJECT_ROOT/isaac_sim/configs/physics/${PRO
 solver `32/4`、运动配置、physics Hz、pacing、Camera、环境和 Git 状态，每个条件至少
 重复三次，再比较左右/速度档。
 
-提交 `84c397c` 已把 motion runtime provenance 升级为 schema v3。runner 在创建
+提交 `84c397c` 曾把 motion runtime provenance 升级为 schema v3。runner 在创建
 `/cmd_vel` publisher 前读取 contact canonical JSON 与独立 SHA256，重新校验 profile
 路径/hash、匿名 overlay、scene readback、collider contract、binding、材质、mode
 flags 和 `stage_usd_readback_verified=true`；旧 v1/v2 报告不会冒充当前运行输入。
 正式 A/B 仍必须要求 `.runtime_provenance.git.dirty == false`、环境/solver/profile
 完全匹配，并保留每个输入 JSON、SHA256 和 Kit 日志；仅凭输出文件名仍不构成证据。
+当前生产者和新 runner 已进一步使用 schema v4，把 robot kinematics 写入身份锁；
+v3 仅保留为历史离线审计格式。
 
 需要完整执行这组隔离矩阵时，使用严格串行入口，不要手工开 36 组终端：
 
@@ -1332,9 +1367,10 @@ branch、运动配置、两个项目配置和六个 profile 的 SHA256；每轮�
 配置混进正式矩阵。
 
 每轮启动命令固定为 headless、unbounded、Mapping、Ideal、Camera off；当前 schema
-v3 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
+v4 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
 固定 CLI 合同，文档不把它们冒充成报告 provenance。能由只读参数证明的项目会
-逐项核对：schema v3、robot config/asset、solver `32/4` 与 Stage readback、60 Hz、
+逐项核对：schema v4、robot config/asset、robot profile/lifecycle/轮径/轮宽/几何与
+有效轮距、controller contract、solver `32/4` 与 Stage readback、60 Hz、
 Mapping/Ideal、真实环境 project/source、Git commit/branch/dirty，以及 contact canonical
 JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback。runner 退出后
 会从当前 workspace source 调用严格分析器复验六段结构、实际时间戳、四轮方向和同一组
@@ -1395,7 +1431,10 @@ hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、�
 
 分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat，并分三层锁定
 全矩阵、同环境、同 profile/同组输入。yaw gain 和位移误差按物理时钟的
-`observed_duration_sec` 计算，不按理想配置时长；Jackal 轮半径只接受 `0.098 m`。
+`observed_duration_sec` 计算，不按理想配置时长。历史 schema-v3 报告只接受
+canonical Jackal `0.098 m` 轮径；schema-v4 报告则要求 CLI/矩阵脚本使用的轮径与
+每份 provenance 中的实际 robot 轮径完全一致，因此候选值不会被静默按 `0.098 m`
+计算。v3 与 v4 不能混入同一批分析。
 项目 Stage、源资产和 collider 拓扑在同环境跨 profile 锁定；
 `composed_root_layer_sha256` 可能随 profile 有意 author 的 Stage 接触意见变化，因此与
 contact overlay 一起在同一“环境 + profile”组内锁定，任何 repeat 漂移仍会失败关闭。
@@ -1414,7 +1453,8 @@ jq '{valid: .analysis_valid, counts, matrix, groups: (.groups | keys)}' \
 sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
 ```
 
-若需要重新审计复制来的报告，而不是重新跑 Isaac，可直接使用安装后的离线 CLI：
+若需要重新审计复制来的历史 v3 报告，而不是重新跑 Isaac，可直接使用安装后的离线
+CLI；`--wheel-radius` 对 v4 必须改成该批 provenance 中记录的值：
 
 ```bash
 source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
@@ -1726,10 +1766,10 @@ header、消息年龄和旧 DDS 样本证据，不要只以日志不再打印作
 | 改 LiDAR 型号/频率/Prim | `isaac_sim/configs/sensors/lidar_3d.yaml` |
 | 改 Camera profile/光学/曝光 | `isaac_sim/configs/sensors/camera.yaml`；同步 Camera contract 与 RViz 测试。 |
 | 改点云投影高度和角度 | `ros2_ws/src/robot_perception/config/pointcloud_to_laserscan.yaml` |
-| 改轮径/轮距 | Isaac robot YAML 与 `ros2_ws/src/robot_odometry/config/wheel_odometry.yaml` 同步修改 |
+| 改轮径/轮距 | 只修改所选 schema-v2 robot YAML；`geometric_track_width` 只描述 USD/URDF 几何，`effective_track_width` 同时驱动 Isaac DifferentialController 与 Realistic Wheel Odom。不要在 Wheel Odom YAML 或 Xacro 再复制数值；实验候选必须让 Isaac 与 ROS 的 `robot_config_file` 指向同一文件并重跑 A/B。 |
 | 改接触 threshold/材质 | `isaac_sim/configs/physics/*.yaml`；用 `ISAAC_NAV__FILES__CONTACT_PROFILE` 选择，并重跑 SimplePlane/Warehouse 隔离 A/B。不要直接改源 USD。 |
 | 查 wheel joint 正负方向 | 先运行 `scripts/run_wheel_direction_diagnostic.sh`，查看硬门与 advisory；不要靠手工持续发布 `/cmd_vel` 猜方向。 |
-| 拟合有效轮距 | 用 `robot_experiments effective_track_analysis` 分析同 provenance 的 motion 报告；候选值须再同步 Isaac/ROS 配置并重跑验证，工具不会自动写配置。 |
+| 拟合有效轮距 | 用 `robot_experiments effective_track_analysis` 分析同 provenance 的 motion 报告；把候选做成独立 robot YAML，并让 Isaac/ROS 同时选择它后重跑验证。工具不会自动写配置，也不能把拟合均值直接提升为稳定值。 |
 | 改 Footprint/速度/代价地图 | `ros2_ws/src/robot_navigation/config/nav2_params.yaml` |
 | 改 MPPI 稳定/性能基线 | `ros2_ws/src/robot_navigation/config/nav2_stable.yaml` 或 `ros2_ws/src/robot_navigation/config/nav2_performance.yaml`；必须重新 profile。 |
 | 改出生点 | `isaac_sim/configs/spawn_poses.yaml`，随后重做标定 |

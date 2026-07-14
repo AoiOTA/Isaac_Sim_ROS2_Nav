@@ -520,10 +520,21 @@ ros2 topic echo /odom --once --field twist.twist
 ros2 topic echo /joint_states --once --field velocity
 ```
 
-当前严格 runtime provenance schema 是 v3；solver 必须包含
-`stage_articulation_usd_readback_verified=true`。看到 schema v1 或旧字段
+当前新运行严格要求 runtime provenance schema v4；solver 必须包含
+`stage_articulation_usd_readback_verified=true`，robot 还必须包含完整
+`kinematics`。schema v3 报告可以离线复核，但不能连接当前 motion runner 或与 v4
+混入正式统计。看到 schema v1/v2 或旧字段
 `stage_runtime_readback_verified`，说明连接了旧 Isaac/旧 ROS 安装产物，不能靠手改
 JSON 兼容；应停止两端、重新构建并按 Isaac→ROS 顺序冷启动。
+
+若 Realistic 启动时报 `Isaac kinematics ... does not match local robot config`，不要在
+`wheel_odometry.yaml` 补一份轮径/轮距。确认 Isaac 与 ROS 两端选择的是同一个
+schema-v2 robot YAML：默认均为 `isaac_sim/configs/robots/jackal.yaml`；实验候选则
+必须同时给 Isaac project 的 `files.robot` 和 ROS launch 的
+`robot_config_file:=/absolute/path/to/candidate.yaml`。随后核对只读参数中的
+`robot.config.path/sha256`、profile、lifecycle、轮径、轮宽、几何/有效轮距。握手
+失败时 `/wheel/odom` 不存在且当前 Realistic ROS launch 随后整体关闭，是预期的失败
+关闭行为。
 
 `run_motion_baseline.sh` 不负责启动 Isaac；`/cmd_vel` 没有订阅者时拒绝运行是正确
 门禁。provenance 缺字段通常表示 ROS 工作区未重建、连接了旧 Isaac 进程，或查询

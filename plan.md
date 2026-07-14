@@ -26,6 +26,10 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 - `/scan_fault` 提供丢包、暂停和错误 Frame 注入，Reset 会恢复正常模式并隔离旧代次命令；
 - Runtime Profiler 统计受管 ROS 进程树以及 RTF、Topic Age、TF Lag、CPU/GPU；
 - ROS 监督脚本按 Lifecycle 顺序关闭 Nav2/定位节点，RViz 使用安全退出面板。
+- Jackal robot YAML 已升级为 schema v2 单一运动学真源，显式区分几何/有效轮距并
+  统一 wheel joint；runtime provenance v4 与 Realistic Wheel Odom 启动握手会锁定
+  文件路径、原始字节 SHA256、profile/lifecycle 和运动学数值，稳定 profile 保持原
+  `0.37559 m` 控制行为，尚不代表有效轮距已经标定。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 
@@ -39,7 +43,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 | 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |
 | 7 Nav2 | 已实现 | 1 m/3 m smoke、MPPI 10/15 Hz 参数矩阵和真实局部轨迹已运行 | 多终点、多布局的完整统计 |
 | 8 Ground Truth | 已实现 | smoke 报告已记录终点误差与 GT 路径 | 200 次统计验收 |
-| 9 Realistic Odom | 已实现 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查 | 更复杂滑移/噪声矩阵 |
+| 9 Realistic Odom | 已实现；运动学配置已收敛到 schema-v2 robot YAML，启动前做 provenance v4 失败关闭握手 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查；握手匹配、SHA 错配和服务超时由真实 rclpy 集成测试覆盖 | 新契约仍需在冻结候选上做完整 Realistic 物理复验及更复杂滑移/噪声矩阵 |
 | 10 动态避障 | 已实现基线 | 当前固定世界的 4-seed 基线为 4/4 | 不能外推为多类障碍 90% 广义避障率 |
 | 11 自动实验 | 已实现框架 | Reset、场景契约和 smoke 批次可重复运行 | 完整 200 次矩阵未执行 |
 | 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 没有真实 `warehouse_v2`，未证明 changed-region 时间改善 ≥30% |
