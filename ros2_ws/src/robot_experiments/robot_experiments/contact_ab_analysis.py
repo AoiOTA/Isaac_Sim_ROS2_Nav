@@ -798,12 +798,22 @@ def _identity_locks(
         ),
         "motion_configuration": dict(configuration),
     }
-    environment_lock: dict[str, Any] = {
-        "environment": {
+    provenance_schema = provenance.get("schema_version")
+    if provenance_schema == 5:
+        # Schema v5 hashes Stage.GetRootLayer().  Ground-topology and contact
+        # overlays live under GetSessionLayer(), so they cannot legitimately
+        # change this environment/root identity.
+        locked_environment = dict(environment)
+    else:
+        # Keep the published v3/v4 offline grouping contract stable for
+        # already-recorded historical batches.
+        locked_environment = {
             key: environment[key]
             for key in sorted(environment)
             if key != "composed_root_layer_sha256"
-        },
+        }
+    environment_lock: dict[str, Any] = {
+        "environment": locked_environment,
     }
     topology_lock: dict[str, Any] | None = None
     topology_ab_contact_lock: dict[str, Any] | None = None
@@ -913,12 +923,10 @@ def _identity_locks(
         for key in sorted(contact)
         if key != "overlay_identifier"
     }
-    # The exported composed root reflects the exact environment/profile Stage
-    # composition. Contact profiles may intentionally change it, while
-    # repeats of the same environment/profile must remain byte-identical.
-    contact_lock["composed_root_layer_sha256"] = environment[
-        "composed_root_layer_sha256"
-    ]
+    if provenance_schema != 5:
+        contact_lock["composed_root_layer_sha256"] = environment[
+            "composed_root_layer_sha256"
+        ]
     return (
         global_lock,
         environment_lock,
