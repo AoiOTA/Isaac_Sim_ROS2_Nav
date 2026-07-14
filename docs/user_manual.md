@@ -1629,11 +1629,11 @@ schema 2 才适用。其他 group 写 `applicable=false`、`passed=null` 和非�
 也不会自动选择 profile。
 
 当前完整 contact analyzer 测试文件为 `116 passed`，motion baseline 为 `66 passed`，matrix
-script `42 passed / 1 skipped`；唯一 skip 是本机缺少 `shellcheck`。这只证明工作树中的
-定向合同。同一 dirty worktree 的 `./scripts/test.sh` 为 exit 0：root
-`1061 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、861 tests、0 errors、
-0 failures、1 skipped。它们不等于 clean/frozen 证据；提交后仍须运行 clean commit
-`--with-isaac`，并补真实新 schema smoke 和正式矩阵。
+script `42 passed / 1 skipped`；唯一 skip 是本机缺少 `shellcheck`。clean `2cd0788` 的
+`./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
+34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
+为 `32 passed / 250 deselected`。这证明冻结代码合同与构建门闭合，但仍须补真实新 schema
+smoke 和正式矩阵，不能据此宣称底盘物理通过。
 
 快速核对成功证据：
 

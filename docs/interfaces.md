@@ -207,7 +207,8 @@ service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，�
 描述单份运行时报告的身份；下面的 analysis schema 描述离线聚合结果，二者的版本号
 不能互相替代。
 
-当前合同已实现，但还没有 clean commit 全门、真实新 schema smoke 或正式矩阵实跑证据：
+当前合同已实现，并已在 clean `2cd0788` 通过全门；真实新 schema smoke 和正式矩阵
+实跑仍待完成：
 
 | 工件 | schema | 合同 |
 | --- | ---: | --- |
@@ -259,11 +260,11 @@ runtime schema 和全局 odometry 锁交叉核对；缺检查、伪布尔值或�
 发布 summary 前失败关闭。
 
 当前完整 contact analyzer 测试文件为 `116 passed`，motion baseline 为 `66 passed`，matrix
-script `42 passed / 1 skipped`，唯一 skip 是本机缺少 `shellcheck`。这些是工作树定向
-合同测试。同一 dirty worktree 的 `./scripts/test.sh` 为 exit 0：root
-`1061 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、861 tests、0 errors、
-0 failures、1 skipped。它们都不是 clean/frozen 证据；提交后仍须运行 clean commit
-`--with-isaac`，并补真实新 schema smoke 与正式 54-run/18-group 矩阵。
+script `42 passed / 1 skipped`，唯一 skip 是本机缺少 `shellcheck`。clean `2cd0788` 的
+`./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
+34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
+为 `32 passed / 250 deselected`。build 11 packages、preflight PASS；仍须补真实新 schema
+smoke 与正式 54-run/18-group 矩阵。
 
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
 serves the immutable saved OccupancyGrid. SLAM Toolbox still owns localization
