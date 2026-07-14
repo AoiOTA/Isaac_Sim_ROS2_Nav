@@ -138,6 +138,7 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'status --porcelain --untracked-files=normal' in source
     assert 'ls-files --error-unmatch' in source
     assert 'runtime_provenance.schema_version' in source
+    assert '"${schema}" != 4' in source
     assert 'runtime_provenance.environment.id' in source
     assert 'runtime_provenance.contact.json' in source
     assert 'runtime_provenance.contact.sha256' in source
@@ -155,6 +156,22 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'runtime_provenance.robot.asset.sha256' in source
     assert 'runtime_provenance.robot.solver.position_iterations' in source
     assert 'runtime_provenance.robot.solver.velocity_iterations' in source
+    assert 'runtime_provenance.robot.kinematics.profile_id' in source
+    assert 'runtime_provenance.robot.kinematics.lifecycle' in source
+    assert 'runtime_provenance.robot.kinematics.wheel_radius_m' in source
+    assert 'runtime_provenance.robot.kinematics.wheel_width_m' in source
+    assert (
+        'runtime_provenance.robot.kinematics.geometric_track_width_m'
+        in source
+    )
+    assert (
+        'runtime_provenance.robot.kinematics.effective_track_width_m'
+        in source
+    )
+    assert (
+        'runtime_provenance.robot.kinematics.controller_contract_verified'
+        in source
+    )
     assert 'runtime_provenance.environment.project_stage.path' in source
     assert 'runtime_provenance.environment.project_stage.sha256' in source
     assert 'runtime_provenance.environment.source_asset.path' in source
@@ -163,6 +180,9 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'runtime_provenance.simulation.navigation_mode' in source
     assert 'runtime_provenance.simulation.odometry_mode' in source
     assert 'analyse_contact_ab(' in source
+    assert '[path],\n        wheel_radius,' in source
+    assert 'analyse_contact_ab(report_paths, wheel_radius,' in source
+    assert 'analyse_contact_ab(report_paths, 0.098' not in source
     assert 'min_repeats=1' in source
     assert 'workspace source deliberately' in source
 

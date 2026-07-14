@@ -608,15 +608,48 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     _validate_json_value(provenance, "runtime_provenance")
     if provenance.get("verified") is not True:
         raise ReportValidationError("runtime_provenance must be runtime-verified")
+    expected_root_keys = {
+        "verified",
+        "schema_version",
+        "robot",
+        "environment",
+        "simulation",
+        "contact",
+        "git",
+    }
+    if set(provenance) != expected_root_keys:
+        raise ReportValidationError(
+            "runtime_provenance keys must be exactly "
+            f"{sorted(expected_root_keys)}"
+        )
     schema_version = provenance.get("schema_version")
-    if isinstance(schema_version, bool) or schema_version != 3:
-        raise ReportValidationError("runtime_provenance.schema_version must be 3")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in {3, 4}
+    ):
+        raise ReportValidationError(
+            "runtime_provenance.schema_version must be integer 3 or 4"
+        )
 
     robot = _required_mapping(provenance, "robot", "runtime_provenance")
+    robot_keys = {"config", "asset", "solver"}
+    if schema_version == 4:
+        robot_keys.add("kinematics")
+    if set(robot) != robot_keys:
+        raise ReportValidationError(
+            "runtime_provenance.robot keys must be exactly "
+            f"{sorted(robot_keys)}"
+        )
     for name in ("config", "asset"):
         input_file = _required_mapping(
             robot, name, "runtime_provenance.robot"
         )
+        if set(input_file) != {"path", "sha256"}:
+            raise ReportValidationError(
+                f"runtime_provenance.robot.{name} keys must be exactly "
+                "['path', 'sha256']"
+            )
         _required_string(
             input_file.get("path"),
             f"runtime_provenance.robot.{name}.path",
@@ -628,6 +661,16 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     solver = _required_mapping(
         robot, "solver", "runtime_provenance.robot"
     )
+    solver_keys = {
+        "position_iterations",
+        "velocity_iterations",
+        "stage_articulation_usd_readback_verified",
+    }
+    if set(solver) != solver_keys:
+        raise ReportValidationError(
+            "runtime_provenance.robot.solver keys must be exactly "
+            f"{sorted(solver_keys)}"
+        )
     for name in ("position_iterations", "velocity_iterations"):
         count = solver.get(name)
         if (
@@ -645,9 +688,80 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
             "stage_articulation_usd_readback_verified must be true"
         )
 
+    if schema_version == 4:
+        kinematics = _required_mapping(
+            robot, "kinematics", "runtime_provenance.robot"
+        )
+        kinematics_keys = {
+            "profile_id",
+            "lifecycle",
+            "wheel_radius_m",
+            "wheel_width_m",
+            "geometric_track_width_m",
+            "effective_track_width_m",
+            "controller_contract_verified",
+        }
+        if set(kinematics) != kinematics_keys:
+            raise ReportValidationError(
+                "runtime_provenance.robot.kinematics keys must be exactly "
+                f"{sorted(kinematics_keys)}"
+            )
+        for name in ("profile_id", "lifecycle"):
+            value = _required_string(
+                kinematics.get(name),
+                f"runtime_provenance.robot.kinematics.{name}",
+            )
+            if not _IDENTIFIER_PATTERN.fullmatch(value):
+                raise ReportValidationError(
+                    f"runtime_provenance.robot.kinematics.{name} must be a "
+                    "path-safe identifier"
+                )
+        if kinematics.get("lifecycle") not in {
+            "stable_baseline",
+            "experimental_candidate",
+        }:
+            raise ReportValidationError(
+                "runtime_provenance.robot.kinematics.lifecycle is unsupported"
+            )
+        for name in (
+            "wheel_radius_m",
+            "wheel_width_m",
+            "geometric_track_width_m",
+            "effective_track_width_m",
+        ):
+            value = kinematics.get(name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ReportValidationError(
+                    f"runtime_provenance.robot.kinematics.{name} must be a "
+                    "finite positive number"
+                )
+        if kinematics.get("controller_contract_verified") is not True:
+            raise ReportValidationError(
+                "runtime_provenance.robot.kinematics."
+                "controller_contract_verified must be true"
+            )
+
     environment = _required_mapping(
         provenance, "environment", "runtime_provenance"
     )
+    environment_keys = {
+        "id",
+        "project_stage",
+        "source_asset",
+        "asset_root",
+        "asset_version",
+        "composed_root_layer_sha256",
+    }
+    if set(environment) != environment_keys:
+        raise ReportValidationError(
+            "runtime_provenance.environment keys must be exactly "
+            f"{sorted(environment_keys)}"
+        )
     environment_id = _required_string(
         environment.get("id"),
         "runtime_provenance.environment.id",
@@ -660,6 +774,11 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         input_file = _required_mapping(
             environment, name, "runtime_provenance.environment"
         )
+        if set(input_file) != {"path", "sha256"}:
+            raise ReportValidationError(
+                f"runtime_provenance.environment.{name} keys must be "
+                "exactly ['path', 'sha256']"
+            )
         _required_string(
             input_file.get("path"),
             f"runtime_provenance.environment.{name}.path",
@@ -684,6 +803,12 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     simulation = _required_mapping(
         provenance, "simulation", "runtime_provenance"
     )
+    simulation_keys = {"navigation_mode", "odometry_mode", "physics_hz"}
+    if set(simulation) != simulation_keys:
+        raise ReportValidationError(
+            "runtime_provenance.simulation keys must be exactly "
+            f"{sorted(simulation_keys)}"
+        )
     for name in ("navigation_mode", "odometry_mode"):
         _required_string(
             simulation.get(name),
@@ -708,6 +833,11 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     _validate_contact_provenance(contact)
 
     git = _required_mapping(provenance, "git", "runtime_provenance")
+    if set(git) != {"commit", "branch", "dirty"}:
+        raise ReportValidationError(
+            "runtime_provenance.git keys must be exactly "
+            "['branch', 'commit', 'dirty']"
+        )
     commit = git.get("commit")
     if not isinstance(commit, str) or len(commit) not in {40, 64}:
         raise ReportValidationError(

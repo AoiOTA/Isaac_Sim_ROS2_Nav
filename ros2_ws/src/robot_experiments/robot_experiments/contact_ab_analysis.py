@@ -163,6 +163,7 @@ class InputRecord:
     path: str
     sha256: str
     canonical_sha256: str
+    runtime_provenance_schema: int
     environment_id: str
     contact_profile_id: str
     global_lock: dict[str, Any]
@@ -836,15 +837,47 @@ def _validated_record(
         )
     provenance = _mapping(report.get("runtime_provenance"), f"{location}.runtime_provenance")
     _exact_keys(provenance, _RUNTIME_PROVENANCE_KEYS, f"{location}.runtime_provenance")
-    _exact_integer(
-        provenance.get("schema_version"),
-        3,
-        f"{location}.runtime_provenance.schema_version",
-    )
+    provenance_schema = provenance.get("schema_version")
+    if (
+        isinstance(provenance_schema, bool)
+        or not isinstance(provenance_schema, int)
+        or provenance_schema not in {3, 4}
+    ):
+        raise ConfigurationError(
+            f"{location}.runtime_provenance.schema_version must be integer "
+            "3 or 4"
+        )
     try:
         validate_runtime_provenance(provenance)
     except ReportValidationError as exc:
         raise ConfigurationError(f"{location} runtime provenance: {exc}") from exc
+    if provenance_schema == 3:
+        if wheel_radius_m != CANONICAL_WHEEL_RADIUS_M:
+            raise ConfigurationError(
+                f"{location} historical runtime provenance schema 3 requires "
+                f"the canonical Jackal wheel radius "
+                f"{CANONICAL_WHEEL_RADIUS_M}; selected {wheel_radius_m}"
+            )
+    else:
+        robot = _mapping(
+            provenance.get("robot"),
+            f"{location}.runtime_provenance.robot",
+        )
+        kinematics = _mapping(
+            robot.get("kinematics"),
+            f"{location}.runtime_provenance.robot.kinematics",
+        )
+        provenance_wheel_radius = _positive(
+            kinematics.get("wheel_radius_m"),
+            f"{location}.runtime_provenance.robot.kinematics."
+            "wheel_radius_m",
+        )
+        if provenance_wheel_radius != wheel_radius_m:
+            raise ConfigurationError(
+                f"{location} runtime provenance wheel_radius_m does not "
+                f"match the selected robot: provenance="
+                f"{provenance_wheel_radius}, selected={wheel_radius_m}"
+            )
     git = _mapping(provenance.get("git"), f"{location}.runtime_provenance.git")
     if git.get("dirty") is not False:
         raise ConfigurationError(f"{location} Git worktree must be clean")
@@ -928,6 +961,7 @@ def _validated_record(
         path=str(source_path),
         sha256=source_sha256,
         canonical_sha256=canonical_sha256,
+        runtime_provenance_schema=provenance_schema,
         environment_id=environment_id,
         contact_profile_id=contact_profile_id,
         global_lock=global_lock,
@@ -1075,13 +1109,8 @@ def analyse_contact_ab(
     expected_profiles: Sequence[str] = (),
     require_complete_matrix: bool = False,
 ) -> dict[str, object]:
-    """Validate, group, and summarize schema-3 motion reports."""
+    """Validate, group, and summarize one schema-3 or schema-4 batch."""
     radius = _positive(wheel_radius_m, "wheel_radius_m")
-    if radius != CANONICAL_WHEEL_RADIUS_M:
-        raise ConfigurationError(
-            "wheel_radius_m must exactly match the canonical Jackal radius "
-            f"{CANONICAL_WHEEL_RADIUS_M}"
-        )
     if (
         isinstance(min_repeats, bool)
         or not isinstance(min_repeats, int)
@@ -1172,6 +1201,16 @@ def analyse_contact_ab(
                 f"{first_reason.get('detail', 'no detail')}"
             )
         raise ConfigurationError(message)
+
+    provenance_schemas = {
+        record.runtime_provenance_schema for record in included
+    }
+    if len(provenance_schemas) != 1:
+        raise ConfigurationError(
+            "mixed runtime provenance schemas are forbidden in one contact "
+            f"A/B batch: observed {sorted(provenance_schemas)}"
+        )
+    runtime_provenance_schema = next(iter(provenance_schemas))
 
     reference_lock = included[0].global_lock
     for record in included[1:]:
@@ -1289,7 +1328,9 @@ def analyse_contact_ab(
         },
         "selection_policy": {
             "required_report_result": "success",
-            "required_runtime_provenance_schema": 3,
+            "required_runtime_provenance_schema": (
+                runtime_provenance_schema
+            ),
             "required_git_dirty": False,
             "expected_environments": list(selected_environments),
             "expected_profiles": list(selected_profiles),

@@ -13,10 +13,38 @@ class YamlConfigError(ValueError):
     pass
 
 
+class _UniqueKeySafeLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects silently shadowed mapping keys."""
+
+
+def _construct_unique_mapping(
+    loader: _UniqueKeySafeLoader,
+    node: yaml.MappingNode,
+    deep: bool = False,
+) -> dict[Any, Any]:
+    mapping: dict[Any, Any] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in mapping
+        except TypeError as exc:
+            raise YamlConfigError("YAML mapping keys must be hashable") from exc
+        if duplicate:
+            raise YamlConfigError(f"duplicate YAML mapping key: {key!r}")
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_UniqueKeySafeLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG,
+    _construct_unique_mapping,
+)
+
+
 def load_mapping(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     with path.open("r", encoding="utf-8") as stream:
-        value = yaml.safe_load(stream)
+        value = yaml.load(stream, Loader=_UniqueKeySafeLoader)
     if not isinstance(value, dict):
         raise YamlConfigError(f"{path} must contain a mapping")
     return value

@@ -5,24 +5,14 @@ import math
 from typing import Optional, Sequence, Tuple
 
 
-DEFAULT_LEFT_JOINTS = (
-    'front_left_wheel_joint',
-    'rear_left_wheel_joint',
-)
-DEFAULT_RIGHT_JOINTS = (
-    'front_right_wheel_joint',
-    'rear_right_wheel_joint',
-)
-
-
 @dataclass(frozen=True)
 class WheelOdometryConfig:
     """Geometry and safety bounds used by the integrator."""
 
-    wheel_radius: float = 0.098
-    track_width: float = 0.37559
-    left_joint_names: Tuple[str, ...] = DEFAULT_LEFT_JOINTS
-    right_joint_names: Tuple[str, ...] = DEFAULT_RIGHT_JOINTS
+    wheel_radius: float
+    track_width: float
+    left_joint_names: Tuple[str, ...]
+    right_joint_names: Tuple[str, ...]
     max_integration_step: float = 0.25
 
     def __post_init__(self):
