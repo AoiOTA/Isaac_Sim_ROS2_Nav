@@ -79,4 +79,5 @@ files:
   topics: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/topics.yaml
   qos: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/qos.yaml
   dynamic_obstacles: ${PROJECT_ROOT}/isaac_sim/configs/experiments/dynamic.yaml
+  ground_topology_profile: ${PROJECT_ROOT}/isaac_sim/configs/ground_topologies/warehouse_combined32_v1.yaml
   contact_profile: ${PROJECT_ROOT}/isaac_sim/configs/physics/legacy_baseline.yaml

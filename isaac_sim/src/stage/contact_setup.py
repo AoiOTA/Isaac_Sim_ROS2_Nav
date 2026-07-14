@@ -29,8 +29,6 @@ _PROFILE_MODES = {"legacy_baseline", "threshold_only", "explicit_material"}
 _COMBINE_MODES = {"average", "min", "multiply", "max"}
 _WHEEL_MATERIAL_PATH = "/World/PhysicsMaterials/ContactProfile/Wheel"
 _GROUND_MATERIAL_PATH = "/World/PhysicsMaterials/ContactProfile/Ground"
-_SEMANTIC_CLASS_ATTRIBUTE = "semantic:Semantics:params:semanticData"
-_SEMANTIC_TYPE_ATTRIBUTE = "semantic:Semantics:params:semanticType"
 
 
 @dataclass(frozen=True)
@@ -386,48 +384,13 @@ def resolve_wheel_colliders(stage: object, config: ProjectConfig) -> tuple[str, 
 
 
 def resolve_ground_colliders(stage: object, config: ProjectConfig) -> tuple[str, ...]:
-    """Resolve the environment's exact enabled-ground collider contract."""
+    """Consume the already-applied, readback-verified topology target set."""
 
-    resolver = config.environment.ground_colliders
-    paths: set[str] = set()
-    for path in resolver.required_prim_paths:
-        prim = stage.GetPrimAtPath(path)
-        if not _collision_is_enabled(prim):
-            raise ContactSetupError(
-                f"required ground collider is missing or disabled: {path}"
-            )
-        paths.add(path)
-    semantic_classes = set(resolver.semantic_classes)
-    matched_semantic_classes: set[str] = set()
-    if semantic_classes:
-        for prim in stage.TraverseAll():
-            if not _collision_is_enabled(prim):
-                continue
-            class_attribute = prim.GetAttribute(_SEMANTIC_CLASS_ATTRIBUTE)
-            type_attribute = prim.GetAttribute(_SEMANTIC_TYPE_ATTRIBUTE)
-            semantic_class = (
-                class_attribute.Get() if class_attribute.IsValid() else None
-            )
-            semantic_type = (
-                type_attribute.Get() if type_attribute.IsValid() else None
-            )
-            if semantic_type == "class" and semantic_class in semantic_classes:
-                paths.add(str(prim.GetPath()))
-                matched_semantic_classes.add(str(semantic_class))
-    if matched_semantic_classes != semantic_classes:
-        raise ContactSetupError(
-            "ground collider resolver semantic class mismatch: "
-            f"configured={sorted(semantic_classes)}, "
-            f"matched={sorted(matched_semantic_classes)}"
-        )
-    if len(paths) != resolver.expected_enabled_count:
-        raise ContactSetupError(
-            "ground collider resolver count mismatch: "
-            f"environment={config.environment.identifier}, "
-            f"expected={resolver.expected_enabled_count}, actual={len(paths)}, "
-            f"paths={sorted(paths)}"
-        )
-    return tuple(sorted(paths))
+    from isaac_sim.src.stage.ground_topology import (
+        capture_ground_topology_snapshot,
+    )
+
+    return capture_ground_topology_snapshot(stage, config).target_colliders
 
 
 def _remove_existing_contact_layers(stage: object) -> None:
