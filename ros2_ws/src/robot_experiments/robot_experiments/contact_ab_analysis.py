@@ -1130,7 +1130,10 @@ def _reason_for_invalid(exc: ConfigurationError) -> dict[str, str]:
         return _exclusion("git_dirty", detail)
     if ".profile_id must" in detail:
         return _exclusion("invalid_motion_profile", detail)
-    if "runtime provenance" in detail:
+    if (
+        "runtime provenance" in detail
+        or "ground topology/environment pair" in detail
+    ):
         return _exclusion("invalid_runtime_provenance", detail)
     return _exclusion("invalid_motion_protocol", detail)
 
