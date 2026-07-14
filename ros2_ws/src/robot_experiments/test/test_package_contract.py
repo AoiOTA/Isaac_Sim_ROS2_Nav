@@ -74,6 +74,14 @@ def test_incremental_map_comparison_has_an_installed_cli():
     ) in setup_source
 
 
+def test_effective_track_analysis_has_an_installed_cli():
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "effective_track_analysis = "
+        "robot_experiments.effective_track_analysis:main"
+    ) in setup_source
+
+
 def test_motion_baseline_has_an_installed_cli_and_safe_launch_contract():
     setup_source = (PACKAGE_ROOT / "setup.py").read_text()
     assert (
