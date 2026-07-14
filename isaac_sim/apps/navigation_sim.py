@@ -248,6 +248,11 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
+        # Isaac Sim 6.0.1's SimulationApp owns the complete set of renderer
+        # switches required by multi-tick RTX sensors. Enabling only the base
+        # raytracingMotion setting misses Hydra engine masking and produces
+        # point clouds without motion effects.
+        "enable_motion_bvh": True,
         "extra_args": [
             "--/rtx/hydra/supportMultiTickRate=true",
             (

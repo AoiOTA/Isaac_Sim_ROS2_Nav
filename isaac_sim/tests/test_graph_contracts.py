@@ -44,15 +44,25 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
         assert "ground_truth" not in repr(spec).lower()
     dt_values = [value for name, value in specs[0].values if name.endswith("inputs:dt")]
     assert dt_values == [pytest.approx(1.0 / 60.0)]
+    sensor_nodes = dict(specs[1].nodes)
+    sensor_values = dict(specs[1].values)
+    assert sensor_nodes["ReadJointState"].endswith("IsaacReadJointState")
+    assert "PublishJointState.inputs:targetPrim" not in sensor_values
+    assert (
+        "ReadJointState.outputs:jointNames",
+        "PublishJointState.inputs:jointNames",
+    ) in specs[1].connections
 
 
 def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
     spec = structure_tf_graph_spec(_config())
     spec.validate()
     node_types = dict(spec.nodes)
+    values = dict(spec.values)
+    assert node_types["ComputeWheelTF"].endswith("IsaacComputeTransformTree")
     assert node_types["WheelTF"].endswith("ROS2PublishTransformTree")
     for node, node_type in node_types.items():
-        if node.endswith("TF") and node != "WheelTF":
+        if node.startswith("StaticTF"):
             assert node_type.endswith("ROS2PublishRawTransformTree")
     frame_values = [
         value
@@ -60,6 +70,11 @@ def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
         if attribute.endswith(("parentFrameId", "childFrameId"))
     ]
     assert "world" not in frame_values
+    assert "WheelTF.inputs:targetPrims" not in values
+    assert (
+        "ComputeWheelTF.outputs:parentFrames",
+        "WheelTF.inputs:parentFrames",
+    ) in spec.connections
 
 
 def test_tf_ownership_requires_exactly_one_publisher():
