@@ -34,7 +34,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在历史实时报告中成立；新契约用真实 rclpy 覆盖 schema-v5 匹配、SHA 错配和 Isaac 服务超时，并在 Wheel Odom 退出时关闭整套 Realistic launch | 新 schema-v5 握手尚未完成一轮冻结候选的真实 Isaac+ROS Realistic 导航；本轮 12 秒历史报告结束时目标仍 active，没有记录该目标最终结果 |
 | Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
 | Ordered shutdown | 当前监督器对本会话认证的 launch/RViz/Teleop/helper 组执行 Lifecycle 后 INT→TERM→KILL；34 个 runtime 脚本测试、176 个 bringup 测试及 3 个顽固组用例连续 5 轮通过 | 既有真实干净退出来自前一版监督器；当前实现尚未完成真实 RViz/active-goal 连续 10 轮 N19，不能混用两代证据 |
-| 自动测试 | clean 代码提交 `ab909b4` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `907 passed / 1 skipped / 23 deselected`，ROS `725 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `21 passed / 232 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
+| 自动测试 | clean 代码提交 `567b8d1` 上完成 11 包重建、preflight，并执行 `./scripts/test.sh --with-isaac`：root `1016 passed / 1 skipped / 34 deselected`，ROS `816 tests / 0 errors / 0 failures / 1 skipped`，Isaac/USD `32 passed / 250 deselected` | 唯一 skip 是环境未安装 `shellcheck`；单元/契约门不等于真实 skid-steer、Realistic 导航或 Warehouse V2 正式统计，第三至第十三阶段仍须继续 |
 
 ## Map Manifest 与标定
 
@@ -1112,21 +1112,21 @@ PGID、leader start ticks、项目根和 `ISAAC_NAV_SESSION_ID` 均匹配的本�
 
 ## 自动测试证据与当前重跑边界
 
-2026-07-14 标准 Cylinder、TGS 32/4 和 runtime provenance schema v2 冻结点曾
-执行完整三条门。构建、预检和 `test.sh --with-isaac` 均 exit 0；预检仍如实
-报告 275 个 Fast DDS SHM 遗留工件和 CPU governor 非 performance 的环境警告，
-资产、地图、GPU 与其余门通过。该完整门早于 `121eafd`、`dcb5ca2`、`cf27605`
-三项新增工具；它们只有下表列出的定向测试与实跑证据。最终正式统计前仍必须在
-代码冻结后重新执行完整门，不能把历史全量门或局部测试外推为整个 Goal 完成。
+2026-07-15 在 clean 提交 `567b8d1` 上重新执行完整三条门。构建、预检和
+`test.sh --with-isaac` 均 exit 0；预检仍如实报告 294 个 Fast DDS SHM 遗留工件和
+20 个 CPU core governor 非 performance 的环境警告，资产、地图、GPU 与其余门通过。
+这次全门已覆盖 schema v5、三个 topology profile、严格 topology 矩阵、RootLayer
+锁层和两份新文档；它仍不能替代真实 skid-steer/topology、Realistic 导航或
+Warehouse V2 正式统计。最终正式统计前还须在最终参数冻结点再次执行完整门。
 
 | Gate | 最近证据 |
 | --- | --- |
-| `./scripts/preflight.sh` | 2026-07-14 PASS；资产/地图/GPU 通过，另有 275 个 Fast DDS SHM 遗留工件和 CPU governor 非 performance 的非阻塞环境警告 |
-| `./scripts/build_ros2.sh` | 2026-07-14：11 packages build completed，exit 0 |
-| `./scripts/test.sh --with-isaac` 的 pure/root suite | 2026-07-14：525 collected，517 passed，8 deselected |
-| ROS `colcon test` | 2026-07-14：483 tests，0 errors，0 failures，0 skipped |
-| Isaac/USD marker suite | 2026-07-14：89 collected，6 passed，83 deselected |
-| RViz config/load smoke | 结构测试包含在 454 个 root tests；安全 Panel 20/20 历史循环及本轮 Off/Monitoring/HQ 实跑组合见上文 |
+| `./scripts/preflight.sh` | 2026-07-15 PASS；资产/地图/GPU 通过，另有 294 个 Fast DDS SHM 遗留工件和 20 个 CPU core governor 非 performance 的非阻塞环境警告 |
+| `./scripts/build_ros2.sh` | 2026-07-15：11 packages build completed，exit 0 |
+| `./scripts/test.sh --with-isaac` 的 pure/root suite | 2026-07-15：1051 collected，1016 passed，1 skipped，34 deselected |
+| ROS `colcon test` | 2026-07-15：816 tests，0 errors，0 failures，1 skipped |
+| Isaac/USD marker suite | 2026-07-15：282 collected，32 passed，250 deselected |
+| RViz config/load smoke | 结构测试包含在当前 pure/root suite；安全 Panel 20/20 历史循环及本轮 Off/Monitoring/HQ 实跑组合见上文 |
 | `robot_rviz_plugins` production-only build | 独立 `-DBUILD_TESTING=OFF` configure/build/install PASS |
 | 2026-07-14 Camera 定向测试 | Camera contracts 15 passed；Camera/config 定向集合 27 passed；`isaac_sim/tests` 69 passed、3 skipped |
 | 2026-07-14 既有底盘诊断定向测试 | 48 passed；真实 Warehouse + Ideal 14/14 段完整采集 |
