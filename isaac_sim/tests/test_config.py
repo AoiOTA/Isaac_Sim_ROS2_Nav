@@ -7,6 +7,7 @@ import pytest
 
 from isaac_sim.src.config import ConfigError, load_project_config
 from isaac_sim.src.robot.articulation_runtime import (
+    ArticulationRuntimeError,
     load_articulation_physics_config,
 )
 from isaac_sim.src.sensors.sensor_factory import _load_lidar
@@ -45,6 +46,8 @@ def test_default_project_contract_loads_strictly():
     )
     assert config.ros2.rmw_implementation == "rmw_fastrtps_cpp"
     stability = load_articulation_physics_config(config.files.robot)
+    assert stability.solver_position_iterations == 32
+    assert stability.solver_velocity_iterations == 4
     assert stability.sleep_threshold == pytest.approx(0.005)
     assert stability.stabilization_threshold == pytest.approx(0.001)
     assert stability.wheel_static_friction_effort == pytest.approx(0.0)
@@ -173,3 +176,31 @@ def test_custom_robot_runtime_template_uses_the_live_schema():
         load_controller_config(custom)
     with pytest.raises(ValueError, match="robot.physics.*must be numeric"):
         load_articulation_physics_config(custom)
+
+
+@pytest.mark.parametrize(
+    ("field", "original", "value"),
+    [
+        ("solver_position_iterations", "32", "0"),
+        ("solver_position_iterations", "32", "256"),
+        ("solver_velocity_iterations", "4", "-1"),
+        ("solver_velocity_iterations", "4", "4.0"),
+        ("solver_velocity_iterations", "4", "true"),
+    ],
+)
+def test_solver_iteration_counts_require_schema_range(
+    tmp_path, field, original, value
+):
+    source = (ROOT / "isaac_sim/configs/robots/jackal.yaml").read_text()
+    source = source.replace(
+        f"{field}: {original}",
+        f"{field}: {value}",
+        1,
+    )
+    candidate = tmp_path / "robot.yaml"
+    candidate.write_text(source)
+    with pytest.raises(
+        ArticulationRuntimeError,
+        match=f"{field}.*integer in.*1, 255",
+    ):
+        load_articulation_physics_config(candidate)
