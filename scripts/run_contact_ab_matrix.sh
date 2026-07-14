@@ -645,6 +645,16 @@ ros_parameter() {
     /isaac_navigation_sim "${name}" 2>/dev/null
 }
 
+ros_parameter_boolean_matches() {
+  local actual="$1"
+  local expected="$2"
+  case "${expected}" in
+    true) [[ "${actual}" == True ]] ;;
+    false) [[ "${actual}" == False ]] ;;
+    *) return 1 ;;
+  esac
+}
+
 clear_inherited_config_overrides() {
   local variable
   while IFS= read -r variable; do
@@ -789,7 +799,6 @@ wait_for_isaac_ready() {
           && "${actual_robot_asset_sha256}" == "${robot_asset_sha256}" \
           && "${solver_position}" == 32 \
           && "${solver_velocity}" == 4 \
-          && "${solver_readback}" == true \
           && "${project_stage}" == "${current_project_stage}" \
           && "${project_stage_sha256}" == "${current_project_stage_sha256}" \
           && "${source_asset}" == "${current_source_asset}" \
@@ -798,8 +807,9 @@ wait_for_isaac_ready() {
           && "${odometry_mode}" == ideal \
           && ( "${physics_hz}" == 60 || "${physics_hz}" == 60.0 ) \
           && "${provenance_commit}" == "${batch_git_commit}" \
-          && "${provenance_branch}" == "${batch_git_branch}" \
-          && "${provenance_dirty}" == false ]] \
+          && "${provenance_branch}" == "${batch_git_branch}" ]] \
+        && ros_parameter_boolean_matches "${solver_readback}" true \
+        && ros_parameter_boolean_matches "${provenance_dirty}" false \
         && contact_readiness_matches \
           "${contact_json}" "${contact_sha256}" \
           "${profile_id}" "${profile_mode}" \

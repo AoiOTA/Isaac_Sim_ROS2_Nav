@@ -167,6 +167,21 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'workspace source deliberately' in source
 
 
+def test_ros_parameter_boolean_contract_matches_jazzy_cli_output():
+    """Jazzy --hide-type prints bool values as capitalized True/False."""
+    function = _shell_function_source('ros_parameter_boolean_matches')
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'{function}\n'
+        'ros_parameter_boolean_matches True true\n'
+        'ros_parameter_boolean_matches False false\n'
+        'if ros_parameter_boolean_matches true true; then exit 91; fi\n'
+        'if ros_parameter_boolean_matches false false; then exit 92; fi\n'
+        'if ros_parameter_boolean_matches True false; then exit 93; fi\n'
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_contact_ab_matrix_clears_untrusted_nested_overrides_dynamically():
     function = _shell_function_source('clear_inherited_config_overrides')
     result = _bash_harness(
