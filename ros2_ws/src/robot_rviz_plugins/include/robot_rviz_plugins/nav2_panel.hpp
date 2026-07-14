@@ -65,11 +65,7 @@ public:
 
 private Q_SLOTS:
   void startThread();
-  void onStartup();
-  void onShutdown();
   void onCancel();
-  void onPause();
-  void onResume();
   void onResumedWp();
   void onAccumulatedWp();
   void onAccumulatedNTP();
@@ -114,6 +110,11 @@ private:
   // The (non-spinning) client node used to invoke the action client
   rclcpp::Node::SharedPtr client_node_;
 
+  // A separate node for read-only lifecycle status polling. Lifecycle service
+  // calls block while waiting for replies, so they must not contend with the
+  // action client node that RViz spins from its timer callback.
+  rclcpp::Node::SharedPtr status_node_;
+
   // Timeout value when waiting for action servers to respnd
   std::chrono::milliseconds server_timeout_;
 
@@ -149,7 +150,9 @@ private:
   WaypointFollowerGoalHandle::SharedPtr waypoint_follower_goal_handle_;
   NavThroughPosesGoalHandle::SharedPtr nav_through_poses_goal_handle_;
 
-  // The client used to control the nav2 stack
+  // Read-only clients used to observe the nav2 stack. Activation Gate is the
+  // project's sole lifecycle owner; this panel never starts, pauses, resumes,
+  // resets, or shuts down lifecycle managers.
   std::shared_ptr<nav2_lifecycle_manager::LifecycleManagerClient> client_nav_;
   std::shared_ptr<nav2_lifecycle_manager::LifecycleManagerClient> client_loc_;
 
@@ -178,9 +181,6 @@ private:
   QState * pre_initial_{nullptr};
   QState * initial_{nullptr};
   QState * idle_{nullptr};
-  QState * reset_{nullptr};
-  QState * paused_{nullptr};
-  QState * resumed_{nullptr};
   QState * paused_wp_{nullptr};
   QState * resumed_wp_{nullptr};
 
@@ -241,55 +241,63 @@ public:
 
   void run() override
   {
-    SystemStatus status_nav = SystemStatus::TIMEOUT;
-    SystemStatus status_loc = SystemStatus::TIMEOUT;
+    SystemStatus previous_nav = SystemStatus::TIMEOUT;
+    SystemStatus previous_loc = SystemStatus::TIMEOUT;
+    bool first_sample = true;
 
-    try {
-      while (status_nav == SystemStatus::TIMEOUT && rclcpp::ok() &&
-        !isInterruptionRequested())
-      {
-        status_nav = client_nav_->is_active(std::chrono::seconds(1));
-      }
-
-      // Try to communicate twice; localization might not exist in SLAM mode.
-      bool tried_loc_bringup_once = false;
-      while (status_loc == SystemStatus::TIMEOUT && rclcpp::ok() &&
-        !isInterruptionRequested())
-      {
-        status_loc = client_loc_->is_active(std::chrono::seconds(1));
-        if (tried_loc_bringup_once) {
-          break;
+    while (rclcpp::ok() && !isInterruptionRequested()) {
+      SystemStatus status_nav = SystemStatus::TIMEOUT;
+      SystemStatus status_loc = SystemStatus::TIMEOUT;
+      try {
+        status_nav = client_nav_->is_active(std::chrono::milliseconds(500));
+        if (!isInterruptionRequested() && rclcpp::ok()) {
+          // TIMEOUT is expected when localization is intentionally absent in
+          // SLAM mode. Report it as unknown and continue polling.
+          status_loc = client_loc_->is_active(std::chrono::milliseconds(500));
         }
-        tried_loc_bringup_once = true;
+      } catch (const std::exception &) {
+        // SIGINT can invalidate the ROS context while a request is waiting.
+        // Convert transient failures to unknown; never let an exception escape
+        // a QThread and turn a normal RViz close into SIGABRT.
+        status_nav = SystemStatus::TIMEOUT;
+        status_loc = SystemStatus::TIMEOUT;
       }
-    } catch (const std::exception &) {
-      // SIGINT can invalidate the ROS context while a lifecycle request is
-      // waiting.  The panel is shutting down; never let an exception escape a
-      // QThread and turn a normal RViz close into SIGABRT.
-      return;
-    }
 
-    if (isInterruptionRequested() || !rclcpp::ok()) {
-      return;
-    }
-    if (status_nav == SystemStatus::ACTIVE) {
-      emit navigationActive();
-    } else {
-      emit navigationInactive();
-    }
-
-    if (status_loc == SystemStatus::ACTIVE) {
-      emit localizationActive();
-    } else {
-      emit localizationInactive();
+      if (isInterruptionRequested() || !rclcpp::ok()) {
+        return;
+      }
+      if (first_sample || status_nav != previous_nav) {
+        if (status_nav == SystemStatus::ACTIVE) {
+          emit navigationActive();
+        } else if (status_nav == SystemStatus::INACTIVE) {
+          emit navigationInactive();
+        } else {
+          emit navigationUnknown();
+        }
+        previous_nav = status_nav;
+      }
+      if (first_sample || status_loc != previous_loc) {
+        if (status_loc == SystemStatus::ACTIVE) {
+          emit localizationActive();
+        } else if (status_loc == SystemStatus::INACTIVE) {
+          emit localizationInactive();
+        } else {
+          emit localizationUnknown();
+        }
+        previous_loc = status_loc;
+      }
+      first_sample = false;
+      QThread::msleep(250);
     }
   }
 
 signals:
   void navigationActive();
   void navigationInactive();
+  void navigationUnknown();
   void localizationActive();
   void localizationInactive();
+  void localizationUnknown();
 
 private:
   std::shared_ptr<nav2_lifecycle_manager::LifecycleManagerClient> client_nav_;
