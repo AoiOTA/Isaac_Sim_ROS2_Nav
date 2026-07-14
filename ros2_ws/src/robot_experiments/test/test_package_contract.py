@@ -15,6 +15,7 @@ PACKAGE_ROOT = Path(__file__).parents[1]
     [
         "initial_pose.launch.py",
         "experiment.launch.py",
+        "motion_baseline.launch.py",
         "scan_fault_bridge.launch.py",
     ],
 )
@@ -71,6 +72,39 @@ def test_incremental_map_comparison_has_an_installed_cli():
         "incremental_map_compare = "
         "robot_experiments.incremental_map_compare:main"
     ) in setup_source
+
+
+def test_motion_baseline_has_an_installed_cli_and_safe_launch_contract():
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "motion_baseline_runner = "
+        "robot_experiments.motion_baseline_runner:main"
+    ) in setup_source
+    launch_source = (PACKAGE_ROOT / "launch" / "motion_baseline.launch.py").read_text()
+    assert '"use_sim_time": True' in launch_source
+    assert 'DeclareLaunchArgument("environment_id", default_value="")' in launch_source
+    assert 'DeclareLaunchArgument("odometry_mode", default_value="")' in launch_source
+
+
+def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
+    source = (
+        PACKAGE_ROOT / "robot_experiments" / "motion_baseline_runner.py"
+    ).read_text()
+    assert "create_publisher" in source
+    assert "_assert_command_channel_uncontended" in source
+    assert "get_subscription_count()" in source
+    assert "safe_stop" in source
+    assert "zero_publish_count" in source
+    assert "signal.SIGTERM" in source
+    assert "_raise_keyboard_interrupt" in source
+    assert "call_async(Trigger.Request())" in source
+    assert "fresh /clock, /odom" in source
+    run_segment = source.split("def _run_segment", 1)[1].split(
+        "def _base_report", 1
+    )[0]
+    assert run_segment.index("reset_report = self._reset_and_wait()") < run_segment.index(
+        "self._begin_segment_capture()"
+    )
 
 
 def test_scan_fault_bridge_has_an_installed_cli_and_opt_in_output():
