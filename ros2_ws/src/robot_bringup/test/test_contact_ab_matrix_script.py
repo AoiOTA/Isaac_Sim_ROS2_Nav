@@ -945,6 +945,10 @@ def test_contact_ab_matrix_has_bounded_cardinality_and_final_assertions():
     assert 'bounded_positive_integer "${timeout_seconds}" 120' in source
     assert 'bounded_positive_integer "${timeout_seconds}" 900' in source
     assert 'bounded_positive_integer "${int_checks}" 600' in source
+    assert 'plan 8.7 physical acceptance=PASS' in source
+    assert 'plan 8.7 physical acceptance=FAIL' in source
+    assert 'plan 8.7 physical acceptance=NOT_APPLICABLE' in source
+    assert 'contact A/B evidence matrix complete' in source
 
 
 def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
@@ -957,9 +961,12 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
     assert '"expected_profiles": COMPLETE_MATRIX_PROFILES' in finalizer
     assert 'row.get("ground_topology_id")' in finalizer
     assert 'analysis.get("analysis_valid") is not True' in finalizer
+    assert 'analysis.get("schema_version") != 3' in finalizer
     assert 'counts.get("excluded_reports") != 0' in finalizer
     assert 'counts.get("included_reports") != expected_runs' in finalizer
     assert 'counts.get("groups") != expected_groups' in finalizer
+    assert 'physical_acceptance.get("policy_id")' in finalizer
+    assert 'aggregate physical acceptance group accounting is invalid' in finalizer
     assert 'write_contact_ab_report(analysis, output_path)' in finalizer
 
     loop_complete = source.rindex('\nexpected_conditions=')
@@ -995,16 +1002,9 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     manifest.write_text(
         '\t'.join(manifest_header)
         + '\n'
-        + ('\t'.join(manifest_row) + '\n') * 12,
+        + ('\t'.join(manifest_row) + '\n') * 18,
         encoding='utf-8',
     )
-    analysis.write_text(
-        '{"counts":{"excluded_reports":0,"groups":6,'
-        '"included_reports":12}}\n',
-        encoding='utf-8',
-    )
-    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
-    analysis_sha256 = hashlib.sha256(analysis.read_bytes()).hexdigest()
     profile_ids = (
         'legacy_baseline',
         'threshold_corr_0p00025_offset_0p0004',
@@ -1013,12 +1013,241 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'threshold_corr_0p025_offset_0p04',
         'explicit_material',
     )
+    group_ids = sorted(
+        f'SimplePlane::simple_plane_only1_v1::{profile_id}'
+        for profile_id in profile_ids
+    )
+    physical_thresholds = {
+        'forward_abs_lateral_drift_max_m': 0.05,
+        'backward_abs_lateral_drift_max_m': 0.08,
+        'rotation_center_drift_max_m': 0.10,
+        'rotation_center_drift_asymmetry_ratio_max': 0.20,
+        'rotation_mean_yaw_rate_absolute_error_fraction_max': 0.10,
+        'stop_stable_duration_min_sec': 0.5,
+        'stop_linear_velocity_threshold_max_mps': 0.02,
+        'stop_angular_velocity_threshold_max_radps': 0.05,
+        'stop_wheel_velocity_threshold_max_radps': 0.20,
+    }
+
+    def physical_checks(group_passed):
+        maximum_checks = {
+            'forward_abs_lateral_drift_m': (
+                0.0 if group_passed else 0.051,
+                0.05,
+            ),
+            'backward_abs_lateral_drift_m': (0.0, 0.08),
+            'rotate_left_center_drift_m': (0.0, 0.10),
+            'rotate_right_center_drift_m': (0.0, 0.10),
+            'rotation_center_drift_asymmetry_ratio': (0.0, 0.20),
+            'stop_config.linear_velocity_threshold_mps': (0.0, 0.02),
+            'stop_config.angular_velocity_threshold_radps': (0.0, 0.05),
+            'stop_config.wheel_velocity_threshold_radps': (0.0, 0.20),
+        }
+        checks = {
+            check_id: {
+                'observed': observed,
+                'maximum': maximum,
+                'passed': (
+                    group_passed
+                    if check_id == 'forward_abs_lateral_drift_m'
+                    else True
+                ),
+            }
+            for check_id, (observed, maximum) in maximum_checks.items()
+        }
+        checks['stop_config.stable_duration_sec'] = {
+            'observed': 0.5,
+            'minimum': 0.5,
+            'passed': True,
+        }
+        for side, command in (('left', 0.4), ('right', -0.4)):
+            checks[
+                f'rotate_{side}_mean_yaw_rate_absolute_error_fraction'
+            ] = {
+                'observed': 0.0,
+                'maximum': 0.10,
+                'passed': True,
+                'commanded_yaw_rate_radps': command,
+                'steady_state_mean_yaw_rate_radps': command,
+                'steady_state_measurement_basis': (
+                    'actual_velocity.steady_state_window.'
+                    'angular_z_radps.mean'
+                ),
+            }
+        for segment_id in (
+            'rotate_left_360',
+            'rotate_right_360',
+            'forward_3m',
+            'backward_2m',
+            'arc_left_5s',
+            'arc_right_5s',
+        ):
+            checks[f'stop_window.{segment_id}'] = {
+                'stopped': True,
+                'stationary_onset_sec': 0.0,
+                'confirmed_sec': 0.5,
+                'observed_stable_duration_sec': 0.5,
+                'required_stable_duration_sec': 0.5,
+                'passed': True,
+            }
+        checks['wheel_direction_contract'] = {
+            'validated_segment_count': 6,
+            'validated_by': 'strict_motion_report_validator',
+            'passed': True,
+        }
+        return checks
+
+    analysis_groups = {}
+    acceptance_groups = {}
+    selection_included = []
+    for group_index, group_id in enumerate(group_ids):
+        contact_profile_id = group_id.rsplit('::', 1)[1]
+        group_passed = group_index < 2
+        input_reports = []
+        repeat_results = []
+        for repeat_index in range(1, 4):
+            label = f'{group_id}-repeat-{repeat_index}'
+            report_path = f'/repo/reports/{label}.json'
+            report_sha256 = hashlib.sha256(label.encode()).hexdigest()
+            canonical_sha256 = hashlib.sha256(
+                f'canonical-{label}'.encode()
+            ).hexdigest()
+            input_reports.append(
+                {
+                    'path': report_path,
+                    'sha256': report_sha256,
+                    'canonical_sha256': canonical_sha256,
+                    'report_schema_version': 2,
+                }
+            )
+            selection_included.append(
+                {
+                    'path': report_path,
+                    'sha256': report_sha256,
+                    'canonical_sha256': canonical_sha256,
+                    'report_schema_version': 2,
+                    'environment_id': 'SimplePlane',
+                    'ground_topology_id': 'simple_plane_only1_v1',
+                    'contact_profile_id': contact_profile_id,
+                }
+            )
+            checks = physical_checks(group_passed)
+            repeat_results.append(
+                {
+                    'repeat_index': repeat_index,
+                    'report_path': report_path,
+                    'report_sha256': report_sha256,
+                    'canonical_sha256': canonical_sha256,
+                    'passed': group_passed,
+                    'checks': checks,
+                    'failed_checks': (
+                        []
+                        if group_passed
+                        else ['forward_abs_lateral_drift_m']
+                    ),
+                }
+            )
+        analysis_groups[group_id] = {
+            'runtime_provenance_schema': 5,
+            'environment_id': 'SimplePlane',
+            'ground_topology_id': 'simple_plane_only1_v1',
+            'odometry_mode': 'ideal',
+            'contact_profile_id': contact_profile_id,
+            'repeat_count': 3,
+            'input_reports': input_reports,
+        }
+        check_ids = sorted(repeat_results[0]['checks'])
+        acceptance_groups[group_id] = {
+            'applicable': True,
+            'passed': group_passed,
+            'not_applicable_reasons': [],
+            'repeat_count': 3,
+            'checks': {
+                check_id: {
+                    'passed_repeats': sum(
+                        repeat['checks'][check_id]['passed']
+                        for repeat in repeat_results
+                    ),
+                    'failed_repeats': sum(
+                        not repeat['checks'][check_id]['passed']
+                        for repeat in repeat_results
+                    ),
+                    'all_repeats_passed': all(
+                        repeat['checks'][check_id]['passed']
+                        for repeat in repeat_results
+                    ),
+                }
+                for check_id in check_ids
+            },
+            'failed_checks': (
+                [] if group_passed else ['forward_abs_lateral_drift_m']
+            ),
+            'repeat_results': repeat_results,
+        }
+    analysis_document = {
+        'schema_version': 3,
+        'counts': {
+            'input_reports': 18,
+            'excluded_reports': 0,
+            'groups': 6,
+            'included_reports': 18,
+        },
+        'selection': {
+            'included': selection_included,
+            'excluded': [],
+        },
+        'matrix': {
+            'complete': True,
+            'required_groups': group_ids,
+            'observed_groups': group_ids,
+            'missing_groups': [],
+        },
+        'selection_policy': {
+            'required_runtime_provenance_schema': 5,
+            'expected_profiles': list(profile_ids),
+        },
+        'locked_inputs': {
+            'simulation': {'odometry_mode': 'ideal'},
+        },
+        'groups': analysis_groups,
+        'physical_acceptance': {
+            'schema_version': 1,
+            'policy_id': 'skid_steer_plan_8_7_v1',
+            'evaluation_basis': 'every_repeat',
+            'ranking_policy': 'none; pass/fail only',
+            'steady_state_measurement_basis': (
+                'actual_velocity.steady_state_window.angular_z_radps.mean '
+                'over the final_half_of_command_interval window'
+            ),
+            'thresholds': physical_thresholds,
+            'applicability': {
+                'required_runtime_provenance_schema': 5,
+                'required_environment_id': 'SimplePlane',
+                'required_ground_topology_id': 'simple_plane_only1_v1',
+                'required_odometry_mode': 'ideal',
+                'minimum_unique_repeats_per_group': 3,
+            },
+            'groups': acceptance_groups,
+            'applicable_groups': group_ids,
+            'not_applicable_groups': [],
+            'passing_groups': group_ids[:2],
+            'failed_groups': group_ids[2:],
+            'all_applicable_groups_passed': False,
+        },
+    }
+    analysis.write_text(
+        json.dumps(analysis_document, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    analysis_sha256 = hashlib.sha256(analysis.read_bytes()).hexdigest()
     profile_hashes = {
         profile_id: str(index) * 64
         for index, profile_id in enumerate(profile_ids, start=1)
     }
     summary = tmp_path / 'batch_summary.json'
     assignments = {
+        'PROJECT_ROOT': REPOSITORY_ROOT,
         'output_dir': tmp_path,
         'environment_selection': 'SimplePlane',
         'ground_topology_selection': 'baseline',
@@ -1032,8 +1261,8 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             sort_keys=True,
             separators=(',', ':'),
         ),
-        'repeats': '2',
-        'expected_conditions': '12',
+        'repeats': '3',
+        'expected_conditions': '18',
         'expected_groups': '6',
         'batch_git_commit': 'a' * 40,
         'batch_git_branch': 'codex/test',
@@ -1075,13 +1304,13 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
         f'{function}\n'
         f'{shell_assignments}\n'
-        'write_batch_summary 12 12\n'
+        'write_batch_summary 18 18\n'
         f'[[ "${{batch_summary_path}}" == {str(summary)!r} ]]\n'
     )
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
-    assert document['schema_version'] == 3
+    assert document['schema_version'] == 4
     assert document['ground_topology_selection'] == 'baseline'
     assert document['environment_topology_pairs'] == [
         {
@@ -1089,7 +1318,30 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'ground_topology_id': 'simple_plane_only1_v1',
         }
     ]
-    assert document['actual_counts']['analysis_included_reports'] == 12
+    assert document['actual_counts']['analysis_included_reports'] == 18
+    assert document['actual_counts']['acceptance_applicable_groups'] == 6
+    assert document['actual_counts']['acceptance_not_applicable_groups'] == 0
+    assert document['actual_counts']['acceptance_passing_groups'] == 2
+    assert document['actual_counts']['acceptance_failed_groups'] == 4
+    assert document['physical_acceptance'] == {
+        'schema_version': 1,
+        'policy_id': 'skid_steer_plan_8_7_v1',
+        'evaluation_basis': 'every_repeat',
+        'ranking_policy': 'none; pass/fail only',
+        'thresholds': physical_thresholds,
+        'applicability': {
+            'required_runtime_provenance_schema': 5,
+            'required_environment_id': 'SimplePlane',
+            'required_ground_topology_id': 'simple_plane_only1_v1',
+            'required_odometry_mode': 'ideal',
+            'minimum_unique_repeats_per_group': 3,
+        },
+        'all_applicable_groups_passed': False,
+        'applicable_groups': group_ids,
+        'not_applicable_groups': [],
+        'passing_groups': group_ids[:2],
+        'failed_groups': group_ids[2:],
+    }
     assert document['evidence']['manifest'] == {
         'path': str(manifest),
         'sha256': manifest_sha256,
@@ -1121,14 +1373,50 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     }
     assert not list(tmp_path.glob('.batch_summary.json.*.tmp'))
 
+    # A top-level pass/fail list is not enough to claim every-repeat evidence.
+    # Removing one repeat must fail before an atomic summary is published.
+    summary.unlink()
+    tampered_analysis = json.loads(json.dumps(analysis_document))
+    tampered_analysis['physical_acceptance']['groups'][group_ids[0]][
+        'repeat_results'
+    ].pop()
+    analysis.write_text(
+        json.dumps(tampered_analysis, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    assignments['analysis_sha256'] = hashlib.sha256(
+        analysis.read_bytes()
+    ).hexdigest()
+    tampered_assignments = '\n'.join(
+        f'{name}={str(value)!r}' for name, value in assignments.items()
+    )
+    tampered_result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{function}\n'
+        f'{tampered_assignments}\n'
+        'write_batch_summary 18 18\n'
+    )
+    assert tampered_result.returncode != 0
+    assert 'every-repeat physical acceptance evidence is invalid' \
+        in tampered_result.stderr
+    assert not summary.exists()
+
+    analysis.write_text(
+        json.dumps(analysis_document, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    assignments['analysis_sha256'] = hashlib.sha256(
+        analysis.read_bytes()
+    ).hexdigest()
+
     # The frozen file digest alone is insufficient: the summary must bind
     # every row's topology identity to the originally locked hash map.
-    summary.unlink()
     mismatched_row = (*manifest_row[:-1], '6' * 64)
     manifest.write_text(
         '\t'.join(manifest_header)
         + '\n'
-        + ('\t'.join(mismatched_row) + '\n') * 12,
+        + ('\t'.join(mismatched_row) + '\n') * 18,
         encoding='utf-8',
     )
     assignments['frozen_manifest_sha256'] = hashlib.sha256(
@@ -1142,7 +1430,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
         f'{function}\n'
         f'{mismatched_assignments}\n'
-        'write_batch_summary 12 12\n'
+        'write_batch_summary 18 18\n'
     )
     assert mismatch_result.returncode != 0
     assert 'manifest row 1 ground-topology identity mismatch' \

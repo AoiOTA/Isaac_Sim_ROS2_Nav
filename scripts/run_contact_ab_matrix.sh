@@ -1823,6 +1823,7 @@ sys.path.insert(0, str(source_root))
 from robot_experiments.contact_ab_analysis import (
     COMPLETE_MATRIX_PROFILES,
     analyse_contact_ab,
+    validate_physical_acceptance_accounting,
     write_contact_ab_report,
 )
 
@@ -1877,14 +1878,106 @@ arguments = {
 analysis = analyse_contact_ab(report_paths, wheel_radius, **arguments)
 counts = analysis.get("counts", {})
 selection = analysis.get("selection", {})
+physical_acceptance = analysis.get("physical_acceptance", {})
+expected_physical_thresholds = {
+    "forward_abs_lateral_drift_max_m": 0.05,
+    "backward_abs_lateral_drift_max_m": 0.08,
+    "rotation_center_drift_max_m": 0.10,
+    "rotation_center_drift_asymmetry_ratio_max": 0.20,
+    "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
+    "stop_stable_duration_min_sec": 0.5,
+    "stop_linear_velocity_threshold_max_mps": 0.02,
+    "stop_angular_velocity_threshold_max_radps": 0.05,
+    "stop_wheel_velocity_threshold_max_radps": 0.20,
+}
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("aggregate contact A/B analysis is not valid")
+if analysis.get("schema_version") != 3:
+    raise SystemExit("aggregate contact A/B analysis schema must be 3")
 if counts.get("excluded_reports") != 0 or selection.get("excluded") != []:
     raise SystemExit("aggregate contact A/B analysis excluded reports")
 if counts.get("included_reports") != expected_runs:
     raise SystemExit("aggregate included-report count mismatch")
 if counts.get("groups") != expected_groups:
     raise SystemExit("aggregate group count mismatch")
+if (
+    not isinstance(physical_acceptance, dict)
+    or physical_acceptance.get("schema_version") != 1
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v1"
+    or physical_acceptance.get("evaluation_basis") != "every_repeat"
+    or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
+    or physical_acceptance.get("thresholds") != expected_physical_thresholds
+    or physical_acceptance.get("applicability") != {
+        "required_runtime_provenance_schema": 5,
+        "required_environment_id": "SimplePlane",
+        "required_ground_topology_id": "simple_plane_only1_v1",
+        "required_odometry_mode": "ideal",
+        "minimum_unique_repeats_per_group": 3,
+    }
+):
+    raise SystemExit("aggregate physical acceptance contract is invalid")
+acceptance_groups = physical_acceptance.get("groups")
+passing_groups = physical_acceptance.get("passing_groups")
+failed_groups = physical_acceptance.get("failed_groups")
+applicable_groups = physical_acceptance.get("applicable_groups")
+not_applicable_groups = physical_acceptance.get("not_applicable_groups")
+analysis_groups = analysis.get("groups")
+if (
+    not isinstance(acceptance_groups, dict)
+    or not isinstance(analysis_groups, dict)
+    or set(acceptance_groups) != set(analysis_groups)
+    or not isinstance(passing_groups, list)
+    or not isinstance(failed_groups, list)
+    or not isinstance(applicable_groups, list)
+    or not isinstance(not_applicable_groups, list)
+    or len(acceptance_groups) != expected_groups
+    or any(
+        not isinstance(group, str)
+        for group in (
+            passing_groups
+            + failed_groups
+            + applicable_groups
+            + not_applicable_groups
+        )
+    )
+    or len(set(passing_groups)) != len(passing_groups)
+    or len(set(failed_groups)) != len(failed_groups)
+    or len(set(applicable_groups)) != len(applicable_groups)
+    or len(set(not_applicable_groups)) != len(not_applicable_groups)
+    or set(passing_groups) & set(failed_groups)
+    or set(applicable_groups) & set(not_applicable_groups)
+    or set(passing_groups) | set(failed_groups) != set(applicable_groups)
+    or set(applicable_groups) | set(not_applicable_groups)
+    != set(acceptance_groups)
+    or any(
+        not isinstance(group_result, dict)
+        or group_result.get("applicable") is not (group_id in applicable_groups)
+        or (
+            group_id in applicable_groups
+            and group_result.get("passed") is not (group_id in passing_groups)
+        )
+        or (
+            group_id in not_applicable_groups
+            and (
+                group_result.get("passed") is not None
+                or not isinstance(
+                    group_result.get("not_applicable_reasons"), list
+                )
+                or not group_result.get("not_applicable_reasons")
+            )
+        )
+        for group_id, group_result in acceptance_groups.items()
+    )
+    or physical_acceptance.get("all_applicable_groups_passed")
+    is not (None if not applicable_groups else not failed_groups)
+):
+    raise SystemExit("aggregate physical acceptance group accounting is invalid")
+try:
+    validate_physical_acceptance_accounting(analysis, repeats)
+except Exception as exc:
+    raise SystemExit(
+        f"aggregate every-repeat physical acceptance evidence is invalid: {exc}"
+    ) from exc
 write_contact_ab_report(analysis, output_path)
 PY
 }
@@ -1899,6 +1992,7 @@ write_batch_summary() {
   }
   python3 - \
     "${batch_summary_path}" \
+    "${PROJECT_ROOT}" \
     "${environment_selection}" "${ground_topology_selection}" \
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
@@ -1928,6 +2022,7 @@ import tempfile
 
 (
     output_name,
+    repository_root_text,
     environment_selection,
     ground_topology_selection,
     environment_topology_pairs_json,
@@ -1965,6 +2060,11 @@ import tempfile
 output_path = Path(output_name)
 manifest_path = Path(manifest_name)
 analysis_path = Path(analysis_name)
+source_root = Path(repository_root_text) / "ros2_ws/src/robot_experiments"
+sys.path.insert(0, str(source_root))
+from robot_experiments.contact_ab_analysis import (
+    validate_physical_acceptance_accounting,
+)
 
 def file_sha256(path):
     if not path.is_file() or path.is_symlink():
@@ -1977,6 +2077,18 @@ if file_sha256(analysis_path) != analysis_sha256:
     raise SystemExit("aggregate analysis SHA256 changed before summary")
 analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
 analysis_counts = analysis.get("counts", {})
+physical_acceptance = analysis.get("physical_acceptance", {})
+expected_physical_thresholds = {
+    "forward_abs_lateral_drift_max_m": 0.05,
+    "backward_abs_lateral_drift_max_m": 0.08,
+    "rotation_center_drift_max_m": 0.10,
+    "rotation_center_drift_asymmetry_ratio_max": 0.20,
+    "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
+    "stop_stable_duration_min_sec": 0.5,
+    "stop_linear_velocity_threshold_max_mps": 0.02,
+    "stop_angular_velocity_threshold_max_radps": 0.05,
+    "stop_wheel_velocity_threshold_max_radps": 0.20,
+}
 expected_runs = int(expected_runs_text)
 expected_groups = int(expected_groups_text)
 if (
@@ -1987,6 +2099,78 @@ if (
     or analysis_counts.get("groups") != expected_groups
 ):
     raise SystemExit("batch summary counts are not a complete successful matrix")
+acceptance_groups = physical_acceptance.get("groups")
+passing_groups = physical_acceptance.get("passing_groups")
+failed_groups = physical_acceptance.get("failed_groups")
+applicable_groups = physical_acceptance.get("applicable_groups")
+not_applicable_groups = physical_acceptance.get("not_applicable_groups")
+if (
+    analysis.get("schema_version") != 3
+    or physical_acceptance.get("schema_version") != 1
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v1"
+    or physical_acceptance.get("evaluation_basis") != "every_repeat"
+    or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
+    or physical_acceptance.get("thresholds") != expected_physical_thresholds
+    or physical_acceptance.get("applicability") != {
+        "required_runtime_provenance_schema": 5,
+        "required_environment_id": "SimplePlane",
+        "required_ground_topology_id": "simple_plane_only1_v1",
+        "required_odometry_mode": "ideal",
+        "minimum_unique_repeats_per_group": 3,
+    }
+    or not isinstance(acceptance_groups, dict)
+    or len(acceptance_groups) != expected_groups
+    or not isinstance(passing_groups, list)
+    or not isinstance(failed_groups, list)
+    or not isinstance(applicable_groups, list)
+    or not isinstance(not_applicable_groups, list)
+    or any(
+        not isinstance(group, str)
+        for group in (
+            passing_groups
+            + failed_groups
+            + applicable_groups
+            + not_applicable_groups
+        )
+    )
+    or len(set(passing_groups)) != len(passing_groups)
+    or len(set(failed_groups)) != len(failed_groups)
+    or len(set(applicable_groups)) != len(applicable_groups)
+    or len(set(not_applicable_groups)) != len(not_applicable_groups)
+    or set(passing_groups) & set(failed_groups)
+    or set(applicable_groups) & set(not_applicable_groups)
+    or set(passing_groups) | set(failed_groups) != set(applicable_groups)
+    or set(applicable_groups) | set(not_applicable_groups)
+    != set(acceptance_groups)
+    or any(
+        not isinstance(group_result, dict)
+        or group_result.get("applicable") is not (group_id in applicable_groups)
+        or (
+            group_id in applicable_groups
+            and group_result.get("passed") is not (group_id in passing_groups)
+        )
+        or (
+            group_id in not_applicable_groups
+            and (
+                group_result.get("passed") is not None
+                or not isinstance(
+                    group_result.get("not_applicable_reasons"), list
+                )
+                or not group_result.get("not_applicable_reasons")
+            )
+        )
+        for group_id, group_result in acceptance_groups.items()
+    )
+    or physical_acceptance.get("all_applicable_groups_passed")
+    is not (None if not applicable_groups else not failed_groups)
+):
+    raise SystemExit("batch physical acceptance accounting is invalid")
+try:
+    validate_physical_acceptance_accounting(analysis, int(repeats_text))
+except Exception as exc:
+    raise SystemExit(
+        f"batch every-repeat physical acceptance evidence is invalid: {exc}"
+    ) from exc
 profile_hashes = json.loads(profile_hashes_json)
 if not isinstance(profile_hashes, dict) or len(profile_hashes) != 6:
     raise SystemExit("locked profile hash map must contain six profiles")
@@ -2058,7 +2242,7 @@ for row_index, row in enumerate(manifest_documents, start=1):
             f"manifest row {row_index} ground-topology identity mismatch"
         )
 summary = {
-    "schema_version": 3,
+    "schema_version": 4,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
     "environment_selection": environment_selection,
@@ -2081,6 +2265,10 @@ summary = {
         "analysis_included_reports": analysis_counts.get("included_reports"),
         "analysis_excluded_reports": analysis_counts.get("excluded_reports"),
         "analysis_groups": analysis_counts.get("groups"),
+        "acceptance_applicable_groups": len(applicable_groups),
+        "acceptance_not_applicable_groups": len(not_applicable_groups),
+        "acceptance_passing_groups": len(passing_groups),
+        "acceptance_failed_groups": len(failed_groups),
     },
     "git": {"commit": git_commit, "branch": git_branch},
     "locked_protocol_inputs": {
@@ -2118,6 +2306,21 @@ summary = {
     "evidence": {
         "manifest": {"path": str(manifest_path), "sha256": manifest_sha256},
         "analysis": {"path": str(analysis_path), "sha256": analysis_sha256},
+    },
+    "physical_acceptance": {
+        "schema_version": physical_acceptance["schema_version"],
+        "policy_id": physical_acceptance["policy_id"],
+        "evaluation_basis": physical_acceptance["evaluation_basis"],
+        "ranking_policy": physical_acceptance["ranking_policy"],
+        "thresholds": physical_acceptance["thresholds"],
+        "applicability": physical_acceptance["applicability"],
+        "all_applicable_groups_passed": physical_acceptance[
+            "all_applicable_groups_passed"
+        ],
+        "applicable_groups": applicable_groups,
+        "not_applicable_groups": not_applicable_groups,
+        "passing_groups": passing_groups,
+        "failed_groups": failed_groups,
     },
 }
 temporary_descriptor, temporary_name = tempfile.mkstemp(
@@ -2234,4 +2437,43 @@ analysis_sha256="$(
 write_batch_summary "${successful_rows}" "${manifest_rows}" \
   || die "cannot write atomic contact A/B batch summary"
 
-log_info "contact A/B matrix complete: ${batch_summary_path}"
+physical_status_line="$(
+  python3 - "${batch_summary_path}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+summary = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+physical = summary.get("physical_acceptance", {})
+verdict = physical.get("all_applicable_groups_passed")
+applicable = physical.get("applicable_groups")
+passing = physical.get("passing_groups")
+failed = physical.get("failed_groups")
+if (
+    verdict is not None and not isinstance(verdict, bool)
+    or not isinstance(applicable, list)
+    or not isinstance(passing, list)
+    or not isinstance(failed, list)
+):
+    raise SystemExit("batch summary physical status is invalid")
+status = "not_applicable" if verdict is None else "pass" if verdict else "fail"
+print(status, len(applicable), len(passing), len(failed), sep="\t")
+PY
+)" || die "cannot read completed batch physical acceptance status"
+IFS=$'\t' read -r physical_status physical_applicable physical_passing physical_failed \
+  <<<"${physical_status_line}"
+case "${physical_status}" in
+  pass)
+    log_info "contact A/B evidence complete; plan 8.7 physical acceptance=PASS (${physical_passing}/${physical_applicable} applicable groups)"
+    ;;
+  fail)
+    log_warn "contact A/B evidence complete; plan 8.7 physical acceptance=FAIL (${physical_failed}/${physical_applicable} applicable groups failed)"
+    ;;
+  not_applicable)
+    log_warn "contact A/B evidence complete; plan 8.7 physical acceptance=NOT_APPLICABLE (requires SimplePlane + Ideal + at least 3 repeats)"
+    ;;
+  *)
+    die "unknown completed batch physical acceptance status: ${physical_status}"
+    ;;
+esac
+log_info "contact A/B evidence matrix complete: ${batch_summary_path}"

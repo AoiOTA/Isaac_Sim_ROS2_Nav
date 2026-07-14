@@ -14,6 +14,7 @@ from robot_experiments.contact_ab_analysis import (
     COMPLETE_MATRIX_PROFILES,
     analyse_contact_ab,
     main,
+    validate_physical_acceptance_accounting,
 )
 
 
@@ -52,6 +53,7 @@ def _runtime_provenance(
     *,
     environment: str = "Warehouse",
     contact_profile: str = "legacy_baseline",
+    odometry_mode: str = "ideal",
     dirty: bool = False,
 ) -> dict[str, object]:
     wheel_colliders = [
@@ -131,7 +133,7 @@ def _runtime_provenance(
         },
         "simulation": {
             "navigation_mode": "mapping",
-            "odometry_mode": "ideal",
+            "odometry_mode": odometry_mode,
             "physics_hz": 60.0,
         },
         "contact": {
@@ -197,6 +199,37 @@ def _upgrade_runtime_provenance_to_v4(report):
     return report
 
 
+def _upgrade_motion_report_to_v2(report):
+    report["schema_version"] = 2
+    for segment in report["segments"]:
+        command = segment["command"]
+        start_stamp = command["start_stamp_ns"]
+        end_stamp = command["end_stamp_ns"]
+        steady_start_stamp = start_stamp + (end_stamp - start_stamp) // 2
+        mean_yaw_rate = segment["actual_velocity"]["angular_z_radps"]["mean"]
+        sample_count = 5
+        segment["actual_velocity"]["steady_state_window"] = {
+            "schema_version": 1,
+            "definition": "final_half_of_command_interval",
+            "start_stamp_ns": steady_start_stamp,
+            "end_stamp_ns": end_stamp,
+            "observed_duration_sec": (
+                end_stamp - steady_start_stamp
+            ) / 1_000_000_000,
+            "sample_count": sample_count,
+            "angular_z_radps": {
+                "sample_count": sample_count,
+                "mean": mean_yaw_rate,
+                "mean_abs": abs(mean_yaw_rate),
+                "minimum": mean_yaw_rate,
+                "maximum": mean_yaw_rate,
+                "peak_abs": abs(mean_yaw_rate),
+                "rmse": abs(mean_yaw_rate),
+            },
+        }
+    return report
+
+
 def _collider_paths_sha256(paths):
     canonical = json.dumps(
         sorted(paths),
@@ -206,7 +239,16 @@ def _collider_paths_sha256(paths):
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def _upgrade_runtime_provenance_to_v5(report, topology=None):
+def _upgrade_runtime_provenance_to_v5(
+    report,
+    topology=None,
+    *,
+    report_schema_version=2,
+):
+    if report_schema_version == 2:
+        _upgrade_motion_report_to_v2(report)
+    else:
+        assert report_schema_version == 1
     _upgrade_runtime_provenance_to_v4(report)
     provenance = report["runtime_provenance"]
     provenance["schema_version"] = 5
@@ -355,8 +397,8 @@ def _segment(
         },
         "stopping": {
             "stopped": True,
-            "stationary_onset_after_command_sec": 0.05 * scale,
-            "confirmed_after_command_sec": 0.55 * scale,
+            "stationary_onset_after_command_sec": 0.05,
+            "confirmed_after_command_sec": 0.55,
         },
         "wheels": {
             "all_directions_match": True,
@@ -390,6 +432,7 @@ def _report(
     *,
     environment: str = "Warehouse",
     contact_profile: str = "legacy_baseline",
+    odometry_mode: str = "ideal",
     scale: float = 1.0,
     dirty: bool = False,
 ) -> dict[str, object]:
@@ -409,7 +452,7 @@ def _report(
         "diagnostic": "four_wheel_chassis_motion_baseline",
         "profile_id": MOTION_PROFILE_ID,
         "environment_id": environment,
-        "odometry_mode": "ideal",
+        "odometry_mode": odometry_mode,
         "config_file": "/repo/motion_skid_steer_ab.yaml",
         "config_sha256": "3" * 64,
         "output_file": f"/reports/{environment}_{contact_profile}_{scale}.json",
@@ -422,13 +465,19 @@ def _report(
             "reset": {},
             "sampling": {},
             "limits": {},
-            "stop": {"wheel_velocity_threshold_radps": 0.2},
+            "stop": {
+                "linear_velocity_threshold_mps": 0.02,
+                "angular_velocity_threshold_radps": 0.05,
+                "wheel_velocity_threshold_radps": 0.2,
+                "stable_duration_sec": 0.5,
+            },
             "wheels": WHEELS,
             "segments": configuration_segments,
         },
         "runtime_provenance": _runtime_provenance(
             environment=environment,
             contact_profile=contact_profile,
+            odometry_mode=odometry_mode,
             dirty=dirty,
         ),
         "segments": [_segment(specification, scale=scale) for specification in SEGMENTS],
@@ -471,6 +520,8 @@ def _three_v5_reports(
     environment: str = "Warehouse",
     topology: str = "warehouse_combined32_v1",
     contact_profile: str = "legacy_baseline",
+    odometry_mode: str = "ideal",
+    report_schema_version: int = 2,
 ) -> list[Path]:
     return [
         _write(
@@ -479,13 +530,57 @@ def _three_v5_reports(
                 _report(
                     environment=environment,
                     contact_profile=contact_profile,
+                    odometry_mode=odometry_mode,
                     scale=scale,
                 ),
                 topology,
+                report_schema_version=report_schema_version,
             ),
         )
         for index, scale in enumerate((0.98, 1.0, 1.02))
     ]
+
+
+def _three_physical_acceptance_reports(
+    directory: Path,
+    *,
+    contact_profile: str = "legacy_baseline",
+    odometry_mode: str = "ideal",
+) -> list[Path]:
+    return _three_v5_reports(
+        directory,
+        environment="SimplePlane",
+        topology="simple_plane_only1_v1",
+        contact_profile=contact_profile,
+        odometry_mode=odometry_mode,
+    )
+
+
+def _set_yaw_gain(segment, gain):
+    expected = segment["yaw"]["expected_change_rad"]
+    measured = expected * gain
+    segment["yaw"]["change_rad"] = measured
+    segment["yaw"]["error_rad"] = measured - expected
+    segment["pose"]["end"]["yaw_rad"] = measured
+    segment["actual_velocity"]["angular_z_radps"]["mean"] = (
+        segment["command"]["angular_z_radps"] * gain
+    )
+    steady_state_window = segment["actual_velocity"].get(
+        "steady_state_window"
+    )
+    if steady_state_window is not None:
+        steady_rate = segment["command"]["angular_z_radps"] * gain
+        steady_distribution = steady_state_window["angular_z_radps"]
+        steady_distribution.update(
+            {
+                "mean": steady_rate,
+                "mean_abs": abs(steady_rate),
+                "minimum": steady_rate,
+                "maximum": steady_rate,
+                "peak_abs": abs(steady_rate),
+                "rmse": abs(steady_rate),
+            }
+        )
 
 
 def test_three_repeats_produce_audited_group_metrics(tmp_path):
@@ -495,6 +590,7 @@ def test_three_repeats_produce_audited_group_metrics(tmp_path):
     report = analyse_contact_ab(paths, RADIUS_M)
 
     assert report["schema_version"] == 1
+    assert "physical_acceptance" not in report
     assert report["report_type"] == "contact_ab_analysis"
     assert report["analysis_valid"] is True
     assert report["selection_policy"][
@@ -643,7 +739,7 @@ def test_v5_separates_ground_topology_from_environment_and_contact(tmp_path):
         expected_profiles=("legacy_baseline",),
     )
 
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["analysis_valid"] is True
     assert report["selection_policy"][
         "required_runtime_provenance_schema"
@@ -669,6 +765,647 @@ def test_v5_separates_ground_topology_from_environment_and_contact(tmp_path):
     assert plane_group["ground_topology_contract"]["ground_topology"][
         "target_collider_count"
     ] == 1
+
+
+def test_v5_physical_acceptance_is_every_repeat_and_non_ranking(tmp_path):
+    paths = _three_physical_acceptance_reports(tmp_path)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    acceptance = report["physical_acceptance"]
+    group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
+    group = acceptance["groups"][group_id]
+    assert acceptance["schema_version"] == 1
+    assert acceptance["policy_id"] == "skid_steer_plan_8_7_v1"
+    assert acceptance["evaluation_basis"] == "every_repeat"
+    assert acceptance["ranking_policy"] == "none; pass/fail only"
+    assert acceptance["applicability"] == {
+        "required_runtime_provenance_schema": 5,
+        "required_environment_id": "SimplePlane",
+        "required_ground_topology_id": "simple_plane_only1_v1",
+        "required_odometry_mode": "ideal",
+        "minimum_unique_repeats_per_group": 3,
+    }
+    assert acceptance["steady_state_measurement_basis"] == (
+        "actual_velocity.steady_state_window.angular_z_radps.mean over the "
+        "final_half_of_command_interval window"
+    )
+    assert acceptance["thresholds"] == {
+        "forward_abs_lateral_drift_max_m": 0.05,
+        "backward_abs_lateral_drift_max_m": 0.08,
+        "rotation_center_drift_max_m": 0.10,
+        "rotation_center_drift_asymmetry_ratio_max": 0.20,
+        "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
+        "stop_stable_duration_min_sec": 0.5,
+        "stop_linear_velocity_threshold_max_mps": 0.02,
+        "stop_angular_velocity_threshold_max_radps": 0.05,
+        "stop_wheel_velocity_threshold_max_radps": 0.20,
+    }
+    assert acceptance["applicable_groups"] == [group_id]
+    assert acceptance["not_applicable_groups"] == []
+    assert acceptance["passing_groups"] == [group_id]
+    assert acceptance["failed_groups"] == []
+    assert acceptance["all_applicable_groups_passed"] is True
+    assert group["applicable"] is True
+    assert group["not_applicable_reasons"] == []
+    assert group["passed"] is True
+    assert group["repeat_count"] == 3
+    assert group["failed_checks"] == []
+    assert len(group["repeat_results"]) == 3
+    assert all(result["passed"] for result in group["repeat_results"])
+    assert all(
+        len(result["checks"]) == 18
+        for result in group["repeat_results"]
+    )
+    assert report["groups"][group_id]["runtime_provenance_schema"] == 5
+    assert report["groups"][group_id]["odometry_mode"] == "ideal"
+    assert all(
+        result["checks"]["wheel_direction_contract"] == {
+            "validated_segment_count": 6,
+            "validated_by": "strict_motion_report_validator",
+            "passed": True,
+        }
+        for result in group["repeat_results"]
+    )
+    assert report["method"]["ranking_policy"].startswith("none;")
+    assert "best_profile" not in json.dumps(report)
+
+
+def test_v5_physical_acceptance_rejects_one_repeat_not_the_mean(tmp_path):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    changed = json.loads(paths[1].read_text(encoding="utf-8"))
+    forward = changed["segments"][2]
+    forward["pose"]["lateral_displacement_m"] = 0.051
+    forward["pose"]["lateral_drift_m"] = 0.051
+    _write(paths[1], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
+    group = report["physical_acceptance"]["groups"][group_id]
+    assert report["analysis_valid"] is True
+    assert report["groups"][group_id]["segments"]["forward_3m"][
+        "lateral_drift_m"
+    ]["mean"] < 0.05
+    assert report["physical_acceptance"][
+        "all_applicable_groups_passed"
+    ] is False
+    assert report["physical_acceptance"]["failed_groups"] == [group_id]
+    assert group["passed"] is False
+    assert group["failed_checks"] == ["forward_abs_lateral_drift_m"]
+    assert [result["passed"] for result in group["repeat_results"]] == [
+        True,
+        False,
+        True,
+    ]
+    assert group["repeat_results"][1]["failed_checks"] == [
+        "forward_abs_lateral_drift_m"
+    ]
+    assert group["checks"]["forward_abs_lateral_drift_m"] == {
+        "passed_repeats": 2,
+        "failed_repeats": 1,
+        "all_repeats_passed": False,
+    }
+
+
+@pytest.mark.parametrize("center_drift", (0.0, 0.10))
+def test_v5_physical_acceptance_includes_exact_boundaries_and_zero_symmetry(
+    tmp_path,
+    center_drift,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    for path in paths:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        forward = document["segments"][2]
+        forward["pose"]["lateral_displacement_m"] = 0.05
+        forward["pose"]["lateral_drift_m"] = 0.05
+        backward = document["segments"][3]
+        backward["pose"]["lateral_displacement_m"] = -0.08
+        backward["pose"]["lateral_drift_m"] = -0.08
+        for index, gain in ((0, 0.90), (1, 1.10)):
+            document["segments"][index]["pose"][
+                "translation_drift_m"
+            ] = center_drift
+            _set_yaw_gain(document["segments"][index], gain)
+        _write(path, document)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    group = next(iter(report["physical_acceptance"]["groups"].values()))
+    assert group["passed"] is True
+    assert all(
+        result["checks"]["rotation_center_drift_asymmetry_ratio"][
+            "observed"
+        ]
+        == 0.0
+        for result in group["repeat_results"]
+    )
+    assert all(
+        result["checks"]["stop_window.rotate_left_360"][
+            "observed_stable_duration_sec"
+        ]
+        == pytest.approx(0.5)
+        for result in group["repeat_results"]
+    )
+    assert all(
+        result["checks"][
+            "rotate_left_mean_yaw_rate_absolute_error_fraction"
+        ]["passed"]
+        and result["checks"][
+            "rotate_right_mean_yaw_rate_absolute_error_fraction"
+        ]["passed"]
+        for result in group["repeat_results"]
+    )
+
+
+def test_v5_physical_acceptance_uses_steady_state_yaw_rate_not_yaw_gain(
+    tmp_path,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    changed = json.loads(paths[1].read_text(encoding="utf-8"))
+    changed["segments"][0]["actual_velocity"]["steady_state_window"][
+        "angular_z_radps"
+    ]["mean"] = 0.2
+    _write(paths[1], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
+    analysis_group = report["groups"][group_id]
+    acceptance_group = report["physical_acceptance"]["groups"][group_id]
+    check_id = "rotate_left_mean_yaw_rate_absolute_error_fraction"
+    assert analysis_group["segments"]["rotate_left_360"]["yaw_gain"][
+        "mean"
+    ] == pytest.approx(1.0)
+    assert acceptance_group["passed"] is False
+    assert acceptance_group["failed_checks"] == [check_id]
+    failed_check = acceptance_group["repeat_results"][1]["checks"][check_id]
+    assert failed_check == {
+        "observed": 0.5,
+        "maximum": 0.10,
+        "passed": False,
+        "commanded_yaw_rate_radps": 0.4,
+        "steady_state_mean_yaw_rate_radps": 0.2,
+        "steady_state_measurement_basis": (
+            "actual_velocity.steady_state_window.angular_z_radps.mean"
+        ),
+    }
+
+
+def test_v5_schema1_motion_reports_are_aggregated_but_gate_is_not_applicable(
+    tmp_path,
+):
+    paths = _three_v5_reports(
+        tmp_path,
+        environment="SimplePlane",
+        topology="simple_plane_only1_v1",
+        report_schema_version=1,
+    )
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
+    acceptance = report["physical_acceptance"]
+    assert report["analysis_valid"] is True
+    assert {
+        item["report_schema_version"]
+        for item in report["groups"][group_id]["input_reports"]
+    } == {1}
+    assert acceptance["groups"][group_id]["applicable"] is False
+    assert acceptance["groups"][group_id]["passed"] is None
+    assert acceptance["groups"][group_id]["not_applicable_reasons"] == [
+        "motion_report_schema_not_2"
+    ]
+    assert acceptance["all_applicable_groups_passed"] is None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_window",
+        "unknown_window_key",
+        "wrong_window_schema",
+        "wrong_definition",
+        "wrong_start",
+        "wrong_end",
+        "wrong_duration",
+        "zero_sample_count",
+        "distribution_count_mismatch",
+        "nonfinite_mean_shape",
+        "unknown_distribution_key",
+    ),
+)
+def test_v2_motion_report_steady_state_window_is_strict(tmp_path, mutation):
+    path = _three_physical_acceptance_reports(tmp_path)[0]
+    document = json.loads(path.read_text(encoding="utf-8"))
+    actual_velocity = document["segments"][0]["actual_velocity"]
+    window = actual_velocity["steady_state_window"]
+    if mutation == "missing_window":
+        del actual_velocity["steady_state_window"]
+    elif mutation == "unknown_window_key":
+        window["unlocked"] = True
+    elif mutation == "wrong_window_schema":
+        window["schema_version"] = 2
+    elif mutation == "wrong_definition":
+        window["definition"] = "last_sample_only"
+    elif mutation == "wrong_start":
+        window["start_stamp_ns"] += 1
+    elif mutation == "wrong_end":
+        window["end_stamp_ns"] -= 1
+    elif mutation == "wrong_duration":
+        window["observed_duration_sec"] += 0.001
+    elif mutation == "zero_sample_count":
+        window["sample_count"] = 0
+    elif mutation == "distribution_count_mismatch":
+        window["angular_z_radps"]["sample_count"] += 1
+    elif mutation == "nonfinite_mean_shape":
+        window["angular_z_radps"]["mean"] = "not-a-number"
+    else:
+        assert mutation == "unknown_distribution_key"
+        window["angular_z_radps"]["unlocked"] = 0.4
+    _write(path, document)
+
+    with pytest.raises(ConfigurationError, match="steady_state_window"):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
+
+
+def test_v5_physical_acceptance_marks_warehouse_group_not_applicable(
+    tmp_path,
+):
+    paths = _three_v5_reports(tmp_path)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    acceptance = report["physical_acceptance"]
+    group_id = "Warehouse::warehouse_combined32_v1::legacy_baseline"
+    group = acceptance["groups"][group_id]
+    assert acceptance["applicable_groups"] == []
+    assert acceptance["not_applicable_groups"] == [group_id]
+    assert acceptance["passing_groups"] == []
+    assert acceptance["failed_groups"] == []
+    assert acceptance["all_applicable_groups_passed"] is None
+    assert group == {
+        "applicable": False,
+        "passed": None,
+        "not_applicable_reasons": [
+            "environment_not_SimplePlane",
+            "ground_topology_not_simple_plane_only1_v1",
+        ],
+        "repeat_count": 3,
+        "checks": {},
+        "failed_checks": [],
+        "repeat_results": [],
+    }
+
+
+@pytest.mark.parametrize(
+    "tamper_case",
+    (
+        "acceptance_group_missing",
+        "partition_overlap",
+        "acceptance_repeat_count_bool",
+        "analysis_input_report_removed",
+        "repeat_identity_sha_swap",
+        "repeat_index_gap",
+        "repeat_check_passed_non_bool",
+        "repeat_failed_checks_drift",
+        "repeat_check_removed",
+        "required_check_removed_everywhere",
+        "observed_threshold_contradiction",
+        "leaf_limit_drift",
+        "yaw_evidence_drift",
+        "stop_duration_drift",
+        "aggregate_count_drift",
+        "group_passed_drift",
+        "forged_not_applicable",
+        "top_threshold_drift",
+        "top_policy_drift",
+        "top_applicability_drift",
+        "top_steady_basis_drift",
+        "selection_identity_drift",
+        "matrix_observed_drift",
+        "coordinated_group_identity_forgery",
+        "forged_odometry_not_applicable",
+        "top_verdict_drift",
+    ),
+)
+def test_physical_acceptance_accounting_rejects_applicable_tampering(
+    tmp_path,
+    tamper_case,
+):
+    report = analyse_contact_ab(
+        _three_physical_acceptance_reports(tmp_path),
+        RADIUS_M,
+    )
+    document = json.loads(json.dumps(report))
+    acceptance = document["physical_acceptance"]
+    group_id = acceptance["applicable_groups"][0]
+    group = acceptance["groups"][group_id]
+    first_repeat = group["repeat_results"][0]
+    first_check_id = sorted(first_repeat["checks"])[0]
+
+    if tamper_case == "acceptance_group_missing":
+        del acceptance["groups"][group_id]
+    elif tamper_case == "partition_overlap":
+        acceptance["failed_groups"].append(group_id)
+    elif tamper_case == "acceptance_repeat_count_bool":
+        group["repeat_count"] = True
+    elif tamper_case == "analysis_input_report_removed":
+        document["groups"][group_id]["input_reports"].pop()
+    elif tamper_case == "repeat_identity_sha_swap":
+        repeat_a, repeat_b = group["repeat_results"][:2]
+        repeat_a["report_sha256"], repeat_b["report_sha256"] = (
+            repeat_b["report_sha256"],
+            repeat_a["report_sha256"],
+        )
+    elif tamper_case == "repeat_index_gap":
+        group["repeat_results"][1]["repeat_index"] = 3
+    elif tamper_case == "repeat_check_passed_non_bool":
+        first_repeat["checks"][first_check_id]["passed"] = 1
+    elif tamper_case == "repeat_failed_checks_drift":
+        first_repeat["failed_checks"] = [first_check_id]
+    elif tamper_case == "repeat_check_removed":
+        del first_repeat["checks"][first_check_id]
+    elif tamper_case == "required_check_removed_everywhere":
+        for repeat in group["repeat_results"]:
+            del repeat["checks"][first_check_id]
+        del group["checks"][first_check_id]
+    elif tamper_case == "observed_threshold_contradiction":
+        first_repeat["checks"]["forward_abs_lateral_drift_m"][
+            "observed"
+        ] = 0.051
+    elif tamper_case == "leaf_limit_drift":
+        first_repeat["checks"]["forward_abs_lateral_drift_m"][
+            "maximum"
+        ] = 0.06
+    elif tamper_case == "yaw_evidence_drift":
+        first_repeat["checks"][
+            "rotate_left_mean_yaw_rate_absolute_error_fraction"
+        ]["steady_state_mean_yaw_rate_radps"] = 0.2
+    elif tamper_case == "stop_duration_drift":
+        first_repeat["checks"]["stop_window.forward_3m"][
+            "observed_stable_duration_sec"
+        ] = 0.6
+    elif tamper_case == "aggregate_count_drift":
+        group["checks"][first_check_id]["passed_repeats"] = 2
+    elif tamper_case == "group_passed_drift":
+        group["passed"] = False
+    elif tamper_case == "forged_not_applicable":
+        group.update(
+            {
+                "applicable": False,
+                "passed": None,
+                "not_applicable_reasons": ["motion_report_schema_not_2"],
+                "checks": {},
+                "failed_checks": [],
+                "repeat_results": [],
+            }
+        )
+        acceptance["applicable_groups"] = []
+        acceptance["not_applicable_groups"] = [group_id]
+        acceptance["passing_groups"] = []
+        acceptance["failed_groups"] = []
+        acceptance["all_applicable_groups_passed"] = None
+    elif tamper_case == "top_threshold_drift":
+        acceptance["thresholds"]["forward_abs_lateral_drift_max_m"] = 0.06
+    elif tamper_case == "top_policy_drift":
+        acceptance["policy_id"] = "forged"
+    elif tamper_case == "top_applicability_drift":
+        acceptance["applicability"]["required_odometry_mode"] = "realistic"
+    elif tamper_case == "top_steady_basis_drift":
+        acceptance["steady_state_measurement_basis"] = "whole command"
+    elif tamper_case == "selection_identity_drift":
+        document["selection"]["included"][0]["sha256"] = "0" * 64
+    elif tamper_case == "matrix_observed_drift":
+        document["matrix"]["observed_groups"] = []
+    elif tamper_case == "coordinated_group_identity_forgery":
+        forged_group_id = (
+            "Warehouse::warehouse_combined32_v1::legacy_baseline"
+        )
+        analysis_group = document["groups"].pop(group_id)
+        analysis_group["environment_id"] = "Warehouse"
+        analysis_group["ground_topology_id"] = "warehouse_combined32_v1"
+        document["groups"][forged_group_id] = analysis_group
+        forged_acceptance_group = acceptance["groups"].pop(group_id)
+        forged_acceptance_group.update(
+            {
+                "applicable": False,
+                "passed": None,
+                "not_applicable_reasons": [
+                    "environment_not_SimplePlane",
+                    "ground_topology_not_simple_plane_only1_v1",
+                ],
+                "checks": {},
+                "failed_checks": [],
+                "repeat_results": [],
+            }
+        )
+        acceptance["groups"][forged_group_id] = forged_acceptance_group
+        acceptance["applicable_groups"] = []
+        acceptance["not_applicable_groups"] = [forged_group_id]
+        acceptance["passing_groups"] = []
+        acceptance["failed_groups"] = []
+        acceptance["all_applicable_groups_passed"] = None
+    elif tamper_case == "forged_odometry_not_applicable":
+        document["groups"][group_id]["odometry_mode"] = "realistic"
+        group.update(
+            {
+                "applicable": False,
+                "passed": None,
+                "not_applicable_reasons": ["odometry_mode_not_ideal"],
+                "checks": {},
+                "failed_checks": [],
+                "repeat_results": [],
+            }
+        )
+        acceptance["applicable_groups"] = []
+        acceptance["not_applicable_groups"] = [group_id]
+        acceptance["passing_groups"] = []
+        acceptance["failed_groups"] = []
+        acceptance["all_applicable_groups_passed"] = None
+    else:
+        assert tamper_case == "top_verdict_drift"
+        acceptance["all_applicable_groups_passed"] = None
+
+    with pytest.raises(ConfigurationError):
+        validate_physical_acceptance_accounting(
+            document,
+            expected_repeats=3,
+        )
+
+
+@pytest.mark.parametrize(
+    "tamper_case",
+    (
+        "empty_reasons",
+        "non_null_passed",
+        "forged_checks",
+        "forged_repeat_results",
+        "non_null_top_verdict",
+    ),
+)
+def test_physical_acceptance_accounting_rejects_not_applicable_tampering(
+    tmp_path,
+    tamper_case,
+):
+    report = analyse_contact_ab(_three_v5_reports(tmp_path), RADIUS_M)
+    document = json.loads(json.dumps(report))
+    acceptance = document["physical_acceptance"]
+    group_id = acceptance["not_applicable_groups"][0]
+    group = acceptance["groups"][group_id]
+
+    if tamper_case == "empty_reasons":
+        group["not_applicable_reasons"] = []
+    elif tamper_case == "non_null_passed":
+        group["passed"] = False
+    elif tamper_case == "forged_checks":
+        group["checks"] = {"forged": {"all_repeats_passed": True}}
+    elif tamper_case == "forged_repeat_results":
+        group["repeat_results"] = [{"forged": True}]
+    else:
+        assert tamper_case == "non_null_top_verdict"
+        acceptance["all_applicable_groups_passed"] = False
+
+    with pytest.raises(ConfigurationError):
+        validate_physical_acceptance_accounting(
+            document,
+            expected_repeats=3,
+        )
+
+
+def test_physical_acceptance_accounting_rejects_required_group_shrink(
+    tmp_path,
+):
+    report = analyse_contact_ab(
+        _three_physical_acceptance_reports(tmp_path),
+        RADIUS_M,
+        expected_environments=("SimplePlane",),
+        expected_topologies=("simple_plane_only1_v1",),
+        expected_profiles=("legacy_baseline",),
+    )
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+    assert report["matrix"]["required_groups"] == report["matrix"][
+        "observed_groups"
+    ]
+    document = json.loads(json.dumps(report))
+    document["matrix"]["required_groups"] = []
+
+    with pytest.raises(ConfigurationError, match="required_groups"):
+        validate_physical_acceptance_accounting(
+            document,
+            expected_repeats=3,
+        )
+
+
+def test_v5_physical_acceptance_requires_ideal_odometry(tmp_path):
+    paths = _three_physical_acceptance_reports(
+        tmp_path,
+        odometry_mode="realistic",
+    )
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    acceptance = report["physical_acceptance"]
+    group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
+    group = acceptance["groups"][group_id]
+    assert group["applicable"] is False
+    assert group["passed"] is None
+    assert group["not_applicable_reasons"] == ["odometry_mode_not_ideal"]
+    assert acceptance["all_applicable_groups_passed"] is None
+
+
+def test_v5_physical_acceptance_requires_three_unique_repeats(tmp_path):
+    paths = _three_physical_acceptance_reports(tmp_path)
+
+    report = analyse_contact_ab(paths[:1], RADIUS_M, min_repeats=1)
+    validate_physical_acceptance_accounting(report, expected_repeats=1)
+
+    acceptance = report["physical_acceptance"]
+    group_id = "SimplePlane::simple_plane_only1_v1::legacy_baseline"
+    group = acceptance["groups"][group_id]
+    assert group["applicable"] is False
+    assert group["passed"] is None
+    assert group["repeat_count"] == 1
+    assert group["not_applicable_reasons"] == [
+        "fewer_than_3_unique_repeats"
+    ]
+    assert acceptance["all_applicable_groups_passed"] is None
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "failed_check"),
+    (
+        (
+            "stable_duration_sec",
+            0.499,
+            "stop_config.stable_duration_sec",
+        ),
+        (
+            "linear_velocity_threshold_mps",
+            0.0201,
+            "stop_config.linear_velocity_threshold_mps",
+        ),
+        (
+            "angular_velocity_threshold_radps",
+            0.0501,
+            "stop_config.angular_velocity_threshold_radps",
+        ),
+        (
+            "wheel_velocity_threshold_radps",
+            0.2001,
+            "stop_config.wheel_velocity_threshold_radps",
+        ),
+    ),
+)
+def test_v5_physical_acceptance_rejects_unsafe_stop_configuration(
+    tmp_path,
+    field,
+    value,
+    failed_check,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    for path in paths:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["configuration"]["stop"][field] = value
+        _write(path, document)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    group = next(iter(report["physical_acceptance"]["groups"].values()))
+    assert report["analysis_valid"] is True
+    assert group["passed"] is False
+    assert failed_check in group["failed_checks"]
+    assert all(
+        failed_check in result["failed_checks"]
+        for result in group["repeat_results"]
+    )
+
+
+def test_v5_physical_acceptance_rejects_short_stop_window_in_one_repeat(
+    tmp_path,
+):
+    paths = _three_physical_acceptance_reports(tmp_path)
+    changed = json.loads(paths[2].read_text(encoding="utf-8"))
+    stopping = changed["segments"][5]["stopping"]
+    stopping["confirmed_after_command_sec"] = (
+        stopping["stationary_onset_after_command_sec"] + 0.499
+    )
+    _write(paths[2], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    group = next(iter(report["physical_acceptance"]["groups"].values()))
+    failed_check = "stop_window.arc_right_5s"
+    assert group["passed"] is False
+    assert group["failed_checks"] == [failed_check]
+    assert [result["passed"] for result in group["repeat_results"]] == [
+        True,
+        True,
+        False,
+    ]
+    assert group["repeat_results"][2]["failed_checks"] == [failed_check]
 
 
 def test_v5_topology_identity_drift_is_fatal_within_one_topology(tmp_path):
@@ -1235,8 +1972,9 @@ def test_v5_complete_matrix_requires_eighteen_legal_topology_groups(tmp_path):
         RADIUS_M,
         require_complete_matrix=True,
     )
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
 
-    assert report["schema_version"] == 2
+    assert report["schema_version"] == 3
     assert report["analysis_valid"] is True
     assert report["counts"] == {
         "input_reports": 54,
@@ -1247,6 +1985,14 @@ def test_v5_complete_matrix_requires_eighteen_legal_topology_groups(tmp_path):
     assert report["matrix"]["complete"] is True
     assert len(report["matrix"]["required_groups"]) == 18
     assert report["matrix"]["missing_groups"] == []
+    acceptance = report["physical_acceptance"]
+    assert set(acceptance["groups"]) == set(report["groups"])
+    assert len(acceptance["applicable_groups"]) == 6
+    assert len(acceptance["not_applicable_groups"]) == 12
+    assert all(
+        group_id.startswith("SimplePlane::simple_plane_only1_v1::")
+        for group_id in acceptance["applicable_groups"]
+    )
 
 
 def test_cli_exit_two_atomically_writes_exclusion_audit(tmp_path):
@@ -1309,8 +2055,8 @@ def test_duplicate_content_cannot_satisfy_minimum_repeats(tmp_path):
 @pytest.mark.parametrize(
     ("mutation", "expected_detail"),
     (
-        ("report_float", "schema_version must be integer 1"),
-        ("report_bool", "schema_version must be integer 1"),
+        ("report_float", "schema_version must be integer 1 or 2"),
+        ("report_bool", "schema_version must be integer 1 or 2"),
         ("config_float", "configuration.schema_version"),
         ("runtime_float", "runtime_provenance.schema_version"),
         ("runtime_bool", "runtime_provenance.schema_version"),
