@@ -22,6 +22,7 @@ class ConfigError(ValueError):
 
 
 _ENV_PATTERN = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 def project_root() -> Path:
@@ -105,6 +106,7 @@ def _apply_nested_overrides(data: dict[str, Any], env: Mapping[str, str]) -> Non
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
+    identifier: str
     project_stage: Path
     source_asset: Path
     composition: str
@@ -210,11 +212,24 @@ class ProjectConfig:
 
 def _parse_environment(raw: Any) -> EnvironmentConfig:
     data = _expect_mapping(raw, "environment")
-    _expect_keys(data, {"project_stage", "source_asset", "composition"}, "environment")
+    _expect_keys(
+        data,
+        {"id", "project_stage", "source_asset", "composition"},
+        "environment",
+    )
+    identifier = _required(data, "id", "environment")
+    if not isinstance(identifier, str) or not _IDENTIFIER_PATTERN.fullmatch(
+        identifier
+    ):
+        raise ConfigError(
+            "environment.id must be a path-safe identifier starting with an "
+            "alphanumeric character"
+        )
     composition = _required(data, "composition", "environment")
     if composition != "sublayer":
         raise ConfigError("environment.composition must be 'sublayer'")
     return EnvironmentConfig(
+        identifier=identifier,
         project_stage=Path(_required(data, "project_stage", "environment")).resolve(),
         source_asset=Path(_required(data, "source_asset", "environment")).resolve(),
         composition=composition,

@@ -5,7 +5,10 @@ from pathlib import Path
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from isaac_sim.src.runtime_provenance import (
+    RuntimeProvenanceError,
     capture_runtime_provenance,
     file_sha256,
     git_metadata,
@@ -19,8 +22,50 @@ class _RootLayer:
 
 
 class _Stage:
+    def __init__(self, solver_iterations: tuple[int, int] = (32, 4)):
+        self._prim = _Prim(solver_iterations)
+
     def GetRootLayer(self) -> _RootLayer:
         return _RootLayer()
+
+    def GetPrimAtPath(self, path: str) -> "_Prim":
+        assert path == "/World/Robot"
+        return self._prim
+
+
+class _Attribute:
+    def __init__(self, value: int):
+        self._value = value
+
+    def __bool__(self) -> bool:
+        return True
+
+    def IsValid(self) -> bool:
+        return True
+
+    def Get(self) -> int:
+        return self._value
+
+
+class _Prim:
+    def __init__(self, solver_iterations: tuple[int, int]):
+        self._attributes = {
+            "physxArticulation:solverPositionIterationCount": _Attribute(
+                solver_iterations[0]
+            ),
+            "physxArticulation:solverVelocityIterationCount": _Attribute(
+                solver_iterations[1]
+            ),
+        }
+
+    def __bool__(self) -> bool:
+        return True
+
+    def IsValid(self) -> bool:
+        return True
+
+    def GetAttribute(self, name: str) -> _Attribute:
+        return self._attributes[name]
 
 
 def _git(repository: Path, *arguments: str) -> None:
@@ -79,8 +124,12 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(tmp_path):
     asset_root.mkdir()
     config = SimpleNamespace(
         files=SimpleNamespace(robot=robot_config),
-        robot=SimpleNamespace(asset_path=robot_asset),
+        robot=SimpleNamespace(
+            asset_path=robot_asset,
+            articulation_root="/World/Robot",
+        ),
         environment=SimpleNamespace(
+            identifier="Warehouse",
             project_stage=project_stage,
             source_asset=source_asset,
         ),
@@ -91,26 +140,35 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(tmp_path):
             physics_hz=60.0,
         ),
     )
-    settings = SimpleNamespace(
-        solver_position_iterations=32,
-        solver_velocity_iterations=4,
-    )
-
     provenance = capture_runtime_provenance(
         config,
-        settings,
         _Stage(),
+        articulation_usd_solver_iterations=(32, 4),
         repository_root=repository,
     )
     parameters = runtime_provenance_parameters(provenance)
 
+    assert provenance["schema_version"] == 2
+    assert parameters["runtime_provenance.schema_version"] == 2
     assert provenance["robot"]["config"]["sha256"] == file_sha256(
         robot_config
     )
     assert provenance["robot"]["solver"] == {
         "position_iterations": 32,
         "velocity_iterations": 4,
+        "stage_articulation_usd_readback_verified": True,
     }
+    assert provenance["environment"]["id"] == "Warehouse"
+    assert (
+        parameters["runtime_provenance.environment.id"] == "Warehouse"
+    )
+    assert (
+        parameters[
+            "runtime_provenance.robot.solver."
+            "stage_articulation_usd_readback_verified"
+        ]
+        is True
+    )
     assert provenance["environment"]["asset_version"] == "6.0"
     assert parameters["runtime_provenance.robot.asset.path"] == str(
         robot_asset
@@ -122,3 +180,38 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(tmp_path):
         == hashlib.sha256(_RootLayer().ExportToString().encode()).hexdigest()
     )
     assert parameters["runtime_provenance.git.dirty"] is False
+
+
+def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
+    repository = _repository(tmp_path)
+    required = []
+    for name in ("robot.yaml", "robot.usda", "project.usda", "source.usd"):
+        path = tmp_path / name
+        path.write_bytes(b"input")
+        required.append(path)
+    config = SimpleNamespace(
+        files=SimpleNamespace(robot=required[0]),
+        robot=SimpleNamespace(
+            asset_path=required[1],
+            articulation_root="/World/Robot",
+        ),
+        environment=SimpleNamespace(
+            identifier="Warehouse",
+            project_stage=required[2],
+            source_asset=required[3],
+        ),
+        asset_root=tmp_path,
+        simulation=SimpleNamespace(
+            navigation_mode="mapping",
+            odometry_mode="ideal",
+            physics_hz=60.0,
+        ),
+    )
+
+    with pytest.raises(RuntimeProvenanceError, match="solver readback disagree"):
+        capture_runtime_provenance(
+            config,
+            _Stage((32, 4)),
+            articulation_usd_solver_iterations=(32, 16),
+            repository_root=repository,
+        )

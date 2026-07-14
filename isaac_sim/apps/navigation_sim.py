@@ -312,10 +312,45 @@ def run(
         articulation_settings = load_articulation_physics_config(
             config.files.robot
         )
+
+        from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
+        from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
+        from isaac_sim.src.robot.articulation_runtime import (
+            ArticulationRuntime,
+        )
+        from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
+        from isaac_sim.src.robot.idle_brake import IdleBrake
+        from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
+        from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
+        from isaac_sim.src.sensors.sensor_factory import SensorFactory
+        from isaacsim.core.simulation_manager import SimulationManager
+
+        sensors = SensorFactory(
+            config,
+            camera_profile=camera_selection.profile.name,
+        ).create_all()
+        dynamic_manager = DynamicObstacleManager(stage, dynamic_scenario)
+        runtime.reset()
+
+        robot = ArticulationRuntime(
+            config.robot.articulation_root,
+            config.robot.base_link_prim,
+            app,
+        )
+        robot.initialize()
+        articulation_usd_solver_iterations = robot.configure_stability(
+            articulation_settings
+        )
+        JointValidator(
+            config.robot.wheel_joints,
+            JointGroups(config.robot.front_wheel_joints, config.robot.rear_wheel_joints),
+        ).validate(robot.get_dof_names())
         runtime_provenance = capture_runtime_provenance(
             config,
-            articulation_settings,
             stage,
+            articulation_usd_solver_iterations=(
+                articulation_usd_solver_iterations
+            ),
             repository_root=PROJECT_ROOT,
         )
 
@@ -353,37 +388,7 @@ def run(
         ).items():
             node.declare_parameter(name, value, read_only)
 
-        from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
-        from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
-        from isaac_sim.src.robot.articulation_runtime import (
-            ArticulationRuntime,
-        )
-        from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
-        from isaac_sim.src.robot.idle_brake import IdleBrake
-        from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
-        from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
-        from isaac_sim.src.sensors.sensor_factory import SensorFactory
-        from isaacsim.core.simulation_manager import SimulationManager
-
-        sensors = SensorFactory(
-            config,
-            camera_profile=camera_selection.profile.name,
-        ).create_all()
-        dynamic_manager = DynamicObstacleManager(stage, dynamic_scenario)
         collision_monitor = CollisionMonitor(config.robot.base_link_prim, node)
-        runtime.reset()
-
-        robot = ArticulationRuntime(
-            config.robot.articulation_root,
-            config.robot.base_link_prim,
-            app,
-        )
-        robot.initialize()
-        robot.configure_stability(articulation_settings)
-        JointValidator(
-            config.robot.wheel_joints,
-            JointGroups(config.robot.front_wheel_joints, config.robot.rear_wheel_joints),
-        ).validate(robot.get_dof_names())
         spawn_manager = SpawnPoseManager(robot, load_spawn_poses(config.spawn.poses_file))
         spawn_manager.apply_usd_pose(config.spawn.selected)
         idle_brake = IdleBrake(

@@ -4,6 +4,7 @@ schema_version: 1
 asset_root: ${ISAAC_ASSET_ROOT}
 
 environment:
+  id: Warehouse
   # Keep the generated custom Stage separate from the committed Jackal Stage,
   # which already authors a Jackal reference.
   project_stage: ${PROJECT_ROOT}/data/runtime/custom_robot_navigation_scene.usda

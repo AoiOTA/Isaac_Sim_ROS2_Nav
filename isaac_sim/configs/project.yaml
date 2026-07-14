@@ -2,6 +2,7 @@ schema_version: 1
 asset_root: ${ISAAC_ASSET_ROOT}
 
 environment:
+  id: Warehouse
   project_stage: ${PROJECT_ROOT}/isaac_sim/assets/environments/navigation_scene.usda
   source_asset: ${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
   composition: sublayer

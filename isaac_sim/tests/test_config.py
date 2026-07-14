@@ -7,6 +7,7 @@ import pytest
 
 from isaac_sim.src.config import ConfigError, load_project_config
 from isaac_sim.src.robot.articulation_runtime import (
+    ArticulationRuntime,
     ArticulationRuntimeError,
     load_articulation_physics_config,
 )
@@ -18,6 +19,38 @@ from isaac_sim.graphs.sensor_graph import lidar_graph_spec
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "isaac_sim/configs/project.yaml"
 ASSET_ROOT = Path("/home/lyb/isaacsim_assets/Assets/Isaac/6.0")
+
+
+class _SolverValues:
+    def __init__(self, value: int):
+        self._values = [value]
+
+    def numpy(self):
+        return self
+
+    def reshape(self, shape):
+        assert shape in {-1, (-1,)}
+        return self._values
+
+
+class _FakeArticulation:
+    def __init__(self, readback: tuple[int, int]):
+        self.readback = readback
+
+    def set_solver_iteration_counts(self, position, velocity):
+        self.requested = (position, velocity)
+
+    def get_solver_iteration_counts(self):
+        return _SolverValues(self.readback[0]), _SolverValues(self.readback[1])
+
+    def set_sleep_thresholds(self, values):
+        pass
+
+    def set_stabilization_thresholds(self, values):
+        pass
+
+    def set_dof_friction_properties(self, **values):
+        pass
 
 
 def _environment(**updates: str) -> dict[str, str]:
@@ -32,6 +65,7 @@ def _environment(**updates: str) -> dict[str, str]:
 def test_default_project_contract_loads_strictly():
     config = load_project_config(CONFIG, _environment())
     assert config.schema_version == 1
+    assert config.environment.identifier == "Warehouse"
     assert config.environment.composition == "sublayer"
     assert config.simulation.expected_physics_scene == "/PhysicsScene"
     assert config.simulation.structure_tf_source == "isaac"
@@ -154,6 +188,15 @@ def test_unknown_override_is_rejected():
         )
 
 
+@pytest.mark.parametrize("value", ["", "bad/id", "-leading"])
+def test_environment_id_must_be_path_safe(value):
+    with pytest.raises(ConfigError, match="environment.id.*path-safe"):
+        load_project_config(
+            CONFIG,
+            _environment(ISAAC_NAV__ENVIRONMENT__ID=value),
+        )
+
+
 def test_ideal_rsp_tf_ownership_is_rejected():
     with pytest.raises(ConfigError, match="ideal odometry requires"):
         load_project_config(
@@ -204,3 +247,20 @@ def test_solver_iteration_counts_require_schema_range(
         match=f"{field}.*integer in.*1, 255",
     ):
         load_articulation_physics_config(candidate)
+
+
+@pytest.mark.parametrize("readback", [(32, 4), (32, 16)])
+def test_runtime_solver_configuration_requires_matching_readback(readback):
+    settings = load_articulation_physics_config(
+        ROOT / "isaac_sim/configs/robots/jackal.yaml"
+    )
+    runtime = ArticulationRuntime("/World/Robot", "/World/Robot/base", None)
+    runtime._articulation = _FakeArticulation(readback)
+    if readback == (32, 4):
+        assert runtime.configure_stability(settings) == (32, 4)
+    else:
+        with pytest.raises(
+            ArticulationRuntimeError,
+            match="solver readback does not match",
+        ):
+            runtime.configure_stability(settings)

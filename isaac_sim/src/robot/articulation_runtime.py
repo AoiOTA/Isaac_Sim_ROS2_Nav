@@ -155,7 +155,7 @@ class ArticulationRuntime:
 
     def configure_stability(
         self, settings: ArticulationPhysicsConfig
-    ) -> None:
+    ) -> tuple[int, int]:
         self.articulation.set_solver_iteration_counts(
             [settings.solver_position_iterations],
             [settings.solver_velocity_iterations],
@@ -168,6 +168,41 @@ class ArticulationRuntime:
             static_frictions=[settings.wheel_static_friction_effort],
             dynamic_frictions=[settings.wheel_dynamic_friction_effort],
             viscous_frictions=[settings.wheel_viscous_friction_coefficient],
+        )
+        actual = self.get_solver_iteration_usd_values()
+        expected = (
+            settings.solver_position_iterations,
+            settings.solver_velocity_iterations,
+        )
+        if actual != expected:
+            raise ArticulationRuntimeError(
+                "articulation USD solver readback does not match configuration: "
+                f"expected={expected}, actual={actual}"
+            )
+        return actual
+
+    def get_solver_iteration_usd_values(self) -> tuple[int, int]:
+        """Read composed USD values through the initialized Articulation wrapper."""
+
+        position, velocity = self.articulation.get_solver_iteration_counts()
+
+        def single_count(values: object, name: str) -> int:
+            flattened = values.numpy().reshape(-1)
+            if len(flattened) != 1:
+                raise ArticulationRuntimeError(
+                    f"expected one {name} solver count, got {len(flattened)}"
+                )
+            value = int(flattened[0])
+            if not 1 <= value <= 255:
+                raise ArticulationRuntimeError(
+                    f"articulation USD {name} solver count must be in [1, 255], "
+                    f"got {value}"
+                )
+            return value
+
+        return (
+            single_count(position, "position"),
+            single_count(velocity, "velocity"),
         )
 
     def set_world_pose(self, position: Sequence[float], orientation_wxyz: Sequence[float]) -> None:
@@ -226,7 +261,7 @@ def author_articulation_solver_iterations(
     articulation_root: str,
     settings: ArticulationPhysicsConfig,
 ) -> None:
-    """Author effective solver counts before PhysX parses the composed Stage."""
+    """Author configured solver USD attributes before PhysX parses the Stage."""
 
     from pxr import Sdf, UsdPhysics
 
@@ -238,20 +273,25 @@ def author_articulation_solver_iterations(
             "articulation root is invalid or lacks ArticulationRootAPI: "
             f"{articulation_root}"
         )
-    values = {
-        "physxArticulation:solverPositionIterationCount": (
-            Sdf.ValueTypeNames.UInt,
+    values = (
+        (
+            "physxArticulation:solverPositionIterationCount",
             settings.solver_position_iterations,
         ),
-        "physxArticulation:solverVelocityIterationCount": (
-            Sdf.ValueTypeNames.UInt,
+        (
+            "physxArticulation:solverVelocityIterationCount",
             settings.solver_velocity_iterations,
         ),
-    }
-    for name, (value_type, value) in values.items():
+    )
+    for name, value in values:
         attribute = prim.GetAttribute(name)
         if not attribute:
-            attribute = prim.CreateAttribute(name, value_type)
+            attribute = prim.CreateAttribute(name, Sdf.ValueTypeNames.Int)
+        elif attribute.GetTypeName() != Sdf.ValueTypeNames.Int:
+            raise ArticulationRuntimeError(
+                f"{name} on {articulation_root} must use USD int, got "
+                f"{attribute.GetTypeName()}"
+            )
         if not attribute.Set(value):
             raise ArticulationRuntimeError(
                 f"failed to author {name}={value} on {articulation_root}"

@@ -48,6 +48,9 @@ _RUNTIME_PROVENANCE_PARAMETER_NAMES = (
     "runtime_provenance.robot.asset.sha256",
     "runtime_provenance.robot.solver.position_iterations",
     "runtime_provenance.robot.solver.velocity_iterations",
+    "runtime_provenance.robot.solver."
+    "stage_articulation_usd_readback_verified",
+    "runtime_provenance.environment.id",
     "runtime_provenance.environment.project_stage.path",
     "runtime_provenance.environment.project_stage.sha256",
     "runtime_provenance.environment.source_asset.path",
@@ -319,9 +322,14 @@ class MotionBaselineRunner(Node):
                     "velocity_iterations": value(
                         "robot.solver.velocity_iterations"
                     ),
+                    "stage_articulation_usd_readback_verified": value(
+                        "robot.solver."
+                        "stage_articulation_usd_readback_verified"
+                    ),
                 },
             },
             "environment": {
+                "id": value("environment.id"),
                 "project_stage": {
                     "path": value("environment.project_stage.path"),
                     "sha256": value("environment.project_stage.sha256"),
@@ -348,13 +356,21 @@ class MotionBaselineRunner(Node):
             },
         }
         validate_runtime_provenance(provenance)
+        # Preserve a structurally verified Isaac snapshot in failure reports
+        # even when a caller-supplied grouping label does not match it.
+        self._runtime_provenance = provenance
         runtime_odometry = provenance["simulation"]["odometry_mode"]
         if runtime_odometry != self._odometry_mode:
             raise RuntimeError(
                 "odometry label does not match Isaac runtime provenance: "
                 f"requested={self._odometry_mode}, runtime={runtime_odometry}"
             )
-        self._runtime_provenance = provenance
+        runtime_environment = provenance["environment"]["id"]
+        if runtime_environment != self._environment_id:
+            raise RuntimeError(
+                "environment label does not match Isaac runtime provenance: "
+                f"requested={self._environment_id}, runtime={runtime_environment}"
+            )
 
     def _begin_segment_capture(self) -> None:
         self._active_timestamps = {

@@ -20,16 +20,18 @@ from robot_experiments.report import (
 def valid_runtime_provenance():
     return {
         "verified": True,
-        "schema_version": 1,
+        "schema_version": 2,
         "robot": {
             "config": {"path": "/repo/jackal.yaml", "sha256": "a" * 64},
             "asset": {"path": "/repo/jackal_nav.usda", "sha256": "b" * 64},
             "solver": {
                 "position_iterations": 32,
                 "velocity_iterations": 4,
+                "stage_articulation_usd_readback_verified": True,
             },
         },
         "environment": {
+            "id": "Warehouse",
             "project_stage": {
                 "path": "/repo/navigation_scene.usda",
                 "sha256": "c" * 64,
@@ -117,10 +119,21 @@ def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
 @pytest.mark.parametrize(
     ("path", "bad_value", "message"),
     [
+        (("schema_version",), 1, "must be 2"),
         (("robot", "config", "sha256"), "g" * 64, "SHA256"),
         (("robot", "solver", "velocity_iterations"), True, "integer"),
         (("robot", "solver", "velocity_iterations"), 0, "integer"),
         (("robot", "solver", "velocity_iterations"), 256, "integer"),
+        (
+            (
+                "robot",
+                "solver",
+                "stage_articulation_usd_readback_verified",
+            ),
+            False,
+            "must be true",
+        ),
+        (("environment", "id"), "bad/id", "path-safe"),
         (("environment", "source_asset", "path"), "", "non-empty"),
         (("simulation", "physics_hz"), 0.0, "positive"),
         (("git", "commit"), "z" * 40, "Git object id"),
