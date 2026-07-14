@@ -1493,7 +1493,8 @@ repeat。baseline 默认共启动 36 个互相独立的 Isaac 进程，topology=
 
 批处理在整批开始时冻结 HEAD、branch、运动配置、两个项目配置、所选 robot config、
 本批选中的全部 topology profile 和六个 contact profile 的 SHA256；每轮前后都会
-重新检查。
+重新检查。运动配置不只锁文件 SHA：脚本还复用 runner 的配置解析器，把默认值补全为
+规范 JSON，并按 JSON 类型严格比较；例如数值 `1.0` 不能与布尔值 `true` 相互冒充。
 它还从所选项目 YAML 解析 robot config/asset、project Stage 和 source asset 的真实
 路径与 SHA256。Warehouse source 是 `${ISAAC_ASSET_ROOT}` 下的 NVIDIA 外部资产，
 不是 Git 文件，但同样会在本批输入中锁定。启动子进程前会清掉调用者遗留的全部
@@ -1513,11 +1514,12 @@ canonical JSON/SHA256 中的 profile/environment/source/overlay/三组 collider/
 readback，以及 contact canonical JSON/SHA256 中的 profile 路径、ID、mode、文件
 SHA256、Stage readback 和与 topology target 的一致性。runner 退出后
 会从当前 workspace source 调用严格分析器复验六段结构、实际时间戳、四轮方向和同一组
-environment/topology/contact-profile/motion 身份。四轮的 `expected_direction` 必须由六段协议独立重算；通常
-实测方向必须与它相同。纯旋转允许保留生产者报告的 `mixed` 瞬态，但只在最小/最大
-轮速分别越过配置 deadband 两侧、逐轮 `direction_matches=false`、平均轮速的主导方向
-仍符合命令时接受。`all_directions_match` 必须严格等于四个逐轮标志的逻辑合取；
-反向、静止、伪造标志、零均值或符号错误，以及直行/倒车/圆弧中的 `mixed` 仍会失败关闭。
+environment/topology/contact-profile/motion 身份。四轮的 `expected_direction` 必须由六段
+协议独立重算。schema 3 的整段轮向只作启动/全过程描述，诚实的 mixed、stationary 或
+反向值不会让证据被排除；真正的物理方向门只读取后半段 JointState closed window。
+窗口中的分类、deadband、三类计数、分布、逐轮 `direction_matches` 和总合取必须彼此
+一致；统计伪造属于 invalid evidence，而统计自洽但方向不匹配属于 valid evidence +
+physical FAIL。schema 1/2 历史报告仍按其原有整段合同读取，不被静默重解释。
 
 每个 motion 段的 Reset 成功响应末尾都必须带可机器解析的
 `reset_metadata_v1` JSON trailer。它给出 Reset generation，以及 Isaac 在发布
@@ -1554,36 +1556,52 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
     └── <run_id>.runner.log
 ```
 
-- `manifest.tsv`：每轮 43 列输入、状态、路径，以及 report/Isaac log/runner log 的
-  最终 SHA256；其中 `robot_config_selection` 为 `project_default` 或 `explicit_cli`，
+- `manifest.tsv`：当前合同每轮 44 列输入、状态、路径，以及 report/Isaac log/runner log 的
+  最终 SHA256；新增的 `report_schema_version` 必须为 `3`，并与报告和 analysis selection
+  交叉核对。其中 `robot_config_selection` 为 `project_default` 或 `explicit_cli`，
   并逐行记录 robot canonical path、SHA256、profile、lifecycle、轮径、轮宽、几何轮距
-  和有效轮距，并新增每轮 topology ID/path/SHA256。所有轮完成后改为只读并冻结 hash。
-- `reports/*.json`：新生成的 motion report 顶层 `schema_version=2`，但其中
-  `configuration.schema_version=1` 不变。每段 `actual_velocity.steady_state_window` 精确
-  表示命令时间区间的后半段，保存该窗口 Odom 的 `angular_z_radps` 分布；历史 report
-  schema 1 仍可读，但没有这个机器门观测窗口。
+  和有效轮距，并新增每轮 topology ID/path/SHA256。聚合和 summary 发布前都要求精确、
+  顺序固定的 44 列；每一行都会与 report、analysis selection 和本批冻结输入逐字段
+  交叉绑定，并验证 robot asset、controller、solver `32/4` 与 Stage readback、
+  Mapping/Ideal/60 Hz、环境 source、Git 身份和所有 path/hash。三类证据路径必须是彼此
+  不重复的 canonical regular 非 symlink 文件，SHA256 不得变化；报告完成时间还必须落在
+  manifest 记录的同一 UTC 秒区间内。所有轮完成后才改为只读并冻结 hash。
+- `reports/*.json`：新生成的 motion report 顶层 `schema_version=3`，但其中
+  `configuration.schema_version=1` 不变。每段 Odom
+  `actual_velocity.steady_state_window` 与 JointState
+  `wheels.steady_state_window` 都精确表示命令时间区间的后半段 closed window；两者至少
+  有两个严格递增样本，首尾覆盖和最大相邻间隔都受
+  `configuration.sampling.max_sample_age_sec` 约束。JointState 窗口还记录分类 deadband、
+  正/负/阈值内样本数和逐轮完整分布；稳态角速度分布必须能作为整段命令分布的真实
+  样本子集成立。停止证据分别保存 Odom 与 JointState 的连续静止样本、时间跨度与 freshness，
+  两路都满足合同后才能确认；报告还保存 Reset generation/三路接收水位、非法消息计数、
+  命令与停止样本记账，以及起终姿态、路程、位移分解和模 `2π` 航向一致性。任一时间、
+  统计或几何关系不能由原始证据重算都会失败关闭。历史 report schema 1/2 仍可读，但不
+  具备 v2 方向门所需的完整证据。
 - `analysis.json`：把全部报告作为一个数据集重新验证；v5 以合法
   environment/topology pair × 六 profile 形成组，baseline/all 分别要求 12/18 个完整组，
   单一环境/拓扑也必须包含六 profile，且每组重复数不少于 `--repeats`。当前 v5
-  analysis 为 `schema_version=3`，并包含 schema 1、policy
-  `skid_steer_plan_8_7_v1` 的 `physical_acceptance`；历史 v3/v4 analysis 仍为 schema 1。
-- `batch_summary.json`：当前合同为 `schema_version=4`；记录
+  analysis 为 `schema_version=4`，并包含 schema 2、policy
+  `skid_steer_plan_8_7_v2` 的 `physical_acceptance`；历史 v3/v4 analysis 仍为 schema 1。
+- `batch_summary.json`：当前合同为 `schema_version=5`；记录
   `ground_topology_selection`、精确 `environment_topology_pairs`，并在
-  `locked_protocol_inputs.robot_config` 中记录 selection、path、SHA256 和完整 kinematics，
+  `locked_protocol_inputs.robot_config` 中记录 selection、path、SHA256、asset、完整
+  kinematics 和 solver 合同，
   在 `locked_protocol_inputs.ground_topology_profiles` 中记录本批 topology 的环境、路径
-  与 SHA256；同时记录 Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和 analysis 的
-  路径及 SHA256；不存在自引用 hash。`result="success"` 表示证据采集、身份、矩阵和
+  与 SHA256；`locked_protocol_inputs.simulation` 另锁 Mapping、Ideal 和 60 Hz。summary
+  同时绑定运动配置的 path/SHA256、Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和
+  analysis 的路径及 SHA256；不存在自引用 hash。`result="success"` 表示证据采集、身份、矩阵和
   聚合闭合，不表示底盘物理通过；物理结论另看
   `physical_acceptance.all_applicable_groups_passed` 以及
   `applicable_groups/not_applicable_groups/passing_groups/failed_groups`。
 
-版本边界不能混淆：RootLayer 修复后的 clean `d5840ed` 12-run 机制烟测早于这次机器
-硬门升级，保存的是 v5 analysis schema 2 与 batch-summary schema 3，不含
-`physical_acceptance`。它的 Warehouse、repeat=1、motion report schema 1 也都不满足
-当前物理门适用条件；即使只读重新审计也应是 N/A，不能写成 `0/12 fail`，更不能回填
-历史文件。当前合同已在 clean `2cd0788` 通过全门；clean `190f357` 的
-SimplePlane/only1 六 profile × 一次重复真实新 schema smoke 也已闭合，但因每组只有
-1 个 repeat，六组都正确记为 N/A。它不是正式 54-run/18-group 实跑证据。
+版本边界不能混淆：RootLayer 修复后的 clean `d5840ed` 12-run 机制烟测保存 motion report
+schema 1、v5 analysis schema 2 与 batch-summary schema 3，不含 `physical_acceptance`。
+clean `190f357` 的 SimplePlane/only1 六 profile × 一次重复烟测则原样保存 43 列 manifest、
+motion report schema 2、analysis schema 3、physical-acceptance schema 1 / policy
+`skid_steer_plan_8_7_v1` 和 batch-summary schema 4；六组都只因 repeat=1 而 N/A。两批
+历史工件都不能回填为当前 schema，也不能写成 `0/N fail`。当前 v2 合同的正式
+54-run/18-group 矩阵仍待执行。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
@@ -1592,7 +1610,9 @@ environment/topology/Profile 的运动统计。单轮细节看 `reports/`，故�
 为只读。失败目录通常只有部分 manifest、报告和日志；缺少两个聚合文件是失败关闭的
 预期行为，不是文件丢失。失败目录不得续跑，也不得把其中的部分样本混入新批次。
 
-分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat。v5 分别锁定
+分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat。聚合结束前还会
+重新读取每份 source report，核对全局 Git、robot、asset、kinematics、solver、simulation
+和运动配置锁；不能通过协调改写 report 与 selection hash 绕过批次身份。v5 分别锁定
 全矩阵 robot/motion、按 contact profile ID 跨环境/topology 的 path/SHA/id/mode/flags、
 同环境的 environment/source collider 发现合同、同 topology 的 operation/target/disabled、同 environment+contact profile 跨 topology 不应变化的
 scene、wheel bindings、wheel material、ground material 和 readback，以及三元组内
@@ -1609,13 +1629,16 @@ environment/topology/contact 组内锁定它。跨 treatment 的显式不变量�
 约束，匿名层内容分别由 topology/contact 的 `overlay_sha256` 锁定。历史 v3/v4
 保留其既有离线分组合同，不被 v5 重新解释。
 输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
-最终选择仍需结合两环境指标与工程约束。这里接受可证明的纯旋转 `mixed`，只是区分
-“短暂反向瞬态”和“主导轮速方向错误”，不会把方向检查降级为只看一个布尔字段。
+最终选择仍需结合两环境指标与工程约束。schema 3 的段级 `wheels.per_wheel` 保存整段
+命令的描述性诊断，可能包含启动瞬态，不参与 v2 方向硬门；硬门只读取
+`wheels.steady_state_window`。稳态 `mixed`、`stationary` 或相反方向只要统计内部自洽，
+就是 valid evidence，不会被 analyzer 排除，但会令该 repeat 的方向检查失败。
 
 `physical_acceptance` 不是均值排行，而是计划 8.7 的适用性门加逐重复硬门。一个
 group 只有同时满足 runtime provenance schema 5、环境 `SimplePlane`、topology
 `simple_plane_only1_v1`、Ideal odometry、至少 3 个唯一 repeat、全部 motion report
-schema 2 才适用。其他 group 写 `applicable=false`、`passed=null` 和非空
+schema 3 才适用。schema 1/2 的固定 N/A 原因是 `motion_report_schema_not_3`。其他
+group 写 `applicable=false`、`passed=null` 和非空
 `not_applicable_reasons`；它们进入 `not_applicable_groups`，不会进入 passing/failed。
 若没有任何适用 group，`all_applicable_groups_passed` 为 `null`。
 
@@ -1625,17 +1648,25 @@ schema 2 才适用。其他 group 写 `applicable=false`、`passed=null` 和非�
 实际 `actual_velocity.steady_state_window.angular_z_radps.mean` 相对目标角速度的
 `abs(actual-commanded)/abs(commanded)` 各不超过 `0.10`，不使用 yaw gain；配置的
 稳定时长至少 `0.5 s`，六段的确认静止窗各不短于该配置值；配置的线速、角速、轮速
-停止阈值分别不高于 `0.02 m/s`、`0.05 rad/s`、`0.20 rad/s`；六段四轮方向合同成立。
+停止阈值分别不高于 `0.02 m/s`、`0.05 rad/s`、`0.20 rad/s`；六段四轮的后半段
+JointState closed window 方向合同成立。整段命令窗口只作描述，不用于这一项判定。
 任何 repeat 的任何一项失败都会让该适用 group 失败，不能用其他重复的较好结果抵消，
 也不会自动选择 profile。
 
-当前完整 contact analyzer 测试文件为 `116 passed`，motion baseline 为 `66 passed`，matrix
-script `42 passed / 1 skipped`；唯一 skip 是本机缺少 `shellcheck`。clean `2cd0788` 的
+公共 accounting 不只检查 analysis 内部字段：它会重新读取 selection 指向的原 report，
+验证 raw/canonical SHA、全局批次身份、Reset epoch、时间与样本记账、双路停止证据、
+姿态/位移/航向几何和稳态分布子集关系，再重算 physical acceptance。因此原报告必须与
+analysis 一起保留；缺文件、替换 source、协调伪造 N/A 或 wheel PASS 都会失败关闭。
+
+当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
+script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯一 skip 是本机
+缺少 `shellcheck`。clean `2cd0788` 的
 `./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
 34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
-为 `32 passed / 250 deselected`。clean `190f357` 的真实新 schema smoke 另完成 6/6 run、
-36/36 段和六组 N/A 记账。这证明冻结代码合同、构建门和真实报告链闭合；正式矩阵仍待
-执行，不能据此宣称底盘物理通过。
+为 `32 passed / 250 deselected`；这是上一版合同的 clean 全门记录。clean `190f357`
+历史 smoke 另完成 6/6 run、36/36 段和六组 N/A 记账，但其工件版本仍是
+motion 2 / analysis 3 / physical 1 / summary 4 / manifest 43 列。它证明当时冻结代码的
+报告链闭合；正式 v2 矩阵仍待执行，不能据此宣称底盘物理通过。
 
 快速核对成功证据：
 
@@ -1660,6 +1691,8 @@ jq '{schema_version, valid: .analysis_valid, counts, matrix,
        applicability: .physical_acceptance.applicability,
        steady_state_measurement_basis:
          .physical_acceptance.steady_state_measurement_basis,
+       wheel_direction_measurement_basis:
+         .physical_acceptance.wheel_direction_measurement_basis,
        thresholds: .physical_acceptance.thresholds,
        all_applicable_groups_passed:
          .physical_acceptance.all_applicable_groups_passed,
@@ -1683,8 +1716,9 @@ sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
 第一条 `jq` 命令看到 `result="success"` 时仍必须继续看
 `physical_acceptance.all_applicable_groups_passed`；前者是证据成功，后者才是适用
 group 的物理硬门结果。还必须检查 `not_applicable_groups`，避免把未覆盖条件误当通过。
-对历史 schema 2/3 批次，`physical_acceptance` 会是 `null`，只能按历史合同审计，
-不能补写或推断通过/失败。
+历史工件必须按其自身版本读取：analysis schema 2 没有 `physical_acceptance`；clean
+`190f357` 的 analysis schema 3 则携带 physical schema 1 / policy v1。两者都不能补写成
+当前 physical schema 2，也不能用当前字段反推历史通过/失败。
 
 若需要重新审计复制来的历史报告，而不是重新跑 Isaac，可直接使用安装后的离线 CLI；
 `--wheel-radius` 对 v4/v5 必须改成该批 provenance 中记录的值，三种 schema 要分开
