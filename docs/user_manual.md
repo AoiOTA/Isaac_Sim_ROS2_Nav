@@ -1284,7 +1284,9 @@ cd "$PROJECT_ROOT"
 时会直接拒绝。默认严格顺序是：先 `SimplePlane`、后 `Warehouse`；每个环境依次运行
 `legacy_baseline`、四个 threshold 2×2 profile、`explicit_material`；最后才展开
 repeat，所以默认共启动 36 个互相独立的 Isaac 进程。若只想做一轮 SimplePlane
-烟测，可使用：
+烟测，可使用下列命令。它仍会按顺序运行六个 profile，即启动六个独立 Isaac 进程；
+每组只有一次 repeat，因此只验证批处理链路和严格报告门，不能替代每组至少三次的
+正式 A/B：
 
 ```bash
 ./scripts/run_contact_ab_matrix.sh \
@@ -1308,7 +1310,11 @@ v3 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera of
 Mapping/Ideal、真实环境 project/source、Git commit/branch/dirty，以及 contact canonical
 JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback。runner 退出后
 会从当前 workspace source 调用严格分析器复验六段结构、实际时间戳、四轮方向和同一组
-环境/profile/motion 身份。
+环境/profile/motion 身份。四轮的 `expected_direction` 必须由六段协议独立重算；通常
+实测方向必须与它相同。纯旋转允许保留生产者报告的 `mixed` 瞬态，但只在最小/最大
+轮速分别越过配置 deadband 两侧、逐轮 `direction_matches=false`、平均轮速的主导方向
+仍符合命令时接受。`all_directions_match` 必须严格等于四个逐轮标志的逻辑合取；
+反向、静止、伪造标志、零均值或符号错误，以及直行/倒车/圆弧中的 `mixed` 仍会失败关闭。
 
 输出名称不含时间随机量，例如
 `001_simple_plane_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
@@ -1325,7 +1331,8 @@ JSON/SHA256 中的 profile 路径、ID、mode、文件 SHA256 和 Stage readback
 全矩阵、同环境、同 profile/同组输入。yaw gain 和位移误差按物理时钟的
 `observed_duration_sec` 计算，不按理想配置时长；Jackal 轮半径只接受 `0.098 m`。
 输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
-最终选择仍需结合两环境指标与工程约束。
+最终选择仍需结合两环境指标与工程约束。这里接受可证明的纯旋转 `mixed`，只是区分
+“短暂反向瞬态”和“主导轮速方向错误”，不会把方向检查降级为只看一个布尔字段。
 
 快速核对成功证据：
 

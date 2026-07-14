@@ -307,6 +307,53 @@ def test_rotation_analysis_unwraps_yaw_and_flags_wrong_wheel_direction():
     )
 
 
+@pytest.mark.parametrize(
+    ("reverse_transient", "expected_direction", "expected_match"),
+    (
+        (0.31, "mixed", False),
+        (0.19, "negative", True),
+    ),
+)
+def test_rotation_direction_classification_preserves_deadband_transients(
+    reverse_transient, expected_direction, expected_match
+):
+    """Producer retains above-deadband reversals without misclassifying noise."""
+    start = 1_000_000_000
+    middle = 1_500_000_000
+    end = 2_000_000_000
+    odom = [
+        OdomSample(start, 0, 0, 0, 0, 0, 0.5),
+        OdomSample(middle, 0, 0, 0.25, 0, 0, 0.5),
+        OdomSample(end, 0, 0, 0.5, 0, 0, 0.5),
+        OdomSample(end + 100_000_000, 0, 0, 0.5, 0, 0, 0),
+        OdomSample(end + 600_000_000, 0, 0, 0.5, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, (-1, 1, -1, 1)),
+        _joint(middle, (reverse_transient, 1, -1, 1)),
+        _joint(end, (-1, 1, -1, 1)),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+    result = analyse_motion_segment(
+        MotionSegment("left", "rotate_left", "test", 0, 0.5, 1),
+        start,
+        end,
+        odom,
+        joints,
+        WHEELS,
+        STOP,
+        command_publish_count=20,
+        timestamp_integrity={},
+    )
+
+    front_left = result["wheels"]["per_wheel"][WHEELS.front_left]
+    assert front_left["direction"] == expected_direction
+    assert front_left["direction_matches"] is expected_match
+    assert result["wheels"]["all_directions_match"] is expected_match
+    assert front_left["speed_radps"]["mean"] < -STOP.wheel_velocity_threshold_radps
+
+
 def test_arc_analysis_keeps_intended_lateral_displacement_distinct_from_drift():
     start = 1_000_000_000
     end = 6_000_000_000
