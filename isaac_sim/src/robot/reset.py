@@ -79,7 +79,11 @@ class ResetManager:
             self.hooks.reset_odometry(request.odometry_mode)
             self.hooks.reset_ground_truth_path()
             self.hooks.reset_dynamic_obstacles(request.random_seed)
-            self.hooks.clear_costmaps()
+            # Costmaps belong to the saved-map navigation/localization stack.
+            # Mapping mode intentionally has no Nav2 costmap servers, so
+            # probing their reset services there only creates false warnings.
+            if request.navigation_mode == "localization":
+                self.hooks.clear_costmaps()
             self.simulation.step(render=False)
             if request.navigation_mode == "localization":
                 # The concrete hook must apply the calibration gate before ROS publication.

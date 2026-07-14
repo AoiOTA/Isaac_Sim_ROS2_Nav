@@ -103,7 +103,39 @@ def test_reset_manager_executes_every_hook_in_fixed_order():
         ResetRequest("mapping_start", "mapping", "ideal", 123)
     )
     assert simulation.calls == ["pause", "step:False", "play"]
-    assert calls == ["zero", "controller", "odom:ideal", "gt", "dynamic:123", "costmaps"]
+    assert calls == ["zero", "controller", "odom:ideal", "gt", "dynamic:123"]
+
+
+def test_localization_reset_clears_costmaps_before_initial_pose():
+    robot = FakeRobot()
+    spawn = SpawnPoseManager(
+        robot, load_spawn_poses(ROOT / "isaac_sim/configs/spawn_poses.yaml")
+    )
+    simulation = FakeSimulation()
+    calls: list[str] = []
+    hooks = ResetHooks(
+        send_zero_velocity=lambda: calls.append("zero"),
+        clear_controller_state=lambda: calls.append("controller"),
+        reset_odometry=lambda mode: calls.append(f"odom:{mode}"),
+        reset_ground_truth_path=lambda: calls.append("gt"),
+        reset_dynamic_obstacles=lambda seed: calls.append(f"dynamic:{seed}"),
+        clear_costmaps=lambda: calls.append("costmaps"),
+        publish_map_initial_pose=lambda pose: calls.append(f"initial:{pose}"),
+    )
+
+    ResetManager(simulation, spawn, hooks).reset(
+        ResetRequest("mapping_start", "localization", "ideal", 123)
+    )
+
+    assert calls == [
+        "zero",
+        "controller",
+        "odom:ideal",
+        "gt",
+        "dynamic:123",
+        "costmaps",
+        "initial:mapping_start",
+    ]
 
 
 def test_invalid_reset_request_is_rejected():
