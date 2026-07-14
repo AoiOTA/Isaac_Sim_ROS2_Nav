@@ -682,8 +682,8 @@ odometry 的负测均会失败关闭。
 script `42 passed / 1 skipped`，唯一 skip 是缺少 `shellcheck`。clean `2cd0788` 的
 build/preflight/`./scripts/test.sh --with-isaac` 均 exit 0；root pytest
 `1076 passed / 1 skipped / 34 deselected`，ROS 11 packages / 876 tests / 0 errors /
-0 failures / 1 skipped，Isaac `32 passed / 250 deselected`。当前仍没有真实新 schema
-smoke，更没有正式 54-run/18-group 矩阵。
+0 failures / 1 skipped，Isaac `32 passed / 250 deselected`。真实新 schema smoke 已在
+clean `190f357` 完成；正式 54-run/18-group 矩阵仍未执行。
 
 ### 新 schema SimplePlane 真实机制烟测（2026-07-15）
 
@@ -705,8 +705,9 @@ provenance 均为 schema 5、`verified=true`、Git dirty false、commit 精确�
 `9c9b423eac26db8e940d08bbd9996f3f8e09fc206902f086e1826654d0fbb37c`；
 `batch_summary.json` 为 schema 4、`result=success`。43 列 manifest 为 mode `0444`，有 6 个数据行，
 SHA256 `bc443124528af896a31f85239a8788a59eb3614bb3adad8e62c39905953d36cd`；
-12 类 path/hash × 6 行共 72 项复核为 0 missing / 0 mismatch，summary 中冻结的两份
-evidence SHA 也逐字匹配。严格 accounting validator 以 `expected_repeats=1` 复核通过。
+12 类 path/hash 配对 × 6 行共 72 对（144 个 path/hash 叶检查）复核为
+0 missing / 0 mismatch，summary 中冻结的两份 evidence SHA 也逐字匹配。严格
+accounting validator 以 `expected_repeats=1` 复核通过。
 
 物理结论按设计为 0 applicable / 6 N/A / 0 passing / 0 failed，
 `all_applicable_groups_passed=null`；六组唯一原因都是
@@ -1331,8 +1332,8 @@ preflight PASS；`./scripts/test.sh --with-isaac` 的 root suite 为
 `1076 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、876 tests、0 errors、
 0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。唯一 skip 仍是本机缺少
 `shellcheck`；preflight 如实报告 396 个 Fast DDS SHM 工件和 20 个非 performance
-governor 的非阻塞环境警告。真实新 schema smoke 见下节；正式 54-run/18-group 矩阵
-仍待执行。
+governor 的非阻塞环境警告。真实新 schema smoke 见上文“新 schema SimplePlane
+真实机制烟测”；正式 54-run/18-group 矩阵仍待执行。
 
 | Gate | 最近证据 |
 | --- | --- |
