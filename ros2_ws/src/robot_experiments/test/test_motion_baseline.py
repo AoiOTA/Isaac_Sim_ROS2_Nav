@@ -1,7 +1,9 @@
 import copy
 import json
 import math
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -19,6 +21,7 @@ from robot_experiments.motion_baseline import (
     expected_wheel_directions,
     load_motion_baseline_config,
 )
+from robot_experiments.motion_baseline_runner import MotionBaselineRunner
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
@@ -352,6 +355,127 @@ def test_rotation_direction_classification_preserves_deadband_transients(
     assert front_left["direction_matches"] is expected_match
     assert result["wheels"]["all_directions_match"] is expected_match
     assert front_left["speed_radps"]["mean"] < -STOP.wheel_velocity_threshold_radps
+
+
+def test_reset_recovery_diagnostic_identifies_freshness_and_motion_blockers():
+    """A Reset timeout retains the exact stream ages and velocity gates."""
+    runner = object.__new__(MotionBaselineRunner)
+    runner._clock_sequence = 8
+    runner._odom_sequence = 9
+    runner._joint_sequence = 10
+    runner._clock_ns = 2_000_000_000
+    runner._latest_odom = OdomSample(
+        1_400_000_000,
+        0.0,
+        0.0,
+        0.0,
+        0.03,
+        0.04,
+        0.06,
+    )
+    runner._latest_joint = JointSample.from_mapping(
+        1_900_000_000,
+        {
+            WHEELS.front_left: 0.3,
+            WHEELS.front_right: 0.0,
+            WHEELS.rear_left: 0.0,
+            WHEELS.rear_right: 0.0,
+        },
+    )
+    now = time.monotonic()
+    runner._last_clock_received_wall = now - 0.1
+    runner._last_odom_received_wall = now - 0.1
+    runner._last_joint_received_wall = now - 0.1
+    runner._config = SimpleNamespace(
+        sampling=SimpleNamespace(max_sample_age_sec=0.5),
+        stop=STOP,
+        wheels=WHEELS,
+    )
+
+    diagnostic = runner._reset_recovery_diagnostic(
+        (7, 8, 9),
+        {"sequence_not_fresh": 1, "not_stationary": 2, "stationary": 3},
+        {
+            "streams_fresh": 2,
+            "odom_linear_speed": 2,
+            "odom_angular_speed": 1,
+            f"wheel:{WHEELS.front_left}": 2,
+        },
+        {
+            "odom_linear_speed_mps": 0.1,
+            "odom_angular_speed_radps": 0.2,
+            "wheel_abs_speed_radps": {WHEELS.front_left: 0.4},
+        },
+        250_000_000,
+    )
+
+    assert diagnostic["fresh_sequences"] == {
+        "clock": True,
+        "odom": True,
+        "joint_states": True,
+    }
+    assert diagnostic["sim_age_sec"] == {"odom": 0.6, "joint_states": 0.1}
+    assert diagnostic["streams_fresh"] is False
+    assert diagnostic["wall_streams_fresh"] is True
+    assert diagnostic["stationary_now"] is False
+    assert diagnostic["terminal_blockers"] == [
+        "odom_angular_speed",
+        "odom_linear_speed",
+        "streams_fresh",
+        f"wheel:{WHEELS.front_left}",
+    ]
+    assert diagnostic["violation_counts"]["odom_linear_speed"] == 2
+    assert diagnostic["peak_observed"]["odom_linear_speed_mps"] == 0.1
+    assert diagnostic["longest_stationary_duration_sec"] == 0.25
+    assert diagnostic["odom"]["linear_speed_mps"] == pytest.approx(0.05)
+    assert diagnostic["joint_states"]["wheel_abs_speed_radps"][
+        WHEELS.front_left
+    ] == pytest.approx(0.3)
+
+
+def test_reset_recovery_diagnostic_remains_strict_json_after_float_overflow():
+    """Finite message fields may overflow a derived hypot without hiding timeout."""
+    runner = object.__new__(MotionBaselineRunner)
+    runner._clock_sequence = 2
+    runner._odom_sequence = 2
+    runner._joint_sequence = 2
+    runner._clock_ns = 2_000_000_000
+    runner._latest_odom = OdomSample(
+        2_000_000_000,
+        0.0,
+        0.0,
+        0.0,
+        float.fromhex("0x1.fffffffffffffp+1023"),
+        float.fromhex("0x1.fffffffffffffp+1023"),
+        0.0,
+    )
+    runner._latest_joint = JointSample.from_mapping(
+        2_000_000_000,
+        {name: 0.0 for name in WHEELS.ordered_names},
+    )
+    now = time.monotonic()
+    runner._last_clock_received_wall = now
+    runner._last_odom_received_wall = now
+    runner._last_joint_received_wall = now
+    runner._config = SimpleNamespace(
+        sampling=SimpleNamespace(max_sample_age_sec=0.5),
+        stop=STOP,
+        wheels=WHEELS,
+    )
+
+    diagnostic = runner._reset_recovery_diagnostic(
+        (1, 1, 1),
+        {"sequence_not_fresh": 0, "not_stationary": 1, "stationary": 0},
+        {"odom_linear_speed": 1},
+        {"odom_linear_speed_mps": math.inf},
+        0,
+    )
+
+    assert diagnostic["odom"]["linear_speed_mps"] == "non_finite:+inf"
+    assert diagnostic["peak_observed"]["odom_linear_speed_mps"] == (
+        "non_finite:+inf"
+    )
+    json.dumps(diagnostic, allow_nan=False)
 
 
 def test_arc_analysis_keeps_intended_lateral_displacement_distinct_from_drift():
