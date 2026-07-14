@@ -294,11 +294,10 @@ controller、Mapping/Ideal/60 Hz 和其余批次身份。
 
 当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
 script `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`；唯一 skip 是本机缺少
-`shellcheck`。clean `2cd0788` 的
-`./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
-34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
-为 `32 passed / 250 deselected`。build 11 packages、preflight PASS。这些 clean
-`2cd0788` 数字属于上一版合同的全门记录，不是 v2 实跑。clean `190f357` 的历史
+`shellcheck`。当前 v2 合同已在 clean `0484b72` 完成 build 11 packages、preflight PASS
+和 `./scripts/test.sh --with-isaac` exit 0：root
+`1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
+0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `190f357` 的历史
 SimplePlane/only1 六 profile 一次重复烟测为 6/6 run、36/36 段、analysis 6 included /
 0 excluded / 6 groups、summary schema 4 `result=success`；六组都只因 repeat=1 而 N/A。
 正式 schema 3 / v2 的 54-run/18-group 矩阵仍待完成。
