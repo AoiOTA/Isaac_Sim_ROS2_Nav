@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import runpy
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,53 @@ import pytest
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 SCRIPT = REPOSITORY_ROOT / 'scripts' / 'run_contact_ab_matrix.sh'
+MANIFEST_COLUMNS = (
+    'run_id',
+    'environment',
+    'profile_id',
+    'profile_mode',
+    'repeat',
+    'status',
+    'detail',
+    'report',
+    'report_sha256',
+    'report_schema_version',
+    'isaac_log',
+    'isaac_log_sha256',
+    'runner_log',
+    'runner_log_sha256',
+    'git_commit',
+    'git_branch',
+    'motion_config',
+    'motion_config_sha256',
+    'warehouse_project_config',
+    'warehouse_project_config_sha256',
+    'simple_plane_project_config',
+    'simple_plane_project_config_sha256',
+    'robot_config_selection',
+    'robot_config',
+    'robot_config_sha256',
+    'robot_kinematics_profile_id',
+    'robot_kinematics_lifecycle',
+    'robot_wheel_radius_m',
+    'robot_wheel_width_m',
+    'robot_geometric_track_width_m',
+    'robot_effective_track_width_m',
+    'selected_project_config',
+    'selected_project_config_sha256',
+    'profile_path',
+    'profile_sha256',
+    'ground_topology_id',
+    'ground_topology_profile_path',
+    'ground_topology_profile_sha256',
+    'all_profile_hashes_json',
+    'environment_project_stage',
+    'environment_project_stage_sha256',
+    'environment_source_asset',
+    'environment_source_asset_sha256',
+    'started_at_utc/completed_at_utc',
+)
+MANIFEST_HEADER_BASH = "$'" + r'\t'.join(MANIFEST_COLUMNS) + "'"
 
 
 def _run(*arguments: str) -> subprocess.CompletedProcess[str]:
@@ -452,6 +501,10 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'stage_usd_readback_verified' in source
     assert 'motion_skid_steer_ab.yaml' in source
     assert 'manifest.tsv' in source
+    assert 'report.get("schema_version") != 3' in source
+    assert 'strict contact A/B analysis schema must be integer 4' in source
+    assert 'physical_acceptance.get("schema_version") != 2' in source
+    assert 'skid_steer_plan_8_7_v2' in source
     assert 'report.get("result") != "success"' in source
     assert 'runtime_provenance.git.dirty' in source
     assert 'runtime_provenance.git.commit' in source
@@ -660,6 +713,37 @@ def test_contact_ab_matrix_locks_batch_identity_and_hashed_evidence():
     assert 'append_manifest_line_atomically' in source
 
 
+def test_motion_configuration_contract_is_normalized_from_locked_yaml():
+    function = _shell_function_source('freeze_motion_configuration_contract')
+    motion_config = (
+        REPOSITORY_ROOT
+        / 'ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml'
+    )
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'{function}\n'
+        f'PROJECT_ROOT={str(REPOSITORY_ROOT)!r}\n'
+        f'motion_config={str(motion_config)!r}\n'
+        'die() { printf "%s\\n" "$*" >&2; return 1; }\n'
+        'freeze_motion_configuration_contract\n'
+        'printf "%s\\n" "${batch_motion_configuration_json}"\n'
+    )
+    assert result.returncode == 0, result.stderr
+    contract = json.loads(result.stdout)
+    assert contract['schema_version'] == 1
+    assert contract['profile_id'] == 'jackal_skid_steer_ab_v1'
+    assert contract['topics']['odom'] == '/odom'
+    assert contract['sampling']['publish_rate_hz'] == 20.0
+    assert [segment['segment_id'] for segment in contract['segments']] == [
+        'rotate_left_360',
+        'rotate_right_360',
+        'forward_3m',
+        'backward_2m',
+        'arc_left_5s',
+        'arc_right_5s',
+    ]
+
+
 def test_locked_topology_hash_map_never_rereads_mutated_file(tmp_path):
     function = _shell_function_source('lock_batch_identity')
     physics_dir = tmp_path / 'physics'
@@ -749,12 +833,73 @@ def test_manifest_append_is_complete_and_atomic_dynamically(tmp_path):
     assert not list(tmp_path.glob('manifest.tsv.tmp.*'))
 
 
+def test_manifest_freezes_motion_report_schema_column_dynamically(tmp_path):
+    function = _shell_function_source('initialize_manifest')
+    manifest = tmp_path / 'manifest.tsv'
+    contract_line = next(
+        line
+        for line in SCRIPT.read_text(encoding='utf-8').splitlines()
+        if line.startswith("readonly manifest_header_contract=$'")
+    )
+    encoded_contract = contract_line.removeprefix(
+        "readonly manifest_header_contract=$'"
+    ).removesuffix("'")
+    assert encoded_contract.split(r'\t') == list(MANIFEST_COLUMNS)
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'die() { printf "%s\\n" "$*" >&2; return 1; }\n'
+        f'{function}\n'
+        f'manifest_header_contract={MANIFEST_HEADER_BASH}\n'
+        f'output_dir={str(tmp_path)!r}\n'
+        'initialize_manifest\n'
+    )
+    assert result.returncode == 0, result.stderr
+    header = manifest.read_text(encoding='utf-8').splitlines()[0].split('\t')
+    assert tuple(header) == MANIFEST_COLUMNS
+    assert header.count('report_schema_version') == 1
+    assert header[7:11] == [
+        'report',
+        'report_sha256',
+        'report_schema_version',
+        'isaac_log',
+    ]
+
+
+def test_success_manifest_row_rejects_non_schema_3_report(tmp_path):
+    functions = '\n'.join(
+        _shell_function_source(name)
+        for name in (
+            'tsv_safe',
+            'final_evidence_sha256',
+            'motion_report_schema_version',
+            'append_manifest_line_atomically',
+            'append_current_manifest',
+        )
+    )
+    report = tmp_path / 'report.json'
+    report.write_text('{"result":"success","schema_version":2}\n')
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'declare -Ag owned_pids=()\n'
+        'required_motion_report_schema_version=3\n'
+        'runtime_process_is_running() { return 1; }\n'
+        'sha256_file() { sha256sum "$1" | awk "{print \\$1}"; }\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{functions}\n'
+        f'current_report={str(report)!r}\n'
+        'if append_current_manifest success complete; then exit 91; fi\n'
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'successful motion report schema mismatch: 2 != 3' in result.stderr
+
+
 def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     functions = '\n'.join(
         _shell_function_source(name)
         for name in (
             'tsv_safe',
             'final_evidence_sha256',
+            'motion_report_schema_version',
             'append_manifest_line_atomically',
             'append_current_manifest',
         )
@@ -764,9 +909,12 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     isaac_log = tmp_path / 'isaac.log'
     runner_log = tmp_path / 'runner.log'
     manifest.write_text(
-        '\t'.join(f'column_{index}' for index in range(43)) + '\n'
+        '\t'.join(f'column_{index}' for index in range(44)) + '\n'
     )
-    report.write_text('{"result":"success"}\n', encoding='utf-8')
+    report.write_text(
+        '{"result":"success","schema_version":3}\n',
+        encoding='utf-8',
+    )
     isaac_log.write_text('isaac stopped\n', encoding='utf-8')
     runner_log.write_text('runner stopped\n', encoding='utf-8')
     assignments = {
@@ -790,8 +938,10 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         'robot_config_selection': 'explicit_cli',
         'robot_config': '/repo/robot.yaml',
         'batch_robot_config_sha256': '9' * 64,
+        'robot_asset': '/repo/jackal_nav.usda',
+        'robot_asset_sha256': 'b' * 64,
         'robot_kinematics_profile_id': 'jackal_candidate_v1',
-        'robot_kinematics_lifecycle': 'experimental',
+        'robot_kinematics_lifecycle': 'experimental_candidate',
         'robot_wheel_radius': '0.098',
         'robot_wheel_width': '0.08',
         'robot_geometric_track_width': '0.37559',
@@ -816,6 +966,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     result = _bash_harness(
         'set -Eeuo pipefail\n'
         'declare -Ag owned_pids=()\n'
+        'required_motion_report_schema_version=3\n'
         'runtime_process_is_running() { return 1; }\n'
         'sha256_file() { sha256sum "$1" | awk "{print \\$1}"; }\n'
         f'{functions}\n'
@@ -828,21 +979,22 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     lines = manifest.read_text(encoding='utf-8').splitlines()
     assert len(lines) == 2
     fields = lines[1].split('\t')
-    assert len(fields) == 43
+    assert len(fields) == 44
     assert fields[8] == hashlib.sha256(report.read_bytes()).hexdigest()
-    assert fields[10] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
-    assert fields[12] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
-    assert fields[13] == 'a' * 40
-    assert fields[16] == 'b' * 64
-    assert fields[18] == 'c' * 64
-    assert fields[20] == 'd' * 64
-    assert fields[21] == 'explicit_cli'
-    assert fields[22] == '/repo/robot.yaml'
-    assert fields[23] == '9' * 64
-    assert fields[24] == 'jackal_candidate_v1'
-    assert fields[25] == 'experimental'
-    assert fields[26:30] == ['0.098', '0.08', '0.37559', '1.012']
-    assert fields[34:37] == [
+    assert fields[9] == '3'
+    assert fields[11] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
+    assert fields[13] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
+    assert fields[14] == 'a' * 40
+    assert fields[17] == 'b' * 64
+    assert fields[19] == 'c' * 64
+    assert fields[21] == 'd' * 64
+    assert fields[22] == 'explicit_cli'
+    assert fields[23] == '/repo/robot.yaml'
+    assert fields[24] == '9' * 64
+    assert fields[25] == 'jackal_candidate_v1'
+    assert fields[26] == 'experimental_candidate'
+    assert fields[27:31] == ['0.098', '0.08', '0.37559', '1.012']
+    assert fields[35:38] == [
         'simple_plane_only1_v1',
         '/repo/simple_plane_only1_v1.yaml',
         '8' * 64,
@@ -961,11 +1113,16 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
     assert '"expected_profiles": COMPLETE_MATRIX_PROFILES' in finalizer
     assert 'row.get("ground_topology_id")' in finalizer
     assert 'analysis.get("analysis_valid") is not True' in finalizer
-    assert 'analysis.get("schema_version") != 3' in finalizer
+    assert 'row.get("report_schema_version") != "3"' in finalizer
+    assert 'report_document.get("schema_version") != 3' in finalizer
+    assert 'analysis.get("schema_version") != 4' in finalizer
     assert 'counts.get("excluded_reports") != 0' in finalizer
     assert 'counts.get("included_reports") != expected_runs' in finalizer
     assert 'counts.get("groups") != expected_groups' in finalizer
+    assert 'analysis_report_locks != manifest_report_locks' in finalizer
     assert 'physical_acceptance.get("policy_id")' in finalizer
+    assert 'physical_acceptance.get("schema_version") != 2' in finalizer
+    assert 'skid_steer_plan_8_7_v2' in finalizer
     assert 'aggregate physical acceptance group accounting is invalid' in finalizer
     assert 'write_contact_ab_report(analysis, output_path)' in finalizer
 
@@ -984,27 +1141,15 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
 
 
 def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
-    function = _shell_function_source('write_batch_summary')
+    functions = '\n'.join(
+        _shell_function_source(name)
+        for name in (
+            'validate_success_manifest_evidence',
+            'write_batch_summary',
+        )
+    )
     manifest = tmp_path / 'manifest.tsv'
     analysis = tmp_path / 'analysis.json'
-    manifest_header = (
-        'environment',
-        'ground_topology_id',
-        'ground_topology_profile_path',
-        'ground_topology_profile_sha256',
-    )
-    manifest_row = (
-        'SimplePlane',
-        'simple_plane_only1_v1',
-        '/repo/ground_topologies/simple_plane_only1_v1.yaml',
-        '7' * 64,
-    )
-    manifest.write_text(
-        '\t'.join(manifest_header)
-        + '\n'
-        + ('\t'.join(manifest_row) + '\n') * 18,
-        encoding='utf-8',
-    )
     profile_ids = (
         'legacy_baseline',
         'threshold_corr_0p00025_offset_0p0004',
@@ -1013,6 +1158,29 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'threshold_corr_0p025_offset_0p04',
         'explicit_material',
     )
+    profile_modes = {
+        profile_id: (
+            'legacy_baseline'
+            if profile_id == 'legacy_baseline'
+            else (
+                'explicit_material'
+                if profile_id == 'explicit_material'
+                else 'threshold_only'
+            )
+        )
+        for profile_id in profile_ids
+    }
+    profile_hashes = {
+        profile_id: str(index) * 64
+        for index, profile_id in enumerate(profile_ids, start=1)
+    }
+    profile_hashes_json = json.dumps(
+        profile_hashes, sort_keys=True, separators=(',', ':')
+    )
+    ordered_group_ids = [
+        f'SimplePlane::simple_plane_only1_v1::{profile_id}'
+        for profile_id in profile_ids
+    ]
     group_ids = sorted(
         f'SimplePlane::simple_plane_only1_v1::{profile_id}'
         for profile_id in profile_ids
@@ -1028,6 +1196,60 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'stop_angular_velocity_threshold_max_radps': 0.05,
         'stop_wheel_velocity_threshold_max_radps': 0.20,
     }
+    wheel_layout = {
+        'front_left': 'front_left_wheel_joint',
+        'front_right': 'front_right_wheel_joint',
+        'rear_left': 'rear_left_wheel_joint',
+        'rear_right': 'rear_right_wheel_joint',
+    }
+    segment_specs = (
+        ('rotate_left_360', 'rotate_left', 0.0, 0.4, 15.707963267948966),
+        ('rotate_right_360', 'rotate_right', 0.0, -0.4, 15.707963267948966),
+        ('forward_3m', 'forward', 0.5, 0.0, 6.0),
+        ('backward_2m', 'backward', -0.3, 0.0, 6.666666666666667),
+        ('arc_left_5s', 'arc_left', 0.4, 0.4, 5.0),
+        ('arc_right_5s', 'arc_right', 0.4, -0.4, 5.0),
+    )
+    motion_configuration = {
+        'schema_version': 1,
+        'profile_id': 'jackal_skid_steer_ab_v1',
+        'topics': {},
+        'reset': {},
+        'sampling': {},
+        'limits': {},
+        'stop': {
+            'linear_velocity_threshold_mps': 0.02,
+            'angular_velocity_threshold_radps': 0.05,
+            'wheel_velocity_threshold_radps': 0.2,
+            'stable_duration_sec': 0.5,
+        },
+        'wheels': wheel_layout,
+        'segments': [
+            {
+                'segment_id': segment_id,
+                'motion': motion,
+                'tier': 'ab',
+                'linear_x_mps': linear,
+                'angular_z_radps': angular,
+                'duration_sec': duration,
+            }
+            for segment_id, motion, linear, angular, duration in segment_specs
+        ],
+    }
+
+    def expected_wheel_directions(motion):
+        if motion == 'rotate_left':
+            return {
+                joint: ('negative' if 'left' in role else 'positive')
+                for role, joint in wheel_layout.items()
+            }
+        if motion == 'rotate_right':
+            return {
+                joint: ('positive' if 'left' in role else 'negative')
+                for role, joint in wheel_layout.items()
+            }
+        direction = 'negative' if motion == 'backward' else 'positive'
+        return {joint: direction for joint in wheel_layout.values()}
 
     def physical_checks(group_passed):
         maximum_checks = {
@@ -1090,9 +1312,31 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                 'required_stable_duration_sec': 0.5,
                 'passed': True,
             }
+        direction_segments = {}
+        for segment_id, motion, *_ in segment_specs:
+            directions = expected_wheel_directions(motion)
+            direction_segments[segment_id] = {
+                'motion': motion,
+                'all_directions_match': True,
+                'per_wheel': {
+                    joint: {
+                        'direction': direction,
+                        'expected_direction': direction,
+                        'direction_matches': True,
+                    }
+                    for joint, direction in directions.items()
+                },
+            }
         checks['wheel_direction_contract'] = {
+            'steady_state_window_schema_version': 1,
+            'measurement_basis': (
+                'wheels.steady_state_window.per_wheel[*].direction_matches '
+                'over the final_half_of_command_interval window'
+            ),
             'validated_segment_count': 6,
-            'validated_by': 'strict_motion_report_validator',
+            'validated_wheel_observation_count': 24,
+            'segments': direction_segments,
+            'failed_observations': [],
             'passed': True,
         }
         return checks
@@ -1100,24 +1344,203 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     analysis_groups = {}
     acceptance_groups = {}
     selection_included = []
-    for group_index, group_id in enumerate(group_ids):
+    reports_dir = tmp_path / 'reports'
+    reports_dir.mkdir()
+    logs_dir = tmp_path / 'logs'
+    logs_dir.mkdir()
+    manifest_rows = []
+    report_payloads = {}
+    report_paths = []
+    experiment_source = REPOSITORY_ROOT / 'ros2_ws/src/robot_experiments'
+    if str(experiment_source) not in sys.path:
+        sys.path.insert(0, str(experiment_source))
+    contact_helpers = runpy.run_path(
+        str(experiment_source / 'test/test_contact_ab_analysis.py')
+    )
+    make_report = contact_helpers['_report']
+    upgrade_report = contact_helpers['_upgrade_runtime_provenance_to_v5']
+    from robot_experiments.contact_ab_analysis import analyse_contact_ab
+
+    def write_manifest(rows, columns=MANIFEST_COLUMNS):
+        manifest.write_text(
+            '\t'.join(columns)
+            + '\n'
+            + ''.join(
+                '\t'.join(row.get(column, '') for column in columns) + '\n'
+                for row in rows
+            ),
+            encoding='utf-8',
+        )
+
+    for group_index, group_id in enumerate(ordered_group_ids):
         contact_profile_id = group_id.rsplit('::', 1)[1]
         group_passed = group_index < 2
         input_reports = []
         repeat_results = []
         for repeat_index in range(1, 4):
-            label = f'{group_id}-repeat-{repeat_index}'
-            report_path = f'/repo/reports/{label}.json'
-            report_sha256 = hashlib.sha256(label.encode()).hexdigest()
-            canonical_sha256 = hashlib.sha256(
-                f'canonical-{label}'.encode()
+            sequence = group_index * 3 + repeat_index
+            label = (
+                f'{sequence:03d}_simple_plane_simple_plane_only1_v1_'
+                f'{contact_profile_id}_r{repeat_index:02d}'
+            )
+            report_file = reports_dir / f'{label}.json'
+            report_document = upgrade_report(
+                make_report(
+                    environment='SimplePlane',
+                    contact_profile=contact_profile_id,
+                    scale=(0.98, 1.0, 1.02)[repeat_index - 1],
+                ),
+                'simple_plane_only1_v1',
+                report_schema_version=3,
+            )
+            report_document['output_file'] = str(report_file.resolve())
+            report_document['completed_at_utc'] = (
+                '2026-07-14T00:01:00.900000+00:00'
+            )
+            report_document['configuration']['limits'] = {
+                'max_abs_linear_mps': 1.0,
+            }
+            report_document['config_file'] = '/repo/motion.yaml'
+            report_document['config_sha256'] = 'b' * 64
+            runtime_provenance = report_document['runtime_provenance']
+            runtime_provenance['git'].update(
+                {
+                    'commit': 'a' * 40,
+                    'branch': 'codex/test',
+                    'dirty': False,
+                }
+            )
+            runtime_provenance['robot']['config'] = {
+                'path': '/repo/robot.yaml',
+                'sha256': '9' * 64,
+            }
+            runtime_provenance['robot']['kinematics'].update(
+                {
+                    'profile_id': 'jackal_candidate_v1',
+                    'lifecycle': 'experimental_candidate',
+                    'wheel_radius_m': 0.098,
+                    'wheel_width_m': 0.08,
+                    'geometric_track_width_m': 0.37559,
+                    'effective_track_width_m': 1.012,
+                }
+            )
+            runtime_provenance['environment']['project_stage'] = {
+                'path': '/repo/simple_stage.usda',
+                'sha256': 'e' * 64,
+            }
+            runtime_provenance['environment']['source_asset'] = {
+                'path': '/assets/simple.usd',
+                'sha256': 'f' * 64,
+            }
+            runtime_provenance['contact']['profile_path'] = (
+                f'/repo/physics/{contact_profile_id}.yaml'
+            )
+            runtime_provenance['contact']['profile_sha256'] = profile_hashes[
+                contact_profile_id
+            ]
+            runtime_provenance['ground_topology'].update(
+                {
+                    'profile_path': (
+                        '/repo/ground_topologies/simple_plane_only1_v1.yaml'
+                    ),
+                    'profile_sha256': '7' * 64,
+                    'source_asset_path': '/assets/simple.usd',
+                    'source_asset_sha256': 'f' * 64,
+                }
+            )
+            report_payload = (
+                json.dumps(
+                    report_document,
+                    sort_keys=True,
+                )
+                + '\n'
+            )
+            report_file.write_text(
+                report_payload,
+                encoding='utf-8',
+            )
+            report_path = str(report_file.resolve())
+            report_paths.append(report_file.resolve())
+            report_payloads[report_path] = report_payload
+            report_sha256 = hashlib.sha256(
+                report_file.read_bytes()
             ).hexdigest()
+            isaac_log = logs_dir / f'{label}.isaac.log'
+            runner_log = logs_dir / f'{label}.runner.log'
+            isaac_log.write_text(f'isaac {label}\n', encoding='utf-8')
+            runner_log.write_text(f'runner {label}\n', encoding='utf-8')
+            canonical_sha256 = hashlib.sha256(
+                json.dumps(
+                    json.loads(report_payload),
+                    sort_keys=True,
+                    separators=(',', ':'),
+                    allow_nan=False,
+                ).encode()
+            ).hexdigest()
+            manifest_rows.append(
+                {
+                    'run_id': label,
+                    'environment': 'SimplePlane',
+                    'profile_id': contact_profile_id,
+                    'profile_mode': profile_modes[contact_profile_id],
+                    'repeat': str(repeat_index),
+                    'status': 'success',
+                    'detail': 'complete',
+                    'report': report_path,
+                    'report_sha256': report_sha256,
+                    'report_schema_version': '3',
+                    'isaac_log': str(isaac_log.resolve()),
+                    'isaac_log_sha256': hashlib.sha256(
+                        isaac_log.read_bytes()
+                    ).hexdigest(),
+                    'runner_log': str(runner_log.resolve()),
+                    'runner_log_sha256': hashlib.sha256(
+                        runner_log.read_bytes()
+                    ).hexdigest(),
+                    'git_commit': 'a' * 40,
+                    'git_branch': 'codex/test',
+                    'motion_config': '/repo/motion.yaml',
+                    'motion_config_sha256': 'b' * 64,
+                    'warehouse_project_config': '/repo/warehouse.yaml',
+                    'warehouse_project_config_sha256': 'c' * 64,
+                    'simple_plane_project_config': '/repo/simple.yaml',
+                    'simple_plane_project_config_sha256': 'd' * 64,
+                    'robot_config_selection': 'explicit_cli',
+                    'robot_config': '/repo/robot.yaml',
+                    'robot_config_sha256': '9' * 64,
+                    'robot_kinematics_profile_id': 'jackal_candidate_v1',
+                    'robot_kinematics_lifecycle': 'experimental_candidate',
+                    'robot_wheel_radius_m': '0.098',
+                    'robot_wheel_width_m': '0.08',
+                    'robot_geometric_track_width_m': '0.37559',
+                    'robot_effective_track_width_m': '1.012',
+                    'selected_project_config': '/repo/simple.yaml',
+                    'selected_project_config_sha256': 'd' * 64,
+                    'profile_path': (
+                        f'/repo/physics/{contact_profile_id}.yaml'
+                    ),
+                    'profile_sha256': profile_hashes[contact_profile_id],
+                    'ground_topology_id': 'simple_plane_only1_v1',
+                    'ground_topology_profile_path': (
+                        '/repo/ground_topologies/simple_plane_only1_v1.yaml'
+                    ),
+                    'ground_topology_profile_sha256': '7' * 64,
+                    'all_profile_hashes_json': profile_hashes_json,
+                    'environment_project_stage': '/repo/simple_stage.usda',
+                    'environment_project_stage_sha256': 'e' * 64,
+                    'environment_source_asset': '/assets/simple.usd',
+                    'environment_source_asset_sha256': 'f' * 64,
+                    'started_at_utc/completed_at_utc': (
+                        '2026-07-14T00:00:00Z/2026-07-14T00:01:00Z'
+                    ),
+                }
+            )
             input_reports.append(
                 {
                     'path': report_path,
                     'sha256': report_sha256,
                     'canonical_sha256': canonical_sha256,
-                    'report_schema_version': 2,
+                    'report_schema_version': 3,
                 }
             )
             selection_included.append(
@@ -1125,7 +1548,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     'path': report_path,
                     'sha256': report_sha256,
                     'canonical_sha256': canonical_sha256,
-                    'report_schema_version': 2,
+                    'report_schema_version': 3,
                     'environment_id': 'SimplePlane',
                     'ground_topology_id': 'simple_plane_only1_v1',
                     'contact_profile_id': contact_profile_id,
@@ -1185,7 +1608,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'repeat_results': repeat_results,
         }
     analysis_document = {
-        'schema_version': 3,
+        'schema_version': 4,
         'counts': {
             'input_reports': 18,
             'excluded_reports': 0,
@@ -1207,20 +1630,27 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'expected_profiles': list(profile_ids),
         },
         'locked_inputs': {
+            'wheel_radius_m': 0.098,
             'simulation': {'odometry_mode': 'ideal'},
+            'motion_configuration': motion_configuration,
         },
         'groups': analysis_groups,
         'physical_acceptance': {
-            'schema_version': 1,
-            'policy_id': 'skid_steer_plan_8_7_v1',
+            'schema_version': 2,
+            'policy_id': 'skid_steer_plan_8_7_v2',
             'evaluation_basis': 'every_repeat',
             'ranking_policy': 'none; pass/fail only',
             'steady_state_measurement_basis': (
                 'actual_velocity.steady_state_window.angular_z_radps.mean '
                 'over the final_half_of_command_interval window'
             ),
+            'wheel_direction_measurement_basis': (
+                'wheels.steady_state_window.per_wheel[*].direction_matches '
+                'over the final_half_of_command_interval window'
+            ),
             'thresholds': physical_thresholds,
             'applicability': {
+                'required_motion_report_schema': 3,
                 'required_runtime_provenance_schema': 5,
                 'required_environment_id': 'SimplePlane',
                 'required_ground_topology_id': 'simple_plane_only1_v1',
@@ -1235,19 +1665,25 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'all_applicable_groups_passed': False,
         },
     }
+    analysis_document = analyse_contact_ab(
+        report_paths,
+        0.098,
+        min_repeats=3,
+        expected_environments=('SimplePlane',),
+        expected_topologies=('simple_plane_only1_v1',),
+        expected_profiles=profile_ids,
+    )
+    write_manifest(manifest_rows)
     analysis.write_text(
         json.dumps(analysis_document, sort_keys=True) + '\n',
         encoding='utf-8',
     )
     manifest_sha256 = hashlib.sha256(manifest.read_bytes()).hexdigest()
     analysis_sha256 = hashlib.sha256(analysis.read_bytes()).hexdigest()
-    profile_hashes = {
-        profile_id: str(index) * 64
-        for index, profile_id in enumerate(profile_ids, start=1)
-    }
     summary = tmp_path / 'batch_summary.json'
     assignments = {
         'PROJECT_ROOT': REPOSITORY_ROOT,
+        'required_motion_report_schema_version': '3',
         'output_dir': tmp_path,
         'environment_selection': 'SimplePlane',
         'ground_topology_selection': 'baseline',
@@ -1268,6 +1704,11 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'batch_git_branch': 'codex/test',
         'motion_config': '/repo/motion.yaml',
         'batch_motion_sha256': 'b' * 64,
+        'batch_motion_configuration_json': json.dumps(
+            analysis_document['locked_inputs']['motion_configuration'],
+            sort_keys=True,
+            separators=(',', ':'),
+        ),
         'warehouse_config': '/repo/warehouse.yaml',
         'batch_warehouse_project_sha256': 'c' * 64,
         'simple_plane_config': '/repo/simple.yaml',
@@ -1275,8 +1716,10 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'robot_config_selection': 'explicit_cli',
         'robot_config': '/repo/robot.yaml',
         'batch_robot_config_sha256': '9' * 64,
+        'robot_asset': '/repo/jackal_nav.usda',
+        'robot_asset_sha256': 'b' * 64,
         'robot_kinematics_profile_id': 'jackal_candidate_v1',
-        'robot_kinematics_lifecycle': 'experimental',
+        'robot_kinematics_lifecycle': 'experimental_candidate',
         'robot_wheel_radius': '0.098',
         'robot_wheel_width': '0.08',
         'robot_geometric_track_width': '0.37559',
@@ -1291,18 +1734,33 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             sort_keys=True,
             separators=(',', ':'),
         ),
+        'warehouse_project_stage': '/repo/warehouse_stage.usda',
+        'warehouse_project_stage_sha256': '1' * 64,
+        'warehouse_source_asset': '/assets/warehouse.usd',
+        'warehouse_source_asset_sha256': '2' * 64,
+        'simple_plane_project_stage': '/repo/simple_stage.usda',
+        'simple_plane_project_stage_sha256': 'e' * 64,
+        'simple_plane_source_asset': '/assets/simple.usd',
+        'simple_plane_source_asset_sha256': 'f' * 64,
         'manifest': manifest,
         'frozen_manifest_sha256': manifest_sha256,
         'analysis_path': analysis,
         'analysis_sha256': analysis_sha256,
     }
-    shell_assignments = '\n'.join(
-        f'{name}={str(value)!r}' for name, value in assignments.items()
-    )
+
+    def shell_assignments_for(values):
+        return (
+            f'manifest_header_contract={MANIFEST_HEADER_BASH}\n'
+            + '\n'.join(
+                f'{name}={str(value)!r}' for name, value in values.items()
+            )
+        )
+
+    shell_assignments = shell_assignments_for(assignments)
     result = _bash_harness(
         'set -Eeuo pipefail\n'
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        f'{function}\n'
+        f'{functions}\n'
         f'{shell_assignments}\n'
         'write_batch_summary 18 18\n'
         f'[[ "${{batch_summary_path}}" == {str(summary)!r} ]]\n'
@@ -1310,7 +1768,12 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
-    assert document['schema_version'] == 4
+    assert document['schema_version'] == 5
+    assert document['schema_contract'] == {
+        'motion_report': 3,
+        'aggregate_analysis': 4,
+        'physical_acceptance': 2,
+    }
     assert document['ground_topology_selection'] == 'baseline'
     assert document['environment_topology_pairs'] == [
         {
@@ -1321,26 +1784,35 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert document['actual_counts']['analysis_included_reports'] == 18
     assert document['actual_counts']['acceptance_applicable_groups'] == 6
     assert document['actual_counts']['acceptance_not_applicable_groups'] == 0
-    assert document['actual_counts']['acceptance_passing_groups'] == 2
-    assert document['actual_counts']['acceptance_failed_groups'] == 4
+    assert document['actual_counts']['acceptance_passing_groups'] == 6
+    assert document['actual_counts']['acceptance_failed_groups'] == 0
     assert document['physical_acceptance'] == {
-        'schema_version': 1,
-        'policy_id': 'skid_steer_plan_8_7_v1',
+        'schema_version': 2,
+        'policy_id': 'skid_steer_plan_8_7_v2',
         'evaluation_basis': 'every_repeat',
         'ranking_policy': 'none; pass/fail only',
+        'steady_state_measurement_basis': (
+            'actual_velocity.steady_state_window.angular_z_radps.mean over '
+            'the final_half_of_command_interval window'
+        ),
+        'wheel_direction_measurement_basis': (
+            'wheels.steady_state_window.per_wheel[*].direction_matches over '
+            'the final_half_of_command_interval window'
+        ),
         'thresholds': physical_thresholds,
         'applicability': {
+            'required_motion_report_schema': 3,
             'required_runtime_provenance_schema': 5,
             'required_environment_id': 'SimplePlane',
             'required_ground_topology_id': 'simple_plane_only1_v1',
             'required_odometry_mode': 'ideal',
             'minimum_unique_repeats_per_group': 3,
         },
-        'all_applicable_groups_passed': False,
+        'all_applicable_groups_passed': True,
         'applicable_groups': group_ids,
         'not_applicable_groups': [],
-        'passing_groups': group_ids[:2],
-        'failed_groups': group_ids[2:],
+        'passing_groups': group_ids,
+        'failed_groups': [],
     }
     assert document['evidence']['manifest'] == {
         'path': str(manifest),
@@ -1355,14 +1827,28 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'selection': 'explicit_cli',
         'path': '/repo/robot.yaml',
         'sha256': '9' * 64,
+        'asset': {
+            'path': '/repo/jackal_nav.usda',
+            'sha256': 'b' * 64,
+        },
         'kinematics': {
             'profile_id': 'jackal_candidate_v1',
-            'lifecycle': 'experimental',
+            'lifecycle': 'experimental_candidate',
             'wheel_radius_m': 0.098,
             'wheel_width_m': 0.08,
             'geometric_track_width_m': 0.37559,
             'effective_track_width_m': 1.012,
         },
+        'solver': {
+            'position_iterations': 32,
+            'velocity_iterations': 4,
+            'stage_articulation_usd_readback_verified': True,
+        },
+    }
+    assert document['locked_protocol_inputs']['simulation'] == {
+        'navigation_mode': 'mapping',
+        'odometry_mode': 'ideal',
+        'physics_hz': 60.0,
     }
     assert document['locked_protocol_inputs']['ground_topology_profiles'] == {
         'simple_plane_only1_v1': {
@@ -1373,9 +1859,200 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     }
     assert not list(tmp_path.glob('.batch_summary.json.*.tmp'))
 
+    def expect_summary_failure(expected_message):
+        summary.unlink(missing_ok=True)
+        assignments['frozen_manifest_sha256'] = hashlib.sha256(
+            manifest.read_bytes()
+        ).hexdigest()
+        assignments['analysis_sha256'] = hashlib.sha256(
+            analysis.read_bytes()
+        ).hexdigest()
+        result = _bash_harness(
+            'set -Eeuo pipefail\n'
+            'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+            f'{functions}\n'
+            f'{shell_assignments_for(assignments)}\n'
+            'write_batch_summary 18 18\n'
+        )
+        assert result.returncode != 0
+        assert expected_message in result.stderr
+        assert not summary.exists()
+        assert not list(tmp_path.glob('.batch_summary.json.*.tmp'))
+
+    # A success summary may never bless a partial or extended manifest shape.
+    write_manifest(manifest_rows, MANIFEST_COLUMNS[:-1])
+    expect_summary_failure('manifest header does not match the 44-column contract')
+    write_manifest(manifest_rows, MANIFEST_COLUMNS + ('unexpected_column',))
+    expect_summary_failure('manifest header does not match the 44-column contract')
+
+    # Every stopped writer's final log must still be canonical, regular, and
+    # byte-identical when the success summary is published.
+    first_row = manifest_rows[0]
+    isaac_log_path = Path(first_row['isaac_log'])
+    runner_log_path = Path(first_row['runner_log'])
+    write_manifest(manifest_rows)
+    isaac_log_path.unlink()
+    expect_summary_failure('manifest row 1 isaac_log path is unsafe')
+    isaac_log_path.write_text(
+        f"isaac {first_row['run_id']}\n",
+        encoding='utf-8',
+    )
+    runner_log_path.write_text('tampered runner log\n', encoding='utf-8')
+    expect_summary_failure('manifest row 1 runner_log SHA256 mismatch')
+    runner_log_path.write_text(
+        f"runner {first_row['run_id']}\n",
+        encoding='utf-8',
+    )
+    symlink_target = logs_dir / 'symlink-target.log'
+    symlink_target.write_text(
+        f"isaac {first_row['run_id']}\n",
+        encoding='utf-8',
+    )
+    isaac_log_path.unlink()
+    isaac_log_path.symlink_to(symlink_target)
+    expect_summary_failure('manifest row 1 isaac_log path is unsafe')
+    isaac_log_path.unlink()
+    isaac_log_path.write_text(
+        f"isaac {first_row['run_id']}\n",
+        encoding='utf-8',
+    )
+    write_manifest(manifest_rows)
+
+    # Every semantic field family in the 44-column row is rebound before a
+    # success summary.  A correct header and valid report/log hashes alone are
+    # insufficient.
+    for field, replacement, expected_message in (
+        ('git_commit', '0' * 40, 'git_commit identity mismatch'),
+        (
+            'motion_config_sha256',
+            '0' * 64,
+            'motion_config_sha256 identity mismatch',
+        ),
+        (
+            'robot_effective_track_width_m',
+            '9.9',
+            'robot_effective_track_width_m identity mismatch',
+        ),
+        (
+            'selected_project_config',
+            '/repo/wrong.yaml',
+            'selected_project_config identity mismatch',
+        ),
+        (
+            'profile_path',
+            '/repo/physics/wrong.yaml',
+            'profile_path identity mismatch',
+        ),
+        (
+            'all_profile_hashes_json',
+            '{}',
+            'all_profile_hashes_json identity mismatch',
+        ),
+        (
+            'environment_source_asset_sha256',
+            '0' * 64,
+            'environment_source_asset_sha256 identity mismatch',
+        ),
+    ):
+        tampered_rows = [dict(row) for row in manifest_rows]
+        tampered_rows[0][field] = replacement
+        write_manifest(tampered_rows)
+        expect_summary_failure(expected_message)
+
+    wrong_run_rows = [dict(row) for row in manifest_rows]
+    wrong_run_rows[0]['run_id'] = '999_wrong'
+    write_manifest(wrong_run_rows)
+    expect_summary_failure('run_id contradicts matrix order')
+
+    wrong_time_rows = [dict(row) for row in manifest_rows]
+    wrong_time_rows[0]['started_at_utc/completed_at_utc'] = (
+        '2026-07-14T00:02:00Z/2026-07-14T00:01:00Z'
+    )
+    write_manifest(wrong_time_rows)
+    expect_summary_failure('completes before it starts')
+
+    aliased_log_rows = [dict(row) for row in manifest_rows]
+    aliased_log_rows[1]['isaac_log'] = aliased_log_rows[0]['isaac_log']
+    aliased_log_rows[1]['isaac_log_sha256'] = aliased_log_rows[0][
+        'isaac_log_sha256'
+    ]
+    write_manifest(aliased_log_rows)
+    expect_summary_failure('manifest row 2 isaac_log path mismatch')
+
+    first_report_path = Path(first_row['report'])
+    original_report_payload = report_payloads[str(first_report_path)]
+    for mutation in (
+        'motion_configuration',
+        'motion_configuration_numeric_type',
+        'robot_asset',
+        'robot_kinematics',
+        'solver',
+        'physics_hz',
+    ):
+        report_document = json.loads(original_report_payload)
+        if mutation == 'motion_configuration':
+            report_document['configuration']['topics']['odom'] = '/forged_odom'
+        elif mutation == 'motion_configuration_numeric_type':
+            report_document['configuration']['limits'][
+                'max_abs_linear_mps'
+            ] = True
+        elif mutation == 'robot_asset':
+            report_document['runtime_provenance']['robot']['asset'] = {
+                'path': '/repo/forged.usda',
+                'sha256': '0' * 64,
+            }
+        elif mutation == 'robot_kinematics':
+            report_document['runtime_provenance']['robot']['kinematics'][
+                'effective_track_width_m'
+            ] = 9.9
+        elif mutation == 'solver':
+            report_document['runtime_provenance']['robot']['solver'][
+                'velocity_iterations'
+            ] = 16
+        else:
+            assert mutation == 'physics_hz'
+            report_document['runtime_provenance']['simulation'][
+                'physics_hz'
+            ] = 120.0
+        first_report_path.write_text(
+            json.dumps(report_document, sort_keys=True) + '\n',
+            encoding='utf-8',
+        )
+        report_identity_rows = [dict(row) for row in manifest_rows]
+        report_identity_rows[0]['report_sha256'] = hashlib.sha256(
+            first_report_path.read_bytes()
+        ).hexdigest()
+        write_manifest(report_identity_rows)
+        expect_summary_failure('manifest row 1 report identity mismatch')
+        first_report_path.write_text(
+            original_report_payload, encoding='utf-8'
+        )
+    report_document = json.loads(original_report_payload)
+    report_document['completed_at_utc'] = '2026-07-14T00:01:01+00:00'
+    first_report_path.write_text(
+        json.dumps(report_document, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    outside_time_rows = [dict(row) for row in manifest_rows]
+    outside_time_rows[0]['report_sha256'] = hashlib.sha256(
+        first_report_path.read_bytes()
+    ).hexdigest()
+    write_manifest(outside_time_rows)
+    expect_summary_failure('does not enclose report timestamps')
+    first_report_path.write_text(original_report_payload, encoding='utf-8')
+    write_manifest(manifest_rows)
+
+    first_report_path.unlink()
+    write_manifest(manifest_rows)
+    expect_summary_failure('manifest row 1 report path is unsafe')
+    first_report_path.write_text(
+        report_payloads[str(first_report_path)], encoding='utf-8'
+    )
+    write_manifest(manifest_rows)
+
     # A top-level pass/fail list is not enough to claim every-repeat evidence.
     # Removing one repeat must fail before an atomic summary is published.
-    summary.unlink()
+    summary.unlink(missing_ok=True)
     tampered_analysis = json.loads(json.dumps(analysis_document))
     tampered_analysis['physical_acceptance']['groups'][group_ids[0]][
         'repeat_results'
@@ -1387,13 +2064,11 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assignments['analysis_sha256'] = hashlib.sha256(
         analysis.read_bytes()
     ).hexdigest()
-    tampered_assignments = '\n'.join(
-        f'{name}={str(value)!r}' for name, value in assignments.items()
-    )
+    tampered_assignments = shell_assignments_for(assignments)
     tampered_result = _bash_harness(
         'set -Eeuo pipefail\n'
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        f'{function}\n'
+        f'{functions}\n'
         f'{tampered_assignments}\n'
         'write_batch_summary 18 18\n'
     )
@@ -1410,30 +2085,118 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         analysis.read_bytes()
     ).hexdigest()
 
-    # The frozen file digest alone is insufficient: the summary must bind
-    # every row's topology identity to the originally locked hash map.
-    mismatched_row = (*manifest_row[:-1], '6' * 64)
-    manifest.write_text(
-        '\t'.join(manifest_header)
-        + '\n'
-        + ('\t'.join(mismatched_row) + '\n') * 18,
+    # The analysis selection must preserve the frozen manifest's report
+    # schema identity; a coordinated top-level count is insufficient.
+    selection_tamper = json.loads(json.dumps(analysis_document))
+    selection_tamper['selection']['included'][0][
+        'report_schema_version'
+    ] = 2
+    analysis.write_text(
+        json.dumps(selection_tamper, sort_keys=True) + '\n',
         encoding='utf-8',
     )
+    assignments['analysis_sha256'] = hashlib.sha256(
+        analysis.read_bytes()
+    ).hexdigest()
+    selection_assignments = shell_assignments_for(assignments)
+    selection_result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{functions}\n'
+        f'{selection_assignments}\n'
+        'write_batch_summary 18 18\n'
+    )
+    assert selection_result.returncode != 0
+    assert (
+        'aggregate selection does not match frozen manifest/report identities'
+        in selection_result.stderr
+        or 'input_reports and identity fields must exactly match '
+        'analysis.selection.included' in selection_result.stderr
+    )
+    assert not summary.exists()
+
+    analysis.write_text(
+        json.dumps(analysis_document, sort_keys=True) + '\n',
+        encoding='utf-8',
+    )
+    assignments['analysis_sha256'] = hashlib.sha256(
+        analysis.read_bytes()
+    ).hexdigest()
+
+    # The new manifest column is an immutable integer-3 contract.
+    schema_mismatch_rows = [
+        {**row, 'report_schema_version': '2'} for row in manifest_rows
+    ]
+    write_manifest(schema_mismatch_rows)
     assignments['frozen_manifest_sha256'] = hashlib.sha256(
         manifest.read_bytes()
     ).hexdigest()
-    mismatched_assignments = '\n'.join(
-        f'{name}={str(value)!r}' for name, value in assignments.items()
+    schema_assignments = shell_assignments_for(assignments)
+    schema_result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{functions}\n'
+        f'{schema_assignments}\n'
+        'write_batch_summary 18 18\n'
     )
+    assert schema_result.returncode != 0
+    assert 'manifest row 1 report schema version mismatch' \
+        in schema_result.stderr
+    assert not summary.exists()
+
+    # A row claiming schema 3 cannot cover a schema-2 report JSON, even when
+    # its raw digest is updated consistently.
+    first_report = Path(manifest_rows[0]['report'])
+    first_report.write_text('{"schema_version":2}\n', encoding='utf-8')
+    schema_2_sha256 = hashlib.sha256(first_report.read_bytes()).hexdigest()
+    report_json_mismatch_rows = [dict(row) for row in manifest_rows]
+    report_json_mismatch_rows[0]['report_sha256'] = schema_2_sha256
+    write_manifest(report_json_mismatch_rows)
+    assignments['frozen_manifest_sha256'] = hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest()
+    report_json_assignments = shell_assignments_for(assignments)
+    report_json_result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
+        f'{functions}\n'
+        f'{report_json_assignments}\n'
+        'write_batch_summary 18 18\n'
+    )
+    assert report_json_result.returncode != 0
+    assert 'manifest row 1 report JSON schema version mismatch' \
+        in report_json_result.stderr
+    assert not summary.exists()
+
+    first_report.write_text(
+        report_payloads[str(first_report)],
+        encoding='utf-8',
+    )
+    write_manifest(manifest_rows)
+    assignments['frozen_manifest_sha256'] = hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest()
+
+    # The frozen file digest alone is insufficient: the summary must bind
+    # every row's topology identity to the originally locked hash map.
+    mismatched_rows = [
+        {**row, 'ground_topology_profile_sha256': '6' * 64}
+        for row in manifest_rows
+    ]
+    write_manifest(mismatched_rows)
+    assignments['frozen_manifest_sha256'] = hashlib.sha256(
+        manifest.read_bytes()
+    ).hexdigest()
+    mismatched_assignments = shell_assignments_for(assignments)
     mismatch_result = _bash_harness(
         'set -Eeuo pipefail\n'
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        f'{function}\n'
+        f'{functions}\n'
         f'{mismatched_assignments}\n'
         'write_batch_summary 18 18\n'
     )
     assert mismatch_result.returncode != 0
-    assert 'manifest row 1 ground-topology identity mismatch' \
+    assert 'manifest row 1 ground_topology_profile_sha256 identity mismatch' \
         in mismatch_result.stderr
     assert not summary.exists()
 

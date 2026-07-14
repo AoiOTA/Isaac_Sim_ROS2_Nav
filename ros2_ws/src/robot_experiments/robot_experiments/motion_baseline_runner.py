@@ -1505,12 +1505,15 @@ class MotionBaselineRunner(Node):
                 self._publish(0.0, 0.0)
                 next_publish = now + publish_period
             self._spin_once(min(0.02, deadline - now))
+            if not self._wall_streams_fresh() or not self._streams_fresh():
+                raise RuntimeError("stop detection input streams became stale")
             detected = detect_stopping(
                 command_end_ns,
                 self._active_odom,
                 self._active_joints,
                 self._config.wheels,
                 self._config.stop,
+                self._config.sampling.max_sample_age_sec,
             )
             if detected.stopped:
                 return
@@ -1530,6 +1533,11 @@ class MotionBaselineRunner(Node):
         )
         self._wait_for_stop(command_end_ns)
         self.safe_stop()
+        if any(self._active_invalid.values()):
+            raise RuntimeError(
+                "invalid odometry or joint-state messages were received "
+                "during the motion segment"
+            )
         assert self._active_odom is not None
         assert self._active_joints is not None
         result = analyse_motion_segment(
@@ -1541,6 +1549,7 @@ class MotionBaselineRunner(Node):
             self._config.wheels,
             self._config.stop,
             command_publish_count=publish_count,
+            max_sample_age_sec=self._config.sampling.max_sample_age_sec,
             timestamp_integrity=self._timestamp_report(),
         )
         result["reset"] = reset_report
@@ -1549,7 +1558,7 @@ class MotionBaselineRunner(Node):
 
     def _base_report(self) -> dict[str, object]:
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "diagnostic": "four_wheel_chassis_motion_baseline",
             "profile_id": self._config.profile_id,
             "environment_id": self._environment_id,

@@ -8,6 +8,7 @@ engineering decision, not that decision itself.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -148,11 +149,29 @@ _POSE_KEYS = {
     "lateral_drift_m",
     "translation_drift_m",
 }
+_POSE_SAMPLE_KEYS = {"x_m", "y_m", "yaw_rad"}
 _YAW_KEYS = {"change_rad", "expected_change_rad", "error_rad"}
 _STOPPING_KEYS = {
     "stopped",
     "stationary_onset_after_command_sec",
     "confirmed_after_command_sec",
+}
+_SCHEMA3_STOPPING_KEYS = _STOPPING_KEYS | {"stationary_evidence"}
+_STATIONARY_EVIDENCE_KEYS = {
+    "schema_version",
+    "definition",
+    "boundary_semantics",
+    "start_stamp_ns",
+    "end_stamp_ns",
+    "observed_duration_sec",
+    "max_sample_age_sec",
+    "streams",
+}
+_STATIONARY_STREAM_KEYS = {
+    "sample_count",
+    "first_sample_stamp_ns",
+    "last_sample_stamp_ns",
+    "maximum_inter_sample_gap_sec",
 }
 _WHEEL_REPORT_KEYS = {
     "direction",
@@ -175,6 +194,89 @@ _STEADY_STATE_WINDOW_KEYS = {
     "sample_count",
     "angular_z_radps",
 }
+_SCHEMA3_STEADY_STATE_WINDOW_KEYS = _STEADY_STATE_WINDOW_KEYS | {
+    "boundary_semantics",
+    "first_sample_stamp_ns",
+    "last_sample_stamp_ns",
+    "maximum_inter_sample_gap_sec",
+}
+_WHEEL_STEADY_STATE_WINDOW_KEYS = {
+    "schema_version",
+    "definition",
+    "boundary_semantics",
+    "start_stamp_ns",
+    "end_stamp_ns",
+    "observed_duration_sec",
+    "sample_count",
+    "first_sample_stamp_ns",
+    "last_sample_stamp_ns",
+    "maximum_inter_sample_gap_sec",
+    "classification_deadband_radps",
+    "all_directions_match",
+    "per_wheel",
+}
+_DIRECTION_SAMPLE_COUNT_KEYS = {
+    "positive_above_deadband",
+    "negative_below_deadband",
+    "within_deadband",
+}
+_SCHEMA3_WHEEL_REPORT_KEYS = _WHEEL_REPORT_KEYS | {
+    "direction_sample_counts"
+}
+_SAMPLE_COUNT_KEYS = {
+    "odom_command",
+    "odom_total",
+    "joint_states_command",
+    "joint_states_total",
+}
+_TIMESTAMP_SOURCE_KEYS = {"clock", "odom", "joint_states"}
+_TIMESTAMP_TRACKER_KEYS = {
+    "sample_count",
+    "first_stamp_ns",
+    "last_stamp_ns",
+    "regression_count",
+    "duplicate_count",
+    "monotonic_unique",
+}
+_INVALID_MESSAGE_COUNT_KEYS = {"odom", "joint_states"}
+_SAFETY_KEYS = {
+    "exclusive_non_reset_cmd_vel_owner_enforced",
+    "authorized_reset_safety_publishers",
+    "cmd_vel_subscription_count",
+    "safe_zero_burst_attempted",
+    "zero_publish_count",
+}
+_RESET_REPORT_KEYS = {
+    "service",
+    "response_message",
+    "reset_generation",
+    "reset_boundary_clock_ns",
+    "service_latency_wall_sec",
+    "recovery_latency_wall_sec",
+    "clock_before_ns",
+    "clock_after_ns",
+    "clock_rollback_observed",
+    "fresh_clock_received",
+    "fresh_odom_received",
+    "fresh_joint_states_received",
+    "stationary_settle_duration_sec",
+    "recovery_observation_counts",
+    "recovery_violation_counts",
+    "recovery_peak_observed",
+    "credited_stamp_high_watermarks_ns",
+    "received_stamp_high_watermarks_ns",
+    "longest_stationary_duration_sec",
+}
+_RESET_OBSERVATION_COUNT_KEYS = {
+    "coherent_group_not_ready",
+    "pre_boundary_group",
+    "not_stationary",
+    "stationary",
+    "coherent_without_time_progress",
+    "observation_regression",
+    "receive_timestamp_regression",
+    "coherent_timestamp_regression",
+}
 _VELOCITY_DISTRIBUTION_KEYS = {
     "sample_count",
     "mean",
@@ -184,7 +286,8 @@ _VELOCITY_DISTRIBUTION_KEYS = {
     "peak_abs",
     "rmse",
 }
-_PHYSICAL_ACCEPTANCE_POLICY_ID = "skid_steer_plan_8_7_v1"
+_SCHEMA3_MAX_SAMPLE_AGE_SEC = 0.5
+_PHYSICAL_ACCEPTANCE_POLICY_ID = "skid_steer_plan_8_7_v2"
 _PHYSICAL_ACCEPTANCE_THRESHOLDS = {
     "forward_abs_lateral_drift_max_m": 0.05,
     "backward_abs_lateral_drift_max_m": 0.08,
@@ -197,6 +300,7 @@ _PHYSICAL_ACCEPTANCE_THRESHOLDS = {
     "stop_wheel_velocity_threshold_max_radps": 0.20,
 }
 _PHYSICAL_ACCEPTANCE_APPLICABILITY = {
+    "required_motion_report_schema": 3,
     "required_runtime_provenance_schema": 5,
     "required_environment_id": "SimplePlane",
     "required_ground_topology_id": "simple_plane_only1_v1",
@@ -209,6 +313,10 @@ _PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS = (
 )
 _PHYSICAL_STEADY_STATE_LEAF_BASIS = (
     "actual_velocity.steady_state_window.angular_z_radps.mean"
+)
+_PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS = (
+    "wheels.steady_state_window.per_wheel[*].direction_matches over the "
+    "final_half_of_command_interval window"
 )
 _PHYSICAL_MAXIMUM_CHECK_THRESHOLDS = {
     "forward_abs_lateral_drift_m": "forward_abs_lateral_drift_max_m",
@@ -289,6 +397,7 @@ class InputRecord:
     contact_lock: dict[str, Any]
     physical_stop_contract: dict[str, float] | None
     physical_yaw_rate_metrics: dict[str, dict[str, float]] | None
+    physical_wheel_direction_evidence: dict[str, dict[str, Any]] | None
     segments: dict[str, dict[str, float]]
 
 
@@ -340,6 +449,14 @@ def _exact_integer(value: Any, expected: int, location: str) -> None:
 def _positive_integer_value(value: Any, location: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ConfigurationError(f"{location} must be a positive integer")
+    return value
+
+
+def _nonnegative_integer_value(value: Any, location: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ConfigurationError(
+            f"{location} must be a non-negative integer"
+        )
     return value
 
 
@@ -669,28 +786,1228 @@ def _validate_wheel_directions(
         )
 
 
+def _validated_schema3_speed_distribution(
+    value: Any,
+    location: str,
+    *,
+    expected_sample_count: int | None,
+) -> tuple[int, float, float, float, float, float]:
+    """Validate a producer distribution strongly enough to classify direction."""
+
+    distribution = _mapping(value, location)
+    _exact_keys(distribution, _VELOCITY_DISTRIBUTION_KEYS, location)
+    sample_count = _positive_integer_value(
+        distribution.get("sample_count"), f"{location}.sample_count"
+    )
+    if expected_sample_count is not None and sample_count != expected_sample_count:
+        raise ConfigurationError(
+            f"{location}.sample_count must match its wheel window sample_count"
+        )
+    mean = _finite(distribution.get("mean"), f"{location}.mean")
+    mean_abs = _nonnegative(
+        distribution.get("mean_abs"), f"{location}.mean_abs"
+    )
+    minimum = _finite(distribution.get("minimum"), f"{location}.minimum")
+    maximum = _finite(distribution.get("maximum"), f"{location}.maximum")
+    peak_abs = _nonnegative(
+        distribution.get("peak_abs"), f"{location}.peak_abs"
+    )
+    rmse = _nonnegative(distribution.get("rmse"), f"{location}.rmse")
+    tolerance = 1e-12
+    if (
+        minimum > maximum
+        or mean < minimum - tolerance
+        or mean > maximum + tolerance
+    ):
+        raise ConfigurationError(
+            f"{location} must satisfy minimum <= mean <= maximum"
+        )
+    _exact_number(
+        peak_abs,
+        max(abs(minimum), abs(maximum)),
+        f"{location}.peak_abs",
+    )
+    if (
+        mean_abs + tolerance < abs(mean)
+        or rmse + tolerance < mean_abs
+        or rmse > peak_abs + tolerance
+    ):
+        raise ConfigurationError(
+            f"{location} must satisfy abs(mean) <= mean_abs <= rmse <= peak_abs"
+        )
+    if minimum == maximum:
+        for observed, expected, field in (
+            (mean, minimum, "mean"),
+            (mean_abs, abs(minimum), "mean_abs"),
+            (rmse, abs(minimum), "rmse"),
+        ):
+            _exact_number(observed, expected, f"{location}.{field}")
+        return sample_count, minimum, maximum, mean, mean_abs, rmse
+    if sample_count < 2:
+        raise ConfigurationError(
+            f"{location} distinct extrema require at least two samples"
+        )
+    remaining = sample_count - 2
+    lower_abs = (
+        0.0
+        if minimum <= 0.0 <= maximum
+        else min(abs(minimum), abs(maximum))
+    )
+    lower_square = lower_abs * lower_abs
+    try:
+        moment_bounds = (
+            (
+                sample_count * mean,
+                minimum + maximum + remaining * minimum,
+                minimum + maximum + remaining * maximum,
+                "mean",
+            ),
+            (
+                sample_count * mean_abs,
+                abs(minimum) + abs(maximum) + remaining * lower_abs,
+                abs(minimum) + abs(maximum) + remaining * peak_abs,
+                "mean_abs",
+            ),
+            (
+                sample_count * rmse * rmse,
+                minimum * minimum
+                + maximum * maximum
+                + remaining * lower_square,
+                minimum * minimum
+                + maximum * maximum
+                + remaining * peak_abs * peak_abs,
+                "rmse",
+            ),
+        )
+    except OverflowError as exc:
+        raise ConfigurationError(
+            f"{location} distribution moment bounds overflowed"
+        ) from exc
+    for observed, lower, upper, field in moment_bounds:
+        if not all(math.isfinite(value) for value in (observed, lower, upper)):
+            raise ConfigurationError(
+                f"{location}.{field} distribution moment bounds must be finite"
+            )
+        if not _physical_minimum_passed(
+            observed, lower
+        ) or not _physical_maximum_passed(observed, upper):
+            raise ConfigurationError(
+                f"{location}.{field} is impossible for sample_count and extrema"
+            )
+    interior_count = sample_count - 2
+    interior_sum = sample_count * mean - minimum - maximum
+    interior_abs_sum = (
+        sample_count * mean_abs - abs(minimum) - abs(maximum)
+    )
+    interior_square_sum = (
+        sample_count * rmse * rmse
+        - minimum * minimum
+        - maximum * maximum
+    )
+
+    def nonnegative_residual(value: float, field: str) -> float:
+        if value < 0.0 and not math.isclose(
+            value, 0.0, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ConfigurationError(
+                f"{location}.{field} residual is impossible for the extrema"
+            )
+        return max(0.0, value)
+
+    interior_abs_sum = nonnegative_residual(
+        interior_abs_sum, "mean_abs"
+    )
+    interior_square_sum = nonnegative_residual(
+        interior_square_sum, "rmse"
+    )
+    if interior_count == 0:
+        if any(
+            not math.isclose(value, 0.0, rel_tol=1e-12, abs_tol=1e-12)
+            for value in (
+                interior_sum,
+                interior_abs_sum,
+                interior_square_sum,
+            )
+        ):
+            raise ConfigurationError(
+                f"{location} two-sample moments must equal the two extrema"
+            )
+    else:
+        if not _physical_minimum_passed(
+            interior_abs_sum, abs(interior_sum)
+        ):
+            raise ConfigurationError(
+                f"{location} interior absolute sum cannot realize its signed sum"
+            )
+        minimum_interior_square_sum = max(
+            interior_sum * interior_sum / interior_count,
+            interior_abs_sum * interior_abs_sum / interior_count,
+        )
+        positive_interior_sum = (interior_abs_sum + interior_sum) / 2.0
+        negative_interior_sum = (interior_abs_sum - interior_sum) / 2.0
+        positive_interior_sum = nonnegative_residual(
+            positive_interior_sum, "positive interior magnitude"
+        )
+        negative_interior_sum = nonnegative_residual(
+            negative_interior_sum, "negative interior magnitude"
+        )
+        signed_extrema_square_upper = (
+            max(0.0, maximum) * positive_interior_sum
+            + max(0.0, -minimum) * negative_interior_sum
+        )
+        maximum_interior_square_sum = min(
+            interior_abs_sum * interior_abs_sum,
+            peak_abs * interior_abs_sum,
+            signed_extrema_square_upper,
+        )
+        if not _physical_minimum_passed(
+            interior_square_sum, minimum_interior_square_sum
+        ) or not _physical_maximum_passed(
+            interior_square_sum, maximum_interior_square_sum
+        ):
+            raise ConfigurationError(
+                f"{location} interior moments are jointly impossible"
+            )
+    return sample_count, minimum, maximum, mean, mean_abs, rmse
+
+
+def _validate_schema3_distribution_subset(
+    full: tuple[int, float, float, float, float, float],
+    subset: tuple[int, float, float, float, float, float],
+    location: str,
+) -> None:
+    """Prove necessary moment bounds for one reported sample subset."""
+
+    full_count, full_minimum, full_maximum, full_mean, full_abs, full_rmse = full
+    (
+        subset_count,
+        subset_minimum,
+        subset_maximum,
+        subset_mean,
+        subset_abs,
+        subset_rmse,
+    ) = subset
+    if subset_count > full_count:
+        raise ConfigurationError(f"{location} sample_count exceeds its full window")
+    if not _physical_minimum_passed(
+        subset_minimum, full_minimum
+    ) or not _physical_maximum_passed(subset_maximum, full_maximum):
+        raise ConfigurationError(
+            f"{location} extrema escape the full-command distribution"
+        )
+    residual_count = full_count - subset_count
+    residual_sum = full_count * full_mean - subset_count * subset_mean
+    residual_abs_sum = full_count * full_abs - subset_count * subset_abs
+    residual_square_sum = (
+        full_count * full_rmse * full_rmse
+        - subset_count * subset_rmse * subset_rmse
+    )
+
+    def nonnegative(value: float, field: str) -> float:
+        if value < 0.0 and not math.isclose(
+            value, 0.0, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            raise ConfigurationError(
+                f"{location} leaves a negative residual {field} moment"
+            )
+        return max(0.0, value)
+
+    residual_abs_sum = nonnegative(residual_abs_sum, "mean_abs")
+    residual_square_sum = nonnegative(residual_square_sum, "rmse")
+    if residual_count == 0:
+        if any(
+            not math.isclose(value, 0.0, rel_tol=1e-12, abs_tol=1e-12)
+            for value in (
+                residual_sum,
+                residual_abs_sum,
+                residual_square_sum,
+            )
+        ):
+            raise ConfigurationError(
+                f"{location} full-size subset moments differ from the full window"
+            )
+        return
+    peak_abs = max(abs(full_minimum), abs(full_maximum))
+    lower_abs = (
+        0.0
+        if full_minimum <= 0.0 <= full_maximum
+        else min(abs(full_minimum), abs(full_maximum))
+    )
+    positive_sum = nonnegative(
+        (residual_abs_sum + residual_sum) / 2.0,
+        "positive magnitude",
+    )
+    negative_sum = nonnegative(
+        (residual_abs_sum - residual_sum) / 2.0,
+        "negative magnitude",
+    )
+    residual_bounds = (
+        (
+            residual_sum,
+            residual_count * full_minimum,
+            residual_count * full_maximum,
+            "mean",
+        ),
+        (
+            residual_abs_sum,
+            residual_count * lower_abs,
+            residual_count * peak_abs,
+            "mean_abs",
+        ),
+        (
+            residual_square_sum,
+            max(
+                residual_sum * residual_sum / residual_count,
+                residual_abs_sum * residual_abs_sum / residual_count,
+            ),
+            min(
+                residual_abs_sum * residual_abs_sum,
+                peak_abs * residual_abs_sum,
+                max(0.0, full_maximum) * positive_sum
+                + max(0.0, -full_minimum) * negative_sum,
+            ),
+            "rmse",
+        ),
+    )
+    for observed, lower, upper, field in residual_bounds:
+        if not all(math.isfinite(value) for value in (observed, lower, upper)):
+            raise ConfigurationError(
+                f"{location} residual {field} bounds must be finite"
+            )
+        if not _physical_minimum_passed(
+            observed, lower
+        ) or not _physical_maximum_passed(observed, upper):
+            raise ConfigurationError(
+                f"{location} cannot be a subset of the full-command distribution"
+            )
+
+
+def _direction_from_extrema(
+    minimum: float,
+    maximum: float,
+    deadband_radps: float,
+) -> str:
+    negative = minimum < -deadband_radps
+    positive = maximum > deadband_radps
+    if negative and positive:
+        return "mixed"
+    if positive:
+        return "positive"
+    if negative:
+        return "negative"
+    return "stationary"
+
+
+def _validate_schema3_window_gap_feasibility(
+    *,
+    first_stamp_ns: int,
+    last_stamp_ns: int,
+    sample_count: int,
+    maximum_gap_sec: float,
+    location: str,
+) -> None:
+    """Reject a maximum gap that no strictly increasing sample set can have."""
+
+    span_sec = (last_stamp_ns - first_stamp_ns) / 1_000_000_000
+    average_gap_sec = span_sec / (sample_count - 1)
+    if not _physical_minimum_passed(maximum_gap_sec, average_gap_sec):
+        raise ConfigurationError(
+            f"{location}.maximum_inter_sample_gap_sec cannot be smaller than "
+            "the average gap implied by first/last stamps and sample_count"
+        )
+    if not _physical_maximum_passed(maximum_gap_sec, span_sec):
+        raise ConfigurationError(
+            f"{location}.maximum_inter_sample_gap_sec cannot exceed the "
+            "first-to-last sample span"
+        )
+
+
+def _validated_timestamp_tracker(
+    value: Any,
+    location: str,
+    *,
+    require_monotonic_unique: bool,
+) -> dict[str, int | bool]:
+    tracker = _mapping(value, location)
+    _exact_keys(tracker, _TIMESTAMP_TRACKER_KEYS, location)
+    sample_count = _positive_integer_value(
+        tracker.get("sample_count"), f"{location}.sample_count"
+    )
+    first_stamp = _nonnegative_integer_value(
+        tracker.get("first_stamp_ns"), f"{location}.first_stamp_ns"
+    )
+    last_stamp = _nonnegative_integer_value(
+        tracker.get("last_stamp_ns"), f"{location}.last_stamp_ns"
+    )
+    regression_count = _nonnegative_integer_value(
+        tracker.get("regression_count"), f"{location}.regression_count"
+    )
+    duplicate_count = _nonnegative_integer_value(
+        tracker.get("duplicate_count"), f"{location}.duplicate_count"
+    )
+    if regression_count + duplicate_count > sample_count - 1:
+        raise ConfigurationError(
+            f"{location} regression/duplicate counts exceed receipt transitions"
+        )
+    monotonic_unique = tracker.get("monotonic_unique")
+    if not isinstance(monotonic_unique, bool):
+        raise ConfigurationError(
+            f"{location}.monotonic_unique must be a boolean"
+        )
+    expected_monotonic = regression_count == 0 and duplicate_count == 0
+    if monotonic_unique is not expected_monotonic:
+        raise ConfigurationError(
+            f"{location}.monotonic_unique contradicts regression/duplicate counts"
+        )
+    if require_monotonic_unique:
+        if not monotonic_unique or first_stamp > last_stamp:
+            raise ConfigurationError(
+                f"{location} must describe unique monotonic segment timestamps"
+            )
+        if sample_count == 1 and first_stamp != last_stamp:
+            raise ConfigurationError(
+                f"{location} one-sample tracker must have identical first/last stamps"
+            )
+    return {
+        "sample_count": sample_count,
+        "first_stamp_ns": first_stamp,
+        "last_stamp_ns": last_stamp,
+        "regression_count": regression_count,
+        "duplicate_count": duplicate_count,
+        "monotonic_unique": monotonic_unique,
+    }
+
+
+def _validated_timestamp_integrity(
+    value: Any,
+    location: str,
+    *,
+    require_monotonic_unique: bool,
+) -> dict[str, dict[str, int | bool]]:
+    integrity = _mapping(value, location)
+    _exact_keys(integrity, _TIMESTAMP_SOURCE_KEYS, location)
+    return {
+        source: _validated_timestamp_tracker(
+            integrity.get(source),
+            f"{location}.{source}",
+            require_monotonic_unique=require_monotonic_unique,
+        )
+        for source in sorted(_TIMESTAMP_SOURCE_KEYS)
+    }
+
+
+def _validated_invalid_message_counts(
+    value: Any, location: str
+) -> dict[str, int]:
+    counts = _mapping(value, location)
+    _exact_keys(counts, _INVALID_MESSAGE_COUNT_KEYS, location)
+    parsed = {
+        source: _nonnegative_integer_value(
+            counts.get(source), f"{location}.{source}"
+        )
+        for source in sorted(_INVALID_MESSAGE_COUNT_KEYS)
+    }
+    if any(parsed.values()):
+        raise ConfigurationError(
+            f"{location} must be zero for every successful schema-3 segment"
+        )
+    return parsed
+
+
+def _validate_reset_report(
+    value: Any,
+    reset_configuration: Mapping[str, Any],
+    wheel_layout: Mapping[str, str],
+    location: str,
+) -> tuple[int, int, dict[str, int]]:
+    report = _mapping(value, location)
+    _exact_keys(report, _RESET_REPORT_KEYS, location)
+    configured_service = _string(
+        reset_configuration.get("service"), "configuration.reset.service"
+    )
+    configured_settle = _nonnegative(
+        reset_configuration.get("settle_duration_sec"),
+        "configuration.reset.settle_duration_sec",
+    )
+    if report.get("service") != configured_service:
+        raise ConfigurationError(
+            f"{location}.service must match configuration.reset.service"
+        )
+    _string(report.get("response_message"), f"{location}.response_message")
+    reset_generation = _positive_integer_value(
+        report.get("reset_generation"), f"{location}.reset_generation"
+    )
+    boundary = _nonnegative_integer_value(
+        report.get("reset_boundary_clock_ns"),
+        f"{location}.reset_boundary_clock_ns",
+    )
+    for field in ("service_latency_wall_sec", "recovery_latency_wall_sec"):
+        _nonnegative(report.get(field), f"{location}.{field}")
+    before = report.get("clock_before_ns")
+    if before is not None:
+        before = _nonnegative_integer_value(
+            before, f"{location}.clock_before_ns"
+        )
+    after = _nonnegative_integer_value(
+        report.get("clock_after_ns"), f"{location}.clock_after_ns"
+    )
+    if after <= boundary:
+        raise ConfigurationError(
+            f"{location}.clock_after_ns must follow the reset boundary"
+        )
+    rollback = report.get("clock_rollback_observed")
+    if not isinstance(rollback, bool) or rollback is not (
+        before is not None and after < before
+    ):
+        raise ConfigurationError(
+            f"{location}.clock_rollback_observed contradicts clock stamps"
+        )
+    for field in (
+        "fresh_clock_received",
+        "fresh_odom_received",
+        "fresh_joint_states_received",
+    ):
+        if report.get(field) is not True:
+            raise ConfigurationError(f"{location}.{field} must be true")
+    settle = _nonnegative(
+        report.get("stationary_settle_duration_sec"),
+        f"{location}.stationary_settle_duration_sec",
+    )
+    _exact_number(
+        settle,
+        configured_settle,
+        f"{location}.stationary_settle_duration_sec",
+    )
+    longest = _nonnegative(
+        report.get("longest_stationary_duration_sec"),
+        f"{location}.longest_stationary_duration_sec",
+    )
+    if not _physical_minimum_passed(longest, settle):
+        raise ConfigurationError(
+            f"{location}.longest_stationary_duration_sec is shorter than settle"
+        )
+    observations = _mapping(
+        report.get("recovery_observation_counts"),
+        f"{location}.recovery_observation_counts",
+    )
+    _exact_keys(
+        observations,
+        _RESET_OBSERVATION_COUNT_KEYS,
+        f"{location}.recovery_observation_counts",
+    )
+    parsed_observations = {
+        field: _nonnegative_integer_value(
+            observations.get(field),
+            f"{location}.recovery_observation_counts.{field}",
+        )
+        for field in sorted(_RESET_OBSERVATION_COUNT_KEYS)
+    }
+    if parsed_observations["stationary"] <= 0:
+        raise ConfigurationError(
+            f"{location}.recovery_observation_counts.stationary must be positive"
+        )
+    violations = _mapping(
+        report.get("recovery_violation_counts"),
+        f"{location}.recovery_violation_counts",
+    )
+    required_violation_keys = {
+        "streams_fresh",
+        "stream:odom_not_stale",
+        "stream:odom_not_too_far_ahead",
+        "stream:joint_states_not_stale",
+        "stream:joint_states_not_too_far_ahead",
+        "wall_streams_fresh",
+        "odom_linear_speed",
+        "odom_angular_speed",
+        *(f"wheel:{joint_name}" for joint_name in wheel_layout.values()),
+    }
+    optional_violation_keys = {
+        f"{kind}:{source}"
+        for kind in (
+            "receive_timestamp_regression",
+            "coherent_timestamp_regression",
+        )
+        for source in _TIMESTAMP_SOURCE_KEYS
+    }
+    if not required_violation_keys <= set(violations) or (
+        set(violations) - required_violation_keys
+    ) - optional_violation_keys:
+        raise ConfigurationError(
+            f"{location}.recovery_violation_counts keys are invalid"
+        )
+    for key, count in violations.items():
+        _string(key, f"{location}.recovery_violation_counts key")
+        _nonnegative_integer_value(
+            count, f"{location}.recovery_violation_counts.{key}"
+        )
+    peaks = _mapping(
+        report.get("recovery_peak_observed"),
+        f"{location}.recovery_peak_observed",
+    )
+    _exact_keys(
+        peaks,
+        {
+            "odom_linear_speed_mps",
+            "odom_angular_speed_radps",
+            "wheel_abs_speed_radps",
+            "sim_age_sec",
+        },
+        f"{location}.recovery_peak_observed",
+    )
+    for field in ("odom_linear_speed_mps", "odom_angular_speed_radps"):
+        _nonnegative(
+            peaks.get(field), f"{location}.recovery_peak_observed.{field}"
+        )
+    wheel_peaks = _mapping(
+        peaks.get("wheel_abs_speed_radps"),
+        f"{location}.recovery_peak_observed.wheel_abs_speed_radps",
+    )
+    _exact_keys(
+        wheel_peaks,
+        set(wheel_layout.values()),
+        f"{location}.recovery_peak_observed.wheel_abs_speed_radps",
+    )
+    for joint_name in wheel_layout.values():
+        _nonnegative(
+            wheel_peaks.get(joint_name),
+            f"{location}.recovery_peak_observed.wheel_abs_speed_radps."
+            f"{joint_name}",
+        )
+    sim_age = _mapping(
+        peaks.get("sim_age_sec"),
+        f"{location}.recovery_peak_observed.sim_age_sec",
+    )
+    _exact_keys(
+        sim_age,
+        _INVALID_MESSAGE_COUNT_KEYS,
+        f"{location}.recovery_peak_observed.sim_age_sec",
+    )
+    for source in sorted(_INVALID_MESSAGE_COUNT_KEYS):
+        extrema_location = (
+            f"{location}.recovery_peak_observed.sim_age_sec.{source}"
+        )
+        extrema = _mapping(sim_age.get(source), extrema_location)
+        _exact_keys(extrema, {"minimum", "maximum"}, extrema_location)
+        minimum = _finite(extrema.get("minimum"), f"{extrema_location}.minimum")
+        maximum = _finite(extrema.get("maximum"), f"{extrema_location}.maximum")
+        if minimum > maximum:
+            raise ConfigurationError(
+                f"{extrema_location}.minimum cannot exceed maximum"
+            )
+    watermark_sets: dict[str, dict[str, int]] = {}
+    for field in (
+        "credited_stamp_high_watermarks_ns",
+        "received_stamp_high_watermarks_ns",
+    ):
+        watermarks = _mapping(report.get(field), f"{location}.{field}")
+        _exact_keys(watermarks, _TIMESTAMP_SOURCE_KEYS, f"{location}.{field}")
+        watermark_sets[field] = {
+            source: _nonnegative_integer_value(
+                watermarks.get(source), f"{location}.{field}.{source}"
+            )
+            for source in sorted(_TIMESTAMP_SOURCE_KEYS)
+        }
+    credited = watermark_sets["credited_stamp_high_watermarks_ns"]
+    received = watermark_sets["received_stamp_high_watermarks_ns"]
+    for source in sorted(_TIMESTAMP_SOURCE_KEYS):
+        if credited[source] <= boundary or received[source] < credited[source]:
+            raise ConfigurationError(
+                f"{location} {source} reset watermarks are inconsistent"
+            )
+    if after != credited["clock"]:
+        raise ConfigurationError(
+            f"{location}.clock_after_ns must equal the credited clock watermark"
+        )
+    return reset_generation, after, received
+
+
+def _validated_stationary_evidence(
+    value: Any,
+    *,
+    command_end_stamp_ns: int,
+    onset_sec: float,
+    confirmed_sec: float,
+    max_sample_age_sec: float,
+    sample_counts: Mapping[str, int],
+    timestamp_integrity: Mapping[str, Mapping[str, int | bool]],
+    location: str,
+) -> dict[str, dict[str, int | float]]:
+    evidence = _mapping(value, location)
+    _exact_keys(evidence, _STATIONARY_EVIDENCE_KEYS, location)
+    _exact_integer(evidence.get("schema_version"), 1, f"{location}.schema_version")
+    if evidence.get("definition") != (
+        "dual_stream_continuously_stationary_after_zero_command"
+    ):
+        raise ConfigurationError(f"{location}.definition is invalid")
+    if evidence.get("boundary_semantics") != "closed_interval":
+        raise ConfigurationError(
+            f"{location}.boundary_semantics must be 'closed_interval'"
+        )
+    start_stamp = _nonnegative_integer_value(
+        evidence.get("start_stamp_ns"), f"{location}.start_stamp_ns"
+    )
+    end_stamp = _nonnegative_integer_value(
+        evidence.get("end_stamp_ns"), f"{location}.end_stamp_ns"
+    )
+    expected_start = command_end_stamp_ns + round(onset_sec * 1_000_000_000)
+    expected_end = command_end_stamp_ns + round(confirmed_sec * 1_000_000_000)
+    if start_stamp != expected_start or end_stamp != expected_end:
+        raise ConfigurationError(
+            f"{location} boundaries contradict stopping onset/confirmation"
+        )
+    if end_stamp <= start_stamp:
+        raise ConfigurationError(f"{location} end must follow start")
+    duration = (end_stamp - start_stamp) / 1_000_000_000
+    _exact_number(
+        evidence.get("observed_duration_sec"),
+        duration,
+        f"{location}.observed_duration_sec",
+    )
+    _exact_number(
+        evidence.get("max_sample_age_sec"),
+        max_sample_age_sec,
+        f"{location}.max_sample_age_sec",
+    )
+    streams = _mapping(evidence.get("streams"), f"{location}.streams")
+    _exact_keys(
+        streams, _INVALID_MESSAGE_COUNT_KEYS, f"{location}.streams"
+    )
+    parsed_streams: dict[str, dict[str, int | float]] = {}
+    for source in sorted(_INVALID_MESSAGE_COUNT_KEYS):
+        stream_location = f"{location}.streams.{source}"
+        stream = _mapping(streams.get(source), stream_location)
+        _exact_keys(stream, _STATIONARY_STREAM_KEYS, stream_location)
+        sample_count = _positive_integer_value(
+            stream.get("sample_count"), f"{stream_location}.sample_count"
+        )
+        if sample_count < 2 or sample_count > sample_counts[f"{source}_total"]:
+            raise ConfigurationError(
+                f"{stream_location}.sample_count must be in [2, {source}_total]"
+            )
+        first_stamp = _nonnegative_integer_value(
+            stream.get("first_sample_stamp_ns"),
+            f"{stream_location}.first_sample_stamp_ns",
+        )
+        last_stamp = _nonnegative_integer_value(
+            stream.get("last_sample_stamp_ns"),
+            f"{stream_location}.last_sample_stamp_ns",
+        )
+        tracker = timestamp_integrity[source]
+        if not (
+            int(tracker["first_stamp_ns"])
+            <= start_stamp
+            <= first_stamp
+            < last_stamp
+            <= end_stamp
+            <= int(tracker["last_stamp_ns"])
+        ):
+            raise ConfigurationError(
+                f"{stream_location} stamps escape the segment tracker/window"
+            )
+        maximum_gap = _positive(
+            stream.get("maximum_inter_sample_gap_sec"),
+            f"{stream_location}.maximum_inter_sample_gap_sec",
+        )
+        _validate_schema3_window_gap_feasibility(
+            first_stamp_ns=first_stamp,
+            last_stamp_ns=last_stamp,
+            sample_count=sample_count,
+            maximum_gap_sec=maximum_gap,
+            location=stream_location,
+        )
+        for observed, description in (
+            ((first_stamp - start_stamp) / 1_000_000_000, "first sample lag"),
+            ((end_stamp - last_stamp) / 1_000_000_000, "end sample lag"),
+            (maximum_gap, "maximum inter-sample gap"),
+        ):
+            if not _physical_maximum_passed(observed, max_sample_age_sec):
+                raise ConfigurationError(
+                    f"{stream_location} {description} exceeds max_sample_age_sec"
+                )
+        parsed_streams[source] = {
+            "sample_count": sample_count,
+            "first_sample_stamp_ns": first_stamp,
+            "last_sample_stamp_ns": last_stamp,
+            "maximum_inter_sample_gap_sec": maximum_gap,
+        }
+    return parsed_streams
+
+
+def _validated_schema3_wheel_mapping(
+    value: Any,
+    wheel_layout: Mapping[str, str],
+    motion: str,
+    direction_deadband_radps: float,
+    location: str,
+    *,
+    expected_sample_count: int | None,
+    require_direction_sample_counts: bool,
+) -> dict[str, Any]:
+    """Validate schema-3 wheel evidence without treating mismatch as invalid."""
+
+    wheels = _mapping(value, location)
+    _exact_keys(wheels, {"all_directions_match", "per_wheel"}, location)
+    aggregate_matches = wheels.get("all_directions_match")
+    if not isinstance(aggregate_matches, bool):
+        raise ConfigurationError(
+            f"{location}.all_directions_match must be a boolean"
+        )
+    per_wheel = _mapping(wheels.get("per_wheel"), f"{location}.per_wheel")
+    expected = _expected_wheel_directions(motion, wheel_layout)
+    if set(per_wheel) != set(expected):
+        raise ConfigurationError(
+            f"{location}.per_wheel must exactly match configured wheels"
+        )
+    evidence: dict[str, dict[str, Any]] = {}
+    match_values: list[bool] = []
+    observed_sample_counts: set[int] = set()
+    for joint_name, expected_direction in expected.items():
+        wheel_location = f"{location}.per_wheel.{joint_name}"
+        wheel = _mapping(per_wheel.get(joint_name), wheel_location)
+        _exact_keys(
+            wheel,
+            (
+                _SCHEMA3_WHEEL_REPORT_KEYS
+                if require_direction_sample_counts
+                else _WHEEL_REPORT_KEYS
+            ),
+            wheel_location,
+        )
+        if wheel.get("expected_direction") != expected_direction:
+            raise ConfigurationError(
+                f"{wheel_location}.expected_direction must be "
+                f"{expected_direction!r}"
+            )
+        direction = wheel.get("direction")
+        if direction not in {"positive", "negative", "stationary", "mixed"}:
+            raise ConfigurationError(
+                f"{wheel_location}.direction must be a supported classification"
+            )
+        direction_matches = wheel.get("direction_matches")
+        if not isinstance(direction_matches, bool):
+            raise ConfigurationError(
+                f"{wheel_location}.direction_matches must be a boolean"
+            )
+        computed_match = direction == expected_direction
+        if direction_matches is not computed_match:
+            raise ConfigurationError(
+                f"{wheel_location}.direction_matches is inconsistent with "
+                "direction and expected_direction"
+            )
+        (
+            sample_count,
+            minimum,
+            maximum,
+            mean,
+            mean_abs,
+            rmse,
+        ) = _validated_schema3_speed_distribution(
+            wheel.get("speed_radps"),
+            f"{wheel_location}.speed_radps",
+            expected_sample_count=expected_sample_count,
+        )
+        observed_sample_counts.add(sample_count)
+        classified = _direction_from_extrema(
+            minimum,
+            maximum,
+            direction_deadband_radps,
+        )
+        if require_direction_sample_counts:
+            counts_location = f"{wheel_location}.direction_sample_counts"
+            counts = _mapping(
+                wheel.get("direction_sample_counts"), counts_location
+            )
+            _exact_keys(counts, _DIRECTION_SAMPLE_COUNT_KEYS, counts_location)
+            parsed_counts: dict[str, int] = {}
+            for field in sorted(_DIRECTION_SAMPLE_COUNT_KEYS):
+                raw_count = counts.get(field)
+                if (
+                    isinstance(raw_count, bool)
+                    or not isinstance(raw_count, int)
+                    or raw_count < 0
+                ):
+                    raise ConfigurationError(
+                        f"{counts_location}.{field} must be a non-negative integer"
+                    )
+                parsed_counts[field] = raw_count
+            if sum(parsed_counts.values()) != sample_count:
+                raise ConfigurationError(
+                    f"{counts_location} must sum to the wheel sample_count"
+                )
+            positive = parsed_counts["positive_above_deadband"] > 0
+            negative = parsed_counts["negative_below_deadband"] > 0
+            within = parsed_counts["within_deadband"] > 0
+            counted_classification = (
+                "mixed"
+                if positive and negative
+                else "positive"
+                if positive
+                else "negative"
+                if negative
+                else "stationary"
+            )
+            if counted_classification != classified:
+                raise ConfigurationError(
+                    f"{counts_location} contradicts the speed extrema and "
+                    "classification deadband"
+                )
+            if positive is not (maximum > direction_deadband_radps) or (
+                negative is not (minimum < -direction_deadband_radps)
+            ):
+                raise ConfigurationError(
+                    f"{counts_location} contradicts the speed extrema"
+                )
+            if within and (
+                minimum > direction_deadband_radps
+                or maximum < -direction_deadband_radps
+            ):
+                raise ConfigurationError(
+                    f"{counts_location}.within_deadband contradicts the speed "
+                    "extrema"
+                )
+            if (
+                parsed_counts["positive_above_deadband"] == sample_count
+            ) is not (minimum > direction_deadband_radps):
+                raise ConfigurationError(
+                    f"{counts_location}.positive_above_deadband contradicts the "
+                    "speed minimum"
+                )
+            if (
+                parsed_counts["negative_below_deadband"] == sample_count
+            ) is not (maximum < -direction_deadband_radps):
+                raise ConfigurationError(
+                    f"{counts_location}.negative_below_deadband contradicts the "
+                    "speed maximum"
+                )
+            if (
+                parsed_counts["within_deadband"] == sample_count
+            ) is not (
+                minimum >= -direction_deadband_radps
+                and maximum <= direction_deadband_radps
+            ):
+                raise ConfigurationError(
+                    f"{counts_location}.within_deadband contradicts the complete "
+                    "speed range"
+                )
+            positive_count = parsed_counts["positive_above_deadband"]
+            negative_count = parsed_counts["negative_below_deadband"]
+            within_count = parsed_counts["within_deadband"]
+            positive_limit = max(0.0, maximum)
+            negative_limit = max(0.0, -minimum)
+            signed_sum = sample_count * mean
+            absolute_sum = sample_count * mean_abs
+            square_sum = sample_count * rmse * rmse
+            bucket_bounds = (
+                (
+                    signed_sum,
+                    positive_count * direction_deadband_radps
+                    - negative_count * negative_limit
+                    - within_count * direction_deadband_radps,
+                    positive_count * positive_limit
+                    - negative_count * direction_deadband_radps
+                    + within_count * direction_deadband_radps,
+                    "mean",
+                ),
+                (
+                    absolute_sum,
+                    (positive_count + negative_count)
+                    * direction_deadband_radps,
+                    positive_count * positive_limit
+                    + negative_count * negative_limit
+                    + within_count * direction_deadband_radps,
+                    "mean_abs",
+                ),
+                (
+                    square_sum,
+                    (positive_count + negative_count)
+                    * direction_deadband_radps
+                    * direction_deadband_radps,
+                    positive_count * positive_limit * positive_limit
+                    + negative_count * negative_limit * negative_limit
+                    + within_count
+                    * direction_deadband_radps
+                    * direction_deadband_radps,
+                    "rmse",
+                ),
+            )
+            for observed, lower, upper, field in bucket_bounds:
+                if not all(
+                    math.isfinite(value) for value in (observed, lower, upper)
+                ):
+                    raise ConfigurationError(
+                        f"{counts_location} {field} bucket bounds must be finite"
+                    )
+                if not _physical_minimum_passed(
+                    observed, lower
+                ) or not _physical_maximum_passed(observed, upper):
+                    raise ConfigurationError(
+                        f"{counts_location} cannot realize the reported {field} "
+                        "moment"
+                    )
+            remaining_magnitude = absolute_sum
+            allocation_square_upper = 0.0
+            for cap, count in sorted(
+                (
+                    (positive_limit, positive_count),
+                    (negative_limit, negative_count),
+                    (direction_deadband_radps, within_count),
+                ),
+                reverse=True,
+            ):
+                if count == 0 or cap == 0.0 or remaining_magnitude <= 0.0:
+                    continue
+                fully_allocated = min(
+                    count, int(remaining_magnitude // cap)
+                )
+                allocation_square_upper += fully_allocated * cap * cap
+                remaining_magnitude -= fully_allocated * cap
+                if fully_allocated < count and remaining_magnitude > 0.0:
+                    partial = min(cap, remaining_magnitude)
+                    allocation_square_upper += partial * partial
+                    remaining_magnitude -= partial
+            if remaining_magnitude > 0.0 and not math.isclose(
+                remaining_magnitude, 0.0, rel_tol=1e-12, abs_tol=1e-12
+            ):
+                raise ConfigurationError(
+                    f"{counts_location} cannot allocate the reported mean_abs "
+                    "moment within its sample caps"
+                )
+            if not _physical_maximum_passed(
+                square_sum, allocation_square_upper
+            ):
+                raise ConfigurationError(
+                    f"{counts_location} cannot jointly realize the reported "
+                    "mean_abs and rmse moments"
+                )
+            classified = counted_classification
+        if direction != classified:
+            raise ConfigurationError(
+                f"{wheel_location}.direction contradicts its speed distribution"
+            )
+        match_values.append(direction_matches)
+        evidence[joint_name] = {
+            "direction": direction,
+            "expected_direction": expected_direction,
+            "direction_matches": direction_matches,
+        }
+    if len(observed_sample_counts) != 1:
+        raise ConfigurationError(
+            f"{location}.per_wheel distributions must have one shared sample_count"
+        )
+    if aggregate_matches is not all(match_values):
+        raise ConfigurationError(
+            f"{location}.all_directions_match is inconsistent with per-wheel "
+            "direction_matches"
+        )
+    return {
+        "motion": motion,
+        "all_directions_match": aggregate_matches,
+        "per_wheel": evidence,
+    }
+
+
+def _validated_schema3_wheel_window(
+    value: Any,
+    wheel_layout: Mapping[str, str],
+    motion: str,
+    direction_deadband_radps: float,
+    max_sample_age_sec: float,
+    command_sample_count: int,
+    command_start_stamp_ns: int,
+    command_end_stamp_ns: int,
+    location: str,
+) -> dict[str, Any]:
+    window = _mapping(value, location)
+    _exact_keys(window, _WHEEL_STEADY_STATE_WINDOW_KEYS, location)
+    _exact_integer(window.get("schema_version"), 1, f"{location}.schema_version")
+    if window.get("definition") != "final_half_of_command_interval":
+        raise ConfigurationError(
+            f"{location}.definition must be 'final_half_of_command_interval'"
+        )
+    if window.get("boundary_semantics") != "closed_interval":
+        raise ConfigurationError(
+            f"{location}.boundary_semantics must be 'closed_interval'"
+        )
+    expected_start = command_start_stamp_ns + (
+        command_end_stamp_ns - command_start_stamp_ns
+    ) // 2
+    _exact_integer(
+        window.get("start_stamp_ns"),
+        expected_start,
+        f"{location}.start_stamp_ns",
+    )
+    _exact_integer(
+        window.get("end_stamp_ns"),
+        command_end_stamp_ns,
+        f"{location}.end_stamp_ns",
+    )
+    expected_duration = (
+        command_end_stamp_ns - expected_start
+    ) / 1_000_000_000
+    _exact_number(
+        window.get("observed_duration_sec"),
+        expected_duration,
+        f"{location}.observed_duration_sec",
+    )
+    sample_count = _positive_integer_value(
+        window.get("sample_count"), f"{location}.sample_count"
+    )
+    if sample_count < 2:
+        raise ConfigurationError(f"{location}.sample_count must be at least 2")
+    if sample_count > command_sample_count:
+        raise ConfigurationError(
+            f"{location}.sample_count cannot exceed "
+            "segment.sample_counts.joint_states_command"
+        )
+    first_stamp = _positive_integer_value(
+        window.get("first_sample_stamp_ns"),
+        f"{location}.first_sample_stamp_ns",
+    )
+    last_stamp = _positive_integer_value(
+        window.get("last_sample_stamp_ns"),
+        f"{location}.last_sample_stamp_ns",
+    )
+    if not expected_start <= first_stamp < last_stamp <= command_end_stamp_ns:
+        raise ConfigurationError(
+            f"{location} sample stamps must be a strictly increasing subset of "
+            "the closed steady-state interval"
+        )
+    maximum_gap = _positive(
+        window.get("maximum_inter_sample_gap_sec"),
+        f"{location}.maximum_inter_sample_gap_sec",
+    )
+    _validate_schema3_window_gap_feasibility(
+        first_stamp_ns=first_stamp,
+        last_stamp_ns=last_stamp,
+        sample_count=sample_count,
+        maximum_gap_sec=maximum_gap,
+        location=location,
+    )
+    _exact_number(
+        window.get("classification_deadband_radps"),
+        direction_deadband_radps,
+        f"{location}.classification_deadband_radps",
+    )
+    for observed, description in (
+        ((first_stamp - expected_start) / 1_000_000_000, "first sample lag"),
+        ((command_end_stamp_ns - last_stamp) / 1_000_000_000, "last sample lag"),
+        (maximum_gap, "maximum inter-sample gap"),
+    ):
+        if not _physical_maximum_passed(observed, max_sample_age_sec):
+            raise ConfigurationError(
+                f"{location} {description} exceeds configuration.sampling."
+                "max_sample_age_sec"
+            )
+    wheel_evidence = _validated_schema3_wheel_mapping(
+        {
+            "all_directions_match": window.get("all_directions_match"),
+            "per_wheel": window.get("per_wheel"),
+        },
+        wheel_layout,
+        motion,
+        direction_deadband_radps,
+        location,
+        expected_sample_count=sample_count,
+        require_direction_sample_counts=True,
+    )
+    return wheel_evidence
+
+
 def _segment_metrics(
     segment: Mapping[str, Any],
     specification: tuple[str, str, float, float, float],
     wheel_layout: Mapping[str, str],
     wheel_radius_m: float,
     direction_deadband_radps: float,
+    max_sample_age_sec: float | None,
+    reset_configuration: Mapping[str, Any] | None,
     report_schema_version: int,
     location: str,
-) -> tuple[dict[str, float], float | None]:
+) -> tuple[
+    dict[str, float],
+    float | None,
+    dict[str, Any] | None,
+    dict[str, int] | None,
+    int | None,
+]:
     segment_id, motion, linear, angular, duration = specification
     _exact_keys(segment, _RESULT_SEGMENT_KEYS, location)
     if segment.get("segment_id") != segment_id or segment.get("motion") != motion:
         raise ConfigurationError(f"{location} must be {segment_id}/{motion}")
     if segment.get("tier") != "ab" or segment.get("result") != "complete":
         raise ConfigurationError(f"{location} must be a complete 'ab' segment")
-    for name in (
-        "sample_counts",
-        "timestamp_integrity",
-        "reset",
-        "invalid_message_counts",
-    ):
-        _mapping(segment.get(name), f"{location}.{name}")
+    sample_counts = _mapping(
+        segment.get("sample_counts"), f"{location}.sample_counts"
+    )
+    schema3_sample_counts: dict[str, int] | None = None
+    if report_schema_version == 3:
+        _exact_keys(
+            sample_counts,
+            _SAMPLE_COUNT_KEYS,
+            f"{location}.sample_counts",
+        )
+        schema3_sample_counts = {
+            name: _positive_integer_value(
+                sample_counts.get(name), f"{location}.sample_counts.{name}"
+            )
+            for name in sorted(_SAMPLE_COUNT_KEYS)
+        }
+        for source in ("odom", "joint_states"):
+            if (
+                schema3_sample_counts[f"{source}_total"]
+                < schema3_sample_counts[f"{source}_command"]
+            ):
+                raise ConfigurationError(
+                    f"{location}.sample_counts.{source}_total cannot be smaller "
+                    f"than {source}_command"
+                )
+    schema3_timestamp_integrity: dict[
+        str, dict[str, int | bool]
+    ] | None = None
+    schema3_reset_generation: int | None = None
+    schema3_reset_after_ns: int | None = None
+    schema3_reset_received_watermarks: dict[str, int] | None = None
+    if report_schema_version == 3:
+        assert schema3_sample_counts is not None
+        if reset_configuration is None:
+            raise ConfigurationError(
+                f"{location} schema-3 report lacks reset configuration"
+            )
+        invalid_counts = _validated_invalid_message_counts(
+            segment.get("invalid_message_counts"),
+            f"{location}.invalid_message_counts",
+        )
+        schema3_timestamp_integrity = _validated_timestamp_integrity(
+            segment.get("timestamp_integrity"),
+            f"{location}.timestamp_integrity",
+            require_monotonic_unique=True,
+        )
+        for source in ("odom", "joint_states"):
+            expected_timestamp_count = (
+                schema3_sample_counts[f"{source}_total"]
+                + invalid_counts[source]
+            )
+            if (
+                schema3_timestamp_integrity[source]["sample_count"]
+                != expected_timestamp_count
+            ):
+                raise ConfigurationError(
+                    f"{location}.timestamp_integrity.{source}.sample_count "
+                    f"must equal {source}_total plus invalid messages"
+                )
+        (
+            schema3_reset_generation,
+            schema3_reset_after_ns,
+            schema3_reset_received_watermarks,
+        ) = _validate_reset_report(
+            segment.get("reset"),
+            reset_configuration,
+            wheel_layout,
+            f"{location}.reset",
+        )
+    else:
+        for name in ("timestamp_integrity", "reset", "invalid_message_counts"):
+            _mapping(segment.get(name), f"{location}.{name}")
     command = _mapping(segment.get("command"), f"{location}.command")
     _exact_keys(command, _COMMAND_KEYS, f"{location}.command")
     _exact_number(command.get("linear_x_mps"), linear, f"{location}.command.linear_x_mps")
@@ -715,6 +2032,31 @@ def _segment_metrics(
     )
     if end_stamp <= start_stamp:
         raise ConfigurationError(f"{location}.command end stamp must follow start")
+    if schema3_timestamp_integrity is not None:
+        assert schema3_reset_after_ns is not None
+        assert schema3_reset_received_watermarks is not None
+        if schema3_reset_after_ns > start_stamp:
+            raise ConfigurationError(
+                f"{location}.command.start_stamp_ns precedes reset recovery"
+            )
+        for source in sorted(_TIMESTAMP_SOURCE_KEYS):
+            first_stamp = int(
+                schema3_timestamp_integrity[source]["first_stamp_ns"]
+            )
+            if first_stamp < schema3_reset_received_watermarks[source]:
+                raise ConfigurationError(
+                    f"{location}.timestamp_integrity.{source}.first_stamp_ns "
+                    "precedes its reset received watermark"
+                )
+        clock_tracker = schema3_timestamp_integrity["clock"]
+        if not (
+            int(clock_tracker["first_stamp_ns"])
+            <= end_stamp
+            <= int(clock_tracker["last_stamp_ns"])
+        ):
+            raise ConfigurationError(
+                f"{location}.command.end_stamp_ns escapes the clock tracker"
+            )
     try:
         stamp_duration = (end_stamp - start_stamp) / 1_000_000_000
     except OverflowError as exc:
@@ -728,12 +2070,68 @@ def _segment_metrics(
     )
     pose = _mapping(segment.get("pose"), f"{location}.pose")
     _exact_keys(pose, _POSE_KEYS, f"{location}.pose")
-    _mapping(pose.get("start"), f"{location}.pose.start")
-    _mapping(pose.get("end"), f"{location}.pose.end")
+    pose_samples: dict[str, dict[str, float]] = {}
+    for endpoint in ("start", "end"):
+        endpoint_location = f"{location}.pose.{endpoint}"
+        sample = _mapping(pose.get(endpoint), endpoint_location)
+        _exact_keys(sample, _POSE_SAMPLE_KEYS, endpoint_location)
+        pose_samples[endpoint] = {
+            field: _finite(sample.get(field), f"{endpoint_location}.{field}")
+            for field in sorted(_POSE_SAMPLE_KEYS)
+        }
+    start_pose = pose_samples["start"]
+    end_pose = pose_samples["end"]
+    delta_x = end_pose["x_m"] - start_pose["x_m"]
+    delta_y = end_pose["y_m"] - start_pose["y_m"]
+    start_yaw = start_pose["yaw_rad"]
+    net_displacement = _finite(
+        math.hypot(delta_x, delta_y),
+        f"{location}.pose.net_displacement_calculated",
+    )
+    calculated_longitudinal = _finite(
+        math.cos(start_yaw) * delta_x + math.sin(start_yaw) * delta_y,
+        f"{location}.pose.longitudinal_displacement_calculated",
+    )
+    calculated_lateral = _finite(
+        -math.sin(start_yaw) * delta_x + math.cos(start_yaw) * delta_y,
+        f"{location}.pose.lateral_displacement_calculated",
+    )
+    _exact_number(
+        pose.get("net_displacement_m"),
+        net_displacement,
+        f"{location}.pose.net_displacement_m",
+    )
+    _exact_number(
+        pose.get("longitudinal_displacement_m"),
+        calculated_longitudinal,
+        f"{location}.pose.longitudinal_displacement_m",
+    )
+    _exact_number(
+        pose.get("lateral_displacement_m"),
+        calculated_lateral,
+        f"{location}.pose.lateral_displacement_m",
+    )
+    trajectory_length = _nonnegative(
+        pose.get("trajectory_length_m"),
+        f"{location}.pose.trajectory_length_m",
+    )
+    if not _physical_minimum_passed(trajectory_length, net_displacement):
+        raise ConfigurationError(
+            f"{location}.pose.trajectory_length_m cannot be shorter than "
+            "net_displacement_m"
+        )
     yaw = _mapping(segment.get("yaw"), f"{location}.yaw")
     _exact_keys(yaw, _YAW_KEYS, f"{location}.yaw")
     stopping = _mapping(segment.get("stopping"), f"{location}.stopping")
-    _exact_keys(stopping, _STOPPING_KEYS, f"{location}.stopping")
+    _exact_keys(
+        stopping,
+        (
+            _SCHEMA3_STOPPING_KEYS
+            if report_schema_version == 3
+            else _STOPPING_KEYS
+        ),
+        f"{location}.stopping",
+    )
     if stopping.get("stopped") is not True:
         raise ConfigurationError(f"{location}.stopping.stopped must be true")
     onset = _nonnegative(
@@ -746,6 +2144,34 @@ def _segment_metrics(
     )
     if confirmed < onset:
         raise ConfigurationError(f"{location} stop confirmation precedes onset")
+    if report_schema_version == 3:
+        assert max_sample_age_sec is not None
+        assert schema3_sample_counts is not None
+        assert schema3_timestamp_integrity is not None
+        stationary_streams = _validated_stationary_evidence(
+            stopping.get("stationary_evidence"),
+            command_end_stamp_ns=end_stamp,
+            onset_sec=onset,
+            confirmed_sec=confirmed,
+            max_sample_age_sec=max_sample_age_sec,
+            sample_counts=schema3_sample_counts,
+            timestamp_integrity=schema3_timestamp_integrity,
+            location=f"{location}.stopping.stationary_evidence",
+        )
+        shared_command_boundary_sample = (
+            1 if round(onset * 1_000_000_000) == 0 else 0
+        )
+        for source in sorted(_INVALID_MESSAGE_COUNT_KEYS):
+            minimum_total = (
+                schema3_sample_counts[f"{source}_command"]
+                + int(stationary_streams[source]["sample_count"])
+                - shared_command_boundary_sample
+            )
+            if schema3_sample_counts[f"{source}_total"] < minimum_total:
+                raise ConfigurationError(
+                    f"{location}.sample_counts.{source}_total cannot cover "
+                    "both command and stationary stop evidence"
+                )
     actual_velocity = _mapping(
         segment.get("actual_velocity"), f"{location}.actual_velocity"
     )
@@ -753,22 +2179,37 @@ def _segment_metrics(
         actual_velocity,
         (
             _ACTUAL_VELOCITY_KEYS | {"steady_state_window"}
-            if report_schema_version == 2
+            if report_schema_version in {2, 3}
             else _ACTUAL_VELOCITY_KEYS
         ),
         f"{location}.actual_velocity",
     )
+    schema3_velocity_distributions: dict[
+        str, tuple[int, float, float, float, float, float]
+    ] = {}
     for velocity_name in _ACTUAL_VELOCITY_KEYS:
         distribution = _mapping(
             actual_velocity.get(velocity_name),
             f"{location}.actual_velocity.{velocity_name}",
         )
-        _finite(
-            distribution.get("mean"),
-            f"{location}.actual_velocity.{velocity_name}.mean",
-        )
+        if report_schema_version == 3:
+            assert schema3_sample_counts is not None
+            schema3_velocity_distributions[velocity_name] = (
+                _validated_schema3_speed_distribution(
+                    distribution,
+                    f"{location}.actual_velocity.{velocity_name}",
+                    expected_sample_count=schema3_sample_counts[
+                        "odom_command"
+                    ],
+                )
+            )
+        else:
+            _finite(
+                distribution.get("mean"),
+                f"{location}.actual_velocity.{velocity_name}.mean",
+            )
     steady_state_mean_yaw_rate: float | None = None
-    if report_schema_version == 2:
+    if report_schema_version in {2, 3}:
         steady_state_window = _mapping(
             actual_velocity.get("steady_state_window"),
             f"{location}.actual_velocity.steady_state_window",
@@ -776,7 +2217,11 @@ def _segment_metrics(
         steady_location = f"{location}.actual_velocity.steady_state_window"
         _exact_keys(
             steady_state_window,
-            _STEADY_STATE_WINDOW_KEYS,
+            (
+                _SCHEMA3_STEADY_STATE_WINDOW_KEYS
+                if report_schema_version == 3
+                else _STEADY_STATE_WINDOW_KEYS
+            ),
             steady_location,
         )
         _exact_integer(
@@ -813,41 +2258,194 @@ def _segment_metrics(
             steady_state_window.get("sample_count"),
             f"{steady_location}.sample_count",
         )
+        if report_schema_version == 3:
+            if max_sample_age_sec is None:
+                raise ConfigurationError(
+                    f"{steady_location} lacks max_sample_age_sec"
+                )
+            if steady_state_window.get("boundary_semantics") != "closed_interval":
+                raise ConfigurationError(
+                    f"{steady_location}.boundary_semantics must be "
+                    "'closed_interval'"
+                )
+            if steady_sample_count < 2:
+                raise ConfigurationError(
+                    f"{steady_location}.sample_count must be at least 2"
+                )
+            assert schema3_sample_counts is not None
+            if steady_sample_count > schema3_sample_counts["odom_command"]:
+                raise ConfigurationError(
+                    f"{steady_location}.sample_count cannot exceed "
+                    "segment.sample_counts.odom_command"
+                )
+            first_stamp = _positive_integer_value(
+                steady_state_window.get("first_sample_stamp_ns"),
+                f"{steady_location}.first_sample_stamp_ns",
+            )
+            last_stamp = _positive_integer_value(
+                steady_state_window.get("last_sample_stamp_ns"),
+                f"{steady_location}.last_sample_stamp_ns",
+            )
+            if not steady_start_stamp <= first_stamp < last_stamp <= end_stamp:
+                raise ConfigurationError(
+                    f"{steady_location} sample stamps must be a strictly "
+                    "increasing subset of the closed steady-state interval"
+                )
+            assert schema3_timestamp_integrity is not None
+            odom_tracker = schema3_timestamp_integrity["odom"]
+            if not (
+                int(odom_tracker["first_stamp_ns"])
+                <= first_stamp
+                < last_stamp
+                <= int(odom_tracker["last_stamp_ns"])
+            ):
+                raise ConfigurationError(
+                    f"{steady_location} sample stamps escape the Odom tracker"
+                )
+            maximum_gap = _positive(
+                steady_state_window.get("maximum_inter_sample_gap_sec"),
+                f"{steady_location}.maximum_inter_sample_gap_sec",
+            )
+            _validate_schema3_window_gap_feasibility(
+                first_stamp_ns=first_stamp,
+                last_stamp_ns=last_stamp,
+                sample_count=steady_sample_count,
+                maximum_gap_sec=maximum_gap,
+                location=steady_location,
+            )
+            for observed, description in (
+                (
+                    (first_stamp - steady_start_stamp) / 1_000_000_000,
+                    "first sample lag",
+                ),
+                (
+                    (end_stamp - last_stamp) / 1_000_000_000,
+                    "last sample lag",
+                ),
+                (maximum_gap, "maximum inter-sample gap"),
+            ):
+                if not _physical_maximum_passed(
+                    observed, max_sample_age_sec
+                ):
+                    raise ConfigurationError(
+                        f"{steady_location} {description} exceeds "
+                        "configuration.sampling.max_sample_age_sec"
+                    )
         steady_angular = _mapping(
             steady_state_window.get("angular_z_radps"),
             f"{steady_location}.angular_z_radps",
         )
-        _exact_keys(
-            steady_angular,
-            _VELOCITY_DISTRIBUTION_KEYS,
-            f"{steady_location}.angular_z_radps",
-        )
-        distribution_sample_count = _positive_integer_value(
-            steady_angular.get("sample_count"),
-            f"{steady_location}.angular_z_radps.sample_count",
-        )
-        if distribution_sample_count != steady_sample_count:
-            raise ConfigurationError(
-                f"{steady_location}.angular_z_radps.sample_count must match "
-                f"{steady_location}.sample_count"
+        if report_schema_version == 3:
+            steady_angular_distribution = _validated_schema3_speed_distribution(
+                steady_angular,
+                f"{steady_location}.angular_z_radps",
+                expected_sample_count=steady_sample_count,
             )
-        for metric_name in _VELOCITY_DISTRIBUTION_KEYS - {"sample_count"}:
-            _finite(
-                steady_angular.get(metric_name),
-                f"{steady_location}.angular_z_radps.{metric_name}",
+            _validate_schema3_distribution_subset(
+                schema3_velocity_distributions["angular_z_radps"],
+                steady_angular_distribution,
+                f"{steady_location}.angular_z_radps",
             )
+        else:
+            _exact_keys(
+                steady_angular,
+                _VELOCITY_DISTRIBUTION_KEYS,
+                f"{steady_location}.angular_z_radps",
+            )
+            distribution_sample_count = _positive_integer_value(
+                steady_angular.get("sample_count"),
+                f"{steady_location}.angular_z_radps.sample_count",
+            )
+            if distribution_sample_count != steady_sample_count:
+                raise ConfigurationError(
+                    f"{steady_location}.angular_z_radps.sample_count must match "
+                    f"{steady_location}.sample_count"
+                )
+            for metric_name in _VELOCITY_DISTRIBUTION_KEYS - {"sample_count"}:
+                _finite(
+                    steady_angular.get(metric_name),
+                    f"{steady_location}.angular_z_radps.{metric_name}",
+                )
         steady_state_mean_yaw_rate = _finite(
             steady_angular.get("mean"),
             f"{steady_location}.angular_z_radps.mean",
         )
-    _validate_wheel_directions(
-        segment,
-        wheel_layout,
-        motion,
-        direction_deadband_radps,
-        location,
-    )
+    physical_wheel_direction_evidence: dict[str, Any] | None = None
+    if report_schema_version == 3:
+        if max_sample_age_sec is None:
+            raise ConfigurationError(
+                f"{location} schema-3 report lacks max_sample_age_sec"
+            )
+        assert schema3_sample_counts is not None
+        wheels = _mapping(segment.get("wheels"), f"{location}.wheels")
+        _exact_keys(
+            wheels,
+            {"all_directions_match", "per_wheel", "steady_state_window"},
+            f"{location}.wheels",
+        )
+        _validated_schema3_wheel_mapping(
+            {
+                "all_directions_match": wheels.get("all_directions_match"),
+                "per_wheel": wheels.get("per_wheel"),
+            },
+            wheel_layout,
+            motion,
+            direction_deadband_radps,
+            f"{location}.wheels",
+            expected_sample_count=schema3_sample_counts[
+                "joint_states_command"
+            ],
+            require_direction_sample_counts=False,
+        )
+        raw_wheel_window = wheels.get("steady_state_window")
+        physical_wheel_direction_evidence = _validated_schema3_wheel_window(
+            raw_wheel_window,
+            wheel_layout,
+            motion,
+            direction_deadband_radps,
+            max_sample_age_sec,
+            schema3_sample_counts["joint_states_command"],
+            start_stamp,
+            end_stamp,
+            f"{location}.wheels.steady_state_window",
+        )
+        wheel_window = _mapping(
+            raw_wheel_window, f"{location}.wheels.steady_state_window"
+        )
+        assert schema3_timestamp_integrity is not None
+        joint_tracker = schema3_timestamp_integrity["joint_states"]
+        wheel_first_stamp = int(wheel_window["first_sample_stamp_ns"])
+        wheel_last_stamp = int(wheel_window["last_sample_stamp_ns"])
+        if not (
+            int(joint_tracker["first_stamp_ns"])
+            <= wheel_first_stamp
+            < wheel_last_stamp
+            <= int(joint_tracker["last_stamp_ns"])
+        ):
+            raise ConfigurationError(
+                f"{location}.wheels.steady_state_window sample stamps escape "
+                "the JointState tracker"
+            )
+    else:
+        _validate_wheel_directions(
+            segment,
+            wheel_layout,
+            motion,
+            direction_deadband_radps,
+            location,
+        )
     yaw_change = _finite(yaw.get("change_rad"), f"{location}.yaw.change_rad")
+    endpoint_yaw_change = end_pose["yaw_rad"] - start_pose["yaw_rad"]
+    wrapped_yaw_disagreement = math.atan2(
+        math.sin(endpoint_yaw_change - yaw_change),
+        math.cos(endpoint_yaw_change - yaw_change),
+    )
+    if not math.isclose(
+        wrapped_yaw_disagreement, 0.0, rel_tol=1e-12, abs_tol=1e-12
+    ):
+        raise ConfigurationError(
+            f"{location}.yaw.change_rad contradicts pose endpoint yaw modulo 2*pi"
+        )
     expected_yaw = _finite(
         angular * observed_duration, f"{location}.yaw.expected_change_calculated"
     )
@@ -861,10 +2459,7 @@ def _segment_metrics(
         yaw_change - expected_yaw,
         f"{location}.yaw.error_rad",
     )
-    longitudinal = _finite(
-        pose.get("longitudinal_displacement_m"),
-        f"{location}.pose.longitudinal_displacement_m",
-    )
+    longitudinal = calculated_longitudinal
     expected_longitudinal = _finite(
         linear * observed_duration,
         f"{location}.pose.expected_longitudinal_displacement_calculated",
@@ -881,16 +2476,10 @@ def _segment_metrics(
     )
     metrics = {
         "observed_duration_sec": observed_duration,
-        "trajectory_length_m": _nonnegative(
-            pose.get("trajectory_length_m"),
-            f"{location}.pose.trajectory_length_m",
-        ),
+        "trajectory_length_m": trajectory_length,
         "longitudinal_displacement_m": longitudinal,
         "distance_error_m": longitudinal - expected_longitudinal,
-        "lateral_displacement_m": _finite(
-            pose.get("lateral_displacement_m"),
-            f"{location}.pose.lateral_displacement_m",
-        ),
+        "lateral_displacement_m": calculated_lateral,
         "yaw_change_rad": yaw_change,
         "yaw_error_rad": yaw_change - expected_yaw,
         "stop_onset_sec": onset,
@@ -902,27 +2491,26 @@ def _segment_metrics(
         metrics["yaw_gain"] = _finite(
             yaw_change / expected_yaw, f"{location}.yaw_gain"
         )
-    if motion in {"forward", "backward"}:
-        lateral_drift = _finite(
-            pose.get("lateral_drift_m"),
-            f"{location}.pose.lateral_drift_m",
-        )
+    if motion in {"forward", "backward", "rotate_left", "rotate_right"}:
         _exact_number(
-            lateral_drift,
-            metrics["lateral_displacement_m"],
+            pose.get("lateral_drift_m"),
+            calculated_lateral,
             f"{location}.pose.lateral_drift_m",
         )
-        metrics["lateral_drift_m"] = lateral_drift
-    elif motion in {"arc_left", "arc_right"}:
+    else:
         if pose.get("lateral_drift_m") is not None:
             raise ConfigurationError(
                 f"{location}.pose.lateral_drift_m must be null for arcs"
             )
-    else:
-        metrics["center_drift_m"] = _nonnegative(
+    if motion in {"forward", "backward"}:
+        metrics["lateral_drift_m"] = calculated_lateral
+    if motion in {"rotate_left", "rotate_right"}:
+        _exact_number(
             pose.get("translation_drift_m"),
+            net_displacement,
             f"{location}.pose.translation_drift_m",
         )
+        metrics["center_drift_m"] = net_displacement
         left_rate, right_rate = _wheel_means(segment, wheel_layout, location)
         wheel_differential = _finite(
             wheel_radius_m * (right_rate - left_rate),
@@ -944,7 +2532,24 @@ def _segment_metrics(
             wheel_differential / measured_yaw_rate,
             f"{location}.effective_track_m",
         )
-    return metrics, steady_state_mean_yaw_rate
+    elif pose.get("translation_drift_m") is not None:
+        raise ConfigurationError(
+            f"{location}.pose.translation_drift_m must be null outside rotations"
+        )
+    return (
+        metrics,
+        steady_state_mean_yaw_rate,
+        physical_wheel_direction_evidence,
+        (
+            None
+            if schema3_timestamp_integrity is None
+            else {
+                source: int(tracker["sample_count"])
+                for source, tracker in schema3_timestamp_integrity.items()
+            }
+        ),
+        schema3_reset_generation,
+    )
 
 
 def _identity_locks(
@@ -1131,11 +2736,34 @@ def _validated_record(
     if (
         isinstance(report_schema_version, bool)
         or not isinstance(report_schema_version, int)
-        or report_schema_version not in {1, 2}
+        or report_schema_version not in {1, 2, 3}
     ):
         raise ConfigurationError(
-            f"{location} schema_version must be integer 1 or 2"
+            f"{location} schema_version must be integer 1, 2, or 3"
         )
+    if report_schema_version == 3:
+        if report.get("output_file") != str(source_path):
+            raise ConfigurationError(
+                f"{location}.output_file must equal its canonical source path"
+            )
+        parsed_times: list[datetime] = []
+        for field in ("started_at_utc", "completed_at_utc"):
+            raw_timestamp = _string(report.get(field), f"{location}.{field}")
+            try:
+                timestamp = datetime.fromisoformat(raw_timestamp)
+            except ValueError as exc:
+                raise ConfigurationError(
+                    f"{location}.{field} must be an ISO-8601 timestamp"
+                ) from exc
+            if timestamp.tzinfo is None or timestamp.utcoffset() != timezone.utc.utcoffset(
+                timestamp
+            ):
+                raise ConfigurationError(f"{location}.{field} must be UTC")
+            parsed_times.append(timestamp)
+        if parsed_times[1] < parsed_times[0]:
+            raise ConfigurationError(
+                f"{location}.completed_at_utc precedes started_at_utc"
+            )
     if report.get("result") != "success":
         raise ConfigurationError(f"{location}.result must be 'success'")
     if report.get("failure_reason") != "" or report.get("failed_segments") != []:
@@ -1235,6 +2863,68 @@ def _validated_record(
         stop_configuration.get("wheel_velocity_threshold_radps"),
         f"{location}.configuration.stop.wheel_velocity_threshold_radps",
     )
+    max_sample_age_sec: float | None = None
+    reset_configuration: Mapping[str, Any] | None = None
+    if report_schema_version == 3:
+        sampling_configuration = _mapping(
+            configuration.get("sampling"),
+            f"{location}.configuration.sampling",
+        )
+        max_sample_age_sec = _positive(
+            sampling_configuration.get("max_sample_age_sec"),
+            f"{location}.configuration.sampling.max_sample_age_sec",
+        )
+        _exact_number(
+            max_sample_age_sec,
+            _SCHEMA3_MAX_SAMPLE_AGE_SEC,
+            f"{location}.configuration.sampling.max_sample_age_sec",
+        )
+        reset_configuration = _mapping(
+            configuration.get("reset"), f"{location}.configuration.reset"
+        )
+        safety = _mapping(report.get("safety"), f"{location}.safety")
+        _exact_keys(safety, _SAFETY_KEYS, f"{location}.safety")
+        if safety.get("exclusive_non_reset_cmd_vel_owner_enforced") is not True:
+            raise ConfigurationError(
+                f"{location}.safety.exclusive_non_reset_cmd_vel_owner_enforced "
+                "must be true"
+            )
+        if safety.get("safe_zero_burst_attempted") is not True:
+            raise ConfigurationError(
+                f"{location}.safety.safe_zero_burst_attempted must be true"
+            )
+        _positive_integer_value(
+            safety.get("cmd_vel_subscription_count"),
+            f"{location}.safety.cmd_vel_subscription_count",
+        )
+        configured_zero_count = _positive_integer_value(
+            sampling_configuration.get("zero_publish_count"),
+            f"{location}.configuration.sampling.zero_publish_count",
+        )
+        _exact_integer(
+            safety.get("zero_publish_count"),
+            configured_zero_count,
+            f"{location}.safety.zero_publish_count",
+        )
+        raw_reset_publishers = _sequence(
+            safety.get("authorized_reset_safety_publishers"),
+            f"{location}.safety.authorized_reset_safety_publishers",
+        )
+        reset_publishers = [
+            _string(
+                publisher,
+                f"{location}.safety.authorized_reset_safety_publishers[{index}]",
+            )
+            for index, publisher in enumerate(raw_reset_publishers)
+        ]
+        if (
+            not reset_publishers
+            or reset_publishers != sorted(set(reset_publishers))
+        ):
+            raise ConfigurationError(
+                f"{location}.safety.authorized_reset_safety_publishers must be "
+                "a non-empty sorted unique list"
+            )
     physical_stop_contract = None
     if provenance_schema == 5:
         physical_stop_contract = {
@@ -1283,14 +2973,27 @@ def _validated_record(
         raise ConfigurationError(f"{location}.segments must contain exactly 6 segments")
     metrics: dict[str, dict[str, float]] = {}
     steady_state_mean_yaw_rates: dict[str, float] = {}
+    physical_wheel_direction_evidence: dict[str, dict[str, Any]] = {}
+    segment_timestamp_totals = {
+        source: 0 for source in _TIMESTAMP_SOURCE_KEYS
+    }
+    reset_generations: list[int] = []
     for index, specification in enumerate(_SEGMENT_SPECS):
         segment_id = specification[0]
-        segment_metrics, steady_state_mean_yaw_rate = _segment_metrics(
+        (
+            segment_metrics,
+            steady_state_mean_yaw_rate,
+            steady_wheel_evidence,
+            segment_timestamp_counts,
+            reset_generation,
+        ) = _segment_metrics(
             _mapping(raw_segments[index], f"{location}.segments[{index}]"),
             specification,
             wheel_layout,
             wheel_radius_m,
             direction_deadband_radps,
+            max_sample_age_sec,
+            reset_configuration,
             report_schema_version,
             f"{location}.segments[{index}]({segment_id})",
         )
@@ -1299,8 +3002,46 @@ def _validated_record(
             steady_state_mean_yaw_rates[segment_id] = (
                 steady_state_mean_yaw_rate
             )
+        if steady_wheel_evidence is not None:
+            physical_wheel_direction_evidence[segment_id] = (
+                steady_wheel_evidence
+            )
+        if segment_timestamp_counts is not None:
+            for source, count in segment_timestamp_counts.items():
+                segment_timestamp_totals[source] += count
+        if reset_generation is not None:
+            reset_generations.append(reset_generation)
+    if report_schema_version == 3:
+        if any(
+            current <= previous
+            for previous, current in zip(
+                reset_generations, reset_generations[1:]
+            )
+        ):
+            raise ConfigurationError(
+                f"{location} reset generations must be strictly increasing"
+            )
+        session_timestamp_integrity = _validated_timestamp_integrity(
+            report.get("timestamp_integrity"),
+            f"{location}.timestamp_integrity",
+            require_monotonic_unique=False,
+        )
+        for source, segment_total in segment_timestamp_totals.items():
+            if (
+                int(session_timestamp_integrity[source]["sample_count"])
+                < segment_total
+            ):
+                raise ConfigurationError(
+                    f"{location}.timestamp_integrity.{source}.sample_count "
+                    "cannot be smaller than the sum of segment trackers"
+                )
+    else:
+        _mapping(
+            report.get("timestamp_integrity"),
+            f"{location}.timestamp_integrity",
+        )
     physical_yaw_rate_metrics = None
-    if provenance_schema == 5 and report_schema_version == 2:
+    if provenance_schema == 5 and report_schema_version in {2, 3}:
         physical_yaw_rate_metrics = {}
         for segment_id, motion, _linear, angular, _duration in _SEGMENT_SPECS:
             if motion not in {"rotate_left", "rotate_right"}:
@@ -1364,6 +3105,11 @@ def _validated_record(
         contact_lock=contact_lock,
         physical_stop_contract=physical_stop_contract,
         physical_yaw_rate_metrics=physical_yaw_rate_metrics,
+        physical_wheel_direction_evidence=(
+            physical_wheel_direction_evidence
+            if report_schema_version == 3
+            else None
+        ),
         segments=metrics,
     )
 
@@ -1516,7 +3262,12 @@ def _physical_repeat_result(
 
     stop = record.physical_stop_contract
     yaw_rate_metrics = record.physical_yaw_rate_metrics
-    if stop is None or yaw_rate_metrics is None:
+    wheel_direction_evidence = record.physical_wheel_direction_evidence
+    if (
+        stop is None
+        or yaw_rate_metrics is None
+        or wheel_direction_evidence is None
+    ):
         raise ConfigurationError(
             f"schema-5 report {record.path} lacks a physical acceptance contract"
         )
@@ -1634,10 +3385,27 @@ def _physical_repeat_result(
                 stop["stable_duration_sec"],
             ),
         }
+    failed_wheel_observations = sorted(
+        f"{segment_id}::{joint_name}"
+        for segment_id, *_ in _SEGMENT_SPECS
+        for joint_name, wheel in wheel_direction_evidence[segment_id][
+            "per_wheel"
+        ].items()
+        if wheel["direction_matches"] is not True
+    )
     checks["wheel_direction_contract"] = {
+        "steady_state_window_schema_version": 1,
+        "measurement_basis": _PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS,
         "validated_segment_count": len(_SEGMENT_SPECS),
-        "validated_by": "strict_motion_report_validator",
-        "passed": True,
+        "validated_wheel_observation_count": (
+            len(_SEGMENT_SPECS) * len(_WHEEL_KEYS)
+        ),
+        "segments": {
+            segment_id: wheel_direction_evidence[segment_id]
+            for segment_id, *_ in _SEGMENT_SPECS
+        },
+        "failed_observations": failed_wheel_observations,
+        "passed": not failed_wheel_observations,
     }
     failed_checks = sorted(
         check_id
@@ -1658,7 +3426,7 @@ def _physical_repeat_result(
 def _physical_acceptance(
     grouped: Mapping[tuple[str, ...], Sequence[InputRecord]],
 ) -> dict[str, Any]:
-    """Build a non-ranking, every-repeat schema-v1 plan 8.7 verdict."""
+    """Build a non-ranking, every-repeat schema-v2 plan 8.7 verdict."""
 
     applicability = dict(_PHYSICAL_ACCEPTANCE_APPLICABILITY)
     group_results: dict[str, dict[str, Any]] = {}
@@ -1670,8 +3438,8 @@ def _physical_acceptance(
         group_id = "::".join(group_key)
         first = records[0]
         not_applicable_reasons = []
-        if any(record.report_schema_version != 2 for record in records):
-            not_applicable_reasons.append("motion_report_schema_not_2")
+        if any(record.report_schema_version != 3 for record in records):
+            not_applicable_reasons.append("motion_report_schema_not_3")
         if first.runtime_provenance_schema != 5:
             not_applicable_reasons.append(
                 "runtime_provenance_schema_not_5"
@@ -1743,13 +3511,16 @@ def _physical_acceptance(
         }
         (passing_groups if passed else failed_groups).append(group_id)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "policy_id": _PHYSICAL_ACCEPTANCE_POLICY_ID,
         "evaluation_basis": "every_repeat",
         "ranking_policy": "none; pass/fail only",
         "applicability": applicability,
         "steady_state_measurement_basis": (
             _PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS
+        ),
+        "wheel_direction_measurement_basis": (
+            _PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS
         ),
         "thresholds": dict(_PHYSICAL_ACCEPTANCE_THRESHOLDS),
         "groups": group_results,
@@ -1765,6 +3536,7 @@ def _physical_acceptance(
 
 def _validated_physical_repeat_check_outcomes(
     checks: Mapping[str, Any],
+    wheel_layout: Mapping[str, str],
     location: str,
 ) -> dict[str, bool]:
     """Recompute every physical leaf from its immutable policy semantics."""
@@ -1970,30 +3742,310 @@ def _validated_physical_repeat_check_outcomes(
     )
     _exact_keys(
         wheel_check,
-        {"validated_segment_count", "validated_by", "passed"},
+        {
+            "steady_state_window_schema_version",
+            "measurement_basis",
+            "validated_segment_count",
+            "validated_wheel_observation_count",
+            "segments",
+            "failed_observations",
+            "passed",
+        },
         wheel_location,
     )
+    _exact_integer(
+        wheel_check.get("steady_state_window_schema_version"),
+        1,
+        f"{wheel_location}.steady_state_window_schema_version",
+    )
+    if (
+        wheel_check.get("measurement_basis")
+        != _PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS
+    ):
+        raise ConfigurationError(
+            f"{wheel_location}.measurement_basis must be "
+            f"{_PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS!r}"
+        )
     _exact_integer(
         wheel_check.get("validated_segment_count"),
         len(_SEGMENT_SPECS),
         f"{wheel_location}.validated_segment_count",
     )
-    if wheel_check.get("validated_by") != "strict_motion_report_validator":
-        raise ConfigurationError(
-            f"{wheel_location}.validated_by must be "
-            "'strict_motion_report_validator'"
+    _exact_integer(
+        wheel_check.get("validated_wheel_observation_count"),
+        len(_SEGMENT_SPECS) * len(_WHEEL_KEYS),
+        f"{wheel_location}.validated_wheel_observation_count",
+    )
+    segments = _mapping(
+        wheel_check.get("segments"), f"{wheel_location}.segments"
+    )
+    _exact_keys(
+        segments,
+        set(_SEGMENT_BY_ID),
+        f"{wheel_location}.segments",
+    )
+    failed_observations: list[str] = []
+    for segment_id, motion, *_ in _SEGMENT_SPECS:
+        segment_location = f"{wheel_location}.segments.{segment_id}"
+        segment = _mapping(segments.get(segment_id), segment_location)
+        _exact_keys(
+            segment,
+            {"motion", "all_directions_match", "per_wheel"},
+            segment_location,
         )
-    if wheel_check.get("passed") is not True:
-        raise ConfigurationError(f"{wheel_location}.passed must be true")
-    outcomes["wheel_direction_contract"] = True
+        if segment.get("motion") != motion:
+            raise ConfigurationError(
+                f"{segment_location}.motion must be {motion!r}"
+            )
+        aggregate = segment.get("all_directions_match")
+        if not isinstance(aggregate, bool):
+            raise ConfigurationError(
+                f"{segment_location}.all_directions_match must be a boolean"
+            )
+        per_wheel = _mapping(
+            segment.get("per_wheel"), f"{segment_location}.per_wheel"
+        )
+        expected = _expected_wheel_directions(motion, wheel_layout)
+        _exact_keys(
+            per_wheel,
+            set(expected),
+            f"{segment_location}.per_wheel",
+        )
+        segment_matches: list[bool] = []
+        for joint_name, expected_direction in expected.items():
+            observation_location = (
+                f"{segment_location}.per_wheel.{joint_name}"
+            )
+            observation = _mapping(
+                per_wheel.get(joint_name), observation_location
+            )
+            _exact_keys(
+                observation,
+                {"direction", "expected_direction", "direction_matches"},
+                observation_location,
+            )
+            direction = observation.get("direction")
+            if direction not in {
+                "positive",
+                "negative",
+                "stationary",
+                "mixed",
+            }:
+                raise ConfigurationError(
+                    f"{observation_location}.direction must be a supported "
+                    "classification"
+                )
+            if observation.get("expected_direction") != expected_direction:
+                raise ConfigurationError(
+                    f"{observation_location}.expected_direction must be "
+                    f"{expected_direction!r}"
+                )
+            direction_matches = observation.get("direction_matches")
+            if not isinstance(direction_matches, bool):
+                raise ConfigurationError(
+                    f"{observation_location}.direction_matches must be a boolean"
+                )
+            expected_match = direction == expected_direction
+            if direction_matches is not expected_match:
+                raise ConfigurationError(
+                    f"{observation_location}.direction_matches contradicts "
+                    "direction and expected_direction"
+                )
+            segment_matches.append(direction_matches)
+            if not direction_matches:
+                failed_observations.append(f"{segment_id}::{joint_name}")
+        if aggregate is not all(segment_matches):
+            raise ConfigurationError(
+                f"{segment_location}.all_directions_match contradicts its "
+                "per-wheel evidence"
+            )
+    failed_observations.sort()
+    raw_failed_observations = _sequence(
+        wheel_check.get("failed_observations"),
+        f"{wheel_location}.failed_observations",
+    )
+    parsed_failed_observations = [
+        _string(
+            observation,
+            f"{wheel_location}.failed_observations[{index}]",
+        )
+        for index, observation in enumerate(raw_failed_observations)
+    ]
+    if (
+        parsed_failed_observations != sorted(set(parsed_failed_observations))
+        or parsed_failed_observations != failed_observations
+    ):
+        raise ConfigurationError(
+            f"{wheel_location}.failed_observations must be the unique, sorted "
+            "failures recomputed from segment evidence"
+        )
+    exact_passed(
+        "wheel_direction_contract",
+        wheel_check,
+        not failed_observations,
+        wheel_location,
+    )
     return outcomes
+
+
+def _revalidated_physical_acceptance_from_sources(
+    source_locks: Sequence[
+        tuple[str, str, str, int, str, str, str]
+    ],
+    wheel_radius_m: float,
+    expected_repeats: int,
+    expected_global_lock: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Re-read immutable reports so accounting is anchored to source bytes."""
+
+    grouped: dict[tuple[str, str, str], list[InputRecord]] = {}
+    environment_references: dict[str, InputRecord] = {}
+    topology_references: dict[tuple[str, str], InputRecord] = {}
+    topology_ab_contact_references: dict[tuple[str, str], InputRecord] = {}
+    profile_references: dict[str, InputRecord] = {}
+    for index, (
+        path,
+        expected_raw_sha256,
+        expected_canonical_sha256,
+        expected_report_schema,
+        expected_environment,
+        expected_topology,
+        expected_profile,
+    ) in enumerate(source_locks):
+        location = f"analysis.selection.included[{index}]"
+        source = Path(path)
+        try:
+            if (
+                not source.is_absolute()
+                or source.is_symlink()
+                or not source.is_file()
+                or str(source.resolve(strict=True)) != path
+            ):
+                raise ConfigurationError(
+                    f"{location}.path must identify one canonical regular report file"
+                )
+            content = source.read_bytes()
+        except OSError as exc:
+            raise ConfigurationError(
+                f"{location}.path cannot be read for source revalidation: {exc}"
+            ) from exc
+        observed_raw_sha256 = hashlib.sha256(content).hexdigest()
+        if observed_raw_sha256 != expected_raw_sha256:
+            raise ConfigurationError(
+                f"{location}.sha256 no longer matches the source report"
+            )
+        document = _strict_json(content, f"source report {source}")
+        observed_canonical_sha256 = hashlib.sha256(
+            _canonical(document).encode("utf-8")
+        ).hexdigest()
+        if observed_canonical_sha256 != expected_canonical_sha256:
+            raise ConfigurationError(
+                f"{location}.canonical_sha256 no longer matches the source report"
+            )
+        record = _validated_record(
+            document,
+            source,
+            observed_raw_sha256,
+            observed_canonical_sha256,
+            wheel_radius_m,
+        )
+        observed_identity = (
+            record.report_schema_version,
+            record.environment_id,
+            record.ground_topology_id,
+            record.contact_profile_id,
+        )
+        expected_identity = (
+            expected_report_schema,
+            expected_environment,
+            expected_topology,
+            expected_profile,
+        )
+        if observed_identity != expected_identity:
+            raise ConfigurationError(
+                f"{location} identity no longer matches the source report"
+            )
+        if record.runtime_provenance_schema != 5 or record.ground_topology_id is None:
+            raise ConfigurationError(
+                f"{location} source report must use runtime provenance schema 5"
+            )
+        if _canonical(record.global_lock) != _canonical(expected_global_lock):
+            raise ConfigurationError(
+                f"{location} global identity no longer matches analysis.locked_inputs"
+            )
+        environment_reference = environment_references.setdefault(
+            record.environment_id, record
+        )
+        if _canonical(record.environment_lock) != _canonical(
+            environment_reference.environment_lock
+        ):
+            raise ConfigurationError(
+                f"{location} environment identity differs within its batch"
+            )
+        if record.topology_lock is None:
+            raise ConfigurationError(f"{location} lacks a topology identity lock")
+        topology_key = (record.environment_id, record.ground_topology_id)
+        topology_reference = topology_references.setdefault(topology_key, record)
+        if _canonical(record.topology_lock) != _canonical(
+            topology_reference.topology_lock
+        ):
+            raise ConfigurationError(
+                f"{location} topology identity differs within its batch"
+            )
+        if record.topology_ab_contact_lock is None:
+            raise ConfigurationError(
+                f"{location} lacks a topology A/B contact invariant lock"
+            )
+        topology_contact_key = (
+            record.environment_id,
+            record.contact_profile_id,
+        )
+        topology_contact_reference = topology_ab_contact_references.setdefault(
+            topology_contact_key, record
+        )
+        if _canonical(record.topology_ab_contact_lock) != _canonical(
+            topology_contact_reference.topology_ab_contact_lock
+        ):
+            raise ConfigurationError(
+                f"{location} topology A/B contact invariants differ within batch"
+            )
+        profile_reference = profile_references.setdefault(
+            record.contact_profile_id, record
+        )
+        if _canonical(record.profile_lock) != _canonical(
+            profile_reference.profile_lock
+        ):
+            raise ConfigurationError(
+                f"{location} profile identity differs within its batch"
+            )
+        group_key = (
+            record.environment_id,
+            record.ground_topology_id,
+            record.contact_profile_id,
+        )
+        grouped.setdefault(group_key, []).append(record)
+    for group_key, records in grouped.items():
+        reference_contact = records[0].contact_lock
+        if any(
+            _canonical(record.contact_lock) != _canonical(reference_contact)
+            for record in records[1:]
+        ):
+            raise ConfigurationError(
+                "source contact identity differs within group "
+                + "::".join(group_key)
+            )
+    if any(len(records) != expected_repeats for records in grouped.values()):
+        raise ConfigurationError(
+            "source reports must contain exactly expected_repeats per group"
+        )
+    return _physical_acceptance(grouped)
 
 
 def validate_physical_acceptance_accounting(
     analysis: Mapping[str, Any],
     expected_repeats: int,
 ) -> None:
-    """Fail closed when a schema-v1 physical verdict loses repeat evidence."""
+    """Fail closed when a schema-v2 physical verdict loses repeat evidence."""
 
     if (
         isinstance(expected_repeats, bool)
@@ -2004,7 +4056,7 @@ def validate_physical_acceptance_accounting(
     analysis_mapping = _mapping(analysis, "analysis")
     _exact_integer(
         analysis_mapping.get("schema_version"),
-        3,
+        4,
         "analysis.schema_version",
     )
     selection_policy = _mapping(
@@ -2038,6 +4090,10 @@ def validate_physical_acceptance_accounting(
         analysis_mapping.get("locked_inputs"),
         "analysis.locked_inputs",
     )
+    locked_wheel_radius_m = _positive(
+        locked_inputs.get("wheel_radius_m"),
+        "analysis.locked_inputs.wheel_radius_m",
+    )
     locked_simulation = _mapping(
         locked_inputs.get("simulation"),
         "analysis.locked_inputs.simulation",
@@ -2046,6 +4102,34 @@ def validate_physical_acceptance_accounting(
         locked_simulation.get("odometry_mode"),
         "analysis.locked_inputs.simulation.odometry_mode",
     )
+    locked_motion_configuration = _mapping(
+        locked_inputs.get("motion_configuration"),
+        "analysis.locked_inputs.motion_configuration",
+    )
+    _validate_configured_segments(
+        locked_motion_configuration,
+        "analysis.locked_inputs.motion_configuration",
+    )
+    locked_wheels = _mapping(
+        locked_motion_configuration.get("wheels"),
+        "analysis.locked_inputs.motion_configuration.wheels",
+    )
+    _exact_keys(
+        locked_wheels,
+        set(_WHEEL_KEYS),
+        "analysis.locked_inputs.motion_configuration.wheels",
+    )
+    wheel_layout = {
+        role: _string(
+            locked_wheels.get(role),
+            f"analysis.locked_inputs.motion_configuration.wheels.{role}",
+        )
+        for role in _WHEEL_KEYS
+    }
+    if len(set(wheel_layout.values())) != len(_WHEEL_KEYS):
+        raise ConfigurationError(
+            "analysis.locked_inputs.motion_configuration.wheels must be unique"
+        )
     analysis_groups = _mapping(analysis_mapping.get("groups"), "analysis.groups")
     acceptance = _mapping(
         analysis_mapping.get("physical_acceptance"),
@@ -2060,6 +4144,7 @@ def validate_physical_acceptance_accounting(
             "ranking_policy",
             "applicability",
             "steady_state_measurement_basis",
+            "wheel_direction_measurement_basis",
             "thresholds",
             "groups",
             "applicable_groups",
@@ -2072,7 +4157,7 @@ def validate_physical_acceptance_accounting(
     )
     _exact_integer(
         acceptance.get("schema_version"),
-        1,
+        2,
         "analysis.physical_acceptance.schema_version",
     )
     for field, expected in (
@@ -2082,6 +4167,10 @@ def validate_physical_acceptance_accounting(
         (
             "steady_state_measurement_basis",
             _PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS,
+        ),
+        (
+            "wheel_direction_measurement_basis",
+            _PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS,
         ),
     ):
         if acceptance.get(field) != expected:
@@ -2176,6 +4265,9 @@ def validate_physical_acceptance_accounting(
     selection_paths: set[str] = set()
     selection_raw_hashes: set[str] = set()
     selection_canonical_hashes: set[str] = set()
+    source_locks: list[
+        tuple[str, str, str, int, str, str, str]
+    ] = []
     for index, raw_included in enumerate(included):
         included_location = f"analysis.selection.included[{index}]"
         item = _mapping(raw_included, included_location)
@@ -2204,10 +4296,11 @@ def validate_physical_acceptance_accounting(
         if (
             isinstance(report_schema_version, bool)
             or not isinstance(report_schema_version, int)
-            or report_schema_version not in {1, 2}
+            or report_schema_version not in {1, 2, 3}
         ):
             raise ConfigurationError(
-                f"{included_location}.report_schema_version must be integer 1 or 2"
+                f"{included_location}.report_schema_version must be integer "
+                "1, 2, or 3"
             )
         environment_id = _string(
             item.get("environment_id"),
@@ -2242,6 +4335,7 @@ def validate_physical_acceptance_accounting(
         selection_raw_hashes.add(raw_hash)
         selection_canonical_hashes.add(canonical_hash)
         selection_by_group.setdefault(group_id, set()).add(identity)
+        source_locks.append(identity)
     if not all(
         len(values) == expected_included_count
         for values in (
@@ -2439,11 +4533,11 @@ def validate_physical_acceptance_accounting(
             if (
                 isinstance(report_schema_version, bool)
                 or not isinstance(report_schema_version, int)
-                or report_schema_version not in {1, 2}
+                or report_schema_version not in {1, 2, 3}
             ):
                 raise ConfigurationError(
                     f"{report_location}.report_schema_version must be integer "
-                    "1 or 2"
+                    "1, 2, or 3"
                 )
             report_schema_versions.append(report_schema_version)
             group_report_identities.add(
@@ -2541,8 +4635,8 @@ def validate_physical_acceptance_accounting(
                 "must exactly match analysis.selection.included"
             )
         expected_reasons: list[str] = []
-        if any(version != 2 for version in report_schema_versions):
-            expected_reasons.append("motion_report_schema_not_2")
+        if any(version != 3 for version in report_schema_versions):
+            expected_reasons.append("motion_report_schema_not_3")
         if runtime_provenance_schema != 5:
             expected_reasons.append("runtime_provenance_schema_not_5")
         if environment_id != "SimplePlane":
@@ -2683,6 +4777,7 @@ def validate_physical_acceptance_accounting(
             )
             check_outcomes = _validated_physical_repeat_check_outcomes(
                 repeat_checks,
+                wheel_layout,
                 f"{repeat_location}.checks",
             )
             expected_repeat_failures = sorted(
@@ -2816,6 +4911,20 @@ def validate_physical_acceptance_accounting(
         raise ConfigurationError(
             "all_applicable_groups_passed disagrees with applicable group verdicts"
         )
+    source_acceptance = _revalidated_physical_acceptance_from_sources(
+        source_locks,
+        locked_wheel_radius_m,
+        expected_repeats,
+        {
+            key: value
+            for key, value in locked_inputs.items()
+            if key != "wheel_radius_m"
+        },
+    )
+    if _canonical(source_acceptance) != _canonical(acceptance):
+        raise ConfigurationError(
+            "analysis.physical_acceptance does not match revalidated source reports"
+        )
 
 
 def analyse_contact_ab(
@@ -2828,7 +4937,7 @@ def analyse_contact_ab(
     expected_profiles: Sequence[str] = (),
     require_complete_matrix: bool = False,
 ) -> dict[str, object]:
-    """Validate and summarize one homogeneous schema-3, -4, or -5 batch."""
+    """Validate and summarize one homogeneous motion-report batch."""
     radius = _positive(wheel_radius_m, "wheel_radius_m")
     if (
         isinstance(min_repeats, bool)
@@ -3169,7 +5278,7 @@ def analyse_contact_ab(
         for group, records in sorted(grouped.items())
     }
     report = {
-        "schema_version": 3 if runtime_provenance_schema == 5 else 1,
+        "schema_version": 4 if runtime_provenance_schema == 5 else 1,
         "report_type": "contact_ab_analysis",
         "analysis_valid": not exclusions and matrix_complete,
         "method": {
@@ -3299,7 +5408,10 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "reports",
         nargs="+",
-        help="homogeneous schema-3, -4, or -5 motion report JSON files",
+        help=(
+            "homogeneous motion report JSON files (top-level schema 1, 2, or 3; "
+            "runtime provenance schema 3, 4, or 5)"
+        ),
     )
     parser.add_argument(
         "--wheel-radius",

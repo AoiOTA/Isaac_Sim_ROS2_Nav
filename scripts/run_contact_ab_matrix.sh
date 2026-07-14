@@ -34,6 +34,8 @@ repeats=3
 output_dir=""
 robot_config_argument=""
 robot_config_option_seen=false
+required_motion_report_schema_version=3
+readonly manifest_header_contract=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\treport_schema_version\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
 while (($#)); do
   case "$1" in
     --environment|--ground-topology|--repeats|--output-dir|--robot-config)
@@ -184,6 +186,7 @@ manifest=""
 batch_git_commit=""
 batch_git_branch=""
 batch_motion_sha256=""
+batch_motion_configuration_json=""
 batch_warehouse_project_sha256=""
 batch_simple_plane_project_sha256=""
 batch_robot_config_sha256=""
@@ -536,6 +539,25 @@ verify_batch_identity() {
   done
 }
 
+freeze_motion_configuration_contract() {
+  batch_motion_configuration_json="$(python3 - \
+    "${motion_config}" \
+    "${PROJECT_ROOT}/ros2_ws/src/robot_experiments" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+config_path = Path(sys.argv[1])
+package_root = Path(sys.argv[2])
+sys.path.insert(0, str(package_root))
+from robot_experiments.motion_baseline import load_motion_baseline_config
+
+configuration = load_motion_baseline_config(config_path).as_dict()
+print(json.dumps(configuration, sort_keys=True, separators=(",", ":")))
+PY
+  )" || die "cannot freeze normalized motion configuration"
+}
+
 project_config_for_environment() {
   case "$1" in
     Warehouse) printf '%s\n' "${warehouse_config}" ;;
@@ -617,6 +639,537 @@ final_evidence_sha256() {
   sha256_file "${path}"
 }
 
+motion_report_schema_version() {
+  local path="$1"
+  python3 - "${path}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+try:
+    report = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, ValueError) as exc:
+    raise SystemExit(f"cannot read motion report schema version: {exc}")
+schema_version = report.get("schema_version")
+if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+    raise SystemExit("motion report schema_version must be an integer")
+print(schema_version)
+PY
+}
+
+validate_success_manifest_evidence() {
+  local phase="$1"
+  python3 - \
+    "${manifest}" "${manifest_header_contract}" \
+    "${required_motion_report_schema_version}" "${phase}" \
+    "${output_dir}" "${repeats}" "${expected_conditions}" \
+    "${batch_environment_topology_pairs_json}" \
+    "${batch_profile_hashes_json}" \
+    "${batch_ground_topology_hashes_json}" \
+    "${batch_git_commit}" "${batch_git_branch}" \
+    "${motion_config}" "${batch_motion_sha256}" \
+    "${batch_motion_configuration_json}" \
+    "${warehouse_config}" "${batch_warehouse_project_sha256}" \
+    "${simple_plane_config}" "${batch_simple_plane_project_sha256}" \
+    "${robot_config_selection}" "${robot_config}" \
+    "${batch_robot_config_sha256}" \
+    "${robot_asset}" "${robot_asset_sha256}" \
+    "${robot_kinematics_profile_id}" \
+    "${robot_kinematics_lifecycle}" \
+    "${robot_wheel_radius}" "${robot_wheel_width}" \
+    "${robot_geometric_track_width}" \
+    "${robot_effective_track_width}" \
+    "${physics_dir}" "${ground_topology_dir}" \
+    "${warehouse_project_stage}" \
+    "${warehouse_project_stage_sha256}" \
+    "${warehouse_source_asset}" "${warehouse_source_asset_sha256}" \
+    "${simple_plane_project_stage}" \
+    "${simple_plane_project_stage_sha256}" \
+    "${simple_plane_source_asset}" \
+    "${simple_plane_source_asset_sha256}" <<'PY'
+import csv
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
+import math
+from pathlib import Path
+import sys
+
+(
+    manifest_name,
+    manifest_header,
+    required_report_schema_text,
+    phase,
+    output_directory,
+    repeats_text,
+    expected_rows_text,
+    selected_pairs_json,
+    profile_hashes_json,
+    topology_hashes_json,
+    git_commit,
+    git_branch,
+    motion_config,
+    motion_sha256,
+    motion_configuration_json,
+    warehouse_config,
+    warehouse_config_sha256,
+    simple_plane_config,
+    simple_plane_config_sha256,
+    robot_config_selection,
+    robot_config,
+    robot_config_sha256,
+    robot_asset,
+    robot_asset_sha256,
+    kinematics_profile_id,
+    kinematics_lifecycle,
+    wheel_radius,
+    wheel_width,
+    geometric_track_width,
+    effective_track_width,
+    physics_directory,
+    ground_topology_directory,
+    warehouse_project_stage,
+    warehouse_project_stage_sha256,
+    warehouse_source_asset,
+    warehouse_source_asset_sha256,
+    simple_plane_project_stage,
+    simple_plane_project_stage_sha256,
+    simple_plane_source_asset,
+    simple_plane_source_asset_sha256,
+) = sys.argv[1:]
+manifest_path = Path(manifest_name)
+expected_fieldnames = manifest_header.split("\t")
+required_report_schema = int(required_report_schema_text)
+repeats = int(repeats_text)
+expected_rows = int(expected_rows_text)
+output_path = Path(output_directory)
+
+if len(expected_fieldnames) != 44 or len(set(expected_fieldnames)) != 44:
+    raise SystemExit("internal manifest header contract must contain 44 unique columns")
+if manifest_path.is_symlink() or not manifest_path.is_file():
+    raise SystemExit(f"{phase}: manifest path is unsafe: {manifest_path}")
+
+with manifest_path.open("r", encoding="utf-8", newline="") as stream:
+    reader = csv.DictReader(stream, delimiter="\t", strict=True)
+    if reader.fieldnames != expected_fieldnames:
+        raise SystemExit(f"{phase}: manifest header does not match the 44-column contract")
+    rows = list(reader)
+if len(rows) != expected_rows:
+    raise SystemExit(
+        f"{phase}: manifest row count mismatch: {len(rows)} != {expected_rows}"
+    )
+
+try:
+    selected_pairs = json.loads(selected_pairs_json)
+    profile_hashes = json.loads(profile_hashes_json)
+    topology_hashes = json.loads(topology_hashes_json)
+    motion_configuration = json.loads(motion_configuration_json)
+except ValueError as exc:
+    raise SystemExit(f"{phase}: locked matrix JSON is invalid: {exc}") from exc
+if (
+    not isinstance(selected_pairs, list)
+    or not selected_pairs
+    or not isinstance(profile_hashes, dict)
+    or not isinstance(topology_hashes, dict)
+    or not isinstance(motion_configuration, dict)
+):
+    raise SystemExit(f"{phase}: locked matrix inputs are incomplete")
+if json.dumps(
+    profile_hashes, sort_keys=True, separators=(",", ":")
+) != profile_hashes_json:
+    raise SystemExit(f"{phase}: profile hash JSON must be canonical")
+if json.dumps(
+    motion_configuration, sort_keys=True, separators=(",", ":")
+) != motion_configuration_json:
+    raise SystemExit(f"{phase}: motion configuration JSON must be canonical")
+
+profile_contract = (
+    ("legacy_baseline", "legacy_baseline"),
+    ("threshold_corr_0p00025_offset_0p0004", "threshold_only"),
+    ("threshold_corr_0p025_offset_0p0004", "threshold_only"),
+    ("threshold_corr_0p00025_offset_0p04", "threshold_only"),
+    ("threshold_corr_0p025_offset_0p04", "threshold_only"),
+    ("explicit_material", "explicit_material"),
+)
+if set(profile_hashes) != {profile_id for profile_id, _ in profile_contract}:
+    raise SystemExit(f"{phase}: profile hash map does not match the six-profile contract")
+pair_identities = []
+for pair_index, pair in enumerate(selected_pairs, start=1):
+    if not isinstance(pair, dict) or set(pair) != {
+        "environment_id",
+        "ground_topology_id",
+    }:
+        raise SystemExit(f"{phase}: selected pair {pair_index} is invalid")
+    identity = (pair["environment_id"], pair["ground_topology_id"])
+    if identity not in {
+        ("SimplePlane", "simple_plane_only1_v1"),
+        ("Warehouse", "warehouse_combined32_v1"),
+        ("Warehouse", "warehouse_plane_only1_v1"),
+    }:
+        raise SystemExit(f"{phase}: selected pair {pair_index} is unsupported")
+    pair_identities.append(identity)
+if len(pair_identities) != len(set(pair_identities)):
+    raise SystemExit(f"{phase}: selected environment/topology pairs must be unique")
+if set(topology_hashes) != {topology for _, topology in pair_identities}:
+    raise SystemExit(f"{phase}: topology hash map does not match selected pairs")
+if expected_rows != len(pair_identities) * len(profile_contract) * repeats:
+    raise SystemExit(f"{phase}: expected row count contradicts the matrix contract")
+
+environment_contracts = {
+    "Warehouse": {
+        "project_config": warehouse_config,
+        "project_config_sha256": warehouse_config_sha256,
+        "project_stage": warehouse_project_stage,
+        "project_stage_sha256": warehouse_project_stage_sha256,
+        "source_asset": warehouse_source_asset,
+        "source_asset_sha256": warehouse_source_asset_sha256,
+        "slug": "warehouse",
+    },
+    "SimplePlane": {
+        "project_config": simple_plane_config,
+        "project_config_sha256": simple_plane_config_sha256,
+        "project_stage": simple_plane_project_stage,
+        "project_stage_sha256": simple_plane_project_stage_sha256,
+        "source_asset": simple_plane_source_asset,
+        "source_asset_sha256": simple_plane_source_asset_sha256,
+        "slug": "simple_plane",
+    },
+}
+expected_matrix_rows = []
+sequence = 0
+for environment_id, topology_id in pair_identities:
+    for profile_id, profile_mode in profile_contract:
+        for repeat in range(1, repeats + 1):
+            sequence += 1
+            run_id = (
+                f"{sequence:03d}_{environment_contracts[environment_id]['slug']}_"
+                f"{topology_id}_{profile_id}_r{repeat:02d}"
+            )
+            expected_matrix_rows.append(
+                {
+                    "run_id": run_id,
+                    "environment": environment_id,
+                    "ground_topology_id": topology_id,
+                    "profile_id": profile_id,
+                    "profile_mode": profile_mode,
+                    "repeat": str(repeat),
+                }
+            )
+
+
+def canonical_regular_file(raw_path, row_index, field):
+    if not isinstance(raw_path, str) or not raw_path:
+        raise SystemExit(f"{phase}: manifest row {row_index} {field} path is empty")
+    path = Path(raw_path)
+    if not path.is_absolute() or path.is_symlink() or not path.is_file():
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} {field} path is unsafe"
+        )
+    try:
+        canonical = path.resolve(strict=True)
+    except OSError as exc:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} {field} path cannot be resolved: {exc}"
+        ) from exc
+    if path != canonical:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} {field} path is not canonical"
+        )
+    return path
+
+
+def digest_file(path):
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+    except OSError as exc:
+        raise SystemExit(f"{phase}: cannot hash evidence file {path}: {exc}") from exc
+    return digest.hexdigest()
+
+
+all_evidence_paths = set()
+typed_evidence_paths = {
+    "report": set(),
+    "isaac_log": set(),
+    "runner_log": set(),
+}
+for row_index, (row, expected_row) in enumerate(
+    zip(rows, expected_matrix_rows, strict=True), start=1
+):
+    if None in row or any(value is None for value in row.values()):
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} has missing or extra fields"
+        )
+    if row.get("status") != "success":
+        raise SystemExit(f"{phase}: manifest row {row_index} is not successful")
+    if row.get("detail") != "complete":
+        raise SystemExit(f"{phase}: manifest row {row_index} detail must be complete")
+    for field, expected in expected_row.items():
+        if row.get(field) != expected:
+            raise SystemExit(
+                f"{phase}: manifest row {row_index} {field} contradicts matrix order"
+            )
+    environment = expected_row["environment"]
+    topology_id = expected_row["ground_topology_id"]
+    profile_id = expected_row["profile_id"]
+    environment_contract = environment_contracts[environment]
+    expected_scalars = {
+        "git_commit": git_commit,
+        "git_branch": git_branch,
+        "motion_config": motion_config,
+        "motion_config_sha256": motion_sha256,
+        "warehouse_project_config": warehouse_config,
+        "warehouse_project_config_sha256": warehouse_config_sha256,
+        "simple_plane_project_config": simple_plane_config,
+        "simple_plane_project_config_sha256": simple_plane_config_sha256,
+        "robot_config_selection": robot_config_selection,
+        "robot_config": robot_config,
+        "robot_config_sha256": robot_config_sha256,
+        "robot_kinematics_profile_id": kinematics_profile_id,
+        "robot_kinematics_lifecycle": kinematics_lifecycle,
+        "robot_wheel_radius_m": wheel_radius,
+        "robot_wheel_width_m": wheel_width,
+        "robot_geometric_track_width_m": geometric_track_width,
+        "robot_effective_track_width_m": effective_track_width,
+        "selected_project_config": environment_contract["project_config"],
+        "selected_project_config_sha256": environment_contract[
+            "project_config_sha256"
+        ],
+        "profile_path": str(Path(physics_directory) / f"{profile_id}.yaml"),
+        "profile_sha256": profile_hashes[profile_id],
+        "ground_topology_profile_path": str(
+            Path(ground_topology_directory) / f"{topology_id}.yaml"
+        ),
+        "ground_topology_profile_sha256": topology_hashes[topology_id],
+        "all_profile_hashes_json": profile_hashes_json,
+        "environment_project_stage": environment_contract["project_stage"],
+        "environment_project_stage_sha256": environment_contract[
+            "project_stage_sha256"
+        ],
+        "environment_source_asset": environment_contract["source_asset"],
+        "environment_source_asset_sha256": environment_contract[
+            "source_asset_sha256"
+        ],
+    }
+    for field, expected in expected_scalars.items():
+        if row.get(field) != expected:
+            raise SystemExit(
+                f"{phase}: manifest row {row_index} {field} identity mismatch"
+            )
+    run_id = expected_row["run_id"]
+    expected_evidence_paths = {
+        "report": output_path / "reports" / f"{run_id}.json",
+        "isaac_log": output_path / "logs" / f"{run_id}.isaac.log",
+        "runner_log": output_path / "logs" / f"{run_id}.runner.log",
+    }
+    locked_paths = {}
+    for field, sha_field in (
+        ("report", "report_sha256"),
+        ("isaac_log", "isaac_log_sha256"),
+        ("runner_log", "runner_log_sha256"),
+    ):
+        path = canonical_regular_file(row.get(field), row_index, field)
+        if path != expected_evidence_paths[field]:
+            raise SystemExit(
+                f"{phase}: manifest row {row_index} {field} path mismatch"
+            )
+        if path in all_evidence_paths or path in typed_evidence_paths[field]:
+            raise SystemExit(
+                f"{phase}: manifest evidence paths must be unique and disjoint"
+            )
+        all_evidence_paths.add(path)
+        typed_evidence_paths[field].add(path)
+        actual_sha256 = digest_file(path)
+        if row.get(sha_field) != actual_sha256:
+            raise SystemExit(
+                f"{phase}: manifest row {row_index} {field} SHA256 mismatch"
+            )
+        locked_paths[field] = path
+    try:
+        report = json.loads(locked_paths["report"].read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report is not valid JSON: {exc}"
+        ) from exc
+    if report.get("schema_version") != required_report_schema:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report JSON schema version mismatch"
+        )
+    if report.get("output_file") != str(locked_paths["report"]):
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report output path mismatch"
+        )
+    if row.get("report_schema_version") != str(required_report_schema):
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report schema version mismatch"
+        )
+    try:
+        report_configuration_json = json.dumps(
+            report.get("configuration"),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report configuration is invalid: "
+            f"{exc}"
+        ) from exc
+    provenance = report.get("runtime_provenance")
+    if not isinstance(provenance, dict):
+        raise SystemExit(f"{phase}: manifest row {row_index} report provenance is invalid")
+    contact = provenance.get("contact")
+    ground_topology = provenance.get("ground_topology")
+    report_git = provenance.get("git")
+    report_robot = provenance.get("robot")
+    report_environment = provenance.get("environment")
+    report_simulation = provenance.get("simulation")
+    robot_config_lock = (
+        report_robot.get("config") if isinstance(report_robot, dict) else None
+    )
+    robot_asset_lock = (
+        report_robot.get("asset") if isinstance(report_robot, dict) else None
+    )
+    solver = (
+        report_robot.get("solver") if isinstance(report_robot, dict) else None
+    )
+    kinematics = (
+        report_robot.get("kinematics")
+        if isinstance(report_robot, dict)
+        else None
+    )
+
+    def numeric_lock_matches(field, expected_text):
+        value = kinematics.get(field) if isinstance(kinematics, dict) else None
+        try:
+            return (
+                not isinstance(value, bool)
+                and isinstance(value, (int, float))
+                and math.isfinite(float(value))
+                and float(value) == float(expected_text)
+            )
+        except (TypeError, ValueError):
+            return False
+
+    if (
+        report.get("environment_id") != environment
+        or report.get("odometry_mode") != "ideal"
+        or report.get("config_file") != motion_config
+        or report.get("config_sha256") != motion_sha256
+        or report_configuration_json != motion_configuration_json
+        or not isinstance(contact, dict)
+        or contact.get("profile_id") != profile_id
+        or contact.get("profile_mode") != expected_row["profile_mode"]
+        or contact.get("profile_path") != expected_scalars["profile_path"]
+        or contact.get("profile_sha256") != expected_scalars["profile_sha256"]
+        or not isinstance(ground_topology, dict)
+        or ground_topology.get("profile_id") != topology_id
+        or ground_topology.get("profile_path")
+        != expected_scalars["ground_topology_profile_path"]
+        or ground_topology.get("profile_sha256")
+        != expected_scalars["ground_topology_profile_sha256"]
+        or not isinstance(report_git, dict)
+        or report_git.get("commit") != git_commit
+        or report_git.get("branch") != git_branch
+        or report_git.get("dirty") is not False
+        or not isinstance(robot_config_lock, dict)
+        or robot_config_lock.get("path") != robot_config
+        or robot_config_lock.get("sha256") != robot_config_sha256
+        or not isinstance(robot_asset_lock, dict)
+        or robot_asset_lock.get("path") != robot_asset
+        or robot_asset_lock.get("sha256") != robot_asset_sha256
+        or solver
+        != {
+            "position_iterations": 32,
+            "velocity_iterations": 4,
+            "stage_articulation_usd_readback_verified": True,
+        }
+        or not isinstance(kinematics, dict)
+        or kinematics.get("profile_id") != kinematics_profile_id
+        or kinematics.get("lifecycle") != kinematics_lifecycle
+        or kinematics.get("controller_contract_verified") is not True
+        or not numeric_lock_matches("wheel_radius_m", wheel_radius)
+        or not numeric_lock_matches("wheel_width_m", wheel_width)
+        or not numeric_lock_matches(
+            "geometric_track_width_m", geometric_track_width
+        )
+        or not numeric_lock_matches(
+            "effective_track_width_m", effective_track_width
+        )
+        or not isinstance(report_environment, dict)
+        or report_environment.get("id") != environment
+        or report_environment.get("project_stage")
+        != {
+            "path": expected_scalars["environment_project_stage"],
+            "sha256": expected_scalars["environment_project_stage_sha256"],
+        }
+        or report_environment.get("source_asset")
+        != {
+            "path": expected_scalars["environment_source_asset"],
+            "sha256": expected_scalars["environment_source_asset_sha256"],
+        }
+        or not isinstance(report_simulation, dict)
+        or report_simulation.get("navigation_mode") != "mapping"
+        or report_simulation.get("odometry_mode") != "ideal"
+        or isinstance(report_simulation.get("physics_hz"), bool)
+        or not isinstance(report_simulation.get("physics_hz"), (int, float))
+        or float(report_simulation.get("physics_hz")) != 60.0
+    ):
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report identity mismatch"
+        )
+    interval = row.get("started_at_utc/completed_at_utc", "")
+    parts = interval.split("/")
+    if len(parts) != 2:
+        raise SystemExit(f"{phase}: manifest row {row_index} time interval is invalid")
+    try:
+        started, completed = (
+            datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(
+                tzinfo=timezone.utc
+            )
+            for value in parts
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} time interval is invalid: {exc}"
+        ) from exc
+    if completed < started:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} completes before it starts"
+        )
+    try:
+        report_started, report_completed = (
+            datetime.fromisoformat(report[field])
+            for field in ("started_at_utc", "completed_at_utc")
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report time interval is invalid: {exc}"
+        ) from exc
+    if any(
+        value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value)
+        for value in (report_started, report_completed)
+    ):
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} report timestamps must be UTC"
+        )
+    # The manifest is intentionally written at whole-second precision while
+    # motion reports retain microseconds.  Treat the completed second as a
+    # closed one-second bucket so a report completed later in that same second
+    # is not rejected as being outside its manifest interval.
+    if not (
+        started <= report_started <= report_completed
+        and report_completed < completed + timedelta(seconds=1)
+    ):
+        raise SystemExit(
+            f"{phase}: manifest row {row_index} does not enclose report timestamps"
+        )
+PY
+}
+
 append_manifest_line_atomically() {
   local row="$1"
   local temporary
@@ -632,7 +1185,8 @@ append_manifest_line_atomically() {
 append_current_manifest() {
   local status="$1"
   local detail="$2"
-  local completed report_sha256 isaac_log_sha256 runner_log_sha256 row
+  local completed report_sha256 report_schema_version=""
+  local isaac_log_sha256 runner_log_sha256 row
   local evidence_required=false
   [[ "${status}" == success ]] && evidence_required=true
   completed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
@@ -640,6 +1194,21 @@ append_current_manifest() {
     final_evidence_sha256 \
       "${current_report}" "${evidence_required}" "motion report"
   )" || return 1
+  if [[ -f "${current_report}" && ! -L "${current_report}" ]]; then
+    if ! report_schema_version="$(
+      motion_report_schema_version "${current_report}"
+    )"; then
+      [[ "${evidence_required}" == false ]] || return 1
+      report_schema_version=""
+    fi
+  fi
+  if [[ "${evidence_required}" == true \
+        && "${report_schema_version}" \
+        != "${required_motion_report_schema_version}" ]]; then
+    log_warn \
+      "successful motion report schema mismatch: ${report_schema_version:-missing} != ${required_motion_report_schema_version}"
+    return 1
+  fi
   # A log digest is final only after its writer has stopped.  A live,
   # unauthenticated child is intentionally left unsignalled and therefore
   # cannot be represented by a misleading "final" digest.
@@ -662,7 +1231,7 @@ append_current_manifest() {
     )" || return 1
   fi
   if ! printf -v row \
-    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(tsv_safe "${current_run_id}")" \
     "$(tsv_safe "${current_environment}")" \
     "$(tsv_safe "${current_profile_id}")" \
@@ -672,6 +1241,7 @@ append_current_manifest() {
     "$(tsv_safe "${detail}")" \
     "$(tsv_safe "${current_report}")" \
     "${report_sha256}" \
+    "${report_schema_version}" \
     "$(tsv_safe "${current_isaac_log}")" \
     "${isaac_log_sha256}" \
     "$(tsv_safe "${current_runner_log}")" \
@@ -1393,6 +1963,8 @@ try:
     report = json.loads(path.read_text(encoding="utf-8"))
 except (OSError, ValueError) as exc:
     raise SystemExit(f"motion report is not valid JSON: {exc}")
+if report.get("schema_version") != 3:
+    raise SystemExit("motion report schema must be integer 3")
 
 # Load the current workspace source deliberately.  The installed ROS package
 # may predate this batch runner during development, while the committed source
@@ -1416,6 +1988,15 @@ except Exception as exc:
     raise SystemExit(f"strict contact A/B report validation failed: {exc}")
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("strict contact A/B report validation excluded the report")
+physical_acceptance = analysis.get("physical_acceptance", {})
+if analysis.get("schema_version") != 4:
+    raise SystemExit("strict contact A/B analysis schema must be integer 4")
+if (
+    not isinstance(physical_acceptance, dict)
+    or physical_acceptance.get("schema_version") != 2
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v2"
+):
+    raise SystemExit("strict contact A/B physical acceptance contract mismatch")
 if report.get("result") != "success":
     raise SystemExit("motion report result != \"success\"")
 if report.get("environment_id") != environment_id:
@@ -1749,7 +2330,7 @@ prepare_output_directory() {
 initialize_manifest() {
   local header temporary
   manifest="${output_dir}/manifest.tsv"
-  header=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
+  header="${manifest_header_contract}"
   temporary="$(mktemp "${manifest}.tmp.XXXXXX")" \
     || die "cannot create manifest temporary file"
   if ! printf '%s\n' "${header}" >"${temporary}" \
@@ -1780,7 +2361,8 @@ finalize_contact_analysis() {
     return 1
   }
   python3 - \
-    "${PROJECT_ROOT}" "${manifest}" "${analysis_path}" \
+    "${PROJECT_ROOT}" "${manifest}" "${manifest_header_contract}" \
+    "${analysis_path}" \
     "${environment_selection}" "${ground_topology_selection}" \
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
@@ -1794,6 +2376,7 @@ import sys
 (
     repository_root,
     manifest_name,
+    manifest_header,
     output_name,
     environment_selection,
     ground_topology_selection,
@@ -1809,6 +2392,7 @@ expected_groups = int(expected_groups_text)
 wheel_radius = float(wheel_radius_text)
 manifest_path = Path(manifest_name)
 output_path = Path(output_name)
+expected_manifest_fieldnames = manifest_header.split("\t")
 selected_pairs_data = json.loads(selected_pairs_json)
 selected_pairs = {
     (pair["environment_id"], pair["ground_topology_id"])
@@ -1829,13 +2413,20 @@ from robot_experiments.contact_ab_analysis import (
 
 with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     reader = csv.DictReader(stream, delimiter="\t", strict=True)
+    if reader.fieldnames != expected_manifest_fieldnames:
+        raise SystemExit("manifest header does not match the 44-column contract")
     rows = list(reader)
 if len(rows) != expected_runs:
     raise SystemExit(
         f"manifest run count mismatch: {len(rows)} != {expected_runs}"
     )
 report_paths = []
+manifest_report_locks = {}
 for row_index, row in enumerate(rows, start=1):
+    if None in row or any(value is None for value in row.values()):
+        raise SystemExit(
+            f"manifest row {row_index} has missing or extra fields"
+        )
     if row.get("status") != "success":
         raise SystemExit(f"manifest row {row_index} is not successful")
     report_path = Path(row.get("report", ""))
@@ -1844,12 +2435,36 @@ for row_index, row in enumerate(rows, start=1):
     actual_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
     if row.get("report_sha256") != actual_sha256:
         raise SystemExit(f"manifest row {row_index} report SHA256 mismatch")
+    if row.get("report_schema_version") != "3":
+        raise SystemExit(
+            f"manifest row {row_index} report schema version must be 3"
+        )
+    try:
+        report_document = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit(
+            f"manifest row {row_index} report is not valid JSON: {exc}"
+        ) from exc
+    if report_document.get("schema_version") != 3:
+        raise SystemExit(
+            f"manifest row {row_index} report JSON schema version mismatch"
+        )
     row_pair = (row.get("environment"), row.get("ground_topology_id"))
     if row_pair not in selected_pairs:
         raise SystemExit(
             f"manifest row {row_index} has an unselected environment/topology pair"
         )
-    report_paths.append(report_path)
+    canonical_report_path = str(report_path.resolve())
+    if canonical_report_path in manifest_report_locks:
+        raise SystemExit("manifest report paths must be unique")
+    manifest_report_locks[canonical_report_path] = {
+        "sha256": actual_sha256,
+        "report_schema_version": 3,
+        "environment_id": row.get("environment"),
+        "ground_topology_id": row.get("ground_topology_id"),
+        "contact_profile_id": row.get("profile_id"),
+    }
+    report_paths.append(Path(canonical_report_path))
 if len(set(report_paths)) != expected_runs:
     raise SystemExit("manifest report paths must be unique")
 
@@ -1892,22 +2507,57 @@ expected_physical_thresholds = {
 }
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("aggregate contact A/B analysis is not valid")
-if analysis.get("schema_version") != 3:
-    raise SystemExit("aggregate contact A/B analysis schema must be 3")
+if analysis.get("schema_version") != 4:
+    raise SystemExit("aggregate contact A/B analysis schema must be 4")
 if counts.get("excluded_reports") != 0 or selection.get("excluded") != []:
     raise SystemExit("aggregate contact A/B analysis excluded reports")
 if counts.get("included_reports") != expected_runs:
     raise SystemExit("aggregate included-report count mismatch")
 if counts.get("groups") != expected_groups:
     raise SystemExit("aggregate group count mismatch")
+selection_included = selection.get("included")
+if (
+    not isinstance(selection_included, list)
+    or len(selection_included) != expected_runs
+):
+    raise SystemExit("aggregate selection included-report count mismatch")
+analysis_report_locks = {}
+for selection_index, included in enumerate(selection_included, start=1):
+    if not isinstance(included, dict):
+        raise SystemExit(
+            f"aggregate selection item {selection_index} must be an object"
+        )
+    included_path = included.get("path")
+    if not isinstance(included_path, str):
+        raise SystemExit(
+            f"aggregate selection item {selection_index} path is invalid"
+        )
+    if included_path in analysis_report_locks:
+        raise SystemExit("aggregate selection report paths must be unique")
+    analysis_report_locks[included_path] = {
+        "sha256": included.get("sha256"),
+        "report_schema_version": included.get("report_schema_version"),
+        "environment_id": included.get("environment_id"),
+        "ground_topology_id": included.get("ground_topology_id"),
+        "contact_profile_id": included.get("contact_profile_id"),
+    }
+if analysis_report_locks != manifest_report_locks:
+    raise SystemExit(
+        "aggregate selection does not match frozen manifest/report identities"
+    )
 if (
     not isinstance(physical_acceptance, dict)
-    or physical_acceptance.get("schema_version") != 1
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v1"
+    or physical_acceptance.get("schema_version") != 2
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v2"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
     or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
+    or physical_acceptance.get("steady_state_measurement_basis")
+    != "actual_velocity.steady_state_window.angular_z_radps.mean over the final_half_of_command_interval window"
+    or physical_acceptance.get("wheel_direction_measurement_basis")
+    != "wheels.steady_state_window.per_wheel[*].direction_matches over the final_half_of_command_interval window"
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
+        "required_motion_report_schema": 3,
         "required_runtime_provenance_schema": 5,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
@@ -1990,9 +2640,10 @@ write_batch_summary() {
     log_warn "refusing to overwrite batch summary: ${batch_summary_path}"
     return 1
   }
+  validate_success_manifest_evidence "summary" || return 1
   python3 - \
     "${batch_summary_path}" \
-    "${PROJECT_ROOT}" \
+    "${PROJECT_ROOT}" "${manifest_header_contract}" \
     "${environment_selection}" "${ground_topology_selection}" \
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
@@ -2003,6 +2654,7 @@ write_batch_summary() {
     "${simple_plane_config}" "${batch_simple_plane_project_sha256}" \
     "${robot_config_selection}" \
     "${robot_config}" "${batch_robot_config_sha256}" \
+    "${robot_asset}" "${robot_asset_sha256}" \
     "${robot_kinematics_profile_id}" \
     "${robot_kinematics_lifecycle}" \
     "${robot_wheel_radius}" "${robot_wheel_width}" \
@@ -2023,6 +2675,7 @@ import tempfile
 (
     output_name,
     repository_root_text,
+    manifest_header,
     environment_selection,
     ground_topology_selection,
     environment_topology_pairs_json,
@@ -2042,6 +2695,8 @@ import tempfile
     robot_config_selection,
     robot_config_path,
     robot_config_sha256,
+    robot_asset_path,
+    robot_asset_sha256,
     robot_kinematics_profile_id,
     robot_kinematics_lifecycle,
     robot_wheel_radius_text,
@@ -2060,6 +2715,7 @@ import tempfile
 output_path = Path(output_name)
 manifest_path = Path(manifest_name)
 analysis_path = Path(analysis_name)
+expected_manifest_fieldnames = manifest_header.split("\t")
 source_root = Path(repository_root_text) / "ros2_ws/src/robot_experiments"
 sys.path.insert(0, str(source_root))
 from robot_experiments.contact_ab_analysis import (
@@ -2105,13 +2761,18 @@ failed_groups = physical_acceptance.get("failed_groups")
 applicable_groups = physical_acceptance.get("applicable_groups")
 not_applicable_groups = physical_acceptance.get("not_applicable_groups")
 if (
-    analysis.get("schema_version") != 3
-    or physical_acceptance.get("schema_version") != 1
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v1"
+    analysis.get("schema_version") != 4
+    or physical_acceptance.get("schema_version") != 2
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v2"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
     or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
+    or physical_acceptance.get("steady_state_measurement_basis")
+    != "actual_velocity.steady_state_window.angular_z_radps.mean over the final_half_of_command_interval window"
+    or physical_acceptance.get("wheel_direction_measurement_basis")
+    != "wheels.steady_state_window.per_wheel[*].direction_matches over the final_half_of_command_interval window"
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
+        "required_motion_report_schema": 3,
         "required_runtime_provenance_schema": 5,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
@@ -2223,10 +2884,20 @@ selected_pairs = {
     for pair in environment_topology_pairs
 }
 with manifest_path.open("r", encoding="utf-8", newline="") as stream:
-    manifest_documents = list(csv.DictReader(stream, delimiter="\t", strict=True))
+    manifest_reader = csv.DictReader(stream, delimiter="\t", strict=True)
+    if manifest_reader.fieldnames != expected_manifest_fieldnames:
+        raise SystemExit(
+            "frozen manifest header does not match the 44-column contract"
+        )
+    manifest_documents = list(manifest_reader)
 if len(manifest_documents) != expected_runs:
     raise SystemExit("frozen manifest row count does not match expected runs")
+manifest_report_locks = {}
 for row_index, row in enumerate(manifest_documents, start=1):
+    if None in row or any(value is None for value in row.values()):
+        raise SystemExit(
+            f"frozen manifest row {row_index} has missing or extra fields"
+        )
     topology_id = row.get("ground_topology_id")
     expected_topology_path = str(
         Path(ground_topology_directory) / f"{topology_id}.yaml"
@@ -2241,10 +2912,76 @@ for row_index, row in enumerate(manifest_documents, start=1):
         raise SystemExit(
             f"manifest row {row_index} ground-topology identity mismatch"
         )
+    report_path = Path(row.get("report", ""))
+    if not report_path.is_file() or report_path.is_symlink():
+        raise SystemExit(f"manifest row {row_index} report path is unsafe")
+    report_sha256 = file_sha256(report_path)
+    if row.get("report_sha256") != report_sha256:
+        raise SystemExit(f"manifest row {row_index} report SHA256 mismatch")
+    if row.get("report_schema_version") != "3":
+        raise SystemExit(
+            f"manifest row {row_index} report schema version must be 3"
+        )
+    try:
+        report_document = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit(
+            f"manifest row {row_index} report is not valid JSON: {exc}"
+        ) from exc
+    if report_document.get("schema_version") != 3:
+        raise SystemExit(
+            f"manifest row {row_index} report JSON schema version mismatch"
+        )
+    canonical_report_path = str(report_path.resolve())
+    if canonical_report_path in manifest_report_locks:
+        raise SystemExit("manifest report paths must be unique")
+    manifest_report_locks[canonical_report_path] = {
+        "sha256": report_sha256,
+        "report_schema_version": 3,
+        "environment_id": row.get("environment"),
+        "ground_topology_id": topology_id,
+        "contact_profile_id": row.get("profile_id"),
+    }
+selection = analysis.get("selection", {})
+selection_included = selection.get("included") if isinstance(selection, dict) else None
+if (
+    not isinstance(selection_included, list)
+    or len(selection_included) != expected_runs
+):
+    raise SystemExit("aggregate selection included-report count mismatch")
+analysis_report_locks = {}
+for selection_index, included in enumerate(selection_included, start=1):
+    if not isinstance(included, dict):
+        raise SystemExit(
+            f"aggregate selection item {selection_index} must be an object"
+        )
+    included_path = included.get("path")
+    if not isinstance(included_path, str):
+        raise SystemExit(
+            f"aggregate selection item {selection_index} path is invalid"
+        )
+    if included_path in analysis_report_locks:
+        raise SystemExit("aggregate selection report paths must be unique")
+    analysis_report_locks[included_path] = {
+        "sha256": included.get("sha256"),
+        "report_schema_version": included.get("report_schema_version"),
+        "environment_id": included.get("environment_id"),
+        "ground_topology_id": included.get("ground_topology_id"),
+        "contact_profile_id": included.get("contact_profile_id"),
+    }
+if analysis_report_locks != manifest_report_locks:
+    raise SystemExit(
+        "aggregate selection does not match frozen manifest/report identities"
+    )
 summary = {
-    "schema_version": 4,
+    "schema_version": 5,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
+    "schema_contract": {
+        "motion_report": 3,
+        "aggregate_analysis": 4,
+        "physical_acceptance": 2,
+    },
     "environment_selection": environment_selection,
     "ground_topology_selection": ground_topology_selection,
     "environments": selected_environments,
@@ -2287,6 +3024,10 @@ summary = {
             "selection": robot_config_selection,
             "path": robot_config_path,
             "sha256": robot_config_sha256,
+            "asset": {
+                "path": robot_asset_path,
+                "sha256": robot_asset_sha256,
+            },
             "kinematics": {
                 "profile_id": robot_kinematics_profile_id,
                 "lifecycle": robot_kinematics_lifecycle,
@@ -2299,6 +3040,16 @@ summary = {
                     robot_effective_track_width_text
                 ),
             },
+            "solver": {
+                "position_iterations": 32,
+                "velocity_iterations": 4,
+                "stage_articulation_usd_readback_verified": True,
+            },
+        },
+        "simulation": {
+            "navigation_mode": "mapping",
+            "odometry_mode": "ideal",
+            "physics_hz": 60.0,
         },
         "contact_profiles": profiles,
         "ground_topology_profiles": ground_topology_profiles,
@@ -2312,6 +3063,12 @@ summary = {
         "policy_id": physical_acceptance["policy_id"],
         "evaluation_basis": physical_acceptance["evaluation_basis"],
         "ranking_policy": physical_acceptance["ranking_policy"],
+        "steady_state_measurement_basis": physical_acceptance[
+            "steady_state_measurement_basis"
+        ],
+        "wheel_direction_measurement_basis": physical_acceptance[
+            "wheel_direction_measurement_basis"
+        ],
         "thresholds": physical_acceptance["thresholds"],
         "applicability": physical_acceptance["applicability"],
         "all_applicable_groups_passed": physical_acceptance[
@@ -2392,6 +3149,7 @@ runtime_lock_is_held motion_baseline \
   && die "motion baseline is already running; stop it before contact A/B"
 load_runtime_contracts
 lock_batch_identity
+freeze_motion_configuration_contract
 verify_batch_identity "batch initialization" \
   || die "contact A/B batch identity changed during initialization"
 prepare_output_directory
@@ -2427,6 +3185,8 @@ manifest_rows="$(awk 'END {print NR - 1}' "${manifest}")" \
       && "${manifest_rows}" == "${expected_conditions}" ]] \
   || die "contact A/B completion count mismatch: sequence=${sequence}, success=${successful_rows}, rows=${manifest_rows}, expected=${expected_conditions}"
 
+validate_success_manifest_evidence "aggregate pre-freeze" \
+  || die "completed contact A/B evidence failed pre-freeze validation"
 freeze_manifest \
   || die "cannot freeze and hash the completed contact A/B manifest"
 finalize_contact_analysis \

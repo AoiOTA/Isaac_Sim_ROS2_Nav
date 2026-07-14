@@ -207,22 +207,28 @@ service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，�
 描述单份运行时报告的身份；下面的 analysis schema 描述离线聚合结果，二者的版本号
 不能互相替代。
 
-当前合同已实现，并已在 clean `2cd0788` 通过全门；clean `190f357` 的真实新 schema
-SimplePlane 一次重复烟测也已闭合，正式矩阵仍待完成：
+当前 v2 机器门合同已实现；它取代后续新批次使用的工件版本，但不会改写已经冻结的
+历史证据。clean `190f357` 的 SimplePlane 一次重复烟测仍按运行当时的 v1 合同解释，
+正式 v2 矩阵仍待完成：
 
 | 工件 | schema | 合同 |
 | --- | ---: | --- |
-| motion report | `2` | 顶层报告版本；`configuration.schema_version` 继续为 `1`。`actual_velocity.steady_state_window` 为命令时间区间后半段，内含实际 Odom `angular_z_radps` 分布 |
-| `analysis.json` | `3` | v5 报告的严格聚合；在既有分布、对称性、停止时延和有效轮距之外，必须包含 `physical_acceptance` |
-| `analysis.json.physical_acceptance` | `1` | `policy_id="skid_steer_plan_8_7_v1"`、`evaluation_basis="every_repeat"`；先判适用性，仅对适用 group 保存检查汇总、失败项和逐 repeat 结果 |
-| `batch_summary.json` | `4` | `result="success"` 只表示报告采集、输入身份、预期矩阵、Manifest 和聚合证据成功；物理结论单独复制 `all_applicable_groups_passed` 及四个 group 列表 |
+| `manifest.tsv` | 44 列 | 当前批次逐轮 `report_schema_version` 必须精确为 `3`。consumer 不只核对表头和 hash，还按固定矩阵顺序重算 run ID、环境/topology/profile/repeat，并把 44 个字段与报告、analysis selection、批次锁逐项交叉核对 |
+| motion report | `3` | 顶层报告版本；`configuration.schema_version` 继续为 `1`。Odom 与 JointState 各自保存命令后半段 closed window；双流停车、Reset epoch、时间戳、sample accounting、pose 派生量和 yaw endpoint 都是强制证据 |
+| `analysis.json` | `4` | v5 报告的严格聚合；在既有分布、对称性、停止时延和有效轮距之外，必须包含 v2 `physical_acceptance` |
+| `analysis.json.physical_acceptance` | `2` | `policy_id="skid_steer_plan_8_7_v2"`、`evaluation_basis="every_repeat"`；逐 repeat 保存可重算的六段 × 四轮稳态方向证据 |
+| `batch_summary.json` | `5` | `result="success"` 只表示报告采集、输入身份、预期矩阵、Manifest 和聚合证据成功；物理结论单独复制两个 measurement basis、`all_applicable_groups_passed` 及四个 group 列表 |
 
-motion report schema 1 仍可作历史输入读取，schema 2 才携带旋转稳态角速度门所需的窗口。
-历史 v3/v4 运行报告的 analysis 仍为 schema 1。RootLayer 修复后的 `d5840ed` 12-run
-机制烟测发生在本次升级之前，磁盘上的 v5 analysis 是 schema 2、batch summary 是
-schema 3，且没有 `physical_acceptance`；若按新合同审计，其 Warehouse、repeat=1、
-motion report schema 1 均使 group 为 N/A，而不是 `0/12 fail`。禁止回填历史工件，也
-禁止把 batch summary 的 `result="success"` 解释成底盘物理通过。
+motion report schema 1、2 仍可作为历史输入读取；只有 schema 3 携带 v2 方向门要求的
+JointState 稳态窗口，因此旧报告在 v2 门下必须是 N/A，原因固定为
+`motion_report_schema_not_3`。历史 v3/v4 runtime-provenance 报告的 analysis 仍为 schema 1。
+
+两个冻结批次必须按各自的原始版本阅读，禁止回填：RootLayer 修复后的 clean `d5840ed`
+12-run 保存 motion report schema 1、v5 analysis schema 2、batch summary schema 3，且没有
+`physical_acceptance`；clean `190f357` 的 SimplePlane 6-run 则保存 43 列 manifest、motion
+report schema 2、analysis schema 3、physical-acceptance schema 1 / policy
+`skid_steer_plan_8_7_v1`、batch summary schema 4。后者六组都只因 repeat=1 而 N/A。
+两者都不能按 v2 结构补字段，也不能把 summary 的 `result="success"` 解释成底盘物理通过。
 
 `physical_acceptance.thresholds` 使用固定数值，不接受“记录最终可实现值”替代：
 
@@ -240,33 +246,62 @@ motion report schema 1 均使 group 为 N/A，而不是 `0/12 fail`。禁止回�
 
 适用性要求必须同时满足：runtime provenance schema 5、环境 `SimplePlane`、topology
 `simple_plane_only1_v1`、Ideal odometry、同 group 至少 3 个唯一 repeat、且所有 motion
-report 都是 schema 2。任何条件不满足时，该 group 写
+report 都是 schema 3。任何条件不满足时，该 group 写
 `applicable=false`、`passed=null`、非空 `not_applicable_reasons`，并进入
 `not_applicable_groups`；它既不进入 passing/failed，也不影响总 verdict。没有任何适用
 group 时，`all_applicable_groups_passed=null`。
+
+schema 3 的 Odom 与 JointState 窗口都固定为
+`[start+(end-start)//2, end]` closed interval，至少有两个严格递增样本；首样本延迟、
+末样本延迟和最大相邻间隔均不得超过固定 profile 的
+`configuration.sampling.max_sample_age_sec=0.5`，且最大间隔必须位于由首尾时间和样本数
+决定的 average-gap..span 可行区间。稳态角速度的 extrema/moments 必须能作为整段
+Odom 分布的真实子集，方向 bucket count 必须与 mean/mean-abs/RMSE 联合可实现；不能
+把两个各自看似合法、组合却不可能的统计对象拼在一起。整段/稳态 sample count 与
+segment command count 相容，Odom/JointState `total` 还必须覆盖命令样本与停车证据样本；
+命令终点至多允许一个共享样本，除此之外不能重复记账。
+JointState 窗口锁定分类 deadband、正/负/阈值内样本计数和完整速度分布。段级
+`wheels.per_wheel` 全命令窗口仅作描述和诊断，不参与 v2 物理方向判定。
+
+每段 `stopping.stationary_evidence` 固定为命令结束后的双流连续静止 closed window：
+Odom 与 JointState 都至少两个样本、始终新鲜、gap 受限，确认终点取两流共同支持到的
+时间。Reset 的 credited/received watermark 必须早于命令起点和段 tracker 首样本；
+成功段不得包含 invalid Odom/JointState。`pose.start/end` 精确为三轴有限数，分析器从
+端点重算 net/longitudinal/lateral、`trajectory_length>=net`、直行/旋转 lateral drift、
+旋转 translation drift，并要求端点 yaw 与累计 yaw 按 `2*pi` 一致。
 
 对适用 group，每个 repeat 分别检查前进/后退横漂、左右旋转中心漂移、漂移不对称、
 左右旋转稳态角速度误差、六段停止窗和停止阈值；角速度观测值固定为
 `actual_velocity.steady_state_window.angular_z_radps.mean`，误差为
 `abs(actual-commanded)/abs(commanded) ≤ 0.10`，不是 yaw gain。不对称按
 `abs(left-right)/max(left,right)` 计算，两者均为零时为零。严格报告校验器已经确认的
-六段四轮方向合同也必须计入。group 只有在每个 repeat 的每项检查都通过时才通过；
+六段四轮方向读取 `wheels.steady_state_window`。`mixed`、`stationary` 或与期望相反的
+稳态分类只要统计自洽，就是有效、可纳入的测量证据；它们不会被伪装成
+`invalid_motion_protocol` exclusion，而会令 `wheel_direction_contract=false` 并使适用
+group 物理失败。group 只有在每个 repeat 的每项检查都通过时才通过；
 输出不得按分数排名，也不得自动选择“最佳” profile。顶层
 `applicable_groups` 与 `not_applicable_groups` 精确划分所有 group，`passing_groups` 与
 `failed_groups` 精确划分适用 group，总 verdict 为 `all_applicable_groups_passed`。
 最终记账校验器固定 18 个检查 ID，逐叶重算阈值、时序和 `passed`，再把每份报告的
 path/raw SHA/canonical SHA/schema 与 `selection.included`、group 身份、matrix 观测组、
-runtime schema 和全局 odometry 锁交叉核对；缺检查、伪布尔值或协调伪造 N/A 都会在
-发布 summary 前失败关闭。
+runtime schema 和全局输入锁交叉核对。它还重新读取 canonical source report、复验双
+SHA、Git/robot/simulation/motion configuration/environment/topology/contact 身份并重算
+完整 physical acceptance；缺 source、缺检查、伪布尔值、协调伪造 N/A 或 wheel
+FAIL→PASS 都会在发布 summary 前失败关闭。Manifest consumer 同时要求完整有序 44 列，
+逐行验证唯一 canonical report/Isaac/runner 路径与 SHA、报告时间被 manifest 秒级区间
+包围，以及规范化 motion YAML 的类型严格 JSON、robot asset/solver `32/4`/readback、
+controller、Mapping/Ideal/60 Hz 和其余批次身份。
 
-当前完整 contact analyzer 测试文件为 `116 passed`，motion baseline 为 `66 passed`，matrix
-script `42 passed / 1 skipped`，唯一 skip 是本机缺少 `shellcheck`。clean `2cd0788` 的
+当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
+script `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`；唯一 skip 是本机缺少
+`shellcheck`。clean `2cd0788` 的
 `./scripts/test.sh --with-isaac` 为 exit 0：root `1076 passed / 1 skipped /
 34 deselected`，ROS 为 11 packages、876 tests、0 errors、0 failures、1 skipped，Isaac
-为 `32 passed / 250 deselected`。build 11 packages、preflight PASS。clean `190f357` 的
+为 `32 passed / 250 deselected`。build 11 packages、preflight PASS。这些 clean
+`2cd0788` 数字属于上一版合同的全门记录，不是 v2 实跑。clean `190f357` 的历史
 SimplePlane/only1 六 profile 一次重复烟测为 6/6 run、36/36 段、analysis 6 included /
 0 excluded / 6 groups、summary schema 4 `result=success`；六组都只因 repeat=1 而 N/A。
-正式 54-run/18-group 矩阵仍待完成。
+正式 schema 3 / v2 的 54-run/18-group 矩阵仍待完成。
 
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
 serves the immutable saved OccupancyGrid. SLAM Toolbox still owns localization
