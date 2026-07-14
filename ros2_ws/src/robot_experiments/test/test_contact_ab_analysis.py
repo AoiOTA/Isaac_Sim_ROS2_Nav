@@ -709,7 +709,8 @@ def test_v5_rejects_a_shipped_topology_in_the_wrong_environment(tmp_path):
     assert report["analysis_valid"] is False
     assert report["counts"]["excluded_reports"] == 3
     assert all(
-        "shipped ground topology/environment pair is invalid"
+        item["reasons"][0]["code"] == "invalid_runtime_provenance"
+        and "shipped ground topology/environment pair is invalid"
         in item["reasons"][0]["detail"]
         for item in report["selection"]["excluded"]
     )
