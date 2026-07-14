@@ -93,6 +93,9 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert "create_publisher" in source
     assert "_assert_command_channel_uncontended" in source
     assert "get_subscription_count()" in source
+    assert "get_service_names_and_types_by_node" in source
+    assert '"std_srvs/srv/Trigger" in service_types' in source
+    assert "authorized_reset_safety_publishers" in source
     assert "safe_stop" in source
     assert "zero_publish_count" in source
     assert "signal.SIGTERM" in source

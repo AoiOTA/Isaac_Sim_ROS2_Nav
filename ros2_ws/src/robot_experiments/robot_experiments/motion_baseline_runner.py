@@ -140,6 +140,7 @@ class MotionBaselineRunner(Node):
         self._segments: list[dict[str, object]] = []
         self._started_at = datetime.now(timezone.utc)
         self._safe_stop_attempted = False
+        self._authorized_reset_publishers: set[str] = set()
 
     def _observe_timestamp(self, topic: str, stamp_ns: int) -> None:
         self._session_timestamps[topic].observe(stamp_ns)
@@ -249,19 +250,52 @@ class MotionBaselineRunner(Node):
             for name, tracker in self._active_timestamps.items()
         }
 
+    @staticmethod
+    def _node_fqn(node_name: str, node_namespace: str) -> str:
+        return f"{node_namespace.rstrip('/')}/{node_name}".replace("//", "/")
+
+    def _owns_reset_service(self, endpoint: Any) -> bool:
+        try:
+            services = self.get_service_names_and_types_by_node(
+                endpoint.node_name, endpoint.node_namespace
+            )
+        except RuntimeError:
+            return False
+        return any(
+            service_name == self._config.reset.service
+            and "std_srvs/srv/Trigger" in service_types
+            for service_name, service_types in services
+        )
+
     def _foreign_command_publishers(self) -> list[str]:
         publishers = self.get_publishers_info_by_topic(self._config.topics.cmd_vel)
         own_name = self.get_name()
         own_namespace = self.get_namespace()
-        foreign = {
-            f"{endpoint.node_namespace.rstrip('/')}/{endpoint.node_name}"
-            for endpoint in publishers
-            if not (
+        foreign: set[str] = set()
+        reset_publishers: set[str] = set()
+        for endpoint in publishers:
+            if (
                 endpoint.node_name == own_name
                 and endpoint.node_namespace == own_namespace
+            ):
+                continue
+            identity = self._node_fqn(
+                endpoint.node_name, endpoint.node_namespace
             )
-        }
-        return sorted(name.replace("//", "/") for name in foreign)
+            if self._owns_reset_service(endpoint):
+                reset_publishers.add(identity)
+            else:
+                foreign.add(identity)
+
+        # Reset deliberately publishes a zero Twist before restoring the robot.
+        # Authenticate that safety endpoint by service ownership instead of a
+        # hard-coded node name. Multiple Reset owners are ambiguous and unsafe.
+        if len(reset_publishers) == 1:
+            self._authorized_reset_publishers = reset_publishers
+        else:
+            self._authorized_reset_publishers = set()
+            foreign.update(reset_publishers)
+        return sorted(foreign)
 
     def _assert_command_channel_uncontended(self) -> None:
         foreign = self._foreign_command_publishers()
@@ -551,7 +585,10 @@ class MotionBaselineRunner(Node):
                 for name, tracker in self._session_timestamps.items()
             },
             "safety": {
-                "exclusive_cmd_vel_owner_enforced": True,
+                "exclusive_non_reset_cmd_vel_owner_enforced": True,
+                "authorized_reset_safety_publishers": sorted(
+                    self._authorized_reset_publishers
+                ),
                 "cmd_vel_subscription_count": (
                     0
                     if self._publisher is None
