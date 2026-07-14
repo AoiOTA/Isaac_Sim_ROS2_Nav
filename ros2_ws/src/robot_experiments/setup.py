@@ -24,6 +24,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "contact_ab_analysis = robot_experiments.contact_ab_analysis:main",
             "effective_track_analysis = robot_experiments.effective_track_analysis:main",
             "experiment_runner = robot_experiments.experiment_runner:main",
             "incremental_map_compare = robot_experiments.incremental_map_compare:main",
