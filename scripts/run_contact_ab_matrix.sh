@@ -11,26 +11,35 @@ original_args=("$@")
 usage() {
   cat <<'EOF'
 usage: run_contact_ab_matrix.sh [--environment Warehouse|SimplePlane|all]
-                                [--repeats N] --output-dir DIR
+                                [--repeats N] [--robot-config FILE]
+                                --output-dir DIR
 
 Run the committed skid-steer motion A/B protocol in strict serial order.
 The default environment is all (SimplePlane, then Warehouse), and the
 default repeat count is 3: 2 environments x 6 contact profiles x 3 = 36
 independent Isaac processes. DIR must be empty and is never overwritten.
+By default the committed robot selected by the project configuration is used.
+FILE selects a committed robot contract by canonical absolute path.
 EOF
 }
 
 environment_selection="all"
 repeats=3
 output_dir=""
+robot_config_argument=""
+robot_config_option_seen=false
 while (($#)); do
   case "$1" in
-    --environment|--repeats|--output-dir)
+    --environment|--repeats|--output-dir|--robot-config)
       (($# >= 2)) || die "$1 requires a value"
       case "$1" in
         --environment) environment_selection="$2" ;;
         --repeats) repeats="$2" ;;
         --output-dir) output_dir="$2" ;;
+        --robot-config)
+          robot_config_argument="$2"
+          robot_config_option_seen=true
+          ;;
       esac
       shift 2
       ;;
@@ -61,8 +70,19 @@ if ((10#${repeats} > 100)); then
 fi
 repeats=$((10#${repeats}))
 [[ -n "${output_dir}" ]] || die "--output-dir is required"
-[[ "${output_dir}" != *$'\t'* && "${output_dir}" != *$'\n'* ]] \
-  || die "--output-dir must not contain tabs or newlines"
+[[ "${output_dir}" != *$'\t'* && "${output_dir}" != *$'\r'* \
+      && "${output_dir}" != *$'\n'* ]] \
+  || die \
+    "--output-dir must not contain tabs, carriage returns, or newlines"
+if [[ "${robot_config_option_seen}" == true \
+      && -z "${robot_config_argument}" ]]; then
+  die "--robot-config requires a non-empty value"
+fi
+[[ "${robot_config_argument}" != *$'\t'* \
+      && "${robot_config_argument}" != *$'\r'* \
+      && "${robot_config_argument}" != *$'\n'* ]] \
+  || die \
+    "--robot-config must not contain tabs, carriage returns, or newlines"
 
 profile_ids=(
   legacy_baseline
@@ -91,9 +111,11 @@ batch_git_branch=""
 batch_motion_sha256=""
 batch_warehouse_project_sha256=""
 batch_simple_plane_project_sha256=""
+batch_robot_config_sha256=""
 batch_profile_hashes_json=""
 
 robot_config=""
+robot_config_selection="project_default"
 robot_asset=""
 robot_config_sha256=""
 robot_asset_sha256=""
@@ -125,10 +147,59 @@ require_clean_git() {
 
 require_tracked_input() {
   local path="$1"
-  local relative="${path#"${PROJECT_ROOT}/"}"
+  local canonical relative head_entry head_mode head_type head_blob
+  local verified_head_blob worktree_blob
+  [[ "${path}" == "${PROJECT_ROOT}/"* ]] \
+    || die "contact A/B input is outside the repository: ${path}"
+  [[ "${path}" != *$'\t'* && "${path}" != *$'\r'* \
+        && "${path}" != *$'\n'* && -f "${path}" && ! -L "${path}" ]] \
+    || die "contact A/B input is not a committed regular file: ${path}"
+  canonical="$(realpath -e -- "${path}" 2>/dev/null)" \
+    || die "cannot canonicalize contact A/B input: ${path}"
+  [[ "${canonical}" == "${path}" ]] \
+    || die "contact A/B input path is not canonical: ${path}"
+  relative="${path#"${PROJECT_ROOT}/"}"
   git -C "${PROJECT_ROOT}" ls-files --error-unmatch -- "${relative}" \
     >/dev/null 2>&1 \
     || die "contact A/B input is not committed: ${relative}"
+  head_entry="$(
+    git -C "${PROJECT_ROOT}" ls-tree HEAD -- "${relative}"
+  )" || die "cannot inspect committed contact A/B input: ${relative}"
+  IFS=$' \t' read -r \
+    head_mode head_type head_blob _ <<<"${head_entry}"
+  [[ ( "${head_mode}" == 100644 || "${head_mode}" == 100755 ) \
+        && "${head_type}" == blob && -n "${head_blob}" ]] \
+    || die "contact A/B input is not a committed regular file: ${relative}"
+  verified_head_blob="$(
+    git -C "${PROJECT_ROOT}" rev-parse --verify "HEAD:${relative}"
+  )" || die "cannot resolve committed contact A/B blob: ${relative}"
+  [[ "${verified_head_blob}" == "${head_blob}" ]] \
+    || die "committed contact A/B blob identity is inconsistent: ${relative}"
+  worktree_blob="$(git hash-object --no-filters -- "${path}")" \
+    || die "cannot hash contact A/B working-tree input: ${relative}"
+  [[ "${worktree_blob}" == "${head_blob}" ]] \
+    || die \
+      "contact A/B input does not match the committed HEAD blob: ${relative}"
+}
+
+validate_robot_config_path() {
+  local path="$1"
+  local canonical
+  if [[ "${path}" != /* || ! -f "${path}" || -L "${path}" ]]; then
+    log_warn \
+      "--robot-config must be a canonical absolute regular file: ${path}"
+    return 1
+  fi
+  canonical="$(realpath -e -- "${path}" 2>/dev/null)" || {
+    log_warn \
+      "--robot-config must be a canonical absolute regular file: ${path}"
+    return 1
+  }
+  if [[ "${canonical}" != "${path}" ]]; then
+    log_warn \
+      "--robot-config must be a canonical absolute regular file: ${path}"
+    return 1
+  fi
 }
 
 sha256_file() {
@@ -145,22 +216,29 @@ git_branch() {
 
 project_runtime_contract() {
   local project_config="$1"
+  local robot_override="${2:-}"
   python3 - "${PROJECT_ROOT}" "${ISAAC_ASSET_ROOT}" \
-    "${project_config}" <<'PY'
+    "${project_config}" "${robot_override}" <<'PY'
 from pathlib import Path
 import sys
 
-repository_root, asset_root, project_path = sys.argv[1:]
+repository_root, asset_root, project_path, robot_override = sys.argv[1:]
 sys.path.insert(0, repository_root)
 from isaac_sim.src.config import load_project_config
 from isaac_sim.src.robot.kinematics_config import load_robot_config_contract
 
 # Do not pass os.environ here: inherited ISAAC_NAV__* values are untrusted
 # nested YAML overrides.  Only interpolation inputs are needed to resolve the
-# committed project contract.
+# committed project contract, plus the one explicitly selected robot input.
+effective_environment = {
+    "PROJECT_ROOT": repository_root,
+    "ISAAC_ASSET_ROOT": asset_root,
+}
+if robot_override:
+    effective_environment["ISAAC_NAV__FILES__ROBOT"] = robot_override
 config = load_project_config(
     project_path,
-    {"PROJECT_ROOT": repository_root, "ISAAC_ASSET_ROOT": asset_root},
+    effective_environment,
 )
 kinematics = load_robot_config_contract(config.files.robot).kinematics
 values = (
@@ -189,10 +267,14 @@ load_runtime_contracts() {
   local simple_wheel_radius simple_wheel_width
   local simple_geometric_track_width simple_effective_track_width
   local runtime_input
-  warehouse_contract="$(project_runtime_contract "${warehouse_config}")" \
+  warehouse_contract="$(
+    project_runtime_contract \
+      "${warehouse_config}" "${robot_config_argument}"
+  )" \
     || die "cannot resolve the committed Warehouse runtime contract"
   simple_plane_contract="$(
-    project_runtime_contract "${simple_plane_config}"
+    project_runtime_contract \
+      "${simple_plane_config}" "${robot_config_argument}"
   )" || die "cannot resolve the committed SimplePlane runtime contract"
   IFS=$'\t' read -r \
     warehouse_id robot_config robot_asset \
@@ -220,6 +302,12 @@ load_runtime_contracts() {
         && "${simple_geometric_track_width}" == "${robot_geometric_track_width}" \
         && "${simple_effective_track_width}" == "${robot_effective_track_width}" ]] \
     || die "Warehouse and SimplePlane robot kinematics contracts differ"
+  if [[ "${robot_config_option_seen}" == true ]]; then
+    robot_config_selection="explicit_cli"
+  fi
+  validate_robot_config_path "${robot_config}" \
+    || die "selected robot config path is not trusted"
+  require_tracked_input "${robot_config}"
   for runtime_input in \
       "${robot_config}" "${robot_asset}" \
       "${warehouse_project_stage}" "${warehouse_source_asset}" \
@@ -254,17 +342,23 @@ lock_batch_identity() {
     "${motion_config}"
     "${warehouse_config}"
     "${simple_plane_config}"
+    "${robot_config}"
   )
   for profile_id in "${profile_ids[@]}"; do
     locked_input_paths+=("${physics_dir}/${profile_id}.yaml")
   done
   for profile_path in "${locked_input_paths[@]}"; do
+    require_tracked_input "${profile_path}"
     locked_input_hashes["${profile_path}"]="$(sha256_file "${profile_path}")" \
       || die "cannot hash contact A/B input: ${profile_path}"
   done
   batch_motion_sha256="${locked_input_hashes[${motion_config}]}"
   batch_warehouse_project_sha256="${locked_input_hashes[${warehouse_config}]}"
   batch_simple_plane_project_sha256="${locked_input_hashes[${simple_plane_config}]}"
+  batch_robot_config_sha256="${locked_input_hashes[${robot_config}]}"
+  [[ "${batch_robot_config_sha256}" == "${robot_config_sha256}" ]] \
+    || die "selected robot config changed while batch identity was locked"
+  robot_config_sha256="${batch_robot_config_sha256}"
   batch_profile_hashes_json="$(python3 - "${physics_dir}" \
     "${profile_ids[@]}" <<'PY'
 import hashlib
@@ -335,6 +429,7 @@ environment_slug() {
 tsv_safe() {
   local value="$1"
   value="${value//$'\t'/ }"
+  value="${value//$'\r'/ }"
   value="${value//$'\n'/ }"
   printf '%s' "${value}"
 }
@@ -429,7 +524,7 @@ append_current_manifest() {
     )" || return 1
   fi
   if ! printf -v row \
-    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$(tsv_safe "${current_run_id}")" \
     "$(tsv_safe "${current_environment}")" \
     "$(tsv_safe "${current_profile_id}")" \
@@ -451,6 +546,15 @@ append_current_manifest() {
     "${batch_warehouse_project_sha256}" \
     "$(tsv_safe "${simple_plane_config}")" \
     "${batch_simple_plane_project_sha256}" \
+    "$(tsv_safe "${robot_config_selection}")" \
+    "$(tsv_safe "${robot_config}")" \
+    "${batch_robot_config_sha256}" \
+    "$(tsv_safe "${robot_kinematics_profile_id}")" \
+    "$(tsv_safe "${robot_kinematics_lifecycle}")" \
+    "${robot_wheel_radius}" \
+    "${robot_wheel_width}" \
+    "${robot_geometric_track_width}" \
+    "${robot_effective_track_width}" \
     "$(tsv_safe "${current_project_config}")" \
     "${current_project_sha256}" \
     "$(tsv_safe "${current_profile_path}")" \
@@ -898,6 +1002,7 @@ launch_isaac() {
     clear_inherited_config_overrides
     export ISAAC_NAV_PROJECT_CONFIG="${project_config}"
     export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"
+    export ISAAC_NAV__FILES__ROBOT="${robot_config}"
     # Schema-v4 provenance verifies mapping/ideal/60 Hz and kinematics below.
     # It does not
     # currently expose headless, pacing, or camera selection, so those remain
@@ -1257,7 +1362,7 @@ prepare_output_directory() {
 initialize_manifest() {
   local header temporary
   manifest="${output_dir}/manifest.tsv"
-  header=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
+  header=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
   temporary="$(mktemp "${manifest}.tmp.XXXXXX")" \
     || die "cannot create manifest temporary file"
   if ! printf '%s\n' "${header}" >"${temporary}" \
@@ -1384,6 +1489,13 @@ write_batch_summary() {
     "${motion_config}" "${batch_motion_sha256}" \
     "${warehouse_config}" "${batch_warehouse_project_sha256}" \
     "${simple_plane_config}" "${batch_simple_plane_project_sha256}" \
+    "${robot_config_selection}" \
+    "${robot_config}" "${batch_robot_config_sha256}" \
+    "${robot_kinematics_profile_id}" \
+    "${robot_kinematics_lifecycle}" \
+    "${robot_wheel_radius}" "${robot_wheel_width}" \
+    "${robot_geometric_track_width}" \
+    "${robot_effective_track_width}" \
     "${physics_dir}" "${batch_profile_hashes_json}" \
     "${manifest}" "${frozen_manifest_sha256}" \
     "${analysis_path}" "${analysis_sha256}" <<'PY'
@@ -1410,6 +1522,15 @@ import tempfile
     warehouse_sha256,
     simple_plane_path,
     simple_plane_sha256,
+    robot_config_selection,
+    robot_config_path,
+    robot_config_sha256,
+    robot_kinematics_profile_id,
+    robot_kinematics_lifecycle,
+    robot_wheel_radius_text,
+    robot_wheel_width_text,
+    robot_geometric_track_width_text,
+    robot_effective_track_width_text,
     physics_directory,
     profile_hashes_json,
     manifest_name,
@@ -1458,7 +1579,7 @@ selected_environments = (
     else [environment_selection]
 )
 summary = {
-    "schema_version": 1,
+    "schema_version": 2,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
     "environment_selection": environment_selection,
@@ -1488,6 +1609,23 @@ summary = {
             "SimplePlane": {
                 "path": simple_plane_path,
                 "sha256": simple_plane_sha256,
+            },
+        },
+        "robot_config": {
+            "selection": robot_config_selection,
+            "path": robot_config_path,
+            "sha256": robot_config_sha256,
+            "kinematics": {
+                "profile_id": robot_kinematics_profile_id,
+                "lifecycle": robot_kinematics_lifecycle,
+                "wheel_radius_m": float(robot_wheel_radius_text),
+                "wheel_width_m": float(robot_wheel_width_text),
+                "geometric_track_width_m": float(
+                    robot_geometric_track_width_text
+                ),
+                "effective_track_width_m": float(
+                    robot_effective_track_width_text
+                ),
             },
         },
         "contact_profiles": profiles,
@@ -1534,6 +1672,11 @@ for profile_id in "${profile_ids[@]}"; do
   require_file "${physics_dir}/${profile_id}.yaml"
 done
 require_clean_git
+if [[ "${robot_config_option_seen}" == true ]]; then
+  validate_robot_config_path "${robot_config_argument}" \
+    || die "explicit --robot-config path is not trusted"
+  require_tracked_input "${robot_config_argument}"
+fi
 require_tracked_input "${motion_config}"
 require_tracked_input "${warehouse_config}"
 require_tracked_input "${simple_plane_config}"
