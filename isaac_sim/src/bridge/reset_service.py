@@ -349,24 +349,26 @@ class ResetServiceBridge:
             "/set_pose",
             callback_group=self._callback_group,
         )
-        self._costmap_clients = (
-            (
-                "global costmap",
-                node.create_client(
-                    ClearEntireCostmap,
-                    "/global_costmap/clear_entirely_global_costmap",
-                    callback_group=self._callback_group,
+        self._costmap_clients = ()
+        if navigation_mode == "localization":
+            self._costmap_clients = (
+                (
+                    "global costmap",
+                    node.create_client(
+                        ClearEntireCostmap,
+                        "/global_costmap/clear_entirely_global_costmap",
+                        callback_group=self._callback_group,
+                    ),
                 ),
-            ),
-            (
-                "local costmap",
-                node.create_client(
-                    ClearEntireCostmap,
-                    "/local_costmap/clear_entirely_local_costmap",
-                    callback_group=self._callback_group,
+                (
+                    "local costmap",
+                    node.create_client(
+                        ClearEntireCostmap,
+                        "/local_costmap/clear_entirely_local_costmap",
+                        callback_group=self._callback_group,
+                    ),
                 ),
-            ),
-        )
+            )
         self._service = node.create_service(
             Trigger,
             service_name,
