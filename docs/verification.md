@@ -25,7 +25,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean schema v3 的 SimplePlane 六 Profile 单轮批处理也完成 6/6 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；SimplePlane 当前每组只有 1 次链路烟测，低速左右转向仍不对称，Warehouse/Realistic、接触材料与有效轮距正式 A/B 尚未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v3 均已实现；真实 Warehouse 单轮诊断 8/8 硬门通过；clean commit `a8863d2` 的 SimplePlane 六 Profile 烟测为 6/6、聚合纳入 6/排除 0 | 六 Profile 目前各 1 次，只证明批处理、身份锁与严格分析链路；Warehouse、每组至少 3 次、Realistic 与候选轮距运动 A/B 均未完成，不能冻结材质、threshold 或 `1.0124 m` |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v3 均已实现；真实 Warehouse 单轮诊断 8/8 硬门通过；clean commit `d7710b7` 的 Reset epoch 修复后 SimplePlane 六 Profile 烟测为 6/6、36/36 Reset 成功、聚合纳入 6/排除 0 | 六 Profile 目前各 1 次，只证明批处理、身份锁、Reset 恢复与严格分析链路；Warehouse、每组至少 3 次、Realistic 与候选轮距运动 A/B 均未完成，不能冻结材质、threshold 或 `1.0124 m` |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -425,6 +425,65 @@ origin tracking 和 GitHub 远程分支在烟测与审计时也都指向同一�
   某个具体速度门根因。提交 `a8863d2` 已增加逐门违规计数、峰值、末端 blocker 和
   最长连续静止窗；本轮未再复现，因此仍保留为待 soak 定位的间歇问题，未放宽
   30 秒或速度阈值。
+
+#### Reset epoch/coherent recovery 修复后复验（2026-07-14）
+
+后续正式矩阵 `data/reports/contact_ab/skid_steer_v1_bcfc201` 在第 8 轮
+`008_simple_plane_threshold_corr_0p025_offset_0p0004_r02` 失败关闭。失败报告
+SHA256 为 `38452edbc39263b234fecbc6cc8e9f534a242d84461673e958641ddabf775fdc`，
+manifest SHA256 为 `4c516937d585b50cffbcf9b317bc7ecc3dd9fb5c46d3739e6ce5e513b47607be`。
+当时所有速度门均通过，但 `/clock`、Odom、JointState 的非原子 callback 相位反复清空
+静止窗；该目录和失败样本保留，不续跑、不删除，也不混入新的正式矩阵。
+
+提交 `d7710b7f07039c18a38dcabc68e3958bbec13bf8` 为 Reset Trigger 增加版本化
+generation/boundary trailer，并让 runner 以服务端 boundary、Trigger 等待窗口逐 Topic
+历史最大 timestamp、response barrier 当前 stamp、三路 receive/credited sequence 和
+timestamp 水位共同消费相干组。Clock 单独推进、旧队列、覆盖式回退、断流和已知运动
+均不能跨窗；同一 60 Hz tick 的有界 callback 相位仍可恢复。该提交通过：
+
+- Reset/运动聚焦测试 `81 passed`；
+- `robot_experiments` 根目录与标准隔离 `colcon test` 均为 `271 passed`；
+- Isaac 测试 `121 passed, 21 skipped`；
+- contact batch/runtime 脚本测试 `56 passed, 1 skipped`，skip 原因为本机未安装
+  `shellcheck`；
+- fatal/F401 flake8、`compileall` 与 `git diff --check` 均通过；三轮独立状态机复核
+  均未发现 P0/P1。
+
+在该 clean commit 上重新执行：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment SimplePlane \
+  --repeats 1 \
+  --output-dir data/reports/contact_ab/simple_plane_smoke_d7710b7
+```
+
+六个独立 Isaac 进程全部完成，6 份报告均为 `result=success`、每份 6 个 segment
+均为 `complete`；summary 为 `result=success`，实际/预期运行数、manifest 行数均为
+`6/6`。严格聚合为 `analysis_valid=true`、矩阵完整、6 个 group、纳入 6、排除 0。
+36 次 Reset 的 versioned trailer、generation/boundary、三路 fresh 标志、静止时长和
+stamp 下界检查全部通过，recovery wall latency 为 `0.5287–0.5579 s`，均值
+`0.5401 s`；service latency 为 `0.1553–0.1831 s`，均值 `0.1657 s`。
+
+全窗审计记录 15 个 pre-boundary group 和 13 个 JointState receive timestamp
+regression；非零 violation 只有
+`receive_timestamp_regression:joint_states=13`，这些旧队列证据均被拒绝。coherent/
+observation regression、not-stationary、速度、wall freshness、stale/future-skew 和四轮
+速度 violation 全为 0。恢复期 Odom 线速度峰值 `0.000325 m/s`、角速度峰值
+`0.000227 rad/s`，远低于 `0.02 m/s` 与 `0.05 rad/s` 门；JointState sim age 为
+`-0.0000036–0.0333369 s`，Odom 为 `0–0.0166667 s`。
+
+独立 `sha256sum --check --strict` 对 manifest 中 6 份报告、6 份 Isaac 日志和 6 份
+runner 日志共 18 个文件全部返回 `OK`。根证据哈希为：
+
+| 文件 | SHA256 |
+| --- | --- |
+| `manifest.tsv` | `f908728da1fb90ed6f087869cf18502881ee5315939a60fd460edf0a92d33163` |
+| `analysis.json` | `27fc2681e8c1321c8a7e02021044e67c7bce22993667aa1e5393372f0ff1ae1f` |
+| `batch_summary.json` | `0f4fba89eb76daa21eba4eaeb9eb3f771a866552934d7a4cfac0075e3dc77730` |
+
+这仍是每组 1 次的机制 smoke，只证明 `d7710b7` 的真实 Reset/批处理链路恢复，不能
+替代两环境 × 六 Profile × 三重复的新正式矩阵，也不能用于自动选择 contact Profile。
 
 这次 `--repeats 1` 只验收六 Profile 串行启动、运行态 provenance、报告结构、
 聚合身份锁和失败保留机制。每组样本数为 1，不能估计方差、排名或选择材质；计划
