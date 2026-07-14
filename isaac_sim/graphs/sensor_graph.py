@@ -90,7 +90,13 @@ def lidar_graph_spec(config: ProjectConfig, render_product_path: str) -> GraphSp
         ("PointCloudPublisher.inputs:queueSize", 5),
         ("PointCloudPublisher.inputs:qosProfile", qos["sensor_data"]),
         ("PointCloudPublisher.inputs:useSystemTime", False),
-        ("PointCloudPublisher.inputs:resetSimulationTimeOnStop", False),
+        # The installed Isaac Sim 6.0.1 ros2.nodes 1.18.13 keeps the True
+        # default introduced for RTX helpers in its 1.5.3 changelog.
+        # False selects monotonic history lookups; in the recorded A/B those
+        # lookups coincided with intermittent missing Fabric samples.
+        # Transactional project Reset uses pause/play rather than Timeline
+        # stop, so this does not create a new epoch during /simulation/reset.
+        ("PointCloudPublisher.inputs:resetSimulationTimeOnStop", True),
         # Isaac Sim 6.0.1 ships the deprecated fullScan input with a True
         # default and warns at runtime even when projects never author it.
         # False is the vendor implementation's explicit compatibility path;

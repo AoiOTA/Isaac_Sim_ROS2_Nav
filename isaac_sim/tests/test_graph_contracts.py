@@ -52,8 +52,15 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     assert dt_values == [pytest.approx(1.0 / 60.0)]
     sensor_nodes = dict(specs[1].nodes)
     sensor_values = dict(specs[1].values)
+    lidar_values = dict(specs[2].values)
     assert sensor_nodes["ReadJointState"].endswith("IsaacReadJointState")
     assert "PublishJointState.inputs:targetPrim" not in sensor_values
+    assert (
+        lidar_values[
+            "PointCloudPublisher.inputs:resetSimulationTimeOnStop"
+        ]
+        is True
+    )
     assert (
         "ReadJointState.outputs:jointNames",
         "PublishJointState.inputs:jointNames",
