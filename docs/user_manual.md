@@ -307,6 +307,8 @@ cd "$PROJECT_ROOT"
 
 `--pacing-mode unbounded` 只用于明确的吞吐/极限测试，会取消墙钟节流，不能和 realtime 结果直接比较，也不应作为日常导航默认值。实际 RTF 必须由第 17.3 节 Profiler 的 `/clock` 与稳态墙钟采样得出，不能用配置目标值代替测量值。
 
+headless 启动会关闭 SimulationApp 的默认 viewport 更新，以避免无人观看的视窗持续占用 RTX resource descriptor。这不会关闭 LiDAR 或显式启用 Camera profile 各自的 RenderProduct；GUI 模式则保持 viewport 正常更新。clean `65ae923` 上的 Warehouse/Camera-off/realtime 实测在 8.000 s 稳态窗内收到 77 帧 `/lidar/points_raw`，墙钟频率 `9.603 Hz`；这证明关闭默认 viewport 后 RTX LiDAR 仍正常输出，不代表长时 soak 已完成。
+
 等待日志出现：
 
 ```text
@@ -504,12 +506,13 @@ Realistic 模式不使用 Isaac Ideal Odom。轮关节状态先生成 `/wheel/od
 
 两端默认都选择
 `isaac_sim/configs/robots/jackal.yaml`。ROS 在创建 Wheel Odom 的 Topic、Reset
-service 和 timer 前，会读取 `/isaac_navigation_sim` 的只读 provenance v5 参数，
+service 和 timer 前，会读取 `/isaac_navigation_sim` 的只读 provenance v6 参数，
 并逐项比对 robot 文件的规范路径、原始字节 SHA256、profile、lifecycle、轮径、
 轮宽、几何轮距、有效轮距和 controller 校验标志，同时要求运行态 schema 精确为
-v5，避免连接仍发布旧合同的 Isaac。Wheel Odom 不重复实现完整 topology/contact
-报告校验；Isaac producer 已 fresh 读取并验证当前 Stage，motion runner 验证两对
-序列化 JSON/SHA 并调用 report validator，离线 validator 负责报告内的解码结构。
+v6，避免连接仍发布旧合同的 Isaac。Wheel Odom 不重复实现完整
+topology/contact/reset-strategy 报告校验；Isaac producer 已 fresh 读取并验证当前
+Stage，motion runner 验证 topology/contact/reset-strategy 三对 JSON/SHA，并调用
+report validator，离线 validator 负责报告内的解码结构。
 Isaac 尚未就绪、参数服务超时或
 任一值不一致时，Wheel Odom 非零退出并让当前 Realistic ROS launch 受管关闭；此时
 没有 `/wheel/odom` 是正确门禁，不是再启动一个手工 publisher 或单独重启 EKF 的
@@ -817,17 +820,16 @@ Localization 的 `reset_pose_name` 已在启动时绑定到当前 Manifest 的
 
 Reset 是一个异步事务，但 Trigger 只有在物理复位以及所有已排队的 Wheel Odom、EKF、Costmap 清理请求完成后才返回 `success: true`。Isaac 会在 Articulation 初始化时保存完整 DOF position；每次事务先恢复这份有限值快照，把 DOF velocity、velocity target 和 effort 清零并即时读回验证，再恢复 USD 根 Pose 和底盘速度。它不会假设自定义机器人的每个关节默认都为零。随后事务重置里程计/GT/碰撞/动态障碍，最后发布带代次语义的 `/simulation/reset_event`；重叠 Reset 请求会被拒绝。
 
-这一步消除了“上一运动段留下的连续轮关节相位”这一未受控 Reset 变量，但
-`set_dof_positions()` 本身不清除 PhysX contact manifold 或 solver warm-start cache。
-因此它必须通过同输入 A/B 复跑验证，不能仅凭代码存在就宣称转向不对称已修复。
+当前 Reset strategy schema v1 定义了两个可审计策略：
 
-clean `55418fe` 已用与旧 `8973728` 相同的 SimplePlane/only1、六 contact profile ×
-三重复输入完成正式复跑。结果从旧批 0/6 group、8/18 repeat 提升到 3/6 group、
-12/18 repeat，但整体物理门仍失败：剩余失败只有 6 次左右旋转中心漂移不对称，其中
-2 次还同时右旋绝对中心漂移超限。它证明完整 DOF 恢复有效，却没有消除离散右旋分支。
-旧批早于该修复，不能作为后续 Reset A/B 的 control。下一次 A/B 前必须先把版本化
-`reset_strategy` 写入 runtime provenance、motion report、Manifest、matrix readiness
-和 group identity；当前 schema v5 尚未记录这项实验身份。
+| 策略 ID | 物理操作 | 当前地位 |
+| --- | --- | --- |
+| `pose_restore_v1` | 在原始出生点恢复完整关节状态、底盘零速与根 Pose，然后执行 1 个 recontact physics step。 | A；Warehouse 与 SimplePlane 项目默认值。 |
+| `separate_recontact_0p20m_1step_v1` | 先在出生点上方 `0.20 m` 恢复，执行 1 个不渲染 physics step，再用 PhysX contact tensor 确认四轮对当前 topology 精确 ground target 全部无接触；通过后在原始出生点重做完整恢复，再执行 1 个 recontact step。 | B；实验策略，未晋级。 |
+
+两个策略都在 runtime provenance v6 中锁定 ID、抬升距离、分离/recontact step 数，以及四轮和 topology target 的 contact-probe 定义。根 Pose 是所有关节与速度恢复之后的最后一步：它通过 `base_link` 的 USD backend 写入，随后 flush 到 PhysX 并调用 articulation kinematic synchronization，再读回 Pose/速度。分离步仍有 wheel-ground contact、根 Pose 写入/同步失败或同步物理恢复 hook 抛异常时，Trigger 返回失败且仿真保持 paused；不会在未知物理状态下继续导航。物理路径成功并恢复播放之后，如果已提交的 Wheel Odom、EKF 或 Costmap 异步 future 失败/超时，Trigger 同样返回失败且不会发布 reset event，但实现不会因此重新暂停仿真；此时应按事务错误继续诊断，不能只凭 `success: false` 推断 Timeline 状态。
+
+clean `65ae923` 已在固定 `SimplePlane` / `simple_plane_only1_v1` / `threshold_corr_0p00025_offset_0p04` / `jackal_etw_0p989_v1` 输入上，对 A/B 各做 10 次独立 Isaac 冷进程。20/20 run、120/120 segment 与聚合证据都成功，但物理门两组都为 FAIL：A 有 5/10 repeat 失败，B 有 6/10 repeat 失败，失败叶均仅为 `rotation_center_drift_asymmetry_ratio`；每组的其他检查都是 10/10 通过。因此 B 没有证明比 A 更好，不晋级；项目继续以 A `pose_restore_v1` 为默认。`batch_summary.result="success"` 在这里只表示证据链闭合，不是物理 PASS。
 
 Trigger 成功表示“复位事务已提交完成”，仍不表示定位已经重新稳定。Localization 模式下还要等待：
 
@@ -1248,9 +1250,9 @@ Realistic 模式的 `/odom` 由 Wheel Odom + IMU + EKF 发布，所以还要启�
   --output data/reports/motion/warehouse_ideal_ab.json
 ```
 
-JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、runtime 初始化后的 `Stage.GetRootLayer()` 摘要、仿真模式和 Git commit/branch/dirty。topology/contact 的直接 opinion 位于 SessionLayer 下的两个独立匿名 sublayer，不会原样进入 RootLayer 导出；但初始化可形成随 treatment 变化的派生 RootLayer opinion，所以该摘要按最终实验组锁定。当前 live 启动链只接受 schema v5：solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志；`ground_topology` 另以 canonical JSON + SHA256 锁定 topology profile、源资产、匿名 overlay、source/target/disabled collider 精确集合与 Stage 读回；`contact` 再锁定 profile、PhysicsScene threshold、精确 wheel/目标 ground collider、physics-purpose binding 和材质读回。contact 的 ground 集合必须严格等于 topology target，不能靠两个彼此无关的参数声称运行了某个拓扑。
+JSON 会记录实际 motion 配置及 SHA256、每段位移/路径长度/横向漂移/航向变化、四个轮 joint 的方向、停止响应、Clock/Odom/JointState 重复或回退时间戳，以及非 Reset `/cmd_vel` 独占、已认证 Reset 安全 publisher 和零速 burst 尝试。报告中的 `runtime_provenance` 不是运行脚本事后猜测：Isaac 在启动时快照并用只读参数发布实际加载的机器人 YAML/USD、环境 Stage/源资产、runtime 初始化后的 `Stage.GetRootLayer()` 摘要、仿真模式和 Git commit/branch/dirty。topology/contact 的直接 opinion 位于 SessionLayer 下的两个独立匿名 sublayer，不会原样进入 RootLayer 导出；但初始化可形成随 treatment 变化的派生 RootLayer opinion，所以该摘要按最终实验组锁定。当前 live 启动链只接受 schema v6：solver 门要求有效 Stage 属性与初始化后的 Articulation wrapper USD 读回一致；robot kinematics 记录 profile/lifecycle、轮径、轮宽、几何轮距、有效轮距与 controller 合同校验标志；`ground_topology` 另以 canonical JSON + SHA256 锁定 topology profile、源资产、匿名 overlay、source/target/disabled collider 精确集合与 Stage 读回；`contact` 再锁定 profile、PhysicsScene threshold、精确 wheel/目标 ground collider、physics-purpose binding 和材质读回；`simulation.reset_strategy` 锁定策略 ID/步数和四轮对 topology target 的 contact-probe 定义。contact 与 reset probe 的 ground 集合都必须严格绑定 topology target，不能靠彼此无关的参数声称运行了某个拓扑或 Reset strategy。
 
-这套 API 证明的是当前 USD Stage 输入与读回一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验两对 canonical JSON 参数；schema v1/v2/v3/v4、字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。历史 schema v3/v4 报告仍可各自单独离线复核，但 v3、v4、v5 不能混入同一份正式统计。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示 14 段均完整采集，不代表物理参数或地面拓扑自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、拓扑、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
+这套 API 证明的是当前 USD Stage 输入与读回一致，不是 PhysX 引擎内部状态的直接读取，实际物理效果仍要看同配置 A/B、运动指标和日志。runner 会在创建运动命令 publisher 前重新哈希、解码并严格校验 topology、contact 和 reset-strategy 三对 canonical JSON/SHA256；字段缺失、哈希非法、非 canonical JSON、`--odometry-mode` 或 `--environment` 与运行态不一致都会失败关闭。历史 provenance schema v3/v4/v5 报告仍可按它们各自的离线合同单独复核，但 v3、v4、v5、v6 不能混入同一份正式统计。默认项目的规范环境 ID 是 `Warehouse`，隔离项目明确写 `environment.id: SimplePlane`，不能只改报告标签。`result: success` 只表示运动段均完整采集，不代表物理参数、地面拓扑或 Reset strategy 自动达到正式阈值；必须比较同一配置下的 SimplePlane/Warehouse、拓扑、Reset strategy、Ideal/Realistic 报告并把验收证据写入 [`verification.md`](verification.md)。
 
 快速核对某次报告是否真的是目标配置：
 
@@ -1283,6 +1285,15 @@ jq '{result, schema: .runtime_provenance.schema_version,
          (.runtime_provenance.contact.ground_colliders ==
           .runtime_provenance.ground_topology.target_colliders),
        readback: .runtime_provenance.contact.stage_usd_readback_verified},
+     reset_strategy: {
+       id: .runtime_provenance.simulation.reset_strategy.id,
+       schema: .runtime_provenance.simulation.reset_strategy.schema_version,
+       lift_m: .runtime_provenance.simulation.reset_strategy.lift_distance_m,
+       separation_steps:
+         .runtime_provenance.simulation.reset_strategy.separation_step_count,
+       recontact_steps:
+         .runtime_provenance.simulation.reset_strategy.recontact_step_count,
+       probe: .runtime_provenance.simulation.reset_strategy.contact_probe},
      git: .runtime_provenance.git}' \
   data/reports/motion/<report>.json
 sha256sum isaac_sim/configs/robots/jackal.yaml \
@@ -1304,17 +1315,18 @@ Reset 和聚合完整性全部通过，但空旷平面原地旋转中心漂移�
 
 ### 17.5 选择接触 Profile 并做隔离 A/B
 
-这一节有两个彼此独立的实验维度：
+这一节有三个彼此独立的实验维度：
 
 - **Ground topology** 决定哪些环境 collider 参与碰撞；
 - **Contact profile** 决定 PhysicsScene threshold、轮胎/地面材质与 binding。
+- **Reset strategy** 决定每段前直接恢复 Pose，还是先抬升、验证无接触后再落回。
 
 先固定一个维度，再改变另一个维度，才能把结果归因到单个输入。仓库提供三个不可
 变更语义的 topology profile：
 
 | Topology ID | 合法环境 | Source → Target | 用途 |
 | --- | --- | --- | --- |
-| `simple_plane_only1_v1` | `SimplePlane` | 1 → 1，保留唯一解析平面 | 空旷隔离基线 |
+| `simple_plane_only1_v1` | `SimplePlane` | 1 → 1，保留唯一解析平面 | 空旷 contact-only 隔离基线 |
 | `warehouse_combined32_v1` | `Warehouse` | 32 → 32，保留 GroundPlane 与 31 个 floor-decal collider | Warehouse 默认/历史行为基线 |
 | `warehouse_plane_only1_v1` | `Warehouse` | 32 → 1，在匿名层禁用 31 个非目标 collider | 只隔离 Warehouse 地面 collider 拓扑，不改源资产 |
 
@@ -1325,6 +1337,8 @@ Topology YAML 同时锁定环境 ID、源资产 SHA256、source/target/disabled 
 写多余意见。应用后会重新读取 Stage 并检查 overlay 中没有额外 Prim、metadata 或属性；
 失败时移除临时层并终止启动。切回 `warehouse_combined32_v1` 会清掉旧 topology layer，
 恢复源 Stage 的 32 个 collider，因此不需要也不允许手工修改 USD。
+
+SimplePlane 源资产中的唯一 `Plane` 明确使用 `purpose=guide`：它是有效的 PhysX 碰撞平面，但不是供 RTX 相机/LiDAR 渲染的可见 Warehouse 地面。因此 SimplePlane 仿真画面中看不到普通地面材质、LiDAR 不应把该 guide plane 当作可见环境点云，都是 contact-only 校准夹具的设计行为，不是场景加载失败。需要验证 RTX 点云时应使用 Warehouse；clean `65ae923` 的 8.000 s 窗口已采到 77 帧、`9.603 Hz` 的 Warehouse `/lidar/points_raw`。
 
 接触 Profile 用于把“场景 patch-friction threshold”“轮胎/地面显式材质”和其他
 底盘参数分开比较。默认
@@ -1417,17 +1431,16 @@ solver `32/4`、运动配置、physics Hz、pacing、Camera、环境和 Git 状�
 重复三次，再比较左右/速度档。
 
 提交 `84c397c` 曾把 motion runtime provenance 升级为 schema v3，后续 schema v4
-加入 robot kinematics。当前生产者发布 schema v5，motion runner 和 Realistic Wheel
-Odom 的 live 握手只接受整数 v5；生产者在原有 contact canonical JSON/SHA256 之外发布
-独立的 ground-topology canonical JSON/SHA256，motion runner 会完整读取并校验两者，
+加入 robot kinematics、schema v5 加入 ground topology。当前生产者发布 schema v6，motion runner 和 Realistic Wheel
+Odom 的 live 握手只接受整数 v6；生产者在 contact 与 ground-topology canonical JSON/SHA256 之外，还发布独立的 reset-strategy canonical JSON/SHA256，motion runner 会完整读取并校验三者，
 Wheel Odom 则校验 schema、robot config path/SHA 与七个 kinematics/controller 字段。
 生产者即使收到 `SceneComposer` 保存的快照，也会在发布前重新读取当前 Stage，并对
-topology/contact snapshot 做 canonical 全量比较，拒绝会改变这两份快照的 compose 后
+topology/contact snapshot 做 canonical 全量比较，同时校验 reset contact probe 与它们的精确 collider 绑定，拒绝 compose 后
 漂移。正式 A/B 必须要求 `.runtime_provenance.git.dirty == false`，并在正确锁层内保持
-环境/solver/robot 与非 treatment 输入一致；topology/contact treatment 本身只允许按
+环境/solver/robot 与非 treatment 输入一致；topology/contact/reset treatment 本身只允许按
 实验选择有意变化，
 并保留每个输入 JSON、SHA256 和 Kit 日志；仅凭输出文件名仍不构成证据。schema v3/v4
-只保留为历史离线审计格式，不能连接当前 live runner，也不能与 v5 混批。
+以及 v5 只保留为历史离线审计格式，不能连接当前 live runner，也不能与 v6 混批。
 
 需要完整执行这组隔离矩阵时，使用严格串行入口。默认 `baseline` topology 选择保持
 历史口径：SimplePlane 使用唯一 Plane，Warehouse 使用 combined32；不要手工开 36
@@ -1470,16 +1483,35 @@ CANDIDATE="$(realpath -e -- \
 ./scripts/run_contact_ab_matrix.sh \
   --environment all \
   --ground-topology baseline \
+  --contact-profile all \
+  --reset-strategy project \
   --repeats 3 \
   --robot-config "$CANDIDATE" \
   --output-dir data/reports/contact_ab/jackal_etw_0p989_v1
+```
+
+要比较两个 Reset strategy，必须反过来把环境、topology、contact profile 和 robot 全部固定。下面是 clean `65ae923` 正式 20-run A/B 的可复制命令：
+
+```bash
+cd "$PROJECT_ROOT"
+CANDIDATE="$(realpath -e -- \
+  "$PROJECT_ROOT/isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml")"
+
+./scripts/run_contact_ab_matrix.sh \
+  --environment SimplePlane \
+  --ground-topology simple_plane_only1_v1 \
+  --contact-profile threshold_corr_0p00025_offset_0p04 \
+  --reset-strategy all \
+  --repeats 10 \
+  --robot-config "$CANDIDATE" \
+  --output-dir data/reports/contact_ab/reset_strategy_ab_new
 ```
 
 `--environment` 默认是 `all`，也可只取 `SimplePlane` 或 `Warehouse`。
 `--ground-topology` 默认 `baseline`；`all` 选择当前环境范围内全部合法 pair，也可
 显式写一个完整 ID。显式 ID 必须和单一 `--environment` 匹配；例如
 `--environment all --ground-topology warehouse_plane_only1_v1` 会失败关闭，不会静默
-丢掉 SimplePlane。`--repeats` 默认是 `3`，取值范围是 `1..100`；不传 `--robot-config` 时选择两个项目
+丢掉 SimplePlane。`--contact-profile` 默认 `all`，也可只选一个完整 profile ID；`--reset-strategy` 默认 `project`，要求两个项目 YAML 解析为同一默认策略，也可显式选择 `pose_restore_v1`、`separate_recontact_0p20m_1step_v1` 或 `all`。选择 `all` 时，奇数 repeat 按 A→B 启动，偶数 repeat 按 B→A 启动；偶数次重复可抵消固定启动顺序的一阶偏差，但每个策略内的 repeat 编号仍是 `1..N`。`--repeats` 默认是 `3`，取值范围是 `1..100`；不传 `--robot-config` 时选择两个项目
 YAML 共同声明的默认 robot，传入时其值必须是仓库内 canonical absolute regular file：
 不能是相对路径、symlink 或目录，必须被 Git 跟踪并在 `HEAD` 中是普通 blob，且当前
 工作树原始字节必须与该 `HEAD` blob 完全一致。整批仍只接受 attached branch 上的
@@ -1487,9 +1519,7 @@ clean worktree，所以不能用未提交或局部改写的候选。`--output-di
 证据不会被覆盖。仓库内输出路径还必须已被 Git ignore（推荐继续放在
 `data/reports/`），也可使用仓库外的绝对路径；路径本身或任一已有祖先是 symlink
 时会直接拒绝。pair 的严格顺序是：SimplePlane/only1、Warehouse/combined32、
-Warehouse/plane-only（最后一项只在 topology=`all` 时出现）；每个 pair 依次运行
-`legacy_baseline`、四个 threshold 2×2 profile、`explicit_material`，最后才展开
-repeat。baseline 默认共启动 36 个互相独立的 Isaac 进程，topology=`all` 则为 54。
+Warehouse/plane-only（最后一项只在 topology=`all` 时出现）；每个 pair 依次运行所选 contact profile，再展开 repeat 和当轮对应的 Reset strategy 顺序。默认的六 profile、project strategy 及 baseline topology 共启动 36 个互相独立的 Isaac 进程，topology=`all` 则为 54；`--reset-strategy all` 会在其他选择不变时把运行数翻倍。
 若只想做一轮 SimplePlane
 烟测，可使用下列命令。它仍会按顺序运行六个 profile，即启动六个独立 Isaac 进程；
 每组只有一次 repeat，因此只验证批处理链路和严格报告门，不能替代每组至少三次的
@@ -1504,29 +1534,29 @@ repeat。baseline 默认共启动 36 个互相独立的 Isaac 进程，topology=
 ```
 
 批处理在整批开始时冻结 HEAD、branch、运动配置、两个项目配置、所选 robot config、
-本批选中的全部 topology profile 和六个 contact profile 的 SHA256；每轮前后都会
+本批选中的全部 topology profile、contact profile 和 Reset strategy ID/定义；可由文件表示的输入另锁定 SHA256，每轮前后都会
 重新检查。运动配置不只锁文件 SHA：脚本还复用 runner 的配置解析器，把默认值补全为
 规范 JSON，并按 JSON 类型严格比较；例如数值 `1.0` 不能与布尔值 `true` 相互冒充。
 它还从所选项目 YAML 解析 robot config/asset、project Stage 和 source asset 的真实
 路径与 SHA256。Warehouse source 是 `${ISAAC_ASSET_ROOT}` 下的 NVIDIA 外部资产，
 不是 Git 文件，但同样会在本批输入中锁定。启动子进程前会清掉调用者遗留的全部
-`ISAAC_NAV__*` 嵌套覆盖，只恢复本轮唯一允许的 project、ground topology、contact
-和已锁定 robot 四项；即使使用项目默认 robot，也会显式恢复同一规范路径，避免
+`ISAAC_NAV__*` 嵌套覆盖，只恢复本轮唯一允许的 project、ground topology、contact、reset strategy
+和已锁定 robot 五项；即使使用项目默认 robot，也会显式恢复同一规范路径，避免
 30 Hz、错误 topology 或另一个临时
 robot 配置混进正式矩阵。CLI 显式选择时两个项目必须解析为同一 robot asset、profile、
 lifecycle、轮径、轮宽、几何轮距和有效轮距，否则在启动 Isaac 前失败关闭。
 
-每轮启动命令固定为 headless、unbounded、Mapping、Ideal、Camera off；当前 schema
-v5 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
+每轮启动命令固定为 headless、unbounded、Mapping、Ideal、Camera off；当前 provenance schema
+v6 尚未暴露 headless/pacing/Camera，所以 headless、unbounded、Camera off 只属于
 固定 CLI 合同，文档不把它们冒充成报告 provenance。能由只读参数证明的项目会
-逐项核对：schema v5、robot config/asset、robot profile/lifecycle/轮径/轮宽/几何与
+逐项核对：schema v6、robot config/asset、robot profile/lifecycle/轮径/轮宽/几何与
 有效轮距、controller contract、solver `32/4` 与 Stage readback、60 Hz、
 Mapping/Ideal、真实环境 project/source、Git commit/branch/dirty，ground-topology
 canonical JSON/SHA256 中的 profile/environment/source/overlay/三组 collider/hash/
 readback，以及 contact canonical JSON/SHA256 中的 profile 路径、ID、mode、文件
 SHA256、Stage readback 和与 topology target 的一致性。runner 退出后
 会从当前 workspace source 调用严格分析器复验六段结构、实际时间戳、四轮方向和同一组
-environment/topology/contact-profile/motion 身份。四轮的 `expected_direction` 必须由六段
+environment/topology/reset-strategy/contact-profile/motion 身份。reset strategy 的 canonical JSON/SHA256、策略语义和 contact-probe 精确绑定也必须与本轮选择一致。四轮的 `expected_direction` 必须由六段
 协议独立重算。schema 3 的整段轮向只作启动/全过程描述，诚实的 mixed、stationary 或
 反向值不会让证据被排除；真正的物理方向门只读取后半段 JointState closed window。
 窗口中的分类、deadband、三类计数、分布、逐轮 `direction_matches` 和总合取必须彼此
@@ -1553,7 +1583,7 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
 旧 Odom/JointState，真实运动、积压、断流、回退或过远未来时间戳仍会清空窗口。
 
 输出名称不含时间随机量，例如
-`001_simple_plane_simple_plane_only1_v1_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
+`001_simple_plane_simple_plane_only1_v1_reset-v1-pose_restore_v1_legacy_baseline_r01.json`；`reports/` 保存严格 JSON，`logs/`
 分别保存 Isaac 与 runner 日志。成功目录根部有三份总证据：
 
 ```text
@@ -1568,12 +1598,11 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
     └── <run_id>.runner.log
 ```
 
-- `manifest.tsv`：当前合同每轮 44 列输入、状态、路径，以及 report/Isaac log/runner log 的
-  最终 SHA256；新增的 `report_schema_version` 必须为 `3`，并与报告和 analysis selection
+- `manifest.tsv`：当前是 Manifest contract v2，每轮有顺序固定的 47 列输入、状态、路径，以及 report/Isaac log/runner log 的
+  最终 SHA256；`report_schema_version=3`、`runtime_provenance_schema_version=6`、`reset_strategy_schema_version=1` 与 `reset_strategy_id` 必须与报告和 analysis selection
   交叉核对。其中 `robot_config_selection` 为 `project_default` 或 `explicit_cli`，
   并逐行记录 robot canonical path、SHA256、profile、lifecycle、轮径、轮宽、几何轮距
-  和有效轮距，并新增每轮 topology ID/path/SHA256。聚合和 summary 发布前都要求精确、
-  顺序固定的 44 列；每一行都会与 report、analysis selection 和本批冻结输入逐字段
+  和有效轮距，以及每轮 topology ID/path/SHA256。聚合和 summary 发布前都要求精确 47 列；每一行都会与 report、analysis selection 和本批冻结输入逐字段
   交叉绑定，并验证 robot asset、controller、solver `32/4` 与 Stage readback、
   Mapping/Ideal/60 Hz、环境 source、Git 身份和所有 path/hash。三类证据路径必须是彼此
   不重复的 canonical regular 非 symlink 文件，SHA256 不得变化；报告完成时间还必须落在
@@ -1592,31 +1621,30 @@ callback 覆盖也不会丢失；首个静止观察的时间下界取三路 barr
   当前报告的 canonical absolute path，因此生成后不能单独移动、复制到别处或改名；
   `started_at_utc/completed_at_utc` 必须是有时区的 UTC 且按先后排序。历史 report schema
   1/2 仍可读，但不具备 v2 方向门所需的完整证据。
-- `analysis.json`：把全部报告作为一个数据集重新验证；v5 以合法
-  environment/topology pair × 六 profile 形成组，baseline/all 分别要求 12/18 个完整组，
-  单一环境/拓扑也必须包含六 profile，且每组重复数不少于 `--repeats`。当前 v5
-  analysis 为 `schema_version=4`，并包含 schema 2、policy
-  `skid_steer_plan_8_7_v2` 的 `physical_acceptance`；历史 v3/v4 analysis 仍为 schema 1。
-- `batch_summary.json`：当前合同为 `schema_version=5`；记录
-  `ground_topology_selection`、精确 `environment_topology_pairs`，并在
+- `analysis.json`：把全部报告作为一个数据集重新验证；当前 `schema_version=5`，以
+  `environment::topology::reset-v1-<strategy-id>::contact-profile` 四元身份分组。它按 CLI 选择计算必须存在的组，每组必须精确包含 `--repeats` 个唯一报告；不再把两个 Reset strategy 合并成同一 contact 组。它包含 physical-acceptance schema 3 / policy `skid_steer_plan_8_7_v3`；该 policy 仍是每个 repeat 的硬 PASS/FAIL，不生成均值排名。
+- `batch_summary.json`：当前合同为 `schema_version=6`；其 `schema_contract` 显式记录 project config 2、runtime provenance 6、motion report 3、analysis 5、physical acceptance 3 和 Manifest 2。它记录
+  `ground_topology_selection`、`contact_profile_selection`、`reset_strategy_selection`、精确 `environment_topology_pairs`，并在
   `locked_protocol_inputs.robot_config` 中记录 selection、path、SHA256、asset、完整
   kinematics 和 solver 合同，
   在 `locked_protocol_inputs.ground_topology_profiles` 中记录本批 topology 的环境、路径
-  与 SHA256；`locked_protocol_inputs.simulation` 另锁 Mapping、Ideal 和 60 Hz。summary
+  与 SHA256，并在 `locked_protocol_inputs.reset_strategies` 中记录 schema、selection、ID 和 token；`locked_protocol_inputs.simulation` 另锁 Mapping、Ideal 和 60 Hz。summary
   同时绑定运动配置的 path/SHA256、Git/其他协议输入、预期/实际计数，并绑定已冻结 manifest 和
   analysis 的路径及 SHA256；不存在自引用 hash。`result="success"` 表示证据采集、身份、矩阵和
   聚合闭合，不表示底盘物理通过；物理结论另看
   `physical_acceptance.all_applicable_groups_passed` 以及
   `applicable_groups/not_applicable_groups/passing_groups/failed_groups`。
 
-版本边界不能混淆：RootLayer 修复后的 clean `d5840ed` 12-run 机制烟测保存 motion report
-schema 1、v5 analysis schema 2 与 batch-summary schema 3，不含 `physical_acceptance`。
-clean `190f357` 的 SimplePlane/only1 六 profile × 一次重复烟测则原样保存 43 列 manifest、
-motion report schema 2、analysis schema 3、physical-acceptance schema 1 / policy
-`skid_steer_plan_8_7_v1` 和 batch-summary schema 4；六组都只因 repeat=1 而 N/A。两批
-历史工件都不能回填为当前 schema，也不能写成 `0/N fail`。当前 v2 合同已经在 clean
-`8973728` 完成 `0.989 m`、SimplePlane/only1、六 profile × 三重复的 18-run 子矩阵；
-其证据链成功但 6/6 适用 group 物理失败。完整 54-run/18-group topology 矩阵仍待执行。
+版本边界不能混淆，历史工件也不允许回填新字段或重算成新策略：
+
+| 代表工件 | Runtime provenance | Motion report | Manifest | Analysis | Physical acceptance | Batch summary |
+| --- | ---: | ---: | --- | ---: | --- | ---: |
+| clean `65ae923` 当前合同 | 6 | 3 | v2 / 47 列 | 5 | schema 3 / `skid_steer_plan_8_7_v3` | 6 |
+| clean `8973728` 与 `55418fe` | 5 | 3 | 历史 44 列 | 4 | schema 2 / `skid_steer_plan_8_7_v2` | 5 |
+| clean `190f357` | 5 | 2 | 历史 43 列 | 3 | schema 1 / `skid_steer_plan_8_7_v1` | 4 |
+| clean `d5840ed` | 5 | 1 | 历史 43 列 | 2 | 无 | 3 |
+
+`190f357` 的六组仅因 repeat=1 而 N/A，不能改写为 `0/6 fail`；`8973728` 的 18-run 批次在当时 policy v2 下 6/6 group 失败，`55418fe` 仍必须保持其原始 schema 与下文所列 SHA256。它们均不含当前 schema-v6 Reset strategy 身份，不能与 clean `65ae923` 的 A/B 统计混批。完整 54-run/18-group 历史 topology 矩阵仍待执行；当前 selector 若加入两个 Reset strategy，实际四元组数与运行数会相应翻倍。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
@@ -1627,30 +1655,30 @@ environment/topology/Profile 的运动统计。单轮细节看 `reports/`，故�
 
 分析器使用规范化 JSON digest 阻止只改缩进的重复报告冒充独立 repeat。聚合结束前还会
 重新读取每份 source report，核对全局 Git、robot、asset、kinematics、solver、simulation
-和运动配置锁；不能通过协调改写 report 与 selection hash 绕过批次身份。v5 分别锁定
+和运动配置锁；不能通过协调改写 report 与 selection hash 绕过批次身份。v6 分别锁定
 全矩阵 robot/motion、按 contact profile ID 跨环境/topology 的 path/SHA/id/mode/flags、
 同环境的 environment/source collider 发现合同、同 topology 的 operation/target/disabled、同 environment+contact profile 跨 topology 不应变化的
 scene、wheel bindings、wheel material、ground material 和 readback，以及三元组内
 除进程专用 `overlay_identifier` 外的完整 contact；ground bindings/path 会随 topology
-target 合法变化。因此不能一边切换 topology，一边悄悄改变摩擦或轮侧输入。yaw gain 和位移误差按物理时钟的
+target 合法变化。v6 另外按策略 token 锁定 Reset 语义，按 environment/topology 锁定四轮 contact-probe 合同，并在四元组内锁定完整 reset snapshot。因此不能一边切换 topology 或 Reset strategy，一边悄悄改变摩擦、轮侧输入或 contact filter。yaw gain 和位移误差按物理时钟的
 `observed_duration_sec` 计算，不按理想配置时长。历史 schema-v3 报告只接受
-canonical Jackal `0.098 m` 轮径；schema-v4/v5 报告则要求 CLI/矩阵脚本使用的轮径与
+canonical Jackal `0.098 m` 轮径；schema-v4/v5/v6 报告则要求 CLI/矩阵脚本使用的轮径与
 每份 provenance 中的实际 robot 轮径完全一致，因此候选值不会被静默按 `0.098 m`
-计算。v3、v4、v5 不能混入同一批分析。非法的 shipped environment/topology pair 会
-作为 `invalid_runtime_provenance` 排除；完整矩阵缺任一合法三元组同样失败关闭。
+计算。v3、v4、v5、v6 不能混入同一批分析。非法的 shipped environment/topology pair 会
+作为 `invalid_runtime_provenance` 排除；完整矩阵缺任一合法四元组同样失败关闭。
 `composed_root_layer_sha256` 摘要 runtime 初始化后的 RootLayer，不直接包含
-SessionLayer opinion，但可包含随 treatment 产生的派生 opinion；因此 v5 在最终
-environment/topology/contact 组内锁定它。跨 treatment 的显式不变量仍由上述分层锁
+SessionLayer opinion，但可包含随 treatment 产生的派生 opinion；因此 v6 在最终
+environment/topology/reset/contact 组内锁定它。跨 treatment 的显式不变量仍由上述分层锁
 约束，匿名层内容分别由 topology/contact 的 `overlay_sha256` 锁定。历史 v3/v4
-保留其既有离线分组合同，不被 v5 重新解释。
+与 v5 保留其既有离线分组合同，不被 v6 重新解释。
 输出包含每段分布、停止时延、左右对称性和有效轮距，但故意不生成 `best_profile`，
 最终选择仍需结合两环境指标与工程约束。schema 3 的段级 `wheels.per_wheel` 保存整段
-命令的描述性诊断，可能包含启动瞬态，不参与 v2 方向硬门；硬门只读取
+命令的描述性诊断，可能包含启动瞬态，不参与当前 policy v3 方向硬门；硬门只读取
 `wheels.steady_state_window`。稳态 `mixed`、`stationary` 或相反方向只要统计内部自洽，
 就是 valid evidence，不会被 analyzer 排除，但会令该 repeat 的方向检查失败。
 
 `physical_acceptance` 不是均值排行，而是计划 8.7 的适用性门加逐重复硬门。一个
-group 只有同时满足 runtime provenance schema 5、环境 `SimplePlane`、topology
+group 只有同时满足 runtime provenance schema 6、环境 `SimplePlane`、topology
 `simple_plane_only1_v1`、Ideal odometry、至少 3 个唯一 repeat、全部 motion report
 schema 3 才适用。schema 1/2 的固定 N/A 原因是 `motion_report_schema_not_3`。其他
 group 写 `applicable=false`、`passed=null` 和非空
@@ -1679,9 +1707,9 @@ analysis 一起保留；缺文件、替换 source、协调伪造 N/A 或 wheel P
 `safe_zero_burst_attempted=true`，以及与 motion 配置完全一致的 `zero_publish_count`。
 字段缺失、多余、类型伪装或零速 burst 未尝试都会使离线验证失败。
 
-当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
+以下定向与全量测试计数属于早期 policy-v2 历史基线，用于回溯而不是当前计数：contact analyzer `217 passed`、motion baseline `92 passed`、matrix
 script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯一 skip 是本机
-缺少 `shellcheck`。当前 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight
+缺少 `shellcheck`。该 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight
 和 `./scripts/test.sh --with-isaac` 均为 exit 0：root
 `1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
 0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `22a7746` 又完成
@@ -1718,8 +1746,24 @@ position/velocity/target/effort 恢复，并用相同输入正式复跑。证据
 
 完整复验、逐 profile 数值和日志边界见
 [`verification.md`](verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
-后续 Reset 策略 A/B 必须先版本化并锁入 provenance、报告、Manifest 和分组身份；
-`8973728` 早于 DOF 修复，不能作为 control。完整 topology 54-run/18-group 矩阵仍待执行。
+该批的 schema 与上表哈希必须原样保留；`8973728` 早于 DOF 修复，不能作为当前 Reset A/B control。
+
+clean `65ae92365705b03bf2c2bd832915d43d32f61575` 随后用已版本化的 A/B 完成当前 schema-v6 正式批次：`SimplePlane` / `simple_plane_only1_v1` / `threshold_corr_0p00025_offset_0p04` / `jackal_etw_0p989_v1`，A/B 各 10 个独立 Isaac 进程。结果为 20/20 run、120/120 segment、analysis 20 included / 0 excluded / 2 groups，当前 runtime/motion/Manifest/analysis/physical/summary 合同分别为 `6/3/2/5/3/6`，Manifest 为 47 列。证据链 `result=success`，但 physical acceptance 为 FAIL：
+
+| Reset strategy | 失败 repeat | 通过 repeat | 唯一失败检查 | 其他检查 |
+| --- | ---: | ---: | --- | --- |
+| A `pose_restore_v1` | 5/10 | 5/10 | `rotation_center_drift_asymmetry_ratio` | 10/10 repeat 全部通过 |
+| B `separate_recontact_0p20m_1step_v1` | 6/10 | 4/10 | `rotation_center_drift_asymmetry_ratio` | 10/10 repeat 全部通过 |
+
+当前批次的冻结根工件为：
+
+| 工件 | SHA256 |
+| --- | --- |
+| `manifest.tsv` | `da7faad19cbcb247287ae241626bd392562e6737dca6d0fa91f82eac236121e5` |
+| `analysis.json` | `9e595e51dd625718d45bf1a4d8611248eb8ee13daf720ab0d8764ed814b1deba` |
+| `batch_summary.json` | `1b7778236594fab4867f5d04956dcb1f7955144f4e868f3835c63911930f72d7` |
+
+policy v3 明确 `ranking_policy="none; pass/fail only"`，所以这不是用均值宣布 A 胜出；可以得出的结论只是 B 没有通过晋级门，而且失败 repeat 还多 1 次。因此 A 保留为项目默认，B 不晋级，旋转中心漂移不对称问题仍未解决。完整 topology 54-run/18-group 历史矩阵仍待执行。
 
 快速核对成功证据：
 
@@ -1727,9 +1771,13 @@ position/velocity/target/effort 恢复，并用相同输入正式复跑。证据
 RUN=data/reports/contact_ab/skid_steer_v1
 jq '{schema_version, result, environments, repeats,
      topology_selection: .ground_topology_selection,
+     contact_selection: .contact_profile_selection,
+     reset_selection: .reset_strategy_selection,
      environment_topology_pairs,
      robot: .locked_protocol_inputs.robot_config,
      topologies: .locked_protocol_inputs.ground_topology_profiles,
+     reset_strategies: .locked_protocol_inputs.reset_strategies,
+     schema_contract, manifest_contract,
      expected_counts, actual_counts,
      evidence_success: (.result == "success"),
      physical_acceptance, evidence}' \
@@ -1763,7 +1811,7 @@ jq '(.physical_acceptance.groups // {}) | to_entries[]
        failed_checks: .value.failed_checks,
        repeat_results: .value.repeat_results}' \
   "$RUN/analysis.json"
-sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
+sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json" "$RUN/batch_summary.json"
 ```
 
 第一条 `jq` 命令看到 `result="success"` 时仍必须继续看
@@ -1771,10 +1819,10 @@ sha256sum "$RUN/manifest.tsv" "$RUN/analysis.json"
 group 的物理硬门结果。还必须检查 `not_applicable_groups`，避免把未覆盖条件误当通过。
 历史工件必须按其自身版本读取：analysis schema 2 没有 `physical_acceptance`；clean
 `190f357` 的 analysis schema 3 则携带 physical schema 1 / policy v1。两者都不能补写成
-当前 physical schema 2，也不能用当前字段反推历史通过/失败。
+当前 physical schema 3，也不能用当前字段反推历史通过/失败。
 
 若需要重新审计复制来的历史报告，而不是重新跑 Isaac，可直接使用安装后的离线 CLI；
-`--wheel-radius` 对 v4/v5 必须改成该批 provenance 中记录的值，三种 schema 要分开
+`--wheel-radius` 对 v4/v5/v6 必须改成该批 provenance 中记录的值，各代 schema 要分开
 执行：
 
 ```bash
@@ -2088,8 +2136,9 @@ header、消息年龄和旧 DDS 样本证据，不要只以日志不再打印作
 | 改 Camera profile/光学/曝光 | `isaac_sim/configs/sensors/camera.yaml`；同步 Camera contract 与 RViz 测试。 |
 | 改点云投影高度和角度 | `ros2_ws/src/robot_perception/config/pointcloud_to_laserscan.yaml` |
 | 改轮径/轮距 | 只修改所选 schema-v2 robot YAML；`geometric_track_width` 只描述 USD/URDF 几何，`effective_track_width` 同时驱动 Isaac DifferentialController 与 Realistic Wheel Odom。不要在 Wheel Odom YAML 或 Xacro 再复制数值；实验候选必须让 Isaac 与 ROS 的 `robot_config_file` 指向同一文件并重跑 A/B。 |
-| 改 ground collider 拓扑 | 新建版本化 `isaac_sim/configs/ground_topologies/*.yaml`，同步项目 `files.ground_topology_profile`、schema-v5 provenance/analyzer 测试并重跑同环境单变量 A/B。不要直接编辑 Warehouse/SimplePlane 源 USD，也不要原地修改已有 `_v1` profile。 |
+| 改 ground collider 拓扑 | 新建版本化 `isaac_sim/configs/ground_topologies/*.yaml`，同步项目 `files.ground_topology_profile`、schema-v6 provenance/analyzer 测试并重跑同环境单变量 A/B。不要直接编辑 Warehouse/SimplePlane 源 USD，也不要原地修改已有 `_v1` profile。 |
 | 改接触 threshold/材质 | `isaac_sim/configs/physics/*.yaml`；用 `ISAAC_NAV__FILES__CONTACT_PROFILE` 选择，并重跑 SimplePlane/Warehouse 隔离 A/B。不要直接改源 USD。 |
+| 改 Reset 物理策略 | 先在 `isaac_sim/src/robot/reset_strategy.py` 中定义新的不可变 ID/语义，再让项目 YAML 的 `simulation.reset_strategy` 显式选择；同步 provenance v6、report/analyzer/matrix 合同与测试，用 `--reset-strategy` 做锁定四元组 A/B。不要原地改变已有 `_v1` ID 的语义。 |
 | 查 wheel joint 正负方向 | 先运行 `scripts/run_wheel_direction_diagnostic.sh`，查看硬门与 advisory；不要靠手工持续发布 `/cmd_vel` 猜方向。 |
 | 拟合有效轮距 | 用 `robot_experiments effective_track_analysis` 分析同 provenance 的 motion 报告；把候选做成独立 robot YAML，并让 Isaac/ROS 同时选择它后重跑验证。工具不会自动写配置，也不能把拟合均值直接提升为稳定值。 |
 | 改 Footprint/速度/代价地图 | `ros2_ws/src/robot_navigation/config/nav2_params.yaml` |
@@ -2223,7 +2272,7 @@ git pull --ff-only origin main
 
 ## 22. 当前能力边界
 
-仓库当前为 Ideal/Realistic 导航、固定地图定位、前置 RGB Camera/CameraInfo、动态障碍、事务式 Reset、Lifecycle 恢复、三套模式 RViz、Camera-only RViz、Mapping 安全 Teleop、底盘运动诊断、运行时 Profiler 和实验报告提供了完整入口与自动合同检查。代码存在、构建通过或 topic 能发布都不等于整套运行时验收已经完成；每一项实际跑过的环境、命令、指标和限制以 [`verification.md`](verification.md) 为准。当前发布的 MPPI stable/performance 都保持 `10 Hz`、`20 × 0.10 s` 预测窗，但下面内容仍需要真实实验或外部资产：
+仓库当前为 Ideal/Realistic 导航、固定地图定位、前置 RGB Camera/CameraInfo、动态障碍、事务式 Reset、Lifecycle 恢复、三套模式 RViz、Camera-only RViz、Mapping 安全 Teleop、底盘运动诊断、运行时 Profiler 和实验报告提供了完整入口与自动合同检查。代码存在、构建通过或 topic 能发布都不等于整套运行时验收已经完成；每一项实际跑过的环境、命令、指标和限制以 [`verification.md`](verification.md) 为准。当前 Reset 保留 A `pose_restore_v1` 为默认，B 分离/再接触策略未通过晋级门；左右旋转中心漂移不对称仍是已知物理失败。当前发布的 MPPI stable/performance 都保持 `10 Hz`、`20 × 0.10 s` 预测窗，但下面内容仍需要真实实验或外部资产：
 
 - `warehouse_v2` 与当前 Stage/出生点的运行时对齐、重复冷启动标定和长距离路线/
   场景验证；

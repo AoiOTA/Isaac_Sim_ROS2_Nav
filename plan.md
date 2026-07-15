@@ -27,11 +27,12 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 - Runtime Profiler 统计受管 ROS 进程树以及 RTF、Topic Age、TF Lag、CPU/GPU；
 - ROS 监督脚本按 Lifecycle 顺序关闭 Nav2/定位节点，RViz 使用安全退出面板。
 - Jackal robot YAML 已升级为 schema v2 单一运动学真源，显式区分几何/有效轮距并
-  统一 wheel joint；runtime provenance v5 与 Realistic Wheel Odom 启动握手会锁定
+  统一 wheel joint；runtime provenance v6 与 Realistic Wheel Odom 启动握手会锁定
   文件路径、原始字节 SHA256、profile/lifecycle 和运动学数值，稳定 profile 保持原
-  `0.37559 m` 控制行为，尚不代表有效轮距已经标定。
+  `0.37559 m` 控制行为；v6 还锁定 Reset strategy 定义和 contact probe 身份。该稳定值
+  只表示旧行为兼容，尚不代表有效轮距已经标定。
 - SimplePlane 1-collider、Warehouse 32-collider 与 Warehouse plane-only 1-collider
-  已成为版本化、可逆的 ground-topology profile；schema v5 还锁定源资产、匿名
+  已成为版本化、可逆的 ground-topology profile；当前 provenance schema v6 锁定源资产、匿名
   overlay、source/target/disabled 精确集合并要求 contact ground target 一致。USD
   应用/读回和离线分组合同已验证；严格矩阵入口可按三个合法 pair 生成 54-run/18-group
   全拓扑批次。RootLayer 锁作用域修复后的 clean `d5840ed` 已完成 Warehouse 32-vs-1、
@@ -41,7 +42,12 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   analysis schema 2、batch-summary schema 3；Kit `[Error]` 为 0，但 12 份 Isaac 日志
   各有一条非致命 absl `E0000`，因此不能写成“零错误”。正式每组三重复的
   54-run/18-group 全拓扑批次仍未执行。
-- 导航质量升级计划 8.7 的 v2 机器硬门已实现：新 motion report 顶层为 schema 3，
+- headless `SimulationApp` 现在关闭默认 viewport update，避免连续冷启动时 RTX
+  resource descriptor 耗尽；独立 RenderProduct 继续工作。clean `65ae923` 上 Warehouse、
+  Camera Off 的 8 秒实测为点云 77 samples / 9.6028 Hz，Image/CameraInfo publisher 为 0。
+  SimplePlane 的唯一碰撞平面是 `purpose="guide"` 的 contact-only fixture，RTX 对它零命中
+  是场景边界，不能用该夹具做 LiDAR 正样本验收。
+- 导航质量升级计划 8.7 的历史 v2 机器硬门已实现并保留用于回溯：motion report 顶层为 schema 3，
   `configuration.schema_version` 仍为 1。Odom 与 JointState 都保存命令后半段 closed
   window，至少两个严格递增样本，并对首尾覆盖、最大间隔、deadband、方向样本计数和
   分布执行 fail-closed 复核；稳态角速度分布还必须能由整段 Odom 分布的真实样本子集
@@ -58,9 +64,9 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   acceptance。批次 summary 还会逐行语义核对 44 列、报告路径/时间、规范化 motion YAML
   （类型严格）、robot asset/kinematics/solver、Mapping/Ideal/60 Hz、环境、topology、
   contact、Git 和三类证据 hash，不能靠协调改写 schema、N/A、方向叶或运行身份伪造
-  verdict。当前定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
+  verdict。当时的定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
   `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（唯一 skip 为缺少
-  `shellcheck`）。当前 v2 合同已在 clean `0484b72` 上完成三条全门：build 11 packages，
+  `shellcheck`）。当时的 v2 合同已在 clean `0484b72` 上完成三条全门：build 11 packages，
   preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
   `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
   0 failures / 1 skipped，Isaac `32 passed / 250 deselected`；预检另有 422 个 Fast DDS
@@ -87,6 +93,15 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
   72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
   schema 2/3/4，六组都只因少于 3 个 repeat 而 N/A。正式 54-run/18-group 实跑仍未执行。
+- 当前计划 8.7 v3 合同已把 Reset strategy 作为独立实验维度：runtime provenance 6、
+  motion report 3、Manifest contract 2/47 列、analysis 5、physical acceptance 3、policy
+  `skid_steer_plan_8_7_v3`、batch summary 6；最终 group key 为
+  environment/topology/reset/contact 四元组。`--reset-strategy all` 在奇数 repeat 使用
+  A→B、偶数使用 B→A。clean `65ae923` 的固定输入正式批次完成 20/20 run、20 included、
+  0 excluded、两组各 10 repeat；A=`pose_restore_v1` 有 5/10 repeat 因旋转中心漂移
+  不对称失败，B=`separate_recontact_0p20m_1step_v1` 有 6/10 失败，其余 17 类检查均
+  10/10。两组 physical 都 FAIL，B 不晋级并继续保留 A 默认。该结论只关闭 Reset
+  变量假设，不关闭第三阶段；正式 54-run/18-group 全 topology 批次仍待物理阻塞闭合。
 - `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件，并在
   clean `8d1c5f4` / `05fdba7` 各采集过一份 SimplePlane + legacy 原始筛选。旧 schema 2
   因圆弧整段 `mixed` 被验证器排除，不能形成正式 verdict；这正是上面 schema-3 稳态
@@ -95,14 +110,14 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   的不对称 `43.67%`，因此成为上述 schema-3 smoke 首选。`0.989 m` 已完成上述六 profile
   三重复，clean `55418fe` 的 reset-state 复跑将结果改善到 3/6 group 和 12/18 repeat
   通过，但整批仍未过物理门；两个候选都没有覆盖 stable，也尚未完成两环境、
-  多速度、全拓扑或 Realistic 物理 A/B。下一个受控假设是版本化 `reset_strategy` A/B：
-  A=`pose_restore_v1`（当前完整 pose/DOF 恢复），B=`separate_recontact_0p20m_1step_v1`。只有
-  在 runtime provenance、motion report、版本化 manifest（必要时升版）和 analyzer/group identity 均能精确绑定
-  `reset_strategy` 后才允许实跑；届时固定 `SimplePlane`/`simple_plane_only1_v1`、
-  `threshold_corr_0p00025_offset_0p04`、`jackal_etw_0p989_v1`、60 Hz 和 TGS `32/4`，
-  A/B 交替使用独立冷进程，每策略至少 10 次。该假设尚未实现或运行，不得宣称
-  `separate_recontact_0p20m_1step_v1` 是解决方案。N20/N21 的正式可计样本仍各为
-  `0`，原方案十三阶段仍未全部完成。
+  多速度、全拓扑或 Realistic 物理 A/B。版本化 Reset A/B 身份合同随后完成，并在
+  clean `65ae923` 对固定的 `SimplePlane`/`simple_plane_only1_v1`、
+  `threshold_corr_0p00025_offset_0p04`、`jackal_etw_0p989_v1`、60 Hz、TGS `32/4`
+  运行每策略 10 次。A/B 两组都只因旋转中心漂移不对称失败，B 比 A 多一个失败 repeat；
+  因此 `separate_recontact_0p20m_1step_v1` 已被实证为不能解决该阻塞，保持
+  `pose_restore_v1` 默认。这 20 个 SimplePlane Reset A/B 诊断 repeat 不属于参数冻结后
+  Warehouse V2 静态/动态场景各至少 100 次的 N20/N21 正式验收样本；N20/N21 当前仍各为
+  0，原方案十三阶段仍未全部完成。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 
@@ -116,7 +131,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 | 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |
 | 7 Nav2 | 已实现 | 1 m/3 m smoke、MPPI 10/15 Hz 参数矩阵和真实局部轨迹已运行 | 多终点、多布局的完整统计 |
 | 8 Ground Truth | 已实现 | smoke 报告已记录终点误差与 GT 路径 | 200 次统计验收 |
-| 9 Realistic Odom | 已实现；运动学配置已收敛到 schema-v2 robot YAML，启动前做 provenance v5 失败关闭握手 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查；握手匹配、SHA 错配和服务超时由真实 rclpy 集成测试覆盖 | 新契约仍需在冻结候选上做完整 Realistic 物理复验及更复杂滑移/噪声矩阵 |
+| 9 Realistic Odom | 已实现；运动学配置已收敛到 schema-v2 robot YAML，启动前做 provenance v6 失败关闭握手 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查；握手匹配、SHA 错配和服务超时由真实 rclpy 集成测试覆盖 | 新契约仍需在冻结候选上做完整 Realistic 物理复验及更复杂滑移/噪声矩阵 |
 | 10 动态避障 | 已实现基线 | 当前固定世界的 4-seed 基线为 4/4 | 不能外推为多类障碍 90% 广义避障率 |
 | 11 自动实验 | 已实现框架 | Reset、场景契约和 smoke 批次可重复运行 | 完整 200 次矩阵未执行 |
 | 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 没有真实 `warehouse_v2`，未证明 changed-region 时间改善 ≥30% |

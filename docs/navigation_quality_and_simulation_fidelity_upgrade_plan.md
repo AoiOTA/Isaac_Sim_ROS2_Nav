@@ -253,10 +253,11 @@ controller:
 字段。稳定 profile 为保持行为不变，暂把二者都设为 `0.37559 m`；这只是迁移基线，
 不是有效轮距已标定。Isaac DifferentialController、Robot Description 和 Realistic
 Wheel Odom 都从同一个 robot YAML 取得对应字段及 wheel joint。runtime provenance
-v5 负责发布 path/SHA/profile/lifecycle/数值身份；motion runner 还完整校验 canonical
-topology/contact JSON 与 SHA，Wheel Odom 则握手 schema、robot path/SHA 和七个
-kinematics/controller 字段，只有启动前逐项匹配后才创建业务端点。后续候选必须保存为独立 `experimental_candidate` profile，
-不得直接覆盖 stable。
+v6 负责发布 path/SHA/profile/lifecycle/数值身份，并冻结 Reset strategy/contact probe；
+motion runner 还完整校验 canonical reset/topology/contact JSON 与 SHA，Wheel Odom 则
+握手 schema、robot path/SHA 和七个 kinematics/controller 字段，只有启动前逐项匹配后
+才创建业务端点。后续候选必须保存为独立 `experimental_candidate` profile，不得直接
+覆盖 stable。
 
 ---
 
@@ -1445,7 +1446,7 @@ stabilization on
 | 停止判定配置 | 线速度阈值 `≤ 0.02 m/s`、角速度阈值 `≤ 0.05 rad/s`、轮速阈值 `≤ 0.20 rad/s` |
 | 四轮速度方向 | 六段全部符合配置契约 |
 
-机器判定使用 policy `skid_steer_plan_8_7_v2`。motion report 顶层 schema 3 保持
+机器判定使用 policy `skid_steer_plan_8_7_v3`。motion report 顶层 schema 3 保持
 `configuration.schema_version=1`，并为 Odom 与 JointState 分别保存命令区间后半段的
 closed window。两窗都要求至少两个严格递增样本，首尾延迟和最大相邻间隔受 canonical
 profile 的 `max_sample_age_sec=0.5` 约束；停止确认也必须由新鲜、连续且同时静止的 Odom
@@ -1453,12 +1454,14 @@ profile 的 `max_sample_age_sec=0.5` 约束；停止确认也必须由新鲜、�
 样本记账、时间/非法消息/安全状态、起终姿态—路程—位移—模 `2π` 航向几何、deadband、
 方向计数和分布矩可行性，并证明稳态角速度分布确为整段命令分布的样本子集。旋转门读取
 Odom 窗口的 `angular_z_radps.mean`，四轮方向门读取 JointState 窗口；整段轮向只作描述。
-v5 离线结果为 analysis schema 4，内嵌 `physical_acceptance` schema 2；44 列 manifest
-逐行绑定规范化且类型严格的运动配置、report/selection、robot asset/kinematics/solver、
-Mapping/Ideal/60 Hz、Git、环境、唯一证据 path/hash 与 UTC 时间区间，batch-summary
-schema 5 冻结同一批次身份和最终证据。
+当前离线结果为 analysis schema 5，内嵌 `physical_acceptance` schema 3；Manifest
+contract 2 固定 47 列，在旧字段之外逐行绑定 runtime provenance schema、Reset strategy
+schema/ID。它还绑定规范化且类型严格的运动配置、report/selection、robot
+asset/kinematics/solver、Mapping/Ideal/60 Hz、Git、环境、唯一证据 path/hash 与 UTC
+时间区间；batch-summary schema 6 冻结同一批次身份、Reset tokens 和最终证据。最终
+group identity 为 environment/topology/reset/contact 四元组，不得跨 Reset treatment 聚合。
 
-机器门只适用于同时满足 runtime provenance schema 5、`SimplePlane`、
+机器门只适用于同时满足 runtime provenance schema 6、`SimplePlane`、
 `simple_plane_only1_v1`、Ideal、每组至少 3 个唯一 repeat、全部 motion report schema 3
 的 group。其他 group 必须写 `applicable=false`、`passed=null` 和非空原因，进入
 `not_applicable_groups`，不得伪造为物理失败。对适用 group，每个 repeat 的每项检查都
@@ -1467,10 +1470,10 @@ schema 5 冻结同一批次身份和最终证据。
 `passing_groups/failed_groups` 精确划分适用 group；没有适用 group 时
 `all_applicable_groups_passed=null`。
 
-batch-summary schema 5 的 `result=success` 只表示证据采集、身份、矩阵与聚合闭合；
+batch-summary schema 6 的 `result=success` 只表示证据采集、身份、矩阵与聚合闭合；
 物理结论必须另读 `physical_acceptance.all_applicable_groups_passed` 及上述四个列表。
-v2 合同定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
-`45 passed / 1 skipped`，合并为 `354 passed / 1 skipped`（缺少 `shellcheck`）。当前 v2
+下述 v2 合同定向套件是历史证据：analyzer `217 passed`、motion baseline `92 passed`、matrix
+`45 passed / 1 skipped`，合并为 `354 passed / 1 skipped`（缺少 `shellcheck`）。当时 v2
 合同在 clean `0484b72` 的 build（11 packages）、preflight 和
 `./scripts/test.sh --with-isaac` 均 exit 0：root `1206 passed / 1 skipped /
 34 deselected`，ROS 11 packages / 1006 tests / 0 errors / 0 failures / 1 skipped，Isaac
@@ -1491,14 +1494,17 @@ velocity target 和 effort 后，对同一锁定输入再做正式三重复。�
 yaw-rate、六段稳态轮向和双流停止窗检查通过。因此，完整 DOF 状态恢复是有效改善，
 但不足以解决旋转漂移离散性；本阶段仍不能退出，也不能宣称物理参数已冻结。
 
-下一个受控假设只允许比较版本化 `reset_strategy`：
-A=`pose_restore_v1`（当前完整 pose/DOF 恢复），
-B=`separate_recontact_0p20m_1step_v1`。实现顺序必须是先让 runtime provenance、motion
-report、版本化 manifest（必要时升版）以及 analyzer/group identity 对该策略做精确身份绑定，再在
-`SimplePlane` + `simple_plane_only1_v1`、
-`threshold_corr_0p00025_offset_0p04`、`jackal_etw_0p989_v1`、60 Hz、TGS `32/4` 的
-完全固定条件下，以 A/B 交替顺序运行独立冷进程，每个策略至少 10 次。当前只记录
-这个假设；身份合同尚未实现，A/B 尚未运行，不得把 B 写成已证明的解决方案。
+版本化 `reset_strategy` 假设已经按上述顺序实现并实跑：A=`pose_restore_v1`，
+B=`separate_recontact_0p20m_1step_v1`。clean `65ae923` 在
+`SimplePlane` + `simple_plane_only1_v1`、`threshold_corr_0p00025_offset_0p04`、
+`jackal_etw_0p989_v1`、60 Hz、TGS `32/4` 的固定条件下，以奇数 A→B、偶数 B→A 的
+独立冷进程顺序完成每策略 10 次。20/20 run、20 included、0 excluded；A 有 5/10、
+B 有 6/10 repeat 因旋转中心漂移不对称失败，其余 17 类检查均 10/10。两组都 FAIL，
+B 没有改善并不晋级，默认继续使用 A。冻结根 SHA256 为 Manifest
+`da7faad19cbcb247287ae241626bd392562e6737dca6d0fa91f82eac236121e5`、analysis
+`9e595e51dd625718d45bf1a4d8611248eb8ee13daf720ab0d8764ed814b1deba`、summary
+`1b7778236594fab4867f5d04956dcb1f7955144f4e868f3835c63911930f72d7`。该结论关闭
+Reset 变量假设，但没有关闭物理阻塞。
 完整 54-run/18-group 全 topology 矩阵仍待执行。历史
 `d5840ed` 12-run 保存的是 analysis schema 2、batch-summary schema 3，且 Warehouse、
 repeat=1、motion report schema 1 均不满足适用性；它是机制证据，不能写成 `0/12 fail`。
@@ -3273,21 +3279,28 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   repeat=1 的历史 schema 2/3 机制烟测。其 Warehouse、repeat=1 与旧 motion report
   schema 1 都使计划 8.7 物理判定为 N/A，不能记成 `0/12 fail`；正式每组三重复的
   54-run/18-group 全 topology 矩阵仍未运行，因此第三阶段仍未退出。
+- 第三阶段 headless RTX 稳定性：首次 Reset A/B 正式尝试在第二个冷进程触发
+  `Out of resource descriptors` 并失败关闭。clean `65ae923` 使用 Isaac Sim 6.0.1 支持的
+  `disable_viewport_updates` 关闭 headless 默认 viewport 后，A/B smoke 2/2 与正式 20/20
+  连续冷进程完成。Warehouse、Camera Off 的 8 秒 profiler 同时得到点云 77 samples /
+  9.6028 Hz；SimplePlane 的 `purpose="guide"` 地面是 contact-only fixture，RTX 零命中
+  不能用作传感器验收。
 - 第三阶段物理机器门：motion report schema 3（configuration 仍为 1）已提供 Odom 与
   JointState 的命令后半段 closed window、双流连续停止证据、Reset epoch/接收水位、
-  样本记账和可重算姿态/航向几何；v5 analysis schema 4、`physical_acceptance`
-  schema 2 / policy `skid_steer_plan_8_7_v2`、44 列 manifest 和 batch-summary schema 5
+  样本记账和可重算姿态/航向几何；当前 v6 analysis schema 5、`physical_acceptance`
+  schema 3 / policy `skid_steer_plan_8_7_v3`、Manifest contract 2/47 列和 batch-summary schema 6
   已实现。旋转门按 Odom 窗口实际 angular-z mean 判定；方向门按 24 个稳态轮向观察
   判定，真实不匹配会形成 physical FAIL，不再被误作 invalid evidence。机器 verdict
-  只适用于 provenance 5 + SimplePlane/only1 + Ideal + 每组至少 3 个唯一 repeat +
+  只适用于 provenance 6 + SimplePlane/only1 + Ideal + 每组至少 3 个唯一 repeat +
   motion report schema 3；其他组为 `passed=null` 的 N/A。summary 的证据 `success` 与
   `all_applicable_groups_passed` 及 applicable/not-applicable/passing/failed 四类 group
   必须分别读取。公共 accounting 会重新读取 selection 原报告，校验双 SHA、完整批次
-  身份、Reset/时间/停止/姿态/分布证据，再重算 physical acceptance。44 列逐行合同另锁
+  身份、Reset/时间/停止/姿态/分布证据，再重算 physical acceptance。47 列逐行合同另锁
   规范化 motion 配置、robot asset/kinematics/solver、Mapping/Ideal/60 Hz、Git、唯一证据
-  path/hash 和 UTC 时间区间。当前定向套件为 analyzer `217 passed`、motion baseline
+  path/hash、UTC 时间区间及 Reset strategy schema/ID；最终分组是
+  environment/topology/reset/contact 四元组。历史 v2 定向套件为 analyzer `217 passed`、motion baseline
   `92 passed`、matrix `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（缺少
-  `shellcheck`）；当前 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight 和
+  `shellcheck`）；当时 v2 合同在 clean `0484b72` 的 build（11 packages）、preflight 和
   `./scripts/test.sh --with-isaac` 均 exit 0：root `1206 passed / 1 skipped /
   34 deselected`，ROS 11 packages / 1006 tests / 0 errors / 0 failures / 1 skipped，Isaac
   `32 passed / 250 deselected`。clean `22a7746` 的 `0.989 m` schema-3 六 profile smoke
@@ -3297,10 +3310,13 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   左右旋转中心漂移不对称失败，当时为 0/6 group、8/18 repeat 通过。clean
   `55418fe` 的完整 DOF reset-state 恢复后以同一输入复跑，仍完成 18/18 run、108/108
   段，并改善为 3/6 group、12/18 repeat 通过；失败叶为不对称 6 次、右旋漂移 2 次，
-  yaw-rate、稳态轮向和 108/108 停止窗通过。改善不等于问题已解决；下一假设是上述
-  `pose_restore_v1` vs `separate_recontact_0p20m_1step_v1` 受控 A/B，必须先补齐
-  provenance/report/manifest/group identity，当前未实现也未运行。完整 54-run 全 topology
-  实跑仍待完成，N20/N21 正式可计样本仍各为 `0`，本计划的十三阶段仍未完成。
+  yaw-rate、稳态轮向和 108/108 停止窗通过。改善不等于问题已解决。随后 clean
+  `65ae923` 已完成 `pose_restore_v1` vs `separate_recontact_0p20m_1step_v1` 受控 A/B：
+  20/20 run、两组各 10 repeat、0 exclusions；A/B 分别有 5/10、6/10 repeat 只因旋转
+  中心漂移不对称失败，其余检查均 10/10。B 不晋级；这 20 个 SimplePlane Reset A/B
+  诊断 repeat 不属于参数冻结后 Warehouse V2 静态/动态场景各至少 100 次的 N20/N21
+  正式验收样本，N20/N21 当前仍各为 0。完整 54-run 全 topology 实跑仍待完成，本计划
+  的十三阶段仍未完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均
