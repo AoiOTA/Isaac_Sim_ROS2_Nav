@@ -43,7 +43,7 @@ repeats=3
 output_dir=""
 robot_config_argument=""
 robot_config_option_seen=false
-required_motion_report_schema_version=3
+required_motion_report_schema_version=4
 required_runtime_provenance_schema_version=6
 required_reset_strategy_schema_version=1
 readonly manifest_header_contract=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\treport_schema_version\truntime_provenance_schema_version\treset_strategy_schema_version\treset_strategy_id\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
@@ -2384,8 +2384,8 @@ try:
     report = json.loads(path.read_text(encoding="utf-8"))
 except (OSError, ValueError) as exc:
     raise SystemExit(f"motion report is not valid JSON: {exc}")
-if report.get("schema_version") != 3:
-    raise SystemExit("motion report schema must be integer 3")
+if report.get("schema_version") != 4:
+    raise SystemExit("motion report schema must be integer 4")
 
 # Load the current workspace source deliberately.  The installed ROS package
 # may predate this batch runner during development, while the committed source
@@ -2411,12 +2411,12 @@ except Exception as exc:
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("strict contact A/B report validation excluded the report")
 physical_acceptance = analysis.get("physical_acceptance", {})
-if analysis.get("schema_version") != 5:
-    raise SystemExit("strict contact A/B analysis schema must be integer 5")
+if analysis.get("schema_version") != 6:
+    raise SystemExit("strict contact A/B analysis schema must be integer 6")
 if (
     not isinstance(physical_acceptance, dict)
-    or physical_acceptance.get("schema_version") != 3
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v3"
+    or physical_acceptance.get("schema_version") != 4
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v4"
 ):
     raise SystemExit("strict contact A/B physical acceptance contract mismatch")
 if report.get("result") != "success":
@@ -2881,9 +2881,9 @@ for row_index, row in enumerate(rows, start=1):
     actual_sha256 = hashlib.sha256(report_path.read_bytes()).hexdigest()
     if row.get("report_sha256") != actual_sha256:
         raise SystemExit(f"manifest row {row_index} report SHA256 mismatch")
-    if row.get("report_schema_version") != "3":
+    if row.get("report_schema_version") != "4":
         raise SystemExit(
-            f"manifest row {row_index} report schema version must be 3"
+            f"manifest row {row_index} report schema version must be 4"
         )
     if row.get("runtime_provenance_schema_version") != "6":
         raise SystemExit(
@@ -2899,7 +2899,7 @@ for row_index, row in enumerate(rows, start=1):
         raise SystemExit(
             f"manifest row {row_index} report is not valid JSON: {exc}"
         ) from exc
-    if report_document.get("schema_version") != 3:
+    if report_document.get("schema_version") != 4:
         raise SystemExit(
             f"manifest row {row_index} report JSON schema version mismatch"
         )
@@ -2931,7 +2931,7 @@ for row_index, row in enumerate(rows, start=1):
         raise SystemExit("manifest report paths must be unique")
     manifest_report_locks[canonical_report_path] = {
         "sha256": actual_sha256,
-        "report_schema_version": 3,
+        "report_schema_version": 4,
         "runtime_provenance_schema_version": 6,
         "reset_strategy_schema_version": 1,
         "reset_strategy_id": reset_strategy_id,
@@ -2974,8 +2974,9 @@ physical_acceptance = analysis.get("physical_acceptance", {})
 expected_physical_thresholds = {
     "forward_abs_lateral_drift_max_m": 0.05,
     "backward_abs_lateral_drift_max_m": 0.08,
-    "rotation_center_drift_max_m": 0.10,
-    "rotation_center_drift_asymmetry_ratio_max": 0.20,
+    "rotation_max_radial_displacement_from_start_max_m": 0.10,
+    "rotation_max_radial_displacement_asymmetry_ratio_max": 0.20,
+    "rotation_commanded_zero_mean_linear_speed_max_mps": 0.02,
     "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
     "stop_stable_duration_min_sec": 0.5,
     "stop_linear_velocity_threshold_max_mps": 0.02,
@@ -2984,8 +2985,8 @@ expected_physical_thresholds = {
 }
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("aggregate contact A/B analysis is not valid")
-if analysis.get("schema_version") != 5:
-    raise SystemExit("aggregate contact A/B analysis schema must be 5")
+if analysis.get("schema_version") != 6:
+    raise SystemExit("aggregate contact A/B analysis schema must be 6")
 if counts.get("excluded_reports") != 0 or selection.get("excluded") != []:
     raise SystemExit("aggregate contact A/B analysis excluded reports")
 if counts.get("included_reports") != expected_runs:
@@ -3032,8 +3033,8 @@ if analysis_report_locks != manifest_report_locks:
     )
 if (
     not isinstance(physical_acceptance, dict)
-    or physical_acceptance.get("schema_version") != 3
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v3"
+    or physical_acceptance.get("schema_version") != 4
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v4"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
     or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
     or physical_acceptance.get("steady_state_measurement_basis")
@@ -3042,7 +3043,7 @@ if (
     != "wheels.steady_state_window.per_wheel[*].direction_matches over the final_half_of_command_interval window"
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
-        "required_motion_report_schema": 3,
+        "required_motion_report_schema": 4,
         "required_runtime_provenance_schema": 6,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
@@ -3231,8 +3232,9 @@ physical_acceptance = analysis.get("physical_acceptance", {})
 expected_physical_thresholds = {
     "forward_abs_lateral_drift_max_m": 0.05,
     "backward_abs_lateral_drift_max_m": 0.08,
-    "rotation_center_drift_max_m": 0.10,
-    "rotation_center_drift_asymmetry_ratio_max": 0.20,
+    "rotation_max_radial_displacement_from_start_max_m": 0.10,
+    "rotation_max_radial_displacement_asymmetry_ratio_max": 0.20,
+    "rotation_commanded_zero_mean_linear_speed_max_mps": 0.02,
     "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
     "stop_stable_duration_min_sec": 0.5,
     "stop_linear_velocity_threshold_max_mps": 0.02,
@@ -3255,9 +3257,9 @@ failed_groups = physical_acceptance.get("failed_groups")
 applicable_groups = physical_acceptance.get("applicable_groups")
 not_applicable_groups = physical_acceptance.get("not_applicable_groups")
 if (
-    analysis.get("schema_version") != 5
-    or physical_acceptance.get("schema_version") != 3
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v3"
+    analysis.get("schema_version") != 6
+    or physical_acceptance.get("schema_version") != 4
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v4"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
     or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
     or physical_acceptance.get("steady_state_measurement_basis")
@@ -3266,7 +3268,7 @@ if (
     != "wheels.steady_state_window.per_wheel[*].direction_matches over the final_half_of_command_interval window"
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
-        "required_motion_report_schema": 3,
+        "required_motion_report_schema": 4,
         "required_runtime_provenance_schema": 6,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
@@ -3470,9 +3472,9 @@ for row_index, row in enumerate(manifest_documents, start=1):
     report_sha256 = file_sha256(report_path)
     if row.get("report_sha256") != report_sha256:
         raise SystemExit(f"manifest row {row_index} report SHA256 mismatch")
-    if row.get("report_schema_version") != "3":
+    if row.get("report_schema_version") != "4":
         raise SystemExit(
-            f"manifest row {row_index} report schema version must be 3"
+            f"manifest row {row_index} report schema version must be 4"
         )
     if row.get("runtime_provenance_schema_version") != "6":
         raise SystemExit(
@@ -3488,7 +3490,7 @@ for row_index, row in enumerate(manifest_documents, start=1):
         raise SystemExit(
             f"manifest row {row_index} report is not valid JSON: {exc}"
         ) from exc
-    if report_document.get("schema_version") != 3:
+    if report_document.get("schema_version") != 4:
         raise SystemExit(
             f"manifest row {row_index} report JSON schema version mismatch"
         )
@@ -3515,7 +3517,7 @@ for row_index, row in enumerate(manifest_documents, start=1):
         raise SystemExit("manifest report paths must be unique")
     manifest_report_locks[canonical_report_path] = {
         "sha256": report_sha256,
-        "report_schema_version": 3,
+        "report_schema_version": 4,
         "runtime_provenance_schema_version": 6,
         "reset_strategy_schema_version": 1,
         "reset_strategy_id": reset_strategy_id,
@@ -3564,15 +3566,15 @@ if analysis_report_locks != manifest_report_locks:
         "aggregate selection does not match frozen manifest/report identities"
     )
 summary = {
-    "schema_version": 6,
+    "schema_version": 7,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
     "schema_contract": {
         "project_config": 2,
         "runtime_provenance": 6,
-        "motion_report": 3,
-        "aggregate_analysis": 5,
-        "physical_acceptance": 3,
+        "motion_report": 4,
+        "aggregate_analysis": 6,
+        "physical_acceptance": 4,
         "manifest": 2,
     },
     "manifest_contract": {
