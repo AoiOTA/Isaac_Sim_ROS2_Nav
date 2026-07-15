@@ -201,6 +201,12 @@ service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，�
 `git.dirty=true` 不是自动失败：输入
 文件哈希仍精确绑定被测内容，但正式冻结报告应在 clean commit 上重跑。
 
+当前 runtime provenance schema v5 还没有 `reset_strategy` 身份字段。因此报告只能证明
+本节已列出的运行输入，不能仅凭同一 schema 或同一 motion 配置声称两个 Reset 算法可比。
+下一次 Reset A/B 必须先为策略分配版本化 ID，并将它逐项锁入 runtime provenance、
+motion report、Manifest、matrix readiness 和 group identity；否则分析器不得把不同策略
+聚合进同一组。clean `8973728` 早于完整 DOF 恢复，不能作为新策略 A/B 的 control。
+
 ### Contact A/B 离线分析与批次摘要接口
 
 该接口与上面的 runtime provenance schema 独立：`runtime_provenance.schema_version=5`
@@ -210,7 +216,18 @@ service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，�
 当前 v2 机器门合同已实现；它取代后续新批次使用的工件版本，但不会改写已经冻结的
 历史证据。clean `190f357` 的 SimplePlane 一次重复烟测仍按运行当时的 v1 合同解释，
 clean `8973728` 的 SimplePlane/only1 六 profile × 三重复已按当前 v2 合同完成并得出
-6/6 group 物理失败；全 topology 54-run/18-group v2 矩阵仍待完成：
+6/6 group 物理失败。clean `55418fe` 补齐完整初始 DOF 状态恢复后复跑同一矩阵：
+18/18 run、108/108 segment，motion/analysis/physical/summary schema `3/4/2/5`，
+analysis 18 included / 0 excluded；`explicit_material`、`legacy_baseline`、
+`threshold_corr_0p00025_offset_0p0004` 三组通过，另三组失败，逐 repeat 通过由 8/18
+提升到 12/18。失败叶仅为 6 次旋转不对称及其中 2 次右旋绝对漂移；yaw-rate、
+432/432 稳态轮向观察和 108/108 停止窗全部通过。这是 Reset 改善证据，不是整体
+物理 PASS；离散右旋分支仍存在。冻结根 SHA256 为 manifest
+`2dc3aba651ff0eb253687c12c32fe2156a827af9444ad7c2dc39c76ed5a03866`、analysis
+`51903b770da88030c5d56418771408e54d02fcd195d176407be1b9be7773cc10`、summary
+`b85dc9188bcb0d783570993850fc173966803eb7b5eb25c9911f9fd5c0b6c2f1`；完整审计见
+[`verification.md`](verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
+全 topology 54-run/18-group v2 矩阵仍待完成：
 
 | 工件 | schema | 合同 |
 | --- | ---: | --- |

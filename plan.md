@@ -75,7 +75,14 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   与 schema 3/4/2/5 全链闭合。6/6 group 均适用且均失败，唯一失败检查是左右旋转中心
   漂移不对称 `<=0.20`；其余 17 项逐重复检查、108/108 停止窗和 432/432 稳态轮向
   观察全部通过。最接近门的是 `threshold_corr_0p00025_offset_0p04`，2/3 repeat 通过，
-  唯一失败值 `0.243182`。这批证明证据合同成立，同时明确证明当前冻结参数未通过物理门。
+  唯一失败值 `0.243182`。该历史批次证明证据合同成立，同时明确证明当时的
+  Reset/物理状态恢复未通过物理门。随后在 clean `55418fe` 上使用完整 Articulation DOF
+  position 快照恢复并清零动态状态后，对同一 `0.989 m` + SimplePlane/only1 六 profile
+  正式复跑：18/18 run、108/108 段和全部证据记账仍闭合；3/6 group 通过、12/18
+  repeat 通过，相比旧批次的 0/6 group 和 8/18 repeat 有明确改善。未通过的叶检查为
+  旋转中心漂移不对称 6 次、右旋中心漂移上限 2 次；稳态 yaw-rate、432/432 轮向
+  观察和 108/108 停止窗均通过。这说明完整 DOF 状态恢复有帮助，但还不足以解决
+  旋转漂移离散性，不得宣称物理门已经通过。
   此前在 clean `190f357` 完成
   SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
   72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
@@ -86,8 +93,16 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   方向合同的触发证据。描述性指标中 `0.989 m` 的左右稳态 yaw 误差为
   `2.95%/0.02%`、中心漂移 `0.0530/0.0587 m`、不对称 `9.70%`，明显优于 `1.012 m`
   的不对称 `43.67%`，因此成为上述 schema-3 smoke 首选。`0.989 m` 已完成上述六 profile
-  三重复但未过物理门；两者都没有覆盖 stable，也尚未完成两环境、多速度、全拓扑或
-  Realistic 物理 A/B。
+  三重复，clean `55418fe` 的 reset-state 复跑将结果改善到 3/6 group 和 12/18 repeat
+  通过，但整批仍未过物理门；两个候选都没有覆盖 stable，也尚未完成两环境、
+  多速度、全拓扑或 Realistic 物理 A/B。下一个受控假设是版本化 `reset_strategy` A/B：
+  A=`pose_restore_v1`（当前完整 pose/DOF 恢复），B=`separate_recontact_0p20m_1step_v1`。只有
+  在 runtime provenance、motion report、版本化 manifest（必要时升版）和 analyzer/group identity 均能精确绑定
+  `reset_strategy` 后才允许实跑；届时固定 `SimplePlane`/`simple_plane_only1_v1`、
+  `threshold_corr_0p00025_offset_0p04`、`jackal_etw_0p989_v1`、60 Hz 和 TGS `32/4`，
+  A/B 交替使用独立冷进程，每策略至少 10 次。该假设尚未实现或运行，不得宣称
+  `separate_recontact_0p20m_1step_v1` 是解决方案。N20/N21 的正式可计样本仍各为
+  `0`，原方案十三阶段仍未全部完成。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 

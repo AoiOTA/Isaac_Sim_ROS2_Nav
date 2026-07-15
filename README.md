@@ -11,6 +11,17 @@
 > `8973728` 已完成 `0.989 m`、SimplePlane/only1、六 contact profile × 三重复的正式
 > 18-run 批次：证据采集 18/18 成功，但 6/6 物理组都只因左右旋转中心漂移不对称失败；
 > 详见 [`docs/verification.md`](docs/verification.md)。
+>
+> clean `55418fe` 在 Reset 中补齐完整初始 DOF position/velocity/target/effort 恢复后，
+> 用相同输入正式复跑：18/18 run、108/108 segment、report/analysis/physical/summary
+> schema `3/4/2/5`，analysis 18 included / 0 excluded。`explicit_material`、
+> `legacy_baseline` 和 `threshold_corr_0p00025_offset_0p0004` 三组通过，逐 repeat 通过率由
+> 旧批的 8/18 提升到 12/18；其余三组仍失败，失败叶仅剩 6 次左右旋转不对称，其中
+> 2 次同时右旋中心漂移超限，而 yaw-rate、432/432 稳态轮向观察和 108/108 停止窗均通过。
+> 这说明 DOF Reset 有效改善了结果，但整体物理门仍为 FAIL，离散右旋分支尚未消除；
+> 详见[完整关节状态 Reset 正式复测](docs/verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
+> 下一次 Reset A/B 必须先把 `reset_strategy` 版本化并写入 provenance、报告、Manifest
+> 和分组身份；旧 `8973728` 早于该修复，不能充当 control。
 
 ## 文档导航
 

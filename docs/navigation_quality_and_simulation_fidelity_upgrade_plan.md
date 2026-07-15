@@ -1483,6 +1483,22 @@ SimplePlane/only1 六 profile × 一次
 `result=success`；六组只因少于 3 个 repeat 而 N/A。随后 clean `8973728` 的同一
 `0.989 m` SimplePlane/only1 正式三重复完成 18/18 run、108/108 段、analysis
 18/0/6；六组全部适用且全部只因旋转中心漂移不对称失败，0 passing、0 N/A。
+该历史批次为 0/6 group、8/18 repeat 通过。在 clean `55418fe` 将 Reset 改为恢复
+Articulation 初始化后捕获的完整有限 DOF position，并清零/读回校验 DOF velocity、
+velocity target 和 effort 后，对同一锁定输入再做正式三重复。新批次仍为
+18/18 run、108/108 段且证据链全闭合，结果改善为 3/6 group、12/18 repeat 通过；
+失败叶计数为旋转中心漂移不对称 6 次、右旋中心漂移上限 2 次。所有稳态
+yaw-rate、六段稳态轮向和双流停止窗检查通过。因此，完整 DOF 状态恢复是有效改善，
+但不足以解决旋转漂移离散性；本阶段仍不能退出，也不能宣称物理参数已冻结。
+
+下一个受控假设只允许比较版本化 `reset_strategy`：
+A=`pose_restore_v1`（当前完整 pose/DOF 恢复），
+B=`separate_recontact_0p20m_1step_v1`。实现顺序必须是先让 runtime provenance、motion
+report、版本化 manifest（必要时升版）以及 analyzer/group identity 对该策略做精确身份绑定，再在
+`SimplePlane` + `simple_plane_only1_v1`、
+`threshold_corr_0p00025_offset_0p04`、`jackal_etw_0p989_v1`、60 Hz、TGS `32/4` 的
+完全固定条件下，以 A/B 交替顺序运行独立冷进程，每个策略至少 10 次。当前只记录
+这个假设；身份合同尚未实现，A/B 尚未运行，不得把 B 写成已证明的解决方案。
 完整 54-run/18-group 全 topology 矩阵仍待执行。历史
 `d5840ed` 12-run 保存的是 analysis schema 2、batch-summary schema 3，且 Warehouse、
 repeat=1、motion report schema 1 均不满足适用性；它是机制证据，不能写成 `0/12 fail`。
@@ -3278,7 +3294,13 @@ docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md
   已完成 6/6 run、36/36 段、analysis 6/0/6 和六组 repeat=1 N/A；clean `190f357` 的
   历史 schema-2 smoke 也按原合同保留。clean `8973728` 随后完成同一 SimplePlane
   子矩阵正式三重复：18/18 run、108/108 段和六组适用性记账闭合，但 6/6 group 均只因
-  左右旋转中心漂移不对称失败。完整 54-run 全 topology 实跑仍待完成。
+  左右旋转中心漂移不对称失败，当时为 0/6 group、8/18 repeat 通过。clean
+  `55418fe` 的完整 DOF reset-state 恢复后以同一输入复跑，仍完成 18/18 run、108/108
+  段，并改善为 3/6 group、12/18 repeat 通过；失败叶为不对称 6 次、右旋漂移 2 次，
+  yaw-rate、稳态轮向和 108/108 停止窗通过。改善不等于问题已解决；下一假设是上述
+  `pose_restore_v1` vs `separate_recontact_0p20m_1step_v1` 受控 A/B，必须先补齐
+  provenance/report/manifest/group identity，当前未实现也未运行。完整 54-run 全 topology
+  实跑仍待完成，N20/N21 正式可计样本仍各为 `0`，本计划的十三阶段仍未完成。
 - 第三阶段 Reset/证据审计：正式接触矩阵的 108 个 report/双日志哈希全部复验通过；
   216 次服务/恢复 latency 均值分别为 `0.1694/0.5427 s`，恢复期 Odom 线/角速度和
   轮速峰值远低于门。119 个 pre-boundary group 与 105 个 JointState receive 回退均
