@@ -3,11 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 import runpy
 import shutil
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 
@@ -138,6 +138,8 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
     assert '--robot-config FILE' in help_result.stdout
     assert '--output-dir DIR' in help_result.stdout
     assert '36' in help_result.stdout
+    assert 'odd repeats run A then B' in help_result.stdout
+    assert 'repeats run B then A' in help_result.stdout
 
 
 @pytest.mark.parametrize(
@@ -331,14 +333,21 @@ def test_contact_ab_matrix_locks_the_ordered_inputs_and_runtime_modes():
     assert 'for pair_index in "${!matrix_environment_ids[@]}"' in source
     assert 'for profile_index in "${!profile_ids[@]}"' in source
     assert 'for ((repeat = 1; repeat <= repeats; repeat++))' in source
-    assert 'for reset_strategy_id in "${reset_strategy_ids[@]}"' in source
+    assert 'order_reset_strategies_for_repeat "${repeat}"' in source
+    assert (
+        'for reset_strategy_id in "${repeat_reset_strategy_ids[@]}"'
+        in source
+    )
     repeat_loop = source.rindex(
         'for ((repeat = 1; repeat <= repeats; repeat++))'
     )
-    strategy_loop = source.rindex(
-        'for reset_strategy_id in "${reset_strategy_ids[@]}"'
+    order_call = source.rindex(
+        'order_reset_strategies_for_repeat "${repeat}"'
     )
-    assert repeat_loop < strategy_loop
+    strategy_loop = source.rindex(
+        'for reset_strategy_id in "${repeat_reset_strategy_ids[@]}"'
+    )
+    assert repeat_loop < order_call < strategy_loop
     assert 'reset-v1-${reset_strategy_id}' in source
     assert '"${SCRIPT_DIR}/run_isaac.sh"' in source
     assert '--headless --pacing-mode unbounded' in source
@@ -391,6 +400,49 @@ def test_contact_profile_and_reset_strategy_selection_is_ordered_dynamically():
         'separate_recontact_0p20m_1step_v1 ]]\n'
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_reset_strategy_launch_order_is_counterbalanced_by_repeat():
+    orderer = _shell_function_source('order_reset_strategies_for_repeat')
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'reset_strategy_ids=(pose_restore_v1 '
+        'separate_recontact_0p20m_1step_v1)\n'
+        'repeat_reset_strategy_ids=()\n'
+        f'{orderer}\n'
+        'for repeat in 1 2 3 4; do\n'
+        '  order_reset_strategies_for_repeat "${repeat}"\n'
+        '  printf "%s\\n" "${repeat_reset_strategy_ids[*]}"\n'
+        'done\n'
+        '[[ "${reset_strategy_ids[*]}" == '
+        '"pose_restore_v1 separate_recontact_0p20m_1step_v1" ]]\n'
+        'reset_strategy_ids=(pose_restore_v1)\n'
+        'order_reset_strategies_for_repeat 2\n'
+        'printf "%s\\n" "${repeat_reset_strategy_ids[*]}"\n'
+        'if order_reset_strategies_for_repeat 0; then exit 91; fi\n'
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        'pose_restore_v1 separate_recontact_0p20m_1step_v1',
+        'separate_recontact_0p20m_1step_v1 pose_restore_v1',
+        'pose_restore_v1 separate_recontact_0p20m_1step_v1',
+        'separate_recontact_0p20m_1step_v1 pose_restore_v1',
+        'pose_restore_v1',
+    ]
+
+
+def test_manifest_auditor_uses_the_same_counterbalanced_order():
+    source = SCRIPT.read_text(encoding='utf-8')
+    expected_rows = source[
+        source.index('expected_matrix_rows = []'):
+        source.index('\n\ndef canonical_regular_file', source.index(
+            'expected_matrix_rows = []'
+        ))
+    ]
+    assert 'for repeat in range(1, repeats + 1):' in expected_rows
+    assert 'if len(reset_strategy_ids) != 2 or repeat % 2' in expected_rows
+    assert 'else list(reversed(reset_strategy_ids))' in expected_rows
+    assert 'for reset_strategy_id in strategy_order:' in expected_rows
 
 
 def test_explicit_robot_config_must_be_canonical_absolute_regular_file(
