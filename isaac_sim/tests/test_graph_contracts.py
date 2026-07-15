@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from isaac_sim.apps.navigation_sim import _parser
+from isaac_sim.apps.navigation_sim import _parser, _rebuild_control_graph
 from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
@@ -178,14 +178,36 @@ def test_navigation_cli_selects_only_versioned_wheel_command_applications():
         )
 
 
-def test_navigation_reset_rebuilds_control_graph_through_immutable_builder():
-    source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
-        encoding="utf-8"
-    )
-    runtime = source.split("def run(", 1)[1].split("def main(", 1)[0]
+def test_navigation_reset_executes_control_graph_rebuild_through_selected_builder():
+    events = []
 
-    assert "graph_builder = RosGraphBuilder(" in runtime
-    assert 'graph_references["control"] = graph_builder.build_control()' in runtime
+    class IdleBrake:
+        def reset(self):
+            events.append("idle_brake.reset")
+
+    class GraphBuilder:
+        wheel_command_application = SINGLE_FOUR_WHEEL_WRITE_V1
+
+        def build_control(self):
+            events.append(
+                f"build:{self.wheel_command_application}"
+            )
+            return {"mode": self.wheel_command_application}
+
+    references = {"control": {"mode": SPLIT_AXLE_V1}}
+
+    rebuilt = _rebuild_control_graph(
+        IdleBrake(),
+        GraphBuilder(),
+        references,
+    )
+
+    assert events == [
+        "idle_brake.reset",
+        f"build:{SINGLE_FOUR_WHEEL_WRITE_V1}",
+    ]
+    assert rebuilt == {"mode": SINGLE_FOUR_WHEEL_WRITE_V1}
+    assert references["control"] is rebuilt
 
 
 def test_control_graph_rejects_project_joint_targets_that_diverge_from_robot_yaml():
