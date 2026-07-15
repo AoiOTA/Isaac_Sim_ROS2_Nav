@@ -163,6 +163,43 @@ def require_map_calibration(pose: SpawnPose, purpose: str) -> None:
         )
 
 
+def author_initial_articulation_pose(stage, prim_path: str, pose: SpawnPose) -> None:
+    """Place the whole articulation before PhysX parses the composed Stage."""
+
+    from pxr import Gf, UsdGeom
+
+    prim = stage.GetPrimAtPath(prim_path)
+    if not prim.IsValid():
+        raise SpawnPoseError(f"articulation prim is missing: {prim_path}")
+    xform = UsdGeom.Xformable(prim)
+    if not xform or xform.GetResetXformStack():
+        raise SpawnPoseError(
+            f"articulation prim must have an inherited Xform stack: {prim_path}"
+        )
+    operations = xform.GetOrderedXformOps()
+    translate_ops = [
+        operation
+        for operation in operations
+        if operation.GetOpType() == UsdGeom.XformOp.TypeTranslate
+    ]
+    orient_ops = [
+        operation
+        for operation in operations
+        if operation.GetOpType() == UsdGeom.XformOp.TypeOrient
+    ]
+    if len(translate_ops) != 1 or len(orient_ops) != 1:
+        raise SpawnPoseError(
+            "articulation root must expose exactly one translate and one "
+            f"orient operation: {prim_path}"
+        )
+
+    translate_ops[0].Set(Gf.Vec3d(*pose.usd.position))
+    orientation = quaternion_from_yaw_deg(pose.usd.yaw_deg)
+    orient_ops[0].Set(
+        Gf.Quatd(orientation[0], Gf.Vec3d(*orientation[1:]))
+    )
+
+
 class SpawnPoseManager:
     def __init__(self, robot: RobotPosePort, poses: dict[str, SpawnPose]):
         if not poses:
