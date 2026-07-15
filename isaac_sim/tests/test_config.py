@@ -33,9 +33,27 @@ class _SolverValues:
         return self._values
 
 
+class _DofValues:
+    def __init__(self, values):
+        self._values = [list(values)]
+
+    def numpy(self):
+        return self._values
+
+
 class _FakeArticulation:
-    def __init__(self, readback: tuple[int, int]):
+    def __init__(
+        self,
+        readback: tuple[int, int],
+        dof_positions=(0.1, -0.2, 0.3, -0.4),
+    ):
         self.readback = readback
+        self.num_dofs = len(dof_positions)
+        self.dof_positions = tuple(dof_positions)
+        self.dof_position_updates = []
+        self.dof_velocities = (5.0,) * self.num_dofs
+        self.dof_velocity_targets = (6.0,) * self.num_dofs
+        self.dof_efforts = (7.0,) * self.num_dofs
 
     def set_solver_iteration_counts(self, position, velocity):
         self.requested = (position, velocity)
@@ -51,6 +69,31 @@ class _FakeArticulation:
 
     def set_dof_friction_properties(self, **values):
         pass
+
+    def get_dof_positions(self):
+        return _DofValues(self.dof_positions)
+
+    def set_dof_positions(self, values):
+        self.dof_position_updates.append(values)
+        self.dof_positions = tuple(values[0])
+
+    def get_dof_velocities(self):
+        return _DofValues(self.dof_velocities)
+
+    def set_dof_velocities(self, values):
+        self.dof_velocities = tuple(values[0])
+
+    def get_dof_velocity_targets(self):
+        return _DofValues(self.dof_velocity_targets)
+
+    def set_dof_velocity_targets(self, values):
+        self.dof_velocity_targets = tuple(values[0])
+
+    def get_dof_efforts(self):
+        return _DofValues(self.dof_efforts)
+
+    def set_dof_efforts(self, values):
+        self.dof_efforts = tuple(values[0])
 
 
 def _environment(**updates: str) -> dict[str, str]:
@@ -312,3 +355,79 @@ def test_runtime_solver_configuration_requires_matching_readback(readback):
             match="solver readback does not match",
         ):
             runtime.configure_stability(settings)
+
+
+def test_runtime_restores_captured_nonzero_dof_positions_with_readback():
+    articulation = _FakeArticulation((32, 4))
+    runtime = ArticulationRuntime("/World/Robot", "/World/Robot/base", None)
+    runtime._articulation = articulation
+    runtime._initial_dof_positions = runtime._read_dof_positions(
+        context="test initial state"
+    )
+
+    articulation.dof_positions = (9.0, 8.0, 7.0, 6.0)
+    runtime.restore_initial_joint_state()
+    articulation.dof_positions = (9.0, 8.0, 7.0, 6.0)
+    articulation.dof_velocities = (5.0,) * 4
+    articulation.dof_velocity_targets = (6.0,) * 4
+    articulation.dof_efforts = (7.0,) * 4
+    runtime.restore_initial_joint_state()
+
+    expected = [[0.1, -0.2, 0.3, -0.4]]
+    assert articulation.dof_position_updates == [expected, expected]
+    assert articulation.dof_positions == (0.1, -0.2, 0.3, -0.4)
+    assert articulation.dof_velocities == (0.0,) * 4
+    assert articulation.dof_velocity_targets == (0.0,) * 4
+    assert articulation.dof_efforts == (0.0,) * 4
+
+
+def test_runtime_rejects_nonfinite_or_mismatched_dof_position_readback():
+    runtime = ArticulationRuntime("/World/Robot", "/World/Robot/base", None)
+    runtime._articulation = _FakeArticulation((32, 4), (0.0, float("nan")))
+    with pytest.raises(ArticulationRuntimeError, match="non-finite"):
+        runtime._read_dof_positions(context="test state")
+
+    runtime._initial_dof_positions = (0.0, 1.0)
+    runtime._articulation = _FakeArticulation((32, 4), (0.0, 1.0))
+
+    def ignore_update(values):
+        runtime._articulation.dof_position_updates.append(values)
+
+    runtime._articulation.set_dof_positions = ignore_update
+    runtime._articulation.dof_positions = (2.0, 3.0)
+    with pytest.raises(ArticulationRuntimeError, match="does not match"):
+        runtime.restore_initial_joint_state()
+
+
+@pytest.mark.parametrize(
+    ("state_attribute", "setter_name", "label"),
+    [
+        ("dof_velocities", "set_dof_velocities", "velocity"),
+        (
+            "dof_velocity_targets",
+            "set_dof_velocity_targets",
+            "velocity target",
+        ),
+        ("dof_efforts", "set_dof_efforts", "effort"),
+    ],
+)
+def test_runtime_rejects_nonzero_dynamic_state_readback(
+    state_attribute,
+    setter_name,
+    label,
+):
+    articulation = _FakeArticulation((32, 4), (0.0, 0.0))
+    runtime = ArticulationRuntime("/World/Robot", "/World/Robot/base", None)
+    runtime._articulation = articulation
+    runtime._initial_dof_positions = (0.0, 0.0)
+
+    def ignore_update(values):
+        del values
+
+    setattr(articulation, setter_name, ignore_update)
+    setattr(articulation, state_attribute, (1.0, -1.0))
+    with pytest.raises(
+        ArticulationRuntimeError,
+        match=rf"{label} readback is not zero",
+    ):
+        runtime.restore_initial_joint_state()

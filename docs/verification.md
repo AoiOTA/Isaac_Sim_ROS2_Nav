@@ -888,7 +888,8 @@ Profile：它 2/3 次通过，唯一失败值 `0.243181692` 只比固定上限�
 样本记账均通过，invalid Odom/JointState 消息为 0。
 
 失败形态呈离散、可重复的中心漂移水平，而不是轮向错误或持续 yaw-rate 欠标定。
-当前每段 Reset 会恢复根 pose、根速度、DOF 速度和 velocity target，但没有显式恢复
+被测 clean `8973728` 的每段 Reset 会恢复根 pose、根速度、DOF 速度和 velocity target，
+但没有显式恢复
 DOF position；连续轮 joint 和 PhysX 接触暖状态因此成为下一步必须隔离的变量。这个
 判断是由结果产生的根因假设，不是已经证明的修复结论；修复后必须在新 clean commit
 上重新运行同一 18-run 批次，旧失败样本不得删除或混入新批。

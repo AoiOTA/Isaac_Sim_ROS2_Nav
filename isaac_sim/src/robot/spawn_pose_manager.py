@@ -54,9 +54,7 @@ class RobotPosePort(Protocol):
 
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None: ...
 
-    def set_joint_velocities(self, values: Sequence[float]) -> None: ...
-
-    def set_joint_velocity_targets(self, values: Sequence[float]) -> None: ...
+    def restore_initial_joint_state(self) -> None: ...
 
 
 def quaternion_from_yaw_deg(yaw_deg: float) -> tuple[float, float, float, float]:
@@ -176,11 +174,11 @@ class SpawnPoseManager:
 
     def apply_usd_pose(self, pose_name: str) -> SpawnPose:
         pose = self.get(pose_name)
-        zeros = [0.0] * self.robot.num_dof
+        # Restore the complete articulation state while physics is paused.
+        # Root pose is applied last so no joint teleport can perturb it.
+        self.robot.restore_initial_joint_state()
         self.robot.set_world_pose(pose.usd.position, quaternion_from_yaw_deg(pose.usd.yaw_deg))
         self.robot.set_base_velocities([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
-        self.robot.set_joint_velocities(zeros)
-        self.robot.set_joint_velocity_targets(zeros)
         return pose
 
     def get_map_pose(self, pose_name: str, *, purpose: str) -> MapSpawnPose:

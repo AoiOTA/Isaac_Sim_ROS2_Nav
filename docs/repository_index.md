@@ -206,9 +206,9 @@
 | --- | --- |
 | `isaac_sim/src/robot/__init__.py` | 机器人运行时子包标记。 |
 | `isaac_sim/src/robot/kinematics_config.py` | 严格解析完整 robot schema v2；把几何轮距与有效轮距分开，校验 profile/lifecycle、四个唯一 wheel joint、正有限几何/质量、总质量恒等式，以及不再重复运动学字段的 controller 限幅，并向 Control Graph/provenance 提供冻结 dataclass。 |
-| `isaac_sim/src/robot/articulation_runtime.py` | 严格解析含 `[1,255]` solver counts 的 Jackal 物理配置，通过初始化后的实验 Articulation API 写入 solver、sleep/stabilization/DOF 参数，仅对 USD solver 做交叉读回校验，并负责关节控制/读取及 sleep/wake。 |
+| `isaac_sim/src/robot/articulation_runtime.py` | 严格解析含 `[1,255]` solver counts 的 Jackal 物理配置，通过初始化后的实验 Articulation API 写入 solver、sleep/stabilization/DOF 参数，仅对 USD solver 做交叉读回校验；同时捕获完整初始 DOF pose，Reset 时恢复位置、清零 velocity/target/effort 并做 tensor readback，另负责关节控制/读取及 sleep/wake。 |
 | `isaac_sim/src/robot/joint_validator.py` | 验证四个 wheel joint 的存在、分组、方向映射和 DOF 顺序。 |
-| `isaac_sim/src/robot/spawn_pose_manager.py` | 读取/校验命名 USD/Map Pose；已标定 Pose 必须携带合法 map version 与 bundle SHA256，并向 Reset 提供 Pose 查询。 |
+| `isaac_sim/src/robot/spawn_pose_manager.py` | 读取/校验命名 USD/Map Pose；已标定 Pose 必须携带合法 map version 与 bundle SHA256；Reset 时先要求 runtime 恢复完整初始关节状态，再设置命名根 Pose 和零底盘速度。 |
 | `isaac_sim/src/robot/reset.py` | ResetManager 物理事务：预校验出生点/标定，暂停、停控、恢复 Pose、清速度、重置子系统，并在失败路径也恢复 timeline。 |
 | `isaac_sim/src/robot/idle_brake.py` | 低层命令超时/死区 watchdog；无有效命令时让底盘可靠静止但允许低速唤醒。 |
 | `isaac_sim/src/robot/wheel_direction_diagnostic.py` | 不依赖 Isaac import 的单轮诊断核心；严格加载协议，计算轮底接触速度、摩擦/冲量/底盘方向、API 法向力一致性、硬门与 advisory，并原子写出有限数 JSON。 |
@@ -248,7 +248,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/tests/conftest.py` | 把项目根加入测试导入路径。 |
-| `isaac_sim/tests/test_config.py` | 测试项目/机器人配置 schema、环境变量 override、模式组合和 custom fail-fast。 |
+| `isaac_sim/tests/test_config.py` | 测试项目/机器人配置 schema、环境变量 override、模式组合、custom fail-fast，以及非零初始 DOF 快照恢复和位置/速度/目标/effort readback 失败闭锁。 |
 | `isaac_sim/tests/test_asset_paths.py` | 测试资产 manifest、项目 overlay 只引用本地导入以及路径可复现性。 |
 | `isaac_sim/tests/test_stage_composition.py` | Isaac/USD marker 测试：Stage 组合、唯一 PhysicsScene、solver authoring、旧 collider inactive、新 Cylinder 尺寸/轴向/对称性/材质和 articulation 结构。 |
 | `isaac_sim/tests/test_runtime_provenance.py` | 测试流式文件 SHA256、clean/dirty Git 快照、机器人/环境/solver/组合 Layer，以及 schema-v5 combined32/plane-only topology 和 contact 到 ROS 参数的完整映射；同时覆盖 composer 快照的 fresh Stage 重读、陈旧/篡改拒绝和 topology target/contact ground 交叉门。 |
@@ -258,7 +258,7 @@
 | `isaac_sim/tests/test_scan_projection.py` | 检查 Isaac LiDAR 与 ROS LaserScan 投影参数的 frame/range/角度契约。 |
 | `isaac_sim/tests/test_ground_truth_transforms.py` | 测试 `map_T_usd` 与 Pose 变换数学。 |
 | `isaac_sim/tests/test_idle_brake.py` | 测试命令死区、超时停车、低速唤醒和 sim-time 行为。 |
-| `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 事务/commit 顺序、非法 boundary 不发布 event、initial-pose 失败不形成 event/响应分裂、版本化响应 metadata、fresh-scan initial pose 和重复 seed。 |
+| `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、完整关节状态→根 Pose→根速度的 Reset 顺序、事务/commit 顺序、非法 boundary 不发布 event、initial-pose 失败不形成 event/响应分裂、版本化响应 metadata、fresh-scan initial pose 和重复 seed。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 测试动态障碍解析、有限数、repeat、轨迹推进和 Reset。 |
 | `isaac_sim/tests/test_camera_contracts.py` | 测试相机 profile 默认值、严格 schema、RGB/CameraInfo 同源时间戳/QoS、CLI 选择和 Render Product 幂等释放。 |
 | `isaac_sim/tests/test_ground_topology_config.py` | 纯 Python 锁定三份 topology schema-v1 catalog、source/target/disabled 数量与 hash、canonical collider-path 编码、exact/duplicate/type/操作不变量，以及默认 Warehouse/SimplePlane project 选择的稳定 topology 和 plane-only 可替换路径。 |
