@@ -30,6 +30,8 @@ specific topology ID requires its one matching --environment.  DIR must be
 empty and is never overwritten.
 By default the committed robot selected by the project configuration is used.
 FILE selects a committed robot contract by canonical absolute path.
+When --reset-strategy all is selected, odd repeats run A then B and even
+repeats run B then A so an even repeat count counterbalances launch order.
 EOF
 }
 
@@ -222,6 +224,7 @@ case "${reset_strategy_selection}" in
 esac
 
 reset_strategy_ids=()
+repeat_reset_strategy_ids=()
 select_reset_strategies() {
   local project_default_id="$1"
   case "${reset_strategy_selection}" in
@@ -241,6 +244,19 @@ select_reset_strategies() {
       return 1
       ;;
   esac
+}
+
+order_reset_strategies_for_repeat() {
+  local repeat_index="$1"
+  [[ "${repeat_index}" =~ ^[1-9][0-9]*$ ]] || return 1
+  repeat_reset_strategy_ids=("${reset_strategy_ids[@]}")
+  if ((${#repeat_reset_strategy_ids[@]} == 2 \
+      && 10#${repeat_index} % 2 == 0)); then
+    repeat_reset_strategy_ids=(
+      "${reset_strategy_ids[1]}"
+      "${reset_strategy_ids[0]}"
+    )
+  fi
 }
 
 motion_config="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml"
@@ -988,7 +1004,12 @@ sequence = 0
 for environment_id, topology_id in pair_identities:
     for profile_id, profile_mode in profile_contract:
         for repeat in range(1, repeats + 1):
-            for reset_strategy_id in reset_strategy_ids:
+            strategy_order = (
+                reset_strategy_ids
+                if len(reset_strategy_ids) != 2 or repeat % 2
+                else list(reversed(reset_strategy_ids))
+            )
+            for reset_strategy_id in strategy_order:
                 sequence += 1
                 reset_token = f"reset-v1-{reset_strategy_id}"
                 run_id = (
@@ -3746,7 +3767,9 @@ for pair_index in "${!matrix_environment_ids[@]}"; do
   topology_id="${matrix_ground_topology_ids[pair_index]}"
   for profile_index in "${!profile_ids[@]}"; do
     for ((repeat = 1; repeat <= repeats; repeat++)); do
-      for reset_strategy_id in "${reset_strategy_ids[@]}"; do
+      order_reset_strategies_for_repeat "${repeat}" \
+        || die "cannot order reset strategies for repeat ${repeat}"
+      for reset_strategy_id in "${repeat_reset_strategy_ids[@]}"; do
         sequence=$((sequence + 1))
         if ! run_one_condition \
             "${sequence}" "${environment_id}" "${topology_id}" \
