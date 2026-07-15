@@ -821,6 +821,14 @@ Reset 是一个异步事务，但 Trigger 只有在物理复位以及所有已�
 `set_dof_positions()` 本身不清除 PhysX contact manifold 或 solver warm-start cache。
 因此它必须通过同输入 A/B 复跑验证，不能仅凭代码存在就宣称转向不对称已修复。
 
+clean `55418fe` 已用与旧 `8973728` 相同的 SimplePlane/only1、六 contact profile ×
+三重复输入完成正式复跑。结果从旧批 0/6 group、8/18 repeat 提升到 3/6 group、
+12/18 repeat，但整体物理门仍失败：剩余失败只有 6 次左右旋转中心漂移不对称，其中
+2 次还同时右旋绝对中心漂移超限。它证明完整 DOF 恢复有效，却没有消除离散右旋分支。
+旧批早于该修复，不能作为后续 Reset A/B 的 control。下一次 A/B 前必须先把版本化
+`reset_strategy` 写入 runtime provenance、motion report、Manifest、matrix readiness
+和 group identity；当前 schema v5 尚未记录这项实验身份。
+
 Trigger 成功表示“复位事务已提交完成”，仍不表示定位已经重新稳定。Localization 模式下还要等待：
 
 1. Reset 后的新 `/scan`；
@@ -1691,6 +1699,27 @@ script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯�
 历史 smoke 另完成 6/6 run、36/36 段和六组 N/A 记账，但其工件版本仍是
 motion 2 / analysis 3 / physical 1 / summary 4 / manifest 43 列。它证明当时冻结代码的
 报告链闭合；完整 topology v2 矩阵仍待执行，不能据此宣称底盘物理通过。
+
+随后 clean `55418fe2eee507e9d3b690eb84584862c350b2db` 加入完整初始 DOF
+position/velocity/target/effort 恢复，并用相同输入正式复跑。证据链为 18/18 run、
+108/108 segment，motion/analysis/physical/summary schema `3/4/2/5`，analysis
+18 included / 0 excluded。`explicit_material`、`legacy_baseline`、
+`threshold_corr_0p00025_offset_0p0004` 三组通过，另三组失败；逐 repeat 全门通过由
+8/18 提升到 12/18。18/18 左右 yaw-rate、432/432 稳态轮向观察和 108/108 停止窗
+全部通过，失败叶只有 6 次 `rotation_center_drift_asymmetry_ratio`，其中 2 次同时有
+`rotate_right_center_drift_m`。因此 DOF Reset 确有改善，但 3/6 group 失败意味着整体
+物理结论仍为 FAIL，不能把离散右旋分支写成已修复。冻结根工件为：
+
+| 工件 | SHA256 |
+| --- | --- |
+| `manifest.tsv` | `2dc3aba651ff0eb253687c12c32fe2156a827af9444ad7c2dc39c76ed5a03866` |
+| `analysis.json` | `51903b770da88030c5d56418771408e54d02fcd195d176407be1b9be7773cc10` |
+| `batch_summary.json` | `b85dc9188bcb0d783570993850fc173966803eb7b5eb25c9911f9fd5c0b6c2f1` |
+
+完整复验、逐 profile 数值和日志边界见
+[`verification.md`](verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
+后续 Reset 策略 A/B 必须先版本化并锁入 provenance、报告、Manifest 和分组身份；
+`8973728` 早于 DOF 修复，不能作为 control。完整 topology 54-run/18-group 矩阵仍待执行。
 
 快速核对成功证据：
 
