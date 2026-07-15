@@ -43,7 +43,7 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument(
             'robot_config_file',
-            description='Absolute path to the schema v2 robot YAML'),
+            description='Absolute path to the schema v3 robot YAML'),
         DeclareLaunchArgument(
             'isaac_node_name', default_value='/isaac_navigation_sim'),
         DeclareLaunchArgument(

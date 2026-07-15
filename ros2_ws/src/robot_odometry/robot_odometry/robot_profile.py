@@ -22,6 +22,8 @@ _TOP_LEVEL_KEYS = frozenset({
     'base_mass',
     'wheel_mass',
     'nominal_total_mass',
+    'mass_collision_profile',
+    'wheel_velocity_drive',
     'physics',
     'wheel_joints',
     'controller',
@@ -39,11 +41,21 @@ _CONTROLLER_KEYS = frozenset({
     'max_deceleration',
     'max_angular_acceleration',
 })
+_WHEEL_VELOCITY_DRIVE_KEYS = frozenset({
+    'schema_version',
+    'profile_id',
+    'drive_type',
+    'stiffness_n_m_per_rad',
+    'damping_n_m_s_per_rad',
+    'max_effort_n_m',
+    'max_joint_velocity_rad_s',
+})
 _LIFECYCLES = frozenset({'stable_baseline', 'experimental_candidate'})
 _PROFILE_ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_.-]*$')
 _JOINT_NAME = re.compile(r'^[A-Za-z_][A-Za-z0-9_.-]*$')
 ISAAC_KINEMATICS_PARAMETER_NAMES = (
     'runtime_provenance.schema_version',
+    'runtime_provenance.robot.config.schema_version',
     'runtime_provenance.robot.config.path',
     'runtime_provenance.robot.config.sha256',
     'runtime_provenance.robot.kinematics.profile_id',
@@ -101,6 +113,7 @@ class IsaacKinematicsSnapshot:
     """Typed readback from the Isaac runtime provenance parameters."""
 
     schema_version: int
+    config_schema_version: int
     config_path: Path
     config_sha256: str
     profile_id: str
@@ -136,6 +149,15 @@ def _positive_number(value, location):
     return parsed
 
 
+def _finite_number(value, location):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f'{location} must be a finite number')
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f'{location} must be a finite number')
+    return parsed
+
+
 def _joint_name(value, location):
     if not isinstance(value, str) or _JOINT_NAME.fullmatch(value) is None:
         raise ValueError(
@@ -144,7 +166,7 @@ def _joint_name(value, location):
 
 
 def load_robot_profile(path):
-    """Load wheel kinematics from one schema-v2 robot YAML file."""
+    """Load wheel kinematics from one schema-v3 robot YAML file."""
     source = Path(path).expanduser().resolve()
     raw = source.read_bytes()
     try:
@@ -156,8 +178,8 @@ def load_robot_profile(path):
     schema_version = document['schema_version']
     if (isinstance(schema_version, bool)
             or not isinstance(schema_version, int)
-            or schema_version != 2):
-        raise ValueError('schema_version must be integer 2')
+            or schema_version != 3):
+        raise ValueError('schema_version must be integer 3')
 
     profile_id = document['kinematics_profile_id']
     if not isinstance(profile_id, str) or not _PROFILE_ID.fullmatch(profile_id):
@@ -187,6 +209,12 @@ def load_robot_profile(path):
         raise ValueError(
             'nominal_total_mass must equal base_mass + 4 * wheel_mass')
 
+    mass_collision_profile = document['mass_collision_profile']
+    if (not isinstance(mass_collision_profile, str)
+            or not mass_collision_profile.strip()):
+        raise ValueError(
+            'mass_collision_profile must be a non-empty path string')
+
     joints = _mapping(document['wheel_joints'], 'wheel_joints')
     _exact_keys(joints, _WHEEL_JOINT_KEYS, 'wheel_joints')
     joint_names = {
@@ -200,6 +228,40 @@ def load_robot_profile(path):
     _exact_keys(controller, _CONTROLLER_KEYS, 'controller')
     for key, value in controller.items():
         _positive_number(value, f'controller.{key}')
+
+    drive = _mapping(
+        document['wheel_velocity_drive'], 'wheel_velocity_drive')
+    _exact_keys(
+        drive, _WHEEL_VELOCITY_DRIVE_KEYS, 'wheel_velocity_drive')
+    drive_schema_version = drive['schema_version']
+    if (isinstance(drive_schema_version, bool)
+            or not isinstance(drive_schema_version, int)
+            or drive_schema_version != 1):
+        raise ValueError(
+            'wheel_velocity_drive.schema_version must be integer 1')
+    drive_profile_id = drive['profile_id']
+    if (not isinstance(drive_profile_id, str)
+            or _PROFILE_ID.fullmatch(drive_profile_id) is None):
+        raise ValueError(
+            'wheel_velocity_drive.profile_id must be path-safe')
+    if drive['drive_type'] != 'force':
+        raise ValueError('wheel_velocity_drive.drive_type must equal force')
+    stiffness = _finite_number(
+        drive['stiffness_n_m_per_rad'],
+        'wheel_velocity_drive.stiffness_n_m_per_rad')
+    if stiffness != 0.0:
+        raise ValueError(
+            'wheel_velocity_drive.stiffness_n_m_per_rad must equal 0')
+    for key in (
+            'damping_n_m_s_per_rad',
+            'max_effort_n_m',
+            'max_joint_velocity_rad_s'):
+        _positive_number(drive[key], f'wheel_velocity_drive.{key}')
+    if (float(controller['max_wheel_speed'])
+            > float(drive['max_joint_velocity_rad_s'])):
+        raise ValueError(
+            'controller.max_wheel_speed must not exceed '
+            'wheel_velocity_drive.max_joint_velocity_rad_s')
 
     return RobotKinematicsProfile(
         source=source,
@@ -243,9 +305,17 @@ def validate_isaac_kinematics(profile, parameters):
     schema_version = parameters['runtime_provenance.schema_version']
     if (isinstance(schema_version, bool)
             or not isinstance(schema_version, int)
-            or schema_version != 6):
+            or schema_version != 7):
         raise ValueError(
-            'runtime_provenance.schema_version must be integer 6')
+            'runtime_provenance.schema_version must be integer 7')
+
+    config_schema_version = parameters[
+        'runtime_provenance.robot.config.schema_version']
+    if (isinstance(config_schema_version, bool)
+            or not isinstance(config_schema_version, int)
+            or config_schema_version != 3):
+        raise ValueError(
+            'runtime_provenance.robot.config.schema_version must be integer 3')
 
     sha256 = parameters['runtime_provenance.robot.config.sha256']
     if (not isinstance(sha256, str)
@@ -299,6 +369,7 @@ def validate_isaac_kinematics(profile, parameters):
 
     return IsaacKinematicsSnapshot(
         schema_version=schema_version,
+        config_schema_version=config_schema_version,
         config_path=config_path,
         config_sha256=sha256,
         profile_id=parameters[

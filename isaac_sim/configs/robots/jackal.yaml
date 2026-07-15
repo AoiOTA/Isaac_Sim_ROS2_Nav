@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 name: jackal
 kinematics_profile_id: jackal_legacy_geometric_v1
 lifecycle: stable_baseline
@@ -10,6 +10,18 @@ wheelbase: 0.262
 base_mass: 17.0
 wheel_mass: 0.477
 nominal_total_mass: 18.908
+mass_collision_profile: ../robot_mass_profiles/legacy_default_sensor_density_v1.yaml
+# Behavior-preserving migration guard, not a calibrated drive. The damping is
+# the legacy USD value converted to SI; the two 1e9 limits replace prior
+# unbounded values with explicit finite sentinels until isolated A/B acceptance.
+wheel_velocity_drive:
+  schema_version: 1
+  profile_id: jackal_drive_legacy_finite_guard_v1
+  drive_type: force
+  stiffness_n_m_per_rad: 0.0
+  damping_n_m_s_per_rad: 572957795.1308232
+  max_effort_n_m: 1000000000.0
+  max_joint_velocity_rad_s: 1000000000.0
 physics:
   # Isaac Sim 6 warns that TGS behavior changed above four velocity
   # iterations. The 2026-07-14 standard-collider A/B kept straight/stopping

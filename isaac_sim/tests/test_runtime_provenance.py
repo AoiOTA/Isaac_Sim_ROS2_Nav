@@ -31,8 +31,28 @@ JACKAL_CONFIG = (
     / "robots"
     / "jackal.yaml"
 )
+LEGACY_MASS_PROFILE = (
+    Path(__file__).resolve().parents[1]
+    / "configs"
+    / "robot_mass_profiles"
+    / "legacy_default_sensor_density_v1.yaml"
+)
 ROOT = Path(__file__).resolve().parents[2]
 HAS_PXR = importlib.util.find_spec("pxr") is not None
+
+
+def _write_test_robot_config(path: Path) -> None:
+    """Copy the schema-v3 robot contract with a fixture-stable profile path."""
+
+    source = JACKAL_CONFIG.read_text(encoding="utf-8")
+    relative_profile = (
+        "../robot_mass_profiles/legacy_default_sensor_density_v1.yaml"
+    )
+    assert relative_profile in source
+    path.write_text(
+        source.replace(relative_profile, str(LEGACY_MASS_PROFILE)),
+        encoding="utf-8",
+    )
 
 
 class _RootLayer:
@@ -317,7 +337,7 @@ def _runtime_inputs(
     source_asset = tmp_path / "warehouse.usd"
     topology_profile = tmp_path / "ground_topology.yaml"
     contact_profile = tmp_path / "legacy_baseline.yaml"
-    robot_config.write_bytes(JACKAL_CONFIG.read_bytes())
+    _write_test_robot_config(robot_config)
     robot_asset.write_bytes(b"#usda 1.0\n")
     project_stage.write_bytes(b"#usda 1.0\n")
     source_asset.write_bytes(b"PXR-USDC")
@@ -407,7 +427,6 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
     ground_topology_profile = tmp_path / "ground_topology.yaml"
     contact_profile = tmp_path / "legacy_baseline.yaml"
     for path, content in (
-        (robot_config, JACKAL_CONFIG.read_bytes()),
         (robot_asset, b"#usda 1.0\n"),
         (project_stage, b"#usda 1.0\n"),
         (source_asset, b"PXR-USDC"),
@@ -417,6 +436,7 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         ),
     ):
         path.write_bytes(content)
+    _write_test_robot_config(robot_config)
     ground_colliders = ["/World/Ground/Collision"]
     _write_ground_topology_profile(
         ground_topology_profile,
@@ -1057,7 +1077,7 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
     source_asset = tmp_path / "source.usd"
     ground_topology_profile = tmp_path / "ground_topology.yaml"
     contact_profile = tmp_path / "legacy_baseline.yaml"
-    robot_config.write_bytes(JACKAL_CONFIG.read_bytes())
+    _write_test_robot_config(robot_config)
     for path in (robot_asset, project_stage, source_asset):
         path.write_bytes(b"input")
     contact_profile.write_text(
