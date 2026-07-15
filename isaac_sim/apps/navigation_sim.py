@@ -252,6 +252,19 @@ def validate_project(config: ProjectConfig) -> tuple[object, object, object]:
     return selected_pose, dynamic_scenario, camera_selection
 
 
+def _rebuild_control_graph(
+    idle_brake: object,
+    graph_builder: object,
+    graph_references: dict[str, object],
+) -> object:
+    """Reset controller state and replace the materialized control graph."""
+
+    idle_brake.reset()
+    rebuilt = graph_builder.build_control()
+    graph_references["control"] = rebuilt
+    return rebuilt
+
+
 def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     import omni.kit.app
 
@@ -480,8 +493,11 @@ def run(
         )
 
         def clear_controller_state() -> None:
-            idle_brake.reset()
-            graph_references["control"] = graph_builder.build_control()
+            _rebuild_control_graph(
+                idle_brake,
+                graph_builder,
+                graph_references,
+            )
 
         def reset_odometry(mode: str) -> None:
             if mode != config.simulation.odometry_mode:
