@@ -5,7 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from isaac_sim.graphs.camera_graph import build_camera_graphs
-from isaac_sim.graphs.control_graph import build_control_graph
+from isaac_sim.graphs.control_graph import (
+    SPLIT_AXLE_V1,
+    build_control_graph,
+    require_wheel_command_application,
+)
 from isaac_sim.graphs.odometry_graph import build_odometry_graph
 from isaac_sim.graphs.sensor_graph import build_sensor_graphs
 from isaac_sim.graphs.tf_graph import build_tf_graph
@@ -21,10 +25,24 @@ class RosGraphHandles:
     cameras: tuple[object, ...]
 
 
+@dataclass(frozen=True)
 class RosGraphBuilder:
-    def __init__(self, config: ProjectConfig, sensors):
-        self.config = config
-        self.sensors = sensors
+    config: ProjectConfig
+    sensors: object
+    wheel_command_application: str = SPLIT_AXLE_V1
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "wheel_command_application",
+            require_wheel_command_application(self.wheel_command_application),
+        )
+
+    def build_control(self) -> object:
+        return build_control_graph(
+            self.config,
+            self.wheel_command_application,
+        )
 
     def build(self) -> RosGraphHandles:
         if self.config.simulation.odometry_mode == "realistic":
@@ -33,7 +51,7 @@ class RosGraphBuilder:
         else:
             odometry = build_odometry_graph(self.config)
         return RosGraphHandles(
-            control=build_control_graph(self.config),
+            control=self.build_control(),
             sensors=build_sensor_graphs(
                 self.config,
                 self.sensors.imu_prim_path,

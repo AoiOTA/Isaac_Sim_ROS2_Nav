@@ -23,7 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from isaac_sim.graphs.control_graph import control_graph_spec
+from isaac_sim.graphs.control_graph import (
+    SPLIT_AXLE_V1,
+    WHEEL_COMMAND_APPLICATIONS,
+    control_graph_spec,
+    require_wheel_command_application,
+)
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
 from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
@@ -129,6 +134,15 @@ def _parser() -> argparse.ArgumentParser:
             "in headless mode"
         ),
     )
+    parser.add_argument(
+        "--wheel-command-application",
+        choices=WHEEL_COMMAND_APPLICATIONS,
+        default=SPLIT_AXLE_V1,
+        help=(
+            "diagnostic wheel target write topology; split_axle_v1 preserves "
+            "the baseline"
+        ),
+    )
     return parser
 
 
@@ -160,6 +174,7 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
 def validate_configuration(
     config: ProjectConfig,
     camera_profile: str | None = None,
+    wheel_command_application: str = SPLIT_AXLE_V1,
 ) -> tuple[object, object, object]:
     """Validate configuration without importing USD/Kit modules."""
 
@@ -184,7 +199,7 @@ def validate_configuration(
     )
     load_articulation_physics_config(config.files.robot)
     specifications = [
-        control_graph_spec(config),
+        control_graph_spec(config, wheel_command_application),
         core_sensor_graph_spec(config, str(imu["sensor_prim"])),
         lidar_graph_spec(config, "/Render/ValidationProduct"),
     ]
@@ -278,7 +293,11 @@ def run(
     selected_pose: object,
     dynamic_scenario: object,
     camera_selection: object,
+    wheel_command_application: str = SPLIT_AXLE_V1,
 ) -> None:
+    wheel_command_application = require_wheel_command_application(
+        wheel_command_application
+    )
     configure_process_environment(config)
 
     from isaacsim import SimulationApp
@@ -430,7 +449,12 @@ def run(
 
         from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
 
-        graph_handles = RosGraphBuilder(config, sensors).build()
+        graph_builder = RosGraphBuilder(
+            config,
+            sensors,
+            wheel_command_application=wheel_command_application,
+        )
+        graph_handles = graph_builder.build()
         graph_references: dict[str, object] = {"all": graph_handles}
         camera_graph_paths = tuple(
             camera.graph_path for camera in sensors.cameras
@@ -456,10 +480,8 @@ def run(
         )
 
         def clear_controller_state() -> None:
-            from isaac_sim.graphs.control_graph import build_control_graph
-
             idle_brake.reset()
-            graph_references["control"] = build_control_graph(config)
+            graph_references["control"] = graph_builder.build_control()
 
         def reset_odometry(mode: str) -> None:
             if mode != config.simulation.odometry_mode:
@@ -518,6 +540,7 @@ def run(
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, dynamic={dynamic_scenario.enabled}, "
             f"camera={camera_selection.profile.name}, "
+            f"wheel_command_application={wheel_command_application}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"max_frames={max_frames or 'unlimited'}"
@@ -598,7 +621,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = load_project_config(args.config)
     configure_process_environment(config)
     selected_pose, dynamic_scenario, camera_selection = validate_configuration(
-        config, args.camera_profile
+        config,
+        args.camera_profile,
+        args.wheel_command_application,
     )
     if args.dynamic_obstacles is not None:
         dynamic_scenario = replace(
@@ -617,12 +642,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, "
             f"camera={camera_selection.profile.name}, "
+            f"wheel_command_application={args.wheel_command_application}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"dynamic_obstacles={dynamic_scenario.enabled}, {calibration})"
         )
         return 0
-    run(config, selected_pose, dynamic_scenario, camera_selection)
+    run(
+        config,
+        selected_pose,
+        dynamic_scenario,
+        camera_selection,
+        args.wheel_command_application,
+    )
     return 0
 
 
