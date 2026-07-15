@@ -21,6 +21,11 @@ def generate_launch_description():
         DeclareLaunchArgument('map_file', default_value=''),
         DeclareLaunchArgument('map_manifest_file', default_value=''),
         DeclareLaunchArgument('robot_description_file', default_value=''),
+        DeclareLaunchArgument('robot_config_file', default_value=''),
+        DeclareLaunchArgument(
+            'isaac_node_name', default_value='/isaac_navigation_sim'),
+        DeclareLaunchArgument(
+            'kinematics_handshake_timeout_sec', default_value='10.0'),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
@@ -56,6 +61,11 @@ def generate_launch_description():
                     'map_manifest_file'),
                 'robot_description_file': LaunchConfiguration(
                     'robot_description_file'),
+                'robot_config_file': LaunchConfiguration(
+                    'robot_config_file'),
+                'isaac_node_name': LaunchConfiguration('isaac_node_name'),
+                'kinematics_handshake_timeout_sec': LaunchConfiguration(
+                    'kinematics_handshake_timeout_sec'),
                 'wheel_odometry_params_file': LaunchConfiguration(
                     'wheel_odometry_params_file'),
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),

@@ -19,6 +19,8 @@ CLEAN_RUNTIME = REPOSITORY_ROOT / 'scripts' / 'clean_runtime.sh'
 PERFORMANCE_MODE = REPOSITORY_ROOT / 'scripts' / 'performance_mode.sh'
 RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
+RUN_TELEOP_TERMINAL = (
+    REPOSITORY_ROOT / 'scripts' / 'run_teleop_terminal.sh')
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
@@ -41,6 +43,39 @@ def _run_bash(command: str, *, cwd: Path, environment=None):
         capture_output=True,
         check=False,
     )
+
+
+def _process_is_running(pid: int) -> bool:
+    stat = Path(f'/proc/{pid}/stat')
+    if not stat.is_file():
+        return False
+    return stat.read_text(encoding='utf-8').split()[2] != 'Z'
+
+
+def _wait_until(predicate, *, timeout: float = 4.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+def _runtime_metadata(path: Path) -> dict[str, str]:
+    return dict(
+        line.split('=', 1)
+        for line in path.read_text(encoding='utf-8').splitlines()
+        if '=' in line
+    )
+
+
+def _lock_is_available(path: Path) -> bool:
+    return subprocess.run(
+        ['flock', '-n', str(path), 'true'],
+        text=True,
+        capture_output=True,
+        check=False,
+    ).returncode == 0
 
 
 def test_setup_ros_env_must_be_sourced():
@@ -431,7 +466,80 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
     assert 'Isaac/ROS pair is incomplete' in diagnose
     assert 'nav2_profile="unavailable"' in diagnose
     cleanup = CLEAN_RUNTIME.read_text(encoding='utf-8')
-    assert 'for component in teleop rviz ros isaac' in cleanup
+    assert 'for component in motion_baseline teleop rviz ros isaac' in cleanup
+    assert '/lib/robot_experiments/motion_baseline_runner' in cleanup
+    assert '/bin/ros2 run robot_experiments motion_baseline_runner' in cleanup
+    assert '${PROJECT_ROOT}/scripts/run_rviz.sh' in cleanup
+
+
+def test_process_group_identity_retries_only_transient_environ_mismatch():
+    result = _run_bash(
+        f'source "{COMMON}"\n'
+        'identity_ready=false\n'
+        'start_tick=77\n'
+        'sleep_calls=0\n'
+        'runtime_process_group_members() { printf "4242\\n"; }\n'
+        'runtime_process_is_running() { return 0; }\n'
+        'runtime_process_start_ticks() { printf "%s\\n" "${start_tick}"; }\n'
+        'stat() { printf "%s\\n" "${UID}"; }\n'
+        'runtime_process_environment_value() {\n'
+        '  [[ "${identity_ready}" == true ]] || return 1\n'
+        '  case "$2" in\n'
+        '    PROJECT_ROOT) printf "%s\\n" "${PROJECT_ROOT}" ;;\n'
+        '    ISAAC_NAV_SESSION_ID) printf "test-session\\n" ;;\n'
+        '    *) return 1 ;;\n'
+        '  esac\n'
+        '}\n'
+        'sleep() { identity_ready=true; sleep_calls=$((sleep_calls + 1)); }\n'
+        'runtime_process_group_is_owned_by_session '
+        '4242 "${PROJECT_ROOT}" test-session\n'
+        '[[ "${sleep_calls}" == 1 ]]\n'
+        'identity_ready=false\n'
+        'sleep_calls=0\n'
+        'sleep() { sleep_calls=$((sleep_calls + 1)); }\n'
+        'if runtime_process_group_is_owned_by_session '
+        '4242 "${PROJECT_ROOT}" test-session; then exit 91; fi\n'
+        '[[ "${sleep_calls}" == 2 ]]\n'
+        'identity_ready=false\n'
+        'start_tick=77\n'
+        'sleep_calls=0\n'
+        'sleep() {\n'
+        '  identity_ready=true\n'
+        '  start_tick=78\n'
+        '  sleep_calls=$((sleep_calls + 1))\n'
+        '}\n'
+        'if runtime_process_group_is_owned_by_session '
+        '4242 "${PROJECT_ROOT}" test-session; then exit 92; fi\n'
+        '[[ "${sleep_calls}" == 2 ]]\n',
+        cwd=REPOSITORY_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'session identity mismatch' in result.stderr
+
+
+def test_motion_baseline_identity_accepts_ros2_run_leader_only():
+    """The authenticated leader is ros2 while the installed node is its child."""
+    command = (
+        '/usr/bin/python3 /opt/ros/jazzy/bin/ros2 run robot_experiments '
+        'motion_baseline_runner --ros-args'
+    )
+    wrong_package = command.replace('robot_experiments', 'other_package')
+    result = subprocess.run(
+        [
+            'bash',
+            '-c',
+            'source scripts/lib/common.sh\n'
+            f'runtime_component_command_matches motion_baseline {command!r}\n'
+            'if runtime_component_command_matches motion_baseline '
+            f'{wrong_package!r}; then exit 91; fi\n',
+        ],
+        cwd=REPOSITORY_ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_performance_mode_enable_is_transactional_and_restore_is_exact(
@@ -551,18 +659,590 @@ def test_ros_launcher_supervises_ordered_shutdown_before_sigint():
     source = RUN_ROS.read_text(encoding='utf-8')
     helper = 'python3 -m robot_bringup.ordered_shutdown'
     launch = 'setsid -- ros2 launch robot_bringup'
-    relay = 'signal_launch_group INT'
+    ordered_stop = source[
+        source.index('ordered_stop() {'):source.index('cleanup_supervisor() {')]
 
     assert helper in source
     assert launch in source
-    assert relay in source
-    assert source.index(helper) < source.index(relay)
+    assert 'shutdown_owned_process_groups' in ordered_stop
+    assert ordered_stop.index(helper) < ordered_stop.index(
+        'shutdown_owned_process_groups')
     assert "trap 'ordered_stop INT' INT" in source
     assert "trap 'ordered_stop TERM' TERM" in source
     assert "trap 'force_stop TERM' TERM" in source
-    assert 'wait_for_launch_group_exit "${shutdown_int_checks}"' in source
-    assert 'signal_launch_group KILL' in source
+    assert 'wait_for_owned_groups_exit "${shutdown_int_checks}"' in source
+    assert 'signal_all_owned_groups KILL' in source
+    assert 'shutdown_timeout_seconds="${ISAAC_NAV_SHUTDOWN_TIMEOUT_SECONDS:-20}"' \
+        in source
+    assert 'runtime_registered_process_group' in source
+    assert 'managed_process_group_starts' in source
+    assert 'runtime_process_start_ticks "${process_group}"' in source
     assert "trap '' INT TERM HUP\n  log_info" not in source
+
+
+def _prepare_fake_rviz_project(tmp_path: Path, rviz_source: str):
+    project = tmp_path / 'project'
+    scripts = project / 'scripts'
+    scripts_lib = scripts / 'lib'
+    scripts_lib.mkdir(parents=True)
+    shutil.copy2(RUN_RVIZ, scripts / 'run_rviz.sh')
+    shutil.copy2(CLEAN_RUNTIME, scripts / 'clean_runtime.sh')
+    shutil.copy2(COMMON, scripts_lib / 'common.sh')
+
+    workspace_setup = project / 'ros2_ws/install/setup.bash'
+    workspace_setup.parent.mkdir(parents=True)
+    workspace_setup.write_text(
+        'export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    ros_setup = tmp_path / 'ros_setup.bash'
+    ros_setup.write_text('export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    rviz_config = tmp_path / 'navigation.rviz'
+    rviz_config.write_text('Panels: []\n', encoding='utf-8')
+
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        '#!/usr/bin/env bash\nexit 0\n', encoding='utf-8')
+    fake_ros2.chmod(0o755)
+    fake_rviz = fake_bin / 'rviz2'
+    fake_rviz.write_text(rviz_source, encoding='utf-8')
+    fake_rviz.chmod(0o755)
+
+    runtime = tmp_path / 'runtime'
+    shm_root = tmp_path / 'shm'
+    dds_proc_root = tmp_path / 'proc'
+    shm_root.mkdir()
+    dds_proc_root.mkdir()
+    environment = _environment(
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+        ROS_SETUP=str(ros_setup),
+        ISAAC_NAV_RUNTIME_DIR=str(runtime),
+        ISAAC_NAV_SHM_ROOT=str(shm_root),
+        ISAAC_NAV_DDS_PROC_ROOT=str(dds_proc_root),
+        ISAAC_NAV_RVIZ_INT_CHECKS='2',
+        ISAAC_NAV_RVIZ_TERM_CHECKS='2',
+        ISAAC_NAV_RVIZ_KILL_CHECKS='20',
+        ISAAC_NAV_CLEAN_INT_CHECKS='2',
+        ISAAC_NAV_CLEAN_TERM_CHECKS='2',
+        ISAAC_NAV_CLEAN_KILL_CHECKS='20',
+        FAKE_RVIZ_CHILD_PID_FILE=str(tmp_path / 'rviz-child.pid'),
+        FAKE_RVIZ_FD_FILE=str(tmp_path / 'rviz-lock-fd.txt'),
+        FAKE_RVIZ_READY_FILE=str(tmp_path / 'rviz-ready'),
+    )
+    return project, runtime, rviz_config, environment
+
+
+def test_rviz_wrapper_kills_stubborn_descendant_before_metadata_cleanup(
+        tmp_path):
+    project, runtime, rviz_config, environment = _prepare_fake_rviz_project(
+        tmp_path,
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+/usr/bin/python3 -c '
+import os
+from pathlib import Path
+import signal
+import time
+
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+lock_path = os.path.join(os.environ["ISAAC_NAV_RUNTIME_DIR"], "rviz.lock")
+inherited = False
+for descriptor in os.listdir("/proc/self/fd"):
+    try:
+        inherited = inherited or os.readlink(
+            f"/proc/self/fd/{descriptor}") == lock_path
+    except OSError:
+        pass
+Path(os.environ["FAKE_RVIZ_FD_FILE"]).write_text(
+    "held" if inherited else "closed", encoding="utf-8")
+Path(os.environ["FAKE_RVIZ_CHILD_PID_FILE"]).write_text(
+    str(os.getpid()), encoding="utf-8")
+Path(os.environ["FAKE_RVIZ_READY_FILE"]).touch()
+time.sleep(30)
+' &
+for _ in {1..200}; do
+  [[ -e "${FAKE_RVIZ_READY_FILE}" ]] && exit 0
+  sleep 0.01
+done
+exit 2
+''')
+    process = subprocess.Popen(
+        [str(project / 'scripts/run_rviz.sh'), 'navigation',
+         str(rviz_config)],
+        cwd=project,
+        env=environment,
+        start_new_session=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    child_pid = None
+    try:
+        stdout, stderr = process.communicate(timeout=6.0)
+        child_pid = int(
+            (tmp_path / 'rviz-child.pid').read_text(encoding='utf-8'))
+
+        assert process.returncode == 0, stdout + stderr
+        assert not _process_is_running(child_pid)
+        assert not (runtime / 'rviz.pid').exists()
+        assert (tmp_path / 'rviz-lock-fd.txt').read_text(
+            encoding='utf-8') == 'closed'
+        assert _lock_is_available(runtime / 'rviz.lock')
+        assert 'live process-group descendants; sending SIGINT' in stderr
+        assert 'ignored SIGINT; sending SIGTERM' in stderr
+        assert 'ignored SIGTERM; sending SIGKILL' in stderr
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3.0)
+        if child_pid is not None and _process_is_running(child_pid):
+            os.kill(child_pid, signal.SIGKILL)
+
+
+def test_clean_runtime_authenticates_and_kills_standalone_rviz_group(
+        tmp_path):
+    project, runtime, rviz_config, environment = _prepare_fake_rviz_project(
+        tmp_path,
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+trap '' INT TERM HUP
+printf '%s\n' "$BASHPID" >"${FAKE_RVIZ_CHILD_PID_FILE}"
+touch "${FAKE_RVIZ_READY_FILE}"
+while true; do sleep 1; done
+''')
+    environment.update(
+        ISAAC_NAV_RVIZ_INT_CHECKS='100',
+        ISAAC_NAV_RVIZ_TERM_CHECKS='100',
+    )
+    process = subprocess.Popen(
+        [str(project / 'scripts/run_rviz.sh'), 'navigation',
+         str(rviz_config)],
+        cwd=project,
+        env=environment,
+        start_new_session=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    child_pid = None
+    try:
+        assert _wait_until(
+            lambda: (
+                (runtime / 'rviz.pid').is_file()
+                and (tmp_path / 'rviz-ready').is_file()
+            )
+        )
+        metadata = _runtime_metadata(runtime / 'rviz.pid')
+        child_pid = int(
+            (tmp_path / 'rviz-child.pid').read_text(encoding='utf-8'))
+        environment_entries = Path(
+            f'/proc/{process.pid}/environ').read_bytes().split(b'\0')
+        assert f'PROJECT_ROOT={project}'.encode() in environment_entries
+        assert (
+            f'ISAAC_NAV_SESSION_ID={metadata["session_id"]}'.encode()
+            in environment_entries
+        )
+        assert int(metadata['pid']) == process.pid
+        assert int(metadata['process_group']) == process.pid
+
+        cleanup = subprocess.run(
+            [str(project / 'scripts/clean_runtime.sh')],
+            cwd=project,
+            env=environment,
+            text=True,
+            capture_output=True,
+            timeout=6.0,
+            check=False,
+        )
+        process.wait(timeout=3.0)
+
+        assert cleanup.returncode == 0, cleanup.stdout + cleanup.stderr
+        assert not _process_is_running(process.pid)
+        assert not _process_is_running(child_pid)
+        assert not (runtime / 'rviz.pid').exists()
+        assert _lock_is_available(runtime / 'rviz.lock')
+        assert 'ignored SIGTERM; sending SIGKILL' in cleanup.stderr
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3.0)
+        if child_pid is not None and _process_is_running(child_pid):
+            try:
+                os.killpg(os.getpgid(child_pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def test_teleop_terminal_kills_stubborn_registered_group_before_cleanup(
+        tmp_path):
+    project = tmp_path / 'project'
+    scripts = project / 'scripts'
+    scripts_lib = scripts / 'lib'
+    scripts_lib.mkdir(parents=True)
+    shutil.copy2(RUN_TELEOP_TERMINAL, scripts / 'run_teleop_terminal.sh')
+    shutil.copy2(COMMON, scripts_lib / 'common.sh')
+    fake_run_teleop = scripts / 'run_teleop.sh'
+    fake_run_teleop.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+original_args=("$@")
+ensure_dedicated_process_group "${original_args[@]}"
+acquire_instance_lock teleop "fake Mapping teleop"
+exec "${FAKE_TELEOP_EXECUTABLE}"
+''',
+        encoding='utf-8',
+    )
+    fake_run_teleop.chmod(0o755)
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_teleop = fake_bin / 'robot_teleop_keyboard_teleop'
+    fake_teleop.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+trap '' INT TERM HUP
+printf '%s\n' "$BASHPID" >"${FAKE_TELEOP_PID_FILE}"
+touch "${FAKE_TELEOP_READY_FILE}"
+while true; do sleep 1; done
+''',
+        encoding='utf-8',
+    )
+    fake_teleop.chmod(0o755)
+    fake_terminal = fake_bin / 'fake-terminal'
+    fake_terminal.write_text(
+        '''#!/usr/bin/env bash
+set -Eeuo pipefail
+"${FAKE_RUN_TELEOP}" &
+wait "$!"
+''',
+        encoding='utf-8',
+    )
+    fake_terminal.chmod(0o755)
+
+    runtime = tmp_path / 'runtime'
+    environment = _environment(
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+        ISAAC_NAV_RUNTIME_DIR=str(runtime),
+        ISAAC_NAV_SESSION_ID='teleop-terminal-test-session',
+        ISAAC_NAV_TELEOP_INT_CHECKS='3',
+        ISAAC_NAV_TELEOP_TERM_CHECKS='3',
+        ISAAC_NAV_TELEOP_KILL_CHECKS='20',
+        ISAAC_NAV_TERMINAL_TERM_CHECKS='3',
+        ISAAC_NAV_TERMINAL_KILL_CHECKS='20',
+        FAKE_RUN_TELEOP=str(fake_run_teleop),
+        FAKE_TELEOP_EXECUTABLE=str(fake_teleop),
+        FAKE_TELEOP_PID_FILE=str(tmp_path / 'teleop-process.pid'),
+        FAKE_TELEOP_READY_FILE=str(tmp_path / 'teleop-ready'),
+    )
+    process = subprocess.Popen(
+        [str(scripts / 'run_teleop_terminal.sh'), str(fake_terminal)],
+        cwd=project,
+        env=environment,
+        start_new_session=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    teleop_pid = None
+    try:
+        assert _wait_until(
+            lambda: (
+                (runtime / 'teleop.pid').is_file()
+                and (tmp_path / 'teleop-ready').is_file()
+            )
+        )
+        teleop_pid = int(
+            (tmp_path / 'teleop-process.pid').read_text(encoding='utf-8'))
+        teleop_group = int(
+            _runtime_metadata(runtime / 'teleop.pid')['process_group'])
+        assert os.getpgid(teleop_pid) == teleop_group
+
+        os.kill(process.pid, signal.SIGTERM)
+        time.sleep(0.12)
+        assert _process_is_running(teleop_pid)
+        assert (runtime / 'teleop.pid').is_file()
+        stdout, stderr = process.communicate(timeout=6.0)
+
+        assert process.returncode == 143, stdout + stderr
+        assert not _process_is_running(teleop_pid)
+        assert not (runtime / 'teleop.pid').exists()
+        assert _lock_is_available(runtime / 'teleop.lock')
+        assert 'did not exit after SIGINT; sending SIGTERM' in stderr
+        assert 'did not exit after SIGTERM; sending SIGKILL' in stderr
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3.0)
+        if teleop_pid is not None and _process_is_running(teleop_pid):
+            try:
+                os.killpg(os.getpgid(teleop_pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+def _prepare_fake_managed_ros_project(
+    tmp_path: Path, *, start_rviz: bool, start_teleop: bool = False
+):
+    project = tmp_path / 'project'
+    scripts = project / 'scripts'
+    scripts_lib = scripts / 'lib'
+    scripts_lib.mkdir(parents=True)
+    shutil.copy2(RUN_ROS, scripts / 'run_ros.sh')
+    shutil.copy2(RUN_RVIZ, scripts / 'run_rviz.sh')
+    shutil.copy2(COMMON, scripts_lib / 'common.sh')
+    fake_run_teleop = scripts / 'run_teleop.sh'
+    fake_run_teleop.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${SCRIPT_DIR}/lib/common.sh"
+original_args=("$@")
+ensure_dedicated_process_group "${original_args[@]}"
+acquire_instance_lock teleop "fake Mapping teleop"
+exec "${FAKE_TELEOP_EXECUTABLE}"
+""",
+        encoding='utf-8',
+    )
+    fake_run_teleop.chmod(0o755)
+    workspace_setup = project / 'ros2_ws/install/setup.bash'
+    workspace_setup.parent.mkdir(parents=True)
+    workspace_setup.write_text(
+        'export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    ros_setup = tmp_path / 'ros_setup.bash'
+    ros_setup.write_text('export ROS_DISTRO=jazzy\n', encoding='utf-8')
+    rviz_config = tmp_path / 'navigation.rviz'
+    rviz_config.write_text('Panels: []\n', encoding='utf-8')
+
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "$1" == launch ]]; then
+  printf '%s\n' "$$" >"${FAKE_LAUNCH_PID_FILE}"
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+  if [[ "${FAKE_START_RVIZ}" == 1 ]]; then
+    ISAAC_NAV_DEDICATED_PROCESS_GROUP=0 \
+      "${FAKE_RUN_RVIZ}" navigation "${FAKE_RVIZ_CONFIG}" &
+  fi
+  if [[ "${FAKE_START_TELEOP}" == 1 ]]; then
+    ISAAC_NAV_DEDICATED_PROCESS_GROUP=0 "${FAKE_RUN_TELEOP}" &
+  fi
+  while true; do sleep 1; done
+fi
+exit 99
+""",
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    fake_rviz = fake_bin / 'rviz2'
+    fake_rviz.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$$" >"${FAKE_RVIZ_PID_FILE}"
+trap '' INT TERM HUP
+while true; do sleep 1; done
+""",
+        encoding='utf-8',
+    )
+    fake_rviz.chmod(0o755)
+    fake_teleop = fake_bin / 'robot_teleop_keyboard_teleop'
+    fake_teleop.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+printf '%s\n' "$$" >"${FAKE_TELEOP_PID_FILE}"
+trap '' INT TERM HUP
+while true; do sleep 1; done
+""",
+        encoding='utf-8',
+    )
+    fake_teleop.chmod(0o755)
+    fake_python = fake_bin / 'python3'
+    fake_python.write_text(
+        """#!/usr/bin/env bash
+set -Eeuo pipefail
+if [[ "${1:-}" == -m \
+      && "${2:-}" == robot_bringup.ordered_shutdown ]]; then
+  printf 'ordered-helper\n' >>"${FAKE_EVENT_LOG}"
+  exit 0
+fi
+exec /usr/bin/python3 "$@"
+""",
+        encoding='utf-8',
+    )
+    fake_python.chmod(0o755)
+
+    runtime = tmp_path / 'runtime'
+    environment = _environment(
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+        ROS_SETUP=str(ros_setup),
+        ISAAC_NAV_RUNTIME_DIR=str(runtime),
+        ISAAC_NAV_SHUTDOWN_TIMEOUT_SECONDS='4',
+        ISAAC_NAV_LIFECYCLE_SHUTDOWN_SECONDS='1',
+        ISAAC_NAV_SHUTDOWN_INT_CHECKS='3',
+        ISAAC_NAV_SHUTDOWN_TERM_CHECKS='3',
+        ISAAC_NAV_SHUTDOWN_KILL_CHECKS='20',
+        FAKE_START_RVIZ='1' if start_rviz else '0',
+        FAKE_START_TELEOP='1' if start_teleop else '0',
+        FAKE_RUN_RVIZ=str(scripts / 'run_rviz.sh'),
+        FAKE_RUN_TELEOP=str(fake_run_teleop),
+        FAKE_RVIZ_CONFIG=str(rviz_config),
+        FAKE_TELEOP_EXECUTABLE=str(fake_teleop),
+        FAKE_LAUNCH_PID_FILE=str(tmp_path / 'launch.pid'),
+        FAKE_RVIZ_PID_FILE=str(tmp_path / 'rviz-process.pid'),
+        FAKE_TELEOP_PID_FILE=str(tmp_path / 'teleop-process.pid'),
+        FAKE_EVENT_LOG=str(tmp_path / 'events.log'),
+    )
+    return project, runtime, environment
+
+
+def test_ros_supervisor_stops_nested_rviz_group_and_cleans_metadata(tmp_path):
+    project, runtime, environment = _prepare_fake_managed_ros_project(
+        tmp_path, start_rviz=True, start_teleop=True)
+    process = subprocess.Popen(
+        [str(project / 'scripts/run_ros.sh'), 'mapping'],
+        cwd=project,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    rviz_process_pid = None
+    teleop_process_pid = None
+    launch_pid = None
+    try:
+        assert _wait_until(
+            lambda: (
+                (runtime / 'ros.pid').is_file()
+                and (runtime / 'rviz.pid').is_file()
+                and (runtime / 'teleop.pid').is_file()
+                and (tmp_path / 'launch.pid').is_file()
+                and (tmp_path / 'rviz-process.pid').is_file()
+                and (tmp_path / 'teleop-process.pid').is_file()
+                and os.getpgid(process.pid) == process.pid
+            )
+        )
+        launch_pid = int((tmp_path / 'launch.pid').read_text())
+        rviz_process_pid = int(
+            (tmp_path / 'rviz-process.pid').read_text())
+        teleop_process_pid = int(
+            (tmp_path / 'teleop-process.pid').read_text())
+        rviz_metadata = _runtime_metadata(runtime / 'rviz.pid')
+        teleop_metadata = _runtime_metadata(runtime / 'teleop.pid')
+        rviz_group = int(rviz_metadata['process_group'])
+        assert rviz_group == int(rviz_metadata['pid'])
+        assert rviz_group != process.pid
+        assert rviz_group != launch_pid
+        assert os.getpgid(rviz_process_pid) == rviz_group
+        assert os.getpgid(teleop_process_pid) == int(
+            teleop_metadata['process_group'])
+        assert rviz_metadata['session_id'] == _runtime_metadata(
+            runtime / 'ros.pid')['session_id']
+
+        shutdown_started = time.monotonic()
+        os.killpg(process.pid, signal.SIGINT)
+        process.wait(timeout=6.0)
+        stdout, stderr = process.communicate(timeout=1.0)
+
+        assert time.monotonic() - shutdown_started < 4.5
+        assert not _process_is_running(launch_pid)
+        assert not _process_is_running(rviz_process_pid)
+        assert not _process_is_running(teleop_process_pid)
+        assert not (runtime / 'rviz.pid').exists()
+        assert not (runtime / 'teleop.pid').exists()
+        assert not (runtime / 'ros.pid').exists()
+        assert (tmp_path / 'events.log').read_text().splitlines() == [
+            'ordered-helper']
+        assert 'stopping managed rviz process group' in stdout
+        assert 'stopping managed teleop process group' in stdout
+        assert 'with SIGINT' in stdout
+        assert 'with SIGTERM' in stdout
+        assert 'with SIGKILL' in stdout
+        assert 'escalating to SIGKILL' in stderr
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3.0)
+        for pid in (rviz_process_pid, teleop_process_pid, launch_pid):
+            if pid is not None and _process_is_running(pid):
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+
+def test_ros_supervisor_refuses_foreign_project_rviz_metadata(tmp_path):
+    project, runtime, environment = _prepare_fake_managed_ros_project(
+        tmp_path, start_rviz=False)
+    foreign_root = tmp_path / 'foreign-project'
+    foreign_root.mkdir()
+    foreign_environment = os.environ.copy()
+    foreign_environment.update(
+        PROJECT_ROOT=str(foreign_root),
+        ISAAC_NAV_SESSION_ID='foreign-session',
+    )
+    foreign = subprocess.Popen(
+        [sys.executable, '-c', 'import time; time.sleep(30)', 'rviz2'],
+        start_new_session=True,
+        env=foreign_environment,
+    )
+    runtime.mkdir(mode=0o700)
+    foreign_start = Path(f'/proc/{foreign.pid}/stat').read_text().split()[21]
+    boot_id = Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+    foreign_metadata = runtime / 'rviz.pid'
+    foreign_metadata.write_text(
+        '\n'.join([
+            f'pid={foreign.pid}',
+            f'process_group={os.getpgid(foreign.pid)}',
+            f'leader_start_ticks={foreign_start}',
+            f'boot_id={boot_id}',
+            'component=rviz',
+            f'project_root={foreign_root}',
+            'session_id=foreign-session',
+            'started_at=test',
+            '',
+        ]),
+        encoding='utf-8',
+    )
+    process = subprocess.Popen(
+        [str(project / 'scripts/run_ros.sh'), 'mapping'],
+        cwd=project,
+        env=environment,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    launch_pid = None
+    try:
+        assert _wait_until(
+            lambda: (
+                (tmp_path / 'launch.pid').is_file()
+                and (runtime / 'ros.pid').is_file()
+                and os.getpgid(process.pid) == process.pid
+            )
+        )
+        launch_pid = int((tmp_path / 'launch.pid').read_text())
+        os.killpg(process.pid, signal.SIGINT)
+        process.wait(timeout=6.0)
+
+        assert _process_is_running(foreign.pid)
+        assert foreign_metadata.is_file()
+        assert _runtime_metadata(foreign_metadata)['project_root'] \
+            == str(foreign_root)
+        assert not (runtime / 'ros.pid').exists()
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3.0)
+        if launch_pid is not None and _process_is_running(launch_pid):
+            os.killpg(launch_pid, signal.SIGKILL)
+        if foreign.poll() is None:
+            os.killpg(foreign.pid, signal.SIGKILL)
+            foreign.wait(timeout=3.0)
 
 
 def test_ros_supervisor_second_signal_forces_stubborn_launch_group(tmp_path):
@@ -623,6 +1303,7 @@ sleep 30
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
+    launch_pid = None
     try:
         deadline = time.monotonic() + 4.0
         while time.monotonic() < deadline:
@@ -649,6 +1330,8 @@ sleep 30
             except ProcessLookupError:
                 pass
             process.wait(timeout=3.0)
+        if launch_pid is not None and _process_is_running(launch_pid):
+            os.killpg(launch_pid, signal.SIGKILL)
 
 
 def test_saved_map_launcher_derives_and_requires_version_manifest():

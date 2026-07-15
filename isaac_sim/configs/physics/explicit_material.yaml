@@ -1,0 +1,19 @@
+schema_version: 1
+id: explicit_material
+mode: explicit_material
+scene:
+  # Keep the current Warehouse thresholds while isolating material authoring.
+  friction_correlation_distance: 0.00025
+  friction_offset_threshold: 0.0004
+wheel_material:
+  static_friction: 0.2
+  dynamic_friction: 0.2
+  restitution: 0.0
+  friction_combine_mode: average
+  restitution_combine_mode: average
+ground_material:
+  static_friction: 0.5
+  dynamic_friction: 0.5
+  restitution: 0.0
+  friction_combine_mode: average
+  restitution_combine_mode: average

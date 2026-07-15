@@ -22,6 +22,14 @@ class ConfigError(ValueError):
 
 
 _ENV_PATTERN = re.compile(r"\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))")
+_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_PRIM_PATH_PATTERN = re.compile(
+    r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_RESET_STRATEGY_IDS = {
+    "pose_restore_v1",
+    "separate_recontact_0p20m_1step_v1",
+}
 
 
 def project_root() -> Path:
@@ -61,6 +69,13 @@ def _absolute_prim(value: Any, name: str) -> str:
     if not isinstance(value, str) or not value.startswith("/") or "//" in value:
         raise ConfigError(f"{name} must be an absolute USD prim path")
     return value
+
+
+def _strict_prim_path(value: Any, name: str) -> str:
+    path = _absolute_prim(value, name)
+    if not _PRIM_PATH_PATTERN.fullmatch(path):
+        raise ConfigError(f"{name} must be a valid absolute USD prim path")
+    return path
 
 
 def _expand_string(value: str, env: Mapping[str, str]) -> str:
@@ -104,10 +119,21 @@ def _apply_nested_overrides(data: dict[str, Any], env: Mapping[str, str]) -> Non
 
 
 @dataclass(frozen=True)
+class GroundColliderResolverConfig:
+    """Strict recipe for resolving the colliders that act as ground."""
+
+    required_prim_paths: tuple[str, ...]
+    semantic_classes: tuple[str, ...]
+    expected_enabled_count: int
+
+
+@dataclass(frozen=True)
 class EnvironmentConfig:
+    identifier: str
     project_stage: Path
     source_asset: Path
     composition: str
+    ground_colliders: GroundColliderResolverConfig
 
 
 @dataclass(frozen=True)
@@ -123,6 +149,12 @@ class RobotConfig:
 
 
 @dataclass(frozen=True)
+class ResetStrategyConfig:
+    schema_version: int
+    identifier: str
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     physics_hz: float
     rendering_hz: float
@@ -135,6 +167,7 @@ class SimulationConfig:
     pacing_mode: str
     target_realtime_factor: float
     max_frames: int
+    reset_strategy: ResetStrategyConfig
 
 
 @dataclass(frozen=True)
@@ -170,6 +203,8 @@ class ConfigFiles:
     topics: Path
     qos: Path
     dynamic_obstacles: Path
+    ground_topology_profile: Path
+    contact_profile: Path
 
 
 @dataclass(frozen=True)
@@ -200,6 +235,8 @@ class ProjectConfig:
                 self.files.topics,
                 self.files.qos,
                 self.files.dynamic_obstacles,
+                self.files.ground_topology_profile,
+                self.files.contact_profile,
             )
             if not path.exists()
         ]
@@ -210,14 +247,106 @@ class ProjectConfig:
 
 def _parse_environment(raw: Any) -> EnvironmentConfig:
     data = _expect_mapping(raw, "environment")
-    _expect_keys(data, {"project_stage", "source_asset", "composition"}, "environment")
+    _expect_keys(
+        data,
+        {
+            "id",
+            "project_stage",
+            "source_asset",
+            "composition",
+            "ground_colliders",
+        },
+        "environment",
+    )
+    identifier = _required(data, "id", "environment")
+    if not isinstance(identifier, str) or not _IDENTIFIER_PATTERN.fullmatch(
+        identifier
+    ):
+        raise ConfigError(
+            "environment.id must be a path-safe identifier starting with an "
+            "alphanumeric character"
+        )
     composition = _required(data, "composition", "environment")
     if composition != "sublayer":
         raise ConfigError("environment.composition must be 'sublayer'")
+    ground_data = _expect_mapping(
+        _required(data, "ground_colliders", "environment"),
+        "environment.ground_colliders",
+    )
+    _expect_keys(
+        ground_data,
+        {
+            "required_prim_paths",
+            "semantic_classes",
+            "expected_enabled_count",
+        },
+        "environment.ground_colliders",
+    )
+    required_paths_raw = _required(
+        ground_data,
+        "required_prim_paths",
+        "environment.ground_colliders",
+    )
+    if not isinstance(required_paths_raw, list) or not required_paths_raw:
+        raise ConfigError(
+            "environment.ground_colliders.required_prim_paths must be a "
+            "non-empty list"
+        )
+    required_paths = tuple(
+        _strict_prim_path(
+            value,
+            "environment.ground_colliders.required_prim_paths",
+        )
+        for value in required_paths_raw
+    )
+    if len(set(required_paths)) != len(required_paths):
+        raise ConfigError(
+            "environment.ground_colliders.required_prim_paths must not "
+            "contain duplicates"
+        )
+    semantic_classes_raw = _required(
+        ground_data,
+        "semantic_classes",
+        "environment.ground_colliders",
+    )
+    if not isinstance(semantic_classes_raw, list) or not all(
+        isinstance(value, str) and _IDENTIFIER_PATTERN.fullmatch(value)
+        for value in semantic_classes_raw
+    ):
+        raise ConfigError(
+            "environment.ground_colliders.semantic_classes must be a list "
+            "of path-safe identifiers"
+        )
+    semantic_classes = tuple(semantic_classes_raw)
+    if len(set(semantic_classes)) != len(semantic_classes):
+        raise ConfigError(
+            "environment.ground_colliders.semantic_classes must not contain "
+            "duplicates"
+        )
+    expected_count = _required(
+        ground_data,
+        "expected_enabled_count",
+        "environment.ground_colliders",
+    )
+    if (
+        isinstance(expected_count, bool)
+        or not isinstance(expected_count, int)
+        or expected_count < len(required_paths)
+    ):
+        raise ConfigError(
+            "environment.ground_colliders.expected_enabled_count must be an "
+            "integer no smaller than the required path count"
+        )
     return EnvironmentConfig(
+        identifier=identifier,
         project_stage=Path(_required(data, "project_stage", "environment")).resolve(),
         source_asset=Path(_required(data, "source_asset", "environment")).resolve(),
         composition=composition,
+        ground_colliders=GroundColliderResolverConfig(
+            required_prim_paths=required_paths,
+            semantic_classes=semantic_classes,
+            expected_enabled_count=expected_count,
+        ),
     )
 
 
@@ -280,6 +409,7 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
         "pacing_mode",
         "target_realtime_factor",
         "max_frames",
+        "reset_strategy",
     }
     _expect_keys(data, allowed, "simulation")
     headless = _required(data, "headless", "simulation")
@@ -310,6 +440,39 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
     renderer = _required(data, "renderer", "simulation")
     if renderer not in {"RaytracedLighting", "PathTracing"}:
         raise ConfigError("simulation.renderer is unsupported")
+    reset_strategy_data = _expect_mapping(
+        _required(data, "reset_strategy", "simulation"),
+        "simulation.reset_strategy",
+    )
+    _expect_keys(
+        reset_strategy_data,
+        {"schema_version", "id"},
+        "simulation.reset_strategy",
+    )
+    reset_strategy_schema = _required(
+        reset_strategy_data,
+        "schema_version",
+        "simulation.reset_strategy",
+    )
+    if (
+        isinstance(reset_strategy_schema, bool)
+        or not isinstance(reset_strategy_schema, int)
+        or reset_strategy_schema != 1
+    ):
+        raise ConfigError("simulation.reset_strategy.schema_version must be 1")
+    reset_strategy_id = _required(
+        reset_strategy_data,
+        "id",
+        "simulation.reset_strategy",
+    )
+    if (
+        not isinstance(reset_strategy_id, str)
+        or reset_strategy_id not in _RESET_STRATEGY_IDS
+    ):
+        raise ConfigError(
+            "simulation.reset_strategy.id must be one of "
+            f"{sorted(_RESET_STRATEGY_IDS)}"
+        )
     return SimulationConfig(
         physics_hz=_positive_number(_required(data, "physics_hz", "simulation"), "simulation.physics_hz"),
         rendering_hz=_positive_number(
@@ -329,6 +492,10 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
             "simulation.target_realtime_factor",
         ),
         max_frames=max_frames,
+        reset_strategy=ResetStrategyConfig(
+            schema_version=reset_strategy_schema,
+            identifier=reset_strategy_id,
+        ),
     )
 
 
@@ -379,7 +546,17 @@ def _parse_ground_truth(raw: Any) -> GroundTruthConfig:
 
 def _parse_files(raw: Any) -> ConfigFiles:
     data = _expect_mapping(raw, "files")
-    allowed = {"robot", "lidar", "imu", "camera", "topics", "qos", "dynamic_obstacles"}
+    allowed = {
+        "robot",
+        "lidar",
+        "imu",
+        "camera",
+        "topics",
+        "qos",
+        "dynamic_obstacles",
+        "ground_topology_profile",
+        "contact_profile",
+    }
     _expect_keys(data, allowed, "files")
     return ConfigFiles(**{key: Path(_required(data, key, "files")).resolve() for key in sorted(allowed)})
 
@@ -418,7 +595,7 @@ def load_project_config(path: str | Path | None = None, env: Mapping[str, str] |
     }
     _expect_keys(data, allowed, "project")
     version = _required(data, "schema_version", "project")
-    if version != 1:
+    if version != 2:
         raise ConfigError(f"unsupported schema_version {version!r}")
     extensions = _required(data, "extensions", "project")
     if not isinstance(extensions, list) or not extensions or not all(isinstance(v, str) and v for v in extensions):

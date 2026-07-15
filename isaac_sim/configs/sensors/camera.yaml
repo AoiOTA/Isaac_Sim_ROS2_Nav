@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 enabled: true
 default_profile: monitoring
 primary_camera: front
@@ -54,11 +54,21 @@ cameras:
       horizontal_aperture_mm: 21.0
       vertical_aperture_mode: match_profile_aspect_ratio
       focus_distance_m: 4.0
+      # 0.0 keeps the machine-vision camera pinhole-sharp; exposure f-stop is
+      # configured independently below.
+      f_stop: 0.0
     exposure:
       enabled: true
+      auto_exposure_enabled: false
       time_s: 0.02
       responsivity: 1.10267
       f_stop: 5.0
+    render_product:
+      # These settings are authored only on CameraFront's RenderProduct. They
+      # do not change the interactive viewport's global renderer settings.
+      anti_aliasing: rtxaa
+      motion_blur_enabled: false
+      depth_of_field_enabled: false
     rviz:
       enabled: true
       transport: raw

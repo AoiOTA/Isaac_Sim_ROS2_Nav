@@ -1,14 +1,19 @@
 # Stage-13 project template. Every CUSTOM_ROBOT_* variable is deliberately
 # required so a Jackal path cannot be reused silently during migration.
-schema_version: 1
+schema_version: 2
 asset_root: ${ISAAC_ASSET_ROOT}
 
 environment:
+  id: Warehouse
   # Keep the generated custom Stage separate from the committed Jackal Stage,
   # which already authors a Jackal reference.
   project_stage: ${PROJECT_ROOT}/data/runtime/custom_robot_navigation_scene.usda
   source_asset: ${ISAAC_ASSET_ROOT}/Isaac/Environments/Simple_Warehouse/warehouse_multiple_shelves.usd
   composition: sublayer
+  ground_colliders:
+    required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+    semantic_classes: [floor_decal]
+    expected_enabled_count: 32
 
 robot:
   asset_path: ${CUSTOM_ROBOT_USD}
@@ -25,6 +30,9 @@ robot:
   rear_wheel_joints: [rear_left_wheel_joint, rear_right_wheel_joint]
 
 simulation:
+  reset_strategy:
+    schema_version: 1
+    id: pose_restore_v1
   physics_hz: 60
   rendering_hz: 60
   expected_physics_scene: /PhysicsScene
@@ -56,6 +64,7 @@ ground_truth:
   path_hz: 10
 
 extensions:
+  - isaacsim.core.experimental.prims
   - isaacsim.core.nodes
   - isaacsim.robot.wheeled_robots.nodes
   - isaacsim.ros2.bridge
@@ -63,6 +72,7 @@ extensions:
   - isaacsim.sensors.experimental.physics
   - isaacsim.sensors.physics.nodes
   - isaacsim.sensors.experimental.rtx
+  - omni.usd.schema.render_settings.rtx
 
 files:
   robot: ${PROJECT_ROOT}/isaac_sim/configs/robots/custom_robot.yaml
@@ -72,3 +82,5 @@ files:
   topics: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/topics.yaml
   qos: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/qos.yaml
   dynamic_obstacles: ${PROJECT_ROOT}/isaac_sim/configs/experiments/dynamic.yaml
+  ground_topology_profile: ${PROJECT_ROOT}/isaac_sim/configs/ground_topologies/warehouse_combined32_v1.yaml
+  contact_profile: ${PROJECT_ROOT}/isaac_sim/configs/physics/legacy_baseline.yaml

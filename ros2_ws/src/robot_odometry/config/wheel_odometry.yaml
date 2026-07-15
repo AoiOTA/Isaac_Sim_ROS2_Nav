@@ -1,14 +1,6 @@
 wheel_odometry:
   ros__parameters:
     use_sim_time: true
-    wheel_radius: 0.098
-    track_width: 0.37559
-    left_joint_names:
-      - front_left_wheel_joint
-      - rear_left_wheel_joint
-    right_joint_names:
-      - front_right_wheel_joint
-      - rear_right_wheel_joint
     publish_rate: 50.0
     max_integration_step: 0.25
     odom_frame: odom

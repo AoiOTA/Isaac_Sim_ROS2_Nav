@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -20,6 +21,8 @@ class ArticulationRuntimeError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArticulationPhysicsConfig:
+    solver_position_iterations: int
+    solver_velocity_iterations: int
     sleep_threshold: float
     stabilization_threshold: float
     wheel_static_friction_effort: float
@@ -37,6 +40,8 @@ def load_articulation_physics_config(
     if not isinstance(physics, dict):
         raise ArticulationRuntimeError("robot.physics must be a mapping")
     fields = {
+        "solver_position_iterations",
+        "solver_velocity_iterations",
         "sleep_threshold",
         "stabilization_threshold",
         "wheel_static_friction_effort",
@@ -47,6 +52,19 @@ def load_articulation_physics_config(
     }
     reject_unknown(physics, fields, context="robot.physics")
     require_keys(physics, fields, context="robot.physics")
+
+    def positive_integer(name: str) -> int:
+        value = physics[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 255
+        ):
+            raise ArticulationRuntimeError(
+                f"robot.physics.{name} must be an integer in [1, 255]"
+            )
+        return value
+
     static_friction = require_number(
         physics["wheel_static_friction_effort"],
         context="robot.physics.wheel_static_friction_effort",
@@ -68,6 +86,12 @@ def load_articulation_physics_config(
             "wheel static friction effort must be at least dynamic friction effort"
         )
     return ArticulationPhysicsConfig(
+        solver_position_iterations=positive_integer(
+            "solver_position_iterations"
+        ),
+        solver_velocity_iterations=positive_integer(
+            "solver_velocity_iterations"
+        ),
         sleep_threshold=require_number(
             physics["sleep_threshold"],
             context="robot.physics.sleep_threshold",
@@ -100,9 +124,11 @@ class ArticulationRuntime:
         self.base_link_prim_path = base_link_prim_path
         self.app = app
         self._articulation = None
+        self._base_link_view = None
+        self._initial_dof_positions: tuple[float, ...] | None = None
 
     def initialize(self) -> None:
-        from isaacsim.core.experimental.prims import Articulation
+        from isaacsim.core.experimental.prims import Articulation, RigidPrim
         from isaacsim.core.simulation_manager import SimulationManager
 
         self._articulation = Articulation(self.prim_path)
@@ -116,6 +142,15 @@ class ArticulationRuntime:
             self.app.update()
         if not self._articulation.is_physics_tensor_entity_valid():
             raise ArticulationRuntimeError(f"physics articulation view is invalid for {self.prim_path}")
+        self._base_link_view = RigidPrim(self.base_link_prim_path)
+        self.app.update()
+        if not self._base_link_view.is_physics_tensor_entity_valid():
+            raise ArticulationRuntimeError(
+                f"physics root rigid-body view is invalid for {self.base_link_prim_path}"
+            )
+        self._initial_dof_positions = self._read_dof_positions(
+            context="initial articulation state"
+        )
 
     @property
     def articulation(self):
@@ -132,7 +167,11 @@ class ArticulationRuntime:
 
     def configure_stability(
         self, settings: ArticulationPhysicsConfig
-    ) -> None:
+    ) -> tuple[int, int]:
+        self.articulation.set_solver_iteration_counts(
+            [settings.solver_position_iterations],
+            [settings.solver_velocity_iterations],
+        )
         self.articulation.set_sleep_thresholds([settings.sleep_threshold])
         self.articulation.set_stabilization_thresholds(
             [settings.stabilization_threshold]
@@ -142,9 +181,75 @@ class ArticulationRuntime:
             dynamic_frictions=[settings.wheel_dynamic_friction_effort],
             viscous_frictions=[settings.wheel_viscous_friction_coefficient],
         )
+        actual = self.get_solver_iteration_usd_values()
+        expected = (
+            settings.solver_position_iterations,
+            settings.solver_velocity_iterations,
+        )
+        if actual != expected:
+            raise ArticulationRuntimeError(
+                "articulation USD solver readback does not match configuration: "
+                f"expected={expected}, actual={actual}"
+            )
+        return actual
+
+    def get_solver_iteration_usd_values(self) -> tuple[int, int]:
+        """Read composed USD values through the initialized Articulation wrapper."""
+
+        position, velocity = self.articulation.get_solver_iteration_counts()
+
+        def single_count(values: object, name: str) -> int:
+            flattened = values.numpy().reshape(-1)
+            if len(flattened) != 1:
+                raise ArticulationRuntimeError(
+                    f"expected one {name} solver count, got {len(flattened)}"
+                )
+            value = int(flattened[0])
+            if not 1 <= value <= 255:
+                raise ArticulationRuntimeError(
+                    f"articulation USD {name} solver count must be in [1, 255], "
+                    f"got {value}"
+                )
+            return value
+
+        return (
+            single_count(position, "position"),
+            single_count(velocity, "velocity"),
+        )
 
     def set_world_pose(self, position: Sequence[float], orientation_wxyz: Sequence[float]) -> None:
-        self.articulation.set_world_poses(positions=[list(position)], orientations=[list(orientation_wxyz)])
+        if self._base_link_view is None:
+            raise ArticulationRuntimeError(
+                "physics root rigid-body view is not initialized"
+            )
+
+        from isaacsim.core.experimental.utils.backend import use_backend
+        from isaacsim.core.simulation_manager import SimulationManager
+        from omni.physics.core import get_physics_simulation_interface
+
+        # A stage-wide SimulationManager step consumes the PhysX state sourced
+        # from USD.  Author the root rigid body through that same source before
+        # flushing it into PhysX; a tensor-only write can round-trip through its
+        # articulation view yet be replaced by the prior USD pose on simulate.
+        with use_backend(
+            "usd",
+            raise_on_unsupported=True,
+            raise_on_fallback=True,
+        ):
+            self._base_link_view.set_world_poses(
+                positions=[list(position)],
+                orientations=[list(orientation_wxyz)],
+            )
+        get_physics_simulation_interface().flush_changes()
+        physics_view = SimulationManager.get_physics_simulation_view()
+        if physics_view is None or not physics_view.is_valid:
+            raise ArticulationRuntimeError(
+                "physics simulation view is unavailable after root teleport"
+            )
+        if physics_view.update_articulations_kinematic() is False:
+            raise ArticulationRuntimeError(
+                "articulation kinematic synchronization failed after root teleport"
+            )
 
     def get_world_pose(self) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
         positions, orientations = self.articulation.get_world_poses()
@@ -154,6 +259,108 @@ class ArticulationRuntime:
 
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None:
         self.articulation.set_velocities(linear_velocities=[list(linear)], angular_velocities=[list(angular)])
+
+    def get_base_velocities(
+        self,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        linear_values, angular_values = self.articulation.get_velocities()
+
+        def read(values: object, label: str) -> tuple[float, float, float]:
+            rows = values.numpy()
+            if len(rows) != 1 or len(rows[0]) != 3:
+                raise ArticulationRuntimeError(
+                    f"base {label} readback must contain one three-vector"
+                )
+            result = tuple(float(value) for value in rows[0])
+            if not all(math.isfinite(value) for value in result):
+                raise ArticulationRuntimeError(
+                    f"base {label} readback contains a non-finite value"
+                )
+            return result  # type: ignore[return-value]
+
+        return read(linear_values, "linear velocity"), read(
+            angular_values, "angular velocity"
+        )
+
+    def _read_dof_values(
+        self,
+        getter_name: str,
+        *,
+        context: str,
+    ) -> tuple[float, ...]:
+        values = getattr(self.articulation, getter_name)().numpy()
+        if len(values) != 1:
+            raise ArticulationRuntimeError(
+                f"{context} expected one articulation, got {len(values)}"
+            )
+        row = values[0]
+        if len(row) != self.num_dof:
+            raise ArticulationRuntimeError(
+                f"{context} expected {self.num_dof} DOF values, got {len(row)}"
+            )
+        result = tuple(float(value) for value in row)
+        if not all(math.isfinite(value) for value in result):
+            raise ArticulationRuntimeError(
+                f"{context} contains a non-finite DOF value"
+            )
+        return result
+
+    def _read_dof_positions(self, *, context: str) -> tuple[float, ...]:
+        return self._read_dof_values(
+            "get_dof_positions",
+            context=context,
+        )
+
+    def restore_initial_joint_state(self) -> None:
+        """Restore the initialized DOF pose and a zero dynamic state.
+
+        Resetting every DOF to a numeric zero would corrupt custom robots whose
+        authored rest pose is non-zero.  The initialization snapshot instead
+        removes accumulated DOF pose as an uncontrolled reset variable while
+        preserving the asset's complete articulation pose.
+        """
+
+        expected = self._initial_dof_positions
+        if expected is None:
+            raise ArticulationRuntimeError(
+                "initial DOF positions are unavailable before initialization"
+            )
+        zeros = [0.0] * self.num_dof
+        self.articulation.set_dof_positions([list(expected)])
+        self.articulation.set_dof_velocities([zeros])
+        self.articulation.set_dof_velocity_targets([zeros])
+        self.articulation.set_dof_efforts([zeros])
+        actual = self._read_dof_positions(context="restored articulation state")
+        mismatches = [
+            (index, expected_value, actual_value)
+            for index, (expected_value, actual_value) in enumerate(
+                zip(expected, actual, strict=True)
+            )
+            if not math.isclose(
+                actual_value,
+                expected_value,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ]
+        if mismatches:
+            raise ArticulationRuntimeError(
+                "restored DOF position readback does not match the initialized "
+                f"state: {mismatches}"
+            )
+        for getter_name, label in (
+            ("get_dof_velocities", "velocity"),
+            ("get_dof_velocity_targets", "velocity target"),
+            ("get_dof_efforts", "effort"),
+        ):
+            values = self._read_dof_values(
+                getter_name,
+                context=f"restored articulation {label}",
+            )
+            if any(abs(value) > 1e-6 for value in values):
+                raise ArticulationRuntimeError(
+                    f"restored DOF {label} readback is not zero: {values}"
+                )
 
     def set_joint_velocities(self, values: Sequence[float]) -> None:
         if len(values) != self.num_dof:
@@ -192,3 +399,45 @@ class ArticulationRuntime:
     def wake_up(self) -> None:
         interface, stage_id, body_path = self._physx_body_handle()
         interface.wake_up(stage_id, body_path)
+
+
+def author_articulation_solver_iterations(
+    stage: object,
+    articulation_root: str,
+    settings: ArticulationPhysicsConfig,
+) -> None:
+    """Author configured solver USD attributes before PhysX parses the Stage."""
+
+    from pxr import Sdf, UsdPhysics
+
+    prim = stage.GetPrimAtPath(articulation_root)
+    if not prim or not prim.IsValid() or not prim.HasAPI(
+        UsdPhysics.ArticulationRootAPI
+    ):
+        raise ArticulationRuntimeError(
+            "articulation root is invalid or lacks ArticulationRootAPI: "
+            f"{articulation_root}"
+        )
+    values = (
+        (
+            "physxArticulation:solverPositionIterationCount",
+            settings.solver_position_iterations,
+        ),
+        (
+            "physxArticulation:solverVelocityIterationCount",
+            settings.solver_velocity_iterations,
+        ),
+    )
+    for name, value in values:
+        attribute = prim.GetAttribute(name)
+        if not attribute:
+            attribute = prim.CreateAttribute(name, Sdf.ValueTypeNames.Int)
+        elif attribute.GetTypeName() != Sdf.ValueTypeNames.Int:
+            raise ArticulationRuntimeError(
+                f"{name} on {articulation_root} must use USD int, got "
+                f"{attribute.GetTypeName()}"
+            )
+        if not attribute.Set(value):
+            raise ArticulationRuntimeError(
+                f"failed to author {name}={value} on {articulation_root}"
+            )

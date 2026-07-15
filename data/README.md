@@ -32,32 +32,41 @@ warehouse asset.
 
 ## Maps and pose graphs
 
-Generated maps are ignored by default. Large curated maps and pose graphs must
-use Git LFS or an external artifact store rather than ordinary Git history. The
-validated `warehouse_v1` bundle is the repository baseline: its large
-`.posegraph` is tracked by Git LFS, while the matching OccupancyGrid and `.data`
-file are regular Git artifacts. Hydrate it after cloning:
+Generated maps are ignored by default. Large curated Pose Graph files must use
+Git LFS or an external artifact store rather than ordinary Git history. The
+validated `warehouse_v1` bundle is the calibrated repository baseline;
+`warehouse_v2` is a recovered, uncalibrated candidate whose provenance and
+runtime alignment are not yet verified. Each large `.posegraph` is tracked by
+Git LFS, while its matching OccupancyGrid and `.data` are regular Git artifacts.
+Hydrate LFS after cloning, then follow the normal asset/build/preflight order:
 
 ```bash
 git lfs install
 git lfs pull
+./scripts/import_assets.sh
+./scripts/build_ros2.sh
 ./scripts/preflight.sh
 ```
+
+Install ROS/Python dependencies first as described in `docs/user_manual.md`;
+running preflight before the local asset import and ROS workspace build fails by
+design.
 
 For externally stored artifacts, commit only a small manifest containing the
 artifact URI, checksum, byte size, format/version, creation scenario, and map to
 USD alignment metadata. Verify the checksum after retrieval before running an
 experiment.
 
-The current repository baseline is described by
-`data/maps/manifests/warehouse_v1.yaml`. It records the byte size and SHA256 of
-the OccupancyGrid (`.yaml`/`.pgm`) and serialized Pose Graph
-(`.posegraph`/`.data`), plus map dimensions, origin, source environment, and the
-Map/USD calibration pair. Those four generated files are one indivisible
-version: do not mix artifacts from different mapping runs. `preflight.sh`
-rejects missing, unhydrated, size-mismatched, or checksum-mismatched baseline
-files. New generated versions remain local until deliberately curated and
-added to the manifest/LFS policy.
+The current repository bundles are described by
+`data/maps/manifests/warehouse_v1.yaml` and `warehouse_v2.yaml`. Each records the
+byte size and SHA256 of the OccupancyGrid (`.yaml`/`.pgm`) and serialized Pose
+Graph (`.posegraph`/`.data`), plus map dimensions, origin, source environment,
+and calibration state. Those four generated files are one indivisible version:
+do not mix artifacts from different mapping runs. `preflight.sh` automatically
+checks the calibrated v1 release baseline; v2 can be checked explicitly with
+`map_manifest verify`, but must not be treated as calibrated or accepted for
+formal navigation statistics. New generated versions remain local until
+deliberately curated and added to the manifest/LFS policy.
 
 Localization and Navigation consume both halves of that version for different
 purposes: `nav2_map_server` serves the saved `.yaml`/`.pgm` pair as the immutable

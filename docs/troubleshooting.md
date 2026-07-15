@@ -82,6 +82,7 @@ ros2 pkg prefix robot_teleop
 先确认是否真的有一个正在使用的会话：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 ./scripts/diagnose.sh
 ./scripts/clean_runtime.sh --dry-run
 ```
@@ -358,7 +359,8 @@ publisher 是 Controller Server，消息类型是 `nav_msgs/msg/Path`、frame �
 
 **症状：** RViz 显示 `No Image`；两个 Camera Topic 没有 publisher；出现
 QoS incompatibility；Image 与 CameraInfo 数量/时间戳不匹配；画面速率低于
-profile 配置；分辨率、frame 或画面方向不对。
+profile 配置；分辨率、frame 或画面方向不对；静止画面失焦、运动画面拖影，
+或低分辨率画面出现明显的 DLSS 上采样模糊。
 
 **检查：**
 
@@ -377,19 +379,25 @@ ros2 run tf2_ros tf2_echo base_link camera_front_optical_frame
 publisher；其他 profile 应各有且仅有 1 个 Isaac publisher。两者应使用
 `camera_front_optical_frame`、Best Effort/Volatile、depth 2，Image encoding
 为 `rgb8`。GUI 默认 `monitoring`，headless 默认 `off`。
+同时确认 `camera.yaml` 是 schema v3：`optics.f_stop=0.0` 与
+`exposure.f_stop` 分离，`render_product.anti_aliasing=rtxaa`，Motion Blur、DoF
+和 Auto Exposure 均为 `false`。
 
 **常见原因：** headless 未显式传 `--camera-profile`；误选 `off`；RViz 用了
 Reliable 或 compressed transport；旧 Isaac 实例造成重复 publisher；GPU/渲染
 负载或 RTF 低使实际墙钟速率达不到 15/20/30 Hz 配置目标；消费者按到达序号
 而不是 header stamp 配对 Best Effort 消息；只改了 Camera YAML、Topic 或 TF
-契约的一侧。
+契约的一侧；仍使用把光学 f-stop 与曝光 f-stop 混在一起的 schema v2；或只改
+UI viewport 的全局 AA，而没有给 CameraFront RenderProduct 写局部 RTX 设置。
 
 **修复：** 正常停止 Isaac，在原来的完整启动命令中显式加入
 `--camera-profile monitoring` 后重启；不要因此改变原有 navigation/odometry
 mode。RViz 使用 raw transport、Best Effort/Volatile depth 2。性能不足时从
 `high_quality` 降到 `monitoring`，并用 Profiler 记录 RTF、实际 Hz、age 和
 Image/CameraInfo stamp 配对。方向、曝光、遮挡必须实际看图，不能只看 Topic。
-重复 publisher 先通过受管清理停止旧实例。
+重复 publisher 先通过受管清理停止旧实例。模糊问题应修改并验证 Camera schema
+v3 的局部配置，不要借机改变 UI viewport 的全局渲染策略；代码和配置测试通过
+后仍要抓取真实静止/运动图像验收。
 
 **禁止操作：** 不要把 profile 的目标 Hz 当成实测结论，不要为了消除 RViz
 提示把传感器改成 Reliable，不要把 Camera 接入 SLAM/Nav2/Collision Monitor，
@@ -412,11 +420,11 @@ ros2 lifecycle get /controller_server  # Navigation 尚在时
 ```
 
 正常 `scripts/run_ros.sh` 日志会先打印按模式执行的
-`ordered shutdown: <step>: PASS`（失败时是明确 `WARN`），完整序列共用 20 秒
-总期限，之后才停止 launch
-process group。Navigation
-使用 `robot_rviz_plugins/Navigation 2 Safe`；受管 ROS 与 RViz 各有经过身份验证
-的 PID/process-group 元数据。
+`ordered shutdown: <step>: PASS`（失败时是明确 `WARN`）。完整关闭共用 20 秒
+总期限，Lifecycle helper 默认最多使用 10 秒并保留最后 1 秒；随后本会话认证的
+launch、RViz、Teleop 和 helper 独立进程组按 INT→TERM→KILL 有界停止。Navigation
+使用只观察 Lifecycle 的 `robot_rviz_plugins/Navigation 2 Safe`；受管组件都有
+PID/PGID、start ticks、boot ID、项目根和 session 元数据。
 
 **常见原因：** 手工 `ros2 launch` 绕过 supervisor；直接 kill 了 launch
 child、Lifecycle manager 或 RViz；工作空间没有重建，仍加载上游旧 Nav2 panel；
@@ -427,14 +435,16 @@ child、Lifecycle manager 或 RViz；工作空间没有重建，仍加载上游�
 终端按一次 Ctrl+C 并等待：Navigation 先关 Navigation manager 再关
 Localization manager；Localization 关其 manager；Mapping 依次 deactivate、
 cleanup、shutdown SLAM Toolbox。终端已丢失时先 dry-run，再执行
-`./scripts/clean_runtime.sh --dds-shm`；清理器会向 supervisor 发信号并验证
-身份。一次 Ctrl+C 走正常顺序；确认卡住时第二次会中断 helper 并强制 TERM，
-监督器再按有界等待升级它自己创建的精确 launch 组。若某步是 WARN，保留完整
-日志并检查对应服务，而不是假定干净退出。
+`./scripts/clean_runtime.sh`；只有还需清理 Fast DDS SHM 且确认没有使用者时才加
+`--dds-shm`。清理器会逐个认证遗留的 Isaac/ROS/RViz/Teleop/底盘诊断组，并在每个
+信号阶段复核身份。一次 Ctrl+C 走正常顺序；确认卡住时第二次会中断 helper 并对
+本会话组请求 TERM，第三次才请求 KILL。若某步是 WARN，保留完整日志并检查对应
+服务，而不是假定干净退出。
 
 **禁止操作：** 不要直接 `kill` launch 子进程、手工乱发 lifecycle transition、
-删除 PID 文件、`pkill -f ros`/`pkill python`、发送 SIGKILL，或在仍有 Fast DDS
-进程时清空 `/dev/shm`。
+删除 PID 文件、`pkill -f ros`/`pkill python`、手工向未认证 PID/PGID 发送
+SIGKILL，或在仍有 Fast DDS 进程时清空 `/dev/shm`。只有项目监督器/清理器通过
+身份复核后的最终有界 KILL 属于安全契约。
 
 ## 14. Profiler 报告为空、CPU 统计异常或性能模式不可复现
 
@@ -491,6 +501,122 @@ warning 却只比较平均 Hz；Intel P-state 下 governor 标签
 start/end snapshot 写成连续平均，不要比较不同 Camera/RViz/目标/参数的结果，
 不要修改报告 JSON 掩盖缺失数据，不要让 benchmark 启动器隐式 sudo/改电源
 策略，也不要测试结束后把主机永久留在性能模式。
+
+### 14.1 底盘报告缺少运行态指纹或 Reset recovery 超时
+
+**症状：** motion baseline 在首段前失败；报告中
+`runtime_provenance.verified=false`；错误为 `environment label does not match Isaac
+runtime provenance`；或错误为 `Reset recovery timed out`。
+
+先确认 Isaac 已经启动且与脚本处于相同 Domain，再检查启动快照：
+
+```bash
+source scripts/lib/common.sh
+source_ros --require-workspace
+ros2 param dump /isaac_navigation_sim
+jq '{result, failure_reason, runtime_provenance, segments}' \
+  data/reports/motion/<report>.json
+ros2 topic echo /odom --once --field twist.twist
+ros2 topic echo /joint_states --once --field velocity
+```
+
+当前新运行严格要求 runtime provenance schema v5；solver 必须包含
+`stage_articulation_usd_readback_verified=true`，robot 必须包含完整 `kinematics`，
+并且 `ground_topology.json/.sha256` 与 `contact.json/.sha256` 两对参数都要通过
+canonical JSON、hash、Stage readback 和 topology-target/contact-ground 交叉校验。
+schema v3/v4 报告可以各自离线复核，但不能连接当前 motion runner，也不能与 v5
+混入正式统计。看到 schema v1/v2 或旧字段
+`stage_runtime_readback_verified`，说明连接了旧 Isaac/旧 ROS 安装产物，不能靠手改
+JSON 兼容；应停止两端、重新构建并按 Isaac→ROS 顺序冷启动。
+
+若 Realistic 启动时报 `Isaac kinematics ... does not match local robot config`，不要在
+`wheel_odometry.yaml` 补一份轮径/轮距。确认 Isaac 与 ROS 两端选择的是同一个
+schema-v2 robot YAML：默认均为 `isaac_sim/configs/robots/jackal.yaml`；实验候选则
+必须同时给 Isaac project 的 `files.robot` 和 ROS launch 的
+`robot_config_file:=/absolute/path/to/candidate.yaml`。随后核对只读参数中的
+`robot.config.path/sha256`、profile、lifecycle、轮径、轮宽、几何/有效轮距。握手
+失败时 `/wheel/odom` 不存在且当前 Realistic ROS launch 随后整体关闭，是预期的失败
+关闭行为。
+
+若错误包含 `ground topology`、`stale or differs`、`source partition` 或
+`contact ground colliders must match ground topology target`，不要只改报告 JSON 或
+profile ID。先核对项目 `files.ground_topology_profile` 是否与规范环境匹配：
+SimplePlane 只能使用 `simple_plane_only1_v1`，Warehouse 可使用
+`warehouse_combined32_v1` 或 `warehouse_plane_only1_v1`；再确认 topology YAML、源
+资产以及 compose 后会反映到 topology/contact fresh snapshot 的 Stage 状态没有被其他
+扩展修改。该 fresh 比较不覆盖任意无关 Stage 变更。正式矩阵还要求 profile 是 clean
+HEAD 中的普通 blob，工作树字节必须一致。需要回到 Warehouse 默认行为时选择
+`warehouse_combined32_v1` 并冷启动新 Isaac，不要手工把 31 个 collider 重新打开。
+
+`run_motion_baseline.sh` 不负责启动 Isaac；`/cmd_vel` 没有订阅者时拒绝运行是正确
+门禁。provenance 缺字段通常表示 ROS 工作区未重建、连接了旧 Isaac 进程，或查询
+shell 没有加载项目 Domain。环境标签不一致时，以
+`ros2 param get /isaac_navigation_sim runtime_provenance.environment.id` 的只读值和
+实际项目配置为准；不要只改报告名冒充 A/B，必须让 `--environment` 精确匹配，或
+同时建立正确的环境项目配置、源资产和规范 ID。Reset Trigger 成功只证明事务响应完成；runner 仍要求
+新的 Clock/Odom/JointState 并连续静止。保留失败 JSON，核对三路 Topic Hz、当前
+底盘/轮速和 Isaac reset 日志；当前 runner 会把 `diagnostic` 追加到 timeout，列出
+三路 sequence、wall/simulation age、Odom 线/角速度、四轮绝对速度、各门限、观察
+次数、逐门违规计数、恢复窗峰值和最长连续静止时间。由于三个 DDS Topic 没有
+跨 Topic 到达顺序保证，Odom/JointState 可比同一 physics tick 的 `/clock` 回调先到；
+runner 只接受配置中 `max_future_skew_sec=0.02` 的有界相位差，真正落后仍受
+`max_sample_age_sec=0.5` 限制。Reset 成功响应末尾必须有版本化
+`reset_metadata_v1` JSON；其中的 generation 和服务端 `boundary_clock_ns` 把响应后
+处理、但实际产生于旧 Reset epoch 的排队消息排除。runner 在收到响应后重建三路
+sequence barrier，并要求 Clock/Odom/JointState 都越过各自上次已记账水位、三路
+timestamp 都严格晚于 boundary。逐流时间门、wall age 和速度门每个 callback 都检查；
+event 到 Trigger 响应之间每个 Topic 的历史最大 timestamp 会被锁存，静止观察下界取
+三路 barrier 高水位最大值，后续较旧 callback 不能覆盖这段已知运动/时间证据；
+连续静止时长只由三路都有新证据的相干组按最小 timestamp 推进，任一 Topic 回退、
+Clock 单独推进、真实断流或积压都不能跨缺口记账。诊断中的
+`stream:*_not_stale`、`stream:*_not_too_far_ahead`、`wall_streams_fresh` 以及全窗
+`peak_observed.sim_age_sec` 可区分正常一帧回调重排、正向积压和真实断流。先用这些
+字段区分 Topic freshness 与真实未静止，不要先
+放宽 30 秒 recovery 或速度阈值。若全新 Isaac
+进程立即复跑成功，把旧样本分类为启动/长空闲瞬态并继续 soak 复现；若连续复现，
+应按逐阈值诊断定位并修复物理或 Reset，不得删除失败样本。
+
+### 14.2 RTX helper 时间样本警告
+
+**症状：** Kit 日志重复出现 `getSimulationTimeMonotonicAtTime`、
+`getSimulationTimeAtTime` 或 `No adjacent samples found`；ROS 消息仍在发布，但
+点云时间可能来自失败后的当前仿真时间 fallback。
+
+当前仓库把 RTX LiDAR、RGB 和 CameraInfo helper 的
+`resetSimulationTimeOnStop` 显式设为 true。这是安装版 Isaac Sim 6.0.1
+`isaacsim.ros2.nodes` 1.18.13 的默认策略；false 会请求跨 Timeline Stop 的
+monotonic 路径。项目 `/simulation/reset` 只做 pause → 单步 → play，不执行
+Timeline Stop，所以它不会因为该设置自行创建新 epoch。
+
+**检查：** 先保存原始日志，不要边运行边改开关。把三类警告分别计数，并生成
+包含 `/clock`、点云、Odom、JointState 和 TF age 的统一报告：
+
+```bash
+KIT_LOG=/absolute/path/to/kit_YYYYMMDD_HHMMSS.log
+rg -c --include-zero 'getSimulationTimeMonotonicAtTime' "$KIT_LOG"
+rg -c --include-zero 'getSimulationTimeAtTime' "$KIT_LOG"
+rg -c --include-zero 'No adjacent samples' "$KIT_LOG"
+./scripts/profile_runtime.sh \
+  --warmup 10 --duration 900 \
+  --label timing_reproduction \
+  --output data/reports/runtime/timing_reproduction.json
+```
+
+同时记录 Camera Off/Monitoring、LiDAR 开关、GUI/headless、realtime/unbounded、
+physics Hz、`update_fabric`、Stop→Play 与 Reset 时刻。当前可复核基线中，false
+在至少 30 分钟内为 `93 / 0 / 93`，true 的 15 分钟 headless 和 Camera
+Monitoring 短窗均为 `0 / 0 / 0`；详细日志哈希见
+[`verification.md`](verification.md#rtx-helper-时间策略与-ab)。
+
+**判读：** Profiler 的 Topic `future_stamps` 以“最新收到的 `/clock` 回调”为
+参考。同一物理步内几十微秒的 IMU/Joint lead 可能只是回调顺序，仍须与 stamp
+回退、TF future 和 PointCloud age 分开看；不能用 Kit 警告为 0 掩盖真正的
+Odom/TF 离群点。
+
+**禁止操作：** 不要打开 `useSystemTime` 逃离 ROS 仿真时钟，不要把
+`accumulate_outputs` 设为 false（本项目 90 秒实验曾升至 2860 次警告），不要
+吞日志或只删 warning。若只在真正 Stop→Play 后复现，必须保留跨 epoch 的点云
+header、消息年龄和旧 DDS 样本证据，再修生命周期边界。
 
 ## 15. 异常退出后仍有进程
 

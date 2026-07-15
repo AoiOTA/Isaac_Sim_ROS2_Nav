@@ -8,6 +8,58 @@ import yaml
 
 
 PACKAGE_ROOT = Path(__file__).parents[1]
+REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
+
+
+def _literal_tuple_assignment(source, name):
+    tree = ast.parse(source)
+    assignment = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        )
+    )
+    assert isinstance(assignment.value, ast.Tuple)
+    return tuple(ast.literal_eval(item) for item in assignment.value.elts)
+
+
+def _literal_return_mapping_keys(source, function_name):
+    tree = ast.parse(source)
+    function = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    returns = [node for node in ast.walk(function) if isinstance(node, ast.Return)]
+    assert len(returns) == 1
+    assert isinstance(returns[0].value, ast.Dict)
+    return tuple(ast.literal_eval(key) for key in returns[0].value.keys)
+
+
+def test_runtime_provenance_producer_and_consumer_parameter_sets_match():
+    producer_source = (
+        REPOSITORY_ROOT / "isaac_sim" / "src" / "runtime_provenance.py"
+    ).read_text(encoding="utf-8")
+    consumer_source = (
+        PACKAGE_ROOT
+        / "robot_experiments"
+        / "motion_baseline_runner.py"
+    ).read_text(encoding="utf-8")
+    produced = _literal_return_mapping_keys(
+        producer_source,
+        "runtime_provenance_parameters",
+    )
+    consumed = _literal_tuple_assignment(
+        consumer_source,
+        "_RUNTIME_PROVENANCE_PARAMETER_NAMES",
+    )
+
+    assert len(produced) == len(set(produced))
+    assert len(consumed) == len(set(consumed))
+    assert set(produced) == set(consumed)
 
 
 @pytest.mark.parametrize(
@@ -15,6 +67,7 @@ PACKAGE_ROOT = Path(__file__).parents[1]
     [
         "initial_pose.launch.py",
         "experiment.launch.py",
+        "motion_baseline.launch.py",
         "scan_fault_bridge.launch.py",
     ],
 )
@@ -71,6 +124,97 @@ def test_incremental_map_comparison_has_an_installed_cli():
         "incremental_map_compare = "
         "robot_experiments.incremental_map_compare:main"
     ) in setup_source
+
+
+def test_effective_track_analysis_has_an_installed_cli():
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "effective_track_analysis = "
+        "robot_experiments.effective_track_analysis:main"
+    ) in setup_source
+
+
+def test_contact_ab_analysis_has_an_installed_cli():
+    """The offline contact A/B analyser is installed as a console script."""
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "contact_ab_analysis = "
+        "robot_experiments.contact_ab_analysis:main"
+    ) in setup_source
+
+
+def test_motion_baseline_has_an_installed_cli_and_safe_launch_contract():
+    setup_source = (PACKAGE_ROOT / "setup.py").read_text()
+    assert (
+        "motion_baseline_runner = "
+        "robot_experiments.motion_baseline_runner:main"
+    ) in setup_source
+    launch_source = (PACKAGE_ROOT / "launch" / "motion_baseline.launch.py").read_text()
+    assert '"use_sim_time": True' in launch_source
+    assert 'DeclareLaunchArgument("environment_id", default_value="")' in launch_source
+    assert 'DeclareLaunchArgument("odometry_mode", default_value="")' in launch_source
+
+
+def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
+    source = (
+        PACKAGE_ROOT / "robot_experiments" / "motion_baseline_runner.py"
+    ).read_text()
+    assert "create_publisher" in source
+    assert "_assert_command_channel_uncontended" in source
+    assert "get_subscription_count()" in source
+    assert "get_service_names_and_types_by_node" in source
+    assert '"std_srvs/srv/Trigger" in service_types' in source
+    assert "authorized_reset_safety_publishers" in source
+    assert "safe_stop" in source
+    assert "zero_publish_count" in source
+    assert "signal.SIGTERM" in source
+    assert "_raise_keyboard_interrupt" in source
+    assert "call_async(Trigger.Request())" in source
+    assert "fresh /clock, /odom" in source
+    assert "_reset_recovery_diagnostic" in source
+    assert "longest_stationary_duration_sec" in source
+    assert "wheel_abs_speed_radps" in source
+    assert "max_future_skew_sec" in source
+    assert "coherent_without_time_progress" in source
+    assert "boundary_clock_ns" in source
+    assert "_coherent_group_ready" in source
+    assert "AsyncParameterClient" in source
+    assert "runtime_provenance" in source
+    assert "validate_runtime_provenance" in source
+    assert '"runtime_provenance.contact.json"' in source
+    assert '"runtime_provenance.contact.sha256"' in source
+    assert '"runtime_provenance.ground_topology.json"' in source
+    assert '"runtime_provenance.ground_topology.sha256"' in source
+    assert (
+        '"runtime_provenance.simulation.reset_strategy.json"' in source
+    )
+    assert (
+        '"runtime_provenance.simulation.reset_strategy.sha256"' in source
+    )
+    assert "decode_hashed_contact_snapshot" in source
+    assert "decode_hashed_reset_strategy_snapshot" in source
+    assert "_decode_hashed_ground_topology_snapshot" in source
+    assert "environment label does not match Isaac runtime provenance" in source
+    provenance_reader = source.split("def _read_runtime_provenance", 1)[1].split(
+        "def _begin_segment_capture", 1
+    )[0]
+    assert provenance_reader.index(
+        "self._runtime_provenance = provenance"
+    ) < provenance_reader.index(
+        "environment label does not match Isaac runtime provenance"
+    )
+    run_segment = source.split("def _run_segment", 1)[1].split(
+        "def _base_report", 1
+    )[0]
+    assert run_segment.index("reset_report = self._reset_and_wait()") < run_segment.index(
+        "self._begin_segment_capture()"
+    )
+    run_all = source.split("def run_all", 1)[1].split(
+        "def _raise_keyboard_interrupt", 1
+    )[0]
+    assert run_all.index("self._read_runtime_provenance()") < run_all.index(
+        "self._create_command_publisher()"
+    )
 
 
 def test_scan_fault_bridge_has_an_installed_cli_and_opt_in_output():

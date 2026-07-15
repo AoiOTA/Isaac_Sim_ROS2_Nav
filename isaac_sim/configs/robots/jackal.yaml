@@ -1,13 +1,35 @@
-schema_version: 1
+schema_version: 3
 name: jackal
+kinematics_profile_id: jackal_legacy_geometric_v1
+lifecycle: stable_baseline
 wheel_radius: 0.098
 wheel_width: 0.040
 geometric_track_width: 0.37559
+effective_track_width: 0.37559
 wheelbase: 0.262
 base_mass: 17.0
 wheel_mass: 0.477
 nominal_total_mass: 18.908
+mass_collision_profile: ../robot_mass_profiles/legacy_default_sensor_density_v1.yaml
+# Behavior-preserving migration guard, not a calibrated drive. The damping is
+# the legacy USD value converted to SI; the two 1e9 limits replace prior
+# unbounded values with explicit finite sentinels until isolated A/B acceptance.
+wheel_velocity_drive:
+  schema_version: 1
+  profile_id: jackal_drive_legacy_finite_guard_v1
+  drive_type: force
+  stiffness_n_m_per_rad: 0.0
+  damping_n_m_s_per_rad: 572957795.1308232
+  max_effort_n_m: 1000000000.0
+  max_joint_velocity_rad_s: 1000000000.0
 physics:
+  # Isaac Sim 6 warns that TGS behavior changed above four velocity
+  # iterations. The 2026-07-14 standard-collider A/B kept straight/stopping
+  # behavior equivalent at 4 versus 16, improved high-tier rotation at 4, and
+  # exposed reset-latency outliers at 16. Freeze 32/4 and author both counts
+  # before physics starts; warning suppression alone was not the decision gate.
+  solver_position_iterations: 32
+  solver_velocity_iterations: 4
   # The command watchdog owns stationary braking. Extra joint friction causes
   # a low-speed dead zone that prevents Nav2's initial commands from moving the
   # platform, so leave the wheel joints free while the articulation is awake.
@@ -24,8 +46,6 @@ wheel_joints:
   rear_left: rear_left_wheel_joint
   rear_right: rear_right_wheel_joint
 controller:
-  wheel_radius: 0.098
-  wheel_distance: 0.37559
   max_linear_speed: 1.0
   max_angular_speed: 1.5
   max_wheel_speed: 15.0

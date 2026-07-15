@@ -28,7 +28,7 @@
 | 基础稳定性 | 已完成统一 Jazzy/Domain 42/Fast DDS 环境、任意目录入口、四类单实例 PID、只读诊断和有进程证明的 SHM 清理。 |
 | Lifecycle/时间 | 已完成唯一 Lifecycle owner、原子状态快照、有限退避、异步代次令牌、Clock 回退/前跳/显式 Reset epoch 和完整 Reset 恢复序列。 |
 | RViz | 已完成 `mapping.rviz`、`localization.rviz`、`navigation.rviz`，并锁定 Map 与传感器 QoS。 |
-| 初始位姿 | 已完成 `auto|rviz` 所有权策略；RViz 2D Pose Estimate 不会被自动标定位姿覆盖，Reset 后按策略恢复。 |
+| 初始位姿 | 已完成 `auto/rviz` 所有权策略；RViz 2D Pose Estimate 不会被自动标定位姿覆盖，Reset 后按策略恢复。 |
 | 导航目标 | 使用官方 Nav2 Navigation 2 Panel + GoalTool，已满足需求，因此按方案约束没有实现额外 Goal Bridge。 |
 | Mapping Teleop | 已完成 W/A/S/D/方向键、0.18 秒稳态 deadman、速度上限、最终零速度、模式互斥和受管终端。 |
 | 启动集成 | 四种 `run_ros.sh` 操作默认启动对应 RViz；Mapping 两种模式默认启动 Teleop；`interactive:=false` 可无头运行。 |
@@ -1156,8 +1156,9 @@ Topic: /odom
 
 ```bash
 ros2 topic list
-ros2 topic type <topic>
-ros2 topic info -v <topic>
+TOPIC=/plan  # replace after inspecting the list above
+ros2 topic type "$TOPIC"
+ros2 topic info -v "$TOPIC"
 ```
 
 可能为：

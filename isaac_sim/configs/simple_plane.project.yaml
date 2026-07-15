@@ -1,0 +1,82 @@
+schema_version: 2
+asset_root: ${ISAAC_ASSET_ROOT}
+
+environment:
+  id: SimplePlane
+  project_stage: ${PROJECT_ROOT}/isaac_sim/assets/environments/simple_plane_navigation_scene.usda
+  source_asset: ${PROJECT_ROOT}/isaac_sim/assets/environments/simple_plane.usda
+  composition: sublayer
+  ground_colliders:
+    required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+    semantic_classes: []
+    expected_enabled_count: 1
+
+robot:
+  asset_path: ${PROJECT_ROOT}/isaac_sim/assets/robots/jackal/jackal_nav.usda
+  default_prim: jackal
+  runtime_prim_path: /World/Robots/Jackal
+  articulation_root: /World/Robots/Jackal
+  base_link_prim: /World/Robots/Jackal/base_link
+  wheel_joints:
+    - front_left_wheel_joint
+    - front_right_wheel_joint
+    - rear_left_wheel_joint
+    - rear_right_wheel_joint
+  front_wheel_joints: [front_left_wheel_joint, front_right_wheel_joint]
+  rear_wheel_joints: [rear_left_wheel_joint, rear_right_wheel_joint]
+
+simulation:
+  reset_strategy:
+    schema_version: 1
+    id: pose_restore_v1
+  physics_hz: 60
+  rendering_hz: 60
+  expected_physics_scene: /PhysicsScene
+  headless: true
+  renderer: RaytracedLighting
+  navigation_mode: mapping
+  odometry_mode: ideal
+  structure_tf_source: isaac
+  pacing_mode: realtime
+  target_realtime_factor: 1.0
+  max_frames: 0
+
+spawn:
+  poses_file: ${PROJECT_ROOT}/isaac_sim/configs/spawn_poses.yaml
+  selected: mapping_start
+
+ros2:
+  domain_id: 42
+  rmw_implementation: rmw_fastrtps_cpp
+  namespace: ""
+
+ground_truth:
+  enabled: false
+  frame_id: map
+  child_frame_id: ground_truth_base_link
+  odom_topic: /ground_truth/odom
+  path_topic: /ground_truth/path
+  odom_hz: 60
+  path_hz: 10
+
+extensions:
+  - isaacsim.core.experimental.prims
+  - isaacsim.core.nodes
+  - isaacsim.robot.wheeled_robots.nodes
+  - isaacsim.ros2.bridge
+  - isaacsim.ros2.nodes
+  - isaacsim.sensors.experimental.physics
+  - isaacsim.sensors.physics.nodes
+  - isaacsim.sensors.experimental.rtx
+  - omni.usd.schema.render_settings.rtx
+
+files:
+  robot: ${PROJECT_ROOT}/isaac_sim/configs/robots/jackal.yaml
+  lidar: ${PROJECT_ROOT}/isaac_sim/configs/sensors/lidar_3d.yaml
+  imu: ${PROJECT_ROOT}/isaac_sim/configs/sensors/imu.yaml
+  camera: ${PROJECT_ROOT}/isaac_sim/configs/sensors/camera.yaml
+  topics: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/topics.yaml
+  qos: ${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/qos.yaml
+  dynamic_obstacles: ${PROJECT_ROOT}/isaac_sim/configs/experiments/dynamic.yaml
+  ground_topology_profile: ${PROJECT_ROOT}/isaac_sim/configs/ground_topologies/simple_plane_only1_v1.yaml
+  contact_profile: ${PROJECT_ROOT}/isaac_sim/configs/physics/legacy_baseline.yaml

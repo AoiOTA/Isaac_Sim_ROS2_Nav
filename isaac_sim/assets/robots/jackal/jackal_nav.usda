@@ -10,6 +10,111 @@
 
 over "jackal"
 {
+    # The imported 2022 Jackal asset authors the removed PhysX
+    # `customGeometry` property on every wheel. PhysX warns whenever that
+    # property exists, even when it is false or value-blocked, so the project
+    # overlay deactivates each legacy collider and supplies an equivalent
+    # standard Cylinder without modifying the imported source crate.
+    over "front_left_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    over "front_right_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    over "rear_left_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    over "rear_right_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
     over "base_link"
     {
         over "sick_lms1xx_lidar_frame" (

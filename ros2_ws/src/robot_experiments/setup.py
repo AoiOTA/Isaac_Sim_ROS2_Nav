@@ -24,9 +24,12 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "contact_ab_analysis = robot_experiments.contact_ab_analysis:main",
+            "effective_track_analysis = robot_experiments.effective_track_analysis:main",
             "experiment_runner = robot_experiments.experiment_runner:main",
             "incremental_map_compare = robot_experiments.incremental_map_compare:main",
             "initial_pose_publisher = robot_experiments.initial_pose_publisher:main",
+            "motion_baseline_runner = robot_experiments.motion_baseline_runner:main",
             "runtime_profiler = robot_experiments.runtime_profiler:main",
             "scan_fault_bridge = robot_experiments.scan_fault_bridge:main",
         ],

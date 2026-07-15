@@ -1,10 +1,31 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="jackal">
   <xacro:arg name="prefix" default=""/>
+  <xacro:arg name="wheel_radius" default=""/>
+  <xacro:arg name="wheel_width" default=""/>
+  <xacro:arg name="geometric_track_width" default=""/>
+  <xacro:arg name="wheelbase" default=""/>
+  <xacro:arg name="base_mass" default=""/>
+  <xacro:arg name="wheel_mass" default=""/>
+  <xacro:arg name="front_left_joint_name" default=""/>
+  <xacro:arg name="front_right_joint_name" default=""/>
+  <xacro:arg name="rear_left_joint_name" default=""/>
+  <xacro:arg name="rear_right_joint_name" default=""/>
 
   <xacro:include filename="jackal_base.xacro"/>
   <xacro:include filename="jackal_sensors.xacro"/>
 
-  <xacro:jackal_base prefix="$(arg prefix)"/>
+  <xacro:jackal_base
+      prefix="$(arg prefix)"
+      wheel_radius="$(arg wheel_radius)"
+      wheel_width="$(arg wheel_width)"
+      geometric_track_width="$(arg geometric_track_width)"
+      wheelbase="$(arg wheelbase)"
+      base_mass="$(arg base_mass)"
+      wheel_mass="$(arg wheel_mass)"
+      front_left_joint_name="$(arg front_left_joint_name)"
+      front_right_joint_name="$(arg front_right_joint_name)"
+      rear_left_joint_name="$(arg rear_left_joint_name)"
+      rear_right_joint_name="$(arg rear_right_joint_name)"/>
   <xacro:jackal_sensors prefix="$(arg prefix)"/>
 </robot>

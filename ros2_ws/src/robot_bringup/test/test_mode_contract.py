@@ -119,6 +119,9 @@ def test_stable_operation_launch_entries_delegate_to_core_contract():
         assert "'ros_stack.launch.py'" in source
         assert f"'operation': '{operation}'" in source
         for argument in (
+                'robot_config_file',
+                'isaac_node_name',
+                'kinematics_handshake_timeout_sec',
                 'robot_description_file',
                 'wheel_odometry_params_file',
                 'nav2_params_file',
@@ -128,6 +131,20 @@ def test_stable_operation_launch_entries_delegate_to_core_contract():
                 'use_teleop',
                 'project_root'):
             assert argument in source
+
+
+def test_robot_config_is_one_launch_source_for_description_and_odometry():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py'
+    ).read_text(encoding='utf-8')
+    assert "DeclareLaunchArgument(\n            'robot_config_file'" \
+        in core_source
+    assert "'robot_config_file': robot_config_file" in core_source
+    assert core_source.count("'robot_config_file': robot_config_file") == 2
+    assert "'isaac_node_name': isaac_node_name" in core_source
+    assert "'kinematics_handshake_timeout_sec': handshake_timeout" \
+        in core_source
+    assert "'isaac_sim/configs/robots/jackal.yaml'" in core_source
 
 
 def test_robot_runtime_files_are_explicit_and_checked(tmp_path):

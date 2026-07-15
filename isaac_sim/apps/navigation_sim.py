@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import traceback
 from typing import Sequence
 
 
@@ -22,7 +23,12 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from isaac_sim.graphs.control_graph import control_graph_spec
+from isaac_sim.graphs.control_graph import (
+    SPLIT_AXLE_V1,
+    WHEEL_COMMAND_APPLICATIONS,
+    control_graph_spec,
+    require_wheel_command_application,
+)
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
 from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
@@ -39,6 +45,10 @@ from isaac_sim.src.robot.spawn_pose_manager import (
 )
 from isaac_sim.src.robot.articulation_runtime import (
     load_articulation_physics_config,
+)
+from isaac_sim.src.runtime_provenance import (
+    capture_runtime_provenance,
+    runtime_provenance_parameters,
 )
 from isaac_sim.src.sensors.sensor_factory import (
     CAMERA_PROFILE_NAMES,
@@ -124,6 +134,15 @@ def _parser() -> argparse.ArgumentParser:
             "in headless mode"
         ),
     )
+    parser.add_argument(
+        "--wheel-command-application",
+        choices=WHEEL_COMMAND_APPLICATIONS,
+        default=SPLIT_AXLE_V1,
+        help=(
+            "diagnostic wheel target write topology; split_axle_v1 preserves "
+            "the baseline"
+        ),
+    )
     return parser
 
 
@@ -155,6 +174,7 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
 def validate_configuration(
     config: ProjectConfig,
     camera_profile: str | None = None,
+    wheel_command_application: str = SPLIT_AXLE_V1,
 ) -> tuple[object, object, object]:
     """Validate configuration without importing USD/Kit modules."""
 
@@ -179,7 +199,7 @@ def validate_configuration(
     )
     load_articulation_physics_config(config.files.robot)
     specifications = [
-        control_graph_spec(config),
+        control_graph_spec(config, wheel_command_application),
         core_sensor_graph_spec(config, str(imu["sensor_prim"])),
         lidar_graph_spec(config, "/Render/ValidationProduct"),
     ]
@@ -232,6 +252,19 @@ def validate_project(config: ProjectConfig) -> tuple[object, object, object]:
     return selected_pose, dynamic_scenario, camera_selection
 
 
+def _rebuild_control_graph(
+    idle_brake: object,
+    graph_builder: object,
+    graph_references: dict[str, object],
+) -> object:
+    """Reset controller state and replace the materialized control graph."""
+
+    idle_brake.reset()
+    rebuilt = graph_builder.build_control()
+    graph_references["control"] = rebuilt
+    return rebuilt
+
+
 def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     import omni.kit.app
 
@@ -248,6 +281,16 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
+        # SimulationApp still renders its default viewport in headless mode
+        # unless this supported launch option is enabled.  RTX sensors own
+        # separate render products, so disabling only the default viewport
+        # avoids descriptor pressure without suppressing sensor output.
+        "disable_viewport_updates": config.simulation.headless,
+        # Isaac Sim 6.0.1's SimulationApp owns the complete set of renderer
+        # switches required by multi-tick RTX sensors. Enabling only the base
+        # raytracingMotion setting misses Hydra engine masking and produces
+        # point clouds without motion effects.
+        "enable_motion_bvh": True,
         "extra_args": [
             "--/rtx/hydra/supportMultiTickRate=true",
             (
@@ -263,7 +306,11 @@ def run(
     selected_pose: object,
     dynamic_scenario: object,
     camera_selection: object,
+    wheel_command_application: str = SPLIT_AXLE_V1,
 ) -> None:
+    wheel_command_application = require_wheel_command_application(
+        wheel_command_application
+    )
     configure_process_environment(config)
 
     from isaacsim import SimulationApp
@@ -294,12 +341,80 @@ def run(
 
         # Runtime composition uses omni.usd so sensors and OmniGraph operate on
         # exactly the same Stage object.
-        stage = SceneComposer(config).compose(save=False)
+        composer = SceneComposer(config)
+        stage = composer.compose(save=False)
+        if composer.ground_topology_snapshot is None:
+            raise RuntimeError(
+                "ground topology snapshot is unavailable before reset "
+                "contact instrumentation"
+            )
+        from isaac_sim.src.robot.reset_strategy import (
+            author_wheel_ground_contact_probe,
+        )
+
+        # Both reset arms carry the same four-wheel, ground-filtered contact
+        # instrumentation.  Reports must be authored before PhysX parses USD.
+        reset_contact_probe = author_wheel_ground_contact_probe(
+            stage,
+            config,
+            composer.ground_topology_snapshot.target_colliders,
+        )
         # Configure coherent Timeline/RunLoop/Fabric periods before the first
         # post-composition app update creates Fabric history caches.
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
         app.update()
         validate_composed_stage(config, stage)
+        articulation_settings = load_articulation_physics_config(
+            config.files.robot
+        )
+
+        from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
+        from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
+        from isaac_sim.src.robot.articulation_runtime import (
+            ArticulationRuntime,
+        )
+        from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
+        from isaac_sim.src.robot.idle_brake import IdleBrake
+        from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
+        from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
+        from isaac_sim.src.sensors.sensor_factory import SensorFactory
+        from isaacsim.core.simulation_manager import SimulationManager
+
+        sensors = SensorFactory(
+            config,
+            camera_profile=camera_selection.profile.name,
+        ).create_all()
+        dynamic_manager = DynamicObstacleManager(stage, dynamic_scenario)
+        runtime.reset()
+
+        robot = ArticulationRuntime(
+            config.robot.articulation_root,
+            config.robot.base_link_prim,
+            app,
+        )
+        robot.initialize()
+        articulation_usd_solver_iterations = robot.configure_stability(
+            articulation_settings
+        )
+        JointValidator(
+            config.robot.wheel_joints,
+            JointGroups(config.robot.front_wheel_joints, config.robot.rear_wheel_joints),
+        ).validate(robot.get_dof_names())
+        reset_contact_probe.initialize(app)
+        reset_strategy_snapshot = reset_contact_probe.provenance_snapshot(
+            config.simulation.reset_strategy
+        )
+        runtime_provenance = capture_runtime_provenance(
+            config,
+            stage,
+            articulation_usd_solver_iterations=(
+                articulation_usd_solver_iterations
+            ),
+            repository_root=PROJECT_ROOT,
+            reset_strategy_snapshot=reset_strategy_snapshot,
+            ground_topology_snapshot=composer.ground_topology_snapshot,
+            contact_snapshot=composer.contact_snapshot,
+        )
 
         import rclpy
         from rcl_interfaces.msg import ParameterDescriptor
@@ -330,42 +445,12 @@ def run(
             [obstacle.obstacle_id for obstacle in dynamic_scenario.obstacles],
             read_only,
         )
+        for name, value in runtime_provenance_parameters(
+            runtime_provenance
+        ).items():
+            node.declare_parameter(name, value, read_only)
 
-        from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
-        from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
-        from isaac_sim.src.robot.articulation_runtime import (
-            ArticulationRuntime,
-            load_articulation_physics_config,
-        )
-        from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
-        from isaac_sim.src.robot.idle_brake import IdleBrake
-        from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
-        from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
-        from isaac_sim.src.sensors.sensor_factory import SensorFactory
-        from isaacsim.core.simulation_manager import SimulationManager
-
-        articulation_settings = load_articulation_physics_config(
-            config.files.robot
-        )
-        sensors = SensorFactory(
-            config,
-            camera_profile=camera_selection.profile.name,
-        ).create_all()
-        dynamic_manager = DynamicObstacleManager(stage, dynamic_scenario)
         collision_monitor = CollisionMonitor(config.robot.base_link_prim, node)
-        runtime.reset()
-
-        robot = ArticulationRuntime(
-            config.robot.articulation_root,
-            config.robot.base_link_prim,
-            app,
-        )
-        robot.initialize()
-        robot.configure_stability(articulation_settings)
-        JointValidator(
-            config.robot.wheel_joints,
-            JointGroups(config.robot.front_wheel_joints, config.robot.rear_wheel_joints),
-        ).validate(robot.get_dof_names())
         spawn_manager = SpawnPoseManager(robot, load_spawn_poses(config.spawn.poses_file))
         spawn_manager.apply_usd_pose(config.spawn.selected)
         idle_brake = IdleBrake(
@@ -377,7 +462,12 @@ def run(
 
         from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
 
-        graph_handles = RosGraphBuilder(config, sensors).build()
+        graph_builder = RosGraphBuilder(
+            config,
+            sensors,
+            wheel_command_application=wheel_command_application,
+        )
+        graph_handles = graph_builder.build()
         graph_references: dict[str, object] = {"all": graph_handles}
         camera_graph_paths = tuple(
             camera.graph_path for camera in sensors.cameras
@@ -403,10 +493,11 @@ def run(
         )
 
         def clear_controller_state() -> None:
-            from isaac_sim.graphs.control_graph import build_control_graph
-
-            idle_brake.reset()
-            graph_references["control"] = build_control_graph(config)
+            _rebuild_control_graph(
+                idle_brake,
+                graph_builder,
+                graph_references,
+            )
 
         def reset_odometry(mode: str) -> None:
             if mode != config.simulation.odometry_mode:
@@ -433,7 +524,14 @@ def run(
             clear_costmaps=reset_bridge.clear_costmaps,
             publish_map_initial_pose=reset_bridge.publish_map_initial_pose,
         )
-        reset_manager = ResetManager(runtime, spawn_manager, hooks)
+        reset_manager = ResetManager(
+            runtime,
+            spawn_manager,
+            hooks,
+            reset_strategy=config.simulation.reset_strategy,
+            contact_probe=reset_contact_probe,
+            physics_dt_s=1.0 / config.simulation.physics_hz,
+        )
         reset_bridge.bind(reset_manager)
         startup_reset = reset_bridge.start_reset(
             ResetRequest(
@@ -458,12 +556,13 @@ def run(
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, dynamic={dynamic_scenario.enabled}, "
             f"camera={camera_selection.profile.name}, "
+            f"wheel_command_application={wheel_command_application}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
-            app.update()
+            runtime.update()
             rclpy.spin_once(node, timeout_sec=0.0)
             if startup_reset.finished and startup_reset.errors:
                 raise RuntimeError(
@@ -477,6 +576,14 @@ def run(
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             frame += 1
+    except Exception:
+        # SimulationApp.close() performs a fast Kit shutdown that can terminate
+        # the process before Python emits an otherwise-unhandled traceback.
+        # Persist the original failure first so readiness gates remain
+        # diagnosable instead of reporting only that the process disappeared.
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        raise
     finally:
         if runtime is not None:
             try:
@@ -530,7 +637,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     config = load_project_config(args.config)
     configure_process_environment(config)
     selected_pose, dynamic_scenario, camera_selection = validate_configuration(
-        config, args.camera_profile
+        config,
+        args.camera_profile,
+        args.wheel_command_application,
     )
     if args.dynamic_obstacles is not None:
         dynamic_scenario = replace(
@@ -549,12 +658,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"spawn={config.spawn.selected}, "
             f"camera={camera_selection.profile.name}, "
+            f"wheel_command_application={args.wheel_command_application}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"dynamic_obstacles={dynamic_scenario.enabled}, {calibration})"
         )
         return 0
-    run(config, selected_pose, dynamic_scenario, camera_selection)
+    run(
+        config,
+        selected_pose,
+        dynamic_scenario,
+        camera_selection,
+        args.wheel_command_application,
+    )
     return 0
 
 

@@ -66,21 +66,30 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
     base = config.robot.base_link_prim
     static_transforms = load_static_transforms(config.files.robot)
     nodes = (
-        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
+        ("ComputeWheelTF", "isaacsim.core.nodes.IsaacComputeTransformTree"),
         ("WheelTF", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
     ) + tuple(
         (node, "isaacsim.ros2.bridge.ROS2PublishRawTransformTree")
         for node, _, _, _, _ in static_transforms
     )
-    connections: list[tuple[str, str]] = []
-    for node in ("WheelTF",) + tuple(item[0] for item in static_transforms):
-        connections.append(("OnPlaybackTick.outputs:tick", f"{node}.inputs:execIn"))
+    connections: list[tuple[str, str]] = [
+        ("OnPhysicsStep.outputs:step", "ComputeWheelTF.inputs:execIn"),
+        ("ComputeWheelTF.outputs:execOut", "WheelTF.inputs:execIn"),
+        ("ComputeWheelTF.outputs:parentFrames", "WheelTF.inputs:parentFrames"),
+        ("ComputeWheelTF.outputs:childFrames", "WheelTF.inputs:childFrames"),
+        ("ComputeWheelTF.outputs:translations", "WheelTF.inputs:translations"),
+        ("ComputeWheelTF.outputs:orientations", "WheelTF.inputs:orientations"),
+        ("ReadSimTime.outputs:simulationTime", "WheelTF.inputs:timeStamp"),
+    ]
+    for node in tuple(item[0] for item in static_transforms):
+        connections.append(("OnPhysicsStep.outputs:step", f"{node}.inputs:execIn"))
         connections.append(("ReadSimTime.outputs:simulationTime", f"{node}.inputs:timeStamp"))
     values: tuple[tuple[str, object], ...] = (
-        ("WheelTF.inputs:parentPrim", TargetPaths((base,))),
+        ("ComputeWheelTF.inputs:parentPrim", TargetPaths((base,))),
         (
-            "WheelTF.inputs:targetPrims",
+            "ComputeWheelTF.inputs:targetPrims",
             TargetPaths(
                 tuple(
                     f"{config.robot.runtime_prim_path}/{name.replace('_joint', '_link')}"

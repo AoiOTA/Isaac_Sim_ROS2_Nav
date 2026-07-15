@@ -1,0 +1,21 @@
+schema_version: 1
+id: simple_plane_only1_v1
+environment_id: SimplePlane
+operation: preserve_source_colliders
+
+source:
+  asset_sha256: 63aa9b6b2ed4025aecc373e1c6442fa460f3ed8c670c7dbf0e9de2b41da322f3
+  required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+  semantic_classes: []
+  collider_count: 1
+  collider_paths_sha256: 093b0b40e3e87c6102b5e60ab009a27b36b45428ac4e61f424ea89d054448e3f
+
+target:
+  required_prim_paths: [/Root/GroundPlane/CollisionPlane]
+  semantic_classes: []
+  collider_count: 1
+  collider_paths_sha256: 093b0b40e3e87c6102b5e60ab009a27b36b45428ac4e61f424ea89d054448e3f
+
+disabled:
+  collider_count: 0
+  collider_paths_sha256: 4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945

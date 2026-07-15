@@ -4,7 +4,32 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态（2026-07-13）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新可靠性升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、顺序 Lifecycle Shutdown 和安全退出的 Navigation 2 面板。Camera `monitoring`/`high_quality` 已完成 headless 发布性能采样，前向画面方向与转弯变化已用实际截图目视确认，集成 RViz 也已实际启动验证；`standard` 仍只有配置与自动契约覆盖，不能写成已完成实机性能验收。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计、真实 `warehouse_v2` changed-region 的 30% 增量改善基准和真实自定义机器人迁移仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态（2026-07-15）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、物理步同步 ROS 发布、顺序 Lifecycle Shutdown、只观察 Lifecycle 的安全 Navigation 2 面板，以及独占 `/cmd_vel` 的底盘运动诊断。Jackal 项目 Overlay 已停用四个带 obsolete `customGeometry` 的只读轮胎 collider，改用对称标准 Cylinder；TGS 32/4 与 32/16 的 Warehouse + Ideal 隔离 A/B 支持冻结 32/4。地面碰撞拓扑现已拆成三个版本化、可逆 Profile：SimplePlane 1-collider、Warehouse 原始 32-collider 和 Warehouse plane-only 1-collider；源资产、匿名 overlay、source/target/disabled 集合、contact target 和 Reset 策略现在由 runtime provenance v6 绑定，但真实 32-vs-1 运动 A/B 尚未完成。运动报告还会绑定实际加载的机器人、规范环境 ID、仿真模式与 Git 指纹，solver 必须通过 Stage 属性和初始化后 Articulation wrapper 的 USD 后端读回交叉校验；这不是 PhysX 引擎内部状态的直接读回，实际行为由隔离 A/B 和警告日志另行验证。机器人配置已升级为 schema v2：几何轮距与控制/Wheel Odom 使用的有效轮距是两个显式字段，Isaac、ROS Wheel Odom 和 Xacro 由同一 robot YAML 驱动；Realistic Wheel Odom 在精确 runtime provenance schema v6、robot config path/SHA 和七个 kinematics/controller 字段全部匹配前不会创建 `/wheel/odom`。稳定基线的两种轮距目前仍同为 `0.37559 m`，这次迁移不改变控制行为，也不表示有效轮距已标定。环境不匹配的 topology profile 会在 Isaac 组合 Stage 时失败；错误的运动报告环境标签会在 motion runner 创建命令 publisher 前失败。低速左右转向不对称、Realistic 对照及接触拓扑/材料/有效轮距仍未验收。旧 Camera 配置下的 `monitoring`/`high_quality` 已有 headless 性能与截图基线；2026-07-14 的 Camera schema v3 已完成严格配置、USD API 写入和 headless 属性读回，但新配置的真实静止/运动画质、RTF 和 GPU 仍待复测，不能沿用旧截图冒充验收。`warehouse_v1` 是可自动播种的发布基线；`warehouse_v2` 四工件已由 Manifest 登记，其中大型 `.posegraph` 由 Git LFS 管理，但来源日志缺失、运行对齐未验证且尚未标定，不能当作已验收地图。完整静态/动态统计、Warehouse V2 标定与路线矩阵及真实自定义机器人迁移仍未完成。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+
+> 阶段 3 另提供 `0.989/1.012 m` 两个版本化 `experimental_candidate`，只用于后续
+> 两环境、多速度、拓扑和 Realistic A/B；它们尚未验收，不会覆盖稳定配置。clean
+> `8973728` 已完成 `0.989 m`、SimplePlane/only1、六 contact profile × 三重复的正式
+> 18-run 批次：证据采集 18/18 成功，但 6/6 物理组都只因左右旋转中心漂移不对称失败；
+> 详见 [`docs/verification.md`](docs/verification.md)。
+>
+> clean `55418fe` 在 Reset 中补齐完整初始 DOF position/velocity/target/effort 恢复后，
+> 用相同输入正式复跑：18/18 run、108/108 segment、report/analysis/physical/summary
+> schema `3/4/2/5`，analysis 18 included / 0 excluded。`explicit_material`、
+> `legacy_baseline` 和 `threshold_corr_0p00025_offset_0p0004` 三组通过，逐 repeat 通过率由
+> 旧批的 8/18 提升到 12/18；其余三组仍失败，失败叶仅剩 6 次左右旋转不对称，其中
+> 2 次同时右旋中心漂移超限，而 yaw-rate、432/432 稳态轮向观察和 108/108 停止窗均通过。
+> 这说明 DOF Reset 有效改善了结果，但整体物理门仍为 FAIL，离散右旋分支尚未消除；
+> 详见[完整关节状态 Reset 正式复测](docs/verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
+> 上述历史批次早于版本化 Reset 策略，仍不能充当新 A/B 的 control。后续 clean
+> `ae06c1f` 已加入 A=`pose_restore_v1` 与
+> B=`separate_recontact_0p20m_1step_v1`、四轮对地 contact probe 和 provenance v6；
+> `d228f25` 又把根位姿改为 USD 后端写入、PhysX flush 与 articulation kinematic 同步，
+> 避免下一物理步把 tensor-only teleport 覆盖回旧位姿。clean `65ae923` 的正式
+> A/B 使用固定 SimplePlane/only1、`threshold_corr_0p00025_offset_0p04`、
+> `jackal_etw_0p989_v1` 和奇偶 repeat 的 A/B→B/A 冷进程顺序，完成 20/20 run、
+> 20 included / 0 excluded / 2 groups。两组都只因
+> `rotation_center_drift_asymmetry_ratio` 失败：A 有 5/10 repeat 失败，B 有 6/10；
+> 其余物理检查通过。因此 B 没有证明改善，项目继续保留 A 为默认策略。
 
 ## 文档导航
 
@@ -12,7 +37,7 @@
 
 | 文档 | 适合什么时候看 |
 | --- | --- |
-| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、性能采样和排障。 |
+| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、底盘诊断、性能采样、排障和 Git 回溯。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
 | [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
@@ -21,11 +46,14 @@
 | [`docs/development.md`](docs/development.md) | 开发、测试、调试和准备 Git 提交时。 |
 | [`docs/rviz_workflow_upgrade_plan.md`](docs/rviz_workflow_upgrade_plan.md) | 回溯本轮 RViz/Teleop/Lifecycle/性能升级的冻结设计和完成状态时。 |
 | [`docs/runtime_reliability_and_performance_upgrade_plan.md`](docs/runtime_reliability_and_performance_upgrade_plan.md) | 回溯地图 Manifest、Camera、MPPI/Ceres、故障注入、Profiler 与有序退出的设计、实测结果和未验收边界时。 |
+| [`docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md`](docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md) | 查看当前导航质量、物理/时间/传感器保真度、Warehouse V2 和最终静态/动态统计的执行顺序与验收门。 |
 | [`plan.md`](plan.md) | 需要完整设计背景、技术选型、指标公式和最终验收目标时。 |
 
 ## 系统契约
 
 - USD/PhysX 是唯一物理模型；URDF/Xacro 只用于 ROS RobotModel、结构描述和真机迁移。
+- 环境 ground collider 必须由与环境匹配的版本化 topology profile 选择；任何禁用
+  只进入匿名 session overlay，不修改 NVIDIA 或项目源 USD。
 - 主 TF 树固定为 `map → odom → base_link`，不发布 ROS `world` frame。
 - Mapping 与 Localization 严格互斥，因为二者都拥有 `map → odom`。
 - Localization/Navigation 中由 `nav2_map_server` 唯一发布保存的静态 `/map`；
@@ -34,6 +62,8 @@
 - Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
 - 感知基线为 `/lidar/points_raw → pointcloud_to_laserscan → /scan`；默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
+- `SimplePlane` 是空旷的接触/底盘隔离场景，只能指导轮地接触与运动诊断；它不能替代
+  Warehouse 中对 RTX LiDAR、遮挡、定位或导航的验证。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
 - 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
 
@@ -56,12 +86,12 @@
 ```bash
 git lfs install
 git lfs pull
-./scripts/preflight.sh
 ./scripts/import_assets.sh
 ./scripts/build_ros2.sh
+./scripts/preflight.sh
 ```
 
-资产导入只在本地复制 Jackal 的最小运行依赖，并校验来源和 SHA256。NVIDIA 二进制资产被 Git 忽略；仓库只管理项目自有的 USD overlay、manifest 和导入工具。
+先按 [`docs/user_manual.md`](docs/user_manual.md) 安装 ROS/Python 依赖，再执行上述顺序；干净 clone 在资产导入和 ROS 构建之前运行 `preflight.sh` 会按设计失败。资产导入只在本地复制 Jackal 的最小运行依赖，并校验来源和 SHA256。NVIDIA 二进制资产被 Git 忽略；仓库只管理项目自有的 USD overlay、manifest 和导入工具。
 
 默认使用：
 
@@ -93,6 +123,12 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 
 等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 Navigation 2 Goal 工具拖出目标。右侧 **Robot Front Camera** 应显示机器人前向画面；若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。停止时在启动 ROS 的终端按一次 Ctrl+C；监督脚本会先按 Navigation/Localization 顺序关闭 Lifecycle，再终止其余 ROS 子进程。
 
+clean `65ae923` 起，headless 启动会关闭 SimulationApp 的默认 viewport 更新，避免连续
+冷启动正式批次出现 RTX `Out of resource descriptors`；该开关不关闭 RTX 传感器自己的
+Render Product。修复后在 Warehouse 实测 `/lidar/points_raw` 的 8 秒窗口收到 77 个样本，
+观测频率 `9.60 Hz`，接近配置的 10 Hz。该短窗只证明 descriptor 修复后 LiDAR 仍输出，
+不替代完整传感器性能矩阵。
+
 如果这一步失败，先运行 `./scripts/preflight.sh` 和 `./scripts/diagnose.sh`，然后按 [`docs/user_manual.md`](docs/user_manual.md) 的逐步流程排查。Camera profile、地图保存、Reset、故障注入和性能采样的完整命令也都在使用手册中。
 
 ## 运行模式
@@ -102,9 +138,9 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 | ROS 操作 | Isaac `--navigation-mode` | Pose Graph | OccupancyGrid YAML | Map Pose 标定 |
 | --- | --- | --- | --- | --- |
 | `mapping` | `mapping` | 禁止传入 | 禁止传入 | 不要求 |
-| `incremental_mapping` | `mapping` | 必须存在 `.posegraph` 和 `.data` | 禁止传入 | 必须 |
-| `localization` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 必须 |
-| `navigation` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 必须 |
+| `incremental_mapping` | `mapping` | 必须存在 `.posegraph` 和 `.data` | 禁止传入 | 仅允许 `auto`；exact bundle 与出生点必须已标定，未标定地图不得进入增量建图 |
+| `localization` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 正式统计必须使用已标定 `auto`；`rviz` 仅用于人工对齐/诊断 |
+| `navigation` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 正式统计必须使用已标定 `auto`；`rviz` 仅用于人工对齐/诊断 |
 
 里程计模式在两端都使用 `ideal` 或 `realistic`。结构 TF 默认由 Isaac 发布；Realistic 模式也支持改由 Robot State Publisher 发布，但必须在两端同时显式选择 `structure_tf_source:=rsp`。Ideal + RSP 会被拒绝，Isaac 与 RSP 不能同时拥有结构 TF。
 
@@ -137,10 +173,11 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 命令会自动打开 Mapping RViz 和独立安全 Teleop 终端。使用 `W/A/S/D` 或方向键缓慢完成旋转、走廊覆盖和闭环；超过 0.18 秒无按键会自动停车，`Space` 立即停车，`Q` 安全退出。随后同时保存 OccupancyGrid 与序列化 Pose Graph：
 
 ```bash
-./scripts/save_map.sh warehouse_v1
+MAP_VERSION="warehouse_mapping_$(date -u +%Y%m%dT%H%M%SZ)"
+./scripts/save_map.sh "$MAP_VERSION"
 ```
 
-`save_map.sh` 先在暂存目录生成 OccupancyGrid 与序列化 Pose Graph，逐项验证后再安装四个工件，最后原子发布 Manifest；任一步失败都会回滚，不留下“半套新地图”。当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并绑定对应 Manifest bundle。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件、路径逃逸以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前必须把四个工件和 Manifest 视为不可混用的同一版本。
+`save_map.sh` 先在暂存目录生成 OccupancyGrid 与序列化 Pose Graph，逐项验证后再安装四个工件，最后原子发布 Manifest；任一步失败都会回滚，不留下“半套新地图”。脚本严格禁止覆盖，仓库已有的 `warehouse_v1`/`warehouse_v2` 不能再作为保存目标；请保留上面的新 `MAP_VERSION`，供后续校验和标定使用。当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并绑定对应 Manifest bundle。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件、路径逃逸以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前必须把四个工件和 Manifest 视为不可混用的同一版本。
 
 标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
 
@@ -161,7 +198,8 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 该模式会启动 async SLAM Toolbox、加载旧 Pose Graph，并在 `/clock` 与 `odom → base_link` 就绪后发布已标定 `/initialpose`。完成变化区域采集后用新的版本名保存，禁止覆盖基线：
 
 ```bash
-./scripts/save_map.sh warehouse_v2
+INCREMENTAL_VERSION="warehouse_incremental_$(date -u +%Y%m%dT%H%M%SZ)"
+./scripts/save_map.sh "$INCREMENTAL_VERSION"
 ```
 
 提交的 `incremental_mapping.yaml` 是建图工作流描述符，不是导航试验；`NavigateToPose` runner 会显式拒绝它。增量试验必须使用上述 bringup、保存新地图，再显式对比工件。当前只验证了模式校验和启动编排，尚未用真实变化区域证明“耗时改善不少于 30%”。
@@ -169,6 +207,7 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 保存基线、完整重建和增量更新三张地图后，复制并填写严格比较模板，再生成 JSON 证据报告：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 cp ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml \
   data/reports/incremental_comparison.yaml
 # 填写三张地图、同口径耗时和真实 Map 坐标矩形范围后：
@@ -247,7 +286,7 @@ ros2 launch robot_experiments experiment.launch.py \
   output_directory:="$PWD/data/experiment_runs/dynamic_smoke"
 ```
 
-Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。`repeat: false` 表示单程到达终点后保持，`repeat: true` 表示沿同一路径往返；两侧都必须显式填写且一致。当前横穿与对向两个单程障碍的 4-seed 基线已 4/4 成功，GT 终点误差为 `0.168–0.186 m`，每轮均看到 Collision Monitor、碰撞状态、定位状态和 `map → odom`，且最终静止。静态 smoke 仍只使用固定仓库、显式 `static: []`；这些 4 个 seed 是同一世界的确定性重复，不是多布局统计。完整 200 次静态矩阵和多类动态避障率仍需执行。
+Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。`repeat: false` 表示单程到达终点后保持，`repeat: true` 表示沿同一路径往返；两侧都必须显式填写且一致。当前横穿与对向两个单程障碍的 4-seed 基线已 4/4 成功，GT 终点误差为 `0.168–0.186 m`，每轮均看到 Collision Monitor、碰撞状态、定位状态和 `map → odom`，且最终静止。静态 smoke 仍只使用固定仓库、显式 `static: []`；这些 4 个 seed 是同一世界的确定性重复，不是多布局统计，也不得计入 N20/N21。参数冻结后仍须在已对齐、已标定的 `warehouse_v2` 上分别完成静态不少于 100 次、动态不少于 100 次正式统计。
 
 `/simulation/collision` 来自底盘物理接触传感器；`/collision_monitor_state` 来自 Nav2 Collision Monitor。Ground Truth 只在显式启用且 Map Pose 已标定时发布，不发布 TF，也不进入控制链。
 
@@ -262,12 +301,40 @@ Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag
 运行中的 Isaac 节点提供 Trigger 服务。先设置种子与出生点，再调用 Reset：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 ros2 param set /isaac_navigation_sim reset_seed 4242
 ros2 param set /isaac_navigation_sim reset_pose_name mapping_start
 ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
 ```
 
-Reset 会按固定顺序停车、清控制器、恢复 USD Pose、重置里程计/GT 路径/碰撞状态/动态障碍，并等待已排队的 Wheel/EKF/Costmap 请求。Trigger 只在事务完成后返回成功，失败不会伪造 reset event；重叠请求会被拒绝。Localization 的自动初始位姿只接受 Reset 后的新鲜 `/scan`，随后发布 `/simulation/localization_seeded`；RViz 初始位姿模式则等待新的人工输入。Navigation Gate 还会等待严格更新且稳定的 `map → odom` 和新鲜 `/odom` 后恢复 Lifecycle，因此服务返回不能等同于系统已经可接收目标。无有效非零命令时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，有效低速命令仍能唤醒车体。
+Reset 会按固定顺序停车、清控制器，恢复 Articulation 初始化时捕获的完整 DOF pose，
+清零并读回校验 DOF 动态状态，再恢复根 Pose、重置里程计/GT 路径/碰撞状态/动态障碍，
+并等待已排队的 Wheel/EKF/Costmap 请求。根 Pose 不是只写 tensor：实现会对
+`base_link` 的物理根刚体使用 USD 后端，随后执行 PhysX `flush_changes()` 和
+`update_articulations_kinematic()`；同步失败会失败关闭。它不会把自定义机器人的非零
+默认关节强制归零。Trigger 只在事务完成后返回成功，失败不会伪造 reset event；
+物理策略/contact/root-sync 异常会让仿真保持暂停以便诊断/重试，后续异步 ROS reset
+future 的失败则按事务错误报告。重叠请求会被拒绝。Localization 的自动初始位姿只接受
+Reset 后的新鲜 `/scan`，随后发布 `/simulation/localization_seeded`；RViz 初始位姿模式
+则等待新的人工输入。Navigation Gate 还会等待严格更新且稳定的 `map → odom` 和新鲜
+`/odom` 后恢复 Lifecycle，因此服务返回不能等同于系统已经可接收目标。无有效非零命令
+时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，
+有效低速命令仍能唤醒车体。
+
+项目配置显式选择 schema-v1 Reset 策略。默认 A=`pose_restore_v1` 直接执行完整状态/
+根位姿恢复；实验 B=`separate_recontact_0p20m_1step_v1` 先把机器人抬高 `0.20 m`，推进
+一个无渲染物理步并用四轮对 ground-topology target 的 contact probe 验证已分离，再次
+完整恢复并推进一个 recontact 步。contact probe 只回答“这四个 wheel rigid body 与所列
+ground collider 是否仍有 contact count”；它不能证明 chassis/其他物体无接触，也不能
+读取或清除全部 PhysX manifold/warm-start 状态。
+
+当前 Reset/Contact matrix 机器合同为：runtime provenance `6`、47 列 Manifest v2、
+motion report `3`、aggregate analysis `5`、physical acceptance `3` / policy
+`skid_steer_plan_8_7_v3`、batch summary `6`。group identity 是
+`environment::ground_topology::reset-v<schema>-<strategy>::contact_profile` 四元组；
+`--reset-strategy all` 在奇数 repeat 按 A→B、偶数 repeat 按 B→A 启动独立冷进程，偶数
+重复数才能完全抵消启动顺序。clean `65ae923` 的 10+10 正式结果为 A 5/10、B 6/10
+repeat 仅因旋转中心漂移不对称失败，因此没有理由把默认策略从 A 改为 B。
 
 ## 测试
 
@@ -281,6 +348,7 @@ Reset 会按固定顺序停车、清控制器、恢复 USD Pose、重置里程�
 针对运行中系统的验收检查包括：
 
 ```bash
+source ./scripts/setup_ros_env.sh
 ros2 topic hz /clock
 ros2 topic hz /lidar/points_raw
 ros2 topic hz /scan
@@ -292,7 +360,10 @@ ros2 lifecycle get /map_server
 ros2 run tf2_tools view_frames
 ```
 
-统计阈值、场景数量和失败判定以 [`plan.md`](plan.md) 第十二、十四部分为准。单元测试或一次 smoke run 不能替代 200 次静态障碍实验等统计验收。
+统计阈值、场景数量和失败判定以
+[`docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md`](docs/navigation_quality_and_simulation_fidelity_upgrade_plan.md)
+为准。单元测试或一次 smoke run 不能替代参数冻结后的 `warehouse_v2` 静态
+不少于 100 次（N20）和动态不少于 100 次（N21）正式统计。
 
 完整的已验证结果、复现命令和剩余验收项见 [`docs/verification.md`](docs/verification.md)。
 
@@ -311,7 +382,7 @@ ros2 run tf2_tools view_frames
 ```text
 isaac_sim/   Stage、项目 USD overlay、传感器、OmniGraph、Reset、GT 和场景编排
 ros2_ws/     描述、感知、Wheel Odom、EKF、SLAM、Nav2、bringup 和实验节点
-data/        Git LFS 地图基线，以及 bag、轨迹、指标和报告的本地输出边界
+data/        地图 bundle（精选 `.posegraph` 走 Git LFS），以及 bag、轨迹、指标和报告的本地输出边界
 scripts/     预检、资产导入、构建、测试、启动和地图保存入口
 docs/        使用手册、逐文件索引、排障、开发、接口、标定、升级方案和验收文档
 ```
@@ -322,7 +393,8 @@ docs/        使用手册、逐文件索引、排障、开发、接口、标定�
 
 ```bash
 git log --oneline --decorate --graph
-git show --stat <commit>
+COMMIT_SHA="$(git rev-parse HEAD)"
+git show --stat "$COMMIT_SHA"
 ```
 
 具体约定见 [`CONTRIBUTING.md`](CONTRIBUTING.md)、[`docs/development.md`](docs/development.md) 和 [`data/README.md`](data/README.md)。

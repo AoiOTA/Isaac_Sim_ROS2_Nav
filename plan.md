@@ -14,7 +14,7 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 该路径及原始系统目标来自现有方案。
 
-## 0. 修订说明与当前状态（2026-07-13）
+## 0. 修订说明与当前状态（2026-07-15）
 
 本文最初是项目从零搭建时的完整设计方案，后续章节仍保留当时的目标、SOP 和最终统计验收标准，便于回溯为什么采用当前架构。它不是“所有目标均已验收”的声明；第一次使用仓库请先看 [`docs/user_manual.md`](docs/user_manual.md)，逐文件理解请看 [`docs/repository_index.md`](docs/repository_index.md)，当前实测证据和明确边界以 [`docs/verification.md`](docs/verification.md) 为准。
 
@@ -26,6 +26,98 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 - `/scan_fault` 提供丢包、暂停和错误 Frame 注入，Reset 会恢复正常模式并隔离旧代次命令；
 - Runtime Profiler 统计受管 ROS 进程树以及 RTF、Topic Age、TF Lag、CPU/GPU；
 - ROS 监督脚本按 Lifecycle 顺序关闭 Nav2/定位节点，RViz 使用安全退出面板。
+- Jackal robot YAML 已升级为 schema v2 单一运动学真源，显式区分几何/有效轮距并
+  统一 wheel joint；runtime provenance v6 与 Realistic Wheel Odom 启动握手会锁定
+  文件路径、原始字节 SHA256、profile/lifecycle 和运动学数值，稳定 profile 保持原
+  `0.37559 m` 控制行为；v6 还锁定 Reset strategy 定义和 contact probe 身份。该稳定值
+  只表示旧行为兼容，尚不代表有效轮距已经标定。
+- SimplePlane 1-collider、Warehouse 32-collider 与 Warehouse plane-only 1-collider
+  已成为版本化、可逆的 ground-topology profile；当前 provenance schema v6 锁定源资产、匿名
+  overlay、source/target/disabled 精确集合并要求 contact ground target 一致。USD
+  应用/读回和离线分组合同已验证；严格矩阵入口可按三个合法 pair 生成 54-run/18-group
+  全拓扑批次。RootLayer 锁作用域修复后的 clean `d5840ed` 已完成 Warehouse 32-vs-1、
+  六 contact profile、每格一次的 12-run 机制烟测：12/12 run、72/72 段和 144/144
+  路径/hash 对均闭合，Root SHA 分布为 combined32 六份、plane-only legacy/explicit/
+  两个 `0.00025` profile 四份、plane-only 两个 `0.025` profile 两份。该历史批次保存
+  analysis schema 2、batch-summary schema 3；Kit `[Error]` 为 0，但 12 份 Isaac 日志
+  各有一条非致命 absl `E0000`，因此不能写成“零错误”。正式每组三重复的
+  54-run/18-group 全拓扑批次仍未执行。
+- headless `SimulationApp` 现在关闭默认 viewport update，避免连续冷启动时 RTX
+  resource descriptor 耗尽；独立 RenderProduct 继续工作。clean `65ae923` 上 Warehouse、
+  Camera Off 的 8 秒实测为点云 77 samples / 9.6028 Hz，Image/CameraInfo publisher 为 0。
+  SimplePlane 的唯一碰撞平面是 `purpose="guide"` 的 contact-only fixture，RTX 对它零命中
+  是场景边界，不能用该夹具做 LiDAR 正样本验收。
+- 导航质量升级计划 8.7 的历史 v2 机器硬门已实现并保留用于回溯：motion report 顶层为 schema 3，
+  `configuration.schema_version` 仍为 1。Odom 与 JointState 都保存命令后半段 closed
+  window，至少两个严格递增样本，并对首尾覆盖、最大间隔、deadband、方向样本计数和
+  分布执行 fail-closed 复核；稳态角速度分布还必须能由整段 Odom 分布的真实样本子集
+  实现。每段停车证据要求 Odom/JointState 在同一命令后区间内持续静止、样本新鲜且总
+  count 足以同时覆盖命令窗和停车窗；Reset recovery watermark 必须先于命令和段内首
+  样本。起止 pose 会重算净位移、纵横向位移、轨迹下界和旋转漂移，端点 yaw 与累计
+  yaw 也须按 `2*pi` 自洽。整段轮向只作描述，稳态 mixed/stationary/opposite 会作为
+  valid evidence 纳入并使物理方向门失败。v5 analysis/physical/summary 分别为 schema
+  4/2/5，policy 为 `skid_steer_plan_8_7_v2`，manifest 为 44 列并锁定逐轮 report schema。
+  机器判定只适用于 runtime provenance 5 + `SimplePlane` +
+  `simple_plane_only1_v1` + Ideal + 每组至少 3 个唯一 repeat + motion report schema 3；
+  旧 schema 1/2 以 `motion_report_schema_not_3` 记 N/A。公共 accounting 会重新读取
+  selection 原报告、复核 raw/canonical SHA、全局身份和每个 physical 叶并重算完整
+  acceptance。批次 summary 还会逐行语义核对 44 列、报告路径/时间、规范化 motion YAML
+  （类型严格）、robot asset/kinematics/solver、Mapping/Ideal/60 Hz、环境、topology、
+  contact、Git 和三类证据 hash，不能靠协调改写 schema、N/A、方向叶或运行身份伪造
+  verdict。当时的定向套件为 analyzer `217 passed`、motion baseline `92 passed`、matrix
+  `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`（唯一 skip 为缺少
+  `shellcheck`）。当时的 v2 合同已在 clean `0484b72` 上完成三条全门：build 11 packages，
+  preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
+  `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
+  0 failures / 1 skipped，Isaac `32 passed / 250 deselected`；预检另有 422 个 Fast DDS
+  SHM 工件和 20 个非 performance governor 的非阻塞环境警告。随后在 clean `22a7746`
+  完成 `0.989 m` + SimplePlane/only1 的首个 schema-3 六 profile × 一次真实 smoke：
+  6/6 run、36/36 段、analysis 6 included / 0 excluded / 6 groups、44 列 manifest 和
+  summary schema 5 全部闭合；六组都只因 repeat=1 记 N/A。36 段稳态轮向 0 mismatch，
+  整段描述窗口则诚实保留 18 个 mismatch。单次投影只有
+  `threshold_corr_0p00025_offset_0p04` 同时落在全部 18 项边界内，不能替代三重复。
+  随后在 clean `8973728` 对同一 `0.989 m`、SimplePlane/only1、六 profile 完成正式
+  三重复：18/18 run、108/108 段、18 included / 0 excluded / 6 groups、44 列 manifest
+  与 schema 3/4/2/5 全链闭合。6/6 group 均适用且均失败，唯一失败检查是左右旋转中心
+  漂移不对称 `<=0.20`；其余 17 项逐重复检查、108/108 停止窗和 432/432 稳态轮向
+  观察全部通过。最接近门的是 `threshold_corr_0p00025_offset_0p04`，2/3 repeat 通过，
+  唯一失败值 `0.243182`。该历史批次证明证据合同成立，同时明确证明当时的
+  Reset/物理状态恢复未通过物理门。随后在 clean `55418fe` 上使用完整 Articulation DOF
+  position 快照恢复并清零动态状态后，对同一 `0.989 m` + SimplePlane/only1 六 profile
+  正式复跑：18/18 run、108/108 段和全部证据记账仍闭合；3/6 group 通过、12/18
+  repeat 通过，相比旧批次的 0/6 group 和 8/18 repeat 有明确改善。未通过的叶检查为
+  旋转中心漂移不对称 6 次、右旋中心漂移上限 2 次；稳态 yaw-rate、432/432 轮向
+  观察和 108/108 停止窗均通过。这说明完整 DOF 状态恢复有帮助，但还不足以解决
+  旋转漂移离散性，不得宣称物理门已经通过。
+  此前在 clean `190f357` 完成
+  SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
+  72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
+  schema 2/3/4，六组都只因少于 3 个 repeat 而 N/A。正式 54-run/18-group 实跑仍未执行。
+- 当前计划 8.7 v3 合同已把 Reset strategy 作为独立实验维度：runtime provenance 6、
+  motion report 3、Manifest contract 2/47 列、analysis 5、physical acceptance 3、policy
+  `skid_steer_plan_8_7_v3`、batch summary 6；最终 group key 为
+  environment/topology/reset/contact 四元组。`--reset-strategy all` 在奇数 repeat 使用
+  A→B、偶数使用 B→A。clean `65ae923` 的固定输入正式批次完成 20/20 run、20 included、
+  0 excluded、两组各 10 repeat；A=`pose_restore_v1` 有 5/10 repeat 因旋转中心漂移
+  不对称失败，B=`separate_recontact_0p20m_1step_v1` 有 6/10 失败，其余 17 类检查均
+  10/10。两组 physical 都 FAIL，B 不晋级并继续保留 A 默认。该结论只关闭 Reset
+  变量假设，不关闭第三阶段；正式 54-run/18-group 全 topology 批次仍待物理阻塞闭合。
+- `0.989/1.012 m` 已分别保存为不可原地修改的 `experimental_candidate` v1 文件，并在
+  clean `8d1c5f4` / `05fdba7` 各采集过一份 SimplePlane + legacy 原始筛选。旧 schema 2
+  因圆弧整段 `mixed` 被验证器排除，不能形成正式 verdict；这正是上面 schema-3 稳态
+  方向合同的触发证据。描述性指标中 `0.989 m` 的左右稳态 yaw 误差为
+  `2.95%/0.02%`、中心漂移 `0.0530/0.0587 m`、不对称 `9.70%`，明显优于 `1.012 m`
+  的不对称 `43.67%`，因此成为上述 schema-3 smoke 首选。`0.989 m` 已完成上述六 profile
+  三重复，clean `55418fe` 的 reset-state 复跑将结果改善到 3/6 group 和 12/18 repeat
+  通过，但整批仍未过物理门；两个候选都没有覆盖 stable，也尚未完成两环境、
+  多速度、全拓扑或 Realistic 物理 A/B。版本化 Reset A/B 身份合同随后完成，并在
+  clean `65ae923` 对固定的 `SimplePlane`/`simple_plane_only1_v1`、
+  `threshold_corr_0p00025_offset_0p04`、`jackal_etw_0p989_v1`、60 Hz、TGS `32/4`
+  运行每策略 10 次。A/B 两组都只因旋转中心漂移不对称失败，B 比 A 多一个失败 repeat；
+  因此 `separate_recontact_0p20m_1step_v1` 已被实证为不能解决该阻塞，保持
+  `pose_restore_v1` 默认。这 20 个 SimplePlane Reset A/B 诊断 repeat 不属于参数冻结后
+  Warehouse V2 静态/动态场景各至少 100 次的 N20/N21 正式验收样本；N20/N21 当前仍各为
+  0，原方案十三阶段仍未全部完成。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 
@@ -33,13 +125,13 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 | --- | --- | --- | --- |
 | 1 Jackal 物理底盘 | 已实现 | 官方 Warehouse + 项目 Jackal 可启动，唯一 PhysicsScene、固定出生点与 Reset 已运行 | 更换场景后的全资产复验 |
 | 2 `/cmd_vel` 控制 | 已实现 | Teleop、Nav2、停车与 Reset 路径已运行 | 不同地面材料和载荷的系统辨识 |
-| 3 `/clock` | 已实现 | RTF/频率/消息年龄已由 Profiler 实测 | 长时间压力运行 |
+| 3 `/clock` | 已实现，RTX helper 时间策略已对齐供应商默认 | 15 分钟 headless soak 中 `/clock` 51130 样本无重复/回退，三类 Kit 时间样本警告均为 0；Camera Monitoring 短窗同样为 0 | 真正 Timeline Stop→Play 与 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵 |
 | 4 TF 与 Ideal Odom | 已实现 | Ideal 导航、Reset、TF freshness 已运行 | 计划中的全部长时统计矩阵 |
 | 5 LiDAR 与 `/scan` | 已实现 | 正常扫描及丢包/暂停/错误 Frame 故障矩阵已运行 | 更广传感器噪声与遮挡矩阵 |
 | 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |
 | 7 Nav2 | 已实现 | 1 m/3 m smoke、MPPI 10/15 Hz 参数矩阵和真实局部轨迹已运行 | 多终点、多布局的完整统计 |
 | 8 Ground Truth | 已实现 | smoke 报告已记录终点误差与 GT 路径 | 200 次统计验收 |
-| 9 Realistic Odom | 已实现 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查 | 更复杂滑移/噪声矩阵 |
+| 9 Realistic Odom | 已实现；运动学配置已收敛到 schema-v2 robot YAML，启动前做 provenance v6 失败关闭握手 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查；握手匹配、SHA 错配和服务超时由真实 rclpy 集成测试覆盖 | 新契约仍需在冻结候选上做完整 Realistic 物理复验及更复杂滑移/噪声矩阵 |
 | 10 动态避障 | 已实现基线 | 当前固定世界的 4-seed 基线为 4/4 | 不能外推为多类障碍 90% 广义避障率 |
 | 11 自动实验 | 已实现框架 | Reset、场景契约和 smoke 批次可重复运行 | 完整 200 次矩阵未执行 |
 | 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 没有真实 `warehouse_v2`，未证明 changed-region 时间改善 ≥30% |
@@ -2435,7 +2527,7 @@ failure_reason:
 | 自车点进入 `/scan`               | 机器人周围固定障碍               | 添加 CropBox                                    |
 | VoxelGrid 与 Voxel Layer 混淆  | 配置职责错误                  | 前者降采样，后者 Costmap 插件                           |
 | USD Pose 与 Map Pose 混淆      | 定位初始位置错误                | 同一出生点保存两组坐标                                   |
-| Reset 后轮速残留                 | 重置后突然运动                 | 清零速度和 Joint Target                            |
+| Reset 后关节状态残留               | 重置后突然运动或重复实验漂移分叉       | 恢复初始化 DOF pose，清零并读回验证 velocity/target/effort |
 | `wheelDistance` 不准确         | 原地旋转误差大                 | 标定有效轮距                                        |
 | RTF 过低                      | 导航超时                    | 降低 LiDAR 分辨率或控制计算量                            |
 
@@ -2443,7 +2535,7 @@ failure_reason:
 
 # 第十四部分：分阶段开发计划和验收标准
 
-以下内容保留原始阶段目标和严格验收门槛，不应仅凭代码存在就勾选完成。每阶段截至 2026-07-13 的“实现/实测/边界”结论见本文开头的 **0. 修订说明与当前状态**；尤其阶段 10 的 90% 广义动态避障率、阶段 11 的完整统计矩阵、阶段 12 的真实 changed-region 30% 改善和阶段 13 的真实机器人迁移仍未验收。
+以下内容保留原始阶段目标和严格验收门槛，不应仅凭代码存在就勾选完成。每阶段截至 2026-07-15 的“实现/实测/边界”结论见本文开头的 **0. 修订说明与当前状态**；尤其阶段 10 的 90% 广义动态避障率、阶段 11 的完整统计矩阵、阶段 12 的真实 changed-region 30% 改善和阶段 13 的真实机器人迁移仍未验收。
 
 ## 阶段 1：Jackal 物理底盘验证
 
