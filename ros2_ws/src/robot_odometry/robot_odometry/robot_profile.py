@@ -243,9 +243,9 @@ def validate_isaac_kinematics(profile, parameters):
     schema_version = parameters['runtime_provenance.schema_version']
     if (isinstance(schema_version, bool)
             or not isinstance(schema_version, int)
-            or schema_version != 5):
+            or schema_version != 6):
         raise ValueError(
-            'runtime_provenance.schema_version must be integer 5')
+            'runtime_provenance.schema_version must be integer 6')
 
     sha256 = parameters['runtime_provenance.robot.config.sha256']
     if (not isinstance(sha256, str)

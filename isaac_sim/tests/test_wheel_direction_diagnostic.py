@@ -73,8 +73,11 @@ def test_runtime_authors_contact_reports_before_physx_and_filters_all_ground():
         "PhysicsSetup(config.simulation).apply(stage, app)"
     )
     assert "ground_paths = resolve_ground_colliders(stage, config)" in runtime
-    assert "contact_filter_paths=list(ground_paths)" in runtime
-    assert "wheel_view.num_contact_filters != len(ground_paths)" in runtime
+    assert "reset_contact_probe = WheelGroundContactProbe(" in runtime
+    assert "ground_filter_paths=ground_paths" in runtime
+    assert "reset_contact_probe.initialize(app)" in runtime
+    assert "wheel_view = reset_contact_probe.view" in runtime
+    assert "reset_contact_probe.provenance_snapshot(" in runtime
     cleanup = runtime.split("finally:", 1)[1]
     assert cleanup.index("write_json_atomic(output_path, report)") < cleanup.index(
         "app.close("

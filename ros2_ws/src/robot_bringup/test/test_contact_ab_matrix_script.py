@@ -25,6 +25,9 @@ MANIFEST_COLUMNS = (
     'report',
     'report_sha256',
     'report_schema_version',
+    'runtime_provenance_schema_version',
+    'reset_strategy_schema_version',
+    'reset_strategy_id',
     'isaac_log',
     'isaac_log_sha256',
     'runner_log',
@@ -128,6 +131,9 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
     assert help_result.returncode == 0, help_result.stderr
     assert '--environment Warehouse|SimplePlane|all' in help_result.stdout
     assert '--ground-topology baseline|all|ID' in help_result.stdout
+    assert '--contact-profile all|ID' in help_result.stdout
+    assert '--reset-strategy project|pose_restore_v1|' in help_result.stdout
+    assert 'separate_recontact_0p20m_1step_v1|all' in help_result.stdout
     assert '--repeats N' in help_result.stdout
     assert '--robot-config FILE' in help_result.stdout
     assert '--output-dir DIR' in help_result.stdout
@@ -149,6 +155,8 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
         (('--repeats', '1'), '--output-dir is required'),
         (('--robot-config',), '--robot-config requires a value'),
         (('--ground-topology',), '--ground-topology requires a value'),
+        (('--contact-profile',), '--contact-profile requires a value'),
+        (('--reset-strategy',), '--reset-strategy requires a value'),
         (
             ('--ground-topology', 'unknown', '--output-dir', '/tmp/out'),
             '--ground-topology must be baseline, all',
@@ -172,6 +180,15 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
                 '/tmp/out',
             ),
             '--ground-topology ID must match the selected --environment',
+        ),
+        (
+            ('--contact-profile', 'unknown', '--output-dir', '/tmp/out'),
+            '--contact-profile must be all or a shipped contact profile ID',
+        ),
+        (
+            ('--reset-strategy', 'unknown', '--output-dir', '/tmp/out'),
+            '--reset-strategy must be project, pose_restore_v1, '
+            'separate_recontact_0p20m_1step_v1, or all',
         ),
         (
             ('--robot-config', '', '--output-dir', '/tmp/out'),
@@ -314,13 +331,66 @@ def test_contact_ab_matrix_locks_the_ordered_inputs_and_runtime_modes():
     assert 'for pair_index in "${!matrix_environment_ids[@]}"' in source
     assert 'for profile_index in "${!profile_ids[@]}"' in source
     assert 'for ((repeat = 1; repeat <= repeats; repeat++))' in source
+    assert 'for reset_strategy_id in "${reset_strategy_ids[@]}"' in source
+    repeat_loop = source.rindex(
+        'for ((repeat = 1; repeat <= repeats; repeat++))'
+    )
+    strategy_loop = source.rindex(
+        'for reset_strategy_id in "${reset_strategy_ids[@]}"'
+    )
+    assert repeat_loop < strategy_loop
+    assert 'reset-v1-${reset_strategy_id}' in source
     assert '"${SCRIPT_DIR}/run_isaac.sh"' in source
     assert '--headless --pacing-mode unbounded' in source
     assert (
         '--navigation-mode mapping --mode ideal --camera-profile off' in source
     )
+    assert (
+        'export ISAAC_NAV__SIMULATION__RESET_STRATEGY__ID='
+        '"${reset_strategy_id}"'
+    ) in source
     assert '"${SCRIPT_DIR}/run_motion_baseline.sh"' in source
     assert '--odometry-mode ideal' in source
+
+
+def test_contact_profile_and_reset_strategy_selection_contracts():
+    source = SCRIPT.read_text(encoding='utf-8')
+    assert 'contact_profile_selection="all"' in source
+    assert 'reset_strategy_selection="project"' in source
+    assert 'reset_strategy_ids=(' in source
+    assert 'select_contact_profiles' in source
+    assert 'select_reset_strategies' in source
+    assert 'config.schema_version' in source
+    assert 'config.simulation.reset_strategy.schema_version' in source
+    assert 'config.simulation.reset_strategy.identifier' in source
+
+
+def test_contact_profile_and_reset_strategy_selection_is_ordered_dynamically():
+    profile_selector = _shell_function_source('select_contact_profiles')
+    strategy_selector = _shell_function_source('select_reset_strategies')
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        'shipped_profile_ids=(legacy_baseline explicit_material)\n'
+        'shipped_profile_modes=(legacy_baseline explicit_material)\n'
+        'profile_ids=()\n'
+        'profile_modes=()\n'
+        f'{profile_selector}\n'
+        'contact_profile_selection=explicit_material\n'
+        'select_contact_profiles\n'
+        '[[ "${profile_ids[*]}" == explicit_material ]]\n'
+        '[[ "${profile_modes[*]}" == explicit_material ]]\n'
+        'reset_strategy_ids=()\n'
+        f'{strategy_selector}\n'
+        'reset_strategy_selection=all\n'
+        'select_reset_strategies pose_restore_v1\n'
+        '[[ "${reset_strategy_ids[*]}" == '
+        '"pose_restore_v1 separate_recontact_0p20m_1step_v1" ]]\n'
+        'reset_strategy_selection=project\n'
+        'select_reset_strategies separate_recontact_0p20m_1step_v1\n'
+        '[[ "${reset_strategy_ids[*]}" == '
+        'separate_recontact_0p20m_1step_v1 ]]\n'
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_explicit_robot_config_must_be_canonical_absolute_regular_file(
@@ -482,6 +552,7 @@ def test_only_explicit_matrix_inputs_are_reinstated_as_runtime_overrides():
         'export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"',
         'export ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE="${ground_topology_path}"',
         'export ISAAC_NAV__FILES__ROBOT="${robot_config}"',
+        'export ISAAC_NAV__SIMULATION__RESET_STRATEGY__ID="${reset_strategy_id}"',
     ]
 
 
@@ -490,21 +561,24 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'status --porcelain --untracked-files=normal' in source
     assert 'ls-files --error-unmatch' in source
     assert 'runtime_provenance.schema_version' in source
-    assert '"${schema}" != 5' in source
+    assert '"${schema}" != 6' in source
     assert 'runtime_provenance.environment.id' in source
     assert 'runtime_provenance.contact.json' in source
     assert 'runtime_provenance.contact.sha256' in source
     assert 'runtime_provenance.ground_topology.json' in source
     assert 'runtime_provenance.ground_topology.sha256' in source
+    assert 'runtime_provenance.simulation.reset_strategy.json' in source
+    assert 'runtime_provenance.simulation.reset_strategy.sha256' in source
+    assert 'reset_strategy_readiness_matches' in source
     assert 'ground_topology_readiness_matches' in source
     assert 'profile_sha256' in source
     assert 'stage_usd_readback_verified' in source
     assert 'motion_skid_steer_ab.yaml' in source
     assert 'manifest.tsv' in source
     assert 'report.get("schema_version") != 3' in source
-    assert 'strict contact A/B analysis schema must be integer 4' in source
-    assert 'physical_acceptance.get("schema_version") != 2' in source
-    assert 'skid_steer_plan_8_7_v2' in source
+    assert 'strict contact A/B analysis schema must be integer 5' in source
+    assert 'physical_acceptance.get("schema_version") != 3' in source
+    assert 'skid_steer_plan_8_7_v3' in source
     assert 'report.get("result") != "success"' in source
     assert 'runtime_provenance.git.dirty' in source
     assert 'runtime_provenance.git.commit' in source
@@ -629,6 +703,82 @@ def test_ground_topology_readiness_requires_canonical_hashed_profile_contract():
         f'{function}\n'
         f'ground_topology_readiness_matches {quoted}\n'
         f'if ground_topology_readiness_matches {bad_quoted}; then exit 91; fi\n'
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize(
+    ('strategy_id', 'lift_distance_m', 'separation_steps'),
+    [
+        ('pose_restore_v1', 0.0, 0),
+        ('separate_recontact_0p20m_1step_v1', 0.2, 1),
+    ],
+)
+def test_reset_strategy_readiness_requires_exact_canonical_probe_contract(
+    strategy_id,
+    lift_distance_m,
+    separation_steps,
+):
+    function = _shell_function_source('reset_strategy_readiness_matches')
+    collider = '/Root/GroundPlane/CollisionPlane'
+    topology_payload = json.dumps(
+        {'target_colliders': [collider]},
+        sort_keys=True,
+        separators=(',', ':'),
+    )
+    wheel_bindings = [
+        {
+            'joint_name': f'{position}_wheel_joint',
+            'wheel_link_path': f'/World/Robots/Jackal/{position}_wheel_link',
+        }
+        for position in ('front_left', 'front_right', 'rear_left', 'rear_right')
+    ]
+    reset_strategy = {
+        'schema_version': 1,
+        'id': strategy_id,
+        'lift_distance_m': lift_distance_m,
+        'separation_step_count': separation_steps,
+        'recontact_step_count': 1,
+        'contact_probe': {
+            'schema_version': 1,
+            'enabled': True,
+            'wheel_bindings': wheel_bindings,
+            'wheel_count': 4,
+            'ground_filter_paths': [collider],
+            'ground_filter_count': 1,
+            'max_contact_count': 128,
+            'report_threshold_n': 0.0,
+            'stage_usd_readback_verified': True,
+        },
+    }
+    payload = json.dumps(
+        reset_strategy, sort_keys=True, separators=(',', ':'), allow_nan=False
+    )
+    payload_sha256 = hashlib.sha256(payload.encode()).hexdigest()
+    valid_arguments = ' '.join(
+        repr(value)
+        for value in (payload, payload_sha256, strategy_id, topology_payload)
+    )
+    tampered = dict(reset_strategy)
+    tampered['recontact_step_count'] = 2
+    bad_payload = json.dumps(
+        tampered, sort_keys=True, separators=(',', ':'), allow_nan=False
+    )
+    bad_arguments = ' '.join(
+        repr(value)
+        for value in (
+            bad_payload,
+            hashlib.sha256(bad_payload.encode()).hexdigest(),
+            strategy_id,
+            topology_payload,
+        )
+    )
+    result = _bash_harness(
+        'set -Eeuo pipefail\n'
+        f'{function}\n'
+        f'reset_strategy_readiness_matches {valid_arguments}\n'
+        'if reset_strategy_readiness_matches '
+        f'{bad_arguments}; then exit 91; fi\n'
     )
     assert result.returncode == 0, result.stderr
 
@@ -857,10 +1007,13 @@ def test_manifest_freezes_motion_report_schema_column_dynamically(tmp_path):
     header = manifest.read_text(encoding='utf-8').splitlines()[0].split('\t')
     assert tuple(header) == MANIFEST_COLUMNS
     assert header.count('report_schema_version') == 1
-    assert header[7:11] == [
+    assert header[7:14] == [
         'report',
         'report_sha256',
         'report_schema_version',
+        'runtime_provenance_schema_version',
+        'reset_strategy_schema_version',
+        'reset_strategy_id',
         'isaac_log',
     ]
 
@@ -909,7 +1062,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     isaac_log = tmp_path / 'isaac.log'
     runner_log = tmp_path / 'runner.log'
     manifest.write_text(
-        '\t'.join(f'column_{index}' for index in range(44)) + '\n'
+        '\t'.join(f'column_{index}' for index in range(47)) + '\n'
     )
     report.write_text(
         '{"result":"success","schema_version":3}\n',
@@ -923,6 +1076,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         'current_environment': 'SimplePlane',
         'current_profile_id': 'legacy_baseline',
         'current_profile_mode': 'legacy_baseline',
+        'current_reset_strategy_id': 'pose_restore_v1',
         'current_repeat': '1',
         'current_report': report,
         'current_isaac_log': isaac_log,
@@ -967,6 +1121,8 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         'set -Eeuo pipefail\n'
         'declare -Ag owned_pids=()\n'
         'required_motion_report_schema_version=3\n'
+        'required_runtime_provenance_schema_version=6\n'
+        'required_reset_strategy_schema_version=1\n'
         'runtime_process_is_running() { return 1; }\n'
         'sha256_file() { sha256sum "$1" | awk "{print \\$1}"; }\n'
         f'{functions}\n'
@@ -979,22 +1135,23 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     lines = manifest.read_text(encoding='utf-8').splitlines()
     assert len(lines) == 2
     fields = lines[1].split('\t')
-    assert len(fields) == 44
+    assert len(fields) == 47
     assert fields[8] == hashlib.sha256(report.read_bytes()).hexdigest()
     assert fields[9] == '3'
-    assert fields[11] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
-    assert fields[13] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
-    assert fields[14] == 'a' * 40
-    assert fields[17] == 'b' * 64
-    assert fields[19] == 'c' * 64
-    assert fields[21] == 'd' * 64
-    assert fields[22] == 'explicit_cli'
-    assert fields[23] == '/repo/robot.yaml'
-    assert fields[24] == '9' * 64
-    assert fields[25] == 'jackal_candidate_v1'
-    assert fields[26] == 'experimental_candidate'
-    assert fields[27:31] == ['0.098', '0.08', '0.37559', '1.012']
-    assert fields[35:38] == [
+    assert fields[10:13] == ['6', '1', 'pose_restore_v1']
+    assert fields[14] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
+    assert fields[16] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
+    assert fields[17] == 'a' * 40
+    assert fields[20] == 'b' * 64
+    assert fields[22] == 'c' * 64
+    assert fields[24] == 'd' * 64
+    assert fields[25] == 'explicit_cli'
+    assert fields[26] == '/repo/robot.yaml'
+    assert fields[27] == '9' * 64
+    assert fields[28] == 'jackal_candidate_v1'
+    assert fields[29] == 'experimental_candidate'
+    assert fields[30:34] == ['0.098', '0.08', '0.37559', '1.012']
+    assert fields[38:41] == [
         'simple_plane_only1_v1',
         '/repo/simple_plane_only1_v1.yaml',
         '8' * 64,
@@ -1110,19 +1267,20 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
     assert '"min_repeats": repeats' in finalizer
     assert '"expected_environments": selected_environments' in finalizer
     assert '"expected_topologies": selected_topologies' in finalizer
-    assert '"expected_profiles": COMPLETE_MATRIX_PROFILES' in finalizer
+    assert '"expected_profiles": selected_profiles' in finalizer
+    assert '"expected_reset_strategies": selected_reset_tokens' in finalizer
     assert 'row.get("ground_topology_id")' in finalizer
     assert 'analysis.get("analysis_valid") is not True' in finalizer
     assert 'row.get("report_schema_version") != "3"' in finalizer
     assert 'report_document.get("schema_version") != 3' in finalizer
-    assert 'analysis.get("schema_version") != 4' in finalizer
+    assert 'analysis.get("schema_version") != 5' in finalizer
     assert 'counts.get("excluded_reports") != 0' in finalizer
     assert 'counts.get("included_reports") != expected_runs' in finalizer
     assert 'counts.get("groups") != expected_groups' in finalizer
     assert 'analysis_report_locks != manifest_report_locks' in finalizer
     assert 'physical_acceptance.get("policy_id")' in finalizer
-    assert 'physical_acceptance.get("schema_version") != 2' in finalizer
-    assert 'skid_steer_plan_8_7_v2' in finalizer
+    assert 'physical_acceptance.get("schema_version") != 3' in finalizer
+    assert 'skid_steer_plan_8_7_v3' in finalizer
     assert 'aggregate physical acceptance group accounting is invalid' in finalizer
     assert 'write_contact_ab_report(analysis, output_path)' in finalizer
 
@@ -1177,12 +1335,16 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     profile_hashes_json = json.dumps(
         profile_hashes, sort_keys=True, separators=(',', ':')
     )
+    reset_strategy_id = 'pose_restore_v1'
+    reset_strategy_token = f'reset-v1-{reset_strategy_id}'
     ordered_group_ids = [
-        f'SimplePlane::simple_plane_only1_v1::{profile_id}'
+        f'SimplePlane::simple_plane_only1_v1::{reset_strategy_token}::'
+        f'{profile_id}'
         for profile_id in profile_ids
     ]
     group_ids = sorted(
-        f'SimplePlane::simple_plane_only1_v1::{profile_id}'
+        f'SimplePlane::simple_plane_only1_v1::{reset_strategy_token}::'
+        f'{profile_id}'
         for profile_id in profile_ids
     )
     physical_thresholds = {
@@ -1381,7 +1543,8 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             sequence = group_index * 3 + repeat_index
             label = (
                 f'{sequence:03d}_simple_plane_simple_plane_only1_v1_'
-                f'{contact_profile_id}_r{repeat_index:02d}'
+                f'{reset_strategy_token}_{contact_profile_id}_'
+                f'r{repeat_index:02d}'
             )
             report_file = reports_dir / f'{label}.json'
             report_document = upgrade_report(
@@ -1403,6 +1566,34 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             report_document['config_file'] = '/repo/motion.yaml'
             report_document['config_sha256'] = 'b' * 64
             runtime_provenance = report_document['runtime_provenance']
+            runtime_provenance['schema_version'] = 6
+            target_colliders = runtime_provenance['ground_topology'][
+                'target_colliders'
+            ]
+            runtime_provenance['simulation']['reset_strategy'] = {
+                'schema_version': 1,
+                'id': reset_strategy_id,
+                'lift_distance_m': 0.0,
+                'separation_step_count': 0,
+                'recontact_step_count': 1,
+                'contact_probe': {
+                    'schema_version': 1,
+                    'enabled': True,
+                    'wheel_bindings': [
+                        {
+                            'joint_name': joint,
+                            'wheel_link_path': f'/World/Robot/wheel_{index}',
+                        }
+                        for index, joint in enumerate(wheel_layout.values())
+                    ],
+                    'wheel_count': 4,
+                    'ground_filter_paths': target_colliders,
+                    'ground_filter_count': len(target_colliders),
+                    'max_contact_count': 128,
+                    'report_threshold_n': 0.0,
+                    'stage_usd_readback_verified': True,
+                },
+            }
             runtime_provenance['git'].update(
                 {
                     'commit': 'a' * 40,
@@ -1489,6 +1680,9 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     'report': report_path,
                     'report_sha256': report_sha256,
                     'report_schema_version': '3',
+                    'runtime_provenance_schema_version': '6',
+                    'reset_strategy_schema_version': '1',
+                    'reset_strategy_id': reset_strategy_id,
                     'isaac_log': str(isaac_log.resolve()),
                     'isaac_log_sha256': hashlib.sha256(
                         isaac_log.read_bytes()
@@ -1551,6 +1745,10 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     'report_schema_version': 3,
                     'environment_id': 'SimplePlane',
                     'ground_topology_id': 'simple_plane_only1_v1',
+                    'runtime_provenance_schema_version': 6,
+                    'reset_strategy_schema_version': 1,
+                    'reset_strategy_id': reset_strategy_id,
+                    'reset_strategy_token': reset_strategy_token,
                     'contact_profile_id': contact_profile_id,
                 }
             )
@@ -1571,9 +1769,12 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                 }
             )
         analysis_groups[group_id] = {
-            'runtime_provenance_schema': 5,
+            'runtime_provenance_schema': 6,
             'environment_id': 'SimplePlane',
             'ground_topology_id': 'simple_plane_only1_v1',
+            'reset_strategy_schema_version': 1,
+            'reset_strategy_id': reset_strategy_id,
+            'reset_strategy_token': reset_strategy_token,
             'odometry_mode': 'ideal',
             'contact_profile_id': contact_profile_id,
             'repeat_count': 3,
@@ -1608,7 +1809,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'repeat_results': repeat_results,
         }
     analysis_document = {
-        'schema_version': 4,
+        'schema_version': 5,
         'counts': {
             'input_reports': 18,
             'excluded_reports': 0,
@@ -1626,7 +1827,8 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'missing_groups': [],
         },
         'selection_policy': {
-            'required_runtime_provenance_schema': 5,
+            'required_runtime_provenance_schema': 6,
+            'expected_reset_strategies': [reset_strategy_token],
             'expected_profiles': list(profile_ids),
         },
         'locked_inputs': {
@@ -1636,8 +1838,8 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         },
         'groups': analysis_groups,
         'physical_acceptance': {
-            'schema_version': 2,
-            'policy_id': 'skid_steer_plan_8_7_v2',
+            'schema_version': 3,
+            'policy_id': 'skid_steer_plan_8_7_v3',
             'evaluation_basis': 'every_repeat',
             'ranking_policy': 'none; pass/fail only',
             'steady_state_measurement_basis': (
@@ -1651,7 +1853,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'thresholds': physical_thresholds,
             'applicability': {
                 'required_motion_report_schema': 3,
-                'required_runtime_provenance_schema': 5,
+                'required_runtime_provenance_schema': 6,
                 'required_environment_id': 'SimplePlane',
                 'required_ground_topology_id': 'simple_plane_only1_v1',
                 'required_odometry_mode': 'ideal',
@@ -1671,6 +1873,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         min_repeats=3,
         expected_environments=('SimplePlane',),
         expected_topologies=('simple_plane_only1_v1',),
+        expected_reset_strategies=(reset_strategy_token,),
         expected_profiles=profile_ids,
     )
     write_manifest(manifest_rows)
@@ -1684,9 +1887,16 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assignments = {
         'PROJECT_ROOT': REPOSITORY_ROOT,
         'required_motion_report_schema_version': '3',
+        'required_runtime_provenance_schema_version': '6',
+        'required_reset_strategy_schema_version': '1',
         'output_dir': tmp_path,
         'environment_selection': 'SimplePlane',
         'ground_topology_selection': 'baseline',
+        'contact_profile_selection': 'all',
+        'reset_strategy_selection': 'project',
+        'batch_reset_strategy_ids_json': json.dumps(
+            [reset_strategy_id], separators=(',', ':')
+        ),
         'batch_environment_topology_pairs_json': json.dumps(
             [
                 {
@@ -1768,12 +1978,21 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
-    assert document['schema_version'] == 5
+    assert document['schema_version'] == 6
     assert document['schema_contract'] == {
+        'project_config': 2,
+        'runtime_provenance': 6,
         'motion_report': 3,
-        'aggregate_analysis': 4,
-        'physical_acceptance': 2,
+        'aggregate_analysis': 5,
+        'physical_acceptance': 3,
+        'manifest': 2,
     }
+    assert document['manifest_contract'] == {
+        'version': 2,
+        'columns': list(MANIFEST_COLUMNS),
+    }
+    assert document['contact_profile_selection'] == 'all'
+    assert document['reset_strategy_selection'] == 'project'
     assert document['ground_topology_selection'] == 'baseline'
     assert document['environment_topology_pairs'] == [
         {
@@ -1787,8 +2006,8 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert document['actual_counts']['acceptance_passing_groups'] == 6
     assert document['actual_counts']['acceptance_failed_groups'] == 0
     assert document['physical_acceptance'] == {
-        'schema_version': 2,
-        'policy_id': 'skid_steer_plan_8_7_v2',
+        'schema_version': 3,
+        'policy_id': 'skid_steer_plan_8_7_v3',
         'evaluation_basis': 'every_repeat',
         'ranking_policy': 'none; pass/fail only',
         'steady_state_measurement_basis': (
@@ -1802,7 +2021,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'thresholds': physical_thresholds,
         'applicability': {
             'required_motion_report_schema': 3,
-            'required_runtime_provenance_schema': 5,
+            'required_runtime_provenance_schema': 6,
             'required_environment_id': 'SimplePlane',
             'required_ground_topology_id': 'simple_plane_only1_v1',
             'required_odometry_mode': 'ideal',
@@ -1850,6 +2069,12 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'odometry_mode': 'ideal',
         'physics_hz': 60.0,
     }
+    assert document['locked_protocol_inputs']['reset_strategies'] == {
+        'selection': 'project',
+        'schema_version': 1,
+        'ids': [reset_strategy_id],
+        'tokens': [reset_strategy_token],
+    }
     assert document['locked_protocol_inputs']['ground_topology_profiles'] == {
         'simple_plane_only1_v1': {
             'environment_id': 'SimplePlane',
@@ -1881,9 +2106,9 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
 
     # A success summary may never bless a partial or extended manifest shape.
     write_manifest(manifest_rows, MANIFEST_COLUMNS[:-1])
-    expect_summary_failure('manifest header does not match the 44-column contract')
+    expect_summary_failure('manifest header does not match the 47-column contract')
     write_manifest(manifest_rows, MANIFEST_COLUMNS + ('unexpected_column',))
-    expect_summary_failure('manifest header does not match the 44-column contract')
+    expect_summary_failure('manifest header does not match the 47-column contract')
 
     # Every stopped writer's final log must still be canonical, regular, and
     # byte-identical when the success summary is published.
@@ -1918,7 +2143,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     )
     write_manifest(manifest_rows)
 
-    # Every semantic field family in the 44-column row is rebound before a
+    # Every semantic field family in the 47-column row is rebound before a
     # success summary.  A correct header and valid report/log hashes alone are
     # insufficient.
     for field, replacement, expected_message in (
@@ -1952,6 +2177,16 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             'environment_source_asset_sha256',
             '0' * 64,
             'environment_source_asset_sha256 identity mismatch',
+        ),
+        (
+            'runtime_provenance_schema_version',
+            '5',
+            'runtime_provenance_schema_version identity mismatch',
+        ),
+        (
+            'reset_strategy_schema_version',
+            '2',
+            'reset_strategy_schema_version identity mismatch',
         ),
     ):
         tampered_rows = [dict(row) for row in manifest_rows]
@@ -1988,6 +2223,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'robot_kinematics',
         'solver',
         'physics_hz',
+        'reset_strategy',
     ):
         report_document = json.loads(original_report_payload)
         if mutation == 'motion_configuration':
@@ -2009,11 +2245,15 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             report_document['runtime_provenance']['robot']['solver'][
                 'velocity_iterations'
             ] = 16
-        else:
-            assert mutation == 'physics_hz'
+        elif mutation == 'physics_hz':
             report_document['runtime_provenance']['simulation'][
                 'physics_hz'
             ] = 120.0
+        else:
+            assert mutation == 'reset_strategy'
+            report_document['runtime_provenance']['simulation'][
+                'reset_strategy'
+            ]['id'] = 'separate_recontact_0p20m_1step_v1'
         first_report_path.write_text(
             json.dumps(report_document, sort_keys=True) + '\n',
             encoding='utf-8',

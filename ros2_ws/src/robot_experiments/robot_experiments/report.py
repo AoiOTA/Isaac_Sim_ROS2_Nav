@@ -87,6 +87,29 @@ _GROUND_TOPOLOGY_OPERATIONS = {
     "preserve_source_colliders",
     "disable_non_target_colliders",
 }
+_RESET_STRATEGY_KEYS = {
+    "schema_version",
+    "id",
+    "lift_distance_m",
+    "separation_step_count",
+    "recontact_step_count",
+    "contact_probe",
+}
+_RESET_CONTACT_PROBE_KEYS = {
+    "schema_version",
+    "enabled",
+    "wheel_bindings",
+    "wheel_count",
+    "ground_filter_paths",
+    "ground_filter_count",
+    "max_contact_count",
+    "report_threshold_n",
+    "stage_usd_readback_verified",
+}
+_RESET_STRATEGY_SEMANTICS = {
+    "pose_restore_v1": (0.0, 0, 1),
+    "separate_recontact_0p20m_1step_v1": (0.2, 1, 1),
+}
 
 
 class ReportValidationError(ValueError):
@@ -238,25 +261,21 @@ def _topology_count(value: Any, location: str, *, allow_zero: bool) -> int:
     return value
 
 
-def decode_hashed_contact_snapshot(
+def _decode_hashed_snapshot(
     payload: object,
     expected_sha256: object,
+    *,
+    location: str,
 ) -> dict[str, Any]:
-    """Verify and decode the canonical contact JSON exposed by Isaac."""
-
     if not isinstance(payload, str):
-        raise ReportValidationError(
-            "runtime_provenance.contact.json must be a string"
-        )
+        raise ReportValidationError(f"{location}.json must be a string")
     _validate_sha256(
         expected_sha256,
-        "runtime_provenance.contact.sha256",
+        f"{location}.sha256",
     )
     actual_sha256 = hashlib.sha256(payload.encode("utf-8")).hexdigest()
     if not hmac.compare_digest(actual_sha256, expected_sha256):
-        raise ReportValidationError(
-            "runtime_provenance.contact JSON SHA256 mismatch"
-        )
+        raise ReportValidationError(f"{location} JSON SHA256 mismatch")
 
     def reject_constant(token: str) -> None:
         raise ValueError(f"non-finite JSON constant {token}")
@@ -277,23 +296,52 @@ def decode_hashed_contact_snapshot(
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ReportValidationError(
-            f"runtime_provenance.contact.json must be valid JSON: {exc}"
+            f"{location}.json must be valid JSON: {exc}"
         ) from exc
     if not isinstance(decoded, dict):
-        raise ReportValidationError(
-            "runtime_provenance.contact.json root must be a mapping"
+        raise ReportValidationError(f"{location}.json root must be a mapping")
+    try:
+        canonical = json.dumps(
+            decoded,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
         )
-    canonical = json.dumps(
-        decoded,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    )
+    except (TypeError, ValueError) as exc:
+        raise ReportValidationError(
+            f"{location}.json must be strict JSON: {exc}"
+        ) from exc
     if canonical != payload:
         raise ReportValidationError(
-            "runtime_provenance.contact.json must be canonical strict JSON"
+            f"{location}.json must be canonical strict JSON"
         )
     return decoded
+
+
+def decode_hashed_contact_snapshot(
+    payload: object,
+    expected_sha256: object,
+) -> dict[str, Any]:
+    """Verify and decode the canonical contact JSON exposed by Isaac."""
+
+    return _decode_hashed_snapshot(
+        payload,
+        expected_sha256,
+        location="runtime_provenance.contact",
+    )
+
+
+def decode_hashed_reset_strategy_snapshot(
+    payload: object,
+    expected_sha256: object,
+) -> dict[str, Any]:
+    """Verify and decode Isaac's canonical reset-strategy JSON pair."""
+
+    return _decode_hashed_snapshot(
+        payload,
+        expected_sha256,
+        location="runtime_provenance.simulation.reset_strategy",
+    )
 
 
 def _absolute_file_path(value: Any, location: str) -> str:
@@ -852,6 +900,179 @@ def _validate_ground_topology_provenance(
         )
 
 
+def _validate_reset_strategy_provenance(
+    reset_strategy: Mapping[str, Any],
+    contact: Mapping[str, Any],
+    ground_topology: Mapping[str, Any],
+) -> None:
+    location = "runtime_provenance.simulation.reset_strategy"
+    if set(reset_strategy) != _RESET_STRATEGY_KEYS:
+        raise ReportValidationError(
+            f"{location} keys must be exactly "
+            f"{sorted(_RESET_STRATEGY_KEYS)}"
+        )
+    schema_version = reset_strategy.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != 1
+    ):
+        raise ReportValidationError(
+            f"{location}.schema_version must be integer 1"
+        )
+    identifier = _required_string(reset_strategy.get("id"), f"{location}.id")
+    if not _IDENTIFIER_PATTERN.fullmatch(identifier):
+        raise ReportValidationError(f"{location}.id must be path-safe")
+    expected_semantics = _RESET_STRATEGY_SEMANTICS.get(identifier)
+    if expected_semantics is None:
+        raise ReportValidationError(f"{location}.id is unsupported")
+
+    lift_distance_m = reset_strategy.get("lift_distance_m")
+    separation_step_count = reset_strategy.get("separation_step_count")
+    recontact_step_count = reset_strategy.get("recontact_step_count")
+    if (
+        not isinstance(lift_distance_m, float)
+        or not math.isfinite(lift_distance_m)
+        or isinstance(separation_step_count, bool)
+        or not isinstance(separation_step_count, int)
+        or isinstance(recontact_step_count, bool)
+        or not isinstance(recontact_step_count, int)
+    ):
+        raise ReportValidationError(
+            f"{location} strategy semantics must use one finite float and "
+            "integer step counts"
+        )
+    if (
+        lift_distance_m,
+        separation_step_count,
+        recontact_step_count,
+    ) != expected_semantics:
+        raise ReportValidationError(
+            f"{location} strategy semantics do not match id {identifier!r}"
+        )
+
+    probe = _required_mapping(reset_strategy, "contact_probe", location)
+    probe_location = f"{location}.contact_probe"
+    if set(probe) != _RESET_CONTACT_PROBE_KEYS:
+        raise ReportValidationError(
+            f"{probe_location} keys must be exactly "
+            f"{sorted(_RESET_CONTACT_PROBE_KEYS)}"
+        )
+    probe_schema_version = probe.get("schema_version")
+    if (
+        isinstance(probe_schema_version, bool)
+        or not isinstance(probe_schema_version, int)
+        or probe_schema_version != 1
+    ):
+        raise ReportValidationError(
+            f"{probe_location}.schema_version must be integer 1"
+        )
+    if probe.get("enabled") is not True:
+        raise ReportValidationError(f"{probe_location}.enabled must be true")
+    if probe.get("stage_usd_readback_verified") is not True:
+        raise ReportValidationError(
+            f"{probe_location}.stage_usd_readback_verified must be true"
+        )
+
+    wheel_bindings = probe.get("wheel_bindings")
+    if not isinstance(wheel_bindings, list) or len(wheel_bindings) != 4:
+        raise ReportValidationError(
+            f"{probe_location}.wheel_bindings must contain exactly 4 entries"
+        )
+    joint_names: list[str] = []
+    wheel_link_paths: list[str] = []
+    for index, binding in enumerate(wheel_bindings):
+        binding_location = f"{probe_location}.wheel_bindings[{index}]"
+        if not isinstance(binding, Mapping) or set(binding) != {
+            "joint_name",
+            "wheel_link_path",
+        }:
+            raise ReportValidationError(
+                f"{binding_location} keys must be exactly "
+                "['joint_name', 'wheel_link_path']"
+            )
+        joint_name = _required_string(
+            binding.get("joint_name"),
+            f"{binding_location}.joint_name",
+        )
+        if not _IDENTIFIER_PATTERN.fullmatch(joint_name):
+            raise ReportValidationError(
+                f"{binding_location}.joint_name must be path-safe"
+            )
+        joint_names.append(joint_name)
+        wheel_link_paths.append(
+            _absolute_prim_path(
+                binding.get("wheel_link_path"),
+                f"{binding_location}.wheel_link_path",
+            )
+        )
+    if len(set(wheel_link_paths)) != len(wheel_link_paths):
+        raise ReportValidationError(
+            f"{probe_location}.wheel_bindings wheel link paths must be unique"
+        )
+    expected_joint_names = contact["collider_contract"]["wheel_joint_names"]
+    if joint_names != expected_joint_names:
+        raise ReportValidationError(
+            f"{probe_location}.wheel_bindings must preserve wheel joint order"
+        )
+    wheel_colliders = contact["wheel_colliders"]
+    for index, (wheel_link_path, collider_path) in enumerate(
+        zip(wheel_link_paths, wheel_colliders, strict=True)
+    ):
+        if not (
+            collider_path == wheel_link_path
+            or collider_path.startswith(f"{wheel_link_path.rstrip('/')}/")
+        ):
+            raise ReportValidationError(
+                f"{probe_location}.wheel_bindings[{index}].wheel_link_path "
+                "must be the bound contact wheel collider or its ancestor"
+            )
+    wheel_count = probe.get("wheel_count")
+    if (
+        isinstance(wheel_count, bool)
+        or not isinstance(wheel_count, int)
+        or wheel_count != 4
+        or wheel_count != len(wheel_bindings)
+    ):
+        raise ReportValidationError(
+            f"{probe_location}.wheel_count must be 4"
+        )
+
+    ground_filter_paths = _ground_topology_path_sequence(
+        probe.get("ground_filter_paths"),
+        f"{probe_location}.ground_filter_paths",
+        allow_empty=False,
+    )
+    if ground_filter_paths != ground_topology["target_colliders"]:
+        raise ReportValidationError(
+            f"{probe_location}.ground_filter_paths must equal the ground "
+            "topology target"
+        )
+    ground_filter_count = probe.get("ground_filter_count")
+    if (
+        isinstance(ground_filter_count, bool)
+        or not isinstance(ground_filter_count, int)
+        or ground_filter_count != len(ground_filter_paths)
+    ):
+        raise ReportValidationError(
+            f"{probe_location}.ground_filter_count must equal the path count"
+        )
+    max_contact_count = probe.get("max_contact_count")
+    if (
+        isinstance(max_contact_count, bool)
+        or not isinstance(max_contact_count, int)
+        or max_contact_count != 128
+    ):
+        raise ReportValidationError(
+            f"{probe_location}.max_contact_count must be 128"
+        )
+    report_threshold_n = probe.get("report_threshold_n")
+    if not isinstance(report_threshold_n, float) or report_threshold_n != 0.0:
+        raise ReportValidationError(
+            f"{probe_location}.report_threshold_n must be 0.0"
+        )
+
+
 def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     """Validate the Isaac-startup snapshot embedded in a diagnostic report."""
 
@@ -864,10 +1085,10 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version not in {3, 4, 5}
+        or schema_version not in {3, 4, 5, 6}
     ):
         raise ReportValidationError(
-            "runtime_provenance.schema_version must be integer 3, 4, or 5"
+            "runtime_provenance.schema_version must be integer 3, 4, 5, or 6"
         )
     expected_root_keys = {
         "verified",
@@ -878,7 +1099,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         "contact",
         "git",
     }
-    if schema_version == 5:
+    if schema_version in {5, 6}:
         expected_root_keys.add("ground_topology")
     if set(provenance) != expected_root_keys:
         raise ReportValidationError(
@@ -888,7 +1109,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
 
     robot = _required_mapping(provenance, "robot", "runtime_provenance")
     robot_keys = {"config", "asset", "solver"}
-    if schema_version in {4, 5}:
+    if schema_version in {4, 5, 6}:
         robot_keys.add("kinematics")
     if set(robot) != robot_keys:
         raise ReportValidationError(
@@ -942,7 +1163,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
             "stage_articulation_usd_readback_verified must be true"
         )
 
-    if schema_version in {4, 5}:
+    if schema_version in {4, 5, 6}:
         kinematics = _required_mapping(
             robot, "kinematics", "runtime_provenance.robot"
         )
@@ -1058,6 +1279,8 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         provenance, "simulation", "runtime_provenance"
     )
     simulation_keys = {"navigation_mode", "odometry_mode", "physics_hz"}
+    if schema_version == 6:
+        simulation_keys.add("reset_strategy")
     if set(simulation) != simulation_keys:
         raise ReportValidationError(
             "runtime_provenance.simulation keys must be exactly "
@@ -1085,7 +1308,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         "runtime_provenance",
     )
     _validate_contact_provenance(contact)
-    if schema_version == 5:
+    if schema_version in {5, 6}:
         ground_topology = _required_mapping(
             provenance,
             "ground_topology",
@@ -1096,6 +1319,17 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
             environment,
             contact,
         )
+        if schema_version == 6:
+            reset_strategy = _required_mapping(
+                simulation,
+                "reset_strategy",
+                "runtime_provenance.simulation",
+            )
+            _validate_reset_strategy_provenance(
+                reset_strategy,
+                contact,
+                ground_topology,
+            )
 
     git = _required_mapping(provenance, "git", "runtime_provenance")
     if set(git) != {"commit", "branch", "dirty"}:

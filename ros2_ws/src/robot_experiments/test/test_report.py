@@ -6,6 +6,7 @@ import math
 
 import pytest
 
+import robot_experiments.report as report_module
 from robot_experiments.report import (
     REPRODUCIBILITY_FIELDS,
     ReportValidationError,
@@ -184,6 +185,51 @@ def valid_runtime_provenance_v5():
     return provenance
 
 
+def valid_reset_strategy(identifier="pose_restore_v1"):
+    if identifier == "pose_restore_v1":
+        lift_distance_m = 0.0
+        separation_step_count = 0
+    else:
+        assert identifier == "separate_recontact_0p20m_1step_v1"
+        lift_distance_m = 0.2
+        separation_step_count = 1
+    return {
+        "schema_version": 1,
+        "id": identifier,
+        "lift_distance_m": lift_distance_m,
+        "separation_step_count": separation_step_count,
+        "recontact_step_count": 1,
+        "contact_probe": {
+            "schema_version": 1,
+            "enabled": True,
+            "wheel_bindings": [
+                {
+                    "joint_name": joint_name,
+                    "wheel_link_path": f"/World/Robot/wheel_{index}",
+                }
+                for index, joint_name in enumerate(("fl", "fr", "rl", "rr"))
+            ],
+            "wheel_count": 4,
+            "ground_filter_paths": [
+                "/Root/GroundPlane/CollisionPlane"
+            ],
+            "ground_filter_count": 1,
+            "max_contact_count": 128,
+            "report_threshold_n": 0.0,
+            "stage_usd_readback_verified": True,
+        },
+    }
+
+
+def valid_runtime_provenance_v6(identifier="pose_restore_v1"):
+    provenance = valid_runtime_provenance_v5()
+    provenance["schema_version"] = 6
+    provenance["simulation"]["reset_strategy"] = valid_reset_strategy(
+        identifier
+    )
+    return provenance
+
+
 def replace_topology_paths(topology, name, paths):
     topology[f"{name}_colliders"] = paths
     topology[f"{name}_collider_count"] = len(paths)
@@ -269,15 +315,21 @@ def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
     validate_runtime_provenance(valid_runtime_provenance())
     validate_runtime_provenance(valid_runtime_provenance_v4())
     validate_runtime_provenance(valid_runtime_provenance_v5())
+    validate_runtime_provenance(valid_runtime_provenance_v6())
+    validate_runtime_provenance(
+        valid_runtime_provenance_v6(
+            "separate_recontact_0p20m_1step_v1"
+        )
+    )
 
 
-@pytest.mark.parametrize("bad_version", [True, 3.0, "5", None, 2, 6])
+@pytest.mark.parametrize("bad_version", [True, 3.0, "5", None, 2, 7])
 def test_validate_runtime_provenance_requires_exact_integer_schema_version(
     bad_version,
 ):
     provenance = valid_runtime_provenance()
     provenance["schema_version"] = bad_version
-    with pytest.raises(ReportValidationError, match="integer 3, 4, or 5"):
+    with pytest.raises(ReportValidationError, match="integer 3, 4, 5, or 6"):
         validate_runtime_provenance(provenance)
 
 
@@ -311,8 +363,10 @@ def test_validate_runtime_provenance_v5_accepts_preserved_topology():
     [
         (3, "kinematics"),
         (4, "ground_topology"),
+        (5, "reset_strategy"),
         (5, "missing_kinematics"),
         (5, "missing_ground_topology"),
+        (6, "missing_reset_strategy"),
     ],
 )
 def test_validate_runtime_provenance_rejects_version_field_confusion(
@@ -328,12 +382,19 @@ def test_validate_runtime_provenance_rejects_version_field_confusion(
         provenance["ground_topology"] = deepcopy(
             valid_runtime_provenance_v5()["ground_topology"]
         )
-    else:
+    elif version == 5:
         provenance = valid_runtime_provenance_v5()
-        if mutation == "missing_kinematics":
+        if mutation == "reset_strategy":
+            provenance["simulation"]["reset_strategy"] = (
+                valid_reset_strategy()
+            )
+        elif mutation == "missing_kinematics":
             del provenance["robot"]["kinematics"]
         else:
             del provenance["ground_topology"]
+    else:
+        provenance = valid_runtime_provenance_v6()
+        del provenance["simulation"]["reset_strategy"]
 
     with pytest.raises(ReportValidationError, match="keys must be exactly"):
         validate_runtime_provenance(provenance)
@@ -523,10 +584,98 @@ def test_decode_hashed_contact_snapshot_requires_canonical_verified_json():
         )
 
 
+def test_decode_hashed_reset_strategy_requires_canonical_verified_json():
+    assert hasattr(report_module, "decode_hashed_reset_strategy_snapshot")
+    decoder = report_module.decode_hashed_reset_strategy_snapshot
+    reset_strategy = valid_reset_strategy()
+    payload = json.dumps(
+        reset_strategy,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    assert (
+        decoder(payload, digest)
+        == reset_strategy
+    )
+    with pytest.raises(ReportValidationError, match="SHA256 mismatch"):
+        decoder(payload + " ", digest)
+    pretty = json.dumps(reset_strategy, indent=2, sort_keys=True)
+    with pytest.raises(ReportValidationError, match="canonical strict JSON"):
+        decoder(
+            pretty,
+            hashlib.sha256(pretty.encode("utf-8")).hexdigest(),
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda strategy: strategy.update(extra=True),
+            "keys must be exactly",
+        ),
+        (
+            lambda strategy: strategy.update(schema_version=2),
+            "schema_version must be integer 1",
+        ),
+        (
+            lambda strategy: strategy.update(id="unknown_v1"),
+            "id is unsupported",
+        ),
+        (
+            lambda strategy: strategy.update(lift_distance_m=0.2),
+            "strategy semantics",
+        ),
+        (
+            lambda strategy: strategy["contact_probe"][
+                "wheel_bindings"
+            ].reverse(),
+            "wheel joint order",
+        ),
+        (
+            lambda strategy: strategy["contact_probe"]["wheel_bindings"][
+                0
+            ].update(wheel_link_path="/World/Robot/unbound_wheel"),
+            "bound contact wheel collider or its ancestor",
+        ),
+        (
+            lambda strategy: strategy["contact_probe"].update(
+                ground_filter_paths=["/Root/OtherGround"]
+            ),
+            "ground topology target",
+        ),
+        (
+            lambda strategy: strategy["contact_probe"].update(
+                max_contact_count=64
+            ),
+            "max_contact_count must be 128",
+        ),
+        (
+            lambda strategy: strategy["contact_probe"].update(
+                report_threshold_n=1.0
+            ),
+            "report_threshold_n must be 0.0",
+        ),
+    ],
+)
+def test_validate_runtime_provenance_v6_rejects_reset_contract_drift(
+    mutation,
+    message,
+):
+    provenance = valid_runtime_provenance_v6()
+    mutation(provenance["simulation"]["reset_strategy"])
+
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
 @pytest.mark.parametrize(
     ("path", "bad_value", "message"),
     [
-        (("schema_version",), 2, "integer 3, 4, or 5"),
+        (("schema_version",), 2, "integer 3, 4, 5, or 6"),
         (("robot", "config", "sha256"), "g" * 64, "SHA256"),
         (("robot", "solver", "velocity_iterations"), True, "integer"),
         (("robot", "solver", "velocity_iterations"), 0, "integer"),

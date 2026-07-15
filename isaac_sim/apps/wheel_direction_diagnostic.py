@@ -961,7 +961,11 @@ def run(
 
         from isaac_sim.src.stage.physics_setup import PhysicsSetup, prepare_pacing
         from isaacsim.core.simulation_manager import SimulationManager
-        from isaacsim.core.experimental.prims import RigidPrim
+        from isaac_sim.src.robot.reset_strategy import (
+            MAX_CONTACT_COUNT,
+            WheelBinding,
+            WheelGroundContactProbe,
+        )
 
         prepare_pacing(config.simulation)
         composer = SceneComposer(config)
@@ -980,6 +984,23 @@ def run(
         contact_report_snapshots = _author_wheel_contact_reports(
             stage, stage_bindings
         )
+        if diagnostic.protocol.max_contact_count != MAX_CONTACT_COUNT:
+            raise WheelDirectionDiagnosticError(
+                "diagnostic max_contact_count must match the versioned reset "
+                f"probe contract: expected={MAX_CONTACT_COUNT}, "
+                f"actual={diagnostic.protocol.max_contact_count}"
+            )
+        reset_contact_probe = WheelGroundContactProbe(
+            wheel_bindings=[
+                WheelBinding(
+                    joint_name=str(binding["joint_name"]),
+                    wheel_link_path=str(binding["wheel_link_path"]),
+                )
+                for binding in stage_bindings
+            ],
+            ground_filter_paths=ground_paths,
+            stage_usd_readback_verified=True,
+        )
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
         app.update()
         validate_composed_stage(config, stage)
@@ -995,14 +1016,6 @@ def run(
         solver_readback = robot.configure_stability(settings)
         wheel_dof_indices, bindings = _wheel_bindings(
             stage_bindings, config, robot
-        )
-        report["runtime_provenance"] = capture_runtime_provenance(
-            config,
-            stage,
-            articulation_usd_solver_iterations=solver_readback,
-            repository_root=PROJECT_ROOT,
-            ground_topology_snapshot=composer.ground_topology_snapshot,
-            contact_snapshot=composer.contact_snapshot,
         )
         report["bindings"] = {
             "articulation_root": config.robot.articulation_root,
@@ -1023,23 +1036,21 @@ def run(
             ),
         }
 
-        wheel_paths = [str(binding["wheel_link_path"]) for binding in bindings]
-        wheel_view = RigidPrim(
-            wheel_paths,
-            contact_filter_paths=list(ground_paths),
-            max_contact_count=diagnostic.protocol.max_contact_count,
+        reset_contact_probe.initialize(app)
+        wheel_view = reset_contact_probe.view
+        report["runtime_provenance"] = capture_runtime_provenance(
+            config,
+            stage,
+            articulation_usd_solver_iterations=solver_readback,
+            repository_root=PROJECT_ROOT,
+            reset_strategy_snapshot=(
+                reset_contact_probe.provenance_snapshot(
+                    config.simulation.reset_strategy
+                )
+            ),
+            ground_topology_snapshot=composer.ground_topology_snapshot,
+            contact_snapshot=composer.contact_snapshot,
         )
-        app.update()
-        if not wheel_view.is_physics_tensor_entity_valid():
-            raise WheelDirectionDiagnosticError(
-                "RigidPrim wheel tensor view is invalid after physics warmup"
-            )
-        if wheel_view.num_contact_filters != len(ground_paths):
-            raise WheelDirectionDiagnosticError(
-                "wheel contact view filter count mismatch: "
-                f"expected={len(ground_paths)}, "
-                f"actual={wheel_view.num_contact_filters}"
-            )
         physics_dt_s = float(SimulationManager.get_physics_dt())
         expected_dt = 1.0 / config.simulation.physics_hz
         if abs(physics_dt_s - expected_dt) > 1e-9:

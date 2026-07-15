@@ -185,7 +185,14 @@ def test_motion_baseline_runner_owns_a_bounded_cmd_vel_and_reset_contract():
     assert '"runtime_provenance.contact.sha256"' in source
     assert '"runtime_provenance.ground_topology.json"' in source
     assert '"runtime_provenance.ground_topology.sha256"' in source
+    assert (
+        '"runtime_provenance.simulation.reset_strategy.json"' in source
+    )
+    assert (
+        '"runtime_provenance.simulation.reset_strategy.sha256"' in source
+    )
     assert "decode_hashed_contact_snapshot" in source
+    assert "decode_hashed_reset_strategy_snapshot" in source
     assert "_decode_hashed_ground_topology_snapshot" in source
     assert "environment label does not match Isaac runtime provenance" in source
     provenance_reader = source.split("def _read_runtime_provenance", 1)[1].split(

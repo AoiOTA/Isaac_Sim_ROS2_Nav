@@ -52,7 +52,11 @@ class RobotPosePort(Protocol):
 
     def set_world_pose(self, position: Sequence[float], orientation_wxyz: Sequence[float]) -> None: ...
 
+    def get_world_pose(self) -> tuple[Sequence[float], Sequence[float]]: ...
+
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None: ...
+
+    def get_base_velocities(self) -> tuple[Sequence[float], Sequence[float]]: ...
 
     def restore_initial_joint_state(self) -> None: ...
 
@@ -172,13 +176,89 @@ class SpawnPoseManager:
         except KeyError as exc:
             raise SpawnPoseError(f"unknown spawn pose {pose_name!r}; available={sorted(self.poses)}") from exc
 
-    def apply_usd_pose(self, pose_name: str) -> SpawnPose:
+    def apply_usd_pose(
+        self,
+        pose_name: str,
+        *,
+        z_offset_m: float = 0.0,
+    ) -> SpawnPose:
         pose = self.get(pose_name)
+        if (
+            isinstance(z_offset_m, bool)
+            or not isinstance(z_offset_m, (int, float))
+            or not math.isfinite(z_offset_m)
+            or z_offset_m < 0.0
+        ):
+            raise SpawnPoseError("z_offset_m must be finite and non-negative")
+        expected_position = (
+            pose.usd.position[0],
+            pose.usd.position[1],
+            pose.usd.position[2] + float(z_offset_m),
+        )
+        expected_orientation = quaternion_from_yaw_deg(pose.usd.yaw_deg)
         # Restore the complete articulation state while physics is paused.
         # Root pose is applied last so no joint teleport can perturb it.
         self.robot.restore_initial_joint_state()
-        self.robot.set_world_pose(pose.usd.position, quaternion_from_yaw_deg(pose.usd.yaw_deg))
+        self.robot.set_world_pose(expected_position, expected_orientation)
         self.robot.set_base_velocities([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        actual_position, actual_orientation = self.robot.get_world_pose()
+        if (
+            len(actual_position) != 3
+            or len(actual_orientation) != 4
+            or not all(
+                math.isfinite(float(value))
+                for value in (*actual_position, *actual_orientation)
+            )
+            or any(
+                not math.isclose(
+                    float(actual),
+                    expected,
+                    rel_tol=0.0,
+                    abs_tol=1e-6,
+                )
+                for actual, expected in zip(
+                    actual_position, expected_position, strict=True
+                )
+            )
+            or min(
+                max(
+                    abs(float(actual) - expected)
+                    for actual, expected in zip(
+                        actual_orientation,
+                        expected_orientation,
+                        strict=True,
+                    )
+                ),
+                max(
+                    abs(float(actual) + expected)
+                    for actual, expected in zip(
+                        actual_orientation,
+                        expected_orientation,
+                        strict=True,
+                    )
+                ),
+            )
+            > 1e-6
+        ):
+            raise SpawnPoseError(
+                "root pose readback does not match requested reset pose: "
+                f"expected=({expected_position}, {expected_orientation}), "
+                f"actual=({tuple(actual_position)}, {tuple(actual_orientation)})"
+            )
+        linear_velocity, angular_velocity = self.robot.get_base_velocities()
+        if (
+            len(linear_velocity) != 3
+            or len(angular_velocity) != 3
+            or any(
+                not math.isfinite(float(value)) or abs(float(value)) > 1e-6
+                for value in (*linear_velocity, *angular_velocity)
+            )
+        ):
+            raise SpawnPoseError(
+                "base velocity readback is not zero after reset: "
+                f"linear={tuple(linear_velocity)}, "
+                f"angular={tuple(angular_velocity)}"
+            )
         return pose
 
     def get_map_pose(self, pose_name: str, *, purpose: str) -> MapSpawnPose:

@@ -233,6 +233,55 @@ def _ground_topology_snapshot(
     }
 
 
+def _reset_strategy_snapshot(
+    *,
+    wheel_joints: tuple[str, ...] = ("fl", "fr", "rl", "rr"),
+    wheel_link_paths: list[str] | None = None,
+    ground_filter_paths: list[str] | None = None,
+    identifier: str = "pose_restore_v1",
+) -> dict[str, object]:
+    wheel_link_paths = wheel_link_paths or [
+        f"/World/Robot/wheel_{index}" for index in range(4)
+    ]
+    assert len(wheel_link_paths) == len(wheel_joints) == 4
+    ground_filter_paths = sorted(
+        ground_filter_paths or ["/World/Ground/Collision"]
+    )
+    if identifier == "pose_restore_v1":
+        lift_distance_m = 0.0
+        separation_step_count = 0
+    else:
+        assert identifier == "separate_recontact_0p20m_1step_v1"
+        lift_distance_m = 0.2
+        separation_step_count = 1
+    return {
+        "schema_version": 1,
+        "id": identifier,
+        "lift_distance_m": lift_distance_m,
+        "separation_step_count": separation_step_count,
+        "recontact_step_count": 1,
+        "contact_probe": {
+            "schema_version": 1,
+            "enabled": True,
+            "wheel_bindings": [
+                {
+                    "joint_name": joint_name,
+                    "wheel_link_path": wheel_link_path,
+                }
+                for joint_name, wheel_link_path in zip(
+                    wheel_joints, wheel_link_paths, strict=True
+                )
+            ],
+            "wheel_count": 4,
+            "ground_filter_paths": ground_filter_paths,
+            "ground_filter_count": len(ground_filter_paths),
+            "max_contact_count": 128,
+            "report_threshold_n": 0.0,
+            "stage_usd_readback_verified": True,
+        },
+    }
+
+
 def _git(repository: Path, *arguments: str) -> None:
     subprocess.run(
         ["git", "-C", str(repository), *arguments],
@@ -311,6 +360,10 @@ def _runtime_inputs(
             odometry_mode="ideal",
             physics_hz=60.0,
             expected_physics_scene="/PhysicsScene",
+            reset_strategy=SimpleNamespace(
+                schema_version=1,
+                identifier="pose_restore_v1",
+            ),
         ),
     )
     topology_snapshot = _ground_topology_snapshot(
@@ -400,6 +453,10 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
             odometry_mode="ideal",
             physics_hz=60.0,
             expected_physics_scene="/PhysicsScene",
+            reset_strategy=SimpleNamespace(
+                schema_version=1,
+                identifier="pose_restore_v1",
+            ),
         ),
     )
     from isaac_sim.src.stage import contact_setup
@@ -437,14 +494,15 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         _Stage(),
         articulation_usd_solver_iterations=(32, 4),
         repository_root=repository,
+        reset_strategy_snapshot=_reset_strategy_snapshot(),
         ground_topology_snapshot=expected_ground_topology_snapshot,
         contact_snapshot=expected_contact_snapshot,
     )
     parameters = runtime_provenance_parameters(provenance)
 
     assert fresh_readbacks == ["ground_topology", "contact"]
-    assert provenance["schema_version"] == 5
-    assert parameters["runtime_provenance.schema_version"] == 5
+    assert provenance["schema_version"] == 6
+    assert parameters["runtime_provenance.schema_version"] == 6
     assert provenance["robot"]["config"]["sha256"] == file_sha256(
         robot_config
     )
@@ -511,6 +569,19 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
     assert parameters["runtime_provenance.contact.sha256"] == hashlib.sha256(
         contact_json.encode("utf-8")
     ).hexdigest()
+    reset_strategy_json = parameters[
+        "runtime_provenance.simulation.reset_strategy.json"
+    ]
+    assert isinstance(reset_strategy_json, str)
+    assert reset_strategy_json == json.dumps(
+        provenance["simulation"]["reset_strategy"],
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    assert parameters[
+        "runtime_provenance.simulation.reset_strategy.sha256"
+    ] == hashlib.sha256(reset_strategy_json.encode("utf-8")).hexdigest()
     assert provenance["contact"]["collider_contract"] == {
         "wheel_joint_names": ["fl", "fr", "rl", "rr"],
         "wheel_expected_count": 4,
@@ -521,7 +592,7 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
 
 
 @pytest.mark.parametrize("target_count", [32, 1])
-def test_schema_v5_locks_combined_and_plane_only_ground_topologies(
+def test_schema_v6_locks_reset_strategy_and_ground_topologies(
     tmp_path,
     monkeypatch,
     target_count,
@@ -555,12 +626,16 @@ def test_schema_v5_locks_combined_and_plane_only_ground_topologies(
         _Stage(),
         articulation_usd_solver_iterations=(32, 4),
         repository_root=repository,
+        reset_strategy_snapshot=_reset_strategy_snapshot(
+            wheel_joints=tuple(config.robot.wheel_joints),
+            ground_filter_paths=sorted(target_colliders),
+        ),
         ground_topology_snapshot=topology_snapshot,
         contact_snapshot=contact_snapshot,
     )
     parameters = runtime_provenance_parameters(provenance)
 
-    assert provenance["schema_version"] == 5
+    assert provenance["schema_version"] == 6
     assert set(provenance) == {
         "schema_version",
         "robot",
@@ -595,6 +670,101 @@ def test_schema_v5_locks_combined_and_plane_only_ground_topologies(
     }
 
 
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda snapshot: snapshot.update(extra=True),
+            "keys must be exactly",
+        ),
+        (
+            lambda snapshot: snapshot.update(schema_version=2),
+            "schema_version must be integer 1",
+        ),
+        (
+            lambda snapshot: snapshot.update(
+                id="separate_recontact_0p20m_1step_v1"
+            ),
+            "config identity",
+        ),
+        (
+            lambda snapshot: snapshot.update(lift_distance_m=0.2),
+            "strategy semantics",
+        ),
+        (
+            lambda snapshot: snapshot["contact_probe"][
+                "wheel_bindings"
+            ].reverse(),
+            "wheel joint order",
+        ),
+        (
+            lambda snapshot: snapshot["contact_probe"]["wheel_bindings"][
+                0
+            ].update(wheel_link_path="/World/Robot/unbound_wheel"),
+            "bound contact wheel collider or its ancestor",
+        ),
+        (
+            lambda snapshot: snapshot["contact_probe"].update(
+                ground_filter_paths=["/World/Ground/Other"]
+            ),
+            "ground topology target",
+        ),
+        (
+            lambda snapshot: snapshot["contact_probe"].update(
+                max_contact_count=127
+            ),
+            "max_contact_count must be 128",
+        ),
+        (
+            lambda snapshot: snapshot["contact_probe"].update(
+                stage_usd_readback_verified=False
+            ),
+            "readback",
+        ),
+    ],
+)
+def test_capture_rejects_invalid_reset_strategy_snapshot(
+    tmp_path,
+    monkeypatch,
+    mutation,
+    message,
+):
+    target_colliders = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=target_colliders,
+        target_colliders=target_colliders,
+    )
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+    reset_strategy_snapshot = _reset_strategy_snapshot(
+        wheel_joints=tuple(config.robot.wheel_joints),
+        ground_filter_paths=target_colliders,
+    )
+    mutation(reset_strategy_snapshot)
+
+    with pytest.raises(RuntimeProvenanceError, match=message):
+        capture_runtime_provenance(
+            config,
+            _Stage(),
+            articulation_usd_solver_iterations=(32, 4),
+            repository_root=repository,
+            reset_strategy_snapshot=reset_strategy_snapshot,
+            ground_topology_snapshot=topology_snapshot,
+            contact_snapshot=contact_snapshot,
+        )
+
+
 @pytest.mark.isaac
 @pytest.mark.skipif(not HAS_PXR, reason="Isaac/USD pxr bindings are unavailable")
 @pytest.mark.parametrize(
@@ -604,7 +774,7 @@ def test_schema_v5_locks_combined_and_plane_only_ground_topologies(
         ("warehouse_plane_only1_v1.yaml", 1),
     ],
 )
-def test_schema_v5_captures_scene_composer_topology_snapshots(
+def test_schema_v6_captures_scene_composer_topology_snapshots(
     profile_name,
     target_count,
 ):
@@ -645,11 +815,21 @@ def test_schema_v5_captures_scene_composer_topology_snapshots(
         stage,
         articulation_usd_solver_iterations=solver_iterations,
         repository_root=ROOT,
+        reset_strategy_snapshot=_reset_strategy_snapshot(
+            wheel_joints=tuple(config.robot.wheel_joints),
+            wheel_link_paths=[
+                path.rsplit("/", 1)[0]
+                for path in composer.contact_snapshot.wheel_colliders
+            ],
+            ground_filter_paths=list(
+                composer.ground_topology_snapshot.target_colliders
+            ),
+        ),
         ground_topology_snapshot=composer.ground_topology_snapshot,
         contact_snapshot=composer.contact_snapshot,
     )
 
-    assert provenance["schema_version"] == 5
+    assert provenance["schema_version"] == 6
     assert provenance["ground_topology"]["source_collider_count"] == 32
     assert provenance["ground_topology"]["target_collider_count"] == target_count
     assert provenance["contact"]["ground_colliders"] == provenance[
@@ -719,6 +899,12 @@ def test_capture_rejects_injected_ground_topology_disagreement(
             _Stage(),
             articulation_usd_solver_iterations=(32, 4),
             repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=list(
+                    topology_snapshot["target_colliders"]
+                ),
+            ),
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=contact_snapshot,
         )
@@ -762,6 +948,12 @@ def test_capture_rejects_stale_scene_composer_snapshots(
             _Stage(),
             articulation_usd_solver_iterations=(32, 4),
             repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=list(
+                    topology_snapshot["target_colliders"]
+                ),
+            ),
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=contact_snapshot,
         )
@@ -781,6 +973,7 @@ def test_navigation_runtime_injects_scene_composer_snapshots():
         "ground_topology_snapshot=composer.ground_topology_snapshot" in capture
     )
     assert "contact_snapshot=composer.contact_snapshot" in capture
+    assert "reset_strategy_snapshot=" in capture
 
 
 def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
@@ -815,6 +1008,7 @@ def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
             _Stage((32, 4)),
             articulation_usd_solver_iterations=(32, 16),
             repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(),
         )
 
 
@@ -904,6 +1098,10 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
             odometry_mode="ideal",
             physics_hz=60.0,
             expected_physics_scene="/PhysicsScene",
+            reset_strategy=SimpleNamespace(
+                schema_version=1,
+                identifier="pose_restore_v1",
+            ),
         ),
     )
     snapshot = _contact_snapshot(contact_profile)
@@ -933,6 +1131,12 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
             _Stage(),
             articulation_usd_solver_iterations=(32, 4),
             repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=list(
+                    topology_snapshot["target_colliders"]
+                ),
+            ),
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=snapshot,
         )

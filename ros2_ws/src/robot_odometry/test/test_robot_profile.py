@@ -181,7 +181,7 @@ def test_robot_profile_rejects_duplicate_yaml_keys(tmp_path):
 
 def _isaac_parameters(profile):
     return {
-        'runtime_provenance.schema_version': 5,
+        'runtime_provenance.schema_version': 6,
         'runtime_provenance.robot.config.path': str(profile.source),
         'runtime_provenance.robot.config.sha256': profile.sha256,
         'runtime_provenance.robot.kinematics.profile_id': profile.profile_id,
@@ -199,7 +199,7 @@ def _isaac_parameters(profile):
     }
 
 
-def test_matching_isaac_v5_kinematics_is_accepted(tmp_path):
+def test_matching_isaac_v6_kinematics_is_accepted(tmp_path):
     from robot_odometry.robot_profile import load_robot_profile
     from robot_odometry.robot_profile import validate_isaac_kinematics
 
@@ -210,28 +210,28 @@ def test_matching_isaac_v5_kinematics_is_accepted(tmp_path):
 
     snapshot = validate_isaac_kinematics(profile, parameters)
 
-    assert snapshot.schema_version == 5
+    assert snapshot.schema_version == 6
     assert snapshot.config_path == profile.source
     assert snapshot.config_sha256 == profile.sha256
     assert snapshot.controller_contract_verified is True
 
 
-def test_historical_v4_kinematics_is_rejected_by_live_handshake(tmp_path):
+def test_historical_v5_kinematics_is_rejected_by_live_handshake(tmp_path):
     from robot_odometry.robot_profile import load_robot_profile
     from robot_odometry.robot_profile import validate_isaac_kinematics
 
     profile = load_robot_profile(_write_profile(tmp_path))
     parameters = _isaac_parameters(profile)
-    parameters['runtime_provenance.schema_version'] = 4
+    parameters['runtime_provenance.schema_version'] = 5
 
-    with pytest.raises(ValueError, match='schema_version must be integer 5'):
+    with pytest.raises(ValueError, match='schema_version must be integer 6'):
         validate_isaac_kinematics(profile, parameters)
 
 
 @pytest.mark.parametrize(
     ('parameter_name', 'replacement', 'message'),
     [
-        ('runtime_provenance.schema_version', 5.0, 'schema_version'),
+        ('runtime_provenance.schema_version', 6.0, 'schema_version'),
         ('runtime_provenance.schema_version', True, 'schema_version'),
         ('runtime_provenance.robot.config.path', '/tmp/other.yaml',
          'config.path'),

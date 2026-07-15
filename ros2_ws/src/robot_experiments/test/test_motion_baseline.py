@@ -104,14 +104,14 @@ def test_ground_topology_parameter_pair_requires_sha256_digest(digest):
         _decode_hashed_ground_topology_snapshot("{}", digest)
 
 
-@pytest.mark.parametrize("schema_version", [4, 5.0, True, None])
-def test_live_motion_report_requires_exact_runtime_schema_v5(schema_version):
-    with pytest.raises(RuntimeError, match="schema must be integer 5"):
+@pytest.mark.parametrize("schema_version", [5, 6.0, True, None])
+def test_live_motion_report_requires_exact_runtime_schema_v6(schema_version):
+    with pytest.raises(RuntimeError, match="schema must be integer 6"):
         _require_live_runtime_provenance_schema(schema_version)
 
 
-def test_live_motion_report_accepts_runtime_schema_v5():
-    assert _require_live_runtime_provenance_schema(5) == 5
+def test_live_motion_report_accepts_runtime_schema_v6():
+    assert _require_live_runtime_provenance_schema(6) == 6
 
 
 def test_base_motion_report_uses_schema_v3_while_configuration_stays_v1():
@@ -142,7 +142,9 @@ def test_base_motion_report_uses_schema_v3_while_configuration_stays_v1():
     assert report["configuration"]["schema_version"] == 1
 
 
-def test_motion_runner_reads_and_validates_top_level_ground_topology(monkeypatch):
+def test_motion_runner_reads_and_validates_reset_strategy_and_topology(
+    monkeypatch,
+):
     names = motion_baseline_runner._RUNTIME_PROVENANCE_PARAMETER_NAMES
     topology = {"operation": "keep_all", "target": {"collider_count": 32}}
     topology_payload = json.dumps(
@@ -151,12 +153,50 @@ def test_motion_runner_reads_and_validates_top_level_ground_topology(monkeypatch
         separators=(",", ":"),
         allow_nan=False,
     )
+    reset_strategy = {
+        "schema_version": 1,
+        "id": "pose_restore_v1",
+        "lift_distance_m": 0.0,
+        "separation_step_count": 0,
+        "recontact_step_count": 1,
+        "contact_probe": {
+            "schema_version": 1,
+            "enabled": True,
+            "wheel_bindings": [
+                {
+                    "joint_name": joint_name,
+                    "wheel_link_path": f"/World/Robot/{joint_name}",
+                }
+                for joint_name in ("fl", "fr", "rl", "rr")
+            ],
+            "wheel_count": 4,
+            "ground_filter_paths": ["/World/Ground"],
+            "ground_filter_count": 1,
+            "max_contact_count": 128,
+            "report_threshold_n": 0.0,
+            "stage_usd_readback_verified": True,
+        },
+    }
+    reset_strategy_payload = json.dumps(
+        reset_strategy,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
     values = {name: None for name in names}
     values.update(
         {
-            "runtime_provenance.schema_version": 5,
+            "runtime_provenance.schema_version": 6,
             "runtime_provenance.environment.id": "Warehouse",
             "runtime_provenance.simulation.odometry_mode": "ground_truth",
+            "runtime_provenance.simulation.reset_strategy.json": (
+                reset_strategy_payload
+            ),
+            "runtime_provenance.simulation.reset_strategy.sha256": (
+                hashlib.sha256(
+                    reset_strategy_payload.encode("utf-8")
+                ).hexdigest()
+            ),
             "runtime_provenance.contact.json": "{}",
             "runtime_provenance.contact.sha256": hashlib.sha256(
                 b"{}"
@@ -210,7 +250,11 @@ def test_motion_runner_reads_and_validates_top_level_ground_topology(monkeypatch
     MotionBaselineRunner._read_runtime_provenance(runner)
 
     assert client.requested_names == names
-    assert runner._runtime_provenance["schema_version"] == 5
+    assert runner._runtime_provenance["schema_version"] == 6
+    assert (
+        runner._runtime_provenance["simulation"]["reset_strategy"]
+        == reset_strategy
+    )
     assert runner._runtime_provenance["ground_topology"] == topology
     assert validated == [runner._runtime_provenance]
 

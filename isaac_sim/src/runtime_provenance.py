@@ -64,6 +64,29 @@ _PROFILE_FLAGS = {
     "explicit_material": (True, True),
 }
 _COMBINE_MODES = {"average", "min", "multiply", "max"}
+_RESET_STRATEGY_KEYS = {
+    "schema_version",
+    "id",
+    "lift_distance_m",
+    "separation_step_count",
+    "recontact_step_count",
+    "contact_probe",
+}
+_RESET_CONTACT_PROBE_KEYS = {
+    "schema_version",
+    "enabled",
+    "wheel_bindings",
+    "wheel_count",
+    "ground_filter_paths",
+    "ground_filter_count",
+    "max_contact_count",
+    "report_threshold_n",
+    "stage_usd_readback_verified",
+}
+_RESET_STRATEGY_SEMANTICS = {
+    "pose_restore_v1": (0.0, 0, 1),
+    "separate_recontact_0p20m_1step_v1": (0.2, 1, 1),
+}
 
 
 def file_sha256(path: str | Path) -> str:
@@ -808,12 +831,247 @@ def _capture_contact_provenance(
     return snapshot
 
 
+def _capture_reset_strategy_provenance(
+    config: Any,
+    ground_topology: Mapping[str, Any],
+    contact: Mapping[str, Any],
+    snapshot: object,
+) -> dict[str, object]:
+    location = "runtime reset strategy snapshot"
+    if not isinstance(snapshot, Mapping):
+        raise RuntimeProvenanceError(f"{location} must be a mapping")
+    if set(snapshot) != _RESET_STRATEGY_KEYS:
+        raise RuntimeProvenanceError(
+            f"{location} keys must be exactly "
+            f"{sorted(_RESET_STRATEGY_KEYS)}"
+        )
+    schema_version = snapshot.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != 1
+    ):
+        raise RuntimeProvenanceError(
+            f"{location}.schema_version must be integer 1"
+        )
+    identifier = _nonempty_string(snapshot.get("id"), location=f"{location}.id")
+    if not _IDENTIFIER_PATTERN.fullmatch(identifier):
+        raise RuntimeProvenanceError(
+            f"{location}.id must be a path-safe identifier"
+        )
+    expected_semantics = _RESET_STRATEGY_SEMANTICS.get(identifier)
+    if expected_semantics is None:
+        raise RuntimeProvenanceError(f"{location}.id is unsupported")
+    configured = config.simulation.reset_strategy
+    if (
+        configured.schema_version != schema_version
+        or configured.identifier != identifier
+    ):
+        raise RuntimeProvenanceError(
+            f"{location} does not match the configured reset strategy "
+            "config identity"
+        )
+
+    lift_distance_m = snapshot.get("lift_distance_m")
+    separation_step_count = snapshot.get("separation_step_count")
+    recontact_step_count = snapshot.get("recontact_step_count")
+    if (
+        not isinstance(lift_distance_m, float)
+        or not math.isfinite(lift_distance_m)
+        or isinstance(separation_step_count, bool)
+        or not isinstance(separation_step_count, int)
+        or isinstance(recontact_step_count, bool)
+        or not isinstance(recontact_step_count, int)
+    ):
+        raise RuntimeProvenanceError(
+            f"{location} strategy semantics must use one finite float and "
+            "integer step counts"
+        )
+    if (
+        lift_distance_m,
+        separation_step_count,
+        recontact_step_count,
+    ) != expected_semantics:
+        raise RuntimeProvenanceError(
+            f"{location} strategy semantics do not match id {identifier!r}"
+        )
+
+    probe = snapshot.get("contact_probe")
+    probe_location = f"{location}.contact_probe"
+    if not isinstance(probe, Mapping):
+        raise RuntimeProvenanceError(f"{probe_location} must be a mapping")
+    if set(probe) != _RESET_CONTACT_PROBE_KEYS:
+        raise RuntimeProvenanceError(
+            f"{probe_location} keys must be exactly "
+            f"{sorted(_RESET_CONTACT_PROBE_KEYS)}"
+        )
+    probe_schema_version = probe.get("schema_version")
+    if (
+        isinstance(probe_schema_version, bool)
+        or not isinstance(probe_schema_version, int)
+        or probe_schema_version != 1
+    ):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.schema_version must be integer 1"
+        )
+    if probe.get("enabled") is not True:
+        raise RuntimeProvenanceError(f"{probe_location}.enabled must be true")
+    if probe.get("stage_usd_readback_verified") is not True:
+        raise RuntimeProvenanceError(
+            f"{probe_location} Stage USD readback must be verified"
+        )
+
+    wheel_bindings = probe.get("wheel_bindings")
+    if not isinstance(wheel_bindings, list) or len(wheel_bindings) != 4:
+        raise RuntimeProvenanceError(
+            f"{probe_location}.wheel_bindings must contain exactly 4 entries"
+        )
+    normalized_wheel_bindings: list[dict[str, str]] = []
+    joint_names: list[str] = []
+    wheel_link_paths: list[str] = []
+    for index, binding in enumerate(wheel_bindings):
+        binding_location = f"{probe_location}.wheel_bindings[{index}]"
+        if not isinstance(binding, Mapping) or set(binding) != {
+            "joint_name",
+            "wheel_link_path",
+        }:
+            raise RuntimeProvenanceError(
+                f"{binding_location} keys must be exactly "
+                "['joint_name', 'wheel_link_path']"
+            )
+        joint_name = _nonempty_string(
+            binding.get("joint_name"),
+            location=f"{binding_location}.joint_name",
+        )
+        if not _IDENTIFIER_PATTERN.fullmatch(joint_name):
+            raise RuntimeProvenanceError(
+                f"{binding_location}.joint_name must be path-safe"
+            )
+        wheel_link_path = _absolute_prim_path(
+            binding.get("wheel_link_path"),
+            location=f"{binding_location}.wheel_link_path",
+        )
+        joint_names.append(joint_name)
+        wheel_link_paths.append(wheel_link_path)
+        normalized_wheel_bindings.append(
+            {
+                "joint_name": joint_name,
+                "wheel_link_path": wheel_link_path,
+            }
+        )
+    if len(set(wheel_link_paths)) != len(wheel_link_paths):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.wheel link paths must be unique"
+        )
+    expected_joint_names = list(config.robot.wheel_joints)
+    if joint_names != expected_joint_names:
+        raise RuntimeProvenanceError(
+            f"{probe_location}.wheel_bindings must preserve config wheel "
+            "joint order"
+        )
+    wheel_colliders = _path_list(
+        contact.get("wheel_colliders"),
+        location="runtime contact wheel colliders",
+        expected_count=4,
+    )
+    for index, (wheel_link_path, collider_path) in enumerate(
+        zip(wheel_link_paths, wheel_colliders, strict=True)
+    ):
+        if not (
+            collider_path == wheel_link_path
+            or collider_path.startswith(f"{wheel_link_path.rstrip('/')}/")
+        ):
+            raise RuntimeProvenanceError(
+                f"{probe_location}.wheel_bindings[{index}].wheel_link_path "
+                "must be the bound contact wheel collider or its ancestor"
+            )
+    wheel_count = probe.get("wheel_count")
+    if (
+        isinstance(wheel_count, bool)
+        or not isinstance(wheel_count, int)
+        or wheel_count != 4
+        or wheel_count != len(wheel_bindings)
+    ):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.wheel_count must be 4"
+        )
+
+    ground_filter_paths = probe.get("ground_filter_paths")
+    if not isinstance(ground_filter_paths, list) or not ground_filter_paths:
+        raise RuntimeProvenanceError(
+            f"{probe_location}.ground_filter_paths must be a non-empty list"
+        )
+    normalized_ground_paths = [
+        _absolute_prim_path(
+            path,
+            location=f"{probe_location}.ground_filter_paths[{index}]",
+        )
+        for index, path in enumerate(ground_filter_paths)
+    ]
+    if normalized_ground_paths != sorted(normalized_ground_paths):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.ground_filter_paths must be sorted"
+        )
+    if len(set(normalized_ground_paths)) != len(normalized_ground_paths):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.ground_filter_paths must be unique"
+        )
+    if normalized_ground_paths != ground_topology["target_colliders"]:
+        raise RuntimeProvenanceError(
+            f"{probe_location}.ground_filter_paths disagree with the ground "
+            "topology target"
+        )
+    ground_filter_count = probe.get("ground_filter_count")
+    if (
+        isinstance(ground_filter_count, bool)
+        or not isinstance(ground_filter_count, int)
+        or ground_filter_count != len(normalized_ground_paths)
+    ):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.ground_filter_count must equal the path count"
+        )
+    max_contact_count = probe.get("max_contact_count")
+    if (
+        isinstance(max_contact_count, bool)
+        or not isinstance(max_contact_count, int)
+        or max_contact_count != 128
+    ):
+        raise RuntimeProvenanceError(
+            f"{probe_location}.max_contact_count must be 128"
+        )
+    report_threshold_n = probe.get("report_threshold_n")
+    if not isinstance(report_threshold_n, float) or report_threshold_n != 0.0:
+        raise RuntimeProvenanceError(
+            f"{probe_location}.report_threshold_n must be 0.0"
+        )
+
+    return {
+        "schema_version": schema_version,
+        "id": identifier,
+        "lift_distance_m": lift_distance_m,
+        "separation_step_count": separation_step_count,
+        "recontact_step_count": recontact_step_count,
+        "contact_probe": {
+            "schema_version": probe_schema_version,
+            "enabled": True,
+            "wheel_bindings": normalized_wheel_bindings,
+            "wheel_count": wheel_count,
+            "ground_filter_paths": normalized_ground_paths,
+            "ground_filter_count": ground_filter_count,
+            "max_contact_count": max_contact_count,
+            "report_threshold_n": report_threshold_n,
+            "stage_usd_readback_verified": True,
+        },
+    }
+
+
 def capture_runtime_provenance(
     config: Any,
     stage: Any,
     *,
     articulation_usd_solver_iterations: tuple[int, int],
     repository_root: str | Path,
+    reset_strategy_snapshot: object,
     ground_topology_snapshot: object | None = None,
     contact_snapshot: object | None = None,
 ) -> dict[str, object]:
@@ -852,6 +1110,12 @@ def capture_runtime_provenance(
         ground_topology_profile,
         contact_snapshot,
     )
+    reset_strategy = _capture_reset_strategy_provenance(
+        config,
+        ground_topology,
+        contact,
+        reset_strategy_snapshot,
+    )
     try:
         robot_contract = load_robot_config_contract(config.files.robot)
     except (OSError, ValueError) as exc:
@@ -861,7 +1125,7 @@ def capture_runtime_provenance(
         ) from exc
     kinematics = robot_contract.kinematics
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "robot": {
             "config": {
                 "path": str(config.files.robot),
@@ -910,6 +1174,7 @@ def capture_runtime_provenance(
             "navigation_mode": config.simulation.navigation_mode,
             "odometry_mode": config.simulation.odometry_mode,
             "physics_hz": config.simulation.physics_hz,
+            "reset_strategy": reset_strategy,
         },
         "ground_topology": ground_topology,
         "contact": contact,
@@ -932,6 +1197,10 @@ def runtime_provenance_parameters(
     contact_json = _canonical_json(
         provenance["contact"],
         location="runtime contact provenance",
+    )
+    reset_strategy_json = _canonical_json(
+        simulation["reset_strategy"],
+        location="runtime reset strategy provenance",
     )
     git = provenance["git"]
     return {
@@ -996,6 +1265,12 @@ def runtime_provenance_parameters(
         ],
         "runtime_provenance.simulation.odometry_mode": simulation["odometry_mode"],
         "runtime_provenance.simulation.physics_hz": simulation["physics_hz"],
+        "runtime_provenance.simulation.reset_strategy.json": (
+            reset_strategy_json
+        ),
+        "runtime_provenance.simulation.reset_strategy.sha256": hashlib.sha256(
+            reset_strategy_json.encode("utf-8")
+        ).hexdigest(),
         "runtime_provenance.ground_topology.json": ground_topology_json,
         "runtime_provenance.ground_topology.sha256": hashlib.sha256(
             ground_topology_json.encode("utf-8")
