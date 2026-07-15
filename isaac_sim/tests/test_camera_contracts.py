@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 
@@ -363,9 +364,15 @@ def test_camera_cli_accepts_only_named_profiles():
 
 
 def test_simulation_app_enables_supported_multitick_sensor_settings_early():
-    launch = _simulation_app_config(_config())
+    config = _config()
+    launch = _simulation_app_config(config)
+    headless_launch = _simulation_app_config(
+        replace(config, simulation=replace(config.simulation, headless=True))
+    )
 
     assert launch["multi_gpu"] is False
+    assert launch["disable_viewport_updates"] is False
+    assert headless_launch["disable_viewport_updates"] is True
     assert launch["enable_motion_bvh"] is True
     assert launch["extra_args"] == [
         "--/rtx/hydra/supportMultiTickRate=true",

@@ -253,6 +253,11 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
+        # SimulationApp still renders its default viewport in headless mode
+        # unless this supported launch option is enabled.  RTX sensors own
+        # separate render products, so disabling only the default viewport
+        # avoids descriptor pressure without suppressing sensor output.
+        "disable_viewport_updates": config.simulation.headless,
         # Isaac Sim 6.0.1's SimulationApp owns the complete set of renderer
         # switches required by multi-tick RTX sensors. Enabling only the base
         # raytracingMotion setting misses Hydra engine masking and produces
