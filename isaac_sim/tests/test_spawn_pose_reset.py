@@ -37,11 +37,8 @@ class FakeRobot:
     def set_base_velocities(self, linear, angular):
         self.calls.append(("base_velocity", (tuple(linear), tuple(angular))))
 
-    def set_joint_velocities(self, values):
-        self.calls.append(("joint_velocity", tuple(values)))
-
-    def set_joint_velocity_targets(self, values):
-        self.calls.append(("joint_target", tuple(values)))
+    def restore_initial_joint_state(self):
+        self.calls.append(("joint_state", "initial_pose_and_zero_dynamics"))
 
 
 @dataclass
@@ -63,10 +60,19 @@ def test_spawn_reset_zeros_all_robot_state_and_gates_map_pose():
     poses = load_spawn_poses(ROOT / "isaac_sim/configs/spawn_poses.yaml")
     manager = SpawnPoseManager(robot, poses)
     manager.apply_usd_pose("mapping_start")
-    assert robot.calls[0][0] == "pose"
-    assert robot.calls[-2:] == [
-        ("joint_velocity", (0.0,) * 6),
-        ("joint_target", (0.0,) * 6),
+    assert robot.calls == [
+        ("joint_state", "initial_pose_and_zero_dynamics"),
+        (
+            "pose",
+            (
+                poses["mapping_start"].usd.position,
+                (1.0, 0.0, 0.0, 0.0),
+            ),
+        ),
+        (
+            "base_velocity",
+            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        ),
     ]
     map_pose = manager.get_map_pose("mapping_start", purpose="test localization")
     assert map_pose.position_stddev_m == pytest.approx(0.05)

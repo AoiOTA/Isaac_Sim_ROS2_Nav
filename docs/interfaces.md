@@ -531,7 +531,7 @@ A Reset is a non-blocking ROS service transaction with one active generation at 
 
 1. Validate the named spawn and required Map calibration before pausing.
 2. Pause physics and publish zero velocity.
-3. Recreate/clear controller state, apply the USD Pose, and zero chassis/joint velocity and targets.
+3. Recreate/clear controller state; restore every DOF to the finite position captured from the initialized Articulation, zero DOF velocity/velocity-target/effort, verify the tensor readback, then apply the USD Pose and zero chassis velocity. The snapshot preserves non-zero authored poses on custom robots; Reset never assumes that every DOF should be numeric zero.
 4. Reset Ideal odometry, or submit Wheel Odom and EKF reset requests in Realistic mode.
 5. Clear Ground Truth path, collision state, and deterministic dynamic-obstacle phase.
 6. Submit available global/local Costmap clear requests.

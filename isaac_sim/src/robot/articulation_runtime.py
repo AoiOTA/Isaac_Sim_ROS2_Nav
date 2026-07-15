@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Sequence
 
@@ -123,6 +124,7 @@ class ArticulationRuntime:
         self.base_link_prim_path = base_link_prim_path
         self.app = app
         self._articulation = None
+        self._initial_dof_positions: tuple[float, ...] | None = None
 
     def initialize(self) -> None:
         from isaacsim.core.experimental.prims import Articulation
@@ -139,6 +141,9 @@ class ArticulationRuntime:
             self.app.update()
         if not self._articulation.is_physics_tensor_entity_valid():
             raise ArticulationRuntimeError(f"physics articulation view is invalid for {self.prim_path}")
+        self._initial_dof_positions = self._read_dof_positions(
+            context="initial articulation state"
+        )
 
     @property
     def articulation(self):
@@ -216,6 +221,86 @@ class ArticulationRuntime:
 
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None:
         self.articulation.set_velocities(linear_velocities=[list(linear)], angular_velocities=[list(angular)])
+
+    def _read_dof_values(
+        self,
+        getter_name: str,
+        *,
+        context: str,
+    ) -> tuple[float, ...]:
+        values = getattr(self.articulation, getter_name)().numpy()
+        if len(values) != 1:
+            raise ArticulationRuntimeError(
+                f"{context} expected one articulation, got {len(values)}"
+            )
+        row = values[0]
+        if len(row) != self.num_dof:
+            raise ArticulationRuntimeError(
+                f"{context} expected {self.num_dof} DOF values, got {len(row)}"
+            )
+        result = tuple(float(value) for value in row)
+        if not all(math.isfinite(value) for value in result):
+            raise ArticulationRuntimeError(
+                f"{context} contains a non-finite DOF value"
+            )
+        return result
+
+    def _read_dof_positions(self, *, context: str) -> tuple[float, ...]:
+        return self._read_dof_values(
+            "get_dof_positions",
+            context=context,
+        )
+
+    def restore_initial_joint_state(self) -> None:
+        """Restore the initialized DOF pose and a zero dynamic state.
+
+        Resetting every DOF to a numeric zero would corrupt custom robots whose
+        authored rest pose is non-zero.  The initialization snapshot instead
+        removes accumulated DOF pose as an uncontrolled reset variable while
+        preserving the asset's complete articulation pose.
+        """
+
+        expected = self._initial_dof_positions
+        if expected is None:
+            raise ArticulationRuntimeError(
+                "initial DOF positions are unavailable before initialization"
+            )
+        zeros = [0.0] * self.num_dof
+        self.articulation.set_dof_positions([list(expected)])
+        self.articulation.set_dof_velocities([zeros])
+        self.articulation.set_dof_velocity_targets([zeros])
+        self.articulation.set_dof_efforts([zeros])
+        actual = self._read_dof_positions(context="restored articulation state")
+        mismatches = [
+            (index, expected_value, actual_value)
+            for index, (expected_value, actual_value) in enumerate(
+                zip(expected, actual, strict=True)
+            )
+            if not math.isclose(
+                actual_value,
+                expected_value,
+                rel_tol=0.0,
+                abs_tol=1e-6,
+            )
+        ]
+        if mismatches:
+            raise ArticulationRuntimeError(
+                "restored DOF position readback does not match the initialized "
+                f"state: {mismatches}"
+            )
+        for getter_name, label in (
+            ("get_dof_velocities", "velocity"),
+            ("get_dof_velocity_targets", "velocity target"),
+            ("get_dof_efforts", "effort"),
+        ):
+            values = self._read_dof_values(
+                getter_name,
+                context=f"restored articulation {label}",
+            )
+            if any(abs(value) > 1e-6 for value in values):
+                raise ArticulationRuntimeError(
+                    f"restored DOF {label} readback is not zero: {values}"
+                )
 
     def set_joint_velocities(self, values: Sequence[float]) -> None:
         if len(values) != self.num_dof:

@@ -815,7 +815,11 @@ Localization 的 `reset_pose_name` 已在启动时绑定到当前 Manifest 的
 `spawn_pose_profile`，只能保持该值；运行中切换到另一个地图的 pose 会在移动机器人
 前被拒绝。Mapping 没有自动 Map 初始位姿发布，仍可选择其配置中已有的 USD pose。
 
-Reset 是一个异步事务，但 Trigger 只有在物理复位以及所有已排队的 Wheel Odom、EKF、Costmap 清理请求完成后才返回 `success: true`。事务会清零控制和轮速、恢复 USD Pose、重置里程计/GT/碰撞/动态障碍，最后发布带代次语义的 `/simulation/reset_event`；重叠 Reset 请求会被拒绝。
+Reset 是一个异步事务，但 Trigger 只有在物理复位以及所有已排队的 Wheel Odom、EKF、Costmap 清理请求完成后才返回 `success: true`。Isaac 会在 Articulation 初始化时保存完整 DOF position；每次事务先恢复这份有限值快照，把 DOF velocity、velocity target 和 effort 清零并即时读回验证，再恢复 USD 根 Pose 和底盘速度。它不会假设自定义机器人的每个关节默认都为零。随后事务重置里程计/GT/碰撞/动态障碍，最后发布带代次语义的 `/simulation/reset_event`；重叠 Reset 请求会被拒绝。
+
+这一步消除了“上一运动段留下的连续轮关节相位”这一未受控 Reset 变量，但
+`set_dof_positions()` 本身不清除 PhysX contact manifold 或 solver warm-start cache。
+因此它必须通过同输入 A/B 复跑验证，不能仅凭代码存在就宣称转向不对称已修复。
 
 Trigger 成功表示“复位事务已提交完成”，仍不表示定位已经重新稳定。Localization 模式下还要等待：
 

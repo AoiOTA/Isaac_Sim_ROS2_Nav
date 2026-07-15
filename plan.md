@@ -2497,7 +2497,7 @@ failure_reason:
 | 自车点进入 `/scan`               | 机器人周围固定障碍               | 添加 CropBox                                    |
 | VoxelGrid 与 Voxel Layer 混淆  | 配置职责错误                  | 前者降采样，后者 Costmap 插件                           |
 | USD Pose 与 Map Pose 混淆      | 定位初始位置错误                | 同一出生点保存两组坐标                                   |
-| Reset 后轮速残留                 | 重置后突然运动                 | 清零速度和 Joint Target                            |
+| Reset 后关节状态残留               | 重置后突然运动或重复实验漂移分叉       | 恢复初始化 DOF pose，清零并读回验证 velocity/target/effort |
 | `wheelDistance` 不准确         | 原地旋转误差大                 | 标定有效轮距                                        |
 | RTF 过低                      | 导航超时                    | 降低 LiDAR 分辨率或控制计算量                            |
 
