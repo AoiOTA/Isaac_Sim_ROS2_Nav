@@ -1064,6 +1064,13 @@ def analyse_motion_segment(
         sample_age_limit,
     )
     trajectory_points = [(sample.x_m, sample.y_m) for sample in command_odom]
+    max_radial_displacement_from_start = _finite_number(
+        max(
+            math.hypot(sample.x_m - start.x_m, sample.y_m - start.y_m)
+            for sample in command_odom
+        ),
+        "max_radial_displacement_from_start_m",
+    )
     return {
         "segment_id": segment.segment_id,
         "motion": segment.motion,
@@ -1088,6 +1095,9 @@ def analyse_motion_segment(
             "start": start.pose_dict(),
             "end": end.pose_dict(),
             "trajectory_length_m": path_length(trajectory_points),
+            "max_radial_displacement_from_start_m": (
+                max_radial_displacement_from_start
+            ),
             "net_displacement_m": math.hypot(delta_x, delta_y),
             "longitudinal_displacement_m": longitudinal,
             "expected_longitudinal_displacement_m": expected_longitudinal,

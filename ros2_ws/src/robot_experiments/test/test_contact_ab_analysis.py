@@ -475,6 +475,16 @@ def _upgrade_motion_report_to_v3(report):
     return report
 
 
+def _upgrade_motion_report_to_v4(report):
+    _upgrade_motion_report_to_v3(report)
+    report["schema_version"] = 4
+    for segment in report["segments"]:
+        segment["pose"]["max_radial_displacement_from_start_m"] = (
+            segment["pose"]["net_displacement_m"]
+        )
+    return report
+
+
 def _collider_paths_sha256(paths):
     canonical = json.dumps(
         sorted(paths),
@@ -490,7 +500,9 @@ def _upgrade_runtime_provenance_to_v5(
     *,
     report_schema_version=3,
 ):
-    if report_schema_version == 3:
+    if report_schema_version == 4:
+        _upgrade_motion_report_to_v4(report)
+    elif report_schema_version == 3:
         _upgrade_motion_report_to_v3(report)
     elif report_schema_version == 2:
         _upgrade_motion_report_to_v2(report)
@@ -583,8 +595,13 @@ def _upgrade_runtime_provenance_to_v6(
     *,
     strategy_id="pose_restore_v1",
     topology=None,
+    report_schema_version=3,
 ):
-    _upgrade_runtime_provenance_to_v5(report, topology)
+    _upgrade_runtime_provenance_to_v5(
+        report,
+        topology,
+        report_schema_version=report_schema_version,
+    )
     provenance = report["runtime_provenance"]
     provenance["schema_version"] = 6
     semantics = {
@@ -843,6 +860,7 @@ def _three_v6_reports(
     environment: str = "SimplePlane",
     topology: str = "simple_plane_only1_v1",
     contact_profile: str = "threshold_corr_0p00025_offset_0p04",
+    report_schema_version: int = 3,
 ) -> list[Path]:
     return [
         _write(
@@ -855,6 +873,7 @@ def _three_v6_reports(
                 ),
                 strategy_id=strategy_id,
                 topology=topology,
+                report_schema_version=report_schema_version,
             ),
         )
         for index, scale in enumerate((0.98, 1.0, 1.02))
@@ -1255,6 +1274,139 @@ def test_v6_reset_strategies_are_distinct_audited_physical_groups(tmp_path):
         pose_group,
         separate_group,
     }
+
+
+def test_motion_v4_uses_full_path_rotation_gates_and_policy_v4(tmp_path):
+    paths = _three_v6_reports(
+        tmp_path,
+        strategy_id="pose_restore_v1",
+        report_schema_version=4,
+    )
+    changed = json.loads(paths[0].read_text(encoding="utf-8"))
+    rotation = changed["segments"][0]
+    rotation["pose"]["max_radial_displacement_from_start_m"] = 0.15
+    rotation["pose"]["trajectory_length_m"] = 0.30
+    _write(paths[0], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    assert report["schema_version"] == 6
+    acceptance = report["physical_acceptance"]
+    assert acceptance["schema_version"] == 4
+    assert acceptance["policy_id"] == "skid_steer_plan_8_7_v4"
+    assert acceptance["applicability"]["required_motion_report_schema"] == 4
+    group = next(iter(acceptance["groups"].values()))
+    first = group["repeat_results"][0]
+    assert len(first["checks"]) == 20
+    radial = first["checks"][
+        "rotate_left_max_radial_displacement_from_start_m"
+    ]
+    assert radial == {
+        "observed": pytest.approx(0.15),
+        "maximum": pytest.approx(0.10),
+        "passed": False,
+    }
+    assert first["checks"][
+        "rotate_left_commanded_zero_mean_linear_speed_mps"
+    ]["passed"] is True
+    assert "rotate_left_center_drift_m" not in first["checks"]
+
+
+def test_motion_v4_rejects_cyclic_rotation_speed_even_with_small_endpoint(
+    tmp_path,
+):
+    paths = _three_v6_reports(
+        tmp_path,
+        strategy_id="pose_restore_v1",
+        report_schema_version=4,
+    )
+    changed = json.loads(paths[0].read_text(encoding="utf-8"))
+    rotation = changed["segments"][0]
+    speed = rotation["actual_velocity"]["linear_speed_mps"]
+    speed.update(
+        _constant_speed_distribution(0.0201, speed["sample_count"])
+    )
+    _write(paths[0], changed)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    group = next(iter(report["physical_acceptance"]["groups"].values()))
+    first = group["repeat_results"][0]
+    speed_check = first["checks"][
+        "rotate_left_commanded_zero_mean_linear_speed_mps"
+    ]
+    assert speed_check["observed"] == pytest.approx(0.0201)
+    assert speed_check["maximum"] == pytest.approx(0.02)
+    assert speed_check["passed"] is False
+
+
+def test_motion_v4_cannot_be_mixed_with_historical_motion_v3(tmp_path):
+    paths = _three_v6_reports(
+        tmp_path,
+        strategy_id="pose_restore_v1",
+        report_schema_version=4,
+    )
+    historical = json.loads(paths[0].read_text(encoding="utf-8"))
+    historical["schema_version"] = 3
+    for segment in historical["segments"]:
+        del segment["pose"]["max_radial_displacement_from_start_m"]
+    _write(paths[0], historical)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="motion report schema versions must be homogeneous",
+    ):
+        analyse_contact_ab(paths, RADIUS_M)
+
+
+@pytest.mark.parametrize(
+    ("radial_from_report", "expected_error"),
+    (
+        (
+            lambda pose: pose["net_displacement_m"] - 0.001,
+            "cannot be smaller than net_displacement_m",
+        ),
+        (
+            lambda pose: pose["trajectory_length_m"] + 0.001,
+            "cannot exceed trajectory_length_m",
+        ),
+    ),
+)
+def test_motion_v4_rejects_impossible_radial_displacement_contract(
+    tmp_path,
+    radial_from_report,
+    expected_error,
+):
+    paths = _three_v6_reports(
+        tmp_path,
+        strategy_id="pose_restore_v1",
+        report_schema_version=4,
+    )
+    changed = json.loads(paths[0].read_text(encoding="utf-8"))
+    pose = changed["segments"][0]["pose"]
+    pose["max_radial_displacement_from_start_m"] = radial_from_report(pose)
+    _write(paths[0], changed)
+
+    with pytest.raises(ConfigurationError, match=expected_error):
+        analyse_contact_ab([paths[0]], RADIUS_M, min_repeats=1)
+
+
+def test_motion_v4_rejects_negative_linear_speed_distribution(tmp_path):
+    paths = _three_v6_reports(
+        tmp_path,
+        strategy_id="pose_restore_v1",
+        report_schema_version=4,
+    )
+    changed = json.loads(paths[0].read_text(encoding="utf-8"))
+    speed = changed["segments"][0]["actual_velocity"]["linear_speed_mps"]
+    speed.update(_constant_speed_distribution(-0.001, speed["sample_count"]))
+    _write(paths[0], changed)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="linear_speed_mps.minimum must be non-negative",
+    ):
+        analyse_contact_ab([paths[0]], RADIUS_M, min_repeats=1)
 
 
 def test_v6_reset_contact_probe_is_locked_across_strategy_arms(tmp_path):
@@ -3559,8 +3711,8 @@ def test_duplicate_content_cannot_satisfy_minimum_repeats(tmp_path):
 @pytest.mark.parametrize(
     ("mutation", "expected_detail"),
     (
-        ("report_float", "schema_version must be integer 1, 2, or 3"),
-        ("report_bool", "schema_version must be integer 1, 2, or 3"),
+        ("report_float", "schema_version must be integer 1, 2, 3, or 4"),
+        ("report_bool", "schema_version must be integer 1, 2, 3, or 4"),
         ("config_float", "configuration.schema_version"),
         ("runtime_float", "runtime_provenance.schema_version"),
         ("runtime_bool", "runtime_provenance.schema_version"),

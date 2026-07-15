@@ -114,7 +114,7 @@ def test_live_motion_report_accepts_runtime_schema_v6():
     assert _require_live_runtime_provenance_schema(6) == 6
 
 
-def test_base_motion_report_uses_schema_v3_while_configuration_stays_v1():
+def test_base_motion_report_uses_schema_v4_while_configuration_stays_v1():
     runner = object.__new__(MotionBaselineRunner)
     runner._config = load_motion_baseline_config(CONFIG_PATH)
     runner._environment_id = "Warehouse"
@@ -138,7 +138,7 @@ def test_base_motion_report_uses_schema_v3_while_configuration_stays_v1():
 
     report = runner._base_report()
 
-    assert report["schema_version"] == 3
+    assert report["schema_version"] == 4
     assert report["configuration"]["schema_version"] == 1
 
 
@@ -611,6 +611,9 @@ def test_forward_analysis_records_pose_drift_velocity_wheels_and_stop_time():
     assert result["pose"]["trajectory_length_m"] == pytest.approx(
         2 * math.hypot(0.05, 0.5)
     )
+    assert result["pose"][
+        "max_radial_displacement_from_start_m"
+    ] == pytest.approx(math.hypot(0.1, 1.0))
     assert result["yaw"]["change_rad"] == pytest.approx(0)
     assert result["actual_velocity"]["linear_x_mps"]["mean"] == pytest.approx(0.5)
     assert result["stopping"]["stationary_onset_after_command_sec"] == pytest.approx(0.2)
@@ -1074,6 +1077,105 @@ def test_rotation_analysis_unwraps_yaw_and_flags_wrong_wheel_direction():
         result["wheels"]["per_wheel"][WHEELS.front_left]["expected_direction"]
         == "negative"
     )
+
+
+def test_rotation_analysis_keeps_maximum_excursion_distinct_from_endpoint_residual():
+    start = 1_000_000_000
+    middle = 1_500_000_000
+    end = 2_000_000_000
+    odom = [
+        OdomSample(start, 0, 0, 0, 0, 0, 0.5),
+        OdomSample(middle, 0.15, 0, 0.25, 0, 0, 0.5),
+        OdomSample(end, 0, 0, 0.5, 0, 0, 0.5),
+        # A post-command parking sample must not inflate the command metric.
+        OdomSample(end + 100_000_000, 1.0, 0, 0.5, 0, 0, 0),
+        OdomSample(end + 600_000_000, 1.0, 0, 0.5, 0, 0, 0),
+    ]
+    moving_wheels = (-3.0, 3.0, -3.0, 3.0)
+    joints = [
+        _joint(start, moving_wheels),
+        _joint(middle, moving_wheels),
+        _joint(end, moving_wheels),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    result = analyse_motion_segment(
+        MotionSegment("left", "rotate_left", "test", 0, 0.5, 1),
+        start,
+        end,
+        odom,
+        joints,
+        WHEELS,
+        STOP,
+        command_publish_count=20,
+        max_sample_age_sec=0.5,
+        timestamp_integrity={},
+    )
+
+    assert result["pose"]["translation_drift_m"] == pytest.approx(0.0)
+    assert result["pose"][
+        "max_radial_displacement_from_start_m"
+    ] == pytest.approx(0.15)
+
+
+@pytest.mark.parametrize(
+    ("motion", "linear_x_mps", "angular_z_radps", "moving_wheels"),
+    [
+        ("forward", 0.2, 0.0, (2.0, 2.0, 2.0, 2.0)),
+        ("backward", -0.2, 0.0, (-2.0, -2.0, -2.0, -2.0)),
+        ("rotate_left", 0.0, 0.2, (-2.0, 2.0, -2.0, 2.0)),
+        ("rotate_right", 0.0, -0.2, (2.0, -2.0, 2.0, -2.0)),
+        ("arc_left", 0.2, 0.2, (1.0, 2.0, 1.0, 2.0)),
+        ("arc_right", 0.2, -0.2, (2.0, 1.0, 2.0, 1.0)),
+    ],
+)
+def test_every_motion_kind_reports_finite_non_negative_maximum_excursion(
+    motion, linear_x_mps, angular_z_radps, moving_wheels
+):
+    start = 1_000_000_000
+    middle = 1_500_000_000
+    end = 2_000_000_000
+    odom = [
+        OdomSample(start, -0.2, 0.3, 0, linear_x_mps, 0, angular_z_radps),
+        OdomSample(middle, -0.1, 0.4, 0, linear_x_mps, 0, angular_z_radps),
+        OdomSample(end, 0.0, 0.5, 0, linear_x_mps, 0, angular_z_radps),
+        OdomSample(end + 100_000_000, 0.0, 0.5, 0, 0, 0, 0),
+        OdomSample(end + 600_000_000, 0.0, 0.5, 0, 0, 0, 0),
+    ]
+    joints = [
+        _joint(start, moving_wheels),
+        _joint(middle, moving_wheels),
+        _joint(end, moving_wheels),
+        _joint(end + 100_000_000, (0, 0, 0, 0)),
+        _joint(end + 600_000_000, (0, 0, 0, 0)),
+    ]
+
+    result = analyse_motion_segment(
+        MotionSegment(
+            motion,
+            motion,
+            "test",
+            linear_x_mps,
+            angular_z_radps,
+            1,
+        ),
+        start,
+        end,
+        odom,
+        joints,
+        WHEELS,
+        STOP,
+        command_publish_count=20,
+        max_sample_age_sec=0.5,
+        timestamp_integrity={},
+    )
+
+    maximum_excursion = result["pose"][
+        "max_radial_displacement_from_start_m"
+    ]
+    assert math.isfinite(maximum_excursion)
+    assert maximum_excursion >= 0.0
 
 
 @pytest.mark.parametrize(

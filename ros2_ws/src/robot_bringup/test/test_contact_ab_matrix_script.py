@@ -627,10 +627,10 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'stage_usd_readback_verified' in source
     assert 'motion_skid_steer_ab.yaml' in source
     assert 'manifest.tsv' in source
-    assert 'report.get("schema_version") != 3' in source
-    assert 'strict contact A/B analysis schema must be integer 5' in source
-    assert 'physical_acceptance.get("schema_version") != 3' in source
-    assert 'skid_steer_plan_8_7_v3' in source
+    assert 'report.get("schema_version") != 4' in source
+    assert 'strict contact A/B analysis schema must be integer 6' in source
+    assert 'physical_acceptance.get("schema_version") != 4' in source
+    assert 'skid_steer_plan_8_7_v4' in source
     assert 'report.get("result") != "success"' in source
     assert 'runtime_provenance.git.dirty' in source
     assert 'runtime_provenance.git.commit' in source
@@ -1070,7 +1070,7 @@ def test_manifest_freezes_motion_report_schema_column_dynamically(tmp_path):
     ]
 
 
-def test_success_manifest_row_rejects_non_schema_3_report(tmp_path):
+def test_success_manifest_row_rejects_non_schema_4_report(tmp_path):
     functions = '\n'.join(
         _shell_function_source(name)
         for name in (
@@ -1086,7 +1086,7 @@ def test_success_manifest_row_rejects_non_schema_3_report(tmp_path):
     result = _bash_harness(
         'set -Eeuo pipefail\n'
         'declare -Ag owned_pids=()\n'
-        'required_motion_report_schema_version=3\n'
+        'required_motion_report_schema_version=4\n'
         'runtime_process_is_running() { return 1; }\n'
         'sha256_file() { sha256sum "$1" | awk "{print \\$1}"; }\n'
         'log_warn() { printf "%s\\n" "$*" >&2; }\n'
@@ -1095,7 +1095,7 @@ def test_success_manifest_row_rejects_non_schema_3_report(tmp_path):
         'if append_current_manifest success complete; then exit 91; fi\n'
     )
     assert result.returncode == 0, result.stderr
-    assert 'successful motion report schema mismatch: 2 != 3' in result.stderr
+    assert 'successful motion report schema mismatch: 2 != 4' in result.stderr
 
 
 def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
@@ -1117,7 +1117,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         '\t'.join(f'column_{index}' for index in range(47)) + '\n'
     )
     report.write_text(
-        '{"result":"success","schema_version":3}\n',
+        '{"result":"success","schema_version":4}\n',
         encoding='utf-8',
     )
     isaac_log.write_text('isaac stopped\n', encoding='utf-8')
@@ -1172,7 +1172,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     result = _bash_harness(
         'set -Eeuo pipefail\n'
         'declare -Ag owned_pids=()\n'
-        'required_motion_report_schema_version=3\n'
+        'required_motion_report_schema_version=4\n'
         'required_runtime_provenance_schema_version=6\n'
         'required_reset_strategy_schema_version=1\n'
         'runtime_process_is_running() { return 1; }\n'
@@ -1189,7 +1189,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     fields = lines[1].split('\t')
     assert len(fields) == 47
     assert fields[8] == hashlib.sha256(report.read_bytes()).hexdigest()
-    assert fields[9] == '3'
+    assert fields[9] == '4'
     assert fields[10:13] == ['6', '1', 'pose_restore_v1']
     assert fields[14] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
     assert fields[16] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
@@ -1323,16 +1323,16 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
     assert '"expected_reset_strategies": selected_reset_tokens' in finalizer
     assert 'row.get("ground_topology_id")' in finalizer
     assert 'analysis.get("analysis_valid") is not True' in finalizer
-    assert 'row.get("report_schema_version") != "3"' in finalizer
-    assert 'report_document.get("schema_version") != 3' in finalizer
-    assert 'analysis.get("schema_version") != 5' in finalizer
+    assert 'row.get("report_schema_version") != "4"' in finalizer
+    assert 'report_document.get("schema_version") != 4' in finalizer
+    assert 'analysis.get("schema_version") != 6' in finalizer
     assert 'counts.get("excluded_reports") != 0' in finalizer
     assert 'counts.get("included_reports") != expected_runs' in finalizer
     assert 'counts.get("groups") != expected_groups' in finalizer
     assert 'analysis_report_locks != manifest_report_locks' in finalizer
     assert 'physical_acceptance.get("policy_id")' in finalizer
-    assert 'physical_acceptance.get("schema_version") != 3' in finalizer
-    assert 'skid_steer_plan_8_7_v3' in finalizer
+    assert 'physical_acceptance.get("schema_version") != 4' in finalizer
+    assert 'skid_steer_plan_8_7_v4' in finalizer
     assert 'aggregate physical acceptance group accounting is invalid' in finalizer
     assert 'write_contact_ab_report(analysis, output_path)' in finalizer
 
@@ -1402,8 +1402,9 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     physical_thresholds = {
         'forward_abs_lateral_drift_max_m': 0.05,
         'backward_abs_lateral_drift_max_m': 0.08,
-        'rotation_center_drift_max_m': 0.10,
-        'rotation_center_drift_asymmetry_ratio_max': 0.20,
+        'rotation_max_radial_displacement_from_start_max_m': 0.10,
+        'rotation_max_radial_displacement_asymmetry_ratio_max': 0.20,
+        'rotation_commanded_zero_mean_linear_speed_max_mps': 0.02,
         'rotation_mean_yaw_rate_absolute_error_fraction_max': 0.10,
         'stop_stable_duration_min_sec': 0.5,
         'stop_linear_velocity_threshold_max_mps': 0.02,
@@ -1416,148 +1417,6 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'rear_left': 'rear_left_wheel_joint',
         'rear_right': 'rear_right_wheel_joint',
     }
-    segment_specs = (
-        ('rotate_left_360', 'rotate_left', 0.0, 0.4, 15.707963267948966),
-        ('rotate_right_360', 'rotate_right', 0.0, -0.4, 15.707963267948966),
-        ('forward_3m', 'forward', 0.5, 0.0, 6.0),
-        ('backward_2m', 'backward', -0.3, 0.0, 6.666666666666667),
-        ('arc_left_5s', 'arc_left', 0.4, 0.4, 5.0),
-        ('arc_right_5s', 'arc_right', 0.4, -0.4, 5.0),
-    )
-    motion_configuration = {
-        'schema_version': 1,
-        'profile_id': 'jackal_skid_steer_ab_v1',
-        'topics': {},
-        'reset': {},
-        'sampling': {},
-        'limits': {},
-        'stop': {
-            'linear_velocity_threshold_mps': 0.02,
-            'angular_velocity_threshold_radps': 0.05,
-            'wheel_velocity_threshold_radps': 0.2,
-            'stable_duration_sec': 0.5,
-        },
-        'wheels': wheel_layout,
-        'segments': [
-            {
-                'segment_id': segment_id,
-                'motion': motion,
-                'tier': 'ab',
-                'linear_x_mps': linear,
-                'angular_z_radps': angular,
-                'duration_sec': duration,
-            }
-            for segment_id, motion, linear, angular, duration in segment_specs
-        ],
-    }
-
-    def expected_wheel_directions(motion):
-        if motion == 'rotate_left':
-            return {
-                joint: ('negative' if 'left' in role else 'positive')
-                for role, joint in wheel_layout.items()
-            }
-        if motion == 'rotate_right':
-            return {
-                joint: ('positive' if 'left' in role else 'negative')
-                for role, joint in wheel_layout.items()
-            }
-        direction = 'negative' if motion == 'backward' else 'positive'
-        return {joint: direction for joint in wheel_layout.values()}
-
-    def physical_checks(group_passed):
-        maximum_checks = {
-            'forward_abs_lateral_drift_m': (
-                0.0 if group_passed else 0.051,
-                0.05,
-            ),
-            'backward_abs_lateral_drift_m': (0.0, 0.08),
-            'rotate_left_center_drift_m': (0.0, 0.10),
-            'rotate_right_center_drift_m': (0.0, 0.10),
-            'rotation_center_drift_asymmetry_ratio': (0.0, 0.20),
-            'stop_config.linear_velocity_threshold_mps': (0.0, 0.02),
-            'stop_config.angular_velocity_threshold_radps': (0.0, 0.05),
-            'stop_config.wheel_velocity_threshold_radps': (0.0, 0.20),
-        }
-        checks = {
-            check_id: {
-                'observed': observed,
-                'maximum': maximum,
-                'passed': (
-                    group_passed
-                    if check_id == 'forward_abs_lateral_drift_m'
-                    else True
-                ),
-            }
-            for check_id, (observed, maximum) in maximum_checks.items()
-        }
-        checks['stop_config.stable_duration_sec'] = {
-            'observed': 0.5,
-            'minimum': 0.5,
-            'passed': True,
-        }
-        for side, command in (('left', 0.4), ('right', -0.4)):
-            checks[
-                f'rotate_{side}_mean_yaw_rate_absolute_error_fraction'
-            ] = {
-                'observed': 0.0,
-                'maximum': 0.10,
-                'passed': True,
-                'commanded_yaw_rate_radps': command,
-                'steady_state_mean_yaw_rate_radps': command,
-                'steady_state_measurement_basis': (
-                    'actual_velocity.steady_state_window.'
-                    'angular_z_radps.mean'
-                ),
-            }
-        for segment_id in (
-            'rotate_left_360',
-            'rotate_right_360',
-            'forward_3m',
-            'backward_2m',
-            'arc_left_5s',
-            'arc_right_5s',
-        ):
-            checks[f'stop_window.{segment_id}'] = {
-                'stopped': True,
-                'stationary_onset_sec': 0.0,
-                'confirmed_sec': 0.5,
-                'observed_stable_duration_sec': 0.5,
-                'required_stable_duration_sec': 0.5,
-                'passed': True,
-            }
-        direction_segments = {}
-        for segment_id, motion, *_ in segment_specs:
-            directions = expected_wheel_directions(motion)
-            direction_segments[segment_id] = {
-                'motion': motion,
-                'all_directions_match': True,
-                'per_wheel': {
-                    joint: {
-                        'direction': direction,
-                        'expected_direction': direction,
-                        'direction_matches': True,
-                    }
-                    for joint, direction in directions.items()
-                },
-            }
-        checks['wheel_direction_contract'] = {
-            'steady_state_window_schema_version': 1,
-            'measurement_basis': (
-                'wheels.steady_state_window.per_wheel[*].direction_matches '
-                'over the final_half_of_command_interval window'
-            ),
-            'validated_segment_count': 6,
-            'validated_wheel_observation_count': 24,
-            'segments': direction_segments,
-            'failed_observations': [],
-            'passed': True,
-        }
-        return checks
-
-    analysis_groups = {}
-    acceptance_groups = {}
-    selection_included = []
     reports_dir = tmp_path / 'reports'
     reports_dir.mkdir()
     logs_dir = tmp_path / 'logs'
@@ -1588,9 +1447,6 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
 
     for group_index, group_id in enumerate(ordered_group_ids):
         contact_profile_id = group_id.rsplit('::', 1)[1]
-        group_passed = group_index < 2
-        input_reports = []
-        repeat_results = []
         for repeat_index in range(1, 4):
             sequence = group_index * 3 + repeat_index
             label = (
@@ -1606,7 +1462,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     scale=(0.98, 1.0, 1.02)[repeat_index - 1],
                 ),
                 'simple_plane_only1_v1',
-                report_schema_version=3,
+                report_schema_version=4,
             )
             report_document['output_file'] = str(report_file.resolve())
             report_document['completed_at_utc'] = (
@@ -1712,14 +1568,6 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             runner_log = logs_dir / f'{label}.runner.log'
             isaac_log.write_text(f'isaac {label}\n', encoding='utf-8')
             runner_log.write_text(f'runner {label}\n', encoding='utf-8')
-            canonical_sha256 = hashlib.sha256(
-                json.dumps(
-                    json.loads(report_payload),
-                    sort_keys=True,
-                    separators=(',', ':'),
-                    allow_nan=False,
-                ).encode()
-            ).hexdigest()
             manifest_rows.append(
                 {
                     'run_id': label,
@@ -1731,7 +1579,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     'detail': 'complete',
                     'report': report_path,
                     'report_sha256': report_sha256,
-                    'report_schema_version': '3',
+                    'report_schema_version': '4',
                     'runtime_provenance_schema_version': '6',
                     'reset_strategy_schema_version': '1',
                     'reset_strategy_id': reset_strategy_id,
@@ -1781,144 +1629,6 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     ),
                 }
             )
-            input_reports.append(
-                {
-                    'path': report_path,
-                    'sha256': report_sha256,
-                    'canonical_sha256': canonical_sha256,
-                    'report_schema_version': 3,
-                }
-            )
-            selection_included.append(
-                {
-                    'path': report_path,
-                    'sha256': report_sha256,
-                    'canonical_sha256': canonical_sha256,
-                    'report_schema_version': 3,
-                    'environment_id': 'SimplePlane',
-                    'ground_topology_id': 'simple_plane_only1_v1',
-                    'runtime_provenance_schema_version': 6,
-                    'reset_strategy_schema_version': 1,
-                    'reset_strategy_id': reset_strategy_id,
-                    'reset_strategy_token': reset_strategy_token,
-                    'contact_profile_id': contact_profile_id,
-                }
-            )
-            checks = physical_checks(group_passed)
-            repeat_results.append(
-                {
-                    'repeat_index': repeat_index,
-                    'report_path': report_path,
-                    'report_sha256': report_sha256,
-                    'canonical_sha256': canonical_sha256,
-                    'passed': group_passed,
-                    'checks': checks,
-                    'failed_checks': (
-                        []
-                        if group_passed
-                        else ['forward_abs_lateral_drift_m']
-                    ),
-                }
-            )
-        analysis_groups[group_id] = {
-            'runtime_provenance_schema': 6,
-            'environment_id': 'SimplePlane',
-            'ground_topology_id': 'simple_plane_only1_v1',
-            'reset_strategy_schema_version': 1,
-            'reset_strategy_id': reset_strategy_id,
-            'reset_strategy_token': reset_strategy_token,
-            'odometry_mode': 'ideal',
-            'contact_profile_id': contact_profile_id,
-            'repeat_count': 3,
-            'input_reports': input_reports,
-        }
-        check_ids = sorted(repeat_results[0]['checks'])
-        acceptance_groups[group_id] = {
-            'applicable': True,
-            'passed': group_passed,
-            'not_applicable_reasons': [],
-            'repeat_count': 3,
-            'checks': {
-                check_id: {
-                    'passed_repeats': sum(
-                        repeat['checks'][check_id]['passed']
-                        for repeat in repeat_results
-                    ),
-                    'failed_repeats': sum(
-                        not repeat['checks'][check_id]['passed']
-                        for repeat in repeat_results
-                    ),
-                    'all_repeats_passed': all(
-                        repeat['checks'][check_id]['passed']
-                        for repeat in repeat_results
-                    ),
-                }
-                for check_id in check_ids
-            },
-            'failed_checks': (
-                [] if group_passed else ['forward_abs_lateral_drift_m']
-            ),
-            'repeat_results': repeat_results,
-        }
-    analysis_document = {
-        'schema_version': 5,
-        'counts': {
-            'input_reports': 18,
-            'excluded_reports': 0,
-            'groups': 6,
-            'included_reports': 18,
-        },
-        'selection': {
-            'included': selection_included,
-            'excluded': [],
-        },
-        'matrix': {
-            'complete': True,
-            'required_groups': group_ids,
-            'observed_groups': group_ids,
-            'missing_groups': [],
-        },
-        'selection_policy': {
-            'required_runtime_provenance_schema': 6,
-            'expected_reset_strategies': [reset_strategy_token],
-            'expected_profiles': list(profile_ids),
-        },
-        'locked_inputs': {
-            'wheel_radius_m': 0.098,
-            'simulation': {'odometry_mode': 'ideal'},
-            'motion_configuration': motion_configuration,
-        },
-        'groups': analysis_groups,
-        'physical_acceptance': {
-            'schema_version': 3,
-            'policy_id': 'skid_steer_plan_8_7_v3',
-            'evaluation_basis': 'every_repeat',
-            'ranking_policy': 'none; pass/fail only',
-            'steady_state_measurement_basis': (
-                'actual_velocity.steady_state_window.angular_z_radps.mean '
-                'over the final_half_of_command_interval window'
-            ),
-            'wheel_direction_measurement_basis': (
-                'wheels.steady_state_window.per_wheel[*].direction_matches '
-                'over the final_half_of_command_interval window'
-            ),
-            'thresholds': physical_thresholds,
-            'applicability': {
-                'required_motion_report_schema': 3,
-                'required_runtime_provenance_schema': 6,
-                'required_environment_id': 'SimplePlane',
-                'required_ground_topology_id': 'simple_plane_only1_v1',
-                'required_odometry_mode': 'ideal',
-                'minimum_unique_repeats_per_group': 3,
-            },
-            'groups': acceptance_groups,
-            'applicable_groups': group_ids,
-            'not_applicable_groups': [],
-            'passing_groups': group_ids[:2],
-            'failed_groups': group_ids[2:],
-            'all_applicable_groups_passed': False,
-        },
-    }
     analysis_document = analyse_contact_ab(
         report_paths,
         0.098,
@@ -1938,7 +1648,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     summary = tmp_path / 'batch_summary.json'
     assignments = {
         'PROJECT_ROOT': REPOSITORY_ROOT,
-        'required_motion_report_schema_version': '3',
+        'required_motion_report_schema_version': '4',
         'required_runtime_provenance_schema_version': '6',
         'required_reset_strategy_schema_version': '1',
         'output_dir': tmp_path,
@@ -2030,13 +1740,13 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
-    assert document['schema_version'] == 6
+    assert document['schema_version'] == 7
     assert document['schema_contract'] == {
         'project_config': 2,
         'runtime_provenance': 6,
-        'motion_report': 3,
-        'aggregate_analysis': 5,
-        'physical_acceptance': 3,
+        'motion_report': 4,
+        'aggregate_analysis': 6,
+        'physical_acceptance': 4,
         'manifest': 2,
     }
     assert document['manifest_contract'] == {
@@ -2058,8 +1768,8 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert document['actual_counts']['acceptance_passing_groups'] == 6
     assert document['actual_counts']['acceptance_failed_groups'] == 0
     assert document['physical_acceptance'] == {
-        'schema_version': 3,
-        'policy_id': 'skid_steer_plan_8_7_v3',
+        'schema_version': 4,
+        'policy_id': 'skid_steer_plan_8_7_v4',
         'evaluation_basis': 'every_repeat',
         'ranking_policy': 'none; pass/fail only',
         'steady_state_measurement_basis': (
@@ -2072,7 +1782,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         ),
         'thresholds': physical_thresholds,
         'applicability': {
-            'required_motion_report_schema': 3,
+            'required_motion_report_schema': 4,
             'required_runtime_provenance_schema': 6,
             'required_environment_id': 'SimplePlane',
             'required_ground_topology_id': 'simple_plane_only1_v1',

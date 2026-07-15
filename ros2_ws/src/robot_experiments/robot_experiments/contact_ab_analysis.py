@@ -153,6 +153,9 @@ _POSE_KEYS = {
     "lateral_drift_m",
     "translation_drift_m",
 }
+_SCHEMA4_POSE_KEYS = _POSE_KEYS | {
+    "max_radial_displacement_from_start_m",
+}
 _POSE_SAMPLE_KEYS = {"x_m", "y_m", "yaw_rad"}
 _YAW_KEYS = {"change_rad", "expected_change_rad", "error_rad"}
 _STOPPING_KEYS = {
@@ -306,11 +309,24 @@ _PHYSICAL_ACCEPTANCE_THRESHOLDS = {
     "stop_angular_velocity_threshold_max_radps": 0.05,
     "stop_wheel_velocity_threshold_max_radps": 0.20,
 }
+_PHYSICAL_ACCEPTANCE_V4_THRESHOLDS = {
+    "forward_abs_lateral_drift_max_m": 0.05,
+    "backward_abs_lateral_drift_max_m": 0.08,
+    "rotation_max_radial_displacement_from_start_max_m": 0.10,
+    "rotation_max_radial_displacement_asymmetry_ratio_max": 0.20,
+    "rotation_commanded_zero_mean_linear_speed_max_mps": 0.02,
+    "rotation_mean_yaw_rate_absolute_error_fraction_max": 0.10,
+    "stop_stable_duration_min_sec": 0.5,
+    "stop_linear_velocity_threshold_max_mps": 0.02,
+    "stop_angular_velocity_threshold_max_radps": 0.05,
+    "stop_wheel_velocity_threshold_max_radps": 0.20,
+}
 def _physical_acceptance_applicability(
     runtime_provenance_schema: int,
+    motion_report_schema: int = 3,
 ) -> dict[str, Any]:
     return {
-        "required_motion_report_schema": 3,
+        "required_motion_report_schema": motion_report_schema,
         "required_runtime_provenance_schema": runtime_provenance_schema,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
@@ -346,6 +362,34 @@ _PHYSICAL_MAXIMUM_CHECK_THRESHOLDS = {
         "stop_wheel_velocity_threshold_max_radps"
     ),
 }
+_PHYSICAL_ACCEPTANCE_V4_MAXIMUM_CHECK_THRESHOLDS = {
+    "forward_abs_lateral_drift_m": "forward_abs_lateral_drift_max_m",
+    "backward_abs_lateral_drift_m": "backward_abs_lateral_drift_max_m",
+    "rotate_left_max_radial_displacement_from_start_m": (
+        "rotation_max_radial_displacement_from_start_max_m"
+    ),
+    "rotate_right_max_radial_displacement_from_start_m": (
+        "rotation_max_radial_displacement_from_start_max_m"
+    ),
+    "rotation_max_radial_displacement_asymmetry_ratio": (
+        "rotation_max_radial_displacement_asymmetry_ratio_max"
+    ),
+    "rotate_left_commanded_zero_mean_linear_speed_mps": (
+        "rotation_commanded_zero_mean_linear_speed_max_mps"
+    ),
+    "rotate_right_commanded_zero_mean_linear_speed_mps": (
+        "rotation_commanded_zero_mean_linear_speed_max_mps"
+    ),
+    "stop_config.linear_velocity_threshold_mps": (
+        "stop_linear_velocity_threshold_max_mps"
+    ),
+    "stop_config.angular_velocity_threshold_radps": (
+        "stop_angular_velocity_threshold_max_radps"
+    ),
+    "stop_config.wheel_velocity_threshold_radps": (
+        "stop_wheel_velocity_threshold_max_radps"
+    ),
+}
 _PHYSICAL_MINIMUM_CHECK_THRESHOLDS = {
     "stop_config.stable_duration_sec": "stop_stable_duration_min_sec",
 }
@@ -362,6 +406,24 @@ _PHYSICAL_ACCEPTANCE_CHECK_IDS = frozenset(
         *_PHYSICAL_MAXIMUM_CHECK_THRESHOLDS,
         *_PHYSICAL_MINIMUM_CHECK_THRESHOLDS,
         *_PHYSICAL_YAW_RATE_CHECK_SEGMENTS,
+        *_PHYSICAL_STOP_WINDOW_CHECK_SEGMENTS,
+        "wheel_direction_contract",
+    }
+)
+_PHYSICAL_ACCEPTANCE_V4_CHECK_IDS = frozenset(
+    {
+        "forward_abs_lateral_drift_m",
+        "backward_abs_lateral_drift_m",
+        "rotate_left_max_radial_displacement_from_start_m",
+        "rotate_right_max_radial_displacement_from_start_m",
+        "rotation_max_radial_displacement_asymmetry_ratio",
+        "rotate_left_commanded_zero_mean_linear_speed_mps",
+        "rotate_right_commanded_zero_mean_linear_speed_mps",
+        *_PHYSICAL_YAW_RATE_CHECK_SEGMENTS,
+        *_PHYSICAL_MINIMUM_CHECK_THRESHOLDS,
+        "stop_config.linear_velocity_threshold_mps",
+        "stop_config.angular_velocity_threshold_radps",
+        "stop_config.wheel_velocity_threshold_radps",
         *_PHYSICAL_STOP_WINDOW_CHECK_SEGMENTS,
         "wheel_direction_contract",
     }
@@ -1259,7 +1321,7 @@ def _validated_invalid_message_counts(
     }
     if any(parsed.values()):
         raise ConfigurationError(
-            f"{location} must be zero for every successful schema-3 segment"
+            f"{location} must be zero for every successful schema-3/4 segment"
         )
     return parsed
 
@@ -1990,7 +2052,7 @@ def _segment_metrics(
         segment.get("sample_counts"), f"{location}.sample_counts"
     )
     schema3_sample_counts: dict[str, int] | None = None
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         _exact_keys(
             sample_counts,
             _SAMPLE_COUNT_KEYS,
@@ -2017,11 +2079,11 @@ def _segment_metrics(
     schema3_reset_generation: int | None = None
     schema3_reset_after_ns: int | None = None
     schema3_reset_received_watermarks: dict[str, int] | None = None
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         assert schema3_sample_counts is not None
         if reset_configuration is None:
             raise ConfigurationError(
-                f"{location} schema-3 report lacks reset configuration"
+                f"{location} schema-{report_schema_version} report lacks reset configuration"
             )
         invalid_counts = _validated_invalid_message_counts(
             segment.get("invalid_message_counts"),
@@ -2119,7 +2181,11 @@ def _segment_metrics(
         f"{location}.command.observed_duration_sec",
     )
     pose = _mapping(segment.get("pose"), f"{location}.pose")
-    _exact_keys(pose, _POSE_KEYS, f"{location}.pose")
+    _exact_keys(
+        pose,
+        _SCHEMA4_POSE_KEYS if report_schema_version == 4 else _POSE_KEYS,
+        f"{location}.pose",
+    )
     pose_samples: dict[str, dict[str, float]] = {}
     for endpoint in ("start", "end"):
         endpoint_location = f"{location}.pose.{endpoint}"
@@ -2170,6 +2236,28 @@ def _segment_metrics(
             f"{location}.pose.trajectory_length_m cannot be shorter than "
             "net_displacement_m"
         )
+    max_radial_displacement: float | None = None
+    if report_schema_version == 4:
+        max_radial_displacement = _nonnegative(
+            pose.get("max_radial_displacement_from_start_m"),
+            f"{location}.pose.max_radial_displacement_from_start_m",
+        )
+        if not _physical_minimum_passed(
+            max_radial_displacement,
+            net_displacement,
+        ):
+            raise ConfigurationError(
+                f"{location}.pose.max_radial_displacement_from_start_m "
+                "cannot be smaller than net_displacement_m"
+            )
+        if not _physical_maximum_passed(
+            max_radial_displacement,
+            trajectory_length,
+        ):
+            raise ConfigurationError(
+                f"{location}.pose.max_radial_displacement_from_start_m "
+                "cannot exceed trajectory_length_m"
+            )
     yaw = _mapping(segment.get("yaw"), f"{location}.yaw")
     _exact_keys(yaw, _YAW_KEYS, f"{location}.yaw")
     stopping = _mapping(segment.get("stopping"), f"{location}.stopping")
@@ -2177,7 +2265,7 @@ def _segment_metrics(
         stopping,
         (
             _SCHEMA3_STOPPING_KEYS
-            if report_schema_version == 3
+            if report_schema_version in {3, 4}
             else _STOPPING_KEYS
         ),
         f"{location}.stopping",
@@ -2194,7 +2282,7 @@ def _segment_metrics(
     )
     if confirmed < onset:
         raise ConfigurationError(f"{location} stop confirmation precedes onset")
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         assert max_sample_age_sec is not None
         assert schema3_sample_counts is not None
         assert schema3_timestamp_integrity is not None
@@ -2229,7 +2317,7 @@ def _segment_metrics(
         actual_velocity,
         (
             _ACTUAL_VELOCITY_KEYS | {"steady_state_window"}
-            if report_schema_version in {2, 3}
+            if report_schema_version in {2, 3, 4}
             else _ACTUAL_VELOCITY_KEYS
         ),
         f"{location}.actual_velocity",
@@ -2242,7 +2330,7 @@ def _segment_metrics(
             actual_velocity.get(velocity_name),
             f"{location}.actual_velocity.{velocity_name}",
         )
-        if report_schema_version == 3:
+        if report_schema_version in {3, 4}:
             assert schema3_sample_counts is not None
             schema3_velocity_distributions[velocity_name] = (
                 _validated_schema3_speed_distribution(
@@ -2258,8 +2346,27 @@ def _segment_metrics(
                 distribution.get("mean"),
                 f"{location}.actual_velocity.{velocity_name}.mean",
             )
+    if report_schema_version == 4:
+        (
+            _speed_sample_count,
+            speed_minimum,
+            _speed_maximum,
+            speed_mean,
+            speed_mean_abs,
+            _speed_rmse,
+        ) = schema3_velocity_distributions["linear_speed_mps"]
+        if speed_minimum < 0.0:
+            raise ConfigurationError(
+                f"{location}.actual_velocity.linear_speed_mps.minimum must "
+                "be non-negative"
+            )
+        _exact_number(
+            speed_mean_abs,
+            speed_mean,
+            f"{location}.actual_velocity.linear_speed_mps.mean_abs",
+        )
     steady_state_mean_yaw_rate: float | None = None
-    if report_schema_version in {2, 3}:
+    if report_schema_version in {2, 3, 4}:
         steady_state_window = _mapping(
             actual_velocity.get("steady_state_window"),
             f"{location}.actual_velocity.steady_state_window",
@@ -2269,7 +2376,7 @@ def _segment_metrics(
             steady_state_window,
             (
                 _SCHEMA3_STEADY_STATE_WINDOW_KEYS
-                if report_schema_version == 3
+                if report_schema_version in {3, 4}
                 else _STEADY_STATE_WINDOW_KEYS
             ),
             steady_location,
@@ -2308,7 +2415,7 @@ def _segment_metrics(
             steady_state_window.get("sample_count"),
             f"{steady_location}.sample_count",
         )
-        if report_schema_version == 3:
+        if report_schema_version in {3, 4}:
             if max_sample_age_sec is None:
                 raise ConfigurationError(
                     f"{steady_location} lacks max_sample_age_sec"
@@ -2385,7 +2492,7 @@ def _segment_metrics(
             steady_state_window.get("angular_z_radps"),
             f"{steady_location}.angular_z_radps",
         )
-        if report_schema_version == 3:
+        if report_schema_version in {3, 4}:
             steady_angular_distribution = _validated_schema3_speed_distribution(
                 steady_angular,
                 f"{steady_location}.angular_z_radps",
@@ -2421,10 +2528,10 @@ def _segment_metrics(
             f"{steady_location}.angular_z_radps.mean",
         )
     physical_wheel_direction_evidence: dict[str, Any] | None = None
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         if max_sample_age_sec is None:
             raise ConfigurationError(
-                f"{location} schema-3 report lacks max_sample_age_sec"
+                f"{location} schema-{report_schema_version} report lacks max_sample_age_sec"
             )
         assert schema3_sample_counts is not None
         wheels = _mapping(segment.get("wheels"), f"{location}.wheels")
@@ -2535,6 +2642,10 @@ def _segment_metrics(
         "stop_onset_sec": onset,
         "stop_confirmed_sec": confirmed,
     }
+    if max_radial_displacement is not None:
+        metrics["max_radial_displacement_from_start_m"] = (
+            max_radial_displacement
+        )
     if expected_yaw != 0.0:
         if yaw_change == 0.0 or (yaw_change > 0.0) != (expected_yaw > 0.0):
             raise ConfigurationError(f"{location} measured yaw sign is invalid")
@@ -2561,6 +2672,10 @@ def _segment_metrics(
             f"{location}.pose.translation_drift_m",
         )
         metrics["center_drift_m"] = net_displacement
+        if report_schema_version == 4:
+            metrics["commanded_zero_mean_linear_speed_mps"] = (
+                schema3_velocity_distributions["linear_speed_mps"][3]
+            )
         left_rate, right_rate = _wheel_means(segment, wheel_layout, location)
         wheel_differential = _finite(
             wheel_radius_m * (right_rate - left_rate),
@@ -2817,12 +2932,12 @@ def _validated_record(
     if (
         isinstance(report_schema_version, bool)
         or not isinstance(report_schema_version, int)
-        or report_schema_version not in {1, 2, 3}
+        or report_schema_version not in {1, 2, 3, 4}
     ):
         raise ConfigurationError(
-            f"{location} schema_version must be integer 1, 2, or 3"
+            f"{location} schema_version must be integer 1, 2, 3, or 4"
         )
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         if report.get("output_file") != str(source_path):
             raise ConfigurationError(
                 f"{location}.output_file must equal its canonical source path"
@@ -2946,7 +3061,7 @@ def _validated_record(
     )
     max_sample_age_sec: float | None = None
     reset_configuration: Mapping[str, Any] | None = None
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         sampling_configuration = _mapping(
             configuration.get("sampling"),
             f"{location}.configuration.sampling",
@@ -3092,7 +3207,7 @@ def _validated_record(
                 segment_timestamp_totals[source] += count
         if reset_generation is not None:
             reset_generations.append(reset_generation)
-    if report_schema_version == 3:
+    if report_schema_version in {3, 4}:
         if any(
             current <= previous
             for previous, current in zip(
@@ -3122,7 +3237,7 @@ def _validated_record(
             f"{location}.timestamp_integrity",
         )
     physical_yaw_rate_metrics = None
-    if provenance_schema in {5, 6} and report_schema_version in {2, 3}:
+    if provenance_schema in {5, 6} and report_schema_version in {2, 3, 4}:
         physical_yaw_rate_metrics = {}
         for segment_id, motion, _linear, angular, _duration in _SEGMENT_SPECS:
             if motion not in {"rotate_left", "rotate_right"}:
@@ -3223,7 +3338,7 @@ def _validated_record(
         physical_yaw_rate_metrics=physical_yaw_rate_metrics,
         physical_wheel_direction_evidence=(
             physical_wheel_direction_evidence
-            if report_schema_version == 3
+            if report_schema_version in {3, 4}
             else None
         ),
         segments=metrics,
@@ -3266,6 +3381,15 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
     rotation_gain_delta = paired("rotate_left_360", "rotate_right_360", "yaw_gain")
     rotation_center_delta = paired(
         "rotate_left_360", "rotate_right_360", "center_drift_m"
+    )
+    rotation_radial_delta = (
+        paired(
+            "rotate_left_360",
+            "rotate_right_360",
+            "max_radial_displacement_from_start_m",
+        )
+        if first.report_schema_version == 4
+        else None
     )
     rotation_track_delta = paired(
         "rotate_left_360", "rotate_right_360", "effective_track_m"
@@ -3347,6 +3471,18 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
             "center_drift_signed_difference_m": _distribution(
                 rotation_center_delta, "rotation.center_drift_signed_difference_m"
             ),
+            **(
+                {
+                    "max_radial_displacement_signed_difference_m": (
+                        _distribution(
+                            rotation_radial_delta,
+                            "rotation.max_radial_displacement_signed_difference_m",
+                        )
+                    )
+                }
+                if rotation_radial_delta is not None
+                else {}
+            ),
             "effective_track_signed_difference_m": _distribution(
                 rotation_track_delta, "rotation.effective_track_signed_difference_m"
             ),
@@ -3395,7 +3531,7 @@ def _physical_repeat_result(
     record: InputRecord,
     repeat_index: int,
 ) -> dict[str, Any]:
-    """Evaluate one schema-v5 report against every plan 8.7 hard gate."""
+    """Evaluate one report against its immutable plan 8.7 policy epoch."""
 
     stop = record.physical_stop_contract
     yaw_rate_metrics = record.physical_yaw_rate_metrics
@@ -3409,7 +3545,12 @@ def _physical_repeat_result(
             f"schema-{record.runtime_provenance_schema} report {record.path} "
             "lacks a physical acceptance contract"
         )
-    thresholds = _PHYSICAL_ACCEPTANCE_THRESHOLDS
+    motion_v4 = record.report_schema_version == 4
+    thresholds = (
+        _PHYSICAL_ACCEPTANCE_V4_THRESHOLDS
+        if motion_v4
+        else _PHYSICAL_ACCEPTANCE_THRESHOLDS
+    )
     checks: dict[str, dict[str, Any]] = {}
 
     def maximum(check_id: str, observed: float, limit: float) -> None:
@@ -3436,28 +3577,77 @@ def _physical_repeat_result(
         abs(record.segments["backward_2m"]["lateral_drift_m"]),
         thresholds["backward_abs_lateral_drift_max_m"],
     )
-    left_center = record.segments["rotate_left_360"]["center_drift_m"]
-    right_center = record.segments["rotate_right_360"]["center_drift_m"]
-    maximum(
-        "rotate_left_center_drift_m",
-        left_center,
-        thresholds["rotation_center_drift_max_m"],
-    )
-    maximum(
-        "rotate_right_center_drift_m",
-        right_center,
-        thresholds["rotation_center_drift_max_m"],
-    )
-    symmetry_denominator = max(left_center, right_center)
+    if motion_v4:
+        left_translation = record.segments["rotate_left_360"][
+            "max_radial_displacement_from_start_m"
+        ]
+        right_translation = record.segments["rotate_right_360"][
+            "max_radial_displacement_from_start_m"
+        ]
+        translation_limit = thresholds[
+            "rotation_max_radial_displacement_from_start_max_m"
+        ]
+        maximum(
+            "rotate_left_max_radial_displacement_from_start_m",
+            left_translation,
+            translation_limit,
+        )
+        maximum(
+            "rotate_right_max_radial_displacement_from_start_m",
+            right_translation,
+            translation_limit,
+        )
+        for side, segment_id in (
+            ("left", "rotate_left_360"),
+            ("right", "rotate_right_360"),
+        ):
+            maximum(
+                f"rotate_{side}_commanded_zero_mean_linear_speed_mps",
+                record.segments[segment_id][
+                    "commanded_zero_mean_linear_speed_mps"
+                ],
+                thresholds[
+                    "rotation_commanded_zero_mean_linear_speed_max_mps"
+                ],
+            )
+        asymmetry_check_id = (
+            "rotation_max_radial_displacement_asymmetry_ratio"
+        )
+        asymmetry_limit = thresholds[
+            "rotation_max_radial_displacement_asymmetry_ratio_max"
+        ]
+    else:
+        left_translation = record.segments["rotate_left_360"][
+            "center_drift_m"
+        ]
+        right_translation = record.segments["rotate_right_360"][
+            "center_drift_m"
+        ]
+        translation_limit = thresholds["rotation_center_drift_max_m"]
+        maximum(
+            "rotate_left_center_drift_m",
+            left_translation,
+            translation_limit,
+        )
+        maximum(
+            "rotate_right_center_drift_m",
+            right_translation,
+            translation_limit,
+        )
+        asymmetry_check_id = "rotation_center_drift_asymmetry_ratio"
+        asymmetry_limit = thresholds[
+            "rotation_center_drift_asymmetry_ratio_max"
+        ]
+    symmetry_denominator = max(left_translation, right_translation)
     symmetry_ratio = (
         0.0
         if symmetry_denominator == 0.0
-        else abs(left_center - right_center) / symmetry_denominator
+        else abs(left_translation - right_translation) / symmetry_denominator
     )
     maximum(
-        "rotation_center_drift_asymmetry_ratio",
+        asymmetry_check_id,
         symmetry_ratio,
-        thresholds["rotation_center_drift_asymmetry_ratio_max"],
+        asymmetry_limit,
     )
     for side, segment_id in (
         ("left", "rotate_left_360"),
@@ -3577,8 +3767,25 @@ def _physical_acceptance(
             "schema 5 or 6 batch"
         )
     runtime_provenance_schema = next(iter(runtime_schemas))
+    motion_schemas = {
+        record.report_schema_version
+        for records in grouped.values()
+        for record in records
+    }
+    if len(motion_schemas) != 1:
+        raise ConfigurationError(
+            "physical acceptance requires one homogeneous motion report schema"
+        )
+    motion_report_schema = next(iter(motion_schemas))
+    motion_v4 = motion_report_schema == 4
+    if motion_v4 and runtime_provenance_schema != 6:
+        raise ConfigurationError(
+            "motion report schema 4 requires runtime provenance schema 6"
+        )
+    required_motion_report_schema = 4 if motion_v4 else 3
     applicability = _physical_acceptance_applicability(
-        runtime_provenance_schema
+        runtime_provenance_schema,
+        required_motion_report_schema,
     )
     group_results: dict[str, dict[str, Any]] = {}
     applicable_groups: list[str] = []
@@ -3589,8 +3796,14 @@ def _physical_acceptance(
         group_id = "::".join(group_key)
         first = records[0]
         not_applicable_reasons = []
-        if any(record.report_schema_version != 3 for record in records):
-            not_applicable_reasons.append("motion_report_schema_not_3")
+        if any(
+            record.report_schema_version != required_motion_report_schema
+            for record in records
+        ):
+            not_applicable_reasons.append(
+                "motion_report_schema_not_"
+                f"{required_motion_report_schema}"
+            )
         if first.runtime_provenance_schema != runtime_provenance_schema:
             not_applicable_reasons.append(
                 "runtime_provenance_schema_not_"
@@ -3663,10 +3876,20 @@ def _physical_acceptance(
         }
         (passing_groups if passed else failed_groups).append(group_id)
     return {
-        "schema_version": 3 if runtime_provenance_schema == 6 else 2,
-        "policy_id": _PHYSICAL_ACCEPTANCE_POLICY_IDS[
-            runtime_provenance_schema
-        ],
+        "schema_version": (
+            4
+            if motion_v4
+            else 3
+            if runtime_provenance_schema == 6
+            else 2
+        ),
+        "policy_id": (
+            "skid_steer_plan_8_7_v4"
+            if motion_v4
+            else _PHYSICAL_ACCEPTANCE_POLICY_IDS[
+                runtime_provenance_schema
+            ]
+        ),
         "evaluation_basis": "every_repeat",
         "ranking_policy": "none; pass/fail only",
         "applicability": applicability,
@@ -3676,7 +3899,11 @@ def _physical_acceptance(
         "wheel_direction_measurement_basis": (
             _PHYSICAL_WHEEL_DIRECTION_MEASUREMENT_BASIS
         ),
-        "thresholds": dict(_PHYSICAL_ACCEPTANCE_THRESHOLDS),
+        "thresholds": dict(
+            _PHYSICAL_ACCEPTANCE_V4_THRESHOLDS
+            if motion_v4
+            else _PHYSICAL_ACCEPTANCE_THRESHOLDS
+        ),
         "groups": group_results,
         "applicable_groups": applicable_groups,
         "not_applicable_groups": not_applicable_groups,
@@ -3691,6 +3918,7 @@ def _physical_acceptance(
 def _validated_physical_repeat_check_outcomes(
     checks: Mapping[str, Any],
     wheel_layout: Mapping[str, str],
+    physical_schema_version: int,
     location: str,
 ) -> dict[str, bool]:
     """Recompute every physical leaf from its immutable policy semantics."""
@@ -3701,7 +3929,28 @@ def _validated_physical_repeat_check_outcomes(
             raise ConfigurationError(
                 f"{location} check ids must not contain surrounding whitespace"
             )
-    _exact_keys(checks, set(_PHYSICAL_ACCEPTANCE_CHECK_IDS), location)
+    motion_v4 = physical_schema_version == 4
+    if physical_schema_version not in {2, 3, 4}:
+        raise ConfigurationError(
+            f"{location} has unsupported physical schema "
+            f"{physical_schema_version}"
+        )
+    thresholds = (
+        _PHYSICAL_ACCEPTANCE_V4_THRESHOLDS
+        if motion_v4
+        else _PHYSICAL_ACCEPTANCE_THRESHOLDS
+    )
+    maximum_checks = (
+        _PHYSICAL_ACCEPTANCE_V4_MAXIMUM_CHECK_THRESHOLDS
+        if motion_v4
+        else _PHYSICAL_MAXIMUM_CHECK_THRESHOLDS
+    )
+    expected_check_ids = (
+        _PHYSICAL_ACCEPTANCE_V4_CHECK_IDS
+        if motion_v4
+        else _PHYSICAL_ACCEPTANCE_CHECK_IDS
+    )
+    _exact_keys(checks, set(expected_check_ids), location)
     outcomes: dict[str, bool] = {}
 
     def exact_passed(
@@ -3721,7 +3970,7 @@ def _validated_physical_repeat_check_outcomes(
             )
         outcomes[check_id] = actual
 
-    for check_id, threshold_id in _PHYSICAL_MAXIMUM_CHECK_THRESHOLDS.items():
+    for check_id, threshold_id in maximum_checks.items():
         check_location = f"{location}.{check_id}"
         check = _mapping(checks.get(check_id), check_location)
         _exact_keys(check, {"observed", "maximum", "passed"}, check_location)
@@ -3733,7 +3982,7 @@ def _validated_physical_repeat_check_outcomes(
         )
         _exact_number(
             maximum,
-            _PHYSICAL_ACCEPTANCE_THRESHOLDS[threshold_id],
+            thresholds[threshold_id],
             f"{check_location}.maximum",
         )
         exact_passed(
@@ -3755,7 +4004,7 @@ def _validated_physical_repeat_check_outcomes(
         )
         _exact_number(
             minimum,
-            _PHYSICAL_ACCEPTANCE_THRESHOLDS[threshold_id],
+            thresholds[threshold_id],
             f"{check_location}.minimum",
         )
         exact_passed(
@@ -3765,7 +4014,7 @@ def _validated_physical_repeat_check_outcomes(
             check_location,
         )
 
-    yaw_limit = _PHYSICAL_ACCEPTANCE_THRESHOLDS[
+    yaw_limit = thresholds[
         "rotation_mean_yaw_rate_absolute_error_fraction_max"
     ]
     for check_id, segment_id in _PHYSICAL_YAW_RATE_CHECK_SEGMENTS.items():
@@ -4327,13 +4576,35 @@ def validate_physical_acceptance_accounting(
     if (
         isinstance(analysis_schema_version, bool)
         or not isinstance(analysis_schema_version, int)
-        or analysis_schema_version not in {4, 5}
+        or analysis_schema_version not in {4, 5, 6}
     ):
         raise ConfigurationError(
-            "analysis.schema_version must be integer 4 or 5"
+            "analysis.schema_version must be integer 4, 5, or 6"
         )
     expected_runtime_provenance_schema = (
-        6 if analysis_schema_version == 5 else 5
+        6 if analysis_schema_version in {5, 6} else 5
+    )
+    expected_motion_report_schema = (
+        4 if analysis_schema_version == 6 else 3
+    )
+    expected_physical_schema = (
+        4
+        if analysis_schema_version == 6
+        else 3
+        if expected_runtime_provenance_schema == 6
+        else 2
+    )
+    expected_policy_id = (
+        "skid_steer_plan_8_7_v4"
+        if analysis_schema_version == 6
+        else _PHYSICAL_ACCEPTANCE_POLICY_IDS[
+            expected_runtime_provenance_schema
+        ]
+    )
+    expected_thresholds = (
+        _PHYSICAL_ACCEPTANCE_V4_THRESHOLDS
+        if analysis_schema_version == 6
+        else _PHYSICAL_ACCEPTANCE_THRESHOLDS
     )
     selection_policy = _mapping(
         analysis_mapping.get("selection_policy"),
@@ -4451,15 +4722,13 @@ def validate_physical_acceptance_accounting(
     )
     _exact_integer(
         acceptance.get("schema_version"),
-        3 if expected_runtime_provenance_schema == 6 else 2,
+        expected_physical_schema,
         "analysis.physical_acceptance.schema_version",
     )
     for field, expected in (
         (
             "policy_id",
-            _PHYSICAL_ACCEPTANCE_POLICY_IDS[
-                expected_runtime_provenance_schema
-            ],
+            expected_policy_id,
         ),
         ("evaluation_basis", "every_repeat"),
         ("ranking_policy", "none; pass/fail only"),
@@ -4484,14 +4753,16 @@ def validate_physical_acceptance_accounting(
         applicability_contract,
         set(
             _physical_acceptance_applicability(
-                expected_runtime_provenance_schema
+                expected_runtime_provenance_schema,
+                expected_motion_report_schema,
             )
         ),
         "analysis.physical_acceptance.applicability",
     )
     if _canonical(applicability_contract) != _canonical(
         _physical_acceptance_applicability(
-            expected_runtime_provenance_schema
+            expected_runtime_provenance_schema,
+            expected_motion_report_schema,
         )
     ):
         raise ConfigurationError(
@@ -4504,10 +4775,10 @@ def validate_physical_acceptance_accounting(
     )
     _exact_keys(
         thresholds_contract,
-        set(_PHYSICAL_ACCEPTANCE_THRESHOLDS),
+        set(expected_thresholds),
         "analysis.physical_acceptance.thresholds",
     )
-    for threshold_id, expected in _PHYSICAL_ACCEPTANCE_THRESHOLDS.items():
+    for threshold_id, expected in expected_thresholds.items():
         _exact_number(
             thresholds_contract.get(threshold_id),
             expected,
@@ -4600,11 +4871,11 @@ def validate_physical_acceptance_accounting(
         if (
             isinstance(report_schema_version, bool)
             or not isinstance(report_schema_version, int)
-            or report_schema_version not in {1, 2, 3}
+            or report_schema_version not in {1, 2, 3, 4}
         ):
             raise ConfigurationError(
                 f"{included_location}.report_schema_version must be integer "
-                "1, 2, or 3"
+                "1, 2, 3, or 4"
             )
         environment_id = _string(
             item.get("environment_id"),
@@ -4917,11 +5188,11 @@ def validate_physical_acceptance_accounting(
             if (
                 isinstance(report_schema_version, bool)
                 or not isinstance(report_schema_version, int)
-                or report_schema_version not in {1, 2, 3}
+                or report_schema_version not in {1, 2, 3, 4}
             ):
                 raise ConfigurationError(
                     f"{report_location}.report_schema_version must be integer "
-                    "1, 2, or 3"
+                    "1, 2, 3, or 4"
                 )
             report_schema_versions.append(report_schema_version)
             report_reset_identity: tuple[Any, ...] = ()
@@ -5099,8 +5370,14 @@ def validate_physical_acceptance_accounting(
                 "must exactly match analysis.selection.included"
             )
         expected_reasons: list[str] = []
-        if any(version != 3 for version in report_schema_versions):
-            expected_reasons.append("motion_report_schema_not_3")
+        if any(
+            version != expected_motion_report_schema
+            for version in report_schema_versions
+        ):
+            expected_reasons.append(
+                "motion_report_schema_not_"
+                f"{expected_motion_report_schema}"
+            )
         if runtime_provenance_schema != expected_runtime_provenance_schema:
             expected_reasons.append(
                 "runtime_provenance_schema_not_"
@@ -5202,7 +5479,11 @@ def validate_physical_acceptance_accounting(
         observed_raw_hashes: set[str] = set()
         observed_canonical_hashes: set[str] = set()
         repeated_checks: list[dict[str, bool]] = []
-        expected_check_ids = set(_PHYSICAL_ACCEPTANCE_CHECK_IDS)
+        expected_check_ids = set(
+            _PHYSICAL_ACCEPTANCE_V4_CHECK_IDS
+            if expected_physical_schema == 4
+            else _PHYSICAL_ACCEPTANCE_CHECK_IDS
+        )
         for position, raw_repeat in enumerate(repeat_results, start=1):
             repeat_location = f"{acceptance_location}.repeat_results[{position - 1}]"
             repeat = _mapping(raw_repeat, repeat_location)
@@ -5245,6 +5526,7 @@ def validate_physical_acceptance_accounting(
             check_outcomes = _validated_physical_repeat_check_outcomes(
                 repeat_checks,
                 wheel_layout,
+                expected_physical_schema,
                 f"{repeat_location}.checks",
             )
             expected_repeat_failures = sorted(
@@ -5582,6 +5864,15 @@ def analyse_contact_ab(
             f"A/B batch: observed {sorted(provenance_schemas)}"
         )
     runtime_provenance_schema = next(iter(provenance_schemas))
+    motion_report_schemas = {
+        record.report_schema_version for record in included
+    }
+    if len(motion_report_schemas) != 1:
+        raise ConfigurationError(
+            "motion report schema versions must be homogeneous: observed "
+            f"{sorted(motion_report_schemas)}"
+        )
+    motion_report_schema = next(iter(motion_report_schemas))
     if runtime_provenance_schema not in {5, 6} and explicit_topology_selection:
         raise ConfigurationError(
             "expected_topologies requires runtime provenance schema 5 or 6; "
@@ -5936,7 +6227,9 @@ def analyse_contact_ab(
     }
     report = {
         "schema_version": (
-            5
+            6
+            if runtime_provenance_schema == 6 and motion_report_schema == 4
+            else 5
             if runtime_provenance_schema == 6
             else 4
             if runtime_provenance_schema == 5
@@ -6128,7 +6421,7 @@ def _parser() -> argparse.ArgumentParser:
         "reports",
         nargs="+",
         help=(
-            "homogeneous motion report JSON files (top-level schema 1, 2, or 3; "
+            "homogeneous motion report JSON files (top-level schema 1, 2, 3, or 4; "
             "runtime provenance schema 3, 4, 5, or 6)"
         ),
     )
