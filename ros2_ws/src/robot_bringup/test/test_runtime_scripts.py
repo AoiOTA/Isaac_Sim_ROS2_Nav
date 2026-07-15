@@ -472,6 +472,51 @@ def test_runtime_scripts_use_strict_shell_and_diagnose_is_read_only():
     assert '${PROJECT_ROOT}/scripts/run_rviz.sh' in cleanup
 
 
+def test_process_group_identity_retries_only_transient_environ_mismatch():
+    result = _run_bash(
+        f'source "{COMMON}"\n'
+        'identity_ready=false\n'
+        'start_tick=77\n'
+        'sleep_calls=0\n'
+        'runtime_process_group_members() { printf "4242\\n"; }\n'
+        'runtime_process_is_running() { return 0; }\n'
+        'runtime_process_start_ticks() { printf "%s\\n" "${start_tick}"; }\n'
+        'stat() { printf "%s\\n" "${UID}"; }\n'
+        'runtime_process_environment_value() {\n'
+        '  [[ "${identity_ready}" == true ]] || return 1\n'
+        '  case "$2" in\n'
+        '    PROJECT_ROOT) printf "%s\\n" "${PROJECT_ROOT}" ;;\n'
+        '    ISAAC_NAV_SESSION_ID) printf "test-session\\n" ;;\n'
+        '    *) return 1 ;;\n'
+        '  esac\n'
+        '}\n'
+        'sleep() { identity_ready=true; sleep_calls=$((sleep_calls + 1)); }\n'
+        'runtime_process_group_is_owned_by_session '
+        '4242 "${PROJECT_ROOT}" test-session\n'
+        '[[ "${sleep_calls}" == 1 ]]\n'
+        'identity_ready=false\n'
+        'sleep_calls=0\n'
+        'sleep() { sleep_calls=$((sleep_calls + 1)); }\n'
+        'if runtime_process_group_is_owned_by_session '
+        '4242 "${PROJECT_ROOT}" test-session; then exit 91; fi\n'
+        '[[ "${sleep_calls}" == 2 ]]\n'
+        'identity_ready=false\n'
+        'start_tick=77\n'
+        'sleep_calls=0\n'
+        'sleep() {\n'
+        '  identity_ready=true\n'
+        '  start_tick=78\n'
+        '  sleep_calls=$((sleep_calls + 1))\n'
+        '}\n'
+        'if runtime_process_group_is_owned_by_session '
+        '4242 "${PROJECT_ROOT}" test-session; then exit 92; fi\n'
+        '[[ "${sleep_calls}" == 2 ]]\n',
+        cwd=REPOSITORY_ROOT,
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'session identity mismatch' in result.stderr
+
+
 def test_motion_baseline_identity_accepts_ros2_run_leader_only():
     """The authenticated leader is ros2 while the installed node is its child."""
     command = (

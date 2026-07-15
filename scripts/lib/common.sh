@@ -234,28 +234,67 @@ start_runtime_session() {
   export ISAAC_NAV_SESSION_ID="${boot_id}:$$:${start_ticks}"
 }
 
+runtime_process_identity_matches_session() {
+  local member="$1"
+  local expected_start="$2"
+  local expected_root="$3"
+  local expected_session="$4"
+  local member_uid member_start_before member_start_after
+  local member_root member_session
+  member_uid="$(stat -c '%u' "/proc/${member}" 2>/dev/null || true)"
+  member_start_before="$(runtime_process_start_ticks "${member}" || true)"
+  member_root="$(
+    runtime_process_environment_value "${member}" PROJECT_ROOT || true
+  )"
+  member_session="$(
+    runtime_process_environment_value "${member}" ISAAC_NAV_SESSION_ID || true
+  )"
+  member_start_after="$(runtime_process_start_ticks "${member}" || true)"
+  [[ "${member_uid}" == "${UID}" \
+        && "${member_start_before}" == "${expected_start}" \
+        && "${member_start_after}" == "${expected_start}" \
+        && "${member_root}" == "${expected_root}" \
+        && "${member_session}" == "${expected_session}" ]]
+}
+
 runtime_process_group_is_owned_by_session() {
   local process_group="$1"
   local expected_root="$2"
   local expected_session="$3"
-  local member member_uid member_root member_session found=false
+  local member member_start identity_attempt authenticated disappeared
+  local found=false
   [[ -n "${expected_session}" ]] || return 1
   while IFS= read -r member; do
     [[ -n "${member}" ]] || continue
     runtime_process_is_running "${member}" || continue
-    member_uid="$(stat -c '%u' "/proc/${member}" 2>/dev/null || true)"
-    member_root="$(
-      runtime_process_environment_value "${member}" PROJECT_ROOT || true
-    )"
-    member_session="$(
-      runtime_process_environment_value "${member}" ISAAC_NAV_SESSION_ID || true
-    )"
-    if [[ "${member_uid}" != "${UID}" \
-          || "${member_root}" != "${expected_root}" \
-          || "${member_session}" != "${expected_session}" ]]; then
-      # A process may disappear between the process-group snapshot and the
-      # identity reads.  Only a still-live mismatch is grounds for refusal.
+    member_start="$(runtime_process_start_ticks "${member}" || true)"
+    if [[ ! "${member_start}" =~ ^[0-9]+$ ]]; then
       runtime_process_is_running "${member}" || continue
+      log_warn "refusing process group ${process_group}: member ${member} start identity unavailable"
+      return 1
+    fi
+    authenticated=false
+    disappeared=false
+    # A short-lived child can be observed while exec is replacing its address
+    # space, when /proc/<pid>/environ may momentarily read as empty.  Require a
+    # stable mismatch across three reads before rejecting the whole group.
+    for ((identity_attempt = 1; identity_attempt <= 3; identity_attempt++)); do
+      if runtime_process_identity_matches_session \
+          "${member}" "${member_start}" \
+          "${expected_root}" "${expected_session}"; then
+        authenticated=true
+        break
+      fi
+      if ! runtime_process_is_running "${member}"; then
+        disappeared=true
+        break
+      fi
+      if ((identity_attempt < 3)); then
+        sleep 0.01
+      fi
+    done
+    [[ "${disappeared}" == false ]] || continue
+    if [[ "${authenticated}" != true ]]; then
       log_warn "refusing process group ${process_group}: member ${member} session identity mismatch"
       return 1
     fi
