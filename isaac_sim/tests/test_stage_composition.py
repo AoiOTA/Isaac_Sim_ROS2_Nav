@@ -114,6 +114,46 @@ def test_composed_stage_authors_selected_spawn_before_first_physics_step():
         assert wheel_center_z == pytest.approx(0.098, abs=1e-8)
 
 
+def test_scene_composer_applies_versioned_drive_and_mass_before_physics():
+    from pxr import Sdf
+
+    config = _config()
+    composer = SceneComposer(config)
+    stage = composer.compose(save=False)
+
+    drive = composer.wheel_velocity_drive_snapshot
+    mass = composer.mass_collision_snapshot
+    assert drive is not None
+    assert mass is not None
+    assert drive.profile_id == "jackal_drive_legacy_finite_guard_v1"
+    assert drive.stage_usd_readback_verified is True
+    assert drive.overlay_identifier.startswith("anon:")
+    assert mass.profile.id == "legacy_default_sensor_density_v1"
+    assert mass.stage_usd_readback_verified is True
+    assert mass.overlay.identifier.startswith("anon:")
+
+    layers = [
+        Sdf.Layer.Find(identifier)
+        for identifier in stage.GetSessionLayer().subLayerPaths
+    ]
+    assert sum(
+        layer.customLayerData.get(
+            "isaac_nav_wheel_velocity_drive_layer"
+        )
+        is True
+        for layer in layers
+        if layer is not None
+    ) == 1
+    assert sum(
+        layer.customLayerData.get(
+            "isaac_nav_mass_collision_profile_layer"
+        )
+        is True
+        for layer in layers
+        if layer is not None
+    ) == 1
+
+
 def test_composed_stage_has_exactly_one_expected_physics_scene():
     config = _config()
     stage = SceneComposer(config).compose(save=False)
