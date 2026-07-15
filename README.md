@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态（2026-07-15）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、物理步同步 ROS 发布、顺序 Lifecycle Shutdown、只观察 Lifecycle 的安全 Navigation 2 面板，以及独占 `/cmd_vel` 的底盘运动诊断。Jackal 项目 Overlay 已停用四个带 obsolete `customGeometry` 的只读轮胎 collider，改用对称标准 Cylinder；TGS 32/4 与 32/16 的 Warehouse + Ideal 隔离 A/B 支持冻结 32/4。地面碰撞拓扑现已拆成三个版本化、可逆 Profile：SimplePlane 1-collider、Warehouse 原始 32-collider 和 Warehouse plane-only 1-collider；源资产、匿名 overlay、source/target/disabled 集合与 contact target 由 runtime provenance v5 绑定，但真实 32-vs-1 运动 A/B 尚未完成。运动报告还会绑定实际加载的机器人、规范环境 ID、仿真模式与 Git 指纹，solver 必须通过 Stage 属性和初始化后 Articulation wrapper 的 USD 后端读回交叉校验；这不是 PhysX 引擎内部状态的直接读回，实际行为由隔离 A/B 和警告日志另行验证。机器人配置已升级为 schema v2：几何轮距与控制/Wheel Odom 使用的有效轮距是两个显式字段，Isaac、ROS Wheel Odom 和 Xacro 由同一 robot YAML 驱动；Realistic Wheel Odom 在精确 schema v5、robot config path/SHA 和七个 kinematics/controller 字段全部匹配前不会创建 `/wheel/odom`。稳定基线的两种轮距目前仍同为 `0.37559 m`，这次迁移不改变控制行为，也不表示有效轮距已标定。环境不匹配的 topology profile 会在 Isaac 组合 Stage 时失败；错误的运动报告环境标签会在 motion runner 创建命令 publisher 前失败。低速左右转向不对称、Realistic 对照及接触拓扑/材料/有效轮距仍未验收。旧 Camera 配置下的 `monitoring`/`high_quality` 已有 headless 性能与截图基线；2026-07-14 的 Camera schema v3 已完成严格配置、USD API 写入和 headless 属性读回，但新配置的真实静止/运动画质、RTF 和 GPU 仍待复测，不能沿用旧截图冒充验收。`warehouse_v1` 是可自动播种的发布基线；`warehouse_v2` 四工件已由 Manifest 登记，其中大型 `.posegraph` 由 Git LFS 管理，但来源日志缺失、运行对齐未验证且尚未标定，不能当作已验收地图。完整静态/动态统计、Warehouse V2 标定与路线矩阵及真实自定义机器人迁移仍未完成。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态（2026-07-15）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、物理步同步 ROS 发布、顺序 Lifecycle Shutdown、只观察 Lifecycle 的安全 Navigation 2 面板，以及独占 `/cmd_vel` 的底盘运动诊断。Jackal 项目 Overlay 已停用四个带 obsolete `customGeometry` 的只读轮胎 collider，改用对称标准 Cylinder；TGS 32/4 与 32/16 的 Warehouse + Ideal 隔离 A/B 支持冻结 32/4。地面碰撞拓扑现已拆成三个版本化、可逆 Profile：SimplePlane 1-collider、Warehouse 原始 32-collider 和 Warehouse plane-only 1-collider；源资产、匿名 overlay、source/target/disabled 集合、contact target 和 Reset 策略现在由 runtime provenance v6 绑定，但真实 32-vs-1 运动 A/B 尚未完成。运动报告还会绑定实际加载的机器人、规范环境 ID、仿真模式与 Git 指纹，solver 必须通过 Stage 属性和初始化后 Articulation wrapper 的 USD 后端读回交叉校验；这不是 PhysX 引擎内部状态的直接读回，实际行为由隔离 A/B 和警告日志另行验证。机器人配置已升级为 schema v2：几何轮距与控制/Wheel Odom 使用的有效轮距是两个显式字段，Isaac、ROS Wheel Odom 和 Xacro 由同一 robot YAML 驱动；Realistic Wheel Odom 在精确 runtime provenance schema v6、robot config path/SHA 和七个 kinematics/controller 字段全部匹配前不会创建 `/wheel/odom`。稳定基线的两种轮距目前仍同为 `0.37559 m`，这次迁移不改变控制行为，也不表示有效轮距已标定。环境不匹配的 topology profile 会在 Isaac 组合 Stage 时失败；错误的运动报告环境标签会在 motion runner 创建命令 publisher 前失败。低速左右转向不对称、Realistic 对照及接触拓扑/材料/有效轮距仍未验收。旧 Camera 配置下的 `monitoring`/`high_quality` 已有 headless 性能与截图基线；2026-07-14 的 Camera schema v3 已完成严格配置、USD API 写入和 headless 属性读回，但新配置的真实静止/运动画质、RTF 和 GPU 仍待复测，不能沿用旧截图冒充验收。`warehouse_v1` 是可自动播种的发布基线；`warehouse_v2` 四工件已由 Manifest 登记，其中大型 `.posegraph` 由 Git LFS 管理，但来源日志缺失、运行对齐未验证且尚未标定，不能当作已验收地图。完整静态/动态统计、Warehouse V2 标定与路线矩阵及真实自定义机器人迁移仍未完成。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 > 阶段 3 另提供 `0.989/1.012 m` 两个版本化 `experimental_candidate`，只用于后续
 > 两环境、多速度、拓扑和 Realistic A/B；它们尚未验收，不会覆盖稳定配置。clean
@@ -20,8 +20,16 @@
 > 2 次同时右旋中心漂移超限，而 yaw-rate、432/432 稳态轮向观察和 108/108 停止窗均通过。
 > 这说明 DOF Reset 有效改善了结果，但整体物理门仍为 FAIL，离散右旋分支尚未消除；
 > 详见[完整关节状态 Reset 正式复测](docs/verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
-> 下一次 Reset A/B 必须先把 `reset_strategy` 版本化并写入 provenance、报告、Manifest
-> 和分组身份；旧 `8973728` 早于该修复，不能充当 control。
+> 上述历史批次早于版本化 Reset 策略，仍不能充当新 A/B 的 control。后续 clean
+> `ae06c1f` 已加入 A=`pose_restore_v1` 与
+> B=`separate_recontact_0p20m_1step_v1`、四轮对地 contact probe 和 provenance v6；
+> `d228f25` 又把根位姿改为 USD 后端写入、PhysX flush 与 articulation kinematic 同步，
+> 避免下一物理步把 tensor-only teleport 覆盖回旧位姿。clean `65ae923` 的正式
+> A/B 使用固定 SimplePlane/only1、`threshold_corr_0p00025_offset_0p04`、
+> `jackal_etw_0p989_v1` 和奇偶 repeat 的 A/B→B/A 冷进程顺序，完成 20/20 run、
+> 20 included / 0 excluded / 2 groups。两组都只因
+> `rotation_center_drift_asymmetry_ratio` 失败：A 有 5/10 repeat 失败，B 有 6/10；
+> 其余物理检查通过。因此 B 没有证明改善，项目继续保留 A 为默认策略。
 
 ## 文档导航
 
@@ -54,6 +62,8 @@
 - Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
 - 感知基线为 `/lidar/points_raw → pointcloud_to_laserscan → /scan`；默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
+- `SimplePlane` 是空旷的接触/底盘隔离场景，只能指导轮地接触与运动诊断；它不能替代
+  Warehouse 中对 RTX LiDAR、遮挡、定位或导航的验证。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
 - 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
 
@@ -112,6 +122,12 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 ```
 
 等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 Navigation 2 Goal 工具拖出目标。右侧 **Robot Front Camera** 应显示机器人前向画面；若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。停止时在启动 ROS 的终端按一次 Ctrl+C；监督脚本会先按 Navigation/Localization 顺序关闭 Lifecycle，再终止其余 ROS 子进程。
+
+clean `65ae923` 起，headless 启动会关闭 SimulationApp 的默认 viewport 更新，避免连续
+冷启动正式批次出现 RTX `Out of resource descriptors`；该开关不关闭 RTX 传感器自己的
+Render Product。修复后在 Warehouse 实测 `/lidar/points_raw` 的 8 秒窗口收到 77 个样本，
+观测频率 `9.60 Hz`，接近配置的 10 Hz。该短窗只证明 descriptor 修复后 LiDAR 仍输出，
+不替代完整传感器性能矩阵。
 
 如果这一步失败，先运行 `./scripts/preflight.sh` 和 `./scripts/diagnose.sh`，然后按 [`docs/user_manual.md`](docs/user_manual.md) 的逐步流程排查。Camera profile、地图保存、Reset、故障注入和性能采样的完整命令也都在使用手册中。
 
@@ -291,7 +307,34 @@ ros2 param set /isaac_navigation_sim reset_pose_name mapping_start
 ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
 ```
 
-Reset 会按固定顺序停车、清控制器，恢复 Articulation 初始化时捕获的完整 DOF pose，清零并读回校验 DOF 动态状态，再恢复 USD 根 Pose、重置里程计/GT 路径/碰撞状态/动态障碍，并等待已排队的 Wheel/EKF/Costmap 请求。它不会把自定义机器人的非零默认关节强制归零。Trigger 只在事务完成后返回成功，失败不会伪造 reset event；重叠请求会被拒绝。Localization 的自动初始位姿只接受 Reset 后的新鲜 `/scan`，随后发布 `/simulation/localization_seeded`；RViz 初始位姿模式则等待新的人工输入。Navigation Gate 还会等待严格更新且稳定的 `map → odom` 和新鲜 `/odom` 后恢复 Lifecycle，因此服务返回不能等同于系统已经可接收目标。无有效非零命令时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，有效低速命令仍能唤醒车体。
+Reset 会按固定顺序停车、清控制器，恢复 Articulation 初始化时捕获的完整 DOF pose，
+清零并读回校验 DOF 动态状态，再恢复根 Pose、重置里程计/GT 路径/碰撞状态/动态障碍，
+并等待已排队的 Wheel/EKF/Costmap 请求。根 Pose 不是只写 tensor：实现会对
+`base_link` 的物理根刚体使用 USD 后端，随后执行 PhysX `flush_changes()` 和
+`update_articulations_kinematic()`；同步失败会失败关闭。它不会把自定义机器人的非零
+默认关节强制归零。Trigger 只在事务完成后返回成功，失败不会伪造 reset event；
+物理策略/contact/root-sync 异常会让仿真保持暂停以便诊断/重试，后续异步 ROS reset
+future 的失败则按事务错误报告。重叠请求会被拒绝。Localization 的自动初始位姿只接受
+Reset 后的新鲜 `/scan`，随后发布 `/simulation/localization_seeded`；RViz 初始位姿模式
+则等待新的人工输入。Navigation Gate 还会等待严格更新且稳定的 `map → odom` 和新鲜
+`/odom` 后恢复 Lifecycle，因此服务返回不能等同于系统已经可接收目标。无有效非零命令
+时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，
+有效低速命令仍能唤醒车体。
+
+项目配置显式选择 schema-v1 Reset 策略。默认 A=`pose_restore_v1` 直接执行完整状态/
+根位姿恢复；实验 B=`separate_recontact_0p20m_1step_v1` 先把机器人抬高 `0.20 m`，推进
+一个无渲染物理步并用四轮对 ground-topology target 的 contact probe 验证已分离，再次
+完整恢复并推进一个 recontact 步。contact probe 只回答“这四个 wheel rigid body 与所列
+ground collider 是否仍有 contact count”；它不能证明 chassis/其他物体无接触，也不能
+读取或清除全部 PhysX manifold/warm-start 状态。
+
+当前 Reset/Contact matrix 机器合同为：runtime provenance `6`、47 列 Manifest v2、
+motion report `3`、aggregate analysis `5`、physical acceptance `3` / policy
+`skid_steer_plan_8_7_v3`、batch summary `6`。group identity 是
+`environment::ground_topology::reset-v<schema>-<strategy>::contact_profile` 四元组；
+`--reset-strategy all` 在奇数 repeat 按 A→B、偶数 repeat 按 B→A 启动独立冷进程，偶数
+重复数才能完全抵消启动顺序。clean `65ae923` 的 10+10 正式结果为 A 5/10、B 6/10
+repeat 仅因旋转中心漂移不对称失败，因此没有理由把默认策略从 A 改为 B。
 
 ## 测试
 

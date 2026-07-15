@@ -146,10 +146,24 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 All Isaac publishers use simulation time. The RTX LiDAR, RGB, and CameraInfo
 helpers explicitly keep the Isaac Sim 6.0.1 vendor default
 `resetSimulationTimeOnStop=true`; they must not switch to system time or use a
-different epoch policy from `/clock`. `/simulation/reset` is pause → one physics
-step → play, so it preserves the current Timeline epoch. A real Timeline
+different epoch policy from `/clock`. `/simulation/reset` pauses without a real
+Timeline Stop and preserves the current epoch. A=`pose_restore_v1` advances one
+recontact physics step; B=`separate_recontact_0p20m_1step_v1` advances one
+separation step and one recontact step. A physical-strategy/contact/root-sync
+failure leaves the simulation paused instead of blindly playing. A real Timeline
 Stop→Play may start a new epoch and must be treated as a lifecycle boundary;
 cross-epoch PointCloud/Image samples are not a supported continuity contract.
+
+In headless mode, `SimulationApp` sets `disable_viewport_updates=true`. This
+disables only the default viewport that otherwise keeps rendering in headless
+sessions; RTX sensor render products remain enabled. The change prevents
+sequential cold-process matrices from exhausting RTX resource descriptors.
+After clean `65ae923`, a Warehouse LiDAR smoke received 77
+`/lidar/points_raw` samples in 8 seconds (`9.60 Hz`, nominal 10 Hz), proving the
+descriptor mitigation did not suppress the RTX LiDAR stream. SimplePlane is a
+contact/motion isolation scene with no representative Warehouse geometry, so a
+SimplePlane contact run cannot substitute for this sensor-path check or for a
+full navigation/performance matrix.
 
 The PointCloud-to-LaserScan projection uses `base_link` as its target frame,
 height `[0.05, 0.50] m`, range `[0.30, 25.0] m`, a full `[-pi, pi]` field of
@@ -167,7 +181,7 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 
 | 参数组 | 内容 |
 | --- | --- |
-| `runtime_provenance.schema_version` | 当前 live motion/Wheel Odom 严格要求整数 `5`；schema v3/v4 报告仍可各自由离线分析器复核，但 v3、v4、v5 不能混入同一正式统计；v1/v2 只作历史证据 |
+| `runtime_provenance.schema_version` | 当前 live motion/Wheel Odom 严格要求整数 `6`；schema v3/v4/v5 报告仍可各自由离线分析器复核，但不同 runtime schema 不能混入同一正式统计；v1/v2 只作历史证据 |
 | `runtime_provenance.robot.config.*` | 实际 robot YAML 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.asset.*` | 实际项目 robot USD Overlay 的绝对路径与 SHA256 |
 | `runtime_provenance.robot.solver.*` | 有效 Stage 属性与初始化后 Articulation wrapper 的 USD 后端读回一致的 position、velocity iterations，以及 `stage_articulation_usd_readback_verified=true` |
@@ -177,7 +191,8 @@ into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
 | `runtime_provenance.environment.source_asset.*` | 官方环境根资产路径与 SHA256 |
 | `runtime_provenance.environment.asset_root/version` | Isaac 资产根与版本目录名 |
 | `runtime_provenance.environment.composed_root_layer_sha256` | runtime 初始化后 `Stage.GetRootLayer().ExportToString()` 的 SHA256。topology/contact 的直接 opinion 位于 SessionLayer 下的两个独立匿名 sublayer，不会原样进入该导出；但 PhysX/runtime 初始化可按 treatment 在 RootLayer 形成派生 opinion，所以分析器在最终 environment/topology/contact 组内锁定该摘要，而不把它误当作跨 treatment 环境常量。跨 treatment 不变量由显式环境/topology/contact 锁和两个匿名层的 `overlay_sha256` 约束 |
-| `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz |
+| `runtime_provenance.simulation.*` | navigation mode、odometry mode、physics Hz；schema v6 还包含下述版本化 Reset 策略 |
+| `runtime_provenance.simulation.reset_strategy.json/.sha256` | canonical strict JSON 与原始 UTF-8 SHA256；锁定策略 schema/ID、lift 距离、separation/recontact 步数，以及四个 wheel rigid body 对 topology target 的 contact probe schema、filter path、容量、threshold 和 Stage readback |
 | `runtime_provenance.ground_topology.json/.sha256` | canonical strict JSON 与其原始 UTF-8 SHA256；完整对象锁定 topology profile path/id/hash、environment、operation、source asset path/hash、匿名 overlay/hash、source/target/disabled collider 的排序路径、数量、集合 hash 和 `stage_usd_readback_verified=true` |
 | `runtime_provenance.contact.json/.sha256` | canonical strict JSON 与其原始 UTF-8 SHA256；锁定 contact profile/mode/hash、匿名 overlay、PhysicsScene、wheel/ground collider、binding、材质和 Stage readback；ground collider 必须精确等于 topology target |
 | `runtime_provenance.git.*` | Isaac 启动瞬间的 commit、branch、dirty 布尔值 |
@@ -188,34 +203,37 @@ SHA256 必须是 64 位十六进制；solver 必须是 `[1,255]` 的非布尔整
 PhysX 引擎内部状态 introspection；引擎行为必须另由受控 A/B、运动数据和警告日志
 验证。Git
 object ID 必须为 40 或 64 位十六进制。正式 runner 在字段缺失、类型不符、里程计
-模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。两对 JSON
+模式或环境 ID 不一致时必须在创建运动 `/cmd_vel` publisher 前失败。三对 JSON
 参数都必须是 canonical、无重复 key、无 NaN/Infinity，且 digest 必须与原始 UTF-8
-字节匹配。职责边界如下：Isaac producer fresh capture 当前 Stage、验证 topology/contact
+字节匹配。职责边界如下：Isaac producer fresh capture 当前 Stage、验证 topology/contact/reset
 语义，并把 SceneComposer 快照仅作为对应 snapshot 的 canonical 漂移比较；motion runner
-验证两对序列化 JSON/SHA 后调用 report validator；report validator 验证报告内已解码
-结构。Wheel Odom 只请求 schema=5、robot config path/SHA 和七个 kinematics/controller
-字段，不解析 topology/contact JSON。服务超时或上述运动学字段任一不匹配时，进程
+验证三对序列化 JSON/SHA 后调用 report validator；report validator 验证报告内已解码
+结构。Wheel Odom 只请求 schema=6、robot config path/SHA 和七个 kinematics/controller
+字段，不解析 topology/contact/reset JSON。服务超时或上述运动学字段任一不匹配时，进程
 非零退出，并且不会先创建 `/wheel/odom` publisher、JointState subscription、Reset
 service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，避免留下没有
 里程计来源的 EKF、SLAM 或 Nav2 半栈。
 `git.dirty=true` 不是自动失败：输入
 文件哈希仍精确绑定被测内容，但正式冻结报告应在 clean commit 上重跑。
 
-当前 runtime provenance schema v5 还没有 `reset_strategy` 身份字段。因此报告只能证明
-本节已列出的运行输入，不能仅凭同一 schema 或同一 motion 配置声称两个 Reset 算法可比。
-下一次 Reset A/B 必须先为策略分配版本化 ID，并将它逐项锁入 runtime provenance、
-motion report、Manifest、matrix readiness 和 group identity；否则分析器不得把不同策略
-聚合进同一组。clean `8973728` 早于完整 DOF 恢复，不能作为新策略 A/B 的 control。
+runtime provenance schema v6 将 `reset_strategy` 的 canonical JSON/SHA 纳入单份报告
+身份。A=`pose_restore_v1` 的 lift/separation 为 `0 m / 0 step`；
+B=`separate_recontact_0p20m_1step_v1` 为 `0.20 m / 1 step`，两者都在最终恢复后推进
+一个 recontact step。contact probe 固定四个 wheel rigid body，ground filter 必须精确
+等于 topology target，且在 PhysX 初始化前 author 零阈值 contact report API。该 probe
+只证明指定 wheel↔ground filter 的 contact count；它不是全 Stage 碰撞扫描，也不能证明
+PhysX manifold/warm-start cache 已被清除。历史 schema v5 没有此字段，故 clean
+`8973728`/`55418fe` 仍只能按原合同解释，不能回填 Reset 身份或充当 schema-v6 A/B control。
 
 ### Contact A/B 离线分析与批次摘要接口
 
-该接口与上面的 runtime provenance schema 独立：`runtime_provenance.schema_version=5`
+该接口与上面的 runtime provenance schema 独立：`runtime_provenance.schema_version=6`
 描述单份运行时报告的身份；下面的 analysis schema 描述离线聚合结果，二者的版本号
 不能互相替代。
 
-当前 v2 机器门合同已实现；它取代后续新批次使用的工件版本，但不会改写已经冻结的
+当前 v3 机器门合同已实现；它取代后续新批次使用的工件版本，但不会改写已经冻结的
 历史证据。clean `190f357` 的 SimplePlane 一次重复烟测仍按运行当时的 v1 合同解释，
-clean `8973728` 的 SimplePlane/only1 六 profile × 三重复已按当前 v2 合同完成并得出
+clean `8973728` 的 SimplePlane/only1 六 profile × 三重复已按当时的 v2 合同完成并得出
 6/6 group 物理失败。clean `55418fe` 补齐完整初始 DOF 状态恢复后复跑同一矩阵：
 18/18 run、108/108 segment，motion/analysis/physical/summary schema `3/4/2/5`，
 analysis 18 included / 0 excluded；`explicit_material`、`legacy_baseline`、
@@ -227,15 +245,29 @@ analysis 18 included / 0 excluded；`explicit_material`、`legacy_baseline`、
 `51903b770da88030c5d56418771408e54d02fcd195d176407be1b9be7773cc10`、summary
 `b85dc9188bcb0d783570993850fc173966803eb7b5eb25c9911f9fd5c0b6c2f1`；完整审计见
 [`verification.md`](verification.md#完整关节状态-reset-后的正式三重复复测2026-07-15)。
-全 topology 54-run/18-group v2 矩阵仍待完成：
+当前 v3 在 clean `65ae923` 完成首个正式 Reset A/B：固定
+SimplePlane/`simple_plane_only1_v1`、`threshold_corr_0p00025_offset_0p04`、
+`jackal_etw_0p989_v1`、Ideal、60 Hz、TGS `32/4`，每策略 10 个唯一 repeat，共
+20/20 run、20 included / 0 excluded / 2 groups。奇数 repeat 冷进程顺序 A→B，偶数
+repeat B→A，以抵消启动顺序。两组均只因 `rotation_center_drift_asymmetry_ratio` 失败：
+A=`pose_restore_v1` 有 5/10 repeat 失败，B=`separate_recontact_0p20m_1step_v1` 有
+6/10；因此 B 未证明优于 A，默认策略保持 A。冻结根 SHA256 为 manifest
+`da7faad19cbcb247287ae241626bd392562e6737dca6d0fa91f82eac236121e5`、analysis
+`9e595e51dd625718d45bf1a4d8611248eb8ee13daf720ab0d8764ed814b1deba`、summary
+`1b7778236594fab4867f5d04956dcb1f7955144f4e868f3835c63911930f72d7`。原
+full-topology 矩阵仍待按当前合同完成。
+
+上述 A/B→B/A 也是 `--reset-strategy all` 的固定展开合同，不只属于这一次批次；
+单策略 selector 仍按原 repeat 顺序执行。只有偶数 repeat 数能让两个策略各占相同数量的
+首发/后发位置，run ID 的 canonical 排序和 Manifest auditor 使用完全相同的展开规则。
 
 | 工件 | schema | 合同 |
 | --- | ---: | --- |
-| `manifest.tsv` | 44 列 | 当前批次逐轮 `report_schema_version` 必须精确为 `3`。consumer 不只核对表头和 hash，还按固定矩阵顺序重算 run ID、环境/topology/profile/repeat，并把 44 个字段与报告、analysis selection、批次锁逐项交叉核对 |
+| `manifest.tsv` | v2 / 47 列 | 当前批次逐轮 `report_schema_version=3`、`runtime_provenance_schema_version=6`，并显式保存 `reset_strategy_schema_version/id`。consumer 按固定矩阵顺序重算 run ID、环境/topology/reset/profile/repeat，再把 47 个字段与报告、analysis selection、批次锁逐项交叉核对 |
 | motion report | `3` | 顶层报告版本；`configuration.schema_version` 继续为 `1`。Odom 与 JointState 各自保存命令后半段 closed window；双流停车、Reset epoch、时间戳、sample accounting、pose 派生量和 yaw endpoint 都是强制证据 |
-| `analysis.json` | `4` | v5 报告的严格聚合；在既有分布、对称性、停止时延和有效轮距之外，必须包含 v2 `physical_acceptance` |
-| `analysis.json.physical_acceptance` | `2` | `policy_id="skid_steer_plan_8_7_v2"`、`evaluation_basis="every_repeat"`；逐 repeat 保存可重算的六段 × 四轮稳态方向证据 |
-| `batch_summary.json` | `5` | `result="success"` 只表示报告采集、输入身份、预期矩阵、Manifest 和聚合证据成功；物理结论单独复制两个 measurement basis、`all_applicable_groups_passed` 及四个 group 列表 |
+| `analysis.json` | `5` | schema-v6 报告的严格聚合；group identity 为 `environment::topology::reset-v<schema>-<id>::contact-profile` 四元组，Reset 策略定义和 contact-probe 合同分别跨组锁定 |
+| `analysis.json.physical_acceptance` | `3` | `policy_id="skid_steer_plan_8_7_v3"`、`evaluation_basis="every_repeat"`；逐 repeat 保存可重算的六段 × 四轮稳态方向证据，Reset 策略是适用性和分组身份的一部分 |
+| `batch_summary.json` | `6` | `result="success"` 只表示报告采集、输入身份、预期矩阵、Manifest 和聚合证据成功；物理结论单独复制两个 measurement basis、`all_applicable_groups_passed` 及四个 group 列表 |
 
 motion report schema 1、2 仍可作为历史输入读取；只有 schema 3 携带 v2 方向门要求的
 JointState 稳态窗口，因此旧报告在 v2 门下必须是 N/A，原因固定为
@@ -262,7 +294,7 @@ report schema 2、analysis schema 3、physical-acceptance schema 1 / policy
 | `stop_angular_velocity_threshold_max_radps` | `0.05` |
 | `stop_wheel_velocity_threshold_max_radps` | `0.20` |
 
-适用性要求必须同时满足：runtime provenance schema 5、环境 `SimplePlane`、topology
+当前 v3 适用性要求必须同时满足：runtime provenance schema 6、环境 `SimplePlane`、topology
 `simple_plane_only1_v1`、Ideal odometry、同 group 至少 3 个唯一 repeat、且所有 motion
 report 都是 schema 3。任何条件不满足时，该 group 写
 `applicable=false`、`passed=null`、非空 `not_applicable_reasons`，并进入
@@ -303,16 +335,16 @@ group 物理失败。group 只有在每个 repeat 的每项检查都通过时才
 最终记账校验器固定 18 个检查 ID，逐叶重算阈值、时序和 `passed`，再把每份报告的
 path/raw SHA/canonical SHA/schema 与 `selection.included`、group 身份、matrix 观测组、
 runtime schema 和全局输入锁交叉核对。它还重新读取 canonical source report、复验双
-SHA、Git/robot/simulation/motion configuration/environment/topology/contact 身份并重算
+SHA、Git/robot/simulation/motion configuration/environment/topology/reset/contact 身份并重算
 完整 physical acceptance；缺 source、缺检查、伪布尔值、协调伪造 N/A 或 wheel
-FAIL→PASS 都会在发布 summary 前失败关闭。Manifest consumer 同时要求完整有序 44 列，
+FAIL→PASS 都会在发布 summary 前失败关闭。当前 Manifest consumer 同时要求完整有序 47 列，
 逐行验证唯一 canonical report/Isaac/runner 路径与 SHA、报告时间被 manifest 秒级区间
 包围，以及规范化 motion YAML 的类型严格 JSON、robot asset/solver `32/4`/readback、
 controller、Mapping/Ideal/60 Hz 和其余批次身份。
 
-当前定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
+历史 v2 定向测试为 contact analyzer `217 passed`、motion baseline `92 passed`、matrix
 script `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`；唯一 skip 是本机缺少
-`shellcheck`。当前 v2 合同已在 clean `0484b72` 完成 build 11 packages、preflight PASS
+`shellcheck`。该 v2 合同已在 clean `0484b72` 完成 build 11 packages、preflight PASS
 和 `./scripts/test.sh --with-isaac` exit 0：root
 `1206 passed / 1 skipped / 34 deselected`，ROS 为 11 packages、1006 tests、0 errors、
 0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。clean `22a7746` 的
@@ -323,8 +355,9 @@ SimplePlane/only1 六 profile 一次重复烟测为 6/6 run、36/36 段、analys
 0 excluded / 6 groups、summary schema 4 `result=success`；六组都只因 repeat=1 而 N/A。
 clean `8973728` 随后完成同一 `0.989 m` 候选的 18/18 run、108/108 segment、analysis
 18 included / 0 excluded / 6 groups；六组全部适用、0 passing / 6 failed，唯一失败 leaf
-是 `rotation_center_drift_asymmetry_ratio`。因此当前接口已有真实 PASS/N/A/FAIL 三种
-verdict 路径证据，但全 topology 54-run/18-group 矩阵仍待完成。
+是 `rotation_center_drift_asymmetry_ratio`。这些冻结工件证明接口已有真实 PASS/N/A/FAIL
+三种 verdict 路径证据；clean `65ae923` 又证明 v3 的 47 列/四元组/Reset A/B 路径可在
+20 个冷进程上闭合，但两个策略组的物理 verdict 都是 FAIL。全 topology 矩阵仍待完成。
 
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
 serves the immutable saved OccupancyGrid. SLAM Toolbox still owns localization
@@ -544,18 +577,29 @@ The Isaac node declares these runtime parameters:
 | `navigation_mode` | running Isaac mode: `mapping` or `localization` |
 | `odometry_mode` | running mode: `ideal` or `realistic` |
 
+The project configuration also selects one immutable schema-v1 Reset strategy
+for the process. Its full definition is exposed through the read-only
+`runtime_provenance.simulation.reset_strategy.json/.sha256` pair; it is not a
+mutable ROS parameter that may be switched after PhysX initialization.
+
 A Reset is a non-blocking ROS service transaction with one active generation at a time. Overlapping requests are rejected. It executes in this fixed order:
 
 1. Validate the named spawn and required Map calibration before pausing.
-2. Pause physics and publish zero velocity.
-3. Recreate/clear controller state; restore every DOF to the finite position captured from the initialized Articulation, zero DOF velocity/velocity-target/effort, verify the tensor readback, then apply the USD Pose and zero chassis velocity. The snapshot preserves non-zero authored poses on custom robots; Reset never assumes that every DOF should be numeric zero.
-4. Reset Ideal odometry, or submit Wheel Odom and EKF reset requests in Realistic mode.
-5. Clear Ground Truth path, collision state, and deterministic dynamic-obstacle phase.
-6. Submit available global/local Costmap clear requests.
-7. Step physics once and always resume the timeline, including exception paths.
+2. Pause physics, publish zero velocity, and recreate/clear controller state.
+3. Execute the configured physical strategy. A=`pose_restore_v1` performs one complete restore. B=`separate_recontact_0p20m_1step_v1` performs a complete restore `0.20 m` above the spawn, advances one no-render physics step, requires the four wheel↔topology-target contact counts to be zero, then performs a second complete restore at the spawn. Every complete restore returns all DOFs to the finite positions captured from the initialized Articulation, zeroes DOF velocity/velocity-target/effort, verifies tensor readback, zeroes chassis velocity, and applies the root pose last. The snapshot preserves non-zero authored poses on custom robots; Reset never assumes that every DOF should be numeric zero.
+4. Within each complete restore, author the physical-root `base_link` pose through the USD backend, flush USD changes into PhysX, require a valid physics simulation view, and call `update_articulations_kinematic()`. A tensor-only teleport is not accepted because the next stage-wide physics step can replace it with the previous USD pose.
+5. Reset Ideal odometry, or submit Wheel Odom and EKF reset requests in Realistic mode.
+6. Clear Ground Truth path, collision state, and deterministic dynamic-obstacle phase; submit available global/local Costmap clear requests.
+7. Advance the strategy's one recontact step, record the calibrated Map initial-pose request for post-reset fresh-scan seeding when required, and resume the timeline only after the physical path succeeds. Any physical-strategy/contact/root-sync exception re-pauses and restores the spawn without stepping, leaves the simulation paused, and fails closed.
 8. Await every submitted ROS future under steady-wall-time deadlines. A submitted call that fails or times out fails the Trigger; a service unavailable before submission is reported as skipped so the continuously running recovery gate can handle its layer. Stale callbacks carry a generation and cannot complete a newer transaction.
 9. Only after the transaction succeeds, publish `/simulation/reset_event` and return `success: true`.
 10. In Localization with `initial_pose_source=auto`, arm a simulation-clock evidence barrier, ignore old/high-epoch cached scans, and publish the calibrated `/initialpose` plus `/simulation/localization_seeded` on the first valid post-reset scan. With source `rviz`, automatic publication remains disabled.
+
+The contact probe is deliberately narrow: it checks only the four configured
+wheel rigid bodies against the exact ground-topology target filter paths.
+Especially on SimplePlane, it is a contact/reset diagnostic guide, not evidence
+that the chassis or other objects have no contacts, and not evidence that
+Warehouse LiDAR/localization/navigation behavior is valid.
 
 A Reset has two related identities. The Isaac bridge increments an internal
 transaction `generation` when it accepts a request; async callbacks from another
