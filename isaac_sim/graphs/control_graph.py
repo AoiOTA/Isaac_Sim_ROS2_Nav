@@ -2,10 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
-from isaac_sim.graphs.spec import GraphSpec, TargetPaths, materialize_graph
+from isaac_sim.graphs.spec import (
+    GraphSpec,
+    MaterializedGraphReadbackError,
+    TargetPaths,
+    materialize_graph,
+    read_materialized_graph,
+)
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.src.config import ProjectConfig
 from isaac_sim.src.robot.kinematics_config import (
@@ -21,6 +29,12 @@ WHEEL_COMMAND_APPLICATIONS = (
     SPLIT_AXLE_V1,
     SINGLE_FOUR_WHEEL_WRITE_V1,
 )
+
+
+def _command_writer_names(wheel_command_application: str) -> tuple[str, ...]:
+    if wheel_command_application == SPLIT_AXLE_V1:
+        return ("FrontController", "RearController")
+    return ("WheelController",)
 
 
 def require_wheel_command_application(value: str) -> str:
@@ -196,6 +210,107 @@ def control_graph_spec(
     )
 
 
+def capture_materialized_control_graph_snapshot(
+    spec: GraphSpec,
+    materialized_graph: Any,
+    wheel_command_application: str = SPLIT_AXLE_V1,
+) -> dict[str, Any]:
+    """Verify and canonically snapshot the live control OmniGraph.
+
+    The snapshot is intentionally derived from ``graph.get_nodes()`` and the
+    live node attributes. A GraphSpec by itself is therefore not accepted as
+    evidence that the graph was materialized correctly.
+    """
+
+    wheel_command_application = require_wheel_command_application(
+        wheel_command_application
+    )
+    try:
+        readback = read_materialized_graph(spec, materialized_graph)
+        values = dict(readback.values)
+        command_writers = []
+        node_names = {name for name, _ in readback.nodes}
+        for writer_name in _command_writer_names(wheel_command_application):
+            if writer_name not in node_names:
+                raise MaterializedGraphReadbackError(
+                    f"required command writer is missing: {writer_name!r}"
+                )
+            target_attribute = f"{writer_name}.inputs:targetPrim"
+            joint_attribute = f"{writer_name}.inputs:jointNames"
+            if target_attribute not in values or joint_attribute not in values:
+                raise MaterializedGraphReadbackError(
+                    f"command writer values are missing for {writer_name!r}"
+                )
+            target_paths = values[target_attribute]
+            joint_names = values[joint_attribute]
+            if (
+                not isinstance(target_paths, list)
+                or len(target_paths) != 1
+                or not isinstance(target_paths[0], str)
+                or not target_paths[0].startswith("/")
+            ):
+                raise MaterializedGraphReadbackError(
+                    f"invalid command writer targetPrim for {writer_name!r}: "
+                    f"{target_paths!r}"
+                )
+            if (
+                not isinstance(joint_names, list)
+                or not joint_names
+                or any(
+                    not isinstance(joint_name, str) or not joint_name
+                    for joint_name in joint_names
+                )
+                or len(joint_names) != len(set(joint_names))
+            ):
+                raise MaterializedGraphReadbackError(
+                    f"invalid command writer jointNames for {writer_name!r}: "
+                    f"{joint_names!r}"
+                )
+            command_writers.append(
+                {
+                    "node": writer_name,
+                    "target_prim": target_paths[0],
+                    "joint_names": list(joint_names),
+                }
+            )
+
+        topology = {
+            "graph_path": readback.graph_path,
+            "pipeline_stage": readback.pipeline_stage,
+            "nodes": [
+                {"name": name, "type_name": type_name}
+                for name, type_name in readback.nodes
+            ],
+            "connections": [
+                {"source": source, "target": target}
+                for source, target in readback.connections
+            ],
+            "command_writers": sorted(
+                command_writers,
+                key=lambda writer: writer["node"],
+            ),
+        }
+        canonical_topology = json.dumps(
+            topology,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (MaterializedGraphReadbackError, TypeError, ValueError) as exc:
+        raise RuntimeError(
+            f"materialized control graph mismatch: {exc}"
+        ) from exc
+
+    return {
+        "schema_version": 1,
+        "wheel_command_application": wheel_command_application,
+        "topology": topology,
+        "topology_sha256": hashlib.sha256(canonical_topology).hexdigest(),
+        "materialized_readback_verified": True,
+    }
+
+
 def build_control_graph(
     config: ProjectConfig,
     wheel_command_application: str = SPLIT_AXLE_V1,
@@ -203,3 +318,19 @@ def build_control_graph(
     return materialize_graph(
         control_graph_spec(config, wheel_command_application)
     )
+
+
+def build_control_graph_with_snapshot(
+    config: ProjectConfig,
+    wheel_command_application: str = SPLIT_AXLE_V1,
+) -> tuple[object, dict[str, Any]]:
+    """Materialize the control graph and immediately verify its readback."""
+
+    spec = control_graph_spec(config, wheel_command_application)
+    materialized_graph = materialize_graph(spec)
+    snapshot = capture_materialized_control_graph_snapshot(
+        spec,
+        materialized_graph,
+        wheel_command_application,
+    )
+    return materialized_graph, snapshot
