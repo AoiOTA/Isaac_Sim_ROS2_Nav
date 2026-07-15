@@ -1,0 +1,20 @@
+schema_version: 1
+profile_id: legacy_default_sensor_density_v1
+mode: legacy_default_sensor_density
+robot_asset_sha256: bf870a06c9b974eea2607dd7f33bb536eb930f2a7795ed07f25def792b150a8a
+base_prim_suffix: /base_link
+sensor_shells:
+  - prim_suffix: /base_link/collisions/bumblebee_camera
+    active: true
+    collision_enabled: true
+  - prim_suffix: /base_link/collisions/sick_lms1xx_lidar
+    active: true
+    collision_enabled: true
+base_inertial: null
+expected_link_masses:
+  /base_link: 18.3179048
+  /front_left_wheel_link: 0.477
+  /front_right_wheel_link: 0.477
+  /rear_left_wheel_link: 0.477
+  /rear_right_wheel_link: 0.477
+expected_total_mass_kg: 20.2259048

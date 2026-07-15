@@ -1,10 +1,10 @@
-# Experimental effective-track candidate only.  It is a full schema-v2 copy
+# Experimental effective-track candidate only.  It is a full schema-v3 copy
 # so every runtime hashes one self-contained input.  Relative to the stable
 # Jackal profile, only kinematics_profile_id, lifecycle, and
 # effective_track_width differ.  The value rounds the clean contact-matrix
 # corr=0.025/offset=0.04 equal-environment mean 1.0120214399292224 m; it is not
 # a calibrated or accepted value, and this v1 file must never be edited in place.
-schema_version: 2
+schema_version: 3
 name: jackal
 kinematics_profile_id: jackal_etw_1p012_v1
 lifecycle: experimental_candidate
@@ -16,6 +16,18 @@ wheelbase: 0.262
 base_mass: 17.0
 wheel_mass: 0.477
 nominal_total_mass: 18.908
+mass_collision_profile: ../../robot_mass_profiles/legacy_default_sensor_density_v1.yaml
+# Behavior-preserving migration guard, not a calibrated drive. The damping is
+# the legacy USD value converted to SI; the two 1e9 limits replace prior
+# unbounded values with explicit finite sentinels until isolated A/B acceptance.
+wheel_velocity_drive:
+  schema_version: 1
+  profile_id: jackal_drive_legacy_finite_guard_v1
+  drive_type: force
+  stiffness_n_m_per_rad: 0.0
+  damping_n_m_s_per_rad: 572957795.1308232
+  max_effort_n_m: 1000000000.0
+  max_joint_velocity_rad_s: 1000000000.0
 physics:
   solver_position_iterations: 32
   solver_velocity_iterations: 4

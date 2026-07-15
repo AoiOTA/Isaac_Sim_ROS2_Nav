@@ -21,7 +21,8 @@ ROBOT_CONFIG = (
 
 def _runtime_parameters(profile):
     return {
-        'runtime_provenance.schema_version': 6,
+        'runtime_provenance.schema_version': 7,
+        'runtime_provenance.robot.config.schema_version': 3,
         'runtime_provenance.robot.config.path': str(profile.source),
         'runtime_provenance.robot.config.sha256': profile.sha256,
         'runtime_provenance.robot.kinematics.profile_id': profile.profile_id,

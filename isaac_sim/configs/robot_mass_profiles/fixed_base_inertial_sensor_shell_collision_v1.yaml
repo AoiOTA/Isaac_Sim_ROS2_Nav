@@ -1,0 +1,26 @@
+schema_version: 1
+profile_id: fixed_base_inertial_sensor_shell_collision_v1
+mode: fixed_base_inertial_sensor_shell_collision
+robot_asset_sha256: bf870a06c9b974eea2607dd7f33bb536eb930f2a7795ed07f25def792b150a8a
+base_prim_suffix: /base_link
+sensor_shells:
+  - prim_suffix: /base_link/collisions/bumblebee_camera
+    active: true
+    collision_enabled: true
+  - prim_suffix: /base_link/collisions/sick_lms1xx_lidar
+    active: true
+    collision_enabled: true
+base_inertial:
+  mass_kg: 17.0
+  center_of_mass_m: [0.00504, 0.00062, 0.104328]
+  inertia_kg_m2:
+    - [0.18669458, -0.00005312, -0.00105626]
+    - [-0.00005312, 0.30087811, -0.00012994]
+    - [-0.00105626, -0.00012994, 0.38648003]
+expected_link_masses:
+  /base_link: 17.0
+  /front_left_wheel_link: 0.477
+  /front_right_wheel_link: 0.477
+  /rear_left_wheel_link: 0.477
+  /rear_right_wheel_link: 0.477
+expected_total_mass_kg: 18.908

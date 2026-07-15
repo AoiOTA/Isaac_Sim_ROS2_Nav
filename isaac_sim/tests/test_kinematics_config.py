@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 import pytest
@@ -43,12 +44,23 @@ ROBOT_CONFIG_FIELDS = {
     "base_mass",
     "wheel_mass",
     "nominal_total_mass",
+    "mass_collision_profile",
+    "wheel_velocity_drive",
     "physics",
     "wheel_joints",
     "controller",
     "frames",
     "footprint",
     "static_transforms",
+}
+WHEEL_VELOCITY_DRIVE_FIELDS = {
+    "schema_version",
+    "profile_id",
+    "drive_type",
+    "stiffness_n_m_per_rad",
+    "damping_n_m_s_per_rad",
+    "max_effort_n_m",
+    "max_joint_velocity_rad_s",
 }
 CONTROLLER_FIELDS = {
     "max_linear_speed",
@@ -62,6 +74,9 @@ CONTROLLER_FIELDS = {
 
 def _candidate(tmp_path: Path, mutate) -> Path:
     data = yaml.safe_load(JACKAL.read_text(encoding="utf-8"))
+    mass_profile = tmp_path / "mass_profile.yaml"
+    mass_profile.write_text("schema_version: 1\n", encoding="utf-8")
+    data["mass_collision_profile"] = mass_profile.name
     mutate(data)
     path = tmp_path / "robot.yaml"
     path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
@@ -71,7 +86,7 @@ def _candidate(tmp_path: Path, mutate) -> Path:
 def test_jackal_kinematics_contract_is_explicit_and_behavior_preserving():
     kinematics = load_robot_kinematics_config(JACKAL)
 
-    assert kinematics.schema_version == 2
+    assert kinematics.schema_version == 3
     assert kinematics.kinematics_profile_id == "jackal_legacy_geometric_v1"
     assert kinematics.lifecycle == "stable_baseline"
     assert kinematics.wheel_radius == 0.098
@@ -83,7 +98,24 @@ def test_jackal_kinematics_contract_is_explicit_and_behavior_preserving():
     assert kinematics.wheel_mass == 0.477
     assert kinematics.nominal_total_mass == 18.908
 
-    joints = load_robot_config_contract(JACKAL).wheel_joints
+    contract = load_robot_config_contract(JACKAL)
+    assert contract.schema_version == 3
+    assert contract.mass_collision_profile == (
+        ROOT
+        / "isaac_sim/configs/robot_mass_profiles/legacy_default_sensor_density_v1.yaml"
+    ).resolve()
+    assert is_dataclass(contract.wheel_velocity_drive)
+    assert asdict(contract.wheel_velocity_drive) == {
+        "schema_version": 1,
+        "profile_id": "jackal_drive_legacy_finite_guard_v1",
+        "drive_type": "force",
+        "stiffness_n_m_per_rad": 0.0,
+        "damping_n_m_s_per_rad": 572957795.1308232,
+        "max_effort_n_m": 1_000_000_000.0,
+        "max_joint_velocity_rad_s": 1_000_000_000.0,
+    }
+
+    joints = contract.wheel_joints
     assert joints.ordered == (
         "front_left_wheel_joint",
         "front_right_wheel_joint",
@@ -113,6 +145,7 @@ def test_effective_track_candidates_only_change_declared_experimental_fields(
         "kinematics_profile_id",
         "lifecycle",
         "effective_track_width",
+        "mass_collision_profile",
     }
 
     assert candidate.keys() == stable.keys()
@@ -126,6 +159,9 @@ def test_effective_track_candidates_only_change_declared_experimental_fields(
     assert contract.kinematics.kinematics_profile_id == profile_id
     assert contract.kinematics.lifecycle == "experimental_candidate"
     assert contract.kinematics.effective_track_width == effective_track_width
+    assert contract.mass_collision_profile == load_robot_config_contract(
+        JACKAL
+    ).mass_collision_profile
     assert load_controller_config(candidate_path)[
         "effective_track_width"
     ] == effective_track_width
@@ -167,7 +203,7 @@ def test_kinematics_contract_requires_every_explicit_field(tmp_path, field):
         load_robot_kinematics_config(path)
 
 
-@pytest.mark.parametrize("schema_version", [1, True, 2.0, "2", None])
+@pytest.mark.parametrize("schema_version", [1, 2, True, 3.0, "3", None])
 def test_kinematics_contract_rejects_old_or_non_integer_schema(
     tmp_path, schema_version
 ):
@@ -178,7 +214,7 @@ def test_kinematics_contract_rejects_old_or_non_integer_schema(
 
     with pytest.raises(
         YamlConfigError,
-        match="robot config schema_version must be integer 2",
+        match="robot config schema_version must be integer 3",
     ):
         load_robot_kinematics_config(path)
 
@@ -374,14 +410,223 @@ def test_controller_limits_are_strict_positive_finite_numbers(
         load_controller_config(path)
 
 
-def test_custom_robot_template_exposes_schema_v2_placeholders():
+@pytest.mark.parametrize("value", [None, True, "", "   "])
+def test_mass_collision_profile_must_be_a_nonempty_path_string(
+    tmp_path, value
+):
+    path = _candidate(
+        tmp_path,
+        lambda data: data.update({"mass_collision_profile": value}),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match="robot.mass_collision_profile must be a nonempty path string",
+    ):
+        load_robot_config_contract(path)
+
+
+def test_mass_collision_profile_is_resolved_relative_to_robot_yaml(tmp_path):
+    profile_dir = tmp_path / "profiles"
+    profile_dir.mkdir()
+    profile = profile_dir / "mass.yaml"
+    profile.write_text("schema_version: 1\n", encoding="utf-8")
+    path = _candidate(
+        tmp_path,
+        lambda data: data.update(
+            {"mass_collision_profile": "profiles/../profiles/mass.yaml"}
+        ),
+    )
+
+    contract = load_robot_config_contract(path)
+
+    assert contract.mass_collision_profile == profile.resolve()
+    assert contract.mass_collision_profile.is_absolute()
+
+
+@pytest.mark.parametrize("target_kind", ["missing", "directory"])
+def test_mass_collision_profile_must_reference_an_existing_regular_file(
+    tmp_path, target_kind
+):
+    target = tmp_path / target_kind
+    if target_kind == "directory":
+        target.mkdir()
+    path = _candidate(
+        tmp_path,
+        lambda data: data.update({"mass_collision_profile": target.name}),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match=(
+            "robot.mass_collision_profile must reference an existing regular "
+            "file"
+        ),
+    ):
+        load_robot_config_contract(path)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["unknown", *sorted(WHEEL_VELOCITY_DRIVE_FIELDS)],
+)
+def test_wheel_velocity_drive_mapping_is_exact(tmp_path, mutation):
+    def mutate(data):
+        drive = data["wheel_velocity_drive"]
+        if mutation == "unknown":
+            drive["maximum_force"] = 1.0
+        else:
+            drive.pop(mutation)
+
+    path = _candidate(tmp_path, mutate)
+
+    with pytest.raises(YamlConfigError, match="robot.wheel_velocity_drive"):
+        load_robot_config_contract(path)
+
+
+@pytest.mark.parametrize("value", [None, True, 1, [], "force"])
+def test_wheel_velocity_drive_must_be_a_mapping(tmp_path, value):
+    path = _candidate(
+        tmp_path,
+        lambda data: data.update({"wheel_velocity_drive": value}),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match="robot.wheel_velocity_drive must be a mapping",
+    ):
+        load_robot_config_contract(path)
+
+
+@pytest.mark.parametrize("schema_version", [0, 2, True, 1.0, "1", None])
+def test_wheel_velocity_drive_schema_is_strict_integer_one(
+    tmp_path, schema_version
+):
+    path = _candidate(
+        tmp_path,
+        lambda data: data["wheel_velocity_drive"].update(
+            {"schema_version": schema_version}
+        ),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match="robot.wheel_velocity_drive.schema_version must be integer 1",
+    ):
+        load_robot_config_contract(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (field, value, message)
+        for field in (
+            "damping_n_m_s_per_rad",
+            "max_effort_n_m",
+            "max_joint_velocity_rad_s",
+        )
+        for value, message in (
+            (True, "must be numeric"),
+            (math.nan, "must be finite"),
+            (math.inf, "must be finite"),
+            (0.0, "must be positive"),
+            (-1.0, "must be positive"),
+        )
+    ],
+)
+def test_wheel_velocity_drive_positive_fields_are_strict_finite_numbers(
+    tmp_path, field, value, message
+):
+    path = _candidate(
+        tmp_path,
+        lambda data: data["wheel_velocity_drive"].update({field: value}),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match=rf"robot\.wheel_velocity_drive\.{field} {message}",
+    ):
+        load_robot_config_contract(path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [True, math.nan, math.inf, -1.0, 0.000001],
+)
+def test_wheel_velocity_drive_stiffness_must_be_finite_numeric_zero(
+    tmp_path, value
+):
+    path = _candidate(
+        tmp_path,
+        lambda data: data["wheel_velocity_drive"].update(
+            {"stiffness_n_m_per_rad": value}
+        ),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match="robot.wheel_velocity_drive.stiffness_n_m_per_rad",
+    ):
+        load_robot_config_contract(path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("profile_id", None, "must match"),
+        ("profile_id", True, "must match"),
+        ("profile_id", "", "must match"),
+        ("profile_id", "drive profile", "must match"),
+        ("drive_type", None, "must equal force"),
+        ("drive_type", True, "must equal force"),
+        ("drive_type", "acceleration", "must equal force"),
+    ],
+)
+def test_wheel_velocity_drive_identity_is_strict(
+    tmp_path, field, value, message
+):
+    path = _candidate(
+        tmp_path,
+        lambda data: data["wheel_velocity_drive"].update({field: value}),
+    )
+
+    with pytest.raises(
+        YamlConfigError,
+        match=rf"robot\.wheel_velocity_drive\.{field} {message}",
+    ):
+        load_robot_config_contract(path)
+
+
+def test_controller_max_wheel_speed_must_not_exceed_drive_limit(tmp_path):
+    def mutate(data):
+        data["controller"]["max_wheel_speed"] = 16.0
+        data["wheel_velocity_drive"]["max_joint_velocity_rad_s"] = 15.0
+
+    path = _candidate(tmp_path, mutate)
+
+    with pytest.raises(
+        YamlConfigError,
+        match=(
+            "robot.controller.max_wheel_speed must be less than or equal to "
+            "robot.wheel_velocity_drive.max_joint_velocity_rad_s"
+        ),
+    ):
+        load_robot_config_contract(path)
+
+
+def test_custom_robot_template_exposes_schema_v3_placeholders():
     custom = ROOT / "isaac_sim/configs/robots/custom_robot.yaml"
     raw = yaml.safe_load(custom.read_text(encoding="utf-8"))
     assert set(raw) == ROBOT_CONFIG_FIELDS
-    assert raw["schema_version"] == 2
+    assert raw["schema_version"] == 3
     assert raw["kinematics_profile_id"] is None
     assert raw["lifecycle"] is None
     assert raw["effective_track_width"] is None
+    assert raw["mass_collision_profile"] is None
+    assert set(raw["wheel_velocity_drive"]) == WHEEL_VELOCITY_DRIVE_FIELDS
+    assert raw["wheel_velocity_drive"]["schema_version"] == 1
+    for field in WHEEL_VELOCITY_DRIVE_FIELDS - {"schema_version"}:
+        assert raw["wheel_velocity_drive"][field] is None
     assert "wheel_radius" not in raw["controller"]
     assert "wheel_distance" not in raw["controller"]
 
