@@ -9,9 +9,15 @@ from isaac_sim.src.robot.articulation_runtime import (
     author_articulation_solver_iterations,
     load_articulation_physics_config,
 )
+from isaac_sim.src.robot.mass_collision_runtime import (
+    apply_mass_collision_profile,
+)
 from isaac_sim.src.robot.spawn_pose_manager import (
     author_initial_articulation_pose,
     load_spawn_poses,
+)
+from isaac_sim.src.robot.wheel_velocity_drive import (
+    apply_wheel_velocity_drive,
 )
 from isaac_sim.src.stage.asset_validator import dependency_report, validate_default_prim, validate_prim
 from isaac_sim.src.stage.contact_setup import apply_contact_profile
@@ -49,6 +55,8 @@ class SceneComposer:
         self.config = config
         self.ground_topology_snapshot = None
         self.contact_snapshot = None
+        self.mass_collision_snapshot = None
+        self.wheel_velocity_drive_snapshot = None
 
     def compose(self, *, save: bool = False):
         config = self.config
@@ -93,6 +101,16 @@ class SceneComposer:
             stage,
             config.robot.articulation_root,
             load_articulation_physics_config(config.files.robot),
+        )
+        # These anonymous overlays must exist before PhysicsSetup performs the
+        # first update that lets PhysX parse the composed articulation.
+        self.mass_collision_snapshot = apply_mass_collision_profile(
+            stage,
+            config,
+        )
+        self.wheel_velocity_drive_snapshot = apply_wheel_velocity_drive(
+            stage,
+            config,
         )
         validate_prim(stage, config.robot.base_link_prim, "Xform")
         self.ground_topology_snapshot = apply_ground_topology(stage, config)
