@@ -12,14 +12,19 @@ usage() {
   cat <<'EOF'
 usage: run_contact_ab_matrix.sh [--environment Warehouse|SimplePlane|all]
                                 [--ground-topology baseline|all|ID]
+                                [--contact-profile all|ID]
+                                [--reset-strategy project|pose_restore_v1|
+                                  separate_recontact_0p20m_1step_v1|all]
                                 [--repeats N] [--robot-config FILE]
                                 --output-dir DIR
 
 Run the committed skid-steer motion A/B protocol in strict serial order.
 The default environment is all (SimplePlane, then Warehouse), the default
-ground topology is baseline (one committed default per environment), and the
-default repeat count is 3: 2 environment/topology pairs x 6 contact profiles
-x 3 = 36 independent Isaac processes.  --ground-topology all selects every
+ground topology is baseline (one committed default per environment), all six
+contact profiles are selected, the project reset strategy is resolved from
+both committed project configs, and the default repeat count is 3: 2
+environment/topology pairs x 6 contact profiles x 1 reset strategy x 3 = 36
+independent Isaac processes.  --ground-topology all selects every
 legal pair (3 pairs for --environment all, producing 54 default runs).  A
 specific topology ID requires its one matching --environment.  DIR must be
 empty and is never overwritten.
@@ -30,19 +35,26 @@ EOF
 
 environment_selection="all"
 ground_topology_selection="baseline"
+contact_profile_selection="all"
+reset_strategy_selection="project"
 repeats=3
 output_dir=""
 robot_config_argument=""
 robot_config_option_seen=false
 required_motion_report_schema_version=3
-readonly manifest_header_contract=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\treport_schema_version\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
+required_runtime_provenance_schema_version=6
+required_reset_strategy_schema_version=1
+readonly manifest_header_contract=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\treport_schema_version\truntime_provenance_schema_version\treset_strategy_schema_version\treset_strategy_id\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
 while (($#)); do
   case "$1" in
-    --environment|--ground-topology|--repeats|--output-dir|--robot-config)
+    --environment|--ground-topology|--contact-profile|--reset-strategy|\
+      --repeats|--output-dir|--robot-config)
       (($# >= 2)) || die "$1 requires a value"
       case "$1" in
         --environment) environment_selection="$2" ;;
         --ground-topology) ground_topology_selection="$2" ;;
+        --contact-profile) contact_profile_selection="$2" ;;
+        --reset-strategy) reset_strategy_selection="$2" ;;
         --repeats) repeats="$2" ;;
         --output-dir) output_dir="$2" ;;
         --robot-config)
@@ -160,7 +172,7 @@ fi
   || die \
     "--robot-config must not contain tabs, carriage returns, or newlines"
 
-profile_ids=(
+shipped_profile_ids=(
   legacy_baseline
   threshold_corr_0p00025_offset_0p0004
   threshold_corr_0p025_offset_0p0004
@@ -168,7 +180,7 @@ profile_ids=(
   threshold_corr_0p025_offset_0p04
   explicit_material
 )
-profile_modes=(
+shipped_profile_modes=(
   legacy_baseline
   threshold_only
   threshold_only
@@ -176,6 +188,60 @@ profile_modes=(
   threshold_only
   explicit_material
 )
+profile_ids=()
+profile_modes=()
+
+select_contact_profiles() {
+  local index
+  profile_ids=()
+  profile_modes=()
+  if [[ "${contact_profile_selection}" == all ]]; then
+    profile_ids=("${shipped_profile_ids[@]}")
+    profile_modes=("${shipped_profile_modes[@]}")
+    return 0
+  fi
+  for index in "${!shipped_profile_ids[@]}"; do
+    if [[ "${shipped_profile_ids[index]}" \
+          == "${contact_profile_selection}" ]]; then
+      profile_ids+=("${shipped_profile_ids[index]}")
+      profile_modes+=("${shipped_profile_modes[index]}")
+      return 0
+    fi
+  done
+  return 1
+}
+
+select_contact_profiles \
+  || die "--contact-profile must be all or a shipped contact profile ID"
+
+case "${reset_strategy_selection}" in
+  project|pose_restore_v1|separate_recontact_0p20m_1step_v1|all) ;;
+  *)
+    die "--reset-strategy must be project, pose_restore_v1, separate_recontact_0p20m_1step_v1, or all"
+    ;;
+esac
+
+reset_strategy_ids=()
+select_reset_strategies() {
+  local project_default_id="$1"
+  case "${reset_strategy_selection}" in
+    project)
+      reset_strategy_ids=("${project_default_id}")
+      ;;
+    pose_restore_v1|separate_recontact_0p20m_1step_v1)
+      reset_strategy_ids=("${reset_strategy_selection}")
+      ;;
+    all)
+      reset_strategy_ids=(
+        pose_restore_v1
+        separate_recontact_0p20m_1step_v1
+      )
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
 motion_config="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/motion_skid_steer_ab.yaml"
 warehouse_config="${PROJECT_ROOT}/isaac_sim/configs/project.yaml"
@@ -193,6 +259,7 @@ batch_robot_config_sha256=""
 batch_profile_hashes_json=""
 batch_ground_topology_hashes_json=""
 batch_environment_topology_pairs_json=""
+batch_reset_strategy_ids_json=""
 
 robot_config=""
 robot_config_selection="project_default"
@@ -205,6 +272,7 @@ robot_wheel_radius=""
 robot_wheel_width=""
 robot_geometric_track_width=""
 robot_effective_track_width=""
+project_reset_strategy_id=""
 warehouse_project_stage=""
 warehouse_project_stage_sha256=""
 warehouse_source_asset=""
@@ -322,6 +390,7 @@ config = load_project_config(
 )
 kinematics = load_robot_config_contract(config.files.robot).kinematics
 values = (
+    str(config.schema_version),
     config.environment.identifier,
     str(config.files.robot),
     str(config.robot.asset_path),
@@ -333,6 +402,8 @@ values = (
     str(kinematics.wheel_width),
     str(kinematics.geometric_track_width),
     str(kinematics.effective_track_width),
+    str(config.simulation.reset_strategy.schema_version),
+    config.simulation.reset_strategy.identifier,
 )
 if any("\t" in value or "\n" in value for value in values):
     raise SystemExit("runtime contract paths must not contain tabs or newlines")
@@ -342,10 +413,13 @@ PY
 
 load_runtime_contracts() {
   local warehouse_contract simple_plane_contract
+  local warehouse_project_schema simple_plane_project_schema
   local warehouse_id simple_plane_id simple_robot_config simple_robot_asset
   local simple_kinematics_profile_id simple_kinematics_lifecycle
   local simple_wheel_radius simple_wheel_width
   local simple_geometric_track_width simple_effective_track_width
+  local warehouse_reset_schema warehouse_reset_id
+  local simple_reset_schema simple_reset_id
   local runtime_input
   warehouse_contract="$(
     project_runtime_contract \
@@ -357,19 +431,25 @@ load_runtime_contracts() {
       "${simple_plane_config}" "${robot_config_argument}"
   )" || die "cannot resolve the committed SimplePlane runtime contract"
   IFS=$'\t' read -r \
-    warehouse_id robot_config robot_asset \
+    warehouse_project_schema warehouse_id robot_config robot_asset \
     warehouse_project_stage warehouse_source_asset \
     robot_kinematics_profile_id robot_kinematics_lifecycle \
     robot_wheel_radius robot_wheel_width \
     robot_geometric_track_width robot_effective_track_width \
+    warehouse_reset_schema warehouse_reset_id \
     <<<"${warehouse_contract}"
   IFS=$'\t' read -r \
-    simple_plane_id simple_robot_config simple_robot_asset \
+    simple_plane_project_schema simple_plane_id \
+    simple_robot_config simple_robot_asset \
     simple_plane_project_stage simple_plane_source_asset \
     simple_kinematics_profile_id simple_kinematics_lifecycle \
     simple_wheel_radius simple_wheel_width \
     simple_geometric_track_width simple_effective_track_width \
+    simple_reset_schema simple_reset_id \
     <<<"${simple_plane_contract}"
+  [[ "${warehouse_project_schema}" == 2 \
+        && "${simple_plane_project_schema}" == 2 ]] \
+    || die "contact A/B requires project schema version 2"
   [[ "${warehouse_id}" == Warehouse && "${simple_plane_id}" == SimplePlane ]] \
     || die "project runtime environment identifiers are not canonical"
   [[ "${simple_robot_config}" == "${robot_config}" \
@@ -382,6 +462,38 @@ load_runtime_contracts() {
         && "${simple_geometric_track_width}" == "${robot_geometric_track_width}" \
         && "${simple_effective_track_width}" == "${robot_effective_track_width}" ]] \
     || die "Warehouse and SimplePlane robot kinematics contracts differ"
+  [[ "${warehouse_reset_schema}" == 1 \
+        && "${simple_reset_schema}" == 1 \
+        && "${warehouse_reset_id}" == "${simple_reset_id}" ]] \
+    || die "Warehouse and SimplePlane project reset strategy contracts differ"
+  case "${warehouse_reset_id}" in
+    pose_restore_v1|separate_recontact_0p20m_1step_v1) ;;
+    *) die "project reset strategy ID is unsupported" ;;
+  esac
+  project_reset_strategy_id="${warehouse_reset_id}"
+  select_reset_strategies "${project_reset_strategy_id}" \
+    || die "cannot resolve selected reset strategies"
+  batch_reset_strategy_ids_json="$(
+    python3 - "${reset_strategy_ids[@]}" <<'PY'
+import json
+import sys
+
+strategy_ids = sys.argv[1:]
+if (
+    not strategy_ids
+    or len(strategy_ids) != len(set(strategy_ids))
+    or any(
+        strategy_id not in {
+            "pose_restore_v1",
+            "separate_recontact_0p20m_1step_v1",
+        }
+        for strategy_id in strategy_ids
+    )
+):
+    raise SystemExit("selected reset strategy IDs are invalid")
+print(json.dumps(strategy_ids, separators=(",", ":")))
+PY
+  )" || die "cannot serialize selected reset strategies"
   if [[ "${robot_config_option_seen}" == true ]]; then
     robot_config_selection="explicit_cli"
   fi
@@ -605,6 +717,8 @@ current_run_id=""
 current_environment=""
 current_profile_id=""
 current_profile_mode=""
+current_reset_strategy_id=""
+current_reset_strategy_token=""
 current_repeat=""
 current_report=""
 current_isaac_log=""
@@ -662,11 +776,14 @@ validate_success_manifest_evidence() {
   local phase="$1"
   python3 - \
     "${manifest}" "${manifest_header_contract}" \
-    "${required_motion_report_schema_version}" "${phase}" \
+    "${required_motion_report_schema_version}" \
+    "${required_runtime_provenance_schema_version}" \
+    "${required_reset_strategy_schema_version}" "${phase}" \
     "${output_dir}" "${repeats}" "${expected_conditions}" \
     "${batch_environment_topology_pairs_json}" \
     "${batch_profile_hashes_json}" \
     "${batch_ground_topology_hashes_json}" \
+    "${batch_reset_strategy_ids_json}" \
     "${batch_git_commit}" "${batch_git_branch}" \
     "${motion_config}" "${batch_motion_sha256}" \
     "${batch_motion_configuration_json}" \
@@ -694,12 +811,15 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 import sys
 
 (
     manifest_name,
     manifest_header,
     required_report_schema_text,
+    required_provenance_schema_text,
+    required_reset_schema_text,
     phase,
     output_directory,
     repeats_text,
@@ -707,6 +827,7 @@ import sys
     selected_pairs_json,
     profile_hashes_json,
     topology_hashes_json,
+    reset_strategy_ids_json,
     git_commit,
     git_branch,
     motion_config,
@@ -741,19 +862,21 @@ import sys
 manifest_path = Path(manifest_name)
 expected_fieldnames = manifest_header.split("\t")
 required_report_schema = int(required_report_schema_text)
+required_provenance_schema = int(required_provenance_schema_text)
+required_reset_schema = int(required_reset_schema_text)
 repeats = int(repeats_text)
 expected_rows = int(expected_rows_text)
 output_path = Path(output_directory)
 
-if len(expected_fieldnames) != 44 or len(set(expected_fieldnames)) != 44:
-    raise SystemExit("internal manifest header contract must contain 44 unique columns")
+if len(expected_fieldnames) != 47 or len(set(expected_fieldnames)) != 47:
+    raise SystemExit("internal manifest header contract must contain 47 unique columns")
 if manifest_path.is_symlink() or not manifest_path.is_file():
     raise SystemExit(f"{phase}: manifest path is unsafe: {manifest_path}")
 
 with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     reader = csv.DictReader(stream, delimiter="\t", strict=True)
     if reader.fieldnames != expected_fieldnames:
-        raise SystemExit(f"{phase}: manifest header does not match the 44-column contract")
+        raise SystemExit(f"{phase}: manifest header does not match the 47-column contract")
     rows = list(reader)
 if len(rows) != expected_rows:
     raise SystemExit(
@@ -764,6 +887,7 @@ try:
     selected_pairs = json.loads(selected_pairs_json)
     profile_hashes = json.loads(profile_hashes_json)
     topology_hashes = json.loads(topology_hashes_json)
+    reset_strategy_ids = json.loads(reset_strategy_ids_json)
     motion_configuration = json.loads(motion_configuration_json)
 except ValueError as exc:
     raise SystemExit(f"{phase}: locked matrix JSON is invalid: {exc}") from exc
@@ -772,6 +896,8 @@ if (
     or not selected_pairs
     or not isinstance(profile_hashes, dict)
     or not isinstance(topology_hashes, dict)
+    or not isinstance(reset_strategy_ids, list)
+    or not reset_strategy_ids
     or not isinstance(motion_configuration, dict)
 ):
     raise SystemExit(f"{phase}: locked matrix inputs are incomplete")
@@ -784,7 +910,7 @@ if json.dumps(
 ) != motion_configuration_json:
     raise SystemExit(f"{phase}: motion configuration JSON must be canonical")
 
-profile_contract = (
+complete_profile_contract = (
     ("legacy_baseline", "legacy_baseline"),
     ("threshold_corr_0p00025_offset_0p0004", "threshold_only"),
     ("threshold_corr_0p025_offset_0p0004", "threshold_only"),
@@ -792,8 +918,24 @@ profile_contract = (
     ("threshold_corr_0p025_offset_0p04", "threshold_only"),
     ("explicit_material", "explicit_material"),
 )
-if set(profile_hashes) != {profile_id for profile_id, _ in profile_contract}:
-    raise SystemExit(f"{phase}: profile hash map does not match the six-profile contract")
+if not set(profile_hashes).issubset(
+    {profile_id for profile_id, _ in complete_profile_contract}
+):
+    raise SystemExit(f"{phase}: profile hash map contains an unsupported profile")
+profile_contract = tuple(
+    item for item in complete_profile_contract if item[0] in profile_hashes
+)
+if not profile_contract or len(profile_contract) != len(profile_hashes):
+    raise SystemExit(f"{phase}: profile hash map does not match the selected profiles")
+if (
+    reset_strategy_ids
+    not in [
+        ["pose_restore_v1"],
+        ["separate_recontact_0p20m_1step_v1"],
+        ["pose_restore_v1", "separate_recontact_0p20m_1step_v1"],
+    ]
+):
+    raise SystemExit(f"{phase}: reset strategy selection is invalid")
 pair_identities = []
 for pair_index, pair in enumerate(selected_pairs, start=1):
     if not isinstance(pair, dict) or set(pair) != {
@@ -813,7 +955,12 @@ if len(pair_identities) != len(set(pair_identities)):
     raise SystemExit(f"{phase}: selected environment/topology pairs must be unique")
 if set(topology_hashes) != {topology for _, topology in pair_identities}:
     raise SystemExit(f"{phase}: topology hash map does not match selected pairs")
-if expected_rows != len(pair_identities) * len(profile_contract) * repeats:
+if expected_rows != (
+    len(pair_identities)
+    * len(profile_contract)
+    * len(reset_strategy_ids)
+    * repeats
+):
     raise SystemExit(f"{phase}: expected row count contradicts the matrix contract")
 
 environment_contracts = {
@@ -841,21 +988,24 @@ sequence = 0
 for environment_id, topology_id in pair_identities:
     for profile_id, profile_mode in profile_contract:
         for repeat in range(1, repeats + 1):
-            sequence += 1
-            run_id = (
-                f"{sequence:03d}_{environment_contracts[environment_id]['slug']}_"
-                f"{topology_id}_{profile_id}_r{repeat:02d}"
-            )
-            expected_matrix_rows.append(
-                {
-                    "run_id": run_id,
-                    "environment": environment_id,
-                    "ground_topology_id": topology_id,
-                    "profile_id": profile_id,
-                    "profile_mode": profile_mode,
-                    "repeat": str(repeat),
-                }
-            )
+            for reset_strategy_id in reset_strategy_ids:
+                sequence += 1
+                reset_token = f"reset-v1-{reset_strategy_id}"
+                run_id = (
+                    f"{sequence:03d}_{environment_contracts[environment_id]['slug']}_"
+                    f"{topology_id}_{reset_token}_{profile_id}_r{repeat:02d}"
+                )
+                expected_matrix_rows.append(
+                    {
+                        "run_id": run_id,
+                        "environment": environment_id,
+                        "ground_topology_id": topology_id,
+                        "profile_id": profile_id,
+                        "profile_mode": profile_mode,
+                        "reset_strategy_id": reset_strategy_id,
+                        "repeat": str(repeat),
+                    }
+                )
 
 
 def canonical_regular_file(raw_path, row_index, field):
@@ -890,6 +1040,97 @@ def digest_file(path):
     return digest.hexdigest()
 
 
+def reset_strategy_contract_matches(strategy, expected_id, topology):
+    expected_steps = {
+        "pose_restore_v1": (0.0, 0, 1),
+        "separate_recontact_0p20m_1step_v1": (0.2, 1, 1),
+    }
+    if (
+        not isinstance(strategy, dict)
+        or set(strategy)
+        != {
+            "schema_version",
+            "id",
+            "lift_distance_m",
+            "separation_step_count",
+            "recontact_step_count",
+            "contact_probe",
+        }
+        or strategy.get("schema_version") != required_reset_schema
+        or strategy.get("id") != expected_id
+        or expected_id not in expected_steps
+    ):
+        return False
+    lift, separation_steps, recontact_steps = expected_steps[expected_id]
+    actual_lift = strategy.get("lift_distance_m")
+    if (
+        isinstance(actual_lift, bool)
+        or not isinstance(actual_lift, (int, float))
+        or not math.isfinite(float(actual_lift))
+        or float(actual_lift) != lift
+        or isinstance(strategy.get("separation_step_count"), bool)
+        or strategy.get("separation_step_count") != separation_steps
+        or isinstance(strategy.get("recontact_step_count"), bool)
+        or strategy.get("recontact_step_count") != recontact_steps
+    ):
+        return False
+    probe = strategy.get("contact_probe")
+    if not isinstance(probe, dict) or set(probe) != {
+        "schema_version",
+        "enabled",
+        "wheel_bindings",
+        "wheel_count",
+        "ground_filter_paths",
+        "ground_filter_count",
+        "max_contact_count",
+        "report_threshold_n",
+        "stage_usd_readback_verified",
+    }:
+        return False
+    wheel_bindings = probe.get("wheel_bindings")
+    ground_paths = probe.get("ground_filter_paths")
+    target_colliders = topology.get("target_colliders")
+    prim_path = re.compile(
+        r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+    )
+    threshold = probe.get("report_threshold_n")
+    return (
+        probe.get("schema_version") == 1
+        and probe.get("enabled") is True
+        and isinstance(wheel_bindings, list)
+        and len(wheel_bindings) == 4
+        and probe.get("wheel_count") == 4
+        and all(
+            isinstance(binding, dict)
+            and set(binding) == {"joint_name", "wheel_link_path"}
+            and isinstance(binding["joint_name"], str)
+            and binding["joint_name"]
+            and isinstance(binding["wheel_link_path"], str)
+            and prim_path.fullmatch(binding["wheel_link_path"])
+            for binding in wheel_bindings
+        )
+        and len({binding["joint_name"] for binding in wheel_bindings}) == 4
+        and len({binding["wheel_link_path"] for binding in wheel_bindings}) == 4
+        and isinstance(ground_paths, list)
+        and ground_paths == target_colliders
+        and ground_paths == sorted(ground_paths)
+        and len(set(ground_paths)) == len(ground_paths)
+        and all(
+            isinstance(path, str) and prim_path.fullmatch(path)
+            for path in ground_paths
+        )
+        and not isinstance(probe.get("ground_filter_count"), bool)
+        and probe.get("ground_filter_count") == len(ground_paths)
+        and not isinstance(probe.get("max_contact_count"), bool)
+        and probe.get("max_contact_count") == 128
+        and not isinstance(threshold, bool)
+        and isinstance(threshold, (int, float))
+        and math.isfinite(float(threshold))
+        and float(threshold) == 0.0
+        and probe.get("stage_usd_readback_verified") is True
+    )
+
+
 all_evidence_paths = set()
 typed_evidence_paths = {
     "report": set(),
@@ -917,6 +1158,8 @@ for row_index, (row, expected_row) in enumerate(
     profile_id = expected_row["profile_id"]
     environment_contract = environment_contracts[environment]
     expected_scalars = {
+        "runtime_provenance_schema_version": str(required_provenance_schema),
+        "reset_strategy_schema_version": str(required_reset_schema),
         "git_commit": git_commit,
         "git_branch": git_branch,
         "motion_config": motion_config,
@@ -1027,6 +1270,11 @@ for row_index, (row, expected_row) in enumerate(
     report_robot = provenance.get("robot")
     report_environment = provenance.get("environment")
     report_simulation = provenance.get("simulation")
+    report_reset_strategy = (
+        report_simulation.get("reset_strategy")
+        if isinstance(report_simulation, dict)
+        else None
+    )
     robot_config_lock = (
         report_robot.get("config") if isinstance(report_robot, dict) else None
     )
@@ -1055,7 +1303,8 @@ for row_index, (row, expected_row) in enumerate(
             return False
 
     if (
-        report.get("environment_id") != environment
+        provenance.get("schema_version") != required_provenance_schema
+        or report.get("environment_id") != environment
         or report.get("odometry_mode") != "ideal"
         or report.get("config_file") != motion_config
         or report.get("config_sha256") != motion_sha256
@@ -1117,6 +1366,11 @@ for row_index, (row, expected_row) in enumerate(
         or isinstance(report_simulation.get("physics_hz"), bool)
         or not isinstance(report_simulation.get("physics_hz"), (int, float))
         or float(report_simulation.get("physics_hz")) != 60.0
+        or not reset_strategy_contract_matches(
+            report_reset_strategy,
+            expected_row["reset_strategy_id"],
+            ground_topology,
+        )
     ):
         raise SystemExit(
             f"{phase}: manifest row {row_index} report identity mismatch"
@@ -1187,6 +1441,7 @@ append_current_manifest() {
   local detail="$2"
   local completed report_sha256 report_schema_version=""
   local isaac_log_sha256 runner_log_sha256 row
+  local -a manifest_fields=()
   local evidence_required=false
   [[ "${status}" == success ]] && evidence_required=true
   completed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
@@ -1230,8 +1485,7 @@ append_current_manifest() {
         "${current_runner_log}" "${evidence_required}" "runner log"
     )" || return 1
   fi
-  if ! printf -v row \
-    '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+  manifest_fields=(
     "$(tsv_safe "${current_run_id}")" \
     "$(tsv_safe "${current_environment}")" \
     "$(tsv_safe "${current_profile_id}")" \
@@ -1242,6 +1496,9 @@ append_current_manifest() {
     "$(tsv_safe "${current_report}")" \
     "${report_sha256}" \
     "${report_schema_version}" \
+    "${required_runtime_provenance_schema_version}" \
+    "${required_reset_strategy_schema_version}" \
+    "$(tsv_safe "${current_reset_strategy_id}")" \
     "$(tsv_safe "${current_isaac_log}")" \
     "${isaac_log_sha256}" \
     "$(tsv_safe "${current_runner_log}")" \
@@ -1275,7 +1532,10 @@ append_current_manifest() {
     "${current_project_stage_sha256}" \
     "$(tsv_safe "${current_source_asset}")" \
     "${current_source_asset_sha256}" \
-    "${current_started}/${completed}"; then
+    "${current_started}/${completed}"
+  )
+  ((${#manifest_fields[@]} == 47)) || return 1
+  if ! row="$(IFS=$'\t'; printf '%s' "${manifest_fields[*]}")"; then
     return 1
   fi
   append_manifest_line_atomically "${row}" || return 1
@@ -1547,6 +1807,127 @@ if any(contact.get(key) != value for key, value in expected.items()):
 PY
 }
 
+reset_strategy_readiness_matches() {
+  local payload="$1"
+  local payload_sha256="$2"
+  local expected_strategy_id="$3"
+  local ground_topology_payload="$4"
+  python3 - \
+    "${payload}" "${payload_sha256}" \
+    "${expected_strategy_id}" "${ground_topology_payload}" <<'PY'
+import hashlib
+import json
+import math
+import re
+import sys
+
+payload, payload_sha256, strategy_id, topology_payload = sys.argv[1:]
+try:
+    strategy = json.loads(payload)
+    topology = json.loads(topology_payload)
+    canonical = json.dumps(
+        strategy, sort_keys=True, separators=(",", ":"), allow_nan=False
+    )
+except (TypeError, ValueError):
+    raise SystemExit(1)
+if canonical != payload:
+    raise SystemExit(1)
+if hashlib.sha256(payload.encode("utf-8")).hexdigest() != payload_sha256:
+    raise SystemExit(1)
+if set(strategy) != {
+    "schema_version",
+    "id",
+    "lift_distance_m",
+    "separation_step_count",
+    "recontact_step_count",
+    "contact_probe",
+}:
+    raise SystemExit(1)
+expected_strategies = {
+    "pose_restore_v1": {
+        "lift_distance_m": 0.0,
+        "separation_step_count": 0,
+        "recontact_step_count": 1,
+    },
+    "separate_recontact_0p20m_1step_v1": {
+        "lift_distance_m": 0.2,
+        "separation_step_count": 1,
+        "recontact_step_count": 1,
+    },
+}
+expected = expected_strategies.get(strategy_id)
+if expected is None or strategy.get("schema_version") != 1:
+    raise SystemExit(1)
+if strategy.get("id") != strategy_id:
+    raise SystemExit(1)
+for field, value in expected.items():
+    actual = strategy.get(field)
+    if isinstance(value, float):
+        if (
+            isinstance(actual, bool)
+            or not isinstance(actual, (int, float))
+            or not math.isfinite(float(actual))
+            or float(actual) != value
+        ):
+            raise SystemExit(1)
+    elif isinstance(actual, bool) or actual != value:
+        raise SystemExit(1)
+
+probe = strategy.get("contact_probe")
+if not isinstance(probe, dict) or set(probe) != {
+    "schema_version",
+    "enabled",
+    "wheel_bindings",
+    "wheel_count",
+    "ground_filter_paths",
+    "ground_filter_count",
+    "max_contact_count",
+    "report_threshold_n",
+    "stage_usd_readback_verified",
+}:
+    raise SystemExit(1)
+wheel_bindings = probe.get("wheel_bindings")
+ground_paths = probe.get("ground_filter_paths")
+target_colliders = topology.get("target_colliders")
+prim_path = re.compile(
+    r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+if (
+    probe.get("schema_version") != 1
+    or probe.get("enabled") is not True
+    or not isinstance(wheel_bindings, list)
+    or len(wheel_bindings) != 4
+    or probe.get("wheel_count") != 4
+    or not all(
+        isinstance(binding, dict)
+        and set(binding) == {"joint_name", "wheel_link_path"}
+        and isinstance(binding["joint_name"], str)
+        and binding["joint_name"]
+        and isinstance(binding["wheel_link_path"], str)
+        and prim_path.fullmatch(binding["wheel_link_path"])
+        for binding in wheel_bindings
+    )
+    or len({binding["joint_name"] for binding in wheel_bindings}) != 4
+    or len({binding["wheel_link_path"] for binding in wheel_bindings}) != 4
+    or not isinstance(ground_paths, list)
+    or ground_paths != target_colliders
+    or ground_paths != sorted(ground_paths)
+    or len(set(ground_paths)) != len(ground_paths)
+    or not all(isinstance(path, str) and prim_path.fullmatch(path) for path in ground_paths)
+    or isinstance(probe.get("ground_filter_count"), bool)
+    or probe.get("ground_filter_count") != len(ground_paths)
+    or isinstance(probe.get("max_contact_count"), bool)
+    or probe.get("max_contact_count") != 128
+    or isinstance(probe.get("report_threshold_n"), bool)
+    or not isinstance(probe.get("report_threshold_n"), (int, float))
+    or not math.isfinite(float(probe.get("report_threshold_n")))
+    or float(probe.get("report_threshold_n")) != 0.0
+    or probe.get("stage_usd_readback_verified") is not True
+):
+    raise SystemExit(1)
+PY
+}
+
 ground_topology_readiness_matches() {
   local payload="$1"
   local payload_sha256="$2"
@@ -1708,6 +2089,7 @@ wait_for_isaac_ready() {
   local timeout_seconds="${ISAAC_NAV_CONTACT_AB_READY_TIMEOUT_SECONDS:-180}"
   local deadline schema environment_id contact_json contact_sha256
   local ground_topology_json ground_topology_sha256
+  local reset_strategy_json reset_strategy_sha256
   local actual_robot_config actual_robot_config_sha256
   local actual_robot_asset actual_robot_asset_sha256
   local actual_kinematics_profile actual_kinematics_lifecycle
@@ -1728,7 +2110,7 @@ wait_for_isaac_ready() {
       isaac "${owned_pids[isaac]}" "${owned_groups[isaac]}" \
       "${owned_start_ticks[isaac]}" || return 1
     schema="$(ros_parameter runtime_provenance.schema_version || true)"
-    if [[ "${schema}" != 5 ]]; then
+    if [[ "${schema}" != 6 ]]; then
       sleep 0.2
       continue
     fi
@@ -1744,6 +2126,12 @@ wait_for_isaac_ready() {
     )"
     ground_topology_sha256="$(
       ros_parameter runtime_provenance.ground_topology.sha256 || true
+    )"
+    reset_strategy_json="$(
+      ros_parameter runtime_provenance.simulation.reset_strategy.json || true
+    )"
+    reset_strategy_sha256="$(
+      ros_parameter runtime_provenance.simulation.reset_strategy.sha256 || true
     )"
     actual_robot_config="$(
       ros_parameter runtime_provenance.robot.config.path || true
@@ -1861,7 +2249,11 @@ wait_for_isaac_ready() {
           "${current_ground_topology_path}" \
           "${current_ground_topology_sha256}" \
           "${expected_environment}" "${current_source_asset}" \
-          "${current_source_asset_sha256}"; then
+          "${current_source_asset_sha256}" \
+        && reset_strategy_readiness_matches \
+          "${reset_strategy_json}" "${reset_strategy_sha256}" \
+          "${current_reset_strategy_id}" \
+          "${ground_topology_json}"; then
       return 0
     fi
     sleep 0.2
@@ -1873,7 +2265,8 @@ launch_isaac() {
   local project_config="$1"
   local profile_path="$2"
   local ground_topology_path="$3"
-  local log_path="$4"
+  local reset_strategy_id="$4"
+  local log_path="$5"
   (
     close_instance_lock_fds_for_child
     unset ISAAC_NAV_DEDICATED_PROCESS_GROUP
@@ -1882,7 +2275,10 @@ launch_isaac() {
     export ISAAC_NAV__FILES__CONTACT_PROFILE="${profile_path}"
     export ISAAC_NAV__FILES__GROUND_TOPOLOGY_PROFILE="${ground_topology_path}"
     export ISAAC_NAV__FILES__ROBOT="${robot_config}"
-    # Schema-v5 provenance verifies mapping/ideal/60 Hz and kinematics below.
+    [[ "${reset_strategy_id}" == "${current_reset_strategy_id}" ]] || return 1
+    export ISAAC_NAV__SIMULATION__RESET_STRATEGY__ID="${reset_strategy_id}"
+    # Schema-v6 provenance verifies mapping/ideal/60 Hz, kinematics, and the
+    # selected Reset strategy below.
     # It does not
     # currently expose headless, pacing, or camera selection, so those remain
     # a pinned CLI launch contract and are not misreported as provenance locks.
@@ -1924,6 +2320,7 @@ verify_motion_report() {
   local ground_topology_path="$8"
   local ground_topology_sha256="$9"
   local motion_sha256="${10}"
+  local reset_strategy_id="${11}"
   python3 - \
     "${PROJECT_ROOT}" "${report_path}" "${environment_id}" \
     "${profile_id}" "${profile_mode}" \
@@ -1937,7 +2334,8 @@ verify_motion_report() {
     "${current_source_asset}" "${current_source_asset_sha256}" \
     "${robot_kinematics_profile_id}" "${robot_kinematics_lifecycle}" \
     "${robot_wheel_radius}" "${robot_wheel_width}" \
-    "${robot_geometric_track_width}" "${robot_effective_track_width}" <<'PY'
+    "${robot_geometric_track_width}" "${robot_effective_track_width}" \
+    "${reset_strategy_id}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -1957,6 +2355,8 @@ source_asset, source_asset_sha256 = sys.argv[20:22]
 kinematics_profile_id, kinematics_lifecycle = sys.argv[22:24]
 wheel_radius, wheel_width = map(float, sys.argv[24:26])
 geometric_track_width, effective_track_width = map(float, sys.argv[26:28])
+reset_strategy_id = sys.argv[28]
+reset_strategy_token = f"reset-v1-{reset_strategy_id}"
 if not path.is_file():
     raise SystemExit("motion report is missing")
 try:
@@ -1982,6 +2382,7 @@ try:
         min_repeats=1,
         expected_environments=(environment_id,),
         expected_topologies=(ground_topology_id,),
+        expected_reset_strategies=(reset_strategy_token,),
         expected_profiles=(profile_id,),
     )
 except Exception as exc:
@@ -1989,12 +2390,12 @@ except Exception as exc:
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("strict contact A/B report validation excluded the report")
 physical_acceptance = analysis.get("physical_acceptance", {})
-if analysis.get("schema_version") != 4:
-    raise SystemExit("strict contact A/B analysis schema must be integer 4")
+if analysis.get("schema_version") != 5:
+    raise SystemExit("strict contact A/B analysis schema must be integer 5")
 if (
     not isinstance(physical_acceptance, dict)
-    or physical_acceptance.get("schema_version") != 2
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v2"
+    or physical_acceptance.get("schema_version") != 3
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v3"
 ):
     raise SystemExit("strict contact A/B physical acceptance contract mismatch")
 if report.get("result") != "success":
@@ -2012,8 +2413,8 @@ environment = provenance.get("environment", {})
 robot = provenance.get("robot", {})
 simulation = provenance.get("simulation", {})
 git = provenance.get("git", {})
-if provenance.get("schema_version") != 5:
-    raise SystemExit("runtime provenance schema must be integer 5")
+if provenance.get("schema_version") != 6:
+    raise SystemExit("runtime provenance schema must be integer 6")
 if environment.get("id") != environment_id:
     raise SystemExit("runtime provenance environment mismatch")
 if git.get("dirty") is not False:
@@ -2059,6 +2460,13 @@ if (
     or simulation.get("physics_hz") != 60
 ):
     raise SystemExit("runtime provenance simulation contract mismatch")
+reset_strategy = simulation.get("reset_strategy")
+if (
+    not isinstance(reset_strategy, dict)
+    or reset_strategy.get("schema_version") != 1
+    or reset_strategy.get("id") != reset_strategy_id
+):
+    raise SystemExit("runtime provenance reset strategy mismatch")
 expected_contact = {
     "profile_id": profile_id,
     "profile_mode": profile_mode,
@@ -2124,7 +2532,8 @@ run_one_condition() {
   local ground_topology_id="$3"
   local profile_id="$4"
   local profile_mode="$5"
-  local repeat="$6"
+  local reset_strategy_id="$6"
+  local repeat="$7"
   local slug project_config profile_path topology_path runner_status
 
   slug="$(environment_slug "${environment_id}")" || {
@@ -2151,9 +2560,11 @@ run_one_condition() {
       return 1
       ;;
   esac
-  if ! printf -v current_run_id '%03d_%s_%s_%s_r%02d' \
+  current_reset_strategy_id="${reset_strategy_id}"
+  current_reset_strategy_token="reset-v1-${reset_strategy_id}"
+  if ! printf -v current_run_id '%03d_%s_%s_%s_%s_r%02d' \
       "${sequence}" "${slug}" "${ground_topology_id}" \
-      "${profile_id}" "${repeat}"; then
+      "${current_reset_strategy_token}" "${profile_id}" "${repeat}"; then
     current_failure_reason="run_id_format_failed"
     return 1
   fi
@@ -2204,6 +2615,7 @@ run_one_condition() {
   log_info "contact A/B ${current_run_id}: starting Isaac"
   if ! launch_isaac \
       "${project_config}" "${profile_path}" "${topology_path}" \
+      "${reset_strategy_id}" \
       "${current_isaac_log}"; then
     current_failure_reason="isaac_registration_failed"
     return 1
@@ -2249,7 +2661,7 @@ run_one_condition() {
       "${profile_path}" "${current_profile_sha256}" \
       "${ground_topology_id}" "${topology_path}" \
       "${current_ground_topology_sha256}" \
-      "${batch_motion_sha256}"; then
+      "${batch_motion_sha256}" "${reset_strategy_id}"; then
     current_failure_reason="motion_report_verification_failed"
     return 1
   fi
@@ -2366,7 +2778,8 @@ finalize_contact_analysis() {
     "${environment_selection}" "${ground_topology_selection}" \
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
-    "${robot_wheel_radius}" <<'PY'
+    "${robot_wheel_radius}" "${batch_profile_hashes_json}" \
+    "${batch_reset_strategy_ids_json}" <<'PY'
 import csv
 import hashlib
 import json
@@ -2385,6 +2798,8 @@ import sys
     expected_runs_text,
     expected_groups_text,
     wheel_radius_text,
+    profile_hashes_json,
+    reset_strategy_ids_json,
 ) = sys.argv[1:]
 repeats = int(repeats_text)
 expected_runs = int(expected_runs_text)
@@ -2394,18 +2809,28 @@ manifest_path = Path(manifest_name)
 output_path = Path(output_name)
 expected_manifest_fieldnames = manifest_header.split("\t")
 selected_pairs_data = json.loads(selected_pairs_json)
+profile_hashes = json.loads(profile_hashes_json)
+reset_strategy_ids = json.loads(reset_strategy_ids_json)
+selected_profiles = tuple(profile_hashes)
+selected_reset_tokens = tuple(
+    f"reset-v1-{strategy_id}" for strategy_id in reset_strategy_ids
+)
 selected_pairs = {
     (pair["environment_id"], pair["ground_topology_id"])
     for pair in selected_pairs_data
 }
-if not selected_pairs or len(selected_pairs) != len(selected_pairs_data):
+if (
+    not selected_pairs
+    or len(selected_pairs) != len(selected_pairs_data)
+    or not selected_profiles
+    or not selected_reset_tokens
+):
     raise SystemExit("selected environment/topology pairs must be unique")
 
 # Use the committed workspace source explicitly; the install tree may be stale.
 source_root = Path(repository_root) / "ros2_ws/src/robot_experiments"
 sys.path.insert(0, str(source_root))
 from robot_experiments.contact_ab_analysis import (
-    COMPLETE_MATRIX_PROFILES,
     analyse_contact_ab,
     validate_physical_acceptance_accounting,
     write_contact_ab_report,
@@ -2414,7 +2839,7 @@ from robot_experiments.contact_ab_analysis import (
 with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     reader = csv.DictReader(stream, delimiter="\t", strict=True)
     if reader.fieldnames != expected_manifest_fieldnames:
-        raise SystemExit("manifest header does not match the 44-column contract")
+        raise SystemExit("manifest header does not match the 47-column contract")
     rows = list(reader)
 if len(rows) != expected_runs:
     raise SystemExit(
@@ -2439,6 +2864,14 @@ for row_index, row in enumerate(rows, start=1):
         raise SystemExit(
             f"manifest row {row_index} report schema version must be 3"
         )
+    if row.get("runtime_provenance_schema_version") != "6":
+        raise SystemExit(
+            f"manifest row {row_index} runtime provenance schema version must be 6"
+        )
+    if row.get("reset_strategy_schema_version") != "1":
+        raise SystemExit(
+            f"manifest row {row_index} reset strategy schema version must be 1"
+        )
     try:
         report_document = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -2448,6 +2881,24 @@ for row_index, row in enumerate(rows, start=1):
     if report_document.get("schema_version") != 3:
         raise SystemExit(
             f"manifest row {row_index} report JSON schema version mismatch"
+        )
+    provenance = report_document.get("runtime_provenance")
+    simulation = provenance.get("simulation") if isinstance(provenance, dict) else None
+    reset_strategy = (
+        simulation.get("reset_strategy") if isinstance(simulation, dict) else None
+    )
+    reset_strategy_id = row.get("reset_strategy_id")
+    reset_strategy_token = f"reset-v1-{reset_strategy_id}"
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("schema_version") != 6
+        or not isinstance(reset_strategy, dict)
+        or reset_strategy.get("schema_version") != 1
+        or reset_strategy.get("id") != reset_strategy_id
+        or reset_strategy_token not in selected_reset_tokens
+    ):
+        raise SystemExit(
+            f"manifest row {row_index} report reset strategy identity mismatch"
         )
     row_pair = (row.get("environment"), row.get("ground_topology_id"))
     if row_pair not in selected_pairs:
@@ -2460,6 +2911,10 @@ for row_index, row in enumerate(rows, start=1):
     manifest_report_locks[canonical_report_path] = {
         "sha256": actual_sha256,
         "report_schema_version": 3,
+        "runtime_provenance_schema_version": 6,
+        "reset_strategy_schema_version": 1,
+        "reset_strategy_id": reset_strategy_id,
+        "reset_strategy_token": reset_strategy_token,
         "environment_id": row.get("environment"),
         "ground_topology_id": row.get("ground_topology_id"),
         "contact_profile_id": row.get("profile_id"),
@@ -2488,7 +2943,8 @@ arguments = {
     "min_repeats": repeats,
     "expected_environments": selected_environments,
     "expected_topologies": selected_topologies,
-    "expected_profiles": COMPLETE_MATRIX_PROFILES,
+    "expected_reset_strategies": selected_reset_tokens,
+    "expected_profiles": selected_profiles,
 }
 analysis = analyse_contact_ab(report_paths, wheel_radius, **arguments)
 counts = analysis.get("counts", {})
@@ -2507,8 +2963,8 @@ expected_physical_thresholds = {
 }
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("aggregate contact A/B analysis is not valid")
-if analysis.get("schema_version") != 4:
-    raise SystemExit("aggregate contact A/B analysis schema must be 4")
+if analysis.get("schema_version") != 5:
+    raise SystemExit("aggregate contact A/B analysis schema must be 5")
 if counts.get("excluded_reports") != 0 or selection.get("excluded") != []:
     raise SystemExit("aggregate contact A/B analysis excluded reports")
 if counts.get("included_reports") != expected_runs:
@@ -2537,6 +2993,14 @@ for selection_index, included in enumerate(selection_included, start=1):
     analysis_report_locks[included_path] = {
         "sha256": included.get("sha256"),
         "report_schema_version": included.get("report_schema_version"),
+        "runtime_provenance_schema_version": included.get(
+            "runtime_provenance_schema_version"
+        ),
+        "reset_strategy_schema_version": included.get(
+            "reset_strategy_schema_version"
+        ),
+        "reset_strategy_id": included.get("reset_strategy_id"),
+        "reset_strategy_token": included.get("reset_strategy_token"),
         "environment_id": included.get("environment_id"),
         "ground_topology_id": included.get("ground_topology_id"),
         "contact_profile_id": included.get("contact_profile_id"),
@@ -2547,8 +3011,8 @@ if analysis_report_locks != manifest_report_locks:
     )
 if (
     not isinstance(physical_acceptance, dict)
-    or physical_acceptance.get("schema_version") != 2
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v2"
+    or physical_acceptance.get("schema_version") != 3
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v3"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
     or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
     or physical_acceptance.get("steady_state_measurement_basis")
@@ -2558,7 +3022,7 @@ if (
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
         "required_motion_report_schema": 3,
-        "required_runtime_provenance_schema": 5,
+        "required_runtime_provenance_schema": 6,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
         "required_odometry_mode": "ideal",
@@ -2645,6 +3109,8 @@ write_batch_summary() {
     "${batch_summary_path}" \
     "${PROJECT_ROOT}" "${manifest_header_contract}" \
     "${environment_selection}" "${ground_topology_selection}" \
+    "${contact_profile_selection}" "${reset_strategy_selection}" \
+    "${batch_reset_strategy_ids_json}" \
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
     "${successful_rows}" "${manifest_rows}" \
@@ -2678,6 +3144,9 @@ import tempfile
     manifest_header,
     environment_selection,
     ground_topology_selection,
+    contact_profile_selection,
+    reset_strategy_selection,
+    reset_strategy_ids_json,
     environment_topology_pairs_json,
     repeats_text,
     expected_runs_text,
@@ -2716,6 +3185,10 @@ output_path = Path(output_name)
 manifest_path = Path(manifest_name)
 analysis_path = Path(analysis_name)
 expected_manifest_fieldnames = manifest_header.split("\t")
+reset_strategy_ids = json.loads(reset_strategy_ids_json)
+reset_strategy_tokens = [
+    f"reset-v1-{strategy_id}" for strategy_id in reset_strategy_ids
+]
 source_root = Path(repository_root_text) / "ros2_ws/src/robot_experiments"
 sys.path.insert(0, str(source_root))
 from robot_experiments.contact_ab_analysis import (
@@ -2761,9 +3234,9 @@ failed_groups = physical_acceptance.get("failed_groups")
 applicable_groups = physical_acceptance.get("applicable_groups")
 not_applicable_groups = physical_acceptance.get("not_applicable_groups")
 if (
-    analysis.get("schema_version") != 4
-    or physical_acceptance.get("schema_version") != 2
-    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v2"
+    analysis.get("schema_version") != 5
+    or physical_acceptance.get("schema_version") != 3
+    or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v3"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
     or physical_acceptance.get("ranking_policy") != "none; pass/fail only"
     or physical_acceptance.get("steady_state_measurement_basis")
@@ -2773,7 +3246,7 @@ if (
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
         "required_motion_report_schema": 3,
-        "required_runtime_provenance_schema": 5,
+        "required_runtime_provenance_schema": 6,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
         "required_odometry_mode": "ideal",
@@ -2833,8 +3306,60 @@ except Exception as exc:
         f"batch every-repeat physical acceptance evidence is invalid: {exc}"
     ) from exc
 profile_hashes = json.loads(profile_hashes_json)
-if not isinstance(profile_hashes, dict) or len(profile_hashes) != 6:
-    raise SystemExit("locked profile hash map must contain six profiles")
+if not isinstance(profile_hashes, dict) or not profile_hashes:
+    raise SystemExit("locked profile hash map must contain selected profiles")
+complete_profile_ids = {
+    "legacy_baseline",
+    "threshold_corr_0p00025_offset_0p0004",
+    "threshold_corr_0p025_offset_0p0004",
+    "threshold_corr_0p00025_offset_0p04",
+    "threshold_corr_0p025_offset_0p04",
+    "explicit_material",
+}
+if (
+    not set(profile_hashes).issubset(complete_profile_ids)
+    or (
+        contact_profile_selection == "all"
+        and set(profile_hashes) != complete_profile_ids
+    )
+    or (
+        contact_profile_selection != "all"
+        and set(profile_hashes) != {contact_profile_selection}
+    )
+):
+    raise SystemExit("locked profile hash map contradicts contact selection")
+supported_reset_strategies = {
+    "pose_restore_v1",
+    "separate_recontact_0p20m_1step_v1",
+}
+expected_reset_selections = {
+    "pose_restore_v1": ["pose_restore_v1"],
+    "separate_recontact_0p20m_1step_v1": [
+        "separate_recontact_0p20m_1step_v1"
+    ],
+    "all": [
+        "pose_restore_v1",
+        "separate_recontact_0p20m_1step_v1",
+    ],
+}
+if (
+    (
+        reset_strategy_selection == "project"
+        and (
+            len(reset_strategy_ids) != 1
+            or reset_strategy_ids[0] not in supported_reset_strategies
+        )
+    )
+    or (
+        reset_strategy_selection != "project"
+        and (
+            reset_strategy_selection not in expected_reset_selections
+            or reset_strategy_ids
+            != expected_reset_selections[reset_strategy_selection]
+        )
+    )
+):
+    raise SystemExit("locked reset strategies contradict reset selection")
 profiles = {
     profile_id: {
         "path": str(Path(physics_directory) / f"{profile_id}.yaml"),
@@ -2863,8 +3388,14 @@ selected_topologies = list(
 )
 if set(selected_topologies) != set(ground_topology_hashes):
     raise SystemExit("locked ground-topology hashes do not match selected pairs")
-if expected_groups != len(environment_topology_pairs) * 6:
+if expected_groups != (
+    len(environment_topology_pairs)
+    * len(profile_hashes)
+    * len(reset_strategy_ids)
+):
     raise SystemExit("expected group count does not match selected topology pairs")
+if expected_runs != expected_groups * int(repeats_text):
+    raise SystemExit("expected run count does not match matrix cardinality")
 topology_environments = {
     pair["ground_topology_id"]: pair["environment_id"]
     for pair in environment_topology_pairs
@@ -2887,7 +3418,7 @@ with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     manifest_reader = csv.DictReader(stream, delimiter="\t", strict=True)
     if manifest_reader.fieldnames != expected_manifest_fieldnames:
         raise SystemExit(
-            "frozen manifest header does not match the 44-column contract"
+            "frozen manifest header does not match the 47-column contract"
         )
     manifest_documents = list(manifest_reader)
 if len(manifest_documents) != expected_runs:
@@ -2922,6 +3453,14 @@ for row_index, row in enumerate(manifest_documents, start=1):
         raise SystemExit(
             f"manifest row {row_index} report schema version must be 3"
         )
+    if row.get("runtime_provenance_schema_version") != "6":
+        raise SystemExit(
+            f"manifest row {row_index} runtime provenance schema version must be 6"
+        )
+    if row.get("reset_strategy_schema_version") != "1":
+        raise SystemExit(
+            f"manifest row {row_index} reset strategy schema version must be 1"
+        )
     try:
         report_document = json.loads(report_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError) as exc:
@@ -2932,12 +3471,34 @@ for row_index, row in enumerate(manifest_documents, start=1):
         raise SystemExit(
             f"manifest row {row_index} report JSON schema version mismatch"
         )
+    provenance = report_document.get("runtime_provenance")
+    simulation = provenance.get("simulation") if isinstance(provenance, dict) else None
+    reset_strategy = (
+        simulation.get("reset_strategy") if isinstance(simulation, dict) else None
+    )
+    reset_strategy_id = row.get("reset_strategy_id")
+    reset_strategy_token = f"reset-v1-{reset_strategy_id}"
+    if (
+        not isinstance(provenance, dict)
+        or provenance.get("schema_version") != 6
+        or not isinstance(reset_strategy, dict)
+        or reset_strategy.get("schema_version") != 1
+        or reset_strategy.get("id") != reset_strategy_id
+        or reset_strategy_token not in reset_strategy_tokens
+    ):
+        raise SystemExit(
+            f"manifest row {row_index} report reset strategy identity mismatch"
+        )
     canonical_report_path = str(report_path.resolve())
     if canonical_report_path in manifest_report_locks:
         raise SystemExit("manifest report paths must be unique")
     manifest_report_locks[canonical_report_path] = {
         "sha256": report_sha256,
         "report_schema_version": 3,
+        "runtime_provenance_schema_version": 6,
+        "reset_strategy_schema_version": 1,
+        "reset_strategy_id": reset_strategy_id,
+        "reset_strategy_token": reset_strategy_token,
         "environment_id": row.get("environment"),
         "ground_topology_id": topology_id,
         "contact_profile_id": row.get("profile_id"),
@@ -2965,6 +3526,14 @@ for selection_index, included in enumerate(selection_included, start=1):
     analysis_report_locks[included_path] = {
         "sha256": included.get("sha256"),
         "report_schema_version": included.get("report_schema_version"),
+        "runtime_provenance_schema_version": included.get(
+            "runtime_provenance_schema_version"
+        ),
+        "reset_strategy_schema_version": included.get(
+            "reset_strategy_schema_version"
+        ),
+        "reset_strategy_id": included.get("reset_strategy_id"),
+        "reset_strategy_token": included.get("reset_strategy_token"),
         "environment_id": included.get("environment_id"),
         "ground_topology_id": included.get("ground_topology_id"),
         "contact_profile_id": included.get("contact_profile_id"),
@@ -2974,16 +3543,25 @@ if analysis_report_locks != manifest_report_locks:
         "aggregate selection does not match frozen manifest/report identities"
     )
 summary = {
-    "schema_version": 5,
+    "schema_version": 6,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
     "schema_contract": {
+        "project_config": 2,
+        "runtime_provenance": 6,
         "motion_report": 3,
-        "aggregate_analysis": 4,
-        "physical_acceptance": 2,
+        "aggregate_analysis": 5,
+        "physical_acceptance": 3,
+        "manifest": 2,
+    },
+    "manifest_contract": {
+        "version": 2,
+        "columns": expected_manifest_fieldnames,
     },
     "environment_selection": environment_selection,
     "ground_topology_selection": ground_topology_selection,
+    "contact_profile_selection": contact_profile_selection,
+    "reset_strategy_selection": reset_strategy_selection,
     "environments": selected_environments,
     "ground_topologies": selected_topologies,
     "environment_topology_pairs": environment_topology_pairs,
@@ -2994,7 +3572,8 @@ summary = {
         "environments": len(selected_environments),
         "environment_topology_pairs": len(environment_topology_pairs),
         "ground_topologies": len(selected_topologies),
-        "profiles": 6,
+        "profiles": len(profile_hashes),
+        "reset_strategies": len(reset_strategy_ids),
     },
     "actual_counts": {
         "manifest_rows": int(manifest_rows_text),
@@ -3050,6 +3629,12 @@ summary = {
             "navigation_mode": "mapping",
             "odometry_mode": "ideal",
             "physics_hz": 60.0,
+        },
+        "reset_strategies": {
+            "selection": reset_strategy_selection,
+            "schema_version": 1,
+            "ids": reset_strategy_ids,
+            "tokens": reset_strategy_tokens,
         },
         "contact_profiles": profiles,
         "ground_topology_profiles": ground_topology_profiles,
@@ -3161,19 +3746,22 @@ for pair_index in "${!matrix_environment_ids[@]}"; do
   topology_id="${matrix_ground_topology_ids[pair_index]}"
   for profile_index in "${!profile_ids[@]}"; do
     for ((repeat = 1; repeat <= repeats; repeat++)); do
-      sequence=$((sequence + 1))
-      if ! run_one_condition \
-          "${sequence}" "${environment_id}" "${topology_id}" \
-          "${profile_ids[profile_index]}" \
-          "${profile_modes[profile_index]}" "${repeat}"; then
-        die "contact A/B failed closed at ${current_run_id}: ${current_failure_reason}"
-      fi
+      for reset_strategy_id in "${reset_strategy_ids[@]}"; do
+        sequence=$((sequence + 1))
+        if ! run_one_condition \
+            "${sequence}" "${environment_id}" "${topology_id}" \
+            "${profile_ids[profile_index]}" \
+            "${profile_modes[profile_index]}" \
+            "${reset_strategy_id}" "${repeat}"; then
+          die "contact A/B failed closed at ${current_run_id}: ${current_failure_reason}"
+        fi
+      done
     done
   done
 done
 
-expected_conditions=$((${#matrix_environment_ids[@]} * ${#profile_ids[@]} * repeats))
-expected_groups=$((${#matrix_environment_ids[@]} * ${#profile_ids[@]}))
+expected_conditions=$((${#matrix_environment_ids[@]} * ${#profile_ids[@]} * ${#reset_strategy_ids[@]} * repeats))
+expected_groups=$((${#matrix_environment_ids[@]} * ${#profile_ids[@]} * ${#reset_strategy_ids[@]}))
 successful_rows="$(
   awk -F $'\t' 'NR > 1 && $6 == "success" {count++} END {print count + 0}' \
     "${manifest}"

@@ -41,6 +41,10 @@ COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES = (
     ("Warehouse", "warehouse_combined32_v1"),
     ("Warehouse", "warehouse_plane_only1_v1"),
 )
+COMPLETE_MATRIX_RESET_STRATEGIES = (
+    "reset-v1-pose_restore_v1",
+    "reset-v1-separate_recontact_0p20m_1step_v1",
+)
 _SHIPPED_TOPOLOGY_ENVIRONMENTS = {
     topology: environment
     for environment, topology in COMPLETE_MATRIX_ENVIRONMENT_TOPOLOGIES
@@ -109,7 +113,7 @@ _RUNTIME_PROVENANCE_KEYS = {
     "contact",
     "git",
 }
-_RUNTIME_PROVENANCE_V5_KEYS = _RUNTIME_PROVENANCE_KEYS | {
+_RUNTIME_PROVENANCE_TOPOLOGY_KEYS = _RUNTIME_PROVENANCE_KEYS | {
     "ground_topology",
 }
 _RESULT_SEGMENT_KEYS = {
@@ -287,7 +291,10 @@ _VELOCITY_DISTRIBUTION_KEYS = {
     "rmse",
 }
 _SCHEMA3_MAX_SAMPLE_AGE_SEC = 0.5
-_PHYSICAL_ACCEPTANCE_POLICY_ID = "skid_steer_plan_8_7_v2"
+_PHYSICAL_ACCEPTANCE_POLICY_IDS = {
+    5: "skid_steer_plan_8_7_v2",
+    6: "skid_steer_plan_8_7_v3",
+}
 _PHYSICAL_ACCEPTANCE_THRESHOLDS = {
     "forward_abs_lateral_drift_max_m": 0.05,
     "backward_abs_lateral_drift_max_m": 0.08,
@@ -299,14 +306,17 @@ _PHYSICAL_ACCEPTANCE_THRESHOLDS = {
     "stop_angular_velocity_threshold_max_radps": 0.05,
     "stop_wheel_velocity_threshold_max_radps": 0.20,
 }
-_PHYSICAL_ACCEPTANCE_APPLICABILITY = {
-    "required_motion_report_schema": 3,
-    "required_runtime_provenance_schema": 5,
-    "required_environment_id": "SimplePlane",
-    "required_ground_topology_id": "simple_plane_only1_v1",
-    "required_odometry_mode": "ideal",
-    "minimum_unique_repeats_per_group": 3,
-}
+def _physical_acceptance_applicability(
+    runtime_provenance_schema: int,
+) -> dict[str, Any]:
+    return {
+        "required_motion_report_schema": 3,
+        "required_runtime_provenance_schema": runtime_provenance_schema,
+        "required_environment_id": "SimplePlane",
+        "required_ground_topology_id": "simple_plane_only1_v1",
+        "required_odometry_mode": "ideal",
+        "minimum_unique_repeats_per_group": 3,
+    }
 _PHYSICAL_STEADY_STATE_MEASUREMENT_BASIS = (
     "actual_velocity.steady_state_window.angular_z_radps.mean over the "
     "final_half_of_command_interval window"
@@ -388,17 +398,38 @@ class InputRecord:
     environment_id: str
     odometry_mode: str
     ground_topology_id: str | None
+    reset_strategy_schema_version: int | None
+    reset_strategy_id: str | None
+    reset_strategy_token: str | None
     contact_profile_id: str
     global_lock: dict[str, Any]
     environment_lock: dict[str, Any]
     topology_lock: dict[str, Any] | None
     topology_ab_contact_lock: dict[str, Any] | None
+    reset_strategy_lock: dict[str, Any] | None
+    reset_strategy_definition_lock: dict[str, Any] | None
+    reset_contact_probe_lock: dict[str, Any] | None
     profile_lock: dict[str, Any]
     contact_lock: dict[str, Any]
     physical_stop_contract: dict[str, float] | None
     physical_yaw_rate_metrics: dict[str, dict[str, float]] | None
     physical_wheel_direction_evidence: dict[str, dict[str, Any]] | None
     segments: dict[str, dict[str, float]]
+
+
+@dataclass(frozen=True)
+class _SourceLock:
+    path: str
+    sha256: str
+    canonical_sha256: str
+    report_schema_version: int
+    environment_id: str
+    ground_topology_id: str
+    contact_profile_id: str
+    runtime_provenance_schema_version: int
+    reset_strategy_schema_version: int | None = None
+    reset_strategy_id: str | None = None
+    reset_strategy_token: str | None = None
 
 
 def _finite(value: Any, location: str) -> float:
@@ -559,6 +590,25 @@ def _identifier_values(values: Sequence[str], option: str) -> tuple[str, ...]:
         raise ConfigurationError(f"{option} values must be path-safe identifiers")
     if len(set(parsed)) != len(parsed):
         raise ConfigurationError(f"{option} values must be unique")
+    return parsed
+
+
+def _reset_strategy_token(schema_version: int, strategy_id: str) -> str:
+    """Return the canonical, path-safe identity used in v6 group keys."""
+
+    return f"reset-v{schema_version}-{strategy_id}"
+
+
+def _reset_strategy_selector_values(
+    values: Sequence[str], option: str
+) -> tuple[str, ...]:
+    parsed = _identifier_values(values, option)
+    for value in parsed:
+        match = re.fullmatch(r"reset-v([1-9][0-9]*)-(.+)", value)
+        if match is None or not _IDENTIFIER_PATTERN.fullmatch(match.group(2)):
+            raise ConfigurationError(
+                f"{option} values must use canonical reset-v<schema>-<id> tokens"
+            )
     return parsed
 
 
@@ -2561,6 +2611,9 @@ def _identity_locks(
     dict[str, Any],
     dict[str, Any] | None,
     dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
+    dict[str, Any] | None,
     dict[str, Any],
     dict[str, Any],
 ]:
@@ -2573,11 +2626,36 @@ def _identity_locks(
     )
     git = _mapping(provenance.get("git"), "runtime_provenance.git")
     contact = _mapping(provenance.get("contact"), "runtime_provenance.contact")
+    provenance_schema = provenance.get("schema_version")
+    locked_simulation = dict(simulation)
+    reset_strategy_lock: dict[str, Any] | None = None
+    reset_strategy_definition_lock: dict[str, Any] | None = None
+    reset_contact_probe_lock: dict[str, Any] | None = None
+    if provenance_schema == 6:
+        reset_strategy = _mapping(
+            simulation.get("reset_strategy"),
+            "runtime_provenance.simulation.reset_strategy",
+        )
+        reset_strategy_lock = dict(reset_strategy)
+        reset_contact_probe_lock = dict(
+            _mapping(
+                reset_strategy.get("contact_probe"),
+                "runtime_provenance.simulation.reset_strategy.contact_probe",
+            )
+        )
+        reset_strategy_definition_lock = {
+            key: reset_strategy[key]
+            for key in sorted(reset_strategy)
+            if key != "contact_probe"
+        }
+        # Reset strategy is the v6 treatment variable.  Every other simulation
+        # field remains a cross-treatment global lock.
+        del locked_simulation["reset_strategy"]
     global_lock = {
         # Lock complete validated mappings so future nested schema additions
         # cannot become silent experimental variables.
         "robot": dict(robot),
-        "simulation": dict(simulation),
+        "simulation": locked_simulation,
         "git": dict(git),
         "motion_config_file": _string(
             report.get("config_file"), "report.config_file"
@@ -2603,7 +2681,7 @@ def _identity_locks(
     }
     topology_lock: dict[str, Any] | None = None
     topology_ab_contact_lock: dict[str, Any] | None = None
-    if provenance.get("schema_version") == 5:
+    if provenance_schema in {5, 6}:
         collider_contract = _mapping(
             contact.get("collider_contract"),
             "runtime_provenance.contact.collider_contract",
@@ -2686,7 +2764,7 @@ def _identity_locks(
         "explicit_materials": contact["explicit_materials"],
         "thresholds_authored": contact["thresholds_authored"],
     }
-    if provenance.get("schema_version") == 5:
+    if provenance_schema in {5, 6}:
         # A topology A/B may change only the topology overlay and the exact
         # ground collider/binding path set.  Scene thresholds, wheel-side
         # evidence, and material values must remain identical for the same
@@ -2718,6 +2796,9 @@ def _identity_locks(
         environment_lock,
         topology_lock,
         topology_ab_contact_lock,
+        reset_strategy_lock,
+        reset_strategy_definition_lock,
+        reset_contact_probe_lock,
         profile_lock,
         contact_lock,
     )
@@ -2779,17 +2860,17 @@ def _validated_record(
     if (
         isinstance(provenance_schema, bool)
         or not isinstance(provenance_schema, int)
-        or provenance_schema not in {3, 4, 5}
+        or provenance_schema not in {3, 4, 5, 6}
     ):
         raise ConfigurationError(
             f"{location}.runtime_provenance.schema_version must be integer "
-            "3, 4, or 5"
+            "3, 4, 5, or 6"
         )
     _exact_keys(
         provenance,
         (
-            _RUNTIME_PROVENANCE_V5_KEYS
-            if provenance_schema == 5
+            _RUNTIME_PROVENANCE_TOPOLOGY_KEYS
+            if provenance_schema in {5, 6}
             else _RUNTIME_PROVENANCE_KEYS
         ),
         f"{location}.runtime_provenance",
@@ -2926,7 +3007,7 @@ def _validated_record(
                 "a non-empty sorted unique list"
             )
     physical_stop_contract = None
-    if provenance_schema == 5:
+    if provenance_schema in {5, 6}:
         physical_stop_contract = {
             "stable_duration_sec": _nonnegative(
                 stop_configuration.get("stable_duration_sec"),
@@ -3041,7 +3122,7 @@ def _validated_record(
             f"{location}.timestamp_integrity",
         )
     physical_yaw_rate_metrics = None
-    if provenance_schema == 5 and report_schema_version in {2, 3}:
+    if provenance_schema in {5, 6} and report_schema_version in {2, 3}:
         physical_yaw_rate_metrics = {}
         for segment_id, motion, _linear, angular, _duration in _SEGMENT_SPECS:
             if motion not in {"rotate_left", "rotate_right"}:
@@ -3058,11 +3139,14 @@ def _validated_record(
         environment_lock,
         topology_lock,
         topology_ab_contact_lock,
+        reset_strategy_lock,
+        reset_strategy_definition_lock,
+        reset_contact_probe_lock,
         profile_lock,
         contact_lock,
     ) = _identity_locks(report, provenance, configuration)
     ground_topology_id = None
-    if provenance_schema == 5:
+    if provenance_schema in {5, 6}:
         topology = _mapping(
             provenance.get("ground_topology"),
             f"{location}.runtime_provenance.ground_topology",
@@ -3083,6 +3167,32 @@ def _validated_record(
                 f"invalid: {environment_id}::{ground_topology_id}; expected "
                 f"{shipped_environment}::{ground_topology_id}"
             )
+    reset_strategy_schema_version = None
+    reset_strategy_id = None
+    reset_strategy_token = None
+    if provenance_schema == 6:
+        reset_strategy = _mapping(
+            simulation.get("reset_strategy"),
+            f"{location}.runtime_provenance.simulation.reset_strategy",
+        )
+        reset_strategy_schema_version = _positive_integer_value(
+            reset_strategy.get("schema_version"),
+            f"{location}.runtime_provenance.simulation.reset_strategy."
+            "schema_version",
+        )
+        reset_strategy_id = _string(
+            reset_strategy.get("id"),
+            f"{location}.runtime_provenance.simulation.reset_strategy.id",
+        )
+        if not _IDENTIFIER_PATTERN.fullmatch(reset_strategy_id):
+            raise ConfigurationError(
+                f"{location}.runtime_provenance.simulation.reset_strategy.id "
+                "must be a path-safe identifier"
+            )
+        reset_strategy_token = _reset_strategy_token(
+            reset_strategy_schema_version,
+            reset_strategy_id,
+        )
     contact_profile_id = _string(
         contact.get("profile_id"),
         f"{location}.runtime_provenance.contact.profile_id",
@@ -3096,11 +3206,17 @@ def _validated_record(
         environment_id=environment_id,
         odometry_mode=odometry_mode,
         ground_topology_id=ground_topology_id,
+        reset_strategy_schema_version=reset_strategy_schema_version,
+        reset_strategy_id=reset_strategy_id,
+        reset_strategy_token=reset_strategy_token,
         contact_profile_id=contact_profile_id,
         global_lock=global_lock,
         environment_lock=environment_lock,
         topology_lock=topology_lock,
         topology_ab_contact_lock=topology_ab_contact_lock,
+        reset_strategy_lock=reset_strategy_lock,
+        reset_strategy_definition_lock=reset_strategy_definition_lock,
+        reset_contact_probe_lock=reset_contact_probe_lock,
         profile_lock=profile_lock,
         contact_lock=contact_lock,
         physical_stop_contract=physical_stop_contract,
@@ -3184,6 +3300,20 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
                 "sha256": record.sha256,
                 "canonical_sha256": record.canonical_sha256,
                 "report_schema_version": record.report_schema_version,
+                **(
+                    {
+                        "runtime_provenance_schema_version": (
+                            record.runtime_provenance_schema
+                        ),
+                        "reset_strategy_schema_version": (
+                            record.reset_strategy_schema_version
+                        ),
+                        "reset_strategy_id": record.reset_strategy_id,
+                        "reset_strategy_token": record.reset_strategy_token,
+                    }
+                    if record.runtime_provenance_schema == 6
+                    else {}
+                ),
             }
             for record in records
         ],
@@ -3251,6 +3381,13 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
         summary["odometry_mode"] = first.odometry_mode
         summary["ground_topology_id"] = first.ground_topology_id
         summary["ground_topology_contract"] = first.topology_lock
+    if first.runtime_provenance_schema == 6:
+        summary["reset_strategy_schema_version"] = (
+            first.reset_strategy_schema_version
+        )
+        summary["reset_strategy_id"] = first.reset_strategy_id
+        summary["reset_strategy_token"] = first.reset_strategy_token
+        summary["reset_strategy_contract"] = first.reset_strategy_lock
     return summary
 
 
@@ -3269,7 +3406,8 @@ def _physical_repeat_result(
         or wheel_direction_evidence is None
     ):
         raise ConfigurationError(
-            f"schema-5 report {record.path} lacks a physical acceptance contract"
+            f"schema-{record.runtime_provenance_schema} report {record.path} "
+            "lacks a physical acceptance contract"
         )
     thresholds = _PHYSICAL_ACCEPTANCE_THRESHOLDS
     checks: dict[str, dict[str, Any]] = {}
@@ -3426,9 +3564,22 @@ def _physical_repeat_result(
 def _physical_acceptance(
     grouped: Mapping[tuple[str, ...], Sequence[InputRecord]],
 ) -> dict[str, Any]:
-    """Build a non-ranking, every-repeat schema-v2 plan 8.7 verdict."""
+    """Build a non-ranking, every-repeat plan 8.7 verdict."""
 
-    applicability = dict(_PHYSICAL_ACCEPTANCE_APPLICABILITY)
+    runtime_schemas = {
+        record.runtime_provenance_schema
+        for records in grouped.values()
+        for record in records
+    }
+    if len(runtime_schemas) != 1 or not runtime_schemas <= {5, 6}:
+        raise ConfigurationError(
+            "physical acceptance requires one homogeneous runtime provenance "
+            "schema 5 or 6 batch"
+        )
+    runtime_provenance_schema = next(iter(runtime_schemas))
+    applicability = _physical_acceptance_applicability(
+        runtime_provenance_schema
+    )
     group_results: dict[str, dict[str, Any]] = {}
     applicable_groups: list[str] = []
     not_applicable_groups: list[str] = []
@@ -3440,9 +3591,10 @@ def _physical_acceptance(
         not_applicable_reasons = []
         if any(record.report_schema_version != 3 for record in records):
             not_applicable_reasons.append("motion_report_schema_not_3")
-        if first.runtime_provenance_schema != 5:
+        if first.runtime_provenance_schema != runtime_provenance_schema:
             not_applicable_reasons.append(
-                "runtime_provenance_schema_not_5"
+                "runtime_provenance_schema_not_"
+                f"{runtime_provenance_schema}"
             )
         if first.environment_id != "SimplePlane":
             not_applicable_reasons.append("environment_not_SimplePlane")
@@ -3511,8 +3663,10 @@ def _physical_acceptance(
         }
         (passing_groups if passed else failed_groups).append(group_id)
     return {
-        "schema_version": 2,
-        "policy_id": _PHYSICAL_ACCEPTANCE_POLICY_ID,
+        "schema_version": 3 if runtime_provenance_schema == 6 else 2,
+        "policy_id": _PHYSICAL_ACCEPTANCE_POLICY_IDS[
+            runtime_provenance_schema
+        ],
         "evaluation_basis": "every_repeat",
         "ranking_policy": "none; pass/fail only",
         "applicability": applicability,
@@ -3889,37 +4043,32 @@ def _validated_physical_repeat_check_outcomes(
 
 
 def _revalidated_physical_acceptance_from_sources(
-    source_locks: Sequence[
-        tuple[str, str, str, int, str, str, str]
-    ],
+    source_locks: Sequence[_SourceLock],
     wheel_radius_m: float,
     expected_repeats: int,
     expected_global_lock: Mapping[str, Any],
+    expected_runtime_provenance_schema: int,
 ) -> dict[str, Any]:
-    """Re-read immutable reports so accounting is anchored to source bytes."""
+    """Re-read immutable reports and rebuild source-anchored evidence."""
 
-    grouped: dict[tuple[str, str, str], list[InputRecord]] = {}
+    grouped: dict[tuple[str, ...], list[InputRecord]] = {}
     environment_references: dict[str, InputRecord] = {}
     topology_references: dict[tuple[str, str], InputRecord] = {}
     topology_ab_contact_references: dict[tuple[str, str], InputRecord] = {}
+    reset_strategy_references: dict[tuple[str, str, str], InputRecord] = {}
+    reset_strategy_definition_references: dict[str, InputRecord] = {}
+    reset_contact_probe_references: dict[tuple[str, str], InputRecord] = {}
+    reset_ab_contact_references: dict[tuple[str, str, str], InputRecord] = {}
     profile_references: dict[str, InputRecord] = {}
-    for index, (
-        path,
-        expected_raw_sha256,
-        expected_canonical_sha256,
-        expected_report_schema,
-        expected_environment,
-        expected_topology,
-        expected_profile,
-    ) in enumerate(source_locks):
+    for index, source_lock in enumerate(source_locks):
         location = f"analysis.selection.included[{index}]"
-        source = Path(path)
+        source = Path(source_lock.path)
         try:
             if (
                 not source.is_absolute()
                 or source.is_symlink()
                 or not source.is_file()
-                or str(source.resolve(strict=True)) != path
+                or str(source.resolve(strict=True)) != source_lock.path
             ):
                 raise ConfigurationError(
                     f"{location}.path must identify one canonical regular report file"
@@ -3930,7 +4079,7 @@ def _revalidated_physical_acceptance_from_sources(
                 f"{location}.path cannot be read for source revalidation: {exc}"
             ) from exc
         observed_raw_sha256 = hashlib.sha256(content).hexdigest()
-        if observed_raw_sha256 != expected_raw_sha256:
+        if observed_raw_sha256 != source_lock.sha256:
             raise ConfigurationError(
                 f"{location}.sha256 no longer matches the source report"
             )
@@ -3938,7 +4087,7 @@ def _revalidated_physical_acceptance_from_sources(
         observed_canonical_sha256 = hashlib.sha256(
             _canonical(document).encode("utf-8")
         ).hexdigest()
-        if observed_canonical_sha256 != expected_canonical_sha256:
+        if observed_canonical_sha256 != source_lock.canonical_sha256:
             raise ConfigurationError(
                 f"{location}.canonical_sha256 no longer matches the source report"
             )
@@ -3954,20 +4103,33 @@ def _revalidated_physical_acceptance_from_sources(
             record.environment_id,
             record.ground_topology_id,
             record.contact_profile_id,
+            record.runtime_provenance_schema,
+            record.reset_strategy_schema_version,
+            record.reset_strategy_id,
+            record.reset_strategy_token,
         )
         expected_identity = (
-            expected_report_schema,
-            expected_environment,
-            expected_topology,
-            expected_profile,
+            source_lock.report_schema_version,
+            source_lock.environment_id,
+            source_lock.ground_topology_id,
+            source_lock.contact_profile_id,
+            source_lock.runtime_provenance_schema_version,
+            source_lock.reset_strategy_schema_version,
+            source_lock.reset_strategy_id,
+            source_lock.reset_strategy_token,
         )
         if observed_identity != expected_identity:
             raise ConfigurationError(
                 f"{location} identity no longer matches the source report"
             )
-        if record.runtime_provenance_schema != 5 or record.ground_topology_id is None:
+        if (
+            record.runtime_provenance_schema
+            != expected_runtime_provenance_schema
+            or record.ground_topology_id is None
+        ):
             raise ConfigurationError(
-                f"{location} source report must use runtime provenance schema 5"
+                f"{location} source report must use runtime provenance schema "
+                f"{expected_runtime_provenance_schema}"
             )
         if _canonical(record.global_lock) != _canonical(expected_global_lock):
             raise ConfigurationError(
@@ -4009,6 +4171,63 @@ def _revalidated_physical_acceptance_from_sources(
             raise ConfigurationError(
                 f"{location} topology A/B contact invariants differ within batch"
             )
+        if expected_runtime_provenance_schema == 6:
+            if (
+                record.reset_strategy_token is None
+                or record.reset_strategy_lock is None
+                or record.reset_strategy_definition_lock is None
+                or record.reset_contact_probe_lock is None
+            ):
+                raise ConfigurationError(
+                    f"{location} lacks a reset strategy identity lock"
+                )
+            reset_key = (
+                record.environment_id,
+                record.ground_topology_id,
+                record.reset_strategy_token,
+            )
+            reset_reference = reset_strategy_references.setdefault(
+                reset_key, record
+            )
+            if _canonical(record.reset_strategy_lock) != _canonical(
+                reset_reference.reset_strategy_lock
+            ):
+                raise ConfigurationError(
+                    f"{location} reset strategy identity differs within batch"
+                )
+            definition_reference = reset_strategy_definition_references.setdefault(
+                record.reset_strategy_token, record
+            )
+            if _canonical(record.reset_strategy_definition_lock) != _canonical(
+                definition_reference.reset_strategy_definition_lock
+            ):
+                raise ConfigurationError(
+                    f"{location} reset strategy definition differs within batch"
+                )
+            probe_key = (record.environment_id, record.ground_topology_id)
+            probe_reference = reset_contact_probe_references.setdefault(
+                probe_key, record
+            )
+            if _canonical(record.reset_contact_probe_lock) != _canonical(
+                probe_reference.reset_contact_probe_lock
+            ):
+                raise ConfigurationError(
+                    f"{location} reset contact-probe invariant differs within batch"
+                )
+            reset_contact_key = (
+                record.environment_id,
+                record.ground_topology_id,
+                record.contact_profile_id,
+            )
+            reset_contact_reference = reset_ab_contact_references.setdefault(
+                reset_contact_key, record
+            )
+            if _canonical(record.contact_lock) != _canonical(
+                reset_contact_reference.contact_lock
+            ):
+                raise ConfigurationError(
+                    f"{location} reset A/B contact identity differs within batch"
+                )
         profile_reference = profile_references.setdefault(
             record.contact_profile_id, record
         )
@@ -4019,10 +4238,23 @@ def _revalidated_physical_acceptance_from_sources(
                 f"{location} profile identity differs within its batch"
             )
         group_key = (
-            record.environment_id,
-            record.ground_topology_id,
-            record.contact_profile_id,
+            (
+                record.environment_id,
+                record.ground_topology_id,
+                record.reset_strategy_token,
+                record.contact_profile_id,
+            )
+            if expected_runtime_provenance_schema == 6
+            else (
+                record.environment_id,
+                record.ground_topology_id,
+                record.contact_profile_id,
+            )
         )
+        if any(value is None for value in group_key):
+            raise ConfigurationError(
+                f"{location} source report has an incomplete group identity"
+            )
         grouped.setdefault(group_key, []).append(record)
     for group_key, records in grouped.items():
         reference_contact = records[0].contact_lock
@@ -4038,14 +4270,51 @@ def _revalidated_physical_acceptance_from_sources(
         raise ConfigurationError(
             "source reports must contain exactly expected_repeats per group"
         )
-    return _physical_acceptance(grouped)
+    source_evidence: dict[str, Any] = {
+        "physical_acceptance": _physical_acceptance(grouped),
+    }
+    if expected_runtime_provenance_schema == 6:
+        source_evidence.update(
+            {
+                "reset_strategy_contracts": {
+                    f"{environment_id}::{topology_id}::{strategy_token}": (
+                        reference.reset_strategy_lock
+                    )
+                    for (
+                        environment_id,
+                        topology_id,
+                        strategy_token,
+                    ), reference in sorted(reset_strategy_references.items())
+                },
+                "reset_strategy_definitions": {
+                    strategy_token: reference.reset_strategy_definition_lock
+                    for strategy_token, reference in sorted(
+                        reset_strategy_definition_references.items()
+                    )
+                },
+                "reset_contact_probe_contracts": {
+                    f"{environment_id}::{topology_id}": (
+                        reference.reset_contact_probe_lock
+                    )
+                    for (
+                        environment_id,
+                        topology_id,
+                    ), reference in sorted(reset_contact_probe_references.items())
+                },
+                "group_reset_strategy_contracts": {
+                    "::".join(group_key): records[0].reset_strategy_lock
+                    for group_key, records in sorted(grouped.items())
+                },
+            }
+        )
+    return source_evidence
 
 
 def validate_physical_acceptance_accounting(
     analysis: Mapping[str, Any],
     expected_repeats: int,
 ) -> None:
-    """Fail closed when a schema-v2 physical verdict loses repeat evidence."""
+    """Fail closed when a physical verdict loses repeat evidence."""
 
     if (
         isinstance(expected_repeats, bool)
@@ -4054,10 +4323,17 @@ def validate_physical_acceptance_accounting(
     ):
         raise ConfigurationError("expected_repeats must be a positive integer")
     analysis_mapping = _mapping(analysis, "analysis")
-    _exact_integer(
-        analysis_mapping.get("schema_version"),
-        4,
-        "analysis.schema_version",
+    analysis_schema_version = analysis_mapping.get("schema_version")
+    if (
+        isinstance(analysis_schema_version, bool)
+        or not isinstance(analysis_schema_version, int)
+        or analysis_schema_version not in {4, 5}
+    ):
+        raise ConfigurationError(
+            "analysis.schema_version must be integer 4 or 5"
+        )
+    expected_runtime_provenance_schema = (
+        6 if analysis_schema_version == 5 else 5
     )
     selection_policy = _mapping(
         analysis_mapping.get("selection_policy"),
@@ -4068,7 +4344,7 @@ def validate_physical_acceptance_accounting(
     )
     _exact_integer(
         selection_runtime_provenance_schema,
-        5,
+        expected_runtime_provenance_schema,
         "analysis.selection_policy.required_runtime_provenance_schema",
     )
     raw_expected_profiles = _sequence(
@@ -4085,6 +4361,24 @@ def validate_physical_acceptance_accounting(
     if len(selected_profiles) != len(set(selected_profiles)):
         raise ConfigurationError(
             "analysis.selection_policy.expected_profiles must be unique"
+        )
+    selected_reset_strategies: list[str] = []
+    if expected_runtime_provenance_schema == 6:
+        raw_expected_reset_strategies = _sequence(
+            selection_policy.get("expected_reset_strategies"),
+            "analysis.selection_policy.expected_reset_strategies",
+        )
+        selected_reset_strategies = list(
+            _reset_strategy_selector_values(
+                [
+                    _string(
+                        token,
+                        "analysis.selection_policy.expected_reset_strategies",
+                    )
+                    for token in raw_expected_reset_strategies
+                ],
+                "analysis.selection_policy.expected_reset_strategies",
+            )
         )
     locked_inputs = _mapping(
         analysis_mapping.get("locked_inputs"),
@@ -4157,11 +4451,16 @@ def validate_physical_acceptance_accounting(
     )
     _exact_integer(
         acceptance.get("schema_version"),
-        2,
+        3 if expected_runtime_provenance_schema == 6 else 2,
         "analysis.physical_acceptance.schema_version",
     )
     for field, expected in (
-        ("policy_id", _PHYSICAL_ACCEPTANCE_POLICY_ID),
+        (
+            "policy_id",
+            _PHYSICAL_ACCEPTANCE_POLICY_IDS[
+                expected_runtime_provenance_schema
+            ],
+        ),
         ("evaluation_basis", "every_repeat"),
         ("ranking_policy", "none; pass/fail only"),
         (
@@ -4183,11 +4482,17 @@ def validate_physical_acceptance_accounting(
     )
     _exact_keys(
         applicability_contract,
-        set(_PHYSICAL_ACCEPTANCE_APPLICABILITY),
+        set(
+            _physical_acceptance_applicability(
+                expected_runtime_provenance_schema
+            )
+        ),
         "analysis.physical_acceptance.applicability",
     )
     if _canonical(applicability_contract) != _canonical(
-        _PHYSICAL_ACCEPTANCE_APPLICABILITY
+        _physical_acceptance_applicability(
+            expected_runtime_provenance_schema
+        )
     ):
         raise ConfigurationError(
             "analysis.physical_acceptance.applicability does not match the "
@@ -4255,35 +4560,34 @@ def validate_physical_acceptance_accounting(
             "analysis.selection.included count must equal analysis groups times "
             "expected_repeats"
         )
-    selection_by_group: dict[
-        str,
-        set[tuple[str, str, str, int, str, str, str]],
-    ] = {}
-    selection_identities: set[
-        tuple[str, str, str, int, str, str, str]
-    ] = set()
+    selection_by_group: dict[str, set[tuple[Any, ...]]] = {}
+    selection_identities: set[tuple[Any, ...]] = set()
     selection_paths: set[str] = set()
     selection_raw_hashes: set[str] = set()
     selection_canonical_hashes: set[str] = set()
-    source_locks: list[
-        tuple[str, str, str, int, str, str, str]
-    ] = []
+    source_locks: list[_SourceLock] = []
     for index, raw_included in enumerate(included):
         included_location = f"analysis.selection.included[{index}]"
         item = _mapping(raw_included, included_location)
-        _exact_keys(
-            item,
-            {
-                "path",
-                "sha256",
-                "canonical_sha256",
-                "report_schema_version",
-                "environment_id",
-                "ground_topology_id",
-                "contact_profile_id",
-            },
-            included_location,
-        )
+        expected_included_keys = {
+            "path",
+            "sha256",
+            "canonical_sha256",
+            "report_schema_version",
+            "environment_id",
+            "ground_topology_id",
+            "contact_profile_id",
+        }
+        if expected_runtime_provenance_schema == 6:
+            expected_included_keys.update(
+                {
+                    "runtime_provenance_schema_version",
+                    "reset_strategy_schema_version",
+                    "reset_strategy_id",
+                    "reset_strategy_token",
+                }
+            )
+        _exact_keys(item, expected_included_keys, included_location)
         path = _string(item.get("path"), f"{included_location}.path")
         raw_hash = _sha256(
             item.get("sha256"), f"{included_location}.sha256"
@@ -4314,8 +4618,44 @@ def validate_physical_acceptance_accounting(
             item.get("contact_profile_id"),
             f"{included_location}.contact_profile_id",
         )
+        reset_strategy_schema_version = None
+        reset_strategy_id = None
+        reset_strategy_token = None
+        if expected_runtime_provenance_schema == 6:
+            _exact_integer(
+                item.get("runtime_provenance_schema_version"),
+                6,
+                f"{included_location}.runtime_provenance_schema_version",
+            )
+            reset_strategy_schema_version = _positive_integer_value(
+                item.get("reset_strategy_schema_version"),
+                f"{included_location}.reset_strategy_schema_version",
+            )
+            reset_strategy_id = _string(
+                item.get("reset_strategy_id"),
+                f"{included_location}.reset_strategy_id",
+            )
+            reset_strategy_token = _string(
+                item.get("reset_strategy_token"),
+                f"{included_location}.reset_strategy_token",
+            )
+            expected_token = _reset_strategy_token(
+                reset_strategy_schema_version, reset_strategy_id
+            )
+            if reset_strategy_token != expected_token:
+                raise ConfigurationError(
+                    f"{included_location}.reset_strategy_token must be "
+                    f"{expected_token!r}"
+                )
         group_id = "::".join(
-            (environment_id, ground_topology_id, contact_profile_id)
+            (
+                environment_id,
+                ground_topology_id,
+                reset_strategy_token,
+                contact_profile_id,
+            )
+            if reset_strategy_token is not None
+            else (environment_id, ground_topology_id, contact_profile_id)
         )
         if group_id not in analysis_group_ids:
             raise ConfigurationError(
@@ -4329,13 +4669,35 @@ def validate_physical_acceptance_accounting(
             environment_id,
             ground_topology_id,
             contact_profile_id,
+            expected_runtime_provenance_schema,
+            reset_strategy_schema_version,
+            reset_strategy_id,
+            reset_strategy_token,
         )
         selection_identities.add(identity)
         selection_paths.add(path)
         selection_raw_hashes.add(raw_hash)
         selection_canonical_hashes.add(canonical_hash)
         selection_by_group.setdefault(group_id, set()).add(identity)
-        source_locks.append(identity)
+        source_locks.append(
+            _SourceLock(
+                path=path,
+                sha256=raw_hash,
+                canonical_sha256=canonical_hash,
+                report_schema_version=report_schema_version,
+                environment_id=environment_id,
+                ground_topology_id=ground_topology_id,
+                contact_profile_id=contact_profile_id,
+                runtime_provenance_schema_version=(
+                    expected_runtime_provenance_schema
+                ),
+                reset_strategy_schema_version=(
+                    reset_strategy_schema_version
+                ),
+                reset_strategy_id=reset_strategy_id,
+                reset_strategy_token=reset_strategy_token,
+            )
+        )
     if not all(
         len(values) == expected_included_count
         for values in (
@@ -4363,6 +4725,20 @@ def validate_physical_acceptance_accounting(
         raise ConfigurationError(
             "analysis.selection_policy.expected_profiles must exactly match "
             "selected contact profiles"
+        )
+    observed_selection_reset_strategies = {
+        identity[10]
+        for identity in selection_identities
+        if identity[10] is not None
+    }
+    if (
+        selected_reset_strategies
+        and set(selected_reset_strategies)
+        != observed_selection_reset_strategies
+    ):
+        raise ConfigurationError(
+            "analysis.selection_policy.expected_reset_strategies must exactly "
+            "match selected reset strategies"
         )
 
     matrix = _mapping(analysis_mapping.get("matrix"), "analysis.matrix")
@@ -4396,7 +4772,9 @@ def validate_physical_acceptance_accounting(
         )
     required_matrix_groups = matrix_group_list("required_groups")
     expected_required_matrix_groups = (
-        sorted(analysis_group_ids) if selected_profiles else []
+        sorted(analysis_group_ids)
+        if selected_profiles or selected_reset_strategies
+        else []
     )
     if required_matrix_groups != expected_required_matrix_groups:
         raise ConfigurationError(
@@ -4504,23 +4882,29 @@ def validate_physical_acceptance_accounting(
         expected_paths: set[str] = set()
         expected_raw_hashes: set[str] = set()
         expected_canonical_hashes: set[str] = set()
-        group_report_identities: set[tuple[str, str, str, int]] = set()
+        group_report_identities: set[tuple[Any, ...]] = set()
         report_schema_versions: list[int] = []
         for index, raw_report in enumerate(input_reports):
             report_location = (
                 f"analysis.groups.{group_id}.input_reports[{index}]"
             )
             report = _mapping(raw_report, report_location)
-            _exact_keys(
-                report,
-                {
-                    "path",
-                    "sha256",
-                    "canonical_sha256",
-                    "report_schema_version",
-                },
-                report_location,
-            )
+            expected_report_keys = {
+                "path",
+                "sha256",
+                "canonical_sha256",
+                "report_schema_version",
+            }
+            if expected_runtime_provenance_schema == 6:
+                expected_report_keys.update(
+                    {
+                        "runtime_provenance_schema_version",
+                        "reset_strategy_schema_version",
+                        "reset_strategy_id",
+                        "reset_strategy_token",
+                    }
+                )
+            _exact_keys(report, expected_report_keys, report_location)
             path = _string(report.get("path"), f"{report_location}.path")
             raw_hash = _sha256(
                 report.get("sha256"), f"{report_location}.sha256"
@@ -4540,8 +4924,45 @@ def validate_physical_acceptance_accounting(
                     "1, 2, or 3"
                 )
             report_schema_versions.append(report_schema_version)
+            report_reset_identity: tuple[Any, ...] = ()
+            if expected_runtime_provenance_schema == 6:
+                _exact_integer(
+                    report.get("runtime_provenance_schema_version"),
+                    6,
+                    f"{report_location}.runtime_provenance_schema_version",
+                )
+                report_reset_schema = _positive_integer_value(
+                    report.get("reset_strategy_schema_version"),
+                    f"{report_location}.reset_strategy_schema_version",
+                )
+                report_reset_id = _string(
+                    report.get("reset_strategy_id"),
+                    f"{report_location}.reset_strategy_id",
+                )
+                report_reset_token = _string(
+                    report.get("reset_strategy_token"),
+                    f"{report_location}.reset_strategy_token",
+                )
+                if report_reset_token != _reset_strategy_token(
+                    report_reset_schema, report_reset_id
+                ):
+                    raise ConfigurationError(
+                        f"{report_location}.reset_strategy_token contradicts "
+                        "its schema version and id"
+                    )
+                report_reset_identity = (
+                    report_reset_schema,
+                    report_reset_id,
+                    report_reset_token,
+                )
             group_report_identities.add(
-                (path, raw_hash, canonical_hash, report_schema_version)
+                (
+                    path,
+                    raw_hash,
+                    canonical_hash,
+                    report_schema_version,
+                    *report_reset_identity,
+                )
             )
             expected_report_identities.add((path, raw_hash, canonical_hash))
             expected_paths.add(path)
@@ -4572,11 +4993,11 @@ def validate_physical_acceptance_accounting(
         if (
             isinstance(runtime_provenance_schema, bool)
             or not isinstance(runtime_provenance_schema, int)
-            or runtime_provenance_schema not in {3, 4, 5}
+            or runtime_provenance_schema not in {3, 4, 5, 6}
         ):
             raise ConfigurationError(
                 f"analysis.groups.{group_id}.runtime_provenance_schema must "
-                "be integer 3, 4, or 5"
+                "be integer 3, 4, 5, or 6"
             )
         if runtime_provenance_schema != selection_runtime_provenance_schema:
             raise ConfigurationError(
@@ -4604,31 +5025,74 @@ def validate_physical_acceptance_accounting(
             analysis_group.get("contact_profile_id"),
             f"analysis.groups.{group_id}.contact_profile_id",
         )
+        reset_strategy_schema_version = None
+        reset_strategy_id = None
+        reset_strategy_token = None
+        if expected_runtime_provenance_schema == 6:
+            reset_strategy_schema_version = _positive_integer_value(
+                analysis_group.get("reset_strategy_schema_version"),
+                f"analysis.groups.{group_id}.reset_strategy_schema_version",
+            )
+            reset_strategy_id = _string(
+                analysis_group.get("reset_strategy_id"),
+                f"analysis.groups.{group_id}.reset_strategy_id",
+            )
+            reset_strategy_token = _string(
+                analysis_group.get("reset_strategy_token"),
+                f"analysis.groups.{group_id}.reset_strategy_token",
+            )
+            if reset_strategy_token != _reset_strategy_token(
+                reset_strategy_schema_version, reset_strategy_id
+            ):
+                raise ConfigurationError(
+                    f"analysis.groups.{group_id}.reset_strategy_token "
+                    "contradicts its schema version and id"
+                )
         expected_group_id = "::".join(
-            (environment_id, ground_topology_id, contact_profile_id)
+            (
+                environment_id,
+                ground_topology_id,
+                reset_strategy_token,
+                contact_profile_id,
+            )
+            if reset_strategy_token is not None
+            else (environment_id, ground_topology_id, contact_profile_id)
         )
         if group_id != expected_group_id:
             raise ConfigurationError(
                 f"analysis group id {group_id!r} contradicts its environment, "
                 "ground topology, and contact profile identity"
             )
-        group_selection_identities = {
-            (
-                path,
-                raw_hash,
-                canonical_hash,
-                report_schema_version,
-                environment_id,
-                ground_topology_id,
-                contact_profile_id,
+        group_selection_identities: set[tuple[Any, ...]] = set()
+        for report_identity in group_report_identities:
+            path, raw_hash, canonical_hash, report_schema_version = (
+                report_identity[:4]
             )
-            for (
-                path,
-                raw_hash,
-                canonical_hash,
-                report_schema_version,
-            ) in group_report_identities
-        }
+            if expected_runtime_provenance_schema == 6:
+                if report_identity[4:] != (
+                    reset_strategy_schema_version,
+                    reset_strategy_id,
+                    reset_strategy_token,
+                ):
+                    raise ConfigurationError(
+                        f"analysis.groups.{group_id}.input_reports reset "
+                        "identity must match its group identity"
+                    )
+            group_selection_identities.add(
+                (
+                    path,
+                    raw_hash,
+                    canonical_hash,
+                    report_schema_version,
+                    environment_id,
+                    ground_topology_id,
+                    contact_profile_id,
+                    expected_runtime_provenance_schema,
+                    reset_strategy_schema_version,
+                    reset_strategy_id,
+                    reset_strategy_token,
+                )
+            )
         if group_selection_identities != selection_by_group[group_id]:
             raise ConfigurationError(
                 f"analysis.groups.{group_id}.input_reports and identity fields "
@@ -4637,8 +5101,11 @@ def validate_physical_acceptance_accounting(
         expected_reasons: list[str] = []
         if any(version != 3 for version in report_schema_versions):
             expected_reasons.append("motion_report_schema_not_3")
-        if runtime_provenance_schema != 5:
-            expected_reasons.append("runtime_provenance_schema_not_5")
+        if runtime_provenance_schema != expected_runtime_provenance_schema:
+            expected_reasons.append(
+                "runtime_provenance_schema_not_"
+                f"{expected_runtime_provenance_schema}"
+            )
         if environment_id != "SimplePlane":
             expected_reasons.append("environment_not_SimplePlane")
         if ground_topology_id != "simple_plane_only1_v1":
@@ -4911,7 +5378,7 @@ def validate_physical_acceptance_accounting(
         raise ConfigurationError(
             "all_applicable_groups_passed disagrees with applicable group verdicts"
         )
-    source_acceptance = _revalidated_physical_acceptance_from_sources(
+    source_evidence = _revalidated_physical_acceptance_from_sources(
         source_locks,
         locked_wheel_radius_m,
         expected_repeats,
@@ -4920,11 +5387,46 @@ def validate_physical_acceptance_accounting(
             for key, value in locked_inputs.items()
             if key != "wheel_radius_m"
         },
+        expected_runtime_provenance_schema,
     )
+    source_acceptance = source_evidence["physical_acceptance"]
     if _canonical(source_acceptance) != _canonical(acceptance):
         raise ConfigurationError(
             "analysis.physical_acceptance does not match revalidated source reports"
         )
+    if expected_runtime_provenance_schema == 6:
+        for field in (
+            "reset_strategy_contracts",
+            "reset_strategy_definitions",
+            "reset_contact_probe_contracts",
+        ):
+            published = _mapping(
+                analysis_mapping.get(field),
+                f"analysis.{field}",
+            )
+            if _canonical(published) != _canonical(source_evidence[field]):
+                raise ConfigurationError(
+                    f"analysis.{field} does not match revalidated source reports"
+                )
+        source_group_contracts = source_evidence[
+            "group_reset_strategy_contracts"
+        ]
+        for group_id in sorted(analysis_group_ids):
+            group = _mapping(
+                analysis_groups.get(group_id),
+                f"analysis.groups.{group_id}",
+            )
+            published_contract = _mapping(
+                group.get("reset_strategy_contract"),
+                f"analysis.groups.{group_id}.reset_strategy_contract",
+            )
+            if _canonical(published_contract) != _canonical(
+                source_group_contracts[group_id]
+            ):
+                raise ConfigurationError(
+                    f"analysis.groups.{group_id}.reset_strategy_contract does "
+                    "not match revalidated source reports"
+                )
 
 
 def analyse_contact_ab(
@@ -4934,6 +5436,7 @@ def analyse_contact_ab(
     min_repeats: int = 3,
     expected_environments: Sequence[str] = (),
     expected_topologies: Sequence[str] = (),
+    expected_reset_strategies: Sequence[str] = (),
     expected_profiles: Sequence[str] = (),
     require_complete_matrix: bool = False,
 ) -> dict[str, object]:
@@ -4954,9 +5457,18 @@ def analyse_contact_ab(
         expected_topologies, "expected_topologies"
     )
     explicit_topology_selection = bool(selected_topologies)
+    selected_reset_strategies = _reset_strategy_selector_values(
+        expected_reset_strategies, "expected_reset_strategies"
+    )
+    explicit_reset_strategy_selection = bool(selected_reset_strategies)
     selected_profiles = _identifier_values(expected_profiles, "expected_profiles")
     if require_complete_matrix:
-        if selected_environments or selected_topologies or selected_profiles:
+        if (
+            selected_environments
+            or selected_topologies
+            or selected_reset_strategies
+            or selected_profiles
+        ):
             raise ConfigurationError(
                 "require_complete_matrix cannot be combined with expected selectors"
             )
@@ -5026,6 +5538,17 @@ def analyse_contact_ab(
         if selected_profiles and record.contact_profile_id not in selected_profiles:
             reasons.append(_exclusion("unexpected_profile", record.contact_profile_id))
         if (
+            selected_reset_strategies
+            and record.reset_strategy_token is not None
+            and record.reset_strategy_token not in selected_reset_strategies
+        ):
+            reasons.append(
+                _exclusion(
+                    "unexpected_reset_strategy",
+                    record.reset_strategy_token,
+                )
+            )
+        if (
             selected_topologies
             and record.ground_topology_id is not None
             and record.ground_topology_id not in selected_topologies
@@ -5059,11 +5582,18 @@ def analyse_contact_ab(
             f"A/B batch: observed {sorted(provenance_schemas)}"
         )
     runtime_provenance_schema = next(iter(provenance_schemas))
-    if runtime_provenance_schema != 5 and explicit_topology_selection:
+    if runtime_provenance_schema not in {5, 6} and explicit_topology_selection:
         raise ConfigurationError(
-            "expected_topologies requires runtime provenance schema 5; "
+            "expected_topologies requires runtime provenance schema 5 or 6; "
             f"observed schema {runtime_provenance_schema}"
         )
+    if runtime_provenance_schema != 6 and explicit_reset_strategy_selection:
+        raise ConfigurationError(
+            "expected_reset_strategies requires runtime provenance schema 6; "
+            f"observed schema {runtime_provenance_schema}"
+        )
+    if require_complete_matrix and runtime_provenance_schema == 6:
+        selected_reset_strategies = COMPLETE_MATRIX_RESET_STRATEGIES
 
     reference_lock = included[0].global_lock
     for record in included[1:]:
@@ -5075,6 +5605,10 @@ def analyse_contact_ab(
     environment_references: dict[str, InputRecord] = {}
     topology_references: dict[tuple[str, str], InputRecord] = {}
     topology_ab_contact_references: dict[tuple[str, str], InputRecord] = {}
+    reset_strategy_references: dict[tuple[str, str, str], InputRecord] = {}
+    reset_strategy_definition_references: dict[str, InputRecord] = {}
+    reset_contact_probe_references: dict[tuple[str, str], InputRecord] = {}
+    reset_ab_contact_references: dict[tuple[str, str, str], InputRecord] = {}
     profile_references: dict[str, InputRecord] = {}
     for record in included:
         environment_reference = environment_references.setdefault(
@@ -5088,10 +5622,11 @@ def analyse_contact_ab(
                 f"{record.environment_id}: {record.path} differs from "
                 f"{environment_reference.path}"
             )
-        if runtime_provenance_schema == 5:
+        if runtime_provenance_schema in {5, 6}:
             if record.ground_topology_id is None or record.topology_lock is None:
                 raise ConfigurationError(
-                    f"schema-5 report {record.path} lacks a topology identity lock"
+                    f"schema-{runtime_provenance_schema} report {record.path} "
+                    "lacks a topology identity lock"
                 )
             topology_key = (
                 record.environment_id,
@@ -5111,7 +5646,8 @@ def analyse_contact_ab(
                 )
             if record.topology_ab_contact_lock is None:
                 raise ConfigurationError(
-                    f"schema-5 report {record.path} lacks a topology A/B "
+                    f"schema-{runtime_provenance_schema} report {record.path} "
+                    "lacks a topology A/B "
                     "contact invariant lock"
                 )
             contact_ab_key = (
@@ -5130,6 +5666,72 @@ def analyse_contact_ab(
                     f"{contact_ab_key[0]}::{contact_ab_key[1]}: "
                     f"{record.path} differs from {contact_ab_reference.path}"
                 )
+        if runtime_provenance_schema == 6:
+            if (
+                record.ground_topology_id is None
+                or record.reset_strategy_token is None
+                or record.reset_strategy_lock is None
+                or record.reset_strategy_definition_lock is None
+                or record.reset_contact_probe_lock is None
+            ):
+                raise ConfigurationError(
+                    f"schema-6 report {record.path} lacks a reset strategy lock"
+                )
+            reset_key = (
+                record.environment_id,
+                record.ground_topology_id,
+                record.reset_strategy_token,
+            )
+            reset_reference = reset_strategy_references.setdefault(
+                reset_key, record
+            )
+            if _canonical(record.reset_strategy_lock) != _canonical(
+                reset_reference.reset_strategy_lock
+            ):
+                raise ConfigurationError(
+                    "reset strategy contract mismatch for "
+                    f"{'::'.join(reset_key)}: {record.path} differs from "
+                    f"{reset_reference.path}"
+                )
+            definition_reference = reset_strategy_definition_references.setdefault(
+                record.reset_strategy_token, record
+            )
+            if _canonical(record.reset_strategy_definition_lock) != _canonical(
+                definition_reference.reset_strategy_definition_lock
+            ):
+                raise ConfigurationError(
+                    "reset strategy definition mismatch for "
+                    f"{record.reset_strategy_token}: {record.path} differs from "
+                    f"{definition_reference.path}"
+                )
+            probe_key = (record.environment_id, record.ground_topology_id)
+            probe_reference = reset_contact_probe_references.setdefault(
+                probe_key, record
+            )
+            if _canonical(record.reset_contact_probe_lock) != _canonical(
+                probe_reference.reset_contact_probe_lock
+            ):
+                raise ConfigurationError(
+                    "reset contact-probe invariant mismatch for "
+                    f"{'::'.join(probe_key)}: {record.path} differs from "
+                    f"{probe_reference.path}"
+                )
+            reset_contact_key = (
+                record.environment_id,
+                record.ground_topology_id,
+                record.contact_profile_id,
+            )
+            reset_contact_reference = reset_ab_contact_references.setdefault(
+                reset_contact_key, record
+            )
+            if _canonical(record.contact_lock) != _canonical(
+                reset_contact_reference.contact_lock
+            ):
+                raise ConfigurationError(
+                    "reset A/B contact identity mismatch for "
+                    f"{'::'.join(reset_contact_key)}: {record.path} differs "
+                    f"from {reset_contact_reference.path}"
+                )
         profile_reference = profile_references.setdefault(
             record.contact_profile_id, record
         )
@@ -5147,6 +5749,13 @@ def analyse_contact_ab(
             (
                 record.environment_id,
                 record.ground_topology_id,
+                record.reset_strategy_token,
+                record.contact_profile_id,
+            )
+            if runtime_provenance_schema == 6
+            else (
+                record.environment_id,
+                record.ground_topology_id,
                 record.contact_profile_id,
             )
             if runtime_provenance_schema == 5
@@ -5154,7 +5763,8 @@ def analyse_contact_ab(
         )
         if any(value is None for value in group_key):
             raise ConfigurationError(
-                f"schema-5 report {record.path} lacks a ground topology id"
+                f"schema-{runtime_provenance_schema} report {record.path} "
+                "has an incomplete group identity"
             )
         grouped.setdefault(tuple(group_key), []).append(record)
     for group_key, records in grouped.items():
@@ -5173,10 +5783,18 @@ def analyse_contact_ab(
 
     observed_groups = set(grouped)
     required_groups: set[tuple[str, ...]] = set()
-    if runtime_provenance_schema == 5:
+    if runtime_provenance_schema in {5, 6}:
         observed_environments = {group[0] for group in observed_groups}
         observed_topologies = {group[1] for group in observed_groups}
-        observed_profiles = {group[2] for group in observed_groups}
+        profile_index = 3 if runtime_provenance_schema == 6 else 2
+        observed_profiles = {
+            group[profile_index] for group in observed_groups
+        }
+        observed_reset_strategies = (
+            {group[2] for group in observed_groups}
+            if runtime_provenance_schema == 6
+            else set()
+        )
         observed_pairs = {(group[0], group[1]) for group in observed_groups}
         required_pairs: set[tuple[str, str]]
         if selected_topologies:
@@ -5224,12 +5842,51 @@ def analyse_contact_ab(
                     "expected environments are missing: "
                     f"{sorted(missing_environments)}"
                 )
-        if selected_profiles:
+        if runtime_provenance_schema == 6:
+            if require_complete_matrix:
+                unexpected_reset_strategies = (
+                    observed_reset_strategies
+                    - set(selected_reset_strategies)
+                )
+                if unexpected_reset_strategies:
+                    raise ConfigurationError(
+                        "unexpected reset strategies in complete matrix: "
+                        f"{sorted(unexpected_reset_strategies)}"
+                    )
+            if selected_reset_strategies:
+                missing_reset_strategies = (
+                    set(selected_reset_strategies)
+                    - observed_reset_strategies
+                )
+                if missing_reset_strategies:
+                    raise ConfigurationError(
+                        "expected reset strategies are missing: "
+                        f"{sorted(missing_reset_strategies)}"
+                    )
+            if selected_profiles or selected_reset_strategies:
+                required_profiles = (
+                    set(selected_profiles)
+                    if selected_profiles
+                    else observed_profiles
+                )
+                required_reset_strategies = (
+                    set(selected_reset_strategies)
+                    if selected_reset_strategies
+                    else observed_reset_strategies
+                )
+                required_groups = {
+                    (environment, topology, reset_strategy, profile)
+                    for environment, topology in required_pairs
+                    for reset_strategy in required_reset_strategies
+                    for profile in required_profiles
+                }
+        elif selected_profiles:
             required_groups = {
                 (environment, topology, profile)
                 for environment, topology in required_pairs
                 for profile in selected_profiles
             }
+        if selected_profiles:
             missing_profiles = set(selected_profiles) - observed_profiles
             if missing_profiles:
                 raise ConfigurationError(
@@ -5278,7 +5935,13 @@ def analyse_contact_ab(
         for group, records in sorted(grouped.items())
     }
     report = {
-        "schema_version": 4 if runtime_provenance_schema == 5 else 1,
+        "schema_version": (
+            5
+            if runtime_provenance_schema == 6
+            else 4
+            if runtime_provenance_schema == 5
+            else 1
+        ),
         "report_type": "contact_ab_analysis",
         "analysis_valid": not exclusions and matrix_complete,
         "method": {
@@ -5311,7 +5974,38 @@ def analyse_contact_ab(
                     in sorted(topology_references.items())
                 }
             }
-            if runtime_provenance_schema == 5
+            if runtime_provenance_schema in {5, 6}
+            else {}
+        ),
+        **(
+            {
+                "reset_strategy_contracts": {
+                    f"{environment_id}::{topology_id}::{strategy_token}": (
+                        reference.reset_strategy_lock
+                    )
+                    for (
+                        environment_id,
+                        topology_id,
+                        strategy_token,
+                    ), reference in sorted(reset_strategy_references.items())
+                },
+                "reset_strategy_definitions": {
+                    strategy_token: reference.reset_strategy_definition_lock
+                    for strategy_token, reference in sorted(
+                        reset_strategy_definition_references.items()
+                    )
+                },
+                "reset_contact_probe_contracts": {
+                    f"{environment_id}::{topology_id}": (
+                        reference.reset_contact_probe_lock
+                    )
+                    for (
+                        environment_id,
+                        topology_id,
+                    ), reference in sorted(reset_contact_probe_references.items())
+                },
+            }
+            if runtime_provenance_schema == 6
             else {}
         ),
         "profile_contracts": {
@@ -5327,7 +6021,16 @@ def analyse_contact_ab(
             "expected_environments": list(selected_environments),
             **(
                 {"expected_topologies": list(selected_topologies)}
-                if runtime_provenance_schema == 5
+                if runtime_provenance_schema in {5, 6}
+                else {}
+            ),
+            **(
+                {
+                    "expected_reset_strategies": list(
+                        selected_reset_strategies
+                    )
+                }
+                if runtime_provenance_schema == 6
                 else {}
             ),
             "expected_profiles": list(selected_profiles),
@@ -5343,7 +6046,23 @@ def analyse_contact_ab(
                     "environment_id": record.environment_id,
                     **(
                         {"ground_topology_id": record.ground_topology_id}
-                        if runtime_provenance_schema == 5
+                        if runtime_provenance_schema in {5, 6}
+                        else {}
+                    ),
+                    **(
+                        {
+                            "runtime_provenance_schema_version": (
+                                record.runtime_provenance_schema
+                            ),
+                            "reset_strategy_schema_version": (
+                                record.reset_strategy_schema_version
+                            ),
+                            "reset_strategy_id": record.reset_strategy_id,
+                            "reset_strategy_token": (
+                                record.reset_strategy_token
+                            ),
+                        }
+                        if runtime_provenance_schema == 6
                         else {}
                     ),
                     "contact_profile_id": record.contact_profile_id,
@@ -5372,7 +6091,7 @@ def analyse_contact_ab(
         },
         **(
             {"physical_acceptance": _physical_acceptance(grouped)}
-            if runtime_provenance_schema == 5
+            if runtime_provenance_schema in {5, 6}
             else {}
         ),
         "groups": group_summaries,
@@ -5410,7 +6129,7 @@ def _parser() -> argparse.ArgumentParser:
         nargs="+",
         help=(
             "homogeneous motion report JSON files (top-level schema 1, 2, or 3; "
-            "runtime provenance schema 3, 4, or 5)"
+            "runtime provenance schema 3, 4, 5, or 6)"
         ),
     )
     parser.add_argument(
@@ -5427,13 +6146,17 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-repeats", type=_positive_integer, default=3)
     parser.add_argument("--expected-environment", action="append", default=[])
     parser.add_argument("--expected-topology", action="append", default=[])
+    parser.add_argument(
+        "--expected-reset-strategy", action="append", default=[]
+    )
     parser.add_argument("--expected-profile", action="append", default=[])
     parser.add_argument(
         "--require-complete-matrix",
         action="store_true",
         help=(
-            "require the shipped environment/contact matrix; schema 5 also "
-            "requires all three legal environment/topology pairs"
+            "require the shipped environment/contact matrix; schemas 5 and 6 "
+            "also require all three legal environment/topology pairs, and "
+            "schema 6 requires both shipped reset strategies"
         ),
     )
     return parser
@@ -5449,6 +6172,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_repeats=arguments.min_repeats,
             expected_environments=arguments.expected_environment,
             expected_topologies=arguments.expected_topology,
+            expected_reset_strategies=arguments.expected_reset_strategy,
             expected_profiles=arguments.expected_profile,
             require_complete_matrix=arguments.require_complete_matrix,
         )

@@ -578,6 +578,48 @@ def _upgrade_runtime_provenance_to_v5(
     return report
 
 
+def _upgrade_runtime_provenance_to_v6(
+    report,
+    *,
+    strategy_id="pose_restore_v1",
+    topology=None,
+):
+    _upgrade_runtime_provenance_to_v5(report, topology)
+    provenance = report["runtime_provenance"]
+    provenance["schema_version"] = 6
+    semantics = {
+        "pose_restore_v1": (0.0, 0),
+        "separate_recontact_0p20m_1step_v1": (0.2, 1),
+    }
+    lift_distance_m, separation_step_count = semantics[strategy_id]
+    ground_paths = provenance["ground_topology"]["target_colliders"]
+    provenance["simulation"]["reset_strategy"] = {
+        "schema_version": 1,
+        "id": strategy_id,
+        "lift_distance_m": lift_distance_m,
+        "separation_step_count": separation_step_count,
+        "recontact_step_count": 1,
+        "contact_probe": {
+            "schema_version": 1,
+            "enabled": True,
+            "wheel_bindings": [
+                {
+                    "joint_name": joint_name,
+                    "wheel_link_path": f"/World/Robot/wheel_{index}",
+                }
+                for index, joint_name in enumerate(WHEELS.values())
+            ],
+            "wheel_count": 4,
+            "ground_filter_paths": list(ground_paths),
+            "ground_filter_count": len(ground_paths),
+            "max_contact_count": 128,
+            "report_threshold_n": 0.0,
+            "stage_usd_readback_verified": True,
+        },
+    }
+    return report
+
+
 def _segment(
     specification: tuple[str, str, float, float, float],
     *,
@@ -788,6 +830,31 @@ def _three_v5_reports(
                 ),
                 topology,
                 report_schema_version=report_schema_version,
+            ),
+        )
+        for index, scale in enumerate((0.98, 1.0, 1.02))
+    ]
+
+
+def _three_v6_reports(
+    directory: Path,
+    *,
+    strategy_id: str,
+    environment: str = "SimplePlane",
+    topology: str = "simple_plane_only1_v1",
+    contact_profile: str = "threshold_corr_0p00025_offset_0p04",
+) -> list[Path]:
+    return [
+        _write(
+            directory / f"{strategy_id}_{index}.json",
+            _upgrade_runtime_provenance_to_v6(
+                _report(
+                    environment=environment,
+                    contact_profile=contact_profile,
+                    scale=scale,
+                ),
+                strategy_id=strategy_id,
+                topology=topology,
             ),
         )
         for index, scale in enumerate((0.98, 1.0, 1.02))
@@ -1115,6 +1182,168 @@ def test_v5_separates_ground_topology_from_environment_and_contact(tmp_path):
     assert plane_group["ground_topology_contract"]["ground_topology"][
         "target_collider_count"
     ] == 1
+
+
+def test_v6_reset_strategies_are_distinct_audited_physical_groups(tmp_path):
+    pose = _three_v6_reports(
+        tmp_path / "pose", strategy_id="pose_restore_v1"
+    )
+    separate = _three_v6_reports(
+        tmp_path / "separate",
+        strategy_id="separate_recontact_0p20m_1step_v1",
+    )
+
+    report = analyse_contact_ab(
+        [*pose, *separate],
+        RADIUS_M,
+        expected_environments=("SimplePlane",),
+        expected_topologies=("simple_plane_only1_v1",),
+        expected_reset_strategies=(
+            "reset-v1-pose_restore_v1",
+            "reset-v1-separate_recontact_0p20m_1step_v1",
+        ),
+        expected_profiles=("threshold_corr_0p00025_offset_0p04",),
+    )
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    pose_group = (
+        "SimplePlane::simple_plane_only1_v1::reset-v1-pose_restore_v1::"
+        "threshold_corr_0p00025_offset_0p04"
+    )
+    separate_group = (
+        "SimplePlane::simple_plane_only1_v1::"
+        "reset-v1-separate_recontact_0p20m_1step_v1::"
+        "threshold_corr_0p00025_offset_0p04"
+    )
+    assert report["schema_version"] == 5
+    assert report["analysis_valid"] is True
+    assert set(report["groups"]) == {pose_group, separate_group}
+    assert report["selection_policy"][
+        "required_runtime_provenance_schema"
+    ] == 6
+    assert report["selection_policy"]["expected_reset_strategies"] == [
+        "reset-v1-pose_restore_v1",
+        "reset-v1-separate_recontact_0p20m_1step_v1",
+    ]
+    assert "reset_strategy" not in report["locked_inputs"]["simulation"]
+    assert set(report["reset_strategy_definitions"]) == {
+        "reset-v1-pose_restore_v1",
+        "reset-v1-separate_recontact_0p20m_1step_v1",
+    }
+    assert set(report["reset_contact_probe_contracts"]) == {
+        "SimplePlane::simple_plane_only1_v1"
+    }
+    assert report["groups"][pose_group]["reset_strategy_id"] == (
+        "pose_restore_v1"
+    )
+    assert report["groups"][separate_group]["reset_strategy_id"] == (
+        "separate_recontact_0p20m_1step_v1"
+    )
+    assert all(
+        item["runtime_provenance_schema_version"] == 6
+        and item["reset_strategy_schema_version"] == 1
+        and item["reset_strategy_token"].startswith("reset-v1-")
+        for item in report["selection"]["included"]
+    )
+    acceptance = report["physical_acceptance"]
+    assert acceptance["schema_version"] == 3
+    assert acceptance["policy_id"] == "skid_steer_plan_8_7_v3"
+    assert acceptance["applicability"][
+        "required_runtime_provenance_schema"
+    ] == 6
+    assert set(acceptance["applicable_groups"]) == {
+        pose_group,
+        separate_group,
+    }
+
+
+def test_v6_reset_contact_probe_is_locked_across_strategy_arms(tmp_path):
+    pose = _three_v6_reports(
+        tmp_path / "pose", strategy_id="pose_restore_v1"
+    )
+    separate = _three_v6_reports(
+        tmp_path / "separate",
+        strategy_id="separate_recontact_0p20m_1step_v1",
+    )
+    changed = json.loads(separate[0].read_text(encoding="utf-8"))
+    changed["runtime_provenance"]["simulation"]["reset_strategy"][
+        "contact_probe"
+    ]["wheel_bindings"][0]["wheel_link_path"] = (
+        "/World/Robot/wheel_0/collider"
+    )
+    _write(separate[0], changed)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="reset contact-probe invariant mismatch",
+    ):
+        analyse_contact_ab([*pose, *separate], RADIUS_M)
+
+
+def test_v6_expected_reset_matrix_rejects_a_missing_arm(tmp_path):
+    pose = _three_v6_reports(
+        tmp_path / "pose", strategy_id="pose_restore_v1"
+    )
+
+    with pytest.raises(
+        ConfigurationError,
+        match="expected reset strategies are missing",
+    ):
+        analyse_contact_ab(
+            pose,
+            RADIUS_M,
+            expected_reset_strategies=(
+                "reset-v1-pose_restore_v1",
+                "reset-v1-separate_recontact_0p20m_1step_v1",
+            ),
+        )
+
+
+def test_v6_physical_accounting_rejects_reset_identity_tampering(tmp_path):
+    paths = _three_v6_reports(
+        tmp_path, strategy_id="pose_restore_v1"
+    )
+    report = analyse_contact_ab(paths, RADIUS_M)
+    report["selection"]["included"][0]["reset_strategy_token"] = (
+        "reset-v1-separate_recontact_0p20m_1step_v1"
+    )
+
+    with pytest.raises(ConfigurationError, match="reset_strategy_token"):
+        validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+
+def test_v6_physical_accounting_rejects_probe_contract_tampering(tmp_path):
+    paths = _three_v6_reports(
+        tmp_path, strategy_id="pose_restore_v1"
+    )
+    report = analyse_contact_ab(paths, RADIUS_M)
+    probe_contract = next(
+        iter(report["reset_contact_probe_contracts"].values())
+    )
+    probe_contract["wheel_count"] = 999
+
+    with pytest.raises(
+        ConfigurationError,
+        match="reset_contact_probe_contracts",
+    ):
+        validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+
+def test_v6_physical_accounting_rejects_group_reset_contract_tampering(
+    tmp_path,
+):
+    paths = _three_v6_reports(
+        tmp_path, strategy_id="pose_restore_v1"
+    )
+    report = analyse_contact_ab(paths, RADIUS_M)
+    group = next(iter(report["groups"].values()))
+    group["reset_strategy_contract"]["lift_distance_m"] = 999.0
+
+    with pytest.raises(
+        ConfigurationError,
+        match="reset_strategy_contract",
+    ):
+        validate_physical_acceptance_accounting(report, expected_repeats=3)
 
 
 def test_v5_physical_acceptance_is_every_repeat_and_non_ranking(tmp_path):

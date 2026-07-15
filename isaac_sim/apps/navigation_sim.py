@@ -305,6 +305,22 @@ def run(
         # exactly the same Stage object.
         composer = SceneComposer(config)
         stage = composer.compose(save=False)
+        if composer.ground_topology_snapshot is None:
+            raise RuntimeError(
+                "ground topology snapshot is unavailable before reset "
+                "contact instrumentation"
+            )
+        from isaac_sim.src.robot.reset_strategy import (
+            author_wheel_ground_contact_probe,
+        )
+
+        # Both reset arms carry the same four-wheel, ground-filtered contact
+        # instrumentation.  Reports must be authored before PhysX parses USD.
+        reset_contact_probe = author_wheel_ground_contact_probe(
+            stage,
+            config,
+            composer.ground_topology_snapshot.target_colliders,
+        )
         # Configure coherent Timeline/RunLoop/Fabric periods before the first
         # post-composition app update creates Fabric history caches.
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
@@ -346,6 +362,10 @@ def run(
             config.robot.wheel_joints,
             JointGroups(config.robot.front_wheel_joints, config.robot.rear_wheel_joints),
         ).validate(robot.get_dof_names())
+        reset_contact_probe.initialize(app)
+        reset_strategy_snapshot = reset_contact_probe.provenance_snapshot(
+            config.simulation.reset_strategy
+        )
         runtime_provenance = capture_runtime_provenance(
             config,
             stage,
@@ -353,6 +373,7 @@ def run(
                 articulation_usd_solver_iterations
             ),
             repository_root=PROJECT_ROOT,
+            reset_strategy_snapshot=reset_strategy_snapshot,
             ground_topology_snapshot=composer.ground_topology_snapshot,
             contact_snapshot=composer.contact_snapshot,
         )
@@ -459,7 +480,14 @@ def run(
             clear_costmaps=reset_bridge.clear_costmaps,
             publish_map_initial_pose=reset_bridge.publish_map_initial_pose,
         )
-        reset_manager = ResetManager(runtime, spawn_manager, hooks)
+        reset_manager = ResetManager(
+            runtime,
+            spawn_manager,
+            hooks,
+            reset_strategy=config.simulation.reset_strategy,
+            contact_probe=reset_contact_probe,
+            physics_dt_s=1.0 / config.simulation.physics_hz,
+        )
         reset_bridge.bind(reset_manager)
         startup_reset = reset_bridge.start_reset(
             ResetRequest(

@@ -222,6 +222,28 @@ class ArticulationRuntime:
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None:
         self.articulation.set_velocities(linear_velocities=[list(linear)], angular_velocities=[list(angular)])
 
+    def get_base_velocities(
+        self,
+    ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+        linear_values, angular_values = self.articulation.get_velocities()
+
+        def read(values: object, label: str) -> tuple[float, float, float]:
+            rows = values.numpy()
+            if len(rows) != 1 or len(rows[0]) != 3:
+                raise ArticulationRuntimeError(
+                    f"base {label} readback must contain one three-vector"
+                )
+            result = tuple(float(value) for value in rows[0])
+            if not all(math.isfinite(value) for value in result):
+                raise ArticulationRuntimeError(
+                    f"base {label} readback contains a non-finite value"
+                )
+            return result  # type: ignore[return-value]
+
+        return read(linear_values, "linear velocity"), read(
+            angular_values, "angular velocity"
+        )
+
     def _read_dof_values(
         self,
         getter_name: str,

@@ -40,6 +40,7 @@ from .report import (
     ReportValidationError,
     configuration_sha256,
     decode_hashed_contact_snapshot,
+    decode_hashed_reset_strategy_snapshot,
     validate_runtime_provenance,
     write_strict_json_report,
 )
@@ -73,6 +74,8 @@ _RUNTIME_PROVENANCE_PARAMETER_NAMES = (
     "runtime_provenance.simulation.navigation_mode",
     "runtime_provenance.simulation.odometry_mode",
     "runtime_provenance.simulation.physics_hz",
+    "runtime_provenance.simulation.reset_strategy.json",
+    "runtime_provenance.simulation.reset_strategy.sha256",
     "runtime_provenance.contact.json",
     "runtime_provenance.contact.sha256",
     "runtime_provenance.ground_topology.json",
@@ -175,10 +178,10 @@ def _require_live_runtime_provenance_schema(schema_version: object) -> int:
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version != 5
+        or schema_version != 6
     ):
         raise RuntimeError(
-            "Isaac runtime provenance schema must be integer 5 for new "
+            "Isaac runtime provenance schema must be integer 6 for new "
             "motion reports"
         )
     return schema_version
@@ -643,6 +646,10 @@ class MotionBaselineRunner(Node):
                 "navigation_mode": value("simulation.navigation_mode"),
                 "odometry_mode": value("simulation.odometry_mode"),
                 "physics_hz": value("simulation.physics_hz"),
+                "reset_strategy": decode_hashed_reset_strategy_snapshot(
+                    value("simulation.reset_strategy.json"),
+                    value("simulation.reset_strategy.sha256"),
+                ),
             },
             "contact": decode_hashed_contact_snapshot(
                 value("contact.json"),

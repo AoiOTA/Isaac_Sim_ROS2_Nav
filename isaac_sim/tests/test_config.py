@@ -54,6 +54,8 @@ class _FakeArticulation:
         self.dof_velocities = (5.0,) * self.num_dofs
         self.dof_velocity_targets = (6.0,) * self.num_dofs
         self.dof_efforts = (7.0,) * self.num_dofs
+        self.linear_velocity = (1.0, 2.0, 3.0)
+        self.angular_velocity = (4.0, 5.0, 6.0)
 
     def set_solver_iteration_counts(self, position, velocity):
         self.requested = (position, velocity)
@@ -95,6 +97,16 @@ class _FakeArticulation:
     def set_dof_efforts(self, values):
         self.dof_efforts = tuple(values[0])
 
+    def get_velocities(self):
+        return (
+            _DofValues(self.linear_velocity),
+            _DofValues(self.angular_velocity),
+        )
+
+    def set_velocities(self, *, linear_velocities, angular_velocities):
+        self.linear_velocity = tuple(linear_velocities[0])
+        self.angular_velocity = tuple(angular_velocities[0])
+
 
 def _environment(**updates: str) -> dict[str, str]:
     values = {
@@ -107,7 +119,7 @@ def _environment(**updates: str) -> dict[str, str]:
 
 def test_default_project_contract_loads_strictly():
     config = load_project_config(CONFIG, _environment())
-    assert config.schema_version == 1
+    assert config.schema_version == 2
     assert config.environment.identifier == "Warehouse"
     assert config.environment.composition == "sublayer"
     assert config.environment.ground_colliders.required_prim_paths == (
@@ -124,6 +136,8 @@ def test_default_project_contract_loads_strictly():
     assert config.simulation.structure_tf_source == "isaac"
     assert config.simulation.pacing_mode == "realtime"
     assert config.simulation.target_realtime_factor == pytest.approx(1.0)
+    assert config.simulation.reset_strategy.schema_version == 1
+    assert config.simulation.reset_strategy.identifier == "pose_restore_v1"
     assert config.robot.default_prim == "jackal"
     assert config.robot.wheel_joints == (
         "front_left_wheel_joint",
@@ -159,6 +173,9 @@ def test_nested_environment_overrides_are_typed():
             ISAAC_NAV__SIMULATION__MAX_FRAMES="17",
             ISAAC_NAV__SIMULATION__PACING_MODE="unbounded",
             ISAAC_NAV__SIMULATION__TARGET_REALTIME_FACTOR="1.25",
+            ISAAC_NAV__SIMULATION__RESET_STRATEGY__ID=(
+                "separate_recontact_0p20m_1step_v1"
+            ),
             ISAAC_NAV__ROS2__DOMAIN_ID="42",
         ),
     )
@@ -168,6 +185,9 @@ def test_nested_environment_overrides_are_typed():
     assert config.simulation.max_frames == 17
     assert config.simulation.pacing_mode == "unbounded"
     assert config.simulation.target_realtime_factor == pytest.approx(1.25)
+    assert config.simulation.reset_strategy.identifier == (
+        "separate_recontact_0p20m_1step_v1"
+    )
     assert config.ros2.domain_id == 42
 
 
@@ -239,6 +259,45 @@ def test_unknown_override_is_rejected():
             CONFIG,
             _environment(ISAAC_NAV__SIMULATION__TYPO="true"),
         )
+
+
+@pytest.mark.parametrize(
+    ("strategy_schema", "strategy_id", "message"),
+    [
+        (2, "pose_restore_v1", "reset_strategy.schema_version must be 1"),
+        (True, "pose_restore_v1", "reset_strategy.schema_version must be 1"),
+        (1, "unknown", "reset_strategy.id must be one of"),
+        (1, 7, "reset_strategy.id must be one of"),
+    ],
+)
+def test_reset_strategy_mapping_is_strict(
+    tmp_path, strategy_schema, strategy_id, message
+):
+    source = CONFIG.read_text(encoding="utf-8")
+    if source.startswith("schema_version: 1\n"):
+        source = source.replace("schema_version: 1", "schema_version: 2", 1)
+    valid_strategy = (
+        "  reset_strategy:\n"
+        "    schema_version: 1\n"
+        "    id: pose_restore_v1\n"
+    )
+    if valid_strategy not in source:
+        source = source.replace(
+            "simulation:\n",
+            "simulation:\n" + valid_strategy,
+            1,
+        )
+    invalid_strategy = (
+        "  reset_strategy:\n"
+        f"    schema_version: {str(strategy_schema).lower()}\n"
+        f"    id: {strategy_id}\n"
+    )
+    source = source.replace(valid_strategy, invalid_strategy, 1)
+    candidate = tmp_path / "project.yaml"
+    candidate.write_text(source, encoding="utf-8")
+
+    with pytest.raises(ConfigError, match=message):
+        load_project_config(candidate, _environment())
 
 
 @pytest.mark.parametrize("value", ["", "bad/id", "-leading"])
@@ -379,6 +438,22 @@ def test_runtime_restores_captured_nonzero_dof_positions_with_readback():
     assert articulation.dof_velocities == (0.0,) * 4
     assert articulation.dof_velocity_targets == (0.0,) * 4
     assert articulation.dof_efforts == (0.0,) * 4
+
+
+def test_runtime_base_velocity_adapter_has_finite_three_vector_readback():
+    articulation = _FakeArticulation((32, 4))
+    runtime = ArticulationRuntime("/World/Robot", "/World/Robot/base", None)
+    runtime._articulation = articulation
+
+    runtime.set_base_velocities((0.1, 0.2, 0.3), (0.4, 0.5, 0.6))
+
+    assert runtime.get_base_velocities() == (
+        (0.1, 0.2, 0.3),
+        (0.4, 0.5, 0.6),
+    )
+    articulation.angular_velocity = (0.0, float("nan"), 0.0)
+    with pytest.raises(ArticulationRuntimeError, match="non-finite"):
+        runtime.get_base_velocities()
 
 
 def test_runtime_rejects_nonfinite_or_mismatched_dof_position_readback():

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 asset_root: ${ISAAC_ASSET_ROOT}
 
 environment:
@@ -26,6 +26,9 @@ robot:
   rear_wheel_joints: [rear_left_wheel_joint, rear_right_wheel_joint]
 
 simulation:
+  reset_strategy:
+    schema_version: 1
+    id: pose_restore_v1
   physics_hz: 60
   rendering_hz: 60
   expected_physics_scene: /PhysicsScene
@@ -57,6 +60,7 @@ ground_truth:
   path_hz: 10
 
 extensions:
+  - isaacsim.core.experimental.prims
   - isaacsim.core.nodes
   - isaacsim.robot.wheeled_robots.nodes
   - isaacsim.ros2.bridge

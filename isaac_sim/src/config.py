@@ -26,6 +26,10 @@ _IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _PRIM_PATH_PATTERN = re.compile(
     r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
 )
+_RESET_STRATEGY_IDS = {
+    "pose_restore_v1",
+    "separate_recontact_0p20m_1step_v1",
+}
 
 
 def project_root() -> Path:
@@ -145,6 +149,12 @@ class RobotConfig:
 
 
 @dataclass(frozen=True)
+class ResetStrategyConfig:
+    schema_version: int
+    identifier: str
+
+
+@dataclass(frozen=True)
 class SimulationConfig:
     physics_hz: float
     rendering_hz: float
@@ -157,6 +167,7 @@ class SimulationConfig:
     pacing_mode: str
     target_realtime_factor: float
     max_frames: int
+    reset_strategy: ResetStrategyConfig
 
 
 @dataclass(frozen=True)
@@ -398,6 +409,7 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
         "pacing_mode",
         "target_realtime_factor",
         "max_frames",
+        "reset_strategy",
     }
     _expect_keys(data, allowed, "simulation")
     headless = _required(data, "headless", "simulation")
@@ -428,6 +440,39 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
     renderer = _required(data, "renderer", "simulation")
     if renderer not in {"RaytracedLighting", "PathTracing"}:
         raise ConfigError("simulation.renderer is unsupported")
+    reset_strategy_data = _expect_mapping(
+        _required(data, "reset_strategy", "simulation"),
+        "simulation.reset_strategy",
+    )
+    _expect_keys(
+        reset_strategy_data,
+        {"schema_version", "id"},
+        "simulation.reset_strategy",
+    )
+    reset_strategy_schema = _required(
+        reset_strategy_data,
+        "schema_version",
+        "simulation.reset_strategy",
+    )
+    if (
+        isinstance(reset_strategy_schema, bool)
+        or not isinstance(reset_strategy_schema, int)
+        or reset_strategy_schema != 1
+    ):
+        raise ConfigError("simulation.reset_strategy.schema_version must be 1")
+    reset_strategy_id = _required(
+        reset_strategy_data,
+        "id",
+        "simulation.reset_strategy",
+    )
+    if (
+        not isinstance(reset_strategy_id, str)
+        or reset_strategy_id not in _RESET_STRATEGY_IDS
+    ):
+        raise ConfigError(
+            "simulation.reset_strategy.id must be one of "
+            f"{sorted(_RESET_STRATEGY_IDS)}"
+        )
     return SimulationConfig(
         physics_hz=_positive_number(_required(data, "physics_hz", "simulation"), "simulation.physics_hz"),
         rendering_hz=_positive_number(
@@ -447,6 +492,10 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
             "simulation.target_realtime_factor",
         ),
         max_frames=max_frames,
+        reset_strategy=ResetStrategyConfig(
+            schema_version=reset_strategy_schema,
+            identifier=reset_strategy_id,
+        ),
     )
 
 
@@ -546,7 +595,7 @@ def load_project_config(path: str | Path | None = None, env: Mapping[str, str] |
     }
     _expect_keys(data, allowed, "project")
     version = _required(data, "schema_version", "project")
-    if version != 1:
+    if version != 2:
         raise ConfigError(f"unsupported schema_version {version!r}")
     extensions = _required(data, "extensions", "project")
     if not isinstance(extensions, list) or not extensions or not all(isinstance(v, str) and v for v in extensions):
