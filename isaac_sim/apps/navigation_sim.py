@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import traceback
 from typing import Sequence
 
 
@@ -531,6 +532,14 @@ def run(
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             frame += 1
+    except Exception:
+        # SimulationApp.close() performs a fast Kit shutdown that can terminate
+        # the process before Python emits an otherwise-unhandled traceback.
+        # Persist the original failure first so readiness gates remain
+        # diagnosable instead of reporting only that the process disappeared.
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        raise
     finally:
         if runtime is not None:
             try:

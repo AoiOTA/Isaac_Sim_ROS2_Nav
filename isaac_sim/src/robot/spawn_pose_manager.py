@@ -199,8 +199,8 @@ class SpawnPoseManager:
         # Restore the complete articulation state while physics is paused.
         # Root pose is applied last so no joint teleport can perturb it.
         self.robot.restore_initial_joint_state()
-        self.robot.set_world_pose(expected_position, expected_orientation)
         self.robot.set_base_velocities([0.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        self.robot.set_world_pose(expected_position, expected_orientation)
         actual_position, actual_orientation = self.robot.get_world_pose()
         if (
             len(actual_position) != 3

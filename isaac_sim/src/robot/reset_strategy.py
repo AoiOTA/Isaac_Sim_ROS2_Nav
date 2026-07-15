@@ -178,6 +178,18 @@ class WheelGroundContactProbe:
                 "wheel-ground contact count shape mismatch: "
                 f"expected={expected_shape}, actual={tuple(values.shape)}"
             )
+        wheel_z_values: tuple[float, ...] | None = None
+        try:
+            wheel_positions, _ = self._view.get_world_poses()
+            rows = wheel_positions.numpy()
+            if tuple(rows.shape) == (4, 3):
+                parsed = tuple(float(row[2]) for row in rows)
+                if all(math.isfinite(value) for value in parsed):
+                    wheel_z_values = parsed
+        except Exception:
+            # Pose diagnostics must never mask the authoritative contact-count
+            # failure from the PhysX contact view.
+            wheel_z_values = None
         active: list[str] = []
         for wheel_index, binding in enumerate(self.wheel_bindings):
             total = 0
@@ -194,7 +206,14 @@ class WheelGroundContactProbe:
                     )
                 total += int(numeric)
             if total:
-                active.append(f"{binding.joint_name}={total}")
+                pose_detail = (
+                    f"@z={wheel_z_values[wheel_index]:.6f}m"
+                    if wheel_z_values is not None
+                    else ""
+                )
+                active.append(
+                    f"{binding.joint_name}={total}{pose_detail}"
+                )
         if active:
             raise ResetStrategyError(
                 "wheel-ground contact remains after separation step: "
