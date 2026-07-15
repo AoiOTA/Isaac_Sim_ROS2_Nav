@@ -209,7 +209,8 @@ service 或积分 timer；其 OnProcessExit 会关闭当前 Realistic launch，�
 
 当前 v2 机器门合同已实现；它取代后续新批次使用的工件版本，但不会改写已经冻结的
 历史证据。clean `190f357` 的 SimplePlane 一次重复烟测仍按运行当时的 v1 合同解释，
-正式 v2 矩阵仍待完成：
+clean `8973728` 的 SimplePlane/only1 六 profile × 三重复已按当前 v2 合同完成并得出
+6/6 group 物理失败；全 topology 54-run/18-group v2 矩阵仍待完成：
 
 | 工件 | schema | 合同 |
 | --- | ---: | --- |
@@ -303,7 +304,10 @@ script `45 passed / 1 skipped`，合并 `354 passed / 1 skipped`；唯一 skip �
 schema 5 均通过；唯一 N/A 原因是 `fewer_than_3_unique_repeats`。clean `190f357` 的历史
 SimplePlane/only1 六 profile 一次重复烟测为 6/6 run、36/36 段、analysis 6 included /
 0 excluded / 6 groups、summary schema 4 `result=success`；六组都只因 repeat=1 而 N/A。
-正式 schema 3 / v2 的 54-run/18-group 矩阵仍待完成。
+clean `8973728` 随后完成同一 `0.989 m` 候选的 18/18 run、108/108 segment、analysis
+18 included / 0 excluded / 6 groups；六组全部适用、0 passing / 6 failed，唯一失败 leaf
+是 `rotation_center_drift_asymmetry_ratio`。因此当前接口已有真实 PASS/N/A/FAIL 三种
+verdict 路径证据，但全 topology 54-run/18-group 矩阵仍待完成。
 
 In Localization/Navigation, `nav2_map_server` is the sole `/map` publisher and
 serves the immutable saved OccupancyGrid. SLAM Toolbox still owns localization

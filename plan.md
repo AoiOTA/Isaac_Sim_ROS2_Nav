@@ -70,6 +70,12 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   summary schema 5 全部闭合；六组都只因 repeat=1 记 N/A。36 段稳态轮向 0 mismatch，
   整段描述窗口则诚实保留 18 个 mismatch。单次投影只有
   `threshold_corr_0p00025_offset_0p04` 同时落在全部 18 项边界内，不能替代三重复。
+  随后在 clean `8973728` 对同一 `0.989 m`、SimplePlane/only1、六 profile 完成正式
+  三重复：18/18 run、108/108 段、18 included / 0 excluded / 6 groups、44 列 manifest
+  与 schema 3/4/2/5 全链闭合。6/6 group 均适用且均失败，唯一失败检查是左右旋转中心
+  漂移不对称 `<=0.20`；其余 17 项逐重复检查、108/108 停止窗和 432/432 稳态轮向
+  观察全部通过。最接近门的是 `threshold_corr_0p00025_offset_0p04`，2/3 repeat 通过，
+  唯一失败值 `0.243182`。这批证明证据合同成立，同时明确证明当前冻结参数未通过物理门。
   此前在 clean `190f357` 完成
   SimplePlane/only1 × 六 profile × 一次的历史 schema-2 smoke：6/6 run、36/36 段、
   72/72 Manifest path/hash 配对（144 个叶检查）闭合；motion/analysis/summary 分别为
@@ -79,8 +85,9 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
   因圆弧整段 `mixed` 被验证器排除，不能形成正式 verdict；这正是上面 schema-3 稳态
   方向合同的触发证据。描述性指标中 `0.989 m` 的左右稳态 yaw 误差为
   `2.95%/0.02%`、中心漂移 `0.0530/0.0587 m`、不对称 `9.70%`，明显优于 `1.012 m`
-  的不对称 `43.67%`，因此成为上述 schema-3 smoke 首选。两者都没有覆盖 stable，也尚未完成
-  三重复、两环境、多速度、全拓扑或 Realistic 物理 A/B。
+  的不对称 `43.67%`，因此成为上述 schema-3 smoke 首选。`0.989 m` 已完成上述六 profile
+  三重复但未过物理门；两者都没有覆盖 stable，也尚未完成两环境、多速度、全拓扑或
+  Realistic 物理 A/B。
 
 原方案十三个阶段的当前状态如下。“已实现”表示代码和契约存在，“实机/仿真证据”只写本仓库已经实际运行的范围；计划中的广义统计门槛仍须独立完成。
 

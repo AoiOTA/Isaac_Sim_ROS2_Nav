@@ -1602,8 +1602,9 @@ schema 1、v5 analysis schema 2 与 batch-summary schema 3，不含 `physical_ac
 clean `190f357` 的 SimplePlane/only1 六 profile × 一次重复烟测则原样保存 43 列 manifest、
 motion report schema 2、analysis schema 3、physical-acceptance schema 1 / policy
 `skid_steer_plan_8_7_v1` 和 batch-summary schema 4；六组都只因 repeat=1 而 N/A。两批
-历史工件都不能回填为当前 schema，也不能写成 `0/N fail`。当前 v2 合同的正式
-54-run/18-group 矩阵仍待执行。
+历史工件都不能回填为当前 schema，也不能写成 `0/N fail`。当前 v2 合同已经在 clean
+`8973728` 完成 `0.989 m`、SimplePlane/only1、六 profile × 三重复的 18-run 子矩阵；
+其证据链成功但 6/6 适用 group 物理失败。完整 54-run/18-group topology 矩阵仍待执行。
 
 阅读时先打开 `batch_summary.json`，检查 `result`、expected/actual counts 和 evidence
 hash；再用 `analysis.json` 查看 `analysis_valid`、纳入/排除原因、矩阵完整性和各
@@ -1676,10 +1677,16 @@ script `45 passed / 1 skipped`，三份合并为 `354 passed / 1 skipped`；唯�
 36/36 段、analysis 6 included / 0 excluded / 6 groups，summary schema 5
 `result=success`；六组只因 repeat=1 而 N/A。完整路径、SHA、日志和逐 profile 描述指标见
 [`verification.md`](verification.md#schema-3-simpleplane-0989-m-六-profile-真实烟测2026-07-15)。
-它证明使用手册中的当前证据链可以真实运行，不是三重复物理结论。clean `190f357`
+它证明使用手册中的当前证据链可以真实运行，不是三重复物理结论。随后 clean `8973728`
+使用相同候选和环境完成 18/18 run、108/108 段；六组全部适用，但全部只因左右旋转中心
+漂移不对称失败，最接近门的是 `threshold_corr_0p00025_offset_0p04`（2/3 repeat 通过，
+唯一失败值 `0.243182`）。完整 SHA、逐重复表格和日志边界见
+[`verification.md`](verification.md#schema-3-simpleplane-0989-m-六-profile-正式三重复2026-07-15)。
+这次结果说明命令和证据格式正确，但冻结物理参数不合格；不要把 summary
+`result=success` 当作物理 PASS，也不要覆盖 stable robot 配置。clean `190f357`
 历史 smoke 另完成 6/6 run、36/36 段和六组 N/A 记账，但其工件版本仍是
 motion 2 / analysis 3 / physical 1 / summary 4 / manifest 43 列。它证明当时冻结代码的
-报告链闭合；正式 v2 矩阵仍待执行，不能据此宣称底盘物理通过。
+报告链闭合；完整 topology v2 矩阵仍待执行，不能据此宣称底盘物理通过。
 
 快速核对成功证据：
 

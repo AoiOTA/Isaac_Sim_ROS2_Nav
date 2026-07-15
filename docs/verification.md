@@ -25,7 +25,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Map Manifest | `warehouse_v1` 与 `warehouse_v2` 四工件的逐文件/bundle 哈希均通过真实仓库校验 | v2 来自遗留本地工件恢复，来源日志缺失、运行时对齐未验证且未标定；`rviz` 路径允许人工播种，但按证据政策只用于对齐检查，不能计入正式统计 |
 | 物理步与传感器时间 | OnPhysicsStep 的 8 秒短窗保持 56.40 Hz 状态 Topic 与 9.51 Hz 点云；`resetSimulationTimeOnStop=false` 的 30 分钟基线为 `93 / 0 / 93` 次时间样本警告，采用供应商默认 `true` 后的两个 Camera 短窗与 15 分钟 headless soak 均为 `0 / 0 / 0` | 15 分钟报告中 `/clock` 和点云均无重复/回退，RTF 为 0.947；真正 Timeline Stop→Play 以及 GUI/headless × realtime/unbounded × 60/120 Hz 完整矩阵仍未完成 |
 | 底盘运动基线 | Warehouse + Ideal 改动前基线及标准 Cylinder 下 32/4、32/16 隔离 A/B 均完成 14/14；clean commit `0500f9e` 上的 SimplePlane/Warehouse × 六 Profile × 三重复也完成 36/36 运行、216/216 段 | 32/4 已冻结并消除项目轮 collider/TGS 两类警告；历史矩阵证明证据链和 Reset 合同可靠，且描述性中心漂移 `0.297–0.350 m`、旧整段角速度误差 `60.1%–69.0%` 暴露严重欠转，但这些 schema-1 报告没有当前稳态窗口，计划 8.7 verdict 为 N/A；Realistic 和候选有效轮距 A/B 仍未完成 |
-| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；当前 motion/analysis/physical/summary 为 schema 3/4/2/5，Odom 与 JointState 都有严格后半段窗口，44 列 manifest 锁逐轮 report schema；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手 | clean `d5840ed` 已闭合 Warehouse 12-run 历史机制烟测，clean `190f357` 闭合旧 schema-2 SimplePlane 六 profile × 一次 smoke；clean `22a7746` 又闭合 `0.989 m` schema-3 六 profile × 一次 smoke。v2 定向、非 Isaac 全测试和 clean `0484b72` build/preflight/`--with-isaac` 全门已通过；正式三重复仍待执行。批次 `success` 只表示证据采集、身份、矩阵和聚合闭合，不是物理门通过 |
+| 阶段 3 物理诊断工具 | 可逆 contact Profile、三个版本化 ground-topology Profile、独立 SimplePlane、8-trial 单轮方向诊断、有效轮距离线拟合及 motion provenance schema v5 均已实现；当前 motion/analysis/physical/summary 为 schema 3/4/2/5，Odom 与 JointState 都有严格后半段窗口，44 列 manifest 锁逐轮 report schema；schema-v2 robot YAML 统一轮径、几何/有效轮距和 joint，Realistic Wheel Odom 有启动握手 | clean `d5840ed` 已闭合 Warehouse 12-run 历史机制烟测，clean `190f357` 闭合旧 schema-2 SimplePlane 六 profile × 一次 smoke；clean `22a7746` 闭合 `0.989 m` schema-3 六 profile × 一次 smoke。随后 clean `8973728` 的同输入正式三重复已完成 18/18 run、108/108 段和全部证据记账；6/6 group 均适用且均只因旋转中心漂移不对称失败，不能宣称物理通过。v2 定向、非 Isaac 全测试和 clean `0484b72` build/preflight/`--with-isaac` 全门已通过。批次 `success` 只表示证据采集、身份、矩阵和聚合闭合，不是物理门通过 |
 | Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
 | Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
 | MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
@@ -700,8 +700,8 @@ preflight PASS，`./scripts/test.sh --with-isaac` exit 0；root
 `1206 passed / 1 skipped / 34 deselected`，ROS 11 packages / 1006 tests / 0 errors /
 0 failures / 1 skipped，Isaac `32 passed / 250 deselected`。preflight 如实记录 422 个
 Fast DDS SHM 工件和 20 个非 performance governor 的非阻塞警告。clean `190f357` 的历史
-schema-2 smoke 与 clean `22a7746` 的 schema-3 smoke 见下文；正式三重复和
-54-run/18-group 矩阵仍未执行。
+schema-2 smoke、clean `22a7746` 的 schema-3 smoke 和 clean `8973728` 的正式
+SimplePlane 三重复失败结论见下文；完整 54-run/18-group topology 矩阵仍未执行。
 
 ### 历史 v1/schema-2 SimplePlane 真实机制烟测（2026-07-15）
 
@@ -835,6 +835,68 @@ error/failure 模式为 0；Kit warning 共 108 行。每份 Isaac 日志仍各�
 protobuf `E0000/W0000`，合计各 6 条，不能写成“零错误”。同一 `legacy_baseline` 的单次
 不对称从旧筛选的 `9.70%` 变为本批 `50.46%`，进一步说明不能用 repeat=1 冻结参数；
 下一步必须执行 SimplePlane/only1 六 profile × 三个唯一 repeat。
+
+### schema-3 SimplePlane 0.989 m 六 Profile 正式三重复（2026-07-15）
+
+在上述单次 smoke 之后，于 clean
+`897372866baa634d31d067a5b3ed5add74783acb`、同一分支和同一冻结输入上执行：
+
+```bash
+./scripts/run_contact_ab_matrix.sh \
+  --environment SimplePlane \
+  --ground-topology simple_plane_only1_v1 \
+  --repeats 3 \
+  --robot-config \
+    isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml \
+  --output-dir \
+    data/reports/contact_ab/simple_plane_etw_0p989_schema5_repeat3_8973728
+```
+
+批次机制完整成功：18/18 run、108/108 segment complete；44 列只读 manifest
+有 18 行且全部 `success`，18 份 report 均为 schema 3；analysis 为 schema 4，纳入
+18、排除 0、形成 6 个完整组；physical acceptance 为 schema 2，六组全部适用；summary
+为 schema 5、`result=success`。公共 accounting 重读全部原报告并复算身份、双 SHA、
+Reset/时间/停止/姿态/分布和每个物理叶后通过。冻结根证据为：
+
+| 工件 | SHA256 |
+| --- | --- |
+| `manifest.tsv` | `622ee56fb33f3a679e2db0d97c9920e0d07cba23c5a6fa8de2b85ccad725fe4c` |
+| `analysis.json` | `82bbd0fb286972df9c5e00469745e2afda97565fe83730f981a7d33de09cfcfb` |
+| `batch_summary.json` | `f879db530c2b2d9439b3ee4c0ad23f6db86b153827acd2226593496cdee6e5a0` |
+
+物理结论与机制结论必须分开：`all_applicable_groups_passed=false`，6/6 applicable
+group 全部 failed，0 passing、0 N/A。18 个 repeat 中有 8 个逐项通过、10 个失败；
+每个失败都只来自
+`rotation_center_drift_asymmetry_ratio <= 0.20`，其余 17 项逐重复检查全部通过。
+因为策略是 `evaluation_basis="every_repeat"`，2/3 通过也不能把 group 判为 PASS：
+
+| Profile | 通过重复 | 左中心漂移 m（r1/r2/r3） | 右中心漂移 m（r1/r2/r3） | 不对称率（r1/r2/r3） |
+| --- | ---: | --- | --- | --- |
+| `explicit_material` | 1/3 | `0.053018 / 0.035133 / 0.035133` | `0.066732 / 0.071537 / 0.032957` | `0.205502 / 0.508889 / 0.061926` |
+| `legacy_baseline` | 2/3 | `0.053018 / 0.053018 / 0.053018` | `0.087229 / 0.058710 / 0.058710` | `0.392192 / 0.096950 / 0.096950` |
+| `threshold_corr_0p00025_offset_0p0004` | 2/3 | `0.035133 / 0.053018 / 0.035133` | `0.071537 / 0.058710 / 0.039660` | `0.508889 / 0.096950 / 0.114146` |
+| `threshold_corr_0p00025_offset_0p04` | 2/3 | `0.053018 / 0.053018 / 0.053018` | `0.043602 / 0.070054 / 0.043602` | `0.177598 / 0.243182 / 0.177598` |
+| `threshold_corr_0p025_offset_0p0004` | 0/3 | `0.025113 / 0.032775 / 0.032775` | `0.088220 / 0.041256 / 0.024031` | `0.715335 / 0.205585 / 0.266771` |
+| `threshold_corr_0p025_offset_0p04` | 1/3 | `0.032775 / 0.025113 / 0.025113` | `0.032401 / 0.088220 / 0.044670` | `0.011389 / 0.715335 / 0.437808` |
+
+`threshold_corr_0p00025_offset_0p04` 是下一轮诊断的优先输入，不是自动选出的合格
+Profile：它 2/3 次通过，唯一失败值 `0.243181692` 只比固定上限高
+`0.043181692`；正式报告仍明确写 `ranking_policy="none; pass/fail only"`。
+其他硬门保留了明显余量：全批最大前进/后退横漂分别为 `0.001911/0.001226 m`，
+最大单侧旋转中心漂移为 `0.088220 m`，左右稳态 yaw-rate 最大相对误差分别为
+`6.542%/5.264%`；108/108 停止窗、432/432 个稳态轮向观察和全部时间戳/Reset/
+样本记账均通过，invalid Odom/JointState 消息为 0。
+
+失败形态呈离散、可重复的中心漂移水平，而不是轮向错误或持续 yaw-rate 欠标定。
+当前每段 Reset 会恢复根 pose、根速度、DOF 速度和 velocity target，但没有显式恢复
+DOF position；连续轮 joint 和 PhysX 接触暖状态因此成为下一步必须隔离的变量。这个
+判断是由结果产生的根因假设，不是已经证明的修复结论；修复后必须在新 clean commit
+上重新运行同一 18-run 批次，旧失败样本不得删除或混入新批。
+
+日志审计中 Isaac Kit `[Error]`、Fatal、Exception、Traceback、segfault/core、runner
+error/failure 均为 0；324 条 Kit warning 在 18 个进程中分布一致。每份 Isaac 日志仍
+各有一条非致命 protobuf `E0000` 和一条 `W0000`，合计各 18 条；18/18 日志还记录 CPU
+governor 为 powersave。因此这批既不能写成“零错误”，也不能外推成性能基准。
 
 ### SimplePlane 六 Profile 严格批处理烟测（2026-07-14）
 
@@ -1446,7 +1508,8 @@ preflight PASS；`./scripts/test.sh --with-isaac` 的 root suite 为
 0 failures、1 skipped，Isaac 为 `32 passed / 250 deselected`。唯一 skip 仍是本机缺少
 `shellcheck`；preflight 如实报告 396 个 Fast DDS SHM 工件和 20 个非 performance
 governor 的非阻塞环境警告。历史 schema-2 smoke 见上文“历史 v1/schema-2 SimplePlane
-真实机制烟测”；正式 54-run/18-group 矩阵仍待执行。
+真实机制烟测”；SimplePlane 正式 18-run 子矩阵已在 clean `8973728` 执行并物理失败，
+完整 54-run/18-group topology 矩阵仍待执行。
 
 随后本轮 v2 方向合同完成 motion/analysis/physical/summary `3/4/2/5` 与 44 列
 manifest 升级。三份定向文件合并为 `354 passed / 1 skipped`；在 clean `0484b72` 上，
@@ -1456,8 +1519,9 @@ build、preflight、`./scripts/test.sh --with-isaac` 均 exit 0，root 为
 稀疏/单流陈旧停止证据、Reset 水位与命令次序、样本记账、姿态/航向几何、方向
 counts/extrema/矩/稳态子集伪造、协调全局身份或 schema→N/A、wheel FAIL→PASS、
 partial manifest、配置 JSON 类型混淆、asset/solver/simulation/UTC 时间篡改，以及早期
-双日志删除/hash/symlink 篡改。clean `22a7746` 的 schema-3 repeat=1 smoke 已闭合；正式
-三重复和完整矩阵仍待执行。
+双日志删除/hash/symlink 篡改。clean `22a7746` 的 schema-3 repeat=1 smoke 已闭合；
+clean `8973728` 的正式 SimplePlane 三重复证据链也已闭合，但 6/6 group 均因旋转中心
+漂移不对称失败；完整 topology 矩阵仍待执行。
 
 | Gate | 最近证据 |
 | --- | --- |
@@ -1477,7 +1541,7 @@ partial manifest、配置 JSON 类型混淆、asset/solver/simulation/UTC 时间
 | Clean schema v3 wheel direction | Warehouse + legacy：8/8 trial、全部硬门通过，Git dirty false；报告 SHA256 `f63ec096...a9de` |
 | Clean schema v3 motion provenance | Warehouse + Ideal + legacy：14/14 complete，三路时间戳无重复/回退，Git dirty false；报告 SHA256 `8532187c...0f23` |
 | Effective-track 定向测试 | fitter + package contract：30 passed；五报告探索拟合完成，但 contact/provenance 身份不足以冻结参数 |
-| Contact A/B 聚合与 Reset 诊断 | clean `c210150`、`2cd0788`、`190f357` 的历史证据按原 schema 保留；当前 v2 合同 analyzer/motion/matrix 为 `217/92/45 passed`（matrix 1 skipped），三份合并 `354 passed / 1 skipped`，clean `0484b72` build/preflight/`--with-isaac` 全门通过；clean `22a7746` schema-3 smoke 为 6/6 run、36/36 段、六组 repeat=1 N/A。正式三重复与 54-run 仍待执行 |
+| Contact A/B 聚合与 Reset 诊断 | clean `c210150`、`2cd0788`、`190f357` 的历史证据按原 schema 保留；当前 v2 合同 analyzer/motion/matrix 为 `217/92/45 passed`（matrix 1 skipped），三份合并 `354 passed / 1 skipped`，clean `0484b72` build/preflight/`--with-isaac` 全门通过；clean `22a7746` schema-3 smoke 为 6/6 run、36/36 段、六组 repeat=1 N/A；clean `8973728` 正式 SimplePlane 三重复为 18/18 run、108/108 段、0 passing / 6 failed，唯一失败 leaf 为旋转中心漂移不对称。完整 54-run topology 矩阵仍待执行 |
 | 2026-07-14 退出加固定向测试 | Runtime 脚本 34 passed；`robot_bringup` 176 passed；3 个顽固进程组用例连续 5 轮通过 |
 | Map bundle 校验 | `warehouse_v1`、`warehouse_v2` 的真实 Manifest verify 均 PASS |
 | Repository index set comparison | 当前 318 个 Git 跟踪路径对 318 个索引路径，集合差分无输出 |
