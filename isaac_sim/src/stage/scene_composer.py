@@ -9,6 +9,10 @@ from isaac_sim.src.robot.articulation_runtime import (
     author_articulation_solver_iterations,
     load_articulation_physics_config,
 )
+from isaac_sim.src.robot.spawn_pose_manager import (
+    author_initial_articulation_pose,
+    load_spawn_poses,
+)
 from isaac_sim.src.stage.asset_validator import dependency_report, validate_default_prim, validate_prim
 from isaac_sim.src.stage.contact_setup import apply_contact_profile
 from isaac_sim.src.stage.ground_topology import apply_ground_topology
@@ -72,6 +76,19 @@ class SceneComposer:
         ensure_xform(stage, "/World/ExperimentMarkers")
         robot_prim = ensure_xform(stage, config.robot.runtime_prim_path)
         ensure_reference(robot_prim, config.robot.asset_path)
+        poses = load_spawn_poses(config.spawn.poses_file)
+        try:
+            selected_pose = poses[config.spawn.selected]
+        except KeyError as exc:
+            raise ValueError(
+                f"unknown selected spawn pose {config.spawn.selected!r}; "
+                f"available={sorted(poses)}"
+            ) from exc
+        author_initial_articulation_pose(
+            stage,
+            config.robot.runtime_prim_path,
+            selected_pose,
+        )
         author_articulation_solver_iterations(
             stage,
             config.robot.articulation_root,

@@ -30,6 +30,10 @@ from isaac_sim.src.stage.asset_validator import validate_robot_articulation  # n
 from isaac_sim.src.stage.asset_validator import validate_sensor_frames  # noqa: E402
 from isaac_sim.src.stage.physics_setup import find_all_physics_scenes  # noqa: E402
 from isaac_sim.src.stage.scene_composer import SceneComposer  # noqa: E402
+from isaac_sim.src.robot.spawn_pose_manager import (  # noqa: E402
+    load_spawn_poses,
+    quaternion_from_yaw_deg,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -67,6 +71,47 @@ def test_environment_is_sublayer_robot_is_reference_and_stage_is_not_saved():
         config.robot.wheel_joints,
     )
     validate_sensor_frames(stage, config.robot.base_link_prim)
+
+
+def test_composed_stage_authors_selected_spawn_before_first_physics_step():
+    from pxr import UsdGeom
+
+    config = _config()
+    poses = load_spawn_poses(config.spawn.poses_file)
+    expected = poses[config.spawn.selected]
+
+    stage = SceneComposer(config).compose(save=False)
+    cache = UsdGeom.XformCache()
+    root = stage.GetPrimAtPath(config.robot.runtime_prim_path)
+    base_link = stage.GetPrimAtPath(config.robot.base_link_prim)
+
+    root_transform = cache.GetLocalToWorldTransform(root)
+    base_transform = cache.GetLocalToWorldTransform(base_link)
+    assert tuple(root_transform.ExtractTranslation()) == pytest.approx(
+        expected.usd.position,
+        abs=1e-9,
+    )
+    assert tuple(base_transform.ExtractTranslation()) == pytest.approx(
+        expected.usd.position,
+        abs=1e-9,
+    )
+    expected_orientation = quaternion_from_yaw_deg(expected.usd.yaw_deg)
+    actual_orientation = root_transform.ExtractRotationQuat()
+    assert (
+        actual_orientation.GetReal(),
+        *actual_orientation.GetImaginary(),
+    ) == pytest.approx(expected_orientation, abs=1e-9)
+
+    for joint_name in config.robot.wheel_joints:
+        wheel_path = (
+            f"{config.robot.runtime_prim_path}/"
+            f"{joint_name.removesuffix('_joint')}_link"
+        )
+        wheel = stage.GetPrimAtPath(wheel_path)
+        wheel_center_z = cache.GetLocalToWorldTransform(
+            wheel
+        ).ExtractTranslation()[2]
+        assert wheel_center_z == pytest.approx(0.098, abs=1e-8)
 
 
 def test_composed_stage_has_exactly_one_expected_physics_scene():
