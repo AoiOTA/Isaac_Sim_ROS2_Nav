@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+import sys
+from types import ModuleType
 
 import pytest
 
@@ -454,6 +457,153 @@ def test_runtime_base_velocity_adapter_has_finite_three_vector_readback():
     articulation.angular_velocity = (0.0, float("nan"), 0.0)
     with pytest.raises(ArticulationRuntimeError, match="non-finite"):
         runtime.get_base_velocities()
+
+
+def _root_pose_runtime_harness(monkeypatch, physics_view):
+    events = []
+
+    @contextmanager
+    def use_backend(name, *, raise_on_unsupported, raise_on_fallback):
+        events.append(
+            (
+                "backend",
+                name,
+                raise_on_unsupported,
+                raise_on_fallback,
+            )
+        )
+        yield
+        events.append(("backend_exit", name))
+
+    class FakeRootView:
+        def set_world_poses(self, *, positions, orientations):
+            events.append(("pose", positions, orientations))
+
+    class FakePhysicsInterface:
+        def flush_changes(self):
+            events.append(("flush",))
+
+    backend_module = ModuleType(
+        "isaacsim.core.experimental.utils.backend"
+    )
+    backend_module.use_backend = use_backend
+    simulation_module = ModuleType("isaacsim.core.simulation_manager")
+    simulation_module.SimulationManager = type(
+        "SimulationManager",
+        (),
+        {
+            "get_physics_simulation_view": staticmethod(
+                lambda: physics_view
+            )
+        },
+    )
+    physics_module = ModuleType("omni.physics.core")
+    physics_module.get_physics_simulation_interface = (
+        lambda: FakePhysicsInterface()
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim.core.experimental.utils.backend",
+        backend_module,
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim.core.simulation_manager",
+        simulation_module,
+    )
+    monkeypatch.setitem(sys.modules, "omni.physics.core", physics_module)
+
+    runtime = ArticulationRuntime(
+        "/World/Robot",
+        "/World/Robot/base",
+        None,
+    )
+    runtime._base_link_view = FakeRootView()
+    return runtime, events
+
+
+def test_runtime_root_pose_uses_persistent_usd_source_before_kinematic_sync(
+    monkeypatch,
+):
+    class FakePhysicsView:
+        is_valid = True
+
+        def update_articulations_kinematic(self):
+            events.append(("sync",))
+            return True
+
+    runtime, events = _root_pose_runtime_harness(
+        monkeypatch,
+        FakePhysicsView(),
+    )
+    runtime.set_world_pose((4.0, 0.0, 0.2635), (1.0, 0.0, 0.0, 0.0))
+
+    assert events == [
+        ("backend", "usd", True, True),
+        (
+            "pose",
+            [[4.0, 0.0, 0.2635]],
+            [[1.0, 0.0, 0.0, 0.0]],
+        ),
+        ("backend_exit", "usd"),
+        ("flush",),
+        ("sync",),
+    ]
+
+
+def test_runtime_root_pose_fails_closed_when_physics_sync_is_unavailable(
+    monkeypatch,
+):
+    class FakePhysicsView:
+        def __init__(self, *, valid, sync_result):
+            self.is_valid = valid
+            self.sync_result = sync_result
+            self.sync_calls = 0
+
+        def update_articulations_kinematic(self):
+            self.sync_calls += 1
+            return self.sync_result
+
+    for physics_view, message, expected_sync_calls in (
+        (None, "physics simulation view is unavailable", None),
+        (
+            FakePhysicsView(valid=False, sync_result=True),
+            "physics simulation view is unavailable",
+            0,
+        ),
+        (
+            FakePhysicsView(valid=True, sync_result=False),
+            "articulation kinematic synchronization failed",
+            1,
+        ),
+    ):
+        runtime, _ = _root_pose_runtime_harness(
+            monkeypatch,
+            physics_view,
+        )
+        with pytest.raises(ArticulationRuntimeError, match=message):
+            runtime.set_world_pose(
+                (4.0, 0.0, 0.2635),
+                (1.0, 0.0, 0.0, 0.0),
+            )
+        if expected_sync_calls is not None:
+            assert physics_view.sync_calls == expected_sync_calls
+
+
+def test_runtime_root_pose_rejects_uninitialized_root_view_before_imports():
+    runtime = ArticulationRuntime(
+        "/World/Robot",
+        "/World/Robot/base",
+        None,
+    )
+    with pytest.raises(
+        ArticulationRuntimeError,
+        match="physics root rigid-body view is not initialized",
+    ):
+        runtime.set_world_pose(
+            (4.0, 0.0, 0.2635),
+            (1.0, 0.0, 0.0, 0.0),
+        )
 
 
 def test_runtime_rejects_nonfinite_or_mismatched_dof_position_readback():

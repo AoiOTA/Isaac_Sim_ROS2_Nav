@@ -121,15 +121,15 @@ def test_spawn_reset_zeros_all_robot_state_and_gates_map_pose():
     assert robot.calls == [
         ("joint_state", "initial_pose_and_zero_dynamics"),
         (
+            "base_velocity",
+            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
+        ),
+        (
             "pose",
             (
                 poses["mapping_start"].usd.position,
                 (1.0, 0.0, 0.0, 0.0),
             ),
-        ),
-        (
-            "base_velocity",
-            ((0.0, 0.0, 0.0), (0.0, 0.0, 0.0)),
         ),
     ]
     map_pose = manager.get_map_pose("mapping_start", purpose="test localization")

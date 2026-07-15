@@ -124,10 +124,11 @@ class ArticulationRuntime:
         self.base_link_prim_path = base_link_prim_path
         self.app = app
         self._articulation = None
+        self._base_link_view = None
         self._initial_dof_positions: tuple[float, ...] | None = None
 
     def initialize(self) -> None:
-        from isaacsim.core.experimental.prims import Articulation
+        from isaacsim.core.experimental.prims import Articulation, RigidPrim
         from isaacsim.core.simulation_manager import SimulationManager
 
         self._articulation = Articulation(self.prim_path)
@@ -141,6 +142,12 @@ class ArticulationRuntime:
             self.app.update()
         if not self._articulation.is_physics_tensor_entity_valid():
             raise ArticulationRuntimeError(f"physics articulation view is invalid for {self.prim_path}")
+        self._base_link_view = RigidPrim(self.base_link_prim_path)
+        self.app.update()
+        if not self._base_link_view.is_physics_tensor_entity_valid():
+            raise ArticulationRuntimeError(
+                f"physics root rigid-body view is invalid for {self.base_link_prim_path}"
+            )
         self._initial_dof_positions = self._read_dof_positions(
             context="initial articulation state"
         )
@@ -211,7 +218,38 @@ class ArticulationRuntime:
         )
 
     def set_world_pose(self, position: Sequence[float], orientation_wxyz: Sequence[float]) -> None:
-        self.articulation.set_world_poses(positions=[list(position)], orientations=[list(orientation_wxyz)])
+        if self._base_link_view is None:
+            raise ArticulationRuntimeError(
+                "physics root rigid-body view is not initialized"
+            )
+
+        from isaacsim.core.experimental.utils.backend import use_backend
+        from isaacsim.core.simulation_manager import SimulationManager
+        from omni.physics.core import get_physics_simulation_interface
+
+        # A stage-wide SimulationManager step consumes the PhysX state sourced
+        # from USD.  Author the root rigid body through that same source before
+        # flushing it into PhysX; a tensor-only write can round-trip through its
+        # articulation view yet be replaced by the prior USD pose on simulate.
+        with use_backend(
+            "usd",
+            raise_on_unsupported=True,
+            raise_on_fallback=True,
+        ):
+            self._base_link_view.set_world_poses(
+                positions=[list(position)],
+                orientations=[list(orientation_wxyz)],
+            )
+        get_physics_simulation_interface().flush_changes()
+        physics_view = SimulationManager.get_physics_simulation_view()
+        if physics_view is None or not physics_view.is_valid:
+            raise ArticulationRuntimeError(
+                "physics simulation view is unavailable after root teleport"
+            )
+        if physics_view.update_articulations_kinematic() is False:
+            raise ArticulationRuntimeError(
+                "articulation kinematic synchronization failed after root teleport"
+            )
 
     def get_world_pose(self) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
         positions, orientations = self.articulation.get_world_poses()

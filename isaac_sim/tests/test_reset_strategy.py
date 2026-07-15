@@ -60,6 +60,7 @@ class FakeContactView:
     counts: tuple[tuple[int, int], ...]
     valid: bool = True
     num_contact_filters: int = 2
+    wheel_z_m: float = 0.098
 
     def is_physics_tensor_entity_valid(self):
         return self.valid
@@ -67,6 +68,12 @@ class FakeContactView:
     def get_contact_force_data(self, *, dt):
         assert dt == pytest.approx(1.0 / 60.0)
         return None, None, None, None, FakeTensor(self.counts), None
+
+    def get_world_poses(self):
+        return (
+            FakeTensor(((0.0, 0.0, self.wheel_z_m),) * 4),
+            FakeTensor(((1.0, 0.0, 0.0, 0.0),) * 4),
+        )
 
 
 class FakeApp:
@@ -155,7 +162,7 @@ def test_contact_probe_accepts_only_zero_counts_for_every_wheel_and_filter():
     )
     with pytest.raises(
         ResetStrategyError,
-        match="front_right_wheel_joint.*1",
+        match=r"front_right_wheel_joint=1@z=0\.098000m",
     ):
         probe.assert_all_wheels_separated(physics_dt_s=1.0 / 60.0)
 
