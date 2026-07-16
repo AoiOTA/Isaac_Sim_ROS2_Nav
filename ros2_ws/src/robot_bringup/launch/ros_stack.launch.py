@@ -184,6 +184,11 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'posegraph_file': selection.posegraph_prefix,
                     'map_file': selection.occupancy_map_file,
+                    'use_posegraph_localization': (
+                        'true'
+                        if selection.odometry_mode == 'realistic'
+                        else 'false'
+                    ),
                 },
             ),
         ])

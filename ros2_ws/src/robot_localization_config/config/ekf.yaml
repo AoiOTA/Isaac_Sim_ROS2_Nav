@@ -20,10 +20,13 @@ ekf_filter_node:
     odom0: /wheel/odom
     # State vector order:
     # x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az
+    # Skid-steer wheel speed is reliable for body-forward velocity, but the
+    # left/right difference is biased by tire scrub at low-speed turns.
+    # Fuse yaw rate exclusively from the IMU below.
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  false, false,
-                   false, false, true,
+                   false, false, false,
                    false, false, false]
     odom0_queue_size: 10
     odom0_differential: false

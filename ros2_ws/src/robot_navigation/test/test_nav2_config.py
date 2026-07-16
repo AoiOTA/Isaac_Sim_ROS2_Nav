@@ -28,7 +28,7 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert controller['motion_model'] == 'DiffDrive'
     assert controller['time_steps'] == 20
     assert controller['model_dt'] == 0.10
-    assert controller['batch_size'] == 1000
+    assert controller['batch_size'] == 500
     assert controller['time_steps'] * controller['model_dt'] == 2.0
     assert controller['transform_tolerance'] >= 0.5
     assert local['rolling_window'] is True
@@ -55,6 +55,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert controller['enable_stamped_cmd_vel'] is False
     assert controller['controller_frequency'] == 10.0
     assert controller['goal_checker']['xy_goal_tolerance'] < 0.25
+    assert controller['goal_checker']['yaw_goal_tolerance'] <= 0.174532925
     assert behavior['enable_stamped_cmd_vel'] is False
     assert smoother['enable_stamped_cmd_vel'] is False
     assert collision['enable_stamped_cmd_vel'] is False
@@ -72,3 +73,38 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in launch_source
     assert "package='nav2_velocity_smoother'" in launch_source
     assert "package='nav2_collision_monitor'" in launch_source
+
+
+def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
+    config = _config()
+    controller_server = _params(config, 'controller_server')
+    controller = controller_server['FollowPath']
+    smoother = _params(config, 'velocity_smoother')
+
+    assert controller_server['progress_checker']['plugin'] \
+        == 'nav2_controller::PoseProgressChecker'
+    assert controller_server['progress_checker'][
+        'required_movement_angle'] > 0.0
+    assert controller['vx_min'] == 0.0
+    assert controller['wz_std'] >= 0.60
+    assert controller['wz_max'] >= 1.0
+    assert controller['PathAngleCritic']['mode'] == 0
+    assert controller['PathAngleCritic']['cost_weight'] \
+        > controller['PathFollowCritic']['cost_weight']
+    assert 'PreferForwardCritic' in controller['critics']
+    prefer_forward = controller['PreferForwardCritic']
+    assert prefer_forward['enabled'] is True
+    assert prefer_forward['cost_weight'] > 0.0
+    assert prefer_forward['threshold_to_consider'] <= 0.5
+    assert controller['regenerate_noises'] is True
+    assert controller['visualize'] is False
+
+    assert smoother['scale_velocities'] is True
+    assert smoother['max_velocity'] == [
+        controller['vx_max'], 0.0, controller['wz_max']]
+    assert smoother['min_velocity'] == [
+        controller['vx_min'], 0.0, -controller['wz_max']]
+    assert smoother['max_accel'] == [
+        controller['ax_max'], 0.0, controller['az_max']]
+    assert smoother['max_decel'] == [
+        controller['ax_min'], 0.0, -controller['az_max']]

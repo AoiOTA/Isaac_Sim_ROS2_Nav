@@ -1,6 +1,8 @@
 import math
+from pathlib import Path
 
 import pytest
+import yaml
 
 from robot_odometry.kinematics import covariance_from_diagonal
 from robot_odometry.kinematics import WheelOdometry
@@ -37,7 +39,7 @@ def test_opposed_wheel_velocities_rotate_in_place():
     odometry.update(NAMES, velocities, 5.0)
     result = odometry.update(NAMES, velocities, 5.1)
 
-    expected_wz = 2.0 * 0.098 / 0.37559
+    expected_wz = 2.0 * 0.098 / 0.800
     assert result.sample.linear_velocity == pytest.approx(0.0)
     assert result.sample.angular_velocity == pytest.approx(expected_wz)
     assert result.sample.yaw == pytest.approx(expected_wz * 0.1)
@@ -105,3 +107,16 @@ def test_ros_adapter_relies_on_rclpy_builtin_sim_time_parameter():
     )
     with open(source, encoding='utf-8') as source_file:
         assert "declare_parameter('use_sim_time'" not in source_file.read()
+
+
+def test_realistic_odometry_uses_the_controller_effective_track_width():
+    root = Path(__file__).resolve().parents[4]
+    robot = yaml.safe_load(
+        (root / 'isaac_sim/configs/robots/jackal.yaml').read_text())
+    odometry = yaml.safe_load(
+        (Path(__file__).resolve().parents[1]
+         / 'config/wheel_odometry.yaml').read_text())
+    assert odometry['wheel_odometry']['ros__parameters']['track_width'] \
+        == pytest.approx(robot['controller']['wheel_distance'])
+    assert robot['controller']['wheel_distance'] \
+        > robot['geometric_track_width']

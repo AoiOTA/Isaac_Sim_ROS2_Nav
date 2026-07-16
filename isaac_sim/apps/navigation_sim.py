@@ -268,6 +268,9 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
         )
         from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
         from isaac_sim.src.robot.idle_brake import IdleBrake
+        from isaac_sim.src.robot.skid_steer_motion_assist import (
+            SkidSteerMotionAssist,
+        )
         from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
         from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
         from isaac_sim.src.sensors.sensor_factory import SensorFactory
@@ -302,6 +305,13 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
             articulation_settings,
             clock=lambda: float(SimulationManager.get_simulation_time()),
         )
+        motion_assist = SkidSteerMotionAssist(
+            node,
+            robot,
+            articulation_settings,
+            physics_dt=1.0 / config.simulation.physics_hz,
+            clock=lambda: float(SimulationManager.get_simulation_time()),
+        )
 
         from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
 
@@ -332,6 +342,7 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
             from isaac_sim.graphs.control_graph import build_control_graph
 
             idle_brake.reset()
+            motion_assist.reset()
             graph_references["control"] = build_control_graph(config)
 
         def reset_odometry(mode: str) -> None:
@@ -396,7 +407,8 @@ def run(config: ProjectConfig, selected_pose: object, dynamic_scenario: object) 
             simulation_time = float(SimulationManager.get_simulation_time())
             dynamic_manager.update(simulation_time)
             collision_monitor.update(simulation_time)
-            idle_brake.update()
+            if not idle_brake.update():
+                motion_assist.update()
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             frame += 1

@@ -1,3 +1,4 @@
+import math
 from pathlib import Path
 
 import pytest
@@ -28,7 +29,11 @@ FIXTURES = Path(__file__).parent / "fixtures"
     [
         ("static.yaml", "static", 4),
         ("static_long_range.yaml", "static", 1),
+        ("static_benchmark.yaml", "static", 20),
+        ("static_complex_route.yaml", "static", 3),
         ("dynamic.yaml", "dynamic", 4),
+        ("dynamic_benchmark.yaml", "dynamic", 20),
+        ("dynamic_complex_route.yaml", "dynamic", 3),
         ("incremental_mapping.yaml", "incremental", 1),
     ],
 )
@@ -51,18 +56,61 @@ def test_dynamic_scenario_preserves_reproducible_trajectories():
     assert scenario.dynamic_config_file is not None
 
 
+def test_long_benchmarks_share_the_same_far_goal():
+    static = load_scenario(CONFIG / "static_benchmark.yaml")
+    dynamic = load_scenario(CONFIG / "dynamic_benchmark.yaml")
+    assert static.goal.position == dynamic.goal.position == (2.0, 5.0)
+    assert math.dist((0.0, 0.0), static.goal.position) > 5.0
+
+
 def test_dynamic_scenario_matches_isaac_physical_configuration():
-    scenario = load_scenario(CONFIG / "dynamic.yaml")
-    spawn_pose = load_spawn_pose(
-        PACKAGE_ROOT.parents[2] / "isaac_sim/configs/spawn_poses.yaml",
-        scenario.spawn_pose_name,
+    for filename in (
+        "dynamic.yaml",
+        "dynamic_benchmark.yaml",
+        "dynamic_complex_route.yaml",
+    ):
+        scenario = load_scenario(CONFIG / filename)
+        spawn_pose = load_spawn_pose(
+            PACKAGE_ROOT.parents[2] / "isaac_sim/configs/spawn_poses.yaml",
+            scenario.spawn_pose_name,
+        )
+        assert scenario.dynamic_config_file is not None
+        validate_dynamic_physical_contract(
+            scenario,
+            spawn_pose,
+            scenario.resolve_path(scenario.dynamic_config_file),
+        )
+
+
+def test_complex_routes_are_long_continuous_and_end_at_goal():
+    for filename in (
+        "static_complex_route.yaml",
+        "dynamic_complex_route.yaml",
+    ):
+        scenario = load_scenario(CONFIG / filename)
+        assert len(scenario.route) == 6
+        assert scenario.route[-1] == scenario.goal
+        assert scenario.success.minimum_ground_truth_path_length_m >= 49.0
+        assert scenario.success.minimum_reverse_distance_m == 0.0
+        assert scenario.success.maximum_reverse_distance_fraction == 0.02
+        assert scenario.success.minimum_curved_distance_fraction == 0.05
+        straight_line_lower_bound = sum(
+            math.dist(previous.position, current.position)
+            for previous, current in zip(scenario.route, scenario.route[1:])
+        )
+        straight_line_lower_bound += math.dist(
+            (0.0, 0.0), scenario.route[0].position
+        )
+        assert straight_line_lower_bound > 45.0
+
+
+def test_route_final_pose_must_match_goal(tmp_path):
+    document = yaml.safe_load(
+        (CONFIG / "static_complex_route.yaml").read_text()
     )
-    assert scenario.dynamic_config_file is not None
-    validate_dynamic_physical_contract(
-        scenario,
-        spawn_pose,
-        scenario.resolve_path(scenario.dynamic_config_file),
-    )
+    document["scenario"]["route"][-1]["position"] = [0.5, 0.0]
+    with pytest.raises(ConfigurationError, match="must exactly match"):
+        load_scenario(_write_scenario(tmp_path, document))
 
 
 def test_usd_to_map_projection_supports_translation_and_nonzero_yaw():

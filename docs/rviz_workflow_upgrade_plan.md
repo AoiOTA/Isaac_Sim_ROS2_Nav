@@ -19,7 +19,7 @@
 - `plan.md`：项目总体架构和完整建设规划；
 - `docs/rviz_workflow_upgrade_plan.md`：本轮运行稳定性及 RViz 一体化交互工作流升级方案。
 
-### 1.1 实施状态（2026-07-12）
+### 1.1 实施状态（2026-07-16）
 
 本方案已经按冻结架构完成实现。本文后续章节保留实施前的问题分析和决策过程；日常操作以 [`user_manual.md`](user_manual.md) 为准，逐文件入口以 [`repository_index.md`](repository_index.md) 为准，最终测试数字和未验收边界以 [`verification.md`](verification.md) 为准。
 
@@ -32,7 +32,8 @@
 | 导航目标 | 使用官方 Nav2 Navigation 2 Panel + GoalTool，已满足需求，因此按方案约束没有实现额外 Goal Bridge。 |
 | Mapping Teleop | 已完成 W/A/S/D/方向键、0.18 秒稳态 deadman、速度上限、最终零速度、模式互斥和受管终端。 |
 | 启动集成 | 四种 `run_ros.sh` 操作默认启动对应 RViz；Mapping 两种模式默认启动 Teleop；`interactive:=false` 可无头运行。 |
-| MPPI | 实测选定 10 Hz、20×0.10 秒预测点、1000 batch；保持 2 秒窗，并把定位扫描处理降为每两帧一次。 |
+| Jackal 运动控制 | 已更换受支持的轮胎碰撞体并联合标定有效轮距、Wheel Odom 和有界滑移转向补偿；控制图改为 OnPhysicsStep + 真实 `dt`，单次同步写四轮；前进弧线、倒车弧线和原地旋转均通过 Realistic 实测。 |
+| MPPI | 实测选定 10 Hz、20×0.10 秒预测点、500 batch；保持 2 秒窗，允许倒车并提前修正路径角度。 |
 | 文档 | 使用手册、逐文件索引、接口契约、排障手册、README 和验证台账均已同步。 |
 
 实测中 Fast DDS SHM 残留、重复进程、Lifecycle 竞态、RViz QoS、仿真时间 epoch 和 MPPI 负载是可分别定位但会在启动/Reset 时相互放大的问题；修复保持原 TF/Topic 所有权、Ideal/Realistic、四种操作和 Ground Truth 隔离不变。

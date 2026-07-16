@@ -6,7 +6,8 @@ import threading
 import time
 
 from action_msgs.srv import CancelGoal
-from lifecycle_msgs.srv import GetState
+from lifecycle_msgs.msg import Transition
+from lifecycle_msgs.srv import ChangeState, GetState
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
 import rclpy
@@ -19,6 +20,7 @@ from rclpy.time import Time
 from robot_bringup.lifecycle_policy import duplicate_names
 from robot_bringup.lifecycle_policy import lifecycle_decision
 from robot_bringup.lifecycle_policy import LifecycleAction
+from robot_bringup.lifecycle_policy import normalization_transition
 from robot_bringup.lifecycle_policy import RetryPolicy
 from robot_bringup.readiness import ReadinessConfig, ReadinessTracker
 from rosgraph_msgs.msg import Clock
@@ -127,6 +129,7 @@ class Nav2ActivationGate(Node):
         self._snapshot_in_flight = False
         self._snapshot_generation = None
         self._manager_request_token = None
+        self._normalization_attempts = 0
 
         self._recovering = False
         self._recovery_started_at = None
@@ -178,6 +181,10 @@ class Nav2ActivationGate(Node):
             ManageLifecycleNodes, service_name)
         self._state_clients = {
             name: self.create_client(GetState, f'/{name}/get_state')
+            for name in self._managed_nodes
+        }
+        self._change_state_clients = {
+            name: self.create_client(ChangeState, f'/{name}/change_state')
             for name in self._managed_nodes
         }
         self._cancel_goal_client = self.create_client(
@@ -463,21 +470,34 @@ class Nav2ActivationGate(Node):
             return
 
         if context == 'activation':
-            self._handle_activation_decision(decision, now, generation)
+            self._handle_activation_decision(
+                decision, states, now, generation)
         elif context == 'recovery_pause':
-            self._handle_recovery_pause_decision(decision, now, generation)
+            self._handle_recovery_pause_decision(
+                decision, states, now, generation)
         elif context == 'recovery_resume':
-            self._handle_recovery_resume_decision(decision, now, generation)
+            self._handle_recovery_resume_decision(
+                decision, states, now, generation)
         else:
             if not self._consume_snapshot(generation):
                 return
             self._set_fatal(f'unknown lifecycle query context: {context}')
 
-    def _handle_activation_decision(self, decision, now, generation):
+    def _handle_activation_decision(
+            self, decision, states, now, generation):
         if decision.action is LifecycleAction.ALREADY_ACTIVE:
             if not self._consume_snapshot(generation):
                 return
             self._mark_active(recovered=False)
+            return
+        if decision.action is LifecycleAction.NORMALIZE:
+            self._send_normalization_transition(
+                'activation',
+                states,
+                'active',
+                now,
+                generation,
+            )
             return
         if self._activation_verifying:
             if not self._consume_snapshot(generation):
@@ -590,6 +610,123 @@ class Nav2ActivationGate(Node):
                 self._set_fatal(
                     f'unknown lifecycle command context: {context}')
 
+    def _send_normalization_transition(
+            self, context, states, target, now, generation):
+        try:
+            transition = normalization_transition(
+                states, self._managed_nodes, target)
+        except ValueError as exc:
+            if self._consume_snapshot(generation):
+                self._set_fatal(str(exc))
+            return False
+        if transition is None:
+            if self._consume_snapshot(generation):
+                self._next_attempt_at = now + 0.1
+            return True
+        name, transition_name = transition
+        transition_ids = {
+            'configure': Transition.TRANSITION_CONFIGURE,
+            'activate': Transition.TRANSITION_ACTIVATE,
+            'deactivate': Transition.TRANSITION_DEACTIVATE,
+        }
+        with self._state_query_lock:
+            if not self._snapshot_is_current(generation):
+                return False
+            if self._request_in_flight:
+                return False
+            client = self._change_state_clients[name]
+            if not client.service_is_ready():
+                self._consume_snapshot(generation)
+                self._record_normalization_failure(
+                    f'/{name}/change_state service unavailable',
+                    now,
+                )
+                return False
+            self._consume_snapshot(generation)
+            request = ChangeState.Request()
+            request.transition.id = transition_ids[transition_name]
+            token = object()
+            self._request_in_flight = True
+            self._manager_request_token = token
+            operation_generation = self._generation
+            self.get_logger().warning(
+                f'Normalizing mixed Nav2 lifecycle state: '
+                f'node={name}, transition={transition_name}, '
+                f'target={target}, context={context}')
+            try:
+                future = client.call_async(request)
+            except Exception as exc:
+                self._request_in_flight = False
+                self._manager_request_token = None
+                self._record_normalization_failure(
+                    f'/{name}/change_state raised {type(exc).__name__}: {exc}',
+                    now,
+                )
+                return False
+            future.add_done_callback(partial(
+                self._normalization_transition_done,
+                context=context,
+                name=name,
+                transition_name=transition_name,
+                generation=operation_generation,
+                token=token,
+            ))
+            return True
+
+    def _normalization_transition_done(
+            self, future, *, context, name, transition_name,
+            generation, token):
+        try:
+            response = future.result()
+            error = None
+        except Exception as exc:
+            response = None
+            error = exc
+        with self._state_query_lock:
+            if (generation != self._generation
+                    or token is not self._manager_request_token):
+                return
+            self._request_in_flight = False
+            self._manager_request_token = None
+            now = time.monotonic()
+            if error is not None:
+                self._record_normalization_failure(
+                    f'/{name}/change_state {transition_name} raised '
+                    f'{type(error).__name__}: {error}',
+                    now,
+                )
+                return
+            if response is None or not response.success:
+                self._record_normalization_failure(
+                    f'/{name}/change_state {transition_name} returned '
+                    f'success={getattr(response, "success", None)}',
+                    now,
+                )
+                return
+            self._normalization_attempts = 0
+            self._next_attempt_at = now + 0.1
+            self.get_logger().info(
+                f'Nav2 lifecycle normalization step completed: '
+                f'node={name}, transition={transition_name}, '
+                f'context={context}')
+
+    def _record_normalization_failure(self, reason, now):
+        self._last_failure = reason
+        self._normalization_attempts += 1
+        if not self._retry_policy.can_retry(self._normalization_attempts):
+            self._set_fatal(
+                'Nav2 lifecycle normalization failed after '
+                f'{self._normalization_attempts} attempts: {reason}')
+            return
+        delay = self._retry_policy.delay_after_failure(
+            self._normalization_attempts)
+        self._next_attempt_at = now + delay
+        self.get_logger().warning(
+            f'Nav2 lifecycle normalization attempt '
+            f'{self._normalization_attempts}/'
+            f'{self._retry_policy.max_attempts} failed: {reason}; '
+            f'retrying in {delay:.2f}s')
+
     def _record_failure(
             self, reason, now, *, attempt_already_counted=False):
         with self._state_query_lock:
@@ -618,6 +755,7 @@ class Nav2ActivationGate(Node):
         self._recovery_stage = None
         self._attempts = 0
         self._last_failure = ''
+        self._normalization_attempts = 0
         if recovered:
             self.get_logger().info(
                 'Nav2 lifecycle recovery completed on simulation epoch '
@@ -633,6 +771,7 @@ class Nav2ActivationGate(Node):
             self._recovery_started_at = time.monotonic()
             self._attempts = 0
             self._last_failure = ''
+            self._normalization_attempts = 0
             self._next_attempt_at = self._recovery_started_at
             self._set_recovery_stage('cancel_goal')
             self.get_logger().warning(
@@ -756,7 +895,16 @@ class Nav2ActivationGate(Node):
                 self._set_fatal(f'unknown recovery stage: {stage}')
 
     def _handle_recovery_pause_decision(
-            self, decision, now, generation):
+            self, decision, states, now, generation):
+        if decision.action is LifecycleAction.NORMALIZE:
+            self._send_normalization_transition(
+                'recovery_pause',
+                states,
+                'inactive',
+                now,
+                generation,
+            )
+            return
         if decision.action in {
                 LifecycleAction.RESUME, LifecycleAction.STARTUP}:
             if not self._consume_snapshot(generation):
@@ -783,7 +931,16 @@ class Nav2ActivationGate(Node):
                 )
 
     def _handle_recovery_resume_decision(
-            self, decision, now, generation):
+            self, decision, states, now, generation):
+        if decision.action is LifecycleAction.NORMALIZE:
+            self._send_normalization_transition(
+                'recovery_resume',
+                states,
+                'active',
+                now,
+                generation,
+            )
+            return
         if decision.action is LifecycleAction.ALREADY_ACTIVE:
             if not self._consume_snapshot(generation):
                 return

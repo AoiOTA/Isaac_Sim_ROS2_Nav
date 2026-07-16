@@ -3,6 +3,7 @@ import pytest
 from robot_bringup.lifecycle_policy import duplicate_names
 from robot_bringup.lifecycle_policy import lifecycle_decision
 from robot_bringup.lifecycle_policy import LifecycleAction
+from robot_bringup.lifecycle_policy import normalization_transition
 from robot_bringup.lifecycle_policy import RetryPolicy
 
 
@@ -46,13 +47,38 @@ def test_terminal_or_unknown_states_fail_with_node_diagnostics(state):
     assert f'controller_server={state}' in decision.reason
 
 
-def test_mixed_stable_states_are_not_blindly_retransitioned():
+def test_mixed_stable_states_request_ordered_normalization():
     decision = lifecycle_decision({
         'controller_server': 'active',
         'planner_server': 'inactive',
     })
-    assert decision.action is LifecycleAction.FAIL
-    assert 'unsafe mixed' in decision.reason
+    assert decision.action is LifecycleAction.NORMALIZE
+    assert 'ordered repair' in decision.reason
+
+
+def test_normalization_deactivates_in_reverse_and_activates_forward():
+    nodes = ['controller_server', 'planner_server', 'bt_navigator']
+    states = {
+        'controller_server': 'active',
+        'planner_server': 'active',
+        'bt_navigator': 'inactive',
+    }
+    assert normalization_transition(states, nodes, 'inactive') == (
+        'planner_server',
+        'deactivate',
+    )
+    assert normalization_transition(states, nodes, 'active') == (
+        'bt_navigator',
+        'activate',
+    )
+
+
+def test_normalization_configures_unconfigured_nodes_before_activation():
+    assert normalization_transition(
+        {'controller_server': 'unconfigured'},
+        ['controller_server'],
+        'active',
+    ) == ('controller_server', 'configure')
 
 
 def test_empty_snapshot_fails_and_duplicate_fqns_are_reported():

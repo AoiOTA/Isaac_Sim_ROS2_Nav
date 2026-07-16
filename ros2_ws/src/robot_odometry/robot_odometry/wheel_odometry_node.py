@@ -23,7 +23,7 @@ class WheelOdometryNode(Node):
     def __init__(self):
         super().__init__('wheel_odometry')
         self.declare_parameter('wheel_radius', 0.098)
-        self.declare_parameter('track_width', 0.37559)
+        self.declare_parameter('track_width', 0.800)
         self.declare_parameter('left_joint_names', list(DEFAULT_LEFT_JOINTS))
         self.declare_parameter('right_joint_names', list(DEFAULT_RIGHT_JOINTS))
         self.declare_parameter('publish_rate', 50.0)

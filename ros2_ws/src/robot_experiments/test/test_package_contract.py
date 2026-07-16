@@ -42,7 +42,9 @@ def test_package_metadata_declares_runtime_contract():
     [
         "static.yaml",
         "static_long_range.yaml",
+        "static_benchmark.yaml",
         "dynamic.yaml",
+        "dynamic_benchmark.yaml",
         "incremental_mapping.yaml",
     ],
 )
@@ -64,9 +66,17 @@ def test_incremental_map_comparison_has_an_installed_cli():
         "incremental_map_compare = "
         "robot_experiments.incremental_map_compare:main"
     ) in setup_source
+    assert (
+        "navigation_benchmark = "
+        "robot_experiments.navigation_benchmark:main"
+    ) in setup_source
+    assert (
+        "motion_benchmark = "
+        "robot_experiments.motion_benchmark:main"
+    ) in setup_source
 
 
-def test_runner_has_no_publishers_or_control_and_localization_topics():
+def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
     source = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
     tree = ast.parse(source)
     attribute_calls = {
@@ -75,7 +85,9 @@ def test_runner_has_no_publishers_or_control_and_localization_topics():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
     assert "create_publisher" not in attribute_calls
-    assert "/cmd_vel" not in source
+    # A read-only /cmd_vel subscription is allowed for motion-quality metrics.
+    assert "create_subscription(" in source
+    assert '"command_topic", "/cmd_vel"' in source
     assert "/initialpose" not in source
     assert "self._scenario.goal" in source
     assert "_verify_dynamic_runtime_contract" in source

@@ -61,6 +61,7 @@
 | `scripts/test.sh` | 统一运行纯 Python、ROS colcon 和可选 Isaac/USD 测试。 |
 | `scripts/run_isaac.sh` | 选择项目配置并用 Isaac Python 启动 standalone 仿真；支持 custom profile。 |
 | `scripts/run_ros.sh` | 启动四种顶层 ROS 操作，并为 Localization/Navigation 自动推导同名 OccupancyGrid。 |
+| `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
 | `scripts/run_teleop_terminal.sh` | 顶层 launch 的前台 Teleop 终端托管器；转发停止信号、校验 PID 身份并等待真实节点退出。 |
@@ -117,6 +118,9 @@
 | `isaac_sim/configs/ros2_bridge/topics.yaml` | Isaac OmniGraph 使用的 ROS Topic 和 frame 名称集中表。 |
 | `isaac_sim/configs/ros2_bridge/qos.yaml` | Clock、sensor、command、state、TF、static TF 的显式 QoS profiles。 |
 | `isaac_sim/configs/experiments/static.yaml` | 静态实验 seed、场景 ID 和目标列表的占位清单；当前 Isaac 运行时不读取此文件。 |
+| `isaac_sim/configs/experiments/dynamic.yaml` | 原始 4-seed 动态 smoke 的横穿/对向物理障碍配置。 |
+| `isaac_sim/configs/experiments/dynamic_benchmark.yaml` | 远距离 20-run 动态验收物理配置；两障碍在交互后继续离开路线，避免单程终点永久堵塞通道。 |
+| `isaac_sim/configs/experiments/dynamic_complex_route.yaml` | Ideal 复杂长路线动态验收的四个低速一次性横穿/对向物理障碍。 |
 | `isaac_sim/configs/experiments/dynamic.yaml` | Isaac 物理动态障碍物 ID、形状、尺寸、USD 轨迹、速度和 repeat。 |
 | `isaac_sim/configs/experiments/incremental_mapping.yaml` | Isaac 增量地图变化占位配置；真实 changed-region 资产尚需另行制作。 |
 
@@ -125,9 +129,9 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/graphs/__init__.py` | OmniGraph 构建子包标记。 |
-| `isaac_sim/graphs/spec.py` | 与 Isaac API 解耦的 GraphSpec/TargetPaths 数据结构和 materialize 工具，便于纯 Python 测试图契约。 |
+| `isaac_sim/graphs/spec.py` | 与 Isaac API 解耦的 GraphSpec/TargetPaths 数据结构和 materialize 工具；支持动态属性及 OnPhysicsStep 所需的 on-demand pipeline。 |
 | `isaac_sim/graphs/ros_contract.py` | 严格读取 Topic/QoS 配置并提供图构建所需的 ROS 合同。 |
-| `isaac_sim/graphs/control_graph.py` | `/cmd_vel`→DifferentialController→前后轮 ArticulationController 数据流。 |
+| `isaac_sim/graphs/control_graph.py` | `OnPhysicsStep` 每个物理步读取最新 `/cmd_vel`，使用真实仿真 `dt` 执行 DifferentialController，并通过单个 ArticulationController 原子写入四轮目标。 |
 | `isaac_sim/graphs/odometry_graph.py` | Ideal 模式的 `/odom` 和 `odom → base_link` 发布图。 |
 | `isaac_sim/graphs/sensor_graph.py` | `/clock`、JointState、IMU、RTX LiDAR PointCloud2 等传感器发布图。 |
 | `isaac_sim/graphs/tf_graph.py` | 轮子动态 TF 与传感器/相机静态 TF 图；从所选 robot YAML 读取外参。 |
@@ -160,6 +164,7 @@
 | `isaac_sim/src/robot/spawn_pose_manager.py` | 读取/校验命名 USD/Map Pose，提供标定门和 Pose 查询。 |
 | `isaac_sim/src/robot/reset.py` | ResetManager 物理事务：预校验出生点/标定，暂停、停控、恢复 Pose、清速度、重置子系统，并在失败路径也恢复 timeline。 |
 | `isaac_sim/src/robot/idle_brake.py` | 低层命令超时/死区 watchdog；无有效命令时让底盘可靠静止但允许低速唤醒。 |
+| `isaac_sim/src/robot/skid_steer_motion_assist.py` | 对 PhysX 四轮滑移转向的曲率欠响应进行超时保护和加速度受限的平面速度补偿，使前进/倒车弧线与 `/cmd_vel` 一致。 |
 
 ## 14. Isaac 传感器与 ROS Bridge
 
@@ -204,6 +209,7 @@
 | `isaac_sim/tests/test_scan_projection.py` | 检查 Isaac LiDAR 与 ROS LaserScan 投影参数的 frame/range/角度契约。 |
 | `isaac_sim/tests/test_ground_truth_transforms.py` | 测试 `map_T_usd` 与 Pose 变换数学。 |
 | `isaac_sim/tests/test_idle_brake.py` | 测试命令死区、超时停车、低速唤醒和 sim-time 行为。 |
+| `isaac_sim/tests/test_skid_steer_motion_assist.py` | 测试滑移转向补偿的前进/倒车跟踪、加速度边界、命令超时、Reset 和原地旋转标定。 |
 | `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 顺序、fresh-scan initial pose 和重复 seed。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 测试动态障碍解析、有限数、repeat、轨迹推进和 Reset。 |
 
@@ -294,7 +300,7 @@
 | --- | --- |
 | `ros2_ws/src/robot_navigation/CMakeLists.txt` | 安装 Nav2 配置/launch并注册测试。 |
 | `ros2_ws/src/robot_navigation/package.xml` | Nav2 planner/controller/behavior/smoother/collision monitor/lifecycle 依赖。 |
-| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用实测稳定的 10 Hz、2 秒窗和 1000 批次。 |
+| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用 10 Hz、2 秒窗和 500 批次，并允许倒车与提前角度修正。 |
 | `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点；默认不 autostart，等待外部 readiness gate。 |
 | `ros2_ws/src/robot_navigation/test/test_nav2_config.py` | 检查插件、Footprint、inflation、话题链、2D obstacle layer 和安全参数。 |
 
@@ -310,6 +316,11 @@
 | `ros2_ws/src/robot_experiments/config/static.yaml` | 1 m Ideal/Realistic 静态 smoke：4 seeds、目标、阈值和配置引用。 |
 | `ros2_ws/src/robot_experiments/config/static_long_range.yaml` | 3 m 长距离 smoke：单 seed 和更长 timeout。 |
 | `ros2_ws/src/robot_experiments/config/dynamic.yaml` | ROS 动态基线：目标、4 seeds、两条 Map-frame 障碍轨迹和 repeat 契约。 |
+| `ros2_ws/src/robot_experiments/config/static_benchmark.yaml` | Realistic 远距离静态验收：同一仓库、同起止点、20 seeds 和严格终点/静止/安全观测门。 |
+| `ros2_ws/src/robot_experiments/config/dynamic_benchmark.yaml` | Realistic 远距离动态验收：同起止点、20 seeds，并与 Isaac 横穿/对向实体障碍配置严格对齐。 |
+| `ros2_ws/src/robot_experiments/config/static_complex_route.yaml` | Ideal 前进优先复杂静态验收：6 个强制航点、约 50 m 路线、3 seeds 和运动质量门。 |
+| `ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml` | Ideal 复杂动态验收：与四个物理移动障碍严格对齐的 6 航点、3-seed 长路线。 |
+| `ros2_ws/src/robot_experiments/config/motion_benchmark.yaml` | 底盘直线、原地旋转、正反圆弧、蛇形和快速反向的自动运动基准。 |
 | `ros2_ws/src/robot_experiments/config/incremental_mapping.yaml` | 增量建图工作流描述符；NavigateToPose runner 会明确拒绝它。 |
 | `ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml` | 三地图离线比较模板；路径、耗时、真实变化矩形为必填占位。 |
 
@@ -322,9 +333,12 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/spawn_poses.py` | ROS 侧读取命名 USD/Map Pose并要求已标定。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/scenario.py` | 场景 dataclass/loader、导航场景门、Isaac 动态运行时和物理几何契约校验。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/metrics.py` | 单轮成功判定、路径长度、角度 wrap、避障率和增量时间改善等纯指标函数。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/optimal_path.py` | 读取 OccupancyGrid YAML/PGM、按机器人净空膨胀障碍，并用禁止斜穿墙角的 8 邻域 A* 计算理论最短路。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/navigation_benchmark.py` | 汇总静态/动态 manifest，验收 95%/90% 成功率和成功静态路线相对理论最短路不超过 20% 的偏差。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema 校验、配置 SHA256，以及单轮 CSV/JSON 报告的原子写入。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/motion_benchmark.py` | 使用 Ground Truth 自动执行并验收底盘运动原语、曲率、误差和转向反向延迟。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/incremental_map_compare.py` | 离线加载三张 Map Server YAML/PGM，按世界坐标比较耗时、变化恢复和旧区退化。 |
 | `ros2_ws/src/robot_experiments/launch/initial_pose.launch.py` | 把 spawn pose、持续监听和扫描/TF 恢复参数传给 initial pose publisher。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 启动 experiment runner并传入场景、出生点、输出目录和可选配置 override。 |
@@ -337,11 +351,14 @@
 | `ros2_ws/src/robot_experiments/test/fixtures/spawn_poses_uncalibrated.yaml` | 未标定出生点 fixture，用于验证 fail-fast。 |
 | `ros2_ws/src/robot_experiments/test/test_configuration.py` | 测试三种场景解析、schema、相对路径、静/动态契约和真实物理配置一致性。 |
 | `ros2_ws/src/robot_experiments/test/test_metrics.py` | 测试成功/失败原因、路径、角度、率和时间改善指标。 |
+| `ros2_ws/src/robot_experiments/test/test_optimal_path.py` | 用合成地图与 20+20 份 manifest 测试 A* 绕行、阻塞判定、成功率和路径偏差验收。 |
 | `ros2_ws/src/robot_experiments/test/test_report.py` | 测试 manifest 必需字段、有限数/hash、CSV/JSON 原子替换和输出路径安全。 |
 | `ros2_ws/src/robot_experiments/test/test_incremental_map_compare.py` | 用合成 PGM 测试变化恢复、旧区退化、阈值 override 和 CLI 返回码。 |
 | `ros2_ws/src/robot_experiments/test/test_package_contract.py` | 检查安装入口、配置/launch 文件和 reset/dynamic contract 关键代码存在。 |
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
+| `ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py` | 测试命令/实测前进、倒车、弧线、停止和转向换向指标。 |
+| `ros2_ws/src/robot_experiments/test/test_motion_benchmark.py` | 测试运动基准配置、判定和报告逻辑。 |
 
 ## 28. `robot_bringup` 配置与入口
 
@@ -367,14 +384,16 @@
 | `ros2_ws/src/robot_bringup/robot_bringup/mode_contract.py` | 纯函数校验 operation、Ideal/Realistic、Isaac/RSP、Pose Graph、Map和自定义文件。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/interactive_policy.py` | 纯函数解析 interactive/RViz/Teleop 选项、按模式选配置并寻找可受管的终端模拟器。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/initial_pose_policy.py` | 以 transient-local Topic 发布 `auto|rviz` 初始位姿所有权，供 Isaac Reset 与 ROS Gate 共用。 |
-| `ros2_ws/src/robot_bringup/robot_bringup/lifecycle_policy.py` | Lifecycle STARTUP/PAUSE/RESUME 状态机、代次令牌和有限指数退避的纯策略。 |
+| `ros2_ws/src/robot_bringup/robot_bringup/ideal_localization_tf.py` | Ideal 定位发布新鲜 identity `map→odom`，并提供兼容实验 Reset 的空缓冲清理服务。 |
+| `ros2_ws/src/robot_bringup/robot_bringup/lifecycle_policy.py` | Lifecycle STARTUP/PAUSE/RESUME、混合稳定状态的有序归一化和有限指数退避纯策略。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/readiness.py` | 按仿真代次判断 Clock/scan/odom/map 与 map→odom 的新鲜、稳定和时间跳变。 |
-| `ros2_ws/src/robot_bringup/robot_bringup/activation_gate.py` | Nav2 Lifecycle 唯一管理者；原子检查节点状态，启动时 STARTUP，Reset 时暂停、清图、重播/等待初始位姿并恢复。 |
+| `ros2_ws/src/robot_bringup/robot_bringup/activation_gate.py` | Nav2 Lifecycle 唯一管理者；原子检查状态，Reset 时暂停/清图/重播/恢复，并修复 Manager 部分转换留下的 Active/Inactive 混合状态。 |
 | `ros2_ws/src/robot_bringup/test/test_mode_contract.py` | 覆盖合法/非法模式、缺失地图、后缀归一化和自定义文件入口。 |
 | `ros2_ws/src/robot_bringup/test/test_readiness.py` | 覆盖 freshness、TF 抖动、重复时间戳、时钟回退、稳定窗口和 timeout。 |
 | `ros2_ws/src/robot_bringup/test/test_lifecycle_policy.py` | 覆盖 Lifecycle 状态决策、代次隔离、重试次数和退避上限。 |
+| `ros2_ws/src/robot_bringup/test/test_ideal_localization_tf.py` | 验证 Ideal `map→odom` 的 frame、时间戳和单位变换。 |
 | `ros2_ws/src/robot_bringup/test/test_activation_gate.py` | 使用 ROS adapter 替身测试 Gate 的状态查询、服务结果、Reset 恢复顺序和旧 future 隔离。 |
-| `ros2_ws/src/robot_bringup/test/test_activation_gate_integration.py` | 在真实 rclpy executor 中回归异步服务与代次竞态。 |
+| `ros2_ws/src/robot_bringup/test/test_activation_gate_integration.py` | 在真实 rclpy executor 中回归异步服务、代次竞态和部分 RESUME 后的有序归一化。 |
 | `ros2_ws/src/robot_bringup/test/test_initial_pose_policy.py` | 测试 `auto|rviz` 规范化和非法策略拒绝。 |
 | `ros2_ws/src/robot_bringup/test/test_interactive_policy.py` | 覆盖三套 RViz 选择、headless 行为、Teleop 模式禁令和终端命令。 |
 | `ros2_ws/src/robot_bringup/test/test_runtime_scripts.py` | 用隔离运行目录测试统一环境、单实例锁、安全清理以及 RViz/Teleop 启动脚本。 |
@@ -403,7 +422,7 @@
 | 轮径/轮距/joint | Isaac robot YAML、Wheel Odom YAML、Xacro、Nav2 Footprint和 joint 测试 |
 | 传感器外参 | Isaac robot YAML static TF、Xacro sensors、投影高度、Map Pose/地图 |
 | 出生点 | `spawn_poses.yaml`、Map Pose 标定、GT 变换、动态障碍 USD↔Map 坐标 |
-| 动态障碍 | Isaac physical `dynamic.yaml` 与 ROS scenario `dynamic.yaml` |
+| 动态障碍 | 对应的 Isaac physical `dynamic*.yaml` 与 ROS scenario `dynamic*.yaml` |
 | Nav2 footprint/速度 | `nav2_params.yaml`、Collision Monitor polygons和验证场景 |
 | 地图版本 | 四个地图工件、manifest、spawn Map Pose和所有 scenario version 字段 |
 | 自定义机器人 | custom project/robot YAML、USD、Xacro、Wheel Odom、Nav2、传感器 YAML、出生点和地图 |

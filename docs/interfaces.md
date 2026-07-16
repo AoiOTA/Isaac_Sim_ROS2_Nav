@@ -143,6 +143,29 @@ proof of compatibility; use `ros2 topic info --verbose <topic>` when debugging.
 
 The committed RViz configs explicitly bind map-like topics (`/map`, both costmaps) as Reliable + Transient Local. Sensor streams (`/scan`, `/lidar/points_raw`) are Best Effort + Volatile. This distinction is regression-tested. The top-level interactive launch starts RViz before delaying perception by 1.5 seconds so the saved sensor QoS is applied before the `/scan` publisher appears; this avoids a misleading one-shot constructor warning without changing the final graph.
 
+## Isaac wheel-control execution contract
+
+The control graph is an on-demand graph driven by
+`isaacsim.core.nodes.OnPhysicsStep`, not by a render/playback tick and not by
+`ROS2SubscribeTwist.execOut`.
+
+On every physics step it:
+
+1. polls `/cmd_vel`, retaining the subscriber's most recently received Twist
+   when no new message is available;
+2. executes `DifferentialController`;
+3. supplies `OnPhysicsStep.deltaSimulationTime` directly to the controller's
+   `dt` input;
+4. expands `[left, right]` to `[front_left, front_right, rear_left,
+   rear_right]`;
+5. writes all four velocity targets through one
+   `IsaacArticulationController` call.
+
+Consequently the acceleration limits are integrated at the physics-step rate
+and remain independent of whether Teleop/Nav2 publishes at 10 Hz, 20 Hz, or
+another supported command rate. The single four-wheel write also prevents a
+front/rear axle command from straddling two graph executions.
+
 ## TF ownership
 
 The only navigation tree is:
@@ -214,7 +237,7 @@ A Reset is a non-blocking ROS service transaction with one active generation at 
 9. Only after the transaction succeeds, publish `/simulation/reset_event` and return `success: true`.
 10. In Localization with `initial_pose_source=auto`, arm a simulation-clock evidence barrier, ignore old/high-epoch cached scans, and publish the calibrated `/initialpose` plus `/simulation/localization_seeded` on the first valid post-reset scan. With source `rviz`, automatic publication remains disabled.
 
-A successful Trigger response therefore means the physical reset and all submitted downstream reset/clear calls completed, not merely that they were queued. It still does not prove localization readiness. Clients must wait for the appropriate automatic seed or new RViz pose, fresh `/odom`, and a newly stamped, stable `map -> odom`. The experiment runner additionally requires fresh post-event Ground Truth and spawn-aligned `map -> base_link` before dispatching a goal.
+A successful Trigger response therefore means the physical reset and all submitted downstream reset/clear calls completed, not merely that they were queued. It still does not prove localization readiness. Clients must wait for the appropriate automatic seed or new RViz pose, fresh `/odom`, and a newly stamped, stable `map -> odom`. The experiment runner additionally requires fresh post-event Ground Truth, spawn-aligned `map -> base_link`, and all six Nav2 managed nodes in `active` state before dispatching a goal.
 
 ## Navigation activation contract
 
@@ -240,7 +263,9 @@ Before every transition the gate atomically snapshots all six managed Nav2
 states and rejects duplicate node names. It is the sole lifecycle owner. Calls
 carry a generation/token pair, are guarded by one lock, and use at most three
 attempts with bounded exponential backoff; an old future cannot advance the new
-epoch.
+epoch. If a manager command completes only partially, the gate normalizes the
+mixed stable state in dependency order: activate/configure forward and
+deactivate in reverse, then verifies the full snapshot again.
 
 After a successful lifecycle `STARTUP`, the activation gate remains alive.
 On reset it cancels active navigation, pauses managed nodes, clears global and
@@ -251,15 +276,16 @@ inconsistent stack. An actual gate process exit shuts down the composed stack.
 
 ## Navigation control performance contract
 
-The committed MPPI configuration is based on the same Isaac Sim 6.0.1 headless
-Ideal three-metre goal, not an arbitrary reduction:
+The committed MPPI timing keeps the measured Isaac Sim 6.0.1 headless Ideal
+baseline. The batch reduction also passed two consecutive Realistic curved
+goals, including a reverse-turning goal:
 
 | Parameter | Value | Reason |
 | --- | --- | --- |
-| `controller_frequency` | 10 Hz | Completed the measured goal with no missed-control warnings. |
+| `controller_frequency` | 10 Hz | Preserves the two-second horizon and remained close to its target under the measured Realistic load. |
 | `FollowPath.time_steps` | 20 | Combined with `model_dt` keeps the prediction horizon at two seconds. |
 | `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
-| `FollowPath.batch_size` | 1000 | Reduces per-cycle sampling cost while preserving successful navigation. |
+| `FollowPath.batch_size` | 500 | Avoids localization contention while preserving the two-second horizon. |
 | Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
 
 The 20 Hz/40×0.05/1500 baseline and tested 20 Hz reduced batches repeatedly
@@ -286,6 +312,12 @@ points, trajectory duration, and boolean `repeat`. `repeat: false` clamps the
 obstacle at its endpoint after one traversal; `repeat: true` makes it traverse
 back and forth. Both documents must state the value explicitly. The committed
 dynamic baseline currently uses `repeat: false` for both obstacles.
+
+For calibrated Ideal Localization/Navigation, Isaac already publishes the
+authoritative `odom -> base_link`. ROS therefore serves the immutable map and
+publishes a freshly stamped identity `map -> odom` instead of applying a second
+SLAM Toolbox localization correction. Realistic mode continues to use the
+serialized Pose Graph and SLAM Toolbox for `map -> odom`.
 
 `incremental_mapping.yaml` is a mapping-workflow descriptor. The
 `NavigateToPose` runner rejects it deliberately; execute it through

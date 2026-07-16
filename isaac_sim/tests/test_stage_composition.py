@@ -71,6 +71,47 @@ def test_composed_stage_has_exactly_one_expected_physics_scene():
     assert [str(scene.GetPath()) for scene in scenes] == [config.simulation.expected_physics_scene]
 
 
+def test_composed_stage_uses_supported_wheel_colliders():
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    config = _config()
+    stage = SceneComposer(config).compose(save=False)
+    root = stage.GetPrimAtPath(config.robot.articulation_root)
+    assert root.GetAttribute(
+        "physxArticulation:solverPositionIterationCount"
+    ).Get() == 32
+    assert root.GetAttribute(
+        "physxArticulation:solverVelocityIterationCount"
+    ).Get() == 4
+
+    for joint_name in config.robot.wheel_joints:
+        joint_prim = next(
+            prim
+            for prim in Usd.PrimRange(root)
+            if prim.GetName() == joint_name
+        )
+        joint = UsdPhysics.RevoluteJoint(joint_prim)
+        bodies = (
+            tuple(joint.GetBody0Rel().GetTargets())
+            + tuple(joint.GetBody1Rel().GetTargets())
+        )
+        wheel_path = next(
+            path
+            for path in bodies
+            if str(path) != config.robot.base_link_prim
+        )
+        wheel = stage.GetPrimAtPath(wheel_path)
+        assert not wheel.GetChild("collisions").IsActive()
+        collider = wheel.GetChild("collisions_v2")
+        assert collider.IsA(UsdGeom.Cylinder)
+        assert collider.HasAPI(UsdPhysics.CollisionAPI)
+        assert not collider.HasAttribute("physxCollisionCustomGeometry")
+        assert UsdGeom.Cylinder(collider).GetRadiusAttr().Get() \
+            == pytest.approx(0.098)
+        assert UsdGeom.Cylinder(collider).GetHeightAttr().Get() \
+            == pytest.approx(0.04)
+
+
 def test_dynamic_obstacle_reset_restarts_scenario_time():
     from pxr import Usd, UsdGeom, UsdPhysics
 

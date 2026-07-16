@@ -3,8 +3,8 @@ import time
 from action_msgs.srv import CancelGoal
 from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped
-from lifecycle_msgs.msg import State
-from lifecycle_msgs.srv import GetState
+from lifecycle_msgs.msg import State, Transition
+from lifecycle_msgs.srv import ChangeState, GetState
 from nav2_msgs.srv import ClearEntireCostmap
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -32,7 +32,7 @@ def _stamp(value):
 
 
 class _LifecycleFixture(Node):
-    def __init__(self):
+    def __init__(self, *, partial_resume_once=False):
         super().__init__('activation_gate_fixture')
         self.states = {
             name: 'unconfigured' for name in DEFAULT_MANAGED_NODES
@@ -40,6 +40,7 @@ class _LifecycleFixture(Node):
         self.events = []
         self.sim_stamp = 10.0
         self._rollback_next = False
+        self._partial_resume_once = partial_resume_once
 
         self._clock_publisher = self.create_publisher(Clock, '/clock', 10)
         self._scan = self.create_publisher(LaserScan, '/scan', 10)
@@ -61,6 +62,15 @@ class _LifecycleFixture(Node):
                 f'/{name}/get_state',
                 lambda request, response, node_name=name:
                 self._get_state(request, response, node_name),
+            )
+            for name in DEFAULT_MANAGED_NODES
+        ]
+        self._change_state_services = [
+            self.create_service(
+                ChangeState,
+                f'/{name}/change_state',
+                lambda request, response, node_name=name:
+                self._change_state(request, response, node_name),
             )
             for name in DEFAULT_MANAGED_NODES
         ]
@@ -112,6 +122,17 @@ class _LifecycleFixture(Node):
             ManageLifecycleNodes.Request.RESUME: 'RESUME',
         }
         self.events.append('manager:' + names[request.command])
+        if (
+            request.command == ManageLifecycleNodes.Request.RESUME
+            and self._partial_resume_once
+        ):
+            self._partial_resume_once = False
+            self.states.update({
+                'controller_server': 'active',
+                'planner_server': 'active',
+            })
+            response.success = True
+            return response
         if request.command in {
                 ManageLifecycleNodes.Request.STARTUP,
                 ManageLifecycleNodes.Request.RESUME}:
@@ -122,6 +143,22 @@ class _LifecycleFixture(Node):
             response.success = False
             return response
         self.states = {name: state for name in self.states}
+        response.success = True
+        return response
+
+    def _change_state(self, request, response, node_name):
+        transitions = {
+            Transition.TRANSITION_CONFIGURE: ('configure', 'inactive'),
+            Transition.TRANSITION_ACTIVATE: ('activate', 'active'),
+            Transition.TRANSITION_DEACTIVATE: ('deactivate', 'inactive'),
+        }
+        transition = transitions.get(request.transition.id)
+        if transition is None:
+            response.success = False
+            return response
+        label, target = transition
+        self.events.append(f'direct:{node_name}:{label}')
+        self.states[node_name] = target
         response.success = True
         return response
 
@@ -252,6 +289,74 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
             'manager:RESUME',
         ]
         assert gate._tracker.epoch == 1
+    finally:
+        fixture._timer.cancel()
+        gate._timer.cancel()
+        gate._tf_listener.unregister()
+        for _ in range(10):
+            executor.spin_once(timeout_sec=0.01)
+        executor.remove_node(gate)
+        executor.remove_node(fixture)
+        executor.shutdown(timeout_sec=1.0)
+        gate.destroy_node()
+        fixture.destroy_node()
+        rclpy.shutdown()
+
+
+@pytest.mark.ros
+def test_gate_repairs_partial_resume_without_terminating(tmp_path):
+    parameters = tmp_path / 'gate.yaml'
+    parameters.write_text(
+        """nav2_activation_gate:
+  ros__parameters:
+    use_sim_time: false
+    startup_timeout: 5.0
+    recovery_timeout: 5.0
+    recovery_service_timeout: 2.0
+    check_period: 0.02
+    freshness_timeout: 0.30
+    tf_stable_duration: 0.10
+    tf_translation_tolerance: 0.05
+    tf_yaw_tolerance: 0.05
+    clock_jump_tolerance: 1.0
+    max_attempts: 3
+    retry_initial_backoff: 0.05
+    retry_maximum_backoff: 0.10
+    initial_pose_source: auto
+""",
+        encoding='utf-8',
+    )
+    rclpy.init(args=['--ros-args', '--params-file', str(parameters)])
+    fixture = _LifecycleFixture(partial_resume_once=True)
+    gate = Nav2ActivationGate()
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(fixture)
+    executor.add_node(gate)
+    try:
+        assert _spin_until(executor, lambda: gate._activated, 4.0)
+        fixture.request_reset()
+        assert _spin_until(
+            executor,
+            lambda: gate._tracker.epoch == 1 and gate._recovering,
+            1.0,
+        )
+        assert _spin_until(
+            executor,
+            lambda: gate._activated and not gate._recovering
+            and fixture.states
+            == {name: 'active' for name in DEFAULT_MANAGED_NODES},
+            4.0,
+        )
+        direct_events = [
+            event for event in fixture.events if event.startswith('direct:')
+        ]
+        assert direct_events == [
+            'direct:behavior_server:activate',
+            'direct:velocity_smoother:activate',
+            'direct:collision_monitor:activate',
+            'direct:bt_navigator:activate',
+        ]
+        assert gate._fatal_error is None
     finally:
         fixture._timer.cancel()
         gate._timer.cancel()

@@ -57,26 +57,49 @@ def control_graph_spec(config: ProjectConfig) -> GraphSpec:
     controller = load_controller_config(config.files.robot)
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
+    # ROS2SubscribeTwist.execOut only pulses for a newly received message.
+    # Poll and integrate on every physics step instead, using the subscriber
+    # outputs as a latest-command cache.
     nodes = (
-        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("SubscribeTwist", "isaacsim.ros2.bridge.ROS2SubscribeTwist"),
         ("BreakLinear", "omni.graph.nodes.BreakVector3"),
         ("BreakAngular", "omni.graph.nodes.BreakVector3"),
         ("DifferentialController", "isaacsim.robot.wheeled_robots.DifferentialController"),
-        ("FrontController", "isaacsim.core.nodes.IsaacArticulationController"),
-        ("RearController", "isaacsim.core.nodes.IsaacArticulationController"),
+        ("LeftWheelCommand", "omni.graph.nodes.ArrayIndex"),
+        ("RightWheelCommand", "omni.graph.nodes.ArrayIndex"),
+        ("FourWheelCommand", "omni.graph.nodes.ConstructArray"),
+        ("WheelController", "isaacsim.core.nodes.IsaacArticulationController"),
     )
     connections = (
-        ("OnPlaybackTick.outputs:tick", "SubscribeTwist.inputs:execIn"),
-        ("SubscribeTwist.outputs:execOut", "DifferentialController.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "SubscribeTwist.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "DifferentialController.inputs:execIn"),
+        (
+            "OnPhysicsStep.outputs:deltaSimulationTime",
+            "DifferentialController.inputs:dt",
+        ),
         ("SubscribeTwist.outputs:linearVelocity", "BreakLinear.inputs:tuple"),
         ("SubscribeTwist.outputs:angularVelocity", "BreakAngular.inputs:tuple"),
         ("BreakLinear.outputs:x", "DifferentialController.inputs:linearVelocity"),
         ("BreakAngular.outputs:z", "DifferentialController.inputs:angularVelocity"),
-        ("OnPlaybackTick.outputs:tick", "FrontController.inputs:execIn"),
-        ("OnPlaybackTick.outputs:tick", "RearController.inputs:execIn"),
-        ("DifferentialController.outputs:velocityCommand", "FrontController.inputs:velocityCommand"),
-        ("DifferentialController.outputs:velocityCommand", "RearController.inputs:velocityCommand"),
+        (
+            "DifferentialController.outputs:velocityCommand",
+            "LeftWheelCommand.inputs:array",
+        ),
+        (
+            "DifferentialController.outputs:velocityCommand",
+            "RightWheelCommand.inputs:array",
+        ),
+        ("LeftWheelCommand.outputs:value", "FourWheelCommand.inputs:input0"),
+        ("RightWheelCommand.outputs:value", "FourWheelCommand.inputs:input1"),
+        ("LeftWheelCommand.outputs:value", "FourWheelCommand.inputs:input2"),
+        ("RightWheelCommand.outputs:value", "FourWheelCommand.inputs:input3"),
+        # One controller call updates all four targets in the same graph step.
+        ("OnPhysicsStep.outputs:step", "WheelController.inputs:execIn"),
+        (
+            "FourWheelCommand.outputs:array",
+            "WheelController.inputs:velocityCommand",
+        ),
     )
     values: list[tuple[str, Any]] = [
         ("SubscribeTwist.inputs:topicName", topics["cmd_vel"]),
@@ -85,19 +108,43 @@ def control_graph_spec(config: ProjectConfig) -> GraphSpec:
         ("SubscribeTwist.inputs:qosProfile", qos["command"]),
         ("DifferentialController.inputs:wheelRadius", controller["wheel_radius"]),
         ("DifferentialController.inputs:wheelDistance", controller["wheel_distance"]),
-        ("DifferentialController.inputs:dt", 1.0 / config.simulation.physics_hz),
         ("DifferentialController.inputs:maxLinearSpeed", controller["max_linear_speed"]),
         ("DifferentialController.inputs:maxAngularSpeed", controller["max_angular_speed"]),
         ("DifferentialController.inputs:maxWheelSpeed", controller["max_wheel_speed"]),
         ("DifferentialController.inputs:maxAcceleration", controller["max_acceleration"]),
         ("DifferentialController.inputs:maxDeceleration", controller["max_deceleration"]),
         ("DifferentialController.inputs:maxAngularAcceleration", controller["max_angular_acceleration"]),
-        ("FrontController.inputs:targetPrim", TargetPaths((config.robot.articulation_root,))),
-        ("FrontController.inputs:jointNames", list(config.robot.front_wheel_joints)),
-        ("RearController.inputs:targetPrim", TargetPaths((config.robot.articulation_root,))),
-        ("RearController.inputs:jointNames", list(config.robot.rear_wheel_joints)),
+        ("LeftWheelCommand.inputs:index", 0),
+        ("RightWheelCommand.inputs:index", 1),
+        ("FourWheelCommand.inputs:arrayType", "double[]"),
+        ("FourWheelCommand.inputs:arraySize", 4),
+        (
+            "WheelController.inputs:targetPrim",
+            TargetPaths((config.robot.articulation_root,)),
+        ),
+        (
+            "WheelController.inputs:jointNames",
+            [
+                config.robot.front_wheel_joints[0],
+                config.robot.front_wheel_joints[1],
+                config.robot.rear_wheel_joints[0],
+                config.robot.rear_wheel_joints[1],
+            ],
+        ),
     ]
-    return GraphSpec("/World/Graphs/Control", nodes, connections, tuple(values))
+    attributes = (
+        ("FourWheelCommand.inputs:input1", "double"),
+        ("FourWheelCommand.inputs:input2", "double"),
+        ("FourWheelCommand.inputs:input3", "double"),
+    )
+    return GraphSpec(
+        path="/World/Graphs/Control",
+        nodes=nodes,
+        connections=connections,
+        values=tuple(values),
+        attributes=attributes,
+        on_demand=True,
+    )
 
 
 def build_control_graph(config: ProjectConfig):
