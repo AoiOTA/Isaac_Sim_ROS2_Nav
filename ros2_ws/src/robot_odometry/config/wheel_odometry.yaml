@@ -2,7 +2,8 @@ wheel_odometry:
   ros__parameters:
     use_sim_time: true
     wheel_radius: 0.098
-    track_width: 0.37559
+    # Must match robot.controller.wheel_distance, not the geometric wheel span.
+    track_width: 0.800
     left_joint_names:
       - front_left_wheel_joint
       - rear_left_wheel_joint

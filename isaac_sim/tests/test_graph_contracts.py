@@ -42,8 +42,65 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     for spec in specs:
         spec.validate()
         assert "ground_truth" not in repr(spec).lower()
-    dt_values = [value for name, value in specs[0].values if name.endswith("inputs:dt")]
-    assert dt_values == [pytest.approx(1.0 / 60.0)]
+    control = specs[0]
+    assert control.on_demand is True
+    node_types = dict(control.nodes)
+    assert node_types["OnPhysicsStep"] \
+        == "isaacsim.core.nodes.OnPhysicsStep"
+    assert "OnPlaybackTick" not in node_types
+    assert [
+        name
+        for name, node_type in control.nodes
+        if node_type.endswith("IsaacArticulationController")
+    ] == ["WheelController"]
+    assert (
+        "OnPhysicsStep.outputs:deltaSimulationTime",
+        "DifferentialController.inputs:dt",
+    ) in control.connections
+    assert not any(
+        name == "DifferentialController.inputs:dt"
+        for name, _ in control.values
+    )
+    assert (
+        "SubscribeTwist.outputs:execOut",
+        "DifferentialController.inputs:execIn",
+    ) not in control.connections
+    assert (
+        "FourWheelCommand.outputs:array",
+        "WheelController.inputs:velocityCommand",
+    ) in control.connections
+    assert {
+        (
+            "LeftWheelCommand.outputs:value",
+            "FourWheelCommand.inputs:input0",
+        ),
+        (
+            "RightWheelCommand.outputs:value",
+            "FourWheelCommand.inputs:input1",
+        ),
+        (
+            "LeftWheelCommand.outputs:value",
+            "FourWheelCommand.inputs:input2",
+        ),
+        (
+            "RightWheelCommand.outputs:value",
+            "FourWheelCommand.inputs:input3",
+        ),
+    }.issubset(set(control.connections))
+    assert dict(control.values)["FourWheelCommand.inputs:arraySize"] == 4
+    assert dict(control.values)["WheelController.inputs:jointNames"] == [
+        config.robot.front_wheel_joints[0],
+        config.robot.front_wheel_joints[1],
+        config.robot.rear_wheel_joints[0],
+        config.robot.rear_wheel_joints[1],
+    ]
+    control_values = dict(specs[0].values)
+    assert control_values[
+        "DifferentialController.inputs:wheelDistance"
+    ] == pytest.approx(0.800)
+    assert control_values[
+        "DifferentialController.inputs:maxAngularAcceleration"
+    ] == pytest.approx(6.0)
 
 
 def test_static_sensor_frames_use_raw_tf_and_no_world_frame():

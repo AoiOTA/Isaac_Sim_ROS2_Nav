@@ -10,6 +10,122 @@
 
 over "jackal"
 {
+    # -------------------------------------------------------------------------
+    # Articulation solver tuning
+    # -------------------------------------------------------------------------
+    int physxArticulation:solverPositionIterationCount = 32
+    int physxArticulation:solverVelocityIterationCount = 4
+
+    # -------------------------------------------------------------------------
+    # Supported wheel colliders
+    #
+    # The imported asset uses the removed PhysX customGeometry property.
+    # Deactivate those four colliders and replace them with equivalent standard
+    # cylinders so wheel contact is stable and symmetric in Isaac Sim 6.
+    # -------------------------------------------------------------------------
+    over "front_left_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    over "front_right_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    over "rear_left_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    over "rear_right_wheel_link"
+    {
+        over "collisions" (
+            active = false
+        )
+        {
+        }
+
+        def Cylinder "collisions_v2" (
+            prepend apiSchemas = ["PhysicsCollisionAPI", "MaterialBindingAPI"]
+        )
+        {
+            uniform token axis = "Z"
+            float3[] extent = [(-0.098, -0.098, -0.02), (0.098, 0.098, 0.02)]
+            double height = 0.04
+            bool physics:collisionEnabled = true
+            uniform token purpose = "guide"
+            double radius = 0.098
+            rel material:binding = </jackal/PhysicsMaterials/wheels>
+            quatd xformOp:orient = (0.7071067811865476, 0.7071067811865476, 0, 0)
+            double3 xformOp:translate = (0, 0, 0)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient"]
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # ROS-compatible sensor frames
+    # -------------------------------------------------------------------------
     over "base_link"
     {
         over "sick_lms1xx_lidar_frame" (
@@ -70,6 +186,75 @@ over "jackal"
                     uniform token[] xformOpOrder = ["xformOp:orient"]
                 }
             }
+        }
+    }
+
+    # -------------------------------------------------------------------------
+    # Wheel velocity drives
+    #
+    # Engineering targets:
+    # damping       ~= 50 N*m*s/rad
+    # max torque    = 7 N*m
+    # max velocity  = 15 rad/s
+    #
+    # Degree-based USD values:
+    # 50 / 57.2957795 = 0.872664626
+    # 15 * 57.2957795 = 859.436693
+    # -------------------------------------------------------------------------
+    over "front_left_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0.0
+        float drive:angular:physics:damping = 0.872664626
+        float drive:angular:physics:maxForce = 7.0
+        uniform token drive:angular:physics:type = "force"
+
+        float physxJoint:jointFriction = 0.0
+        float physxJoint:maxJointVelocity = 859.436693
+    }
+
+    over "front_right_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0.0
+        float drive:angular:physics:damping = 0.872664626
+        float drive:angular:physics:maxForce = 7.0
+        uniform token drive:angular:physics:type = "force"
+
+        float physxJoint:jointFriction = 0.0
+        float physxJoint:maxJointVelocity = 859.436693
+    }
+
+    over "rear_left_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0.0
+        float drive:angular:physics:damping = 0.872664626
+        float drive:angular:physics:maxForce = 7.0
+        uniform token drive:angular:physics:type = "force"
+
+        float physxJoint:jointFriction = 0.0
+        float physxJoint:maxJointVelocity = 859.436693
+    }
+
+    over "rear_right_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0.0
+        float drive:angular:physics:damping = 0.872664626
+        float drive:angular:physics:maxForce = 7.0
+        uniform token drive:angular:physics:type = "force"
+
+        float physxJoint:jointFriction = 0.0
+        float physxJoint:maxJointVelocity = 859.436693
+    }
+
+    # -------------------------------------------------------------------------
+    # Wheel-ground contact material
+    # -------------------------------------------------------------------------
+    over "PhysicsMaterials"
+    {
+        over "wheels"
+        {
+            float physics:staticFriction = 0.20
+            float physics:dynamicFriction = 0.20
+            float physics:restitution = 0.0
         }
     }
 }

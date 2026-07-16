@@ -27,6 +27,8 @@ setup(
             "experiment_runner = robot_experiments.experiment_runner:main",
             "incremental_map_compare = robot_experiments.incremental_map_compare:main",
             "initial_pose_publisher = robot_experiments.initial_pose_publisher:main",
+            "motion_benchmark = robot_experiments.motion_benchmark:main",
+            "navigation_benchmark = robot_experiments.navigation_benchmark:main",
         ],
     },
 )

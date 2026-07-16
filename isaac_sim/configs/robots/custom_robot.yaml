@@ -10,6 +10,8 @@ base_mass: null
 wheel_mass: null
 nominal_total_mass: null
 physics:
+  solver_position_iterations: null
+  solver_velocity_iterations: null
   sleep_threshold: null
   stabilization_threshold: null
   wheel_static_friction_effort: null
@@ -17,6 +19,10 @@ physics:
   wheel_viscous_friction_coefficient: null
   idle_brake_command_timeout_sec: null
   idle_brake_command_deadband: null
+  motion_assist_enabled: null
+  motion_assist_command_timeout_sec: null
+  motion_assist_max_linear_acceleration: null
+  motion_assist_max_angular_acceleration: null
 wheel_joints:
   front_left: front_left_wheel_joint
   front_right: front_right_wheel_joint

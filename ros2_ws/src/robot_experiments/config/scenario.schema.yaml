@@ -67,6 +67,22 @@ properties:
             items: {type: number}
           yaw_deg: {type: number}
           require_orientation: {type: boolean}
+      route:
+        type: array
+        minItems: 2
+        items:
+          type: object
+          additionalProperties: false
+          required: [frame_id, position, yaw_deg, require_orientation]
+          properties:
+            frame_id: {const: map}
+            position:
+              type: array
+              minItems: 2
+              maxItems: 2
+              items: {type: number}
+            yaw_deg: {type: number}
+            require_orientation: {type: boolean}
       success:
         type: object
         additionalProperties: false
@@ -86,6 +102,11 @@ properties:
           final_still_duration_sec: {type: number, exclusiveMinimum: 0}
           final_still_timeout_sec: {type: number, exclusiveMinimum: 0}
           require_safety_observations: {type: boolean}
+          minimum_ground_truth_path_length_m: {type: number, minimum: 0}
+          minimum_reverse_distance_m: {type: number, minimum: 0}
+          maximum_reverse_distance_fraction: {type: number, minimum: 0, maximum: 1}
+          minimum_curved_distance_fraction: {type: number, minimum: 0, maximum: 1}
+          maximum_stopped_time_fraction: {type: number, minimum: 0, maximum: 1}
       obstacles:
         type: object
         additionalProperties: false

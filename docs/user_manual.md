@@ -510,13 +510,9 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
 ```bash
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
 export PROJECT_ROOT="$PWD"
-source /opt/ros/jazzy/setup.bash
-source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
-
-ros2 launch robot_experiments experiment.launch.py \
-  scenario_file:="$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/static.yaml" \
-  spawn_poses_file:="$PROJECT_ROOT/isaac_sim/configs/spawn_poses.yaml" \
-  output_directory:="$PROJECT_ROOT/data/experiment_runs/static_run"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/static.yaml \
+  data/experiment_runs/static_run
 ```
 
 当前 `static.yaml` 会在同一固定仓库中运行 4 个 seed。它是 Reset/导航 smoke，不是 200 次多布局统计。
@@ -546,13 +542,9 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
 # 终端 C，等待 Nav2 激活后
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
 export PROJECT_ROOT="$PWD"
-source /opt/ros/jazzy/setup.bash
-source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
-
-ros2 launch robot_experiments experiment.launch.py \
-  scenario_file:="$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/dynamic.yaml" \
-  spawn_poses_file:="$PROJECT_ROOT/isaac_sim/configs/spawn_poses.yaml" \
-  output_directory:="$PROJECT_ROOT/data/experiment_runs/dynamic_run"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic.yaml \
+  data/experiment_runs/dynamic_run
 ```
 
 runner 会在第一轮 Reset 前严格比较 Isaac 与 ROS 两侧的：
@@ -568,6 +560,69 @@ runner 会在第一轮 Reset 前严格比较 Isaac 与 ROS 两侧的：
 isaac_sim/configs/experiments/dynamic.yaml
 ros2_ws/src/robot_experiments/config/dynamic.yaml
 ```
+
+### 11.1 运行 20+20 远距离统计验收
+
+动态批次需让 Isaac 加载专用物理配置：
+
+```bash
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
+ISAAC_NAV__FILES__DYNAMIC_OBSTACLES="$PROJECT_ROOT/isaac_sim/configs/experiments/dynamic_benchmark.yaml" \
+  ./scripts/run_isaac.sh --headless \
+  --navigation-mode localization \
+  --mode realistic \
+  --dynamic-obstacles
+
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic_benchmark.yaml \
+  data/experiment_runs/dynamic_benchmark
+```
+
+静态批次把场景文件替换为 `static_benchmark.yaml`，Isaac 不加 `--dynamic-obstacles`。两批完成后汇总：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
+ros2 run robot_experiments navigation_benchmark \
+  --static-directory "$PROJECT_ROOT/data/experiment_runs/static_benchmark" \
+  --dynamic-directory "$PROJECT_ROOT/data/experiment_runs/dynamic_benchmark" \
+  --map-file "$PROJECT_ROOT/data/maps/occupancy/warehouse_v1.yaml" \
+  --clearance-m 0.34 \
+  --output "$PROJECT_ROOT/data/reports/navigation_benchmark.json"
+```
+
+工具要求至少 20 次静态和 20 次动态运行，验收静态成功率 `≥95%`、动态成功率 `≥90%`，并要求每次成功静态路线相对理论最短路的偏差 `≤20%`。
+
+### 11.2 Ideal 复杂长路线验收
+
+本轮前进优先验收关闭 MPPI 倒车采样，使用 6 个强制航点和约 50 m
+连续路线。静态运行：
+
+```bash
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/static_complex_route.yaml \
+  data/experiment_runs/static_complex_route
+```
+
+动态运行前，Isaac 必须加载对应的四障碍物理配置：
+
+```bash
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
+ISAAC_NAV__FILES__DYNAMIC_OBSTACLES="$PROJECT_ROOT/isaac_sim/configs/experiments/dynamic_complex_route.yaml" \
+  ./scripts/run_isaac.sh --headless \
+  --navigation-mode localization \
+  --mode ideal \
+  --dynamic-obstacles
+
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml \
+  data/experiment_runs/dynamic_complex_route
+```
+
+2026-07-17 实测静态 `3/3`、动态 `3/3`；每轮 6/6 航点、约
+`50.1 m`、0 次恢复、0 碰撞，导航命令倒车距离为 `0`。Ideal
+Localization/Navigation 使用新鲜 identity `map→odom`，避免在精确
+Isaac `/odom` 上再次叠加 SLAM 定位修正。
 
 ## 12. 长距离 smoke
 
@@ -717,7 +772,7 @@ ros2 run tf2_tools view_frames
 - `/lidar/points_raw` 和 `/scan` 约 10 Hz；
 - Realistic `/wheel/odom`、`/odom` 约 45 Hz；
 - `/odom`、`/map` 均只有一个模式正确的 publisher。
-- Navigation 的 MPPI 控制频率为 `10 Hz`，预测窗保持 `20 × 0.10 s = 2 s`；Velocity Smoother 仍以 `20 Hz` 输出平滑命令。
+- Navigation 的 MPPI 控制频率为 `10 Hz`，预测窗保持 `20 × 0.10 s = 2 s`，batch 为 `500`；Velocity Smoother 仍以 `20 Hz` 输出平滑命令。
 
 ## 17. 常见问题
 

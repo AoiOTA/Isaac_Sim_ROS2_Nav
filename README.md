@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-11 的 smoke 批次中，Ideal 静态为 4/4、Ideal 动态为 4/4、Realistic 静态为 4/4，另有 3 m Ideal 长距离目标 1/1；2026-07-12 又完成了交互工作流、Reset 恢复和 MPPI 负载对照，最终 10 Hz/2 s 预测窗组合无控制周期超时。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-17 的 Realistic 同环境远距离验收达到静态 20/20、动态 19/20，且两批均无物理碰撞；同日 Ideal 前进优先复杂长路线验收达到静态 3/3、动态 3/3，每轮约 50 m、6/6 航点、0 恢复、0 碰撞且导航指令无倒车。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。多地图/多布局泛化矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 ## 文档导航
 
@@ -212,17 +212,17 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
   posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
 ```
 
-待 Localization、Ground Truth 与 Nav2 readiness 均通过后，可在第三个终端启动当前 4-seed 动态基线 runner：
+待 Localization、Ground Truth 与 Nav2 readiness 均通过后，可在第三个终端启动实验 runner。包装脚本会自动统一 Domain 42 和 Fast DDS 环境：
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source "$PWD/ros2_ws/install/setup.bash"
-ros2 launch robot_experiments experiment.launch.py \
-  scenario_file:="$PWD/ros2_ws/src/robot_experiments/config/dynamic.yaml" \
-  output_directory:="$PWD/data/experiment_runs/dynamic_smoke"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic.yaml \
+  data/experiment_runs/dynamic_smoke
 ```
 
-Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。`repeat: false` 表示单程到达终点后保持，`repeat: true` 表示沿同一路径往返；两侧都必须显式填写且一致。当前横穿与对向两个单程障碍的 4-seed 基线已 4/4 成功，GT 终点误差为 `0.168–0.186 m`，每轮均看到 Collision Monitor、碰撞状态、定位状态和 `map → odom`，且最终静止。静态 smoke 仍只使用固定仓库、显式 `static: []`；这些 4 个 seed 是同一世界的确定性重复，不是多布局统计。完整 200 次静态矩阵和多类动态避障率仍需执行。
+Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。
+
+2026-07-17 的 Realistic 同环境、同起止点远距离验收结果为：静态 `20/20`、动态 `19/20`，两批均为 `0` 次物理碰撞；动态唯一失败是一次早期 Nav2 action abort。静态成功路线相对带 `0.34 m` 净空的 OccupancyGrid A* 理论最短路，最大偏差 `4.31%`、P95 `3.96%`。机器可读汇总写在 `data/reports/navigation_benchmark_20260717.json`；这证明当前固定仓库远距离基准通过，不等同于多地图、多布局的泛化结论。
 
 `/simulation/collision` 来自底盘物理接触传感器；`/collision_monitor_state` 来自 Nav2 Collision Monitor。Ground Truth 只在显式启用且 Map Pose 已标定时发布，不发布 TF，也不进入控制链。
 

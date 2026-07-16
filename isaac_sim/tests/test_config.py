@@ -6,6 +6,7 @@ import pytest
 
 from isaac_sim.src.config import ConfigError, load_project_config
 from isaac_sim.src.robot.articulation_runtime import (
+    ArticulationRuntimeError,
     load_articulation_physics_config,
 )
 
@@ -39,12 +40,20 @@ def test_default_project_contract_loads_strictly():
     )
     assert config.ros2.rmw_implementation == "rmw_fastrtps_cpp"
     stability = load_articulation_physics_config(config.files.robot)
+    assert stability.solver_position_iterations == 32
+    assert stability.solver_velocity_iterations == 4
     assert stability.sleep_threshold == pytest.approx(0.005)
     assert stability.stabilization_threshold == pytest.approx(0.001)
     assert stability.wheel_static_friction_effort == pytest.approx(0.0)
     assert stability.wheel_dynamic_friction_effort == pytest.approx(0.0)
     assert stability.wheel_viscous_friction_coefficient == pytest.approx(0.0)
     assert stability.idle_brake_command_timeout_sec == pytest.approx(0.25)
+    assert stability.motion_assist_enabled is True
+    assert stability.motion_assist_command_timeout_sec == pytest.approx(0.25)
+    assert stability.motion_assist_max_linear_acceleration \
+        == pytest.approx(6.0)
+    assert stability.motion_assist_max_angular_acceleration \
+        == pytest.approx(30.0)
 
 
 def test_nested_environment_overrides_are_typed():
@@ -93,5 +102,11 @@ def test_custom_robot_runtime_template_uses_the_live_schema():
         from isaac_sim.graphs.control_graph import load_controller_config
 
         load_controller_config(custom)
-    with pytest.raises(ValueError, match="robot.physics.*must be numeric"):
+    with pytest.raises(
+        (ValueError, ArticulationRuntimeError),
+        match=(
+            "robot.physics.*"
+            "(must be numeric|must be an integer|must be boolean)"
+        ),
+    ):
         load_articulation_physics_config(custom)

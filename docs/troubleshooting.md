@@ -253,7 +253,7 @@ ros2 run tf2_ros tf2_echo map odom
 controller_frequency = 10 Hz
 time_steps = 20
 model_dt = 0.10 s
-batch_size = 1000
+batch_size = 500
 prediction horizon = 2.0 s
 SLAM localization throttle_scans = 2
 ```

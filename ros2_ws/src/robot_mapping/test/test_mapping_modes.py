@@ -47,6 +47,8 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'yaml_filename': map_file" in localization_source
     assert "'mode': 'localization'" in localization_source
     assert "('.posegraph', '.data')" in localization_source
+    assert "'use_posegraph_localization'" in localization_source
+    assert "executable='ideal_localization_tf'" in localization_source
     assert 'return [slam_node, activate, configure]' in mapping_source
     assert 'activate_map' in localization_source
     assert 'configure_map' in localization_source
