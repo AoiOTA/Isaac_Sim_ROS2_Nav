@@ -12,6 +12,7 @@ from robot_experiments.report import (
     ReportValidationError,
     configuration_sha256,
     decode_hashed_contact_snapshot,
+    decode_hashed_runtime_snapshot,
     validate_manifest,
     validate_runtime_provenance,
     write_run_report,
@@ -230,6 +231,213 @@ def valid_runtime_provenance_v6(identifier="pose_restore_v1"):
     return provenance
 
 
+def valid_runtime_provenance_v7():
+    provenance = valid_runtime_provenance_v6()
+    provenance["schema_version"] = 7
+    provenance["robot"]["config"]["schema_version"] = 3
+    provenance["robot"]["wheel_velocity_drive"] = {
+        "schema_version": 1,
+        "profile_path": "/repo/jackal.yaml",
+        "profile_sha256": "a" * 64,
+        "profile_id": "jackal_drive_legacy_finite_guard_v1",
+        "configured_si": {
+            "drive_type": "force",
+            "stiffness_n_m_per_rad": 0.0,
+            "damping_n_m_s_per_rad": 572957795.1308232,
+            "max_effort_n_m": 1.0e9,
+            "max_joint_velocity_rad_s": 1.0e9,
+        },
+        "authored_usd": {
+            "drive_type": "force",
+            "stiffness_n_m_per_degree": 0.0,
+            "damping_n_m_s_per_degree": 1.0e7,
+            "max_force_n_m": 1.0e9,
+            "max_joint_velocity_deg_s": 57295779513.08232,
+        },
+        "joint_paths": [
+            "/World/Robot/front_left_wheel_joint",
+            "/World/Robot/front_right_wheel_joint",
+            "/World/Robot/rear_left_wheel_joint",
+            "/World/Robot/rear_right_wheel_joint",
+        ],
+        "overlay_identifier": "anon:0x123:wheel_velocity_drive.usda",
+        "overlay_sha256": "7" * 64,
+        "stage_usd_readback_verified": True,
+        "physics_tensor": {
+            "schema_version": 1,
+            "profile_path": "/repo/jackal.yaml",
+            "profile_sha256": "a" * 64,
+            "profile_id": "jackal_drive_legacy_finite_guard_v1",
+            "stage_overlay_sha256": "7" * 64,
+            "dof_names": [
+                "front_left_wheel_joint",
+                "front_right_wheel_joint",
+                "rear_left_wheel_joint",
+                "rear_right_wheel_joint",
+            ],
+            "dof_indices": [0, 1, 2, 3],
+            "drive_types": ["force", "force", "force", "force"],
+            "stiffnesses_n_m_per_rad": [0.0, 0.0, 0.0, 0.0],
+            "dampings_n_m_s_per_rad": [572957795.1308232] * 4,
+            "max_efforts_n_m": [1.0e9] * 4,
+            "max_joint_velocities_rad_s": [1.0e9] * 4,
+            "physics_tensor_readback_verified": True,
+        },
+    }
+    base_inertia = [
+        [0.18669458, -0.00005312, -0.00105626],
+        [-0.00005312, 0.30087811, -0.00012994],
+        [-0.00105626, -0.00012994, 0.38648003],
+    ]
+    expected_links = [
+        ("base_link", 17.0),
+        ("front_left_wheel_link", 0.477),
+        ("front_right_wheel_link", 0.477),
+        ("rear_left_wheel_link", 0.477),
+        ("rear_right_wheel_link", 0.477),
+    ]
+    provenance["robot"]["mass_collision"] = {
+        "schema_version": 1,
+        "profile_path": (
+            "isaac_sim/configs/robot_mass_profiles/"
+            "fixed_base_inertial_sensor_shell_collision_v1.yaml"
+        ),
+        "profile_sha256": "8" * 64,
+        "profile_id": "fixed_base_inertial_sensor_shell_collision_v1",
+        "profile_mode": "fixed_base_inertial_sensor_shell_collision",
+        "robot_asset_sha256": "b" * 64,
+        "sensor_shells": [
+            {
+                "prim_path": (
+                    "/World/Robot/base_link/collisions/bumblebee_camera"
+                ),
+                "active": True,
+                "collision_enabled": True,
+            },
+            {
+                "prim_path": (
+                    "/World/Robot/base_link/collisions/sick_lms1xx_lidar"
+                ),
+                "active": True,
+                "collision_enabled": True,
+            },
+        ],
+        "base_inertial": {
+            "prim_path": "/World/Robot/base_link",
+            "mass_kg": 17.0,
+            "center_of_mass_m": [0.00504, 0.00062, 0.104328],
+            "inertia_kg_m2": base_inertia,
+        },
+        "expected_link_masses": [
+            {
+                "prim_path": f"/World/Robot/{name}",
+                "mass_kg": mass,
+            }
+            for name, mass in expected_links
+        ],
+        "expected_total_mass_kg": 18.908,
+        "overlay_id": (
+            "mass_collision_profile/"
+            "fixed_base_inertial_sensor_shell_collision_v1"
+        ),
+        "overlay_identifier": "anon:0x456:mass_collision.usda",
+        "overlay_sha256": "9" * 64,
+        "stage_usd_readback_verified": True,
+        "physics_tensor": {
+            "schema_version": 1,
+            "profile_id": "fixed_base_inertial_sensor_shell_collision_v1",
+            "links": [
+                {
+                    "name": name,
+                    "prim_path": f"/World/Robot/{name}",
+                    "mass_kg": mass,
+                    "center_of_mass_m": (
+                        [0.00504, 0.00062, 0.104328]
+                        if name == "base_link"
+                        else [0.0, 0.0, 0.0]
+                    ),
+                    "inertia_kg_m2": (
+                        base_inertia
+                        if name == "base_link"
+                        else [
+                            [0.01, 0.0, 0.0],
+                            [0.0, 0.01, 0.0],
+                            [0.0, 0.0, 0.01],
+                        ]
+                    ),
+                }
+                for name, mass in expected_links
+            ],
+            "total_mass_kg": 18.908,
+            "physics_tensor_readback_verified": True,
+        },
+    }
+    writers = [
+        {
+            "node": "FrontController",
+            "target_prim": "/World/Robot",
+            "joint_names": [
+                "front_left_wheel_joint",
+                "front_right_wheel_joint",
+            ],
+        },
+        {
+            "node": "RearController",
+            "target_prim": "/World/Robot",
+            "joint_names": [
+                "rear_left_wheel_joint",
+                "rear_right_wheel_joint",
+            ],
+        },
+    ]
+    topology = {
+        "graph_path": "/World/Graphs/Control",
+        "pipeline_stage": "execution",
+        "nodes": [
+            {
+                "name": "FrontController",
+                "type_name": "isaacsim.core.nodes.Controller",
+            },
+            {
+                "name": "OnPhysicsStep",
+                "type_name": "isaacsim.core.nodes.OnPhysicsStep",
+            },
+            {
+                "name": "RearController",
+                "type_name": "isaacsim.core.nodes.Controller",
+            },
+        ],
+        "connections": [
+            {
+                "source": "OnPhysicsStep.outputs:step",
+                "target": "FrontController.inputs:execIn",
+            },
+            {
+                "source": "OnPhysicsStep.outputs:step",
+                "target": "RearController.inputs:execIn",
+            },
+        ],
+        "command_writers": writers,
+    }
+    canonical_topology = json.dumps(
+        topology,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    provenance["control_graph"] = {
+        "schema_version": 1,
+        "wheel_command_application": "split_axle_v1",
+        "topology": topology,
+        "topology_sha256": hashlib.sha256(
+            canonical_topology.encode("utf-8")
+        ).hexdigest(),
+        "materialized_readback_verified": True,
+    }
+    return provenance
+
+
 def replace_topology_paths(topology, name, paths):
     topology[f"{name}_colliders"] = paths
     topology[f"{name}_collider_count"] = len(paths)
@@ -321,16 +529,72 @@ def test_validate_runtime_provenance_accepts_a_complete_startup_snapshot():
             "separate_recontact_0p20m_1step_v1"
         )
     )
+    validate_runtime_provenance(valid_runtime_provenance_v7())
 
 
-@pytest.mark.parametrize("bad_version", [True, 3.0, "5", None, 2, 7])
+@pytest.mark.parametrize("bad_version", [True, 3.0, "5", None, 2, 8])
 def test_validate_runtime_provenance_requires_exact_integer_schema_version(
     bad_version,
 ):
     provenance = valid_runtime_provenance()
     provenance["schema_version"] = bad_version
-    with pytest.raises(ReportValidationError, match="integer 3, 4, 5, or 6"):
+    with pytest.raises(
+        ReportValidationError,
+        match="integer 3, 4, 5, 6, or 7",
+    ):
         validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    "component",
+    ["robot.wheel_velocity_drive", "robot.mass_collision", "control_graph"],
+)
+def test_decode_hashed_runtime_snapshot_requires_canonical_verified_json(
+    component,
+):
+    snapshot = {"component": component, "verified": True}
+    payload = json.dumps(
+        snapshot,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    assert decode_hashed_runtime_snapshot(
+        payload,
+        digest,
+        component=component,
+    ) == snapshot
+
+    duplicate = '{"verified":true,"verified":false}'
+    with pytest.raises(ReportValidationError, match="duplicate JSON key"):
+        decode_hashed_runtime_snapshot(
+            duplicate,
+            hashlib.sha256(duplicate.encode("utf-8")).hexdigest(),
+            component=component,
+        )
+    nonfinite = '{"value":NaN}'
+    with pytest.raises(ReportValidationError, match="non-finite JSON"):
+        decode_hashed_runtime_snapshot(
+            nonfinite,
+            hashlib.sha256(nonfinite.encode("utf-8")).hexdigest(),
+            component=component,
+        )
+    with pytest.raises(ReportValidationError, match="JSON SHA256 mismatch"):
+        decode_hashed_runtime_snapshot(
+            payload,
+            "0" * 64,
+            component=component,
+        )
+
+
+def test_decode_hashed_runtime_snapshot_rejects_unapproved_component():
+    with pytest.raises(ReportValidationError, match="unsupported component"):
+        decode_hashed_runtime_snapshot(
+            "{}",
+            hashlib.sha256(b"{}").hexdigest(),
+            component="git",
+        )
 
 
 @pytest.mark.parametrize(
@@ -367,6 +631,8 @@ def test_validate_runtime_provenance_v5_accepts_preserved_topology():
         (5, "missing_kinematics"),
         (5, "missing_ground_topology"),
         (6, "missing_reset_strategy"),
+        (6, "v7_robot_fields"),
+        (7, "missing_control_graph"),
     ],
 )
 def test_validate_runtime_provenance_rejects_version_field_confusion(
@@ -392,11 +658,240 @@ def test_validate_runtime_provenance_rejects_version_field_confusion(
             del provenance["robot"]["kinematics"]
         else:
             del provenance["ground_topology"]
-    else:
+    elif version == 6:
         provenance = valid_runtime_provenance_v6()
-        del provenance["simulation"]["reset_strategy"]
+        if mutation == "v7_robot_fields":
+            source = valid_runtime_provenance_v7()["robot"]
+            provenance["robot"]["wheel_velocity_drive"] = deepcopy(
+                source["wheel_velocity_drive"]
+            )
+            provenance["robot"]["mass_collision"] = deepcopy(
+                source["mass_collision"]
+            )
+        else:
+            del provenance["simulation"]["reset_strategy"]
+    else:
+        provenance = valid_runtime_provenance_v7()
+        del provenance["control_graph"]
 
     with pytest.raises(ReportValidationError, match="keys must be exactly"):
+        validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda value: value["robot"]["config"].update(
+                schema_version=2
+            ),
+            "robot.config.schema_version must be integer 3",
+        ),
+        (
+            lambda value: value["robot"]["config"].update(extra=True),
+            "robot.config keys must be exactly",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"].update(
+                extra=True
+            ),
+            "wheel_velocity_drive keys must be exactly",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"].update(
+                profile_path="/repo/other.yaml"
+            ),
+            "profile_path must match robot.config.path",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"].update(
+                profile_sha256="0" * 64
+            ),
+            "profile_sha256 must match robot.config.sha256",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"].update(
+                overlay_identifier="saved.usda"
+            ),
+            "anonymous layer",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"].update(
+                stage_usd_readback_verified=False
+            ),
+            "stage_usd_readback_verified must be true",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"][
+                "authored_usd"
+            ].update(damping_n_m_s_per_degree=2.0),
+            "damping conversion",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"][
+                "physics_tensor"
+            ].update(profile_id="other_drive"),
+            "profile_id must match Stage evidence",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"][
+                "physics_tensor"
+            ].update(dof_names=["only_one"]),
+            "dof_names must contain exactly 4",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"][
+                "physics_tensor"
+            ].update(dampings_n_m_s_per_rad=[1.0, 1.0, math.inf, 1.0]),
+            "NaN or infinity",
+        ),
+        (
+            lambda value: value["robot"]["wheel_velocity_drive"][
+                "physics_tensor"
+            ].update(physics_tensor_readback_verified=False),
+            "physics_tensor_readback_verified must be true",
+        ),
+    ],
+)
+def test_validate_runtime_provenance_v7_rejects_drive_contract_drift(
+    mutation,
+    message,
+):
+    provenance = valid_runtime_provenance_v7()
+    mutation(provenance)
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda value: value["robot"]["mass_collision"].update(
+                extra=True
+            ),
+            "mass_collision keys must be exactly",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"].update(
+                robot_asset_sha256="0" * 64
+            ),
+            "robot_asset_sha256 must match robot.asset.sha256",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"].update(
+                overlay_identifier="saved.usda"
+            ),
+            "anonymous layer",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"].update(
+                sensor_shells=[]
+            ),
+            "sensor_shells must contain exactly 2",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"][
+                "sensor_shells"
+            ][0].update(active=False),
+            "shell flags disagree",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"][
+                "base_inertial"
+            ].update(center_of_mass_m=[0.0, math.nan, 0.0]),
+            "NaN or infinity",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"].update(
+                expected_link_masses=[]
+            ),
+            "expected_link_masses must contain exactly 5",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"][
+                "physics_tensor"
+            ].update(links=[]),
+            "links must contain exactly 5",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"][
+                "physics_tensor"
+            ].update(profile_id="other_mass"),
+            "profile_id must match Stage evidence",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"][
+                "physics_tensor"
+            ].update(total_mass_kg=18.0),
+            "total_mass_kg must match expected_total_mass_kg",
+        ),
+        (
+            lambda value: value["robot"]["mass_collision"][
+                "physics_tensor"
+            ].update(physics_tensor_readback_verified=False),
+            "physics_tensor_readback_verified must be true",
+        ),
+    ],
+)
+def test_validate_runtime_provenance_v7_rejects_mass_contract_drift(
+    mutation,
+    message,
+):
+    provenance = valid_runtime_provenance_v7()
+    mutation(provenance)
+    with pytest.raises(ReportValidationError, match=message):
+        validate_runtime_provenance(provenance)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        (
+            lambda value: value["control_graph"].update(extra=True),
+            "control_graph keys must be exactly",
+        ),
+        (
+            lambda value: value["control_graph"].update(
+                wheel_command_application="unknown"
+            ),
+            "wheel_command_application must be one of",
+        ),
+        (
+            lambda value: value["control_graph"].update(
+                topology_sha256="0" * 64
+            ),
+            "topology_sha256 does not match",
+        ),
+        (
+            lambda value: value["control_graph"]["topology"].update(
+                nodes=list(
+                    reversed(value["control_graph"]["topology"]["nodes"])
+                )
+            ),
+            "nodes must be sorted",
+        ),
+        (
+            lambda value: value["control_graph"]["topology"][
+                "command_writers"
+            ][0].update(joint_names=["front_left_wheel_joint"]),
+            "command writers must cover four unique wheel joints",
+        ),
+        (
+            lambda value: value["control_graph"].update(
+                materialized_readback_verified=False
+            ),
+            "materialized_readback_verified must be true",
+        ),
+    ],
+)
+def test_validate_runtime_provenance_v7_rejects_control_graph_drift(
+    mutation,
+    message,
+):
+    provenance = valid_runtime_provenance_v7()
+    mutation(provenance)
+    with pytest.raises(ReportValidationError, match=message):
         validate_runtime_provenance(provenance)
 
 
@@ -675,7 +1170,7 @@ def test_validate_runtime_provenance_v6_rejects_reset_contract_drift(
 @pytest.mark.parametrize(
     ("path", "bad_value", "message"),
     [
-        (("schema_version",), 2, "integer 3, 4, 5, or 6"),
+        (("schema_version",), 2, "integer 3, 4, 5, 6, or 7"),
         (("robot", "config", "sha256"), "g" * 64, "SHA256"),
         (("robot", "solver", "velocity_iterations"), True, "integer"),
         (("robot", "solver", "velocity_iterations"), 0, "integer"),

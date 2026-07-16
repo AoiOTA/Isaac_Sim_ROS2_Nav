@@ -668,18 +668,29 @@ def test_navigation_reset_executes_control_graph_rebuild_through_selected_builde
     class GraphBuilder:
         wheel_command_application = SINGLE_FOUR_WHEEL_WRITE_V1
 
-        def build_control(self):
+        def build_control_with_snapshot(self):
             events.append(
                 f"build:{self.wheel_command_application}"
             )
-            return {"mode": self.wheel_command_application}
+            return (
+                {"mode": self.wheel_command_application},
+                {
+                    "wheel_command_application": self.wheel_command_application,
+                    "topology_sha256": "a" * 64,
+                },
+            )
 
+    expected_snapshot = {
+        "wheel_command_application": SINGLE_FOUR_WHEEL_WRITE_V1,
+        "topology_sha256": "a" * 64,
+    }
     references = {"control": {"mode": SPLIT_AXLE_V1}}
 
     rebuilt = _rebuild_control_graph(
         IdleBrake(),
         GraphBuilder(),
         references,
+        expected_snapshot,
     )
 
     assert events == [
@@ -688,6 +699,54 @@ def test_navigation_reset_executes_control_graph_rebuild_through_selected_builde
     ]
     assert rebuilt == {"mode": SINGLE_FOUR_WHEEL_WRITE_V1}
     assert references["control"] is rebuilt
+    assert references["control_snapshot"] == expected_snapshot
+
+
+def test_navigation_reset_rejects_changed_control_graph_topology():
+    class IdleBrake:
+        def reset(self):
+            pass
+
+    class GraphBuilder:
+        def build_control_with_snapshot(self):
+            return object(), {
+                "wheel_command_application": SPLIT_AXLE_V1,
+                "topology_sha256": "b" * 64,
+            }
+
+    references = {"control": "startup"}
+    with pytest.raises(RuntimeError, match="topology changed across Reset"):
+        _rebuild_control_graph(
+            IdleBrake(),
+            GraphBuilder(),
+            references,
+            {
+                "wheel_command_application": SPLIT_AXLE_V1,
+                "topology_sha256": "a" * 64,
+            },
+        )
+    assert references == {"control": "startup"}
+
+
+def test_navigation_captures_tensor_and_live_graph_before_provenance_parameters():
+    source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
+        encoding="utf-8"
+    )
+    runtime = source.split("def run(", 1)[1].split("def main(", 1)[0]
+
+    ordered_markers = (
+        "stage = composer.compose(save=False)",
+        "runtime = PhysicsSetup(config.simulation).apply(stage, app)",
+        "robot.initialize()",
+        "wheel_drive_tensor_snapshot = capture_wheel_drive_tensor_snapshot(",
+        "mass_tensor_snapshot = capture_mass_tensor_snapshot(",
+        "rclpy.init(args=[])",
+        "graph_handles = graph_builder.build()",
+        "runtime_provenance = capture_runtime_provenance(",
+        "for name, value in runtime_provenance_parameters(",
+    )
+    offsets = [runtime.index(marker) for marker in ordered_markers]
+    assert offsets == sorted(offsets)
 
 
 def test_control_graph_rejects_project_joint_targets_that_diverge_from_robot_yaml():

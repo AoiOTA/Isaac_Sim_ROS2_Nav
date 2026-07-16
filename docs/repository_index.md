@@ -136,10 +136,13 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `isaac_sim/configs/robots/jackal.yaml` | Jackal schema-v2 单一运动学真源：显式 profile/lifecycle、轮径/轮宽、几何轮距、有效轮距、质量、物理参数、控制限幅、Footprint、joint/frame 和七条静态 TF。稳定基线的几何/有效轮距暂同为 `0.37559 m`。 |
+| `isaac_sim/configs/robots/jackal.yaml` | Jackal schema-v3 单一机器人真源：在原有 profile/lifecycle、运动学、solver、控制限幅、Footprint、joint/frame 和静态 TF 上，新增版本化 `mass_collision_profile` 与内联 `wheel_velocity_drive`。稳定基线的几何/有效轮距暂同为 `0.37559 m`；当前 drive 是保留旧行为的有限值迁移护栏，不是已调优参数。 |
 | `isaac_sim/configs/robots/experimental/jackal_etw_0p989_v1.yaml` | 有效轮距 `0.989 m` 的不可变 v1 实验候选；从 clean 接触矩阵 Warehouse 指定 Profile 均值舍入，只允许与 stable 在 profile ID、lifecycle 和有效轮距三项不同，尚未通过物理验收。 |
 | `isaac_sim/configs/robots/experimental/jackal_etw_1p012_v1.yaml` | 有效轮距 `1.012 m` 的不可变 v1 实验候选；从 clean 接触矩阵指定 Profile 的两环境等权均值舍入，只允许与 stable 在 profile ID、lifecycle 和有效轮距三项不同，尚未通过物理验收。 |
-| `isaac_sim/configs/robots/custom_robot.yaml` | 与运行时同为 schema v2 的 fail-fast 模板；profile/lifecycle、几何/有效轮距等 `null` 表示真实机器人尚未测量，不能伪造默认值。 |
+| `isaac_sim/configs/robots/custom_robot.yaml` | 与运行时同为 schema v3 的 fail-fast 模板；profile/lifecycle、几何/有效轮距、质量/碰撞 profile 和轮关节 drive 必须由真实机器人资产补齐，`null` 占位不能伪装成可运行默认值。 |
+| `isaac_sim/configs/robot_mass_profiles/legacy_default_sensor_density_v1.yaml` | 质量/碰撞 A/B 的只读 legacy 基线：保留两个传感器碰撞壳，记录资产默认密度推导出的 base mass `18.3179048 kg` 和五 link 总质量 `20.2259048 kg`，不 author 固定 base inertial。 |
+| `isaac_sim/configs/robot_mass_profiles/sensor_shells_disabled_v1.yaml` | 质量/碰撞隔离候选：在匿名 Overlay 中停用 Camera/LiDAR 两个传感器碰撞壳，预期 base mass `17 kg`、五 link 总质量 `18.908 kg`，用于判断额外壳体碰撞/密度是否影响旋转漂移。 |
+| `isaac_sim/configs/robot_mass_profiles/fixed_base_inertial_sensor_shell_collision_v1.yaml` | 固定惯量候选：保留两个传感器碰撞壳，同时给 base author 经审计的 `17 kg` 质量、质心和完整惯量矩阵；五 link 总质量仍为 `18.908 kg`，用于把碰撞外形与质量贡献拆开比较。 |
 | `isaac_sim/configs/simulation/ideal.yaml` | Ideal 模式与 TF 发布所有权的配置快照；当前运行时不读取此文件。 |
 | `isaac_sim/configs/simulation/realistic.yaml` | Realistic 模式与 TF 发布所有权的配置快照；当前运行时不读取此文件。 |
 | `isaac_sim/configs/ground_topologies/simple_plane_only1_v1.yaml` | SimplePlane 的版本化 topology schema-v1；按源资产 SHA256 与 canonical collider-path hash 锁定唯一 Plane，`preserve_source_colliders` 保持 source=target=1、disabled=0。 |
@@ -205,7 +208,10 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/robot/__init__.py` | 机器人运行时子包标记。 |
-| `isaac_sim/src/robot/kinematics_config.py` | 严格解析完整 robot schema v2；把几何轮距与有效轮距分开，校验 profile/lifecycle、四个唯一 wheel joint、正有限几何/质量、总质量恒等式，以及不再重复运动学字段的 controller 限幅，并向 Control Graph/provenance 提供冻结 dataclass。 |
+| `isaac_sim/src/robot/kinematics_config.py` | 严格解析完整 robot schema v3；把几何轮距与有效轮距分开，校验 profile/lifecycle、四个唯一 wheel joint、正有限几何/质量、总质量恒等式、版本化质量/碰撞 profile 路径和有限 wheel velocity-drive 参数，并向 Control Graph、物理 Overlay 与 provenance 提供冻结 dataclass。 |
+| `isaac_sim/src/robot/mass_collision_config.py` | 无 Isaac/NumPy 依赖的质量/碰撞 profile 严格解析器；只接受三个冻结 schema-v1 ID/模式组合，锁定 Jackal 资产 SHA、两个传感器壳、base 惯量、五个 link 质量及总质量恒等式。 |
+| `isaac_sim/src/robot/mass_collision_runtime.py` | 在 PhysX 初始化前用唯一匿名 SessionLayer materialize 所选质量/碰撞 profile；精确读回壳体 active/collision、base 质量/质心/惯量和 Overlay hash，并在 Articulation 初始化后通过 physics tensor 按五个 link 名称/路径复核 mass、COM、inertia 与总质量。 |
+| `isaac_sim/src/robot/wheel_velocity_drive.py` | 四轮 angular Drive 的版本化匿名 Overlay：把 robot YAML 的 SI stiffness/damping/max effort/max velocity 转为 USD 单位，精确验证四个 RevoluteJoint、Layer authored opinion 和有效 Stage 读回；Articulation 初始化后再按 DOF 名称从 physics tensor 复核实际 drive type、gain 与限值。 |
 | `isaac_sim/src/robot/articulation_runtime.py` | 严格解析含 `[1,255]` solver counts 的 Jackal 物理配置，通过初始化后的实验 Articulation API 写入 solver、sleep/stabilization/DOF 参数，其中仅 solver counts 通过 USD backend 交叉读回；捕获完整初始 DOF pose，Reset 时恢复位置、清零 velocity/target/effort 并做 tensor readback。根位姿经 base-link `RigidPrim` 的强制 USD backend 写入，随后 `flush_changes()` 并要求有效 physics view 完成 articulation kinematic sync，避免 tensor-only teleport 在下一物理步被旧 USD Pose 覆盖；同步不可用时失败关闭。 |
 | `isaac_sim/src/robot/joint_validator.py` | 验证四个 wheel joint 的存在、分组、方向映射和 DOF 顺序。 |
 | `isaac_sim/src/robot/spawn_pose_manager.py` | 读取/校验命名 USD/Map Pose；已标定 Pose 必须携带合法 map version 与 bundle SHA256；Reset 时严格按“恢复完整初始关节状态→清零底盘速度→最后写根 Pose”执行，并读回根 Pose/四元数和线/角速度，防止关节 teleport 扰动最终出生位姿。 |
@@ -253,7 +259,10 @@
 | `isaac_sim/tests/test_asset_paths.py` | 测试资产 manifest、项目 overlay 只引用本地导入以及路径可复现性。 |
 | `isaac_sim/tests/test_stage_composition.py` | Isaac/USD marker 测试：Stage 组合、唯一 PhysicsScene、solver authoring、旧 collider inactive、新 Cylinder 尺寸/轴向/对称性/材质和 articulation 结构。 |
 | `isaac_sim/tests/test_runtime_provenance.py` | 测试流式文件 SHA256、clean/dirty Git 快照、机器人/环境/solver/组合 Layer，以及当前 schema-v6 topology/contact/Reset 到 ROS 参数的完整映射；锁定两个 Reset ID、contact-probe wheel/filter/hash 契约，并覆盖 composer 快照的 fresh Stage 重读、陈旧/篡改拒绝和 topology target/contact/reset-ground 交叉门。 |
-| `isaac_sim/tests/test_kinematics_config.py` | 覆盖 robot schema v2 exact-key、重复键、旧 schema、profile/lifecycle、joint 名/唯一性、几何/质量/总质量、bool/NaN/Infinity/非正数、controller 旧重复字段，以及稳定 Control Graph 数值不变。 |
+| `isaac_sim/tests/test_kinematics_config.py` | 覆盖 robot schema v3 exact-key、重复键、旧 schema、profile/lifecycle、joint 名/唯一性、几何/质量/总质量、mass profile 路径、wheel drive 有限值与单位、bool/NaN/Infinity/非正数，以及稳定迁移值和 Control Graph 数值不变。 |
+| `isaac_sim/tests/test_mass_collision_config.py` | 覆盖三个质量/碰撞 profile 的 exact schema、固定资产/Prim 集合、质量恒等式、惯量对称正定性以及未知键、非法数值和 profile 语义漂移拒绝。 |
+| `isaac_sim/tests/test_mass_collision_runtime.py` | 用 USD/Isaac 双层测试质量/碰撞匿名 Overlay 的单实例、可逆 author、Layer/Stage 新鲜读回和篡改失败，并验证初始化后五 link physics tensor 的 mass/COM/inertia、顺序与总质量绑定。 |
+| `isaac_sim/tests/test_wheel_velocity_drive.py` | 测试轮驱动 SI→USD 单位转换、四轮 joint 解析、匿名 Layer authored opinion/effective Stage 读回、切换清理与错误关闭；Isaac marker 另核对 physics tensor 中四个 DOF 的 drive type、gain 和有限限值。 |
 | `isaac_sim/tests/test_graph_contracts.py` | 测试 Topic/QoS、控制/传感器/TF Graph 节点连接和 GT 隔离。 |
 | `isaac_sim/tests/test_joint_mapping.py` | 测试四轮 joint 分组和控制顺序。 |
 | `isaac_sim/tests/test_scan_projection.py` | 检查 Isaac LiDAR 与 ROS LaserScan 投影参数的 frame/range/角度契约。 |

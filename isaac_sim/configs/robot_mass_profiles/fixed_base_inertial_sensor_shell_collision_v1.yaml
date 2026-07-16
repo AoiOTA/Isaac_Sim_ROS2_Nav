@@ -1,7 +1,7 @@
 schema_version: 1
 profile_id: fixed_base_inertial_sensor_shell_collision_v1
 mode: fixed_base_inertial_sensor_shell_collision
-robot_asset_sha256: bf870a06c9b974eea2607dd7f33bb536eb930f2a7795ed07f25def792b150a8a
+robot_asset_sha256: f80d036922eb3cd3d2eb51c13eede30a467e69448ea55a2fc2410c101ceb8c34
 base_prim_suffix: /base_link
 sensor_shells:
   - prim_suffix: /base_link/collisions/bumblebee_camera

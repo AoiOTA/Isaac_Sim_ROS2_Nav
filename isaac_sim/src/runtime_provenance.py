@@ -1065,7 +1065,923 @@ def _capture_reset_strategy_provenance(
     }
 
 
-def capture_runtime_provenance(
+def _snapshot_mapping(value: object, *, location: str) -> dict[str, Any]:
+    if hasattr(value, "to_dict") and callable(value.to_dict):
+        value = value.to_dict()
+    if not isinstance(value, Mapping):
+        raise RuntimeProvenanceError(f"{location} must be a mapping")
+    return json.loads(_canonical_json(value, location=location))
+
+
+def _exact_keys(
+    value: Mapping[str, Any],
+    expected: set[str],
+    *,
+    location: str,
+) -> None:
+    if set(value) != expected:
+        raise RuntimeProvenanceError(
+            f"{location} keys must be exactly {sorted(expected)}"
+        )
+
+
+def _schema_one(value: object, *, location: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value != 1:
+        raise RuntimeProvenanceError(f"{location} must be integer 1")
+
+
+def _finite_number(value: object, *, location: str) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise RuntimeProvenanceError(f"{location} must be a finite number")
+    return float(value)
+
+
+def _numeric_vector(
+    value: object,
+    *,
+    location: str,
+    length: int,
+) -> list[float]:
+    if not isinstance(value, list) or len(value) != length:
+        raise RuntimeProvenanceError(
+            f"{location} must contain exactly {length} numbers"
+        )
+    return [
+        _finite_number(item, location=f"{location}[{index}]")
+        for index, item in enumerate(value)
+    ]
+
+
+def _matrix3(value: object, *, location: str) -> list[list[float]]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise RuntimeProvenanceError(f"{location} must be a 3x3 matrix")
+    matrix = [
+        _numeric_vector(row, location=f"{location}[{index}]", length=3)
+        for index, row in enumerate(value)
+    ]
+    if any(
+        not math.isclose(
+            matrix[row][column],
+            matrix[column][row],
+            rel_tol=1e-6,
+            abs_tol=1e-8,
+        )
+        for row in range(3)
+        for column in range(3)
+    ):
+        raise RuntimeProvenanceError(f"{location} must be symmetric")
+    if any(matrix[index][index] <= 0.0 for index in range(3)):
+        raise RuntimeProvenanceError(
+            f"{location} diagonal entries must be positive"
+        )
+    return matrix
+
+
+def _numbers_match(actual: object, expected: float) -> bool:
+    try:
+        value = _finite_number(actual, location="numeric comparison")
+    except RuntimeProvenanceError:
+        return False
+    return math.isclose(value, expected, rel_tol=1e-6, abs_tol=1e-8)
+
+
+def _capture_wheel_velocity_drive_provenance(
+    config: Any,
+    stage: Any,
+    robot_contract: Any,
+    supplied_stage_snapshot: object,
+    supplied_tensor_snapshot: object,
+) -> dict[str, object]:
+    try:
+        from isaac_sim.src.robot.wheel_velocity_drive import (
+            capture_wheel_velocity_drive_snapshot,
+        )
+
+        fresh_value = capture_wheel_velocity_drive_snapshot(stage, config)
+    except Exception as exc:
+        raise RuntimeProvenanceError(
+            f"failed to capture fresh wheel velocity-drive Stage evidence: {exc}"
+        ) from exc
+    supplied = _snapshot_mapping(
+        supplied_stage_snapshot,
+        location="supplied wheel velocity-drive Stage snapshot",
+    )
+    fresh = _snapshot_mapping(
+        fresh_value,
+        location="fresh wheel velocity-drive Stage snapshot",
+    )
+    if _canonical_json(
+        supplied,
+        location="supplied wheel velocity-drive Stage snapshot",
+    ) != _canonical_json(
+        fresh,
+        location="fresh wheel velocity-drive Stage snapshot",
+    ):
+        raise RuntimeProvenanceError(
+            "supplied wheel velocity-drive snapshot is stale or differs from "
+            "the current Stage readback"
+        )
+
+    stage_keys = {
+        "schema_version",
+        "profile_path",
+        "profile_sha256",
+        "profile_id",
+        "configured_si",
+        "authored_usd",
+        "joint_paths",
+        "overlay_identifier",
+        "overlay_sha256",
+        "stage_usd_readback_verified",
+    }
+    _exact_keys(fresh, stage_keys, location="wheel velocity-drive Stage snapshot")
+    _schema_one(
+        fresh["schema_version"],
+        location="wheel velocity-drive Stage snapshot.schema_version",
+    )
+    if fresh["stage_usd_readback_verified"] is not True:
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive Stage USD readback must be verified"
+        )
+    expected_profile_path = str(Path(config.files.robot).resolve())
+    if fresh["profile_path"] != expected_profile_path:
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive profile path does not match robot config"
+        )
+    if fresh["profile_sha256"] != file_sha256(config.files.robot):
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive profile SHA256 does not match robot config"
+        )
+    _sha256_digest(
+        fresh["profile_sha256"],
+        location="wheel velocity-drive profile SHA256",
+    )
+    drive = robot_contract.wheel_velocity_drive
+    if fresh["profile_id"] != drive.profile_id:
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive profile identity does not match robot config"
+        )
+    configured = fresh["configured_si"]
+    authored = fresh["authored_usd"]
+    if not isinstance(configured, Mapping) or not isinstance(authored, Mapping):
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive configured/authored values must be mappings"
+        )
+    configured_keys = {
+        "drive_type",
+        "stiffness_n_m_per_rad",
+        "damping_n_m_s_per_rad",
+        "max_effort_n_m",
+        "max_joint_velocity_rad_s",
+    }
+    authored_keys = {
+        "drive_type",
+        "stiffness_n_m_per_degree",
+        "damping_n_m_s_per_degree",
+        "max_force_n_m",
+        "max_joint_velocity_deg_s",
+    }
+    _exact_keys(configured, configured_keys, location="configured SI drive")
+    _exact_keys(authored, authored_keys, location="authored USD drive")
+    if configured["drive_type"] != drive.drive_type or authored[
+        "drive_type"
+    ] != drive.drive_type:
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive type does not match robot config"
+        )
+    expected_configured = {
+        "stiffness_n_m_per_rad": drive.stiffness_n_m_per_rad,
+        "damping_n_m_s_per_rad": drive.damping_n_m_s_per_rad,
+        "max_effort_n_m": drive.max_effort_n_m,
+        "max_joint_velocity_rad_s": drive.max_joint_velocity_rad_s,
+    }
+    expected_authored = {
+        "stiffness_n_m_per_degree": (
+            drive.stiffness_n_m_per_rad * math.pi / 180.0
+        ),
+        "damping_n_m_s_per_degree": (
+            drive.damping_n_m_s_per_rad * math.pi / 180.0
+        ),
+        "max_force_n_m": drive.max_effort_n_m,
+        "max_joint_velocity_deg_s": (
+            drive.max_joint_velocity_rad_s * 180.0 / math.pi
+        ),
+    }
+    if any(
+        not _numbers_match(configured[name], expected)
+        for name, expected in expected_configured.items()
+    ) or any(
+        not _numbers_match(authored[name], expected)
+        for name, expected in expected_authored.items()
+    ):
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive values do not match robot config"
+        )
+
+    expected_joint_names = list(robot_contract.wheel_joints.ordered)
+    expected_joint_paths = [
+        f"{config.robot.runtime_prim_path}/{name}"
+        for name in expected_joint_names
+    ]
+    if fresh["joint_paths"] != expected_joint_paths:
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive joint paths do not match robot config"
+        )
+    for index, path in enumerate(expected_joint_paths):
+        _absolute_prim_path(path, location=f"wheel joint path[{index}]")
+    overlay_identifier = _nonempty_string(
+        fresh["overlay_identifier"],
+        location="wheel velocity-drive overlay identifier",
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise RuntimeProvenanceError(
+            "wheel velocity-drive overlay identifier must name an anonymous layer"
+        )
+    _sha256_digest(
+        fresh["overlay_sha256"],
+        location="wheel velocity-drive overlay SHA256",
+    )
+
+    tensor = _snapshot_mapping(
+        supplied_tensor_snapshot,
+        location="wheel velocity-drive physics tensor snapshot",
+    )
+    tensor_keys = {
+        "schema_version",
+        "profile_path",
+        "profile_sha256",
+        "profile_id",
+        "stage_overlay_sha256",
+        "dof_names",
+        "dof_indices",
+        "drive_types",
+        "stiffnesses_n_m_per_rad",
+        "dampings_n_m_s_per_rad",
+        "max_efforts_n_m",
+        "max_joint_velocities_rad_s",
+        "physics_tensor_readback_verified",
+    }
+    _exact_keys(tensor, tensor_keys, location="wheel drive tensor snapshot")
+    _schema_one(
+        tensor["schema_version"],
+        location="wheel drive tensor snapshot.schema_version",
+    )
+    if tensor["physics_tensor_readback_verified"] is not True:
+        raise RuntimeProvenanceError(
+            "wheel drive physics tensor readback must be verified"
+        )
+    bindings = (
+        ("profile_path", "profile_path"),
+        ("profile_sha256", "profile_sha256"),
+        ("profile_id", "profile_id"),
+        ("stage_overlay_sha256", "overlay_sha256"),
+    )
+    if any(tensor[target] != fresh[source] for target, source in bindings):
+        raise RuntimeProvenanceError(
+            "wheel drive tensor profile/hash binding disagrees with Stage"
+        )
+    if tensor["dof_names"] != expected_joint_names:
+        raise RuntimeProvenanceError(
+            "wheel drive tensor DOF order does not match robot config"
+        )
+    indices = tensor["dof_indices"]
+    if (
+        not isinstance(indices, list)
+        or len(indices) != 4
+        or any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in indices
+        )
+        or len(set(indices)) != 4
+    ):
+        raise RuntimeProvenanceError(
+            "wheel drive tensor must bind four unique non-negative DOF indices"
+        )
+    if tensor["drive_types"] != [drive.drive_type] * 4:
+        raise RuntimeProvenanceError(
+            "wheel drive tensor types do not match configured drive type"
+        )
+    tensor_numeric = {
+        "stiffnesses_n_m_per_rad": drive.stiffness_n_m_per_rad,
+        "dampings_n_m_s_per_rad": drive.damping_n_m_s_per_rad,
+        "max_efforts_n_m": drive.max_effort_n_m,
+        "max_joint_velocities_rad_s": drive.max_joint_velocity_rad_s,
+    }
+    for name, expected in tensor_numeric.items():
+        values = tensor[name]
+        if (
+            not isinstance(values, list)
+            or len(values) != 4
+            or any(not _numbers_match(value, expected) for value in values)
+        ):
+            raise RuntimeProvenanceError(
+                f"wheel drive tensor {name} does not match configured SI values"
+            )
+
+    return {**fresh, "physics_tensor": tensor}
+
+
+def _capture_mass_collision_provenance(
+    config: Any,
+    stage: Any,
+    robot_contract: Any,
+    supplied_stage_snapshot: object,
+    supplied_tensor_snapshot: object,
+) -> dict[str, object]:
+    try:
+        from isaac_sim.src.robot.mass_collision_config import (
+            load_mass_collision_profile,
+        )
+        from isaac_sim.src.robot.mass_collision_runtime import (
+            capture_mass_collision_snapshot,
+        )
+
+        fresh_value = capture_mass_collision_snapshot(stage, config)
+        profile = load_mass_collision_profile(
+            robot_contract.mass_collision_profile
+        )
+    except Exception as exc:
+        raise RuntimeProvenanceError(
+            f"failed to capture fresh mass/collision Stage evidence: {exc}"
+        ) from exc
+    supplied = _snapshot_mapping(
+        supplied_stage_snapshot,
+        location="supplied mass/collision Stage snapshot",
+    )
+    fresh = _snapshot_mapping(
+        fresh_value,
+        location="fresh mass/collision Stage snapshot",
+    )
+    if _canonical_json(
+        supplied,
+        location="supplied mass/collision Stage snapshot",
+    ) != _canonical_json(
+        fresh,
+        location="fresh mass/collision Stage snapshot",
+    ):
+        raise RuntimeProvenanceError(
+            "supplied mass/collision snapshot is stale or differs from the "
+            "current Stage readback"
+        )
+    stage_keys = {
+        "schema_version",
+        "profile",
+        "robot_asset_sha256",
+        "sensor_shells",
+        "base_inertial",
+        "expected_link_masses",
+        "expected_total_mass_kg",
+        "overlay",
+        "stage_usd_readback_verified",
+    }
+    _exact_keys(fresh, stage_keys, location="mass/collision Stage snapshot")
+    _schema_one(
+        fresh["schema_version"],
+        location="mass/collision Stage snapshot.schema_version",
+    )
+    if fresh["stage_usd_readback_verified"] is not True:
+        raise RuntimeProvenanceError(
+            "mass/collision Stage USD readback must be verified"
+        )
+    profile_evidence = fresh["profile"]
+    overlay = fresh["overlay"]
+    if not isinstance(profile_evidence, Mapping) or not isinstance(
+        overlay, Mapping
+    ):
+        raise RuntimeProvenanceError(
+            "mass/collision profile and overlay evidence must be mappings"
+        )
+    _exact_keys(
+        profile_evidence,
+        {"path", "sha256", "id", "mode"},
+        location="mass/collision profile evidence",
+    )
+    _exact_keys(
+        overlay,
+        {"id", "identifier", "sha256"},
+        location="mass/collision overlay evidence",
+    )
+    if profile_evidence["sha256"] != file_sha256(
+        robot_contract.mass_collision_profile
+    ):
+        raise RuntimeProvenanceError(
+            "mass/collision profile SHA256 does not match robot config"
+        )
+    _sha256_digest(
+        profile_evidence["sha256"],
+        location="mass/collision profile SHA256",
+    )
+    if (
+        profile_evidence["id"] != profile.profile_id
+        or profile_evidence["mode"] != profile.mode
+    ):
+        raise RuntimeProvenanceError(
+            "mass/collision profile identity does not match robot config"
+        )
+    profile_path = _nonempty_string(
+        profile_evidence["path"],
+        location="mass/collision profile path",
+    )
+    if profile_path.startswith("/") or ".." in Path(profile_path).parts:
+        raise RuntimeProvenanceError(
+            "mass/collision profile path must be repository-relative"
+        )
+    selected_profile = robot_contract.mass_collision_profile.resolve()
+    expected_profile_path = None
+    for ancestor in selected_profile.parents:
+        if (
+            (ancestor / "pyproject.toml").is_file()
+            and (ancestor / "isaac_sim").is_dir()
+        ):
+            expected_profile_path = selected_profile.relative_to(
+                ancestor
+            ).as_posix()
+            break
+    if expected_profile_path is None or profile_path != expected_profile_path:
+        raise RuntimeProvenanceError(
+            "mass/collision profile path does not match robot config"
+        )
+    asset_sha256 = file_sha256(config.robot.asset_path)
+    if (
+        fresh["robot_asset_sha256"] != asset_sha256
+        or asset_sha256 != profile.robot_asset_sha256
+    ):
+        raise RuntimeProvenanceError(
+            "mass/collision robot asset SHA256 does not match profile/config"
+        )
+    _sha256_digest(
+        fresh["robot_asset_sha256"],
+        location="mass/collision robot asset SHA256",
+    )
+
+    expected_shells = sorted(
+        [
+            {
+                "prim_path": (
+                    f"{config.robot.articulation_root}{shell.prim_suffix}"
+                ),
+                "active": shell.active,
+                "collision_enabled": shell.collision_enabled,
+            }
+            for shell in profile.sensor_shells
+        ],
+        key=lambda item: item["prim_path"],
+    )
+    shells = fresh["sensor_shells"]
+    if not isinstance(shells, list) or len(shells) != 2:
+        raise RuntimeProvenanceError(
+            "mass/collision sensor_shells must contain exactly two entries"
+        )
+    for index, shell in enumerate(shells):
+        if not isinstance(shell, Mapping):
+            raise RuntimeProvenanceError(
+                f"mass/collision sensor_shells[{index}] must be a mapping"
+            )
+        _exact_keys(
+            shell,
+            {"prim_path", "active", "collision_enabled"},
+            location=f"mass/collision sensor_shells[{index}]",
+        )
+    if shells != expected_shells:
+        raise RuntimeProvenanceError(
+            "mass/collision sensor shells do not match selected profile"
+        )
+
+    expected_link_masses = sorted(
+        [
+            {
+                "prim_path": (
+                    f"{config.robot.articulation_root}{item.prim_suffix}"
+                ),
+                "mass_kg": item.mass_kg,
+            }
+            for item in profile.expected_link_masses
+        ],
+        key=lambda item: item["prim_path"],
+    )
+    if fresh["expected_link_masses"] != expected_link_masses:
+        raise RuntimeProvenanceError(
+            "mass/collision expected link masses do not match selected profile"
+        )
+    if not _numbers_match(
+        fresh["expected_total_mass_kg"], profile.expected_total_mass_kg
+    ):
+        raise RuntimeProvenanceError(
+            "mass/collision expected total mass does not match selected profile"
+        )
+    base = fresh["base_inertial"]
+    if profile.base_inertial is None:
+        if base is not None:
+            raise RuntimeProvenanceError(
+                "mass/collision base inertial must be null for this profile"
+            )
+    else:
+        if not isinstance(base, Mapping):
+            raise RuntimeProvenanceError(
+                "mass/collision fixed base inertial must be a mapping"
+            )
+        _exact_keys(
+            base,
+            {"prim_path", "mass_kg", "center_of_mass_m", "inertia_kg_m2"},
+            location="mass/collision base inertial",
+        )
+        expected_base = profile.base_inertial
+        if (
+            base["prim_path"] != config.robot.base_link_prim
+            or not _numbers_match(base["mass_kg"], expected_base.mass_kg)
+            or any(
+                not _numbers_match(actual, expected)
+                for actual, expected in zip(
+                    _numeric_vector(
+                        base["center_of_mass_m"],
+                        location="mass/collision base COM",
+                        length=3,
+                    ),
+                    expected_base.center_of_mass_m,
+                    strict=True,
+                )
+            )
+        ):
+            raise RuntimeProvenanceError(
+                "mass/collision base inertial does not match selected profile"
+            )
+        matrix = _matrix3(
+            base["inertia_kg_m2"],
+            location="mass/collision base inertia",
+        )
+        if any(
+            not _numbers_match(matrix[row][column], expected_base.inertia_kg_m2[row][column])
+            for row in range(3)
+            for column in range(3)
+        ):
+            raise RuntimeProvenanceError(
+                "mass/collision base inertia does not match selected profile"
+            )
+    expected_overlay_id = f"mass_collision_profile/{profile.profile_id}"
+    if overlay["id"] != expected_overlay_id:
+        raise RuntimeProvenanceError(
+            "mass/collision overlay id does not match selected profile"
+        )
+    overlay_identifier = _nonempty_string(
+        overlay["identifier"],
+        location="mass/collision overlay identifier",
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise RuntimeProvenanceError(
+            "mass/collision overlay identifier must name an anonymous layer"
+        )
+    _sha256_digest(
+        overlay["sha256"],
+        location="mass/collision overlay SHA256",
+    )
+
+    tensor = _snapshot_mapping(
+        supplied_tensor_snapshot,
+        location="mass/collision physics tensor snapshot",
+    )
+    tensor_keys = {
+        "schema_version",
+        "profile_id",
+        "links",
+        "total_mass_kg",
+        "physics_tensor_readback_verified",
+    }
+    _exact_keys(tensor, tensor_keys, location="mass tensor snapshot")
+    _schema_one(
+        tensor["schema_version"],
+        location="mass tensor snapshot.schema_version",
+    )
+    if tensor["profile_id"] != profile.profile_id:
+        raise RuntimeProvenanceError(
+            "mass tensor profile identity disagrees with Stage/config"
+        )
+    if tensor["physics_tensor_readback_verified"] is not True:
+        raise RuntimeProvenanceError(
+            "mass physics tensor readback must be verified"
+        )
+    links = tensor["links"]
+    if not isinstance(links, list) or len(links) != 5:
+        raise RuntimeProvenanceError(
+            "mass tensor must contain exactly five link snapshots"
+        )
+    expected_mass_by_path = {
+        item["prim_path"]: item["mass_kg"] for item in expected_link_masses
+    }
+    seen_paths: list[str] = []
+    normalized_links: list[dict[str, Any]] = []
+    for index, link in enumerate(links):
+        location = f"mass tensor links[{index}]"
+        if not isinstance(link, Mapping):
+            raise RuntimeProvenanceError(f"{location} must be a mapping")
+        _exact_keys(
+            link,
+            {"name", "prim_path", "mass_kg", "center_of_mass_m", "inertia_kg_m2"},
+            location=location,
+        )
+        path = _absolute_prim_path(
+            link["prim_path"], location=f"{location}.prim_path"
+        )
+        if path not in expected_mass_by_path:
+            raise RuntimeProvenanceError(
+                f"{location} is not one of the five configured links"
+            )
+        if link["name"] != Path(path).name:
+            raise RuntimeProvenanceError(
+                f"{location}.name does not match its prim path"
+            )
+        if not _numbers_match(link["mass_kg"], expected_mass_by_path[path]):
+            raise RuntimeProvenanceError(
+                f"{location}.mass_kg does not match Stage expectation"
+            )
+        _numeric_vector(
+            link["center_of_mass_m"],
+            location=f"{location}.center_of_mass_m",
+            length=3,
+        )
+        _matrix3(link["inertia_kg_m2"], location=f"{location}.inertia_kg_m2")
+        seen_paths.append(path)
+        normalized_links.append(dict(link))
+    if (
+        seen_paths != sorted(seen_paths)
+        or len(set(seen_paths)) != 5
+        or set(seen_paths) != set(expected_mass_by_path)
+    ):
+        raise RuntimeProvenanceError(
+            "mass tensor links must be sorted unique and cover exactly five configured links"
+        )
+    if not _numbers_match(tensor["total_mass_kg"], profile.expected_total_mass_kg):
+        raise RuntimeProvenanceError(
+            "mass tensor total mass disagrees with Stage/config"
+        )
+    if base is not None:
+        tensor_base = next(
+            link for link in normalized_links if link["prim_path"] == base["prim_path"]
+        )
+        if any(
+            not _numbers_match(actual, expected)
+            for actual, expected in zip(
+                tensor_base["center_of_mass_m"],
+                base["center_of_mass_m"],
+                strict=True,
+            )
+        ) or any(
+            not _numbers_match(
+                tensor_base["inertia_kg_m2"][row][column],
+                base["inertia_kg_m2"][row][column],
+            )
+            for row in range(3)
+            for column in range(3)
+        ):
+            raise RuntimeProvenanceError(
+                "mass tensor fixed base COM/inertia disagrees with Stage"
+            )
+
+    return {
+        "schema_version": fresh["schema_version"],
+        "profile_path": profile_evidence["path"],
+        "profile_sha256": profile_evidence["sha256"],
+        "profile_id": profile_evidence["id"],
+        "profile_mode": profile_evidence["mode"],
+        "robot_asset_sha256": fresh["robot_asset_sha256"],
+        "sensor_shells": fresh["sensor_shells"],
+        "base_inertial": fresh["base_inertial"],
+        "expected_link_masses": fresh["expected_link_masses"],
+        "expected_total_mass_kg": fresh["expected_total_mass_kg"],
+        "overlay_id": overlay["id"],
+        "overlay_identifier": overlay["identifier"],
+        "overlay_sha256": overlay["sha256"],
+        "stage_usd_readback_verified": fresh[
+            "stage_usd_readback_verified"
+        ],
+        "physics_tensor": tensor,
+    }
+
+
+def _capture_control_graph_provenance(
+    config: Any,
+    robot_contract: Any,
+    supplied_snapshot: object,
+) -> dict[str, object]:
+    snapshot = _snapshot_mapping(
+        supplied_snapshot,
+        location="control graph snapshot",
+    )
+    _exact_keys(
+        snapshot,
+        {
+            "schema_version",
+            "wheel_command_application",
+            "topology",
+            "topology_sha256",
+            "materialized_readback_verified",
+        },
+        location="control graph snapshot",
+    )
+    _schema_one(
+        snapshot["schema_version"],
+        location="control graph snapshot.schema_version",
+    )
+    if snapshot["materialized_readback_verified"] is not True:
+        raise RuntimeProvenanceError(
+            "control graph materialized readback must be verified"
+        )
+    mode = snapshot["wheel_command_application"]
+    modes = {"split_axle_v1", "single_four_wheel_write_v1"}
+    if mode not in modes:
+        raise RuntimeProvenanceError(
+            "control graph wheel command application is unsupported"
+        )
+    topology = snapshot["topology"]
+    if not isinstance(topology, Mapping):
+        raise RuntimeProvenanceError("control graph topology must be a mapping")
+    _exact_keys(
+        topology,
+        {
+            "graph_path",
+            "pipeline_stage",
+            "nodes",
+            "connections",
+            "command_writers",
+        },
+        location="control graph topology",
+    )
+    if topology["graph_path"] != "/World/Graphs/Control":
+        raise RuntimeProvenanceError(
+            "control graph path must be /World/Graphs/Control"
+        )
+    if topology["pipeline_stage"] != "on_demand":
+        raise RuntimeProvenanceError(
+            "control graph pipeline must be on_demand"
+        )
+    nodes = topology["nodes"]
+    if not isinstance(nodes, list) or not nodes:
+        raise RuntimeProvenanceError("control graph nodes must be nonempty")
+    node_pairs: list[tuple[str, str]] = []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, Mapping):
+            raise RuntimeProvenanceError(
+                f"control graph nodes[{index}] must be a mapping"
+            )
+        _exact_keys(
+            node,
+            {"name", "type_name"},
+            location=f"control graph nodes[{index}]",
+        )
+        node_pairs.append(
+            (
+                _nonempty_string(
+                    node["name"], location=f"control graph nodes[{index}].name"
+                ),
+                _nonempty_string(
+                    node["type_name"],
+                    location=f"control graph nodes[{index}].type_name",
+                ),
+            )
+        )
+    if node_pairs != sorted(node_pairs) or len(
+        {name for name, _ in node_pairs}
+    ) != len(node_pairs):
+        raise RuntimeProvenanceError(
+            "control graph nodes must be sorted with unique names"
+        )
+    node_names = {name for name, _ in node_pairs}
+
+    connections = topology["connections"]
+    if not isinstance(connections, list) or not connections:
+        raise RuntimeProvenanceError(
+            "control graph connections must be nonempty"
+        )
+    connection_pairs: list[tuple[str, str]] = []
+    for index, connection in enumerate(connections):
+        if not isinstance(connection, Mapping):
+            raise RuntimeProvenanceError(
+                f"control graph connections[{index}] must be a mapping"
+            )
+        _exact_keys(
+            connection,
+            {"source", "target"},
+            location=f"control graph connections[{index}]",
+        )
+        pair = (
+            _nonempty_string(
+                connection["source"],
+                location=f"control graph connections[{index}].source",
+            ),
+            _nonempty_string(
+                connection["target"],
+                location=f"control graph connections[{index}].target",
+            ),
+        )
+        for endpoint in pair:
+            if "." not in endpoint or endpoint.split(".", 1)[0] not in node_names:
+                raise RuntimeProvenanceError(
+                    "control graph connection references an unknown node"
+                )
+        connection_pairs.append(pair)
+    if connection_pairs != sorted(connection_pairs) or len(
+        set(connection_pairs)
+    ) != len(connection_pairs):
+        raise RuntimeProvenanceError(
+            "control graph connections must be sorted and unique"
+        )
+
+    writers = topology["command_writers"]
+    if not isinstance(writers, list):
+        raise RuntimeProvenanceError(
+            "control graph command_writers must be a list"
+        )
+    normalized_writers: list[dict[str, object]] = []
+    for index, writer in enumerate(writers):
+        if not isinstance(writer, Mapping):
+            raise RuntimeProvenanceError(
+                f"control graph command_writers[{index}] must be a mapping"
+            )
+        _exact_keys(
+            writer,
+            {"node", "target_prim", "joint_names"},
+            location=f"control graph command_writers[{index}]",
+        )
+        node = _nonempty_string(
+            writer["node"],
+            location=f"control graph command_writers[{index}].node",
+        )
+        if node not in node_names:
+            raise RuntimeProvenanceError(
+                "control graph command writer references an unknown node"
+            )
+        target = _absolute_prim_path(
+            writer["target_prim"],
+            location=f"control graph command_writers[{index}].target_prim",
+        )
+        joint_names = writer["joint_names"]
+        if (
+            not isinstance(joint_names, list)
+            or not joint_names
+            or any(not isinstance(name, str) or not name for name in joint_names)
+            or len(set(joint_names)) != len(joint_names)
+        ):
+            raise RuntimeProvenanceError(
+                "control graph command writer joint names must be unique nonempty strings"
+            )
+        normalized_writers.append(
+            {"node": node, "target_prim": target, "joint_names": joint_names}
+        )
+    writer_names = [writer["node"] for writer in normalized_writers]
+    if writer_names != sorted(writer_names) or len(set(writer_names)) != len(
+        writer_names
+    ):
+        raise RuntimeProvenanceError(
+            "control graph command writers must be sorted and unique"
+        )
+    joints = list(robot_contract.wheel_joints.ordered)
+    expected_writers = (
+        [
+            {
+                "node": "FrontController",
+                "target_prim": config.robot.articulation_root,
+                "joint_names": joints[:2],
+            },
+            {
+                "node": "RearController",
+                "target_prim": config.robot.articulation_root,
+                "joint_names": joints[2:],
+            },
+        ]
+        if mode == "split_axle_v1"
+        else [
+            {
+                "node": "WheelController",
+                "target_prim": config.robot.articulation_root,
+                "joint_names": joints,
+            }
+        ]
+    )
+    if normalized_writers != expected_writers:
+        raise RuntimeProvenanceError(
+            "control graph command writers disagree with mode/robot config"
+        )
+    topology_sha256 = _sha256_digest(
+        snapshot["topology_sha256"],
+        location="control graph topology SHA256",
+    )
+    calculated_sha256 = hashlib.sha256(
+        _canonical_json(
+            topology,
+            location="control graph topology",
+        ).encode("utf-8")
+    ).hexdigest()
+    if topology_sha256 != calculated_sha256:
+        raise RuntimeProvenanceError(
+            "control graph topology SHA256 does not match canonical topology"
+        )
+    return snapshot
+
+
+def capture_runtime_provenance_v6_legacy(
     config: Any,
     stage: Any,
     *,
@@ -1075,7 +1991,7 @@ def capture_runtime_provenance(
     ground_topology_snapshot: object | None = None,
     contact_snapshot: object | None = None,
 ) -> dict[str, object]:
-    """Capture the effective files and in-memory Stage loaded by Isaac."""
+    """Capture schema-v6 evidence for explicitly migrated legacy diagnostics."""
 
     stage_solver_iterations = stage_articulation_solver_iterations(
         stage,
@@ -1182,6 +2098,87 @@ def capture_runtime_provenance(
     }
 
 
+def capture_runtime_provenance(
+    config: Any,
+    stage: Any,
+    *,
+    articulation_usd_solver_iterations: tuple[int, int],
+    repository_root: str | Path,
+    reset_strategy_snapshot: object,
+    wheel_velocity_drive_snapshot: object,
+    wheel_drive_tensor_snapshot: object,
+    mass_collision_snapshot: object,
+    mass_tensor_snapshot: object,
+    control_graph_snapshot: object,
+    ground_topology_snapshot: object | None = None,
+    contact_snapshot: object | None = None,
+) -> dict[str, object]:
+    """Capture fail-closed schema-v7 Stage, tensor, and graph evidence."""
+
+    base = capture_runtime_provenance_v6_legacy(
+        config,
+        stage,
+        articulation_usd_solver_iterations=articulation_usd_solver_iterations,
+        repository_root=repository_root,
+        reset_strategy_snapshot=reset_strategy_snapshot,
+        ground_topology_snapshot=ground_topology_snapshot,
+        contact_snapshot=contact_snapshot,
+    )
+    try:
+        robot_contract = load_robot_config_contract(config.files.robot)
+    except (AttributeError, OSError, ValueError) as exc:
+        raise RuntimeProvenanceError(
+            f"runtime robot schema-v3 contract is invalid: {exc}"
+        ) from exc
+    if robot_contract.schema_version != 3:
+        raise RuntimeProvenanceError(
+            "runtime robot config schema_version must be integer 3"
+        )
+    configured_joints = tuple(config.robot.wheel_joints)
+    if configured_joints != robot_contract.wheel_joints.ordered:
+        raise RuntimeProvenanceError(
+            "runtime project wheel joints do not match robot schema-v3 config"
+        )
+    wheel_velocity_drive = _capture_wheel_velocity_drive_provenance(
+        config,
+        stage,
+        robot_contract,
+        wheel_velocity_drive_snapshot,
+        wheel_drive_tensor_snapshot,
+    )
+    mass_collision = _capture_mass_collision_provenance(
+        config,
+        stage,
+        robot_contract,
+        mass_collision_snapshot,
+        mass_tensor_snapshot,
+    )
+    control_graph = _capture_control_graph_provenance(
+        config,
+        robot_contract,
+        control_graph_snapshot,
+    )
+
+    robot = dict(base["robot"])
+    robot["config"] = {
+        "schema_version": 3,
+        "path": str(config.files.robot),
+        "sha256": file_sha256(config.files.robot),
+    }
+    robot["wheel_velocity_drive"] = wheel_velocity_drive
+    robot["mass_collision"] = mass_collision
+    return {
+        "schema_version": 7,
+        "robot": robot,
+        "environment": base["environment"],
+        "simulation": base["simulation"],
+        "ground_topology": base["ground_topology"],
+        "contact": base["contact"],
+        "control_graph": control_graph,
+        "git": base["git"],
+    }
+
+
 def runtime_provenance_parameters(
     provenance: Mapping[str, Any],
 ) -> dict[str, str | bool | int | float]:
@@ -1203,7 +2200,7 @@ def runtime_provenance_parameters(
         location="runtime reset strategy provenance",
     )
     git = provenance["git"]
-    return {
+    parameters: dict[str, str | bool | int | float] = {
         "runtime_provenance.schema_version": provenance["schema_version"],
         "runtime_provenance.robot.config.path": robot["config"]["path"],
         "runtime_provenance.robot.config.sha256": robot["config"]["sha256"],
@@ -1283,3 +2280,22 @@ def runtime_provenance_parameters(
         "runtime_provenance.git.branch": git["branch"],
         "runtime_provenance.git.dirty": git["dirty"],
     }
+    if provenance["schema_version"] == 7:
+        parameters["runtime_provenance.robot.config.schema_version"] = robot[
+            "config"
+        ]["schema_version"]
+        for parameter_name, value in (
+            ("robot.wheel_velocity_drive", robot["wheel_velocity_drive"]),
+            ("robot.mass_collision", robot["mass_collision"]),
+            ("control_graph", provenance["control_graph"]),
+        ):
+            encoded = _canonical_json(
+                value,
+                location=f"runtime {parameter_name} provenance",
+            )
+            prefix = f"runtime_provenance.{parameter_name}"
+            parameters[f"{prefix}.json"] = encoded
+            parameters[f"{prefix}.sha256"] = hashlib.sha256(
+                encoded.encode("utf-8")
+            ).hexdigest()
+    return parameters

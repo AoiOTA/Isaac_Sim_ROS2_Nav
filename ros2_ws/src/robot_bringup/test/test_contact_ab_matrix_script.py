@@ -43,6 +43,13 @@ MANIFEST_COLUMNS = (
     'robot_config_selection',
     'robot_config',
     'robot_config_sha256',
+    'robot_config_schema_version',
+    'robot_wheel_velocity_drive_profile_id',
+    'robot_wheel_velocity_drive_overlay_sha256',
+    'robot_mass_collision_profile_id',
+    'robot_mass_collision_overlay_sha256',
+    'wheel_command_application',
+    'control_graph_topology_sha256',
     'robot_kinematics_profile_id',
     'robot_kinematics_lifecycle',
     'robot_wheel_radius_m',
@@ -136,6 +143,8 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
     assert 'separate_recontact_0p20m_1step_v1|all' in help_result.stdout
     assert '--repeats N' in help_result.stdout
     assert '--robot-config FILE' in help_result.stdout
+    assert '--wheel-command-application split_axle_v1|' in help_result.stdout
+    assert 'single_four_wheel_write_v1' in help_result.stdout
     assert '--output-dir DIR' in help_result.stdout
     assert '36' in help_result.stdout
     assert 'odd repeats run A then B' in help_result.stdout
@@ -156,6 +165,10 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
          '--repeats must be an integer in [1, 100]'),
         (('--repeats', '1'), '--output-dir is required'),
         (('--robot-config',), '--robot-config requires a value'),
+        (
+            ('--wheel-command-application',),
+            '--wheel-command-application requires a value',
+        ),
         (('--ground-topology',), '--ground-topology requires a value'),
         (('--contact-profile',), '--contact-profile requires a value'),
         (('--reset-strategy',), '--reset-strategy requires a value'),
@@ -195,6 +208,16 @@ def test_contact_ab_matrix_has_valid_shell_and_help_contract():
         (
             ('--robot-config', '', '--output-dir', '/tmp/out'),
             '--robot-config requires a non-empty value',
+        ),
+        (
+            (
+                '--wheel-command-application',
+                'unknown',
+                '--output-dir',
+                '/tmp/out',
+            ),
+            '--wheel-command-application must be split_axle_v1 or '
+            'single_four_wheel_write_v1',
         ),
         (
             ('--output-dir', '/tmp/out\rhidden'),
@@ -352,6 +375,10 @@ def test_contact_ab_matrix_locks_the_ordered_inputs_and_runtime_modes():
     assert '"${SCRIPT_DIR}/run_isaac.sh"' in source
     assert '--headless --pacing-mode unbounded' in source
     assert (
+        '--wheel-command-application "${wheel_command_application}"'
+        in source
+    )
+    assert (
         '--navigation-mode mapping --mode ideal --camera-profile off' in source
     )
     assert (
@@ -372,6 +399,7 @@ def test_contact_profile_and_reset_strategy_selection_contracts():
     assert 'config.schema_version' in source
     assert 'config.simulation.reset_strategy.schema_version' in source
     assert 'config.simulation.reset_strategy.identifier' in source
+    assert 'wheel_command_application="split_axle_v1"' in source
 
 
 def test_contact_profile_and_reset_strategy_selection_is_ordered_dynamically():
@@ -613,7 +641,7 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'status --porcelain --untracked-files=normal' in source
     assert 'ls-files --error-unmatch' in source
     assert 'runtime_provenance.schema_version' in source
-    assert '"${schema}" != 6' in source
+    assert '"${schema}" != 7' in source
     assert 'runtime_provenance.environment.id' in source
     assert 'runtime_provenance.contact.json' in source
     assert 'runtime_provenance.contact.sha256' in source
@@ -628,7 +656,7 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'motion_skid_steer_ab.yaml' in source
     assert 'manifest.tsv' in source
     assert 'report.get("schema_version") != 4' in source
-    assert 'strict contact A/B analysis schema must be integer 6' in source
+    assert 'strict contact A/B analysis schema must be integer 7' in source
     assert 'physical_acceptance.get("schema_version") != 4' in source
     assert 'skid_steer_plan_8_7_v4' in source
     assert 'report.get("result") != "success"' in source
@@ -637,6 +665,13 @@ def test_contact_ab_matrix_is_fail_closed_on_git_readiness_and_reports():
     assert 'runtime_provenance.git.branch' in source
     assert 'runtime_provenance.robot.config.path' in source
     assert 'runtime_provenance.robot.config.sha256' in source
+    assert 'runtime_provenance.robot.config.schema_version' in source
+    assert 'runtime_provenance.robot.wheel_velocity_drive.json' in source
+    assert 'runtime_provenance.robot.wheel_velocity_drive.sha256' in source
+    assert 'runtime_provenance.robot.mass_collision.json' in source
+    assert 'runtime_provenance.robot.mass_collision.sha256' in source
+    assert 'runtime_provenance.control_graph.json' in source
+    assert 'runtime_provenance.control_graph.sha256' in source
     assert 'runtime_provenance.robot.asset.path' in source
     assert 'runtime_provenance.robot.asset.sha256' in source
     assert 'runtime_provenance.robot.solver.position_iterations' in source
@@ -989,6 +1024,7 @@ def test_locked_topology_hash_map_never_rereads_mutated_file(tmp_path):
         f'simple_plane_config={str(fixed_inputs["simple_plane"])!r}\n'
         f'robot_config={str(fixed_inputs["robot"])!r}\n'
         f'robot_config_sha256={robot_digest!r}\n'
+        'wheel_command_application=split_axle_v1\n'
         f'profile_ids=({profile_array})\n'
         f'matrix_ground_topology_ids=({topology_id!r})\n'
         "matrix_environment_ids=('SimplePlane')\n"
@@ -1077,6 +1113,7 @@ def test_success_manifest_row_rejects_non_schema_4_report(tmp_path):
             'tsv_safe',
             'final_evidence_sha256',
             'motion_report_schema_version',
+            'motion_report_manifest_provenance_fields',
             'append_manifest_line_atomically',
             'append_current_manifest',
         )
@@ -1105,6 +1142,7 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
             'tsv_safe',
             'final_evidence_sha256',
             'motion_report_schema_version',
+            'motion_report_manifest_provenance_fields',
             'append_manifest_line_atomically',
             'append_current_manifest',
         )
@@ -1114,17 +1152,53 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     isaac_log = tmp_path / 'isaac.log'
     runner_log = tmp_path / 'runner.log'
     manifest.write_text(
-        '\t'.join(f'column_{index}' for index in range(47)) + '\n'
+        '\t'.join(f'column_{index}' for index in range(54)) + '\n'
     )
+    control_topology = {}
+    control_topology_sha256 = hashlib.sha256(
+        json.dumps(
+            control_topology,
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode('utf-8')
+    ).hexdigest()
     report.write_text(
-        '{"result":"success","schema_version":4}\n',
+        json.dumps(
+            {
+                'result': 'success',
+                'schema_version': 4,
+                'runtime_provenance': {
+                    'schema_version': 7,
+                    'robot': {
+                        'config': {'schema_version': 3},
+                        'wheel_velocity_drive': {
+                            'profile_id': 'drive_v1',
+                            'overlay_sha256': '4' * 64,
+                        },
+                        'mass_collision': {
+                            'profile_id': 'mass_v1',
+                            'overlay_sha256': '5' * 64,
+                        },
+                    },
+                    'control_graph': {
+                        'schema_version': 1,
+                        'wheel_command_application': 'split_axle_v1',
+                        'topology': control_topology,
+                        'topology_sha256': control_topology_sha256,
+                    },
+                },
+            },
+            sort_keys=True,
+        ) + '\n',
         encoding='utf-8',
     )
     isaac_log.write_text('isaac stopped\n', encoding='utf-8')
     runner_log.write_text('runner stopped\n', encoding='utf-8')
     assignments = {
         'manifest': manifest,
-        'current_run_id': '001_simple_plane_legacy_baseline_r01',
+        'current_run_id': (
+            '001_simple_plane_legacy_baseline_split_axle_v1_r01'
+        ),
         'current_environment': 'SimplePlane',
         'current_profile_id': 'legacy_baseline',
         'current_profile_mode': 'legacy_baseline',
@@ -1173,8 +1247,9 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
         'set -Eeuo pipefail\n'
         'declare -Ag owned_pids=()\n'
         'required_motion_report_schema_version=4\n'
-        'required_runtime_provenance_schema_version=6\n'
+        'required_runtime_provenance_schema_version=7\n'
         'required_reset_strategy_schema_version=1\n'
+        'wheel_command_application=split_axle_v1\n'
         'runtime_process_is_running() { return 1; }\n'
         'sha256_file() { sha256sum "$1" | awk "{print \\$1}"; }\n'
         f'{functions}\n'
@@ -1187,10 +1262,10 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     lines = manifest.read_text(encoding='utf-8').splitlines()
     assert len(lines) == 2
     fields = lines[1].split('\t')
-    assert len(fields) == 47
+    assert len(fields) == 54
     assert fields[8] == hashlib.sha256(report.read_bytes()).hexdigest()
     assert fields[9] == '4'
-    assert fields[10:13] == ['6', '1', 'pose_restore_v1']
+    assert fields[10:13] == ['7', '1', 'pose_restore_v1']
     assert fields[14] == hashlib.sha256(isaac_log.read_bytes()).hexdigest()
     assert fields[16] == hashlib.sha256(runner_log.read_bytes()).hexdigest()
     assert fields[17] == 'a' * 40
@@ -1200,10 +1275,19 @@ def test_success_manifest_row_has_all_locked_inputs_and_final_hashes(tmp_path):
     assert fields[25] == 'explicit_cli'
     assert fields[26] == '/repo/robot.yaml'
     assert fields[27] == '9' * 64
-    assert fields[28] == 'jackal_candidate_v1'
-    assert fields[29] == 'experimental_candidate'
-    assert fields[30:34] == ['0.098', '0.08', '0.37559', '1.012']
-    assert fields[38:41] == [
+    assert fields[28:35] == [
+        '3',
+        'drive_v1',
+        '4' * 64,
+        'mass_v1',
+        '5' * 64,
+        'split_axle_v1',
+        control_topology_sha256,
+    ]
+    assert fields[35] == 'jackal_candidate_v1'
+    assert fields[36] == 'experimental_candidate'
+    assert fields[37:41] == ['0.098', '0.08', '0.37559', '1.012']
+    assert fields[45:48] == [
         'simple_plane_only1_v1',
         '/repo/simple_plane_only1_v1.yaml',
         '8' * 64,
@@ -1325,7 +1409,7 @@ def test_contact_ab_matrix_runs_strict_final_aggregate_before_summary():
     assert 'analysis.get("analysis_valid") is not True' in finalizer
     assert 'row.get("report_schema_version") != "4"' in finalizer
     assert 'report_document.get("schema_version") != 4' in finalizer
-    assert 'analysis.get("schema_version") != 6' in finalizer
+    assert 'analysis.get("schema_version") != 7' in finalizer
     assert 'counts.get("excluded_reports") != 0' in finalizer
     assert 'counts.get("included_reports") != expected_runs' in finalizer
     assert 'counts.get("groups") != expected_groups' in finalizer
@@ -1431,7 +1515,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         str(experiment_source / 'test/test_contact_ab_analysis.py')
     )
     make_report = contact_helpers['_report']
-    upgrade_report = contact_helpers['_upgrade_runtime_provenance_to_v5']
+    upgrade_report = contact_helpers['_upgrade_runtime_provenance_to_v7']
     from robot_experiments.contact_ab_analysis import analyse_contact_ab
 
     def write_manifest(rows, columns=MANIFEST_COLUMNS):
@@ -1452,6 +1536,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             label = (
                 f'{sequence:03d}_simple_plane_simple_plane_only1_v1_'
                 f'{reset_strategy_token}_{contact_profile_id}_'
+                'split_axle_v1_'
                 f'r{repeat_index:02d}'
             )
             report_file = reports_dir / f'{label}.json'
@@ -1461,8 +1546,9 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     contact_profile=contact_profile_id,
                     scale=(0.98, 1.0, 1.02)[repeat_index - 1],
                 ),
-                'simple_plane_only1_v1',
-                report_schema_version=4,
+                topology='simple_plane_only1_v1',
+                wheel_command_application='split_axle_v1',
+                anonymous_token=f'process-{sequence}',
             )
             report_document['output_file'] = str(report_file.resolve())
             report_document['completed_at_utc'] = (
@@ -1474,7 +1560,6 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
             report_document['config_file'] = '/repo/motion.yaml'
             report_document['config_sha256'] = 'b' * 64
             runtime_provenance = report_document['runtime_provenance']
-            runtime_provenance['schema_version'] = 6
             target_colliders = runtime_provenance['ground_topology'][
                 'target_colliders'
             ]
@@ -1510,6 +1595,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                 }
             )
             runtime_provenance['robot']['config'] = {
+                'schema_version': 3,
                 'path': '/repo/robot.yaml',
                 'sha256': '9' * 64,
             }
@@ -1580,7 +1666,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     'report': report_path,
                     'report_sha256': report_sha256,
                     'report_schema_version': '4',
-                    'runtime_provenance_schema_version': '6',
+                    'runtime_provenance_schema_version': '7',
                     'reset_strategy_schema_version': '1',
                     'reset_strategy_id': reset_strategy_id,
                     'isaac_log': str(isaac_log.resolve()),
@@ -1602,6 +1688,33 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
                     'robot_config_selection': 'explicit_cli',
                     'robot_config': '/repo/robot.yaml',
                     'robot_config_sha256': '9' * 64,
+                    'robot_config_schema_version': '3',
+                    'robot_wheel_velocity_drive_profile_id': (
+                        runtime_provenance['robot']['wheel_velocity_drive'][
+                            'profile_id'
+                        ]
+                    ),
+                    'robot_wheel_velocity_drive_overlay_sha256': (
+                        runtime_provenance['robot']['wheel_velocity_drive'][
+                            'overlay_sha256'
+                        ]
+                    ),
+                    'robot_mass_collision_profile_id': (
+                        runtime_provenance['robot']['mass_collision'][
+                            'profile_id'
+                        ]
+                    ),
+                    'robot_mass_collision_overlay_sha256': (
+                        runtime_provenance['robot']['mass_collision'][
+                            'overlay_sha256'
+                        ]
+                    ),
+                    'wheel_command_application': 'split_axle_v1',
+                    'control_graph_topology_sha256': (
+                        runtime_provenance['control_graph'][
+                            'topology_sha256'
+                        ]
+                    ),
                     'robot_kinematics_profile_id': 'jackal_candidate_v1',
                     'robot_kinematics_lifecycle': 'experimental_candidate',
                     'robot_wheel_radius_m': '0.098',
@@ -1649,13 +1762,14 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assignments = {
         'PROJECT_ROOT': REPOSITORY_ROOT,
         'required_motion_report_schema_version': '4',
-        'required_runtime_provenance_schema_version': '6',
+        'required_runtime_provenance_schema_version': '7',
         'required_reset_strategy_schema_version': '1',
         'output_dir': tmp_path,
         'environment_selection': 'SimplePlane',
         'ground_topology_selection': 'baseline',
         'contact_profile_selection': 'all',
         'reset_strategy_selection': 'project',
+        'batch_wheel_command_application': 'split_axle_v1',
         'batch_reset_strategy_ids_json': json.dumps(
             [reset_strategy_id], separators=(',', ':')
         ),
@@ -1740,22 +1854,27 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     assert result.returncode == 0, result.stderr
     document = json.loads(summary.read_text(encoding='utf-8'))
     assert document['result'] == 'success'
-    assert document['schema_version'] == 7
+    assert document['schema_version'] == 8
     assert document['schema_contract'] == {
         'project_config': 2,
-        'runtime_provenance': 6,
+        'robot_config': 3,
+        'wheel_velocity_drive': 1,
+        'mass_collision': 1,
+        'control_graph': 1,
+        'runtime_provenance': 7,
         'motion_report': 4,
-        'aggregate_analysis': 6,
+        'aggregate_analysis': 7,
         'physical_acceptance': 4,
-        'manifest': 2,
+        'manifest': 3,
     }
     assert document['manifest_contract'] == {
-        'version': 2,
+        'version': 3,
         'columns': list(MANIFEST_COLUMNS),
     }
     assert document['contact_profile_selection'] == 'all'
     assert document['reset_strategy_selection'] == 'project'
     assert document['ground_topology_selection'] == 'baseline'
+    assert document['wheel_command_application'] == 'split_axle_v1'
     assert document['environment_topology_pairs'] == [
         {
             'environment_id': 'SimplePlane',
@@ -1783,7 +1902,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
         'thresholds': physical_thresholds,
         'applicability': {
             'required_motion_report_schema': 4,
-            'required_runtime_provenance_schema': 6,
+            'required_runtime_provenance_schema': 7,
             'required_environment_id': 'SimplePlane',
             'required_ground_topology_id': 'simple_plane_only1_v1',
             'required_odometry_mode': 'ideal',
@@ -1868,9 +1987,9 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
 
     # A success summary may never bless a partial or extended manifest shape.
     write_manifest(manifest_rows, MANIFEST_COLUMNS[:-1])
-    expect_summary_failure('manifest header does not match the 47-column contract')
+    expect_summary_failure('manifest header does not match the 54-column contract')
     write_manifest(manifest_rows, MANIFEST_COLUMNS + ('unexpected_column',))
-    expect_summary_failure('manifest header does not match the 47-column contract')
+    expect_summary_failure('manifest header does not match the 54-column contract')
 
     # Every stopped writer's final log must still be canonical, regular, and
     # byte-identical when the success summary is published.
@@ -1905,7 +2024,7 @@ def test_batch_summary_atomically_records_frozen_evidence_hashes(tmp_path):
     )
     write_manifest(manifest_rows)
 
-    # Every semantic field family in the 47-column row is rebound before a
+    # Every semantic field family in the 54-column row is rebound before a
     # success summary.  A correct header and valid report/log hashes alone are
     # insufficient.
     for field, replacement, expected_message in (

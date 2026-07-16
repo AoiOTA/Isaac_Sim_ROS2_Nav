@@ -12,7 +12,7 @@ from isaac_sim.src.yaml_utils import YamlConfigError
 
 ROOT = Path(__file__).resolve().parents[2]
 PROFILE_DIR = ROOT / "isaac_sim/configs/robot_mass_profiles"
-ASSET_SHA256 = "bf870a06c9b974eea2607dd7f33bb536eb930f2a7795ed07f25def792b150a8a"
+ASSET_SHA256 = "f80d036922eb3cd3d2eb51c13eede30a467e69448ea55a2fc2410c101ceb8c34"
 SENSOR_SHELL_SUFFIXES = (
     "/base_link/collisions/bumblebee_camera",
     "/base_link/collisions/sick_lms1xx_lidar",

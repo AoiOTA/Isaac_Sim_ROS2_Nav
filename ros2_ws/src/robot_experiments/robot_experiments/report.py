@@ -110,6 +110,52 @@ _RESET_STRATEGY_SEMANTICS = {
     "pose_restore_v1": (0.0, 0, 1),
     "separate_recontact_0p20m_1step_v1": (0.2, 1, 1),
 }
+_WHEEL_VELOCITY_DRIVE_KEYS = {
+    "schema_version",
+    "profile_path",
+    "profile_sha256",
+    "profile_id",
+    "configured_si",
+    "authored_usd",
+    "joint_paths",
+    "overlay_identifier",
+    "overlay_sha256",
+    "stage_usd_readback_verified",
+    "physics_tensor",
+}
+_MASS_COLLISION_KEYS = {
+    "schema_version",
+    "profile_path",
+    "profile_sha256",
+    "profile_id",
+    "profile_mode",
+    "robot_asset_sha256",
+    "sensor_shells",
+    "base_inertial",
+    "expected_link_masses",
+    "expected_total_mass_kg",
+    "overlay_id",
+    "overlay_identifier",
+    "overlay_sha256",
+    "stage_usd_readback_verified",
+    "physics_tensor",
+}
+_MASS_COLLISION_MODES = {
+    "legacy_default_sensor_density",
+    "sensor_shells_disabled",
+    "fixed_base_inertial_sensor_shell_collision",
+}
+_CONTROL_GRAPH_KEYS = {
+    "schema_version",
+    "wheel_command_application",
+    "topology",
+    "topology_sha256",
+    "materialized_readback_verified",
+}
+_WHEEL_COMMAND_APPLICATIONS = {
+    "split_axle_v1": ("FrontController", "RearController"),
+    "single_four_wheel_write_v1": ("WheelController",),
+}
 
 
 class ReportValidationError(ValueError):
@@ -341,6 +387,30 @@ def decode_hashed_reset_strategy_snapshot(
         payload,
         expected_sha256,
         location="runtime_provenance.simulation.reset_strategy",
+    )
+
+
+def decode_hashed_runtime_snapshot(
+    payload: object,
+    expected_sha256: object,
+    *,
+    component: str,
+) -> dict[str, Any]:
+    """Decode one schema-v7 JSON/SHA parameter pair without ambiguity."""
+
+    supported = {
+        "robot.wheel_velocity_drive",
+        "robot.mass_collision",
+        "control_graph",
+    }
+    if component not in supported:
+        raise ReportValidationError(
+            f"unsupported component for hashed runtime snapshot: {component!r}"
+        )
+    return _decode_hashed_snapshot(
+        payload,
+        expected_sha256,
+        location=f"runtime_provenance.{component}",
     )
 
 
@@ -1073,6 +1143,842 @@ def _validate_reset_strategy_provenance(
         )
 
 
+def _exact_keys(
+    value: Mapping[str, Any],
+    expected: set[str],
+    location: str,
+) -> None:
+    if set(value) != expected:
+        raise ReportValidationError(
+            f"{location} keys must be exactly {sorted(expected)}"
+        )
+
+
+def _schema_version_one(value: Any, location: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value != 1:
+        raise ReportValidationError(f"{location} must be integer 1")
+
+
+def _finite_number(
+    value: Any,
+    location: str,
+    *,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+    ):
+        raise ReportValidationError(f"{location} must be a finite number")
+    number = float(value)
+    if positive and number <= 0.0:
+        raise ReportValidationError(
+            f"{location} must be a finite positive number"
+        )
+    if nonnegative and number < 0.0:
+        raise ReportValidationError(
+            f"{location} must be a finite non-negative number"
+        )
+    return number
+
+
+def _finite_vector(
+    value: Any,
+    location: str,
+    *,
+    length: int,
+    positive: bool = False,
+    nonnegative: bool = False,
+) -> list[float]:
+    if not isinstance(value, list) or len(value) != length:
+        raise ReportValidationError(
+            f"{location} must contain exactly {length} finite numbers"
+        )
+    return [
+        _finite_number(
+            item,
+            f"{location}[{index}]",
+            positive=positive,
+            nonnegative=nonnegative,
+        )
+        for index, item in enumerate(value)
+    ]
+
+
+def _inertia_matrix(value: Any, location: str) -> list[list[float]]:
+    if not isinstance(value, list) or len(value) != 3:
+        raise ReportValidationError(
+            f"{location} must be a finite 3x3 matrix"
+        )
+    matrix = [
+        _finite_vector(row, f"{location}[{index}]", length=3)
+        for index, row in enumerate(value)
+    ]
+    for row in range(3):
+        if matrix[row][row] <= 0.0:
+            raise ReportValidationError(
+                f"{location} diagonal must be positive"
+            )
+        for column in range(row + 1, 3):
+            if not math.isclose(
+                matrix[row][column],
+                matrix[column][row],
+                rel_tol=1.0e-6,
+                abs_tol=1.0e-9,
+            ):
+                raise ReportValidationError(
+                    f"{location} must be symmetric"
+                )
+    return matrix
+
+
+def _numbers_close(actual: float, expected: float) -> bool:
+    return math.isclose(
+        actual,
+        expected,
+        rel_tol=1.0e-6,
+        abs_tol=1.0e-8,
+    )
+
+
+def _validate_wheel_velocity_drive_provenance(
+    drive: Mapping[str, Any],
+    robot_config: Mapping[str, Any],
+) -> None:
+    location = "runtime_provenance.robot.wheel_velocity_drive"
+    _exact_keys(drive, _WHEEL_VELOCITY_DRIVE_KEYS, location)
+    _schema_version_one(drive["schema_version"], f"{location}.schema_version")
+    profile_path = _absolute_file_path(
+        drive["profile_path"], f"{location}.profile_path"
+    )
+    if profile_path != robot_config["path"]:
+        raise ReportValidationError(
+            f"{location}.profile_path must match robot.config.path"
+        )
+    profile_sha256 = _validate_lowercase_sha256(
+        drive["profile_sha256"], f"{location}.profile_sha256"
+    )
+    if not hmac.compare_digest(profile_sha256, robot_config["sha256"]):
+        raise ReportValidationError(
+            f"{location}.profile_sha256 must match robot.config.sha256"
+        )
+    profile_id = _required_string(
+        drive["profile_id"], f"{location}.profile_id"
+    )
+    if not _IDENTIFIER_PATTERN.fullmatch(profile_id):
+        raise ReportValidationError(f"{location}.profile_id must be path-safe")
+
+    configured = _required_mapping(drive, "configured_si", location)
+    configured_keys = {
+        "drive_type",
+        "stiffness_n_m_per_rad",
+        "damping_n_m_s_per_rad",
+        "max_effort_n_m",
+        "max_joint_velocity_rad_s",
+    }
+    _exact_keys(configured, configured_keys, f"{location}.configured_si")
+    if configured["drive_type"] != "force":
+        raise ReportValidationError(
+            f"{location}.configured_si.drive_type must equal force"
+        )
+    stiffness = _finite_number(
+        configured["stiffness_n_m_per_rad"],
+        f"{location}.configured_si.stiffness_n_m_per_rad",
+        nonnegative=True,
+    )
+    if stiffness != 0.0:
+        raise ReportValidationError(
+            f"{location}.configured_si.stiffness_n_m_per_rad must equal 0"
+        )
+    damping = _finite_number(
+        configured["damping_n_m_s_per_rad"],
+        f"{location}.configured_si.damping_n_m_s_per_rad",
+        positive=True,
+    )
+    max_effort = _finite_number(
+        configured["max_effort_n_m"],
+        f"{location}.configured_si.max_effort_n_m",
+        positive=True,
+    )
+    max_velocity = _finite_number(
+        configured["max_joint_velocity_rad_s"],
+        f"{location}.configured_si.max_joint_velocity_rad_s",
+        positive=True,
+    )
+
+    authored = _required_mapping(drive, "authored_usd", location)
+    authored_keys = {
+        "drive_type",
+        "stiffness_n_m_per_degree",
+        "damping_n_m_s_per_degree",
+        "max_force_n_m",
+        "max_joint_velocity_deg_s",
+    }
+    _exact_keys(authored, authored_keys, f"{location}.authored_usd")
+    if authored["drive_type"] != "force":
+        raise ReportValidationError(
+            f"{location}.authored_usd.drive_type must equal force"
+        )
+    authored_values = {
+        "stiffness_n_m_per_degree": _finite_number(
+            authored["stiffness_n_m_per_degree"],
+            f"{location}.authored_usd.stiffness_n_m_per_degree",
+            nonnegative=True,
+        ),
+        "damping_n_m_s_per_degree": _finite_number(
+            authored["damping_n_m_s_per_degree"],
+            f"{location}.authored_usd.damping_n_m_s_per_degree",
+            positive=True,
+        ),
+        "max_force_n_m": _finite_number(
+            authored["max_force_n_m"],
+            f"{location}.authored_usd.max_force_n_m",
+            positive=True,
+        ),
+        "max_joint_velocity_deg_s": _finite_number(
+            authored["max_joint_velocity_deg_s"],
+            f"{location}.authored_usd.max_joint_velocity_deg_s",
+            positive=True,
+        ),
+    }
+    conversions = {
+        "stiffness_n_m_per_degree": (stiffness * math.pi / 180.0),
+        "damping_n_m_s_per_degree": (damping * math.pi / 180.0),
+        "max_force_n_m": max_effort,
+        "max_joint_velocity_deg_s": (max_velocity * 180.0 / math.pi),
+    }
+    conversion_labels = {
+        "stiffness_n_m_per_degree": "stiffness conversion",
+        "damping_n_m_s_per_degree": "damping conversion",
+        "max_force_n_m": "max effort conversion",
+        "max_joint_velocity_deg_s": "max velocity conversion",
+    }
+    for name, expected in conversions.items():
+        if not _numbers_close(authored_values[name], expected):
+            raise ReportValidationError(
+                f"{location}.authored_usd {conversion_labels[name]} mismatch"
+            )
+
+    joint_paths = drive["joint_paths"]
+    if not isinstance(joint_paths, list) or len(joint_paths) != 4:
+        raise ReportValidationError(
+            f"{location}.joint_paths must contain exactly 4 paths"
+        )
+    normalized_joint_paths = [
+        _absolute_prim_path(path, f"{location}.joint_paths[{index}]")
+        for index, path in enumerate(joint_paths)
+    ]
+    if len(set(normalized_joint_paths)) != 4:
+        raise ReportValidationError(
+            f"{location}.joint_paths must contain four unique paths"
+        )
+    overlay_identifier = _required_string(
+        drive["overlay_identifier"], f"{location}.overlay_identifier"
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise ReportValidationError(
+            f"{location}.overlay_identifier must identify an anonymous layer"
+        )
+    overlay_sha256 = _validate_lowercase_sha256(
+        drive["overlay_sha256"], f"{location}.overlay_sha256"
+    )
+    if drive["stage_usd_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{location}.stage_usd_readback_verified must be true"
+        )
+
+    tensor = _required_mapping(drive, "physics_tensor", location)
+    tensor_location = f"{location}.physics_tensor"
+    tensor_keys = {
+        "schema_version",
+        "profile_path",
+        "profile_sha256",
+        "profile_id",
+        "stage_overlay_sha256",
+        "dof_names",
+        "dof_indices",
+        "drive_types",
+        "stiffnesses_n_m_per_rad",
+        "dampings_n_m_s_per_rad",
+        "max_efforts_n_m",
+        "max_joint_velocities_rad_s",
+        "physics_tensor_readback_verified",
+    }
+    _exact_keys(tensor, tensor_keys, tensor_location)
+    _schema_version_one(
+        tensor["schema_version"], f"{tensor_location}.schema_version"
+    )
+    for name, expected in (
+        ("profile_path", profile_path),
+        ("profile_sha256", profile_sha256),
+        ("profile_id", profile_id),
+        ("stage_overlay_sha256", overlay_sha256),
+    ):
+        actual = tensor[name]
+        if name.endswith("sha256"):
+            _validate_lowercase_sha256(actual, f"{tensor_location}.{name}")
+        else:
+            _required_string(actual, f"{tensor_location}.{name}")
+        if actual != expected:
+            label = (
+                "Stage evidence"
+                if name in {"profile_path", "profile_sha256", "profile_id"}
+                else "Stage overlay"
+            )
+            raise ReportValidationError(
+                f"{tensor_location}.{name} must match {label}"
+            )
+    dof_names = tensor["dof_names"]
+    if not isinstance(dof_names, list) or len(dof_names) != 4:
+        raise ReportValidationError(
+            f"{tensor_location}.dof_names must contain exactly 4 names"
+        )
+    normalized_dof_names = [
+        _required_string(name, f"{tensor_location}.dof_names[{index}]")
+        for index, name in enumerate(dof_names)
+    ]
+    if len(set(normalized_dof_names)) != 4:
+        raise ReportValidationError(
+            f"{tensor_location}.dof_names must contain unique names"
+        )
+    if normalized_dof_names != [Path(path).name for path in joint_paths]:
+        raise ReportValidationError(
+            f"{tensor_location}.dof_names must match Stage joint_paths"
+        )
+    indices = tensor["dof_indices"]
+    if (
+        not isinstance(indices, list)
+        or len(indices) != 4
+        or any(
+            isinstance(index, bool)
+            or not isinstance(index, int)
+            or index < 0
+            for index in indices
+        )
+        or len(set(indices)) != 4
+    ):
+        raise ReportValidationError(
+            f"{tensor_location}.dof_indices must contain exactly 4 unique "
+            "non-negative integers"
+        )
+    drive_types = tensor["drive_types"]
+    if drive_types != ["force"] * 4:
+        raise ReportValidationError(
+            f"{tensor_location}.drive_types must contain four force drives"
+        )
+    tensor_vectors = {
+        "stiffnesses_n_m_per_rad": _finite_vector(
+            tensor["stiffnesses_n_m_per_rad"],
+            f"{tensor_location}.stiffnesses_n_m_per_rad",
+            length=4,
+            nonnegative=True,
+        ),
+        "dampings_n_m_s_per_rad": _finite_vector(
+            tensor["dampings_n_m_s_per_rad"],
+            f"{tensor_location}.dampings_n_m_s_per_rad",
+            length=4,
+            positive=True,
+        ),
+        "max_efforts_n_m": _finite_vector(
+            tensor["max_efforts_n_m"],
+            f"{tensor_location}.max_efforts_n_m",
+            length=4,
+            positive=True,
+        ),
+        "max_joint_velocities_rad_s": _finite_vector(
+            tensor["max_joint_velocities_rad_s"],
+            f"{tensor_location}.max_joint_velocities_rad_s",
+            length=4,
+            positive=True,
+        ),
+    }
+    expected_vectors = {
+        "stiffnesses_n_m_per_rad": stiffness,
+        "dampings_n_m_s_per_rad": damping,
+        "max_efforts_n_m": max_effort,
+        "max_joint_velocities_rad_s": max_velocity,
+    }
+    for name, values in tensor_vectors.items():
+        if any(
+            not _numbers_close(actual, expected_vectors[name])
+            for actual in values
+        ):
+            raise ReportValidationError(
+                f"{tensor_location}.{name} must match configured_si"
+            )
+    if tensor["physics_tensor_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{tensor_location}.physics_tensor_readback_verified must be true"
+        )
+
+
+def _validate_mass_collision_provenance(
+    mass: Mapping[str, Any],
+    robot_asset: Mapping[str, Any],
+) -> None:
+    location = "runtime_provenance.robot.mass_collision"
+    _exact_keys(mass, _MASS_COLLISION_KEYS, location)
+    _schema_version_one(mass["schema_version"], f"{location}.schema_version")
+    _required_string(mass["profile_path"], f"{location}.profile_path")
+    _validate_lowercase_sha256(
+        mass["profile_sha256"], f"{location}.profile_sha256"
+    )
+    profile_id = _required_string(
+        mass["profile_id"], f"{location}.profile_id"
+    )
+    if not _IDENTIFIER_PATTERN.fullmatch(profile_id):
+        raise ReportValidationError(f"{location}.profile_id must be path-safe")
+    profile_mode = mass["profile_mode"]
+    if profile_mode not in _MASS_COLLISION_MODES:
+        raise ReportValidationError(
+            f"{location}.profile_mode must be one of "
+            f"{sorted(_MASS_COLLISION_MODES)}"
+        )
+    robot_asset_sha256 = _validate_lowercase_sha256(
+        mass["robot_asset_sha256"], f"{location}.robot_asset_sha256"
+    )
+    if not hmac.compare_digest(robot_asset_sha256, robot_asset["sha256"]):
+        raise ReportValidationError(
+            f"{location}.robot_asset_sha256 must match robot.asset.sha256"
+        )
+
+    sensor_shells = mass["sensor_shells"]
+    if not isinstance(sensor_shells, list) or len(sensor_shells) != 2:
+        raise ReportValidationError(
+            f"{location}.sensor_shells must contain exactly 2 entries"
+        )
+    shell_paths: list[str] = []
+    expected_shell_flag = profile_mode != "sensor_shells_disabled"
+    for index, shell in enumerate(sensor_shells):
+        shell_location = f"{location}.sensor_shells[{index}]"
+        if not isinstance(shell, Mapping):
+            raise ReportValidationError(f"{shell_location} must be a mapping")
+        _exact_keys(
+            shell,
+            {"prim_path", "active", "collision_enabled"},
+            shell_location,
+        )
+        shell_paths.append(
+            _absolute_prim_path(shell["prim_path"], f"{shell_location}.prim_path")
+        )
+        if not isinstance(shell["active"], bool) or not isinstance(
+            shell["collision_enabled"], bool
+        ):
+            raise ReportValidationError(
+                f"{shell_location} shell flags must be boolean"
+            )
+        if (
+            shell["active"] is not expected_shell_flag
+            or shell["collision_enabled"] is not expected_shell_flag
+        ):
+            raise ReportValidationError(
+                f"{shell_location} shell flags disagree with profile_mode"
+            )
+    if shell_paths != sorted(shell_paths) or len(set(shell_paths)) != 2:
+        raise ReportValidationError(
+            f"{location}.sensor_shells must have sorted unique prim paths"
+        )
+
+    base_inertial = mass["base_inertial"]
+    if profile_mode == "fixed_base_inertial_sensor_shell_collision":
+        if not isinstance(base_inertial, Mapping):
+            raise ReportValidationError(
+                f"{location}.base_inertial must be a mapping for fixed mode"
+            )
+    elif base_inertial is not None:
+        raise ReportValidationError(
+            f"{location}.base_inertial must be null for {profile_mode}"
+        )
+    normalized_base: dict[str, Any] | None = None
+    if isinstance(base_inertial, Mapping):
+        base_location = f"{location}.base_inertial"
+        _exact_keys(
+            base_inertial,
+            {"prim_path", "mass_kg", "center_of_mass_m", "inertia_kg_m2"},
+            base_location,
+        )
+        normalized_base = {
+            "prim_path": _absolute_prim_path(
+                base_inertial["prim_path"], f"{base_location}.prim_path"
+            ),
+            "mass_kg": _finite_number(
+                base_inertial["mass_kg"],
+                f"{base_location}.mass_kg",
+                positive=True,
+            ),
+            "center_of_mass_m": _finite_vector(
+                base_inertial["center_of_mass_m"],
+                f"{base_location}.center_of_mass_m",
+                length=3,
+            ),
+            "inertia_kg_m2": _inertia_matrix(
+                base_inertial["inertia_kg_m2"],
+                f"{base_location}.inertia_kg_m2",
+            ),
+        }
+
+    expected_links = mass["expected_link_masses"]
+    if not isinstance(expected_links, list) or len(expected_links) != 5:
+        raise ReportValidationError(
+            f"{location}.expected_link_masses must contain exactly 5 entries"
+        )
+    expected_by_path: dict[str, float] = {}
+    expected_paths: list[str] = []
+    for index, link in enumerate(expected_links):
+        link_location = f"{location}.expected_link_masses[{index}]"
+        if not isinstance(link, Mapping):
+            raise ReportValidationError(f"{link_location} must be a mapping")
+        _exact_keys(link, {"prim_path", "mass_kg"}, link_location)
+        path = _absolute_prim_path(
+            link["prim_path"], f"{link_location}.prim_path"
+        )
+        expected_paths.append(path)
+        expected_by_path[path] = _finite_number(
+            link["mass_kg"], f"{link_location}.mass_kg", positive=True
+        )
+    if expected_paths != sorted(expected_paths) or len(expected_by_path) != 5:
+        raise ReportValidationError(
+            f"{location}.expected_link_masses must have sorted unique paths"
+        )
+    expected_total = _finite_number(
+        mass["expected_total_mass_kg"],
+        f"{location}.expected_total_mass_kg",
+        positive=True,
+    )
+    if not _numbers_close(sum(expected_by_path.values()), expected_total):
+        raise ReportValidationError(
+            f"{location}.expected_total_mass_kg must equal link mass sum"
+        )
+    if normalized_base is not None:
+        path = normalized_base["prim_path"]
+        if path not in expected_by_path or not _numbers_close(
+            expected_by_path[path], normalized_base["mass_kg"]
+        ):
+            raise ReportValidationError(
+                f"{location}.base_inertial mass must match expected_link_masses"
+            )
+
+    overlay_id = _required_string(
+        mass["overlay_id"], f"{location}.overlay_id"
+    )
+    if overlay_id != f"mass_collision_profile/{profile_id}":
+        raise ReportValidationError(
+            f"{location}.overlay_id must link to profile_id"
+        )
+    overlay_identifier = _required_string(
+        mass["overlay_identifier"], f"{location}.overlay_identifier"
+    )
+    if not overlay_identifier.startswith("anon:"):
+        raise ReportValidationError(
+            f"{location}.overlay_identifier must identify an anonymous layer"
+        )
+    _validate_lowercase_sha256(
+        mass["overlay_sha256"], f"{location}.overlay_sha256"
+    )
+    if mass["stage_usd_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{location}.stage_usd_readback_verified must be true"
+        )
+
+    tensor = _required_mapping(mass, "physics_tensor", location)
+    tensor_location = f"{location}.physics_tensor"
+    tensor_keys = {
+        "schema_version",
+        "profile_id",
+        "links",
+        "total_mass_kg",
+        "physics_tensor_readback_verified",
+    }
+    _exact_keys(tensor, tensor_keys, tensor_location)
+    _schema_version_one(
+        tensor["schema_version"], f"{tensor_location}.schema_version"
+    )
+    tensor_profile_id = _required_string(
+        tensor["profile_id"], f"{tensor_location}.profile_id"
+    )
+    if tensor_profile_id != profile_id:
+        raise ReportValidationError(
+            f"{tensor_location}.profile_id must match Stage evidence"
+        )
+    tensor_links = tensor["links"]
+    if not isinstance(tensor_links, list) or len(tensor_links) != 5:
+        raise ReportValidationError(
+            f"{tensor_location}.links must contain exactly 5 entries"
+        )
+    tensor_by_path: dict[str, dict[str, Any]] = {}
+    tensor_paths: list[str] = []
+    for index, link in enumerate(tensor_links):
+        link_location = f"{tensor_location}.links[{index}]"
+        if not isinstance(link, Mapping):
+            raise ReportValidationError(f"{link_location} must be a mapping")
+        _exact_keys(
+            link,
+            {
+                "name",
+                "prim_path",
+                "mass_kg",
+                "center_of_mass_m",
+                "inertia_kg_m2",
+            },
+            link_location,
+        )
+        name = _required_string(link["name"], f"{link_location}.name")
+        path = _absolute_prim_path(
+            link["prim_path"], f"{link_location}.prim_path"
+        )
+        if Path(path).name != name:
+            raise ReportValidationError(
+                f"{link_location}.name must match prim_path basename"
+            )
+        tensor_paths.append(path)
+        tensor_by_path[path] = {
+            "mass_kg": _finite_number(
+                link["mass_kg"], f"{link_location}.mass_kg", positive=True
+            ),
+            "center_of_mass_m": _finite_vector(
+                link["center_of_mass_m"],
+                f"{link_location}.center_of_mass_m",
+                length=3,
+            ),
+            "inertia_kg_m2": _inertia_matrix(
+                link["inertia_kg_m2"], f"{link_location}.inertia_kg_m2"
+            ),
+        }
+    if tensor_paths != sorted(tensor_paths) or len(tensor_by_path) != 5:
+        raise ReportValidationError(
+            f"{tensor_location}.links must have sorted unique prim paths"
+        )
+    if set(tensor_by_path) != set(expected_by_path):
+        raise ReportValidationError(
+            f"{tensor_location}.links must match expected_link_masses paths"
+        )
+    for path, expected_mass in expected_by_path.items():
+        if not _numbers_close(tensor_by_path[path]["mass_kg"], expected_mass):
+            raise ReportValidationError(
+                f"{tensor_location}.links masses must match Stage evidence"
+            )
+    tensor_total = _finite_number(
+        tensor["total_mass_kg"],
+        f"{tensor_location}.total_mass_kg",
+        positive=True,
+    )
+    if not _numbers_close(tensor_total, expected_total):
+        raise ReportValidationError(
+            f"{tensor_location}.total_mass_kg must match "
+            "expected_total_mass_kg"
+        )
+    if not _numbers_close(
+        sum(link["mass_kg"] for link in tensor_by_path.values()), tensor_total
+    ):
+        raise ReportValidationError(
+            f"{tensor_location}.total_mass_kg must equal tensor link mass sum"
+        )
+    if normalized_base is not None:
+        actual_base = tensor_by_path[normalized_base["prim_path"]]
+        if any(
+            not _numbers_close(actual, expected)
+            for actual, expected in zip(
+                actual_base["center_of_mass_m"],
+                normalized_base["center_of_mass_m"],
+                strict=True,
+            )
+        ):
+            raise ReportValidationError(
+                f"{tensor_location} base COM must match Stage evidence"
+            )
+        if any(
+            not _numbers_close(actual, expected)
+            for actual_row, expected_row in zip(
+                actual_base["inertia_kg_m2"],
+                normalized_base["inertia_kg_m2"],
+                strict=True,
+            )
+            for actual, expected in zip(
+                actual_row, expected_row, strict=True
+            )
+        ):
+            raise ReportValidationError(
+                f"{tensor_location} base inertia must match Stage evidence"
+            )
+    if tensor["physics_tensor_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{tensor_location}.physics_tensor_readback_verified must be true"
+        )
+
+
+def _validate_control_graph_provenance(control: Mapping[str, Any]) -> None:
+    location = "runtime_provenance.control_graph"
+    _exact_keys(control, _CONTROL_GRAPH_KEYS, location)
+    _schema_version_one(control["schema_version"], f"{location}.schema_version")
+    mode = control["wheel_command_application"]
+    if mode not in _WHEEL_COMMAND_APPLICATIONS:
+        raise ReportValidationError(
+            f"{location}.wheel_command_application must be one of "
+            f"{sorted(_WHEEL_COMMAND_APPLICATIONS)}"
+        )
+    topology = _required_mapping(control, "topology", location)
+    topology_location = f"{location}.topology"
+    _exact_keys(
+        topology,
+        {
+            "graph_path",
+            "pipeline_stage",
+            "nodes",
+            "connections",
+            "command_writers",
+        },
+        topology_location,
+    )
+    graph_path = _absolute_prim_path(
+        topology["graph_path"], f"{topology_location}.graph_path"
+    )
+    if not graph_path.startswith("/World/Graphs/"):
+        raise ReportValidationError(
+            f"{topology_location}.graph_path must be under /World/Graphs"
+        )
+    if topology["pipeline_stage"] != "execution":
+        raise ReportValidationError(
+            f"{topology_location}.pipeline_stage must equal execution"
+        )
+
+    nodes = topology["nodes"]
+    if not isinstance(nodes, list) or not nodes:
+        raise ReportValidationError(
+            f"{topology_location}.nodes must be a non-empty list"
+        )
+    normalized_nodes: list[tuple[str, str]] = []
+    for index, node in enumerate(nodes):
+        node_location = f"{topology_location}.nodes[{index}]"
+        if not isinstance(node, Mapping):
+            raise ReportValidationError(f"{node_location} must be a mapping")
+        _exact_keys(node, {"name", "type_name"}, node_location)
+        normalized_nodes.append(
+            (
+                _required_string(node["name"], f"{node_location}.name"),
+                _required_string(
+                    node["type_name"], f"{node_location}.type_name"
+                ),
+            )
+        )
+    if normalized_nodes != sorted(normalized_nodes):
+        raise ReportValidationError(f"{topology_location}.nodes must be sorted")
+    node_names = [name for name, _ in normalized_nodes]
+    if len(set(node_names)) != len(node_names):
+        raise ReportValidationError(
+            f"{topology_location}.nodes must contain unique names"
+        )
+
+    connections = topology["connections"]
+    if not isinstance(connections, list) or not connections:
+        raise ReportValidationError(
+            f"{topology_location}.connections must be a non-empty list"
+        )
+    normalized_connections: list[tuple[str, str]] = []
+    for index, connection in enumerate(connections):
+        child_location = f"{topology_location}.connections[{index}]"
+        if not isinstance(connection, Mapping):
+            raise ReportValidationError(f"{child_location} must be a mapping")
+        _exact_keys(connection, {"source", "target"}, child_location)
+        source = _required_string(
+            connection["source"], f"{child_location}.source"
+        )
+        target = _required_string(
+            connection["target"], f"{child_location}.target"
+        )
+        if (
+            "." not in source
+            or "." not in target
+            or source.split(".", 1)[0] not in node_names
+            or target.split(".", 1)[0] not in node_names
+        ):
+            raise ReportValidationError(
+                f"{child_location} must reference known nodes"
+            )
+        normalized_connections.append((source, target))
+    if normalized_connections != sorted(normalized_connections):
+        raise ReportValidationError(
+            f"{topology_location}.connections must be sorted"
+        )
+    if len(set(normalized_connections)) != len(normalized_connections):
+        raise ReportValidationError(
+            f"{topology_location}.connections must be unique"
+        )
+
+    writers = topology["command_writers"]
+    expected_writer_names = _WHEEL_COMMAND_APPLICATIONS[mode]
+    if not isinstance(writers, list) or len(writers) != len(
+        expected_writer_names
+    ):
+        raise ReportValidationError(
+            f"{topology_location}.command_writers disagree with "
+            "wheel_command_application"
+        )
+    writer_names: list[str] = []
+    wheel_joint_names: list[str] = []
+    for index, writer in enumerate(writers):
+        writer_location = f"{topology_location}.command_writers[{index}]"
+        if not isinstance(writer, Mapping):
+            raise ReportValidationError(f"{writer_location} must be a mapping")
+        _exact_keys(
+            writer, {"node", "target_prim", "joint_names"}, writer_location
+        )
+        writer_name = _required_string(
+            writer["node"], f"{writer_location}.node"
+        )
+        writer_names.append(writer_name)
+        if writer_name not in node_names:
+            raise ReportValidationError(
+                f"{writer_location}.node must reference a topology node"
+            )
+        _absolute_prim_path(
+            writer["target_prim"], f"{writer_location}.target_prim"
+        )
+        joint_names = writer["joint_names"]
+        if not isinstance(joint_names, list) or not joint_names:
+            raise ReportValidationError(
+                f"{writer_location}.joint_names must be a non-empty list"
+            )
+        wheel_joint_names.extend(
+            _required_string(
+                name, f"{writer_location}.joint_names[{joint_index}]"
+            )
+            for joint_index, name in enumerate(joint_names)
+        )
+    if tuple(writer_names) != expected_writer_names:
+        raise ReportValidationError(
+            f"{topology_location}.command_writers disagree with "
+            "wheel_command_application"
+        )
+    if len(wheel_joint_names) != 4 or len(set(wheel_joint_names)) != 4:
+        raise ReportValidationError(
+            f"{topology_location} command writers must cover four unique "
+            "wheel joints"
+        )
+    topology_sha256 = _validate_lowercase_sha256(
+        control["topology_sha256"], f"{location}.topology_sha256"
+    )
+    canonical_topology = json.dumps(
+        topology,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    actual_sha256 = hashlib.sha256(
+        canonical_topology.encode("utf-8")
+    ).hexdigest()
+    if not hmac.compare_digest(topology_sha256, actual_sha256):
+        raise ReportValidationError(
+            f"{location}.topology_sha256 does not match canonical topology"
+        )
+    if control["materialized_readback_verified"] is not True:
+        raise ReportValidationError(
+            f"{location}.materialized_readback_verified must be true"
+        )
+
+
 def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     """Validate the Isaac-startup snapshot embedded in a diagnostic report."""
 
@@ -1085,10 +1991,11 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
     if (
         isinstance(schema_version, bool)
         or not isinstance(schema_version, int)
-        or schema_version not in {3, 4, 5, 6}
+        or schema_version not in {3, 4, 5, 6, 7}
     ):
         raise ReportValidationError(
-            "runtime_provenance.schema_version must be integer 3, 4, 5, or 6"
+            "runtime_provenance.schema_version must be integer "
+            "3, 4, 5, 6, or 7"
         )
     expected_root_keys = {
         "verified",
@@ -1099,8 +2006,10 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         "contact",
         "git",
     }
-    if schema_version in {5, 6}:
+    if schema_version in {5, 6, 7}:
         expected_root_keys.add("ground_topology")
+    if schema_version == 7:
+        expected_root_keys.add("control_graph")
     if set(provenance) != expected_root_keys:
         raise ReportValidationError(
             "runtime_provenance keys must be exactly "
@@ -1109,8 +2018,10 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
 
     robot = _required_mapping(provenance, "robot", "runtime_provenance")
     robot_keys = {"config", "asset", "solver"}
-    if schema_version in {4, 5, 6}:
+    if schema_version in {4, 5, 6, 7}:
         robot_keys.add("kinematics")
+    if schema_version == 7:
+        robot_keys.update({"wheel_velocity_drive", "mass_collision"})
     if set(robot) != robot_keys:
         raise ReportValidationError(
             "runtime_provenance.robot keys must be exactly "
@@ -1120,11 +2031,25 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         input_file = _required_mapping(
             robot, name, "runtime_provenance.robot"
         )
-        if set(input_file) != {"path", "sha256"}:
+        input_file_keys = {"path", "sha256"}
+        if schema_version == 7 and name == "config":
+            input_file_keys.add("schema_version")
+        if set(input_file) != input_file_keys:
             raise ReportValidationError(
                 f"runtime_provenance.robot.{name} keys must be exactly "
-                "['path', 'sha256']"
+                f"{sorted(input_file_keys)}"
             )
+        if schema_version == 7 and name == "config":
+            config_schema_version = input_file.get("schema_version")
+            if (
+                isinstance(config_schema_version, bool)
+                or not isinstance(config_schema_version, int)
+                or config_schema_version != 3
+            ):
+                raise ReportValidationError(
+                    "runtime_provenance.robot.config.schema_version must be "
+                    "integer 3"
+                )
         _required_string(
             input_file.get("path"),
             f"runtime_provenance.robot.{name}.path",
@@ -1163,7 +2088,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
             "stage_articulation_usd_readback_verified must be true"
         )
 
-    if schema_version in {4, 5, 6}:
+    if schema_version in {4, 5, 6, 7}:
         kinematics = _required_mapping(
             robot, "kinematics", "runtime_provenance.robot"
         )
@@ -1220,6 +2145,24 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
                 "runtime_provenance.robot.kinematics."
                 "controller_contract_verified must be true"
             )
+
+    if schema_version == 7:
+        _validate_wheel_velocity_drive_provenance(
+            _required_mapping(
+                robot,
+                "wheel_velocity_drive",
+                "runtime_provenance.robot",
+            ),
+            _required_mapping(robot, "config", "runtime_provenance.robot"),
+        )
+        _validate_mass_collision_provenance(
+            _required_mapping(
+                robot,
+                "mass_collision",
+                "runtime_provenance.robot",
+            ),
+            _required_mapping(robot, "asset", "runtime_provenance.robot"),
+        )
 
     environment = _required_mapping(
         provenance, "environment", "runtime_provenance"
@@ -1279,7 +2222,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         provenance, "simulation", "runtime_provenance"
     )
     simulation_keys = {"navigation_mode", "odometry_mode", "physics_hz"}
-    if schema_version == 6:
+    if schema_version in {6, 7}:
         simulation_keys.add("reset_strategy")
     if set(simulation) != simulation_keys:
         raise ReportValidationError(
@@ -1308,7 +2251,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
         "runtime_provenance",
     )
     _validate_contact_provenance(contact)
-    if schema_version in {5, 6}:
+    if schema_version in {5, 6, 7}:
         ground_topology = _required_mapping(
             provenance,
             "ground_topology",
@@ -1319,7 +2262,7 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
             environment,
             contact,
         )
-        if schema_version == 6:
+        if schema_version in {6, 7}:
             reset_strategy = _required_mapping(
                 simulation,
                 "reset_strategy",
@@ -1330,6 +2273,14 @@ def validate_runtime_provenance(provenance: Mapping[str, Any]) -> None:
                 contact,
                 ground_topology,
             )
+    if schema_version == 7:
+        _validate_control_graph_provenance(
+            _required_mapping(
+                provenance,
+                "control_graph",
+                "runtime_provenance",
+            )
+        )
 
     git = _required_mapping(provenance, "git", "runtime_provenance")
     if set(git) != {"commit", "branch", "dirty"}:

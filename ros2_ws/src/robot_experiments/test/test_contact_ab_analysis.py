@@ -637,6 +637,336 @@ def _upgrade_runtime_provenance_to_v6(
     return report
 
 
+def _control_graph_snapshot(wheel_command_application="split_axle_v1"):
+    nodes = [
+        {
+            "name": "BreakAngular",
+            "type_name": "omni.graph.nodes.BreakVector3",
+        },
+        {
+            "name": "BreakLinear",
+            "type_name": "omni.graph.nodes.BreakVector3",
+        },
+        {
+            "name": "DifferentialController",
+            "type_name": (
+                "isaacsim.robot.wheeled_robots.DifferentialController"
+            ),
+        },
+        {
+            "name": "OnPhysicsStep",
+            "type_name": "isaacsim.core.nodes.OnPhysicsStep",
+        },
+        {
+            "name": "SubscribeTwist",
+            "type_name": "isaacsim.ros2.bridge.ROS2SubscribeTwist",
+        },
+    ]
+    connections = [
+        {
+            "source": "BreakAngular.outputs:z",
+            "target": "DifferentialController.inputs:angularVelocity",
+        },
+        {
+            "source": "BreakLinear.outputs:x",
+            "target": "DifferentialController.inputs:linearVelocity",
+        },
+        {
+            "source": "OnPhysicsStep.outputs:step",
+            "target": "SubscribeTwist.inputs:execIn",
+        },
+        {
+            "source": "SubscribeTwist.outputs:angularVelocity",
+            "target": "BreakAngular.inputs:tuple",
+        },
+        {
+            "source": "SubscribeTwist.outputs:execOut",
+            "target": "DifferentialController.inputs:execIn",
+        },
+        {
+            "source": "SubscribeTwist.outputs:linearVelocity",
+            "target": "BreakLinear.inputs:tuple",
+        },
+    ]
+    if wheel_command_application == "split_axle_v1":
+        nodes.extend(
+            [
+                {
+                    "name": "FrontController",
+                    "type_name": (
+                        "isaacsim.core.nodes.IsaacArticulationController"
+                    ),
+                },
+                {
+                    "name": "RearController",
+                    "type_name": (
+                        "isaacsim.core.nodes.IsaacArticulationController"
+                    ),
+                },
+            ]
+        )
+        connections.extend(
+            [
+                {
+                    "source": (
+                        "DifferentialController.outputs:velocityCommand"
+                    ),
+                    "target": "FrontController.inputs:velocityCommand",
+                },
+                {
+                    "source": (
+                        "DifferentialController.outputs:velocityCommand"
+                    ),
+                    "target": "RearController.inputs:velocityCommand",
+                },
+                {
+                    "source": "OnPhysicsStep.outputs:step",
+                    "target": "FrontController.inputs:execIn",
+                },
+                {
+                    "source": "OnPhysicsStep.outputs:step",
+                    "target": "RearController.inputs:execIn",
+                },
+            ]
+        )
+        writers = [
+            {
+                "node": "FrontController",
+                "target_prim": "/World/Robot",
+                "joint_names": [
+                    WHEELS["front_left"],
+                    WHEELS["front_right"],
+                ],
+            },
+            {
+                "node": "RearController",
+                "target_prim": "/World/Robot",
+                "joint_names": [
+                    WHEELS["rear_left"],
+                    WHEELS["rear_right"],
+                ],
+            },
+        ]
+    else:
+        assert wheel_command_application == "single_four_wheel_write_v1"
+        nodes.extend(
+            [
+                {
+                    "name": "AppendWheelCommands",
+                    "type_name": "omni.graph.nodes.AppendArray",
+                },
+                {
+                    "name": "WheelController",
+                    "type_name": (
+                        "isaacsim.core.nodes.IsaacArticulationController"
+                    ),
+                },
+            ]
+        )
+        connections.extend(
+            [
+                {
+                    "source": "AppendWheelCommands.outputs:array",
+                    "target": "WheelController.inputs:velocityCommand",
+                },
+                {
+                    "source": (
+                        "DifferentialController.outputs:velocityCommand"
+                    ),
+                    "target": "AppendWheelCommands.inputs:input0",
+                },
+                {
+                    "source": (
+                        "DifferentialController.outputs:velocityCommand"
+                    ),
+                    "target": "AppendWheelCommands.inputs:input1",
+                },
+                {
+                    "source": "OnPhysicsStep.outputs:step",
+                    "target": "WheelController.inputs:execIn",
+                },
+            ]
+        )
+        writers = [
+            {
+                "node": "WheelController",
+                "target_prim": "/World/Robot",
+                "joint_names": list(WHEELS.values()),
+            }
+        ]
+    topology = {
+        "graph_path": "/World/Graphs/Control",
+        "pipeline_stage": "on_demand",
+        "nodes": sorted(nodes, key=lambda node: node["name"]),
+        "connections": sorted(
+            connections,
+            key=lambda connection: (
+                connection["source"],
+                connection["target"],
+            ),
+        ),
+        "command_writers": sorted(
+            writers,
+            key=lambda writer: writer["node"],
+        ),
+    }
+    topology_sha256 = hashlib.sha256(
+        json.dumps(
+            topology,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": 1,
+        "wheel_command_application": wheel_command_application,
+        "topology": topology,
+        "topology_sha256": topology_sha256,
+        "materialized_readback_verified": True,
+    }
+
+
+def _upgrade_runtime_provenance_to_v7(
+    report,
+    *,
+    strategy_id="pose_restore_v1",
+    topology=None,
+    wheel_command_application="split_axle_v1",
+    anonymous_token="fixture",
+):
+    _upgrade_runtime_provenance_to_v6(
+        report,
+        strategy_id=strategy_id,
+        topology=topology,
+        report_schema_version=4,
+    )
+    provenance = report["runtime_provenance"]
+    provenance["schema_version"] = 7
+    robot = provenance["robot"]
+    robot["config"]["schema_version"] = 3
+    joint_names = list(WHEELS.values())
+    joint_paths = [f"/World/Robot/{name}" for name in joint_names]
+    drive_sha256 = robot["config"]["sha256"]
+    drive_overlay_sha256 = "5" * 64
+    drive_values = [572957795.1308232] * 4
+    robot["wheel_velocity_drive"] = {
+        "schema_version": 1,
+        "profile_path": robot["config"]["path"],
+        "profile_sha256": drive_sha256,
+        "profile_id": "jackal_drive_legacy_finite_guard_v1",
+        "configured_si": {
+            "drive_type": "force",
+            "stiffness_n_m_per_rad": 0.0,
+            "damping_n_m_s_per_rad": drive_values[0],
+            "max_effort_n_m": 1_000_000_000.0,
+            "max_joint_velocity_rad_s": 1_000_000_000.0,
+        },
+        "authored_usd": {
+            "drive_type": "force",
+            "stiffness_n_m_per_degree": 0.0,
+            "damping_n_m_s_per_degree": 10_000_000.0,
+            "max_force_n_m": 1_000_000_000.0,
+            "max_joint_velocity_deg_s": 57_295_779_513.08232,
+        },
+        "joint_paths": joint_paths,
+        "overlay_identifier": (
+            f"anon:{anonymous_token}:wheel_velocity_drive.usda"
+        ),
+        "overlay_sha256": drive_overlay_sha256,
+        "stage_usd_readback_verified": True,
+        "physics_tensor": {
+            "schema_version": 1,
+            "profile_path": robot["config"]["path"],
+            "profile_sha256": drive_sha256,
+            "profile_id": "jackal_drive_legacy_finite_guard_v1",
+            "stage_overlay_sha256": drive_overlay_sha256,
+            "dof_names": joint_names,
+            "dof_indices": [0, 1, 2, 3],
+            "drive_types": ["force"] * 4,
+            "stiffnesses_n_m_per_rad": [0.0] * 4,
+            "dampings_n_m_s_per_rad": drive_values,
+            "max_efforts_n_m": [1_000_000_000.0] * 4,
+            "max_joint_velocities_rad_s": [1_000_000_000.0] * 4,
+            "physics_tensor_readback_verified": True,
+        },
+    }
+    mass_profile_id = "legacy_default_sensor_density_v1"
+    mass_profile_sha256 = "6" * 64
+    mass_overlay_sha256 = "7" * 64
+    link_specifications = [
+        ("base_link", 18.3179048),
+        ("front_left_wheel_link", 0.477),
+        ("front_right_wheel_link", 0.477),
+        ("rear_left_wheel_link", 0.477),
+        ("rear_right_wheel_link", 0.477),
+    ]
+    robot["mass_collision"] = {
+        "schema_version": 1,
+        "profile_path": (
+            "/repo/configs/robot_mass_profiles/"
+            f"{mass_profile_id}.yaml"
+        ),
+        "profile_sha256": mass_profile_sha256,
+        "profile_id": mass_profile_id,
+        "profile_mode": "legacy_default_sensor_density",
+        "robot_asset_sha256": robot["asset"]["sha256"],
+        "sensor_shells": [
+            {
+                "prim_path": (
+                    "/World/Robot/base_link/collisions/bumblebee_camera"
+                ),
+                "active": True,
+                "collision_enabled": True,
+            },
+            {
+                "prim_path": (
+                    "/World/Robot/base_link/collisions/sick_lms1xx_lidar"
+                ),
+                "active": True,
+                "collision_enabled": True,
+            },
+        ],
+        "base_inertial": None,
+        "expected_link_masses": [
+            {
+                "prim_path": f"/World/Robot/{name}",
+                "mass_kg": mass,
+            }
+            for name, mass in link_specifications
+        ],
+        "expected_total_mass_kg": 20.2259048,
+        "overlay_id": f"mass_collision_profile/{mass_profile_id}",
+        "overlay_identifier": f"anon:{anonymous_token}:mass_collision.usda",
+        "overlay_sha256": mass_overlay_sha256,
+        "stage_usd_readback_verified": True,
+        "physics_tensor": {
+            "schema_version": 1,
+            "profile_id": mass_profile_id,
+            "links": [
+                {
+                    "name": name,
+                    "prim_path": f"/World/Robot/{name}",
+                    "mass_kg": mass,
+                    "center_of_mass_m": [0.0, 0.0, 0.0],
+                    "inertia_kg_m2": [
+                        [1.0, 0.0, 0.0],
+                        [0.0, 1.0, 0.0],
+                        [0.0, 0.0, 1.0],
+                    ],
+                }
+                for name, mass in link_specifications
+            ],
+            "total_mass_kg": 20.2259048,
+            "physics_tensor_readback_verified": True,
+        },
+    }
+    provenance["control_graph"] = _control_graph_snapshot(
+        wheel_command_application
+    )
+    return report
+
+
 def _segment(
     specification: tuple[str, str, float, float, float],
     *,
@@ -874,6 +1204,34 @@ def _three_v6_reports(
                 strategy_id=strategy_id,
                 topology=topology,
                 report_schema_version=report_schema_version,
+            ),
+        )
+        for index, scale in enumerate((0.98, 1.0, 1.02))
+    ]
+
+
+def _three_v7_reports(
+    directory: Path,
+    *,
+    strategy_id: str = "pose_restore_v1",
+    environment: str = "SimplePlane",
+    topology: str = "simple_plane_only1_v1",
+    contact_profile: str = "threshold_corr_0p00025_offset_0p04",
+    wheel_command_application: str = "split_axle_v1",
+) -> list[Path]:
+    return [
+        _write(
+            directory / f"{strategy_id}_{index}.json",
+            _upgrade_runtime_provenance_to_v7(
+                _report(
+                    environment=environment,
+                    contact_profile=contact_profile,
+                    scale=scale,
+                ),
+                strategy_id=strategy_id,
+                topology=topology,
+                wheel_command_application=wheel_command_application,
+                anonymous_token=f"process-{index}",
             ),
         )
         for index, scale in enumerate((0.98, 1.0, 1.02))
@@ -1311,6 +1669,95 @@ def test_motion_v4_uses_full_path_rotation_gates_and_policy_v4(tmp_path):
         "rotate_left_commanded_zero_mean_linear_speed_mps"
     ]["passed"] is True
     assert "rotate_left_center_drift_m" not in first["checks"]
+
+
+def test_v7_analysis_locks_drive_mass_and_materialized_control_provenance(
+    tmp_path,
+):
+    paths = _three_v7_reports(tmp_path)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+    validate_physical_acceptance_accounting(report, expected_repeats=3)
+
+    assert report["schema_version"] == 7
+    assert report["selection_policy"][
+        "required_runtime_provenance_schema"
+    ] == 7
+    assert report["locked_inputs"]["robot"]["config"][
+        "schema_version"
+    ] == 3
+    drive = report["locked_inputs"]["robot"]["wheel_velocity_drive"]
+    mass = report["locked_inputs"]["robot"]["mass_collision"]
+    assert drive["profile_id"] == "jackal_drive_legacy_finite_guard_v1"
+    assert drive["overlay_sha256"] == "5" * 64
+    assert drive["physics_tensor"][
+        "physics_tensor_readback_verified"
+    ] is True
+    assert mass["profile_id"] == "legacy_default_sensor_density_v1"
+    assert mass["overlay_sha256"] == "7" * 64
+    assert mass["physics_tensor"][
+        "physics_tensor_readback_verified"
+    ] is True
+    assert "overlay_identifier" not in drive
+    assert "overlay_identifier" not in mass
+    control = report["locked_inputs"]["control_graph"]
+    assert control["wheel_command_application"] == "split_axle_v1"
+    assert len(control["topology_sha256"]) == 64
+    assert control["materialized_readback_verified"] is True
+    acceptance = report["physical_acceptance"]
+    assert acceptance["schema_version"] == 4
+    assert acceptance["policy_id"] == "skid_steer_plan_8_7_v4"
+    assert acceptance["applicability"][
+        "required_runtime_provenance_schema"
+    ] == 7
+
+
+def test_v7_global_lock_ignores_only_process_local_overlay_identifiers(
+    tmp_path,
+):
+    paths = _three_v7_reports(tmp_path)
+
+    report = analyse_contact_ab(paths, RADIUS_M)
+
+    assert report["analysis_valid"] is True
+    changed = json.loads(paths[1].read_text(encoding="utf-8"))
+    changed["runtime_provenance"]["robot"]["wheel_velocity_drive"][
+        "overlay_sha256"
+    ] = "8" * 64
+    changed["runtime_provenance"]["robot"]["wheel_velocity_drive"][
+        "physics_tensor"
+    ]["stage_overlay_sha256"] = "8" * 64
+    _write(paths[1], changed)
+
+    with pytest.raises(ConfigurationError, match="global input lock mismatch"):
+        analyse_contact_ab(paths, RADIUS_M)
+
+
+def test_v7_forbids_mixing_wheel_command_application_modes(tmp_path):
+    paths = _three_v7_reports(tmp_path)
+    changed = json.loads(paths[2].read_text(encoding="utf-8"))
+    changed["runtime_provenance"]["control_graph"] = (
+        _control_graph_snapshot("single_four_wheel_write_v1")
+    )
+    _write(paths[2], changed)
+
+    with pytest.raises(ConfigurationError, match="global input lock mismatch"):
+        analyse_contact_ab(paths, RADIUS_M)
+
+
+def test_v7_rejects_motion_report_before_schema_four(tmp_path):
+    path = _three_v7_reports(tmp_path)[0]
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    changed["schema_version"] = 3
+    for segment in changed["segments"]:
+        segment["pose"].pop("max_radial_displacement_from_start_m")
+    _write(path, changed)
+
+    with pytest.raises(
+        ConfigurationError,
+        match="no valid contact A/B reports remain.*schema 4",
+    ):
+        analyse_contact_ab([path], RADIUS_M, min_repeats=1)
 
 
 def test_motion_v4_rejects_cyclic_rotation_speed_even_with_small_endpoint(

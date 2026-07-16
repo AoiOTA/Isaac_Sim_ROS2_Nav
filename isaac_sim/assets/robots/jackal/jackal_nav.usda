@@ -189,4 +189,67 @@ over "jackal"
             }
         }
     }
+        # -------------------------------------------------------------------------
+    # Finite wheel velocity drives
+    #
+    # Original asset:
+    #   damping = 10000000
+    #   maxForce = inf
+    #
+    # Initial tuned values:
+    #   damping = 50
+    #   maxForce = 3 N*m
+    # -------------------------------------------------------------------------
+    over "front_left_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0
+        float drive:angular:physics:damping = 50
+        float drive:angular:physics:maxForce = 3.0
+        uniform token drive:angular:physics:type = "force"
+        float physxJoint:jointFriction = 0
+    }
+
+    over "front_right_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0
+        float drive:angular:physics:damping = 50
+        float drive:angular:physics:maxForce = 3.0
+        uniform token drive:angular:physics:type = "force"
+        float physxJoint:jointFriction = 0
+    }
+
+    over "rear_left_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0
+        float drive:angular:physics:damping = 50
+        float drive:angular:physics:maxForce = 3.0
+        uniform token drive:angular:physics:type = "force"
+        float physxJoint:jointFriction = 0
+    }
+
+    over "rear_right_wheel_joint"
+    {
+        float drive:angular:physics:stiffness = 0
+        float drive:angular:physics:damping = 50
+        float drive:angular:physics:maxForce = 3.0
+        uniform token drive:angular:physics:type = "force"
+        float physxJoint:jointFriction = 0
+    }
+
+    # -------------------------------------------------------------------------
+    # Wheel-ground contact material
+    #
+    # Use moderate isotropic friction. Excessively high friction prevents the
+    # four-wheel skid-steer base from releasing lateral scrub during rotation.
+    # -------------------------------------------------------------------------
+    over "PhysicsMaterials"
+    {
+        over "wheels"
+        {
+            float physics:staticFriction = 0.4
+            float physics:dynamicFriction = 0.3
+            float physics:restitution = 0.0
+        }
+    }
+
 }

@@ -4,6 +4,7 @@ from copy import deepcopy
 from dataclasses import replace
 import hashlib
 import importlib.util
+import inspect
 import json
 from pathlib import Path
 import subprocess
@@ -14,6 +15,7 @@ import pytest
 from isaac_sim.src.runtime_provenance import (
     RuntimeProvenanceError,
     capture_runtime_provenance,
+    capture_runtime_provenance_v6_legacy,
     file_sha256,
     git_metadata,
     runtime_provenance_parameters,
@@ -22,6 +24,10 @@ from isaac_sim.src.runtime_provenance import (
 from isaac_sim.src.stage.ground_topology import (
     collider_paths_sha256,
     load_ground_topology_profile,
+)
+from isaac_sim.src.robot.kinematics_config import load_robot_config_contract
+from isaac_sim.src.robot.mass_collision_config import (
+    load_mass_collision_profile,
 )
 
 
@@ -38,6 +44,15 @@ LEGACY_MASS_PROFILE = (
     / "legacy_default_sensor_density_v1.yaml"
 )
 ROOT = Path(__file__).resolve().parents[2]
+JACKAL_ASSET = (
+    ROOT / "isaac_sim/assets/robots/jackal/jackal_nav.usda"
+)
+WHEEL_JOINTS = (
+    "front_left_wheel_joint",
+    "front_right_wheel_joint",
+    "rear_left_wheel_joint",
+    "rear_right_wheel_joint",
+)
 HAS_PXR = importlib.util.find_spec("pxr") is not None
 
 
@@ -302,6 +317,289 @@ def _reset_strategy_snapshot(
     }
 
 
+def _wheel_velocity_drive_snapshot(config) -> dict[str, object]:
+    contract = load_robot_config_contract(config.files.robot)
+    drive = contract.wheel_velocity_drive
+    configured_si = {
+        "drive_type": drive.drive_type,
+        "stiffness_n_m_per_rad": drive.stiffness_n_m_per_rad,
+        "damping_n_m_s_per_rad": drive.damping_n_m_s_per_rad,
+        "max_effort_n_m": drive.max_effort_n_m,
+        "max_joint_velocity_rad_s": drive.max_joint_velocity_rad_s,
+    }
+    authored_usd = {
+        "drive_type": drive.drive_type,
+        "stiffness_n_m_per_degree": (
+            drive.stiffness_n_m_per_rad * 3.141592653589793 / 180.0
+        ),
+        "damping_n_m_s_per_degree": (
+            drive.damping_n_m_s_per_rad * 3.141592653589793 / 180.0
+        ),
+        "max_force_n_m": drive.max_effort_n_m,
+        "max_joint_velocity_deg_s": (
+            drive.max_joint_velocity_rad_s * 180.0 / 3.141592653589793
+        ),
+    }
+    return {
+        "schema_version": 1,
+        "profile_path": str(Path(config.files.robot).resolve()),
+        "profile_sha256": file_sha256(config.files.robot),
+        "profile_id": drive.profile_id,
+        "configured_si": configured_si,
+        "authored_usd": authored_usd,
+        "joint_paths": [
+            f"{config.robot.runtime_prim_path}/{name}"
+            for name in contract.wheel_joints.ordered
+        ],
+        "overlay_identifier": "anon:0x123:wheel_velocity_drive.usda",
+        "overlay_sha256": "3" * 64,
+        "stage_usd_readback_verified": True,
+    }
+
+
+def _wheel_drive_tensor_snapshot(
+    config,
+    stage_snapshot: dict[str, object],
+) -> dict[str, object]:
+    contract = load_robot_config_contract(config.files.robot)
+    drive = contract.wheel_velocity_drive
+    return {
+        "schema_version": 1,
+        "profile_path": stage_snapshot["profile_path"],
+        "profile_sha256": stage_snapshot["profile_sha256"],
+        "profile_id": stage_snapshot["profile_id"],
+        "stage_overlay_sha256": stage_snapshot["overlay_sha256"],
+        "dof_names": list(contract.wheel_joints.ordered),
+        "dof_indices": [0, 1, 2, 3],
+        "drive_types": [drive.drive_type] * 4,
+        "stiffnesses_n_m_per_rad": [
+            drive.stiffness_n_m_per_rad
+        ] * 4,
+        "dampings_n_m_s_per_rad": [drive.damping_n_m_s_per_rad] * 4,
+        "max_efforts_n_m": [drive.max_effort_n_m] * 4,
+        "max_joint_velocities_rad_s": [
+            drive.max_joint_velocity_rad_s
+        ] * 4,
+        "physics_tensor_readback_verified": True,
+    }
+
+
+def _mass_collision_snapshot(config) -> dict[str, object]:
+    contract = load_robot_config_contract(config.files.robot)
+    profile_path = contract.mass_collision_profile
+    profile = load_mass_collision_profile(profile_path)
+    articulation_root = config.robot.articulation_root
+
+    def prim_path(suffix: str) -> str:
+        return f"{articulation_root}{suffix}"
+
+    base_inertial = None
+    if profile.base_inertial is not None:
+        base_inertial = {
+            "prim_path": config.robot.base_link_prim,
+            "mass_kg": profile.base_inertial.mass_kg,
+            "center_of_mass_m": list(
+                profile.base_inertial.center_of_mass_m
+            ),
+            "inertia_kg_m2": [
+                list(row) for row in profile.base_inertial.inertia_kg_m2
+            ],
+        }
+    return {
+        "schema_version": 1,
+        "profile": {
+            "path": profile_path.relative_to(ROOT).as_posix(),
+            "sha256": file_sha256(profile_path),
+            "id": profile.profile_id,
+            "mode": profile.mode,
+        },
+        "robot_asset_sha256": file_sha256(config.robot.asset_path),
+        "sensor_shells": sorted(
+            [
+                {
+                    "prim_path": prim_path(shell.prim_suffix),
+                    "active": shell.active,
+                    "collision_enabled": shell.collision_enabled,
+                }
+                for shell in profile.sensor_shells
+            ],
+            key=lambda shell: shell["prim_path"],
+        ),
+        "base_inertial": base_inertial,
+        "expected_link_masses": sorted(
+            [
+                {
+                    "prim_path": prim_path(expectation.prim_suffix),
+                    "mass_kg": expectation.mass_kg,
+                }
+                for expectation in profile.expected_link_masses
+            ],
+            key=lambda expectation: expectation["prim_path"],
+        ),
+        "expected_total_mass_kg": profile.expected_total_mass_kg,
+        "overlay": {
+            "id": f"mass_collision_profile/{profile.profile_id}",
+            "identifier": "anon:0x456:mass_collision.usda",
+            "sha256": "4" * 64,
+        },
+        "stage_usd_readback_verified": True,
+    }
+
+
+def _mass_tensor_snapshot(
+    stage_snapshot: dict[str, object],
+) -> dict[str, object]:
+    base = stage_snapshot["base_inertial"]
+    links = []
+    for expectation in stage_snapshot["expected_link_masses"]:
+        path = expectation["prim_path"]
+        is_base = base is not None and path == base["prim_path"]
+        links.append(
+            {
+                "name": Path(path).name,
+                "prim_path": path,
+                "mass_kg": expectation["mass_kg"],
+                "center_of_mass_m": (
+                    base["center_of_mass_m"] if is_base else [0.0, 0.0, 0.0]
+                ),
+                "inertia_kg_m2": (
+                    base["inertia_kg_m2"]
+                    if is_base
+                    else [
+                        [0.01, 0.0, 0.0],
+                        [0.0, 0.01, 0.0],
+                        [0.0, 0.0, 0.01],
+                    ]
+                ),
+            }
+        )
+    return {
+        "schema_version": 1,
+        "profile_id": stage_snapshot["profile"]["id"],
+        "links": links,
+        "total_mass_kg": stage_snapshot["expected_total_mass_kg"],
+        "physics_tensor_readback_verified": True,
+    }
+
+
+def _control_graph_snapshot(
+    config,
+    *,
+    wheel_command_application: str = "split_axle_v1",
+) -> dict[str, object]:
+    joints = list(config.robot.wheel_joints)
+    if wheel_command_application == "split_axle_v1":
+        writers = [
+            {
+                "node": "FrontController",
+                "target_prim": config.robot.articulation_root,
+                "joint_names": joints[:2],
+            },
+            {
+                "node": "RearController",
+                "target_prim": config.robot.articulation_root,
+                "joint_names": joints[2:],
+            },
+        ]
+    else:
+        writers = [
+            {
+                "node": "WheelController",
+                "target_prim": config.robot.articulation_root,
+                "joint_names": joints,
+            }
+        ]
+    nodes = sorted(
+        [
+            {"name": "OnPhysicsStep", "type_name": "OnPhysicsStep"},
+            *[
+                {"name": writer["node"], "type_name": "Controller"}
+                for writer in writers
+            ],
+        ],
+        key=lambda node: (node["name"], node["type_name"]),
+    )
+    connections = sorted(
+        [
+            {
+                "source": "OnPhysicsStep.outputs:step",
+                "target": f"{writer['node']}.inputs:execIn",
+            }
+            for writer in writers
+        ],
+        key=lambda connection: (connection["source"], connection["target"]),
+    )
+    topology = {
+        "graph_path": "/World/Graphs/Control",
+        "pipeline_stage": "on_demand",
+        "nodes": nodes,
+        "connections": connections,
+        "command_writers": writers,
+    }
+    topology_json = json.dumps(
+        topology,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    )
+    return {
+        "schema_version": 1,
+        "wheel_command_application": wheel_command_application,
+        "topology": topology,
+        "topology_sha256": hashlib.sha256(
+            topology_json.encode("utf-8")
+        ).hexdigest(),
+        "materialized_readback_verified": True,
+    }
+
+
+def _runtime_v7_evidence(config) -> dict[str, dict[str, object]]:
+    wheel_stage = _wheel_velocity_drive_snapshot(config)
+    mass_stage = _mass_collision_snapshot(config)
+    return {
+        "wheel_velocity_drive_snapshot": wheel_stage,
+        "wheel_drive_tensor_snapshot": _wheel_drive_tensor_snapshot(
+            config, wheel_stage
+        ),
+        "mass_collision_snapshot": mass_stage,
+        "mass_tensor_snapshot": _mass_tensor_snapshot(mass_stage),
+        "control_graph_snapshot": _control_graph_snapshot(config),
+    }
+
+
+def _patch_v7_stage_readbacks(
+    monkeypatch,
+    evidence: dict[str, dict[str, object]],
+    fresh_readbacks: list[str] | None = None,
+) -> None:
+    from isaac_sim.src.robot import (
+        mass_collision_runtime,
+        wheel_velocity_drive,
+    )
+
+    def drive_readback(stage, config):
+        if fresh_readbacks is not None:
+            fresh_readbacks.append("wheel_velocity_drive")
+        return deepcopy(evidence["wheel_velocity_drive_snapshot"])
+
+    def mass_readback(stage, config):
+        if fresh_readbacks is not None:
+            fresh_readbacks.append("mass_collision")
+        return deepcopy(evidence["mass_collision_snapshot"])
+
+    monkeypatch.setattr(
+        wheel_velocity_drive,
+        "capture_wheel_velocity_drive_snapshot",
+        drive_readback,
+    )
+    monkeypatch.setattr(
+        mass_collision_runtime,
+        "capture_mass_collision_snapshot",
+        mass_readback,
+    )
+
+
 def _git(repository: Path, *arguments: str) -> None:
     subprocess.run(
         ["git", "-C", str(repository), *arguments],
@@ -338,7 +636,7 @@ def _runtime_inputs(
     topology_profile = tmp_path / "ground_topology.yaml"
     contact_profile = tmp_path / "legacy_baseline.yaml"
     _write_test_robot_config(robot_config)
-    robot_asset.write_bytes(b"#usda 1.0\n")
+    robot_asset.write_bytes(JACKAL_ASSET.read_bytes())
     project_stage.write_bytes(b"#usda 1.0\n")
     source_asset.write_bytes(b"PXR-USDC")
     contact_profile.write_text(
@@ -362,7 +660,11 @@ def _runtime_inputs(
         robot=SimpleNamespace(
             asset_path=robot_asset,
             articulation_root="/World/Robot",
-            wheel_joints=("fl", "fr", "rl", "rr"),
+            runtime_prim_path="/World/Robot",
+            base_link_prim="/World/Robot/base_link",
+            wheel_joints=WHEEL_JOINTS,
+            front_wheel_joints=WHEEL_JOINTS[:2],
+            rear_wheel_joints=WHEEL_JOINTS[2:],
         ),
         environment=SimpleNamespace(
             identifier="Warehouse",
@@ -416,6 +718,311 @@ def test_git_metadata_captures_revision_branch_and_dirty_state(tmp_path):
     assert git_metadata(repository)["dirty"] is True
 
 
+def test_schema_v7_binds_drive_mass_control_and_ros_parameters(
+    tmp_path,
+    monkeypatch,
+):
+    ground = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=ground,
+        target_colliders=ground,
+    )
+    evidence = _runtime_v7_evidence(config)
+    fresh_readbacks: list[str] = []
+    _patch_v7_stage_readbacks(monkeypatch, evidence, fresh_readbacks)
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
+
+    provenance = capture_runtime_provenance(
+        config,
+        _Stage(),
+        articulation_usd_solver_iterations=(32, 4),
+        repository_root=repository,
+        reset_strategy_snapshot=_reset_strategy_snapshot(
+            wheel_joints=tuple(config.robot.wheel_joints),
+            ground_filter_paths=ground,
+        ),
+        ground_topology_snapshot=topology_snapshot,
+        contact_snapshot=contact_snapshot,
+        **evidence,
+    )
+    parameters = runtime_provenance_parameters(provenance)
+
+    assert fresh_readbacks == ["wheel_velocity_drive", "mass_collision"]
+    assert provenance["schema_version"] == 7
+    assert set(provenance) == {
+        "schema_version",
+        "robot",
+        "environment",
+        "simulation",
+        "ground_topology",
+        "contact",
+        "control_graph",
+        "git",
+    }
+    assert provenance["robot"]["config"] == {
+        "schema_version": 3,
+        "path": str(config.files.robot),
+        "sha256": file_sha256(config.files.robot),
+    }
+    drive = provenance["robot"]["wheel_velocity_drive"]
+    assert set(drive) == {
+        "schema_version",
+        "profile_path",
+        "profile_sha256",
+        "profile_id",
+        "configured_si",
+        "authored_usd",
+        "joint_paths",
+        "overlay_identifier",
+        "overlay_sha256",
+        "stage_usd_readback_verified",
+        "physics_tensor",
+    }
+    mass = provenance["robot"]["mass_collision"]
+    assert set(mass) == {
+        "schema_version",
+        "profile_path",
+        "profile_sha256",
+        "profile_id",
+        "profile_mode",
+        "robot_asset_sha256",
+        "sensor_shells",
+        "base_inertial",
+        "expected_link_masses",
+        "expected_total_mass_kg",
+        "overlay_id",
+        "overlay_identifier",
+        "overlay_sha256",
+        "stage_usd_readback_verified",
+        "physics_tensor",
+    }
+    assert provenance["control_graph"] == evidence["control_graph_snapshot"]
+    assert parameters["runtime_provenance.schema_version"] == 7
+    assert parameters[
+        "runtime_provenance.robot.config.schema_version"
+    ] == 3
+    for key, value in (
+        ("robot.wheel_velocity_drive", drive),
+        ("robot.mass_collision", mass),
+        ("control_graph", provenance["control_graph"]),
+    ):
+        parameter_prefix = f"runtime_provenance.{key}"
+        encoded = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        assert parameters[f"{parameter_prefix}.json"] == encoded
+        assert parameters[f"{parameter_prefix}.sha256"] == hashlib.sha256(
+            encoded.encode("utf-8")
+        ).hexdigest()
+
+
+@pytest.mark.parametrize(
+    ("component", "field"),
+    [
+        ("wheel_velocity_drive_snapshot", "overlay_sha256"),
+        ("mass_collision_snapshot", "overlay.sha256"),
+    ],
+)
+def test_schema_v7_rejects_stale_supplied_stage_snapshots(
+    tmp_path,
+    monkeypatch,
+    component,
+    field,
+):
+    ground = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=ground,
+        target_colliders=ground,
+    )
+    fresh = _runtime_v7_evidence(config)
+    supplied = deepcopy(fresh)
+    if field == "overlay.sha256":
+        supplied[component]["overlay"]["sha256"] = "9" * 64
+    else:
+        supplied[component][field] = "9" * 64
+    _patch_v7_stage_readbacks(monkeypatch, fresh)
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+
+    with pytest.raises(RuntimeProvenanceError, match="stale or differs"):
+        capture_runtime_provenance(
+            config,
+            _Stage(),
+            articulation_usd_solver_iterations=(32, 4),
+            repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=ground,
+            ),
+            ground_topology_snapshot=topology_snapshot,
+            contact_snapshot=contact_snapshot,
+            **supplied,
+        )
+
+
+@pytest.mark.parametrize("component", ["drive", "mass"])
+def test_schema_v7_rejects_tampered_physics_tensor_evidence(
+    tmp_path,
+    monkeypatch,
+    component,
+):
+    ground = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=ground,
+        target_colliders=ground,
+    )
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
+    if component == "drive":
+        evidence["wheel_drive_tensor_snapshot"]["max_efforts_n_m"][0] *= 0.9
+        message = "max_efforts_n_m"
+    else:
+        evidence["mass_tensor_snapshot"]["links"][0]["mass_kg"] += 1.0
+        message = "mass_kg"
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+
+    with pytest.raises(RuntimeProvenanceError, match=message):
+        capture_runtime_provenance(
+            config,
+            _Stage(),
+            articulation_usd_solver_iterations=(32, 4),
+            repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=ground,
+            ),
+            ground_topology_snapshot=topology_snapshot,
+            contact_snapshot=contact_snapshot,
+            **evidence,
+        )
+
+
+def test_schema_v7_rejects_control_topology_hash_tampering(
+    tmp_path,
+    monkeypatch,
+):
+    ground = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=ground,
+        target_colliders=ground,
+    )
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
+    evidence["control_graph_snapshot"]["topology_sha256"] = "0" * 64
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+
+    with pytest.raises(RuntimeProvenanceError, match="topology SHA256"):
+        capture_runtime_provenance(
+            config,
+            _Stage(),
+            articulation_usd_solver_iterations=(32, 4),
+            repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=ground,
+            ),
+            ground_topology_snapshot=topology_snapshot,
+            contact_snapshot=contact_snapshot,
+            **evidence,
+        )
+
+
+def test_schema_v7_rejects_mass_profile_path_not_bound_to_robot_config(
+    tmp_path,
+    monkeypatch,
+):
+    ground = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=ground,
+        target_colliders=ground,
+    )
+    evidence = _runtime_v7_evidence(config)
+    evidence["mass_collision_snapshot"]["profile"]["path"] = (
+        "isaac_sim/configs/robot_mass_profiles/not_selected.yaml"
+    )
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+
+    with pytest.raises(RuntimeProvenanceError, match="profile path"):
+        capture_runtime_provenance(
+            config,
+            _Stage(),
+            articulation_usd_solver_iterations=(32, 4),
+            repository_root=repository,
+            reset_strategy_snapshot=_reset_strategy_snapshot(
+                wheel_joints=tuple(config.robot.wheel_joints),
+                ground_filter_paths=ground,
+            ),
+            ground_topology_snapshot=topology_snapshot,
+            contact_snapshot=contact_snapshot,
+            **evidence,
+        )
+
+
 def test_capture_flattens_the_effective_robot_environment_and_stage(
     tmp_path, monkeypatch
 ):
@@ -427,7 +1034,7 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
     ground_topology_profile = tmp_path / "ground_topology.yaml"
     contact_profile = tmp_path / "legacy_baseline.yaml"
     for path, content in (
-        (robot_asset, b"#usda 1.0\n"),
+        (robot_asset, JACKAL_ASSET.read_bytes()),
         (project_stage, b"#usda 1.0\n"),
         (source_asset, b"PXR-USDC"),
         (
@@ -455,7 +1062,11 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         robot=SimpleNamespace(
             asset_path=robot_asset,
             articulation_root="/World/Robot",
-            wheel_joints=("fl", "fr", "rl", "rr"),
+            runtime_prim_path="/World/Robot",
+            base_link_prim="/World/Robot/base_link",
+            wheel_joints=WHEEL_JOINTS,
+            front_wheel_joints=WHEEL_JOINTS[:2],
+            rear_wheel_joints=WHEEL_JOINTS[2:],
         ),
         environment=SimpleNamespace(
             identifier="Warehouse",
@@ -493,6 +1104,8 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         ground_colliders,
     )
     fresh_readbacks = []
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence, fresh_readbacks)
     monkeypatch.setattr(
         contact_setup,
         "capture_contact_profile_snapshot",
@@ -514,15 +1127,23 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         _Stage(),
         articulation_usd_solver_iterations=(32, 4),
         repository_root=repository,
-        reset_strategy_snapshot=_reset_strategy_snapshot(),
+        reset_strategy_snapshot=_reset_strategy_snapshot(
+            wheel_joints=tuple(config.robot.wheel_joints),
+        ),
         ground_topology_snapshot=expected_ground_topology_snapshot,
         contact_snapshot=expected_contact_snapshot,
+        **evidence,
     )
     parameters = runtime_provenance_parameters(provenance)
 
-    assert fresh_readbacks == ["ground_topology", "contact"]
-    assert provenance["schema_version"] == 6
-    assert parameters["runtime_provenance.schema_version"] == 6
+    assert fresh_readbacks == [
+        "ground_topology",
+        "contact",
+        "wheel_velocity_drive",
+        "mass_collision",
+    ]
+    assert provenance["schema_version"] == 7
+    assert parameters["runtime_provenance.schema_version"] == 7
     assert provenance["robot"]["config"]["sha256"] == file_sha256(
         robot_config
     )
@@ -603,7 +1224,7 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
         "runtime_provenance.simulation.reset_strategy.sha256"
     ] == hashlib.sha256(reset_strategy_json.encode("utf-8")).hexdigest()
     assert provenance["contact"]["collider_contract"] == {
-        "wheel_joint_names": ["fl", "fr", "rl", "rr"],
+        "wheel_joint_names": list(WHEEL_JOINTS),
         "wheel_expected_count": 4,
         "ground_required_prim_paths": ["/World/Ground/Collision"],
         "ground_semantic_classes": [],
@@ -612,7 +1233,7 @@ def test_capture_flattens_the_effective_robot_environment_and_stage(
 
 
 @pytest.mark.parametrize("target_count", [32, 1])
-def test_schema_v6_locks_reset_strategy_and_ground_topologies(
+def test_schema_v7_locks_reset_strategy_and_ground_topologies(
     tmp_path,
     monkeypatch,
     target_count,
@@ -640,6 +1261,8 @@ def test_schema_v6_locks_reset_strategy_and_ground_topologies(
         "capture_contact_profile_snapshot",
         lambda stage, runtime_config: deepcopy(contact_snapshot),
     )
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
 
     provenance = capture_runtime_provenance(
         config,
@@ -652,10 +1275,11 @@ def test_schema_v6_locks_reset_strategy_and_ground_topologies(
         ),
         ground_topology_snapshot=topology_snapshot,
         contact_snapshot=contact_snapshot,
+        **evidence,
     )
     parameters = runtime_provenance_parameters(provenance)
 
-    assert provenance["schema_version"] == 6
+    assert provenance["schema_version"] == 7
     assert set(provenance) == {
         "schema_version",
         "robot",
@@ -663,6 +1287,7 @@ def test_schema_v6_locks_reset_strategy_and_ground_topologies(
         "simulation",
         "ground_topology",
         "contact",
+        "control_graph",
         "git",
     }
     assert provenance["ground_topology"]["source_collider_count"] == 32
@@ -772,6 +1397,8 @@ def test_capture_rejects_invalid_reset_strategy_snapshot(
         ground_filter_paths=target_colliders,
     )
     mutation(reset_strategy_snapshot)
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
 
     with pytest.raises(RuntimeProvenanceError, match=message):
         capture_runtime_provenance(
@@ -782,6 +1409,7 @@ def test_capture_rejects_invalid_reset_strategy_snapshot(
             reset_strategy_snapshot=reset_strategy_snapshot,
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=contact_snapshot,
+            **evidence,
         )
 
 
@@ -794,7 +1422,7 @@ def test_capture_rejects_invalid_reset_strategy_snapshot(
         ("warehouse_plane_only1_v1.yaml", 1),
     ],
 )
-def test_schema_v6_captures_scene_composer_topology_snapshots(
+def test_schema_v7_captures_scene_composer_stage_snapshots(
     profile_name,
     target_count,
 ):
@@ -825,11 +1453,24 @@ def test_schema_v6_captures_scene_composer_topology_snapshots(
     stage = composer.compose(save=False)
     assert composer.ground_topology_snapshot is not None
     assert composer.contact_snapshot is not None
+    assert composer.wheel_velocity_drive_snapshot is not None
+    assert composer.mass_collision_snapshot is not None
     solver_iterations = stage_articulation_solver_iterations(
         stage,
         config.robot.articulation_root,
     )
 
+    wheel_stage = composer.wheel_velocity_drive_snapshot.to_dict()
+    mass_stage = composer.mass_collision_snapshot.to_dict()
+    evidence = {
+        "wheel_velocity_drive_snapshot": wheel_stage,
+        "wheel_drive_tensor_snapshot": _wheel_drive_tensor_snapshot(
+            config, wheel_stage
+        ),
+        "mass_collision_snapshot": mass_stage,
+        "mass_tensor_snapshot": _mass_tensor_snapshot(mass_stage),
+        "control_graph_snapshot": _control_graph_snapshot(config),
+    }
     provenance = capture_runtime_provenance(
         config,
         stage,
@@ -847,9 +1488,10 @@ def test_schema_v6_captures_scene_composer_topology_snapshots(
         ),
         ground_topology_snapshot=composer.ground_topology_snapshot,
         contact_snapshot=composer.contact_snapshot,
+        **evidence,
     )
 
-    assert provenance["schema_version"] == 6
+    assert provenance["schema_version"] == 7
     assert provenance["ground_topology"]["source_collider_count"] == 32
     assert provenance["ground_topology"]["target_collider_count"] == target_count
     assert provenance["contact"]["ground_colliders"] == provenance[
@@ -927,6 +1569,7 @@ def test_capture_rejects_injected_ground_topology_disagreement(
             ),
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=contact_snapshot,
+            **evidence,
         )
 
 
@@ -961,6 +1604,8 @@ def test_capture_rejects_stale_scene_composer_snapshots(
         "capture_contact_profile_snapshot",
         lambda stage, runtime_config: deepcopy(fresh_contact_snapshot),
     )
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
 
     with pytest.raises(RuntimeProvenanceError, match="stale or differs"):
         capture_runtime_provenance(
@@ -976,24 +1621,68 @@ def test_capture_rejects_stale_scene_composer_snapshots(
             ),
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=contact_snapshot,
+            **evidence,
         )
 
 
-def test_navigation_runtime_injects_scene_composer_snapshots():
-    source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
-        encoding="utf-8"
+def test_schema_v7_requires_physical_and_control_evidence_arguments():
+    parameters = inspect.signature(capture_runtime_provenance).parameters
+    required = {
+        "wheel_velocity_drive_snapshot",
+        "wheel_drive_tensor_snapshot",
+        "mass_collision_snapshot",
+        "mass_tensor_snapshot",
+        "control_graph_snapshot",
+    }
+    assert required <= set(parameters)
+    assert all(
+        parameters[name].default is inspect.Parameter.empty
+        for name in required
     )
-    runtime = source.split("def run(", 1)[1].split("def main(", 1)[0]
-    assert "composer = SceneComposer(config)" in runtime
-    assert "stage = composer.compose(save=False)" in runtime
-    capture = runtime.split("runtime_provenance = capture_runtime_provenance(", 1)[
-        1
-    ].split("\n        )", 1)[0]
-    assert (
-        "ground_topology_snapshot=composer.ground_topology_snapshot" in capture
+
+
+def test_explicit_legacy_diagnostic_producer_remains_schema_v6(
+    tmp_path,
+    monkeypatch,
+):
+    ground = ["/World/Ground/Collision"]
+    repository, config, topology_snapshot, contact_snapshot = _runtime_inputs(
+        tmp_path,
+        source_colliders=ground,
+        target_colliders=ground,
     )
-    assert "contact_snapshot=composer.contact_snapshot" in capture
-    assert "reset_strategy_snapshot=" in capture
+    from isaac_sim.src.stage import contact_setup, ground_topology
+
+    monkeypatch.setattr(
+        ground_topology,
+        "capture_ground_topology_snapshot",
+        lambda stage, runtime_config: deepcopy(topology_snapshot),
+    )
+    monkeypatch.setattr(
+        contact_setup,
+        "capture_contact_profile_snapshot",
+        lambda stage, runtime_config: deepcopy(contact_snapshot),
+    )
+
+    provenance = capture_runtime_provenance_v6_legacy(
+        config,
+        _Stage(),
+        articulation_usd_solver_iterations=(32, 4),
+        repository_root=repository,
+        reset_strategy_snapshot=_reset_strategy_snapshot(
+            wheel_joints=tuple(config.robot.wheel_joints),
+            ground_filter_paths=ground,
+        ),
+        ground_topology_snapshot=topology_snapshot,
+        contact_snapshot=contact_snapshot,
+    )
+
+    assert provenance["schema_version"] == 6
+    assert "control_graph" not in provenance
+    assert "wheel_velocity_drive" not in provenance["robot"]
+    assert runtime_provenance_parameters(provenance)[
+        "runtime_provenance.schema_version"
+    ] == 6
 
 
 def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
@@ -1029,6 +1718,11 @@ def test_capture_rejects_stage_and_articulation_solver_disagreement(tmp_path):
             articulation_usd_solver_iterations=(32, 16),
             repository_root=repository,
             reset_strategy_snapshot=_reset_strategy_snapshot(),
+            wheel_velocity_drive_snapshot={},
+            wheel_drive_tensor_snapshot={},
+            mass_collision_snapshot={},
+            mass_tensor_snapshot={},
+            control_graph_snapshot={},
         )
 
 
@@ -1078,7 +1772,8 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
     ground_topology_profile = tmp_path / "ground_topology.yaml"
     contact_profile = tmp_path / "legacy_baseline.yaml"
     _write_test_robot_config(robot_config)
-    for path in (robot_asset, project_stage, source_asset):
+    robot_asset.write_bytes(JACKAL_ASSET.read_bytes())
+    for path in (project_stage, source_asset):
         path.write_bytes(b"input")
     contact_profile.write_text(
         "schema_version: 1\nid: legacy-baseline\nmode: legacy_baseline\n",
@@ -1100,7 +1795,11 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
         robot=SimpleNamespace(
             asset_path=robot_asset,
             articulation_root="/World/Robot",
-            wheel_joints=("fl", "fr", "rl", "rr"),
+            runtime_prim_path="/World/Robot",
+            base_link_prim="/World/Robot/base_link",
+            wheel_joints=WHEEL_JOINTS,
+            front_wheel_joints=WHEEL_JOINTS[:2],
+            rear_wheel_joints=WHEEL_JOINTS[2:],
         ),
         environment=SimpleNamespace(
             identifier="Warehouse",
@@ -1144,6 +1843,8 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
         "capture_contact_profile_snapshot",
         lambda stage, runtime_config: deepcopy(snapshot),
     )
+    evidence = _runtime_v7_evidence(config)
+    _patch_v7_stage_readbacks(monkeypatch, evidence)
 
     with pytest.raises(RuntimeProvenanceError, match=message):
         capture_runtime_provenance(
@@ -1159,4 +1860,5 @@ def test_capture_rejects_contact_snapshot_that_disagrees_with_config(
             ),
             ground_topology_snapshot=topology_snapshot,
             contact_snapshot=snapshot,
+            **evidence,
         )

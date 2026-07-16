@@ -16,6 +16,8 @@ usage: run_contact_ab_matrix.sh [--environment Warehouse|SimplePlane|all]
                                 [--reset-strategy project|pose_restore_v1|
                                   separate_recontact_0p20m_1step_v1|all]
                                 [--repeats N] [--robot-config FILE]
+                                [--wheel-command-application split_axle_v1|
+                                  single_four_wheel_write_v1]
                                 --output-dir DIR
 
 Run the committed skid-steer motion A/B protocol in strict serial order.
@@ -39,24 +41,26 @@ environment_selection="all"
 ground_topology_selection="baseline"
 contact_profile_selection="all"
 reset_strategy_selection="project"
+wheel_command_application="split_axle_v1"
 repeats=3
 output_dir=""
 robot_config_argument=""
 robot_config_option_seen=false
 required_motion_report_schema_version=4
-required_runtime_provenance_schema_version=6
+required_runtime_provenance_schema_version=7
 required_reset_strategy_schema_version=1
-readonly manifest_header_contract=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\treport_schema_version\truntime_provenance_schema_version\treset_strategy_schema_version\treset_strategy_id\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
+readonly manifest_header_contract=$'run_id\tenvironment\tprofile_id\tprofile_mode\trepeat\tstatus\tdetail\treport\treport_sha256\treport_schema_version\truntime_provenance_schema_version\treset_strategy_schema_version\treset_strategy_id\tisaac_log\tisaac_log_sha256\trunner_log\trunner_log_sha256\tgit_commit\tgit_branch\tmotion_config\tmotion_config_sha256\twarehouse_project_config\twarehouse_project_config_sha256\tsimple_plane_project_config\tsimple_plane_project_config_sha256\trobot_config_selection\trobot_config\trobot_config_sha256\trobot_config_schema_version\trobot_wheel_velocity_drive_profile_id\trobot_wheel_velocity_drive_overlay_sha256\trobot_mass_collision_profile_id\trobot_mass_collision_overlay_sha256\twheel_command_application\tcontrol_graph_topology_sha256\trobot_kinematics_profile_id\trobot_kinematics_lifecycle\trobot_wheel_radius_m\trobot_wheel_width_m\trobot_geometric_track_width_m\trobot_effective_track_width_m\tselected_project_config\tselected_project_config_sha256\tprofile_path\tprofile_sha256\tground_topology_id\tground_topology_profile_path\tground_topology_profile_sha256\tall_profile_hashes_json\tenvironment_project_stage\tenvironment_project_stage_sha256\tenvironment_source_asset\tenvironment_source_asset_sha256\tstarted_at_utc/completed_at_utc'
 while (($#)); do
   case "$1" in
     --environment|--ground-topology|--contact-profile|--reset-strategy|\
-      --repeats|--output-dir|--robot-config)
+      --repeats|--output-dir|--robot-config|--wheel-command-application)
       (($# >= 2)) || die "$1 requires a value"
       case "$1" in
         --environment) environment_selection="$2" ;;
         --ground-topology) ground_topology_selection="$2" ;;
         --contact-profile) contact_profile_selection="$2" ;;
         --reset-strategy) reset_strategy_selection="$2" ;;
+        --wheel-command-application) wheel_command_application="$2" ;;
         --repeats) repeats="$2" ;;
         --output-dir) output_dir="$2" ;;
         --robot-config)
@@ -76,6 +80,13 @@ while (($#)); do
       ;;
   esac
 done
+
+case "${wheel_command_application}" in
+  split_axle_v1|single_four_wheel_write_v1) ;;
+  *)
+    die "--wheel-command-application must be split_axle_v1 or single_four_wheel_write_v1"
+    ;;
+esac
 
 case "${environment_selection}" in
   Warehouse) environments=(Warehouse) ;;
@@ -276,6 +287,7 @@ batch_profile_hashes_json=""
 batch_ground_topology_hashes_json=""
 batch_environment_topology_pairs_json=""
 batch_reset_strategy_ids_json=""
+batch_wheel_command_application=""
 
 robot_config=""
 robot_config_selection="project_default"
@@ -547,6 +559,7 @@ lock_batch_identity() {
     || die "contact A/B requires an attached Git HEAD"
   batch_git_branch="$(git_branch)" \
     || die "contact A/B requires an attached Git branch"
+  batch_wheel_command_application="${wheel_command_application}"
   locked_input_paths=(
     "${motion_config}"
     "${warehouse_config}"
@@ -656,6 +669,11 @@ verify_batch_identity() {
   actual="$(git_branch)" || return 1
   [[ "${actual}" == "${batch_git_branch}" ]] || {
     log_warn "Git branch changed during contact A/B ${phase}"
+    return 1
+  }
+  [[ "${wheel_command_application}" \
+      == "${batch_wheel_command_application}" ]] || {
+    log_warn "wheel command application changed during contact A/B ${phase}"
     return 1
   }
   for path in "${locked_input_paths[@]}"; do
@@ -788,6 +806,80 @@ print(schema_version)
 PY
 }
 
+motion_report_manifest_provenance_fields() {
+  local path="$1"
+  local expected_mode="$2"
+  python3 - "${path}" "${expected_mode}" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+expected_mode = sys.argv[2]
+try:
+    report = json.loads(path.read_text(encoding="utf-8"))
+except (OSError, UnicodeError, ValueError) as exc:
+    raise SystemExit(f"cannot read motion report provenance: {exc}") from exc
+provenance = report.get("runtime_provenance")
+robot = provenance.get("robot") if isinstance(provenance, dict) else None
+config = robot.get("config") if isinstance(robot, dict) else None
+drive = (
+    robot.get("wheel_velocity_drive") if isinstance(robot, dict) else None
+)
+mass = robot.get("mass_collision") if isinstance(robot, dict) else None
+control = (
+    provenance.get("control_graph") if isinstance(provenance, dict) else None
+)
+sha_pattern = re.compile(r"^[0-9a-f]{64}$")
+if (
+    not isinstance(provenance, dict)
+    or provenance.get("schema_version") != 7
+    or not isinstance(config, dict)
+    or config.get("schema_version") != 3
+    or not isinstance(drive, dict)
+    or not isinstance(drive.get("profile_id"), str)
+    or not drive.get("profile_id")
+    or sha_pattern.fullmatch(str(drive.get("overlay_sha256"))) is None
+    or not isinstance(mass, dict)
+    or not isinstance(mass.get("profile_id"), str)
+    or not mass.get("profile_id")
+    or sha_pattern.fullmatch(str(mass.get("overlay_sha256"))) is None
+    or not isinstance(control, dict)
+    or control.get("schema_version") != 1
+    or control.get("wheel_command_application") != expected_mode
+    or sha_pattern.fullmatch(str(control.get("topology_sha256"))) is None
+):
+    raise SystemExit("motion report provenance manifest fields are invalid")
+topology = control.get("topology")
+try:
+    canonical_topology = json.dumps(
+        topology,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+except (TypeError, ValueError) as exc:
+    raise SystemExit(f"control graph topology is invalid: {exc}") from exc
+if (
+    hashlib.sha256(canonical_topology.encode("utf-8")).hexdigest()
+    != control["topology_sha256"]
+):
+    raise SystemExit("control graph topology SHA256 mismatch")
+for value in (
+    config["schema_version"],
+    drive["profile_id"],
+    drive["overlay_sha256"],
+    mass["profile_id"],
+    mass["overlay_sha256"],
+    control["wheel_command_application"],
+    control["topology_sha256"],
+):
+    print(value)
+PY
+}
+
 validate_success_manifest_evidence() {
   local phase="$1"
   python3 - \
@@ -800,6 +892,7 @@ validate_success_manifest_evidence() {
     "${batch_profile_hashes_json}" \
     "${batch_ground_topology_hashes_json}" \
     "${batch_reset_strategy_ids_json}" \
+    "${batch_wheel_command_application}" \
     "${batch_git_commit}" "${batch_git_branch}" \
     "${motion_config}" "${batch_motion_sha256}" \
     "${batch_motion_configuration_json}" \
@@ -844,6 +937,7 @@ import sys
     profile_hashes_json,
     topology_hashes_json,
     reset_strategy_ids_json,
+    wheel_command_application,
     git_commit,
     git_branch,
     motion_config,
@@ -884,15 +978,15 @@ repeats = int(repeats_text)
 expected_rows = int(expected_rows_text)
 output_path = Path(output_directory)
 
-if len(expected_fieldnames) != 47 or len(set(expected_fieldnames)) != 47:
-    raise SystemExit("internal manifest header contract must contain 47 unique columns")
+if len(expected_fieldnames) != 54 or len(set(expected_fieldnames)) != 54:
+    raise SystemExit("internal manifest header contract must contain 54 unique columns")
 if manifest_path.is_symlink() or not manifest_path.is_file():
     raise SystemExit(f"{phase}: manifest path is unsafe: {manifest_path}")
 
 with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     reader = csv.DictReader(stream, delimiter="\t", strict=True)
     if reader.fieldnames != expected_fieldnames:
-        raise SystemExit(f"{phase}: manifest header does not match the 47-column contract")
+        raise SystemExit(f"{phase}: manifest header does not match the 54-column contract")
     rows = list(reader)
 if len(rows) != expected_rows:
     raise SystemExit(
@@ -917,6 +1011,11 @@ if (
     or not isinstance(motion_configuration, dict)
 ):
     raise SystemExit(f"{phase}: locked matrix inputs are incomplete")
+if wheel_command_application not in {
+    "split_axle_v1",
+    "single_four_wheel_write_v1",
+}:
+    raise SystemExit(f"{phase}: wheel command application is invalid")
 if json.dumps(
     profile_hashes, sort_keys=True, separators=(",", ":")
 ) != profile_hashes_json:
@@ -1014,7 +1113,8 @@ for environment_id, topology_id in pair_identities:
                 reset_token = f"reset-v1-{reset_strategy_id}"
                 run_id = (
                     f"{sequence:03d}_{environment_contracts[environment_id]['slug']}_"
-                    f"{topology_id}_{reset_token}_{profile_id}_r{repeat:02d}"
+                    f"{topology_id}_{reset_token}_{profile_id}_"
+                    f"{wheel_command_application}_r{repeat:02d}"
                 )
                 expected_matrix_rows.append(
                     {
@@ -1192,6 +1292,8 @@ for row_index, (row, expected_row) in enumerate(
         "robot_config_selection": robot_config_selection,
         "robot_config": robot_config,
         "robot_config_sha256": robot_config_sha256,
+        "robot_config_schema_version": "3",
+        "wheel_command_application": wheel_command_application,
         "robot_kinematics_profile_id": kinematics_profile_id,
         "robot_kinematics_lifecycle": kinematics_lifecycle,
         "robot_wheel_radius_m": wheel_radius,
@@ -1310,6 +1412,59 @@ for row_index, (row, expected_row) in enumerate(
         if isinstance(report_robot, dict)
         else None
     )
+    wheel_velocity_drive = (
+        report_robot.get("wheel_velocity_drive")
+        if isinstance(report_robot, dict)
+        else None
+    )
+    mass_collision = (
+        report_robot.get("mass_collision")
+        if isinstance(report_robot, dict)
+        else None
+    )
+    control_graph = provenance.get("control_graph")
+    control_topology = (
+        control_graph.get("topology")
+        if isinstance(control_graph, dict)
+        else None
+    )
+    try:
+        control_topology_canonical = json.dumps(
+            control_topology,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError):
+        control_topology_canonical = ""
+    control_topology_sha256 = (
+        hashlib.sha256(control_topology_canonical.encode("utf-8")).hexdigest()
+        if control_topology_canonical
+        else ""
+    )
+    expected_report_manifest_fields = {
+        "robot_wheel_velocity_drive_profile_id": (
+            wheel_velocity_drive.get("profile_id")
+            if isinstance(wheel_velocity_drive, dict)
+            else None
+        ),
+        "robot_wheel_velocity_drive_overlay_sha256": (
+            wheel_velocity_drive.get("overlay_sha256")
+            if isinstance(wheel_velocity_drive, dict)
+            else None
+        ),
+        "robot_mass_collision_profile_id": (
+            mass_collision.get("profile_id")
+            if isinstance(mass_collision, dict)
+            else None
+        ),
+        "robot_mass_collision_overlay_sha256": (
+            mass_collision.get("overlay_sha256")
+            if isinstance(mass_collision, dict)
+            else None
+        ),
+        "control_graph_topology_sha256": control_topology_sha256,
+    }
 
     def numeric_lock_matches(field, expected_text):
         value = kinematics.get(field) if isinstance(kinematics, dict) else None
@@ -1346,6 +1501,7 @@ for row_index, (row, expected_row) in enumerate(
         or report_git.get("branch") != git_branch
         or report_git.get("dirty") is not False
         or not isinstance(robot_config_lock, dict)
+        or robot_config_lock.get("schema_version") != 3
         or robot_config_lock.get("path") != robot_config
         or robot_config_lock.get("sha256") != robot_config_sha256
         or not isinstance(robot_asset_lock, dict)
@@ -1392,10 +1548,33 @@ for row_index, (row, expected_row) in enumerate(
             expected_row["reset_strategy_id"],
             ground_topology,
         )
+        or not isinstance(wheel_velocity_drive, dict)
+        or wheel_velocity_drive.get("stage_usd_readback_verified") is not True
+        or not isinstance(wheel_velocity_drive.get("physics_tensor"), dict)
+        or wheel_velocity_drive["physics_tensor"].get(
+            "physics_tensor_readback_verified"
+        ) is not True
+        or not isinstance(mass_collision, dict)
+        or mass_collision.get("stage_usd_readback_verified") is not True
+        or not isinstance(mass_collision.get("physics_tensor"), dict)
+        or mass_collision["physics_tensor"].get(
+            "physics_tensor_readback_verified"
+        ) is not True
+        or not isinstance(control_graph, dict)
+        or control_graph.get("wheel_command_application")
+        != wheel_command_application
+        or control_graph.get("topology_sha256")
+        != control_topology_sha256
+        or control_graph.get("materialized_readback_verified") is not True
     ):
         raise SystemExit(
             f"{phase}: manifest row {row_index} report identity mismatch"
         )
+    for field, expected in expected_report_manifest_fields.items():
+        if row.get(field) != expected:
+            raise SystemExit(
+                f"{phase}: manifest row {row_index} {field} report mismatch"
+            )
     interval = row.get("started_at_utc/completed_at_utc", "")
     parts = interval.split("/")
     if len(parts) != 2:
@@ -1463,6 +1642,7 @@ append_current_manifest() {
   local completed report_sha256 report_schema_version=""
   local isaac_log_sha256 runner_log_sha256 row
   local -a manifest_fields=()
+  local -a provenance_fields=("" "" "" "" "" "" "")
   local evidence_required=false
   [[ "${status}" == success ]] && evidence_required=true
   completed="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
@@ -1484,6 +1664,13 @@ append_current_manifest() {
     log_warn \
       "successful motion report schema mismatch: ${report_schema_version:-missing} != ${required_motion_report_schema_version}"
     return 1
+  fi
+  if [[ "${evidence_required}" == true ]]; then
+    mapfile -t provenance_fields < <(
+      motion_report_manifest_provenance_fields \
+        "${current_report}" "${wheel_command_application}"
+    ) || return 1
+    ((${#provenance_fields[@]} == 7)) || return 1
   fi
   # A log digest is final only after its writer has stopped.  A live,
   # unauthenticated child is intentionally left unsignalled and therefore
@@ -1535,6 +1722,13 @@ append_current_manifest() {
     "$(tsv_safe "${robot_config_selection}")" \
     "$(tsv_safe "${robot_config}")" \
     "${batch_robot_config_sha256}" \
+    "${provenance_fields[0]}" \
+    "$(tsv_safe "${provenance_fields[1]}")" \
+    "${provenance_fields[2]}" \
+    "$(tsv_safe "${provenance_fields[3]}")" \
+    "${provenance_fields[4]}" \
+    "$(tsv_safe "${provenance_fields[5]}")" \
+    "${provenance_fields[6]}" \
     "$(tsv_safe "${robot_kinematics_profile_id}")" \
     "$(tsv_safe "${robot_kinematics_lifecycle}")" \
     "${robot_wheel_radius}" \
@@ -1555,7 +1749,7 @@ append_current_manifest() {
     "${current_source_asset_sha256}" \
     "${current_started}/${completed}"
   )
-  ((${#manifest_fields[@]} == 47)) || return 1
+  ((${#manifest_fields[@]} == 54)) || return 1
   if ! row="$(IFS=$'\t'; printf '%s' "${manifest_fields[*]}")"; then
     return 1
   fi
@@ -2101,6 +2295,97 @@ if contact.get("ground_colliders") != topology["target_colliders"]:
 PY
 }
 
+robot_physics_control_readiness_matches() {
+  python3 - \
+    "$1" "$2" "$3" "$4" "$5" "$6" "$7" <<'PY'
+import hashlib
+import json
+import re
+import sys
+
+(
+    drive_payload,
+    drive_payload_sha256,
+    mass_payload,
+    mass_payload_sha256,
+    control_payload,
+    control_payload_sha256,
+    expected_mode,
+) = sys.argv[1:]
+sha_pattern = re.compile(r"^[0-9a-f]{64}$")
+
+
+def canonical_document(payload, payload_sha256, label):
+    try:
+        document = json.loads(payload)
+        canonical = json.dumps(
+            document,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"invalid {label} provenance JSON: {exc}") from exc
+    if canonical != payload:
+        raise SystemExit(f"{label} provenance JSON is not canonical")
+    if (
+        sha_pattern.fullmatch(payload_sha256) is None
+        or hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        != payload_sha256
+    ):
+        raise SystemExit(f"{label} provenance JSON SHA256 mismatch")
+    if not isinstance(document, dict):
+        raise SystemExit(f"{label} provenance must be an object")
+    return document
+
+
+drive = canonical_document(
+    drive_payload, drive_payload_sha256, "wheel velocity drive"
+)
+mass = canonical_document(mass_payload, mass_payload_sha256, "mass collision")
+control = canonical_document(
+    control_payload, control_payload_sha256, "control graph"
+)
+drive_tensor = drive.get("physics_tensor")
+mass_tensor = mass.get("physics_tensor")
+topology_sha256 = control.get("topology_sha256")
+if (
+    drive.get("schema_version") != 1
+    or not isinstance(drive.get("profile_id"), str)
+    or not drive.get("profile_id")
+    or sha_pattern.fullmatch(str(drive.get("overlay_sha256"))) is None
+    or drive.get("stage_usd_readback_verified") is not True
+    or not isinstance(drive_tensor, dict)
+    or drive_tensor.get("physics_tensor_readback_verified") is not True
+    or drive_tensor.get("stage_overlay_sha256")
+    != drive.get("overlay_sha256")
+    or mass.get("schema_version") != 1
+    or not isinstance(mass.get("profile_id"), str)
+    or not mass.get("profile_id")
+    or sha_pattern.fullmatch(str(mass.get("overlay_sha256"))) is None
+    or mass.get("stage_usd_readback_verified") is not True
+    or not isinstance(mass_tensor, dict)
+    or mass_tensor.get("physics_tensor_readback_verified") is not True
+    or control.get("schema_version") != 1
+    or control.get("wheel_command_application") != expected_mode
+    or sha_pattern.fullmatch(str(topology_sha256)) is None
+    or control.get("materialized_readback_verified") is not True
+):
+    raise SystemExit("runtime physics/control provenance contract mismatch")
+topology = control.get("topology")
+if not isinstance(topology, dict):
+    raise SystemExit("control graph topology must be an object")
+canonical_topology = json.dumps(
+    topology,
+    sort_keys=True,
+    separators=(",", ":"),
+    allow_nan=False,
+)
+if hashlib.sha256(canonical_topology.encode("utf-8")).hexdigest() != topology_sha256:
+    raise SystemExit("control graph topology SHA256 mismatch")
+PY
+}
+
 wait_for_isaac_ready() {
   local expected_environment="$1"
   local profile_id="$2"
@@ -2112,6 +2397,9 @@ wait_for_isaac_ready() {
   local ground_topology_json ground_topology_sha256
   local reset_strategy_json reset_strategy_sha256
   local actual_robot_config actual_robot_config_sha256
+  local actual_robot_config_schema_version
+  local drive_json drive_sha256 mass_json mass_sha256
+  local control_graph_json control_graph_sha256
   local actual_robot_asset actual_robot_asset_sha256
   local actual_kinematics_profile actual_kinematics_lifecycle
   local actual_wheel_radius actual_wheel_width
@@ -2131,7 +2419,7 @@ wait_for_isaac_ready() {
       isaac "${owned_pids[isaac]}" "${owned_groups[isaac]}" \
       "${owned_start_ticks[isaac]}" || return 1
     schema="$(ros_parameter runtime_provenance.schema_version || true)"
-    if [[ "${schema}" != 6 ]]; then
+    if [[ "${schema}" != 7 ]]; then
       sleep 0.2
       continue
     fi
@@ -2159,6 +2447,27 @@ wait_for_isaac_ready() {
     )"
     actual_robot_config_sha256="$(
       ros_parameter runtime_provenance.robot.config.sha256 || true
+    )"
+    actual_robot_config_schema_version="$(
+      ros_parameter runtime_provenance.robot.config.schema_version || true
+    )"
+    drive_json="$(
+      ros_parameter runtime_provenance.robot.wheel_velocity_drive.json || true
+    )"
+    drive_sha256="$(
+      ros_parameter runtime_provenance.robot.wheel_velocity_drive.sha256 || true
+    )"
+    mass_json="$(
+      ros_parameter runtime_provenance.robot.mass_collision.json || true
+    )"
+    mass_sha256="$(
+      ros_parameter runtime_provenance.robot.mass_collision.sha256 || true
+    )"
+    control_graph_json="$(
+      ros_parameter runtime_provenance.control_graph.json || true
+    )"
+    control_graph_sha256="$(
+      ros_parameter runtime_provenance.control_graph.sha256 || true
     )"
     actual_robot_asset="$(
       ros_parameter runtime_provenance.robot.asset.path || true
@@ -2237,6 +2546,7 @@ wait_for_isaac_ready() {
     if [[ "${environment_id}" == "${expected_environment}" \
           && "${actual_robot_config}" == "${robot_config}" \
           && "${actual_robot_config_sha256}" == "${robot_config_sha256}" \
+          && "${actual_robot_config_schema_version}" == 3 \
           && "${actual_robot_asset}" == "${robot_asset}" \
           && "${actual_robot_asset_sha256}" == "${robot_asset_sha256}" \
           && "${actual_kinematics_profile}" == "${robot_kinematics_profile_id}" \
@@ -2274,7 +2584,12 @@ wait_for_isaac_ready() {
         && reset_strategy_readiness_matches \
           "${reset_strategy_json}" "${reset_strategy_sha256}" \
           "${current_reset_strategy_id}" \
-          "${ground_topology_json}"; then
+          "${ground_topology_json}" \
+        && robot_physics_control_readiness_matches \
+          "${drive_json}" "${drive_sha256}" \
+          "${mass_json}" "${mass_sha256}" \
+          "${control_graph_json}" "${control_graph_sha256}" \
+          "${wheel_command_application}"; then
       return 0
     fi
     sleep 0.2
@@ -2298,14 +2613,15 @@ launch_isaac() {
     export ISAAC_NAV__FILES__ROBOT="${robot_config}"
     [[ "${reset_strategy_id}" == "${current_reset_strategy_id}" ]] || return 1
     export ISAAC_NAV__SIMULATION__RESET_STRATEGY__ID="${reset_strategy_id}"
-    # Schema-v6 provenance verifies mapping/ideal/60 Hz, kinematics, and the
-    # selected Reset strategy below.
+    # Schema-v7 provenance verifies mapping/ideal/60 Hz, kinematics, physics
+    # overlays, the materialized control graph, and the selected Reset strategy.
     # It does not
     # currently expose headless, pacing, or camera selection, so those remain
     # a pinned CLI launch contract and are not misreported as provenance locks.
     exec "${SCRIPT_DIR}/run_isaac.sh" \
       --headless --pacing-mode unbounded \
-      --navigation-mode mapping --mode ideal --camera-profile off
+      --navigation-mode mapping --mode ideal --camera-profile off \
+      --wheel-command-application "${wheel_command_application}"
   ) >"${log_path}" 2>&1 &
   owned_pids[isaac]=$!
   wait_for_component_registration isaac "${owned_pids[isaac]}"
@@ -2356,7 +2672,7 @@ verify_motion_report() {
     "${robot_kinematics_profile_id}" "${robot_kinematics_lifecycle}" \
     "${robot_wheel_radius}" "${robot_wheel_width}" \
     "${robot_geometric_track_width}" "${robot_effective_track_width}" \
-    "${reset_strategy_id}" <<'PY'
+    "${reset_strategy_id}" "${wheel_command_application}" <<'PY'
 import json
 from pathlib import Path
 import sys
@@ -2377,6 +2693,7 @@ kinematics_profile_id, kinematics_lifecycle = sys.argv[22:24]
 wheel_radius, wheel_width = map(float, sys.argv[24:26])
 geometric_track_width, effective_track_width = map(float, sys.argv[26:28])
 reset_strategy_id = sys.argv[28]
+wheel_command_application = sys.argv[29]
 reset_strategy_token = f"reset-v1-{reset_strategy_id}"
 if not path.is_file():
     raise SystemExit("motion report is missing")
@@ -2411,8 +2728,8 @@ except Exception as exc:
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("strict contact A/B report validation excluded the report")
 physical_acceptance = analysis.get("physical_acceptance", {})
-if analysis.get("schema_version") != 6:
-    raise SystemExit("strict contact A/B analysis schema must be integer 6")
+if analysis.get("schema_version") != 7:
+    raise SystemExit("strict contact A/B analysis schema must be integer 7")
 if (
     not isinstance(physical_acceptance, dict)
     or physical_acceptance.get("schema_version") != 4
@@ -2434,8 +2751,8 @@ environment = provenance.get("environment", {})
 robot = provenance.get("robot", {})
 simulation = provenance.get("simulation", {})
 git = provenance.get("git", {})
-if provenance.get("schema_version") != 6:
-    raise SystemExit("runtime provenance schema must be integer 6")
+if provenance.get("schema_version") != 7:
+    raise SystemExit("runtime provenance schema must be integer 7")
 if environment.get("id") != environment_id:
     raise SystemExit("runtime provenance environment mismatch")
 if git.get("dirty") is not False:
@@ -2443,11 +2760,37 @@ if git.get("dirty") is not False:
 if git.get("commit") != git_commit or git.get("branch") != git_branch:
     raise SystemExit("runtime provenance Git identity mismatch")
 expected_robot_inputs = {
-    "config": {"path": robot_config, "sha256": robot_config_sha256},
+    "config": {
+        "schema_version": 3,
+        "path": robot_config,
+        "sha256": robot_config_sha256,
+    },
     "asset": {"path": robot_asset, "sha256": robot_asset_sha256},
 }
 if any(robot.get(name) != value for name, value in expected_robot_inputs.items()):
     raise SystemExit("runtime provenance robot input mismatch")
+drive = robot.get("wheel_velocity_drive")
+mass = robot.get("mass_collision")
+control_graph = provenance.get("control_graph")
+if (
+    not isinstance(drive, dict)
+    or not isinstance(drive.get("profile_id"), str)
+    or not drive.get("profile_id")
+    or drive.get("stage_usd_readback_verified") is not True
+    or not isinstance(drive.get("physics_tensor"), dict)
+    or drive["physics_tensor"].get("physics_tensor_readback_verified") is not True
+    or not isinstance(mass, dict)
+    or not isinstance(mass.get("profile_id"), str)
+    or not mass.get("profile_id")
+    or mass.get("stage_usd_readback_verified") is not True
+    or not isinstance(mass.get("physics_tensor"), dict)
+    or mass["physics_tensor"].get("physics_tensor_readback_verified") is not True
+    or not isinstance(control_graph, dict)
+    or control_graph.get("wheel_command_application")
+    != wheel_command_application
+    or control_graph.get("materialized_readback_verified") is not True
+):
+    raise SystemExit("runtime physics/control provenance mismatch")
 expected_kinematics = {
     "profile_id": kinematics_profile_id,
     "lifecycle": kinematics_lifecycle,
@@ -2583,9 +2926,10 @@ run_one_condition() {
   esac
   current_reset_strategy_id="${reset_strategy_id}"
   current_reset_strategy_token="reset-v1-${reset_strategy_id}"
-  if ! printf -v current_run_id '%03d_%s_%s_%s_%s_r%02d' \
+  if ! printf -v current_run_id '%03d_%s_%s_%s_%s_%s_r%02d' \
       "${sequence}" "${slug}" "${ground_topology_id}" \
-      "${current_reset_strategy_token}" "${profile_id}" "${repeat}"; then
+      "${current_reset_strategy_token}" "${profile_id}" \
+      "${wheel_command_application}" "${repeat}"; then
     current_failure_reason="run_id_format_failed"
     return 1
   fi
@@ -2800,7 +3144,8 @@ finalize_contact_analysis() {
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
     "${robot_wheel_radius}" "${batch_profile_hashes_json}" \
-    "${batch_reset_strategy_ids_json}" <<'PY'
+    "${batch_reset_strategy_ids_json}" \
+    "${batch_wheel_command_application}" <<'PY'
 import csv
 import hashlib
 import json
@@ -2821,6 +3166,7 @@ import sys
     wheel_radius_text,
     profile_hashes_json,
     reset_strategy_ids_json,
+    wheel_command_application,
 ) = sys.argv[1:]
 repeats = int(repeats_text)
 expected_runs = int(expected_runs_text)
@@ -2860,7 +3206,7 @@ from robot_experiments.contact_ab_analysis import (
 with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     reader = csv.DictReader(stream, delimiter="\t", strict=True)
     if reader.fieldnames != expected_manifest_fieldnames:
-        raise SystemExit("manifest header does not match the 47-column contract")
+        raise SystemExit("manifest header does not match the 54-column contract")
     rows = list(reader)
 if len(rows) != expected_runs:
     raise SystemExit(
@@ -2885,9 +3231,9 @@ for row_index, row in enumerate(rows, start=1):
         raise SystemExit(
             f"manifest row {row_index} report schema version must be 4"
         )
-    if row.get("runtime_provenance_schema_version") != "6":
+    if row.get("runtime_provenance_schema_version") != "7":
         raise SystemExit(
-            f"manifest row {row_index} runtime provenance schema version must be 6"
+            f"manifest row {row_index} runtime provenance schema version must be 7"
         )
     if row.get("reset_strategy_schema_version") != "1":
         raise SystemExit(
@@ -2904,6 +3250,15 @@ for row_index, row in enumerate(rows, start=1):
             f"manifest row {row_index} report JSON schema version mismatch"
         )
     provenance = report_document.get("runtime_provenance")
+    robot = provenance.get("robot") if isinstance(provenance, dict) else None
+    robot_config = robot.get("config") if isinstance(robot, dict) else None
+    drive = (
+        robot.get("wheel_velocity_drive") if isinstance(robot, dict) else None
+    )
+    mass = robot.get("mass_collision") if isinstance(robot, dict) else None
+    control = (
+        provenance.get("control_graph") if isinstance(provenance, dict) else None
+    )
     simulation = provenance.get("simulation") if isinstance(provenance, dict) else None
     reset_strategy = (
         simulation.get("reset_strategy") if isinstance(simulation, dict) else None
@@ -2912,7 +3267,26 @@ for row_index, row in enumerate(rows, start=1):
     reset_strategy_token = f"reset-v1-{reset_strategy_id}"
     if (
         not isinstance(provenance, dict)
-        or provenance.get("schema_version") != 6
+        or provenance.get("schema_version") != 7
+        or not isinstance(robot_config, dict)
+        or robot_config.get("schema_version") != 3
+        or row.get("robot_config_schema_version") != "3"
+        or not isinstance(drive, dict)
+        or row.get("robot_wheel_velocity_drive_profile_id")
+        != drive.get("profile_id")
+        or row.get("robot_wheel_velocity_drive_overlay_sha256")
+        != drive.get("overlay_sha256")
+        or not isinstance(mass, dict)
+        or row.get("robot_mass_collision_profile_id")
+        != mass.get("profile_id")
+        or row.get("robot_mass_collision_overlay_sha256")
+        != mass.get("overlay_sha256")
+        or not isinstance(control, dict)
+        or row.get("wheel_command_application") != wheel_command_application
+        or control.get("wheel_command_application")
+        != wheel_command_application
+        or row.get("control_graph_topology_sha256")
+        != control.get("topology_sha256")
         or not isinstance(reset_strategy, dict)
         or reset_strategy.get("schema_version") != 1
         or reset_strategy.get("id") != reset_strategy_id
@@ -2932,7 +3306,7 @@ for row_index, row in enumerate(rows, start=1):
     manifest_report_locks[canonical_report_path] = {
         "sha256": actual_sha256,
         "report_schema_version": 4,
-        "runtime_provenance_schema_version": 6,
+        "runtime_provenance_schema_version": 7,
         "reset_strategy_schema_version": 1,
         "reset_strategy_id": reset_strategy_id,
         "reset_strategy_token": reset_strategy_token,
@@ -2985,8 +3359,8 @@ expected_physical_thresholds = {
 }
 if analysis.get("analysis_valid") is not True:
     raise SystemExit("aggregate contact A/B analysis is not valid")
-if analysis.get("schema_version") != 6:
-    raise SystemExit("aggregate contact A/B analysis schema must be 6")
+if analysis.get("schema_version") != 7:
+    raise SystemExit("aggregate contact A/B analysis schema must be 7")
 if counts.get("excluded_reports") != 0 or selection.get("excluded") != []:
     raise SystemExit("aggregate contact A/B analysis excluded reports")
 if counts.get("included_reports") != expected_runs:
@@ -3044,7 +3418,7 @@ if (
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
         "required_motion_report_schema": 4,
-        "required_runtime_provenance_schema": 6,
+        "required_runtime_provenance_schema": 7,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
         "required_odometry_mode": "ideal",
@@ -3133,6 +3507,7 @@ write_batch_summary() {
     "${environment_selection}" "${ground_topology_selection}" \
     "${contact_profile_selection}" "${reset_strategy_selection}" \
     "${batch_reset_strategy_ids_json}" \
+    "${batch_wheel_command_application}" \
     "${batch_environment_topology_pairs_json}" "${repeats}" \
     "${expected_conditions}" "${expected_groups}" \
     "${successful_rows}" "${manifest_rows}" \
@@ -3169,6 +3544,7 @@ import tempfile
     contact_profile_selection,
     reset_strategy_selection,
     reset_strategy_ids_json,
+    wheel_command_application,
     environment_topology_pairs_json,
     repeats_text,
     expected_runs_text,
@@ -3257,7 +3633,7 @@ failed_groups = physical_acceptance.get("failed_groups")
 applicable_groups = physical_acceptance.get("applicable_groups")
 not_applicable_groups = physical_acceptance.get("not_applicable_groups")
 if (
-    analysis.get("schema_version") != 6
+    analysis.get("schema_version") != 7
     or physical_acceptance.get("schema_version") != 4
     or physical_acceptance.get("policy_id") != "skid_steer_plan_8_7_v4"
     or physical_acceptance.get("evaluation_basis") != "every_repeat"
@@ -3269,7 +3645,7 @@ if (
     or physical_acceptance.get("thresholds") != expected_physical_thresholds
     or physical_acceptance.get("applicability") != {
         "required_motion_report_schema": 4,
-        "required_runtime_provenance_schema": 6,
+        "required_runtime_provenance_schema": 7,
         "required_environment_id": "SimplePlane",
         "required_ground_topology_id": "simple_plane_only1_v1",
         "required_odometry_mode": "ideal",
@@ -3441,7 +3817,7 @@ with manifest_path.open("r", encoding="utf-8", newline="") as stream:
     manifest_reader = csv.DictReader(stream, delimiter="\t", strict=True)
     if manifest_reader.fieldnames != expected_manifest_fieldnames:
         raise SystemExit(
-            "frozen manifest header does not match the 47-column contract"
+            "frozen manifest header does not match the 54-column contract"
         )
     manifest_documents = list(manifest_reader)
 if len(manifest_documents) != expected_runs:
@@ -3476,9 +3852,9 @@ for row_index, row in enumerate(manifest_documents, start=1):
         raise SystemExit(
             f"manifest row {row_index} report schema version must be 4"
         )
-    if row.get("runtime_provenance_schema_version") != "6":
+    if row.get("runtime_provenance_schema_version") != "7":
         raise SystemExit(
-            f"manifest row {row_index} runtime provenance schema version must be 6"
+            f"manifest row {row_index} runtime provenance schema version must be 7"
         )
     if row.get("reset_strategy_schema_version") != "1":
         raise SystemExit(
@@ -3495,6 +3871,15 @@ for row_index, row in enumerate(manifest_documents, start=1):
             f"manifest row {row_index} report JSON schema version mismatch"
         )
     provenance = report_document.get("runtime_provenance")
+    robot = provenance.get("robot") if isinstance(provenance, dict) else None
+    robot_config = robot.get("config") if isinstance(robot, dict) else None
+    drive = (
+        robot.get("wheel_velocity_drive") if isinstance(robot, dict) else None
+    )
+    mass = robot.get("mass_collision") if isinstance(robot, dict) else None
+    control = (
+        provenance.get("control_graph") if isinstance(provenance, dict) else None
+    )
     simulation = provenance.get("simulation") if isinstance(provenance, dict) else None
     reset_strategy = (
         simulation.get("reset_strategy") if isinstance(simulation, dict) else None
@@ -3503,7 +3888,26 @@ for row_index, row in enumerate(manifest_documents, start=1):
     reset_strategy_token = f"reset-v1-{reset_strategy_id}"
     if (
         not isinstance(provenance, dict)
-        or provenance.get("schema_version") != 6
+        or provenance.get("schema_version") != 7
+        or not isinstance(robot_config, dict)
+        or robot_config.get("schema_version") != 3
+        or row.get("robot_config_schema_version") != "3"
+        or not isinstance(drive, dict)
+        or row.get("robot_wheel_velocity_drive_profile_id")
+        != drive.get("profile_id")
+        or row.get("robot_wheel_velocity_drive_overlay_sha256")
+        != drive.get("overlay_sha256")
+        or not isinstance(mass, dict)
+        or row.get("robot_mass_collision_profile_id")
+        != mass.get("profile_id")
+        or row.get("robot_mass_collision_overlay_sha256")
+        != mass.get("overlay_sha256")
+        or not isinstance(control, dict)
+        or row.get("wheel_command_application") != wheel_command_application
+        or control.get("wheel_command_application")
+        != wheel_command_application
+        or row.get("control_graph_topology_sha256")
+        != control.get("topology_sha256")
         or not isinstance(reset_strategy, dict)
         or reset_strategy.get("schema_version") != 1
         or reset_strategy.get("id") != reset_strategy_id
@@ -3518,7 +3922,7 @@ for row_index, row in enumerate(manifest_documents, start=1):
     manifest_report_locks[canonical_report_path] = {
         "sha256": report_sha256,
         "report_schema_version": 4,
-        "runtime_provenance_schema_version": 6,
+        "runtime_provenance_schema_version": 7,
         "reset_strategy_schema_version": 1,
         "reset_strategy_id": reset_strategy_id,
         "reset_strategy_token": reset_strategy_token,
@@ -3566,25 +3970,30 @@ if analysis_report_locks != manifest_report_locks:
         "aggregate selection does not match frozen manifest/report identities"
     )
 summary = {
-    "schema_version": 7,
+    "schema_version": 8,
     "report_type": "contact_ab_batch_summary",
     "result": "success",
     "schema_contract": {
         "project_config": 2,
-        "runtime_provenance": 6,
+        "robot_config": 3,
+        "wheel_velocity_drive": 1,
+        "mass_collision": 1,
+        "control_graph": 1,
+        "runtime_provenance": 7,
         "motion_report": 4,
-        "aggregate_analysis": 6,
+        "aggregate_analysis": 7,
         "physical_acceptance": 4,
-        "manifest": 2,
+        "manifest": 3,
     },
     "manifest_contract": {
-        "version": 2,
+        "version": 3,
         "columns": expected_manifest_fieldnames,
     },
     "environment_selection": environment_selection,
     "ground_topology_selection": ground_topology_selection,
     "contact_profile_selection": contact_profile_selection,
     "reset_strategy_selection": reset_strategy_selection,
+    "wheel_command_application": wheel_command_application,
     "environments": selected_environments,
     "ground_topologies": selected_topologies,
     "environment_topology_pairs": environment_topology_pairs,

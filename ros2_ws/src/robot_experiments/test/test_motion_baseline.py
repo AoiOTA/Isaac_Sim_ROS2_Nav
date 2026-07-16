@@ -104,14 +104,14 @@ def test_ground_topology_parameter_pair_requires_sha256_digest(digest):
         _decode_hashed_ground_topology_snapshot("{}", digest)
 
 
-@pytest.mark.parametrize("schema_version", [5, 6.0, True, None])
-def test_live_motion_report_requires_exact_runtime_schema_v6(schema_version):
-    with pytest.raises(RuntimeError, match="schema must be integer 6"):
+@pytest.mark.parametrize("schema_version", [6, 7.0, True, None])
+def test_live_motion_report_requires_exact_runtime_schema_v7(schema_version):
+    with pytest.raises(RuntimeError, match="schema must be integer 7"):
         _require_live_runtime_provenance_schema(schema_version)
 
 
-def test_live_motion_report_accepts_runtime_schema_v6():
-    assert _require_live_runtime_provenance_schema(6) == 6
+def test_live_motion_report_accepts_runtime_schema_v7():
+    assert _require_live_runtime_provenance_schema(7) == 7
 
 
 def test_base_motion_report_uses_schema_v4_while_configuration_stays_v1():
@@ -142,7 +142,7 @@ def test_base_motion_report_uses_schema_v4_while_configuration_stays_v1():
     assert report["configuration"]["schema_version"] == 1
 
 
-def test_motion_runner_reads_and_validates_reset_strategy_and_topology(
+def test_motion_runner_reads_and_validates_runtime_schema_v7_snapshots(
     monkeypatch,
 ):
     names = motion_baseline_runner._RUNTIME_PROVENANCE_PARAMETER_NAMES
@@ -183,10 +183,29 @@ def test_motion_runner_reads_and_validates_reset_strategy_and_topology(
         separators=(",", ":"),
         allow_nan=False,
     )
+    drive = {"schema_version": 1, "stage_usd_readback_verified": True}
+    mass = {"schema_version": 1, "stage_usd_readback_verified": True}
+    control_graph = {
+        "schema_version": 1,
+        "materialized_readback_verified": True,
+    }
+
+    def canonical_payload(snapshot):
+        return json.dumps(
+            snapshot,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    drive_payload = canonical_payload(drive)
+    mass_payload = canonical_payload(mass)
+    control_payload = canonical_payload(control_graph)
     values = {name: None for name in names}
     values.update(
         {
-            "runtime_provenance.schema_version": 6,
+            "runtime_provenance.schema_version": 7,
+            "runtime_provenance.robot.config.schema_version": 3,
             "runtime_provenance.environment.id": "Warehouse",
             "runtime_provenance.simulation.odometry_mode": "ground_truth",
             "runtime_provenance.simulation.reset_strategy.json": (
@@ -204,6 +223,20 @@ def test_motion_runner_reads_and_validates_reset_strategy_and_topology(
             "runtime_provenance.ground_topology.json": topology_payload,
             "runtime_provenance.ground_topology.sha256": hashlib.sha256(
                 topology_payload.encode("utf-8")
+            ).hexdigest(),
+            "runtime_provenance.robot.wheel_velocity_drive.json": (
+                drive_payload
+            ),
+            "runtime_provenance.robot.wheel_velocity_drive.sha256": (
+                hashlib.sha256(drive_payload.encode("utf-8")).hexdigest()
+            ),
+            "runtime_provenance.robot.mass_collision.json": mass_payload,
+            "runtime_provenance.robot.mass_collision.sha256": (
+                hashlib.sha256(mass_payload.encode("utf-8")).hexdigest()
+            ),
+            "runtime_provenance.control_graph.json": control_payload,
+            "runtime_provenance.control_graph.sha256": hashlib.sha256(
+                control_payload.encode("utf-8")
             ).hexdigest(),
         }
     )
@@ -250,12 +283,20 @@ def test_motion_runner_reads_and_validates_reset_strategy_and_topology(
     MotionBaselineRunner._read_runtime_provenance(runner)
 
     assert client.requested_names == names
-    assert runner._runtime_provenance["schema_version"] == 6
+    assert runner._runtime_provenance["schema_version"] == 7
+    assert runner._runtime_provenance["robot"]["config"][
+        "schema_version"
+    ] == 3
+    assert runner._runtime_provenance["robot"][
+        "wheel_velocity_drive"
+    ] == drive
+    assert runner._runtime_provenance["robot"]["mass_collision"] == mass
     assert (
         runner._runtime_provenance["simulation"]["reset_strategy"]
         == reset_strategy
     )
     assert runner._runtime_provenance["ground_topology"] == topology
+    assert runner._runtime_provenance["control_graph"] == control_graph
     assert validated == [runner._runtime_provenance]
 
 

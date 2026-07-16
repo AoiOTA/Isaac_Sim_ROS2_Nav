@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 import sys
 import traceback
-from typing import Sequence
+from typing import Mapping, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -256,12 +256,27 @@ def _rebuild_control_graph(
     idle_brake: object,
     graph_builder: object,
     graph_references: dict[str, object],
+    startup_control_snapshot: Mapping[str, object],
 ) -> object:
-    """Reset controller state and replace the materialized control graph."""
+    """Reset controller state and preserve the verified startup topology."""
 
     idle_brake.reset()
-    rebuilt = graph_builder.build_control()
+    rebuilt, snapshot = graph_builder.build_control_with_snapshot()
+    expected_identity = (
+        startup_control_snapshot.get("wheel_command_application"),
+        startup_control_snapshot.get("topology_sha256"),
+    )
+    actual_identity = (
+        snapshot.get("wheel_command_application"),
+        snapshot.get("topology_sha256"),
+    )
+    if actual_identity != expected_identity:
+        raise RuntimeError(
+            "materialized control graph topology changed across Reset: "
+            f"startup={expected_identity!r}, rebuilt={actual_identity!r}"
+        )
     graph_references["control"] = rebuilt
+    graph_references["control_snapshot"] = snapshot
     return rebuilt
 
 
@@ -404,16 +419,29 @@ def run(
         reset_strategy_snapshot = reset_contact_probe.provenance_snapshot(
             config.simulation.reset_strategy
         )
-        runtime_provenance = capture_runtime_provenance(
+        if (
+            composer.wheel_velocity_drive_snapshot is None
+            or composer.mass_collision_snapshot is None
+        ):
+            raise RuntimeError(
+                "pre-physics drive and mass/collision snapshots are required"
+            )
+        from isaac_sim.src.robot.mass_collision_runtime import (
+            capture_mass_tensor_snapshot,
+        )
+        from isaac_sim.src.robot.wheel_velocity_drive import (
+            capture_wheel_drive_tensor_snapshot,
+        )
+
+        wheel_drive_tensor_snapshot = capture_wheel_drive_tensor_snapshot(
+            robot,
             config,
-            stage,
-            articulation_usd_solver_iterations=(
-                articulation_usd_solver_iterations
-            ),
-            repository_root=PROJECT_ROOT,
-            reset_strategy_snapshot=reset_strategy_snapshot,
-            ground_topology_snapshot=composer.ground_topology_snapshot,
-            contact_snapshot=composer.contact_snapshot,
+            composer.wheel_velocity_drive_snapshot,
+        )
+        mass_tensor_snapshot = capture_mass_tensor_snapshot(
+            robot,
+            config,
+            composer.mass_collision_snapshot,
         )
 
         import rclpy
@@ -429,6 +457,54 @@ def run(
             parameter_overrides=[Parameter("use_sim_time", value=True)],
             automatically_declare_parameters_from_overrides=True,
         )
+
+        # Materialize the graph before publishing provenance: GraphSpec alone
+        # is not evidence that the live OmniGraph has the expected nodes,
+        # connections, configured values, and command writers.
+        from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
+
+        graph_builder = RosGraphBuilder(
+            config,
+            sensors,
+            wheel_command_application=wheel_command_application,
+        )
+        graph_handles = graph_builder.build()
+        graph_references: dict[str, object] = {
+            "all": graph_handles,
+            "control": graph_handles.control,
+            "control_snapshot": graph_handles.control_snapshot,
+        }
+        startup_control_snapshot = {
+            "wheel_command_application": graph_handles.control_snapshot[
+                "wheel_command_application"
+            ],
+            "topology_sha256": graph_handles.control_snapshot[
+                "topology_sha256"
+            ],
+        }
+        camera_graph_paths = tuple(
+            camera.graph_path for camera in sensors.cameras
+        )
+
+        runtime_provenance = capture_runtime_provenance(
+            config,
+            stage,
+            articulation_usd_solver_iterations=(
+                articulation_usd_solver_iterations
+            ),
+            repository_root=PROJECT_ROOT,
+            reset_strategy_snapshot=reset_strategy_snapshot,
+            ground_topology_snapshot=composer.ground_topology_snapshot,
+            contact_snapshot=composer.contact_snapshot,
+            wheel_velocity_drive_snapshot=(
+                composer.wheel_velocity_drive_snapshot
+            ),
+            wheel_drive_tensor_snapshot=wheel_drive_tensor_snapshot,
+            mass_collision_snapshot=composer.mass_collision_snapshot,
+            mass_tensor_snapshot=mass_tensor_snapshot,
+            control_graph_snapshot=graph_handles.control_snapshot,
+        )
+
         read_only = ParameterDescriptor(read_only=True)
         node.declare_parameter(
             "dynamic_obstacles_enabled",
@@ -460,19 +536,6 @@ def run(
             clock=lambda: float(SimulationManager.get_simulation_time()),
         )
 
-        from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
-
-        graph_builder = RosGraphBuilder(
-            config,
-            sensors,
-            wheel_command_application=wheel_command_application,
-        )
-        graph_handles = graph_builder.build()
-        graph_references: dict[str, object] = {"all": graph_handles}
-        camera_graph_paths = tuple(
-            camera.graph_path for camera in sensors.cameras
-        )
-
         from isaac_sim.src.bridge.reset_service import ResetServiceBridge
         from isaac_sim.src.ground_truth.recorder import GroundTruthRecorder
 
@@ -497,6 +560,7 @@ def run(
                 idle_brake,
                 graph_builder,
                 graph_references,
+                startup_control_snapshot,
             )
 
         def reset_odometry(mode: str) -> None:

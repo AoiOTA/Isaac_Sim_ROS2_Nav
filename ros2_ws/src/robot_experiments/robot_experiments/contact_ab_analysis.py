@@ -8,6 +8,7 @@ engineering decision, not that decision itself.
 from __future__ import annotations
 
 import argparse
+import copy
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -115,6 +116,9 @@ _RUNTIME_PROVENANCE_KEYS = {
 }
 _RUNTIME_PROVENANCE_TOPOLOGY_KEYS = _RUNTIME_PROVENANCE_KEYS | {
     "ground_topology",
+}
+_RUNTIME_PROVENANCE_V7_KEYS = _RUNTIME_PROVENANCE_TOPOLOGY_KEYS | {
+    "control_graph",
 }
 _RESULT_SEGMENT_KEYS = {
     "segment_id",
@@ -611,6 +615,552 @@ def _canonical(value: Any) -> str:
         )
     except (TypeError, ValueError) as exc:
         raise ConfigurationError(f"identity contains an invalid JSON value: {exc}") from exc
+
+
+def _strict_string_sequence(
+    value: Any,
+    location: str,
+    *,
+    expected_length: int | None = None,
+) -> list[str]:
+    raw = _sequence(value, location)
+    parsed = [
+        _string(item, f"{location}[{index}]")
+        for index, item in enumerate(raw)
+    ]
+    if expected_length is not None and len(parsed) != expected_length:
+        raise ConfigurationError(
+            f"{location} must contain exactly {expected_length} values"
+        )
+    if len(parsed) != len(set(parsed)):
+        raise ConfigurationError(f"{location} values must be unique")
+    return parsed
+
+
+def _strict_finite_sequence(
+    value: Any,
+    location: str,
+    *,
+    expected_length: int,
+    nonnegative: bool = False,
+) -> list[float]:
+    raw = _sequence(value, location)
+    if len(raw) != expected_length:
+        raise ConfigurationError(
+            f"{location} must contain exactly {expected_length} values"
+        )
+    parser = _nonnegative if nonnegative else _finite
+    return [parser(item, f"{location}[{index}]") for index, item in enumerate(raw)]
+
+
+def _matching_number(actual: Any, expected: float, location: str) -> float:
+    parsed = _finite(actual, location)
+    if not math.isclose(parsed, expected, rel_tol=1e-12, abs_tol=1e-12):
+        raise ConfigurationError(
+            f"{location} must match {expected!r}, observed {parsed!r}"
+        )
+    return parsed
+
+
+def _validate_v7_drive(
+    raw: Any,
+    location: str,
+) -> None:
+    drive = _mapping(raw, location)
+    _exact_keys(
+        drive,
+        {
+            "schema_version",
+            "profile_path",
+            "profile_sha256",
+            "profile_id",
+            "configured_si",
+            "authored_usd",
+            "joint_paths",
+            "overlay_identifier",
+            "overlay_sha256",
+            "stage_usd_readback_verified",
+            "physics_tensor",
+        },
+        location,
+    )
+    _exact_integer(drive.get("schema_version"), 1, f"{location}.schema_version")
+    _string(drive.get("profile_path"), f"{location}.profile_path")
+    profile_sha256 = _sha256(
+        drive.get("profile_sha256"), f"{location}.profile_sha256"
+    )
+    profile_id = _string(drive.get("profile_id"), f"{location}.profile_id")
+    if not _IDENTIFIER_PATTERN.fullmatch(profile_id):
+        raise ConfigurationError(f"{location}.profile_id must be path-safe")
+    configured = _mapping(drive.get("configured_si"), f"{location}.configured_si")
+    _exact_keys(
+        configured,
+        {
+            "drive_type",
+            "stiffness_n_m_per_rad",
+            "damping_n_m_s_per_rad",
+            "max_effort_n_m",
+            "max_joint_velocity_rad_s",
+        },
+        f"{location}.configured_si",
+    )
+    if configured.get("drive_type") != "force":
+        raise ConfigurationError(f"{location}.configured_si.drive_type must be 'force'")
+    stiffness = _finite(
+        configured.get("stiffness_n_m_per_rad"),
+        f"{location}.configured_si.stiffness_n_m_per_rad",
+    )
+    if stiffness != 0.0:
+        raise ConfigurationError(
+            f"{location}.configured_si.stiffness_n_m_per_rad must equal 0"
+        )
+    damping = _positive(
+        configured.get("damping_n_m_s_per_rad"),
+        f"{location}.configured_si.damping_n_m_s_per_rad",
+    )
+    max_effort = _positive(
+        configured.get("max_effort_n_m"),
+        f"{location}.configured_si.max_effort_n_m",
+    )
+    max_velocity = _positive(
+        configured.get("max_joint_velocity_rad_s"),
+        f"{location}.configured_si.max_joint_velocity_rad_s",
+    )
+    authored = _mapping(drive.get("authored_usd"), f"{location}.authored_usd")
+    _exact_keys(
+        authored,
+        {
+            "drive_type",
+            "stiffness_n_m_per_degree",
+            "damping_n_m_s_per_degree",
+            "max_force_n_m",
+            "max_joint_velocity_deg_s",
+        },
+        f"{location}.authored_usd",
+    )
+    if authored.get("drive_type") != "force":
+        raise ConfigurationError(f"{location}.authored_usd.drive_type must be 'force'")
+    _matching_number(
+        authored.get("stiffness_n_m_per_degree"),
+        stiffness * math.pi / 180.0,
+        f"{location}.authored_usd.stiffness_n_m_per_degree",
+    )
+    _matching_number(
+        authored.get("damping_n_m_s_per_degree"),
+        damping * math.pi / 180.0,
+        f"{location}.authored_usd.damping_n_m_s_per_degree",
+    )
+    _matching_number(
+        authored.get("max_force_n_m"),
+        max_effort,
+        f"{location}.authored_usd.max_force_n_m",
+    )
+    _matching_number(
+        authored.get("max_joint_velocity_deg_s"),
+        max_velocity * 180.0 / math.pi,
+        f"{location}.authored_usd.max_joint_velocity_deg_s",
+    )
+    joint_paths = _strict_string_sequence(
+        drive.get("joint_paths"), f"{location}.joint_paths", expected_length=4
+    )
+    if any(not path.startswith("/") for path in joint_paths):
+        raise ConfigurationError(f"{location}.joint_paths must be absolute prim paths")
+    _string(
+        drive.get("overlay_identifier"), f"{location}.overlay_identifier"
+    )
+    overlay_sha256 = _sha256(
+        drive.get("overlay_sha256"), f"{location}.overlay_sha256"
+    )
+    if drive.get("stage_usd_readback_verified") is not True:
+        raise ConfigurationError(
+            f"{location}.stage_usd_readback_verified must be true"
+        )
+    tensor_location = f"{location}.physics_tensor"
+    tensor = _mapping(drive.get("physics_tensor"), tensor_location)
+    _exact_keys(
+        tensor,
+        {
+            "schema_version",
+            "profile_path",
+            "profile_sha256",
+            "profile_id",
+            "stage_overlay_sha256",
+            "dof_names",
+            "dof_indices",
+            "drive_types",
+            "stiffnesses_n_m_per_rad",
+            "dampings_n_m_s_per_rad",
+            "max_efforts_n_m",
+            "max_joint_velocities_rad_s",
+            "physics_tensor_readback_verified",
+        },
+        tensor_location,
+    )
+    _exact_integer(tensor.get("schema_version"), 1, f"{tensor_location}.schema_version")
+    if (
+        tensor.get("profile_path") != drive.get("profile_path")
+        or tensor.get("profile_sha256") != profile_sha256
+        or tensor.get("profile_id") != profile_id
+        or tensor.get("stage_overlay_sha256") != overlay_sha256
+    ):
+        raise ConfigurationError(f"{tensor_location} profile/overlay identity mismatch")
+    dof_names = _strict_string_sequence(
+        tensor.get("dof_names"), f"{tensor_location}.dof_names", expected_length=4
+    )
+    raw_indices = _sequence(tensor.get("dof_indices"), f"{tensor_location}.dof_indices")
+    if len(raw_indices) != 4:
+        raise ConfigurationError(f"{tensor_location}.dof_indices must contain exactly 4 values")
+    indices = [
+        _nonnegative_integer_value(value, f"{tensor_location}.dof_indices[{index}]")
+        for index, value in enumerate(raw_indices)
+    ]
+    if len(indices) != len(set(indices)):
+        raise ConfigurationError(f"{tensor_location}.dof_indices values must be unique")
+    drive_types = _sequence(tensor.get("drive_types"), f"{tensor_location}.drive_types")
+    if list(drive_types) != ["force"] * 4:
+        raise ConfigurationError(f"{tensor_location}.drive_types must be four force drives")
+    tensor_arrays = {
+        "stiffnesses_n_m_per_rad": stiffness,
+        "dampings_n_m_s_per_rad": damping,
+        "max_efforts_n_m": max_effort,
+        "max_joint_velocities_rad_s": max_velocity,
+    }
+    for field, expected in tensor_arrays.items():
+        values = _strict_finite_sequence(
+            tensor.get(field),
+            f"{tensor_location}.{field}",
+            expected_length=4,
+            nonnegative=True,
+        )
+        for index, value in enumerate(values):
+            _matching_number(value, expected, f"{tensor_location}.{field}[{index}]")
+    if tensor.get("physics_tensor_readback_verified") is not True:
+        raise ConfigurationError(
+            f"{tensor_location}.physics_tensor_readback_verified must be true"
+        )
+    if any(name not in path for name, path in zip(dof_names, joint_paths)):
+        raise ConfigurationError(f"{location} joint paths and tensor DOF names mismatch")
+
+
+def _validate_v7_mass_collision(
+    raw: Any,
+    robot_asset_sha256: str,
+    location: str,
+) -> None:
+    mass = _mapping(raw, location)
+    _exact_keys(
+        mass,
+        {
+            "schema_version",
+            "profile_path",
+            "profile_sha256",
+            "profile_id",
+            "profile_mode",
+            "robot_asset_sha256",
+            "sensor_shells",
+            "base_inertial",
+            "expected_link_masses",
+            "expected_total_mass_kg",
+            "overlay_id",
+            "overlay_identifier",
+            "overlay_sha256",
+            "stage_usd_readback_verified",
+            "physics_tensor",
+        },
+        location,
+    )
+    _exact_integer(mass.get("schema_version"), 1, f"{location}.schema_version")
+    _string(mass.get("profile_path"), f"{location}.profile_path")
+    _sha256(mass.get("profile_sha256"), f"{location}.profile_sha256")
+    profile_id = _string(mass.get("profile_id"), f"{location}.profile_id")
+    if not _IDENTIFIER_PATTERN.fullmatch(profile_id):
+        raise ConfigurationError(f"{location}.profile_id must be path-safe")
+    _string(mass.get("profile_mode"), f"{location}.profile_mode")
+    if mass.get("robot_asset_sha256") != robot_asset_sha256:
+        raise ConfigurationError(f"{location}.robot_asset_sha256 must match robot.asset")
+    shells = _sequence(mass.get("sensor_shells"), f"{location}.sensor_shells")
+    if len(shells) != 2:
+        raise ConfigurationError(f"{location}.sensor_shells must contain exactly 2 entries")
+    shell_paths = []
+    for index, raw_shell in enumerate(shells):
+        shell_location = f"{location}.sensor_shells[{index}]"
+        shell = _mapping(raw_shell, shell_location)
+        _exact_keys(shell, {"prim_path", "active", "collision_enabled"}, shell_location)
+        path = _string(shell.get("prim_path"), f"{shell_location}.prim_path")
+        if not path.startswith("/"):
+            raise ConfigurationError(f"{shell_location}.prim_path must be absolute")
+        shell_paths.append(path)
+        if not isinstance(shell.get("active"), bool) or not isinstance(
+            shell.get("collision_enabled"), bool
+        ):
+            raise ConfigurationError(f"{shell_location} state values must be booleans")
+    if len(set(shell_paths)) != 2:
+        raise ConfigurationError(f"{location}.sensor_shells prim paths must be unique")
+    base_inertial = mass.get("base_inertial")
+    if base_inertial is not None:
+        inertial_location = f"{location}.base_inertial"
+        inertial = _mapping(base_inertial, inertial_location)
+        _exact_keys(
+            inertial,
+            {"prim_path", "mass_kg", "center_of_mass_m", "inertia_kg_m2"},
+            inertial_location,
+        )
+        _string(inertial.get("prim_path"), f"{inertial_location}.prim_path")
+        _positive(inertial.get("mass_kg"), f"{inertial_location}.mass_kg")
+        _strict_finite_sequence(
+            inertial.get("center_of_mass_m"),
+            f"{inertial_location}.center_of_mass_m",
+            expected_length=3,
+        )
+        inertia_rows = _sequence(
+            inertial.get("inertia_kg_m2"), f"{inertial_location}.inertia_kg_m2"
+        )
+        if len(inertia_rows) != 3:
+            raise ConfigurationError(f"{inertial_location}.inertia_kg_m2 must be 3x3")
+        for row_index, row in enumerate(inertia_rows):
+            _strict_finite_sequence(
+                row,
+                f"{inertial_location}.inertia_kg_m2[{row_index}]",
+                expected_length=3,
+            )
+    expected_links = _sequence(
+        mass.get("expected_link_masses"), f"{location}.expected_link_masses"
+    )
+    if len(expected_links) != 5:
+        raise ConfigurationError(f"{location}.expected_link_masses must contain exactly 5 entries")
+    expected_by_path = {}
+    for index, raw_link in enumerate(expected_links):
+        link_location = f"{location}.expected_link_masses[{index}]"
+        link = _mapping(raw_link, link_location)
+        _exact_keys(link, {"prim_path", "mass_kg"}, link_location)
+        path = _string(link.get("prim_path"), f"{link_location}.prim_path")
+        if not path.startswith("/") or path in expected_by_path:
+            raise ConfigurationError(f"{location}.expected_link_masses prim paths must be unique absolute paths")
+        expected_by_path[path] = _positive(link.get("mass_kg"), f"{link_location}.mass_kg")
+    expected_total = _positive(
+        mass.get("expected_total_mass_kg"), f"{location}.expected_total_mass_kg"
+    )
+    _matching_number(
+        sum(expected_by_path.values()),
+        expected_total,
+        f"{location}.expected_link_masses.total",
+    )
+    overlay_id = _string(mass.get("overlay_id"), f"{location}.overlay_id")
+    if overlay_id != f"mass_collision_profile/{profile_id}":
+        raise ConfigurationError(f"{location}.overlay_id contradicts profile_id")
+    _string(mass.get("overlay_identifier"), f"{location}.overlay_identifier")
+    _sha256(mass.get("overlay_sha256"), f"{location}.overlay_sha256")
+    if mass.get("stage_usd_readback_verified") is not True:
+        raise ConfigurationError(f"{location}.stage_usd_readback_verified must be true")
+    tensor_location = f"{location}.physics_tensor"
+    tensor = _mapping(mass.get("physics_tensor"), tensor_location)
+    _exact_keys(
+        tensor,
+        {
+            "schema_version",
+            "profile_id",
+            "links",
+            "total_mass_kg",
+            "physics_tensor_readback_verified",
+        },
+        tensor_location,
+    )
+    _exact_integer(tensor.get("schema_version"), 1, f"{tensor_location}.schema_version")
+    if tensor.get("profile_id") != profile_id:
+        raise ConfigurationError(f"{tensor_location}.profile_id mismatch")
+    tensor_links = _sequence(tensor.get("links"), f"{tensor_location}.links")
+    if len(tensor_links) != 5:
+        raise ConfigurationError(f"{tensor_location}.links must contain exactly 5 entries")
+    tensor_paths = set()
+    tensor_total = 0.0
+    for index, raw_link in enumerate(tensor_links):
+        link_location = f"{tensor_location}.links[{index}]"
+        link = _mapping(raw_link, link_location)
+        _exact_keys(
+            link,
+            {"name", "prim_path", "mass_kg", "center_of_mass_m", "inertia_kg_m2"},
+            link_location,
+        )
+        _string(link.get("name"), f"{link_location}.name")
+        path = _string(link.get("prim_path"), f"{link_location}.prim_path")
+        if path in tensor_paths:
+            raise ConfigurationError(f"{tensor_location}.links prim paths must be unique")
+        tensor_paths.add(path)
+        link_mass = _positive(link.get("mass_kg"), f"{link_location}.mass_kg")
+        tensor_total += link_mass
+        if path not in expected_by_path:
+            raise ConfigurationError(f"{link_location}.prim_path is not expected")
+        _matching_number(link_mass, expected_by_path[path], f"{link_location}.mass_kg")
+        _strict_finite_sequence(
+            link.get("center_of_mass_m"),
+            f"{link_location}.center_of_mass_m",
+            expected_length=3,
+        )
+        inertia_rows = _sequence(link.get("inertia_kg_m2"), f"{link_location}.inertia_kg_m2")
+        if len(inertia_rows) != 3:
+            raise ConfigurationError(f"{link_location}.inertia_kg_m2 must be 3x3")
+        for row_index, row in enumerate(inertia_rows):
+            _strict_finite_sequence(
+                row,
+                f"{link_location}.inertia_kg_m2[{row_index}]",
+                expected_length=3,
+            )
+    if tensor_paths != set(expected_by_path):
+        raise ConfigurationError(f"{tensor_location}.links must match expected links")
+    tensor_total_reported = _positive(
+        tensor.get("total_mass_kg"), f"{tensor_location}.total_mass_kg"
+    )
+    _matching_number(tensor_total, tensor_total_reported, f"{tensor_location}.links.total")
+    _matching_number(tensor_total_reported, expected_total, f"{tensor_location}.total_mass_kg")
+    if tensor.get("physics_tensor_readback_verified") is not True:
+        raise ConfigurationError(f"{tensor_location}.physics_tensor_readback_verified must be true")
+
+
+def _validate_v7_control_graph(raw: Any, location: str) -> None:
+    control = _mapping(raw, location)
+    _exact_keys(
+        control,
+        {
+            "schema_version",
+            "wheel_command_application",
+            "topology",
+            "topology_sha256",
+            "materialized_readback_verified",
+        },
+        location,
+    )
+    _exact_integer(control.get("schema_version"), 1, f"{location}.schema_version")
+    mode = control.get("wheel_command_application")
+    if mode not in {"split_axle_v1", "single_four_wheel_write_v1"}:
+        raise ConfigurationError(f"{location}.wheel_command_application is unsupported")
+    topology_location = f"{location}.topology"
+    topology = _mapping(control.get("topology"), topology_location)
+    _exact_keys(
+        topology,
+        {"graph_path", "pipeline_stage", "nodes", "connections", "command_writers"},
+        topology_location,
+    )
+    graph_path = _string(topology.get("graph_path"), f"{topology_location}.graph_path")
+    if not graph_path.startswith("/") or topology.get("pipeline_stage") != "on_demand":
+        raise ConfigurationError(f"{topology_location} graph path/pipeline contract mismatch")
+    nodes = _sequence(topology.get("nodes"), f"{topology_location}.nodes")
+    parsed_nodes = []
+    for index, raw_node in enumerate(nodes):
+        node_location = f"{topology_location}.nodes[{index}]"
+        node = _mapping(raw_node, node_location)
+        _exact_keys(node, {"name", "type_name"}, node_location)
+        parsed_nodes.append(
+            {
+                "name": _string(node.get("name"), f"{node_location}.name"),
+                "type_name": _string(node.get("type_name"), f"{node_location}.type_name"),
+            }
+        )
+    if parsed_nodes != sorted(parsed_nodes, key=lambda item: item["name"]) or len(
+        {item["name"] for item in parsed_nodes}
+    ) != len(parsed_nodes):
+        raise ConfigurationError(f"{topology_location}.nodes must be sorted and unique")
+    connections = _sequence(topology.get("connections"), f"{topology_location}.connections")
+    parsed_connections = []
+    for index, raw_connection in enumerate(connections):
+        connection_location = f"{topology_location}.connections[{index}]"
+        connection = _mapping(raw_connection, connection_location)
+        _exact_keys(connection, {"source", "target"}, connection_location)
+        parsed_connections.append(
+            {
+                "source": _string(connection.get("source"), f"{connection_location}.source"),
+                "target": _string(connection.get("target"), f"{connection_location}.target"),
+            }
+        )
+    if parsed_connections != sorted(
+        parsed_connections, key=lambda item: (item["source"], item["target"])
+    ) or len({(item["source"], item["target"]) for item in parsed_connections}) != len(
+        parsed_connections
+    ):
+        raise ConfigurationError(f"{topology_location}.connections must be sorted and unique")
+    writers = _sequence(topology.get("command_writers"), f"{topology_location}.command_writers")
+    parsed_writers = []
+    all_joint_names = []
+    for index, raw_writer in enumerate(writers):
+        writer_location = f"{topology_location}.command_writers[{index}]"
+        writer = _mapping(raw_writer, writer_location)
+        _exact_keys(writer, {"node", "target_prim", "joint_names"}, writer_location)
+        joints = _strict_string_sequence(
+            writer.get("joint_names"), f"{writer_location}.joint_names"
+        )
+        all_joint_names.extend(joints)
+        parsed_writers.append(
+            {
+                "node": _string(writer.get("node"), f"{writer_location}.node"),
+                "target_prim": _string(writer.get("target_prim"), f"{writer_location}.target_prim"),
+                "joint_names": joints,
+            }
+        )
+    expected_writer_count = 2 if mode == "split_axle_v1" else 1
+    if (
+        len(parsed_writers) != expected_writer_count
+        or parsed_writers != sorted(parsed_writers, key=lambda item: item["node"])
+        or len(all_joint_names) != 4
+        or len(set(all_joint_names)) != 4
+    ):
+        raise ConfigurationError(f"{topology_location}.command_writers contradict control mode")
+    canonical_topology = _canonical(topology).encode("utf-8")
+    expected_sha256 = hashlib.sha256(canonical_topology).hexdigest()
+    if _sha256(control.get("topology_sha256"), f"{location}.topology_sha256") != expected_sha256:
+        raise ConfigurationError(f"{location}.topology_sha256 contradicts topology")
+    if control.get("materialized_readback_verified") is not True:
+        raise ConfigurationError(f"{location}.materialized_readback_verified must be true")
+
+
+def _validate_runtime_provenance_for_analysis(
+    provenance: Mapping[str, Any],
+    location: str,
+) -> None:
+    """Validate v3-v7 provenance while keeping v7 additions fail-closed."""
+
+    if provenance.get("schema_version") != 7:
+        try:
+            validate_runtime_provenance(provenance)
+        except ReportValidationError as exc:
+            raise ConfigurationError(f"{location}: {exc}") from exc
+        return
+
+    robot = _mapping(provenance.get("robot"), f"{location}.robot")
+    config = _mapping(robot.get("config"), f"{location}.robot.config")
+    _exact_keys(
+        config,
+        {"schema_version", "path", "sha256"},
+        f"{location}.robot.config",
+    )
+    _exact_integer(
+        config.get("schema_version"), 3, f"{location}.robot.config.schema_version"
+    )
+    legacy = copy.deepcopy(dict(provenance))
+    legacy["schema_version"] = 6
+    legacy.pop("control_graph", None)
+    legacy_robot = legacy["robot"]
+    legacy_robot.pop("wheel_velocity_drive", None)
+    legacy_robot.pop("mass_collision", None)
+    legacy_robot["config"].pop("schema_version", None)
+    try:
+        validate_runtime_provenance(legacy)
+    except ReportValidationError as exc:
+        raise ConfigurationError(f"{location}: {exc}") from exc
+    robot_asset = _mapping(robot.get("asset"), f"{location}.robot.asset")
+    robot_asset_sha256 = _sha256(
+        robot_asset.get("sha256"), f"{location}.robot.asset.sha256"
+    )
+    _validate_v7_drive(
+        robot.get("wheel_velocity_drive"),
+        f"{location}.robot.wheel_velocity_drive",
+    )
+    _validate_v7_mass_collision(
+        robot.get("mass_collision"),
+        robot_asset_sha256,
+        f"{location}.robot.mass_collision",
+    )
+    _validate_v7_control_graph(
+        provenance.get("control_graph"), f"{location}.control_graph"
+    )
 
 
 def _distribution(values: Sequence[float], location: str) -> dict[str, float | int]:
@@ -2746,7 +3296,7 @@ def _identity_locks(
     reset_strategy_lock: dict[str, Any] | None = None
     reset_strategy_definition_lock: dict[str, Any] | None = None
     reset_contact_probe_lock: dict[str, Any] | None = None
-    if provenance_schema == 6:
+    if provenance_schema in {6, 7}:
         reset_strategy = _mapping(
             simulation.get("reset_strategy"),
             "runtime_provenance.simulation.reset_strategy",
@@ -2766,10 +3316,22 @@ def _identity_locks(
         # Reset strategy is the v6 treatment variable.  Every other simulation
         # field remains a cross-treatment global lock.
         del locked_simulation["reset_strategy"]
+    locked_robot = copy.deepcopy(dict(robot))
+    if provenance_schema == 7:
+        for field in ("wheel_velocity_drive", "mass_collision"):
+            snapshot = _mapping(
+                locked_robot.get(field), f"runtime_provenance.robot.{field}"
+            )
+            if "overlay_identifier" not in snapshot:
+                raise ConfigurationError(
+                    f"runtime_provenance.robot.{field}.overlay_identifier "
+                    "is required"
+                )
+            del snapshot["overlay_identifier"]
     global_lock = {
         # Lock complete validated mappings so future nested schema additions
         # cannot become silent experimental variables.
-        "robot": dict(robot),
+        "robot": locked_robot,
         "simulation": locked_simulation,
         "git": dict(git),
         "motion_config_file": _string(
@@ -2779,6 +3341,11 @@ def _identity_locks(
             report.get("config_sha256"), "report.config_sha256"
         ),
         "motion_configuration": dict(configuration),
+        **(
+            {"control_graph": copy.deepcopy(provenance["control_graph"])}
+            if provenance_schema == 7
+            else {}
+        ),
     }
     # The root-layer digest is captured after physics/runtime initialization.
     # Although topology/contact author their direct opinions in SessionLayer,
@@ -2796,7 +3363,7 @@ def _identity_locks(
     }
     topology_lock: dict[str, Any] | None = None
     topology_ab_contact_lock: dict[str, Any] | None = None
-    if provenance_schema in {5, 6}:
+    if provenance_schema in {5, 6, 7}:
         collider_contract = _mapping(
             contact.get("collider_contract"),
             "runtime_provenance.contact.collider_contract",
@@ -2879,7 +3446,7 @@ def _identity_locks(
         "explicit_materials": contact["explicit_materials"],
         "thresholds_authored": contact["thresholds_authored"],
     }
-    if provenance_schema in {5, 6}:
+    if provenance_schema in {5, 6, 7}:
         # A topology A/B may change only the topology overlay and the exact
         # ground collider/binding path set.  Scene thresholds, wheel-side
         # evidence, and material values must remain identical for the same
@@ -2975,25 +3542,31 @@ def _validated_record(
     if (
         isinstance(provenance_schema, bool)
         or not isinstance(provenance_schema, int)
-        or provenance_schema not in {3, 4, 5, 6}
+        or provenance_schema not in {3, 4, 5, 6, 7}
     ):
         raise ConfigurationError(
             f"{location}.runtime_provenance.schema_version must be integer "
-            "3, 4, 5, or 6"
+            "3, 4, 5, 6, or 7"
         )
     _exact_keys(
         provenance,
         (
-            _RUNTIME_PROVENANCE_TOPOLOGY_KEYS
+            _RUNTIME_PROVENANCE_V7_KEYS
+            if provenance_schema == 7
+            else _RUNTIME_PROVENANCE_TOPOLOGY_KEYS
             if provenance_schema in {5, 6}
             else _RUNTIME_PROVENANCE_KEYS
         ),
         f"{location}.runtime_provenance",
     )
-    try:
-        validate_runtime_provenance(provenance)
-    except ReportValidationError as exc:
-        raise ConfigurationError(f"{location} runtime provenance: {exc}") from exc
+    _validate_runtime_provenance_for_analysis(
+        provenance, f"{location} runtime provenance"
+    )
+    if provenance_schema == 7 and report_schema_version != 4:
+        raise ConfigurationError(
+            f"{location} runtime provenance schema 7 requires motion report "
+            "schema 4"
+        )
     if provenance_schema == 3:
         if wheel_radius_m != CANONICAL_WHEEL_RADIUS_M:
             raise ConfigurationError(
@@ -3122,7 +3695,7 @@ def _validated_record(
                 "a non-empty sorted unique list"
             )
     physical_stop_contract = None
-    if provenance_schema in {5, 6}:
+    if provenance_schema in {5, 6, 7}:
         physical_stop_contract = {
             "stable_duration_sec": _nonnegative(
                 stop_configuration.get("stable_duration_sec"),
@@ -3237,7 +3810,7 @@ def _validated_record(
             f"{location}.timestamp_integrity",
         )
     physical_yaw_rate_metrics = None
-    if provenance_schema in {5, 6} and report_schema_version in {2, 3, 4}:
+    if provenance_schema in {5, 6, 7} and report_schema_version in {2, 3, 4}:
         physical_yaw_rate_metrics = {}
         for segment_id, motion, _linear, angular, _duration in _SEGMENT_SPECS:
             if motion not in {"rotate_left", "rotate_right"}:
@@ -3261,7 +3834,7 @@ def _validated_record(
         contact_lock,
     ) = _identity_locks(report, provenance, configuration)
     ground_topology_id = None
-    if provenance_schema in {5, 6}:
+    if provenance_schema in {5, 6, 7}:
         topology = _mapping(
             provenance.get("ground_topology"),
             f"{location}.runtime_provenance.ground_topology",
@@ -3285,7 +3858,7 @@ def _validated_record(
     reset_strategy_schema_version = None
     reset_strategy_id = None
     reset_strategy_token = None
-    if provenance_schema == 6:
+    if provenance_schema in {6, 7}:
         reset_strategy = _mapping(
             simulation.get("reset_strategy"),
             f"{location}.runtime_provenance.simulation.reset_strategy",
@@ -3435,7 +4008,7 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
                         "reset_strategy_id": record.reset_strategy_id,
                         "reset_strategy_token": record.reset_strategy_token,
                     }
-                    if record.runtime_provenance_schema == 6
+                    if record.runtime_provenance_schema in {6, 7}
                     else {}
                 ),
             }
@@ -3517,7 +4090,7 @@ def _group_summary(records: Sequence[InputRecord]) -> dict[str, Any]:
         summary["odometry_mode"] = first.odometry_mode
         summary["ground_topology_id"] = first.ground_topology_id
         summary["ground_topology_contract"] = first.topology_lock
-    if first.runtime_provenance_schema == 6:
+    if first.runtime_provenance_schema in {6, 7}:
         summary["reset_strategy_schema_version"] = (
             first.reset_strategy_schema_version
         )
@@ -3761,10 +4334,10 @@ def _physical_acceptance(
         for records in grouped.values()
         for record in records
     }
-    if len(runtime_schemas) != 1 or not runtime_schemas <= {5, 6}:
+    if len(runtime_schemas) != 1 or not runtime_schemas <= {5, 6, 7}:
         raise ConfigurationError(
             "physical acceptance requires one homogeneous runtime provenance "
-            "schema 5 or 6 batch"
+            "schema 5, 6, or 7 batch"
         )
     runtime_provenance_schema = next(iter(runtime_schemas))
     motion_schemas = {
@@ -3778,7 +4351,7 @@ def _physical_acceptance(
         )
     motion_report_schema = next(iter(motion_schemas))
     motion_v4 = motion_report_schema == 4
-    if motion_v4 and runtime_provenance_schema != 6:
+    if motion_v4 and runtime_provenance_schema not in {6, 7}:
         raise ConfigurationError(
             "motion report schema 4 requires runtime provenance schema 6"
         )
@@ -3880,7 +4453,7 @@ def _physical_acceptance(
             4
             if motion_v4
             else 3
-            if runtime_provenance_schema == 6
+            if runtime_provenance_schema in {6, 7}
             else 2
         ),
         "policy_id": (
@@ -4420,7 +4993,7 @@ def _revalidated_physical_acceptance_from_sources(
             raise ConfigurationError(
                 f"{location} topology A/B contact invariants differ within batch"
             )
-        if expected_runtime_provenance_schema == 6:
+        if expected_runtime_provenance_schema in {6, 7}:
             if (
                 record.reset_strategy_token is None
                 or record.reset_strategy_lock is None
@@ -4493,7 +5066,7 @@ def _revalidated_physical_acceptance_from_sources(
                 record.reset_strategy_token,
                 record.contact_profile_id,
             )
-            if expected_runtime_provenance_schema == 6
+            if expected_runtime_provenance_schema in {6, 7}
             else (
                 record.environment_id,
                 record.ground_topology_id,
@@ -4522,7 +5095,7 @@ def _revalidated_physical_acceptance_from_sources(
     source_evidence: dict[str, Any] = {
         "physical_acceptance": _physical_acceptance(grouped),
     }
-    if expected_runtime_provenance_schema == 6:
+    if expected_runtime_provenance_schema in {6, 7}:
         source_evidence.update(
             {
                 "reset_strategy_contracts": {
@@ -4576,34 +5149,25 @@ def validate_physical_acceptance_accounting(
     if (
         isinstance(analysis_schema_version, bool)
         or not isinstance(analysis_schema_version, int)
-        or analysis_schema_version not in {4, 5, 6}
+        or analysis_schema_version not in {4, 5, 6, 7}
     ):
         raise ConfigurationError(
-            "analysis.schema_version must be integer 4, 5, or 6"
+            "analysis.schema_version must be integer 4, 5, 6, or 7"
         )
-    expected_runtime_provenance_schema = (
-        6 if analysis_schema_version in {5, 6} else 5
-    )
-    expected_motion_report_schema = (
-        4 if analysis_schema_version == 6 else 3
-    )
-    expected_physical_schema = (
-        4
-        if analysis_schema_version == 6
-        else 3
-        if expected_runtime_provenance_schema == 6
-        else 2
-    )
-    expected_policy_id = (
-        "skid_steer_plan_8_7_v4"
-        if analysis_schema_version == 6
-        else _PHYSICAL_ACCEPTANCE_POLICY_IDS[
-            expected_runtime_provenance_schema
-        ]
-    )
+    (
+        expected_runtime_provenance_schema,
+        expected_motion_report_schema,
+        expected_physical_schema,
+        expected_policy_id,
+    ) = {
+        4: (5, 3, 2, "skid_steer_plan_8_7_v2"),
+        5: (6, 3, 3, "skid_steer_plan_8_7_v3"),
+        6: (6, 4, 4, "skid_steer_plan_8_7_v4"),
+        7: (7, 4, 4, "skid_steer_plan_8_7_v4"),
+    }[analysis_schema_version]
     expected_thresholds = (
         _PHYSICAL_ACCEPTANCE_V4_THRESHOLDS
-        if analysis_schema_version == 6
+        if expected_physical_schema == 4
         else _PHYSICAL_ACCEPTANCE_THRESHOLDS
     )
     selection_policy = _mapping(
@@ -4634,7 +5198,7 @@ def validate_physical_acceptance_accounting(
             "analysis.selection_policy.expected_profiles must be unique"
         )
     selected_reset_strategies: list[str] = []
-    if expected_runtime_provenance_schema == 6:
+    if expected_runtime_provenance_schema in {6, 7}:
         raw_expected_reset_strategies = _sequence(
             selection_policy.get("expected_reset_strategies"),
             "analysis.selection_policy.expected_reset_strategies",
@@ -4849,7 +5413,7 @@ def validate_physical_acceptance_accounting(
             "ground_topology_id",
             "contact_profile_id",
         }
-        if expected_runtime_provenance_schema == 6:
+        if expected_runtime_provenance_schema in {6, 7}:
             expected_included_keys.update(
                 {
                     "runtime_provenance_schema_version",
@@ -4892,10 +5456,10 @@ def validate_physical_acceptance_accounting(
         reset_strategy_schema_version = None
         reset_strategy_id = None
         reset_strategy_token = None
-        if expected_runtime_provenance_schema == 6:
+        if expected_runtime_provenance_schema in {6, 7}:
             _exact_integer(
                 item.get("runtime_provenance_schema_version"),
-                6,
+                expected_runtime_provenance_schema,
                 f"{included_location}.runtime_provenance_schema_version",
             )
             reset_strategy_schema_version = _positive_integer_value(
@@ -5166,7 +5730,7 @@ def validate_physical_acceptance_accounting(
                 "canonical_sha256",
                 "report_schema_version",
             }
-            if expected_runtime_provenance_schema == 6:
+            if expected_runtime_provenance_schema in {6, 7}:
                 expected_report_keys.update(
                     {
                         "runtime_provenance_schema_version",
@@ -5196,10 +5760,10 @@ def validate_physical_acceptance_accounting(
                 )
             report_schema_versions.append(report_schema_version)
             report_reset_identity: tuple[Any, ...] = ()
-            if expected_runtime_provenance_schema == 6:
+            if expected_runtime_provenance_schema in {6, 7}:
                 _exact_integer(
                     report.get("runtime_provenance_schema_version"),
-                    6,
+                    expected_runtime_provenance_schema,
                     f"{report_location}.runtime_provenance_schema_version",
                 )
                 report_reset_schema = _positive_integer_value(
@@ -5264,11 +5828,11 @@ def validate_physical_acceptance_accounting(
         if (
             isinstance(runtime_provenance_schema, bool)
             or not isinstance(runtime_provenance_schema, int)
-            or runtime_provenance_schema not in {3, 4, 5, 6}
+            or runtime_provenance_schema not in {3, 4, 5, 6, 7}
         ):
             raise ConfigurationError(
                 f"analysis.groups.{group_id}.runtime_provenance_schema must "
-                "be integer 3, 4, 5, or 6"
+                "be integer 3, 4, 5, 6, or 7"
             )
         if runtime_provenance_schema != selection_runtime_provenance_schema:
             raise ConfigurationError(
@@ -5299,7 +5863,7 @@ def validate_physical_acceptance_accounting(
         reset_strategy_schema_version = None
         reset_strategy_id = None
         reset_strategy_token = None
-        if expected_runtime_provenance_schema == 6:
+        if expected_runtime_provenance_schema in {6, 7}:
             reset_strategy_schema_version = _positive_integer_value(
                 analysis_group.get("reset_strategy_schema_version"),
                 f"analysis.groups.{group_id}.reset_strategy_schema_version",
@@ -5339,7 +5903,7 @@ def validate_physical_acceptance_accounting(
             path, raw_hash, canonical_hash, report_schema_version = (
                 report_identity[:4]
             )
-            if expected_runtime_provenance_schema == 6:
+            if expected_runtime_provenance_schema in {6, 7}:
                 if report_identity[4:] != (
                     reset_strategy_schema_version,
                     reset_strategy_id,
@@ -5676,7 +6240,7 @@ def validate_physical_acceptance_accounting(
         raise ConfigurationError(
             "analysis.physical_acceptance does not match revalidated source reports"
         )
-    if expected_runtime_provenance_schema == 6:
+    if expected_runtime_provenance_schema in {6, 7}:
         for field in (
             "reset_strategy_contracts",
             "reset_strategy_definitions",
@@ -5873,17 +6437,17 @@ def analyse_contact_ab(
             f"{sorted(motion_report_schemas)}"
         )
     motion_report_schema = next(iter(motion_report_schemas))
-    if runtime_provenance_schema not in {5, 6} and explicit_topology_selection:
+    if runtime_provenance_schema not in {5, 6, 7} and explicit_topology_selection:
         raise ConfigurationError(
-            "expected_topologies requires runtime provenance schema 5 or 6; "
+            "expected_topologies requires runtime provenance schema 5, 6, or 7; "
             f"observed schema {runtime_provenance_schema}"
         )
-    if runtime_provenance_schema != 6 and explicit_reset_strategy_selection:
+    if runtime_provenance_schema not in {6, 7} and explicit_reset_strategy_selection:
         raise ConfigurationError(
-            "expected_reset_strategies requires runtime provenance schema 6; "
+            "expected_reset_strategies requires runtime provenance schema 6 or 7; "
             f"observed schema {runtime_provenance_schema}"
         )
-    if require_complete_matrix and runtime_provenance_schema == 6:
+    if require_complete_matrix and runtime_provenance_schema in {6, 7}:
         selected_reset_strategies = COMPLETE_MATRIX_RESET_STRATEGIES
 
     reference_lock = included[0].global_lock
@@ -5913,7 +6477,7 @@ def analyse_contact_ab(
                 f"{record.environment_id}: {record.path} differs from "
                 f"{environment_reference.path}"
             )
-        if runtime_provenance_schema in {5, 6}:
+        if runtime_provenance_schema in {5, 6, 7}:
             if record.ground_topology_id is None or record.topology_lock is None:
                 raise ConfigurationError(
                     f"schema-{runtime_provenance_schema} report {record.path} "
@@ -5957,7 +6521,7 @@ def analyse_contact_ab(
                     f"{contact_ab_key[0]}::{contact_ab_key[1]}: "
                     f"{record.path} differs from {contact_ab_reference.path}"
                 )
-        if runtime_provenance_schema == 6:
+        if runtime_provenance_schema in {6, 7}:
             if (
                 record.ground_topology_id is None
                 or record.reset_strategy_token is None
@@ -5966,7 +6530,8 @@ def analyse_contact_ab(
                 or record.reset_contact_probe_lock is None
             ):
                 raise ConfigurationError(
-                    f"schema-6 report {record.path} lacks a reset strategy lock"
+                    f"schema-{runtime_provenance_schema} report {record.path} "
+                    "lacks a reset strategy lock"
                 )
             reset_key = (
                 record.environment_id,
@@ -6043,7 +6608,7 @@ def analyse_contact_ab(
                 record.reset_strategy_token,
                 record.contact_profile_id,
             )
-            if runtime_provenance_schema == 6
+            if runtime_provenance_schema in {6, 7}
             else (
                 record.environment_id,
                 record.ground_topology_id,
@@ -6074,16 +6639,16 @@ def analyse_contact_ab(
 
     observed_groups = set(grouped)
     required_groups: set[tuple[str, ...]] = set()
-    if runtime_provenance_schema in {5, 6}:
+    if runtime_provenance_schema in {5, 6, 7}:
         observed_environments = {group[0] for group in observed_groups}
         observed_topologies = {group[1] for group in observed_groups}
-        profile_index = 3 if runtime_provenance_schema == 6 else 2
+        profile_index = 3 if runtime_provenance_schema in {6, 7} else 2
         observed_profiles = {
             group[profile_index] for group in observed_groups
         }
         observed_reset_strategies = (
             {group[2] for group in observed_groups}
-            if runtime_provenance_schema == 6
+            if runtime_provenance_schema in {6, 7}
             else set()
         )
         observed_pairs = {(group[0], group[1]) for group in observed_groups}
@@ -6133,7 +6698,7 @@ def analyse_contact_ab(
                     "expected environments are missing: "
                     f"{sorted(missing_environments)}"
                 )
-        if runtime_provenance_schema == 6:
+        if runtime_provenance_schema in {6, 7}:
             if require_complete_matrix:
                 unexpected_reset_strategies = (
                     observed_reset_strategies
@@ -6227,7 +6792,9 @@ def analyse_contact_ab(
     }
     report = {
         "schema_version": (
-            6
+            7
+            if runtime_provenance_schema == 7 and motion_report_schema == 4
+            else 6
             if runtime_provenance_schema == 6 and motion_report_schema == 4
             else 5
             if runtime_provenance_schema == 6
@@ -6267,7 +6834,7 @@ def analyse_contact_ab(
                     in sorted(topology_references.items())
                 }
             }
-            if runtime_provenance_schema in {5, 6}
+            if runtime_provenance_schema in {5, 6, 7}
             else {}
         ),
         **(
@@ -6298,7 +6865,7 @@ def analyse_contact_ab(
                     ), reference in sorted(reset_contact_probe_references.items())
                 },
             }
-            if runtime_provenance_schema == 6
+            if runtime_provenance_schema in {6, 7}
             else {}
         ),
         "profile_contracts": {
@@ -6314,7 +6881,7 @@ def analyse_contact_ab(
             "expected_environments": list(selected_environments),
             **(
                 {"expected_topologies": list(selected_topologies)}
-                if runtime_provenance_schema in {5, 6}
+                if runtime_provenance_schema in {5, 6, 7}
                 else {}
             ),
             **(
@@ -6323,7 +6890,7 @@ def analyse_contact_ab(
                         selected_reset_strategies
                     )
                 }
-                if runtime_provenance_schema == 6
+                if runtime_provenance_schema in {6, 7}
                 else {}
             ),
             "expected_profiles": list(selected_profiles),
@@ -6339,7 +6906,7 @@ def analyse_contact_ab(
                     "environment_id": record.environment_id,
                     **(
                         {"ground_topology_id": record.ground_topology_id}
-                        if runtime_provenance_schema in {5, 6}
+                        if runtime_provenance_schema in {5, 6, 7}
                         else {}
                     ),
                     **(
@@ -6355,7 +6922,7 @@ def analyse_contact_ab(
                                 record.reset_strategy_token
                             ),
                         }
-                        if runtime_provenance_schema == 6
+                        if runtime_provenance_schema in {6, 7}
                         else {}
                     ),
                     "contact_profile_id": record.contact_profile_id,
@@ -6384,7 +6951,7 @@ def analyse_contact_ab(
         },
         **(
             {"physical_acceptance": _physical_acceptance(grouped)}
-            if runtime_provenance_schema in {5, 6}
+            if runtime_provenance_schema in {5, 6, 7}
             else {}
         ),
         "groups": group_summaries,
@@ -6422,7 +6989,7 @@ def _parser() -> argparse.ArgumentParser:
         nargs="+",
         help=(
             "homogeneous motion report JSON files (top-level schema 1, 2, 3, or 4; "
-            "runtime provenance schema 3, 4, 5, or 6)"
+            "runtime provenance schema 3, 4, 5, 6, or 7)"
         ),
     )
     parser.add_argument(
@@ -6447,9 +7014,9 @@ def _parser() -> argparse.ArgumentParser:
         "--require-complete-matrix",
         action="store_true",
         help=(
-            "require the shipped environment/contact matrix; schemas 5 and 6 "
+            "require the shipped environment/contact matrix; schemas 5, 6, and 7 "
             "also require all three legal environment/topology pairs, and "
-            "schema 6 requires both shipped reset strategies"
+            "schemas 6 and 7 require both shipped reset strategies"
         ),
     )
     return parser
