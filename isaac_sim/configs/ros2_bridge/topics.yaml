@@ -13,4 +13,5 @@ frames:
   odom: odom
   base: base_link
   lidar: lidar_link
+  rtx_world: rtx_world
   imu: imu_link

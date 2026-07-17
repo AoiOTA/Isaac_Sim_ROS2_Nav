@@ -27,6 +27,7 @@ def test_mapping_and_localization_configs_have_exclusive_semantics():
         assert params['base_frame'] == 'base_link'
         assert params['scan_topic'] == '/scan'
         assert params['use_sim_time'] is True
+        assert params['min_laser_range'] == 0.40
 
 
 def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
@@ -39,6 +40,10 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'mode': 'mapping'" in mapping_source
     assert "('.posegraph', '.data')" in mapping_source
     assert "'map_file_name': prefix" in mapping_source
+    assert "'use_scan_matching': use_scan_matching" in mapping_source
+    assert "'do_loop_closing': do_loop_closing" in mapping_source
+    assert "'use_scan_matching'," in mapping_source
+    assert "'do_loop_closing'," in mapping_source
     assert "executable='localization_slam_toolbox_node'" \
         in localization_source
     assert "package='nav2_map_server'" in localization_source

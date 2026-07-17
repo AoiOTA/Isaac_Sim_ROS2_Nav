@@ -1,3 +1,5 @@
+import ast
+import math
 from pathlib import Path
 
 import yaml
@@ -108,3 +110,59 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
         controller['ax_max'], 0.0, controller['az_max']]
     assert smoother['max_decel'] == [
         controller['ax_min'], 0.0, -controller['az_max']]
+
+
+def test_narrow_passage_profile_preserves_physical_collision_safety():
+    config = _config()
+    controller = _params(config, 'controller_server')['FollowPath']
+    planner = _params(config, 'planner_server')['GridBased']
+    collision = _params(config, 'collision_monitor')
+    local = config['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = config['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    physical = ast.literal_eval(local['footprint'])
+    stop = ast.literal_eval(collision['StopZone']['points'])
+    slowdown = ast.literal_eval(collision['SlowdownZone']['points'])
+
+    physical_x = [point[0] for point in physical]
+    physical_y = [point[1] for point in physical]
+    stop_x = [point[0] for point in stop]
+    stop_y = [point[1] for point in stop]
+    slowdown_x = [point[0] for point in slowdown]
+    slowdown_y = [point[1] for point in slowdown]
+
+    # Emergency stop still encloses every physical corner with at least a
+    # 20 mm shell, while remaining narrow enough for indoor doorways.
+    assert max(stop_x) - max(physical_x) >= 0.019
+    assert min(physical_x) - min(stop_x) >= 0.019
+    assert max(stop_y) - max(physical_y) >= 0.019
+    assert min(physical_y) - min(stop_y) >= 0.019
+    assert max(stop_y) <= 0.24
+
+    assert max(slowdown_x) > max(stop_x)
+    assert min(slowdown_x) < min(stop_x)
+    assert max(slowdown_y) > max(stop_y)
+    assert min(slowdown_y) < min(stop_y)
+    assert 0.0 < collision['SlowdownZone']['slowdown_ratio'] < 1.0
+    assert collision['ApproachZone']['time_before_collision'] >= 1.0
+
+    for costmap in (local, global_costmap):
+        assert costmap['footprint'] == local['footprint']
+        assert 0.0 <= costmap['footprint_padding'] <= 0.005
+        inflation = costmap['inflation_layer']
+        padded_radius = max(
+            math.hypot(x, y) for x, y in physical
+        ) + costmap['footprint_padding']
+        assert inflation['inflation_radius'] > padded_radius
+        assert inflation['inflation_radius'] <= 0.45
+        assert inflation['cost_scaling_factor'] >= 6.0
+
+    assert planner['cost_travel_multiplier'] <= 1.5
+    assert planner['tolerance'] \
+        < _params(config, 'controller_server')['goal_checker'][
+            'xy_goal_tolerance']
+    assert controller['CostCritic']['consider_footprint'] is True
+    assert controller['CostCritic']['trajectory_point_step'] == 1
+    assert controller['CostCritic']['collision_cost'] >= 1000000.0
+    assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30

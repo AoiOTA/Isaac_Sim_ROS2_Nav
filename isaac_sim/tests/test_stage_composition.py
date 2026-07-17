@@ -23,8 +23,18 @@ from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager  #
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario  # noqa: E402
 from isaac_sim.src.stage.asset_validator import validate_robot_articulation  # noqa: E402
 from isaac_sim.src.stage.asset_validator import validate_sensor_frames  # noqa: E402
-from isaac_sim.src.stage.physics_setup import find_all_physics_scenes  # noqa: E402
+from isaac_sim.src.stage.physics_setup import (  # noqa: E402
+    ensure_physics_scene,
+    find_all_physics_scenes,
+)
 from isaac_sim.src.stage.scene_composer import SceneComposer  # noqa: E402
+from isaac_sim.src.stage.stage_loader import (  # noqa: E402
+    make_environment_meshes_double_sided,
+    repair_malformed_asset_paths,
+)
+from isaac_sim.src.visualization.third_person_camera import (  # noqa: E402
+    ThirdPersonCamera,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -65,10 +75,102 @@ def test_environment_is_sublayer_robot_is_reference_and_stage_is_not_saved():
 
 
 def test_composed_stage_has_exactly_one_expected_physics_scene():
+    from pxr import UsdGeom
+
     config = _config()
     stage = SceneComposer(config).compose(save=False)
     scenes = find_all_physics_scenes(stage)
     assert [str(scene.GetPath()) for scene in scenes] == [config.simulation.expected_physics_scene]
+    assert UsdGeom.GetStageMetersPerUnit(stage) == pytest.approx(1.0)
+    assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
+
+
+def test_missing_physics_scene_is_created_once():
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateInMemory()
+    first = ensure_physics_scene(stage, "/PhysicsScene")
+    second = ensure_physics_scene(stage, "/PhysicsScene")
+
+    assert first == second
+    assert [str(scene.GetPath()) for scene in find_all_physics_scenes(stage)] == [
+        "/PhysicsScene"
+    ]
+
+
+def test_malformed_asset_path_is_repaired_in_overlay_only(tmp_path: Path):
+    from pxr import Sdf, Usd, UsdShade
+
+    texture = tmp_path / "Materials" / "Textures" / "albedo.png"
+    texture.parent.mkdir(parents=True)
+    texture.write_bytes(b"texture")
+    source_path = tmp_path / "source.usda"
+    source = Usd.Stage.CreateNew(str(source_path))
+    shader = UsdShade.Shader.Define(source, "/Root/Shader")
+    shader.CreateInput("texture", Sdf.ValueTypeNames.Asset).Set(
+        Sdf.AssetPath(".../Materials/Textures/albedo.png")
+    )
+    source.GetRootLayer().Save()
+
+    overlay = Usd.Stage.CreateInMemory()
+    overlay.GetRootLayer().subLayerPaths.append(str(source_path))
+    repaired = repair_malformed_asset_paths(overlay, tmp_path)
+
+    attribute = overlay.GetPrimAtPath("/Root/Shader").GetAttribute("inputs:texture")
+    assert repaired == ("/Root/Shader.inputs:texture",)
+    assert attribute.Get().path == str(texture.resolve())
+    assert (
+        Usd.Stage.Open(str(source_path))
+        .GetPrimAtPath("/Root/Shader")
+        .GetAttribute("inputs:texture")
+        .Get()
+        .path
+        == ".../Materials/Textures/albedo.png"
+    )
+
+
+def test_single_sided_room_mesh_is_repaired_in_overlay_only(tmp_path: Path):
+    from pxr import Usd, UsdGeom
+
+    source_path = tmp_path / "room.usda"
+    source = Usd.Stage.CreateNew(str(source_path))
+    mesh = UsdGeom.Mesh.Define(source, "/Root/wall")
+    mesh.CreateDoubleSidedAttr(False)
+    source.GetRootLayer().Save()
+
+    overlay = Usd.Stage.CreateInMemory()
+    overlay.GetRootLayer().subLayerPaths.append(str(source_path))
+    repaired = make_environment_meshes_double_sided(overlay)
+
+    assert repaired == ("/Root/wall",)
+    assert UsdGeom.Mesh(overlay.GetPrimAtPath("/Root/wall")) \
+        .GetDoubleSidedAttr().Get() is True
+    assert UsdGeom.Mesh(Usd.Stage.Open(str(source_path)).GetPrimAtPath(
+        "/Root/wall")).GetDoubleSidedAttr().Get() is False
+
+
+def test_third_person_camera_is_authored_below_base_link():
+    from pxr import UsdGeom
+
+    config = _config()
+    stage = SceneComposer(config).compose(save=False)
+    camera = ThirdPersonCamera(
+        stage,
+        config.robot.base_link_prim,
+        config.third_person_camera,
+        activate_viewport=False,
+    )
+
+    expected_path = (
+        f"{config.robot.base_link_prim}/"
+        f"{config.third_person_camera.prim_name}"
+    )
+    prim = stage.GetPrimAtPath(expected_path)
+    assert camera.camera_path == expected_path
+    assert prim.IsA(UsdGeom.Camera)
+    assert str(prim.GetParent().GetPath()) == config.robot.base_link_prim
+    assert UsdGeom.Camera(prim).GetFocalLengthAttr().Get() \
+        == pytest.approx(config.third_person_camera.focal_length_mm)
 
 
 def test_composed_stage_uses_supported_wheel_colliders():

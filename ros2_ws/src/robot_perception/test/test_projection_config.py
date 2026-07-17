@@ -18,7 +18,7 @@ def test_projection_contract_matches_navigation_baseline():
     assert params['target_frame'] == 'base_link'
     assert params['min_height'] == 0.05
     assert params['max_height'] == 0.50
-    assert params['range_min'] == 0.30
+    assert params['range_min'] == 0.40
     assert params['range_max'] == 25.0
     assert params['scan_time'] == 0.10
     assert params['use_inf'] is True

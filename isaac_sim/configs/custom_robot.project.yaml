@@ -53,6 +53,15 @@ ground_truth:
   odom_hz: 60
   path_hz: 10
 
+third_person_camera:
+  enabled: true
+  prim_name: third_person_camera
+  distance_m: 3.2
+  height_m: 2.2
+  look_ahead_m: 1.0
+  look_at_height_m: 0.25
+  focal_length_mm: 16.0
+
 extensions:
   - isaacsim.core.nodes
   - isaacsim.robot.wheeled_robots.nodes
