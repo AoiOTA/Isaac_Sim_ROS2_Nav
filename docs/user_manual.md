@@ -841,7 +841,7 @@ ros2 run tf2_tools view_frames
 - Realistic `/wheel/odom`、`/odom` 约 45 Hz；
 - `/odom`、`/map` 均只有一个模式正确的 publisher。
 - Navigation 的 MPPI 控制频率为 `10 Hz`，预测窗保持 `20 × 0.10 s = 2 s`，batch 为 `500`；Velocity Smoother 仍以 `20 Hz` 输出平滑命令。
-- 酷家乐窄通道配置保持 Jackal `0.485 × 0.420 m` 的真实矩形 Footprint；Costmap padding 为 `5 mm`，Inflation 半径为 `0.40 m`、衰减系数为 `8.0`。Collision Monitor 紧急停止区宽 `0.46 m`，仍覆盖实体两侧各 `20 mm`，外围 `0.60 m` 减速区只降低速度，不把平行墙误判为正面碰撞。
+- 酷家乐窄通道配置保持 Jackal `0.485 × 0.420 m` 的真实矩形 Footprint；Costmap padding 为 `5 mm`，Inflation 半径为 `0.40 m`、衰减系数为 `8.0`。Collision Monitor 紧急停止区宽 `0.46 m`，仍覆盖实体两侧各 `20 mm`；外围减速区宽 `0.47 m`、保留 85% 指令速度，主要提供前后预警而不会因平行墙面持续限速。
 
 ## 17. 常见问题
 
