@@ -254,11 +254,13 @@ Nav2 lifecycle activation completed
 2. 确认 **Navigation 2** 面板显示 Nav2 已激活；
 3. 点击工具栏中的 Nav2 Goal 工具（绿色箭头）；
 4. 在地图可通行区域按住鼠标左键，从目标位置拖出朝向后松开；
-5. 观察青色全局路径、粉色局部路径和 Costmap，等待面板显示完成。
+5. 观察黄色全局路径、洋红色局部路径、橙色 MPPI 最优轨迹和 Costmap，等待面板显示完成。
 
 该 RViz 配置使用官方 `nav2_rviz_plugins/GoalTool` 和 Navigation 2 面板，目标直接进入 Nav2 Action；没有额外的 `/goal_pose` 转换节点，也不需要第三个终端。
 
 成功标准：面板最终状态成功，机器人停车，局部/全局路径没有持续振荡。Nav2 goal checker 的位置容差是 `0.20 m`，所以机器人不会精确停在数学坐标点。自动实验另用 Ground Truth 检查 `0.25 m` 的成功阈值；这是评价门槛，不是 Nav2 的 goal checker 配置。
+
+正常路径跟踪仍以前进为主，MPPI 的 `vx_min=0`，不会为了缩短路径而频繁倒车。如果机器人进入无法原地旋转的窄死胡同，项目行为树会在上下文清图仍无法恢复后，先执行一次短倒车（`0.55 m @ 0.18 m/s`），重新规划；仍无法脱困时才尝试原地旋转。死胡同倒车关闭 Behavior Server 自带的局部 Costmap footprint 预测，因为狭窄处可能已经把机器人当前 footprint 标成占用，导致第一帧误报 `COLLISION_AHEAD`。Velocity Smoother 只为这条恢复链开放到 `-0.25 m/s`，所有倒车命令仍完整经过激光 Collision Monitor 的 ApproachZone 和 StopZone，真实障碍进入急停区域时仍会硬停止。因此这里去掉的是重复误判，不是最终安全保护，“恢复倒车”也不等于“常规导航允许任意倒车”。
 
 CLI 仍可用于自动化或无显示器测试，但不作为日常入口：
 

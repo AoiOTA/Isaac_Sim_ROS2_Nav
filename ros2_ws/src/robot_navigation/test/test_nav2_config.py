@@ -1,6 +1,7 @@
 import ast
 import math
 from pathlib import Path
+from xml.etree import ElementTree
 
 import yaml
 
@@ -109,8 +110,10 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert smoother['scale_velocities'] is True
     assert smoother['max_velocity'] == [
         controller['vx_max'], 0.0, controller['wz_max']]
-    assert smoother['min_velocity'] == [
-        controller['vx_min'], 0.0, -controller['wz_max']]
+    # Routine MPPI tracking stays forward-only, while the command chain must
+    # pass the behavior server's bounded negative BackUp recovery velocity.
+    assert -0.30 <= smoother['min_velocity'][0] <= -0.18
+    assert smoother['min_velocity'][1:] == [0.0, -controller['wz_max']]
     assert smoother['max_accel'] == [
         controller['ax_max'], 0.0, controller['az_max']]
     assert smoother['max_decel'] == [
@@ -177,3 +180,41 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert controller['CostCritic']['trajectory_point_step'] == 1
     assert controller['CostCritic']['collision_cost'] >= 1000000.0
     assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30
+
+
+def test_dead_end_recovery_backs_up_before_attempting_spin():
+    config = _config()
+    behavior = _params(config, 'behavior_server')
+    collision = _params(config, 'collision_monitor')
+    launch_source = (
+        PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text()
+    cmake_source = (PACKAGE_ROOT / 'CMakeLists.txt').read_text()
+    tree_names = [
+        'navigate_to_pose_with_dead_end_recovery.xml',
+        'navigate_through_poses_with_dead_end_recovery.xml',
+    ]
+
+    assert 'install(DIRECTORY behavior_trees config launch' in cmake_source
+    # Behavior-server footprint rollout rejects recovery immediately when a
+    # narrow local costmap already marks the current footprint occupied. The
+    # lidar Collision Monitor remains the final hard-stop for reverse commands.
+    assert behavior['simulate_ahead_time'] == 0.0
+    assert collision['cmd_vel_in_topic'] == '/cmd_vel_smoothed'
+    assert collision['cmd_vel_out_topic'] == '/cmd_vel'
+    assert 'StopZone' in collision['polygons']
+    assert collision['StopZone']['action_type'] == 'stop'
+    for tree_name in tree_names:
+        assert tree_name in launch_source
+        tree_path = PACKAGE_ROOT / 'behavior_trees' / tree_name
+        root = ElementTree.parse(tree_path).getroot()
+        recovery_actions = next(
+            node for node in root.iter('RoundRobin')
+            if node.attrib.get('name') == 'RecoveryActions')
+        actions = list(recovery_actions)
+
+        assert [action.tag for action in actions] == [
+            'Sequence', 'BackUp', 'Spin', 'Wait']
+        backup = actions[1]
+        assert 0.45 <= float(backup.attrib['backup_dist']) <= 0.65
+        assert 0.15 <= float(backup.attrib['backup_speed']) <= 0.20
+        assert float(backup.attrib['time_allowance']) >= 5.0

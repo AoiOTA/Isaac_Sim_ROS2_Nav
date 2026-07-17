@@ -245,6 +245,8 @@ Ideal Localization/Navigation 使用 [`ideal_localization_tf.py`](../ros2_ws/src
 - 动态场景使用四个有界、一次性、非互惠的脚本物理障碍，不等同于任意人群行为泛化；
 - 平面运动补偿是针对 Isaac Sim 6 当前各向同性接触模型的仿真修正。迁移到真车或支持各向异性轮胎模型的仿真器时，应重新辨识有效轮距、轮胎摩擦和控制带宽，而不是直接照搬补偿值。
 
+2026-07-17 后续增加了一个严格限定的例外：常规 MPPI 仍保持 `vx_min = 0.0`，但 Velocity Smoother 允许最低 `-0.25 m/s`，供 Nav2 `BackUp` 恢复行为使用。项目行为树在系统清图后先执行 `0.55 m @ 0.18 m/s` 的短倒车，再尝试原地旋转，避免窄死胡同里反复自转。Behavior Server 的局部 footprint 预测会在酷家乐窄通道中从已占用的当前姿态误报碰撞，因此恢复倒车关闭这层重复预测；激光 Collision Monitor 仍保留在最终输出端并负责 ApproachZone/StopZone 保护。该修改不改变上面原始 `3/3 + 3/3` 前进路线的历史结论，也不代表主动倒车路径规划已经验收。
+
 ## 8. 复现入口
 
 完整启动和实验步骤见 [`user_manual.md`](user_manual.md)。最小回归命令为：

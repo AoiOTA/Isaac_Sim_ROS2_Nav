@@ -11,7 +11,7 @@
 - 使用酷家乐场景 `kujiale_0026_A_to_B_door_open.usd`；
 - 使用 Ideal 里程计完成建图、标定和复杂导航验证；
 - 地图名称为 `warehouse_new`；
-- 导航以前进为主，当前关闭主动倒车，MPPI 的 `vx_min` 保持为 `0.0 m/s`；
+- 导航以前进为主，MPPI 的 `vx_min` 保持为 `0.0 m/s`；仅在死胡同恢复中允许有限、碰撞检查的短距离倒车；
 - 保留 `codex/rviz-workflow-upgrade` 上已经验证的 `warehouse_v2` 基线，酷家乐适配在独立分支 `codex/kujiale-navigation-mapping` 中开发。
 
 当前已经达到的状态：
@@ -23,12 +23,13 @@
 - RViz 会随 Navigation 启动，能够区分全局路径、局部路径、MPPI 最优轨迹、候选轨迹和实际运动轨迹；
 - 相机作为 `base_link` 子坐标系随车运动，并调高、后移和扩大视野；
 - 相同方向的窄空间实测路线由约 `49.09 s` 降至 `27.87 s`，耗时下降约 `43%`，最终状态为 `SUCCEEDED`。
+- 死胡同恢复顺序调整为清图后先短倒车、再原地旋转。酷家乐窄通道中，Behavior Server 会从已经被局部代价地图标成占用的当前 footprint 开始预测，使 `BackUp` 第一帧误报 `COLLISION_AHEAD`；关闭这层重复预测后，命令仍经过激光 Collision Monitor 的 StopZone/ApproachZone，同一死胡同姿态实测成功倒车 `0.350 m`。
 
 本阶段没有宣称完成：
 
 - Realistic 轮速里程计下的 `warehouse_new` 定位和导航验收；
 - 使用 `warehouse_new.posegraph` 做真实扫描匹配/回环定位；
-- 主动倒车规划与倒车恢复；
+- 常规路径的主动倒车规划，以及真实死胡同端到端场景批量验收；
 - 对酷家乐源资产中的每一条材质、拓扑和碰撞告警进行源文件级修复。
 
 ## 2. 为什么 `warehouse_v2` 正常，而自建场景问题很多
@@ -262,7 +263,8 @@ MPPI 的 `visualize: true` 会增加一定计算和显示开销，这是为了�
 | `/optimal_trajectory` 和 `/trajectories` 实时消息 | 通过 |
 | Nav2 controller lifecycle active | 通过 |
 | 窄空间同方向基准目标 | `27.87 s`，`SUCCEEDED` |
-| 主动倒车 | 本阶段关闭，未验收 |
+| 常规主动倒车 | MPPI 保持关闭，未验收 |
+| 死胡同恢复倒车 | 用户报告的死胡同姿态下复现了 Behavior footprint 误报；修复后原地重复测试成功倒车 `0.350 m`，完整 NavigateToPose 场景待人工复测 |
 | Realistic 定位/导航 | 本阶段未验收 |
 | Pose Graph 真实扫描匹配/回环 | 未批准用于当前交付 |
 | 源 USD 所有材质/拓扑告警清零 | 未完成，也不作为当前导航通过条件 |
