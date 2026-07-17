@@ -46,6 +46,16 @@ def _launch_setup(context):
         check_posegraph_files=True,
     )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
+    posegraph_calibration_value = LaunchConfiguration(
+        'posegraph_calibration').perform(context).strip().lower()
+    if posegraph_calibration_value not in {'true', 'false'}:
+        raise RuntimeError('posegraph_calibration must be true or false')
+    posegraph_calibration = posegraph_calibration_value == 'true'
+    if posegraph_calibration and not (
+            selection.operation == 'localization'
+            and selection.odometry_mode == 'ideal'):
+        raise RuntimeError(
+            'posegraph_calibration is only valid for Ideal localization')
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
     initial_pose_source = LaunchConfiguration(
         'initial_pose_source').perform(context).strip().lower()
@@ -186,7 +196,8 @@ def _launch_setup(context):
                     'map_file': selection.occupancy_map_file,
                     'use_posegraph_localization': (
                         'true'
-                        if selection.odometry_mode == 'realistic'
+                        if (selection.odometry_mode == 'realistic'
+                            or posegraph_calibration)
                         else 'false'
                     ),
                 },
@@ -300,6 +311,12 @@ def generate_launch_description():
             description='isaac or rsp'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'posegraph_calibration',
+            default_value='false',
+            description=(
+                'Use SLAM Toolbox Pose Graph localization in Ideal '
+                'localization solely to measure Map Pose calibration')),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),

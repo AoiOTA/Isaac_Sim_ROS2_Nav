@@ -34,7 +34,7 @@ git lfs pull
 ./scripts/preflight.sh
 ```
 
-`warehouse_v1.posegraph`、`.data`、OccupancyGrid YAML/PGM 是同一版本的不可拆分工件。不要只替换其中一个。
+`warehouse_v2.posegraph`、`.data`、OccupancyGrid YAML/PGM 是同一版本的不可拆分工件。不要只替换其中一个。
 
 ### 2.2 ROS 包或可执行文件找不到
 

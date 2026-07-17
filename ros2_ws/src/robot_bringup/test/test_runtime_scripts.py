@@ -300,3 +300,11 @@ def test_ros_launcher_blocks_mapping_teleop_in_navigation_modes():
         encoding='utf-8')
     assert 'runtime_lock_is_held teleop' in source
     assert 'stop the Mapping teleop before starting' in source
+
+
+def test_ros_launcher_defaults_navigation_to_warehouse_v2_bundle():
+    source = (REPOSITORY_ROOT / 'scripts' / 'run_ros.sh').read_text(
+        encoding='utf-8')
+    assert 'default_map_version="warehouse_v2"' in source
+    assert 'posegraph_file:=${posegraph_file}' in source
+    assert 'map_file:=${map_file}' in source

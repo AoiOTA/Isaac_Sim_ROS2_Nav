@@ -4,8 +4,9 @@ This is an evidence ledger, not a claim that every acceptance item in
 `plan.md` is complete. Results below were observed on 2026-07-10 through 2026-07-17
 with Isaac Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090.
 Generated Kit logs and raw experiment captures remain outside normal Git
-history. The curated `warehouse_v1` map bundle is versioned; its large
-`.posegraph` is stored through Git LFS.
+history. The full-coverage `warehouse_v2` bundle is the current default;
+the incomplete `warehouse_v1` bundle remains versioned for historical-result
+reproduction. Both large `.posegraph` files are stored through Git LFS.
 
 ## Runtime evidence obtained
 
@@ -19,8 +20,9 @@ history. The curated `warehouse_v1` map bundle is versioned; its large
 | Idle stability | With no effective non-zero command, the command watchdog put the articulation to sleep; stationary tests showed exact rest, zero wheel-joint velocities, and no Ground Truth drift for more than 10 seconds after the navigation goal | idle watchdog regression verified; not a long-duration soak |
 | Deterministic Reset | The final 20-run static and 20-run dynamic Realistic batches completed all reset/reseed cycles. Recovery required a post-reset scan, `/simulation/localization_seeded`, strictly newer `map -> odom`, fresh stamped GT/odom, spawn alignment, stable TF, and all six Nav2 managed nodes active before goal dispatch | 40-run isolation gate verified; destructive service-failure runtime injection was not run |
 | Ideal Mapping | SLAM produced `/map` at `0.05 m` resolution, observed live size `395 x 604`, with `map -> odom` and a complete base/sensor TF chain | mapping/save smoke verified; full-route map-quality acceptance not run |
-| Curated map artifacts | `warehouse_v1` OccupancyGrid (`.yaml`/`.pgm`/preview) and matching serialized Pose Graph (`.posegraph`/`.data`) are distributed as one repository baseline; the 27 MB `.posegraph` uses Git LFS. The manifest records sizes, SHA256 digests, `398 x 606` dimensions, origin, and calibration; `preflight.sh` verified all four runtime artifacts | clone-reproducible baseline verified; other generated maps remain ignored until deliberately curated |
-| Map Pose calibration | At the resting reset USD pose `[4, 0, 0.0635, 0°]`, Mapping reported `map -> odom = [0, 0, 0]` and Ideal odometry was at reset identity; `mapping_start.map` is recorded as `[0, 0, 0°]`, `calibrated: true` | coordinate pair recorded for `warehouse_v1`; three-start repeatability remains pending |
+| Curated map artifacts | Full-coverage `warehouse_v2` OccupancyGrid and matching serialized Pose Graph are distributed as one indivisible default bundle; the manifest pins all four byte sizes/SHA256 values, `406 x 611 @ 0.05 m`, origin `[-14.692, -12.294, 0°]`, source and calibration. Its 39.8 MB `.posegraph` uses Git LFS. The incomplete v1 bundle remains available but is no longer the default | clone-reproducible v2 baseline verified by manifest/preflight; other generated maps remain ignored until deliberately curated |
+| `warehouse_v2` Map Pose calibration | Three independent Isaac + ROS cold starts explicitly enabled Ideal Pose Graph localization, loaded both v2 map representations and measured `map -> base_link = [0.000, -0.000, 0.000°]` at USD `[4, 0, 0.0635, 0°]`. Each run served one `406 x 611` `/map`; `/map` and `/odom` each had one owner | `3/3` repeatability; no spread at `0.001 m / 0.001°` reported precision, while the source retains conservative `0.05 m / 5°` covariance |
+| `warehouse_v2` default navigation | An Ideal Navigation cold start passed no map arguments to `run_ros.sh`; Map Server loaded `warehouse_v2.yaml` at `406 x 611`, all Nav2 managed nodes activated, and `/map` had one publisher. A goal at `[-5.267, 0.331, 0°]` was deliberately chosen in a cell that is unknown in v1 but free in v2. NavigateToPose succeeded in about 21 s with 0 recoveries; final TF position was `[-5.269, 0.222]` (about `0.109 m` position error) | default-version selection and navigation into the v2-only mapped area verified in one cold-start smoke; not a repeated complex-route batch |
 | Localization + Ground Truth | The saved Pose Graph loaded in multiple Ideal sessions and one Realistic session. All 13 final runs passed the runner's post-reset map/base alignment and GT freshness gates | Ideal/Realistic runtime alignment exercised; three independent cold starts per mode with quantified pose spread remain pending |
 | Immutable navigation map | In Localization/Navigation, `map_server` was active and the only `/map` publisher at `398 x 606`, while SLAM Toolbox published its changing diagnostic grid only on `/slam_toolbox/map`; Nav2 consumed the saved transient-local map | publisher isolation verified and used by the final dynamic batch |
 | Nav2 activation | Activation waited for latched `/map`, fresh non-zero `/clock`, fresh `/scan` and `/odom`, and stable, freshly stamped `map -> odom`; lifecycle activation completed. The gate remains alive after `STARTUP`, eliminating the prior process-exit handler race | readiness/lifecycle smoke verified |
@@ -169,13 +171,19 @@ The 2026-07-16 skid-steer increment additionally recorded:
   and 1 existing skip;
 - `git diff --check`: PASS.
 
-The 2026-07-17 Ideal complex-navigation increment additionally recorded:
+The 2026-07-17 final Ideal complex-navigation and `warehouse_v2` promotion
+additionally recorded:
 
-- preflight: PASS; full ROS build: 9 packages completed;
-- root/pure suite: 317 passed, 7 runtime-marked tests deselected;
-- ROS colcon suite: 326 tests, 0 errors, 0 failures, 0 skipped;
+- preflight: PASS against the v2 manifest; full ROS build: 9 packages completed;
+- root/pure suite: 319 passed, 7 runtime-marked tests deselected;
+- ROS colcon suite: 328 tests, 0 errors, 0 failures, 0 skipped;
 - Isaac/USD Stage composition suite: 4 passed, 49 non-Isaac tests
   deselected;
+- v2 Map Pose calibration: 3/3 independent cold starts at identity, with no
+  spread at `0.001 m / 0.001°` reported precision;
+- default-argument v2 NavigateToPose smoke: succeeded in the v2-only mapped
+  area in about 21 seconds, with 0 recoveries and about `0.109 m` final
+  position error;
 - automated chassis motion benchmark: `10/10` primitives accepted with zero
   collision, including circles, slaloms and rapid turn-direction reversals;
 - complex static route: `3/3`, all 6 poses, 0 recoveries and 0 collisions;

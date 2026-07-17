@@ -173,6 +173,19 @@ def test_incremental_and_localization_modes_include_initial_pose():
     assert "'spawn_pose_name'" in core_source
 
 
+def test_ideal_posegraph_calibration_is_explicit_and_localization_only():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    core_source = (launch_dir / 'ros_stack.launch.py').read_text()
+    localization_source = (
+        launch_dir / 'localization_bringup.launch.py').read_text()
+
+    assert 'posegraph_calibration must be true or false' in core_source
+    assert 'posegraph_calibration is only valid for Ideal localization' \
+        in core_source
+    assert 'or posegraph_calibration' in core_source
+    assert "'posegraph_calibration'" in localization_source
+
+
 def test_initial_pose_source_is_forwarded_and_rviz_disables_auto_publisher():
     launch_dir = PACKAGE_ROOT / 'launch'
     core_source = (launch_dir / 'ros_stack.launch.py').read_text()

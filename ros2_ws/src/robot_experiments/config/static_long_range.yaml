@@ -3,8 +3,8 @@ scenario:
   id: static_warehouse_long_range
   type: static
   spawn_pose_name: mapping_start
-  map_version: warehouse_v1
-  posegraph_version: warehouse_v1
+  map_version: warehouse_v2
+  posegraph_version: warehouse_v2
   configs:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
     nav2: ../../robot_navigation/config/nav2_params.yaml

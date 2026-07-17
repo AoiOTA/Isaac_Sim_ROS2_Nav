@@ -26,6 +26,7 @@ export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim
 
 launch_args=("$@")
 if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; then
+  default_map_version="warehouse_v2"
   posegraph_file=""
   map_file=""
   for argument in "${launch_args[@]}"; do
@@ -34,7 +35,18 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
       map_file:=*) map_file="${argument#map_file:=}" ;;
     esac
   done
-  if [[ -z "${map_file}" && -n "${posegraph_file}" ]]; then
+  if [[ -z "${posegraph_file}" ]]; then
+    if [[ -n "${map_file}" ]]; then
+      map_prefix="${map_file%.yaml}"
+      posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/$(basename "${map_prefix}")"
+    else
+      posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/${default_map_version}"
+    fi
+    require_file "${posegraph_file}.posegraph"
+    require_file "${posegraph_file}.data"
+    launch_args+=("posegraph_file:=${posegraph_file}")
+  fi
+  if [[ -z "${map_file}" ]]; then
     posegraph_prefix="${posegraph_file%.posegraph}"
     posegraph_prefix="${posegraph_prefix%.data}"
     map_file="${PROJECT_ROOT}/data/maps/occupancy/$(basename "${posegraph_prefix}").yaml"
