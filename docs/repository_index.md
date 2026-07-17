@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 263 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 265 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -316,10 +316,12 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `ros2_ws/src/robot_navigation/CMakeLists.txt` | 安装 Nav2 配置/launch并注册测试。 |
+| `ros2_ws/src/robot_navigation/CMakeLists.txt` | 安装 Nav2 配置、行为树和 launch，并注册测试。 |
 | `ros2_ws/src/robot_navigation/package.xml` | Nav2 planner/controller/behavior/smoother/collision monitor/lifecycle 依赖。 |
-| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用 10 Hz、2 秒窗和 500 批次，当前酷家乐分支还包含真实 Footprint 逐点碰撞检查及窄门/走廊安全壳。 |
-| `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点；默认不 autostart，等待外部 readiness gate。 |
+| `ros2_ws/src/robot_navigation/behavior_trees/navigate_to_pose_with_dead_end_recovery.xml` | 单目标前进优先导航行为树；常规 MPPI 不倒车，系统恢复时在原地旋转前执行 0.55 m 激光安全监控倒车。 |
+| `ros2_ws/src/robot_navigation/behavior_trees/navigate_through_poses_with_dead_end_recovery.xml` | 多目标版本的死胡同恢复行为树，保持与单目标相同的清图、倒车、旋转和等待顺序。 |
+| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用 10 Hz、2 秒窗和 500 批次，常规路径前进优先，恢复链允许有限倒车。 |
+| `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点并注入项目死胡同恢复行为树；默认不 autostart，等待外部 readiness gate。 |
 | `ros2_ws/src/robot_navigation/test/test_nav2_config.py` | 检查插件、Footprint、inflation、话题链、2D obstacle layer 和安全参数。 |
 
 ## 25. `robot_experiments` 包装文件与配置

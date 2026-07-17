@@ -65,16 +65,16 @@ controller_server:
       batch_size: 500
       iteration_count: 1
 
-      # Forward-only navigation stress-test profile.  Skid-steer reverse
-      # remains available at the direct chassis layer and can be restored
-      # after forward path-following/avoidance acceptance is complete.
+      # Normal path following remains forward-only. Dead-end escape is handled
+      # explicitly by the lidar-monitored BackUp recovery behavior rather
+      # than allowing MPPI to select reverse trajectories during routine travel.
       # Sample enough of the usable forward-speed range that a narrow but
       # collision-free corridor does not collapse to creeping trajectories.
       vx_std: 0.35
       vy_std: 0.00
       wz_std: 0.80
 
-      # 前进不再掩盖转弯；本阶段关闭导航倒车采样。
+      # 前进不再掩盖转弯；正常路径跟踪仍关闭 MPPI 倒车采样。
       vx_max: 0.75
       vx_min: 0.00
       vy_max: 0.00
@@ -170,8 +170,8 @@ controller_server:
         max_angle_to_furthest: 0.45
         mode: 0
 
-      # 与路径角度 critic 协同强化前进路径选择。底盘直接控制层仍保留
-      # 倒车能力，但本阶段导航控制器不生成负线速度。
+      # 与路径角度 critic 协同强化前进路径选择。恢复行为可短距离倒车，
+      # 但正常 MPPI 路径跟踪不生成负线速度。
       PreferForwardCritic:
         enabled: true
         cost_power: 1
@@ -348,7 +348,14 @@ behavior_server:
     robot_base_frame: base_link
 
     transform_tolerance: 0.10
-    simulate_ahead_time: 2.0
+    # In a narrow cul-de-sac the local costmap can report the robot's current
+    # rectangular footprint as occupied even though manual reverse is clear.
+    # Any positive value makes BackUp test that already-occupied start pose and
+    # abort immediately with COLLISION_AHEAD. Disable this duplicate costmap
+    # rollout for recovery behaviors; /collision_monitor still applies the
+    # live lidar StopZone, ApproachZone and command hard-stop to every reverse
+    # velocity sent to the robot.
+    simulate_ahead_time: 0.0
 
     max_rotational_vel: 1.0
     min_rotational_vel: 0.12
@@ -369,7 +376,9 @@ velocity_smoother:
     feedback: OPEN_LOOP
 
     max_velocity: [0.75, 0.0, 1.20]
-    min_velocity: [0.00, 0.0, -1.20]
+    # MPPI仍以 vx_min=0 前进跟踪；这里单独允许行为树 BackUp 的有限负速，
+    # 否则 -0.18 m/s 恢复命令会被平滑器钳成零而无法离开死胡同。
+    min_velocity: [-0.25, 0.0, -1.20]
 
     max_accel: [1.10, 0.0, 3.00]
     max_decel: [-1.00, 0.0, -3.00]
