@@ -159,6 +159,15 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
         in nav_source
 
 
+def test_ideal_mapping_anchors_map_to_ground_truth_odometry():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+
+    assert "'use_scan_matching': (" in core_source
+    assert "'do_loop_closing': (" in core_source
+    assert "if selection.odometry_mode == 'ideal'" in core_source
+
+
 def test_incremental_and_localization_modes_include_initial_pose():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()

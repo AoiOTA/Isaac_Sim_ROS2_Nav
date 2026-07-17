@@ -20,19 +20,25 @@ that intentionally permits an uncalibrated Map Pose. `localization` and
 nonexistent OccupancyGrid YAML before launch.
 
 When launched through `scripts/run_ros.sh`, omitted Localization/Navigation map
-arguments select the complete `warehouse_v2` bundle. An explicit Pose Graph or
-OccupancyGrid basename selects the matching other half. Ideal navigation checks
+arguments select the `warehouse_new` Kujiale bundle on this branch. An
+explicit Pose Graph or OccupancyGrid basename selects the matching other half. Ideal navigation checks
 that the versioned pair exists but uses the calibrated identity `map -> odom`;
 `posegraph_calibration:=true` temporarily enables Pose Graph localization only
 for Ideal `localization`, never for Navigation.
+
+The `warehouse_new` bundle is currently approved only for normal Ideal
+Localization/Navigation. It was generated while scan matching and loop closing
+were disabled, so its serialized data has no valid optimization-graph vertices.
+The launcher rejects Realistic or explicit Pose Graph localization with this
+version instead of allowing SLAM Toolbox to fail at runtime.
 
 The ROS `posegraph_file` argument is normalized to a prefix, so all of the
 following refer to the same serialized map:
 
 ```text
-data/maps/posegraphs/warehouse_v2
-data/maps/posegraphs/warehouse_v2.posegraph
-data/maps/posegraphs/warehouse_v2.data
+data/maps/posegraphs/warehouse_new
+data/maps/posegraphs/warehouse_new.posegraph
+data/maps/posegraphs/warehouse_new.data
 ```
 
 Both files must exist. Baseline `mapping` rejects a non-empty Pose Graph instead
@@ -100,7 +106,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/cmd_vel_smoothed` | `geometry_msgs/msg/Twist` | Velocity Smoother | Collision Monitor | Navigation only |
 | `/joint_states` | `sensor_msgs/msg/JointState` | Isaac | Wheel Odom and RobotModel | simulator tick |
 | `/imu/data` | `sensor_msgs/msg/Imu` | Isaac | EKF in Realistic mode | `imu_link`, configured 60 Hz |
-| `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | pointcloud-to-laserscan | `lidar_link`, nominal 10 Hz |
+| `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | pointcloud-to-laserscan | `rtx_world`, nominal 10 Hz |
 | `/scan` | `sensor_msgs/msg/LaserScan` | `pointcloud_to_laserscan` | SLAM Toolbox, costmaps, Collision Monitor | `base_link`, nominal 10 Hz, 720 bins |
 | `/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Mapping; `nav2_map_server` in Localization/Navigation | map inspection in Mapping; activation gate and global costmap in Navigation | `map`; reliable, transient local; exactly one mode-appropriate publisher |
 | `/slam_toolbox/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Localization/Navigation | diagnostics only; never a Nav2 static-map input | `map`; scan-rasterized localization view |
@@ -119,7 +125,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/initial_pose/reseed` | `std_srvs/srv/Trigger` | calibrated initial-pose node | Activation Gate reset recovery | arm calibrated pose after a post-request scan; preserves valid manual ownership |
 
 The PointCloud-to-LaserScan projection uses `base_link` as its target frame,
-height `[0.05, 0.50] m`, range `[0.30, 25.0] m`, a full `[-pi, pi]` field of
+height `[0.05, 0.50] m`, range `[0.40, 25.0] m`, a full `[-pi, pi]` field of
 view, and a `0.5°` angular increment. The optional self filter is disabled by
 default and changes the projection input only when explicitly enabled.
 
@@ -179,23 +185,26 @@ front/rear axle command from straddling two graph executions.
 The only navigation tree is:
 
 ```text
-map -> odom -> base_link
-                  |-> front_left_wheel_link
-                  |-> front_right_wheel_link
-                  |-> rear_left_wheel_link
-                  |-> rear_right_wheel_link
-                  |-> lidar_link
-                  |-> imu_link
-                  `-> camera_link -> camera_left/right_link -> optical frames
+map -> odom
+        |-> base_link
+        |     |-> front_left/right_wheel_link
+        |     |-> rear_left/right_wheel_link
+        |     |-> lidar_link
+        |     |-> imu_link
+        |     `-> camera_link -> camera_left/right_link -> optical frames
+        `-> rtx_world
 ```
 
 There is no ROS `world` frame. USD `/World` is a Stage prim path and is not a TF
-frame.
+frame. `rtx_world` is an explicit fixed data frame for the absolute endpoint
+coordinates emitted by Isaac Sim 6.0.1's RTX PointCloud writer; its
+spawn-derived static transform attaches those coordinates to `odom`.
 
 | Edge or subtree | Ideal | Realistic | Constraint |
 | --- | --- | --- | --- |
 | `map -> odom` | SLAM Toolbox | SLAM Toolbox | exactly one Mapping or Localization instance |
 | `odom -> base_link` | Isaac | `robot_localization` EKF | exactly one owner; Wheel Odom does not publish TF |
+| `odom -> rtx_world` | Isaac static TF | Isaac static TF | inverse selected USD spawn pose; RTX data-frame conversion only |
 | wheel-link dynamic TF | Isaac | Isaac or RSP, selected explicitly | derived from articulation joints/JointState |
 | sensor/camera static TF | Isaac | Isaac or RSP, selected explicitly | seven static pairs |
 

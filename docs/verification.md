@@ -13,8 +13,12 @@ reproduction. Both large `.posegraph` files are stored through Git LFS.
 | Area | Observed evidence | Status and limit |
 | --- | --- | --- |
 | Stage/runtime | Project Stage composed the official warehouse and Jackal overlay, found one `/PhysicsScene`, and reached the standalone ready loop without `Error`, `Traceback`, or unattached-render-product messages in the checked run | smoke verified; not a long-duration soak |
-| RTX LiDAR | 91 `/lidar/points_raw` messages in 10 wall seconds: `9.10 Hz`; each observed cloud had 41,363 points, about 993 KiB, frame `lidar_link` | nominal 10 Hz rate verified |
-| LaserScan projection | 55 `/scan` messages in 6 wall seconds: `9.08 Hz`; 720 beams, frame `base_link`, all ranges finite in that sample | rate/frame/shape verified; full projection-quality metrics not measured |
+| Custom Kujiale mapping Stage | `kujiale_0026_A_to_B_door_open.usd` resolved by filename from `/home/lyb`, composed with the Jackal overlay, meter/Z metadata and one auto-created `/PhysicsScene`. The promoted `warehouse_new` map is `154 x 248 @ 0.05 m`, with 18,015 free and 3,294 occupied cells | full saved OccupancyGrid promoted for Ideal navigation |
+| `warehouse_new` calibration | Three independent Isaac + ROS cold starts held `map -> base_link` at identity. Occupancy-grid scan correlation used 703–704 live endpoints per final trials; each trial placed 100% within `0.075 m` of occupied cells, with mean raster distances `0.0028 / 0.0032 / 0.0028 m` | identity Map Pose accepted at the map's 0.05 m resolution; conservative uncertainty `0.05 m / 1°` |
+| `warehouse_new` Ideal navigation | With no explicit ROS map arguments, Map Server loaded `154 x 248` `warehouse_new`, all six Nav2 managed nodes became Active, and a goal at `[1.435, -0.395, 0°]` succeeded in about `4.7 s` simulated time with 0 recoveries and about `0.15 m` final position error | one calibrated short-route smoke passed; complex multi-room route not yet run |
+| `warehouse_new` narrow-passage profile | Physical `0.485 x 0.420 m` footprint retained; padding reduced to `0.005 m`; both inflation layers use `0.40 m / 8.0`; emergency stop shell is `0.535 x 0.460 m`; MPPI checks the footprint at every prediction point; planner substitute-goal tolerance is `0.10 m` inside the `0.20 m` goal-check radius | a return route from `[0.738, 4.941]` to the calibrated origin crossed a passage disconnected by a conservative `0.34 m` radial-clearance mask: `SUCCEEDED`, `5.499 m`, `0` recoveries, no physical collision, moving-command fraction `1.0`; Collision Monitor applied only 50% slowdown and never StopZone. Configuration tests retain the safety invariants |
+| RTX LiDAR | Single-channel `RPLIDAR_S2E` clouds used frame `rtx_world`, contained 3,058–3,098 points (median 3,079), and were observed at about `13 Hz` wall time in the checked fast-simulation run | horizontal scan and processing-rate baseline verified on the custom room |
+| LaserScan projection | 720 beams in `base_link`; stationary valid-return ratio median `97.57%`, and during 109 rotating frames median/minimum were `97.92% / 96.94%` | rate/frame/shape and moving projection density verified |
 | Ideal drive | A `+0.2 m/s` command for 3 seconds moved Ideal odometry X by approximately `+0.517 m` | forward sign and motion path verified; full control characterization not run |
 | Low-speed control | After removing extra wheel-joint friction, a `+0.02 m/s` command for 5 seconds traveled `0.09981 m` | low-speed wake/motion path verified; one manual sample only |
 | Idle stability | With no effective non-zero command, the command watchdog put the articulation to sleep; stationary tests showed exact rest, zero wheel-joint velocities, and no Ground Truth drift for more than 10 seconds after the navigation goal | idle watchdog regression verified; not a long-duration soak |
@@ -138,8 +142,8 @@ intentionally calls the shared collision checker with radius mode enabled and
 logs the ERROR for any non-positive value before returning for radius mode.
 
 Both project costmaps do contain `nav2_costmap_2d::InflationLayer` with an
-inflation radius of `0.55 m`. The padded rectangular Jackal footprint has a
-circumscribed radius of approximately `0.34 m`, so the configured radius is
+inflation radius of `0.40 m`. The padded rectangular Jackal footprint has a
+circumscribed radius of approximately `0.337 m`, so the configured radius is
 larger than the footprint requirement. The subsequent 1 m Ideal navigation
 goal planned and completed. Keep treating this message as a version-specific
 known diagnostic only while those footprint, plugin, radius, and Nav2 version
@@ -193,6 +197,52 @@ additionally recorded:
   intentionally outside this test stage;
 - Ideal Localization/Navigation used a freshly stamped identity `map -> odom`
   rather than a second SLAM localization correction.
+
+The 2026-07-17 robot-relative third-person camera increment additionally
+recorded:
+
+- GUI runtime created and bound
+  `/World/Robots/Jackal/base_link/third_person_camera` to the active viewport;
+- the current indoor-safe `3.2 m` rear / `2.2 m` high / `16 mm` wide-angle
+  framing stays below a normal ceiling while retaining Jackal and the next
+  doorway or bend in view;
+- root/pure suite: 322 passed, 8 runtime-marked tests deselected;
+- ROS colcon suite: 328 tests, 0 errors, 0 failures, 0 skipped;
+- Isaac/USD Stage composition suite: 5 passed, 52 non-Isaac tests
+  deselected;
+- `git diff --check`: PASS.
+
+The 2026-07-17 custom Kujiale Mapping increment additionally recorded:
+
+- filename-only resolution selected
+  `kujiale_0026_A_to_B_door_open.usd` and its uncalibrated scene-specific
+  Mapping spawn profile;
+- Isaac Sim 6.0.1 RTX PointCloud endpoints were verified to be absolute USD
+  world coordinates, so `/lidar/points_raw` is labeled `rtx_world` and joined
+  to `odom` by the inverse selected spawn pose;
+- the original 32-line sensor projected only about 10% valid navigation-height
+  bins because most indoor returns hit the ceiling. The horizontal
+  single-channel RPLIDAR produced about 3,080 points per cloud and more than
+  97% valid 2D bins without the prior processing overload;
+- ROS Mapping short integration activated SLAM Toolbox, subscribed to the
+  projected LaserScan and registered `Custom Described Lidar`;
+- a collision-free Ideal S-curve traveled `0.532 m`; a subsequent near-full
+  rotation held the moving scan above `96.94%` valid bins. Maps saved before
+  and after that rotation were byte-identical, demonstrating that walls no
+  longer rotate or duplicate with the chassis;
+- the promoted `warehouse_new` OccupancyGrid passed three independent Ideal
+  cold-start scan correlations at identity; all sampled endpoints were within
+  `0.075 m` of saved obstacles and the worst mean raster distance was
+  `0.0032 m`;
+- the default ROS navigation entry loaded `warehouse_new` without explicit map
+  arguments, activated all six Nav2 managed nodes, and completed a 1.49 m
+  NavigateToPose smoke with status `SUCCEEDED`, 0 recoveries and about 0.15 m
+  final position error;
+- root non-Isaac/non-ROS suite: 333 passed, 11 runtime-marked tests deselected;
+- ROS colcon suite: 329 tests, 0 errors, 0 failures, 0 skipped;
+- Isaac/USD Stage composition suite: 8 passed, 62 non-Isaac tests deselected;
+- repository index covered all 257 deliverable files, and `git diff --check`
+  passed.
 
 Re-run the same gates after any change; terminal output is authoritative if
 counts change as tests are added:

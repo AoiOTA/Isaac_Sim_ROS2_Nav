@@ -170,6 +170,19 @@ def _launch_setup(context):
             {
                 'use_sim_time': use_sim_time,
                 'posegraph_file': selection.posegraph_prefix,
+                # IsaacComputeOdometry is ground truth in Ideal mode.  Scan
+                # matching in visually repetitive rooms can otherwise pull
+                # map->odom away from that exact pose during curved motion.
+                'use_scan_matching': (
+                    'false'
+                    if selection.odometry_mode == 'ideal'
+                    else 'true'
+                ),
+                'do_loop_closing': (
+                    'false'
+                    if selection.odometry_mode == 'ideal'
+                    else 'true'
+                ),
             },
         ))
         if (selection.operation == 'incremental_mapping'

@@ -97,6 +97,8 @@ dist/
 !/data/maps/occupancy/warehouse_v1_preview.png
 !/data/maps/occupancy/warehouse_v2.yaml
 !/data/maps/occupancy/warehouse_v2.pgm
+!/data/maps/occupancy/warehouse_new.yaml
+!/data/maps/occupancy/warehouse_new.pgm
 
 /data/maps/posegraphs/*
 !/data/maps/posegraphs/.gitkeep
@@ -106,3 +108,5 @@ dist/
 !/data/maps/posegraphs/warehouse_v1.data
 !/data/maps/posegraphs/warehouse_v2.posegraph
 !/data/maps/posegraphs/warehouse_v2.data
+!/data/maps/posegraphs/warehouse_new.posegraph
+!/data/maps/posegraphs/warehouse_new.data

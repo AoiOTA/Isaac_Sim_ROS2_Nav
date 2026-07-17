@@ -8,7 +8,7 @@ from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
-from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
+from isaac_sim.graphs.tf_graph import rtx_world_transform, structure_tf_graph_spec
 from isaac_sim.src.bridge.tf_ownership import (
     TfOwnershipError,
     expected_tf_owners,
@@ -117,6 +117,27 @@ def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
         if attribute.endswith(("parentFrameId", "childFrameId"))
     ]
     assert "world" not in frame_values
+    assert "rtx_world" in frame_values
+
+
+def test_rtx_world_frame_is_the_inverse_selected_spawn_pose():
+    config = load_project_config(
+        ROOT / "isaac_sim/configs/project.yaml",
+        {
+            "PROJECT_ROOT": str(ROOT),
+            "ISAAC_ASSET_ROOT": "/home/lyb/isaacsim_assets/Assets/Isaac/6.0",
+            "ISAAC_NAV__SPAWN__POSES_FILE": str(
+                ROOT
+                / "isaac_sim/configs/environments"
+                / "kujiale_0026_A_to_B_door_open.spawn.yaml"
+            ),
+        },
+    )
+
+    node, parent, child, translation, rotation = rtx_world_transform(config)
+    assert (node, parent, child) == ("RtxWorldTF", "odom", "rtx_world")
+    assert translation == pytest.approx([2.9, -0.2, -0.0635])
+    assert rotation == pytest.approx([0.0, 0.0, -1.0, 0.0], abs=1e-12)
 
 
 def test_tf_ownership_requires_exactly_one_publisher():
@@ -143,5 +164,6 @@ def test_topic_and_qos_contracts_are_absolute_and_encoded():
     qos = load_qos_profiles(ROOT / "isaac_sim/configs/ros2_bridge/qos.yaml")
     assert topics["pointcloud"] == "/lidar/points_raw"
     assert topics["frames"]["base"] == "base_link"
+    assert topics["frames"]["rtx_world"] == "rtx_world"
     assert '"reliability":"bestEffort"' in qos["sensor_data"]
     assert '"durability":"transientLocal"' in qos["static_tf"]

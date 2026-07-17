@@ -34,7 +34,7 @@ warehouse asset.
 
 Generated maps are ignored by default. Large curated maps and pose graphs must
 use Git LFS or an external artifact store rather than ordinary Git history. The
-validated `warehouse_v2` bundle is the repository baseline: its large
+validated `warehouse_new` bundle is this custom-scene branch's baseline: its large
 `.posegraph` is tracked by Git LFS, while the matching OccupancyGrid and `.data`
 file are regular Git artifacts. Hydrate it after cloning:
 
@@ -50,7 +50,7 @@ USD alignment metadata. Verify the checksum after retrieval before running an
 experiment.
 
 The current repository baseline is described by
-`data/maps/manifests/warehouse_v2.yaml`. It records the byte size and SHA256 of
+`data/maps/manifests/warehouse_new.yaml`. It records the byte size and SHA256 of
 the OccupancyGrid (`.yaml`/`.pgm`) and serialized Pose Graph
 (`.posegraph`/`.data`), plus map dimensions, origin, source environment, and the
 Map/USD calibration pair. Those four generated files are one indivisible
@@ -60,10 +60,12 @@ files. New generated versions remain local until deliberately curated and
 added to the manifest/LFS policy.
 
 Localization and Navigation validate both halves of that version:
-`nav2_map_server` serves the saved `.yaml`/`.pgm` pair as immutable `/map`;
-Realistic localization and explicit Ideal calibration load
-`.posegraph`/`.data` in SLAM Toolbox. Normal Ideal operation uses the calibrated
-identity `map -> odom`. `scripts/run_ros.sh` defaults to v2 and derives
+`nav2_map_server` serves the saved `.yaml`/`.pgm` pair as immutable `/map`.
+Normal Ideal operation uses the calibrated identity `map -> odom`.
+`warehouse_new` was generated with scan matching and loop closing disabled, so
+its serialized Pose Graph remains mapping provenance and is not approved for
+Realistic localization or explicit Pose Graph calibration. `scripts/run_ros.sh`
+defaults to `warehouse_new` and derives
 `maps/occupancy/<posegraph-basename>.yaml` when `map_file` is omitted, so matching
 basenames are the normal convention. Pass `map_file:=...` explicitly for a
 deliberate nonmatching name; never substitute SLAM Toolbox's diagnostic

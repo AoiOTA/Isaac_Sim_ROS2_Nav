@@ -110,7 +110,7 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 ### 4.1 拉取 Git LFS 地图
 
-`warehouse_v2.posegraph` 使用 Git LFS。没有拉取它时，文件只是一个很小的指针，Localization 无法启动。
+`warehouse_new.posegraph` 使用 Git LFS。没有拉取它时，文件只是一个很小的指针，启动前完整性检查会失败。
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -127,7 +127,7 @@ git lfs pull
 成功时最后应看到：
 
 ```text
-map baseline: warehouse_v2 (integrity verified)
+map baseline: warehouse_new (integrity verified)
 preflight: PASS
 ```
 
@@ -137,7 +137,7 @@ preflight: PASS
 - 官方 Warehouse/Jackal 资产是否存在；
 - ROS Jazzy、Nav2、SLAM Toolbox 等包是否存在；
 - NVIDIA GPU 是否可见；
-- `warehouse_v2` 四个地图文件的大小和 SHA256 是否匹配 manifest；
+- `warehouse_new` 四个地图文件的大小和 SHA256 是否匹配 manifest；
 - Git LFS 文件是否已经真正下载。
 
 ### 4.3 导入 Jackal 本地依赖
@@ -177,21 +177,45 @@ Isaac 的 `--mode ideal|realistic` 必须与 ROS 的 `odometry_mode:=ideal|reali
 
 ## 5. 最快完成一次 Ideal 导航
 
-仓库已经包含可用的 `warehouse_v2` OccupancyGrid 和 Pose Graph，因此不需要先重新建图。
+该酷家乐分支已经包含标定后的 `warehouse_new` OccupancyGrid，因此不需要再建图即可运行普通 Ideal Navigation。
 
 ### 5.1 终端 A：启动 Isaac
 
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal
 ```
+
+GUI 启动时，主视口会自动切换到
+`/World/Robots/Jackal/base_link/third_person_camera`。它位于 Jackal
+`base_link` 坐标系后方 `3.2 m`、上方 `2.2 m`，配合 `16 mm` 广角焦距朝
+车前方俯视，可同时看到更多道路与周边环境；因为相机是
+`base_link` 的子 Prim，所以会自然继承机器人的直行、转弯和 Reset，不需要
+手动拖动视角。相机不会被持续强制锁定：运行中仍可从 Isaac 视口的 Camera
+菜单切到其他视角，之后选择 `third_person_camera` 即可回来。
+
+如果本次 GUI 运行不需要跟随相机，可以显式关闭：
+
+```bash
+./scripts/run_isaac.sh \
+  --navigation-mode localization \
+  --mode ideal \
+  --no-third-person-camera
+```
+
+相对距离、高度、注视点和焦距集中配置在
+`isaac_sim/configs/project.yaml` 的 `third_person_camera` 段；自定义 USD
+场景也默认启用，不再因为使用 `--environment-usd` 而自动关闭。修改后无需改
+USD 资产。自定义机器人模板会把同名相机挂到自己的 `base_link` 下。
 
 无显示器或不需要 GUI 时加 `--headless`：
 
 ```bash
 ./scripts/run_isaac.sh --headless \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal
 ```
@@ -210,10 +234,10 @@ cd "$PROJECT_ROOT"
   odometry_mode:=ideal
 ```
 
-脚本默认选择 `warehouse_v2`，等价于同时传入 v2 Pose Graph，并自动推导：
+此酷家乐分支默认选择 `warehouse_new`，并自动推导：
 
 ```text
-data/maps/occupancy/warehouse_v2.yaml
+data/maps/occupancy/warehouse_new.yaml
 ```
 
 等待日志出现：
@@ -413,6 +437,46 @@ cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh mapping odometry_mode:=ideal
 ```
 
+当前选中的酷家乐房间使用下面这组命令：
+
+```bash
+# 终端 A：文件名会在主目录场景树中递归查找
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode mapping \
+  --mode ideal
+
+# 终端 B：等终端 A 出现 ready 后启动
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh mapping odometry_mode:=ideal
+```
+
+默认场景根目录是 `/home/lyb/kujiale_usd_rooms_20260717`。可以通过
+`--environment-root DIR` 或环境变量 `ISAAC_NAV_ENVIRONMENT_ROOT` 改为其他
+目录；`--environment-usd` 支持绝对路径、相对场景根目录的路径或唯一文件名。
+若不同子目录内存在同名 USD，程序会拒绝猜测并列出候选路径。
+
+每个自定义场景都必须有出生点 YAML，查找顺序是：
+
+1. `--spawn-poses-file PATH` 显式指定；
+2. 与 USD 同目录的 `<USD文件主名>.spawn.yaml`；
+3. 仓库 `isaac_sim/configs/environments/` 下的同名文件。
+
+当前房间已经配置
+`kujiale_0026_A_to_B_door_open.spawn.yaml`，Jackal 从客厅较开阔位置
+`[2.9, -0.2, 0.0635]`、朝向 `180°` 出生。此 Pose 的
+`map` Pose 已通过三次 Ideal 冷启动扫描配准标定为 `[0, 0, 0°]`，保守
+不确定度为 `0.05 m / 1°`。自定义室内环境还会默认关闭
+Warehouse 使用的高位第三人称相机；确需启用时可显式追加
+`--third-person-camera`，随后应把相机高度调到低于房间天花板。
+
+运行时只在 `/tmp/isaac_sim_ros2_nav_$UID/stages/` 创建按资产区分的项目
+overlay，并在其中补齐 `/World`、Jackal 和 `/PhysicsScene`。源 USD 和主目录
+中的材质文件不会被改写。对酷家乐导出器写成 `.../Materials/...` 的可解析
+路径错误，overlay 会自动改成有效绝对路径；真正缺失的纹理仍会由 Isaac
+日志明确报告。
+
 Mapping 中 SLAM Toolbox 自己发布 `/map`，不会启动 `map_server`。
 
 终端 B 会自动打开 `mapping.rviz` 和一个标题为 **Isaac Nav Mapping Teleop** 的独立终端。RViz 默认显示实时 `/map`、`/scan`、RobotModel、TF 和 `/odom`；原始 PointCloud2 与 Ground Truth 默认关闭，需要时在 Displays 中勾选。
@@ -442,6 +506,12 @@ Teleop 只能在 Mapping/Incremental Mapping 使用。脚本会拒绝在 Localiz
 
 ```bash
 ./scripts/save_map.sh warehouse_v3
+```
+
+当前房间建议使用清楚的版本名，例如：
+
+```bash
+./scripts/save_map.sh kujiale_0026_door_open_v1
 ```
 
 `save_map.sh` 可以在另一个已 source 工作区的终端执行；如果你刚从仓库根打开新终端，先运行：
@@ -771,6 +841,7 @@ ros2 run tf2_tools view_frames
 - Realistic `/wheel/odom`、`/odom` 约 45 Hz；
 - `/odom`、`/map` 均只有一个模式正确的 publisher。
 - Navigation 的 MPPI 控制频率为 `10 Hz`，预测窗保持 `20 × 0.10 s = 2 s`，batch 为 `500`；Velocity Smoother 仍以 `20 Hz` 输出平滑命令。
+- 酷家乐窄通道配置保持 Jackal `0.485 × 0.420 m` 的真实矩形 Footprint；Costmap padding 为 `5 mm`，Inflation 半径为 `0.40 m`、衰减系数为 `8.0`。Collision Monitor 紧急停止区宽 `0.46 m`，仍覆盖实体两侧各 `20 mm`，外围 `0.60 m` 减速区只降低速度，不把平行墙误判为正面碰撞。
 
 ## 17. 常见问题
 
@@ -832,7 +903,7 @@ Mapping 与 Localization/Navigation 被同时启动，或 SLAM map 未正确重�
 
 ### 17.7 SmacPlanner2D 打印 inflation `ERROR`
 
-Nav2 Jazzy 1.3.12 对当前 2D radius 模式会打印已知误诊。只要版本、Footprint、插件和 `0.55 m` inflation 配置未改变，并且随后正常完成规划，可按 [`verification.md`](verification.md#nav2-1312-smac-inflation-diagnostic) 的说明处理。其他 planner 或参数变化后必须重新调查。
+Nav2 Jazzy 1.3.12 对当前 2D radius 模式会打印已知误诊。只要版本、Footprint、插件和当前 `0.40 m` inflation 配置未改变，并且随后正常完成规划，可按 [`verification.md`](verification.md#nav2-1312-smac-inflation-diagnostic) 的说明处理。其他 planner 或参数变化后必须重新调查。
 
 ### 17.8 机器人不动或持续运动
 

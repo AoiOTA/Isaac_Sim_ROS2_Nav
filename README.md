@@ -6,6 +6,10 @@
 
 > 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-17 的 Realistic 同环境远距离验收达到静态 20/20、动态 19/20，且两批均无物理碰撞；同日 Ideal 前进优先复杂长路线验收达到静态 3/3、动态 3/3，每轮约 50 m、6/6 航点、0 恢复、0 碰撞且导航指令无倒车。覆盖完整仓库的 `warehouse_v2` 已完成三次冷启动标定并作为默认导航基线发布，大 Pose Graph 使用 Git LFS；覆盖不完整的 v1 仅保留用于历史结果复现。多地图/多布局泛化矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
+> `codex/kujiale-navigation-mapping` 分支专用于酷家乐房间。该分支默认加载
+> `warehouse_new` 地图和酷家乐出生点；原 `codex/rviz-workflow-upgrade`
+> 分支仍默认使用 `warehouse_v2`，两套环境不会互相覆盖。
+
 ## 文档导航
 
 第一次使用建议先看前两项：
@@ -33,7 +37,7 @@
   `/slam_toolbox/map`，不得作为 Nav2 静态地图。
 - Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
-- 感知基线为 `/lidar/points_raw → pointcloud_to_laserscan → /scan`；默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
+- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；RTX 绝对端点使用显式 `rtx_world` 数据帧，默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
 
 完整 Topic、QoS、TF 所有权和 Reset 契约见 [`docs/interfaces.md`](docs/interfaces.md)。
@@ -104,6 +108,28 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 ./scripts/run_isaac.sh --navigation-mode mapping --mode ideal
 ```
 
+也可以只给出主目录场景树中的唯一 USD 文件名来建立自定义环境地图：
+
+```bash
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode mapping \
+  --mode ideal
+```
+
+默认递归搜索 `/home/lyb/kujiale_usd_rooms_20260717`；也接受该目录下的相对
+路径或任意绝对路径。自定义环境使用独立的临时项目 Stage，不会改写下载的
+源 USD，并自动加载同名 `.spawn.yaml` 出生点配置。当前 `kujiale_0026` 的
+出生点已经针对 `warehouse_new` 完成 Ideal 标定。
+室内场景默认启用 Jackal 相对坐标系下的第三人称跟随相机。相机位于
+`base_link` 后方 `3.2 m`、上方 `2.2 m`，保持在常见室内天花板以下，并以
+`16 mm` 广角朝车前方注视；主视口会自动切换到该相机。
+
+GUI 模式会自动把 Isaac 主视口切换到 Jackal 的第三人称相机。相机作为
+`base_link` 的子 Prim 固定在车后上方，会随底盘平移、转向和 Reset；无需再
+手动追踪视角。临时不使用时可给启动命令增加
+`--no-third-person-camera`，无头模式会自动跳过该相机。
+
 终端 B 启动点云投影与异步 SLAM：
 
 ```bash
@@ -116,7 +142,24 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 ./scripts/save_map.sh warehouse_new
 ```
 
-当前 `mapping_start.map` 已依据完整的 `warehouse_v2` 建图结果完成三次冷启动标定，结果为 `[0.0, 0.0, 0.0°]`。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前仍须把四个工件视为不可混用的同一版本。
+当前酷家乐 `mapping_start.map` 已针对 `warehouse_new` 完成三次 Ideal
+冷启动扫描配准，标定结果为 `[0.0, 0.0, 0.0°]`。该精选基线的
+OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh`
+会校验四件套大小和 SHA256。当前阶段只验收普通 Ideal Navigation；此轮
+关闭扫描匹配生成的 Pose Graph 不用于 Realistic 定位或 Pose Graph 标定。
+
+直接使用新地图导航：
+
+```bash
+# 终端 A
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal
+
+# 终端 B；自动选择 warehouse_new 和酷家乐出生点
+./scripts/run_ros.sh navigation odometry_mode:=ideal
+```
 
 标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
 
@@ -192,7 +235,9 @@ Navigation 不会立即激活 Nav2。Activation Gate 会先等待 Map Server 的
 
 最终回归在固定 `/map` 架构下完成：Ideal 1 m 静态 4/4（GT 误差 `0.178–0.188 m`），Ideal 3 m 长距离 1/1（GT 路径 `2.807 m`、误差 `0.193 m`），Realistic 1 m 静态 4/4（GT 误差 `0.175–0.187 m`）。所有轮次 Nav2 状态为成功、最终静止门满足；Realistic `/odom` 运行时只有 `ekf_filter_node` 一个发布者。这些是确定性 smoke/recovery 证据，不是计划中多起终点与多布局的统计验收。
 
-Nav2 1.3.12 在 `SmacPlanner2D` 初始化时会打印一条 inflation `ERROR`；对该版本的 2D planner 路径，这是上游通用 collision checker 的误报。当前双 costmap 均已配置 `InflationLayer`，`0.55 m` 半径大于约 `0.34 m` 的带 padding 外接半径。原因、上游源码链接和限定条件见 [`docs/verification.md`](docs/verification.md#nav2-1312-smac-inflation-diagnostic)。
+Nav2 1.3.12 在 `SmacPlanner2D` 初始化时会打印一条 inflation `ERROR`；对该版本的 2D planner 路径，这是上游通用 collision checker 的误报。当前酷家乐窄通道配置的双 costmap 均使用 `0.40 m` InflationLayer，仍大于约 `0.337 m` 的带 padding 外接半径；较快的代价衰减不会关闭真实矩形 footprint 碰撞检查。原因、上游源码链接和限定条件见 [`docs/verification.md`](docs/verification.md#nav2-1312-smac-inflation-diagnostic)。
+
+`warehouse_new` 针对室内窄门和走廊采用紧凑安全壳：物理 footprint 保持不变，紧急停止区只比底盘外缘多 `20--30 mm`，MPPI 对每个预测点执行 footprint 碰撞检查。平行墙面进入外围减速区时会降速，但不会再因为旧的 `0.54 m` 停止区宽度而把可通行窄道直接锁死。
 
 ## 动态障碍与实验
 

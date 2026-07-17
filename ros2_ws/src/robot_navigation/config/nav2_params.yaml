@@ -68,9 +68,11 @@ controller_server:
       # Forward-only navigation stress-test profile.  Skid-steer reverse
       # remains available at the direct chassis layer and can be restored
       # after forward path-following/avoidance acceptance is complete.
-      vx_std: 0.25
+      # Narrow indoor passages need more low-speed samples and enough angular
+      # spread to settle onto the corridor centreline before accelerating.
+      vx_std: 0.20
       vy_std: 0.00
-      wz_std: 0.70
+      wz_std: 0.80
 
       # 前进不再掩盖转弯；本阶段关闭导航倒车采样。
       vx_max: 0.65
@@ -112,12 +114,15 @@ controller_server:
       CostCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 3.81
+        # The rectangular footprint remains collision-checked at every
+        # prediction point.  A lower soft-cost weight lets valid trajectories
+        # traverse the centre of narrow, symmetrically inflated corridors.
+        cost_weight: 2.50
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
         near_goal_distance: 1.0
-        trajectory_point_step: 2
+        trajectory_point_step: 1
 
       GoalCritic:
         enabled: true
@@ -131,15 +136,15 @@ controller_server:
         cost_weight: 4.0
         threshold_to_consider: 0.6
 
-      # 提前贴合局部路径，但仍允许为避障和倒车偏离中心线。
+      # 窄通道内膨胀代价占比天然较高，仍保持 PathAlign 工作以避免左右摆动。
       PathAlignCritic:
         enabled: true
         cost_power: 1
         cost_weight: 10.0
-        max_path_occupancy_ratio: 0.10
+        max_path_occupancy_ratio: 0.40
         trajectory_point_step: 4
         threshold_to_consider: 0.5
-        offset_from_furthest: 12
+        offset_from_furthest: 8
         use_path_orientations: false
 
       PathFollowCritic:
@@ -185,7 +190,9 @@ local_costmap:
       resolution: 0.05
 
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
-      footprint_padding: 0.01
+      # The footprint already matches the physical wheel envelope. Keep a
+      # small numerical shell without consuming a narrow doorway twice.
+      footprint_padding: 0.005
 
       plugins: [obstacle_layer, inflation_layer]
 
@@ -203,14 +210,17 @@ local_costmap:
           data_type: LaserScan
 
           raytrace_max_range: 25.0
-          raytrace_min_range: 0.30
+          raytrace_min_range: 0.40
           obstacle_max_range: 25.0
-          obstacle_min_range: 0.30
+          obstacle_min_range: 0.40
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        # 0.40 m remains above the padded 0.337 m circumscribed radius.  The
+        # steeper decay preserves collision checking while allowing the MPPI
+        # controller to use valid corridor-centre cells.
+        cost_scaling_factor: 8.0
+        inflation_radius: 0.40
 
       always_send_full_costmap: true
 
@@ -230,7 +240,7 @@ global_costmap:
       track_unknown_space: true
 
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
-      footprint_padding: 0.01
+      footprint_padding: 0.005
 
       plugins: [static_layer, obstacle_layer, inflation_layer]
 
@@ -252,14 +262,14 @@ global_costmap:
           data_type: LaserScan
 
           raytrace_max_range: 25.0
-          raytrace_min_range: 0.30
+          raytrace_min_range: 0.40
           obstacle_max_range: 25.0
-          obstacle_min_range: 0.30
+          obstacle_min_range: 0.40
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 3.0
-        inflation_radius: 0.55
+        cost_scaling_factor: 8.0
+        inflation_radius: 0.40
 
       always_send_full_costmap: true
 
@@ -276,7 +286,10 @@ planner_server:
     GridBased:
       plugin: nav2_smac_planner::SmacPlanner2D
 
-      tolerance: 0.25
+      # Keep the planner's substitute-goal radius inside the Goal Checker's
+      # 0.20 m acceptance radius. Otherwise an invalid RViz goal can produce a
+      # valid path that the controller can never finish.
+      tolerance: 0.10
       downsample_costmap: false
       allow_unknown: true
 
@@ -284,7 +297,9 @@ planner_server:
       max_on_approach_iterations: 1000
       max_planning_time: 2.0
 
-      cost_travel_multiplier: 2.0
+      # Keep a preference for open space, but do not reject the only valid
+      # route merely because both walls inflate the corridor centreline.
+      cost_travel_multiplier: 1.2
       use_final_approach_orientation: false
 
       smoother:
@@ -381,7 +396,10 @@ collision_monitor:
 
     StopZone:
       type: polygon
-      points: "[[0.32, 0.27], [0.32, -0.27], [-0.29, -0.27], [-0.29, 0.27]]"
+      # Physical footprint is x=[-0.230, 0.255], y=+/-0.210 m.  This zone keeps
+      # a 20--30 mm emergency shell, rather than the former 60 mm lateral shell
+      # that was continuously triggered by parallel walls in narrow passages.
+      points: "[[0.285, 0.230], [0.285, -0.230], [-0.250, -0.230], [-0.250, 0.230]]"
 
       action_type: stop
       min_points: 3
@@ -392,11 +410,11 @@ collision_monitor:
 
     SlowdownZone:
       type: polygon
-      points: "[[0.55, 0.42], [0.55, -0.42], [-0.45, -0.42], [-0.45, 0.42]]"
+      points: "[[0.45, 0.30], [0.45, -0.30], [-0.38, -0.30], [-0.38, 0.30]]"
 
       action_type: slowdown
       min_points: 3
-      slowdown_ratio: 0.35
+      slowdown_ratio: 0.50
 
       visualize: true
       polygon_pub_topic: /collision_monitor/slowdown_zone
@@ -408,7 +426,7 @@ collision_monitor:
 
       footprint_topic: /local_costmap/published_footprint
 
-      time_before_collision: 1.20
+      time_before_collision: 1.00
       simulation_time_step: 0.10
       min_points: 3
 

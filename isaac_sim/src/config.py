@@ -154,6 +154,17 @@ class GroundTruthConfig:
 
 
 @dataclass(frozen=True)
+class ThirdPersonCameraConfig:
+    enabled: bool
+    prim_name: str
+    distance_m: float
+    height_m: float
+    look_ahead_m: float
+    look_at_height_m: float
+    focal_length_mm: float
+
+
+@dataclass(frozen=True)
 class ConfigFiles:
     robot: Path
     lidar: Path
@@ -174,6 +185,7 @@ class ProjectConfig:
     spawn: SpawnConfig
     ros2: Ros2Config
     ground_truth: GroundTruthConfig
+    third_person_camera: ThirdPersonCameraConfig
     extensions: tuple[str, ...]
     files: ConfigFiles
 
@@ -357,6 +369,65 @@ def _parse_ground_truth(raw: Any) -> GroundTruthConfig:
     )
 
 
+def _parse_third_person_camera(raw: Any) -> ThirdPersonCameraConfig:
+    data = _expect_mapping(raw, "third_person_camera")
+    allowed = {
+        "enabled",
+        "prim_name",
+        "distance_m",
+        "height_m",
+        "look_ahead_m",
+        "look_at_height_m",
+        "focal_length_mm",
+    }
+    _expect_keys(data, allowed, "third_person_camera")
+    enabled = _required(data, "enabled", "third_person_camera")
+    if not isinstance(enabled, bool):
+        raise ConfigError("third_person_camera.enabled must be boolean")
+    height = _required(data, "height_m", "third_person_camera")
+    look_ahead = _required(data, "look_ahead_m", "third_person_camera")
+    look_at_height = _required(
+        data, "look_at_height_m", "third_person_camera"
+    )
+    for value, name in (
+        (height, "height_m"),
+        (look_ahead, "look_ahead_m"),
+        (look_at_height, "look_at_height_m"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ConfigError(
+                f"third_person_camera.{name} must be a non-negative number"
+            )
+        if value < 0:
+            raise ConfigError(
+                f"third_person_camera.{name} must be a non-negative number"
+            )
+    prim_name = _required(data, "prim_name", "third_person_camera")
+    if (
+        not isinstance(prim_name, str)
+        or not prim_name
+        or "/" in prim_name
+    ):
+        raise ConfigError(
+            "third_person_camera.prim_name must be a non-empty USD prim name"
+        )
+    return ThirdPersonCameraConfig(
+        enabled=enabled,
+        prim_name=prim_name,
+        distance_m=_positive_number(
+            _required(data, "distance_m", "third_person_camera"),
+            "third_person_camera.distance_m",
+        ),
+        height_m=float(height),
+        look_ahead_m=float(look_ahead),
+        look_at_height_m=float(look_at_height),
+        focal_length_mm=_positive_number(
+            _required(data, "focal_length_mm", "third_person_camera"),
+            "third_person_camera.focal_length_mm",
+        ),
+    )
+
+
 def _parse_files(raw: Any) -> ConfigFiles:
     data = _expect_mapping(raw, "files")
     allowed = {"robot", "lidar", "imu", "camera", "topics", "qos", "dynamic_obstacles"}
@@ -393,6 +464,7 @@ def load_project_config(path: str | Path | None = None, env: Mapping[str, str] |
         "spawn",
         "ros2",
         "ground_truth",
+        "third_person_camera",
         "extensions",
         "files",
     }
@@ -414,6 +486,9 @@ def load_project_config(path: str | Path | None = None, env: Mapping[str, str] |
         spawn=_parse_spawn(_required(data, "spawn", "project")),
         ros2=_parse_ros2(_required(data, "ros2", "project")),
         ground_truth=_parse_ground_truth(_required(data, "ground_truth", "project")),
+        third_person_camera=_parse_third_person_camera(
+            _required(data, "third_person_camera", "project")
+        ),
         extensions=tuple(extensions),
         files=_parse_files(_required(data, "files", "project")),
     )

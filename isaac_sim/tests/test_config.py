@@ -32,6 +32,10 @@ def test_default_project_contract_loads_strictly():
     assert config.simulation.expected_physics_scene == "/PhysicsScene"
     assert config.simulation.structure_tf_source == "isaac"
     assert config.robot.default_prim == "jackal"
+    assert config.third_person_camera.enabled is True
+    assert config.third_person_camera.prim_name == "third_person_camera"
+    assert config.third_person_camera.distance_m == pytest.approx(3.2)
+    assert config.third_person_camera.height_m == pytest.approx(2.2)
     assert config.robot.wheel_joints == (
         "front_left_wheel_joint",
         "front_right_wheel_joint",
@@ -65,6 +69,8 @@ def test_nested_environment_overrides_are_typed():
             ISAAC_NAV__SIMULATION__HEADLESS="true",
             ISAAC_NAV__SIMULATION__MAX_FRAMES="17",
             ISAAC_NAV__ROS2__DOMAIN_ID="42",
+            ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED="false",
+            ISAAC_NAV__THIRD_PERSON_CAMERA__DISTANCE_M="4.75",
         ),
     )
     assert config.simulation.odometry_mode == "realistic"
@@ -72,6 +78,23 @@ def test_nested_environment_overrides_are_typed():
     assert config.simulation.headless is True
     assert config.simulation.max_frames == 17
     assert config.ros2.domain_id == 42
+    assert config.third_person_camera.enabled is False
+    assert config.third_person_camera.distance_m == pytest.approx(4.75)
+
+
+def test_invalid_third_person_camera_settings_are_rejected():
+    with pytest.raises(ConfigError, match="distance_m must be a positive"):
+        load_project_config(
+            CONFIG,
+            _environment(
+                ISAAC_NAV__THIRD_PERSON_CAMERA__DISTANCE_M="-1.0"
+            ),
+        )
+    with pytest.raises(ConfigError, match="height_m must be a non-negative"):
+        load_project_config(
+            CONFIG,
+            _environment(ISAAC_NAV__THIRD_PERSON_CAMERA__HEIGHT_M="-0.1"),
+        )
 
 
 def test_unknown_override_is_rejected():

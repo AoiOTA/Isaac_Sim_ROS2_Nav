@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 251 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 257 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -44,17 +44,22 @@
 | `data/trajectories/.gitkeep` | 保留估计轨迹与 Ground Truth 轨迹输出目录。 |
 | `data/maps/manifests/warehouse_v1.yaml` | 历史不完整 v1 的来源、尺寸、SHA256、坐标原点和旧标定记录。 |
 | `data/maps/manifests/warehouse_v2.yaml` | 当前完整仓库导航基线的来源、四件套大小/SHA256、`406×611` 栅格、坐标原点及三次冷启动标定证据；preflight 的权威清单。 |
+| `data/maps/manifests/warehouse_new.yaml` | 酷家乐分支默认地图的四件套完整性、`154×248` 栅格、坐标原点和三次 Ideal 扫描配准标定证据。 |
 | `data/maps/occupancy/.gitkeep` | 保留 OccupancyGrid 目录。 |
 | `data/maps/occupancy/warehouse_v1.yaml` | 历史不完整 v1 的 ROS Map Server 元数据。 |
 | `data/maps/occupancy/warehouse_v1.pgm` | 历史不完整 v1 的二值/三值占据栅格图，用于旧结果复现。 |
 | `data/maps/occupancy/warehouse_v1_preview.png` | 方便人工浏览地图的预览图，不参与导航。 |
 | `data/maps/occupancy/warehouse_v2.yaml` | 当前默认导航 OccupancyGrid 元数据：分辨率、原点、占据阈值及 v2 PGM 文件名。 |
 | `data/maps/occupancy/warehouse_v2.pgm` | 覆盖完整仓库的 `406×611` 二值/三值栅格，由 Nav2 Map Server 发布。 |
+| `data/maps/occupancy/warehouse_new.yaml` | 酷家乐默认 OccupancyGrid 元数据。 |
+| `data/maps/occupancy/warehouse_new.pgm` | 酷家乐房间 `154×248 @ 0.05 m` 占据栅格。 |
 | `data/maps/posegraphs/.gitkeep` | 保留 SLAM Toolbox 序列化地图目录。 |
 | `data/maps/posegraphs/warehouse_v1.posegraph` | Git LFS 管理的历史 v1 SLAM Toolbox Pose Graph。 |
 | `data/maps/posegraphs/warehouse_v1.data` | 与历史 v1 `.posegraph` 配套的序列化数据。 |
 | `data/maps/posegraphs/warehouse_v2.posegraph` | Git LFS 管理的完整仓库 v2 Pose Graph；Realistic 定位和显式 Ideal 标定加载它。 |
 | `data/maps/posegraphs/warehouse_v2.data` | 与 v2 `.posegraph` 不可拆分的序列化传感器/数据文件。 |
+| `data/maps/posegraphs/warehouse_new.posegraph` | Git LFS 管理的酷家乐建图序列化工件；当前只作为 Ideal 建图来源记录。 |
+| `data/maps/posegraphs/warehouse_new.data` | 与 `warehouse_new.posegraph` 配套的扫描数据。 |
 
 ## 4. 操作脚本
 
@@ -66,7 +71,7 @@
 | `scripts/build_ros2.sh` | source ROS 环境并执行 `colcon build --symlink-install`。 |
 | `scripts/test.sh` | 统一运行纯 Python、ROS colcon 和可选 Isaac/USD 测试。 |
 | `scripts/run_isaac.sh` | 选择项目配置并用 Isaac Python 启动 standalone 仿真；支持 custom profile。 |
-| `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；Localization/Navigation 未显式传图时默认完整 `warehouse_v2`，传入任一地图工件时按 basename 配对另一半。 |
+| `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
@@ -100,9 +105,10 @@
 
 | 文件 | 用途 |
 | --- | --- |
-| `isaac_sim/configs/project.yaml` | 默认 Jackal 项目总配置；串联环境、机器人、仿真模式、出生点、ROS、GT 和所有子配置文件。 |
-| `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；要求显式环境变量提供真实 USD、defaultPrim 和传感器配置。 |
+| `isaac_sim/configs/project.yaml` | 默认 Jackal 项目总配置；串联环境、机器人、仿真模式、出生点、ROS、GT、第三人称相机和所有子配置文件。 |
+| `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；要求显式环境变量提供真实 USD、defaultPrim 和传感器配置，并把第三人称相机挂到自定义 `base_link`。 |
 | `isaac_sim/configs/spawn_poses.yaml` | 出生点唯一真源；同时保存物理 USD Pose、已标定 Map Pose 及不确定度。 |
+| `isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml` | 酷家乐 0026 开门场景的 Mapping 出生点；Map Pose 在新地图标定前保持未标定。 |
 | `isaac_sim/configs/environments/warehouse_multiple_shelves.yaml` | 官方 Warehouse 资产路径、组合方式和预期关键 Prim 的小型描述。 |
 
 ## 8. Isaac 机器人与仿真配置
@@ -148,6 +154,7 @@
 | --- | --- |
 | `isaac_sim/src/__init__.py` | Isaac 核心源码包标记。 |
 | `isaac_sim/src/config.py` | 严格解析总配置、环境变量替换、嵌套 override、模式组合和必需路径。 |
+| `isaac_sim/src/environment_selection.py` | 解析自定义 USD 的绝对/相对/唯一文件名，选择同名出生点配置并生成按资产隔离的运行时 Stage 路径。 |
 | `isaac_sim/src/yaml_utils.py` | 通用 YAML mapping、字段、数值、向量和未知 key 校验函数。 |
 
 ## 12. Isaac Stage 管理
@@ -155,9 +162,9 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/stage/__init__.py` | Stage 子包标记。 |
-| `isaac_sim/src/stage/stage_loader.py` | 创建/打开项目 Stage，管理 Sublayer、Reference、Xform 和保存。 |
-| `isaac_sim/src/stage/scene_composer.py` | 按“环境 Sublayer + 机器人 Reference”组合最终 Stage，并保持项目层为 edit target。 |
-| `isaac_sim/src/stage/physics_setup.py` | 查找并校验唯一 PhysicsScene，设置重力、时间步和 PhysX 参数。 |
+| `isaac_sim/src/stage/stage_loader.py` | 创建/打开项目 Stage，管理 Sublayer、Reference、Xform、保存，并在 overlay 中修复可解析的 `.../` 资产路径笔误。 |
+| `isaac_sim/src/stage/scene_composer.py` | 按“环境 Sublayer + 机器人 Reference”组合最终 Stage，统一米/Z 元数据并保持项目层为 edit target。 |
+| `isaac_sim/src/stage/physics_setup.py` | 查找并校验唯一 PhysicsScene；自定义环境缺失时创建预期场景，再设置重力、时间步和 PhysX 参数。 |
 | `isaac_sim/src/stage/asset_validator.py` | 检查 defaultPrim、依赖、关键 Prim、传感器 frame、Articulation、wheel joint/碰撞和 GT 隔离。 |
 
 ## 13. Isaac 机器人运行时
@@ -171,6 +178,8 @@
 | `isaac_sim/src/robot/reset.py` | ResetManager 物理事务：预校验出生点/标定，暂停、停控、恢复 Pose、清速度、重置子系统，并在失败路径也恢复 timeline。 |
 | `isaac_sim/src/robot/idle_brake.py` | 低层命令超时/死区 watchdog；无有效命令时让底盘可靠静止但允许低速唤醒。 |
 | `isaac_sim/src/robot/skid_steer_motion_assist.py` | 对 PhysX 四轮滑移转向的曲率欠响应进行超时保护和加速度受限的平面速度补偿，使前进/倒车弧线与 `/cmd_vel` 一致。 |
+| `isaac_sim/src/visualization/__init__.py` | Isaac GUI 可视化工具子包标记。 |
+| `isaac_sim/src/visualization/third_person_camera.py` | 在机器人 `base_link` 下创建固定相对位姿的第三人称 USD Camera，并自动绑定 Isaac 主视口。 |
 
 ## 14. Isaac 传感器与 ROS Bridge
 
@@ -208,6 +217,8 @@
 | --- | --- |
 | `isaac_sim/tests/conftest.py` | 把项目根加入测试导入路径。 |
 | `isaac_sim/tests/test_config.py` | 测试项目/机器人配置 schema、环境变量 override、模式组合和 custom fail-fast。 |
+| `isaac_sim/tests/test_environment_selection.py` | 测试自定义 USD 文件名解析、歧义拒绝、出生点配置优先级和隔离的运行时 Stage 路径。 |
+| `isaac_sim/tests/test_third_person_camera.py` | 测试第三人称相机在 `base_link` 坐标系中的后上方位置、前向注视点和配置覆盖。 |
 | `isaac_sim/tests/test_asset_paths.py` | 测试资产 manifest、项目 overlay 只引用本地导入以及路径可复现性。 |
 | `isaac_sim/tests/test_stage_composition.py` | Isaac/USD marker 测试：Stage 组合、唯一 PhysicsScene、defaultPrim 和 articulation 结构。 |
 | `isaac_sim/tests/test_graph_contracts.py` | 测试 Topic/QoS、控制/传感器/TF Graph 节点连接和 GT 隔离。 |
@@ -306,7 +317,7 @@
 | --- | --- |
 | `ros2_ws/src/robot_navigation/CMakeLists.txt` | 安装 Nav2 配置/launch并注册测试。 |
 | `ros2_ws/src/robot_navigation/package.xml` | Nav2 planner/controller/behavior/smoother/collision monitor/lifecycle 依赖。 |
-| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用 10 Hz、2 秒窗和 500 批次，并允许倒车与提前角度修正。 |
+| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用 10 Hz、2 秒窗和 500 批次，当前酷家乐分支还包含真实 Footprint 逐点碰撞检查及窄门/走廊安全壳。 |
 | `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点；默认不 autostart，等待外部 readiness gate。 |
 | `ros2_ws/src/robot_navigation/test/test_nav2_config.py` | 检查插件、Footprint、inflation、话题链、2D obstacle layer 和安全参数。 |
 

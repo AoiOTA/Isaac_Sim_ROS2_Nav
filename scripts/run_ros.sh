@@ -22,17 +22,23 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
   fi
 fi
 acquire_instance_lock ros "ROS stack"
-export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim/configs/spawn_poses.yaml}"
+export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml}"
 
 launch_args=("$@")
 if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; then
-  default_map_version="warehouse_v2"
+  # This custom-scene branch promotes the complete Kujiale map bundle while
+  # the original warehouse branch keeps warehouse_v2 as its own default.
+  default_map_version="warehouse_new"
   posegraph_file=""
   map_file=""
+  odometry_mode="ideal"
+  posegraph_calibration="false"
   for argument in "${launch_args[@]}"; do
     case "${argument}" in
       posegraph_file:=*) posegraph_file="${argument#posegraph_file:=}" ;;
       map_file:=*) map_file="${argument#map_file:=}" ;;
+      odometry_mode:=*) odometry_mode="${argument#odometry_mode:=}" ;;
+      posegraph_calibration:=*) posegraph_calibration="${argument#posegraph_calibration:=}" ;;
     esac
   done
   if [[ -z "${posegraph_file}" ]]; then
@@ -52,6 +58,13 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
     map_file="${PROJECT_ROOT}/data/maps/occupancy/$(basename "${posegraph_prefix}").yaml"
     require_file "${map_file}"
     launch_args+=("map_file:=${map_file}")
+  fi
+  posegraph_version="$(basename "${posegraph_file%.posegraph}")"
+  posegraph_version="${posegraph_version%.data}"
+  if [[ "${posegraph_version}" == "warehouse_new" ]] \
+      && [[ "${odometry_mode}" != "ideal" \
+            || "${posegraph_calibration}" == "true" ]]; then
+    die "warehouse_new is calibrated for normal Ideal localization/navigation only; rebuild it with scan matching before Realistic or Pose Graph localization"
   fi
 fi
 

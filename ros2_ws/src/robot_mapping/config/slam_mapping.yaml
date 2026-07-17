@@ -21,7 +21,7 @@ slam_toolbox:
     map_update_interval: 5.0
     resolution: 0.05
     restamp_tf: false
-    min_laser_range: 0.30
+    min_laser_range: 0.40
     max_laser_range: 25.0
     minimum_time_interval: 0.10
     transform_timeout: 0.20
@@ -29,6 +29,9 @@ slam_toolbox:
     stack_size_to_use: 40000000
     enable_interactive_mode: true
 
+    # Direct/Realistic launches use scan matching and loop closure.  The
+    # project bringup overrides both to false only for Ideal odometry, whose
+    # Isaac world-pose odometry is already exact and must remain the map pose.
     use_scan_matching: true
     use_scan_barycenter: true
     minimum_travel_distance: 0.20

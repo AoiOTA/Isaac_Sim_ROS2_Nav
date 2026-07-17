@@ -1,12 +1,23 @@
 schema_version: 1
 enabled: true
 sensor_prim: /World/Robots/Jackal/base_link/lidar_link/rtx_lidar
-config: XT32_SD10
+config: RPLIDAR_S2E
 variant: null
+# RTX rotary lidar assets scan in their local X-Z plane. Rotate the internal
+# sensor about X so the navigation scan lies in the robot's horizontal X-Y
+# plane. Quaternion order is wxyz.
+scan_plane_rotation_wxyz: [0.7071067811865476, 0.7071067811865475, 0.0, 0.0]
 tick_rate: 10.0
 accumulate_outputs: true
 render_product_resolution: [128, 128]
 topic_name: /lidar/points_raw
-frame_id: lidar_link
+frame_id: rtx_world
+# Isaac Sim 6.0.1's RTX PointCloud writer publishes absolute USD-world
+# coordinates. Label them with the explicit fixed data frame; a spawn-derived
+# odom -> rtx_world transform converts them into the ROS navigation tree.
+output_frame: WORLD
+# A full rotary scan spans one sensor period. Compensate returns into one
+# sensor pose so simultaneous translation and rotation do not bend walls.
+motion_compensation: COMPENSATED
 type: point_cloud
 qos_profile: sensor_data
