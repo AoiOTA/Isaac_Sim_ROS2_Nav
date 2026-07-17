@@ -19,6 +19,7 @@
 | [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、导航、建图、实验和排障。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
 | [`docs/skid_steer_navigation_solution.md`](docs/skid_steer_navigation_solution.md) | 回顾 Jackal 直行正常但导航转弯困难的症状、根因、分层修复和 Ideal 复杂路线验收时。 |
+| [`docs/kujiale_usd_navigation_postmortem_20260717.md`](docs/kujiale_usd_navigation_postmortem_20260717.md) | 复盘酷家乐自建 USD 的材质、Stage、RTX/TF、建图标定、窄空间导航和 RViz 问题，以及与 `warehouse_v2` 的差异时。 |
 | [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
 | [`docs/calibration.md`](docs/calibration.md) | 修改地图、出生点、传感器外参或动态障碍坐标时。 |
@@ -237,7 +238,7 @@ Navigation 不会立即激活 Nav2。Activation Gate 会先等待 Map Server 的
 
 Nav2 1.3.12 在 `SmacPlanner2D` 初始化时会打印一条 inflation `ERROR`；对该版本的 2D planner 路径，这是上游通用 collision checker 的误报。当前酷家乐窄通道配置的双 costmap 均使用 `0.40 m` InflationLayer，仍大于约 `0.337 m` 的带 padding 外接半径；较快的代价衰减不会关闭真实矩形 footprint 碰撞检查。原因、上游源码链接和限定条件见 [`docs/verification.md`](docs/verification.md#nav2-1312-smac-inflation-diagnostic)。
 
-`warehouse_new` 针对室内窄门和走廊采用紧凑安全壳：物理 footprint 保持不变，紧急停止区只比底盘外缘多 `20--30 mm`，MPPI 对每个预测点执行 footprint 碰撞检查。平行墙面进入外围减速区时会降速，但不会再因为旧的 `0.54 m` 停止区宽度而把可通行窄道直接锁死。
+`warehouse_new` 针对室内窄门和走廊采用紧凑安全壳：物理 footprint 保持不变，紧急停止区只比底盘外缘多 `20--30 mm`，MPPI 对每个预测点执行 footprint 碰撞检查。外围减速区侧向宽度仅 `0.47 m`，只比急停区多 `5 mm/侧`，并保留 85% 指令速度；平行墙面不再造成持续限速，正前方障碍仍由前后预警、预测碰撞与急停三层处理。
 
 ## 动态障碍与实验
 

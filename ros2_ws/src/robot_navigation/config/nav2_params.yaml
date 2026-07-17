@@ -68,19 +68,19 @@ controller_server:
       # Forward-only navigation stress-test profile.  Skid-steer reverse
       # remains available at the direct chassis layer and can be restored
       # after forward path-following/avoidance acceptance is complete.
-      # Narrow indoor passages need more low-speed samples and enough angular
-      # spread to settle onto the corridor centreline before accelerating.
-      vx_std: 0.20
+      # Sample enough of the usable forward-speed range that a narrow but
+      # collision-free corridor does not collapse to creeping trajectories.
+      vx_std: 0.35
       vy_std: 0.00
       wz_std: 0.80
 
       # 前进不再掩盖转弯；本阶段关闭导航倒车采样。
-      vx_max: 0.65
+      vx_max: 0.75
       vx_min: 0.00
       vy_max: 0.00
       wz_max: 1.20
 
-      ax_max: 0.80
+      ax_max: 1.10
       ax_min: -1.00
       ay_max: 0.00
       ay_min: 0.00
@@ -93,7 +93,9 @@ controller_server:
       gamma: 0.015
 
       motion_model: DiffDrive
-      visualize: false
+      # Publish both /optimal_trajectory and /trajectories so the controller's
+      # selected path and sampled candidates can be inspected live in RViz.
+      visualize: true
       regenerate_noises: true
 
       critics:
@@ -117,7 +119,7 @@ controller_server:
         # The rectangular footprint remains collision-checked at every
         # prediction point.  A lower soft-cost weight lets valid trajectories
         # traverse the centre of narrow, symmetrically inflated corridors.
-        cost_weight: 2.50
+        cost_weight: 2.00
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -140,7 +142,9 @@ controller_server:
       PathAlignCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 10.0
+        # Balance centring against forward progress.  An overly dominant
+        # alignment score rewards slow samples in narrow corridors.
+        cost_weight: 5.0
         max_path_occupancy_ratio: 0.40
         trajectory_point_step: 4
         threshold_to_consider: 0.5
@@ -150,16 +154,18 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
-        offset_from_furthest: 5
+        # Reward useful progress along the path instead of allowing a
+        # well-aligned but persistently slow trajectory to dominate.
+        cost_weight: 9.0
+        offset_from_furthest: 10
         threshold_to_consider: 1.4
 
       # 大角度偏差时尽早修正朝向；正常导航明确以前进为主。
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 6.0
-        offset_from_furthest: 6
+        cost_weight: 9.5
+        offset_from_furthest: 8
         threshold_to_consider: 0.5
         max_angle_to_furthest: 0.45
         mode: 0
@@ -362,10 +368,10 @@ velocity_smoother:
 
     feedback: OPEN_LOOP
 
-    max_velocity: [0.65, 0.0, 1.20]
+    max_velocity: [0.75, 0.0, 1.20]
     min_velocity: [0.00, 0.0, -1.20]
 
-    max_accel: [0.80, 0.0, 3.00]
+    max_accel: [1.10, 0.0, 3.00]
     max_decel: [-1.00, 0.0, -3.00]
 
     odom_topic: /odom
@@ -410,11 +416,16 @@ collision_monitor:
 
     SlowdownZone:
       type: polygon
-      points: "[[0.45, 0.30], [0.45, -0.30], [-0.38, -0.30], [-0.38, 0.30]]"
+      # Keep a useful warning shell around StopZone without continuously
+      # catching parallel walls in a valid narrow corridor.  The physical
+      # footprint is y=+/-0.210 m and the emergency shell is y=+/-0.230 m.
+      points: "[[0.42, 0.235], [0.42, -0.235], [-0.35, -0.235], [-0.35, 0.235]]"
 
       action_type: slowdown
-      min_points: 3
-      slowdown_ratio: 0.50
+      min_points: 4
+      # Preserve steering authority and forward progress when slowdown is
+      # genuinely required; StopZone still provides the final hard stop.
+      slowdown_ratio: 0.85
 
       visualize: true
       polygon_pub_topic: /collision_monitor/slowdown_zone

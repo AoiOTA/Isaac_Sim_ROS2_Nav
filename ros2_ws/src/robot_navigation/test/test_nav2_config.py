@@ -88,18 +88,23 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
     assert controller['vx_min'] == 0.0
+    assert controller['vx_std'] >= 0.30
+    assert 0.70 <= controller['vx_max'] <= 0.80
     assert controller['wz_std'] >= 0.60
     assert controller['wz_max'] >= 1.0
     assert controller['PathAngleCritic']['mode'] == 0
     assert controller['PathAngleCritic']['cost_weight'] \
         > controller['PathFollowCritic']['cost_weight']
+    assert controller['PathFollowCritic']['cost_weight'] \
+        >= controller['PathAlignCritic']['cost_weight']
+    assert controller['PathFollowCritic']['offset_from_furthest'] >= 8
     assert 'PreferForwardCritic' in controller['critics']
     prefer_forward = controller['PreferForwardCritic']
     assert prefer_forward['enabled'] is True
     assert prefer_forward['cost_weight'] > 0.0
     assert prefer_forward['threshold_to_consider'] <= 0.5
     assert controller['regenerate_noises'] is True
-    assert controller['visualize'] is False
+    assert controller['visualize'] is True
 
     assert smoother['scale_velocities'] is True
     assert smoother['max_velocity'] == [
@@ -144,7 +149,12 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert min(slowdown_x) < min(stop_x)
     assert max(slowdown_y) > max(stop_y)
     assert min(slowdown_y) < min(stop_y)
-    assert 0.0 < collision['SlowdownZone']['slowdown_ratio'] < 1.0
+    # Parallel walls must not permanently halve the command in a traversable
+    # indoor corridor.  The slowdown shell remains outside the emergency stop
+    # shell while retaining enough speed for stable MPPI path tracking.
+    assert max(slowdown_y) <= 0.24
+    assert collision['SlowdownZone']['min_points'] >= 4
+    assert 0.80 <= collision['SlowdownZone']['slowdown_ratio'] <= 0.90
     assert collision['ApproachZone']['time_before_collision'] >= 1.0
 
     for costmap in (local, global_costmap):
@@ -163,6 +173,7 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
         < _params(config, 'controller_server')['goal_checker'][
             'xy_goal_tolerance']
     assert controller['CostCritic']['consider_footprint'] is True
+    assert controller['CostCritic']['cost_weight'] <= 2.5
     assert controller['CostCritic']['trajectory_point_step'] == 1
     assert controller['CostCritic']['collision_cost'] >= 1000000.0
     assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30

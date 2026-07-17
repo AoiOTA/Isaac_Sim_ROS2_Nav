@@ -169,17 +169,19 @@ Ideal `/odom` 已由 Isaac 精确给出；如果再让 SLAM Toolbox 根据激光
 | --- | ---: | ---: | --- |
 | MPPI 控制频率 | 已有基线 10 Hz | 10 Hz | 在 Isaac 负载下稳定满足周期 |
 | 预测窗 / batch | `20 × 0.10 s` / 1000 | `20 × 0.10 s` / 500 | 保留 2 秒视野并降低单周期计算量 |
-| `vx_max` | 1.00 | 0.65 m/s | 避免线速度掩盖转向能力 |
+| `vx_std` | 0.20 | 0.35 m/s | 扩大可用前进速度采样，避免窄道长期选择爬行轨迹 |
+| `vx_max` | 1.00 | 0.75 m/s | 保留室内直线效率，同时由曲率与安全层动态降速 |
 | `vx_min` | -0.20 | 0.00 m/s | 按本阶段要求关闭导航倒车采样 |
-| `wz_std` | 0.40 | 0.70 rad/s | 增加有效转向候选 |
+| `wz_std` | 0.40 | 0.80 rad/s | 增加有效转向候选 |
 | `wz_max` | 1.50 | 1.20 rad/s | 与已验收底盘/平滑器范围一致 |
 | `az_max` | 2.00 | 3.00 rad/s² | 更快建立和切换角速度 |
-| `PathAngleCritic` 权重 | 2.0 | 6.0 | 更早修正路径朝向 |
+| `PathAngleCritic` 权重 | 2.0 | 9.5 | 更早修正路径朝向，并允许保持速度通过连续弯道 |
 | 最大朝向偏差 | 1.0 | 0.45 rad | 避免偏差过大后才转向 |
-| `PathAlign` 前视 offset | 20 | 12 | 减少过远参考造成的迟转 |
+| `PathAlign` / `PathFollow` 权重 | 10.0 / 5.0 | 5.0 / 9.0 | 避免过度奖励“对齐但缓慢”，强化沿路径推进 |
+| `PathFollow` 前视 offset | 5 | 10 | 让优化器优先选择有实际前进量的轨迹 |
 | 速度同比缩放 | false | true | 限速时保持 `wz / vx` 曲率 |
 
-进度检查器改为 `PoseProgressChecker`，同时接受平移和旋转进展；Velocity Smoother 以 20 Hz 输出，线/角加速度分别受 `0.8 m/s²` 和 `3.0 rad/s²` 限制。MPPI 仍使用 `DiffDrive` 模型，并强化 PathAngle、PathAlign、PathFollow 与 PreferForward 的协同。
+进度检查器改为 `PoseProgressChecker`，同时接受平移和旋转进展；Velocity Smoother 以 20 Hz 输出，线/角加速度分别受 `1.1 m/s²` 和 `3.0 rad/s²` 限制。MPPI 仍使用 `DiffDrive` 模型，并强化 PathAngle、PathAlign、PathFollow 与 PreferForward 的协同。
 
 ### 5.6 简化 Ideal 定位
 
