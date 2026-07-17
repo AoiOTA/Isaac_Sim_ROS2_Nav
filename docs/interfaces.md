@@ -10,8 +10,8 @@ interface proposed in `plan.md`.
 | --- | --- | --- | --- | --- | --- |
 | `mapping` | `mapping` | `async_slam_toolbox_node` | must be empty | must be empty | off |
 | `incremental_mapping` | `mapping` | `async_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | must be empty | off |
-| `localization` | `localization` | `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | off |
-| `navigation` | `localization` | `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | readiness-gated |
+| `localization` | `localization` | Ideal: `ideal_localization_tf`; Realistic/explicit calibration: `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | off |
+| `navigation` | `localization` | Ideal: `ideal_localization_tf`; Realistic: `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | readiness-gated |
 
 `incremental_mapping`, `localization`, and `navigation` also require a measured
 Map Pose with `map.calibrated: true`. Baseline mapping is the only operation
@@ -19,13 +19,20 @@ that intentionally permits an uncalibrated Map Pose. `localization` and
 `navigation` additionally require `map_file`; they reject a missing or
 nonexistent OccupancyGrid YAML before launch.
 
+When launched through `scripts/run_ros.sh`, omitted Localization/Navigation map
+arguments select the complete `warehouse_v2` bundle. An explicit Pose Graph or
+OccupancyGrid basename selects the matching other half. Ideal navigation checks
+that the versioned pair exists but uses the calibrated identity `map -> odom`;
+`posegraph_calibration:=true` temporarily enables Pose Graph localization only
+for Ideal `localization`, never for Navigation.
+
 The ROS `posegraph_file` argument is normalized to a prefix, so all of the
 following refer to the same serialized map:
 
 ```text
-data/maps/posegraphs/warehouse_v1
-data/maps/posegraphs/warehouse_v1.posegraph
-data/maps/posegraphs/warehouse_v1.data
+data/maps/posegraphs/warehouse_v2
+data/maps/posegraphs/warehouse_v2.posegraph
+data/maps/posegraphs/warehouse_v2.data
 ```
 
 Both files must exist. Baseline `mapping` rejects a non-empty Pose Graph instead
@@ -73,11 +80,12 @@ All four top-level bringups expose the same interaction arguments:
 | `rviz_config` | `auto` | Select `mapping.rviz`, `localization.rviz`, or `navigation.rviz`; an explicit path must exist. |
 | `use_teleop` | `auto` | Enable only for `mapping` and `incremental_mapping`; explicit true in Localization/Navigation is rejected. |
 | `initial_pose_source` | `auto` | `auto` owns calibrated reseeding; `rviz` gives ownership to valid `/initialpose` input. Incremental Mapping requires `auto`. |
+| `posegraph_calibration` | `false` | Only valid for Ideal Localization; explicitly loads the Pose Graph to measure Map Pose. Normal Ideal operation keeps identity `map → odom`. |
 
 The three RViz configurations are mode contracts, not cosmetic presets:
 
 - Mapping shows the live SLAM `/map` and enables the SLAM Toolbox panel.
-- Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled diagnostic overlay, and provides `SetInitialPose`.
+- Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled Realistic/calibration diagnostic overlay, and provides `SetInitialPose`.
 - Navigation additionally loads the official `nav2_rviz_plugins/Navigation 2` panel and `GoalTool`, dual costmaps, paths, footprints, and Collision Monitor zones. It sends Nav2 actions directly; there is no project `/goal_pose` bridge.
 
 Managed RViz/Teleop processes use the same environment and PID registry as the main scripts. Mapping Teleop publishes Reliable/Volatile `/cmd_vel` at 20 Hz, stops after 0.18 seconds without a key event using a monotonic wall clock, clamps commands to 1.0 m/s and 1.5 rad/s, and publishes a final zero on every normal/signal/EOF exit. Navigation's command chain remains the sole owner in its mode.

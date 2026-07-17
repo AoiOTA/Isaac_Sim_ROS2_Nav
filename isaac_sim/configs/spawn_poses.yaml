@@ -10,8 +10,9 @@ spawn_poses:
     map:
       position: [0.0, 0.0]
       yaw_deg: 0.0
-      # Calibrated against the warehouse_v1 pose graph on 2026-07-10.  A
-      # reset mapping run reported map->odom = [0, 0, 0] at this USD pose.
+      # Recalibrated against warehouse_v2 on 2026-07-17.  Three independent
+      # Ideal/Pose-Graph cold starts measured map->base_link = [0, 0, 0]
+      # at this USD pose, with no spread at the reported precision.
       calibrated: true
       position_stddev_m: 0.05
       yaw_stddev_deg: 5.0

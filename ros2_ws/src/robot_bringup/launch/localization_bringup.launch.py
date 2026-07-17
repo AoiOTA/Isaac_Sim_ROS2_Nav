@@ -18,6 +18,8 @@ def generate_launch_description():
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'posegraph_calibration', default_value='false'),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
@@ -48,6 +50,8 @@ def generate_launch_description():
                     'structure_tf_source'),
                 'posegraph_file': LaunchConfiguration('posegraph_file'),
                 'map_file': LaunchConfiguration('map_file'),
+                'posegraph_calibration': LaunchConfiguration(
+                    'posegraph_calibration'),
                 'robot_description_file': LaunchConfiguration(
                     'robot_description_file'),
                 'wheel_odometry_params_file': LaunchConfiguration(

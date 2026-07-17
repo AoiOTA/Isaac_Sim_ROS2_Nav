@@ -2,9 +2,9 @@
 # and record timings measured with the same start/stop definition.
 schema_version: 1
 comparison:
-  baseline_map: ../../../../data/maps/occupancy/warehouse_v1.yaml
-  full_remap_map: ../../../../data/maps/occupancy/warehouse_v2_full.yaml
-  incremental_map: ../../../../data/maps/occupancy/warehouse_v2_incremental.yaml
+  baseline_map: ../../../../data/maps/occupancy/warehouse_v2.yaml
+  full_remap_map: ../../../../data/maps/occupancy/warehouse_v3_full.yaml
+  incremental_map: ../../../../data/maps/occupancy/warehouse_v3_incremental.yaml
   timing_sec:
     full_mapping: null
     incremental_mapping: null

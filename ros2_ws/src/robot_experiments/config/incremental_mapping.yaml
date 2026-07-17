@@ -3,8 +3,8 @@ scenario:
   id: incremental_warehouse_operator_change
   type: incremental
   spawn_pose_name: mapping_start
-  map_version: warehouse_v2_candidate
-  posegraph_version: warehouse_v1
+  map_version: warehouse_v3_candidate
+  posegraph_version: warehouse_v2
   configs:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
     nav2: ../../robot_navigation/config/nav2_params.yaml
@@ -32,6 +32,6 @@ scenario:
     static: []
     trajectories: []
   incremental_mapping:
-    baseline_map_version: warehouse_v1
+    baseline_map_version: warehouse_v2
     changed_regions: [operator_authored_change]
     minimum_time_improvement_percent: 30.0

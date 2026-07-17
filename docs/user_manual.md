@@ -110,7 +110,7 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 ### 4.1 拉取 Git LFS 地图
 
-`warehouse_v1.posegraph` 使用 Git LFS。没有拉取它时，文件只是一个很小的指针，Localization 无法启动。
+`warehouse_v2.posegraph` 使用 Git LFS。没有拉取它时，文件只是一个很小的指针，Localization 无法启动。
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -127,7 +127,7 @@ git lfs pull
 成功时最后应看到：
 
 ```text
-map baseline: warehouse_v1 (integrity verified)
+map baseline: warehouse_v2 (integrity verified)
 preflight: PASS
 ```
 
@@ -137,7 +137,7 @@ preflight: PASS
 - 官方 Warehouse/Jackal 资产是否存在；
 - ROS Jazzy、Nav2、SLAM Toolbox 等包是否存在；
 - NVIDIA GPU 是否可见；
-- `warehouse_v1` 四个地图文件的大小和 SHA256 是否匹配 manifest；
+- `warehouse_v2` 四个地图文件的大小和 SHA256 是否匹配 manifest；
 - Git LFS 文件是否已经真正下载。
 
 ### 4.3 导入 Jackal 本地依赖
@@ -177,7 +177,7 @@ Isaac 的 `--mode ideal|realistic` 必须与 ROS 的 `odometry_mode:=ideal|reali
 
 ## 5. 最快完成一次 Ideal 导航
 
-仓库已经包含可用的 `warehouse_v1` OccupancyGrid 和 Pose Graph，因此不需要先重新建图。
+仓库已经包含可用的 `warehouse_v2` OccupancyGrid 和 Pose Graph，因此不需要先重新建图。
 
 ### 5.1 终端 A：启动 Isaac
 
@@ -207,14 +207,13 @@ Isaac navigation simulation ready
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
-脚本会按 Pose Graph 基名自动推导：
+脚本默认选择 `warehouse_v2`，等价于同时传入 v2 Pose Graph，并自动推导：
 
 ```text
-data/maps/occupancy/warehouse_v1.yaml
+data/maps/occupancy/warehouse_v2.yaml
 ```
 
 等待日志出现：
@@ -257,8 +256,7 @@ ros2 action send_goal /navigate_to_pose \
 ```bash
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  initial_pose_source:=rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  initial_pose_source:=rviz
 ```
 
 然后在 RViz 点击 **2D Pose Estimate**，在地图上拖出机器人实际朝向。该模式不会被自动标定位姿覆盖；每次 `/simulation/reset` 后，Activation Gate 会暂停 Nav2，并等待你重新在 RViz 给出位姿后再恢复。
@@ -288,10 +286,10 @@ ros2 action send_goal /navigate_to_pose \
 # 终端 B
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
-`localization.rviz` 会自动打开：`/map` 是 Map Server 的固定地图，`/slam_toolbox/map` 是默认关闭的定位诊断层，不能把两者混为一谈。默认仍由已标定出生点自动提供初始位姿。
+`localization.rviz` 会自动打开：`/map` 是 Map Server 的固定地图；`/slam_toolbox/map` 是默认关闭的 Realistic/标定诊断层，普通 Ideal 模式不启动 SLAM Toolbox。默认仍由已标定出生点自动提供初始位姿。
 
 若要练习人工重定位，加入 `initial_pose_source:=rviz`，然后在 RViz 用 **2D Pose Estimate** 在地图上拖出位置和朝向：
 
@@ -299,7 +297,7 @@ ros2 action send_goal /navigate_to_pose \
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
   initial_pose_source:=rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 检查关键接口：
@@ -314,7 +312,7 @@ ros2 run tf2_ros tf2_echo odom base_link
 期望结果：
 
 - `/map` 有且只有一个 `map_server` publisher；
-- `/slam_toolbox/map` 的 publisher 是 `slam_toolbox`；
+- Realistic 或 `posegraph_calibration:=true` 时，`/slam_toolbox/map` 的 publisher 是 `slam_toolbox`；普通 Ideal 模式允许该诊断 Topic 没有 publisher；
 - `map → odom → base_link` 连续可用；
 - `/odom` 只有一个 publisher。
 
@@ -333,7 +331,7 @@ Realistic 模式不使用 Isaac Ideal Odom。轮关节状态先生成 `/wheel/od
 # 终端 B
 ./scripts/run_ros.sh navigation \
   odometry_mode:=realistic \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 检查唯一所有权：
@@ -360,7 +358,7 @@ ros2 topic info /odom -v
 ./scripts/run_ros.sh navigation \
   odometry_mode:=realistic \
   structure_tf_source:=rsp \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 两端必须同时选择 `rsp`。`ideal + rsp` 会被配置检查拒绝。
@@ -383,7 +381,7 @@ ros2 topic info /odom -v
 ./scripts/run_ros.sh navigation \
   interactive:=false \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 
 # Mapping 保留 RViz，但不打开键盘终端
 ./scripts/run_ros.sh mapping \
@@ -394,7 +392,7 @@ ros2 topic info /odom -v
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
   rviz_config:=/absolute/path/custom.rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 若只想在一个已运行的栈旁重新打开受管 RViz，可执行 `./scripts/run_rviz.sh navigation`（也支持其他三个操作）；已有 RViz 实例存在时脚本会拒绝重复启动。
@@ -443,7 +441,7 @@ Teleop 只能在 Mapping/Incremental Mapping 使用。脚本会拒绝在 Localiz
 使用新的版本名，脚本拒绝覆盖已有文件：
 
 ```bash
-./scripts/save_map.sh warehouse_v2
+./scripts/save_map.sh warehouse_v3
 ```
 
 `save_map.sh` 可以在另一个已 source 工作区的终端执行；如果你刚从仓库根打开新终端，先运行：
@@ -456,10 +454,10 @@ source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
 会生成四个不可拆分的文件：
 
 ```text
-data/maps/occupancy/warehouse_v2.yaml
-data/maps/occupancy/warehouse_v2.pgm
-data/maps/posegraphs/warehouse_v2.posegraph
-data/maps/posegraphs/warehouse_v2.data
+data/maps/occupancy/warehouse_v3.yaml
+data/maps/occupancy/warehouse_v3.pgm
+data/maps/posegraphs/warehouse_v3.posegraph
+data/maps/posegraphs/warehouse_v3.data
 ```
 
 新地图不能直接沿用旧 Map Pose。请按照 [`calibration.md`](calibration.md) 重新测量 `spawn_poses.yaml` 中的 Map Pose，再把 `calibrated` 设为 `true`。
@@ -502,7 +500,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
 # 终端 B
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 等待 Nav2 激活，然后在终端 C 运行：
@@ -537,7 +535,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
 # 终端 B
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 
 # 终端 C，等待 Nav2 激活后
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
@@ -586,7 +584,7 @@ source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
 ros2 run robot_experiments navigation_benchmark \
   --static-directory "$PROJECT_ROOT/data/experiment_runs/static_benchmark" \
   --dynamic-directory "$PROJECT_ROOT/data/experiment_runs/dynamic_benchmark" \
-  --map-file "$PROJECT_ROOT/data/maps/occupancy/warehouse_v1.yaml" \
+  --map-file "$PROJECT_ROOT/data/maps/occupancy/warehouse_v2.yaml" \
   --clearance-m 0.34 \
   --output "$PROJECT_ROOT/data/reports/navigation_benchmark.json"
 ```
@@ -619,7 +617,7 @@ ISAAC_NAV__FILES__DYNAMIC_OBSTACLES="$PROJECT_ROOT/isaac_sim/configs/experiments
   data/experiment_runs/dynamic_complex_route
 ```
 
-2026-07-17 实测静态 `3/3`、动态 `3/3`；每轮 6/6 航点、约
+2026-07-17 在历史 `warehouse_v1` 上实测静态 `3/3`、动态 `3/3`；每轮 6/6 航点、约
 `50.1 m`、0 次恢复、0 碰撞，导航命令倒车距离为 `0`。Ideal
 Localization/Navigation 使用新鲜 identity `map→odom`，避免在精确
 Isaac `/odom` 上再次叠加 SLAM 定位修正。
@@ -648,7 +646,7 @@ ros2 launch robot_experiments experiment.launch.py \
 # 终端 B
 ./scripts/run_ros.sh incremental_mapping \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 该模式同样自动打开 `mapping.rviz` 和安全 Teleop，但会先加载旧 Pose Graph，并且只允许 `initial_pose_source:=auto`。等待旧图和标定位姿就绪后再移动机器人。
@@ -656,10 +654,10 @@ ros2 launch robot_experiments experiment.launch.py \
 遍历真实变化区域后，用新名称保存：
 
 ```bash
-./scripts/save_map.sh warehouse_v2_incremental
+./scripts/save_map.sh warehouse_v3_incremental
 ```
 
-还需要在相同变化环境中从零完成一次完整重建，例如 `warehouse_v2_full`。两次计时必须使用相同的开始/结束定义。
+还需要在相同变化环境中从零完成一次完整重建，例如 `warehouse_v3_full`。两次计时必须使用相同的开始/结束定义。
 
 ### 13.2 比较三张地图
 

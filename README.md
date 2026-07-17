@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-17 的 Realistic 同环境远距离验收达到静态 20/20、动态 19/20，且两批均无物理碰撞；同日 Ideal 前进优先复杂长路线验收达到静态 3/3、动态 3/3，每轮约 50 m、6/6 航点、0 恢复、0 碰撞且导航指令无倒车。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。多地图/多布局泛化矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-17 的 Realistic 同环境远距离验收达到静态 20/20、动态 19/20，且两批均无物理碰撞；同日 Ideal 前进优先复杂长路线验收达到静态 3/3、动态 3/3，每轮约 50 m、6/6 航点、0 恢复、0 碰撞且导航指令无倒车。覆盖完整仓库的 `warehouse_v2` 已完成三次冷启动标定并作为默认导航基线发布，大 Pose Graph 使用 Git LFS；覆盖不完整的 v1 仅保留用于历史结果复现。多地图/多布局泛化矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
 
 ## 文档导航
 
@@ -113,10 +113,10 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 命令会自动打开 Mapping RViz 和独立安全 Teleop 终端。使用 `W/A/S/D` 或方向键缓慢完成旋转、走廊覆盖和闭环；超过 0.18 秒无按键会自动停车，`Space` 立即停车，`Q` 安全退出。随后同时保存 OccupancyGrid 与序列化 Pose Graph：
 
 ```bash
-./scripts/save_map.sh warehouse_v1
+./scripts/save_map.sh warehouse_new
 ```
 
-当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并记录了初始位姿不确定度。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前仍须把四个工件视为不可混用的同一版本。
+当前 `mapping_start.map` 已依据完整的 `warehouse_v2` 建图结果完成三次冷启动标定，结果为 `[0.0, 0.0, 0.0°]`。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前仍须把四个工件视为不可混用的同一版本。
 
 标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
 
@@ -131,13 +131,13 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 # 终端 B；参数可以是前缀，也可以带 .posegraph/.data 后缀
 ./scripts/run_ros.sh incremental_mapping \
   odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v2"
 ```
 
 该模式会启动 async SLAM Toolbox、加载旧 Pose Graph，并在 `/clock` 与 `odom → base_link` 就绪后发布已标定 `/initialpose`。完成变化区域采集后用新的版本名保存，禁止覆盖基线：
 
 ```bash
-./scripts/save_map.sh warehouse_v2
+./scripts/save_map.sh warehouse_v3_incremental
 ```
 
 提交的 `incremental_mapping.yaml` 是建图工作流描述符，不是导航试验；`NavigateToPose` runner 会显式拒绝它。增量试验必须使用上述 bringup、保存新地图，再显式对比工件。当前只验证了模式校验和启动编排，尚未用真实变化区域证明“耗时改善不少于 30%”。
@@ -171,20 +171,18 @@ ros2 run robot_experiments incremental_map_compare \
 
 ```bash
 ./scripts/run_ros.sh localization \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
 `run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用官方 Nav2 Navigation 2 面板和 GoalTool：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；日常操作不需要 CLI 发布 `/goal_pose` 或另写桥接节点。Localization/Navigation 默认从已标定出生点自动播种，需人工定位时传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop用于无头实验。
 
 Realistic 模式把 `odometry_mode` 改为 `realistic`。两端都会拒绝各自已知的不合法组合，但进程之间没有自动握手；操作者仍须保证 `odometry_mode` 和 `structure_tf_source` 成对一致，并用 Topic/TF introspection 确认唯一所有权。
 
-Localization 和 Navigation 同时使用两种同版本地图工件：SLAM Toolbox 从
-`posegraph_file` 加载 `.posegraph`/`.data` 以定位并发布 `map → odom`，
+Localization 和 Navigation 同时校验两种同版本地图工件：Realistic 模式由 SLAM Toolbox 从
+`posegraph_file` 加载 `.posegraph`/`.data` 以定位并发布 `map → odom`，Ideal 模式使用已标定的 identity `map → odom`，
 `nav2_map_server` 从 `map_file` 加载 `.yaml`/`.pgm` 并独占发布静态 `/map`。
 若命令已传 `posegraph_file` 而省略 `map_file`，`run_ros.sh` 会按 Pose Graph
 基名推导 `data/maps/occupancy/<basename>.yaml`，文件不存在时立即失败；工件名不一致时须显式传入 `map_file:=...`。SLAM Toolbox 的实时扫描栅格图只发布在
@@ -209,8 +207,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
   --dynamic-obstacles
 
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
 待 Localization、Ground Truth 与 Nav2 readiness 均通过后，可在第三个终端启动实验 runner。包装脚本会自动统一 Domain 42 和 Fast DDS 环境：
