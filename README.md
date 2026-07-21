@@ -4,7 +4,11 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态（2026-07-13）：Stage、LiDAR/IMU、前置 RGB Camera、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、四套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。最新可靠性升级还加入了地图四工件 Manifest 绑定、`/scan_fault` 可控故障桥、真实 MPPI `/optimal_trajectory` 显示、Nav2 参数硬约束、进程组级 Runtime Profiler、顺序 Lifecycle Shutdown 和安全退出的 Navigation 2 面板。Camera `monitoring`/`high_quality` 已完成 headless 发布性能采样，前向画面方向与转弯变化已用实际截图目视确认，集成 RViz 也已实际启动验证；`standard` 仍只有配置与自动契约覆盖，不能写成已完成实机性能验收。`warehouse_v1` 完整地图基线随仓库发布，其中大 Pose Graph 使用 Git LFS。完整 200 次静态矩阵、多类动态障碍统计、真实 `warehouse_v2` changed-region 的 30% 增量改善基准和真实自定义机器人迁移仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-17 的 Realistic 同环境远距离验收达到静态 20/20、动态 19/20，且两批均无物理碰撞；同日 Ideal 前进优先复杂长路线验收达到静态 3/3、动态 3/3，每轮约 50 m、6/6 航点、0 恢复、0 碰撞且导航指令无倒车。覆盖完整仓库的 `warehouse_v2` 已完成三次冷启动标定并作为默认导航基线发布，大 Pose Graph 使用 Git LFS；覆盖不完整的 v1 仅保留用于历史结果复现。多地图/多布局泛化矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+
+> `codex/kujiale-navigation-mapping` 分支专用于酷家乐房间。该分支默认加载
+> `warehouse_new` 地图和酷家乐出生点；原 `codex/rviz-workflow-upgrade`
+> 分支仍默认使用 `warehouse_v2`，两套环境不会互相覆盖。
 
 ## 文档导航
 
@@ -14,6 +18,8 @@
 | --- | --- |
 | [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、性能采样和排障。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
+| [`docs/skid_steer_navigation_solution.md`](docs/skid_steer_navigation_solution.md) | 回顾 Jackal 直行正常但导航转弯困难的症状、根因、分层修复和 Ideal 复杂路线验收时。 |
+| [`docs/kujiale_usd_navigation_postmortem_20260717.md`](docs/kujiale_usd_navigation_postmortem_20260717.md) | 复盘酷家乐自建 USD 的材质、Stage、RTX/TF、建图标定、窄空间导航和 RViz 问题，以及与 `warehouse_v2` 的差异时。 |
 | [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
 | [`docs/calibration.md`](docs/calibration.md) | 修改地图、出生点、传感器外参或动态障碍坐标时。 |
@@ -33,7 +39,7 @@
   `/slam_toolbox/map`，不得作为 Nav2 静态地图。
 - Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
-- 感知基线为 `/lidar/points_raw → pointcloud_to_laserscan → /scan`；默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
+- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；RTX 绝对端点使用显式 `rtx_world` 数据帧，默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
 - 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
 
@@ -128,6 +134,28 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 ./scripts/run_isaac.sh --navigation-mode mapping --mode ideal
 ```
 
+也可以只给出主目录场景树中的唯一 USD 文件名来建立自定义环境地图：
+
+```bash
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode mapping \
+  --mode ideal
+```
+
+默认递归搜索 `/home/lyb/kujiale_usd_rooms_20260717`；也接受该目录下的相对
+路径或任意绝对路径。自定义环境使用独立的临时项目 Stage，不会改写下载的
+源 USD，并自动加载同名 `.spawn.yaml` 出生点配置。当前 `kujiale_0026` 的
+出生点已经针对 `warehouse_new` 完成 Ideal 标定。
+室内场景默认启用 Jackal 相对坐标系下的第三人称跟随相机。相机位于
+`base_link` 后方 `3.2 m`、上方 `2.2 m`，保持在常见室内天花板以下，并以
+`16 mm` 广角朝车前方注视；主视口会自动切换到该相机。
+
+GUI 模式会自动把 Isaac 主视口切换到 Jackal 的第三人称相机。相机作为
+`base_link` 的子 Prim 固定在车后上方，会随底盘平移、转向和 Reset；无需再
+手动追踪视角。临时不使用时可给启动命令增加
+`--no-third-person-camera`，无头模式会自动跳过该相机。
+
 终端 B 启动点云投影与异步 SLAM：
 
 ```bash
@@ -137,10 +165,27 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 命令会自动打开 Mapping RViz 和独立安全 Teleop 终端。使用 `W/A/S/D` 或方向键缓慢完成旋转、走廊覆盖和闭环；超过 0.18 秒无按键会自动停车，`Space` 立即停车，`Q` 安全退出。随后同时保存 OccupancyGrid 与序列化 Pose Graph：
 
 ```bash
-./scripts/save_map.sh warehouse_v1
+./scripts/save_map.sh warehouse_new
 ```
 
-`save_map.sh` 先在暂存目录生成 OccupancyGrid 与序列化 Pose Graph，逐项验证后再安装四个工件，最后原子发布 Manifest；任一步失败都会回滚，不留下“半套新地图”。当前 `mapping_start.map` 已依据 `warehouse_v1` 建图结果标定为 `[0.0, 0.0, 0.0°]`，并绑定对应 Manifest bundle。该精选基线的 OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh` 会拒绝未执行 `git lfs pull` 的指针文件、缺失工件、路径逃逸以及大小或 SHA256 不一致。启动 Localization、Navigation 或增量建图前必须把四个工件和 Manifest 视为不可混用的同一版本。
+当前酷家乐 `mapping_start.map` 已针对 `warehouse_new` 完成三次 Ideal
+冷启动扫描配准，标定结果为 `[0.0, 0.0, 0.0°]`。该精选基线的
+OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh`
+会校验四件套大小和 SHA256。当前阶段只验收普通 Ideal Navigation；此轮
+关闭扫描匹配生成的 Pose Graph 不用于 Realistic 定位或 Pose Graph 标定。
+
+直接使用新地图导航：
+
+```bash
+# 终端 A
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal
+
+# 终端 B；自动选择 warehouse_new 和酷家乐出生点
+./scripts/run_ros.sh navigation odometry_mode:=ideal
+```
 
 标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
 
@@ -155,13 +200,13 @@ Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数
 # 终端 B；参数可以是前缀，也可以带 .posegraph/.data 后缀
 ./scripts/run_ros.sh incremental_mapping \
   odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v2"
 ```
 
 该模式会启动 async SLAM Toolbox、加载旧 Pose Graph，并在 `/clock` 与 `odom → base_link` 就绪后发布已标定 `/initialpose`。完成变化区域采集后用新的版本名保存，禁止覆盖基线：
 
 ```bash
-./scripts/save_map.sh warehouse_v2
+./scripts/save_map.sh warehouse_v3_incremental
 ```
 
 提交的 `incremental_mapping.yaml` 是建图工作流描述符，不是导航试验；`NavigateToPose` runner 会显式拒绝它。增量试验必须使用上述 bringup、保存新地图，再显式对比工件。当前只验证了模式校验和启动编排，尚未用真实变化区域证明“耗时改善不少于 30%”。
@@ -195,20 +240,18 @@ ros2 run robot_experiments incremental_map_compare \
 
 ```bash
 ./scripts/run_ros.sh localization \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
 `run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用官方 GoalTool 和仓库内安全关闭版 Navigation 2 面板：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；日常操作不需要 CLI 发布 `/goal_pose` 或另写桥接节点。局部轨迹显示读取 MPPI 真正输出的 `/optimal_trajectory`，`/transformed_global_plan` 是控制器参考路径，默认不订阅体量更大的候选集 `/trajectories`。Localization/Navigation 默认从已标定出生点自动播种；Manifest 或出生点 bundle 未标定时，`auto` 会 fail fast，需传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop，用于无头实验。
 
 Realistic 模式把 `odometry_mode` 改为 `realistic`。两端都会拒绝各自已知的不合法组合，但进程之间没有自动握手；操作者仍须保证 `odometry_mode` 和 `structure_tf_source` 成对一致，并用 Topic/TF introspection 确认唯一所有权。
 
-Localization 和 Navigation 同时使用两种同版本地图工件：SLAM Toolbox 从
-`posegraph_file` 加载 `.posegraph`/`.data` 以定位并发布 `map → odom`，
+Localization 和 Navigation 同时校验两种同版本地图工件：Realistic 模式由 SLAM Toolbox 从
+`posegraph_file` 加载 `.posegraph`/`.data` 以定位并发布 `map → odom`，Ideal 模式使用已标定的 identity `map → odom`，
 `nav2_map_server` 从 `map_file` 加载 `.yaml`/`.pgm` 并独占发布静态 `/map`。
 若命令已传 `posegraph_file` 而省略 `map_file`，`run_ros.sh` 会按 Pose Graph
 基名推导 `data/maps/occupancy/<basename>.yaml`，文件不存在时立即失败；工件名不一致时须显式传入 `map_file:=...`。SLAM Toolbox 的实时扫描栅格图只发布在
@@ -218,7 +261,9 @@ Navigation 不会立即激活 Nav2。Activation Gate 会先等待 Map Server 的
 
 最终回归在固定 `/map` 架构下完成：Ideal 1 m 静态 4/4（GT 误差 `0.178–0.188 m`），Ideal 3 m 长距离 1/1（GT 路径 `2.807 m`、误差 `0.193 m`），Realistic 1 m 静态 4/4（GT 误差 `0.175–0.187 m`）。所有轮次 Nav2 状态为成功、最终静止门满足；Realistic `/odom` 运行时只有 `ekf_filter_node` 一个发布者。这些是确定性 smoke/recovery 证据，不是计划中多起终点与多布局的统计验收。
 
-Nav2 1.3.12 在 `SmacPlanner2D` 初始化时会打印一条 inflation `ERROR`；对该版本的 2D planner 路径，这是上游通用 collision checker 的误报。当前双 costmap 均已配置 `InflationLayer`，`0.55 m` 半径大于约 `0.34 m` 的带 padding 外接半径。原因、上游源码链接和限定条件见 [`docs/verification.md`](docs/verification.md#nav2-1312-smac-inflation-diagnostic)。
+Nav2 1.3.12 在 `SmacPlanner2D` 初始化时会打印一条 inflation `ERROR`；对该版本的 2D planner 路径，这是上游通用 collision checker 的误报。当前酷家乐窄通道配置的双 costmap 均使用 `0.40 m` InflationLayer，仍大于约 `0.337 m` 的带 padding 外接半径；较快的代价衰减不会关闭真实矩形 footprint 碰撞检查。原因、上游源码链接和限定条件见 [`docs/verification.md`](docs/verification.md#nav2-1312-smac-inflation-diagnostic)。
+
+`warehouse_new` 针对室内窄门和走廊采用紧凑安全壳：物理 footprint 保持不变，紧急停止区只比底盘外缘多 `20--30 mm`，MPPI 对每个预测点执行 footprint 碰撞检查。外围减速区侧向宽度仅 `0.47 m`，只比急停区多 `5 mm/侧`，并保留 85% 指令速度；平行墙面不再造成持续限速，正前方障碍仍由前后预警、预测碰撞与急停三层处理。
 
 ## 动态障碍与实验
 
@@ -233,21 +278,20 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
   --dynamic-obstacles
 
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
-待 Localization、Ground Truth 与 Nav2 readiness 均通过后，可在第三个终端启动当前 4-seed 动态基线 runner：
+待 Localization、Ground Truth 与 Nav2 readiness 均通过后，可在第三个终端启动实验 runner。包装脚本会自动统一 Domain 42 和 Fast DDS 环境：
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source "$PWD/ros2_ws/install/setup.bash"
-ros2 launch robot_experiments experiment.launch.py \
-  scenario_file:="$PWD/ros2_ws/src/robot_experiments/config/dynamic.yaml" \
-  output_directory:="$PWD/data/experiment_runs/dynamic_smoke"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic.yaml \
+  data/experiment_runs/dynamic_smoke
 ```
 
-Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。`repeat: false` 表示单程到达终点后保持，`repeat: true` 表示沿同一路径往返；两侧都必须显式填写且一致。当前横穿与对向两个单程障碍的 4-seed 基线已 4/4 成功，GT 终点误差为 `0.168–0.186 m`，每轮均看到 Collision Monitor、碰撞状态、定位状态和 `map → odom`，且最终静止。静态 smoke 仍只使用固定仓库、显式 `static: []`；这些 4 个 seed 是同一世界的确定性重复，不是多布局统计。完整 200 次静态矩阵和多类动态避障率仍需执行。
+Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。
+
+2026-07-17 的 Realistic 同环境、同起止点远距离验收结果为：静态 `20/20`、动态 `19/20`，两批均为 `0` 次物理碰撞；动态唯一失败是一次早期 Nav2 action abort。静态成功路线相对带 `0.34 m` 净空的 OccupancyGrid A* 理论最短路，最大偏差 `4.31%`、P95 `3.96%`。机器可读汇总写在 `data/reports/navigation_benchmark_20260717.json`；这证明当前固定仓库远距离基准通过，不等同于多地图、多布局的泛化结论。
 
 `/simulation/collision` 来自底盘物理接触传感器；`/collision_monitor_state` 来自 Nav2 Collision Monitor。Ground Truth 只在显式启用且 Map Pose 已标定时发布，不发布 TF，也不进入控制链。
 

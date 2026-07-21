@@ -176,6 +176,15 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
     assert 'invalid nav2_profile_params_file:' in core_source
 
 
+def test_ideal_mapping_anchors_map_to_ground_truth_odometry():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+
+    assert "'use_scan_matching': (" in core_source
+    assert "'do_loop_closing': (" in core_source
+    assert "if selection.odometry_mode == 'ideal'" in core_source
+
+
 def test_incremental_and_localization_modes_include_initial_pose():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
@@ -188,6 +197,19 @@ def test_incremental_and_localization_modes_include_initial_pose():
     assert incremental_start < initial_pose < localization_start
     assert "'spawn_poses_file'" in core_source
     assert "'spawn_pose_name'" in core_source
+
+
+def test_ideal_posegraph_calibration_is_explicit_and_localization_only():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    core_source = (launch_dir / 'ros_stack.launch.py').read_text()
+    localization_source = (
+        launch_dir / 'localization_bringup.launch.py').read_text()
+
+    assert 'posegraph_calibration must be true or false' in core_source
+    assert 'posegraph_calibration is only valid for Ideal localization' \
+        in core_source
+    assert 'or posegraph_calibration' in core_source
+    assert "'posegraph_calibration'" in localization_source
 
 
 def test_initial_pose_source_is_forwarded_and_rviz_disables_auto_publisher():

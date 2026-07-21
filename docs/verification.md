@@ -1,8 +1,12 @@
 # 最终验证台账
 
-本文件记录仓库当前实现的可复核证据。截至 2026-07-13，本轮运行环境为
-Ubuntu 24.04、Isaac Sim 6.0.1.0、ROS 2 Jazzy、Fast DDS、Nav2 1.3.12、
-RTX 4090，ROS Domain 为 `42`。
+This is an evidence ledger, not a claim that every acceptance item in
+`plan.md` is complete. Results below were observed on 2026-07-10 through 2026-07-17
+with Isaac Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090.
+Generated Kit logs and raw experiment captures remain outside normal Git
+history. The full-coverage `warehouse_v2` bundle is the current default;
+the incomplete `warehouse_v1` bundle remains versioned for historical-result
+reproduction. Both large `.posegraph` files are stored through Git LFS.
 
 本文严格区分三类数据：
 
@@ -22,20 +26,103 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 
 | 范围 | 当前结论 | 证据边界 |
 | --- | --- | --- |
-| Map Manifest | `warehouse_v1` 四工件、逐文件哈希、bundle 哈希和标定绑定通过真实仓库校验 | 未生成或运行真实 `warehouse_v2`；未标定 v2 行为来自测试夹具 |
-| Collision Monitor / `scan_fault` | 单帧/双帧丢失不停机，持续断流和 TF 缺失停车，恢复及 Reset 清故障均通过实时测试 | 是显式启用的安全测试桥，不是常驻数据通路 |
-| Local Plan | `/optimal_trajectory` 为真实 MPPI 局部轨迹，10/15 Hz 均有实测 | `/transformed_global_plan` 是参考全局计划，不是 Local Plan；候选 `/trajectories` 默认不订阅 |
-| MPPI | 10/15 Hz 共 12 个可行组合全部完成 3 m 目标且 missed=0；8 Hz 的 6 个组合被硬约束拒绝 | 8 Hz 没有性能数据；它们在 ROS 节点创建前即为无效配置 |
-| Ceres | 8/12/16/20 线程均完成 3 m 目标且控制 missed=0；保留 12 线程默认值 | 20 线程的 RTF、Scan 和 TF 延迟更差，不能据线程数推断性能更高 |
-| Camera / RViz | Off、Monitoring×RViz Off/On、High Quality×RViz On 已运行；Monitoring/HQ 的 RGB、CameraInfo、导航控制均有报告 | `standard` 未运行；HQ 配置目标 30 Hz，但 RGB 实测约 15 Hz 仿真时间频率；最终人工 GUI 易用性验收未完成 |
-| Realistic odometry | `/wheel/odom`、IMU、EKF 唯一 `/odom` 所有权和 10 Hz 控制在实时报告中成立 | 本轮 12 秒报告结束时目标仍 active，没有记录该目标最终结果 |
-| Reset | 性能矩阵逐次 Reset、Camera stamp 恢复和 `scan_fault` epoch 隔离均有实时证据 | 不能用 Trigger 成功替代后续定位/TF readiness 检查 |
-| Ordered shutdown | ROS 监督器先发 Lifecycle Shutdown，再向独立 launch 进程组转发信号；重复 Navigation 和一次 Mapping 实跑均干净退出 | 新监督器的“每模式/每相机 Profile/目标执行中各连续 5 次”完整矩阵未单独归档，暂不宣称全部验收 |
-| 完整自动测试 | `./scripts/test.sh --with-isaac` exit 0：root 454 passed/5 deselected；ROS 445/445；Isaac marker 3 passed | 详细精确计数见“自动测试证据” |
+| Stage/runtime | Project Stage composed the official warehouse and Jackal overlay, found one `/PhysicsScene`, and reached the standalone ready loop without `Error`, `Traceback`, or unattached-render-product messages in the checked run | smoke verified; not a long-duration soak |
+| Custom Kujiale mapping Stage | `kujiale_0026_A_to_B_door_open.usd` resolved by filename from `/home/lyb`, composed with the Jackal overlay, meter/Z metadata and one auto-created `/PhysicsScene`. The promoted `warehouse_new` map is `154 x 248 @ 0.05 m`, with 18,015 free and 3,294 occupied cells | full saved OccupancyGrid promoted for Ideal navigation |
+| `warehouse_new` calibration | Three independent Isaac + ROS cold starts held `map -> base_link` at identity. Occupancy-grid scan correlation used 703–704 live endpoints per final trials; each trial placed 100% within `0.075 m` of occupied cells, with mean raster distances `0.0028 / 0.0032 / 0.0028 m` | identity Map Pose accepted at the map's 0.05 m resolution; conservative uncertainty `0.05 m / 1°` |
+| `warehouse_new` Ideal navigation | With no explicit ROS map arguments, Map Server loaded `154 x 248` `warehouse_new`, all six Nav2 managed nodes became Active, and a goal at `[1.435, -0.395, 0°]` succeeded in about `4.7 s` simulated time with 0 recoveries and about `0.15 m` final position error. After the dead-end recovery change, the same goal succeeded again in about `3.43 s` simulated time with 0 recoveries | calibrated short-route smoke and post-recovery regression passed; complex multi-room route not yet run |
+| `warehouse_new` narrow-passage profile | Physical `0.485 x 0.420 m` footprint retained; padding reduced to `0.005 m`; both inflation layers use `0.40 m / 8.0`; emergency stop shell is `0.535 x 0.460 m`; the `0.770 x 0.470 m` slowdown shell retains 85% command speed; MPPI checks the footprint at every prediction point | the same-direction indoor route from approximately `[0.98, 4.93]` to `[-3.45, 3.84]` improved from `49.09 s` to `27.87 s` wall time (`43%` reduction): `SUCCEEDED`, no StopZone event, two approximately `0.05 s` SlowdownZone events, and three brief predictive-approach interventions. A separate command-chain sample covered `12.096 m`; MPPI and final safety output both averaged about `0.30 m/s`, proving the earlier residual bottleneck was controller progress scoring rather than continuous Collision Monitor clipping |
+| Dead-end reverse recovery | Both navigator plugins loaded project BT XMLs that order system recovery as costmap clear, `BackUp`, `Spin`, then a one-second wait. Routine MPPI remains forward-only (`vx_min=0`), while Velocity Smoother passes bounded recovery commands down to `-0.25 m/s`. The user's cul-de-sac run reached `Running backup`, but the behavior costmap rejected its already-occupied start footprint with `COLLISION_AHEAD (714)`. With this duplicate rollout disabled and the lidar Collision Monitor retained, a repeat from the same pose reversed `0.350 m` in about `3.22 s` and returned `SUCCEEDED` | reverse recovery now works at the reported pose; repeat the complete NavigateToPose scenario for final user acceptance |
+| RTX LiDAR | Single-channel `RPLIDAR_S2E` clouds used frame `rtx_world`, contained 3,058–3,098 points (median 3,079), and were observed at about `13 Hz` wall time in the checked fast-simulation run | horizontal scan and processing-rate baseline verified on the custom room |
+| LaserScan projection | 720 beams in `base_link`; stationary valid-return ratio median `97.57%`, and during 109 rotating frames median/minimum were `97.92% / 96.94%` | rate/frame/shape and moving projection density verified |
+| Ideal drive | A `+0.2 m/s` command for 3 seconds moved Ideal odometry X by approximately `+0.517 m` | forward sign and motion path verified; full control characterization not run |
+| Low-speed control | After removing extra wheel-joint friction, a `+0.02 m/s` command for 5 seconds traveled `0.09981 m` | low-speed wake/motion path verified; one manual sample only |
+| Idle stability | With no effective non-zero command, the command watchdog put the articulation to sleep; stationary tests showed exact rest, zero wheel-joint velocities, and no Ground Truth drift for more than 10 seconds after the navigation goal | idle watchdog regression verified; not a long-duration soak |
+| Deterministic Reset | The final 20-run static and 20-run dynamic Realistic batches completed all reset/reseed cycles. Recovery required a post-reset scan, `/simulation/localization_seeded`, strictly newer `map -> odom`, fresh stamped GT/odom, spawn alignment, stable TF, and all six Nav2 managed nodes active before goal dispatch | 40-run isolation gate verified; destructive service-failure runtime injection was not run |
+| Ideal Mapping | SLAM produced `/map` at `0.05 m` resolution, observed live size `395 x 604`, with `map -> odom` and a complete base/sensor TF chain | mapping/save smoke verified; full-route map-quality acceptance not run |
+| Curated map artifacts | Full-coverage `warehouse_v2` OccupancyGrid and matching serialized Pose Graph are distributed as one indivisible default bundle; the manifest pins all four byte sizes/SHA256 values, `406 x 611 @ 0.05 m`, origin `[-14.692, -12.294, 0°]`, source and calibration. Its 39.8 MB `.posegraph` uses Git LFS. The incomplete v1 bundle remains available but is no longer the default | clone-reproducible v2 baseline verified by manifest/preflight; other generated maps remain ignored until deliberately curated |
+| `warehouse_v2` Map Pose calibration | Three independent Isaac + ROS cold starts explicitly enabled Ideal Pose Graph localization, loaded both v2 map representations and measured `map -> base_link = [0.000, -0.000, 0.000°]` at USD `[4, 0, 0.0635, 0°]`. Each run served one `406 x 611` `/map`; `/map` and `/odom` each had one owner | `3/3` repeatability; no spread at `0.001 m / 0.001°` reported precision, while the source retains conservative `0.05 m / 5°` covariance |
+| `warehouse_v2` default navigation | An Ideal Navigation cold start passed no map arguments to `run_ros.sh`; Map Server loaded `warehouse_v2.yaml` at `406 x 611`, all Nav2 managed nodes activated, and `/map` had one publisher. A goal at `[-5.267, 0.331, 0°]` was deliberately chosen in a cell that is unknown in v1 but free in v2. NavigateToPose succeeded in about 21 s with 0 recoveries; final TF position was `[-5.269, 0.222]` (about `0.109 m` position error) | default-version selection and navigation into the v2-only mapped area verified in one cold-start smoke; not a repeated complex-route batch |
+| Localization + Ground Truth | The saved Pose Graph loaded in multiple Ideal sessions and one Realistic session. All 13 final runs passed the runner's post-reset map/base alignment and GT freshness gates | Ideal/Realistic runtime alignment exercised; three independent cold starts per mode with quantified pose spread remain pending |
+| Immutable navigation map | In Localization/Navigation, `map_server` was active and the only `/map` publisher at `398 x 606`, while SLAM Toolbox published its changing diagnostic grid only on `/slam_toolbox/map`; Nav2 consumed the saved transient-local map | publisher isolation verified and used by the final dynamic batch |
+| Nav2 activation | Activation waited for latched `/map`, fresh non-zero `/clock`, fresh `/scan` and `/odom`, and stable, freshly stamped `map -> odom`; lifecycle activation completed. The gate remains alive after `STARTUP`, eliminating the prior process-exit handler race | readiness/lifecycle smoke verified |
+| Transactional Reset recovery | The gate performs cancel/pause/clear/reseed/readiness/resume and repairs partial Lifecycle Manager transitions by ordered per-node normalization. A dedicated integration test reproduces Controller/Planner active with the other four nodes inactive; the final dynamic batch then passed resets 18–20 without terminating the ROS stack | live long-batch recovery and mixed-state repair verified; destructive service-failure runtime injection remains pending |
+| RViz workflows | `mapping.rviz`, `localization.rviz`, and `navigation.rviz` each loaded under Xvfb for eight seconds with no plugin/config error. The integrated Mapping launch opened managed RViz, loaded final Best-Effort sensor QoS before `/scan`, and shut down without orphan RViz processes | all three configs load-tested; extended manual GUI sessions across every display toggle are not a soak |
+| Mapping Teleop | A real PTY run produced `+0.30 m/s` on W, returned to zero after the 0.18-second deadman, and Q logged a final zero. The integrated Mapping launch started the separate terminal and its wrapper stopped the identity-checked node on top-level shutdown; no Teleop/ROS/RViz process remained | input/deadman/shutdown smoke verified; not a human full-map driving acceptance |
+| RViz navigation interaction | Navigation config contains the official Navigation 2 panel and GoalTool, SetInitialPose, dual costmaps, paths, footprints, and collision zones; config tests reject a project `/goal_pose` bridge and lock topic/QoS values. Live Nav2 goals completed through the same action server used by the panel | plugin/config and action path verified; final click-by-click human acceptance was bounded to config/load and navigation smoke |
+| Ideal NavigateToPose | Final static batch: 4/4 at `[1, 0, 0°]`, GT errors `0.178–0.188 m`; long-range run: 1/1 at `[3, 0, 0°]`, GT path `2.807 m`, error `0.193 m`. Every run returned Nav2 status 4 and met the final-still gate | deterministic smoke/recovery evidence; not the plan's multi-goal statistical matrix |
+| Realistic odometry | `/wheel/odom` and EKF `/odom` both observed at about `45 Hz`; `/odom` had one publisher (`ekf_filter_node`) | Wheel Odom + IMU + EKF ownership smoke verified |
+| Realistic Navigation + Reset | Four Realistic static runs succeeded after repeated Wheel Odom/EKF resets; GT errors were `0.175–0.187 m`, odom path lengths `0.818–0.831 m`, final linear speeds about `-0.0015 m/s`, and every run met the still gate. `/odom` had exactly one publisher, `ekf_filter_node` | 4/4 deterministic smoke verified; broader drift and varied-goal statistics not run |
+| TF structure | All seven configured static sensor/camera pairs and dynamic wheel links were observed; Ideal and Realistic `odom -> base_link` ownership matched the selected mode | checked runtime snapshots; always recheck after mode changes |
+| Static navigation benchmark | Realistic fixed-warehouse far goal `[2, 5, 90°]`: `20/20` successes, `0` collisions, mean GT path `5.649 m`, mean/max goal error `0.171/0.191 m` | static avoidance rate `100%`, exceeding the `95%` requirement for this same-environment/same-goal benchmark |
+| Dynamic navigation benchmark | Two physical one-shot obstacles clear the route after crossing/oncoming interaction. The Realistic far-goal batch achieved `19/20` successes and `0` physical collisions; successful runs had mean GT path `5.856 m` and mean/max goal error `0.126/0.178 m`. The sole failure was an early Nav2 action abort, not contact | dynamic avoidance rate `95%`, exceeding the `90%` requirement for this scenario |
+| Ideal complex static route | Three forward-only runs enforced all 6 sequential poses over mean GT path `50.132 m`; mean/max final position error `0.132/0.143 m`, mean measured curved-distance fraction `30.8%`, mean stopped fraction `2.81%`, `0` recoveries and `0` commanded reverse distance | `3/3` accepted; fixed warehouse and one route, not multi-layout generalization |
+| Ideal complex dynamic route | Four physical one-shot moving obstacles crossed the long route. Three runs enforced all 6 poses over mean GT path `50.108 m`; mean/max final position error `0.137/0.152 m`, mean measured curved-distance fraction `29.4%`, mean stopped fraction `4.16%`, `0` recoveries, `0` collisions and `0` commanded reverse distance | `3/3` accepted under Ideal odometry; obstacles are non-reciprocal scripted actors, so speeds are bounded to leave a valid yielding window |
+| Path optimality | Inflated OccupancyGrid 8-connected A* with `0.34 m` clearance produced a `5.828 m` reference. Across all 20 successful static runs, maximum deviation was `4.31%` and P95 was `3.96%` | passes the `≤20%` requirement; reference is grid/clearance dependent |
+| Experiment contracts | Static and dynamic 20-run batches wrote strict CSV/JSON reports; the aggregate checker rejects duplicate identities, insufficient samples, wrong scenario types, rate failures, and path-deviation failures | same-environment statistical benchmark accepted; multi-map/multi-layout generalization remains pending |
+| Runtime hygiene | `preflight.sh` passed with Jazzy, Domain 42, Fast DDS, map hashes/LFS, assets, GPU, three RViz files and Teleop package. Safe cleanup removed stale registered metadata and current-user Fast DDS SHM only after stopping the CLI daemon and proving no Fast DDS mapping remained | normal and dry-run paths tested; the diagnostic process list may also show the IDE/Codex process because its working directory is the repository, but it is never a managed kill target |
 
 ## Map Manifest 与标定
 
-### `warehouse_v1` 仓库基线
+## 2026-07-16 Realistic skid-steer control verification
+
+The Jackal wheel collision shapes, drive limits, effective track calibration,
+Wheel Odometry, command smoothing, and MPPI configuration were verified together
+in a headless Realistic Navigation session. A bounded motion-assist layer was
+enabled because PhysX isotropic tire contact reproduced wheel-joint target
+velocities but converted too little of the left/right speed difference into body
+yaw, especially while translating.
+
+Before the correction, a commanded `0.30 m/s, 0.80 rad/s` forward arc produced
+about `0.235 m/s, 0.088 rad/s`, a turn radius of approximately `2.68 m` instead
+of the requested `0.375 m`. The corresponding reverse arc produced a radius of
+approximately `2.08 m`. With the final configuration:
+
+| Command | Observed steady response | Result |
+| --- | --- | --- |
+| rotate `0.00 m/s, +0.80 rad/s` | about `+0.819 rad/s` | yaw-rate error about 2.4% |
+| forward arc `+0.30 m/s, +0.80 rad/s` | about `+0.287 m/s, +0.806 rad/s`; radius `0.356 m` | tight forward arc follows the requested curvature |
+| reverse arc `-0.25 m/s, +0.80 rad/s` | about `-0.239 m/s, +0.798 rad/s`; radius `0.299 m` | reverse turning follows the requested curvature |
+| reverse straight `-0.30 m/s` | about `-0.300 m/s` | reverse speed is no longer artificially suppressed |
+
+The low-level graph was subsequently verified after replacing the
+message-triggered controller execution with an on-demand `OnPhysicsStep` graph.
+The physics node's measured simulation delta drives `DifferentialController.dt`,
+and one articulation controller writes all four wheel targets:
+
+| Step command | 10 Hz `/cmd_vel` | 20 Hz `/cmd_vel` | Difference |
+| --- | --- | --- | --- |
+| `+0.60 m/s` wheel-speed 10–90% rise | `0.181 s` | `0.164 s` | `0.017 s` |
+| `+1.20 rad/s` wheel-speed 10–90% rise | `0.132 s` | `0.148 s` | `0.016 s` |
+
+The old message-triggered topology would have scaled the configured
+acceleration by approximately `command_rate / 60`; that behavior is absent in
+these measurements. During the forward step, contact dynamics caused brief
+front/rear physical-wheel differences, but after `0.30 s` the maximum same-side
+difference was about `0.0089 rad/s` and the mean was about `0.0018 rad/s`.
+Command targets themselves are written atomically in one four-joint call.
+
+After the timing/topology change, a fresh end-to-end Realistic Navigation run
+to `[1.0, 1.0, +90°]` returned Nav2 status 4. All 98 observed non-zero
+`/cmd_vel` samples contained curvature, the maximum observed `|wz|` was about
+`0.617 rad/s`, and no missed-controller-rate warning was emitted during the
+goal.
+
+The final MPPI default uses a 10 Hz controller, a two-second horizon
+(`20 x 0.10 s`), and batch size 500. Two consecutive curved navigation goals
+were then executed from one reset:
+
+| Goal | Outcome | Command-path evidence |
+| --- | --- | --- |
+| `[1.0, 1.0, +90°]` | Nav2 succeeded | 53 command samples; 52 contained curvature; maximum observed `|wz|` about `0.595 rad/s` |
+| `[0.2, -0.8, -90°]` | Nav2 succeeded | 70 command samples; 63 contained curvature; 52 used reverse motion; maximum observed `|wz|` reached `1.20 rad/s` |
+
+One controller-rate warning was observed on the first goal (`8.57 Hz` achieved
+against the 10 Hz target) while the CPU governor was `powersave`; the second
+goal completed without a missed-rate warning. This is direct evidence for
+forward curves, reverse curves, and Nav2 selecting reverse trajectories, but it
+does not replace a broad obstacle/layout statistical matrix.
+
+## 2026-07-12 MPPI comparison
 
 实际执行：
 
@@ -47,7 +134,12 @@ ros2 run robot_bringup map_manifest verify \
   --manifest data/maps/manifests/warehouse_v1.yaml
 ```
 
-输出：
+The bold row was the 2026-07-12 baseline. The 2026-07-16 Realistic curved-goal
+verification above subsequently reduced the batch to 500. Both configurations
+preserve a two-second MPPI horizon while reducing per-cycle work and SLAM
+contention. Collision Monitor still subscribes to the original nominal 10 Hz
+`/scan`; `throttle_scans` changes SLAM Toolbox processing, not the safety sensor
+stream. The 20 Hz retest with reduced localization load was still worse.
 
 ```text
 map manifest verified: warehouse_v1 bundle=88b91be7fb0afe4364851c59dc3466f560017df5acc5405f3ab590729ded9bac
@@ -55,12 +147,13 @@ map manifest verified: warehouse_v1 bundle=88b91be7fb0afe4364851c59dc3466f560017
 
 Manifest 中的四个不可分割工件为：
 
-| 角色 | 路径 | 字节数 | SHA256 |
-| --- | --- | ---: | --- |
-| Occupancy YAML | `data/maps/occupancy/warehouse_v1.yaml` | 136 | `891fdaec103073711e88cf675c9149e7684eb3d92f49913e6cf406adddf6cb6a` |
-| Occupancy PGM | `data/maps/occupancy/warehouse_v1.pgm` | 241203 | `24d4a19c9a8e7f2bfdd548cbdf778e8d5c66711a71ceedb2ec5c12626cf509c5` |
-| Pose Graph | `data/maps/posegraphs/warehouse_v1.posegraph` | 27834150 | `ad6a995790553d1a1a9b9ba9298d2d9d6ff7321f802f0c97e1c1e02cf19e2092` |
-| Pose Graph data | `data/maps/posegraphs/warehouse_v1.data` | 204812 | `de9f482ce3d871177a2dd65d05f99585d3febb46fa397d3073f7cca9ca4f1422` |
+Both project costmaps do contain `nav2_costmap_2d::InflationLayer` with an
+inflation radius of `0.40 m`. The padded rectangular Jackal footprint has a
+circumscribed radius of approximately `0.337 m`, so the configured radius is
+larger than the footprint requirement. The subsequent 1 m Ideal navigation
+goal planned and completed. Keep treating this message as a version-specific
+known diagnostic only while those footprint, plugin, radius, and Nav2 version
+facts remain unchanged.
 
 OccupancyGrid 声明为 `398 x 606`、`0.05 m/cell`、origin
 `[-14.360, -12.247, 0.0]`。Manifest 的 calibrated bundle、
@@ -77,289 +170,89 @@ PGM 尺寸以及 resolution/origin 不一致。`save_map.sh` 的自动测试夹�
 节点启动前失败，而 `initial_pose_source=rviz` 允许进入人工初始位姿流程。
 这证明的是契约实现，**不是**真实 Warehouse v2 已建图、已标定或已导航。
 
-## Collision Monitor 与 `scan_fault`
+The 2026-07-16 skid-steer increment additionally recorded:
 
-安全测试时显式启用 `scan_fault_bridge`，路径为：
+- preflight and headless Isaac configuration/Stage validation: PASS;
+- root non-Isaac/non-ROS suite: 295 passed, 6 deselected;
+- focused control/Nav2 suite: 17 passed;
+- focused Wheel Odometry suite: 9 passed;
+- Isaac/USD Stage composition suite: 4 passed;
+- rebuilt `robot_navigation` and `robot_odometry`; selected-package tests passed,
+  while the workspace result ledger reported 978 tests, 0 errors, 0 failures,
+  and 1 existing skip;
+- `git diff --check`: PASS.
 
-```text
-/scan -> scan_fault_bridge -> /scan_fault -> Collision Monitor
-```
+The 2026-07-17 final Ideal complex-navigation and `warehouse_v2` promotion
+additionally recorded:
 
-其他 SLAM/Costmap 消费者继续使用原始 `/scan`。桥接输出与 Collision Monitor
-使用 Best Effort/Volatile Sensor Data QoS；`scan.topic` 的实时参数读回为
-`/scan_fault`，`source_timeout` 为 `0.40 s`。
+- preflight: PASS against the v2 manifest; full ROS build: 9 packages completed;
+- root/pure suite: 319 passed, 7 runtime-marked tests deselected;
+- ROS colcon suite: 328 tests, 0 errors, 0 failures, 0 skipped;
+- Isaac/USD Stage composition suite: 4 passed, 49 non-Isaac tests
+  deselected;
+- v2 Map Pose calibration: 3/3 independent cold starts at identity, with no
+  spread at `0.001 m / 0.001°` reported precision;
+- default-argument v2 NavigateToPose smoke: succeeded in the v2-only mapped
+  area in about 21 seconds, with 0 recoveries and about `0.109 m` final
+  position error;
+- automated chassis motion benchmark: `10/10` primitives accepted with zero
+  collision, including circles, slaloms and rapid turn-direction reversals;
+- complex static route: `3/3`, all 6 poses, 0 recoveries and 0 collisions;
+- complex dynamic route: `3/3`, four physical moving obstacles, all 6 poses,
+  0 recoveries and 0 collisions;
+- both complex batches commanded no reverse motion; reverse recovery was
+  intentionally outside this test stage;
+- Ideal Localization/Navigation used a freshly stamped identity `map -> odom`
+  rather than a second SLAM localization correction.
 
-| 故障动作 | 实际观察 | 结论 |
-| --- | --- | --- |
-| 正常转发 | `/scan_fault` 唯一 Publisher 为 bridge，唯一外部 Consumer 为 Collision Monitor | 测试链路所有权正确 |
-| `drop_next: 1` | 后续 `/cmd_vel` 仍为非零：linear `0.0132 m/s`、angular `0.0582 rad/s` | 单帧丢失不误停车 |
-| `drop_next: 2` | 后续 `/cmd_vel` 仍为非零：linear `0.0736 m/s`、angular `0.0613 rad/s` | 双帧丢失不误停车 |
-| `drop_all` | 超过 `0.40 s` 后出现 invalid-source 日志并执行安全停车 | 完全断流会停车 |
-| `resume` | 日志恢复 `Robot to continue normal operation`，扫描继续转发 | 故障可恢复 |
-| `replace_frame_id: missing_scan_frame` | TF 查询失败，随后 invalid-source 停车 | TF 缺失会停车 |
-| 故障中 Reset | epoch 从 1 变为 2；mode 恢复 `normal`，remaining=0，replacement=null | Reset 不继承旧故障 |
+The 2026-07-17 robot-relative third-person camera increment additionally
+recorded:
 
-Reset 后状态快照记录 `received=2658`、`forwarded=2273`、`dropped=385`，
-`last_epoch_reason=reset_event`。Reset 后正常 `/scan_fault` 约 `9.35 Hz`。
-测试结束时 Navigation 和 Localization Lifecycle manager 均成功完成有序
-Shutdown；该故障目标在断流期间触发 progress/recovery 属预期安全行为，不能
-把它当作一次普通导航成功样本。
+- GUI runtime created and bound
+  `/World/Robots/Jackal/base_link/third_person_camera` to the active viewport;
+- the current indoor-safe `3.2 m` rear / `2.2 m` high / `16 mm` wide-angle
+  framing stays below a normal ceiling while retaining Jackal and the next
+  doorway or bend in view;
+- root/pure suite: 322 passed, 8 runtime-marked tests deselected;
+- ROS colcon suite: 328 tests, 0 errors, 0 failures, 0 skipped;
+- Isaac/USD Stage composition suite: 5 passed, 52 non-Isaac tests
+  deselected;
+- `git diff --check`: PASS.
 
-## RViz Local Plan
+The 2026-07-17 custom Kujiale Mapping increment additionally recorded:
 
-实时图验证的 Local Plan 契约为：
+- filename-only resolution selected
+  `kujiale_0026_A_to_B_door_open.usd` and its uncalibrated scene-specific
+  Mapping spawn profile;
+- Isaac Sim 6.0.1 RTX PointCloud endpoints were verified to be absolute USD
+  world coordinates, so `/lidar/points_raw` is labeled `rtx_world` and joined
+  to `odom` by the inverse selected spawn pose;
+- the original 32-line sensor projected only about 10% valid navigation-height
+  bins because most indoor returns hit the ceiling. The horizontal
+  single-channel RPLIDAR produced about 3,080 points per cloud and more than
+  97% valid 2D bins without the prior processing overload;
+- ROS Mapping short integration activated SLAM Toolbox, subscribed to the
+  projected LaserScan and registered `Custom Described Lidar`;
+- a collision-free Ideal S-curve traveled `0.532 m`; a subsequent near-full
+  rotation held the moving scan above `96.94%` valid bins. Maps saved before
+  and after that rotation were byte-identical, demonstrating that walls no
+  longer rotate or duplicate with the chassis;
+- the promoted `warehouse_new` OccupancyGrid passed three independent Ideal
+  cold-start scan correlations at identity; all sampled endpoints were within
+  `0.075 m` of saved obstacles and the worst mean raster distance was
+  `0.0032 m`;
+- the default ROS navigation entry loaded `warehouse_new` without explicit map
+  arguments, activated all six Nav2 managed nodes, and completed a 1.49 m
+  NavigateToPose smoke with status `SUCCEEDED`, 0 recoveries and about 0.15 m
+  final position error;
+- root non-Isaac/non-ROS suite: 333 passed, 11 runtime-marked tests deselected;
+- ROS colcon suite: 329 tests, 0 errors, 0 failures, 0 skipped;
+- Isaac/USD Stage composition suite: 8 passed, 62 non-Isaac tests deselected;
+- repository index covered all 257 deliverable files, and `git diff --check`
+  passed.
 
-| 项目 | 实际值 |
-| --- | --- |
-| Topic | `/optimal_trajectory` |
-| 类型 | `nav_msgs/msg/Path` |
-| Publisher | `controller_server`，1 个 |
-| Frame | `odom` |
-| 单条轨迹 | 20 poses（stable 20-step 配置） |
-| 10 Hz stable 实测 | `10.001 Hz`，到达间隔 P99 `101.079 ms` |
-| 15 Hz 矩阵实测范围 | `15.000–15.001 Hz`，到达间隔 P99 `67.332–67.784 ms` |
-
-`/transformed_global_plan` 是 Controller 使用的参考全局计划，不能标为局部
-轨迹。MPPI 候选轨迹 `/trajectories` 保持默认不显示，RViz 没有订阅，实测
-external subscriber count 为 0，避免候选批次序列化和渲染开销。
-
-## MPPI 10/15 Hz 性能矩阵
-
-所有可行行使用同一 `warehouse_v1`、Ideal Localization、Camera Off、RViz Off、
-`model_dt=0.10 s`、Ceres 12 线程。每行都是新 ROS 启动、Reset、3 m
-NavigateToPose、约 12 秒 profiler 和有序退出。表中为实际测量值，显示时做了
-有限小数舍入；原始精度保留在对应 JSON 中。
-
-| Hz | Batch / Steps / Horizon | RTF | Controller 实际 Hz | `/cmd_vel_nav` 间隔 P99 | Scan Hz / Age P99 | Local Plan Hz | Host CPU | ROS CPU（单核口径） | Goal / 时长 | Missed |
-| ---: | --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | ---: |
-| 10 | 500 / 15 / 1.5 s | 0.9553 | 10.0008 | 102.297 ms | 9.571 / 16.667 ms | 10.0004 | 27.86% | 89.50% | succeeded / 6.261 s | 0 |
-| 10 | 500 / 20 / 2.0 s | 0.9585 | 10.0006 | 100.840 ms | 9.578 / 16.667 ms | 10.0006 | 27.56% | 87.83% | succeeded / 6.451 s | 0 |
-| 10 | 750 / 15 / 1.5 s | 0.9608 | 9.9982 | 101.881 ms | 9.602 / 16.667 ms | 9.9983 | 27.59% | 86.00% | succeeded / 6.260 s | 0 |
-| **10** | **750 / 20 / 2.0 s** | **0.9547** | **10.0011** | **101.079 ms** | **9.542 / 31.333 ms** | **10.0011** | **28.75%** | **88.33%** | **succeeded / 6.550 s** | **0** |
-| 10 | 1000 / 15 / 1.5 s | 0.9529 | 9.9999 | 100.848 ms | 9.474 / 50.000 ms | 9.9999 | 27.59% | 87.91% | succeeded / 6.151 s | 0 |
-| **10** | **1000 / 20 / 2.0 s** | **0.9543** | **10.0008** | **100.843 ms** | **9.478 / 132.167 ms** | **10.0006** | **27.90%** | **91.75%** | **succeeded / 6.451 s** | **0** |
-| 15 | 500 / 15 / 1.5 s | 0.9508 | 15.0004 | 67.380 ms | 9.511 / 31.000 ms | 15.0005 | 28.43% | 90.00% | succeeded / 6.711 s | 0 |
-| 15 | 500 / 20 / 2.0 s | 0.9644 | 15.0008 | 67.784 ms | 9.626 / 16.667 ms | 15.0008 | 27.91% | 87.92% | succeeded / 6.980 s | 0 |
-| 15 | 750 / 15 / 1.5 s | 0.9555 | 15.0003 | 67.332 ms | 9.571 / 16.667 ms | 15.0001 | 28.55% | 91.33% | succeeded / 6.511 s | 0 |
-| 15 | 750 / 20 / 2.0 s | 0.9631 | 15.0002 | 67.734 ms | 9.633 / 16.667 ms | 15.0002 | 28.86% | 90.25% | succeeded / 6.851 s | 0 |
-| 15 | 1000 / 15 / 1.5 s | 0.9626 | 15.0003 | 67.558 ms | 9.668 / 33.333 ms | 15.0001 | 28.71% | 90.42% | succeeded / 6.581 s | 0 |
-| 15 | 1000 / 20 / 2.0 s | 0.9590 | 15.0013 | 67.748 ms | 9.634 / 16.667 ms | 15.0012 | 27.79% | 88.75% | succeeded / 6.711 s | 0 |
-
-两个报告在结束采样时 Controller 参数服务暂时不可用：
-`mppi_c10_b0500_t20.json` 和 `mppi_c15_b1000_t20.json`。这两行的配置值来自
-各自被 Launch 读取的 overlay 文件和报告 label；Topic 实际频率、目标结果和
-其他测量值来自运行时报告，不能把 overlay 值误称为该次参数服务读回。
-
-### 8 Hz 硬约束拒绝
-
-8 Hz 的所有 `batch={500,750,1000} x steps={15,20}` 组合共享：
-
-```text
-controller period = 1 / 8 Hz = 0.125 s
-FollowPath.model_dt = 0.100 s
-```
-
-Nav2 1.3.12 MPPI 要求 Controller period 不大于 `model_dt`。Launch 在构造
-任何 ROS Node action 前执行严格校验，因此这 6 行是 **invalid/rejected**，
-不是“性能较差”。代表性真实启动约 0.7 秒内失败，明确提示至少使用 10 Hz，
-且没有遗留 ROS 节点。其余五个组合由相同频率/DT 硬约束分类，不存在 RTF、
-Goal 或 Missed 等测量值。
-
-### 最终 Profile 选择
-
-- `stable`：10 Hz、750 batch、20 steps、0.10 s DT；
-- `performance`：10 Hz、1000 batch、20 steps、0.10 s DT；
-- 15 Hz 保留为有效 Benchmark 点，不作为交付默认值；交付 Profile 保持
-  Controller period 与 `model_dt` 相等；
-- performance 行的 Scan Age P99 为 `132.167 ms`，明显高于 stable 行的
-  `31.333 ms`，所以“performance”是显式实验 Profile，不表示每个指标都更优。
-
-## Ceres 8/12/16/20 线程矩阵
-
-以下行固定使用 MPPI stable（10 Hz、750、20、0.10 s）、Camera Off、RViz Off，
-每行新启动、Reset、3 m Goal 和约 12 秒采样。
-
-| Ceres 线程 | RTF | Controller Hz | Scan Hz / Age P99 | `map->base_link` Lag P99 | Host CPU | ROS CPU（单核口径） | Goal / 时长 | Missed |
-| ---: | ---: | ---: | --- | ---: | ---: | ---: | --- | ---: |
-| 8 | 0.9604 | 10.0006 | 9.625 / 33.167 ms | 0.000 ms | 27.81% | 88.25% | succeeded / 6.451 s | 0 |
-| **12** | **0.9565** | **10.0002** | **9.595 / 33.333 ms** | **16.667 ms** | **28.38%** | **90.50%** | **succeeded / 6.450 s** | **0** |
-| 16 | 0.9607 | 10.0014 | 9.605 / 16.667 ms | 16.667 ms | 29.13% | 93.42% | succeeded / 6.450 s | 0 |
-| 20 | 0.9342 | 10.0002 | 9.106 / 32.000 ms | 382.500 ms | 27.82% | 90.00% | succeeded / 6.750 s | 0 |
-
-8 线程报告的 Ceres 参数服务读回为 `service_unavailable`，线程数来自该次
-CLI/metadata（`ceres_num_threads="8"`）；其余性能值来自实时 Topic/TF 报告。
-20 线程降低 RTF 和 Scan rate，并把 TF P99 拉高到 `382.5 ms`。12 线程因此
-保留为保守默认值；本轮没有声称 Ceres、SLAM 或 MPPI 获得 CUDA 加速。
-
-## Camera、RViz 与导航组合
-
-Profile 的配置目标是：Monitoring `640x360 @ 15 Hz`，Standard
-`640x480 @ 20 Hz`，High Quality `1280x720 @ 30 Hz`。下面把目标与测量值
-分开列出。`Image sim Hz` 由图像 Header stamp period P50 换算；`Image wall Hz`
-是 profiler 的墙钟到达率，两者不能混用。
-
-| 组合 | 配置目标 | Image sim / wall Hz | CameraInfo wall Hz | Image Age P99 | RTF | Controller Hz / Missed | Scan Hz / Age P99 | Goal 结果 |
-| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
-| Off + RViz On | 无 Publisher | — / — | — | — | 0.8895 | 10.0012 / 0 | 8.844 / 33.333 ms | 报告未记录 Goal |
-| Monitoring + RViz Off | 640x360 @ 15 | 15.000 / 12.431 | 13.684 | 25.167 ms | 0.9118 | 10.0005 / 0 | 9.121 / 33.333 ms | 报告未记录 Goal |
-| Monitoring + RViz On | 640x360 @ 15 | 15.000 / 8.995 | 12.830 | 16.667 ms | 0.8556 | 10.0003 / 0 | 8.460 / 33.333 ms | 1 succeeded / 7.261 s |
-| High Quality + RViz On | 1280x720 @ 30 | **15.000** / 10.800 | 25.717 | 33.333 ms | 0.8564 | 9.9989 / 0 | 8.542 / 33.333 ms | 1 succeeded / 7.261 s |
-| **Standard + RViz On** | **640x480 @ 20** | **未运行** | **未运行** | **未运行** | **未运行** | **未运行** | **未运行** | **未运行** |
-
-运行时消息契约：
-
-- Monitoring 图像为 `640x360 rgb8`，High Quality 为 `1280x720 rgb8`；
-- Image 和 CameraInfo 均使用 `camera_front_optical_frame`，每个 Topic 各 1 个
-  Publisher；
-- RViz On 时 Image 有 1 个 RViz 外部订阅者，RViz Off 时为 0；
-- Off 时 Image/CameraInfo Publisher 都是 0，即使 RViz Image Display 正在等待
-  Topic 也没有崩溃；
-- 每个已收到的 RGB frame 都找到 exact-stamp CameraInfo，ratio 为 `1.0`，
-  但 CameraInfo 还分别多出 15、48、179 个无对应 RGB 的样本；不能将其描述成
-  两个 Topic 完全一一同频；
-- HQ RGB 没达到 30 Hz 配置目标，而是约 15 Hz 仿真时间频率，因此 HQ 频率目标
-  尚未验收；Monitoring 在仿真时间口径接近 15 Hz，但墙钟率随 RTF/RViz 负载
-  下降；
-- HQ 报告中 Camera 静态 TF lookup failure 为 0；Monitoring + RViz On 报告记录
-  2 次 Camera 静态 TF lookup failure，不能宣称所有组合的 TF 采样均零失败；
-- 两张本机 RGB 抓帧已做图像检查，画面朝前、正立、未镜像且转向后内容改变；
-  这只是抓帧检查，不等同于用户完成了 RViz 面板、交互和视觉体验的人工作业。
-
-### GPU 指标的重要限制
-
-Camera 和 Realistic 报告采样时，GPU 上同时存在另一个用户的 Isaac Sim 进程
-（PID 825090），另有 Sunshine 进程。因此 `nvidia-smi` 的 device utilization、
-总显存和功耗是共享设备快照，**不能**作为本项目 Camera On/Off 的独占增量。
-
-| 组合 | GPU Util | 总显存 | 功耗 | 本项目 Isaac 显存 | 并发用户 Isaac 显存 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Off + RViz On | 46% | 7077 MiB | 113.72 W | 2927 MiB | 2690 MiB |
-| Monitoring + RViz Off | 45% | 7746 MiB | 111.66 W | 3086 MiB | 3286 MiB |
-| Monitoring + RViz On | 50% | 7837 MiB | 116.05 W | 3085 MiB | 3158 MiB |
-| High Quality + RViz On | 56% | 7983 MiB | 130.50 W | 3228 MiB | 3158 MiB |
-| Realistic Monitoring + RViz Off | 54% | 7631 MiB | 121.48 W | 3086 MiB | 3222 MiB |
-
-这些数字只用于说明采样当时的资源状态。若要得到可信 Camera GPU 增量，必须在
-独占 GPU、停止 PID 825090 和其他图形负载后重跑同一矩阵。
-
-## Realistic odometry
-
-`realistic_monitoring_nav.json` 使用 Realistic、Monitoring、RViz Off、stable
-Profile。12 秒窗口中的实际结果：
-
-| 指标 | 实际值 |
-| --- | --- |
-| `/wheel/odom` | `45.893 Hz` wall，1 个 Publisher：`wheel_odometry` |
-| `/odom` | `44.806 Hz` wall，1 个 Publisher：`ekf_filter_node` |
-| `/imu/data` | `109.456 Hz` wall；Header stamp P50 `16.67 ms`（约 60 Hz 仿真时间），存在重复 stamp 到达 |
-| `odom -> base_link` | EKF 所有，lookup failure=0，future stamp=0，Lag P99 `233.333 ms` |
-| Controller | 目标 10 Hz，实际 `9.9982 Hz`，missed=0 |
-| Scan | `9.127 Hz`，Age P99 `33.333 ms` |
-| Camera | `640x360 rgb8`，Image sim/wall 约 `15.000/11.602 Hz`，exact match ratio=1.0 |
-| RTF / Host CPU / ROS CPU | `0.9205` / `38.26%` / `100.00%`（ROS 为单核口径） |
-| Navigation snapshot | `active_goal_count=1`，没有 succeeded/failed result |
-
-该报告验证的是 Wheel Odom + IMU + EKF 的所有权、数据流和目标执行期间的控制
-稳定性，**不能**声称这个特定目标已完成。此前 2026-07-12 的 1 m Realistic
-基线有 4/4 成功记录（GT 终点误差 `0.175–0.187 m`），它是独立的历史 smoke
-证据，不替代本轮报告，也不是广泛 start/goal 统计结论。
-
-## Reset 证据
-
-本轮可复核的 Reset 证据包括：
-
-- 12 个可行 MPPI 组合和 4 个 Ceres 组合在各自新进程中先完成 Reset/readiness，
-  再发送 3 m Goal；16/16 Goal 均 succeeded；
-- 一次实时 Navigation Reset 只在 cancel/pause/clear/reseed/wait/resume 的异步
-  Future 完成后返回，六个受管 Nav2 节点恢复 active；
-- `scan_fault` 在 fault active 时收到 `/simulation/reset_event`，新 epoch 自动恢复
-  `normal`，旧 epoch 命令被拒绝；
-- Camera Reset 前后 Image stamp 从 `143.333333666` 前进到 `145.0`，没有回退，
-  Image/CameraInfo Publisher 数保持各 1 个；
-- 自动测试还覆盖旧 Future、超时/服务失败、重叠 Reset、旧 scan epoch 和 stamp
-  rollback，旧 generation callback 不能完成新事务；
-- 更早的最终实验批次累计完成 13 次 Ideal/Realistic reset/reseed，均通过 post-reset
-  scan、`/simulation/localization_seeded`、新 `map->odom`、新 GT/odom 和稳定 Pose
-  门控。
-
-Reset Trigger 的 `success: true` 只表示已提交的物理重置和下游服务调用完成。
-调用方仍必须等待新的 seed/manual initial pose、fresh `/odom` 和稳定且新 stamp 的
-`map -> odom`，不能单凭 Trigger 返回值开始导航。
-
-## Ordered shutdown 与 RViz 安全退出
-
-当前 `scripts/run_ros.sh` 是顶层监督器：它通过 `setsid` 把 `ros2 launch` 放入
-独立进程组。收到 INT/TERM/HUP 后，监督器先运行私有 rclpy Context 和
-SingleThreadedExecutor 的 `robot_bringup.ordered_shutdown`，再向 launch 进程组
-转发 SIGINT 并等待退出。
-
-顺序契约为：
-
-- Navigation：先 `/lifecycle_manager_navigation/manage_nodes` Shutdown，再
-  `/lifecycle_manager_localization/manage_nodes` Shutdown；
-- Localization：只关闭 Localization manager；
-- Mapping/Incremental Mapping：依次向 SLAM Toolbox 发送 deactivate、cleanup、
-  shutdown transition；
-- 每个握手的默认完整超时为 20 秒；RViz 使用仓库内安全 Nav2 Panel，避免退出时
-  callback/Future/Context 竞态。
-
-实际证据：
-
-- 12 个 MPPI 与 4 个 Ceres 新进程运行均以该监督器有序退出，没有 Controller
-  `-6`、未等待协程或残留 ROS/RViz 进程；
-- Collision 故障测试的两步 manager Shutdown 实测分别约 `3.239 s` 和
-  `3.351 s`，全栈干净退出；
-- 新监督器下至少一次 Mapping 实跑完成 SLAM 生命周期有序退出；
-- High Quality + RViz 首轮退出暴露了 `robot_description` 的 rclpy Context
-  竞态，修复后用同一组合复跑明确 clean；
-- Realistic 首轮退出暴露了 `wheel_odometry` 未处理的
-  `ExternalShutdownException`，修复后复跑明确 clean；
-- 最终 `clean_runtime.sh` 检查项目受管进程为 `none`；
-- 安全 RViz Panel 在监督器改造前另做了 Navigation、Mapping、Localization、
-  Camera View 各 5 次（20/20）启动/退出测试；该数据验证 Panel 本身，但不能
-  冒充新监督器的跨模式 20 次矩阵。
-
-尚未单独归档“新监督器下每个模式、Camera Off/Monitoring/High Quality、目标
-执行中各连续 5 次”的完整矩阵，也没有独立的 Render Product 泄漏计数报告。
-因此当前结论是重复 smoke 通过，不能把计划第 21/26.7 节的全部 shutdown 矩阵
-标为最终完成。
-
-## 发布前审查回归
-
-最终三路只读审查没有发现 P0，但发现了地图发布、进程退出和输入边界的阻塞项。
-修复后针对性测试与全量测试均重新执行，不能把审查前结果当作最终结果。新增回归
-明确覆盖：
-
-- `save_map.sh` no-clobber hard-link 发布、并发同名工件保留、Manifest 链接后的
-  信号窗口回滚、父目录 symlink 和纯点版本拒绝；
-- Manifest 正数 resolution、父级 symlink/路径身份、USD/Map pose、yaw、两项
-  标准差逐值绑定，以及 Localization Reset profile 不可跨 bundle 切换；
-- `run_ros.sh` helper 不继承忽略信号、第二次停止强制 TERM、顽固 launch 组的
-  有界升级，以及 Ordered Shutdown 的 20 秒全局 deadline；
-- Safe RViz Panel 的空 GoalStatus 和非法/超范围循环文本；
-- `/scan_fault` 每条命令强制 epoch，Profiler 识别 supervisor operation，并在
-  PID+start-time 成员集合变化时拒绝输出误导 CPU 差分；
-- `robot_rviz_plugins` 在 `BUILD_TESTING=OFF` 且不查找测试依赖时独立配置、编译和
-  安装成功。
-
-## 自动测试证据
-
-最终交付在所有代码修改结束后执行了 `./scripts/test.sh --with-isaac`，命令
-exit 0。以下是本轮最终计数，不沿用旧版本：
-
-| Gate | 最终结果 |
-| --- | --- |
-| `./scripts/preflight.sh` | PASS，包括仓库环境、资产和 `warehouse_v1` Manifest/LFS 检查 |
-| `./scripts/build_ros2.sh` | 11 packages build completed |
-| `./scripts/test.sh --with-isaac` 的 pure/root suite | 459 collected：454 passed，5 deselected |
-| ROS `colcon test` | 11 packages，445 tests，0 errors，0 failures，0 skipped |
-| Isaac/USD marker suite | 61 collected：3 passed，58 deselected |
-| RViz config/load smoke | 结构测试包含在 454 个 root tests；安全 Panel 20/20 历史循环及本轮 Off/Monitoring/HQ 实跑组合见上文 |
-| `robot_rviz_plugins` production-only build | 独立 `-DBUILD_TESTING=OFF` configure/build/install PASS |
-| Repository index set comparison | 267 个交付路径对 267 个索引路径，集合差分无输出 |
-| `git diff --check` | PASS；全工作树、未跟踪源码和文档在提交前再执行一次最终审计 |
-
-推荐最终命令：
+Re-run the same gates after any change; terminal output is authoritative if
+counts change as tests are added:
 
 ```bash
 ./scripts/preflight.sh
@@ -375,20 +268,34 @@ exit 0。以下是本轮最终计数，不沿用旧版本：
 
 | 能力 | 当前边界 |
 | --- | --- |
-| 真实 `warehouse_v2` | 未建图、未生成四工件、未标定、未运行导航；只有临时测试夹具验证 uncalibrated 契约 |
-| Camera Standard | `640x480 @ 20 Hz` 组合未运行 |
-| Camera High Quality 频率 | 配置目标 30 Hz，RGB 实测约 15 Hz 仿真时间频率，目标未达到 |
-| Camera 人工 GUI 验收 | 抓帧方向检查已做，但用户 click-by-click、面板布局和视觉体验验收未完成 |
-| GPU Camera 增量 | 并发另一个用户 Isaac Sim，当前共享 GPU 快照不能做独占增量结论 |
-| Realistic 本轮目标结果 | 报告结束时目标 active；不得写成该报告 succeeded |
-| Localization 冷启动统计 | 未完成 Ideal/Realistic 各 3 次独立冷启动及 Map Pose 离散度量化 |
-| 一般导航成功率 | MPPI/Ceres 是固定 3 m 调参矩阵，不是多 start/goal 的总体成功率统计 |
-| Static/Dynamic 大矩阵 | 已有固定场景 smoke，但没有完成计划要求的广泛布局、速度、尺寸和种子统计 |
-| Incremental-map 收益 | 尚无真实 changed-region 三地图对照及至少 30% 收益证据 |
-| Long-duration soak | 未记录长时间稳定性结果 |
-| Custom robot | 只有参数化迁移契约和模板，没有真实自定义 USD、标定和全链路验收 |
-| 完整 Shutdown 矩阵 | 新监督器的所有模式/Profile/active-goal 连续 5 次矩阵未单独归档 |
+| Localization cold restart | multiple Ideal sessions and one Realistic session loaded and navigated, but the required three independent cold starts per mode and quantified Map-pose spread have not been accepted |
+| Map-frame Ground Truth | all final batches passed runtime alignment/freshness gates; three-cold-start spread and longer statistical calibration evidence are not complete |
+| Nav2 end-to-end navigation | The fixed-warehouse far-goal statistical benchmark is accepted; broader start/goal pairs, recovery fault injection, and multi-map generalization remain untested |
+| Static obstacle statistics | The requested same-environment 20-run static rate passed at 100%; a larger authored multi-layout matrix is still not available |
+| Dynamic obstacle statistics | The requested two-obstacle 20-run rate passed at 95%; following/blocking/size/speed families and intentional-contact observability remain separate future coverage |
+| Automated experiment matrix | 20 static + 20 dynamic runs and A* aggregate acceptance are automated; multi-layout generation and unattended cold-start orchestration remain pending |
+| Incremental-map benefit | bringup and a strict three-map offline comparator exist, but no real changed-region trial has produced baseline/full/incremental maps and same-definition timings to prove at least 30% improvement, changed-cell recovery, or old-region preservation; updated-map Localization/Nav2 is also pending |
+| Long-duration stability | no soak-duration result is recorded |
+| Custom robot migration | project/defaultPrim, static TF, Xacro, Wheel Odom, and Nav2 inputs are parameterized with a fail-fast template; no real custom USD, measured calibration, or full-chain evidence is available |
 
-以上固定目标运行可以作为回归、Reset 隔离、控制稳定性和资源竞争基线，但不能
-把 16/16 调参 Goal、历史 4/4 Realistic 或 4/4 动态 smoke 外推成一般性的
-100% 导航成功率。
+The accepted `100%` static and `95%` dynamic rates apply only to the recorded
+`warehouse_v1`, `mapping_start`, goal `[2, 5, 90°]`, Realistic-mode benchmark.
+They must not be generalized to unrelated maps, layouts, obstacle families, or
+robots without new runs.
+
+## Final acceptance sequence
+
+1. Repeat cold-start Localization at least three times in Ideal and Realistic
+   modes; verify single TF/odom ownership and quantify map-pose spread.
+2. Repeat Ground Truth alignment across those starts, retain the no-drift check,
+   and confirm that no navigation node subscribes to Ground Truth.
+3. Expand Navigation beyond the successful Ideal/Realistic baselines; cover
+   varied start/goal pairs, recovery fault injection, velocity smoothing,
+   stop/slowdown behavior, and intentional physical collision observability.
+4. Expand the accepted same-environment static/dynamic benchmark into
+   multi-layout and multi-obstacle-family matrices, preserving raw reports
+   under `data/`.
+5. Execute the changed-region incremental workflow, run the three-map comparator,
+   then validate Localization and Nav2 with the accepted updated map.
+6. Supply and calibrate the real custom robot asset, then execute its Ideal,
+   Realistic, Ground Truth, Reset, Localization, and Nav2 acceptance sequence.

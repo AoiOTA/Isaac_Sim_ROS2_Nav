@@ -20,7 +20,7 @@ class WheelOdometryConfig:
     """Geometry and safety bounds used by the integrator."""
 
     wheel_radius: float = 0.098
-    track_width: float = 0.37559
+    track_width: float = 0.800
     left_joint_names: Tuple[str, ...] = DEFAULT_LEFT_JOINTS
     right_joint_names: Tuple[str, ...] = DEFAULT_RIGHT_JOINTS
     max_integration_step: float = 0.25

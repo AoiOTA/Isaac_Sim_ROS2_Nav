@@ -428,26 +428,45 @@ def _load_lidar(path) -> dict[str, Any]:
         "sensor_prim",
         "config",
         "variant",
+        "scan_plane_rotation_wxyz",
         "tick_rate",
         "accumulate_outputs",
         "render_product_resolution",
         "topic_name",
         "frame_id",
+        "output_frame",
+        "motion_compensation",
         "type",
         "qos_profile",
     }
     reject_unknown(data, allowed, context="lidar config")
     require_keys(data, allowed, context="lidar config")
     if data["schema_version"] != 1 or data["enabled"] is not True:
-        raise SensorConfigError("3D LiDAR must be enabled with schema_version 1")
-    if data["config"] != "XT32_SD10":
+        raise SensorConfigError("navigation LiDAR must be enabled with schema_version 1")
+    if data["config"] != "RPLIDAR_S2E":
         raise SensorConfigError(
-            "baseline requires the locally verified 32-channel XT32_SD10 RTX config"
+            "navigation mapping requires the single-channel RPLIDAR_S2E RTX config"
         )
     if data["type"] != "point_cloud" or data["topic_name"] != "/lidar/points_raw":
         raise SensorConfigError("LiDAR must publish point_cloud on /lidar/points_raw")
-    if data["frame_id"] != "lidar_link":
-        raise SensorConfigError("LiDAR frame_id must be lidar_link")
+    if data["frame_id"] != "rtx_world":
+        raise SensorConfigError("RTX PointCloud frame_id must be rtx_world")
+    if data["output_frame"] != "WORLD":
+        raise SensorConfigError(
+            "RTX PointCloud output_frame must be WORLD when frame_id is rtx_world"
+        )
+    if data["motion_compensation"] != "COMPENSATED":
+        raise SensorConfigError(
+            "moving navigation LiDAR requires COMPENSATED full-scan output"
+        )
+    rotation = require_vector(
+        data["scan_plane_rotation_wxyz"],
+        4,
+        context="lidar.scan_plane_rotation_wxyz",
+    )
+    norm_squared = sum(float(value) ** 2 for value in rotation)
+    if abs(norm_squared - 1.0) > 1e-6:
+        raise SensorConfigError("LiDAR scan-plane rotation must be a unit quaternion")
     data["tick_rate"] = require_number(data["tick_rate"], context="lidar.tick_rate", positive=True)
     data["render_product_resolution"] = require_vector(
         data["render_product_resolution"], 2, context="lidar.render_product_resolution"
@@ -601,15 +620,47 @@ class SensorFactory:
             variant=lidar_config["variant"],
             tick_rate=lidar_config["tick_rate"],
             accumulate_outputs=bool(lidar_config["accumulate_outputs"]),
+            attributes={
+                "omni:sensor:Core:outputFrameOfReference": lidar_config[
+                    "output_frame"
+                ],
+                "omni:sensor:Core:outputMotionCompensationState": lidar_config[
+                    "motion_compensation"
+                ],
+            },
         )
         if len(lidar.paths) != 1:
             raise SensorConfigError(
                 f"expected one RTX LiDAR prim, got {list(lidar.paths)}"
             )
-        # Vendor assets may reference an Xform containing the actual OmniLidar
-        # child (for XT32 this is ``.../PandarXT_32_10hz``). A render product
-        # must target that resolved sensor prim, not the configured mount root.
+        # Rotary assets are authored in a vertical X-Z plane. Keep the physical
+        # lidar_link TF unchanged and rotate only the internal ray generator
+        # into the horizontal X-Y navigation plane.
+        lidar.set_local_poses(
+            orientations=[lidar_config["scan_plane_rotation_wxyz"]]
+        )
+        # Sensor assets may reference an Xform containing the actual OmniLidar
+        # child. A render product must target that resolved sensor prim, not the
+        # configured mount root.
         lidar_prim_path = str(lidar.paths[0])
+        lidar_prim = lidar.prims[0]
+        output_frame = lidar_prim.GetAttribute(
+            "omni:sensor:Core:outputFrameOfReference"
+        ).Get()
+        if str(output_frame) != lidar_config["output_frame"]:
+            raise SensorConfigError(
+                f"LiDAR {lidar_prim_path} output frame is {output_frame!r}, "
+                f"expected {lidar_config['output_frame']!r}"
+            )
+        motion_compensation = lidar_prim.GetAttribute(
+            "omni:sensor:Core:outputMotionCompensationState"
+        ).Get()
+        if str(motion_compensation) != lidar_config["motion_compensation"]:
+            raise SensorConfigError(
+                f"LiDAR {lidar_prim_path} motion compensation is "
+                f"{motion_compensation!r}, expected "
+                f"{lidar_config['motion_compensation']!r}"
+            )
         resolution = tuple(int(value) for value in lidar_config["render_product_resolution"])
         render_product = rep.create.render_product(lidar_prim_path, resolution=resolution)
         render_product_path = str(render_product.path)

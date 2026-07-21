@@ -23,7 +23,7 @@ def test_ekf_owns_only_local_odom_transform():
     assert params['publish_tf'] is True
 
 
-def test_ekf_fuses_only_wheel_vx_wz_and_imu_wz():
+def test_ekf_fuses_wheel_vx_and_imu_wz_without_skid_yaw_bias():
     params = _params()
     wheel_enabled = {
         index for index, enabled in enumerate(params['odom0_config']) if enabled}
@@ -33,6 +33,6 @@ def test_ekf_fuses_only_wheel_vx_wz_and_imu_wz():
     assert params['imu0'] == '/imu/data'
     assert len(params['odom0_config']) == 15
     assert len(params['imu0_config']) == 15
-    assert wheel_enabled == {6, 11}
+    assert wheel_enabled == {6}
     assert imu_enabled == {11}
     assert params['imu0_remove_gravitational_acceleration'] is False

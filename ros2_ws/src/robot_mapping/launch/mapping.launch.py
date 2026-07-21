@@ -21,6 +21,13 @@ def _posegraph_prefix(value):
     return value
 
 
+def _bool_argument(context, name):
+    value = LaunchConfiguration(name).perform(context).strip().lower()
+    if value not in {'true', 'false'}:
+        raise RuntimeError(f'{name} must be true or false')
+    return value == 'true'
+
+
 def _launch_setup(context):
     prefix = _posegraph_prefix(
         LaunchConfiguration('posegraph_file').perform(context).strip())
@@ -36,11 +43,8 @@ def _launch_setup(context):
                 + ', '.join(missing))
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
-    try:
-        ceres_num_threads = int(
-            LaunchConfiguration('ceres_num_threads').perform(context))
-    except ValueError as exc:
-        raise RuntimeError('ceres_num_threads must be an integer') from exc
+    use_scan_matching = _bool_argument(context, 'use_scan_matching')
+    do_loop_closing = _bool_argument(context, 'do_loop_closing')
 
     slam_node = LifecycleNode(
         package='slam_toolbox',
@@ -56,7 +60,8 @@ def _launch_setup(context):
                 'use_lifecycle_manager': False,
                 'mode': 'mapping',
                 'map_file_name': prefix,
-                'ceres_num_threads': ceres_num_threads,
+                'use_scan_matching': use_scan_matching,
+                'do_loop_closing': do_loop_closing,
             },
         ],
         remappings=[('scan', '/scan')],
@@ -96,6 +101,20 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
+        DeclareLaunchArgument(
+            'use_scan_matching',
+            default_value='true',
+            description=(
+                'Correct odometry with scan matching. Ideal odometry bringup '
+                'overrides this to false because its pose is ground truth.'),
+        ),
+        DeclareLaunchArgument(
+            'do_loop_closing',
+            default_value='true',
+            description=(
+                'Enable loop closure. Ideal odometry bringup overrides this '
+                'to false to keep map->odom anchored to ground truth.'),
+        ),
         DeclareLaunchArgument(
             'mapping_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(

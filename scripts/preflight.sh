@@ -56,7 +56,7 @@ done
 teleop_prefix="$(ros2 pkg prefix robot_teleop)"
 require_file "${teleop_prefix}/share/robot_teleop/config/teleop.yaml"
 
-MAP_MANIFEST="${PROJECT_ROOT}/data/maps/manifests/warehouse_v1.yaml"
+MAP_MANIFEST="${PROJECT_ROOT}/data/maps/manifests/warehouse_new.yaml"
 require_file "${MAP_MANIFEST}"
 ros2 run robot_bringup map_manifest verify \
   --project-root "${PROJECT_ROOT}" \

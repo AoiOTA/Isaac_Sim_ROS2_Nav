@@ -6,12 +6,12 @@ interface proposed in `plan.md`.
 
 ## Mode pairing
 
-| ROS operation | Isaac `--navigation-mode` | SLAM executable | Saved-map input | Nav2 |
-| --- | --- | --- | --- | --- |
-| `mapping` | `mapping` | `async_slam_toolbox_node` | none; Pose Graph and OccupancyGrid inputs are rejected, and no manifest is consumed | off |
-| `incremental_mapping` | `mapping` | `async_slam_toolbox_node` | one verified four-artifact manifest bundle; OccupancyGrid is not an input | off |
-| `localization` | `localization` | `localization_slam_toolbox_node` | one verified four-artifact manifest bundle | off |
-| `navigation` | `localization` | `localization_slam_toolbox_node` | one verified four-artifact manifest bundle | readiness-gated |
+| ROS operation | Isaac `--navigation-mode` | SLAM executable | Pose Graph requirement | Occupancy map requirement | Nav2 |
+| --- | --- | --- | --- | --- | --- |
+| `mapping` | `mapping` | `async_slam_toolbox_node` | must be empty | must be empty | off |
+| `incremental_mapping` | `mapping` | `async_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | must be empty | off |
+| `localization` | `localization` | Ideal: `ideal_localization_tf`; Realistic/explicit calibration: `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | off |
+| `navigation` | `localization` | Ideal: `ideal_localization_tf`; Realistic: `localization_slam_toolbox_node` | `<prefix>.posegraph` and `<prefix>.data` | saved `.yaml` plus referenced image | readiness-gated |
 
 Every saved-map operation requires one strict manifest at
 `data/maps/manifests/<map_version>.yaml`. The manifest binds the OccupancyGrid
@@ -29,13 +29,26 @@ this calibration. `localization` and `navigation` may use an uncalibrated new
 bundle only with `initial_pose_source=rviz`, in which case the operator owns the
 pose and must provide a new valid **2D Pose Estimate** after every Reset.
 
+When launched through `scripts/run_ros.sh`, omitted Localization/Navigation map
+arguments select the `warehouse_new` Kujiale bundle on this branch. An
+explicit Pose Graph or OccupancyGrid basename selects the matching other half. Ideal navigation checks
+that the versioned pair exists but uses the calibrated identity `map -> odom`;
+`posegraph_calibration:=true` temporarily enables Pose Graph localization only
+for Ideal `localization`, never for Navigation.
+
+The `warehouse_new` bundle is currently approved only for normal Ideal
+Localization/Navigation. It was generated while scan matching and loop closing
+were disabled, so its serialized data has no valid optimization-graph vertices.
+The launcher rejects Realistic or explicit Pose Graph localization with this
+version instead of allowing SLAM Toolbox to fail at runtime.
+
 The ROS `posegraph_file` argument is normalized to a prefix, so all of the
 following refer to the same serialized map:
 
 ```text
-data/maps/posegraphs/warehouse_v1
-data/maps/posegraphs/warehouse_v1.posegraph
-data/maps/posegraphs/warehouse_v1.data
+data/maps/posegraphs/warehouse_new
+data/maps/posegraphs/warehouse_new.posegraph
+data/maps/posegraphs/warehouse_new.data
 ```
 
 Both files must exist. Baseline `mapping` rejects a non-empty Pose Graph instead
@@ -87,22 +100,13 @@ All four top-level bringups expose the same interaction arguments:
 | `rviz_config` | `auto` | Select `mapping.rviz`, `localization.rviz`, or `navigation.rviz`; an explicit path must exist. |
 | `use_teleop` | `auto` | Enable only for `mapping` and `incremental_mapping`; explicit true in Localization/Navigation is rejected. |
 | `initial_pose_source` | `auto` | `auto` owns calibrated reseeding; `rviz` gives ownership to valid `/initialpose` input. Incremental Mapping requires `auto`. |
+| `posegraph_calibration` | `false` | Only valid for Ideal Localization; explicitly loads the Pose Graph to measure Map Pose. Normal Ideal operation keeps identity `map → odom`. |
 
 The three RViz configurations are mode contracts, not cosmetic presets:
 
-- Mapping shows the live SLAM `/map`. It intentionally does not load the SLAM
-  Toolbox lifecycle panel; lifecycle ownership stays outside RViz.
-- Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled diagnostic overlay, and provides `SetInitialPose`.
-- Navigation loads the project-owned
-  `robot_rviz_plugins/Navigation 2 Safe` panel and the official Nav2
-  `GoalTool`, plus dual costmaps, paths, footprints, and Collision Monitor
-  zones. The safe panel preserves the official action interface while owning
-  and joining its QThread/QtConcurrent work during close. It sends Nav2 actions
-  directly; there is no project `/goal_pose` bridge.
-- Mapping, Localization, and Navigation include an Image display for
-  `/camera/front/image_raw` using raw transport and Best Effort/Volatile depth
-  2. A Camera `off` profile therefore produces a deliberate `No Image` state,
-  not a graph error. `camera_view.rviz` is the camera-only layout.
+- Mapping shows the live SLAM `/map` and enables the SLAM Toolbox panel.
+- Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled Realistic/calibration diagnostic overlay, and provides `SetInitialPose`.
+- Navigation additionally loads the official `nav2_rviz_plugins/Navigation 2` panel and `GoalTool`, dual costmaps, paths, footprints, and Collision Monitor zones. It sends Nav2 actions directly; there is no project `/goal_pose` bridge.
 
 Managed RViz/Teleop processes use the same environment and PID registry as the main scripts. Mapping Teleop publishes Reliable/Volatile `/cmd_vel` at 20 Hz, stops after 0.18 seconds without a key event using a monotonic wall clock, clamps commands to 1.0 m/s and 1.5 rad/s, and publishes a final zero on every normal/signal/EOF exit. Navigation's command chain remains the sole owner in its mode.
 
@@ -116,11 +120,8 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/cmd_vel_smoothed` | `geometry_msgs/msg/Twist` | Velocity Smoother | Collision Monitor | Navigation only |
 | `/joint_states` | `sensor_msgs/msg/JointState` | Isaac | Wheel Odom and RobotModel | simulator tick |
 | `/imu/data` | `sensor_msgs/msg/Imu` | Isaac | EKF in Realistic mode | `imu_link`, configured 60 Hz |
-| `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | pointcloud-to-laserscan | `lidar_link`, nominal 10 Hz |
-| `/scan` | `sensor_msgs/msg/LaserScan` | `pointcloud_to_laserscan` | SLAM Toolbox, costmaps, production Collision Monitor; optional scan-fault bridge input | `base_link`, nominal 10 Hz, 720 bins; Best Effort + Volatile |
-| `/scan_fault` | `sensor_msgs/msg/LaserScan` | opt-in `scan_fault_bridge` | Collision Monitor only when a safety-test parameter overlay explicitly selects it | unchanged scan or test-only frame override; Best Effort + Volatile |
-| `/scan_fault/control` | `std_msgs/msg/String` | safety-test operator/runner | `scan_fault_bridge` JSON command input | Reliable + Volatile; every command must carry the current epoch |
-| `/scan_fault/status` | `std_msgs/msg/String` | opt-in `scan_fault_bridge` | safety-test evidence and automation | transient-local JSON snapshot, plus periodic/event updates |
+| `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | pointcloud-to-laserscan | `rtx_world`, nominal 10 Hz |
+| `/scan` | `sensor_msgs/msg/LaserScan` | `pointcloud_to_laserscan` | SLAM Toolbox, costmaps, Collision Monitor | `base_link`, nominal 10 Hz, 720 bins |
 | `/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Mapping; `nav2_map_server` in Localization/Navigation | map inspection in Mapping; activation gate and global costmap in Navigation | `map`; reliable, transient local; exactly one mode-appropriate publisher |
 | `/slam_toolbox/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Localization/Navigation | diagnostics only; never a Nav2 static-map input | `map`; scan-rasterized localization view |
 | `/wheel/odom` | `nav_msgs/msg/Odometry` | `wheel_odometry` | EKF | Realistic only; `odom`/`base_link` |
@@ -144,7 +145,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/initial_pose/reseed` | `std_srvs/srv/Trigger` | calibrated initial-pose node | Activation Gate reset recovery | arm calibrated pose after a post-request scan; preserves valid manual ownership |
 
 The PointCloud-to-LaserScan projection uses `base_link` as its target frame,
-height `[0.05, 0.50] m`, range `[0.30, 25.0] m`, a full `[-pi, pi]` field of
+height `[0.05, 0.50] m`, range `[0.40, 25.0] m`, a full `[-pi, pi]` field of
 view, and a `0.5°` angular increment. The optional self filter is disabled by
 default and changes the projection input only when explicitly enabled.
 
@@ -297,28 +298,54 @@ proof of compatibility; use `ros2 topic info --verbose <topic>` when debugging.
 
 The committed RViz configs explicitly bind map-like topics (`/map`, both costmaps) as Reliable + Transient Local. Sensor streams (`/scan`, `/lidar/points_raw`) are Best Effort + Volatile. This distinction is regression-tested. The top-level interactive launch starts RViz before delaying perception by 1.5 seconds so the saved sensor QoS is applied before the `/scan` publisher appears; this avoids a misleading one-shot constructor warning without changing the final graph.
 
+## Isaac wheel-control execution contract
+
+The control graph is an on-demand graph driven by
+`isaacsim.core.nodes.OnPhysicsStep`, not by a render/playback tick and not by
+`ROS2SubscribeTwist.execOut`.
+
+On every physics step it:
+
+1. polls `/cmd_vel`, retaining the subscriber's most recently received Twist
+   when no new message is available;
+2. executes `DifferentialController`;
+3. supplies `OnPhysicsStep.deltaSimulationTime` directly to the controller's
+   `dt` input;
+4. expands `[left, right]` to `[front_left, front_right, rear_left,
+   rear_right]`;
+5. writes all four velocity targets through one
+   `IsaacArticulationController` call.
+
+Consequently the acceleration limits are integrated at the physics-step rate
+and remain independent of whether Teleop/Nav2 publishes at 10 Hz, 20 Hz, or
+another supported command rate. The single four-wheel write also prevents a
+front/rear axle command from straddling two graph executions.
+
 ## TF ownership
 
 The only navigation tree is:
 
 ```text
-map -> odom -> base_link
-                  |-> front_left_wheel_link
-                  |-> front_right_wheel_link
-                  |-> rear_left_wheel_link
-                  |-> rear_right_wheel_link
-                  |-> lidar_link
-                  |-> imu_link
-                  `-> camera_link -> camera_left/right_link -> optical frames
+map -> odom
+        |-> base_link
+        |     |-> front_left/right_wheel_link
+        |     |-> rear_left/right_wheel_link
+        |     |-> lidar_link
+        |     |-> imu_link
+        |     `-> camera_link -> camera_left/right_link -> optical frames
+        `-> rtx_world
 ```
 
 There is no ROS `world` frame. USD `/World` is a Stage prim path and is not a TF
-frame.
+frame. `rtx_world` is an explicit fixed data frame for the absolute endpoint
+coordinates emitted by Isaac Sim 6.0.1's RTX PointCloud writer; its
+spawn-derived static transform attaches those coordinates to `odom`.
 
 | Edge or subtree | Ideal | Realistic | Constraint |
 | --- | --- | --- | --- |
 | `map -> odom` | SLAM Toolbox | SLAM Toolbox | exactly one Mapping or Localization instance |
 | `odom -> base_link` | Isaac | `robot_localization` EKF | exactly one owner; Wheel Odom does not publish TF |
+| `odom -> rtx_world` | Isaac static TF | Isaac static TF | inverse selected USD spawn pose; RTX data-frame conversion only |
 | wheel-link dynamic TF | Isaac | Isaac or RSP, selected explicitly | derived from articulation joints/JointState |
 | sensor/camera static TF | Isaac | Isaac or RSP, selected explicitly | seven static pairs |
 
@@ -368,18 +395,7 @@ A Reset is a non-blocking ROS service transaction with one active generation at 
 9. Only after the transaction succeeds, publish `/simulation/reset_event` and return `success: true`.
 10. In Localization with `initial_pose_source=auto`, arm a simulation-clock evidence barrier, ignore old/high-epoch cached scans, and publish the calibrated `/initialpose` plus `/simulation/localization_seeded` on the first valid post-reset scan. With source `rviz`, automatic publication remains disabled.
 
-A Reset has two related identities. The Isaac bridge increments an internal
-transaction `generation` when it accepts a request; async callbacks from another
-generation cannot complete it, overlapping transactions are rejected, and a
-failed/timed-out generation emits no reset event. The reliable, volatile
-`/simulation/reset_event` emitted by a successful transaction is the public
-recovery-epoch boundary. Activation Gate clears TF/readiness and invalidates old
-async tokens, Wheel Odom resets its integrator, the scan-fault bridge clears its
-fault and increments its epoch, and profilers split time-series evidence at a
-clock rollback. Because the event is Volatile, observers must subscribe before
-calling Reset; late subscribers cannot infer that an event occurred.
-
-A successful Trigger response therefore means the physical reset and all submitted downstream reset/clear calls completed, not merely that they were queued. It still does not prove localization readiness. Clients must wait for the appropriate automatic seed or new RViz pose, fresh `/odom`, and a newly stamped, stable `map -> odom`. The experiment runner additionally requires fresh post-event Ground Truth and spawn-aligned `map -> base_link` before dispatching a goal.
+A successful Trigger response therefore means the physical reset and all submitted downstream reset/clear calls completed, not merely that they were queued. It still does not prove localization readiness. Clients must wait for the appropriate automatic seed or new RViz pose, fresh `/odom`, and a newly stamped, stable `map -> odom`. The experiment runner additionally requires fresh post-event Ground Truth, spawn-aligned `map -> base_link`, and all six Nav2 managed nodes in `active` state before dispatching a goal.
 
 ## Navigation activation contract
 
@@ -405,7 +421,9 @@ Before every transition the gate atomically snapshots all six managed Nav2
 states and rejects duplicate node names. It is the sole lifecycle owner. Calls
 carry a generation/token pair, are guarded by one lock, and use at most three
 attempts with bounded exponential backoff; an old future cannot advance the new
-epoch.
+epoch. If a manager command completes only partially, the gate normalizes the
+mixed stable state in dependency order: activate/configure forward and
+deactivate in reverse, then verifies the full snapshot again.
 
 After a successful lifecycle `STARTUP`, the activation gate remains alive.
 On reset it cancels active navigation, pauses managed nodes, clears global and
@@ -454,16 +472,17 @@ may be replaced with broad `pkill` commands.
 
 ## Navigation control performance contract
 
-The two committed MPPI overlays share the measured control timing and differ
-only in sample count:
+The committed MPPI timing keeps the measured Isaac Sim 6.0.1 headless Ideal
+baseline. The batch reduction also passed two consecutive Realistic curved
+goals, including a reverse-turning goal:
 
-| Parameter | `stable` | `performance` | Contract |
-| --- | ---: | ---: | --- |
-| `controller_frequency` | 10 Hz | 10 Hz | control period is exactly `model_dt` |
-| `FollowPath.time_steps` | 20 | 20 | two-second prediction horizon |
-| `FollowPath.model_dt` | 0.10 s | 0.10 s | preserves MPPI control-sequence shifting |
-| `FollowPath.batch_size` | 750 | 1000 | stable keeps more compute headroom; performance evaluates more samples |
-| Localization `throttle_scans` | 2 | 2 | SLAM processes every second scan; Collision Monitor still receives every `/scan` |
+| Parameter | Value | Reason |
+| --- | --- | --- |
+| `controller_frequency` | 10 Hz | Preserves the two-second horizon and remained close to its target under the measured Realistic load. |
+| `FollowPath.time_steps` | 20 | Combined with `model_dt` keeps the prediction horizon at two seconds. |
+| `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
+| `FollowPath.batch_size` | 500 | Avoids localization contention while preserving the two-second horizon. |
+| Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
 
 Profile validation runs before Nav2 nodes start. Values must be finite and
 positive, steps/batch must be positive integers, and controller period
@@ -492,6 +511,12 @@ points, trajectory duration, and boolean `repeat`. `repeat: false` clamps the
 obstacle at its endpoint after one traversal; `repeat: true` makes it traverse
 back and forth. Both documents must state the value explicitly. The committed
 dynamic baseline currently uses `repeat: false` for both obstacles.
+
+For calibrated Ideal Localization/Navigation, Isaac already publishes the
+authoritative `odom -> base_link`. ROS therefore serves the immutable map and
+publishes a freshly stamped identity `map -> odom` instead of applying a second
+SLAM Toolbox localization correction. Realistic mode continues to use the
+serialized Pose Graph and SLAM Toolbox for `map -> odom`.
 
 `incremental_mapping.yaml` is a mapping-workflow descriptor. The
 `NavigateToPose` runner rejects it deliberately; execute it through

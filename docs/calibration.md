@@ -1,144 +1,194 @@
-# Map Pose calibration
+# Warehouse 地图坐标标定
 
-`isaac_sim/configs/spawn_poses.yaml` stores two different poses for the same
-physical starting point:
+本文说明如何标定 Isaac USD 世界中的固定出生位姿与 ROS 保存地图中的 Map
+位姿，并记录 `warehouse_v2` 的实际标定过程。日常导航默认使用
+`warehouse_v2`；`warehouse_v1` 因覆盖不完整，仅作为历史基线保留。
 
-- `usd`: the robot pose in the Isaac Stage, used to spawn/reset physics;
-- `map`: the pose of `base_link` in the saved ROS map, used for Localization,
-  Ground Truth alignment, repeatable experiments, and incremental mapping.
+## 1. 标定对象
 
-## Current calibration record
+[`isaac_sim/configs/spawn_poses.yaml`](../isaac_sim/configs/spawn_poses.yaml)
+为同一个物理出生点保存两套坐标：
 
-The current source records this pair for repository baseline `warehouse_v1`:
+- `usd`：Isaac Stage 中的 `base_link` 位姿，用于物理出生与 Reset；
+- `map`：保存地图中 `base_link` 的位姿，用于初始定位、Ground Truth
+  对齐、重复实验和增量建图。
+
+OccupancyGrid YAML 中的 `origin` 是“栅格左下角在 Map 坐标系中的位置”，
+不是机器人的出生位姿。标定必须测量 `map → base_link`，不能把地图
+`origin` 抄到 `spawn_poses.yaml`。
+
+平面坐标关系为：
 
 ```text
-USD base pose: [4.0, 0.0, 0.0635], yaw 0°
-Map base pose: [0.0, 0.0], yaw 0°
-Initial-pose standard deviation: 0.05 m, 5°
-Calibration date: 2026-07-10
+map_T_usd = map_T_base_start * inverse(usd_T_base_start)
+map_T_object = map_T_usd * usd_T_object
 ```
 
-`0.0635 m` is the measured resting `base_link` height on the warehouse floor.
-The earlier `0.10 m` value left the chassis above its resting contact pose and
-introduced a gravity/contact settling transient, so it must not be reused as
-the reset height.
+## 2. warehouse_v2 最终标定结果
 
-At the reset Mapping pose, the observed `map -> odom` transform was
-`[0, 0, 0]`; Ideal `odom -> base_link` was reset to identity, yielding the
-recorded Map base pose. The `warehouse_v1` OccupancyGrid and serialized Pose
-Graph were generated and inspected together. This curated bundle is distributed
-with the repository; the large `.posegraph` uses Git LFS. Run `git lfs pull`
-after cloning. `preflight.sh` verifies all four files against the committed byte
-sizes and SHA256 digests before runtime use.
+`warehouse_v2` 与 `warehouse_v1` 来自同一个
+`warehouse_multiple_shelves.usd` 场景，但 v2 完成了整个仓库的建图覆盖。
+2026-07-17 的最终记录为：
 
-Multiple Ideal sessions plus one Realistic session have since loaded the bundle,
-and the final multi-reset navigation batches succeeded. The stricter requirement
-for three independent cold starts in each odometry mode, quantified pose spread,
-and broad statistical navigation acceptance remains separate in
-`docs/verification.md`.
+```text
+地图版本: warehouse_v2
+OccupancyGrid: 406 × 611, 0.05 m/cell
+OccupancyGrid origin: [-14.692, -12.294, 0°]
 
-The rest of this document is the procedure for reproducing or replacing that
-calibration. If the warehouse, map origin, Pose Graph, or USD spawn changes,
-first set the affected Map Pose back to `calibrated: false`.
+USD base pose: [4.0, 0.0, 0.0635], yaw 0°
+Map base pose: [0.0, 0.0], yaw 0°
+保守初始位姿标准差: 0.05 m, 5°
+```
 
-## 1. Produce the baseline artifacts
+`0.0635 m` 是 Jackal 在仓库地面上的实测静止 `base_link` 高度。旧的
+`0.10 m` 会让底盘先经历落地/接触瞬态，不应恢复使用。
 
-Start from the fixed USD pose in Ideal mode:
+### 2.1 三次冷启动测量
+
+标定不是根据“v1 与 v2 同场景”直接复制，而是显式加载 v2 Pose Graph
+并完成三次 Isaac + ROS 全冷启动。每次都把 Jackal 恢复到同一个 USD
+出生位姿，等待 `/scan`、Pose Graph 定位和 TF 稳定后采样：
+
+| 冷启动 | `map → base_link` X/Y | Yaw | v2 Pose Graph | v2 `/map` |
+| --- | --- | --- | --- | --- |
+| 1 | `[0.000, -0.000] m` | `0.000°` | 成功加载 | `406×611` |
+| 2 | `[0.000, -0.000] m` | `0.000°` | 成功加载 | `406×611` |
+| 3 | `[0.000, -0.000] m` | `0.000°` | 成功加载 | `406×611` |
+
+在 TF 输出的 `0.001 m / 0.001°` 精度内，最大平移 spread 和最大航向
+spread 均为 0。`/map` 只有 `map_server` 一个发布者，`/odom` 只有 Isaac
+Ideal Odometry 一个发布者。最终仍保留 `0.05 m / 5°` 的保守初始不确定度，
+不把有限输出精度下的零 spread 当作零测量误差。
+
+标定和工件完整性记录在
+[`data/maps/manifests/warehouse_v2.yaml`](../data/maps/manifests/warehouse_v2.yaml)。
+
+## 3. 为什么标定时要显式启用 Pose Graph
+
+日常 Ideal Navigation 已经拥有 Isaac 发布的精确 `/odom`。为避免在理想
+位姿上再次叠加扫描匹配修正，正常 Ideal Localization 使用新鲜的 identity
+`map → odom`，不会启动 SLAM Toolbox 定位。
+
+但地图标定必须验证“这份 Pose Graph 的 Map 坐标”与出生点的关系，不能用
+日常 identity TF 反过来证明自己。因此项目提供只用于标定的参数：
+
+```text
+posegraph_calibration:=true
+```
+
+它只允许 `operation=localization + odometry_mode=ideal`，会临时让 SLAM
+Toolbox 加载指定 Pose Graph 并拥有 `map → odom`。Navigation 和普通 Ideal
+Localization 仍保持原来的 identity 定位链。
+
+## 4. 可复现标定步骤
+
+### 4.1 生成并冻结同版本四件套
+
+从固定 USD 出生点启动 Ideal Mapping：
 
 ```bash
 ./scripts/run_isaac.sh --navigation-mode mapping --mode ideal
 ./scripts/run_ros.sh mapping odometry_mode:=ideal
 ```
 
-Collect the full route slowly, include rotations and loop closure, inspect the
-result for tearing or duplicated walls, then save both representations with one
-version:
+缓慢覆盖完整区域，包含左右旋转、走廊两侧和至少一次闭环。确认 RViz 中
+没有墙体重影、撕裂或错误闭环后，以一个新版本名同时保存两种地图：
 
 ```bash
-./scripts/save_map.sh warehouse_v1
+./scripts/save_map.sh warehouse_v2
 ```
 
-The following four files are one logical version and must be retained together:
+以下四个文件是不可拆分的同一版本：
 
 ```text
-data/maps/occupancy/warehouse_v1.yaml
-data/maps/occupancy/warehouse_v1.pgm
-data/maps/posegraphs/warehouse_v1.posegraph
-data/maps/posegraphs/warehouse_v1.data
+data/maps/occupancy/warehouse_v2.yaml
+data/maps/occupancy/warehouse_v2.pgm
+data/maps/posegraphs/warehouse_v2.posegraph
+data/maps/posegraphs/warehouse_v2.data
 ```
 
-Do not calibrate against an OccupancyGrid from one run and a Pose Graph from
-another.
+不能拿一次建图的 OccupancyGrid 与另一次建图的 Pose Graph 混用。
 
-## 2. Bootstrap localization without weakening the source gate
+### 4.2 准备临时 bootstrap 位姿
 
-When recalibrating, Localization intentionally refuses the tracked file while
-`map.calibrated: false`. Make a temporary copy outside the repository, enter an
-initial estimate in that copy, and set only the temporary copy to `true`:
+新地图尚未测量时，先把受影响的 tracked Map Pose 视为
+`calibrated: false`。Localization 会拒绝未标定源，因此制作一个仓库外的
+临时副本，只在副本中填入合理初值并设置 `calibrated: true`：
 
 ```bash
 cp isaac_sim/configs/spawn_poses.yaml /tmp/spawn_poses_calibration.yaml
 ```
 
-Edit `/tmp/spawn_poses_calibration.yaml`; do not change the tracked file yet.
-For a replacement map, even the old measured `[0.0, 0.0, 0.0°]` value is only
-a bootstrap estimate until remeasured against that new Pose Graph. Keep Ground
-Truth disabled during this procedure so a wrong bootstrap transform cannot be
-recorded as truth.
+同场景同起点的新地图可以把旧 `[0, 0, 0°]` 作为 bootstrap，但它仍不是
+最终测量。此阶段保持 Ground Truth 关闭，避免错误初值被记录为真值。
 
-Point both processes at the same temporary source:
+### 4.3 启动专用标定定位
+
+终端 A 启动 Isaac，并确保它与 ROS 使用同一个临时出生点文件：
 
 ```bash
-export ISAAC_NAV__SPAWN__POSES_FILE=/tmp/spawn_poses_calibration.yaml
-export ISAAC_NAV_SPAWN_POSES=/tmp/spawn_poses_calibration.yaml
-
-# terminal A
-./scripts/run_isaac.sh --navigation-mode localization --mode ideal
-
-# terminal B
-./scripts/run_ros.sh localization \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+ISAAC_NAV__SPAWN__POSES_FILE=/tmp/spawn_poses_calibration.yaml \
+  ./scripts/run_isaac.sh \
+  --navigation-mode localization \
+  --mode ideal \
+  --headless
 ```
 
-Localization needs both representations from step 1. With the matching
-`warehouse_v1` basename shown above, `run_ros.sh` infers
-`data/maps/occupancy/warehouse_v1.yaml`; use an explicit
-`map_file:=/path/to/map.yaml` argument if the OccupancyGrid and Pose Graph names
-differ. The Map Server publishes that saved grid on `/map`, while SLAM Toolbox
-loads the Pose Graph to publish `map -> odom`; its diagnostic grid is isolated
-on `/slam_toolbox/map`.
+终端 B 显式加载待标定的 Pose Graph 和 OccupancyGrid：
 
-Use RViz scan/map overlap and `2D Pose Estimate` if the bootstrap estimate does
-not converge. Keep the physical robot at the exact `mapping_start.usd` pose;
-after localization has settled, record the transform:
+```bash
+ISAAC_NAV_SPAWN_POSES=/tmp/spawn_poses_calibration.yaml \
+  ./scripts/run_ros.sh localization \
+  odometry_mode:=ideal \
+  posegraph_calibration:=true \
+  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v2" \
+  map_file:="$PWD/data/maps/occupancy/warehouse_v2.yaml" \
+  interactive:=false
+```
+
+日志必须同时出现：
+
+- v2 `.posegraph` 成功 `Load From File`；
+- Map Server 读取 v2 PGM 的正确尺寸、分辨率和 origin；
+- SLAM Toolbox 进入 Active；
+- 自动初始位姿已发布。
+
+如果扫描与地图不重合，使用 RViz `2D Pose Estimate` 修正 bootstrap，再等待
+定位稳定。不要通过扩大 TF 容差掩盖坐标错误。
+
+### 4.4 采集 Map Pose 与所有权证据
+
+机器人保持在固定 USD 出生点，记录：
 
 ```bash
 ros2 run tf2_ros tf2_echo map base_link
+ros2 run tf2_ros tf2_echo map odom
+ros2 topic info --verbose /map
+ros2 topic info --verbose /odom
 ```
 
-Record translation X/Y and yaw in degrees. This is the measured
-`mapping_start.map` pose. It is not the USD X/Y, and `map -> odom` by itself is
-not the requested pose unless `odom -> base_link` is exactly identity.
+使用稳定后的 `map → base_link` X/Y 和 yaw 作为测量值。只有在
+`odom → base_link` 确认是 identity 时，才可以把 `map → odom` 直接当成
+出生 Map Pose。
 
-## 3. Verify repeatability
+### 4.5 做三次独立冷启动
 
-Repeat a full stop/start and localization at least three times, always restoring
-the same USD pose. For each run verify:
+完整停止终端 A、B，再从 4.3 开始重复至少三次。每次都要重新创建 Isaac
+进程、重新反序列化 Pose Graph、重新发布初始位姿并重新采样 TF。
 
-- `/scan` visually overlaps the saved map;
-- `map -> odom` remains available without jumps;
-- `map -> base_link` settles near the same X/Y/yaw;
-- `/odom` and `odom -> base_link` each have a single owner.
+项目门限为：
 
-As the project calibration gate, require the cold-start results to agree within
-`0.05 m` translation and `3°` yaw, matching the current Nav2 activation TF
-stability tolerances. If they do not, fix the map, pose estimate, or TF
-ownership; do not average an unstable result and mark it calibrated.
+- 三次平移结果最大距离差不超过 `0.05 m`；
+- 三次 yaw 最大环形角差不超过 `3°`；
+- 每次扫描均与保存地图重合；
+- TF 无跳变，`/map` 与 `/odom` 所有者唯一。
 
-## 4. Promote the measured pose
+不满足门限时应修复地图、初值、TF 所有权或出生点，不能把不稳定结果简单
+平均后标记为已标定。
 
-Only after the repeatability check, update the tracked entry:
+### 4.6 提升标定与 manifest
+
+通过重复性门后，更新 tracked 源：
 
 ```yaml
 spawn_poses:
@@ -154,58 +204,77 @@ spawn_poses:
       yaw_stddev_deg: MEASURED_OR_CONSERVATIVE_STDDEV_DEG
 ```
 
-Clear the temporary overrides and validate both Localization and Ground Truth
-gates against the real source:
+同时为该版本创建 `data/maps/manifests/<version>.yaml`，记录：
+
+- OccupancyGrid 尺寸、分辨率和 origin；
+- 四件套的 byte size 与 SHA256；
+- USD/Map 位姿、冷启动次数和最大 spread；
+- 建图环境、机器人、里程计模式与覆盖范围。
+
+大 `.posegraph` 必须由 Git LFS 管理。执行 `git lfs status`，确认它不是普通
+Git blob，也不是未 hydrate 的 LFS 指针。
+
+## 5. 将标定地图用于导航
+
+项目的默认导航版本已设为 `warehouse_v2`。完成构建后不传地图参数即可使用：
 
 ```bash
-unset ISAAC_NAV__SPAWN__POSES_FILE ISAAC_NAV_SPAWN_POSES
-
+# 终端 A
 ./scripts/run_isaac.sh \
   --navigation-mode localization \
   --mode ideal \
-  --validate-only
+  --headless
 
-ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
-  ./scripts/run_isaac.sh \
-  --navigation-mode localization \
-  --mode ideal \
-  --validate-only
+# 终端 B；run_ros.sh 自动选择 warehouse_v2 的 Pose Graph 和 OccupancyGrid
+./scripts/run_ros.sh navigation \
+  odometry_mode:=ideal \
+  interactive:=false
 ```
 
-Then rerun Localization from a cold start using the tracked file before
-attempting Navigation or experiments.
+显式传 `posegraph_file` 时，脚本仍按 basename 推导同名 OccupancyGrid；因此
+需要回放历史 v1 时可以覆盖默认值：
 
-## 5. Realign dynamic-obstacle coordinates
-
-The committed Isaac dynamic coordinates use the current calibrated Map Pose
-`[0, 0, 0°]` at USD base pose `[4, 0, 0.0635, 0°]`. A different measured Map
-Pose changes the Map/USD transform. For planar poses the implementation uses:
-
-```text
-map_T_usd = map_T_base_start * inverse(usd_T_base_start)
-map_T_obstacle = map_T_usd * usd_T_obstacle
+```bash
+./scripts/run_ros.sh navigation \
+  odometry_mode:=ideal \
+  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
 ```
 
-After calibration, update `isaac_sim/configs/experiments/dynamic.yaml` so every
-physical obstacle trajectory maps to the corresponding trajectory in
-`ros2_ws/src/robot_experiments/config/dynamic.yaml`. Verify the crossing and
-oncoming endpoints in RViz or recorded Ground Truth before collecting dynamic
-success statistics. The experiment contract also requires matching obstacle
-IDs, shapes, XY dimensions, durations, and explicit boolean `repeat` values;
-changing a trajectory from one-shot (`false`) to back-and-forth (`true`) on only
-one side is a configuration error.
+正常 Ideal Navigation 不要传 `posegraph_calibration:=true`。
 
-## 6. Version and evidence discipline
+## 6. 标定后的验证
 
-The calibration commit or handoff record must identify:
+先检查工件和配置：
 
-- map and Pose Graph version;
-- unchanged USD start pose;
-- measured Map X/Y/yaw;
-- number and spread of cold-start trials;
-- TF ownership check;
-- whether dynamic-obstacle coordinates were re-aligned.
+```bash
+./scripts/preflight.sh
+./scripts/build_ros2.sh
+./scripts/test.sh --with-isaac
+```
 
-Changing the warehouse layer, map origin, spawn USD pose, robot base frame, or
-serialized Pose Graph invalidates the calibration and requires the Map Pose to
-return to `calibrated: false` until remeasured.
+Navigation 激活后至少验证：
+
+```bash
+ros2 topic echo /map --once --field info
+ros2 topic info --verbose /map
+ros2 topic info --verbose /odom
+ros2 run tf2_ros tf2_echo map base_link
+```
+
+还应完成一个不在旧 v1 覆盖范围内的 v2 导航目标，确认：
+
+- Map Server 发布 `warehouse_v2` 的 `406×611` 栅格；
+- 全局规划路径位于 v2 已建区域；
+- Nav2 成功结束，最终姿态与地图一致；
+- 无重复 `/map`、`/odom` 或 `map → odom` 发布者。
+
+## 7. 动态障碍与 Ground Truth 重对齐
+
+本次 v2 实测 Map 出生位姿仍为 `[0, 0, 0°]`，所以现有 Map/USD 变换没有
+变化，动态障碍坐标无需平移或旋转。若未来标定结果发生变化，必须同时更新
+Isaac 物理障碍轨迹，并与 ROS 场景配置中的 Map 轨迹逐项核对：ID、shape、
+XY 尺寸、起终点、时长和 `repeat` 都必须一致。
+
+修改仓库 Stage、地图原点、出生 USD Pose、`base_link` 定义或 Pose Graph
+中的任一项，都会使现有标定失效。此时应先把 `calibrated` 恢复为 `false`，
+重新执行本文流程，再运行导航或实验。

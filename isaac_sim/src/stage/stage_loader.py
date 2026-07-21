@@ -86,6 +86,56 @@ def ensure_reference(prim, asset_path: str | Path) -> bool:
     return True
 
 
+def repair_malformed_asset_paths(stage, source_directory: str | Path) -> tuple[str, ...]:
+    """Overlay resolvable ``.../`` asset typos without editing the source USD.
+
+    Some exported room assets use three dots where a relative path was
+    intended. USD treats that text literally. Only paths whose corrected
+    target exists are overridden, so unrelated or genuinely missing assets
+    remain visible to the normal diagnostics.
+    """
+
+    from pxr import Sdf
+
+    source_directory = Path(source_directory).expanduser().resolve()
+    repaired: list[str] = []
+    for prim in stage.TraverseAll():
+        for attribute in prim.GetAttributes():
+            value = attribute.Get()
+            if not isinstance(value, Sdf.AssetPath) or not value.path.startswith(".../"):
+                continue
+            target = (source_directory / value.path[4:]).resolve()
+            if not target.is_file():
+                continue
+            attribute.Set(Sdf.AssetPath(str(target)))
+            repaired.append(f"{prim.GetPath()}.{attribute.GetName()}")
+    return tuple(repaired)
+
+
+def make_environment_meshes_double_sided(stage) -> tuple[str, ...]:
+    """Make imported indoor meshes visible to RTX rays from either side.
+
+    Room exporters commonly author every mesh as single-sided even though wall
+    normals face away from the room interior.  Author the correction only in
+    the project/runtime root layer; the source room USD remains untouched.
+    Call this before the robot reference is added so only environment meshes
+    are affected.
+    """
+    from pxr import UsdGeom
+
+    repaired: list[str] = []
+    for prim in stage.TraverseAll():
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        mesh = UsdGeom.Mesh(prim)
+        attribute = mesh.GetDoubleSidedAttr()
+        if bool(attribute.Get()):
+            continue
+        mesh.CreateDoubleSidedAttr().Set(True)
+        repaired.append(str(prim.GetPath()))
+    return tuple(repaired)
+
+
 def save_stage(stage) -> None:
     if not stage.GetRootLayer().Save():
         raise StageLoadError(f"failed to save root layer {stage.GetRootLayer().identifier}")

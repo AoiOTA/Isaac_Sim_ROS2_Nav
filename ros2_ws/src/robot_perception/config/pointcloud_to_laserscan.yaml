@@ -9,7 +9,10 @@ pointcloud_to_laserscan:
     angle_max: 3.14159265
     angle_increment: 0.008726646
     scan_time: 0.10
-    range_min: 0.30
+    # Jackal's rendered body reaches a 0.334 m circumscribed radius and the RTX
+    # LiDAR sees it. Reject those robot-relative returns before SLAM can mistake
+    # the moving chassis for a wall.
+    range_min: 0.40
     range_max: 25.0
     use_inf: true
     inf_epsilon: 1.0

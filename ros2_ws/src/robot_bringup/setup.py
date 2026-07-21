@@ -26,6 +26,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'ideal_localization_tf = '
+            'robot_bringup.ideal_localization_tf:main',
             'initial_pose_policy = robot_bringup.initial_pose_policy:main',
             'map_manifest = robot_bringup.map_manifest:main',
             'nav2_activation_gate = robot_bringup.activation_gate:main',

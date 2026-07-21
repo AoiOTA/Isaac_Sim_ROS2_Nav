@@ -20,6 +20,8 @@ class ArticulationRuntimeError(RuntimeError):
 
 @dataclass(frozen=True)
 class ArticulationPhysicsConfig:
+    solver_position_iterations: int
+    solver_velocity_iterations: int
     sleep_threshold: float
     stabilization_threshold: float
     wheel_static_friction_effort: float
@@ -27,6 +29,10 @@ class ArticulationPhysicsConfig:
     wheel_viscous_friction_coefficient: float
     idle_brake_command_timeout_sec: float
     idle_brake_command_deadband: float
+    motion_assist_enabled: bool
+    motion_assist_command_timeout_sec: float
+    motion_assist_max_linear_acceleration: float
+    motion_assist_max_angular_acceleration: float
 
 
 def load_articulation_physics_config(
@@ -37,6 +43,8 @@ def load_articulation_physics_config(
     if not isinstance(physics, dict):
         raise ArticulationRuntimeError("robot.physics must be a mapping")
     fields = {
+        "solver_position_iterations",
+        "solver_velocity_iterations",
         "sleep_threshold",
         "stabilization_threshold",
         "wheel_static_friction_effort",
@@ -44,9 +52,31 @@ def load_articulation_physics_config(
         "wheel_viscous_friction_coefficient",
         "idle_brake_command_timeout_sec",
         "idle_brake_command_deadband",
+        "motion_assist_enabled",
+        "motion_assist_command_timeout_sec",
+        "motion_assist_max_linear_acceleration",
+        "motion_assist_max_angular_acceleration",
     }
     reject_unknown(physics, fields, context="robot.physics")
     require_keys(physics, fields, context="robot.physics")
+
+    def positive_integer(name: str) -> int:
+        value = physics[name]
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, int)
+            or not 1 <= value <= 255
+        ):
+            raise ArticulationRuntimeError(
+                f"robot.physics.{name} must be an integer in [1, 255]"
+            )
+        return value
+
+    motion_assist_enabled = physics["motion_assist_enabled"]
+    if not isinstance(motion_assist_enabled, bool):
+        raise ArticulationRuntimeError(
+            "robot.physics.motion_assist_enabled must be boolean"
+        )
     static_friction = require_number(
         physics["wheel_static_friction_effort"],
         context="robot.physics.wheel_static_friction_effort",
@@ -68,6 +98,12 @@ def load_articulation_physics_config(
             "wheel static friction effort must be at least dynamic friction effort"
         )
     return ArticulationPhysicsConfig(
+        solver_position_iterations=positive_integer(
+            "solver_position_iterations"
+        ),
+        solver_velocity_iterations=positive_integer(
+            "solver_velocity_iterations"
+        ),
         sleep_threshold=require_number(
             physics["sleep_threshold"],
             context="robot.physics.sleep_threshold",
@@ -89,6 +125,22 @@ def load_articulation_physics_config(
         idle_brake_command_deadband=require_number(
             physics["idle_brake_command_deadband"],
             context="robot.physics.idle_brake_command_deadband",
+            positive=True,
+        ),
+        motion_assist_enabled=motion_assist_enabled,
+        motion_assist_command_timeout_sec=require_number(
+            physics["motion_assist_command_timeout_sec"],
+            context="robot.physics.motion_assist_command_timeout_sec",
+            positive=True,
+        ),
+        motion_assist_max_linear_acceleration=require_number(
+            physics["motion_assist_max_linear_acceleration"],
+            context="robot.physics.motion_assist_max_linear_acceleration",
+            positive=True,
+        ),
+        motion_assist_max_angular_acceleration=require_number(
+            physics["motion_assist_max_angular_acceleration"],
+            context="robot.physics.motion_assist_max_angular_acceleration",
             positive=True,
         ),
     )
@@ -133,6 +185,10 @@ class ArticulationRuntime:
     def configure_stability(
         self, settings: ArticulationPhysicsConfig
     ) -> None:
+        self.articulation.set_solver_iteration_counts(
+            [settings.solver_position_iterations],
+            [settings.solver_velocity_iterations],
+        )
         self.articulation.set_sleep_thresholds([settings.sleep_threshold])
         self.articulation.set_stabilization_thresholds(
             [settings.stabilization_threshold]
@@ -154,6 +210,18 @@ class ArticulationRuntime:
 
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None:
         self.articulation.set_velocities(linear_velocities=[list(linear)], angular_velocities=[list(angular)])
+
+    def get_base_velocities(
+        self,
+    ) -> tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]:
+        linear, angular = self.articulation.get_velocities()
+        return (
+            tuple(float(value) for value in linear.numpy()[0]),
+            tuple(float(value) for value in angular.numpy()[0]),
+        )
 
     def set_joint_velocities(self, values: Sequence[float]) -> None:
         if len(values) != self.num_dof:
