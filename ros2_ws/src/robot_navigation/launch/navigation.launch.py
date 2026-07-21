@@ -10,7 +10,10 @@ from launch_ros.actions import Node, SetParameter
 def generate_launch_description():
     package_share = Path(get_package_share_directory('robot_navigation'))
     default_config = package_share / 'config' / 'nav2_params.yaml'
-    default_profile = package_share / 'config' / 'nav2_stable.yaml'
+    default_nav_to_pose_bt = package_share / 'behavior_trees' / (
+        'navigate_to_pose_with_dead_end_recovery.xml')
+    default_nav_through_poses_bt = package_share / 'behavior_trees' / (
+        'navigate_through_poses_with_dead_end_recovery.xml')
     params_file = LaunchConfiguration('nav2_params_file')
     profile_params_file = LaunchConfiguration('nav2_profile_params_file')
     use_sim_time = LaunchConfiguration('use_sim_time')
@@ -64,8 +67,15 @@ def generate_launch_description():
             executable='bt_navigator',
             name='bt_navigator',
             output='screen',
-            sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file],
+            parameters=[
+                params_file,
+                {
+                    'default_nav_to_pose_bt_xml': str(
+                        default_nav_to_pose_bt),
+                    'default_nav_through_poses_bt_xml': str(
+                        default_nav_through_poses_bt),
+                },
+            ],
         ),
         Node(
             package='nav2_velocity_smoother',

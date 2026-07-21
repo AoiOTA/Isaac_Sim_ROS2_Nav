@@ -27,8 +27,8 @@ setup(
             "experiment_runner = robot_experiments.experiment_runner:main",
             "incremental_map_compare = robot_experiments.incremental_map_compare:main",
             "initial_pose_publisher = robot_experiments.initial_pose_publisher:main",
-            "runtime_profiler = robot_experiments.runtime_profiler:main",
-            "scan_fault_bridge = robot_experiments.scan_fault_bridge:main",
+            "motion_benchmark = robot_experiments.motion_benchmark:main",
+            "navigation_benchmark = robot_experiments.navigation_benchmark:main",
         ],
     },
 )

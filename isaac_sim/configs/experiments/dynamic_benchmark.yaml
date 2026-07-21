@@ -1,0 +1,28 @@
+schema_version: 1
+seed: 20260717
+enabled: false
+obstacles:
+  - id: crossing_box
+    shape: cube
+    size: [0.50, 0.50, 1.00]
+    mass: 20.0
+    # Map [2.0, -3.0] -> [2.0, 6.0], transformed by the calibrated
+    # mapping_start USD offset [4, 0]. This preserves the previously verified
+    # crossing motion through y=3 m, then continues beyond the far goal so the
+    # one-shot obstacle cannot become a permanent blocker in the route.
+    start: [6.0, -3.0, 0.50]
+    end: [6.0, 6.0, 0.50]
+    speed: 0.80
+    phase_jitter: 0.50
+    repeat: false
+  - id: cart_proxy_b
+    shape: cube
+    size: [0.80, 0.50, 1.00]
+    mass: 30.0
+    # Map [4.0, 1.8] -> [-2.0, 1.8]. The first ten seconds match the verified
+    # baseline, after which the obstacle continues out of the route corridor.
+    start: [8.0, 1.8, 0.50]
+    end: [2.0, 1.8, 0.50]
+    speed: 0.60
+    phase_jitter: 0.50
+    repeat: false

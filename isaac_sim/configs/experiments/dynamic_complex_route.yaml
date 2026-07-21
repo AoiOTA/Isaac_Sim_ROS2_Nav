@@ -1,0 +1,41 @@
+schema_version: 1
+seed: 20260717
+enabled: false
+obstacles:
+  - id: crossing_east
+    shape: cube
+    size: [0.50, 0.50, 1.00]
+    mass: 20.0
+    # Map x=2.0 is USD x=6.0 for the calibrated mapping_start pose.
+    start: [6.0, -4.5, 0.50]
+    end: [6.0, 5.3, 0.50]
+    speed: 0.35
+    phase_jitter: 0.15
+    repeat: false
+  - id: crossing_west
+    shape: cube
+    size: [0.50, 0.50, 1.00]
+    mass: 20.0
+    start: [2.0, 5.8, 0.50]
+    end: [2.0, -6.0, 0.50]
+    speed: 0.30
+    phase_jitter: 0.15
+    repeat: false
+  - id: oncoming_north
+    shape: cube
+    size: [0.80, 0.50, 1.00]
+    mass: 30.0
+    start: [8.8, 1.0, 0.50]
+    end: [-1.8, 1.0, 0.50]
+    speed: 0.35
+    phase_jitter: 0.15
+    repeat: false
+  - id: oncoming_south
+    shape: cube
+    size: [0.80, 0.50, 1.00]
+    mass: 30.0
+    start: [-1.3, -1.0, 0.50]
+    end: [8.8, -1.0, 0.50]
+    speed: 0.30
+    phase_jitter: 0.15
+    repeat: false

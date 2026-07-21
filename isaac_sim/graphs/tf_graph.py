@@ -8,6 +8,7 @@ from pathlib import Path
 from isaac_sim.graphs.spec import GraphSpec, TargetPaths, materialize_graph
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.src.config import ProjectConfig
+from isaac_sim.src.robot.spawn_pose_manager import load_spawn_poses
 from isaac_sim.src.yaml_utils import load_mapping, require_vector
 
 
@@ -60,21 +61,57 @@ def load_static_transforms(path: str | Path):
     return tuple(result)
 
 
+def rtx_world_transform(config: ProjectConfig):
+    """Return the fixed odom -> USD-world data-frame transform.
+
+    RTX PointCloud coordinates are absolute USD-world positions.  Isaac ideal
+    odometry is zeroed at the selected spawn, so this inverse spawn transform
+    attaches that fixed coordinate system below odom without adding a second
+    parent to odom.
+    """
+    poses = load_spawn_poses(config.spawn.poses_file)
+    pose = poses[config.spawn.selected].usd
+    x, y, z = pose.position
+    yaw = math.radians(pose.yaw_deg)
+    cosine = math.cos(yaw)
+    sine = math.sin(yaw)
+    translation = [
+        -(cosine * x + sine * y),
+        -(-sine * x + cosine * y),
+        -z,
+    ]
+    half_inverse_yaw = -0.5 * yaw
+    rotation = [
+        0.0,
+        0.0,
+        math.sin(half_inverse_yaw),
+        math.cos(half_inverse_yaw),
+    ]
+    return (
+        "RtxWorldTF",
+        "odom",
+        "rtx_world",
+        translation,
+        rotation,
+    )
+
+
 def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
     base = config.robot.base_link_prim
     static_transforms = load_static_transforms(config.files.robot)
+    published_transforms = static_transforms + (rtx_world_transform(config),)
     nodes = (
         ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
         ("WheelTF", "isaacsim.ros2.bridge.ROS2PublishTransformTree"),
     ) + tuple(
         (node, "isaacsim.ros2.bridge.ROS2PublishRawTransformTree")
-        for node, _, _, _, _ in static_transforms
+        for node, _, _, _, _ in published_transforms
     )
     connections: list[tuple[str, str]] = []
-    for node in ("WheelTF",) + tuple(item[0] for item in static_transforms):
+    for node in ("WheelTF",) + tuple(item[0] for item in published_transforms):
         connections.append(("OnPlaybackTick.outputs:tick", f"{node}.inputs:execIn"))
         connections.append(("ReadSimTime.outputs:simulationTime", f"{node}.inputs:timeStamp"))
     values: tuple[tuple[str, object], ...] = (
@@ -93,7 +130,7 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
         ("WheelTF.inputs:staticPublisher", False),
     )
     static_values: list[tuple[str, object]] = []
-    for node, parent, child, translation, rotation in static_transforms:
+    for node, parent, child, translation, rotation in published_transforms:
         static_values.extend(
             (
                 (f"{node}.inputs:parentFrameId", parent),
@@ -107,7 +144,7 @@ def structure_tf_graph_spec(config: ProjectConfig) -> GraphSpec:
         )
     namespace_values = tuple(
         (f"{node}.inputs:nodeNamespace", config.ros2.namespace)
-        for node in ("WheelTF",) + tuple(item[0] for item in static_transforms)
+        for node in ("WheelTF",) + tuple(item[0] for item in published_transforms)
     )
     return GraphSpec(
         "/World/Graphs/StructureTF",

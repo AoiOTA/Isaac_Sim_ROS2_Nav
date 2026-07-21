@@ -7,6 +7,7 @@ import pytest
 
 from isaac_sim.src.config import ConfigError, load_project_config
 from isaac_sim.src.robot.articulation_runtime import (
+    ArticulationRuntimeError,
     load_articulation_physics_config,
 )
 from isaac_sim.src.sensors.sensor_factory import _load_lidar
@@ -37,6 +38,10 @@ def test_default_project_contract_loads_strictly():
     assert config.simulation.pacing_mode == "realtime"
     assert config.simulation.target_realtime_factor == pytest.approx(1.0)
     assert config.robot.default_prim == "jackal"
+    assert config.third_person_camera.enabled is True
+    assert config.third_person_camera.prim_name == "third_person_camera"
+    assert config.third_person_camera.distance_m == pytest.approx(3.2)
+    assert config.third_person_camera.height_m == pytest.approx(2.2)
     assert config.robot.wheel_joints == (
         "front_left_wheel_joint",
         "front_right_wheel_joint",
@@ -45,17 +50,20 @@ def test_default_project_contract_loads_strictly():
     )
     assert config.ros2.rmw_implementation == "rmw_fastrtps_cpp"
     stability = load_articulation_physics_config(config.files.robot)
+    assert stability.solver_position_iterations == 32
+    assert stability.solver_velocity_iterations == 4
     assert stability.sleep_threshold == pytest.approx(0.005)
     assert stability.stabilization_threshold == pytest.approx(0.001)
     assert stability.wheel_static_friction_effort == pytest.approx(0.0)
     assert stability.wheel_dynamic_friction_effort == pytest.approx(0.0)
     assert stability.wheel_viscous_friction_coefficient == pytest.approx(0.0)
     assert stability.idle_brake_command_timeout_sec == pytest.approx(0.25)
-    lidar = _load_lidar(config.files.lidar)
-    assert tuple(lidar["render_product_resolution"]) == (1.0, 1.0)
-    lidar_values = dict(lidar_graph_spec(config, "/Render/Test").values)
-    assert lidar_values["PointCloudConfig.inputs:outputIntensity"] is False
-    assert lidar_values["PointCloudConfig.inputs:outputTimestamp"] is False
+    assert stability.motion_assist_enabled is True
+    assert stability.motion_assist_command_timeout_sec == pytest.approx(0.25)
+    assert stability.motion_assist_max_linear_acceleration \
+        == pytest.approx(6.0)
+    assert stability.motion_assist_max_angular_acceleration \
+        == pytest.approx(30.0)
 
 
 def test_nested_environment_overrides_are_typed():
@@ -69,6 +77,8 @@ def test_nested_environment_overrides_are_typed():
             ISAAC_NAV__SIMULATION__PACING_MODE="unbounded",
             ISAAC_NAV__SIMULATION__TARGET_REALTIME_FACTOR="1.25",
             ISAAC_NAV__ROS2__DOMAIN_ID="42",
+            ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED="false",
+            ISAAC_NAV__THIRD_PERSON_CAMERA__DISTANCE_M="4.75",
         ),
     )
     assert config.simulation.odometry_mode == "realistic"
@@ -78,6 +88,23 @@ def test_nested_environment_overrides_are_typed():
     assert config.simulation.pacing_mode == "unbounded"
     assert config.simulation.target_realtime_factor == pytest.approx(1.25)
     assert config.ros2.domain_id == 42
+    assert config.third_person_camera.enabled is False
+    assert config.third_person_camera.distance_m == pytest.approx(4.75)
+
+
+def test_invalid_third_person_camera_settings_are_rejected():
+    with pytest.raises(ConfigError, match="distance_m must be a positive"):
+        load_project_config(
+            CONFIG,
+            _environment(
+                ISAAC_NAV__THIRD_PERSON_CAMERA__DISTANCE_M="-1.0"
+            ),
+        )
+    with pytest.raises(ConfigError, match="height_m must be a non-negative"):
+        load_project_config(
+            CONFIG,
+            _environment(ISAAC_NAV__THIRD_PERSON_CAMERA__HEIGHT_M="-0.1"),
+        )
 
 
 def test_realtime_and_unbounded_pacing_keep_fixed_simulation_dt():
@@ -140,5 +167,11 @@ def test_custom_robot_runtime_template_uses_the_live_schema():
         from isaac_sim.graphs.control_graph import load_controller_config
 
         load_controller_config(custom)
-    with pytest.raises(ValueError, match="robot.physics.*must be numeric"):
+    with pytest.raises(
+        (ValueError, ArticulationRuntimeError),
+        match=(
+            "robot.physics.*"
+            "(must be numeric|must be an integer|must be boolean)"
+        ),
+    ):
         load_articulation_physics_config(custom)

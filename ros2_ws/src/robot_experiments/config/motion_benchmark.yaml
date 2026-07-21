@@ -1,0 +1,72 @@
+schema_version: 1
+spawn_pose_name: mapping_start
+reset_seed: 6101
+command_rate_hz: 20.0
+reset_settle_sec: 0.6
+final_settle_sec: 0.8
+steady_window_sec: 0.35
+thresholds:
+  linear_mae_mps: 0.06
+  angular_mae_radps: 0.12
+  radius_relative_error_percent: 20.0
+  tracking_fraction: 0.85
+  transition_latency_sec: 0.45
+  overshoot_ratio: 1.25
+  wrong_direction_fraction: 0.05
+primitives:
+  - id: spin_left
+    segments:
+      - {duration_sec: 3.2, linear_x: 0.0, angular_z: 1.0}
+  - id: spin_right
+    segments:
+      - {duration_sec: 3.2, linear_x: 0.0, angular_z: -1.0}
+  - id: forward_circle_left
+    segments:
+      - {duration_sec: 7.85, linear_x: 0.32, angular_z: 0.8}
+  - id: forward_circle_right
+    segments:
+      - {duration_sec: 7.85, linear_x: 0.32, angular_z: -0.8}
+  - id: reverse_circle_left
+    segments:
+      - {duration_sec: 7.85, linear_x: -0.28, angular_z: 0.8}
+  - id: reverse_circle_right
+    segments:
+      - {duration_sec: 7.85, linear_x: -0.28, angular_z: -0.8}
+  - id: reverse_straight
+    segments:
+      - {duration_sec: 3.0, linear_x: -0.40, angular_z: 0.0}
+  - id: forward_sharp_slalom
+    segments:
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: 1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: -1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: 1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: -1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: 1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: -1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: 1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: -1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: 1.1}
+      - {duration_sec: 0.8, linear_x: 0.32, angular_z: -1.1}
+  - id: reverse_sharp_slalom
+    segments:
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: 1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: -1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: 1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: -1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: 1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: -1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: 1.0}
+      - {duration_sec: 0.8, linear_x: -0.26, angular_z: -1.0}
+  - id: rapid_spin_reversal
+    segments:
+      # Reversing from +1.2 to -1.2 rad/s is a 2.4 rad/s step.  The Nav2
+      # velocity smoother permits 3.0 rad/s², so 0.8 s is the shortest
+      # physically consistent full reversal that navigation can command.
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: 1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: -1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: 1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: -1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: 1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: -1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: 1.2}
+      - {duration_sec: 0.8, linear_x: 0.0, angular_z: -1.2}

@@ -53,6 +53,20 @@ ground_truth:
   odom_hz: 60
   path_hz: 10
 
+# GUI runs automatically bind the main Isaac viewport to this camera. It is a
+# child of base_link, so the robot's transform and Reset are inherited without
+# per-frame tracking. Headless runs skip it and keep their existing cost.
+third_person_camera:
+  enabled: true
+  prim_name: third_person_camera
+  # Indoor-safe chase view: below a normal ceiling, far/high enough to keep
+  # Jackal and the next doorway or bend in frame.
+  distance_m: 3.2
+  height_m: 2.2
+  look_ahead_m: 1.0
+  look_at_height_m: 0.25
+  focal_length_mm: 16.0
+
 extensions:
   - isaacsim.core.nodes
   - isaacsim.robot.wheeled_robots.nodes

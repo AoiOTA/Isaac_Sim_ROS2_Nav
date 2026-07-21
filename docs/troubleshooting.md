@@ -45,25 +45,7 @@ git status --short -- \
   isaac_sim/configs/spawn_poses.yaml
 ```
 
-确认 `posegraph_file`、`map_file`、`map_manifest_file` 指向同一版本；自动位姿
-还必须让 manifest 的 `spawn_pose_profile`/`bundle_sha256` 与
-`spawn_poses.yaml` 的 `map_version`/`map_bundle_sha256` 完全一致，并逐值核对
-USD/Map position、yaw 和两项标准差。
-
-**常见原因：** Git LFS 工件未 hydrated；四个地图工件只更新了一部分；
-Occupancy YAML 指错 PGM；文件大小/SHA256 或 bundle hash 已变化；把旧地图
-Map Pose 复制到新版本；`save_map.sh` 新建的 manifest 尚未标定。这四个工件
-是一个不可拆分 bundle，新保存成功不等于自动位姿已标定。
-
-**修复：** LFS 问题执行 `git lfs install && git lfs pull`。内容损坏时从同一
-commit 恢复完整四件套和 manifest，或用 `./scripts/save_map.sh <新版本>`
-重新生成，不覆盖旧版本。新版本先使用 `initial_pose_source:=rviz` 人工定位，
-再按 [`calibration.md`](calibration.md) 实测并同步更新 manifest 与出生点绑定；
-最后重新 `verify`、冷启动 Localization 和 Navigation。
-
-**禁止操作：** 不要只改 SHA256/`calibrated: true` 来绕过校验，不要混用
-不同版本的 YAML/PGM/Pose Graph，不要复制旧 Map Pose，不要把 manifest 或其
-父目录做成符号链接，也不要删除 manifest 后让系统“猜”地图。
+`warehouse_v2.posegraph`、`.data`、OccupancyGrid YAML/PGM 是同一版本的不可拆分工件。不要只替换其中一个。
 
 ### 2.2 ROS 包或可执行文件找不到
 
@@ -280,7 +262,16 @@ ros2 run tf2_ros tf2_echo map odom
 或 TF lookup 失败，`/cmd_vel` 变为零；或者明明发送了故障命令，机器人仍正常
 运动；Reset 后旧命令报 `stale epoch`。
 
-**检查：** 先判断当前是生产接线还是显式故障试验：
+```text
+controller_frequency = 10 Hz
+time_steps = 20
+model_dt = 0.10 s
+batch_size = 500
+prediction horizon = 2.0 s
+SLAM localization throttle_scans = 2
+```
+
+检查实际参数和日志：
 
 ```bash
 ros2 param get /collision_monitor scan.topic

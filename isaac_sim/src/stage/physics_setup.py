@@ -106,6 +106,25 @@ def _create_physics_scene(stage, scene_path: str):
     return UsdPhysics.Scene.Define(stage, scene_path).GetPrim()
 
 
+def ensure_physics_scene(stage, expected_path: str):
+    """Return the sole expected PhysicsScene, creating it when absent."""
+
+    scenes = find_all_physics_scenes(stage)
+    if len(scenes) == 0:
+        return _create_physics_scene(stage, expected_path)
+    if len(scenes) > 1:
+        paths = [str(prim.GetPath()) for prim in scenes]
+        raise PhysicsSetupError(f"multiple PhysicsScene prims detected: {paths}")
+    scene_prim = scenes[0]
+    scene_path = str(scene_prim.GetPath())
+    if scene_path != expected_path:
+        raise PhysicsSetupError(
+            f"PhysicsScene is {scene_path}, expected {expected_path}; "
+            "refusing to create a second"
+        )
+    return scene_prim
+
+
 def _configure_scene(prim, physics_hz: float) -> None:
     from pxr import Gf, Sdf, UsdPhysics
 
@@ -168,20 +187,11 @@ class PhysicsSetup:
         self.config = config
 
     def apply(self, stage, app) -> IsaacSimulationRuntime:
-        plan = prepare_pacing(self.config)
-        scenes = find_all_physics_scenes(stage)
-        if len(scenes) == 0:
-            scene_prim = _create_physics_scene(stage, self.config.expected_physics_scene)
-        elif len(scenes) == 1:
-            scene_prim = scenes[0]
-        else:
-            paths = [str(prim.GetPath()) for prim in scenes]
-            raise PhysicsSetupError(f"multiple PhysicsScene prims detected: {paths}")
+        scene_prim = ensure_physics_scene(
+            stage,
+            self.config.expected_physics_scene,
+        )
         scene_path = str(scene_prim.GetPath())
-        if scene_path != self.config.expected_physics_scene:
-            raise PhysicsSetupError(
-                f"PhysicsScene is {scene_path}, expected {self.config.expected_physics_scene}; refusing to create a second"
-            )
         validate_stage_units(stage, 1.0)
         validate_up_axis(stage, "Z")
         _configure_scene(scene_prim, self.config.physics_hz)

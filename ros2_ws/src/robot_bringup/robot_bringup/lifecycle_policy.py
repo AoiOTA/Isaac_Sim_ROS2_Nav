@@ -12,6 +12,7 @@ class LifecycleAction(str, Enum):
     STARTUP = 'startup'
     RESUME = 'resume'
     ALREADY_ACTIVE = 'already_active'
+    NORMALIZE = 'normalize'
     WAIT = 'wait'
     FAIL = 'fail'
 
@@ -103,10 +104,47 @@ def lifecycle_decision(states: Mapping[str, str]) -> LifecycleDecision:
             LifecycleAction.ALREADY_ACTIVE,
             'all managed nodes are already active',
         )
+    if state_values <= {'unconfigured', 'inactive', 'active'}:
+        return LifecycleDecision(
+            LifecycleAction.NORMALIZE,
+            'mixed stable lifecycle states require ordered repair: '
+            + _format_states(normalized),
+        )
     return LifecycleDecision(
         LifecycleAction.FAIL,
-        'unsafe mixed lifecycle states: ' + _format_states(normalized),
+        'unsupported mixed lifecycle states: ' + _format_states(normalized),
     )
+
+
+def normalization_transition(states, managed_nodes, target):
+    """Return the next ordered per-node repair transition, if any."""
+
+    if target not in {'inactive', 'active'}:
+        raise ValueError('normalization target must be inactive or active')
+    normalized = {name: str(state).lower() for name, state in states.items()}
+    ordered = (
+        list(reversed(managed_nodes))
+        if target == 'inactive'
+        else list(managed_nodes)
+    )
+    for name in ordered:
+        state = normalized.get(name)
+        if state is None:
+            raise ValueError(f'missing lifecycle state for {name}')
+        if target == 'inactive':
+            if state == 'active':
+                return name, 'deactivate'
+            if state in {'inactive', 'unconfigured'}:
+                continue
+        else:
+            if state == 'unconfigured':
+                return name, 'configure'
+            if state == 'inactive':
+                return name, 'activate'
+            if state == 'active':
+                continue
+        raise ValueError(f'cannot normalize {name} from {state} to {target}')
+    return None
 
 
 def duplicate_names(names):

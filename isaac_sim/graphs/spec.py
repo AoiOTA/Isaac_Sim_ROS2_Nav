@@ -25,6 +25,8 @@ class GraphSpec:
     nodes: tuple[tuple[str, str], ...]
     connections: tuple[tuple[str, str], ...]
     values: tuple[tuple[str, Any], ...] = field(default_factory=tuple)
+    attributes: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    on_demand: bool = False
 
     def validate(self) -> None:
         if not self.path.startswith("/World/Graphs/"):
@@ -39,7 +41,19 @@ class GraphSpec:
         for attribute, _ in self.values:
             if attribute.split(".", 1)[0] not in known:
                 raise GraphSpecError(f"value references unknown node: {attribute}")
-        all_text = repr((self.connections, self.values)).lower()
+        for attribute, _ in self.attributes:
+            if attribute.split(".", 1)[0] not in known:
+                raise GraphSpecError(
+                    f"created attribute references unknown node: {attribute}"
+                )
+        attribute_names = [name for name, _ in self.attributes]
+        if len(attribute_names) != len(set(attribute_names)):
+            raise GraphSpecError(
+                f"duplicate created attributes in {self.path}"
+            )
+        all_text = repr(
+            (self.connections, self.values, self.attributes)
+        ).lower()
         if "ground_truth" in all_text:
             raise GraphSpecError("ground truth is not allowed in control/sensor/odometry/TF graphs")
         if '"world"' in all_text or "'world'" in all_text:
@@ -64,12 +78,24 @@ def materialize_graph(spec: GraphSpec):
         return value
 
     keys = og.Controller.Keys
-    graph, nodes, _, _ = og.Controller.edit(
-        {"graph_path": spec.path, "evaluator_name": "execution"},
-        {
-            keys.CREATE_NODES: list(spec.nodes),
-            keys.CONNECT: list(spec.connections),
-            keys.SET_VALUES: [(attribute, runtime_value(value)) for attribute, value in spec.values],
-        },
-    )
+    edit = {
+        keys.CREATE_NODES: list(spec.nodes),
+        keys.CONNECT: list(spec.connections),
+        keys.SET_VALUES: [
+            (attribute, runtime_value(value))
+            for attribute, value in spec.values
+        ],
+    }
+    if spec.attributes:
+        edit[keys.CREATE_ATTRIBUTES] = list(spec.attributes)
+
+    graph_description: dict[str, Any] = {"graph_path": spec.path}
+    if spec.on_demand:
+        graph_description["pipeline_stage"] = (
+            og.GraphPipelineStage.GRAPH_PIPELINE_STAGE_ONDEMAND
+        )
+    else:
+        graph_description["evaluator_name"] = "execution"
+
+    graph, nodes, _, _ = og.Controller.edit(graph_description, edit)
     return graph, nodes

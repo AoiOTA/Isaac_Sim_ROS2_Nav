@@ -141,13 +141,35 @@ Isaac Sim 的 Python 环境不必另装 pytest；`scripts/test.sh --with-isaac` 
 
 ### 4.2 拉取 Git LFS 地图
 
-`warehouse_v1.posegraph` 使用 Git LFS。没有拉取它时，文件只是一个很小的指针，Localization 无法启动。
+`warehouse_new.posegraph` 使用 Git LFS。没有拉取它时，文件只是一个很小的指针，启动前完整性检查会失败。
 
 ```bash
 cd "$PROJECT_ROOT"
 git lfs install
 git lfs pull
 ```
+
+### 4.2 环境预检
+
+```bash
+./scripts/preflight.sh
+```
+
+成功时最后应看到：
+
+```text
+map baseline: warehouse_new (integrity verified)
+preflight: PASS
+```
+
+预检会检查：
+
+- Isaac Sim 版本是否为 `6.0.1.0`；
+- 官方 Warehouse/Jackal 资产是否存在；
+- ROS Jazzy、Nav2、SLAM Toolbox 等包是否存在；
+- NVIDIA GPU 是否可见；
+- `warehouse_new` 四个地图文件的大小和 SHA256 是否匹配 manifest；
+- Git LFS 文件是否已经真正下载。
 
 ### 4.3 导入 Jackal 本地依赖
 
@@ -212,21 +234,45 @@ Isaac 的 `--mode ideal|realistic` 必须与 ROS 的 `odometry_mode:=ideal|reali
 
 ## 5. 最快完成一次 Ideal 导航
 
-仓库已经包含可用的 `warehouse_v1` OccupancyGrid 和 Pose Graph，因此不需要先重新建图。
+该酷家乐分支已经包含标定后的 `warehouse_new` OccupancyGrid，因此不需要再建图即可运行普通 Ideal Navigation。
 
 ### 5.1 终端 A：启动 Isaac
 
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal
 ```
+
+GUI 启动时，主视口会自动切换到
+`/World/Robots/Jackal/base_link/third_person_camera`。它位于 Jackal
+`base_link` 坐标系后方 `3.2 m`、上方 `2.2 m`，配合 `16 mm` 广角焦距朝
+车前方俯视，可同时看到更多道路与周边环境；因为相机是
+`base_link` 的子 Prim，所以会自然继承机器人的直行、转弯和 Reset，不需要
+手动拖动视角。相机不会被持续强制锁定：运行中仍可从 Isaac 视口的 Camera
+菜单切到其他视角，之后选择 `third_person_camera` 即可回来。
+
+如果本次 GUI 运行不需要跟随相机，可以显式关闭：
+
+```bash
+./scripts/run_isaac.sh \
+  --navigation-mode localization \
+  --mode ideal \
+  --no-third-person-camera
+```
+
+相对距离、高度、注视点和焦距集中配置在
+`isaac_sim/configs/project.yaml` 的 `third_person_camera` 段；自定义 USD
+场景也默认启用，不再因为使用 `--environment-usd` 而自动关闭。修改后无需改
+USD 资产。自定义机器人模板会把同名相机挂到自己的 `base_link` 下。
 
 无显示器或不需要 GUI 时加 `--headless`：
 
 ```bash
 ./scripts/run_isaac.sh --headless \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal
 ```
@@ -254,14 +300,13 @@ Isaac navigation simulation ready
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
-脚本会按 Pose Graph 基名自动推导：
+此酷家乐分支默认选择 `warehouse_new`，并自动推导：
 
 ```text
-data/maps/occupancy/warehouse_v1.yaml
+data/maps/occupancy/warehouse_new.yaml
 ```
 
 等待日志出现：
@@ -291,11 +336,13 @@ SLAM Ceres 默认请求 `ceres_num_threads:=12`；可在启动命令中显式覆
 2. 确认 **Navigation 2** 面板显示 Nav2 已激活；
 3. 点击工具栏中的 Nav2 Goal 工具（绿色箭头）；
 4. 在地图可通行区域按住鼠标左键，从目标位置拖出朝向后松开；
-5. 观察青色全局路径、粉色局部路径和 Costmap，等待面板显示完成。
+5. 观察黄色全局路径、洋红色局部路径、橙色 MPPI 最优轨迹和 Costmap，等待面板显示完成。
 
 该 RViz 配置使用官方 `nav2_rviz_plugins/GoalTool` 和仓库自带的安全关闭 Navigation 2 面板，目标直接进入 Nav2 Action；没有额外的 `/goal_pose` 转换节点，也不需要第三个终端。
 
 成功标准：面板最终状态成功，机器人停车，局部/全局路径没有持续振荡。Nav2 goal checker 的位置容差是 `0.20 m`，所以机器人不会精确停在数学坐标点。自动实验另用 Ground Truth 检查 `0.25 m` 的成功阈值；这是评价门槛，不是 Nav2 的 goal checker 配置。
+
+正常路径跟踪仍以前进为主，MPPI 的 `vx_min=0`，不会为了缩短路径而频繁倒车。如果机器人进入无法原地旋转的窄死胡同，项目行为树会在上下文清图仍无法恢复后，先执行一次短倒车（`0.55 m @ 0.18 m/s`），重新规划；仍无法脱困时才尝试原地旋转。死胡同倒车关闭 Behavior Server 自带的局部 Costmap footprint 预测，因为狭窄处可能已经把机器人当前 footprint 标成占用，导致第一帧误报 `COLLISION_AHEAD`。Velocity Smoother 只为这条恢复链开放到 `-0.25 m/s`，所有倒车命令仍完整经过激光 Collision Monitor 的 ApproachZone 和 StopZone，真实障碍进入急停区域时仍会硬停止。因此这里去掉的是重复误判，不是最终安全保护，“恢复倒车”也不等于“常规导航允许任意倒车”。
 
 CLI 仍可用于自动化或无显示器测试，但不作为日常入口：
 
@@ -340,8 +387,7 @@ ros2 topic hz /optimal_trajectory
 ```bash
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  initial_pose_source:=rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  initial_pose_source:=rviz
 ```
 
 然后在 RViz 点击 **2D Pose Estimate**，在地图上拖出机器人实际朝向。该模式不会被自动标定位姿覆盖；每次 `/simulation/reset` 后，Activation Gate 会暂停 Nav2，并等待你重新在 RViz 给出位姿后再恢复。
@@ -386,10 +432,10 @@ ordered shutdown: localization lifecycle manager: PASS (...)
 # 终端 B
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
-`localization.rviz` 会自动打开：`/map` 是 Map Server 的固定地图，`/slam_toolbox/map` 是默认关闭的定位诊断层，不能把两者混为一谈。默认仍由已标定出生点自动提供初始位姿。
+`localization.rviz` 会自动打开：`/map` 是 Map Server 的固定地图；`/slam_toolbox/map` 是默认关闭的 Realistic/标定诊断层，普通 Ideal 模式不启动 SLAM Toolbox。默认仍由已标定出生点自动提供初始位姿。
 
 若要练习人工重定位，加入 `initial_pose_source:=rviz`，然后在 RViz 用 **2D Pose Estimate** 在地图上拖出位置和朝向：
 
@@ -397,7 +443,7 @@ ordered shutdown: localization lifecycle manager: PASS (...)
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
   initial_pose_source:=rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 检查关键接口：
@@ -412,7 +458,7 @@ ros2 run tf2_ros tf2_echo odom base_link
 期望结果：
 
 - `/map` 有且只有一个 `map_server` publisher；
-- `/slam_toolbox/map` 的 publisher 是 `slam_toolbox`；
+- Realistic 或 `posegraph_calibration:=true` 时，`/slam_toolbox/map` 的 publisher 是 `slam_toolbox`；普通 Ideal 模式允许该诊断 Topic 没有 publisher；
 - `map → odom → base_link` 连续可用；
 - `/odom` 只有一个 publisher。
 
@@ -431,7 +477,7 @@ Realistic 模式不使用 Isaac Ideal Odom。轮关节状态先生成 `/wheel/od
 # 终端 B
 ./scripts/run_ros.sh navigation \
   odometry_mode:=realistic \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 检查唯一所有权：
@@ -458,7 +504,7 @@ ros2 topic info /odom -v
 ./scripts/run_ros.sh navigation \
   odometry_mode:=realistic \
   structure_tf_source:=rsp \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 两端必须同时选择 `rsp`。`ideal + rsp` 会被配置检查拒绝。
@@ -481,7 +527,7 @@ ros2 topic info /odom -v
 ./scripts/run_ros.sh navigation \
   interactive:=false \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 
 # Mapping 保留 RViz，但不打开键盘终端
 ./scripts/run_ros.sh mapping \
@@ -492,7 +538,7 @@ ros2 topic info /odom -v
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
   rviz_config:=/absolute/path/custom.rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 若只想在一个已运行的栈旁重新打开受管 RViz，可执行 `./scripts/run_rviz.sh navigation`（也支持其他三个操作）；已有 RViz 实例存在时脚本会拒绝重复启动。
@@ -582,6 +628,46 @@ cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh mapping odometry_mode:=ideal
 ```
 
+当前选中的酷家乐房间使用下面这组命令：
+
+```bash
+# 终端 A：文件名会在主目录场景树中递归查找
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode mapping \
+  --mode ideal
+
+# 终端 B：等终端 A 出现 ready 后启动
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh mapping odometry_mode:=ideal
+```
+
+默认场景根目录是 `/home/lyb/kujiale_usd_rooms_20260717`。可以通过
+`--environment-root DIR` 或环境变量 `ISAAC_NAV_ENVIRONMENT_ROOT` 改为其他
+目录；`--environment-usd` 支持绝对路径、相对场景根目录的路径或唯一文件名。
+若不同子目录内存在同名 USD，程序会拒绝猜测并列出候选路径。
+
+每个自定义场景都必须有出生点 YAML，查找顺序是：
+
+1. `--spawn-poses-file PATH` 显式指定；
+2. 与 USD 同目录的 `<USD文件主名>.spawn.yaml`；
+3. 仓库 `isaac_sim/configs/environments/` 下的同名文件。
+
+当前房间已经配置
+`kujiale_0026_A_to_B_door_open.spawn.yaml`，Jackal 从客厅较开阔位置
+`[2.9, -0.2, 0.0635]`、朝向 `180°` 出生。此 Pose 的
+`map` Pose 已通过三次 Ideal 冷启动扫描配准标定为 `[0, 0, 0°]`，保守
+不确定度为 `0.05 m / 1°`。自定义室内环境还会默认关闭
+Warehouse 使用的高位第三人称相机；确需启用时可显式追加
+`--third-person-camera`，随后应把相机高度调到低于房间天花板。
+
+运行时只在 `/tmp/isaac_sim_ros2_nav_$UID/stages/` 创建按资产区分的项目
+overlay，并在其中补齐 `/World`、Jackal 和 `/PhysicsScene`。源 USD 和主目录
+中的材质文件不会被改写。对酷家乐导出器写成 `.../Materials/...` 的可解析
+路径错误，overlay 会自动改成有效绝对路径；真正缺失的纹理仍会由 Isaac
+日志明确报告。
+
 Mapping 中 SLAM Toolbox 自己发布 `/map`，不会启动 `map_server`。
 
 终端 B 会自动打开 `mapping.rviz` 和一个标题为 **Isaac Nav Mapping Teleop** 的独立终端。RViz 默认显示实时 `/map`、`/scan`、RobotModel、TF 和 `/odom`；原始 PointCloud2 与 Ground Truth 默认关闭，需要时在 Displays 中勾选。
@@ -627,8 +713,13 @@ Teleop 只能在 Mapping/Incremental Mapping 使用。脚本会拒绝在 Localiz
 保持 Mapping/Incremental Mapping 正在运行，在另一个已配置 ROS 环境的终端使用新的版本名；版本名只允许字母、数字、点、下划线和连字符，脚本拒绝覆盖任何同名工件：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/save_map.sh warehouse_v2
+./scripts/save_map.sh warehouse_v3
+```
+
+当前房间建议使用清楚的版本名，例如：
+
+```bash
+./scripts/save_map.sh kujiale_0026_door_open_v1
 ```
 
 `save_map.sh` 会自行加载统一的 ROS 环境和工作区；后面直接使用 `ros2` 命令时才需要在该终端 source `setup_ros_env.sh`。
@@ -638,11 +729,10 @@ cd "$PROJECT_ROOT"
 成功后会生成五个同版本文件：
 
 ```text
-data/maps/occupancy/warehouse_v2.yaml
-data/maps/occupancy/warehouse_v2.pgm
-data/maps/posegraphs/warehouse_v2.posegraph
-data/maps/posegraphs/warehouse_v2.data
-data/maps/manifests/warehouse_v2.yaml
+data/maps/occupancy/warehouse_v3.yaml
+data/maps/occupancy/warehouse_v3.pgm
+data/maps/posegraphs/warehouse_v3.posegraph
+data/maps/posegraphs/warehouse_v3.data
 ```
 
 立即独立复核一次：
@@ -799,19 +889,17 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
 # 终端 B
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 等待 Nav2 激活，然后在终端 C 运行：
 
 ```bash
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
-source ./scripts/setup_ros_env.sh
-
-ros2 launch robot_experiments experiment.launch.py \
-  scenario_file:="$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/static.yaml" \
-  spawn_poses_file:="$PROJECT_ROOT/isaac_sim/configs/spawn_poses.yaml" \
-  output_directory:="$PROJECT_ROOT/data/experiment_runs/static_run"
+export PROJECT_ROOT="$PWD"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/static.yaml \
+  data/experiment_runs/static_run
 ```
 
 当前 `static.yaml` 会在同一固定仓库中运行 4 个 seed。它是 Reset/导航 smoke，不是 200 次多布局统计。
@@ -836,16 +924,14 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
 # 终端 B
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 
 # 终端 C，等待 Nav2 激活后
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
-source ./scripts/setup_ros_env.sh
-
-ros2 launch robot_experiments experiment.launch.py \
-  scenario_file:="$PROJECT_ROOT/ros2_ws/src/robot_experiments/config/dynamic.yaml" \
-  spawn_poses_file:="$PROJECT_ROOT/isaac_sim/configs/spawn_poses.yaml" \
-  output_directory:="$PROJECT_ROOT/data/experiment_runs/dynamic_run"
+export PROJECT_ROOT="$PWD"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic.yaml \
+  data/experiment_runs/dynamic_run
 ```
 
 runner 会在第一轮 Reset 前严格比较 Isaac 与 ROS 两侧的：
@@ -862,7 +948,70 @@ isaac_sim/configs/experiments/dynamic.yaml
 ros2_ws/src/robot_experiments/config/dynamic.yaml
 ```
 
-## 13. 长距离 smoke
+### 11.1 运行 20+20 远距离统计验收
+
+动态批次需让 Isaac 加载专用物理配置：
+
+```bash
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
+ISAAC_NAV__FILES__DYNAMIC_OBSTACLES="$PROJECT_ROOT/isaac_sim/configs/experiments/dynamic_benchmark.yaml" \
+  ./scripts/run_isaac.sh --headless \
+  --navigation-mode localization \
+  --mode realistic \
+  --dynamic-obstacles
+
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic_benchmark.yaml \
+  data/experiment_runs/dynamic_benchmark
+```
+
+静态批次把场景文件替换为 `static_benchmark.yaml`，Isaac 不加 `--dynamic-obstacles`。两批完成后汇总：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source "$PROJECT_ROOT/ros2_ws/install/setup.bash"
+ros2 run robot_experiments navigation_benchmark \
+  --static-directory "$PROJECT_ROOT/data/experiment_runs/static_benchmark" \
+  --dynamic-directory "$PROJECT_ROOT/data/experiment_runs/dynamic_benchmark" \
+  --map-file "$PROJECT_ROOT/data/maps/occupancy/warehouse_v2.yaml" \
+  --clearance-m 0.34 \
+  --output "$PROJECT_ROOT/data/reports/navigation_benchmark.json"
+```
+
+工具要求至少 20 次静态和 20 次动态运行，验收静态成功率 `≥95%`、动态成功率 `≥90%`，并要求每次成功静态路线相对理论最短路的偏差 `≤20%`。
+
+### 11.2 Ideal 复杂长路线验收
+
+本轮前进优先验收关闭 MPPI 倒车采样，使用 6 个强制航点和约 50 m
+连续路线。静态运行：
+
+```bash
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/static_complex_route.yaml \
+  data/experiment_runs/static_complex_route
+```
+
+动态运行前，Isaac 必须加载对应的四障碍物理配置：
+
+```bash
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
+ISAAC_NAV__FILES__DYNAMIC_OBSTACLES="$PROJECT_ROOT/isaac_sim/configs/experiments/dynamic_complex_route.yaml" \
+  ./scripts/run_isaac.sh --headless \
+  --navigation-mode localization \
+  --mode ideal \
+  --dynamic-obstacles
+
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml \
+  data/experiment_runs/dynamic_complex_route
+```
+
+2026-07-17 在历史 `warehouse_v1` 上实测静态 `3/3`、动态 `3/3`；每轮 6/6 航点、约
+`50.1 m`、0 次恢复、0 碰撞，导航命令倒车距离为 `0`。Ideal
+Localization/Navigation 使用新鲜 identity `map→odom`，避免在精确
+Isaac `/odom` 上再次叠加 SLAM 定位修正。
+
+## 12. 长距离 smoke
 
 使用与静态实验相同的 Isaac/ROS 启动方式，只替换场景文件：
 
@@ -886,7 +1035,7 @@ ros2 launch robot_experiments experiment.launch.py \
 # 终端 B
 ./scripts/run_ros.sh incremental_mapping \
   odometry_mode:=ideal \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
 ```
 
 该模式同样自动打开 `mapping.rviz` 和安全 Teleop，但会先加载旧 Pose Graph，并且只允许 `initial_pose_source:=auto`。等待旧图和标定位姿就绪后再移动机器人。
@@ -894,10 +1043,10 @@ ros2 launch robot_experiments experiment.launch.py \
 遍历真实变化区域后，用新名称保存：
 
 ```bash
-./scripts/save_map.sh warehouse_v2_incremental
+./scripts/save_map.sh warehouse_v3_incremental
 ```
 
-还需要在相同变化环境中从零完成一次完整重建，例如 `warehouse_v2_full`。两次计时必须使用相同的开始/结束定义。
+还需要在相同变化环境中从零完成一次完整重建，例如 `warehouse_v3_full`。两次计时必须使用相同的开始/结束定义。
 
 ### 14.2 比较三张地图
 
@@ -1067,7 +1216,8 @@ ros2 run tf2_tools view_frames
 - `/lidar/points_raw` 和 `/scan` 约 10 Hz；
 - Realistic `/wheel/odom`、`/odom` 约 45 Hz；
 - `/odom`、`/map` 均只有一个模式正确的 publisher。
-- Navigation 的 MPPI 控制频率为 `10 Hz`，预测窗保持 `20 × 0.10 s = 2 s`；Velocity Smoother 仍以 `20 Hz` 输出平滑命令。
+- Navigation 的 MPPI 控制频率为 `10 Hz`，预测窗保持 `20 × 0.10 s = 2 s`，batch 为 `500`；Velocity Smoother 仍以 `20 Hz` 输出平滑命令。
+- 酷家乐窄通道配置保持 Jackal `0.485 × 0.420 m` 的真实矩形 Footprint；Costmap padding 为 `5 mm`，Inflation 半径为 `0.40 m`、衰减系数为 `8.0`。Collision Monitor 紧急停止区宽 `0.46 m`，仍覆盖实体两侧各 `20 mm`；外围减速区宽 `0.47 m`、保留 85% 指令速度，主要提供前后预警而不会因平行墙面持续限速。
 
 ## 18. 常见问题
 
@@ -1129,7 +1279,7 @@ Mapping 与 Localization/Navigation 被同时启动，或 SLAM map 未正确重�
 
 ### 18.7 SmacPlanner2D 打印 inflation `ERROR`
 
-Nav2 Jazzy 1.3.12 对当前 2D radius 模式会打印已知误诊。只要版本、Footprint、插件和 `0.55 m` inflation 配置未改变，并且随后正常完成规划，可按 [`verification.md`](verification.md#nav2-1312-smac-inflation-diagnostic) 的说明处理。其他 planner 或参数变化后必须重新调查。
+Nav2 Jazzy 1.3.12 对当前 2D radius 模式会打印已知误诊。只要版本、Footprint、插件和当前 `0.40 m` inflation 配置未改变，并且随后正常完成规划，可按 [`verification.md`](verification.md#nav2-1312-smac-inflation-diagnostic) 的说明处理。其他 planner 或参数变化后必须重新调查。
 
 ### 18.8 机器人不动或持续运动
 

@@ -11,6 +11,7 @@ import time
 from typing import Any
 
 from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import PoseStamped, Twist
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import NavigateToPose
@@ -59,6 +60,13 @@ class OdometrySample:
     angular_speed_radps: float
     stamp_s: float
     received_at: float
+
+
+@dataclass(frozen=True)
+class CommandSample:
+    linear_speed_mps: float
+    angular_speed_radps: float
+    stamp_s: float
 
 
 class ExperimentIsolationError(RuntimeError):
@@ -218,6 +226,12 @@ class ExperimentRunner(Node):
             self._odom_callback,
             reliable,
         )
+        self._command_subscription = self.create_subscription(
+            Twist,
+            str(self.declare_parameter("command_topic", "/cmd_vel").value),
+            self._command_callback,
+            reliable,
+        )
         self._status_subscriptions = [
             self.create_subscription(
                 Bool,
@@ -269,6 +283,20 @@ class ExperimentRunner(Node):
                 ).value
             ),
         )
+        self._nav2_managed_state_clients = tuple(
+            (
+                node_name,
+                self.create_client(GetState, f"/{node_name}/get_state"),
+            )
+            for node_name in (
+                "controller_server",
+                "planner_server",
+                "behavior_server",
+                "velocity_smoother",
+                "collision_monitor",
+                "bt_navigator",
+            )
+        )
         self._costmap_clear_clients = (
             (
                 "global costmap",
@@ -297,6 +325,13 @@ class ExperimentRunner(Node):
     def _clear_run_state(self) -> None:
         self._ground_truth_samples: list[OdometrySample] = []
         self._odom_samples: list[OdometrySample] = []
+        self._command_samples: list[CommandSample] = []
+        self._navigation_active = False
+        self._navigation_start_stamp_s: float | None = None
+        self._navigation_end_stamp_s: float | None = None
+        self._route_feedback_count = 0
+        self._minimum_poses_remaining: int | None = None
+        self._maximum_route_recoveries = 0
         self._collision_seen = False
         self._collision_detected = False
         self._localization_seen = False
@@ -323,6 +358,26 @@ class ExperimentRunner(Node):
         sample = _sample_from_odometry(message)
         if sample is not None:
             self._odom_samples.append(sample)
+
+    def _command_callback(self, message: Twist) -> None:
+        stamp_s = self._clock_seconds()
+        values = (
+            message.linear.x,
+            message.angular.z,
+            stamp_s,
+        )
+        if (
+            self._navigation_active
+            and stamp_s is not None
+            and all(math.isfinite(value) for value in values)
+        ):
+            self._command_samples.append(
+                CommandSample(
+                    linear_speed_mps=float(message.linear.x),
+                    angular_speed_radps=float(message.angular.z),
+                    stamp_s=stamp_s,
+                )
+            )
 
     def _collision_callback(self, message: Bool) -> None:
         self._collision_seen = True
@@ -528,6 +583,61 @@ class ExperimentRunner(Node):
                 f"Collision Monitor is not active: {label}"
             )
         self._collision_monitor_active = True
+
+    def _wait_for_nav2_managed_nodes_active(self) -> None:
+        """Do not dispatch a goal while the reset recovery gate is resuming Nav2."""
+
+        deadline = time.monotonic() + self._reset_recovery_timeout_sec
+        latest_states: dict[str, str] = {}
+        while rclpy.ok():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                state_summary = ", ".join(
+                    f"{name}={latest_states.get(name, 'unavailable')}"
+                    for name, _ in self._nav2_managed_state_clients
+                )
+                raise TimeoutError(
+                    "simulation reset recovery timed out waiting for all Nav2 "
+                    f"managed nodes to become active: {state_summary}"
+                )
+
+            services_ready = True
+            for node_name, client in self._nav2_managed_state_clients:
+                if not client.wait_for_service(timeout_sec=min(0.1, remaining)):
+                    services_ready = False
+                    latest_states[node_name] = "service_unavailable"
+            if not services_ready:
+                self._spin_once(min(0.1, max(0.0, deadline - time.monotonic())))
+                continue
+
+            futures = {
+                node_name: client.call_async(GetState.Request())
+                for node_name, client in self._nav2_managed_state_clients
+            }
+            query_deadline = min(deadline, time.monotonic() + 1.0)
+            query_complete = True
+            for future in futures.values():
+                if not self._wait_future(future, query_deadline):
+                    query_complete = False
+            if query_complete:
+                all_active = True
+                for node_name, future in futures.items():
+                    response = future.result()
+                    if response is None:
+                        latest_states[node_name] = "no_response"
+                        all_active = False
+                        continue
+                    latest_states[node_name] = response.current_state.label
+                    all_active = (
+                        all_active
+                        and response.current_state.id
+                        == State.PRIMARY_STATE_ACTIVE
+                    )
+                if all_active:
+                    self._collision_monitor_active = True
+                    return
+            self._spin_once(min(0.1, max(0.0, deadline - time.monotonic())))
+        raise ExternalShutdownException()
 
     def _clear_navigation_costmaps(self) -> None:
         for label, client in self._costmap_clear_clients:
@@ -747,74 +857,190 @@ class ExperimentRunner(Node):
             tf_stamp_barrier_s,
             sample_stamp_barrier_s,
         )
+        self._wait_for_nav2_managed_nodes_active()
 
-    def _goal_message(self) -> NavigateToPose.Goal:
-        goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = self._scenario.goal.frame_id
+    def _pose_message(self, specification) -> PoseStamped:
+        pose = PoseStamped()
+        pose.header.frame_id = specification.frame_id
         if self._clock_stamp is not None:
-            goal.pose.header.stamp = self._clock_stamp
-        goal.pose.pose.position.x = self._scenario.goal.position[0]
-        goal.pose.pose.position.y = self._scenario.goal.position[1]
-        yaw = math.radians(self._scenario.goal.yaw_deg)
-        goal.pose.pose.orientation.z = math.sin(yaw / 2.0)
-        goal.pose.pose.orientation.w = math.cos(yaw / 2.0)
+            pose.header.stamp = self._clock_stamp
+        pose.pose.position.x = specification.position[0]
+        pose.pose.position.y = specification.position[1]
+        yaw = math.radians(specification.yaw_deg)
+        pose.pose.orientation.z = math.sin(yaw / 2.0)
+        pose.pose.orientation.w = math.cos(yaw / 2.0)
+        return pose
+
+    def _goal_message(self, specification=None) -> NavigateToPose.Goal:
+        goal = NavigateToPose.Goal()
+        goal.pose = self._pose_message(
+            specification or self._scenario.goal
+        )
         return goal
 
-    def _navigate(self) -> tuple[bool, bool, int]:
-        if not self._navigate_client.wait_for_server(timeout_sec=self._service_timeout_sec):
-            self._raise_if_shutdown()
-            raise RuntimeError(f"Nav2 action unavailable: {self._action_name}")
-        send_future = self._navigate_client.send_goal_async(self._goal_message())
-        send_deadline = time.monotonic() + self._service_timeout_sec
-        if not self._wait_future(send_future, send_deadline):
-            raise TimeoutError("Nav2 goal acknowledgement timed out")
-        goal_handle = send_future.result()
-        if goal_handle is None or not goal_handle.accepted:
-            return False, False, GoalStatus.STATUS_ABORTED
-
-        result_future = goal_handle.get_result_async()
-        result_deadline = time.monotonic() + self._scenario.timeout_sec
-        if not self._wait_future(result_future, result_deadline):
-            cancel_future = goal_handle.cancel_goal_async()
-            if not self._wait_future(
-                cancel_future,
-                time.monotonic() + self._service_timeout_sec,
-            ):
-                raise ExperimentIsolationError(
-                    "Nav2 goal timed out and cancellation acknowledgement "
-                    "was not received"
-                )
-            try:
-                cancel_response = cancel_future.result()
-            except Exception as exc:
-                raise ExperimentIsolationError(
-                    f"Nav2 cancellation request failed: {exc}"
-                ) from exc
-            if cancel_response is None:
-                raise ExperimentIsolationError(
-                    "Nav2 cancellation returned no response"
-                )
-            if not self._wait_future(
-                result_future,
-                time.monotonic() + self._service_timeout_sec,
-            ):
-                raise ExperimentIsolationError(
-                    "Nav2 goal did not reach a terminal state after cancellation"
-                )
-            wrapped_result = result_future.result()
-            if wrapped_result is None:
-                raise ExperimentIsolationError(
-                    "Nav2 goal returned no terminal result after cancellation"
-                )
-            return False, True, int(wrapped_result.status)
-        wrapped_result = result_future.result()
-        if wrapped_result is None:
-            return False, False, GoalStatus.STATUS_UNKNOWN
-        return (
-            wrapped_result.status == GoalStatus.STATUS_SUCCEEDED,
-            False,
-            int(wrapped_result.status),
+    def _navigation_feedback_callback(self, message) -> None:
+        feedback = message.feedback
+        self._route_feedback_count += 1
+        self._maximum_route_recoveries = max(
+            self._maximum_route_recoveries,
+            int(feedback.number_of_recoveries),
         )
+
+    def _navigate(self) -> tuple[bool, bool, int]:
+        if not self._navigate_client.wait_for_server(
+            timeout_sec=self._service_timeout_sec
+        ):
+            self._raise_if_shutdown()
+            raise RuntimeError(
+                f"Nav2 action unavailable: {self._action_name}"
+            )
+        specifications = (
+            self._scenario.route
+            if self._scenario.route
+            else (self._scenario.goal,)
+        )
+        overall_deadline = time.monotonic() + self._scenario.timeout_sec
+        self._navigation_active = True
+        self._navigation_start_stamp_s = self._clock_seconds()
+        try:
+            for index, specification in enumerate(specifications):
+                poses_remaining = len(specifications) - index
+                self._minimum_poses_remaining = (
+                    poses_remaining
+                    if self._minimum_poses_remaining is None
+                    else min(
+                        self._minimum_poses_remaining,
+                        poses_remaining,
+                    )
+                )
+                send_future = self._navigate_client.send_goal_async(
+                    self._goal_message(specification),
+                    feedback_callback=self._navigation_feedback_callback,
+                )
+                send_deadline = min(
+                    overall_deadline,
+                    time.monotonic() + self._service_timeout_sec,
+                )
+                if not self._wait_future(send_future, send_deadline):
+                    raise TimeoutError(
+                        "Nav2 goal acknowledgement timed out"
+                    )
+                goal_handle = send_future.result()
+                if goal_handle is None or not goal_handle.accepted:
+                    return False, False, GoalStatus.STATUS_ABORTED
+
+                result_future = goal_handle.get_result_async()
+                if not self._wait_future(result_future, overall_deadline):
+                    cancel_future = goal_handle.cancel_goal_async()
+                    if not self._wait_future(
+                        cancel_future,
+                        time.monotonic() + self._service_timeout_sec,
+                    ):
+                        raise ExperimentIsolationError(
+                            "Nav2 goal timed out and cancellation "
+                            "acknowledgement was not received"
+                        )
+                    try:
+                        cancel_response = cancel_future.result()
+                    except Exception as exc:
+                        raise ExperimentIsolationError(
+                            f"Nav2 cancellation request failed: {exc}"
+                        ) from exc
+                    if cancel_response is None:
+                        raise ExperimentIsolationError(
+                            "Nav2 cancellation returned no response"
+                        )
+                    if not self._wait_future(
+                        result_future,
+                        time.monotonic() + self._service_timeout_sec,
+                    ):
+                        raise ExperimentIsolationError(
+                            "Nav2 goal did not reach a terminal state "
+                            "after cancellation"
+                        )
+                    wrapped_result = result_future.result()
+                    if wrapped_result is None:
+                        raise ExperimentIsolationError(
+                            "Nav2 goal returned no terminal result "
+                            "after cancellation"
+                        )
+                    return False, True, int(wrapped_result.status)
+                wrapped_result = result_future.result()
+                if wrapped_result is None:
+                    return False, False, GoalStatus.STATUS_UNKNOWN
+                if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
+                    return False, False, int(wrapped_result.status)
+                self._minimum_poses_remaining = len(specifications) - index - 1
+            return True, False, GoalStatus.STATUS_SUCCEEDED
+        finally:
+            self._navigation_end_stamp_s = self._clock_seconds()
+            self._navigation_active = False
+
+    @staticmethod
+    def _motion_quality_metrics(
+        samples: list[CommandSample] | list[OdometrySample],
+    ) -> dict[str, Any]:
+        translated_distance = 0.0
+        reverse_distance = 0.0
+        curved_distance = 0.0
+        moving_time = 0.0
+        observed_time = 0.0
+        maximum_linear_acceleration = 0.0
+        maximum_angular_acceleration = 0.0
+        angular_direction_changes = 0
+        previous_turn_sign = 0
+        for previous, current in zip(samples, samples[1:]):
+            dt = current.stamp_s - previous.stamp_s
+            if not 0.005 <= dt <= 0.25:
+                continue
+            linear = previous.linear_speed_mps
+            angular = previous.angular_speed_radps
+            distance = abs(linear) * dt
+            translated_distance += distance
+            reverse_distance += max(-linear, 0.0) * dt
+            if abs(linear) >= 0.05 and abs(angular) >= 0.15:
+                curved_distance += distance
+            if abs(linear) >= 0.03 or abs(angular) >= 0.10:
+                moving_time += dt
+            observed_time += dt
+            maximum_linear_acceleration = max(
+                maximum_linear_acceleration,
+                abs(current.linear_speed_mps - linear) / dt,
+            )
+            maximum_angular_acceleration = max(
+                maximum_angular_acceleration,
+                abs(current.angular_speed_radps - angular) / dt,
+            )
+            if abs(angular) >= 0.25:
+                turn_sign = 1 if angular > 0.0 else -1
+                if previous_turn_sign and turn_sign != previous_turn_sign:
+                    angular_direction_changes += 1
+                previous_turn_sign = turn_sign
+        return {
+            "sample_count": len(samples),
+            "observed_duration_sec": observed_time,
+            "translated_distance_m": translated_distance,
+            "reverse_distance_m": reverse_distance,
+            "reverse_distance_fraction": (
+                reverse_distance / translated_distance
+                if translated_distance > 1.0e-6
+                else 0.0
+            ),
+            "curved_distance_m": curved_distance,
+            "curved_distance_fraction": (
+                curved_distance / translated_distance
+                if translated_distance > 1.0e-6
+                else 0.0
+            ),
+            "stopped_time_fraction": (
+                1.0 - moving_time / observed_time
+                if observed_time > 1.0e-6
+                else 1.0
+            ),
+            "maximum_linear_acceleration_mps2": maximum_linear_acceleration,
+            "maximum_angular_acceleration_radps2": maximum_angular_acceleration,
+            "angular_direction_changes": angular_direction_changes,
+        }
 
     def _wait_for_final_stillness(self) -> bool:
         settings = self._scenario.success
@@ -890,11 +1116,55 @@ class ExperimentRunner(Node):
             safety_observability_complete=safety_complete,
         )
         evaluation = evaluate_single_run(observation, thresholds)
+        navigation_odom = [
+            sample
+            for sample in self._odom_samples
+            if (
+                self._navigation_start_stamp_s is not None
+                and self._navigation_end_stamp_s is not None
+                and self._navigation_start_stamp_s
+                <= sample.stamp_s
+                <= self._navigation_end_stamp_s
+            )
+        ]
+        ground_truth_path_length = path_length(
+            [(sample.x, sample.y) for sample in self._ground_truth_samples]
+        )
+        command_quality = self._motion_quality_metrics(
+            self._command_samples
+        )
+        measured_quality = self._motion_quality_metrics(navigation_odom)
+        quality_thresholds = self._scenario.success
         reasons = list(evaluation.failure_reasons)
         if odom is None:
             reasons.append("odom_unavailable")
         if not final_still:
             reasons.append("final_still_duration_not_met")
+        if (
+            ground_truth_path_length
+            < quality_thresholds.minimum_ground_truth_path_length_m
+        ):
+            reasons.append("ground_truth_path_too_short")
+        if (
+            measured_quality["reverse_distance_m"]
+            < quality_thresholds.minimum_reverse_distance_m
+        ):
+            reasons.append("insufficient_reverse_motion")
+        if (
+            measured_quality["reverse_distance_fraction"]
+            > quality_thresholds.maximum_reverse_distance_fraction
+        ):
+            reasons.append("excessive_reverse_motion")
+        if (
+            measured_quality["curved_distance_fraction"]
+            < quality_thresholds.minimum_curved_distance_fraction
+        ):
+            reasons.append("insufficient_curved_motion")
+        if (
+            measured_quality["stopped_time_fraction"]
+            > quality_thresholds.maximum_stopped_time_fraction
+        ):
+            reasons.append("excessive_stopped_time")
         if runner_error:
             reasons.append(f"runner_error:{runner_error}")
         reasons = list(dict.fromkeys(reasons))
@@ -913,6 +1183,10 @@ class ExperimentRunner(Node):
             "usd_start_pose": self._spawn_pose.usd.as_dict(),
             "map_start_pose": self._spawn_pose.map.as_dict(),
             "goal_pose": self._scenario.goal.as_dict(),
+            "route_poses": [
+                specification.as_dict()
+                for specification in self._scenario.route
+            ],
             "obstacle_trajectories": list(self._scenario.obstacle_trajectories),
             "physics_dt": self._scenario.physics_dt,
             "rtf": self._scenario.rtf,
@@ -922,22 +1196,44 @@ class ExperimentRunner(Node):
             "scenario_type": self._scenario.scenario_type,
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
             "nav2_status": nav2_status,
+            "motion_acceptance": {
+                "minimum_ground_truth_path_length_m": (
+                    quality_thresholds.minimum_ground_truth_path_length_m
+                ),
+                "minimum_reverse_distance_m": (
+                    quality_thresholds.minimum_reverse_distance_m
+                ),
+                "maximum_reverse_distance_fraction": (
+                    quality_thresholds.maximum_reverse_distance_fraction
+                ),
+                "minimum_curved_distance_fraction": (
+                    quality_thresholds.minimum_curved_distance_fraction
+                ),
+                "maximum_stopped_time_fraction": (
+                    quality_thresholds.maximum_stopped_time_fraction
+                ),
+            },
             "sample_counts": {
                 "ground_truth": len(self._ground_truth_samples),
                 "odom": len(self._odom_samples),
+                "navigation_odom": len(navigation_odom),
+                "navigation_commands": len(self._command_samples),
             },
             "metrics": {
                 "ground_truth_position_error_m": position_error,
                 "ground_truth_orientation_error_rad": orientation_error,
-                "ground_truth_path_length_m": path_length(
-                    [(sample.x, sample.y) for sample in self._ground_truth_samples]
-                ),
+                "ground_truth_path_length_m": ground_truth_path_length,
                 "odom_path_length_m": path_length(
                     [(sample.x, sample.y) for sample in self._odom_samples]
                 ),
                 "final_linear_speed_mps": odom.linear_speed_mps if odom else 0.0,
                 "final_angular_speed_radps": odom.angular_speed_radps if odom else 0.0,
                 "final_still_duration_met": final_still,
+                "command_motion_quality": command_quality,
+                "measured_motion_quality": measured_quality,
+                "route_feedback_count": self._route_feedback_count,
+                "minimum_poses_remaining": self._minimum_poses_remaining,
+                "maximum_route_recoveries": self._maximum_route_recoveries,
             },
             "observability": {
                 "collision_status_seen": self._collision_seen,

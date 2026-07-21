@@ -58,6 +58,11 @@ class SuccessSettings:
     final_still_duration_sec: float
     final_still_timeout_sec: float
     require_safety_observations: bool
+    minimum_ground_truth_path_length_m: float
+    minimum_reverse_distance_m: float
+    maximum_reverse_distance_fraction: float
+    minimum_curved_distance_fraction: float
+    maximum_stopped_time_fraction: float
 
 
 @dataclass(frozen=True)
@@ -75,6 +80,7 @@ class Scenario:
     physics_dt: float
     rtf: float
     goal: Goal
+    route: tuple[Goal, ...]
     success: SuccessSettings
     obstacles: Mapping[str, Any]
     obstacle_trajectories: tuple[Mapping[str, Any], ...]
@@ -104,6 +110,13 @@ def _positive(value: Any, location: str, *, allow_zero: bool = False) -> float:
     if parsed < 0.0 or (parsed == 0.0 and not allow_zero):
         relation = "non-negative" if allow_zero else "positive"
         raise ConfigurationError(f"{location} must be {relation}")
+    return parsed
+
+
+def _fraction(value: Any, location: str) -> float:
+    parsed = _positive(value, location, allow_zero=True)
+    if parsed > 1.0:
+        raise ConfigurationError(f"{location} must be between 0 and 1")
     return parsed
 
 
@@ -225,6 +238,58 @@ def _validate_obstacles(
             f"{scenario_type} scenarios cannot contain dynamic trajectories"
         )
     return ()
+
+
+def _parse_goal(value: Any, location: str) -> Goal:
+    raw = require_mapping(value, location)
+    _reject_unknown(
+        raw,
+        {"frame_id", "position", "yaw_deg", "require_orientation"},
+        location,
+    )
+    frame_id = require_string(raw.get("frame_id"), f"{location}.frame_id")
+    if frame_id != "map":
+        raise ConfigurationError(f"{location}.frame_id must be map")
+    require_orientation = raw.get("require_orientation")
+    if not isinstance(require_orientation, bool):
+        raise ConfigurationError(
+            f"{location}.require_orientation must be boolean"
+        )
+    return Goal(
+        frame_id=frame_id,
+        position=require_vector(raw.get("position"), 2, f"{location}.position"),
+        yaw_deg=require_finite(raw.get("yaw_deg"), f"{location}.yaw_deg"),
+        require_orientation=require_orientation,
+    )
+
+
+def _parse_route(value: Any, final_goal: Goal) -> tuple[Goal, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) < 2:
+        raise ConfigurationError(
+            "scenario.route must contain at least two map-frame poses"
+        )
+    route = tuple(
+        _parse_goal(item, f"scenario.route[{index}]")
+        for index, item in enumerate(value)
+    )
+    for previous, current in zip(route, route[1:]):
+        if math.dist(previous.position, current.position) <= 1.0e-6:
+            raise ConfigurationError(
+                "scenario.route cannot contain consecutive duplicate positions"
+            )
+    last = route[-1]
+    if (
+        last.frame_id != final_goal.frame_id
+        or math.dist(last.position, final_goal.position) > 1.0e-9
+        or abs(last.yaw_deg - final_goal.yaw_deg) > 1.0e-9
+        or last.require_orientation != final_goal.require_orientation
+    ):
+        raise ConfigurationError(
+            "scenario.route final pose must exactly match scenario.goal"
+        )
+    return route
 
 
 def validate_navigation_runner_scenario(scenario: Scenario) -> None:
@@ -562,6 +627,7 @@ def load_scenario(path: str | Path) -> Scenario:
             "simulation",
             "runs",
             "goal",
+            "route",
             "success",
             "obstacles",
             "incremental_mapping",
@@ -580,7 +646,6 @@ def load_scenario(path: str | Path) -> Scenario:
     configs = require_mapping(raw.get("configs"), "scenario.configs")
     simulation = require_mapping(raw.get("simulation"), "scenario.simulation")
     runs = require_mapping(raw.get("runs"), "scenario.runs")
-    goal_raw = require_mapping(raw.get("goal"), "scenario.goal")
     success_raw = require_mapping(raw.get("success"), "scenario.success")
     obstacles = require_mapping(raw.get("obstacles"), "scenario.obstacles")
     _reject_unknown(
@@ -591,11 +656,6 @@ def load_scenario(path: str | Path) -> Scenario:
     )
     _reject_unknown(runs, {"seeds", "timeout_sec"}, "scenario.runs")
     _reject_unknown(
-        goal_raw,
-        {"frame_id", "position", "yaw_deg", "require_orientation"},
-        "scenario.goal",
-    )
-    _reject_unknown(
         success_raw,
         {
             "position_tolerance_m",
@@ -605,17 +665,17 @@ def load_scenario(path: str | Path) -> Scenario:
             "final_still_duration_sec",
             "final_still_timeout_sec",
             "require_safety_observations",
+            "minimum_ground_truth_path_length_m",
+            "minimum_reverse_distance_m",
+            "maximum_reverse_distance_fraction",
+            "minimum_curved_distance_fraction",
+            "maximum_stopped_time_fraction",
         },
         "scenario.success",
     )
 
-    frame_id = require_string(goal_raw.get("frame_id"), "scenario.goal.frame_id")
-    if frame_id != "map":
-        raise ConfigurationError("scenario.goal.frame_id must be map")
-
-    require_orientation = goal_raw.get("require_orientation")
-    if not isinstance(require_orientation, bool):
-        raise ConfigurationError("scenario.goal.require_orientation must be boolean")
+    goal = _parse_goal(raw.get("goal"), "scenario.goal")
+    route = _parse_route(raw.get("route"), goal)
     safety_required = success_raw.get("require_safety_observations", False)
     if not isinstance(safety_required, bool):
         raise ConfigurationError("scenario.success.require_safety_observations must be boolean")
@@ -698,12 +758,8 @@ def load_scenario(path: str | Path) -> Scenario:
         dynamic_config_file=dynamic_config_file,
         physics_dt=_positive(simulation.get("physics_dt"), "scenario.simulation.physics_dt"),
         rtf=_positive(simulation.get("rtf"), "scenario.simulation.rtf"),
-        goal=Goal(
-            frame_id=frame_id,
-            position=require_vector(goal_raw.get("position"), 2, "scenario.goal.position"),
-            yaw_deg=require_finite(goal_raw.get("yaw_deg"), "scenario.goal.yaw_deg"),
-            require_orientation=require_orientation,
-        ),
+        goal=goal,
+        route=route,
         success=SuccessSettings(
             position_tolerance_m=position_tolerance,
             orientation_tolerance_deg=orientation_tolerance,
@@ -726,6 +782,28 @@ def load_scenario(path: str | Path) -> Scenario:
                 "scenario.success.final_still_timeout_sec",
             ),
             require_safety_observations=safety_required,
+            minimum_ground_truth_path_length_m=_positive(
+                success_raw.get("minimum_ground_truth_path_length_m", 0.0),
+                "scenario.success.minimum_ground_truth_path_length_m",
+                allow_zero=True,
+            ),
+            minimum_reverse_distance_m=_positive(
+                success_raw.get("minimum_reverse_distance_m", 0.0),
+                "scenario.success.minimum_reverse_distance_m",
+                allow_zero=True,
+            ),
+            maximum_reverse_distance_fraction=_fraction(
+                success_raw.get("maximum_reverse_distance_fraction", 1.0),
+                "scenario.success.maximum_reverse_distance_fraction",
+            ),
+            minimum_curved_distance_fraction=_fraction(
+                success_raw.get("minimum_curved_distance_fraction", 0.0),
+                "scenario.success.minimum_curved_distance_fraction",
+            ),
+            maximum_stopped_time_fraction=_fraction(
+                success_raw.get("maximum_stopped_time_fraction", 1.0),
+                "scenario.success.maximum_stopped_time_fraction",
+            ),
         ),
         obstacles=dict(obstacles),
         obstacle_trajectories=trajectories,

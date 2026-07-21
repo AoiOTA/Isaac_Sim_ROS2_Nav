@@ -123,6 +123,21 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     for display_name, topic in expected_topics.items():
         assert _named(config, display_name)['Topic']['Value'] == topic
 
+    global_plan = _named(config, 'Global Plan')
+    odometry = _named(config, 'Odometry')
+    assert global_plan['Color'] == '255; 215; 0'
+    assert global_plan['Pose Color'] == global_plan['Color']
+    assert global_plan['Line Width'] >= 0.12
+    assert global_plan['Color'] != odometry['Shape']['Color']
+
+    optimal = _named(config, 'MPPI Optimal Trajectory')
+    candidates = _named(config, 'MPPI Candidate Trajectories')
+    assert optimal['Enabled'] is True
+    assert optimal['Topic']['Value'] == '/optimal_trajectory'
+    assert optimal['Line Width'] >= 0.08
+    assert candidates['Enabled'] is True
+    assert candidates['Topic']['Value'] == '/trajectories'
+
     panels = [panel['Class'] for panel in config['Panels']]
     tools = [tool['Class'] for tool in config['Visualization Manager']['Tools']]
     assert panels.count('robot_rviz_plugins/Navigation 2 Safe') == 1

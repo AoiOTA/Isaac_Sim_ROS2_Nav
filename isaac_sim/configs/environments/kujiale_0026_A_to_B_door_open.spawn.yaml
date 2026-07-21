@@ -1,0 +1,16 @@
+schema_version: 1
+spawn_poses:
+  mapping_start:
+    usd:
+      # Open area in the living room, with more than 1.2 m clearance to the
+      # nearest low collision bounds. The base-link rest height matches Jackal.
+      position: [2.9, -0.2, 0.0635]
+      yaw_deg: 180.0
+    map:
+      # warehouse_new was built with Ideal odometry anchored at this spawn, so
+      # map and odom share the same origin and heading.
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      calibrated: true
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0

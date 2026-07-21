@@ -1,0 +1,49 @@
+schema_version: 1
+scenario:
+  id: static_warehouse_complex_route
+  type: static
+  spawn_pose_name: mapping_start
+  map_version: warehouse_v2
+  posegraph_version: warehouse_v2
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+  simulation:
+    physics_dt: 0.0166666667
+    rtf: 1.0
+  runs:
+    seeds: [6201, 6202, 6203]
+    timeout_sec: 360.0
+  goal:
+    frame_id: map
+    position: [0.0, 6.0]
+    yaw_deg: 90.0
+    require_orientation: true
+  # One reset-isolated mission with every pose enforced by sequential
+  # NavigateToPose actions.  The inflated-grid A* lower bound is about 53 m
+  # and includes long diagonals, narrow warehouse exits, and repeated
+  # left/right turns.
+  route:
+    - {frame_id: map, position: [0.0, 8.0], yaw_deg: 90.0, require_orientation: true}
+    - {frame_id: map, position: [5.0, 1.0], yaw_deg: 0.0, require_orientation: true}
+    - {frame_id: map, position: [0.0, -7.0], yaw_deg: -90.0, require_orientation: true}
+    - {frame_id: map, position: [-8.0, 0.0], yaw_deg: 180.0, require_orientation: true}
+    - {frame_id: map, position: [-2.0, 5.0], yaw_deg: 90.0, require_orientation: true}
+    - {frame_id: map, position: [0.0, 6.0], yaw_deg: 90.0, require_orientation: true}
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 10.0
+    require_safety_observations: true
+    minimum_ground_truth_path_length_m: 49.0
+    minimum_reverse_distance_m: 0.0
+    maximum_reverse_distance_fraction: 0.02
+    minimum_curved_distance_fraction: 0.05
+    maximum_stopped_time_fraction: 0.35
+  obstacles:
+    layout_id: warehouse_full_complex_route_v1
+    static: []
+    trajectories: []

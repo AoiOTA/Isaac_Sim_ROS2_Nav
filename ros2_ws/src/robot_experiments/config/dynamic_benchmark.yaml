@@ -1,0 +1,70 @@
+schema_version: 1
+scenario:
+  id: dynamic_warehouse_long_benchmark
+  type: dynamic
+  spawn_pose_name: mapping_start
+  map_version: warehouse_v2
+  posegraph_version: warehouse_v2
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/dynamic_benchmark.yaml
+  simulation:
+    physics_dt: 0.0166666667
+    rtf: 1.0
+  runs:
+    seeds:
+      - 5101
+      - 5102
+      - 5103
+      - 5104
+      - 5105
+      - 5106
+      - 5107
+      - 5108
+      - 5109
+      - 5110
+      - 5111
+      - 5112
+      - 5113
+      - 5114
+      - 5115
+      - 5116
+      - 5117
+      - 5118
+      - 5119
+      - 5120
+    timeout_sec: 120.0
+  goal:
+    frame_id: map
+    position: [2.0, 5.0]
+    yaw_deg: 90.0
+    require_orientation: true
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 10.0
+    require_safety_observations: true
+  obstacles:
+    layout_id: crossing_oncoming_long_clear_exit_v4
+    static: []
+    trajectories:
+      - id: crossing_box
+        motion: crossing
+        shape: box
+        repeat: false
+        dimensions: [0.5, 0.5]
+        waypoints:
+          - {time_sec: 0.0, position: [2.0, -3.0]}
+          - {time_sec: 11.25, position: [2.0, 6.0]}
+      - id: cart_proxy_b
+        motion: oncoming
+        shape: box
+        repeat: false
+        dimensions: [0.8, 0.5]
+        waypoints:
+          - {time_sec: 0.0, position: [4.0, 1.8]}
+          - {time_sec: 10.0, position: [-2.0, 1.8]}

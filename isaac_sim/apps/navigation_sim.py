@@ -33,6 +33,12 @@ from isaac_sim.src.config import (
     load_project_config,
 )
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario
+from isaac_sim.src.environment_selection import (
+    DEFAULT_ENVIRONMENT_ROOT,
+    resolve_environment_usd,
+    resolve_spawn_poses_file,
+    runtime_project_stage,
+)
 from isaac_sim.src.robot.spawn_pose_manager import (
     load_spawn_poses,
     require_map_calibration,
@@ -116,13 +122,39 @@ def _parser() -> argparse.ArgumentParser:
         help="enable or disable the configured deterministic dynamic obstacle set",
     )
     parser.add_argument(
-        "--camera-profile",
-        choices=CAMERA_PROFILE_NAMES,
+        "--third-person-camera",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="enable or disable the GUI third-person robot-follow camera",
+    )
+    parser.add_argument(
+        "--environment-usd",
+        type=str,
+        help=(
+            "environment USD absolute path, path relative to --environment-root, "
+            "or unique filename below that root"
+        ),
+    )
+    parser.add_argument(
+        "--environment-root",
+        type=Path,
         default=None,
         help=(
-            "front RGB Camera profile; default is monitoring in GUI and off "
-            "in headless mode"
+            "directory searched recursively for --environment-usd filenames "
+            f"(default: {DEFAULT_ENVIRONMENT_ROOT})"
         ),
+    )
+    parser.add_argument(
+        "--spawn-poses-file",
+        type=Path,
+        default=None,
+        help="spawn-pose YAML for the selected environment",
+    )
+    parser.add_argument(
+        "--spawn-pose",
+        type=str,
+        default=None,
+        help="named pose selected from the spawn-pose YAML",
     )
     return parser
 
@@ -142,14 +174,50 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         if args.max_steps < 0:
             raise ValueError("--max-steps must be non-negative")
         os.environ["ISAAC_NAV__SIMULATION__MAX_FRAMES"] = str(args.max_steps)
-    if args.pacing_mode is not None:
-        os.environ["ISAAC_NAV__SIMULATION__PACING_MODE"] = args.pacing_mode
-    if args.target_rtf is not None:
-        if not math.isfinite(args.target_rtf) or args.target_rtf <= 0.0:
-            raise ValueError("--target-rtf must be positive")
-        os.environ["ISAAC_NAV__SIMULATION__TARGET_REALTIME_FACTOR"] = str(
-            args.target_rtf
+    if args.third_person_camera is not None:
+        os.environ["ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED"] = (
+            "true" if args.third_person_camera else "false"
         )
+    if args.spawn_pose is not None:
+        os.environ["ISAAC_NAV__SPAWN__SELECTED"] = args.spawn_pose
+
+    if args.environment_usd is not None:
+        environment_root = (
+            args.environment_root
+            or Path(
+                os.environ.get(
+                    "ISAAC_NAV_ENVIRONMENT_ROOT",
+                    str(DEFAULT_ENVIRONMENT_ROOT),
+                )
+            )
+        )
+        source_asset = resolve_environment_usd(
+            args.environment_usd,
+            environment_root,
+        )
+        spawn_poses = resolve_spawn_poses_file(
+            source_asset,
+            explicit=args.spawn_poses_file,
+            repository_profiles=PROJECT_ROOT / "isaac_sim/configs/environments",
+        )
+        runtime_dir = Path(
+            os.environ.get(
+                "ISAAC_NAV_RUNTIME_DIR",
+                f"/tmp/isaac_sim_ros2_nav_{os.getuid()}",
+            )
+        )
+        project_stage = runtime_project_stage(source_asset, runtime_dir)
+        os.environ["ISAAC_NAV__ENVIRONMENT__SOURCE_ASSET"] = str(source_asset)
+        os.environ["ISAAC_NAV__ENVIRONMENT__PROJECT_STAGE"] = str(project_stage)
+        os.environ["ISAAC_NAV__SPAWN__POSES_FILE"] = str(spawn_poses)
+        # Custom environments use the same robot-relative camera contract as
+        # the built-in scene.  The committed pose is below a normal indoor
+        # ceiling, so GUI runs may safely inherit the configured default.
+    elif args.spawn_poses_file is not None:
+        spawn_poses = args.spawn_poses_file.expanduser().resolve()
+        if not spawn_poses.is_file():
+            raise ValueError(f"spawn poses file not found: {spawn_poses}")
+        os.environ["ISAAC_NAV__SPAWN__POSES_FILE"] = str(spawn_poses)
 
 
 def validate_configuration(
@@ -273,7 +341,21 @@ def run(
         # SimulationApp otherwise forwards this application's argparse flags
         # to Kit as if they were native settings.
         sys.argv = [sys.argv[0]]
-        app = SimulationApp(_simulation_app_config(config))
+        app = SimulationApp(
+            {
+                "headless": config.simulation.headless,
+                "renderer": config.simulation.renderer,
+                # RTX LiDAR uses multi-tick 100 ms exposures.  Motion BVH must
+                # be enabled before Kit starts or a moving/rotating sensor
+                # produces frame-inconsistent accumulated point clouds.
+                "extra_args": [
+                    "--/renderer/raytracingMotion/enabled=true",
+                    "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
+                    "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
+                    "--/rtx/rendering/perSensorTickTlas=true",
+                ],
+            }
+        )
     finally:
         sys.argv = original_argv
     runtime = None
@@ -300,6 +382,21 @@ def run(
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
         app.update()
         validate_composed_stage(config, stage)
+        camera_enabled = bool(
+            config.third_person_camera.enabled
+            and not config.simulation.headless
+        )
+        third_person_camera = None
+        if camera_enabled:
+            from isaac_sim.src.visualization.third_person_camera import (
+                ThirdPersonCamera,
+            )
+
+            third_person_camera = ThirdPersonCamera(
+                stage,
+                config.robot.base_link_prim,
+                config.third_person_camera,
+            )
 
         import rclpy
         from rcl_interfaces.msg import ParameterDescriptor
@@ -330,6 +427,27 @@ def run(
             [obstacle.obstacle_id for obstacle in dynamic_scenario.obstacles],
             read_only,
         )
+        node.declare_parameter(
+            "third_person_camera_enabled", camera_enabled, read_only
+        )
+        node.declare_parameter(
+            "third_person_camera_prim_path",
+            (
+                f"{config.robot.base_link_prim}/"
+                f"{config.third_person_camera.prim_name}"
+            ),
+            read_only,
+        )
+        node.declare_parameter(
+            "environment_usd",
+            str(config.environment.source_asset),
+            read_only,
+        )
+        node.declare_parameter(
+            "spawn_poses_file",
+            str(config.spawn.poses_file),
+            read_only,
+        )
 
         from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
         from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
@@ -339,6 +457,9 @@ def run(
         )
         from isaac_sim.src.robot.joint_validator import JointGroups, JointValidator
         from isaac_sim.src.robot.idle_brake import IdleBrake
+        from isaac_sim.src.robot.skid_steer_motion_assist import (
+            SkidSteerMotionAssist,
+        )
         from isaac_sim.src.robot.reset import ResetHooks, ResetManager, ResetRequest
         from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager
         from isaac_sim.src.sensors.sensor_factory import SensorFactory
@@ -368,10 +489,25 @@ def run(
         ).validate(robot.get_dof_names())
         spawn_manager = SpawnPoseManager(robot, load_spawn_poses(config.spawn.poses_file))
         spawn_manager.apply_usd_pose(config.spawn.selected)
+        camera_binding_reported = False
+        if third_person_camera is not None:
+            camera_binding_reported = third_person_camera.viewport_bound
+            node.get_logger().info(
+                "third-person camera created: "
+                f"prim={third_person_camera.camera_path}, "
+                f"viewport={'bound' if camera_binding_reported else 'pending'}"
+            )
         idle_brake = IdleBrake(
             node,
             robot,
             articulation_settings,
+            clock=lambda: float(SimulationManager.get_simulation_time()),
+        )
+        motion_assist = SkidSteerMotionAssist(
+            node,
+            robot,
+            articulation_settings,
+            physics_dt=1.0 / config.simulation.physics_hz,
             clock=lambda: float(SimulationManager.get_simulation_time()),
         )
 
@@ -406,6 +542,7 @@ def run(
             from isaac_sim.graphs.control_graph import build_control_graph
 
             idle_brake.reset()
+            motion_assist.reset()
             graph_references["control"] = build_control_graph(config)
 
         def reset_odometry(mode: str) -> None:
@@ -456,6 +593,7 @@ def run(
             f"navigation={config.simulation.navigation_mode}, "
             f"odometry={config.simulation.odometry_mode}, "
             f"structure_tf={config.simulation.structure_tf_source}, "
+            f"environment={config.environment.source_asset.name}, "
             f"spawn={config.spawn.selected}, dynamic={dynamic_scenario.enabled}, "
             f"camera={camera_selection.profile.name}, "
             f"pacing={config.simulation.pacing_mode}, "
@@ -473,9 +611,20 @@ def run(
             simulation_time = float(SimulationManager.get_simulation_time())
             dynamic_manager.update(simulation_time)
             collision_monitor.update(simulation_time)
-            idle_brake.update()
+            if not idle_brake.update():
+                motion_assist.update()
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
+            if third_person_camera is not None:
+                third_person_camera.bind_viewport()
+                if (
+                    third_person_camera.viewport_bound
+                    and not camera_binding_reported
+                ):
+                    node.get_logger().info(
+                        "third-person camera bound to the active Isaac viewport"
+                    )
+                    camera_binding_reported = True
             frame += 1
     finally:
         if runtime is not None:
@@ -542,16 +691,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         # without Kit is safe here.
         stage = SceneComposer(config).compose(save=False)
         validate_composed_stage(config, stage)
+        if config.third_person_camera.enabled:
+            from isaac_sim.src.visualization.third_person_camera import (
+                ThirdPersonCamera,
+            )
+
+            ThirdPersonCamera(
+                stage,
+                config.robot.base_link_prim,
+                config.third_person_camera,
+                activate_viewport=False,
+            )
         print(
             "validation: PASS "
             f"(navigation={config.simulation.navigation_mode}, "
             f"odometry={config.simulation.odometry_mode}, "
             f"structure_tf={config.simulation.structure_tf_source}, "
+            f"environment={config.environment.source_asset.name}, "
             f"spawn={config.spawn.selected}, "
-            f"camera={camera_selection.profile.name}, "
-            f"pacing={config.simulation.pacing_mode}, "
-            f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
-            f"dynamic_obstacles={dynamic_scenario.enabled}, {calibration})"
+            f"dynamic_obstacles={dynamic_scenario.enabled}, "
+            f"third_person_camera={config.third_person_camera.enabled}, "
+            f"{calibration})"
         )
         return 0
     run(config, selected_pose, dynamic_scenario, camera_selection)

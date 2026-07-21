@@ -15,6 +15,7 @@ frames:
   odom: odom
   base: base_link
   lidar: lidar_link
+  rtx_world: rtx_world
   imu: imu_link
   camera_front: camera_front_link
   camera_front_optical: camera_front_optical_frame
