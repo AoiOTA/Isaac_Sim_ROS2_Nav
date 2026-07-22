@@ -429,7 +429,155 @@ KPI 来源，HTML/PDF/Markdown/CSV 都由它和每轮证据生成。不要手工
 PDF、PNG、CSV、JSON、MCAP 和图像都不推送；应提交的是代码、冻结场景/校验规则和对
 应文档。
 
-## 8. 常用诊断
+## 8. 人工可视化全屋长距离测试（Isaac GUI + RViz）
+
+本节用于人工观察真实 GUI、RViz 路径、RGB-D 融合、Costmap 和避障动作。它与第 7 节
+的正式自动化验收互补，但不能替代后者：人工测试不会自动逐轮 Reset、记录完整 MCAP
+证据或生成可验收的 `benchmark.json`。不要把人工截图或手工记录混入正式
+`$RUN_ROOT` 后再运行汇总器。
+
+每次只启动一套 Isaac 和 ROS。使用本节时不要启动 `run_experiment.sh`，它会抢占
+`/simulation/reset` 并自行发送 Nav2 Goal。
+
+### 8.1 固定人工路线
+
+从 `mapping_start`（S）依次通过下表的 G1 至 G8。使用 RViz 的 **2D Goal Pose**：在
+Map 显示中放置目标，拖动箭头使其与表中 yaw 一致。若地图缩放后难以精确点击，可先在
+RViz 状态栏确认鼠标 Map 坐标；目标容差为 `0.25 m`、朝向容差为 `10°`。
+
+| 顺序 | Map 坐标 `[x, y, yaw]` | 单段人工观察重点 |
+| --- | --- | --- |
+| S | `[0.00, 0.00, 0°]` | 起点与 `map -> odom -> base_link` 对齐。 |
+| G1 | `[0.80, 4.80, -135°]` | 首段门洞与静态低矮方块绕行。 |
+| G2 | `[-3.45, 3.90, 0°]` | 顶部走廊与动态 D2 穿行。 |
+| G3 | `[-4.05, 1.15, 0°]` | 左侧房间进入/退出。 |
+| G4 | `[-3.25, -0.45, 0°]` | 左侧房间航点；按普通房间目标处理。 |
+| G5 | `[-2.50, -3.35, 90°]` | 下方转角与恢复动作。 |
+| G6 | `[0.65, -4.25, -90°]` | 底部通道与动态 D3 穿行。 |
+| G7 | `[0.45, -5.35, 90°]` | 最下方房间朝向收敛。 |
+| G8 | `[0.00, 0.00, 0°]` | 返回起点、终点静止。 |
+
+每个目标完成后，等待机器人静止至少 1 秒，再发送下一目标。若 Nav2 失败、发生碰撞、
+Collision Monitor 长时间 Stop 或路径持续振荡，记录发生的航段、现象和截图；不要通过
+手动推车、Teleop 或连续重发同一目标掩盖失败。
+
+### 8.2 人工静态长距离测试
+
+终端 A 以 GUI 启动静态低矮方块。这里仍需 `--dynamic-obstacles`，因为它负责把
+`rgbd_low_box` 实体放入场景；该配置没有运动轨迹。
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal \
+  --spawn-pose mapping_start \
+  --camera-profile rgbd_navigation \
+  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
+  --dynamic-obstacles
+```
+
+终端 B 启动 Navigation 和受管 RViz：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation odometry_mode:=ideal
+```
+
+等待 `Nav2 lifecycle activation completed`。在 Isaac GUI 中确认低矮方块位于 S 到 G1
+区域；在 RViz 展开 **RGB-D Fusion**，启用 **Robot Front Camera**、
+**Depth PointCloud2** 和 **Marked Voxels (3D)**（按需），再按第 8.1 节依次手动发送
+G1–G8。
+
+人工静态通过的可视化观察应同时满足：低矮方块可在深度点云/体素中出现、全局或局部
+路径绕开其占地、机器人没有碰撞、每个目标由 Nav2 成功完成。仅 LiDAR Scan 看不到该
+方块并不表示 RGB-D 失败；应检查 Depth PointCloud2 和 VoxelGrid。
+
+### 8.3 人工动态长距离测试
+
+先正常关闭静态的终端 B，再关闭终端 A。动态配置在 Isaac 启动时冻结，不能在原
+Isaac 进程中切换。随后使用 GUI 启动三个触发式障碍：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal \
+  --spawn-pose mapping_start \
+  --camera-profile rgbd_navigation \
+  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml \
+  --dynamic-obstacles
+```
+
+终端 B 启动可视化 Navigation：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation odometry_mode:=ideal
+```
+
+终端 C 用于确认触发服务，并在人工目标被 Nav2 接受后触发对应障碍：
+
+```bash
+cd "$PROJECT_ROOT"
+source ./scripts/setup_ros_env.sh
+ros2 service list | rg '^/experiment/obstacles/(G1|G2|G6)/trigger$'
+```
+
+若要持续观察 `waiting`、`active`、`retired` 状态，可另开终端 D：
+
+```bash
+source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+ros2 topic echo /experiment/obstacles/state
+```
+
+在 RViz 发送 G1 后，立刻在终端 C 运行以下命令；随后等待 G1 成功。对 G2 和
+G6 重复同样操作。服务只允许每个触发组在一次 Reset 后成功一次，响应中的
+`activated` 应列出对应障碍 ID。
+
+```bash
+# G1 已被 Nav2 接受后：D1（central_crossing）在 S -> G1 路段穿行
+ros2 service call /experiment/obstacles/G1/trigger std_srvs/srv/Trigger '{}'
+
+# G2 已被 Nav2 接受后：D2（north_crossing）在 G1 -> G2 路段穿行
+ros2 service call /experiment/obstacles/G2/trigger std_srvs/srv/Trigger '{}'
+
+# G6 已被 Nav2 接受后：D3（south_crossing）在 G5 -> G6 路段穿行
+ros2 service call /experiment/obstacles/G6/trigger std_srvs/srv/Trigger '{}'
+```
+
+完整人工顺序为：发送 G1 并触发 G1 服务，等待完成；发送 G2 并触发 G2 服务，等待
+完成；依次发送 G3、G4、G5；发送 G6 并触发 G6 服务；最后发送 G7、G8。观察
+`/experiment/obstacles/state` 从 `waiting` 到 `active`，并在运动完成后到 `retired`。
+在 GUI 中应能看到实体移动/消失；在 RViz 中同时观察全局/局部路径、MPPI 最优轨迹、
+Collision Monitor 和机器人轨迹，确认减速、等待、绕行或恢复行为合理且无物理碰撞。
+
+### 8.4 手工重测、截图与停止
+
+同一静态或动态场景需要从 S 重测时，先取消当前 Nav2 Goal；然后在终端 C 设置确定性
+seed 并请求事务式 Reset：
+
+```bash
+ros2 param set /isaac_navigation_sim reset_seed 7301
+ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
+ros2 topic echo /simulation/localization_seeded --once
+```
+
+静态重测可使用 `7201`，动态重测使用 `7301`；也可以选择同一正式种子范围内的其他值。
+Reset 后等待新的定位完成和 Navigation 2 Safe 面板恢复激活，再从 G1 开始。动态障碍的
+服务触发状态会随 Reset 清除，因此必须重新调用 G1/G2/G6 的服务。
+
+每个关键航段建议保存两张截图：Isaac GUI（机器人与实体障碍）和 RViz（路径、Costmap、
+RGB-D Fusion/Collision Monitor）。这些人工证据可放入一个单独的本地目录，例如
+`data/reports/manual_<时间戳>/`，用于调试记录；它不应与正式自动批次报告混用。
+
+停止顺序仍是先在终端 B 按 Ctrl+C，等待 Nav2 有序关闭，再在终端 A 按 Ctrl+C 停止
+Isaac；最后停止终端 C 的 `ros2 topic echo`。若异常退出，先执行
+`./scripts/diagnose.sh`，再按其输出使用 `clean_runtime.sh --dry-run`。
+
+## 9. 常用诊断
 
 | 症状 | 首先执行 |
 | --- | --- |
@@ -443,7 +591,7 @@ PDF、PNG、CSV、JSON、MCAP 和图像都不推送；应提交的是代码、�
 完整排障命令和安全边界见 [`troubleshooting.md`](troubleshooting.md)。Topic、TF、QoS
 和唯一发布者要求见 [`interfaces.md`](interfaces.md)。
 
-## 9. 验证与提交
+## 10. 验证与提交
 
 代码或配置改动后：
 
