@@ -277,6 +277,8 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 或控制。
 详细验收口径见
 [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md)。
+静态/动态地图、G1–G8、S、障碍位置和动态触发路线见
+[`kujiale_long_route_map.md`](kujiale_long_route_map.md)。
 
 ### 7.1 正式批次前检查
 

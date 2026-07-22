@@ -90,6 +90,9 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 终端。完整的人工回归目标、RGB-D 可视化、Reset 与排障步骤见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
+静态/动态全屋长距离测试的 `warehouse_new` 地图、S 与 G1–G8 航点、静态方块和三条
+动态障碍触发路线见 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
+
 ## RGB-D 感知边界
 
 `--camera-profile rgbd_navigation` 会发布：
