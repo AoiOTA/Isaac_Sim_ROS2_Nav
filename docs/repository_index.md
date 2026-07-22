@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 322 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 329 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -11,7 +11,7 @@
 | 需求 | 首选入口 | 接下来查看 |
 | --- | --- | --- |
 | 第一次安装并跑起来 | `README.md`、`docs/user_manual.md` | `scripts/preflight.sh`、`scripts/build_ros2.sh`、`scripts/run_isaac.sh`、`scripts/run_ros.sh` |
-| 手动测试当前导航 | `docs/user_manual.md` 第 5 节 | `docs/interfaces.md`、`docs/troubleshooting.md` |
+| 手动测试当前导航 | `docs/user_manual.md` 第 3、7、8 节 | `docs/interfaces.md`、`docs/troubleshooting.md` |
 | 了解系统边界 | `docs/interfaces.md` | `isaac_sim/configs/project.yaml`、`ros2_ws/src/robot_bringup/launch/ros_stack.launch.py` |
 | 修改参数 | 本索引对应配置行 | 同包的 `test/`、`docs/development.md` |
 | 保存或切换地图 | `scripts/save_map.sh` | `robot_bringup/map_manifest.py`、`data/maps/manifests/`、`docs/calibration.md` |
@@ -60,14 +60,14 @@
 | `data/reports/.gitkeep` | 保留分析报告、比较结果和图表输出目录。 |
 | `data/trajectories/.gitkeep` | 保留估计轨迹与 Ground Truth 轨迹输出目录。 |
 | `data/maps/manifests/warehouse_v1.yaml` | 历史不完整 v1 的来源、尺寸、SHA256、坐标原点和旧标定记录。 |
-| `data/maps/manifests/warehouse_v2.yaml` | 当前完整仓库导航基线的来源、四件套大小/SHA256、`406×611` 栅格、坐标原点及三次冷启动标定证据；preflight 的权威清单。 |
+| `data/maps/manifests/warehouse_v2.yaml` | 官方 Warehouse 历史复现的完整地图 bundle；当前酷家乐启动不会默认选择它。 |
 | `data/maps/manifests/warehouse_new.yaml` | 酷家乐分支默认地图的四件套完整性、`154×248` 栅格、坐标原点和三次 Ideal 扫描配准标定证据。 |
 | `data/maps/occupancy/.gitkeep` | 保留 OccupancyGrid 目录。 |
 | `data/maps/occupancy/warehouse_v1.yaml` | 历史不完整 v1 的 ROS Map Server 元数据。 |
 | `data/maps/occupancy/warehouse_v1.pgm` | 历史不完整 v1 的二值/三值占据栅格图，用于旧结果复现。 |
 | `data/maps/occupancy/warehouse_v1_preview.png` | 方便人工浏览地图的预览图，不参与导航。 |
-| `data/maps/occupancy/warehouse_v2.yaml` | 当前默认导航 OccupancyGrid 元数据：分辨率、原点、占据阈值及 v2 PGM 文件名。 |
-| `data/maps/occupancy/warehouse_v2.pgm` | 覆盖完整仓库的 `406×611` 二值/三值栅格，由 Nav2 Map Server 发布。 |
+| `data/maps/occupancy/warehouse_v2.yaml` | 官方 Warehouse 历史 OccupancyGrid 元数据；不是当前默认导航地图。 |
+| `data/maps/occupancy/warehouse_v2.pgm` | 官方 Warehouse 历史 `406×611` 二值/三值栅格，用于复现旧记录。 |
 | `data/maps/occupancy/warehouse_new.yaml` | 酷家乐默认 OccupancyGrid 元数据。 |
 | `data/maps/occupancy/warehouse_new.pgm` | 酷家乐房间 `154×248 @ 0.05 m` 占据栅格。 |
 | `data/maps/posegraphs/.gitkeep` | 保留 SLAM Toolbox 序列化地图目录。 |
@@ -130,8 +130,8 @@
 | --- | --- |
 | `isaac_sim/configs/project.yaml` | 默认 Jackal 项目总配置；串联环境、机器人、仿真模式、出生点、ROS、GT、第三人称相机和所有子配置文件。 |
 | `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；要求显式环境变量提供真实 USD、defaultPrim 和传感器配置，并把第三人称相机挂到自定义 `base_link`。 |
-| `isaac_sim/configs/spawn_poses.yaml` | 出生点唯一真源；同时保存物理 USD Pose、已标定 Map Pose 及不确定度。 |
-| `isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml` | 酷家乐 0026 开门场景的 Mapping 出生点；Map Pose 在新地图标定前保持未标定。 |
+| `isaac_sim/configs/spawn_poses.yaml` | 通用 project-config fallback 出生点；不作为当前酷家乐标定来源。 |
+| `isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml` | 当前酷家乐 0026 开门场景的已标定 `mapping_start`；绑定 `warehouse_new` 的 Map Pose、bundle SHA256 和不确定度。 |
 | `isaac_sim/configs/environments/warehouse_multiple_shelves.yaml` | 官方 Warehouse 资产路径、组合方式和预期关键 Prim 的小型描述。 |
 
 ## 8. Isaac 机器人与仿真配置
@@ -221,7 +221,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `isaac_sim/src/experiment/__init__.py` | Isaac 实验场景子包标记。 |
-| `isaac_sim/src/experiment/scenario.py` | 严格解析 Isaac `dynamic.yaml`，校验动态 box 的几何、轨迹、速度、repeat 并按 seed 采样相位。 |
+| `isaac_sim/src/experiment/scenario.py` | 严格解析 Isaac physical-obstacle YAML，校验静态/动态 box 的几何、Map-frame 轨迹、触发组、速度、retire 策略和 seed 抖动。 |
 | `isaac_sim/src/experiment/dynamic_obstacles.py` | 按配置中的 USD 坐标直接创建运动学动态 box，并按仿真时间推进或 Reset；不执行 USD→Map 变换。 |
 | `isaac_sim/src/experiment/collision_monitor.py` | 读取底盘物理接触并发布 `/simulation/collision`。 |
 | `isaac_sim/src/ground_truth/__init__.py` | Ground Truth 子包标记。 |
@@ -511,7 +511,7 @@
 | --- | --- |
 | 轮径/轮距/joint | Isaac robot YAML、Wheel Odom YAML、Xacro、Nav2 Footprint和 joint 测试 |
 | 传感器外参 | Isaac robot YAML static TF、Xacro sensors、投影高度、Map Pose/地图 |
-| 出生点 | `spawn_poses.yaml`、Map Pose 标定、GT 变换、动态障碍 USD↔Map 坐标 |
+| 出生点 | 当前场景的 `*.spawn.yaml`、Map Pose 标定、GT 变换、动态障碍 USD↔Map 坐标 |
 | 动态障碍 | 对应的 Isaac physical `dynamic*.yaml` 与 ROS scenario `dynamic*.yaml` |
 | Nav2 footprint/速度 | `nav2_params.yaml`、Collision Monitor polygons和验证场景 |
 | Nav2 控制时序/负载 | `nav2_stable.yaml`、`nav2_performance.yaml`、MPPI `model_dt`、`mode_contract.py` 启动前约束和 profiler 实测 |

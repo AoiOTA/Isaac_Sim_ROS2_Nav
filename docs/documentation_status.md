@@ -21,7 +21,7 @@
 - `warehouse_new` 只批准普通 Ideal Localization/Navigation，Realistic 或显式 Pose Graph 定位会被启动脚本拒绝；
 - 标准人工导航使用两个终端、受管 RViz 和 **2D Goal Pose**，不存在项目私有目标桥；
 - `rgbd_navigation` 发布 `/camera/front/depth/points`，全局和局部 Costmap 均使用独立 `depth_voxel_layer`；Collision Monitor 仍只使用 `/scan`；
-- 当前正式全屋批次结果为静态 `20/20`、动态 `19/20`，物理无碰撞分别为 `20/20` 和 `20/20`。生成的完整报告是本地数据工件，不纳入 Git。
+- 已记录正式全屋批次 `kujiale_long_route_20260722-171828` 的自动结论为通过：静态严格/物理无碰撞均为 `20/20 (100%)`，动态严格为 `18/20 (90%)`、物理无碰撞为 `19/20 (95%)`，静态最大路径偏差为 `19.2868%`（门槛 `20%`）。这是本地报告记录，不是后续代码或参数改动的重新验收声明；完整报告不纳入 Git。
 
 ## 文档分工
 

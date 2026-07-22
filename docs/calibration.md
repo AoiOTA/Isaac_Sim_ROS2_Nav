@@ -10,8 +10,11 @@
 
 ## 1. 标定对象
 
-[`isaac_sim/configs/spawn_poses.yaml`](../isaac_sim/configs/spawn_poses.yaml)
-为同一个物理出生点保存两套坐标：
+当前酷家乐流程使用
+[`isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml`](../isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml)
+为同一个物理出生点保存两套坐标。通用
+[`isaac_sim/configs/spawn_poses.yaml`](../isaac_sim/configs/spawn_poses.yaml) 仅是其他 profile 的
+project-config fallback：
 
 - `usd`：Isaac Stage 中的 `base_link` 位姿，用于物理出生与 Reset；
 - `map`：保存地图中 `base_link` 的位姿，用于初始定位、Ground Truth
@@ -19,7 +22,7 @@
 
 OccupancyGrid YAML 中的 `origin` 是“栅格左下角在 Map 坐标系中的位置”，
 不是机器人的出生位姿。标定必须测量 `map → base_link`，不能把地图
-`origin` 抄到 `spawn_poses.yaml`。
+`origin` 抄到当前场景的 spawn-pose YAML。
 
 平面坐标关系为：
 
@@ -84,7 +87,13 @@ posegraph_calibration:=true
 Toolbox 加载指定 Pose Graph 并拥有 `map → odom`。Navigation 和普通 Ideal
 Localization 仍保持原来的 identity 定位链。
 
-## 4. 可复现标定步骤
+## 4. 已归档的 Warehouse v2 标定记录
+
+本节保留 2026-07 的 Warehouse v2 测量和当时的临时文件名，便于审计旧证据；它不再是
+当前酷家乐分支的可执行流程。不要把本节的 v2 USD、出生点或 Pose Graph 参数复制到
+`warehouse_new`。当前运行只使用第 5 节的 `warehouse_new` Ideal 入口；若要制作新的
+酷家乐地图版本，应按当前场景 spawn-pose YAML 与新 manifest 成对更新，并在当前
+`interfaces.md` 的 Map/initial-pose 契约下验证。
 
 ### 4.1 生成并冻结同版本四件套
 
@@ -120,7 +129,8 @@ data/maps/posegraphs/warehouse_v2.data
 临时副本，只在副本中填入合理初值并设置 `calibrated: true`：
 
 ```bash
-cp isaac_sim/configs/spawn_poses.yaml /tmp/spawn_poses_calibration.yaml
+cp isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml \
+  /tmp/kujiale_spawn_poses_calibration.yaml
 ```
 
 同场景同起点的新地图可以把旧 `[0, 0, 0°]` 作为 bootstrap，但它仍不是
@@ -131,7 +141,7 @@ cp isaac_sim/configs/spawn_poses.yaml /tmp/spawn_poses_calibration.yaml
 终端 A 启动 Isaac，并确保它与 ROS 使用同一个临时出生点文件：
 
 ```bash
-ISAAC_NAV__SPAWN__POSES_FILE=/tmp/spawn_poses_calibration.yaml \
+ISAAC_NAV__SPAWN__POSES_FILE=/tmp/kujiale_spawn_poses_calibration.yaml \
   ./scripts/run_isaac.sh \
   --navigation-mode localization \
   --mode ideal \

@@ -25,7 +25,7 @@ does not consume an existing map and therefore has no manifest input.
 Automatic initial pose is a stronger contract than merely having four files.
 For `initial_pose_source=auto`, the manifest must be calibrated, its
 `calibration.spawn_pose_profile` must equal `spawn_pose_name`, and the selected
-entry in `spawn_poses.yaml` must repeat the exact `map_version` and
+entry in the active spawn-pose YAML must repeat the exact `map_version` and
 `map_bundle_sha256`. `incremental_mapping` requires `auto`, so it also requires
 this calibration. `localization` and `navigation` may use an uncalibrated new
 bundle only with `initial_pose_source=rviz`, in which case the operator owns the
@@ -43,6 +43,12 @@ Localization/Navigation. It was generated while scan matching and loop closing
 were disabled, so its serialized data has no valid optimization-graph vertices.
 The launcher rejects Realistic or explicit Pose Graph localization with this
 version instead of allowing SLAM Toolbox to fail at runtime.
+
+Current Kujiale commands select
+`isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml`.
+`isaac_sim/configs/spawn_poses.yaml` remains the generic project-config fallback
+for non-Kujiale profiles; it is not the source of truth for the current
+`warehouse_new` calibration.
 
 The ROS `posegraph_file` argument is normalized to a prefix, so all of the
 following refer to the same serialized map:
@@ -199,7 +205,7 @@ Calibration binds two documents to the same identity:
 
 - the manifest names `spawn_pose_profile`, repeats its own `bundle_sha256`, and
   records the calibration time/method and measured poses;
-- `spawn_poses.yaml` marks that profile calibrated and repeats the identical
+- the active spawn-pose YAML marks that profile calibrated and repeats the identical
   `map_version` and `map_bundle_sha256` beside its Map Pose;
 - both documents must also match the exact USD position/yaw、Map position/yaw
   and position/yaw standard deviations. Keeping an old hash while editing a
@@ -385,7 +391,7 @@ The Isaac node declares these runtime parameters:
 | Parameter | Meaning |
 | --- | --- |
 | `reset_seed` | non-negative dynamic-obstacle random seed |
-| `reset_pose_name` | key in `spawn_poses.yaml`; immutable in Localization because it is bound to the startup Manifest profile |
+| `reset_pose_name` | key in the active spawn-pose YAML; immutable in Localization because it is bound to the startup Manifest profile |
 | `navigation_mode` | running Isaac mode: `mapping` or `localization` |
 | `odometry_mode` | running mode: `ideal` or `realistic` |
 
@@ -501,23 +507,29 @@ contracts. Re-tune only with comparable runtime evidence.
 
 ## Experiment scenario contract
 
-The committed static scenario is a fixed
-`warehouse_multiple_shelves_v1` smoke with an empty authored `static` obstacle
-list. Its four seeds are deterministic repetitions of that same world, not four
-random layouts. Non-empty authored static-obstacle lists are rejected because
-physical static obstacle authoring is not implemented.
+The current formal scenarios are
+`kujiale_static_long_range.yaml` and `kujiale_dynamic_long_range.yaml`. Both
+run the same `warehouse_new` closed route `G1` through `G8` from calibrated
+`mapping_start`; they are not random-layout Warehouse smoke tests. The static
+scenario requires the physical `rgbd_low_box`, while the dynamic scenario
+requires `central_crossing` (G1), `north_crossing` (G2), and `south_crossing`
+(G6). The GUI/RViz visual scenarios reuse this geometry with one seed each and
+set `record_evidence:=false`.
 
-Before any static or dynamic run, the experiment runner reads the Isaac runtime
-contract. Static runs require dynamic obstacles to be disabled. Dynamic runs
-require the enabled flag, dynamic configuration SHA256, and sorted obstacle ID
-set to match the scenario exactly; mismatches fail before Reset or goal dispatch.
+Before every static or dynamic run, the experiment runner reads the Isaac
+runtime obstacle contract. Both current scenario types require
+`--dynamic-obstacles`: static uses it to instantiate the stationary low box;
+dynamic uses it to instantiate the three triggered actors. The enabled flag,
+physical configuration SHA256 and sorted obstacle IDs must exactly match the
+scenario before Reset or goal dispatch. For dynamic scenarios the runner also
+validates each actor's shape, XY size, Map-frame endpoints and duration.
+Mismatches fail before a navigation goal is sent.
 
-The physical Isaac configuration and ROS scenario must also agree on every
-dynamic obstacle's ID, supported shape, XY dimensions, Map-frame start/end
-points, trajectory duration, and boolean `repeat`. `repeat: false` clamps the
-obstacle at its endpoint after one traversal; `repeat: true` makes it traverse
-back and forth. Both documents must state the value explicitly. The committed
-dynamic baseline currently uses `repeat: false` for both obstacles.
+The static low box is a physical `0.30 × 0.30 × 0.16 m` obstacle. Each dynamic
+actor is one-shot and enters `retired` after motion, disabling its visibility
+and collision instead of permanently blocking the route. The route and obstacle
+coordinates are shown in [`kujiale_long_route_map.md`](kujiale_long_route_map.md);
+the exact machine-readable definitions remain the scenario and Isaac YAML files.
 
 For calibrated Ideal Localization/Navigation, Isaac already publishes the
 authoritative `odom -> base_link`. ROS therefore serves the immutable map and
