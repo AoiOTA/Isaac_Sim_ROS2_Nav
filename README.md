@@ -132,6 +132,9 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推送到 Git；受版本
 控制的是生成器、场景、校验规则和文档。
 
+自动启动静态 20 轮、动态 20 轮、汇总并核验自包含报告的完整命令见
+[`docs/user_manual.md`](docs/user_manual.md)。
+
 ## 文档入口
 
 | 文档 | 用途 |
