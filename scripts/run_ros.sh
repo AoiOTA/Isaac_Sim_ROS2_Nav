@@ -25,6 +25,11 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
 fi
 ensure_dedicated_process_group "${original_args[@]}"
 acquire_instance_lock ros "ROS stack"
+# The supervisor retains this descriptor while it waits for ros2 launch.  Do
+# not leak it into launch children: managed RViz deliberately creates a new
+# session, so an inherited descriptor would otherwise keep ros.lock held after
+# the ROS launch leader exits.
+ros_lock_fd="${ISAAC_NAV_LOCK_FDS[-1]}"
 export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml}"
 
 launch_args=("$@")
@@ -167,7 +172,7 @@ trap 'ordered_stop HUP' HUP
 trap cleanup_launch_process EXIT
 
 setsid -- ros2 launch robot_bringup \
-  "${operation}_bringup.launch.py" "${launch_args[@]}" &
+  "${operation}_bringup.launch.py" "${launch_args[@]}" {ros_lock_fd}>&- &
 launch_pid=$!
 
 launch_status=0

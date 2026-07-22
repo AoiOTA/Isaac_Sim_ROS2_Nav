@@ -6,4 +6,12 @@
       Project-owned Nav2 panel with cooperative QThread and QFuture shutdown.
     </description>
   </class>
+  <class name="robot_rviz_plugins/Voxel Grid"
+         type="robot_rviz_plugins::VoxelGridDisplay"
+         base_class_type="rviz_common::Display">
+    <description>
+      Displays the marked cells in a nav2_msgs/VoxelGrid as colored 3D points or boxes.
+    </description>
+    <message_type>nav2_msgs/msg/VoxelGrid</message_type>
+  </class>
 </library>
