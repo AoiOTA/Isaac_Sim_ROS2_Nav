@@ -12,7 +12,7 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/config", glob("config/*.yaml")),
+        (f"share/{package_name}/config", glob("config/*.yaml") + glob("config/*.json")),
         (f"share/{package_name}/launch", glob("launch/*.launch.py")),
     ],
     install_requires=["setuptools", "PyYAML"],
@@ -29,6 +29,8 @@ setup(
             "initial_pose_publisher = robot_experiments.initial_pose_publisher:main",
             "motion_benchmark = robot_experiments.motion_benchmark:main",
             "navigation_benchmark = robot_experiments.navigation_benchmark:main",
+            "kujiale_campaign = robot_experiments.kujiale_campaign:main",
+            "kujiale_reference = robot_experiments.kujiale_reference:main",
         ],
     },
 )

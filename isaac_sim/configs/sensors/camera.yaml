@@ -51,10 +51,13 @@ cameras:
       qos_profile: camera_sensor_data
       queue_size: 2
     depth:
-      enabled: false
+      # Keep the raw depth stream alongside the point cloud.  The point cloud
+      # feeds Nav2's VoxelLayer; the image is retained as RGB-D evidence for
+      # the low-obstacle Pilot and failed-run artifacts.
+      enabled: true
       topic_name: depth/image_raw
       qos_profile: camera_sensor_data
-      queue_size: 1
+      queue_size: 2
     depth_points:
       enabled: true
       topic_name: depth/points
@@ -65,7 +68,10 @@ cameras:
       far: 100.0
     optics:
       projection: perspective
-      focal_length_mm: 24.0
+      # The low RGB-D validation box starts lateral to the robot's initial
+      # heading.  A ~105 degree horizontal FOV observes it while turning to
+      # G1, before the local controller reaches the collision envelope.
+      focal_length_mm: 8.0
       horizontal_aperture_mm: 21.0
       vertical_aperture_mode: match_profile_aspect_ratio
       focus_distance_m: 4.0

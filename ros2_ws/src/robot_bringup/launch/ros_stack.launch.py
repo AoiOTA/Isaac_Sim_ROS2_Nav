@@ -391,6 +391,12 @@ def generate_launch_description():
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        # Keep the manifest explicit at the core-launch boundary so direct
+        # users get the same map-integrity validation as the wrapper launches.
+        DeclareLaunchArgument(
+            'map_manifest_file',
+            default_value='',
+            description='optional map-bundle manifest used to validate map and posegraph inputs'),
         DeclareLaunchArgument(
             'posegraph_calibration',
             default_value='false',

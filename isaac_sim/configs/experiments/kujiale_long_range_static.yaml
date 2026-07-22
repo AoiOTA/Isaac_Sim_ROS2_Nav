@@ -1,0 +1,8 @@
+# Schema v2 physical representation of the RGB-D-only low obstacle.
+schema_version: 2
+seed: 7201
+enabled: false
+coordinate_frame: map
+spawn_pose_name: mapping_start
+obstacles:
+  - {id: rgbd_low_box, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.15, 0.70, 0.08], end: [-0.15, 0.70, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}

@@ -19,6 +19,7 @@ def generate_launch_description():
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument('map_manifest_file', default_value=''),
         DeclareLaunchArgument(
             'posegraph_calibration', default_value='false'),
         DeclareLaunchArgument('robot_description_file', default_value=''),
@@ -53,6 +54,8 @@ def generate_launch_description():
                 'ceres_num_threads': LaunchConfiguration(
                     'ceres_num_threads'),
                 'map_file': LaunchConfiguration('map_file'),
+                'map_manifest_file': LaunchConfiguration(
+                    'map_manifest_file'),
                 'posegraph_calibration': LaunchConfiguration(
                     'posegraph_calibration'),
                 'robot_description_file': LaunchConfiguration(

@@ -276,9 +276,9 @@ def test_dynamic_waypoint_times_must_increase(tmp_path):
         (lambda scenario: scenario.__setitem__("unknown", True), "unknown scenario keys"),
         (
             lambda scenario: scenario["obstacles"]["static"].append(
-                {"id": "not_authored"}
+                {"id": "not_authored", "unexpected": True}
             ),
-            "not implemented",
+            "unknown scenario.obstacles.static",
         ),
     ],
 )

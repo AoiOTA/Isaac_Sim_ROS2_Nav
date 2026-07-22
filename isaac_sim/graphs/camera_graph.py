@@ -15,6 +15,7 @@ from isaac_sim.src.sensors.sensor_factory import CameraConfig, CameraRuntime
 class CameraRosContract:
     image_topic: str
     camera_info_topic: str
+    depth_topic: str
     depth_points_topic: str
     optical_frame: str
     qos_profile: str
@@ -37,6 +38,7 @@ def validate_camera_ros_contract(
     camera_info_topic = _qualified_topic(
         camera.node_namespace, camera.camera_info.topic_name
     )
+    depth_topic = _qualified_topic(camera.node_namespace, camera.depth.topic_name)
     depth_points_topic = _qualified_topic(
         camera.node_namespace, camera.depth_points.topic_name
     )
@@ -50,6 +52,11 @@ def validate_camera_ros_contract(
             f"CameraInfo topic mismatch: config={camera_info_topic}, "
             f"contract={topics['camera_front_info']}"
         )
+    if depth_topic != topics["camera_front_depth"]:
+        raise ValueError(
+            f"Camera depth topic mismatch: config={depth_topic}, "
+            f"contract={topics['camera_front_depth']}"
+        )
     if depth_points_topic != topics["camera_front_depth_points"]:
         raise ValueError(
             f"Camera depth points topic mismatch: config={depth_points_topic}, "
@@ -60,7 +67,7 @@ def validate_camera_ros_contract(
     if camera.optical_frame != topics["frames"]["camera_front_optical"]:
         raise ValueError("Camera optical frame does not match ROS frame contract")
     if len({camera.rgb.qos_profile, camera.camera_info.qos_profile,
-            camera.depth_points.qos_profile}) != 1:
+            camera.depth.qos_profile, camera.depth_points.qos_profile}) != 1:
         raise ValueError("Camera stream QoS profiles must match")
     try:
         encoded_qos = qos_profiles[camera.rgb.qos_profile]
@@ -82,6 +89,7 @@ def validate_camera_ros_contract(
     return CameraRosContract(
         image_topic=image_topic,
         camera_info_topic=camera_info_topic,
+        depth_topic=depth_topic,
         depth_points_topic=depth_points_topic,
         optical_frame=camera.optical_frame,
         qos_profile=encoded_qos,
@@ -101,16 +109,18 @@ def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec
             f"{contract.optical_frame}"
         )
     if len({camera.rgb.qos_profile, camera.camera_info.qos_profile,
-            camera.depth_points.qos_profile}) != 1:
+            camera.depth.qos_profile, camera.depth_points.qos_profile}) != 1:
         raise ValueError("Camera runtime streams must share one QoS profile")
     nodes = [
         ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
         ("PublishRGB", "isaacsim.ros2.bridge.ROS2CameraHelper"),
         ("PublishCameraInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
+        ("PublishDepth", "isaacsim.ros2.bridge.ROS2CameraHelper"),
     ]
     connections = [
         ("OnPlaybackTick.outputs:tick", "PublishRGB.inputs:execIn"),
         ("OnPlaybackTick.outputs:tick", "PublishCameraInfo.inputs:execIn"),
+        ("OnPlaybackTick.outputs:tick", "PublishDepth.inputs:execIn"),
     ]
     values = [
         ("PublishRGB.inputs:enabled", True),
@@ -135,6 +145,16 @@ def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec
         ("PublishCameraInfo.inputs:qosProfile", contract.qos_profile),
         ("PublishCameraInfo.inputs:useSystemTime", False),
         ("PublishCameraInfo.inputs:resetSimulationTimeOnStop", False),
+        ("PublishDepth.inputs:enabled", True),
+        ("PublishDepth.inputs:renderProductPath", camera.render_product_path),
+        ("PublishDepth.inputs:type", "depth"),
+        ("PublishDepth.inputs:frameId", camera.optical_frame),
+        ("PublishDepth.inputs:nodeNamespace", camera.node_namespace),
+        ("PublishDepth.inputs:topicName", camera.depth.topic_name),
+        ("PublishDepth.inputs:queueSize", camera.depth.queue_size),
+        ("PublishDepth.inputs:qosProfile", contract.qos_profile),
+        ("PublishDepth.inputs:useSystemTime", False),
+        ("PublishDepth.inputs:resetSimulationTimeOnStop", False),
     ]
     if camera.depth_points_enabled:
         nodes.append(("PublishDepthPoints", "isaacsim.ros2.bridge.ROS2CameraHelper"))

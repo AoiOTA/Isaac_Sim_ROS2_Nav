@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -35,18 +35,22 @@ DYNAMIC_DURATION_TOLERANCE_SEC = 1.0e-4
 
 @dataclass(frozen=True)
 class Goal:
+    goal_id: str | None = field(compare=False)
     frame_id: str
     position: tuple[float, float]
     yaw_deg: float
     require_orientation: bool
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "frame_id": self.frame_id,
             "position": list(self.position),
             "yaw_deg": self.yaw_deg,
             "require_orientation": self.require_orientation,
         }
+        if self.goal_id is not None:
+            result["id"] = self.goal_id
+        return result
 
 
 @dataclass(frozen=True)
@@ -71,12 +75,14 @@ class Scenario:
     scenario_type: str
     seeds: tuple[int, ...]
     timeout_sec: float
+    leg_timeout_sec: float
     spawn_pose_name: str
     map_version: str
     posegraph_version: str
     robot_config_file: str
     nav2_config_file: str
     dynamic_config_file: str | None
+    optimal_reference_file: str | None
     physics_dt: float
     rtf: float
     goal: Goal
@@ -103,6 +109,7 @@ class _PhysicalObstacle:
     end: tuple[float, float, float]
     speed: float
     repeat: bool
+    coordinate_frame: str
 
 
 def _positive(value: Any, location: str, *, allow_zero: bool = False) -> float:
@@ -156,7 +163,7 @@ def _validate_dynamic_trajectories(obstacles: Mapping[str, Any]) -> tuple[Mappin
         trajectory = require_mapping(item, f"scenario.obstacles.trajectories[{index}]")
         _reject_unknown(
             trajectory,
-            {"id", "motion", "shape", "repeat", "dimensions", "waypoints"},
+            {"id", "motion", "shape", "repeat", "dimensions", "waypoints", "trigger_group"},
             f"scenario.obstacles.trajectories[{index}]",
         )
         identifier = require_string(trajectory.get("id"), f"trajectory[{index}].id")
@@ -168,6 +175,11 @@ def _validate_dynamic_trajectories(obstacles: Mapping[str, Any]) -> tuple[Mappin
         motion = require_string(trajectory.get("motion"), f"trajectory[{index}].motion")
         if motion not in DYNAMIC_MOTIONS:
             raise ConfigurationError(f"unsupported dynamic motion {motion!r}")
+        if trajectory.get("trigger_group") is not None:
+            require_string(
+                trajectory.get("trigger_group"),
+                f"trajectory[{index}].trigger_group",
+            )
         if trajectory.get("shape") != "box":
             raise ConfigurationError(
                 f"trajectory[{index}].shape must be 'box'"
@@ -223,11 +235,10 @@ def _validate_obstacles(
     static = obstacles.get("static")
     if not isinstance(static, list):
         raise ConfigurationError("scenario.obstacles.static must be a list")
-    if static:
-        raise ConfigurationError(
-            "non-empty static obstacle authoring is not implemented; "
-            "use the composed warehouse layout"
-        )
+    for index, item in enumerate(static):
+        obstacle = require_mapping(item, f"scenario.obstacles.static[{index}]")
+        _reject_unknown(obstacle, {"id"}, f"scenario.obstacles.static[{index}]")
+        require_string(obstacle.get("id"), f"scenario.obstacles.static[{index}].id")
     trajectories = obstacles.get("trajectories")
     if not isinstance(trajectories, list):
         raise ConfigurationError("scenario.obstacles.trajectories must be a list")
@@ -244,7 +255,7 @@ def _parse_goal(value: Any, location: str) -> Goal:
     raw = require_mapping(value, location)
     _reject_unknown(
         raw,
-        {"frame_id", "position", "yaw_deg", "require_orientation"},
+        {"id", "frame_id", "position", "yaw_deg", "require_orientation"},
         location,
     )
     frame_id = require_string(raw.get("frame_id"), f"{location}.frame_id")
@@ -255,7 +266,11 @@ def _parse_goal(value: Any, location: str) -> Goal:
         raise ConfigurationError(
             f"{location}.require_orientation must be boolean"
         )
+    identifier = raw.get("id")
+    if identifier is not None:
+        identifier = require_string(identifier, f"{location}.id")
     return Goal(
+        goal_id=identifier,
         frame_id=frame_id,
         position=require_vector(raw.get("position"), 2, f"{location}.position"),
         yaw_deg=require_finite(raw.get("yaw_deg"), f"{location}.yaw_deg"),
@@ -274,6 +289,20 @@ def _parse_route(value: Any, final_goal: Goal) -> tuple[Goal, ...]:
         _parse_goal(item, f"scenario.route[{index}]")
         for index, item in enumerate(value)
     )
+    identifiers = [item.goal_id for item in route]
+    if any(identifier is None for identifier in identifiers):
+        route = tuple(
+            Goal(
+                goal_id=f"G{index}",
+                frame_id=item.frame_id,
+                position=item.position,
+                yaw_deg=item.yaw_deg,
+                require_orientation=item.require_orientation,
+            )
+            for index, item in enumerate(route, start=1)
+        )
+    elif len(set(identifiers)) != len(identifiers):
+        raise ConfigurationError("scenario.route goal ids must be unique")
     for previous, current in zip(route, route[1:]):
         if math.dist(previous.position, current.position) <= 1.0e-6:
             raise ConfigurationError(
@@ -330,14 +359,14 @@ def _load_physical_dynamic_obstacles(
 ) -> dict[str, _PhysicalObstacle]:
     source = Path(path).expanduser().resolve()
     document = load_yaml_mapping(source)
-    _reject_unknown(
-        document,
-        {"schema_version", "seed", "enabled", "obstacles"},
-        "physical dynamic obstacle document",
-    )
-    if document.get("schema_version") != 1:
+    version = document.get("schema_version")
+    allowed_document = {"schema_version", "seed", "enabled", "obstacles"}
+    if version == 2:
+        allowed_document |= {"coordinate_frame", "spawn_pose_name"}
+    _reject_unknown(document, allowed_document, "physical dynamic obstacle document")
+    if version not in {1, 2}:
         raise ConfigurationError(
-            "physical dynamic obstacle schema_version must be 1"
+            "physical dynamic obstacle schema_version must be 1 or 2"
         )
     seed = document.get("seed")
     if isinstance(seed, bool) or not isinstance(seed, int):
@@ -350,8 +379,11 @@ def _load_physical_dynamic_obstacles(
             "physical dynamic obstacles must be a non-empty list"
         )
 
+    coordinate_frame = document.get("coordinate_frame", "usd")
+    if coordinate_frame not in {"usd", "map"}:
+        raise ConfigurationError("physical dynamic obstacle coordinate_frame must be usd or map")
     parsed: dict[str, _PhysicalObstacle] = {}
-    allowed = {
+    allowed_v1 = {
         "id",
         "shape",
         "size",
@@ -362,9 +394,14 @@ def _load_physical_dynamic_obstacles(
         "phase_jitter",
         "repeat",
     }
+    allowed_v2 = {
+        "id", "mode", "trigger_group", "size", "mass", "start", "end", "speed",
+        "delay_sec", "jitter_sec", "post_motion",
+    }
     for index, value in enumerate(raw_obstacles):
         location = f"physical dynamic obstacles[{index}]"
         obstacle = require_mapping(value, location)
+        allowed = allowed_v1 if version == 1 else allowed_v2
         _reject_unknown(obstacle, allowed, location)
         missing = sorted(allowed - set(obstacle))
         if missing:
@@ -374,7 +411,7 @@ def _load_physical_dynamic_obstacles(
             raise ConfigurationError(
                 f"duplicate physical dynamic obstacle id {identifier!r}"
             )
-        shape = require_string(obstacle.get("shape"), f"{location}.shape")
+        shape = "cube" if version == 2 else require_string(obstacle.get("shape"), f"{location}.shape")
         if shape != "cube":
             raise ConfigurationError(
                 f"physical dynamic obstacle {identifier!r} shape must be 'cube'"
@@ -391,25 +428,29 @@ def _load_physical_dynamic_obstacles(
             )
         start = require_vector(obstacle.get("start"), 3, f"{location}.start")
         end = require_vector(obstacle.get("end"), 3, f"{location}.end")
+        mode = obstacle.get("mode", "linear")
+        if mode not in {"linear", "stationary"}:
+            raise ConfigurationError(f"physical dynamic obstacle {identifier!r} mode is invalid")
         distance = math.dist(start, end)
-        if distance <= 0.0:
+        if mode == "linear" and distance <= 0.0:
             raise ConfigurationError(
                 f"physical dynamic obstacle {identifier!r} path must be non-zero"
             )
         speed = require_finite(obstacle.get("speed"), f"{location}.speed")
-        if speed <= 0.0:
+        if speed < 0.0 or (mode == "linear" and speed <= 0.0):
             raise ConfigurationError(
                 f"physical dynamic obstacle {identifier!r} speed must be positive"
             )
         phase_jitter = require_finite(
-            obstacle.get("phase_jitter"), f"{location}.phase_jitter"
+            obstacle.get("phase_jitter") if version == 1 else obstacle.get("jitter_sec"),
+            f"{location}.phase_jitter",
         )
         if phase_jitter < 0.0:
             raise ConfigurationError(
                 f"physical dynamic obstacle {identifier!r} phase_jitter "
                 "must be non-negative"
             )
-        repeat = obstacle.get("repeat")
+        repeat = obstacle.get("repeat", False)
         if not isinstance(repeat, bool):
             raise ConfigurationError(
                 f"physical dynamic obstacle {identifier!r} repeat must be boolean"
@@ -422,6 +463,7 @@ def _load_physical_dynamic_obstacles(
             end=(end[0], end[1], end[2]),
             speed=speed,
             repeat=repeat,
+            coordinate_frame=coordinate_frame,
         )
     return parsed
 
@@ -533,12 +575,16 @@ def validate_dynamic_physical_contract(
             2,
             f"trajectory {identifier!r} last position",
         )
-        physical_start = project_usd_xy_to_map(
-            (obstacle.start[0], obstacle.start[1]), spawn_pose
-        )
-        physical_end = project_usd_xy_to_map(
-            (obstacle.end[0], obstacle.end[1]), spawn_pose
-        )
+        if obstacle.coordinate_frame == "map":
+            physical_start = (obstacle.start[0], obstacle.start[1])
+            physical_end = (obstacle.end[0], obstacle.end[1])
+        else:
+            physical_start = project_usd_xy_to_map(
+                (obstacle.start[0], obstacle.start[1]), spawn_pose
+            )
+            physical_end = project_usd_xy_to_map(
+                (obstacle.end[0], obstacle.end[1]), spawn_pose
+            )
         if not _close_sequence(
             physical_start,
             (scenario_start[0], scenario_start[1]),
@@ -582,9 +628,28 @@ def validate_dynamic_runtime_contract(
 ) -> None:
     """Verify the Isaac process is running the physical obstacle set claimed."""
     if scenario.scenario_type == "static":
-        if runtime_enabled:
+        if scenario.dynamic_config_file is None:
+            if runtime_enabled:
+                raise ConfigurationError(
+                    "static scenario without a physical obstacle config requires Isaac dynamic obstacles to be disabled"
+                )
+            return
+        if not runtime_enabled:
             raise ConfigurationError(
-                "static scenario requires Isaac dynamic obstacles to be disabled"
+                "static physical-obstacle scenario requires Isaac --dynamic-obstacles"
+            )
+        if not expected_config_hash or runtime_config_hash != expected_config_hash:
+            raise ConfigurationError(
+                "Isaac static obstacle configuration hash does not match the scenario"
+            )
+        expected_ids = tuple(sorted(
+            require_string(item.get("id"), "static obstacle id")
+            for item in scenario.obstacles.get("static", [])
+        ))
+        if tuple(sorted(runtime_obstacle_ids)) != expected_ids:
+            raise ConfigurationError(
+                "Isaac static obstacle IDs do not match the scenario: "
+                f"expected={expected_ids}, runtime={tuple(sorted(runtime_obstacle_ids))}"
             )
         return
     if scenario.scenario_type != "dynamic":
@@ -649,12 +714,12 @@ def load_scenario(path: str | Path) -> Scenario:
     success_raw = require_mapping(raw.get("success"), "scenario.success")
     obstacles = require_mapping(raw.get("obstacles"), "scenario.obstacles")
     _reject_unknown(
-        configs, {"robot", "nav2", "dynamic_obstacles"}, "scenario.configs"
+        configs, {"robot", "nav2", "dynamic_obstacles", "optimal_reference"}, "scenario.configs"
     )
     _reject_unknown(
         simulation, {"physics_dt", "rtf"}, "scenario.simulation"
     )
-    _reject_unknown(runs, {"seeds", "timeout_sec"}, "scenario.runs")
+    _reject_unknown(runs, {"seeds", "timeout_sec", "leg_timeout_sec"}, "scenario.runs")
     _reject_unknown(
         success_raw,
         {
@@ -698,15 +763,24 @@ def load_scenario(path: str | Path) -> Scenario:
     trajectories = _validate_obstacles(obstacles, scenario_type)
     incremental: Mapping[str, Any] | None = None
     dynamic_config_file: str | None = None
+    optimal_reference_file: str | None = None
+    if configs.get("optimal_reference") is not None:
+        optimal_reference_file = require_string(
+            configs.get("optimal_reference"), "scenario.configs.optimal_reference"
+        )
     configured_dynamic = configs.get("dynamic_obstacles")
     if scenario_type == "dynamic":
         dynamic_config_file = require_string(
             configured_dynamic, "scenario.configs.dynamic_obstacles"
         )
     elif configured_dynamic is not None:
-        raise ConfigurationError(
-            "scenario.configs.dynamic_obstacles is only valid for dynamic scenarios"
+        dynamic_config_file = require_string(
+            configured_dynamic, "scenario.configs.dynamic_obstacles"
         )
+        if not obstacles.get("static"):
+            raise ConfigurationError(
+                "static physical obstacle config requires scenario.obstacles.static"
+            )
 
     if scenario_type == "incremental":
         incremental = require_mapping(raw.get("incremental_mapping"), "scenario.incremental_mapping")
@@ -750,12 +824,17 @@ def load_scenario(path: str | Path) -> Scenario:
         scenario_type=scenario_type,
         seeds=_parse_seeds(runs),
         timeout_sec=_positive(runs.get("timeout_sec"), "scenario.runs.timeout_sec"),
+        leg_timeout_sec=_positive(
+            runs.get("leg_timeout_sec", runs.get("timeout_sec")),
+            "scenario.runs.leg_timeout_sec",
+        ),
         spawn_pose_name=require_string(raw.get("spawn_pose_name"), "scenario.spawn_pose_name"),
         map_version=require_string(raw.get("map_version"), "scenario.map_version"),
         posegraph_version=require_string(raw.get("posegraph_version"), "scenario.posegraph_version"),
         robot_config_file=require_string(configs.get("robot"), "scenario.configs.robot"),
         nav2_config_file=require_string(configs.get("nav2"), "scenario.configs.nav2"),
         dynamic_config_file=dynamic_config_file,
+        optimal_reference_file=optimal_reference_file,
         physics_dt=_positive(simulation.get("physics_dt"), "scenario.simulation.physics_dt"),
         rtf=_positive(simulation.get("rtf"), "scenario.simulation.rtf"),
         goal=goal,
