@@ -367,7 +367,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `ros2_ws/src/robot_experiments/package.xml` | 实验 ROS 包元数据及 Nav2 action、TF、lifecycle、YAML 等依赖。 |
-| `ros2_ws/src/robot_experiments/setup.py` | 安装配置/launch并注册 experiment runner、initial pose、incremental comparator、runtime profiler 与 opt-in scan fault bridge CLI。 |
+| `ros2_ws/src/robot_experiments/setup.py` | 安装配置/launch并注册 experiment runner、Kujiale campaign/report、initial pose、incremental comparator、runtime profiler 与 opt-in scan fault bridge CLI。 |
 | `ros2_ws/src/robot_experiments/setup.cfg` | Python ROS 可执行文件安装规则和 flake8 配置。 |
 | `ros2_ws/src/robot_experiments/resource/robot_experiments` | ament resource index 标记。 |
 | `ros2_ws/src/robot_experiments/config/scenario.schema.yaml` | Static/Dynamic/Incremental 场景 YAML 的结构、类型和必需字段定义。 |
@@ -378,6 +378,14 @@
 | `ros2_ws/src/robot_experiments/config/dynamic_benchmark.yaml` | Realistic 远距离动态验收：同起止点、20 seeds，并与 Isaac 横穿/对向实体障碍配置严格对齐。 |
 | `ros2_ws/src/robot_experiments/config/static_complex_route.yaml` | Ideal 前进优先复杂静态验收：6 个强制航点、约 50 m 路线、3 seeds 和运动质量门。 |
 | `ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml` | Ideal 复杂动态验收：与四个物理移动障碍严格对齐的 6 航点、3-seed 长路线。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_pilot.yaml` | 酷家乐静态 Pilot：G1–G8、RGB-D 低矮方块和 3 个 seed；不计入正式批次。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_pilot.yaml` | 酷家乐动态 Pilot：G1–G8、三个触发障碍和 3 个 seed；不计入正式批次。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml` | GUI + RViz 静态可视化回归：固定 seed 7201，runner 自动跑完整 G1–G8 与低矮方块。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | GUI + RViz 动态可视化回归：固定 seed 7301，runner 自动跑 G1–G8 并触发三个动态障碍。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐正式静态 20 轮：冻结 seed 7201–7220、G1–G8、低矮方块与理论路径参考。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 酷家乐正式动态 20 轮：冻结 seed 7301–7320、G1–G8 与三个触发障碍。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 正式酷家乐 20+20 批次的路线、门槛、障碍和固定 seed 总定义。 |
+| `ros2_ws/src/robot_experiments/config/optimal_reference.json` | 正式静态路线的冻结 footprint-aware 理论长度、地图哈希和障碍多边形。 |
 | `ros2_ws/src/robot_experiments/config/motion_benchmark.yaml` | 底盘直线、原地旋转、正反圆弧、蛇形和快速反向的自动运动基准。 |
 | `ros2_ws/src/robot_experiments/config/incremental_mapping.yaml` | 增量建图工作流描述符；NavigateToPose runner 会明确拒绝它。 |
 | `ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml` | 三地图离线比较模板；路径、耗时、真实变化矩形为必填占位。 |

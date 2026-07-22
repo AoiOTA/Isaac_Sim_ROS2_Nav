@@ -52,6 +52,8 @@ def test_package_metadata_declares_runtime_contract():
         "static_benchmark.yaml",
         "dynamic.yaml",
         "dynamic_benchmark.yaml",
+        "kujiale_static_visual.yaml",
+        "kujiale_dynamic_visual.yaml",
         "incremental_mapping.yaml",
     ],
 )

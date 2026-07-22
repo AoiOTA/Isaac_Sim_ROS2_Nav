@@ -34,6 +34,8 @@ FIXTURES = Path(__file__).parent / "fixtures"
         ("dynamic.yaml", "dynamic", 4),
         ("dynamic_benchmark.yaml", "dynamic", 20),
         ("dynamic_complex_route.yaml", "dynamic", 3),
+        ("kujiale_static_visual.yaml", "static", 1),
+        ("kujiale_dynamic_visual.yaml", "dynamic", 1),
         ("incremental_mapping.yaml", "incremental", 1),
     ],
 )
@@ -68,6 +70,7 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         "dynamic.yaml",
         "dynamic_benchmark.yaml",
         "dynamic_complex_route.yaml",
+        "kujiale_dynamic_visual.yaml",
     ):
         scenario = load_scenario(CONFIG / filename)
         spawn_pose = load_spawn_pose(
@@ -80,6 +83,17 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
             spawn_pose,
             scenario.resolve_path(scenario.dynamic_config_file),
         )
+
+
+def test_kujiale_visual_scenarios_are_one_complete_g1_to_g8_route():
+    static = load_scenario(CONFIG / "kujiale_static_visual.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_dynamic_visual.yaml")
+    assert static.seeds == (7201,)
+    assert dynamic.seeds == (7301,)
+    assert [goal.goal_id for goal in static.route] == [f"G{index}" for index in range(1, 9)]
+    assert [goal.goal_id for goal in dynamic.route] == [f"G{index}" for index in range(1, 9)]
+    assert static.route[-1] == static.goal
+    assert dynamic.route[-1] == dynamic.goal
 
 
 def test_complex_routes_are_long_continuous_and_end_at_goal():
