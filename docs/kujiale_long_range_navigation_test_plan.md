@@ -66,14 +66,14 @@ G4 对应 USD 坐标约 `[6.15, 0.25]`，位于语义节点 `/Root/Meshes/bathro
 - USD 中心约：`[3.05, -0.90, 0.08]`；
 - 尺寸：`0.30 x 0.30 x 0.16 m`；
 - 位于 S 到 G1 的通行区域，周围保留可绕行空间；
-- 障碍顶面低于 LiDAR 扫描高度，必须由 RGB-D、VoxelLayer 和 Local Costmap 识别；
+- 障碍顶面低于 LiDAR 扫描高度，必须由 RGB-D、VoxelLayer 以及全局/局部 Costmap 识别；
 - 正式种子固定为 `7201` 至 `7220`。
 
 正式实验前的 Pilot 必须证明：
 
 - `/scan` 没有直接检测该方块；
 - RGB-D 深度数据包含有效障碍观测；
-- VoxelLayer 和 Local Costmap 成功形成障碍标记；
+- 全局/局部 VoxelLayer 和 Costmap 成功形成障碍标记；
 - 机器人确实绕行且没有接触；
 - Reset 后相关 Costmap 残留能够在规定时间内清除。
 

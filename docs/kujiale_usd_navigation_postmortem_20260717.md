@@ -2,6 +2,8 @@
 
 本文记录 2026-07-17 将项目从官方 `warehouse_v2` 切换到酷家乐自建室内 USD 后，围绕资产加载、仿真组合、RTX LiDAR、TF、建图、地图标定、RViz、跟随相机和狭窄空间导航遇到的问题、根因、修复方法与验证结果。
 
+> 文档状态：历史复盘。当前酷家乐手动导航默认值是 `warehouse_new` + Ideal Odometry；可执行命令和现行接口以 [`user_manual.md`](user_manual.md) 与 [`interfaces.md`](interfaces.md) 为准，正式 20+20 批次结果以 [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) 为准。
+
 这不是一份“所有告警都已消失”的报告。本文会明确区分已经解决的运行问题、不会阻塞当前 Ideal 导航的源资产告警，以及尚未进入本阶段验收范围的能力。
 
 ## 1. 本次工作的范围和最终状态

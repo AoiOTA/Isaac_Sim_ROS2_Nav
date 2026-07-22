@@ -4,6 +4,8 @@ This document is the runtime contract for the current Isaac Sim standalone and
 ROS 2 bringup. It describes what the implementation publishes today, not every
 interface proposed in `plan.md`.
 
+> 最近复核：2026-07-22。执行命令优先使用 [`user_manual.md`](user_manual.md)；历史文档的描述与本文件冲突时，以本文件、启动脚本和配置为准。
+
 ## Mode pairing
 
 | ROS operation | Isaac `--navigation-mode` | SLAM executable | Pose Graph requirement | Occupancy map requirement | Nav2 |
@@ -132,7 +134,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | candidate-sample visualization | Reliable + Volatile, expensive/lazy; current saved Navigation RViz layout enables its display |
 | `/camera/front/image_raw` | `sensor_msgs/msg/Image` | Isaac front Camera graph | RViz or external perception/recording only | `camera_front_optical_frame`, `rgb8`; profile rate/resolution; Best Effort + Volatile, depth 2 |
 | `/camera/front/camera_info` | `sensor_msgs/msg/CameraInfo` | same Isaac Render Product as Image | camera calibration consumers and profiler pairing | same frame, simulated stamp and QoS as Image; Best Effort + Volatile, depth 2 |
-| `/camera/front/depth/points` | `sensor_msgs/msg/PointCloud2` | Isaac Camera graph (`rgbd_navigation` only) | Local Costmap `depth_voxel_layer`, RViz | `camera_front_optical_frame`, 10 Hz target; Best Effort + Volatile, depth 2 |
+| `/camera/front/depth/points` | `sensor_msgs/msg/PointCloud2` | Isaac Camera graph (`rgbd_navigation` only) | Local and Global Costmap `depth_voxel_layer`, RViz | `camera_front_optical_frame`, 10 Hz target; Best Effort + Volatile, depth 2 |
 | `/local_costmap/voxel_grid` | `nav2_msgs/msg/VoxelGrid` | Local Costmap `depth_voxel_layer` | `robot_rviz_plugins/Voxel Grid` display | Local Costmap frame; Reliable + Volatile; only `MARKED` cells are rendered as 3D boxes |
 | `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node/Isaac Reset in `auto`, or RViz in `rviz` | SLAM Toolbox localization | `map`; Reliable + Volatile; invalid frame/non-finite/non-normalized manual poses are ignored |
 | `/initial_pose/status` | `std_msgs/msg/String` | calibrated initial-pose node | operator and recovery diagnostics | transient-local state such as waiting clock/scan/TF, complete, or manual override |

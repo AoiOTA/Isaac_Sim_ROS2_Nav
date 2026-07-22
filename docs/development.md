@@ -172,6 +172,6 @@ commit only deliberately curated summaries.
 Follow `CONTRIBUTING.md`: keep code, its configuration, tests, and necessary
 documentation in one coherent commit. Do not commit the externally licensed
 warehouse source, rosbags, generated experiment batches, or simulator logs. The
-deliberately curated `warehouse_v2` map bundle is the exception: its manifest
-pins every digest and its large Pose Graph is stored with Git LFS. See
+deliberately curated `warehouse_new` map bundle is this branch's exception: its
+manifest pins every digest and its large Pose Graph is stored with Git LFS. See
 `data/README.md` before versioning another map or pose graph.

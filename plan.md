@@ -14,9 +14,9 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 该路径及原始系统目标来自现有方案。
 
-## 0. 修订说明与当前状态（2026-07-13）
+## 0. 修订说明与当前状态（2026-07-22）
 
-本文最初是项目从零搭建时的完整设计方案，后续章节仍保留当时的目标、SOP 和最终统计验收标准，便于回溯为什么采用当前架构。它不是“所有目标均已验收”的声明；第一次使用仓库请先看 [`docs/user_manual.md`](docs/user_manual.md)，逐文件理解请看 [`docs/repository_index.md`](docs/repository_index.md)，当前实测证据和明确边界以 [`docs/verification.md`](docs/verification.md) 为准。
+本文最初是项目从零搭建时的完整设计方案，后续章节仍保留当时的目标、SOP 和最终统计验收标准，便于回溯为什么采用当前架构。它不是当前可执行手册，也不是“所有目标均已验收”的声明；第一次使用仓库请先看 [`docs/user_manual.md`](docs/user_manual.md)，逐文件理解请看 [`docs/repository_index.md`](docs/repository_index.md)，当前接口以 [`docs/interfaces.md`](docs/interfaces.md) 为准，当前实测证据和明确边界以 [`docs/verification.md`](docs/verification.md) 为准。文档角色总览见 [`docs/documentation_status.md`](docs/documentation_status.md)。
 
 当前实现相对原方案又完成了以下可靠性升级：
 

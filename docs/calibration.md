@@ -1,8 +1,12 @@
 # Warehouse 地图坐标标定
 
 本文说明如何标定 Isaac USD 世界中的固定出生位姿与 ROS 保存地图中的 Map
-位姿，并记录 `warehouse_v2` 的实际标定过程。日常导航默认使用
-`warehouse_v2`；`warehouse_v1` 因覆盖不完整，仅作为历史基线保留。
+位姿。本分支日常 Ideal 导航默认使用酷家乐 `warehouse_new`；`warehouse_v1` 和
+`warehouse_v2` 的记录保留用于 Warehouse 历史复现，不是本分支的默认运行入口。
+
+> 文档状态：当前标定流程 + Warehouse 历史测量记录。当前可执行组合以
+> `data/maps/manifests/warehouse_new.yaml`、其场景专用出生点文件和
+> [`interfaces.md`](interfaces.md) 为准。
 
 ## 1. 标定对象
 
@@ -24,7 +28,7 @@ map_T_usd = map_T_base_start * inverse(usd_T_base_start)
 map_T_object = map_T_usd * usd_T_object
 ```
 
-## 2. warehouse_v2 最终标定结果
+## 2. Warehouse 历史 `warehouse_v2` 标定结果
 
 `warehouse_v2` 与 `warehouse_v1` 来自同一个
 `warehouse_multiple_shelves.usd` 场景，但 v2 完成了整个仓库的建图覆盖。
@@ -214,25 +218,27 @@ spawn_poses:
 大 `.posegraph` 必须由 Git LFS 管理。执行 `git lfs status`，确认它不是普通
 Git blob，也不是未 hydrate 的 LFS 指针。
 
-## 5. 将标定地图用于导航
+## 5. 将当前标定地图用于导航
 
-项目的默认导航版本已设为 `warehouse_v2`。完成构建后不传地图参数即可使用：
+本分支的默认导航版本是 `warehouse_new`，仅批准用于普通 Ideal
+Localization/Navigation。完成构建后不传地图参数即可使用：
 
 ```bash
 # 终端 A
 ./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
   --headless
 
-# 终端 B；run_ros.sh 自动选择 warehouse_v2 的 Pose Graph 和 OccupancyGrid
+# 终端 B；run_ros.sh 自动选择 warehouse_new 的 Pose Graph 和 OccupancyGrid
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
   interactive:=false
 ```
 
-显式传 `posegraph_file` 时，脚本仍按 basename 推导同名 OccupancyGrid；因此
-需要回放历史 v1 时可以覆盖默认值：
+显式传 `posegraph_file` 时，脚本仍按 basename 推导同名 OccupancyGrid。需要
+回放历史 Warehouse 基线时才显式覆盖默认值，并保证 Isaac 也回到匹配的 Warehouse 场景：
 
 ```bash
 ./scripts/run_ros.sh navigation \
@@ -261,17 +267,17 @@ ros2 topic info --verbose /odom
 ros2 run tf2_ros tf2_echo map base_link
 ```
 
-还应完成一个不在旧 v1 覆盖范围内的 v2 导航目标，确认：
+还应完成一个穿过酷家乐门洞的 `warehouse_new` 导航目标，确认：
 
-- Map Server 发布 `warehouse_v2` 的 `406×611` 栅格；
-- 全局规划路径位于 v2 已建区域；
+- Map Server 发布 `warehouse_new` 的 `154×248` 栅格；
+- 全局规划路径位于已建的酷家乐房间区域；
 - Nav2 成功结束，最终姿态与地图一致；
 - 无重复 `/map`、`/odom` 或 `map → odom` 发布者。
 
 ## 7. 动态障碍与 Ground Truth 重对齐
 
-本次 v2 实测 Map 出生位姿仍为 `[0, 0, 0°]`，所以现有 Map/USD 变换没有
-变化，动态障碍坐标无需平移或旋转。若未来标定结果发生变化，必须同时更新
+当前 `warehouse_new` 实测 Map 出生位姿为 `[0, 0, 0°]`，对应酷家乐
+`mapping_start` 的 USD 位姿 `[2.9, -0.2, 0.0635]`、朝向 `180°`。若未来标定结果发生变化，必须同时更新
 Isaac 物理障碍轨迹，并与 ROS 场景配置中的 Map 轨迹逐项核对：ID、shape、
 XY 尺寸、起终点、时长和 `repeat` 都必须一致。
 

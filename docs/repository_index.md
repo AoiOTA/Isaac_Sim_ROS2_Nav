@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 265 个 Git 文件，并逐个解释职责。索引已与 `git ls-files --cached --others --exclude-standard` 做集合比对，当前没有遗漏。构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 322 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -11,6 +11,7 @@
 | 需求 | 首选入口 | 接下来查看 |
 | --- | --- | --- |
 | 第一次安装并跑起来 | `README.md`、`docs/user_manual.md` | `scripts/preflight.sh`、`scripts/build_ros2.sh`、`scripts/run_isaac.sh`、`scripts/run_ros.sh` |
+| 手动测试当前导航 | `docs/user_manual.md` 第 5 节 | `docs/interfaces.md`、`docs/troubleshooting.md` |
 | 了解系统边界 | `docs/interfaces.md` | `isaac_sim/configs/project.yaml`、`ros2_ws/src/robot_bringup/launch/ros_stack.launch.py` |
 | 修改参数 | 本索引对应配置行 | 同包的 `test/`、`docs/development.md` |
 | 保存或切换地图 | `scripts/save_map.sh` | `robot_bringup/map_manifest.py`、`data/maps/manifests/`、`docs/calibration.md` |
@@ -22,7 +23,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `.gitattributes` | 定义 Git LFS 规则；当前把 SLAM Toolbox `.posegraph` 作为 LFS 大文件管理。 |
-| `.gitignore` | 排除构建目录、缓存、日志、官方资产、rosbag、批量结果和普通生成地图，同时放行当前 `warehouse_v2` 与历史 v1 精选地图。 |
+| `.gitignore` | 排除构建目录、缓存、日志、官方资产、rosbag、批量结果和普通生成地图，同时放行本分支 `warehouse_new` 与历史 Warehouse 精选地图。 |
 | `CONTRIBUTING.md` | 代码贡献、分支、提交消息、验证和数据管理约定。 |
 | `LICENSE` | 项目源码的 Apache-2.0 许可证文本。 |
 | `README.md` | GitHub 首页：项目能力、运行入口、验证状态以及主要文档导航。 |
@@ -35,11 +36,12 @@
 | 文件 | 用途 |
 | --- | --- |
 | `docs/user_manual.md` | 面向使用者的中文操作手册，从 clone、构建到导航、建图、实验和排障。 |
+| `docs/documentation_status.md` | 文档新鲜度清单：当前运行手册、权威契约和历史设计/复盘的职责边界。 |
 | `docs/repository_index.md` | 本文件；逐项解释所有 Git 跟踪文件。 |
 | `docs/skid_steer_navigation_solution.md` | Jackal 直行正常但导航转弯困难的专项复盘：原始症状、证据化根因、分层修复、Ideal 复杂路线结果和适用边界。 |
 | `docs/kujiale_usd_navigation_postmortem_20260717.md` | 2026-07-17 酷家乐 USD 导航复盘：对比官方 Warehouse，记录材质、Stage、RTX/TF、建图标定、窄空间 MPPI、RViz 和剩余边界。 |
 | `docs/interfaces.md` | 运行时权威契约：模式配对、Topic、Message、QoS、TF 所有权、Reset 和 Nav2 激活门。 |
-| `docs/calibration.md` | USD Pose 与 Map Pose 的标定、三次冷启动复测、v2 实测记录、版本化和动态障碍坐标重对齐流程。 |
+| `docs/calibration.md` | 当前 `warehouse_new` 的 Map/USD 标定流程，以及 Warehouse 历史 v2 测量记录、版本化和动态障碍坐标重对齐流程。 |
 | `docs/verification.md` | 证据台账：已通过的运行/测试结果、已知 Nav2 诊断以及尚未验收的范围。 |
 | `docs/development.md` | 开发环境、调试命令、测试方式、运行探针和提交/数据纪律。 |
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
