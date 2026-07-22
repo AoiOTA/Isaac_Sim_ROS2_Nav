@@ -55,7 +55,10 @@ def test_campaign_requires_exact_seeds_and_writes_consistent_artifacts(tmp_path)
     assert benchmark["passed"] is summary["passed"]
     assert all("_evidence_dir" not in row for row in benchmark["runs"])
     assert (output / "runs" / "static-7201" / "run_summary.json").is_file()
-    assert (output / "index.html").is_file()
+    dashboard = (output / "index.html").read_text(encoding="utf-8")
+    assert "总体 KPI" in dashboard
+    assert "全屋轨迹地图" in dashboard
+    assert "FORMAL ACCEPTANCE" in dashboard
     assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
     png = (output / "figures" / "campaign_overview.png").read_bytes()
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
