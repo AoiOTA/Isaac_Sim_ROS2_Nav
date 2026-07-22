@@ -18,6 +18,7 @@ COMMON = REPOSITORY_ROOT / 'scripts' / 'lib' / 'common.sh'
 CLEAN_RUNTIME = REPOSITORY_ROOT / 'scripts' / 'clean_runtime.sh'
 PERFORMANCE_MODE = REPOSITORY_ROOT / 'scripts' / 'performance_mode.sh'
 RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
+RUN_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_isaac.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
@@ -554,6 +555,13 @@ def test_ros_launcher_does_not_leak_its_lock_to_managed_rviz():
     assert 'setsid -- ros2 launch robot_bringup \\' in source
     assert ('"${operation}_bringup.launch.py" "${launch_args[@]}" '
             '{ros_lock_fd}>&- &') in source
+
+
+def test_isaac_launcher_does_not_leak_its_lock_to_kit_children():
+    source = RUN_ISAAC.read_text(encoding='utf-8')
+    assert 'isaac_lock_fd="${ISAAC_NAV_LOCK_FDS[-1]}"' in source
+    assert '"$@" {isaac_lock_fd}>&- &' in source
+    assert 'wait "${isaac_pid}"' in source
 
 
 def test_ros_launcher_defaults_navigation_to_warehouse_new_bundle():
