@@ -1,5 +1,7 @@
 # RViz 一体化建图、定位与导航工作流升级方案
 
+> 文档状态：冻结的历史设计与实施记录。它保留旧问题和决策过程；当前手动 Goal 使用 RViz 标准 **2D Goal Pose**/Nav2 `goal_pose`，启动命令和当前默认地图以 [`user_manual.md`](user_manual.md) 与 [`interfaces.md`](interfaces.md) 为准。
+
 ## 1. 文档定位
 
 本文档描述 `Isaac_Sim_ROS2_Nav` 项目在现有总体架构基础上的增量升级方案，重点解决以下问题：

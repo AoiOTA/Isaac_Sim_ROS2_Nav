@@ -4,7 +4,7 @@
 
 完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
 
-> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2 和实验框架均已实现。2026-07-17 的 Realistic 同环境远距离验收达到静态 20/20、动态 19/20，且两批均无物理碰撞；同日 Ideal 前进优先复杂长路线验收达到静态 3/3、动态 3/3，每轮约 50 m、6/6 航点、0 恢复、0 碰撞且导航指令无倒车。覆盖完整仓库的 `warehouse_v2` 已完成三次冷启动标定并作为默认导航基线发布，大 Pose Graph 使用 Git LFS；覆盖不完整的 v1 仅保留用于历史结果复现。多地图/多布局泛化矩阵和真实 changed-region 的增量建图 30% 改善基准仍未执行。详细证据与边界见 [`docs/verification.md`](docs/verification.md)。
+> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2、RGB-D 融合和实验框架均已实现。本分支默认使用已标定的酷家乐 `warehouse_new` 地图；2026-07-22 正式全屋长路线批次达到静态 `20/20`、动态 `19/20`，两批物理无碰撞均为 `20/20`，静态最大路径偏差为 `4.31%`。可复现的结论、边界和本地生成报告的索引见 [`docs/verification.md`](docs/verification.md) 与 [`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md)。
 
 > `codex/kujiale-navigation-mapping` 分支专用于酷家乐房间。该分支默认加载
 > `warehouse_new` 地图和酷家乐出生点；原 `codex/rviz-workflow-upgrade`
@@ -17,6 +17,7 @@
 | 文档 | 适合什么时候看 |
 | --- | --- |
 | [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、性能采样和排障。 |
+| [`docs/documentation_status.md`](docs/documentation_status.md) | 判断一份文档是当前可执行手册、权威契约还是历史设计/复盘时。 |
 | [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
 | [`docs/skid_steer_navigation_solution.md`](docs/skid_steer_navigation_solution.md) | 回顾 Jackal 直行正常但导航转弯困难的症状、根因、分层修复和 Ideal 复杂路线验收时。 |
 | [`docs/kujiale_usd_navigation_postmortem_20260717.md`](docs/kujiale_usd_navigation_postmortem_20260717.md) | 复盘酷家乐自建 USD 的材质、Stage、RTX/TF、建图标定、窄空间导航和 RViz 问题，以及与 `warehouse_v2` 的差异时。 |
@@ -39,7 +40,7 @@
   `/slam_toolbox/map`，不得作为 Nav2 静态地图。
 - Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
-- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；`--camera-profile rgbd_navigation` 额外发布 `/camera/front/depth/points`，并仅由 Local Costmap 的独立 VoxelLayer 融合。Global Costmap 与 Collision Monitor 仍只使用 `/scan`。
+- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；`--camera-profile rgbd_navigation` 额外发布 `/camera/front/depth/points`，由全局和局部 Costmap 的独立 VoxelLayer 融合。Collision Monitor 仍只使用 `/scan`。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
 - 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
 
@@ -80,24 +81,24 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 ## 五分钟快速启动
 
-完成首次设置后，可先用仓库自带的 `warehouse_v1` 跑通最小导航闭环。GUI 默认启用 `monitoring` Camera；这里显式写出 profile，便于日志和性能报告回溯。
+完成首次设置后，直接用本分支默认的酷家乐 `warehouse_new` 跑通最小导航闭环。GUI 默认启用 `monitoring` Camera；若要同时手动验证 RGB-D 融合，显式使用 `rgbd_navigation`。
 
 ```bash
 # 终端 A：Isaac、Ideal Odom、前向 Camera
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
 ./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
-  --camera-profile monitoring
+  --camera-profile rgbd_navigation
 
 # 终端 B：地图定位、Nav2、集成 RViz
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
 ./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
+  odometry_mode:=ideal
 ```
 
-等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 **2D Goal Pose** 拖出目标。`RGB-D Fusion` 分组中可按需开启 **Robot Front Camera** 和 **Depth PointCloud2**；深度点云为青色，已标记体素显示为浅绿色立方体。若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。停止时在启动 ROS 的终端按一次 Ctrl+C；监督脚本会先按 Navigation/Localization 顺序关闭 Lifecycle，再终止其余 ROS 子进程。
+等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 **2D Goal Pose** 拖出目标。`RGB-D Fusion` 分组中可按需开启 **Robot Front Camera** 和 **Depth PointCloud2**；深度点云为青色，已标记体素显示为浅绿色立方体。若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。完整的人工测试判定、记录和停止流程见 [`docs/user_manual.md`](docs/user_manual.md)。
 
 如果这一步失败，先运行 `./scripts/preflight.sh` 和 `./scripts/diagnose.sh`，然后按 [`docs/user_manual.md`](docs/user_manual.md) 的逐步流程排查。Camera profile、地图保存、Reset、故障注入和性能采样的完整命令也都在使用手册中。
 

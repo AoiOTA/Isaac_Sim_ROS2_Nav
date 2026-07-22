@@ -1,5 +1,7 @@
 # Isaac Sim ROS 2 导航运行时可靠性、性能与机器人相机视角升级方案
 
+> 文档状态：冻结的历史设计、测试矩阵和证据快照。当前分支默认 `warehouse_new`，RGB-D 点云进入全局和局部 VoxelLayer；运行入口与事实契约以 [`user_manual.md`](user_manual.md) 和 [`interfaces.md`](interfaces.md) 为准。
+
 > 文件路径：`docs/runtime_reliability_and_performance_upgrade_plan.md`
 > 适用仓库：`AoiOTA/Isaac_Sim_ROS2_Nav`
 > 适用环境：Ubuntu 24.04、ROS 2 Jazzy、Isaac Sim 6.0.1、RTX 4090

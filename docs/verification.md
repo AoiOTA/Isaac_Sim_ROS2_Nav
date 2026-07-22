@@ -1,12 +1,32 @@
 # 最终验证台账
 
 This is an evidence ledger, not a claim that every acceptance item in
-`plan.md` is complete. Results below were observed on 2026-07-10 through 2026-07-17
-with Isaac Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090.
-Generated Kit logs and raw experiment captures remain outside normal Git
-history. The full-coverage `warehouse_v2` bundle is the current default;
-the incomplete `warehouse_v1` bundle remains versioned for historical-result
-reproduction. Both large `.posegraph` files are stored through Git LFS.
+`plan.md` is complete. It contains historical observations from 2026-07-10
+through 2026-07-17 and the current 2026-07-22 Kujiale campaign, run with Isaac
+Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090. Generated Kit
+logs and raw experiment captures remain outside normal Git history. On this
+branch the calibrated `warehouse_new` bundle is the default; `warehouse_v1` and
+`warehouse_v2` are retained for Warehouse history/reproduction. Large
+`.posegraph` files are stored through Git LFS.
+
+## 当前分支正式验收（2026-07-22）
+
+正式酷家乐批次使用 `kujiale_0026_A_to_B_door_open.usd`、`warehouse_new`、Ideal
+Odometry 与 `rgbd_navigation`，包含静态 20 次、动态 20 次。生成报告存放在被
+忽略的 `data/reports/`；生成器、报告 schema 与验收规则均受版本控制。
+
+| 项目 | 结果 | 范围与边界 |
+| --- | --- | --- |
+| 静态严格成功 | `20/20 (100%)` | 通过 `19/20 (95%)` 门槛。 |
+| 动态严格成功 | `19/20 (95%)` | 通过 `18/20 (90%)` 门槛。 |
+| 物理无碰撞 | 静态 `20/20`、动态 `20/20` | 两类场景均通过门槛。 |
+| 静态路径最优性 | 最大偏差 `4.31%` | 通过 `<=20%` 门槛。 |
+| RGB-D 证据 | 按批次记录深度点云、VoxelLayer、全局/局部 Costmap | Collision Monitor 仍只使用 `/scan`。 |
+
+完整路线、报告一致性检查与精确结论以
+[`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) 为准。
+
+## 历史能力台账
 
 本文严格区分三类数据：
 
@@ -31,7 +51,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | `warehouse_new` calibration | Three independent Isaac + ROS cold starts held `map -> base_link` at identity. Occupancy-grid scan correlation used 703–704 live endpoints per final trials; each trial placed 100% within `0.075 m` of occupied cells, with mean raster distances `0.0028 / 0.0032 / 0.0028 m` | identity Map Pose accepted at the map's 0.05 m resolution; conservative uncertainty `0.05 m / 1°` |
 | `warehouse_new` Ideal navigation | With no explicit ROS map arguments, Map Server loaded `154 x 248` `warehouse_new`, all six Nav2 managed nodes became Active, and a goal at `[1.435, -0.395, 0°]` succeeded in about `4.7 s` simulated time with 0 recoveries and about `0.15 m` final position error. After the dead-end recovery change, the same goal succeeded again in about `3.43 s` simulated time with 0 recoveries | calibrated short-route smoke and post-recovery regression passed; complex multi-room route not yet run |
 | `warehouse_new` narrow-passage profile | Physical `0.485 x 0.420 m` footprint retained; padding reduced to `0.005 m`; both inflation layers use `0.40 m / 8.0`; emergency stop shell is `0.535 x 0.460 m`; the `0.770 x 0.470 m` slowdown shell retains 85% command speed; MPPI checks the footprint at every prediction point | the same-direction indoor route from approximately `[0.98, 4.93]` to `[-3.45, 3.84]` improved from `49.09 s` to `27.87 s` wall time (`43%` reduction): `SUCCEEDED`, no StopZone event, two approximately `0.05 s` SlowdownZone events, and three brief predictive-approach interventions. A separate command-chain sample covered `12.096 m`; MPPI and final safety output both averaged about `0.30 m/s`, proving the earlier residual bottleneck was controller progress scoring rather than continuous Collision Monitor clipping |
-| Dead-end reverse recovery | Both navigator plugins loaded project BT XMLs that order system recovery as costmap clear, `BackUp`, `Spin`, then a one-second wait. Routine MPPI remains forward-only (`vx_min=0`), while Velocity Smoother passes bounded recovery commands down to `-0.25 m/s`. The user's cul-de-sac run reached `Running backup`, but the behavior costmap rejected its already-occupied start footprint with `COLLISION_AHEAD (714)`. With this duplicate rollout disabled and the lidar Collision Monitor retained, a repeat from the same pose reversed `0.350 m` in about `3.22 s` and returned `SUCCEEDED` | reverse recovery now works at the reported pose; repeat the complete NavigateToPose scenario for final user acceptance |
+| Dead-end reverse recovery | Historical run: both navigator plugins ordered costmap clear, `BackUp`, `Spin`, then a one-second wait. The then-forward-only MPPI setting used `vx_min=0`; the current configuration permits bounded `vx_min=-0.15 m/s` terminal adjustment and the Velocity Smoother permits recovery down to `-0.25 m/s`. The recorded cul-de-sac repeat reversed `0.350 m` in about `3.22 s` and returned `SUCCEEDED` with the lidar Collision Monitor retained. | Historical root-cause evidence; current long-route acceptance is recorded above. |
 | RTX LiDAR | Single-channel `RPLIDAR_S2E` clouds used frame `rtx_world`, contained 3,058–3,098 points (median 3,079), and were observed at about `13 Hz` wall time in the checked fast-simulation run | horizontal scan and processing-rate baseline verified on the custom room |
 | LaserScan projection | 720 beams in `base_link`; stationary valid-return ratio median `97.57%`, and during 109 rotating frames median/minimum were `97.92% / 96.94%` | rate/frame/shape and moving projection density verified |
 | Ideal drive | A `+0.2 m/s` command for 3 seconds moved Ideal odometry X by approximately `+0.517 m` | forward sign and motion path verified; full control characterization not run |

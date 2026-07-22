@@ -2,6 +2,8 @@
 
 本文面向第一次接触本项目的使用者，目标是让你从一个干净的 clone 开始，依次完成依赖安装、环境检查、构建、启动仿真、Camera/RViz 观察、定位/导航、安全建图、Reset、性能采样和自动实验。
 
+> 文档状态：当前可执行手册。已按本分支的 `scripts/run_isaac.sh`、`scripts/run_ros.sh`、`nav2_params.yaml` 和 `warehouse_new` Manifest 于 2026-07-22 复核。历史方案或旧仓库基线请先看 [`documentation_status.md`](documentation_status.md)。
+
 日常操作只需要两个终端：终端 A 运行 Isaac Sim，终端 B 运行 ROS 栈。终端 B 默认会自动打开与当前模式匹配的 RViz；Mapping/Incremental Mapping 还会自动打开独立键盘控制窗口。不要把旧教程里的手工 `rviz2`、持续 `ros2 topic pub /cmd_vel` 或 CLI 目标发送当作默认工作流。
 
 如果你想了解“某个文件究竟负责什么”，请配合阅读 [`repository_index.md`](repository_index.md)。如果你要修改算法参数，再阅读 [`interfaces.md`](interfaces.md) 和 [`calibration.md`](calibration.md)。
@@ -198,7 +200,7 @@ preflight: PASS
 成功时应看到地图校验和最终结果：
 
 ```text
-map manifest verified: warehouse_v1 bundle=88b91be7fb0afe4364851c59dc3466f560017df5acc5405f3ab590729ded9bac
+map baseline: warehouse_new (integrity verified)
 preflight: PASS
 ```
 
@@ -209,7 +211,7 @@ preflight: PASS
 - ROS Jazzy、Nav2、SLAM Toolbox 和本仓库十一个 package 是否可见；
 - 安全关闭 Nav2 面板、RViz 配置和运行脚本是否已安装；
 - NVIDIA GPU 是否可见；
-- `warehouse_v1` 四个地图文件的大小和 SHA256 是否匹配 manifest；
+- `warehouse_new` 四个地图文件的大小和 SHA256 是否匹配 manifest；
 - Git LFS 文件是否已经真正下载；
 - 受管 runtime lock、重复 ROS 节点和 Fast DDS SHM 是否存在明显冲突。
 
@@ -232,9 +234,14 @@ preflight: PASS
 
 Isaac 的 `--mode ideal|realistic` 必须与 ROS 的 `odometry_mode:=ideal|realistic` 相同。Mapping 两种模式绝不能与 Localization/Navigation 同时运行。
 
-## 5. 最快完成一次 Ideal 导航
+## 5. 手动测试导航（Ideal + RGB-D 基线）
 
 该酷家乐分支已经包含标定后的 `warehouse_new` OccupancyGrid，因此不需要再建图即可运行普通 Ideal Navigation。
+
+开始前先运行 `./scripts/preflight.sh`；若提示已有 Isaac 或 ROS 实例，先执行
+`./scripts/diagnose.sh`。不要另起第二套栈或直接 `pkill`：复用已经按相同参数启动
+的会话，或按第 5.6 节的顺序正常停止后再开始。本节的两条启动命令必须使用同一
+个 `ROS_DOMAIN_ID=42` 和 `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`。
 
 ### 5.1 终端 A：启动 Isaac
 
@@ -243,7 +250,8 @@ cd "$PROJECT_ROOT"
 ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
-  --mode ideal
+  --mode ideal \
+  --camera-profile rgbd_navigation
 ```
 
 GUI 启动时，主视口会自动切换到
@@ -322,8 +330,7 @@ Nav2 lifecycle activation completed
 ```bash
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
-  nav2_profile:=performance \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  nav2_profile:=performance
 ```
 
 `nav2_profile_params_file:=/absolute/path/overlay.yaml` 是矩阵测试/自定义 overlay 入口，日常运行不要随意替换基线。overlay 必须提供正数 `controller_frequency`、`model_dt`，以及正整数 `time_steps`、`batch_size`；还必须满足 `1 / controller_frequency <= model_dt`。例如 `model_dt=0.10 s` 时 8 Hz 会在创建 ROS 节点前被拒绝，而不是等 `controller_server` 运行后崩溃。
@@ -338,11 +345,13 @@ SLAM Ceres 默认请求 `ceres_num_threads:=12`；可在启动命令中显式覆
 4. 在地图可通行区域按住鼠标左键，从目标位置拖出朝向后松开；
 5. 观察黄色全局路径、洋红色局部路径、橙色 MPPI 最优轨迹和 Costmap，等待面板显示完成。
 
+一次人工回归建议至少发送三个目标：同一房间的近目标、穿过门洞的远目标、再回到空旷区域。每次都记录 Nav2 面板结果、是否出现碰撞/StopZone、以及目标完成后机器人是否静止。若本次启动使用 `rgbd_navigation`，还要确认 **Depth PointCloud2** 有数据、**Marked Voxels (3D)** 会随低矮障碍出现；这只是深度链路可见性检查，不替代正式批量验收。
+
 该 RViz 配置使用 RViz 标准 `SetGoal` 与仓库自带的安全关闭 Navigation 2 面板；目标由 Nav2 自带 `goal_pose` 接口处理，没有项目额外的 `/goal_pose` 转换节点，也不需要第三个终端。
 
 成功标准：面板最终状态成功，机器人停车，局部/全局路径没有持续振荡。Nav2 goal checker 的位置容差是 `0.20 m`，所以机器人不会精确停在数学坐标点。自动实验另用 Ground Truth 检查 `0.25 m` 的成功阈值；这是评价门槛，不是 Nav2 的 goal checker 配置。
 
-正常路径跟踪仍以前进为主，MPPI 的 `vx_min=0`，不会为了缩短路径而频繁倒车。如果机器人进入无法原地旋转的窄死胡同，项目行为树会在上下文清图仍无法恢复后，先执行一次短倒车（`0.55 m @ 0.18 m/s`），重新规划；仍无法脱困时才尝试原地旋转。死胡同倒车关闭 Behavior Server 自带的局部 Costmap footprint 预测，因为狭窄处可能已经把机器人当前 footprint 标成占用，导致第一帧误报 `COLLISION_AHEAD`。Velocity Smoother 只为这条恢复链开放到 `-0.25 m/s`，所有倒车命令仍完整经过激光 Collision Monitor 的 ApproachZone 和 StopZone，真实障碍进入急停区域时仍会硬停止。因此这里去掉的是重复误判，不是最终安全保护，“恢复倒车”也不等于“常规导航允许任意倒车”。
+MPPI 对前进有偏好，但当前配置允许受限的 `vx_min=-0.15 m/s`，用于窄房间终端位姿的微调；这不表示应把倒车当作正常人工操作。如果机器人进入无法原地旋转的窄死胡同，项目行为树会在上下文清图仍无法恢复后，先执行一次短倒车（`0.55 m @ 0.18 m/s`），重新规划；仍无法脱困时才尝试原地旋转。所有倒车命令仍完整经过激光 Collision Monitor 的 ApproachZone 和 StopZone，真实障碍进入急停区域时仍会硬停止。
 
 CLI 仍可用于自动化或无显示器测试，但不作为日常入口：
 
@@ -545,7 +554,7 @@ ros2 topic info /odom -v
 
 ## 8. Camera profiles 与 Camera-only RViz
 
-前置 Camera 由 Isaac 直接发布。`rgbd_navigation` 会将深度点云接入 Nav2 的**局部** VoxelLayer；RGB 图像不会进入 SLAM/EKF，深度点云不会进入 Global Costmap 或 Collision Monitor。其他 profile 仍只用于显示、诊断和记录。启用 Camera 时始终发布 RGB 与 CameraInfo，RGB-D profile 额外发布：
+前置 Camera 由 Isaac 直接发布。`rgbd_navigation` 会将深度点云接入 Nav2 的**局部和全局** VoxelLayer；RGB 图像不会进入 SLAM/EKF，深度点云不会进入 Collision Monitor。其他 profile 仍只用于显示、诊断和记录。启用 Camera 时始终发布 RGB 与 CameraInfo，RGB-D profile 额外发布：
 
 ```text
 /camera/front/image_raw   sensor_msgs/msg/Image       rgb8
@@ -562,7 +571,7 @@ Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、�
 | `monitoring` | 640×360 | 15 Hz | GUI 默认值，日常监看与导航。 |
 | `standard` | 640×480 | 20 Hz | 更高纵向视野/常规录制。 |
 | `high_quality` | 1280×720 | 30 Hz | 图像质量验收；GPU/CPU/带宽负载最高。 |
-| `rgbd_navigation` | 320×180 | 10 Hz | RGB-D 局部代价地图融合；发布深度 PointCloud2。 |
+| `rgbd_navigation` | 320×180 | 10 Hz | RGB-D 全局/局部代价地图融合；发布深度 PointCloud2。 |
 
 表中的发布率是配置目标，不是对任意机器的实测保证。Camera 的墙钟 Hz 会同时受 GPU、渲染负载和 RTF 影响；尤其 `high_quality` 不能只因配置写着 30 Hz 就在报告中声称实测达到 30 Hz。用本节末尾的 topic 检查做快速观察，用第 17.3 节 Profiler 的稳态窗口记录结论。
 
@@ -587,7 +596,7 @@ Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、�
   --mode ideal \
   --camera-profile off
 
-# RGB-D 局部代价地图融合（Ideal Odom）
+# RGB-D 全局/局部代价地图融合（Ideal Odom）
 ./scripts/run_isaac.sh \
   --environment-root /home/lyb/kujiale_usd_rooms_20260717 \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
@@ -597,7 +606,7 @@ Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、�
 
 Camera profile 是 Isaac 启动期选择，不能热切换；更改时先正常停止 Isaac，再用新 profile 重启。Mapping、Localization 和 Navigation 的默认 RViz 都有右侧 **Robot Front Camera** dock；当 profile 为 `off` 时该 dock 空白是正常现象。
 
-当 `navigation.rviz` 配合 `rgbd_navigation` 使用时，展开 **RGB-D Fusion**：当前保存布局默认显示 **Marked Voxels (3D)**，而 RGB 图像和 **Depth PointCloud2** 可按需手动勾选。深度点云是青色 `Flat Squares`；体素为浅绿色盒子，只表示 `/local_costmap/voxel_grid` 中已被 Nav2 标记的体素。若只看到深度点而没有体素，检查 VoxelLayer 的障碍标记和 `/local_costmap/voxel_grid`，不要把该 Topic 加为内置 `PointCloud2`。
+当 `navigation.rviz` 配合 `rgbd_navigation` 使用时，展开 **RGB-D Fusion**：当前保存布局默认显示 **Marked Voxels (3D)**，而 RGB 图像和 **Depth PointCloud2** 可按需手动勾选。深度点云是青色 `Flat Squares`；体素为浅绿色盒子，只表示 `/local_costmap/voxel_grid` 中已被 Nav2 标记的局部体素。全局 VoxelLayer 同样订阅深度点云，但默认 RViz 不单独渲染它；若只看到深度点而没有局部体素，检查两层 VoxelLayer 的障碍标记和 `/local_costmap/voxel_grid`，不要把该 Topic 加为内置 `PointCloud2`。
 
 只想看前置画面时，避免与模式 RViz 的单实例锁冲突：让 ROS 栈不启动 RViz，再开专用 Camera 配置。若只验证 Isaac Camera/TF，也可以不启动算法栈，但仍须先构建并 source ROS 工作区。
 
@@ -606,7 +615,7 @@ Camera profile 是 Isaac 启动期选择，不能热切换；更改时先正常�
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
   use_rviz:=false \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v1"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_new"
 
 # 终端 C
 ./scripts/run_camera_view.sh
@@ -754,7 +763,7 @@ data/maps/posegraphs/warehouse_v3.data
 source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
 ros2 run robot_bringup map_manifest verify \
   --project-root "$PROJECT_ROOT" \
-  --manifest "$PROJECT_ROOT/data/maps/manifests/warehouse_v2.yaml"
+  --manifest "$PROJECT_ROOT/data/maps/manifests/warehouse_v3.yaml"
 ```
 
 校验器会检查 manifest 固定路径和 schema、拒绝纯点版本名和任意父级符号链接、核对四个工件的固定相对路径/大小/SHA256、bundle SHA256、Git LFS 指针和路径逃逸、Occupancy YAML 对 PGM 的绑定，以及 PGM 尺寸、正数 resolution 和 origin 的一致性。任一文件被替换、缺失或与版本混用都会让 saved-map 模式在创建 ROS 节点前失败。
@@ -765,14 +774,14 @@ ros2 run robot_bringup map_manifest verify \
 ./scripts/run_ros.sh localization \
   odometry_mode:=ideal \
   initial_pose_source:=rviz \
-  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v2"
+  posegraph_file:="$PROJECT_ROOT/data/maps/posegraphs/warehouse_v3"
 ```
 
-`run_ros.sh` 会从 Pose Graph 基名自动推导 `warehouse_v2.yaml` 的 Occupancy map 和 manifest；也可用 `map_file:=...`、`map_manifest_file:=...` 显式指定，但三者版本必须完全匹配。进入 RViz 后用 **2D Pose Estimate** 给出真实初始位姿。
+`run_ros.sh` 会从 Pose Graph 基名自动推导同名的 Occupancy map 和 manifest；也可用 `map_file:=...`、`map_manifest_file:=...` 显式指定，但三者版本必须完全匹配。进入 RViz 后用 **2D Pose Estimate** 给出真实初始位姿。
 
 新地图不能直接沿用旧 Map Pose。`initial_pose_source:=auto` 会检查 manifest 是否已标定、标定的 spawn profile、manifest bundle SHA256、`spawn_poses.yaml` 中的 `map_version`/`map_bundle_sha256`，以及两边 USD position/yaw、Map position/yaw、位置/航向标准差的逐值一致性；只保留旧 hash 却修改坐标也会被拒绝。Incremental Mapping 又要求 `initial_pose_source:=auto`，因此也必须先完成标定，不能拿未标定的新版本直接继续增量建图。
 
-请按照 [`calibration.md`](calibration.md) 重新测量 `spawn_poses.yaml` 中 USD Pose 对应的 Map X/Y/yaw，完成至少三次冷启动重复性检查后，再同步更新 manifest 的 calibration 字段和 `spawn_poses.yaml` 中同名 pose 的 Map 绑定。完成后重新运行上面的 `map_manifest verify`，再分别冷启动 Localization/Navigation 验证 auto。大型 `.posegraph` 应通过 Git LFS 管理；`warehouse_v1` 是当前 `preflight.sh` 自动校验的仓库发布基线。
+请按照 [`calibration.md`](calibration.md) 重新测量 `spawn_poses.yaml` 中 USD Pose 对应的 Map X/Y/yaw，完成至少三次冷启动重复性检查后，再同步更新 manifest 的 calibration 字段和 `spawn_poses.yaml` 中同名 pose 的 Map 绑定。完成后重新运行上面的 `map_manifest verify`，再分别冷启动 Localization/Navigation 验证 auto。大型 `.posegraph` 应通过 Git LFS 管理；本分支 `preflight.sh` 自动校验的发布基线是 `warehouse_new`。
 
 ## 10. 确定性 Reset
 
@@ -1397,7 +1406,7 @@ docs: clarify realistic navigation workflow
 
 1. `git lfs pull`，安装外部依赖并运行 `rosdep install`；
 2. `import_assets.sh → build_ros2.sh → preflight.sh → test.sh --with-isaac`；
-3. 先按第 5 节完成一次 `warehouse_v1` Ideal 导航，再尝试 Realistic、建图或实验。
+3. 先按第 5 节完成一次 `warehouse_new` Ideal 手动导航，再尝试 Realistic、建图或实验。
 
 日常运行按固定顺序：
 

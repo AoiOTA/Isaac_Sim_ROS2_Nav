@@ -38,14 +38,14 @@ git status --short --branch
 source "$PWD/scripts/setup_ros_env.sh"
 ros2 run robot_bringup map_manifest verify \
   --project-root "$PWD" \
-  --manifest "$PWD/data/maps/manifests/warehouse_v1.yaml"
+  --manifest "$PWD/data/maps/manifests/warehouse_new.yaml"
 git lfs status
 git status --short -- \
   data/maps/manifests data/maps/occupancy data/maps/posegraphs \
   isaac_sim/configs/spawn_poses.yaml
 ```
 
-`warehouse_v2.posegraph`、`.data`、OccupancyGrid YAML/PGM 是同一版本的不可拆分工件。不要只替换其中一个。
+`warehouse_new.posegraph`、`.data`、OccupancyGrid YAML/PGM 是同一版本的不可拆分工件。不要只替换其中一个；其他版本也必须保持同一规则。
 
 ### 2.2 ROS 包或可执行文件找不到
 
@@ -385,8 +385,8 @@ Image/CameraInfo stamp 配对。方向、曝光、遮挡必须实际看图，不
 重复 publisher 先通过受管清理停止旧实例。
 
 **禁止操作：** 不要把 profile 的目标 Hz 当成实测结论，不要为了消除 RViz
-提示把传感器改成 Reliable，不要把 Camera 接入 SLAM、EKF、Global Costmap 或 Collision Monitor；
-`rgbd_navigation` 的点云仅允许接入 Local VoxelLayer，
+提示把传感器改成 Reliable，不要把 Camera 接入 SLAM、EKF 或 Collision Monitor；
+`rgbd_navigation` 的点云由全局和局部 VoxelLayer 使用，
 不要只改 frame 名或光学外参的一端，也不要在纯导航性能基线中忘记显式
 `--camera-profile off`。
 
