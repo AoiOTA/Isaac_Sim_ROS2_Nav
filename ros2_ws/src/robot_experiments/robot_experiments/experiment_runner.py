@@ -215,6 +215,13 @@ class ExperimentRunner(Node):
         self._output_directory = Path(
             str(self.declare_parameter("output_directory", "data/experiment_runs").value)
         ).expanduser()
+        record_evidence = self.declare_parameter("record_evidence", True).value
+        if isinstance(record_evidence, bool):
+            self._record_evidence = record_evidence
+        elif isinstance(record_evidence, str) and record_evidence.strip().lower() in {"true", "false"}:
+            self._record_evidence = record_evidence.strip().lower() == "true"
+        else:
+            raise ConfigurationError("record_evidence must be boolean")
         self._reset_service_name = str(
             self.declare_parameter("reset_service", "/simulation/reset").value
         )
@@ -1818,7 +1825,8 @@ class ExperimentRunner(Node):
             bag_complete = False
             try:
                 self._reset_simulation(seed)
-                root = self._begin_run_evidence(run_index, seed)
+                if self._record_evidence:
+                    root = self._begin_run_evidence(run_index, seed)
                 nav2_succeeded, timed_out, nav2_status = self._navigate()
                 final_still = self._wait_for_final_stillness()
             except Exception as exc:  # Preserve a manifest for every attempted run.
@@ -1826,7 +1834,7 @@ class ExperimentRunner(Node):
                     raise KeyboardInterrupt from exc
                 # A failure before evidence recording means no goal could have
                 # been dispatched.  It is an environment fault, not a trial.
-                if root is None:
+                if root is None and self._record_evidence:
                     raise
                 if isinstance(exc, ExperimentIsolationError):
                     isolation_error = exc
@@ -1843,12 +1851,15 @@ class ExperimentRunner(Node):
                 final_still=final_still,
                 runner_error=runner_error,
             )
-            timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
-            stem = f"{self._scenario.scenario_id}-run-{run_index:04d}-seed-{seed}-{timestamp}"
-            write_run_report(manifest, self._output_directory, stem)
-            if root is None:
-                root = self._begin_run_evidence(run_index, seed)
-            self._write_run_evidence(manifest, seed, run_index, root, bag_complete)
+            if self._record_evidence:
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+                stem = f"{self._scenario.scenario_id}-run-{run_index:04d}-seed-{seed}-{timestamp}"
+                write_run_report(manifest, self._output_directory, stem)
+                if root is None:
+                    root = self._begin_run_evidence(run_index, seed)
+                self._write_run_evidence(manifest, seed, run_index, root, bag_complete)
+            else:
+                stem = f"{self._scenario.scenario_id}-run-{run_index:04d}-seed-{seed}"
             manifests.append(manifest)
             self.get_logger().info(f"completed {stem}: {manifest['result']}")
             if isolation_error is not None:
