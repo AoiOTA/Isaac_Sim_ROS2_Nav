@@ -2013,7 +2013,7 @@ ros2 topic info /transformed_global_plan --verbose
 ros2 topic info /trajectories --verbose
 ```
 
-实测 `/optimal_trajectory` 由 `controller_server` 发布，frame 为 `odom`，一次样本为 20 poses，发布频率与控制器约 10 Hz；RViz 读取这条真实最优轨迹。`/transformed_global_plan` 单独显示为参考路径，`/trajectories` 的 RViz subscriber count 保持 0。
+实测 `/optimal_trajectory` 由 `controller_server` 发布，frame 为 `odom`，一次样本为 20 poses，发布频率与控制器约 10 Hz；RViz 读取这条真实最优轨迹。`/transformed_global_plan` 单独显示为参考路径。此处历史采样时 `/trajectories` 的 RViz subscriber count 为 0；当前保存的 Navigation RViz 布局已启用候选轨迹显示，性能采样前应手动关闭它。
 
 ### 20.2 Camera Panel 与地图布局
 

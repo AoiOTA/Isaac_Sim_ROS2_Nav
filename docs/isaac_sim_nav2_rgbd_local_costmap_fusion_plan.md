@@ -1,6 +1,6 @@
 # Isaac Sim + Nav2 RGB-D 局部代价地图融合最终方案
 
-> 文档状态：最终实施设计，待按本文实现
+> 文档状态：一期实现完成；低矮障碍的现场端到端验收仍待执行
 >
 > 一期验收场景：`kujiale_0026_A_to_B_door_open.usd`
 >
@@ -304,18 +304,24 @@ Navigation RViz 新增一个 `RGB-D Fusion` 分组：
 
 | Display | Topic | 默认状态 | 用途 |
 | --- | --- | --- | --- |
-| RGB Image | `/camera/front/image_raw` | 开启 | 观察前向画面 |
-| Depth PointCloud2 | `/camera/front/depth/points` | 开启 | 证明低矮障碍被 Camera 观测 |
+| RGB Image | `/camera/front/image_raw` | 关闭，可手动开启 | 观察前向画面 |
+| Depth PointCloud2 | `/camera/front/depth/points` | 关闭，可手动开启 | 青色深度点云，证明低矮障碍被 Camera 观测 |
 | Local Costmap | `/local_costmap/costmap` | 开启 | 观察最终融合代价 |
-| Voxel Grid | `/local_costmap/voxel_grid` | 默认关闭，调试时开启 | 检查 Camera 三维体素 |
+| Marked Voxels (3D) | `/local_costmap/voxel_grid` | 开启 | 浅绿色立方体，检查被 VoxelLayer 标记的三维体素 |
 
-PointCloud2 显示使用 Best Effort QoS、`Decay Time=0.2 s`、点尺寸约 `0.03 m`。
+`Depth PointCloud2` 使用 Best Effort QoS、青色 `Flat Squares`、`Decay Time=0.5 s`
+和约 `0.05 m` 点尺寸。`/local_costmap/voxel_grid` 的消息类型是
+`nav2_msgs/msg/VoxelGrid`，并非 `PointCloud2`；项目的
+`robot_rviz_plugins/Voxel Grid` 会只解码其中 `MARKED` 的体素，再用约 `0.08 m`
+的立方体渲染。若看不到方块，先确认 Camera 已使 VoxelLayer 标记障碍，而不是把
+该 Topic 误加成 RViz 内置 `PointCloud2` Display。
 
 诊断输出至少包含：
 
 - 解析到的 Environment USD、Map Bundle、Spawn File、Odometry Mode 和 Camera Profile；
 - `/odom` 发布者数及发布者节点名；
 - `/camera/front/depth/points` 发布者数、订阅者数、实测 Hz 和消息年龄；
+- `/local_costmap/voxel_grid` 的 `nav2_msgs/msg/VoxelGrid` 发布和 RViz 订阅；
 - `camera_front_optical_frame -> odom` TF 是否可用；
 - Local Costmap 是否已加载 `depth_voxel_layer`；
 - `warehouse_new` 与酷家乐 Spawn Bundle 是否匹配。
