@@ -105,6 +105,14 @@ def generate_launch_description():
                 {'use_sim_time': use_sim_time},
                 {'autostart': autostart},
                 {'node_names': lifecycle_nodes},
+                # A simulation reset deliberately pauses every managed node
+                # while TF and costmaps are re-seeded.  On a loaded Isaac
+                # process that transition can take longer than Nav2's
+                # default four-second bond timeout, which otherwise causes a
+                # freshly resumed controller to be declared dead before its
+                # first heartbeat.  Keep the timeout bounded, but long enough
+                # to cover the documented reset transaction.
+                {'bond_timeout': 10.0},
             ],
         ),
     ])

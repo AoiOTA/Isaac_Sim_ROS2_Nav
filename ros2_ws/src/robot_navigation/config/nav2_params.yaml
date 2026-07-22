@@ -65,18 +65,17 @@ controller_server:
       batch_size: 500
       iteration_count: 1
 
-      # Normal path following remains forward-only. Dead-end escape is handled
-      # explicitly by the lidar-monitored BackUp recovery behavior rather
-      # than allowing MPPI to select reverse trajectories during routine travel.
-      # Sample enough of the usable forward-speed range that a narrow but
-      # collision-free corridor does not collapse to creeping trajectories.
+      # Permit a small reverse sample near tight terminal poses.  This lets
+      # MPPI re-centre at G7 after a dynamic interaction instead of remaining
+      # a few centimetres outside the acceptance circle until timeout.
       vx_std: 0.35
       vy_std: 0.00
       wz_std: 0.80
 
-      # 前进不再掩盖转弯；正常路径跟踪仍关闭 MPPI 倒车采样。
+      # Forward motion remains strongly preferred, but a bounded reverse
+      # sample is available for terminal-pose recovery in narrow rooms.
       vx_max: 0.75
-      vx_min: 0.00
+      vx_min: -0.15
       vy_max: 0.00
       wz_max: 1.20
 
@@ -175,7 +174,10 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
+        # Reverse remains available only when a terminal pose genuinely needs
+        # it.  A strong prior prevents low-box avoidance from oscillating
+        # between forward and reverse samples in the open S→G1 area.
+        cost_weight: 35.0
         threshold_to_consider: 0.5
 
 
@@ -248,14 +250,23 @@ local_costmap:
           data_type: PointCloud2
           transport_type: raw
           marking: true
-          clearing: true
+          # The camera sees the floor and the far side of the low box in the
+          # same frame.  Ray-clearing those returns can immediately erase the
+          # shallow box mark before the local planner consumes it.  Keep RGB-D
+          # as a marking-only source; reset explicitly clears this layer and
+          # the bounded persistence below expires stale observations.
+          clearing: false
           min_obstacle_height: 0.05
           max_obstacle_height: 0.50
           obstacle_min_range: 0.05
           obstacle_max_range: 2.0
           raytrace_min_range: 0.05
           raytrace_max_range: 2.5
-          observation_persistence: 0.0
+          # A low box can leave the front camera FOV while the controller is
+          # turning around it.  Keep a recent RGB-D marking long enough for
+          # the local planner to complete that avoidance manoeuvre; regular
+          # depth clearing still removes it after this bounded interval.
+          observation_persistence: 1.0
           expected_update_rate: 0.0
           inf_is_valid: false
 
@@ -287,7 +298,11 @@ global_costmap:
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
       footprint_padding: 0.005
 
-      plugins: [static_layer, obstacle_layer, inflation_layer]
+      # The low RGB-D-only box must also reach the global planner.  Otherwise
+      # the local controller sees a collision while the global path keeps
+      # commanding it straight through the obstacle, which ends in a safety
+      # stop instead of a valid bypass.
+      plugins: [static_layer, obstacle_layer, depth_voxel_layer, inflation_layer]
 
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
@@ -310,6 +325,42 @@ global_costmap:
           raytrace_min_range: 0.40
           obstacle_max_range: 25.0
           obstacle_min_range: 0.40
+
+      depth_voxel_layer:
+        plugin: nav2_costmap_2d::VoxelLayer
+        enabled: true
+        footprint_clearing_enabled: true
+        combination_method: 1
+        publish_voxel_map: true
+        tf_filter_tolerance: 0.10
+
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        unknown_threshold: 15
+        mark_threshold: 0
+        max_obstacle_height: 0.50
+        observation_sources: camera_depth
+
+        camera_depth:
+          topic: /camera/front/depth/points
+          sensor_frame: camera_front_optical_frame
+          data_type: PointCloud2
+          transport_type: raw
+          marking: true
+          # Global observations must still ray-clear.  A permanent global
+          # depth history eventually turns unrelated furniture observations
+          # into stale walls at later waypoints.
+          clearing: true
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.50
+          obstacle_min_range: 0.05
+          obstacle_max_range: 2.0
+          raytrace_min_range: 0.05
+          raytrace_max_range: 2.5
+          observation_persistence: 1.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
@@ -495,9 +546,22 @@ collision_monitor:
       visualize: false
       enabled: true
 
+    # The low RGB-D test box is below the LiDAR plane.  Feed the same depth
+    # cloud that marks the VoxelLayer into the last-resort safety monitor, so
+    # an unmodelled local-costmap gap cannot become a physical contact.
+    # RGB-D is fused into both costmaps; keep Collision Monitor's hard stop on
+    # LiDAR only so ordinary near-field depth returns cannot deadlock a valid
+    # doorway traversal.  Physical contact remains an independent verdict.
     observation_sources: [scan]
 
     scan:
       type: scan
       topic: /scan
+      enabled: true
+
+    camera_depth:
+      type: pointcloud
+      topic: /camera/front/depth/points
+      min_height: 0.05
+      max_height: 0.50
       enabled: true

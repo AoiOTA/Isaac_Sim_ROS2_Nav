@@ -1,0 +1,47 @@
+schema_version: 2
+campaign: kujiale_long_range
+environment:
+  usd: kujiale_0026_A_to_B_door_open.usd
+  map_version: warehouse_new
+  spawn_pose_name: mapping_start
+  localization: ideal
+  nav2_profile: rgbd_navigation
+  physics_dt: 0.016666666666666666
+  rtf: 1.0
+route:
+  - {id: G1, region: 上方大房间, pose: [0.80, 4.80, -135.0]}
+  - {id: G2, region: 左上房间, pose: [-3.45, 3.90, 0.0]}
+  - {id: G3, region: 最左侧房间, pose: [-4.05, 1.15, 0.0]}
+  - {id: G4, region: 左侧厕所, pose: [-3.25, -0.45, 0.0]}
+  - {id: G5, region: 左下房间, pose: [-2.50, -3.35, 90.0]}
+  - {id: G6, region: 下方中部/右侧房间, pose: [0.65, -4.25, -90.0]}
+  - {id: G7, region: 最下方房间, pose: [0.45, -5.35, 90.0]}
+  - {id: G8, region: 返回起点, pose: [0.00, 0.00, 0.0]}
+acceptance:
+  position_tolerance_m: 0.25
+  orientation_tolerance_deg: 10.0
+  static_leg_timeout_sec: 180
+  dynamic_leg_timeout_sec: 210
+  static_run_timeout_sec: 600
+  dynamic_run_timeout_sec: 720
+  final_still_duration_sec: 1.0
+  final_linear_speed_mps: 0.02
+  final_angular_speed_radps: 0.05
+  minimum_ground_truth_path_length_m: 40.0
+  static_minimum_successes: 19
+  dynamic_minimum_successes: 18
+  maximum_static_path_deviation_percent: 20.0
+static:
+  seeds: [7201, 7202, 7203, 7204, 7205, 7206, 7207, 7208, 7209, 7210, 7211, 7212, 7213, 7214, 7215, 7216, 7217, 7218, 7219, 7220]
+  obstacles:
+    - id: rgbd_low_box
+      mode: stationary
+      coordinate_frame: map
+      center: [-0.15, 0.70, 0.08]
+      size: [0.30, 0.30, 0.16]
+dynamic:
+  seeds: [7301, 7302, 7303, 7304, 7305, 7306, 7307, 7308, 7309, 7310, 7311, 7312, 7313, 7314, 7315, 7316, 7317, 7318, 7319, 7320]
+  obstacles:
+    - {id: central_crossing, trigger_group: G1, mode: linear, coordinate_frame: map, start: [-0.80, 0.65, 0.50], end: [0.80, 0.65, 0.50], size: [0.40, 0.40, 1.00], speed_mps: 0.35, delay_sec: 0.40, jitter_sec: 0.15, post_motion: retire}
+    - {id: north_crossing, trigger_group: G2, mode: linear, coordinate_frame: map, start: [1.30, 4.35, 0.50], end: [-0.10, 4.35, 0.50], size: [0.40, 0.40, 1.00], speed_mps: 0.30, delay_sec: 0.25, jitter_sec: 0.10, post_motion: retire}
+    - {id: south_crossing, trigger_group: G6, mode: linear, coordinate_frame: map, start: [-1.70, -3.20, 0.50], end: [-2.60, -3.20, 0.50], size: [0.35, 0.35, 1.00], speed_mps: 0.25, delay_sec: 0.30, jitter_sec: 0.10, post_motion: retire}

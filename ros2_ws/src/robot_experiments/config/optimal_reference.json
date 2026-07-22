@@ -1,0 +1,114 @@
+{
+  "algorithm": {
+    "algorithm_sha256": "25c0d9eb45edb416fe41176f3067e7aa808656d827cb3fb8474d6609534dbfb1",
+    "heading_bins": 16,
+    "motion_primitives": [
+      "in_place_rotation",
+      "forward_swept_translation"
+    ],
+    "name": "footprint_aware_se2_state_lattice_astar",
+    "occupied_and_unknown_blocked": true,
+    "reported_length": "translation_only"
+  },
+  "campaign": "kujiale_long_route",
+  "campaign_sha256": "0ce15f8ba443979c1e66ce2397782650b778d99dd45b09d659f43a4b9bbcb0c3",
+  "converged": true,
+  "convergence_percent": 0.6203133452827094,
+  "convergence_requirement_percent": 1.0,
+  "footprint": {
+    "padding_m": 0.005,
+    "vertices": [
+      [
+        -0.23,
+        -0.21
+      ],
+      [
+        0.255,
+        -0.21
+      ],
+      [
+        0.255,
+        0.21
+      ],
+      [
+        -0.23,
+        0.21
+      ]
+    ]
+  },
+  "goal_acceptance": {
+    "orientation_handling": "all collision-free terminal headings; rotations are checked but have zero reported translation length",
+    "position_tolerance_m": 0.25
+  },
+  "legs": [
+    {
+      "id": "G1",
+      "length_m_0_025": 5.228365525048733,
+      "length_m_0_05": 5.219458245805066
+    },
+    {
+      "id": "G2",
+      "length_m_0_025": 11.652466295845949,
+      "length_m_0_05": 11.696838374323747
+    },
+    {
+      "id": "G3",
+      "length_m_0_025": 4.236396358024319,
+      "length_m_0_05": 4.28650581819917
+    },
+    {
+      "id": "G4",
+      "length_m_0_025": 3.969920399177806,
+      "length_m_0_05": 4.04486554161217
+    },
+    {
+      "id": "G5",
+      "length_m_0_025": 3.9022153008653215,
+      "length_m_0_05": 3.9301660231058566
+    },
+    {
+      "id": "G6",
+      "length_m_0_025": 6.3612944048505895,
+      "length_m_0_05": 6.409955805209772
+    },
+    {
+      "id": "G7",
+      "length_m_0_025": 0.8854101966249687,
+      "length_m_0_05": 0.9118033988749894
+    },
+    {
+      "id": "G8",
+      "length_m_0_025": 5.321532521777515,
+      "length_m_0_05": 5.315795140080512
+    }
+  ],
+  "map": {
+    "image": "/home/lyb/Workspace/Isaac_Sim_ROS2_Nav/data/maps/occupancy/warehouse_new.pgm",
+    "image_sha256": "1f4ee9d3c19d5fb1ff3c2a926888ba9b22c7dd61b88b0833038c65133d29d0c6",
+    "yaml": "/home/lyb/Workspace/Isaac_Sim_ROS2_Nav/data/maps/occupancy/warehouse_new.yaml",
+    "yaml_sha256": "7f4d947fd892ed4c724707d7f09739252ecd5bbd8888e518cd7857f322c048e0"
+  },
+  "schema_version": 1,
+  "static_obstacle_polygons": [
+    [
+      [
+        -0.3,
+        0.5499999999999999
+      ],
+      [
+        0.0,
+        0.5499999999999999
+      ],
+      [
+        0.0,
+        0.85
+      ],
+      [
+        -0.3,
+        0.85
+      ]
+    ]
+  ],
+  "total_length_m_0_025": 41.5576010022152,
+  "total_length_m_0_05": 41.81538834721128
+}

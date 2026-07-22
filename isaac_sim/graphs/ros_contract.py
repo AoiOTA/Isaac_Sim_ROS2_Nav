@@ -30,6 +30,7 @@ def load_topics(path: str | Path) -> dict[str, Any]:
         "ground_truth_path",
         "camera_front_image",
         "camera_front_info",
+        "camera_front_depth",
         "camera_front_depth_points",
         "tf",
         "tf_static",

@@ -48,6 +48,7 @@ def _camera_runtime(camera_config, profile="monitoring", render_product=None):
         node_namespace=camera.node_namespace,
         rgb=camera.rgb,
         camera_info=camera.camera_info,
+        depth=camera.depth,
         depth_points=camera.depth_points,
         depth_points_enabled=selected.depth_points_enabled,
         width=selected.width,
@@ -91,7 +92,7 @@ def test_camera_schema_profiles_and_front_contract_load_strictly():
     assert front.node_namespace == "/camera/front"
     assert front.rgb.encoding == "rgb8"
     assert front.rgb.queue_size == front.camera_info.queue_size == 2
-    assert front.depth.enabled is False
+    assert front.depth.enabled is True
     assert front.depth_points.enabled is True
     assert front.depth_points.topic_name == "depth/points"
     assert front.depth_points.queue_size == 2
@@ -127,7 +128,7 @@ def test_camera_schema_rejects_profile_drift_and_unknown_keys(tmp_path):
         _load_camera(unknown)
 
 
-def test_camera_graph_publishes_rgb_and_info_without_depth_for_existing_profiles():
+def test_camera_graph_publishes_rgb_info_and_depth_from_one_render_product():
     config = _config()
     camera_config = _load_camera(config.files.camera)
     runtime = _camera_runtime(camera_config)
@@ -141,17 +142,25 @@ def test_camera_graph_publishes_rgb_and_info_without_depth_for_existing_profiles
         "OnPlaybackTick": "omni.graph.action.OnPlaybackTick",
         "PublishRGB": "isaacsim.ros2.bridge.ROS2CameraHelper",
         "PublishCameraInfo": "isaacsim.ros2.bridge.ROS2CameraInfoHelper",
+        "PublishDepth": "isaacsim.ros2.bridge.ROS2CameraHelper",
     }
     assert values["PublishRGB.inputs:renderProductPath"] == (
         values["PublishCameraInfo.inputs:renderProductPath"]
     )
+    assert values["PublishDepth.inputs:renderProductPath"] == (
+        values["PublishRGB.inputs:renderProductPath"]
+    )
     assert values["PublishRGB.inputs:type"] == "rgb"
     assert values["PublishRGB.inputs:useSystemTime"] is False
     assert values["PublishCameraInfo.inputs:useSystemTime"] is False
+    assert values["PublishDepth.inputs:useSystemTime"] is False
     assert values["PublishRGB.inputs:frameId"] == contract.optical_frame
     assert values["PublishCameraInfo.inputs:frameId"] == contract.optical_frame
+    assert values["PublishDepth.inputs:frameId"] == contract.optical_frame
     assert values["PublishRGB.inputs:queueSize"] == 2
     assert values["PublishCameraInfo.inputs:queueSize"] == 2
+    assert values["PublishDepth.inputs:queueSize"] == 2
+    assert values["PublishDepth.inputs:type"] == "depth"
     assert '"depth":2' in contract.qos_profile
     assert '"reliability":"bestEffort"' in contract.qos_profile
     assert '"durability":"volatile"' in contract.qos_profile

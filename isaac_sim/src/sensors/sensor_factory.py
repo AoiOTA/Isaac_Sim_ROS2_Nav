@@ -107,6 +107,7 @@ class CameraRuntime:
     node_namespace: str
     rgb: CameraStream
     camera_info: CameraStream
+    depth: CameraStream
     depth_points: CameraStream
     depth_points_enabled: bool
     width: int
@@ -321,14 +322,14 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
     )
     if not rgb.enabled or rgb.encoding != "rgb8":
         raise SensorConfigError("front Camera RGB must be enabled with rgb8 encoding")
-    if not camera_info.enabled or depth.enabled or not depth_points.enabled:
+    if not camera_info.enabled or not depth.enabled or not depth_points.enabled:
         raise SensorConfigError(
-            "CameraInfo and depth points must be enabled and raw depth must be disabled"
+            "CameraInfo, raw depth, and depth points must be enabled"
         )
-    if len({rgb.qos_profile, camera_info.qos_profile, depth_points.qos_profile}) != 1:
+    if len({rgb.qos_profile, camera_info.qos_profile, depth.qos_profile, depth_points.qos_profile}) != 1:
         raise SensorConfigError("Camera streams must use the same QoS profile")
-    if (rgb.queue_size, camera_info.queue_size, depth_points.queue_size) != (2, 2, 2):
-        raise SensorConfigError("Camera RGB, CameraInfo, and depth points queue_size must be 2")
+    if (rgb.queue_size, camera_info.queue_size, depth.queue_size, depth_points.queue_size) != (2, 2, 2, 2):
+        raise SensorConfigError("Camera RGB, CameraInfo, raw depth, and depth points queue_size must be 2")
 
     clipping = _require_mapping(
         data["clipping_range_m"], {"near", "far"},
@@ -844,6 +845,7 @@ class SensorFactory:
             node_namespace=definition.node_namespace,
             rgb=definition.rgb,
             camera_info=definition.camera_info,
+            depth=definition.depth,
             depth_points=definition.depth_points,
             depth_points_enabled=profile.depth_points_enabled,
             width=profile.width,

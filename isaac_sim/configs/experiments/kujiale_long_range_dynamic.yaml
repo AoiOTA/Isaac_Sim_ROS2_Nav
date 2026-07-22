@@ -1,0 +1,11 @@
+# Schema v2 is the physical-obstacle contract for the Kujiale campaign.
+# Coordinates are Map coordinates and are transformed with mapping_start.
+schema_version: 2
+seed: 7301
+enabled: false
+coordinate_frame: map
+spawn_pose_name: mapping_start
+obstacles:
+  - {id: central_crossing, mode: linear, trigger_group: G1, size: [0.40, 0.40, 1.00], mass: 20.0, start: [-0.80, 0.65, 0.50], end: [0.80, 0.65, 0.50], speed: 0.35, delay_sec: 0.40, jitter_sec: 0.15, post_motion: retire}
+  - {id: north_crossing, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [1.30, 4.35, 0.50], end: [-0.10, 4.35, 0.50], speed: 0.30, delay_sec: 0.25, jitter_sec: 0.10, post_motion: retire}
+  - {id: south_crossing, mode: linear, trigger_group: G6, size: [0.35, 0.35, 1.00], mass: 20.0, start: [-1.70, -3.20, 0.50], end: [-2.60, -3.20, 0.50], speed: 0.25, jitter_sec: 0.10, delay_sec: 0.30, post_motion: retire}

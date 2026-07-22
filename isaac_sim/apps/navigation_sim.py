@@ -123,6 +123,11 @@ def _parser() -> argparse.ArgumentParser:
         help="enable or disable the configured deterministic dynamic obstacle set",
     )
     parser.add_argument(
+        "--dynamic-obstacle-config",
+        type=Path,
+        help="override the physical obstacle schema for a frozen experiment campaign",
+    )
+    parser.add_argument(
         "--third-person-camera",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -479,7 +484,25 @@ def run(
             config,
             camera_profile=camera_selection.profile.name,
         ).create_all()
-        dynamic_manager = DynamicObstacleManager(stage, dynamic_scenario)
+        if dynamic_scenario.coordinate_frame == "map" and not selected_pose.map.calibrated:
+            raise ValueError("map-coordinate obstacles require a calibrated selected spawn pose")
+        def map_to_usd(position):
+            """Map-frame obstacle coordinates through the calibrated spawn pair."""
+            yaw = math.radians(selected_pose.usd.yaw_deg - selected_pose.map.yaw_deg)
+            delta_x = position[0] - selected_pose.map.position[0]
+            delta_y = position[1] - selected_pose.map.position[1]
+            return (
+                selected_pose.usd.position[0] + math.cos(yaw) * delta_x - math.sin(yaw) * delta_y,
+                selected_pose.usd.position[1] + math.sin(yaw) * delta_x + math.cos(yaw) * delta_y,
+                position[2],
+            )
+
+        dynamic_manager = DynamicObstacleManager(
+            stage, dynamic_scenario, map_to_usd=map_to_usd
+        )
+        dynamic_manager.bind_ros(
+            node, lambda: float(SimulationManager.get_simulation_time())
+        )
         collision_monitor = CollisionMonitor(config.robot.base_link_prim, node)
         runtime.reset()
 
@@ -691,6 +714,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
+    if args.dynamic_obstacle_config is not None:
+        obstacle_config = args.dynamic_obstacle_config.expanduser().resolve()
+        if not obstacle_config.is_file():
+            raise ValueError(f"dynamic obstacle config not found: {obstacle_config}")
+        config = replace(
+            config, files=replace(config.files, dynamic_obstacles=obstacle_config)
+        )
     configure_process_environment(config)
     selected_pose, dynamic_scenario, camera_selection = validate_configuration(
         config, args.camera_profile
