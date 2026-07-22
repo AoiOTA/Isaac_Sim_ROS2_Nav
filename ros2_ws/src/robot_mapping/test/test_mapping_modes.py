@@ -58,15 +58,20 @@ def test_launches_use_distinct_jazzy_executables_and_posegraph_pair():
     assert "'use_posegraph_localization'" in localization_source
     assert "executable='ideal_localization_tf'" in localization_source
     assert 'return [slam_node, activate, configure]' in mapping_source
-    assert "package='nav2_lifecycle_manager'" in localization_source
-    assert "name='lifecycle_manager_localization'" in localization_source
-    assert "'node_names': ['map_server', 'slam_toolbox']" \
+    # Localization owns its explicit lifecycle transitions so the immutable
+    # Map Server and optional SLAM Toolbox activate in a deterministic order.
+    # Keep every symbol used by those transitions imported: a missing import
+    # otherwise fails only after the top-level ROS stack has started.
+    assert 'EmitEvent,' in localization_source
+    assert 'LogInfo,' in localization_source
+    assert 'RegisterEventHandler,' in localization_source
+    assert 'from launch.conditions import IfCondition' in localization_source
+    assert 'from launch.events import matches_action' in localization_source
+    assert 'from launch_ros.events.lifecycle import ChangeState' \
         in localization_source
-    assert "'use_lifecycle_manager': True" in localization_source
-    assert 'EmitEvent' not in localization_source
-    assert 'ChangeState' not in localization_source
+    assert "'use_lifecycle_manager': False" in localization_source
+    assert "package='nav2_lifecycle_manager'" not in localization_source
     assert mapping_source.count("sigterm_timeout='15.0'") == 1
-    assert localization_source.count("sigterm_timeout='15.0'") == 3
     for source in (mapping_source, localization_source):
         assert "DeclareLaunchArgument('ceres_num_threads', default_value='12')" \
             in source

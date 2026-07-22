@@ -2,7 +2,15 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import (
+    DeclareLaunchArgument,
+    EmitEvent,
+    LogInfo,
+    OpaqueFunction,
+    RegisterEventHandler,
+)
+from launch.conditions import IfCondition
+from launch.events import matches_action
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
@@ -55,6 +63,8 @@ def _launch_setup(context):
             LaunchConfiguration('ceres_num_threads').perform(context))
     except ValueError as exc:
         raise RuntimeError('ceres_num_threads must be an integer') from exc
+    if ceres_num_threads < 1:
+        raise RuntimeError('ceres_num_threads must be positive')
 
     autostart = LaunchConfiguration('autostart')
     map_node = LifecycleNode(
@@ -106,6 +116,7 @@ def _launch_setup(context):
                     'use_lifecycle_manager': False,
                     'mode': 'localization',
                     'map_file_name': prefix,
+                    'ceres_num_threads': ceres_num_threads,
                 },
             ],
             # SLAM Toolbox owns localization TF only.  Its scan-rasterized map
