@@ -54,6 +54,7 @@ properties:
             uniqueItems: true
             items: {type: integer, minimum: 0}
           timeout_sec: {type: number, exclusiveMinimum: 0}
+          leg_timeout_sec: {type: number, exclusiveMinimum: 0}
       goal:
         type: object
         additionalProperties: false
@@ -75,6 +76,7 @@ properties:
           additionalProperties: false
           required: [frame_id, position, yaw_deg, require_orientation]
           properties:
+            id: {type: string, minLength: 1}
             frame_id: {const: map}
             position:
               type: array
@@ -113,7 +115,14 @@ properties:
         required: [layout_id, static, trajectories]
         properties:
           layout_id: {type: string, minLength: 1}
-          static: {type: array, maxItems: 0}
+          static:
+            type: array
+            items:
+              type: object
+              additionalProperties: false
+              required: [id]
+              properties:
+                id: {type: string, minLength: 1}
           trajectories:
             type: array
             items:
@@ -122,6 +131,7 @@ properties:
               required: [id, motion, shape, repeat, dimensions, waypoints]
               properties:
                 id: {type: string, minLength: 1}
+                trigger_group: {type: [string, 'null'], minLength: 1}
                 motion:
                   enum: [crossing, oncoming, same_direction_slow, temporary_block, custom]
                 shape: {const: box}

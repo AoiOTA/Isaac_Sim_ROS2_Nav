@@ -28,7 +28,7 @@
 | 文档 | 状态 | 使用方式 |
 | --- | --- | --- |
 | [`../README.md`](../README.md) | 当前入口 | 快速启动和项目总览。 |
-| [`user_manual.md`](user_manual.md) | 当前可执行手册 | 手动测试、建图、Reset、Camera 和日常操作。 |
+| [`user_manual.md`](user_manual.md) | 当前可执行手册 | GUI/RViz 可视化单轮、正式自动化批次、建图、Reset、Camera 和日常操作。 |
 | [`interfaces.md`](interfaces.md) | 当前运行契约 | Topic、TF、模式配对、所有权与启动门禁。 |
 | [`troubleshooting.md`](troubleshooting.md) | 当前排障手册 | 根据症状执行只读诊断和受管恢复。 |
 | [`calibration.md`](calibration.md) | 当前流程 + 历史记录 | 新地图的标定流程；Warehouse v2 数字是历史记录。 |

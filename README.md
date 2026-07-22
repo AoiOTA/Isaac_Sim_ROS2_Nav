@@ -128,6 +128,10 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
+GUI + RViz 的单轮可视化回归分别使用
+`kujiale_static_visual.yaml` 与 `kujiale_dynamic_visual.yaml`：runner 自动发送完整
+G1–G8 路线，动态场景也自动触发障碍，二者均不计入正式 20+20 结果。
+
 运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的
 HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推送到 Git；受版本
 控制的是生成器、场景、校验规则和文档。
@@ -135,8 +139,8 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 自动启动静态 20 轮、动态 20 轮、汇总并核验自包含报告的完整命令见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
-需要人工观察 GUI、RViz、RGB-D 融合与动态障碍时，同一手册还提供了 G1–G8 的可视化
-手动静态/动态测试流程和障碍触发命令。
+需要 GUI + RViz 的可视化回归时，同一手册提供静态/动态各一轮的自动 G1–G8 路线；
+无需手动点选目标或手动触发障碍。
 
 ## 文档入口
 
