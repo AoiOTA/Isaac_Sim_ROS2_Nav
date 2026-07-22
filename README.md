@@ -97,7 +97,7 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
   posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v1"
 ```
 
-等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 Navigation 2 Goal 工具拖出目标。右侧 **Robot Front Camera** 应显示机器人前向画面；若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。停止时在启动 ROS 的终端按一次 Ctrl+C；监督脚本会先按 Navigation/Localization 顺序关闭 Lifecycle，再终止其余 ROS 子进程。
+等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 **2D Goal Pose** 拖出目标。`RGB-D Fusion` 分组中可按需开启 **Robot Front Camera** 和 **Depth PointCloud2**；深度点云为青色，已标记体素显示为浅绿色立方体。若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。停止时在启动 ROS 的终端按一次 Ctrl+C；监督脚本会先按 Navigation/Localization 顺序关闭 Lifecycle，再终止其余 ROS 子进程。
 
 如果这一步失败，先运行 `./scripts/preflight.sh` 和 `./scripts/diagnose.sh`，然后按 [`docs/user_manual.md`](docs/user_manual.md) 的逐步流程排查。Camera profile、地图保存、Reset、故障注入和性能采样的完整命令也都在使用手册中。
 
@@ -246,7 +246,7 @@ ros2 run robot_experiments incremental_map_compare \
   odometry_mode:=ideal
 ```
 
-`run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用官方 GoalTool 和仓库内安全关闭版 Navigation 2 面板：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；日常操作不需要 CLI 发布 `/goal_pose` 或另写桥接节点。局部轨迹显示读取 MPPI 真正输出的 `/optimal_trajectory`，`/transformed_global_plan` 是控制器参考路径，默认不订阅体量更大的候选集 `/trajectories`。Localization/Navigation 默认从已标定出生点自动播种；Manifest 或出生点 bundle 未标定时，`auto` 会 fail fast，需传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop，用于无头实验。
+`run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用 RViz 标准 **2D Goal Pose** 和仓库内安全关闭版 Navigation 2 面板：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；目标由 Nav2 自带的 `goal_pose` 接口消费，不需要项目自定义桥接节点。局部轨迹显示读取 MPPI 真正输出的 `/optimal_trajectory`，`/transformed_global_plan` 是按需关闭的控制器参考路径；候选集 `/trajectories` 在当前保存的导航布局中已启用，性能采样时可手动关闭。Localization/Navigation 默认从已标定出生点自动播种；Manifest 或出生点 bundle 未标定时，`auto` 会 fail fast，需传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop，用于无头实验。
 
 Realistic 模式把 `odometry_mode` 改为 `realistic`。两端都会拒绝各自已知的不合法组合，但进程之间没有自动握手；操作者仍须保证 `odometry_mode` 和 `structure_tf_source` 成对一致，并用 Topic/TF introspection 确认唯一所有权。
 

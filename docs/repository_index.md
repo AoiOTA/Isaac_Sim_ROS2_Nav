@@ -85,7 +85,7 @@
 | `scripts/build_ros2.sh` | source ROS 环境并执行 `colcon build --symlink-install`。 |
 | `scripts/test.sh` | 统一运行纯 Python、ROS colcon 和可选 Isaac/USD 测试。 |
 | `scripts/run_isaac.sh` | 选择项目配置并用 Isaac Python 启动 standalone 仿真；支持 custom profile。 |
-| `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。 |
+| `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本，避免孤立 RViz 锁住下一次启动。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
@@ -265,7 +265,7 @@
 | **robot_navigation** | Nav2 planner/controller/costmap/safety。 |
 | **robot_experiments** | 初始位姿、Reset runner、场景、指标和报告。 |
 | **robot_bringup** | 模式验证、组合 launch 和 Nav2 readiness gate。 |
-| **robot_rviz_plugins** | 项目自有、退出安全的 Nav2 RViz 面板。 |
+| **robot_rviz_plugins** | 项目自有、退出安全的 Nav2 RViz 面板，以及 Nav2 `VoxelGrid` 三维显示插件。 |
 | **robot_teleop** | 仅 Mapping 可用、带稳态时钟 deadman 和速度上限的 W/A/S/D 键盘控制。 |
 
 ## 19. `robot_description`
@@ -281,7 +281,7 @@
 | `ros2_ws/src/robot_description/urdf/jackal_sensors.xacro` | lidar、imu、camera、双目和 optical frame 的固定关节。 |
 | `ros2_ws/src/robot_description/rviz/mapping.rviz` | Mapping/Incremental Mapping 专用界面：实时地图、LaserScan、RobotModel、TF 与 Odom；不加载会在退出阶段残留后台线程的 SLAM Toolbox 面板。 |
 | `ros2_ws/src/robot_description/rviz/localization.rviz` | Localization 专用界面：固定 `/map`、可选 `/slam_toolbox/map` 诊断层、扫描、里程计和 2D Pose Estimate。 |
-| `ros2_ws/src/robot_description/rviz/navigation.rviz` | Navigation 完整界面：项目安全 Nav2 面板/GoalTool、双 Costmap、全局路径、真实 MPPI 局部轨迹 `/optimal_trajectory`、Footprint、Collision Monitor 区域，以及默认关闭的参考路径/候选轨迹/GT。 |
+| `ros2_ws/src/robot_description/rviz/navigation.rviz` | Navigation 完整界面：项目安全 Nav2 面板、标准 2D Goal Pose、双 Costmap、全局路径、真实 MPPI 局部轨迹 `/optimal_trajectory`、Footprint、Collision Monitor 和 RGB-D Fusion（青色深度点云、已标记体素盒子）。 |
 | `ros2_ws/src/robot_description/rviz/camera_view.rviz` | 独立的前视 Camera RViz 布局；显示 RGB 图像及必要的机器人/TF 上下文，供单独观察相机链路。 |
 | `ros2_ws/src/robot_description/test/test_urdf.py` | 展开 Xacro，检查必需 link/joint、轮轴、传感器固定关节、禁用导航/GT frame 和 description-only TF 所有权。 |
 | `ros2_ws/src/robot_description/test/test_rviz_configs.py` | 解析四套 RViz YAML，锁定模式 Topic、安全面板、真实局部轨迹、显示开关以及 Map/Sensor QoS。 |
@@ -466,9 +466,11 @@
 | --- | --- |
 | `ros2_ws/src/robot_rviz_plugins/CMakeLists.txt` | 以 C++17/Qt5 构建并安装项目 Nav2 Panel 共享库，导出 pluginlib 描述、头文件、许可证与 pytest 契约。 |
 | `ros2_ws/src/robot_rviz_plugins/package.xml` | ament_cmake 包元数据；声明 Nav2、RViz、rclcpp/action、TF、Qt、YAML 与测试依赖。 |
-| `ros2_ws/src/robot_rviz_plugins/plugins_description.xml` | 注册 RViz class `robot_rviz_plugins/Navigation 2 Safe` 到项目 `Nav2Panel` 实现。 |
+| `ros2_ws/src/robot_rviz_plugins/plugins_description.xml` | 注册安全 Navigation 2 Panel 与 `robot_rviz_plugins/Voxel Grid` 两个 RViz class。 |
 | `ros2_ws/src/robot_rviz_plugins/include/robot_rviz_plugins/nav2_panel.hpp` | 基于 Nav2 Panel 的项目命名空间头文件；增加可中断初始化线程、受管异步任务与退出状态成员。 |
 | `ros2_ws/src/robot_rviz_plugins/src/nav2_panel.cpp` | 安全面板实现；除协作式停止 timer/QThread/QFuture 外，还防御空 GoalStatus 与非法循环输入，避免正常关闭或异常消息造成 RViz 崩溃。 |
+| `ros2_ws/src/robot_rviz_plugins/include/robot_rviz_plugins/voxel_grid_display.hpp` | `nav2_msgs/msg/VoxelGrid` 的 RViz Display 声明。 |
+| `ros2_ws/src/robot_rviz_plugins/src/voxel_grid_display.cpp` | 解码 Nav2 高 16 位 `MARKED` 体素为 PointCloud2，并复用 RViz 点云渲染器显示 3D 方盒。 |
 | `ros2_ws/src/robot_rviz_plugins/LICENSE` | 此派生面板使用的完整 Apache License 2.0。 |
 | `ros2_ws/src/robot_rviz_plugins/NOTICE.md` | 记录 Navigation2 `nav2_rviz_plugins` 1.3.12 来源、上游 SHA256 和本地退出安全修改。 |
 | `ros2_ws/src/robot_rviz_plugins/test/test_safe_panel_contract.py` | 静态契约测试插件类名、协作式 QThread 退出、QFuture 所有权、ROS context guard 与许可证溯源。 |

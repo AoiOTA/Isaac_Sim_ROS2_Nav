@@ -106,7 +106,7 @@ The three RViz configurations are mode contracts, not cosmetic presets:
 
 - Mapping shows the live SLAM `/map` and enables the SLAM Toolbox panel.
 - Localization shows the fixed `/map`, keeps `/slam_toolbox/map` as a disabled Realistic/calibration diagnostic overlay, and provides `SetInitialPose`.
-- Navigation additionally loads the official `nav2_rviz_plugins/Navigation 2` panel and `GoalTool`, dual costmaps, paths, footprints, and Collision Monitor zones. It sends Nav2 actions directly; there is no project `/goal_pose` bridge.
+- Navigation additionally loads the project-owned `robot_rviz_plugins/Navigation 2 Safe` panel, RViz 标准 `SetGoal` (**2D Goal Pose**) 工具、双 Costmap、路径、Footprint 和 Collision Monitor 区域。目标经 Nav2 自带 `goal_pose` 接口处理；不存在项目自定义 `/goal_pose` bridge。
 
 Managed RViz/Teleop processes use the same environment and PID registry as the main scripts. Mapping Teleop publishes Reliable/Volatile `/cmd_vel` at 20 Hz, stops after 0.18 seconds without a key event using a monotonic wall clock, clamps commands to 1.0 m/s and 1.5 rad/s, and publishes a final zero on every normal/signal/EOF exit. Navigation's command chain remains the sole owner in its mode.
 
@@ -129,10 +129,11 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/plan` | `nav_msgs/msg/Path` | Nav2 Planner Server | RViz and profiler global-plan evidence | `map`; Navigation only |
 | `/optimal_trajectory` | `nav_msgs/msg/Path` | MPPI Controller Server | RViz **Local Plan** and runtime profiler | selected local trajectory in `odom`; Navigation only, nominal controller rate; Reliable + Volatile |
 | `/transformed_global_plan` | `nav_msgs/msg/Path` | MPPI Controller Server | optional transformed-reference diagnostic | reference path in the controller frame, not the local plan; Reliable + Volatile |
-| `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | opt-in candidate-sample visualization | Reliable + Volatile, expensive/lazy; committed RViz display is disabled and creates no subscription |
+| `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | candidate-sample visualization | Reliable + Volatile, expensive/lazy; current saved Navigation RViz layout enables its display |
 | `/camera/front/image_raw` | `sensor_msgs/msg/Image` | Isaac front Camera graph | RViz or external perception/recording only | `camera_front_optical_frame`, `rgb8`; profile rate/resolution; Best Effort + Volatile, depth 2 |
 | `/camera/front/camera_info` | `sensor_msgs/msg/CameraInfo` | same Isaac Render Product as Image | camera calibration consumers and profiler pairing | same frame, simulated stamp and QoS as Image; Best Effort + Volatile, depth 2 |
 | `/camera/front/depth/points` | `sensor_msgs/msg/PointCloud2` | Isaac Camera graph (`rgbd_navigation` only) | Local Costmap `depth_voxel_layer`, RViz | `camera_front_optical_frame`, 10 Hz target; Best Effort + Volatile, depth 2 |
+| `/local_costmap/voxel_grid` | `nav2_msgs/msg/VoxelGrid` | Local Costmap `depth_voxel_layer` | `robot_rviz_plugins/Voxel Grid` display | Local Costmap frame; Reliable + Volatile; only `MARKED` cells are rendered as 3D boxes |
 | `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node/Isaac Reset in `auto`, or RViz in `rviz` | SLAM Toolbox localization | `map`; Reliable + Volatile; invalid frame/non-finite/non-normalized manual poses are ignored |
 | `/initial_pose/status` | `std_msgs/msg/String` | calibrated initial-pose node | operator and recovery diagnostics | transient-local state such as waiting clock/scan/TF, complete, or manual override |
 | `/simulation/initial_pose_source` | `std_msgs/msg/String` | `initial_pose_policy` | Isaac Reset and ROS recovery contract | transient-local `auto` or `rviz` |
@@ -246,9 +247,9 @@ navigation run produces it in `odom` at approximately the controller rate.
 `/transformed_global_plan` is the global reference path transformed into the
 controller frame; it is useful for comparison but is not the chosen local
 trajectory. `/trajectories` is the heavyweight MarkerArray of candidate MPPI
-samples. Its publisher is lazy, the committed RViz display is disabled, and the
-normal graph must have no `/trajectories` subscriber. Enable it only for a
-short, explicit controller-debug session.
+samples. Its publisher is lazy; the current saved Navigation RViz layout enables
+this display, so it creates a subscriber while RViz is running. Disable **MPPI
+Candidate Trajectories** before a performance-sensitive run.
 
 ## Collision freshness and scan-fault test interface
 

@@ -315,7 +315,7 @@ data/maps/occupancy/warehouse_new.yaml
 Nav2 lifecycle activation completed
 ```
 
-启动命令会自动打开 `navigation.rviz`。不要在上述日志出现前发送导航目标；Activation Gate 正在等待 `/map`、`/clock`、`/scan`、`/odom` 和稳定的 `map → odom`。RViz 左侧应能看到静态地图、LaserScan、机器人、全局/局部 Costmap、全局/局部路径、Footprint 和 Collision Monitor 区域，右侧应有 **Navigation 2** 面板。目标工具仍使用 Nav2 官方 `GoalTool`；面板由本仓库的 `robot_rviz_plugins/Navigation 2 Safe` 提供，功能与当前工作流一致，并在退出时先停止其线程和异步 future。
+启动命令会自动打开 `navigation.rviz`。不要在上述日志出现前发送导航目标；Activation Gate 正在等待 `/map`、`/clock`、`/scan`、`/odom` 和稳定的 `map → odom`。RViz 左侧应能看到静态地图、LaserScan、机器人、全局/局部 Costmap、全局/局部路径、Footprint 和 Collision Monitor 区域，右侧应有 **Navigation 2 Safe** 面板。使用工具栏的 **2D Goal Pose** 发送目标；面板由本仓库的 `robot_rviz_plugins/Navigation 2 Safe` 提供，并在退出时先停止其线程和异步 future。
 
 默认使用 `nav2_profile:=stable`：控制频率 `10 Hz`、MPPI `batch_size=750`、`20 × 0.10 s = 2 s` 预测窗。需要在同一台机器上做更高 MPPI 采样量对照时，选择仍保持 `10 Hz/2 s`、但 `batch_size=1000` 的性能 profile：
 
@@ -333,12 +333,12 @@ SLAM Ceres 默认请求 `ceres_num_threads:=12`；可在启动命令中显式覆
 ### 5.3 在 RViz 中发送目标
 
 1. 确认 RViz 顶部 Fixed Frame 是 `map`；
-2. 确认 **Navigation 2** 面板显示 Nav2 已激活；
-3. 点击工具栏中的 Nav2 Goal 工具（绿色箭头）；
+2. 确认 **Navigation 2 Safe** 面板显示 Nav2 已激活；
+3. 点击工具栏中的 **2D Goal Pose**（绿色箭头）；
 4. 在地图可通行区域按住鼠标左键，从目标位置拖出朝向后松开；
 5. 观察黄色全局路径、洋红色局部路径、橙色 MPPI 最优轨迹和 Costmap，等待面板显示完成。
 
-该 RViz 配置使用官方 `nav2_rviz_plugins/GoalTool` 和仓库自带的安全关闭 Navigation 2 面板，目标直接进入 Nav2 Action；没有额外的 `/goal_pose` 转换节点，也不需要第三个终端。
+该 RViz 配置使用 RViz 标准 `SetGoal` 与仓库自带的安全关闭 Navigation 2 面板；目标由 Nav2 自带 `goal_pose` 接口处理，没有项目额外的 `/goal_pose` 转换节点，也不需要第三个终端。
 
 成功标准：面板最终状态成功，机器人停车，局部/全局路径没有持续振荡。Nav2 goal checker 的位置容差是 `0.20 m`，所以机器人不会精确停在数学坐标点。自动实验另用 Ground Truth 检查 `0.25 m` 的成功阈值；这是评价门槛，不是 Nav2 的 goal checker 配置。
 
@@ -596,6 +596,8 @@ Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、�
 ```
 
 Camera profile 是 Isaac 启动期选择，不能热切换；更改时先正常停止 Isaac，再用新 profile 重启。Mapping、Localization 和 Navigation 的默认 RViz 都有右侧 **Robot Front Camera** dock；当 profile 为 `off` 时该 dock 空白是正常现象。
+
+当 `navigation.rviz` 配合 `rgbd_navigation` 使用时，展开 **RGB-D Fusion**：当前保存布局默认显示 **Marked Voxels (3D)**，而 RGB 图像和 **Depth PointCloud2** 可按需手动勾选。深度点云是青色 `Flat Squares`；体素为浅绿色盒子，只表示 `/local_costmap/voxel_grid` 中已被 Nav2 标记的体素。若只看到深度点而没有体素，检查 VoxelLayer 的障碍标记和 `/local_costmap/voxel_grid`，不要把该 Topic 加为内置 `PointCloud2`。
 
 只想看前置画面时，避免与模式 RViz 的单实例锁冲突：让 ROS 栈不启动 RViz，再开专用 Camera 配置。若只验证 Isaac Camera/TF，也可以不启动算法栈，但仍须先构建并 source ROS 工作区。
 
