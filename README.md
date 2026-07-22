@@ -1,373 +1,154 @@
-# Isaac Sim 6.0.1 + ROS 2 Jazzy Navigation
+# Isaac Sim 6.0.1 + ROS 2 Jazzy：酷家乐 RGB-D 导航
 
-这是一个面向 Clearpath Jackal 的二维 SLAM、定位、Nav2 导航与可重复实验工程。仿真运行在 Isaac Sim 6.0.1，ROS 侧使用 Jazzy、SLAM Toolbox、robot_localization、SmacPlanner2D、MPPI、Velocity Smoother 和 Collision Monitor。
+本分支提供 Clearpath Jackal 在酷家乐室内场景中的 Isaac Sim 导航闭环：二维
+LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。当前分支的唯一
+默认运行组合是：
 
-完整设计和分阶段验收标准见 [`plan.md`](plan.md)。本 README 只保留可执行入口、运行约束和交付状态。
+```text
+场景:      kujiale_0026_A_to_B_door_open.usd
+地图:      warehouse_new
+出生点:    mapping_start
+定位:      Ideal Odometry / 已标定 identity map -> odom
+导航感知:  /scan + /camera/front/depth/points
+```
 
-> 当前交付状态：Stage、传感器、Ideal/Realistic 里程计、SLAM、事务式 Reset/Lifecycle 恢复、三套 RViz、Mapping 安全 Teleop、动态障碍、Nav2、RGB-D 融合和实验框架均已实现。本分支默认使用已标定的酷家乐 `warehouse_new` 地图；2026-07-22 正式全屋长路线批次达到静态 `20/20`、动态 `19/20`，两批物理无碰撞均为 `20/20`，静态最大路径偏差为 `4.31%`。可复现的结论、边界和本地生成报告的索引见 [`docs/verification.md`](docs/verification.md) 与 [`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md)。
+`warehouse_new` 仅用于普通 Ideal Localization/Navigation；用 `realistic` 或
+`posegraph_calibration:=true` 启动该地图会被 `run_ros.sh` 拒绝。Warehouse 的旧
+地图、旧实验和历史调参不属于本分支的运行入口，见
+[`docs/documentation_status.md`](docs/documentation_status.md)。
 
-> `codex/kujiale-navigation-mapping` 分支专用于酷家乐房间。该分支默认加载
-> `warehouse_new` 地图和酷家乐出生点；原 `codex/rviz-workflow-upgrade`
-> 分支仍默认使用 `warehouse_v2`，两套环境不会互相覆盖。
+## 当前验收结果
 
-## 文档导航
+2026-07-22 的正式全屋长路线批次使用上述固定组合和 `rgbd_navigation`：
 
-第一次使用建议先看前两项：
-
-| 文档 | 适合什么时候看 |
+| 项目 | 结果 |
 | --- | --- |
-| [`docs/user_manual.md`](docs/user_manual.md) | 不熟悉项目时从这里开始；按步骤完成安装、Camera/RViz、导航、建图、Reset、性能采样和排障。 |
-| [`docs/documentation_status.md`](docs/documentation_status.md) | 判断一份文档是当前可执行手册、权威契约还是历史设计/复盘时。 |
-| [`docs/repository_index.md`](docs/repository_index.md) | 想理解代码结构或准备修改文件时；逐项解释全部 Git 跟踪文件。 |
-| [`docs/skid_steer_navigation_solution.md`](docs/skid_steer_navigation_solution.md) | 回顾 Jackal 直行正常但导航转弯困难的症状、根因、分层修复和 Ideal 复杂路线验收时。 |
-| [`docs/kujiale_usd_navigation_postmortem_20260717.md`](docs/kujiale_usd_navigation_postmortem_20260717.md) | 复盘酷家乐自建 USD 的材质、Stage、RTX/TF、建图标定、窄空间导航和 RViz 问题，以及与 `warehouse_v2` 的差异时。 |
-| [`docs/interfaces.md`](docs/interfaces.md) | 排查 Topic、QoS、TF、Reset、模式配对或 Nav2 激活问题时。 |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 运行异常时按症状执行安全诊断和恢复，不盲目杀进程或删除 SHM。 |
-| [`docs/calibration.md`](docs/calibration.md) | 修改地图、出生点、传感器外参或动态障碍坐标时。 |
-| [`docs/verification.md`](docs/verification.md) | 判断某项能力是否真正验证，以及了解当前未验收边界时。 |
-| [`docs/development.md`](docs/development.md) | 开发、测试、调试和准备 Git 提交时。 |
-| [`docs/rviz_workflow_upgrade_plan.md`](docs/rviz_workflow_upgrade_plan.md) | 回溯本轮 RViz/Teleop/Lifecycle/性能升级的冻结设计和完成状态时。 |
-| [`docs/runtime_reliability_and_performance_upgrade_plan.md`](docs/runtime_reliability_and_performance_upgrade_plan.md) | 回溯地图 Manifest、Camera、MPPI/Ceres、故障注入、Profiler 与有序退出的设计、实测结果和未验收边界时。 |
-| [`plan.md`](plan.md) | 需要完整设计背景、技术选型、指标公式和最终验收目标时。 |
+| 静态严格成功 | `20/20 (100%)` |
+| 动态严格成功 | `19/20 (95%)` |
+| 物理无碰撞 | 静态 `20/20`、动态 `20/20` |
+| 静态最大路径偏差 | `4.31%`，低于 `20%` 门槛 |
 
-## 系统契约
+完整路线、验收口径和报告目录结构见
+[`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md)。
 
-- USD/PhysX 是唯一物理模型；URDF/Xacro 只用于 ROS RobotModel、结构描述和真机迁移。
-- 主 TF 树固定为 `map → odom → base_link`，不发布 ROS `world` frame。
-- Mapping 与 Localization 严格互斥，因为二者都拥有 `map → odom`。
-- Localization/Navigation 中由 `nav2_map_server` 唯一发布保存的静态 `/map`；
-  SLAM Toolbox 只负责定位和 `map → odom`，其扫描栅格图重映射到
-  `/slam_toolbox/map`，不得作为 Nav2 静态地图。
-- Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
-- Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
-- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；`--camera-profile rgbd_navigation` 额外发布 `/camera/front/depth/points`，由全局和局部 Costmap 的独立 VoxelLayer 融合。Collision Monitor 仍只使用 `/scan`。
-- 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
-- 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
-
-完整 Topic、QoS、TF 所有权和 Reset 契约见 [`docs/interfaces.md`](docs/interfaces.md)。
-
-## 已验证环境
-
-当前工作站的基线为：
-
-- Isaac Sim `6.0.1.0`：`/home/lyb/miniconda3/envs/isaacsim`；
-- ROS 2 Jazzy：`/opt/ros/jazzy`；
-- Fast DDS：`rmw_fastrtps_cpp`；
-- NVIDIA GeForce RTX 4090；
-- 官方资产根：`/home/lyb/isaacsim_assets/Assets/Isaac/6.0`。
-
-所有路径都可以通过环境变量覆盖，脚本不会修改官方 Warehouse 或 Jackal 文件。
-
-## 首次设置
+## 首次准备
 
 ```bash
+cd /your/path/Isaac_Sim_ROS2_Nav
+export PROJECT_ROOT="$PWD"
 git lfs install
 git lfs pull
-./scripts/preflight.sh
 ./scripts/import_assets.sh
 ./scripts/build_ros2.sh
+./scripts/preflight.sh
 ```
 
-资产导入只在本地复制 Jackal 的最小运行依赖，并校验来源和 SHA256。NVIDIA 二进制资产被 Git 忽略；仓库只管理项目自有的 USD overlay、manifest 和导入工具。
-
-默认使用：
+脚本默认使用 ROS 2 Jazzy、`ROS_DOMAIN_ID=42` 和 `rmw_fastrtps_cpp`。如果需要
+在终端中直接使用 `ros2`，先执行：
 
 ```bash
-export ROS_DOMAIN_ID=42
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+source ./scripts/setup_ros_env.sh
 ```
 
-两个终端必须使用相同的值。
+`preflight.sh` 必须显示 `map baseline: warehouse_new (integrity verified)` 和
+`preflight: PASS`。它也会检查 Git LFS、地图 Manifest、GPU、Isaac、ROS 与已构建
+工作区。
 
-## 五分钟快速启动
+## 手动导航：两个终端
 
-完成首次设置后，直接用本分支默认的酷家乐 `warehouse_new` 跑通最小导航闭环。GUI 默认启用 `monitoring` Camera；若要同时手动验证 RGB-D 融合，显式使用 `rgbd_navigation`。
+开始前不要已有第二套 Isaac 或 ROS 栈。若脚本提示锁被占用，先运行
+`./scripts/diagnose.sh`；复用已有的同配置会话，或按下面的停止顺序正常关闭，
+不要用 `pkill`。
+
+终端 A 启动 Isaac GUI、Ideal Odom 与 RGB-D：
 
 ```bash
-# 终端 A：Isaac、Ideal Odom、前向 Camera
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
 ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
   --camera-profile rgbd_navigation
+```
 
-# 终端 B：地图定位、Nav2、集成 RViz
+终端 B 启动 Navigation、Map Server 与受管 RViz：
+
+```bash
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
-./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal
-```
-
-等待终端 B 出现 `Nav2 lifecycle activation completed`，再在 RViz 用 **2D Goal Pose** 拖出目标。`RGB-D Fusion` 分组中可按需开启 **Robot Front Camera** 和 **Depth PointCloud2**；深度点云为青色，已标记体素显示为浅绿色立方体。若只做无头性能基线，在终端 A 加 `--headless --camera-profile off`，并在终端 B 加 `interactive:=false`。完整的人工测试判定、记录和停止流程见 [`docs/user_manual.md`](docs/user_manual.md)。
-
-如果这一步失败，先运行 `./scripts/preflight.sh` 和 `./scripts/diagnose.sh`，然后按 [`docs/user_manual.md`](docs/user_manual.md) 的逐步流程排查。Camera profile、地图保存、Reset、故障注入和性能采样的完整命令也都在使用手册中。
-
-## 运行模式
-
-Isaac 的 `--navigation-mode` 描述仿真 Reset 行为；ROS 的第一个参数选择实际算法栈。两端必须按下表配对：
-
-| ROS 操作 | Isaac `--navigation-mode` | Pose Graph | OccupancyGrid YAML | Map Pose 标定 |
-| --- | --- | --- | --- | --- |
-| `mapping` | `mapping` | 禁止传入 | 禁止传入 | 不要求 |
-| `incremental_mapping` | `mapping` | 必须存在 `.posegraph` 和 `.data` | 禁止传入 | 必须 |
-| `localization` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 必须 |
-| `navigation` | `localization` | 必须存在 `.posegraph` 和 `.data` | 必须存在 | 必须 |
-
-里程计模式在两端都使用 `ideal` 或 `realistic`。结构 TF 默认由 Isaac 发布；Realistic 模式也支持改由 Robot State Publisher 发布，但必须在两端同时显式选择 `structure_tf_source:=rsp`。Ideal + RSP 会被拒绝，Isaac 与 RSP 不能同时拥有结构 TF。
-
-```bash
-# 可选的 Realistic + RSP 结构 TF 组合；两个参数必须成对出现
-./scripts/run_isaac.sh \
-  --navigation-mode mapping \
-  --mode realistic \
-  --structure-tf-source rsp
-
-./scripts/run_ros.sh mapping \
-  odometry_mode:=realistic \
-  structure_tf_source:=rsp
-```
-
-## 基线建图
-
-终端 A 启动 Ideal 模式仿真：
-
-```bash
-./scripts/run_isaac.sh --navigation-mode mapping --mode ideal
-```
-
-也可以只给出主目录场景树中的唯一 USD 文件名来建立自定义环境地图：
-
-```bash
-./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode mapping \
-  --mode ideal
-```
-
-默认递归搜索 `/home/lyb/kujiale_usd_rooms_20260717`；也接受该目录下的相对
-路径或任意绝对路径。自定义环境使用独立的临时项目 Stage，不会改写下载的
-源 USD，并自动加载同名 `.spawn.yaml` 出生点配置。当前 `kujiale_0026` 的
-出生点已经针对 `warehouse_new` 完成 Ideal 标定。
-室内场景默认启用 Jackal 相对坐标系下的第三人称跟随相机。相机位于
-`base_link` 后方 `3.2 m`、上方 `2.2 m`，保持在常见室内天花板以下，并以
-`16 mm` 广角朝车前方注视；主视口会自动切换到该相机。
-
-GUI 模式会自动把 Isaac 主视口切换到 Jackal 的第三人称相机。相机作为
-`base_link` 的子 Prim 固定在车后上方，会随底盘平移、转向和 Reset；无需再
-手动追踪视角。临时不使用时可给启动命令增加
-`--no-third-person-camera`，无头模式会自动跳过该相机。
-
-终端 B 启动点云投影与异步 SLAM：
-
-```bash
-./scripts/run_ros.sh mapping odometry_mode:=ideal
-```
-
-命令会自动打开 Mapping RViz 和独立安全 Teleop 终端。使用 `W/A/S/D` 或方向键缓慢完成旋转、走廊覆盖和闭环；超过 0.18 秒无按键会自动停车，`Space` 立即停车，`Q` 安全退出。随后同时保存 OccupancyGrid 与序列化 Pose Graph：
-
-```bash
-./scripts/save_map.sh warehouse_new
-```
-
-当前酷家乐 `mapping_start.map` 已针对 `warehouse_new` 完成三次 Ideal
-冷启动扫描配准，标定结果为 `[0.0, 0.0, 0.0°]`。该精选基线的
-OccupancyGrid、`.data` 和 Git LFS Pose Graph 均纳入仓库；`preflight.sh`
-会校验四件套大小和 SHA256。当前阶段只验收普通 Ideal Navigation；此轮
-关闭扫描匹配生成的 Pose Graph 不用于 Realistic 定位或 Pose Graph 标定。
-
-直接使用新地图导航：
-
-```bash
-# 终端 A
-./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode localization \
-  --mode ideal
-
-# 终端 B；自动选择 warehouse_new 和酷家乐出生点
 ./scripts/run_ros.sh navigation odometry_mode:=ideal
 ```
 
-标定步骤和动态障碍坐标重对齐要求见 [`docs/calibration.md`](docs/calibration.md)。
+等待 `Nav2 lifecycle activation completed`。随后在 RViz：
 
-## 增量建图
+1. 确认 Fixed Frame 为 `map`，**Navigation 2 Safe** 面板为激活状态；
+2. 选择工具栏 **2D Goal Pose**；
+3. 在可通行区域拖出目标位置和朝向；
+4. 观察全局/局部路径、MPPI 轨迹、Costmap 和 Collision Monitor；
+5. 确认面板显示成功且机器人停止。
 
-完成基线地图和 Map Pose 标定后，可以加载旧 Pose Graph 继续建图：
+目标由 Nav2 标准 `goal_pose` 接口处理；没有项目自定义目标桥，也不需要第三个
+终端。完整的人工回归目标、RGB-D 可视化、Reset 与排障步骤见
+[`docs/user_manual.md`](docs/user_manual.md)。
 
-```bash
-# 终端 A
-./scripts/run_isaac.sh --navigation-mode mapping --mode ideal
+## RGB-D 感知边界
 
-# 终端 B；参数可以是前缀，也可以带 .posegraph/.data 后缀
-./scripts/run_ros.sh incremental_mapping \
-  odometry_mode:=ideal \
-  posegraph_file:="$PWD/data/maps/posegraphs/warehouse_v2"
+`--camera-profile rgbd_navigation` 会发布：
+
+```text
+/camera/front/image_raw
+/camera/front/camera_info
+/camera/front/depth/points
 ```
 
-该模式会启动 async SLAM Toolbox、加载旧 Pose Graph，并在 `/clock` 与 `odom → base_link` 就绪后发布已标定 `/initialpose`。完成变化区域采集后用新的版本名保存，禁止覆盖基线：
+深度点云被全局和局部 Costmap 的独立 `depth_voxel_layer` 使用；RViz 的
+**RGB-D Fusion** 分组显示局部 `/local_costmap/voxel_grid`。Collision Monitor
+仍只使用二维 `/scan`，RGB-D 不进入 SLAM、EKF 或 Collision Monitor。
 
-```bash
-./scripts/save_map.sh warehouse_v3_incremental
+## 其他当前操作
+
+| 目标 | 入口 |
+| --- | --- |
+| 仅检查定位与 TF | `./scripts/run_ros.sh localization odometry_mode:=ideal` |
+| 从零建图 | Isaac 使用 `--navigation-mode mapping --mode ideal`，ROS 使用 `./scripts/run_ros.sh mapping odometry_mode:=ideal` |
+| 保存新地图 | `./scripts/save_map.sh <新版本名>`；新地图先是未标定状态，必须完成标定后才能用 `initial_pose_source:=auto`。 |
+| 无头自动运行 | Isaac 增加 `--headless`；ROS 增加 `interactive:=false`。 |
+| 查看当前进程/锁 | `./scripts/diagnose.sh` |
+| 受管清理 | `./scripts/clean_runtime.sh --dry-run`，确认目标后才按输出执行。 |
+
+Mapping Teleop 只属于 Mapping，不能与 Localization 或
+Navigation 同时发布 `/cmd_vel`。
+
+## 实验与报告
+
+正式静态、动态场景配置位于：
+
+```text
+ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml
+ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
+ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-提交的 `incremental_mapping.yaml` 是建图工作流描述符，不是导航试验；`NavigateToPose` runner 会显式拒绝它。增量试验必须使用上述 bringup、保存新地图，再显式对比工件。当前只验证了模式校验和启动编排，尚未用真实变化区域证明“耗时改善不少于 30%”。
+运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的
+HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推送到 Git；受版本
+控制的是生成器、场景、校验规则和文档。
 
-保存基线、完整重建和增量更新三张地图后，复制并填写严格比较模板，再生成 JSON 证据报告：
+## 文档入口
 
-```bash
-cp ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml \
-  data/reports/incremental_comparison.yaml
-# 填写三张地图、同口径耗时和真实 Map 坐标矩形范围后：
-ros2 run robot_experiments incremental_map_compare \
-  --spec "$PWD/data/reports/incremental_comparison.yaml" \
-  --output "$PWD/data/reports/incremental_comparison.json"
-```
+| 文档 | 用途 |
+| --- | --- |
+| [`docs/user_manual.md`](docs/user_manual.md) | 当前可执行使用手册。 |
+| [`docs/interfaces.md`](docs/interfaces.md) | Topic、TF、模式配对和所有权契约。 |
+| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 启动、地图、RViz、QoS、Reset 和清理排障。 |
+| [`docs/verification.md`](docs/verification.md) | 当前验收和历史证据边界。 |
+| [`docs/documentation_status.md`](docs/documentation_status.md) | 当前文档与历史文档的职责边界。 |
+| [`docs/repository_index.md`](docs/repository_index.md) | 文件职责和代码修改入口。 |
 
-比较器按世界坐标处理不同原点、尺寸和 yaw，检查 30% 时间改善、三图覆盖率、变化单元恢复率、变化区域一致率与旧区域退化率。返回码 `0` 表示保存地图比较通过，`2` 表示阈值未通过，`1` 表示输入无效；即使通过也不能替代更新后 Localization/Nav2 的独立运行验收。
-
-## 定位与导航
-
-先启动与 ROS 模式一致的仿真：
-
-```bash
-# Ideal odometry（仅在 Map Pose 标定后可启动）
-./scripts/run_isaac.sh --navigation-mode localization --mode ideal
-
-# 或 Wheel Odom + IMU + EKF
-./scripts/run_isaac.sh --navigation-mode localization --mode realistic
-```
-
-另一个终端启动 Localization 或完整导航：
-
-```bash
-./scripts/run_ros.sh localization \
-  odometry_mode:=ideal
-
-./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal
-```
-
-`run_ros.sh` 默认自动启动模式专用 RViz。Navigation 使用 RViz 标准 **2D Goal Pose** 和仓库内安全关闭版 Navigation 2 面板：等待 `Nav2 lifecycle activation completed` 后，在 RViz 地图中拖出目标位置和朝向即可；目标由 Nav2 自带的 `goal_pose` 接口消费，不需要项目自定义桥接节点。局部轨迹显示读取 MPPI 真正输出的 `/optimal_trajectory`，`/transformed_global_plan` 是按需关闭的控制器参考路径；候选集 `/trajectories` 在当前保存的导航布局中已启用，性能采样时可手动关闭。Localization/Navigation 默认从已标定出生点自动播种；Manifest 或出生点 bundle 未标定时，`auto` 会 fail fast，需传 `initial_pose_source:=rviz` 并使用 **2D Pose Estimate**。`interactive:=false` 可同时关闭 RViz/Teleop，用于无头实验。
-
-Realistic 模式把 `odometry_mode` 改为 `realistic`。两端都会拒绝各自已知的不合法组合，但进程之间没有自动握手；操作者仍须保证 `odometry_mode` 和 `structure_tf_source` 成对一致，并用 Topic/TF introspection 确认唯一所有权。
-
-Localization 和 Navigation 同时校验两种同版本地图工件：Realistic 模式由 SLAM Toolbox 从
-`posegraph_file` 加载 `.posegraph`/`.data` 以定位并发布 `map → odom`，Ideal 模式使用已标定的 identity `map → odom`，
-`nav2_map_server` 从 `map_file` 加载 `.yaml`/`.pgm` 并独占发布静态 `/map`。
-若命令已传 `posegraph_file` 而省略 `map_file`，`run_ros.sh` 会按 Pose Graph
-基名推导 `data/maps/occupancy/<basename>.yaml`，文件不存在时立即失败；工件名不一致时须显式传入 `map_file:=...`。SLAM Toolbox 的实时扫描栅格图只发布在
-`/slam_toolbox/map`，用于诊断而不进入 Nav2，从而避免移动物体固化为静态地图残影。
-
-Navigation 不会立即激活 Nav2。Activation Gate 会先等待 Map Server 的 transient-local `/map`、非零且新鲜的 `/clock`、新鲜的 `/scan` 和 `/odom`，以及连续稳定且时间戳新鲜的 `map → odom`，然后才请求 Nav2 lifecycle `STARTUP`。Gate 是唯一 Lifecycle 管理者并持续存活；Reset 后按暂停、清 Costmap、重新播种/等待 RViz 位姿、readiness、恢复的顺序执行，旧异步回调由代次令牌隔离。
-
-最终回归在固定 `/map` 架构下完成：Ideal 1 m 静态 4/4（GT 误差 `0.178–0.188 m`），Ideal 3 m 长距离 1/1（GT 路径 `2.807 m`、误差 `0.193 m`），Realistic 1 m 静态 4/4（GT 误差 `0.175–0.187 m`）。所有轮次 Nav2 状态为成功、最终静止门满足；Realistic `/odom` 运行时只有 `ekf_filter_node` 一个发布者。这些是确定性 smoke/recovery 证据，不是计划中多起终点与多布局的统计验收。
-
-Nav2 1.3.12 在 `SmacPlanner2D` 初始化时会打印一条 inflation `ERROR`；对该版本的 2D planner 路径，这是上游通用 collision checker 的误报。当前酷家乐窄通道配置的双 costmap 均使用 `0.40 m` InflationLayer，仍大于约 `0.337 m` 的带 padding 外接半径；较快的代价衰减不会关闭真实矩形 footprint 碰撞检查。原因、上游源码链接和限定条件见 [`docs/verification.md`](docs/verification.md#nav2-1312-smac-inflation-diagnostic)。
-
-`warehouse_new` 针对室内窄门和走廊采用紧凑安全壳：物理 footprint 保持不变，紧急停止区只比底盘外缘多 `20--30 mm`，MPPI 对每个预测点执行 footprint 碰撞检查。外围减速区侧向宽度仅 `0.47 m`，只比急停区多 `5 mm/侧`，并保留 85% 指令速度；平行墙面不再造成持续限速，正前方障碍仍由前后预警、预测碰撞与急停三层处理。
-
-## 动态障碍与实验
-
-动态障碍由 Isaac CLI 显式打开；默认关闭：
-
-```bash
-# Map Pose 标定、Pose Graph 可用后
-ISAAC_NAV__GROUND_TRUTH__ENABLED=true \
-  ./scripts/run_isaac.sh \
-  --navigation-mode localization \
-  --mode ideal \
-  --dynamic-obstacles
-
-./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal
-```
-
-待 Localization、Ground Truth 与 Nav2 readiness 均通过后，可在第三个终端启动实验 runner。包装脚本会自动统一 Domain 42 和 Fast DDS 环境：
-
-```bash
-./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/dynamic.yaml \
-  data/experiment_runs/dynamic_smoke
-```
-
-Dynamic runner 在运行前会从 Isaac 读取并核对动态障碍 enabled flag、配置 SHA256 和 obstacle ID 集合，并严格比对物理配置与 ROS 场景中的 ID、形状、平面尺寸、Map 坐标端点、运动时长和 `repeat`，不匹配时 fail fast。
-
-2026-07-17 的 Realistic 同环境、同起止点远距离验收结果为：静态 `20/20`、动态 `19/20`，两批均为 `0` 次物理碰撞；动态唯一失败是一次早期 Nav2 action abort。静态成功路线相对带 `0.34 m` 净空的 OccupancyGrid A* 理论最短路，最大偏差 `4.31%`、P95 `3.96%`。机器可读汇总写在 `data/reports/navigation_benchmark_20260717.json`；这证明当前固定仓库远距离基准通过，不等同于多地图、多布局的泛化结论。
-
-`/simulation/collision` 来自底盘物理接触传感器；`/collision_monitor_state` 来自 Nav2 Collision Monitor。Ground Truth 只在显式启用且 Map Pose 已标定时发布，不发布 TF，也不进入控制链。
-
-当前 Isaac 动态障碍坐标按已标定 Map Pose `[0, 0, 0°]` 编写，并与 ROS 场景端点使用同一变换。4-run 基线不等于计划中的广义动态避障率验收；若地图、出生点或 Map Pose 改变，必须按 [`docs/calibration.md`](docs/calibration.md) 重新计算障碍 USD 坐标。
-
-## 自定义机器人迁移模板
-
-阶段 13 已参数化 `robot.default_prim`、项目配置、Isaac 静态 TF，以及 ROS 侧的 Xacro、Wheel Odom 与 Nav2 参数入口。模板故意保留 `null` 测量项并 fail fast，不会伪造一个“已迁移”机器人。真实资产到位后设置 `ISAAC_NAV_PROJECT_CONFIG=isaac_sim/configs/custom_robot.project.yaml` 并按 [`isaac_sim/assets/robots/custom_robot/README.md`](isaac_sim/assets/robots/custom_robot/README.md) 完成 USD、质量/惯量、轮向、传感器外参、Footprint、出生点和全链路验收。
-
-## 确定性 Reset
-
-运行中的 Isaac 节点提供 Trigger 服务。先设置种子与出生点，再调用 Reset：
-
-```bash
-ros2 param set /isaac_navigation_sim reset_seed 4242
-ros2 param set /isaac_navigation_sim reset_pose_name mapping_start
-ros2 service call /simulation/reset std_srvs/srv/Trigger '{}'
-```
-
-Reset 会按固定顺序停车、清控制器、恢复 USD Pose、重置里程计/GT 路径/碰撞状态/动态障碍，并等待已排队的 Wheel/EKF/Costmap 请求。Trigger 只在事务完成后返回成功，失败不会伪造 reset event；重叠请求会被拒绝。Localization 的自动初始位姿只接受 Reset 后的新鲜 `/scan`，随后发布 `/simulation/localization_seeded`；RViz 初始位姿模式则等待新的人工输入。Navigation Gate 还会等待严格更新且稳定的 `map → odom` 和新鲜 `/odom` 后恢复 Lifecycle，因此服务返回不能等同于系统已经可接收目标。无有效非零命令时，Isaac 侧 idle watchdog 会把底盘保持在物理 sleep 状态；实测休眠时静止无漂移，有效低速命令仍能唤醒车体。
-
-## 测试
-
-纯 Python、ROS package 和可选 Isaac 测试统一由以下入口执行：
+## 验证
 
 ```bash
 ./scripts/test.sh
 ./scripts/test.sh --with-isaac
 ```
 
-针对运行中系统的验收检查包括：
-
-```bash
-ros2 topic hz /clock
-ros2 topic hz /lidar/points_raw
-ros2 topic hz /scan
-ros2 topic info --verbose /odom
-ros2 topic info --verbose /map
-ros2 topic info --verbose /slam_toolbox/map
-ros2 topic info --verbose /tf
-ros2 lifecycle get /map_server
-ros2 run tf2_tools view_frames
-```
-
-统计阈值、场景数量和失败判定以 [`plan.md`](plan.md) 第十二、十四部分为准。单元测试或一次 smoke run 不能替代 200 次静态障碍实验等统计验收。
-
-完整的已验证结果、复现命令和剩余验收项见 [`docs/verification.md`](docs/verification.md)。
-
-运行异常时先执行只读诊断；确认旧会话已停止后再做受控清理：
-
-```bash
-./scripts/diagnose.sh
-./scripts/clean_runtime.sh --dry-run
-./scripts/clean_runtime.sh --dds-shm
-```
-
-清理器只处理 PID 元数据和命令身份均匹配的本项目进程。DDS SHM 清理还会先证明没有进程仍在使用 Fast DDS；详细判断见 [`docs/troubleshooting.md`](docs/troubleshooting.md)。
-
-## 目录
-
-```text
-isaac_sim/   Stage、项目 USD overlay、传感器、OmniGraph、Reset、GT 和场景编排
-ros2_ws/     描述、感知、Wheel Odom、EKF、SLAM、Nav2、bringup 和实验节点
-data/        Git LFS 地图基线，以及 bag、轨迹、指标和报告的本地输出边界
-scripts/     预检、资产导入、构建、测试、启动和地图保存入口
-docs/        使用手册、逐文件索引、排障、开发、接口、标定、升级方案和验收文档
-```
-
-## Git 管理
-
-提交遵循 Conventional Commits，并按可独立验证、可独立回滚的能力拆分。代码、参数、测试和必要文档应进入同一 commit；ROS 构建产物、Isaac 日志、rosbag 和批量实验输出不得进入普通 Git 历史。
-
-```bash
-git log --oneline --decorate --graph
-git show --stat <commit>
-```
-
-具体约定见 [`CONTRIBUTING.md`](CONTRIBUTING.md)、[`docs/development.md`](docs/development.md) 和 [`data/README.md`](data/README.md)。
+运行 ROS 集成测试时需停止同一 Domain 42 中的 Isaac 仿真；否则真实 `/clock` 会与
+测试夹具时钟冲突。代码改动后至少运行 `git diff --check` 和相应测试。

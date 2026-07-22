@@ -509,7 +509,7 @@
 | RViz Nav2 面板 | `robot_rviz_plugins` 源码/plugin XML、`navigation.rviz`、preflight、退出测试和第三方 NOTICE |
 | 自定义机器人 | custom project/robot YAML、USD、Xacro、Wheel Odom、Nav2、传感器 YAML、出生点和地图 |
 
-更详细的修改流程见 [`user_manual.md`](user_manual.md#19-修改配置时应该改哪里) 和 [`development.md`](development.md)。
+当前运行与修改入口见 [`user_manual.md`](user_manual.md) 和 [`development.md`](development.md)；文档的新鲜度边界见 [`documentation_status.md`](documentation_status.md)。
 
 ## 34. 如何确认索引没有漏文件
 
