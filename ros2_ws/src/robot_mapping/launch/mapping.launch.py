@@ -45,6 +45,13 @@ def _launch_setup(context):
     autostart = LaunchConfiguration('autostart')
     use_scan_matching = _bool_argument(context, 'use_scan_matching')
     do_loop_closing = _bool_argument(context, 'do_loop_closing')
+    try:
+        ceres_num_threads = int(
+            LaunchConfiguration('ceres_num_threads').perform(context))
+    except ValueError as exc:
+        raise RuntimeError('ceres_num_threads must be an integer') from exc
+    if ceres_num_threads < 1:
+        raise RuntimeError('ceres_num_threads must be positive')
 
     slam_node = LifecycleNode(
         package='slam_toolbox',
@@ -62,6 +69,7 @@ def _launch_setup(context):
                 'map_file_name': prefix,
                 'use_scan_matching': use_scan_matching,
                 'do_loop_closing': do_loop_closing,
+                'ceres_num_threads': ceres_num_threads,
             },
         ],
         remappings=[('scan', '/scan')],
