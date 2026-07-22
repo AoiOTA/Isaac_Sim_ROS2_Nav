@@ -272,6 +272,9 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 
 静态批次含 RGB-D 低矮方块；动态批次含三个由 G1、G2、G6 触发的穿行障碍。两批都
 使用 `warehouse_new`、`mapping_start`、Ideal Odom 与 `rgbd_navigation` Camera。
+由于 runner 会以 `/ground_truth/odom` 核验 Reset 和统计路线，下面所有长距离命令都
+显式设置 `ISAAC_NAV__GROUND_TRUTH__ENABLED=true`；它仅发布评测数据，不参与导航 TF
+或控制。
 详细验收口径见
 [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md)。
 
@@ -309,7 +312,7 @@ printf 'campaign_id=%s\n' "$CAMPAIGN_ID"
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_isaac.sh \
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --headless \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
@@ -355,7 +358,7 @@ Reset 隔离错误或中断则应停止批次，保存终端日志并排障后�
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_isaac.sh \
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --headless \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
@@ -452,7 +455,8 @@ cd "$PROJECT_ROOT"
 终端 A 始终运行 Isaac GUI；终端 B 启动受管 `navigation.rviz`；终端 C 运行单轮
 visual runner。C 启动后先自行 Reset 到 `mapping_start`，再顺序发送 G1–G8；在 RViz
 只观察，不要再手动发送 Goal。`run_visual_route.sh` 不创建 `data/experiment_runs/` 或
-`data/reports/` 下的任何文件。
+`data/reports/` 下的任何文件。visual runner 同样需读取 Ground Truth 完成 Reset
+一致性检查，因此终端 A 的命令也显式启用它；这不会产生评测证据或报告。
 
 ### 8.2 静态可视化单轮
 
@@ -461,7 +465,7 @@ visual runner。C 启动后先自行 Reset 到 `mapping_start`，再顺序发送
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_isaac.sh \
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
@@ -497,7 +501,7 @@ Isaac。动态物理配置在 Isaac 启动时冻结，必须重新启动 GUI：
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_isaac.sh \
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
