@@ -101,7 +101,9 @@ registered_group_is_safe() {
     member_cwd="$(readlink -f "/proc/${member}/cwd" 2>/dev/null || true)"
     if [[ "${member_cwd}" != "${recorded_root}" \
           || ("${member_command}" != *"${recorded_root}/scripts/run_ros.sh"* \
-              && "${member_command}" != *" scripts/run_ros.sh "*) ]]; then
+              && "${member_command}" != *" scripts/run_ros.sh "* \
+              && "${member_command}" != *"${recorded_root}/scripts/run_isaac.sh"* \
+              && "${member_command}" != *" scripts/run_isaac.sh "*) ]]; then
       log_warn "refusing process group ${process_group}: member ${member} identity mismatch"
       return 1
     fi
@@ -114,7 +116,9 @@ matches_registered_component() {
   local command_line="$2"
   case "${component}" in
     isaac)
-      [[ "${command_line}" == *"${PROJECT_ROOT}/isaac_sim/apps/navigation_sim.py"* ]]
+      [[ "${command_line}" == *"${PROJECT_ROOT}/isaac_sim/apps/navigation_sim.py"* \
+        || "${command_line}" == *"${PROJECT_ROOT}/scripts/run_isaac.sh"* \
+        || "${command_line}" == *" scripts/run_isaac.sh "* ]]
       ;;
     ros)
       [[ "${command_line}" == *"ros2"*"launch"*"robot_bringup"* \

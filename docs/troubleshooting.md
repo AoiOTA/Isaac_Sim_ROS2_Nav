@@ -412,10 +412,10 @@ process group。Navigation
 使用 `robot_rviz_plugins/Navigation 2 Safe`；受管 ROS 与 RViz 各有经过身份验证
 的 PID/process-group 元数据。
 
-当前 `run_ros.sh` 会在启动 `ros2 launch` 子进程前关闭其继承的 `ros.lock`
-描述符，因此受管 RViz 即使异常遗留也不应继续占住 ROS 栈锁。若仍提示
-`ROS stack is already running`，按本节的 dry-run/`clean_runtime.sh` 顺序核实，
-不要删除 lock 或 PID 文件。
+当前 `run_ros.sh` 和 `run_isaac.sh` 都由监督器持有单实例锁，并在启动子进程前
+关闭其继承的锁描述符。因此受管 RViz 或 Isaac 的 Omniverse Hub 即使异常遗留，
+也不应继续占住下一次 ROS/Isaac 启动。若仍提示已有实例，按本节的
+dry-run/`clean_runtime.sh` 顺序核实，不要删除 lock 或 PID 文件。
 
 **常见原因：** 手工 `ros2 launch` 绕过 supervisor；直接 kill 了 launch
 child、Lifecycle manager 或 RViz；工作空间没有重建，仍加载上游旧 Nav2 panel；
