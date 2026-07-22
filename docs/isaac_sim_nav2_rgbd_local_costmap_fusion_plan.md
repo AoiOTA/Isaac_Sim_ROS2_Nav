@@ -241,7 +241,7 @@ local_costmap:
         mark_threshold: 0
         max_obstacle_height: 0.50
 
-        observation_sources: [camera_depth]
+        observation_sources: camera_depth
 
         camera_depth:
           topic: /camera/front/depth/points

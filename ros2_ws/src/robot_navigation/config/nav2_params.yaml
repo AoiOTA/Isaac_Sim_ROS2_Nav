@@ -238,7 +238,9 @@ local_costmap:
         mark_threshold: 0
         max_obstacle_height: 0.50
 
-        observation_sources: [camera_depth]
+        # Costmap2D observation_sources is declared as a string in Nav2 Jazzy;
+        # multiple sources, when needed, are separated by spaces.
+        observation_sources: camera_depth
 
         camera_depth:
           topic: /camera/front/depth/points
