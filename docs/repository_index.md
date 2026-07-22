@@ -47,6 +47,7 @@
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
+| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的长距离静态/动态地图示意；冻结 S、G1–G8、静态方块和三条动态障碍路线。 |
 
 ## 3. 数据目录
 
@@ -83,6 +84,7 @@
 | --- | --- |
 | `scripts/lib/common.sh` | 所有脚本共享的项目根、Isaac/ROS 路径、DDS 默认值、依赖检查和 `source_ros` 函数。 |
 | `scripts/preflight.sh` | 启动前检查 Isaac 版本、官方资产、全部项目 ROS 包、安全 RViz 插件、GPU，并调用 `map_manifest verify` 校验 Git LFS 地图 bundle。 |
+| `scripts/generate_kujiale_long_route_maps.py` | 按 OccupancyGrid 的原点、分辨率和 PGM 上下翻转规则生成长距离静态/动态航点地图 PNG。 |
 | `scripts/import_assets.sh` | 调用 Isaac Python，把官方 Jackal 的最小依赖复制到本地项目资产目录并校验 hash。 |
 | `scripts/build_ros2.sh` | source ROS 环境并执行 `colcon build --symlink-install`。 |
 | `scripts/test.sh` | 统一运行纯 Python、ROS colcon 和可选 Isaac/USD 测试。 |
