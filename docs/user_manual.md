@@ -255,9 +255,14 @@ Space 立即停车，Q 退出。保存地图：
 在将新地图用于 `initial_pose_source:=auto` 或正式实验前，必须完成 Map/USD 标定、
 Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibration.md)。
 
-## 7. 自动实验与报告
+## 7. 自动化全屋长距离测试与报告
 
-当前正式长路线配置：
+本节运行当前正式的 40 轮全屋长路线批次：静态种子 `7201–7220`、动态种子
+`7301–7320`，每轮依次自动执行 `G1` 到 `G8`。实验 runner 会在每轮开始时设置
+seed、调用 `/simulation/reset`、等待 Nav2 恢复、发送八个 Nav2 Goal，并记录 GT、
+Scan、深度图/点云、Costmap、碰撞、安全状态和 MCAP；它不负责启动 Isaac 或 Nav2。
+
+正式配置是冻结输入，不要编辑后继续沿用正式结论：
 
 ```text
 ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml
@@ -265,20 +270,164 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-静态、动态实验使用固定的 G1–G8 路线、`warehouse_new`、Ideal Odom 与 RGB-D。
-正式批次的完整要求和结果见
+静态批次含 RGB-D 低矮方块；动态批次含三个由 G1、G2、G6 触发的穿行障碍。两批都
+使用 `warehouse_new`、`mapping_start`、Ideal Odom 与 `rgbd_navigation` Camera。
+详细验收口径见
 [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md)。
 
-单个场景的 runner 入口格式为：
+### 7.1 正式批次前检查
+
+正式结果会记录当前 Git 提交、工作区状态、地图/配置 SHA256 和每轮证据。先停止所有
+旧 Isaac、ROS、RViz 与实验 runner，并确认工作区没有待提交修改：
 
 ```bash
-./scripts/run_experiment.sh <场景 YAML> <输出目录>
+cd "$PROJECT_ROOT"
+./scripts/preflight.sh
+./scripts/diagnose.sh
+git status --short
 ```
 
-运行前必须由 Isaac 启动匹配场景、出生点、相机 profile 和障碍配置；不要把历史
-Warehouse 场景文件与当前酷家乐地图混用。报告生成物位于 `data/experiment_runs/` 与
-`data/reports/`，默认被 Git 忽略：HTML、PDF、PNG、CSV、JSON、MCAP 均不推送，
-但报告生成器和场景配置会提交。
+最后一条应没有输出。执行 `git status --short` 时如果仍有修改，先提交或另建实验分支；
+不要把混合配置的证据当作正式批次。完整批次的理论最大导航时间是静态 `20 × 600 s` 加
+动态 `20 × 720 s`，即约 7 小时 20 分钟，另加 Reset、初始化和 MCAP 写盘时间。确保
+磁盘空间充足，并在无人值守前关闭睡眠/自动锁屏。
+
+为静态、动态和最终报告创建同一个正式批次 ID。该 ID 必须取批次开始时的本地时间：
+
+```bash
+export CAMPAIGN_ID="$(date +%Y%m%d-%H%M%S)"
+export RUN_ROOT="$PROJECT_ROOT/data/experiment_runs/kujiale_long_route_${CAMPAIGN_ID}"
+export REPORT_ROOT="$PROJECT_ROOT/data/reports/kujiale_long_route_${CAMPAIGN_ID}"
+mkdir -p "$RUN_ROOT/static" "$RUN_ROOT/dynamic"
+printf 'campaign_id=%s\n' "$CAMPAIGN_ID"
+```
+
+### 7.2 自动静态批次
+
+终端 A 启动无头 Isaac。`--dynamic-obstacles` 对静态批次同样是必须的：它启用冻结的
+`rgbd_low_box` 物理障碍，而不是启用动态轨迹。
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh \
+  --headless \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal \
+  --spawn-pose mapping_start \
+  --camera-profile rgbd_navigation \
+  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
+  --dynamic-obstacles
+```
+
+终端 B 启动无交互 Navigation。等待 `Nav2 lifecycle activation completed` 后再启动
+runner；不要同时打开 RViz 或 Teleop。
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation \
+  odometry_mode:=ideal \
+  interactive:=false \
+  use_rviz:=false
+```
+
+终端 C 启动 20 个静态 seed。该命令结束前不要关闭 A 或 B：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml \
+  "$RUN_ROOT/static"
+```
+
+runner 会顺序运行，不会并发启动机器人。每轮证据位于
+`$RUN_ROOT/static/kujiale_static_long_range/run-<序号>-seed-<seed>/`；其
+`run_summary.json`、`run_manifest.json`、`checksums.sha256` 和 `telemetry/*.mcap`
+是后续报告的输入。runner 的某轮导航失败会写成该轮结果并继续；启动前契约不匹配、
+Reset 隔离错误或中断则应停止批次，保存终端日志并排障后从新的 `CAMPAIGN_ID` 重跑。
+
+静态 runner 正常结束后，先在终端 B 按 Ctrl+C 等待有序关闭，再在终端 A 按 Ctrl+C。
+不要直接切换 Isaac 障碍配置后复用旧进程。
+
+### 7.3 自动动态批次
+
+动态批次必须用新的 Isaac 进程，加载三个触发式动态障碍的物理配置。重新打开终端 A：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_isaac.sh \
+  --headless \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal \
+  --spawn-pose mapping_start \
+  --camera-profile rgbd_navigation \
+  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml \
+  --dynamic-obstacles
+```
+
+终端 B 使用与静态批次相同的无交互 Navigation：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation \
+  odometry_mode:=ideal \
+  interactive:=false \
+  use_rviz:=false
+```
+
+等 Nav2 激活后，在终端 C 运行动态 seed：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_experiment.sh \
+  ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml \
+  "$RUN_ROOT/dynamic"
+```
+
+动态 runner 会核验 Isaac 已启用障碍、物理配置 SHA256 和障碍 ID；若不匹配会在发出
+第一个 Goal 前失败，而不是把错误环境记录成测试数据。结束后按静态批次相同顺序关闭
+终端 B、终端 A。
+
+### 7.4 生成并核验自包含报告
+
+两个 runner 都正常完成后，在新终端汇总全部 40 轮证据：
+
+```bash
+cd "$PROJECT_ROOT"
+source ./scripts/setup_ros_env.sh
+ros2 run robot_experiments kujiale_campaign \
+  --run-directory "$RUN_ROOT/static" \
+  --run-directory "$RUN_ROOT/dynamic" \
+  --output-directory "$REPORT_ROOT"
+```
+
+汇总器要求静态和动态各恰好 20 个冻结 seed；它会验证每轮数据完整性、校验和、成功率
+门槛和静态路径偏差，并根据证据自动写出结论。即使验收未通过，报告也会生成；此时命令
+以退出码 `2` 结束，表示“测试结论未通过”，不是允许手工修改结论的错误。
+
+输出目录为：
+
+```text
+data/reports/kujiale_long_route_<campaign_id>/
+├── index.html
+├── report.pdf
+├── report.md
+├── benchmark.json
+├── benchmark.csv
+├── data_dictionary.md
+├── figures/
+├── runs/
+└── checksums.sha256
+```
+
+用浏览器直接打开 `index.html`；它不需要 Web 服务器。`benchmark.json` 是唯一机器可读
+KPI 来源，HTML/PDF/Markdown/CSV 都由它和每轮证据生成。不要手工编辑报告、`runs/` 或
+校验和来改变结论；若需要重生成同一批报告，只对原始 `$RUN_ROOT` 重新执行汇总命令。
+
+运行证据与报告在 `data/experiment_runs/`、`data/reports/` 下，默认被 Git 忽略：HTML、
+PDF、PNG、CSV、JSON、MCAP 和图像都不推送；应提交的是代码、冻结场景/校验规则和对
+应文档。
 
 ## 8. 常用诊断
 
