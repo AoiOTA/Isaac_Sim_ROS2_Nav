@@ -135,6 +135,9 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 自动启动静态 20 轮、动态 20 轮、汇总并核验自包含报告的完整命令见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
+需要人工观察 GUI、RViz、RGB-D 融合与动态障碍时，同一手册还提供了 G1–G8 的可视化
+手动静态/动态测试流程和障碍触发命令。
+
 ## 文档入口
 
 | 文档 | 用途 |
