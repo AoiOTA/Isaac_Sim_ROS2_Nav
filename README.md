@@ -1,8 +1,8 @@
 # Isaac Sim 6.0.1 + ROS 2 Jazzy：酷家乐 RGB-D 导航
 
 本分支提供 Clearpath Jackal 在酷家乐室内场景中的 Isaac Sim 导航闭环：二维
-LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。当前分支的唯一
-默认运行组合是：
+LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README、使用手册和
+正式长距离场景使用的标准酷家乐组合是：
 
 ```text
 场景:      kujiale_0026_A_to_B_door_open.usd
@@ -17,19 +17,23 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。当前
 地图、旧实验和历史调参不属于本分支的运行入口，见
 [`docs/documentation_status.md`](docs/documentation_status.md)。
 
-## 当前验收结果
+## 已记录的正式批次结果
 
-2026-07-22 的正式全屋长路线批次使用上述固定组合和 `rgbd_navigation`：
+下表是 2026-07-22 正式全屋批次 `kujiale_long_route_20260722-171828` 的自动汇总
+结果，不是对当前工作树或后续参数改动的重新验收声明。原始报告是本地忽略工件；当前
+可执行的验收规格、阈值与复跑步骤以使用手册和测试方案为准。
 
 | 项目 | 结果 |
 | --- | --- |
 | 静态严格成功 | `20/20 (100%)` |
-| 动态严格成功 | `19/20 (95%)` |
-| 物理无碰撞 | 静态 `20/20`、动态 `20/20` |
-| 静态最大路径偏差 | `4.31%`，低于 `20%` 门槛 |
+| 动态严格成功 | `18/20 (90%)` |
+| 物理无碰撞 | 静态 `20/20 (100%)`、动态 `19/20 (95%)` |
+| 静态最大路径偏差 | `19.2868%`，低于 `20%` 门槛 |
 
-完整路线、验收口径和报告目录结构见
-[`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md)。
+完整路线、验收口径、失败边界和报告目录结构见
+[`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md)；
+静态/动态地图和航点见
+[`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
 
 ## 首次准备
 

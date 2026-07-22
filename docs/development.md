@@ -154,8 +154,11 @@ fresh odometry, and a strictly newer stable TF afterward.
 
 ## Calibration and acceptance records
 
-`isaac_sim/configs/spawn_poses.yaml` is the single source of truth for the USD
-and Map poses. Never set `map.calibrated: true` from an assumed transform.
+For the current Kujiale flow,
+`isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml` is
+the source of truth for the USD and Map poses. The generic
+`isaac_sim/configs/spawn_poses.yaml` is only the project-config fallback for
+other profiles. Never set `map.calibrated: true` from an assumed transform.
 Follow `docs/calibration.md`, keep Ground Truth disabled during calibration,
 and commit the measured pose together with its map/Pose Graph version and
 verification evidence.

@@ -42,7 +42,7 @@ ros2 run robot_bringup map_manifest verify \
 git lfs status
 git status --short -- \
   data/maps/manifests data/maps/occupancy data/maps/posegraphs \
-  isaac_sim/configs/spawn_poses.yaml
+  isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml
 ```
 
 `warehouse_new.posegraph`、`.data`、OccupancyGrid YAML/PGM 是同一版本的不可拆分工件。不要只替换其中一个；其他版本也必须保持同一规则。
@@ -192,7 +192,7 @@ ros2 lifecycle get /map_server
 
 Gate 要求新鲜 `/clock`、`/scan`、`/odom`、已收到 transient-local `/map`，以及连续稳定至少 1 秒的新鲜 `map → odom`。同一个缓存 TF 被重复读取不会刷新新鲜度。
 
-若使用 `initial_pose_source:=rviz`，必须在 RViz 点击 **2D Pose Estimate** 并在实际位置拖出朝向。默认 `auto` 则要求 `spawn_poses.yaml` 中对应 Map Pose 已标定。
+若使用 `initial_pose_source:=rviz`，必须在 RViz 点击 **2D Pose Estimate** 并在实际位置拖出朝向。默认 `auto` 则要求当前场景的 spawn-pose YAML（酷家乐为 `kujiale_0026_A_to_B_door_open.spawn.yaml`）中对应 Map Pose 已标定。
 
 不要关闭 Gate 或把 Nav2 `autostart` 改为 true 来绕过 readiness。这会重新引入 Lifecycle 重复转换和 Reset 竞态。
 
