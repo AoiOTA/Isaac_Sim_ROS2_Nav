@@ -89,6 +89,7 @@
 | `scripts/run_isaac.sh` | 选择项目配置并监督 Isaac Python standalone 仿真；支持 custom profile，并只让监督器持有 Isaac 单实例锁，防止遗留 Omniverse Hub 锁住下一次启动。 |
 | `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本，避免孤立 RViz 锁住下一次启动。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
+| `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：自动发送 G1–G8，关闭 MCAP、结构化证据和项目输出目录创建。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
 | `scripts/run_teleop_terminal.sh` | 顶层 launch 的前台 Teleop 终端托管器；转发停止信号、校验 PID 身份并等待真实节点退出。 |
@@ -380,8 +381,8 @@
 | `ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml` | Ideal 复杂动态验收：与四个物理移动障碍严格对齐的 6 航点、3-seed 长路线。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_static_pilot.yaml` | 酷家乐静态 Pilot：G1–G8、RGB-D 低矮方块和 3 个 seed；不计入正式批次。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_dynamic_pilot.yaml` | 酷家乐动态 Pilot：G1–G8、三个触发障碍和 3 个 seed；不计入正式批次。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml` | GUI + RViz 静态可视化回归：固定 seed 7201，runner 自动跑完整 G1–G8 与低矮方块。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | GUI + RViz 动态可视化回归：固定 seed 7301，runner 自动跑 G1–G8 并触发三个动态障碍。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml` | GUI + RViz 静态可视化回归：固定 seed 7201，runner 自动跑完整 G1–G8 与低矮方块，不保存项目证据。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | GUI + RViz 动态可视化回归：固定 seed 7301，runner 自动跑 G1–G8 并触发三个动态障碍，不保存项目证据。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐正式静态 20 轮：冻结 seed 7201–7220、G1–G8、低矮方块与理论路径参考。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 酷家乐正式动态 20 轮：冻结 seed 7301–7320、G1–G8 与三个触发障碍。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 正式酷家乐 20+20 批次的路线、门槛、障碍和固定 seed 总定义。 |

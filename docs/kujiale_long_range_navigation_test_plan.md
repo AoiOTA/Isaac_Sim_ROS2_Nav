@@ -350,7 +350,7 @@ Pilot 全部通过后冻结代码、参数、障碍布局和理论参考。冻�
 - RGB-D 原始深度、点云、VoxelLayer、局部/全局 Costmap 和 Collision Monitor 的数据链路已经接入并留存证据；
 - 实现了静态低矮方块与按 G1、G2、G6 触发的三个动态实体障碍，包含确定性 Reset、运动、完成与 retire 事件；
 - 实验 runner 每轮保存 Ground Truth、Odom、Cmd、Depth、Scan、Costmap、障碍事件、MCAP 与 SHA-256 清单；
-- 提供 GUI Isaac + RViz 的静态/动态各一轮 visual 场景；runner 自动发送 G1–G8，并在动态轮自动触发三个障碍，供人工观察但不计入正式 20+20 验收；
+- 提供 GUI Isaac + RViz 的静态/动态各一轮 visual 场景；runner 自动发送 G1–G8，并在动态轮自动触发三个障碍，只供人工观察且不写项目证据或计入正式 20+20 验收；
 - 实现 footprint-aware SE(2) 理论参考路径及静态路径偏差门禁；
 - 生成自包含中文 HTML、PDF、Markdown、PNG、CSV、JSON 报告，并复制全部 40 轮可下钻证据。
 

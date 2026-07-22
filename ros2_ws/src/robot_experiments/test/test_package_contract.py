@@ -69,6 +69,17 @@ def test_package_does_not_install_a_second_spawn_pose_truth_source():
     assert "ISAAC_NAV_SPAWN_POSES" in launch_source
 
 
+def test_visual_route_wrapper_disables_all_project_evidence_output():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_visual_route.sh").read_text()
+    launch = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    assert '"record_evidence:=false"' in wrapper
+    assert "mkdir -p" not in wrapper
+    assert 'DeclareLaunchArgument("record_evidence", default_value="true")' in launch
+    assert "if self._record_evidence:" in runner
+
+
 def test_incremental_map_comparison_has_an_installed_cli():
     setup_source = (PACKAGE_ROOT / "setup.py").read_text()
     assert (

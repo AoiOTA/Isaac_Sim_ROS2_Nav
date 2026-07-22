@@ -436,25 +436,23 @@ PDF、PNG、CSV、JSON、MCAP 和图像都不推送；应提交的是代码、�
 触发动态障碍或运行 20 轮。静态和动态各只运行固定的一个 seed，适合观察 RGB-D 融合、
 Costmap、MPPI、Collision Monitor 与实体障碍行为。
 
-可视化单轮会记录自己的本地 MCAP/JSON，但它不是正式 20+20 验收，不能输入第 7 节的
-`kujiale_campaign` 汇总器或替代正式结论。每次只启动一套 Isaac 和 ROS；同一套会话中
-不要并行启动正式 `run_experiment.sh`。
+可视化单轮不写 MCAP、JSON、CSV、报告或项目结果目录；它只向正在运行的 ROS 图发送
+自动路线。它不是正式 20+20 验收，不能替代正式结论。每次只启动一套 Isaac 和 ROS；
+同一套会话中不要并行启动正式 `run_experiment.sh`。
 
 ### 8.1 启动约定
 
-先正常停止旧的 Isaac/ROS 会话，随后为这次可视化运行设置独立输出目录：
+先正常停止旧的 Isaac/ROS 会话：
 
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/diagnose.sh
-export VISUAL_ID="$(date +%Y%m%d-%H%M%S)"
-export VISUAL_ROOT="$PROJECT_ROOT/data/experiment_runs/kujiale_visual_${VISUAL_ID}"
-mkdir -p "$VISUAL_ROOT/static" "$VISUAL_ROOT/dynamic"
 ```
 
 终端 A 始终运行 Isaac GUI；终端 B 启动受管 `navigation.rviz`；终端 C 运行单轮
-experiment runner。C 启动后先自行 Reset 到 `mapping_start`，再顺序发送 G1–G8；在
-RViz 只观察，不要再手动发送 Goal。
+visual runner。C 启动后先自行 Reset 到 `mapping_start`，再顺序发送 G1–G8；在 RViz
+只观察，不要再手动发送 Goal。`run_visual_route.sh` 不创建 `data/experiment_runs/` 或
+`data/reports/` 下的任何文件。
 
 ### 8.2 静态可视化单轮
 
@@ -480,13 +478,11 @@ cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation odometry_mode:=ideal
 ```
 
-终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G1–G8 路线：
+终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G1–G8 路线，且不写
+项目输出：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml \
-  "$VISUAL_ROOT/static"
+./scripts/run_visual_route.sh static
 ```
 
 在 GUI 中观察低矮方块与机器人绕行；在 RViz 展开 **RGB-D Fusion**，按需启用
@@ -518,13 +514,10 @@ cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation odometry_mode:=ideal
 ```
 
-等待 Nav2 激活后，在终端 C 运行唯一动态 visual seed `7301`：
+等待 Nav2 激活后，在终端 C 运行唯一动态 visual seed `7301`，同样不写项目输出：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml \
-  "$VISUAL_ROOT/dynamic"
+./scripts/run_visual_route.sh dynamic
 ```
 
 runner 在 G1、G2、G6 的 Goal 被 Nav2 接受后自动调用对应障碍触发服务；不需要手工输入
@@ -536,19 +529,17 @@ ros2 topic echo /experiment/obstacles/state
 ```
 
 在 GUI 中应看到三个实体依次触发、运动和 retire；在 RViz 观察路径重规划、减速/等待、
-MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 会退出并在
-`$VISUAL_ROOT/dynamic/kujiale_dynamic_visual/` 留下一轮证据。
+MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 直接退出，不会
+留下项目证据目录。
 
 ### 8.4 重跑、截图与停止
 
 要重跑任一 visual 场景，直接再次执行对应的终端 C 命令；runner 会为这一轮自动 Reset，
-不需要发送 2D Goal Pose 或手工 Reset。为避免同一输出目录出现重复 run 编号，建议每次
-重新设置 `VISUAL_ID`，或为输出目录增加新的后缀。
+不需要发送 2D Goal Pose、手工 Reset 或准备输出目录。
 
-每个关键航段建议保存 Isaac GUI（机器人与实体障碍）和 RViz（路径、Costmap、RGB-D
-Fusion/Collision Monitor）截图。可视化单轮输出和截图应保留在独立的
-`data/experiment_runs/kujiale_visual_*` 或 `data/reports/manual_*` 目录，不能与正式
-`kujiale_long_route_<campaign_id>` 目录混用。
+每个关键航段可按需保存 Isaac GUI（机器人与实体障碍）和 RViz（路径、Costmap、RGB-D
+Fusion/Collision Monitor）截图；是否保存截图完全由操作者决定。若保存，使用单独的
+本地调试目录，不能与正式 `kujiale_long_route_<campaign_id>` 目录混用。
 
 完成后先停止终端 B，再停止终端 A；若异常退出，先运行 `./scripts/diagnose.sh`，再按
 输出使用 `clean_runtime.sh --dry-run`。

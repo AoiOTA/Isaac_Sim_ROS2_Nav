@@ -130,7 +130,8 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 
 GUI + RViz 的单轮可视化回归分别使用
 `kujiale_static_visual.yaml` 与 `kujiale_dynamic_visual.yaml`：runner 自动发送完整
-G1–G8 路线，动态场景也自动触发障碍，二者均不计入正式 20+20 结果。
+G1–G8 路线，动态场景也自动触发障碍。使用 `./scripts/run_visual_route.sh static|dynamic`
+启动；它不生成项目实验输出，二者均不计入正式 20+20 结果。
 
 运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的
 HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推送到 Git；受版本
