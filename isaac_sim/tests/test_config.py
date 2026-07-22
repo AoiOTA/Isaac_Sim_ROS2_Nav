@@ -11,7 +11,7 @@ from isaac_sim.src.robot.articulation_runtime import (
     load_articulation_physics_config,
 )
 from isaac_sim.src.sensors.sensor_factory import _load_lidar
-from isaac_sim.src.stage.physics_setup import pacing_plan
+from isaac_sim.src.stage.physics_setup import PhysicsSetup, pacing_plan
 from isaac_sim.graphs.sensor_graph import lidar_graph_spec
 
 
@@ -121,6 +121,7 @@ def test_realtime_and_unbounded_pacing_keep_fixed_simulation_dt():
     assert realtime.target_realtime_factor == 1.0
     assert unbounded.timeline_hz == 60.0
     assert unbounded.wall_loop_hz is None
+    assert PhysicsSetup(config.simulation).plan == realtime
 
 
 @pytest.mark.parametrize(
