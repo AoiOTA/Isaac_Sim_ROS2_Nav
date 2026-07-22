@@ -6,11 +6,7 @@ Panels:
       Expanded:
         - /Global Options1
         - /Static Map1
-        - /Navigation1
         - /Navigation1/Global Plan1
-        - /Navigation1/MPPI Optimal Trajectory1
-        - /Collision Monitor1
-        - /RGB-D Fusion1
         - /RGB-D Fusion1/Depth PointCloud21
         - /RGB-D Fusion1/Marked Voxels (3D)1
       Splitter Ratio: 0.550000011920929
@@ -812,7 +808,7 @@ Visualization Manager:
   Value: true
   Views:
     Current:
-      Angle: -0.0050000036135315895
+      Angle: -1.5749990940093994
       Class: rviz_default_plugins/TopDownOrtho
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
@@ -822,11 +818,11 @@ Visualization Manager:
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Scale: 111.45919799804688
+      Scale: 105.17649841308594
       Target Frame: <Fixed Frame>
       Value: TopDownOrtho (rviz_default_plugins)
-      X: 0.05100490152835846
-      Y: 0.3628939092159271
+      X: -1.6012883186340332
+      Y: -0.14113172888755798
     Saved: ~
 Window Geometry:
   Displays:
