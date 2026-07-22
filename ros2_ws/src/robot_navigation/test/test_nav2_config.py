@@ -50,7 +50,9 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
         'static_layer', 'obstacle_layer', 'inflation_layer']
     voxel = local['depth_voxel_layer']
     assert voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
-    assert voxel['observation_sources'] == ['camera_depth']
+    # Costmap2D declares observation_sources as a string parameter, unlike the
+    # Collision Monitor's string-array parameter with the same name.
+    assert voxel['observation_sources'] == 'camera_depth'
     assert voxel['camera_depth']['topic'] == '/camera/front/depth/points'
     assert voxel['camera_depth']['sensor_frame'] == 'camera_front_optical_frame'
     assert voxel['camera_depth']['data_type'] == 'PointCloud2'
