@@ -39,7 +39,7 @@
   `/slam_toolbox/map`，不得作为 Nav2 静态地图。
 - Ideal 模式由 Isaac 唯一发布 `/odom` 和 `odom → base_link`；Realistic 模式关闭 Isaac odom，由 Wheel Odom + IMU + EKF 唯一发布。
 - Ground Truth 只进入记录和指标模块，不进入 SLAM、EKF、Nav2 或控制器。
-- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；RTX 绝对端点使用显式 `rtx_world` 数据帧，默认不启用 Self Filter、VoxelGrid 或 Nav2 Voxel Layer。
+- 感知基线为水平单通道 RTX LiDAR `/lidar/points_raw → pointcloud_to_laserscan → /scan`；`--camera-profile rgbd_navigation` 额外发布 `/camera/front/depth/points`，并仅由 Local Costmap 的独立 VoxelLayer 融合。Global Costmap 与 Collision Monitor 仍只使用 `/scan`。
 - 当前动态避障是基于二维 `/scan` 的反应式避障，不表示三维路径规划或高度可通行性推理。
 - 保存地图的 `.yaml`、`.pgm`、`.posegraph`、`.data` 必须由同一个 Manifest bundle 绑定；`auto` 初始位姿只接受与出生点标定版本一致的 bundle，未标定的新地图只能使用 RViz 人工播种。
 

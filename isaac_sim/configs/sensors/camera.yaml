@@ -1,4 +1,4 @@
-schema_version: 2
+schema_version: 3
 enabled: true
 default_profile: monitoring
 primary_camera: front
@@ -6,21 +6,31 @@ primary_camera: front
 profiles:
   "off":
     enabled: false
+    depth_points_enabled: false
   monitoring:
     enabled: true
     width: 640
     height: 360
     publish_rate_hz: 15.0
+    depth_points_enabled: false
   standard:
     enabled: true
     width: 640
     height: 480
     publish_rate_hz: 20.0
+    depth_points_enabled: false
   high_quality:
     enabled: true
     width: 1280
     height: 720
     publish_rate_hz: 30.0
+    depth_points_enabled: false
+  rgbd_navigation:
+    enabled: true
+    width: 320
+    height: 180
+    publish_rate_hz: 10.0
+    depth_points_enabled: true
 
 cameras:
   front:
@@ -45,6 +55,11 @@ cameras:
       topic_name: depth/image_raw
       qos_profile: camera_sensor_data
       queue_size: 1
+    depth_points:
+      enabled: true
+      topic_name: depth/points
+      qos_profile: camera_sensor_data
+      queue_size: 2
     clipping_range_m:
       near: 0.05
       far: 100.0

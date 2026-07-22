@@ -357,10 +357,12 @@ profile 配置；分辨率、frame 或画面方向不对。
 ./scripts/diagnose.sh
 ros2 topic info /camera/front/image_raw --verbose
 ros2 topic info /camera/front/camera_info --verbose
+ros2 topic info /camera/front/depth/points --verbose
 ros2 topic echo /camera/front/image_raw --once --field header
 ros2 topic echo /camera/front/image_raw --once --field encoding
 ros2 topic echo /camera/front/camera_info --once
 ros2 topic hz /camera/front/image_raw
+ros2 topic hz /camera/front/depth/points
 ros2 run tf2_ros tf2_echo base_link camera_front_optical_frame
 ```
 
@@ -383,7 +385,8 @@ Image/CameraInfo stamp 配对。方向、曝光、遮挡必须实际看图，不
 重复 publisher 先通过受管清理停止旧实例。
 
 **禁止操作：** 不要把 profile 的目标 Hz 当成实测结论，不要为了消除 RViz
-提示把传感器改成 Reliable，不要把 Camera 接入 SLAM/Nav2/Collision Monitor，
+提示把传感器改成 Reliable，不要把 Camera 接入 SLAM、EKF、Global Costmap 或 Collision Monitor；
+`rgbd_navigation` 的点云仅允许接入 Local VoxelLayer，
 不要只改 frame 名或光学外参的一端，也不要在纯导航性能基线中忘记显式
 `--camera-profile off`。
 

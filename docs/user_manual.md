@@ -545,11 +545,12 @@ ros2 topic info /odom -v
 
 ## 8. Camera profiles 与 Camera-only RViz
 
-前置 RGB Camera 由 Isaac 直接发布，ROS 侧只负责显示、诊断和记录，不会把图像接入当前二维 Nav2 控制链。所有启用的 profile 都发布同一组接口：
+前置 Camera 由 Isaac 直接发布。`rgbd_navigation` 会将深度点云接入 Nav2 的**局部** VoxelLayer；RGB 图像不会进入 SLAM/EKF，深度点云不会进入 Global Costmap 或 Collision Monitor。其他 profile 仍只用于显示、诊断和记录。启用 Camera 时始终发布 RGB 与 CameraInfo，RGB-D profile 额外发布：
 
 ```text
 /camera/front/image_raw   sensor_msgs/msg/Image       rgb8
 /camera/front/camera_info sensor_msgs/msg/CameraInfo
+/camera/front/depth/points sensor_msgs/msg/PointCloud2  # 仅 rgbd_navigation
 camera_front_optical_frame
 ```
 
@@ -561,6 +562,7 @@ Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、�
 | `monitoring` | 640×360 | 15 Hz | GUI 默认值，日常监看与导航。 |
 | `standard` | 640×480 | 20 Hz | 更高纵向视野/常规录制。 |
 | `high_quality` | 1280×720 | 30 Hz | 图像质量验收；GPU/CPU/带宽负载最高。 |
+| `rgbd_navigation` | 320×180 | 10 Hz | RGB-D 局部代价地图融合；发布深度 PointCloud2。 |
 
 表中的发布率是配置目标，不是对任意机器的实测保证。Camera 的墙钟 Hz 会同时受 GPU、渲染负载和 RTF 影响；尤其 `high_quality` 不能只因配置写着 30 Hz 就在报告中声称实测达到 30 Hz。用本节末尾的 topic 检查做快速观察，用第 17.3 节 Profiler 的稳态窗口记录结论。
 
@@ -584,6 +586,13 @@ Image 与 CameraInfo 使用传感器数据语义的 Best Effort/Volatile QoS、�
   --navigation-mode localization \
   --mode ideal \
   --camera-profile off
+
+# RGB-D 局部代价地图融合（Ideal Odom）
+./scripts/run_isaac.sh \
+  --environment-root /home/lyb/kujiale_usd_rooms_20260717 \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization --mode ideal \
+  --camera-profile rgbd_navigation
 ```
 
 Camera profile 是 Isaac 启动期选择，不能热切换；更改时先正常停止 Isaac，再用新 profile 重启。Mapping、Localization 和 Navigation 的默认 RViz 都有右侧 **Robot Front Camera** dock；当 profile 为 `off` 时该 dock 空白是正常现象。
@@ -608,6 +617,8 @@ ros2 topic info /camera/front/image_raw --verbose
 ros2 topic info /camera/front/camera_info --verbose
 ros2 topic hz /camera/front/image_raw
 ros2 topic echo /camera/front/camera_info --once
+ros2 topic info /camera/front/depth/points --verbose
+ros2 topic hz /camera/front/depth/points
 ```
 
 需要验证 Image/CameraInfo 时间戳配对、图像消息年龄和实际吞吐时，运行第 17.3 节的 Profiler。画面方向、遮挡、曝光和光学外参属于视觉验收，不能只用 topic 存在代替人工查看。

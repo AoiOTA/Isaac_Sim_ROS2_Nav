@@ -9,6 +9,7 @@ ground_truth_odom: /ground_truth/odom
 ground_truth_path: /ground_truth/path
 camera_front_image: /camera/front/image_raw
 camera_front_info: /camera/front/camera_info
+camera_front_depth_points: /camera/front/depth/points
 tf: /tf
 tf_static: /tf_static
 frames:
