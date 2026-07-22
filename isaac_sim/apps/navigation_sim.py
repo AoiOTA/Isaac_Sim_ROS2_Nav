@@ -15,6 +15,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import traceback
 from typing import Sequence
 
 
@@ -369,6 +370,7 @@ def run(
     node = None
     reset_bridge = None
     rclpy_started = False
+    failed = False
     try:
         _enable_extensions(app, config.extensions)
 
@@ -631,6 +633,13 @@ def run(
                     )
                     camera_binding_reported = True
             frame += 1
+    except Exception:
+        # Kit's fast-shutdown path terminates Python with os._exit().  Print
+        # initialization/runtime failures before close() so their traceback and
+        # nonzero status are not replaced by a successful shutdown message.
+        failed = True
+        traceback.print_exc()
+        raise
     finally:
         if runtime is not None:
             try:
@@ -675,7 +684,7 @@ def run(
 
             if rclpy.ok():
                 rclpy.shutdown()
-        app.close()
+        app.close(exit_code=1 if failed else 0)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

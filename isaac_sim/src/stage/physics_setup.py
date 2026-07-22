@@ -185,6 +185,7 @@ class IsaacSimulationRuntime:
 class PhysicsSetup:
     def __init__(self, config: SimulationConfig):
         self.config = config
+        self.plan = pacing_plan(config)
 
     def apply(self, stage, app) -> IsaacSimulationRuntime:
         scene_prim = ensure_physics_scene(
@@ -208,19 +209,20 @@ class PhysicsSetup:
         settings.set_bool("/app/player/useFixedTimeStepping", True)
         settings.set_bool(
             "/app/runLoops/main/rateLimitEnabled",
-            plan.wall_loop_hz is not None,
+            self.plan.wall_loop_hz is not None,
         )
         # Isaac Sim 6.0 couples RunLoop, Timeline time codes, and its manual
         # loop runner here. Setting only targetFramerate leaves the Stage at
         # its previous timeCodesPerSecond and can advance simulation at ~2x.
-        RenderingManager.set_dt(1.0 / plan.timeline_hz)
+        RenderingManager.set_dt(1.0 / self.plan.timeline_hz)
         timeline.set_play_every_frame(
-            plan.mode == "unbounded" or plan.target_realtime_factor > 1.0
+            self.plan.mode == "unbounded"
+            or self.plan.target_realtime_factor > 1.0
         )
-        if plan.wall_loop_hz is not None:
+        if self.plan.wall_loop_hz is not None:
             settings.set_float(
                 "/app/runLoops/main/rateLimitFrequency",
-                plan.wall_loop_hz,
+                self.plan.wall_loop_hz,
             )
-            timeline.set_target_framerate(plan.wall_loop_hz)
+            timeline.set_target_framerate(self.plan.wall_loop_hz)
         return IsaacSimulationRuntime(app)
