@@ -44,11 +44,26 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     # Nav2 Jazzy declares these two parameters as integers.
     assert type(local['width']) is int
     assert type(local['height']) is int
-    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']
+    assert local['plugins'] == [
+        'obstacle_layer', 'depth_voxel_layer', 'inflation_layer']
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'inflation_layer']
-    assert 'voxel_layer' not in local
+    voxel = local['depth_voxel_layer']
+    assert voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
+    assert voxel['observation_sources'] == ['camera_depth']
+    assert voxel['camera_depth']['topic'] == '/camera/front/depth/points'
+    assert voxel['camera_depth']['sensor_frame'] == 'camera_front_optical_frame'
+    assert voxel['camera_depth']['data_type'] == 'PointCloud2'
+    assert voxel['camera_depth']['marking'] is True
+    assert voxel['camera_depth']['clearing'] is True
+    assert voxel['camera_depth']['min_obstacle_height'] == 0.05
+    assert voxel['camera_depth']['max_obstacle_height'] == 0.50
+    assert voxel['camera_depth']['obstacle_max_range'] == 2.0
+    assert voxel['camera_depth']['raytrace_max_range'] == 2.5
+    assert voxel['camera_depth']['expected_update_rate'] == 0.0
+    assert voxel['combination_method'] == 1
     assert 'voxel_layer' not in global_costmap
+    assert 'depth_voxel_layer' not in global_costmap
     assert local['obstacle_layer']['scan']['topic'] == '/scan'
     assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
 

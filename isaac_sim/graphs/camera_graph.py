@@ -1,4 +1,4 @@
-"""Front RGB Camera and CameraInfo ROS 2 graph contracts."""
+"""Front RGB-D Camera ROS 2 graph contracts."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from isaac_sim.src.sensors.sensor_factory import CameraConfig, CameraRuntime
 class CameraRosContract:
     image_topic: str
     camera_info_topic: str
+    depth_points_topic: str
     optical_frame: str
     qos_profile: str
 
@@ -36,6 +37,9 @@ def validate_camera_ros_contract(
     camera_info_topic = _qualified_topic(
         camera.node_namespace, camera.camera_info.topic_name
     )
+    depth_points_topic = _qualified_topic(
+        camera.node_namespace, camera.depth_points.topic_name
+    )
     if image_topic != topics["camera_front_image"]:
         raise ValueError(
             f"Camera Image topic mismatch: config={image_topic}, "
@@ -46,12 +50,18 @@ def validate_camera_ros_contract(
             f"CameraInfo topic mismatch: config={camera_info_topic}, "
             f"contract={topics['camera_front_info']}"
         )
+    if depth_points_topic != topics["camera_front_depth_points"]:
+        raise ValueError(
+            f"Camera depth points topic mismatch: config={depth_points_topic}, "
+            f"contract={topics['camera_front_depth_points']}"
+        )
     if camera.link_frame != topics["frames"]["camera_front"]:
         raise ValueError("Camera mechanical frame does not match ROS frame contract")
     if camera.optical_frame != topics["frames"]["camera_front_optical"]:
         raise ValueError("Camera optical frame does not match ROS frame contract")
-    if camera.rgb.qos_profile != camera.camera_info.qos_profile:
-        raise ValueError("Image and CameraInfo QoS profiles must match")
+    if len({camera.rgb.qos_profile, camera.camera_info.qos_profile,
+            camera.depth_points.qos_profile}) != 1:
+        raise ValueError("Camera stream QoS profiles must match")
     try:
         encoded_qos = qos_profiles[camera.rgb.qos_profile]
     except KeyError as exc:
@@ -72,13 +82,14 @@ def validate_camera_ros_contract(
     return CameraRosContract(
         image_topic=image_topic,
         camera_info_topic=camera_info_topic,
+        depth_points_topic=depth_points_topic,
         optical_frame=camera.optical_frame,
         qos_profile=encoded_qos,
     )
 
 
 def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec:
-    """Build two publishers sharing the SensorFactory-owned Render Product."""
+    """Build RGB/CameraInfo and optional depth publishers from one Render Product."""
 
     camera_config = __import__(
         "isaac_sim.src.sensors.sensor_factory", fromlist=["_load_camera"]
@@ -89,18 +100,19 @@ def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec
             f"Camera runtime frame mismatch: {camera.optical_frame} != "
             f"{contract.optical_frame}"
         )
-    if camera.rgb.qos_profile != camera.camera_info.qos_profile:
+    if len({camera.rgb.qos_profile, camera.camera_info.qos_profile,
+            camera.depth_points.qos_profile}) != 1:
         raise ValueError("Camera runtime streams must share one QoS profile")
-    nodes = (
+    nodes = [
         ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
         ("PublishRGB", "isaacsim.ros2.bridge.ROS2CameraHelper"),
         ("PublishCameraInfo", "isaacsim.ros2.bridge.ROS2CameraInfoHelper"),
-    )
-    connections = (
+    ]
+    connections = [
         ("OnPlaybackTick.outputs:tick", "PublishRGB.inputs:execIn"),
         ("OnPlaybackTick.outputs:tick", "PublishCameraInfo.inputs:execIn"),
-    )
-    values = (
+    ]
+    values = [
         ("PublishRGB.inputs:enabled", True),
         ("PublishRGB.inputs:renderProductPath", camera.render_product_path),
         ("PublishRGB.inputs:type", "rgb"),
@@ -123,8 +135,23 @@ def camera_graph_spec(config: ProjectConfig, camera: CameraRuntime) -> GraphSpec
         ("PublishCameraInfo.inputs:qosProfile", contract.qos_profile),
         ("PublishCameraInfo.inputs:useSystemTime", False),
         ("PublishCameraInfo.inputs:resetSimulationTimeOnStop", False),
-    )
-    return GraphSpec(camera.graph_path, nodes, connections, values)
+    ]
+    if camera.depth_points_enabled:
+        nodes.append(("PublishDepthPoints", "isaacsim.ros2.bridge.ROS2CameraHelper"))
+        connections.append(("OnPlaybackTick.outputs:tick", "PublishDepthPoints.inputs:execIn"))
+        values.extend((
+            ("PublishDepthPoints.inputs:enabled", True),
+            ("PublishDepthPoints.inputs:renderProductPath", camera.render_product_path),
+            ("PublishDepthPoints.inputs:type", "depth_pcl"),
+            ("PublishDepthPoints.inputs:frameId", camera.optical_frame),
+            ("PublishDepthPoints.inputs:nodeNamespace", camera.node_namespace),
+            ("PublishDepthPoints.inputs:topicName", camera.depth_points.topic_name),
+            ("PublishDepthPoints.inputs:queueSize", camera.depth_points.queue_size),
+            ("PublishDepthPoints.inputs:qosProfile", contract.qos_profile),
+            ("PublishDepthPoints.inputs:useSystemTime", False),
+            ("PublishDepthPoints.inputs:resetSimulationTimeOnStop", False),
+        ))
+    return GraphSpec(camera.graph_path, tuple(nodes), tuple(connections), tuple(values))
 
 
 def build_camera_graphs(config: ProjectConfig, cameras: tuple[CameraRuntime, ...]):

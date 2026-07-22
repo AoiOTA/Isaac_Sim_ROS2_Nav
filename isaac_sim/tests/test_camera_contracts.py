@@ -48,6 +48,8 @@ def _camera_runtime(camera_config, profile="monitoring", render_product=None):
         node_namespace=camera.node_namespace,
         rgb=camera.rgb,
         camera_info=camera.camera_info,
+        depth_points=camera.depth_points,
+        depth_points_enabled=selected.depth_points_enabled,
         width=selected.width,
         height=selected.height,
         publish_rate_hz=selected.publish_rate_hz,
@@ -75,6 +77,12 @@ def test_camera_schema_profiles_and_front_contract_load_strictly():
         camera.profiles["high_quality"].height,
         camera.profiles["high_quality"].publish_rate_hz,
     ) == (1280, 720, 30.0)
+    assert (
+        camera.profiles["rgbd_navigation"].width,
+        camera.profiles["rgbd_navigation"].height,
+        camera.profiles["rgbd_navigation"].publish_rate_hz,
+        camera.profiles["rgbd_navigation"].depth_points_enabled,
+    ) == (320, 180, 10.0, True)
     front = camera.cameras["front"]
     assert front.sensor_prim.endswith(
         "/camera_front_link/camera_front_optical_frame/camera_front_sensor"
@@ -84,6 +92,9 @@ def test_camera_schema_profiles_and_front_contract_load_strictly():
     assert front.rgb.encoding == "rgb8"
     assert front.rgb.queue_size == front.camera_info.queue_size == 2
     assert front.depth.enabled is False
+    assert front.depth_points.enabled is True
+    assert front.depth_points.topic_name == "depth/points"
+    assert front.depth_points.queue_size == 2
 
 
 def test_camera_defaults_are_gui_monitoring_and_headless_off():
@@ -116,7 +127,7 @@ def test_camera_schema_rejects_profile_drift_and_unknown_keys(tmp_path):
         _load_camera(unknown)
 
 
-def test_camera_graph_publishes_rgb_and_info_from_one_render_product():
+def test_camera_graph_publishes_rgb_and_info_without_depth_for_existing_profiles():
     config = _config()
     camera_config = _load_camera(config.files.camera)
     runtime = _camera_runtime(camera_config)
@@ -144,6 +155,26 @@ def test_camera_graph_publishes_rgb_and_info_from_one_render_product():
     assert '"depth":2' in contract.qos_profile
     assert '"reliability":"bestEffort"' in contract.qos_profile
     assert '"durability":"volatile"' in contract.qos_profile
+
+
+def test_rgbd_navigation_graph_publishes_depth_points_from_shared_render_product():
+    config = _config()
+    camera_config = _load_camera(config.files.camera)
+    runtime = _camera_runtime(camera_config, profile="rgbd_navigation")
+    spec = camera_graph_spec(config, runtime)
+    spec.validate()
+
+    nodes = dict(spec.nodes)
+    values = dict(spec.values)
+    assert nodes["PublishDepthPoints"] == "isaacsim.ros2.bridge.ROS2CameraHelper"
+    assert values["PublishDepthPoints.inputs:renderProductPath"] == (
+        values["PublishRGB.inputs:renderProductPath"]
+    )
+    assert values["PublishDepthPoints.inputs:type"] == "depth_pcl"
+    assert values["PublishDepthPoints.inputs:topicName"] == "depth/points"
+    assert values["PublishDepthPoints.inputs:frameId"] == "camera_front_optical_frame"
+    assert values["PublishDepthPoints.inputs:queueSize"] == 2
+    assert values["PublishDepthPoints.inputs:useSystemTime"] is False
 
 
 def test_camera_render_product_owner_releases_exactly_once():

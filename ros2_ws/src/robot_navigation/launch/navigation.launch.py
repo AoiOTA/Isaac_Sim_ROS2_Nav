@@ -10,6 +10,7 @@ from launch_ros.actions import Node, SetParameter
 def generate_launch_description():
     package_share = Path(get_package_share_directory('robot_navigation'))
     default_config = package_share / 'config' / 'nav2_params.yaml'
+    default_profile = package_share / 'config' / 'nav2_stable.yaml'
     default_nav_to_pose_bt = package_share / 'behavior_trees' / (
         'navigate_to_pose_with_dead_end_recovery.xml')
     default_nav_through_poses_bt = package_share / 'behavior_trees' / (

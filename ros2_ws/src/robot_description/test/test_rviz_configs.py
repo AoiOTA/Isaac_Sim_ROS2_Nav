@@ -135,7 +135,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert optimal['Enabled'] is True
     assert optimal['Topic']['Value'] == '/optimal_trajectory'
     assert optimal['Line Width'] >= 0.08
-    assert candidates['Enabled'] is True
+    assert candidates['Enabled'] is False
     assert candidates['Topic']['Value'] == '/trajectories'
 
     panels = [panel['Class'] for panel in config['Panels']]
@@ -152,6 +152,20 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert _named(config, 'Transformed Reference Plan')['Topic'][
         'Value'] == '/transformed_global_plan'
     assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is False
+
+    depth_cloud = _named(config, 'Depth PointCloud2')
+    _assert_topic(
+        depth_cloud,
+        '/camera/front/depth/points',
+        reliability='Best Effort',
+        durability='Volatile',
+    )
+    assert depth_cloud['Enabled'] is True
+    assert depth_cloud['Decay Time'] == 0.2
+    assert depth_cloud['Size (m)'] == 0.03
+    voxel_grid = _named(config, 'Voxel Grid')
+    assert voxel_grid['Topic']['Value'] == '/local_costmap/voxel_grid'
+    assert voxel_grid['Enabled'] is False
 
 
 def test_robot_description_cmake_installs_all_rviz_configs():

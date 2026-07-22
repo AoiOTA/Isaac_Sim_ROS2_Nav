@@ -3,6 +3,7 @@ map_version: warehouse_new
 created_at: "2026-07-17"
 availability: repository_baseline
 artifact_policy: posegraph_in_git_lfs
+bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
 source:
   environment_asset: kujiale_0026/kujiale_0026_A_to_B_door_open.usd
   robot: jackal
@@ -16,35 +17,35 @@ occupancy_grid:
   height_cells: 248
   origin: [-5.140, -6.520, 0.0]
   files:
-    - path: data/maps/occupancy/warehouse_new.yaml
+    - role: yaml
+      path: data/maps/occupancy/warehouse_new.yaml
       bytes: 135
       sha256: 7f4d947fd892ed4c724707d7f09739252ecd5bbd8888e518cd7857f322c048e0
-    - path: data/maps/occupancy/warehouse_new.pgm
+    - role: image
+      path: data/maps/occupancy/warehouse_new.pgm
       bytes: 38207
       sha256: 1f4ee9d3c19d5fb1ff3c2a926888ba9b22c7dd61b88b0833038c65133d29d0c6
 pose_graph:
   prefix: data/maps/posegraphs/warehouse_new
   files:
-    - path: data/maps/posegraphs/warehouse_new.posegraph
+    - role: posegraph
+      path: data/maps/posegraphs/warehouse_new.posegraph
       bytes: 31890111
       sha256: 06082ba4ac27bf2e083d477ab0660b91ab46841eb02a7dc42b6850ee8004a159
-    - path: data/maps/posegraphs/warehouse_new.data
+    - role: data
+      path: data/maps/posegraphs/warehouse_new.data
       bytes: 4325736
       sha256: 1c466428190a54bbb3135216e71d01d9c93ac660ff86b4c089540fb9eefb64d2
 calibration:
+  calibrated: true
+  spawn_pose_profile: mapping_start
+  bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
   calibrated_at: "2026-07-17"
-  method: ideal_mapping_anchor_plus_occupancy_grid_scan_correlation
-  cold_start_trials: 3
+  calibration_method: ideal_mapping_anchor_plus_occupancy_grid_scan_correlation
   usd_base_position: [2.9, -0.2, 0.0635]
   usd_base_yaw_deg: 180.0
   map_base_position: [0.0, 0.0]
   map_base_yaw_deg: 0.0
-  observed_max_position_spread_m: 0.0
-  observed_max_yaw_spread_deg: 0.0
-  observed_identity_mean_endpoint_distance_m: [0.0028, 0.0032, 0.0028]
-  observed_endpoint_fraction_within_0_075_m: [1.0, 1.0, 1.0]
-  reported_translation_precision_m: 0.05
-  reported_yaw_precision_deg: 1.0
   position_stddev_m: 0.05
   yaw_stddev_deg: 1.0
 notes:

@@ -20,12 +20,15 @@ class SensorConfigError(RuntimeError):
     pass
 
 
-CAMERA_PROFILE_NAMES = ("off", "monitoring", "standard", "high_quality")
+CAMERA_PROFILE_NAMES = (
+    "off", "monitoring", "standard", "high_quality", "rgbd_navigation"
+)
 _CAMERA_PROFILE_CONTRACT = {
-    "off": (False, 0, 0, 0.0),
-    "monitoring": (True, 640, 360, 15.0),
-    "standard": (True, 640, 480, 20.0),
-    "high_quality": (True, 1280, 720, 30.0),
+    "off": (False, 0, 0, 0.0, False),
+    "monitoring": (True, 640, 360, 15.0, False),
+    "standard": (True, 640, 480, 20.0, False),
+    "high_quality": (True, 1280, 720, 30.0, False),
+    "rgbd_navigation": (True, 320, 180, 10.0, True),
 }
 
 
@@ -36,6 +39,7 @@ class CameraProfile:
     width: int
     height: int
     publish_rate_hz: float
+    depth_points_enabled: bool
 
 
 @dataclass(frozen=True)
@@ -58,6 +62,7 @@ class CameraDefinition:
     rgb: CameraStream
     camera_info: CameraStream
     depth: CameraStream
+    depth_points: CameraStream
     clipping_range_m: tuple[float, float]
     projection: str
     focal_length_mm: float
@@ -102,6 +107,8 @@ class CameraRuntime:
     node_namespace: str
     rgb: CameraStream
     camera_info: CameraStream
+    depth_points: CameraStream
+    depth_points_enabled: bool
     width: int
     height: int
     publish_rate_hz: float
@@ -215,13 +222,16 @@ def _load_camera_stream(
 
 def _load_camera_profile(name: str, value: Any) -> CameraProfile:
     expected = _CAMERA_PROFILE_CONTRACT[name]
-    keys = {"enabled"} if name == "off" else {
-        "enabled", "width", "height", "publish_rate_hz"
+    keys = {"enabled", "depth_points_enabled"} if name == "off" else {
+        "enabled", "width", "height", "publish_rate_hz", "depth_points_enabled"
     }
     data = _require_mapping(value, keys, context=f"camera.profiles.{name}")
     enabled = _require_bool(data["enabled"], context=f"camera.profiles.{name}.enabled")
     if name == "off":
-        profile = CameraProfile(name, enabled, 0, 0, 0.0)
+        profile = CameraProfile(
+            name, enabled, 0, 0, 0.0,
+            _require_bool(data["depth_points_enabled"], context=f"camera.profiles.{name}.depth_points_enabled"),
+        )
     else:
         profile = CameraProfile(
             name=name,
@@ -237,12 +247,17 @@ def _load_camera_profile(name: str, value: Any) -> CameraProfile:
                 context=f"camera.profiles.{name}.publish_rate_hz",
                 positive=True,
             ),
+            depth_points_enabled=_require_bool(
+                data["depth_points_enabled"],
+                context=f"camera.profiles.{name}.depth_points_enabled",
+            ),
         )
     observed = (
         profile.enabled,
         profile.width,
         profile.height,
         profile.publish_rate_hz,
+        profile.depth_points_enabled,
     )
     if observed != expected:
         raise SensorConfigError(
@@ -262,6 +277,7 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         "rgb",
         "camera_info",
         "depth",
+        "depth_points",
         "clipping_range_m",
         "optics",
         "exposure",
@@ -298,14 +314,21 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
     depth = _load_camera_stream(
         data["depth"], context=f"camera.cameras.{name}.depth", encoding=False
     )
+    depth_points = _load_camera_stream(
+        data["depth_points"],
+        context=f"camera.cameras.{name}.depth_points",
+        encoding=False,
+    )
     if not rgb.enabled or rgb.encoding != "rgb8":
         raise SensorConfigError("front Camera RGB must be enabled with rgb8 encoding")
-    if not camera_info.enabled or depth.enabled:
-        raise SensorConfigError("CameraInfo must be enabled and depth must be disabled")
-    if rgb.qos_profile != camera_info.qos_profile:
-        raise SensorConfigError("Image and CameraInfo must use the same QoS profile")
-    if rgb.queue_size != 2 or camera_info.queue_size != 2:
-        raise SensorConfigError("Image and CameraInfo queue_size must be 2")
+    if not camera_info.enabled or depth.enabled or not depth_points.enabled:
+        raise SensorConfigError(
+            "CameraInfo and depth points must be enabled and raw depth must be disabled"
+        )
+    if len({rgb.qos_profile, camera_info.qos_profile, depth_points.qos_profile}) != 1:
+        raise SensorConfigError("Camera streams must use the same QoS profile")
+    if (rgb.queue_size, camera_info.queue_size, depth_points.queue_size) != (2, 2, 2):
+        raise SensorConfigError("Camera RGB, CameraInfo, and depth points queue_size must be 2")
 
     clipping = _require_mapping(
         data["clipping_range_m"], {"near", "far"},
@@ -375,6 +398,7 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         rgb=rgb,
         camera_info=camera_info,
         depth=depth,
+        depth_points=depth_points,
         clipping_range_m=(near, far),
         projection=projection,
         focal_length_mm=require_number(
@@ -519,8 +543,8 @@ def _load_camera(path) -> CameraConfig:
     }
     reject_unknown(data, allowed, context="camera config")
     require_keys(data, allowed, context="camera config")
-    if data["schema_version"] != 2:
-        raise SensorConfigError("camera schema_version must be 2")
+    if data["schema_version"] != 3:
+        raise SensorConfigError("camera schema_version must be 3")
 
     raw_profiles = _require_mapping(
         data["profiles"], set(CAMERA_PROFILE_NAMES), context="camera.profiles"
@@ -820,6 +844,8 @@ class SensorFactory:
             node_namespace=definition.node_namespace,
             rgb=definition.rgb,
             camera_info=definition.camera_info,
+            depth_points=definition.depth_points,
+            depth_points_enabled=profile.depth_points_enabled,
             width=profile.width,
             height=profile.height,
             publish_rate_hz=profile.publish_rate_hz,

@@ -132,6 +132,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | opt-in candidate-sample visualization | Reliable + Volatile, expensive/lazy; committed RViz display is disabled and creates no subscription |
 | `/camera/front/image_raw` | `sensor_msgs/msg/Image` | Isaac front Camera graph | RViz or external perception/recording only | `camera_front_optical_frame`, `rgb8`; profile rate/resolution; Best Effort + Volatile, depth 2 |
 | `/camera/front/camera_info` | `sensor_msgs/msg/CameraInfo` | same Isaac Render Product as Image | camera calibration consumers and profiler pairing | same frame, simulated stamp and QoS as Image; Best Effort + Volatile, depth 2 |
+| `/camera/front/depth/points` | `sensor_msgs/msg/PointCloud2` | Isaac Camera graph (`rgbd_navigation` only) | Local Costmap `depth_voxel_layer`, RViz | `camera_front_optical_frame`, 10 Hz target; Best Effort + Volatile, depth 2 |
 | `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node/Isaac Reset in `auto`, or RViz in `rviz` | SLAM Toolbox localization | `map`; Reliable + Volatile; invalid frame/non-finite/non-normalized manual poses are ignored |
 | `/initial_pose/status` | `std_msgs/msg/String` | calibrated initial-pose node | operator and recovery diagnostics | transient-local state such as waiting clock/scan/TF, complete, or manual override |
 | `/simulation/initial_pose_source` | `std_msgs/msg/String` | `initial_pose_policy` | Isaac Reset and ROS recovery contract | transient-local `auto` or `rviz` |
@@ -208,9 +209,11 @@ calibration, and update both sides of the binding.
 
 ## Camera stream contract
 
-The front Camera is an optional observation stream. It is not consumed by SLAM,
-EKF, Nav2, Collision Monitor, Reset, or the activation gate. `--camera-profile`
-selects one of these strict profiles before Kit starts:
+The front Camera is an optional observation stream. `rgbd_navigation` sends its
+depth point cloud only to the Nav2 Local Costmap VoxelLayer; no Camera stream is
+consumed by SLAM, EKF, Global Costmap, Collision Monitor, Reset, or the
+activation gate. `--camera-profile` selects one of these strict profiles before
+Kit starts:
 
 | Profile | Resolution | Configured target rate | Contract |
 | --- | ---: | ---: | --- |
@@ -218,17 +221,18 @@ selects one of these strict profiles before Kit starts:
 | `monitoring` | 640×360 | 15 Hz | GUI default and normal navigation observation |
 | `standard` | 640×480 | 20 Hz | intermediate observation/recording load |
 | `high_quality` | 1280×720 | 30 Hz | visual-quality run; not the navigation performance baseline |
+| `rgbd_navigation` | 320×180 | 10 Hz | RGB, CameraInfo, and depth point cloud for Local Costmap fusion |
 
 When the CLI option is omitted, GUI mode resolves to `monitoring` and headless
 mode resolves to `off`. Rates in the table are configured targets, not wall-time
 guarantees: GPU load and RTF determine the observed rate.
 
-One SensorFactory-owned Render Product feeds both
-`/camera/front/image_raw` (`rgb8`) and `/camera/front/camera_info`. Both helpers
-use simulation time, `camera_front_optical_frame`, raw sensor semantics, and the
-same Keep Last / depth 2 / Best Effort / Volatile QoS. Best Effort delivery means
-consumer-side counts can differ; synchronize Image and CameraInfo by header
-stamp and record mismatches instead of assuming every arrival is paired. Camera
+One SensorFactory-owned Render Product feeds `/camera/front/image_raw` (`rgb8`)
+and `/camera/front/camera_info` for every enabled profile. Under
+`rgbd_navigation`, that same Render Product also feeds
+`/camera/front/depth/points` (`sensor_msgs/msg/PointCloud2`) using `depth_pcl`.
+All three helpers use simulation time, `camera_front_optical_frame`, raw sensor
+semantics, and the same Keep Last / depth 2 / Best Effort / Volatile QoS. Camera
 graph destruction precedes Render Product release, including shutdown and
 profile teardown.
 

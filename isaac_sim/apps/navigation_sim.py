@@ -128,6 +128,11 @@ def _parser() -> argparse.ArgumentParser:
         help="enable or disable the GUI third-person robot-follow camera",
     )
     parser.add_argument(
+        "--camera-profile",
+        choices=CAMERA_PROFILE_NAMES,
+        help="front Camera publication profile selected before Isaac starts",
+    )
+    parser.add_argument(
         "--environment-usd",
         type=str,
         help=(

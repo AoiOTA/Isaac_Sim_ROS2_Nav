@@ -167,7 +167,7 @@ printf '\nDuplicate node names:\n'
 duplicates="$(printf '%s\n' "${nodes}" | sed '/^$/d' | sort | uniq -d)"
 printf '%s\n' "${duplicates:-none}"
 printf '\nKey topics:\n'
-printf '%s\n' "${topics}" | grep -E '^/(clock|map|slam_toolbox/map|scan|lidar/points_raw|odom|tf|tf_static|cmd_vel|cmd_vel_nav|cmd_vel_smoothed|initialpose|goal_pose|global_costmap|local_costmap|collision_monitor)' || true
+printf '%s\n' "${topics}" | grep -E '^/(clock|map|slam_toolbox/map|scan|lidar/points_raw|camera/front/(image_raw|camera_info|depth/points)|odom|tf|tf_static|cmd_vel|cmd_vel_nav|cmd_vel_smoothed|initialpose|goal_pose|global_costmap|local_costmap|collision_monitor)' || true
 printf '\nKey services:\n'
 printf '%s\n' "${services}" | grep -E '(lifecycle|clear|simulation/reset)' || true
 printf '\nKey actions:\n'
@@ -186,6 +186,7 @@ done
 
 section "QoS"
 for topic in /map /scan /lidar/points_raw /odom /tf /tf_static \
+  /camera/front/image_raw /camera/front/camera_info /camera/front/depth/points \
   /global_costmap/costmap /local_costmap/costmap; do
   if printf '%s\n' "${topics}" | grep -qx "${topic}"; then
     run_query "${topic}" ros2 topic info "${topic}" --verbose
@@ -209,7 +210,7 @@ else
 fi
 
 section "TF"
-for pair in 'map odom' 'odom base_link' 'map base_link'; do
+for pair in 'map odom' 'odom base_link' 'odom camera_front_optical_frame' 'map base_link'; do
   # Jazzy tf2_echo has no --once option, so every query is bounded whether a
   # sample is printed or the transform is missing.
   read -r target source <<<"${pair}"
@@ -221,6 +222,8 @@ section "Simulation time"
 run_query "/clock sample" ros2 topic echo /clock --once
 run_query "/scan header" ros2 topic echo /scan --once --field header
 run_query "/odom header" ros2 topic echo /odom --once --field header
+run_query "/camera/front/depth/points header" \
+  ros2 topic echo /camera/front/depth/points --once --field header
 
 section "Fast DDS shared memory"
 shm_root="${ISAAC_NAV_SHM_ROOT:-/dev/shm}"
@@ -364,7 +367,7 @@ declare -A expected_presence=(
   [/lidar/points_raw]=1
 )
 for topic in /map /odom /cmd_vel /wheel/odom /optimal_trajectory \
-  /camera/front/image_raw /camera/front/camera_info; do
+  /camera/front/image_raw /camera/front/camera_info /camera/front/depth/points; do
   count="$(publisher_count "${topic}")"
   if [[ ! "${count}" =~ ^[0-9]+$ ]]; then
     summary_result WARN "owner ${topic}" "publisher count unavailable"
@@ -402,6 +405,46 @@ elif [[ "${image_publishers}" == 1 && "${info_publishers}" == 1 ]]; then
 else
   summary_result FAIL "Camera runtime" \
     "profile=${camera_profile}, Image/CameraInfo publishers=${image_publishers}/${info_publishers}"
+fi
+
+depth_topic="/camera/front/depth/points"
+depth_publishers="$(publisher_count "${depth_topic}")"
+depth_subscribers="$(subscription_count "${depth_topic}")"
+if [[ ! "${depth_publishers}" =~ ^[0-9]+$ \
+      || ! "${depth_subscribers}" =~ ^[0-9]+$ ]]; then
+  summary_result WARN "RGB-D fusion" "depth point-cloud endpoint query unavailable"
+elif [[ "${camera_profile}" == rgbd_navigation ]]; then
+  if [[ "${depth_publishers}" != 1 || "${depth_subscribers}" != 1 ]]; then
+    summary_result FAIL "RGB-D fusion" \
+      "profile=rgbd_navigation requires one depth publisher and Local Costmap subscriber, got ${depth_publishers}/${depth_subscribers}"
+  else
+    depth_hz_output="$(timeout "${query_timeout}" ros2 topic hz "${depth_topic}" 2>&1 || true)"
+    depth_hz="$(sed -n 's/.*average rate: \([0-9.]*\).*/\1/p' <<<"${depth_hz_output}" | tail -n 1)"
+    if [[ "${depth_hz}" =~ ^[0-9]+([.][0-9]+)?$ ]] \
+        && awk "BEGIN { exit !(${depth_hz} >= 8.0) }"; then
+      summary_result PASS "RGB-D fusion" \
+        "depth publisher/subscriber=${depth_publishers}/${depth_subscribers}, measured_hz=${depth_hz}"
+    elif [[ -z "${depth_hz}" ]]; then
+      summary_result FAIL "RGB-D fusion" "cannot measure depth point-cloud rate"
+    else
+      summary_result FAIL "RGB-D fusion" \
+        "depth point-cloud rate below 8 Hz: ${depth_hz}"
+    fi
+  fi
+
+  local_plugins="$(timeout "${query_timeout}" ros2 param get /local_costmap plugins 2>&1 || true)"
+  if [[ "${local_plugins}" == *depth_voxel_layer* ]]; then
+    summary_result PASS "RGB-D VoxelLayer" "Local Costmap loads depth_voxel_layer"
+  elif [[ "${local_plugins}" == *'not found'* || "${local_plugins}" == *'does not exist'* ]]; then
+    summary_result FAIL "RGB-D VoxelLayer" "Local Costmap is unavailable"
+  else
+    summary_result FAIL "RGB-D VoxelLayer" "Local Costmap plugins omit depth_voxel_layer"
+  fi
+elif [[ "${depth_publishers}" == 0 ]]; then
+  summary_result PASS "RGB-D fusion" "depth point cloud disabled for profile=${camera_profile}"
+else
+  summary_result FAIL "RGB-D fusion" \
+    "profile=${camera_profile} must not publish depth points, got ${depth_publishers} publisher(s)"
 fi
 
 latest_kit_log="$(find \
