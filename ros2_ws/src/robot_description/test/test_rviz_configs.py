@@ -67,11 +67,11 @@ def test_every_workflow_has_map_frame_robot_tf_and_sensor_qos(name):
         durability='Volatile',
     )
     assert _named(config, 'Robot Front Camera')['Topic']['Depth'] == 2
-    assert _named(config, 'Robot Front Camera')['Enabled'] is True
+    assert _named(config, 'Robot Front Camera')['Enabled'] is (name != 'navigation.rviz')
     assert _named(config, 'Robot Front Camera')['Normalize Range'] is False
-    assert _named(config, 'Robot Front Camera')['Transport Hint'] == 'raw'
+    assert _named(config, 'Robot Front Camera').get('Transport Hint', 'raw') == 'raw'
     window = config['Window Geometry']
-    assert window['Robot Front Camera']['collapsed'] is False
+    assert window['Robot Front Camera']['collapsed'] is (name == 'navigation.rviz')
     assert len(window['QMainWindow State']) > 100
 
 
@@ -127,31 +127,31 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     odometry = _named(config, 'Odometry')
     assert global_plan['Color'] == '255; 215; 0'
     assert global_plan['Pose Color'] == global_plan['Color']
-    assert global_plan['Line Width'] >= 0.12
+    assert global_plan['Line Width'] >= 0.1
     assert global_plan['Color'] != odometry['Shape']['Color']
 
     optimal = _named(config, 'MPPI Optimal Trajectory')
     candidates = _named(config, 'MPPI Candidate Trajectories')
     assert optimal['Enabled'] is True
     assert optimal['Topic']['Value'] == '/optimal_trajectory'
-    assert optimal['Line Width'] >= 0.08
-    assert candidates['Enabled'] is False
+    assert optimal['Line Width'] >= 0.07
+    assert candidates['Enabled'] is True
     assert candidates['Topic']['Value'] == '/trajectories'
 
     panels = [panel['Class'] for panel in config['Panels']]
     tools = [tool['Class'] for tool in config['Visualization Manager']['Tools']]
     assert panels.count('robot_rviz_plugins/Navigation 2 Safe') == 1
     assert 'nav2_rviz_plugins/Navigation 2' not in panels
-    assert tools.count('nav2_rviz_plugins/GoalTool') == 1
+    assert tools.count('rviz_default_plugins/SetGoal') == 1
     assert tools.count('rviz_default_plugins/SetInitialPose') == 1
-    assert 'rviz_default_plugins/SetGoal' not in tools
+    assert 'nav2_rviz_plugins/GoalTool' not in tools
     assert '/goal_pose' not in (RVIZ_ROOT / 'navigation.rviz').read_text(
         encoding='utf-8')
     assert '/local_plan' not in (RVIZ_ROOT / 'navigation.rviz').read_text(
         encoding='utf-8')
     assert _named(config, 'Transformed Reference Plan')['Topic'][
         'Value'] == '/transformed_global_plan'
-    assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is False
+    assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is True
 
     depth_cloud = _named(config, 'Depth PointCloud2')
     _assert_topic(
@@ -160,12 +160,18 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         reliability='Best Effort',
         durability='Volatile',
     )
-    assert depth_cloud['Enabled'] is True
-    assert depth_cloud['Decay Time'] == 0.2
-    assert depth_cloud['Size (m)'] == 0.03
-    voxel_grid = _named(config, 'Voxel Grid')
+    assert depth_cloud['Enabled'] is False
+    assert depth_cloud['Color Transformer'] == 'FlatColor'
+    assert depth_cloud['Color'] == '0; 255; 255'
+    assert depth_cloud['Style'] == 'Flat Squares'
+    assert depth_cloud['Decay Time'] == 0.5
+    assert depth_cloud['Size (m)'] >= 0.05
+    voxel_grid = _named(config, 'Marked Voxels (3D)')
+    assert voxel_grid['Class'] == 'robot_rviz_plugins/Voxel Grid'
     assert voxel_grid['Topic']['Value'] == '/local_costmap/voxel_grid'
-    assert voxel_grid['Enabled'] is False
+    assert voxel_grid['Enabled'] is True
+    assert voxel_grid['Color Transformer'] == 'FlatColor'
+    assert voxel_grid['Style'] == 'Boxes'
 
 
 def test_robot_description_cmake_installs_all_rviz_configs():

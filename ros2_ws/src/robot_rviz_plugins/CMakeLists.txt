@@ -24,6 +24,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rviz_common REQUIRED)
 find_package(rviz_default_plugins REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
@@ -31,10 +32,12 @@ find_package(yaml_cpp_vendor REQUIRED)
 
 set(headers_to_moc
   include/robot_rviz_plugins/nav2_panel.hpp
+  include/robot_rviz_plugins/voxel_grid_display.hpp
 )
 
 add_library(${PROJECT_NAME} SHARED
   src/nav2_panel.cpp
+  src/voxel_grid_display.cpp
   ${headers_to_moc}
 )
 
@@ -56,6 +59,7 @@ ament_target_dependencies(${PROJECT_NAME}
   rclcpp_action
   rviz_common
   rviz_default_plugins
+  sensor_msgs
   tf2_geometry_msgs
   tf2_ros
   visualization_msgs

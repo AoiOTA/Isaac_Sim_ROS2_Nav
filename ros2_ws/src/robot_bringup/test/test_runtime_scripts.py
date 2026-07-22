@@ -547,6 +547,15 @@ def test_ros_launcher_blocks_mapping_teleop_in_navigation_modes():
     assert 'stop the Mapping teleop before starting' in source
 
 
+def test_ros_launcher_does_not_leak_its_lock_to_managed_rviz():
+    source = (REPOSITORY_ROOT / 'scripts' / 'run_ros.sh').read_text(
+        encoding='utf-8')
+    assert 'ros_lock_fd="${ISAAC_NAV_LOCK_FDS[-1]}"' in source
+    assert 'setsid -- ros2 launch robot_bringup \\' in source
+    assert ('"${operation}_bringup.launch.py" "${launch_args[@]}" '
+            '{ros_lock_fd}>&- &') in source
+
+
 def test_ros_launcher_defaults_navigation_to_warehouse_new_bundle():
     source = (REPOSITORY_ROOT / 'scripts' / 'run_ros.sh').read_text(
         encoding='utf-8')
