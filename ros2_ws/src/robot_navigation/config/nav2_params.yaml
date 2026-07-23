@@ -66,7 +66,7 @@ controller_server:
       iteration_count: 1
 
       # Permit a small reverse sample near tight terminal poses.  This lets
-      # MPPI re-centre at G7 after a dynamic interaction instead of remaining
+      # MPPI re-centres at the G1 return point after a dynamic interaction instead of remaining
       # a few centimetres outside the acceptance circle until timeout.
       vx_std: 0.35
       vy_std: 0.00

@@ -509,25 +509,26 @@ contracts. Re-tune only with comparable runtime evidence.
 
 The current formal scenarios are
 `kujiale_static_long_range.yaml` and `kujiale_dynamic_long_range.yaml`. Both
-run the same `warehouse_new` closed route `G1` through `G8` from calibrated
-`mapping_start`; they are not random-layout Warehouse smoke tests. The static
-scenario requires the physical `rgbd_low_box`, while the dynamic scenario
-requires `central_crossing` (G1), `north_crossing` (G2), and `south_crossing`
-(G6). The GUI/RViz visual scenarios reuse this geometry with one seed each and
+run the same `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G6 → G1`
+from transform-verified `long_route_start_g1`; they are not random-layout Warehouse
+smoke tests. The static scenario requires `rgbd_low_box_west` and
+`rgbd_low_box_east`, while the dynamic scenario requires `central_slow_west` and
+`central_slow_east` (both triggered by G2). The GUI/RViz visual scenarios reuse this geometry with one seed each and
 set `record_evidence:=false`.
 
 Before every static or dynamic run, the experiment runner reads the Isaac
 runtime obstacle contract. Both current scenario types require
-`--dynamic-obstacles`: static uses it to instantiate the stationary low box;
-dynamic uses it to instantiate the three triggered actors. The enabled flag,
+`--dynamic-obstacles`: static uses it to instantiate the stationary low boxes;
+dynamic uses it to instantiate the two triggered actors. The enabled flag,
 physical configuration SHA256 and sorted obstacle IDs must exactly match the
 scenario before Reset or goal dispatch. For dynamic scenarios the runner also
 validates each actor's shape, XY size, Map-frame endpoints and duration.
 Mismatches fail before a navigation goal is sent.
 
-The static low box is a physical `0.30 × 0.30 × 0.16 m` obstacle. Each dynamic
-actor is one-shot and enters `retired` after motion, disabling its visibility
-and collision instead of permanently blocking the route. The route and obstacle
+Each static low box is a physical `0.30 × 0.30 × 0.16 m` obstacle. Each dynamic
+actor moves only `0.30 m` at `0.08–0.10 m/s` and enters `hold` after motion,
+remaining a visible central-area constraint rather than pushing the robot at startup.
+The route and obstacle
 coordinates are shown in [`kujiale_long_route_map.md`](kujiale_long_route_map.md);
 the exact machine-readable definitions remain the scenario and Isaac YAML files.
 

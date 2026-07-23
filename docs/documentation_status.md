@@ -33,7 +33,7 @@
 | [`troubleshooting.md`](troubleshooting.md) | 当前排障手册 | 根据症状执行只读诊断和受管恢复。 |
 | [`calibration.md`](calibration.md) | 当前流程 + 历史记录 | 新地图的标定流程；Warehouse v2 数字是历史记录。 |
 | [`verification.md`](verification.md) | 当前证据台账 | 当前正式验收和历史能力证据的边界。 |
-| [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 当前正式测试规格与结果 | 全屋路线、报告口径、20+20 结果和生成工件。 |
+| [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 当前重设计测试规格与历史结果边界 | S/G1 闭环路线、报告口径、待执行的 20+20 与旧批次生成工件。 |
 | [`isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md`](isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md) | 历史设计 + 现行差异说明 | 理解 RGB-D 一期决策；不要照抄其中仅 Local Costmap 的旧设计。 |
 | [`rviz_workflow_upgrade_plan.md`](rviz_workflow_upgrade_plan.md) | 历史设计记录 | 回溯 RViz/Lifecycle 升级取舍。 |
 | [`runtime_reliability_and_performance_upgrade_plan.md`](runtime_reliability_and_performance_upgrade_plan.md) | 历史设计与证据快照 | 回溯可靠性和性能升级；部分地图数字已过时。 |

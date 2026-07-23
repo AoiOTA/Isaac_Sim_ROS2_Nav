@@ -9,11 +9,11 @@ branch the calibrated `warehouse_new` bundle is the default; `warehouse_v1` and
 `warehouse_v2` are retained for Warehouse history/reproduction. Large
 `.posegraph` files are stored through Git LFS.
 
-## 当前分支正式验收（2026-07-22）
+## 历史正式验收（2026-07-22；不适用于当前重设计）
 
-正式酷家乐批次使用 `kujiale_0026_A_to_B_door_open.usd`、`warehouse_new`、Ideal
-Odometry 与 `rgbd_navigation`，包含静态 20 次、动态 20 次。生成报告存放在被
-忽略的 `data/reports/`；生成器、报告 schema 与验收规则均受版本控制。
+该历史酷家乐批次使用旧 `mapping_start`、G1–G8、旧障碍布局、`warehouse_new`、Ideal
+Odometry 与 `rgbd_navigation`，包含静态 20 次、动态 20 次。当前分支的 S/G1、G2–G6、
+中心区两组静态/动态障碍为新布局，尚未验收；生成报告存放在被忽略的 `data/reports/`。
 
 | 项目 | 结果 | 范围与边界 |
 | --- | --- | --- |
@@ -23,9 +23,9 @@ Odometry 与 `rgbd_navigation`，包含静态 20 次、动态 20 次。生成报
 | 静态路径最优性 | 最大偏差 `19.2868%` | 通过 `<=20%` 门槛。 |
 | RGB-D 证据 | 按批次记录深度点云、VoxelLayer、全局/局部 Costmap | Collision Monitor 仍只使用 `/scan`。 |
 
-完整路线、报告一致性检查与精确结论以
-[`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) 为准。动态
-失败种子为 `7305`（G2 物理碰撞）和 `7312`（G1 超时）；两轮都计入分母并保留证据。
+历史路线、报告一致性检查与精确结论以
+[`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) 的历史章节为准。动态
+失败种子为 `7305`（G2 物理碰撞）和 `7312`（G1 超时）；两轮都计入旧布局分母并保留证据。
 
 ## 历史能力台账
 

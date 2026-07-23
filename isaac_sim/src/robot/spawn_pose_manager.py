@@ -94,6 +94,7 @@ def load_spawn_poses(path: str | Path) -> dict[str, SpawnPose]:
                 "yaw_stddev_deg",
                 "map_version",
                 "map_bundle_sha256",
+                "derived_from_profile",
             },
             context=f"spawn_poses.{name}.map",
         )

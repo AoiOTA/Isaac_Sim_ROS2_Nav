@@ -16,3 +16,19 @@ spawn_poses:
       map_bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
       position_stddev_m: 0.05
       yaw_stddev_deg: 1.0
+  long_route_start_g1:
+    usd:
+      # Derived from mapping_start with the calibrated 180-degree map-to-USD
+      # transform.  This is G1 in the redesigned whole-home route, not a
+      # second map calibration.
+      position: [2.45, 5.15, 0.0635]
+      yaw_deg: 270.0
+    map:
+      position: [0.45, -5.35]
+      yaw_deg: 90.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: warehouse_new
+      map_bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0

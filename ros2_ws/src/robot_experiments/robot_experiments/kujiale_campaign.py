@@ -25,7 +25,9 @@ DYNAMIC_SEEDS = tuple(range(7301, 7321))
 STATIC_MIN_SUCCESS = 19
 DYNAMIC_MIN_SUCCESS = 18
 PATH_DEVIATION_MAX_PERCENT = 20.0
-WAYPOINT_IDS = tuple(f"G{index}" for index in range(1, 9))
+# G1 is the redesigned route's calibrated spawn/return point.  The runner
+# dispatches G2 through G6, then sends G1 as the final closed-loop goal.
+WAYPOINT_IDS = ("G2", "G3", "G4", "G5", "G6", "G1")
 
 
 class CampaignValidationError(ValueError):
@@ -42,9 +44,19 @@ def load_campaign_definition(path: str | Path) -> Mapping[str, Any]:
         raise CampaignValidationError("campaign definition must use schema_version 2")
     if value.get("campaign") != "kujiale_long_range":
         raise CampaignValidationError("campaign definition has an unexpected campaign id")
+    environment = value.get("environment")
+    if not isinstance(environment, Mapping):
+        raise CampaignValidationError("campaign environment must be a mapping")
+    start_pose = environment.get("start_pose")
+    if (
+        not isinstance(start_pose, list)
+        or len(start_pose) != 3
+        or any(isinstance(component, bool) or not isinstance(component, (int, float)) for component in start_pose)
+    ):
+        raise CampaignValidationError("campaign environment.start_pose must be [x, y, yaw_deg]")
     route = value.get("route")
     if not isinstance(route, list) or [item.get("id") if isinstance(item, Mapping) else None for item in route] != list(WAYPOINT_IDS):
-        raise CampaignValidationError("campaign route must contain G1 through G8 in order")
+        raise CampaignValidationError("campaign route must contain the redesigned G2, G3, G4, G5, G6, G1 order")
     for kind, seeds in (("static", STATIC_SEEDS), ("dynamic", DYNAMIC_SEEDS)):
         section = value.get(kind)
         if not isinstance(section, Mapping) or tuple(section.get("seeds", ())) != seeds:
@@ -140,13 +152,13 @@ def _validate_run(summary: Mapping[str, Any], expected_kind: str) -> int:
     leg_ids = [item.get("id") if isinstance(item, Mapping) else None for item in legs]
     if leg_ids != list(WAYPOINT_IDS[:len(legs)]):
         raise CampaignValidationError(
-            f"run {seed} legs must be an ordered G1-through-G8 prefix"
+            f"run {seed} legs must be an ordered redesigned-route prefix"
         )
     for field in ("strict_success", "physical_collision_free", "data_complete", "checksums_verified"):
         _bool(summary, field)
     if _bool(summary, "strict_success") and len(legs) != len(WAYPOINT_IDS):
         raise CampaignValidationError(
-            f"strictly successful run {seed} must contain exactly 8 leg results"
+            f"strictly successful run {seed} must contain exactly {len(WAYPOINT_IDS)} leg results"
         )
     return seed
 
@@ -329,8 +341,8 @@ def _plot_overview(summary: Mapping[str, Any], figures: Path) -> list[Path]:
         fig.patch.set_facecolor("#f8fafc"); axis.set_facecolor("#ffffff")
         palette = ["#dc2626", "#f97316", "#16a34a", "#7c3aed"]
         image = axis.imshow(matrix, aspect="auto", interpolation="nearest", cmap=plt.matplotlib.colors.ListedColormap(palette), vmin=0, vmax=3)
-        axis.set_xticks(range(8), WAYPOINT_IDS); axis.set_yticks(range(20), [str(row["seed"]) for row in rows]); axis.set_xlabel("目标航点"); axis.set_ylabel("随机种子")
-        axis.set_title(f"{kind.capitalize()}｜20 × 8 航点执行矩阵", loc="left", fontsize=18, fontweight="bold", pad=16)
+        axis.set_xticks(range(len(WAYPOINT_IDS)), WAYPOINT_IDS); axis.set_yticks(range(20), [str(row["seed"]) for row in rows]); axis.set_xlabel("目标航点"); axis.set_ylabel("随机种子")
+        axis.set_title(f"{kind.capitalize()}｜20 × {len(WAYPOINT_IDS)} 航点执行矩阵", loc="left", fontsize=18, fontweight="bold", pad=16)
         colorbar = fig.colorbar(image, ax=axis, ticks=[0, 1, 2, 3], pad=0.02)
         colorbar.ax.set_yticklabels(["失败 / 未执行", "超时", "成功", "动态交互失效"])
         path = figures / f"waypoint_heatmap_{kind}.png"; fig.savefig(path, dpi=100); plt.close(fig); paths.append(path)
@@ -461,6 +473,7 @@ def _map_visual_inputs() -> dict[str, Any]:
         "available": True, "image_base64": base64.b64encode(buffer.getvalue()).decode("ascii"),
         "width": int(raster.shape[1]), "height": int(raster.shape[0]),
         "origin": [float(document["origin"][0]), float(document["origin"][1])], "resolution": float(document["resolution"]),
+        "start": [float(campaign["environment"]["start_pose"][0]), float(campaign["environment"]["start_pose"][1])],
         "route": [{"id": item["id"], "region": item["region"], "x": float(item["pose"][0]), "y": float(item["pose"][1])} for item in campaign["route"]],
         "static_obstacle_polygons": reference.get("static_obstacle_polygons", []),
         "dynamic_obstacles": campaign.get("dynamic", {}).get("obstacles", []),
@@ -496,9 +509,9 @@ def _plot_evidence_figures(visual: Mapping[str, Any], figures: Path) -> list[Pat
     axes[0, 0].scatter([item["seed"] for item in static if _finite_number(item.get("path_deviation_percent")) is not None], deviations, color="#2563eb")
     axes[0, 0].axhline(20, color="#dc2626", linestyle="--"); axes[0, 0].set(title="静态路径偏差散点图", xlabel="种子", ylabel="偏差 (%)")
     axes[0, 1].boxplot(deviations, vert=True, labels=["静态 20 轮"]); axes[0, 1].axhline(20, color="#dc2626", linestyle="--"); axes[0, 1].set(title="路径偏差分布（P50 / P95 / 最大值见 JSON）", ylabel="偏差 (%)")
-    reference_by_leg = [sum(float(item["legs"][index].get("reference_length_m", 0.0)) for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("reference_length_m")) is not None) / max(1, sum(1 for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("reference_length_m")) is not None)) for index in range(8)]
-    gt_by_leg = [sum(float(item["legs"][index].get("ground_truth_length_m", 0.0)) for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("ground_truth_length_m")) is not None) / max(1, sum(1 for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("ground_truth_length_m")) is not None)) for index in range(8)]
-    indices = list(range(8)); axes[1, 0].bar([index - .19 for index in indices], reference_by_leg, .38, label="理论参考", color="#111827"); axes[1, 0].bar([index + .19 for index in indices], gt_by_leg, .38, label="GT 执行", color="#16a34a"); axes[1, 0].set_xticks(indices, WAYPOINT_IDS); axes[1, 0].set(title="每段理论与 GT 长度对比", ylabel="长度 (m)"); axes[1, 0].legend()
+    reference_by_leg = [sum(float(item["legs"][index].get("reference_length_m", 0.0)) for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("reference_length_m")) is not None) / max(1, sum(1 for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("reference_length_m")) is not None)) for index in range(len(WAYPOINT_IDS))]
+    gt_by_leg = [sum(float(item["legs"][index].get("ground_truth_length_m", 0.0)) for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("ground_truth_length_m")) is not None) / max(1, sum(1 for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("ground_truth_length_m")) is not None)) for index in range(len(WAYPOINT_IDS))]
+    indices = list(range(len(WAYPOINT_IDS))); axes[1, 0].bar([index - .19 for index in indices], reference_by_leg, .38, label="理论参考", color="#111827"); axes[1, 0].bar([index + .19 for index in indices], gt_by_leg, .38, label="GT 执行", color="#16a34a"); axes[1, 0].set_xticks(indices, WAYPOINT_IDS); axes[1, 0].set(title="每段理论与 GT 长度对比", ylabel="长度 (m)"); axes[1, 0].legend()
     axes[1, 1].axis("off"); aggregate = visual["aggregate"]["path_deviation"]; axes[1, 1].text(.08, .78, "路径最优性摘要", fontsize=20, fontweight="bold", transform=axes[1, 1].transAxes); axes[1, 1].text(.08, .49, f"P50  {aggregate['p50']:.2f}%\nP95  {aggregate['p95']:.2f}%\n最大  {aggregate['maximum']:.2f}%\n门槛  ≤ 20.00%", fontsize=17, linespacing=1.8, transform=axes[1, 1].transAxes); axes[1, 1].text(.08, .10, "首次规划路径未作为结构化序列采集；原始 MCAP 可下钻。", color="#64748b", transform=axes[1, 1].transAxes)
     path = figures / "path_optimality.png"; fig.savefig(path, dpi=100); plt.close(fig); paths.append(path)
     fig, axes = plt.subplots(1, 2, figsize=(16, 9), constrained_layout=True); fig.patch.set_facecolor("#f8fafc")
@@ -527,7 +540,7 @@ def _map_svg(visual: Mapping[str, Any]) -> str:
     if not map_data.get("available"):
         return "<p class='unavailable'>仓库内未找到冻结的 warehouse_new OccupancyGrid；地图叠加未生成。</p>"
     width, height = int(map_data["width"]), int(map_data["height"])
-    start = _map_pixel((0.0, 0.0), map_data)
+    start = _map_pixel(tuple(map_data["start"]), map_data)
     goals = list(map_data["route"])
     obstacle_polygons = []
     for polygon in map_data.get("static_obstacle_polygons", []):
@@ -547,7 +560,7 @@ def _map_svg(visual: Mapping[str, Any]) -> str:
     # Frozen reference only persists scalar lengths, not state-lattice vertices.
     # The dashed line therefore connects accepted route anchors and is labelled
     # as a route-order guide rather than fabricated as an optimal geometry.
-    guide = _trajectory_points([[0.0, 0.0]] + [[float(goal["x"]), float(goal["y"])] for goal in goals], map_data)
+    guide = _trajectory_points([map_data["start"]] + [[float(goal["x"]), float(goal["y"])] for goal in goals], map_data)
     return f"<svg class='route-map' viewBox='0 0 {width} {height}' role='img' aria-label='warehouse_new 地图和正式试验轨迹'><image href='data:image/png;base64,{map_data['image_base64']}' x='0' y='0' width='{width}' height='{height}'/><polyline class='reference-guide' points='{guide}'><title>冻结航点顺序引导线；精确状态格点路径仅以长度形式归档。</title></polyline>{''.join(f"<polygon class='static-box' points='{points}'><title>RGB-D 低矮方块</title></polygon>" for points in obstacle_polygons)}{''.join(f"<polyline class='dynamic-path' points='{points}'><title>动态障碍预定义轨迹</title></polyline>" for points in dynamic_paths)}{''.join(tracks)}<g class='start'><circle cx='{start[0]:.2f}' cy='{start[1]:.2f}' r='5.5'/><text x='{start[0] + 7:.2f}' y='{start[1] - 7:.2f}'>S</text></g>{''.join(labels)}</svg>"
 
 
@@ -572,7 +585,7 @@ def _html_heatmap(visual: Mapping[str, Any], kind: str) -> str:
             else:
                 state, label = "success", "成功"
             cells.append(f"<a class='heat-cell {state}' href='runs/{item['id']}/index.html#{waypoint}' title='{item['id']} · {waypoint} · {label}' aria-label='{item['id']} {waypoint} {label}'>{'✓' if state == 'success' else '!'}</a>")
-    return f"<div class='heatmap' style='grid-template-columns:92px repeat(8,minmax(28px,1fr))'>{''.join(cells)}</div>"
+    return f"<div class='heatmap' style='grid-template-columns:92px repeat({len(WAYPOINT_IDS)},minmax(28px,1fr))'>{''.join(cells)}</div>"
 
 
 def _html_page(summary: Mapping[str, Any], figure_paths: Iterable[Path], visual: Mapping[str, Any]) -> str:
@@ -611,6 +624,25 @@ def _dashboard_html(summary: Mapping[str, Any], visual: Mapping[str, Any], cards
 :root{{--ink:#101828;--muted:#667085;--line:#e4e7ec;--paper:#fff;--canvas:#f6f8fc;--green:#169c4b;--red:#d92d20;--orange:#f79009;--purple:#7a5af8;--blue:#2e5bff}}*{{box-sizing:border-box}}body{{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.55 Inter,"Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif}}.wrap{{max-width:1280px;margin:auto;padding:28px 24px 60px}}.hero{{padding:38px 42px;border-radius:24px;background:radial-gradient(circle at top right,#3266ff 0,transparent 36%),linear-gradient(135deg,#101828,#172554);color:#fff;box-shadow:0 20px 45px #10182833}}.eyebrow{{margin:0;color:#bfdbfe;font-size:12px;font-weight:800;letter-spacing:.12em}}h1{{margin:8px 0 0;font-size:clamp(30px,5vw,46px);letter-spacing:-.04em}}.hero p{{max-width:800px;color:#dbeafe}}.decision{{display:inline-flex;gap:9px;align-items:center;margin-top:16px;padding:8px 13px;border:1px solid #ffffff33;border-radius:99px;background:#ffffff14;font-weight:800}}.decision:before{{content:"";width:9px;height:9px;border-radius:50%;background:{'#4ade80' if conclusion == '通过' else '#f87171'}}}.section-head{{margin:38px 0 14px}}h2{{margin:0;font-size:22px}}.section-head p{{margin:3px 0 0;color:var(--muted)}}.cards,.facts{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}}.metric-card,.panel,figure,.facts div{{background:var(--paper);border:1px solid var(--line);border-radius:18px;box-shadow:0 10px 24px #10182808}}.metric-card{{position:relative;padding:18px;overflow:hidden}}.metric-card:before{{content:"";position:absolute;inset:0 auto 0 0;width:4px;background:var(--green)}}.metric-card.is-fail:before{{background:var(--red)}}.metric-card span,.metric-card small,.facts span{{display:block;color:var(--muted)}}.metric-card strong{{display:block;margin-top:7px;font-size:32px;line-height:1}}.metric-card em{{font-size:16px;font-style:normal;color:var(--muted)}}.metric-card b{{display:block;margin:7px 0;color:var(--green)}}.facts{{grid-template-columns:repeat(4,1fr)}}.facts div{{padding:16px}}.facts strong{{display:block;margin-top:5px;font-size:20px}}.panel{{padding:18px}}.filters{{display:flex;flex-wrap:wrap;gap:12px;align-items:center}}select{{margin-left:6px;padding:8px;border:1px solid var(--line);border-radius:8px;background:#fff;font:inherit}}.route-map{{display:block;width:100%;max-height:680px;background:#f1f5f9;border-radius:12px}}.route-map text{{font-size:5px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:1.3px}}.start circle{{fill:#111827;stroke:#fff;stroke-width:2px}}.goal circle{{fill:#2563eb;stroke:#fff;stroke-width:2px}}.static-box{{fill:#f59e0b88;stroke:#d97706;stroke-width:1.5px}}.dynamic-path{{fill:none;stroke:#7c3aed;stroke-width:2px;stroke-dasharray:4 2}}.reference-guide{{fill:none;stroke:#111827;stroke-width:1.4px;stroke-dasharray:5 3}}.track{{fill:none;stroke-width:1.6px;pointer-events:all}}.success-track{{stroke:#16a34a;opacity:.24}}.failure-track{{stroke:#dc2626;opacity:.9;stroke-width:2.4px}}.heatmap{{display:grid;gap:4px;align-items:center}}.heat-label{{font-size:12px;color:var(--muted);text-align:center}}.heat-cell{{display:grid;aspect-ratio:1;place-items:center;border-radius:5px;color:white;font-weight:800;text-decoration:none}}.heat-cell.success{{background:var(--green)}}.heat-cell.fail{{background:var(--red)}}.heat-cell.timeout{{background:var(--orange)}}.heat-cell.interaction{{background:var(--purple)}}.legend{{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;color:var(--muted);font-size:13px}}.legend i{{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:4px}}.table-wrap{{overflow-x:auto}}table{{width:100%;min-width:720px;border-collapse:collapse}}th{{padding:12px;text-align:left;color:var(--muted);font-size:12px}}td{{padding:12px;border-top:1px solid var(--line)}}.tag,.status{{display:inline-block;padding:3px 8px;border-radius:99px;font-size:12px;font-weight:800}}.tag{{background:#eff6ff;color:#1d4ed8}}.status.pass{{background:#dcfce7;color:#166534}}.status.fail{{background:#fee2e2;color:#991b1b}}a{{color:#2454d5;font-weight:700;text-decoration:none}}figure{{margin:16px 0;padding:12px}}img{{display:block;width:100%;border-radius:10px}}figcaption{{padding:9px 2px 1px;color:var(--muted);font-size:13px}}.split{{display:grid;grid-template-columns:1.2fr .8fr;gap:14px}}footer{{margin-top:32px;color:var(--muted);font-size:13px}}@media(max-width:860px){{.wrap{{padding:16px}}.hero{{padding:28px 24px}}.cards,.facts{{grid-template-columns:repeat(2,1fr)}}.split{{grid-template-columns:1fr}}}}@media(max-width:500px){{.cards,.facts{{grid-template-columns:1fr}}}}</style></head><body><main class='wrap'><header class='hero'><p class='eyebrow'>FORMAL ACCEPTANCE · KUJIALE LONG RANGE</p><h1>Kujiale 全屋长距离导航</h1><p>统一由 <code>benchmark.json</code> 聚合的正式验收可视化报告；覆盖静态与动态各 20 轮、8 个航点和完整可追溯证据。</p><div class='decision'>自动结论：{conclusion}</div></header><section class='section-head'><h2>总体 KPI</h2><p>门槛：静态严格/无碰撞 19/20（95%）；动态严格/无碰撞 18/20（90%）；静态偏差 ≤20%。</p></section><section class='cards'>{cards}</section><section class='section-head'><h2>运行规模与安全</h2></section><section class='facts'><div><span>最大静态路径偏差</span><strong>{max_deviation:.2f}% / 20%</strong></div><div><span>总实验时间</span><strong>{aggregate['total_duration_sec'] / 60:.1f} min</strong></div><div><span>总 GT 里程</span><strong>{aggregate['total_ground_truth_length_m']:.1f} m</strong></div><div><span>物理碰撞总数</span><strong>{aggregate['physical_collision_count']}</strong></div></section><section class='section-head'><h2>全屋轨迹地图</h2><p>底图：warehouse_new OccupancyGrid；路线可按场景、种子和结果筛选，悬停路线查看原始数值。</p></section><section class='panel'><div class='filters'><label>场景 <select id='kind'><option value='all'>全部</option><option value='static'>static</option><option value='dynamic'>dynamic</option></select></label><label>种子 <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>结果 <select id='status'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></div>{_map_svg(visual)}<div class='legend'><span><i style='background:#16a34a'></i>成功 GT（半透明）</span><span><i style='background:#dc2626'></i>失败 GT</span><span><i style='background:#111827'></i>冻结航点顺序引导</span><span><i style='background:#7c3aed'></i>动态障碍路径</span></div></section><section class='section-head'><h2>航点结果热力图</h2><p>点击单元格进入对应实验及航段下钻页面。</p></section><section class='split'><div class='panel'><h3>静态 20 × 8</h3>{_html_heatmap(visual, 'static')}</div><div class='panel'><h3>动态 20 × 8</h3>{_html_heatmap(visual, 'dynamic')}</div></section><div class='legend'><span><i style='background:#169c4b'></i>成功</span><span><i style='background:#d92d20'></i>Action/碰撞失败</span><span><i style='background:#f79009'></i>超时/定位/传感器</span><span><i style='background:#7a5af8'></i>动态交互失效</span></div><section class='section-head'><h2>路径、避障与 RGB-D 证据</h2><p>图中悬停可查看数据点；未采集的结构化字段明确保留为不可用。</p></section><section>{images}</section><section class='split'><section class='panel'><h3>失败分析</h3><table><thead><tr><th>失败原因</th><th>静态</th><th>动态</th></tr></thead><tbody>{failures}</tbody></table></section><section class='panel'><h3>证据可用性</h3><ul>{unavailable_html}</ul><p>深度帧、Scan、Local/Global Costmap 与结构化运行数据在每轮 <code>runs/</code> 下提供；失败轮和指定代表轮保留 MCAP 相对链接。</p></section></section><section class='section-head'><h2>运行明细与原始数据</h2><p>表格与地图筛选联动；每轮页面包含事件时间线、轨迹、航段指标和原始文件链接。</p></section><section class='panel'><div class='table-wrap'><table><thead><tr><th>场景</th><th>种子</th><th>严格成功</th><th>物理无碰撞</th><th>路径偏差</th><th>证据下钻</th></tr></thead><tbody>{rows}</tbody></table></div></section><footer>自包含 HTML；PNG、PDF、Markdown、CSV、JSON 与原始运行证据均由同一次生成写入，并由 <code>checksums.sha256</code> 覆盖。</footer></main><script>const kind=document.getElementById('kind'),seed=document.getElementById('seed'),status=document.getElementById('status');function visible(e){{return(kind.value==='all'||e.dataset.kind===kind.value)&&(seed.value==='all'||e.dataset.seed===seed.value)&&(status.value==='all'||e.dataset.status===status.value)}}function apply(){{document.querySelectorAll('.track').forEach(e=>e.style.display=visible(e)?'':'none');document.querySelectorAll('tbody tr[data-kind]').forEach(e=>e.hidden=!visible(e))}}[kind,seed,status].forEach(e=>e.addEventListener('change',apply));</script></body></html>"""
 
 
+# Keep the report template focused on evidence views, but derive its route copy
+# from the frozen waypoint contract so a future layout change cannot silently
+# keep the old G1–G8 wording in a newly generated report.
+_legacy_dashboard_html = _dashboard_html
+
+
+def _dashboard_html(summary: Mapping[str, Any], visual: Mapping[str, Any], cards: str, rows: str, images: str, conclusion: str, max_deviation: float, integrity: int) -> str:
+    page = _legacy_dashboard_html(
+        summary, visual, cards, rows, images, conclusion, max_deviation, integrity
+    )
+    route_copy = "G1（出生）→ G2 → G3 → G4 → G5 → G6 → G1（回归）"
+    return (
+        page.replace("静态与动态各 20 轮、8 个航点", "静态与动态各 20 轮、6 个导航 Goal")
+        .replace("固定路径</span><strong>G1 → G8 <small>每轮共 8 个航点", f"固定路径</span><strong>{route_copy} <small>每轮共 6 个导航 Goal")
+        .replace("静态 20 × 8", "静态 20 × 6")
+        .replace("动态 20 × 8", "动态 20 × 6")
+    )
+
+
 def _write_run_pages(root: Path, visual: Mapping[str, Any]) -> None:
     for item in visual["runs"]:
         legs = "".join(
@@ -643,7 +675,7 @@ def write_campaign_report(summary: Mapping[str, Any], directory: str | Path) -> 
     conclusion = "通过" if clean_summary["passed"] else "未通过"
     markdown = f"# Kujiale 全屋长距离导航验收报告\n\n自动结论：**{conclusion}**。静态门槛 19/20（95%），动态门槛 18/20（90%），静态路径偏差上限 20%。\n\n- 静态严格：{clean_summary['static']['strict_success']['numerator']}/20\n- 动态严格：{clean_summary['dynamic']['strict_success']['numerator']}/20\n- 最大静态路径偏差：{clean_summary['path_optimality']['maximum_deviation_percent']}%\n- 总实验时间：{visual['aggregate']['total_duration_sec'] / 60:.1f} min\n- 总 GT 里程：{visual['aggregate']['total_ground_truth_length_m']:.1f} m\n- 物理碰撞总数：{visual['aggregate']['physical_collision_count']}\n\n![总体 KPI](figures/campaign_overview.png)\n\n![路径最优性](figures/path_optimality.png)\n\n![避障与安全](figures/safety_overview.png)\n"
     _atomic_write(root / "report.md", markdown.encode("utf-8")); _atomic_write(root / "index.html", _html_page(clean_summary, figure_paths, visual).encode("utf-8"))
-    dictionary = "# 数据字典\n\n`benchmark.json` 是 KPI 的唯一机器可读来源；`runs/` 保存每轮清单、事件、GT/Odom/Cmd、RGB-D、Scan、Costmap、MCAP 和校验和。`strict_success` 表示八个航点及所有安全门禁均通过。\n"
+    dictionary = "# 数据字典\n\n`benchmark.json` 是 KPI 的唯一机器可读来源；`runs/` 保存每轮清单、事件、GT/Odom/Cmd、RGB-D、Scan、Costmap、MCAP 和校验和。`strict_success` 表示重设计闭环的六个导航 Goal（G2 至 G6，再回归 G1）及所有安全门禁均通过。\n"
     _atomic_write(root / "data_dictionary.md", dictionary.encode("utf-8"))
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:

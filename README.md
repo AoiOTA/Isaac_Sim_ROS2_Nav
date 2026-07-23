@@ -7,7 +7,7 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 ```text
 场景:      kujiale_0026_A_to_B_door_open.usd
 地图:      warehouse_new
-出生点:    mapping_start
+长距离出生点: long_route_start_g1（Map `[0.45, -5.35, 90°]`）
 定位:      Ideal Odometry / 已标定 identity map -> odom
 导航感知:  /scan + /camera/front/depth/points
 ```
@@ -17,11 +17,18 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 地图、旧实验和历史调参不属于本分支的运行入口，见
 [`docs/documentation_status.md`](docs/documentation_status.md)。
 
-## 已记录的正式批次结果
+## 长距离重设计状态
+
+当前长距离静态/动态配置从 `long_route_start_g1` 出生，依次运行
+`G1 → G2 → G3 → G4 → G5 → G6 → G1`。原 G7 重命名为 G1，旧 G6 被移除；中心区使用两组静态
+RGB-D 低矮方块或两组 G2 后才慢速短移并停住的动态方块。该重设计尚未执行新的 Pilot 或
+20+20 正式验收。
+
+## 已记录的历史正式批次结果
 
 下表是 2026-07-22 正式全屋批次 `kujiale_long_route_20260722-171828` 的自动汇总
-结果，不是对当前工作树或后续参数改动的重新验收声明。原始报告是本地忽略工件；当前
-可执行的验收规格、阈值与复跑步骤以使用手册和测试方案为准。
+结果，使用旧 `mapping_start`、G1–G8 与旧障碍布局；不是对当前工作树或本次重设计的
+重新验收声明。原始报告是本地忽略工件；当前可执行规格与复跑步骤以使用手册和测试方案为准。
 
 | 项目 | 结果 |
 | --- | --- |
@@ -72,14 +79,20 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
+  --spawn-pose long_route_start_g1 \
   --camera-profile rgbd_navigation
 ```
+
+Isaac 控制台必须出现 `spawn=long_route_start_g1`；这对应 USD
+`[2.45, 5.15, 0.0635]`、Map `[0.45, -5.35, 90°]`。若仍显示
+`spawn=mapping_start`，先停止该旧进程并用以上完整命令重启，不能在已启动的 Isaac
+进程中热切换出生点。
 
 终端 B 启动 Navigation、Map Server 与受管 RViz：
 
 ```bash
 cd /你的实际路径/Isaac_Sim_ROS2_Nav
-./scripts/run_ros.sh navigation odometry_mode:=ideal
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
 ```
 
 等待 `Nav2 lifecycle activation completed`。随后在 RViz：
@@ -94,7 +107,7 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 终端。完整的人工回归目标、RGB-D 可视化、Reset 与排障步骤见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
-静态/动态全屋长距离测试的 `warehouse_new` 地图、S 与 G1–G8 航点、静态方块和三条
+静态/动态全屋长距离测试的 `warehouse_new` 地图、S/G1 与 G2–G6 航点、静态方块和两条
 动态障碍触发路线见 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
 
 ## RGB-D 感知边界
@@ -137,7 +150,7 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 
 GUI + RViz 的单轮可视化回归分别使用
 `kujiale_static_visual.yaml` 与 `kujiale_dynamic_visual.yaml`：runner 自动发送完整
-G1–G8 路线，动态场景也自动触发障碍。使用 `./scripts/run_visual_route.sh static|dynamic`
+`G1 → G2 → G3 → G4 → G5 → G6 → G1` 闭环路线，动态场景也会在 G2 后自动触发两组中心区障碍。使用 `./scripts/run_visual_route.sh static|dynamic`
 启动；它不生成项目实验输出，二者均不计入正式 20+20 结果。
 
 运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的
@@ -147,7 +160,7 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 自动启动静态 20 轮、动态 20 轮、汇总并核验自包含报告的完整命令见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
-需要 GUI + RViz 的可视化回归时，同一手册提供静态/动态各一轮的自动 G1–G8 路线；
+需要 GUI + RViz 的可视化回归时，同一手册提供静态/动态各一轮的自动 G1–G6 闭环路线；
 无需手动点选目标或手动触发障碍。
 
 ## 文档入口
