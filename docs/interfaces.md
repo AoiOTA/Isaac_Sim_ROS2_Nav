@@ -34,7 +34,7 @@ pose and must provide a new valid **2D Pose Estimate** after every Reset.
 When launched through `scripts/run_ros.sh`, omitted Localization/Navigation map
 arguments select the `warehouse_new` Kujiale bundle on this branch. An
 explicit Pose Graph or OccupancyGrid basename selects the matching other half. Ideal navigation checks
-that the versioned pair exists but uses the calibrated identity `map -> odom`;
+that the versioned pair exists and publishes the calibrated selected-spawn `map -> odom`;
 `posegraph_calibration:=true` temporarily enables Pose Graph localization only
 for Ideal `localization`, never for Navigation.
 
@@ -108,7 +108,7 @@ All four top-level bringups expose the same interaction arguments:
 | `rviz_config` | `auto` | Select `mapping.rviz`, `localization.rviz`, or `navigation.rviz`; an explicit path must exist. |
 | `use_teleop` | `auto` | Enable only for `mapping` and `incremental_mapping`; explicit true in Localization/Navigation is rejected. |
 | `initial_pose_source` | `auto` | `auto` owns calibrated reseeding; `rviz` gives ownership to valid `/initialpose` input. Incremental Mapping requires `auto`. |
-| `posegraph_calibration` | `false` | Only valid for Ideal Localization; explicitly loads the Pose Graph to measure Map Pose. Normal Ideal operation keeps identity `map → odom`. |
+| `posegraph_calibration` | `false` | Only valid for Ideal Localization; explicitly loads the Pose Graph to measure Map Pose. Normal Ideal operation keeps `map → odom` aligned to the selected calibrated spawn. |
 
 The three RViz configurations are mode contracts, not cosmetic presets:
 
@@ -533,9 +533,12 @@ coordinates are shown in [`kujiale_long_route_map.md`](kujiale_long_route_map.md
 the exact machine-readable definitions remain the scenario and Isaac YAML files.
 
 For calibrated Ideal Localization/Navigation, Isaac already publishes the
-authoritative `odom -> base_link`. ROS therefore serves the immutable map and
-publishes a freshly stamped identity `map -> odom` instead of applying a second
-SLAM Toolbox localization correction. Realistic mode continues to use the
+authoritative `odom -> base_link` zeroed at the selected spawn. ROS therefore
+serves the immutable map and publishes a freshly stamped `map -> odom` whose
+translation and yaw equal that spawn's calibrated Map pose, instead of applying
+a second SLAM Toolbox localization correction. The original `mapping_start`
+therefore remains identity, while `long_route_start_g1` is `[0.45, -5.35, 90°]`.
+Realistic mode continues to use the
 serialized Pose Graph and SLAM Toolbox for `map -> odom`.
 
 `incremental_mapping.yaml` is a mapping-workflow descriptor. The

@@ -153,8 +153,8 @@ def _launch_setup(context):
     else:
         actions.extend([
             LogInfo(msg=(
-                'Ideal odometry localization: publishing fresh identity '
-                'map->odom transform')),
+                'Ideal odometry localization: publishing fresh map->odom '
+                'transform aligned to the selected spawn')),
             Node(
                 package='robot_bringup',
                 executable='ideal_localization_tf',
@@ -162,6 +162,10 @@ def _launch_setup(context):
                 output='screen',
                 parameters=[{
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
+                    'map_to_odom_x': LaunchConfiguration('map_to_odom_x'),
+                    'map_to_odom_y': LaunchConfiguration('map_to_odom_y'),
+                    'map_to_odom_yaw_deg': LaunchConfiguration(
+                        'map_to_odom_yaw_deg'),
                 }],
             ),
         ])
@@ -196,5 +200,8 @@ def generate_launch_description():
             default_value='',
             description='Saved OccupancyGrid YAML served on /map',
         ),
+        DeclareLaunchArgument('map_to_odom_x', default_value='0.0'),
+        DeclareLaunchArgument('map_to_odom_y', default_value='0.0'),
+        DeclareLaunchArgument('map_to_odom_yaw_deg', default_value='0.0'),
         OpaqueFunction(function=_launch_setup),
     ])

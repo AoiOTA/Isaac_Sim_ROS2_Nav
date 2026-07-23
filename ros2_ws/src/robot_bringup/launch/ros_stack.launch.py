@@ -19,6 +19,7 @@ from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
+from robot_experiments.spawn_poses import load_spawn_pose
 
 
 _TELEOP_SPEED_ARGUMENTS = (
@@ -74,6 +75,15 @@ def _launch_setup(context):
         spawn_pose_name=LaunchConfiguration(
             'spawn_pose_name').perform(context),
     )
+    selected_spawn = None
+    if (selection.operation in {'localization', 'navigation'}
+            and selection.odometry_mode == 'ideal'
+            and initial_pose_source == 'auto'):
+        selected_spawn = load_spawn_pose(
+            spawn_poses_file,
+            LaunchConfiguration('spawn_pose_name').perform(context),
+            require_calibrated=True,
+        )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     posegraph_calibration_value = LaunchConfiguration(
         'posegraph_calibration').perform(context).strip().lower()
@@ -256,6 +266,18 @@ def _launch_setup(context):
                         if (selection.odometry_mode == 'realistic'
                             or posegraph_calibration)
                         else 'false'
+                    ),
+                    'map_to_odom_x': (
+                        str(selected_spawn.map.position[0])
+                        if selected_spawn is not None else '0.0'
+                    ),
+                    'map_to_odom_y': (
+                        str(selected_spawn.map.position[1])
+                        if selected_spawn is not None else '0.0'
+                    ),
+                    'map_to_odom_yaw_deg': (
+                        str(selected_spawn.map.yaw_deg)
+                        if selected_spawn is not None else '0.0'
                     ),
                 },
             ),
