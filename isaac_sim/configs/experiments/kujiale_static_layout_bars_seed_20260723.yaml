@@ -1,0 +1,15 @@
+# Initial six-obstacle tuning seed.  This is not a capture: the two bars are
+# parked on verified free cells solely so the operator can choose final GUI
+# positions and then capture the complete layout.
+schema_version: 1
+kind: kujiale_static_layout_seed
+status: provisional_manual_tuning
+coordinate_frame: map
+source_config: kujiale_long_range_static.yaml
+obstacles:
+  - {id: rgbd_low_box_west, position: [-0.853013, -0.961904, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_box_center, position: [-0.538928, 0.294727, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_box_east, position: [0.926339, 0.222787, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_box_north, position: [0.126442, -0.579985, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_bar_east, position: [1.50, 0.00, 0.08], size: [0.60, 0.30, 0.16]}
+  - {id: rgbd_low_bar_north, position: [1.10, 0.80, 0.08], size: [0.60, 0.30, 0.16]}

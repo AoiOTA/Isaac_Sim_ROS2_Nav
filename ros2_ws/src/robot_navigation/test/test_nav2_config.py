@@ -127,15 +127,15 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
     assert -0.20 <= controller['vx_min'] <= -0.10
-    assert controller['vx_std'] >= 0.30
+    assert controller['vx_std'] == 0.35
     assert 0.70 <= controller['vx_max'] <= 0.80
-    assert controller['wz_std'] >= 0.60
-    assert controller['wz_max'] >= 1.0
+    assert controller['wz_std'] == 0.75
+    assert controller['wz_max'] == 1.35
     assert controller['PathAngleCritic']['mode'] == 0
     assert controller['PathAngleCritic']['cost_weight'] \
         > controller['PathFollowCritic']['cost_weight']
     assert controller['PathFollowCritic']['cost_weight'] \
-        >= controller['PathAlignCritic']['cost_weight']
+        > controller['PathAlignCritic']['cost_weight']
     assert controller['PathFollowCritic']['offset_from_furthest'] >= 8
     assert 'PreferForwardCritic' in controller['critics']
     prefer_forward = controller['PreferForwardCritic']
@@ -193,8 +193,8 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     # Parallel walls must not permanently halve the command in a traversable
     # indoor corridor.  The slowdown shell remains outside the emergency stop
     # shell while retaining enough speed for stable MPPI path tracking.
-    assert max(slowdown_y) <= 0.24
-    assert collision['SlowdownZone']['min_points'] >= 5
+    assert max(slowdown_y) == 0.232
+    assert collision['SlowdownZone']['min_points'] == 6
     assert 0.85 <= collision['SlowdownZone']['slowdown_ratio'] <= 0.92
     assert collision['ApproachZone']['time_before_collision'] >= 1.0
     assert collision['ApproachZone']['enabled'] is False

@@ -71,22 +71,25 @@ controller_server:
       # Stable, fixed-noise sampling reduces small left/right corrections in
       # the wide parts of the house while retaining enough spread to detour
       # around a newly marked RGB-D low box.
-      vx_std: 0.30
+      # Slightly wider, but still fixed-noise, samples let the controller
+      # choose a continuous turning arc instead of alternating between a
+      # crawl and a stop at the entrance to a valid narrow passage.
+      vx_std: 0.35
       vy_std: 0.00
-      wz_std: 0.65
+      wz_std: 0.75
 
       # Forward motion remains strongly preferred, but a bounded reverse
       # sample is available for terminal-pose recovery in narrow rooms.
       vx_max: 0.75
       vx_min: -0.15
       vy_max: 0.00
-      wz_max: 1.20
+      wz_max: 1.35
 
-      ax_max: 1.10
-      ax_min: -1.00
+      ax_max: 1.25
+      ax_min: -1.10
       ay_max: 0.00
       ay_min: 0.00
-      az_max: 3.00
+      az_max: 3.50
 
       prune_distance: 1.50
       transform_tolerance: 0.50
@@ -121,7 +124,10 @@ controller_server:
         # The rectangular footprint remains collision-checked at every
         # prediction point.  A lower soft-cost weight lets valid trajectories
         # traverse the centre of narrow, symmetrically inflated corridors.
-        cost_weight: 2.00
+        # Hard footprint collision checking remains enabled.  Reduce only the
+        # soft obstacle gradient slightly so RGB-D low-box avoidance chooses
+        # a continuous bypass instead of alternating crawl / re-sample steps.
+        cost_weight: 1.35
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -131,14 +137,17 @@ controller_server:
       GoalCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 5.0
+        cost_weight: 4.5
         threshold_to_consider: 1.4
 
       GoalAngleCritic:
         enabled: true
         cost_power: 1
         cost_weight: 4.0
-        threshold_to_consider: 0.6
+        # Start establishing the required goal heading before the chassis is
+        # parked at G4.  This removes the visible dwell before the following
+        # in-place correction while preserving the 10° completion tolerance.
+        threshold_to_consider: 1.0
 
       # 窄通道内膨胀代价占比天然较高，仍保持 PathAlign 工作以避免左右摆动。
       PathAlignCritic:
@@ -147,7 +156,7 @@ controller_server:
         # Balance centring against forward progress.  An overly dominant
         # alignment score rewards slow samples in narrow corridors.
         cost_weight: 5.0
-        max_path_occupancy_ratio: 0.40
+        max_path_occupancy_ratio: 0.50
         trajectory_point_step: 4
         threshold_to_consider: 0.5
         offset_from_furthest: 8
@@ -158,7 +167,7 @@ controller_server:
         cost_power: 1
         # Reward useful progress along the path instead of allowing a
         # well-aligned but persistently slow trajectory to dominate.
-        cost_weight: 9.0
+        cost_weight: 10.0
         offset_from_furthest: 10
         threshold_to_consider: 1.4
 
@@ -166,9 +175,12 @@ controller_server:
       PathAngleCritic:
         enabled: true
         cost_power: 1
-        cost_weight: 9.5
+        # Keep heading establishment dominant over pure path progress at the
+        # entrance to G3→G4; otherwise the faster samples delay the turn and
+        # then need a visible correction in the narrow section.
+        cost_weight: 10.5
         offset_from_furthest: 8
-        threshold_to_consider: 0.5
+        threshold_to_consider: 0.7
         max_angle_to_furthest: 0.45
         mode: 0
 
@@ -180,7 +192,7 @@ controller_server:
         # Reverse remains available only when a terminal pose genuinely needs
         # it.  A strong prior prevents low-box avoidance from oscillating
         # between forward and reverse samples in the open S→G1 area.
-        cost_weight: 35.0
+        cost_weight: 30.0
         threshold_to_consider: 0.5
 
 
@@ -278,7 +290,9 @@ local_costmap:
         # 0.40 m remains above the padded 0.337 m circumscribed radius.  The
         # steeper decay preserves collision checking while allowing the MPPI
         # controller to use valid corridor-centre cells.
-        cost_scaling_factor: 8.0
+        # Preserve the 0.40 m inflation radius and footprint collision test,
+        # but make its soft gradient decay sooner in a valid narrow corridor.
+        cost_scaling_factor: 9.0
         inflation_radius: 0.40
 
       always_send_full_costmap: true
@@ -367,7 +381,7 @@ global_costmap:
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
-        cost_scaling_factor: 8.0
+        cost_scaling_factor: 9.0
         inflation_radius: 0.40
 
       always_send_full_costmap: true
@@ -468,13 +482,13 @@ velocity_smoother:
 
     feedback: OPEN_LOOP
 
-    max_velocity: [0.75, 0.0, 1.20]
+    max_velocity: [0.75, 0.0, 1.35]
     # MPPI仍以 vx_min=0 前进跟踪；这里单独允许行为树 BackUp 的有限负速，
     # 否则 -0.18 m/s 恢复命令会被平滑器钳成零而无法离开死胡同。
-    min_velocity: [-0.25, 0.0, -1.20]
+    min_velocity: [-0.25, 0.0, -1.35]
 
-    max_accel: [1.10, 0.0, 3.00]
-    max_decel: [-1.00, 0.0, -3.00]
+    max_accel: [1.25, 0.0, 3.50]
+    max_decel: [-1.10, 0.0, -3.50]
 
     odom_topic: /odom
     odom_duration: 0.10
@@ -524,10 +538,14 @@ collision_monitor:
       # Keep a useful warning shell around StopZone without continuously
       # catching parallel walls in a valid narrow corridor.  The physical
       # footprint is y=+/-0.210 m and the emergency shell is y=+/-0.230 m.
-      points: "[[0.36, 0.235], [0.36, -0.235], [-0.30, -0.235], [-0.30, 0.235]]"
+      # Keep the warning shell just outside the 20 mm StopZone shell.  The
+      # former 5 mm lateral expansion was repeatedly occupied by parallel
+      # wall returns in the valid G3→G4 passage, causing needless crawl/stop
+      # cycles.  Hard StopZone protection remains unchanged.
+      points: "[[0.36, 0.232], [0.36, -0.232], [-0.30, -0.232], [-0.30, 0.232]]"
 
       action_type: slowdown
-      min_points: 5
+      min_points: 6
       # Preserve steering authority and forward progress when slowdown is
       # genuinely required; StopZone still provides the final hard stop.
       slowdown_ratio: 0.90

@@ -498,8 +498,10 @@ the StopZone remains active while ApproachZone is deliberately disabled:
 | `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
 | `FollowPath.batch_size` | 500 | Avoids localization contention while preserving the two-second horizon. |
 | `FollowPath.regenerate_noises` | `false` | Reuses the noise table to prevent controller-cycle sampling jitter. |
-| `FollowPath.vx_std` / `wz_std` | `0.30` / `0.65` | Retains avoidance spread while reducing small speed and heading corrections. |
-| `SlowdownZone` | `0.660 × 0.470 m`, 5 points, 90% | Acts only near a genuine LiDAR constraint instead of continually clipping a traversable corridor. |
+| `FollowPath.vx_std` / `wz_std` | `0.35` / `0.75` | Preserves deterministic sampling while providing enough continuous turning candidates at a narrow-passage entrance. |
+| `FollowPath.GoalAngleCritic` / `CostCritic` | `1.0 m` / `1.35` | Begins goal-heading alignment before each intermediate goal completes, while retaining complete-footprint collision rejection for RGB-D low-box bypasses. |
+| Costmap inflation | `0.40 m`, scaling `9.0` | Keeps the physical clearance radius while reducing only the soft-cost tail that caused crawl/re-sample cycles. |
+| `SlowdownZone` | `0.660 × 0.464 m`, 6 points, 90% | Leaves StopZone unchanged but rejects sparse/parallel-wall returns that previously clipped a traversable corridor. |
 | `ApproachZone` | disabled | MPPI performs footprint-aware costmap prediction; StopZone remains the final LiDAR hard stop. |
 | Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
 
@@ -515,10 +517,10 @@ contracts. Re-tune only with comparable runtime evidence.
 
 The current formal scenarios are
 `kujiale_static_long_range.yaml` and `kujiale_dynamic_long_range.yaml`. Both
-run the same `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G6 → G1`
+run the same `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1`
 from transform-verified `long_route_start_g1`; they are not random-layout Warehouse
 smoke tests. The static scenario requires `rgbd_low_box_west`, `rgbd_low_box_center`,
-`rgbd_low_box_east`, and `rgbd_low_box_north`, while the dynamic scenario requires `g1_g2_south_crossing` and
+`rgbd_low_box_east`, `rgbd_low_box_north`, `rgbd_low_bar_east`, and `rgbd_low_bar_north`, while the dynamic scenario requires `g1_g2_south_crossing` and
 `g1_g2_north_crossing` (both triggered by G2). The GUI/RViz visual scenarios reuse this geometry with one seed each and
 set `record_evidence:=false`.
 
@@ -531,8 +533,8 @@ scenario before Reset or goal dispatch. For dynamic scenarios the runner also
 validates each actor's shape, XY size, Map-frame endpoints and duration.
 Mismatches fail before a navigation goal is sent.
 
-Each static low box is a physical `0.30 × 0.30 × 0.16 m` obstacle.  A static box's
-Isaac GUI `Translate` edit is intentionally retained during normal simulation ticks so
+Four static low boxes are physical `0.30 × 0.30 × 0.16 m` obstacles; the two static low bars are
+`0.60 × 0.30 × 0.16 m`. A stationary obstacle's Isaac GUI `Translate` edit is intentionally retained during normal simulation ticks so
 the operator can repeatedly adjust it and send RViz goals.  The `std_srvs/Trigger`
 service `/experiment/obstacles/capture_layout` returns the current positions in the
 declared Map frame; `/experiment/obstacles/reset` or a visual runner Reset restores the

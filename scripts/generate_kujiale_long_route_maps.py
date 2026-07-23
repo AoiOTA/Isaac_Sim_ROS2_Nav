@@ -128,9 +128,9 @@ def text_with_box(
 
 def route_from(scenario: dict[str, Any]) -> list[dict[str, Any]]:
     route = scenario["scenario"]["route"]
-    expected = ["G2", "G3", "G4", "G5", "G6", "G1"]
+    expected = ["G2", "G3", "G4", "G5", "G1"]
     if not isinstance(route, list) or [item["id"] for item in route] != expected:
-        raise ValueError("long-route scenario must contain redesigned G2, G3, G4, G5, G6, G1 order")
+        raise ValueError("long-route scenario must contain redesigned G2, G3, G4, G5, G1 order")
     return route
 
 
@@ -168,7 +168,7 @@ def render(kind: str, output: Path) -> None:
     image.paste(occupancy, (map_left, map_top))
     draw = ImageDraw.Draw(image, "RGBA")
     title = "Kujiale 全屋长距离导航｜静态场景" if kind == "static" else "Kujiale 全屋长距离导航｜动态场景"
-    subtitle = "warehouse_new OccupancyGrid · map 坐标系 · S(G1) → G2 → … → G6 → G1"
+    subtitle = "warehouse_new OccupancyGrid · map 坐标系 · S(G1) → G2 → … → G5 → G1"
     draw.rectangle((0, 0, CANVAS_WIDTH, HEADER_HEIGHT), fill="#ffffff")
     draw.text((MARGIN_X, 55), title, font=font(48), fill=INK)
     draw.text((MARGIN_X, 126), subtitle, font=font(28), fill=MUTED)
@@ -209,13 +209,16 @@ def render(kind: str, output: Path) -> None:
         dashed_line(draw, previous, current, fill=TEAL, width=5)
 
     # Static/dynamic overlays are intentionally distinct while all room goals
-    # (G2–G6) retain identical blue circles, sizes, and labels.
+    # (G2–G5) retain identical blue circles, sizes, and labels.
     if kind == "static":
         label_offsets = {
-            # Keep the four provisional-box labels readable even while their
+            # Keep the provisional obstacle labels readable even while their
             # centres form a compact, intentionally editable test layout.
             "rgbd_low_box_center": (-220, -50),
             "rgbd_low_box_west": (-210, 15),
+            # Keep this long label inside the right edge of the map.
+            "rgbd_low_bar_east": (-365, 130),
+            "rgbd_low_bar_north": (18, -54),
         }
         for obstacle in campaign["static"]["obstacles"]:
             center = obstacle["center"][:2]
@@ -233,11 +236,11 @@ def render(kind: str, output: Path) -> None:
             text_with_box(
                 draw,
                 (center_px[0] + label_dx, center_px[1] + label_dy),
-                f"{obstacle['id']}\n0.30 × 0.30 × 0.16 m",
+                f"{obstacle['id']}\n{float(size[0]):.2f} × {float(size[1]):.2f} × {float(obstacle['size'][2]):.2f} m",
                 text_font=font(20),
                 fill=ORANGE,
             )
-        overlay_legend = "静态障碍：中心区四组可手调 RGB-D 低矮方块（临时种子）"
+        overlay_legend = "静态障碍：四个方块和两个可手调 RGB-D 低矮长条（当前草案）"
     else:
         for obstacle in campaign["dynamic"]["obstacles"]:
             start = pixel(obstacle["start"][:2])
@@ -285,7 +288,7 @@ def render(kind: str, output: Path) -> None:
     )
     draw.text((MARGIN_X + 34, footer_top + 27), "图例与使用边界", font=font(31), fill=INK)
     legend = [
-        ("●", BLUE, "G2–G6：相同样式的房间航点；箭头为要求朝向"),
+        ("●", BLUE, "G2–G5：相同样式的房间航点；箭头为要求朝向"),
         ("●", "#111827", "S / G1：long_route_start_g1 与返回点，坐标重合"),
         ("– –", TEAL, "青绿虚线：航点发送顺序示意，不代表 Nav2 理论最优或实际轨迹"),
         ("■", ORANGE if kind == "static" else PURPLE, overlay_legend),

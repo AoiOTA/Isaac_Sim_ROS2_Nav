@@ -5,10 +5,12 @@ enabled: false
 coordinate_frame: map
 spawn_pose_name: long_route_start_g1
 obstacles:
-  # GUI capture 2026-07-23 11:04:43 +08:00. This is a saveable, editable
+  # GUI capture 2026-07-23 13:37:02 +08:00. This is a saveable, editable
   # tuning baseline only, not a frozen formal 20-run layout. Move Translate
   # in Isaac and capture again before promoting any later layout.
   - {id: rgbd_low_box_west, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.853013, -0.961904, 0.08], end: [-0.853013, -0.961904, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
-  - {id: rgbd_low_box_center, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.538928, 0.294727, 0.08], end: [-0.538928, 0.294727, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
-  - {id: rgbd_low_box_east, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.926339, 0.222787, 0.08], end: [0.926339, 0.222787, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_box_center, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-2.135744, -0.876959, 0.08], end: [-2.135744, -0.876959, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_box_east, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.366563, 0.66795, 0.08], end: [0.366563, 0.66795, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
   - {id: rgbd_low_box_north, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.126442, -0.579985, 0.08], end: [0.126442, -0.579985, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_bar_east, mode: stationary, trigger_group: null, size: [0.60, 0.30, 0.16], mass: 5.0, start: [1.286899, 0.033996, 0.08], end: [1.286899, 0.033996, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_bar_north, mode: stationary, trigger_group: null, size: [0.60, 0.30, 0.16], mass: 5.0, start: [-0.703143, 0.252652, 0.08], end: [-0.703143, 0.252652, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}

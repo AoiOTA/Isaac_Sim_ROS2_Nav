@@ -93,8 +93,23 @@ def test_kujiale_visual_scenarios_are_one_complete_redesigned_closed_route():
     dynamic = load_scenario(CONFIG / "kujiale_dynamic_visual.yaml")
     assert static.seeds == (7201,)
     assert dynamic.seeds == (7301,)
-    assert [goal.goal_id for goal in static.route] == ["G2", "G3", "G4", "G5", "G6", "G1"]
-    assert [goal.goal_id for goal in dynamic.route] == ["G2", "G3", "G4", "G5", "G6", "G1"]
+    assert [goal.goal_id for goal in static.route] == ["G2", "G3", "G4", "G5", "G1"]
+    assert [goal.goal_id for goal in dynamic.route] == ["G2", "G3", "G4", "G5", "G1"]
+    # G4 is now the former toilet waypoint. All intermediate headings face
+    # the next route leg; the narrow-passage waypoint is intentionally gone.
+    expected_yaws = (-160.0, -100.0, -75.0, -35.0, 90.0)
+    assert tuple(goal.yaw_deg for goal in static.route) == expected_yaws
+    assert tuple(goal.yaw_deg for goal in dynamic.route) == expected_yaws
+    assert static.route[2].position == (-3.25, -0.45)
+    assert dynamic.route[2].position == (-3.25, -0.45)
+    for filename in (
+        "kujiale_static_long_range.yaml",
+        "kujiale_static_pilot.yaml",
+        "kujiale_dynamic_long_range.yaml",
+        "kujiale_dynamic_pilot.yaml",
+    ):
+        scenario = load_scenario(CONFIG / filename)
+        assert tuple(goal.yaw_deg for goal in scenario.route) == expected_yaws
     assert static.route[-1] == static.goal
     assert dynamic.route[-1] == dynamic.goal
 
