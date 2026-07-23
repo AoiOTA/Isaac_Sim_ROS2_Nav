@@ -11,9 +11,9 @@
     "reported_length": "translation_only"
   },
   "campaign": "kujiale_long_route",
-  "campaign_sha256": "092ac8b9b6334904b40ed67c867b56b3daa4e5b8832848a3276c1745179181ff",
+  "campaign_sha256": "861beca24dc5041172e909a003c80a63d8185e86bbb3c47cd2ea17a3ff214fc3",
   "converged": true,
-  "convergence_percent": 0.7228384315768271,
+  "convergence_percent": 0.7704410578583296,
   "convergence_requirement_percent": 1.0,
   "footprint": {
     "padding_m": 0.005,
@@ -48,23 +48,23 @@
     },
     {
       "id": "G3",
-      "length_m_0_025": 10.528396834810342,
-      "length_m_0_05": 10.594270380260522
+      "length_m_0_025": 10.045773042685417,
+      "length_m_0_05": 10.11164658813559
     },
     {
       "id": "G4",
-      "length_m_0_025": 4.889073557305952,
-      "length_m_0_05": 4.930275738237132
+      "length_m_0_025": 4.156449765181025,
+      "length_m_0_05": 4.1976519461122095
     },
     {
       "id": "G5",
-      "length_m_0_025": 4.302325015996603,
-      "length_m_0_05": 4.350657780874818
+      "length_m_0_025": 3.5815046227466683,
+      "length_m_0_05": 3.629837387624882
     },
     {
       "id": "G1",
-      "length_m_0_025": 8.614543217679813,
-      "length_m_0_05": 8.720225741811163
+      "length_m_0_025": 8.143722824429863,
+      "length_m_0_05": 8.249405348561226
     }
   ],
   "map": {
@@ -184,6 +184,6 @@
       ]
     ]
   ],
-  "total_length_m_0_025": 38.955111668478125,
-  "total_length_m_0_05": 39.236694186681554
+  "total_length_m_0_025": 36.548223297728384,
+  "total_length_m_0_05": 36.82980581593183
 }

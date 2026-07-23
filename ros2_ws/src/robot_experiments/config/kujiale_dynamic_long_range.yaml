@@ -17,9 +17,9 @@ scenario:
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   route:
     - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -160.0, require_orientation: true}
-    - {id: G3, frame_id: map, position: [-2.55, 3.65], yaw_deg: -100.0, require_orientation: true}
-    - {id: G4, frame_id: map, position: [-3.25, -0.45], yaw_deg: -75.0, require_orientation: true}
-    - {id: G5, frame_id: map, position: [-2.50, -3.35], yaw_deg: -35.0, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-2.20, 3.25], yaw_deg: -105.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-3.00, -0.45], yaw_deg: -68.0, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-2.20, -2.95], yaw_deg: -42.0, require_orientation: true}
     - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   success:
     position_tolerance_m: 0.25

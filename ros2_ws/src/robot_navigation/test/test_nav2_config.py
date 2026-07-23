@@ -37,7 +37,9 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert controller['visualize'] is True
     assert controller['time_steps'] == 20
     assert controller['model_dt'] == 0.10
-    assert controller['batch_size'] == 500
+    assert controller['batch_size'] == 700
+    assert controller['retry_attempt_limit'] == 3
+    assert controller['regenerate_noises'] is True
     assert controller['time_steps'] * controller['model_dt'] == 2.0
     assert controller['transform_tolerance'] >= 0.5
     assert local['rolling_window'] is True
@@ -82,7 +84,7 @@ def test_stable_overlay_preserves_the_verified_low_latency_mppi_budget():
     assert parameters['controller_frequency'] == 10.0
     assert follow_path['time_steps'] == 20
     assert follow_path['model_dt'] == 0.10
-    assert follow_path['batch_size'] == 500
+    assert follow_path['batch_size'] == 700
 
 
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
@@ -95,7 +97,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
 
     assert controller['enable_stamped_cmd_vel'] is False
     assert controller['controller_frequency'] == 10.0
-    assert controller['goal_checker']['xy_goal_tolerance'] < 0.25
+    assert controller['goal_checker']['xy_goal_tolerance'] == 0.20
     assert controller['goal_checker']['yaw_goal_tolerance'] <= 0.174532925
     assert behavior['enable_stamped_cmd_vel'] is False
     assert smoother['enable_stamped_cmd_vel'] is False
@@ -142,7 +144,7 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert prefer_forward['enabled'] is True
     assert prefer_forward['cost_weight'] > 0.0
     assert prefer_forward['threshold_to_consider'] <= 0.5
-    assert controller['regenerate_noises'] is False
+    assert controller['regenerate_noises'] is True
     assert controller['visualize'] is True
 
     assert smoother['scale_velocities'] is True
@@ -202,6 +204,11 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     for costmap in (local, global_costmap):
         assert costmap['footprint'] == local['footprint']
         assert 0.0 <= costmap['footprint_padding'] <= 0.005
+        voxel = costmap['depth_voxel_layer']
+        assert voxel['z_voxels'] == 16
+        # A front-only RGB-D camera must not turn every unobserved column into
+        # a 2D unknown obstacle over StaticLayer free space.
+        assert voxel['unknown_threshold'] == voxel['z_voxels']
         inflation = costmap['inflation_layer']
         padded_radius = max(
             math.hypot(x, y) for x, y in physical
@@ -211,13 +218,14 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
         assert inflation['cost_scaling_factor'] >= 6.0
 
     assert planner['cost_travel_multiplier'] <= 1.5
-    assert planner['tolerance'] \
-        < _params(config, 'controller_server')['goal_checker'][
-            'xy_goal_tolerance']
+    assert planner['tolerance'] == 0.10
+    assert planner['tolerance'] < _params(config, 'controller_server')[
+        'goal_checker']['xy_goal_tolerance']
     assert controller['CostCritic']['consider_footprint'] is True
     assert controller['CostCritic']['cost_weight'] <= 2.5
     assert controller['CostCritic']['trajectory_point_step'] == 1
     assert controller['CostCritic']['collision_cost'] >= 1000000.0
+    assert controller['GoalAngleCritic']['threshold_to_consider'] == 0.20
     assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30
 
 
