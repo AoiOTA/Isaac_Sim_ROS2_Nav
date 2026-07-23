@@ -459,7 +459,7 @@
 | `ros2_ws/src/robot_bringup/robot_bringup/ordered_shutdown.py` | 用私有 rclpy Context/Executor 和一个全局 deadline 调 Lifecycle：Navigation 先停导航再停定位，Localization 停定位，Mapping 依次 deactivate/cleanup/shutdown SLAM Toolbox。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/interactive_policy.py` | 纯函数解析 interactive/RViz/Teleop 选项、按模式选配置并寻找可受管的终端模拟器。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/initial_pose_policy.py` | 以 transient-local Topic 发布 `auto|rviz` 初始位姿所有权，供 Isaac Reset 与 ROS Gate 共用。 |
-| `ros2_ws/src/robot_bringup/robot_bringup/ideal_localization_tf.py` | Ideal 定位发布新鲜 identity `map→odom`，并提供兼容实验 Reset 的空缓冲清理服务。 |
+| `ros2_ws/src/robot_bringup/robot_bringup/ideal_localization_tf.py` | Ideal 定位按已选标定出生点发布新鲜 `map→odom`（`mapping_start` 为 identity，长距离 G1 为 `[0.45, -5.35, 90°]`），并提供兼容实验 Reset 的空缓冲清理服务。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/lifecycle_policy.py` | Lifecycle STARTUP/PAUSE/RESUME、混合稳定状态的有序归一化和有限指数退避纯策略。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/readiness.py` | 按仿真代次判断 Clock/scan/odom/map 与 map→odom 的新鲜、稳定和时间跳变。 |
 | `ros2_ws/src/robot_bringup/robot_bringup/activation_gate.py` | Nav2 Lifecycle 唯一管理者；原子检查状态，Reset 时暂停/清图/重播/恢复，并修复 Manager 部分转换留下的 Active/Inactive 混合状态。 |

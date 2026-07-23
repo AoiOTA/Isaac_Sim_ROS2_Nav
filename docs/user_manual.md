@@ -15,10 +15,10 @@
 | 场景 | `kujiale_0026_A_to_B_door_open.usd` |
 | 地图 | `warehouse_new`，`154 x 248 @ 0.05 m` |
 | 出生点 | `long_route_start_g1`（Map `[0.45, -5.35, 90°]`） |
-| USD 出生位姿 | `[2.9, -0.2, 0.0635]`，yaw `180°` |
-| Map 初始位姿 | `[0, 0]`，yaw `0°` |
+| USD 出生位姿 | `[2.45, 5.15, 0.0635]`，yaw `270°` |
+| Map 初始位姿 | `[0.45, -5.35]`，yaw `90°` |
 | 里程计 | Isaac Ideal `/odom` 和 `odom -> base_link` |
-| Map TF | 已标定 identity `map -> odom` |
+| Map TF | 已标定、按出生点对齐的 `map -> odom` |
 | ROS | Jazzy、Domain `42`、`rmw_fastrtps_cpp` |
 
 `warehouse_new` 的 Pose Graph 是建图来源记录，不用于 Realistic 或显式 Pose
@@ -99,6 +99,10 @@ Isaac navigation simulation ready
 `[2.45, 5.15, 0.0635] / 270°`，对应 Map `[0.45, -5.35] / 90°`；若日志仍是
 `spawn=mapping_start`，说明运行的是旧进程或遗漏了 `--spawn-pose`，应停止 Isaac 后以
 上述完整命令重启。出生点不能在运行中热切换。
+
+终端 B 启动后，`ideal_localization_tf` 日志必须显示
+`Ideal map->odom aligned to selected spawn: x=0.450, y=-5.350, yaw_deg=90.0`；此时
+RViz 中的机器人也应落在地图最下方的 G1，而不是旧的 `[0, 0]` 原点。
 
 GUI 会使用 Jackal 的第三人称相机。无头自动运行才使用 `--headless`；手动点击
 目标需要 RViz，因此日常人工测试使用 GUI Isaac + RViz 更直接。

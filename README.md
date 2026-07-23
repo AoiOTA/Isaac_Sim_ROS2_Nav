@@ -8,7 +8,7 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 场景:      kujiale_0026_A_to_B_door_open.usd
 地图:      warehouse_new
 长距离出生点: long_route_start_g1（Map `[0.45, -5.35, 90°]`）
-定位:      Ideal Odometry / 已标定 identity map -> odom
+定位:      Ideal Odometry / 已标定、按出生点对齐的 map -> odom
 导航感知:  /scan + /camera/front/depth/points
 ```
 
