@@ -49,7 +49,10 @@ def build_optimal_reference(
     if len(polygons) != len(obstacles):
         raise CampaignValidationError("campaign static obstacle is malformed")
 
-    waypoints = [(0.0, 0.0, 0.0)] + [
+    start_pose = campaign["environment"].get("start_pose")
+    if not isinstance(start_pose, list) or len(start_pose) != 3:
+        raise CampaignValidationError("campaign environment.start_pose must be [x, y, yaw_deg]")
+    waypoints = [(float(start_pose[0]), float(start_pose[1]), math.radians(float(start_pose[2])))] + [
         (float(item["pose"][0]), float(item["pose"][1]), math.radians(float(item["pose"][2])))
         for item in route
     ]

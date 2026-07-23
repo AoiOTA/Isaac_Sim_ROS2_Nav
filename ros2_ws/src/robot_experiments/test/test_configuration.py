@@ -73,10 +73,13 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         "kujiale_dynamic_visual.yaml",
     ):
         scenario = load_scenario(CONFIG / filename)
-        spawn_pose = load_spawn_pose(
-            PACKAGE_ROOT.parents[2] / "isaac_sim/configs/spawn_poses.yaml",
-            scenario.spawn_pose_name,
+        spawn_file = (
+            PACKAGE_ROOT.parents[2]
+            / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml"
+            if filename.startswith("kujiale_")
+            else PACKAGE_ROOT.parents[2] / "isaac_sim/configs/spawn_poses.yaml"
         )
+        spawn_pose = load_spawn_pose(spawn_file, scenario.spawn_pose_name)
         assert scenario.dynamic_config_file is not None
         validate_dynamic_physical_contract(
             scenario,
@@ -85,13 +88,13 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         )
 
 
-def test_kujiale_visual_scenarios_are_one_complete_g1_to_g8_route():
+def test_kujiale_visual_scenarios_are_one_complete_redesigned_closed_route():
     static = load_scenario(CONFIG / "kujiale_static_visual.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_dynamic_visual.yaml")
     assert static.seeds == (7201,)
     assert dynamic.seeds == (7301,)
-    assert [goal.goal_id for goal in static.route] == [f"G{index}" for index in range(1, 9)]
-    assert [goal.goal_id for goal in dynamic.route] == [f"G{index}" for index in range(1, 9)]
+    assert [goal.goal_id for goal in static.route] == ["G2", "G3", "G4", "G5", "G6", "G1"]
+    assert [goal.goal_id for goal in dynamic.route] == ["G2", "G3", "G4", "G5", "G6", "G1"]
     assert static.route[-1] == static.goal
     assert dynamic.route[-1] == dynamic.goal
 

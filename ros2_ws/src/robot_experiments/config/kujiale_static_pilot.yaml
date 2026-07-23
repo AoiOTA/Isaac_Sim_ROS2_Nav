@@ -2,7 +2,7 @@ schema_version: 1
 scenario:
   id: kujiale_static_pilot
   type: static
-  spawn_pose_name: mapping_start
+  spawn_pose_name: long_route_start_g1
   map_version: warehouse_new
   posegraph_version: warehouse_new
   configs:
@@ -11,15 +11,13 @@ scenario:
     dynamic_obstacles: ../../../../isaac_sim/configs/experiments/kujiale_long_range_static.yaml
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs: {seeds: [7201, 7202, 7203], timeout_sec: 600.0, leg_timeout_sec: 180.0}
-  goal: {frame_id: map, position: [0.0, 0.0], yaw_deg: 0.0, require_orientation: true}
+  goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   route:
-    - {id: G1, frame_id: map, position: [0.80, 4.80], yaw_deg: -135.0, require_orientation: true}
-    - {id: G2, frame_id: map, position: [-3.45, 3.90], yaw_deg: 0.0, require_orientation: true}
-    - {id: G3, frame_id: map, position: [-4.05, 1.15], yaw_deg: 0.0, require_orientation: true}
-    - {id: G4, frame_id: map, position: [-3.25, -0.45], yaw_deg: 0.0, require_orientation: true}
-    - {id: G5, frame_id: map, position: [-2.50, -3.35], yaw_deg: 90.0, require_orientation: true}
-    - {id: G6, frame_id: map, position: [0.65, -4.25], yaw_deg: -90.0, require_orientation: true}
-    - {id: G7, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
-    - {id: G8, frame_id: map, position: [0.0, 0.0], yaw_deg: 0.0, require_orientation: true}
-  success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 40.0, minimum_reverse_distance_m: 0.0, maximum_reverse_distance_fraction: 1.0, minimum_curved_distance_fraction: 0.0, maximum_stopped_time_fraction: 1.0}
-  obstacles: {layout_id: kujiale_rgbd_low_box_v1, static: [{id: rgbd_low_box}], trajectories: []}
+    - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -135.0, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-2.55, 3.65], yaw_deg: 0.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-4.05, 1.15], yaw_deg: 0.0, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-3.25, -0.45], yaw_deg: 0.0, require_orientation: true}
+    - {id: G6, frame_id: map, position: [-2.50, -3.35], yaw_deg: 90.0, require_orientation: true}
+    - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
+  success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0, minimum_reverse_distance_m: 0.0, maximum_reverse_distance_fraction: 1.0, minimum_curved_distance_fraction: 0.0, maximum_stopped_time_fraction: 1.0}
+  obstacles: {layout_id: kujiale_rgbd_low_boxes_v2, static: [{id: rgbd_low_box_west}, {id: rgbd_low_box_east}], trajectories: []}

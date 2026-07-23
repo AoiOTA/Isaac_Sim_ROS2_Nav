@@ -639,11 +639,7 @@ def validate_initial_pose_contract(
             "use initial_pose_source=rviz and calibrate before enabling auto"
         )
     pose_name = spawn_pose_name.strip()
-    if manifest.calibration.spawn_pose_profile != pose_name:
-        raise MapManifestError(
-            f"map {manifest.map_version!r} is calibrated for spawn pose "
-            f"{manifest.calibration.spawn_pose_profile!r}, not {pose_name!r}"
-        )
+    is_primary_profile = manifest.calibration.spawn_pose_profile == pose_name
     requested_spawn_path = Path(spawn_poses_file).expanduser().absolute()
     if requested_spawn_path.is_symlink():
         raise MapManifestError(
@@ -655,6 +651,11 @@ def validate_initial_pose_contract(
     if poses_document.get("schema_version") != 1:
         raise MapManifestError("spawn pose schema_version must be 1")
     poses = _mapping(poses_document.get("spawn_poses"), "spawn_poses")
+    if not is_primary_profile and pose_name not in poses:
+        raise MapManifestError(
+            f"map {manifest.map_version!r} is calibrated for spawn pose "
+            f"{manifest.calibration.spawn_pose_profile!r}, not {pose_name!r}"
+        )
     pose = _mapping(poses.get(pose_name), f"spawn_poses.{pose_name}")
     usd_pose = _mapping(pose.get("usd"), f"spawn_poses.{pose_name}.usd")
     map_pose = _mapping(pose.get("map"), f"spawn_poses.{pose_name}.map")
@@ -669,6 +670,12 @@ def validate_initial_pose_contract(
         raise MapManifestError(
             f"spawn pose {pose_name!r} map_bundle_sha256 does not match "
             f"map {manifest.map_version!r}"
+        )
+    if not is_primary_profile and map_pose.get("derived_from_profile") != manifest.calibration.spawn_pose_profile:
+        raise MapManifestError(
+            f"spawn pose {pose_name!r} is neither the map calibration profile "
+            f"nor a transform-verified derivative of "
+            f"{manifest.calibration.spawn_pose_profile!r}"
         )
 
     usd_position_values = _finite_vector(
@@ -693,36 +700,69 @@ def validate_initial_pose_contract(
             f"spawn_poses.{pose_name}.map.yaw_stddev_deg",
         ),
     }
-    expected_vectors = {
-        "usd.position": manifest.calibration.usd_base_position,
-        "map.position": manifest.calibration.map_base_position,
-    }
-    actual_vectors = {
-        "usd.position": usd_position_values,
-        "map.position": map_position_values,
-    }
-    for field, expected in expected_vectors.items():
-        if expected is None or any(
-            not math.isclose(actual, declared, rel_tol=0.0, abs_tol=1e-12)
-            for actual, declared in zip(actual_vectors[field], expected)
-        ):
+    if is_primary_profile:
+        expected_vectors = {
+            "usd.position": manifest.calibration.usd_base_position,
+            "map.position": manifest.calibration.map_base_position,
+        }
+        actual_vectors = {
+            "usd.position": usd_position_values,
+            "map.position": map_position_values,
+        }
+        for field, expected in expected_vectors.items():
+            if expected is None or any(
+                not math.isclose(actual, declared, rel_tol=0.0, abs_tol=1e-12)
+                for actual, declared in zip(actual_vectors[field], expected)
+            ):
+                raise MapManifestError(
+                    f"spawn pose {pose_name!r} {field} does not match "
+                    "the map calibration"
+                )
+        expected_scalars = {
+            "usd.yaw_deg": manifest.calibration.usd_base_yaw_deg,
+            "map.yaw_deg": manifest.calibration.map_base_yaw_deg,
+            "map.position_stddev_m": manifest.calibration.position_stddev_m,
+            "map.yaw_stddev_deg": manifest.calibration.yaw_stddev_deg,
+        }
+        for field, expected in expected_scalars.items():
+            if expected is None or not math.isclose(
+                scalar_values[field], expected, rel_tol=0.0, abs_tol=1e-12
+            ):
+                raise MapManifestError(
+                    f"spawn pose {pose_name!r} {field} does not match "
+                    "the map calibration"
+                )
+        return
+
+    reference_usd = manifest.calibration.usd_base_position
+    reference_map = manifest.calibration.map_base_position
+    reference_usd_yaw = manifest.calibration.usd_base_yaw_deg
+    reference_map_yaw = manifest.calibration.map_base_yaw_deg
+    if None in (reference_usd, reference_map, reference_usd_yaw, reference_map_yaw):
+        raise MapManifestError("map calibration is incomplete for a derived spawn pose")
+    rotation = math.radians(float(reference_usd_yaw) - float(reference_map_yaw))
+    delta_x = map_position_values[0] - reference_map[0]
+    delta_y = map_position_values[1] - reference_map[1]
+    expected_usd = (
+        reference_usd[0] + math.cos(rotation) * delta_x - math.sin(rotation) * delta_y,
+        reference_usd[1] + math.sin(rotation) * delta_x + math.cos(rotation) * delta_y,
+        reference_usd[2],
+    )
+    expected_yaw = float(map_pose["yaw_deg"]) + math.degrees(rotation)
+    if any(
+        not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12)
+        for actual, expected in zip(usd_position_values, expected_usd)
+    ) or not math.isclose(scalar_values["usd.yaw_deg"], expected_yaw, rel_tol=0.0, abs_tol=1e-12):
+        raise MapManifestError(
+            f"derived spawn pose {pose_name!r} does not preserve the calibrated map-to-USD transform"
+        )
+    for field, expected in (
+        ("map.position_stddev_m", manifest.calibration.position_stddev_m),
+        ("map.yaw_stddev_deg", manifest.calibration.yaw_stddev_deg),
+    ):
+        if expected is None or not math.isclose(scalar_values[field], expected, rel_tol=0.0, abs_tol=1e-12):
             raise MapManifestError(
-                f"spawn pose {pose_name!r} {field} does not match "
-                "the map calibration"
-            )
-    expected_scalars = {
-        "usd.yaw_deg": manifest.calibration.usd_base_yaw_deg,
-        "map.yaw_deg": manifest.calibration.map_base_yaw_deg,
-        "map.position_stddev_m": manifest.calibration.position_stddev_m,
-        "map.yaw_stddev_deg": manifest.calibration.yaw_stddev_deg,
-    }
-    for field, expected in expected_scalars.items():
-        if expected is None or not math.isclose(
-            scalar_values[field], expected, rel_tol=0.0, abs_tol=1e-12
-        ):
-            raise MapManifestError(
-                f"spawn pose {pose_name!r} {field} does not match "
-                "the map calibration"
+                f"derived spawn pose {pose_name!r} {field} does not match the map calibration"
             )
 
 

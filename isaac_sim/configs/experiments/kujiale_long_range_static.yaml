@@ -3,6 +3,10 @@ schema_version: 2
 seed: 7201
 enabled: false
 coordinate_frame: map
-spawn_pose_name: mapping_start
+spawn_pose_name: long_route_start_g1
 obstacles:
-  - {id: rgbd_low_box, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.15, 0.70, 0.08], end: [-0.15, 0.70, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  # These two low boxes sit around the former mapping_start area, well away
+  # from the G1 spawn.  They create an RGB-D-only detour while the robot is
+  # travelling north toward G1 instead of obstructing Reset or initial turns.
+  - {id: rgbd_low_box_west, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.65, -0.50, 0.08], end: [-0.65, -0.50, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_box_east, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.60, 0.15, 0.08], end: [0.60, 0.15, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}

@@ -128,10 +128,9 @@ def text_with_box(
 
 def route_from(scenario: dict[str, Any]) -> list[dict[str, Any]]:
     route = scenario["scenario"]["route"]
-    if not isinstance(route, list) or [item["id"] for item in route] != [
-        f"G{index}" for index in range(1, 9)
-    ]:
-        raise ValueError("long-route scenario must contain G1 through G8 in order")
+    expected = ["G2", "G3", "G4", "G5", "G6", "G1"]
+    if not isinstance(route, list) or [item["id"] for item in route] != expected:
+        raise ValueError("long-route scenario must contain redesigned G2, G3, G4, G5, G6, G1 order")
     return route
 
 
@@ -169,7 +168,7 @@ def render(kind: str, output: Path) -> None:
     image.paste(occupancy, (map_left, map_top))
     draw = ImageDraw.Draw(image, "RGBA")
     title = "Kujiale 全屋长距离导航｜静态场景" if kind == "static" else "Kujiale 全屋长距离导航｜动态场景"
-    subtitle = "warehouse_new OccupancyGrid · map 坐标系 · S → G1 → … → G8"
+    subtitle = "warehouse_new OccupancyGrid · map 坐标系 · S(G1) → G2 → … → G6 → G1"
     draw.rectangle((0, 0, CANVAS_WIDTH, HEADER_HEIGHT), fill="#ffffff")
     draw.text((MARGIN_X, 55), title, font=font(48), fill=INK)
     draw.text((MARGIN_X, 126), subtitle, font=font(28), fill=MUTED)
@@ -202,47 +201,47 @@ def render(kind: str, output: Path) -> None:
     draw.text((map_left + display_width - 135, map_top + display_height + 18), "x / m", font=font(22), fill=MUTED)
     draw.text((map_left - 85, map_top + 6), "y / m", font=font(22), fill=MUTED)
 
-    spawn = spawn_data["spawn_poses"]["mapping_start"]["map"]
+    spawn_name = campaign["environment"]["spawn_pose_name"]
+    spawn = spawn_data["spawn_poses"][spawn_name]["map"]
     start_position = spawn["position"]
     sequence = [pixel(start_position), *[pixel(item["position"]) for item in static_route]]
     for previous, current in zip(sequence, sequence[1:]):
         dashed_line(draw, previous, current, fill=TEAL, width=5)
 
-    # Static/dynamic overlays are intentionally distinct while all G1–G7
-    # goals retain identical blue circles, sizes, and labels.
+    # Static/dynamic overlays are intentionally distinct while all room goals
+    # (G2–G6) retain identical blue circles, sizes, and labels.
     if kind == "static":
-        obstacle = campaign["static"]["obstacles"][0]
-        center = obstacle["center"][:2]
-        size = obstacle["size"][:2]
-        center_px = pixel(center)
-        half_w = float(size[0]) / resolution * scale / 2
-        half_h = float(size[1]) / resolution * scale / 2
-        draw.rectangle(
-            (center_px[0] - half_w, center_px[1] - half_h, center_px[0] + half_w, center_px[1] + half_h),
-            fill="#fb923cba",
-            outline=ORANGE,
-            width=5,
-        )
-        text_with_box(draw, (center_px[0] + 22, center_px[1] - 50), "RGB-D 低矮方块\n0.30 × 0.30 × 0.16 m", text_font=font(22), fill=ORANGE)
-        overlay_legend = "静态障碍：RGB-D 低矮方块"
+        for obstacle in campaign["static"]["obstacles"]:
+            center = obstacle["center"][:2]
+            size = obstacle["size"][:2]
+            center_px = pixel(center)
+            half_w = float(size[0]) / resolution * scale / 2
+            half_h = float(size[1]) / resolution * scale / 2
+            draw.rectangle(
+                (center_px[0] - half_w, center_px[1] - half_h, center_px[0] + half_w, center_px[1] + half_h),
+                fill="#fb923cba",
+                outline=ORANGE,
+                width=5,
+            )
+            text_with_box(draw, (center_px[0] + 18, center_px[1] - 50), f"{obstacle['id']}\n0.30 × 0.30 × 0.16 m", text_font=font(20), fill=ORANGE)
+        overlay_legend = "静态障碍：中心区两组 RGB-D 低矮方块"
     else:
         for obstacle in campaign["dynamic"]["obstacles"]:
             start = pixel(obstacle["start"][:2])
             end = pixel(obstacle["end"][:2])
             dashed_line(draw, start, end, fill=PURPLE, width=7, dash=22, gap=12)
             arrow(draw, (end[0] - (end[0] - start[0]) * 0.18, end[1] - (end[1] - start[1]) * 0.18), end, fill=PURPLE, width=7)
-            label = f"{obstacle['id']}\n触发：{obstacle['trigger_group']}"
+            label = f"{obstacle['id']}\nG2 后延迟慢速短移并停住"
             text_with_box(draw, (start[0] + 16, start[1] - 62), label, text_font=font(21), fill=PURPLE)
-        overlay_legend = "动态障碍：紫色虚线箭头（按 G1、G2、G6 触发）"
+        overlay_legend = "动态障碍：紫色短距轨迹（均在 G2 后慢速移动并停住）"
 
-    # Start / return point: G8 coincides with S, so both labels are explicitly
-    # shown from one marker instead of hiding either coordinate.
+    # G1 is intentionally both the calibrated spawn and final return point.
     start_px = pixel(start_position)
     draw.ellipse((start_px[0] - 19, start_px[1] - 19, start_px[0] + 19, start_px[1] + 19), fill="#111827", outline=WHITE, width=5)
-    text_with_box(draw, (start_px[0] + 27, start_px[1] + 17), "S / G8\n[0.00, 0.00]", text_font=font(22), fill="#111827")
+    text_with_box(draw, (start_px[0] + 27, start_px[1] + 17), f"S / G1\n[{start_position[0]:.2f}, {start_position[1]:.2f}]", text_font=font(22), fill="#111827")
 
-    for index, waypoint in enumerate(static_route, start=1):
-        if index == 8:
+    for waypoint in static_route:
+        if waypoint["id"] == "G1":
             continue
         goal = pixel(waypoint["position"])
         radius = 18
@@ -258,7 +257,7 @@ def render(kind: str, output: Path) -> None:
         text_with_box(
             draw,
             (goal[0] + 23, goal[1] - 50),
-            f"G{index}\n[{waypoint['position'][0]:.2f}, {waypoint['position'][1]:.2f}]",
+            f"{waypoint['id']}\n[{waypoint['position'][0]:.2f}, {waypoint['position'][1]:.2f}]",
             text_font=font(22),
             fill=BLUE,
         )
@@ -273,8 +272,8 @@ def render(kind: str, output: Path) -> None:
     )
     draw.text((MARGIN_X + 34, footer_top + 27), "图例与使用边界", font=font(31), fill=INK)
     legend = [
-        ("●", BLUE, "G1–G7：相同样式的房间航点；箭头为要求朝向"),
-        ("●", "#111827", "S / G8：mapping_start 与返回起点，坐标重合"),
+        ("●", BLUE, "G2–G6：相同样式的房间航点；箭头为要求朝向"),
+        ("●", "#111827", "S / G1：long_route_start_g1 与返回点，坐标重合"),
         ("– –", TEAL, "青绿虚线：航点发送顺序示意，不代表 Nav2 理论最优或实际轨迹"),
         ("■", ORANGE if kind == "static" else PURPLE, overlay_legend),
     ]
@@ -284,7 +283,7 @@ def render(kind: str, output: Path) -> None:
         draw.text((MARGIN_X + 100, y + 3), description, font=font(23), fill=INK)
     draw.text(
         (MARGIN_X + 34, CANVAS_HEIGHT - 106),
-        "来源：warehouse_new.yaml、Kujiale 长距离 static/dynamic scenario、campaign YAML 和 calibrated mapping_start。",
+        "来源：warehouse_new.yaml、Kujiale 长距离 static/dynamic scenario、campaign YAML 和校验过的 G1 派生出生点。",
         font=font(20),
         fill=MUTED,
     )

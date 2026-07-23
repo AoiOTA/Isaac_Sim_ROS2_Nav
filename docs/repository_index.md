@@ -47,7 +47,7 @@
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
-| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的长距离静态/动态地图示意；冻结 S、G1–G8、静态方块和三条动态障碍路线。 |
+| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的重设计长距离静态/动态地图示意；S/G1、G2–G6、两组静态方块和两条慢速动态轨迹。 |
 
 ## 3. 数据目录
 
@@ -91,7 +91,7 @@
 | `scripts/run_isaac.sh` | 选择项目配置并监督 Isaac Python standalone 仿真；支持 custom profile，并只让监督器持有 Isaac 单实例锁，防止遗留 Omniverse Hub 锁住下一次启动。 |
 | `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本，避免孤立 RViz 锁住下一次启动。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
-| `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：自动发送 G1–G8，关闭 MCAP、结构化证据和项目输出目录创建。 |
+| `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：从 G1 出生并自动发送 G2、G3、G4、G5、G6、G1，关闭 MCAP、结构化证据和项目输出目录创建。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
 | `scripts/run_teleop_terminal.sh` | 顶层 launch 的前台 Teleop 终端托管器；转发停止信号、校验 PID 身份并等待真实节点退出。 |
@@ -131,7 +131,7 @@
 | `isaac_sim/configs/project.yaml` | 默认 Jackal 项目总配置；串联环境、机器人、仿真模式、出生点、ROS、GT、第三人称相机和所有子配置文件。 |
 | `isaac_sim/configs/custom_robot.project.yaml` | 自定义机器人项目模板；要求显式环境变量提供真实 USD、defaultPrim 和传感器配置，并把第三人称相机挂到自定义 `base_link`。 |
 | `isaac_sim/configs/spawn_poses.yaml` | 通用 project-config fallback 出生点；不作为当前酷家乐标定来源。 |
-| `isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml` | 当前酷家乐 0026 开门场景的已标定 `mapping_start`；绑定 `warehouse_new` 的 Map Pose、bundle SHA256 和不确定度。 |
+| `isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml` | 当前酷家乐 0026 开门场景的 `mapping_start` 标定，以及由同一变换核验的 `long_route_start_g1`；绑定 `warehouse_new` 的 Map Pose、bundle SHA256 和不确定度。 |
 | `isaac_sim/configs/environments/warehouse_multiple_shelves.yaml` | 官方 Warehouse 资产路径、组合方式和预期关键 Prim 的小型描述。 |
 
 ## 8. Isaac 机器人与仿真配置
@@ -381,13 +381,13 @@
 | `ros2_ws/src/robot_experiments/config/dynamic_benchmark.yaml` | Realistic 远距离动态验收：同起止点、20 seeds，并与 Isaac 横穿/对向实体障碍配置严格对齐。 |
 | `ros2_ws/src/robot_experiments/config/static_complex_route.yaml` | Ideal 前进优先复杂静态验收：6 个强制航点、约 50 m 路线、3 seeds 和运动质量门。 |
 | `ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml` | Ideal 复杂动态验收：与四个物理移动障碍严格对齐的 6 航点、3-seed 长路线。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_static_pilot.yaml` | 酷家乐静态 Pilot：G1–G8、RGB-D 低矮方块和 3 个 seed；不计入正式批次。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_pilot.yaml` | 酷家乐动态 Pilot：G1–G8、三个触发障碍和 3 个 seed；不计入正式批次。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml` | GUI + RViz 静态可视化回归：固定 seed 7201，runner 自动跑完整 G1–G8 与低矮方块，不保存项目证据。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | GUI + RViz 动态可视化回归：固定 seed 7301，runner 自动跑 G1–G8 并触发三个动态障碍，不保存项目证据。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐正式静态 20 轮：冻结 seed 7201–7220、G1–G8、低矮方块与理论路径参考。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 酷家乐正式动态 20 轮：冻结 seed 7301–7320、G1–G8 与三个触发障碍。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 正式酷家乐 20+20 批次的路线、门槛、障碍和固定 seed 总定义。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_pilot.yaml` | 酷家乐重设计静态 Pilot：S/G1、G2–G6、闭环回归 G1、两组 RGB-D 低矮方块和 3 个 seed；不计入正式批次。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_pilot.yaml` | 酷家乐重设计动态 Pilot：S/G1、G2–G6、闭环回归 G1、两组 G2 后触发的慢速障碍和 3 个 seed；不计入正式批次。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml` | GUI + RViz 静态可视化回归：固定 seed 7201，从 G1 出生并自动跑 G2、G3、G4、G5、G6、G1 与两组低矮方块，不保存项目证据。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | GUI + RViz 动态可视化回归：固定 seed 7301，从 G1 出生并自动跑 G2、G3、G4、G5、G6、G1 并触发两组慢速动态障碍，不保存项目证据。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐重设计静态 20 轮候选：冻结 seed 7201–7220、S/G1、G2–G6、闭环回归 G1、两组低矮方块与待重新生成的理论路径参考。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 酷家乐重设计动态 20 轮候选：冻结 seed 7301–7320、S/G1、G2–G6、闭环回归 G1 与两组慢速中心障碍。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 重设计后候选 20+20 批次的路线、门槛、障碍、出生点和固定 seed 总定义；尚未执行。 |
 | `ros2_ws/src/robot_experiments/config/optimal_reference.json` | 正式静态路线的冻结 footprint-aware 理论长度、地图哈希和障碍多边形。 |
 | `ros2_ws/src/robot_experiments/config/motion_benchmark.yaml` | 底盘直线、原地旋转、正反圆弧、蛇形和快速反向的自动运动基准。 |
 | `ros2_ws/src/robot_experiments/config/incremental_mapping.yaml` | 增量建图工作流描述符；NavigateToPose runner 会明确拒绝它。 |

@@ -6,6 +6,7 @@ import pytest
 
 from robot_experiments.kujiale_campaign import (
     CampaignValidationError,
+    WAYPOINT_IDS,
     load_campaign_definition,
     summarize_campaign,
     write_campaign_report,
@@ -17,7 +18,7 @@ def test_frozen_campaign_definition_has_the_required_v2_route_and_seeds():
         Path(__file__).resolve().parents[1]
         / "config" / "kujiale_long_range_campaign.yaml"
     )
-    assert definition["route"][3]["id"] == "G4"
+    assert definition["route"][3]["id"] == "G5"
 
 
 def _run(kind, seed, *, strict=True, collision_free=True, deviation=12.5):
@@ -30,7 +31,7 @@ def _run(kind, seed, *, strict=True, collision_free=True, deviation=12.5):
         "data_complete": True,
         "checksums_verified": True,
         "path_deviation_percent": deviation,
-        "legs": [{"id": f"G{index}"} for index in range(1, 9)],
+        "legs": [{"id": waypoint} for waypoint in WAYPOINT_IDS],
     }
 
 
@@ -79,7 +80,7 @@ def test_campaign_accepts_an_ordered_failed_leg_prefix_and_pads_the_heatmap(tmp_
     _write_batch(tmp_path, "static", 7201)
     _write_batch(tmp_path, "dynamic", 7301)
     failed = _run("dynamic", 7301, strict=False)
-    failed["legs"] = [{"id": "G1", "timed_out": True}]
+    failed["legs"] = [{"id": "G2", "timed_out": True}]
     (tmp_path / "dynamic" / "7301" / "run_summary.json").write_text(
         json.dumps(failed), encoding="utf-8"
     )

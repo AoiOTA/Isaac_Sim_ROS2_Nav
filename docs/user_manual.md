@@ -14,7 +14,7 @@
 | --- | --- |
 | 场景 | `kujiale_0026_A_to_B_door_open.usd` |
 | 地图 | `warehouse_new`，`154 x 248 @ 0.05 m` |
-| 出生点 | `mapping_start` |
+| 出生点 | `long_route_start_g1`（Map `[0.45, -5.35, 90°]`） |
 | USD 出生位姿 | `[2.9, -0.2, 0.0635]`，yaw `180°` |
 | Map 初始位姿 | `[0, 0]`，yaw `0°` |
 | 里程计 | Isaac Ideal `/odom` 和 `odom -> base_link` |
@@ -85,6 +85,7 @@ cd "$PROJECT_ROOT"
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
+  --spawn-pose long_route_start_g1 \
   --camera-profile rgbd_navigation
 ```
 
@@ -94,6 +95,11 @@ cd "$PROJECT_ROOT"
 Isaac navigation simulation ready
 ```
 
+同一行还必须包含 `spawn=long_route_start_g1`。它的物理 USD 位姿是
+`[2.45, 5.15, 0.0635] / 270°`，对应 Map `[0.45, -5.35] / 90°`；若日志仍是
+`spawn=mapping_start`，说明运行的是旧进程或遗漏了 `--spawn-pose`，应停止 Isaac 后以
+上述完整命令重启。出生点不能在运行中热切换。
+
 GUI 会使用 Jackal 的第三人称相机。无头自动运行才使用 `--headless`；手动点击
 目标需要 RViz，因此日常人工测试使用 GUI Isaac + RViz 更直接。
 
@@ -101,7 +107,7 @@ GUI 会使用 Jackal 的第三人称相机。无头自动运行才使用 `--head
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation odometry_mode:=ideal
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
 ```
 
 不传地图参数时，脚本自动选择：
@@ -189,7 +195,7 @@ ros2 topic echo /local_costmap/voxel_grid --once
 ## 4. 初始位姿与 Reset
 
 默认 `initial_pose_source:=auto` 会根据 `warehouse_new` 的 Manifest 与
-`mapping_start` 标定自动发布初始位姿。每次 Reset 后，系统会等待新鲜的 `/clock`、
+`long_route_start_g1` 的派生标定自动发布初始位姿。每次 Reset 后，系统会等待新鲜的 `/clock`、
 `/scan`、`/odom` 与稳定 `map -> odom`，然后恢复 Nav2。
 
 若你在开发新地图且尚未完成标定，可显式选择人工位姿：
@@ -259,7 +265,7 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 
 本节运行当前正式的 40 轮全屋长路线批次：静态种子 `7201–7220`、动态种子
 `7301–7320`，每轮依次自动执行 `G1` 到 `G8`。实验 runner 会在每轮开始时设置
-seed、调用 `/simulation/reset`、等待 Nav2 恢复、发送八个 Nav2 Goal，并记录 GT、
+seed、调用 `/simulation/reset`、等待 Nav2 恢复、发送六个 Nav2 Goal，并记录 GT、
 Scan、深度图/点云、Costmap、碰撞、安全状态和 MCAP；它不负责启动 Isaac 或 Nav2。
 
 正式配置是冻结输入，不要编辑后继续沿用正式结论：
@@ -270,14 +276,15 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-静态批次含 RGB-D 低矮方块；动态批次含三个由 G1、G2、G6 触发的穿行障碍。两批都
-使用 `warehouse_new`、`mapping_start`、Ideal Odom 与 `rgbd_navigation` Camera。
+当前重设计的静态批次含中心区两组 RGB-D 低矮方块；动态批次含两组在 G1 受理后才慢速
+短移并停住的实体障碍。两批都使用 `warehouse_new`、`long_route_start_g1`、Ideal Odom 与
+`rgbd_navigation` Camera。旧 `mapping_start` / G1–G8 的正式报告是历史证据，不能用于本布局。
 由于 runner 会以 `/ground_truth/odom` 核验 Reset 和统计路线，下面所有长距离命令都
 显式设置 `ISAAC_NAV__GROUND_TRUTH__ENABLED=true`；它仅发布评测数据，不参与导航 TF
 或控制。
 详细验收口径见
 [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md)。
-静态/动态地图、G1–G8、S、障碍位置和动态触发路线见
+静态/动态地图、S/G1、G2–G6、障碍位置和动态触发路线见
 [`kujiale_long_route_map.md`](kujiale_long_route_map.md)。
 
 ### 7.1 正式批次前检查
@@ -307,10 +314,10 @@ mkdir -p "$RUN_ROOT/static" "$RUN_ROOT/dynamic"
 printf 'campaign_id=%s\n' "$CAMPAIGN_ID"
 ```
 
-### 7.2 自动静态批次
+### 7.2 自动静态批次（待 Pilot 后执行）
 
 终端 A 启动无头 Isaac。`--dynamic-obstacles` 对静态批次同样是必须的：它启用冻结的
-`rgbd_low_box` 物理障碍，而不是启用动态轨迹。
+两组 `rgbd_low_box_*` 物理障碍，而不是启用动态轨迹。
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -319,7 +326,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
-  --spawn-pose mapping_start \
+  --spawn-pose long_route_start_g1 \
   --camera-profile rgbd_navigation \
   --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
   --dynamic-obstacles
@@ -332,6 +339,7 @@ runner；不要同时打开 RViz 或 Teleop。
 cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
+  spawn_pose_name:=long_route_start_g1 \
   interactive:=false \
   use_rviz:=false
 ```
@@ -354,9 +362,9 @@ Reset 隔离错误或中断则应停止批次，保存终端日志并排障后�
 静态 runner 正常结束后，先在终端 B 按 Ctrl+C 等待有序关闭，再在终端 A 按 Ctrl+C。
 不要直接切换 Isaac 障碍配置后复用旧进程。
 
-### 7.3 自动动态批次
+### 7.3 自动动态批次（待 Pilot 后执行）
 
-动态批次必须用新的 Isaac 进程，加载三个触发式动态障碍的物理配置。重新打开终端 A：
+动态批次必须用新的 Isaac 进程，加载两组 G2 后触发、慢速短移并 hold 的物理障碍配置。重新打开终端 A：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -365,7 +373,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
-  --spawn-pose mapping_start \
+  --spawn-pose long_route_start_g1 \
   --camera-profile rgbd_navigation \
   --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml \
   --dynamic-obstacles
@@ -377,6 +385,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
 cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
+  spawn_pose_name:=long_route_start_g1 \
   interactive:=false \
   use_rviz:=false
 ```
@@ -437,7 +446,7 @@ PDF、PNG、CSV、JSON、MCAP 和图像都不推送；应提交的是代码、�
 ## 8. 可视化单轮全屋长距离测试（Isaac GUI + RViz）
 
 本节用于可视化回归：Isaac 保持 GUI、Navigation 保持 RViz，但由 experiment runner
-自动按 `G1 → G2 → … → G8` 发送八个 Nav2 Goal。你不需要点击 **2D Goal Pose**、手动
+自动按 `G2 → G3 → G4 → G5 → G6 → G1` 发送六个 Nav2 Goal（G1 是出生点也是最终回归点）。你不需要点击 **2D Goal Pose**、手动
 触发动态障碍或运行 20 轮。静态和动态各只运行固定的一个 seed，适合观察 RGB-D 融合、
 Costmap、MPPI、Collision Monitor 与实体障碍行为。
 
@@ -455,15 +464,18 @@ cd "$PROJECT_ROOT"
 ```
 
 终端 A 始终运行 Isaac GUI；终端 B 启动受管 `navigation.rviz`；终端 C 运行单轮
-visual runner。C 启动后先自行 Reset 到 `mapping_start`，再顺序发送 G1–G8；在 RViz
+visual runner。C 启动后先自行 Reset 到 `long_route_start_g1`，再顺序发送 G2、G3、G4、G5、G6、G1；在 RViz
 只观察，不要再手动发送 Goal。`run_visual_route.sh` 不创建 `data/experiment_runs/` 或
 `data/reports/` 下的任何文件。visual runner 同样需读取 Ground Truth 完成 Reset
 一致性检查，因此终端 A 的命令也显式启用它；这不会产生评测证据或报告。
 
+终端 A 的启动日志同样必须显示 `spawn=long_route_start_g1`。若显示
+`mapping_start`，不要启动 B/C；先停止旧 Isaac，再复制本节完整命令重新启动。
+
 ### 8.2 静态可视化单轮
 
 终端 A 启动带 RGB-D 低矮方块的 Isaac GUI。`--dynamic-obstacles` 对静态场景同样必须
-启用，因为它负责实例化 `rgbd_low_box`，该配置没有运动轨迹：
+启用，因为它负责实例化中心区两组 RGB-D 低矮方块，该配置没有运动轨迹：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -471,7 +483,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
-  --spawn-pose mapping_start \
+  --spawn-pose long_route_start_g1 \
   --camera-profile rgbd_navigation \
   --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
   --dynamic-obstacles
@@ -481,10 +493,10 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation odometry_mode:=ideal
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
 ```
 
-终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G1–G8 路线，且不写
+终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G2、G3、G4、G5、G6、G1 闭环路线，且不写
 项目输出：
 
 ```bash
@@ -507,7 +519,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --navigation-mode localization \
   --mode ideal \
-  --spawn-pose mapping_start \
+  --spawn-pose long_route_start_g1 \
   --camera-profile rgbd_navigation \
   --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml \
   --dynamic-obstacles
@@ -517,7 +529,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation odometry_mode:=ideal
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
 ```
 
 等待 Nav2 激活后，在终端 C 运行唯一动态 visual seed `7301`，同样不写项目输出：
@@ -526,7 +538,7 @@ cd "$PROJECT_ROOT"
 ./scripts/run_visual_route.sh dynamic
 ```
 
-runner 在 G1、G2、G6 的 Goal 被 Nav2 接受后自动调用对应障碍触发服务；不需要手工输入
+runner 在 G2 的 Goal 被 Nav2 接受后自动调用两组中心区障碍的触发服务；不需要手工输入
 服务命令。若希望额外查看状态，可另开终端 D：
 
 ```bash
@@ -534,7 +546,7 @@ source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
 ros2 topic echo /experiment/obstacles/state
 ```
 
-在 GUI 中应看到三个实体依次触发、运动和 retire；在 RViz 观察路径重规划、减速/等待、
+在 GUI 中应看到两组实体在中心区延迟触发、缓慢短移并 hold；在 RViz 观察路径重规划、减速/等待、
 MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 直接退出，不会
 留下项目证据目录。
 

@@ -34,6 +34,7 @@ class SpawnPose:
     yaw_stddev_deg: float
     map_version: str | None = None
     map_bundle_sha256: str | None = None
+    derived_from_profile: str | None = None
 
 
 def load_spawn_pose(
@@ -61,6 +62,7 @@ def load_spawn_pose(
         )
     map_version = map_pose.get("map_version")
     map_bundle_sha256 = map_pose.get("map_bundle_sha256")
+    derived_from_profile = map_pose.get("derived_from_profile")
     if calibrated:
         if not isinstance(map_version, str) or not re.fullmatch(
             r"[A-Za-z0-9._-]+", map_version
@@ -75,6 +77,12 @@ def load_spawn_pose(
             raise ConfigurationError(
                 f"spawn_poses.{pose_name}.map.map_bundle_sha256 must bind a "
                 "calibrated pose to one map bundle"
+            )
+        if derived_from_profile is not None and (
+            not isinstance(derived_from_profile, str) or not derived_from_profile.strip()
+        ):
+            raise ConfigurationError(
+                f"spawn_poses.{pose_name}.map.derived_from_profile must be a non-empty string"
             )
     position_stddev = require_finite(
         map_pose.get("position_stddev_m", 0.05),
@@ -105,4 +113,5 @@ def load_spawn_pose(
         yaw_stddev_deg=yaw_stddev,
         map_version=map_version,
         map_bundle_sha256=map_bundle_sha256,
+        derived_from_profile=derived_from_profile,
     )
