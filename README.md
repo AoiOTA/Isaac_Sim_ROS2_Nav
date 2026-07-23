@@ -20,8 +20,9 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 ## 长距离重设计状态
 
 当前长距离静态/动态配置从 `long_route_start_g1` 出生，依次运行
-`G1 → G2 → G3 → G4 → G5 → G6 → G1`。原 G7 重命名为 G1，旧 G6 被移除；中心区使用两组静态
-RGB-D 低矮方块或两组 G2 后才慢速短移并停住的动态方块。该重设计尚未执行新的 Pilot 或
+`G1 → G2 → G3 → G4 → G5 → G6 → G1`。原 G7 重命名为 G1，旧 G6 被移除；中心区使用四组可在
+Isaac GUI 中反复拖动的 RGB-D 低矮方块，或两组在 G1→G2 实际通道中横穿并停住的动态方块。四组静态方块的
+当前坐标是已保存的可微调基线（`2026-07-23 11:04:43 +08:00`），尚未冻结。该重设计尚未执行新的 Pilot 或
 20+20 正式验收。
 
 ## 已记录的历史正式批次结果
@@ -110,6 +111,10 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 静态/动态全屋长距离测试的 `warehouse_new` 地图、S/G1 与 G2–G6 航点、静态方块和两条
 动态障碍触发路线见 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
 
+若要一边拖动四个静态方块、一边在 RViz 手动发送 Goal 观察效果，请按
+[`docs/user_manual.md`](docs/user_manual.md#82-静态可视化单轮) 的“交互式布局与手动导航”流程启动；
+不要运行会 Reset 方块位置的自动 `run_visual_route.sh static`。
+
 ## RGB-D 感知边界
 
 `--camera-profile rgbd_navigation` 会发布：
@@ -150,7 +155,7 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 
 GUI + RViz 的单轮可视化回归分别使用
 `kujiale_static_visual.yaml` 与 `kujiale_dynamic_visual.yaml`：runner 自动发送完整
-`G1 → G2 → G3 → G4 → G5 → G6 → G1` 闭环路线，动态场景也会在 G2 后自动触发两组中心区障碍。使用 `./scripts/run_visual_route.sh static|dynamic`
+`G1 → G2 → G3 → G4 → G5 → G6 → G1` 闭环路线；动态场景会在 G2 受理后让两组实体横穿 G1→G2 通道并停住。使用 `./scripts/run_visual_route.sh static|dynamic`
 启动；它不生成项目实验输出，二者均不计入正式 20+20 结果。
 
 运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的

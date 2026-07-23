@@ -487,7 +487,9 @@ may be replaced with broad `pkill` commands.
 
 The committed MPPI timing keeps the measured Isaac Sim 6.0.1 headless Ideal
 baseline. The batch reduction also passed two consecutive Realistic curved
-goals, including a reverse-turning goal:
+goals, including a reverse-turning goal. Fixed MPPI noise and the tighter
+SlowdownZone avoid continuous micro-adjustments in traversable narrow passages;
+the StopZone remains active while ApproachZone is deliberately disabled:
 
 | Parameter | Value | Reason |
 | --- | --- | --- |
@@ -495,6 +497,10 @@ goals, including a reverse-turning goal:
 | `FollowPath.time_steps` | 20 | Combined with `model_dt` keeps the prediction horizon at two seconds. |
 | `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
 | `FollowPath.batch_size` | 500 | Avoids localization contention while preserving the two-second horizon. |
+| `FollowPath.regenerate_noises` | `false` | Reuses the noise table to prevent controller-cycle sampling jitter. |
+| `FollowPath.vx_std` / `wz_std` | `0.30` / `0.65` | Retains avoidance spread while reducing small speed and heading corrections. |
+| `SlowdownZone` | `0.660 × 0.470 m`, 5 points, 90% | Acts only near a genuine LiDAR constraint instead of continually clipping a traversable corridor. |
+| `ApproachZone` | disabled | MPPI performs footprint-aware costmap prediction; StopZone remains the final LiDAR hard stop. |
 | Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
 
 Profile validation runs before Nav2 nodes start. Values must be finite and
@@ -511,21 +517,26 @@ The current formal scenarios are
 `kujiale_static_long_range.yaml` and `kujiale_dynamic_long_range.yaml`. Both
 run the same `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G6 → G1`
 from transform-verified `long_route_start_g1`; they are not random-layout Warehouse
-smoke tests. The static scenario requires `rgbd_low_box_west` and
-`rgbd_low_box_east`, while the dynamic scenario requires `central_slow_west` and
-`central_slow_east` (both triggered by G2). The GUI/RViz visual scenarios reuse this geometry with one seed each and
+smoke tests. The static scenario requires `rgbd_low_box_west`, `rgbd_low_box_center`,
+`rgbd_low_box_east`, and `rgbd_low_box_north`, while the dynamic scenario requires `g1_g2_south_crossing` and
+`g1_g2_north_crossing` (both triggered by G2). The GUI/RViz visual scenarios reuse this geometry with one seed each and
 set `record_evidence:=false`.
 
 Before every static or dynamic run, the experiment runner reads the Isaac
 runtime obstacle contract. Both current scenario types require
 `--dynamic-obstacles`: static uses it to instantiate the stationary low boxes;
-dynamic uses it to instantiate the two triggered actors. The enabled flag,
+dynamic uses it to instantiate the two triggered corridor-crossing actors. The enabled flag,
 physical configuration SHA256 and sorted obstacle IDs must exactly match the
 scenario before Reset or goal dispatch. For dynamic scenarios the runner also
 validates each actor's shape, XY size, Map-frame endpoints and duration.
 Mismatches fail before a navigation goal is sent.
 
-Each static low box is a physical `0.30 × 0.30 × 0.16 m` obstacle. Each dynamic
+Each static low box is a physical `0.30 × 0.30 × 0.16 m` obstacle.  A static box's
+Isaac GUI `Translate` edit is intentionally retained during normal simulation ticks so
+the operator can repeatedly adjust it and send RViz goals.  The `std_srvs/Trigger`
+service `/experiment/obstacles/capture_layout` returns the current positions in the
+declared Map frame; `/experiment/obstacles/reset` or a visual runner Reset restores the
+YAML seed positions. Each dynamic
 actor moves only `0.30 m` at `0.08–0.10 m/s` and enters `hold` after motion,
 remaining a visible central-area constraint rather than pushing the robot at startup.
 The route and obstacle

@@ -47,7 +47,7 @@
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
-| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的重设计长距离静态/动态地图示意；S/G1、G2–G6、两组静态方块和两条慢速动态轨迹。 |
+| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的重设计长距离静态/动态地图示意；S/G1、G2–G6、四组可手调的静态方块和两条慢速动态轨迹。 |
 
 ## 3. 数据目录
 
@@ -89,7 +89,7 @@
 | `scripts/build_ros2.sh` | source ROS 环境并执行 `colcon build --symlink-install`。 |
 | `scripts/test.sh` | 统一运行纯 Python、ROS colcon 和可选 Isaac/USD 测试。 |
 | `scripts/run_isaac.sh` | 选择项目配置并监督 Isaac Python standalone 仿真；支持 custom profile，并只让监督器持有 Isaac 单实例锁，防止遗留 Omniverse Hub 锁住下一次启动。 |
-| `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本，避免孤立 RViz 锁住下一次启动。 |
+| `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本；收到 Ctrl+C 时先核验并关闭受管 RViz，再执行 Navigation 的有序 lifecycle 关闭。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
 | `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：从 G1 出生并自动发送 G2、G3、G4、G5、G6、G1，关闭 MCAP、结构化证据和项目输出目录创建。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
@@ -222,7 +222,7 @@
 | --- | --- |
 | `isaac_sim/src/experiment/__init__.py` | Isaac 实验场景子包标记。 |
 | `isaac_sim/src/experiment/scenario.py` | 严格解析 Isaac physical-obstacle YAML，校验静态/动态 box 的几何、Map-frame 轨迹、触发组、速度、retire 策略和 seed 抖动。 |
-| `isaac_sim/src/experiment/dynamic_obstacles.py` | 按配置中的 USD 坐标直接创建运动学动态 box，并按仿真时间推进或 Reset；不执行 USD→Map 变换。 |
+| `isaac_sim/src/experiment/dynamic_obstacles.py` | 按配置创建运动学物理 box，并按仿真时间推进或 Reset；Map 坐标通过已校验的出生点变换到 USD。静态方块保留 GUI Translate 编辑，可用 `/experiment/obstacles/capture_layout` 导出回 Map 坐标。 |
 | `isaac_sim/src/experiment/collision_monitor.py` | 读取底盘物理接触并发布 `/simulation/collision`。 |
 | `isaac_sim/src/ground_truth/__init__.py` | Ground Truth 子包标记。 |
 | `isaac_sim/src/ground_truth/transforms.py` | 纯数学的二维 Pose、`map_T_usd` 和 USD→Map 变换。 |

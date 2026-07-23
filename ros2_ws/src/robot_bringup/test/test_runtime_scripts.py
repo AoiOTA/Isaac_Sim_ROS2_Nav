@@ -557,6 +557,16 @@ def test_ros_launcher_does_not_leak_its_lock_to_managed_rviz():
             '{ros_lock_fd}>&- &') in source
 
 
+def test_ros_launcher_closes_the_identity_checked_managed_rviz_before_lifecycle_shutdown():
+    source = (REPOSITORY_ROOT / 'scripts' / 'run_ros.sh').read_text(
+        encoding='utf-8')
+    assert 'stop_managed_rviz()' in source
+    assert 'registered identity no longer matches' in source
+    assert 'kill -INT "${rviz_pid}"' in source
+    assert source.index('stop_managed_rviz') < source.index(
+        'requesting ordered ${operation} lifecycle shutdown')
+
+
 def test_isaac_launcher_does_not_leak_its_lock_to_kit_children():
     source = RUN_ISAAC.read_text(encoding='utf-8')
     assert 'isaac_lock_fd="${ISAAC_NAV_LOCK_FDS[-1]}"' in source

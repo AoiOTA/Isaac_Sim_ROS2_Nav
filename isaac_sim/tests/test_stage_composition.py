@@ -242,3 +242,25 @@ def test_dynamic_obstacle_reset_restarts_scenario_time():
     manager.update(100.0)
     restarted = tuple(manager._runtime["crossing_box"].translate_op.Get())
     assert restarted == pytest.approx(initial)
+
+
+def test_stationary_obstacle_keeps_an_isaac_gui_translate_edit_until_reset():
+    from pxr import Gf, Usd
+
+    scenario = replace(
+        load_dynamic_scenario(
+            ROOT / "isaac_sim/configs/experiments/kujiale_long_range_static.yaml"),
+        enabled=True,
+    )
+    stage = Usd.Stage.CreateInMemory()
+    manager = DynamicObstacleManager(stage, scenario, map_to_usd=lambda position: position)
+    runtime = manager._runtime["rgbd_low_box_center"]
+    edited = (0.34, -0.12, 0.08)
+    runtime.translate_op.Set(Gf.Vec3d(*edited))
+
+    manager.update(5.0)
+    assert tuple(runtime.translate_op.Get()) == pytest.approx(edited)
+
+    manager.reset(7201)
+    assert tuple(runtime.translate_op.Get()) == pytest.approx(
+        runtime.spec.start)

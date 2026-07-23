@@ -5,8 +5,10 @@ enabled: false
 coordinate_frame: map
 spawn_pose_name: long_route_start_g1
 obstacles:
-  # These two low boxes sit around the former mapping_start area, well away
-  # from the G1 spawn.  They create an RGB-D-only detour while the robot is
-  # travelling north toward G1 instead of obstructing Reset or initial turns.
-  - {id: rgbd_low_box_west, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.65, -0.50, 0.08], end: [-0.65, -0.50, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
-  - {id: rgbd_low_box_east, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.60, 0.15, 0.08], end: [0.60, 0.15, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  # GUI capture 2026-07-23 11:04:43 +08:00. This is a saveable, editable
+  # tuning baseline only, not a frozen formal 20-run layout. Move Translate
+  # in Isaac and capture again before promoting any later layout.
+  - {id: rgbd_low_box_west, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.853013, -0.961904, 0.08], end: [-0.853013, -0.961904, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_box_center, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [-0.538928, 0.294727, 0.08], end: [-0.538928, 0.294727, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_box_east, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.926339, 0.222787, 0.08], end: [0.926339, 0.222787, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: rgbd_low_box_north, mode: stationary, trigger_group: null, size: [0.30, 0.30, 0.16], mass: 5.0, start: [0.126442, -0.579985, 0.08], end: [0.126442, -0.579985, 0.08], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}

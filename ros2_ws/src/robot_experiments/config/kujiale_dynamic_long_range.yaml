@@ -36,8 +36,8 @@ scenario:
     minimum_curved_distance_fraction: 0.0
     maximum_stopped_time_fraction: 1.0
   obstacles:
-    layout_id: kujiale_central_slow_dynamic_v2
+    layout_id: kujiale_g1_g2_crossing_dynamic_v3
     static: []
     trajectories:
-      - {id: central_slow_west, trigger_group: G2, motion: crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [-0.85, 0.45]}, {time_sec: 3.0, position: [-0.55, 0.45]}]}
-      - {id: central_slow_east, trigger_group: G2, motion: crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.95, -0.45]}, {time_sec: 3.75, position: [0.65, -0.45]}]}
+      - {id: g1_g2_south_crossing, trigger_group: G2, motion: crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [1.15, -1.00]}, {time_sec: 7.0, position: [0.45, -1.00]}]}
+      - {id: g1_g2_north_crossing, trigger_group: G2, motion: crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [-0.20, 0.65]}, {time_sec: 7.0, position: [0.50, 0.65]}]}

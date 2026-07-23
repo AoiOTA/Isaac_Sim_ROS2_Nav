@@ -74,6 +74,17 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
 
 
+def test_stable_overlay_preserves_the_verified_low_latency_mppi_budget():
+    stable = _profile('stable')
+    parameters = stable['controller_server']['ros__parameters']
+    follow_path = parameters['FollowPath']
+
+    assert parameters['controller_frequency'] == 10.0
+    assert follow_path['time_steps'] == 20
+    assert follow_path['model_dt'] == 0.10
+    assert follow_path['batch_size'] == 500
+
+
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     config = _config()
     navigator = _params(config, 'bt_navigator')
@@ -131,7 +142,7 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert prefer_forward['enabled'] is True
     assert prefer_forward['cost_weight'] > 0.0
     assert prefer_forward['threshold_to_consider'] <= 0.5
-    assert controller['regenerate_noises'] is True
+    assert controller['regenerate_noises'] is False
     assert controller['visualize'] is True
 
     assert smoother['scale_velocities'] is True
@@ -183,9 +194,10 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     # indoor corridor.  The slowdown shell remains outside the emergency stop
     # shell while retaining enough speed for stable MPPI path tracking.
     assert max(slowdown_y) <= 0.24
-    assert collision['SlowdownZone']['min_points'] >= 4
-    assert 0.80 <= collision['SlowdownZone']['slowdown_ratio'] <= 0.90
+    assert collision['SlowdownZone']['min_points'] >= 5
+    assert 0.85 <= collision['SlowdownZone']['slowdown_ratio'] <= 0.92
     assert collision['ApproachZone']['time_before_collision'] >= 1.0
+    assert collision['ApproachZone']['enabled'] is False
 
     for costmap in (local, global_costmap):
         assert costmap['footprint'] == local['footprint']

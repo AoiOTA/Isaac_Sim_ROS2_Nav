@@ -16,7 +16,7 @@ git status --short --branch
 
 标准恢复顺序是：
 
-1. 在 ROS 终端按 `Ctrl+C`，等待 RViz/Teleop/Nav2 退出；
+1. 在 ROS 终端按一次 `Ctrl+C`；受管 RViz 会先收到独立关闭请求，再等待 Nav2 有序退出；
 2. 在 Isaac 终端按 `Ctrl+C`；
 3. 若终端异常消失，再执行 `./scripts/clean_runtime.sh --dds-shm`；
 4. 先启动 Isaac，看到 `Isaac navigation simulation ready`；
@@ -423,7 +423,7 @@ child、Lifecycle manager 或 RViz；工作空间没有重建，仍加载上游�
 元数据其实属于仍在运行的进程。
 
 **修复：** 重新构建后只用 `./scripts/run_ros.sh <operation> ...` 启动。在该
-终端按一次 Ctrl+C 并等待：Navigation 先关 Navigation manager 再关
+终端按一次 Ctrl+C 并等待：受管 RViz 先关闭，Navigation 再关 Navigation manager 后关
 Localization manager；Localization 关其 manager；Mapping 依次 deactivate、
 cleanup、shutdown SLAM Toolbox。终端已丢失时先 dry-run，再执行
 `./scripts/clean_runtime.sh --dds-shm`；清理器会向 supervisor 发信号并验证

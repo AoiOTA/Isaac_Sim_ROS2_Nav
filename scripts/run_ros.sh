@@ -94,6 +94,33 @@ launch_group_is_running() {
   '
 }
 
+stop_managed_rviz() {
+  # Managed RViz is deliberately in its own session, so the terminal's Ctrl+C
+  # does not reach it with the ROS launch group.  Ask only the registered,
+  # identity-checked RViz leader to exit before the lifecycle shutdown starts.
+  local pid_file rviz_pid expected_ticks actual_ticks command_line attempt
+  pid_file="$(runtime_pid_file rviz)"
+  [[ -r "${pid_file}" ]] || return 0
+  rviz_pid="$(sed -n 's/^pid=//p' "${pid_file}" | head -n 1)"
+  expected_ticks="$(sed -n 's/^leader_start_ticks=//p' "${pid_file}" | head -n 1)"
+  [[ "${rviz_pid}" =~ ^[1-9][0-9]*$ ]] || return 0
+  [[ -r "/proc/${rviz_pid}/stat" && -r "/proc/${rviz_pid}/cmdline" ]] || return 0
+  actual_ticks="$(awk '{print $22}' "/proc/${rviz_pid}/stat")"
+  command_line="$(tr '\0' ' ' <"/proc/${rviz_pid}/cmdline")"
+  if [[ -n "${expected_ticks}" && "${actual_ticks}" != "${expected_ticks}" ]] \
+      || [[ "${command_line}" != *"rviz2"* ]]; then
+    log_warn "not signaling RViz: registered identity no longer matches"
+    return 0
+  fi
+  log_info "requesting managed RViz shutdown before Navigation lifecycle shutdown"
+  kill -INT "${rviz_pid}" 2>/dev/null || return 0
+  for ((attempt = 0; attempt < 30; attempt++)); do
+    kill -0 "${rviz_pid}" 2>/dev/null || return 0
+    sleep 0.1
+  done
+  log_warn "managed RViz is still exiting; ROS shutdown will continue"
+}
+
 signal_launch_group() {
   local signal_name="$1"
   launch_group_is_running || return 0
@@ -138,6 +165,8 @@ ordered_stop() {
     return 0
   fi
   shutdown_signal="${signal_name}"
+
+  stop_managed_rviz
 
   # A terminal sends Ctrl+C to every process in its foreground process group.
   # The launch child has its own session so lifecycle services remain alive

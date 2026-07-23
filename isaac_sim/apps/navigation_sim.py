@@ -497,8 +497,19 @@ def run(
                 position[2],
             )
 
+        def usd_to_map(position):
+            """Inverse of map_to_usd for GUI-adjusted obstacle capture."""
+            yaw = math.radians(selected_pose.usd.yaw_deg - selected_pose.map.yaw_deg)
+            delta_x = position[0] - selected_pose.usd.position[0]
+            delta_y = position[1] - selected_pose.usd.position[1]
+            return (
+                selected_pose.map.position[0] + math.cos(yaw) * delta_x + math.sin(yaw) * delta_y,
+                selected_pose.map.position[1] - math.sin(yaw) * delta_x + math.cos(yaw) * delta_y,
+                position[2],
+            )
+
         dynamic_manager = DynamicObstacleManager(
-            stage, dynamic_scenario, map_to_usd=map_to_usd
+            stage, dynamic_scenario, map_to_usd=map_to_usd, usd_to_map=usd_to_map
         )
         dynamic_manager.bind_ros(
             node, lambda: float(SimulationManager.get_simulation_time())
