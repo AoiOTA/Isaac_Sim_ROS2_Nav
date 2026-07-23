@@ -6,8 +6,9 @@ enabled: false
 coordinate_frame: map
 spawn_pose_name: long_route_start_g1
 obstacles:
-  # Both actors are enabled only after G2 is accepted.  Their delayed, short
-  # motions take place around the former mapping_start while the robot is in
-  # transit from G1; they then hold at the endpoint rather than retiring.
-  - {id: central_slow_west, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [-0.85, 0.45, 0.50], end: [-0.55, 0.45, 0.50], speed: 0.10, delay_sec: 10.0, jitter_sec: 0.25, post_motion: hold}
-  - {id: central_slow_east, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [0.95, -0.45, 0.50], end: [0.65, -0.45, 0.50], speed: 0.08, delay_sec: 13.0, jitter_sec: 0.25, post_motion: hold}
+  # G2 acceptance occurs at the beginning of the G1->G2 leg.  Each actor
+  # enters that leg's centre corridor from a side clearance, then holds in
+  # the travel lane before the robot reaches its row.  This forces a real
+  # slow-down/wait/replan or detour without spawning against the robot.
+  - {id: g1_g2_south_crossing, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [1.15, -1.00, 0.50], end: [0.45, -1.00, 0.50], speed: 0.10, delay_sec: 6.0, jitter_sec: 0.25, post_motion: hold}
+  - {id: g1_g2_north_crossing, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [-0.20, 0.65, 0.50], end: [0.50, 0.65, 0.50], speed: 0.10, delay_sec: 15.0, jitter_sec: 0.25, post_motion: hold}

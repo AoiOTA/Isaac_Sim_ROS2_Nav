@@ -33,11 +33,13 @@ class DynamicObstacleManager:
         scenario: DynamicScenario,
         root_path: str = "/World/DynamicObstacles",
         map_to_usd: Callable[[tuple[float, float, float]], tuple[float, float, float]] | None = None,
+        usd_to_map: Callable[[tuple[float, float, float]], tuple[float, float, float]] | None = None,
     ):
         self.stage = stage
         self.scenario = scenario
         self.root_path = root_path
         self._map_to_usd = map_to_usd
+        self._usd_to_map = usd_to_map
         self._runtime: dict[str, _ObstacleRuntime] = {}
         self._events: list[dict[str, object]] = []
         self._reset_time: float | None = None
@@ -121,11 +123,20 @@ class DynamicObstacleManager:
                     "trigger_group": runtime.spec.trigger_group,
                     "state": "retired" if runtime.retired else ("active" if runtime.active_at is not None else "waiting"),
                     "progress": runtime.progress,
+                    "position": list(self._reported_position(runtime)),
+                    "position_frame": "map" if self.scenario.coordinate_frame == "map" else "usd",
                 }
                 for identifier, runtime in sorted(self._runtime.items())
             ],
             "events": list(self._events),
         }
+
+    def _reported_position(self, runtime: _ObstacleRuntime) -> tuple[float, float, float]:
+        value = runtime.translate_op.Get()
+        usd_position = (float(value[0]), float(value[1]), float(value[2]))
+        if self.scenario.coordinate_frame == "map" and self._usd_to_map is not None:
+            return self._usd_to_map(usd_position)
+        return usd_position
 
     def bind_ros(self, node, simulation_time: Callable[[], float]) -> None:
         """Expose the documented trigger/reset/state endpoints from the Isaac process."""
@@ -147,6 +158,21 @@ class DynamicObstacleManager:
             response.message = "obstacles reset"
             return response
         self._services.append(node.create_service(Trigger, "/experiment/obstacles/reset", reset_callback))
+        def capture_layout_callback(request, response):
+            response.success = True
+            response.message = json.dumps({
+                "coordinate_frame": "map" if self.scenario.coordinate_frame == "map" else "usd",
+                "obstacles": [
+                    {
+                        "id": identifier,
+                        "position": [round(value, 6) for value in self._reported_position(runtime)],
+                    }
+                    for identifier, runtime in sorted(self._runtime.items())
+                ],
+            })
+            return response
+        self._services.append(node.create_service(
+            Trigger, "/experiment/obstacles/capture_layout", capture_layout_callback))
 
     def _publish_state(self) -> None:
         if not hasattr(self, "_state_publisher"):
@@ -165,6 +191,12 @@ class DynamicObstacleManager:
         for identifier, runtime in self._runtime.items():
             spec = runtime.spec
             if runtime.active_at is None or runtime.retired:
+                continue
+            # Stationary low boxes are deliberately GUI-adjustable.  Reset
+            # restores their YAML seed pose, but normal ticks never overwrite
+            # a manual Translate edit made in Isaac.
+            if spec.mode == "stationary":
+                runtime.progress = 1.0
                 continue
             elapsed = max(0.0, simulation_time - runtime.active_at - spec.delay_sec)
             if not runtime.motion_started and simulation_time >= runtime.active_at + spec.delay_sec:

@@ -37,6 +37,6 @@ scenario:
     minimum_curved_distance_fraction: 0.0
     maximum_stopped_time_fraction: 1.0
   obstacles:
-    layout_id: kujiale_rgbd_low_boxes_v2
-    static: [{id: rgbd_low_box_west}, {id: rgbd_low_box_east}]
+    layout_id: kujiale_rgbd_low_boxes_v4_provisional_20260723_110443
+    static: [{id: rgbd_low_box_west}, {id: rgbd_low_box_center}, {id: rgbd_low_box_east}, {id: rgbd_low_box_north}]
     trajectories: []

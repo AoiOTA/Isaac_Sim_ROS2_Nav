@@ -68,9 +68,12 @@ controller_server:
       # Permit a small reverse sample near tight terminal poses.  This lets
       # MPPI re-centres at the G1 return point after a dynamic interaction instead of remaining
       # a few centimetres outside the acceptance circle until timeout.
-      vx_std: 0.35
+      # Stable, fixed-noise sampling reduces small left/right corrections in
+      # the wide parts of the house while retaining enough spread to detour
+      # around a newly marked RGB-D low box.
+      vx_std: 0.30
       vy_std: 0.00
-      wz_std: 0.80
+      wz_std: 0.65
 
       # Forward motion remains strongly preferred, but a bounded reverse
       # sample is available for terminal-pose recovery in narrow rooms.
@@ -88,14 +91,14 @@ controller_server:
       prune_distance: 1.50
       transform_tolerance: 0.50
 
-      temperature: 0.30
+      temperature: 0.35
       gamma: 0.015
 
       motion_model: DiffDrive
       # Publish both /optimal_trajectory and /trajectories so the controller's
       # selected path and sampled candidates can be inspected live in RViz.
       visualize: true
-      regenerate_noises: true
+      regenerate_noises: false
 
       critics:
         - ConstraintCritic
@@ -521,13 +524,13 @@ collision_monitor:
       # Keep a useful warning shell around StopZone without continuously
       # catching parallel walls in a valid narrow corridor.  The physical
       # footprint is y=+/-0.210 m and the emergency shell is y=+/-0.230 m.
-      points: "[[0.42, 0.235], [0.42, -0.235], [-0.35, -0.235], [-0.35, 0.235]]"
+      points: "[[0.36, 0.235], [0.36, -0.235], [-0.30, -0.235], [-0.30, 0.235]]"
 
       action_type: slowdown
-      min_points: 4
+      min_points: 5
       # Preserve steering authority and forward progress when slowdown is
       # genuinely required; StopZone still provides the final hard stop.
-      slowdown_ratio: 0.85
+      slowdown_ratio: 0.90
 
       visualize: true
       polygon_pub_topic: /collision_monitor/slowdown_zone
@@ -539,12 +542,16 @@ collision_monitor:
 
       footprint_topic: /local_costmap/published_footprint
 
+      # MPPI already collision-checks the complete footprint against both
+      # costmap layers.  In narrow passages this predictive action repeatedly
+      # rescales commands as individual LiDAR returns vary; SlowdownZone and
+      # StopZone remain the final LiDAR safety layers.
       time_before_collision: 1.00
       simulation_time_step: 0.10
       min_points: 3
 
       visualize: false
-      enabled: true
+      enabled: false
 
     # The low RGB-D test box is below the LiDAR plane.  Feed the same depth
     # cloud that marks the VoxelLayer into the last-resort safety monitor, so

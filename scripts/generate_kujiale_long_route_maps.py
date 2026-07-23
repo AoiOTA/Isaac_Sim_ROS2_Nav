@@ -211,6 +211,12 @@ def render(kind: str, output: Path) -> None:
     # Static/dynamic overlays are intentionally distinct while all room goals
     # (G2–G6) retain identical blue circles, sizes, and labels.
     if kind == "static":
+        label_offsets = {
+            # Keep the four provisional-box labels readable even while their
+            # centres form a compact, intentionally editable test layout.
+            "rgbd_low_box_center": (-220, -50),
+            "rgbd_low_box_west": (-210, 15),
+        }
         for obstacle in campaign["static"]["obstacles"]:
             center = obstacle["center"][:2]
             size = obstacle["size"][:2]
@@ -223,17 +229,24 @@ def render(kind: str, output: Path) -> None:
                 outline=ORANGE,
                 width=5,
             )
-            text_with_box(draw, (center_px[0] + 18, center_px[1] - 50), f"{obstacle['id']}\n0.30 × 0.30 × 0.16 m", text_font=font(20), fill=ORANGE)
-        overlay_legend = "静态障碍：中心区两组 RGB-D 低矮方块"
+            label_dx, label_dy = label_offsets.get(obstacle["id"], (18, -50))
+            text_with_box(
+                draw,
+                (center_px[0] + label_dx, center_px[1] + label_dy),
+                f"{obstacle['id']}\n0.30 × 0.30 × 0.16 m",
+                text_font=font(20),
+                fill=ORANGE,
+            )
+        overlay_legend = "静态障碍：中心区四组可手调 RGB-D 低矮方块（临时种子）"
     else:
         for obstacle in campaign["dynamic"]["obstacles"]:
             start = pixel(obstacle["start"][:2])
             end = pixel(obstacle["end"][:2])
             dashed_line(draw, start, end, fill=PURPLE, width=7, dash=22, gap=12)
             arrow(draw, (end[0] - (end[0] - start[0]) * 0.18, end[1] - (end[1] - start[1]) * 0.18), end, fill=PURPLE, width=7)
-            label = f"{obstacle['id']}\nG2 后延迟慢速短移并停住"
+            label = f"{obstacle['id']}\nG2 后横穿 G1→G2 通道并停住"
             text_with_box(draw, (start[0] + 16, start[1] - 62), label, text_font=font(21), fill=PURPLE)
-        overlay_legend = "动态障碍：紫色短距轨迹（均在 G2 后慢速移动并停住）"
+        overlay_legend = "动态障碍：紫色横穿轨迹（均在 G2 后进入通道并停住）"
 
     # G1 is intentionally both the calibrated spawn and final return point.
     start_px = pixel(start_position)

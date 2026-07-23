@@ -186,8 +186,8 @@ ros2 topic echo /local_costmap/voxel_grid --once
 
 ### 3.6 正常停止
 
-先在终端 B 按一次 Ctrl+C，等待 Navigation 的有序 Lifecycle 关闭完成；再在终端 A
-按一次 Ctrl+C 停止 Isaac。正常情况下不要连续按键。若下一次启动仍提示实例占用：
+先在终端 B 按一次 Ctrl+C。受管 RViz 会先收到独立关闭请求，随后 Navigation 执行有序
+Lifecycle 关闭；再在终端 A 按一次 Ctrl+C 停止 Isaac。正常情况下不要连续按键。若下一次启动仍提示实例占用：
 
 ```bash
 ./scripts/diagnose.sh
@@ -280,8 +280,8 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-当前重设计的静态批次含中心区两组 RGB-D 低矮方块；动态批次含两组在 G1 受理后才慢速
-短移并停住的实体障碍。两批都使用 `warehouse_new`、`long_route_start_g1`、Ideal Odom 与
+当前重设计的静态批次含中心区四组 RGB-D 低矮方块；动态批次含两组在 G2 受理后横穿
+G1→G2 通道并停住的实体障碍。两批都使用 `warehouse_new`、`long_route_start_g1`、Ideal Odom 与
 `rgbd_navigation` Camera。旧 `mapping_start` / G1–G8 的正式报告是历史证据，不能用于本布局。
 由于 runner 会以 `/ground_truth/odom` 核验 Reset 和统计路线，下面所有长距离命令都
 显式设置 `ISAAC_NAV__GROUND_TRUTH__ENABLED=true`；它仅发布评测数据，不参与导航 TF
@@ -321,7 +321,8 @@ printf 'campaign_id=%s\n' "$CAMPAIGN_ID"
 ### 7.2 自动静态批次（待 Pilot 后执行）
 
 终端 A 启动无头 Isaac。`--dynamic-obstacles` 对静态批次同样是必须的：它启用冻结的
-两组 `rgbd_low_box_*` 物理障碍，而不是启用动态轨迹。
+四组 `rgbd_low_box_*` 物理障碍，而不是启用动态轨迹。仅在四个方块的 GUI 手调坐标导出并
+冻结后，才能执行这一自动批次。
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -363,12 +364,12 @@ runner 会顺序运行，不会并发启动机器人。每轮证据位于
 是后续报告的输入。runner 的某轮导航失败会写成该轮结果并继续；启动前契约不匹配、
 Reset 隔离错误或中断则应停止批次，保存终端日志并排障后从新的 `CAMPAIGN_ID` 重跑。
 
-静态 runner 正常结束后，先在终端 B 按 Ctrl+C 等待有序关闭，再在终端 A 按 Ctrl+C。
+静态 runner 正常结束后，先在终端 B 按 Ctrl+C（受管 RViz 会先关闭）等待有序关闭，再在终端 A 按 Ctrl+C。
 不要直接切换 Isaac 障碍配置后复用旧进程。
 
 ### 7.3 自动动态批次（待 Pilot 后执行）
 
-动态批次必须用新的 Isaac 进程，加载两组 G2 后触发、慢速短移并 hold 的物理障碍配置。重新打开终端 A：
+动态批次必须用新的 Isaac 进程，加载两组 G2 后触发、横穿 G1→G2 通道并 hold 的物理障碍配置。重新打开终端 A：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -479,7 +480,7 @@ visual runner。C 启动后先自行 Reset 到 `long_route_start_g1`，再顺序
 ### 8.2 静态可视化单轮
 
 终端 A 启动带 RGB-D 低矮方块的 Isaac GUI。`--dynamic-obstacles` 对静态场景同样必须
-启用，因为它负责实例化中心区两组 RGB-D 低矮方块，该配置没有运动轨迹：
+启用，因为它负责实例化中心区四组 RGB-D 低矮方块；该配置没有运动轨迹：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -500,6 +501,43 @@ cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
 ```
 
+#### 8.2.1 交互式布局与手动导航（可反复调整，不写实验输出）
+
+四个静态方块现在是用于布局确认的可编辑实体。保持上面的终端 A 和 B 运行，**不要启动**
+`./scripts/run_visual_route.sh static`：自动 visual runner 会执行 Reset，故会把方块恢复为
+YAML 中的临时种子位置。
+
+在 Isaac GUI 的 Stage 树展开 `/World/DynamicObstacles`，依次选择：
+
+- `rgbd_low_box_west`
+- `rgbd_low_box_center`
+- `rgbd_low_box_east`
+- `rgbd_low_box_north`
+
+使用 Move 工具（`W`）只修改每个 Prim 的 **Translate X/Y**；不要旋转、缩放，也不要改变
+`Z=0.08 m`。方块是 `0.30 × 0.30 × 0.16 m`，普通仿真 tick 不会覆盖 GUI 拖动，因此可在
+机器人停止后再次拖动、再次测试任意次数。每次修改后在 RViz 选择 **2D Goal Pose**，先发 G2
+`[0.80, 4.80, -135°]`，必要时依序发 G3、G4、G5、G6、G1，观察深度点云、VoxelGrid、Local
+Costmap、MPPI 路径和实际绕行。此交互式过程不创建 MCAP、JSON、CSV、报告或正式实验目录。
+
+需要随时读取当前的精确 Map 坐标时，在终端 C 执行：
+
+```bash
+cd "$PROJECT_ROOT"
+source ./scripts/setup_ros_env.sh
+ros2 service call /experiment/obstacles/capture_layout std_srvs/srv/Trigger '{}'
+```
+
+返回 JSON 中的四个 `position` 已经是 `warehouse_new` 的 **Map** 坐标，而不是 Isaac USD 坐标。
+每次保存会同步可编辑的 Isaac 基线、候选 campaign、地图示意和候选 `optimal_reference.json`，并保留一份带时间戳的草案快照；只有明确确认
+“冻结布局”后，才最后一次重生成参考并更新正式测试文档。点击 Isaac Reset、调用
+`/experiment/obstacles/reset`、或运行自动 visual runner 均会恢复最近保存的 YAML 基线；这是避免试验中的
+手调位置被误当作已冻结参数的保护措施。
+
+当前已保存的可微调基线是 `2026-07-23 11:04:43 +08:00` 的四方块 Map 快照，保存在
+`isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-110443.yaml`，并作为下一次
+静态 GUI 启动的初始位置。它明确不是正式验收冻结；继续微调后再次调用 capture 服务即可创建下一份快照。
+
 终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G2、G3、G4、G5、G6、G1 闭环路线，且不写
 项目输出：
 
@@ -514,7 +552,7 @@ RGB-D 失败；应以深度点云和 VoxelGrid 为准。
 
 ### 8.3 动态可视化单轮
 
-静态单轮结束后，先在终端 B 按 Ctrl+C 等待有序关闭，再在终端 A 按 Ctrl+C 停止
+静态单轮结束后，先在终端 B 按 Ctrl+C（受管 RViz 会先关闭）等待有序关闭，再在终端 A 按 Ctrl+C 停止
 Isaac。动态物理配置在 Isaac 启动时冻结，必须重新启动 GUI：
 
 ```bash
@@ -542,7 +580,7 @@ cd "$PROJECT_ROOT"
 ./scripts/run_visual_route.sh dynamic
 ```
 
-runner 在 G2 的 Goal 被 Nav2 接受后自动调用两组中心区障碍的触发服务；不需要手工输入
+runner 在 G2 的 Goal 被 Nav2 接受后自动调用两组横穿 G1→G2 通道障碍的触发服务；不需要手工输入
 服务命令。若希望额外查看状态，可另开终端 D：
 
 ```bash
@@ -550,7 +588,7 @@ source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
 ros2 topic echo /experiment/obstacles/state
 ```
 
-在 GUI 中应看到两组实体在中心区延迟触发、缓慢短移并 hold；在 RViz 观察路径重规划、减速/等待、
+在 GUI 中应看到两组实体从通道侧方进入 G1→G2 行进线、延迟触发并 hold；在 RViz 观察路径重规划、减速/等待、
 MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 直接退出，不会
 留下项目证据目录。
 
@@ -563,7 +601,8 @@ MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终�
 Fusion/Collision Monitor）截图；是否保存截图完全由操作者决定。若保存，使用单独的
 本地调试目录，不能与正式 `kujiale_long_route_<campaign_id>` 目录混用。
 
-完成后先停止终端 B，再停止终端 A；若异常退出，先运行 `./scripts/diagnose.sh`，再按
+完成后在终端 B 按一次 Ctrl+C：脚本会先关闭受管 RViz，再执行 Nav2 的有序 lifecycle
+关闭；随后停止终端 A。若异常退出，先运行 `./scripts/diagnose.sh`，再按
 输出使用 `clean_runtime.sh --dry-run`。
 
 ## 9. 常用诊断
