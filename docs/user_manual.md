@@ -268,8 +268,8 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 ## 7. 自动化全屋长距离测试与报告
 
 本节运行当前正式的 40 轮全屋长路线批次：静态种子 `7201–7220`、动态种子
-`7301–7320`，每轮依次自动执行 `G1` 到 `G8`。实验 runner 会在每轮开始时设置
-seed、调用 `/simulation/reset`、等待 Nav2 恢复、发送六个 Nav2 Goal，并记录 GT、
+`7301–7320`，每轮依次自动执行 `G2 → G3 → G4 → G5 → G1`。实验 runner 会在每轮开始时设置
+seed、调用 `/simulation/reset`、等待 Nav2 恢复、发送五个 Nav2 Goal，并记录 GT、
 Scan、深度图/点云、Costmap、碰撞、安全状态和 MCAP；它不负责启动 Isaac 或 Nav2。
 
 正式配置是冻结输入，不要编辑后继续沿用正式结论：
@@ -280,7 +280,7 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-当前重设计的静态批次含中心区四组 RGB-D 低矮方块；动态批次含两组在 G2 受理后横穿
+当前重设计的静态批次含中心区四个 RGB-D 低矮方块和两个低矮长条；动态批次含两组在 G2 受理后横穿
 G1→G2 通道并停住的实体障碍。两批都使用 `warehouse_new`、`long_route_start_g1`、Ideal Odom 与
 `rgbd_navigation` Camera。旧 `mapping_start` / G1–G8 的正式报告是历史证据，不能用于本布局。
 由于 runner 会以 `/ground_truth/odom` 核验 Reset 和统计路线，下面所有长距离命令都
@@ -288,7 +288,7 @@ G1→G2 通道并停住的实体障碍。两批都使用 `warehouse_new`、`long
 或控制。
 详细验收口径见
 [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md)。
-静态/动态地图、S/G1、G2–G6、障碍位置和动态触发路线见
+静态/动态地图、S/G1、G2–G5、障碍位置和动态触发路线见
 [`kujiale_long_route_map.md`](kujiale_long_route_map.md)。
 
 ### 7.1 正式批次前检查
@@ -318,11 +318,12 @@ mkdir -p "$RUN_ROOT/static" "$RUN_ROOT/dynamic"
 printf 'campaign_id=%s\n' "$CAMPAIGN_ID"
 ```
 
-### 7.2 自动静态批次（待 Pilot 后执行）
+### 7.2 自动静态 20 轮候选批次（当前六障碍参数）
 
 终端 A 启动无头 Isaac。`--dynamic-obstacles` 对静态批次同样是必须的：它启用冻结的
-四组 `rgbd_low_box_*` 物理障碍，而不是启用动态轨迹。仅在四个方块的 GUI 手调坐标导出并
-冻结后，才能执行这一自动批次。
+四个 `rgbd_low_box_*` 方块和两个 `rgbd_low_bar_*` 长条物理障碍，而不是启用动态轨迹。当前脚本使用
+`kujiale_rgbd_low_obstacles_v6_draft_20260723_133702` 可编辑基线；它对应 `2026-07-23 13:37:02 +08:00` 捕获的四个方块和两个长条。结果是**静态候选**，不替代布局冻结
+后的正式 20+20 验收。
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -349,20 +350,30 @@ cd "$PROJECT_ROOT"
   use_rviz:=false
 ```
 
-终端 C 启动 20 个静态 seed。该命令结束前不要关闭 A 或 B：
+终端 C 启动 20 个静态 seed。该命令结束前不要关闭 A 或 B；可选参数是本次启动时的
+`YYYYMMDD-HHMMSS` 批次 ID，省略时脚本自动生成。runner 完成后脚本会自动汇总静态证据并生成
+离线中文报告：
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml \
-  "$RUN_ROOT/static"
+./scripts/run_kujiale_static_20.sh
+# 或固定本次批次 ID：
+# ./scripts/run_kujiale_static_20.sh 20260723-120000
 ```
 
 runner 会顺序运行，不会并发启动机器人。每轮证据位于
-`$RUN_ROOT/static/kujiale_static_long_range/run-<序号>-seed-<seed>/`；其
-`run_summary.json`、`run_manifest.json`、`checksums.sha256` 和 `telemetry/*.mcap`
-是后续报告的输入。runner 的某轮导航失败会写成该轮结果并继续；启动前契约不匹配、
-Reset 隔离错误或中断则应停止批次，保存终端日志并排障后从新的 `CAMPAIGN_ID` 重跑。
+`data/experiment_runs/kujiale_long_route_static_<campaign_id>/kujiale_static_long_range/run-<序号>-seed-<seed>/`；
+其 `run_summary.json`、`run_manifest.json`、`checksums.sha256` 和 `telemetry/*.mcap` 是报告输入。
+完成后自动输出 `data/reports/kujiale_long_route_static_<campaign_id>/`，其中 `index.html` 可直接双击打开，
+不需要 Web 服务器。全屋轨迹地图提供 **种子**（7201–7220）和**结果**筛选器：选择一个种子会只显示该轮
+Ground Truth 轨迹，同时联动隐藏其他轮的明细行；悬停轨迹可查看该轮原始里程与通过/失败状态，点击热力图单元格或
+“查看详情”可进入该轮证据页。报告同时生成 `report.pdf`、`report.md`、`benchmark.json`、`benchmark.csv`、
+`data_dictionary.md`、`figures/`、`runs/` 和 `checksums.sha256`。
+
+静态 runner 的某轮导航失败会写成该轮结果并继续；静态门槛不通过时，脚本仍会生成完整报告，
+并以退出码 `2` 结束（表示“有结论但未通过”，不是报告生成失败）。该报告明确标注“动态 20 轮未运行”，
+不能用于动态或完整 20+20 验收。启动前契约不匹配、Reset 隔离错误或中断则应停止批次，保存终端日志并
+从新的 `CAMPAIGN_ID` 重跑。
 
 静态 runner 正常结束后，先在终端 B 按 Ctrl+C（受管 RViz 会先关闭）等待有序关闭，再在终端 A 按 Ctrl+C。
 不要直接切换 Isaac 障碍配置后复用旧进程。
@@ -451,7 +462,7 @@ PDF、PNG、CSV、JSON、MCAP 和图像都不推送；应提交的是代码、�
 ## 8. 可视化单轮全屋长距离测试（Isaac GUI + RViz）
 
 本节用于可视化回归：Isaac 保持 GUI、Navigation 保持 RViz，但由 experiment runner
-自动按 `G2 → G3 → G4 → G5 → G6 → G1` 发送六个 Nav2 Goal（G1 是出生点也是最终回归点）。你不需要点击 **2D Goal Pose**、手动
+自动按 `G2 → G3 → G4 → G5 → G1` 发送五个 Nav2 Goal（G1 是出生点也是最终回归点）。你不需要点击 **2D Goal Pose**、手动
 触发动态障碍或运行 20 轮。静态和动态各只运行固定的一个 seed，适合观察 RGB-D 融合、
 Costmap、MPPI、Collision Monitor 与实体障碍行为。
 
@@ -469,7 +480,7 @@ cd "$PROJECT_ROOT"
 ```
 
 终端 A 始终运行 Isaac GUI；终端 B 启动受管 `navigation.rviz`；终端 C 运行单轮
-visual runner。C 启动后先自行 Reset 到 `long_route_start_g1`，再顺序发送 G2、G3、G4、G5、G6、G1；在 RViz
+visual runner。C 启动后先自行 Reset 到 `long_route_start_g1`，再顺序发送 G2、G3、G4、G5、G1；在 RViz
 只观察，不要再手动发送 Goal。`run_visual_route.sh` 不创建 `data/experiment_runs/` 或
 `data/reports/` 下的任何文件。visual runner 同样需读取 Ground Truth 完成 Reset
 一致性检查，因此终端 A 的命令也显式启用它；这不会产生评测证据或报告。
@@ -480,7 +491,7 @@ visual runner。C 启动后先自行 Reset 到 `long_route_start_g1`，再顺序
 ### 8.2 静态可视化单轮
 
 终端 A 启动带 RGB-D 低矮方块的 Isaac GUI。`--dynamic-obstacles` 对静态场景同样必须
-启用，因为它负责实例化中心区四组 RGB-D 低矮方块；该配置没有运动轨迹：
+启用，因为它负责实例化中心区四个 RGB-D 低矮方块和两个低矮长条；该配置没有运动轨迹：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -503,8 +514,8 @@ cd "$PROJECT_ROOT"
 
 #### 8.2.1 交互式布局与手动导航（可反复调整，不写实验输出）
 
-四个静态方块现在是用于布局确认的可编辑实体。保持上面的终端 A 和 B 运行，**不要启动**
-`./scripts/run_visual_route.sh static`：自动 visual runner 会执行 Reset，故会把方块恢复为
+六个静态障碍现在是用于布局确认的可编辑实体。保持上面的终端 A 和 B 运行，**不要启动**
+`./scripts/run_visual_route.sh static`：自动 visual runner 会执行 Reset，故会把障碍恢复为
 YAML 中的临时种子位置。
 
 在 Isaac GUI 的 Stage 树展开 `/World/DynamicObstacles`，依次选择：
@@ -513,11 +524,15 @@ YAML 中的临时种子位置。
 - `rgbd_low_box_center`
 - `rgbd_low_box_east`
 - `rgbd_low_box_north`
+- `rgbd_low_bar_east`
+- `rgbd_low_bar_north`
 
 使用 Move 工具（`W`）只修改每个 Prim 的 **Translate X/Y**；不要旋转、缩放，也不要改变
-`Z=0.08 m`。方块是 `0.30 × 0.30 × 0.16 m`，普通仿真 tick 不会覆盖 GUI 拖动，因此可在
-机器人停止后再次拖动、再次测试任意次数。每次修改后在 RViz 选择 **2D Goal Pose**，先发 G2
-`[0.80, 4.80, -135°]`，必要时依序发 G3、G4、G5、G6、G1，观察深度点云、VoxelGrid、Local
+`Z=0.08 m`。四个方块是 `0.30 × 0.30 × 0.16 m`，两个长条是 `0.60 × 0.30 × 0.16 m`；普通仿真 tick 不会覆盖 GUI 拖动，因此可在
+机器人停止后再次拖动、再次测试任意次数。每次修改后在 RViz 选择 **2D Goal Pose**，按顺序发送
+G2 `[0.80, 4.80, -160°]`、G3 `[-2.55, 3.65, -100°]`、G4 `[-3.25, -0.45, -75°]`、
+G5 `[-2.50, -3.35, -35°]`、G1 `[0.45, -5.35, 90°]`。
+原狭窄通道停靠点已删除；G4 是原左侧厕所航点，只作为普通目标显示。观察深度点云、VoxelGrid、Local
 Costmap、MPPI 路径和实际绕行。此交互式过程不创建 MCAP、JSON、CSV、报告或正式实验目录。
 
 需要随时读取当前的精确 Map 坐标时，在终端 C 执行：
@@ -528,17 +543,17 @@ source ./scripts/setup_ros_env.sh
 ros2 service call /experiment/obstacles/capture_layout std_srvs/srv/Trigger '{}'
 ```
 
-返回 JSON 中的四个 `position` 已经是 `warehouse_new` 的 **Map** 坐标，而不是 Isaac USD 坐标。
+返回 JSON 中的六个 `position` 已经是 `warehouse_new` 的 **Map** 坐标，而不是 Isaac USD 坐标。
 每次保存会同步可编辑的 Isaac 基线、候选 campaign、地图示意和候选 `optimal_reference.json`，并保留一份带时间戳的草案快照；只有明确确认
 “冻结布局”后，才最后一次重生成参考并更新正式测试文档。点击 Isaac Reset、调用
 `/experiment/obstacles/reset`、或运行自动 visual runner 均会恢复最近保存的 YAML 基线；这是避免试验中的
 手调位置被误当作已冻结参数的保护措施。
 
-当前已保存的可微调基线是 `2026-07-23 11:04:43 +08:00` 的四方块 Map 快照，保存在
-`isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-110443.yaml`，并作为下一次
-静态 GUI 启动的初始位置。它明确不是正式验收冻结；继续微调后再次调用 capture 服务即可创建下一份快照。
+完整六障碍的最后 GUI 捕获是 `isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-133702.yaml`；它与
+`kujiale_long_range_static.yaml`、静态 Pilot/visual/20 轮场景和候选理论参考同步。下一次静态 GUI 启动会加载这六个障碍；
+它明确不是正式验收冻结。继续微调后再次调用 capture 服务，即可导出包含六个障碍的下一份快照。
 
-终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G2、G3、G4、G5、G6、G1 闭环路线，且不写
+终端 C 启动唯一静态 visual seed `7201`。runner 自动发送完整 G2、G3、G4、G5、G1 闭环路线，且不写
 项目输出：
 
 ```bash

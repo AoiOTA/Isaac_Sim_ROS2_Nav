@@ -10,11 +10,12 @@ environment:
   physics_dt: 0.016666666666666666
   rtf: 1.0
 route:
-  - {id: G2, region: 上方大房间, pose: [0.80, 4.80, -135.0]}
-  - {id: G3, region: 左上房间出口侧, pose: [-2.55, 3.65, 0.0]}
-  - {id: G4, region: 最左侧房间, pose: [-4.05, 1.15, 0.0]}
-  - {id: G5, region: 左侧厕所, pose: [-3.25, -0.45, 0.0]}
-  - {id: G6, region: 左下房间, pose: [-2.50, -3.35, 90.0]}
+  # The narrow-passage waypoint was removed. Intermediate yaws face the next
+  # leg so the runner can continue directly after each completed action.
+  - {id: G2, region: 上方大房间, pose: [0.80, 4.80, -160.0]}
+  - {id: G3, region: 左上房间出口侧, pose: [-2.55, 3.65, -100.0]}
+  - {id: G4, region: 左侧厕所, pose: [-3.25, -0.45, -75.0]}
+  - {id: G5, region: 左下房间, pose: [-2.50, -3.35, -35.0]}
   - {id: G1, region: 最下方房间/回归出生点, pose: [0.45, -5.35, 90.0]}
 acceptance:
   position_tolerance_m: 0.25
@@ -33,12 +34,14 @@ acceptance:
 static:
   seeds: [7201, 7202, 7203, 7204, 7205, 7206, 7207, 7208, 7209, 7210, 7211, 7212, 7213, 7214, 7215, 7216, 7217, 7218, 7219, 7220]
   obstacles:
-    # Provisional GUI snapshot 2026-07-23 11:04:43 +08:00. Do not treat this
-    # candidate as a frozen formal layout until the tuning loop is complete.
+    # GUI capture 2026-07-23 13:37:02 +08:00. Do not treat this candidate as
+    # a frozen formal layout until the tuning loop is complete.
     - {id: rgbd_low_box_west, mode: stationary, coordinate_frame: map, center: [-0.853013, -0.961904, 0.08], size: [0.30, 0.30, 0.16]}
-    - {id: rgbd_low_box_center, mode: stationary, coordinate_frame: map, center: [-0.538928, 0.294727, 0.08], size: [0.30, 0.30, 0.16]}
-    - {id: rgbd_low_box_east, mode: stationary, coordinate_frame: map, center: [0.926339, 0.222787, 0.08], size: [0.30, 0.30, 0.16]}
+    - {id: rgbd_low_box_center, mode: stationary, coordinate_frame: map, center: [-2.135744, -0.876959, 0.08], size: [0.30, 0.30, 0.16]}
+    - {id: rgbd_low_box_east, mode: stationary, coordinate_frame: map, center: [0.366563, 0.66795, 0.08], size: [0.30, 0.30, 0.16]}
     - {id: rgbd_low_box_north, mode: stationary, coordinate_frame: map, center: [0.126442, -0.579985, 0.08], size: [0.30, 0.30, 0.16]}
+    - {id: rgbd_low_bar_east, mode: stationary, coordinate_frame: map, center: [1.286899, 0.033996, 0.08], size: [0.60, 0.30, 0.16]}
+    - {id: rgbd_low_bar_north, mode: stationary, coordinate_frame: map, center: [-0.703143, 0.252652, 0.08], size: [0.60, 0.30, 0.16]}
 dynamic:
   seeds: [7301, 7302, 7303, 7304, 7305, 7306, 7307, 7308, 7309, 7310, 7311, 7312, 7313, 7314, 7315, 7316, 7317, 7318, 7319, 7320]
   obstacles:

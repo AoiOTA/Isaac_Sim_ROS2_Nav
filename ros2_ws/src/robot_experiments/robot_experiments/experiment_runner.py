@@ -1764,7 +1764,10 @@ class ExperimentRunner(Node):
             bag_complete and depth_complete and scan_complete and local_costmap_complete
             and global_costmap_complete and all((root / name).is_file() for name in required_files)
         )
-        strict_success = manifest.get("result") == "success" and len(legs) == 8
+        # The redesigned long route dispatches G2–G5 and then closes the loop
+        # at G1.  It therefore has six legs, not the obsolete eight-waypoint
+        # route that preceded this campaign.
+        strict_success = manifest.get("result") == "success" and len(legs) == len(self._scenario.route)
         summary = {
             "campaign": "kujiale_long_range",
             "kind": self._scenario.scenario_type,

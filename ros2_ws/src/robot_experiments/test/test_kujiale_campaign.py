@@ -9,7 +9,9 @@ from robot_experiments.kujiale_campaign import (
     WAYPOINT_IDS,
     load_campaign_definition,
     summarize_campaign,
+    summarize_static_campaign,
     write_campaign_report,
+    write_static_campaign_report,
 )
 
 
@@ -18,7 +20,9 @@ def test_frozen_campaign_definition_has_the_required_v2_route_and_seeds():
         Path(__file__).resolve().parents[1]
         / "config" / "kujiale_long_range_campaign.yaml"
     )
-    assert definition["route"][3]["id"] == "G5"
+    assert [item["id"] for item in definition["route"]] == [
+        "G2", "G3", "G4", "G5", "G1"
+    ]
 
 
 def _run(kind, seed, *, strict=True, collision_free=True, deviation=12.5):
@@ -74,6 +78,38 @@ def test_campaign_rejects_missing_or_selectively_repeated_formal_runs(tmp_path):
     (tmp_path / "static" / "7201" / "run_summary.json").unlink()
     with pytest.raises(CampaignValidationError, match="seeds must be exactly"):
         summarize_campaign([tmp_path])
+
+
+def test_static_candidate_report_requires_only_static_seeds_and_never_claims_dynamic_result(tmp_path):
+    _write_batch(tmp_path, "static", 7201, failures=1)
+    summary = summarize_static_campaign([tmp_path])
+    assert summary["passed"] is True
+    assert summary["scope"] == "static_20_candidate"
+    assert summary["dynamic"]["executed"] is False
+    output = write_static_campaign_report(summary, tmp_path / "static-report")
+    benchmark = json.loads((output / "benchmark.json").read_text())
+    assert benchmark["dynamic"]["executed"] is False
+    assert benchmark["static"]["strict_success"]["numerator"] == 19
+    assert (output / "figures" / "static_campaign_overview.png").read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    dashboard = (output / "index.html").read_text(encoding="utf-8")
+    assert "动态 20 轮尚未运行" in dashboard
+    assert "id='seed'" in dashboard
+    assert "document.querySelectorAll('.track')" in dashboard
+
+
+def test_static_candidate_report_normalizes_only_the_known_legacy_route_length_defect(tmp_path):
+    _write_batch(tmp_path, "static", 7201)
+    target = tmp_path / "static" / "7201"
+    summary_file = target / "run_summary.json"
+    legacy = json.loads(summary_file.read_text(encoding="utf-8"))
+    legacy["strict_success"] = False
+    summary_file.write_text(json.dumps(legacy), encoding="utf-8")
+    (target / "run_manifest.json").write_text(
+        json.dumps({"result": "success"}), encoding="utf-8"
+    )
+    summary = summarize_static_campaign([tmp_path])
+    assert summary["static"]["strict_success"]["numerator"] == 20
+    assert summary["runs"][0]["strict_success_source"] == "run_manifest_success_legacy_route_length_fix"
 
 
 def test_campaign_accepts_an_ordered_failed_leg_prefix_and_pads_the_heatmap(tmp_path):

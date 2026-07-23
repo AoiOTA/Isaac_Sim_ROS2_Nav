@@ -13,11 +13,10 @@ scenario:
   runs: {seeds: [7201], timeout_sec: 600.0, leg_timeout_sec: 180.0}
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   route:
-    - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -135.0, require_orientation: true}
-    - {id: G3, frame_id: map, position: [-2.55, 3.65], yaw_deg: 0.0, require_orientation: true}
-    - {id: G4, frame_id: map, position: [-4.05, 1.15], yaw_deg: 0.0, require_orientation: true}
-    - {id: G5, frame_id: map, position: [-3.25, -0.45], yaw_deg: 0.0, require_orientation: true}
-    - {id: G6, frame_id: map, position: [-2.50, -3.35], yaw_deg: 90.0, require_orientation: true}
+    - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -160.0, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-2.55, 3.65], yaw_deg: -100.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-3.25, -0.45], yaw_deg: -75.0, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-2.50, -3.35], yaw_deg: -35.0, require_orientation: true}
     - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0, minimum_reverse_distance_m: 0.0, maximum_reverse_distance_fraction: 1.0, minimum_curved_distance_fraction: 0.0, maximum_stopped_time_fraction: 1.0}
-  obstacles: {layout_id: kujiale_rgbd_low_boxes_v4_provisional_20260723_110443, static: [{id: rgbd_low_box_west}, {id: rgbd_low_box_center}, {id: rgbd_low_box_east}, {id: rgbd_low_box_north}], trajectories: []}
+  obstacles: {layout_id: kujiale_rgbd_low_obstacles_v6_draft_20260723_133702, static: [{id: rgbd_low_box_west}, {id: rgbd_low_box_center}, {id: rgbd_low_box_east}, {id: rgbd_low_box_north}, {id: rgbd_low_bar_east}, {id: rgbd_low_bar_north}], trajectories: []}

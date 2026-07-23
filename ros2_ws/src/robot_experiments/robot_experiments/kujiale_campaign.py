@@ -26,8 +26,8 @@ STATIC_MIN_SUCCESS = 19
 DYNAMIC_MIN_SUCCESS = 18
 PATH_DEVIATION_MAX_PERCENT = 20.0
 # G1 is the redesigned route's calibrated spawn/return point.  The runner
-# dispatches G2 through G6, then sends G1 as the final closed-loop goal.
-WAYPOINT_IDS = ("G2", "G3", "G4", "G5", "G6", "G1")
+# dispatches G2 through G5, then sends G1 as the final closed-loop goal.
+WAYPOINT_IDS = ("G2", "G3", "G4", "G5", "G1")
 
 
 class CampaignValidationError(ValueError):
@@ -56,7 +56,7 @@ def load_campaign_definition(path: str | Path) -> Mapping[str, Any]:
         raise CampaignValidationError("campaign environment.start_pose must be [x, y, yaw_deg]")
     route = value.get("route")
     if not isinstance(route, list) or [item.get("id") if isinstance(item, Mapping) else None for item in route] != list(WAYPOINT_IDS):
-        raise CampaignValidationError("campaign route must contain the redesigned G2, G3, G4, G5, G6, G1 order")
+        raise CampaignValidationError("campaign route must contain the redesigned G2, G3, G4, G5, G1 order")
     for kind, seeds in (("static", STATIC_SEEDS), ("dynamic", DYNAMIC_SEEDS)):
         section = value.get(kind)
         if not isinstance(section, Mapping) or tuple(section.get("seeds", ())) != seeds:
@@ -163,11 +163,36 @@ def _validate_run(summary: Mapping[str, Any], expected_kind: str) -> int:
     return seed
 
 
+def _normalize_legacy_strict_success(summary: Mapping[str, Any]) -> Mapping[str, Any]:
+    """Repair only the known route-length reporter defect in memory.
+
+    Existing evidence is immutable.  Builds made before the corrected runner
+    wrote ``strict_success: false`` for every successful redesigned route,
+    because the summary still expected a retired route length. A successful
+    manifest plus exactly the current route legs is sufficient to
+    identify that narrow defect without reclassifying any actual failure.
+    """
+    if _bool(summary, "strict_success") or len(summary.get("legs", [])) != len(WAYPOINT_IDS):
+        return summary
+    evidence_dir = Path(str(summary.get("_evidence_dir", "")))
+    manifest_path = evidence_dir / "run_manifest.json"
+    if not manifest_path.is_file():
+        return summary
+    manifest = _read_json(manifest_path)
+    if manifest.get("result") != "success":
+        return summary
+    normalized = dict(summary)
+    normalized["strict_success"] = True
+    normalized["strict_success_source"] = "run_manifest_success_legacy_route_length_fix"
+    return normalized
+
+
 def _campaign_rows(summaries: Iterable[Mapping[str, Any]], kind: str, seeds: tuple[int, ...]) -> list[Mapping[str, Any]]:
     selected: dict[int, Mapping[str, Any]] = {}
     for summary in summaries:
         if summary.get("kind") != kind:
             continue
+        summary = _normalize_legacy_strict_success(summary)
         seed = _validate_run(summary, kind)
         if seed in selected:
             raise CampaignValidationError(f"duplicate {kind} seed {seed}")
@@ -205,6 +230,44 @@ def summarize_campaign(directories: Iterable[str | Path]) -> dict[str, Any]:
         "evidence_complete": evidence_ok, "runs": list(static) + list(dynamic),
     }
     result["passed"] = bool(static_strict.passed and static_collision.passed and dynamic_strict.passed and dynamic_collision.passed and deviations_ok and evidence_ok)
+    return result
+
+
+def summarize_static_campaign(directories: Iterable[str | Path]) -> dict[str, Any]:
+    """Validate one exact static 20-seed candidate batch.
+
+    This is intentionally separate from :func:`summarize_campaign`: a static
+    candidate result must never imply that the dynamic acceptance batch has
+    passed or failed.  The output is still evidence-first and uses the same
+    static 19/20, collision-free, and path-deviation gates as the full report.
+    """
+    summaries = _candidate_summaries(directories)
+    static = _campaign_rows(summaries, "static", STATIC_SEEDS)
+    strict = _rate(sum(_bool(row, "strict_success") for row in static), 20, STATIC_MIN_SUCCESS)
+    collision = _rate(sum(_bool(row, "physical_collision_free") for row in static), 20, STATIC_MIN_SUCCESS)
+    successful = [row for row in static if _bool(row, "strict_success")]
+    deviations = [_number(row, "path_deviation_percent") for row in successful]
+    deviations_ok = bool(deviations) and all(value <= PATH_DEVIATION_MAX_PERCENT for value in deviations)
+    evidence_ok = all(_bool(row, "data_complete") and _bool(row, "checksums_verified") for row in static)
+    result = {
+        "schema_version": 2,
+        "campaign": "kujiale_long_range",
+        "scope": "static_20_candidate",
+        "static": {"strict_success": asdict(strict), "physical_collision_free": asdict(collision)},
+        "dynamic": {"executed": False, "reason": "本报告只汇总静态 20 轮；动态 20 轮未运行。"},
+        "path_optimality": {
+            "successful_static_runs": len(successful),
+            "mean_deviation_percent": sum(deviations) / len(deviations) if deviations else None,
+            "p50_deviation_percent": median(deviations) if deviations else None,
+            "p95_deviation_percent": sorted(deviations)[max(0, math.ceil(0.95 * len(deviations)) - 1)] if deviations else None,
+            "maximum_deviation_percent": max(deviations) if deviations else None,
+            "required_maximum_percent": PATH_DEVIATION_MAX_PERCENT,
+            "passed": deviations_ok,
+        },
+        "evidence_complete": evidence_ok,
+        "runs": list(static),
+    }
+    result["passed"] = bool(strict.passed and collision.passed and deviations_ok and evidence_ok)
     return result
 
 
@@ -508,11 +571,20 @@ def _plot_evidence_figures(visual: Mapping[str, Any], figures: Path) -> list[Pat
     fig, axes = plt.subplots(2, 2, figsize=(16, 9), constrained_layout=True); fig.patch.set_facecolor("#f8fafc")
     axes[0, 0].scatter([item["seed"] for item in static if _finite_number(item.get("path_deviation_percent")) is not None], deviations, color="#2563eb")
     axes[0, 0].axhline(20, color="#dc2626", linestyle="--"); axes[0, 0].set(title="静态路径偏差散点图", xlabel="种子", ylabel="偏差 (%)")
-    axes[0, 1].boxplot(deviations, vert=True, labels=["静态 20 轮"]); axes[0, 1].axhline(20, color="#dc2626", linestyle="--"); axes[0, 1].set(title="路径偏差分布（P50 / P95 / 最大值见 JSON）", ylabel="偏差 (%)")
+    if deviations:
+        axes[0, 1].boxplot(deviations, vert=True, labels=["静态 20 轮"])
+    else:
+        axes[0, 1].text(.5, .5, "没有成功静态运行；\n无法计算路径偏差分布。", ha="center", va="center", transform=axes[0, 1].transAxes)
+        axes[0, 1].set_xticks([])
+    axes[0, 1].axhline(20, color="#dc2626", linestyle="--"); axes[0, 1].set(title="路径偏差分布（P50 / P95 / 最大值见 JSON）", ylabel="偏差 (%)")
     reference_by_leg = [sum(float(item["legs"][index].get("reference_length_m", 0.0)) for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("reference_length_m")) is not None) / max(1, sum(1 for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("reference_length_m")) is not None)) for index in range(len(WAYPOINT_IDS))]
     gt_by_leg = [sum(float(item["legs"][index].get("ground_truth_length_m", 0.0)) for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("ground_truth_length_m")) is not None) / max(1, sum(1 for item in static if len(item["legs"]) > index and _finite_number(item["legs"][index].get("ground_truth_length_m")) is not None)) for index in range(len(WAYPOINT_IDS))]
     indices = list(range(len(WAYPOINT_IDS))); axes[1, 0].bar([index - .19 for index in indices], reference_by_leg, .38, label="理论参考", color="#111827"); axes[1, 0].bar([index + .19 for index in indices], gt_by_leg, .38, label="GT 执行", color="#16a34a"); axes[1, 0].set_xticks(indices, WAYPOINT_IDS); axes[1, 0].set(title="每段理论与 GT 长度对比", ylabel="长度 (m)"); axes[1, 0].legend()
-    axes[1, 1].axis("off"); aggregate = visual["aggregate"]["path_deviation"]; axes[1, 1].text(.08, .78, "路径最优性摘要", fontsize=20, fontweight="bold", transform=axes[1, 1].transAxes); axes[1, 1].text(.08, .49, f"P50  {aggregate['p50']:.2f}%\nP95  {aggregate['p95']:.2f}%\n最大  {aggregate['maximum']:.2f}%\n门槛  ≤ 20.00%", fontsize=17, linespacing=1.8, transform=axes[1, 1].transAxes); axes[1, 1].text(.08, .10, "首次规划路径未作为结构化序列采集；原始 MCAP 可下钻。", color="#64748b", transform=axes[1, 1].transAxes)
+    axes[1, 1].axis("off"); aggregate = visual["aggregate"]["path_deviation"]
+    def metric(value: object) -> str:
+        number = _finite_number(value)
+        return "—" if number is None else f"{number:.2f}%"
+    axes[1, 1].text(.08, .78, "路径最优性摘要", fontsize=20, fontweight="bold", transform=axes[1, 1].transAxes); axes[1, 1].text(.08, .49, f"P50  {metric(aggregate['p50'])}\nP95  {metric(aggregate['p95'])}\n最大  {metric(aggregate['maximum'])}\n门槛  ≤ 20.00%", fontsize=17, linespacing=1.8, transform=axes[1, 1].transAxes); axes[1, 1].text(.08, .10, "首次规划路径未作为结构化序列采集；原始 MCAP 可下钻。", color="#64748b", transform=axes[1, 1].transAxes)
     path = figures / "path_optimality.png"; fig.savefig(path, dpi=100); plt.close(fig); paths.append(path)
     fig, axes = plt.subplots(1, 2, figsize=(16, 9), constrained_layout=True); fig.patch.set_facecolor("#f8fafc")
     runs = list(visual["runs"]); scan_points = [(item["seed"], item["minimum_scan_range_m"], item["kind"]) for item in runs if item["minimum_scan_range_m"] is not None]
@@ -634,10 +706,10 @@ def _dashboard_html(summary: Mapping[str, Any], visual: Mapping[str, Any], cards
     page = _legacy_dashboard_html(
         summary, visual, cards, rows, images, conclusion, max_deviation, integrity
     )
-    route_copy = "G1（出生）→ G2 → G3 → G4 → G5 → G6 → G1（回归）"
+    route_copy = "G1（出生）→ G2 → G3 → G4 → G5 → G1（回归）"
     return (
-        page.replace("静态与动态各 20 轮、8 个航点", "静态与动态各 20 轮、6 个导航 Goal")
-        .replace("固定路径</span><strong>G1 → G8 <small>每轮共 8 个航点", f"固定路径</span><strong>{route_copy} <small>每轮共 6 个导航 Goal")
+        page.replace("静态与动态各 20 轮、8 个航点", "静态与动态各 20 轮、5 个导航 Goal")
+        .replace("固定路径</span><strong>G1 → G8 <small>每轮共 8 个航点", f"固定路径</span><strong>{route_copy} <small>每轮共 5 个导航 Goal")
         .replace("静态 20 × 8", "静态 20 × 6")
         .replace("动态 20 × 8", "动态 20 × 6")
     )
@@ -675,7 +747,7 @@ def write_campaign_report(summary: Mapping[str, Any], directory: str | Path) -> 
     conclusion = "通过" if clean_summary["passed"] else "未通过"
     markdown = f"# Kujiale 全屋长距离导航验收报告\n\n自动结论：**{conclusion}**。静态门槛 19/20（95%），动态门槛 18/20（90%），静态路径偏差上限 20%。\n\n- 静态严格：{clean_summary['static']['strict_success']['numerator']}/20\n- 动态严格：{clean_summary['dynamic']['strict_success']['numerator']}/20\n- 最大静态路径偏差：{clean_summary['path_optimality']['maximum_deviation_percent']}%\n- 总实验时间：{visual['aggregate']['total_duration_sec'] / 60:.1f} min\n- 总 GT 里程：{visual['aggregate']['total_ground_truth_length_m']:.1f} m\n- 物理碰撞总数：{visual['aggregate']['physical_collision_count']}\n\n![总体 KPI](figures/campaign_overview.png)\n\n![路径最优性](figures/path_optimality.png)\n\n![避障与安全](figures/safety_overview.png)\n"
     _atomic_write(root / "report.md", markdown.encode("utf-8")); _atomic_write(root / "index.html", _html_page(clean_summary, figure_paths, visual).encode("utf-8"))
-    dictionary = "# 数据字典\n\n`benchmark.json` 是 KPI 的唯一机器可读来源；`runs/` 保存每轮清单、事件、GT/Odom/Cmd、RGB-D、Scan、Costmap、MCAP 和校验和。`strict_success` 表示重设计闭环的六个导航 Goal（G2 至 G6，再回归 G1）及所有安全门禁均通过。\n"
+    dictionary = "# 数据字典\n\n`benchmark.json` 是 KPI 的唯一机器可读来源；`runs/` 保存每轮清单、事件、GT/Odom/Cmd、RGB-D、Scan、Costmap、MCAP 和校验和。`strict_success` 表示重设计闭环的五个导航 Goal（G2 至 G5，再回归 G1）及所有安全门禁均通过。\n"
     _atomic_write(root / "data_dictionary.md", dictionary.encode("utf-8"))
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:
@@ -685,8 +757,157 @@ def write_campaign_report(summary: Mapping[str, Any], directory: str | Path) -> 
     return root
 
 
+def _plot_static_overview(summary: Mapping[str, Any], figures: Path) -> list[Path]:
+    """Render the overview for an explicitly static-only 20-run report."""
+    plt, _ = _matplotlib()
+    figures.mkdir(parents=True, exist_ok=True)
+    fig, axes = plt.subplots(2, 2, figsize=(16, 9), constrained_layout=True)
+    fig.patch.set_facecolor("#f8fafc")
+    fig.suptitle("Kujiale 全屋长距离导航｜静态 20 轮候选总览", fontsize=22, fontweight="bold", color="#0f172a")
+    rates = [summary["static"]["strict_success"], summary["static"]["physical_collision_free"]]
+    labels, thresholds = ["静态严格", "静态无碰撞"], [95, 95]
+    kpi_axis = axes[0, 0]; kpi_axis.set_facecolor("#ffffff")
+    values = [rate["percent"] for rate in rates]
+    bars = kpi_axis.bar(labels, values, color=["#16a34a" if value >= threshold else "#dc2626" for value, threshold in zip(values, thresholds)], width=.62)
+    kpi_axis.plot(range(2), thresholds, color="#f97316", linestyle="--", marker="o", label="静态门槛")
+    kpi_axis.set(ylim=(0, 108), ylabel="成功率 (%)", title="静态 KPI｜每项分母均为 20")
+    for bar, rate in zip(bars, rates):
+        kpi_axis.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 2, f"{rate['numerator']}/20\n{rate['percent']:.1f}%", ha="center", va="bottom", fontsize=10, fontweight="bold")
+    kpi_axis.legend(loc="lower left", frameon=False)
+
+    rows = list(summary["runs"])
+    valid = [(row["seed"], row.get("path_deviation_percent")) for row in rows if row.get("strict_success") and _finite_number(row.get("path_deviation_percent")) is not None]
+    deviation_axis = axes[0, 1]; deviation_axis.set_facecolor("#ffffff")
+    if valid:
+        seeds, deviations = zip(*valid)
+        deviation_axis.vlines(seeds, 0, deviations, color="#93c5fd", linewidth=2)
+        deviation_axis.scatter(seeds, deviations, color="#2563eb", s=48, zorder=3, label="GT 相对理论路径")
+    else:
+        deviation_axis.text(.5, .5, "无成功静态运行\n无法计算路径偏差", ha="center", va="center", transform=deviation_axis.transAxes)
+    deviation_axis.axhline(PATH_DEVIATION_MAX_PERCENT, color="#dc2626", linestyle="--", label="20% 门槛")
+    maximum = _finite_number(summary["path_optimality"]["maximum_deviation_percent"])
+    deviation_axis.set(xlabel="静态种子", ylabel="路径偏差 (%)", title=f"路径最优性｜最大偏差 {'—' if maximum is None else f'{maximum:.2f}%'}")
+    deviation_axis.legend(loc="upper left", frameon=False)
+
+    outcome_axis = axes[1, 0]; outcome_axis.set_facecolor("#ffffff")
+    for index, row in enumerate(rows, 1):
+        outcome_axis.scatter(index, 0, s=260, color="#16a34a" if row["strict_success"] else "#dc2626", marker="s", edgecolors="#ffffff", linewidths=1.2)
+    strict_count = sum(bool(row["strict_success"]) for row in rows)
+    outcome_axis.text(20.9, 0, f"{strict_count}/20", va="center", color="#334155", fontweight="bold")
+    outcome_axis.set(xlim=(.25, 23), ylim=(-.7, .7), yticks=[0], yticklabels=["静态"], xlabel="正式试验序号（由左至右）", title="试验覆盖｜绿=严格通过，红=未通过")
+    outcome_axis.set_xticks([1, 5, 10, 15, 20])
+
+    evidence_axis = axes[1, 1]; evidence_axis.set_facecolor("#0f172a"); evidence_axis.set_xticks([]); evidence_axis.set_yticks([])
+    for spine in evidence_axis.spines.values():
+        spine.set_visible(False)
+    complete = sum(bool(row["data_complete"]) for row in rows); verified = sum(bool(row["checksums_verified"]) for row in rows)
+    evidence_axis.text(.07, .83, "静态证据与结论", transform=evidence_axis.transAxes, color="#f8fafc", fontsize=18, fontweight="bold")
+    evidence_axis.text(.07, .55, "通过" if summary["passed"] else "未通过", transform=evidence_axis.transAxes, color="#4ade80" if summary["passed"] else "#f87171", fontsize=31, fontweight="bold")
+    evidence_axis.text(.07, .27, f"{complete} / 20 轮证据完整\n{verified} / 20 轮校验和已验证", transform=evidence_axis.transAxes, color="#e2e8f0", fontsize=13, linespacing=1.8)
+    evidence_axis.text(.07, .08, "仅静态 20 轮；动态批次未运行。门槛 19/20 · 偏差上限 20%", transform=evidence_axis.transAxes, color="#94a3b8", fontsize=10)
+    for axis in (kpi_axis, deviation_axis, outcome_axis):
+        axis.spines[["top", "right"]].set_visible(False); axis.grid(axis="y", color="#e2e8f0", linewidth=.8)
+    overview = figures / "static_campaign_overview.png"; fig.savefig(overview, dpi=100); plt.close(fig)
+
+    matrix = []
+    for row in rows:
+        line = []
+        for index in range(len(WAYPOINT_IDS)):
+            leg = row["legs"][index] if index < len(row["legs"]) else None
+            line.append(0 if leg is None or not row["strict_success"] else 1 if leg.get("timed_out") else 2)
+        matrix.append(line)
+    fig, axis = plt.subplots(figsize=(16, 9), constrained_layout=True); fig.patch.set_facecolor("#f8fafc"); axis.set_facecolor("#ffffff")
+    image = axis.imshow(matrix, aspect="auto", interpolation="nearest", cmap=plt.matplotlib.colors.ListedColormap(["#dc2626", "#f97316", "#16a34a"]), vmin=0, vmax=2)
+    axis.set_xticks(range(len(WAYPOINT_IDS)), WAYPOINT_IDS); axis.set_yticks(range(20), [str(row["seed"]) for row in rows]); axis.set(xlabel="目标航点", ylabel="随机种子", title=f"Static｜20 × {len(WAYPOINT_IDS)} 航点执行矩阵")
+    colorbar = fig.colorbar(image, ax=axis, ticks=[0, 1, 2], pad=.02); colorbar.ax.set_yticklabels(["失败 / 未执行", "超时", "成功"])
+    heatmap = figures / "waypoint_heatmap_static.png"; fig.savefig(heatmap, dpi=100); plt.close(fig)
+    return [overview, heatmap]
+
+
+def _static_dashboard_html(summary: Mapping[str, Any], visual: Mapping[str, Any], figure_paths: Iterable[Path]) -> str:
+    strict, collision = summary["static"]["strict_success"], summary["static"]["physical_collision_free"]
+    cards = "".join(
+        f"<article class='card {'good' if rate['passed'] else 'bad'}'><span>{label}</span><strong>{rate['numerator']}/20</strong><b>{rate['percent']:.1f}%</b><small>Wilson 95%：{rate['wilson95_low_percent']:.1f}%–{rate['wilson95_high_percent']:.1f}%</small></article>"
+        for label, rate in (("静态严格成功", strict), ("静态物理无碰撞", collision))
+    )
+    max_deviation = _finite_number(summary["path_optimality"]["maximum_deviation_percent"])
+    table_rows: list[str] = []
+    for row in summary["runs"]:
+        deviation = _finite_number(row.get("path_deviation_percent"))
+        deviation_text = "—" if deviation is None else f"{deviation:.2f}%"
+        status = "pass" if row["strict_success"] else "fail"
+        table_rows.append(
+            f"<tr data-seed='{row['seed']}' data-status='{status}'><td>{row['seed']}</td><td>{'通过' if row['strict_success'] else '失败'}</td>"
+            f"<td>{'是' if row['physical_collision_free'] else '否'}</td><td>{deviation_text}</td>"
+            f"<td><a href='runs/static-{row['seed']}/index.html'>查看详情</a></td></tr>"
+        )
+    rows = "".join(table_rows)
+    images = "".join(f"<figure><img src='data:image/png;base64,{base64.b64encode(path.read_bytes()).decode('ascii')}' alt='{html.escape(path.name)}'><figcaption>{html.escape(path.name)}</figcaption></figure>" for path in figure_paths)
+    conclusion = "通过" if summary["passed"] else "未通过"
+    static_obstacle_count = len(visual["map"].get("static_obstacle_polygons", []))
+    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Kujiale 静态 20 轮报告</title><style>:root{{--ink:#101828;--muted:#667085;--line:#e4e7ec;--paper:#fff;--canvas:#f6f8fc;--green:#169c4b;--red:#d92d20;--blue:#2e5bff}}*{{box-sizing:border-box}}body{{margin:0;background:var(--canvas);color:var(--ink);font:15px/1.55 Inter,"Noto Sans CJK SC","Microsoft YaHei",system-ui,sans-serif}}main{{max-width:1280px;margin:auto;padding:28px 24px 60px}}header{{padding:38px 42px;border-radius:24px;background:radial-gradient(circle at top right,#3266ff 0,transparent 36%),linear-gradient(135deg,#101828,#172554);color:#fff}}h1{{margin:8px 0;font-size:clamp(30px,5vw,46px)}}h2{{margin:38px 0 8px}}.eyebrow{{font-size:12px;font-weight:800;letter-spacing:.12em;color:#bfdbfe}}.note{{color:#dbeafe}}.decision{{display:inline-block;margin-top:10px;padding:7px 12px;border:1px solid #ffffff33;border-radius:99px;font-weight:800}}.cards{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}}.card,.panel,figure{{background:var(--paper);border:1px solid var(--line);border-radius:18px;box-shadow:0 10px 24px #10182808}}.card{{padding:18px;border-left:4px solid var(--green)}}.card.bad{{border-left-color:var(--red)}}.card span,.card small{{display:block;color:var(--muted)}}.card strong{{display:block;margin-top:7px;font-size:34px}}.card b{{display:block;color:var(--green)}}.card.bad b{{color:var(--red)}}.panel{{padding:18px}}.route-map{{display:block;width:100%;max-height:680px;background:#f1f5f9;border-radius:12px}}.route-map text{{font-size:5px;font-weight:800;paint-order:stroke;stroke:#fff;stroke-width:1.3px}}.start circle{{fill:#111827;stroke:#fff;stroke-width:2px}}.goal circle{{fill:#2563eb;stroke:#fff;stroke-width:2px}}.static-box{{fill:#f59e0b88;stroke:#d97706;stroke-width:1.5px}}.reference-guide{{fill:none;stroke:#111827;stroke-width:1.4px;stroke-dasharray:5 3}}.track{{fill:none;stroke-width:1.6px;pointer-events:all}}.success-track{{stroke:#16a34a;opacity:.24}}.failure-track{{stroke:#dc2626;opacity:.9;stroke-width:2.4px}}.heatmap{{display:grid;gap:4px;align-items:center}}.heat-label{{font-size:12px;color:var(--muted);text-align:center}}.heat-cell{{display:grid;aspect-ratio:1;place-items:center;border-radius:5px;color:white;font-weight:800;text-decoration:none}}.heat-cell.success{{background:var(--green)}}.heat-cell.fail{{background:var(--red)}}.heat-cell.timeout{{background:#f79009}}table{{width:100%;border-collapse:collapse}}th,td{{padding:11px;text-align:left;border-bottom:1px solid var(--line)}}a{{color:var(--blue);font-weight:700;text-decoration:none}}figure{{margin:16px 0;padding:12px}}img{{display:block;width:100%;border-radius:10px}}figcaption{{padding:9px 2px 1px;color:var(--muted);font-size:13px}}footer{{margin-top:32px;color:var(--muted)}}@media(max-width:680px){{main{{padding:16px}}header{{padding:28px 24px}}.cards{{grid-template-columns:1fr}}}}</style><main><header><p class='eyebrow'>STATIC 20-RUN CANDIDATE · KUJIALE LONG RANGE</p><h1>Kujiale 全屋长距离导航｜静态 20 轮</h1><p class='note'>当前 {static_obstacle_count} 个 RGB-D 低矮静态障碍参数的候选静态批次。动态 20 轮尚未运行，本报告不对动态验收作任何结论。</p><div class='decision'>自动静态结论：{conclusion}</div></header><h2>总体 KPI</h2><p>门槛：静态严格成功和静态物理无碰撞均为 19/20（95%）；成功轮路径偏差 ≤20%。</p><section class='cards'>{cards}</section><section class='panel'><p>最大静态路径偏差：<strong>{'—' if max_deviation is None else f'{max_deviation:.2f}%'}</strong> / 20%　·　证据完整：{sum(bool(row['data_complete']) and bool(row['checksums_verified']) for row in summary['runs'])}/20</p></section><h2>全屋轨迹地图</h2><section class='panel'>{_map_svg(visual)}<p>黑色虚线是航点顺序引导；绿色为成功 GT、红色为失败 GT；橙色方块为当前 {static_obstacle_count} 个静态 RGB-D 障碍。</p></section><h2>航点结果热力图</h2><section class='panel'>{_html_heatmap(visual, 'static')}</section><h2>图形证据</h2>{images}<h2>运行明细</h2><section class='panel'><table><thead><tr><th>种子</th><th>严格成功</th><th>物理无碰撞</th><th>路径偏差</th><th>下钻</th></tr></thead><tbody>{rows}</tbody></table></section><footer>自动生成的离线静态候选报告。`benchmark.json` 是本报告的机器可读 KPI 来源；HTML、PDF、Markdown、CSV、PNG 和原始证据均由同一批输入生成并受 `checksums.sha256` 覆盖。</footer></main></html>"""
+
+
+_legacy_static_dashboard_html = _static_dashboard_html
+
+
+def _static_dashboard_html(summary: Mapping[str, Any], visual: Mapping[str, Any], figure_paths: Iterable[Path]) -> str:
+    """Add static-run filtering without duplicating the evidence-derived map."""
+    page = _legacy_static_dashboard_html(summary, visual, figure_paths)
+    seed_options = "".join(
+        f"<option value='{row['seed']}'>{row['seed']}</option>"
+        for row in summary["runs"]
+    )
+    filters = (
+        "<div class='filters'><label>种子 <select id='seed'><option value='all'>全部</option>"
+        f"{seed_options}</select></label><label>结果 <select id='status'><option value='all'>全部</option>"
+        "<option value='pass'>通过</option><option value='fail'>失败</option></select></label></div>"
+    )
+    route_map = _map_svg(visual)
+    page = page.replace(
+        f"<section class='panel'>{route_map}",
+        f"<section class='panel'>{filters}{route_map}",
+        1,
+    ).replace(
+        ".panel{padding:18px}",
+        ".panel{padding:18px}.filters{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px}.filters label{color:#667085;font-weight:700}.filters select{margin-left:6px;padding:8px;border:1px solid #e4e7ec;border-radius:8px;background:#fff;font:inherit}",
+        1,
+    )
+    script = """<script>const seed=document.getElementById('seed'),status=document.getElementById('status');function visible(e){return(seed.value==='all'||e.dataset.seed===seed.value)&&(status.value==='all'||e.dataset.status===status.value)}function apply(){document.querySelectorAll('.track').forEach(e=>e.style.display=visible(e)?'':'none');document.querySelectorAll('tbody tr[data-seed]').forEach(e=>e.hidden=!visible(e))}[seed,status].forEach(e=>e.addEventListener('change',apply));</script>"""
+    return page.replace("</main></html>", f"{script}</main></html>", 1)
+
+
+def write_static_campaign_report(summary: Mapping[str, Any], directory: str | Path) -> Path:
+    """Create the self-contained report for one static 20-run candidate batch."""
+    root = Path(directory).expanduser().resolve(); figures = root / "figures"; root.mkdir(parents=True, exist_ok=True)
+    visual = _visualization_data(summary)
+    figure_paths = _plot_static_overview(summary, figures) + _plot_evidence_figures(visual, figures)
+    _copy_runs(summary["runs"], root / "runs"); _write_run_pages(root, visual)
+    clean = {key: value for key, value in summary.items() if key != "runs"}
+    clean["runs"] = [{key: value for key, value in row.items() if key != "_evidence_dir"} for row in summary["runs"]]
+    clean["visualization"] = visual
+    _atomic_write(root / "benchmark.json", (json.dumps(clean, indent=2, sort_keys=True, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8"))
+    fields = ["kind", "seed", "strict_success", "physical_collision_free", "path_deviation_percent", "data_complete", "checksums_verified", "static_candidate_conclusion"]
+    with (root / "benchmark.csv").open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader()
+        writer.writerows({**{key: row.get(key) for key in fields}, "static_candidate_conclusion": "通过" if clean["passed"] else "未通过"} for row in clean["runs"])
+    conclusion = "通过" if clean["passed"] else "未通过"; deviation = _finite_number(clean["path_optimality"]["maximum_deviation_percent"])
+    markdown = f"# Kujiale 静态 20 轮候选报告\n\n自动静态结论：**{conclusion}**。动态 20 轮未运行，本报告不包含动态验收结论。\n\n- 静态严格：{clean['static']['strict_success']['numerator']}/20\n- 静态物理无碰撞：{clean['static']['physical_collision_free']['numerator']}/20\n- 最大静态路径偏差：{'—' if deviation is None else f'{deviation:.2f}%'}（门槛 ≤20%）\n\n![静态总览](figures/static_campaign_overview.png)\n\n![路径最优性](figures/path_optimality.png)\n"
+    _atomic_write(root / "report.md", markdown.encode("utf-8")); _atomic_write(root / "index.html", _static_dashboard_html(clean, visual, figure_paths).encode("utf-8"))
+    _atomic_write(root / "data_dictionary.md", "# 数据字典\n\n`benchmark.json` 是静态 20 轮候选 KPI 的唯一机器可读来源。`runs/` 保存每轮结构化清单、事件、GT/Odom/Cmd、RGB-D、Scan、Costmap、MCAP 与校验和。此报告明确不包含动态批次结论。\n".encode("utf-8"))
+    plt, PdfPages = _matplotlib()
+    with PdfPages(root / "report.pdf") as pdf:
+        for path in figure_paths:
+            image = plt.imread(path); fig, axis = plt.subplots(figsize=(16, 9)); axis.imshow(image); axis.axis("off"); axis.set_title(f"Kujiale 静态 20 轮：{conclusion}"); pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
+    _write_report_checksums(root)
+    return root
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="validate and render a Kujiale formal campaign")
     parser.add_argument("--run-directory", action="append", required=True); parser.add_argument("--output-directory", required=True)
-    arguments = parser.parse_args(); summary = summarize_campaign(arguments.run_directory); output = write_campaign_report(summary, arguments.output_directory)
+    parser.add_argument("--static-only", action="store_true", help="validate static seeds 7201–7220 and render a static-only candidate report")
+    arguments = parser.parse_args()
+    summary = summarize_static_campaign(arguments.run_directory) if arguments.static_only else summarize_campaign(arguments.run_directory)
+    output = write_static_campaign_report(summary, arguments.output_directory) if arguments.static_only else write_campaign_report(summary, arguments.output_directory)
     print(json.dumps({"output": str(output), "passed": summary["passed"]}, ensure_ascii=False)); raise SystemExit(0 if summary["passed"] else 2)

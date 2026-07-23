@@ -20,9 +20,10 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 ## 长距离重设计状态
 
 当前长距离静态/动态配置从 `long_route_start_g1` 出生，依次运行
-`G1 → G2 → G3 → G4 → G5 → G6 → G1`。原 G7 重命名为 G1，旧 G6 被移除；中心区使用四组可在
-Isaac GUI 中反复拖动的 RGB-D 低矮方块，或两组在 G1→G2 实际通道中横穿并停住的动态方块。四组静态方块的
-当前坐标是已保存的可微调基线（`2026-07-23 11:04:43 +08:00`），尚未冻结。该重设计尚未执行新的 Pilot 或
+`G1 → G2 → G3 → G4 → G5 → G1`。原狭窄通道航点已移除，原左侧厕所和左下房间航点依次重命名为 G4、G5；中心区使用四个可在
+Isaac GUI 中反复拖动的 RGB-D 低矮方块和两个低矮长条，或两组在 G1→G2 实际通道中横穿并停住的动态方块。六个
+静态障碍的当前坐标来自 `2026-07-23 13:37:02 +08:00` 的完整 GUI 捕获：四个方块为 `0.30 × 0.30 × 0.16 m`，
+两个长条为 `0.60 × 0.30 × 0.16 m`；当前布局仍可继续手调，尚未冻结。该重设计尚未执行新的 Pilot 或
 20+20 正式验收。
 
 ## 已记录的历史正式批次结果
@@ -108,10 +109,10 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 终端。完整的人工回归目标、RGB-D 可视化、Reset 与排障步骤见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
-静态/动态全屋长距离测试的 `warehouse_new` 地图、S/G1 与 G2–G6 航点、静态方块和两条
+静态/动态全屋长距离测试的 `warehouse_new` 地图、S/G1 与 G2–G5 航点、静态方块和两条
 动态障碍触发路线见 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
 
-若要一边拖动四个静态方块、一边在 RViz 手动发送 Goal 观察效果，请按
+若要一边拖动四个静态方块和两个静态长条、一边在 RViz 手动发送 Goal 观察效果，请按
 [`docs/user_manual.md`](docs/user_manual.md#82-静态可视化单轮) 的“交互式布局与手动导航”流程启动；
 不要运行会 Reset 方块位置的自动 `run_visual_route.sh static`。
 
@@ -155,7 +156,7 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 
 GUI + RViz 的单轮可视化回归分别使用
 `kujiale_static_visual.yaml` 与 `kujiale_dynamic_visual.yaml`：runner 自动发送完整
-`G1 → G2 → G3 → G4 → G5 → G6 → G1` 闭环路线；动态场景会在 G2 受理后让两组实体横穿 G1→G2 通道并停住。使用 `./scripts/run_visual_route.sh static|dynamic`
+`G1 → G2 → G3 → G4 → G5 → G1` 闭环路线；动态场景会在 G2 受理后让两组实体横穿 G1→G2 通道并停住。使用 `./scripts/run_visual_route.sh static|dynamic`
 启动；它不生成项目实验输出，二者均不计入正式 20+20 结果。
 
 运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的
@@ -165,7 +166,12 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 自动启动静态 20 轮、动态 20 轮、汇总并核验自包含报告的完整命令见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
-需要 GUI + RViz 的可视化回归时，同一手册提供静态/动态各一轮的自动 G1–G6 闭环路线；
+如果当前只需要验证已保存的六个静态障碍参数，可在静态 Isaac 与无交互 Nav2 已启动后运行
+`./scripts/run_kujiale_static_20.sh [YYYYMMDD-HHMMSS]`。它顺序执行静态种子 `7201`–`7220`，
+并自动生成 `data/reports/kujiale_long_route_static_<campaign_id>/index.html` 及 PDF、Markdown、
+PNG、CSV、JSON 和原始证据。该报告只给出静态结论，绝不把未运行的动态 20 轮显示为通过或失败。
+
+需要 GUI + RViz 的可视化回归时，同一手册提供静态/动态各一轮的自动 G1–G5 闭环路线；
 无需手动点选目标或手动触发障碍。
 
 ## 文档入口

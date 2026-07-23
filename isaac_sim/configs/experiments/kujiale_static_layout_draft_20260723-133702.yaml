@@ -1,0 +1,16 @@
+# Captured from /experiment/obstacles/capture_layout.
+# This snapshot records the current GUI tuning baseline.  It remains editable
+# and must not be treated as a frozen formal campaign or acceptance input.
+schema_version: 1
+kind: kujiale_static_layout_draft
+status: provisional_tuning
+captured_at: '2026-07-23T13:37:02+08:00'
+coordinate_frame: map
+source_service: /experiment/obstacles/capture_layout
+obstacles:
+  - {id: rgbd_low_bar_east, position: [1.286899, 0.033996, 0.08], size: [0.60, 0.30, 0.16]}
+  - {id: rgbd_low_bar_north, position: [-0.703143, 0.252652, 0.08], size: [0.60, 0.30, 0.16]}
+  - {id: rgbd_low_box_center, position: [-2.135744, -0.876959, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_box_east, position: [0.366563, 0.66795, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_box_north, position: [0.126442, -0.579985, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: rgbd_low_box_west, position: [-0.853013, -0.961904, 0.08], size: [0.30, 0.30, 0.16]}
