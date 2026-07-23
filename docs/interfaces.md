@@ -486,9 +486,10 @@ may be replaced with broad `pkill` commands.
 ## Navigation control performance contract
 
 The committed MPPI timing keeps the measured Isaac Sim 6.0.1 headless Ideal
-baseline. The batch reduction also passed two consecutive Realistic curved
-goals, including a reverse-turning goal. Fixed MPPI noise and the tighter
-SlowdownZone avoid continuous micro-adjustments in traversable narrow passages;
+baseline. The long-route static campaign showed that a fixed 500-sample noise
+bank can be temporarily infeasible after a local-costmap update, causing an
+unnecessary controller abort and BT costmap-clear recovery. The shipped profile
+therefore uses a bounded larger sample bank and internal re-sampling retries;
 the StopZone remains active while ApproachZone is deliberately disabled:
 
 | Parameter | Value | Reason |
@@ -496,10 +497,11 @@ the StopZone remains active while ApproachZone is deliberately disabled:
 | `controller_frequency` | 10 Hz | Preserves the two-second horizon and remained close to its target under the measured Realistic load. |
 | `FollowPath.time_steps` | 20 | Combined with `model_dt` keeps the prediction horizon at two seconds. |
 | `FollowPath.model_dt` | 0.10 s | Matches the measured controller period. |
-| `FollowPath.batch_size` | 500 | Avoids localization contention while preserving the two-second horizon. |
-| `FollowPath.regenerate_noises` | `false` | Reuses the noise table to prevent controller-cycle sampling jitter. |
-| `FollowPath.vx_std` / `wz_std` | `0.35` / `0.75` | Preserves deterministic sampling while providing enough continuous turning candidates at a narrow-passage entrance. |
-| `FollowPath.GoalAngleCritic` / `CostCritic` | `1.0 m` / `1.35` | Begins goal-heading alignment before each intermediate goal completes, while retaining complete-footprint collision rejection for RGB-D low-box bypasses. |
+| `FollowPath.batch_size` | 700 | Keeps the two-second horizon while providing enough candidate rollouts for a transiently constrained local costmap. |
+| `FollowPath.retry_attempt_limit` | 3 | Re-samples internally before escalating an exhausted candidate bank to the BT recovery tree. |
+| `FollowPath.regenerate_noises` | `true` | Makes each internal retry explore a new candidate bank rather than repeating the same infeasible samples. |
+| `FollowPath.vx_std` / `wz_std` | `0.35` / `0.75` | Bounds each freshly sampled candidate bank while retaining enough continuous turning candidates at a narrow-passage entrance. |
+| `FollowPath.GoalAngleCritic` / `CostCritic` | `0.20 m` / `1.35` | Defers intermediate-yaw alignment until the position gate is reached, while retaining complete-footprint collision rejection for RGB-D low-box bypasses. |
 | Costmap inflation | `0.40 m`, scaling `9.0` | Keeps the physical clearance radius while reducing only the soft-cost tail that caused crawl/re-sample cycles. |
 | `SlowdownZone` | `0.660 × 0.464 m`, 6 points, 90% | Leaves StopZone unchanged but rejects sparse/parallel-wall returns that previously clipped a traversable corridor. |
 | `ApproachZone` | disabled | MPPI performs footprint-aware costmap prediction; StopZone remains the final LiDAR hard stop. |

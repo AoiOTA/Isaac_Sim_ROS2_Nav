@@ -48,10 +48,11 @@ controller_server:
     goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
       stateful: true
-      # Avoid declaring success while the chassis is still visibly short of
-      # the requested pose.  The experiment gate independently checks
-      # Ground Truth at 0.25 m / 10 deg, so Nav2 must converge more tightly
-      # than that external acceptance envelope.
+      # Keep route progression independent from the report's 0.25 m GT gate,
+      # but do not require the final 1--2 cm that can trap a physical run in
+      # repeated recoveries. The 0.20 m Nav2 radius is a strict 5 cm margin
+      # inside the report gate and lets a visibly settled room goal dispatch
+      # the following waypoint.
       xy_goal_tolerance: 0.20
       yaw_goal_tolerance: 0.174532925
 
@@ -61,19 +62,27 @@ controller_server:
       # 20 × 0.10 = 2 秒预测范围。
       time_steps: 20
       model_dt: 0.10
-      # 保留 2 秒预测窗，用 500 samples 避免与 Ceres 定位争抢控制周期。
-      batch_size: 500
+      # The seven-run static campaign exposed repeated cases where the fixed
+      # 500-sample bank contained no collision-free rollout for a transient
+      # local-costmap state.  700 remains well within the 10 Hz controller
+      # budget while materially increasing the chance of a feasible bypass.
+      batch_size: 700
       iteration_count: 1
+      # Do not immediately escalate a single exhausted candidate bank to the
+      # BT recovery tree.  Retry with freshly sampled controls first; this
+      # avoids unnecessary FollowPath abort -> costmap-clear -> replan cycles
+      # without changing the action timeout or accepting a less-safe path.
+      retry_attempt_limit: 3
 
       # Permit a small reverse sample near tight terminal poses.  This lets
       # MPPI re-centres at the G1 return point after a dynamic interaction instead of remaining
       # a few centimetres outside the acceptance circle until timeout.
-      # Stable, fixed-noise sampling reduces small left/right corrections in
-      # the wide parts of the house while retaining enough spread to detour
-      # around a newly marked RGB-D low box.
-      # Slightly wider, but still fixed-noise, samples let the controller
-      # choose a continuous turning arc instead of alternating between a
-      # crawl and a stop at the entrance to a valid narrow passage.
+      # A fresh noise bank is required for retry_attempt_limit to explore a
+      # different control set after a short-lived RGB-D / LaserScan costmap
+      # change.  Reusing the same exhausted bank was the common source of the
+      # repeated "Optimizer fail to compute path" bursts in the campaign.
+      # The bounded standard deviations still favour continuous turning arcs
+      # instead of alternating crawl / stop corrections at corridor entries.
       vx_std: 0.35
       vy_std: 0.00
       wz_std: 0.75
@@ -101,7 +110,7 @@ controller_server:
       # Publish both /optimal_trajectory and /trajectories so the controller's
       # selected path and sampled candidates can be inspected live in RViz.
       visualize: true
-      regenerate_noises: false
+      regenerate_noises: true
 
       critics:
         - ConstraintCritic
@@ -144,10 +153,12 @@ controller_server:
         enabled: true
         cost_power: 1
         cost_weight: 4.0
-        # Start establishing the required goal heading before the chassis is
-        # parked at G4.  This removes the visible dwell before the following
-        # in-place correction while preserving the 10° completion tolerance.
-        threshold_to_consider: 1.0
+        # The intermediate yaw intentionally faces the following leg, not
+        # necessarily the incoming leg. Do not rotate toward it one metre
+        # early: that leaves the robot facing away from its still-unreached
+        # position goal and forces a fragile reverse correction. Start final
+        # heading alignment only after the 0.20 m position gate is reached.
+        threshold_to_consider: 0.20
 
       # 窄通道内膨胀代价占比天然较高，仍保持 PathAlign 工作以避免左右摆动。
       PathAlignCritic:
@@ -251,7 +262,12 @@ local_costmap:
         origin_z: 0.0
         z_resolution: 0.05
         z_voxels: 16
-        unknown_threshold: 15
+        # A front-only camera leaves most columns unobserved at every frame.
+        # Do not project a fully unobserved 16-voxel column as NO_INFORMATION:
+        # it can overwrite a StaticLayer free cell beside/behind the robot and
+        # block the final lateral approach to a room goal. Observed depth
+        # returns still mark low obstacles normally.
+        unknown_threshold: 16
         mark_threshold: 0
         max_obstacle_height: 0.50
 
@@ -315,7 +331,7 @@ global_costmap:
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
       footprint_padding: 0.005
 
-      # The low RGB-D-only box must also reach the global planner.  Otherwise
+      # The low RGB-D-only box must also reach the global planner. Otherwise
       # the local controller sees a collision while the global path keeps
       # commanding it straight through the obstacle, which ends in a safety
       # stop instead of a valid bypass.
@@ -354,7 +370,12 @@ global_costmap:
         origin_z: 0.0
         z_resolution: 0.05
         z_voxels: 16
-        unknown_threshold: 15
+        # Preserve StaticLayer free cells outside the front camera FOV. With
+        # all 16 voxels unobserved, the former threshold projected a broad
+        # unknown band over valid G1 return cells. RGB-D obstacle markings and
+        # ray clearing remain enabled; only absence of a depth observation is
+        # no longer promoted to a 2D obstacle/unknown cell.
+        unknown_threshold: 16
         mark_threshold: 0
         max_obstacle_height: 0.50
         observation_sources: camera_depth
@@ -365,7 +386,7 @@ global_costmap:
           data_type: PointCloud2
           transport_type: raw
           marking: true
-          # Global observations must still ray-clear.  A permanent global
+          # Global observations must still ray-clear. A permanent global
           # depth history eventually turns unrelated furniture observations
           # into stale walls at later waypoints.
           clearing: true
@@ -399,9 +420,10 @@ planner_server:
     GridBased:
       plugin: nav2_smac_planner::SmacPlanner2D
 
-      # Keep the planner's substitute-goal radius inside the Goal Checker's
-      # 0.20 m acceptance radius. Otherwise an invalid RViz goal can produce a
-      # valid path that the controller can never finish.
+      # Keep a substitute endpoint strictly inside the 0.20 m action
+      # acceptance radius. This gives the global RGB-D layer a one-cell
+      # fallback for a temporarily marked target cell without allowing a
+      # visibly early goal completion.
       tolerance: 0.10
       downsample_costmap: false
       allow_unknown: true

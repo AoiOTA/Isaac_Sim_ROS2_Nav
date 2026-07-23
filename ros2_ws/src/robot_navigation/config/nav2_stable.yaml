@@ -4,7 +4,7 @@ controller_server:
     FollowPath:
       time_steps: 20
       model_dt: 0.10
-      # Keep the stable overlay aligned with nav2_params.yaml and the verified
-      # 10 Hz timing budget; a larger overlay silently defeated the intended
-      # 500-sample low-latency controller configuration.
-      batch_size: 500
+      # Keep the overlay aligned with the source profile.  The 700-sample
+      # bank plus internal retries prevents a transiently infeasible set from
+      # repeatedly escalating to BT costmap-clear recovery.
+      batch_size: 700

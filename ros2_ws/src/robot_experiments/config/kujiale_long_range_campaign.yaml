@@ -10,12 +10,12 @@ environment:
   physics_dt: 0.016666666666666666
   rtf: 1.0
 route:
-  # The narrow-passage waypoint was removed. Intermediate yaws face the next
-  # leg so the runner can continue directly after each completed action.
+  # The narrow-passage waypoint was removed. Each target is centred in its
+  # room's high-clearance free space, and its yaw faces the next leg.
   - {id: G2, region: 上方大房间, pose: [0.80, 4.80, -160.0]}
-  - {id: G3, region: 左上房间出口侧, pose: [-2.55, 3.65, -100.0]}
-  - {id: G4, region: 左侧厕所, pose: [-3.25, -0.45, -75.0]}
-  - {id: G5, region: 左下房间, pose: [-2.50, -3.35, -35.0]}
+  - {id: G3, region: 左上房间出口侧, pose: [-2.20, 3.25, -105.0]}
+  - {id: G4, region: 左侧厕所, pose: [-3.00, -0.45, -68.0]}
+  - {id: G5, region: 左下房间, pose: [-2.20, -2.95, -42.0]}
   - {id: G1, region: 最下方房间/回归出生点, pose: [0.45, -5.35, 90.0]}
 acceptance:
   position_tolerance_m: 0.25
