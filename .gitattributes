@@ -1,3 +1,6 @@
 # Serialized SLAM Toolbox pose graphs are curated binary release artifacts.
 # Keep the validated baseline reproducible without bloating normal Git objects.
 data/maps/posegraphs/*.posegraph filter=lfs diff=lfs merge=lfs -text
+# Curated navigation demonstration videos are stored through Git LFS so the
+# README can link to a versioned, downloadable playback artifact.
+docs/media/*.mp4 filter=lfs diff=lfs merge=lfs -text
