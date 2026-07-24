@@ -27,7 +27,10 @@ import math
 SCENARIO_TYPES = frozenset({"static", "dynamic", "incremental"})
 SCENARIO_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 DYNAMIC_MOTIONS = frozenset(
-    {"crossing", "oncoming", "same_direction_slow", "local_bypass", "temporary_block", "custom"}
+    {
+        "crossing", "oncoming", "same_direction_slow", "local_bypass",
+        "temporary_block", "g2_g3_exit", "g5_g1_crossing", "custom",
+    }
 )
 DYNAMIC_GEOMETRY_TOLERANCE_M = 1.0e-4
 DYNAMIC_DURATION_TOLERANCE_SEC = 1.0e-4
@@ -162,7 +165,7 @@ def _parse_seeds(runs: Mapping[str, Any]) -> tuple[int, ...]:
 
 
 def _parse_run_matrix(runs: Mapping[str, Any]) -> tuple[RunSelection, ...]:
-    """Parse explicit case/variant rows used by the schema-v3 benchmark."""
+    """Parse explicit case/variant rows used by the dynamic benchmark."""
     raw = runs.get("matrix")
     if raw is None:
         return tuple(RunSelection(seed) for seed in _parse_seeds(runs))
@@ -391,10 +394,10 @@ def _load_physical_dynamic_obstacles(
     source = Path(path).expanduser().resolve()
     document = load_yaml_mapping(source)
     version = document.get("schema_version")
-    if version == 3:
+    if version in {3, 4}:
         cases = document.get("cases")
         if not isinstance(cases, Mapping) or not cases:
-            raise ConfigurationError("schema-v3 physical dynamic obstacles require cases")
+            raise ConfigurationError(f"schema-v{version} physical dynamic obstacles require cases")
         parsed_v3: dict[str, _PhysicalObstacle] = {}
         for case_id, raw_case in cases.items():
             case = require_mapping(raw_case, f"physical dynamic case {case_id}")
@@ -402,12 +405,12 @@ def _load_physical_dynamic_obstacles(
             identifier = require_string(obstacle.get("id"), f"physical dynamic case {case_id}.obstacle.id")
             waypoints = obstacle.get("waypoints")
             if identifier in parsed_v3 or not isinstance(waypoints, list) or len(waypoints) < 2:
-                raise ConfigurationError("schema-v3 physical dynamic obstacle id/waypoints is invalid")
+                raise ConfigurationError(f"schema-v{version} physical dynamic obstacle id/waypoints is invalid")
             start, end = require_vector(waypoints[0], 3, f"{identifier}.start"), require_vector(waypoints[-1], 3, f"{identifier}.end")
             size = require_vector(obstacle.get("size"), 3, f"{identifier}.size")
             speed = _positive(obstacle.get("speed"), f"{identifier}.speed")
             if min(size) <= 0.0 or sum(math.dist(a, b) for a, b in zip(waypoints, waypoints[1:])) <= 0.0:
-                raise ConfigurationError(f"schema-v3 physical dynamic obstacle {identifier!r} is invalid")
+                raise ConfigurationError(f"schema-v{version} physical dynamic obstacle {identifier!r} is invalid")
             parsed_v3[identifier] = _PhysicalObstacle(identifier, "cube", tuple(size), tuple(start), tuple(end), speed, False, "map")
         return parsed_v3
     allowed_document = {"schema_version", "seed", "enabled", "obstacles"}
@@ -543,7 +546,7 @@ def validate_dynamic_physical_contract(
     if scenario.scenario_type != "dynamic":
         return
     physical = _load_physical_dynamic_obstacles(physical_config_path)
-    physical_schema_v3 = load_yaml_mapping(physical_config_path).get("schema_version") == 3
+    physical_schema_v3 = load_yaml_mapping(physical_config_path).get("schema_version") in {3, 4}
     declared = {
         require_string(item.get("id"), "dynamic trajectory id"): item
         for item in scenario.obstacle_trajectories
@@ -594,7 +597,7 @@ def validate_dynamic_physical_contract(
                 f"dynamic obstacle {identifier!r} XY dimensions mismatch: "
                 f"scenario={dimensions}, physical={physical_dimensions}"
             )
-        # Schema v3 uses acceleration-limited multi-segment trajectories and
+        # Schema v3/v4 use acceleration-limited multi-segment trajectories and
         # therefore has no truthful fixed waypoint time in the ROS campaign.
         # Geometry/IDs remain verified here; kinematics live in Isaac YAML.
         if physical_schema_v3:
