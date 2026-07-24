@@ -164,20 +164,78 @@ GUI + RViz 的单轮可视化回归分别使用
 `G1 → G2 → G3 → G4 → G5 → G1` 闭环路线；动态场景会在 G2 受理后让两组实体横穿 G1→G2 通道并停住。使用 `./scripts/run_visual_route.sh static|dynamic`
 启动；它不生成项目实验输出，二者均不计入正式 20+20 结果。
 
+### 静态可视化一轮（Isaac GUI + RViz）
+
+用途是人工观察六个低矮静态障碍、RGB-D 点云/VoxelGrid、Costmap 和 MPPI 行为。开始前先确保
+没有另一套 Isaac 或 ROS 会话；依次在三个终端运行，终端 B 出现
+`Nav2 lifecycle activation completed` 后才启动终端 C：
+
+```bash
+# 终端 A：Isaac GUI + 六个静态障碍
+cd "$PROJECT_ROOT"
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal \
+  --spawn-pose long_route_start_g1 \
+  --camera-profile rgbd_navigation \
+  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
+  --dynamic-obstacles
+
+# 终端 B：Navigation + RViz
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
+
+# 终端 C：唯一静态 seed 7201；自动执行 G2 → G3 → G4 → G5 → G1
+cd "$PROJECT_ROOT"
+./scripts/run_visual_route.sh static
+```
+
+此模式不写入 MCAP、JSON、CSV 或报告，不能作为验收结果。运行时只观察，不要在 RViz 再手动发送
+Goal；若要拖动障碍后手动导航，保持 A/B 运行且不要执行终端 C，因为 visual runner 会 Reset 障碍到 YAML 基线。
+
+### 静态 20 轮自动候选测试（无头 Isaac）
+
+该测试顺序运行种子 `7201`–`7220`，输出可复核的静态候选报告；运行期间不要关闭终端 A/B，也不要打开
+RViz 或 Teleop。先停止可视化会话，再按下列顺序启动：
+
+```bash
+# 终端 A：无头 Isaac + 六个静态障碍
+cd "$PROJECT_ROOT"
+ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
+  --headless \
+  --environment-usd kujiale_0026_A_to_B_door_open.usd \
+  --navigation-mode localization \
+  --mode ideal \
+  --spawn-pose long_route_start_g1 \
+  --camera-profile rgbd_navigation \
+  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
+  --dynamic-obstacles
+
+# 终端 B：无交互 Navigation；等待 Nav2 lifecycle activation completed
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation \
+  odometry_mode:=ideal \
+  spawn_pose_name:=long_route_start_g1 \
+  interactive:=false \
+  use_rviz:=false
+
+# 终端 C：执行并汇总静态 20 轮；可选固定批次 ID
+cd "$PROJECT_ROOT"
+./scripts/run_kujiale_static_20.sh
+# ./scripts/run_kujiale_static_20.sh 20260723-120000
+```
+
+完成后打开 `data/reports/kujiale_long_route_static_<campaign_id>/index.html`；该目录还包含
+`report.pdf`、`report.md`、`benchmark.json`、`benchmark.csv` 和每轮证据。退出码 `0` 表示静态候选
+通过，`2` 表示报告已生成但未满足静态门槛；二者都不代表动态或完整 20+20 结论。
+
 运行证据与报告写入 `data/experiment_runs/` 和 `data/reports/`。这些目录中的
 HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推送到 Git；受版本
 控制的是生成器、场景、校验规则和文档。
 
 自动启动静态 20 轮、动态 20 轮、汇总并核验自包含报告的完整命令见
 [`docs/user_manual.md`](docs/user_manual.md)。
-
-如果当前只需要验证已保存的六个静态障碍参数，可在静态 Isaac 与无交互 Nav2 已启动后运行
-`./scripts/run_kujiale_static_20.sh [YYYYMMDD-HHMMSS]`。它顺序执行静态种子 `7201`–`7220`，
-并自动生成 `data/reports/kujiale_long_route_static_<campaign_id>/index.html` 及 PDF、Markdown、
-PNG、CSV、JSON 和原始证据。该报告只给出静态结论，绝不把未运行的动态 20 轮显示为通过或失败。
-
-需要 GUI + RViz 的可视化回归时，同一手册提供静态/动态各一轮的自动 G1–G5 闭环路线；
-无需手动点选目标或手动触发障碍。
 
 ## 文档入口
 
