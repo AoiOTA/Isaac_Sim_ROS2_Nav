@@ -1,14 +1,81 @@
-# Schema v2 is the physical-obstacle contract for the Kujiale campaign.
-# Coordinates are Map coordinates and are transformed with long_route_start_g1.
-schema_version: 2
-seed: 7301
+# Schema v3: the physical source of truth for the Kujiale dynamic benchmark.
+# Every actor is a high LiDAR-visible 0.40 x 0.40 x 1.00 m kinematic cube.
+# Goal acceptance only arms it. Motion is released once the robot crosses the
+# spatial gate in the specified direction at >= 0.20 m/s.
+schema_version: 3
+seed: 7401
 enabled: false
 coordinate_frame: map
 spawn_pose_name: long_route_start_g1
-obstacles:
-  # G2 acceptance occurs at the beginning of the G1->G2 leg.  Each actor
-  # enters that leg's centre corridor from a side clearance, then holds in
-  # the travel lane before the robot reaches its row.  This forces a real
-  # slow-down/wait/replan or detour without spawning against the robot.
-  - {id: g1_g2_south_crossing, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [1.15, -1.00, 0.50], end: [0.45, -1.00, 0.50], speed: 0.10, delay_sec: 6.0, jitter_sec: 0.25, post_motion: hold}
-  - {id: g1_g2_north_crossing, mode: linear, trigger_group: G2, size: [0.40, 0.40, 1.00], mass: 20.0, start: [-0.20, 0.65, 0.50], end: [0.50, 0.65, 0.50], speed: 0.10, delay_sec: 15.0, jitter_sec: 0.25, post_motion: hold}
+# The actor yields before the footprint acceptance threshold, never by
+# disabling itself after it is already touching the robot.
+safety: {guard_clearance_m: 0.14, min_clearance_m: 0.10}
+cases:
+  crossing:
+    trigger_group: G2
+    # At -1.80 m the measured time-to-conflict was only ~2.1 s, equal to
+    # the MPPI horizon. Trigger earlier so perception and braking are testable.
+    gate: {axis: y, threshold: -2.80, direction: positive, min_speed_mps: 0.20, x_range: [-0.60, 0.40]}
+    obstacle:
+      {id: crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[0.70, 0.00, 0.50], [-0.85, 0.00, 0.50], [-1.20, 0.00, 0.50]], speed: 0.45, max_acceleration: 0.75, post_motion: park}
+    variants:
+      v1: {seed: 7401, start_delay_sec: 0.00}
+      v2: {seed: 7402, start_delay_sec: 0.15}
+      v3: {seed: 7403, start_delay_sec: 0.30}
+      v4: {seed: 7404, start_delay_sec: 0.45}
+      v5: {seed: 7405, start_delay_sec: 0.60}
+  oncoming:
+    trigger_group: G2
+    gate: {axis: y, threshold: -1.80, direction: positive, min_speed_mps: 0.20, x_range: [-0.60, 0.40]}
+    obstacle:
+      {id: oncoming_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[0.70, 0.80, 0.50], [-0.10, 0.50, 0.50], [-0.10, -1.20, 0.50]], speed: 0.40, max_acceleration: 0.75, post_motion: park}
+    variants:
+      v1: {seed: 7411, start_delay_sec: 0.00}
+      v2: {seed: 7412, start_delay_sec: 0.15}
+      v3: {seed: 7413, start_delay_sec: 0.30}
+      v4: {seed: 7414, start_delay_sec: 0.45}
+      v5: {seed: 7415, start_delay_sec: 0.60}
+  same_direction_slow:
+    trigger_group: G2
+    # Overtaking case: the actor starts 3.5 m ahead of the spatial gate in
+    # the open hall, then moves aside before the y >= 1.0 m bottleneck.  A
+    # 0.45 m footprint blocks the nominal line and requires a real left-side
+    # bypass, without turning the narrow passage into an impossible deadlock.
+    gate: {axis: y, threshold: -3.60, direction: positive, min_speed_mps: 0.20, x_range: [-0.60, 0.40]}
+    obstacle:
+      {id: same_direction_slow_actor, size: [0.45, 0.45, 1.00], mass: 20.0, waypoints: [[-0.35, -0.10, 0.50], [-0.35, 0.65, 0.50], [0.45, 0.65, 0.50], [0.45, -0.55, 0.50]], speed: 0.18, max_acceleration: 0.50, post_motion: park}
+    variants:
+      v1: {seed: 7421, start_delay_sec: 0.00}
+      v2: {seed: 7422, start_delay_sec: 0.15}
+      v3: {seed: 7423, start_delay_sec: 0.30}
+      v4: {seed: 7424, start_delay_sec: 0.45}
+      v5: {seed: 7425, start_delay_sec: 0.60}
+  local_bypass:
+    trigger_group: G2
+    # Start while the robot is still approaching the open hall.  The actor
+    # Traverses right to the planned bypass point, then parks there.  This
+    # deliberately produces a moving-to-parked interaction: the robot must
+    # route around the parked actor rather than wait for a safety-yield.
+    # Start at the doorway instead of in the preceding corridor.  At 0.40
+    # m/s the actor reaches its planned parking point before it can enter the
+    # robot's near-field protection band.
+    gate: {axis: y, threshold: -2.80, direction: positive, min_speed_mps: 0.20, x_range: [-0.45, 0.30]}
+    obstacle:
+      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, 0.00, 0.50], [-0.85, 0.00, 0.50]], speed: 0.40, max_acceleration: 0.50, post_motion: park}
+    variants:
+      v1: {seed: 7441, start_delay_sec: 0.00}
+      v2: {seed: 7442, start_delay_sec: 0.05}
+      v3: {seed: 7443, start_delay_sec: 0.00}
+      v4: {seed: 7444, start_delay_sec: 0.10}
+      v5: {seed: 7445, start_delay_sec: 0.15}
+  temporary_block:
+    trigger_group: G2
+    gate: {axis: y, threshold: -1.80, direction: positive, min_speed_mps: 0.20, x_range: [-0.60, 0.40]}
+    obstacle:
+      {id: temporary_block_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[0.95, 0.15, 0.50], [-0.10, 0.15, 0.50], [0.95, 0.15, 0.50]], speed: 0.50, max_acceleration: 0.75, post_motion: park}
+    variants:
+      v1: {seed: 7431, dwell_sec: 0.60}
+      v2: {seed: 7432, dwell_sec: 0.90}
+      v3: {seed: 7433, dwell_sec: 1.20}
+      v4: {seed: 7434, dwell_sec: 1.50}
+      v5: {seed: 7435, dwell_sec: 1.80}

@@ -100,7 +100,7 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     ] == pytest.approx(0.800)
     assert control_values[
         "DifferentialController.inputs:maxAngularAcceleration"
-    ] == pytest.approx(6.0)
+    ] == pytest.approx(6.5)
 
 
 def test_static_sensor_frames_use_raw_tf_and_no_world_frame():

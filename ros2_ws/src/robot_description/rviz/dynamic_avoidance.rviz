@@ -1,0 +1,23 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Global Options: {Background Color: 48; 48; 48, Fixed Frame: map, Frame Rate: 30}
+  Displays:
+    - {Class: rviz_default_plugins/Map, Enabled: true, Name: Map, Topic: {Value: /map}}
+    - {Class: rviz_default_plugins/TF, Enabled: true, Name: Robot TF, Show Axes: false, Show Names: false}
+    - {Class: rviz_default_plugins/LaserScan, Enabled: true, Name: LiDAR Scan, Topic: {Value: /scan}, Size (m): 0.03}
+    - {Class: rviz_default_plugins/Map, Enabled: true, Name: Local Costmap, Topic: {Value: /local_costmap/costmap}, Alpha: 0.55}
+    - {Class: rviz_default_plugins/Map, Enabled: true, Name: Global Costmap, Topic: {Value: /global_costmap/costmap}, Alpha: 0.35}
+    - {Class: rviz_default_plugins/Path, Enabled: true, Name: Global Plan, Topic: {Value: /plan}, Line Style: Billboards, Line Width: 0.04}
+    - {Class: rviz_default_plugins/Path, Enabled: true, Name: MPPI Optimal Trajectory, Topic: {Value: /optimal_trajectory}, Line Style: Billboards, Line Width: 0.08}
+    - {Class: rviz_default_plugins/Odometry, Enabled: true, Name: Ground Truth Path, Topic: {Value: /ground_truth/odom}, Keep: 400}
+    # Dynamic actor cube, state text, future trajectory/conflict markers and
+    # nearest-line marker are emitted together on this topic at 20 Hz.
+    - {Class: rviz_default_plugins/MarkerArray, Enabled: true, Name: Dynamic Obstacle State and Safety, Topic: {Value: /experiment/dynamic_obstacles/markers}}
+  Views:
+    Current:
+      Class: rviz_default_plugins/TopDownOrtho
+      Name: Top Down
+      Scale: 12

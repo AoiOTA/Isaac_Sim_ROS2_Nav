@@ -7,7 +7,10 @@ variant: null
 # sensor about X so the navigation scan lies in the robot's horizontal X-Y
 # plane. Quaternion order is wxyz.
 scan_plane_rotation_wxyz: [0.7071067811865476, 0.7071067811865475, 0.0, 0.0]
-tick_rate: 10.0
+# Keep the obstacle-observation cadence aligned with the 20 Hz MPPI and
+# local-costmap chain, so a newly visible actor is considered on the next
+# control cycle rather than after a 100 ms sensor period.
+tick_rate: 20.0
 accumulate_outputs: true
 render_product_resolution: [1, 1]
 topic_name: /lidar/points_raw

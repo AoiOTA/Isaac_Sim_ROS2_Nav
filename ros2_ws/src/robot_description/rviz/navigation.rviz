@@ -693,7 +693,11 @@ Visualization Manager:
             Value: /local_costmap/voxel_grid
           Use Fixed Frame: true
           Use rainbow: false
-          Value: true
+          # This is a diagnostic RGB-D view.  It retains short-lived depth
+          # marks by design, which makes a moving actor look like a strip.
+          # Keep the sensor fused into the Local Costmap, but hide this debug
+          # overlay by default in navigation and dynamic-avoidance sessions.
+          Value: false
       Enabled: true
       Name: RGB-D Fusion
     - Alpha: 1

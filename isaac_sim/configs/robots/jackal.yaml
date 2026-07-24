@@ -49,14 +49,17 @@ controller:
   # Realistic Wheel Odom 必须使用相同值，避免角速度估计和控制不一致。
   wheel_distance: 0.800
 
-  max_linear_speed: 1.0
-  max_angular_speed: 1.5
-  max_wheel_speed: 15.0
+  max_linear_speed: 1.6
+  # The Nav2 dynamic-bypass profile can command 3.14 rad/s while moving at
+  # 1.5 m/s.  Keep a small physical margin and enough outer-wheel speed so
+  # the four-wheel differential controller does not silently clip that arc.
+  max_angular_speed: 3.5
+  max_wheel_speed: 30.0
 
   # Isaac 内层仅作为硬保护，不负责正常导航平滑。
-  max_acceleration: 2.0
-  max_deceleration: 3.0
-  max_angular_acceleration: 6.0
+  max_acceleration: 3.5
+  max_deceleration: 3.5
+  max_angular_acceleration: 6.5
 
 frames:
   base: base_link

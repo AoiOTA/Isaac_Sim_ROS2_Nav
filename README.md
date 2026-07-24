@@ -131,7 +131,8 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 /camera/front/depth/points
 ```
 
-深度点云被全局和局部 Costmap 的独立 `depth_voxel_layer` 使用；RViz 的
+深度点云仅被滚动 Local Costmap 的 `depth_voxel_layer` 使用；Global Costmap
+只使用静态地图和实时 `/scan`，避免动态物体留下全局视觉残影。RViz 的
 **RGB-D Fusion** 分组显示局部 `/local_costmap/voxel_grid`。Collision Monitor
 仍只使用二维 `/scan`，RGB-D 不进入 SLAM、EKF 或 Collision Monitor。
 

@@ -88,19 +88,20 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         )
 
 
-def test_kujiale_visual_scenarios_are_one_complete_redesigned_closed_route():
+def test_kujiale_dynamic_visual_is_one_controlled_g1_to_g2_observation():
     static = load_scenario(CONFIG / "kujiale_static_visual.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_dynamic_visual.yaml")
     assert static.seeds == (7201,)
-    assert dynamic.seeds == (7301,)
+    assert dynamic.seeds == (7401,)
     assert [goal.goal_id for goal in static.route] == ["G2", "G3", "G4", "G5", "G1"]
-    assert [goal.goal_id for goal in dynamic.route] == ["G2", "G3", "G4", "G5", "G1"]
+    assert dynamic.route == ()
+    assert dynamic.goal.goal_id == "G2"
+    assert dynamic.run_matrix[0].case_id == "crossing"
     # G4 is now the former toilet waypoint. Every intermediate target is in
     # a high-clearance part of its room and points toward the next leg; the
     # narrow-passage waypoint is intentionally gone.
     expected_yaws = (-160.0, -105.0, -68.0, -42.0, 90.0)
     assert tuple(goal.yaw_deg for goal in static.route) == expected_yaws
-    assert tuple(goal.yaw_deg for goal in dynamic.route) == expected_yaws
     expected_positions = (
         (0.80, 4.80),
         (-2.20, 3.25),
@@ -109,7 +110,6 @@ def test_kujiale_visual_scenarios_are_one_complete_redesigned_closed_route():
         (0.45, -5.35),
     )
     assert tuple(goal.position for goal in static.route) == expected_positions
-    assert tuple(goal.position for goal in dynamic.route) == expected_positions
     for filename in (
         "kujiale_static_long_range.yaml",
         "kujiale_static_pilot.yaml",
@@ -119,7 +119,7 @@ def test_kujiale_visual_scenarios_are_one_complete_redesigned_closed_route():
         scenario = load_scenario(CONFIG / filename)
         assert tuple(goal.yaw_deg for goal in scenario.route) == expected_yaws
     assert static.route[-1] == static.goal
-    assert dynamic.route[-1] == dynamic.goal
+    assert dynamic.goal.position == (0.80, 4.80)
 
 
 def test_complex_routes_are_long_continuous_and_end_at_goal():

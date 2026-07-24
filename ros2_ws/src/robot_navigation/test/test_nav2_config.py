@@ -35,9 +35,10 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert controller['plugin'] == 'nav2_mppi_controller::MPPIController'
     assert controller['motion_model'] == 'DiffDrive'
     assert controller['visualize'] is True
-    assert controller['time_steps'] == 20
-    assert controller['model_dt'] == 0.10
-    assert controller['batch_size'] == 700
+    assert controller['time_steps'] == 40
+    assert controller['model_dt'] == 0.05
+    assert controller['batch_size'] == 500
+    assert controller['vx_std'] == 1.35
     assert controller['retry_attempt_limit'] == 3
     assert controller['regenerate_noises'] is True
     assert controller['time_steps'] * controller['model_dt'] == 2.0
@@ -49,8 +50,7 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert local['plugins'] == [
         'obstacle_layer', 'depth_voxel_layer', 'inflation_layer']
     assert global_costmap['plugins'] == [
-        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
-        'inflation_layer']
+        'static_layer', 'obstacle_layer', 'inflation_layer']
     voxel = local['depth_voxel_layer']
     assert voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
     # Costmap2D declares observation_sources as a string parameter, unlike the
@@ -60,18 +60,15 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert voxel['camera_depth']['sensor_frame'] == 'camera_front_optical_frame'
     assert voxel['camera_depth']['data_type'] == 'PointCloud2'
     assert voxel['camera_depth']['marking'] is True
-    assert voxel['camera_depth']['clearing'] is False
+    assert voxel['camera_depth']['clearing'] is True
     assert voxel['camera_depth']['min_obstacle_height'] == 0.05
     assert voxel['camera_depth']['max_obstacle_height'] == 0.50
     assert voxel['camera_depth']['obstacle_max_range'] == 2.0
     assert voxel['camera_depth']['raytrace_max_range'] == 2.5
+    assert voxel['camera_depth']['observation_persistence'] == 0.0
     assert voxel['camera_depth']['expected_update_rate'] == 0.0
     assert voxel['combination_method'] == 1
-    global_voxel = global_costmap['depth_voxel_layer']
-    assert global_voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
-    assert global_voxel['observation_sources'] == 'camera_depth'
-    assert global_voxel['camera_depth']['topic'] == '/camera/front/depth/points'
-    assert global_voxel['camera_depth']['clearing'] is True
+    assert 'depth_voxel_layer' not in global_costmap
     assert local['obstacle_layer']['scan']['topic'] == '/scan'
     assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
 
@@ -81,10 +78,10 @@ def test_stable_overlay_preserves_the_verified_low_latency_mppi_budget():
     parameters = stable['controller_server']['ros__parameters']
     follow_path = parameters['FollowPath']
 
-    assert parameters['controller_frequency'] == 10.0
-    assert follow_path['time_steps'] == 20
-    assert follow_path['model_dt'] == 0.10
-    assert follow_path['batch_size'] == 700
+    assert parameters['controller_frequency'] == 20.0
+    assert follow_path['time_steps'] == 40
+    assert follow_path['model_dt'] == 0.05
+    assert follow_path['batch_size'] == 500
 
 
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
@@ -96,7 +93,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     collision = _params(config, 'collision_monitor')
 
     assert controller['enable_stamped_cmd_vel'] is False
-    assert controller['controller_frequency'] == 10.0
+    assert controller['controller_frequency'] == 20.0
     assert controller['goal_checker']['xy_goal_tolerance'] == 0.20
     assert controller['goal_checker']['yaw_goal_tolerance'] <= 0.174532925
     assert behavior['enable_stamped_cmd_vel'] is False
@@ -129,13 +126,13 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
     assert -0.20 <= controller['vx_min'] <= -0.10
-    assert controller['vx_std'] == 0.35
-    assert 0.70 <= controller['vx_max'] <= 0.80
-    assert controller['wz_std'] == 0.75
-    assert controller['wz_max'] == 1.35
+    assert controller['vx_std'] == 1.35
+    assert 1.45 <= controller['vx_max'] <= 1.55
+    assert controller['wz_std'] == 3.40
+    assert controller['wz_max'] == 3.40
     assert controller['PathAngleCritic']['mode'] == 0
-    assert controller['PathAngleCritic']['cost_weight'] \
-        > controller['PathFollowCritic']['cost_weight']
+    assert controller['PathFollowCritic']['cost_weight'] \
+        > controller['PathAngleCritic']['cost_weight']
     assert controller['PathFollowCritic']['cost_weight'] \
         > controller['PathAlignCritic']['cost_weight']
     assert controller['PathFollowCritic']['offset_from_furthest'] >= 8
@@ -204,11 +201,6 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     for costmap in (local, global_costmap):
         assert costmap['footprint'] == local['footprint']
         assert 0.0 <= costmap['footprint_padding'] <= 0.005
-        voxel = costmap['depth_voxel_layer']
-        assert voxel['z_voxels'] == 16
-        # A front-only RGB-D camera must not turn every unobserved column into
-        # a 2D unknown obstacle over StaticLayer free space.
-        assert voxel['unknown_threshold'] == voxel['z_voxels']
         inflation = costmap['inflation_layer']
         padded_radius = max(
             math.hypot(x, y) for x, y in physical
@@ -216,6 +208,12 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
         assert inflation['inflation_radius'] > padded_radius
         assert inflation['inflation_radius'] <= 0.45
         assert inflation['cost_scaling_factor'] >= 6.0
+
+    voxel = local['depth_voxel_layer']
+    assert voxel['z_voxels'] == 16
+    # A front-only RGB-D camera must not turn every unobserved local column
+    # into a 2D unknown obstacle over currently free space.
+    assert voxel['unknown_threshold'] == voxel['z_voxels']
 
     assert planner['cost_travel_multiplier'] <= 1.5
     assert planner['tolerance'] == 0.10

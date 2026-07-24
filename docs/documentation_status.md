@@ -20,7 +20,7 @@
 - Localization/Navigation 默认地图是酷家乐 `warehouse_new`；
 - `warehouse_new` 只批准普通 Ideal Localization/Navigation，Realistic 或显式 Pose Graph 定位会被启动脚本拒绝；
 - 标准人工导航使用两个终端、受管 RViz 和 **2D Goal Pose**，不存在项目私有目标桥；
-- `rgbd_navigation` 发布 `/camera/front/depth/points`，全局和局部 Costmap 均使用独立 `depth_voxel_layer`；Collision Monitor 仍只使用 `/scan`；
+- `rgbd_navigation` 发布 `/camera/front/depth/points`，仅滚动 Local Costmap 使用 `depth_voxel_layer`；Global Costmap 与 Collision Monitor 均只使用 `/scan`；
 - 当前可复核的静态候选批次为 `kujiale_long_route_static_20260723-194416`：静态严格成功、物理无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`（门槛 `20%`）。动态 20 轮尚未执行，因此不能宣称动态或完整 20+20 验收；报告仅保存在本地忽略的 `data/reports/`。
 - 旧全屋批次 `kujiale_long_route_20260722-171828` 使用 `mapping_start`、G1–G8 和旧障碍布局，只能作为历史证据，不能替代当前候选布局的结论。
 

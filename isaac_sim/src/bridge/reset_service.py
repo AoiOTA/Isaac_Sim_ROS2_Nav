@@ -277,6 +277,10 @@ class ResetServiceBridge:
         self._String = String
 
         self._declare_parameter("reset_seed", 0)
+        # Selection is intentionally reset-scoped: a campaign can choose one
+        # physical case/variant without mutating the immutable simulation YAML.
+        self._declare_parameter("dynamic_case_id", "")
+        self._declare_parameter("dynamic_variant_id", "")
         self._declare_parameter("reset_pose_name", default_pose_name)
         self._declare_parameter("navigation_mode", navigation_mode)
         self._declare_parameter("odometry_mode", odometry_mode)

@@ -30,6 +30,7 @@ setup(
             "motion_benchmark = robot_experiments.motion_benchmark:main",
             "navigation_benchmark = robot_experiments.navigation_benchmark:main",
             "kujiale_campaign = robot_experiments.kujiale_campaign:main",
+            "dynamic_avoidance_campaign = robot_experiments.dynamic_avoidance_campaign:main",
             "kujiale_reference = robot_experiments.kujiale_reference:main",
         ],
     },
