@@ -121,6 +121,32 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 [`docs/user_manual.md`](docs/user_manual.md#82-静态可视化单轮) 的“交互式布局与手动导航”流程启动；
 不要运行会 Reset 方块位置的自动 `run_visual_route.sh static`。
 
+## WebRTC 无窗口流媒体
+
+分支中的 `--streaming` 会使项目的 standalone 启动器使用 Isaac Sim 6.0.1 自带的
+`isaacsim.exp.full.streaming.kit`：本地没有 Kit 窗口，但保留 viewport 供 WebRTC
+客户端查看和操作。服务端在客户端断开后继续运行，直到正常停止 Isaac 进程。
+
+启动当前 Kujiale 定位场景（Ideal odometry、`long_route_start_g1`）：
+
+```bash
+cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+./scripts/run_isaac_streaming.sh
+```
+
+等到日志出现 `Isaac navigation simulation ready: ... streaming=True` 后，用 Isaac Sim
+WebRTC Streaming Client 连接服务端主机。默认信令端口为 TCP `49100`，媒体端口为
+UDP `47998`（远程连接需放行这两个端口）。若同时需要导航与 RViz，另开终端：
+
+```bash
+cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
+```
+
+不要用裸命令 `isaacsim isaacsim.exp.full.streaming --no-window` 来运行本项目：它会绕过
+`navigation_sim.py`，因此不会构建项目的场景 overlay、Jackal、ROS 2 图或出生点。需要
+自定义出生点或 Camera profile 时，可直接调用 `run_isaac.sh --streaming` 并附加项目参数。
+
 ## RGB-D 感知边界
 
 `--camera-profile rgbd_navigation` 会发布：

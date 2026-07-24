@@ -107,6 +107,25 @@ RViz 中的机器人也应落在地图最下方的 G1，而不是旧的 `[0, 0]`
 GUI 会使用 Jackal 的第三人称相机。无头自动运行才使用 `--headless`；手动点击
 目标需要 RViz，因此日常人工测试使用 GUI Isaac + RViz 更直接。
 
+### 3.2.1 WebRTC 无窗口服务端
+
+需要远程查看或操作 Isaac viewport、但不在服务器创建桌面窗口时，在终端 A 改为：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/run_isaac_streaming.sh
+```
+
+该入口固定使用当前 Kujiale 场景、Localization、Ideal odometry 和
+`long_route_start_g1`，并启用 `isaacsim.exp.full.streaming.kit`。等待日志中的
+`streaming=True` 后，通过 Isaac Sim WebRTC Streaming Client 连接该机器；默认信令端口
+是 TCP `49100`，媒体端口是 UDP `47998`（远程客户端需能访问这两个端口）。服务端不会因
+最后一个客户端断开而退出。
+
+它仍是项目的 Isaac 进程，因此终端 B 使用不变的 `run_ros.sh navigation` 命令。不可改用
+裸命令 `isaacsim isaacsim.exp.full.streaming --no-window`，否则项目的场景组合、机器人、
+ROS 2 bridge 与出生位姿初始化都不会执行。
+
 ### 3.3 终端 B：启动 Navigation 与 RViz
 
 ```bash

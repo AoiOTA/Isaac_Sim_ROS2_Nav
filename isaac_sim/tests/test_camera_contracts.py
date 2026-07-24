@@ -215,11 +215,37 @@ def test_camera_cli_accepts_only_named_profiles():
         parser.parse_args(["--camera-profile", "turbo"])
 
 
+def test_streaming_cli_and_launcher_use_the_webrtc_experience(tmp_path, monkeypatch):
+    experience = tmp_path / "isaacsim.exp.full.streaming.kit"
+    experience.touch()
+    monkeypatch.setenv("EXP_PATH", str(tmp_path))
+
+    assert _parser().parse_args(["--streaming"]).streaming is True
+
+    launch, selected_experience = _simulation_app_config(
+        _config(), streaming=True
+    )
+
+    assert selected_experience == str(experience)
+    assert launch["headless"] is True
+    assert launch["hide_ui"] is False
+    assert "--no-window" in launch["extra_args"]
+    assert (
+        "--/exts/omni.services.livestream.session/quitOnSessionEnded=false"
+        in launch["extra_args"]
+    )
+
+
 def test_simulation_app_enables_supported_multitick_sensor_settings_early():
-    launch = _simulation_app_config(_config())
+    launch, experience = _simulation_app_config(_config())
 
     assert launch["multi_gpu"] is False
+    assert experience == ""
     assert launch["extra_args"] == [
+        "--/renderer/raytracingMotion/enabled=true",
+        "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
+        "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
+        "--/rtx/rendering/perSensorTickTlas=true",
         "--/rtx/hydra/supportMultiTickRate=true",
         "--/persistent/simulation/minFrameRate=60",
     ]

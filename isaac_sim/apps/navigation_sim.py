@@ -96,6 +96,14 @@ def _parser() -> argparse.ArgumentParser:
         help="override the configured GUI/headless mode",
     )
     parser.add_argument(
+        "--streaming",
+        action="store_true",
+        help=(
+            "run the project in Isaac Sim's WebRTC streaming experience "
+            "without a local application window"
+        ),
+    )
+    parser.add_argument(
         "--max-steps",
         type=int,
         default=None,
@@ -322,12 +330,25 @@ def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     app.update()
 
 
-def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
-    return {
+def _simulation_app_config(
+    config: ProjectConfig,
+    *,
+    streaming: bool = False,
+) -> tuple[dict[str, object], str]:
+    """Build the Kit launcher arguments before importing Isaac modules."""
+
+    launch_config: dict[str, object] = {
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
         "extra_args": [
+            # RTX LiDAR uses multi-tick 100 ms exposures.  Motion BVH must
+            # be enabled before Kit starts or a moving/rotating sensor
+            # produces frame-inconsistent accumulated point clouds.
+            "--/renderer/raytracingMotion/enabled=true",
+            "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
+            "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
+            "--/rtx/rendering/perSensorTickTlas=true",
             "--/rtx/hydra/supportMultiTickRate=true",
             (
                 "--/persistent/simulation/minFrameRate="
@@ -335,6 +356,28 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
             ),
         ],
     }
+    if not streaming:
+        return launch_config, ""
+
+    experience = Path(os.environ["EXP_PATH"]) / "isaacsim.exp.full.streaming.kit"
+    if not experience.is_file():
+        raise FileNotFoundError(
+            "Isaac Sim WebRTC streaming experience is unavailable: "
+            f"{experience}"
+        )
+    launch_config["headless"] = True
+    # Headless normally hides the UI.  Streaming needs the viewport/UI stack
+    # alive even though Kit receives --no-window, otherwise there is no
+    # primary render target for the WebRTC stream.
+    launch_config["hide_ui"] = False
+    launch_config["extra_args"] = [
+        *launch_config["extra_args"],
+        "--no-window",
+        # The stock streaming experience exits after the only client leaves.
+        # This project launcher is a service, so retain it for reconnects.
+        "--/exts/omni.services.livestream.session/quitOnSessionEnded=false",
+    ]
+    return launch_config, str(experience)
 
 
 def run(
@@ -342,6 +385,8 @@ def run(
     selected_pose: object,
     dynamic_scenario: object,
     camera_selection: object,
+    *,
+    streaming: bool = False,
 ) -> None:
     configure_process_environment(config)
 
@@ -352,21 +397,10 @@ def run(
         # SimulationApp otherwise forwards this application's argparse flags
         # to Kit as if they were native settings.
         sys.argv = [sys.argv[0]]
-        app = SimulationApp(
-            {
-                "headless": config.simulation.headless,
-                "renderer": config.simulation.renderer,
-                # RTX LiDAR uses multi-tick 100 ms exposures.  Motion BVH must
-                # be enabled before Kit starts or a moving/rotating sensor
-                # produces frame-inconsistent accumulated point clouds.
-                "extra_args": [
-                    "--/renderer/raytracingMotion/enabled=true",
-                    "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
-                    "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
-                    "--/rtx/rendering/perSensorTickTlas=true",
-                ],
-            }
+        launch_config, experience = _simulation_app_config(
+            config, streaming=streaming
         )
+        app = SimulationApp(launch_config, experience=experience)
     finally:
         sys.argv = original_argv
     runtime = None
@@ -404,7 +438,7 @@ def run(
         validate_composed_stage(config, stage)
         camera_enabled = bool(
             config.third_person_camera.enabled
-            and not config.simulation.headless
+            and (not config.simulation.headless or streaming)
         )
         third_person_camera = None
         if camera_enabled:
@@ -667,6 +701,7 @@ def run(
             f"dynamic_config={config.files.dynamic_obstacles.name}, "
             f"ground_truth={config.ground_truth.enabled}, "
             f"camera={camera_selection.profile.name}, "
+            f"streaming={streaming}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"max_frames={max_frames or 'unlimited'}"
@@ -755,6 +790,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
+    if args.streaming:
+        # The stock streaming experience owns a renderable viewport but must
+        # not create a local desktop window.  Keep this override after config
+        # loading so camera selection and third-person binding see it too.
+        config = replace(
+            config,
+            simulation=replace(config.simulation, headless=True),
+        )
     if args.dynamic_obstacle_config is not None:
         obstacle_config = args.dynamic_obstacle_config.expanduser().resolve()
         if not obstacle_config.is_file():
@@ -799,7 +842,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{calibration})"
         )
         return 0
-    run(config, selected_pose, dynamic_scenario, camera_selection)
+    run(
+        config,
+        selected_pose,
+        dynamic_scenario,
+        camera_selection,
+        streaming=args.streaming,
+    )
     return 0
 
 
