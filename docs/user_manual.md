@@ -170,7 +170,8 @@ Nav2 lifecycle activation completed
 - **Depth PointCloud2**：青色深度点云；
 - **Marked Voxels (3D)**：局部 Costmap 已标记的浅绿色体素。
 
-深度点云同时进入全局和局部 `depth_voxel_layer`；默认 RViz 仅渲染
+深度点云仅进入滚动 Local Costmap 的 `depth_voxel_layer`；Global Costmap 只使用
+静态地图和实时 `/scan`，避免动态物体在全局代价地图留下视觉残影。默认 RViz 仅渲染
 `/local_costmap/voxel_grid`。Collision Monitor 仍只以 `/scan` 作为急停传感器。
 RGB-D 不进入 SLAM、EKF 或 odometry。
 

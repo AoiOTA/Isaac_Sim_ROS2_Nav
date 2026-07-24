@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 import yaml
 
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario
+from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,3 +58,22 @@ def test_dynamic_baseline_uses_one_shot_trajectories():
     )
     assert scenario.obstacles
     assert all(not obstacle.repeat for obstacle in scenario.obstacles)
+
+
+def test_dynamic_profile_is_smooth_and_honours_motion_limits():
+    distance, max_speed, max_acceleration = 0.80, 0.40, 0.50
+    start = DynamicObstacleManager._profile(
+        distance, max_speed, max_acceleration, 0.0
+    )
+    _, _, duration = start
+    middle = DynamicObstacleManager._profile(
+        distance, max_speed, max_acceleration, duration / 2.0
+    )
+    finish = DynamicObstacleManager._profile(
+        distance, max_speed, max_acceleration, duration
+    )
+
+    assert duration == pytest.approx(math.pi, abs=1e-6)
+    assert start[:2] == pytest.approx((0.0, 0.0))
+    assert middle[:2] == pytest.approx((distance / 2.0, max_speed))
+    assert finish[:2] == pytest.approx((distance, 0.0))

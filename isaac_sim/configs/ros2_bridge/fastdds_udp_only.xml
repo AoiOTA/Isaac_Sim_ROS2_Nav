@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Isaac/ROS 2 can run beside an Omniverse Hub that keeps legacy Fast DDS SHM
+  ports open.  Use loopback UDP explicitly for this project so a foreign SHM
+  lock cannot prevent DDS participant creation.  Discovery and payloads stay
+  on this host; no shared-memory files are removed or modified.
+-->
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>isaac_nav_udp_v4</transport_id>
+      <type>UDPv4</type>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="isaac_nav_udp_only" is_default_profile="true">
+    <rtps>
+      <userTransports>
+        <transport_id>isaac_nav_udp_v4</transport_id>
+      </userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>

@@ -7,6 +7,7 @@ export ISAAC_PYTHON="${ISAAC_PYTHON:-/home/lyb/miniconda3/envs/isaacsim/bin/pyth
 export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-/home/lyb/isaacsim_assets/Assets/Isaac/6.0}"
 export ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
+export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"
 
 readonly ISAAC_NAV_EXPECTED_ROS_DISTRO="jazzy"
 readonly ISAAC_NAV_EXPECTED_DOMAIN_ID="42"
@@ -50,6 +51,11 @@ validate_runtime_environment() {
   fi
   export ROS_DOMAIN_ID="${ISAAC_NAV_EXPECTED_DOMAIN_ID}"
   export RMW_IMPLEMENTATION="${ISAAC_NAV_EXPECTED_RMW}"
+  require_file "${ISAAC_NAV_FASTDDS_PROFILE}"
+  # Both names are exported because Isaac's bundled Fast DDS and Jazzy's RMW
+  # may consult different compatibility aliases.
+  export FASTRTPS_DEFAULT_PROFILES_FILE="${ISAAC_NAV_FASTDDS_PROFILE}"
+  export FASTDDS_DEFAULT_PROFILES_FILE="${ISAAC_NAV_FASTDDS_PROFILE}"
 }
 
 source_ros() {

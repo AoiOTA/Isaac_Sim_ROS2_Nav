@@ -24,7 +24,10 @@ controller_server:
     use_sim_time: true
     enable_stamped_cmd_vel: false
 
-    controller_frequency: 10.0
+    # Match the final 20 Hz velocity-smoother cadence.  A higher controller
+    # rate cannot improve actuator updates while the downstream smoother is
+    # 20 Hz; 20 Hz is therefore the meaningful upper bound of this chain.
+    controller_frequency: 20.0
     costmap_update_timeout: 0.30
 
     min_x_velocity_threshold: 0.001
@@ -59,14 +62,15 @@ controller_server:
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
 
-      # 20 × 0.10 = 2 秒预测范围。
-      time_steps: 20
-      model_dt: 0.10
+      # 40 × 0.05 = 2 秒预测范围。模型步长与 20 Hz 控制周期一致，
+      # 以提高动态绕障中的转向更新精度而不缩短预测视野。
+      time_steps: 40
+      model_dt: 0.05
       # The seven-run static campaign exposed repeated cases where the fixed
-      # 500-sample bank contained no collision-free rollout for a transient
-      # local-costmap state.  700 remains well within the 10 Hz controller
-      # budget while materially increasing the chance of a feasible bypass.
-      batch_size: 700
+      # Keep the rollout work bounded after halving model_dt.  500 samples
+      # preserves a dense candidate set while leaving enough compute budget
+      # for every 20 Hz control update to complete on time.
+      batch_size: 500
       iteration_count: 1
       # Do not immediately escalate a single exhausted candidate bank to the
       # BT recovery tree.  Retry with freshly sampled controls first; this
@@ -83,22 +87,39 @@ controller_server:
       # repeated "Optimizer fail to compute path" bursts in the campaign.
       # The bounded standard deviations still favour continuous turning arcs
       # instead of alternating crawl / stop corrections at corridor entries.
-      vx_std: 0.35
+      # A 1.5 m/s ceiling is ineffective if the sampled forward controls stay
+      # clustered around the previous low-speed command.  Broaden the bank so
+      # open-hall candidates include decisive forward bypasses; footprint
+      # collision checks, Collision Monitor and vx_max remain hard bounds.
+      vx_std: 1.35
       vy_std: 0.00
-      wz_std: 0.75
+      # The central-hall interaction needs a prompt, continuous differential
+      # arc.  Cover most of the 3.40 rad/s command range so the optimizer can
+      # select a >=3.14 rad/s bypass turn instead of converging to a crawl.
+      # Keep a broad angular bank for a moving actor in the open hall.  The
+      # validated local-bypass run cleared the actor while it was still
+      # moving only when this bank covered the full 3.40 rad/s command range.
+      wz_std: 3.40
 
       # Forward motion remains strongly preferred, but a bounded reverse
       # sample is available for terminal-pose recovery in narrow rooms.
-      vx_max: 0.75
+      # The local-bypass interaction takes place in the open central hall.
+      # Keep enough forward authority for the robot to complete a continuous
+      # right-side arc while the actor is still moving, rather than yielding
+      # until the actor has cleared the crossing.
+      vx_max: 1.50
       vx_min: -0.15
       vy_max: 0.00
-      wz_max: 1.35
+      # The skid-steer plant under-rotates by about 5% at high yaw rates.
+      # Command 3.40 rad/s so the Ground-Truth body yaw reaches the required
+      # 3.14 rad/s after the complete Nav2 safety chain.
+      wz_max: 3.40
 
-      ax_max: 1.25
-      ax_min: -1.10
+      ax_max: 3.00
+      ax_min: -3.00
       ay_max: 0.00
       ay_min: 0.00
-      az_max: 3.50
+      az_max: 6.28
 
       prune_distance: 1.50
       transform_tolerance: 0.50
@@ -131,12 +152,12 @@ controller_server:
         enabled: true
         cost_power: 1
         # The rectangular footprint remains collision-checked at every
-        # prediction point.  A lower soft-cost weight lets valid trajectories
-        # traverse the centre of narrow, symmetrically inflated corridors.
-        # Hard footprint collision checking remains enabled.  Reduce only the
-        # soft obstacle gradient slightly so RGB-D low-box avoidance chooses
-        # a continuous bypass instead of alternating crawl / re-sample steps.
-        cost_weight: 1.35
+        # prediction point.  In the open local-bypass hall, a stronger soft
+        # obstacle gradient makes MPPI commit early to the free right-side
+        # arc instead of following the stale centre line until the actor's
+        # kinematic safety guard must intervene.  Hard collision checking is
+        # unchanged.
+        cost_weight: 2.20
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -176,9 +197,10 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        # Reward useful progress along the path instead of allowing a
-        # well-aligned but persistently slow trajectory to dominate.
-        cost_weight: 10.0
+        # Reward useful progress without overpowering the newly observed
+        # local obstacle.  The validated dynamic run needs a lateral right
+        # arc before it can resume forward path progress.
+        cost_weight: 16.0
         offset_from_furthest: 10
         threshold_to_consider: 1.4
 
@@ -212,8 +234,11 @@ local_costmap:
     ros__parameters:
       use_sim_time: true
 
-      update_frequency: 10.0
-      publish_frequency: 5.0
+      # Dynamic actors are sampled at 20 Hz.  Rebuild the rolling map at the
+      # same cadence so MPPI receives the first LiDAR marking on its next
+      # control cycle rather than waiting for a second costmap period.
+      update_frequency: 20.0
+      publish_frequency: 10.0
 
       global_frame: odom
       robot_base_frame: base_link
@@ -281,23 +306,21 @@ local_costmap:
           data_type: PointCloud2
           transport_type: raw
           marking: true
-          # The camera sees the floor and the far side of the low box in the
-          # same frame.  Ray-clearing those returns can immediately erase the
-          # shallow box mark before the local planner consumes it.  Keep RGB-D
-          # as a marking-only source; reset explicitly clears this layer and
-          # the bounded persistence below expires stale observations.
-          clearing: false
+          # Dynamic actors must be removed as soon as the background becomes
+          # visible again.  Enable per-frame ray clearing instead of keeping
+          # a marking-only history, so an actor crossing the hall cannot leave
+          # a horizontal obstacle trail in the rolling costmap.
+          clearing: true
           min_obstacle_height: 0.05
           max_obstacle_height: 0.50
           obstacle_min_range: 0.05
           obstacle_max_range: 2.0
           raytrace_min_range: 0.05
           raytrace_max_range: 2.5
-          # A low box can leave the front camera FOV while the controller is
-          # turning around it.  Keep a recent RGB-D marking long enough for
-          # the local planner to complete that avoidance manoeuvre; regular
-          # depth clearing still removes it after this bounded interval.
-          observation_persistence: 1.0
+          # Consume only the current depth frame.  The next background frame
+          # clears a departed dynamic actor instead of extending its obstacle
+          # footprint along the direction of travel.
+          observation_persistence: 0.0
           expected_update_rate: 0.0
           inf_is_valid: false
 
@@ -331,11 +354,10 @@ global_costmap:
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
       footprint_padding: 0.005
 
-      # The low RGB-D-only box must also reach the global planner. Otherwise
-      # the local controller sees a collision while the global path keeps
-      # commanding it straight through the obstacle, which ends in a safety
-      # stop instead of a valid bypass.
-      plugins: [static_layer, obstacle_layer, depth_voxel_layer, inflation_layer]
+      # Global planning consumes the static map plus live LiDAR only. Front
+      # depth has a limited FOV and leaves long stale marking trails when a
+      # dynamic actor moves; keep it in the rolling Local Costmap instead.
+      plugins: [static_layer, obstacle_layer, inflation_layer]
 
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
@@ -358,47 +380,6 @@ global_costmap:
           raytrace_min_range: 0.40
           obstacle_max_range: 25.0
           obstacle_min_range: 0.40
-
-      depth_voxel_layer:
-        plugin: nav2_costmap_2d::VoxelLayer
-        enabled: true
-        footprint_clearing_enabled: true
-        combination_method: 1
-        publish_voxel_map: true
-        tf_filter_tolerance: 0.10
-
-        origin_z: 0.0
-        z_resolution: 0.05
-        z_voxels: 16
-        # Preserve StaticLayer free cells outside the front camera FOV. With
-        # all 16 voxels unobserved, the former threshold projected a broad
-        # unknown band over valid G1 return cells. RGB-D obstacle markings and
-        # ray clearing remain enabled; only absence of a depth observation is
-        # no longer promoted to a 2D obstacle/unknown cell.
-        unknown_threshold: 16
-        mark_threshold: 0
-        max_obstacle_height: 0.50
-        observation_sources: camera_depth
-
-        camera_depth:
-          topic: /camera/front/depth/points
-          sensor_frame: camera_front_optical_frame
-          data_type: PointCloud2
-          transport_type: raw
-          marking: true
-          # Global observations must still ray-clear. A permanent global
-          # depth history eventually turns unrelated furniture observations
-          # into stale walls at later waypoints.
-          clearing: true
-          min_obstacle_height: 0.05
-          max_obstacle_height: 0.50
-          obstacle_min_range: 0.05
-          obstacle_max_range: 2.0
-          raytrace_min_range: 0.05
-          raytrace_max_range: 2.5
-          observation_persistence: 1.0
-          expected_update_rate: 0.0
-          inf_is_valid: false
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
@@ -504,13 +485,13 @@ velocity_smoother:
 
     feedback: OPEN_LOOP
 
-    max_velocity: [0.75, 0.0, 1.35]
+    max_velocity: [1.50, 0.0, 3.40]
     # MPPI仍以 vx_min=0 前进跟踪；这里单独允许行为树 BackUp 的有限负速，
     # 否则 -0.18 m/s 恢复命令会被平滑器钳成零而无法离开死胡同。
-    min_velocity: [-0.25, 0.0, -1.35]
+    min_velocity: [-0.25, 0.0, -3.40]
 
-    max_accel: [1.25, 0.0, 3.50]
-    max_decel: [-1.10, 0.0, -3.50]
+    max_accel: [3.00, 0.0, 6.28]
+    max_decel: [-3.00, 0.0, -6.28]
 
     odom_topic: /odom
     odom_duration: 0.10

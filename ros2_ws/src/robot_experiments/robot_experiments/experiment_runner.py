@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import csv
 import gzip
@@ -52,6 +52,7 @@ from .metrics import (
 )
 from .report import configuration_sha256, write_run_report
 from .scenario import (
+    RunSelection,
     Scenario,
     load_scenario,
     validate_dynamic_physical_contract,
@@ -145,6 +146,13 @@ class ExperimentRunner(Node):
         if not scenario_file:
             raise ConfigurationError("scenario_file is required")
         self._scenario: Scenario = load_scenario(scenario_file)
+        visual_case = str(self.declare_parameter("dynamic_case_id", "").value).strip()
+        visual_variant = str(self.declare_parameter("dynamic_variant_id", "").value).strip()
+        visual_seed = self.declare_parameter("dynamic_seed", 0).value
+        if visual_case or visual_variant:
+            if not (visual_case and visual_variant) or isinstance(visual_seed, bool) or not isinstance(visual_seed, int) or visual_seed < 0:
+                raise ConfigurationError("dynamic visual override requires case_id, variant_id and non-negative seed")
+            self._scenario = replace(self._scenario, seeds=(visual_seed,), run_matrix=(RunSelection(visual_seed, visual_case, visual_variant),))
         validate_navigation_runner_scenario(self._scenario)
 
         configured_spawn_file = str(
@@ -438,6 +446,7 @@ class ExperimentRunner(Node):
         self._collision_monitor_active = False
         self._active_evidence_root: Path | None = None
         self._bag_process: subprocess.Popen[bytes] | None = None
+        self._active_selection: RunSelection | None = None
         self._clear_run_state()
 
     def _clear_run_state(self) -> None:
@@ -465,6 +474,9 @@ class ExperimentRunner(Node):
         self._obstacle_events: list[dict[str, Any]] = []
         self._obstacle_event_keys: set[str] = set()
         self._obstacle_state: dict[str, Any] = {"obstacles": [], "events": []}
+        self._obstacle_samples: list[dict[str, Any]] = []
+        self._dynamic_guard_aborted = False
+        self._dynamic_safety_yield = False
         self._depth_frame: dict[str, Any] | None = None
         self._scan_frame: dict[str, Any] | None = None
         self._local_costmap: Costmap | None = None
@@ -534,6 +546,11 @@ class ExperimentRunner(Node):
         if not isinstance(obstacles, list) or not isinstance(events, list):
             return
         self._obstacle_state = {"obstacles": obstacles, "events": events}
+        stamp_s = self._clock_seconds()
+        if stamp_s is not None:
+            for obstacle in obstacles:
+                if isinstance(obstacle, dict):
+                    self._obstacle_samples.append({"stamp_s": stamp_s, **obstacle})
         for event in events:
             if not isinstance(event, dict):
                 continue
@@ -541,6 +558,10 @@ class ExperimentRunner(Node):
             if key not in self._obstacle_event_keys:
                 self._obstacle_event_keys.add(key)
                 self._obstacle_events.append(dict(event))
+                if event.get("event") == "near_contact_abort":
+                    self._dynamic_guard_aborted = True
+                if event.get("event") == "safety_yield":
+                    self._dynamic_safety_yield = True
 
     def _depth_callback(self, message: Image) -> None:
         # Copy the message bytes: ROS message instances may be reused by the
@@ -640,7 +661,13 @@ class ExperimentRunner(Node):
             self._spin_once(min(0.1, remaining))
         return True
 
-    def _wait_future(self, future, deadline: float) -> bool:
+    def _wait_future(
+        self,
+        future,
+        deadline: float,
+        *,
+        abort_on_dynamic_guard: bool = False,
+    ) -> bool:
         while not future.done():
             if not rclpy.ok():
                 raise ExternalShutdownException()
@@ -648,9 +675,11 @@ class ExperimentRunner(Node):
             if remaining <= 0.0:
                 return False
             self._spin_once(min(0.1, remaining))
+            if abort_on_dynamic_guard and self._dynamic_guard_aborted:
+                return False
         return True
 
-    def _set_reset_seed(self, seed: int) -> None:
+    def _set_reset_seed(self, seed: int, case_id: str | None = None, variant_id: str | None = None) -> None:
         if not self._isaac_parameter_client.wait_for_services(
             timeout_sec=self._service_timeout_sec
         ):
@@ -660,6 +689,8 @@ class ExperimentRunner(Node):
             [
                 Parameter("reset_seed", value=seed),
                 Parameter("reset_pose_name", value=self._scenario.spawn_pose_name),
+                Parameter("dynamic_case_id", value=case_id or ""),
+                Parameter("dynamic_variant_id", value=variant_id or ""),
             ]
         )
         deadline = time.monotonic() + self._service_timeout_sec
@@ -1055,11 +1086,11 @@ class ExperimentRunner(Node):
                 stable_anchor = None
         raise ExternalShutdownException()
 
-    def _reset_simulation(self, seed: int) -> None:
+    def _reset_simulation(self, seed: int, case_id: str | None = None, variant_id: str | None = None) -> None:
         previous_seed_epoch = self._localization_seed_epoch
         self._cancel_stale_navigation_goal()
         self._clear_localization_buffer()
-        self._set_reset_seed(seed)
+        self._set_reset_seed(seed, case_id, variant_id)
         if not self._reset_client.wait_for_service(timeout_sec=self._service_timeout_sec):
             self._raise_if_shutdown()
             raise RuntimeError(f"reset service unavailable: {self._reset_service_name}")
@@ -1198,15 +1229,25 @@ class ExperimentRunner(Node):
                     overall_deadline,
                     time.monotonic() + self._scenario.leg_timeout_sec,
                 )
-                if not self._wait_future(result_future, leg_deadline):
+                if not self._wait_future(
+                    result_future,
+                    leg_deadline,
+                    abort_on_dynamic_guard=True,
+                ):
+                    guard_aborted = self._dynamic_guard_aborted
                     cancel_future = goal_handle.cancel_goal_async()
                     if not self._wait_future(
                         cancel_future,
                         time.monotonic() + self._service_timeout_sec,
                     ):
+                        context = (
+                            "after dynamic safety abort"
+                            if guard_aborted
+                            else "after timeout"
+                        )
                         raise ExperimentIsolationError(
-                            "Nav2 goal timed out and cancellation "
-                            "acknowledgement was not received"
+                            "Nav2 goal cancellation acknowledgement was not "
+                            f"received {context}"
                         )
                     try:
                         cancel_response = cancel_future.result()
@@ -1232,8 +1273,14 @@ class ExperimentRunner(Node):
                             "Nav2 goal returned no terminal result "
                             "after cancellation"
                         )
-                    self._leg_results.append({"id": specification.goal_id or f"G{index + 1}", "nav2_status": int(wrapped_result.status), "accepted": True, "timed_out": True})
-                    return False, True, int(wrapped_result.status)
+                    self._leg_results.append({
+                        "id": specification.goal_id or f"G{index + 1}",
+                        "nav2_status": int(wrapped_result.status),
+                        "accepted": True,
+                        "timed_out": not guard_aborted,
+                        "dynamic_safety_aborted": guard_aborted,
+                    })
+                    return False, not guard_aborted, int(wrapped_result.status)
                 wrapped_result = result_future.result()
                 if wrapped_result is None:
                     self._leg_results.append({"id": specification.goal_id or f"G{index + 1}", "nav2_status": GoalStatus.STATUS_UNKNOWN, "accepted": True})
@@ -1321,6 +1368,152 @@ class ExperimentRunner(Node):
             "maximum_angular_acceleration_radps2": maximum_angular_acceleration,
             "angular_direction_changes": angular_direction_changes,
         }
+
+    @staticmethod
+    def _same_direction_overtake_metrics(
+        ground_truth_samples: list[OdometrySample],
+        obstacle_samples: list[dict[str, Any]],
+        obstacle_id: str,
+    ) -> dict[str, Any]:
+        """Prove that a slow lead actor was passed before it stopped moving.
+
+        The actor and robot streams have different publication rates.  Samples
+        are paired with the nearest GT sample within 150 ms, then evidence is
+        accumulated rather than relying on a single noisy frame.
+        """
+        moving = [
+            item for item in obstacle_samples
+            if item.get("id") == obstacle_id
+            and item.get("state") == "moving"
+            and isinstance(item.get("stamp_s"), (int, float))
+            and isinstance(item.get("position"), list)
+            and len(item["position"]) >= 2
+        ]
+        result: dict[str, Any] = {
+            "required": True,
+            "actor_id": obstacle_id,
+            "moving_sample_count": len(moving),
+            "paired_sample_count": 0,
+            "lateral_bypass_seen": False,
+            "passed_while_moving": False,
+            "passed_before_actor_yielded_right": False,
+            "complete": False,
+        }
+        if not moving or not ground_truth_samples:
+            return result
+
+        ground_truth = sorted(ground_truth_samples, key=lambda item: item.stamp_s)
+        gt_index = 0
+        for actor in sorted(moving, key=lambda item: float(item["stamp_s"])):
+            stamp_s = float(actor["stamp_s"])
+            while (
+                gt_index + 1 < len(ground_truth)
+                and abs(ground_truth[gt_index + 1].stamp_s - stamp_s)
+                <= abs(ground_truth[gt_index].stamp_s - stamp_s)
+            ):
+                gt_index += 1
+            robot = ground_truth[gt_index]
+            if abs(robot.stamp_s - stamp_s) > 0.15:
+                continue
+            position = actor["position"]
+            if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in position[:2]):
+                continue
+            result["paired_sample_count"] += 1
+            lateral_separation_m = abs(robot.x - float(position[0]))
+            longitudinal_lead_m = robot.y - float(position[1])
+            if abs(longitudinal_lead_m) <= 0.70 and lateral_separation_m >= 0.35:
+                result["lateral_bypass_seen"] = True
+            if longitudinal_lead_m >= 0.35:
+                result["passed_while_moving"] = True
+                # The same-direction actor begins in the lead lane at x=-0.35
+                # and later turns right to clear the upcoming bottleneck.  A
+                # pass after that turn is merely waiting for clearance, not a
+                # dynamic overtaking response.
+                if float(position[0]) <= -0.20:
+                    result["passed_before_actor_yielded_right"] = True
+        result["complete"] = bool(
+            result["lateral_bypass_seen"]
+            and result["passed_while_moving"]
+            and result["passed_before_actor_yielded_right"]
+        )
+        return result
+
+    @staticmethod
+    def _local_right_bypass_metrics(
+        ground_truth_samples: list[OdometrySample],
+        obstacle_samples: list[dict[str, Any]],
+        obstacle_id: str,
+    ) -> dict[str, Any]:
+        """Verify a left-to-right actor was passed on the robot's right.
+
+        ``local_bypass`` has a deliberate, visible parking point.  Passing the
+        actor after it reaches that point is valid; yielding because the
+        collision guard stopped the actor is not, and is rejected separately
+        by ``dynamic_actor_safety_yield`` in the final verdict.
+        """
+        moving = [
+            item for item in obstacle_samples
+            if item.get("id") == obstacle_id
+            and item.get("state") == "moving"
+            and isinstance(item.get("stamp_s"), (int, float))
+            and isinstance(item.get("position"), list)
+            and len(item["position"]) >= 2
+        ]
+        parked = [
+            item for item in obstacle_samples
+            if item.get("id") == obstacle_id
+            and item.get("state") == "parked"
+            and isinstance(item.get("stamp_s"), (int, float))
+            and isinstance(item.get("position"), list)
+            and len(item["position"]) >= 2
+        ]
+        interaction = moving + parked
+        result: dict[str, Any] = {
+            "required": True,
+            "actor_id": obstacle_id,
+            "moving_sample_count": len(moving),
+            "parked_sample_count": len(parked),
+            "planned_park_seen": bool(parked),
+            "paired_sample_count": 0,
+            "right_side_bypass_seen": False,
+            "passed_while_moving": False,
+            "passed_after_planned_park": False,
+            "complete": False,
+        }
+        if not moving or not interaction or not ground_truth_samples:
+            return result
+        ground_truth = sorted(ground_truth_samples, key=lambda item: item.stamp_s)
+        gt_index = 0
+        for actor in sorted(interaction, key=lambda item: float(item["stamp_s"])):
+            stamp_s = float(actor["stamp_s"])
+            while (
+                gt_index + 1 < len(ground_truth)
+                and abs(ground_truth[gt_index + 1].stamp_s - stamp_s)
+                <= abs(ground_truth[gt_index].stamp_s - stamp_s)
+            ):
+                gt_index += 1
+            robot = ground_truth[gt_index]
+            if abs(robot.stamp_s - stamp_s) > 0.15:
+                continue
+            position = actor["position"]
+            if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in position[:2]):
+                continue
+            result["paired_sample_count"] += 1
+            actor_x, actor_y = float(position[0]), float(position[1])
+            if abs(robot.y - actor_y) <= 0.70 and robot.x - actor_x >= 0.35:
+                result["right_side_bypass_seen"] = True
+            if robot.y - actor_y >= 0.35 and actor["state"] == "moving":
+                result["passed_while_moving"] = True
+            if robot.y - actor_y >= 0.35 and actor["state"] == "parked":
+                result["passed_after_planned_park"] = True
+        result["complete"] = bool(
+            result["right_side_bypass_seen"]
+            and (
+                result["passed_while_moving"]
+                or result["passed_after_planned_park"]
+            )
+        )
+        return result
 
     def _wait_for_final_stillness(self) -> bool:
         settings = self._scenario.success
@@ -1443,23 +1636,26 @@ class ExperimentRunner(Node):
             for item in self._scenario.obstacle_trajectories
             if isinstance(item, Mapping) and isinstance(item.get("id"), str)
         }
+        if self._active_selection is not None and self._active_selection.case_id:
+            expected_dynamic_ids = {
+                str(item["id"]) for item in self._scenario.obstacle_trajectories
+                if item.get("motion") == self._active_selection.case_id
+            }
         triggered_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
-            if item.get("event") == "trigger" and isinstance(item.get("obstacle_id"), str)
+            if item.get("event") in {"trigger", "armed"} and isinstance(item.get("obstacle_id"), str)
         }
         retired_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
-            if item.get("event") == "retire" and isinstance(item.get("obstacle_id"), str)
+            if item.get("event") in {"retire", "park"} and isinstance(item.get("obstacle_id"), str)
         }
         completed_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
-            if item.get("event") == "motion_complete"
+            if item.get("event") in {"motion_complete", "retire", "park"}
             and isinstance(item.get("obstacle_id"), str)
-            and isinstance(item.get("progress"), (int, float))
-            and float(item["progress"]) >= 0.95
         }
         dynamic_interaction_complete = (
             self._scenario.scenario_type != "dynamic"
@@ -1474,6 +1670,22 @@ class ExperimentRunner(Node):
         )
         if not dynamic_interaction_complete:
             reasons.append("dynamic_obstacle_interaction_incomplete")
+        dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}
+        if (
+            self._active_selection is not None
+            and self._active_selection.case_id == "local_bypass"
+        ):
+            dynamic_behavior = self._local_right_bypass_metrics(
+                self._ground_truth_samples,
+                self._obstacle_samples,
+                "local_bypass_actor",
+            )
+            if not dynamic_behavior["complete"]:
+                reasons.append("local_right_bypass_not_observed")
+        if self._dynamic_guard_aborted:
+            reasons.append("dynamic_near_contact_abort")
+        if self._dynamic_safety_yield:
+            reasons.append("dynamic_actor_safety_yield")
         if odom is None:
             reasons.append("odom_unavailable")
         if not final_still:
@@ -1536,7 +1748,10 @@ class ExperimentRunner(Node):
                 "completed_ids": sorted(completed_ids),
                 "retired_ids": sorted(retired_ids),
                 "complete": dynamic_interaction_complete,
+                "guard_aborted": self._dynamic_guard_aborted,
+                "safety_yield": self._dynamic_safety_yield,
             },
+            "dynamic_behavior": dynamic_behavior,
             "physics_dt": self._scenario.physics_dt,
             "rtf": self._scenario.rtf,
             "result": result,
@@ -1740,11 +1955,11 @@ class ExperimentRunner(Node):
         self._write_gzip_csv(root / "ground_truth.csv.gz", ["x", "y", "yaw_rad", "linear_speed_mps", "angular_speed_radps", "stamp_s"], [sample.__dict__ for sample in self._ground_truth_samples])
         self._write_gzip_csv(root / "odom.csv.gz", ["x", "y", "yaw_rad", "linear_speed_mps", "angular_speed_radps", "stamp_s"], [sample.__dict__ for sample in self._odom_samples])
         self._write_gzip_csv(root / "cmd_vel.csv.gz", ["linear_speed_mps", "angular_speed_radps", "stamp_s"], [sample.__dict__ for sample in self._command_samples])
-        obstacle_rows = [
+        obstacle_rows = self._obstacle_samples or [
             {"id": item.get("id"), "state": item.get("state"), "stamp_s": None}
-            for item in self._obstacle_state.get("obstacles", [])
-            if isinstance(item, Mapping)
+            for item in self._obstacle_state.get("obstacles", []) if isinstance(item, Mapping)
         ]
+        self._write_gzip_csv(root / "dynamic_obstacles.csv.gz", ["id", "state", "stamp_s", "position", "velocity_mps", "progress", "min_clearance_m"], obstacle_rows)
         self._write_gzip_csv(root / "obstacles.csv.gz", ["id", "state", "stamp_s"], obstacle_rows)
         legs = list(manifest.get("legs", []))
         with (root / "leg_metrics.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -1756,7 +1971,7 @@ class ExperimentRunner(Node):
         scan_complete = self._write_scan_snapshot(root)
         required_files = {
             "run_manifest.json", "events.jsonl", "ground_truth.csv.gz", "odom.csv.gz",
-            "cmd_vel.csv.gz", "obstacles.csv.gz", "leg_metrics.csv", "depth_frame.pgm",
+            "cmd_vel.csv.gz", "obstacles.csv.gz", "dynamic_obstacles.csv.gz", "leg_metrics.csv", "depth_frame.pgm",
             "depth_frame.json", "scan.csv", "scan.json", "local_costmap.pgm",
             "local_costmap.json", "global_costmap.pgm", "global_costmap.json",
         }
@@ -1817,7 +2032,12 @@ class ExperimentRunner(Node):
         self._verify_dynamic_runtime_contract()
         self._verify_collision_monitor_active()
         manifests: list[dict[str, Any]] = []
-        for run_index, seed in enumerate(self._scenario.seeds, start=1):
+        selections = self._scenario.run_matrix or tuple(
+            RunSelection(seed) for seed in self._scenario.seeds
+        )
+        for run_index, selection in enumerate(selections, start=1):
+            seed = selection.seed
+            self._active_selection = selection
             nav2_succeeded = False
             timed_out = False
             nav2_status = GoalStatus.STATUS_UNKNOWN
@@ -1827,7 +2047,7 @@ class ExperimentRunner(Node):
             root: Path | None = None
             bag_complete = False
             try:
-                self._reset_simulation(seed)
+                self._reset_simulation(seed, selection.case_id, selection.variant_id)
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
                 nav2_succeeded, timed_out, nav2_status = self._navigate()
@@ -1854,6 +2074,9 @@ class ExperimentRunner(Node):
                 final_still=final_still,
                 runner_error=runner_error,
             )
+            manifest["dynamic_selection"] = {
+                "case_id": selection.case_id, "variant_id": selection.variant_id,
+            }
             if self._record_evidence:
                 timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
                 stem = f"{self._scenario.scenario_id}-run-{run_index:04d}-seed-{seed}-{timestamp}"

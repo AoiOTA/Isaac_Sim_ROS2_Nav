@@ -389,6 +389,14 @@ def run(
         # Runtime composition uses omni.usd so sensors and OmniGraph operate on
         # exactly the same Stage object.
         stage = SceneComposer(config).compose(save=False)
+        # A referenced robot asset can still be resolving on the first Kit
+        # update after reopening the persistent project layer.  Explicitly
+        # load the composed stage before validating/creating the camera so a
+        # transient unresolved reference cannot make the canonical camera
+        # frames appear missing on a restart.
+        stage.Load()
+        for _ in range(3):
+            app.update()
         # Configure coherent Timeline/RunLoop/Fabric periods before the first
         # post-composition app update creates Fabric history caches.
         runtime = PhysicsSetup(config.simulation).apply(stage, app)
@@ -573,6 +581,22 @@ def run(
                 SimulationManager.get_simulation_time()
             ),
         )
+        def dynamic_robot_state() -> dict[str, float]:
+            """Robot state in map coordinates for the dynamic safety gate."""
+            position, orientation = robot.get_world_pose()
+            linear, _ = robot.get_base_velocities()
+            mapped = usd_to_map(position)
+            # Transform the world linear vector through the same calibrated
+            # inverse planar rotation as usd_to_map (translation cancels).
+            yaw = math.radians(selected_pose.usd.yaw_deg - selected_pose.map.yaw_deg)
+            vx = math.cos(yaw) * linear[0] + math.sin(yaw) * linear[1]
+            vy = -math.sin(yaw) * linear[0] + math.cos(yaw) * linear[1]
+            return {
+                "x": mapped[0], "y": mapped[1], "vx": vx, "vy": vy,
+                # Circumscribed radius of the configured 0.255 x 0.210 m
+                # footprint.  Do not underestimate this in the actor guard.
+                "speed": math.hypot(vx, vy), "footprint_radius": 0.33,
+            }
         ground_truth = (
             GroundTruthRecorder(config.ground_truth, robot, node, selected_pose)
             if config.ground_truth.enabled
@@ -607,7 +631,11 @@ def run(
             clear_controller_state=clear_controller_state,
             reset_odometry=reset_odometry,
             reset_ground_truth_path=reset_ground_truth_path,
-            reset_dynamic_obstacles=dynamic_manager.reset,
+            reset_dynamic_obstacles=lambda seed: dynamic_manager.reset(
+                seed,
+                str(node.get_parameter("dynamic_case_id").value) or None,
+                str(node.get_parameter("dynamic_variant_id").value) or None,
+            ),
             clear_costmaps=reset_bridge.clear_costmaps,
             publish_map_initial_pose=reset_bridge.publish_map_initial_pose,
         )
@@ -636,6 +664,8 @@ def run(
             f"structure_tf={config.simulation.structure_tf_source}, "
             f"environment={config.environment.source_asset.name}, "
             f"spawn={config.spawn.selected}, dynamic={dynamic_scenario.enabled}, "
+            f"dynamic_config={config.files.dynamic_obstacles.name}, "
+            f"ground_truth={config.ground_truth.enabled}, "
             f"camera={camera_selection.profile.name}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
@@ -650,7 +680,7 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
-            dynamic_manager.update(simulation_time)
+            dynamic_manager.update(simulation_time, dynamic_robot_state())
             collision_monitor.update(simulation_time)
             if not idle_brake.update():
                 motion_assist.update()

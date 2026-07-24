@@ -1,10 +1,9 @@
 controller_server:
   ros__parameters:
-    # Keep the production control period equal to model_dt so MPPI control
-    # sequence shifting stays enabled. The 15 Hz point remains a benchmark
-    # matrix candidate, not a shipped default.
-    controller_frequency: 10.0
+    # Keep the control period equal to model_dt so MPPI sequence shifting
+    # stays enabled at the 20 Hz command-chain limit.
+    controller_frequency: 20.0
     FollowPath:
-      time_steps: 20
-      model_dt: 0.10
-      batch_size: 1000
+      time_steps: 40
+      model_dt: 0.05
+      batch_size: 700

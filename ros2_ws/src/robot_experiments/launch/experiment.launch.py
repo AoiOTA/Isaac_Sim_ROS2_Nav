@@ -28,6 +28,9 @@ def generate_launch_description():
             DeclareLaunchArgument("record_evidence", default_value="true"),
             DeclareLaunchArgument("robot_config_file", default_value=""),
             DeclareLaunchArgument("nav2_config_file", default_value=""),
+            DeclareLaunchArgument("dynamic_case_id", default_value=""),
+            DeclareLaunchArgument("dynamic_variant_id", default_value=""),
+            DeclareLaunchArgument("dynamic_seed", default_value="0"),
             Node(
                 package="robot_experiments",
                 executable="experiment_runner",
@@ -42,6 +45,9 @@ def generate_launch_description():
                         "record_evidence": LaunchConfiguration("record_evidence"),
                         "robot_config_file": LaunchConfiguration("robot_config_file"),
                         "nav2_config_file": LaunchConfiguration("nav2_config_file"),
+                        "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
+                        "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
+                        "dynamic_seed": LaunchConfiguration("dynamic_seed"),
                     }
                 ],
             ),
