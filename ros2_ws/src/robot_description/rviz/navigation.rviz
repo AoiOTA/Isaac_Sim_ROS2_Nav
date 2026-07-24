@@ -557,7 +557,7 @@ Visualization Manager:
           Enabled: true
           Name: MPPI Candidate Trajectories
           Namespaces:
-            Candidate Trajectories: true
+            Candidate Trajectories: false
             Optimal Trajectory: true
           Topic:
             Depth: 5

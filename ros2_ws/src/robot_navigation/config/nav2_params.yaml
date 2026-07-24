@@ -24,9 +24,10 @@ controller_server:
     use_sim_time: true
     enable_stamped_cmd_vel: false
 
-    # Match the final 20 Hz velocity-smoother cadence.  A higher controller
-    # rate cannot improve actuator updates while the downstream smoother is
-    # 20 Hz; 20 Hz is therefore the meaningful upper bound of this chain.
+    # MPPI replans at 20 Hz, matching its 0.05 s model step and preserving
+    # sequence shifting.  The downstream smoother runs at the 60 Hz physics
+    # cadence and interpolates each selected control into continuous actuator
+    # commands instead of emitting visible 20 Hz velocity stairs.
     controller_frequency: 20.0
     costmap_update_timeout: 0.30
 
@@ -87,27 +88,24 @@ controller_server:
       # repeated "Optimizer fail to compute path" bursts in the campaign.
       # The bounded standard deviations still favour continuous turning arcs
       # instead of alternating crawl / stop corrections at corridor entries.
-      # A 1.5 m/s ceiling is ineffective if the sampled forward controls stay
-      # clustered around the previous low-speed command.  Broaden the bank so
-      # open-hall candidates include decisive forward bypasses; footprint
-      # collision checks, Collision Monitor and vx_max remain hard bounds.
-      vx_std: 1.35
+      # Keep the dynamic bypass brisk but not so fast that each 20 Hz MPPI
+      # replan has to correct a large lateral displacement.  The narrower
+      # bank avoids repeatedly saturating candidates at vx_max, which showed
+      # up as visible speed steps around the moving actor.
+      vx_std: 0.90
       vy_std: 0.00
-      # The central-hall interaction needs a prompt, continuous differential
-      # arc.  Cover most of the 3.40 rad/s command range so the optimizer can
-      # select a >=3.14 rad/s bypass turn instead of converging to a crawl.
-      # Keep a broad angular bank for a moving actor in the open hall.  The
-      # validated local-bypass run cleared the actor while it was still
-      # moving only when this bank covered the full 3.40 rad/s command range.
+      # The measured bypass needs a broad angular candidate bank to select a
+      # continuous evasive arc before reaching the actor.  wz_max remains the
+      # hard 3.40 rad/s ceiling.
       wz_std: 3.40
 
       # Forward motion remains strongly preferred, but a bounded reverse
       # sample is available for terminal-pose recovery in narrow rooms.
       # The local-bypass interaction takes place in the open central hall.
-      # Keep enough forward authority for the robot to complete a continuous
-      # right-side arc while the actor is still moving, rather than yielding
-      # until the actor has cleared the crossing.
-      vx_max: 1.50
+      # 1.20 m/s leaves enough forward authority for a continuous right-side
+      # bypass while reducing overshoot and high-frequency path corrections
+      # in the indoor doorway approach.
+      vx_max: 1.20
       vx_min: -0.15
       vy_max: 0.00
       # The skid-steer plant under-rotates by about 5% at high yaw rates.
@@ -115,22 +113,36 @@ controller_server:
       # 3.14 rad/s after the complete Nav2 safety chain.
       wz_max: 3.40
 
-      ax_max: 3.00
-      ax_min: -3.00
+      # Match the verified drive hard limits.  The previous 3.0 m/s² /
+      # 6.28 rad/s² command-chain caps unnecessarily delayed the first
+      # evasive arc even though the robot can safely supply 3.5 m/s² and
+      # 6.5 rad/s².  Keeping both MPPI and the smoother at these values makes
+      # the response prompt while retaining bounded, continuous commands.
+      ax_max: 3.50
+      ax_min: -3.50
       ay_max: 0.00
       ay_min: 0.00
-      az_max: 6.28
+      az_max: 6.50
 
       prune_distance: 1.50
       transform_tolerance: 0.50
 
       temperature: 0.35
-      gamma: 0.015
+      # Increase the MPPI control-effort regularisation modestly.  This makes
+      # successive 20 Hz optimum sequences prefer a continuous arc over
+      # equally safe left/right corrections, while retaining the full dynamic
+      # limits for a real evasive manoeuvre.
+      gamma: 0.030
 
       motion_model: DiffDrive
-      # Publish both /optimal_trajectory and /trajectories so the controller's
-      # selected path and sampled candidates can be inspected live in RViz.
+      # Keep publishing the selected trajectory for RViz, but aggressively
+      # downsample debug candidates.  Serialising a dense 500 x 40 marker set
+      # every control cycle can steal time from the controller and make the
+      # GUI look like the vehicle is stuttering.
       visualize: true
+      TrajectoryVisualizer:
+        trajectory_step: 25
+        time_step: 5
       regenerate_noises: true
 
       critics:
@@ -157,7 +169,9 @@ controller_server:
         # arc instead of following the stale centre line until the actor's
         # kinematic safety guard must intervene.  Hard collision checking is
         # unchanged.
-        cost_weight: 2.20
+        # Bias the first feasible rollouts away from a newly seen dynamic
+        # actor before the hard footprint critic needs to reject them.
+        cost_weight: 2.50
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -200,7 +214,9 @@ controller_server:
         # Reward useful progress without overpowering the newly observed
         # local obstacle.  The validated dynamic run needs a lateral right
         # arc before it can resume forward path progress.
-        cost_weight: 16.0
+        # Leave enough freedom for an immediate lateral bypass instead of
+        # following the pre-obstacle global path for one more control cycle.
+        cost_weight: 14.0
         offset_from_furthest: 10
         threshold_to_consider: 1.4
 
@@ -477,7 +493,11 @@ velocity_smoother:
     use_sim_time: true
     enable_stamped_cmd_vel: false
 
-    smoothing_frequency: 20.0
+    # Isaac advances physics at 60 Hz.  Keep the optimizer at 20 Hz but emit
+    # acceleration-limited intermediate commands on every physics tick.  At
+    # az_max=6.50 this reduces a single angular increment from 0.325 rad/s
+    # to about 0.108 rad/s without reducing the available turn authority.
+    smoothing_frequency: 60.0
     stamp_smoothed_velocity_with_smoothing_time: false
 
     # 线速度受到限制时，按比例保留角速度，避免转弯曲率被破坏。
@@ -485,13 +505,16 @@ velocity_smoother:
 
     feedback: OPEN_LOOP
 
-    max_velocity: [1.50, 0.0, 3.40]
+    max_velocity: [1.20, 0.0, 3.40]
     # MPPI仍以 vx_min=0 前进跟踪；这里单独允许行为树 BackUp 的有限负速，
     # 否则 -0.18 m/s 恢复命令会被平滑器钳成零而无法离开死胡同。
     min_velocity: [-0.25, 0.0, -3.40]
 
-    max_accel: [3.00, 0.0, 6.28]
-    max_decel: [-3.00, 0.0, -6.28]
+    # Keep this exactly aligned with MPPI's physical acceleration envelope;
+    # otherwise Velocity Smoother silently turns a selected evasive arc into
+    # a slow, late response.
+    max_accel: [3.50, 0.0, 6.50]
+    max_decel: [-3.50, 0.0, -6.50]
 
     odom_topic: /odom
     odom_duration: 0.10
