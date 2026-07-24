@@ -239,14 +239,22 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 
 ## 文档入口
 
-| 文档 | 用途 |
-| --- | --- |
-| [`docs/user_manual.md`](docs/user_manual.md) | 当前可执行使用手册。 |
-| [`docs/interfaces.md`](docs/interfaces.md) | Topic、TF、模式配对和所有权契约。 |
-| [`docs/troubleshooting.md`](docs/troubleshooting.md) | 启动、地图、RViz、QoS、Reset 和清理排障。 |
-| [`docs/verification.md`](docs/verification.md) | 当前验收和历史证据边界。 |
-| [`docs/documentation_status.md`](docs/documentation_status.md) | 当前文档与历史文档的职责边界。 |
-| [`docs/repository_index.md`](docs/repository_index.md) | 文件职责和代码修改入口。 |
+第一次使用建议按“使用手册 → 路线/测试方案 → 接口与排障”的顺序阅读。下面的文档都以
+当前 `warehouse_new`、`long_route_start_g1` 和 Ideal Odometry 入口为准；历史结论与草案的
+适用范围请先看“文档状态与事实来源”。
+
+| 你要做什么 | 阅读文档 | 可以获得什么 |
+| --- | --- | --- |
+| 首次启动 Isaac、ROS、RViz 或运行静态测试 | [`docs/user_manual.md`](docs/user_manual.md) | 从环境准备到手动 Goal、静态可视化一轮、静态 20 轮、报告查看与有序停止的可复制命令。 |
+| 核对酷家乐路线、航点和障碍位置 | [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md) | `long_route_start_g1`、G1–G5 闭环路线、静态六障碍与动态障碍的地图坐标和语义。 |
+| 了解验收口径或准备复跑完整长距离实验 | [`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md) | 静态/动态批次的范围、种子、成功/无碰撞/路径偏差门槛、证据和自包含报告要求。 |
+| 调整地图坐标、出生点或定位基线 | [`docs/calibration.md`](docs/calibration.md) | `map -> odom` 标定步骤、地图/posegraph 匹配规则和初始位姿来源。 |
+| 修改节点、话题、TF 或 Odometry 配置 | [`docs/interfaces.md`](docs/interfaces.md) | ROS Topic、TF、QoS、模式配对和发布所有权契约，避免重复 `/odom` 或 TF 发布者。 |
+| 处理启动失败、锁、RViz、地图或 Reset 问题 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 分步骤诊断命令、常见故障表现和安全清理流程。 |
+| 查看当前结果能否作为结论或引用历史记录 | [`docs/verification.md`](docs/verification.md) | 当前验收状态、运行证据的边界和历史结果不能替代当前复验的条件。 |
+| 修改代码、添加测试或理解工程结构 | [`docs/development.md`](docs/development.md) | 本地开发、构建、测试、配置变更和提交前检查约定。 |
+| 判断文档是否仍适用于当前工作树 | [`docs/documentation_status.md`](docs/documentation_status.md) | 当前操作文档、历史记录、计划草案和事实来源之间的职责边界。 |
+| 快速定位实现与配置文件 | [`docs/repository_index.md`](docs/repository_index.md) | 目录职责、主要脚本、ROS 包和推荐的代码修改入口。 |
 
 ## 验证
 
