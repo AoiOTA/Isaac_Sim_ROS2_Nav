@@ -68,8 +68,8 @@ git lfs pull
 source ./scripts/setup_ros_env.sh
 ```
 
-`preflight.sh` 必须显示 `map baseline: warehouse_new (integrity verified)` 和
-`preflight: PASS`。它也会检查 Git LFS、地图 Manifest、GPU、Isaac、ROS 与已构建
+`preflight.sh` 成功时会显示 `map manifest verified: warehouse_new bundle=<SHA256>` 和
+`preflight: PASS`。它会校验地图 bundle（含 Git LFS 工件）、GPU、Isaac、ROS 与已构建
 工作区。
 
 ## 手动导航：两个终端

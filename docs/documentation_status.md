@@ -1,8 +1,8 @@
 # 文档状态与事实来源
 
-> 最近复核：2026-07-22
+> 最近复核：2026-07-24
 >
-> 适用分支：`codex/kujiale-long-range-navigation-test`
+> 适用分支：`main`
 
 本仓库同时保留可执行手册、运行契约、设计方案和问题复盘。它们的用途不同；
 执行命令或判断当前行为时，始终以脚本、配置和测试所对应的“当前”文档为准。
@@ -21,7 +21,8 @@
 - `warehouse_new` 只批准普通 Ideal Localization/Navigation，Realistic 或显式 Pose Graph 定位会被启动脚本拒绝；
 - 标准人工导航使用两个终端、受管 RViz 和 **2D Goal Pose**，不存在项目私有目标桥；
 - `rgbd_navigation` 发布 `/camera/front/depth/points`，全局和局部 Costmap 均使用独立 `depth_voxel_layer`；Collision Monitor 仍只使用 `/scan`；
-- 已记录正式全屋批次 `kujiale_long_route_20260722-171828` 的自动结论为通过：静态严格/物理无碰撞均为 `20/20 (100%)`，动态严格为 `18/20 (90%)`、物理无碰撞为 `19/20 (95%)`，静态最大路径偏差为 `19.2868%`（门槛 `20%`）。这是本地报告记录，不是后续代码或参数改动的重新验收声明；完整报告不纳入 Git。
+- 当前可复核的静态候选批次为 `kujiale_long_route_static_20260723-194416`：静态严格成功、物理无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`（门槛 `20%`）。动态 20 轮尚未执行，因此不能宣称动态或完整 20+20 验收；报告仅保存在本地忽略的 `data/reports/`。
+- 旧全屋批次 `kujiale_long_route_20260722-171828` 使用 `mapping_start`、G1–G8 和旧障碍布局，只能作为历史证据，不能替代当前候选布局的结论。
 
 ## 文档分工
 
@@ -33,7 +34,7 @@
 | [`troubleshooting.md`](troubleshooting.md) | 当前排障手册 | 根据症状执行只读诊断和受管恢复。 |
 | [`calibration.md`](calibration.md) | 当前流程 + 历史记录 | 新地图的标定流程；Warehouse v2 数字是历史记录。 |
 | [`verification.md`](verification.md) | 当前证据台账 | 当前正式验收和历史能力证据的边界。 |
-| [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 当前重设计测试规格与历史结果边界 | S/G1 闭环路线、报告口径、待执行的 20+20 与旧批次生成工件。 |
+| [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 当前重设计测试规格与结果边界 | S/G1 闭环路线、静态候选批次、待执行动态 20 轮和旧批次生成工件。 |
 | [`isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md`](isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md) | 历史设计 + 现行差异说明 | 理解 RGB-D 一期决策；不要照抄其中仅 Local Costmap 的旧设计。 |
 | [`rviz_workflow_upgrade_plan.md`](rviz_workflow_upgrade_plan.md) | 历史设计记录 | 回溯 RViz/Lifecycle 升级取舍。 |
 | [`runtime_reliability_and_performance_upgrade_plan.md`](runtime_reliability_and_performance_upgrade_plan.md) | 历史设计与证据快照 | 回溯可靠性和性能升级；部分地图数字已过时。 |

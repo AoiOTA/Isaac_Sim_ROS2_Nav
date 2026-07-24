@@ -1,8 +1,8 @@
 # Kujiale 全屋长距离导航、避障测试与可视化报告方案
 
-> 实施分支：`codex/kujiale-long-route-redesign`（基于 `codex/kujiale-long-range-navigation-test`）
+> 当前适用分支：`main`（实现历史见 `codex/kujiale-long-route-redesign`）
 >
-> 文档状态：路线与障碍已重设计；仅完成配置契约和地图示意核验，尚未执行新的 Pilot 或 20+20 正式验收。
+> 文档状态：路线与障碍已重设计；当前候选布局已完成静态 20 轮，动态 20 轮尚未执行，故尚未完成完整 20+20 验收。
 >
 > 适用场景：`kujiale_0026_A_to_B_door_open.usd`
 
@@ -61,7 +61,7 @@ G2 已由房间内部移至出口侧，减少到达后为下一段掉头的需�
 ### 3.1 静态场景
 
 未来静态批次使用中心区六组低矮实体障碍：四个方块和两个长条；它们远离 G1 出生点，车辆在向 G2 行驶的过程中才进入其影响范围。
-当前位置是供 Isaac GUI 反复拖动和 RViz 手动导航观察的临时种子，尚未冻结为正式批次参数：
+当前位置是供 Isaac GUI 反复拖动和 RViz 手动导航观察的候选基线，尚未冻结为完整 20+20 的正式批次参数：
 
 - ID：`rgbd_low_box_west`、`rgbd_low_box_center`、`rgbd_low_box_east`、`rgbd_low_box_north`、`rgbd_low_bar_east`、`rgbd_low_bar_north`；
 - 当前可微调 Map 基线由 GUI 于 `2026-07-23 13:37:02 +08:00` 完整导出：`rgbd_low_bar_east=[1.286899, 0.033996, 0.08]`、`rgbd_low_bar_north=[-0.703143, 0.252652, 0.08]`、`rgbd_low_box_center=[-2.135744, -0.876959, 0.08]`、`rgbd_low_box_east=[0.366563, 0.66795, 0.08]`、`rgbd_low_box_north=[0.126442, -0.579985, 0.08]`、`rgbd_low_box_west=[-0.853013, -0.961904, 0.08]`；快照为 `isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-133702.yaml`，可继续在 GUI 中修改；
@@ -69,7 +69,7 @@ G2 已由房间内部移至出口侧，减少到达后为下一段掉头的需�
 - 均位于原 `mapping_start` 周边的中心通行区域，周围保留可绕行空间；
 - 障碍顶面低于 LiDAR 扫描高度，必须由 RGB-D、VoxelLayer 以及全局/局部 Costmap 识别；
 - GUI 中只修改 Translate X/Y；运行时不覆盖手调位置。使用 `/experiment/obstacles/capture_layout` 导出 Map 坐标后可保存新的可微调基线并同步候选理论参考；只有用户确认冻结后，才将最后一次生成的参考作为正式批次输入；
-- 在最终位置冻结前，不得运行 Pilot 或正式种子 `7201` 至 `7220`。
+- 该候选基线已在 `kujiale_long_route_static_20260723-194416` 中运行种子 `7201` 至 `7220`：静态严格成功、物理无碰撞均为 `20/20`，最大路径偏差为 `10.4614%`。此后任何坐标、路线或导航参数变更都会使该候选结果失效，必须以新的批次 ID 重新运行静态 20 轮；动态 20 轮仍待执行。
 
 正式实验前的 Pilot 必须证明：
 

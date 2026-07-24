@@ -1,6 +1,6 @@
 # 酷家乐 RGB-D 导航使用手册
 
-> 当前可执行手册，适用分支：`codex/kujiale-long-range-navigation-test`。
+> 当前可执行手册，适用分支：`main`。
 >
 > 本手册只描述当前默认的酷家乐 `warehouse_new` + Ideal Odometry 流程。旧
 > Warehouse、Realistic、增量建图和历史 benchmark 记录不作为本分支的日常入口；
@@ -36,10 +36,10 @@ git lfs pull
 ./scripts/preflight.sh
 ```
 
-预检成功时应包含：
+预检成功时应包含（`bundle` 值会随地图工件变更）：
 
 ```text
-map baseline: warehouse_new (integrity verified)
+map manifest verified: warehouse_new bundle=<SHA256>
 preflight: PASS
 ```
 
