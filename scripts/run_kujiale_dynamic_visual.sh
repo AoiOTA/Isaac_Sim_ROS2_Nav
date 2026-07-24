@@ -25,5 +25,5 @@ if ! grep -Eq 'Publisher count: [1-9][0-9]*' <<<"${ground_truth_info}"; then
   die "/ground_truth/odom has no publisher after a continuous 15 s discovery window; start ./scripts/run_kujiale_dynamic_isaac.sh and wait for ground_truth=True before running this script"
 fi
 args=("${SCRIPT_DIR}/run_experiment.sh" "$scenario" "$out" "record_evidence:=$record" "dynamic_case_id:=$case_id" "dynamic_variant_id:=$variant_id" "dynamic_seed:=$seed")
-if $rviz; then log_info "Open robot_description/rviz/dynamic_avoidance.rviz in RViz before/while running."; fi
+if $rviz; then log_info "Use the navigation.rviz started by ./scripts/run_ros.sh navigation to observe this run."; fi
 exec "${args[@]}"
