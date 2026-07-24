@@ -1,8 +1,8 @@
-# Kujiale 全屋长距离路线与避障布置（重设计待验证）
+# Kujiale 全屋长距离路线与避障布置（静态候选已验证）
 
 > 配置版本：`kujiale_*_long_range.yaml` / `kujiale_long_range_campaign.yaml`
 >
-> 状态：本图描述当前重设计，尚未运行新的 20+20 正式批次。旧批次报告仅是旧路线与旧障碍布局的历史证据，不能用于本布局验收。
+> 状态：本图描述当前重设计；静态候选批次 `kujiale_long_route_static_20260723-194416` 已通过 20/20，动态 20 轮尚未执行，故未完成完整 20+20 验收。旧批次报告仅是旧路线与旧障碍布局的历史证据，不能用于本布局验收。
 
 所有坐标均为 `warehouse_new` 的 `map` 坐标。两张图由
 `scripts/generate_kujiale_long_route_maps.py` 直接读取可执行配置生成，不能手工改图。
@@ -18,9 +18,8 @@
 `rgbd_low_box_east=[0.366563, 0.66795]`、`rgbd_low_box_north=[0.126442, -0.579985]`、
 `rgbd_low_box_west=[-0.853013, -0.961904]`；完整可编辑快照见
 `isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-133702.yaml`。
-这些是**已保存但仍可编辑的草案坐标**，不是正式 20 轮验收布局；操作者可拖动六个障碍、用 RViz 多次手动发 Goal
-观察绕行，再通过 `/experiment/obstacles/capture_layout` 导出精确 Map 坐标。当前候选地图和理论参考已经与
-这份基线同步；最终位置确认时会再重生成一次并冻结正式实验配置。方块不会贴着 G1 出生点；进入中心区时应由深度点云、VoxelLayer 和 Costmap
+这些是**已保存但仍可编辑的候选坐标**，静态 20 轮已以该基线通过；它们尚不是完整 20+20 的冻结布局。操作者可拖动六个障碍、用 RViz 多次手动发 Goal
+观察绕行，再通过 `/experiment/obstacles/capture_layout` 导出精确 Map 坐标。任何变更后都必须重新生成候选地图/理论参考并复跑静态 20 轮；最终位置确认时再冻结正式实验配置。方块不会贴着 G1 出生点；进入中心区时应由深度点云、VoxelLayer 和 Costmap
 形成连续可绕行的局部约束。
 
 ## 动态场景

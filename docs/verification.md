@@ -2,12 +2,22 @@
 
 This is an evidence ledger, not a claim that every acceptance item in
 `plan.md` is complete. It contains historical observations from 2026-07-10
-through 2026-07-17 and the current 2026-07-22 Kujiale campaign, run with Isaac
+through 2026-07-17, the historical 2026-07-22 Kujiale campaign, and the current
+2026-07-23 static candidate batch, run with Isaac
 Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090. Generated Kit
 logs and raw experiment captures remain outside normal Git history. On this
 branch the calibrated `warehouse_new` bundle is the default; `warehouse_v1` and
 `warehouse_v2` are retained for Warehouse history/reproduction. Large
 `.posegraph` files are stored through Git LFS.
+
+## 当前静态候选结果（2026-07-23；不等同完整 20+20 验收）
+
+当前六障碍候选布局的本地报告批次为
+`kujiale_long_route_static_20260723-194416`。它使用 `long_route_start_g1`、G1–G5
+闭环路线、`warehouse_new`、Ideal Odometry 和 `rgbd_navigation`；静态严格成功与物理
+无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`，低于 `20%` 门槛。动态 20 轮
+尚未执行，布局也仍允许继续手调；因此该条目只能说明当前静态候选通过，不能作为动态或完整
+20+20 验收声明。原始报告是被忽略的本地生成物。
 
 ## 历史正式验收（2026-07-22；不适用于当前重设计）
 
