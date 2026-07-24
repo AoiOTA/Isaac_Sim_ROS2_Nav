@@ -27,7 +27,10 @@ from isaac_sim.src.stage.physics_setup import (  # noqa: E402
     ensure_physics_scene,
     find_all_physics_scenes,
 )
-from isaac_sim.src.stage.scene_composer import SceneComposer  # noqa: E402
+from isaac_sim.src.stage.scene_composer import (  # noqa: E402
+    SceneComposer,
+    ensure_kujiale_g5_doorway_floor_fill,
+)
 from isaac_sim.src.stage.stage_loader import (  # noqa: E402
     make_environment_meshes_double_sided,
     repair_malformed_asset_paths,
@@ -96,6 +99,32 @@ def test_missing_physics_scene_is_created_once():
     assert [str(scene.GetPath()) for scene in find_all_physics_scenes(stage)] == [
         "/PhysicsScene"
     ]
+
+
+def test_kujiale_g5_doorway_floor_fill_is_flush_static_collision_only():
+    from pxr import Usd, UsdGeom, UsdPhysics
+
+    stage = Usd.Stage.CreateInMemory()
+    repaired = ensure_kujiale_g5_doorway_floor_fill(
+        stage,
+        Path("kujiale_0026_A_to_B_door_open.usd"),
+    )
+    prim = stage.GetPrimAtPath(
+        "/World/EnvironmentRepairs/kujiale_g5_doorway_floor_fill"
+    )
+    assert repaired is True
+    assert prim.IsA(UsdGeom.Cube)
+    assert prim.HasAPI(UsdPhysics.CollisionAPI)
+    assert not prim.HasAPI(UsdPhysics.RigidBodyAPI)
+    bounds = UsdGeom.BBoxCache(
+        Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+    ).ComputeWorldBound(prim).ComputeAlignedRange()
+    assert bounds.GetMin()[2] == pytest.approx(-0.10)
+    assert bounds.GetMax()[2] == pytest.approx(0.0)
+    assert ensure_kujiale_g5_doorway_floor_fill(
+        stage,
+        Path("unrelated_room.usd"),
+    ) is False
 
 
 def test_malformed_asset_path_is_repaired_in_overlay_only(tmp_path: Path):

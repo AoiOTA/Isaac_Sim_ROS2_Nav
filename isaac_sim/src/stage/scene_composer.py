@@ -16,6 +16,42 @@ from isaac_sim.src.stage.stage_loader import (
 )
 
 
+_KUJIALE_DOORWAY_ASSET = "kujiale_0026_A_to_B_door_open.usd"
+_KUJIALE_DOORWAY_FILL_PATH = "/World/EnvironmentRepairs/kujiale_g5_doorway_floor_fill"
+
+
+def ensure_kujiale_g5_doorway_floor_fill(stage, source_asset) -> bool:
+    """Bridge the exported 10 cm doorway recess with a flush static collider.
+
+    The selected Kujiale USD contains a collision-only floor cube at the G5
+    doorway whose top is 0.10 m below the adjacent floor.  The navigation map
+    correctly treats the doorway as traversable, but a wheel can enter that
+    recess and become stuck.  Author the repair in the runtime project layer,
+    never in the supplied environment USD.
+    """
+
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    if source_asset.name != _KUJIALE_DOORWAY_ASSET:
+        return False
+
+    ensure_xform(stage, "/World/EnvironmentRepairs")
+    cube = UsdGeom.Cube.Define(stage, _KUJIALE_DOORWAY_FILL_PATH)
+    cube.CreateSizeAttr(1.0)
+    xform = UsdGeom.Xformable(cube.GetPrim())
+    xform.ClearXformOpOrder()
+    # Exact footprint of the recessed collider plus a 20 mm shell.  The
+    # centre/height yield a top face at z=0, flush with both floor tiles.
+    xform.AddTranslateOp().Set(Gf.Vec3d(3.458, 1.448, -0.05))
+    xform.AddScaleOp().Set(Gf.Vec3d(1.44, 0.29, 0.10))
+    collision = UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+    collision.CreateCollisionEnabledAttr(True)
+    cube.GetPrim().SetCustomDataByKey(
+        "isaac_nav:purpose", "flush fill for the G5 doorway collision recess"
+    )
+    return True
+
+
 class SceneComposer:
     def __init__(self, config: ProjectConfig):
         self.config = config
@@ -60,6 +96,7 @@ class SceneComposer:
         ensure_xform(stage, "/World/Graphs")
         ensure_xform(stage, "/World/DynamicObstacles")
         ensure_xform(stage, "/World/ExperimentMarkers")
+        ensure_kujiale_g5_doorway_floor_fill(stage, config.environment.source_asset)
         robot_prim = ensure_xform(stage, config.robot.runtime_prim_path)
         ensure_reference(robot_prim, config.robot.asset_path)
         ensure_physics_scene(stage, config.simulation.expected_physics_scene)

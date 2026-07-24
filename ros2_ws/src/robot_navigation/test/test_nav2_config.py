@@ -35,10 +35,12 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert controller['plugin'] == 'nav2_mppi_controller::MPPIController'
     assert controller['motion_model'] == 'DiffDrive'
     assert controller['visualize'] is True
+    assert controller['TrajectoryVisualizer']['trajectory_step'] == 25
+    assert controller['TrajectoryVisualizer']['time_step'] == 5
     assert controller['time_steps'] == 40
     assert controller['model_dt'] == 0.05
     assert controller['batch_size'] == 500
-    assert controller['vx_std'] == 1.35
+    assert controller['vx_std'] == 0.90
     assert controller['retry_attempt_limit'] == 3
     assert controller['regenerate_noises'] is True
     assert controller['time_steps'] * controller['model_dt'] == 2.0
@@ -126,10 +128,11 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
     assert -0.20 <= controller['vx_min'] <= -0.10
-    assert controller['vx_std'] == 1.35
-    assert 1.45 <= controller['vx_max'] <= 1.55
+    assert controller['vx_std'] == 0.90
+    assert 1.15 <= controller['vx_max'] <= 1.25
     assert controller['wz_std'] == 3.40
     assert controller['wz_max'] == 3.40
+    assert controller['gamma'] == 0.030
     assert controller['PathAngleCritic']['mode'] == 0
     assert controller['PathFollowCritic']['cost_weight'] \
         > controller['PathAngleCritic']['cost_weight']
@@ -145,6 +148,9 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller['visualize'] is True
 
     assert smoother['scale_velocities'] is True
+    # MPPI selects controls at 20 Hz, while the smoother emits bounded
+    # intermediate commands on every 60 Hz Isaac physics tick.
+    assert smoother['smoothing_frequency'] == 60.0
     assert smoother['max_velocity'] == [
         controller['vx_max'], 0.0, controller['wz_max']]
     # Routine MPPI tracking stays forward-only, while the command chain must

@@ -56,12 +56,19 @@ cases:
     # Traverses right to the planned bypass point, then parks there.  This
     # deliberately produces a moving-to-parked interaction: the robot must
     # route around the parked actor rather than wait for a safety-yield.
-    # Start at the doorway instead of in the preceding corridor.  At 0.40
+    # Start at the doorway instead of in the preceding corridor.  At 0.80
     # m/s the actor reaches its planned parking point before it can enter the
     # robot's near-field protection band.
-    gate: {axis: y, threshold: -2.80, direction: positive, min_speed_mps: 0.20, x_range: [-0.45, 0.30]}
+    # The calibrated route crosses y=-1.75 at x≈-0.52.  Include that
+    # measured lane so the event fires there instead of after the robot has
+    # already entered the open hall and returns into the former x window.
+    gate: {axis: y, threshold: -1.75, direction: positive, min_speed_mps: 0.20, x_range: [-0.60, 0.30]}
     obstacle:
-      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, 0.00, 0.50], [-0.85, 0.00, 0.50]], speed: 0.40, max_acceleration: 0.50, post_motion: park}
+      # y=-0.15 keeps the complete 0.40 m box below the y=+0.10 static
+      # occupied band; a kinematic actor must never sweep through that wall.
+      # The 1.60 m/s² bound is required by the cosine profile to attain the
+      # requested 0.80 m/s peak over this 0.80 m trajectory.
+      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, -0.15, 0.50], [-0.85, -0.15, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
     variants:
       v1: {seed: 7441, start_delay_sec: 0.00}
       v2: {seed: 7442, start_delay_sec: 0.05}

@@ -31,8 +31,10 @@ physics:
   # 四轮仍按差速目标转动；平面速度补偿让车体运动与 cmd_vel/MPPI 模型一致。
   motion_assist_enabled: true
   motion_assist_command_timeout_sec: 0.25
-  # 这是物理误差修正带宽；正常命令斜率仍由 DifferentialController 和
-  # Nav2 Velocity Smoother 的较低加速度限制负责。
+  # This correction must retain enough bandwidth to follow the smoothed Nav2
+  # command through skid-steer slip; reducing it to the outer slew limits
+  # created a lagging catch-up oscillation at doorway turns.  Nav2 remains
+  # responsible for selecting the continuous command trajectory.
   motion_assist_max_linear_acceleration: 6.0
   motion_assist_max_angular_acceleration: 30.0
 
