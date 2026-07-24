@@ -24,6 +24,7 @@ SPAWN_YAML = (
 )
 STATIC_SCENARIO = ROOT / "ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml"
 DYNAMIC_SCENARIO = ROOT / "ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml"
+PHYSICAL_DYNAMIC = ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
 CAMPAIGN = ROOT / "ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml"
 OUTPUT_DIR = ROOT / "docs/figures"
 FONT_PATH = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
@@ -40,7 +41,15 @@ BLUE = "#2563eb"
 TEAL = "#0f766e"
 ORANGE = "#ea580c"
 PURPLE = "#7c3aed"
+PINK = "#db2777"
+GREEN = "#059669"
 WHITE = "#ffffff"
+
+DYNAMIC_STYLES = {
+    "local_bypass": (PURPLE, "G1→G2 横向绕行", "arm/retire: G2"),
+    "g2_g3_exit": (ORANGE, "G2→G3 同向释放", "arm/retire: G3"),
+    "g5_g1_crossing": (PINK, "G5→G1 门洞横穿", "arm/retire: G1"),
+}
 
 
 def read_yaml(path: Path) -> dict[str, Any]:
@@ -134,11 +143,27 @@ def route_from(scenario: dict[str, Any]) -> list[dict[str, Any]]:
     return route
 
 
+def three_stage_cases(physical: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Return the executable relay in its arm/retire order."""
+    try:
+        identifiers = physical["case_sets"]["full_route_three_stage"]
+        cases = physical["cases"]
+    except (KeyError, TypeError) as error:
+        raise ValueError("physical dynamic YAML lacks full_route_three_stage") from error
+    if not isinstance(identifiers, list) or not all(isinstance(item, str) for item in identifiers):
+        raise ValueError("full_route_three_stage must be a list of case IDs")
+    selected = [(identifier, cases[identifier]) for identifier in identifiers]
+    if set(identifier for identifier, _ in selected) != set(DYNAMIC_STYLES):
+        raise ValueError("three-stage set does not match the documented interactions")
+    return selected
+
+
 def render(kind: str, output: Path) -> None:
     map_data = read_yaml(MAP_YAML)
     spawn_data = read_yaml(SPAWN_YAML)
     static = read_yaml(STATIC_SCENARIO)
     dynamic = read_yaml(DYNAMIC_SCENARIO)
+    physical_dynamic = read_yaml(PHYSICAL_DYNAMIC)
     campaign = read_yaml(CAMPAIGN)
     static_route = route_from(static)
     dynamic_route = route_from(dynamic)
@@ -242,14 +267,51 @@ def render(kind: str, output: Path) -> None:
             )
         overlay_legend = "静态障碍：四个方块和两个可手调 RGB-D 低矮长条（当前草案）"
     else:
-        for obstacle in campaign["dynamic"]["obstacles"]:
-            start = pixel(obstacle["start"][:2])
-            end = pixel(obstacle["end"][:2])
-            dashed_line(draw, start, end, fill=PURPLE, width=7, dash=22, gap=12)
-            arrow(draw, (end[0] - (end[0] - start[0]) * 0.18, end[1] - (end[1] - start[1]) * 0.18), end, fill=PURPLE, width=7)
-            label = f"{obstacle['id']}\nG2 后横穿 G1→G2 通道并停住"
-            text_with_box(draw, (start[0] + 16, start[1] - 62), label, text_font=font(21), fill=PURPLE)
-        overlay_legend = "动态障碍：紫色横穿轨迹（均在 G2 后进入通道并停住）"
+        label_offsets = {
+            "local_bypass": (-280, -112),
+            "g2_g3_exit": (22, -118),
+            "g5_g1_crossing": (-210, 28),
+        }
+        for identifier, case in three_stage_cases(physical_dynamic):
+            obstacle = case["obstacle"]
+            gate = case["gate"]
+            color, title, goal_label = DYNAMIC_STYLES[identifier]
+            start = pixel(obstacle["waypoints"][0][:2])
+            end = pixel(obstacle["waypoints"][-1][:2])
+            dashed_line(draw, start, end, fill=color, width=8, dash=24, gap=12)
+            arrow(
+                draw,
+                (end[0] - (end[0] - start[0]) * 0.20, end[1] - (end[1] - start[1]) * 0.20),
+                end,
+                fill=color,
+                width=8,
+            )
+            half_extent = float(obstacle["size"][0]) / resolution * scale / 2.0
+            draw.rectangle(
+                (start[0] - half_extent, start[1] - half_extent, start[0] + half_extent, start[1] + half_extent),
+                fill=f"{color}b8",
+                outline=color,
+                width=5,
+            )
+            draw.rectangle(
+                (end[0] - half_extent, end[1] - half_extent, end[0] + half_extent, end[1] + half_extent),
+                outline=color,
+                width=6,
+            )
+            if gate["axis"] != "y":
+                raise ValueError(f"only y gate is currently drawable: {identifier}")
+            gate_left = pixel((gate["x_range"][0], gate["threshold"]))
+            gate_right = pixel((gate["x_range"][1], gate["threshold"]))
+            dashed_line(draw, gate_left, gate_right, fill=color, width=5, dash=12, gap=8)
+            offset = label_offsets[identifier]
+            text_with_box(
+                draw,
+                (start[0] + offset[0], start[1] + offset[1]),
+                f"{title}\n{goal_label} · {float(obstacle['speed']):.2f} m/s\n触发 y={float(gate['threshold']):.2f}",
+                text_font=font(20),
+                fill=color,
+            )
+        overlay_legend = "三色动态轨迹：实心方块为出现点、空心方块为停车点；到对应航点成功后才退役"
 
     # G1 is intentionally both the calibrated spawn and final return point.
     start_px = pixel(start_position)
@@ -307,12 +369,81 @@ def render(kind: str, output: Path) -> None:
     image.save(output, optimize=True)
 
 
+def render_three_stage_details(output: Path) -> None:
+    """Render the two constrained interaction zones at a readable scale."""
+    map_data = read_yaml(MAP_YAML)
+    physical = read_yaml(PHYSICAL_DYNAMIC)
+    occupancy = Image.open(MAP_YAML.parent / str(map_data["image"])).convert("RGB")
+    resolution = float(map_data["resolution"])
+    origin_x, origin_y, _ = map_data["origin"]
+    map_width, map_height = occupancy.size
+    cases = dict(three_stage_cases(physical))
+
+    canvas = Image.new("RGB", (1800, 1180), "#f7f9fc")
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    draw.rectangle((0, 0, 1800, 170), fill=WHITE)
+    draw.text((100, 43), "Kujiale 三阶段动态避障｜局部交互细节", font=font(46), fill=INK)
+    draw.text((100, 111), "warehouse_new OccupancyGrid · 实心方块=出现点 · 空心方块=停车点 · 虚线=机器人触发门", font=font(25), fill=MUTED)
+
+    panels = [
+        ("g2_g3_exit", "G2→G3：窄通道同向释放", (-1.25, -1.05, 0.45, 2.55), (90, 230, 790, 1080)),
+        ("g5_g1_crossing", "G5→G1：门洞横穿后左侧通过", (-1.40, -2.15, 0.30, -0.50), (930, 230, 1630, 1080)),
+    ]
+    for identifier, heading, bounds, panel in panels:
+        x_min, y_min, x_max, y_max = bounds
+        panel_left, panel_top, panel_right, panel_bottom = panel
+        panel_width, panel_height = panel_right - panel_left, panel_bottom - panel_top
+        scale = min((panel_width - 54) / (x_max - x_min), (panel_height - 132) / (y_max - y_min))
+        render_width = round((x_max - x_min) * scale)
+        render_height = round((y_max - y_min) * scale)
+        map_left = panel_left + (panel_width - render_width) // 2
+        map_top = panel_top + 86 + (panel_height - 114 - render_height) // 2
+        col_left = max(0, int(math.floor((x_min - float(origin_x)) / resolution)))
+        col_right = min(map_width, int(math.ceil((x_max - float(origin_x)) / resolution)))
+        row_top = max(0, int(math.floor(map_height - (y_max - float(origin_y)) / resolution)))
+        row_bottom = min(map_height, int(math.ceil(map_height - (y_min - float(origin_y)) / resolution)))
+        crop = occupancy.crop((col_left, row_top, col_right, row_bottom)).resize(
+            (render_width, render_height), Image.Resampling.NEAREST
+        )
+        draw.rounded_rectangle(panel, radius=24, fill=WHITE, outline="#d0d5dd", width=2)
+        draw.text((panel_left + 28, panel_top + 25), heading, font=font(28), fill=INK)
+        canvas.paste(crop, (map_left, map_top))
+        draw.rectangle((map_left - 3, map_top - 3, map_left + render_width + 3, map_top + render_height + 3), outline="#98a2b3", width=3)
+
+        def pixel(position: list[float] | tuple[float, float]) -> tuple[float, float]:
+            return (map_left + (float(position[0]) - x_min) * scale, map_top + (y_max - float(position[1])) * scale)
+
+        case = cases[identifier]
+        obstacle = case["obstacle"]
+        gate = case["gate"]
+        color, _, goal_label = DYNAMIC_STYLES[identifier]
+        start, end = pixel(obstacle["waypoints"][0][:2]), pixel(obstacle["waypoints"][-1][:2])
+        dashed_line(draw, start, end, fill=color, width=8, dash=22, gap=12)
+        arrow(draw, (end[0] - (end[0] - start[0]) * 0.20, end[1] - (end[1] - start[1]) * 0.20), end, fill=color, width=8)
+        half_extent = float(obstacle["size"][0]) * scale / 2.0
+        draw.rectangle((start[0] - half_extent, start[1] - half_extent, start[0] + half_extent, start[1] + half_extent), fill=f"{color}b8", outline=color, width=5)
+        draw.rectangle((end[0] - half_extent, end[1] - half_extent, end[0] + half_extent, end[1] + half_extent), outline=color, width=6)
+        gate_left = pixel((gate["x_range"][0], gate["threshold"]))
+        gate_right = pixel((gate["x_range"][1], gate["threshold"]))
+        dashed_line(draw, gate_left, gate_right, fill=color, width=5, dash=12, gap=8)
+        text_with_box(
+            draw,
+            (panel_left + 28, panel_bottom - 72),
+            f"{goal_label} · gate: y {('≤' if gate['direction'] == 'negative' else '≥')} {float(gate['threshold']):.2f} · {float(obstacle['speed']):.2f} m/s",
+            text_font=font(19),
+            fill=color,
+        )
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output, optimize=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
     arguments = parser.parse_args()
     render("static", arguments.output_dir / "kujiale_long_route_static_map.png")
     render("dynamic", arguments.output_dir / "kujiale_long_route_dynamic_map.png")
+    render_three_stage_details(arguments.output_dir / "kujiale_three_stage_dynamic_details.png")
 
 
 if __name__ == "__main__":

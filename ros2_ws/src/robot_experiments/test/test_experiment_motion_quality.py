@@ -114,3 +114,41 @@ def test_local_bypass_accepts_a_pass_after_the_planned_park():
     assert not metrics["passed_while_moving"]
     assert metrics["passed_after_planned_park"]
     assert metrics["complete"]
+
+
+def test_g2_g3_exit_requires_following_then_left_exit_turn():
+    ground_truth = [
+        OdometrySample(-0.42, 1.60, 0.0, 0.4, 0.0, 1.00, 0.0),
+        OdometrySample(-0.85, -0.55, 0.0, 0.4, 0.0, 1.10, 0.0),
+    ]
+    actor = [
+        {"id": "g2_g3_exit_actor", "state": "moving", "stamp_s": 1.00, "position": [-0.40, 1.00, 0.5]},
+        {"id": "g2_g3_exit_actor", "state": "parked", "stamp_s": 1.10, "position": [-0.40, -0.70, 0.5]},
+    ]
+
+    metrics = ExperimentRunner._g2_g3_exit_metrics(
+        ground_truth, actor, "g2_g3_exit_actor"
+    )
+
+    assert metrics["continuous_follow_seen"]
+    assert metrics["outlet_left_turn_seen"]
+    assert metrics["complete"]
+
+
+def test_g5_g1_crossing_requires_left_side_pass_while_actor_exists():
+    ground_truth = [
+        OdometrySample(-0.85, -1.42, 0.0, 0.4, 0.0, 1.00, 0.0),
+        OdometrySample(-0.86, -1.90, 0.0, 0.4, 0.0, 1.10, 0.0),
+    ]
+    actor = [
+        {"id": "g5_g1_crossing_actor", "state": "moving", "stamp_s": 1.00, "position": [-0.45, -1.45, 0.5]},
+        {"id": "g5_g1_crossing_actor", "state": "parked", "stamp_s": 1.10, "position": [-0.20, -1.45, 0.5]},
+    ]
+
+    metrics = ExperimentRunner._g5_g1_left_bypass_metrics(
+        ground_truth, actor, "g5_g1_crossing_actor"
+    )
+
+    assert metrics["left_side_bypass_seen"]
+    assert metrics["passed_while_present"]
+    assert metrics["complete"]

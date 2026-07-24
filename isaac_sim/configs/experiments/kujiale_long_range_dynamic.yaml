@@ -1,8 +1,8 @@
-# Schema v3: the physical source of truth for the Kujiale dynamic benchmark.
+# Schema v4: calibrated single cases plus ordered full-route case sets.
 # Every actor is a high LiDAR-visible 0.40 x 0.40 x 1.00 m kinematic cube.
 # Goal acceptance only arms it. Motion is released once the robot crosses the
 # spatial gate in the specified direction at >= 0.20 m/s.
-schema_version: 3
+schema_version: 4
 seed: 7401
 enabled: false
 coordinate_frame: map
@@ -64,18 +64,46 @@ cases:
     # already entered the open hall and returns into the former x window.
     gate: {axis: y, threshold: -1.75, direction: positive, min_speed_mps: 0.20, x_range: [-0.70, 0.30]}
     obstacle:
-      # y=-0.15 keeps the complete 0.40 m box below the y=+0.10 static
-      # occupied band; a kinematic actor must never sweep through that wall.
+      # y=-0.20 keeps the complete 0.40 m box and its 0.05 m map clearance
+      # below the y≈+0.10 static occupied band; a kinematic actor must never
+      # sweep through that wall.
       # This is the verified smooth-interaction trajectory: the actor clears
       # the robot's near-field while leaving enough time for a continuous
       # right-side arc instead of forcing late high-curvature corrections.
-      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, -0.15, 0.50], [-0.85, -0.15, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
+      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, -0.20, 0.50], [-0.85, -0.20, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
     variants:
       v1: {seed: 7441, start_delay_sec: 0.00}
       v2: {seed: 7442, start_delay_sec: 0.05}
       v3: {seed: 7443, start_delay_sec: 0.00}
       v4: {seed: 7444, start_delay_sec: 0.10}
       v5: {seed: 7445, start_delay_sec: 0.15}
+  g2_g3_exit:
+    trigger_group: G3
+    # The G2->G3 reference path descends the x≈-0.4 narrow lane.  Start the
+    # actor at y=1.0 and release it upstream, so it moves with the robot rather
+    # than appearing as a static block at the outlet.
+    gate: {axis: y, threshold: 2.20, direction: negative, min_speed_mps: 0.20, x_range: [-0.55, -0.25]}
+    obstacle:
+      {id: g2_g3_exit_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.40, 1.00, 0.50], [-0.40, -0.70, 0.50]], speed: 0.65, max_acceleration: 0.90, post_motion: park}
+    variants:
+      v1: {seed: 7461, start_delay_sec: 0.00}
+      v2: {seed: 7462, start_delay_sec: 0.05}
+      v3: {seed: 7463, start_delay_sec: 0.10}
+      v4: {seed: 7464, start_delay_sec: 0.15}
+      v5: {seed: 7465, start_delay_sec: 0.20}
+  g5_g1_crossing:
+    trigger_group: G1
+    # Arm only for the return goal.  The negative-y gate selects the return
+    # descent and rejects the earlier G5->upper-hall northbound traversal.
+    gate: {axis: y, threshold: -0.55, direction: negative, min_speed_mps: 0.20, x_range: [-0.75, -0.15]}
+    obstacle:
+      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.90, -1.45, 0.50], [-0.20, -1.45, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
+    variants:
+      v1: {seed: 7471, start_delay_sec: 0.00}
+      v2: {seed: 7472, start_delay_sec: 0.05}
+      v3: {seed: 7473, start_delay_sec: 0.10}
+      v4: {seed: 7474, start_delay_sec: 0.15}
+      v5: {seed: 7475, start_delay_sec: 0.20}
   temporary_block:
     trigger_group: G2
     gate: {axis: y, threshold: -1.80, direction: positive, min_speed_mps: 0.20, x_range: [-0.60, 0.40]}
@@ -87,3 +115,7 @@ cases:
       v3: {seed: 7433, dwell_sec: 1.20}
       v4: {seed: 7434, dwell_sec: 1.50}
       v5: {seed: 7435, dwell_sec: 1.80}
+case_sets:
+  # Exactly one actor is armed for each of G2, G3, and G1.  Goal completion
+  # retires the preceding actor before the next goal is dispatched.
+  full_route_three_stage: [local_bypass, g2_g3_exit, g5_g1_crossing]

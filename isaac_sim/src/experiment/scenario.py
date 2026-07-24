@@ -1,9 +1,9 @@
 """Deterministic dynamic-obstacle scenario parsing and sampling.
 
-Schema v3 deliberately models *one selected interaction* at a time.  The
-physical scenario owns geometry, trigger gates and kinematics; campaign YAMLs
-only select a case/variant/seed matrix.  This avoids the former, unsafe model
-where a Nav2 goal acceptance immediately started every obstacle.
+Schema v4 keeps the calibrated one-actor cases while adding named ``case_sets``
+for ordered full-route interactions.  Each actor remains independently armed
+by its target goal and spatial gate; selecting a set never starts all actors at
+once.
 """
 
 from __future__ import annotations
@@ -77,6 +77,7 @@ class DynamicScenario:
     coordinate_frame: str = "usd"
     spawn_pose_name: str | None = None
     cases: dict[str, DynamicCase] = field(default_factory=dict)
+    case_sets: dict[str, tuple[str, ...]] = field(default_factory=dict)
     guard_clearance_m: float = 0.05
     min_clearance_m: float = 0.10
 
@@ -94,6 +95,12 @@ class DynamicScenario:
         except KeyError as exc:
             raise ValueError(f"unknown dynamic obstacle case {case_id!r}") from exc
 
+    def selected_cases(self, case_id: str | None = None) -> tuple[DynamicCase, ...]:
+        """Return one calibrated case or an ordered schema-v4 case set."""
+        if case_id is not None and case_id in self.case_sets:
+            return tuple(self.cases[item] for item in self.case_sets[case_id])
+        return (self.case(case_id),)
+
     def sampled_phases(self, seed: int | None = None) -> dict[str, float]:
         rng = random.Random(self.seed if seed is None else seed)
         return {item.obstacle_id: rng.uniform(-item.phase_jitter, item.phase_jitter) for item in self.obstacles}
@@ -103,14 +110,16 @@ def _vector(raw: object, size: int, context: str) -> tuple[float, ...]:
     return tuple(require_vector(raw, size, context=context))
 
 
-def _load_v3(data: dict[str, object]) -> DynamicScenario:
+def _load_case_matrix(data: dict[str, object], schema_version: int) -> DynamicScenario:
     allowed = {"schema_version", "seed", "enabled", "coordinate_frame", "spawn_pose_name", "safety", "cases"}
+    if schema_version >= 4:
+        allowed.add("case_sets")
     reject_unknown(data, allowed, context="dynamic scenario")
     require_keys(data, allowed, context="dynamic scenario")
     if not isinstance(data["seed"], int) or isinstance(data["seed"], bool):
         raise ValueError("dynamic scenario schema_version/seed is invalid")
     if not isinstance(data["enabled"], bool) or data["coordinate_frame"] != "map":
-        raise ValueError("schema v3 requires enabled boolean and map coordinates")
+        raise ValueError(f"schema v{schema_version} requires enabled boolean and map coordinates")
     if not isinstance(data["spawn_pose_name"], str) or not data["spawn_pose_name"]:
         raise ValueError("map-coordinate dynamic scenario requires spawn_pose_name")
     safety = data["safety"]
@@ -124,7 +133,7 @@ def _load_v3(data: dict[str, object]) -> DynamicScenario:
         raise ValueError("guard_clearance_m must exceed min_clearance_m")
     raw_cases = data["cases"]
     if not isinstance(raw_cases, dict) or not raw_cases:
-        raise ValueError("schema v3 cases must be a non-empty mapping")
+        raise ValueError(f"schema v{schema_version} cases must be a non-empty mapping")
     cases: dict[str, DynamicCase] = {}
     all_specs: list[ObstacleSpec] = []
     for case_id, raw in raw_cases.items():
@@ -193,14 +202,37 @@ def _load_v3(data: dict[str, object]) -> DynamicScenario:
                                                require_number(gate_raw["min_speed_mps"], context=f"{case_id}.gate.min_speed_mps", positive=True), x_range),
                                      require_number(obstacle_raw["max_acceleration"], context=f"{case_id}.obstacle.max_acceleration", positive=True), tuple(variants))
         all_specs.append(spec)
-    return DynamicScenario(data["seed"], data["enabled"], tuple(all_specs), "map", data["spawn_pose_name"], cases, guard, minimum)
+    case_sets: dict[str, tuple[str, ...]] = {}
+    if schema_version >= 4:
+        raw_sets = data.get("case_sets", {})
+        if not isinstance(raw_sets, dict):
+            raise ValueError("schema v4 case_sets must be a mapping")
+        for set_id, raw_ids in raw_sets.items():
+            if not isinstance(set_id, str) or not set_id:
+                raise ValueError("schema v4 case set id is invalid")
+            if not isinstance(raw_ids, list) or not raw_ids:
+                raise ValueError(f"case set {set_id!r} must contain one or more cases")
+            identifiers = tuple(raw_ids)
+            if (
+                any(not isinstance(item, str) or item not in cases for item in identifiers)
+                or len(set(identifiers)) != len(identifiers)
+            ):
+                raise ValueError(f"case set {set_id!r} references invalid or duplicate cases")
+            groups = [cases[item].trigger_group for item in identifiers]
+            if len(set(groups)) != len(groups):
+                raise ValueError(f"case set {set_id!r} must use distinct trigger groups")
+            case_sets[set_id] = identifiers
+    return DynamicScenario(
+        data["seed"], data["enabled"], tuple(all_specs), "map",
+        data["spawn_pose_name"], cases, case_sets, guard, minimum,
+    )
 
 
 def load_dynamic_scenario(path: str | Path) -> DynamicScenario:
     data = load_mapping(path)
     version = data.get("schema_version")
-    if version == 3:
-        return _load_v3(data)
+    if version in {3, 4}:
+        return _load_case_matrix(data, int(version))
     if version not in {1, 2}:
         raise ValueError("dynamic scenario schema_version/seed is invalid")
     top_level = {"schema_version", "seed", "enabled", "obstacles"}

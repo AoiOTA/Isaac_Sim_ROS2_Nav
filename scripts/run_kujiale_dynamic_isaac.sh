@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Canonical Isaac entrypoint for the Kujiale dynamic-avoidance benchmark.
 # Keep every run-critical contract explicit: USD, G1 spawn, Ideal odometry,
-# schema-v3 actors, and the independent ground-truth evidence recorder.
+# schema-v4 sequential actors, and the independent ground-truth evidence recorder.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -398,6 +398,7 @@ class ExperimentRunner(Node):
             CancelGoal, f"{self._action_name}/_action/cancel_goal"
         )
         self._obstacle_trigger_clients: dict[str, object] = {}
+        self._obstacle_complete_clients: dict[str, object] = {}
         self._collision_monitor_state_client = self.create_client(
             GetState,
             str(
@@ -1177,6 +1178,34 @@ class ExperimentRunner(Node):
                 detail = response.message if response is not None else "no response"
                 raise RuntimeError(f"obstacle trigger failed for {group}: {detail}")
 
+    def _complete_obstacle_group(self, goal_id: str | None) -> None:
+        """Retire only the actors tied to a successfully completed route goal."""
+        if self._scenario.scenario_type != "dynamic" or not goal_id:
+            return
+        groups = sorted({
+            str(item["trigger_group"])
+            for item in self._scenario.obstacle_trajectories
+            if item.get("trigger_group") == goal_id
+        })
+        for group in groups:
+            client = self._obstacle_complete_clients.get(group)
+            if client is None:
+                client = self.create_client(
+                    Trigger, f"/experiment/obstacles/{group}/complete"
+                )
+                self._obstacle_complete_clients[group] = client
+            if not client.wait_for_service(timeout_sec=self._service_timeout_sec):
+                raise RuntimeError(f"obstacle completion service is unavailable for {group}")
+            future = client.call_async(Trigger.Request())
+            if not self._wait_future(
+                future, time.monotonic() + self._service_timeout_sec
+            ):
+                raise TimeoutError(f"obstacle completion timed out for {group}")
+            response = future.result()
+            if response is None or not response.success:
+                detail = response.message if response is not None else "no response"
+                raise RuntimeError(f"obstacle completion failed for {group}: {detail}")
+
     def _navigate(self) -> tuple[bool, bool, int]:
         if not self._navigate_client.wait_for_server(
             timeout_sec=self._service_timeout_sec
@@ -1288,6 +1317,7 @@ class ExperimentRunner(Node):
                 if wrapped_result.status != GoalStatus.STATUS_SUCCEEDED:
                     self._leg_results.append({"id": specification.goal_id or f"G{index + 1}", "nav2_status": int(wrapped_result.status), "accepted": True})
                     return False, False, int(wrapped_result.status)
+                self._complete_obstacle_group(specification.goal_id)
                 leg_gt = self._ground_truth_samples[leg_gt_start:]
                 self._leg_results.append({
                     "id": specification.goal_id or f"G{index + 1}",
@@ -1515,6 +1545,105 @@ class ExperimentRunner(Node):
         )
         return result
 
+    @staticmethod
+    def _g2_g3_exit_metrics(
+        ground_truth_samples: list[OdometrySample],
+        obstacle_samples: list[dict[str, Any]],
+        obstacle_id: str,
+    ) -> dict[str, Any]:
+        """Require a same-direction following interval and outlet-side turn."""
+        interaction = [
+            item for item in obstacle_samples
+            if item.get("id") == obstacle_id
+            and item.get("state") in {"moving", "parked"}
+            and isinstance(item.get("stamp_s"), (int, float))
+            and isinstance(item.get("position"), list)
+            and len(item["position"]) >= 2
+        ]
+        result: dict[str, Any] = {
+            "required": True,
+            "actor_id": obstacle_id,
+            "interaction_sample_count": len(interaction),
+            "paired_sample_count": 0,
+            "continuous_follow_seen": False,
+            "outlet_left_turn_seen": False,
+            "complete": False,
+        }
+        if not interaction or not ground_truth_samples:
+            return result
+        ground_truth = sorted(ground_truth_samples, key=lambda item: item.stamp_s)
+        gt_index = 0
+        for actor in sorted(interaction, key=lambda item: float(item["stamp_s"])):
+            while (
+                gt_index + 1 < len(ground_truth)
+                and abs(ground_truth[gt_index + 1].stamp_s - float(actor["stamp_s"]))
+                <= abs(ground_truth[gt_index].stamp_s - float(actor["stamp_s"]))
+            ):
+                gt_index += 1
+            robot = ground_truth[gt_index]
+            if abs(robot.stamp_s - float(actor["stamp_s"])) > 0.15:
+                continue
+            actor_x, actor_y = float(actor["position"][0]), float(actor["position"][1])
+            result["paired_sample_count"] += 1
+            # Both actors proceed south; a positive value therefore means the
+            # square is in front of the robot while it is moving away.
+            if actor["state"] == "moving" and 0.20 <= robot.y - actor_y <= 1.20 and abs(robot.x - actor_x) <= 0.65:
+                result["continuous_follow_seen"] = True
+            # The planned exit is to the left of the parked actor at x=-0.40.
+            if actor["state"] == "parked" and robot.x <= actor_x - 0.35:
+                result["outlet_left_turn_seen"] = True
+        result["complete"] = bool(result["continuous_follow_seen"] and result["outlet_left_turn_seen"])
+        return result
+
+    @staticmethod
+    def _g5_g1_left_bypass_metrics(
+        ground_truth_samples: list[OdometrySample],
+        obstacle_samples: list[dict[str, Any]],
+        obstacle_id: str,
+    ) -> dict[str, Any]:
+        """Verify the robot passes the right-parked door actor on its left."""
+        interaction = [
+            item for item in obstacle_samples
+            if item.get("id") == obstacle_id
+            and item.get("state") in {"moving", "parked"}
+            and isinstance(item.get("stamp_s"), (int, float))
+            and isinstance(item.get("position"), list)
+            and len(item["position"]) >= 2
+        ]
+        result: dict[str, Any] = {
+            "required": True,
+            "actor_id": obstacle_id,
+            "interaction_sample_count": len(interaction),
+            "paired_sample_count": 0,
+            "left_side_bypass_seen": False,
+            "passed_while_present": False,
+            "complete": False,
+        }
+        if not interaction or not ground_truth_samples:
+            return result
+        ground_truth = sorted(ground_truth_samples, key=lambda item: item.stamp_s)
+        gt_index = 0
+        for actor in sorted(interaction, key=lambda item: float(item["stamp_s"])):
+            while (
+                gt_index + 1 < len(ground_truth)
+                and abs(ground_truth[gt_index + 1].stamp_s - float(actor["stamp_s"]))
+                <= abs(ground_truth[gt_index].stamp_s - float(actor["stamp_s"]))
+            ):
+                gt_index += 1
+            robot = ground_truth[gt_index]
+            if abs(robot.stamp_s - float(actor["stamp_s"])) > 0.15:
+                continue
+            actor_x, actor_y = float(actor["position"][0]), float(actor["position"][1])
+            result["paired_sample_count"] += 1
+            if abs(robot.y - actor_y) <= 0.70 and actor_x - robot.x >= 0.35:
+                result["left_side_bypass_seen"] = True
+            # The return path is southbound through the door.  This confirms
+            # the robot made progress while the actor had not been retired.
+            if robot.y <= actor_y - 0.35:
+                result["passed_while_present"] = True
+        result["complete"] = bool(result["left_side_bypass_seen"] and result["passed_while_present"])
+        return result
+
     def _wait_for_final_stillness(self) -> bool:
         settings = self._scenario.success
         deadline = time.monotonic() + settings.final_still_timeout_sec
@@ -1637,10 +1766,18 @@ class ExperimentRunner(Node):
             if isinstance(item, Mapping) and isinstance(item.get("id"), str)
         }
         if self._active_selection is not None and self._active_selection.case_id:
-            expected_dynamic_ids = {
-                str(item["id"]) for item in self._scenario.obstacle_trajectories
-                if item.get("motion") == self._active_selection.case_id
-            }
+            if self._active_selection.case_id == "full_route_three_stage":
+                expected_dynamic_ids = {
+                    str(item["id"]) for item in self._scenario.obstacle_trajectories
+                    if item.get("motion") in {
+                        "local_bypass", "g2_g3_exit", "g5_g1_crossing"
+                    }
+                }
+            else:
+                expected_dynamic_ids = {
+                    str(item["id"]) for item in self._scenario.obstacle_trajectories
+                    if item.get("motion") == self._active_selection.case_id
+                }
         triggered_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
@@ -1649,20 +1786,42 @@ class ExperimentRunner(Node):
         retired_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
-            if item.get("event") in {"retire", "park"} and isinstance(item.get("obstacle_id"), str)
+            if item.get("event") in {"retire", "park", "goal_reached_retire"} and isinstance(item.get("obstacle_id"), str)
         }
         completed_ids = {
             str(item.get("obstacle_id"))
             for item in self._obstacle_events
-            if item.get("event") in {"motion_complete", "retire", "park"}
+            if item.get("event") in {"motion_complete", "retire", "park", "goal_reached_retire"}
             and isinstance(item.get("obstacle_id"), str)
         }
+        clearance_by_actor: dict[str, float] = {}
+        for sample in self._obstacle_samples:
+            identifier = sample.get("id")
+            clearance = sample.get("min_clearance_m")
+            if (
+                isinstance(identifier, str)
+                and identifier in expected_dynamic_ids
+                and isinstance(clearance, (int, float))
+                and math.isfinite(float(clearance))
+            ):
+                clearance_by_actor[identifier] = min(
+                    clearance_by_actor.get(identifier, math.inf),
+                    float(clearance),
+                )
+        clearance_complete = (
+            self._scenario.scenario_type != "dynamic"
+            or (
+                expected_dynamic_ids <= set(clearance_by_actor)
+                and all(value >= 0.10 for value in clearance_by_actor.values())
+            )
+        )
         dynamic_interaction_complete = (
             self._scenario.scenario_type != "dynamic"
             or (
                 expected_dynamic_ids <= triggered_ids
                 and expected_dynamic_ids <= completed_ids
                 and expected_dynamic_ids <= retired_ids
+                and clearance_complete
                 and self._depth_frame is not None
                 and self._scan_frame is not None
                 and self._local_costmap is not None
@@ -1670,11 +1829,15 @@ class ExperimentRunner(Node):
         )
         if not dynamic_interaction_complete:
             reasons.append("dynamic_obstacle_interaction_incomplete")
+        if not clearance_complete:
+            reasons.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}
-        if (
-            self._active_selection is not None
-            and self._active_selection.case_id == "local_bypass"
-        ):
+        selected_case = (
+            self._active_selection.case_id
+            if self._active_selection is not None
+            else None
+        )
+        if selected_case == "local_bypass":
             dynamic_behavior = self._local_right_bypass_metrics(
                 self._ground_truth_samples,
                 self._obstacle_samples,
@@ -1682,6 +1845,44 @@ class ExperimentRunner(Node):
             )
             if not dynamic_behavior["complete"]:
                 reasons.append("local_right_bypass_not_observed")
+        elif selected_case == "g2_g3_exit":
+            dynamic_behavior = self._g2_g3_exit_metrics(
+                self._ground_truth_samples,
+                self._obstacle_samples,
+                "g2_g3_exit_actor",
+            )
+            if not dynamic_behavior["complete"]:
+                reasons.append("g2_g3_follow_and_exit_not_observed")
+        elif selected_case == "g5_g1_crossing":
+            dynamic_behavior = self._g5_g1_left_bypass_metrics(
+                self._ground_truth_samples,
+                self._obstacle_samples,
+                "g5_g1_crossing_actor",
+            )
+            if not dynamic_behavior["complete"]:
+                reasons.append("g5_g1_left_bypass_not_observed")
+        elif selected_case == "full_route_three_stage":
+            segments = {
+                "g1_g2": self._local_right_bypass_metrics(
+                    self._ground_truth_samples, self._obstacle_samples,
+                    "local_bypass_actor",
+                ),
+                "g2_g3": self._g2_g3_exit_metrics(
+                    self._ground_truth_samples, self._obstacle_samples,
+                    "g2_g3_exit_actor",
+                ),
+                "g5_g1": self._g5_g1_left_bypass_metrics(
+                    self._ground_truth_samples, self._obstacle_samples,
+                    "g5_g1_crossing_actor",
+                ),
+            }
+            dynamic_behavior = {
+                "required": True,
+                "segments": segments,
+                "complete": all(item["complete"] for item in segments.values()),
+            }
+            if not dynamic_behavior["complete"]:
+                reasons.append("three_stage_dynamic_behavior_not_observed")
         if self._dynamic_guard_aborted:
             reasons.append("dynamic_near_contact_abort")
         if self._dynamic_safety_yield:
@@ -1747,6 +1948,8 @@ class ExperimentRunner(Node):
                 "triggered_ids": sorted(triggered_ids),
                 "completed_ids": sorted(completed_ids),
                 "retired_ids": sorted(retired_ids),
+                "minimum_clearance_m_by_actor": clearance_by_actor,
+                "minimum_clearance_complete": clearance_complete,
                 "complete": dynamic_interaction_complete,
                 "guard_aborted": self._dynamic_guard_aborted,
                 "safety_yield": self._dynamic_safety_yield,

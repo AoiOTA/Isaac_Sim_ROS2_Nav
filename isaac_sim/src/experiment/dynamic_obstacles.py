@@ -7,7 +7,7 @@ import json
 import math
 from typing import Callable
 
-from isaac_sim.src.experiment.scenario import DynamicCase, DynamicScenario, ObstacleSpec
+from isaac_sim.src.experiment.scenario import DynamicCase, DynamicScenario, DynamicVariant, ObstacleSpec
 
 
 @dataclass
@@ -40,7 +40,7 @@ def _distance_point_to_segment(point, start, end) -> float:
 class DynamicObstacleManager:
     """Own physical actors and prevent kinematic actors from pushing the robot.
 
-    For schema v3, ``trigger`` only transitions to ``armed``.  A monotonic
+    For schema v3/v4, ``trigger`` only transitions to ``armed``.  A monotonic
     spatial gate plus a robot-speed threshold starts the actor exactly once.
     A pre-contact safety yield freezes a risky kinematic actor while keeping
     it visible and collidable, then resumes only once the robot has passed.
@@ -52,8 +52,9 @@ class DynamicObstacleManager:
         self._map_to_usd, self._usd_to_map = map_to_usd, usd_to_map
         self._runtime: dict[str, _ObstacleRuntime] = {}
         self._events: list[dict[str, object]] = []
-        self._selected_case: DynamicCase | None = None
-        self._selected_variant = None
+        self._selected_cases: tuple[DynamicCase, ...] = ()
+        self._selected_variants: dict[str, DynamicVariant] = {}
+        self._case_by_obstacle_id: dict[str, DynamicCase] = {}
         self._last_publish_time = -math.inf
         self._last_robot: dict[str, float] | None = None
         self._author(); self.reset(scenario.seed)
@@ -89,24 +90,39 @@ class DynamicObstacleManager:
 
     def reset(self, seed: int, case_id: str | None = None, variant_id: str | int | None = None) -> None:
         from pxr import Gf
-        self._events.clear(); self._selected_case = self.scenario.case(case_id) if self.scenario.is_case_matrix else None
-        self._selected_variant = self._selected_case.variant(variant_id) if self._selected_case else None
+        self._events.clear()
+        self._selected_cases = self.scenario.selected_cases(case_id) if self.scenario.is_case_matrix else ()
+        self._selected_variants = {
+            item.case_id: item.variant(variant_id) for item in self._selected_cases
+        }
+        self._case_by_obstacle_id = {
+            item.obstacle.obstacle_id: item for item in self._selected_cases
+        }
         phases = self.scenario.sampled_phases(seed)
         for identifier, runtime in self._runtime.items():
-            active = self._selected_case is None or identifier == self._selected_case.obstacle.obstacle_id
+            active = not self._selected_cases or identifier in self._case_by_obstacle_id
             runtime.state, runtime.armed_at, runtime.gate_at, runtime.motion_at, runtime.yield_at, runtime.retired = "waiting", None, None, None, None, not active
             runtime.phase, runtime.progress, runtime.velocity_mps, runtime.min_clearance_m = phases[identifier], 0.0, 0.0, math.inf
             runtime.position_map = runtime.spec.start; runtime.translate_op.Set(Gf.Vec3d(*self._world_position(runtime.spec.start)))
             self._set_enabled(runtime, active and runtime.spec.trigger_group is None)
-        self._event("reset", 0.0, seed=seed, case_id=self._selected_case.case_id if self._selected_case else None,
-                    variant_id=self._selected_variant.variant_id if self._selected_variant else None)
+        self._event(
+            "reset", 0.0, seed=seed,
+            case_id=case_id,
+            case_ids=[item.case_id for item in self._selected_cases],
+            variant_id=str(variant_id) if variant_id is not None else None,
+        )
 
     def trigger(self, group: str, simulation_time: float) -> tuple[str, ...]:
         activated = []
         for identifier, runtime in self._runtime.items():
-            if runtime.spec.trigger_group == group and runtime.state == "waiting" and not runtime.retired:
+            if (
+                runtime.spec.trigger_group == group
+                and runtime.state == "waiting"
+                and not runtime.retired
+                and (not self._selected_cases or identifier in self._case_by_obstacle_id)
+            ):
                 runtime.state, runtime.armed_at, runtime.gate_at = "armed", simulation_time, None
-                # Schema v3 deliberately keeps an armed actor hidden until the
+                # Schema v4 deliberately keeps an armed actor hidden until the
                 # spatial gate.  Otherwise it becomes a static global-costmap
                 # obstacle for several seconds before the interaction.
                 if not self.scenario.is_case_matrix:
@@ -114,6 +130,31 @@ class DynamicObstacleManager:
                 activated.append(identifier)
                 self._event("armed", simulation_time, obstacle_id=identifier, group=group)
         return tuple(activated)
+
+    def complete(self, group: str, simulation_time: float) -> tuple[str, ...]:
+        """Retire actors only after their corresponding Nav2 goal succeeds.
+
+        The operation is intentionally idempotent so a runner retry cannot
+        re-enable, move, or otherwise alter an already retired actor.
+        """
+        retired = []
+        for identifier, runtime in self._runtime.items():
+            if (
+                runtime.spec.trigger_group != group
+                or runtime.retired
+                or runtime.state == "waiting"
+                or (self._selected_cases and identifier not in self._case_by_obstacle_id)
+            ):
+                continue
+            previous_state = runtime.state
+            runtime.state, runtime.retired, runtime.velocity_mps = "retired", True, 0.0
+            self._set_enabled(runtime, False)
+            retired.append(identifier)
+            self._event(
+                "goal_reached_retire", simulation_time,
+                obstacle_id=identifier, group=group, previous_state=previous_state,
+            )
+        return tuple(retired)
 
     def _gate_passed(self, case: DynamicCase, robot: dict[str, float]) -> bool:
         axis_value = robot[case.gate.axis]
@@ -144,7 +185,7 @@ class DynamicObstacleManager:
         velocity = 0.5 * math.pi * distance / duration * math.sin(angle)
         return travelled, velocity, duration
 
-    def _trajectory(self, case: DynamicCase, elapsed: float) -> tuple[tuple[float, float, float], float, float, str]:
+    def _trajectory(self, case: DynamicCase, variant: DynamicVariant | None, elapsed: float) -> tuple[tuple[float, float, float], float, float, str]:
         points = case.waypoints; total_length = sum(math.dist(a, b) for a, b in zip(points, points[1:])); travelled = 0.0
         for index, (start, end) in enumerate(zip(points, points[1:])):
             length = math.dist(start, end); distance, velocity, duration = self._profile(length, case.obstacle.speed, case.max_acceleration, elapsed)
@@ -152,9 +193,9 @@ class DynamicObstacleManager:
                 ratio = distance / length; pos = tuple(a + ratio * (b - a) for a, b in zip(start, end))
                 return pos, velocity, min(1.0, (travelled + distance) / total_length), "moving"
             elapsed -= duration; travelled += length
-            if index < len(points) - 2 and self._selected_variant and self._selected_variant.dwell_sec:
-                if elapsed <= self._selected_variant.dwell_sec: return end, 0.0, travelled / total_length, "dwell"
-                elapsed -= self._selected_variant.dwell_sec
+            if index < len(points) - 2 and variant and variant.dwell_sec:
+                if elapsed <= variant.dwell_sec: return end, 0.0, travelled / total_length, "dwell"
+                elapsed -= variant.dwell_sec
         return points[-1], 0.0, 1.0, "clearing"
 
     def _guard_clearance(self, runtime: _ObstacleRuntime, robot: dict[str, float]) -> float:
@@ -172,9 +213,9 @@ class DynamicObstacleManager:
         self._event("near_contact_abort", simulation_time, obstacle_id=runtime.spec.obstacle_id, clearance_m=round(clearance, 4))
 
     def state(self) -> dict[str, object]:
-        return {"schema_version": 3, "case_id": self._selected_case.case_id if self._selected_case else None,
-                "variant_id": self._selected_variant.variant_id if self._selected_variant else None,
-                "obstacles": [{"id": key, "trigger_group": item.spec.trigger_group, "state": item.state,
+        return {"schema_version": 4, "case_ids": [item.case_id for item in self._selected_cases],
+                "obstacles": [{"id": key, "trigger_group": item.spec.trigger_group,
+                                "retire_group": item.spec.trigger_group, "state": item.state,
                                 "progress": round(item.progress, 5), "position": list(self._reported_position(item)), "position_frame": "map" if self.scenario.coordinate_frame == "map" else "usd",
                                 "velocity_mps": round(item.velocity_mps, 4), "min_clearance_m": None if math.isinf(item.min_clearance_m) else round(item.min_clearance_m, 4)}
                                for key, item in sorted(self._runtime.items())], "events": list(self._events)}
@@ -196,6 +237,14 @@ class DynamicObstacleManager:
             def callback(request, response, group=group):
                 activated = self.trigger(group, simulation_time()); response.success = bool(activated); response.message = json.dumps({"group": group, "activated": activated}); return response
             self._services.append(node.create_service(Trigger, f"/experiment/obstacles/{group}/trigger", callback))
+            def complete_callback(request, response, group=group):
+                retired = self.complete(group, simulation_time())
+                # Goal completion is safe to retry: an already-retired actor
+                # simply yields an empty list instead of failing the runner.
+                response.success = True
+                response.message = json.dumps({"group": group, "retired": retired})
+                return response
+            self._services.append(node.create_service(Trigger, f"/experiment/obstacles/{group}/complete", complete_callback))
         def reset_callback(request, response): self.reset(self.scenario.seed); response.success = True; response.message = "obstacles reset"; return response
         self._services.append(node.create_service(Trigger, "/experiment/obstacles/reset", reset_callback))
 
@@ -209,19 +258,26 @@ class DynamicObstacleManager:
             from visualization_msgs.msg import Marker
             markers = self._marker_type(); colors = {"waiting": (.5,.5,.5), "armed": (1.,.75,0.), "moving": (0.,.8,1.), "dwell": (1.,.45,0.), "safety_yield": (1.,.1,.75), "clearing": (.2,1.,.2), "parked": (.35,.35,.35), "retired": (.2,.2,.2), "guard_aborted": (1.,0.,0.)}
             for index, item in enumerate(self._runtime.values()):
-                marker = Marker(); marker.header.frame_id="map"; marker.header.stamp.sec=int(simulation_time); marker.header.stamp.nanosec=int((simulation_time%1)*1e9); marker.ns="dynamic_obstacles"; marker.id=index; marker.type=Marker.CUBE; marker.action=Marker.ADD
+                header = {"frame_id": "map", "stamp_sec": int(simulation_time), "stamp_nanosec": int((simulation_time % 1) * 1e9)}
+                if item.retired or item.state == "waiting":
+                    for namespace, marker_id in (("dynamic_obstacles", index), ("dynamic_obstacle_status", 100 + index)):
+                        marker = Marker(); marker.header.frame_id=header["frame_id"]; marker.header.stamp.sec=header["stamp_sec"]; marker.header.stamp.nanosec=header["stamp_nanosec"]; marker.ns=namespace; marker.id=marker_id; marker.action=Marker.DELETE; markers.markers.append(marker)
+                    continue
+                marker = Marker(); marker.header.frame_id=header["frame_id"]; marker.header.stamp.sec=header["stamp_sec"]; marker.header.stamp.nanosec=header["stamp_nanosec"]; marker.ns="dynamic_obstacles"; marker.id=index; marker.type=Marker.CUBE; marker.action=Marker.ADD
                 marker.pose.position.x, marker.pose.position.y, marker.pose.position.z=item.position_map; marker.pose.orientation.w=1.; marker.scale.x, marker.scale.y, marker.scale.z=item.spec.size
                 marker.color.r, marker.color.g, marker.color.b=colors[item.state]; marker.color.a=.82; markers.markers.append(marker)
                 label = Marker(); label.header=marker.header; label.ns="dynamic_obstacle_status"; label.id=100+index; label.type=Marker.TEXT_VIEW_FACING; label.action=Marker.ADD; label.pose.position.x, label.pose.position.y, label.pose.position.z=item.position_map[0],item.position_map[1],item.position_map[2]+.65; label.pose.orientation.w=1.; label.scale.z=.18; label.color.r=label.color.g=label.color.b=1.; label.color.a=1.; label.text=f"{item.spec.obstacle_id}: {item.state} v={item.velocity_mps:.2f}"; markers.markers.append(label)
-            if self._selected_case is not None:
+            if self._selected_cases:
                 from geometry_msgs.msg import Point
-                path = Marker(); path.header.frame_id="map"; path.header.stamp.sec=int(simulation_time); path.ns="dynamic_future_trajectory"; path.id=300; path.type=Marker.LINE_STRIP; path.action=Marker.ADD; path.scale.x=.035; path.color.r=1.; path.color.g=.25; path.color.b=.85; path.color.a=.9
-                for waypoint in self._selected_case.waypoints:
-                    point=Point(); point.x,point.y,point.z=waypoint; path.points.append(point)
-                markers.markers.append(path)
-                if self._last_robot is not None:
-                    line = Marker(); line.header=path.header; line.ns="dynamic_nearest_line"; line.id=301; line.type=Marker.LINE_LIST; line.action=Marker.ADD; line.scale.x=.025; line.color.r=1.; line.color.g=.05; line.color.b=.05; line.color.a=.9
-                    robot_point=Point(); robot_point.x,robot_point.y,robot_point.z=self._last_robot["x"],self._last_robot["y"],.12; actor_point=Point(); actor_point.x,actor_point.y,actor_point.z=next(iter(self._runtime.values())).position_map[0],next(iter(self._runtime.values())).position_map[1],.12; line.points.extend([robot_point,actor_point]); markers.markers.append(line)
+                for index, case in enumerate(self._selected_cases):
+                    runtime = self._runtime[case.obstacle.obstacle_id]
+                    path = Marker(); path.header.frame_id="map"; path.header.stamp.sec=int(simulation_time); path.header.stamp.nanosec=int((simulation_time%1)*1e9); path.ns="dynamic_future_trajectory"; path.id=300 + index
+                    if runtime.retired:
+                        path.action=Marker.DELETE; markers.markers.append(path); continue
+                    path.type=Marker.LINE_STRIP; path.action=Marker.ADD; path.scale.x=.035; path.color.r=1.; path.color.g=.25; path.color.b=.85; path.color.a=.9
+                    for waypoint in case.waypoints:
+                        point=Point(); point.x,point.y,point.z=waypoint; path.points.append(point)
+                    markers.markers.append(path)
             self._marker_publisher.publish(markers)
 
     def update(self, simulation_time: float, robot: dict[str, float] | None = None) -> None:
@@ -230,6 +286,8 @@ class DynamicObstacleManager:
         from pxr import Gf
         for runtime in self._runtime.values():
             if runtime.retired or runtime.state == "waiting": continue
+            case = self._case_by_obstacle_id.get(runtime.spec.obstacle_id)
+            variant = self._selected_variants.get(case.case_id) if case is not None else None
             if runtime.state == "safety_yield":
                 if robot is None:
                     continue
@@ -246,29 +304,29 @@ class DynamicObstacleManager:
                 runtime.state = "moving"
                 self._event("safety_resume", simulation_time, obstacle_id=runtime.spec.obstacle_id, clearance_m=round(clearance, 4))
             if runtime.state == "armed":
-                if self._selected_case is None:
+                if case is None:
                     runtime.state, runtime.motion_at = "moving", simulation_time
                     self._event("motion_start", simulation_time, obstacle_id=runtime.spec.obstacle_id)
                 else:
                     if (
                         runtime.gate_at is None
                         and robot is not None
-                        and self._gate_passed(self._selected_case, robot)
+                        and self._gate_passed(case, robot)
                     ):
                         runtime.gate_at = simulation_time
                         self._set_enabled(runtime, True)
                         self._event("gate_enter", simulation_time, obstacle_id=runtime.spec.obstacle_id)
                     if (
                         runtime.gate_at is not None
-                        and simulation_time >= runtime.gate_at + self._selected_variant.start_delay_sec
+                        and simulation_time >= runtime.gate_at + (variant.start_delay_sec if variant else 0.0)
                     ):
                         runtime.state, runtime.motion_at = "moving", simulation_time
                         self._event("motion_start", simulation_time, obstacle_id=runtime.spec.obstacle_id)
                     else:
                         continue
             if runtime.state in {"moving", "dwell", "clearing"}:
-                if self._selected_case:
-                    position, velocity, progress, state = self._trajectory(self._selected_case, max(0., simulation_time - runtime.motion_at))
+                if case:
+                    position, velocity, progress, state = self._trajectory(case, variant, max(0., simulation_time - runtime.motion_at))
                     runtime.position_map, runtime.velocity_mps, runtime.progress, runtime.state = position, velocity, progress, state
                     runtime.translate_op.Set(Gf.Vec3d(*self._world_position(position)))
                     if robot is not None:
@@ -281,6 +339,7 @@ class DynamicObstacleManager:
                             self._event("safety_yield", simulation_time, obstacle_id=runtime.spec.obstacle_id, clearance_m=round(clearance, 4))
                             continue
                     if state == "clearing":
+                        self._event("motion_complete", simulation_time, obstacle_id=runtime.spec.obstacle_id)
                         if runtime.spec.post_motion == "park":
                             runtime.state = "parked"
                             self._event("park", simulation_time, obstacle_id=runtime.spec.obstacle_id)
