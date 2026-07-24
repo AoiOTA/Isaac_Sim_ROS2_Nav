@@ -6,9 +6,9 @@ through 2026-07-17, the historical 2026-07-22 Kujiale campaign, and the current
 2026-07-23 static candidate batch, run with Isaac
 Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090. Generated Kit
 logs and raw experiment captures remain outside normal Git history. On this
-branch the calibrated `warehouse_new` bundle is the default; `warehouse_v1` and
-`warehouse_v2` are retained for Warehouse history/reproduction. Large
-`.posegraph` files are stored through Git LFS.
+branch the calibrated `warehouse_new` bundle is the only distributed map;
+`warehouse_v1` and `warehouse_v2` appear below only as historical evidence.
+The remaining `warehouse_new.posegraph` is stored through Git LFS.
 
 ## 当前静态候选结果（2026-07-23；不等同完整 20+20 验收）
 
@@ -74,7 +74,7 @@ Isaac 使用 headless + realtime pacing，目标 RTF 为 `1.0`。报告元数据
 | Idle stability | With no effective non-zero command, the command watchdog put the articulation to sleep; stationary tests showed exact rest, zero wheel-joint velocities, and no Ground Truth drift for more than 10 seconds after the navigation goal | idle watchdog regression verified; not a long-duration soak |
 | Deterministic Reset | The final 20-run static and 20-run dynamic Realistic batches completed all reset/reseed cycles. Recovery required a post-reset scan, `/simulation/localization_seeded`, strictly newer `map -> odom`, fresh stamped GT/odom, spawn alignment, stable TF, and all six Nav2 managed nodes active before goal dispatch | 40-run isolation gate verified; destructive service-failure runtime injection was not run |
 | Ideal Mapping | SLAM produced `/map` at `0.05 m` resolution, observed live size `395 x 604`, with `map -> odom` and a complete base/sensor TF chain | mapping/save smoke verified; full-route map-quality acceptance not run |
-| Curated map artifacts | Full-coverage `warehouse_v2` OccupancyGrid and matching serialized Pose Graph are distributed as one indivisible default bundle; the manifest pins all four byte sizes/SHA256 values, `406 x 611 @ 0.05 m`, origin `[-14.692, -12.294, 0°]`, source and calibration. Its 39.8 MB `.posegraph` uses Git LFS. The incomplete v1 bundle remains available but is no longer the default | clone-reproducible v2 baseline verified by manifest/preflight; other generated maps remain ignored until deliberately curated |
+| Curated map artifacts | 历史 `warehouse_v1/v2` OccupancyGrid、Manifest 与 Pose Graph 已从当前仓库移除；当前唯一分发的可执行地图 bundle 是 `warehouse_new`。下方的 v1/v2 数值仅保留审计背景。 | 历史 Warehouse 结果不能在当前 checkout 直接复现；使用当前酷家乐流程时必须以 `warehouse_new` Manifest 和 preflight 为准。 |
 | `warehouse_v2` Map Pose calibration | Three independent Isaac + ROS cold starts explicitly enabled Ideal Pose Graph localization, loaded both v2 map representations and measured `map -> base_link = [0.000, -0.000, 0.000°]` at USD `[4, 0, 0.0635, 0°]`. Each run served one `406 x 611` `/map`; `/map` and `/odom` each had one owner | `3/3` repeatability; no spread at `0.001 m / 0.001°` reported precision, while the source retains conservative `0.05 m / 5°` covariance |
 | `warehouse_v2` default navigation | An Ideal Navigation cold start passed no map arguments to `run_ros.sh`; Map Server loaded `warehouse_v2.yaml` at `406 x 611`, all Nav2 managed nodes activated, and `/map` had one publisher. A goal at `[-5.267, 0.331, 0°]` was deliberately chosen in a cell that is unknown in v1 but free in v2. NavigateToPose succeeded in about 21 s with 0 recoveries; final TF position was `[-5.269, 0.222]` (about `0.109 m` position error) | default-version selection and navigation into the v2-only mapped area verified in one cold-start smoke; not a repeated complex-route batch |
 | Localization + Ground Truth | The saved Pose Graph loaded in multiple Ideal sessions and one Realistic session. All 13 final runs passed the runner's post-reset map/base alignment and GT freshness gates | Ideal/Realistic runtime alignment exercised; three independent cold starts per mode with quantified pose spread remain pending |

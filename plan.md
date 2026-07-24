@@ -36,13 +36,13 @@ PROJECT_ROOT=/home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 | 3 `/clock` | 已实现 | RTF/频率/消息年龄已由 Profiler 实测 | 长时间压力运行 |
 | 4 TF 与 Ideal Odom | 已实现 | Ideal 导航、Reset、TF freshness 已运行 | 计划中的全部长时统计矩阵 |
 | 5 LiDAR 与 `/scan` | 已实现 | 正常扫描及丢包/暂停/错误 Frame 故障矩阵已运行 | 更广传感器噪声与遮挡矩阵 |
-| 6 SLAM/Localization | 已实现 | `warehouse_v1` 建图工件、Localization、Manifest 校验可用 | 真实变化场景的 `warehouse_v2` 尚未制作 |
+| 6 SLAM/Localization | 已实现 | `warehouse_new` 建图工件、Localization、Manifest 校验可用 | 历史 Warehouse 工件已移除；新场景变化仍须重新建图并标定 |
 | 7 Nav2 | 已实现 | 1 m/3 m smoke、MPPI 10/15 Hz 参数矩阵和真实局部轨迹已运行 | 多终点、多布局的完整统计 |
 | 8 Ground Truth | 已实现 | smoke 报告已记录终点误差与 GT 路径 | 200 次统计验收 |
 | 9 Realistic Odom | 已实现 | 已有 Realistic 静态 smoke，`/odom` 唯一发布者已检查 | 更复杂滑移/噪声矩阵 |
 | 10 动态避障 | 已实现基线 | 当前固定世界的 4-seed 基线为 4/4 | 不能外推为多类障碍 90% 广义避障率 |
 | 11 自动实验 | 已实现框架 | Reset、场景契约和 smoke 批次可重复运行 | 完整 200 次矩阵未执行 |
-| 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 没有真实 `warehouse_v2`，未证明 changed-region 时间改善 ≥30% |
+| 12 增量地图 | 工作流与比较器已实现 | Manifest、未标定 `auto` 拒绝及 `rviz` 路径由临时夹具验证 | 当前没有第二套已分发地图，未证明 changed-region 时间改善 ≥30% |
 | 13 自定义机器人 | 仅迁移模板 | 配置入口和 fail-fast 契约有自动测试 | 没有真实自定义 USD，不能声称完成迁移 |
 
 Camera 的 `monitoring` 与 `high_quality` 已完成 headless 发布采样；前向画面、非镜像/非倒置、无大面积自遮挡和转弯后的视角变化已通过实际截图目视确认，集成 RViz 已实际运行。`standard` profile 尚无独立实机性能报告，完整 GUI 人因/布局验收也没有用一次启动替代。详细矩阵、数字和限制见 [`docs/runtime_reliability_and_performance_upgrade_plan.md`](docs/runtime_reliability_and_performance_upgrade_plan.md) 与 [`docs/verification.md`](docs/verification.md)。

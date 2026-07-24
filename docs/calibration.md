@@ -2,7 +2,7 @@
 
 本文说明如何标定 Isaac USD 世界中的固定出生位姿与 ROS 保存地图中的 Map
 位姿。本分支日常 Ideal 导航默认使用酷家乐 `warehouse_new`；`warehouse_v1` 和
-`warehouse_v2` 的记录保留用于 Warehouse 历史复现，不是本分支的默认运行入口。
+`warehouse_v2` 只保留历史文字记录，其地图工件已从仓库移除，不是本分支的运行入口。
 
 > 文档状态：当前标定流程 + Warehouse 历史测量记录。当前可执行组合以
 > `data/maps/manifests/warehouse_new.yaml`、其场景专用出生点文件和
@@ -67,8 +67,7 @@ spread 均为 0。`/map` 只有 `map_server` 一个发布者，`/odom` 只有 Is
 Ideal Odometry 一个发布者。最终仍保留 `0.05 m / 5°` 的保守初始不确定度，
 不把有限输出精度下的零 spread 当作零测量误差。
 
-标定和工件完整性记录在
-[`data/maps/manifests/warehouse_v2.yaml`](../data/maps/manifests/warehouse_v2.yaml)。
+该历史 v2 Manifest 和四个地图工件已不再随仓库分发；本节仅保留当时的标定记录。
 
 ## 3. 为什么标定时要显式启用 Pose Graph
 

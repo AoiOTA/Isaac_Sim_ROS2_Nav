@@ -126,16 +126,19 @@ def _calibrate_manifest(path: Path, pose_name: str = "mapping_start") -> str:
     return bundle
 
 
-def test_repository_warehouse_v1_bundle_and_auto_pose_are_exactly_bound():
-    manifest_path = REPOSITORY_ROOT / "data/maps/manifests/warehouse_v1.yaml"
+def test_repository_warehouse_new_bundle_and_auto_pose_are_exactly_bound():
+    manifest_path = REPOSITORY_ROOT / "data/maps/manifests/warehouse_new.yaml"
     manifest = load_map_manifest(manifest_path, project_root=REPOSITORY_ROOT)
-    assert manifest.map_version == "warehouse_v1"
+    assert manifest.map_version == "warehouse_new"
     assert len(manifest.artifacts) == 4
     assert manifest.calibration.calibrated is True
     validate_initial_pose_contract(
         manifest,
         initial_pose_source="auto",
-        spawn_poses_file=REPOSITORY_ROOT / "isaac_sim/configs/spawn_poses.yaml",
+        spawn_poses_file=(
+            REPOSITORY_ROOT
+            / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml"
+        ),
         spawn_pose_name="mapping_start",
     )
 
