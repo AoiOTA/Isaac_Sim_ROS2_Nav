@@ -1,6 +1,6 @@
 # Isaac Sim 6.0.1 + ROS 2 Jazzy：酷家乐 RGB-D 导航
 
-https://github.com/user-attachments/assets/c04fb3ac-ffc2-43b8-bfbb-710f01e03c5c
+https://github.com/user-attachments/assets/4b83405f-be85-41e3-9f3e-a8224a30b06d
 
 本分支提供 Clearpath Jackal 在酷家乐室内场景中的 Isaac Sim 导航闭环：二维
 LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README、使用手册和
