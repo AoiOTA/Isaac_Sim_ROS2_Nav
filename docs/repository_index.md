@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 329 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 319 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -23,7 +23,7 @@
 | 文件 | 用途 |
 | --- | --- |
 | `.gitattributes` | 定义 Git LFS 规则；当前把 SLAM Toolbox `.posegraph` 作为 LFS 大文件管理。 |
-| `.gitignore` | 排除构建目录、缓存、日志、官方资产、rosbag、批量结果和普通生成地图，同时放行本分支 `warehouse_new` 与历史 Warehouse 精选地图。 |
+| `.gitignore` | 排除构建目录、缓存、日志、官方资产、rosbag、批量结果和普通生成地图，只放行本分支的 `warehouse_new` 地图 bundle。 |
 | `CONTRIBUTING.md` | 代码贡献、分支、提交消息、验证和数据管理约定。 |
 | `LICENSE` | 项目源码的 Apache-2.0 许可证文本。 |
 | `README.md` | GitHub 首页：项目能力、运行入口、验证状态以及主要文档导航。 |
@@ -41,7 +41,7 @@
 | `docs/skid_steer_navigation_solution.md` | Jackal 直行正常但导航转弯困难的专项复盘：原始症状、证据化根因、分层修复、Ideal 复杂路线结果和适用边界。 |
 | `docs/kujiale_usd_navigation_postmortem_20260717.md` | 2026-07-17 酷家乐 USD 导航复盘：对比官方 Warehouse，记录材质、Stage、RTX/TF、建图标定、窄空间 MPPI、RViz 和剩余边界。 |
 | `docs/interfaces.md` | 运行时权威契约：模式配对、Topic、Message、QoS、TF 所有权、Reset 和 Nav2 激活门。 |
-| `docs/calibration.md` | 当前 `warehouse_new` 的 Map/USD 标定流程，以及 Warehouse 历史 v2 测量记录、版本化和动态障碍坐标重对齐流程。 |
+| `docs/calibration.md` | 当前 `warehouse_new` 的 Map/USD 标定流程，以及不随仓库分发工件的 Warehouse 历史测量记录、版本化和动态障碍坐标重对齐流程。 |
 | `docs/verification.md` | 证据台账：已通过的运行/测试结果、已知 Nav2 诊断以及尚未验收的范围。 |
 | `docs/development.md` | 开发环境、调试命令、测试方式、运行探针和提交/数据纪律。 |
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
@@ -59,22 +59,11 @@
 | `data/metrics/.gitkeep` | 保留聚合指标输出目录。 |
 | `data/reports/.gitkeep` | 保留分析报告、比较结果和图表输出目录。 |
 | `data/trajectories/.gitkeep` | 保留估计轨迹与 Ground Truth 轨迹输出目录。 |
-| `data/maps/manifests/warehouse_v1.yaml` | 历史不完整 v1 的来源、尺寸、SHA256、坐标原点和旧标定记录。 |
-| `data/maps/manifests/warehouse_v2.yaml` | 官方 Warehouse 历史复现的完整地图 bundle；当前酷家乐启动不会默认选择它。 |
 | `data/maps/manifests/warehouse_new.yaml` | 酷家乐分支默认地图的四件套完整性、`154×248` 栅格、坐标原点和三次 Ideal 扫描配准标定证据。 |
 | `data/maps/occupancy/.gitkeep` | 保留 OccupancyGrid 目录。 |
-| `data/maps/occupancy/warehouse_v1.yaml` | 历史不完整 v1 的 ROS Map Server 元数据。 |
-| `data/maps/occupancy/warehouse_v1.pgm` | 历史不完整 v1 的二值/三值占据栅格图，用于旧结果复现。 |
-| `data/maps/occupancy/warehouse_v1_preview.png` | 方便人工浏览地图的预览图，不参与导航。 |
-| `data/maps/occupancy/warehouse_v2.yaml` | 官方 Warehouse 历史 OccupancyGrid 元数据；不是当前默认导航地图。 |
-| `data/maps/occupancy/warehouse_v2.pgm` | 官方 Warehouse 历史 `406×611` 二值/三值栅格，用于复现旧记录。 |
 | `data/maps/occupancy/warehouse_new.yaml` | 酷家乐默认 OccupancyGrid 元数据。 |
 | `data/maps/occupancy/warehouse_new.pgm` | 酷家乐房间 `154×248 @ 0.05 m` 占据栅格。 |
 | `data/maps/posegraphs/.gitkeep` | 保留 SLAM Toolbox 序列化地图目录。 |
-| `data/maps/posegraphs/warehouse_v1.posegraph` | Git LFS 管理的历史 v1 SLAM Toolbox Pose Graph。 |
-| `data/maps/posegraphs/warehouse_v1.data` | 与历史 v1 `.posegraph` 配套的序列化数据。 |
-| `data/maps/posegraphs/warehouse_v2.posegraph` | Git LFS 管理的完整仓库 v2 Pose Graph；Realistic 定位和显式 Ideal 标定加载它。 |
-| `data/maps/posegraphs/warehouse_v2.data` | 与 v2 `.posegraph` 不可拆分的序列化传感器/数据文件。 |
 | `data/maps/posegraphs/warehouse_new.posegraph` | Git LFS 管理的酷家乐建图序列化工件；当前只作为 Ideal 建图来源记录。 |
 | `data/maps/posegraphs/warehouse_new.data` | 与 `warehouse_new.posegraph` 配套的扫描数据。 |
 

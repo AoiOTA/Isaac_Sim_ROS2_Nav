@@ -16,7 +16,7 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 
 `warehouse_new` 仅用于普通 Ideal Localization/Navigation；用 `realistic` 或
 `posegraph_calibration:=true` 启动该地图会被 `run_ros.sh` 拒绝。Warehouse 的旧
-地图、旧实验和历史调参不属于本分支的运行入口，见
+地图工件不再随仓库分发；旧实验和历史调参不属于本分支的运行入口，见
 [`docs/documentation_status.md`](docs/documentation_status.md)。
 
 ## 长距离重设计状态
