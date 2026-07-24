@@ -236,9 +236,9 @@ S/G1 -> G2 -> G3 -> G4 -> G5 -> G1
 - 障碍完成交互后是否在安全终点停放并保持实体；
 - 第三人称相机持续跟随机器人，能够同时看到机器人、障碍和前方通道。
 
-### 7.4 RViz 专用布局
+### 7.4 RViz 标准导航布局
 
-计划新增 `dynamic_avoidance.rviz`，默认显示：
+使用标准 `navigation.rviz`，默认显示：
 
 - `warehouse_new` 地图；
 - RobotModel、TF、LaserScan；
@@ -412,7 +412,7 @@ MCAP 最终交付至少保留：
 
 ### 阶段 C：单轮可视化
 
-- 新增 Marker 发布器和 `dynamic_avoidance.rviz`；
+- 在标准 `navigation.rviz` 增加 Marker 发布器显示；
 - 新增单轮可视化脚本；
 - 验证四类 nominal case 均能在 Isaac 和 RViz 中完整观察。
 
@@ -449,7 +449,7 @@ MCAP 最终交付至少保留：
 ./scripts/run_kujiale_dynamic_visual.sh --case crossing --variant 1 --seed 7401
 ```
 
-在 RViz 中加载 `ros2_ws/src/robot_description/rviz/dynamic_avoidance.rviz`。该配置只显示 MPPI 最优轨迹（不显示候选轨迹），并订阅 `/experiment/dynamic_obstacles/markers` 显示 actor、状态文本、预测路线和最短距离线。它不构成正式验收。
+使用 `./scripts/run_ros.sh navigation` 自动启动的 `navigation.rviz`。该配置只显示 MPPI 最优轨迹（不显示候选轨迹），并订阅 `/experiment/dynamic_obstacles/markers` 显示 actor、状态文本、预测路线和最短距离线。它不构成正式验收。
 
 正式验收前，请以启用动态障碍物的 Isaac 实例、`warehouse_new` 地图、`long_route_start_g1` 和 Ideal 里程计启动导航栈；然后由你执行第 10 节脚本。报告会生成 `summary.json`、`runs.csv`、`success_overview.png` 和 `index.html`；每轮原始证据位于 `data/experiment_runs/kujiale_dynamic_<CAMPAIGN_ID>/`。
 
