@@ -6,7 +6,7 @@
 
 - 场景：`kujiale_0026_A_to_B_door_open.usd`，出生点 `long_route_start_g1`。
 - Case：`local_bypass`，`variant=3`，`seed=7443`。
-- Actor：`0.40 × 0.40 × 1.00 m`，轨迹 `[-1.65,-0.20] -> [-0.85,-0.20]`，峰值速度 `0.80 m/s`、最大加速度 `1.60 m/s²`，到点后保持 `parked`。
+- Actor：`0.40 × 0.40 × 1.00 m`，轨迹 `[-1.65,-0.20] -> [-0.95,-0.20]`，峰值速度 `0.80 m/s`、最大加速度 `1.60 m/s²`，到点后保持 `parked`。
 - 触发门：机器人在 `x∈[-0.70,0.30]` 内北向越过 `y=-1.75`，且速度不低于 `0.20 m/s`。
 - 导航：动态 `dynamic_avoidance` profile 使用 MPPI 15 Hz、30 步、`model_dt=1/15 s`、500 条采样、Velocity Smoother 60 Hz、`vx_max=1.20 m/s` 与 `wz_max=3.40 rad/s`。静态 `stable` profile 则严格保留静态 20 轮基线：MPPI 10 Hz、20 步、`model_dt=0.10 s`、700 条采样、Velocity Smoother 20 Hz、`vx_max=0.75 m/s` 与 `wz_max=1.35 rad/s`。两者都保持 2.0 s 预测范围，但不是同一组控制参数。
 
