@@ -80,64 +80,37 @@ python3 scripts/generate_kujiale_long_route_maps.py
 - 启动前校验ROS环境、地图/场景哈希、话题、TF、Nav2配置及可用空间；小于`120 GiB`时拒绝开始。
 - 静态阶段与动态阶段之间必须重启 Isaac/Nav2；正式80轮期间禁止调参。
 
-以下是实际运行入口。先重新构建ROS工作区，使新增运行器、配置和报告命令进入 `install/`：
+以下是推荐的实际运行入口。单命令监督器会重新构建ROS工作区、启动静态 Isaac/Nav2、
+完成静态 pilot 和40轮、先关闭 Nav2 再关闭 Isaac、启动新的动态栈、完成动态 pilot 和40轮，
+最后自动生成报告；不需要另开终端或手动切换：
 
 ```bash
 cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-./scripts/build_ros2.sh
-export CAMPAIGN_ID="$(date +%Y%m%d-%H%M%S)"
-
-# 终端 A：静态 Isaac
-./scripts/run_kujiale_4x20_isaac.sh static --headless
+./scripts/run_kujiale_4x20_all.sh
 ```
+
+省略 ID 时脚本自动创建 `YYYYMMDD-HHMMSS`。要固定 ID：
 
 ```bash
-# 终端 B：静态 Nav2；等待 lifecycle 激活完成
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=stable interactive:=false use_rviz:=false
+./scripts/run_kujiale_4x20_all.sh 20260725-120000
 ```
+
+每个阶段会等待 `preflight` 校验磁盘、地图/场景哈希、ROS话题、TF和实际 Nav2 profile；
+Isaac 或 Nav2 在启动超时（默认900秒）前退出时，监督器会失败并指出对应日志。日志保存在
+`data/experiment_runs/kujiale_4x20_<campaign_id>/orchestrator/`。每种模式的 `pilot` 都运行矩阵中
+首个外观变化轮次；pilot 仅验证环境和证据，最终报告自动排除它并始终只统计80轮。
+
+中断后，保留同一 ID 运行：
 
 ```bash
-# 终端 C：设置本次唯一ID，静态 Pilot 后执行正式40轮（静态基准20＋静态外观20）
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-export CAMPAIGN_ID="$(date +%Y%m%d-%H%M%S)"
-./scripts/run_kujiale_4x20.sh preflight static
-./scripts/run_kujiale_4x20.sh pilot static "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh static-pair "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20_all.sh 20260725-120000 --resume
 ```
 
-在终端B、A依次按 Ctrl+C 有序结束静态栈；不要复用静态进程。随后启动新的动态栈：
+完整且校验通过的正式轮次会跳过，不完整目录仍隔离保留。已经生成报告的 ID 不允许覆盖，请使用新 ID。
+如果刚完成构建，可加 `--skip-build`；必要时可用 `--startup-timeout-sec 1200` 调整每阶段启动等待上限。
 
-```bash
-# 终端 A：动态 Isaac
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-./scripts/run_kujiale_4x20_isaac.sh dynamic --headless
-```
-
-```bash
-# 终端 B：动态 Nav2（需要已安装 Jazzy STVL）
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance interactive:=false use_rviz:=false
-```
-
-```bash
-# 终端 C：动态 Pilot 后执行正式40轮（动态基准20＋动态外观20）并自动生成报告
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-# 保留静态阶段使用的同一个 CAMPAIGN_ID；若是新终端，请填入静态阶段打印的值。
-export CAMPAIGN_ID="<静态阶段的CAMPAIGN_ID>"
-./scripts/run_kujiale_4x20.sh preflight dynamic
-./scripts/run_kujiale_4x20.sh pilot dynamic "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh dynamic-pair "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh status "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh report "$CAMPAIGN_ID"
-```
-
-每种模式的 `pilot` 都运行矩阵中首个外观变化轮次。中断后只可使用同一ID加 `--resume` 重启对应正式阶段；完整且校验通过的轮次会跳过，其他轮次会移入 `.incomplete-*` 隔离目录后重跑：
-
-```bash
-./scripts/run_kujiale_4x20.sh static-pair "$CAMPAIGN_ID" --resume
-./scripts/run_kujiale_4x20.sh dynamic-pair "$CAMPAIGN_ID" --resume
-```
+`run_kujiale_4x20_isaac.sh`、`run_ros.sh` 和 `run_kujiale_4x20.sh` 的分开调用仍可用于人工观察或单阶段
+调试，但不再是正式批次的推荐入口。
 
 ## 5. 自动报告与校验
 

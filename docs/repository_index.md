@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 350 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 351 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -84,6 +84,7 @@
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
 | `scripts/run_kujiale_4x20_isaac.sh` | 4×20静态或动态阶段的唯一 Isaac 启动器；启用GT、固定场景/出生点/RGB-D、物理障碍和外观配置。 |
 | `scripts/run_kujiale_4x20.sh` | 4×20用户控制器：预检、pilot、静态/动态40轮、断点续跑、状态与最终报告；不自行启动Isaac/Nav2。 |
+| `scripts/run_kujiale_4x20_all.sh` | 当前推荐的一键4×20监督器：自动构建、启动/预检静态栈、运行40轮、有序切换动态栈、运行40轮并生成报告；中断可用同一ID断点续跑。 |
 | `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：从 G1 出生并自动发送 G2、G3、G4、G5、G1，关闭 MCAP、结构化证据和项目输出目录创建。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |

@@ -8,9 +8,10 @@
 （`batch_size=700`、`controller_frequency=10.0`）；动态必须为 `dynamic_avoidance`
 （`batch_size=500`、`controller_frequency=15.0`）。
 
-不要绕过失败的预检。确认 Terminal A 使用 `run_kujiale_4x20_isaac.sh static|dynamic`，Terminal B
-使用对应 `nav2_profile` 且 Nav2 lifecycle 已激活。静态和动态阶段之间须重启两套栈。正式阶段中断后用
-同一 campaign ID 加 `--resume`；不要删除不完整证据目录。完整三终端顺序见
+不要绕过失败的预检。推荐使用 `run_kujiale_4x20_all.sh`；它会管理 Isaac/Nav2 的启动、等待、
+静态/动态切换和有序关闭。正式阶段中断后用同一 campaign ID 加 `--resume`；不要删除不完整证据目录。
+若改为手工诊断，确认 Isaac 使用 `run_kujiale_4x20_isaac.sh static|dynamic`、Nav2 使用对应 profile
+且 lifecycle 已激活。完整运行顺序见
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
 本文按“看到什么现象”组织排查步骤。日常操作先看 [`user_manual.md`](user_manual.md)，接口唯一所有权以 [`interfaces.md`](interfaces.md) 为准，已验证边界以 [`verification.md`](verification.md) 为准。
