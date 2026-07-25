@@ -23,6 +23,7 @@
 - Nav2 有两套明确 profile：默认 `stable` 完整复现静态 20 轮基线（Local + Global 标准 `VoxelLayer`）；`dynamic_avoidance` 使用 Local STVL 时序清除且 Global Costmap 不接收 RGB-D，避免移动 actor 留下全局残影；Collision Monitor 两套 profile 均只使用 `/scan`；
 - 三阶段动态可视化的现行入口是 `run_kujiale_dynamic_isaac.sh`、`run_kujiale_three_stage_visual.sh` 与 `nav2_profile:=dynamic_avoidance`。G1→G2、G2→G3、G5→G1 分别使用独立 actor，成功到达下一航点后才退役；
 - 当前正式操作入口是 `run_kujiale_4x20_all.sh`：一条命令自动管理静态/动态两套栈、四组各20轮、报告和`--resume`。匿名 USD Session Layer、成对调度、预检和报告均已实现；当前尚未执行该80轮，因此不能宣称四组中的任一组通过或算法已达到90%。
+- 单轮 GUI/RViz 诊断提供静态/动态自动完整 G2–G5–G1 路线；它们均不计入4×20证据。
 - 历史静态候选批次 `kujiale_long_route_static_20260723-194416` 的静态严格成功、物理无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`；它是旧的无外观变化静态证据，不能替代4×20结果。
 - 旧全屋批次 `kujiale_long_route_20260722-171828` 使用 `mapping_start`、G1–G8 和旧障碍布局，只能作为历史证据，不能替代当前候选布局的结论。
 
