@@ -413,7 +413,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/optimal_path.py` | 读取 OccupancyGrid YAML/PGM、按机器人净空膨胀障碍，并用禁止斜穿墙角的 8 邻域 A* 计算理论最短路。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/navigation_benchmark.py` | 汇总静态/动态 manifest，验收 95%/90% 成功率和成功静态路线相对理论最短路不超过 20% 的偏差。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema 校验、配置 SHA256，以及单轮 CSV/JSON 报告的原子写入。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 按 full/static/dynamic 范围读取80或40轮证据，校验分组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 按 full/static/dynamic 范围读取80或40轮证据，校验分组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告及可筛选的逐轮 GT 路径地图叠加图。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_benchmark.py` | 使用 Ground Truth 自动执行并验收底盘运动原语、曲率、误差和转向反向延迟。 |

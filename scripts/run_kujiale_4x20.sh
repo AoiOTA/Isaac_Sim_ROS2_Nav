@@ -16,8 +16,8 @@ usage:
   run_kujiale_4x20.sh dynamic-pair CAMPAIGN_ID [--resume]
   run_kujiale_4x20.sh status CAMPAIGN_ID
   run_kujiale_4x20.sh static-status|dynamic-status CAMPAIGN_ID
-  run_kujiale_4x20.sh report CAMPAIGN_ID
-  run_kujiale_4x20.sh static-report|dynamic-report CAMPAIGN_ID
+  run_kujiale_4x20.sh report CAMPAIGN_ID [--replace]
+  run_kujiale_4x20.sh static-report|dynamic-report CAMPAIGN_ID [--replace]
 USAGE
 }
 
@@ -33,6 +33,12 @@ parse_resume() {
   local value="${1:-}"
   [[ -z "${value}" || "${value}" == "--resume" ]] || die "expected optional --resume"
   [[ "${value}" == "--resume" ]] && printf 'true' || printf 'false'
+}
+
+parse_replace() {
+  local value="${1:-}"
+  [[ -z "${value}" || "${value}" == "--replace" ]] || die "expected optional --replace"
+  [[ "${value}" == "--replace" ]] && printf 'true' || printf 'false'
 }
 
 preflight() {
@@ -175,8 +181,8 @@ case "${command_name}" in
     PYTHONPATH="${PROJECT_ROOT}/ros2_ws/src/robot_experiments${PYTHONPATH:+:${PYTHONPATH}}" "${arguments[@]}"
     ;;
   report|static-report|dynamic-report)
-    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
-    campaign_id="$1"; require_campaign_id "${campaign_id}"; source_ros --require-workspace
+    [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
+    campaign_id="$1"; replace_output="$(parse_replace "${2:-}")"; require_campaign_id "${campaign_id}"; source_ros --require-workspace
     run_root="${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}"
     report_root="${PROJECT_ROOT}/data/reports/kujiale_4x20_${campaign_id}"
     scope="full"
@@ -186,7 +192,7 @@ case "${command_name}" in
     elif [[ "${command_name}" == "dynamic-report" ]]; then
       scope="dynamic"; output_directory="${report_root}/dynamic_2x20"
     fi
-    if [[ -e "${output_directory}" ]]; then
+    if [[ -e "${output_directory}" && "${replace_output}" == false ]]; then
       if [[ "${scope}" != "full" ]]; then
         die "refusing to overwrite existing report: ${output_directory}"
       fi
@@ -196,9 +202,9 @@ case "${command_name}" in
           || die "refusing to overwrite existing report: ${output_directory}"
       done
     fi
-    PYTHONPATH="${PROJECT_ROOT}/ros2_ws/src/robot_experiments${PYTHONPATH:+:${PYTHONPATH}}" \
-      python3 -m robot_experiments.kujiale_4x20_campaign \
-      --run-root "${run_root}" --scope "${scope}" --output-directory "${output_directory}"
+    arguments=(python3 -m robot_experiments.kujiale_4x20_campaign --run-root "${run_root}" --scope "${scope}" --output-directory "${output_directory}")
+    [[ "${replace_output}" == true ]] && arguments+=(--replace-output)
+    PYTHONPATH="${PROJECT_ROOT}/ros2_ws/src/robot_experiments${PYTHONPATH:+:${PYTHONPATH}}" "${arguments[@]}"
     ;;
   *) usage >&2; exit 2 ;;
 esac
