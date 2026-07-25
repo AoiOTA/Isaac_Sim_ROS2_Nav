@@ -1,4 +1,5 @@
 import math
+from collections import Counter, defaultdict
 from pathlib import Path
 
 import pytest
@@ -65,7 +66,7 @@ def test_scenario_accepts_per_run_appearance_profiles_only_with_the_appearance_c
     scenario["configs"]["appearance"] = "kujiale_appearance_profiles.yaml"
     scenario["runs"] = {
         "matrix": [
-            {"seed": 8801, "case_id": "static", "variant_id": "v1", "appearance_profile_id": "dim_warm"},
+            {"seed": 8801, "case_id": "static", "variant_id": "v1", "appearance_profile_id": "dim_warm", "condition_id": "static_appearance"},
         ],
         "timeout_sec": 600.0,
         "leg_timeout_sec": 180.0,
@@ -75,6 +76,7 @@ def test_scenario_accepts_per_run_appearance_profiles_only_with_the_appearance_c
     loaded = load_scenario(target)
     assert loaded.appearance_config_file == "kujiale_appearance_profiles.yaml"
     assert loaded.run_matrix[0].appearance_profile_id == "dim_warm"
+    assert loaded.run_matrix[0].condition_id == "static_appearance"
 
     del scenario["runs"]["matrix"][0]["appearance_profile_id"]
     target.write_text(yaml.safe_dump(document), encoding="utf-8")
@@ -97,6 +99,7 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         "kujiale_dynamic_visual.yaml",
         "kujiale_dynamic_visual_g2_g3.yaml",
         "kujiale_dynamic_visual_g5_g1.yaml",
+        "kujiale_4x20_dynamic_pair.yaml",
     ):
         scenario = load_scenario(CONFIG / filename)
         spawn_file = (
@@ -112,6 +115,50 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
             spawn_pose,
             scenario.resolve_path(scenario.dynamic_config_file),
         )
+
+
+def test_4x20_static_and_dynamic_pairs_are_balanced_and_seed_paired():
+    static = load_scenario(CONFIG / "kujiale_4x20_static_pair.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_4x20_dynamic_pair.yaml")
+    for scenario, baseline, varied in (
+        (static, "static_baseline", "static_appearance"),
+        (dynamic, "dynamic_baseline", "dynamic_appearance"),
+    ):
+        assert len(scenario.run_matrix) == 40
+        by_condition = Counter(item.condition_id for item in scenario.run_matrix)
+        assert by_condition == Counter({baseline: 20, varied: 20})
+        pairs = defaultdict(list)
+        for item in scenario.run_matrix:
+            pairs[item.seed].append(item)
+        assert len(pairs) == 20
+        assert all(len(items) == 2 for items in pairs.values())
+        assert all(
+            {item.condition_id for item in items} == {baseline, varied}
+            for items in pairs.values()
+        )
+        assert all(
+            item.appearance_profile_id == "baseline"
+            for item in scenario.run_matrix
+            if item.condition_id == baseline
+        )
+        assert Counter(
+            item.appearance_profile_id
+            for item in scenario.run_matrix
+            if item.condition_id == varied
+        ) == Counter({"dim_warm": 5, "dim_cool": 5, "bright_warm": 5, "bright_cool": 5})
+
+    profiles_by_variant = defaultdict(set)
+    variants = Counter()
+    for item in dynamic.run_matrix:
+        if item.condition_id == "dynamic_appearance":
+            profiles_by_variant[item.variant_id].add(item.appearance_profile_id)
+        if item.condition_id == "dynamic_baseline":
+            variants[item.variant_id] += 1
+    assert variants == Counter({"v1": 4, "v2": 4, "v3": 4, "v4": 4, "v5": 4})
+    assert all(
+        profiles == {"dim_warm", "dim_cool", "bright_warm", "bright_cool"}
+        for profiles in profiles_by_variant.values()
+    )
 
 
 def test_kujiale_dynamic_visual_is_one_controlled_g1_to_g2_observation():

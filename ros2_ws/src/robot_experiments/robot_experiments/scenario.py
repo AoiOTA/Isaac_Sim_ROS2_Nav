@@ -78,6 +78,7 @@ class RunSelection:
     case_id: str | None = None
     variant_id: str | None = None
     appearance_profile_id: str | None = None
+    condition_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -177,7 +178,7 @@ def _parse_run_matrix(runs: Mapping[str, Any]) -> tuple[RunSelection, ...]:
     keys: set[tuple[int, str, str]] = set()
     for index, value in enumerate(raw):
         row = require_mapping(value, f"scenario.runs.matrix[{index}]")
-        _reject_unknown(row, {"seed", "case_id", "variant_id", "appearance_profile_id"}, f"scenario.runs.matrix[{index}]")
+        _reject_unknown(row, {"seed", "case_id", "variant_id", "appearance_profile_id", "condition_id"}, f"scenario.runs.matrix[{index}]")
         seed = row.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ConfigurationError(f"scenario.runs.matrix[{index}].seed must be non-negative integer")
@@ -189,9 +190,16 @@ def _parse_run_matrix(runs: Mapping[str, Any]) -> tuple[RunSelection, ...]:
                 appearance_profile,
                 f"scenario.runs.matrix[{index}].appearance_profile_id",
             )
-        key = seed, case_id, variant_id
+        condition_id = row.get("condition_id")
+        if condition_id is not None:
+            condition_id = require_string(
+                condition_id, f"scenario.runs.matrix[{index}].condition_id"
+            )
+        key = seed, case_id, variant_id, condition_id
         if key in keys: raise ConfigurationError("scenario.runs.matrix must not contain duplicate rows")
-        keys.add(key); rows.append(RunSelection(seed, case_id, variant_id, appearance_profile))
+        keys.add(key); rows.append(
+            RunSelection(seed, case_id, variant_id, appearance_profile, condition_id)
+        )
     return tuple(rows)
 
 
@@ -895,10 +903,11 @@ def load_scenario(path: str | Path) -> Scenario:
 
     run_matrix = _parse_run_matrix(runs)
     if appearance_config_file is not None and any(
-        item.appearance_profile_id is None for item in run_matrix
+        item.appearance_profile_id is None or item.condition_id is None
+        for item in run_matrix
     ):
         raise ConfigurationError(
-            "scenarios with scenario.configs.appearance require appearance_profile_id for every run matrix row"
+            "scenarios with scenario.configs.appearance require appearance_profile_id and condition_id for every run matrix row"
         )
     return Scenario(
         scenario_id=scenario_id,

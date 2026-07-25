@@ -1,0 +1,84 @@
+# 40 paired executions: 20 static baselines and 20 fixed-appearance trials.
+# Odd seed pairs are AB, even seed pairs are BA to control run-order bias.
+schema_version: 1
+scenario:
+  id: kujiale_4x20_static_pair
+  type: static
+  spawn_pose_name: long_route_start_g1
+  map_version: warehouse_new
+  posegraph_version: warehouse_new
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/kujiale_long_range_static.yaml
+    optimal_reference: optimal_reference.json
+    appearance: ../../../../isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml
+  simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
+  runs:
+    matrix:
+      - {seed: 7201, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7201, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 7202, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 7202, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7203, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7203, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 7204, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 7204, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7205, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7205, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 7206, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 7206, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7207, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7207, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 7208, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 7208, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7209, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7209, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 7210, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 7210, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7211, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7211, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 7212, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 7212, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7213, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7213, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 7214, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 7214, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7215, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7215, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 7216, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 7216, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7217, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7217, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 7218, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 7218, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7219, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 7219, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 7220, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 7220, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+    timeout_sec: 600.0
+    leg_timeout_sec: 180.0
+  goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
+  route:
+    - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -160.0, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-2.20, 3.25], yaw_deg: -105.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-3.00, -0.45], yaw_deg: -68.0, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-2.20, -2.95], yaw_deg: -42.0, require_orientation: true}
+    - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 20.0
+    require_safety_observations: true
+    minimum_ground_truth_path_length_m: 20.0
+    minimum_reverse_distance_m: 0.0
+    maximum_reverse_distance_fraction: 1.0
+    minimum_curved_distance_fraction: 0.0
+    maximum_stopped_time_fraction: 1.0
+  obstacles:
+    layout_id: kujiale_rgbd_low_obstacles_v6_draft_20260723_133702
+    static: [{id: rgbd_low_box_west}, {id: rgbd_low_box_center}, {id: rgbd_low_box_east}, {id: rgbd_low_box_north}, {id: rgbd_low_bar_east}, {id: rgbd_low_bar_north}]
+    trajectories: []
