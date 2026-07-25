@@ -474,6 +474,8 @@ class ExperimentRunner(Node):
         self._leg_results: list[dict[str, Any]] = []
         self._obstacle_events: list[dict[str, Any]] = []
         self._obstacle_event_keys: set[str] = set()
+        self._pending_dynamic_trail_clear_ids: set[str] = set()
+        self._dynamic_trail_clear_requested_ids: set[str] = set()
         self._obstacle_state: dict[str, Any] = {"obstacles": [], "events": []}
         self._obstacle_samples: list[dict[str, Any]] = []
         self._dynamic_guard_aborted = False
@@ -563,6 +565,40 @@ class ExperimentRunner(Node):
                     self._dynamic_guard_aborted = True
                 if event.get("event") == "safety_yield":
                     self._dynamic_safety_yield = True
+                if event.get("event") == "park" and isinstance(
+                    event.get("obstacle_id"), str
+                ):
+                    self._pending_dynamic_trail_clear_ids.add(
+                        str(event["obstacle_id"])
+                    )
+        self._request_pending_dynamic_trail_clears()
+
+    def _request_pending_dynamic_trail_clears(self) -> None:
+        """Drop only stale sensor history after an actor reaches its park point.
+
+        The physical cube remains enabled and is marked again by the next
+        LiDAR frame.  Clearing both maps at ``park`` removes the swept cells
+        behind it, which scan ray clearing cannot reliably revisit in a narrow
+        corridor with occlusion.  Requests are asynchronous to keep this ROS
+        subscription callback non-blocking.
+        """
+        pending = (
+            self._pending_dynamic_trail_clear_ids
+            - self._dynamic_trail_clear_requested_ids
+        )
+        if not pending or not all(
+            client.service_is_ready() for _, client in self._costmap_clear_clients
+        ):
+            return
+        for obstacle_id in sorted(pending):
+            for _, client in self._costmap_clear_clients:
+                client.call_async(ClearEntireCostmap.Request())
+            self._dynamic_trail_clear_requested_ids.add(obstacle_id)
+            self._obstacle_events.append({
+                "event": "costmap_trail_clear_requested",
+                "obstacle_id": obstacle_id,
+                "simulation_time": self._clock_seconds(),
+            })
 
     def _depth_callback(self, message: Image) -> None:
         # Copy the message bytes: ROS message instances may be reused by the
