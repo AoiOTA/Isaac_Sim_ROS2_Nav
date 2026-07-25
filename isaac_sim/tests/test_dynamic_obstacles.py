@@ -93,24 +93,24 @@ def test_three_stage_case_set_selects_the_ordered_route_interactions():
         "local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor",
     ]
     assert [item.trigger_group for item in selected] == ["G2", "G3", "G1"]
-    assert selected[0].waypoints[-1] == pytest.approx((-0.85, -0.20, 0.50))
+    assert selected[0].waypoints[-1] == pytest.approx((-0.95, -0.20, 0.50))
 
 
-def test_g2_g3_gate_triggers_southbound_at_y_3_0_in_the_narrow_lane():
+def test_g2_g3_gate_triggers_southbound_at_y_2_6_in_the_narrow_lane():
     scenario = load_dynamic_scenario(
         ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
     )
     case = scenario.cases["g2_g3_exit"]
     manager = object.__new__(DynamicObstacleManager)
 
-    assert case.gate.threshold == pytest.approx(3.00)
+    assert case.gate.threshold == pytest.approx(2.60)
     assert manager._gate_passed(
-        case, {"x": -0.40, "y": 2.99, "vy": -0.30, "speed": 0.30}
+        case, {"x": -0.40, "y": 2.59, "vy": -0.30, "speed": 0.30}
     )
     # Do not trigger before crossing the threshold, outside the calibrated
     # lane, or while travelling in the opposite direction.
     assert not manager._gate_passed(
-        case, {"x": -0.40, "y": 3.01, "vy": -0.30, "speed": 0.30}
+        case, {"x": -0.40, "y": 2.61, "vy": -0.30, "speed": 0.30}
     )
     assert not manager._gate_passed(
         case, {"x": -0.60, "y": 2.40, "vy": -0.30, "speed": 0.30}
