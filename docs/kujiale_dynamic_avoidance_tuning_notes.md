@@ -87,6 +87,12 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 
 为严格复现 `codex/kujiale-mppi-feasibility-tuning` 的静态 20 轮基线，`rgbd_low_box_east` 使用原始中心 `[0.366563, 0.667950]`。该坐标同时写入 Isaac 物理场景、GUI 布局草案和实验 campaign；不会改动 `warehouse_new`，静态与动态控制参数也完全不变。
 
+### 9. 4×20 外观 pilot 的局部绕行净距不足
+
+`20260725-173241` 的动态外观 pilot 中，G1→G2 的 `local_bypass` 三段行为、五个导航航点和物理碰撞检查均通过，但 actor 安全记录出现 `safety_yield`。以 Nav2 的实际矩形 footprint（含 `5 mm` shell）复算，最小真实净距约为 `0.0338 m`，低于 campaign 的 `0.10 m` 门槛；不能通过放宽报告规则将该轮判为成功。
+
+处理：不改 actor 的轨迹、尺寸、速度、触发门或变体延迟。仅在 `dynamic_avoidance` overlay 中将 Local Costmap `inflation_radius` 从基础 profile 的 `0.40 m` 提升至 `0.50 m`，为 0.40 m 动态方块建立额外 0.10 m 的 MPPI 代价缓冲。静态 `stable` profile 保持不变。该调整必须重启 Nav2；下次 pilot 仍须检查 `safety_yield`、每个 actor 的 `minimum_clearance_m` 与物理碰撞证据。
+
 ## 复测方法
 
 每次只改变一组参数，并重启与改动层相对应的进程：
