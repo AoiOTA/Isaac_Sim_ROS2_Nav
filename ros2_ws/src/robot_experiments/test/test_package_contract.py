@@ -93,6 +93,9 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert "run_campaign dynamic-pair" in wrapper
     assert wrapper.count("stop_stage") >= 3
     assert '"${SCRIPT_DIR}/run_kujiale_4x20.sh" report "${campaign_id}"' in wrapper
+    assert 'setsid -- "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh"' not in wrapper
+    assert 'setsid -- "${SCRIPT_DIR}/run_ros.sh"' not in wrapper
+    assert "Keep them as direct children so their PIDs remain waitable" in wrapper
 
 
 def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
