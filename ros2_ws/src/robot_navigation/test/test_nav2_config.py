@@ -137,6 +137,7 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert local['publish_frequency'] == 5.0
     assert local['plugins'] == [
         'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
+    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.10
     # Dynamic-only 0.60 m inflation preserves the >=0.10 m actor-clearance
     # campaign gate without modifying actor geometry or trajectories.
     assert local['inflation_layer']['inflation_radius'] == 0.60
