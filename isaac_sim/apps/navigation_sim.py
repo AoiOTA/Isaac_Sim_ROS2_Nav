@@ -34,6 +34,7 @@ from isaac_sim.src.config import (
     load_project_config,
 )
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario
+from isaac_sim.src.experiment.appearance import load_appearance_profiles
 from isaac_sim.src.environment_selection import (
     DEFAULT_ENVIRONMENT_ROOT,
     resolve_environment_usd,
@@ -166,6 +167,18 @@ def _parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="named pose selected from the spawn-pose YAML",
+    )
+    parser.add_argument(
+        "--appearance-config",
+        type=Path,
+        default=PROJECT_ROOT / "isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml",
+        help="fixed appearance-profile YAML applied through an anonymous USD Session Layer",
+    )
+    parser.add_argument(
+        "--appearance-profile",
+        type=str,
+        default="baseline",
+        help="initial appearance profile ID; the runner may switch it between resets",
     )
     return parser
 
@@ -342,6 +355,8 @@ def run(
     selected_pose: object,
     dynamic_scenario: object,
     camera_selection: object,
+    appearance_profiles: object,
+    initial_appearance_profile: str,
 ) -> None:
     configure_process_environment(config)
 
@@ -374,6 +389,7 @@ def run(
     camera_graph_paths: tuple[str, ...] = ()
     node = None
     reset_bridge = None
+    appearance_manager = None
     rclpy_started = False
     failed = False
     try:
@@ -468,6 +484,11 @@ def run(
             str(config.spawn.poses_file),
             read_only,
         )
+
+        from isaac_sim.src.experiment.appearance import AppearanceManager
+
+        appearance_manager = AppearanceManager(stage, appearance_profiles)
+        appearance_manager.bind_ros(node, initial_appearance_profile)
 
         from isaac_sim.src.experiment.collision_monitor import CollisionMonitor
         from isaac_sim.src.experiment.dynamic_obstacles import DynamicObstacleManager
@@ -667,6 +688,7 @@ def run(
             f"dynamic_config={config.files.dynamic_obstacles.name}, "
             f"ground_truth={config.ground_truth.enabled}, "
             f"camera={camera_selection.profile.name}, "
+            f"appearance={appearance_manager.active_profile_id}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"max_frames={max_frames or 'unlimited'}"
@@ -741,6 +763,14 @@ def run(
                     f"warning: failed to close reset bridge cleanly: {exc}",
                     file=sys.stderr,
                 )
+        if appearance_manager is not None:
+            try:
+                appearance_manager.close()
+            except Exception as exc:
+                print(
+                    f"warning: failed to remove appearance session layer cleanly: {exc}",
+                    file=sys.stderr,
+                )
         if node is not None:
             node.destroy_node()
         if rclpy_started:
@@ -755,6 +785,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
+    appearance_config = args.appearance_config.expanduser().resolve()
+    if not appearance_config.is_file():
+        raise ValueError(f"appearance config not found: {appearance_config}")
+    appearance_profiles = load_appearance_profiles(appearance_config)
+    appearance_profiles.require(args.appearance_profile)
     if args.dynamic_obstacle_config is not None:
         obstacle_config = args.dynamic_obstacle_config.expanduser().resolve()
         if not obstacle_config.is_file():
@@ -799,7 +834,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"{calibration})"
         )
         return 0
-    run(config, selected_pose, dynamic_scenario, camera_selection)
+    run(
+        config,
+        selected_pose,
+        dynamic_scenario,
+        camera_selection,
+        appearance_profiles,
+        args.appearance_profile,
+    )
     return 0
 
 

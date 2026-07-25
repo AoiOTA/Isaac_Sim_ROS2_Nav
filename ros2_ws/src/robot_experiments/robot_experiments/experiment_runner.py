@@ -198,6 +198,16 @@ class ExperimentRunner(Node):
                 self._scenario, self._spawn_pose, dynamic_config
             )
             self._dynamic_config_hash = configuration_sha256(dynamic_config)
+        self._appearance_config_hash: str | None = None
+        if self._scenario.appearance_config_file is not None:
+            appearance_config = self._scenario.resolve_path(
+                self._scenario.appearance_config_file
+            )
+            if not appearance_config.is_file():
+                raise ConfigurationError(
+                    f"appearance configuration does not exist: {appearance_config}"
+                )
+            self._appearance_config_hash = configuration_sha256(appearance_config)
         self._optimal_reference: Mapping[str, Any] | None = None
         self._optimal_reference_hash: str | None = None
         if self._scenario.optimal_reference_file is not None:
@@ -352,6 +362,16 @@ class ExperimentRunner(Node):
             self._obstacle_state_callback,
             reliable,
         )
+        self._appearance_state_subscription = self.create_subscription(
+            String,
+            "/experiment/appearance/state",
+            self._appearance_state_callback,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
         # The RGB-D renderer publishes best-effort sensor data.  Keep a
         # latest-frame evidence snapshot in addition to the selected MCAP so
         # every formal run remains reviewable without a ROS player.
@@ -364,6 +384,12 @@ class ExperimentRunner(Node):
             Image,
             "/camera/front/depth/image_raw",
             self._depth_callback,
+            sensor_qos,
+        )
+        self._rgb_subscription = self.create_subscription(
+            Image,
+            "/camera/front/image_raw",
+            self._rgb_callback,
             sensor_qos,
         )
         self._scan_subscription = self.create_subscription(
@@ -443,6 +469,10 @@ class ExperimentRunner(Node):
         self._dynamic_runtime_contract: dict[str, Any] = {
             "verified": False,
         }
+        self._appearance_runtime_contract: dict[str, Any] = {
+            "verified": self._scenario.appearance_config_file is None,
+        }
+        self._appearance_state: dict[str, Any] | None = None
         self._localization_seed_epoch = 0
         self._collision_monitor_active = False
         self._active_evidence_root: Path | None = None
@@ -478,6 +508,8 @@ class ExperimentRunner(Node):
         self._obstacle_samples: list[dict[str, Any]] = []
         self._dynamic_guard_aborted = False
         self._dynamic_safety_yield = False
+        self._rgb_frame: dict[str, Any] | None = None
+        self._appearance_rgb_snapshot_complete = False
         self._depth_frame: dict[str, Any] | None = None
         self._scan_frame: dict[str, Any] | None = None
         self._local_costmap: Costmap | None = None
@@ -563,6 +595,28 @@ class ExperimentRunner(Node):
                     self._dynamic_guard_aborted = True
                 if event.get("event") == "safety_yield":
                     self._dynamic_safety_yield = True
+
+    def _appearance_state_callback(self, message: String) -> None:
+        try:
+            state = json.loads(message.data)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(state, dict):
+            return
+        profile_id = state.get("profile_id")
+        config_hash = state.get("config_sha256")
+        if not isinstance(profile_id, str) or not isinstance(config_hash, str):
+            return
+        self._appearance_state = state
+
+    def _rgb_callback(self, message: Image) -> None:
+        self._rgb_frame = {
+            "width": int(message.width), "height": int(message.height),
+            "encoding": str(message.encoding), "is_bigendian": int(message.is_bigendian),
+            "step": int(message.step),
+            "stamp_s": message.header.stamp.sec + message.header.stamp.nanosec * 1.0e-9,
+            "data": bytes(message.data),
+        }
 
     def _depth_callback(self, message: Image) -> None:
         # Copy the message bytes: ROS message instances may be reused by the
@@ -680,20 +734,27 @@ class ExperimentRunner(Node):
                 return False
         return True
 
-    def _set_reset_seed(self, seed: int, case_id: str | None = None, variant_id: str | None = None) -> None:
+    def _set_reset_seed(
+        self,
+        seed: int,
+        case_id: str | None = None,
+        variant_id: str | None = None,
+        appearance_profile_id: str | None = None,
+    ) -> None:
         if not self._isaac_parameter_client.wait_for_services(
             timeout_sec=self._service_timeout_sec
         ):
             self._raise_if_shutdown()
             raise RuntimeError("Isaac reset parameter services are unavailable")
-        future = self._isaac_parameter_client.set_parameters(
-            [
-                Parameter("reset_seed", value=seed),
-                Parameter("reset_pose_name", value=self._scenario.spawn_pose_name),
-                Parameter("dynamic_case_id", value=case_id or ""),
-                Parameter("dynamic_variant_id", value=variant_id or ""),
-            ]
-        )
+        parameters = [
+            Parameter("reset_seed", value=seed),
+            Parameter("reset_pose_name", value=self._scenario.spawn_pose_name),
+            Parameter("dynamic_case_id", value=case_id or ""),
+            Parameter("dynamic_variant_id", value=variant_id or ""),
+        ]
+        if appearance_profile_id is not None:
+            parameters.append(Parameter("appearance_profile_id", value=appearance_profile_id))
+        future = self._isaac_parameter_client.set_parameters(parameters)
         deadline = time.monotonic() + self._service_timeout_sec
         if not self._wait_future(future, deadline):
             raise TimeoutError("setting deterministic reset parameters timed out")
@@ -703,6 +764,63 @@ class ExperimentRunner(Node):
         failures = [result.reason for result in response.results if not result.successful]
         if failures:
             raise RuntimeError(f"Isaac rejected reset parameters: {failures}")
+        if appearance_profile_id is not None:
+            if not self._wait_until(
+                lambda: self._appearance_state is not None
+                and self._appearance_state.get("profile_id") == appearance_profile_id
+                and self._appearance_state.get("config_sha256")
+                == self._appearance_config_hash,
+                self._service_timeout_sec,
+            ):
+                raise TimeoutError(
+                    "timed out waiting for Isaac to publish the requested appearance profile state"
+                )
+
+    def _verify_appearance_runtime_contract(self) -> None:
+        if self._scenario.appearance_config_file is None:
+            return
+        if not self._isaac_parameter_client.wait_for_services(
+            timeout_sec=self._service_timeout_sec
+        ):
+            self._raise_if_shutdown()
+            raise RuntimeError("Isaac appearance parameter services are unavailable")
+        names = [
+            "appearance_config_sha256",
+            "appearance_inventory_sha256",
+            "appearance_light_count",
+            "appearance_material_color_input_count",
+        ]
+        future = self._isaac_parameter_client.get_parameters(names)
+        if not self._wait_future(
+            future, time.monotonic() + self._service_timeout_sec
+        ):
+            raise TimeoutError("reading Isaac appearance contract timed out")
+        response = future.result()
+        if response is None or len(response.values) != len(names):
+            raise RuntimeError("Isaac returned an incomplete appearance contract")
+        config_hash, inventory_hash, light_count, material_count = (
+            parameter_value_to_python(value) for value in response.values
+        )
+        if config_hash != self._appearance_config_hash:
+            raise RuntimeError(
+                "Isaac appearance configuration hash does not match the scenario"
+            )
+        if (
+            not isinstance(inventory_hash, str)
+            or len(inventory_hash) != 64
+            or not isinstance(light_count, int)
+            or not isinstance(material_count, int)
+            or light_count <= 0
+            or material_count <= 0
+        ):
+            raise RuntimeError("Isaac appearance inventory contract is invalid")
+        self._appearance_runtime_contract = {
+            "verified": True,
+            "config_sha256": config_hash,
+            "inventory_sha256": inventory_hash,
+            "light_count": light_count,
+            "material_color_input_count": material_count,
+        }
 
     def _verify_dynamic_runtime_contract(self) -> None:
         if not self._isaac_parameter_client.wait_for_services(
@@ -1087,11 +1205,17 @@ class ExperimentRunner(Node):
                 stable_anchor = None
         raise ExternalShutdownException()
 
-    def _reset_simulation(self, seed: int, case_id: str | None = None, variant_id: str | None = None) -> None:
+    def _reset_simulation(
+        self,
+        seed: int,
+        case_id: str | None = None,
+        variant_id: str | None = None,
+        appearance_profile_id: str | None = None,
+    ) -> None:
         previous_seed_epoch = self._localization_seed_epoch
         self._cancel_stale_navigation_goal()
         self._clear_localization_buffer()
-        self._set_reset_seed(seed, case_id, variant_id)
+        self._set_reset_seed(seed, case_id, variant_id, appearance_profile_id)
         if not self._reset_client.wait_for_service(timeout_sec=self._service_timeout_sec):
             self._raise_if_shutdown()
             raise RuntimeError(f"reset service unavailable: {self._reset_service_name}")
@@ -1123,6 +1247,11 @@ class ExperimentRunner(Node):
             sample_stamp_barrier_s,
         )
         self._wait_for_nav2_managed_nodes_active()
+        if appearance_profile_id is not None and not self._wait_until(
+            lambda: self._rgb_frame is not None,
+            self._service_timeout_sec,
+        ):
+            raise TimeoutError("timed out waiting for post-reset RGB evidence frame")
 
     def _pose_message(self, specification) -> PoseStamped:
         pose = PoseStamped()
@@ -1912,6 +2041,23 @@ class ExperimentRunner(Node):
             reasons.append("dynamic_near_contact_abort")
         if self._dynamic_safety_yield:
             reasons.append("dynamic_actor_safety_yield")
+        requested_appearance = (
+            self._active_selection.appearance_profile_id
+            if self._active_selection is not None
+            else None
+        )
+        appearance_ready = (
+            requested_appearance is None
+            or (
+                self._appearance_runtime_contract.get("verified")
+                and self._appearance_state is not None
+                and self._appearance_state.get("profile_id") == requested_appearance
+                and self._appearance_state.get("config_sha256")
+                == self._appearance_config_hash
+            )
+        )
+        if not appearance_ready:
+            reasons.append("appearance_runtime_contract_incomplete")
         if odom is None:
             reasons.append("odom_unavailable")
         if not final_still:
@@ -1957,6 +2103,14 @@ class ExperimentRunner(Node):
             "dynamic_runtime_contract": dict(
                 self._dynamic_runtime_contract
             ),
+            "appearance_runtime_contract": dict(
+                self._appearance_runtime_contract
+            ),
+            "appearance": {
+                "profile_id": requested_appearance,
+                "state": dict(self._appearance_state or {}),
+                "ready": appearance_ready,
+            },
             "spawn_pose_name": self._spawn_pose.name,
             "usd_start_pose": self._spawn_pose.usd.as_dict(),
             "map_start_pose": self._spawn_pose.map.as_dict(),
@@ -2098,6 +2252,44 @@ class ExperimentRunner(Node):
         (root / "depth_frame.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
         return self._write_pgm(root / "depth_frame.pgm", width, height, pixels)
 
+    def _write_appearance_rgb_snapshot(self, root: Path) -> bool:
+        """Persist the RGB frame available before the first navigation goal."""
+        frame = self._rgb_frame
+        if frame is None:
+            return False
+        width, height = int(frame["width"]), int(frame["height"])
+        encoding = str(frame["encoding"]).lower()
+        step, data = int(frame["step"]), bytes(frame["data"])
+        if width <= 0 or height <= 0 or step <= 0 or len(data) < step * height:
+            return False
+        channels_by_encoding = {
+            "rgb8": (3, (0, 1, 2)),
+            "bgr8": (3, (2, 1, 0)),
+            "rgba8": (4, (0, 1, 2)),
+            "bgra8": (4, (2, 1, 0)),
+        }
+        if encoding not in channels_by_encoding:
+            return False
+        channels, order = channels_by_encoding[encoding]
+        if step < width * channels:
+            return False
+        pixels = bytearray()
+        for row in range(height):
+            offset = row * step
+            for column in range(width):
+                base = offset + column * channels
+                pixels.extend(data[base + component] for component in order)
+        target = root / "appearance_rgb_before_goal.ppm"
+        target.write_bytes(
+            f"P6\n{width} {height}\n255\n".encode("ascii") + bytes(pixels)
+        )
+        metadata = {key: value for key, value in frame.items() if key != "data"}
+        metadata["appearance_state"] = dict(self._appearance_state or {})
+        (root / "appearance_rgb_before_goal.json").write_text(
+            json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        return True
+
     def _write_costmap_snapshot(self, root: Path, name: str, grid: Costmap | None) -> bool:
         if grid is None:
             return False
@@ -2133,6 +2325,11 @@ class ExperimentRunner(Node):
         root.mkdir(parents=True, exist_ok=False)
         self._active_evidence_root = root
         self._bag_process = None
+        self._appearance_rgb_snapshot_complete = (
+            self._write_appearance_rgb_snapshot(root)
+            if self._scenario.appearance_config_file is not None
+            else False
+        )
         ros2 = shutil.which("ros2")
         if ros2 is None:
             return root
@@ -2140,8 +2337,8 @@ class ExperimentRunner(Node):
             "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
             "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan", "/optimal_trajectory",
             "/local_costmap/costmap_raw", "/global_costmap/costmap_raw", "/scan",
-            "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision",
-            "/experiment/obstacles/state", "/collision_monitor_state",
+            "/camera/front/image_raw", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision",
+            "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
         log = (root / "bag_record.log").open("wb")
         try:
@@ -2203,9 +2400,19 @@ class ExperimentRunner(Node):
             "depth_frame.json", "scan.csv", "scan.json", "local_costmap.pgm",
             "local_costmap.json", "global_costmap.pgm", "global_costmap.json",
         }
+        if self._scenario.appearance_config_file is not None:
+            required_files |= {
+                "appearance_rgb_before_goal.ppm",
+                "appearance_rgb_before_goal.json",
+            }
         data_complete = (
             bag_complete and depth_complete and scan_complete and local_costmap_complete
-            and global_costmap_complete and all((root / name).is_file() for name in required_files)
+            and global_costmap_complete
+            and (
+                self._scenario.appearance_config_file is None
+                or self._appearance_rgb_snapshot_complete
+            )
+            and all((root / name).is_file() for name in required_files)
         )
         # The redesigned long route dispatches G2–G5 and then closes the loop
         # at G1.  It therefore has six legs, not the obsolete eight-waypoint
@@ -2222,6 +2429,7 @@ class ExperimentRunner(Node):
             "evidence": {
                 "mcap_zstd": bag_complete,
                 "depth_frame": depth_complete,
+                "appearance_rgb_before_goal": self._appearance_rgb_snapshot_complete,
                 "scan": scan_complete,
                 "local_costmap": local_costmap_complete,
                 "global_costmap": global_costmap_complete,
@@ -2258,6 +2466,7 @@ class ExperimentRunner(Node):
         if not self._wait_until(lambda: self._clock_ready, self._clock_timeout_sec):
             raise TimeoutError("timed out waiting for a non-zero /clock")
         self._verify_dynamic_runtime_contract()
+        self._verify_appearance_runtime_contract()
         self._verify_collision_monitor_active()
         manifests: list[dict[str, Any]] = []
         selections = self._scenario.run_matrix or tuple(
@@ -2275,7 +2484,12 @@ class ExperimentRunner(Node):
             root: Path | None = None
             bag_complete = False
             try:
-                self._reset_simulation(seed, selection.case_id, selection.variant_id)
+                self._reset_simulation(
+                    seed,
+                    selection.case_id,
+                    selection.variant_id,
+                    selection.appearance_profile_id,
+                )
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
                 nav2_succeeded, timed_out, nav2_status = self._navigate()

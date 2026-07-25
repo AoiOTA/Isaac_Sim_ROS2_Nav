@@ -77,6 +77,7 @@ class RunSelection:
     seed: int
     case_id: str | None = None
     variant_id: str | None = None
+    appearance_profile_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +93,7 @@ class Scenario:
     robot_config_file: str
     nav2_config_file: str
     dynamic_config_file: str | None
+    appearance_config_file: str | None
     optimal_reference_file: str | None
     physics_dt: float
     rtf: float
@@ -175,15 +177,21 @@ def _parse_run_matrix(runs: Mapping[str, Any]) -> tuple[RunSelection, ...]:
     keys: set[tuple[int, str, str]] = set()
     for index, value in enumerate(raw):
         row = require_mapping(value, f"scenario.runs.matrix[{index}]")
-        _reject_unknown(row, {"seed", "case_id", "variant_id"}, f"scenario.runs.matrix[{index}]")
+        _reject_unknown(row, {"seed", "case_id", "variant_id", "appearance_profile_id"}, f"scenario.runs.matrix[{index}]")
         seed = row.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ConfigurationError(f"scenario.runs.matrix[{index}].seed must be non-negative integer")
         case_id = require_string(row.get("case_id"), f"scenario.runs.matrix[{index}].case_id")
         variant_id = require_string(row.get("variant_id"), f"scenario.runs.matrix[{index}].variant_id")
+        appearance_profile = row.get("appearance_profile_id")
+        if appearance_profile is not None:
+            appearance_profile = require_string(
+                appearance_profile,
+                f"scenario.runs.matrix[{index}].appearance_profile_id",
+            )
         key = seed, case_id, variant_id
         if key in keys: raise ConfigurationError("scenario.runs.matrix must not contain duplicate rows")
-        keys.add(key); rows.append(RunSelection(seed, case_id, variant_id))
+        keys.add(key); rows.append(RunSelection(seed, case_id, variant_id, appearance_profile))
     return tuple(rows)
 
 
@@ -773,7 +781,7 @@ def load_scenario(path: str | Path) -> Scenario:
     success_raw = require_mapping(raw.get("success"), "scenario.success")
     obstacles = require_mapping(raw.get("obstacles"), "scenario.obstacles")
     _reject_unknown(
-        configs, {"robot", "nav2", "dynamic_obstacles", "optimal_reference"}, "scenario.configs"
+        configs, {"robot", "nav2", "dynamic_obstacles", "optimal_reference", "appearance"}, "scenario.configs"
     )
     _reject_unknown(
         simulation, {"physics_dt", "rtf"}, "scenario.simulation"
@@ -824,10 +832,15 @@ def load_scenario(path: str | Path) -> Scenario:
     trajectories = _validate_obstacles(obstacles, scenario_type)
     incremental: Mapping[str, Any] | None = None
     dynamic_config_file: str | None = None
+    appearance_config_file: str | None = None
     optimal_reference_file: str | None = None
     if configs.get("optimal_reference") is not None:
         optimal_reference_file = require_string(
             configs.get("optimal_reference"), "scenario.configs.optimal_reference"
+        )
+    if configs.get("appearance") is not None:
+        appearance_config_file = require_string(
+            configs.get("appearance"), "scenario.configs.appearance"
         )
     configured_dynamic = configs.get("dynamic_obstacles")
     if scenario_type == "dynamic":
@@ -881,6 +894,12 @@ def load_scenario(path: str | Path) -> Scenario:
         )
 
     run_matrix = _parse_run_matrix(runs)
+    if appearance_config_file is not None and any(
+        item.appearance_profile_id is None for item in run_matrix
+    ):
+        raise ConfigurationError(
+            "scenarios with scenario.configs.appearance require appearance_profile_id for every run matrix row"
+        )
     return Scenario(
         scenario_id=scenario_id,
         scenario_type=scenario_type,
@@ -896,6 +915,7 @@ def load_scenario(path: str | Path) -> Scenario:
         robot_config_file=require_string(configs.get("robot"), "scenario.configs.robot"),
         nav2_config_file=require_string(configs.get("nav2"), "scenario.configs.nav2"),
         dynamic_config_file=dynamic_config_file,
+        appearance_config_file=appearance_config_file,
         optimal_reference_file=optimal_reference_file,
         physics_dt=_positive(simulation.get("physics_dt"), "scenario.simulation.physics_dt"),
         rtf=_positive(simulation.get("rtf"), "scenario.simulation.rtf"),
