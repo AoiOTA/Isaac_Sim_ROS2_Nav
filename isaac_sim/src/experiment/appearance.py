@@ -42,6 +42,10 @@ _MATERIAL_COLOR_NAMES = frozenset(
         "albedo_color",
         "displaycolor",
         "display_color",
+        "colorcolor",
+        "basecolorcolor",
+        "diffusecolorconstant",
+        "glasscolor",
     }
 )
 
@@ -138,9 +142,9 @@ def is_material_color_input(attribute_name: str) -> bool:
     if not attribute_name.startswith("inputs:"):
         return False
     name = attribute_name.removeprefix("inputs:").replace("-", "_").lower()
-    compact = name.replace("_", "")
+    compact = re.sub(r"[_0-9]", "", name)
     return name in _MATERIAL_COLOR_NAMES or compact in {
-        item.replace("_", "") for item in _MATERIAL_COLOR_NAMES
+        re.sub(r"[_0-9]", "", item) for item in _MATERIAL_COLOR_NAMES
     }
 
 

@@ -173,6 +173,17 @@ class ExperimentRunner(Node):
 
         robot_override = str(self.declare_parameter("robot_config_file", "").value).strip()
         nav2_override = str(self.declare_parameter("nav2_config_file", "").value).strip()
+        self._nav2_profile = str(
+            self.declare_parameter("nav2_profile", "").value
+        ).strip()
+        if self._scenario.appearance_config_file is not None and self._nav2_profile not in {
+            "stable",
+            "dynamic_avoidance",
+        }:
+            raise ConfigurationError(
+                "appearance benchmark requires nav2_profile:=stable or "
+                "nav2_profile:=dynamic_avoidance"
+            )
         robot_config = (
             Path(robot_override).expanduser().resolve()
             if robot_override
@@ -2125,6 +2136,7 @@ class ExperimentRunner(Node):
             "provenance": dict(self._provenance),
             "robot_config_hash": self._robot_config_hash,
             "nav2_config_hash": self._nav2_config_hash,
+            "nav2_profile": self._nav2_profile,
             "optimal_reference_hash": self._optimal_reference_hash,
             "dynamic_runtime_contract": dict(
                 self._dynamic_runtime_contract
@@ -2455,6 +2467,7 @@ class ExperimentRunner(Node):
             "seed": seed,
             "condition_id": manifest.get("condition_id"),
             "appearance_profile_id": manifest.get("appearance", {}).get("profile_id"),
+            "nav2_profile": manifest.get("nav2_profile"),
             "strict_success": strict_success,
             "physical_collision_free": not self._collision_detected,
             "data_complete": data_complete,
