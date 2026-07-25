@@ -1,6 +1,6 @@
 # Kujiale 动态避障调优问题复盘
 
-本文记录 `local_bypass` 单轮可视化调优中发现的问题、根因和当前处理方式。它是调优复盘，不替代正式动态 20 次验收。
+本文记录 `local_bypass` 单轮可视化调优中发现的问题、根因和当前处理方式。它是调优复盘，不替代当前4×20的动态基准20轮或动态＋外观20轮验收；正式命令和报告见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
 ## 当前可视化基线
 

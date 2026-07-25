@@ -1,8 +1,10 @@
 # Kujiale 全屋长距离导航、避障测试与可视化报告方案
 
-> 当前适用分支：`codex/dynamic-obstacle-benchmark-redesign`
+> 文档状态：历史重设计规格。当前正式执行规格是
+> [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)，
+> 适用分支为 `codex/kujiale-4x20-appearance-benchmark`。
 >
-> 文档状态：路线与障碍已重设计；当前候选布局已完成静态 20 轮，动态 20 轮尚未执行，故尚未完成完整 20+20 验收。
+> 本文保留静态20轮候选、历史动态20轮和旧批次的证据边界；不得将它的命令或结果作为当前4×20结论。
 >
 > 适用场景：`kujiale_0026_A_to_B_door_open.usd`
 

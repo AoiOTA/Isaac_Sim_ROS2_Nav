@@ -149,6 +149,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/ground_truth/odom` | `nav_msgs/msg/Odometry` | optional Isaac GT recorder | metrics only | `map`/`ground_truth_base_link`, configured 60 Hz |
 | `/ground_truth/path` | `nav_msgs/msg/Path` | optional Isaac GT recorder | metrics/visualization only | `map`, configured 10 Hz |
 | `/simulation/collision` | `std_msgs/msg/Bool` | Isaac chassis contact sensor | experiment safety metric | about 20 Hz; instantaneous contact state |
+| `/experiment/appearance/state` | `std_msgs/msg/String` | Isaac `AppearanceManager` | 4×20 runner/report evidence | transient-local JSON: active profile, profile-config SHA256, anonymous Session Layer ID, light/material inventory and applied overrides; never a navigation input |
 | `/collision_monitor_state` | `nav2_msgs/msg/CollisionMonitorState` | Nav2 Collision Monitor | experiment lock/stop metric | Navigation only |
 | `/simulation/reset_event` | `std_msgs/msg/Empty` | Isaac Reset bridge | Wheel Odom, Activation Gate, scan-fault bridge and reset observers | Reliable + Volatile; one event after each successful transaction, and the recovery-epoch boundary |
 | `/simulation/localization_seeded` | `std_msgs/msg/Empty` | Isaac Reset bridge | experiment reset gate | Reliable + Volatile; emitted after a post-reset `/scan` triggers `/initialpose` |
@@ -531,7 +532,13 @@ contracts. Re-tune only with comparable runtime evidence.
 
 ## Experiment scenario contract
 
-The current static scenario is `kujiale_static_long_range.yaml`; it uses the
+当前正式场景组合是 `kujiale_4x20_static_pair.yaml` 与 `kujiale_4x20_dynamic_pair.yaml`：每个文件40轮，
+共同构成四组各20轮。Runner 通过 `appearance_profile_id` 让 Isaac 在 Reset 前选择固定外观 profile，
+并要求运行时 `/experiment/appearance/state` 的配置哈希与场景配置一致。静态清单必须记录
+`nav2_profile=stable`，动态清单必须记录 `nav2_profile=dynamic_avoidance`；二者不一致时报告判为证据失败。
+完整用户命令见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+
+历史静态候选场景是 `kujiale_static_long_range.yaml`; it uses the
 `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1` from
 transform-verified `long_route_start_g1`. It requires `rgbd_low_box_west`,
 `rgbd_low_box_center`, `rgbd_low_box_east`, `rgbd_low_box_north`,
