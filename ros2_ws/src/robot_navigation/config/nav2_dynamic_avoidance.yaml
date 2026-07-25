@@ -70,6 +70,13 @@ local_costmap:
           raytrace_max_range: 25.0
           obstacle_min_range: 0.40
           obstacle_max_range: 25.0
+      inflation_layer:
+        # Dynamic actors are 0.40 m cubes.  Extend the base 0.40 m
+        # inflation envelope by 0.10 m so the selected MPPI trajectory
+        # maintains the campaign's required >=0.10 m actor clearance instead
+        # of merely avoiding a physical collision at the footprint boundary.
+        # This overlay is dynamic-only; the static profile is unchanged.
+        inflation_radius: 0.50
       # STVL is a drop-in Costmap2D voxel plugin.  It consumes the same RGB-D
       # PointCloud2 as the base VoxelLayer but tracks an age per voxel.
       depth_stvl_layer:
