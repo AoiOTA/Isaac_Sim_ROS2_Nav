@@ -111,11 +111,15 @@ start_stage() {
   nav2_profile="stable"
   [[ "${mode}" == "dynamic" ]] && nav2_profile="dynamic_avoidance"
   log_info "starting ${mode} Isaac supervisor; log=${control_root}/${mode}-isaac.log"
-  setsid -- "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" "${mode}" --headless \
+  # These launchers establish and supervise their own dedicated process groups.
+  # Keep them as direct children so their PIDs remain waitable by stop_stage;
+  # wrapping them in a second `setsid` can make $! refer to a short-lived
+  # helper and leave the actual Isaac/ROS stack orphaned after Ctrl+C.
+  "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" "${mode}" --headless \
     >"${control_root}/${mode}-isaac.log" 2>&1 &
   isaac_pid=$!
   log_info "starting ${mode} Nav2 supervisor; log=${control_root}/${mode}-nav2.log"
-  setsid -- "${SCRIPT_DIR}/run_ros.sh" navigation \
+  "${SCRIPT_DIR}/run_ros.sh" navigation \
     odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 \
     nav2_profile:="${nav2_profile}" interactive:=false use_rviz:=false \
     >"${control_root}/${mode}-nav2.log" 2>&1 &
