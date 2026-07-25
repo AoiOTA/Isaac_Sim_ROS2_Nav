@@ -68,7 +68,12 @@ local_costmap:
           inf_is_valid: true
           raytrace_min_range: 0.0
           raytrace_max_range: 25.0
-          obstacle_min_range: 0.40
+          # Preserve LiDAR marking for a dynamic cube after its closest face
+          # crosses the former 0.40 m cut-off.  Otherwise the local costmap
+          # clears the actor precisely during the near-field bypass and MPPI
+          # can select a sub-0.10 m path.  0.10 m remains below valid robot
+          # exterior returns and is used only by this dynamic profile.
+          obstacle_min_range: 0.10
           obstacle_max_range: 25.0
       inflation_layer:
         # Dynamic actors are 0.40 m cubes.  Extend the base 0.40 m

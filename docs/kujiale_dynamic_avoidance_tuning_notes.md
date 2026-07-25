@@ -93,6 +93,8 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 
 处理：不改 actor 的轨迹、尺寸、速度、触发门或变体延迟。v1 重跑成功后，v2 外观轮仍记录到 `0.0233 m` 的真实最小净距，因此仅在 `dynamic_avoidance` overlay 中将 Local Costmap `inflation_radius` 从基础 profile 的 `0.40 m` 提升至 `0.60 m`，为 0.40 m 动态方块建立额外 0.20 m 的 MPPI 代价缓冲。静态 `stable` profile 保持不变。该调整必须重启 Nav2；下次 pilot 仍须检查 `safety_yield`、每个 actor 的 `minimum_clearance_m` 与物理碰撞证据。
 
+后续 v1 pilot 仍在约 `0.13 m` guard 净距触发 `safety_yield`，表明仅扩大膨胀半径不足以让 MPPI 在近场持续看到 actor。根因是动态 Local LiDAR 层继承的 `obstacle_min_range=0.40 m` 会过滤 actor 最近表面已经进入近场的扫描点。仅将 `dynamic_avoidance` 的 Local `obstacle_min_range` 降至 `0.10 m`；Global Costmap、静态 profile、Collision Monitor 与 actor 本身均不改变。这样 Local Costmap 不会在绕行关键时刻清除动态方块，MPPI 仍保留完整 footprint 碰撞检查。
+
 ## 复测方法
 
 每次只改变一组参数，并重启与改动层相对应的进程：
