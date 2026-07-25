@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# User-operated 4x20 campaign controller.  Isaac and Nav2 remain visible in
+# their own terminals; this script owns only the formal runner/report process.
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
+
+usage() {
+  cat <<'USAGE'
+usage:
+  run_kujiale_4x20.sh preflight static|dynamic
+  run_kujiale_4x20.sh pilot static|dynamic CAMPAIGN_ID [--resume]
+  run_kujiale_4x20.sh static-pair CAMPAIGN_ID [--resume]
+  run_kujiale_4x20.sh dynamic-pair CAMPAIGN_ID [--resume]
+  run_kujiale_4x20.sh status CAMPAIGN_ID
+  run_kujiale_4x20.sh report CAMPAIGN_ID
+USAGE
+}
+
+[[ $# -ge 1 ]] || { usage >&2; exit 2; }
+command_name="$1"; shift
+
+require_campaign_id() {
+  local value="$1"
+  [[ "${value}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "invalid CAMPAIGN_ID: ${value}"
+}
+
+parse_resume() {
+  local value="${1:-}"
+  [[ -z "${value}" || "${value}" == "--resume" ]] || die "expected optional --resume"
+  [[ "${value}" == "--resume" ]] && printf 'true' || printf 'false'
+}
+
+preflight() {
+  local mode="$1"
+  [[ "${mode}" == "static" || "${mode}" == "dynamic" ]] || die "preflight mode must be static or dynamic"
+  source_ros --require-workspace
+  local available_gib
+  available_gib="$(df -Pk "${PROJECT_ROOT}" | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
+  [[ "${available_gib}" =~ ^[0-9]+$ && "${available_gib}" -ge 120 ]] \
+    || die "4x20 campaign requires at least 120 GiB free; available=${available_gib:-unknown} GiB"
+  require_file "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/kujiale_4x20_${mode}_pair.yaml"
+  require_file "${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml"
+  require_file "${PROJECT_ROOT}/data/maps/occupancy/warehouse_new.yaml"
+  if [[ "${mode}" == "dynamic" ]] && ! ros2 pkg prefix spatio_temporal_voxel_layer >/dev/null 2>&1; then
+    die "dynamic stage requires STVL: sudo apt install ros-jazzy-spatio-temporal-voxel-layer"
+  fi
+  local topics
+  topics="$(ros2 topic list 2>/dev/null || true)"
+  for topic in /clock /ground_truth/odom /odom /camera/front/image_raw /camera/front/depth/points /experiment/appearance/state; do
+    grep -qx "${topic}" <<<"${topics}" || die "required live topic is absent: ${topic}; start Isaac/Nav2 and wait for readiness"
+  done
+  ros2 param get /isaac_navigation_sim appearance_config_sha256 >/dev/null \
+    || die "Isaac appearance contract is unavailable; start run_kujiale_4x20_isaac.sh and wait for ready log"
+  log_info "preflight passed for ${mode}; free space=${available_gib} GiB"
+}
+
+run_stage() {
+  local mode="$1" output="$2" indices="$3" resume="$4"
+  local scenario="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/kujiale_4x20_${mode}_pair.yaml"
+  [[ ! -e "${output}" || "${resume}" == true ]] || die "refusing to overwrite ${output}; use --resume only after an interrupted run"
+  mkdir -p "${output}"
+  local arguments=("${SCRIPT_DIR}/run_experiment.sh" "${scenario}" "${output}" "resume:=${resume}")
+  [[ -n "${indices}" ]] && arguments+=("run_indices:=${indices}")
+  "${arguments[@]}"
+}
+
+case "${command_name}" in
+  preflight)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    preflight "$1"
+    ;;
+  pilot)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage >&2; exit 2; }
+    mode="$1"; campaign_id="$2"; resume="$(parse_resume "${3:-}")"; require_campaign_id "${campaign_id}"
+    [[ "${mode}" == "static" || "${mode}" == "dynamic" ]] || die "pilot mode must be static or dynamic"
+    preflight "${mode}"
+    # Matrix row 2 is the first non-baseline profile (dim_warm) for both modes.
+    run_stage "${mode}" "${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}/pilot-${mode}" "2" "${resume}"
+    ;;
+  static-pair|dynamic-pair)
+    [[ $# -ge 1 && $# -le 2 ]] || { usage >&2; exit 2; }
+    campaign_id="$1"; resume="$(parse_resume "${2:-}")"; require_campaign_id "${campaign_id}"
+    mode="${command_name%-pair}"
+    preflight "${mode}"
+    run_stage "${mode}" "${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}/${mode}" "" "${resume}"
+    ;;
+  status)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    campaign_id="$1"; require_campaign_id "${campaign_id}"; source_ros --require-workspace
+    ros2 run robot_experiments kujiale_4x20_campaign --run-root "${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}" --status
+    ;;
+  report)
+    [[ $# -eq 1 ]] || { usage >&2; exit 2; }
+    campaign_id="$1"; require_campaign_id "${campaign_id}"; source_ros --require-workspace
+    run_root="${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}"
+    report_root="${PROJECT_ROOT}/data/reports/kujiale_4x20_${campaign_id}"
+    [[ ! -e "${report_root}" ]] || die "refusing to overwrite existing report: ${report_root}"
+    ros2 run robot_experiments kujiale_4x20_campaign --run-root "${run_root}" --output-directory "${report_root}"
+    ;;
+  *) usage >&2; exit 2 ;;
+esac
