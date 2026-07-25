@@ -352,7 +352,8 @@
 | `ros2_ws/src/robot_navigation/package.xml` | Nav2 planner/controller/behavior/smoother/collision monitor/lifecycle 依赖。 |
 | `ros2_ws/src/robot_navigation/behavior_trees/navigate_to_pose_with_dead_end_recovery.xml` | 单目标前进优先导航行为树；常规 MPPI 不倒车，系统恢复时在原地旋转前执行 0.55 m 激光安全监控倒车。 |
 | `ros2_ws/src/robot_navigation/behavior_trees/navigate_through_poses_with_dead_end_recovery.xml` | 多目标版本的死胡同恢复行为树，保持与单目标相同的清图、倒车、旋转和等待顺序。 |
-| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | 全局/局部 Costmap、SmacPlanner2D、MPPI、BT、Velocity Smoother、Collision Monitor 的统一参数；MPPI 使用 10 Hz、2 秒窗和 500 批次，常规路径前进优先，恢复链允许有限倒车。 |
+| `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | `stable` 基础 profile：全局/局部标准 VoxelLayer、SmacPlanner2D、MPPI（10 Hz、2 秒窗、700 批次）、BT、Velocity Smoother 与 Collision Monitor。 |
+| `ros2_ws/src/robot_navigation/config/nav2_dynamic_avoidance.yaml` | `dynamic_avoidance` overlay：MPPI 15 Hz / 30 步 / 500 批次、60 Hz 平滑器、Local STVL 时序 RGB-D 清除与不接收 RGB-D 的 Global Costmap。 |
 | `ros2_ws/src/robot_navigation/launch/navigation.launch.py` | 创建 Nav2 lifecycle 节点并注入项目死胡同恢复行为树；默认不 autostart，等待外部 readiness gate。 |
 | `ros2_ws/src/robot_navigation/test/test_nav2_config.py` | 检查插件、Footprint、inflation、话题链、2D obstacle layer 和安全参数。 |
 
@@ -373,14 +374,19 @@
 | `ros2_ws/src/robot_experiments/config/static_complex_route.yaml` | Ideal 前进优先复杂静态验收：6 个强制航点、约 50 m 路线、3 seeds 和运动质量门。 |
 | `ros2_ws/src/robot_experiments/config/dynamic_complex_route.yaml` | Ideal 复杂动态验收：与四个物理移动障碍严格对齐的 6 航点、3-seed 长路线。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_static_pilot.yaml` | 酷家乐重设计静态 Pilot：S/G1、G2–G5、闭环回归 G1、四个可在 Isaac GUI 微调的 RGB-D 低矮方块和两个长条、3 个 seed；不计入正式批次。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_pilot.yaml` | 酷家乐重设计动态 Pilot：S/G1、G2–G5、闭环回归 G1、两组 G2 后触发的慢速障碍和 3 个 seed；不计入正式批次。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_pilot.yaml` | 历史动态 Pilot 配置；当前三阶段人工可视化入口不使用它。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_static_visual.yaml` | GUI + RViz 静态可视化回归：固定 seed 7201，从 G1 出生并自动跑 G2、G3、G4、G5、G1 与六个可微调低矮静态障碍，不保存项目证据。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | GUI + RViz 动态可视化回归：固定 seed 7301，从 G1 出生并自动跑 G2、G3、G4、G5、G1 并触发两组慢速动态障碍，不保存项目证据。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual.yaml` | G1→G2 聚焦动态可视化的 runner 场景；由脚本以 `local_bypass` case/variant 覆盖，不作为正式验收。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual_g2_g3.yaml` | 从标定 `long_route_start_g2` 出发的 G2→G3 聚焦可视化场景。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_visual_g5_g1.yaml` | 从标定 `long_route_start_g5` 出发的 G5→G1 聚焦可视化场景。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_full_route_5.yaml` | 从 G1 出发、执行 G2→G3→G4→G5→G1 的三阶段整圈接力可视化场景。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐重设计静态 20 轮候选：固定 seed 7201–7220、S/G1、G2–G5、闭环回归 G1、四个方块和两个可微调低矮长条与同步的候选理论路径参考；布局尚未正式冻结。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 酷家乐重设计动态 20 轮候选：冻结 seed 7301–7320、S/G1、G2–G5、闭环回归 G1 与两组慢速中心障碍。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 历史动态 20 轮候选描述；当前交付的动态验收入口是三段可视化与整圈接力，不应将它当作现行三阶段执行命令。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 重设计后候选 20+20 批次的路线、门槛、障碍、出生点和固定 seed 总定义；尚未执行。 |
 | `ros2_ws/src/robot_experiments/config/optimal_reference.json` | 当前可微调静态路线的 footprint-aware 候选理论长度、地图哈希和障碍多边形；布局确认后需重新生成并冻结。 |
 | `scripts/run_kujiale_static_20.sh` | 需要已启动静态 Isaac 和无交互 Nav2 的静态 20 轮候选 runner；固定当前六个静态障碍参数、运行 seed 7201–7220，并自动导出不含动态结论的自包含中文报告。HTML 全屋轨迹地图可按种子和通过/失败状态筛选单轮 GT 轨迹。 |
+| `scripts/run_kujiale_dynamic_isaac.sh` | 三阶段动态 Isaac 启动器，默认 G1；`--spawn-pose` 支持标定的 G2/G5 聚焦出生点。 |
+| `scripts/run_kujiale_three_stage_visual.sh` | 三阶段动态可视化入口：`g1-g2`、`g2-g3`、`g5-g1` 或 `full`；要求 `dynamic_avoidance` profile。 |
 | `ros2_ws/src/robot_experiments/config/motion_benchmark.yaml` | 底盘直线、原地旋转、正反圆弧、蛇形和快速反向的自动运动基准。 |
 | `ros2_ws/src/robot_experiments/config/incremental_mapping.yaml` | 增量建图工作流描述符；NavigateToPose runner 会明确拒绝它。 |
 | `ros2_ws/src/robot_experiments/config/incremental_comparison.example.yaml` | 三地图离线比较模板；路径、耗时、真实变化矩形为必填占位。 |

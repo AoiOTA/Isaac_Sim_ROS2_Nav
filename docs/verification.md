@@ -23,7 +23,7 @@ The remaining `warehouse_new.posegraph` is stored through Git LFS.
 
 该历史酷家乐批次使用旧 `mapping_start`、G1–G8、旧障碍布局、`warehouse_new`、Ideal
 Odometry 与 `rgbd_navigation`，包含静态 20 次、动态 20 次。当前分支的 S/G1、G2–G5、
-中心区四个可手调静态方块、两个可手调静态长条和两组动态障碍为新布局，尚未验收；生成报告存放在被忽略的 `data/reports/`。
+中心区四个可手调静态方块、两个可手调静态长条和三阶段动态 actor 为新布局。静态候选已按本页上方批次完成；动态最终人工验收尚未执行，生成报告存放在被忽略的 `data/reports/`。
 
 | 项目 | 结果 | 范围与边界 |
 | --- | --- | --- |

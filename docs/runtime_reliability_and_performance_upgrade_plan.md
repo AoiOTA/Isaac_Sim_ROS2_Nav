@@ -1,6 +1,6 @@
 # Isaac Sim ROS 2 导航运行时可靠性、性能与机器人相机视角升级方案
 
-> 文档状态：冻结的历史设计、测试矩阵和证据快照。当前分支默认 `warehouse_new`，RGB-D 点云进入全局和局部 VoxelLayer；运行入口与事实契约以 [`user_manual.md`](user_manual.md) 和 [`interfaces.md`](interfaces.md) 为准。
+> 文档状态：冻结的历史设计、测试矩阵和证据快照。当前分支默认 `warehouse_new`；RGB-D 的当前职责按 profile 分流：`stable` 进入全局和局部 VoxelLayer，`dynamic_avoidance` 仅进入 Local STVL。运行入口与事实契约以 [`user_manual.md`](user_manual.md) 和 [`interfaces.md`](interfaces.md) 为准。
 
 > 文件路径：`docs/runtime_reliability_and_performance_upgrade_plan.md`
 > 适用仓库：`AoiOTA/Isaac_Sim_ROS2_Nav`
@@ -29,7 +29,7 @@
 | 10 RViz/Lifecycle/Shutdown | 已实现 | 安全面板、Future/Context 清理、有序关闭与脚本测试 | Navigation/Mapping 等实际会话已完成干净关闭，集成 RViz 退出无已知崩溃 | 仍不把所有 Camera profile × 活跃目标 × 连续五轮写成已全矩阵验收 |
 | 11 完整验证与文档 | 进行到交付边界 | Python/ROS 全量回归已有通过批次，末轮改动另有目标回归 | Headless、集成 RViz、Camera 截图、MPPI/Ceres、Collision、地图契约均有实际证据 | 200 次静态统计、广义动态障碍统计、真实 v2、自定义机器人和完整 GUI 人因验收不在已完成证据内 |
 
-冻结的日常 Nav2 profile 为：`stable = 10 Hz, batch_size 750, time_steps 20, model_dt 0.1 s`；`performance = 10 Hz, batch_size 1000, time_steps 20, model_dt 0.1 s`。二者都保持 2 秒预测窗。Camera profile 有 `off/monitoring/standard/high_quality` 四种配置，但配置目标频率不等于任意机器上的实测频率。
+本段下方的性能数值是当时快照，不是当前运行参数。当前 profile 以 `nav2_params.yaml`、`nav2_stable.yaml` 与 `nav2_dynamic_avoidance.yaml` 为准：`stable = 10 Hz, batch_size 700, time_steps 20, model_dt 0.1 s`；`dynamic_avoidance = 15 Hz, batch_size 500, time_steps 30, model_dt 1/15 s`。两者都保持 2 秒预测窗。Camera profile 有 `off/monitoring/standard/high_quality` 四种配置，但配置目标频率不等于任意机器上的实测频率。
 
 ---
 

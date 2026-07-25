@@ -217,10 +217,17 @@ sudo apt install ros-jazzy-spatio-temporal-voxel-layer
 4. 最小净距不低于 `0.10 m`；
 5. 机器人在 actor 尚未退役时完成绕行，不能等待 actor 删除后才继续；
 6. actor 在目标成功后 `0.20 s` 内退役；
-7. 对应占用在 Local Costmap `0.25 s` 内、Global Costmap `1.0 s` 内被正常清除。
+7. Local STVL 中对应占用在 actor 离开视野后应按时序衰减；动态 profile 的 Global Costmap 不注入 RGB-D actor，因而不应出现需要等待清除的全局 actor 残影。
 
 最终 Isaac Sim 可视化验收由用户执行。实现阶段只提供启动脚本、三段单测、整圈联测、录制与证据归档入口；不将开发期 smoke test 宣称为正式验收结论。
 
 ## 6. 实施边界
 
-动态实验编排与静态导航共用同一套运动控制基线：MPPI 15 Hz、30 步、`model_dt=1/15 s`、500 条采样、2.0 s 预测范围，Velocity Smoother 60 Hz，以及相同的速度、角速度、加速度、碰撞监控和 RViz 候选轨迹下采样设置。仅 RGB-D 障碍物生命周期不同：静态 profile 保留标准 Local/Global VoxelLayer 标记；动态 profile 以 Local STVL 替换标准 Local VoxelLayer，并不启用 Global RGB-D 体素层，从而让移动 actor 的旧占用自然清除。
+动态实验编排与静态导航使用**不同但各自固定**的控制 profile，不能把一套参数误称为两者通用：
+
+| Profile | MPPI | 速度/角速度上限 | Velocity Smoother | RGB-D Costmap 策略 |
+|---|---|---|---|---|
+| `stable` | `10 Hz`、20 步、`0.10 s`、700 条采样 | `0.75 m/s` / `1.35 rad/s` | `20 Hz` | Local + Global 标准 `VoxelLayer`，保留低矮静态物体。 |
+| `dynamic_avoidance` | `15 Hz`、30 步、`1/15 s`、500 条采样 | `1.20 m/s` / `3.40 rad/s` | `60 Hz` | Local STVL（10 Hz 更新、5 Hz 发布），Global 仅静态图 + LiDAR。 |
+
+两者均保持 `2.0 s` 预测范围、完整 footprint 碰撞检查与 LiDAR Collision Monitor。动态 profile 还将候选轨迹发布下采样为 `trajectory_step=25`、`time_step=5`，而 RViz 默认只显示最优 MPPI 轨迹。切换 profile 必须重启导航栈；修改 actor YAML 还必须重启 Isaac，避免触发运行时配置 hash 保护。

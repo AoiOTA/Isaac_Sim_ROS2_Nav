@@ -8,7 +8,7 @@
 - Case：`local_bypass`，`variant=3`，`seed=7443`。
 - Actor：`0.40 × 0.40 × 1.00 m`，轨迹 `[-1.65,-0.20] -> [-0.85,-0.20]`，峰值速度 `0.80 m/s`、最大加速度 `1.60 m/s²`，到点后保持 `parked`。
 - 触发门：机器人在 `x∈[-0.70,0.30]` 内北向越过 `y=-1.75`，且速度不低于 `0.20 m/s`。
-- 导航：静态与动态避障 profile 共用 MPPI 15 Hz、2.0 s 预测范围、Velocity Smoother 60 Hz、`vx_max=1.20 m/s` 与 `wz_max=3.40 rad/s`。两者只在 RGB-D 障碍物生命周期上区分：静态低矮物体保留标准 VoxelLayer 标记；动态 actor 由局部 STVL 进行时序清除。
+- 导航：动态 `dynamic_avoidance` profile 使用 MPPI 15 Hz、30 步、`model_dt=1/15 s`、500 条采样、Velocity Smoother 60 Hz、`vx_max=1.20 m/s` 与 `wz_max=3.40 rad/s`。静态 `stable` profile 则严格保留静态 20 轮基线：MPPI 10 Hz、20 步、`model_dt=0.10 s`、700 条采样、Velocity Smoother 20 Hz、`vx_max=0.75 m/s` 与 `wz_max=1.35 rad/s`。两者都保持 2.0 s 预测范围，但不是同一组控制参数。
 
 ## 问题与修复
 
@@ -44,7 +44,7 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 - 60 Hz Velocity Smoother 能把这些目标变化转换成有界斜坡；Collision Monitor 在没有危险时原样转发，底盘里程计也能跟随最终命令。
 - 在完整 Isaac、STVL 和 RViz 负载下，原 `500 × 40` 的 MPPI 更新耗时中位数约 `70 ms`、P90 约 `80 ms`，无法稳定满足 20 Hz 所要求的 `50 ms` 周期。结果是一次长计算后紧跟一次追赶式更新，视觉上呈现“顿一下、追一下”。
 
-处理（静态/动态共用的控制预算）：
+处理（动态避障控制预算）：
 
 - 动态避障 overlay 将 MPPI 调为 15 Hz，并同步设置 `model_dt=1/15 s`、`time_steps=30`，继续保持完整 2.0 s 预测范围和控制周期/模型步长一致。
 - 保留 `batch_size=500` 和 `regenerate_noises=true`；固定噪声候选集虽然更平滑，却会降低对新出现动态障碍物的适应性。
@@ -54,7 +54,7 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 - MPPI `gamma=0.030`，提高连续控制序列的偏好；保持 `wz_max=3.40 rad/s`。
 - 候选轨迹发布下采样为 `trajectory_step=25`、`time_step=5`，RViz 默认关闭 Candidate Trajectories，仅显示最优轨迹，避免可视化负担影响控制节奏。
 
-静态与动态不能共用同一个 RGB-D 清除策略：静态 `0.16 m` 低矮物体需要在机器人转向、短暂离开前视相机视野后仍留在 Local/Global Costmap；动态 actor 则必须在离开相机视野后过期，不能形成扫掠残影。因此基础 profile 在 Local 与 Global Costmap 均保留标准 `VoxelLayer`，动态 overlay 只将 **Local** 层替换为 STVL，并明确移除 Global RGB-D 体素层。MPPI、平滑器、碰撞监控、LiDAR 和速度/加速度限制完全相同。
+静态与动态不能共用同一个 RGB-D 清除策略：静态 `0.16 m` 低矮物体需要在机器人转向、短暂离开前视相机视野后仍留在 Local/Global Costmap；动态 actor 则必须在离开相机视野后过期，不能形成扫掠残影。因此 `stable` 在 Local 与 Global Costmap 均保留标准 `VoxelLayer`，`dynamic_avoidance` 只将 **Local** 层替换为 STVL，并明确移除 Global RGB-D 体素层。LiDAR Collision Monitor 和完整 footprint 碰撞检查保持一致；MPPI、平滑器和速度上限按 profile 分开维护。
 
 频率 A/B 结果：
 
@@ -62,7 +62,7 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 |---|---|---|
 | 20 Hz、40 步 | 避障能通过，但实测计算时间超过 50 ms，产生长间隔与追赶更新 | 控制负载超出实时预算 |
 | 12.5 Hz、25 步 | 单段更平滑，但最快横穿 case 出现 `safety_yield`、最小净空降到 0 | 响应间隔过长，拒绝 |
-| 15 Hz、30 步 | 单段与完整三阶段均成功；单段最小净空 `0.1425 m`，整圈三段为 `0.4931 / 0.3222 / 0.4250 m`，无 `safety_yield` | 当前动态避障 profile 基线 |
+| 15 Hz、30 步 | 开发期单段与整圈回归通过；用于确认连续控制预算 | 当前动态避障 profile 基线；不替代用户最终人工验收或动态批次结论 |
 
 15 Hz 单段中，60 Hz 平滑命令的线/角速度反向变化比例相对 20 Hz 分别下降约 13% 和 26%。这不是用低频掩盖控制问题，而是让请求频率匹配本机可持续计算预算。
 

@@ -137,11 +137,12 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/plan` | `nav_msgs/msg/Path` | Nav2 Planner Server | RViz and profiler global-plan evidence | `map`; Navigation only |
 | `/optimal_trajectory` | `nav_msgs/msg/Path` | MPPI Controller Server | RViz **Local Plan** and runtime profiler | selected local trajectory in `odom`; Navigation only, nominal controller rate; Reliable + Volatile |
 | `/transformed_global_plan` | `nav_msgs/msg/Path` | MPPI Controller Server | optional transformed-reference diagnostic | reference path in the controller frame, not the local plan; Reliable + Volatile |
-| `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | candidate-sample visualization | Reliable + Volatile, expensive/lazy; current saved Navigation RViz layout enables its display |
+| `/trajectories` | `visualization_msgs/msg/MarkerArray` | MPPI trajectory visualizer | candidate-sample visualization | Reliable + Volatile, expensive/lazy; the saved Navigation RViz layout keeps it disabled by default |
 | `/camera/front/image_raw` | `sensor_msgs/msg/Image` | Isaac front Camera graph | RViz or external perception/recording only | `camera_front_optical_frame`, `rgb8`; profile rate/resolution; Best Effort + Volatile, depth 2 |
 | `/camera/front/camera_info` | `sensor_msgs/msg/CameraInfo` | same Isaac Render Product as Image | camera calibration consumers and profiler pairing | same frame, simulated stamp and QoS as Image; Best Effort + Volatile, depth 2 |
-| `/camera/front/depth/points` | `sensor_msgs/msg/PointCloud2` | Isaac Camera graph (`rgbd_navigation` only) | Local Costmap `depth_voxel_layer`, RViz | `camera_front_optical_frame`, 10 Hz target; Best Effort + Volatile, depth 2 |
-| `/local_costmap/voxel_grid` | `nav2_msgs/msg/VoxelGrid` | Local Costmap `depth_voxel_layer` | `robot_rviz_plugins/Voxel Grid` display | Local Costmap frame; Reliable + Volatile; only `MARKED` cells are rendered as 3D boxes |
+| `/camera/front/depth/points` | `sensor_msgs/msg/PointCloud2` | Isaac Camera graph (`rgbd_navigation` only) | `stable`: Local + Global `depth_voxel_layer`; `dynamic_avoidance`: Local STVL, RViz | `camera_front_optical_frame`, 10 Hz target; Best Effort + Volatile, depth 2 |
+| `/local_costmap/voxel_grid` | `nav2_msgs/msg/VoxelGrid` | Local Costmap `depth_voxel_layer` in `stable` | `robot_rviz_plugins/Voxel Grid` display | Local Costmap frame; Reliable + Volatile; only `MARKED` cells are rendered as 3D boxes |
+| `/local_costmap/stvl_voxel_grid` | `sensor_msgs/msg/PointCloud2` | Local STVL in `dynamic_avoidance` | RViz temporal-voxel display | Local Costmap frame; the dynamic profile publishes temporal 5 cm voxel points here |
 | `/initialpose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | calibrated initial-pose node/Isaac Reset in `auto`, or RViz in `rviz` | SLAM Toolbox localization | `map`; Reliable + Volatile; invalid frame/non-finite/non-normalized manual poses are ignored |
 | `/initial_pose/status` | `std_msgs/msg/String` | calibrated initial-pose node | operator and recovery diagnostics | transient-local state such as waiting clock/scan/TF, complete, or manual override |
 | `/simulation/initial_pose_source` | `std_msgs/msg/String` | `initial_pose_policy` | Isaac Reset and ROS recovery contract | transient-local `auto` or `rviz` |
@@ -218,11 +219,13 @@ calibration, and update both sides of the binding.
 
 ## Camera stream contract
 
-The front Camera is an optional observation stream. `rgbd_navigation` sends its
-depth point cloud only to the Nav2 Local Costmap VoxelLayer; no Camera stream is
-consumed by SLAM, EKF, Global Costmap, Collision Monitor, Reset, or the
-activation gate. `--camera-profile` selects one of these strict profiles before
-Kit starts:
+The front Camera is an optional observation stream. Camera data never enters
+SLAM, EKF, odometry, Collision Monitor, Reset, or the activation gate. Its
+Costmap consumer is profile-specific: `stable` uses standard `VoxelLayer` in
+both the Local and Global Costmaps so the low static boxes remain known during a
+bypass; `dynamic_avoidance` replaces only the Local layer with STVL and removes
+the Global RGB-D layer, so a moving actor cannot leave a stale global trail.
+`--camera-profile` selects one of these strict profiles before Kit starts:
 
 | Profile | Resolution | Configured target rate | Contract |
 | --- | ---: | ---: | --- |
@@ -230,7 +233,7 @@ Kit starts:
 | `monitoring` | 640×360 | 15 Hz | GUI default and normal navigation observation |
 | `standard` | 640×480 | 20 Hz | intermediate observation/recording load |
 | `high_quality` | 1280×720 | 30 Hz | visual-quality run; not the navigation performance baseline |
-| `rgbd_navigation` | 320×180 | 10 Hz | RGB, CameraInfo, and depth point cloud for Local Costmap fusion |
+| `rgbd_navigation` | 320×180 | 10 Hz | RGB, CameraInfo, and depth point cloud for the selected Nav2 profile's Costmap fusion |
 
 When the CLI option is omitted, GUI mode resolves to `monitoring` and headless
 mode resolves to `off`. Rates in the table are configured targets, not wall-time
@@ -485,8 +488,10 @@ may be replaced with broad `pkill` commands.
 
 ## Navigation control performance contract
 
-The committed MPPI timing keeps the measured Isaac Sim 6.0.1 headless Ideal
-baseline. The long-route static campaign showed that a fixed 500-sample noise
+The committed MPPI timing has two explicit profiles. The following static
+baseline is the parameter set restored from
+`codex/kujiale-mppi-feasibility-tuning`; it is not the dynamic-avoidance
+overlay. The long-route static campaign showed that a fixed 500-sample noise
 bank can be temporarily infeasible after a local-costmap update, causing an
 unnecessary controller abort and BT costmap-clear recovery. The shipped profile
 therefore uses a bounded larger sample bank and internal re-sampling retries;
@@ -507,6 +512,15 @@ the StopZone remains active while ApproachZone is deliberately disabled:
 | `ApproachZone` | disabled | MPPI performs footprint-aware costmap prediction; StopZone remains the final LiDAR hard stop. |
 | Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
 
+The dynamic-avoidance overlay uses a different real-time budget while retaining
+the same two-second horizon: `controller_frequency=15 Hz`,
+`time_steps=30`, `model_dt=0.0666666667 s`, `batch_size=500`,
+`vx_max=1.20 m/s`, `wz_max=3.40 rad/s`, and a 60 Hz Velocity Smoother. It also
+uses a Local STVL at 10 Hz update / 5 Hz publication and publishes candidate
+trajectories sparsely (`trajectory_step=25`, `time_step=5`). It must be started
+with `nav2_profile:=dynamic_avoidance`; the default `stable` profile remains
+10 Hz / 20 steps / 0.10 s / 700 samples with a 20 Hz Velocity Smoother.
+
 Profile validation runs before Nav2 nodes start. Values must be finite and
 positive, steps/batch must be positive integers, and controller period
 `1 / controller_frequency` must not exceed `model_dt`. A configuration such as
@@ -517,19 +531,20 @@ contracts. Re-tune only with comparable runtime evidence.
 
 ## Experiment scenario contract
 
-The current formal scenarios are
-`kujiale_static_long_range.yaml` and `kujiale_dynamic_long_range.yaml`. Both
-run the same `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1`
-from transform-verified `long_route_start_g1`; they are not random-layout Warehouse
-smoke tests. The static scenario requires `rgbd_low_box_west`, `rgbd_low_box_center`,
-`rgbd_low_box_east`, `rgbd_low_box_north`, `rgbd_low_bar_east`, and `rgbd_low_bar_north`, while the dynamic scenario requires `g1_g2_south_crossing` and
-`g1_g2_north_crossing` (both triggered by G2). The GUI/RViz visual scenarios reuse this geometry with one seed each and
-set `record_evidence:=false`.
+The current static scenario is `kujiale_static_long_range.yaml`; it uses the
+`warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1` from
+transform-verified `long_route_start_g1`. It requires `rgbd_low_box_west`,
+`rgbd_low_box_center`, `rgbd_low_box_east`, `rgbd_low_box_north`,
+`rgbd_low_bar_east`, and `rgbd_low_bar_north`. Dynamic visual testing uses the
+schema-v4 actor configuration `kujiale_long_range_dynamic.yaml` and its
+`local_bypass`, `g2_g3_exit`, `g5_g1_crossing`, or
+`full_route_three_stage` case set. The focused G2→G3 and G5→G1 scenarios start
+from their calibrated G2/G5 poses; the full relay starts from G1.
 
 Before every static or dynamic run, the experiment runner reads the Isaac
 runtime obstacle contract. Both current scenario types require
 `--dynamic-obstacles`: static uses it to instantiate the stationary low boxes;
-dynamic uses it to instantiate the two triggered corridor-crossing actors. The enabled flag,
+dynamic uses it to instantiate the selected sequential actor. The enabled flag,
 physical configuration SHA256 and sorted obstacle IDs must exactly match the
 scenario before Reset or goal dispatch. For dynamic scenarios the runner also
 validates each actor's shape, XY size, Map-frame endpoints and duration.
@@ -540,10 +555,10 @@ Four static low boxes are physical `0.30 × 0.30 × 0.16 m` obstacles; the two s
 the operator can repeatedly adjust it and send RViz goals.  The `std_srvs/Trigger`
 service `/experiment/obstacles/capture_layout` returns the current positions in the
 declared Map frame; `/experiment/obstacles/reset` or a visual runner Reset restores the
-YAML seed positions. Each dynamic
-actor moves only `0.30 m` at `0.08–0.10 m/s` and enters `hold` after motion,
-remaining a visible central-area constraint rather than pushing the robot at startup.
-The route and obstacle
+YAML seed positions. Each dynamic actor has an explicit
+`waiting → armed → moving → parked → retired` lifecycle: goal dispatch only
+arms a hidden actor, the spatial gate releases it, and success at the
+corresponding next waypoint retires it. The route and obstacle
 coordinates are shown in [`kujiale_long_route_map.md`](kujiale_long_route_map.md);
 the exact machine-readable definitions remain the scenario and Isaac YAML files.
 
