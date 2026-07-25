@@ -10,17 +10,22 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 usage() {
   cat <<'USAGE'
-usage: run_kujiale_4x20_all.sh [CAMPAIGN_ID] [--resume] [--skip-build] [--startup-timeout-sec SECONDS]
+usage: run_kujiale_4x20_all.sh [CAMPAIGN_ID] [--dynamic-only] [--resume] [--skip-build] [--startup-timeout-sec SECONDS]
 
 Runs, in order: static pilot, static 40 rounds, controlled shutdown, dynamic
-pilot, dynamic 40 rounds, controlled shutdown, then the visual report.  The
-same CAMPAIGN_ID is used throughout; omit it to generate YYYYMMDD-HHMMSS.
+pilot, dynamic 40 rounds, controlled shutdown, then the visual reports.  A
+static 2x20 report is written immediately after the static stage, so it is
+preserved if a later dynamic pilot fails.  The full 4x20 report is written
+only after both stages finish.  With --dynamic-only, runs only the dynamic
+pilot and dynamic 40 rounds and writes a separate dynamic 2x20 report.
+Omit CAMPAIGN_ID to generate YYYYMMDD-HHMMSS.
 USAGE
 }
 
 campaign_id="${CAMPAIGN_ID:-$(date +%Y%m%d-%H%M%S)}"
 resume=false
 build_workspace=true
+dynamic_only=false
 startup_timeout_sec=900
 
 if [[ $# -gt 0 && "${1}" != --* ]]; then
@@ -29,6 +34,7 @@ if [[ $# -gt 0 && "${1}" != --* ]]; then
 fi
 while (($#)); do
   case "$1" in
+    --dynamic-only) dynamic_only=true ;;
     --resume) resume=true ;;
     --skip-build) build_workspace=false ;;
     --startup-timeout-sec)
@@ -183,10 +189,15 @@ run_campaign() {
   fi
 }
 
-[[ ! -e "${run_root}" || "${resume}" == true ]] \
+[[ ! -e "${run_root}" || "${resume}" == true || "${dynamic_only}" == true ]] \
   || die "campaign directory already exists: ${run_root}; use --resume or a new CAMPAIGN_ID"
-[[ ! -e "${report_root}" ]] \
-  || die "report directory already exists: ${report_root}; choose a new CAMPAIGN_ID"
+if [[ "${dynamic_only}" == false ]]; then
+  [[ ! -e "${report_root}" ]] \
+    || die "report directory already exists: ${report_root}; choose a new CAMPAIGN_ID"
+else
+  [[ ! -e "${report_root}/dynamic_2x20" ]] \
+    || die "dynamic report already exists: ${report_root}/dynamic_2x20; choose a new CAMPAIGN_ID"
+fi
 mkdir -p "${control_root}"
 
 if [[ "${build_workspace}" == true ]]; then
@@ -194,16 +205,46 @@ if [[ "${build_workspace}" == true ]]; then
   "${SCRIPT_DIR}/build_ros2.sh"
 fi
 
-log_info "starting one-command Kujiale 4x20 campaign=${campaign_id}"
-start_stage static
-run_campaign pilot static
-run_campaign static-pair
-stop_stage
+if [[ "${dynamic_only}" == false ]]; then
+  log_info "starting one-command Kujiale 4x20 campaign=${campaign_id}"
+  start_stage static
+  run_campaign pilot static
+  run_campaign static-pair
+  stop_stage
+  set +e
+  "${SCRIPT_DIR}/run_kujiale_4x20.sh" static-report "${campaign_id}"
+  static_report_status=$?
+  set -e
+  if [[ "${static_report_status}" -eq 0 ]]; then
+    log_info "static 2x20 report passed; open ${report_root}/static_2x20/index.html"
+  elif [[ "${static_report_status}" -eq 2 ]]; then
+    log_warn "static 2x20 stage completed but did not satisfy every gate; report: ${report_root}/static_2x20/index.html"
+  else
+    die "static 2x20 report generation failed (exit ${static_report_status}); inspect ${run_root}"
+  fi
+else
+  log_info "starting dynamic-only Kujiale 2x20 rerun campaign=${campaign_id}"
+fi
 
 start_stage dynamic
 run_campaign pilot dynamic
 run_campaign dynamic-pair
 stop_stage
+
+set +e
+"${SCRIPT_DIR}/run_kujiale_4x20.sh" dynamic-report "${campaign_id}"
+report_status=$?
+set -e
+if [[ "${report_status}" -eq 0 ]]; then
+  log_info "dynamic 2x20 campaign passed; open ${report_root}/dynamic_2x20/index.html"
+elif [[ "${report_status}" -eq 2 ]]; then
+  log_warn "dynamic 2x20 campaign completed but did not satisfy every gate; report: ${report_root}/dynamic_2x20/index.html"
+else
+  die "dynamic 2x20 report generation failed (exit ${report_status}); inspect ${run_root}"
+fi
+if [[ "${dynamic_only}" == true ]]; then
+  exit "${report_status}"
+fi
 
 "${SCRIPT_DIR}/run_kujiale_4x20.sh" status "${campaign_id}"
 set +e

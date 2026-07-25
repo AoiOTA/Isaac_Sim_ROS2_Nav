@@ -13,9 +13,10 @@ The remaining `warehouse_new.posegraph` is stored through Git LFS.
 ## 当前4×20运行状态（尚无正式结果）
 
 分支 `codex/kujiale-4x20-appearance-benchmark` 已实现四组各20轮的调度、匿名 USD Session
-Layer 外观覆盖、证据采集、断点续跑和报告。离线测试已验证矩阵、报告和源 USD 外观清单；但未启动
+Layer 外观覆盖、证据采集、断点续跑和报告。离线测试已验证矩阵、阶段性2×20/完整4×20报告和源 USD 外观清单；但未启动
 Isaac/ROS、未执行本轮80个正式 run，故本台账**不记录任何4×20成功率**，也不宣称算法已通过90%。
-运行后应以 `data/reports/kujiale_4x20_<campaign_id>/benchmark.json` 和每轮校验和为唯一结论来源。
+运行后应以 `data/reports/kujiale_4x20_<campaign_id>/benchmark.json`（同批次完整4×20）或其 `static_2x20/`、
+`dynamic_2x20/` 子目录（独立40轮范围）和每轮校验和为唯一结论来源；不得自动跨批次拼接。
 命令与门槛见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
 ## 历史静态候选结果（2026-07-23；不等同当前4×20验收）

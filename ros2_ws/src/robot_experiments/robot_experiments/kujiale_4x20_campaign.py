@@ -26,6 +26,22 @@ CONDITIONS = {
     "dynamic_baseline": {"kind": "dynamic", "seeds": DYNAMIC_SEEDS, "profile": "baseline", "required": 18},
     "dynamic_appearance": {"kind": "dynamic", "seeds": DYNAMIC_SEEDS, "profile": None, "required": 18},
 }
+SCOPES = {
+    "full": tuple(CONDITIONS),
+    "static": ("static_baseline", "static_appearance"),
+    "dynamic": ("dynamic_baseline", "dynamic_appearance"),
+}
+SCOPE_TITLES = {
+    "full": "Kujiale 4×20 光照/颜色鲁棒性报告",
+    "static": "Kujiale 静态 2×20 光照/颜色鲁棒性报告",
+    "dynamic": "Kujiale 动态 2×20 光照/颜色鲁棒性报告",
+}
+CONDITION_LABELS = {
+    "static_baseline": "静态\n基准",
+    "static_appearance": "静态\n外观",
+    "dynamic_baseline": "动态\n基准",
+    "dynamic_appearance": "动态\n外观",
+}
 
 
 class Campaign4x20Error(ValueError):
@@ -158,23 +174,27 @@ def _run_rows(run_root: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
-    """Validate all 80 expected evidence rows and calculate four independent gates."""
+def summarize_4x20(run_root: str | Path, *, scope: str = "full") -> dict[str, Any]:
+    """Validate the full 4x20 evidence or an independently reportable 2x20 slice."""
     root = Path(run_root).expanduser().resolve()
     if not root.is_dir():
         raise Campaign4x20Error(f"campaign run root does not exist: {root}")
+    if scope not in SCOPES:
+        raise Campaign4x20Error(f"unknown report scope: {scope}")
+    selected_conditions = SCOPES[scope]
     rows = _run_rows(root)
-    by_condition: dict[str, list[dict[str, Any]]] = {name: [] for name in CONDITIONS}
+    by_condition: dict[str, list[dict[str, Any]]] = {name: [] for name in selected_conditions}
     issues: list[str] = []
     for row in rows:
         condition = row["condition_id"]
         if condition not in CONDITIONS:
             issues.append(f"unknown_or_missing_condition:{condition!r}:{row['evidence_dir']}")
-            continue
-        by_condition[condition].append(row)
+        elif condition in by_condition:
+            by_condition[condition].append(row)
     condition_summaries: dict[str, Any] = {}
     all_rows: list[dict[str, Any]] = []
-    for condition, specification in CONDITIONS.items():
+    for condition in selected_conditions:
+        specification = CONDITIONS[condition]
         selected = by_condition[condition]
         expected_seeds = set(specification["seeds"])
         seen: set[int] = set()
@@ -215,12 +235,9 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
             for row in valid_rows
             if row["kind"] == "static" and row["strict_success"] and row["path_deviation_percent"] is not None
         ]
-        deviations_ok = (
-            specification["kind"] != "static"
-            or (
-                len(successful_static_deviations) == strict
-                and all(value <= 20.0 for value in successful_static_deviations)
-            )
+        deviations_ok = specification["kind"] != "static" or (
+            len(successful_static_deviations) == strict
+            and all(value <= 20.0 for value in successful_static_deviations)
         )
         evidence_ok = len(valid_rows) == 20 and all(
             row["data_complete"] and row["checksums_verified"] for row in valid_rows
@@ -246,23 +263,30 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
             issues.append(f"evidence_incomplete:{condition}")
         all_rows.extend(valid_rows)
 
-    for base, varied in (("static_baseline", "static_appearance"), ("dynamic_baseline", "dynamic_appearance")):
+    selected_pairs = [
+        (base, varied)
+        for base, varied in (("static_baseline", "static_appearance"), ("dynamic_baseline", "dynamic_appearance"))
+        if base in selected_conditions and varied in selected_conditions
+    ]
+    for base, varied in selected_pairs:
         base_seeds = {row["seed"] for row in by_condition[base] if isinstance(row["seed"], int)}
         varied_seeds = {row["seed"] for row in by_condition[varied] if isinstance(row["seed"], int)}
         if base_seeds != varied_seeds:
             issues.append(f"unpaired_seeds:{base}:{varied}")
-    profiles = [row["appearance_profile_id"] for row in by_condition["static_appearance"]]
-    if {profile: profiles.count(profile) for profile in APPEARANCE_PROFILES} != {profile: 5 for profile in APPEARANCE_PROFILES}:
-        issues.append("static_appearance_profile_distribution_invalid")
-    dynamic_profiles: dict[str, set[str]] = {}
-    for row in by_condition["dynamic_appearance"]:
-        if isinstance(row["variant_id"], str) and isinstance(row["appearance_profile_id"], str):
-            dynamic_profiles.setdefault(row["variant_id"], set()).add(row["appearance_profile_id"])
-    if dynamic_profiles != {variant: set(APPEARANCE_PROFILES) for variant in ("v1", "v2", "v3", "v4", "v5")}:
-        issues.append("dynamic_variant_profile_crossing_invalid")
+    if "static_appearance" in selected_conditions:
+        profiles = [row["appearance_profile_id"] for row in by_condition["static_appearance"]]
+        if {profile: profiles.count(profile) for profile in APPEARANCE_PROFILES} != {profile: 5 for profile in APPEARANCE_PROFILES}:
+            issues.append("static_appearance_profile_distribution_invalid")
+    if "dynamic_appearance" in selected_conditions:
+        dynamic_profiles: dict[str, set[str]] = {}
+        for row in by_condition["dynamic_appearance"]:
+            if isinstance(row["variant_id"], str) and isinstance(row["appearance_profile_id"], str):
+                dynamic_profiles.setdefault(row["variant_id"], set()).add(row["appearance_profile_id"])
+        if dynamic_profiles != {variant: set(APPEARANCE_PROFILES) for variant in ("v1", "v2", "v3", "v4", "v5")}:
+            issues.append("dynamic_variant_profile_crossing_invalid")
 
     pairs = []
-    for base, varied in (("static_baseline", "static_appearance"), ("dynamic_baseline", "dynamic_appearance")):
+    for base, varied in selected_pairs:
         first = {row["seed"]: row for row in by_condition[base] if isinstance(row["seed"], int)}
         second = {row["seed"]: row for row in by_condition[varied] if isinstance(row["seed"], int)}
         for seed in sorted(set(first) & set(second)):
@@ -277,7 +301,7 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
                 ),
             })
     complete = (
-        len(all_rows) == 80
+        len(all_rows) == 20 * len(selected_conditions)
         and not issues
         and all(item["evidence_complete"] for item in condition_summaries.values())
     )
@@ -285,6 +309,8 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
     return {
         "schema_version": 1,
         "campaign": "kujiale_4x20_appearance",
+        "scope": scope,
+        "title": SCOPE_TITLES[scope],
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "run_root": str(root),
         "complete": complete,
@@ -314,19 +340,19 @@ def _plot_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
     plt, _ = _matplotlib()
     figures.mkdir(parents=True, exist_ok=True)
     paths: list[Path] = []
-    conditions = list(CONDITIONS)
-    labels = ["静态\n基准", "静态\n外观", "动态\n基准", "动态\n外观"]
+    conditions = list(summary["conditions"])
+    labels = [CONDITION_LABELS[item] for item in conditions]
     strict = [summary["conditions"][item]["strict_success"] for item in conditions]
     collision = [summary["conditions"][item]["physical_collision_free"] for item in conditions]
-    thresholds = [95, 95, 90, 90]
+    thresholds = [summary["conditions"][item]["strict_success"]["required_numerator"] * 5 for item in conditions]
     fig, axis = plt.subplots(figsize=(13, 7), constrained_layout=True)
-    x = list(range(4)); width = 0.36
+    x = list(range(len(conditions))); width = 0.36
     strict_values = [item["percent"] for item in strict]; collision_values = [item["percent"] for item in collision]
     first = axis.bar([value - width / 2 for value in x], strict_values, width, label="严格成功", color="#2563eb")
     second = axis.bar([value + width / 2 for value in x], collision_values, width, label="物理无碰撞", color="#059669")
     axis.plot(x, thresholds, "o--", color="#ea580c", label="分组门槛")
     axis.set_xticks(x, labels); axis.set_ylim(0, 108); axis.set_ylabel("比例 (%)")
-    axis.set_title("Kujiale 4×20｜四组独立验收", loc="left", fontweight="bold")
+    axis.set_title(f"{summary['title']}｜分组独立验收", loc="left", fontweight="bold")
     axis.legend(frameon=False, ncol=3)
     for bars, entries in ((first, strict), (second, collision)):
         for bar, entry in zip(bars, entries):
@@ -344,15 +370,17 @@ def _plot_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
     axis.tick_params(axis="x", rotation=15); axis.legend(frameon=False, ncol=2)
     path = figures / "duration_distribution.png"; fig.savefig(path, dpi=180, facecolor="#f8fafc"); plt.close(fig); paths.append(path)
 
-    fig, axis = plt.subplots(figsize=(13, 6), constrained_layout=True)
-    static_rows = [row for row in rows if row["kind"] == "static" and row["strict_success"] and row["path_deviation_percent"] is not None]
-    for condition in ("static_baseline", "static_appearance"):
-        values = [row for row in static_rows if row["condition_id"] == condition]
-        axis.scatter([row["seed"] for row in values], [row["path_deviation_percent"] for row in values], label=condition, color=colors[condition])
-    axis.axhline(20.0, linestyle="--", color="#dc2626", label="20% 门槛")
-    axis.set_xlabel("seed"); axis.set_ylabel("GT路径偏差 (%)"); axis.set_title("静态成功轮次的路径偏差", loc="left", fontweight="bold")
-    axis.legend(frameon=False)
-    path = figures / "static_path_deviation.png"; fig.savefig(path, dpi=180, facecolor="#f8fafc"); plt.close(fig); paths.append(path)
+    static_conditions = [item for item in conditions if CONDITIONS[item]["kind"] == "static"]
+    if static_conditions:
+        fig, axis = plt.subplots(figsize=(13, 6), constrained_layout=True)
+        static_rows = [row for row in rows if row["kind"] == "static" and row["strict_success"] and row["path_deviation_percent"] is not None]
+        for condition in static_conditions:
+            values = [row for row in static_rows if row["condition_id"] == condition]
+            axis.scatter([row["seed"] for row in values], [row["path_deviation_percent"] for row in values], label=condition, color=colors[condition])
+        axis.axhline(20.0, linestyle="--", color="#dc2626", label="20% 门槛")
+        axis.set_xlabel("seed"); axis.set_ylabel("GT路径偏差 (%)"); axis.set_title("静态成功轮次的路径偏差", loc="left", fontweight="bold")
+        axis.legend(frameon=False)
+        path = figures / "static_path_deviation.png"; fig.savefig(path, dpi=180, facecolor="#f8fafc"); plt.close(fig); paths.append(path)
     return paths
 
 
@@ -379,6 +407,14 @@ def _clean(summary: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _dashboard(summary: Mapping[str, Any], figures: Iterable[Path]) -> str:
+    title = str(summary["title"])
+    scope = str(summary["scope"])
+    run_count = 20 * len(summary["conditions"])
+    scope_text = (
+        "四组各20轮；仅当同一批次的静态和动态均完成时，才可作为完整4×20结论。"
+        if scope == "full"
+        else f"本报告仅覆盖{'静态' if scope == 'static' else '动态'} 2×20；不能替代或自动合并为完整4×20结论。"
+    )
     cards = "".join(
         f"<article><h3>{html.escape(condition)}</h3><strong>{entry['strict_success']['numerator']}/20</strong><span>严格成功</span><p>无碰撞 {entry['physical_collision_free']['numerator']}/20 · {'通过' if entry['passed'] else '未通过'}</p></article>"
         for condition, entry in summary["conditions"].items()
@@ -390,14 +426,23 @@ def _dashboard(summary: Mapping[str, Any], figures: Iterable[Path]) -> str:
     images = "".join(f"<figure><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'><figcaption>{html.escape(path.stem)}</figcaption></figure>" for path in figures)
     issue_text = "无" if not summary["issues"] else "<br>".join(html.escape(item) for item in summary["issues"])
     status = "通过" if summary["passed"] else "未通过"
-    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Kujiale 4×20 外观鲁棒性报告</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img{{display:block;max-width:100%;height:auto;margin:auto}}figcaption{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}</style><main><header><h1>Kujiale 4×20 光照/颜色鲁棒性报告：{status}</h1><p>自动生成；四组各20轮，报告以每轮的manifest、summary、文件校验和为唯一输入。完整性：{'完整' if summary['complete'] else '不完整'}。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>可视化</h2>{images}</section><section class='panel'><h2>运行筛选</h2><div class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{''.join(f"<option>{name}</option>" for name in CONDITIONS)}</select></label><label>外观 <select id='profile'><option value='all'>全部</option><option>baseline</option>{''.join(f'<option>{name}</option>' for name in APPEARANCE_PROFILES)}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></div><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>时长(s)</th><th>失败原因</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script>for(const e of document.querySelectorAll('select'))e.onchange=()=>{{const c=condition.value,p=profile.value,r=result.value;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!((c==='all'||x.dataset.condition===c)&&(p==='all'||x.dataset.profile===p)&&(r==='all'||x.dataset.result===r)))}}</script></html>"""
+    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img{{display:block;max-width:100%;height:auto;margin:auto}}figcaption{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>可视化</h2>{images}</section><section class='panel'><h2>运行筛选</h2><div class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{''.join(f"<option>{name}</option>" for name in summary['conditions'])}</select></label><label>外观 <select id='profile'><option value='all'>全部</option><option>baseline</option>{''.join(f'<option>{name}</option>' for name in APPEARANCE_PROFILES)}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></div><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>时长(s)</th><th>失败原因</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script>for(const e of document.querySelectorAll('select'))e.onchange=()=>{{const c=condition.value,p=profile.value,r=result.value;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!((c==='all'||x.dataset.condition===c)&&(p==='all'||x.dataset.profile===p)&&(r==='all'||x.dataset.result===r)))}}</script></html>"""
 
 
 def write_4x20_report(summary: Mapping[str, Any], output_directory: str | Path) -> Path:
     root = Path(output_directory).expanduser().resolve()
     if root.exists():
-        raise Campaign4x20Error(f"refusing to overwrite report directory: {root}")
-    figures = root / "figures"; root.mkdir(parents=True)
+        # A full report shares its campaign container with previously emitted
+        # static/dynamic subreports.  Those immutable child reports are safe
+        # to retain; any other content means the requested report could be
+        # overwritten and must be rejected.
+        allowed_subreports = {"static_2x20", "dynamic_2x20"}
+        unexpected = [item.name for item in root.iterdir() if item.name not in allowed_subreports]
+        if unexpected:
+            raise Campaign4x20Error(f"refusing to overwrite report directory: {root}")
+    else:
+        root.mkdir(parents=True)
+    figures = root / "figures"
     figures_written = _plot_figures(summary, figures)
     map_figure = _copy_map_figure(figures)
     if map_figure is not None:
@@ -409,18 +454,26 @@ def write_4x20_report(summary: Mapping[str, Any], output_directory: str | Path) 
         writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows({key: row.get(key) for key in fields} for row in clean["runs"])
     evidence = [{"condition_id": row["condition_id"], "seed": row["seed"], "appearance_profile_id": row["appearance_profile_id"], "nav2_profile": row["nav2_profile"], "manifest_path": row["manifest_path"], "evidence_dir": row["evidence_dir"]} for row in summary["runs"]]
     (root / "evidence_index.json").write_text(json.dumps(evidence, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    markdown = "# Kujiale 4×20 光照/颜色鲁棒性报告\n\n"
+    title = str(summary["title"])
+    scope = str(summary["scope"])
+    markdown = f"# {title}\n\n"
     markdown += f"结论：**{'通过' if summary['passed'] else '未通过'}**；证据完整：{'是' if summary['complete'] else '否'}。\n\n"
+    if scope != "full":
+        markdown += "本报告只覆盖本次静态或动态 2×20 证据，不能单独作为完整 4×20 验收结论，也不会自动合并不同批次。\n\n"
     for condition, entry in summary["conditions"].items():
         markdown += f"- {condition}: 严格 {entry['strict_success']['numerator']}/20，无碰撞 {entry['physical_collision_free']['numerator']}/20，{'通过' if entry['passed'] else '未通过'}。\n"
-    markdown += "\n![四组测试地图](figures/kujiale_4x20_test_matrix_map.png)\n\n![条件总览](figures/condition_overview.png)\n"
+    markdown += "\n![测试地图](figures/kujiale_4x20_test_matrix_map.png)\n\n![条件总览](figures/condition_overview.png)\n"
     (root / "report.md").write_text(markdown, encoding="utf-8")
-    (root / "data_dictionary.md").write_text("# 数据字典\n\n`benchmark.json` 是四组验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为四组实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。\n", encoding="utf-8")
+    dictionary = "# 数据字典\n\n"
+    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。\n"
+    if scope != "full":
+        dictionary += "\n本报告是独立的 2×20 子报告，不会与其他批次自动合并。\n"
+    (root / "data_dictionary.md").write_text(dictionary, encoding="utf-8")
     (root / "index.html").write_text(_dashboard(clean, figures_written), encoding="utf-8")
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:
         for path in figures_written:
-            image = plt.imread(path); fig, axis = plt.subplots(figsize=(16, 9)); axis.imshow(image); axis.axis("off"); axis.set_title("Kujiale 4×20 光照/颜色鲁棒性报告"); pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
+            image = plt.imread(path); fig, axis = plt.subplots(figsize=(16, 9)); axis.imshow(image); axis.axis("off"); axis.set_title(title); pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
     _write_checksums(root)
     return root
 
@@ -430,13 +483,14 @@ def main(args: list[str] | None = None) -> None:
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--output-directory")
     parser.add_argument("--status", action="store_true")
+    parser.add_argument("--scope", choices=tuple(SCOPES), default="full")
     parsed = parser.parse_args(args)
     if bool(parsed.output_directory) == bool(parsed.status):
         parser.error("provide exactly one of --output-directory or --status")
-    summary = summarize_4x20(parsed.run_root)
+    summary = summarize_4x20(parsed.run_root, scope=parsed.scope)
     if parsed.status:
-        print(json.dumps({"complete": summary["complete"], "passed": summary["passed"], "issues": summary["issues"], "conditions": summary["conditions"]}, ensure_ascii=False))
+        print(json.dumps({"scope": summary["scope"], "complete": summary["complete"], "passed": summary["passed"], "issues": summary["issues"], "conditions": summary["conditions"]}, ensure_ascii=False))
         return
     output = write_4x20_report(summary, parsed.output_directory)
-    print(json.dumps({"output": str(output), "complete": summary["complete"], "passed": summary["passed"]}, ensure_ascii=False))
+    print(json.dumps({"output": str(output), "scope": summary["scope"], "complete": summary["complete"], "passed": summary["passed"]}, ensure_ascii=False))
     raise SystemExit(0 if summary["passed"] else 2)

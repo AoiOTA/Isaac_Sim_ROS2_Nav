@@ -536,7 +536,8 @@ contracts. Re-tune only with comparable runtime evidence.
 共同构成四组各20轮。Runner 通过 `appearance_profile_id` 让 Isaac 在 Reset 前选择固定外观 profile，
 并要求运行时 `/experiment/appearance/state` 的配置哈希与场景配置一致。静态清单必须记录
 `nav2_profile=stable`，动态清单必须记录 `nav2_profile=dynamic_avoidance`；二者不一致时报告判为证据失败。
-完整用户命令见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+报告可按 `full`、`static`、`dynamic` 范围分别验证：两个 `2×20` 子报告只读取各自40轮，完整4×20报告只能读取同一 campaign
+的全部80轮，绝不自动拼接不同批次。完整用户命令见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
 历史静态候选场景是 `kujiale_static_long_range.yaml`; it uses the
 `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1` from

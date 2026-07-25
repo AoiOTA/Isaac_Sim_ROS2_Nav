@@ -159,8 +159,8 @@ Navigation 同时发布 `/cmd_vel`。
 
 ### 当前正式入口：4×20 光照/颜色鲁棒性 campaign
 
-推荐入口会自动构建工作区、启动静态 Isaac/Nav2、运行静态 pilot＋40轮、有序关闭两套栈、
-启动动态栈、运行动态 pilot＋40轮，并最终自动生成报告：
+推荐入口会自动构建工作区、启动静态 Isaac/Nav2、运行静态 pilot＋40轮并立即保留静态 `2×20` 报告、有序关闭两套栈、
+启动动态栈、运行动态 pilot＋40轮并保留动态 `2×20` 报告，最后才生成同一批次总4×20报告：
 
 ```bash
 ./scripts/run_kujiale_4x20_all.sh
@@ -173,8 +173,11 @@ Navigation 同时发布 `/cmd_vel`。
 预检项目和报告退出码见
 [`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md)。
 
-报告输出为 `data/reports/kujiale_4x20_<campaign_id>/index.html`、PDF、Markdown、PNG、
-CSV、JSON 和证据索引；即使验收失败也生成报告，此时命令返回 `2`。
+报告输出位于 `data/reports/kujiale_4x20_<campaign_id>/`：`static_2x20/` 和 `dynamic_2x20/` 是各阶段完成后
+立即保留的独立报告，根目录为同一批次80轮完成后的总报告。若静态已通过而动态需修复复测，运行
+`./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build`；它不重跑静态、也不自动把不同批次合并成总4×20结论。
+已完成静态但尚未产生子报告的批次可用 `./scripts/run_kujiale_4x20.sh static-report <CAMPAIGN_ID>` 补报。各报告均包含
+PDF、Markdown、PNG、CSV、JSON 和证据索引；即使验收失败也生成报告，此时命令返回 `2`。
 
 ### 历史候选与可视化入口
 

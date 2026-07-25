@@ -20,11 +20,13 @@ def _write_checksums(root: Path) -> None:
     (root / "checksums.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_campaign(root: Path) -> None:
+def _write_campaign(root: Path, kinds: tuple[str, ...] = ("static", "dynamic")) -> None:
     for filename, kind in (
         ("kujiale_4x20_static_pair.yaml", "static"),
         ("kujiale_4x20_dynamic_pair.yaml", "dynamic"),
     ):
+        if kind not in kinds:
+            continue
         scenario = load_scenario(CONFIG / filename)
         for index, selection in enumerate(scenario.run_matrix, start=1):
             evidence = root / kind / scenario.scenario_id / f"run-{index:04d}-seed-{selection.seed}"
@@ -101,3 +103,39 @@ def test_4x20_summary_ignores_pilot_evidence_with_duplicate_seed(tmp_path):
     assert summary["complete"] is True
     assert summary["passed"] is True
     assert len(summary["runs"]) == 80
+
+
+def test_dynamic_2x20_report_is_complete_without_static_evidence(tmp_path):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root, kinds=("dynamic",))
+    summary = summarize_4x20(run_root, scope="dynamic")
+    assert summary["scope"] == "dynamic"
+    assert summary["complete"] is True
+    assert summary["passed"] is True
+    assert set(summary["conditions"]) == {"dynamic_baseline", "dynamic_appearance"}
+    output = write_4x20_report(summary, tmp_path / "dynamic-report")
+    assert (output / "index.html").is_file()
+    assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
+    assert not (output / "figures" / "static_path_deviation.png").exists()
+
+
+def test_static_2x20_report_is_complete_without_dynamic_evidence(tmp_path):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root, kinds=("static",))
+    summary = summarize_4x20(run_root, scope="static")
+    assert summary["scope"] == "static"
+    assert summary["complete"] is True
+    assert summary["passed"] is True
+    assert set(summary["conditions"]) == {"static_baseline", "static_appearance"}
+
+
+def test_full_report_can_follow_retained_stage_subreports(tmp_path):
+    run_root = tmp_path / "runs"
+    report_root = tmp_path / "report"
+    _write_campaign(run_root)
+    write_4x20_report(summarize_4x20(run_root, scope="static"), report_root / "static_2x20")
+    write_4x20_report(summarize_4x20(run_root, scope="dynamic"), report_root / "dynamic_2x20")
+    output = write_4x20_report(summarize_4x20(run_root), report_root)
+    assert (output / "index.html").is_file()
+    assert (output / "static_2x20" / "index.html").is_file()
+    assert (output / "dynamic_2x20" / "index.html").is_file()

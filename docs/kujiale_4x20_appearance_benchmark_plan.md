@@ -81,8 +81,8 @@ python3 scripts/generate_kujiale_long_route_maps.py
 - 静态阶段与动态阶段之间必须重启 Isaac/Nav2；正式80轮期间禁止调参。
 
 以下是推荐的实际运行入口。单命令监督器会重新构建ROS工作区、启动静态 Isaac/Nav2、
-完成静态 pilot 和40轮、先关闭 Nav2 再关闭 Isaac、启动新的动态栈、完成动态 pilot 和40轮，
-最后自动生成报告；不需要另开终端或手动切换：
+完成静态 pilot 和40轮后立即生成并保留静态 `2×20` 报告、先关闭 Nav2 再关闭 Isaac、启动新的动态栈、
+完成动态 pilot 和40轮并生成动态 `2×20` 报告，最后才生成同一批次的总 `4×20` 报告；不需要另开终端或手动切换：
 
 ```bash
 cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
@@ -98,7 +98,8 @@ cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 每个阶段会等待 `preflight` 校验磁盘、地图/场景哈希、ROS话题、TF和实际 Nav2 profile；
 Isaac 或 Nav2 在启动超时（默认900秒）前退出时，监督器会失败并指出对应日志。日志保存在
 `data/experiment_runs/kujiale_4x20_<campaign_id>/orchestrator/`。每种模式的 `pilot` 都运行矩阵中
-首个外观变化轮次；pilot 仅验证环境和证据，最终报告自动排除它并始终只统计80轮。
+首个外观变化轮次；pilot 仅验证环境和证据，所有正式报告自动排除它。静态/动态子报告各只统计对应的40轮，
+总报告只统计同一批次的80轮。
 
 中断后，保留同一 ID 运行：
 
@@ -111,10 +112,36 @@ pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离�
 然后用当前配置重新执行它；不会静默复用失败 pilot，也不会改写正式轮次。已经生成报告的 ID 不允许覆盖，请使用新 ID。
 如果刚完成构建，可加 `--skip-build`；必要时可用 `--startup-timeout-sec 1200` 调整每阶段启动等待上限。
 
+### 4.1 动态问题后的独立复测（不重跑静态）
+
+静态 40 轮已完成并生成 `static_2x20` 报告后，动态出现问题时不要用 `--resume` 混入使用旧配置的
+已完成动态正式轮次。使用新的 campaign ID，只启动动态栈、运行动态 pilot 与40轮、并生成独立的
+`dynamic_2x20` 报告：
+
+```bash
+./scripts/run_kujiale_4x20_all.sh --dynamic-only
+# 已构建工作区时：
+./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build
+```
+
+该模式不启动静态 Isaac/Nav2，也不改写或覆盖已有静态报告。它只验证 `dynamic_baseline` 和
+`dynamic_appearance` 两组各20轮；动态子报告不能自动同其他 campaign 的静态子报告合成为完整4×20结论。
+为已经完成静态阶段、但尚未产生静态报告的现有 campaign 补报时，执行：
+
+```bash
+./scripts/run_kujiale_4x20.sh static-report <已有CAMPAIGN_ID>
+```
+
+当前批次静态阶段完成后可使用：
+
+```bash
+./scripts/run_kujiale_4x20.sh static-report 20260725-210035
+```
+
 `run_kujiale_4x20_isaac.sh`、`run_ros.sh` 和 `run_kujiale_4x20.sh` 的分开调用仍可用于人工观察或单阶段
 调试，但不再是正式批次的推荐入口。
 
-### 4.1 单轮 GUI/RViz 诊断（不计入4×20）
+### 4.2 单轮 GUI/RViz 诊断（不计入4×20）
 
 四组正式实验之外，可单独观察共同路线 `G2 → G3 → G4 → G5 → G1`。静态自动 GUI/RViz
 使用 `run_visual_route.sh static`；动态自动 GUI/RViz 使用
@@ -126,12 +153,14 @@ pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离�
 
 ## 5. 自动报告与校验
 
-完整campaign在单一目录中生成 `index.html`、`report.pdf`、`report.md`、`benchmark.json/csv`、
-`data_dictionary.md`、`evidence_index.json`、校验和及PNG图；不复制完整MCAP。报告首页嵌入本文件的
-4×20测试地图，支持按实验组、seed、外观配置、动态变体和结果筛选。
+完整 campaign 在 `data/reports/kujiale_4x20_<campaign_id>/` 生成总 `index.html`、`report.pdf`、`report.md`、
+`benchmark.json/csv`、`data_dictionary.md`、`evidence_index.json`、校验和及PNG图；不复制完整MCAP。静态阶段
+完成后立即写入 `static_2x20/`，动态阶段完成后写入 `dynamic_2x20/`，从而动态失败不会丢失静态报告。每份报告首页
+嵌入本文件的测试地图，支持按实验组、seed、外观配置、动态变体和结果筛选。
 
 报告展示四组成功率和置信区间、耗时分布、路径长度、静态偏差、恢复次数、碰撞、动态交互有效性和失败原因，
 并保留基准/外观变化的同seed配对记录。即使未达到门槛也必须生成报告；验收通过返回0，批次完成但门槛或证据失败返回2。
+`static_2x20` 与 `dynamic_2x20` 是各自独立的验收报告，不会自动将不同 campaign 的结果拼接成完整4×20报告。
 
 自动化测试覆盖：80轮矩阵完整性、外观分配、路线一致性、Session Layer应用与恢复、
 断点续跑、证据校验、门槛判定，以及HTML/PDF/PNG报告生成。
