@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 from robot_experiments.kujiale_4x20_campaign import (
+    _dynamic_obstacle_tracks,
     _static_obstacle_rectangles,
     main,
     summarize_4x20,
@@ -64,12 +65,24 @@ def _write_campaign(
             }
             (evidence / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (evidence / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
-            if include_one_trajectory and kind == "static" and index == 1:
+            if include_one_trajectory and index == 1:
                 with gzip.open(evidence / "ground_truth.csv.gz", "wt", encoding="utf-8", newline="") as stream:
                     stream.write("x,y,yaw_rad,linear_speed_mps,angular_speed_radps,stamp_s\n")
                     stream.write("0.45,-5.35,1.57,0.0,0.0,0.0\n")
                     stream.write("0.60,-5.10,1.40,0.2,0.0,1.0\n")
                     stream.write("0.80,4.80,-2.79,0.0,0.0,2.0\n")
+                if kind == "dynamic":
+                    with gzip.open(
+                        evidence / "dynamic_obstacles.csv.gz",
+                        "wt",
+                        encoding="utf-8",
+                        newline="",
+                    ) as stream:
+                        stream.write("id,state,stamp_s,position,velocity_mps,progress,min_clearance_m\n")
+                        stream.write('unused_actor,waiting,0.0,"[1.0, 1.0, 0.5]",0.0,0.0,\n')
+                        stream.write('local_bypass_actor,armed,0.0,"[-1.65, -0.2, 0.5]",0.0,0.0,0.4\n')
+                        stream.write('local_bypass_actor,moving,1.0,"[-1.3, -0.2, 0.5]",0.4,0.5,0.3\n')
+                        stream.write('local_bypass_actor,parked,2.0,"[-0.95, -0.2, 0.5]",0.0,1.0,0.3\n')
             _write_checksums(evidence)
 
 
@@ -234,3 +247,27 @@ def test_static_trajectory_overlay_uses_the_six_versioned_physical_obstacles():
     rectangles = _static_obstacle_rectangles()
     assert len(rectangles) == 6
     assert all(width > 0.0 and height > 0.0 for _, _, width, height in rectangles)
+
+
+def test_dynamic_trajectory_overlay_uses_only_actors_activated_in_run_evidence(tmp_path):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root, kinds=("dynamic",), include_one_trajectory=True)
+    evidence = next(run_root.rglob("run-0001-seed-7301"))
+    tracks = _dynamic_obstacle_tracks(evidence)
+    assert set(tracks) == {"local_bypass_actor"}
+    assert tracks["local_bypass_actor"] == [
+        (-1.65, -0.2),
+        (-1.3, -0.2),
+        (-0.95, -0.2),
+    ]
+
+    output = write_4x20_report(
+        summarize_4x20(run_root, scope="dynamic"),
+        tmp_path / "report",
+    )
+    assert (
+        output
+        / "figures"
+        / "trajectories"
+        / "dynamic_baseline-seed-7301-baseline.png"
+    ).is_file()
