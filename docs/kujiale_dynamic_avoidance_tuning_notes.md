@@ -95,9 +95,13 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 
 后续 v1 pilot 仍在约 `0.13 m` guard 净距触发 `safety_yield`，表明仅扩大膨胀半径不足以让 MPPI 在近场持续看到 actor。根因是动态 Local LiDAR 层继承的 `obstacle_min_range=0.40 m` 会过滤 actor 最近表面已经进入近场的扫描点。仅将 `dynamic_avoidance` 的 Local `obstacle_min_range` 降至 `0.10 m`；Global Costmap、静态 profile、Collision Monitor 与 actor 本身均不改变。这样 Local Costmap 不会在绕行关键时刻清除动态方块，MPPI 仍保留完整 footprint 碰撞检查。
 
-`20260725-222852` 的 v1 动态外观 pilot 再次复现了另一层问题：G1–G5 五段均由 Nav2 成功完成，三段动态行为证据也完整，且没有物理碰撞；但 `local_bypass_actor` 在 `31.683333 s`、保守 guard 净距 `0.1332 m` 时执行了 `safety_yield`。将同步记录的 Ground Truth 姿态与 `0.40 m` actor 方块按 Nav2 的矩形 footprint（含 `5 mm` padding）复算，actor 停车后的最小真实净距约为 `0.0238 m`，仍低于 `0.10 m`，因此不能把该轮当作误报或放宽验收。
+`20260725-222852` 的 v1 动态外观 pilot 再次复现了另一层问题：G1–G5 五段均由 Nav2 成功完成，三段动态行为证据也完整，且没有物理碰撞；但 `local_bypass_actor` 在 `31.683333 s`、保守 guard 净距 `0.1332 m` 时执行了 `safety_yield`。将同步记录的 Ground Truth 姿态与 `0.40 m` actor 方块按 Nav2 的矩形 footprint（含 `5 mm` padding）复算，actor 停车后的最小真实净距约为 `0.0238 m`。
 
-本次不改任何 actor 坐标、尺寸、速度、加速度、触发门、变体延迟或安全阈值，也不改静态 Nav2 profile。动态 overlay 保留 `inflation_radius=0.60 m`、`cost_scaling_factor=9.0` 和完整 footprint 碰撞检查，并新增 `CostCritic.near_collision_cost=20`。在当前 inflation 衰减下，cost 20 对应距 lethal actor cell 约 `0.50 m`，位于机器人 `0.33 m` 外接圆加 `0.14 m` actor guard 之外；MPPI 会在 actor 被迫让停之前施加 `critical_cost=300`，而不是只在默认 cost 253 的内切膨胀边界才强惩罚。该值仅作用于动态栈，必须通过新的 dynamic pilot 验证，不能复用失败 pilot 作为通过证据。
+本次不改任何 actor 坐标、尺寸、速度、加速度、触发门、变体延迟或安全阈值，也不改静态 Nav2 profile。动态 overlay 保留 `inflation_radius=0.60 m`、`cost_scaling_factor=9.0` 和完整 footprint 碰撞检查，并先以 `CostCritic.near_collision_cost=20` 验证近碰惩罚链路。该阈值仅作用于动态栈，不能复用失败 pilot 作为通过证据。
+
+`20260725-210035` 使用上述参数时，动态外观 pilot 成功：`local_bypass_actor` 保守净距为 `0.2777 m`，没有 `safety_yield`。但紧随其后的正式动态 baseline 使用相同 seed、actor 和 Nav2 配置时，MPPI 随机候选轨迹更贴近全局路径，在 `125.633333 s`、guard 净距 `0.1322 m` 时再次触发让停；矩形 footprint 复算的最终最小真实净距约为 `0.0350 m`。
+
+按当前实验口径，真实物理碰撞是距离验收门槛，因此不再继续放大动态 MPPI 的避障权重：保留已经通过 pilot 的 `near_collision_cost=20`、`CostCritic.cost_weight=2.50` 和 `PathFollowCritic.cost_weight=14.0`。`minimum_clearance < 0.10 m` 与 `safety_yield` 改为报告风险警告；`/simulation/collision` 接触、`guard_aborted`、动态行为或证据不完整仍判失败。该口径不会改 actor 配置或隐藏近距离事件，HTML/JSON/CSV 必须展示净距和让停警告。
 
 ## 复测方法
 

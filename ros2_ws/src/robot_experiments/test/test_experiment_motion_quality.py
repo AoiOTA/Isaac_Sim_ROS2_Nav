@@ -8,6 +8,7 @@ from robot_experiments.experiment_runner import (
     CommandSample,
     ExperimentRunner,
     OdometrySample,
+    _dynamic_interaction_acceptance,
 )
 
 
@@ -253,3 +254,47 @@ def test_runner_has_no_actor_lifecycle_costmap_clear_workaround():
     assert not hasattr(
         ExperimentRunner, "_request_pending_dynamic_trail_clears"
     )
+
+
+def test_collision_free_policy_keeps_low_clearance_as_warning():
+    actor_ids = {"local", "exit", "door"}
+    status = _dynamic_interaction_acceptance(
+        scenario_type="dynamic",
+        expected_ids=actor_ids,
+        triggered_ids=actor_ids,
+        completed_ids=actor_ids,
+        retired_ids=actor_ids,
+        clearance_by_actor={"local": 0.0, "exit": 0.69, "door": 0.23},
+        evidence_complete=True,
+    )
+
+    assert status["complete"] is True
+    assert status["minimum_clearance_complete"] is True
+    assert status["clearance_warning_below_0_10m"] is True
+    assert status["minimum_clearance_requirement_m"] == 0.0
+    assert status["acceptance_policy"] == "physical_collision_free"
+
+
+@pytest.mark.parametrize(
+    ("triggered", "clearance", "evidence_complete"),
+    [
+        ({"local", "exit"}, {"local": 0.2, "exit": 0.2, "door": 0.2}, True),
+        ({"local", "exit", "door"}, {"local": 0.2, "exit": 0.2}, True),
+        ({"local", "exit", "door"}, {"local": 0.2, "exit": 0.2, "door": 0.2}, False),
+    ],
+)
+def test_collision_free_policy_still_requires_complete_interaction_evidence(
+    triggered, clearance, evidence_complete
+):
+    actor_ids = {"local", "exit", "door"}
+    status = _dynamic_interaction_acceptance(
+        scenario_type="dynamic",
+        expected_ids=actor_ids,
+        triggered_ids=triggered,
+        completed_ids=actor_ids,
+        retired_ids=actor_ids,
+        clearance_by_actor=clearance,
+        evidence_complete=evidence_complete,
+    )
+
+    assert status["complete"] is False

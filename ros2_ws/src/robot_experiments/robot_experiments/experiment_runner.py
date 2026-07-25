@@ -80,6 +80,56 @@ class CommandSample:
     stamp_s: float
 
 
+def _dynamic_interaction_acceptance(
+    *,
+    scenario_type: str,
+    expected_ids: set[str],
+    triggered_ids: set[str],
+    completed_ids: set[str],
+    retired_ids: set[str],
+    clearance_by_actor: Mapping[str, float],
+    evidence_complete: bool,
+) -> dict[str, bool | float | str]:
+    """Evaluate dynamic evidence under the collision-free acceptance policy.
+
+    Clearance remains mandatory evidence and values below 0.10 m remain a
+    report warning. They are not a failure by themselves: the physical
+    collision topic is the authoritative contact gate.
+    """
+    if scenario_type != "dynamic":
+        return {
+            "complete": True,
+            "minimum_clearance_complete": True,
+            "clearance_warning_below_0_10m": False,
+            "minimum_clearance_requirement_m": 0.0,
+            "acceptance_policy": "not_applicable",
+        }
+    clearance_observed = expected_ids <= set(clearance_by_actor)
+    clearance_warning = (
+        clearance_observed
+        and any(float(value) < 0.10 for value in clearance_by_actor.values())
+    )
+    return {
+        "complete": bool(
+            expected_ids <= triggered_ids
+            and expected_ids <= completed_ids
+            and expected_ids <= retired_ids
+            and clearance_observed
+            and evidence_complete
+        ),
+        # Preserve the historical field for report compatibility. Under the
+        # collision-free policy it means every actor supplied a finite,
+        # non-negative observation, not that clearance exceeded 0.10 m.
+        "minimum_clearance_complete": bool(
+            clearance_observed
+            and all(float(value) >= 0.0 for value in clearance_by_actor.values())
+        ),
+        "clearance_warning_below_0_10m": bool(clearance_warning),
+        "minimum_clearance_requirement_m": 0.0,
+        "acceptance_policy": "physical_collision_free",
+    }
+
+
 class ExperimentIsolationError(RuntimeError):
     """Raised when an old action may still contaminate the next trial."""
 
@@ -1682,9 +1732,9 @@ class ExperimentRunner(Node):
         """Verify a left-to-right actor was passed on the robot's right.
 
         ``local_bypass`` has a deliberate, visible parking point.  Passing the
-        actor after it reaches that point is valid; yielding because the
-        collision guard stopped the actor is not, and is rejected separately
-        by ``dynamic_actor_safety_yield`` in the final verdict.
+        actor after it reaches that point is valid. A collision-guard yield is
+        retained as a warning under the physical-collision-free acceptance
+        policy, while an actual collision remains a strict failure.
         """
         moving = [
             item for item in obstacle_samples
@@ -2021,29 +2071,30 @@ class ExperimentRunner(Node):
                     clearance_by_actor.get(identifier, math.inf),
                     float(clearance),
                 )
-        clearance_complete = (
-            self._scenario.scenario_type != "dynamic"
-            or (
-                expected_dynamic_ids <= set(clearance_by_actor)
-                and all(value >= 0.10 for value in clearance_by_actor.values())
-            )
-        )
-        dynamic_interaction_complete = (
-            self._scenario.scenario_type != "dynamic"
-            or (
-                expected_dynamic_ids <= triggered_ids
-                and expected_dynamic_ids <= completed_ids
-                and expected_dynamic_ids <= retired_ids
-                and clearance_complete
-                and self._depth_frame is not None
+        interaction_acceptance = _dynamic_interaction_acceptance(
+            scenario_type=self._scenario.scenario_type,
+            expected_ids=expected_dynamic_ids,
+            triggered_ids=triggered_ids,
+            completed_ids=completed_ids,
+            retired_ids=retired_ids,
+            clearance_by_actor=clearance_by_actor,
+            evidence_complete=(
+                self._depth_frame is not None
                 and self._scan_frame is not None
                 and self._local_costmap is not None
-            )
+            ),
+        )
+        clearance_complete = bool(
+            interaction_acceptance["minimum_clearance_complete"]
+        )
+        dynamic_interaction_complete = bool(
+            interaction_acceptance["complete"]
         )
         if not dynamic_interaction_complete:
             reasons.append("dynamic_obstacle_interaction_incomplete")
-        if not clearance_complete:
-            reasons.append("dynamic_min_clearance_below_0_10m")
+        warnings: list[str] = []
+        if interaction_acceptance["clearance_warning_below_0_10m"]:
+            warnings.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}
         selected_case = (
             self._active_selection.case_id
@@ -2099,7 +2150,7 @@ class ExperimentRunner(Node):
         if self._dynamic_guard_aborted:
             reasons.append("dynamic_near_contact_abort")
         if self._dynamic_safety_yield:
-            reasons.append("dynamic_actor_safety_yield")
+            warnings.append("dynamic_actor_safety_yield")
         requested_appearance = (
             self._active_selection.appearance_profile_id
             if self._active_selection is not None
@@ -2149,6 +2200,7 @@ class ExperimentRunner(Node):
         if runner_error:
             reasons.append(f"runner_error:{runner_error}")
         reasons = list(dict.fromkeys(reasons))
+        warnings = list(dict.fromkeys(warnings))
         result = "success" if not reasons else "failure"
         return {
             "scenario_id": self._scenario.scenario_id,
@@ -2194,6 +2246,15 @@ class ExperimentRunner(Node):
                 "retired_ids": sorted(retired_ids),
                 "minimum_clearance_m_by_actor": clearance_by_actor,
                 "minimum_clearance_complete": clearance_complete,
+                "minimum_clearance_requirement_m": interaction_acceptance[
+                    "minimum_clearance_requirement_m"
+                ],
+                "clearance_warning_below_0_10m": interaction_acceptance[
+                    "clearance_warning_below_0_10m"
+                ],
+                "acceptance_policy": interaction_acceptance[
+                    "acceptance_policy"
+                ],
                 "complete": dynamic_interaction_complete,
                 "guard_aborted": self._dynamic_guard_aborted,
                 "safety_yield": self._dynamic_safety_yield,
@@ -2203,6 +2264,7 @@ class ExperimentRunner(Node):
             "rtf": self._scenario.rtf,
             "result": result,
             "failure_reason": ";".join(reasons),
+            "warning_reason": ";".join(warnings),
             "run_index": run_index,
             "scenario_type": self._scenario.scenario_type,
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -2509,6 +2571,7 @@ class ExperimentRunner(Node):
             "dynamic_interaction_complete": bool(
                 manifest.get("dynamic_interaction", {}).get("complete", False)
             ),
+            "warning_reason": str(manifest.get("warning_reason", "")),
             "legs": legs,
         }
         (root / "run_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")

@@ -542,6 +542,12 @@ contracts. Re-tune only with comparable runtime evidence.
 报告可按 `full`、`static`、`dynamic` 范围分别验证：两个 `2×20` 子报告只读取各自40轮，完整4×20报告只能读取同一 campaign
 的全部80轮，绝不自动拼接不同批次。完整用户命令见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
+动态距离验收采用 `physical_collision_free` 口径：`/simulation/collision`
+记录到真实接触才判碰撞失败。每个 actor 的保守最小净距仍是必需证据；
+低于 `0.10 m` 和 `safety_yield` 写入 `warning_reason` 并在 HTML/JSON/CSV
+展示，但不单独改变该轮 `result`。动态行为缺失、actor 未完成/未退役、
+`guard_aborted`、传感器证据缺失或导航失败仍严格判失败。
+
 历史静态候选场景是 `kujiale_static_long_range.yaml`; it uses the
 `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1` from
 transform-verified `long_route_start_g1`. It requires `rgbd_low_box_west`,

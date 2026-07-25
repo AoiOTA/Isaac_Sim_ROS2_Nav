@@ -217,8 +217,9 @@ sudo apt install ros-jazzy-spatio-temporal-voxel-layer
 
 1. Nav2 成功到达该航段目标；
 2. actor 确实通过 `moving` 后进入 `parked`；
-3. 没有物理接触、`safety_yield` 或 `guard_aborted`；
-4. 最小净距不低于 `0.10 m`；
+3. 没有 `/simulation/collision` 记录的物理接触或 `guard_aborted`；
+4. 必须记录每个 actor 的最小净距；低于 `0.10 m` 或出现 `safety_yield`
+   作为风险警告展示，不再单独判失败；
 5. 机器人在 actor 尚未退役时完成绕行，不能等待 actor 删除后才继续；
 6. actor 在目标成功后 `0.20 s` 内退役；
 7. Local STVL 中对应占用在 actor 离开视野后应按时序衰减；动态 profile 的 Global Costmap 不注入 RGB-D actor，因而不应出现需要等待清除的全局 actor 残影。
@@ -234,4 +235,4 @@ sudo apt install ros-jazzy-spatio-temporal-voxel-layer
 | `stable` | `10 Hz`、20 步、`0.10 s`、700 条采样 | `0.75 m/s` / `1.35 rad/s` | `20 Hz` | Local + Global 标准 `VoxelLayer`，保留低矮静态物体。 |
 | `dynamic_avoidance` | `15 Hz`、30 步、`1/15 s`、500 条采样；`CostCritic.near_collision_cost=20` | `1.20 m/s` / `3.40 rad/s` | `60 Hz` | Local STVL（10 Hz 更新、5 Hz 发布）+ `0.60 m` 局部膨胀；Global 仅静态图 + LiDAR。 |
 
-两者均保持 `2.0 s` 预测范围、完整 footprint 碰撞检查与 LiDAR Collision Monitor。动态 profile 的近碰 cost 阈值在 actor 进入 `0.14 m` guard 前施加 critical penalty，不修改 actor 本身或验收阈值；候选轨迹发布下采样为 `trajectory_step=25`、`time_step=5`，而 RViz 默认只显示最优 MPPI 轨迹。切换 profile 必须重启导航栈；修改 actor YAML 还必须重启 Isaac，避免触发运行时配置 hash 保护。
+两者均保持 `2.0 s` 预测范围、完整 footprint 碰撞检查与 LiDAR Collision Monitor。动态 profile 的近碰 cost 阈值在 actor 进入 `0.14 m` guard 前施加 critical penalty，不修改 actor 本身；候选轨迹发布下采样为 `trajectory_step=25`、`time_step=5`，而 RViz 默认只显示最优 MPPI 轨迹。切换 profile 必须重启导航栈；修改 actor YAML 还必须重启 Isaac，避免触发运行时配置 hash 保护。

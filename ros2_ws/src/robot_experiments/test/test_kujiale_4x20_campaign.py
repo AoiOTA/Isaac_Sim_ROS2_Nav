@@ -93,6 +93,47 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
 
 
+def test_dynamic_clearance_and_safety_yield_are_visible_warnings(tmp_path):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root, kinds=("dynamic",))
+    evidence = next(run_root.rglob("run-0001-seed-7301"))
+    manifest_path = evidence / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["warning_reason"] = (
+        "dynamic_min_clearance_below_0_10m;dynamic_actor_safety_yield"
+    )
+    manifest["dynamic_interaction"] = {
+        "complete": True,
+        "guard_aborted": False,
+        "safety_yield": True,
+        "minimum_clearance_m_by_actor": {
+            "local_bypass_actor": 0.0,
+            "g2_g3_exit_actor": 0.69,
+            "g5_g1_crossing_actor": 0.23,
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    (evidence / "checksums.sha256").unlink()
+    _write_checksums(evidence)
+
+    summary = summarize_4x20(run_root, scope="dynamic")
+    row = next(item for item in summary["runs"] if item["seed"] == 7301)
+    assert row["strict_success"] is True
+    assert row["physical_collision_free"] is True
+    assert row["dynamic_safety_yield"] is True
+    assert row["minimum_actor_clearance_m"] == 0.0
+    assert "dynamic_actor_safety_yield" in row["warning_reason"]
+
+    output = write_4x20_report(summary, tmp_path / "report")
+    dashboard = (output / "index.html").read_text(encoding="utf-8")
+    assert "最小净距(m)" in dashboard
+    assert "actor让停" in dashboard
+    assert "dynamic_actor_safety_yield" in dashboard
+    assert "warning_reason" in (
+        output / "benchmark.csv"
+    ).read_text(encoding="utf-8").splitlines()[0]
+
+
 def test_4x20_summary_marks_missing_evidence_incomplete(tmp_path):
     run_root = tmp_path / "runs"
     _write_campaign(run_root)
