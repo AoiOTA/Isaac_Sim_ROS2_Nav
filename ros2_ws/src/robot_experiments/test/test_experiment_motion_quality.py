@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from robot_experiments.experiment_runner import (
@@ -152,3 +154,24 @@ def test_g5_g1_crossing_requires_left_side_pass_while_actor_exists():
     assert metrics["left_side_bypass_seen"]
     assert metrics["passed_while_present"]
     assert metrics["complete"]
+
+
+def test_focused_dynamic_case_skips_unselected_intermediate_goal_groups():
+    runner = object.__new__(ExperimentRunner)
+    runner._scenario = SimpleNamespace(
+        scenario_type="dynamic",
+        obstacle_trajectories=(
+            {"id": "local", "motion": "local_bypass", "trigger_group": "G2"},
+            {"id": "exit", "motion": "g2_g3_exit", "trigger_group": "G3"},
+            {"id": "door", "motion": "g5_g1_crossing", "trigger_group": "G1"},
+        ),
+    )
+    runner._active_selection = SimpleNamespace(case_id="g2_g3_exit")
+
+    assert runner._selected_dynamic_groups_for_goal("G2") == []
+    assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
+
+    runner._active_selection = SimpleNamespace(case_id="full_route_three_stage")
+    assert runner._selected_dynamic_groups_for_goal("G2") == ["G2"]
+    assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
+    assert runner._selected_dynamic_groups_for_goal("G1") == ["G1"]

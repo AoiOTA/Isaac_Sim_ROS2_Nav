@@ -1151,15 +1151,45 @@ class ExperimentRunner(Node):
             int(feedback.number_of_recoveries),
         )
 
+    def _selected_dynamic_groups_for_goal(self, goal_id: str | None) -> list[str]:
+        """Return only obstacle groups enabled by the active case selection.
+
+        Focused routes such as ``g2_g3_exit`` still travel through G2 before
+        their own arm goal G3.  The scenario declares all physical actors for
+        runtime-contract verification, but their trigger services must not be
+        called for actors that this run deliberately left inactive.
+        """
+        if self._scenario.scenario_type != "dynamic" or not goal_id:
+            return []
+        selected_case = (
+            self._active_selection.case_id
+            if self._active_selection is not None
+            else None
+        )
+        if selected_case == "full_route_three_stage":
+            selected_motions = {
+                "local_bypass", "g2_g3_exit", "g5_g1_crossing",
+            }
+        elif selected_case:
+            selected_motions = {selected_case}
+        else:
+            selected_motions = None
+        return sorted({
+            str(item["trigger_group"])
+            for item in self._scenario.obstacle_trajectories
+            if (
+                item.get("trigger_group") == goal_id
+                and (
+                    selected_motions is None
+                    or item.get("motion") in selected_motions
+                )
+            )
+        })
+
     def _trigger_obstacle_group(self, goal_id: str | None) -> None:
         if self._scenario.scenario_type != "dynamic" or not goal_id:
             return
-        groups = sorted({
-            str(item["trigger_group"])
-            for item in self._scenario.obstacle_trajectories
-            if item.get("trigger_group") == goal_id
-        })
-        for group in groups:
+        for group in self._selected_dynamic_groups_for_goal(goal_id):
             client = self._obstacle_trigger_clients.get(group)
             if client is None:
                 client = self.create_client(
@@ -1182,12 +1212,7 @@ class ExperimentRunner(Node):
         """Retire only the actors tied to a successfully completed route goal."""
         if self._scenario.scenario_type != "dynamic" or not goal_id:
             return
-        groups = sorted({
-            str(item["trigger_group"])
-            for item in self._scenario.obstacle_trajectories
-            if item.get("trigger_group") == goal_id
-        })
-        for group in groups:
+        for group in self._selected_dynamic_groups_for_goal(goal_id):
             client = self._obstacle_complete_clients.get(group)
             if client is None:
                 client = self.create_client(
