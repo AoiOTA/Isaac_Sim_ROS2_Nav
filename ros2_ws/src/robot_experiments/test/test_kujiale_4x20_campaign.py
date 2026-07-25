@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 from robot_experiments.kujiale_4x20_campaign import (
+    main,
     summarize_4x20,
     write_4x20_report,
 )
@@ -139,3 +140,13 @@ def test_full_report_can_follow_retained_stage_subreports(tmp_path):
     assert (output / "index.html").is_file()
     assert (output / "static_2x20" / "index.html").is_file()
     assert (output / "dynamic_2x20" / "index.html").is_file()
+
+
+def test_status_cli_supports_a_static_2x20_scope(tmp_path, capsys):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root, kinds=("static",))
+    main(["--run-root", str(run_root), "--scope", "static", "--status"])
+    status = json.loads(capsys.readouterr().out)
+    assert status["scope"] == "static"
+    assert status["complete"] is True
+    assert status["passed"] is True
