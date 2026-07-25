@@ -132,6 +132,7 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert controller['ax_max'] == 3.50
     assert controller['az_max'] == 6.50
     assert controller['CostCritic']['cost_weight'] == 2.50
+    assert controller['CostCritic']['near_collision_cost'] == 20
     assert controller['PathFollowCritic']['cost_weight'] == 14.0
     assert local['update_frequency'] == 10.0
     assert local['publish_frequency'] == 5.0
@@ -143,6 +144,8 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert local['inflation_layer']['inflation_radius'] == 0.60
     base_local = _config()['local_costmap']['local_costmap']['ros__parameters']
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
+    base_controller = _config()['controller_server']['ros__parameters']['FollowPath']
+    assert 'near_collision_cost' not in base_controller['CostCritic']
     # Dynamic runs deliberately do not inherit the base profile's global
     # RGB-D VoxelLayer: a front-facing camera cannot reliably clear a moving
     # actor after it leaves the field of view.  The rolling local STVL owns

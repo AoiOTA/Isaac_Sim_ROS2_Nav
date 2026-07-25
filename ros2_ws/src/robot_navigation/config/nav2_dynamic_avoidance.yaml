@@ -41,6 +41,14 @@ controller_server:
         trajectory_step: 25
         time_step: 5
       CostCritic:
+        # Jazzy's default near_collision_cost=253 only applies the 300-point
+        # critical penalty at the inscribed-inflation boundary.  With the
+        # 9.0 inflation decay used by this map, cost 20 is reached roughly
+        # 0.50 m from a lethal actor cell: just outside the 0.33 m
+        # circumscribed robot bound plus the actor guard's 0.14 m clearance.
+        # This makes MPPI deviate before the kinematic actor has to safety
+        # yield, while full-footprint collision checking remains unchanged.
+        near_collision_cost: 20
         cost_weight: 2.50
       PathFollowCritic:
         cost_weight: 14.0

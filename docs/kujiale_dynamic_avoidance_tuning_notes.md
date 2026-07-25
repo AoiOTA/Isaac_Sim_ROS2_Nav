@@ -95,6 +95,10 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 
 后续 v1 pilot 仍在约 `0.13 m` guard 净距触发 `safety_yield`，表明仅扩大膨胀半径不足以让 MPPI 在近场持续看到 actor。根因是动态 Local LiDAR 层继承的 `obstacle_min_range=0.40 m` 会过滤 actor 最近表面已经进入近场的扫描点。仅将 `dynamic_avoidance` 的 Local `obstacle_min_range` 降至 `0.10 m`；Global Costmap、静态 profile、Collision Monitor 与 actor 本身均不改变。这样 Local Costmap 不会在绕行关键时刻清除动态方块，MPPI 仍保留完整 footprint 碰撞检查。
 
+`20260725-222852` 的 v1 动态外观 pilot 再次复现了另一层问题：G1–G5 五段均由 Nav2 成功完成，三段动态行为证据也完整，且没有物理碰撞；但 `local_bypass_actor` 在 `31.683333 s`、保守 guard 净距 `0.1332 m` 时执行了 `safety_yield`。将同步记录的 Ground Truth 姿态与 `0.40 m` actor 方块按 Nav2 的矩形 footprint（含 `5 mm` padding）复算，actor 停车后的最小真实净距约为 `0.0238 m`，仍低于 `0.10 m`，因此不能把该轮当作误报或放宽验收。
+
+本次不改任何 actor 坐标、尺寸、速度、加速度、触发门、变体延迟或安全阈值，也不改静态 Nav2 profile。动态 overlay 保留 `inflation_radius=0.60 m`、`cost_scaling_factor=9.0` 和完整 footprint 碰撞检查，并新增 `CostCritic.near_collision_cost=20`。在当前 inflation 衰减下，cost 20 对应距 lethal actor cell 约 `0.50 m`，位于机器人 `0.33 m` 外接圆加 `0.14 m` actor guard 之外；MPPI 会在 actor 被迫让停之前施加 `critical_cost=300`，而不是只在默认 cost 253 的内切膨胀边界才强惩罚。该值仅作用于动态栈，必须通过新的 dynamic pilot 验证，不能复用失败 pilot 作为通过证据。
+
 ## 复测方法
 
 每次只改变一组参数，并重启与改动层相对应的进程：
