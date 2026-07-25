@@ -119,6 +119,8 @@ def _run_rows(run_root: Path) -> list[dict[str, Any]]:
         profile = summary.get("appearance_profile_id")
         manifest_condition = manifest.get("condition_id")
         manifest_profile = manifest.get("appearance", {}).get("profile_id") if isinstance(manifest.get("appearance"), Mapping) else None
+        nav2_profile = summary.get("nav2_profile")
+        manifest_nav2_profile = manifest.get("nav2_profile")
         metrics = manifest.get("metrics", {}) if isinstance(manifest.get("metrics"), Mapping) else {}
         interaction = manifest.get("dynamic_interaction", {}) if isinstance(manifest.get("dynamic_interaction"), Mapping) else {}
         selection = manifest.get("dynamic_selection", {}) if isinstance(manifest.get("dynamic_selection"), Mapping) else {}
@@ -127,6 +129,7 @@ def _run_rows(run_root: Path) -> list[dict[str, Any]]:
             "kind": summary.get("kind"),
             "seed": summary.get("seed"),
             "appearance_profile_id": profile,
+            "nav2_profile": nav2_profile,
             "strict_success": summary.get("strict_success") is True,
             "physical_collision_free": summary.get("physical_collision_free") is True,
             "data_complete": summary.get("data_complete") is True,
@@ -137,9 +140,11 @@ def _run_rows(run_root: Path) -> list[dict[str, Any]]:
             "case_id": selection.get("case_id"),
             "duration_sec": _duration(manifest),
             "ground_truth_path_length_m": _finite(metrics.get("ground_truth_path_length_m")),
+            "maximum_route_recoveries": _finite(metrics.get("maximum_route_recoveries")),
             "failure_reason": str(manifest.get("failure_reason", "")),
             "manifest_condition_id": manifest_condition,
             "manifest_appearance_profile_id": manifest_profile,
+            "manifest_nav2_profile": manifest_nav2_profile,
             "manifest_path": str(manifest_path),
             "evidence_dir": str(root),
             "dynamic_guard_aborted": interaction.get("guard_aborted") is True,
@@ -180,6 +185,9 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
                 issues.append(f"manifest_condition_mismatch:{condition}:{seed}")
             if row["manifest_appearance_profile_id"] != row["appearance_profile_id"]:
                 issues.append(f"manifest_appearance_mismatch:{condition}:{seed}")
+            expected_nav2_profile = "dynamic_avoidance" if specification["kind"] == "dynamic" else "stable"
+            if row["nav2_profile"] != expected_nav2_profile or row["manifest_nav2_profile"] != expected_nav2_profile:
+                issues.append(f"nav2_profile_mismatch:{condition}:{seed}")
             expected_profile = specification["profile"]
             if expected_profile is not None and row["appearance_profile_id"] != expected_profile:
                 issues.append(f"baseline_profile_mismatch:{condition}:{seed}")
@@ -228,6 +236,8 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
             },
             "passed": strict_rate.passed and collision_rate.passed and evidence_ok and deviations_ok,
         }
+        if not evidence_ok:
+            issues.append(f"evidence_incomplete:{condition}")
         all_rows.extend(valid_rows)
 
     for base, varied in (("static_baseline", "static_appearance"), ("dynamic_baseline", "dynamic_appearance")):
@@ -260,7 +270,11 @@ def summarize_4x20(run_root: str | Path) -> dict[str, Any]:
                     else second[seed]["duration_sec"] - first[seed]["duration_sec"]
                 ),
             })
-    complete = len(all_rows) == 80 and not issues
+    complete = (
+        len(all_rows) == 80
+        and not issues
+        and all(item["evidence_complete"] for item in condition_summaries.values())
+    )
     passed = complete and all(item["passed"] for item in condition_summaries.values())
     return {
         "schema_version": 1,
@@ -384,10 +398,10 @@ def write_4x20_report(summary: Mapping[str, Any], output_directory: str | Path) 
         figures_written.insert(0, map_figure)
     clean = _clean(summary)
     (root / "benchmark.json").write_text(json.dumps(clean, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
-    fields = ["condition_id", "kind", "seed", "appearance_profile_id", "variant_id", "strict_success", "physical_collision_free", "data_complete", "checksums_verified", "dynamic_interaction_complete", "path_deviation_percent", "duration_sec", "failure_reason"]
+    fields = ["condition_id", "kind", "seed", "appearance_profile_id", "nav2_profile", "variant_id", "strict_success", "physical_collision_free", "data_complete", "checksums_verified", "dynamic_interaction_complete", "path_deviation_percent", "ground_truth_path_length_m", "duration_sec", "maximum_route_recoveries", "failure_reason"]
     with (root / "benchmark.csv").open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields); writer.writeheader(); writer.writerows({key: row.get(key) for key in fields} for row in clean["runs"])
-    evidence = [{"condition_id": row["condition_id"], "seed": row["seed"], "appearance_profile_id": row["appearance_profile_id"], "manifest_path": row["manifest_path"], "evidence_dir": row["evidence_dir"]} for row in summary["runs"]]
+    evidence = [{"condition_id": row["condition_id"], "seed": row["seed"], "appearance_profile_id": row["appearance_profile_id"], "nav2_profile": row["nav2_profile"], "manifest_path": row["manifest_path"], "evidence_dir": row["evidence_dir"]} for row in summary["runs"]]
     (root / "evidence_index.json").write_text(json.dumps(evidence, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     markdown = "# Kujiale 4×20 光照/颜色鲁棒性报告\n\n"
     markdown += f"结论：**{'通过' if summary['passed'] else '未通过'}**；证据完整：{'是' if summary['complete'] else '否'}。\n\n"
@@ -395,7 +409,7 @@ def write_4x20_report(summary: Mapping[str, Any], output_directory: str | Path) 
         markdown += f"- {condition}: 严格 {entry['strict_success']['numerator']}/20，无碰撞 {entry['physical_collision_free']['numerator']}/20，{'通过' if entry['passed'] else '未通过'}。\n"
     markdown += "\n![四组测试地图](figures/kujiale_4x20_test_matrix_map.png)\n\n![条件总览](figures/condition_overview.png)\n"
     (root / "report.md").write_text(markdown, encoding="utf-8")
-    (root / "data_dictionary.md").write_text("# 数据字典\n\n`benchmark.json` 是四组验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为四组实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置。\n", encoding="utf-8")
+    (root / "data_dictionary.md").write_text("# 数据字典\n\n`benchmark.json` 是四组验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为四组实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。\n", encoding="utf-8")
     (root / "index.html").write_text(_dashboard(clean, figures_written), encoding="utf-8")
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:

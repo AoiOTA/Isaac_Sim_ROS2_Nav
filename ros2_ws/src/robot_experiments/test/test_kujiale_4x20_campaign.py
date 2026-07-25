@@ -32,6 +32,7 @@ def _write_campaign(root: Path) -> None:
             manifest = {
                 "condition_id": selection.condition_id,
                 "appearance": {"profile_id": selection.appearance_profile_id},
+                "nav2_profile": "dynamic_avoidance" if kind == "dynamic" else "stable",
                 "dynamic_selection": {"case_id": selection.case_id, "variant_id": selection.variant_id},
                 "metrics": {"ground_truth_path_length_m": 24.0},
                 "legs": [{"duration_sec": 12.0}] * 5,
@@ -44,6 +45,7 @@ def _write_campaign(root: Path) -> None:
                 "seed": selection.seed,
                 "condition_id": selection.condition_id,
                 "appearance_profile_id": selection.appearance_profile_id,
+                "nav2_profile": "dynamic_avoidance" if kind == "dynamic" else "stable",
                 "strict_success": True,
                 "physical_collision_free": True,
                 "data_complete": True,
