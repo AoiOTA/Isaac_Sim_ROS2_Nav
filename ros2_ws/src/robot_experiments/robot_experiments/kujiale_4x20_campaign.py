@@ -441,9 +441,34 @@ def _trajectory_filename(row: Mapping[str, Any]) -> str:
     return f"{condition}-seed-{seed}-{profile}.png"
 
 
+def _static_obstacle_rectangles() -> list[tuple[float, float, float, float]]:
+    """Read the same versioned physics layout used by the static 4×20 scenario."""
+    source = PROJECT_ROOT / "isaac_sim/configs/experiments/kujiale_long_range_static.yaml"
+    try:
+        payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+        obstacles = payload.get("obstacles") if isinstance(payload, Mapping) else None
+        if not isinstance(obstacles, list):
+            return []
+        rectangles = []
+        for item in obstacles:
+            if not isinstance(item, Mapping) or item.get("mode") != "stationary":
+                return []
+            center, size = item.get("start"), item.get("size")
+            if not isinstance(center, list) or not isinstance(size, list) or len(center) < 2 or len(size) < 2:
+                return []
+            x, y, width, height = (_finite(center[0]), _finite(center[1]), _finite(size[0]), _finite(size[1]))
+            if None in (x, y, width, height) or width <= 0.0 or height <= 0.0:
+                return []
+            rectangles.append((x - width / 2.0, y - height / 2.0, width, height))
+        return rectangles
+    except (OSError, yaml.YAMLError):
+        return []
+
+
 def _plot_trajectory_figures(summary: Mapping[str, Any], figures: Path) -> None:
     """Render each available GT trace on the actual occupancy-grid map."""
     map_data = _occupancy_image()
+    static_obstacles = _static_obstacle_rectangles()
     trajectory_root = figures / "trajectories"
     trajectory_root.mkdir(parents=True, exist_ok=True)
     for row in summary["runs"]:
@@ -459,10 +484,19 @@ def _plot_trajectory_figures(summary: Mapping[str, Any], figures: Path) -> None:
         if map_data is not None:
             image, extent = map_data
             axis.imshow(image, cmap="gray", origin="upper", extent=extent, interpolation="nearest")
+        if row["kind"] == "static":
+            from matplotlib.patches import Rectangle
+
+            for index, (left, bottom, width, height) in enumerate(static_obstacles):
+                axis.add_patch(Rectangle(
+                    (left, bottom), width, height,
+                    facecolor="#fb923c", edgecolor="#ea580c", alpha=0.70, linewidth=1.4,
+                    zorder=3, label="静态 RGB-D 障碍" if index == 0 else "_nolegend_",
+                ))
         x_values = [point[0] for point in points]
         y_values = [point[1] for point in points]
         color = CONDITION_COLORS.get(str(row["condition_id"]), "#2563eb")
-        axis.plot(x_values, y_values, color=color, linewidth=1.8, label="实际 GT 路径")
+        axis.plot(x_values, y_values, color=color, linewidth=1.8, zorder=4, label="实际 GT 路径")
         axis.scatter(x_values[0], y_values[0], color="#16a34a", edgecolors="white", linewidths=0.8, s=54, zorder=3, label="起点")
         axis.scatter(x_values[-1], y_values[-1], color="#dc2626", edgecolors="white", linewidths=0.8, s=54, zorder=3, label="终点")
         axis.set_aspect("equal", adjustable="box")
