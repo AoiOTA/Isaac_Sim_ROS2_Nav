@@ -500,6 +500,9 @@ Costmap、MPPI、Collision Monitor 与实体障碍行为。
 自动路线。它不是正式 20+20 验收，不能替代正式结论。每次只启动一套 Isaac 和 ROS；
 同一套会话中不要并行启动正式 `run_experiment.sh`。
 
+静态和动态自动模式均从 `long_route_start_g1` 出发，并由 runner 发送完整
+`G2 → G3 → G4 → G5 → G1` 航点序列。
+
 ### 8.1 启动约定
 
 先正常停止旧的 Isaac/ROS 会话：

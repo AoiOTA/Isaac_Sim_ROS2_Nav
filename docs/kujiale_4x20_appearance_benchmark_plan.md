@@ -112,6 +112,16 @@ Isaac 或 Nav2 在启动超时（默认900秒）前退出时，监督器会失�
 `run_kujiale_4x20_isaac.sh`、`run_ros.sh` 和 `run_kujiale_4x20.sh` 的分开调用仍可用于人工观察或单阶段
 调试，但不再是正式批次的推荐入口。
 
+### 4.1 单轮 GUI/RViz 诊断（不计入4×20）
+
+四组正式实验之外，可单独观察共同路线 `G2 → G3 → G4 → G5 → G1`。静态自动 GUI/RViz
+使用 `run_visual_route.sh static`；动态自动 GUI/RViz 使用
+`run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501`，后者会自动触发三阶段 actor。
+完整可复制终端命令和目标坐标见
+[`user_manual.md` 第8节](user_manual.md#8-可视化单轮全屋长距离测试isaac-gui--rviz)。
+
+这些 GUI 诊断不生成正式 80 轮证据或结论；不能与 `data/experiment_runs/kujiale_4x20_*` 的报告混用。
+
 ## 5. 自动报告与校验
 
 完整campaign在单一目录中生成 `index.html`、`report.pdf`、`report.md`、`benchmark.json/csv`、

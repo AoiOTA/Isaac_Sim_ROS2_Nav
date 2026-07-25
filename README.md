@@ -192,6 +192,10 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 `G1 → G2 → G3 → G4 → G5 → G1`，在 G1→G2、G2→G3、G5→G1 分别触发一个 actor。两类
 可视化都不构成正式 20+20 验收；动态 `--record` 只保留本轮观测证据。
 
+静态和动态的 GUI 自动全路线测试已在
+[`docs/user_manual.md`](docs/user_manual.md#8-可视化单轮全屋长距离测试isaac-gui--rviz) 汇总；两种自动
+模式都会发送 `G2 → G3 → G4 → G5 → G1`。
+
 ### 静态可视化一轮（Isaac GUI + RViz）
 
 用途是人工观察六个低矮静态障碍、RGB-D 点云/VoxelGrid、Costmap 和 MPPI 行为。开始前先确保
