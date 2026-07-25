@@ -159,21 +159,19 @@ Navigation 同时发布 `/cmd_vel`。
 
 ### 当前正式入口：4×20 光照/颜色鲁棒性 campaign
 
-先构建工作区；然后分别启动静态和动态 Isaac/Nav2 栈，在每个阶段先跑 pilot，再跑 40 轮。
-静态、动态阶段之间必须关闭并重启两套栈。下面只给出命令入口；三终端完整顺序、`--resume`、
-预检项目和报告退出码见
-[`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md)。
+推荐入口会自动构建工作区、启动静态 Isaac/Nav2、运行静态 pilot＋40轮、有序关闭两套栈、
+启动动态栈、运行动态 pilot＋40轮，并最终自动生成报告：
 
 ```bash
-./scripts/build_ros2.sh
-./scripts/run_kujiale_4x20_isaac.sh static --headless
-./scripts/run_kujiale_4x20.sh pilot static "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh static-pair "$CAMPAIGN_ID"
-# 重启为 dynamic Isaac/Nav2 栈后：
-./scripts/run_kujiale_4x20.sh pilot dynamic "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh dynamic-pair "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh report "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20_all.sh
+# 或指定可追踪批次 ID：
+# ./scripts/run_kujiale_4x20_all.sh 20260725-120000
 ```
+
+静态/动态切换由脚本管理，不需要打开多个终端。中断后的同一 ID 可用
+`./scripts/run_kujiale_4x20_all.sh "$CAMPAIGN_ID" --resume` 继续；`--skip-build` 可跳过已经完成的构建。
+预检项目和报告退出码见
+[`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md)。
 
 报告输出为 `data/reports/kujiale_4x20_<campaign_id>/index.html`、PDF、Markdown、PNG、
 CSV、JSON 和证据索引；即使验收失败也生成报告，此时命令返回 `2`。

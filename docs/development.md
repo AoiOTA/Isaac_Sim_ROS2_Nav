@@ -134,11 +134,11 @@ PYTHONPATH=ros2_ws/src/robot_experiments python3 -m pytest -q \
   ros2_ws/src/robot_experiments/test/test_configuration.py \
   ros2_ws/src/robot_experiments/test/test_kujiale_campaign.py \
   ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py
-bash -n scripts/run_kujiale_4x20.sh scripts/run_kujiale_4x20_isaac.sh
+bash -n scripts/run_kujiale_4x20.sh scripts/run_kujiale_4x20_isaac.sh scripts/run_kujiale_4x20_all.sh
 ```
 
-实际运行前必须重新执行 `./scripts/build_ros2.sh`，因为 `kujiale_4x20_campaign` 是 ROS
-console entry point。当前 80 轮的三终端命令、预检项与报告目录由
+实际运行前，推荐执行 `./scripts/run_kujiale_4x20_all.sh`；它会先构建，因为 `kujiale_4x20_campaign` 是 ROS
+console entry point。当前80轮的一键命令、预检项与报告目录由
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) 维护；
 不要用旧的静态候选脚本替代四组正式 campaign。
 

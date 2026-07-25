@@ -82,6 +82,19 @@ def test_visual_route_wrapper_disables_all_project_evidence_output():
     assert "if self._record_evidence:" in runner
 
 
+def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()
+    assert 'run_kujiale_4x20_isaac.sh" "${mode}" --headless' in wrapper
+    assert 'nav2_profile:="${nav2_profile}"' in wrapper
+    assert "run_campaign pilot static" in wrapper
+    assert "run_campaign static-pair" in wrapper
+    assert "run_campaign pilot dynamic" in wrapper
+    assert "run_campaign dynamic-pair" in wrapper
+    assert wrapper.count("stop_stage") >= 3
+    assert '"${SCRIPT_DIR}/run_kujiale_4x20.sh" report "${campaign_id}"' in wrapper
+
+
 def test_incremental_map_comparison_has_an_installed_cli():
     setup_source = (PACKAGE_ROOT / "setup.py").read_text()
     assert (

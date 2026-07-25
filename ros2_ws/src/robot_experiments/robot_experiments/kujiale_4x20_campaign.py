@@ -111,6 +111,12 @@ def _duration(row: Mapping[str, Any]) -> float | None:
 def _run_rows(run_root: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for summary_path in sorted(run_root.rglob("run_summary.json")):
+        relative_parts = summary_path.relative_to(run_root).parts
+        # Pilots prove the RGB/Session-Layer evidence before a formal stage.
+        # They share a seed with the formal matrix, so including them would
+        # create duplicate identities and invalidate the 80-run report.
+        if any(part.startswith("pilot-") or part.startswith(".incomplete-") for part in relative_parts):
+            continue
         root = summary_path.parent
         summary = _read_object(summary_path)
         manifest_path = root / "run_manifest.json"

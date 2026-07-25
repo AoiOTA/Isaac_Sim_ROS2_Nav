@@ -277,44 +277,23 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 动态基准、动态＋外观。外观变化采用匿名 USD Session Layer，整轮固定且不写回场景资产；
 导航仍只消费 `/scan` 和 `/camera/front/depth/points`。当前代码已实现，但尚未运行本轮80个正式实验。
 
-先在任意终端构建，再以三个终端运行静态阶段：
+只需在一个终端运行以下命令；它会自动构建、启动静态栈并完成静态40轮、受控关闭、启动动态栈并完成动态40轮，最后生成报告：
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/build_ros2.sh
-export CAMPAIGN_ID="$(date +%Y%m%d-%H%M%S)"
-
-# Terminal A
-./scripts/run_kujiale_4x20_isaac.sh static --headless
-
-# Terminal B（等待 lifecycle 激活完成）
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=stable interactive:=false use_rviz:=false
-
-# Terminal C
-./scripts/run_kujiale_4x20.sh pilot static "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh static-pair "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20_all.sh
 ```
 
-先在 Terminal B、A 按 Ctrl+C 有序关闭静态栈；随后用新的动态栈运行同一个 `CAMPAIGN_ID`：
+可选固定批次 ID，并在中断后断点续跑：
 
 ```bash
-# Terminal A
-./scripts/run_kujiale_4x20_isaac.sh dynamic --headless
-
-# Terminal B（需要 Jazzy STVL）
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance interactive:=false use_rviz:=false
-
-# Terminal C
-./scripts/run_kujiale_4x20.sh pilot dynamic "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh dynamic-pair "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh status "$CAMPAIGN_ID"
-./scripts/run_kujiale_4x20.sh report "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20_all.sh 20260725-120000
+./scripts/run_kujiale_4x20_all.sh 20260725-120000 --resume
 ```
 
 每个 `pilot` 是首个外观变化轮次；预检在 pilot/正式批次前自动运行，并验证 `120 GiB` 可用空间、
-地图/场景哈希、话题、`map -> base_link` TF 和实际 Nav2 profile。中断后使用
-`static-pair "$CAMPAIGN_ID" --resume` 或 `dynamic-pair "$CAMPAIGN_ID" --resume`；完整证据会跳过，
-不完整轮次隔离后重跑。报告位于 `data/reports/kujiale_4x20_<campaign_id>/`，包含 `index.html`、
+地图/场景哈希、话题、`map -> base_link` TF 和实际 Nav2 profile。脚本会先关闭 Nav2 再关闭 Isaac，
+不复用静态进程；完整证据会跳过，不完整轮次隔离后重跑。报告位于 `data/reports/kujiale_4x20_<campaign_id>/`，包含 `index.html`、
 PDF、Markdown、PNG、CSV、JSON 和证据索引。报告即使验收失败也会生成，返回码 `2` 表示未通过或证据不完整。
 
 完整矩阵、地图、外观配置和每组门槛见

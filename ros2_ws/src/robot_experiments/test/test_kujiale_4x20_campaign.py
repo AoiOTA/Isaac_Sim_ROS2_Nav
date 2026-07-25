@@ -87,3 +87,17 @@ def test_4x20_summary_marks_missing_evidence_incomplete(tmp_path):
     assert summary["complete"] is False
     assert summary["passed"] is False
     assert any(issue.startswith("missing_seeds:") for issue in summary["issues"])
+
+
+def test_4x20_summary_ignores_pilot_evidence_with_duplicate_seed(tmp_path):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root)
+    source = next(run_root.rglob("run-0002-seed-7201"))
+    pilot = run_root / "pilot-static" / "kujiale_4x20_static_pair" / source.name
+    pilot.mkdir(parents=True)
+    for path in source.iterdir():
+        (pilot / path.name).write_bytes(path.read_bytes())
+    summary = summarize_4x20(run_root)
+    assert summary["complete"] is True
+    assert summary["passed"] is True
+    assert len(summary["runs"]) == 80
