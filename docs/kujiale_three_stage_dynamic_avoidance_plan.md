@@ -1,4 +1,8 @@
-# Kujiale 三阶段动态避障实验方案
+# Kujiale 三阶段动态避障实验方案（4×20动态组编排参考）
+
+> 三阶段 actor 的几何、gate 和生命周期仍是当前 `full_route_three_stage` 的权威编排来源；
+> 但本文中的聚焦可视化与旧 `full-route-5` 命令只用于诊断。正式20轮动态基准和20轮动态＋外观
+> 请执行 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
 ## 1. 方案概述
 

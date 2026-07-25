@@ -23,29 +23,32 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 
 当前长距离静态/动态配置从 `long_route_start_g1` 出生，依次运行
 `G1 → G2 → G3 → G4 → G5 → G1`。原狭窄通道航点已移除，原左侧厕所和左下房间航点依次重命名为 G4、G5；中心区使用四个可在
-Isaac GUI 中反复拖动的 RGB-D 低矮方块和两个低矮长条，或三个按空间 gate 接力运动并停车的动态方块（G1→G2、G2→G3、G5→G1）。六个
+Isaac GUI 中诊断性拖动的 RGB-D 低矮方块和两个低矮长条，或三个按空间 gate 接力运动并停车的动态方块（G1→G2、G2→G3、G5→G1）。六个
 静态障碍的当前坐标来自 `2026-07-23 13:37:02 +08:00` 的完整 GUI 捕获：四个方块为 `0.30 × 0.30 × 0.16 m`，
-两个长条为 `0.60 × 0.30 × 0.16 m`；当前布局仍可继续手调，尚未冻结。
+两个长条为 `0.60 × 0.30 × 0.16 m`；4×20正式运行使用版本化 YAML 和哈希，任何 GUI 手调都必须先导出、更新配置并重新运行四组证据。
 
-## 当前已完成的长距离结果
+## 当前 4×20 外观鲁棒性实验
 
-当前布局最新的可复核结果是静态 20 轮候选批次
-`kujiale_long_route_static_20260723-194416`。该批次使用 `long_route_start_g1`、
-`warehouse_new`、当前 G1–G5 闭环路线和六个 RGB-D 低矮静态障碍；自动静态结论为
-**通过**。原始报告是本地生成且忽略的工件，复跑方法以使用手册和测试方案为准。
+当前正式复跑入口是四组各 20 轮的 4×20 campaign：静态基准、静态＋外观变化、动态基准、
+动态＋外观变化。它使用同一条 G1–G5 闭环路线；外观变化只在匿名 USD Session Layer 中
+覆盖灯光和材质颜色，不写回源 USD，也不改变几何、碰撞、地图或动态障碍运动学。
+
+当前版本已实现调度、断点续跑、预检、每轮 RGB 快照和可视化报告，但**尚未执行这 80 轮**，
+因此不能宣称任一 4×20 组已达到 90% 成功率。完整可执行命令、四组矩阵和验收口径以
+[`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md) 为准。
 
 | 项目 | 当前结果 |
 | --- | --- |
-| 静态严格成功 | `20/20 (100%)` |
-| 静态物理无碰撞 | `20/20 (100%)` |
-| 静态最大路径偏差 | `10.4614%`，低于 `20%` 门槛 |
-| 动态 20 轮 | **尚未执行**；不据此宣称动态通过、失败或完整 20+20 验收 |
+| 4×20 实现与离线测试 | 已完成；80 轮运行证据尚未产生 |
+| 静态基准 / 静态＋外观 | 各要求严格成功且无碰撞 `≥19/20` |
+| 动态基准 / 动态＋外观 | 各要求严格成功且无碰撞 `≥18/20` |
+| 静态路径偏差 | 每个成功轮次 `≤20%` |
 
-2026-07-22 的旧 `mapping_start`、G1–G8 和旧障碍布局曾有一份完整 20+20 历史批次；
-它不代表当前工作树或本次长距离重设计的结果，因此不作为本 README 的当前指标。
+`kujiale_long_route_static_20260723-194416` 的静态 20/20 和更早的旧路线结果均为历史证据，
+不替代本轮 4×20 结果；边界见 [`docs/verification.md`](docs/verification.md)。
 
 完整路线、验收口径、失败边界和报告目录结构见
-[`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md)；
+[`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md)；
 静态/动态地图和航点见
 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
 
@@ -154,6 +157,29 @@ Navigation 同时发布 `/cmd_vel`。
 
 ## 实验与报告
 
+### 当前正式入口：4×20 光照/颜色鲁棒性 campaign
+
+先构建工作区；然后分别启动静态和动态 Isaac/Nav2 栈，在每个阶段先跑 pilot，再跑 40 轮。
+静态、动态阶段之间必须关闭并重启两套栈。下面只给出命令入口；三终端完整顺序、`--resume`、
+预检项目和报告退出码见
+[`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md)。
+
+```bash
+./scripts/build_ros2.sh
+./scripts/run_kujiale_4x20_isaac.sh static --headless
+./scripts/run_kujiale_4x20.sh pilot static "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh static-pair "$CAMPAIGN_ID"
+# 重启为 dynamic Isaac/Nav2 栈后：
+./scripts/run_kujiale_4x20.sh pilot dynamic "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh dynamic-pair "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh report "$CAMPAIGN_ID"
+```
+
+报告输出为 `data/reports/kujiale_4x20_<campaign_id>/index.html`、PDF、Markdown、PNG、
+CSV、JSON 和证据索引；即使验收失败也生成报告，此时命令返回 `2`。
+
+### 历史候选与可视化入口
+
 正式静态、动态场景配置位于：
 
 ```text
@@ -249,9 +275,9 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 
 | 你要做什么 | 阅读文档 | 可以获得什么 |
 | --- | --- | --- |
-| 首次启动 Isaac、ROS、RViz 或运行静态测试 | [`docs/user_manual.md`](docs/user_manual.md) | 从环境准备到手动 Goal、静态可视化一轮、静态 20 轮、报告查看与有序停止的可复制命令。 |
+| 首次启动 Isaac、ROS、RViz 或运行 4×20 | [`docs/user_manual.md`](docs/user_manual.md) | 从环境准备到手动 Goal、4×20 三终端运行、报告查看与有序停止的可复制命令。 |
 | 核对酷家乐路线、航点和障碍位置 | [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md) | `long_route_start_g1`、G1–G5 闭环路线、静态六障碍与动态障碍的地图坐标和语义。 |
-| 了解验收口径或准备复跑完整长距离实验 | [`docs/kujiale_long_range_navigation_test_plan.md`](docs/kujiale_long_range_navigation_test_plan.md) | 静态/动态批次的范围、种子、成功/无碰撞/路径偏差门槛、证据和自包含报告要求。 |
+| 了解验收口径或准备复跑完整长距离实验 | [`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md) | 四组各20轮、外观配置、成功/无碰撞/路径偏差门槛、证据和自包含报告要求。 |
 | 调整地图坐标、出生点或定位基线 | [`docs/calibration.md`](docs/calibration.md) | `map -> odom` 标定步骤、地图/posegraph 匹配规则和初始位姿来源。 |
 | 修改节点、话题、TF 或 Odometry 配置 | [`docs/interfaces.md`](docs/interfaces.md) | ROS Topic、TF、QoS、模式配对和发布所有权契约，避免重复 `/odom` 或 TF 发布者。 |
 | 处理启动失败、锁、RViz、地图或 Reset 问题 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 分步骤诊断命令、常见故障表现和安全清理流程。 |

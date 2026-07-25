@@ -1,6 +1,6 @@
 # 仓库文件索引
 
-本文列出当前交付中的全部 319 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
+本文列出当前交付中的全部 350 个 Git 文件，并逐个解释职责。索引已与 `git ls-files` 做集合比对；构建产物、运行日志、批量实验结果和本地导入的 NVIDIA 资产受 `.gitignore` 管理，不属于源码索引。
 
 使用项目请先阅读 [`user_manual.md`](user_manual.md)；修改文件前再用本索引确认它属于 Isaac 物理层、ROS 算法层、配置层还是验证层。
 
@@ -47,7 +47,9 @@
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
-| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的重设计长距离静态/动态地图示意；S/G1、G2–G5、四个可手调静态方块、两个可手调长条和两条慢速动态轨迹。 |
+| `docs/kujiale_4x20_appearance_benchmark_plan.md` | 当前正式4×20运行手册：四组各20轮、匿名USD外观层、三终端命令、预检、证据、断点续跑与可视化报告。 |
+| `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的4×20共同空间基线；S/G1、G2–G5、六个静态低矮障碍和三阶段动态轨迹。 |
+| `docs/figures/kujiale_4x20_test_matrix_map.png` | 由制图脚本生成的2×2测试矩阵地图；展示四组共用路线、静态/动态障碍、外观配置与80轮分配。 |
 
 ## 3. 数据目录
 
@@ -80,6 +82,8 @@
 | `scripts/run_isaac.sh` | 选择项目配置并监督 Isaac Python standalone 仿真；支持 custom profile，并只让监督器持有 Isaac 单实例锁，防止遗留 Omniverse Hub 锁住下一次启动。 |
 | `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本；收到 Ctrl+C 时先核验并关闭受管 RViz，再执行 Navigation 的有序 lifecycle 关闭。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
+| `scripts/run_kujiale_4x20_isaac.sh` | 4×20静态或动态阶段的唯一 Isaac 启动器；启用GT、固定场景/出生点/RGB-D、物理障碍和外观配置。 |
+| `scripts/run_kujiale_4x20.sh` | 4×20用户控制器：预检、pilot、静态/动态40轮、断点续跑、状态与最终报告；不自行启动Isaac/Nav2。 |
 | `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：从 G1 出生并自动发送 G2、G3、G4、G5、G1，关闭 MCAP、结构化证据和项目输出目录创建。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
@@ -146,6 +150,7 @@
 | `isaac_sim/configs/experiments/dynamic_benchmark.yaml` | 远距离 20-run 动态验收物理配置；两障碍在交互后继续离开路线，避免单程终点永久堵塞通道。 |
 | `isaac_sim/configs/experiments/dynamic_complex_route.yaml` | Ideal 复杂长路线动态验收的四个低速一次性横穿/对向物理障碍。 |
 | `isaac_sim/configs/experiments/kujiale_long_range_static.yaml` | 当前酷家乐静态长距离可编辑六障碍物理配置，供 GUI、Pilot、visual 与静态 20 轮候选共用。 |
+| `isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml` | 4×20的固定五档外观契约：baseline 与四种暖/冷、明/暗光照和材质色相覆盖。 |
 | `isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-133702.yaml` | `2026-07-23 13:37:02 +08:00` 从 GUI capture 服务保存的六障碍 Map 布局快照；仅供继续调试，未冻结。 |
 | `isaac_sim/configs/experiments/dynamic.yaml` | Isaac 物理动态障碍物 ID、形状、尺寸、USD 轨迹、速度和 repeat。 |
 | `isaac_sim/configs/experiments/incremental_mapping.yaml` | Isaac 增量地图变化占位配置；真实 changed-region 资产尚需另行制作。 |
@@ -214,6 +219,7 @@
 | `isaac_sim/src/experiment/__init__.py` | Isaac 实验场景子包标记。 |
 | `isaac_sim/src/experiment/scenario.py` | 严格解析 Isaac physical-obstacle YAML，校验静态/动态 box 的几何、Map-frame 轨迹、触发组、速度、retire 策略和 seed 抖动。 |
 | `isaac_sim/src/experiment/dynamic_obstacles.py` | 按配置创建运动学物理 box，并按仿真时间推进或 Reset；Map 坐标通过已校验的出生点变换到 USD。静态方块保留 GUI Translate 编辑，可用 `/experiment/obstacles/capture_layout` 导出回 Map 坐标。 |
+| `isaac_sim/src/experiment/appearance.py` | 解析五档外观配置，在独立匿名 USD Session Layer 覆盖灯光/材质颜色并发布可校验状态；不修改源USD。 |
 | `isaac_sim/src/experiment/collision_monitor.py` | 读取底盘物理接触并发布 `/simulation/collision`。 |
 | `isaac_sim/src/ground_truth/__init__.py` | Ground Truth 子包标记。 |
 | `isaac_sim/src/ground_truth/transforms.py` | 纯数学的二维 Pose、`map_T_usd` 和 USD→Map 变换。 |
@@ -244,6 +250,7 @@
 | `isaac_sim/tests/test_skid_steer_motion_assist.py` | 测试滑移转向补偿的前进/倒车跟踪、加速度边界、命令超时、Reset 和原地旋转标定。 |
 | `isaac_sim/tests/test_spawn_pose_reset.py` | 测试出生点标定门、Reset 顺序、fresh-scan initial pose 和重复 seed。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 测试动态障碍解析、有限数、repeat、轨迹推进和 Reset。 |
+| `isaac_sim/tests/test_appearance.py` | 测试4×20外观profile、色相旋转、材质输入识别和Session Layer运行契约的纯Python部分。 |
 | `isaac_sim/tests/test_camera_contracts.py` | 测试相机 profile 默认值、严格 schema、RGB/CameraInfo 同源时间戳/QoS、CLI 选择和 Render Product 幂等释放。 |
 
 ## 18. ROS 工作区总览
@@ -383,6 +390,8 @@
 | `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐重设计静态 20 轮候选：固定 seed 7201–7220、S/G1、G2–G5、闭环回归 G1、四个方块和两个可微调低矮长条与同步的候选理论路径参考；布局尚未正式冻结。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 历史动态 20 轮候选描述；当前交付的动态验收入口是三段可视化与整圈接力，不应将它当作现行三阶段执行命令。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 重设计后候选 20+20 批次的路线、门槛、障碍、出生点和固定 seed 总定义；尚未执行。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_4x20_static_pair.yaml` | 当前正式静态40轮矩阵：静态基准与四种外观变化各20轮，AB/BA配对及相同seed。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_4x20_dynamic_pair.yaml` | 当前正式动态40轮矩阵：`full_route_three_stage`基准与四种外观变化各20轮，覆盖五个变体。 |
 | `ros2_ws/src/robot_experiments/config/optimal_reference.json` | 当前可微调静态路线的 footprint-aware 候选理论长度、地图哈希和障碍多边形；布局确认后需重新生成并冻结。 |
 | `scripts/run_kujiale_static_20.sh` | 需要已启动静态 Isaac 和无交互 Nav2 的静态 20 轮候选 runner；固定当前六个静态障碍参数、运行 seed 7201–7220，并自动导出不含动态结论的自包含中文报告。HTML 全屋轨迹地图可按种子和通过/失败状态筛选单轮 GT 轨迹。 |
 | `scripts/run_kujiale_dynamic_isaac.sh` | 三阶段动态 Isaac 启动器，默认 G1；`--spawn-pose` 支持标定的 G2/G5 聚焦出生点。 |
@@ -403,6 +412,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/optimal_path.py` | 读取 OccupancyGrid YAML/PGM、按机器人净空膨胀障碍，并用禁止斜穿墙角的 8 邻域 A* 计算理论最短路。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/navigation_benchmark.py` | 汇总静态/动态 manifest，验收 95%/90% 成功率和成功静态路线相对理论最短路不超过 20% 的偏差。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema 校验、配置 SHA256，以及单轮 CSV/JSON 报告的原子写入。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 读取80轮证据，校验四组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_benchmark.py` | 使用 Ground Truth 自动执行并验收底盘运动原语、曲率、误差和转向反向延迟。 |
@@ -429,6 +439,7 @@
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
 | `ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py` | 测试命令/实测前进、倒车、弧线、停止和转向换向指标。 |
+| `ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py` | 用合成完整/缺失证据覆盖4×20四组门槛、完整性判定与HTML/PDF/PNG报告生成。 |
 | `ros2_ws/src/robot_experiments/test/test_motion_benchmark.py` | 测试运动基准配置、判定和报告逻辑。 |
 
 ## 29. `robot_bringup` 配置与入口
@@ -501,7 +512,44 @@
 | `ros2_ws/src/robot_teleop/test/test_safety.py` | 覆盖键位、边界值、超时停车、时间回退和关闭幂等性。 |
 | `ros2_ws/src/robot_teleop/test/test_teleop_package_contract.py` | 检查配置、安装入口、终端按键解码和安全默认值；唯一模块名保证全工作区 pytest 可收集。 |
 
-## 33. 修改文件时的依赖关系
+## 33. 补充索引（现有文件）
+
+下列文件在早期索引中遗漏，现补齐；它们仍遵循前面各层的职责和历史/当前边界。
+
+| 文件 | 用途 |
+| --- | --- |
+| `data/maps/occupancy/warehouse_v1_preview.png` | 历史 Warehouse v1 的小型预览图；不属于当前 `warehouse_new` 导航或4×20地图输入。 |
+| `docs/figures/kujiale_long_route_static_map.png` | 自动生成的静态六障碍路线图，作为4×20共享空间基线图。 |
+| `docs/figures/kujiale_long_route_dynamic_map.png` | 自动生成的三阶段动态路线图，作为4×20动态组空间基线图。 |
+| `docs/figures/kujiale_three_stage_dynamic_details.png` | 自动生成的 G2→G3、G5→G1 局部动态交互细节图。 |
+| `docs/isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md` | RGB-D Local/Global Costmap 融合的一期历史设计及当前 profile 差异说明。 |
+| `docs/kujiale_dynamic_avoidance_tuning_notes.md` | `local_bypass` 单轮动态可视化调优复盘；不是4×20验收结果。 |
+| `docs/kujiale_dynamic_obstacle_benchmark_redesign.md` | 动态避障重设计历史方案；旧 `20 + 5` 入口已由4×20替代。 |
+| `docs/kujiale_long_range_navigation_test_plan.md` | 长路线重设计与静态候选/旧批次的历史验收规格；正式运行改用4×20手册。 |
+| `docs/kujiale_navigation_dynamic_avoidance_issue_log.md` | 静态/动态 profile、STVL 和 actor 生命周期的故障记录。 |
+| `docs/kujiale_three_stage_dynamic_avoidance_plan.md` | `full_route_three_stage` actor/gate/生命周期的编排参考与可视化诊断命令。 |
+| `isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml` | 当前三阶段动态 actor 的 Isaac 物理配置，供4×20动态启动器与诊断使用。 |
+| `isaac_sim/configs/experiments/kujiale_static_layout_bars_seed_20260723.yaml` | 静态方块/长条布局的历史种子快照，供排查或对比而非正式覆盖。 |
+| `isaac_sim/configs/experiments/kujiale_static_layout_draft_20260723-110443.yaml` | 早期静态障碍 GUI 捕获草案；当前4×20基线由版本化正式场景配置决定。 |
+| `isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml` | Fast DDS UDP-only transport profile；供受限共享内存环境的显式 ROS Bridge 诊断。 |
+| `ros2_ws/src/robot_bringup/test/test_map_manifest.py` | 地图四件套、哈希、LFS pointer 与标定身份的单元测试。 |
+| `ros2_ws/src/robot_bringup/test/test_nav2_profile_contract.py` | `stable`/`dynamic_avoidance` overlay 与启动参数契约测试。 |
+| `ros2_ws/src/robot_bringup/test/test_ordered_shutdown.py` | 有序 Lifecycle 关闭策略和时限的测试。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_baseline_pilot.yaml` | 历史 Kujiale baseline pilot 场景；不替代4×20的外观 pilot。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_dynamic_controlled_20.yaml` | 历史受控动态20轮矩阵；不作为当前三阶段4×20动态配置。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/dynamic_avoidance_campaign.py` | 历史动态受控/整圈报告器，保留旧证据读取兼容。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_campaign.py` | 历史静态候选 campaign 汇总器；不生成当前4×20报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_reference.py` | 读取/校验 Kujiale 静态候选参考路径与配置的工具。 |
+| `ros2_ws/src/robot_experiments/test/test_kujiale_campaign.py` | 历史 Kujiale campaign 场景、断点证据与报告契约测试。 |
+| `ros2_ws/src/robot_experiments/test/test_runtime_profiler.py` | 运行时 profiler 采样、进程归属和报告输出测试。 |
+| `ros2_ws/src/robot_experiments/test/test_scan_fault.py` | LaserScan 故障状态机的纯逻辑测试。 |
+| `ros2_ws/src/robot_experiments/test/test_scan_fault_bridge_integration.py` | ROS Scan-fault bridge 的集成隔离和恢复测试。 |
+| `ros2_ws/src/robot_navigation/config/nav2_performance.yaml` | 面向性能测量的 Nav2 overlay；不替代 stable/dynamic_avoidance 4×20 profile。 |
+| `ros2_ws/src/robot_navigation/config/nav2_stable.yaml` | 静态4×20使用的 stable overlay，锁定10 Hz/700 sample等已验证静态控制预算。 |
+| `scripts/run_kujiale_dynamic_acceptance.sh` | 历史动态受控/整圈验收脚本；当前正式动态批次改用 `run_kujiale_4x20.sh`。 |
+| `scripts/run_kujiale_dynamic_visual.sh` | 单段动态视觉诊断脚本；不生成4×20正式证据。 |
+
+## 34. 修改文件时的依赖关系
 
 常见改动不是只改一个文件：
 
@@ -520,7 +568,7 @@
 
 当前运行与修改入口见 [`user_manual.md`](user_manual.md) 和 [`development.md`](development.md)；文档的新鲜度边界见 [`documentation_status.md`](documentation_status.md)。
 
-## 34. 如何确认索引没有漏文件
+## 35. 如何确认索引没有漏文件
 
 维护者在提交前可从仓库根目录执行下列双向集合差分。它把“已跟踪文件 + 尚未 `git add` 的交付源码”作为左集合，排除明确非交付的 `.tmp_runtime/`，再与本文文件表第一列的完整路径比较；命令无输出才表示既没有漏项，也没有指向已删除文件的陈旧条目。
 

@@ -1,6 +1,6 @@
 # 酷家乐 RGB-D 导航使用手册
 
-> 当前可执行手册，适用分支：`main`。
+> 当前可执行手册，适用分支：`codex/kujiale-4x20-appearance-benchmark`。
 >
 > 本手册只描述当前默认的酷家乐 `warehouse_new` + Ideal Odometry 流程。旧
 > Warehouse、Realistic、增量建图和历史 benchmark 记录不作为本分支的日常入口；
@@ -271,7 +271,58 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 
 ## 7. 自动化全屋长距离测试与报告
 
-本节的可自动复核批次是静态 20 轮（种子 `7201–7220`），每轮自动执行
+### 7.0 当前正式入口：4×20 光照/颜色鲁棒性 campaign
+
+当前正式实验不是本文后续保留的静态候选脚本，而是四组各20轮：静态基准、静态＋外观、
+动态基准、动态＋外观。外观变化采用匿名 USD Session Layer，整轮固定且不写回场景资产；
+导航仍只消费 `/scan` 和 `/camera/front/depth/points`。当前代码已实现，但尚未运行本轮80个正式实验。
+
+先在任意终端构建，再以三个终端运行静态阶段：
+
+```bash
+cd "$PROJECT_ROOT"
+./scripts/build_ros2.sh
+export CAMPAIGN_ID="$(date +%Y%m%d-%H%M%S)"
+
+# Terminal A
+./scripts/run_kujiale_4x20_isaac.sh static --headless
+
+# Terminal B（等待 lifecycle 激活完成）
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=stable interactive:=false use_rviz:=false
+
+# Terminal C
+./scripts/run_kujiale_4x20.sh pilot static "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh static-pair "$CAMPAIGN_ID"
+```
+
+先在 Terminal B、A 按 Ctrl+C 有序关闭静态栈；随后用新的动态栈运行同一个 `CAMPAIGN_ID`：
+
+```bash
+# Terminal A
+./scripts/run_kujiale_4x20_isaac.sh dynamic --headless
+
+# Terminal B（需要 Jazzy STVL）
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance interactive:=false use_rviz:=false
+
+# Terminal C
+./scripts/run_kujiale_4x20.sh pilot dynamic "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh dynamic-pair "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh status "$CAMPAIGN_ID"
+./scripts/run_kujiale_4x20.sh report "$CAMPAIGN_ID"
+```
+
+每个 `pilot` 是首个外观变化轮次；预检在 pilot/正式批次前自动运行，并验证 `120 GiB` 可用空间、
+地图/场景哈希、话题、`map -> base_link` TF 和实际 Nav2 profile。中断后使用
+`static-pair "$CAMPAIGN_ID" --resume` 或 `dynamic-pair "$CAMPAIGN_ID" --resume`；完整证据会跳过，
+不完整轮次隔离后重跑。报告位于 `data/reports/kujiale_4x20_<campaign_id>/`，包含 `index.html`、
+PDF、Markdown、PNG、CSV、JSON 和证据索引。报告即使验收失败也会生成，返回码 `2` 表示未通过或证据不完整。
+
+完整矩阵、地图、外观配置和每组门槛见
+[`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+
+### 7.1 历史静态候选与可视化命令
+
+以下保留入口是历史静态20轮候选/三阶段视觉诊断，不构成或替代当前4×20正式 batch。本节的可自动复核批次是静态 20 轮（种子 `7201–7220`），每轮自动执行
 `G2 → G3 → G4 → G5 → G1`。实验 runner 会在每轮开始时设置 seed、调用
 `/simulation/reset`、等待 Nav2 恢复、发送五个 Nav2 Goal，并记录 GT、Scan、深度图/点云、
 Costmap、碰撞、安全状态和 MCAP；它不负责启动 Isaac 或 Nav2。动态部分已改为三阶段人工可视化验收，见 7.3 和 8.3；不要将旧的动态 20 轮配置当成当前执行入口。
@@ -294,7 +345,7 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 静态/动态地图、S/G1、G2–G5、障碍位置和动态触发路线见
 [`kujiale_long_route_map.md`](kujiale_long_route_map.md)。
 
-### 7.1 正式批次前检查
+### 7.2 历史批次前检查
 
 正式结果会记录当前 Git 提交、工作区状态、地图/配置 SHA256 和每轮证据。先停止所有
 旧 Isaac、ROS、RViz 与实验 runner，并确认工作区没有待提交修改：
@@ -321,7 +372,7 @@ mkdir -p "$RUN_ROOT/static" "$RUN_ROOT/dynamic"
 printf 'campaign_id=%s\n' "$CAMPAIGN_ID"
 ```
 
-### 7.2 自动静态 20 轮候选批次（当前六障碍参数）
+### 7.3 历史自动静态 20 轮候选批次
 
 终端 A 启动无头 Isaac。`--dynamic-obstacles` 对静态批次同样是必须的：它启用冻结的
 四个 `rgbd_low_box_*` 方块和两个 `rgbd_low_bar_*` 长条物理障碍，而不是启用动态轨迹。当前脚本使用
@@ -381,7 +432,7 @@ Ground Truth 轨迹，同时联动隐藏其他轮的明细行；悬停轨迹可�
 静态 runner 正常结束后，先在终端 B 按 Ctrl+C（受管 RViz 会先关闭）等待有序关闭，再在终端 A 按 Ctrl+C。
 不要直接切换 Isaac 障碍配置后复用旧进程。
 
-### 7.3 三阶段动态可视化与人工验收准备
+### 7.4 三阶段动态可视化诊断
 
 当前动态交付是三段聚焦可视化、整圈接力和录制入口；不要运行下方旧的 `kujiale_dynamic_long_range.yaml` 自动 20 轮命令来替代最终人工验收。动态必须使用新的 Isaac 进程、三阶段 actor 配置和 `dynamic_avoidance` profile。整圈联测重新打开终端 A：
 
@@ -421,7 +472,7 @@ cd "$PROJECT_ROOT"
 运行器会核验 Isaac 已启用障碍、物理配置 SHA256 和 actor ID；若不匹配会在发出
 第一个 Goal 前失败，而不是把错误环境记录成测试数据。G2→G3 或 G5→G1 聚焦测试必须将 Isaac 和导航栈一起重启到 `long_route_start_g2` 或 `long_route_start_g5`，再分别执行 `run_kujiale_three_stage_visual.sh g2-g3` 或 `g5-g1`。完整命令见 [`kujiale_three_stage_dynamic_avoidance_plan.md`](kujiale_three_stage_dynamic_avoidance_plan.md)。结束后按静态批次相同顺序关闭终端 B、终端 A。
 
-### 7.4 生成并核验自包含报告
+### 7.5 历史静态报告重生成
 
 静态 20 轮是可自动汇总的候选批次；三阶段动态目前由人工验收。不要把 dynamic visual 记录强行与静态 20 轮汇总为“40 轮正式报告”。若仅需要重新汇总静态 20 轮证据：
 

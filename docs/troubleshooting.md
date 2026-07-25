@@ -1,5 +1,18 @@
 # 运行排障手册
 
+## 4×20 campaign 预检失败
+
+`scripts/run_kujiale_4x20.sh pilot|static-pair|dynamic-pair` 会执行严格预检：至少 `120 GiB` 可用空间、
+当前 `warehouse_new` 地图/Pose Graph bundle、唯一的 Kujiale 场景 USD、RGB-D/GT/外观话题、
+实时 `map -> base_link` TF，以及正确的 Nav2 实参。静态必须为 `stable`
+（`batch_size=700`、`controller_frequency=10.0`）；动态必须为 `dynamic_avoidance`
+（`batch_size=500`、`controller_frequency=15.0`）。
+
+不要绕过失败的预检。确认 Terminal A 使用 `run_kujiale_4x20_isaac.sh static|dynamic`，Terminal B
+使用对应 `nav2_profile` 且 Nav2 lifecycle 已激活。静态和动态阶段之间须重启两套栈。正式阶段中断后用
+同一 campaign ID 加 `--resume`；不要删除不完整证据目录。完整三终端顺序见
+[`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+
 本文按“看到什么现象”组织排查步骤。日常操作先看 [`user_manual.md`](user_manual.md)，接口唯一所有权以 [`interfaces.md`](interfaces.md) 为准，已验证边界以 [`verification.md`](verification.md) 为准。
 
 ## 1. 先做这三件事

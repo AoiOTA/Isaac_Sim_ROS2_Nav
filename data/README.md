@@ -5,7 +5,7 @@ metrics, reports, and repeatable experiment runs. Directory placeholders are
 versioned, while generated contents are ignored by default.
 
 > 当前分支说明：正式酷家乐报告目录（例如
-> `data/reports/kujiale_long_route_<campaign_id>/`）是本地交付工件，包含 HTML、PDF、PNG、CSV、JSON 和运行证据，因体积和原始数据原因不推送到 Git；报告生成器、schema、校验和测试规格受版本控制。
+> `data/reports/kujiale_4x20_<campaign_id>/`）是当前 4×20 光照/颜色鲁棒性 campaign 的本地交付工件，包含 HTML、PDF、PNG、CSV、JSON 和运行证据，因体积和原始数据原因不推送到 Git；报告生成器、schema、校验和测试规格受版本控制。每轮原始证据在 `data/experiment_runs/kujiale_4x20_<campaign_id>/{static,dynamic}/`；不完整轮次会保留在同级 `.incomplete-*` 隔离目录。
 
 | Directory | Purpose |
 | --- | --- |

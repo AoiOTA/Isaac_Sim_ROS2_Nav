@@ -1,10 +1,10 @@
-# Kujiale 动态避障实验重设计方案
+# Kujiale 动态避障实验重设计方案（历史设计）
 
 ## 0. 文档状态
 
-- 开发分支：`codex/dynamic-obstacle-benchmark-redesign`
-- 当前阶段：实验装置实现中；正式验收尚未执行
-- 当前实现状态：已实现物理动态 actor、单轮可视化、运行矩阵与报告入口；仍需由用户执行最终 `20 + 5` 验收
+- 原开发分支：`codex/dynamic-obstacle-benchmark-redesign`
+- 当前替代规格：[`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)
+- 本文的 `20 + 5` 命令仅保留为设计/诊断历史；当前正式动态组为4×20中的动态基准20轮和动态＋外观20轮，均使用 `full_route_three_stage`。
 - 最终验收执行人：用户
 - Codex 后续职责：实现实验装置、单轮可视化、自动化测试、最终验收脚本和报告生成入口，但不代替用户执行正式 `20 + 5` 验收，也不宣称正式验收通过
 

@@ -10,7 +10,15 @@ branch the calibrated `warehouse_new` bundle is the only distributed map;
 `warehouse_v1` and `warehouse_v2` appear below only as historical evidence.
 The remaining `warehouse_new.posegraph` is stored through Git LFS.
 
-## 当前静态候选结果（2026-07-23；不等同完整 20+20 验收）
+## 当前4×20运行状态（尚无正式结果）
+
+分支 `codex/kujiale-4x20-appearance-benchmark` 已实现四组各20轮的调度、匿名 USD Session
+Layer 外观覆盖、证据采集、断点续跑和报告。离线测试已验证矩阵、报告和源 USD 外观清单；但未启动
+Isaac/ROS、未执行本轮80个正式 run，故本台账**不记录任何4×20成功率**，也不宣称算法已通过90%。
+运行后应以 `data/reports/kujiale_4x20_<campaign_id>/benchmark.json` 和每轮校验和为唯一结论来源。
+命令与门槛见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+
+## 历史静态候选结果（2026-07-23；不等同当前4×20验收）
 
 当前六障碍候选布局的本地报告批次为
 `kujiale_long_route_static_20260723-194416`。它使用 `long_route_start_g1`、G1–G5

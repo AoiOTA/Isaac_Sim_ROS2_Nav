@@ -123,6 +123,25 @@ The complete non-interactive validation entrypoints are:
 `test.sh --with-isaac` already includes the pure-Python and colcon suites; it is
 not necessary to run both `test.sh` forms for one final verification pass.
 
+## 4×20 appearance campaign checks
+
+对 4×20 调度、报告和外观 profile 的代码修改，先运行最小离线集；它不启动 Isaac 或 ROS：
+
+```bash
+PYTHONPATH=ros2_ws/src/robot_experiments python3 -m pytest -q \
+  isaac_sim/tests/test_appearance.py \
+  isaac_sim/tests/test_dynamic_obstacles.py \
+  ros2_ws/src/robot_experiments/test/test_configuration.py \
+  ros2_ws/src/robot_experiments/test/test_kujiale_campaign.py \
+  ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py
+bash -n scripts/run_kujiale_4x20.sh scripts/run_kujiale_4x20_isaac.sh
+```
+
+实际运行前必须重新执行 `./scripts/build_ros2.sh`，因为 `kujiale_4x20_campaign` 是 ROS
+console entry point。当前 80 轮的三终端命令、预检项与报告目录由
+[`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) 维护；
+不要用旧的静态候选脚本替代四组正式 campaign。
+
 ## Runtime inspection
 
 Once the simulator and ROS graph are running, these checks provide acceptance

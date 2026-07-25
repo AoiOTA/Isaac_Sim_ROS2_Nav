@@ -5,7 +5,7 @@
 >
 > 实施分支：`codex/kujiale-4x20-appearance-benchmark`
 >
-> 当前状态：仅完成计划文档和可复现地图示意图；未启动 Isaac/ROS，未执行80轮实验。
+> 当前状态：4×20 调度、匿名 USD Session Layer、预检、证据采集和报告器均已实现并通过离线验证；尚未启动 Isaac/ROS，尚未执行本轮 80 个正式实验。
 
 ## 1. 目标与实验矩阵
 

@@ -2,7 +2,7 @@
 
 > 最近复核：2026-07-25
 >
-> 适用分支：`codex/dynamic-obstacle-benchmark-redesign`
+> 适用分支：`codex/kujiale-4x20-appearance-benchmark`
 
 本仓库同时保留可执行手册、运行契约、设计方案和问题复盘。它们的用途不同；
 执行命令或判断当前行为时，始终以脚本、配置和测试所对应的“当前”文档为准。
@@ -22,7 +22,8 @@
 - 标准人工导航使用两个终端、受管 RViz 和 **2D Goal Pose**，不存在项目私有目标桥；
 - Nav2 有两套明确 profile：默认 `stable` 完整复现静态 20 轮基线（Local + Global 标准 `VoxelLayer`）；`dynamic_avoidance` 使用 Local STVL 时序清除且 Global Costmap 不接收 RGB-D，避免移动 actor 留下全局残影；Collision Monitor 两套 profile 均只使用 `/scan`；
 - 三阶段动态可视化的现行入口是 `run_kujiale_dynamic_isaac.sh`、`run_kujiale_three_stage_visual.sh` 与 `nav2_profile:=dynamic_avoidance`。G1→G2、G2→G3、G5→G1 分别使用独立 actor，成功到达下一航点后才退役；
-- 当前可复核的静态候选批次为 `kujiale_long_route_static_20260723-194416`：静态严格成功、物理无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`（门槛 `20%`）。动态 20 轮尚未执行，因此不能宣称动态或完整 20+20 验收；报告仅保存在本地忽略的 `data/reports/`。
+- 当前正式操作入口是 `kujiale_4x20`：静态基准、静态＋外观、动态基准、动态＋外观各20轮。匿名 USD Session Layer、成对调度、`--resume`、预检和报告均已实现；当前尚未执行该80轮，因此不能宣称四组中的任一组通过或算法已达到90%。
+- 历史静态候选批次 `kujiale_long_route_static_20260723-194416` 的静态严格成功、物理无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`；它是旧的无外观变化静态证据，不能替代4×20结果。
 - 旧全屋批次 `kujiale_long_route_20260722-171828` 使用 `mapping_start`、G1–G8 和旧障碍布局，只能作为历史证据，不能替代当前候选布局的结论。
 
 ## 文档分工
@@ -35,8 +36,9 @@
 | [`troubleshooting.md`](troubleshooting.md) | 当前排障手册 | 根据症状执行只读诊断和受管恢复。 |
 | [`calibration.md`](calibration.md) | 当前流程 + 历史记录 | 新地图的标定流程；Warehouse v2 数字是历史记录。 |
 | [`verification.md`](verification.md) | 当前证据台账 | 当前正式验收和历史能力证据的边界。 |
-| [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 当前重设计测试规格与结果边界 | S/G1 闭环路线、静态候选批次、待执行动态 20 轮和旧批次生成工件。 |
-| [`kujiale_three_stage_dynamic_avoidance_plan.md`](kujiale_three_stage_dynamic_avoidance_plan.md) | 当前动态编排规格 | 三段 actor 坐标、gate、生命周期、可视化和整圈测试入口。 |
+| [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) | 当前正式4×20运行手册与规格 | 四组20轮、外观Session Layer、三终端命令、证据、报告与验收门槛。 |
+| [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 历史重设计规格与结果边界 | 保留 S/G1 闭环、静态候选批次和旧批次背景；正式执行改用4×20手册。 |
+| [`kujiale_three_stage_dynamic_avoidance_plan.md`](kujiale_three_stage_dynamic_avoidance_plan.md) | 动态 actor 编排参考 | 三段 actor 坐标、gate、生命周期和可视化诊断入口；非4×20运行器。 |
 | [`kujiale_navigation_dynamic_avoidance_issue_log.md`](kujiale_navigation_dynamic_avoidance_issue_log.md) | 当前问题复盘 | 静态/动态 profile 分离、STVL 清除、触发与 RViz 判读的已知边界。 |
 | [`isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md`](isaac_sim_nav2_rgbd_local_costmap_fusion_plan.md) | 历史设计 + 现行差异说明 | 理解 RGB-D 一期决策；不要照抄其中仅 Local Costmap 的旧设计。 |
 | [`rviz_workflow_upgrade_plan.md`](rviz_workflow_upgrade_plan.md) | 历史设计记录 | 回溯 RViz/Lifecycle 升级取舍。 |
