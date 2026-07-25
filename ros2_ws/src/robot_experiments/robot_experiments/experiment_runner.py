@@ -233,6 +233,32 @@ class ExperimentRunner(Node):
         self._output_directory = Path(
             str(self.declare_parameter("output_directory", "data/experiment_runs").value)
         ).expanduser()
+        requested_indices = str(
+            self.declare_parameter("run_indices", "").value
+        ).strip()
+        if requested_indices:
+            try:
+                indices = tuple(
+                    int(item.strip()) for item in requested_indices.split(",")
+                )
+            except ValueError as exc:
+                raise ConfigurationError(
+                    "run_indices must be comma-separated positive integers"
+                ) from exc
+            if not indices or min(indices) <= 0 or len(set(indices)) != len(indices):
+                raise ConfigurationError(
+                    "run_indices must be unique positive integers"
+                )
+            self._run_indices: tuple[int, ...] | None = indices
+        else:
+            self._run_indices = None
+        resume = self.declare_parameter("resume", False).value
+        if isinstance(resume, bool):
+            self._resume = resume
+        elif isinstance(resume, str) and resume.strip().lower() in {"true", "false"}:
+            self._resume = resume.strip().lower() == "true"
+        else:
+            raise ConfigurationError("resume must be boolean")
         record_evidence = self.declare_parameter("record_evidence", True).value
         if isinstance(record_evidence, bool):
             self._record_evidence = record_evidence
@@ -2111,6 +2137,11 @@ class ExperimentRunner(Node):
                 "state": dict(self._appearance_state or {}),
                 "ready": appearance_ready,
             },
+            "condition_id": (
+                self._active_selection.condition_id
+                if self._active_selection is not None
+                else None
+            ),
             "spawn_pose_name": self._spawn_pose.name,
             "usd_start_pose": self._spawn_pose.usd.as_dict(),
             "map_start_pose": self._spawn_pose.map.as_dict(),
@@ -2321,7 +2352,7 @@ class ExperimentRunner(Node):
         return True
 
     def _begin_run_evidence(self, run_index: int, seed: int) -> Path:
-        root = self._output_directory / self._scenario.scenario_id / f"run-{run_index:04d}-seed-{seed}"
+        root = self._evidence_root_for(run_index, seed)
         root.mkdir(parents=True, exist_ok=False)
         self._active_evidence_root = root
         self._bag_process = None
@@ -2422,6 +2453,8 @@ class ExperimentRunner(Node):
             "campaign": "kujiale_long_range",
             "kind": self._scenario.scenario_type,
             "seed": seed,
+            "condition_id": manifest.get("condition_id"),
+            "appearance_profile_id": manifest.get("appearance", {}).get("profile_id"),
             "strict_success": strict_success,
             "physical_collision_free": not self._collision_detected,
             "data_complete": data_complete,
@@ -2462,6 +2495,91 @@ class ExperimentRunner(Node):
             checksums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
         (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
 
+    def _evidence_root_for(self, run_index: int, seed: int) -> Path:
+        return (
+            self._output_directory
+            / self._scenario.scenario_id
+            / f"run-{run_index:04d}-seed-{seed}"
+        )
+
+    @staticmethod
+    def _checksums_are_verified(root: Path) -> bool:
+        checksum_file = root / "checksums.sha256"
+        if not checksum_file.is_file():
+            return False
+        try:
+            entries = [
+                line.split("  ", 1)
+                for line in checksum_file.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+        except OSError:
+            return False
+        if not entries or any(len(item) != 2 or len(item[0]) != 64 for item in entries):
+            return False
+        for digest, relative in entries:
+            candidate = root / relative
+            try:
+                candidate.resolve().relative_to(root.resolve())
+            except ValueError:
+                return False
+            if not candidate.is_file() or hashlib.sha256(candidate.read_bytes()).hexdigest() != digest:
+                return False
+        return True
+
+    def _completed_resume_manifest(
+        self, root: Path, run_index: int, selection: RunSelection
+    ) -> dict[str, Any] | None:
+        summary_path = root / "run_summary.json"
+        manifest_path = root / "run_manifest.json"
+        if not summary_path.is_file() or not manifest_path.is_file():
+            return None
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not (
+            isinstance(summary, Mapping)
+            and summary.get("data_complete") is True
+            and summary.get("checksums_verified") is True
+            and self._checksums_are_verified(root)
+            and isinstance(manifest, dict)
+        ):
+            return None
+        expected = {
+            "random_seed": selection.seed,
+            "run_index": run_index,
+            "condition_id": selection.condition_id,
+        }
+        if any(manifest.get(key) != value for key, value in expected.items()):
+            return None
+        appearance = manifest.get("appearance", {})
+        if selection.appearance_profile_id is not None and (
+            not isinstance(appearance, Mapping)
+            or appearance.get("profile_id") != selection.appearance_profile_id
+        ):
+            return None
+        dynamic = manifest.get("dynamic_selection", {})
+        if (
+            not isinstance(dynamic, Mapping)
+            or dynamic.get("case_id") != selection.case_id
+            or dynamic.get("variant_id") != selection.variant_id
+        ):
+            return None
+        return manifest
+
+    @staticmethod
+    def _quarantine_incomplete_evidence(root: Path) -> Path:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        target = root.with_name(f"{root.name}.incomplete-{timestamp}")
+        suffix = 1
+        while target.exists():
+            target = root.with_name(f"{root.name}.incomplete-{timestamp}-{suffix}")
+            suffix += 1
+        root.rename(target)
+        return target
+
     def run_all(self) -> list[dict[str, Any]]:
         if not self._wait_until(lambda: self._clock_ready, self._clock_timeout_sec):
             raise TimeoutError("timed out waiting for a non-zero /clock")
@@ -2473,8 +2591,29 @@ class ExperimentRunner(Node):
             RunSelection(seed) for seed in self._scenario.seeds
         )
         for run_index, selection in enumerate(selections, start=1):
+            if self._run_indices is not None and run_index not in self._run_indices:
+                continue
             seed = selection.seed
             self._active_selection = selection
+            existing_root = self._evidence_root_for(run_index, seed)
+            if self._record_evidence and existing_root.exists():
+                if not self._resume:
+                    raise ConfigurationError(
+                        f"evidence directory already exists: {existing_root}; rerun with resume:=true"
+                    )
+                preserved = self._completed_resume_manifest(
+                    existing_root, run_index, selection
+                )
+                if preserved is not None:
+                    manifests.append(preserved)
+                    self.get_logger().info(
+                        f"resume verified {existing_root.name}; skipping completed run"
+                    )
+                    continue
+                quarantined = self._quarantine_incomplete_evidence(existing_root)
+                self.get_logger().warning(
+                    f"quarantined incomplete evidence before retry: {quarantined.name}"
+                )
             nav2_succeeded = False
             timed_out = False
             nav2_status = GoalStatus.STATUS_UNKNOWN
