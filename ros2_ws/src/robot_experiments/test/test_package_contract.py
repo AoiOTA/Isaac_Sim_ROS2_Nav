@@ -96,6 +96,9 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert 'setsid -- "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh"' not in wrapper
     assert 'setsid -- "${SCRIPT_DIR}/run_ros.sh"' not in wrapper
     assert "Keep them as direct children so their PIDs remain waitable" in wrapper
+    assert "ros_launch_process_group_for()" in wrapper
+    assert 'kill -INT -- "-${process_group}"' in wrapper
+    assert "stopping ${active_mode} ROS launch process group" in wrapper
 
 
 def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
