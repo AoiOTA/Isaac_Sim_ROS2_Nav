@@ -95,6 +95,13 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert '"${SCRIPT_DIR}/run_kujiale_4x20.sh" report "${campaign_id}"' in wrapper
 
 
+def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
+    root = PACKAGE_ROOT.parents[2]
+    controller = (root / "scripts" / "run_kujiale_4x20.sh").read_text()
+    assert 'find "${environment_root}" -type f' in controller
+    assert "rg --files \"${environment_root}\"" not in controller
+
+
 def test_incremental_map_comparison_has_an_installed_cli():
     setup_source = (PACKAGE_ROOT / "setup.py").read_text()
     assert (
