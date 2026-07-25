@@ -139,6 +139,42 @@ def test_g2_g3_exit_requires_following_then_left_exit_turn():
     assert metrics["complete"]
 
 
+def test_g2_g3_exit_accepts_calibrated_one_point_three_metre_following_gap():
+    ground_truth = [
+        OdometrySample(-0.42, 2.30, 0.0, 0.4, 0.0, 1.00, 0.0),
+        OdometrySample(-0.85, -0.55, 0.0, 0.4, 0.0, 1.10, 0.0),
+    ]
+    actor = [
+        {"id": "g2_g3_exit_actor", "state": "moving", "stamp_s": 1.00, "position": [-0.40, 1.00, 0.5]},
+        {"id": "g2_g3_exit_actor", "state": "parked", "stamp_s": 1.10, "position": [-0.40, -0.70, 0.5]},
+    ]
+
+    metrics = ExperimentRunner._g2_g3_exit_metrics(
+        ground_truth, actor, "g2_g3_exit_actor"
+    )
+
+    assert metrics["continuous_follow_seen"]
+    assert metrics["complete"]
+
+
+def test_g2_g3_exit_rejects_a_following_gap_beyond_the_calibrated_window():
+    ground_truth = [
+        OdometrySample(-0.42, 2.36, 0.0, 0.4, 0.0, 1.00, 0.0),
+        OdometrySample(-0.85, -0.55, 0.0, 0.4, 0.0, 1.10, 0.0),
+    ]
+    actor = [
+        {"id": "g2_g3_exit_actor", "state": "moving", "stamp_s": 1.00, "position": [-0.40, 1.00, 0.5]},
+        {"id": "g2_g3_exit_actor", "state": "parked", "stamp_s": 1.10, "position": [-0.40, -0.70, 0.5]},
+    ]
+
+    metrics = ExperimentRunner._g2_g3_exit_metrics(
+        ground_truth, actor, "g2_g3_exit_actor"
+    )
+
+    assert not metrics["continuous_follow_seen"]
+    assert not metrics["complete"]
+
+
 def test_failed_pilot_evidence_is_retried_only_when_successful_resume_is_required(tmp_path):
     root = tmp_path / "run-0002-seed-7301"
     root.mkdir()
