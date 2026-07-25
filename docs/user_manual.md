@@ -275,7 +275,8 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 
 当前正式实验不是本文后续保留的静态候选脚本，而是四组各20轮：静态基准、静态＋外观、
 动态基准、动态＋外观。外观变化采用匿名 USD Session Layer，整轮固定且不写回场景资产；
-导航仍只消费 `/scan` 和 `/camera/front/depth/points`。当前代码已实现，但尚未运行本轮80个正式实验。
+导航仍只消费 `/scan` 和 `/camera/front/depth/points`。正式批次 `20260725-210035` 已完整通过：
+静态两组均20/20，动态两组均19/20，四组物理无碰撞均20/20。
 
 只需在一个终端运行以下命令；它会自动构建、启动静态栈并完成静态40轮、立即生成静态 `2×20` 报告、受控关闭、
 启动动态栈并完成动态40轮、生成动态 `2×20` 报告，最后生成同一批次的总4×20报告：
@@ -313,6 +314,8 @@ HTML 报告的“逐轮实际 GT 路径”区会把每轮 `ground_truth.csv.gz` 
 动态专用批次只产生独立的 `dynamic_2x20/` 报告，不能自动与另一 campaign 的静态报告组成完整4×20验收。若要为已完成的
 静态阶段补生成报告，则运行 `./scripts/run_kujiale_4x20.sh static-report <CAMPAIGN_ID>`；当前批次可在静态完成后使用
 `./scripts/run_kujiale_4x20.sh static-report 20260725-210035`。
+同一ID下需要保留静态、从零替换全部动态证据时，不要只删失败轮；严格按
+[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md) 的保留/移出清单操作。
 
 完整矩阵、地图、外观配置和每组门槛见
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
@@ -541,19 +544,12 @@ visual runner。C 启动后先自行 Reset 到 `long_route_start_g1`，再顺序
 
 ### 8.2 静态可视化单轮
 
-终端 A 启动带 RGB-D 低矮方块的 Isaac GUI。`--dynamic-obstacles` 对静态场景同样必须
-启用，因为它负责实例化中心区四个 RGB-D 低矮方块和两个低矮长条；该配置没有运动轨迹：
+终端 A 使用正式静态启动器启动带 RGB-D 低矮方块的 Isaac GUI。它已经固定场景、G1出生点、Ideal里程计、
+RGB-D、六个静态障碍和baseline外观：
 
 ```bash
 cd "$PROJECT_ROOT"
-ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode localization \
-  --mode ideal \
-  --spawn-pose long_route_start_g1 \
-  --camera-profile rgbd_navigation \
-  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
-  --dynamic-obstacles
+./scripts/run_kujiale_4x20_isaac.sh static
 ```
 
 终端 B 启动 Navigation 和 RViz，等待 `Nav2 lifecycle activation completed`：
@@ -624,14 +620,7 @@ Isaac。动态物理配置在 Isaac 启动时冻结，必须重新启动 GUI：
 
 ```bash
 cd "$PROJECT_ROOT"
-ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode localization \
-  --mode ideal \
-  --spawn-pose long_route_start_g1 \
-  --camera-profile rgbd_navigation \
-  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml \
-  --dynamic-obstacles
+./scripts/run_kujiale_dynamic_isaac.sh
 ```
 
 重新在终端 B 启动 Navigation/RViz：
@@ -644,7 +633,7 @@ cd "$PROJECT_ROOT"
 等待 Nav2 激活后，在终端 C 使用三阶段入口运行整圈联测；这同样不写正式验收结论：
 
 ```bash
-./scripts/run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501 --record
+./scripts/run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501
 ```
 
 runner 按 G1→G2、G2→G3、G5→G1 三段接力 arm actor；只有机器人通过各自的空间 gate 后才显示并运动，且到达对应下一航点才退役。无需手工输入服务命令。若希望额外查看状态，可另开终端 D：
@@ -654,7 +643,8 @@ source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
 ros2 topic echo /experiment/obstacles/state
 ```
 
-在 GUI 中观察三个 actor 依次移动并停车；在 RViz 观察路径重规划、MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 直接退出；`--record` 仅保存该次可视化记录，不构成正式动态验收。
+在 GUI 中观察三个 actor 依次移动并停车；在 RViz 观察路径重规划、MPPI 最优轨迹、Costmap 和 Collision Monitor。
+一次运行结束后，终端 C 直接退出。默认不写记录；只有需要临时调试证据时才增加 `--record`，且该记录仍不构成正式动态验收。
 
 ### 8.4 重跑、截图与停止
 

@@ -1,6 +1,6 @@
 # Kujiale 全屋长距离路线与避障布置（4×20基线）
 
-> 当前正式规格：[4×20 光照/颜色鲁棒性实验](kujiale_4x20_appearance_benchmark_plan.md)。本图只定义其共同的空间基线；四组各20轮尚未执行。
+> 当前正式规格：[4×20 光照/颜色鲁棒性实验](kujiale_4x20_appearance_benchmark_plan.md)。本图定义其共同的空间基线；正式批次 `20260725-210035` 已完成并通过，结果见 [验证记录](verification.md)。
 >
 > 历史静态候选批次 `kujiale_long_route_static_20260723-194416` 已通过 20/20，但不替代本轮带外观扰动的4×20结果。
 

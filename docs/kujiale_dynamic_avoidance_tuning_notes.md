@@ -1,6 +1,6 @@
 # Kujiale 动态避障调优问题复盘
 
-本文记录 `local_bypass` 单轮可视化调优中发现的问题、根因和当前处理方式。它是调优复盘，不替代当前4×20的动态基准20轮或动态＋外观20轮验收；正式命令和报告见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+本文记录 `local_bypass` 单轮可视化调优中发现的问题、根因和当前处理方式。它是调优复盘，不替代当前4×20的动态基准20轮或动态＋外观20轮验收。正式批次 `20260725-210035` 的两个动态组均严格成功19/20、物理无碰撞20/20；现行命令、验收和恢复规则见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)、[`verification.md`](verification.md) 和 [`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
 
 ## 当前可视化基线
 
@@ -89,7 +89,7 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 
 ### 9. 4×20 外观 pilot 的局部绕行净距不足
 
-`20260725-173241` 的动态外观 pilot 中，G1→G2 的 `local_bypass` 三段行为、五个导航航点和物理碰撞检查均通过，但 actor 安全记录出现 `safety_yield`。以 Nav2 的实际矩形 footprint（含 `5 mm` shell）复算，最小真实净距约为 `0.0338 m`，低于 campaign 的 `0.10 m` 门槛；不能通过放宽报告规则将该轮判为成功。
+`20260725-173241` 的动态外观 pilot 中，G1→G2 的 `local_bypass` 三段行为、五个导航航点和物理碰撞检查均通过，但 actor 安全记录出现 `safety_yield`。以 Nav2 的实际矩形 footprint（含 `5 mm` shell）复算，最小真实净距约为 `0.0338 m`，低于当时 campaign 的 `0.10 m` 门槛；该轮按当时规则不能通过。后续在保留全部近距离证据的前提下，正式4×20统一改为物理接触失败口径，见本节末尾。
 
 处理：不改 actor 的轨迹、尺寸、速度、触发门或变体延迟。v1 重跑成功后，v2 外观轮仍记录到 `0.0233 m` 的真实最小净距，因此仅在 `dynamic_avoidance` overlay 中将 Local Costmap `inflation_radius` 从基础 profile 的 `0.40 m` 提升至 `0.60 m`，为 0.40 m 动态方块建立额外 0.20 m 的 MPPI 代价缓冲。静态 `stable` profile 保持不变。该调整必须重启 Nav2；下次 pilot 仍须检查 `safety_yield`、每个 actor 的 `minimum_clearance_m` 与物理碰撞证据。
 

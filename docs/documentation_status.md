@@ -1,6 +1,6 @@
 # 文档状态与事实来源
 
-> 最近复核：2026-07-25
+> 最近复核：2026-07-26
 >
 > 适用分支：`codex/kujiale-4x20-appearance-benchmark`
 
@@ -22,7 +22,7 @@
 - 标准人工导航使用两个终端、受管 RViz 和 **2D Goal Pose**，不存在项目私有目标桥；
 - Nav2 有两套明确 profile：默认 `stable` 完整复现静态 20 轮基线（Local + Global 标准 `VoxelLayer`）；`dynamic_avoidance` 使用 Local STVL 时序清除且 Global Costmap 不接收 RGB-D，避免移动 actor 留下全局残影；Collision Monitor 两套 profile 均只使用 `/scan`；
 - 三阶段动态可视化的现行入口是 `run_kujiale_dynamic_isaac.sh`、`run_kujiale_three_stage_visual.sh` 与 `nav2_profile:=dynamic_avoidance`。G1→G2、G2→G3、G5→G1 分别使用独立 actor，成功到达下一航点后才退役；
-- 当前正式操作入口是 `run_kujiale_4x20_all.sh`：一条命令自动管理静态/动态两套栈、四组各20轮、报告和`--resume`。静态40轮完成即保留 `static_2x20`，动态40轮完成即保留 `dynamic_2x20`，同一批次四组完成后才写根目录总4×20报告；`--dynamic-only` 可只重跑动态两组且不会覆盖静态报告。匿名 USD Session Layer、成对调度、预检和报告均已实现；在完整同批次80轮报告产生前，不能宣称四组均通过或算法已达到90%。
+- 当前正式操作入口是 `run_kujiale_4x20_all.sh`：一条命令自动管理静态/动态两套栈、四组各20轮、报告和`--resume`。静态40轮完成即保留 `static_2x20`，动态40轮完成即保留 `dynamic_2x20`，同一批次四组完成后才写根目录总4×20报告；`--dynamic-only` 可只重跑动态两组。正式批次 `20260725-210035` 已完成并通过：静态两组20/20，动态两组19/20，四组物理无碰撞均20/20。
 - 单轮 GUI/RViz 诊断提供静态/动态自动完整 G2–G5–G1 路线；它们均不计入4×20证据。
 - 历史静态候选批次 `kujiale_long_route_static_20260723-194416` 的静态严格成功、物理无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`；它是旧的无外观变化静态证据，不能替代4×20结果。
 - 旧全屋批次 `kujiale_long_route_20260722-171828` 使用 `mapping_start`、G1–G8 和旧障碍布局，只能作为历史证据，不能替代当前候选布局的结论。
@@ -37,7 +37,8 @@
 | [`troubleshooting.md`](troubleshooting.md) | 当前排障手册 | 根据症状执行只读诊断和受管恢复。 |
 | [`calibration.md`](calibration.md) | 当前流程 + 历史记录 | 新地图的标定流程；Warehouse v2 数字是历史记录。 |
 | [`verification.md`](verification.md) | 当前证据台账 | 当前正式验收和历史能力证据的边界。 |
-| [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) | 当前正式4×20运行手册与规格 | 四组20轮、外观Session Layer、三终端命令、证据、报告与验收门槛。 |
+| [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) | 当前正式4×20运行手册与规格 | 四组20轮、外观Session Layer、一键批量和三终端单轮可视化命令、证据、报告与验收门槛。 |
+| [`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md) | 当前执行复盘与恢复手册 | supervisor、pilot、续跑/重跑、动态验收、报告和双远程推送问题。 |
 | [`kujiale_long_range_navigation_test_plan.md`](kujiale_long_range_navigation_test_plan.md) | 历史重设计规格与结果边界 | 保留 S/G1 闭环、静态候选批次和旧批次背景；正式执行改用4×20手册。 |
 | [`kujiale_three_stage_dynamic_avoidance_plan.md`](kujiale_three_stage_dynamic_avoidance_plan.md) | 动态 actor 编排参考 | 三段 actor 坐标、gate、生命周期和可视化诊断入口；非4×20运行器。 |
 | [`kujiale_navigation_dynamic_avoidance_issue_log.md`](kujiale_navigation_dynamic_avoidance_issue_log.md) | 当前问题复盘 | 静态/动态 profile 分离、STVL 清除、触发与 RViz 判读的已知边界。 |

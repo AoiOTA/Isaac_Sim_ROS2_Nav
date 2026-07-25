@@ -140,7 +140,17 @@ bash -n scripts/run_kujiale_4x20.sh scripts/run_kujiale_4x20_isaac.sh scripts/ru
 实际运行前，推荐执行 `./scripts/run_kujiale_4x20_all.sh`；它会先构建，因为 `kujiale_4x20_campaign` 是 ROS
 console entry point。当前80轮的一键命令、预检项与报告目录由
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) 维护；
-不要用旧的静态候选脚本替代四组正式 campaign。
+不要用旧的静态候选脚本替代四组正式 campaign。已遇到的监督、pilot、续跑、报告和双远程问题归档在
+[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
+
+修改4×20文档、入口或报告模板后，还应检查 shell 语法和工作区差异：
+
+```bash
+bash -n scripts/run_kujiale_4x20.sh scripts/run_kujiale_4x20_isaac.sh \
+  scripts/run_kujiale_4x20_all.sh scripts/run_visual_route.sh \
+  scripts/run_kujiale_dynamic_isaac.sh scripts/run_kujiale_three_stage_visual.sh
+git diff --check
+```
 
 ## Runtime inspection
 
@@ -185,9 +195,11 @@ verification evidence.
 Keep smoke evidence separate from statistical acceptance. The current status is
 tracked in `docs/verification.md`; an RTX topic-rate check, one successful SLAM
 run, a small deterministic navigation batch, or passing unit tests does not
-establish broad Localization/Nav2 success rates. When the statistical matrix is
-eventually run, preserve raw reports under the ignored `data/` boundary and
-commit only deliberately curated summaries.
+establish broad Localization/Nav2 success rates. The formal
+`20260725-210035` matrix is complete; any later map, actor, Nav2, appearance or
+acceptance-policy change requires new evidence and must not inherit that result.
+Preserve raw reports under the ignored `data/` boundary and commit only
+deliberately curated summaries.
 
 ## Commit and data discipline
 
