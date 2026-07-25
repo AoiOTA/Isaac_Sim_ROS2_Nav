@@ -91,7 +91,7 @@ Actor 使用余弦缓入缓出轨迹。对于 `0.80 m` 的横移，若最大加�
 
 `20260725-173241` 的动态外观 pilot 中，G1→G2 的 `local_bypass` 三段行为、五个导航航点和物理碰撞检查均通过，但 actor 安全记录出现 `safety_yield`。以 Nav2 的实际矩形 footprint（含 `5 mm` shell）复算，最小真实净距约为 `0.0338 m`，低于 campaign 的 `0.10 m` 门槛；不能通过放宽报告规则将该轮判为成功。
 
-处理：不改 actor 的轨迹、尺寸、速度、触发门或变体延迟。仅在 `dynamic_avoidance` overlay 中将 Local Costmap `inflation_radius` 从基础 profile 的 `0.40 m` 提升至 `0.50 m`，为 0.40 m 动态方块建立额外 0.10 m 的 MPPI 代价缓冲。静态 `stable` profile 保持不变。该调整必须重启 Nav2；下次 pilot 仍须检查 `safety_yield`、每个 actor 的 `minimum_clearance_m` 与物理碰撞证据。
+处理：不改 actor 的轨迹、尺寸、速度、触发门或变体延迟。v1 重跑成功后，v2 外观轮仍记录到 `0.0233 m` 的真实最小净距，因此仅在 `dynamic_avoidance` overlay 中将 Local Costmap `inflation_radius` 从基础 profile 的 `0.40 m` 提升至 `0.60 m`，为 0.40 m 动态方块建立额外 0.20 m 的 MPPI 代价缓冲。静态 `stable` profile 保持不变。该调整必须重启 Nav2；下次 pilot 仍须检查 `safety_yield`、每个 actor 的 `minimum_clearance_m` 与物理碰撞证据。
 
 ## 复测方法
 
