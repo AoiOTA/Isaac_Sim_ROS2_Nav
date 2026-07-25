@@ -86,6 +86,42 @@ preflight() {
   log_info "preflight passed for ${mode}; nav2=${nav2_profile}; free=${available_gib} GiB; map_sha256=${map_hash:0:12}; scene_sha256=${scene_hash:0:12}"
 }
 
+verify_pilot_evidence() {
+  local output="$1" indices="$2"
+  python3 - "${output}" "${indices}" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+expected = {int(value) for value in sys.argv[2].split(",")}
+observed: set[int] = set()
+problems: list[str] = []
+for manifest_path in root.rglob("run_manifest.json"):
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        summary = json.loads(
+            (manifest_path.parent / "run_summary.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError) as exc:
+        problems.append(f"unreadable evidence {manifest_path}: {exc}")
+        continue
+    index = manifest.get("run_index")
+    if index not in expected:
+        continue
+    observed.add(index)
+    if manifest.get("result") != "success":
+        problems.append(f"pilot run {index} result={manifest.get('result')!r}")
+    if summary.get("data_complete") is not True or summary.get("checksums_verified") is not True:
+        problems.append(f"pilot run {index} has incomplete evidence")
+missing = sorted(expected - observed)
+if missing:
+    problems.append("missing pilot evidence for run indices: " + ",".join(map(str, missing)))
+if problems:
+    raise SystemExit("[isaac-nav] error: pilot validation failed: " + "; ".join(problems))
+PY
+}
+
 run_stage() {
   local mode="$1" output="$2" indices="$3" resume="$4"
   local scenario="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/kujiale_4x20_${mode}_pair.yaml"
@@ -96,6 +132,9 @@ run_stage() {
   local arguments=("${SCRIPT_DIR}/run_experiment.sh" "${scenario}" "${output}" "resume:=${resume}" "nav2_profile:=${nav2_profile}")
   [[ -n "${indices}" ]] && arguments+=("run_indices:=${indices}")
   "${arguments[@]}"
+  # ros2 launch can return successfully even if a launched node exits during
+  # startup.  A failed pilot must never allow the formal 40-round stage to run.
+  [[ -z "${indices}" ]] || verify_pilot_evidence "${output}" "${indices}"
 }
 
 case "${command_name}" in

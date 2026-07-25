@@ -103,6 +103,15 @@ def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
     controller = (root / "scripts" / "run_kujiale_4x20.sh").read_text()
     assert 'find "${environment_root}" -type f' in controller
     assert "rg --files \"${environment_root}\"" not in controller
+    assert "verify_pilot_evidence()" in controller
+    assert "A failed pilot must never allow the formal 40-round stage to run." in controller
+
+
+def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
+    launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    assert "from launch_ros.parameter_descriptions import ParameterValue" in launch_source
+    assert '"run_indices": ParameterValue(' in launch_source
+    assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
 
 
 def test_incremental_map_comparison_has_an_installed_cli():
