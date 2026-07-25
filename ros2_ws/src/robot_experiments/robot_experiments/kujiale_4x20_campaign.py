@@ -494,3 +494,7 @@ def main(args: list[str] | None = None) -> None:
     output = write_4x20_report(summary, parsed.output_directory)
     print(json.dumps({"output": str(output), "scope": summary["scope"], "complete": summary["complete"], "passed": summary["passed"]}, ensure_ascii=False))
     raise SystemExit(0 if summary["passed"] else 2)
+
+
+if __name__ == "__main__":
+    main()
