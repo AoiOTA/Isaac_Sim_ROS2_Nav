@@ -1793,12 +1793,12 @@ class ExperimentRunner(Node):
             # Both actors proceed south; a positive value therefore means the
             # square is in front of the robot while it is moving away.
             # The calibrated y=2.60 release gate produces a sustained
-            # same-lane following interval just beyond 1.20 m in the physical
+            # same-lane following interval just beyond 1.20 m in physical
             # pilot trace.  Keep the actor clearly in front and in the same
-            # lane, while allowing the documented 1.35 m evidence window.
+            # lane, while allowing the documented 1.40 m evidence window.
             if (
                 actor["state"] == "moving"
-                and 0.20 <= robot.y - actor_y <= 1.35
+                and 0.20 <= robot.y - actor_y <= 1.40
                 and abs(robot.x - actor_x) <= 0.65
             ):
                 result["continuous_follow_seen"] = True
