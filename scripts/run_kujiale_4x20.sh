@@ -51,7 +51,12 @@ preflight() {
   require_file "${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml"
   environment_root="${KUJIALE_ENVIRONMENT_ROOT:-/home/lyb/kujiale_usd_rooms_20260717}"
   require_directory "${environment_root}"
-  mapfile -t scene_matches < <(rg --files "${environment_root}" -g 'kujiale_0026_A_to_B_door_open.usd')
+  # `source_ros` can activate an Isaac/Conda environment whose PATH does not
+  # include ripgrep.  Use the POSIX base-system `find` here: preflight must not
+  # depend on an optional developer CLI before it can validate the live stack.
+  mapfile -t scene_matches < <(
+    find "${environment_root}" -type f -name 'kujiale_0026_A_to_B_door_open.usd' -print
+  )
   [[ "${#scene_matches[@]}" -eq 1 ]] || die "expected exactly one Kujiale scene USD below ${environment_root}; found ${#scene_matches[@]}"
   scene_file="${scene_matches[0]}"
   nav2_profile="stable"; nav2_batch="700"; nav2_frequency="10.0"
