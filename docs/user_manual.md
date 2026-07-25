@@ -277,7 +277,8 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 动态基准、动态＋外观。外观变化采用匿名 USD Session Layer，整轮固定且不写回场景资产；
 导航仍只消费 `/scan` 和 `/camera/front/depth/points`。当前代码已实现，但尚未运行本轮80个正式实验。
 
-只需在一个终端运行以下命令；它会自动构建、启动静态栈并完成静态40轮、受控关闭、启动动态栈并完成动态40轮，最后生成报告：
+只需在一个终端运行以下命令；它会自动构建、启动静态栈并完成静态40轮、立即生成静态 `2×20` 报告、受控关闭、
+启动动态栈并完成动态40轮、生成动态 `2×20` 报告，最后生成同一批次的总4×20报告：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -293,8 +294,21 @@ cd "$PROJECT_ROOT"
 
 每个 `pilot` 是首个外观变化轮次；预检在 pilot/正式批次前自动运行，并验证 `120 GiB` 可用空间、
 地图/场景哈希、话题、`map -> base_link` TF 和实际 Nav2 profile。脚本会先关闭 Nav2 再关闭 Isaac，
-不复用静态进程；完整证据会跳过，不完整轮次隔离后重跑。报告位于 `data/reports/kujiale_4x20_<campaign_id>/`，包含 `index.html`、
+不复用静态进程；完整证据会跳过，不完整轮次隔离后重跑。报告位于 `data/reports/kujiale_4x20_<campaign_id>/`，其中
+`static_2x20/` 和 `dynamic_2x20/` 是阶段完成后立即保留的子报告，根目录是同一批次完整80轮后的总报告；均包含 `index.html`、
 PDF、Markdown、PNG、CSV、JSON 和证据索引。报告即使验收失败也会生成，返回码 `2` 表示未通过或证据不完整。
+
+如果静态已通过、仅需在修复后重新验证动态，请新开动态专用批次；它不会启动静态栈或覆盖静态报告：
+
+```bash
+./scripts/run_kujiale_4x20_all.sh --dynamic-only
+# 已构建工作区：
+./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build
+```
+
+动态专用批次只产生独立的 `dynamic_2x20/` 报告，不能自动与另一 campaign 的静态报告组成完整4×20验收。若要为已完成的
+静态阶段补生成报告，则运行 `./scripts/run_kujiale_4x20.sh static-report <CAMPAIGN_ID>`；当前批次可在静态完成后使用
+`./scripts/run_kujiale_4x20.sh static-report 20260725-210035`。
 
 完整矩阵、地图、外观配置和每组门槛见
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。

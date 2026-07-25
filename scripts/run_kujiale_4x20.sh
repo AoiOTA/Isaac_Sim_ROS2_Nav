@@ -15,7 +15,9 @@ usage:
   run_kujiale_4x20.sh static-pair CAMPAIGN_ID [--resume]
   run_kujiale_4x20.sh dynamic-pair CAMPAIGN_ID [--resume]
   run_kujiale_4x20.sh status CAMPAIGN_ID
+  run_kujiale_4x20.sh static-status|dynamic-status CAMPAIGN_ID
   run_kujiale_4x20.sh report CAMPAIGN_ID
+  run_kujiale_4x20.sh static-report|dynamic-report CAMPAIGN_ID
 USAGE
 }
 
@@ -164,18 +166,39 @@ case "${command_name}" in
     preflight "${mode}"
     run_stage "${mode}" "${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}/${mode}" "" "${resume}"
     ;;
-  status)
+  status|static-status|dynamic-status)
     [[ $# -eq 1 ]] || { usage >&2; exit 2; }
     campaign_id="$1"; require_campaign_id "${campaign_id}"; source_ros --require-workspace
-    ros2 run robot_experiments kujiale_4x20_campaign --run-root "${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}" --status
+    arguments=(python3 -m robot_experiments.kujiale_4x20_campaign --run-root "${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}" --status)
+    [[ "${command_name}" == "static-status" ]] && arguments+=(--scope static)
+    [[ "${command_name}" == "dynamic-status" ]] && arguments+=(--scope dynamic)
+    PYTHONPATH="${PROJECT_ROOT}/ros2_ws/src/robot_experiments${PYTHONPATH:+:${PYTHONPATH}}" "${arguments[@]}"
     ;;
-  report)
+  report|static-report|dynamic-report)
     [[ $# -eq 1 ]] || { usage >&2; exit 2; }
     campaign_id="$1"; require_campaign_id "${campaign_id}"; source_ros --require-workspace
     run_root="${PROJECT_ROOT}/data/experiment_runs/kujiale_4x20_${campaign_id}"
     report_root="${PROJECT_ROOT}/data/reports/kujiale_4x20_${campaign_id}"
-    [[ ! -e "${report_root}" ]] || die "refusing to overwrite existing report: ${report_root}"
-    ros2 run robot_experiments kujiale_4x20_campaign --run-root "${run_root}" --output-directory "${report_root}"
+    scope="full"
+    output_directory="${report_root}"
+    if [[ "${command_name}" == "static-report" ]]; then
+      scope="static"; output_directory="${report_root}/static_2x20"
+    elif [[ "${command_name}" == "dynamic-report" ]]; then
+      scope="dynamic"; output_directory="${report_root}/dynamic_2x20"
+    fi
+    if [[ -e "${output_directory}" ]]; then
+      if [[ "${scope}" != "full" ]]; then
+        die "refusing to overwrite existing report: ${output_directory}"
+      fi
+      mapfile -t existing_entries < <(find "${output_directory}" -mindepth 1 -maxdepth 1 -printf '%f\n')
+      for entry in "${existing_entries[@]}"; do
+        [[ "${entry}" == "static_2x20" || "${entry}" == "dynamic_2x20" ]] \
+          || die "refusing to overwrite existing report: ${output_directory}"
+      done
+    fi
+    PYTHONPATH="${PROJECT_ROOT}/ros2_ws/src/robot_experiments${PYTHONPATH:+:${PYTHONPATH}}" \
+      python3 -m robot_experiments.kujiale_4x20_campaign \
+      --run-root "${run_root}" --scope "${scope}" --output-directory "${output_directory}"
     ;;
   *) usage >&2; exit 2 ;;
 esac

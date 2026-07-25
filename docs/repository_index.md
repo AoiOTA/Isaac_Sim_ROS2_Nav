@@ -47,7 +47,7 @@
 | `docs/troubleshooting.md` | 按症状组织的运行排障手册，覆盖环境、Fast DDS SHM、QoS、TF、Lifecycle、Reset、RViz、Teleop 和 MPPI。 |
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
-| `docs/kujiale_4x20_appearance_benchmark_plan.md` | 当前正式4×20运行手册：四组各20轮、匿名USD外观层、三终端命令、预检、证据、断点续跑与可视化报告。 |
+| `docs/kujiale_4x20_appearance_benchmark_plan.md` | 当前正式4×20运行手册：四组各20轮、匿名USD外观层、一键全量或动态专用复测、预检、证据、断点续跑与分层可视化报告。 |
 | `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的4×20共同空间基线；S/G1、G2–G5、六个静态低矮障碍和三阶段动态轨迹。 |
 | `docs/figures/kujiale_4x20_test_matrix_map.png` | 由制图脚本生成的2×2测试矩阵地图；展示四组共用路线、静态/动态障碍、外观配置与80轮分配。 |
 
@@ -83,8 +83,8 @@
 | `scripts/run_ros.sh` | 启动四种顶层 ROS 操作；该酷家乐分支的 Localization/Navigation 默认 `warehouse_new` 与对应出生点，显式传图时仍按 basename 配对。监督器持有 ROS 单实例锁，并在启动 launch 子进程前关闭其继承副本；收到 Ctrl+C 时先核验并关闭受管 RViz，再执行 Navigation 的有序 lifecycle 关闭。 |
 | `scripts/run_experiment.sh` | 在统一 Domain/RMW 环境中启动场景 runner，避免独立终端因 DDS 环境未对齐而看不到 `/clock`。 |
 | `scripts/run_kujiale_4x20_isaac.sh` | 4×20静态或动态阶段的唯一 Isaac 启动器；启用GT、固定场景/出生点/RGB-D、物理障碍和外观配置。 |
-| `scripts/run_kujiale_4x20.sh` | 4×20用户控制器：预检、pilot、静态/动态40轮、断点续跑、状态与最终报告；不自行启动Isaac/Nav2。 |
-| `scripts/run_kujiale_4x20_all.sh` | 当前推荐的一键4×20监督器：自动构建、启动/预检静态栈、运行40轮、有序切换动态栈、运行40轮并生成报告；中断可用同一ID断点续跑。 |
+| `scripts/run_kujiale_4x20.sh` | 4×20用户控制器：预检、pilot、静态/动态40轮、断点续跑、按 full/static/dynamic 范围的状态与报告；不自行启动Isaac/Nav2。 |
+| `scripts/run_kujiale_4x20_all.sh` | 当前推荐的一键监督器：全量模式自动构建、静态40轮和即时静态报告、有序切换动态40轮和动态报告、最后总报告；`--dynamic-only` 只复测动态两组。 |
 | `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：从 G1 出生并自动发送 G2、G3、G4、G5、G1，关闭 MCAP、结构化证据和项目输出目录创建。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
@@ -413,7 +413,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/optimal_path.py` | 读取 OccupancyGrid YAML/PGM、按机器人净空膨胀障碍，并用禁止斜穿墙角的 8 邻域 A* 计算理论最短路。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/navigation_benchmark.py` | 汇总静态/动态 manifest，验收 95%/90% 成功率和成功静态路线相对理论最短路不超过 20% 的偏差。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema 校验、配置 SHA256，以及单轮 CSV/JSON 报告的原子写入。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 读取80轮证据，校验四组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 按 full/static/dynamic 范围读取80或40轮证据，校验分组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_benchmark.py` | 使用 Ground Truth 自动执行并验收底盘运动原语、曲率、误差和转向反向延迟。 |
@@ -440,7 +440,7 @@
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
 | `ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py` | 测试命令/实测前进、倒车、弧线、停止和转向换向指标。 |
-| `ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py` | 用合成完整/缺失证据覆盖4×20四组门槛、完整性判定与HTML/PDF/PNG报告生成。 |
+| `ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py` | 用合成完整/缺失证据覆盖4×20与静态/动态2×20门槛、完整性判定、阶段报告保留及HTML/PDF/PNG生成。 |
 | `ros2_ws/src/robot_experiments/test/test_motion_benchmark.py` | 测试运动基准配置、判定和报告逻辑。 |
 
 ## 29. `robot_bringup` 配置与入口

@@ -15,6 +15,11 @@
 且 lifecycle 已激活。完整运行顺序见
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
+静态阶段完成后脚本会先生成 `static_2x20` 报告，再进入动态阶段；因此动态 pilot 或动态正式轮次失败时，静态报告仍会保留。
+若动态参数或实现已修复，不要用 `--resume` 重跑已完整写入的旧动态正式轮次；使用新的 ID 执行
+`./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build`，只重新启动动态 Isaac/Nav2、验证动态 pilot、运行动态40轮并
+生成独立 `dynamic_2x20` 报告。这个独立报告不自动和其它批次合并为4×20结论。
+
 本文按“看到什么现象”组织排查步骤。日常操作先看 [`user_manual.md`](user_manual.md)，接口唯一所有权以 [`interfaces.md`](interfaces.md) 为准，已验证边界以 [`verification.md`](verification.md) 为准。
 
 ## 1. 先做这三件事
