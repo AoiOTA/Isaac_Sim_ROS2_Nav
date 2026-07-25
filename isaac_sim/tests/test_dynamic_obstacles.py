@@ -93,6 +93,7 @@ def test_three_stage_case_set_selects_the_ordered_route_interactions():
         "local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor",
     ]
     assert [item.trigger_group for item in selected] == ["G2", "G3", "G1"]
+    assert selected[0].waypoints[-1] == pytest.approx((-1.30, -0.20, 0.50))
 
 
 def test_g2_g3_gate_triggers_southbound_at_y_3_0_in_the_narrow_lane():

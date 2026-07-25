@@ -130,7 +130,9 @@ run_stage() {
   [[ ! -e "${output}" || "${resume}" == true ]] || die "refusing to overwrite ${output}; use --resume only after an interrupted run"
   mkdir -p "${output}"
   local arguments=("${SCRIPT_DIR}/run_experiment.sh" "${scenario}" "${output}" "resume:=${resume}" "nav2_profile:=${nav2_profile}")
-  [[ -n "${indices}" ]] && arguments+=("run_indices:=${indices}")
+  if [[ -n "${indices}" ]]; then
+    arguments+=("run_indices:=${indices}" "require_successful_resume:=true")
+  fi
   "${arguments[@]}"
   # ros2 launch can return successfully even if a launched node exits during
   # startup.  A failed pilot must never allow the formal 40-round stage to run.

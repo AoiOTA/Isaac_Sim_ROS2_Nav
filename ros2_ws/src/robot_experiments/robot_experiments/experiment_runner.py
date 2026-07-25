@@ -270,6 +270,20 @@ class ExperimentRunner(Node):
             self._resume = resume.strip().lower() == "true"
         else:
             raise ConfigurationError("resume must be boolean")
+        require_successful_resume = self.declare_parameter(
+            "require_successful_resume", False
+        ).value
+        if isinstance(require_successful_resume, bool):
+            self._require_successful_resume = require_successful_resume
+        elif (
+            isinstance(require_successful_resume, str)
+            and require_successful_resume.strip().lower() in {"true", "false"}
+        ):
+            self._require_successful_resume = (
+                require_successful_resume.strip().lower() == "true"
+            )
+        else:
+            raise ConfigurationError("require_successful_resume must be boolean")
         record_evidence = self.declare_parameter("record_evidence", True).value
         if isinstance(record_evidence, bool):
             self._record_evidence = record_evidence
@@ -1777,8 +1791,11 @@ class ExperimentRunner(Node):
             actor_x, actor_y = float(actor["position"][0]), float(actor["position"][1])
             result["paired_sample_count"] += 1
             # Both actors proceed south; a positive value therefore means the
-            # square is in front of the robot while it is moving away.
-            if actor["state"] == "moving" and 0.20 <= robot.y - actor_y <= 1.20 and abs(robot.x - actor_x) <= 0.65:
+            # square is in front of the robot while it is moving away.  The
+            # calibrated gate releases the actor about 2 m ahead, so a lead
+            # interval up to 2 m is still the required same-lane following
+            # behaviour, not an unrelated parked-obstacle bypass.
+            if actor["state"] == "moving" and 0.20 <= robot.y - actor_y <= 2.00 and abs(robot.x - actor_x) <= 0.65:
                 result["continuous_follow_seen"] = True
             # The planned exit is to the left of the parked actor at x=-0.40.
             if actor["state"] == "parked" and robot.x <= actor_x - 0.35:
@@ -2579,6 +2596,12 @@ class ExperimentRunner(Node):
             or dynamic.get("case_id") != selection.case_id
             or dynamic.get("variant_id") != selection.variant_id
         ):
+            return None
+        # Formal campaign evidence is immutable whether it passed or failed.
+        # A pilot is different: it gates the remaining 40 rounds, therefore a
+        # fully recorded *failed* pilot must be quarantined and retried on a
+        # resume instead of repeatedly failing validation without doing work.
+        if self._require_successful_resume and manifest.get("result") != "success":
             return None
         return manifest
 

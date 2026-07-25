@@ -10,6 +10,7 @@
 
 不要绕过失败的预检。推荐使用 `run_kujiale_4x20_all.sh`；它会管理 Isaac/Nav2 的启动、等待、
 静态/动态切换和有序关闭。正式阶段中断后用同一 campaign ID 加 `--resume`；不要删除不完整证据目录。
+如果失败的是 pilot，恢复命令会自动隔离保留该失败 pilot 并重新运行它；已完成的正式轮次仍会保持原样跳过。
 若改为手工诊断，确认 Isaac 使用 `run_kujiale_4x20_isaac.sh static|dynamic`、Nav2 使用对应 profile
 且 lifecycle 已激活。完整运行顺序见
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
