@@ -541,12 +541,20 @@ contracts. Re-tune only with comparable runtime evidence.
 `nav2_profile=stable`，动态清单必须记录 `nav2_profile=dynamic_avoidance`；二者不一致时报告判为证据失败。
 报告可按 `full`、`static`、`dynamic` 范围分别验证：两个 `2×20` 子报告只读取各自40轮，完整4×20报告只能读取同一 campaign
 的全部80轮，绝不自动拼接不同批次。完整用户命令见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+`run_indices` 的 ROS 参数类型固定为字符串，即使只选择一轮也不得由 YAML 推断为整数；
+launch 使用显式字符串类型传入，以保证 `--resume` 的单轮重试与多轮列表使用同一接口。
+
+报告的逐轮轨迹图从该轮 Ground Truth CSV读取机器人轨迹。静态报告同时叠加六个冻结静态障碍；
+动态报告从该轮 actor CSV叠加实际触发 actor 的运动/停车轨迹，始终停留在 `waiting` 的对象不绘制。
+筛选实验组、seed、外观 profile、动态 variant 或结果时，地图轨迹和明细表必须同步变化。
 
 动态距离验收采用 `physical_collision_free` 口径：`/simulation/collision`
 记录到真实接触才判碰撞失败。每个 actor 的保守最小净距仍是必需证据；
 低于 `0.10 m` 和 `safety_yield` 写入 `warning_reason` 并在 HTML/JSON/CSV
 展示，但不单独改变该轮 `result`。动态行为缺失、actor 未完成/未退役、
 `guard_aborted`、传感器证据缺失或导航失败仍严格判失败。
+实际执行、续跑和故障恢复规则见
+[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
 
 历史静态候选场景是 `kujiale_static_long_range.yaml`; it uses the
 `warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1` from

@@ -48,6 +48,7 @@
 | `docs/rviz_workflow_upgrade_plan.md` | RViz 一体化升级的冻结设计、问题分析、实施步骤、测试矩阵和完成状态；用于回溯本轮架构决策。 |
 | `docs/runtime_reliability_and_performance_upgrade_plan.md` | 运行时可靠性、性能、地图生命周期、相机和退出清理升级的实施计划、测试矩阵与证据回填台账。 |
 | `docs/kujiale_4x20_appearance_benchmark_plan.md` | 当前正式4×20运行手册：四组各20轮、匿名USD外观层、一键全量或动态专用复测、预检、证据、断点续跑与分层可视化报告。 |
+| `docs/kujiale_4x20_execution_lessons.md` | 正式批次执行复盘：启动监督、pilot、分支/构建、断点续跑、动态重跑、验收警告、报告重绘和双远程推送。 |
 | `docs/kujiale_long_route_map.md` | 基于 `warehouse_new` OccupancyGrid 的4×20共同空间基线；S/G1、G2–G5、六个静态低矮障碍和三阶段动态轨迹。 |
 | `docs/figures/kujiale_4x20_test_matrix_map.png` | 由制图脚本生成的2×2测试矩阵地图；展示四组共用路线、静态/动态障碍、外观配置与80轮分配。 |
 
@@ -85,7 +86,7 @@
 | `scripts/run_kujiale_4x20_isaac.sh` | 4×20静态或动态阶段的唯一 Isaac 启动器；启用GT、固定场景/出生点/RGB-D、物理障碍和外观配置。 |
 | `scripts/run_kujiale_4x20.sh` | 4×20用户控制器：预检、pilot、静态/动态40轮、断点续跑、按 full/static/dynamic 范围的状态与报告；不自行启动Isaac/Nav2。 |
 | `scripts/run_kujiale_4x20_all.sh` | 当前推荐的一键监督器：全量模式自动构建、静态40轮和即时静态报告、有序切换动态40轮和动态报告、最后总报告；`--dynamic-only` 只复测动态两组。 |
-| `scripts/run_visual_route.sh` | 启动静态或动态单轮 GUI/RViz visual runner：从 G1 出生并自动发送 G2、G3、G4、G5、G1，关闭 MCAP、结构化证据和项目输出目录创建。 |
+| `scripts/run_visual_route.sh` | 启动全屋单轮 visual runner；当前静态入口用它从 G1 自动发送 G2、G3、G4、G5、G1，关闭 MCAP、结构化证据和项目输出目录创建。三阶段动态整圈使用 `run_kujiale_three_stage_visual.sh full`。 |
 | `scripts/run_rviz.sh` | 按操作选择已安装的 Mapping/Localization/Navigation RViz 配置，统一 ROS 环境并阻止重复 RViz。 |
 | `scripts/run_teleop.sh` | 只在 Mapping 场景启动 deadman 键盘节点；执行 TTY、冲突节点、参数和单实例检查。 |
 | `scripts/run_teleop_terminal.sh` | 顶层 launch 的前台 Teleop 终端托管器；转发停止信号、校验 PID 身份并等待真实节点退出。 |
@@ -390,7 +391,7 @@
 | `ros2_ws/src/robot_experiments/config/kujiale_dynamic_full_route_5.yaml` | 从 G1 出发、执行 G2→G3→G4→G5→G1 的三阶段整圈接力可视化场景。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_static_long_range.yaml` | 酷家乐重设计静态 20 轮候选：固定 seed 7201–7220、S/G1、G2–G5、闭环回归 G1、四个方块和两个可微调低矮长条与同步的候选理论路径参考；布局尚未正式冻结。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml` | 历史动态 20 轮候选描述；当前交付的动态验收入口是三段可视化与整圈接力，不应将它当作现行三阶段执行命令。 |
-| `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 重设计后候选 20+20 批次的路线、门槛、障碍、出生点和固定 seed 总定义；尚未执行。 |
+| `ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml` | 历史重设计候选 20+20 批次的路线、门槛、障碍、出生点和固定 seed 总定义；该旧矩阵未执行，不是已完成的当前4×20配置。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_4x20_static_pair.yaml` | 当前正式静态40轮矩阵：静态基准与四种外观变化各20轮，AB/BA配对及相同seed。 |
 | `ros2_ws/src/robot_experiments/config/kujiale_4x20_dynamic_pair.yaml` | 当前正式动态40轮矩阵：`full_route_three_stage`基准与四种外观变化各20轮，覆盖五个变体。 |
 | `ros2_ws/src/robot_experiments/config/optimal_reference.json` | 当前可微调静态路线的 footprint-aware 候选理论长度、地图哈希和障碍多边形；布局确认后需重新生成并冻结。 |
@@ -413,7 +414,7 @@
 | `ros2_ws/src/robot_experiments/robot_experiments/optimal_path.py` | 读取 OccupancyGrid YAML/PGM、按机器人净空膨胀障碍，并用禁止斜穿墙角的 8 邻域 A* 计算理论最短路。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/navigation_benchmark.py` | 汇总静态/动态 manifest，验收 95%/90% 成功率和成功静态路线相对理论最短路不超过 20% 的偏差。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/report.py` | manifest schema 校验、配置 SHA256，以及单轮 CSV/JSON 报告的原子写入。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 按 full/static/dynamic 范围读取80或40轮证据，校验分组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告及可筛选的逐轮 GT 路径地图叠加图。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 按 full/static/dynamic 范围读取80或40轮证据，校验分组门槛、profile/variant分布和Nav2 profile，生成HTML/PDF/PNG/CSV/JSON报告及可筛选的逐轮 GT 路径图；静态图叠加六个冻结障碍，动态图叠加每轮实际触发的 actor 轨迹。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/initial_pose_publisher.py` | 冷启动与 Reset 后等待新 `/clock`、`/scan`、TF 再发布标定 `/initialpose`；支持 reseed 服务、状态 Topic 和合法 RViz 人工位姿优先权。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 自动多轮 Reset、恢复门、NavigateToPose、cancel 隔离、观测/指标和报告主节点。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/motion_benchmark.py` | 使用 Ground Truth 自动执行并验收底盘运动原语、曲率、误差和转向反向延迟。 |
@@ -440,7 +441,7 @@
 | `ros2_ws/src/robot_experiments/test/test_ros_adapters.py` | 在 ROS 环境中测试消息→内部 sample 的 adapter 和时间戳保存。 |
 | `ros2_ws/src/robot_experiments/test/test_initial_pose_publisher.py` | 测试回钟/Reset 后扫描屏障、reseed、人工位姿合法性与人工所有权不被自动位姿覆盖。 |
 | `ros2_ws/src/robot_experiments/test/test_experiment_motion_quality.py` | 测试命令/实测前进、倒车、弧线、停止和转向换向指标。 |
-| `ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py` | 用合成完整/缺失证据覆盖4×20与静态/动态2×20门槛、完整性判定、阶段报告保留及HTML/PDF/PNG生成。 |
+| `ros2_ws/src/robot_experiments/test/test_kujiale_4x20_campaign.py` | 用合成完整/缺失证据覆盖4×20与静态/动态2×20门槛、完整性判定、阶段报告保留、筛选器、静态障碍/实际动态 actor 轨迹叠加及HTML/PDF/PNG生成。 |
 | `ros2_ws/src/robot_experiments/test/test_motion_benchmark.py` | 测试运动基准配置、判定和报告逻辑。 |
 
 ## 29. `robot_bringup` 配置与入口

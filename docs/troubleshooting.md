@@ -16,9 +16,28 @@
 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
 
 静态阶段完成后脚本会先生成 `static_2x20` 报告，再进入动态阶段；因此动态 pilot 或动态正式轮次失败时，静态报告仍会保留。
-若动态参数或实现已修复，不要用 `--resume` 重跑已完整写入的旧动态正式轮次；使用新的 ID 执行
-`./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build`，只重新启动动态 Isaac/Nav2、验证动态 pilot、运行动态40轮并
-生成独立 `dynamic_2x20` 报告。这个独立报告不自动和其它批次合并为4×20结论。
+若只是同一配置下被中断，可用同一 ID 执行
+`./scripts/run_kujiale_4x20_all.sh <CAMPAIGN_ID> --dynamic-only --resume --skip-build`。
+若动态参数、actor 配置、验收规则或代码已经改变，则不能把旧的完整动态轮次混入新配置；应使用新 ID 执行
+`./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build`，生成独立 `dynamic_2x20` 报告。若必须在同一 ID
+中完整替换动态两组，先按
+[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md) 的精确清单移走该批次的动态证据，
+再不带 `--resume` 运行；不要删除静态证据。
+
+### 已遇到的4×20故障速查
+
+| 日志/现象 | 含义与当前处理 |
+|---|---|
+| `Trying to set parameter 'run_indices' ... INTEGER, expecting STRING` | 旧 launch/YAML 把单个轮次解析成整数。当前 launch 用显式字符串类型传参；切到正确分支后重新构建，不要继续使用旧 `install/`。 |
+| `run_kujiale_4x20.sh: No such file or directory` | 运行期间切换到了不含4×20脚本的分支。回到 `codex/kujiale-4x20-appearance-benchmark`，重新构建并确认脚本存在后再续跑。不要在 campaign 运行中切分支。 |
+| `static/dynamic Isaac supervisor exited` | 先看对应 `data/experiment_runs/kujiale_4x20_<ID>/orchestrator/*-isaac.log`；常见原因是已有 Isaac/端口/锁持有者或前一进程组未退出。使用 `clean_runtime.sh --dry-run` 核对受管对象，禁止宽泛 `pkill`。 |
+| ROS launch 返回0但 runner 子进程失败 | 不能只看 launch 返回码。当前监督器还校验 pilot manifest、结果与证据完整性，子进程失败会阻止正式批次。 |
+| `pilot validation failed` | 查看 pilot manifest 的 `result`、`failure_reason` 和 `warning_reason`。失败 pilot 在 `--resume` 时会隔离为 `.incomplete-<UTC>` 并重跑；已完成的正式轮不会被覆盖。 |
+| 动态导航到点却 strict failure | 以 manifest 为准。当前低于0.10 m净距和 `safety_yield` 是可见风险警告；真实物理接触、导航失败、`guard_aborted`、三阶段行为或必需证据缺失仍判失败。 |
+| 报告命令返回2 | 报告仍会完整生成；2表示批次未完成、证据不完整或门槛未通过，不表示报告器崩溃。 |
+
+完整的故障根因、恢复决策、报告重绘和双远程检查见
+[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
 
 本文按“看到什么现象”组织排查步骤。日常操作先看 [`user_manual.md`](user_manual.md)，接口唯一所有权以 [`interfaces.md`](interfaces.md) 为准，已验证边界以 [`verification.md`](verification.md) 为准。
 

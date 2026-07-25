@@ -5,7 +5,8 @@
 >
 > 实施分支：`codex/kujiale-4x20-appearance-benchmark`
 >
-> 当前状态：4×20 调度、匿名 USD Session Layer、预检、证据采集和报告器均已实现并通过离线验证；尚未启动 Isaac/ROS，尚未执行本轮 80 个正式实验。
+> 当前状态：正式批次 `20260725-210035` 已完成80轮；完整报告 `complete=true`、`passed=true`、`issues=[]`。
+> 静态两组均20/20，动态两组均19/20，四组物理无碰撞均20/20。
 
 ## 1. 目标与实验矩阵
 
@@ -145,10 +146,38 @@ pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离�
 
 ### 4.2 单轮 GUI/RViz 诊断（不计入4×20）
 
-四组正式实验之外，可单独观察共同路线 `G2 → G3 → G4 → G5 → G1`。静态自动 GUI/RViz
-使用 `run_visual_route.sh static`；动态自动 GUI/RViz 使用
-`run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501`，后者会自动触发三阶段 actor。
-完整可复制终端命令和目标坐标见
+四组正式实验之外，可单独观察共同路线 `G2 → G3 → G4 → G5 → G1`。两种模式均自动发送全部航点，
+不需要在RViz手工发布Goal。
+
+静态全屋单轮依次执行：
+
+```bash
+# 终端 A：Isaac GUI + 六个静态RGB-D障碍
+./scripts/run_kujiale_4x20_isaac.sh static
+
+# 终端 B：Navigation + RViz
+./scripts/run_ros.sh navigation odometry_mode:=ideal \
+  spawn_pose_name:=long_route_start_g1 nav2_profile:=stable
+
+# 终端 C：自动 G2 → G3 → G4 → G5 → G1
+./scripts/run_visual_route.sh static
+```
+
+动态全屋单轮先停止静态B/A，再依次执行：
+
+```bash
+# 终端 A：Isaac GUI + 三阶段动态actor
+./scripts/run_kujiale_dynamic_isaac.sh
+
+# 终端 B：Navigation + RViz
+./scripts/run_ros.sh navigation odometry_mode:=ideal \
+  spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance
+
+# 终端 C：自动全屋航点和三阶段触发
+./scripts/run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501
+```
+
+完整操作、停止顺序和观察项见
 [`user_manual.md` 第8节](user_manual.md#8-可视化单轮全屋长距离测试isaac-gui--rviz)。
 
 这些 GUI 诊断不生成正式 80 轮证据或结论；不能与 `data/experiment_runs/kujiale_4x20_*` 的报告混用。
@@ -182,4 +211,7 @@ actor 的实测运动轨迹，方形为起点、X为终点，箭头表示运动�
 
 ## 6. 本阶段边界
 
-代码已实现但本仓库没有自动启动 Isaac/ROS，也没有代替操作者执行pilot或80轮正式实验。每轮输出仍由你在本机的独占Isaac/Nav2会话生成；本分支只包含运行器、报告器、配置、地图和文档。
+本分支的运行器、报告器、配置、地图和文档已经由本机独占Isaac/Nav2会话完成正式验证。当前可引用结论仅属于
+campaign `20260725-210035` 及其原始校验和；修改地图、actor、Nav2 profile、验收规则或外观矩阵后必须新建证据，
+不能沿用本次成功率。执行中已解决的问题和安全恢复方法见
+[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。

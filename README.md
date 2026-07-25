@@ -33,19 +33,21 @@ Isaac GUI 中诊断性拖动的 RGB-D 低矮方块和两个低矮长条，或三
 动态＋外观变化。它使用同一条 G1–G5 闭环路线；外观变化只在匿名 USD Session Layer 中
 覆盖灯光和材质颜色，不写回源 USD，也不改变几何、碰撞、地图或动态障碍运动学。
 
-当前版本已实现调度、断点续跑、预检、每轮 RGB 快照和可视化报告，但**尚未执行这 80 轮**，
-因此不能宣称任一 4×20 组已达到 90% 成功率。完整可执行命令、四组矩阵和验收口径以
+当前版本已完成正式批次 `20260725-210035` 的80轮运行；同一campaign根报告
+`complete=true`、`passed=true`、`issues=[]`。完整可执行命令、四组矩阵和验收口径以
 [`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md) 为准。
 
 | 项目 | 当前结果 |
 | --- | --- |
-| 4×20 实现与离线测试 | 已完成；80 轮运行证据尚未产生 |
-| 静态基准 / 静态＋外观 | 各要求严格成功且无碰撞 `≥19/20` |
-| 动态基准 / 动态＋外观 | 各要求严格成功且无碰撞 `≥18/20` |
-| 静态路径偏差 | 每个成功轮次 `≤20%` |
+| 静态基准 | 严格成功 `20/20`，无碰撞 `20/20`，最大路径偏差 `10.1687%` |
+| 静态＋外观 | 严格成功 `20/20`，无碰撞 `20/20`，最大路径偏差 `10.1442%` |
+| 动态基准 | 严格成功 `19/20`，无碰撞 `20/20`，通过 `≥18/20` 门槛 |
+| 动态＋外观 | 严格成功 `19/20`，无碰撞 `20/20`，通过 `≥18/20` 门槛 |
 
 `kujiale_long_route_static_20260723-194416` 的静态 20/20 和更早的旧路线结果均为历史证据，
 不替代本轮 4×20 结果；边界见 [`docs/verification.md`](docs/verification.md)。
+实施中遇到的 supervisor、pilot、续跑、动态验收、报告和双远程同步问题见
+[`docs/kujiale_4x20_execution_lessons.md`](docs/kujiale_4x20_execution_lessons.md)。
 
 完整路线、验收口径、失败边界和报告目录结构见
 [`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md)；
@@ -175,7 +177,9 @@ Navigation 同时发布 `/cmd_vel`。
 
 报告输出位于 `data/reports/kujiale_4x20_<campaign_id>/`：`static_2x20/` 和 `dynamic_2x20/` 是各阶段完成后
 立即保留的独立报告，根目录为同一批次80轮完成后的总报告。若静态已通过而动态需修复复测，运行
-`./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build`；它不重跑静态、也不自动把不同批次合并成总4×20结论。
+`./scripts/run_kujiale_4x20_all.sh --dynamic-only --skip-build`；它不重跑静态。不同campaign的两个子报告不会自动合并；
+同一ID要从零替换动态证据时，先按
+[`docs/kujiale_4x20_execution_lessons.md`](docs/kujiale_4x20_execution_lessons.md) 的保留清单移出旧动态证据。
 已完成静态但尚未产生子报告的批次可用 `./scripts/run_kujiale_4x20.sh static-report <CAMPAIGN_ID>` 补报。各报告均包含
 PDF、Markdown、PNG、CSV、JSON 和证据索引；即使验收失败也生成报告，此时命令返回 `2`。
 
@@ -208,14 +212,7 @@ ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```bash
 # 终端 A：Isaac GUI + 六个静态障碍
 cd "$PROJECT_ROOT"
-ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode localization \
-  --mode ideal \
-  --spawn-pose long_route_start_g1 \
-  --camera-profile rgbd_navigation \
-  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
-  --dynamic-obstacles
+./scripts/run_kujiale_4x20_isaac.sh static
 
 # 终端 B：Navigation + RViz
 cd "$PROJECT_ROOT"
@@ -228,6 +225,28 @@ cd "$PROJECT_ROOT"
 
 此模式不写入 MCAP、JSON、CSV 或报告，不能作为验收结果。运行时只观察，不要在 RViz 再手动发送
 Goal；若要拖动障碍后手动导航，保持 A/B 运行且不要执行终端 C，因为 visual runner 会 Reset 障碍到 YAML 基线。
+
+### 动态可视化一轮（Isaac GUI + RViz）
+
+这是三阶段actor的全屋自动联测，同样从G1出生并自动发送 `G2 → G3 → G4 → G5 → G1`。先停止静态ROS和Isaac，
+然后依次在三个终端运行：
+
+```bash
+# 终端 A：Isaac GUI + 三阶段动态actor
+cd "$PROJECT_ROOT"
+./scripts/run_kujiale_dynamic_isaac.sh
+
+# 终端 B：Navigation + RViz；等待 Nav2 lifecycle activation completed
+cd "$PROJECT_ROOT"
+./scripts/run_ros.sh navigation odometry_mode:=ideal \
+  spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance
+
+# 终端 C：自动执行全屋航点并触发三阶段actor
+cd "$PROJECT_ROOT"
+./scripts/run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501
+```
+
+默认不写正式证据；需要临时调试记录时才在终端C末尾增加 `--record`。单轮GUI结果不计入4×20统计。
 
 ### 静态 20 轮自动候选测试（无头 Isaac）
 
@@ -283,6 +302,7 @@ HTML、PDF、PNG、CSV、JSON、MCAP 和图像是本地生成物，默认不推�
 | 首次启动 Isaac、ROS、RViz 或运行 4×20 | [`docs/user_manual.md`](docs/user_manual.md) | 从环境准备到手动 Goal、4×20 三终端运行、报告查看与有序停止的可复制命令。 |
 | 核对酷家乐路线、航点和障碍位置 | [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md) | `long_route_start_g1`、G1–G5 闭环路线、静态六障碍与动态障碍的地图坐标和语义。 |
 | 了解验收口径或准备复跑完整长距离实验 | [`docs/kujiale_4x20_appearance_benchmark_plan.md`](docs/kujiale_4x20_appearance_benchmark_plan.md) | 四组各20轮、外观配置、成功/无碰撞/路径偏差门槛、证据和自包含报告要求。 |
+| 排查4×20历史故障或决定续跑/重跑 | [`docs/kujiale_4x20_execution_lessons.md`](docs/kujiale_4x20_execution_lessons.md) | supervisor、pilot、分支切换、动态证据替换、报告重绘和双远程核验。 |
 | 调整地图坐标、出生点或定位基线 | [`docs/calibration.md`](docs/calibration.md) | `map -> odom` 标定步骤、地图/posegraph 匹配规则和初始位姿来源。 |
 | 修改节点、话题、TF 或 Odometry 配置 | [`docs/interfaces.md`](docs/interfaces.md) | ROS Topic、TF、QoS、模式配对和发布所有权契约，避免重复 `/odom` 或 TF 发布者。 |
 | 处理启动失败、锁、RViz、地图或 Reset 问题 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | 分步骤诊断命令、常见故障表现和安全清理流程。 |

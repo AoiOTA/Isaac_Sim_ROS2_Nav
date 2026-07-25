@@ -1,6 +1,6 @@
 # Kujiale 静态/动态避障问题记录与当前运行基线
 
-本文记录 `warehouse_new` 全屋路线在动态避障重新设计、可视化调试与静态回归期间出现过的问题、根因和处理方式。它是运行与调优记录；当前4×20的正式入口、外观扰动和报告命令以 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) 为准，不再把本文的 visual 命令当作验收入口。
+本文记录 `warehouse_new` 全屋路线在动态避障重新设计、可视化调试与静态回归期间出现过的问题、根因和处理方式。它是运行与调优记录；当前4×20的正式入口、外观扰动和报告命令以 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) 为准，不再把本文的 visual 命令当作验收入口。正式批次 `20260725-210035` 的执行故障、续跑规则和最终结果见 [`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
 
 ## 1. 当前冻结的运行分层
 
@@ -95,6 +95,24 @@
 
 **处理**：为严格复现历史静态 20 轮，将 `rgbd_low_box_east` 恢复为 `[0.366563, 0.667950, 0.08]`。该坐标同步写入 Isaac 静态 YAML、GUI 草案和 campaign。若未来再次修改静态障碍位置，即构成新布局，必须重新做静态验证，不能沿用旧批次结论。
 
+### 3.9 4×20 pilot、分支切换与断点续跑
+
+**现象**：曾出现 `run_indices` 参数类型错误、运行中切换分支后脚本消失、pilot 失败目录被错误视为可续跑结果，
+以及 Isaac/ROS 子进程失败但外层 launch 返回0。
+
+**处理**：当前 launch 将 `run_indices` 强制作为字符串传入；一键监督器校验 pilot manifest 和证据完整性；
+失败或不完整目录在重试前隔离为 `.incomplete-<UTC>`。campaign 运行期间禁止切分支。相同配置的中断才可
+`--resume`；修改动态配置或验收规则后必须新建批次，或精确移走同一批次的全部动态证据后完整重跑动态两组。
+
+### 3.10 低净距、actor 让停与物理碰撞口径
+
+**现象**：部分轮次导航成功且无接触，但由于保守外接圆净距小于 `0.10 m` 或 actor 进入
+`safety_yield` 被旧规则判失败；这会把保护层的保守触发误当成真实碰撞。
+
+**处理**：当前4×20以 `/simulation/collision` 物理接触为距离失败条件。低净距和 `safety_yield`
+仍完整写入 `warning_reason`、JSON/CSV和HTML，便于风险复盘，但不单独令轮次失败。导航失败、
+`guard_aborted`、三阶段行为未观察到或必需证据缺失仍严格失败；没有通过移动 actor来掩盖问题。
+
 ## 4. 当前测试入口
 
 ### 静态单轮可视化
@@ -102,13 +120,7 @@
 ```bash
 # Terminal A
 cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode localization --mode ideal \
-  --spawn-pose long_route_start_g1 \
-  --camera-profile rgbd_navigation \
-  --dynamic-obstacle-config isaac_sim/configs/experiments/kujiale_long_range_static.yaml \
-  --dynamic-obstacles
+./scripts/run_kujiale_4x20_isaac.sh static
 
 # Terminal B
 ./scripts/run_ros.sh navigation odometry_mode:=ideal \
@@ -131,11 +143,17 @@ cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 # Terminal C
 ./scripts/run_kujiale_three_stage_visual.sh full \
-  --variant 1 --seed 7501 --record
+  --variant 1 --seed 7501
 ```
+
+两条单轮命令都会自动发送 `G2 → G3 → G4 → G5 → G1`，不需要在 RViz 手工逐点发布。
+如需保存动态调试证据，可在 Terminal C 命令末尾加 `--record`；默认不录制。
 
 每次从静态切换到动态，或更改动态 YAML/出生点后，都要先停止 ROS 和 Isaac，再完整重启。不要在旧 Isaac 进程上热改障碍配置。
 
 ## 5. 验收边界
 
-单轮可视化和 `--record` 仅用于观察行为与保存调试证据；最终验收由人工执行。动态成功至少应同时满足：方块实际触发、移动、停车；机器人在方块存在期间通过；没有物理接触、`safety_yield` 或 `guard_abort`；到达下一航点后方块与 RViz 标记才退役，且代价地图在规定时限内清除。
+单轮可视化和可选的 `--record` 仅用于观察行为与保存调试证据；正式统计以4×20 runner和报告为准。
+动态严格成功至少应同时满足：方块实际触发、移动、停车；机器人在方块存在期间通过；没有物理接触或
+`guard_abort`；到达下一航点后方块与 RViz 标记才退役，且代价地图在规定时限内清除。
+`safety_yield` 与低于0.10 m净距保留为风险警告，不单独判失败。

@@ -2,37 +2,48 @@
 
 This is an evidence ledger, not a claim that every acceptance item in
 `plan.md` is complete. It contains historical observations from 2026-07-10
-through 2026-07-17, the historical 2026-07-22 Kujiale campaign, and the current
-2026-07-23 static candidate batch, run with Isaac
+through 2026-07-17, the historical 2026-07-22 Kujiale campaign, the
+2026-07-23 static candidate batch, and the current 2026-07-25/26 4×20 campaign, run with Isaac
 Sim 6.0.1.0, ROS 2 Jazzy, Fast DDS, Nav2 1.3.12, and an RTX 4090. Generated Kit
 logs and raw experiment captures remain outside normal Git history. On this
 branch the calibrated `warehouse_new` bundle is the only distributed map;
 `warehouse_v1` and `warehouse_v2` appear below only as historical evidence.
 The remaining `warehouse_new.posegraph` is stored through Git LFS.
 
-## 当前4×20运行状态（尚无正式结果）
+## 当前4×20正式结果（20260725-210035）
 
-分支 `codex/kujiale-4x20-appearance-benchmark` 已实现四组各20轮的调度、匿名 USD Session
-Layer 外观覆盖、证据采集、断点续跑和报告。离线测试已验证矩阵、阶段性2×20/完整4×20报告和源 USD 外观清单；但未启动
-Isaac/ROS、未执行本轮80个正式 run，故本台账**不记录任何4×20成功率**，也不宣称算法已通过90%。
-运行后应以 `data/reports/kujiale_4x20_<campaign_id>/benchmark.json`（同批次完整4×20）或其 `static_2x20/`、
-`dynamic_2x20/` 子目录（独立40轮范围）和每轮校验和为唯一结论来源；不得自动跨批次拼接。
-命令与门槛见 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+分支 `codex/kujiale-4x20-appearance-benchmark` 已完成同一campaign的80个正式run。根报告
+`data/reports/kujiale_4x20_20260725-210035/benchmark.json` 记录
+`complete=true`、`passed=true`、`issues=[]`；四组均满足各自验收门槛：
+
+| 条件 | 严格成功 | 物理无碰撞 | 路径偏差/说明 |
+| --- | ---: | ---: | --- |
+| `static_baseline` | `20/20 (100%)` | `20/20 (100%)` | 最大 `10.1687%`，均低于20% |
+| `static_appearance` | `20/20 (100%)` | `20/20 (100%)` | 最大 `10.1442%`，均低于20% |
+| `dynamic_baseline` | `19/20 (95%)` | `20/20 (100%)` | 通过 `18/20` 门槛 |
+| `dynamic_appearance` | `19/20 (95%)` | `20/20 (100%)` | 通过 `18/20` 门槛 |
+
+动态基准seed `7320` 和动态外观seed `7306` 因 `three_stage_dynamic_behavior_not_observed`
+计为严格失败，但均无物理碰撞。部分成功动态轮记录低于0.10 m的保守净距或actor
+`safety_yield`；它们按当前物理碰撞口径写入 `warning_reason`，没有从报告中隐藏。结果只适用于本次冻结的地图、actor、
+Nav2 profile、外观矩阵和验收规则；不同campaign的 `static_2x20/`、`dynamic_2x20/` 不得自动拼接。
+运行问题与恢复边界见 [`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
 
 ## 历史静态候选结果（2026-07-23；不等同当前4×20验收）
 
 当前六障碍候选布局的本地报告批次为
 `kujiale_long_route_static_20260723-194416`。它使用 `long_route_start_g1`、G1–G5
 闭环路线、`warehouse_new`、Ideal Odometry 和 `rgbd_navigation`；静态严格成功与物理
-无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`，低于 `20%` 门槛。动态 20 轮
-尚未执行，布局也仍允许继续手调；因此该条目只能说明当前静态候选通过，不能作为动态或完整
-20+20 验收声明。原始报告是被忽略的本地生成物。
+无碰撞均为 `20/20 (100%)`，最大路径偏差为 `10.4614%`，低于 `20%` 门槛。当时动态20轮
+未执行，布局也仍允许继续手调；因此该条目只能说明历史静态候选通过，不能替代上方当前4×20结论。
+原始报告是被忽略的本地生成物。
 
 ## 历史正式验收（2026-07-22；不适用于当前重设计）
 
 该历史酷家乐批次使用旧 `mapping_start`、G1–G8、旧障碍布局、`warehouse_new`、Ideal
 Odometry 与 `rgbd_navigation`，包含静态 20 次、动态 20 次。当前分支的 S/G1、G2–G5、
-中心区四个可手调静态方块、两个可手调静态长条和三阶段动态 actor 为新布局。静态候选已按本页上方批次完成；动态最终人工验收尚未执行，生成报告存放在被忽略的 `data/reports/`。
+中心区四个可手调静态方块、两个可手调静态长条和三阶段动态 actor 为新布局。该旧批次只保留为历史对比，
+不能覆盖本页最上方当前4×20正式结论；生成报告存放在被忽略的 `data/reports/`。
 
 | 项目 | 结果 | 范围与边界 |
 | --- | --- | --- |

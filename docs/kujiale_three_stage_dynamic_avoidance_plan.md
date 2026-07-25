@@ -3,6 +3,8 @@
 > 三阶段 actor 的几何、gate 和生命周期仍是当前 `full_route_three_stage` 的权威编排来源；
 > 但本文中的聚焦可视化与旧 `full-route-5` 命令只用于诊断。正式20轮动态基准和20轮动态＋外观
 > 请执行 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)。
+> 正式批次 `20260725-210035` 两个动态组均为严格成功19/20、物理无碰撞20/20；结果边界见
+> [`verification.md`](verification.md)。
 
 ## 1. 方案概述
 
@@ -164,10 +166,12 @@ cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 ./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance
 
-# 终端 3：一次只运行一个聚焦交互，或整圈接力；均可加 --record
-./scripts/run_kujiale_three_stage_visual.sh g1-g2 --variant 3 --seed 7443 --record
-./scripts/run_kujiale_three_stage_visual.sh full  --variant 1 --seed 7501 --record
+# 终端 3：一次只运行一个聚焦交互，或整圈接力；需要留证时再加 --record
+./scripts/run_kujiale_three_stage_visual.sh g1-g2 --variant 3 --seed 7443
+./scripts/run_kujiale_three_stage_visual.sh full  --variant 1 --seed 7501
 ```
+
+其中 `full` 会自动发送全屋 `G2 → G3 → G4 → G5 → G1`，不需要在 RViz 手工逐点发布。
 
 三阶段测试必须使用 `nav2_profile:=dynamic_avoidance`：该覆盖配置保持既有 MPPI、速度平滑和 LiDAR 射线清障；局部 RGB-D 感知由标准 `VoxelLayer` 切换为 **STVL（时空体素层）**。STVL 仍消费 `/camera/front/depth/points` 并发布局部体素可视化，但会对离开前视相机视野的旧体素做时间衰减，避免动态 actor 留下长条占用。
 

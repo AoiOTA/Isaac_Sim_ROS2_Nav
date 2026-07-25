@@ -5,6 +5,9 @@
 - 原开发分支：`codex/dynamic-obstacle-benchmark-redesign`
 - 当前替代规格：[`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md)
 - 本文的 `20 + 5` 命令仅保留为设计/诊断历史；当前正式动态组为4×20中的动态基准20轮和动态＋外观20轮，均使用 `full_route_three_stage`。
+- 本文内部“`safety_yield` 直接判失败”是旧 `20 + 5` 设计口径。当前4×20只把真实物理接触、
+  `guard_aborted`、导航/三阶段行为/证据失败计入严格失败；低净距和 `safety_yield` 作为风险警告展示。
+  当前口径及正式结果以 [`verification.md`](verification.md) 为准。
 - 最终验收执行人：用户
 - Codex 后续职责：实现实验装置、单轮可视化、自动化测试、最终验收脚本和报告生成入口，但不代替用户执行正式 `20 + 5` 验收，也不宣称正式验收通过
 
@@ -441,7 +444,7 @@ MCAP 最终交付至少保留：
 
 本分支已实现 schema v3 物理配置、四类 case 的 20 轮矩阵、5 轮完整路线矩阵、按 `case_id/variant_id/seed` 的 reset 选择、受空间门和速度约束的状态机、加减速轨迹、最大 1.8 秒短暂停留、在安全终点 `parked`（保持可见和物理碰撞）、20 Hz 状态证据，以及接触前的 `safety_yield`。`safety_yield` 会让 actor 原地保持实体、等待机器人离开后再恢复；Runner 会把该轮标为安全失败，但不会删除 actor 或取消导航。
 
-`same_direction_slow` 保留为动态改道验证。局部绕障由 `local_bypass` 单轮调优：Runner 需先观察到 actor 横移，再观察机器人位于 actor 右侧至少 `0.35 m`、并在 actor 仍运动或已按计划 `parked` 后前向超过 actor 至少 `0.35 m`；否则记录 `local_right_bypass_not_observed`。`safety_yield` 仍是失败，不能被计划停车掩盖。
+`same_direction_slow` 保留为动态改道验证。局部绕障由 `local_bypass` 单轮调优：Runner 需先观察到 actor 横移，再观察机器人位于 actor 右侧至少 `0.35 m`、并在 actor 仍运动或已按计划 `parked` 后前向超过 actor 至少 `0.35 m`；否则记录 `local_right_bypass_not_observed`。在本文旧 `20 + 5` 口径下，`safety_yield` 仍记为失败，不能被计划停车掩盖；现行4×20按本文顶部说明执行。
 
 单轮观察：
 
