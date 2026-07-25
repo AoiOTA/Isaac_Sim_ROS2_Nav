@@ -437,6 +437,188 @@ def render_three_stage_details(output: Path) -> None:
     canvas.save(output, optimize=True)
 
 
+def render_4x20_test_matrix(output: Path) -> None:
+    """Render the four planned 20-run conditions from the executable YAML.
+
+    This is a setup schematic, not an experimental result.  It deliberately
+    draws the appearance conditions with the same geometry as their baselines:
+    the right-hand panels explain the USD Session Layer profiles instead of
+    recolouring the OccupancyGrid and accidentally suggesting changed geometry.
+    """
+    map_data = read_yaml(MAP_YAML)
+    spawn_data = read_yaml(SPAWN_YAML)
+    static = read_yaml(STATIC_SCENARIO)
+    dynamic = read_yaml(DYNAMIC_SCENARIO)
+    physical_dynamic = read_yaml(PHYSICAL_DYNAMIC)
+    campaign = read_yaml(CAMPAIGN)
+    static_route = route_from(static)
+    dynamic_route = route_from(dynamic)
+    campaign_route = campaign["route"]
+    if static_route != dynamic_route:
+        raise ValueError("static and dynamic route coordinates must be identical")
+    if [item["id"] for item in campaign_route] != [item["id"] for item in static_route]:
+        raise ValueError("campaign waypoint IDs differ from executable scenarios")
+    dynamic_cases = three_stage_cases(physical_dynamic)
+    dynamic_matrix = dynamic["scenario"]["runs"]["matrix"]
+    variant_ids = [item["variant_id"] for item in dynamic_matrix]
+    if len(dynamic_matrix) != 20 or sorted(set(variant_ids)) != ["v1", "v2", "v3", "v4", "v5"]:
+        raise ValueError("dynamic scenario must define the five documented variants across 20 runs")
+    if any(variant_ids.count(variant) != 4 for variant in set(variant_ids)):
+        raise ValueError("each dynamic variant must occur exactly four times")
+
+    occupancy = Image.open(MAP_YAML.parent / str(map_data["image"])).convert("RGB")
+    map_width, map_height = occupancy.size
+    resolution = float(map_data["resolution"])
+    origin_x, origin_y, _ = map_data["origin"]
+    spawn_name = campaign["environment"]["spawn_pose_name"]
+    start_position = spawn_data["spawn_poses"][spawn_name]["map"]["position"]
+
+    canvas_width, canvas_height = 2600, 2580
+    canvas = Image.new("RGB", (canvas_width, canvas_height), "#f7f9fc")
+    draw = ImageDraw.Draw(canvas, "RGBA")
+    draw.rectangle((0, 0, canvas_width, 188), fill=WHITE)
+    draw.text((105, 42), "Kujiale 4×20 光照/颜色鲁棒性实验｜测试地图示意图", font=font(46), fill=INK)
+    draw.text(
+        (105, 112),
+        "warehouse_new OccupancyGrid · S(G1) → G2 → G3 → G4 → G5 → G1 · 计划阶段，尚未执行80轮实验",
+        font=font(25),
+        fill=MUTED,
+    )
+
+    panel_width, panel_height = 1165, 820
+    panels = [
+        (105, 220, "静态基准", "static", False),
+        (1330, 220, "静态＋光照/材质颜色变化", "static", True),
+        (105, 1085, "三阶段动态基准", "dynamic", False),
+        (1330, 1085, "三阶段动态＋光照/材质颜色变化", "dynamic", True),
+    ]
+
+    def draw_panel(x: int, y: int, title: str, kind: str, varied: bool) -> None:
+        draw.rounded_rectangle((x, y, x + panel_width, y + panel_height), radius=24, fill=WHITE, outline="#d0d5dd", width=2)
+        accent = ORANGE if kind == "static" else PURPLE
+        draw.rounded_rectangle((x + 25, y + 27, x + 37, y + 78), radius=5, fill=accent)
+        draw.text((x + 56, y + 29), title, font=font(31), fill=INK)
+        draw.text((x + 56, y + 75), "20 轮", font=font(21), fill=MUTED)
+
+        map_area_width, map_area_height = 575, 650
+        scale = min(map_area_width / map_width, map_area_height / map_height)
+        display_width, display_height = round(map_width * scale), round(map_height * scale)
+        map_left = x + 34 + (map_area_width - display_width) // 2
+        map_top = y + 125 + (map_area_height - display_height) // 2
+        panel_map = occupancy.resize((display_width, display_height), Image.Resampling.NEAREST)
+        canvas.paste(panel_map, (map_left, map_top))
+        draw.rectangle((map_left - 3, map_top - 3, map_left + display_width + 3, map_top + display_height + 3), outline="#98a2b3", width=3)
+
+        def pixel(position: list[float] | tuple[float, float]) -> tuple[float, float]:
+            col = (float(position[0]) - float(origin_x)) / resolution
+            row_from_top = map_height - 1 - (float(position[1]) - float(origin_y)) / resolution
+            return (map_left + col * scale, map_top + row_from_top * scale)
+
+        x_min, x_max = float(origin_x), float(origin_x) + map_width * resolution
+        y_min, y_max = float(origin_y), float(origin_y) + map_height * resolution
+        for value in range(math.ceil(x_min), math.floor(x_max) + 1):
+            start, end = pixel((value, y_min)), pixel((value, y_max))
+            draw.line((start, end), fill="#1e293b20", width=1)
+        for value in range(math.ceil(y_min), math.floor(y_max) + 1):
+            start, end = pixel((x_min, value)), pixel((x_max, value))
+            draw.line((start, end), fill="#1e293b20", width=1)
+        draw.text((map_left + display_width - 45, map_top + display_height + 8), "x/m", font=font(16), fill=MUTED)
+        draw.text((map_left - 29, map_top + 3), "y/m", font=font(16), fill=MUTED)
+
+        sequence = [pixel(start_position), *[pixel(item["position"]) for item in static_route]]
+        for previous, current in zip(sequence, sequence[1:]):
+            dashed_line(draw, previous, current, fill=TEAL, width=4, dash=14, gap=9)
+
+        if kind == "static":
+            for obstacle in campaign["static"]["obstacles"]:
+                center = pixel(obstacle["center"][:2])
+                half_w = float(obstacle["size"][0]) / resolution * scale / 2.0
+                half_h = float(obstacle["size"][1]) / resolution * scale / 2.0
+                draw.rectangle((center[0] - half_w, center[1] - half_h, center[0] + half_w, center[1] + half_h), fill="#fb923cbb", outline=ORANGE, width=3)
+        else:
+            for identifier, case in dynamic_cases:
+                color, _, _ = DYNAMIC_STYLES[identifier]
+                obstacle, gate = case["obstacle"], case["gate"]
+                start, end = pixel(obstacle["waypoints"][0][:2]), pixel(obstacle["waypoints"][-1][:2])
+                dashed_line(draw, start, end, fill=color, width=5, dash=16, gap=8)
+                arrow(draw, (end[0] - (end[0] - start[0]) * 0.22, end[1] - (end[1] - start[1]) * 0.22), end, fill=color, width=5)
+                half_extent = float(obstacle["size"][0]) / resolution * scale / 2.0
+                draw.rectangle((start[0] - half_extent, start[1] - half_extent, start[0] + half_extent, start[1] + half_extent), fill=f"{color}aa", outline=color, width=3)
+                draw.rectangle((end[0] - half_extent, end[1] - half_extent, end[0] + half_extent, end[1] + half_extent), outline=color, width=3)
+                gate_left = pixel((gate["x_range"][0], gate["threshold"]))
+                gate_right = pixel((gate["x_range"][1], gate["threshold"]))
+                dashed_line(draw, gate_left, gate_right, fill=color, width=3, dash=8, gap=6)
+
+        start = pixel(start_position)
+        draw.ellipse((start[0] - 11, start[1] - 11, start[0] + 11, start[1] + 11), fill="#111827", outline=WHITE, width=3)
+        text_with_box(draw, (start[0] + 15, start[1] + 8), "S/G1", text_font=font(15), fill="#111827")
+        for waypoint in static_route:
+            if waypoint["id"] == "G1":
+                continue
+            goal = pixel(waypoint["position"])
+            draw.ellipse((goal[0] - 10, goal[1] - 10, goal[0] + 10, goal[1] + 10), fill=BLUE, outline=WHITE, width=3)
+            draw.text((goal[0] + 12, goal[1] - 13), waypoint["id"], font=font(16), fill=BLUE)
+
+        info_left = x + 650
+        draw.line((info_left - 24, y + 120, info_left - 24, y + panel_height - 32), fill="#d0d5dd", width=2)
+        if kind == "static":
+            details = ["场景几何", "6 个 RGB-D 低矮障碍", "四个 0.30 m 方块", "两个 0.60 m 长条", "导航配置：stable"]
+        else:
+            details = ["场景几何", "full_route_three_stage", "local_bypass", "g2_g3_exit", "g5_g1_crossing", "v1–v5 各 4 轮", "导航配置：dynamic_avoidance"]
+        draw.text((info_left, y + 125), "固定条件", font=font(24), fill=INK)
+        for index, line in enumerate(details):
+            draw.text((info_left, y + 172 + index * 34), line, font=font(19), fill=MUTED if index else INK)
+
+        profile_top = y + (405 if kind == "static" else 470)
+        if not varied:
+            draw.rounded_rectangle((info_left, profile_top, x + panel_width - 28, profile_top + 116), radius=14, fill="#eff6ff", outline="#93c5fd", width=2)
+            draw.text((info_left + 18, profile_top + 18), "外观配置：baseline", font=font(22), fill=BLUE)
+            draw.text((info_left + 18, profile_top + 57), "不覆盖灯光或材质", font=font(18), fill=INK)
+        else:
+            draw.text((info_left, profile_top), "外观配置：每种 5 轮", font=font(22), fill=INK)
+            profiles = [
+                ("dim_warm", "0.4× · 3000 K · 暖 +35°", ORANGE),
+                ("dim_cool", "0.4× · 7500 K · 冷 -35°", "#0284c7"),
+                ("bright_warm", "1.6× · 3000 K · 暖 +35°", ORANGE),
+                ("bright_cool", "1.6× · 7500 K · 冷 -35°", "#0284c7"),
+            ]
+            for index, (name, detail, color) in enumerate(profiles):
+                top = profile_top + 40 + index * 55
+                draw.rounded_rectangle((info_left, top, x + panel_width - 28, top + 45), radius=9, fill="#f8fafc", outline="#cbd5e1", width=1)
+                draw.text((info_left + 10, top + 8), name, font=font(16), fill=color)
+                draw.text((info_left + 132, top + 8), detail, font=font(15), fill=INK)
+            note_top = profile_top + 275
+            draw.rounded_rectangle((info_left, note_top, x + panel_width - 28, note_top + 86), radius=12, fill="#f0fdf4", outline="#86efac", width=2)
+            draw.text((info_left + 14, note_top + 12), "USD Session Layer；每轮固定", font=font(17), fill=GREEN)
+            draw.text((info_left + 14, note_top + 45), "路线、几何、碰撞和运动学不变", font=font(17), fill=INK)
+
+    for panel in panels:
+        draw_panel(*panel)
+
+    matrix_top = 1945
+    draw.rounded_rectangle((105, matrix_top, canvas_width - 105, 2470), radius=24, fill=WHITE, outline="#d0d5dd", width=2)
+    draw.text((140, matrix_top + 28), "80轮实验矩阵与图例", font=font(31), fill=INK)
+    draw.text((140, matrix_top + 75), "青绿虚线是目标发送顺序示意，不代表 Nav2 规划最优路径或实际 Ground Truth 轨迹。", font=font(20), fill=MUTED)
+    columns = [(140, "实验组"), (710, "外观配置"), (1260, "轮次与变体"), (1810, "验收门槛")]
+    for left, heading in columns:
+        draw.text((left, matrix_top + 125), heading, font=font(21), fill=MUTED)
+    rows = [
+        ("静态基准", "baseline", "20 轮；种子 7201–7220", "严格成功且无碰撞 ≥19/20"),
+        ("静态＋外观变化", "4 profiles × 5", "20 轮；与静态基准配对", "严格成功且无碰撞 ≥19/20"),
+        ("动态基准", "baseline", "20 轮；v1–v5 各 4", "严格成功且无碰撞 ≥18/20"),
+        ("动态＋外观变化", "4 profiles × 5", "20 轮；每个变体覆盖四种外观", "严格成功且无碰撞 ≥18/20"),
+    ]
+    for index, row in enumerate(rows):
+        top = matrix_top + 166 + index * 68
+        if index % 2 == 0:
+            draw.rectangle((125, top - 8, canvas_width - 125, top + 50), fill="#f8fafc")
+        for (left, _), value in zip(columns, row):
+            draw.text((left, top), value, font=font(20), fill=INK)
+    draw.text((140, matrix_top + 455), "变化组使用匿名 USD Session Layer；不改原始USD、导航地图、场景几何、碰撞体或动态障碍运动学。", font=font(19), fill=MUTED)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(output, optimize=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
@@ -444,6 +626,7 @@ def main() -> None:
     render("static", arguments.output_dir / "kujiale_long_route_static_map.png")
     render("dynamic", arguments.output_dir / "kujiale_long_route_dynamic_map.png")
     render_three_stage_details(arguments.output_dir / "kujiale_three_stage_dynamic_details.png")
+    render_4x20_test_matrix(arguments.output_dir / "kujiale_4x20_test_matrix_map.png")
 
 
 if __name__ == "__main__":
