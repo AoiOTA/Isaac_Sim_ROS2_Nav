@@ -1,6 +1,6 @@
 # Isaac Sim + Nav2 RGB-D 代价地图融合方案（历史设计与当前实现说明）
 
-> 文档状态：原一期设计已完成；后续正式长路线批次已完成。本文保留最初仅 Local Costmap 融合的设计过程；**当前代码**已将深度点云接入全局和局部 `depth_voxel_layer`，Collision Monitor 仍仅订阅 `/scan`。可执行配置以 `ros2_ws/src/robot_navigation/config/nav2_params.yaml`、[`interfaces.md`](interfaces.md) 与 [`user_manual.md`](user_manual.md) 为准。
+> 文档状态：原一期设计已完成；后续正式长路线批次已完成。本文保留最初仅 Local Costmap 融合的设计过程；**当前代码按 Nav2 profile 分流**：`stable` 将深度点云接入全局和局部 `depth_voxel_layer`，`dynamic_avoidance` 仅在 Local STVL 使用深度点云以清除移动 actor 残影；Collision Monitor 始终仅订阅 `/scan`。可执行配置以 `ros2_ws/src/robot_navigation/config/nav2_params.yaml`、[`interfaces.md`](interfaces.md) 与 [`user_manual.md`](user_manual.md) 为准。
 >
 > 一期验收场景：`kujiale_0026_A_to_B_door_open.usd`
 >
@@ -8,7 +8,7 @@
 >
 > 导航感知：2D LiDAR + RGB-D Camera
 >
-> 当前融合位置：Nav2 全局和局部代价地图
+> 当前融合位置：`stable` 为 Nav2 全局和局部代价地图；`dynamic_avoidance` 为 Local STVL
 >
 > 二期预留：Wheel Odometry + IMU + `robot_localization` EKF
 

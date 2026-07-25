@@ -171,10 +171,9 @@ Nav2 lifecycle activation completed
 - **Marked Voxels (3D)**：标准 Nav2 `VoxelLayer` 的浅绿色体素；
 - **Temporal Voxels (3D)**：动态避障 `dynamic_avoidance` profile 中 STVL 发布的浅绿色体素点云，以 5 cm 立方体渲染。
 
-深度点云仅进入滚动 Local Costmap 的 `depth_voxel_layer`；Global Costmap 只使用
-静态地图和实时 `/scan`，避免动态物体在全局代价地图留下视觉残影。默认 RViz 仅渲染
+深度点云的 Costmap 消费者取决于 `nav2_profile`。默认 `stable` profile 在滚动 Local Costmap 和 Global Costmap 都使用标准 `depth_voxel_layer`，以保持低矮静态方块的可见性；`dynamic_avoidance` profile 用 Local STVL 替代该层，并让 Global Costmap 仅使用静态地图与实时 `/scan`，避免移动 actor 在全局代价地图留下残影。默认 RViz 仅渲染
 `/local_costmap/voxel_grid`。标准 VoxelLayer 在该 topic 发布 `nav2_msgs/VoxelGrid`；动态 profile 的
-STVL 被重映射到 `/local_costmap/stvl_voxel_grid` 并发布 `sensor_msgs/PointCloud2`，因此 RViz 可同时保留两个按消息类型区分的显示器。Collision Monitor 仍只以 `/scan` 作为急停传感器。
+STVL 被重映射到 `/local_costmap/stvl_voxel_grid` 并发布 `sensor_msgs/PointCloud2`，因此 RViz 可同时保留两个按消息类型区分的显示器。Collision Monitor 两套 profile 均只以 `/scan` 作为急停传感器。
 RGB-D 不进入 SLAM、EKF 或 odometry。
 
 快速检查：
@@ -272,10 +271,10 @@ Manifest 更新和冷启动复核。具体流程见 [`calibration.md`](calibrati
 
 ## 7. 自动化全屋长距离测试与报告
 
-本节运行当前正式的 40 轮全屋长路线批次：静态种子 `7201–7220`、动态种子
-`7301–7320`，每轮依次自动执行 `G2 → G3 → G4 → G5 → G1`。实验 runner 会在每轮开始时设置
-seed、调用 `/simulation/reset`、等待 Nav2 恢复、发送五个 Nav2 Goal，并记录 GT、
-Scan、深度图/点云、Costmap、碰撞、安全状态和 MCAP；它不负责启动 Isaac 或 Nav2。
+本节的可自动复核批次是静态 20 轮（种子 `7201–7220`），每轮自动执行
+`G2 → G3 → G4 → G5 → G1`。实验 runner 会在每轮开始时设置 seed、调用
+`/simulation/reset`、等待 Nav2 恢复、发送五个 Nav2 Goal，并记录 GT、Scan、深度图/点云、
+Costmap、碰撞、安全状态和 MCAP；它不负责启动 Isaac 或 Nav2。动态部分已改为三阶段人工可视化验收，见 7.3 和 8.3；不要将旧的动态 20 轮配置当成当前执行入口。
 
 正式配置是冻结输入，不要编辑后继续沿用正式结论：
 
@@ -285,9 +284,8 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-当前重设计的静态批次含中心区四个 RGB-D 低矮方块和两个低矮长条；动态批次含两组在 G2 受理后横穿
-G1→G2 通道并停住的实体障碍。两批都使用 `warehouse_new`、`long_route_start_g1`、Ideal Odom 与
-`rgbd_navigation` Camera。旧 `mapping_start` / G1–G8 的正式报告是历史证据，不能用于本布局。
+当前静态批次含中心区四个 RGB-D 低矮方块和两个低矮长条；动态可视化含在 G1→G2、G2→G3、G5→G1 依次触发并停车的三个实体 actor。两者都使用 `warehouse_new`、Ideal Odom 与
+`rgbd_navigation` Camera；聚焦动态段分别从经标定的 G2/G5 出生点开始。旧 `mapping_start` / G1–G8 的正式报告是历史证据，不能用于本布局。
 由于 runner 会以 `/ground_truth/odom` 核验 Reset 和统计路线，下面所有长距离命令都
 显式设置 `ISAAC_NAV__GROUND_TRUTH__ENABLED=true`；它仅发布评测数据，不参与导航 TF
 或控制。
@@ -383,9 +381,9 @@ Ground Truth 轨迹，同时联动隐藏其他轮的明细行；悬停轨迹可�
 静态 runner 正常结束后，先在终端 B 按 Ctrl+C（受管 RViz 会先关闭）等待有序关闭，再在终端 A 按 Ctrl+C。
 不要直接切换 Isaac 障碍配置后复用旧进程。
 
-### 7.3 自动动态批次（待 Pilot 后执行）
+### 7.3 三阶段动态可视化与人工验收准备
 
-动态批次必须用新的 Isaac 进程，加载两组 G2 后触发、横穿 G1→G2 通道并 hold 的物理障碍配置。重新打开终端 A：
+当前动态交付是三段聚焦可视化、整圈接力和录制入口；不要运行下方旧的 `kujiale_dynamic_long_range.yaml` 自动 20 轮命令来替代最终人工验收。动态必须使用新的 Isaac 进程、三阶段 actor 配置和 `dynamic_avoidance` profile。整圈联测重新打开终端 A：
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -400,45 +398,42 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
   --dynamic-obstacles
 ```
 
-终端 B 使用与静态批次相同的无交互 Navigation：
+终端 B 使用动态 profile 的 Navigation：
 
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/run_ros.sh navigation \
   odometry_mode:=ideal \
   spawn_pose_name:=long_route_start_g1 \
-  interactive:=false \
-  use_rviz:=false
+  nav2_profile:=dynamic_avoidance
 ```
 
-等 Nav2 激活后，在终端 C 运行动态 seed：
+等 Nav2 激活后，在终端 C 运行整圈三阶段联测并录制：
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_experiment.sh \
-  ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml \
-  "$RUN_ROOT/dynamic"
+./scripts/run_kujiale_three_stage_visual.sh full \
+  --variant 1 \
+  --seed 7501 \
+  --record
 ```
 
-动态 runner 会核验 Isaac 已启用障碍、物理配置 SHA256 和障碍 ID；若不匹配会在发出
-第一个 Goal 前失败，而不是把错误环境记录成测试数据。结束后按静态批次相同顺序关闭
-终端 B、终端 A。
+运行器会核验 Isaac 已启用障碍、物理配置 SHA256 和 actor ID；若不匹配会在发出
+第一个 Goal 前失败，而不是把错误环境记录成测试数据。G2→G3 或 G5→G1 聚焦测试必须将 Isaac 和导航栈一起重启到 `long_route_start_g2` 或 `long_route_start_g5`，再分别执行 `run_kujiale_three_stage_visual.sh g2-g3` 或 `g5-g1`。完整命令见 [`kujiale_three_stage_dynamic_avoidance_plan.md`](kujiale_three_stage_dynamic_avoidance_plan.md)。结束后按静态批次相同顺序关闭终端 B、终端 A。
 
 ### 7.4 生成并核验自包含报告
 
-两个 runner 都正常完成后，在新终端汇总全部 40 轮证据：
+静态 20 轮是可自动汇总的候选批次；三阶段动态目前由人工验收。不要把 dynamic visual 记录强行与静态 20 轮汇总为“40 轮正式报告”。若仅需要重新汇总静态 20 轮证据：
 
 ```bash
 cd "$PROJECT_ROOT"
 source ./scripts/setup_ros_env.sh
 ros2 run robot_experiments kujiale_campaign \
   --run-directory "$RUN_ROOT/static" \
-  --run-directory "$RUN_ROOT/dynamic" \
   --output-directory "$REPORT_ROOT"
 ```
 
-汇总器要求静态和动态各恰好 20 个冻结 seed；它会验证每轮数据完整性、校验和、成功率
-门槛和静态路径偏差，并根据证据自动写出结论。即使验收未通过，报告也会生成；此时命令
+汇总器会验证静态运行数据完整性、校验和、成功率门槛和静态路径偏差，并根据证据自动写出结论。即使验收未通过，报告也会生成；此时命令
 以退出码 `2` 结束，表示“测试结论未通过”，不是允许手工修改结论的错误。
 
 输出目录为：
@@ -514,7 +509,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=stable
 ```
 
 #### 8.2.1 交互式布局与手动导航（可反复调整，不写实验输出）
@@ -592,26 +587,23 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
 
 ```bash
 cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance
 ```
 
-等待 Nav2 激活后，在终端 C 运行唯一动态 visual seed `7301`，同样不写项目输出：
+等待 Nav2 激活后，在终端 C 使用三阶段入口运行整圈联测；这同样不写正式验收结论：
 
 ```bash
-./scripts/run_visual_route.sh dynamic
+./scripts/run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501 --record
 ```
 
-runner 在 G2 的 Goal 被 Nav2 接受后自动调用两组横穿 G1→G2 通道障碍的触发服务；不需要手工输入
-服务命令。若希望额外查看状态，可另开终端 D：
+runner 按 G1→G2、G2→G3、G5→G1 三段接力 arm actor；只有机器人通过各自的空间 gate 后才显示并运动，且到达对应下一航点才退役。无需手工输入服务命令。若希望额外查看状态，可另开终端 D：
 
 ```bash
 source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
 ros2 topic echo /experiment/obstacles/state
 ```
 
-在 GUI 中应看到两组实体从通道侧方进入 G1→G2 行进线、延迟触发并 hold；在 RViz 观察路径重规划、减速/等待、
-MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 直接退出，不会
-留下项目证据目录。
+在 GUI 中观察三个 actor 依次移动并停车；在 RViz 观察路径重规划、MPPI 最优轨迹、Costmap 和 Collision Monitor。一次运行结束后，终端 C 直接退出；`--record` 仅保存该次可视化记录，不构成正式动态验收。
 
 ### 8.4 重跑、截图与停止
 

@@ -263,11 +263,10 @@ ros2 run tf2_ros tf2_echo map odom
 运动；Reset 后旧命令报 `stale epoch`。
 
 ```text
-controller_frequency = 10 Hz
-time_steps = 20
-model_dt = 0.10 s
-batch_size = 500
-prediction horizon = 2.0 s
+stable: controller_frequency = 10 Hz, time_steps = 20,
+model_dt = 0.10 s, batch_size = 700, prediction horizon = 2.0 s
+dynamic_avoidance: controller_frequency = 15 Hz, time_steps = 30,
+model_dt = 0.0666666667 s, batch_size = 500, prediction horizon = 2.0 s
 SLAM localization throttle_scans = 2
 ```
 
@@ -386,8 +385,8 @@ Image/CameraInfo stamp 配对。方向、曝光、遮挡必须实际看图，不
 
 **禁止操作：** 不要把 profile 的目标 Hz 当成实测结论，不要为了消除 RViz
 提示把传感器改成 Reliable，不要把 Camera 接入 SLAM、EKF 或 Collision Monitor；
-`rgbd_navigation` 的点云由全局和局部 VoxelLayer 使用，
-不要只改 frame 名或光学外参的一端，也不要在纯导航性能基线中忘记显式
+`stable` 中 `rgbd_navigation` 的点云由全局和局部 VoxelLayer 使用；
+`dynamic_avoidance` 中仅由 Local STVL 使用。不要只改 frame 名或光学外参的一端，也不要在纯导航性能基线中忘记显式
 `--camera-profile off`。
 
 ## 13. RViz 关闭崩溃、Ctrl+C 卡住或 Lifecycle 没有顺序退出
@@ -458,8 +457,8 @@ ros2 param get /controller_server FollowPath.batch_size
 ```
 
 采样前先确认 Isaac、ROS、目标、Camera/RViz/Nav2 profile 都已进入待测稳态。
-`stable` 应为 10 Hz、0.10 秒、batch 750；`performance` 应为 10 Hz、0.10 秒、
-batch 1000。控制周期大于 `model_dt` 的 overlay 会在节点启动前被拒绝，不是
+`stable` 应为 10 Hz、0.10 秒、batch 700；`dynamic_avoidance` 应为 15 Hz、
+0.0666666667 秒、batch 500。控制周期大于 `model_dt` 的 overlay 会在节点启动前被拒绝，不是
 Profiler 故障。
 报告的 `metadata.operation` 应能从 `run_ros.sh <operation>` 识别且与命令一致，
 `system.registered_processes.ros` 应采用

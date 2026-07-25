@@ -44,9 +44,9 @@ global_costmap:
 
 velocity_smoother:
   ros__parameters:
-    # Restore the historical static drive envelope.  Keep the current RViz
-    # candidate-trajectory downsampling from the base file; it is visual-only
-    # and does not affect the recorded MPPI control solution.
+    # Restore the historical static drive envelope. The saved RViz layout
+    # disables candidate trajectories by default; it does not affect the
+    # recorded MPPI control solution.
     smoothing_frequency: 20.0
     max_velocity: [0.75, 0.0, 1.35]
     min_velocity: [-0.25, 0.0, -1.35]

@@ -23,7 +23,7 @@ LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset 与长距离实验。README
 
 当前长距离静态/动态配置从 `long_route_start_g1` 出生，依次运行
 `G1 → G2 → G3 → G4 → G5 → G1`。原狭窄通道航点已移除，原左侧厕所和左下房间航点依次重命名为 G4、G5；中心区使用四个可在
-Isaac GUI 中反复拖动的 RGB-D 低矮方块和两个低矮长条，或两组在 G1→G2 实际通道中横穿并停住的动态方块。六个
+Isaac GUI 中反复拖动的 RGB-D 低矮方块和两个低矮长条，或三个按空间 gate 接力运动并停车的动态方块（G1→G2、G2→G3、G5→G1）。六个
 静态障碍的当前坐标来自 `2026-07-23 13:37:02 +08:00` 的完整 GUI 捕获：四个方块为 `0.30 × 0.30 × 0.16 m`，
 两个长条为 `0.60 × 0.30 × 0.16 m`；当前布局仍可继续手调，尚未冻结。
 
@@ -114,8 +114,8 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 终端。完整的人工回归目标、RGB-D 可视化、Reset 与排障步骤见
 [`docs/user_manual.md`](docs/user_manual.md)。
 
-静态/动态全屋长距离测试的 `warehouse_new` 地图、S/G1 与 G2–G5 航点、静态方块和两条
-动态障碍触发路线见 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
+静态/动态全屋长距离测试的 `warehouse_new` 地图、S/G1 与 G2–G5 航点、静态方块和三阶段
+动态障碍路线见 [`docs/kujiale_long_route_map.md`](docs/kujiale_long_route_map.md)。
 
 若要一边拖动四个静态方块和两个静态长条、一边在 RViz 手动发送 Goal 观察效果，请按
 [`docs/user_manual.md`](docs/user_manual.md#82-静态可视化单轮) 的“交互式布局与手动导航”流程启动；
@@ -131,10 +131,12 @@ cd /你的实际路径/Isaac_Sim_ROS2_Nav
 /camera/front/depth/points
 ```
 
-深度点云仅被滚动 Local Costmap 的 `depth_voxel_layer` 使用；Global Costmap
-只使用静态地图和实时 `/scan`，避免动态物体留下全局视觉残影。RViz 的
-**RGB-D Fusion** 分组显示局部 `/local_costmap/voxel_grid`。Collision Monitor
-仍只使用二维 `/scan`，RGB-D 不进入 SLAM、EKF 或 Collision Monitor。
+深度点云的 Costmap 消费者由 `nav2_profile` 决定：`stable` 在 Local 和 Global
+Costmap 都使用 `depth_voxel_layer`，保持低矮静态障碍；`dynamic_avoidance` 在
+Local 使用时空 STVL、Global 只使用静态图和 `/scan`，避免移动 actor 留下全局残影。
+RViz 的 **RGB-D Fusion** 分组分别显示标准 `/local_costmap/voxel_grid` 和动态
+`/local_costmap/stvl_voxel_grid`。Collision Monitor 仍只使用二维 `/scan`，RGB-D
+不进入 SLAM、EKF 或 Collision Monitor。
 
 ## 其他当前操作
 
@@ -160,10 +162,11 @@ ros2_ws/src/robot_experiments/config/kujiale_dynamic_long_range.yaml
 ros2_ws/src/robot_experiments/config/kujiale_long_range_campaign.yaml
 ```
 
-GUI + RViz 的单轮可视化回归分别使用
-`kujiale_static_visual.yaml` 与 `kujiale_dynamic_visual.yaml`：runner 自动发送完整
-`G1 → G2 → G3 → G4 → G5 → G1` 闭环路线；动态场景会在 G2 受理后让两组实体横穿 G1→G2 通道并停住。使用 `./scripts/run_visual_route.sh static|dynamic`
-启动；它不生成项目实验输出，二者均不计入正式 20+20 结果。
+静态 GUI + RViz 单轮回归使用 `kujiale_static_visual.yaml` 和
+`./scripts/run_visual_route.sh static`。动态可视化使用 schema-v4 三阶段 actor
+与 `./scripts/run_kujiale_three_stage_visual.sh {g1-g2|g2-g3|g5-g1|full}`：整圈会自动发送
+`G1 → G2 → G3 → G4 → G5 → G1`，在 G1→G2、G2→G3、G5→G1 分别触发一个 actor。两类
+可视化都不构成正式 20+20 验收；动态 `--record` 只保留本轮观测证据。
 
 ### 静态可视化一轮（Isaac GUI + RViz）
 
@@ -185,7 +188,7 @@ ISAAC_NAV__GROUND_TRUTH__ENABLED=true ./scripts/run_isaac.sh \
 
 # 终端 B：Navigation + RViz
 cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=stable
 
 # 终端 C：唯一静态 seed 7201；自动执行 G2 → G3 → G4 → G5 → G1
 cd "$PROJECT_ROOT"
