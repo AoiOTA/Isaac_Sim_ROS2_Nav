@@ -6,6 +6,7 @@ import argparse
 import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+import gzip
 import hashlib
 import html
 import json
@@ -14,6 +15,9 @@ from pathlib import Path
 import shutil
 from statistics import mean
 from typing import Any, Iterable, Mapping
+
+from PIL import Image
+import yaml
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -41,6 +45,12 @@ CONDITION_LABELS = {
     "static_appearance": "静态\n外观",
     "dynamic_baseline": "动态\n基准",
     "dynamic_appearance": "动态\n外观",
+}
+CONDITION_COLORS = {
+    "static_baseline": "#2563eb",
+    "static_appearance": "#7c3aed",
+    "dynamic_baseline": "#059669",
+    "dynamic_appearance": "#db2777",
 }
 
 
@@ -361,11 +371,10 @@ def _plot_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
 
     fig, axis = plt.subplots(figsize=(13, 6), constrained_layout=True)
     rows = summary["runs"]
-    colors = {"static_baseline": "#2563eb", "static_appearance": "#7c3aed", "dynamic_baseline": "#059669", "dynamic_appearance": "#db2777"}
     for condition in conditions:
         values = [row["duration_sec"] for row in rows if row["condition_id"] == condition and row["duration_sec"] is not None]
         if values:
-            axis.scatter([condition] * len(values), values, s=28, alpha=0.75, color=colors[condition], label=condition)
+            axis.scatter([condition] * len(values), values, s=28, alpha=0.75, color=CONDITION_COLORS[condition], label=condition)
     axis.set_ylabel("累计航段时长 (s)"); axis.set_title("每轮导航时长分布", loc="left", fontweight="bold")
     axis.tick_params(axis="x", rotation=15); axis.legend(frameon=False, ncol=2)
     path = figures / "duration_distribution.png"; fig.savefig(path, dpi=180, facecolor="#f8fafc"); plt.close(fig); paths.append(path)
@@ -376,7 +385,7 @@ def _plot_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
         static_rows = [row for row in rows if row["kind"] == "static" and row["strict_success"] and row["path_deviation_percent"] is not None]
         for condition in static_conditions:
             values = [row for row in static_rows if row["condition_id"] == condition]
-            axis.scatter([row["seed"] for row in values], [row["path_deviation_percent"] for row in values], label=condition, color=colors[condition])
+            axis.scatter([row["seed"] for row in values], [row["path_deviation_percent"] for row in values], label=condition, color=CONDITION_COLORS[condition])
         axis.axhline(20.0, linestyle="--", color="#dc2626", label="20% 门槛")
         axis.set_xlabel("seed"); axis.set_ylabel("GT路径偏差 (%)"); axis.set_title("静态成功轮次的路径偏差", loc="left", fontweight="bold")
         axis.legend(frameon=False)
@@ -384,13 +393,118 @@ def _plot_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
     return paths
 
 
-def _copy_map_figure(figures: Path) -> Path | None:
+def _ground_truth_points(evidence_dir: str) -> list[tuple[float, float]]:
+    path = Path(evidence_dir) / "ground_truth.csv.gz"
+    if not path.is_file():
+        return []
+    try:
+        with gzip.open(path, "rt", encoding="utf-8", newline="") as stream:
+            points = [
+                (x, y)
+                for item in csv.DictReader(stream)
+                if (x := _finite(item.get("x"))) is not None and (y := _finite(item.get("y"))) is not None
+            ]
+    except (OSError, UnicodeDecodeError, csv.Error):
+        return []
+    if len(points) <= 4000:
+        return points
+    stride = math.ceil(len(points) / 4000)
+    return points[::stride] + [points[-1]]
+
+
+def _occupancy_image():
+    map_yaml = PROJECT_ROOT / "data/maps/occupancy/warehouse_new.yaml"
+    try:
+        payload = yaml.safe_load(map_yaml.read_text(encoding="utf-8"))
+        if not isinstance(payload, Mapping):
+            return None
+        image_name = payload.get("image")
+        resolution = _finite(payload.get("resolution"))
+        origin = payload.get("origin")
+        if not isinstance(image_name, str) or resolution is None or not isinstance(origin, list) or len(origin) < 2:
+            return None
+        origin_x, origin_y = _finite(origin[0]), _finite(origin[1])
+        if origin_x is None or origin_y is None:
+            return None
+        plt, _ = _matplotlib()
+        image = plt.imread(map_yaml.parent / image_name)
+        height, width = image.shape[:2]
+        return image, (origin_x, origin_x + width * resolution, origin_y, origin_y + height * resolution)
+    except (OSError, ValueError, yaml.YAMLError):
+        return None
+
+
+def _trajectory_filename(row: Mapping[str, Any]) -> str:
+    condition = str(row["condition_id"])
+    seed = row["seed"]
+    profile = str(row["appearance_profile_id"])
+    return f"{condition}-seed-{seed}-{profile}.png"
+
+
+def _plot_trajectory_figures(summary: Mapping[str, Any], figures: Path) -> None:
+    """Render each available GT trace on the actual occupancy-grid map."""
+    map_data = _occupancy_image()
+    trajectory_root = figures / "trajectories"
+    trajectory_root.mkdir(parents=True, exist_ok=True)
+    for row in summary["runs"]:
+        points = _ground_truth_points(str(row["evidence_dir"]))
+        if not points:
+            row["trajectory_figure"] = None
+            continue
+        filename = _trajectory_filename(row)
+        relative = Path("figures") / "trajectories" / filename
+        row["trajectory_figure"] = str(relative)
+        plt, _ = _matplotlib()
+        figure, axis = plt.subplots(figsize=(10, 8), constrained_layout=True)
+        if map_data is not None:
+            image, extent = map_data
+            axis.imshow(image, cmap="gray", origin="upper", extent=extent, interpolation="nearest")
+        x_values = [point[0] for point in points]
+        y_values = [point[1] for point in points]
+        color = CONDITION_COLORS.get(str(row["condition_id"]), "#2563eb")
+        axis.plot(x_values, y_values, color=color, linewidth=1.8, label="实际 GT 路径")
+        axis.scatter(x_values[0], y_values[0], color="#16a34a", edgecolors="white", linewidths=0.8, s=54, zorder=3, label="起点")
+        axis.scatter(x_values[-1], y_values[-1], color="#dc2626", edgecolors="white", linewidths=0.8, s=54, zorder=3, label="终点")
+        axis.set_aspect("equal", adjustable="box")
+        axis.set_xlabel("map x (m)")
+        axis.set_ylabel("map y (m)")
+        axis.set_title(
+            f"{row['condition_id']} · seed {row['seed']} · {row['appearance_profile_id']}",
+            loc="left",
+            fontweight="bold",
+        )
+        axis.grid(alpha=0.18)
+        axis.legend(frameon=True, loc="best")
+        figure.savefig(trajectory_root / filename, dpi=170, facecolor="#f8fafc")
+        plt.close(figure)
+
+
+def _copy_map_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
     source = PROJECT_ROOT / "docs/figures/kujiale_4x20_test_matrix_map.png"
     if not source.is_file():
-        return None
-    target = figures / source.name
-    shutil.copy2(source, target)
-    return target
+        return []
+    scope = str(summary["scope"])
+    if scope == "full":
+        target = figures / source.name
+        shutil.copy2(source, target)
+        return [target]
+    # These bounds mirror the panel geometry in generate_kujiale_long_route_maps.py.
+    # A scoped report must not imply it evaluated the other two conditions.
+    panels_by_scope = {
+        "static": ((105, 220, 1270, 1040), (1330, 220, 2495, 1040)),
+        "dynamic": ((105, 1085, 1270, 1905), (1330, 1085, 2495, 1905)),
+    }
+    with Image.open(source) as image:
+        width, height = image.size
+        scale_x, scale_y = width / 2600.0, height / 2580.0
+        panels = []
+        labels = ("baseline", "appearance")
+        for bounds, label in zip(panels_by_scope[scope], labels):
+            left, top, right, bottom = bounds
+            target = figures / f"{scope}_{label}_test_map.png"
+            image.crop((left * scale_x, top * scale_y, right * scale_x, bottom * scale_y)).save(target)
+            panels.append(target)
+    return panels
 
 
 def _write_checksums(root: Path) -> None:
@@ -419,34 +533,57 @@ def _dashboard(summary: Mapping[str, Any], figures: Iterable[Path]) -> str:
         f"<article><h3>{html.escape(condition)}</h3><strong>{entry['strict_success']['numerator']}/20</strong><span>严格成功</span><p>无碰撞 {entry['physical_collision_free']['numerator']}/20 · {'通过' if entry['passed'] else '未通过'}</p></article>"
         for condition, entry in summary["conditions"].items()
     )
+    trajectory_records = [
+        {
+            "condition": row["condition_id"],
+            "seed": row["seed"],
+            "profile": row["appearance_profile_id"],
+            "result": "pass" if row["strict_success"] else "fail",
+            "path": row.get("trajectory_figure"),
+            "label": f"{row['condition_id']} · seed {row['seed']} · {row['appearance_profile_id']}",
+        }
+        for row in summary["runs"]
+    ]
     rows = "".join(
-        f"<tr data-condition='{html.escape(str(row['condition_id']))}' data-profile='{html.escape(str(row['appearance_profile_id']))}' data-result={'pass' if row['strict_success'] else 'fail'}><td>{html.escape(str(row['condition_id']))}</td><td>{row['seed']}</td><td>{html.escape(str(row['appearance_profile_id']))}</td><td>{html.escape(str(row['variant_id'] or '—'))}</td><td>{'通过' if row['strict_success'] else '失败'}</td><td>{'是' if row['physical_collision_free'] else '否'}</td><td>{'—' if row['duration_sec'] is None else f"{row['duration_sec']:.1f}"}</td><td>{html.escape(row['failure_reason'] or '—')}</td></tr>"
+        f"<tr data-condition='{html.escape(str(row['condition_id']))}' data-seed='{row['seed']}' data-profile='{html.escape(str(row['appearance_profile_id']))}' data-result={'pass' if row['strict_success'] else 'fail'}><td>{html.escape(str(row['condition_id']))}</td><td>{row['seed']}</td><td>{html.escape(str(row['appearance_profile_id']))}</td><td>{html.escape(str(row['variant_id'] or '—'))}</td><td>{'通过' if row['strict_success'] else '失败'}</td><td>{'是' if row['physical_collision_free'] else '否'}</td><td>{'—' if row['duration_sec'] is None else f"{row['duration_sec']:.1f}"}</td><td>{html.escape(row['failure_reason'] or '—')}</td><td>{f"<a href='{html.escape(str(row['trajectory_figure']))}' target='_blank'>打开</a>" if row.get('trajectory_figure') else '缺失'}</td></tr>"
         for row in summary["runs"]
     )
     images = "".join(f"<figure><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'><figcaption>{html.escape(path.stem)}</figcaption></figure>" for path in figures)
     issue_text = "无" if not summary["issues"] else "<br>".join(html.escape(item) for item in summary["issues"])
     status = "通过" if summary["passed"] else "未通过"
-    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img{{display:block;max-width:100%;height:auto;margin:auto}}figcaption{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>可视化</h2>{images}</section><section class='panel'><h2>运行筛选</h2><div class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{''.join(f"<option>{name}</option>" for name in summary['conditions'])}</select></label><label>外观 <select id='profile'><option value='all'>全部</option><option>baseline</option>{''.join(f'<option>{name}</option>' for name in APPEARANCE_PROFILES)}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></div><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>时长(s)</th><th>失败原因</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script>for(const e of document.querySelectorAll('select'))e.onchange=()=>{{const c=condition.value,p=profile.value,r=result.value;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!((c==='all'||x.dataset.condition===c)&&(p==='all'||x.dataset.profile===p)&&(r==='all'||x.dataset.result===r)))}}</script></html>"""
+    records_json = json.dumps(trajectory_records, ensure_ascii=False).replace("</", "<\\/")
+    seed_options = "".join(f"<option>{seed}</option>" for seed in sorted({row["seed"] for row in summary["runs"] if isinstance(row["seed"], int)}))
+    condition_options = "".join(f"<option>{name}</option>" for name in summary["conditions"])
+    profile_options = "".join(f"<option>{name}</option>" for name in ("baseline", *APPEARANCE_PROFILES))
+    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px}}#trajectory-image[hidden]{{display:none}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>统计可视化</h2>{images}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。</p><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><img id='trajectory-image' alt='实际 GT 路径' hidden></section><section class='panel'><h2>运行筛选</h2><div class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></div><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>时长(s)</th><th>失败原因</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
 
 
-def write_4x20_report(summary: Mapping[str, Any], output_directory: str | Path) -> Path:
+def write_4x20_report(
+    summary: Mapping[str, Any], output_directory: str | Path, *, replace_output: bool = False
+) -> Path:
     root = Path(output_directory).expanduser().resolve()
     if root.exists():
-        # A full report shares its campaign container with previously emitted
-        # static/dynamic subreports.  Those immutable child reports are safe
-        # to retain; any other content means the requested report could be
-        # overwritten and must be rejected.
-        allowed_subreports = {"static_2x20", "dynamic_2x20"}
-        unexpected = [item.name for item in root.iterdir() if item.name not in allowed_subreports]
-        if unexpected:
-            raise Campaign4x20Error(f"refusing to overwrite report directory: {root}")
+        if not replace_output:
+            # A full report shares its campaign container with previously emitted
+            # static/dynamic subreports.  Those immutable child reports are safe
+            # to retain; any other content means the requested report could be
+            # overwritten and must be rejected.
+            allowed_subreports = {"static_2x20", "dynamic_2x20"}
+            unexpected = [item.name for item in root.iterdir() if item.name not in allowed_subreports]
+            if unexpected:
+                raise Campaign4x20Error(f"refusing to overwrite report directory: {root}")
     else:
         root.mkdir(parents=True)
     figures = root / "figures"
+    if str(summary["scope"]) != "full":
+        # A scoped refresh may follow an older report that copied the complete
+        # four-condition matrix.  Remove that generated, out-of-scope asset so
+        # the report directory and checksum manifest match the HTML scope.
+        (figures / "kujiale_4x20_test_matrix_map.png").unlink(missing_ok=True)
     figures_written = _plot_figures(summary, figures)
-    map_figure = _copy_map_figure(figures)
-    if map_figure is not None:
-        figures_written.insert(0, map_figure)
+    _plot_trajectory_figures(summary, figures)
+    map_figures = _copy_map_figures(summary, figures)
+    figures_written[0:0] = map_figures
     clean = _clean(summary)
     (root / "benchmark.json").write_text(json.dumps(clean, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     fields = ["condition_id", "kind", "seed", "appearance_profile_id", "nav2_profile", "variant_id", "strict_success", "physical_collision_free", "data_complete", "checksums_verified", "dynamic_interaction_complete", "path_deviation_percent", "ground_truth_path_length_m", "duration_sec", "maximum_route_recoveries", "failure_reason"]
@@ -462,7 +599,9 @@ def write_4x20_report(summary: Mapping[str, Any], output_directory: str | Path) 
         markdown += "本报告只覆盖本次静态或动态 2×20 证据，不能单独作为完整 4×20 验收结论，也不会自动合并不同批次。\n\n"
     for condition, entry in summary["conditions"].items():
         markdown += f"- {condition}: 严格 {entry['strict_success']['numerator']}/20，无碰撞 {entry['physical_collision_free']['numerator']}/20，{'通过' if entry['passed'] else '未通过'}。\n"
-    markdown += "\n![测试地图](figures/kujiale_4x20_test_matrix_map.png)\n\n![条件总览](figures/condition_overview.png)\n"
+    for figure in map_figures:
+        markdown += f"\n![测试地图](figures/{figure.name})\n"
+    markdown += "\n![条件总览](figures/condition_overview.png)\n"
     (root / "report.md").write_text(markdown, encoding="utf-8")
     dictionary = "# 数据字典\n\n"
     dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。\n"
@@ -484,6 +623,7 @@ def main(args: list[str] | None = None) -> None:
     parser.add_argument("--output-directory")
     parser.add_argument("--status", action="store_true")
     parser.add_argument("--scope", choices=tuple(SCOPES), default="full")
+    parser.add_argument("--replace-output", action="store_true")
     parsed = parser.parse_args(args)
     if bool(parsed.output_directory) == bool(parsed.status):
         parser.error("provide exactly one of --output-directory or --status")
@@ -491,7 +631,7 @@ def main(args: list[str] | None = None) -> None:
     if parsed.status:
         print(json.dumps({"scope": summary["scope"], "complete": summary["complete"], "passed": summary["passed"], "issues": summary["issues"], "conditions": summary["conditions"]}, ensure_ascii=False))
         return
-    output = write_4x20_report(summary, parsed.output_directory)
+    output = write_4x20_report(summary, parsed.output_directory, replace_output=parsed.replace_output)
     print(json.dumps({"output": str(output), "scope": summary["scope"], "complete": summary["complete"], "passed": summary["passed"]}, ensure_ascii=False))
     raise SystemExit(0 if summary["passed"] else 2)
 

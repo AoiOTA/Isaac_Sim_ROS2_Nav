@@ -1,7 +1,9 @@
 import hashlib
+import gzip
 import json
 from pathlib import Path
 
+from PIL import Image
 from robot_experiments.kujiale_4x20_campaign import (
     main,
     summarize_4x20,
@@ -21,7 +23,9 @@ def _write_checksums(root: Path) -> None:
     (root / "checksums.sha256").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _write_campaign(root: Path, kinds: tuple[str, ...] = ("static", "dynamic")) -> None:
+def _write_campaign(
+    root: Path, kinds: tuple[str, ...] = ("static", "dynamic"), *, include_one_trajectory: bool = False
+) -> None:
     for filename, kind in (
         ("kujiale_4x20_static_pair.yaml", "static"),
         ("kujiale_4x20_dynamic_pair.yaml", "dynamic"),
@@ -59,6 +63,12 @@ def _write_campaign(root: Path, kinds: tuple[str, ...] = ("static", "dynamic")) 
             }
             (evidence / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
             (evidence / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+            if include_one_trajectory and kind == "static" and index == 1:
+                with gzip.open(evidence / "ground_truth.csv.gz", "wt", encoding="utf-8", newline="") as stream:
+                    stream.write("x,y,yaw_rad,linear_speed_mps,angular_speed_radps,stamp_s\n")
+                    stream.write("0.45,-5.35,1.57,0.0,0.0,0.0\n")
+                    stream.write("0.60,-5.10,1.40,0.2,0.0,1.0\n")
+                    stream.write("0.80,4.80,-2.79,0.0,0.0,2.0\n")
             _write_checksums(evidence)
 
 
@@ -118,6 +128,8 @@ def test_dynamic_2x20_report_is_complete_without_static_evidence(tmp_path):
     assert (output / "index.html").is_file()
     assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
     assert not (output / "figures" / "static_path_deviation.png").exists()
+    assert (output / "figures" / "dynamic_baseline_test_map.png").is_file()
+    assert (output / "figures" / "dynamic_appearance_test_map.png").is_file()
 
 
 def test_static_2x20_report_is_complete_without_dynamic_evidence(tmp_path):
@@ -150,3 +162,27 @@ def test_status_cli_supports_a_static_2x20_scope(tmp_path, capsys):
     assert status["scope"] == "static"
     assert status["complete"] is True
     assert status["passed"] is True
+
+
+def test_report_embeds_a_filterable_actual_ground_truth_trajectory(tmp_path):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root, kinds=("static",), include_one_trajectory=True)
+    output = write_4x20_report(summarize_4x20(run_root, scope="static"), tmp_path / "report")
+    report = (output / "index.html").read_text(encoding="utf-8")
+    assert "逐轮实际 GT 路径" in report
+    assert "id='seed'" in report
+    assert "id='trajectory'" in report
+    assert (output / "figures" / "trajectories" / "static_baseline-seed-7201-baseline.png").is_file()
+    assert (output / "figures" / "static_baseline_test_map.png").is_file()
+    assert (output / "figures" / "static_appearance_test_map.png").is_file()
+    assert not (output / "figures" / "kujiale_4x20_test_matrix_map.png").exists()
+    with Image.open(output / "figures" / "static_baseline_test_map.png") as map_image:
+        assert map_image.size == (1165, 820)
+    benchmark = json.loads((output / "benchmark.json").read_text(encoding="utf-8"))
+    assert any(row.get("trajectory_figure") for row in benchmark["runs"])
+    legacy_map = output / "figures" / "kujiale_4x20_test_matrix_map.png"
+    legacy_map.write_bytes(b"out-of-scope")
+    assert write_4x20_report(
+        summarize_4x20(run_root, scope="static"), output, replace_output=True
+    ) == output
+    assert not legacy_map.exists()

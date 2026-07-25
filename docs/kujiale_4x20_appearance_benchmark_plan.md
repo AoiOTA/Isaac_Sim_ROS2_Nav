@@ -156,11 +156,19 @@ pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离�
 完整 campaign 在 `data/reports/kujiale_4x20_<campaign_id>/` 生成总 `index.html`、`report.pdf`、`report.md`、
 `benchmark.json/csv`、`data_dictionary.md`、`evidence_index.json`、校验和及PNG图；不复制完整MCAP。静态阶段
 完成后立即写入 `static_2x20/`，动态阶段完成后写入 `dynamic_2x20/`，从而动态失败不会丢失静态报告。每份报告首页
-嵌入本文件的测试地图，支持按实验组、seed、外观配置、动态变体和结果筛选。
+嵌入本文件的测试地图，支持按实验组、seed、外观配置、动态变体和结果筛选。每个有
+`ground_truth.csv.gz` 证据的正式轮次都会生成 `warehouse_new` OccupancyGrid 叠加的实际 GT 路径图；
+HTML 的“逐轮实际 GT 路径”选择器随上述筛选联动，绿点为起点、红点为终点。
+静态/动态 2×20 子报告只显示本范围的两张条件地图，完整4×20总报告才显示四组矩阵图。
 
 报告展示四组成功率和置信区间、耗时分布、路径长度、静态偏差、恢复次数、碰撞、动态交互有效性和失败原因，
 并保留基准/外观变化的同seed配对记录。即使未达到门槛也必须生成报告；验收通过返回0，批次完成但门槛或证据失败返回2。
 `static_2x20` 与 `dynamic_2x20` 是各自独立的验收报告，不会自动将不同 campaign 的结果拼接成完整4×20报告。
+若报告器升级后需要仅重绘既有报告（不改变原始证据），使用 `--replace`：
+
+```bash
+./scripts/run_kujiale_4x20.sh static-report <CAMPAIGN_ID> --replace
+```
 
 自动化测试覆盖：80轮矩阵完整性、外观分配、路线一致性、Session Layer应用与恢复、
 断点续跑、证据校验、门槛判定，以及HTML/PDF/PNG报告生成。
