@@ -1,3 +1,5 @@
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -135,6 +137,58 @@ def test_g2_g3_exit_requires_following_then_left_exit_turn():
     assert metrics["continuous_follow_seen"]
     assert metrics["outlet_left_turn_seen"]
     assert metrics["complete"]
+
+
+def test_g2_g3_exit_accepts_the_calibrated_two_metre_same_lane_lead():
+    ground_truth = [
+        OdometrySample(-0.42, 2.75, 0.0, 0.4, 0.0, 1.00, 0.0),
+        OdometrySample(-0.85, -0.55, 0.0, 0.4, 0.0, 1.10, 0.0),
+    ]
+    actor = [
+        {"id": "g2_g3_exit_actor", "state": "moving", "stamp_s": 1.00, "position": [-0.40, 1.00, 0.5]},
+        {"id": "g2_g3_exit_actor", "state": "parked", "stamp_s": 1.10, "position": [-0.40, -0.70, 0.5]},
+    ]
+
+    metrics = ExperimentRunner._g2_g3_exit_metrics(
+        ground_truth, actor, "g2_g3_exit_actor"
+    )
+
+    assert metrics["continuous_follow_seen"]
+    assert metrics["complete"]
+
+
+def test_failed_pilot_evidence_is_retried_only_when_successful_resume_is_required(tmp_path):
+    root = tmp_path / "run-0002-seed-7301"
+    root.mkdir()
+    manifest = {
+        "random_seed": 7301,
+        "run_index": 2,
+        "condition_id": "dynamic_appearance",
+        "appearance": {"profile_id": "dim_warm"},
+        "dynamic_selection": {"case_id": "full_route_three_stage", "variant_id": "v1"},
+        "result": "failure",
+    }
+    summary = {"data_complete": True, "checksums_verified": True}
+    (root / "run_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    checksums = [
+        f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}"
+        for path in sorted(root.iterdir())
+    ]
+    (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+    selection = SimpleNamespace(
+        seed=7301,
+        condition_id="dynamic_appearance",
+        appearance_profile_id="dim_warm",
+        case_id="full_route_three_stage",
+        variant_id="v1",
+    )
+    runner = object.__new__(ExperimentRunner)
+
+    runner._require_successful_resume = False
+    assert runner._completed_resume_manifest(root, 2, selection) == manifest
+    runner._require_successful_resume = True
+    assert runner._completed_resume_manifest(root, 2, selection) is None
 
 
 def test_g5_g1_crossing_requires_left_side_pass_while_actor_exists():

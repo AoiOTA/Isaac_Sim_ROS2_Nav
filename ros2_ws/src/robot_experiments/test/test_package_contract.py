@@ -117,6 +117,17 @@ def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
 
 
+def test_4x20_pilot_resume_requires_a_previous_success_and_preserves_formal_failures():
+    root = PACKAGE_ROOT.parents[2]
+    controller = (root / "scripts" / "run_kujiale_4x20.sh").read_text()
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    launch = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    assert '"require_successful_resume:=true"' in controller
+    assert 'DeclareLaunchArgument("require_successful_resume", default_value="false")' in launch
+    assert 'if self._require_successful_resume and manifest.get("result") != "success":' in runner
+    assert "fully recorded *failed* pilot must be quarantined and retried" in runner
+
+
 def test_incremental_map_comparison_has_an_installed_cli():
     setup_source = (PACKAGE_ROOT / "setup.py").read_text()
     assert (

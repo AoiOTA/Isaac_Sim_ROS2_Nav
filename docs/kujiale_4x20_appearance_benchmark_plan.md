@@ -106,7 +106,9 @@ Isaac 或 Nav2 在启动超时（默认900秒）前退出时，监督器会失�
 ./scripts/run_kujiale_4x20_all.sh 20260725-120000 --resume
 ```
 
-完整且校验通过的正式轮次会跳过，不完整目录仍隔离保留。已经生成报告的 ID 不允许覆盖，请使用新 ID。
+完整且校验通过的正式轮次会跳过，不完整目录仍隔离保留。`pilot` 是正式40轮的前置门：若先前
+pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离为带 `.incomplete-<UTC>` 后缀的保留证据，
+然后用当前配置重新执行它；不会静默复用失败 pilot，也不会改写正式轮次。已经生成报告的 ID 不允许覆盖，请使用新 ID。
 如果刚完成构建，可加 `--skip-build`；必要时可用 `--startup-timeout-sec 1200` 调整每阶段启动等待上限。
 
 `run_kujiale_4x20_isaac.sh`、`run_ros.sh` 和 `run_kujiale_4x20.sh` 的分开调用仍可用于人工观察或单阶段
