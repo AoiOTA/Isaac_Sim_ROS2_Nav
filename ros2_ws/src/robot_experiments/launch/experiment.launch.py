@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.substitutions import FindPackageShare
 
 
@@ -47,7 +48,12 @@ def generate_launch_description():
                         "output_directory": LaunchConfiguration("output_directory"),
                         "record_evidence": LaunchConfiguration("record_evidence"),
                         "resume": LaunchConfiguration("resume"),
-                        "run_indices": LaunchConfiguration("run_indices"),
+                        # A single index such as "2" would otherwise be
+                        # inferred as an INTEGER by launch, while the runner
+                        # intentionally accepts a comma-separated STRING.
+                        "run_indices": ParameterValue(
+                            LaunchConfiguration("run_indices"), value_type=str
+                        ),
                         "robot_config_file": LaunchConfiguration("robot_config_file"),
                         "nav2_config_file": LaunchConfiguration("nav2_config_file"),
                         "nav2_profile": LaunchConfiguration("nav2_profile"),
