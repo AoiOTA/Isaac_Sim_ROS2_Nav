@@ -1,0 +1,157 @@
+# Overlay used only by the reproducible Kujiale dynamic-obstacle experiments.
+#
+# Keep RGB-D fusion enabled, but use a *temporal* voxel representation for the
+# dynamic benchmark.  Nav2's built-in VoxelLayer only removes a marked cell
+# when a later depth ray revisits it.  With a front-only camera, an actor that
+# has left the field of view can therefore leave a trail indefinitely.  STVL
+# keeps the same PointCloud2 input while expiring unobserved voxels and
+# accelerating that expiration inside the current camera frustum.
+#
+# LiDAR remains an independent 2D obstacle layer.  The static map, footprint,
+# MPPI, velocity smoother, and collision monitor are unchanged from the base
+# configuration.
+controller_server:
+  ros__parameters:
+    # On the complete Isaac + STVL + RViz workload, the former 500 x 40 MPPI
+    # update took about 70 ms (P90 about 80 ms).  Requesting 20 Hz therefore
+    # produced alternating long compute periods and immediate catch-up bursts
+    # instead of a real 50 ms cadence.  A 12.5 Hz / 25-step trial was smooth
+    # but reacted too late in the fastest crossing.  Fifteen hertz with 30
+    # steps removes 25% of the rollout work, budgets 66.7 ms per update, and
+    # retains a faster obstacle-response interval.
+    controller_frequency: 15.0
+    FollowPath:
+      # Preserve the complete two-second look-ahead and sequence shifting at
+      # the measured sustainable controller period.
+      time_steps: 30
+      model_dt: 0.0666666667
+      batch_size: 500
+
+      # Dynamic-only evasive envelope.  The static base profile deliberately
+      # retains the validated feasibility-tuning limits instead.
+      vx_std: 0.90
+      wz_std: 3.40
+      vx_max: 1.20
+      wz_max: 3.40
+      ax_max: 3.50
+      ax_min: -3.50
+      az_max: 6.50
+      gamma: 0.030
+      TrajectoryVisualizer:
+        trajectory_step: 25
+        time_step: 5
+      CostCritic:
+        cost_weight: 2.50
+      PathFollowCritic:
+        cost_weight: 14.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      # The RGB-D and LiDAR inputs provide new frames at roughly 6--8 Hz in
+      # the loaded Isaac scene.  A 20 Hz costmap only recomputed the same STVL
+      # observations and contended with the 20 Hz MPPI loop in this shared
+      # controller_server process.  Ten updates per second still consumes the
+      # next sensor frame within 0.10 s while leaving a deterministic MPPI
+      # compute window; publish at 5 Hz to avoid redundant full-grid RViz I/O.
+      update_frequency: 10.0
+      publish_frequency: 5.0
+      plugins: [obstacle_layer, depth_stvl_layer, inflation_layer]
+      obstacle_layer:
+        enabled: true
+        observation_sources: scan
+        scan:
+          clearing: true
+          marking: true
+          data_type: LaserScan
+          observation_persistence: 0.0
+          inf_is_valid: true
+          raytrace_min_range: 0.0
+          raytrace_max_range: 25.0
+          obstacle_min_range: 0.40
+          obstacle_max_range: 25.0
+      # STVL is a drop-in Costmap2D voxel plugin.  It consumes the same RGB-D
+      # PointCloud2 as the base VoxelLayer but tracks an age per voxel.
+      depth_stvl_layer:
+        plugin: spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer
+        enabled: true
+        # Linear decay gives a bounded lifetime even after the actor exits the
+        # front camera FOV.  The companion clearing source below accelerates
+        # decay within the visible frustum, so a departed box is normally gone
+        # in the next few RGB-D frames rather than after the full 0.75 s.
+        voxel_decay: 0.75
+        decay_model: 0
+        voxel_size: 0.05
+        track_unknown_space: false
+        mark_threshold: 0
+        update_footprint_enabled: true
+        combination_method: 1
+        origin_z: 0.0
+        publish_voxel_map: true
+        transform_tolerance: 0.10
+        mapping_mode: false
+        map_save_duration: 60.0
+        observation_sources: camera_depth_mark camera_depth_clear
+
+        camera_depth_mark:
+          data_type: PointCloud2
+          topic: /camera/front/depth/points
+          marking: true
+          clearing: false
+          obstacle_range: 2.0
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.50
+          expected_update_rate: 0.0
+          observation_persistence: 0.0
+          # The 320x180 RGB-D cloud is dense.  This retains one observation
+          # per 5 cm voxel without reducing the collision geometry.
+          filter: voxel
+          voxel_min_points: 0
+          clear_after_reading: true
+
+        camera_depth_clear:
+          data_type: PointCloud2
+          topic: /camera/front/depth/points
+          marking: false
+          clearing: true
+          # Camera optical depth range and calibrated perspective FOV.
+          min_z: 0.05
+          max_z: 2.5
+          vertical_fov_angle: 1.272
+          horizontal_fov_angle: 1.839
+          # A high frustum decay rate removes cells that should have been
+          # observed in the current frame but were not (e.g. a moved actor).
+          decay_acceleration: 15.0
+          model_type: 0
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      # The common base profile includes global RGB-D for static low boxes.
+      # A moving actor must not be retained there, so dynamic runs keep the
+      # static map plus LiDAR and use only the rolling local STVL for depth.
+      plugins: [static_layer, obstacle_layer, inflation_layer]
+      obstacle_layer:
+        enabled: true
+        observation_sources: scan
+        scan:
+          clearing: true
+          marking: true
+          data_type: LaserScan
+          observation_persistence: 0.0
+          inf_is_valid: true
+          raytrace_min_range: 0.0
+          raytrace_max_range: 25.0
+          obstacle_min_range: 0.40
+          obstacle_max_range: 25.0
+
+velocity_smoother:
+  ros__parameters:
+    # Keep the faster dynamic envelope independent from the historical static
+    # profile, while emitting bounded commands on Isaac's 60 Hz physics tick.
+    smoothing_frequency: 60.0
+    max_velocity: [1.20, 0.0, 3.40]
+    min_velocity: [-0.25, 0.0, -3.40]
+    max_accel: [3.50, 0.0, 6.50]
+    max_decel: [-3.50, 0.0, -6.50]
+    feedback: OPEN_LOOP

@@ -39,6 +39,7 @@ class RobotGate:
     direction: str
     min_speed_mps: float
     x_range: tuple[float, float] | None = None
+    max_distance_to_obstacle_start_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -148,7 +149,7 @@ def _load_case_matrix(data: dict[str, object], schema_version: int) -> DynamicSc
         gate_raw = raw["gate"]
         if not isinstance(gate_raw, dict):
             raise ValueError(f"{case_id}.gate must be a mapping")
-        reject_unknown(gate_raw, {"axis", "threshold", "direction", "min_speed_mps", "x_range"}, context=f"{case_id}.gate")
+        reject_unknown(gate_raw, {"axis", "threshold", "direction", "min_speed_mps", "x_range", "max_distance_to_obstacle_start_m"}, context=f"{case_id}.gate")
         require_keys(gate_raw, {"axis", "threshold", "direction", "min_speed_mps"}, context=f"{case_id}.gate")
         axis, direction = gate_raw["axis"], gate_raw["direction"]
         if axis not in {"x", "y"} or direction not in {"positive", "negative"}:
@@ -158,6 +159,13 @@ def _load_case_matrix(data: dict[str, object], schema_version: int) -> DynamicSc
             x_range = _vector(gate_raw["x_range"], 2, f"{case_id}.gate.x_range")
             if x_range[0] > x_range[1]:
                 raise ValueError(f"{case_id}.gate.x_range is invalid")
+        max_distance_to_obstacle_start_m = None
+        if "max_distance_to_obstacle_start_m" in gate_raw:
+            max_distance_to_obstacle_start_m = require_number(
+                gate_raw["max_distance_to_obstacle_start_m"],
+                context=f"{case_id}.gate.max_distance_to_obstacle_start_m",
+                positive=True,
+            )
         obstacle_raw = raw["obstacle"]
         if not isinstance(obstacle_raw, dict):
             raise ValueError(f"{case_id}.obstacle must be a mapping")
@@ -199,7 +207,8 @@ def _load_case_matrix(data: dict[str, object], schema_version: int) -> DynamicSc
             variants.append(DynamicVariant(variant_id, variant_raw.get("seed"), delay, dwell))
         cases[case_id] = DynamicCase(case_id, spec, waypoints, group,
                                      RobotGate(axis, require_number(gate_raw["threshold"], context=f"{case_id}.gate.threshold"), direction,
-                                               require_number(gate_raw["min_speed_mps"], context=f"{case_id}.gate.min_speed_mps", positive=True), x_range),
+                                               require_number(gate_raw["min_speed_mps"], context=f"{case_id}.gate.min_speed_mps", positive=True), x_range,
+                                               max_distance_to_obstacle_start_m),
                                      require_number(obstacle_raw["max_acceleration"], context=f"{case_id}.obstacle.max_acceleration", positive=True), tuple(variants))
         all_specs.append(spec)
     case_sets: dict[str, tuple[str, ...]] = {}

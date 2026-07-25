@@ -172,6 +172,14 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert voxel_grid['Enabled'] is True
     assert voxel_grid['Color Transformer'] == 'FlatColor'
     assert voxel_grid['Style'] == 'Boxes'
+    temporal_voxels = _named(config, 'Temporal Voxels (3D)')
+    assert temporal_voxels['Class'] == 'rviz_default_plugins/PointCloud2'
+    assert temporal_voxels['Topic']['Value'] == (
+        '/local_costmap/stvl_voxel_grid')
+    assert temporal_voxels['Enabled'] is True
+    assert temporal_voxels['Color Transformer'] == 'FlatColor'
+    assert temporal_voxels['Style'] == 'Boxes'
+    assert temporal_voxels['Size (m)'] == pytest.approx(0.05)
 
 
 def test_robot_description_cmake_installs_all_rviz_configs():

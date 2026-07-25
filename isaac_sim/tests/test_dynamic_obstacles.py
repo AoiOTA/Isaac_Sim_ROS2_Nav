@@ -95,6 +95,54 @@ def test_three_stage_case_set_selects_the_ordered_route_interactions():
     assert [item.trigger_group for item in selected] == ["G2", "G3", "G1"]
 
 
+def test_g2_g3_gate_triggers_southbound_at_y_3_0_in_the_narrow_lane():
+    scenario = load_dynamic_scenario(
+        ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+    )
+    case = scenario.cases["g2_g3_exit"]
+    manager = object.__new__(DynamicObstacleManager)
+
+    assert case.gate.threshold == pytest.approx(3.00)
+    assert manager._gate_passed(
+        case, {"x": -0.40, "y": 2.99, "vy": -0.30, "speed": 0.30}
+    )
+    # Do not trigger before crossing the threshold, outside the calibrated
+    # lane, or while travelling in the opposite direction.
+    assert not manager._gate_passed(
+        case, {"x": -0.40, "y": 3.01, "vy": -0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -0.60, "y": 2.40, "vy": -0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -0.40, "y": 2.40, "vy": 0.30, "speed": 0.30}
+    )
+
+
+def test_g5_g1_gate_arms_on_the_northbound_ingress_before_the_doorway():
+    """Regression for the recorded route: it approaches the doorway northbound."""
+    scenario = load_dynamic_scenario(
+        ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+    )
+    case = scenario.cases["g5_g1_crossing"]
+    manager = object.__new__(DynamicObstacleManager)
+
+    assert manager._gate_passed(
+        case, {"x": -1.75, "y": -1.90, "vy": 0.30, "speed": 0.30}
+    )
+    # The broad-room ingress, a too-distant northbound pose, and the later
+    # southbound doorway pose must not arm it.
+    assert not manager._gate_passed(
+        case, {"x": -1.84, "y": -1.93, "vy": 0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -1.95, "y": -2.45, "vy": 0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -1.14, "y": -0.85, "vy": -0.30, "speed": 0.30}
+    )
+
+
 @pytest.mark.parametrize(
     ("case_set", "message"),
     [

@@ -36,6 +36,7 @@ FIXTURES = Path(__file__).parent / "fixtures"
         ("dynamic_complex_route.yaml", "dynamic", 3),
         ("kujiale_static_visual.yaml", "static", 1),
         ("kujiale_dynamic_visual.yaml", "dynamic", 1),
+        ("kujiale_dynamic_visual_g2_g3.yaml", "dynamic", 1),
         ("incremental_mapping.yaml", "incremental", 1),
     ],
 )
@@ -71,6 +72,8 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         "dynamic_benchmark.yaml",
         "dynamic_complex_route.yaml",
         "kujiale_dynamic_visual.yaml",
+        "kujiale_dynamic_visual_g2_g3.yaml",
+        "kujiale_dynamic_visual_g5_g1.yaml",
     ):
         scenario = load_scenario(CONFIG / filename)
         spawn_file = (
@@ -120,6 +123,38 @@ def test_kujiale_dynamic_visual_is_one_controlled_g1_to_g2_observation():
         assert tuple(goal.yaw_deg for goal in scenario.route) == expected_yaws
     assert static.route[-1] == static.goal
     assert dynamic.goal.position == (0.80, 4.80)
+
+
+def test_g2_g3_focus_starts_at_the_calibrated_g2_pose():
+    scenario = load_scenario(CONFIG / "kujiale_dynamic_visual_g2_g3.yaml")
+    spawn = load_spawn_pose(
+        PACKAGE_ROOT.parents[2]
+        / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml",
+        scenario.spawn_pose_name,
+    )
+
+    assert scenario.spawn_pose_name == "long_route_start_g2"
+    assert spawn.map.position == (0.80, 4.80)
+    assert spawn.usd.position == (2.10, -5.00, 0.0635)
+    assert spawn.map_calibrated is True
+    assert scenario.route == ()
+    assert scenario.goal.goal_id == "G3"
+
+
+def test_g5_g1_focus_starts_at_the_calibrated_g5_pose():
+    scenario = load_scenario(CONFIG / "kujiale_dynamic_visual_g5_g1.yaml")
+    spawn = load_spawn_pose(
+        PACKAGE_ROOT.parents[2]
+        / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml",
+        scenario.spawn_pose_name,
+    )
+
+    assert scenario.spawn_pose_name == "long_route_start_g5"
+    assert spawn.map.position == (-2.20, -2.95)
+    assert spawn.usd.position == (5.10, 2.75, 0.0635)
+    assert spawn.map_calibrated is True
+    assert scenario.route == ()
+    assert scenario.goal.goal_id == "G1"
 
 
 def test_complex_routes_are_long_continuous_and_end_at_goal():

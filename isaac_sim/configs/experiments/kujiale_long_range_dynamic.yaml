@@ -79,10 +79,12 @@ cases:
       v5: {seed: 7445, start_delay_sec: 0.15}
   g2_g3_exit:
     trigger_group: G3
-    # The G2->G3 reference path descends the x≈-0.4 narrow lane.  Start the
-    # actor at y=1.0 and release it upstream, so it moves with the robot rather
-    # than appearing as a static block at the outlet.
-    gate: {axis: y, threshold: 2.20, direction: negative, min_speed_mps: 0.20, x_range: [-0.55, -0.25]}
+    # Trigger only after the robot has entered the narrow southbound aisle.
+    # The direct G2 calibrated spawn has the same map frame as the full route,
+    # so y=3.00 is the shared physical gate in focused and full-route modes.
+    # Keep the direction, lane, and speed constraints to prevent an early arm
+    # while the robot is still turning into the aisle.
+    gate: {axis: y, threshold: 3.00, direction: negative, min_speed_mps: 0.20, x_range: [-0.55, -0.25]}
     obstacle:
       {id: g2_g3_exit_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.40, 1.00, 0.50], [-0.40, -0.70, 0.50]], speed: 0.65, max_acceleration: 0.90, post_motion: park}
     variants:
@@ -93,11 +95,17 @@ cases:
       v5: {seed: 7465, start_delay_sec: 0.20}
   g5_g1_crossing:
     trigger_group: G1
-    # Arm only for the return goal.  The negative-y gate selects the return
-    # descent and rejects the earlier G5->upper-hall northbound traversal.
-    gate: {axis: y, threshold: -0.55, direction: negative, min_speed_mps: 0.20, x_range: [-0.75, -0.15]}
+    # G5->G1 first enters this area northbound, then turns south at the
+    # doorway.  Trigger on that northbound ingress instead of the later
+    # southbound exit, otherwise the hidden actor would appear at the robot.
+    # Distance-to-start prevents an actor from materialising at contact range:
+    # it becomes visible at a reproducible 1.05 m forward distance, rather
+    # than relying on a coordinate gate that can drift with the local plan.
+    gate: {axis: y, threshold: -2.50, direction: positive, min_speed_mps: 0.20, x_range: [-2.00, -0.15], max_distance_to_obstacle_start_m: 1.05}
     obstacle:
-      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.90, -1.45, 0.50], [-0.20, -1.45, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
+      # Shift the swept band 0.15 m out of the doorway (north) while retaining
+      # a >= 0.05 m static-map margin for the 0.40 m actor footprint.
+      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.90, -1.30, 0.50], [-0.20, -1.30, 0.50]], speed: 0.32, max_acceleration: 1.60, post_motion: park}
     variants:
       v1: {seed: 7471, start_delay_sec: 0.00}
       v2: {seed: 7472, start_delay_sec: 0.05}

@@ -17,4 +17,12 @@ case "${segment}" in
   *) die "unknown segment ${segment}; expected g1-g2, g2-g3, g5-g1, or full" ;;
 esac
 
+if [[ "${segment}" == "g2-g3" ]]; then
+  log_info "G2→G3 starts at calibrated long_route_start_g2; launch Isaac and navigation with that same spawn pose before this command."
+fi
+if [[ "${segment}" == "g5-g1" ]]; then
+  log_info "G5→G1 starts at calibrated long_route_start_g5; launch Isaac and navigation with that same spawn pose before this command."
+fi
+log_info "Three-stage dynamic runs require Nav2 profile dynamic_avoidance (LiDAR plus temporal RGB-D voxel clearing)."
+
 exec "${SCRIPT_DIR}/run_kujiale_dynamic_visual.sh" --case "${case_id}" "$@"
