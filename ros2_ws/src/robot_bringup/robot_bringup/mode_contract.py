@@ -15,7 +15,7 @@ OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
 ODOMETRY_MODES = frozenset({'ideal', 'realistic'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
-NAV2_PROFILES = frozenset({'stable', 'performance'})
+NAV2_PROFILES = frozenset({'stable', 'performance', 'dynamic_avoidance'})
 
 
 @dataclass(frozen=True)

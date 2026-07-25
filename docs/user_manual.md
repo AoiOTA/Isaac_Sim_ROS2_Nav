@@ -168,11 +168,13 @@ Nav2 lifecycle activation completed
 
 - **Robot Front Camera**：前视 RGB；
 - **Depth PointCloud2**：青色深度点云；
-- **Marked Voxels (3D)**：局部 Costmap 已标记的浅绿色体素。
+- **Marked Voxels (3D)**：标准 Nav2 `VoxelLayer` 的浅绿色体素；
+- **Temporal Voxels (3D)**：动态避障 `dynamic_avoidance` profile 中 STVL 发布的浅绿色体素点云，以 5 cm 立方体渲染。
 
 深度点云仅进入滚动 Local Costmap 的 `depth_voxel_layer`；Global Costmap 只使用
 静态地图和实时 `/scan`，避免动态物体在全局代价地图留下视觉残影。默认 RViz 仅渲染
-`/local_costmap/voxel_grid`。Collision Monitor 仍只以 `/scan` 作为急停传感器。
+`/local_costmap/voxel_grid`。标准 VoxelLayer 在该 topic 发布 `nav2_msgs/VoxelGrid`；动态 profile 的
+STVL 被重映射到 `/local_costmap/stvl_voxel_grid` 并发布 `sensor_msgs/PointCloud2`，因此 RViz 可同时保留两个按消息类型区分的显示器。Collision Monitor 仍只以 `/scan` 作为急停传感器。
 RGB-D 不进入 SLAM、EKF 或 odometry。
 
 快速检查：
@@ -184,8 +186,8 @@ ros2 topic hz /camera/front/depth/points
 ros2 topic echo /local_costmap/voxel_grid --once
 ```
 
-只看到深度点但没有体素时，先检查相机 profile、TF、深度点云和局部 Costmap；不要
-把 `/local_costmap/voxel_grid` 当作普通 PointCloud2 显示。
+只看到深度点但没有体素时，先检查相机 profile、TF、深度点云和局部 Costmap。普通 profile
+使用 `Marked Voxels (3D)`；`dynamic_avoidance` 使用 `Temporal Voxels (3D)`，不要把两者互换。
 
 ### 3.6 正常停止
 

@@ -148,7 +148,7 @@ properties:
                 id: {type: string, minLength: 1}
                 trigger_group: {type: [string, 'null'], minLength: 1}
                 motion:
-                  enum: [crossing, oncoming, same_direction_slow, local_bypass, temporary_block, custom]
+                  enum: [crossing, oncoming, same_direction_slow, local_bypass, temporary_block, g2_g3_exit, g5_g1_crossing, custom]
                 shape: {const: box}
                 repeat: {type: boolean}
                 dimensions:

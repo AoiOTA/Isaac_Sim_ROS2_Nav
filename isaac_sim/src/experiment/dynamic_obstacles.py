@@ -161,6 +161,12 @@ class DynamicObstacleManager:
         if case.gate.direction == "positive" and axis_value < case.gate.threshold: return False
         if case.gate.direction == "negative" and axis_value > case.gate.threshold: return False
         if case.gate.x_range and not case.gate.x_range[0] <= robot["x"] <= case.gate.x_range[1]: return False
+        if case.gate.max_distance_to_obstacle_start_m is not None:
+            distance = math.dist(
+                (robot["x"], robot["y"]), case.waypoints[0][:2]
+            )
+            if distance > case.gate.max_distance_to_obstacle_start_m:
+                return False
         # north/south direction is explicit because accepting G2 alone is not evidence of approach.
         heading = robot.get("vy", 0.0)
         return robot.get("speed", 0.0) >= case.gate.min_speed_mps and (heading > 0.0 if case.gate.direction == "positive" else heading < 0.0)

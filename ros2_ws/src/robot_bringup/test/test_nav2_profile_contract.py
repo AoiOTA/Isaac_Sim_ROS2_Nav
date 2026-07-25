@@ -30,7 +30,9 @@ def _write_profile(path, *, frequency=10.0, model_dt=0.1,
     return path
 
 
-@pytest.mark.parametrize("profile_name", ["stable", "performance"])
+@pytest.mark.parametrize(
+    "profile_name", ["stable", "performance", "dynamic_avoidance"]
+)
 def test_shipped_nav2_profiles_satisfy_mppi_timing_contract(profile_name):
     profile = validate_nav2_profile_params_file(
         NAVIGATION_ROOT / "config" / f"nav2_{profile_name}.yaml"

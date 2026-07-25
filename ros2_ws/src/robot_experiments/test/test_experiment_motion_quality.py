@@ -177,36 +177,7 @@ def test_focused_dynamic_case_skips_unselected_intermediate_goal_groups():
     assert runner._selected_dynamic_groups_for_goal("G1") == ["G1"]
 
 
-def test_park_requests_one_asynchronous_clear_for_each_costmap():
-    class FakeClient:
-        def __init__(self):
-            self.requests = []
-
-        def service_is_ready(self):
-            return True
-
-        def call_async(self, request):
-            self.requests.append(request)
-            return object()
-
-    global_client, local_client = FakeClient(), FakeClient()
-    runner = object.__new__(ExperimentRunner)
-    runner._pending_dynamic_trail_clear_ids = {"g2_g3_exit_actor"}
-    runner._dynamic_trail_clear_requested_ids = set()
-    runner._costmap_clear_clients = (
-        ("global costmap", global_client),
-        ("local costmap", local_client),
+def test_runner_has_no_actor_lifecycle_costmap_clear_workaround():
+    assert not hasattr(
+        ExperimentRunner, "_request_pending_dynamic_trail_clears"
     )
-    runner._obstacle_events = []
-    runner._clock_seconds = lambda: 12.5
-
-    runner._request_pending_dynamic_trail_clears()
-    runner._request_pending_dynamic_trail_clears()
-
-    assert len(global_client.requests) == len(local_client.requests) == 1
-    assert runner._dynamic_trail_clear_requested_ids == {"g2_g3_exit_actor"}
-    assert runner._obstacle_events == [{
-        "event": "costmap_trail_clear_requested",
-        "obstacle_id": "g2_g3_exit_actor",
-        "simulation_time": 12.5,
-    }]

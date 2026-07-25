@@ -32,3 +32,35 @@ spawn_poses:
       map_bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
       position_stddev_m: 0.05
       yaw_stddev_deg: 1.0
+  long_route_start_g2:
+    usd:
+      # Derived through the same calibrated 180-degree map-to-USD transform
+      # as G1: USD = (2.9 - map_x, -0.2 - map_y), yaw = map_yaw + 180 deg.
+      # G2 lies in the open upper room and is used only for the focused
+      # G2->G3 experiment.
+      position: [2.10, -5.00, 0.0635]
+      yaw_deg: 20.0
+    map:
+      position: [0.80, 4.80]
+      yaw_deg: -160.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: warehouse_new
+      map_bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g5:
+    usd:
+      # Same calibrated transform as G1/G2. G5 is the open-room entry before
+      # the focused return-door interaction.
+      position: [5.10, 2.75, 0.0635]
+      yaw_deg: 138.0
+    map:
+      position: [-2.20, -2.95]
+      yaw_deg: -42.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: warehouse_new
+      map_bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0

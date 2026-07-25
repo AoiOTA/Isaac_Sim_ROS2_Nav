@@ -33,6 +33,18 @@ ros_lock_fd="${ISAAC_NAV_LOCK_FDS[-1]}"
 export ISAAC_NAV_SPAWN_POSES="${ISAAC_NAV_SPAWN_POSES:-${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml}"
 
 launch_args=("$@")
+if [[ "${operation}" == "navigation" ]]; then
+  nav2_profile="stable"
+  for argument in "${launch_args[@]}"; do
+    case "${argument}" in
+      nav2_profile:=*) nav2_profile="${argument#nav2_profile:=}" ;;
+    esac
+  done
+  if [[ "${nav2_profile}" == "dynamic_avoidance" ]] \
+      && ! ros2 pkg prefix spatio_temporal_voxel_layer >/dev/null 2>&1; then
+    die "nav2_profile:=dynamic_avoidance requires STVL for temporal RGB-D voxel clearing; install it once with: sudo apt install ros-jazzy-spatio-temporal-voxel-layer"
+  fi
+fi
 if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; then
   # This custom-scene branch promotes the complete Kujiale map bundle while
   # the original warehouse branch keeps warehouse_v2 as its own default.

@@ -24,11 +24,7 @@ controller_server:
     use_sim_time: true
     enable_stamped_cmd_vel: false
 
-    # MPPI replans at 20 Hz, matching its 0.05 s model step and preserving
-    # sequence shifting.  The downstream smoother runs at the 60 Hz physics
-    # cadence and interpolates each selected control into continuous actuator
-    # commands instead of emitting visible 20 Hz velocity stairs.
-    controller_frequency: 20.0
+    controller_frequency: 10.0
     costmap_update_timeout: 0.30
 
     min_x_velocity_threshold: 0.001
@@ -63,15 +59,14 @@ controller_server:
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
 
-      # 40 × 0.05 = 2 秒预测范围。模型步长与 20 Hz 控制周期一致，
-      # 以提高动态绕障中的转向更新精度而不缩短预测视野。
-      time_steps: 40
-      model_dt: 0.05
+      # 20 × 0.10 = 2 秒预测范围。
+      time_steps: 20
+      model_dt: 0.10
       # The seven-run static campaign exposed repeated cases where the fixed
-      # Keep the rollout work bounded after halving model_dt.  500 samples
-      # preserves a dense candidate set while leaving enough compute budget
-      # for every 20 Hz control update to complete on time.
-      batch_size: 500
+      # 500-sample bank contained no collision-free rollout for a transient
+      # local-costmap state.  700 remains well within the 10 Hz controller
+      # budget while materially increasing the chance of a feasible bypass.
+      batch_size: 700
       iteration_count: 1
       # Do not immediately escalate a single exhausted candidate bank to the
       # BT recovery tree.  Retry with freshly sampled controls first; this
@@ -88,61 +83,33 @@ controller_server:
       # repeated "Optimizer fail to compute path" bursts in the campaign.
       # The bounded standard deviations still favour continuous turning arcs
       # instead of alternating crawl / stop corrections at corridor entries.
-      # Keep the dynamic bypass brisk but not so fast that each 20 Hz MPPI
-      # replan has to correct a large lateral displacement.  The narrower
-      # bank avoids repeatedly saturating candidates at vx_max, which showed
-      # up as visible speed steps around the moving actor.
-      vx_std: 0.90
+      vx_std: 0.35
       vy_std: 0.00
-      # The measured bypass needs a broad angular candidate bank to select a
-      # continuous evasive arc before reaching the actor.  wz_max remains the
-      # hard 3.40 rad/s ceiling.
-      wz_std: 3.40
+      wz_std: 0.75
 
       # Forward motion remains strongly preferred, but a bounded reverse
       # sample is available for terminal-pose recovery in narrow rooms.
-      # The local-bypass interaction takes place in the open central hall.
-      # 1.20 m/s leaves enough forward authority for a continuous right-side
-      # bypass while reducing overshoot and high-frequency path corrections
-      # in the indoor doorway approach.
-      vx_max: 1.20
+      vx_max: 0.75
       vx_min: -0.15
       vy_max: 0.00
-      # The skid-steer plant under-rotates by about 5% at high yaw rates.
-      # Command 3.40 rad/s so the Ground-Truth body yaw reaches the required
-      # 3.14 rad/s after the complete Nav2 safety chain.
-      wz_max: 3.40
+      wz_max: 1.35
 
-      # Match the verified drive hard limits.  The previous 3.0 m/s² /
-      # 6.28 rad/s² command-chain caps unnecessarily delayed the first
-      # evasive arc even though the robot can safely supply 3.5 m/s² and
-      # 6.5 rad/s².  Keeping both MPPI and the smoother at these values makes
-      # the response prompt while retaining bounded, continuous commands.
-      ax_max: 3.50
-      ax_min: -3.50
+      ax_max: 1.25
+      ax_min: -1.10
       ay_max: 0.00
       ay_min: 0.00
-      az_max: 6.50
+      az_max: 3.50
 
       prune_distance: 1.50
       transform_tolerance: 0.50
 
       temperature: 0.35
-      # Increase the MPPI control-effort regularisation modestly.  This makes
-      # successive 20 Hz optimum sequences prefer a continuous arc over
-      # equally safe left/right corrections, while retaining the full dynamic
-      # limits for a real evasive manoeuvre.
-      gamma: 0.030
+      gamma: 0.015
 
       motion_model: DiffDrive
-      # Keep publishing the selected trajectory for RViz, but aggressively
-      # downsample debug candidates.  Serialising a dense 500 x 40 marker set
-      # every control cycle can steal time from the controller and make the
-      # GUI look like the vehicle is stuttering.
+      # Publish both /optimal_trajectory and /trajectories so the controller's
+      # selected path and sampled candidates can be inspected live in RViz.
       visualize: true
-      TrajectoryVisualizer:
-        trajectory_step: 25
-        time_step: 5
       regenerate_noises: true
 
       critics:
@@ -164,14 +131,12 @@ controller_server:
         enabled: true
         cost_power: 1
         # The rectangular footprint remains collision-checked at every
-        # prediction point.  In the open local-bypass hall, a stronger soft
-        # obstacle gradient makes MPPI commit early to the free right-side
-        # arc instead of following the stale centre line until the actor's
-        # kinematic safety guard must intervene.  Hard collision checking is
-        # unchanged.
-        # Bias the first feasible rollouts away from a newly seen dynamic
-        # actor before the hard footprint critic needs to reject them.
-        cost_weight: 2.50
+        # prediction point.  A lower soft-cost weight lets valid trajectories
+        # traverse the centre of narrow, symmetrically inflated corridors.
+        # Hard footprint collision checking remains enabled.  Reduce only the
+        # soft obstacle gradient slightly so RGB-D low-box avoidance chooses
+        # a continuous bypass instead of alternating crawl / re-sample steps.
+        cost_weight: 1.35
         critical_cost: 300.0
         consider_footprint: true
         collision_cost: 1000000.0
@@ -211,12 +176,9 @@ controller_server:
       PathFollowCritic:
         enabled: true
         cost_power: 1
-        # Reward useful progress without overpowering the newly observed
-        # local obstacle.  The validated dynamic run needs a lateral right
-        # arc before it can resume forward path progress.
-        # Leave enough freedom for an immediate lateral bypass instead of
-        # following the pre-obstacle global path for one more control cycle.
-        cost_weight: 14.0
+        # Reward useful progress along the path instead of allowing a
+        # well-aligned but persistently slow trajectory to dominate.
+        cost_weight: 10.0
         offset_from_furthest: 10
         threshold_to_consider: 1.4
 
@@ -250,11 +212,10 @@ local_costmap:
     ros__parameters:
       use_sim_time: true
 
-      # Dynamic actors are sampled at 20 Hz.  Rebuild the rolling map at the
-      # same cadence so MPPI receives the first LiDAR marking on its next
-      # control cycle rather than waiting for a second costmap period.
-      update_frequency: 20.0
-      publish_frequency: 10.0
+      # RGB-D 与 LiDAR 在该场景实际约为 6--8 Hz；10 Hz 已能消费下一帧，
+      # 又避免与 MPPI 争用计算资源。这也是静态和动态共用的更新预算。
+      update_frequency: 10.0
+      publish_frequency: 5.0
 
       global_frame: odom
       robot_base_frame: base_link
@@ -322,21 +283,18 @@ local_costmap:
           data_type: PointCloud2
           transport_type: raw
           marking: true
-          # Dynamic actors must be removed as soon as the background becomes
-          # visible again.  Enable per-frame ray clearing instead of keeping
-          # a marking-only history, so an actor crossing the hall cannot leave
-          # a horizontal obstacle trail in the rolling costmap.
-          clearing: true
+          # Static low boxes may leave the front camera FOV while the robot
+          # turns around them. Keep their latest marking long enough for the
+          # controller to finish a bypass. Dynamic runs replace this layer
+          # with STVL in nav2_dynamic_avoidance.yaml.
+          clearing: false
           min_obstacle_height: 0.05
           max_obstacle_height: 0.50
           obstacle_min_range: 0.05
           obstacle_max_range: 2.0
           raytrace_min_range: 0.05
           raytrace_max_range: 2.5
-          # Consume only the current depth frame.  The next background frame
-          # clears a departed dynamic actor instead of extending its obstacle
-          # footprint along the direction of travel.
-          observation_persistence: 0.0
+          observation_persistence: 1.0
           expected_update_rate: 0.0
           inf_is_valid: false
 
@@ -370,10 +328,10 @@ global_costmap:
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
       footprint_padding: 0.005
 
-      # Global planning consumes the static map plus live LiDAR only. Front
-      # depth has a limited FOV and leaves long stale marking trails when a
-      # dynamic actor moves; keep it in the rolling Local Costmap instead.
-      plugins: [static_layer, obstacle_layer, inflation_layer]
+      # Static low boxes are below the LiDAR plane, so the global planner must
+      # also see their RGB-D marking. Dynamic runs explicitly remove this
+      # layer in their STVL overlay to avoid retaining a moving actor trail.
+      plugins: [static_layer, obstacle_layer, depth_voxel_layer, inflation_layer]
 
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
@@ -396,6 +354,37 @@ global_costmap:
           raytrace_min_range: 0.40
           obstacle_max_range: 25.0
           obstacle_min_range: 0.40
+
+      depth_voxel_layer:
+        plugin: nav2_costmap_2d::VoxelLayer
+        enabled: true
+        footprint_clearing_enabled: true
+        combination_method: 1
+        publish_voxel_map: true
+        tf_filter_tolerance: 0.10
+        origin_z: 0.0
+        z_resolution: 0.05
+        z_voxels: 16
+        unknown_threshold: 16
+        mark_threshold: 0
+        max_obstacle_height: 0.50
+        observation_sources: camera_depth
+        camera_depth:
+          topic: /camera/front/depth/points
+          sensor_frame: camera_front_optical_frame
+          data_type: PointCloud2
+          transport_type: raw
+          marking: true
+          clearing: true
+          min_obstacle_height: 0.05
+          max_obstacle_height: 0.50
+          obstacle_min_range: 0.05
+          obstacle_max_range: 2.0
+          raytrace_min_range: 0.05
+          raytrace_max_range: 2.5
+          observation_persistence: 1.0
+          expected_update_rate: 0.0
+          inf_is_valid: false
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
@@ -493,30 +482,22 @@ velocity_smoother:
     use_sim_time: true
     enable_stamped_cmd_vel: false
 
-    # Isaac advances physics at 60 Hz.  Keep the optimizer at 20 Hz but emit
-    # acceleration-limited intermediate commands on every physics tick.  At
-    # az_max=6.50 this reduces a single angular increment from 0.325 rad/s
-    # to about 0.108 rad/s without reducing the available turn authority.
-    smoothing_frequency: 60.0
+    smoothing_frequency: 20.0
     stamp_smoothed_velocity_with_smoothing_time: false
 
     # 线速度受到限制时，按比例保留角速度，避免转弯曲率被破坏。
     scale_velocities: true
 
-    feedback: OPEN_LOOP
-
-    max_velocity: [1.20, 0.0, 3.40]
+    max_velocity: [0.75, 0.0, 1.35]
     # MPPI仍以 vx_min=0 前进跟踪；这里单独允许行为树 BackUp 的有限负速，
     # 否则 -0.18 m/s 恢复命令会被平滑器钳成零而无法离开死胡同。
-    min_velocity: [-0.25, 0.0, -3.40]
+    min_velocity: [-0.25, 0.0, -1.35]
 
-    # Keep this exactly aligned with MPPI's physical acceleration envelope;
-    # otherwise Velocity Smoother silently turns a selected evasive arc into
-    # a slow, late response.
-    max_accel: [3.50, 0.0, 6.50]
-    max_decel: [-3.50, 0.0, -6.50]
+    max_accel: [1.25, 0.0, 3.50]
+    max_decel: [-1.10, 0.0, -3.50]
 
     odom_topic: /odom
+    feedback: OPEN_LOOP
     odom_duration: 0.10
 
     deadband_velocity: [0.0, 0.0, 0.0]

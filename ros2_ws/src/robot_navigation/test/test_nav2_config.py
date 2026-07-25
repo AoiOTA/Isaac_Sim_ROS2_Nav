@@ -35,15 +35,14 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert controller['plugin'] == 'nav2_mppi_controller::MPPIController'
     assert controller['motion_model'] == 'DiffDrive'
     assert controller['visualize'] is True
-    assert controller['TrajectoryVisualizer']['trajectory_step'] == 25
-    assert controller['TrajectoryVisualizer']['time_step'] == 5
-    assert controller['time_steps'] == 40
-    assert controller['model_dt'] == 0.05
-    assert controller['batch_size'] == 500
-    assert controller['vx_std'] == 0.90
+    assert 'TrajectoryVisualizer' not in controller
+    assert controller['time_steps'] == 20
+    assert math.isclose(controller['model_dt'], 0.10)
+    assert controller['batch_size'] == 700
+    assert controller['vx_std'] == 0.35
     assert controller['retry_attempt_limit'] == 3
     assert controller['regenerate_noises'] is True
-    assert controller['time_steps'] * controller['model_dt'] == 2.0
+    assert math.isclose(controller['time_steps'] * controller['model_dt'], 2.0)
     assert controller['transform_tolerance'] >= 0.5
     assert local['rolling_window'] is True
     # Nav2 Jazzy declares these two parameters as integers.
@@ -52,7 +51,8 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert local['plugins'] == [
         'obstacle_layer', 'depth_voxel_layer', 'inflation_layer']
     assert global_costmap['plugins'] == [
-        'static_layer', 'obstacle_layer', 'inflation_layer']
+        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
+        'inflation_layer']
     voxel = local['depth_voxel_layer']
     assert voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
     # Costmap2D declares observation_sources as a string parameter, unlike the
@@ -62,28 +62,115 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert voxel['camera_depth']['sensor_frame'] == 'camera_front_optical_frame'
     assert voxel['camera_depth']['data_type'] == 'PointCloud2'
     assert voxel['camera_depth']['marking'] is True
-    assert voxel['camera_depth']['clearing'] is True
+    assert voxel['camera_depth']['clearing'] is False
     assert voxel['camera_depth']['min_obstacle_height'] == 0.05
     assert voxel['camera_depth']['max_obstacle_height'] == 0.50
     assert voxel['camera_depth']['obstacle_max_range'] == 2.0
     assert voxel['camera_depth']['raytrace_max_range'] == 2.5
-    assert voxel['camera_depth']['observation_persistence'] == 0.0
+    assert voxel['camera_depth']['observation_persistence'] == 1.0
     assert voxel['camera_depth']['expected_update_rate'] == 0.0
     assert voxel['combination_method'] == 1
-    assert 'depth_voxel_layer' not in global_costmap
+    global_voxel = global_costmap['depth_voxel_layer']
+    assert global_voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
+    assert global_voxel['camera_depth']['clearing'] is True
+    assert global_voxel['camera_depth']['observation_persistence'] == 1.0
     assert local['obstacle_layer']['scan']['topic'] == '/scan'
     assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
 
 
-def test_stable_overlay_preserves_the_verified_low_latency_mppi_budget():
+def test_stable_overlay_restores_the_verified_static_mppi_budget():
     stable = _profile('stable')
     parameters = stable['controller_server']['ros__parameters']
     follow_path = parameters['FollowPath']
 
-    assert parameters['controller_frequency'] == 20.0
-    assert follow_path['time_steps'] == 40
-    assert follow_path['model_dt'] == 0.05
-    assert follow_path['batch_size'] == 500
+    assert parameters['controller_frequency'] == 10.0
+    assert follow_path['time_steps'] == 20
+    assert math.isclose(follow_path['model_dt'], 0.10)
+    assert follow_path['batch_size'] == 700
+    assert math.isclose(follow_path['time_steps'] * follow_path['model_dt'], 2.0)
+    assert follow_path['vx_std'] == 0.35
+    assert follow_path['wz_std'] == 0.75
+    assert follow_path['vx_max'] == 0.75
+    assert follow_path['wz_max'] == 1.35
+    assert follow_path['CostCritic']['cost_weight'] == 1.35
+    assert follow_path['PathFollowCritic']['cost_weight'] == 10.0
+
+    local = stable['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = stable['global_costmap']['global_costmap'][
+        'ros__parameters']
+    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.40
+    assert local['obstacle_layer']['scan']['inf_is_valid'] is False
+    assert global_costmap['obstacle_layer']['scan']['raytrace_min_range'] == 0.40
+    assert global_costmap['obstacle_layer']['scan']['inf_is_valid'] is False
+
+    smoother = stable['velocity_smoother']['ros__parameters']
+    assert smoother['smoothing_frequency'] == 20.0
+    assert smoother['max_velocity'] == [0.75, 0.0, 1.35]
+    assert smoother['max_accel'] == [1.25, 0.0, 3.50]
+
+
+def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
+    dynamic = _profile('dynamic_avoidance')
+    controller_server = dynamic['controller_server']['ros__parameters']
+    controller = controller_server['FollowPath']
+    local = dynamic['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
+
+    assert controller_server['controller_frequency'] == 15.0
+    assert controller['time_steps'] == 30
+    assert math.isclose(controller['model_dt'], 1.0 / 15.0)
+    assert math.isclose(
+        controller['model_dt'],
+        1.0 / controller_server['controller_frequency'])
+    assert math.isclose(
+        controller['time_steps'] * controller['model_dt'], 2.0)
+    assert controller['batch_size'] == 500
+    assert controller['vx_std'] == 0.90
+    assert controller['wz_std'] == 3.40
+    assert controller['vx_max'] == 1.20
+    assert controller['wz_max'] == 3.40
+    assert controller['ax_max'] == 3.50
+    assert controller['az_max'] == 6.50
+    assert controller['CostCritic']['cost_weight'] == 2.50
+    assert controller['PathFollowCritic']['cost_weight'] == 14.0
+    assert local['update_frequency'] == 10.0
+    assert local['publish_frequency'] == 5.0
+    assert local['plugins'] == [
+        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
+    # Dynamic runs deliberately do not inherit the base profile's global
+    # RGB-D VoxelLayer: a front-facing camera cannot reliably clear a moving
+    # actor after it leaves the field of view.  The rolling local STVL owns
+    # dynamic RGB-D marking and temporal expiry instead.
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'inflation_layer']
+    depth = local['depth_stvl_layer']
+    assert depth['plugin'] == (
+        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
+    assert depth['enabled'] is True
+    assert depth['voxel_decay'] == 0.75
+    assert depth['decay_model'] == 0
+    assert depth['voxel_size'] == 0.05
+    assert depth['publish_voxel_map'] is True
+    assert depth['observation_sources'] == (
+        'camera_depth_mark camera_depth_clear')
+    marking = depth['camera_depth_mark']
+    clearing = depth['camera_depth_clear']
+    assert marking['topic'] == '/camera/front/depth/points'
+    assert marking['marking'] is True
+    assert marking['clearing'] is False
+    assert marking['observation_persistence'] == 0.0
+    assert clearing['topic'] == marking['topic']
+    assert clearing['marking'] is False
+    assert clearing['clearing'] is True
+    assert clearing['decay_acceleration'] == 15.0
+    assert clearing['model_type'] == 0
+    for costmap in (local, global_costmap):
+        scan = costmap['obstacle_layer']['scan']
+        assert scan['clearing'] is True
+        assert scan['marking'] is True
+        assert scan['observation_persistence'] == 0.0
+        assert scan['inf_is_valid'] is True
+        assert scan['raytrace_min_range'] == 0.0
 
 
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
@@ -95,7 +182,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     collision = _params(config, 'collision_monitor')
 
     assert controller['enable_stamped_cmd_vel'] is False
-    assert controller['controller_frequency'] == 20.0
+    assert controller['controller_frequency'] == 10.0
     assert controller['goal_checker']['xy_goal_tolerance'] == 0.20
     assert controller['goal_checker']['yaw_goal_tolerance'] <= 0.174532925
     assert behavior['enable_stamped_cmd_vel'] is False
@@ -128,14 +215,13 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
     assert -0.20 <= controller['vx_min'] <= -0.10
-    assert controller['vx_std'] == 0.90
-    assert 1.15 <= controller['vx_max'] <= 1.25
-    assert controller['wz_std'] == 3.40
-    assert controller['wz_max'] == 3.40
-    assert controller['gamma'] == 0.030
+    assert controller['vx_std'] == 0.35
+    assert controller['vx_max'] == 0.75
+    assert controller['wz_std'] == 0.75
+    assert controller['wz_max'] == 1.35
+    assert controller['gamma'] == 0.015
     assert controller['PathAngleCritic']['mode'] == 0
-    assert controller['PathFollowCritic']['cost_weight'] \
-        > controller['PathAngleCritic']['cost_weight']
+    assert controller['PathFollowCritic']['cost_weight'] == 10.0
     assert controller['PathFollowCritic']['cost_weight'] \
         > controller['PathAlignCritic']['cost_weight']
     assert controller['PathFollowCritic']['offset_from_furthest'] >= 8
@@ -148,9 +234,9 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert controller['visualize'] is True
 
     assert smoother['scale_velocities'] is True
-    # MPPI selects controls at 20 Hz, while the smoother emits bounded
-    # intermediate commands on every 60 Hz Isaac physics tick.
-    assert smoother['smoothing_frequency'] == 60.0
+    assert smoother['feedback'] == 'OPEN_LOOP'
+    # Static follows the historical 10 Hz optimizer / 20 Hz smoother chain.
+    assert smoother['smoothing_frequency'] == 20.0
     assert smoother['max_velocity'] == [
         controller['vx_max'], 0.0, controller['wz_max']]
     # Routine MPPI tracking stays forward-only, while the command chain must

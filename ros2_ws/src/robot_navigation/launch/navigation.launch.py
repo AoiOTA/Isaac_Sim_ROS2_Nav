@@ -17,6 +17,7 @@ def generate_launch_description():
         'navigate_through_poses_with_dead_end_recovery.xml')
     params_file = LaunchConfiguration('nav2_params_file')
     profile_params_file = LaunchConfiguration('nav2_profile_params_file')
+    voxel_grid_topic = LaunchConfiguration('voxel_grid_topic')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     lifecycle_nodes = [
@@ -35,6 +36,11 @@ def generate_launch_description():
             'nav2_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(
             'nav2_profile_params_file', default_value=str(default_profile)),
+        # STVL publishes a PointCloud2 named voxel_grid, while Nav2's built-in
+        # VoxelLayer publishes nav2_msgs/VoxelGrid on that name.  The dynamic
+        # profile remaps STVL to an independent topic so RViz can display both
+        # message types without creating conflicting same-name subscriptions.
+        DeclareLaunchArgument('voxel_grid_topic', default_value='voxel_grid'),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetParameter('use_sim_time', use_sim_time),
         Node(
@@ -44,7 +50,10 @@ def generate_launch_description():
             output='screen',
             sigterm_timeout='15.0',
             parameters=[params_file, profile_params_file],
-            remappings=[('cmd_vel', '/cmd_vel_nav')],
+            remappings=[
+                ('cmd_vel', '/cmd_vel_nav'),
+                ('voxel_grid', voxel_grid_topic),
+            ],
         ),
         Node(
             package='nav2_planner',

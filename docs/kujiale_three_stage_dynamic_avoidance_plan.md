@@ -18,7 +18,7 @@ G2->G3        (-0.40, 1.00)
                        v
                (-0.40, -0.70)                   纵向同向移动并停车
 
-G5->G1   (-0.90, -1.45) -----> (-0.20, -1.45)  门洞横穿并停车
+G5->G1   (-0.90, -1.30) -----> (-0.20, -1.30)  门外横穿并停车
 ```
 
 三个 actor 均为高 LiDAR 可见的运动学方块：
@@ -54,12 +54,12 @@ G5->G1   (-0.90, -1.45) -----> (-0.20, -1.45)  门洞横穿并停车
 |---|---|
 | interaction ID | `g2_g3_exit` |
 | arm / retire 航点 | `G3` / `G3` |
-| 机器人触发门 | `y <= 2.20`、`x in [-0.55, -0.25]`、南向、速度 `>= 0.20 m/s` |
+| 机器人触发门 | `y <= 3.00`、`x in [-0.55, -0.25]`、南向、速度 `>= 0.20 m/s` |
 | actor 轨迹 | `[-0.40, 1.00, 0.50] -> [-0.40, -0.70, 0.50]` |
 | 峰值速度 / 最大加速度 | `0.65 m/s` / `0.90 m/s^2` |
 | 预期行为 | actor 在窄通道前方同向向下移动；机器人连续跟随，在出口附近绕过停车 actor 后完成转向并到达 G3。 |
 
-该门限依据现有 20 轮静态 Ground Truth：机器人南向经过 `y=2.20` 时位于 `x=-0.47..-0.35`，可在 actor 起动时保留约一段可感知、可规划的安全距离。actor 的余弦缓入缓出运动时长约为 `4.11 s`，不会退化为静态突然封堵。
+根据最新单轮可视化标定，触发门从 `y=2.80` 前移至 `y=3.00`，再增加约 `0.20 m` 的交互准备距离。横向窗口、南向速度门仍要求机器人已经对准狭窄通道，避免在 G2 出发转向阶段提前触发。actor 的余弦缓入缓出运动时长约为 `4.11 s`，不会退化为静态突然封堵。
 
 ### 2.3 G5 -> G1：门洞内从左向右横穿
 
@@ -67,12 +67,12 @@ G5->G1   (-0.90, -1.45) -----> (-0.20, -1.45)  门洞横穿并停车
 |---|---|
 | interaction ID | `g5_g1_door_crossing` |
 | arm / retire 航点 | `G1` / `G1` |
-| 机器人触发门 | `y <= -0.55`、`x in [-0.75, -0.15]`、南向、速度 `>= 0.20 m/s` |
-| actor 轨迹 | `[-0.90, -1.45, 0.50] -> [-0.20, -1.45, 0.50]` |
-| 峰值速度 / 最大加速度 | `0.80 m/s` / `1.60 m/s^2` |
+| 机器人触发门 | 北向通过 `y >= -2.50`、`x in [-2.00, -0.15]`，且距 actor 起点 `<=1.05 m`、速度 `>= 0.20 m/s` |
+| actor 轨迹 | `[-0.90, -1.30, 0.50] -> [-0.20, -1.30, 0.50]` |
+| 峰值速度 / 最大加速度 | `0.32 m/s` / `1.60 m/s^2` |
 | 预期行为 | actor 横穿后停在门洞右侧；机器人从左侧绕过 actor，进入返回 G1 的通道。 |
 
-红框区域不能整段横穿：中间包含墙体和门柱。该 actor 仅在已检查过的门洞自由带 `x=-0.90..-0.20`、`y=-1.45` 内移动。0.40 m 方块沿整段扫掠与静态占用区的几何余量不低于 `0.05 m`，避免视觉或物理上的穿墙。
+红框区域不能整段横穿：中间包含墙体和门柱。该 actor 仅在已检查过的门洞外侧自由带 `x=-0.90..-0.20`、`y=-1.30` 内移动。录制轨迹确认仅凭坐标门会使 actor 在车体旁突然出现，因此触发使用北向进场窗与 `1.05 m` 起点前视距离的交集：既不会在宽敞进场刚开始时触发，也不会进入接触距离后才出现。横穿速度为 `0.32 m/s`，给予局部规划器连续绕行时间。0.40 m 方块沿整段扫掠与静态占用区的几何余量约为 `0.170 m`，高于 `0.05 m` 要求，避免视觉或物理上的穿墙。
 
 ## 3. 顺序状态机与接口
 
@@ -121,7 +121,7 @@ waiting -> armed -> moving -> parked -> retired
 - 三条不同颜色的 actor 轨迹，实心方块表示起点，箭头表示运动方向，空心方块表示停车点；
 - 三条机器人空间触发线，并标注 `arm` 航点、`retire` 航点和运动参数；
 - G2->G3 的 `y≈1` 窄通道局部放大框；
-- G5->G1 的 `y≈-1.45` 门洞局部放大框；
+- G5->G1 的 `y≈-1.30` 门洞外侧局部放大框；
 - 图例中明确说明 actor 在停车后不会消失，只有抵达对应下一航点后才退役。
 
 输出文件：
@@ -143,8 +143,8 @@ waiting -> armed -> moving -> parked -> retired
 ### 5.2 三段单轮可视化
 
 - G1->G2：从 G1 到 G2，仅启用 `local_bypass`；
-- G2->G3：先真实行驶至 G2，再仅启用 `g2_g3_exit`；
-- G5->G1：保留真实进场路线至 G5，再仅启用 `g5_g1_crossing`；
+- G2->G3：从经 `warehouse_new` 标定变换推导的 G2 出生点直接开始，仅启用 `g2_g3_exit`；
+- G5->G1：从经 `warehouse_new` 标定变换推导的 G5 出生点直接开始，仅启用 `g5_g1_crossing`；
 - 整圈联测：使用 `full_route_three_stage`，按 G2、G3、G1 三次接力交互。
 
 聚焦测试不使用未经标定的临时出生点，避免出生点、TF 或里程计初始化差异掩盖动态避障行为。
@@ -152,22 +152,56 @@ waiting -> armed -> moving -> parked -> retired
 启动 Isaac 和原有导航/RViz 后，用以下入口进行人工录制；`--record` 会归档本轮证据，脚本不会将结果宣称为正式验收。
 
 ```bash
-# 终端 1：Isaac（每次动态 YAML 改动后重启）
+# 终端 1：G1→G2 与整圈联测的 Isaac（每次动态 YAML 改动后重启）
 cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 ./scripts/run_kujiale_dynamic_isaac.sh
 
 # 终端 2：保留原有 navigation.rviz 的导航栈
 cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
-./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g1 nav2_profile:=dynamic_avoidance
 
 # 终端 3：一次只运行一个聚焦交互，或整圈接力；均可加 --record
 ./scripts/run_kujiale_three_stage_visual.sh g1-g2 --variant 3 --seed 7443 --record
-./scripts/run_kujiale_three_stage_visual.sh g2-g3 --variant 1 --seed 7461 --record
-./scripts/run_kujiale_three_stage_visual.sh g5-g1 --variant 1 --seed 7471 --record
 ./scripts/run_kujiale_three_stage_visual.sh full  --variant 1 --seed 7501 --record
 ```
 
-`g2-g3` 会真实执行 G1→G2→G3；`g5-g1` 会真实执行 G1→G2→G3→G4→G5→G1，保证进场路线和触发姿态都经过标定。整圈五次联测使用：
+三阶段测试必须使用 `nav2_profile:=dynamic_avoidance`：该覆盖配置保持既有 MPPI、速度平滑和 LiDAR 射线清障；局部 RGB-D 感知由标准 `VoxelLayer` 切换为 **STVL（时空体素层）**。STVL 仍消费 `/camera/front/depth/points` 并发布局部体素可视化，但会对离开前视相机视野的旧体素做时间衰减，避免动态 actor 留下长条占用。
+
+首次使用该 profile 前，安装一次 Jazzy 的官方 STVL 二进制包：
+
+```bash
+sudo apt install ros-jazzy-spatio-temporal-voxel-layer
+```
+
+若未安装，`run_ros.sh` 会在启动前直接给出该命令，不会进入一个插件加载失败的导航栈。动态 profile 只替换滚动 Local Costmap 的 RGB-D 层；Global Costmap 仍保持静态图加 LiDAR，Collision Monitor 仍只使用 `/scan`。
+
+`g2-g3` 使用 `long_route_start_g2`，Isaac 和导航栈必须一起重启到该出生点：
+
+```bash
+# 终端 1：Isaac 直接出生于经标定的 G2
+./scripts/run_kujiale_dynamic_isaac.sh --spawn-pose long_route_start_g2
+
+# 终端 2：导航/RViz 使用同一 G2 出生点
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g2 nav2_profile:=dynamic_avoidance
+
+# 终端 3：正式录像与指标从 G2→G3 开始
+./scripts/run_kujiale_three_stage_visual.sh g2-g3 --variant 1 --seed 7461 --record
+```
+
+`g5-g1` 使用 `long_route_start_g5`，Isaac 和导航栈必须一起重启到该出生点：
+
+```bash
+# 终端 1：Isaac 直接出生于经标定的 G5
+./scripts/run_kujiale_dynamic_isaac.sh --spawn-pose long_route_start_g5
+
+# 终端 2：导航/RViz 使用同一 G5 出生点
+./scripts/run_ros.sh navigation odometry_mode:=ideal spawn_pose_name:=long_route_start_g5 nav2_profile:=dynamic_avoidance
+
+# 终端 3：正式录像与指标从 G5→G1 开始
+./scripts/run_kujiale_three_stage_visual.sh g5-g1 --variant 1 --seed 7471 --record
+```
+
+整圈联测仍会真实执行 G1→G2→G3→G4→G5→G1，保证接力交互的进场路线与触发姿态一致。整圈五次联测使用：
 
 ```bash
 ./scripts/run_kujiale_dynamic_acceptance.sh full-route-5 THREE_STAGE_01
@@ -189,4 +223,4 @@ cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 ## 6. 实施边界
 
-本轮仅修改动态实验编排、actor 生命周期、测试、可视化和脚本入口。保持已调通的 MPPI 20 Hz、Velocity Smoother 60 Hz、速度上限、角速度上限、角加速度和 RViz 候选轨迹下采样设置不变。
+动态实验编排与静态导航共用同一套运动控制基线：MPPI 15 Hz、30 步、`model_dt=1/15 s`、500 条采样、2.0 s 预测范围，Velocity Smoother 60 Hz，以及相同的速度、角速度、加速度、碰撞监控和 RViz 候选轨迹下采样设置。仅 RGB-D 障碍物生命周期不同：静态 profile 保留标准 Local/Global VoxelLayer 标记；动态 profile 以 Local STVL 替换标准 Local VoxelLayer，并不启用 Global RGB-D 体素层，从而让移动 actor 的旧占用自然清除。

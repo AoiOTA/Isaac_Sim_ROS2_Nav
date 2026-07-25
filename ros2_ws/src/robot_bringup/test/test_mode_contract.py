@@ -14,6 +14,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 def test_nav2_profiles_are_bounded_and_normalized():
     assert validate_nav2_profile(' Stable ') == 'stable'
     assert validate_nav2_profile('PERFORMANCE') == 'performance'
+    assert validate_nav2_profile('dynamic_avoidance') == 'dynamic_avoidance'
     with pytest.raises(ValueError, match='nav2_profile'):
         validate_nav2_profile('benchmark-custom')
 

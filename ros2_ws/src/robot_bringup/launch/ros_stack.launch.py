@@ -305,6 +305,11 @@ def _launch_setup(context):
                 'autostart': 'false',
                 'nav2_params_file': runtime_files.nav2_params_file,
                 'nav2_profile_params_file': str(nav2_profile_params_file),
+                'voxel_grid_topic': (
+                    'stvl_voxel_grid'
+                    if nav2_profile == 'dynamic_avoidance'
+                    else 'voxel_grid'
+                ),
             },
         ))
         gate_config = (
