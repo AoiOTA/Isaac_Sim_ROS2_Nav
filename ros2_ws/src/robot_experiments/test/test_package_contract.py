@@ -108,6 +108,9 @@ def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
     assert "rg --files \"${environment_root}\"" not in controller
     assert "verify_pilot_evidence()" in controller
     assert "A failed pilot must never allow the formal 40-round stage to run." in controller
+    assert 'if ".incomplete-" in manifest_path.parent.name:' in controller
+    assert "A failed pilot is intentionally retained under a sibling" in controller
+    assert "evidence, never a second current pilot result." in controller
 
 
 def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():

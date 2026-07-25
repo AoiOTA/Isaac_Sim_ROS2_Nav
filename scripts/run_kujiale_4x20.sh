@@ -98,6 +98,11 @@ expected = {int(value) for value in sys.argv[2].split(",")}
 observed: set[int] = set()
 problems: list[str] = []
 for manifest_path in root.rglob("run_manifest.json"):
+    # A failed pilot is intentionally retained under a sibling
+    # ``.incomplete-<UTC>`` directory before retry.  It is historical
+    # evidence, never a second current pilot result.
+    if ".incomplete-" in manifest_path.parent.name:
+        continue
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         summary = json.loads(
