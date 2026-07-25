@@ -1791,11 +1791,8 @@ class ExperimentRunner(Node):
             actor_x, actor_y = float(actor["position"][0]), float(actor["position"][1])
             result["paired_sample_count"] += 1
             # Both actors proceed south; a positive value therefore means the
-            # square is in front of the robot while it is moving away.  The
-            # calibrated gate releases the actor about 2 m ahead, so a lead
-            # interval up to 2 m is still the required same-lane following
-            # behaviour, not an unrelated parked-obstacle bypass.
-            if actor["state"] == "moving" and 0.20 <= robot.y - actor_y <= 2.00 and abs(robot.x - actor_x) <= 0.65:
+            # square is in front of the robot while it is moving away.
+            if actor["state"] == "moving" and 0.20 <= robot.y - actor_y <= 1.20 and abs(robot.x - actor_x) <= 0.65:
                 result["continuous_follow_seen"] = True
             # The planned exit is to the left of the parked actor at x=-0.40.
             if actor["state"] == "parked" and robot.x <= actor_x - 0.35:

@@ -57,11 +57,8 @@ cases:
     # deliberately produces a moving-to-parked interaction: the robot must
     # route around the parked actor rather than wait for a safety-yield.
     # Start at the doorway instead of in the preceding corridor.  At 0.80
-    # m/s the actor reaches the left-side parking point before it can enter
-    # the robot's near-field protection band.  Parking at x=-1.30 keeps the
-    # complete actor plus the robot's conservative 0.33 m circular bound out
-    # of the right-side bypass corridor; the former x=-0.85 end point allowed
-    # a stopped actor to be approached below the 0.10 m clearance gate.
+    # m/s the actor reaches its planned parking point before it can enter the
+    # robot's near-field protection band.
     # The calibrated route crosses y=-1.75 at x≈-0.59 to -0.65.  Include that
     # measured lane so the event fires there instead of after the robot has
     # already entered the open hall and returns into the former x window.
@@ -73,7 +70,7 @@ cases:
       # This is the verified smooth-interaction trajectory: the actor clears
       # the robot's near-field while leaving enough time for a continuous
       # right-side arc instead of forcing late high-curvature corrections.
-      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, -0.20, 0.50], [-1.30, -0.20, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
+      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, -0.20, 0.50], [-0.85, -0.20, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
     variants:
       v1: {seed: 7441, start_delay_sec: 0.00}
       v2: {seed: 7442, start_delay_sec: 0.05}
