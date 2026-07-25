@@ -59,17 +59,48 @@ pid_is_running() {
   [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null
 }
 
+dedicated_process_group_for() {
+  local pid="$1" process_group
+  process_group="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
+  # run_isaac.sh and run_ros.sh promise to re-exec into their own sessions.
+  # Refuse to signal a shared group if that invariant was not established.
+  [[ "${process_group}" == "${pid}" ]] && printf '%s' "${process_group}"
+}
+
+ros_launch_process_group_for() {
+  local supervisor_pid="$1"
+  # run_ros.sh places `ros2 launch` in a child session.  Signal that group,
+  # rather than only the shell waiting on it, so Nav2 receives SIGINT too.
+  ps -eo pid=,ppid=,pgid=,stat= | awk -v parent="${supervisor_pid}" '
+    $2 == parent && $1 == $3 && $4 !~ /^Z/ { print $3; exit }
+  '
+}
+
 stop_stage() {
-  local pid status=0
+  local process_group status=0
   [[ -n "${active_mode}" ]] || return 0
   log_info "stopping ${active_mode} Nav2 supervisor"
   if pid_is_running "${ros_pid}"; then
-    kill -INT "${ros_pid}" 2>/dev/null || true
+    process_group="$(ros_launch_process_group_for "${ros_pid}" || true)"
+    if [[ "${process_group}" =~ ^[1-9][0-9]*$ ]]; then
+      log_info "stopping ${active_mode} ROS launch process group ${process_group}"
+      kill -INT -- "-${process_group}" 2>/dev/null || true
+    else
+      log_warn "${active_mode} ROS launch group was unavailable; signaling supervisor ${ros_pid}"
+      kill -INT "${ros_pid}" 2>/dev/null || true
+    fi
     wait "${ros_pid}" || status=$?
   fi
   log_info "stopping ${active_mode} Isaac supervisor"
   if pid_is_running "${isaac_pid}"; then
-    kill -INT "${isaac_pid}" 2>/dev/null || true
+    process_group="$(dedicated_process_group_for "${isaac_pid}" || true)"
+    if [[ "${process_group}" =~ ^[1-9][0-9]*$ ]]; then
+      log_info "stopping ${active_mode} Isaac process group ${process_group}"
+      kill -INT -- "-${process_group}" 2>/dev/null || true
+    else
+      log_warn "${active_mode} Isaac process group was unavailable; signaling supervisor ${isaac_pid}"
+      kill -INT "${isaac_pid}" 2>/dev/null || true
+    fi
     wait "${isaac_pid}" || status=$?
   fi
   isaac_pid=""
