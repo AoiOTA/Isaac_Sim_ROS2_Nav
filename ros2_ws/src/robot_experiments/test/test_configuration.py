@@ -59,6 +59,29 @@ def test_dynamic_scenario_preserves_reproducible_trajectories():
     assert scenario.dynamic_config_file is not None
 
 
+def test_scenario_accepts_per_run_appearance_profiles_only_with_the_appearance_contract(tmp_path):
+    document = yaml.safe_load((CONFIG / "kujiale_static_visual.yaml").read_text())
+    scenario = document["scenario"]
+    scenario["configs"]["appearance"] = "kujiale_appearance_profiles.yaml"
+    scenario["runs"] = {
+        "matrix": [
+            {"seed": 8801, "case_id": "static", "variant_id": "v1", "appearance_profile_id": "dim_warm"},
+        ],
+        "timeout_sec": 600.0,
+        "leg_timeout_sec": 180.0,
+    }
+    target = tmp_path / "appearance.yaml"
+    target.write_text(yaml.safe_dump(document), encoding="utf-8")
+    loaded = load_scenario(target)
+    assert loaded.appearance_config_file == "kujiale_appearance_profiles.yaml"
+    assert loaded.run_matrix[0].appearance_profile_id == "dim_warm"
+
+    del scenario["runs"]["matrix"][0]["appearance_profile_id"]
+    target.write_text(yaml.safe_dump(document), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="appearance_profile_id"):
+        load_scenario(target)
+
+
 def test_long_benchmarks_share_the_same_far_goal():
     static = load_scenario(CONFIG / "static_benchmark.yaml")
     dynamic = load_scenario(CONFIG / "dynamic_benchmark.yaml")
