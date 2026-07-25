@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 from robot_experiments.kujiale_4x20_campaign import (
+    _static_obstacle_rectangles,
     main,
     summarize_4x20,
     write_4x20_report,
@@ -186,3 +187,9 @@ def test_report_embeds_a_filterable_actual_ground_truth_trajectory(tmp_path):
         summarize_4x20(run_root, scope="static"), output, replace_output=True
     ) == output
     assert not legacy_map.exists()
+
+
+def test_static_trajectory_overlay_uses_the_six_versioned_physical_obstacles():
+    rectangles = _static_obstacle_rectangles()
+    assert len(rectangles) == 6
+    assert all(width > 0.0 and height > 0.0 for _, _, width, height in rectangles)
