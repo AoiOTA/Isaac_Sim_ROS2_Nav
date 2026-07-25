@@ -232,6 +232,6 @@ sudo apt install ros-jazzy-spatio-temporal-voxel-layer
 | Profile | MPPI | 速度/角速度上限 | Velocity Smoother | RGB-D Costmap 策略 |
 |---|---|---|---|---|
 | `stable` | `10 Hz`、20 步、`0.10 s`、700 条采样 | `0.75 m/s` / `1.35 rad/s` | `20 Hz` | Local + Global 标准 `VoxelLayer`，保留低矮静态物体。 |
-| `dynamic_avoidance` | `15 Hz`、30 步、`1/15 s`、500 条采样 | `1.20 m/s` / `3.40 rad/s` | `60 Hz` | Local STVL（10 Hz 更新、5 Hz 发布）+ `0.60 m` 局部膨胀；Global 仅静态图 + LiDAR。 |
+| `dynamic_avoidance` | `15 Hz`、30 步、`1/15 s`、500 条采样；`CostCritic.near_collision_cost=20` | `1.20 m/s` / `3.40 rad/s` | `60 Hz` | Local STVL（10 Hz 更新、5 Hz 发布）+ `0.60 m` 局部膨胀；Global 仅静态图 + LiDAR。 |
 
-两者均保持 `2.0 s` 预测范围、完整 footprint 碰撞检查与 LiDAR Collision Monitor。动态 profile 还将候选轨迹发布下采样为 `trajectory_step=25`、`time_step=5`，而 RViz 默认只显示最优 MPPI 轨迹。切换 profile 必须重启导航栈；修改 actor YAML 还必须重启 Isaac，避免触发运行时配置 hash 保护。
+两者均保持 `2.0 s` 预测范围、完整 footprint 碰撞检查与 LiDAR Collision Monitor。动态 profile 的近碰 cost 阈值在 actor 进入 `0.14 m` guard 前施加 critical penalty，不修改 actor 本身或验收阈值；候选轨迹发布下采样为 `trajectory_step=25`、`time_step=5`，而 RViz 默认只显示最优 MPPI 轨迹。切换 profile 必须重启导航栈；修改 actor YAML 还必须重启 Isaac，避免触发运行时配置 hash 保护。

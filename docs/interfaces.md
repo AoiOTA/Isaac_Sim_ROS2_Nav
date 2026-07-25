@@ -518,9 +518,12 @@ the same two-second horizon: `controller_frequency=15 Hz`,
 `time_steps=30`, `model_dt=0.0666666667 s`, `batch_size=500`,
 `vx_max=1.20 m/s`, `wz_max=3.40 rad/s`, and a 60 Hz Velocity Smoother. It also
 uses a Local STVL at 10 Hz update / 5 Hz publication and publishes candidate
-trajectories sparsely (`trajectory_step=25`, `time_step=5`). It must be started
-with `nav2_profile:=dynamic_avoidance`; the default `stable` profile remains
-10 Hz / 20 steps / 0.10 s / 700 samples with a 20 Hz Velocity Smoother.
+trajectories sparsely (`trajectory_step=25`, `time_step=5`). Its dynamic-only
+`CostCritic.near_collision_cost=20` applies the critical proximity penalty
+before an actor reaches the `0.14 m` guard, while retaining full-footprint
+collision checking. It must be started with `nav2_profile:=dynamic_avoidance`;
+the default `stable` profile remains 10 Hz / 20 steps / 0.10 s / 700 samples
+with a 20 Hz Velocity Smoother and does not override `near_collision_cost`.
 
 Profile validation runs before Nav2 nodes start. Values must be finite and
 positive, steps/batch must be positive integers, and controller period
