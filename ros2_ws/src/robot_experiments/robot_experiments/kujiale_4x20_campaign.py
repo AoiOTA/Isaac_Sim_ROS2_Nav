@@ -12,7 +12,6 @@ import html
 import json
 import math
 from pathlib import Path
-import shutil
 from statistics import mean
 from typing import Any, Iterable, Mapping
 
@@ -61,6 +60,18 @@ DYNAMIC_ACTOR_LABELS = {
     "local_bypass_actor": "G1→G2 局部绕行 actor",
     "g2_g3_exit_actor": "G2→G3 出口 actor",
     "g5_g1_crossing_actor": "G5→G1 横穿 actor",
+}
+DEMO_VIDEOS = {
+    "static": (
+        "静态避障演示（4×速）",
+        "https://github.com/user-attachments/assets/39970d48-47df-428b-8d7d-276d2fd7db9d",
+        "https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos/%E9%9D%99%E6%80%81%E9%81%BF%E9%9A%9C%E6%BC%94%E7%A4%BA_4x_10MB.mp4",
+    ),
+    "dynamic": (
+        "动态避障演示（4×速）",
+        "https://github.com/user-attachments/assets/0fc1c31f-ace7-4b53-a463-b525a2521f4d",
+        "https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos/%E5%8A%A8%E6%80%81%E9%81%BF%E9%9A%9C%E6%BC%94%E7%A4%BA_4x_10MB.mp4",
+    ),
 }
 
 
@@ -641,24 +652,32 @@ def _copy_map_figures(summary: Mapping[str, Any], figures: Path) -> list[Path]:
     if not source.is_file():
         return []
     scope = str(summary["scope"])
-    if scope == "full":
-        target = figures / source.name
-        shutil.copy2(source, target)
-        return [target]
     # These bounds mirror the panel geometry in generate_kujiale_long_route_maps.py.
-    # A scoped report must not imply it evaluated the other two conditions.
+    # Every report uses individual panels: embedding the full 2×2 source map
+    # makes labels and obstacle details unreadable at dashboard size.
     panels_by_scope = {
-        "static": ((105, 220, 1270, 1040), (1330, 220, 2495, 1040)),
-        "dynamic": ((105, 1085, 1270, 1905), (1330, 1085, 2495, 1905)),
+        "full": (
+            ("static_baseline", (105, 220, 1270, 1040)),
+            ("static_appearance", (1330, 220, 2495, 1040)),
+            ("dynamic_baseline", (105, 1085, 1270, 1905)),
+            ("dynamic_appearance", (1330, 1085, 2495, 1905)),
+        ),
+        "static": (
+            ("static_baseline", (105, 220, 1270, 1040)),
+            ("static_appearance", (1330, 220, 2495, 1040)),
+        ),
+        "dynamic": (
+            ("dynamic_baseline", (105, 1085, 1270, 1905)),
+            ("dynamic_appearance", (1330, 1085, 2495, 1905)),
+        ),
     }
     with Image.open(source) as image:
         width, height = image.size
         scale_x, scale_y = width / 2600.0, height / 2580.0
         panels = []
-        labels = ("baseline", "appearance")
-        for bounds, label in zip(panels_by_scope[scope], labels):
+        for condition, bounds in panels_by_scope[scope]:
             left, top, right, bottom = bounds
-            target = figures / f"{scope}_{label}_test_map.png"
+            target = figures / f"{condition}_test_map.png"
             image.crop((left * scale_x, top * scale_y, right * scale_x, bottom * scale_y)).save(target)
             panels.append(target)
     return panels
@@ -677,7 +696,9 @@ def _clean(summary: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _dashboard(summary: Mapping[str, Any], figures: Iterable[Path]) -> str:
+def _dashboard(
+    summary: Mapping[str, Any], statistics_figures: Iterable[Path], map_figures: Iterable[Path]
+) -> str:
     title = str(summary["title"])
     scope = str(summary["scope"])
     run_count = 20 * len(summary["conditions"])
@@ -705,7 +726,28 @@ def _dashboard(summary: Mapping[str, Any], figures: Iterable[Path]) -> str:
         f"<tr data-condition='{html.escape(str(row['condition_id']))}' data-seed='{row['seed']}' data-profile='{html.escape(str(row['appearance_profile_id']))}' data-result={'pass' if row['strict_success'] else 'fail'}><td>{html.escape(str(row['condition_id']))}</td><td>{row['seed']}</td><td>{html.escape(str(row['appearance_profile_id']))}</td><td>{html.escape(str(row['variant_id'] or '—'))}</td><td>{'通过' if row['strict_success'] else '失败'}</td><td>{'是' if row['physical_collision_free'] else '否'}</td><td>{'—' if row['minimum_actor_clearance_m'] is None else f"{row['minimum_actor_clearance_m']:.3f}"}</td><td>{'是' if row['dynamic_safety_yield'] else '否'}</td><td>{'—' if row['duration_sec'] is None else f"{row['duration_sec']:.1f}"}</td><td>{html.escape(row['failure_reason'] or '—')}</td><td>{html.escape(row['warning_reason'] or '—')}</td><td>{f"<a href='{html.escape(str(row['trajectory_figure']))}' target='_blank'>打开</a>" if row.get('trajectory_figure') else '缺失'}</td></tr>"
         for row in summary["runs"]
     )
-    images = "".join(f"<figure><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'><figcaption>{html.escape(path.stem)}</figcaption></figure>" for path in figures)
+    statistics_images = "".join(
+        f"<figure><a href='figures/{html.escape(path.name)}' target='_blank' rel='noopener'><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击放大）</figcaption></figure>"
+        for path in statistics_figures
+    )
+    maps_by_kind = {"static": [], "dynamic": []}
+    for path in map_figures:
+        kind = "dynamic" if path.name.startswith("dynamic_") else "static"
+        maps_by_kind[kind].append(path)
+    map_sections = "".join(
+        f"<section class='map-pair'><h3>{'静态两组对比' if kind == 'static' else '动态两组对比'}</h3><div class='map-grid'>"
+        + "".join(
+            f"<figure><a href='figures/{html.escape(path.name)}' target='_blank' rel='noopener'><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击打开原尺寸）</figcaption></figure>"
+            for path in maps_by_kind[kind]
+        )
+        + "</div></section>"
+        for kind in ("static", "dynamic") if maps_by_kind[kind]
+    )
+    demo_kinds = ("static", "dynamic") if scope == "full" else (scope,)
+    demo_videos = "".join(
+        f"<figure class='video-card'><figcaption>{html.escape(DEMO_VIDEOS[kind][0])}</figcaption><video controls preload='metadata' playsinline><source src='{html.escape(DEMO_VIDEOS[kind][1])}' type='video/mp4'><source src='{html.escape(DEMO_VIDEOS[kind][2])}' type='video/mp4'>你的浏览器不支持视频播放；<a href='{html.escape(DEMO_VIDEOS[kind][2])}' target='_blank' rel='noopener'>打开演示视频</a>。</video><p class='muted'>优先使用 GitHub attachment；若其不可用，播放器自动回退到仓库内同一视频的原始文件。</p></figure>"
+        for kind in demo_kinds
+    )
     issue_text = "无" if not summary["issues"] else "<br>".join(html.escape(item) for item in summary["issues"])
     status = "通过" if summary["passed"] else "未通过"
     trajectory_note = (
@@ -718,7 +760,7 @@ def _dashboard(summary: Mapping[str, Any], figures: Iterable[Path]) -> str:
     seed_options = "".join(f"<option>{seed}</option>" for seed in sorted({row["seed"] for row in summary["runs"] if isinstance(row["seed"], int)}))
     condition_options = "".join(f"<option>{name}</option>" for name in summary["conditions"])
     profile_options = "".join(f"<option>{name}</option>" for name in ("baseline", *APPEARANCE_PROFILES))
-    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px}}#trajectory-image[hidden]{{display:none}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>统计可视化</h2>{images}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。{trajectory_note}</p><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><img id='trajectory-image' alt='实际 GT 路径' hidden></section><section class='panel'><h2>运行筛选</h2><div class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></div><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
+    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
 
 
 def write_4x20_report(
@@ -738,15 +780,12 @@ def write_4x20_report(
     else:
         root.mkdir(parents=True)
     figures = root / "figures"
-    if str(summary["scope"]) != "full":
-        # A scoped refresh may follow an older report that copied the complete
-        # four-condition matrix.  Remove that generated, out-of-scope asset so
-        # the report directory and checksum manifest match the HTML scope.
-        (figures / "kujiale_4x20_test_matrix_map.png").unlink(missing_ok=True)
+    # Older report versions embedded the unreadable, composite 2×2 map.  It is
+    # a generated artifact, safe to discard on refresh in every report scope.
+    (figures / "kujiale_4x20_test_matrix_map.png").unlink(missing_ok=True)
     figures_written = _plot_figures(summary, figures)
     _plot_trajectory_figures(summary, figures)
     map_figures = _copy_map_figures(summary, figures)
-    figures_written[0:0] = map_figures
     clean = _clean(summary)
     (root / "benchmark.json").write_text(json.dumps(clean, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     fields = ["condition_id", "kind", "seed", "appearance_profile_id", "nav2_profile", "variant_id", "strict_success", "physical_collision_free", "data_complete", "checksums_verified", "dynamic_interaction_complete", "minimum_actor_clearance_m", "dynamic_safety_yield", "path_deviation_percent", "ground_truth_path_length_m", "duration_sec", "maximum_route_recoveries", "failure_reason", "warning_reason"]
@@ -771,10 +810,12 @@ def write_4x20_report(
     if scope != "full":
         dictionary += "\n本报告是独立的 2×20 子报告，不会与其他批次自动合并。\n"
     (root / "data_dictionary.md").write_text(dictionary, encoding="utf-8")
-    (root / "index.html").write_text(_dashboard(clean, figures_written), encoding="utf-8")
+    (root / "index.html").write_text(
+        _dashboard(clean, figures_written, map_figures), encoding="utf-8"
+    )
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:
-        for path in figures_written:
+        for path in [*map_figures, *figures_written]:
             image = plt.imread(path); fig, axis = plt.subplots(figsize=(16, 9)); axis.imshow(image); axis.axis("off"); axis.set_title(title); pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
     _write_checksums(root)
     return root

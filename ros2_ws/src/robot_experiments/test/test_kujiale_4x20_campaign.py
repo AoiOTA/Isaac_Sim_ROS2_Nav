@@ -104,6 +104,17 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert (output / "evidence_index.json").is_file()
     assert (output / "figures" / "condition_overview.png").is_file()
     assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
+    dashboard = (output / "index.html").read_text(encoding="utf-8")
+    assert "<video controls" in dashboard
+    assert "0fc1c31f-ace7-4b53-a463-b525a2521f4d" in dashboard
+    assert "39970d48-47df-428b-8d7d-276d2fd7db9d" in dashboard
+    assert "raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos" in dashboard
+    assert dashboard.index("逐轮实际 GT 路径") < dashboard.index("统计可视化")
+    assert not (output / "figures" / "kujiale_4x20_test_matrix_map.png").exists()
+    for condition in (
+        "static_baseline", "static_appearance", "dynamic_baseline", "dynamic_appearance"
+    ):
+        assert (output / "figures" / f"{condition}_test_map.png").is_file()
 
 
 def test_dynamic_clearance_and_safety_yield_are_visible_warnings(tmp_path):
