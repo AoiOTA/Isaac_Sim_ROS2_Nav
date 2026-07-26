@@ -39,6 +39,8 @@ https://github.com/user-attachments/assets/39970d48-47df-428b-8d7d-276d2fd7db9d
 
 结果仅适用于当前冻结的地图、场景、Nav2 profile、外观矩阵、actor 配置和验收规则。完整证据边界见 [验证台账](docs/verification.md)，执行问题与恢复规则见 [4×20 执行复盘](docs/kujiale_4x20_execution_lessons.md)。
 
+对外使用静态/动态避障率、路径偏差和导航成功率时，请采用[指标定义与对外表述口径](docs/kujiale_4x20_metric_definitions.md)：静态/动态物理避障率均为 `40/40=100%`，但完整任务导航成功率应如实披露为静态 `40/40`、动态 `38/40`、总体 `78/80=97.5%`；理论最优路径偏差仅适用于静态固定障碍参考。
+
 ## 首次准备
 
 ```bash
