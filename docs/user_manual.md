@@ -328,22 +328,22 @@ cd "$PROJECT_ROOT"
 
 聚焦单段 `g2-g3` 或 `g5-g1` 时，Isaac 和 Navigation 必须一起改用对应的 `long_route_start_g2` 或 `long_route_start_g5`；具体命令见 [三阶段动态避障说明](kujiale_three_stage_dynamic_avoidance_plan.md)。
 
-### 8.3 光照/颜色高分辨率第三人称预览
+### 8.3 光照/颜色高分辨率客厅场景预览
 
-正式 campaign 的 `appearance_rgb_before_goal.ppm` 是为导航可复核性保留的 320×180 前向 RGB-D 快照，不适合目视比较全屋外观。下面的独立截图工具使用同一份五配置外观 YAML，在固定 `long_route_start_g1` 处导出 **1920×1080 的机器人第三人称跟随视角**；不是前向相机，也不启动 ROS、RViz、Nav2 或动态 actor：
+正式 campaign 的 `appearance_rgb_before_goal.ppm` 是为导航可复核性保留的 320×180 前向 RGB-D 快照，不适合目视比较全屋外观。下面的独立截图工具使用同一份五配置外观 YAML，在固定**客厅观察位**导出 **1920×1080 的场景视角**，以客厅家具、墙面、地面和灯光为主体；不是前向相机，也不启动 ROS、RViz、Nav2 或动态 actor：
 
 ```bash
 cd "$PROJECT_ROOT"
 ./scripts/capture_kujiale_appearance_preview.sh
 ```
 
-输出目录会自动生成在 `data/appearance_previews/kujiale_appearance_<UTC时间>/`，其中 `index.html` 是可点击放大原图的本地图库，`preview_manifest.json` 记录场景、出生点、分辨率、外观配置哈希和各 profile 的 Session Layer 状态。只导出指定配置：
+输出目录会自动生成在 `data/appearance_previews/kujiale_appearance_<UTC时间>/`，其中 `index.html` 是可点击放大原图的本地图库，`preview_manifest.json` 记录场景、客厅相机坐标、分辨率、外观配置哈希和各 profile 的 Session Layer 状态。只导出指定配置：
 
 ```bash
 ./scripts/capture_kujiale_appearance_preview.sh --profile dim_warm
 ```
 
-可用 `--width`、`--height` 调整分辨率（范围 320–3840），例如 `--width 2560 --height 1440`。它与 Isaac 单实例锁互斥：先停止已有 Isaac GUI 或正式批次，再截图。预览文件不写入 `data/experiment_runs/`，不应作为正式 4×20 统计证据。
+可用 `--width`、`--height` 调整分辨率（范围 320–3840），例如 `--width 2560 --height 1440`。它与 Isaac 单实例锁互斥：先停止已有 Isaac GUI 或正式批次，再截图。启动器会跳过历史 minidump 上传，避免旧 Isaac 崩溃转储阻塞本次截图；预览文件不写入 `data/experiment_runs/`，不应作为正式 4×20 统计证据。
 
 ## 9. 常用诊断
 

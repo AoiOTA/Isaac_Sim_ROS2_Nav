@@ -117,7 +117,7 @@ cd "$PROJECT_ROOT"
 
 ## 光照/颜色大图预览（非前向相机）
 
-正式实验保存的 `appearance_rgb_before_goal.ppm` 是 320×180 的前向 RGB-D 证据图，不能用于观察全屋外观。需要核验光照、色温和材质颜色时，使用下面的独立 headless 工具导出固定 G1 出生点的 **1920×1080 第三人称跟随视角**；它不启动 ROS/Nav2、不运行实验，也不会修改原始 USD 或正式证据。
+正式实验保存的 `appearance_rgb_before_goal.ppm` 是 320×180 的前向 RGB-D 证据图，不能用于观察全屋外观。需要核验光照、色温和材质颜色时，使用下面的独立 headless 工具导出固定**客厅观察位**的 **1920×1080 场景视角**，画面以客厅家具、墙面、地面和灯光为主体；它不启动 ROS/Nav2、不运行实验，也不会修改原始 USD 或正式证据。
 
 ```bash
 cd "$PROJECT_ROOT"
@@ -130,7 +130,7 @@ cd "$PROJECT_ROOT"
 ./scripts/capture_kujiale_appearance_preview.sh --profile bright_warm
 ```
 
-截图工具与其他 Isaac 进程互斥；先停止正在运行的 Isaac，再执行。该图仅用于外观核验，**不是**正式 4×20 统计或运行证据。
+截图工具与其他 Isaac 进程互斥；先停止正在运行的 Isaac，再执行。启动时会跳过历史 minidump 上传，避免旧的 Isaac 崩溃转储阻塞本次截图；该图仅用于外观核验，**不是**正式 4×20 统计或运行证据。
 
 ## 全屋单轮可视化（不计入正式证据）
 

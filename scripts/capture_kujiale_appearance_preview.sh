@@ -23,4 +23,6 @@ export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR}/appearance_preview"
 
 exec "${ISAAC_PYTHON}" "${PROJECT_ROOT}/isaac_sim/apps/appearance_preview.py" \
   --environment-root "${KUJIALE_ENVIRONMENT_ROOT:-/home/lyb/kujiale_usd_rooms_20260717}" \
+  --/crashreporter/skipOldDumpUpload=1 \
+  --/app/skipOldDumpUpload=true \
   "$@" {preview_lock_fd}>&-
