@@ -192,7 +192,7 @@ pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离�
 ./scripts/capture_kujiale_appearance_preview.sh
 ```
 
-该命令 headless 导出固定 G1 出生点的 1920×1080 第三人称跟随视角 `baseline`、`dim_warm`、`dim_cool`、`bright_warm`、`bright_cool` 图片和可点击放大的 `index.html`。它复用同一匿名 Session Layer 外观配置，不创建 ROS/Nav2、RTX LiDAR、动态 actor 或正式 evidence；源 USD、几何、碰撞、地图与动态运动学均不改变。
+该命令 headless 导出固定**客厅观察位**的 1920×1080 场景视角 `baseline`、`dim_warm`、`dim_cool`、`bright_warm`、`bright_cool` 图片和可点击放大的 `index.html`。画面以客厅家具、墙面、地面和灯光为主体，而非小车前向或随车相机；它复用同一匿名 Session Layer 外观配置，不创建 ROS/Nav2、RTX LiDAR、动态 actor 或正式 evidence；源 USD、几何、碰撞、地图与动态运动学均不改变。
 
 ## 5. 自动报告与校验
 

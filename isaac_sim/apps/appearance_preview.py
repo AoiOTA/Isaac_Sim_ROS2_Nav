@@ -17,6 +17,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import traceback
 from typing import Sequence
 
 
@@ -40,7 +41,6 @@ from isaac_sim.src.robot.articulation_runtime import ArticulationRuntime
 from isaac_sim.src.robot.spawn_pose_manager import SpawnPoseManager, load_spawn_poses
 from isaac_sim.src.stage.physics_setup import PhysicsSetup, prepare_pacing
 from isaac_sim.src.stage.scene_composer import SceneComposer
-from isaac_sim.src.visualization.third_person_camera import ThirdPersonCamera
 
 
 DEFAULT_PROFILE_CONFIG = (
@@ -49,6 +49,10 @@ DEFAULT_PROFILE_CONFIG = (
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "data/appearance_previews"
 KUJIALE_ENVIRONMENT = "kujiale_0026_A_to_B_door_open.usd"
 KUJIALE_SPAWN = "long_route_start_g1"
+KIT_ONLY_ARGUMENT_PREFIXES = (
+    "--/crashreporter/skipOldDumpUpload=",
+    "--/app/skipOldDumpUpload=",
+)
 
 
 def _positive_dimension(value: str) -> int:
@@ -148,7 +152,7 @@ def preview_html(profile_ids: Sequence[str], width: int, height: int) -> str:
     cards = "\n".join(
         (
             '<figure><a href="{name}.png" target="_blank" rel="noopener">'
-            '<img src="{name}.png" alt="{label} third-person appearance preview"></a>'
+            '<img src="{name}.png" alt="{label} living-room appearance preview"></a>'
             '<figcaption><strong>{label}</strong><br>点击图片在新标签页查看原始分辨率。</figcaption></figure>'
         ).format(
             name=html.escape(profile_id), label=html.escape(profile_id)
@@ -162,7 +166,7 @@ h1{{margin-bottom:.25rem}}p{{max-width:72rem;line-height:1.55}}.grid{{display:gr
 figure{{background:#fff;border:1px solid #dce3ee;border-radius:14px;margin:0;padding:1rem;box-shadow:0 1px 3px #15213a12}}
 img{{width:100%;height:auto;display:block;border-radius:8px}}figcaption{{padding:.8rem .15rem .1rem}}</style></head>
 <body><h1>Kujiale 光照/颜色外观预览</h1>
-<p>固定 G1 出生点的高分辨率第三人称跟随视角（{width}×{height}），不是小车前向 RGB-D 图。仅用于目视核验外观变化；不包含 ROS/Nav2、动态 actor 或正式实验统计证据。</p>
+<p>固定客厅观察位的高分辨率场景视角（{width}×{height}），以客厅家具、墙面、地面和灯光为主体；不是小车前向 RGB-D 图。仅用于目视核验外观变化；不包含 ROS/Nav2、动态 actor 或正式实验统计证据。</p>
 <div class=\"grid\">{cards}</div></body></html>"""
 
 
@@ -199,6 +203,53 @@ def _capture_rgb(render_product: object, destination: Path) -> None:
         annotator.detach()
 
 
+def _ensure_kit_openable_project_stage(path: Path) -> None:
+    """Seed a valid runtime USD so :class:`SceneComposer` opens it in Kit.
+
+    A missing stage makes the generic composer create a standalone PXR stage.
+    That is sufficient for static USD inspection but not for Articulation,
+    which always resolves prims from OmniUSD's active Stage.  Preview output
+    owns this tiny runtime file, so creating it here cannot alter source USDs.
+    """
+
+    if path.exists():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    from pxr import Usd
+
+    stage = Usd.Stage.CreateNew(str(path))
+    stage.GetRootLayer().Save()
+
+
+def _create_preview_camera(stage: object) -> tuple[str, dict[str, list[float]]]:
+    """Create a fixed observer inside Kujiale's living room.
+
+    This purpose-built exterior camera makes the living-room furniture,
+    walls, floor, and lighting the subject of each image.  It deliberately
+    does not follow the robot: the G1 route start is near a wall and produced
+    a poor view for comparing light and material colour changes.
+    """
+
+    from pxr import Gf, UsdGeom
+
+    # Coordinates are chosen from the authored /Root/Meshes/livingroom_595
+    # bounds (x=[0.278, 4.760], y=[-4.429, 1.341]).  The observer sits in the
+    # open north-east part of the room and looks towards the sofas and table.
+    eye = (3.82, -0.55, 1.62)
+    target = (1.92, -2.68, 0.62)
+    camera = UsdGeom.Camera.Define(stage, "/World/AppearancePreviewCamera")
+    camera.CreateFocalLengthAttr().Set(18.0)
+    camera.CreateHorizontalApertureAttr().Set(24.0)
+    camera.CreateClippingRangeAttr().Set(Gf.Vec2f(0.05, 1000.0))
+    xformable = UsdGeom.Xformable(camera.GetPrim())
+    xformable.ClearXformOpOrder()
+    transform = Gf.Matrix4d(1.0).SetLookAt(
+        Gf.Vec3d(*eye), Gf.Vec3d(*target), Gf.Vec3d(0.0, 0.0, 1.0)
+    ).GetInverse().GetOrthonormalized()
+    xformable.MakeMatrixXform().Set(transform)
+    return str(camera.GetPath()), {"position": list(eye), "target": list(target)}
+
+
 def run(args: argparse.Namespace) -> int:
     output_dir = resolve_output_dir(args.output_dir)
     profiles = selected_profiles(args.profile)
@@ -230,6 +281,7 @@ def run(args: argparse.Namespace) -> int:
         # than the interactive GUI's RTX sensor stack.
         carb.settings.get_settings().set("rtx/post/dlss/execMode", 2)
         prepare_pacing(config.simulation)
+        _ensure_kit_openable_project_stage(config.environment.project_stage)
         stage = SceneComposer(config).compose(save=False)
         stage.Load()
         for _ in range(4):
@@ -246,14 +298,9 @@ def run(args: argparse.Namespace) -> int:
         for _ in range(4):
             app.update()
 
-        camera = ThirdPersonCamera(
-            stage,
-            config.robot.base_link_prim,
-            config.third_person_camera,
-            activate_viewport=False,
-        )
+        camera_path, camera_pose = _create_preview_camera(stage)
         render_product = rep.create.render_product(
-            camera.camera_path,
+            camera_path,
             resolution=(args.width, args.height),
             force_new=True,
             name="KujialeAppearanceThirdPerson",
@@ -264,7 +311,9 @@ def run(args: argparse.Namespace) -> int:
         manifest: dict[str, object] = {
             "schema_version": 1,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "view": "robot-relative third-person",
+            "view": "fixed living-room appearance observer",
+            "view_anchor": "/Root/Meshes/livingroom_595",
+            "camera": camera_pose,
             "resolution": [args.width, args.height],
             "spawn_pose": config.spawn.selected,
             "environment_usd": str(config.environment.source_asset),
@@ -292,8 +341,13 @@ def run(args: argparse.Namespace) -> int:
             preview_html(profiles, args.width, args.height), encoding="utf-8"
         )
         print(f"appearance preview gallery: {output_dir / 'index.html'}")
-    except Exception:
+    except Exception as exc:
         failed = True
+        print(
+            f"appearance preview failed: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        traceback.print_exc()
         raise
     finally:
         if appearance_manager is not None:
@@ -307,7 +361,15 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    # Keep Kit-only startup settings in ``sys.argv`` for SimulationApp, while
+    # excluding them from this application's own argparse contract.
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    app_argv = [
+        value
+        for value in raw_argv
+        if not value.startswith(KIT_ONLY_ARGUMENT_PREFIXES)
+    ]
+    args = _parser().parse_args(app_argv)
     return run(args)
 
 
