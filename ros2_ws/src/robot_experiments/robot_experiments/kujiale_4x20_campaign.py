@@ -53,6 +53,24 @@ CONDITION_COLORS = {
     "dynamic_baseline": "#059669",
     "dynamic_appearance": "#db2777",
 }
+CONDITION_REPORT_CARDS = {
+    "static_baseline": {
+        "title": "静态基准（S1）",
+        "description": "对照组：固定光照/材质颜色，六个静态 RGB-D 障碍保持不动；20轮均执行同一全屋多航点路线。",
+    },
+    "static_appearance": {
+        "title": "静态＋外观变化（S2）",
+        "description": "外观鲁棒性组：几何、路线和六个静态障碍不变；四种固定光照/材质颜色配置各运行5轮。",
+    },
+    "dynamic_baseline": {
+        "title": "动态基准（D1）",
+        "description": "对照组：固定光照/材质颜色；在 G1→G2、G2→G3、G5→G1 依次触发三阶段移动 actor。",
+    },
+    "dynamic_appearance": {
+        "title": "动态＋外观变化（D2）",
+        "description": "联合鲁棒性组：保持与 D1 相同的 actor 轨迹、速度和触发逻辑；四种外观配置各运行5轮。",
+    },
+}
 DYNAMIC_ACTOR_COLORS = {
     "local_bypass_actor": "#f97316",
     "g2_g3_exit_actor": "#0891b2",
@@ -928,7 +946,10 @@ def _dashboard(
         else f"本报告仅覆盖{'静态' if scope == 'static' else '动态'} 2×20；不能替代或自动合并为完整4×20结论。"
     )
     cards = "".join(
-        f"<article><h3>{html.escape(condition)}</h3><strong>{entry['strict_success']['numerator']}/20</strong><span>严格成功</span><p>无碰撞 {entry['physical_collision_free']['numerator']}/20 · {'通过' if entry['passed'] else '未通过'}</p></article>"
+        f"<article><h3>{html.escape(CONDITION_REPORT_CARDS[condition]['title'])}</h3>"
+        f"<p class='condition-detail'>{html.escape(CONDITION_REPORT_CARDS[condition]['description'])}</p>"
+        f"<strong>{entry['strict_success']['numerator']}/20</strong><span>严格成功</span>"
+        f"<p>无碰撞 {entry['physical_collision_free']['numerator']}/20 · {'通过' if entry['passed'] else '未通过'}</p></article>"
         for condition, entry in summary["conditions"].items()
     )
     methodology = _methodology_html(summary)
@@ -948,7 +969,7 @@ def _dashboard(
         for row in summary["runs"]
     )
     statistics_images = "".join(
-        f"<figure><a href='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' target='_blank' rel='noopener'><img src='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击放大）</figcaption></figure>"
+        f"<figure><a href='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' target='_blank' rel='noopener'><img class='zoomable' src='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击放大）</figcaption></figure>"
         for path in statistics_figures
     )
     maps_by_kind = {"static": [], "dynamic": []}
@@ -958,7 +979,7 @@ def _dashboard(
     map_sections = "".join(
         f"<section class='map-pair'><h3>{'静态两组对比' if kind == 'static' else '动态两组对比'}</h3><div class='map-grid'>"
         + "".join(
-            f"<figure><a href='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' target='_blank' rel='noopener'><img src='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击打开原尺寸）</figcaption></figure>"
+            f"<figure><a href='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' target='_blank' rel='noopener'><img class='zoomable' src='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击放大）</figcaption></figure>"
             for path in maps_by_kind[kind]
         )
         + "</div></section>"
@@ -984,13 +1005,24 @@ def _dashboard(
     mathjax = (
         "<script>window.MathJax={tex:{inlineMath:[['\\\\(','\\\\)']],displayMath:[['\\\\[','\\\\]']]}};</script>"
         "<script defer src='https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js'></script>"
+        "<style>.condition-detail{min-height:4.6em;color:#475569;margin:.3em 0 .7em}.zoomable{cursor:zoom-in}"
+        ".image-modal{position:fixed;inset:0;z-index:1000;display:grid;place-items:center;padding:24px;background:rgba(2,6,23,.88)}"
+        ".image-modal[hidden]{display:none}.image-modal img{max-width:96vw;max-height:90vh;object-fit:contain;background:#fff;border-radius:8px}"
+        ".image-modal button{position:fixed;right:22px;top:18px;padding:8px 13px;border:0;border-radius:8px;background:#fff;color:#0f172a;font-weight:700;cursor:pointer}</style>"
     )
+    modal_markup = (
+        "<div id='image-modal' class='image-modal' hidden role='dialog' aria-modal='true' aria-label='图片放大预览'>"
+        "<button id='image-modal-close' type='button' aria-label='关闭图片预览'>关闭</button>"
+        "<img id='image-modal-content' alt='放大预览'></div>"
+    )
+    modal_script = """<script>document.addEventListener('DOMContentLoaded',()=>{const modal=document.getElementById('image-modal'),modalImage=document.getElementById('image-modal-content'),close=document.getElementById('image-modal-close'),trajectoryImage=document.getElementById('trajectory-image');function hide(){modal.hidden=true;modalImage.removeAttribute('src')}function show(image){if(!image.src)return;modalImage.src=image.src;modalImage.alt=image.alt||'放大预览';modal.hidden=false}function bind(image){if(!image||image.dataset.zoomBound)return;image.dataset.zoomBound='true';image.classList.add('zoomable');image.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();show(image)})}document.querySelectorAll('.zoomable').forEach(bind);bind(trajectoryImage);close.addEventListener('click',hide);modal.addEventListener('click',event=>{if(event.target===modal)hide()});document.addEventListener('keydown',event=>{if(event.key==='Escape')hide()})});</script>"""
     transfer_note = (
         "<p class='muted'>便携版：所有 PNG 图片和逐轮轨迹均已内嵌。复制此 HTML 文件即可在另一台电脑离线查看图片；"
-        "演示视频仍需网络访问 GitHub attachment。</p>"
+        "图片可直接点击在当前页放大；演示视频仍需网络访问 GitHub attachment。</p>"
         if portable
-        else "<p class='muted'><a href='index_portable.html'>下载/复制便携单文件 HTML</a>：图片与逐轮轨迹已内嵌，另一台电脑无需携带 PNG 文件。</p>"
+        else "<p class='muted'><a href='index_portable.html'>下载/复制便携单文件 HTML</a>：图片与逐轮轨迹已内嵌，另一台电脑无需携带 PNG 文件；所有图片均可点击在当前页放大。</p>"
     )
+    transfer_note += modal_markup + modal_script
     return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{mathjax}<style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}.methodology table{{margin-top:12px}}.methodology td p{{margin:.25em 0 .7em}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p>{transfer_note}</header><section class='cards'>{cards}</section>{methodology}<section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
 
 

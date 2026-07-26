@@ -140,6 +140,12 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert r"\(\mathrm{ASR}_{\mathrm{s}}" in dashboard
     assert r"\(\mathrm{NSR}" in dashboard
     assert "导航成功率" in dashboard
+    assert "静态基准（S1）" in dashboard
+    assert "静态＋外观变化（S2）" in dashboard
+    assert "动态基准（D1）" in dashboard
+    assert "动态＋外观变化（D2）" in dashboard
+    assert "image-modal" in dashboard
+    assert "图片可直接点击在当前页放大" in portable_dashboard
     assert "data:image/png;base64," in portable_dashboard
     assert "图片和逐轮轨迹均已内嵌" in portable_dashboard
     assert dashboard.index("逐轮实际 GT 路径") < dashboard.index("统计可视化")
