@@ -25,6 +25,8 @@
 或出现 actor `safety_yield` 时保留为风险警告，但只要 `/simulation/collision`
 确认没有真实物理接触，就不单独据此判失败。成功率按组独立判定，不能用80轮总平均掩盖单组失败。
 
+对外统计的名称、分子分母和边界以[指标定义与对外表述口径](kujiale_4x20_metric_definitions.md)为准：物理避障率和完整任务导航成功率分开披露；静态路径偏差只与同约束的静态理论最短可行参考比较，动态场景不套用该固定参考。
+
 ## 2. 测试地图示意图
 
 下图由 `scripts/generate_kujiale_long_route_maps.py` 直接读取 `warehouse_new`、出生点、
