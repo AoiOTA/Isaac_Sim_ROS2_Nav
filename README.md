@@ -207,8 +207,8 @@ cd "$PROJECT_ROOT"
 | 查看地图、航点、静态障碍和动态 actor 路线 | [全屋路线地图](docs/kujiale_long_route_map.md) |
 | 查看运行契约、Topic、TF、QoS 和所有权 | [接口文档](docs/interfaces.md) |
 | 诊断启动、锁、DDS、RViz、Reset 或 Nav2 问题 | [排障手册](docs/troubleshooting.md) |
-| 查看正式结果与历史结果边界 | [验证台账](docs/verification.md) |
-| 查看文档的当前/历史适用范围 | [文档状态](docs/documentation_status.md) |
+| 查看正式结果、配置边界与复核方法 | [验证台账](docs/verification.md) |
+| 查看当前文档的事实来源与职责 | [文档状态](docs/documentation_status.md) |
 
 ## 验证
 

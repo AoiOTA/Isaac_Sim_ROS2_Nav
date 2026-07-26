@@ -2,7 +2,7 @@
 
 > 最近复核：2026-07-26
 >
-> 适用分支：`codex/kujiale-4x20-appearance-benchmark`
+> 适用分支：`main`
 >
 > 当前正式批次：`20260725-210035`
 
@@ -121,9 +121,9 @@ cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
 
 ```bash
 git ls-remote --heads git@github.com:AoiOTA/Isaac_Sim_ROS2_Nav.git \
-  codex/kujiale-4x20-appearance-benchmark
+  main
 git ls-remote --heads git@github.com:HDU-ASL/Bio_Nav_Module3.git \
-  codex/kujiale-4x20-appearance-benchmark
+  main
 ```
 
 两个输出的提交SHA必须一致。

@@ -1,10 +1,11 @@
 # Runtime interfaces and ownership contracts
 
 This document is the runtime contract for the current Isaac Sim standalone and
-ROS 2 bringup. It describes what the implementation publishes today, not every
-interface proposed in `plan.md`.
+ROS 2 bringup. It describes what the implementation publishes today; current
+commands and acceptance rules are maintained with the implementation rather than
+in a separate design-plan document.
 
-> 最近复核：2026-07-22。执行命令优先使用 [`user_manual.md`](user_manual.md)；历史文档的描述与本文件冲突时，以本文件、启动脚本和配置为准。
+> 最近复核：2026-07-26。执行命令优先使用 [`user_manual.md`](user_manual.md)；以本文件、启动脚本和配置为准。
 
 ## Mode pairing
 
@@ -556,15 +557,14 @@ launch 使用显式字符串类型传入，以保证 `--resume` 的单轮重试�
 实际执行、续跑和故障恢复规则见
 [`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md)。
 
-历史静态候选场景是 `kujiale_static_long_range.yaml`; it uses the
-`warehouse_new` closed route `S/G1 → G2 → G3 → G4 → G5 → G1` from
-transform-verified `long_route_start_g1`. It requires `rgbd_low_box_west`,
-`rgbd_low_box_center`, `rgbd_low_box_east`, `rgbd_low_box_north`,
-`rgbd_low_bar_east`, and `rgbd_low_bar_north`. Dynamic visual testing uses the
-schema-v4 actor configuration `kujiale_long_range_dynamic.yaml` and its
-`local_bypass`, `g2_g3_exit`, `g5_g1_crossing`, or
-`full_route_three_stage` case set. The focused G2→G3 and G5→G1 scenarios start
-from their calibrated G2/G5 poses; the full relay starts from G1.
+当前静态 4×20 场景 `kujiale_4x20_static_pair.yaml` 使用经出生点契约校验的
+`warehouse_new` 闭环路线 `S/G1 → G2 → G3 → G4 → G5 → G1`，并固定
+`rgbd_low_box_west`、`rgbd_low_box_center`、`rgbd_low_box_east`、
+`rgbd_low_box_north`、`rgbd_low_bar_east`、`rgbd_low_bar_north` 六个静态障碍。
+动态 4×20 场景 `kujiale_4x20_dynamic_pair.yaml` 使用
+`kujiale_long_range_dynamic.yaml` 的 `local_bypass`、`g2_g3_exit`、
+`g5_g1_crossing` 及 `full_route_three_stage`。聚焦 G2→G3 与 G5→G1 诊断使用其
+对应的已标定 G2/G5 出生点；全屋接力从 G1 出发。
 
 Before every static or dynamic run, the experiment runner reads the Isaac
 runtime obstacle contract. Both current scenario types require
