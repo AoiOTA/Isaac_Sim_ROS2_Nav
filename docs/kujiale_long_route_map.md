@@ -1,8 +1,6 @@
 # Kujiale 全屋长距离路线与避障布置（4×20基线）
 
 > 当前正式规格：[4×20 光照/颜色鲁棒性实验](kujiale_4x20_appearance_benchmark_plan.md)。本图定义其共同的空间基线；正式批次 `20260725-210035` 已完成并通过，结果见 [验证记录](verification.md)。
->
-> 历史静态候选批次 `kujiale_long_route_static_20260723-194416` 已通过 20/20，但不替代本轮带外观扰动的4×20结果。
 
 所有坐标均为 `warehouse_new` 的 `map` 坐标。两张图由
 `scripts/generate_kujiale_long_route_maps.py` 直接读取可执行配置生成，不能手工改图。
@@ -36,7 +34,7 @@
 | G2→G3 / `g2_g3_exit` | 南向越过 `y=2.60`，`x∈[-0.55,-0.25]` | `[-0.40,1.00] → [-0.40,-0.70]` | `0.65 m/s` / `0.90 m/s²` | 窄通道同向跟随，在出口完成转向绕行。 |
 | G5→G1 / `g5_g1_crossing` | 北向越过 `y=-2.50`，`x∈[-2.00,-0.15]` 且距起点 ≤`1.05 m` | `[-0.90,-1.30] → [-0.20,-1.30]` | `0.32 m/s` / `1.60 m/s²` | actor 停在门洞右侧，机器人从左侧通过。 |
 
-三个 actor 均为 `0.40 × 0.40 × 1.00 m`、质量 `20 kg`、中心高度 `z=0.50 m`，触发时还要求机器人速度不低于 `0.20 m/s`。完整状态机、聚焦出生点和测试命令见 [`kujiale_three_stage_dynamic_avoidance_plan.md`](kujiale_three_stage_dynamic_avoidance_plan.md)；不要再使用本文件旧版的“两组 G1→G2 横穿”描述。
+三个 actor 均为 `0.40 × 0.40 × 1.00 m`、质量 `20 kg`、中心高度 `z=0.50 m`，触发时还要求机器人速度不低于 `0.20 m/s`。生命周期固定为 `waiting → armed → moving → parked → retired`：目标发送只会武装隐藏 actor，空间门释放其运动，到达对应下一航点成功后才退役。全屋 GUI/RViz 命令、正式 4×20 调度与验收规则均以 [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) 为准。
 
 ## 航点与出生点
 

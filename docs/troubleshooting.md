@@ -29,7 +29,7 @@
 | 日志/现象 | 含义与当前处理 |
 |---|---|
 | `Trying to set parameter 'run_indices' ... INTEGER, expecting STRING` | 旧 launch/YAML 把单个轮次解析成整数。当前 launch 用显式字符串类型传参；切到正确分支后重新构建，不要继续使用旧 `install/`。 |
-| `run_kujiale_4x20.sh: No such file or directory` | 运行期间切换到了不含4×20脚本的分支。回到 `codex/kujiale-4x20-appearance-benchmark`，重新构建并确认脚本存在后再续跑。不要在 campaign 运行中切分支。 |
+| `run_kujiale_4x20.sh: No such file or directory` | 运行期间切换到了不含4×20脚本的分支。回到当前 `main`，重新构建并确认三个4×20脚本同时存在后再续跑。不要在 campaign 运行中切分支。 |
 | `static/dynamic Isaac supervisor exited` | 先看对应 `data/experiment_runs/kujiale_4x20_<ID>/orchestrator/*-isaac.log`；常见原因是已有 Isaac/端口/锁持有者或前一进程组未退出。使用 `clean_runtime.sh --dry-run` 核对受管对象，禁止宽泛 `pkill`。 |
 | ROS launch 返回0但 runner 子进程失败 | 不能只看 launch 返回码。当前监督器还校验 pilot manifest、结果与证据完整性，子进程失败会阻止正式批次。 |
 | `pilot validation failed` | 查看 pilot manifest 的 `result`、`failure_reason` 和 `warning_reason`。失败 pilot 在 `--resume` 时会隔离为 `.incomplete-<UTC>` 并重跑；已完成的正式轮不会被覆盖。 |

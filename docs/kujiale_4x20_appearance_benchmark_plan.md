@@ -3,7 +3,7 @@
 > 基线：`codex/dynamic-obstacle-benchmark-redesign` 的
 > `f9cf7cbe45f8a260f5535a4c9689b6fc783451c8`
 >
-> 实施分支：`codex/kujiale-4x20-appearance-benchmark`
+> 当前实现分支：`main`
 >
 > 当前状态：正式批次 `20260725-210035` 已完成80轮；完整报告 `complete=true`、`passed=true`、`issues=[]`。
 > 静态两组均20/20，动态两组均19/20，四组物理无碰撞均20/20。

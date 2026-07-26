@@ -1,8 +1,8 @@
 # 酷家乐 RGB-D 导航使用手册
 
-> 当前可执行手册，适用分支：`main` 与 `codex/kujiale-4x20-appearance-benchmark`。
+> 当前可执行手册，适用分支：`main`。
 >
-> 本手册只描述当前酷家乐 `warehouse_new`、Ideal Odometry 和4×20流程。历史候选批次、旧动态矩阵和旧布局调参命令不在本手册提供；它们的边界见 [文档状态](documentation_status.md)。
+> 本手册只描述当前酷家乐 `warehouse_new`、Ideal Odometry 和4×20流程。旧候选批次、旧动态矩阵和旧布局调参命令已不再作为仓库操作入口提供；当前文档职责见 [文档状态](documentation_status.md)。
 
 ## 1. 当前运行组合
 
@@ -326,7 +326,7 @@ cd "$PROJECT_ROOT"
 
 动态 actor 会在 G1→G2、G2→G3、G5→G1 的对应空间 gate 后依次出现、运动、停车，并在到达对应下一航点后退役。需要临时调试证据时，在终端 C 命令末尾加 `--record`；该记录不计入正式统计。
 
-聚焦单段 `g2-g3` 或 `g5-g1` 时，Isaac 和 Navigation 必须一起改用对应的 `long_route_start_g2` 或 `long_route_start_g5`；具体命令见 [三阶段动态避障说明](kujiale_three_stage_dynamic_avoidance_plan.md)。
+聚焦单段 `g2-g3` 或 `g5-g1` 时，Isaac 和 Navigation 必须一起改用对应的 `long_route_start_g2` 或 `long_route_start_g5`；当前 actor 坐标、gate 与全屋/单段诊断边界见 [4×20运行手册](kujiale_4x20_appearance_benchmark_plan.md) 和 [全屋路线地图](kujiale_long_route_map.md)。
 
 ### 8.3 光照/颜色高分辨率客厅场景预览
 
