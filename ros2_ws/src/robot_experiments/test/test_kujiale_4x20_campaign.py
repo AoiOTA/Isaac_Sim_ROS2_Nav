@@ -5,6 +5,7 @@ from pathlib import Path
 
 from PIL import Image
 from robot_experiments.kujiale_4x20_campaign import (
+    _complete_navigation,
     _dynamic_obstacle_tracks,
     _static_obstacle_rectangles,
     main,
@@ -16,6 +17,26 @@ from robot_experiments.scenario import load_scenario
 
 PACKAGE_ROOT = Path(__file__).parents[1]
 CONFIG = PACKAGE_ROOT / "config"
+
+
+def test_task_level_avoidance_success_does_not_use_evidence_bookkeeping():
+    static_row = {
+        "kind": "static",
+        "strict_success": True,
+        "physical_collision_free": True,
+        "data_complete": False,
+        "checksums_verified": False,
+    }
+    dynamic_row = {
+        **static_row,
+        "kind": "dynamic",
+        "dynamic_interaction_complete": True,
+        "dynamic_guard_aborted": False,
+    }
+    assert _complete_navigation(static_row) is True
+    assert _complete_navigation(dynamic_row) is True
+    assert _complete_navigation({**dynamic_row, "physical_collision_free": False}) is False
+    assert _complete_navigation({**dynamic_row, "dynamic_interaction_complete": False}) is False
 
 
 def _write_checksums(root: Path) -> None:
@@ -112,8 +133,9 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert "实验设计与指标口径" in dashboard
     assert "静态避障成功率" in dashboard
     assert "动态避障成功率" in dashboard
-    assert "ASR_s = N_s^succ / N_s" in dashboard
-    assert "NSR = N_goal / N" in dashboard
+    assert "MathJax" in dashboard
+    assert r"\(\mathrm{ASR}_{\mathrm{s}}" in dashboard
+    assert r"\(\mathrm{NSR}" in dashboard
     assert "导航成功率" in dashboard
     assert dashboard.index("逐轮实际 GT 路径") < dashboard.index("统计可视化")
     assert not (output / "figures" / "kujiale_4x20_test_matrix_map.png").exists()
@@ -124,6 +146,8 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     markdown = (output / "report.md").read_text(encoding="utf-8")
     assert "## 实验如何执行" in markdown
     assert "## 指标定义与本次结果" in markdown
+    assert "$$\n\\mathrm{ASR}_{\\mathrm{s}}" in markdown
+    assert "$$\n\\mathrm{NSR}" in markdown
 
 
 def test_dynamic_clearance_and_safety_yield_are_visible_warnings(tmp_path):
