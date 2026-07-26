@@ -144,6 +144,9 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert "静态＋外观变化（S2）" in dashboard
     assert "动态基准（D1）" in dashboard
     assert "动态＋外观变化（D2）" in dashboard
+    assert "光照/颜色配置与客厅示意图" in dashboard
+    assert "材质色相偏移" in dashboard
+    assert "kujiale_livingroom_appearance_bright_warm.png" in dashboard
     assert "image-modal" in dashboard
     assert "图片可直接点击在当前页放大" in portable_dashboard
     assert "data:image/png;base64," in portable_dashboard
@@ -154,11 +157,14 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
         "static_baseline", "static_appearance", "dynamic_baseline", "dynamic_appearance"
     ):
         assert (output / "figures" / f"{condition}_test_map.png").is_file()
+    for profile in ("baseline", "dim_warm", "dim_cool", "bright_warm", "bright_cool"):
+        assert (output / "figures" / f"kujiale_livingroom_appearance_{profile}.png").is_file()
     markdown = (output / "report.md").read_text(encoding="utf-8")
     assert "## 实验如何执行" in markdown
     assert "## 指标定义与本次结果" in markdown
     assert "$$\n\\mathrm{ASR}_{\\mathrm{s}}" in markdown
     assert "$$\n\\mathrm{NSR}" in markdown
+    assert "## 光照/颜色配置与客厅示意图" in markdown
 
 
 def test_dynamic_clearance_and_safety_yield_are_visible_warnings(tmp_path):
