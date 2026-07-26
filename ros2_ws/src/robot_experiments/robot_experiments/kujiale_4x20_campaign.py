@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -750,6 +751,23 @@ def _ratio_text(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator} = {100.0 * numerator / denominator:.1f}%"
 
 
+def _portable_image_assets(root: Path) -> dict[str, str]:
+    """Return data URLs for every generated raster image used by the dashboard."""
+    assets: dict[str, str] = {}
+    figures = root / "figures"
+    for path in sorted(figures.rglob("*.png")):
+        relative = path.relative_to(root).as_posix()
+        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
+        assets[relative] = f"data:image/png;base64,{encoded}"
+    return assets
+
+
+def _dashboard_asset_url(relative: str | None, image_assets: Mapping[str, str] | None) -> str:
+    if not relative:
+        return ""
+    return image_assets.get(relative, relative) if image_assets is not None else relative
+
+
 def _methodology_html(summary: Mapping[str, Any]) -> str:
     """Describe the fixed experiment contract and its honest metric boundaries."""
     metrics = _metric_summary(summary)
@@ -894,7 +912,12 @@ def _write_methodology_pdf_page(plt: Any, pdf: Any, summary: Mapping[str, Any]) 
 
 
 def _dashboard(
-    summary: Mapping[str, Any], statistics_figures: Iterable[Path], map_figures: Iterable[Path]
+    summary: Mapping[str, Any],
+    statistics_figures: Iterable[Path],
+    map_figures: Iterable[Path],
+    *,
+    image_assets: Mapping[str, str] | None = None,
+    portable: bool = False,
 ) -> str:
     title = str(summary["title"])
     scope = str(summary["scope"])
@@ -915,17 +938,17 @@ def _dashboard(
             "seed": row["seed"],
             "profile": row["appearance_profile_id"],
             "result": "pass" if row["strict_success"] else "fail",
-            "path": row.get("trajectory_figure"),
+            "path": _dashboard_asset_url(row.get("trajectory_figure"), image_assets),
             "label": f"{row['condition_id']} · seed {row['seed']} · {row['appearance_profile_id']}",
         }
         for row in summary["runs"]
     ]
     rows = "".join(
-        f"<tr data-condition='{html.escape(str(row['condition_id']))}' data-seed='{row['seed']}' data-profile='{html.escape(str(row['appearance_profile_id']))}' data-result={'pass' if row['strict_success'] else 'fail'}><td>{html.escape(str(row['condition_id']))}</td><td>{row['seed']}</td><td>{html.escape(str(row['appearance_profile_id']))}</td><td>{html.escape(str(row['variant_id'] or '—'))}</td><td>{'通过' if row['strict_success'] else '失败'}</td><td>{'是' if row['physical_collision_free'] else '否'}</td><td>{'—' if row['minimum_actor_clearance_m'] is None else f"{row['minimum_actor_clearance_m']:.3f}"}</td><td>{'是' if row['dynamic_safety_yield'] else '否'}</td><td>{'—' if row['duration_sec'] is None else f"{row['duration_sec']:.1f}"}</td><td>{html.escape(row['failure_reason'] or '—')}</td><td>{html.escape(row['warning_reason'] or '—')}</td><td>{f"<a href='{html.escape(str(row['trajectory_figure']))}' target='_blank'>打开</a>" if row.get('trajectory_figure') else '缺失'}</td></tr>"
+        f"<tr data-condition='{html.escape(str(row['condition_id']))}' data-seed='{row['seed']}' data-profile='{html.escape(str(row['appearance_profile_id']))}' data-result={'pass' if row['strict_success'] else 'fail'}><td>{html.escape(str(row['condition_id']))}</td><td>{row['seed']}</td><td>{html.escape(str(row['appearance_profile_id']))}</td><td>{html.escape(str(row['variant_id'] or '—'))}</td><td>{'通过' if row['strict_success'] else '失败'}</td><td>{'是' if row['physical_collision_free'] else '否'}</td><td>{'—' if row['minimum_actor_clearance_m'] is None else f"{row['minimum_actor_clearance_m']:.3f}"}</td><td>{'是' if row['dynamic_safety_yield'] else '否'}</td><td>{'—' if row['duration_sec'] is None else f"{row['duration_sec']:.1f}"}</td><td>{html.escape(row['failure_reason'] or '—')}</td><td>{html.escape(row['warning_reason'] or '—')}</td><td>{f"<a href='{html.escape(_dashboard_asset_url(str(row['trajectory_figure']), image_assets))}' target='_blank'>打开</a>" if row.get('trajectory_figure') else '缺失'}</td></tr>"
         for row in summary["runs"]
     )
     statistics_images = "".join(
-        f"<figure><a href='figures/{html.escape(path.name)}' target='_blank' rel='noopener'><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击放大）</figcaption></figure>"
+        f"<figure><a href='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' target='_blank' rel='noopener'><img src='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击放大）</figcaption></figure>"
         for path in statistics_figures
     )
     maps_by_kind = {"static": [], "dynamic": []}
@@ -935,7 +958,7 @@ def _dashboard(
     map_sections = "".join(
         f"<section class='map-pair'><h3>{'静态两组对比' if kind == 'static' else '动态两组对比'}</h3><div class='map-grid'>"
         + "".join(
-            f"<figure><a href='figures/{html.escape(path.name)}' target='_blank' rel='noopener'><img src='figures/{html.escape(path.name)}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击打开原尺寸）</figcaption></figure>"
+            f"<figure><a href='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' target='_blank' rel='noopener'><img src='{html.escape(_dashboard_asset_url(f'figures/{path.name}', image_assets))}' alt='{html.escape(path.stem)}'></a><figcaption>{html.escape(path.stem)}（点击打开原尺寸）</figcaption></figure>"
             for path in maps_by_kind[kind]
         )
         + "</div></section>"
@@ -962,7 +985,13 @@ def _dashboard(
         "<script>window.MathJax={tex:{inlineMath:[['\\\\(','\\\\)']],displayMath:[['\\\\[','\\\\]']]}};</script>"
         "<script defer src='https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js'></script>"
     )
-    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{mathjax}<style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}.methodology table{{margin-top:12px}}.methodology td p{{margin:.25em 0 .7em}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p></header><section class='cards'>{cards}</section>{methodology}<section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
+    transfer_note = (
+        "<p class='muted'>便携版：所有 PNG 图片和逐轮轨迹均已内嵌。复制此 HTML 文件即可在另一台电脑离线查看图片；"
+        "演示视频仍需网络访问 GitHub attachment。</p>"
+        if portable
+        else "<p class='muted'><a href='index_portable.html'>下载/复制便携单文件 HTML</a>：图片与逐轮轨迹已内嵌，另一台电脑无需携带 PNG 文件。</p>"
+    )
+    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{mathjax}<style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}.methodology table{{margin-top:12px}}.methodology td p{{margin:.25em 0 .7em}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p>{transfer_note}</header><section class='cards'>{cards}</section>{methodology}<section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
 
 
 def write_4x20_report(
@@ -1013,8 +1042,16 @@ def write_4x20_report(
     if scope != "full":
         dictionary += "\n本报告是独立的 2×20 子报告，不会与其他批次自动合并。\n"
     (root / "data_dictionary.md").write_text(dictionary, encoding="utf-8")
-    (root / "index.html").write_text(
-        _dashboard(clean, figures_written, map_figures), encoding="utf-8"
+    (root / "index.html").write_text(_dashboard(clean, figures_written, map_figures), encoding="utf-8")
+    (root / "index_portable.html").write_text(
+        _dashboard(
+            clean,
+            figures_written,
+            map_figures,
+            image_assets=_portable_image_assets(root),
+            portable=True,
+        ),
+        encoding="utf-8",
     )
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:

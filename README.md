@@ -111,7 +111,7 @@ cd "$PROJECT_ROOT"
 
 如果修改了动态代码、Nav2 参数、actor 配置或验收规则，不能对旧动态证据直接使用 `--resume`；应使用新批次 ID 运行 `--dynamic-only`，或严格按 [执行复盘](docs/kujiale_4x20_execution_lessons.md) 替换同一 ID 下的全部动态证据。
 
-报告目录为 `data/reports/kujiale_4x20_<campaign_id>/`。每份报告包含 HTML、PDF、Markdown、PNG、CSV、JSON 和证据索引；报告即使未通过也会生成，退出码 `2` 表示批次完成但未通过门槛或证据不完整。完整4×20报告的 HTML、PDF 和 Markdown 都内嵌“实验如何执行”和“指标定义与本次结果”：静态/动态避障成功率公式、静态路径偏差公式及静态/动态/总体导航成功率公式。HTML 还可按实验组、seed、外观配置、动态变体和结果筛选每轮路径：静态图叠加六个静态障碍，动态图叠加本轮实际触发 actor 的轨迹、起终点和方向。
+报告目录为 `data/reports/kujiale_4x20_<campaign_id>/`。每份报告包含 HTML、PDF、Markdown、PNG、CSV、JSON 和证据索引；报告即使未通过也会生成，退出码 `2` 表示批次完成但未通过门槛或证据不完整。除轻量的 `index.html` 外，还会生成可移交的单文件 `index_portable.html`：所有 PNG 地图、统计图和逐轮 GT 路径均 Base64 内嵌，复制该 HTML 到另一台电脑即可离线查看图片与筛选轨迹，无需携带 `figures/` 目录。完整4×20报告的 HTML、PDF 和 Markdown 都内嵌“实验如何执行”和“指标定义与本次结果”：静态/动态避障成功率公式、静态路径偏差公式及静态/动态/总体导航成功率公式。HTML 还可按实验组、seed、外观配置、动态变体和结果筛选每轮路径：静态图叠加六个静态障碍，动态图叠加本轮实际触发 actor 的轨迹、起终点和方向。
 
 完整实验矩阵、外观定义、报告与门槛见 [4×20 运行手册](docs/kujiale_4x20_appearance_benchmark_plan.md)。
 

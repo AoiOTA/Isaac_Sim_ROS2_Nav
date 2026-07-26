@@ -121,11 +121,14 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     }
     output = write_4x20_report(summary, tmp_path / "report")
     assert (output / "index.html").is_file()
+    portable = output / "index_portable.html"
+    assert portable.is_file()
     assert (output / "benchmark.json").is_file()
     assert (output / "evidence_index.json").is_file()
     assert (output / "figures" / "condition_overview.png").is_file()
     assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
     dashboard = (output / "index.html").read_text(encoding="utf-8")
+    portable_dashboard = portable.read_text(encoding="utf-8")
     assert "<video controls" in dashboard
     assert "0fc1c31f-ace7-4b53-a463-b525a2521f4d" in dashboard
     assert "39970d48-47df-428b-8d7d-276d2fd7db9d" in dashboard
@@ -137,6 +140,8 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert r"\(\mathrm{ASR}_{\mathrm{s}}" in dashboard
     assert r"\(\mathrm{NSR}" in dashboard
     assert "导航成功率" in dashboard
+    assert "data:image/png;base64," in portable_dashboard
+    assert "图片和逐轮轨迹均已内嵌" in portable_dashboard
     assert dashboard.index("逐轮实际 GT 路径") < dashboard.index("统计可视化")
     assert not (output / "figures" / "kujiale_4x20_test_matrix_map.png").exists()
     for condition in (
