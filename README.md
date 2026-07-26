@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/39970d48-47df-428b-8d7d-276d2fd7db9d
 
 结果仅适用于当前冻结的地图、场景、Nav2 profile、外观矩阵、actor 配置和验收规则。完整证据边界见 [验证台账](docs/verification.md)，执行问题与恢复规则见 [4×20 执行复盘](docs/kujiale_4x20_execution_lessons.md)。
 
-对外使用静态/动态避障率、路径偏差和导航成功率时，请采用[通用指标定义与对外表述](docs/kujiale_4x20_metric_definitions.md)：`ASR_s=N_s^succ/N_s`，`ASR_d=N_d^succ/N_d`，`NSR=N_goal/N`。当前静态避障成功率为 `40/40=100%`、动态避障成功率为 `38/40=95%`、总体导航成功率为 `78/80=97.5%`；理论最优路径偏差仅适用于静态固定障碍参考。
+对外使用静态/动态避障率、路径偏差和导航成功率时，请采用[通用指标定义与对外表述](docs/kujiale_4x20_metric_definitions.md)。该文档以 LaTeX 给出 \(\mathrm{ASR}_{\mathrm{s}}\)、\(\mathrm{ASR}_{\mathrm{d}}\)、\(\delta_i\) 和 \(\mathrm{NSR}\) 的完整定义、统计边界和适用条件。当前静态避障成功率为 `40/40=100%`、动态避障成功率为 `38/40=95%`、总体导航成功率为 `78/80=97.5%`；理论最优路径偏差仅适用于静态固定障碍参考。
 
 ## 首次准备
 
