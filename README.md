@@ -3,14 +3,10 @@
 ## 演示视频（4×速，直接预览）
 
 ### 动态避障演示
-<video controls width="960" preload="metadata" src="https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos/动态避障演示_4x_10MB.mp4">
-  你的浏览器不支持内嵌视频，请复制链接到浏览器打开观看。
-</video>
+https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos/动态避障演示_4x_10MB.mp4
 
 ### 静态避障演示
-<video controls width="960" preload="metadata" src="https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos/静态避障演示_4x_10MB.mp4">
-  你的浏览器不支持内嵌视频，请复制链接到浏览器打开观看。
-</video>
+https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos/静态避障演示_4x_10MB.mp4
 
 ---
 
