@@ -47,6 +47,7 @@ data/reports/kujiale_4x20_20260725-210035/benchmark.json
 | 报告命令无输出/没有生成文件 | 报告模块曾缺少模块主入口 | 当前 `python3 -m robot_experiments.kujiale_4x20_campaign` 会执行 `main()`；报告命令仍以输出JSON和退出码为准。 |
 | 报告只有统计图，没有每轮实际路径 | 初版报告没有读取 `ground_truth.csv.gz` | 当前HTML可按条件、seed、外观和结果筛选逐轮GT路径。 |
 | 静态/动态轨迹图缺少障碍物，或子报告显示四组地图 | 初版只画OccupancyGrid；未区分 scoped report | 静态轨迹叠加六个版本化静态障碍；动态轨迹读取本轮 `dynamic_obstacles.csv.gz`，仅画实际触发actor的实测轨迹、起终点和方向；2×20子报告只显示本范围两张地图。 |
+| 总报告的四组测试地图太小、GT路径难以找到 | 初版直接嵌入2×2矩阵原图，且将逐轮路径放在统计图之后 | 报告拆成静态/动态各一组两图对比；地图、统计图和GT路径都可点击打开原尺寸；GT路径移到统计图之前。摘要后按报告范围嵌入可直接播放的静态或动态演示视频。 |
 | 只推送到了一个GitHub仓库 | remote 只有单一push URL或只验证了一个ref | `origin` 当前有两个push URL；每次推送后分别用 `git ls-remote --heads` 验证 AoiOTA 与 HDU-ASL 的同名分支指向相同提交。 |
 
 ## 3. 续跑和重跑决策

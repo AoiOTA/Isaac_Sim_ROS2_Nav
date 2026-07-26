@@ -270,7 +270,11 @@ data/reports/kujiale_4x20_<campaign_id>/
 ./scripts/run_kujiale_4x20.sh report         <CAMPAIGN_ID> --replace
 ```
 
-HTML 报告可按实验组、seed、外观 profile、动态 variant 和结果筛选每轮实际 GT 路径。静态图显示六个静态障碍；动态图显示本轮实际触发 actor 的轨迹、起终点和运动方向。完整矩阵、外观配置和验收口径见 [4×20运行手册](kujiale_4x20_appearance_benchmark_plan.md)。
+HTML 报告在摘要后直接提供对应的避障演示视频：静态子报告播放静态演示，动态子报告播放动态演示，完整4×20报告同时提供两段视频。视频优先使用指定的 GitHub attachment；播放器还配置了仓库内同一 MP4 的原始文件作为回退，因此 attachment 暂不可达时仍可在页面内直接播放。
+
+测试地图不再把四组缩在一张图内：完整报告分为“静态两组对比”和“动态两组对比”，每次只并列两张；静态/动态 2×20 子报告只显示本范围的一对地图。每张地图和统计图均可点击，在新标签页打开原尺寸。
+
+“逐轮实际 GT 路径”位于测试地图之后、统计图之前，可按实验组、seed、外观 profile 和结果筛选；点击路径图也能查看原尺寸。静态图显示六个静态障碍；动态图显示本轮实际触发 actor 的轨迹、起终点和运动方向。完整矩阵、外观配置和验收口径见 [4×20运行手册](kujiale_4x20_appearance_benchmark_plan.md)。
 
 ## 8. 可视化单轮全屋长距离测试（Isaac GUI + RViz）
 
