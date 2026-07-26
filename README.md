@@ -181,6 +181,13 @@ cd "$PROJECT_ROOT"
 | 查看正式结果与历史结果边界 | [验证台账](docs/verification.md) |
 | 查看文档的当前/历史适用范围 | [文档状态](docs/documentation_status.md) |
 
+## 演示视频（4×速，压缩版，直接预览）
+
+- [动态避障演示.mp4](docs/videos/动态避障演示_4x_10MB.mp4)
+- [静态避障演示.mp4](docs/videos/静态避障演示_4x_10MB.mp4)
+
+这两个链接在 GitHub 的 README 页面可直接点击预览（约 9.1MB / 8.8MB）。
+
 ## 验证
 
 ```bash
