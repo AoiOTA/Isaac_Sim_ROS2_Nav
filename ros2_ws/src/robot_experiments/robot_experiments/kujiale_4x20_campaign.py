@@ -723,13 +723,8 @@ def _metric_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
         selected = [row for row in rows if row["kind"] == kind]
         result[kind] = {
             "planned": planned,
-            "physical_avoidance": sum(
-                bool(row["physical_collision_free"])
-                and bool(row["data_complete"])
-                and bool(row["checksums_verified"])
-                for row in selected
-            ),
-            "navigation_success": sum(_complete_navigation(row) for row in selected),
+            "avoidance_success": sum(_complete_navigation(row) for row in selected),
+            "navigation_success": sum(bool(row["strict_success"]) for row in selected),
         }
     total_planned = 20 * len(summary["conditions"])
     result["overall"] = {
@@ -783,13 +778,13 @@ def _methodology_html(summary: Mapping[str, Any]) -> str:
         "避免跨阶段调参或进程状态影响。</p>"
         "<h3>推荐交付指标与本次结果</h3>"
         "<table><thead><tr><th>指标</th><th>定义</th><th>本报告范围结果</th></tr></thead><tbody>"
-        f"<tr><td>静态物理避障率</td><td>静态计划轮中，证据完整且 <code>/simulation/collision</code> 未记录真实接触的比例。</td><td>{_ratio_text(static['physical_avoidance'], static['planned'])}</td></tr>"
-        f"<tr><td>动态物理避障率</td><td>动态计划轮中，证据完整且机器人与 actor 未发生真实物理接触的比例；actor 不可删除或隐藏。</td><td>{_ratio_text(dynamic['physical_avoidance'], dynamic['planned'])}</td></tr>"
-        f"<tr><td>静态规划相对理论最优路径偏差</td><td><code>(L_GT − L_ref) / L_ref × 100%</code>；仅比较静态完整导航轮。<code>L_ref</code> 是同地图、静态障碍、footprint、目标姿态和分辨率下的 SE(2) 约束理论最短可行参考。</td><td>{html.escape(deviation_text)}</td></tr>"
-        f"<tr><td>导航成功率</td><td>全航点完成、证据及校验和完整、无物理碰撞；动态轮还需三阶段交互有效且无 <code>guard_aborted</code>。</td><td>静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])}</td></tr>"
+        f"<tr><td>静态避障成功率</td><td><code>ASR_s = N_s^succ / N_s × 100%</code>。<code>N_s^succ</code> 为在静态障碍场景中完成规定路线且未发生碰撞的轮数。</td><td>{_ratio_text(static['avoidance_success'], static['planned'])}</td></tr>"
+        f"<tr><td>动态避障成功率</td><td><code>ASR_d = N_d^succ / N_d × 100%</code>。<code>N_d^succ</code> 为完成动态障碍交互、规定路线且未发生碰撞的轮数。</td><td>{_ratio_text(dynamic['avoidance_success'], dynamic['planned'])}</td></tr>"
+        f"<tr><td>规划相对理论最优路径偏差</td><td>单轮 <code>δ_i = (L_i − L_i*) / L_i* × 100%</code>；报告均值 <code>δ̄ = (1/n)Σδ_i</code> 和最大值 <code>max(δ_i)</code>。<code>L_i*</code> 为同约束下的理论最短可行路径长度。</td><td>{html.escape(deviation_text)}</td></tr>"
+        f"<tr><td>导航成功率</td><td><code>NSR = N_goal / N × 100%</code>。<code>N_goal</code> 为在规定时间内完成全部必经航点的轮数。</td><td>静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])}</td></tr>"
         "</tbody></table>"
-        "<p class='muted'>物理避障率与导航成功率刻意分开：低于0.10 m净距和 actor <code>safety_yield</code> 保留为逐轮风险警告，"
-        "不被隐去；但在没有真实接触时不单独改写为物理碰撞。动态 actor 的时间相关运动改变可行空间，"
+        "<p class='muted'>这些是通用的任务级定义。当前实验中，目标完成由导航动作结果判定，碰撞由场景接触检测判定，"
+        "动态交互由 actor 状态机判定；证据和校验和仅用于保证统计数据可追溯，不属于公式的一部分。动态 actor 的时间相关运动改变可行空间，"
         "因此不将动态实际路径与静态固定参考强行比较。</p></section>"
     )
 
@@ -812,12 +807,11 @@ def _methodology_markdown(summary: Mapping[str, Any]) -> str:
         "`dynamic_avoidance`，两个阶段之间重启 Isaac/Nav2。\n\n"
         "## 指标定义与本次结果\n\n"
         "| 指标 | 定义 | 结果 |\n| --- | --- | --- |\n"
-        f"| 静态物理避障率 | 证据完整且 `/simulation/collision` 未记录真实接触的静态计划轮比例 | {_ratio_text(static['physical_avoidance'], static['planned'])} |\n"
-        f"| 动态物理避障率 | 证据完整且机器人与 actor 未真实接触的动态计划轮比例 | {_ratio_text(dynamic['physical_avoidance'], dynamic['planned'])} |\n"
-        f"| 静态规划相对理论最优路径偏差 | `(L_GT − L_ref) / L_ref × 100%`；仅静态完整导航轮，`L_ref` 为同约束 SE(2) 理论最短可行参考 | {deviation_text} |\n"
-        f"| 导航成功率 | 全航点、完整证据、无物理碰撞；动态额外要求三阶段有效且无 `guard_aborted` | 静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])} |\n\n"
-        "动态场景不使用静态固定路径参考比较偏差，因为 actor 时序会改变可行空间。低净距和 `safety_yield` 保留为风险警告，"
-        "不等同于物理碰撞，也不应表述为零近距风险。\n\n"
+        f"| 静态避障成功率 | `ASR_s = N_s^succ / N_s × 100%`；`N_s^succ` 为完成规定路线且未碰撞的静态轮数 | {_ratio_text(static['avoidance_success'], static['planned'])} |\n"
+        f"| 动态避障成功率 | `ASR_d = N_d^succ / N_d × 100%`；`N_d^succ` 为完成动态交互、规定路线且未碰撞的动态轮数 | {_ratio_text(dynamic['avoidance_success'], dynamic['planned'])} |\n"
+        f"| 规划相对理论最优路径偏差 | 单轮 `δ_i = (L_i − L_i*) / L_i* × 100%`；汇总 `δ̄ = (1/n)Σδ_i` 与 `max(δ_i)` | {deviation_text} |\n"
+        f"| 导航成功率 | `NSR = N_goal / N × 100%`；`N_goal` 为在规定时间内完成全部必经航点的轮数 | 静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])} |\n\n"
+        "当前实验将目标完成、碰撞和动态交互分别从导航动作、接触检测和 actor 状态机测量；证据完整性只用于保证数据可追溯，不属于上述通用公式。动态场景不使用静态固定路径参考比较偏差，因为 actor 时序会改变可行空间。\n\n"
     )
 
 
@@ -834,10 +828,10 @@ def _write_methodology_pdf_page(plt: Any, pdf: Any, summary: Mapping[str, Any]) 
     )
     paragraphs = [
         "实验如何执行：固定 warehouse_new、Ideal 定位、G1出生点和 G1→G2→G3→G4→G5→G1 全屋闭环路线。四组各20轮；静态组使用六个低矮 RGB-D 障碍，动态组使用三阶段 actor；外观组轮换四种固定光照/材质颜色 Session Layer，不改变几何、碰撞、地图或 actor 运动学。静态和动态分别使用 stable、dynamic_avoidance，并在两阶段间重启 Isaac/Nav2。",
-        f"静态物理避障率：{_ratio_text(static['physical_avoidance'], static['planned'])}。动态物理避障率：{_ratio_text(dynamic['physical_avoidance'], dynamic['planned'])}。",
+        f"静态避障成功率 ASR_s=N_s^succ/N_s×100%：{_ratio_text(static['avoidance_success'], static['planned'])}。动态避障成功率 ASR_d=N_d^succ/N_d×100%：{_ratio_text(dynamic['avoidance_success'], dynamic['planned'])}。",
         deviation_text,
         f"导航成功率：静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])}。",
-        "口径：物理避障率以 /simulation/collision 的真实接触为准；导航成功还要求全航点、完整证据和校验和，动态额外要求三阶段交互有效且无 guard_aborted。低净距和 safety_yield 保留为风险警告，不被隐藏，也不单独等同于物理碰撞。动态 actor 时序会改变可行空间，因此不将动态实际路径与静态固定理论参考比较。",
+        "口径：避障成功表示完成相应场景规定路线且未碰撞；导航成功率 NSR=N_goal/N×100%，表示规定时间内完成全部必经航点。当前实验以导航动作、接触检测和 actor 状态机测量这些事件；证据校验只保证数据可追溯。动态 actor 时序会改变可行空间，因此不将动态实际路径与静态固定理论参考比较。",
     ]
     figure, axis = plt.subplots(figsize=(16, 9))
     axis.axis("off")
@@ -963,7 +957,7 @@ def write_4x20_report(
     markdown += "\n![条件总览](figures/condition_overview.png)\n"
     (root / "report.md").write_text(markdown, encoding="utf-8")
     dictionary = "# 数据字典\n\n"
-    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。`minimum_actor_clearance_m` 是本轮所有动态 actor 的保守最小净距，`dynamic_safety_yield` 表示 actor 是否执行保护让停；两者在无真实物理碰撞时属于风险警告，写入 `warning_reason` 而不是 `failure_reason`。报告首页和 `report.md` 中的“物理避障率”以 `physical_collision_free` 加证据完整性统计；“导航成功率”进一步要求 `strict_success`，以及动态的 `dynamic_interaction_complete` 和非 `dynamic_guard_aborted`。\n"
+    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。`minimum_actor_clearance_m` 是本轮所有动态 actor 的保守最小净距，`dynamic_safety_yield` 表示 actor 是否执行保护让停；两者在无真实物理碰撞时属于风险警告，写入 `warning_reason` 而不是 `failure_reason`。报告首页和 `report.md` 使用通用公式 `ASR_s=N_s^succ/N_s`、`ASR_d=N_d^succ/N_d`、`NSR=N_goal/N`；本实验分别以导航动作、接触检测和 actor 状态机测量公式中的事件，证据校验仅保证结果可追溯。\n"
     if scope != "full":
         dictionary += "\n本报告是独立的 2×20 子报告，不会与其他批次自动合并。\n"
     (root / "data_dictionary.md").write_text(dictionary, encoding="utf-8")

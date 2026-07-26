@@ -39,7 +39,7 @@ https://github.com/user-attachments/assets/39970d48-47df-428b-8d7d-276d2fd7db9d
 
 结果仅适用于当前冻结的地图、场景、Nav2 profile、外观矩阵、actor 配置和验收规则。完整证据边界见 [验证台账](docs/verification.md)，执行问题与恢复规则见 [4×20 执行复盘](docs/kujiale_4x20_execution_lessons.md)。
 
-对外使用静态/动态避障率、路径偏差和导航成功率时，请采用[指标定义与对外表述口径](docs/kujiale_4x20_metric_definitions.md)：静态/动态物理避障率均为 `40/40=100%`，但完整任务导航成功率应如实披露为静态 `40/40`、动态 `38/40`、总体 `78/80=97.5%`；理论最优路径偏差仅适用于静态固定障碍参考。
+对外使用静态/动态避障率、路径偏差和导航成功率时，请采用[通用指标定义与对外表述](docs/kujiale_4x20_metric_definitions.md)：`ASR_s=N_s^succ/N_s`，`ASR_d=N_d^succ/N_d`，`NSR=N_goal/N`。当前静态避障成功率为 `40/40=100%`、动态避障成功率为 `38/40=95%`、总体导航成功率为 `78/80=97.5%`；理论最优路径偏差仅适用于静态固定障碍参考。
 
 ## 首次准备
 
@@ -111,7 +111,7 @@ cd "$PROJECT_ROOT"
 
 如果修改了动态代码、Nav2 参数、actor 配置或验收规则，不能对旧动态证据直接使用 `--resume`；应使用新批次 ID 运行 `--dynamic-only`，或严格按 [执行复盘](docs/kujiale_4x20_execution_lessons.md) 替换同一 ID 下的全部动态证据。
 
-报告目录为 `data/reports/kujiale_4x20_<campaign_id>/`。每份报告包含 HTML、PDF、Markdown、PNG、CSV、JSON 和证据索引；报告即使未通过也会生成，退出码 `2` 表示批次完成但未通过门槛或证据不完整。完整4×20报告的 HTML、PDF 和 Markdown 都内嵌“实验如何执行”和“指标定义与本次结果”：静态/动态物理避障率、静态路径偏差及静态/动态/总体导航成功率。HTML 还可按实验组、seed、外观配置、动态变体和结果筛选每轮路径：静态图叠加六个静态障碍，动态图叠加本轮实际触发 actor 的轨迹、起终点和方向。
+报告目录为 `data/reports/kujiale_4x20_<campaign_id>/`。每份报告包含 HTML、PDF、Markdown、PNG、CSV、JSON 和证据索引；报告即使未通过也会生成，退出码 `2` 表示批次完成但未通过门槛或证据不完整。完整4×20报告的 HTML、PDF 和 Markdown 都内嵌“实验如何执行”和“指标定义与本次结果”：静态/动态避障成功率公式、静态路径偏差公式及静态/动态/总体导航成功率公式。HTML 还可按实验组、seed、外观配置、动态变体和结果筛选每轮路径：静态图叠加六个静态障碍，动态图叠加本轮实际触发 actor 的轨迹、起终点和方向。
 
 完整实验矩阵、外观定义、报告与门槛见 [4×20 运行手册](docs/kujiale_4x20_appearance_benchmark_plan.md)。
 
