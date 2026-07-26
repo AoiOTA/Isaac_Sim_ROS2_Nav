@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 from statistics import mean
+import textwrap
 from typing import Any, Iterable, Mapping
 
 from PIL import Image
@@ -696,6 +697,160 @@ def _clean(summary: Mapping[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _complete_navigation(row: Mapping[str, Any]) -> bool:
+    """Return the published, evidence-complete definition of task success."""
+    return bool(
+        row.get("strict_success")
+        and row.get("physical_collision_free")
+        and row.get("data_complete")
+        and row.get("checksums_verified")
+        and (
+            row.get("kind") != "dynamic"
+            or (row.get("dynamic_interaction_complete") and not row.get("dynamic_guard_aborted"))
+        )
+    )
+
+
+def _metric_summary(summary: Mapping[str, Any]) -> dict[str, Any]:
+    """Calculate publication metrics without excluding failed planned rounds."""
+    rows = list(summary["runs"])
+    result: dict[str, Any] = {"overall": {}}
+    for kind in ("static", "dynamic"):
+        conditions = [
+            condition for condition in summary["conditions"] if CONDITIONS[condition]["kind"] == kind
+        ]
+        planned = 20 * len(conditions)
+        selected = [row for row in rows if row["kind"] == kind]
+        result[kind] = {
+            "planned": planned,
+            "physical_avoidance": sum(
+                bool(row["physical_collision_free"])
+                and bool(row["data_complete"])
+                and bool(row["checksums_verified"])
+                for row in selected
+            ),
+            "navigation_success": sum(_complete_navigation(row) for row in selected),
+        }
+    total_planned = 20 * len(summary["conditions"])
+    result["overall"] = {
+        "planned": total_planned,
+        "navigation_success": sum(_complete_navigation(row) for row in rows),
+    }
+    static_deviations = [
+        row["path_deviation_percent"]
+        for row in rows
+        if row["kind"] == "static"
+        and _complete_navigation(row)
+        and row["path_deviation_percent"] is not None
+    ]
+    result["static"]["path_deviation"] = {
+        "mean": mean(static_deviations) if static_deviations else None,
+        "maximum": max(static_deviations) if static_deviations else None,
+        "count": len(static_deviations),
+    }
+    return result
+
+
+def _ratio_text(numerator: int, denominator: int) -> str:
+    if denominator <= 0:
+        return "不适用"
+    return f"{numerator}/{denominator} = {100.0 * numerator / denominator:.1f}%"
+
+
+def _methodology_html(summary: Mapping[str, Any]) -> str:
+    """Describe the fixed experiment contract and its honest metric boundaries."""
+    metrics = _metric_summary(summary)
+    static = metrics["static"]
+    dynamic = metrics["dynamic"]
+    overall = metrics["overall"]
+    deviation = static["path_deviation"]
+    deviation_text = (
+        f"{deviation['count']}个静态完整导航轮：均值 {deviation['mean']:.4f}%，"
+        f"最大 {deviation['maximum']:.4f}%（门槛 ≤20%）。"
+        if deviation["mean"] is not None
+        else "本报告范围不含可计算的静态路径偏差。"
+    )
+    return (
+        "<section class='panel methodology'><h2>实验设计与指标口径</h2>"
+        "<h3>实验如何执行</h3>"
+        "<p>固定 <code>warehouse_new</code> OccupancyGrid、Ideal 定位、G1 出生点和 "
+        "<code>G1 → G2 → G3 → G4 → G5 → G1</code> 全屋闭环路线。每个条件20轮："
+        "静态两组使用六个低矮 RGB-D 障碍；动态两组使用 <code>full_route_three_stage</code> 的 "
+        "G1→G2、G2→G3、G5→G1 三阶段 actor。外观组在不改变几何、碰撞、地图或 actor 运动学的前提下，"
+        "轮换四种固定光照/材质颜色 Session Layer 配置。</p>"
+        "<p>每轮保留 manifest、summary、校验和、Ground Truth、传感器及动态交互证据。"
+        "静态使用 <code>stable</code>，动态使用 <code>dynamic_avoidance</code>；两阶段之间重启 Isaac/Nav2，"
+        "避免跨阶段调参或进程状态影响。</p>"
+        "<h3>推荐交付指标与本次结果</h3>"
+        "<table><thead><tr><th>指标</th><th>定义</th><th>本报告范围结果</th></tr></thead><tbody>"
+        f"<tr><td>静态物理避障率</td><td>静态计划轮中，证据完整且 <code>/simulation/collision</code> 未记录真实接触的比例。</td><td>{_ratio_text(static['physical_avoidance'], static['planned'])}</td></tr>"
+        f"<tr><td>动态物理避障率</td><td>动态计划轮中，证据完整且机器人与 actor 未发生真实物理接触的比例；actor 不可删除或隐藏。</td><td>{_ratio_text(dynamic['physical_avoidance'], dynamic['planned'])}</td></tr>"
+        f"<tr><td>静态规划相对理论最优路径偏差</td><td><code>(L_GT − L_ref) / L_ref × 100%</code>；仅比较静态完整导航轮。<code>L_ref</code> 是同地图、静态障碍、footprint、目标姿态和分辨率下的 SE(2) 约束理论最短可行参考。</td><td>{html.escape(deviation_text)}</td></tr>"
+        f"<tr><td>导航成功率</td><td>全航点完成、证据及校验和完整、无物理碰撞；动态轮还需三阶段交互有效且无 <code>guard_aborted</code>。</td><td>静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])}</td></tr>"
+        "</tbody></table>"
+        "<p class='muted'>物理避障率与导航成功率刻意分开：低于0.10 m净距和 actor <code>safety_yield</code> 保留为逐轮风险警告，"
+        "不被隐去；但在没有真实接触时不单独改写为物理碰撞。动态 actor 的时间相关运动改变可行空间，"
+        "因此不将动态实际路径与静态固定参考强行比较。</p></section>"
+    )
+
+
+def _methodology_markdown(summary: Mapping[str, Any]) -> str:
+    metrics = _metric_summary(summary)
+    static = metrics["static"]
+    dynamic = metrics["dynamic"]
+    overall = metrics["overall"]
+    deviation = static["path_deviation"]
+    deviation_text = (
+        f"均值 {deviation['mean']:.4f}%；最大 {deviation['maximum']:.4f}%（{deviation['count']}轮，门槛≤20%）"
+        if deviation["mean"] is not None else "不适用"
+    )
+    return (
+        "## 实验如何执行\n\n"
+        "固定 `warehouse_new`、Ideal 定位、G1出生点及 `G1 → G2 → G3 → G4 → G5 → G1` 全屋闭环路线。"
+        "四个条件各20轮：静态两组使用六个低矮 RGB-D 障碍；动态两组使用三阶段 actor；外观组轮换四种固定"
+        "光照/材质颜色 Session Layer 配置，不改变几何、碰撞、地图或 actor 运动学。静态使用 `stable`，动态使用 "
+        "`dynamic_avoidance`，两个阶段之间重启 Isaac/Nav2。\n\n"
+        "## 指标定义与本次结果\n\n"
+        "| 指标 | 定义 | 结果 |\n| --- | --- | --- |\n"
+        f"| 静态物理避障率 | 证据完整且 `/simulation/collision` 未记录真实接触的静态计划轮比例 | {_ratio_text(static['physical_avoidance'], static['planned'])} |\n"
+        f"| 动态物理避障率 | 证据完整且机器人与 actor 未真实接触的动态计划轮比例 | {_ratio_text(dynamic['physical_avoidance'], dynamic['planned'])} |\n"
+        f"| 静态规划相对理论最优路径偏差 | `(L_GT − L_ref) / L_ref × 100%`；仅静态完整导航轮，`L_ref` 为同约束 SE(2) 理论最短可行参考 | {deviation_text} |\n"
+        f"| 导航成功率 | 全航点、完整证据、无物理碰撞；动态额外要求三阶段有效且无 `guard_aborted` | 静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])} |\n\n"
+        "动态场景不使用静态固定路径参考比较偏差，因为 actor 时序会改变可行空间。低净距和 `safety_yield` 保留为风险警告，"
+        "不等同于物理碰撞，也不应表述为零近距风险。\n\n"
+    )
+
+
+def _write_methodology_pdf_page(plt: Any, pdf: Any, summary: Mapping[str, Any]) -> None:
+    """Put the method and published metric results into the PDF, not only HTML."""
+    metrics = _metric_summary(summary)
+    static = metrics["static"]
+    dynamic = metrics["dynamic"]
+    overall = metrics["overall"]
+    deviation = static["path_deviation"]
+    deviation_text = (
+        f"静态路径偏差：均值 {deviation['mean']:.4f}%，最大 {deviation['maximum']:.4f}%（门槛≤20%）。"
+        if deviation["mean"] is not None else "静态路径偏差：本报告范围不适用。"
+    )
+    paragraphs = [
+        "实验如何执行：固定 warehouse_new、Ideal 定位、G1出生点和 G1→G2→G3→G4→G5→G1 全屋闭环路线。四组各20轮；静态组使用六个低矮 RGB-D 障碍，动态组使用三阶段 actor；外观组轮换四种固定光照/材质颜色 Session Layer，不改变几何、碰撞、地图或 actor 运动学。静态和动态分别使用 stable、dynamic_avoidance，并在两阶段间重启 Isaac/Nav2。",
+        f"静态物理避障率：{_ratio_text(static['physical_avoidance'], static['planned'])}。动态物理避障率：{_ratio_text(dynamic['physical_avoidance'], dynamic['planned'])}。",
+        deviation_text,
+        f"导航成功率：静态 {_ratio_text(static['navigation_success'], static['planned'])}；动态 {_ratio_text(dynamic['navigation_success'], dynamic['planned'])}；总体 {_ratio_text(overall['navigation_success'], overall['planned'])}。",
+        "口径：物理避障率以 /simulation/collision 的真实接触为准；导航成功还要求全航点、完整证据和校验和，动态额外要求三阶段交互有效且无 guard_aborted。低净距和 safety_yield 保留为风险警告，不被隐藏，也不单独等同于物理碰撞。动态 actor 时序会改变可行空间，因此不将动态实际路径与静态固定理论参考比较。",
+    ]
+    figure, axis = plt.subplots(figsize=(16, 9))
+    axis.axis("off")
+    axis.set_title(f"{summary['title']}｜实验设计与指标口径", loc="left", fontsize=18, fontweight="bold")
+    y = 0.88
+    for paragraph in paragraphs:
+        lines = textwrap.wrap(paragraph, width=54, break_long_words=True)
+        axis.text(0.05, y, "\n".join(lines), transform=axis.transAxes, va="top", fontsize=13)
+        y -= 0.055 * (len(lines) + 1)
+    pdf.savefig(figure, bbox_inches="tight")
+    plt.close(figure)
+
+
 def _dashboard(
     summary: Mapping[str, Any], statistics_figures: Iterable[Path], map_figures: Iterable[Path]
 ) -> str:
@@ -711,6 +866,7 @@ def _dashboard(
         f"<article><h3>{html.escape(condition)}</h3><strong>{entry['strict_success']['numerator']}/20</strong><span>严格成功</span><p>无碰撞 {entry['physical_collision_free']['numerator']}/20 · {'通过' if entry['passed'] else '未通过'}</p></article>"
         for condition, entry in summary["conditions"].items()
     )
+    methodology = _methodology_html(summary)
     trajectory_records = [
         {
             "condition": row["condition_id"],
@@ -760,7 +916,7 @@ def _dashboard(
     seed_options = "".join(f"<option>{seed}</option>" for seed in sorted({row["seed"] for row in summary["runs"] if isinstance(row["seed"], int)}))
     condition_options = "".join(f"<option>{name}</option>" for name in summary["conditions"])
     profile_options = "".join(f"<option>{name}</option>" for name in ("baseline", *APPEARANCE_PROFILES))
-    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p></header><section class='cards'>{cards}</section><section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
+    return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title><style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}.methodology table{{margin-top:12px}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p></header><section class='cards'>{cards}</section>{methodology}<section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
 
 
 def write_4x20_report(
@@ -799,6 +955,7 @@ def write_4x20_report(
     markdown += f"结论：**{'通过' if summary['passed'] else '未通过'}**；证据完整：{'是' if summary['complete'] else '否'}。\n\n"
     if scope != "full":
         markdown += "本报告只覆盖本次静态或动态 2×20 证据，不能单独作为完整 4×20 验收结论，也不会自动合并不同批次。\n\n"
+    markdown += _methodology_markdown(summary)
     for condition, entry in summary["conditions"].items():
         markdown += f"- {condition}: 严格 {entry['strict_success']['numerator']}/20，无碰撞 {entry['physical_collision_free']['numerator']}/20，{'通过' if entry['passed'] else '未通过'}。\n"
     for figure in map_figures:
@@ -806,7 +963,7 @@ def write_4x20_report(
     markdown += "\n![条件总览](figures/condition_overview.png)\n"
     (root / "report.md").write_text(markdown, encoding="utf-8")
     dictionary = "# 数据字典\n\n"
-    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。`minimum_actor_clearance_m` 是本轮所有动态 actor 的保守最小净距，`dynamic_safety_yield` 表示 actor 是否执行保护让停；两者在无真实物理碰撞时属于风险警告，写入 `warning_reason` 而不是 `failure_reason`。\n"
+    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。`minimum_actor_clearance_m` 是本轮所有动态 actor 的保守最小净距，`dynamic_safety_yield` 表示 actor 是否执行保护让停；两者在无真实物理碰撞时属于风险警告，写入 `warning_reason` 而不是 `failure_reason`。报告首页和 `report.md` 中的“物理避障率”以 `physical_collision_free` 加证据完整性统计；“导航成功率”进一步要求 `strict_success`，以及动态的 `dynamic_interaction_complete` 和非 `dynamic_guard_aborted`。\n"
     if scope != "full":
         dictionary += "\n本报告是独立的 2×20 子报告，不会与其他批次自动合并。\n"
     (root / "data_dictionary.md").write_text(dictionary, encoding="utf-8")
@@ -815,6 +972,7 @@ def write_4x20_report(
     )
     plt, PdfPages = _matplotlib()
     with PdfPages(root / "report.pdf") as pdf:
+        _write_methodology_pdf_page(plt, pdf, clean)
         for path in [*map_figures, *figures_written]:
             image = plt.imread(path); fig, axis = plt.subplots(figsize=(16, 9)); axis.imshow(image); axis.axis("off"); axis.set_title(title); pdf.savefig(fig, bbox_inches="tight"); plt.close(fig)
     _write_checksums(root)
