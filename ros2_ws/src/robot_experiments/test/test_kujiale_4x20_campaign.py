@@ -110,8 +110,10 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert "39970d48-47df-428b-8d7d-276d2fd7db9d" in dashboard
     assert "raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos" in dashboard
     assert "实验设计与指标口径" in dashboard
-    assert "静态物理避障率" in dashboard
-    assert "动态物理避障率" in dashboard
+    assert "静态避障成功率" in dashboard
+    assert "动态避障成功率" in dashboard
+    assert "ASR_s = N_s^succ / N_s" in dashboard
+    assert "NSR = N_goal / N" in dashboard
     assert "导航成功率" in dashboard
     assert dashboard.index("逐轮实际 GT 路径") < dashboard.index("统计可视化")
     assert not (output / "figures" / "kujiale_4x20_test_matrix_map.png").exists()
