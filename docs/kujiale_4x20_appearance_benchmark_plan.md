@@ -184,6 +184,16 @@ pilot 已完整写入但结果失败，`--resume` 会将该 pilot 目录隔离�
 
 这些 GUI 诊断不生成正式 80 轮证据或结论；不能与 `data/experiment_runs/kujiale_4x20_*` 的报告混用。
 
+### 4.3 高分辨率第三人称外观核验（不计入4×20）
+
+`appearance_rgb_before_goal.ppm` 是 320×180 的前向 RGB-D 证据快照，不能替代外观展示图。若需直接比较五种固定外观，在没有其他 Isaac 实例运行时执行：
+
+```bash
+./scripts/capture_kujiale_appearance_preview.sh
+```
+
+该命令 headless 导出固定 G1 出生点的 1920×1080 第三人称跟随视角 `baseline`、`dim_warm`、`dim_cool`、`bright_warm`、`bright_cool` 图片和可点击放大的 `index.html`。它复用同一匿名 Session Layer 外观配置，不创建 ROS/Nav2、RTX LiDAR、动态 actor 或正式 evidence；源 USD、几何、碰撞、地图与动态运动学均不改变。
+
 ## 5. 自动报告与校验
 
 完整 campaign 在 `data/reports/kujiale_4x20_<campaign_id>/` 生成总 `index.html`、`report.pdf`、`report.md`、
