@@ -180,6 +180,15 @@ def _parser() -> argparse.ArgumentParser:
         default="baseline",
         help="initial appearance profile ID; the runner may switch it between resets",
     )
+    parser.add_argument(
+        "--odom-phase-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2A3 Isaac-only odometry phase "
+            "trace and run its fixed command sequence"
+        ),
+    )
     return parser
 
 
@@ -357,6 +366,7 @@ def run(
     camera_selection: object,
     appearance_profiles: object,
     initial_appearance_profile: str,
+    odom_phase_trace_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -390,6 +400,7 @@ def run(
     node = None
     reset_bridge = None
     appearance_manager = None
+    odom_phase_trace = None
     rclpy_started = False
     failed = False
     try:
@@ -589,6 +600,26 @@ def run(
             camera.graph_path for camera in sensors.cameras
         )
 
+        odom_phase_script = None
+        odom_phase_publisher = None
+        if odom_phase_trace_path is not None:
+            from geometry_msgs.msg import Twist
+            from nav_msgs.msg import Odometry
+            from isaac_sim.src.diagnostics.odom_phase_trace import (
+                OdomPhaseScript,
+                OdomPhaseTrace,
+            )
+
+            odom_phase_trace = OdomPhaseTrace(odom_phase_trace_path)
+            odom_phase_script = OdomPhaseScript()
+            odom_phase_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            node.create_subscription(
+                Odometry,
+                "/odom",
+                lambda message: odom_phase_trace.record_odom(message, loop_sequence=frame),
+                10,
+            )
+
         from isaac_sim.src.bridge.reset_service import ResetServiceBridge
         from isaac_sim.src.ground_truth.recorder import GroundTruthRecorder
 
@@ -694,6 +725,15 @@ def run(
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
+            if odom_phase_trace is not None:
+                odom_phase_trace.snapshot(
+                    phase="before_app_update",
+                    loop_sequence=frame,
+                    simulation_time=float(SimulationManager.get_simulation_time()),
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    command=None,
+                )
             app.update()
             rclpy.spin_once(node, timeout_sec=0.0)
             if startup_reset.finished and startup_reset.errors:
@@ -702,10 +742,38 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
+            command = None
+            if odom_phase_script is not None and odom_phase_publisher is not None:
+                command = odom_phase_script.command(simulation_time)
+                if command is not None:
+                    from geometry_msgs.msg import Twist
+
+                    message = Twist()
+                    message.linear.x = command[0]
+                    message.angular.z = command[1]
+                    odom_phase_publisher.publish(message)
+            if odom_phase_trace is not None:
+                odom_phase_trace.snapshot(
+                    phase="after_app_update",
+                    loop_sequence=frame,
+                    simulation_time=simulation_time,
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    command=command,
+                )
             dynamic_manager.update(simulation_time, dynamic_robot_state())
             collision_monitor.update(simulation_time)
             if not idle_brake.update():
                 motion_assist.update()
+            if odom_phase_trace is not None:
+                odom_phase_trace.snapshot(
+                    phase="after_motion_assist_update",
+                    loop_sequence=frame,
+                    simulation_time=simulation_time,
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    command=command,
+                )
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             if third_person_camera is not None:
@@ -719,6 +787,8 @@ def run(
                     )
                     camera_binding_reported = True
             frame += 1
+            if odom_phase_script is not None and odom_phase_script.complete(simulation_time):
+                break
     except Exception:
         # Kit's fast-shutdown path terminates Python with os._exit().  Print
         # initialization/runtime failures before close() so their traceback and
@@ -773,6 +843,8 @@ def run(
                 )
         if node is not None:
             node.destroy_node()
+        if odom_phase_trace is not None:
+            odom_phase_trace.close()
         if rclpy_started:
             import rclpy
 
@@ -841,6 +913,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         camera_selection,
         appearance_profiles,
         args.appearance_profile,
+        None if args.odom_phase_trace is None else args.odom_phase_trace.expanduser().resolve(),
     )
     return 0
 
