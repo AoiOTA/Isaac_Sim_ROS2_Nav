@@ -46,10 +46,27 @@ def test_trace_is_append_only_and_records_default_velocity_contract(tmp_path):
         robot=_Robot(),
         motion_assist=_Assist(),
         command=(0.5, -0.5, "arc_right"),
+        odom_publish={
+            "graph_epoch": 3,
+            "loop_sequence": 7,
+            "trigger_status": True,
+            "evaluate_status": True,
+            "loop_publish_count": 1,
+        },
     )
+    trace.record_odom_trigger({
+        "graph_epoch": 3,
+        "loop_sequence": 7,
+        "trigger_status": True,
+        "evaluate_status": True,
+        "loop_publish_count": 1,
+    }, simulation_time=1.25)
     trace.close()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert rows[0] == {"kind": "manifest", "publish_raw_velocities": False, "schema": SCHEMA, "stage_end_timecode": 3480}
     assert rows[1]["phase"] == "before_app_update"
     assert rows[1]["motion_assist_target"] == [0.5, -0.5]
     assert rows[1]["motion_assist_applied"] == [0.5, -0.49]
+    assert rows[1]["ideal_odom_publish"]["graph_epoch"] == 3
+    assert rows[2]["kind"] == "ideal_odom_trigger"
+    assert rows[2]["loop_publish_count"] == 1
