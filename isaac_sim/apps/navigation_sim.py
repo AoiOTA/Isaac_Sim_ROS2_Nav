@@ -608,6 +608,9 @@ def run(
 
         graph_handles = RosGraphBuilder(config, sensors).build()
         graph_references: dict[str, object] = {"all": graph_handles}
+        if graph_handles.odometry is not None:
+            graph_references["odometry"] = graph_handles.odometry
+        odom_graph_epoch = 0
         camera_graph_paths = tuple(
             camera.graph_path for camera in sensors.cameras
         )
@@ -617,6 +620,7 @@ def run(
         if odom_phase_trace_path is not None:
             from geometry_msgs.msg import Twist
             from nav_msgs.msg import Odometry
+            from tf2_msgs.msg import TFMessage
             from isaac_sim.src.diagnostics.odom_phase_trace import (
                 OdomPhaseScript,
                 OdomPhaseTrace,
@@ -631,9 +635,10 @@ def run(
             node.create_subscription(
                 Odometry,
                 "/odom",
-                lambda message: odom_phase_trace.record_odom(message, loop_sequence=frame),
+                odom_phase_trace.record_odom,
                 10,
             )
+            node.create_subscription(TFMessage, "/tf", odom_phase_trace.record_tf, 10)
 
         from isaac_sim.src.bridge.reset_service import ResetServiceBridge
         from isaac_sim.src.ground_truth.recorder import GroundTruthRecorder
@@ -678,6 +683,7 @@ def run(
             graph_references["control"] = build_control_graph(config)
 
         def reset_odometry(mode: str) -> None:
+            nonlocal odom_graph_epoch
             if mode != config.simulation.odometry_mode:
                 raise RuntimeError(
                     f"reset requested odometry={mode}, running mode={config.simulation.odometry_mode}"
@@ -686,7 +692,13 @@ def run(
             if mode == "ideal":
                 from isaac_sim.graphs.odometry_graph import build_odometry_graph
 
-                graph_references["odometry"] = build_odometry_graph(config)
+                previous = graph_references.get("odometry")
+                if previous is not None:
+                    previous.retire()
+                odom_graph_epoch += 1
+                graph_references["odometry"] = build_odometry_graph(
+                    config, epoch=odom_graph_epoch
+                )
 
         def reset_ground_truth_path() -> None:
             collision_monitor.reset()
@@ -789,6 +801,29 @@ def run(
                     motion_assist=motion_assist,
                     command=command,
                 )
+            odom_publish = None
+            if config.simulation.odometry_mode == "ideal":
+                ideal_odom = graph_references.get("odometry")
+                if ideal_odom is None:
+                    raise RuntimeError("ideal odometry graph is unavailable after motion assist")
+                odom_publish = ideal_odom.trigger(frame)
+                if odom_phase_trace is not None:
+                    odom_phase_trace.record_odom_trigger(
+                        odom_publish, simulation_time=simulation_time
+                    )
+                    # Drain now so normal probe rows carry the originating
+                    # trigger loop.  Header-stamp association stays active
+                    # for delayed DDS callbacks and fails closed if it differs.
+                    rclpy.spin_once(node, timeout_sec=0.0)
+                    odom_phase_trace.snapshot(
+                        phase="after_odom_trigger",
+                        loop_sequence=frame,
+                        simulation_time=simulation_time,
+                        robot=robot,
+                        motion_assist=motion_assist,
+                        command=command,
+                        odom_publish=odom_publish,
+                    )
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             if third_person_camera is not None:
