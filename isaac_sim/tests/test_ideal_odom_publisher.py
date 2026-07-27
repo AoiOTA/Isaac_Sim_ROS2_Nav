@@ -42,6 +42,28 @@ def test_ideal_odom_trigger_evaluates_once_per_loop_and_records_epoch():
         publisher.trigger(11)
 
 
+def test_ideal_odom_trace_payload_comes_from_graph_compute_and_publisher_inputs():
+    source = {
+        "position": [1.0, 2.0, 0.0], "yaw_rad": 0.25,
+        "linear_xyz": [0.5, 0.0, 0.0], "angular_xyz": [0.0, 0.0, 0.25],
+    }
+    publisher = IdealOdomPublisher(
+        graph=object(),
+        impulse_attribute=_Attribute(),
+        evaluate_sync=lambda _graph: None,
+        epoch=3,
+        payload_reader=lambda: {
+            "source_payload": source,
+            "publisher_payload": dict(source),
+        },
+    )
+
+    receipt = publisher.trigger(5)
+
+    assert receipt["source_payload"] == source
+    assert receipt["publisher_payload"] == source
+
+
 def test_ideal_odom_trigger_fails_closed_for_stale_or_failed_graph():
     publisher = IdealOdomPublisher(
         graph=object(),

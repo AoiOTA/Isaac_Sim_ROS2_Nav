@@ -83,7 +83,9 @@ def test_r2b_trace_associates_observed_odom_and_tf_by_trigger_stamp(tmp_path):
         "evaluate_status": True,
         "loop_publish_count": 1,
     }, simulation_time=1.25)
-    stamp = SimpleNamespace(sec=1, nanosec=250_000_000)
+    # ROS converts the 1.25 s float to one nanosecond below the trace's
+    # round-to-nearest registration; this is the only permitted tolerance.
+    stamp = SimpleNamespace(sec=1, nanosec=249_999_999)
     pose = SimpleNamespace(
         position=SimpleNamespace(x=1.0, y=2.0, z=0.0),
         orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -112,7 +114,7 @@ def test_r2b_trace_associates_observed_odom_and_tf_by_trigger_stamp(tmp_path):
     odom = next(row for row in rows if row["kind"] == "odom_receive")
     transform = next(row for row in rows if row["kind"] == "tf_receive")
     assert odom["loop_sequence"] == transform["loop_sequence"] == 12
-    assert odom["header_stamp_ns"] == transform["header_stamp_ns"] == 1_250_000_000
+    assert odom["header_stamp_ns"] == transform["header_stamp_ns"] == 1_249_999_999
     assert odom["publisher_payload"] == {
         "position": [1.0, 2.0, 0.0],
         "yaw_rad": 0.0,

@@ -136,6 +136,12 @@ class OdomPhaseTrace:
             row["trigger_status"] = None if odom_publish is None else odom_publish["trigger_status"]
             row["evaluate_status"] = None if odom_publish is None else odom_publish["evaluate_status"]
             row["source_payload"] = source_payload
+            if odom_publish is not None:
+                # These values are read directly from ComputeOdometry outputs
+                # and ROS2PublishOdometry inputs after evaluate_sync.  They
+                # are in odom coordinates, unlike robot world-base pose.
+                row["source_payload"] = odom_publish.get("source_payload", source_payload)
+                row["publisher_payload"] = odom_publish.get("publisher_payload")
         self._write(row)
 
     def record_odom_trigger(
@@ -153,7 +159,18 @@ class OdomPhaseTrace:
         })
 
     def _trigger_for_stamp(self, stamp: int) -> dict[str, object]:
-        return self._trigger_by_stamp.get(stamp, {})
+        exact = self._trigger_by_stamp.get(stamp)
+        if exact is not None:
+            return exact
+        # Simulation time is a binary float while ROS stamps are integer ns.
+        # Accept only the one-nanosecond round-trip difference, never a
+        # callback-arrival-based or broad temporal match.
+        candidates = [
+            value
+            for candidate_stamp, value in self._trigger_by_stamp.items()
+            if abs(candidate_stamp - stamp) <= 1
+        ]
+        return candidates[0] if len(candidates) == 1 else {}
 
     def record_odom(self, message: Any) -> None:
         pose = message.pose.pose

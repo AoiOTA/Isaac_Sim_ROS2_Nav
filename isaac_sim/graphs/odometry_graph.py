@@ -8,6 +8,7 @@ one that causally applies to the following simulation interval.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any, Callable
 
 from isaac_sim.graphs.spec import GraphSpec, TargetPaths, materialize_graph
@@ -17,6 +18,26 @@ from isaac_sim.src.config import ProjectConfig
 
 class IdealOdomPublishError(RuntimeError):
     """Raised when an ideal-odometry loop cannot publish exactly once."""
+
+
+def _vector(value: Any, *, length: int) -> list[float]:
+    """Normalize Kit/Gf vector and quaternion values without Kit imports."""
+
+    if hasattr(value, "GetImaginary") and hasattr(value, "GetReal"):
+        imaginary = value.GetImaginary()
+        return [float(imaginary[0]), float(imaginary[1]), float(imaginary[2]), float(value.GetReal())]
+    try:
+        result = [float(item) for item in value]
+    except TypeError as exc:
+        raise IdealOdomPublishError("ideal odometry graph returned a non-vector payload") from exc
+    if len(result) != length or not all(math.isfinite(item) for item in result):
+        raise IdealOdomPublishError("ideal odometry graph returned an invalid payload")
+    return result
+
+
+def _yaw_xyzw(orientation: list[float]) -> float:
+    x, y, z, w = orientation
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 @dataclass
@@ -31,6 +52,7 @@ class IdealOdomPublisher:
     impulse_attribute: Any
     evaluate_sync: Callable[[Any], Any]
     epoch: int
+    payload_reader: Callable[[], dict[str, object]] | None = None
     _retired: bool = False
     _last_loop_sequence: int | None = None
 
@@ -51,11 +73,46 @@ class IdealOdomPublisher:
             ) from exc
         if attribute is None:
             raise IdealOdomPublishError("ideal odometry impulse attribute is unavailable")
+        source_attributes: dict[str, Any] = {}
+        publisher_attributes: dict[str, Any] = {}
+        try:
+            for key, attribute_name in (
+                ("position", "position"),
+                ("orientation_xyzw", "orientation"),
+                ("linear_xyz", "linearVelocity"),
+                ("angular_xyz", "angularVelocity"),
+            ):
+                source_attributes[key] = og.Controller.attribute(
+                    f"/World/Graphs/IdealOdometry/ComputeOdometry.outputs:{attribute_name}"
+                )
+                publisher_attributes[key] = og.Controller.attribute(
+                    f"/World/Graphs/IdealOdometry/PublishOdometry.inputs:{attribute_name}"
+                )
+        except Exception as exc:
+            raise IdealOdomPublishError("ideal odometry payload attributes are unavailable") from exc
+        if any(value is None for value in (*source_attributes.values(), *publisher_attributes.values())):
+            raise IdealOdomPublishError("ideal odometry payload attributes are unavailable")
+
+        def read_payload(attributes: dict[str, Any]) -> dict[str, object]:
+            orientation = _vector(attributes["orientation_xyzw"].get(), length=4)
+            return {
+                "position": _vector(attributes["position"].get(), length=3),
+                "yaw_rad": _yaw_xyzw(orientation),
+                "linear_xyz": _vector(attributes["linear_xyz"].get(), length=3),
+                "angular_xyz": _vector(attributes["angular_xyz"].get(), length=3),
+            }
+
+        def read_both_payloads() -> dict[str, object]:
+            return {
+                "source_payload": read_payload(source_attributes),
+                "publisher_payload": read_payload(publisher_attributes),
+            }
         return cls(
             graph=graph,
             impulse_attribute=attribute,
             evaluate_sync=og.Controller.evaluate_sync,
             epoch=int(epoch),
+            payload_reader=read_both_payloads,
         )
 
     def retire(self) -> None:
@@ -85,6 +142,12 @@ class IdealOdomPublisher:
             raise IdealOdomPublishError(
                 f"ideal odometry evaluate returned failure for loop {loop_sequence}"
             )
+        try:
+            payload = {} if self.payload_reader is None else self.payload_reader()
+        except Exception as exc:
+            raise IdealOdomPublishError(
+                f"ideal odometry payload capture failed for loop {loop_sequence}"
+            ) from exc
         self._last_loop_sequence = loop_sequence
         return {
             "graph_epoch": self.epoch,
@@ -95,6 +158,7 @@ class IdealOdomPublisher:
             # downstream of this sole impulse.  The trace/evaluator verifies
             # received ROS payload cardinality independently.
             "loop_publish_count": 1,
+            **payload,
         }
 
 
