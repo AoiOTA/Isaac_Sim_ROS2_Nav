@@ -98,6 +98,15 @@ class OdomPhaseTrace:
             "linear_xyz": [float(item) for item in linear],
             "angular_xyz": [float(item) for item in angular],
             "motion_assist_target": [float(state.target_linear_speed), float(state.target_yaw_rate)],
+            "motion_assist_applied": (
+                None
+                if state.last_applied_linear_speed is None
+                or state.last_applied_yaw_rate is None
+                else [
+                    float(state.last_applied_linear_speed),
+                    float(state.last_applied_yaw_rate),
+                ]
+            ),
             "motion_assist_last_command_at_s": state.last_command_at,
             "script_command": None if command is None else [float(command[0]), float(command[1]), command[2]],
         })

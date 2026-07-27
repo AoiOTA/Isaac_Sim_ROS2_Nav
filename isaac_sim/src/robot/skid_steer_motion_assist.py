@@ -40,6 +40,10 @@ class SkidSteerMotionAssistState:
     last_command_at: float | None = None
     target_linear_speed: float = 0.0
     target_yaw_rate: float = 0.0
+    # Diagnostic-only observability for the default-off R2A3 phase trace.
+    # These values are never consulted by the control law.
+    last_applied_linear_speed: float | None = None
+    last_applied_yaw_rate: float | None = None
 
     def __post_init__(self) -> None:
         values = (
@@ -198,7 +202,11 @@ class SkidSteerMotionAssist:
             corrected_linear,
             corrected_angular,
         )
+        self.state.last_applied_linear_speed = desired_linear
+        self.state.last_applied_yaw_rate = desired_yaw_rate
         return True
 
     def reset(self) -> None:
         self.state.reset()
+        self.state.last_applied_linear_speed = None
+        self.state.last_applied_yaw_rate = None

@@ -9,6 +9,8 @@ class _State:
     target_linear_speed = 0.5
     target_yaw_rate = -0.5
     last_command_at = 2.0
+    last_applied_linear_speed = 0.5
+    last_applied_yaw_rate = -0.49
 
 
 class _Assist:
@@ -49,3 +51,4 @@ def test_trace_is_append_only_and_records_default_velocity_contract(tmp_path):
     assert rows[0] == {"kind": "manifest", "publish_raw_velocities": False, "schema": SCHEMA}
     assert rows[1]["phase"] == "before_app_update"
     assert rows[1]["motion_assist_target"] == [0.5, -0.5]
+    assert rows[1]["motion_assist_applied"] == [0.5, -0.49]
