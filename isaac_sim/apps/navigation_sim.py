@@ -422,6 +422,18 @@ def run(
         # transient unresolved reference cannot make the canonical camera
         # frames appear missing on a restart.
         stage.Load()
+        probe_end_timecode = None
+        if odom_phase_trace_path is not None:
+            # The warehouse Stage's normal end code is shorter than the
+            # frozen 61-second probe.  This transient extension is scoped to
+            # the default-off diagnostic mode and is never saved to USD.
+            from isaac_sim.src.diagnostics.odom_phase_trace import OdomPhaseScript
+
+            probe_end_timecode = max(
+                int(stage.GetEndTimeCode()),
+                OdomPhaseScript.required_end_timecode(config.simulation.rendering_hz),
+            )
+            stage.SetEndTimeCode(probe_end_timecode)
         for _ in range(3):
             app.update()
         # Configure coherent Timeline/RunLoop/Fabric periods before the first
@@ -610,7 +622,10 @@ def run(
                 OdomPhaseTrace,
             )
 
-            odom_phase_trace = OdomPhaseTrace(odom_phase_trace_path)
+            odom_phase_trace = OdomPhaseTrace(
+                odom_phase_trace_path,
+                stage_end_timecode=probe_end_timecode,
+            )
             odom_phase_script = OdomPhaseScript()
             odom_phase_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
             node.create_subscription(

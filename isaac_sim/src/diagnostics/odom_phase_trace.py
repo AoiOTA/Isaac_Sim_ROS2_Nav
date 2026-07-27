@@ -53,20 +53,28 @@ class OdomPhaseScript:
             return False
         return float(simulation_time) - self._started_at >= sum(item[0] for item in self.segments) + self.settle_s
 
+    @classmethod
+    def required_end_timecode(cls, rendering_hz: float) -> int:
+        """Return the Stage end code needed for the fixed probe plus margin."""
+        return int(math.ceil((sum(item[0] for item in cls.segments) + cls.settle_s + 2.0) * float(rendering_hz)))
+
 
 class OdomPhaseTrace:
     """Append-only JSONL trace; callers own the Isaac and ROS lifecycle."""
 
-    def __init__(self, path: Path, *, publish_raw_velocities: bool = False) -> None:
+    def __init__(self, path: Path, *, publish_raw_velocities: bool = False, stage_end_timecode: int | None = None) -> None:
         self.path = Path(path).expanduser().resolve()
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._output = self.path.open("x", encoding="utf-8")
         self._ordinal_by_stamp: dict[int, int] = {}
-        self._write({
+        manifest: dict[str, object] = {
             "schema": SCHEMA,
             "kind": "manifest",
             "publish_raw_velocities": bool(publish_raw_velocities),
-        })
+        }
+        if stage_end_timecode is not None:
+            manifest["stage_end_timecode"] = int(stage_end_timecode)
+        self._write(manifest)
 
     def _write(self, value: dict[str, object]) -> None:
         self._output.write(json.dumps(value, sort_keys=True) + "\n")

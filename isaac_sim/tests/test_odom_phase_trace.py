@@ -33,11 +33,12 @@ def test_phase_script_has_the_frozen_motion_sequence():
     assert script.command(55.0) == (0.5, -0.5, "arc_right")
     assert script.command(60.0) is None
     assert script.complete(61.0)
+    assert script.required_end_timecode(60.0) == 3480
 
 
 def test_trace_is_append_only_and_records_default_velocity_contract(tmp_path):
     path = tmp_path / "phase.jsonl"
-    trace = OdomPhaseTrace(path)
+    trace = OdomPhaseTrace(path, stage_end_timecode=3480)
     trace.snapshot(
         phase="before_app_update",
         loop_sequence=7,
@@ -48,7 +49,7 @@ def test_trace_is_append_only_and_records_default_velocity_contract(tmp_path):
     )
     trace.close()
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
-    assert rows[0] == {"kind": "manifest", "publish_raw_velocities": False, "schema": SCHEMA}
+    assert rows[0] == {"kind": "manifest", "publish_raw_velocities": False, "schema": SCHEMA, "stage_end_timecode": 3480}
     assert rows[1]["phase"] == "before_app_update"
     assert rows[1]["motion_assist_target"] == [0.5, -0.5]
     assert rows[1]["motion_assist_applied"] == [0.5, -0.49]
