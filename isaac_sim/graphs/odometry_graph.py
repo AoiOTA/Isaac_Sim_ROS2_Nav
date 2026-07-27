@@ -36,13 +36,16 @@ class IdealOdomPublisher:
 
     @classmethod
     def create(cls, config: ProjectConfig, *, epoch: int = 0) -> "IdealOdomPublisher":
-        graph, nodes = materialize_graph(ideal_odometry_graph_spec(config))
+        graph, _nodes = materialize_graph(ideal_odometry_graph_spec(config))
         import omni.graph.core as og
 
         try:
-            impulse_node = nodes["OnImpulseEvent"]
-            attribute = impulse_node.get_attribute("state:enableImpulse")
-        except (KeyError, TypeError, AttributeError) as exc:
+            # Controller.edit returns a positional node list in Isaac Sim 6,
+            # so do not rely on a name-indexed nodes container here.
+            attribute = og.Controller.attribute(
+                "/World/Graphs/IdealOdometry/OnImpulseEvent.state:enableImpulse"
+            )
+        except Exception as exc:
             raise IdealOdomPublishError(
                 "ideal odometry impulse node is unavailable"
             ) from exc
