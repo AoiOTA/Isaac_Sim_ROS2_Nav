@@ -189,6 +189,16 @@ def _parser() -> argparse.ArgumentParser:
             "trace and run its fixed command sequence"
         ),
     )
+    parser.add_argument(
+        "--r2c1-free-space-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C1 reset-separated free-space "
+            "odometry probe trace; requires the frozen Kujiale mapping_start "
+            "diagnostic configuration"
+        ),
+    )
     return parser
 
 
@@ -367,6 +377,7 @@ def run(
     appearance_profiles: object,
     initial_appearance_profile: str,
     odom_phase_trace_path: Path | None = None,
+    r2c1_free_space_trace_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -401,6 +412,10 @@ def run(
     reset_bridge = None
     appearance_manager = None
     odom_phase_trace = None
+    r2c1_trace = None
+    r2c1_observer_node = None
+    r2c1_observer_executor = None
+    r2c1_observer_thread = None
     rclpy_started = False
     failed = False
     try:
@@ -423,16 +438,23 @@ def run(
         # frames appear missing on a restart.
         stage.Load()
         probe_end_timecode = None
-        if odom_phase_trace_path is not None:
+        if odom_phase_trace_path is not None or r2c1_free_space_trace_path is not None:
             # The warehouse Stage's normal end code is shorter than the
             # frozen 61-second probe.  This transient extension is scoped to
             # the default-off diagnostic mode and is never saved to USD.
-            from isaac_sim.src.diagnostics.odom_phase_trace import OdomPhaseScript
-
-            probe_end_timecode = max(
-                int(stage.GetEndTimeCode()),
-                OdomPhaseScript.required_end_timecode(config.simulation.rendering_hz),
-            )
+            if r2c1_free_space_trace_path is not None:
+                from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                    SegmentedFreeSpaceScript,
+                )
+                required_end = SegmentedFreeSpaceScript.required_end_timecode(
+                    config.simulation.rendering_hz
+                )
+            else:
+                from isaac_sim.src.diagnostics.odom_phase_trace import OdomPhaseScript
+                required_end = OdomPhaseScript.required_end_timecode(
+                    config.simulation.rendering_hz
+                )
+            probe_end_timecode = max(int(stage.GetEndTimeCode()), required_end)
             stage.SetEndTimeCode(probe_end_timecode)
         for _ in range(3):
             app.update()
@@ -640,6 +662,129 @@ def run(
             )
             node.create_subscription(TFMessage, "/tf", odom_phase_trace.record_tf, 10)
 
+        r2c1_script = None
+        r2c1_publisher = None
+        r2c1_state: dict[str, object] | None = None
+        if r2c1_free_space_trace_path is not None:
+            from geometry_msgs.msg import Twist
+            from nav_msgs.msg import Odometry
+            from std_msgs.msg import Bool
+            from tf2_msgs.msg import TFMessage
+            from rclpy.executors import SingleThreadedExecutor
+            from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                REQUIRED_CLEARANCE_M,
+                R2C1Trace,
+                SegmentedFreeSpaceScript,
+                minimum_xy_clearance,
+            )
+
+            # Read the composed USD collision bounds before any probe command.
+            # Horizontal floor slabs are deliberately excluded: they are a
+            # legitimate z contact, not a planar obstacle to drive around.
+            from pxr import Usd, UsdGeom, UsdPhysics
+            cache = UsdGeom.BBoxCache(
+                Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+            )
+            static_bounds_xy: list[tuple[float, float, float, float]] = []
+            for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                prim_path = str(prim.GetPath())
+                if prim_path.startswith(config.robot.articulation_root):
+                    continue
+                if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                    continue
+                bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                lower, upper = bounds.GetMin(), bounds.GetMax()
+                if float(upper[2]) - float(lower[2]) <= 0.12:
+                    continue
+                static_bounds_xy.append((
+                    float(lower[0]), float(lower[1]),
+                    float(upper[0]), float(upper[1]),
+                ))
+            start_position, start_orientation = robot.get_world_pose()
+            start_yaw = math.atan2(
+                2.0 * (start_orientation[0] * start_orientation[3] + start_orientation[1] * start_orientation[2]),
+                1.0 - 2.0 * (start_orientation[2] ** 2 + start_orientation[3] ** 2),
+            )
+            clearance_by_segment = {
+                segment.segment_id: minimum_xy_clearance(
+                    start_xy=(float(start_position[0]), float(start_position[1])),
+                    yaw_rad=start_yaw, segment=segment,
+                    obstacle_bounds_xy=static_bounds_xy,
+                )
+                for segment in SegmentedFreeSpaceScript.segments
+            }
+            r2c1_trace = R2C1Trace(
+                r2c1_free_space_trace_path,
+                manifest={
+                    "environment_source_asset": str(config.environment.source_asset),
+                    "environment_project_stage": str(config.environment.project_stage),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(config.spawn.poses_file.read_bytes()).hexdigest(),
+                    "config_sha256": hashlib.sha256(repr(config).encode("utf-8")).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(config.files.robot.read_bytes()).hexdigest(),
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "physics_dt_s": 1.0 / config.simulation.physics_hz,
+                    "render_dt_s": 1.0 / config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "dedicated_delivery_executor": True,
+                    "delivery_recorder_mode": "dedicated",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "static_collision_bound_count": len(static_bounds_xy),
+                    "swept_clearance_m": clearance_by_segment,
+                    "probe_segments": [segment.segment_id for segment in SegmentedFreeSpaceScript.segments],
+                },
+            )
+            r2c1_script = SegmentedFreeSpaceScript()
+            r2c1_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            r2c1_state = {
+                "segment_index": -1,
+                "segment_started_at": None,
+                "pending_reset": None,
+                "reset_epoch": 0,
+                "active": False,
+                "clearance_by_segment": clearance_by_segment,
+                "last_trigger": None,
+                "observer_loop_sequence": -1,
+            }
+            # A dedicated diagnostic node/executor prevents the main loop's
+            # non-blocking spin from becoming a sampling/receipt bottleneck.
+            r2c1_observer_node = Node(
+                "isaac_r2c1_odom_observer",
+                namespace=config.ros2.namespace,
+                parameter_overrides=[Parameter("use_sim_time", value=True)],
+                automatically_declare_parameters_from_overrides=True,
+            )
+            r2c1_observer_executor = SingleThreadedExecutor()
+            r2c1_observer_executor.add_node(r2c1_observer_node)
+            r2c1_observer_node.create_subscription(
+                Odometry, "/odom",
+                lambda message: r2c1_trace.record_odom(
+                    message,
+                    arrival_loop_sequence=int(r2c1_state["observer_loop_sequence"]),
+                ), 100,
+            )
+            r2c1_observer_node.create_subscription(
+                TFMessage, "/tf",
+                lambda message: r2c1_trace.record_tf(
+                    message,
+                    arrival_loop_sequence=int(r2c1_state["observer_loop_sequence"]),
+                ), 100,
+            )
+            r2c1_observer_node.create_subscription(
+                Bool, "/simulation/collision",
+                lambda message: r2c1_trace.record_collision(
+                    message, reset_epoch=int(r2c1_state["reset_epoch"])
+                ), 100,
+            )
+            import threading
+            r2c1_observer_thread = threading.Thread(
+                target=r2c1_observer_executor.spin,
+                name="r2c1-odom-observer",
+                daemon=True,
+            )
+            r2c1_observer_thread.start()
+
         from isaac_sim.src.bridge.reset_service import ResetServiceBridge
         from isaac_sim.src.ground_truth.recorder import GroundTruthRecorder
 
@@ -752,6 +897,46 @@ def run(
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
+            if r2c1_state is not None and r2c1_script is not None:
+                r2c1_state["observer_loop_sequence"] = frame
+                if (
+                    not bool(r2c1_state["active"])
+                    and r2c1_state["pending_reset"] is None
+                    and int(r2c1_state["segment_index"]) + 1 < len(r2c1_script.segments)
+                ):
+                    segment_index = int(r2c1_state["segment_index"]) + 1
+                    segment = r2c1_script.segments[segment_index]
+                    clearance_m = float(r2c1_state["clearance_by_segment"][segment.segment_id])
+                    valid = clearance_m >= REQUIRED_CLEARANCE_M
+                    r2c1_trace.record_preflight(
+                        segment_index=segment_index,
+                        segment_id=segment.segment_id,
+                        clearance_m=clearance_m,
+                        valid=valid,
+                    )
+                    if not valid:
+                        raise RuntimeError(
+                            "R2C1 free-space preflight failed: "
+                            f"clearance={clearance_m:.3f}m < {REQUIRED_CLEARANCE_M:.3f}m"
+                        )
+                    r2c1_state["segment_index"] = segment_index
+                    r2c1_state["reset_epoch"] = int(r2c1_state["reset_epoch"]) + 1
+                    transaction = reset_bridge.start_reset(
+                        ResetRequest(
+                            pose_name="mapping_start",
+                            navigation_mode=config.simulation.navigation_mode,
+                            odometry_mode=config.simulation.odometry_mode,
+                            random_seed=dynamic_scenario.seed,
+                        )
+                    )
+                    r2c1_state["pending_reset"] = transaction
+                    r2c1_trace.record_segment_reset(
+                        segment_index=segment_index,
+                        segment_id=segment.segment_id,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        simulation_time_s=float(SimulationManager.get_simulation_time()),
+                        status="started",
+                    )
             if odom_phase_trace is not None:
                 odom_phase_trace.snapshot(
                     phase="before_app_update",
@@ -769,6 +954,44 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
+            r2c1_after_app_payload = None
+            if r2c1_state is not None and r2c1_script is not None:
+                pending = r2c1_state["pending_reset"]
+                if pending is not None and pending.finished:
+                    if pending.errors:
+                        raise RuntimeError(f"R2C1 segment reset failed: {pending.errors}")
+                    segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                    r2c1_state["pending_reset"] = None
+                    r2c1_state["segment_started_at"] = simulation_time
+                    r2c1_state["active"] = True
+                    r2c1_trace.record_segment_reset(
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        simulation_time_s=simulation_time,
+                        status="complete",
+                    )
+                if bool(r2c1_state["active"]):
+                    segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                    elapsed = simulation_time - float(r2c1_state["segment_started_at"])
+                    _, _, segment_phase = r2c1_script.phase(elapsed, segment)
+                    r2c1_after_app_payload = r2c1_trace.snapshot(
+                        phase="after_app_update", loop_sequence=frame,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id, segment_phase=segment_phase,
+                        simulation_time_s=simulation_time, robot=robot,
+                        motion_assist=motion_assist,
+                    )
+                    previous = r2c1_state["last_trigger"]
+                    if previous is not None:
+                        r2c1_trace.record_realized_next(
+                            trigger_loop_sequence=int(previous["loop_sequence"]),
+                            reset_epoch=int(previous["reset_epoch"]),
+                            simulation_time_s=simulation_time,
+                            payload=r2c1_after_app_payload,
+                        )
+                        r2c1_state["last_trigger"] = None
             command = None
             if odom_phase_script is not None and odom_phase_publisher is not None:
                 command = odom_phase_script.command(simulation_time)
@@ -788,6 +1011,26 @@ def run(
                     motion_assist=motion_assist,
                     command=command,
                 )
+            r2c1_segment_phase = None
+            if r2c1_state is not None and r2c1_script is not None and bool(r2c1_state["active"]):
+                segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                elapsed = simulation_time - float(r2c1_state["segment_started_at"])
+                linear_x, angular_z, r2c1_segment_phase = r2c1_script.phase(elapsed, segment)
+                if elapsed >= r2c1_script.segment_duration_s():
+                    r2c1_trace.record_segment_end(
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        clearance_m=float(r2c1_state["clearance_by_segment"][segment.segment_id]),
+                    )
+                    r2c1_state["active"] = False
+                    r2c1_segment_phase = None
+                elif r2c1_publisher is not None:
+                    from geometry_msgs.msg import Twist
+                    message = Twist()
+                    message.linear.x = linear_x
+                    message.angular.z = angular_z
+                    r2c1_publisher.publish(message)
             dynamic_manager.update(simulation_time, dynamic_robot_state())
             collision_monitor.update(simulation_time)
             if not idle_brake.update():
@@ -801,8 +1044,24 @@ def run(
                     motion_assist=motion_assist,
                     command=command,
                 )
+            r2c1_post_assist_payload = None
+            if r2c1_state is not None and r2c1_script is not None and bool(r2c1_state["active"]):
+                segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                r2c1_post_assist_payload = r2c1_trace.snapshot(
+                    phase="after_motion_assist_update", loop_sequence=frame,
+                    reset_epoch=int(r2c1_state["reset_epoch"]),
+                    segment_index=int(r2c1_state["segment_index"]),
+                    segment_id=segment.segment_id,
+                    segment_phase=str(r2c1_segment_phase or "idle"),
+                    simulation_time_s=simulation_time, robot=robot,
+                    motion_assist=motion_assist,
+                )
             odom_publish = None
-            if config.simulation.odometry_mode == "ideal":
+            should_publish_ideal_odom = (
+                config.simulation.odometry_mode == "ideal"
+                and (r2c1_state is None or bool(r2c1_state["active"]))
+            )
+            if should_publish_ideal_odom:
                 ideal_odom = graph_references.get("odometry")
                 if ideal_odom is None:
                     raise RuntimeError("ideal odometry graph is unavailable after motion assist")
@@ -824,6 +1083,19 @@ def run(
                         command=command,
                         odom_publish=odom_publish,
                     )
+                if r2c1_state is not None and r2c1_script is not None:
+                    segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                    r2c1_trace.record_trigger(
+                        odom_publish, simulation_time_s=simulation_time,
+                        loop_sequence=frame, reset_epoch=int(r2c1_state["reset_epoch"]),
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        post_assist_payload=(r2c1_post_assist_payload or r2c1_after_app_payload or {}),
+                    )
+                    r2c1_state["last_trigger"] = {
+                        "loop_sequence": frame,
+                        "reset_epoch": int(r2c1_state["reset_epoch"]),
+                    }
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             if third_person_camera is not None:
@@ -837,6 +1109,13 @@ def run(
                     )
                     camera_binding_reported = True
             frame += 1
+            if (
+                r2c1_state is not None and r2c1_script is not None
+                and int(r2c1_state["segment_index"]) + 1 >= len(r2c1_script.segments)
+                and not bool(r2c1_state["active"])
+                and r2c1_state["pending_reset"] is None
+            ):
+                break
             if odom_phase_script is not None and odom_phase_script.complete(simulation_time):
                 break
     except Exception:
@@ -847,6 +1126,24 @@ def run(
         traceback.print_exc()
         raise
     finally:
+        if r2c1_observer_executor is not None:
+            try:
+                r2c1_observer_executor.shutdown(timeout_sec=2.0)
+            except Exception as exc:
+                print(
+                    f"warning: failed to stop R2C1 observer executor cleanly: {exc}",
+                    file=sys.stderr,
+                )
+        if r2c1_observer_thread is not None:
+            r2c1_observer_thread.join(timeout=2.0)
+        if r2c1_observer_node is not None:
+            try:
+                r2c1_observer_node.destroy_node()
+            except Exception as exc:
+                print(
+                    f"warning: failed to destroy R2C1 observer node cleanly: {exc}",
+                    file=sys.stderr,
+                )
         if runtime is not None:
             try:
                 runtime.stop()
@@ -895,6 +1192,8 @@ def run(
             node.destroy_node()
         if odom_phase_trace is not None:
             odom_phase_trace.close()
+        if r2c1_trace is not None:
+            r2c1_trace.close()
         if rclpy_started:
             import rclpy
 
@@ -905,6 +1204,8 @@ def run(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.odom_phase_trace is not None and args.r2c1_free_space_trace is not None:
+        raise ValueError("--odom-phase-trace and --r2c1-free-space-trace are mutually exclusive")
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
     appearance_config = args.appearance_config.expanduser().resolve()
@@ -927,6 +1228,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         dynamic_scenario = replace(
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
         )
+    if args.r2c1_free_space_trace is not None:
+        if config.simulation.odometry_mode != "ideal":
+            raise ValueError("R2C1 requires --mode ideal")
+        if config.spawn.selected != "mapping_start":
+            raise ValueError("R2C1 requires --spawn-pose mapping_start")
+        if config.environment.source_asset.name != "kujiale_0026_A_to_B_door_open.usd":
+            raise ValueError("R2C1 requires the frozen Kujiale source USD")
+        if dynamic_scenario.enabled:
+            raise ValueError("R2C1 requires --no-dynamic-obstacles")
+        if camera_selection.profile.name != "off":
+            raise ValueError("R2C1 requires --camera-profile off")
+        if config.third_person_camera.enabled:
+            raise ValueError("R2C1 requires --no-third-person-camera")
+        if args.appearance_profile != "baseline":
+            raise ValueError("R2C1 requires --appearance-profile baseline")
     calibration = "calibrated" if selected_pose.map.calibrated else "uncalibrated"
     if args.validate_only:
         # This process exits immediately after validation, so importing pxr
@@ -964,6 +1280,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         appearance_profiles,
         args.appearance_profile,
         None if args.odom_phase_trace is None else args.odom_phase_trace.expanduser().resolve(),
+        None if args.r2c1_free_space_trace is None else args.r2c1_free_space_trace.expanduser().resolve(),
     )
     return 0
 
