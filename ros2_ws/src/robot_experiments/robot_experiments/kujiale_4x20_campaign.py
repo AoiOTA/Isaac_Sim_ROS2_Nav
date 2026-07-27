@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import csv
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -102,6 +101,10 @@ APPEARANCE_REPORT_SOURCE_FIGURES = {
     / f"kujiale_livingroom_appearance_{profile_id}.png"
     for profile_id in ("baseline", *APPEARANCE_PROFILES)
 }
+PUBLISHED_REPORT_ASSET_DIRECTORY = PROJECT_ROOT / "docs/report_assets"
+PUBLISHED_REPORT_ASSET_URL = (
+    "https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/report_assets"
+)
 
 
 class Campaign4x20Error(ValueError):
@@ -832,15 +835,20 @@ def _ratio_text(numerator: int, denominator: int) -> str:
     return f"{numerator}/{denominator} = {100.0 * numerator / denominator:.1f}%"
 
 
-def _portable_image_assets(root: Path) -> dict[str, str]:
-    """Return data URLs for every generated raster image used by the dashboard."""
-    assets: dict[str, str] = {}
+def _published_image_assets(root: Path) -> dict[str, str] | None:
+    """Return GitHub Raw image links only for an explicitly published snapshot."""
     figures = root / "figures"
-    for path in sorted(figures.rglob("*.png")):
-        relative = path.relative_to(root).as_posix()
-        encoded = base64.b64encode(path.read_bytes()).decode("ascii")
-        assets[relative] = f"data:image/png;base64,{encoded}"
-    return assets
+    snapshot = PUBLISHED_REPORT_ASSET_DIRECTORY / root.name
+    paths = sorted(figures.rglob("*.png")) if figures.is_dir() else []
+    if not paths or not snapshot.is_dir():
+        return None
+    relative_paths = [path.relative_to(root).as_posix() for path in paths]
+    if not all((snapshot / relative).is_file() for relative in relative_paths):
+        return None
+    return {
+        relative: f"{PUBLISHED_REPORT_ASSET_URL}/{root.name}/{relative}"
+        for relative in relative_paths
+    }
 
 
 def _dashboard_asset_url(relative: str | None, image_assets: Mapping[str, str] | None) -> str:
@@ -970,7 +978,9 @@ def _methodology_markdown(summary: Mapping[str, Any]) -> str:
     )
 
 
-def _appearance_markdown(appearance_figures: Mapping[str, Path]) -> str:
+def _appearance_markdown(
+    appearance_figures: Mapping[str, Path], image_assets: Mapping[str, str] | None = None
+) -> str:
     rows = _appearance_profile_rows()
     table = "\n".join(
         "| `{profile_id}` | {scale:.1f}× | {temperature} | {hue:+.0f}° |".format(
@@ -984,7 +994,12 @@ def _appearance_markdown(appearance_figures: Mapping[str, Path]) -> str:
         for row in rows
     )
     images = "".join(
-        f"\n![{row['profile_id']} 客厅示意图](figures/{appearance_figures[row['profile_id']].name})\n"
+        "\n![{profile_id} 客厅示意图]({asset})\n".format(
+            profile_id=row["profile_id"],
+            asset=_dashboard_asset_url(
+                f"figures/{appearance_figures[str(row['profile_id'])].name}", image_assets
+            ),
+        )
         for row in rows
     )
     return (
@@ -1187,12 +1202,21 @@ def _dashboard(
         "<img id='image-modal-content' alt='放大预览'></div>"
     )
     modal_script = """<script>document.addEventListener('DOMContentLoaded',()=>{const modal=document.getElementById('image-modal'),modalImage=document.getElementById('image-modal-content'),close=document.getElementById('image-modal-close'),trajectoryImage=document.getElementById('trajectory-image');function hide(){modal.hidden=true;modalImage.removeAttribute('src')}function show(image){if(!image.src)return;modalImage.src=image.src;modalImage.alt=image.alt||'放大预览';modal.hidden=false}function bind(image){if(!image||image.dataset.zoomBound)return;image.dataset.zoomBound='true';image.classList.add('zoomable');image.addEventListener('click',event=>{event.preventDefault();event.stopPropagation();show(image)})}document.querySelectorAll('.zoomable').forEach(bind);bind(trajectoryImage);close.addEventListener('click',hide);modal.addEventListener('click',event=>{if(event.target===modal)hide()});document.addEventListener('keydown',event=>{if(event.key==='Escape')hide()})});</script>"""
-    transfer_note = (
-        "<p class='muted'>便携版：所有 PNG 图片和逐轮轨迹均已内嵌。复制此 HTML 文件即可在另一台电脑离线查看图片；"
-        "图片可直接点击在当前页放大；演示视频仍需网络访问 GitHub attachment。</p>"
-        if portable
-        else "<p class='muted'><a href='index_portable.html'>下载/复制便携单文件 HTML</a>：图片与逐轮轨迹已内嵌，另一台电脑无需携带 PNG 文件；所有图片均可点击在当前页放大。</p>"
-    )
+    if image_assets is not None:
+        transfer_note = (
+            "<p class='muted'>本报告的图片和逐轮轨迹均为已发布的 GitHub Raw 外链；复制 HTML 到另一台电脑后，"
+            "只需网络访问 GitHub 即可预览和打开原图，无需携带 PNG。图片可直接点击在当前页放大。</p>"
+        )
+    elif portable:
+        transfer_note = (
+            "<p class='muted'>本报告没有已发布的图片快照，仍使用报告目录内的相对 PNG 路径；"
+            "请连同 <code>figures/</code> 目录一起复制。图片可直接点击在当前页放大。</p>"
+        )
+    else:
+        transfer_note = (
+            "<p class='muted'>本报告使用目录内的相对 PNG 路径。若要生成可跨电脑访问的图片外链，"
+            "请先将该批次的 figures 发布到 <code>docs/report_assets/</code> 并提交。</p>"
+        )
     transfer_note += modal_markup + modal_script
     return f"""<!doctype html><html lang='zh-CN'><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(title)}</title>{mathjax}<style>body{{margin:0;background:#f6f8fb;color:#172033;font:15px/1.5 system-ui,sans-serif}}main{{max-width:1440px;margin:auto;padding:30px}}header,.panel,article{{background:#fff;border:1px solid #e2e8f0;border-radius:16px;padding:20px;margin-bottom:18px}}h1,h2,h3{{margin:.1em 0 .55em}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}}article strong{{font-size:32px;color:#2563eb;display:block}}article span{{color:#64748b}}.filters{{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}}select{{padding:7px;border:1px solid #cbd5e1;border-radius:8px;background:#fff}}table{{width:100%;border-collapse:collapse;font-size:13px}}th,td{{padding:9px;border-bottom:1px solid #e2e8f0;text-align:left;vertical-align:top}}figure{{margin:20px 0;background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:12px}}img,video{{display:block;max-width:100%;height:auto;margin:auto}}figcaption,.muted{{color:#64748b;margin-top:8px}}.bad{{color:#b91c1c;font-weight:700}}.map-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}}.map-grid figure,.video-card{{margin:0}}.map-grid img{{width:100%;cursor:zoom-in}}.video-card video{{width:min(100%,1000px);background:#020617}}.statistics figure a{{display:block}}.methodology table{{margin-top:12px}}.methodology td p{{margin:.25em 0 .7em}}.appearance-grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:14px}}.appearance-grid figure{{margin:0}}.appearance-grid img{{width:100%;cursor:zoom-in}}#trajectory-image{{max-height:760px;border:1px solid #cbd5e1;border-radius:12px;background:#fff;padding:4px;cursor:zoom-in}}#trajectory-image[hidden]{{display:none}}@media(max-width:800px){{main{{padding:14px}}.map-grid{{grid-template-columns:1fr}}}}</style><main><header><h1>{html.escape(title)}：{status}</h1><p>自动生成；{run_count}轮，报告以每轮的manifest、summary、文件校验和为唯一输入。{html.escape(scope_text)} 完整性：{'完整' if summary['complete'] else '不完整'}。动态验收以真实物理碰撞为距离门槛；小于0.10 m和actor安全让停保留为警告。</p>{transfer_note}</header><section class='cards'>{cards}</section>{methodology}{appearance}<section class='panel'><h2>完整性与问题</h2><p class='bad'>{issue_text}</p></section><section class='panel'><h2>避障演示视频</h2><p class='muted'>4×速录制；可在此页面直接播放，也可使用视频控件打开链接。</p>{demo_videos}</section><section class='panel'><h2>测试地图</h2><p class='muted'>每次只两组并排对比；点击任意地图可在新标签页打开原尺寸查看。</p>{map_sections}</section><section class='panel'><h2>逐轮实际 GT 路径</h2><p class='muted'>路径来自该轮 <code>ground_truth.csv.gz</code>，叠加在 <code>warehouse_new</code> OccupancyGrid 上；绿点为起点，红点为终点。点击路径图可打开原尺寸。{trajectory_note}</p><section class='filters'><label>条件 <select id='condition'><option value='all'>全部</option>{condition_options}</select></label><label>seed <select id='seed'><option value='all'>全部</option>{seed_options}</select></label><label>外观 <select id='profile'><option value='all'>全部</option>{profile_options}</select></label><label>结果 <select id='result'><option value='all'>全部</option><option value='pass'>通过</option><option value='fail'>失败</option></select></label></section><label>匹配轮次 <select id='trajectory'></select></label><p id='trajectory-empty' class='muted'></p><a id='trajectory-link' target='_blank' rel='noopener'><img id='trajectory-image' alt='实际 GT 路径' hidden></a></section><section class='panel statistics'><h2>统计可视化</h2><p class='muted'>点击统计图可打开原尺寸。</p>{statistics_images}</section><section class='panel'><h2>运行明细</h2><table><thead><tr><th>条件</th><th>seed</th><th>外观</th><th>变体</th><th>严格</th><th>无碰撞</th><th>最小净距(m)</th><th>actor让停</th><th>时长(s)</th><th>失败原因</th><th>警告</th><th>路径</th></tr></thead><tbody>{rows}</tbody></table></section><footer><p>机器可读结果：benchmark.json / benchmark.csv；证据索引：evidence_index.json；不复制MCAP。</p></footer></main><script id='trajectory-data' type='application/json'>{records_json}</script><script>const records=JSON.parse(document.getElementById('trajectory-data').textContent),condition=document.getElementById('condition'),seed=document.getElementById('seed'),profile=document.getElementById('profile'),result=document.getElementById('result'),trajectory=document.getElementById('trajectory'),image=document.getElementById('trajectory-image'),link=document.getElementById('trajectory-link'),empty=document.getElementById('trajectory-empty');function matches(x){{return(condition.value==='all'||x.condition===condition.value)&&(seed.value==='all'||String(x.seed)===seed.value)&&(profile.value==='all'||x.profile===profile.value)&&(result.value==='all'||x.result===result.value)}}function showTrajectory(){{const item=records.find(x=>x.path&&x.path===trajectory.value);image.hidden=!item;link.hidden=!item;empty.textContent=item?'':(records.some(matches)?'匹配的轮次缺少 ground_truth.csv.gz，无法绘制实际路径。':'当前筛选没有匹配轮次。');if(item){{image.src=item.path;image.alt=item.label;link.href=item.path}}}}function apply(){{const options=records.filter(matches).filter(x=>x.path);const prior=trajectory.value;trajectory.replaceChildren();for(const item of options){{const option=document.createElement('option');option.value=item.path;option.textContent=item.label;trajectory.appendChild(option)}}if(options.some(x=>x.path===prior))trajectory.value=prior;document.querySelectorAll('tbody tr').forEach(x=>x.hidden=!matches({{condition:x.dataset.condition,seed:x.dataset.seed,profile:x.dataset.profile,result:x.dataset.result}}));showTrajectory()}}for(const item of [condition,seed,profile,result])item.onchange=apply;trajectory.onchange=showTrajectory;apply();</script></html>"""
 
@@ -1221,6 +1245,7 @@ def write_4x20_report(
     _plot_trajectory_figures(summary, figures)
     map_figures = _copy_map_figures(summary, figures)
     appearance_figures = _copy_appearance_figures(figures)
+    image_assets = _published_image_assets(root)
     clean = _clean(summary)
     (root / "benchmark.json").write_text(json.dumps(clean, indent=2, ensure_ascii=False, sort_keys=True) + "\n", encoding="utf-8")
     fields = ["condition_id", "kind", "seed", "appearance_profile_id", "nav2_profile", "variant_id", "strict_success", "physical_collision_free", "data_complete", "checksums_verified", "dynamic_interaction_complete", "minimum_actor_clearance_m", "dynamic_safety_yield", "path_deviation_percent", "ground_truth_path_length_m", "duration_sec", "maximum_route_recoveries", "failure_reason", "warning_reason"]
@@ -1235,20 +1260,24 @@ def write_4x20_report(
     if scope != "full":
         markdown += "本报告只覆盖本次静态或动态 2×20 证据，不能单独作为完整 4×20 验收结论，也不会自动合并不同批次。\n\n"
     markdown += _methodology_markdown(summary)
-    markdown += _appearance_markdown(appearance_figures)
+    markdown += _appearance_markdown(appearance_figures, image_assets)
     for condition, entry in summary["conditions"].items():
         markdown += f"- {condition}: 严格 {entry['strict_success']['numerator']}/20，无碰撞 {entry['physical_collision_free']['numerator']}/20，{'通过' if entry['passed'] else '未通过'}。\n"
     for figure in map_figures:
-        markdown += f"\n![测试地图](figures/{figure.name})\n"
-    markdown += "\n![条件总览](figures/condition_overview.png)\n"
+        relative = f"figures/{figure.name}"
+        markdown += f"\n![测试地图]({_dashboard_asset_url(relative, image_assets)})\n"
+    markdown += (
+        "\n![条件总览]("
+        f"{_dashboard_asset_url('figures/condition_overview.png', image_assets)})\n"
+    )
     (root / "report.md").write_text(markdown, encoding="utf-8")
     dictionary = "# 数据字典\n\n"
-    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。`minimum_actor_clearance_m` 是本轮所有动态 actor 的保守最小净距，`dynamic_safety_yield` 表示 actor 是否执行保护让停；两者在无真实物理碰撞时属于风险警告，写入 `warning_reason` 而不是 `failure_reason`。报告首页、`report.md` 和 PDF 的客厅示意图区使用版本化五档外观配置和参考渲染，说明实验变量但不替代逐轮 RGB 证据。报告首页和 `report.md` 使用通用公式 `ASR_s=N_s^succ/N_s`、`ASR_d=N_d^succ/N_d`、`NSR=N_goal/N`；本实验分别以导航动作、接触检测和 actor 状态机测量公式中的事件，证据校验仅保证结果可追溯。\n"
+    dictionary += "`benchmark.json` 是本报告范围内的验收、完整性和逐轮指标的机器可读来源。`evidence_index.json` 只索引原始证据目录，不复制MCAP。`condition_id` 为实验条件，`appearance_profile_id` 是本轮固定的Session Layer配置；`nav2_profile` 记录静态的 `stable` 或动态的 `dynamic_avoidance` 导航参数配置。`minimum_actor_clearance_m` 是本轮所有动态 actor 的保守最小净距，`dynamic_safety_yield` 表示 actor 是否执行保护让停；两者在无真实物理碰撞时属于风险警告，写入 `warning_reason` 而不是 `failure_reason`。报告首页、`report.md` 和 PDF 的客厅示意图区使用版本化五档外观配置和参考渲染，说明实验变量但不替代逐轮 RGB 证据。若该报告的 `figures/` 已发布到 `docs/report_assets/<report-dir>/`，HTML 与 Markdown 将改用 GitHub Raw 图片链接；PDF 仍按 PDF 格式嵌入渲染图片。报告首页和 `report.md` 使用通用公式 `ASR_s=N_s^succ/N_s`、`ASR_d=N_d^succ/N_d`、`NSR=N_goal/N`；本实验分别以导航动作、接触检测和 actor 状态机测量公式中的事件，证据校验仅保证结果可追溯。\n"
     if scope != "full":
         dictionary += "\n本报告是独立的 2×20 子报告，不会与其他批次自动合并。\n"
     (root / "data_dictionary.md").write_text(dictionary, encoding="utf-8")
     (root / "index.html").write_text(
-        _dashboard(clean, figures_written, map_figures, appearance_figures),
+        _dashboard(clean, figures_written, map_figures, appearance_figures, image_assets=image_assets),
         encoding="utf-8",
     )
     (root / "index_portable.html").write_text(
@@ -1257,7 +1286,7 @@ def write_4x20_report(
             figures_written,
             map_figures,
             appearance_figures,
-            image_assets=_portable_image_assets(root),
+            image_assets=image_assets,
             portable=True,
         ),
         encoding="utf-8",

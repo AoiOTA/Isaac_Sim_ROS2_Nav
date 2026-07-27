@@ -2,8 +2,10 @@ import hashlib
 import gzip
 import json
 from pathlib import Path
+import shutil
 
 from PIL import Image
+import robot_experiments.kujiale_4x20_campaign as campaign_module
 from robot_experiments.kujiale_4x20_campaign import (
     _complete_navigation,
     _dynamic_obstacle_tracks,
@@ -149,8 +151,8 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert "kujiale_livingroom_appearance_bright_warm.png" in dashboard
     assert "image-modal" in dashboard
     assert "图片可直接点击在当前页放大" in portable_dashboard
-    assert "data:image/png;base64," in portable_dashboard
-    assert "图片和逐轮轨迹均已内嵌" in portable_dashboard
+    assert "data:image/png;base64," not in portable_dashboard
+    assert "相对 PNG 路径" in portable_dashboard
     assert dashboard.index("逐轮实际 GT 路径") < dashboard.index("统计可视化")
     assert not (output / "figures" / "kujiale_4x20_test_matrix_map.png").exists()
     for condition in (
@@ -165,6 +167,35 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert "$$\n\\mathrm{ASR}_{\\mathrm{s}}" in markdown
     assert "$$\n\\mathrm{NSR}" in markdown
     assert "## 光照/颜色配置与客厅示意图" in markdown
+
+
+def test_report_uses_github_raw_links_after_figure_snapshot_is_published(
+    tmp_path: Path, monkeypatch
+):
+    run_root = tmp_path / "runs"
+    _write_campaign(run_root)
+    summary = summarize_4x20(run_root)
+    local_output = write_4x20_report(summary, tmp_path / "local-report")
+    published_assets = tmp_path / "published-assets"
+    snapshot = published_assets / "published-report"
+    shutil.copytree(local_output / "figures", snapshot / "figures")
+    monkeypatch.setattr(campaign_module, "PUBLISHED_REPORT_ASSET_DIRECTORY", published_assets)
+    monkeypatch.setattr(
+        campaign_module,
+        "PUBLISHED_REPORT_ASSET_URL",
+        "https://example.test/reports",
+    )
+
+    output = write_4x20_report(summary, tmp_path / "published-report")
+    dashboard = (output / "index.html").read_text(encoding="utf-8")
+    portable = (output / "index_portable.html").read_text(encoding="utf-8")
+    markdown = (output / "report.md").read_text(encoding="utf-8")
+    expected = "https://example.test/reports/published-report/figures/condition_overview.png"
+    assert expected in dashboard
+    assert expected in portable
+    assert expected in markdown
+    assert "data:image/png;base64," not in portable
+    assert "GitHub Raw 外链" in dashboard
 
 
 def test_dynamic_clearance_and_safety_yield_are_visible_warnings(tmp_path):

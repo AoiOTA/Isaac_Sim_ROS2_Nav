@@ -54,8 +54,8 @@ Ideal 定位、`long_route_start_g1` 和闭环路线 `G1 → G2 → G3 → G4 �
 data/reports/kujiale_4x20_<CAMPAIGN_ID>/
 ```
 
-其中 `index.html` 用于本机浏览；`index_portable.html` 内嵌地图、统计、五张外观示意图和逐轮 GT 路径，
-可单独复制到其他电脑离线查看；`report.pdf`、`report.md`、`benchmark.json/csv`、`evidence_index.json` 和
+其中 `index.html` 与 `index_portable.html` 在图片快照已发布时均使用 GitHub Raw 外链；可单独复制到其他电脑，
+在能访问 GitHub 时预览、筛选并打开原图，无需携带本地 PNG。未发布快照的报告保留相对 PNG 路径；`report.pdf`、`report.md`、`benchmark.json/csv`、`evidence_index.json` 和
 `data_dictionary.md` 提供可审阅的固定交付物。报告能按实验组、seed、外观 profile、动态变体和结果筛选逐轮路径：
 静态图叠加六个静态障碍，动态图叠加本轮实际触发 actor 的轨迹。
 

@@ -76,7 +76,7 @@
 | `isaac_sim/apps/navigation_sim.py` | Isaac 场景、机器人、传感器、障碍、外观 Session Layer 与 ROS Bridge 的主入口。 |
 | `isaac_sim/apps/appearance_preview.py` | 无 ROS 的客厅外观预览渲染入口。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 单轮/批量 reset、目标序列、证据与严格结果写入。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 4×20 校验、统计、GT 轨迹、HTML/便携 HTML/PDF/Markdown 报告生成。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 4×20 校验、统计、GT 轨迹、HTML/PDF/Markdown 报告生成；已发布快照自动采用 GitHub Raw 图片链接。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 4×20 runner 的 ROS launch 参数类型与运行入口。 |
 | `isaac_sim/tests/test_appearance.py` | 外观 profile、Session Layer 与状态契约测试。 |
 | `isaac_sim/tests/test_appearance_preview.py` | 客厅预览参数、渲染和输出契约测试。 |
@@ -90,6 +90,7 @@
 | --- | --- |
 | `data/experiment_runs/kujiale_4x20_<ID>/` | 原始逐轮证据、orchestrator 日志、隔离的不完整轮次。 |
 | `data/reports/kujiale_4x20_<ID>/` | 总报告、静态/动态子报告和可移交的 `index_portable.html`。 |
+| `docs/report_assets/README.md`、`docs/report_assets/<report-dir>/` | 已发布 campaign 的 PNG 快照及发布规则；用于让报告 HTML 通过 GitHub Raw 链接跨电脑显示图片。 |
 | `data/appearance_previews/` | 手工生成的外观核验图片与预览页面，不是正式实验结果。 |
 
 修改启动参数、地图、actor、外观矩阵、Nav2 profile 或验收规则时，必须在同一提交中更新本索引、
