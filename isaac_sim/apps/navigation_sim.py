@@ -675,6 +675,7 @@ def run(
                 REQUIRED_CLEARANCE_M,
                 R2C1Trace,
                 SegmentedFreeSpaceScript,
+                is_leaf_collision_prim,
                 minimum_xy_clearance,
             )
 
@@ -686,11 +687,19 @@ def run(
                 Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
             )
             static_bounds_xy: list[tuple[float, float, float, float]] = []
+            aggregate_collision_parent_count = 0
             for prim in Usd.PrimRange(stage.GetPseudoRoot()):
                 prim_path = str(prim.GetPath())
                 if prim_path.startswith(config.robot.articulation_root):
                     continue
                 if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                    continue
+                if not is_leaf_collision_prim(
+                    prim,
+                    collision_api=UsdPhysics.CollisionAPI,
+                    prim_range=Usd.PrimRange,
+                ):
+                    aggregate_collision_parent_count += 1
                     continue
                 bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
                 lower, upper = bounds.GetMin(), bounds.GetMax()
@@ -739,6 +748,7 @@ def run(
                     "delivery_recorder_mode": "dedicated",
                     "required_clearance_m": REQUIRED_CLEARANCE_M,
                     "static_collision_bound_count": len(static_bounds_xy),
+                    "aggregate_collision_parent_excluded_count": aggregate_collision_parent_count,
                     "swept_clearance_m": clearance_by_segment,
                     "probe_segments": [segment.segment_id for segment in SegmentedFreeSpaceScript.segments],
                 },

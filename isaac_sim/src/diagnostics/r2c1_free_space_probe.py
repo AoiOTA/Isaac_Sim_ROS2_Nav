@@ -144,6 +144,22 @@ def minimum_xy_clearance(
     return minimum
 
 
+def is_leaf_collision_prim(prim: Any, *, collision_api: Any, prim_range: Any) -> bool:
+    """Reject aggregate collision parents whose bounds enclose child colliders.
+
+    Some imported USD scenes apply CollisionAPI both to an environment Xform
+    and to its actual mesh colliders.  The parent has a scene-sized AABB and
+    is not a physical obstacle footprint; only the deepest collision prims
+    are valid inputs to planar swept-clearance checks.
+    """
+
+    if not prim.HasAPI(collision_api):
+        return False
+    iterator = iter(prim_range(prim))
+    next(iterator, None)  # USD PrimRange starts with the queried prim itself.
+    return not any(candidate.HasAPI(collision_api) for candidate in iterator)
+
+
 class R2C1Trace:
     """Thread-safe append-only trace with header-stamp callback association."""
 

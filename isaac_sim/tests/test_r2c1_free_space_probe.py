@@ -8,6 +8,7 @@ from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
     R2C1Trace,
     SCHEMA,
     SegmentedFreeSpaceScript,
+    is_leaf_collision_prim,
     minimum_xy_clearance,
     wheel_velocities,
 )
@@ -70,6 +71,30 @@ def test_swept_clearance_rejects_a_static_obstacle_in_the_arc_envelope():
         footprint_radius_m=0.10,
     )
     assert clear < REQUIRED_CLEARANCE_M
+
+
+def test_scene_sized_collision_parent_is_not_an_obstacle_candidate():
+    token = object()
+
+    class Prim:
+        def __init__(self, collision: bool, descendants=()):
+            self.collision = collision
+            self.descendants = descendants
+
+        def HasAPI(self, api):
+            assert api is token
+            return self.collision
+
+    leaf = Prim(True)
+    aggregate = Prim(True, (leaf,))
+    assert not is_leaf_collision_prim(
+        aggregate, collision_api=token,
+        prim_range=lambda prim: (item for item in (prim, *prim.descendants)),
+    )
+    assert is_leaf_collision_prim(
+        leaf, collision_api=token,
+        prim_range=lambda prim: (item for item in (prim, *prim.descendants)),
+    )
 
 
 def test_wheel_velocity_capture_is_optional_but_not_silently_lost():
