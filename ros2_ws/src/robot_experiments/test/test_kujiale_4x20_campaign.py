@@ -131,7 +131,7 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert (output / "report.pdf").read_bytes().startswith(b"%PDF")
     dashboard = (output / "index.html").read_text(encoding="utf-8")
     portable_dashboard = portable.read_text(encoding="utf-8")
-    assert "<video controls" in dashboard
+    assert "<video id='demo-video-static' controls" in dashboard
     assert "0fc1c31f-ace7-4b53-a463-b525a2521f4d" in dashboard
     assert "39970d48-47df-428b-8d7d-276d2fd7db9d" in dashboard
     assert "raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/main/docs/videos" in dashboard
@@ -149,7 +149,10 @@ def test_4x20_summary_validates_all_four_conditions_and_writes_visual_report(tmp
     assert "光照/颜色配置与客厅示意图" in dashboard
     assert "材质色相偏移" in dashboard
     assert "kujiale_livingroom_appearance_bright_warm.png" in dashboard
-    assert "image-modal" in dashboard
+    assert "media-modal" in dashboard
+    assert "media-expand-video" in dashboard
+    assert "放大视频" in dashboard
+    assert "在新标签页打开视频" in dashboard
     assert "图片可直接点击在当前页放大" in portable_dashboard
     assert "data:image/png;base64," not in portable_dashboard
     assert "相对 PNG 路径" in portable_dashboard
