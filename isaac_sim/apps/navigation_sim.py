@@ -185,7 +185,7 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help=(
-            "write a default-off Stage 2.2-R2A3 Isaac-only odometry phase "
+            "write a default-off Stage 2.2-R2B Isaac-only odometry phase "
             "trace and run its fixed command sequence"
         ),
     )
