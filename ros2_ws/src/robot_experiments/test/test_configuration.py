@@ -161,6 +161,25 @@ def test_4x20_static_and_dynamic_pairs_are_balanced_and_seed_paired():
     )
 
 
+def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_dynamic.yaml")
+    assert tuple(goal.goal_id for goal in static.route) == ("G2", "G3", "G4", "G5", "G1")
+    assert tuple(goal.goal_id for goal in dynamic.route) == ("G2", "G3", "G4", "G5", "G1")
+    assert [item.seed for item in static.run_matrix] == [7801, 7801, 7802, 7802]
+    assert [item.seed for item in dynamic.run_matrix] == [7901, 7901, 7902, 7902]
+    assert [item.appearance_profile_id for item in static.run_matrix] == [
+        "baseline", "dim_warm", "dim_cool", "baseline",
+    ]
+    assert [item.appearance_profile_id for item in dynamic.run_matrix] == [
+        "baseline", "dim_warm", "dim_cool", "baseline",
+    ]
+    assert {item.variant_id for item in dynamic.run_matrix if item.seed == 7901} == {"v1"}
+    assert {item.variant_id for item in dynamic.run_matrix if item.seed == 7902} == {"v2"}
+    assert static.success.minimum_ground_truth_path_length_m >= 20.0
+    assert dynamic.success.minimum_ground_truth_path_length_m >= 20.0
+
+
 def test_kujiale_dynamic_visual_is_one_controlled_g1_to_g2_observation():
     static = load_scenario(CONFIG / "kujiale_static_visual.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_dynamic_visual.yaml")
