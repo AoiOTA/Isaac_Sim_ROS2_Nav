@@ -9,6 +9,7 @@ from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
     SCHEMA,
     SegmentedFreeSpaceScript,
     minimum_xy_clearance,
+    wheel_velocities,
 )
 
 
@@ -71,6 +72,14 @@ def test_swept_clearance_rejects_a_static_obstacle_in_the_arc_envelope():
     assert clear < REQUIRED_CLEARANCE_M
 
 
+def test_wheel_velocity_capture_is_optional_but_not_silently_lost():
+    robot = SimpleNamespace(
+        articulation=SimpleNamespace(get_dof_velocities=lambda: [[1.0, -2.0]])
+    )
+    assert wheel_velocities(robot) == [1.0, -2.0]
+    assert wheel_velocities(SimpleNamespace()) is None
+
+
 def test_trace_preserves_reset_preflight_and_causal_callback_contract(tmp_path):
     path = tmp_path / "r2c1.jsonl"
     trace = R2C1Trace(path, manifest={"required_clearance_m": REQUIRED_CLEARANCE_M})
@@ -93,7 +102,8 @@ def test_trace_preserves_reset_preflight_and_causal_callback_contract(tmp_path):
     }
     trace.record_trigger(
         receipt, simulation_time_s=1.25, loop_sequence=12, reset_epoch=4,
-        segment_index=1, segment_id="straight", post_assist_payload=after_app,
+        segment_index=1, segment_id="straight", segment_phase="action",
+        post_assist_payload=after_app,
     )
     trace.record_odom(_message(stamp=1_249_999_999), arrival_loop_sequence=13)
     trace.record_realized_next(
@@ -112,6 +122,7 @@ def test_trace_preserves_reset_preflight_and_causal_callback_contract(tmp_path):
     trigger = next(row for row in rows if row["kind"] == "ideal_odom_trigger")
     observed = next(row for row in rows if row["kind"] == "odom_receive")
     assert trigger["loop_publish_count"] == 1
+    assert trigger["segment_phase"] == "action"
     assert trigger["post_assist_payload"] == trigger["compute_odometry_payload"]
     assert observed["loop_sequence"] == 12
     assert observed["reset_epoch"] == 4

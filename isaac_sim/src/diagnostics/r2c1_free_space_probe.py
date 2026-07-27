@@ -91,6 +91,13 @@ def wheel_velocities(robot: Any) -> list[float] | None:
     getter = getattr(articulation, "get_dof_velocities", None)
     if not callable(getter):
         return None
+    values = getter()
+    numpy = getattr(values, "numpy", None)
+    values = numpy() if callable(numpy) else values
+    try:
+        return [float(item) for item in values[0]]
+    except (IndexError, TypeError):
+        return None
 
 
 def swept_xy_points(
@@ -135,13 +142,6 @@ def minimum_xy_clearance(
             dy = max(min_y - point_y, 0.0, point_y - max_y)
             minimum = min(minimum, math.hypot(dx, dy) - footprint_radius_m)
     return minimum
-    values = getter()
-    numpy = getattr(values, "numpy", None)
-    values = numpy() if callable(numpy) else values
-    try:
-        return [float(item) for item in values[0]]
-    except (IndexError, TypeError):
-        return None
 
 
 class R2C1Trace:
@@ -220,12 +220,13 @@ class R2C1Trace:
     def record_trigger(
         self, receipt: dict[str, object], *, simulation_time_s: float,
         loop_sequence: int, reset_epoch: int, segment_index: int, segment_id: str,
-        post_assist_payload: dict[str, object],
+        segment_phase: str, post_assist_payload: dict[str, object],
     ) -> None:
         header_stamp_ns = int(round(float(simulation_time_s) * 1_000_000_000.0))
         registered = {
             "loop_sequence": int(loop_sequence), "reset_epoch": int(reset_epoch),
             "segment_index": int(segment_index), "segment_id": str(segment_id),
+            "segment_phase": str(segment_phase),
             "header_stamp_ns": header_stamp_ns,
         }
         self._trigger_by_stamp[header_stamp_ns] = registered
@@ -233,6 +234,8 @@ class R2C1Trace:
             "schema": SCHEMA, "kind": "ideal_odom_trigger", **registered,
             "recorded_sequence": int(loop_sequence), "sim_time_ns": header_stamp_ns,
             "loop_publish_count": int(receipt["loop_publish_count"]),
+            "trigger_status": bool(receipt.get("trigger_status", False)),
+            "evaluate_status": bool(receipt.get("evaluate_status", False)),
             "post_assist_payload": post_assist_payload,
             "source_payload": receipt.get("source_payload"),
             "compute_payload": receipt.get("source_payload"),

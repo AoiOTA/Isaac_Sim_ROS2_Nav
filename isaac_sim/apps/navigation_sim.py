@@ -727,6 +727,14 @@ def run(
                     "physics_dt_s": 1.0 / config.simulation.physics_hz,
                     "render_dt_s": 1.0 / config.simulation.rendering_hz,
                     "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "camera_enabled": False,
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "seed": "stage2_2_r2c1_frozen_seed",
+                    "reset_random_seed": dynamic_scenario.seed,
                     "dedicated_delivery_executor": True,
                     "delivery_recorder_mode": "dedicated",
                     "required_clearance_m": REQUIRED_CLEARANCE_M,
@@ -1090,6 +1098,7 @@ def run(
                         loop_sequence=frame, reset_epoch=int(r2c1_state["reset_epoch"]),
                         segment_index=int(r2c1_state["segment_index"]),
                         segment_id=segment.segment_id,
+                        segment_phase=str(r2c1_segment_phase or "idle"),
                         post_assist_payload=(r2c1_post_assist_payload or r2c1_after_app_payload or {}),
                     )
                     r2c1_state["last_trigger"] = {
