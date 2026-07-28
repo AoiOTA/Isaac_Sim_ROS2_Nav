@@ -196,6 +196,36 @@ def test_r3_r1_r1_r1_r1_authorization_only_scenarios_use_fresh_seeds():
         assert scenario.route[-1] == scenario.goal
 
 
+def test_r3_r1_r1_r1_r2_authorization_only_contract_matches_runtime_manifests():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_r2_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_r2_dynamic.yaml")
+    assert [row.seed for row in static.run_matrix] == [9600]
+    assert [row.seed for row in dynamic.run_matrix] == [9700]
+    assert {item["id"] for item in static.obstacles["static"]} == {
+        "rgbd_low_box_west", "rgbd_low_box_center", "rgbd_low_box_east",
+        "rgbd_low_box_north", "rgbd_low_bar_east", "rgbd_low_bar_north",
+    }
+    assert {item["id"] for item in dynamic.obstacle_trajectories} == {
+        "crossing_actor", "oncoming_actor", "same_direction_slow_actor",
+        "local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor",
+        "temporary_block_actor",
+    }
+    spawn_pose = load_spawn_pose(
+        PACKAGE_ROOT.parents[2]
+        / "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml",
+        dynamic.spawn_pose_name,
+    )
+    assert dynamic.dynamic_config_file is not None
+    validate_dynamic_physical_contract(
+        dynamic, spawn_pose, dynamic.resolve_path(dynamic.dynamic_config_file)
+    )
+    for scenario in (static, dynamic):
+        assert len(scenario.route) == 2
+        assert scenario.route[0].frame_id == scenario.route[1].frame_id == "map"
+        assert scenario.route[0].position != scenario.route[1].position
+        assert scenario.route[-1] == scenario.goal
+
+
 def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
     static = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_static.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_dynamic.yaml")
