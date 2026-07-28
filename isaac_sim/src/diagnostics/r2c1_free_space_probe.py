@@ -163,8 +163,15 @@ def is_leaf_collision_prim(prim: Any, *, collision_api: Any, prim_range: Any) ->
 class R2C1Trace:
     """Thread-safe append-only trace with header-stamp callback association."""
 
-    def __init__(self, path: Path, *, manifest: dict[str, object]) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        manifest: dict[str, object],
+        schema: str = SCHEMA,
+    ) -> None:
         self.path = Path(path).expanduser().resolve()
+        self.schema = str(schema)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._output = self.path.open("x", encoding="utf-8")
         self._lock = threading.Lock()
@@ -172,12 +179,17 @@ class R2C1Trace:
         self._same_stamp_ordinals: dict[int, int] = {}
         self._latest_collision = False
         self._collision_count = 0
-        self._write({"schema": SCHEMA, "kind": "manifest", **manifest})
+        self._write({"schema": self.schema, "kind": "manifest", **manifest})
 
     def _write(self, value: dict[str, object]) -> None:
         with self._lock:
             self._output.write(json.dumps(value, sort_keys=True) + "\n")
             self._output.flush()
+
+    def write(self, value: dict[str, object]) -> None:
+        """Append one diagnostic row using this trace's frozen schema."""
+
+        self._write({"schema": self.schema, **value})
 
     @property
     def collision_count(self) -> int:
@@ -197,7 +209,7 @@ class R2C1Trace:
             self._latest_collision = False
             self._collision_count = 0
         self._write({
-            "schema": SCHEMA, "kind": "segment_reset", "segment_index": int(segment_index),
+            "schema": self.schema, "kind": "segment_reset", "segment_index": int(segment_index),
             "segment_id": str(segment_id), "reset_epoch": int(reset_epoch),
             "simulation_time_s": float(simulation_time_s), "status": str(status),
         })
@@ -207,7 +219,7 @@ class R2C1Trace:
         valid: bool,
     ) -> None:
         self._write({
-            "schema": SCHEMA, "kind": "segment_preflight", "segment_index": int(segment_index),
+            "schema": self.schema, "kind": "segment_preflight", "segment_index": int(segment_index),
             "segment_id": str(segment_id), "clearance_m": float(clearance_m),
             "required_clearance_m": REQUIRED_CLEARANCE_M, "valid": bool(valid),
         })
@@ -220,7 +232,7 @@ class R2C1Trace:
         payload = payload_from_robot(robot)
         state = motion_assist.state
         row: dict[str, object] = {
-            "schema": SCHEMA, "kind": "snapshot", "phase": str(phase),
+            "schema": self.schema, "kind": "snapshot", "phase": str(phase),
             "loop_sequence": int(loop_sequence), "reset_epoch": int(reset_epoch),
             "segment_index": int(segment_index), "segment_id": str(segment_id),
             "segment_phase": str(segment_phase), "simulation_time_s": float(simulation_time_s),
@@ -247,7 +259,7 @@ class R2C1Trace:
         }
         self._trigger_by_stamp[header_stamp_ns] = registered
         self._write({
-            "schema": SCHEMA, "kind": "ideal_odom_trigger", **registered,
+            "schema": self.schema, "kind": "ideal_odom_trigger", **registered,
             "recorded_sequence": int(loop_sequence), "sim_time_ns": header_stamp_ns,
             "loop_publish_count": int(receipt["loop_publish_count"]),
             "trigger_status": bool(receipt.get("trigger_status", False)),
@@ -265,7 +277,7 @@ class R2C1Trace:
         simulation_time_s: float, payload: dict[str, object],
     ) -> None:
         self._write({
-            "schema": SCHEMA, "kind": "realized_next_state",
+            "schema": self.schema, "kind": "realized_next_state",
             "trigger_loop_sequence": int(trigger_loop_sequence), "reset_epoch": int(reset_epoch),
             "simulation_time_s": float(simulation_time_s), "realized_next_payload": payload,
         })
@@ -293,7 +305,7 @@ class R2C1Trace:
             else int(arrival_loop_sequence) - trigger_loop
         )
         self._write({
-            "schema": SCHEMA, "kind": "odom_receive", **trigger,
+            "schema": self.schema, "kind": "odom_receive", **trigger,
             "header_stamp_ns": header_stamp_ns, "same_stamp_ordinal": ordinal,
             "arrival_loop_sequence": int(arrival_loop_sequence),
             "callback_monotonic_ns": received_ns,
@@ -314,7 +326,7 @@ class R2C1Trace:
             trigger = self._trigger(header_stamp_ns)
             translation, rotation = transform.transform.translation, transform.transform.rotation
             self._write({
-                "schema": SCHEMA, "kind": "tf_receive", **trigger,
+                "schema": self.schema, "kind": "tf_receive", **trigger,
                 "header_stamp_ns": header_stamp_ns,
                 "arrival_loop_sequence": int(arrival_loop_sequence),
                 "callback_monotonic_ns": time.monotonic_ns(), "callback_latency_ns": None,
@@ -335,7 +347,7 @@ class R2C1Trace:
             if value:
                 self._collision_count += 1
         self._write({
-            "schema": SCHEMA, "kind": "collision_receive", "reset_epoch": int(reset_epoch),
+            "schema": self.schema, "kind": "collision_receive", "reset_epoch": int(reset_epoch),
             "collision_detected": value, "callback_monotonic_ns": time.monotonic_ns(),
         })
 
@@ -344,7 +356,7 @@ class R2C1Trace:
         clearance_m: float,
     ) -> None:
         self._write({
-            "schema": SCHEMA, "kind": "segment_end", "segment_index": int(segment_index),
+            "schema": self.schema, "kind": "segment_end", "segment_index": int(segment_index),
             "segment_id": str(segment_id), "reset_epoch": int(reset_epoch),
             "collision_count": self.collision_count, "clearance_m": float(clearance_m),
         })

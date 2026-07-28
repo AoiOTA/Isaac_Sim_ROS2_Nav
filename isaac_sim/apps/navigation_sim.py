@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -223,6 +224,21 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="frozen R2C2A collision-bounds fallback configuration",
     )
+    parser.add_argument(
+        "--r2c3-free-space-motion-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C3 envelope-bound, "
+            "reset-separated free-space motion and odometry trace"
+        ),
+    )
+    parser.add_argument(
+        "--r2c3-collision-bounds-config",
+        type=Path,
+        default=None,
+        help="frozen R2C3 collision-bounds fallback configuration",
+    )
     return parser
 
 
@@ -405,6 +421,8 @@ def run(
     r2c2_free_space_envelope_path: Path | None = None,
     r2c2a_free_space_envelope_path: Path | None = None,
     r2c2a_collision_bounds_config_path: Path | None = None,
+    r2c3_free_space_motion_trace_path: Path | None = None,
+    r2c3_collision_bounds_config_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -472,13 +490,20 @@ def run(
             or r2c1_free_space_trace_path is not None
             or r2c2_free_space_envelope_path is not None
             or r2c2a_free_space_envelope_path is not None
+            or r2c3_free_space_motion_trace_path is not None
         ):
             # The warehouse Stage's normal end code is shorter than the
             # frozen 61-second probe.  This transient extension is scoped to
             # the default-off diagnostic mode and is never saved to USD.
-            if r2c2_free_space_envelope_path is not None or r2c2a_free_space_envelope_path is not None:
+            if (
+                r2c2_free_space_envelope_path is not None
+                or r2c2a_free_space_envelope_path is not None
+            ):
                 required_end = int(math.ceil(5.0 * config.simulation.rendering_hz))
-            elif r2c1_free_space_trace_path is not None:
+            elif (
+                r2c1_free_space_trace_path is not None
+                or r2c3_free_space_motion_trace_path is not None
+            ):
                 from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
                     SegmentedFreeSpaceScript,
                 )
@@ -701,7 +726,10 @@ def run(
         r2c1_script = None
         r2c1_publisher = None
         r2c1_state: dict[str, object] | None = None
-        if r2c1_free_space_trace_path is not None:
+        if (
+            r2c1_free_space_trace_path is not None
+            or r2c3_free_space_motion_trace_path is not None
+        ):
             from geometry_msgs.msg import Twist
             from nav_msgs.msg import Odometry
             from std_msgs.msg import Bool
@@ -715,58 +743,84 @@ def run(
                 minimum_xy_clearance,
             )
 
-            # Read the composed USD collision bounds before any probe command.
-            # Horizontal floor slabs are deliberately excluded: they are a
-            # legitimate z contact, not a planar obstacle to drive around.
             from pxr import Usd, UsdGeom, UsdPhysics
-            cache = UsdGeom.BBoxCache(
-                Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
-            )
-            static_bounds_xy: list[tuple[float, float, float, float]] = []
-            aggregate_collision_parent_count = 0
-            for prim in Usd.PrimRange(stage.GetPseudoRoot()):
-                prim_path = str(prim.GetPath())
-                if prim_path.startswith(config.robot.articulation_root):
-                    continue
-                if not prim.HasAPI(UsdPhysics.CollisionAPI):
-                    continue
-                if not is_leaf_collision_prim(
-                    prim,
-                    collision_api=UsdPhysics.CollisionAPI,
-                    prim_range=Usd.PrimRange,
-                ):
-                    aggregate_collision_parent_count += 1
-                    continue
-                bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
-                lower, upper = bounds.GetMin(), bounds.GetMax()
-                if float(upper[2]) - float(lower[2]) <= 0.12:
-                    continue
-                static_bounds_xy.append((
-                    float(lower[0]), float(lower[1]),
-                    float(upper[0]), float(upper[1]),
-                ))
-            start_position, start_orientation = robot.get_world_pose()
-            start_yaw = math.atan2(
-                2.0 * (start_orientation[0] * start_orientation[3] + start_orientation[1] * start_orientation[2]),
-                1.0 - 2.0 * (start_orientation[2] ** 2 + start_orientation[3] ** 2),
-            )
-            clearance_by_segment = {
-                segment.segment_id: minimum_xy_clearance(
-                    start_xy=(float(start_position[0]), float(start_position[1])),
-                    yaw_rad=start_yaw, segment=segment,
-                    obstacle_bounds_xy=static_bounds_xy,
+            r2c3_mode = r2c3_free_space_motion_trace_path is not None
+            r2c3_preflight = None
+            trace_schema = None
+            trace_path = r2c1_free_space_trace_path
+            trace_manifest: dict[str, object]
+            collider_trace_rows: list[dict[str, object]] = []
+
+            if not r2c3_mode:
+                # Preserve the historical R2C1 two-dimensional preflight
+                # exactly.  R2C3 uses the separate three-dimensional branch
+                # below and never changes old trace behavior.
+                cache = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
                 )
-                for segment in SegmentedFreeSpaceScript.segments
-            }
-            r2c1_trace = R2C1Trace(
-                r2c1_free_space_trace_path,
-                manifest={
-                    "environment_source_asset": str(config.environment.source_asset),
-                    "environment_project_stage": str(config.environment.project_stage),
+                static_bounds_xy: list[tuple[float, float, float, float]] = []
+                aggregate_collision_parent_count = 0
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    prim_path = str(prim.GetPath())
+                    if prim_path.startswith(config.robot.articulation_root):
+                        continue
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    if not is_leaf_collision_prim(
+                        prim,
+                        collision_api=UsdPhysics.CollisionAPI,
+                        prim_range=Usd.PrimRange,
+                    ):
+                        aggregate_collision_parent_count += 1
+                        continue
+                    bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                    lower, upper = bounds.GetMin(), bounds.GetMax()
+                    if float(upper[2]) - float(lower[2]) <= 0.12:
+                        continue
+                    static_bounds_xy.append((
+                        float(lower[0]), float(lower[1]),
+                        float(upper[0]), float(upper[1]),
+                    ))
+                start_position, start_orientation = robot.get_world_pose()
+                start_yaw = math.atan2(
+                    2.0 * (
+                        start_orientation[0] * start_orientation[3]
+                        + start_orientation[1] * start_orientation[2]
+                    ),
+                    1.0 - 2.0 * (
+                        start_orientation[2] ** 2
+                        + start_orientation[3] ** 2
+                    ),
+                )
+                clearance_by_segment = {
+                    segment.segment_id: minimum_xy_clearance(
+                        start_xy=(
+                            float(start_position[0]),
+                            float(start_position[1]),
+                        ),
+                        yaw_rad=start_yaw,
+                        segment=segment,
+                        obstacle_bounds_xy=static_bounds_xy,
+                    )
+                    for segment in SegmentedFreeSpaceScript.segments
+                }
+                trace_manifest = {
+                    "environment_source_asset": str(
+                        config.environment.source_asset
+                    ),
+                    "environment_project_stage": str(
+                        config.environment.project_stage
+                    ),
                     "spawn_pose_name": config.spawn.selected,
-                    "spawn_poses_sha256": hashlib.sha256(config.spawn.poses_file.read_bytes()).hexdigest(),
-                    "config_sha256": hashlib.sha256(repr(config).encode("utf-8")).hexdigest(),
-                    "robot_config_sha256": hashlib.sha256(config.files.robot.read_bytes()).hexdigest(),
+                    "spawn_poses_sha256": hashlib.sha256(
+                        config.spawn.poses_file.read_bytes()
+                    ).hexdigest(),
+                    "config_sha256": hashlib.sha256(
+                        repr(config).encode("utf-8")
+                    ).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(
+                        config.files.robot.read_bytes()
+                    ).hexdigest(),
                     "physics_hz": config.simulation.physics_hz,
                     "rendering_hz": config.simulation.rendering_hz,
                     "physics_dt_s": 1.0 / config.simulation.physics_hz,
@@ -784,11 +838,445 @@ def run(
                     "delivery_recorder_mode": "dedicated",
                     "required_clearance_m": REQUIRED_CLEARANCE_M,
                     "static_collision_bound_count": len(static_bounds_xy),
-                    "aggregate_collision_parent_excluded_count": aggregate_collision_parent_count,
+                    "aggregate_collision_parent_excluded_count": (
+                        aggregate_collision_parent_count
+                    ),
                     "swept_clearance_m": clearance_by_segment,
-                    "probe_segments": [segment.segment_id for segment in SegmentedFreeSpaceScript.segments],
-                },
+                    "probe_segments": [
+                        segment.segment_id
+                        for segment in SegmentedFreeSpaceScript.segments
+                    ],
+                }
+            else:
+                if r2c3_collision_bounds_config_path is None:
+                    raise RuntimeError(
+                        "R2C3 requires a collision-bounds configuration"
+                    )
+                from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                    yaw_from_wxyz,
+                )
+                from isaac_sim.src.diagnostics.r2c2_free_space_envelope import (
+                    Bounds3D,
+                    Collider,
+                    SUPPORT_HEIGHT_VARIATION_M,
+                    assess_envelope,
+                )
+                from isaac_sim.src.diagnostics.r2c2a_invisible_collision_bounds import (
+                    load_collision_bounds_config,
+                    resolve_collision_bounds,
+                )
+                from isaac_sim.src.diagnostics.r2c3_free_space_motion import (
+                    FROZEN_SEED,
+                    SCHEMA as R2C3_SCHEMA,
+                    evaluate_envelope_preflight,
+                )
+                from isaac_sim.src.yaml_utils import load_mapping
+
+                bounds_config = load_collision_bounds_config(
+                    r2c3_collision_bounds_config_path
+                )
+                if (
+                    bounds_config.source_asset_name
+                    != config.environment.source_asset.name
+                ):
+                    raise RuntimeError(
+                        "R2C3 collision-bounds configuration does not match "
+                        "the source USD"
+                    )
+                robot_geometry = load_mapping(config.files.robot)
+                footprint = robot_geometry.get("footprint")
+                wheel_radius = robot_geometry.get("wheel_radius")
+                if (
+                    not isinstance(footprint, list)
+                    or not isinstance(wheel_radius, (int, float))
+                ):
+                    raise RuntimeError(
+                        "R2C3 requires robot footprint and wheel_radius"
+                    )
+                footprint_points = [
+                    [float(value) for value in point] for point in footprint
+                ]
+                purposes = [
+                    UsdGeom.Tokens.default_,
+                    UsdGeom.Tokens.render,
+                    UsdGeom.Tokens.proxy,
+                    UsdGeom.Tokens.guide,
+                ]
+                normal_bbox_cache = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), purposes, False, False
+                )
+                invisible_bbox_cache = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), purposes, False, True
+                )
+
+                def r2c3_bounds_for(cache, prim) -> Bounds3D:
+                    bounds = cache.ComputeWorldBound(
+                        prim
+                    ).ComputeAlignedRange()
+                    lower, upper = bounds.GetMin(), bounds.GetMax()
+                    return Bounds3D(
+                        float(lower[0]),
+                        float(lower[1]),
+                        float(lower[2]),
+                        float(upper[0]),
+                        float(upper[1]),
+                        float(upper[2]),
+                    )
+
+                def r2c3_collision_enabled(prim) -> bool:
+                    attribute = UsdPhysics.CollisionAPI(
+                        prim
+                    ).GetCollisionEnabledAttr()
+                    value = attribute.Get() if attribute.IsValid() else True
+                    return bool(True if value is None else value)
+
+                def r2c3_finite_transform(prim) -> bool:
+                    matrix = UsdGeom.Xformable(
+                        prim
+                    ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    return all(
+                        math.isfinite(float(value))
+                        for row in matrix
+                        for value in row
+                    )
+
+                def r2c3_descendant_facts(
+                    prim,
+                ) -> tuple[tuple[str, ...], tuple[str, ...], bool, str]:
+                    gprims: list[str] = []
+                    nested_collisions: list[str] = []
+                    visibility: list[str] = []
+                    finite = True
+                    for descendant in Usd.PrimRange(prim):
+                        if descendant == prim:
+                            continue
+                        if descendant.HasAPI(UsdPhysics.CollisionAPI):
+                            nested_collisions.append(
+                                str(descendant.GetPath())
+                            )
+                        if descendant.IsActive() and descendant.IsA(
+                            UsdGeom.Gprim
+                        ):
+                            gprims.append(str(descendant.GetPath()))
+                            imageable = UsdGeom.Imageable(descendant)
+                            visibility.append(
+                                str(
+                                    imageable.ComputeVisibility(
+                                        Usd.TimeCode.Default()
+                                    )
+                                )
+                            )
+                            finite = (
+                                finite
+                                and r2c3_bounds_for(
+                                    invisible_bbox_cache, descendant
+                                ).finite()
+                                and r2c3_finite_transform(descendant)
+                            )
+                    effective_visibility = (
+                        ",".join(sorted(set(visibility)))
+                        if visibility
+                        else "none"
+                    )
+                    return (
+                        tuple(gprims),
+                        tuple(nested_collisions),
+                        finite,
+                        effective_visibility,
+                    )
+
+                r2c3_colliders: list[Collider] = []
+                r2c3_metadata: dict[str, dict[str, object]] = {}
+                source_leaf_count = 0
+                aggregate_count = 0
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    path = str(prim.GetPath())
+                    aggregate = not is_leaf_collision_prim(
+                        prim,
+                        collision_api=UsdPhysics.CollisionAPI,
+                        prim_range=Usd.PrimRange,
+                    )
+                    if path.startswith(config.robot.articulation_root):
+                        continue
+                    if aggregate:
+                        aggregate_count += 1
+                        bounds = r2c3_bounds_for(normal_bbox_cache, prim)
+                        r2c3_colliders.append(
+                            Collider(
+                                path,
+                                bounds,
+                                r2c3_collision_enabled(prim),
+                                aggregate=True,
+                            )
+                        )
+                        r2c3_metadata[path] = {
+                            "bounds_source": "AGGREGATE_EXCLUDED",
+                            "source_gprim_paths": [],
+                            "effective_visibility": "not_applicable",
+                            "fallback_reason": (
+                                "AGGREGATE_COLLISION_PARENT"
+                            ),
+                            "collision_schema_noncanonical": (
+                                not prim.IsA(UsdGeom.Gprim)
+                            ),
+                            "fallback_bounds_source_delta_m": None,
+                        }
+                        continue
+                    if path.startswith("/Root/"):
+                        source_leaf_count += 1
+                    (
+                        gprims,
+                        nested_collisions,
+                        descendants_finite,
+                        effective_visibility,
+                    ) = r2c3_descendant_facts(prim)
+                    resolution = resolve_collision_bounds(
+                        path=path,
+                        primary_bounds=r2c3_bounds_for(
+                            normal_bbox_cache, prim
+                        ),
+                        fallback_bounds=r2c3_bounds_for(
+                            invisible_bbox_cache, prim
+                        ),
+                        collision_enabled=r2c3_collision_enabled(prim),
+                        is_leaf_collision=True,
+                        active_gprim_paths=gprims,
+                        descendant_collision_paths=nested_collisions,
+                        descendants_finite=descendants_finite,
+                        effective_visibility=effective_visibility,
+                        collision_schema_noncanonical=(
+                            not prim.IsA(UsdGeom.Gprim)
+                        ),
+                        config=bounds_config,
+                    )
+                    fields = resolution.trace_fields()
+                    if (
+                        resolution.bounds_source
+                        == "INVISIBLE_COLLISION_SUBTREE_FALLBACK"
+                    ):
+                        source_bounds = r2c3_bounds_for(
+                            invisible_bbox_cache,
+                            stage.GetPrimAtPath(gprims[0]),
+                        )
+                        source_delta = (
+                            max(
+                                abs(left - right)
+                                for left, right in zip(
+                                    (
+                                        resolution.bounds.min_x,
+                                        resolution.bounds.min_y,
+                                        resolution.bounds.min_z,
+                                        resolution.bounds.max_x,
+                                        resolution.bounds.max_y,
+                                        resolution.bounds.max_z,
+                                    ),
+                                    (
+                                        source_bounds.min_x,
+                                        source_bounds.min_y,
+                                        source_bounds.min_z,
+                                        source_bounds.max_x,
+                                        source_bounds.max_y,
+                                        source_bounds.max_z,
+                                    ),
+                                )
+                            )
+                            if source_bounds.finite()
+                            else math.inf
+                        )
+                        fields[
+                            "fallback_bounds_source_delta_m"
+                        ] = source_delta
+                    else:
+                        fields["fallback_bounds_source_delta_m"] = None
+                    r2c3_colliders.append(
+                        Collider(
+                            path,
+                            resolution.bounds,
+                            r2c3_collision_enabled(prim),
+                        )
+                    )
+                    r2c3_metadata[path] = fields
+
+                frozen_fallback_paths = tuple(
+                    item.collision_prim for item in bounds_config.fallbacks
+                )
+                clearance_by_segment = {
+                    segment.segment_id: math.nan
+                    for segment in SegmentedFreeSpaceScript.segments
+                }
+                trace_path = r2c3_free_space_motion_trace_path
+                trace_schema = R2C3_SCHEMA
+                trace_manifest = {
+                    "environment_source_asset": str(
+                        config.environment.source_asset
+                    ),
+                    "environment_source_sha256": hashlib.sha256(
+                        config.environment.source_asset.read_bytes()
+                    ).hexdigest(),
+                    "environment_project_stage": str(
+                        config.environment.project_stage
+                    ),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(
+                        config.spawn.poses_file.read_bytes()
+                    ).hexdigest(),
+                    "config_sha256": hashlib.sha256(
+                        repr(config).encode("utf-8")
+                    ).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(
+                        config.files.robot.read_bytes()
+                    ).hexdigest(),
+                    "collision_bounds_config_path": str(
+                        r2c3_collision_bounds_config_path
+                    ),
+                    "collision_bounds_config_sha256": hashlib.sha256(
+                        r2c3_collision_bounds_config_path.read_bytes()
+                    ).hexdigest(),
+                    "collision_bounds_config_schema": (
+                        "bio_nav_stage2_2_r2c2a_collision_bounds_config_v1"
+                    ),
+                    "fallback_mappings": [
+                        {
+                            "collision_prim": item.collision_prim,
+                            "source_gprim": item.source_gprim,
+                        }
+                        for item in bounds_config.fallbacks
+                    ],
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "physics_dt_s": 1.0 / config.simulation.physics_hz,
+                    "render_dt_s": 1.0 / config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "camera_enabled": False,
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "seed": FROZEN_SEED,
+                    "reset_random_seed": dynamic_scenario.seed,
+                    "dedicated_delivery_executor": True,
+                    "delivery_recorder_mode": "dedicated",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "support_height_variation_m": (
+                        SUPPORT_HEIGHT_VARIATION_M
+                    ),
+                    "wheel_radius_m": float(wheel_radius),
+                    "footprint": footprint_points,
+                    "source_leaf_collision_count": source_leaf_count,
+                    "aggregate_collision_parent_excluded_count": (
+                        aggregate_count
+                    ),
+                    "probe_segments": [
+                        segment.segment_id
+                        for segment in SegmentedFreeSpaceScript.segments
+                    ],
+                }
+                for collider in r2c3_colliders:
+                    collider_trace_rows.append({
+                        "kind": "collider_bounds",
+                        "path": collider.path,
+                        "bounds": collider.bounds.as_dict(),
+                        "enabled": collider.enabled,
+                        "aggregate": collider.aggregate,
+                        **r2c3_metadata[collider.path],
+                    })
+
+                def capture_r2c3_preflight(
+                    segment_id: str,
+                ):
+                    position, orientation = robot.get_world_pose()
+                    yaw = yaw_from_wxyz(
+                        tuple(float(item) for item in orientation)
+                    )
+                    current_cache = UsdGeom.BBoxCache(
+                        Usd.TimeCode.Default(), purposes, False, False
+                    )
+                    robot_bounds: list[Bounds3D] = []
+                    for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                            continue
+                        path = str(prim.GetPath())
+                        if not path.startswith(
+                            config.robot.articulation_root
+                        ):
+                            continue
+                        if is_leaf_collision_prim(
+                            prim,
+                            collision_api=UsdPhysics.CollisionAPI,
+                            prim_range=Usd.PrimRange,
+                        ):
+                            robot_bounds.append(
+                                r2c3_bounds_for(current_cache, prim)
+                            )
+                    if (
+                        not robot_bounds
+                        or not all(item.finite() for item in robot_bounds)
+                    ):
+                        raise RuntimeError(
+                            "R2C3 robot collision envelope is unavailable"
+                        )
+                    robot_envelope = Bounds3D(
+                        min(item.min_x for item in robot_bounds),
+                        min(item.min_y for item in robot_bounds),
+                        min(item.min_z for item in robot_bounds),
+                        max(item.max_x for item in robot_bounds),
+                        max(item.max_y for item in robot_bounds),
+                        max(item.max_z for item in robot_bounds),
+                    )
+                    support_plane_z = (
+                        float(position[2]) - float(wheel_radius)
+                    )
+                    classified, assessments = assess_envelope(
+                        footprint=footprint_points,
+                        start_x=float(position[0]),
+                        start_y=float(position[1]),
+                        start_yaw=yaw,
+                        support_plane_z=support_plane_z,
+                        robot_max_z=robot_envelope.max_z,
+                        colliders=r2c3_colliders,
+                    )
+                    for item in classified:
+                        item.update(r2c3_metadata[item["path"]])
+                    assessment = next(
+                        item
+                        for item in assessments
+                        if item.segment_id == segment_id
+                    )
+                    preflight = evaluate_envelope_preflight(
+                        assessment=assessment,
+                        classified_colliders=classified,
+                        frozen_fallback_paths=frozen_fallback_paths,
+                    )
+                    classification_sha256 = hashlib.sha256(
+                        json.dumps(
+                            classified,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    return (
+                        preflight,
+                        robot_envelope,
+                        support_plane_z,
+                        [float(item) for item in position],
+                        yaw,
+                        classification_sha256,
+                    )
+
+                r2c3_preflight = capture_r2c3_preflight
+
+            if trace_path is None:
+                raise RuntimeError("free-space diagnostic trace path missing")
+            r2c1_trace = R2C1Trace(
+                trace_path,
+                manifest=trace_manifest,
+                **({} if trace_schema is None else {"schema": trace_schema}),
             )
+            for row in collider_trace_rows:
+                r2c1_trace.write(row)
             r2c1_script = SegmentedFreeSpaceScript()
             r2c1_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
             r2c1_state = {
@@ -800,11 +1288,18 @@ def run(
                 "clearance_by_segment": clearance_by_segment,
                 "last_trigger": None,
                 "observer_loop_sequence": -1,
+                "r2c3_mode": r2c3_mode,
+                "preflight": r2c3_preflight,
+                "preflight_done": not r2c3_mode,
             }
             # A dedicated diagnostic node/executor prevents the main loop's
             # non-blocking spin from becoming a sampling/receipt bottleneck.
             r2c1_observer_node = Node(
-                "isaac_r2c1_odom_observer",
+                (
+                    "isaac_r2c3_odom_observer"
+                    if r2c3_mode
+                    else "isaac_r2c1_odom_observer"
+                ),
                 namespace=config.ros2.namespace,
                 parameter_overrides=[Parameter("use_sim_time", value=True)],
                 automatically_declare_parameters_from_overrides=True,
@@ -834,7 +1329,11 @@ def run(
             import threading
             r2c1_observer_thread = threading.Thread(
                 target=r2c1_observer_executor.spin,
-                name="r2c1-odom-observer",
+                name=(
+                    "r2c3-odom-observer"
+                    if r2c3_mode
+                    else "r2c1-odom-observer"
+                ),
                 daemon=True,
             )
             r2c1_observer_thread.start()
@@ -1289,19 +1788,25 @@ def run(
                 ):
                     segment_index = int(r2c1_state["segment_index"]) + 1
                     segment = r2c1_script.segments[segment_index]
-                    clearance_m = float(r2c1_state["clearance_by_segment"][segment.segment_id])
-                    valid = clearance_m >= REQUIRED_CLEARANCE_M
-                    r2c1_trace.record_preflight(
-                        segment_index=segment_index,
-                        segment_id=segment.segment_id,
-                        clearance_m=clearance_m,
-                        valid=valid,
-                    )
-                    if not valid:
-                        raise RuntimeError(
-                            "R2C1 free-space preflight failed: "
-                            f"clearance={clearance_m:.3f}m < {REQUIRED_CLEARANCE_M:.3f}m"
+                    if not bool(r2c1_state["r2c3_mode"]):
+                        clearance_m = float(
+                            r2c1_state["clearance_by_segment"][
+                                segment.segment_id
+                            ]
                         )
+                        valid = clearance_m >= REQUIRED_CLEARANCE_M
+                        r2c1_trace.record_preflight(
+                            segment_index=segment_index,
+                            segment_id=segment.segment_id,
+                            clearance_m=clearance_m,
+                            valid=valid,
+                        )
+                        if not valid:
+                            raise RuntimeError(
+                                "R2C1 free-space preflight failed: "
+                                f"clearance={clearance_m:.3f}m < "
+                                f"{REQUIRED_CLEARANCE_M:.3f}m"
+                            )
                     r2c1_state["segment_index"] = segment_index
                     r2c1_state["reset_epoch"] = int(r2c1_state["reset_epoch"]) + 1
                     transaction = reset_bridge.start_reset(
@@ -1365,6 +1870,9 @@ def run(
                     r2c1_state["pending_reset"] = None
                     r2c1_state["segment_started_at"] = simulation_time
                     r2c1_state["active"] = True
+                    r2c1_state["preflight_done"] = not bool(
+                        r2c1_state["r2c3_mode"]
+                    )
                     r2c1_trace.record_segment_reset(
                         segment_index=int(r2c1_state["segment_index"]),
                         segment_id=segment.segment_id,
@@ -1393,6 +1901,75 @@ def run(
                             payload=r2c1_after_app_payload,
                         )
                         r2c1_state["last_trigger"] = None
+                    if (
+                        bool(r2c1_state["r2c3_mode"])
+                        and not bool(r2c1_state["preflight_done"])
+                        and elapsed >= r2c1_script.settle_s
+                    ):
+                        capture = r2c1_state["preflight"]
+                        if not callable(capture):
+                            raise RuntimeError(
+                                "R2C3 envelope preflight is unavailable"
+                            )
+                        (
+                            preflight,
+                            robot_envelope,
+                            support_plane_z,
+                            robot_position,
+                            robot_yaw,
+                            classification_sha256,
+                        ) = capture(segment.segment_id)
+                        r2c1_state["clearance_by_segment"][
+                            segment.segment_id
+                        ] = preflight.minimum_clearance_m
+                        r2c1_trace.write({
+                            "kind": "robot_envelope",
+                            "segment_index": int(
+                                r2c1_state["segment_index"]
+                            ),
+                            "segment_id": segment.segment_id,
+                            "reset_epoch": int(
+                                r2c1_state["reset_epoch"]
+                            ),
+                            "bounds": robot_envelope.as_dict(),
+                            "support_plane_z": support_plane_z,
+                            "robot_position": robot_position,
+                            "robot_yaw_rad": robot_yaw,
+                        })
+                        r2c1_trace.write({
+                            "kind": "segment_envelope_preflight",
+                            "segment_index": int(
+                                r2c1_state["segment_index"]
+                            ),
+                            "reset_epoch": int(
+                                r2c1_state["reset_epoch"]
+                            ),
+                            "classification_sha256": (
+                                classification_sha256
+                            ),
+                            **preflight.trace_fields(),
+                        })
+                        r2c1_trace.record_preflight(
+                            segment_index=int(
+                                r2c1_state["segment_index"]
+                            ),
+                            segment_id=segment.segment_id,
+                            clearance_m=preflight.minimum_clearance_m,
+                            valid=preflight.valid,
+                        )
+                        r2c1_state["preflight_done"] = True
+                        if not preflight.valid:
+                            raise RuntimeError(
+                                "R2C3 envelope preflight failed for "
+                                f"{segment.segment_id}: "
+                                f"coverage={preflight.support_coverage:.6f}, "
+                                "height_variation="
+                                f"{preflight.support_height_variation_m:.6f}m, "
+                                "clearance="
+                                f"{preflight.minimum_clearance_m:.6f}m, "
+                                "fallback_delta="
+                                f"{preflight.fallback_source_delta_max_m:.6g}m"
+                            )
             command = None
             if odom_phase_script is not None and odom_phase_publisher is not None:
                 command = odom_phase_script.command(simulation_time)
@@ -1621,9 +2198,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.r2c1_free_space_trace is not None,
         args.r2c2_free_space_envelope is not None,
         args.r2c2a_free_space_envelope is not None,
+        args.r2c3_free_space_motion_trace is not None,
     ]
     if sum(diagnostic_modes) > 1:
-        raise ValueError("odom phase, R2C1, R2C2 and R2C2A diagnostic modes are mutually exclusive")
+        raise ValueError(
+            "odom phase, R2C1, R2C2, R2C2A and R2C3 diagnostic modes "
+            "are mutually exclusive"
+        )
     if args.r2c2a_collision_bounds_config is not None and args.r2c2a_free_space_envelope is None:
         raise ValueError("--r2c2a-collision-bounds-config requires --r2c2a-free-space-envelope")
     if args.r2c2a_free_space_envelope is not None:
@@ -1631,6 +2212,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("R2C2A requires --r2c2a-collision-bounds-config")
         if not args.r2c2a_collision_bounds_config.expanduser().resolve().is_file():
             raise ValueError(f"R2C2A collision-bounds config not found: {args.r2c2a_collision_bounds_config}")
+    if (
+        args.r2c3_collision_bounds_config is not None
+        and args.r2c3_free_space_motion_trace is None
+    ):
+        raise ValueError(
+            "--r2c3-collision-bounds-config requires "
+            "--r2c3-free-space-motion-trace"
+        )
+    if args.r2c3_free_space_motion_trace is not None:
+        if args.r2c3_collision_bounds_config is None:
+            raise ValueError(
+                "R2C3 requires --r2c3-collision-bounds-config"
+            )
+        if not (
+            args.r2c3_collision_bounds_config.expanduser().resolve().is_file()
+        ):
+            raise ValueError(
+                "R2C3 collision-bounds config not found: "
+                f"{args.r2c3_collision_bounds_config}"
+            )
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
     appearance_config = args.appearance_config.expanduser().resolve()
@@ -1653,8 +2254,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         dynamic_scenario = replace(
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
         )
-    if (args.r2c1_free_space_trace is not None or args.r2c2_free_space_envelope is not None
-            or args.r2c2a_free_space_envelope is not None):
+    if (
+        args.r2c1_free_space_trace is not None
+        or args.r2c2_free_space_envelope is not None
+        or args.r2c2a_free_space_envelope is not None
+        or args.r2c3_free_space_motion_trace is not None
+    ):
         if config.simulation.odometry_mode != "ideal":
             raise ValueError("R2C diagnostic modes require --mode ideal")
         if config.spawn.selected != "mapping_start":
@@ -1710,6 +2315,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         None if args.r2c2_free_space_envelope is None else args.r2c2_free_space_envelope.expanduser().resolve(),
         None if args.r2c2a_free_space_envelope is None else args.r2c2a_free_space_envelope.expanduser().resolve(),
         None if args.r2c2a_collision_bounds_config is None else args.r2c2a_collision_bounds_config.expanduser().resolve(),
+        None if args.r2c3_free_space_motion_trace is None else args.r2c3_free_space_motion_trace.expanduser().resolve(),
+        None if args.r2c3_collision_bounds_config is None else args.r2c3_collision_bounds_config.expanduser().resolve(),
     )
     return 0
 
