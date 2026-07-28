@@ -1,7 +1,7 @@
-# Stage 2.2-R2C4: development-only pose-delta same-ingress Shadow routes.
+# Stage 2.2-R2C4-R25: formal pose-delta same-ingress Shadow routes.
 schema_version: 1
 scenario:
-  id: kujiale_stage2_2_r2c4_r24_static
+  id: kujiale_stage2_2_r2c4_r25_static
   type: static
   spawn_pose_name: long_route_start_g1
   map_version: warehouse_new
@@ -15,10 +15,10 @@ scenario:
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
-      - {seed: 9081, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
-      - {seed: 9081, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
-      - {seed: 9082, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
-      - {seed: 9082, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 8801, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 8801, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 8802, case_id: static, variant_id: v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 8802, case_id: static, variant_id: v1, condition_id: static_baseline, appearance_profile_id: baseline}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
