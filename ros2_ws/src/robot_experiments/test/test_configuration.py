@@ -226,6 +226,16 @@ def test_r3_r1_r1_r1_r2_authorization_only_contract_matches_runtime_manifests():
         assert scenario.route[-1] == scenario.goal
 
 
+def test_r3_camera_repair_authorization_scenarios_use_fresh_seeds_and_full_manifests():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_r3_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_r3_dynamic.yaml")
+    assert [row.seed for row in static.run_matrix] == [9800]
+    assert [row.seed for row in dynamic.run_matrix] == [9900]
+    assert len(static.obstacles["static"]) == 6
+    assert len(dynamic.obstacle_trajectories) == 7
+    assert dynamic.run_matrix[0].case_id == "full_route_three_stage"
+
+
 def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
     static = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_static.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_dynamic.yaml")
