@@ -2464,7 +2464,8 @@ class ExperimentRunner(Node):
             "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
             "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan", "/optimal_trajectory",
             "/local_costmap/costmap_raw", "/global_costmap/costmap_raw", "/scan",
-            "/camera/front/image_raw", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision",
+            "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision", "/simulation/reset_event", "/initialpose",
+            "/bio_nav/module2/planning_prior", "/diagnostics", "/cmd_vel_nav",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
         log = (root / "bag_record.log").open("wb")

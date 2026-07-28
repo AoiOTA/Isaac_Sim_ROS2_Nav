@@ -161,6 +161,17 @@ def test_4x20_static_and_dynamic_pairs_are_balanced_and_seed_paired():
     )
 
 
+def test_r2c4_development_matrix_is_new_and_balanced():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_development_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_development_dynamic.yaml")
+    assert [row.seed for row in static.run_matrix] == [8001, 8001, 8002, 8002]
+    assert [row.seed for row in dynamic.run_matrix] == [8101, 8101, 8102, 8102]
+    assert [row.condition_id for row in static.run_matrix] == ["static_baseline", "static_appearance", "static_appearance", "static_baseline"]
+    assert [row.condition_id for row in dynamic.run_matrix] == ["dynamic_baseline", "dynamic_appearance", "dynamic_appearance", "dynamic_baseline"]
+    assert [row.appearance_profile_id for row in static.run_matrix] == ["baseline", "dim_warm", "dim_cool", "baseline"]
+    assert [row.appearance_profile_id for row in dynamic.run_matrix] == ["baseline", "dim_warm", "dim_cool", "baseline"]
+
+
 def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
     static = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_static.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_dynamic.yaml")
