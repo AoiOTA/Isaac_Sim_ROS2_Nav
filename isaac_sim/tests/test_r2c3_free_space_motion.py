@@ -250,3 +250,14 @@ def test_r2c3_cli_requires_explicit_trace_and_bounds_paths():
     ])
     assert str(args.r2c3_free_space_motion_trace).endswith("r2c3.jsonl")
     assert str(args.r2c3_collision_bounds_config).endswith("r2c3.yaml")
+
+
+def test_r2d2_cli_is_distinct_and_requires_its_own_bounds_path():
+    args = _parser().parse_args([
+        "--r2d2-live-pose-delta-trace",
+        "/tmp/r2d2.jsonl",
+        "--r2d2-collision-bounds-config",
+        "/tmp/r2d2.yaml",
+    ])
+    assert str(args.r2d2_live_pose_delta_trace).endswith("r2d2.jsonl")
+    assert str(args.r2d2_collision_bounds_config).endswith("r2d2.yaml")

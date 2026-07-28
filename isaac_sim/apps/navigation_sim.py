@@ -239,6 +239,21 @@ def _parser() -> argparse.ArgumentParser:
         default=None,
         help="frozen R2C3 collision-bounds fallback configuration",
     )
+    parser.add_argument(
+        "--r2d2-live-pose-delta-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2D2 armed live Shadow trace; "
+            "requires the frozen R2D2 diagnostic configuration"
+        ),
+    )
+    parser.add_argument(
+        "--r2d2-collision-bounds-config",
+        type=Path,
+        default=None,
+        help="frozen R2D2 collision-bounds fallback configuration",
+    )
     return parser
 
 
@@ -423,6 +438,8 @@ def run(
     r2c2a_collision_bounds_config_path: Path | None = None,
     r2c3_free_space_motion_trace_path: Path | None = None,
     r2c3_collision_bounds_config_path: Path | None = None,
+    r2d2_live_pose_delta_trace_path: Path | None = None,
+    r2d2_collision_bounds_config_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -491,6 +508,7 @@ def run(
             or r2c2_free_space_envelope_path is not None
             or r2c2a_free_space_envelope_path is not None
             or r2c3_free_space_motion_trace_path is not None
+            or r2d2_live_pose_delta_trace_path is not None
         ):
             # The warehouse Stage's normal end code is shorter than the
             # frozen 61-second probe.  This transient extension is scoped to
@@ -503,6 +521,7 @@ def run(
             elif (
                 r2c1_free_space_trace_path is not None
                 or r2c3_free_space_motion_trace_path is not None
+                or r2d2_live_pose_delta_trace_path is not None
             ):
                 from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
                     SegmentedFreeSpaceScript,
@@ -729,6 +748,7 @@ def run(
         if (
             r2c1_free_space_trace_path is not None
             or r2c3_free_space_motion_trace_path is not None
+            or r2d2_live_pose_delta_trace_path is not None
         ):
             from geometry_msgs.msg import Twist
             from nav_msgs.msg import Odometry
@@ -744,7 +764,8 @@ def run(
             )
 
             from pxr import Usd, UsdGeom, UsdPhysics
-            r2c3_mode = r2c3_free_space_motion_trace_path is not None
+            r2d2_mode = r2d2_live_pose_delta_trace_path is not None
+            r2c3_mode = r2c3_free_space_motion_trace_path is not None or r2d2_mode
             r2c3_preflight = None
             trace_schema = None
             trace_path = r2c1_free_space_trace_path
@@ -848,10 +869,6 @@ def run(
                     ],
                 }
             else:
-                if r2c3_collision_bounds_config_path is None:
-                    raise RuntimeError(
-                        "R2C3 requires a collision-bounds configuration"
-                    )
                 from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
                     yaw_from_wxyz,
                 )
@@ -870,11 +887,20 @@ def run(
                     SCHEMA as R2C3_SCHEMA,
                     evaluate_envelope_preflight,
                 )
+                from isaac_sim.src.diagnostics.r2d2_live_pose_delta import (
+                    FROZEN_SEED as R2D2_FROZEN_SEED,
+                    SCHEMA as R2D2_SCHEMA,
+                )
                 from isaac_sim.src.yaml_utils import load_mapping
 
-                bounds_config = load_collision_bounds_config(
-                    r2c3_collision_bounds_config_path
+                selected_collision_bounds_path = (
+                    r2d2_collision_bounds_config_path
+                    if r2d2_mode
+                    else r2c3_collision_bounds_config_path
                 )
+                if selected_collision_bounds_path is None:
+                    raise RuntimeError("R2C3/R2D2 requires a collision-bounds configuration")
+                bounds_config = load_collision_bounds_config(selected_collision_bounds_path)
                 if (
                     bounds_config.source_asset_name
                     != config.environment.source_asset.name
@@ -1106,8 +1132,12 @@ def run(
                     segment.segment_id: math.nan
                     for segment in SegmentedFreeSpaceScript.segments
                 }
-                trace_path = r2c3_free_space_motion_trace_path
-                trace_schema = R2C3_SCHEMA
+                trace_path = (
+                    r2d2_live_pose_delta_trace_path
+                    if r2d2_mode
+                    else r2c3_free_space_motion_trace_path
+                )
+                trace_schema = R2D2_SCHEMA if r2d2_mode else R2C3_SCHEMA
                 trace_manifest = {
                     "environment_source_asset": str(
                         config.environment.source_asset
@@ -1128,11 +1158,9 @@ def run(
                     "robot_config_sha256": hashlib.sha256(
                         config.files.robot.read_bytes()
                     ).hexdigest(),
-                    "collision_bounds_config_path": str(
-                        r2c3_collision_bounds_config_path
-                    ),
+                    "collision_bounds_config_path": str(selected_collision_bounds_path),
                     "collision_bounds_config_sha256": hashlib.sha256(
-                        r2c3_collision_bounds_config_path.read_bytes()
+                        selected_collision_bounds_path.read_bytes()
                     ).hexdigest(),
                     "collision_bounds_config_schema": (
                         "bio_nav_stage2_2_r2c2a_collision_bounds_config_v1"
@@ -1151,11 +1179,16 @@ def run(
                     "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
                     "nav2_enabled": False,
                     "module2_enabled": False,
-                    "camera_enabled": False,
+                    "module2_shadow_expected": bool(r2d2_mode),
+                    "camera_enabled": bool(r2d2_mode),
+                    "camera_profile": (
+                        camera_selection.profile.name if r2d2_mode else "off"
+                    ),
                     "scene": "kujiale",
                     "spawn": "mapping_start",
                     "appearance_profile": "baseline",
-                    "seed": FROZEN_SEED,
+                    "seed": R2D2_FROZEN_SEED if r2d2_mode else FROZEN_SEED,
+                    "r2d2_mode": bool(r2d2_mode),
                     "reset_random_seed": dynamic_scenario.seed,
                     "dedicated_delivery_executor": True,
                     "delivery_recorder_mode": "dedicated",
@@ -1289,14 +1322,38 @@ def run(
                 "last_trigger": None,
                 "observer_loop_sequence": -1,
                 "r2c3_mode": r2c3_mode,
+                "r2d2_mode": r2d2_mode,
+                "armed": not r2d2_mode,
                 "preflight": r2c3_preflight,
                 "preflight_done": not r2c3_mode,
             }
+            if r2d2_mode:
+                from std_srvs.srv import Trigger
+                from isaac_sim.src.diagnostics.r2d2_live_pose_delta import ARM_SERVICE
+
+                def arm_r2d2(_request, response):
+                    if bool(r2c1_state["armed"]):
+                        response.success = False
+                        response.message = "R2D2 diagnostic is already armed"
+                        return response
+                    r2c1_state["armed"] = True
+                    r2c1_trace.write({
+                        "kind": "armed",
+                        "reset_epoch": int(r2c1_state["reset_epoch"]),
+                        "service": ARM_SERVICE,
+                    })
+                    response.success = True
+                    response.message = "R2D2 live Shadow diagnostic armed"
+                    return response
+
+                node.create_service(Trigger, ARM_SERVICE, arm_r2d2)
             # A dedicated diagnostic node/executor prevents the main loop's
             # non-blocking spin from becoming a sampling/receipt bottleneck.
             r2c1_observer_node = Node(
                 (
-                    "isaac_r2c3_odom_observer"
+                    "isaac_r2d2_odom_observer"
+                    if r2d2_mode
+                    else "isaac_r2c3_odom_observer"
                     if r2c3_mode
                     else "isaac_r2c1_odom_observer"
                 ),
@@ -1313,6 +1370,30 @@ def run(
                     arrival_loop_sequence=int(r2c1_state["observer_loop_sequence"]),
                 ), 100,
             )
+            if r2d2_mode:
+                from sensor_msgs.msg import CameraInfo, Image
+                from rclpy.qos import qos_profile_sensor_data
+
+                def r2d2_camera_receipt(message, kind: str) -> None:
+                    stamp = message.header.stamp
+                    r2c1_trace.write({
+                        "kind": kind,
+                        "reset_epoch": int(r2c1_state["reset_epoch"]),
+                        "stamp_ns": int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+                        "width": int(getattr(message, "width", 0)),
+                        "height": int(getattr(message, "height", 0)),
+                    })
+
+                r2c1_observer_node.create_subscription(
+                    Image, "/camera/front/image_raw",
+                    lambda message: r2d2_camera_receipt(message, "camera_receive"),
+                    qos_profile_sensor_data,
+                )
+                r2c1_observer_node.create_subscription(
+                    CameraInfo, "/camera/front/camera_info",
+                    lambda message: r2d2_camera_receipt(message, "camera_info_receive"),
+                    qos_profile_sensor_data,
+                )
             r2c1_observer_node.create_subscription(
                 TFMessage, "/tf",
                 lambda message: r2c1_trace.record_tf(
@@ -1330,7 +1411,9 @@ def run(
             r2c1_observer_thread = threading.Thread(
                 target=r2c1_observer_executor.spin,
                 name=(
-                    "r2c3-odom-observer"
+                    "r2d2-odom-observer"
+                    if r2d2_mode
+                    else "r2c3-odom-observer"
                     if r2c3_mode
                     else "r2c1-odom-observer"
                 ),
@@ -1784,6 +1867,7 @@ def run(
                 if (
                     not bool(r2c1_state["active"])
                     and r2c1_state["pending_reset"] is None
+                    and bool(r2c1_state["armed"])
                     and int(r2c1_state["segment_index"]) + 1 < len(r2c1_script.segments)
                 ):
                     segment_index = int(r2c1_state["segment_index"]) + 1
@@ -2215,10 +2299,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.r2c2_free_space_envelope is not None,
         args.r2c2a_free_space_envelope is not None,
         args.r2c3_free_space_motion_trace is not None,
+        args.r2d2_live_pose_delta_trace is not None,
     ]
     if sum(diagnostic_modes) > 1:
         raise ValueError(
-            "odom phase, R2C1, R2C2, R2C2A and R2C3 diagnostic modes "
+            "odom phase, R2C1, R2C2, R2C2A, R2C3 and R2D2 diagnostic modes "
             "are mutually exclusive"
         )
     if args.r2c2a_collision_bounds_config is not None and args.r2c2a_free_space_envelope is None:
@@ -2248,6 +2333,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "R2C3 collision-bounds config not found: "
                 f"{args.r2c3_collision_bounds_config}"
             )
+    if (
+        args.r2d2_collision_bounds_config is not None
+        and args.r2d2_live_pose_delta_trace is None
+    ):
+        raise ValueError(
+            "--r2d2-collision-bounds-config requires "
+            "--r2d2-live-pose-delta-trace"
+        )
+    if args.r2d2_live_pose_delta_trace is not None:
+        if args.r2d2_collision_bounds_config is None:
+            raise ValueError("R2D2 requires --r2d2-collision-bounds-config")
+        if not args.r2d2_collision_bounds_config.expanduser().resolve().is_file():
+            raise ValueError(
+                "R2D2 collision-bounds config not found: "
+                f"{args.r2d2_collision_bounds_config}"
+            )
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
     appearance_config = args.appearance_config.expanduser().resolve()
@@ -2275,6 +2376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.r2c2_free_space_envelope is not None
         or args.r2c2a_free_space_envelope is not None
         or args.r2c3_free_space_motion_trace is not None
+        or args.r2d2_live_pose_delta_trace is not None
     ):
         if config.simulation.odometry_mode != "ideal":
             raise ValueError("R2C diagnostic modes require --mode ideal")
@@ -2284,8 +2386,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("R2C diagnostic modes require the frozen Kujiale source USD")
         if dynamic_scenario.enabled:
             raise ValueError("R2C diagnostic modes require --no-dynamic-obstacles")
-        if camera_selection.profile.name != "off":
-            raise ValueError("R2C diagnostic modes require --camera-profile off")
+        expected_camera_profile = (
+            "monitoring"
+            if args.r2d2_live_pose_delta_trace is not None
+            else "off"
+        )
+        if camera_selection.profile.name != expected_camera_profile:
+            raise ValueError(
+                "R2D2 requires --camera-profile monitoring"
+                if args.r2d2_live_pose_delta_trace is not None
+                else "R2C diagnostic modes require --camera-profile off"
+            )
         if config.third_person_camera.enabled:
             raise ValueError("R2C diagnostic modes require --no-third-person-camera")
         if args.appearance_profile != "baseline":
@@ -2333,6 +2444,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         None if args.r2c2a_collision_bounds_config is None else args.r2c2a_collision_bounds_config.expanduser().resolve(),
         None if args.r2c3_free_space_motion_trace is None else args.r2c3_free_space_motion_trace.expanduser().resolve(),
         None if args.r2c3_collision_bounds_config is None else args.r2c3_collision_bounds_config.expanduser().resolve(),
+        None if args.r2d2_live_pose_delta_trace is None else args.r2d2_live_pose_delta_trace.expanduser().resolve(),
+        None if args.r2d2_collision_bounds_config is None else args.r2d2_collision_bounds_config.expanduser().resolve(),
     )
     return 0
 
