@@ -36,6 +36,11 @@ def generate_launch_description():
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
+            # Evidence-only fence used by Stage 2.2-R2C4-R2.  These values do
+            # not alter localization, planning, costmaps, or control.
+            DeclareLaunchArgument("require_pregoal_authorization", default_value="false"),
+            DeclareLaunchArgument("pregoal_authorization_path", default_value=""),
+            DeclareLaunchArgument("lifecycle_jsonl_path", default_value=""),
             Node(
                 package="robot_experiments",
                 executable="experiment_runner",
@@ -65,6 +70,16 @@ def generate_launch_description():
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
                         "dynamic_seed": LaunchConfiguration("dynamic_seed"),
+                        "require_pregoal_authorization": ParameterValue(
+                            LaunchConfiguration("require_pregoal_authorization"),
+                            value_type=bool,
+                        ),
+                        "pregoal_authorization_path": LaunchConfiguration(
+                            "pregoal_authorization_path"
+                        ),
+                        "lifecycle_jsonl_path": LaunchConfiguration(
+                            "lifecycle_jsonl_path"
+                        ),
                     }
                 ],
             ),

@@ -137,6 +137,16 @@ def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
 
 
+def test_experiment_launch_exposes_fail_closed_pregoal_evidence_fence():
+    launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    assert 'DeclareLaunchArgument("require_pregoal_authorization"' in launch_source
+    assert 'DeclareLaunchArgument("pregoal_authorization_path"' in launch_source
+    assert 'DeclareLaunchArgument("lifecycle_jsonl_path"' in launch_source
+    assert "pre-goal authorization requires exactly one run index" in runner
+    assert 'self._lifecycle_event("goal_dispatched")' in runner
+
+
 def test_4x20_pilot_resume_requires_a_previous_success_and_preserves_formal_failures():
     root = PACKAGE_ROOT.parents[2]
     controller = (root / "scripts" / "run_kujiale_4x20.sh").read_text()
@@ -176,7 +186,9 @@ def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
     # A read-only /cmd_vel subscription is allowed for motion-quality metrics.
     assert "create_subscription(" in source
     assert '"command_topic", "/cmd_vel"' in source
-    assert "/initialpose" not in source
+    # The evidence recorder may subscribe to /initialpose, but the runner
+    # must never create a publisher or construct an initial-pose command.
+    assert "create_publisher(PoseWithCovarianceStamped" not in source
     assert "self._scenario.goal" in source
     assert "_verify_dynamic_runtime_contract" in source
     assert "dynamic_obstacles_config_sha256" in source

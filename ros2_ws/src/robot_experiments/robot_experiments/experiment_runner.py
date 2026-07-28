@@ -80,6 +80,54 @@ class CommandSample:
     stamp_s: float
 
 
+PREGOAL_AUTHORIZATION_RECEIPT = "R2C4_R2_PREGOAL_AUTHORIZED"
+
+
+def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
+    """Canonical, evidence-only identity for a fenced experiment route."""
+
+    return {
+        "scenario_id": str(scenario_id),
+        "run_index": int(run_index),
+        "seed": int(selection.seed),
+        "condition_id": str(selection.condition_id),
+        "appearance_profile_id": str(selection.appearance_profile_id or ""),
+        "dynamic_variant_id": str(selection.variant_id or ""),
+    }
+
+
+def validate_pregoal_authorization(
+    path: Path, *, scenario_id: str, run_index: int, selection: RunSelection
+) -> dict[str, object]:
+    """Load the R2C4-R2 authorization without trusting a launcher flag alone."""
+
+    if not path.is_file():
+        raise ConfigurationError("pre-goal authorization receipt is missing")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigurationError("pre-goal authorization receipt is invalid") from exc
+    if not isinstance(value, dict):
+        raise ConfigurationError("pre-goal authorization receipt must be an object")
+    if value.get("pass") is not True or value.get("receipt") != PREGOAL_AUTHORIZATION_RECEIPT:
+        raise ConfigurationError("pre-goal authorization receipt is not passing")
+    identity = value.get("identity")
+    if identity != _pregoal_identity(scenario_id, run_index, selection):
+        raise ConfigurationError("pre-goal authorization identity mismatch")
+    completed_wall_ns = value.get("completed_wall_ns")
+    if not isinstance(completed_wall_ns, int) or completed_wall_ns <= 0:
+        raise ConfigurationError("pre-goal authorization completion timestamp is invalid")
+    return value
+
+
+def _boolean_parameter(value: object, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise ConfigurationError(f"{name} must be boolean")
+
+
 def _dynamic_interaction_acceptance(
     *,
     scenario_type: str,
@@ -313,34 +361,47 @@ class ExperimentRunner(Node):
             self._run_indices: tuple[int, ...] | None = indices
         else:
             self._run_indices = None
-        resume = self.declare_parameter("resume", False).value
-        if isinstance(resume, bool):
-            self._resume = resume
-        elif isinstance(resume, str) and resume.strip().lower() in {"true", "false"}:
-            self._resume = resume.strip().lower() == "true"
-        else:
-            raise ConfigurationError("resume must be boolean")
-        require_successful_resume = self.declare_parameter(
-            "require_successful_resume", False
-        ).value
-        if isinstance(require_successful_resume, bool):
-            self._require_successful_resume = require_successful_resume
-        elif (
-            isinstance(require_successful_resume, str)
-            and require_successful_resume.strip().lower() in {"true", "false"}
-        ):
-            self._require_successful_resume = (
-                require_successful_resume.strip().lower() == "true"
-            )
-        else:
-            raise ConfigurationError("require_successful_resume must be boolean")
-        record_evidence = self.declare_parameter("record_evidence", True).value
-        if isinstance(record_evidence, bool):
-            self._record_evidence = record_evidence
-        elif isinstance(record_evidence, str) and record_evidence.strip().lower() in {"true", "false"}:
-            self._record_evidence = record_evidence.strip().lower() == "true"
-        else:
-            raise ConfigurationError("record_evidence must be boolean")
+        self._resume = _boolean_parameter(
+            self.declare_parameter("resume", False).value, "resume"
+        )
+        self._require_successful_resume = _boolean_parameter(
+            self.declare_parameter("require_successful_resume", False).value,
+            "require_successful_resume",
+        )
+        self._record_evidence = _boolean_parameter(
+            self.declare_parameter("record_evidence", True).value,
+            "record_evidence",
+        )
+        self._require_pregoal_authorization = _boolean_parameter(
+            self.declare_parameter("require_pregoal_authorization", False).value,
+            "require_pregoal_authorization",
+        )
+        authorization_path = str(
+            self.declare_parameter("pregoal_authorization_path", "").value
+        ).strip()
+        lifecycle_path = str(
+            self.declare_parameter("lifecycle_jsonl_path", "").value
+        ).strip()
+        self._pregoal_authorization_path = (
+            Path(authorization_path).expanduser().resolve()
+            if authorization_path
+            else None
+        )
+        self._lifecycle_jsonl_path = (
+            Path(lifecycle_path).expanduser().resolve() if lifecycle_path else None
+        )
+        self._pregoal_authorization_sha256: str | None = None
+        self._active_run_index: int | None = None
+        self._goal_dispatch_recorded = False
+        if self._require_pregoal_authorization:
+            if self._pregoal_authorization_path is None:
+                raise ConfigurationError("pre-goal authorization path is required")
+            if self._lifecycle_jsonl_path is None:
+                raise ConfigurationError("lifecycle JSONL path is required")
+            if self._lifecycle_jsonl_path.exists():
+                raise ConfigurationError("lifecycle JSONL must not reuse an existing file")
+            if self._run_indices is None or len(self._run_indices) != 1:
+                raise ConfigurationError("pre-goal authorization requires exactly one run index")
         self._reset_service_name = str(
             self.declare_parameter("reset_service", "/simulation/reset").value
         )
@@ -615,6 +676,39 @@ class ExperimentRunner(Node):
         self._scan_frame: dict[str, Any] | None = None
         self._local_costmap: Costmap | None = None
         self._global_costmap: Costmap | None = None
+        self._goal_dispatch_recorded = False
+
+    def _lifecycle_event(self, event: str) -> None:
+        """Append an immutable phase record for a topology-fenced run."""
+
+        if not self._require_pregoal_authorization:
+            return
+        if (
+            self._lifecycle_jsonl_path is None
+            or self._active_selection is None
+            or self._active_run_index is None
+        ):
+            raise ConfigurationError("lifecycle context is unavailable")
+        value = {
+            "event": str(event),
+            "wall_ns": time.time_ns(),
+            "monotonic_ns": time.monotonic_ns(),
+            "ros_stamp_s": self._clock_seconds(),
+            "identity": _pregoal_identity(
+                self._scenario.scenario_id,
+                self._active_run_index,
+                self._active_selection,
+            ),
+            "pregoal_authorization_sha256": self._pregoal_authorization_sha256,
+        }
+        try:
+            self._lifecycle_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lifecycle_jsonl_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(value, sort_keys=True) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise ConfigurationError("lifecycle JSONL write failed") from exc
 
     def _clock_callback(self, message: Clock) -> None:
         if message.clock.sec != 0 or message.clock.nanosec != 0:
@@ -1317,6 +1411,7 @@ class ExperimentRunner(Node):
         self._cancel_stale_navigation_goal()
         self._clear_localization_buffer()
         self._set_reset_seed(seed, case_id, variant_id, appearance_profile_id)
+        self._lifecycle_event("reset_requested")
         if not self._reset_client.wait_for_service(timeout_sec=self._service_timeout_sec):
             self._raise_if_shutdown()
             raise RuntimeError(f"reset service unavailable: {self._reset_service_name}")
@@ -1328,6 +1423,7 @@ class ExperimentRunner(Node):
         if response is None or not response.success:
             message = "no response" if response is None else response.message
             raise RuntimeError(f"simulation reset failed: {message}")
+        self._lifecycle_event("reset_succeeded")
         self._clear_navigation_costmaps()
         self._clear_run_state()
         if not self._wait_until(
@@ -1490,6 +1586,9 @@ class ExperimentRunner(Node):
                         poses_remaining,
                     )
                 )
+                if not self._goal_dispatch_recorded:
+                    self._lifecycle_event("goal_dispatched")
+                    self._goal_dispatch_recorded = True
                 send_future = self._navigate_client.send_goal_async(
                     self._goal_message(specification),
                     feedback_callback=self._navigation_feedback_callback,
@@ -2700,6 +2799,19 @@ class ExperimentRunner(Node):
                 continue
             seed = selection.seed
             self._active_selection = selection
+            self._active_run_index = run_index
+            if self._require_pregoal_authorization:
+                assert self._pregoal_authorization_path is not None
+                validate_pregoal_authorization(
+                    self._pregoal_authorization_path,
+                    scenario_id=self._scenario.scenario_id,
+                    run_index=run_index,
+                    selection=selection,
+                )
+                self._pregoal_authorization_sha256 = hashlib.sha256(
+                    self._pregoal_authorization_path.read_bytes()
+                ).hexdigest()
+                self._lifecycle_event("runner_started")
             existing_root = self._evidence_root_for(run_index, seed)
             if self._record_evidence and existing_root.exists():
                 if not self._resume:
@@ -2736,6 +2848,7 @@ class ExperimentRunner(Node):
                 )
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
+                    self._lifecycle_event("evidence_started")
                 nav2_succeeded, timed_out, nav2_status = self._navigate()
                 final_still = self._wait_for_final_stillness()
             except Exception as exc:  # Preserve a manifest for every attempted run.
