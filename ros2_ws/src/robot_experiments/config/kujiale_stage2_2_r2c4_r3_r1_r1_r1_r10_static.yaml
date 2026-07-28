@@ -1,7 +1,7 @@
 # R9 authorization-only static contract.  This is a fresh cold-start identity.
 schema_version: 1
 scenario:
-  id: kujiale_stage2_2_r2c4_r3_r1_r1_r1_r9_static
+  id: kujiale_stage2_2_r2c4_r3_r1_r1_r1_r10_static
   type: static
   spawn_pose_name: long_route_start_g1
   map_version: warehouse_new
@@ -12,7 +12,7 @@ scenario:
     dynamic_obstacles: ../../../../isaac_sim/configs/experiments/kujiale_long_range_static.yaml
     appearance: ../../../../isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
-  runs: {matrix: [{seed: 11600, case_id: static, variant_id: v1, condition_id: static_contract, appearance_profile_id: baseline}], timeout_sec: 60.0, leg_timeout_sec: 30.0}
+  runs: {matrix: [{seed: 11800, case_id: static, variant_id: v1, condition_id: static_contract, appearance_profile_id: baseline}], timeout_sec: 60.0, leg_timeout_sec: 30.0}
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   route:
     - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -160.0, require_orientation: true}
