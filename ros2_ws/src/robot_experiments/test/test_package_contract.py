@@ -151,6 +151,14 @@ def test_experiment_launch_exposes_fail_closed_pregoal_evidence_fence():
     assert 'DeclareLaunchArgument("require_pregoal_authorization"' in launch_source
     assert 'DeclareLaunchArgument("pregoal_authorization_path"' in launch_source
     assert 'DeclareLaunchArgument("lifecycle_jsonl_path"' in launch_source
+    for name in (
+        "pregoal_expected_receipt",
+        "pregoal_expected_schema",
+        "pregoal_expected_campaign",
+        "pregoal_expected_prereg_sha256",
+    ):
+        assert f'DeclareLaunchArgument("{name}"' in launch_source
+        assert f'"{name}": LaunchConfiguration(' in launch_source
     assert "pre-goal authorization requires exactly one run index" in runner
     assert 'self._lifecycle_event("goal_dispatched")' in runner
 

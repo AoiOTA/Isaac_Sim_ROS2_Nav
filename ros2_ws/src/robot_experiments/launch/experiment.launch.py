@@ -41,6 +41,10 @@ def generate_launch_description():
             DeclareLaunchArgument("require_pregoal_authorization", default_value="false"),
             DeclareLaunchArgument("pregoal_authorization_path", default_value=""),
             DeclareLaunchArgument("lifecycle_jsonl_path", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_receipt", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_schema", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_campaign", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_prereg_sha256", default_value=""),
             Node(
                 package="robot_experiments",
                 executable="experiment_runner",
@@ -79,6 +83,18 @@ def generate_launch_description():
                         ),
                         "lifecycle_jsonl_path": LaunchConfiguration(
                             "lifecycle_jsonl_path"
+                        ),
+                        "pregoal_expected_receipt": LaunchConfiguration(
+                            "pregoal_expected_receipt"
+                        ),
+                        "pregoal_expected_schema": LaunchConfiguration(
+                            "pregoal_expected_schema"
+                        ),
+                        "pregoal_expected_campaign": LaunchConfiguration(
+                            "pregoal_expected_campaign"
+                        ),
+                        "pregoal_expected_prereg_sha256": LaunchConfiguration(
+                            "pregoal_expected_prereg_sha256"
                         ),
                     }
                 ],
