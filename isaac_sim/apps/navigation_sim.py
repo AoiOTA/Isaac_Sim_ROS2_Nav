@@ -720,7 +720,7 @@ def run(
         odom_phase_script = None
         odom_phase_publisher = None
         if odom_phase_trace_path is not None:
-            from geometry_msgs.msg import Twist
+            from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
             from nav_msgs.msg import Odometry
             from tf2_msgs.msg import TFMessage
             from isaac_sim.src.diagnostics.odom_phase_trace import (
@@ -1312,6 +1312,16 @@ def run(
                 r2c1_trace.write(row)
             r2c1_script = SegmentedFreeSpaceScript()
             r2c1_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            # R2D2 runs without a SLAM/AMCL scan publisher.  Its diagnostic
+            # therefore publishes the same calibrated Module3 map pose that a
+            # localization reset would publish, after each reset completes.
+            # This is an R2D2-only seed for the Shadow Bridge, never a Nav2
+            # localization correction or control input.
+            r2d2_initialpose_publisher = (
+                node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
+                if r2d2_mode
+                else None
+            )
             r2c1_state = {
                 "segment_index": -1,
                 "segment_started_at": None,
@@ -1957,6 +1967,25 @@ def run(
                     r2c1_state["preflight_done"] = not bool(
                         r2c1_state["r2c3_mode"]
                     )
+                    if r2d2_initialpose_publisher is not None:
+                        initialpose = PoseWithCovarianceStamped()
+                        initialpose.header.stamp = node.get_clock().now().to_msg()
+                        initialpose.header.frame_id = "map"
+                        initialpose.pose.pose.position.x = float(selected_pose.map.position[0])
+                        initialpose.pose.pose.position.y = float(selected_pose.map.position[1])
+                        yaw = math.radians(float(selected_pose.map.yaw_deg))
+                        initialpose.pose.pose.orientation.z = math.sin(yaw * 0.5)
+                        initialpose.pose.pose.orientation.w = math.cos(yaw * 0.5)
+                        initialpose.pose.covariance[0] = float(selected_pose.map.position_stddev_m) ** 2
+                        initialpose.pose.covariance[7] = float(selected_pose.map.position_stddev_m) ** 2
+                        initialpose.pose.covariance[35] = math.radians(float(selected_pose.map.yaw_stddev_deg)) ** 2
+                        r2d2_initialpose_publisher.publish(initialpose)
+                        r2c1_trace.write({
+                            "kind": "r2d2_initialpose_published",
+                            "reset_epoch": int(r2c1_state["reset_epoch"]),
+                            "stamp_ns": int(initialpose.header.stamp.sec) * 1_000_000_000 + int(initialpose.header.stamp.nanosec),
+                            "frame_id": "map",
+                        })
                     r2c1_trace.record_segment_reset(
                         segment_index=int(r2c1_state["segment_index"]),
                         segment_id=segment.segment_id,
