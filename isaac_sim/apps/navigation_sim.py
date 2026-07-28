@@ -720,7 +720,7 @@ def run(
         odom_phase_script = None
         odom_phase_publisher = None
         if odom_phase_trace_path is not None:
-            from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+            from geometry_msgs.msg import Twist
             from nav_msgs.msg import Odometry
             from tf2_msgs.msg import TFMessage
             from isaac_sim.src.diagnostics.odom_phase_trace import (
@@ -750,7 +750,7 @@ def run(
             or r2c3_free_space_motion_trace_path is not None
             or r2d2_live_pose_delta_trace_path is not None
         ):
-            from geometry_msgs.msg import Twist
+            from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
             from nav_msgs.msg import Odometry
             from std_msgs.msg import Bool
             from tf2_msgs.msg import TFMessage
