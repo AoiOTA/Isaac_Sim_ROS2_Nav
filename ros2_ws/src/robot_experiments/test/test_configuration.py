@@ -180,6 +180,34 @@ def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
     assert dynamic.success.minimum_ground_truth_path_length_m >= 20.0
 
 
+def test_stage2_2_r2d1_replacement_preserves_g1_matrix_without_gate_identity():
+    gate_static = load_scenario(CONFIG / "kujiale_stage2_2_g1_gate_static.yaml")
+    gate_dynamic = load_scenario(CONFIG / "kujiale_stage2_2_g1_gate_dynamic.yaml")
+    replacement_static = load_scenario(
+        CONFIG / "kujiale_stage2_2_r2d1_replacement_static.yaml"
+    )
+    replacement_dynamic = load_scenario(
+        CONFIG / "kujiale_stage2_2_r2d1_replacement_dynamic.yaml"
+    )
+
+    assert replacement_static.scenario_id == (
+        "kujiale_stage2_2_r2d1_replacement_static"
+    )
+    assert replacement_dynamic.scenario_id == (
+        "kujiale_stage2_2_r2d1_replacement_dynamic"
+    )
+    assert "gate" not in replacement_static.scenario_id
+    assert "gate" not in replacement_dynamic.scenario_id
+    assert replacement_static.run_matrix == gate_static.run_matrix
+    assert replacement_dynamic.run_matrix == gate_dynamic.run_matrix
+    assert replacement_static.route == gate_static.route
+    assert replacement_dynamic.route == gate_dynamic.route
+    assert replacement_static.success == gate_static.success
+    assert replacement_dynamic.success == gate_dynamic.success
+    assert len(replacement_static.run_matrix) == 10
+    assert len(replacement_dynamic.run_matrix) == 10
+
+
 def test_kujiale_dynamic_visual_is_one_controlled_g1_to_g2_observation():
     static = load_scenario(CONFIG / "kujiale_static_visual.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_dynamic_visual.yaml")

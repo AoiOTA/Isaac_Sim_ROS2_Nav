@@ -113,6 +113,23 @@ def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
     assert "evidence, never a second current pilot result." in controller
 
 
+def test_r2d1_replacement_supervisor_is_isolated_and_never_claims_gate_status():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_stage2_2_r2d1_replacement.sh").read_text()
+    assert "stage2_2_r2d1_replacement_${campaign_id}" in wrapper
+    assert "kujiale_stage2_2_r2d1_replacement_${mode}.yaml" in wrapper
+    assert "start_stage static" in wrapper
+    assert "validate_stage static" in wrapper
+    assert "stop_stage" in wrapper
+    assert "start_stage dynamic" in wrapper
+    assert "validate_stage dynamic" in wrapper
+    assert "development-audit-only" in wrapper
+    assert "not a formal Gate" in wrapper
+    assert "git_dirty" in wrapper
+    assert "telemetry/telemetry_0.mcap" in wrapper
+    assert "kill -INT --" in wrapper
+
+
 def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     assert "from launch_ros.parameter_descriptions import ParameterValue" in launch_source
