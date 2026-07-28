@@ -40,7 +40,12 @@ class Bounds3D:
         values = (self.min_x, self.min_y, self.min_z, self.max_x, self.max_y, self.max_z)
         return all(math.isfinite(value) for value in values) and self.min_x <= self.max_x and self.min_y <= self.max_y and self.min_z <= self.max_z
 
-    def as_dict(self) -> dict[str, list[float]]:
+    def as_dict(self) -> dict[str, list[float] | None]:
+        # JSON must not encode IEEE NaN/Infinity.  An unavailable world bound
+        # is evidence for the fail-closed STATIC_COLLIDER_CLASSIFICATION_INVALID
+        # receipt, not a reason to lose the whole cold-start trace.
+        if not self.finite():
+            return {"min": None, "max": None}
         return {"min": [self.min_x, self.min_y, self.min_z], "max": [self.max_x, self.max_y, self.max_z]}
 
 
@@ -164,7 +169,13 @@ def assess_envelope(*, footprint: Sequence[Sequence[float]], start_x: float, sta
         classification = classify_collider(collider, support_plane_z=support_plane_z, robot_max_z=robot_max_z)
         classified.append({"path": collider.path, "bounds": collider.bounds.as_dict(), "enabled": collider.enabled, "classification": classification})
     if any(item["classification"] == "INVALID" for item in classified):
-        raise ValueError("non-finite collider bounds")
+        # Keep all segment fields finite so the offline auditor can issue the
+        # classifier receipt with its prescribed priority, while retaining the
+        # offending collider path/bounds validity in the trace.
+        return classified, [
+            SegmentAssessment(segment.segment_id, 1.0, 0.0, 0.0, None, False)
+            for segment in SegmentedFreeSpaceScript.segments
+        ]
     active = [(collider, str(item["classification"])) for collider, item in zip(colliders, classified) if collider.enabled and not collider.aggregate]
     outcomes: list[SegmentAssessment] = []
     for segment in SegmentedFreeSpaceScript.segments:

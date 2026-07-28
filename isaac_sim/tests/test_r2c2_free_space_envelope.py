@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from isaac_sim.src.diagnostics.r2c2_free_space_envelope import (
     Bounds3D,
     Collider,
@@ -64,12 +62,14 @@ def test_aggregate_disabled_and_nonfinite_contracts():
     disabled = Collider("/disabled", Bounds3D(-1, -1, 0, 1, 1, 1), False)
     assert classify_collider(aggregate, support_plane_z=0.0, robot_max_z=0.6) == "AGGREGATE_EXCLUDED"
     assert classify_collider(disabled, support_plane_z=0.0, robot_max_z=0.6) == "DISABLED"
-    with pytest.raises(ValueError, match="non-finite"):
-        assess_envelope(
-            footprint=FOOTPRINT, start_x=0.0, start_y=0.0, start_yaw=0.0,
-            support_plane_z=0.0, robot_max_z=0.6,
-            colliders=[Collider("/bad", Bounds3D(0, 0, 0, math.nan, 1, 1), True)],
-        )
+    classified, segments = assess_envelope(
+        footprint=FOOTPRINT, start_x=0.0, start_y=0.0, start_yaw=0.0,
+        support_plane_z=0.0, robot_max_z=0.6,
+        colliders=[Collider("/bad", Bounds3D(0, 0, 0, math.nan, 1, 1), True)],
+    )
+    assert classified[0]["classification"] == "INVALID"
+    assert classified[0]["bounds"] == {"min": None, "max": None}
+    assert all(not item.valid and item.minimum_clearance_m == 0.0 for item in segments)
 
 
 def test_rotated_polygon_clearance_and_threshold_edge():
