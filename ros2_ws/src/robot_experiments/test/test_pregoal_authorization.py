@@ -34,6 +34,15 @@ def _receipt(selection: RunSelection) -> dict[str, object]:
 
 def test_pregoal_authorization_requires_passing_matching_identity(tmp_path):
     selection = _selection()
+    assert _pregoal_identity("kujiale_stage2_2_r2c4_r2_static", 1, selection)["dynamic_variant_id"] == ""
+    dynamic = RunSelection(
+        seed=8202,
+        case_id="dynamic",
+        variant_id="v2",
+        condition_id="dynamic_baseline",
+        appearance_profile_id="baseline",
+    )
+    assert _pregoal_identity("kujiale_stage2_2_r2c4_r2_dynamic", 1, dynamic)["dynamic_variant_id"] == "v2"
     path = tmp_path / "authorization.json"
     path.write_text(json.dumps(_receipt(selection)), encoding="utf-8")
     assert validate_pregoal_authorization(
