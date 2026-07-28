@@ -172,6 +172,18 @@ def test_r2c4_development_matrix_is_new_and_balanced():
     assert [row.appearance_profile_id for row in dynamic.run_matrix] == ["baseline", "dim_warm", "dim_cool", "baseline"]
 
 
+def test_r3_r1_r1_r1_authorization_only_scenarios_have_valid_distinct_routes():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_dynamic.yaml")
+    assert [row.seed for row in static.run_matrix] == [9200]
+    assert [row.seed for row in dynamic.run_matrix] == [9300]
+    for scenario in (static, dynamic):
+        assert len(scenario.route) == 2
+        assert scenario.route[0].frame_id == scenario.route[1].frame_id == "map"
+        assert scenario.route[0].position != scenario.route[1].position
+        assert scenario.route[-1] == scenario.goal
+
+
 def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
     static = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_static.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_dynamic.yaml")
