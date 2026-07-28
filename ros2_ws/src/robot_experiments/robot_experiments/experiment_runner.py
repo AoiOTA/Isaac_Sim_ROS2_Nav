@@ -97,9 +97,12 @@ def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection)
 
 
 def validate_pregoal_authorization(
-    path: Path, *, scenario_id: str, run_index: int, selection: RunSelection
+    path: Path, *, scenario_id: str, run_index: int, selection: RunSelection,
+    expected_receipt: str = PREGOAL_AUTHORIZATION_RECEIPT,
+    expected_schema: str = "", expected_campaign: str = "",
+    expected_prereg_sha256: str = "",
 ) -> dict[str, object]:
-    """Load the R2C4-R2 authorization without trusting a launcher flag alone."""
+    """Load an explicitly version-bound authorization without trusting a launcher flag."""
 
     if not path.is_file():
         raise ConfigurationError("pre-goal authorization receipt is missing")
@@ -109,8 +112,11 @@ def validate_pregoal_authorization(
         raise ConfigurationError("pre-goal authorization receipt is invalid") from exc
     if not isinstance(value, dict):
         raise ConfigurationError("pre-goal authorization receipt must be an object")
-    if value.get("pass") is not True or value.get("receipt") != PREGOAL_AUTHORIZATION_RECEIPT:
+    if value.get("pass") is not True or value.get("receipt") != expected_receipt:
         raise ConfigurationError("pre-goal authorization receipt is not passing")
+    for key, expected in (("schema", expected_schema), ("campaign", expected_campaign), ("prereg_sha256", expected_prereg_sha256)):
+        if expected and value.get(key) != expected:
+            raise ConfigurationError(f"pre-goal authorization {key} mismatch")
     identity = value.get("identity")
     if identity != _pregoal_identity(scenario_id, run_index, selection):
         raise ConfigurationError("pre-goal authorization identity mismatch")
@@ -376,6 +382,22 @@ class ExperimentRunner(Node):
             self.declare_parameter("require_pregoal_authorization", False).value,
             "require_pregoal_authorization",
         )
+        self._authorization_only = _boolean_parameter(
+            self.declare_parameter("authorization_only", False).value,
+            "authorization_only",
+        )
+        self._pregoal_expected_receipt = str(
+            self.declare_parameter("pregoal_expected_receipt", PREGOAL_AUTHORIZATION_RECEIPT).value
+        ).strip()
+        self._pregoal_expected_schema = str(
+            self.declare_parameter("pregoal_expected_schema", "").value
+        ).strip()
+        self._pregoal_expected_campaign = str(
+            self.declare_parameter("pregoal_expected_campaign", "").value
+        ).strip()
+        self._pregoal_expected_prereg_sha256 = str(
+            self.declare_parameter("pregoal_expected_prereg_sha256", "").value
+        ).strip()
         authorization_path = str(
             self.declare_parameter("pregoal_authorization_path", "").value
         ).strip()
@@ -402,6 +424,10 @@ class ExperimentRunner(Node):
                 raise ConfigurationError("lifecycle JSONL must not reuse an existing file")
             if self._run_indices is None or len(self._run_indices) != 1:
                 raise ConfigurationError("pre-goal authorization requires exactly one run index")
+            if not self._pregoal_expected_receipt:
+                raise ConfigurationError("pre-goal expected receipt is required")
+        elif self._authorization_only:
+            raise ConfigurationError("authorization_only requires pre-goal authorization")
         self._reset_service_name = str(
             self.declare_parameter("reset_service", "/simulation/reset").value
         )
@@ -2807,11 +2833,17 @@ class ExperimentRunner(Node):
                     scenario_id=self._scenario.scenario_id,
                     run_index=run_index,
                     selection=selection,
+                    expected_receipt=self._pregoal_expected_receipt,
+                    expected_schema=self._pregoal_expected_schema,
+                    expected_campaign=self._pregoal_expected_campaign,
+                    expected_prereg_sha256=self._pregoal_expected_prereg_sha256,
                 )
                 self._pregoal_authorization_sha256 = hashlib.sha256(
                     self._pregoal_authorization_path.read_bytes()
                 ).hexdigest()
                 self._lifecycle_event("runner_started")
+                if self._authorization_only:
+                    return [{"authorization_only": True, "run_index": run_index, "seed": seed}]
             existing_root = self._evidence_root_for(run_index, seed)
             if self._record_evidence and existing_root.exists():
                 if not self._resume:
