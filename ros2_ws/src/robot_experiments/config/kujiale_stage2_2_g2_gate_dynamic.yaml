@@ -14,6 +14,20 @@ scenario:
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
+      # The campaign's route identity is global (static 1..10, dynamic
+      # 11..20).  These non-selected padding rows preserve that identity when
+      # the runner receives run_indices:=11..20; the real dynamic trials
+      # therefore occupy entries 11..20 below.
+      - {seed: 10091, case_id: g2_index_padding, variant_id: p1, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10092, case_id: g2_index_padding, variant_id: p2, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10093, case_id: g2_index_padding, variant_id: p3, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10094, case_id: g2_index_padding, variant_id: p4, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10095, case_id: g2_index_padding, variant_id: p5, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10096, case_id: g2_index_padding, variant_id: p6, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10097, case_id: g2_index_padding, variant_id: p7, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10098, case_id: g2_index_padding, variant_id: p8, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10099, case_id: g2_index_padding, variant_id: p9, condition_id: dynamic_padding, appearance_profile_id: baseline}
+      - {seed: 10100, case_id: g2_index_padding, variant_id: p10, condition_id: dynamic_padding, appearance_profile_id: baseline}
       - {seed: 10101, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
       - {seed: 10102, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
       - {seed: 10103, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
