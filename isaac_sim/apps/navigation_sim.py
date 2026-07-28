@@ -963,8 +963,19 @@ def run(
             )
 
             def bounds_for(prim) -> Bounds3D:
+                # Jackal's replacement wheel colliders intentionally use the
+                # USD ``guide`` purpose.  A default-only BBoxCache silently
+                # drops them and makes the physical collision envelope appear
+                # absent.  R2C2 is an audit of collision geometry, so include
+                # every geometry purpose rather than only render/default data.
                 bounds = UsdGeom.BBoxCache(
-                    Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+                    Usd.TimeCode.Default(),
+                    [
+                        UsdGeom.Tokens.default_,
+                        UsdGeom.Tokens.render,
+                        UsdGeom.Tokens.proxy,
+                        UsdGeom.Tokens.guide,
+                    ],
                 ).ComputeWorldBound(prim).ComputeAlignedRange()
                 lower, upper = bounds.GetMin(), bounds.GetMax()
                 return Bounds3D(
