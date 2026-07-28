@@ -199,6 +199,15 @@ def _parser() -> argparse.ArgumentParser:
             "diagnostic configuration"
         ),
     )
+    parser.add_argument(
+        "--r2c2-free-space-envelope",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C2 no-motion 3D free-space "
+            "envelope trace at the frozen Kujiale mapping_start configuration"
+        ),
+    )
     return parser
 
 
@@ -378,6 +387,7 @@ def run(
     initial_appearance_profile: str,
     odom_phase_trace_path: Path | None = None,
     r2c1_free_space_trace_path: Path | None = None,
+    r2c2_free_space_envelope_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -413,6 +423,7 @@ def run(
     appearance_manager = None
     odom_phase_trace = None
     r2c1_trace = None
+    r2c2_trace = None
     r2c1_observer_node = None
     r2c1_observer_executor = None
     r2c1_observer_thread = None
@@ -438,11 +449,17 @@ def run(
         # frames appear missing on a restart.
         stage.Load()
         probe_end_timecode = None
-        if odom_phase_trace_path is not None or r2c1_free_space_trace_path is not None:
+        if (
+            odom_phase_trace_path is not None
+            or r2c1_free_space_trace_path is not None
+            or r2c2_free_space_envelope_path is not None
+        ):
             # The warehouse Stage's normal end code is shorter than the
             # frozen 61-second probe.  This transient extension is scoped to
             # the default-off diagnostic mode and is never saved to USD.
-            if r2c1_free_space_trace_path is not None:
+            if r2c2_free_space_envelope_path is not None:
+                required_end = int(math.ceil(5.0 * config.simulation.rendering_hz))
+            elif r2c1_free_space_trace_path is not None:
                 from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
                     SegmentedFreeSpaceScript,
                 )
@@ -897,6 +914,123 @@ def run(
                 f"{startup_reset.errors}"
             )
 
+        r2c2_state: dict[str, object] | None = None
+        if r2c2_free_space_envelope_path is not None:
+            from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                is_leaf_collision_prim,
+                yaw_from_wxyz,
+            )
+            from isaac_sim.src.diagnostics.r2c2_free_space_envelope import (
+                Bounds3D,
+                Collider,
+                EnvelopeTrace,
+                REQUIRED_CLEARANCE_M,
+                SUPPORT_HEIGHT_VARIATION_M,
+                assess_envelope,
+            )
+            from isaac_sim.src.yaml_utils import load_mapping
+            from pxr import Usd, UsdGeom, UsdPhysics
+
+            robot_geometry = load_mapping(config.files.robot)
+            footprint = robot_geometry.get("footprint")
+            wheel_radius = robot_geometry.get("wheel_radius")
+            if not isinstance(footprint, list) or not isinstance(wheel_radius, (int, float)):
+                raise RuntimeError("R2C2 requires robot footprint and wheel_radius")
+            footprint_points = [[float(value) for value in point] for point in footprint]
+            r2c2_trace = EnvelopeTrace(
+                r2c2_free_space_envelope_path,
+                manifest={
+                    "environment_source_asset": str(config.environment.source_asset),
+                    "environment_project_stage": str(config.environment.project_stage),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(config.spawn.poses_file.read_bytes()).hexdigest(),
+                    "config_sha256": hashlib.sha256(repr(config).encode("utf-8")).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(config.files.robot.read_bytes()).hexdigest(),
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "camera_enabled": False,
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "support_height_variation_m": SUPPORT_HEIGHT_VARIATION_M,
+                    "wheel_radius_m": float(wheel_radius),
+                    "footprint": footprint_points,
+                },
+            )
+
+            def bounds_for(prim) -> Bounds3D:
+                bounds = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+                ).ComputeWorldBound(prim).ComputeAlignedRange()
+                lower, upper = bounds.GetMin(), bounds.GetMax()
+                return Bounds3D(
+                    float(lower[0]), float(lower[1]), float(lower[2]),
+                    float(upper[0]), float(upper[1]), float(upper[2]),
+                )
+
+            def collision_enabled(prim) -> bool:
+                attribute = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr()
+                value = attribute.Get() if attribute.IsValid() else True
+                return bool(True if value is None else value)
+
+            def capture_r2c2_envelope() -> None:
+                position, orientation = robot.get_world_pose()
+                yaw = yaw_from_wxyz(tuple(float(item) for item in orientation))
+                robot_bounds: list[Bounds3D] = []
+                colliders: list[Collider] = []
+                aggregate_paths: list[str] = []
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    path = str(prim.GetPath())
+                    aggregate = not is_leaf_collision_prim(
+                        prim, collision_api=UsdPhysics.CollisionAPI, prim_range=Usd.PrimRange
+                    )
+                    if path.startswith(config.robot.articulation_root):
+                        if not aggregate:
+                            robot_bounds.append(bounds_for(prim))
+                        continue
+                    if aggregate:
+                        aggregate_paths.append(path)
+                        colliders.append(Collider(path, bounds_for(prim), collision_enabled(prim), aggregate=True))
+                    else:
+                        colliders.append(Collider(path, bounds_for(prim), collision_enabled(prim)))
+                if not robot_bounds or not all(item.finite() for item in robot_bounds):
+                    raise RuntimeError("R2C2 robot collision envelope is unavailable")
+                robot_envelope = Bounds3D(
+                    min(item.min_x for item in robot_bounds), min(item.min_y for item in robot_bounds), min(item.min_z for item in robot_bounds),
+                    max(item.max_x for item in robot_bounds), max(item.max_y for item in robot_bounds), max(item.max_z for item in robot_bounds),
+                )
+                support_plane_z = float(position[2]) - float(wheel_radius)
+                classified, assessments = assess_envelope(
+                    footprint=footprint_points, start_x=float(position[0]), start_y=float(position[1]), start_yaw=yaw,
+                    support_plane_z=support_plane_z, robot_max_z=robot_envelope.max_z,
+                    colliders=colliders,
+                )
+                if any(item["classification"] in {"INVALID", "DISABLED"} for item in classified):
+                    receipt = "STATIC_COLLIDER_CLASSIFICATION_INVALID"
+                elif not all(item.support_coverage == 1.0 and item.support_height_variation_m <= SUPPORT_HEIGHT_VARIATION_M for item in assessments):
+                    receipt = "SUPPORT_SURFACE_CONTRACT_INVALID"
+                elif not all(item.minimum_clearance_m >= REQUIRED_CLEARANCE_M for item in assessments):
+                    receipt = "SWEEP_CLEARANCE_INSUFFICIENT"
+                else:
+                    receipt = "FREE_SPACE_ENVELOPE_VALID"
+                r2c2_trace.record(
+                    robot_envelope=robot_envelope, support_plane_z=support_plane_z,
+                    colliders=classified, assessments=assessments, receipt=receipt,
+                )
+                r2c2_trace.write({
+                    "schema": "bio_nav_stage2_2_r2c2_free_space_envelope_v1", "kind": "capture",
+                    "robot_position": [float(item) for item in position], "robot_yaw_rad": yaw,
+                    "aggregate_collision_paths": aggregate_paths,
+                })
+
+            r2c2_state = {"settle_until": None, "captured": False, "capture": capture_r2c2_envelope}
+
         max_frames = config.simulation.max_frames
         frame = 0
         node.get_logger().info(
@@ -972,6 +1106,15 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
+            if r2c2_state is not None and startup_reset.finished:
+                if r2c2_state["settle_until"] is None:
+                    r2c2_state["settle_until"] = simulation_time + 2.0
+                elif not bool(r2c2_state["captured"]) and simulation_time >= float(r2c2_state["settle_until"]):
+                    capture = r2c2_state["capture"]
+                    if not callable(capture):
+                        raise RuntimeError("R2C2 envelope capture is unavailable")
+                    capture()
+                    r2c2_state["captured"] = True
             r2c1_after_app_payload = None
             if r2c1_state is not None and r2c1_script is not None:
                 pending = r2c1_state["pending_reset"]
@@ -1077,6 +1220,7 @@ def run(
             odom_publish = None
             should_publish_ideal_odom = (
                 config.simulation.odometry_mode == "ideal"
+                and r2c2_state is None
                 and (r2c1_state is None or bool(r2c1_state["active"]))
             )
             if should_publish_ideal_odom:
@@ -1128,6 +1272,8 @@ def run(
                     )
                     camera_binding_reported = True
             frame += 1
+            if r2c2_state is not None and bool(r2c2_state["captured"]):
+                break
             if (
                 r2c1_state is not None and r2c1_script is not None
                 and int(r2c1_state["segment_index"]) + 1 >= len(r2c1_script.segments)
@@ -1213,6 +1359,8 @@ def run(
             odom_phase_trace.close()
         if r2c1_trace is not None:
             r2c1_trace.close()
+        if r2c2_trace is not None:
+            r2c2_trace.close()
         if rclpy_started:
             import rclpy
 
@@ -1223,8 +1371,13 @@ def run(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if args.odom_phase_trace is not None and args.r2c1_free_space_trace is not None:
-        raise ValueError("--odom-phase-trace and --r2c1-free-space-trace are mutually exclusive")
+    diagnostic_modes = [
+        args.odom_phase_trace is not None,
+        args.r2c1_free_space_trace is not None,
+        args.r2c2_free_space_envelope is not None,
+    ]
+    if sum(diagnostic_modes) > 1:
+        raise ValueError("odom phase, R2C1 and R2C2 diagnostic modes are mutually exclusive")
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
     appearance_config = args.appearance_config.expanduser().resolve()
@@ -1247,21 +1400,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         dynamic_scenario = replace(
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
         )
-    if args.r2c1_free_space_trace is not None:
+    if args.r2c1_free_space_trace is not None or args.r2c2_free_space_envelope is not None:
         if config.simulation.odometry_mode != "ideal":
-            raise ValueError("R2C1 requires --mode ideal")
+            raise ValueError("R2C diagnostic modes require --mode ideal")
         if config.spawn.selected != "mapping_start":
-            raise ValueError("R2C1 requires --spawn-pose mapping_start")
+            raise ValueError("R2C diagnostic modes require --spawn-pose mapping_start")
         if config.environment.source_asset.name != "kujiale_0026_A_to_B_door_open.usd":
-            raise ValueError("R2C1 requires the frozen Kujiale source USD")
+            raise ValueError("R2C diagnostic modes require the frozen Kujiale source USD")
         if dynamic_scenario.enabled:
-            raise ValueError("R2C1 requires --no-dynamic-obstacles")
+            raise ValueError("R2C diagnostic modes require --no-dynamic-obstacles")
         if camera_selection.profile.name != "off":
-            raise ValueError("R2C1 requires --camera-profile off")
+            raise ValueError("R2C diagnostic modes require --camera-profile off")
         if config.third_person_camera.enabled:
-            raise ValueError("R2C1 requires --no-third-person-camera")
+            raise ValueError("R2C diagnostic modes require --no-third-person-camera")
         if args.appearance_profile != "baseline":
-            raise ValueError("R2C1 requires --appearance-profile baseline")
+            raise ValueError("R2C diagnostic modes require --appearance-profile baseline")
     calibration = "calibrated" if selected_pose.map.calibrated else "uncalibrated"
     if args.validate_only:
         # This process exits immediately after validation, so importing pxr
@@ -1300,6 +1453,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.appearance_profile,
         None if args.odom_phase_trace is None else args.odom_phase_trace.expanduser().resolve(),
         None if args.r2c1_free_space_trace is None else args.r2c1_free_space_trace.expanduser().resolve(),
+        None if args.r2c2_free_space_envelope is None else args.r2c2_free_space_envelope.expanduser().resolve(),
     )
     return 0
 
