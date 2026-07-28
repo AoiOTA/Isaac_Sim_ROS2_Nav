@@ -101,6 +101,14 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert "stopping ${active_mode} ROS launch process group" in wrapper
 
 
+def test_authorization_isaac_uses_rgb_ingress_without_depth_navigation_profile():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_kujiale_authorization_isaac.sh").read_text()
+    assert '--camera-profile monitoring' in wrapper
+    assert '--camera-profile off' not in wrapper
+    assert 'run_kujiale_4x20_isaac.sh' in wrapper
+
+
 def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
     root = PACKAGE_ROOT.parents[2]
     controller = (root / "scripts" / "run_kujiale_4x20.sh").read_text()
