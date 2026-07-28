@@ -201,23 +201,24 @@ def assess_envelope(*, footprint: Sequence[Sequence[float]], start_x: float, sta
 class EnvelopeTrace:
     """Append-only JSONL trace for one no-motion R2C2 cold start."""
 
-    def __init__(self, path: Path, *, manifest: dict[str, object]) -> None:
+    def __init__(self, path: Path, *, manifest: dict[str, object], schema: str = SCHEMA) -> None:
         self.path = Path(path).expanduser().resolve()
+        self.schema = schema
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._output = self.path.open("x", encoding="utf-8")
-        self.write({"schema": SCHEMA, "kind": "manifest", **manifest})
+        self.write({"schema": self.schema, "kind": "manifest", **manifest})
 
     def write(self, value: dict[str, object]) -> None:
         self._output.write(json.dumps(value, sort_keys=True) + "\n")
         self._output.flush()
 
     def record(self, *, robot_envelope: Bounds3D, support_plane_z: float, colliders: Sequence[dict[str, object]], assessments: Sequence[SegmentAssessment], receipt: str) -> None:
-        self.write({"schema": SCHEMA, "kind": "robot_envelope", "bounds": robot_envelope.as_dict(), "support_plane_z": support_plane_z})
+        self.write({"schema": self.schema, "kind": "robot_envelope", "bounds": robot_envelope.as_dict(), "support_plane_z": support_plane_z})
         for collider in colliders:
-            self.write({"schema": SCHEMA, "kind": "collider", **collider})
+            self.write({"schema": self.schema, "kind": "collider", **collider})
         for result in assessments:
-            self.write({"schema": SCHEMA, "kind": "segment_assessment", "segment_id": result.segment_id, "support_coverage": result.support_coverage, "support_height_variation_m": result.support_height_variation_m, "minimum_clearance_m": result.minimum_clearance_m, "closest_path": result.closest_path, "valid": result.valid})
-        self.write({"schema": SCHEMA, "kind": "receipt", "receipt": receipt})
+            self.write({"schema": self.schema, "kind": "segment_assessment", "segment_id": result.segment_id, "support_coverage": result.support_coverage, "support_height_variation_m": result.support_height_variation_m, "minimum_clearance_m": result.minimum_clearance_m, "closest_path": result.closest_path, "valid": result.valid})
+        self.write({"schema": self.schema, "kind": "receipt", "receipt": receipt})
 
     def close(self) -> None:
         if not self._output.closed:
