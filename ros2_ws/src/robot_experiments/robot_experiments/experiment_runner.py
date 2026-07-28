@@ -726,6 +726,11 @@ class ExperimentRunner(Node):
                 self._active_selection,
             ),
             "pregoal_authorization_sha256": self._pregoal_authorization_sha256,
+            # This records the value that the installed runner actually
+            # consumed.  A launcher argument alone is not sufficient
+            # evidence for authorization-only gates.
+            "nav2_profile": self._nav2_profile,
+            "authorization_only": self._authorization_only,
         }
         try:
             self._lifecycle_jsonl_path.parent.mkdir(parents=True, exist_ok=True)

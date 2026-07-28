@@ -184,6 +184,18 @@ def test_r3_r1_r1_r1_authorization_only_scenarios_have_valid_distinct_routes():
         assert scenario.route[-1] == scenario.goal
 
 
+def test_r3_r1_r1_r1_r1_authorization_only_scenarios_use_fresh_seeds():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_r1_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r3_r1_r1_r1_r1_dynamic.yaml")
+    assert [row.seed for row in static.run_matrix] == [9400]
+    assert [row.seed for row in dynamic.run_matrix] == [9500]
+    for scenario in (static, dynamic):
+        assert len(scenario.route) == 2
+        assert scenario.route[0].frame_id == scenario.route[1].frame_id == "map"
+        assert scenario.route[0].position != scenario.route[1].position
+        assert scenario.route[-1] == scenario.goal
+
+
 def test_stage2_2_r2b_development_matrix_is_frozen_and_balanced():
     static = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_static.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2b_development_dynamic.yaml")
