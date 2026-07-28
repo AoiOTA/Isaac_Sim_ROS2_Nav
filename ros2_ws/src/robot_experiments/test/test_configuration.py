@@ -84,6 +84,23 @@ def test_scenario_accepts_per_run_appearance_profiles_only_with_the_appearance_c
         load_scenario(target)
 
 
+def test_r2c4_r13_shadow_matrix_is_the_reserved_eight_route_contract():
+    static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r13_static.yaml")
+    dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_r13_dynamic.yaml")
+    assert [(item.seed, item.condition_id, item.appearance_profile_id) for item in static.run_matrix] == [
+        (8801, "static_baseline", "baseline"),
+        (8801, "static_appearance", "dim_warm"),
+        (8802, "static_appearance", "dim_cool"),
+        (8802, "static_baseline", "baseline"),
+    ]
+    assert [(item.seed, item.condition_id, item.appearance_profile_id, item.variant_id) for item in dynamic.run_matrix] == [
+        (8901, "dynamic_baseline", "baseline", "v1"),
+        (8901, "dynamic_appearance", "dim_warm", "v1"),
+        (8902, "dynamic_appearance", "dim_cool", "v2"),
+        (8902, "dynamic_baseline", "baseline", "v2"),
+    ]
+
+
 def test_long_benchmarks_share_the_same_far_goal():
     static = load_scenario(CONFIG / "static_benchmark.yaml")
     dynamic = load_scenario(CONFIG / "dynamic_benchmark.yaml")
