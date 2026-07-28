@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 from isaac_sim.apps.navigation_sim import _parser
 from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
@@ -19,6 +20,31 @@ from isaac_sim.src.diagnostics.r2c3_free_space_motion import (
 
 
 FALLBACKS = ("/Root/door_handle_1", "/Root/door_handle_2")
+
+
+def _odom_message(stamp_ns: int):
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(
+                sec=stamp_ns // 1_000_000_000,
+                nanosec=stamp_ns % 1_000_000_000,
+            )
+        ),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+                orientation=SimpleNamespace(
+                    x=0.0, y=0.0, z=0.0, w=1.0
+                ),
+            )
+        ),
+        twist=SimpleNamespace(
+            twist=SimpleNamespace(
+                linear=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+                angular=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+            )
+        ),
+    )
 
 
 def _assessment(**overrides) -> SegmentAssessment:
@@ -168,6 +194,51 @@ def test_r2c3_trace_schema_is_explicit_and_r2c1_history_stays_unchanged(
         json.loads(r2c1_path.read_text(encoding="utf-8"))["schema"]
         == R2C1_SCHEMA
     )
+
+
+def test_r2c3_registers_callback_context_before_graph_publication(tmp_path):
+    path = tmp_path / "race.jsonl"
+    trace = R2C1Trace(path, manifest={}, schema=SCHEMA)
+    context = {
+        "simulation_time_s": 1.25,
+        "loop_sequence": 12,
+        "reset_epoch": 4,
+        "segment_index": 2,
+        "segment_id": "spin_left",
+        "segment_phase": "action",
+    }
+    trace.register_trigger_context(**context)
+    # The dedicated executor may deliver here, before trigger() returns.
+    trace.record_odom(
+        _odom_message(1_250_000_000),
+        arrival_loop_sequence=12,
+    )
+    payload = {
+        "position": [0.0, 0.0, 0.0],
+        "yaw_rad": 0.0,
+        "linear_xyz": [0.0, 0.0, 0.0],
+        "angular_xyz": [0.0, 0.0, 0.0],
+    }
+    trace.record_trigger(
+        {
+            "loop_publish_count": 1,
+            "trigger_status": True,
+            "evaluate_status": True,
+            "source_payload": payload,
+            "publisher_payload": payload,
+        },
+        post_assist_payload=payload,
+        **context,
+    )
+    trace.close()
+    rows = [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+    ]
+    callback = next(row for row in rows if row["kind"] == "odom_receive")
+    assert callback["loop_sequence"] == 12
+    assert callback["reset_epoch"] == 4
+    assert callback["callback_latency_ticks"] == 0
 
 
 def test_r2c3_cli_requires_explicit_trace_and_bounds_paths():

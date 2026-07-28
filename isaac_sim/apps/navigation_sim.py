@@ -2045,6 +2045,22 @@ def run(
                 ideal_odom = graph_references.get("odometry")
                 if ideal_odom is None:
                     raise RuntimeError("ideal odometry graph is unavailable after motion assist")
+                if (
+                    r2c1_state is not None
+                    and r2c1_script is not None
+                    and bool(r2c1_state["r2c3_mode"])
+                ):
+                    segment = r2c1_script.segments[
+                        int(r2c1_state["segment_index"])
+                    ]
+                    r2c1_trace.register_trigger_context(
+                        simulation_time_s=simulation_time,
+                        loop_sequence=frame,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        segment_phase=str(r2c1_segment_phase or "idle"),
+                    )
                 odom_publish = ideal_odom.trigger(frame)
                 if odom_phase_trace is not None:
                     odom_phase_trace.record_odom_trigger(

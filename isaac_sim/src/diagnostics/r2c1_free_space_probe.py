@@ -250,14 +250,15 @@ class R2C1Trace:
         loop_sequence: int, reset_epoch: int, segment_index: int, segment_id: str,
         segment_phase: str, post_assist_payload: dict[str, object],
     ) -> None:
-        header_stamp_ns = int(round(float(simulation_time_s) * 1_000_000_000.0))
-        registered = {
-            "loop_sequence": int(loop_sequence), "reset_epoch": int(reset_epoch),
-            "segment_index": int(segment_index), "segment_id": str(segment_id),
-            "segment_phase": str(segment_phase),
-            "header_stamp_ns": header_stamp_ns,
-        }
-        self._trigger_by_stamp[header_stamp_ns] = registered
+        registered = self.register_trigger_context(
+            simulation_time_s=simulation_time_s,
+            loop_sequence=loop_sequence,
+            reset_epoch=reset_epoch,
+            segment_index=segment_index,
+            segment_id=segment_id,
+            segment_phase=segment_phase,
+        )
+        header_stamp_ns = int(registered["header_stamp_ns"])
         self._write({
             "schema": self.schema, "kind": "ideal_odom_trigger", **registered,
             "recorded_sequence": int(loop_sequence), "sim_time_ns": header_stamp_ns,
@@ -272,6 +273,36 @@ class R2C1Trace:
             "realized_next_payload": None,
         })
 
+    def register_trigger_context(
+        self, *, simulation_time_s: float, loop_sequence: int,
+        reset_epoch: int, segment_index: int, segment_id: str,
+        segment_phase: str,
+    ) -> dict[str, object]:
+        """Register callback identity before the graph can publish.
+
+        R2C3 uses a dedicated executor, so a DDS callback may run before the
+        synchronous graph trigger returns.  Registering the immutable context
+        first prevents that valid delivery from being misclassified as
+        unmapped.  Historical R2C1 callers still register through
+        ``record_trigger`` after publication.
+        """
+
+        header_stamp_ns = int(round(float(simulation_time_s) * 1_000_000_000.0))
+        registered = {
+            "loop_sequence": int(loop_sequence), "reset_epoch": int(reset_epoch),
+            "segment_index": int(segment_index), "segment_id": str(segment_id),
+            "segment_phase": str(segment_phase),
+            "header_stamp_ns": header_stamp_ns,
+        }
+        with self._lock:
+            existing = self._trigger_by_stamp.get(header_stamp_ns)
+            if existing is not None and existing != registered:
+                raise RuntimeError(
+                    "free-space trigger context conflicts at one header stamp"
+                )
+            self._trigger_by_stamp[header_stamp_ns] = registered
+        return registered
+
     def record_realized_next(
         self, *, trigger_loop_sequence: int, reset_epoch: int,
         simulation_time_s: float, payload: dict[str, object],
@@ -283,14 +314,15 @@ class R2C1Trace:
         })
 
     def _trigger(self, header_stamp_ns: int) -> dict[str, object]:
-        exact = self._trigger_by_stamp.get(header_stamp_ns)
-        if exact is not None:
-            return exact
-        candidates = [
-            value for stamp, value in self._trigger_by_stamp.items()
-            if abs(stamp - header_stamp_ns) <= 1
-        ]
-        return candidates[0] if len(candidates) == 1 else {}
+        with self._lock:
+            exact = self._trigger_by_stamp.get(header_stamp_ns)
+            if exact is not None:
+                return dict(exact)
+            candidates = [
+                value for stamp, value in self._trigger_by_stamp.items()
+                if abs(stamp - header_stamp_ns) <= 1
+            ]
+            return dict(candidates[0]) if len(candidates) == 1 else {}
 
     def record_odom(self, message: Any, *, arrival_loop_sequence: int) -> None:
         pose, twist = message.pose.pose, message.twist.twist
