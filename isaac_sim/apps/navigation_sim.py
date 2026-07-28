@@ -1208,9 +1208,23 @@ def run(
                         descendants_finite=descendants_finite, effective_visibility=effective_visibility,
                         collision_schema_noncanonical=not prim.IsA(UsdGeom.Gprim), config=bounds_config,
                     )
+                    fields = resolution.trace_fields()
+                    if resolution.bounds_source == "INVISIBLE_COLLISION_SUBTREE_FALLBACK":
+                        source_bounds = bounds_for(invisible_bbox_cache, stage.GetPrimAtPath(gprims[0]))
+                        source_delta = max(
+                            abs(left - right)
+                            for left, right in zip(
+                                (resolution.bounds.min_x, resolution.bounds.min_y, resolution.bounds.min_z, resolution.bounds.max_x, resolution.bounds.max_y, resolution.bounds.max_z),
+                                (source_bounds.min_x, source_bounds.min_y, source_bounds.min_z, source_bounds.max_x, source_bounds.max_y, source_bounds.max_z),
+                            )
+                        ) if source_bounds.finite() else math.inf
+                        fields["fallback_bounds_source_delta_m"] = source_delta
+                        invalid_bounds = invalid_bounds or not math.isfinite(source_delta) or source_delta > 1.0e-6
+                    else:
+                        fields["fallback_bounds_source_delta_m"] = None
                     invalid_bounds = invalid_bounds or not resolution.valid
                     colliders.append(Collider(path, resolution.bounds, collision_enabled(prim)))
-                    metadata[path] = resolution.trace_fields()
+                    metadata[path] = fields
                 if not robot_bounds or not all(item.finite() for item in robot_bounds):
                     raise RuntimeError("R2C2A robot collision envelope is unavailable")
                 robot_envelope = Bounds3D(
