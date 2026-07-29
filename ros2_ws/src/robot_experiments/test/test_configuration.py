@@ -117,6 +117,7 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
         "kujiale_dynamic_visual_g2_g3.yaml",
         "kujiale_dynamic_visual_g5_g1.yaml",
         "kujiale_4x20_dynamic_pair.yaml",
+        "kujiale_g2_dynamic_safety_smoke.yaml",
     ):
         scenario = load_scenario(CONFIG / filename)
         spawn_file = (
@@ -132,6 +133,19 @@ def test_dynamic_scenario_matches_isaac_physical_configuration():
             spawn_pose,
             scenario.resolve_path(scenario.dynamic_config_file),
         )
+
+
+def test_g2_dynamic_safety_smoke_is_one_fresh_failing_family_route():
+    scenario = load_scenario(CONFIG / "kujiale_g2_dynamic_safety_smoke.yaml")
+    assert scenario.scenario_id == "kujiale_g2_dynamic_safety_smoke"
+    assert [(item.seed, item.case_id, item.variant_id, item.condition_id,
+             item.appearance_profile_id) for item in scenario.run_matrix] == [
+        (12001, "full_route_three_stage", "v3", "dynamic_safety_smoke",
+         "bright_warm"),
+    ]
+    assert tuple(goal.goal_id for goal in scenario.route) == (
+        "G2", "G3", "G4", "G5", "G1",
+    )
 
 
 def test_4x20_static_and_dynamic_pairs_are_balanced_and_seed_paired():

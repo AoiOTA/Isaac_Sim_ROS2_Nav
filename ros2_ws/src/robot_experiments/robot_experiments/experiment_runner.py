@@ -2310,6 +2310,12 @@ class ExperimentRunner(Node):
             qualification_dynamic = self._scenario.scenario_id in {
                 "kujiale_stage2_2_g2_gate_dynamic",
                 "kujiale_stage2_2_g2_confirmation_dynamic",
+                # This isolated Module3-only smoke shares the formal
+                # telemetry/actor contract, but treats the calibrated
+                # right-side-bypass classifier as diagnostic.  The smoke's
+                # independent runner validates physical collision freedom and
+                # the local-bypass minimum clearance instead.
+                "kujiale_g2_dynamic_safety_smoke",
             }
             if not dynamic_behavior["complete"] and not qualification_dynamic:
                 reasons.append("three_stage_dynamic_behavior_not_observed")

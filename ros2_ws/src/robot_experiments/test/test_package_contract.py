@@ -101,6 +101,18 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert "stopping ${active_mode} ROS launch process group" in wrapper
 
 
+def test_g2_dynamic_safety_smoke_is_single_route_and_module2_free():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_g2_dynamic_safety_smoke.sh").read_text()
+    assert "kujiale_g2_dynamic_safety_smoke.yaml" in wrapper
+    assert "run_kujiale_4x20_isaac.sh\" dynamic --headless" in wrapper
+    assert "nav2_profile:=dynamic_avoidance" in wrapper
+    assert "FollowPath.CostCritic.cost_weight" in wrapper
+    assert "inflation_layer.inflation_radius" in wrapper
+    assert "local_bypass_actor clearance" in wrapper
+    assert "module2" not in wrapper.lower()
+
+
 def test_authorization_isaac_uses_rgb_ingress_without_depth_navigation_profile():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_authorization_isaac.sh").read_text()
