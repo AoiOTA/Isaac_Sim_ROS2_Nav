@@ -2862,7 +2862,12 @@ class ExperimentRunner(Node):
             raise TimeoutError("timed out waiting for a non-zero /clock")
         self._verify_dynamic_runtime_contract()
         self._verify_appearance_runtime_contract()
-        self._verify_collision_monitor_active()
+        # Authorization-only cold starts never dispatch a goal or evaluate a
+        # route.  Collision Monitor readiness is therefore not part of their
+        # no-navigation contract and can race Nav2 lifecycle activation.
+        # Route runs retain the authoritative monitor check below this branch.
+        if not self._authorization_only:
+            self._verify_collision_monitor_active()
         manifests: list[dict[str, Any]] = []
         selections = self._scenario.run_matrix or tuple(
             RunSelection(seed) for seed in self._scenario.seeds
