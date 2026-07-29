@@ -2301,7 +2301,17 @@ class ExperimentRunner(Node):
                 "segments": segments,
                 "complete": all(item["complete"] for item in segments.values()),
             }
-            if not dynamic_behavior["complete"]:
+            # The frozen G2/Confirmation contract independently verifies actor
+            # arming, motion, retirement, safety and paired interaction.  Its
+            # evidence gate intentionally treats this calibrated follow-window
+            # observation as a diagnostic, not as a navigation failure.  Keep
+            # the legacy pilot scenario strict, while preserving that contract
+            # for the qualification scenarios.
+            qualification_dynamic = self._scenario.scenario_id in {
+                "kujiale_stage2_2_g2_gate_dynamic",
+                "kujiale_stage2_2_g2_confirmation_dynamic",
+            }
+            if not dynamic_behavior["complete"] and not qualification_dynamic:
                 reasons.append("three_stage_dynamic_behavior_not_observed")
         if self._dynamic_guard_aborted:
             reasons.append("dynamic_near_contact_abort")
