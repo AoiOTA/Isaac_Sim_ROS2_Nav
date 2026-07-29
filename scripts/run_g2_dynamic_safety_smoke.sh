@@ -21,6 +21,21 @@ mkdir -p "${control_root}"
 
 stop_stack() {
   local status=0
+  local child_pid child_pgid
+  # Both launch wrappers create dedicated sessions.  Interrupting only their
+  # supervisor PID leaves the actual Isaac/ros2 child in its own process group
+  # and can strand a failed smoke stack.  Signal the known direct child group
+  # first, then let the wrapper reap it normally.
+  for child_pid in $(pgrep -P "${ros_pid}" 2>/dev/null || true); do
+    child_pgid="$(ps -o pgid= -p "${child_pid}" 2>/dev/null | tr -d '[:space:]')"
+    [[ "${child_pgid}" =~ ^[1-9][0-9]*$ ]] \
+      && kill -INT -- "-${child_pgid}" 2>/dev/null || true
+  done
+  for child_pid in $(pgrep -P "${isaac_pid}" 2>/dev/null || true); do
+    child_pgid="$(ps -o pgid= -p "${child_pid}" 2>/dev/null | tr -d '[:space:]')"
+    [[ "${child_pgid}" =~ ^[1-9][0-9]*$ ]] \
+      && kill -INT -- "-${child_pgid}" 2>/dev/null || true
+  done
   if [[ -n "${ros_pid}" ]] && kill -0 "${ros_pid}" 2>/dev/null; then
     kill -INT "${ros_pid}" 2>/dev/null || true
     wait "${ros_pid}" || status=$?
