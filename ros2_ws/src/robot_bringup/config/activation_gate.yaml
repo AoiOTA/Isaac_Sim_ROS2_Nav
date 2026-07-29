@@ -1,7 +1,11 @@
 nav2_activation_gate:
   ros__parameters:
     use_sim_time: true
-    startup_timeout: 30.0
+    # Isaac/USD cold starts can publish the latched static map after Nav2 has
+    # already brought up its lifecycle clients.  This is an infrastructure
+    # readiness budget only; it does not relax map, TF, collision, or route
+    # acceptance contracts.
+    startup_timeout: 120.0
     recovery_timeout: 30.0
     recovery_service_timeout: 3.0
     check_period: 0.10
