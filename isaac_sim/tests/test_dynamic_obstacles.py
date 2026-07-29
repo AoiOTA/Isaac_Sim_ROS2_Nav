@@ -120,6 +120,31 @@ def test_g2_g3_gate_triggers_southbound_at_y_2_6_in_the_narrow_lane():
     )
 
 
+def test_local_bypass_gate_arms_early_on_the_calibrated_northbound_lane():
+    """Prevent the late gate that froze the actor in the robot swept arc."""
+    scenario = load_dynamic_scenario(
+        ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+    )
+    case = scenario.cases["local_bypass"]
+    manager = object.__new__(DynamicObstacleManager)
+
+    assert case.gate.threshold == pytest.approx(-2.60)
+    assert manager._gate_passed(
+        case, {"x": -0.60, "y": -2.59, "vy": 0.30, "speed": 0.30}
+    )
+    # It remains direction-, speed-, and calibrated-lane-gated; merely
+    # entering the broad room cannot re-arm this one-shot interaction.
+    assert not manager._gate_passed(
+        case, {"x": -0.60, "y": -2.61, "vy": 0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -0.80, "y": -2.50, "vy": 0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -0.60, "y": -2.50, "vy": -0.30, "speed": 0.30}
+    )
+
+
 def test_g5_g1_gate_arms_on_the_northbound_ingress_before_the_doorway():
     """Regression for the recorded route: it approaches the doorway northbound."""
     scenario = load_dynamic_scenario(

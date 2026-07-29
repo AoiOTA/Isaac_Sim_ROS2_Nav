@@ -56,13 +56,12 @@ cases:
     # Traverses right to the planned bypass point, then parks there.  This
     # deliberately produces a moving-to-parked interaction: the robot must
     # route around the parked actor rather than wait for a safety-yield.
-    # Start at the doorway instead of in the preceding corridor.  At 0.80
-    # m/s the actor reaches its planned parking point before it can enter the
-    # robot's near-field protection band.
-    # The calibrated route crosses y=-1.75 at x≈-0.59 to -0.65.  Include that
-    # measured lane so the event fires there instead of after the robot has
-    # already entered the open hall and returns into the former x window.
-    gate: {axis: y, threshold: -1.75, direction: positive, min_speed_mps: 0.20, x_range: [-0.70, 0.30]}
+    # The recorded G2 safety smoke proved that the former doorway gate
+    # y=-1.75 armed too late: the kinematic actor entered safety_yield while
+    # the robot was already committed to the same swept arc.  Arm at y=-2.60
+    # in the same northbound lane so this unchanged 0.70 m trajectory reaches
+    # its existing parking point before the robot enters the near field.
+    gate: {axis: y, threshold: -2.60, direction: positive, min_speed_mps: 0.20, x_range: [-0.70, 0.30]}
     obstacle:
       # y=-0.20 keeps the complete 0.40 m box and its 0.05 m map clearance
       # below the y≈+0.10 static occupied band; a kinematic actor must never
