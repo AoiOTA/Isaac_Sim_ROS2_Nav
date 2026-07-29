@@ -41,9 +41,9 @@
 ## 验证序列
 
 1. 解析配置与 gate 单元测试，确认仅此门坐标改变。
-2. 执行同一单路线动态 smoke，一次、使用新 campaign ID；验收保持
-   `local_bypass_actor >= 0.10 m`、全路线原生 `success`、三 actor 均触发/退场、
-   无 guard abort。
+2. 执行同一单路线动态 smoke，一次、使用新 campaign ID；验收为全路线原生
+   `success`（物理碰撞为零）、三 actor 均触发/退场、无 guard abort。每 actor
+   净距保留为诊断，不构成额外失败阈值。
 3. smoke 失败则保存证据并停止；不试探第二个阈值，不启动 20 条 Gate。
 4. smoke 通过后才建立独立的 fresh G2 授权和 batch preregistration；通过与否
    均不改变 Module2--Module3 融合的 Shadow-only 边界。

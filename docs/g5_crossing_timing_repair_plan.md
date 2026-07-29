@@ -36,7 +36,7 @@ actor 的尺寸、质量、起终点、速度、加速度、variant、停车语�
 ## 验证
 
 1. 配置/gate/静态扫掠测试确认唯一改动。
-2. 一次新的完整三段动态 smoke，要求三 actor 均有 `>=0.10 m` 最小净距、
-   原生结果 `success`、完整 trigger/retire、无 guard abort。
+2. 一次新的完整三段动态 smoke，要求原生结果 `success`（物理碰撞为零）、
+   完整 trigger/retire、无 guard abort；每 actor 最小净距仅作为诊断记录。
 3. 失败则保留 evidence 并停止；不执行第二次阈值尝试或 20 条 Gate。
 4. 只有该 smoke 通过，才可回到新的 G2 authorization 和 batch preregistration。

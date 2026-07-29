@@ -111,7 +111,8 @@ def test_g2_dynamic_safety_smoke_is_single_route_and_module2_free():
     assert "inflation_layer.inflation_radius" in wrapper
     for actor_id in ("local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor"):
         assert actor_id in wrapper
-    assert "clearance={clearance!r} is below 0.10 m" in wrapper
+    assert '"minimum_clearance_m_by_actor"' in wrapper
+    assert "< 0.10" not in wrapper
     assert "module2" not in wrapper.lower()
 
 

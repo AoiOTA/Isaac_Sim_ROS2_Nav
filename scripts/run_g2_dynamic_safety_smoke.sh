@@ -96,6 +96,8 @@ interaction = manifest.get("dynamic_interaction", {})
 clearances = interaction.get("minimum_clearance_m_by_actor", {})
 required = {"local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor"}
 problems = []
+# Physical collision is the user-approved safety verdict.  Per-actor
+# clearances remain replayable diagnostics, not a second acceptance threshold.
 if manifest.get("result") != "success":
     problems.append(f"result={manifest.get('result')!r}: {manifest.get('failure_reason')!r}")
 if interaction.get("complete") is not True:
@@ -106,14 +108,10 @@ if set(interaction.get("retired_ids", [])) != required:
     problems.append("unexpected retired actor IDs")
 if interaction.get("guard_aborted") is not False:
     problems.append("actor guard aborted")
-for actor_id in sorted(required):
-    clearance = clearances.get(actor_id)
-    if not isinstance(clearance, (float, int)) or clearance < 0.10:
-        problems.append(f"{actor_id} clearance={clearance!r} is below 0.10 m")
 if problems:
     raise SystemExit("G2 dynamic-safety smoke failed: " + "; ".join(problems))
 print(json.dumps({"result": "pass", "manifest": str(manifests[0]),
                   "minimum_clearance_m_by_actor": {
-                      actor_id: clearances[actor_id] for actor_id in sorted(required)}},
+                      actor_id: clearances.get(actor_id) for actor_id in sorted(required)}},
                  sort_keys=True))
 PY
