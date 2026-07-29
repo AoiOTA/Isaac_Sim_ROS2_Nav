@@ -131,7 +131,10 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert controller['wz_max'] == 3.40
     assert controller['ax_max'] == 3.50
     assert controller['az_max'] == 6.50
-    assert controller['CostCritic']['cost_weight'] == 2.50
+    # G2 dynamic-safety repair: enlarge only the dynamic pre-contact cost
+    # envelope and its MPPI weight.  Hard collision handling remains in the
+    # shared base configuration.
+    assert controller['CostCritic']['cost_weight'] == 4.00
     assert controller['CostCritic']['near_collision_cost'] == 20
     assert controller['PathFollowCritic']['cost_weight'] == 14.0
     assert local['update_frequency'] == 10.0
@@ -139,9 +142,10 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert local['plugins'] == [
         'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
     assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.10
-    # Dynamic-only 0.60 m inflation preserves the >=0.10 m actor-clearance
-    # campaign gate without modifying actor geometry or trajectories.
-    assert local['inflation_layer']['inflation_radius'] == 0.60
+    # Dynamic-only 0.75 m inflation moves the soft response before the
+    # >=0.10 m actor-clearance boundary without modifying actor geometry or
+    # trajectories.
+    assert local['inflation_layer']['inflation_radius'] == 0.75
     base_local = _config()['local_costmap']['local_costmap']['ros__parameters']
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
     base_controller = _config()['controller_server']['ros__parameters']['FollowPath']
