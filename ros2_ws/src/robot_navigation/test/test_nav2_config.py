@@ -112,6 +112,7 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
 def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     dynamic = _profile('dynamic_avoidance')
     controller_server = dynamic['controller_server']['ros__parameters']
+    behavior_server = dynamic['behavior_server']['ros__parameters']
     controller = controller_server['FollowPath']
     local = dynamic['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
@@ -137,6 +138,10 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert controller['CostCritic']['cost_weight'] == 4.00
     assert controller['CostCritic']['near_collision_cost'] == 20
     assert controller['PathFollowCritic']['cost_weight'] == 14.0
+    # v25 confines costmap-ahead reverse checking to dynamic recovery.  The
+    # shared/static profile retains its validated zero-look-ahead behavior.
+    assert behavior_server['simulate_ahead_time'] == 1.0
+    assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
     assert local['update_frequency'] == 10.0
     assert local['publish_frequency'] == 5.0
     assert local['plugins'] == [

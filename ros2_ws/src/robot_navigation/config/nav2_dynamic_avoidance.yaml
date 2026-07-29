@@ -169,6 +169,20 @@ global_costmap:
           obstacle_min_range: 0.40
           obstacle_max_range: 25.0
 
+behavior_server:
+  ros__parameters:
+    # v25 G2 safety repair: dynamic runs must never issue the shared
+    # dead-end-recovery BackUp command without a costmap look-ahead.  The v24
+    # physical-contact evidence latched while the robot was reversing at
+    # -0.18 m/s after the dynamic actor had already parked elsewhere.  Keep
+    # the base profile's 0.0 setting for its validated narrow static passage,
+    # but make BackUp predict one second of the reverse sweep here.  A blocked
+    # recovery returns failure to the existing RoundRobin, which can Spin,
+    # Wait, and replan; it must not blindly reverse into an occupied cell.
+    # This does not change any actor geometry, trajectory, Collision Monitor,
+    # physical-contact criterion, or normal MPPI tracking command.
+    simulate_ahead_time: 1.0
+
 velocity_smoother:
   ros__parameters:
     # Keep the faster dynamic envelope independent from the historical static
