@@ -106,11 +106,14 @@ if set(interaction.get("retired_ids", [])) != required:
     problems.append("unexpected retired actor IDs")
 if interaction.get("guard_aborted") is not False:
     problems.append("actor guard aborted")
-clearance = clearances.get("local_bypass_actor")
-if not isinstance(clearance, (float, int)) or clearance < 0.10:
-    problems.append(f"local_bypass_actor clearance={clearance!r} is below 0.10 m")
+for actor_id in sorted(required):
+    clearance = clearances.get(actor_id)
+    if not isinstance(clearance, (float, int)) or clearance < 0.10:
+        problems.append(f"{actor_id} clearance={clearance!r} is below 0.10 m")
 if problems:
     raise SystemExit("G2 dynamic-safety smoke failed: " + "; ".join(problems))
 print(json.dumps({"result": "pass", "manifest": str(manifests[0]),
-                  "local_bypass_clearance_m": clearance}, sort_keys=True))
+                  "minimum_clearance_m_by_actor": {
+                      actor_id: clearances[actor_id] for actor_id in sorted(required)}},
+                 sort_keys=True))
 PY

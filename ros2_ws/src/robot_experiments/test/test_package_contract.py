@@ -109,7 +109,9 @@ def test_g2_dynamic_safety_smoke_is_single_route_and_module2_free():
     assert "nav2_profile:=dynamic_avoidance" in wrapper
     assert "FollowPath.CostCritic.cost_weight" in wrapper
     assert "inflation_layer.inflation_radius" in wrapper
-    assert "local_bypass_actor clearance" in wrapper
+    for actor_id in ("local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor"):
+        assert actor_id in wrapper
+    assert "clearance={clearance!r} is below 0.10 m" in wrapper
     assert "module2" not in wrapper.lower()
 
 
