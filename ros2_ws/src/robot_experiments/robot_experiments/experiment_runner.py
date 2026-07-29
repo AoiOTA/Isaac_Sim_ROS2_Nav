@@ -1056,23 +1056,34 @@ class ExperimentRunner(Node):
         }
 
     def _verify_dynamic_runtime_contract(self) -> None:
-        if not self._isaac_parameter_client.wait_for_services(
-            timeout_sec=self._service_timeout_sec
-        ):
-            self._raise_if_shutdown()
-            raise RuntimeError("Isaac parameter services are unavailable")
         names = [
             "dynamic_obstacles_enabled",
             "dynamic_obstacles_config_sha256",
             "dynamic_obstacle_ids",
         ]
-        future = self._isaac_parameter_client.get_parameters(names)
-        deadline = time.monotonic() + self._service_timeout_sec
-        if not self._wait_future(future, deadline):
-            raise TimeoutError(
-                "reading the Isaac dynamic obstacle contract timed out"
-            )
-        response = future.result()
+        # Isaac may advertise its parameter services before the first request
+        # can be serviced after a cold simulation start.  Retry the read-only
+        # verification before any reset or goal is issued; this is not a
+        # navigation retry and preserves the pre-goal isolation boundary.
+        response = None
+        for attempt in range(3):
+            if self._isaac_parameter_client.wait_for_services(
+                timeout_sec=self._service_timeout_sec
+            ):
+                future = self._isaac_parameter_client.get_parameters(names)
+                if self._wait_future(
+                    future, time.monotonic() + self._service_timeout_sec
+                ):
+                    response = future.result()
+                    break
+            if attempt < 2:
+                self.get_logger().warning(
+                    "Isaac dynamic obstacle contract is not ready; retrying pre-goal verification"
+                )
+                self._spin_once(1.0)
+        if response is None:
+            self._raise_if_shutdown()
+            raise TimeoutError("reading the Isaac dynamic obstacle contract timed out")
         if response is None or len(response.values) != len(names):
             raise RuntimeError(
                 "Isaac returned an incomplete dynamic obstacle contract"
@@ -1249,19 +1260,27 @@ class ExperimentRunner(Node):
         the robot and publishing one zero velocity is not an isolation boundary:
         the old action can publish again on the next controller cycle.
         """
-        if not self._cancel_navigation_client.wait_for_service(
-            timeout_sec=self._service_timeout_sec
-        ):
+        response = None
+        for attempt in range(3):
+            if self._cancel_navigation_client.wait_for_service(
+                timeout_sec=self._service_timeout_sec
+            ):
+                request = CancelGoal.Request()
+                request.goal_info = GoalInfo()
+                future = self._cancel_navigation_client.call_async(request)
+                if self._wait_future(
+                    future, time.monotonic() + self._service_timeout_sec
+                ):
+                    response = future.result()
+                    break
+            if attempt < 2:
+                self.get_logger().warning(
+                    "NavigateToPose cancel service is not ready; retrying before reset"
+                )
+                self._spin_once(1.0)
+        if response is None:
             self._raise_if_shutdown()
-            raise RuntimeError("NavigateToPose cancel service is unavailable")
-        request = CancelGoal.Request()
-        request.goal_info = GoalInfo()
-        future = self._cancel_navigation_client.call_async(request)
-        if not self._wait_future(
-            future, time.monotonic() + self._service_timeout_sec
-        ):
             raise TimeoutError("cancelling stale NavigateToPose goals timed out")
-        response = future.result()
         accepted_codes = {
             CancelGoal.Response.ERROR_NONE,
             CancelGoal.Response.ERROR_REJECTED,
