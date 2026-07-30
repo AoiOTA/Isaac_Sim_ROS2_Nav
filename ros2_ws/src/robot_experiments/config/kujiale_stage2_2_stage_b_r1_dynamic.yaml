@@ -43,6 +43,8 @@ scenario:
       - {seed: 11208, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
       - {seed: 11209, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
       - {seed: 11210, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 12611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 12612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
     timeout_sec: 720.0
     leg_timeout_sec: 210.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
