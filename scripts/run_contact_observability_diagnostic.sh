@@ -14,8 +14,10 @@ output="${root}/data/metrics/contact_observability_${campaign_id}"
 [[ -z "$(git -C "${root}" status --porcelain --untracked-files=no)" ]] || { echo "Module3 tracked worktree is dirty" >&2; exit 2; }
 [[ -f "${scenario}" && ! -e "${output}" ]] || { echo "scenario missing or output already exists" >&2; exit 2; }
 
+set +u
 source /opt/ros/jazzy/setup.bash
 source "${root}/ros2_ws/install/setup.bash"
+set -u
 export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 isaac_pid=""
