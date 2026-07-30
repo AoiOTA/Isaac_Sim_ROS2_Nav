@@ -39,3 +39,21 @@ def test_development_dynamic_has_balanced_focused_cases() -> None:
         "same_direction_slow": 5,
         "temporary_block": 5,
     }
+
+
+def test_attempt_03_gate_and_confirmation_use_fresh_seed_family() -> None:
+    expected = {
+        ("gate", "static"): range(16001, 16011),
+        ("gate", "dynamic"): range(16101, 16111),
+        ("confirmation", "static"): range(16201, 16211),
+        ("confirmation", "dynamic"): range(16301, 16311),
+    }
+    for (phase, mode), seeds in expected.items():
+        scenario = load_scenario(
+            CONFIG
+            / f"isaac_kujiale_dataset_v2_attempt_03_{phase}_{mode}.yaml"
+        )
+        assert scenario.scenario_id == (
+            f"isaac_kujiale_dataset_v2_attempt_03_{phase}_{mode}"
+        )
+        assert [row.seed for row in scenario.run_matrix] == list(seeds)
