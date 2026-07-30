@@ -148,6 +148,43 @@ def test_g2_dynamic_safety_smoke_is_one_fresh_failing_family_route():
     )
 
 
+def test_stage_b_r1_seed_bank_is_fresh_and_preserves_physical_contracts():
+    static = load_scenario(
+        CONFIG / "kujiale_stage2_2_stage_b_r1_static.yaml"
+    )
+    dynamic = load_scenario(
+        CONFIG / "kujiale_stage2_2_stage_b_r1_dynamic.yaml"
+    )
+    assert [row.seed for row in static.run_matrix] == [
+        10600, 10621, 10622,
+        *range(10701, 10711),
+        *range(10901, 10911),
+    ]
+    assert [row.seed for row in dynamic.run_matrix] == [
+        10610, 10611, 10612, 10623, 10624,
+        *range(10801, 10811),
+        *range(11201, 11211),
+    ]
+    assert tuple(goal.goal_id for goal in static.route) == (
+        "G2", "G3", "G4", "G5", "G1",
+    )
+    assert static.route == dynamic.route
+    assert len(static.obstacles["static"]) == 6
+    assert len(dynamic.obstacle_trajectories) == 7
+    spawn_pose = load_spawn_pose(
+        PACKAGE_ROOT.parents[2]
+        / "isaac_sim/configs/environments/"
+        "kujiale_0026_A_to_B_door_open.spawn.yaml",
+        dynamic.spawn_pose_name,
+    )
+    assert dynamic.dynamic_config_file is not None
+    validate_dynamic_physical_contract(
+        dynamic,
+        spawn_pose,
+        dynamic.resolve_path(dynamic.dynamic_config_file),
+    )
+
+
 def test_4x20_static_and_dynamic_pairs_are_balanced_and_seed_paired():
     static = load_scenario(CONFIG / "kujiale_4x20_static_pair.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_4x20_dynamic_pair.yaml")
