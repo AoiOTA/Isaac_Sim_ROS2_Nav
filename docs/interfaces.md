@@ -150,6 +150,7 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/ground_truth/odom` | `nav_msgs/msg/Odometry` | optional Isaac GT recorder | metrics only | `map`/`ground_truth_base_link`, configured 60 Hz |
 | `/ground_truth/path` | `nav_msgs/msg/Path` | optional Isaac GT recorder | metrics/visualization only | `map`, configured 10 Hz |
 | `/simulation/collision` | `std_msgs/msg/Bool` | Isaac chassis contact sensor | experiment safety metric | about 20 Hz; instantaneous contact state |
+| `/simulation/collision_diagnostics` | `std_msgs/msg/String` | Isaac chassis contact sensor | receipt-bound forensic telemetry only | emitted only when `/simulation/collision=true`; JSON carries raw `body0/body1`, contact point/normal/impulse when Isaac exposes them; never a navigation input and never weakens the Bool safety verdict |
 | `/experiment/appearance/state` | `std_msgs/msg/String` | Isaac `AppearanceManager` | 4×20 runner/report evidence | transient-local JSON: active profile, profile-config SHA256, anonymous Session Layer ID, light/material inventory and applied overrides; never a navigation input |
 | `/collision_monitor_state` | `nav2_msgs/msg/CollisionMonitorState` | Nav2 Collision Monitor | experiment lock/stop metric | Navigation only |
 | `/simulation/reset_event` | `std_msgs/msg/Empty` | Isaac Reset bridge | Wheel Odom, Activation Gate, scan-fault bridge and reset observers | Reliable + Volatile; one event after each successful transaction, and the recovery-epoch boundary |

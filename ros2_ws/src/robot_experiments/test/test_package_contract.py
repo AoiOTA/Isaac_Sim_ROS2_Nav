@@ -82,6 +82,11 @@ def test_visual_route_wrapper_disables_all_project_evidence_output():
     assert "if self._record_evidence:" in runner
 
 
+def test_experiment_telemetry_records_contact_identity_diagnostics():
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    assert '"/simulation/collision_diagnostics"' in runner
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()
