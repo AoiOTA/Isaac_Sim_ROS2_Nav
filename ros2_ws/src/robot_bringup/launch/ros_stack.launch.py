@@ -312,7 +312,8 @@ def _launch_setup(context):
                 'nav2_profile_params_file': str(nav2_profile_params_file),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
-                    if nav2_profile == 'dynamic_avoidance'
+                    if nav2_profile in {
+                        'dynamic_avoidance', 'bio_nav_tiebreak_risk'}
                     else 'voxel_grid'
                 ),
             },
@@ -442,7 +443,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav2_profile',
             default_value='stable',
-            description='stable or performance Nav2 parameter overlay'),
+            description=(
+                'stable, performance, dynamic_avoidance, or optional '
+                'bio_nav_tiebreak_risk Nav2 parameter overlay')),
         DeclareLaunchArgument(
             'nav2_profile_params_file',
             default_value='',
