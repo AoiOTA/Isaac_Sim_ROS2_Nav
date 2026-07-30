@@ -4,8 +4,8 @@ set -Eeuo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "${script_dir}/.." && pwd)"
-campaign_id="${1:-20260730-contact-observability-10401}"
-branch="codex/module3-contact-observability"
+campaign_id="${1:-20260730-contact-observability-clean-10402}"
+branch="codex/module3-contact-observability-clean-10402"
 scenario="${root}/ros2_ws/src/robot_experiments/config/kujiale_contact_observability_dynamic.yaml"
 output="${root}/data/metrics/contact_observability_${campaign_id}"
 
@@ -71,7 +71,7 @@ nav2_pid=$!
 wait_for dynamic_preflight "${root}/scripts/run_kujiale_4x20.sh" preflight dynamic
 "${root}/scripts/run_experiment.sh" "${scenario}" "${output}/evidence" run_indices:=1 nav2_profile:=dynamic_avoidance
 
-run_root="${output}/evidence/kujiale_contact_observability_dynamic/run-0001-seed-10401"
+run_root="${output}/evidence/kujiale_contact_observability_dynamic/run-0001-seed-10402"
 [[ -f "${run_root}/run_manifest.json" && -f "${run_root}/run_summary.json" ]] || { echo "single-route evidence is incomplete" >&2; exit 1; }
 telemetry="$(find "${run_root}/telemetry" -maxdepth 1 -name '*.mcap' -print -quit)"
 [[ -n "${telemetry}" ]] || { echo "telemetry MCAP missing" >&2; exit 1; }
@@ -93,7 +93,7 @@ value = {
     "run_manifest_sha256": hashlib.sha256((root / "run_manifest.json").read_bytes()).hexdigest(),
     "run_summary_sha256": hashlib.sha256((root / "run_summary.json").read_bytes()).hexdigest(),
 }
-if value["run_index"] != 1 or value["seed"] != 10401:
+if value["run_index"] != 1 or value["seed"] != 10402:
     raise SystemExit("unexpected diagnostic route identity")
 output.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 if not value["pass"]:

@@ -15,7 +15,7 @@ scenario:
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
-      - {seed: 10401, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10402, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
     timeout_sec: 720.0
     leg_timeout_sec: 210.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}

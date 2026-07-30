@@ -30,7 +30,7 @@ def test_contact_observability_has_one_fresh_non_confirmation_run() -> None:
     assert diagnostic["id"] == "kujiale_contact_observability_dynamic"
     assert matrix == [
         {
-            "seed": 10401,
+            "seed": 10402,
             "case_id": "full_route_three_stage",
             "variant_id": "v2",
             "condition_id": "dynamic_baseline",
