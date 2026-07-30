@@ -5,7 +5,7 @@ set -Eeuo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "${script_dir}/.." && pwd)"
 campaign_id="${1:-20260730-contact-observability-clean-10402}"
-branch="codex/module3-contact-observability-clean-10402"
+branch="codex/module3-contact-observability-asset-hydration"
 scenario="${root}/ros2_ws/src/robot_experiments/config/kujiale_contact_observability_dynamic.yaml"
 output="${root}/data/metrics/contact_observability_${campaign_id}"
 
