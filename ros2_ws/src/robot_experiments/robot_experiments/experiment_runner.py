@@ -92,12 +92,18 @@ def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection)
         "seed": int(selection.seed),
         "condition_id": str(selection.condition_id),
         "appearance_profile_id": str(selection.appearance_profile_id or ""),
-        # The audited R2C4 contract reserves this field for dynamic actor
-        # variants.  Static matrices may still use a local scenario variant
-        # such as v1, which is not a dynamic-runtime identity.
+        # The audited contract reserves this field for dynamic actor variants.
+        # Bind it from the scenario identity as well as the ordinary
+        # ``dynamic_*`` condition namespace: authorization-only conditions use
+        # a stage-prefixed name but still run the frozen dynamic actor contract.
+        # Static matrices may still use a local scenario variant such as v1,
+        # which is not a dynamic-runtime identity.
         "dynamic_variant_id": (
             str(selection.variant_id or "")
-            if str(selection.condition_id).startswith("dynamic_")
+            if (
+                str(selection.condition_id).startswith("dynamic_")
+                or str(scenario_id).endswith("_dynamic")
+            )
             else ""
         ),
     }

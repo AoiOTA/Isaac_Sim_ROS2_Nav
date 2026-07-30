@@ -43,6 +43,16 @@ def test_pregoal_authorization_requires_passing_matching_identity(tmp_path):
         appearance_profile_id="baseline",
     )
     assert _pregoal_identity("kujiale_stage2_2_r2c4_r2_dynamic", 1, dynamic)["dynamic_variant_id"] == "v2"
+    authorization = RunSelection(
+        seed=10610,
+        case_id="authorization_only",
+        variant_id="auth_v1",
+        condition_id="stage_b_r1_dynamic_authorization",
+        appearance_profile_id="baseline",
+    )
+    assert _pregoal_identity(
+        "kujiale_stage2_2_stage_b_r1_dynamic", 1, authorization
+    )["dynamic_variant_id"] == "auth_v1"
     path = tmp_path / "authorization.json"
     path.write_text(json.dumps(_receipt(selection)), encoding="utf-8")
     assert validate_pregoal_authorization(
