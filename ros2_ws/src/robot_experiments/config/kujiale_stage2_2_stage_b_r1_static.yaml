@@ -17,6 +17,7 @@ scenario:
   runs:
     matrix:
       - {seed: 10600, case_id: authorization_only, variant_id: auth_v1, condition_id: stage_b_r1_static_authorization, appearance_profile_id: baseline}
+      - {seed: 11600, case_id: authorization_only, variant_id: auth_v1, condition_id: stage_b_r1_static_authorization, appearance_profile_id: baseline}
       - {seed: 10621, case_id: static, variant_id: r2c4_v1, condition_id: static_baseline, appearance_profile_id: baseline}
       - {seed: 10622, case_id: static, variant_id: r2c4_v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
       - {seed: 10701, case_id: static, variant_id: g2_v1, condition_id: static_baseline, appearance_profile_id: baseline}

@@ -156,12 +156,12 @@ def test_stage_b_r1_seed_bank_is_fresh_and_preserves_physical_contracts():
         CONFIG / "kujiale_stage2_2_stage_b_r1_dynamic.yaml"
     )
     assert [row.seed for row in static.run_matrix] == [
-        10600, 10621, 10622,
+        10600, 11600, 10621, 10622,
         *range(10701, 10711),
         *range(10901, 10911),
     ]
     assert [row.seed for row in dynamic.run_matrix] == [
-        10610, 10611, 10612, 11611, 11612, 10623, 10624,
+        10610, 11610, 10611, 10612, 11611, 11612, 10623, 10624,
         *range(10801, 10811),
         *range(11201, 11211),
     ]
