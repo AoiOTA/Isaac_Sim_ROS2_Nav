@@ -209,7 +209,7 @@ cd "$PROJECT_ROOT"
 | 诊断启动、锁、DDS、RViz、Reset 或 Nav2 问题 | [排障手册](docs/troubleshooting.md) |
 | 查看正式结果、配置边界与复核方法 | [验证台账](docs/verification.md) |
 | 查看当前文档的事实来源与职责 | [文档状态](docs/documentation_status.md) |
-| 区分历史源仓、发布仓、开放 PR 与离线 archive | [分支与标签目录](docs/branch_governance.md) |
+| 查看 Module3 原始源仓、两个发布仓、分支、标签和本地 remote 的一一对应关系 | [分支与标签目录](docs/branch_governance.md) |
 
 ## 验证
 
