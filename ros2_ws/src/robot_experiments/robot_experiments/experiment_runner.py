@@ -296,11 +296,14 @@ class ExperimentRunner(Node):
         if self._scenario.appearance_config_file is not None and self._nav2_profile not in {
             "stable",
             "dynamic_avoidance",
+            "bio_nav_planning_only",
+            "bio_nav_risk_only",
             "bio_nav_tiebreak_risk",
         }:
             raise ConfigurationError(
                 "appearance benchmark requires stable, dynamic_avoidance, "
-                "or bio_nav_tiebreak_risk"
+                "bio_nav_planning_only, bio_nav_risk_only, or "
+                "bio_nav_tiebreak_risk"
             )
         robot_config = (
             Path(robot_override).expanduser().resolve()

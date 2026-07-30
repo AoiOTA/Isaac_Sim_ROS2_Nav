@@ -125,6 +125,9 @@ void BioNavGridBased::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".allow_unknown", rclcpp::ParameterValue(allow_unknown_));
   nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".planner_profile",
+    rclcpp::ParameterValue(planner_profile_));
+  nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".expected_module3_map_sha256",
     rclcpp::ParameterValue(std::string("")));
   nav2_util::declare_parameter_if_not_declared(
@@ -134,6 +137,7 @@ void BioNavGridBased::configure(
   node->get_parameter(name_ + ".planning_prior_topic", prior_topic_);
   node->get_parameter(name_ + ".service_timeout_ms", service_timeout_ms_);
   node->get_parameter(name_ + ".allow_unknown", allow_unknown_);
+  node->get_parameter(name_ + ".planner_profile", planner_profile_);
   node->get_parameter(
     name_ + ".expected_module3_map_sha256", expected_module3_map_sha256_);
   node->get_parameter(
@@ -478,7 +482,7 @@ void BioNavGridBased::publishDecision(
   bio_nav_interfaces::msg::PlannerDecision decision;
   decision.stamp = clock_->now();
   decision.sequence = ++sequence_;
-  decision.planner_profile = "bio_nav_tiebreak_risk";
+  decision.planner_profile = planner_profile_;
   decision.cognitive_tiebreak_used = used;
   decision.fallback_reason = fallback_reason;
   decision.primary_path_cost = primary_cost;

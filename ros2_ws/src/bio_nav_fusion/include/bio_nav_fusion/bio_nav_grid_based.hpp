@@ -93,6 +93,7 @@ private:
   std::string map_version_;
   std::string service_name_{"/bio_nav/get_goal_planning_prior"};
   std::string prior_topic_{"/bio_nav/module2/planning_prior"};
+  std::string planner_profile_{"bio_nav_tiebreak_risk"};
   std::string expected_module3_map_sha256_;
   std::string expected_qualification_sha256_;
   std::string qualification_sha256_;
