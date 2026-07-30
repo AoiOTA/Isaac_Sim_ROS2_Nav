@@ -35,6 +35,7 @@
 | `docs/troubleshooting.md` | 启动、DDS、TF、Reset、RViz、Nav2 和 campaign 的症状式排障。 |
 | `docs/development.md` | 开发环境和当前代码改动的验证命令。 |
 | `docs/documentation_status.md` | 当前文档的事实来源和维护规则。 |
+| `docs/branch_governance.md` | 历史源仓 `main`、开放 PR 分支、发布仓 baseline 与离线 archive 的边界。 |
 
 ## 操作脚本
 
