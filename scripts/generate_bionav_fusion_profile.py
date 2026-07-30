@@ -26,7 +26,7 @@ def build_profile(dynamic_profile: Path) -> dict:
         "plugin": "bio_nav_fusion::CognitiveRiskLayer",
         "enabled": True,
         "prior_topic": "/bio_nav/module2/planning_prior",
-        "reset_topic": "/experiment/reset",
+        "reset_topic": "/simulation/reset_event",
         "max_message_age_s": 0.75,
         "minimum_reliability": 0.2,
         "maximum_cost": 80,
