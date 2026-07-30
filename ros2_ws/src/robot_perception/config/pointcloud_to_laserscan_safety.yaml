@@ -1,0 +1,18 @@
+pointcloud_to_laserscan_safety:
+  ros__parameters:
+    use_sim_time: true
+    target_frame: base_link
+    transform_tolerance: 0.05
+    min_height: 0.05
+    max_height: 0.50
+    angle_min: -3.14159265
+    angle_max: 3.14159265
+    angle_increment: 0.008726646
+    scan_time: 0.10
+    # Self returns have already been removed in base_link. Preserve obstacle
+    # points throughout the footprint-adjacent StopZone instead of inheriting
+    # the mapping scan's deliberate 0.40 m blind radius.
+    range_min: 0.05
+    range_max: 25.0
+    use_inf: true
+    inf_epsilon: 1.0

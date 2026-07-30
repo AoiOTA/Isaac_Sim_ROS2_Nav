@@ -590,6 +590,12 @@ class ExperimentRunner(Node):
         self._scan_subscription = self.create_subscription(
             LaserScan, "/scan", self._scan_callback, sensor_qos
         )
+        self._safety_scan_subscription = self.create_subscription(
+            LaserScan,
+            "/scan_safety",
+            self._safety_scan_callback,
+            sensor_qos,
+        )
         self._local_costmap_subscription = self.create_subscription(
             Costmap,
             "/local_costmap/costmap_raw",
@@ -707,6 +713,7 @@ class ExperimentRunner(Node):
         self._appearance_rgb_snapshot_complete = False
         self._depth_frame: dict[str, Any] | None = None
         self._scan_frame: dict[str, Any] | None = None
+        self._safety_scan_frame: dict[str, Any] | None = None
         self._local_costmap: Costmap | None = None
         self._global_costmap: Costmap | None = None
         self._goal_dispatch_recorded = False
@@ -861,13 +868,21 @@ class ExperimentRunner(Node):
             "data": bytes(message.data),
         }
 
-    def _scan_callback(self, message: LaserScan) -> None:
-        self._scan_frame = {
+    @staticmethod
+    def _scan_value(message: LaserScan) -> dict[str, Any]:
+        return {
+            "frame_id": str(message.header.frame_id),
             "angle_min": float(message.angle_min), "angle_increment": float(message.angle_increment),
             "range_min": float(message.range_min), "range_max": float(message.range_max),
             "stamp_s": message.header.stamp.sec + message.header.stamp.nanosec * 1.0e-9,
             "ranges": [float(value) for value in message.ranges],
         }
+
+    def _scan_callback(self, message: LaserScan) -> None:
+        self._scan_frame = self._scan_value(message)
+
+    def _safety_scan_callback(self, message: LaserScan) -> None:
+        self._safety_scan_frame = self._scan_value(message)
 
     def _local_costmap_callback(self, message: Costmap) -> None:
         self._local_costmap = message
@@ -2608,15 +2623,28 @@ class ExperimentRunner(Node):
         (root / f"{name}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
         return self._write_pgm(root / f"{name}.pgm", width, height, pixels)
 
-    def _write_scan_snapshot(self, root: Path) -> bool:
-        frame = self._scan_frame
+    @staticmethod
+    def _write_scan_snapshot(
+        root: Path,
+        stem: str,
+        frame: dict[str, Any] | None,
+    ) -> bool:
         if frame is None or not frame["ranges"]:
             return False
-        with (root / "scan.csv").open("w", newline="", encoding="utf-8") as stream:
+        with (root / f"{stem}.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as stream:
             writer = csv.DictWriter(stream, fieldnames=["index", "angle_rad", "range_m"])
             writer.writeheader()
             writer.writerows({"index": index, "angle_rad": frame["angle_min"] + index * frame["angle_increment"], "range_m": value} for index, value in enumerate(frame["ranges"]))
-        (root / "scan.json").write_text(json.dumps({key: value for key, value in frame.items() if key != "ranges"}, indent=2, sort_keys=True), encoding="utf-8")
+        (root / f"{stem}.json").write_text(
+            json.dumps(
+                {key: value for key, value in frame.items() if key != "ranges"},
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         return True
 
     def _begin_run_evidence(self, run_index: int, seed: int) -> Path:
@@ -2634,10 +2662,13 @@ class ExperimentRunner(Node):
             return root
         topics = [
             "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
-            "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan", "/optimal_trajectory",
-            "/local_costmap/costmap_raw", "/global_costmap/costmap_raw", "/scan",
+            "/cmd_vel_nav", "/cmd_vel_smoothed",
+            "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan",
+            "/optimal_trajectory", "/trajectories",
+            "/local_costmap/costmap_raw", "/global_costmap/costmap_raw",
+            "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
             "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
-            "/bio_nav/module2/planning_prior", "/diagnostics", "/cmd_vel_nav",
+            "/bio_nav/module2/planning_prior", "/diagnostics",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
         log = (root / "bag_record.log").open("wb")
@@ -2693,11 +2724,15 @@ class ExperimentRunner(Node):
         depth_complete = self._write_depth_snapshot(root)
         local_costmap_complete = self._write_costmap_snapshot(root, "local_costmap", self._local_costmap)
         global_costmap_complete = self._write_costmap_snapshot(root, "global_costmap", self._global_costmap)
-        scan_complete = self._write_scan_snapshot(root)
+        scan_complete = self._write_scan_snapshot(
+            root, "scan", self._scan_frame)
+        safety_scan_complete = self._write_scan_snapshot(
+            root, "scan_safety", self._safety_scan_frame)
         required_files = {
             "run_manifest.json", "events.jsonl", "ground_truth.csv.gz", "odom.csv.gz",
             "cmd_vel.csv.gz", "obstacles.csv.gz", "dynamic_obstacles.csv.gz", "leg_metrics.csv", "depth_frame.pgm",
-            "depth_frame.json", "scan.csv", "scan.json", "local_costmap.pgm",
+            "depth_frame.json", "scan.csv", "scan.json",
+            "scan_safety.csv", "scan_safety.json", "local_costmap.pgm",
             "local_costmap.json", "global_costmap.pgm", "global_costmap.json",
         }
         if self._scenario.appearance_config_file is not None:
@@ -2706,7 +2741,8 @@ class ExperimentRunner(Node):
                 "appearance_rgb_before_goal.json",
             }
         data_complete = (
-            bag_complete and depth_complete and scan_complete and local_costmap_complete
+            bag_complete and depth_complete and scan_complete
+            and safety_scan_complete and local_costmap_complete
             and global_costmap_complete
             and (
                 self._scenario.appearance_config_file is None
@@ -2734,6 +2770,7 @@ class ExperimentRunner(Node):
                 "depth_frame": depth_complete,
                 "appearance_rgb_before_goal": self._appearance_rgb_snapshot_complete,
                 "scan": scan_complete,
+                "scan_safety": safety_scan_complete,
                 "local_costmap": local_costmap_complete,
                 "global_costmap": global_costmap_complete,
                 "required_files": sorted(required_files),

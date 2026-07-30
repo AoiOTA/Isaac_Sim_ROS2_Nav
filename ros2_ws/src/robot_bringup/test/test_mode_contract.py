@@ -177,6 +177,16 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
     assert 'invalid nav2_profile_params_file:' in core_source
 
 
+def test_only_navigation_enables_the_parallel_nearfield_safety_scan():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+
+    assert "'enable_safety_scan': (" in core_source
+    assert "'true' if selection.operation == 'navigation' else 'false'" \
+        in core_source
+    assert "'use_self_filter': use_self_filter" in core_source
+
+
 def test_ideal_mapping_anchors_map_to_ground_truth_odometry():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()

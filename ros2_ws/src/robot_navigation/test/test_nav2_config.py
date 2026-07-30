@@ -74,7 +74,9 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert global_voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
     assert global_voxel['camera_depth']['clearing'] is True
     assert global_voxel['camera_depth']['observation_persistence'] == 1.0
-    assert local['obstacle_layer']['scan']['topic'] == '/scan'
+    assert local['obstacle_layer']['scan']['topic'] == '/scan_safety'
+    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.05
+    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
     assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
 
 
@@ -98,7 +100,7 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
     local = stable['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = stable['global_costmap']['global_costmap'][
         'ros__parameters']
-    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.40
+    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.05
     assert local['obstacle_layer']['scan']['inf_is_valid'] is False
     assert global_costmap['obstacle_layer']['scan']['raytrace_min_range'] == 0.40
     assert global_costmap['obstacle_layer']['scan']['inf_is_valid'] is False
@@ -146,7 +148,7 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert local['publish_frequency'] == 5.0
     assert local['plugins'] == [
         'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
-    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.10
+    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
     # Dynamic-only 0.75 m inflation moves the soft response before the
     # >=0.10 m actor-clearance boundary without modifying actor geometry or
     # trajectories.
@@ -211,7 +213,10 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert navigator['default_server_timeout'] >= 500
     assert collision['cmd_vel_in_topic'] == '/cmd_vel_smoothed'
     assert collision['cmd_vel_out_topic'] == '/cmd_vel'
-    assert collision['observation_sources'] == ['scan']
+    assert collision['observation_sources'] == ['scan_safety']
+    assert collision['scan_safety']['topic'] == '/scan_safety'
+    assert collision['scan_safety']['type'] == 'scan'
+    assert collision['scan_safety']['enabled'] is True
     assert set(collision['polygons']) == {
         'StopZone', 'SlowdownZone', 'ApproachZone'}
 

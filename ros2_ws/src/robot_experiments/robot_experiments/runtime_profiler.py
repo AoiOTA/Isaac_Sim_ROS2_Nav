@@ -21,7 +21,9 @@ from typing import Any
 TOPIC_NAMES = {
     "clock": "/clock",
     "pointcloud": "/lidar/points_raw",
+    "pointcloud_safety": "/lidar/points_scan",
     "scan": "/scan",
+    "scan_safety": "/scan_safety",
     "imu": "/imu/data",
     "joint_states": "/joint_states",
     "wheel_odom": "/wheel/odom",
@@ -37,7 +39,9 @@ TOPIC_NAMES = {
 TOPIC_TYPES = {
     "clock": "rosgraph_msgs/msg/Clock",
     "pointcloud": "sensor_msgs/msg/PointCloud2",
+    "pointcloud_safety": "sensor_msgs/msg/PointCloud2",
     "scan": "sensor_msgs/msg/LaserScan",
+    "scan_safety": "sensor_msgs/msg/LaserScan",
     "imu": "sensor_msgs/msg/Imu",
     "joint_states": "sensor_msgs/msg/JointState",
     "wheel_odom": "nav_msgs/msg/Odometry",
@@ -1012,9 +1016,25 @@ class RuntimeProfiler:
                 sensor_qos,
             ),
             node.create_subscription(
+                PointCloud2,
+                TOPIC_NAMES["pointcloud_safety"],
+                lambda message: self._message_callback(
+                    "pointcloud_safety", message
+                ),
+                sensor_qos,
+            ),
+            node.create_subscription(
                 LaserScan,
                 TOPIC_NAMES["scan"],
                 lambda message: self._message_callback("scan", message),
+                sensor_qos,
+            ),
+            node.create_subscription(
+                LaserScan,
+                TOPIC_NAMES["scan_safety"],
+                lambda message: self._message_callback(
+                    "scan_safety", message
+                ),
                 sensor_qos,
             ),
             node.create_subscription(
@@ -1281,8 +1301,10 @@ class RuntimeProfiler:
             topics[name]["endpoints"] = self._endpoint_report(topic)
             topics[name]["payload_size_estimator"] = (
                 "variable_payload_plus_header_estimate"
-                if name in {"pointcloud", "scan", "global_plan", "local_plan",
-                            "camera_image"}
+                if name in {
+                    "pointcloud", "pointcloud_safety", "scan", "scan_safety",
+                    "global_plan", "local_plan", "camera_image",
+                }
                 else "ros_cdr_serialized"
             )
         return {

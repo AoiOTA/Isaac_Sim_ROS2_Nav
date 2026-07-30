@@ -88,6 +88,30 @@ def test_experiment_telemetry_records_contact_identity_diagnostics():
     assert '"/simulation/collision_diagnostics"' in runner
 
 
+def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    for topic in (
+        "/lidar/points_raw",
+        "/lidar/points_scan",
+        "/scan",
+        "/scan_safety",
+        "/local_costmap/costmap_raw",
+        "/optimal_trajectory",
+        "/trajectories",
+        "/cmd_vel_nav",
+        "/cmd_vel_smoothed",
+        "/cmd_vel",
+    ):
+        assert f'"{topic}"' in runner
+    for artifact in (
+        "scan_safety.csv",
+        "scan_safety.json",
+    ):
+        assert f'"{artifact}"' in runner
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()

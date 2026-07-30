@@ -1,11 +1,13 @@
-# Contract for an optional external CropBox-style self filter. It is deliberately
-# disabled in the baseline. When enabled, that node must remove points inside
-# the robot envelope and publish /lidar/points_scan without changing timestamps.
-self_filter:
-  enabled: false
-  input_topic: /lidar/points_raw
-  output_topic: /lidar/points_scan
-  target_frame: base_link
-  negative: true
-  min_xyz: [-0.28, -0.23, -0.05]
-  max_xyz: [0.31, 0.23, 0.55]
+# CropBox-style self filter used by the independent near-field safety scan.
+# The x/y bounds are the authoritative physical footprint plus its 5 mm
+# numerical padding. Points on the boundary are self points and are removed.
+# The node preserves the source stamp after transforming the cloud to base_link.
+lidar_self_filter:
+  ros__parameters:
+    use_sim_time: true
+    input_topic: /lidar/points_raw
+    output_topic: /lidar/points_scan
+    target_frame: base_link
+    min_xyz: [-0.235, -0.215, -0.05]
+    max_xyz: [0.260, 0.215, 0.55]
+    transform_timeout: 0.05

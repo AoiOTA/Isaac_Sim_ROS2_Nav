@@ -187,6 +187,11 @@ def _launch_setup(context):
         {
             'use_sim_time': use_sim_time,
             'use_self_filter': use_self_filter,
+            # Mapping/localization retain the frozen /scan contract. Only
+            # navigation starts the parallel self-filtered near-field stream
+            # consumed by the local safety chain.
+            'enable_safety_scan': (
+                'true' if selection.operation == 'navigation' else 'false'),
         },
     )
     if interactive.use_rviz:

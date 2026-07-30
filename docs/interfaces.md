@@ -129,8 +129,10 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/cmd_vel_smoothed` | `geometry_msgs/msg/Twist` | Velocity Smoother | Collision Monitor | Navigation only |
 | `/joint_states` | `sensor_msgs/msg/JointState` | Isaac | Wheel Odom and RobotModel | simulator tick |
 | `/imu/data` | `sensor_msgs/msg/Imu` | Isaac | EKF in Realistic mode | `imu_link`, configured 60 Hz |
-| `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | pointcloud-to-laserscan | `rtx_world`, nominal 10 Hz |
-| `/scan` | `sensor_msgs/msg/LaserScan` | `pointcloud_to_laserscan` | SLAM Toolbox, costmaps, Collision Monitor | `base_link`, nominal 10 Hz, 720 bins |
+| `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | legacy projection and near-field self filter | `rtx_world`, nominal 10 Hz; Best Effort + Volatile |
+| `/lidar/points_scan` | `sensor_msgs/msg/PointCloud2` | `lidar_self_filter` | near-field safety projection | `base_link`, original sensor stamp and fields preserved; padded-footprint self points removed; Best Effort + Volatile |
+| `/scan` | `sensor_msgs/msg/LaserScan` | legacy `pointcloud_to_laserscan` | SLAM Toolbox, localization and Global Costmap | `base_link`, nominal 10 Hz, 720 bins, range `[0.40, 25.0] m` |
+| `/scan_safety` | `sensor_msgs/msg/LaserScan` | safety `pointcloud_to_laserscan` | Local Costmap and Collision Monitor in `stable` and `dynamic_avoidance` | `base_link`, nominal 10 Hz, 720 bins, range `[0.05, 25.0] m`; Navigation only |
 | `/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Mapping; `nav2_map_server` in Localization/Navigation | map inspection in Mapping; activation gate and global costmap in Navigation | `map`; reliable, transient local; exactly one mode-appropriate publisher |
 | `/slam_toolbox/map` | `nav_msgs/msg/OccupancyGrid` | SLAM Toolbox in Localization/Navigation | diagnostics only; never a Nav2 static-map input | `map`; scan-rasterized localization view |
 | `/wheel/odom` | `nav_msgs/msg/Odometry` | `wheel_odometry` | EKF | Realistic only; `odom`/`base_link` |
@@ -158,10 +160,25 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | `/simulation/reset` | `std_srvs/srv/Trigger` | Isaac Reset bridge | operator/experiment runner | deterministic reset request |
 | `/initial_pose/reseed` | `std_srvs/srv/Trigger` | calibrated initial-pose node | Activation Gate reset recovery | arm calibrated pose after a post-request scan; preserves valid manual ownership |
 
-The PointCloud-to-LaserScan projection uses `base_link` as its target frame,
-height `[0.05, 0.50] m`, range `[0.40, 25.0] m`, a full `[-pi, pi]` field of
-view, and a `0.5°` angular increment. The optional self filter is disabled by
-default and changes the projection input only when explicitly enabled.
+The legacy PointCloud-to-LaserScan projection uses `base_link` as its target
+frame, height `[0.05, 0.50] m`, range `[0.40, 25.0] m`, a full `[-pi, pi]`
+field of view, and a `0.5°` angular increment. Its `/scan` output and consumers
+are unchanged.
+
+Navigation additionally enables the existing optional self-filter contract as
+an independent safety chain:
+
+```text
+/lidar/points_raw -> lidar_self_filter -> /lidar/points_scan
+                  -> pointcloud_to_laserscan_safety -> /scan_safety
+```
+
+The filter transforms each cloud at its original stamp into `base_link` and
+removes points inside inclusive bounds `x=[-0.235, 0.260]`,
+`y=[-0.215, 0.215]`, `z=[-0.05, 0.55] m`. It preserves the original stamp and
+all point fields. Transform or data-contract errors drop the frame. The safety
+projection retains the legacy height, angular, rate and QoS settings, changing
+only the input cloud and `range_min=0.05 m`.
 
 Ground Truth is evaluation-only. It publishes no TF and must not be remapped
 into SLAM Toolbox, robot_localization, Nav2, Wheel Odom, or the controller.
@@ -267,7 +284,7 @@ Candidate Trajectories** before a performance-sensitive run.
 
 ## Collision freshness and scan-fault test interface
 
-The production Collision Monitor consumes `/scan` directly. Its command chain
+The production Collision Monitor consumes `/scan_safety` directly. Its command chain
 is `/cmd_vel_nav -> /cmd_vel_smoothed -> /cmd_vel`, and only its output owns the
 final Navigation `/cmd_vel`. The committed freshness boundary is
 `source_timeout: 0.40 s`, with `transform_tolerance: 0.20 s`: a sustained scan
@@ -276,10 +293,10 @@ and must stop the robot. One or two missing nominal 10 Hz samples remain inside
 the timeout and are not by themselves proof of a safety fault.
 
 `scan_fault_bridge` is an opt-in verification adapter, never a production
-dependency. A complete fault test must both launch `/scan -> /scan_fault` and
-provide a temporary Nav2 parameter overlay that selects `/scan_fault` for the
-Collision Monitor. Starting the bridge alone leaves production Navigation on
-`/scan`.
+dependency. A complete fault test for the current safety chain must launch
+`/scan_safety -> /scan_fault` and provide a temporary Nav2 parameter overlay
+that selects `/scan_fault` for the Collision Monitor. Starting the bridge alone
+leaves production Navigation on `/scan_safety`.
 
 The Reliable/Volatile `/scan_fault/control` payload is one JSON object. Supported
 commands are:
@@ -315,7 +332,7 @@ These are the explicit Isaac graph profiles. ROS package publishers and
 subscriptions retain their own node-specific QoS. Topic discovery alone is not
 proof of compatibility; use `ros2 topic info --verbose <topic>` when debugging.
 
-The committed RViz configs explicitly bind map-like topics (`/map`, both costmaps) as Reliable + Transient Local. Sensor streams (`/scan`, `/lidar/points_raw`) are Best Effort + Volatile. This distinction is regression-tested. The top-level interactive launch starts RViz before delaying perception by 1.5 seconds so the saved sensor QoS is applied before the `/scan` publisher appears; this avoids a misleading one-shot constructor warning without changing the final graph.
+The committed RViz configs explicitly bind map-like topics (`/map`, both costmaps) as Reliable + Transient Local. Sensor streams (`/scan`, `/scan_safety`, `/lidar/points_raw`, `/lidar/points_scan`) are Best Effort + Volatile. This distinction is regression-tested. The top-level interactive launch starts RViz before delaying perception by 1.5 seconds so the saved sensor QoS is applied before the `/scan` publisher appears; this avoids a misleading one-shot constructor warning without changing the final graph.
 
 ## Isaac wheel-control execution contract
 
@@ -513,7 +530,7 @@ the StopZone remains active while ApproachZone is deliberately disabled:
 | Costmap inflation | `0.40 m`, scaling `9.0` | Keeps the physical clearance radius while reducing only the soft-cost tail that caused crawl/re-sample cycles. |
 | `SlowdownZone` | `0.660 × 0.464 m`, 6 points, 90% | Leaves StopZone unchanged but rejects sparse/parallel-wall returns that previously clipped a traversable corridor. |
 | `ApproachZone` | disabled | MPPI performs footprint-aware costmap prediction; StopZone remains the final LiDAR hard stop. |
-| Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor still consumes the full `/scan` stream. |
+| Localization `throttle_scans` | 2 | Removes SLAM contention; Collision Monitor consumes the independent full-rate `/scan_safety` stream. |
 
 The dynamic-avoidance overlay uses a different real-time budget while retaining
 the same two-second horizon: `controller_frequency=15 Hz`,
