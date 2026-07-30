@@ -35,6 +35,12 @@ public:
     int min_i, int min_j, int max_i, int max_j) override;
   static uint8_t mapRiskCost(
     float probability, float threshold, double decay, int maximum_cost);
+  static std::string validatePrior(
+    const bio_nav_interfaces::msg::PlanningPrior * prior,
+    double age_s, double maximum_age_s, double minimum_reliability,
+    uint32_t reset_epoch, const std::string & expected_map_version,
+    const std::string & expected_risk_model_sha256,
+    const std::string & expected_qualification_sha256);
 
 private:
   void priorCallback(const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message);

@@ -147,52 +147,62 @@ bool CognitiveRiskLayer::validateLocked(
     return false;
   }
   age_s = (now - rclcpp::Time(latest_->stamp)).seconds();
-  if (!std::isfinite(age_s) || age_s < 0.0 || age_s > max_message_age_s_) {
-    reason = "stale";
-    return false;
+  reason = validatePrior(
+    latest_.get(), age_s, max_message_age_s_, minimum_reliability_,
+    reset_epoch_, expected_map_version_, expected_risk_model_sha256_,
+    expected_qualification_sha256_);
+  return reason.empty();
+}
+
+std::string CognitiveRiskLayer::validatePrior(
+  const bio_nav_interfaces::msg::PlanningPrior * prior,
+  double age_s, double maximum_age_s, double minimum_reliability,
+  uint32_t reset_epoch, const std::string & expected_map_version,
+  const std::string & expected_risk_model_sha256,
+  const std::string & expected_qualification_sha256)
+{
+  if (prior == nullptr) {
+    return "no_prior";
+  }
+  if (!std::isfinite(age_s) || age_s < 0.0 || age_s > maximum_age_s) {
+    return "stale";
   }
   if (
-    latest_->schema_version != "bio_nav_planning_prior_v4" ||
-    !latest_->risk_healthy ||
-    !std::isfinite(latest_->risk_reliability) ||
-    latest_->risk_reliability < minimum_reliability_)
+    prior->schema_version != "bio_nav_planning_prior_v4" ||
+    !prior->risk_healthy ||
+    !std::isfinite(prior->risk_reliability) ||
+    prior->risk_reliability < minimum_reliability)
   {
-    reason = "risk_unhealthy";
-    return false;
+    return "risk_unhealthy";
   }
   if (
-    latest_->map_version != expected_map_version_ ||
-    latest_->reset_epoch != reset_epoch_)
+    prior->map_version != expected_map_version ||
+    prior->reset_epoch != reset_epoch)
   {
-    reason = "map_reset_mismatch";
-    return false;
+    return "map_reset_mismatch";
   }
   if (
-    (!expected_risk_model_sha256_.empty() &&
-    latest_->risk_model_sha256 != expected_risk_model_sha256_) ||
-    (!expected_qualification_sha256_.empty() &&
-    latest_->qualification_receipt_sha256 != expected_qualification_sha256_))
+    (!expected_risk_model_sha256.empty() &&
+    prior->risk_model_sha256 != expected_risk_model_sha256) ||
+    (!expected_qualification_sha256.empty() &&
+    prior->qualification_receipt_sha256 != expected_qualification_sha256))
   {
-    reason = "model_hash_mismatch";
-    return false;
+    return "model_hash_mismatch";
   }
   if (
-    !std::isfinite(latest_->risk_threshold) ||
-    !std::isfinite(latest_->risk_ttl_s) ||
-    latest_->risk_threshold < 0.0F || latest_->risk_threshold >= 1.0F ||
-    latest_->risk_ttl_s <= 0.0F)
+    !std::isfinite(prior->risk_threshold) ||
+    !std::isfinite(prior->risk_ttl_s) ||
+    prior->risk_threshold < 0.0F || prior->risk_threshold >= 1.0F ||
+    prior->risk_ttl_s <= 0.0F)
   {
-    reason = "invalid_calibration";
-    return false;
+    return "invalid_calibration";
   }
-  for (const float value : latest_->dynamic_cost) {
+  for (const float value : prior->dynamic_cost) {
     if (!std::isfinite(value)) {
-      reason = "nonfinite";
-      return false;
+      return "nonfinite";
     }
   }
-  reason.clear();
-  return true;
+  return "";
 }
 
 void CognitiveRiskLayer::updateBounds(

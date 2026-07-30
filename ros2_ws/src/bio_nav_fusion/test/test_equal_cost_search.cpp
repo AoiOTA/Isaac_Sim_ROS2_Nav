@@ -80,3 +80,53 @@ TEST(CognitiveRiskLayer, calibrated_cost_is_thresholded_nonlethal_and_decays)
   EXPECT_LT(decayed, 80);
   EXPECT_EQ(CognitiveRiskLayer::mapRiskCost(1.0F, 0.5F, 0.0, 80), 0);
 }
+
+TEST(CognitiveRiskLayer, fault_matrix_rejects_untrusted_risk_inputs)
+{
+  using bio_nav_fusion::CognitiveRiskLayer;
+  bio_nav_interfaces::msg::PlanningPrior prior;
+  prior.schema_version = "bio_nav_planning_prior_v4";
+  prior.risk_healthy = true;
+  prior.risk_reliability = 0.9F;
+  prior.map_version = "map";
+  prior.reset_epoch = 3;
+  prior.risk_model_sha256 = "model";
+  prior.qualification_receipt_sha256 = "qualification";
+  prior.risk_threshold = 0.5F;
+  prior.risk_ttl_s = 0.8F;
+  prior.dynamic_cost.fill(0.0F);
+  const auto validate = [&prior]() {
+    return CognitiveRiskLayer::validatePrior(
+      &prior, 0.1, 0.5, 0.2, 3, "map", "model", "qualification");
+  };
+
+  EXPECT_EQ(validate(), "");
+  EXPECT_EQ(
+    CognitiveRiskLayer::validatePrior(
+      &prior, 0.6, 0.5, 0.2, 3, "map", "model", "qualification"),
+    "stale");
+
+  prior.risk_healthy = false;
+  EXPECT_EQ(validate(), "risk_unhealthy");
+  prior.risk_healthy = true;
+  prior.risk_reliability = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_EQ(validate(), "risk_unhealthy");
+  prior.risk_reliability = 0.9F;
+
+  prior.map_version = "old-map";
+  EXPECT_EQ(validate(), "map_reset_mismatch");
+  prior.map_version = "map";
+  prior.reset_epoch = 2;
+  EXPECT_EQ(validate(), "map_reset_mismatch");
+  prior.reset_epoch = 3;
+
+  prior.risk_model_sha256 = "wrong-model";
+  EXPECT_EQ(validate(), "model_hash_mismatch");
+  prior.risk_model_sha256 = "model";
+  prior.qualification_receipt_sha256 = "wrong-qualification";
+  EXPECT_EQ(validate(), "model_hash_mismatch");
+  prior.qualification_receipt_sha256 = "qualification";
+
+  prior.dynamic_cost[7] = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_EQ(validate(), "nonfinite");
+}
