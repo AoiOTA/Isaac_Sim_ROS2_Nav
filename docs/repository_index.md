@@ -35,6 +35,7 @@
 | `docs/troubleshooting.md` | 启动、DDS、TF、Reset、RViz、Nav2 和 campaign 的症状式排障。 |
 | `docs/development.md` | 开发环境和当前代码改动的验证命令。 |
 | `docs/documentation_status.md` | 当前文档的事实来源和维护规则。 |
+| `docs/branch_governance.md` | `main`、Shadow、Windows 所有者分支、baseline/evidence tag 与离线 archive 的用途目录。 |
 
 ## 操作脚本
 
