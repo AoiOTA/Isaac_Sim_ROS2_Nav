@@ -292,9 +292,10 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     slowdown_x = [point[0] for point in slowdown]
     slowdown_y = [point[1] for point in slowdown]
 
-    # Emergency stop still encloses every physical corner with at least a
-    # 20 mm shell, while remaining narrow enough for indoor doorways.
-    assert max(stop_x) - max(physical_x) >= 0.019
+    # Emergency stop reserves at least 170 mm ahead for a 10 Hz scan interval
+    # plus actuation latency, while its narrow lateral shell remains suitable
+    # for indoor doorways.
+    assert max(stop_x) - max(physical_x) >= 0.17
     assert min(physical_x) - min(stop_x) >= 0.019
     assert max(stop_y) - max(physical_y) >= 0.019
     assert min(physical_y) - min(stop_y) >= 0.019
@@ -308,6 +309,7 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     # indoor corridor.  The slowdown shell remains outside the emergency stop
     # shell while retaining enough speed for stable MPPI path tracking.
     assert max(slowdown_y) == 0.232
+    assert max(slowdown_x) - max(stop_x) >= 0.10
     assert collision['SlowdownZone']['min_points'] == 6
     assert 0.85 <= collision['SlowdownZone']['slowdown_ratio'] <= 0.92
     assert collision['ApproachZone']['time_before_collision'] >= 1.0

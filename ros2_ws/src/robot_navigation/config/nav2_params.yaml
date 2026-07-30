@@ -531,10 +531,12 @@ collision_monitor:
 
     StopZone:
       type: polygon
-      # Physical footprint is x=[-0.230, 0.255], y=+/-0.210 m.  This zone keeps
-      # a 20--30 mm emergency shell, rather than the former 60 mm lateral shell
-      # that was continuously triggered by parallel walls in narrow passages.
-      points: "[[0.285, 0.230], [0.285, -0.230], [-0.250, -0.230], [-0.250, 0.230]]"
+      # Physical footprint is x=[-0.230, 0.255], y=+/-0.210 m.  Preserve the
+      # narrow 20 mm lateral shell that avoids parallel-wall false stops, but
+      # reserve 175 mm longitudinal stopping distance ahead of the footprint.
+      # At the 0.70 m/s command limit this covers one 10 Hz scan interval plus
+      # monitor/controller actuation latency and a small residual margin.
+      points: "[[0.430, 0.230], [0.430, -0.230], [-0.250, -0.230], [-0.250, 0.230]]"
 
       action_type: stop
       min_points: 3
@@ -545,14 +547,11 @@ collision_monitor:
 
     SlowdownZone:
       type: polygon
-      # Keep a useful warning shell around StopZone without continuously
-      # catching parallel walls in a valid narrow corridor.  The physical
-      # footprint is y=+/-0.210 m and the emergency shell is y=+/-0.230 m.
-      # Keep the warning shell just outside the 20 mm StopZone shell.  The
-      # former 5 mm lateral expansion was repeatedly occupied by parallel
-      # wall returns in the valid G3→G4 passage, causing needless crawl/stop
-      # cycles.  Hard StopZone protection remains unchanged.
-      points: "[[0.36, 0.232], [0.36, -0.232], [-0.30, -0.232], [-0.30, 0.232]]"
+      # Keep a useful longitudinal warning shell around StopZone without
+      # catching parallel walls in a valid narrow corridor.  The lateral
+      # bounds remain only 22 mm outside the physical footprint; expanding
+      # them further previously caused needless crawl/stop cycles in G3→G4.
+      points: "[[0.55, 0.232], [0.55, -0.232], [-0.30, -0.232], [-0.30, 0.232]]"
 
       action_type: slowdown
       min_points: 6
