@@ -18,6 +18,8 @@ scenario:
       - {seed: 10610, case_id: authorization_only, variant_id: auth_v1, condition_id: stage_b_r1_dynamic_authorization, appearance_profile_id: baseline}
       - {seed: 10611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
       - {seed: 10612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 11611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
       - {seed: 10623, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
       - {seed: 10624, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
       - {seed: 10801, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}

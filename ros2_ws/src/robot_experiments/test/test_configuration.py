@@ -161,7 +161,7 @@ def test_stage_b_r1_seed_bank_is_fresh_and_preserves_physical_contracts():
         *range(10901, 10911),
     ]
     assert [row.seed for row in dynamic.run_matrix] == [
-        10610, 10611, 10612, 10623, 10624,
+        10610, 10611, 10612, 11611, 11612, 10623, 10624,
         *range(10801, 10811),
         *range(11201, 11211),
     ]
