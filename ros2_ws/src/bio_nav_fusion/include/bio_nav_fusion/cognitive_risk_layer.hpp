@@ -48,14 +48,15 @@ private:
   std::mutex mutex_;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr latest_;
   uint32_t reset_epoch_{0};
+  bool reset_epoch_initialized_{false};
   double max_message_age_s_{0.75};
   double minimum_reliability_{0.2};
   int maximum_cost_{80};
-  std::string expected_map_version_{"warehouse_new"};
+  std::string expected_map_version_;
   std::string expected_risk_model_sha256_;
   std::string expected_qualification_sha256_;
   std::string prior_topic_{"/bio_nav/module2/planning_prior"};
-  std::string reset_topic_{"/experiment/reset"};
+  std::string reset_topic_{"/simulation/reset_event"};
   rclcpp::Subscription<bio_nav_interfaces::msg::PlanningPrior>::SharedPtr prior_subscription_;
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_subscription_;
   rclcpp_lifecycle::LifecyclePublisher<

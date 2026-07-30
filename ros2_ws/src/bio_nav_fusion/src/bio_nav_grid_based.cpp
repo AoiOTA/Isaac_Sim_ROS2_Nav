@@ -115,6 +115,7 @@ void BioNavGridBased::configure(
     throw std::runtime_error("BioNavGridBased lifecycle node expired");
   }
   logger_ = node->get_logger();
+  clock_ = node->get_clock();
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".prior_service", rclcpp::ParameterValue(service_name_));
   nav2_util::declare_parameter_if_not_declared(
@@ -145,7 +146,12 @@ void BioNavGridBased::configure(
   stock_ = std::make_unique<nav2_smac_planner::SmacPlanner2D>();
   stock_->configure(parent, name_ + "_fallback", tf, costmap_ros_);
 
-  client_node_ = std::make_shared<rclcpp::Node>(name_ + "_prior_client");
+  // The planner server process is launched with the global
+  // `__node:=planner_server` remap. A helper node that accepts global
+  // arguments would inherit that name and trip the duplicate-node gate.
+  auto client_options = rclcpp::NodeOptions().use_global_arguments(false);
+  client_node_ = std::make_shared<rclcpp::Node>(
+    "bio_nav_goal_prior_client", client_options);
   prior_client_ = client_node_->create_client<
     bio_nav_interfaces::srv::GetGoalPlanningPrior>(service_name_);
   identity_subscription_ = client_node_->create_subscription<
@@ -186,6 +192,7 @@ void BioNavGridBased::cleanup()
   }
   decision_publisher_.reset();
   costmap_ros_.reset();
+  clock_.reset();
 }
 
 void BioNavGridBased::activate()
@@ -216,7 +223,7 @@ nav_msgs::msg::Path BioNavGridBased::stockPlan(
 {
   auto path = stock_->createPlan(start, goal, cancel_checker);
   const double latency_ms =
-    (client_node_->get_clock()->now().seconds() - begin_s) * 1000.0;
+    (clock_->now().seconds() - begin_s) * 1000.0;
   uint32_t reset_epoch = 0;
   std::string map_version;
   {
@@ -234,7 +241,7 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
   const geometry_msgs::msg::PoseStamped & goal,
   std::function<bool()> cancel_checker)
 {
-  const double begin_s = client_node_->get_clock()->now().seconds();
+  const double begin_s = clock_->now().seconds();
   uint32_t reset_epoch = 0;
   std::string map_version;
   {
@@ -290,14 +297,14 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
       *(costmap_ros_->getCostmap()->getMutex()));
     result = equalCostSearch(
       *costmap_ros_->getCostmap(), start, goal, score, allow_unknown_,
-      global_frame_, client_node_->get_clock()->now(), cancel_checker);
+      global_frame_, clock_->now(), cancel_checker);
   }
   if (!result.success) {
     return stockPlan(
       start, goal, cancel_checker, "cognitive_search:" + result.error, begin_s);
   }
   const double latency_ms =
-    (client_node_->get_clock()->now().seconds() - begin_s) * 1000.0;
+    (clock_->now().seconds() - begin_s) * 1000.0;
   publishDecision(
     true, "", result.primary_cost, result.expanded_nodes, latency_ms,
     reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256);
@@ -469,7 +476,7 @@ void BioNavGridBased::publishDecision(
     return;
   }
   bio_nav_interfaces::msg::PlannerDecision decision;
-  decision.stamp = client_node_->get_clock()->now();
+  decision.stamp = clock_->now();
   decision.sequence = ++sequence_;
   decision.planner_profile = "bio_nav_tiebreak_risk";
   decision.cognitive_tiebreak_used = used;

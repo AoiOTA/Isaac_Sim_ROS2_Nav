@@ -59,6 +59,7 @@ void CognitiveRiskLayer::onInitialize()
   int initial_reset_epoch = 0;
   node->get_parameter(name_ + ".initial_reset_epoch", initial_reset_epoch);
   reset_epoch_ = static_cast<uint32_t>(std::max(0, initial_reset_epoch));
+  reset_epoch_initialized_ = initial_reset_epoch > 0;
   maximum_cost_ = std::clamp(maximum_cost_, 1, 80);
 
   rclcpp::SubscriptionOptions options;
@@ -109,6 +110,14 @@ void CognitiveRiskLayer::priorCallback(
   const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message)
 {
   std::lock_guard<std::mutex> lock(mutex_);
+  // The Integration bridge may start before Nav2 and therefore observe an
+  // earlier simulator reset that this plugin could not see. Latch the first
+  // fresh prior's absolute epoch, then advance both sides from the shared
+  // /simulation/reset_event stream.
+  if (!reset_epoch_initialized_) {
+    reset_epoch_ = message->reset_epoch;
+    reset_epoch_initialized_ = true;
+  }
   latest_ = message;
   addExtraBounds(-8.0, -8.0, 8.0, 8.0);
 }
@@ -117,7 +126,9 @@ void CognitiveRiskLayer::resetCallback(const std_msgs::msg::Empty::SharedPtr)
 {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    ++reset_epoch_;
+    if (reset_epoch_initialized_) {
+      ++reset_epoch_;
+    }
     latest_.reset();
   }
   addExtraBounds(-8.0, -8.0, 8.0, 8.0);

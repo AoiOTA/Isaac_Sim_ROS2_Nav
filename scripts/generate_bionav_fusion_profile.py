@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
 
 WAREHOUSE_NEW_OCCUPANCY_VERSION = (
-    "1a45950d7b1854596231549e853bf7051ad22b1a53a428d31ba41c6b055685cf"
+    "566b92f58042919f9be0612281f1936910465784a32b788c60263e6f1825b2ce"
 )
 
 
@@ -30,8 +30,9 @@ def build_profile(dynamic_profile: Path) -> dict:
         "max_message_age_s": 0.75,
         "minimum_reliability": 0.2,
         "maximum_cost": 80,
-        # This is the hash published by the Integration bridge for the
-        # warehouse_new occupancy bundle, not the human-facing map alias.
+        # This is the live OccupancyGrid hash published by the Integration
+        # bridge for warehouse_new, not the human-facing map alias or the
+        # offline PGM-loader digest.
         "expected_map_version": WAREHOUSE_NEW_OCCUPANCY_VERSION,
         "expected_risk_model_sha256": "",
         "expected_qualification_sha256": "",

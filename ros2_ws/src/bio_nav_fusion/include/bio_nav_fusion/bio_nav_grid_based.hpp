@@ -74,6 +74,7 @@ private:
   std::string name_;
   std::string global_frame_;
   rclcpp::Logger logger_{rclcpp::get_logger("BioNavGridBased")};
+  rclcpp::Clock::SharedPtr clock_;
   rclcpp_lifecycle::LifecycleNode::WeakPtr parent_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
   std::unique_ptr<nav2_smac_planner::SmacPlanner2D> stock_;
