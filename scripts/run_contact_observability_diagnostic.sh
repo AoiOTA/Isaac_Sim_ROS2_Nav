@@ -11,7 +11,7 @@ output="${root}/data/metrics/contact_observability_${campaign_id}"
 
 [[ "${campaign_id}" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || { echo "invalid campaign id" >&2; exit 2; }
 [[ "$(git -C "${root}" branch --show-current)" == "${branch}" ]] || { echo "Module3 branch mismatch" >&2; exit 2; }
-[[ -z "$(git -C "${root}" status --porcelain --untracked-files=no)" ]] || { echo "Module3 tracked worktree is dirty" >&2; exit 2; }
+[[ -z "$(git -C "${root}" status --porcelain)" ]] || { echo "Module3 worktree must be completely clean" >&2; exit 2; }
 [[ -f "${scenario}" && ! -e "${output}" ]] || { echo "scenario missing or output already exists" >&2; exit 2; }
 
 set +u
@@ -22,11 +22,32 @@ export ROS_DOMAIN_ID=42 RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 isaac_pid=""
 nav2_pid=""
+stop_tree() {
+  local root_pid="$1" group
+  [[ -z "${root_pid}" ]] && return 0
+  local -a groups=()
+  mapfile -t groups < <(ps -eo pid=,ppid=,pgid= | awk -v root="${root_pid}" '
+    { parent[$1]=$2; pgid[$1]=$3 }
+    function descendant(pid, current) {
+      current=pid
+      while (current in parent) {
+        if (current == root || parent[current] == root) return 1
+        current=parent[current]
+      }
+      return 0
+    }
+    END { for (pid in parent) if (pid == root || descendant(pid)) print pgid[pid] }
+  ' | sort -u)
+  for group in "${groups[@]}"; do kill -INT -- "-${group}" 2>/dev/null || true; done
+  sleep 3
+  for group in "${groups[@]}"; do kill -0 -- "-${group}" 2>/dev/null && kill -TERM -- "-${group}" 2>/dev/null || true; done
+  sleep 2
+  for group in "${groups[@]}"; do kill -0 -- "-${group}" 2>/dev/null && kill -KILL -- "-${group}" 2>/dev/null || true; done
+  wait "${root_pid}" 2>/dev/null || true
+}
 cleanup() {
-  [[ -z "${nav2_pid}" ]] || kill -INT "${nav2_pid}" 2>/dev/null || true
-  [[ -z "${isaac_pid}" ]] || kill -INT "${isaac_pid}" 2>/dev/null || true
-  [[ -z "${nav2_pid}" ]] || wait "${nav2_pid}" 2>/dev/null || true
-  [[ -z "${isaac_pid}" ]] || wait "${isaac_pid}" 2>/dev/null || true
+  stop_tree "${nav2_pid}"
+  stop_tree "${isaac_pid}"
 }
 trap cleanup EXIT INT TERM HUP
 
