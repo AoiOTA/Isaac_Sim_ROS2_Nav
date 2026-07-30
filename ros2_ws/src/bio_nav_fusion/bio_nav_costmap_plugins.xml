@@ -1,4 +1,4 @@
-<library path="bio_nav_fusion_plugins">
+<library path="bio_nav_costmap_plugin">
   <class
     type="bio_nav_fusion::CognitiveRiskLayer"
     base_class_type="nav2_costmap_2d::Layer">
