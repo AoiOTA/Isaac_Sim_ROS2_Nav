@@ -9,6 +9,10 @@ from pathlib import Path
 
 import yaml
 
+WAREHOUSE_NEW_OCCUPANCY_VERSION = (
+    "1a45950d7b1854596231549e853bf7051ad22b1a53a428d31ba41c6b055685cf"
+)
+
 
 def build_profile(dynamic_profile: Path) -> dict:
     payload = yaml.safe_load(dynamic_profile.read_text(encoding="utf-8"))
@@ -26,7 +30,9 @@ def build_profile(dynamic_profile: Path) -> dict:
         "max_message_age_s": 0.75,
         "minimum_reliability": 0.2,
         "maximum_cost": 80,
-        "expected_map_version": "warehouse_new",
+        # This is the hash published by the Integration bridge for the
+        # warehouse_new occupancy bundle, not the human-facing map alias.
+        "expected_map_version": WAREHOUSE_NEW_OCCUPANCY_VERSION,
         "expected_risk_model_sha256": "",
         "expected_qualification_sha256": "",
         "initial_reset_epoch": 0,
