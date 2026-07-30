@@ -1,4 +1,5 @@
 #include <array>
+#include <limits>
 
 #include "bio_nav_fusion/bio_nav_grid_based.hpp"
 #include "bio_nav_fusion/cognitive_risk_layer.hpp"
@@ -54,6 +55,17 @@ TEST(BioNavGridBased, blocked_goal_fails_for_stock_fallback)
     []() {return false;});
   EXPECT_FALSE(result.success);
   EXPECT_EQ(result.error, "start_or_goal_blocked");
+}
+
+TEST(BioNavGridBased, module2_identity_must_be_recent_for_cognitive_planning)
+{
+  using bio_nav_fusion::BioNavGridBased;
+  EXPECT_TRUE(BioNavGridBased::priorIdentityFresh(0.0, 0.5));
+  EXPECT_TRUE(BioNavGridBased::priorIdentityFresh(0.5, 0.5));
+  EXPECT_FALSE(BioNavGridBased::priorIdentityFresh(0.5001, 0.5));
+  EXPECT_FALSE(BioNavGridBased::priorIdentityFresh(-0.1, 0.5));
+  EXPECT_FALSE(BioNavGridBased::priorIdentityFresh(
+      std::numeric_limits<double>::quiet_NaN(), 0.5));
 }
 
 TEST(CognitiveRiskLayer, calibrated_cost_is_thresholded_nonlethal_and_decays)

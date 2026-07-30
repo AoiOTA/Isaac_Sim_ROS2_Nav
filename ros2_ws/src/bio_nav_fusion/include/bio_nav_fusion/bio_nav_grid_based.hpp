@@ -58,6 +58,7 @@ public:
     const std::string & global_frame,
     const rclcpp::Time & stamp,
     const std::function<bool()> & cancel_checker);
+  static bool priorIdentityFresh(double age_s, double maximum_age_s);
 
 private:
   void publishDecision(
@@ -89,6 +90,7 @@ private:
     bio_nav_interfaces::msg::PlanningPrior>::SharedPtr identity_subscription_;
   std::mutex identity_mutex_;
   bool identity_seen_{false};
+  rclcpp::Time identity_stamp_{0, 0, RCL_ROS_TIME};
   uint32_t reset_epoch_{0};
   std::string map_version_;
   std::string service_name_{"/bio_nav/get_goal_planning_prior"};
@@ -100,6 +102,7 @@ private:
   std::string motion_core_sha256_;
   bool allow_unknown_{true};
   int service_timeout_ms_{100};
+  double maximum_prior_age_s_{0.5};
   std::atomic<uint64_t> sequence_{0};
 };
 

@@ -141,6 +141,7 @@ planner_server:
       prior_service: /bio_nav/get_goal_planning_prior
       planning_prior_topic: /bio_nav/module2/planning_prior
       service_timeout_ms: 100
+      maximum_prior_age_s: 0.5
       allow_unknown: true
       expected_module3_map_sha256: '0000000000000000000000000000000000000000000000000000000000000000'
       expected_qualification_sha256: '0000000000000000000000000000000000000000000000000000000000000000'

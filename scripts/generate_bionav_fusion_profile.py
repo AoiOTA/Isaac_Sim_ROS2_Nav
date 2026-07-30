@@ -101,6 +101,7 @@ def build_profile(
                     "prior_service": "/bio_nav/get_goal_planning_prior",
                     "planning_prior_topic": "/bio_nav/module2/planning_prior",
                     "service_timeout_ms": 100,
+                    "maximum_prior_age_s": 0.5,
                     "allow_unknown": True,
                     "expected_module3_map_sha256": module3_map_sha256,
                     "expected_qualification_sha256":

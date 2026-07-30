@@ -123,6 +123,9 @@ void BioNavGridBased::configure(
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".service_timeout_ms", rclcpp::ParameterValue(service_timeout_ms_));
   nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".maximum_prior_age_s",
+    rclcpp::ParameterValue(maximum_prior_age_s_));
+  nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".allow_unknown", rclcpp::ParameterValue(allow_unknown_));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".planner_profile",
@@ -136,6 +139,7 @@ void BioNavGridBased::configure(
   node->get_parameter(name_ + ".prior_service", service_name_);
   node->get_parameter(name_ + ".planning_prior_topic", prior_topic_);
   node->get_parameter(name_ + ".service_timeout_ms", service_timeout_ms_);
+  node->get_parameter(name_ + ".maximum_prior_age_s", maximum_prior_age_s_);
   node->get_parameter(name_ + ".allow_unknown", allow_unknown_);
   node->get_parameter(name_ + ".planner_profile", planner_profile_);
   node->get_parameter(
@@ -143,6 +147,7 @@ void BioNavGridBased::configure(
   node->get_parameter(
     name_ + ".expected_qualification_sha256", expected_qualification_sha256_);
   service_timeout_ms_ = std::clamp(service_timeout_ms_, 1, 500);
+  maximum_prior_age_s_ = std::clamp(maximum_prior_age_s_, 0.05, 5.0);
   decision_publisher_ = node->create_publisher<
     bio_nav_interfaces::msg::PlannerDecision>(
     "/bio_nav/planner/decision", rclcpp::QoS(10).reliable());
@@ -164,6 +169,7 @@ void BioNavGridBased::configure(
     [this](const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message) {
       std::lock_guard<std::mutex> lock(identity_mutex_);
       identity_seen_ = true;
+      identity_stamp_ = rclcpp::Time(message->stamp, RCL_ROS_TIME);
       reset_epoch_ = message->reset_epoch;
       map_version_ = message->map_version;
       qualification_sha256_ = message->qualification_receipt_sha256;
@@ -248,13 +254,24 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
   const double begin_s = clock_->now().seconds();
   uint32_t reset_epoch = 0;
   std::string map_version;
+  std::string identity_error;
   {
     std::lock_guard<std::mutex> lock(identity_mutex_);
     if (!identity_seen_) {
-      return stockPlan(start, goal, cancel_checker, "no_planning_prior", begin_s);
+      identity_error = "no_planning_prior";
+    } else {
+      const double identity_age_s =
+        (clock_->now() - identity_stamp_).seconds();
+      if (!priorIdentityFresh(identity_age_s, maximum_prior_age_s_)) {
+        identity_error = "planning_prior_stale";
+      }
+      reset_epoch = reset_epoch_;
+      map_version = map_version_;
     }
-    reset_epoch = reset_epoch_;
-    map_version = map_version_;
+  }
+  if (!identity_error.empty()) {
+    return stockPlan(
+      start, goal, cancel_checker, identity_error, begin_s);
   }
   if (!prior_client_->service_is_ready()) {
     return stockPlan(start, goal, cancel_checker, "goal_prior_service_unavailable", begin_s);
@@ -313,6 +330,14 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
     true, "", result.primary_cost, result.expanded_nodes, latency_ms,
     reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256);
   return result.path;
+}
+
+bool BioNavGridBased::priorIdentityFresh(
+  double age_s, double maximum_age_s)
+{
+  return (
+    std::isfinite(age_s) && std::isfinite(maximum_age_s) &&
+    maximum_age_s > 0.0 && age_s >= 0.0 && age_s <= maximum_age_s);
 }
 
 GridSearchResult BioNavGridBased::equalCostSearch(
