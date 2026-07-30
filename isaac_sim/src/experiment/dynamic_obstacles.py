@@ -223,7 +223,9 @@ class DynamicObstacleManager:
                 "obstacles": [{"id": key, "trigger_group": item.spec.trigger_group,
                                 "retire_group": item.spec.trigger_group, "state": item.state,
                                 "progress": round(item.progress, 5), "position": list(self._reported_position(item)), "position_frame": "map" if self.scenario.coordinate_frame == "map" else "usd",
-                                "velocity_mps": round(item.velocity_mps, 4), "min_clearance_m": None if math.isinf(item.min_clearance_m) else round(item.min_clearance_m, 4)}
+                                "velocity_mps": round(item.velocity_mps, 4),
+                                "size": list(item.spec.size),
+                                "min_clearance_m": None if math.isinf(item.min_clearance_m) else round(item.min_clearance_m, 4)}
                                for key, item in sorted(self._runtime.items())], "events": list(self._events)}
 
     def _reported_position(self, runtime):
