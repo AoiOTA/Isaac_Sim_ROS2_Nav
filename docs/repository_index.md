@@ -83,6 +83,7 @@
 | `ros2_ws/src/robot_perception/src/lidar_self_filter_node.cpp` | `/lidar/points_raw` 到 `/lidar/points_scan` 的 TF、自体点删除与 fail-closed 节点。 |
 | `ros2_ws/src/robot_perception/src/lidar_self_filter_core.cpp` | 保留 PointCloud2 字段/时间戳的 padded-footprint 过滤核心。 |
 | `scripts/analyze_collision_evidence.py` | 冻结碰撞证据的 scan/costmap/MPPI/速度链/actor/静态地图关联分析器。 |
+| `scripts/probe_nearfield_safety_contract.py` | 自动启动双投影链，验证自滤波、旧 `/scan` 隔离、0.30 m 安全观测与端到端延迟的合成探针。 |
 | `isaac_sim/tests/test_appearance.py` | 外观 profile、Session Layer 与状态契约测试。 |
 | `isaac_sim/tests/test_appearance_preview.py` | 客厅预览参数、渲染和输出契约测试。 |
 | `isaac_sim/tests/test_dynamic_obstacles.py` | 动态 actor、地图坐标、运动学和可见性契约测试。 |
