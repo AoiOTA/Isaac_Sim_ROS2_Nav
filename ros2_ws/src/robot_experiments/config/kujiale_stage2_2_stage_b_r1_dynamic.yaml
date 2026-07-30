@@ -45,6 +45,28 @@ scenario:
       - {seed: 11210, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
       - {seed: 12611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
       - {seed: 12612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      # Fresh, indivisible formal qualification banks. Actor variants and the
+      # frozen physical contract are unchanged.
+      - {seed: 13801, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13802, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 13803, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13804, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 13805, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13806, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 13807, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13808, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: bright_cool}
+      - {seed: 13809, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13810, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 14201, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14202, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 14203, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14204, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 14205, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14206, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_appearance, appearance_profile_id: bright_cool}
+      - {seed: 14207, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14208, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 14209, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14210, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
     timeout_sec: 720.0
     leg_timeout_sec: 210.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}

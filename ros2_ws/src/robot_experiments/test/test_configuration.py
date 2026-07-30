@@ -159,13 +159,22 @@ def test_stage_b_r1_seed_bank_is_fresh_and_preserves_physical_contracts():
         10600, 11600, 10621, 10622,
         *range(10701, 10711),
         *range(10901, 10911),
+        *range(12701, 12711),
+        *range(13701, 13711),
+        *range(13901, 13911),
     ]
     assert [row.seed for row in dynamic.run_matrix] == [
         10610, 11610, 10611, 10612, 11611, 11612, 10623, 10624,
         *range(10801, 10811),
         *range(11201, 11211),
         12611, 12612,
+        *range(13801, 13811),
+        *range(14201, 14211),
     ]
+    assert all(
+        row.case_id == "authorization_only"
+        for row in static.run_matrix[24:34]
+    )
     assert tuple(goal.goal_id for goal in static.route) == (
         "G2", "G3", "G4", "G5", "G1",
     )

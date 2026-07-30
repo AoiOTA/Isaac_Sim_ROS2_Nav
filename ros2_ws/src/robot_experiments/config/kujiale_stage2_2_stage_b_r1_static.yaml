@@ -40,6 +40,40 @@ scenario:
       - {seed: 10908, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
       - {seed: 10909, case_id: static, variant_id: confirmation_v1, condition_id: static_baseline, appearance_profile_id: baseline}
       - {seed: 10910, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      # Repair-04 cold-start qualification. These authorization-only records
+      # never dispatch a navigation goal and are not formal G2 evidence.
+      - {seed: 12701, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12702, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12703, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12704, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12705, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12706, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12707, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12708, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12709, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      - {seed: 12710, case_id: authorization_only, variant_id: map_activation_probe_v1, condition_id: stage_b_r1_map_activation_probe, appearance_profile_id: baseline}
+      # Final qualification banks are fresh and indivisible: all ten static
+      # records in each phase must pass in the same campaign.
+      - {seed: 13701, case_id: static, variant_id: g2_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13702, case_id: static, variant_id: g2_v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 13703, case_id: static, variant_id: g2_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13704, case_id: static, variant_id: g2_v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 13705, case_id: static, variant_id: g2_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13706, case_id: static, variant_id: g2_v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 13707, case_id: static, variant_id: g2_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13708, case_id: static, variant_id: g2_v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 13709, case_id: static, variant_id: g2_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13710, case_id: static, variant_id: g2_v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 13901, case_id: static, variant_id: confirmation_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13902, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
+      - {seed: 13903, case_id: static, variant_id: confirmation_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13904, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: bright_warm}
+      - {seed: 13905, case_id: static, variant_id: confirmation_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13906, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: bright_cool}
+      - {seed: 13907, case_id: static, variant_id: confirmation_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13908, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: dim_warm}
+      - {seed: 13909, case_id: static, variant_id: confirmation_v1, condition_id: static_baseline, appearance_profile_id: baseline}
+      - {seed: 13910, case_id: static, variant_id: confirmation_v1, condition_id: static_appearance, appearance_profile_id: dim_cool}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}

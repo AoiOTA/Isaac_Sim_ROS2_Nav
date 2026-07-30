@@ -18,6 +18,7 @@ nav2_activation_gate:
     retry_initial_backoff: 0.50
     retry_maximum_backoff: 2.00
     lifecycle_service: /lifecycle_manager_navigation/manage_nodes
+    immutable_map_node: map_server
     managed_nodes:
       - controller_server
       - planner_server

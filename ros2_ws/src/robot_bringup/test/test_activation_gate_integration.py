@@ -37,6 +37,9 @@ class _LifecycleFixture(Node):
         self.states = {
             name: 'unconfigured' for name in DEFAULT_MANAGED_NODES
         }
+        # Reproduce the observed launch race: the immutable map server reached
+        # inactive, but the launch transition handler missed ACTIVATE.
+        self.map_state = 'inactive'
         self.events = []
         self.sim_stamp = 10.0
         self._rollback_next = False
@@ -74,6 +77,16 @@ class _LifecycleFixture(Node):
             )
             for name in DEFAULT_MANAGED_NODES
         ]
+        self._map_state_service = self.create_service(
+            GetState,
+            '/map_server/get_state',
+            self._get_map_state,
+        )
+        self._map_change_state_service = self.create_service(
+            ChangeState,
+            '/map_server/change_state',
+            self._change_map_state,
+        )
         self._manager = self.create_service(
             ManageLifecycleNodes,
             '/lifecycle_manager_navigation/manage_nodes',
@@ -146,6 +159,29 @@ class _LifecycleFixture(Node):
         response.success = True
         return response
 
+    def _get_map_state(self, request, response):
+        del request
+        response.current_state = State(
+            id=State.PRIMARY_STATE_UNKNOWN,
+            label=self.map_state,
+        )
+        return response
+
+    def _change_map_state(self, request, response):
+        transitions = {
+            Transition.TRANSITION_CONFIGURE: ('configure', 'inactive'),
+            Transition.TRANSITION_ACTIVATE: ('activate', 'active'),
+        }
+        transition = transitions.get(request.transition.id)
+        if transition is None:
+            response.success = False
+            return response
+        label, target = transition
+        self.events.append(f'direct:map_server:{label}')
+        self.map_state = target
+        response.success = True
+        return response
+
     def _change_state(self, request, response, node_name):
         transitions = {
             Transition.TRANSITION_CONFIGURE: ('configure', 'inactive'),
@@ -215,7 +251,8 @@ class _LifecycleFixture(Node):
         occupancy.info.height = 1
         occupancy.info.resolution = 1.0
         occupancy.data = [0]
-        self._map.publish(occupancy)
+        if self.map_state == 'active':
+            self._map.publish(occupancy)
 
         transform = TransformStamped()
         transform.header.stamp = stamp
@@ -267,7 +304,10 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
     executor.add_node(gate)
     try:
         assert _spin_until(executor, lambda: gate._activated, 4.0)
-        assert fixture.events == ['manager:STARTUP']
+        assert fixture.events == [
+            'direct:map_server:activate',
+            'manager:STARTUP',
+        ]
 
         if event_kind == 'clock_rollback':
             fixture.request_rollback()
@@ -280,6 +320,7 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
             4.0,
         )
         assert fixture.events == [
+            'direct:map_server:activate',
             'manager:STARTUP',
             'cancel',
             'manager:PAUSE',
@@ -351,6 +392,7 @@ def test_gate_repairs_partial_resume_without_terminating(tmp_path):
             event for event in fixture.events if event.startswith('direct:')
         ]
         assert direct_events == [
+            'direct:map_server:activate',
             'direct:behavior_server:activate',
             'direct:velocity_smoother:activate',
             'direct:collision_monitor:activate',

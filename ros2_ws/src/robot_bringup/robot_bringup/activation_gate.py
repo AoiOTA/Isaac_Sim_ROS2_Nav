@@ -63,6 +63,7 @@ class Nav2ActivationGate(Node):
             '/lifecycle_manager_navigation/manage_nodes',
         )
         self.declare_parameter('managed_nodes', DEFAULT_MANAGED_NODES)
+        self.declare_parameter('immutable_map_node', 'map_server')
         self.declare_parameter('initial_pose_source', 'auto')
         self.declare_parameter(
             'initial_pose_reseed_service', '/initial_pose/reseed')
@@ -103,6 +104,13 @@ class Nav2ActivationGate(Node):
                 + ', '.join(configured_duplicates))
         if not self._managed_nodes:
             raise ValueError('managed_nodes must not be empty')
+        self._immutable_map_node = str(
+            self.get_parameter('immutable_map_node').value).strip('/')
+        if not self._immutable_map_node:
+            raise ValueError('immutable_map_node must not be empty')
+        if self._immutable_map_node in self._managed_nodes:
+            raise ValueError(
+                'immutable_map_node must be independent from managed_nodes')
         self._initial_pose_source = str(
             self.get_parameter('initial_pose_source').value)
         if self._initial_pose_source not in {'auto', 'rviz'}:
@@ -131,6 +139,10 @@ class Nav2ActivationGate(Node):
         self._snapshot_generation = None
         self._manager_request_token = None
         self._normalization_attempts = 0
+        self._map_operation_in_flight = False
+        self._map_operation_token = None
+        self._map_activation_attempts = 0
+        self._next_map_attempt_at = self._started_at
 
         self._recovering = False
         self._recovery_started_at = None
@@ -188,6 +200,10 @@ class Nav2ActivationGate(Node):
             name: self.create_client(ChangeState, f'/{name}/change_state')
             for name in self._managed_nodes
         }
+        self._map_state_client = self.create_client(
+            GetState, f'/{self._immutable_map_node}/get_state')
+        self._map_change_state_client = self.create_client(
+            ChangeState, f'/{self._immutable_map_node}/change_state')
         self._cancel_goal_client = self.create_client(
             CancelGoal, '/navigate_to_pose/_action/cancel_goal')
         self._global_clear_client = self.create_client(
@@ -297,6 +313,8 @@ class Nav2ActivationGate(Node):
             return
 
         missing = self._tracker.missing_requirements(now)
+        if 'latched /map' in missing:
+            missing.extend(self._ensure_immutable_map_active(now))
         service_missing = self._missing_lifecycle_services()
         duplicates = self._runtime_duplicate_managed_nodes()
         if duplicates:
@@ -308,6 +326,181 @@ class Nav2ActivationGate(Node):
             self._log_waiting(now, missing + service_missing)
             return
         self._start_state_query('activation')
+
+    def _ensure_immutable_map_active(self, now):
+        """Repair a missed launch transition before waiting indefinitely on /map."""
+        with self._state_query_lock:
+            if self._map_operation_in_flight:
+                return ['immutable map lifecycle operation']
+            if now < self._next_map_attempt_at:
+                return ['immutable map lifecycle backoff']
+            missing = []
+            if not self._map_state_client.service_is_ready():
+                missing.append(
+                    f'/{self._immutable_map_node}/get_state')
+            if not self._map_change_state_client.service_is_ready():
+                missing.append(
+                    f'/{self._immutable_map_node}/change_state')
+            if missing:
+                return missing
+            token = object()
+            generation = self._generation
+            self._map_operation_in_flight = True
+            self._map_operation_token = token
+            try:
+                future = self._map_state_client.call_async(GetState.Request())
+            except Exception as exc:
+                self._map_operation_in_flight = False
+                self._map_operation_token = None
+                self._record_map_activation_failure(
+                    f'/{self._immutable_map_node}/get_state raised '
+                    f'{type(exc).__name__}: {exc}',
+                    now,
+                )
+                return ['immutable map lifecycle query failed']
+            future.add_done_callback(partial(
+                self._map_state_done,
+                generation=generation,
+                token=token,
+            ))
+            return ['immutable map lifecycle query']
+
+    def _map_state_done(self, future, *, generation, token):
+        try:
+            response = future.result()
+            if response is None:
+                raise RuntimeError('empty response')
+            state = str(response.current_state.label).lower()
+            error = None
+        except Exception as exc:
+            state = ''
+            error = exc
+        with self._state_query_lock:
+            if (generation != self._generation
+                    or token is not self._map_operation_token):
+                return
+            self._map_operation_in_flight = False
+            self._map_operation_token = None
+            now = time.monotonic()
+            if error is not None:
+                self._record_map_activation_failure(
+                    f'/{self._immutable_map_node}/get_state failed: '
+                    f'{type(error).__name__}: {error}',
+                    now,
+                )
+                return
+            if state == 'active':
+                self._map_activation_attempts = 0
+                self._next_map_attempt_at = now + 0.1
+                return
+            if state in {
+                    'configuring', 'activating', 'deactivating',
+                    'cleaningup', 'shuttingdown'}:
+                self._next_map_attempt_at = now + 0.1
+                return
+            transition = {
+                'unconfigured': (
+                    'configure', Transition.TRANSITION_CONFIGURE),
+                'inactive': ('activate', Transition.TRANSITION_ACTIVATE),
+            }.get(state)
+            if transition is None:
+                self._record_map_activation_failure(
+                    f'/{self._immutable_map_node} has unsupported lifecycle '
+                    f'state {state!r}',
+                    now,
+                )
+                return
+            self._send_map_transition(
+                transition[0], transition[1], now)
+
+    def _send_map_transition(self, label, transition_id, now):
+        if self._map_operation_in_flight:
+            return False
+        if not self._map_change_state_client.service_is_ready():
+            self._record_map_activation_failure(
+                f'/{self._immutable_map_node}/change_state unavailable',
+                now,
+            )
+            return False
+        request = ChangeState.Request()
+        request.transition.id = transition_id
+        token = object()
+        generation = self._generation
+        self._map_operation_in_flight = True
+        self._map_operation_token = token
+        self.get_logger().warning(
+            f'Repairing immutable map lifecycle: '
+            f'node={self._immutable_map_node}, transition={label}')
+        try:
+            future = self._map_change_state_client.call_async(request)
+        except Exception as exc:
+            self._map_operation_in_flight = False
+            self._map_operation_token = None
+            self._record_map_activation_failure(
+                f'/{self._immutable_map_node}/change_state {label} raised '
+                f'{type(exc).__name__}: {exc}',
+                now,
+            )
+            return False
+        future.add_done_callback(partial(
+            self._map_transition_done,
+            label=label,
+            generation=generation,
+            token=token,
+        ))
+        return True
+
+    def _map_transition_done(
+            self, future, *, label, generation, token):
+        try:
+            response = future.result()
+            error = None
+        except Exception as exc:
+            response = None
+            error = exc
+        with self._state_query_lock:
+            if (generation != self._generation
+                    or token is not self._map_operation_token):
+                return
+            self._map_operation_in_flight = False
+            self._map_operation_token = None
+            now = time.monotonic()
+            if error is not None:
+                self._record_map_activation_failure(
+                    f'/{self._immutable_map_node}/change_state {label} '
+                    f'raised {type(error).__name__}: {error}',
+                    now,
+                )
+                return
+            if response is None or not response.success:
+                self._record_map_activation_failure(
+                    f'/{self._immutable_map_node}/change_state {label} '
+                    f'returned success={getattr(response, "success", None)}',
+                    now,
+                )
+                return
+            self._map_activation_attempts = 0
+            self._next_map_attempt_at = now + 0.1
+            self.get_logger().info(
+                f'Immutable map lifecycle transition completed: '
+                f'node={self._immutable_map_node}, transition={label}')
+
+    def _record_map_activation_failure(self, reason, now):
+        self._last_failure = reason
+        self._map_activation_attempts += 1
+        if not self._retry_policy.can_retry(self._map_activation_attempts):
+            self._set_fatal(
+                'Immutable map lifecycle activation failed after '
+                f'{self._map_activation_attempts} attempts: {reason}')
+            return
+        delay = self._retry_policy.delay_after_failure(
+            self._map_activation_attempts)
+        self._next_map_attempt_at = now + delay
+        self.get_logger().warning(
+            f'Immutable map lifecycle attempt '
+            f'{self._map_activation_attempts}/'
+            f'{self._retry_policy.max_attempts} failed: {reason}; '
+            f'retrying in {delay:.2f}s')
 
     def _observe_map_to_odom(self, now):
         try:
@@ -790,6 +983,8 @@ class Nav2ActivationGate(Node):
             self._snapshot_generation = None
             self._request_in_flight = False
             self._manager_request_token = None
+            self._map_operation_in_flight = False
+            self._map_operation_token = None
             self._recovery_service_in_flight = False
             self._recovery_service_operation = None
             self._activation_verifying = False
