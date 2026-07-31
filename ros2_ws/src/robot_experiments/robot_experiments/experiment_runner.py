@@ -395,6 +395,14 @@ class ExperimentRunner(Node):
             self.declare_parameter("record_evidence", True).value,
             "record_evidence",
         )
+        self._record_bag = _boolean_parameter(
+            self.declare_parameter("record_bag", True).value,
+            "record_bag",
+        )
+        if self._record_bag and not self._record_evidence:
+            raise ConfigurationError(
+                "record_bag requires record_evidence"
+            )
         self._require_pregoal_authorization = _boolean_parameter(
             self.declare_parameter("require_pregoal_authorization", False).value,
             "require_pregoal_authorization",
@@ -2667,6 +2675,8 @@ class ExperimentRunner(Node):
             if self._scenario.appearance_config_file is not None
             else False
         )
+        if not self._record_bag:
+            return root
         ros2 = shutil.which("ros2")
         if ros2 is None:
             return root
@@ -2751,7 +2761,8 @@ class ExperimentRunner(Node):
                 "appearance_rgb_before_goal.json",
             }
         data_complete = (
-            bag_complete and depth_complete and scan_complete
+            (bag_complete or not self._record_bag)
+            and depth_complete and scan_complete
             and safety_scan_complete and local_costmap_complete
             and global_costmap_complete
             and (
@@ -2777,6 +2788,7 @@ class ExperimentRunner(Node):
             "checksums_verified": False,
             "evidence": {
                 "mcap_zstd": bag_complete,
+                "mcap_required": self._record_bag,
                 "depth_frame": depth_complete,
                 "appearance_rgb_before_goal": self._appearance_rgb_snapshot_complete,
                 "scan": scan_complete,

@@ -80,7 +80,10 @@ def test_visual_route_wrapper_disables_all_project_evidence_output():
     assert '"record_evidence:=false"' in wrapper
     assert "mkdir -p" not in wrapper
     assert 'DeclareLaunchArgument("record_evidence", default_value="true")' in launch
+    assert 'DeclareLaunchArgument("record_bag", default_value="true")' in launch
     assert "if self._record_evidence:" in runner
+    assert "if not self._record_bag:" in runner
+    assert '"mcap_required": self._record_bag' in runner
 
 
 def test_experiment_telemetry_records_contact_identity_diagnostics():
