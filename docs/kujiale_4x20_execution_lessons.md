@@ -57,7 +57,8 @@ data/reports/kujiale_4x20_20260725-210035/benchmark.json
 保留不完整证据，用同一ID续跑：
 
 ```bash
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+source /home/lyb/Workspace/Bio_Nav/workspace.env
+cd "${BIO_NAV_MODULE3_ROOT}"
 ./scripts/run_kujiale_4x20_all.sh <CAMPAIGN_ID> --resume --skip-build
 ```
 

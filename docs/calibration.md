@@ -48,7 +48,8 @@
 常规 Ideal 导航使用默认 `warehouse_new`：
 
 ```bash
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+source /home/lyb/Workspace/Bio_Nav/workspace.env
+cd "${BIO_NAV_MODULE3_ROOT}"
 source ./scripts/setup_ros_env.sh
 ./scripts/run_ros.sh navigation odometry_mode:=ideal \
   spawn_pose_name:=long_route_start_g1 nav2_profile:=stable

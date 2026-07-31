@@ -56,7 +56,8 @@ G2–G5 在两图中统一使用相同的蓝色图标、尺寸和颜色；G4 仅
 ## 生成和核验
 
 ```bash
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+source /home/lyb/Workspace/Bio_Nav/workspace.env
+cd "${BIO_NAV_MODULE3_ROOT}"
 python3 scripts/generate_kujiale_long_route_maps.py
 ```
 
