@@ -15,6 +15,7 @@
 #include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include "bio_nav_fusion/tie_break_smac_planner_2d.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
@@ -152,7 +153,7 @@ void BioNavGridBased::configure(
     bio_nav_interfaces::msg::PlannerDecision>(
     "/bio_nav/planner/decision", rclcpp::QoS(10).reliable());
 
-  stock_ = std::make_unique<nav2_smac_planner::SmacPlanner2D>();
+  stock_ = std::make_unique<TieBreakSmacPlanner2D>();
   stock_->configure(parent, name_ + "_fallback", tf, costmap_ros_);
 
   // The planner server process is launched with the global
@@ -312,32 +313,30 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
       return stockPlan(start, goal, cancel_checker, "goal_prior_nonfinite", begin_s);
     }
   }
-  GridSearchResult result;
-  {
-    std::unique_lock<nav2_costmap_2d::Costmap2D::mutex_t> lock(
-      *(costmap_ros_->getCostmap()->getMutex()));
-    result = equalCostSearch(
-      *costmap_ros_->getCostmap(), start, goal, score, allow_unknown_,
-      global_frame_, clock_->now(), cancel_checker);
-  }
-  if (!result.success) {
+  TieBreakPlanMetrics metrics;
+  nav_msgs::msg::Path path;
+  try {
+    path = stock_->createPlanWithTieBreak(
+      start, goal, score, cancel_checker, metrics);
+  } catch (const std::exception & error) {
     return stockPlan(
-      start, goal, cancel_checker, "cognitive_search:" + result.error, begin_s);
+      start, goal, cancel_checker,
+      "cognitive_search:" + std::string(error.what()), begin_s);
   }
   const double latency_ms =
     (clock_->now().seconds() - begin_s) * 1000.0;
   publishDecision(
-    true, "", result.primary_cost, result.expanded_nodes, latency_ms,
+    true, "", metrics.primary_cost, metrics.expanded_nodes, latency_ms,
     reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256);
-  return result.path;
+  return path;
 }
 
 bool BioNavGridBased::priorIdentityFresh(
   double age_s, double maximum_age_s)
 {
-  return (
+  return
     std::isfinite(age_s) && std::isfinite(maximum_age_s) &&
-    maximum_age_s > 0.0 && age_s >= 0.0 && age_s <= maximum_age_s);
+    maximum_age_s > 0.0 && age_s >= 0.0 && age_s <= maximum_age_s;
 }
 
 GridSearchResult BioNavGridBased::equalCostSearch(

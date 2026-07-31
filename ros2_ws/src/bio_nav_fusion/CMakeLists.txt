@@ -22,6 +22,7 @@ find_package(tf2_geometry_msgs REQUIRED)
 
 add_library(bio_nav_planner_plugin SHARED
   src/bio_nav_grid_based.cpp
+  src/tie_break_smac_planner_2d.cpp
 )
 target_include_directories(bio_nav_planner_plugin PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

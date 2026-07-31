@@ -37,7 +37,7 @@ def _sha256(value: str, field: str) -> str:
 
 
 def build_profile(
-    dynamic_profile: Path,
+    navigation_profile: Path,
     *,
     variant: str,
     module3_map_sha256: str = "",
@@ -65,11 +65,20 @@ def build_profile(
             risk_qualification_sha256, "risk_qualification_sha256"
         )
 
-    payload = yaml.safe_load(dynamic_profile.read_text(encoding="utf-8"))
+    payload = yaml.safe_load(navigation_profile.read_text(encoding="utf-8"))
     result = deepcopy(payload)
-    global_parameters = result["global_costmap"]["global_costmap"]["ros__parameters"]
+    global_parameters = (
+        result.setdefault("global_costmap", {})
+        .setdefault("global_costmap", {})
+        .setdefault("ros__parameters", {})
+    )
     if risk_enabled:
-        plugins = list(global_parameters["plugins"])
+        plugins = list(
+            global_parameters.get(
+                "plugins",
+                ["static_layer", "obstacle_layer", "inflation_layer"],
+            )
+        )
         if "cognitive_risk_layer" not in plugins:
             plugins.insert(
                 plugins.index("inflation_layer"), "cognitive_risk_layer"
@@ -139,6 +148,10 @@ def main() -> None:
         type=Path,
         default=root
         / "ros2_ws/src/robot_navigation/config/nav2_dynamic_avoidance.yaml",
+        help=(
+            "Navigation overlay to preserve before adding fusion; pass "
+            "nav2_stable.yaml for static routes"
+        ),
     )
     parser.add_argument(
         "--variant",

@@ -22,6 +22,8 @@
 namespace bio_nav_fusion
 {
 
+class TieBreakSmacPlanner2D;
+
 struct GridSearchResult
 {
   nav_msgs::msg::Path path;
@@ -78,7 +80,7 @@ private:
   rclcpp::Clock::SharedPtr clock_;
   rclcpp_lifecycle::LifecycleNode::WeakPtr parent_;
   std::shared_ptr<nav2_costmap_2d::Costmap2DROS> costmap_ros_;
-  std::unique_ptr<nav2_smac_planner::SmacPlanner2D> stock_;
+  std::unique_ptr<TieBreakSmacPlanner2D> stock_;
   rclcpp_lifecycle::LifecyclePublisher<
     bio_nav_interfaces::msg::PlannerDecision>::SharedPtr decision_publisher_;
   rclcpp::Node::SharedPtr client_node_;

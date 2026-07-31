@@ -11,6 +11,9 @@ DYNAMIC_PROFILE = (
     / "config"
     / "nav2_dynamic_avoidance.yaml"
 )
+STABLE_PROFILE = (
+    PACKAGE_ROOT.parent / "robot_navigation" / "config" / "nav2_stable.yaml"
+)
 
 SPEC = spec_from_file_location("generate_bionav_fusion_profile", GENERATOR_PATH)
 GENERATOR = module_from_spec(SPEC)
@@ -78,6 +81,28 @@ def test_combined_enables_both_components_without_changing_local_costmap():
         == "bio_nav_fusion::BioNavGridBased"
     )
     assert profile["local_costmap"] == baseline["local_costmap"]
+
+
+def test_static_profile_preserves_static_controller_and_adds_global_risk():
+    baseline = GENERATOR.yaml.safe_load(
+        STABLE_PROFILE.read_text(encoding="utf-8")
+    )
+    profile = GENERATOR.build_profile(
+        STABLE_PROFILE,
+        variant="combined",
+        module3_map_sha256=MAP_SHA,
+        planning_qualification_sha256=PLANNING_QUALIFICATION_SHA,
+        risk_model_sha256=RISK_MODEL_SHA,
+        risk_qualification_sha256=RISK_QUALIFICATION_SHA,
+    )
+
+    assert profile["controller_server"] == baseline["controller_server"]
+    assert _global_parameters(profile)["plugins"] == [
+        "static_layer",
+        "obstacle_layer",
+        "cognitive_risk_layer",
+        "inflation_layer",
+    ]
 
 
 def test_enabled_components_reject_missing_or_malformed_identity():
