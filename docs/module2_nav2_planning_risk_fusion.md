@@ -63,3 +63,24 @@ map、planning qualification、risk model 和 risk qualification SHA 的参数�
 并通过 `nav2_profile_params_file:=/absolute/path/generated.yaml` 指定。
 
 工程 smoke 可以确认接口、插件加载和 fallback，不能替代真实路线 Gate。
+
+## 验证当前 worktree 的融合配置
+
+在当前 source worktree 中修改 profile、launch contract 或风险层参数后，不能直接让
+`pytest` 从旧的 `ros2_ws/install` 导入 `robot_bringup`；旧 install 可能尚未包含
+`bio_nav_*` profile，从而产生与源码无关的假失败。先显式把当前源码放在 Python 搜索路径最前：
+
+```bash
+cd /absolute/path/to/Isaac_Sim_ROS2_Nav
+PYTHONPATH="$PWD/ros2_ws/src/robot_bringup${PYTHONPATH:+:$PYTHONPATH}" \
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+python3 -m pytest -q \
+  ros2_ws/src/robot_bringup/test/test_bio_nav_fusion_profiles.py \
+  ros2_ws/src/robot_bringup/test/test_nav2_profile_contract.py \
+  ros2_ws/src/robot_bringup/test/test_mode_contract.py
+```
+
+该检查验证 combined profile 只向 Global Costmap 插入 `CognitiveRiskLayer`、保持
+Local Costmap 不变，并核验 `BioNavGridBased`、MPPI timing 与 mode contract。通过后仍须
+运行 `./scripts/build_ros2.sh`，再以新 install 启动 Isaac；未重建的 install 不能作为当前
+源码的运行时验证证据。
