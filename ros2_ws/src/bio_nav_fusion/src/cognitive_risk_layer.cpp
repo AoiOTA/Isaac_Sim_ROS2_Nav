@@ -222,6 +222,17 @@ void CognitiveRiskLayer::updateCosts(
   nav2_costmap_2d::Costmap2D & master_grid,
   int min_i, int min_j, int max_i, int max_j)
 {
+  // A CostmapLayer must own the cells it contributes.  Writing cognitive
+  // costs directly into master_grid makes a transient prior indistinguishable
+  // from costs produced by earlier plugins and can leave it behind after the
+  // prior expires.  Rebuild this layer's bounded window every cycle and merge
+  // it with Nav2's standard max-combination path instead.
+  resetMap(
+    static_cast<unsigned int>(std::max(0, min_i)),
+    static_cast<unsigned int>(std::max(0, min_j)),
+    static_cast<unsigned int>(std::max(0, max_i)),
+    static_cast<unsigned int>(std::max(0, max_j)));
+
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior;
   std::string reason;
   double age_s = 0.0;
@@ -234,6 +245,7 @@ void CognitiveRiskLayer::updateCosts(
     }
   }
   if (!valid) {
+    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     publishStatus(false, reason, age_s, 0, 0);
     return;
   }
@@ -258,14 +270,13 @@ void CognitiveRiskLayer::updateCosts(
       if (cost == 0) {
         continue;
       }
-      const auto existing = master_grid.getCost(mx, my);
-      if (existing != nav2_costmap_2d::NO_INFORMATION && cost > existing) {
-        master_grid.setCost(mx, my, cost);
-      }
+      setCost(
+        static_cast<unsigned int>(mx), static_cast<unsigned int>(my), cost);
       ++active_cells;
       maximum_written = std::max(maximum_written, cost);
     }
   }
+  updateWithMax(master_grid, min_i, min_j, max_i, max_j);
   publishStatus(true, "", age_s, active_cells, maximum_written);
 }
 
