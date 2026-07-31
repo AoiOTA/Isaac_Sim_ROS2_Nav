@@ -35,6 +35,8 @@ public:
     int min_i, int min_j, int max_i, int max_j) override;
   static uint8_t mapRiskCost(
     float probability, float threshold, double decay, int maximum_cost);
+  static bool containsActiveRisk(
+    const bio_nav_interfaces::msg::PlanningPrior & prior);
   static std::string validatePrior(
     const bio_nav_interfaces::msg::PlanningPrior * prior,
     double age_s, double maximum_age_s, double minimum_reliability,
@@ -58,6 +60,8 @@ private:
   double max_message_age_s_{0.75};
   double minimum_reliability_{0.2};
   int maximum_cost_{80};
+  int minimum_consecutive_active_messages_{2};
+  int active_message_streak_{0};
   std::string expected_map_version_;
   std::string expected_risk_model_sha256_;
   std::string expected_qualification_sha256_;

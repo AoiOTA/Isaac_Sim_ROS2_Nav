@@ -92,6 +92,9 @@ def build_profile(
             "max_message_age_s": 0.75,
             "minimum_reliability": 0.2,
             "maximum_cost": 80,
+            # At the 5 Hz prior rate this rejects isolated appearance spikes
+            # while adding only about 0.2 s to a persistent actor onset.
+            "minimum_consecutive_active_messages": 2,
             # This is the live OccupancyGrid hash published by the Integration
             # bridge for warehouse_new, not the human-facing map alias or the
             # offline PGM-loader digest.

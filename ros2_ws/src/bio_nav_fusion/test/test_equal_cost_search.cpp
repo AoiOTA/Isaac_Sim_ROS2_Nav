@@ -81,6 +81,23 @@ TEST(CognitiveRiskLayer, calibrated_cost_is_thresholded_nonlethal_and_decays)
   EXPECT_EQ(CognitiveRiskLayer::mapRiskCost(1.0F, 0.5F, 0.0, 80), 0);
 }
 
+TEST(CognitiveRiskLayer, active_risk_requires_a_healthy_threshold_crossing)
+{
+  using bio_nav_fusion::CognitiveRiskLayer;
+  bio_nav_interfaces::msg::PlanningPrior prior;
+  prior.risk_healthy = true;
+  prior.risk_threshold = 0.5F;
+  prior.dynamic_cost.fill(0.0F);
+  EXPECT_FALSE(CognitiveRiskLayer::containsActiveRisk(prior));
+  prior.dynamic_cost[42] = 0.5F;
+  EXPECT_TRUE(CognitiveRiskLayer::containsActiveRisk(prior));
+  prior.risk_healthy = false;
+  EXPECT_FALSE(CognitiveRiskLayer::containsActiveRisk(prior));
+  prior.risk_healthy = true;
+  prior.dynamic_cost[42] = std::numeric_limits<float>::quiet_NaN();
+  EXPECT_FALSE(CognitiveRiskLayer::containsActiveRisk(prior));
+}
+
 TEST(CognitiveRiskLayer, fault_matrix_rejects_untrusted_risk_inputs)
 {
   using bio_nav_fusion::CognitiveRiskLayer;

@@ -37,6 +37,9 @@ void CognitiveRiskLayer::onInitialize()
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".maximum_cost", rclcpp::ParameterValue(maximum_cost_));
   nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".minimum_consecutive_active_messages",
+    rclcpp::ParameterValue(minimum_consecutive_active_messages_));
+  nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".expected_map_version", rclcpp::ParameterValue(expected_map_version_));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".expected_risk_model_sha256",
@@ -52,6 +55,9 @@ void CognitiveRiskLayer::onInitialize()
   node->get_parameter(name_ + ".max_message_age_s", max_message_age_s_);
   node->get_parameter(name_ + ".minimum_reliability", minimum_reliability_);
   node->get_parameter(name_ + ".maximum_cost", maximum_cost_);
+  node->get_parameter(
+    name_ + ".minimum_consecutive_active_messages",
+    minimum_consecutive_active_messages_);
   node->get_parameter(name_ + ".expected_map_version", expected_map_version_);
   node->get_parameter(name_ + ".expected_risk_model_sha256", expected_risk_model_sha256_);
   node->get_parameter(
@@ -61,6 +67,8 @@ void CognitiveRiskLayer::onInitialize()
   reset_epoch_ = static_cast<uint32_t>(std::max(0, initial_reset_epoch));
   reset_epoch_initialized_ = initial_reset_epoch > 0;
   maximum_cost_ = std::clamp(maximum_cost_, 1, 80);
+  minimum_consecutive_active_messages_ = std::max(
+    1, minimum_consecutive_active_messages_);
 
   rclcpp::SubscriptionOptions options;
   options.callback_group = callback_group_;
@@ -100,6 +108,7 @@ void CognitiveRiskLayer::reset()
   {
     std::lock_guard<std::mutex> lock(mutex_);
     latest_.reset();
+    active_message_streak_ = 0;
   }
   resetMaps();
   addExtraBounds(-8.0, -8.0, 8.0, 8.0);
@@ -118,6 +127,12 @@ void CognitiveRiskLayer::priorCallback(
     reset_epoch_ = message->reset_epoch;
     reset_epoch_initialized_ = true;
   }
+  if (containsActiveRisk(*message)) {
+    active_message_streak_ = std::min(
+      active_message_streak_ + 1, minimum_consecutive_active_messages_);
+  } else {
+    active_message_streak_ = 0;
+  }
   latest_ = message;
   addExtraBounds(-8.0, -8.0, 8.0, 8.0);
 }
@@ -130,6 +145,7 @@ void CognitiveRiskLayer::resetCallback(const std_msgs::msg::Empty::SharedPtr)
       ++reset_epoch_;
     }
     latest_.reset();
+    active_message_streak_ = 0;
   }
   addExtraBounds(-8.0, -8.0, 8.0, 8.0);
 }
@@ -237,11 +253,14 @@ void CognitiveRiskLayer::updateCosts(
   std::string reason;
   double age_s = 0.0;
   bool valid = false;
+  bool temporally_confirmed = false;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     valid = validateLocked(clock_->now(), reason, age_s);
     if (valid) {
       prior = latest_;
+      temporally_confirmed =
+        active_message_streak_ >= minimum_consecutive_active_messages_;
     }
   }
   if (!valid) {
@@ -265,6 +284,9 @@ void CognitiveRiskLayer::updateCosts(
         continue;
       }
       const float probability = prior->dynamic_cost[row * 16 + column];
+      if (!temporally_confirmed && probability >= prior->risk_threshold) {
+        continue;
+      }
       const auto cost = mapRiskCost(
         probability, prior->risk_threshold, decay, maximum_cost_);
       if (cost == 0) {
@@ -278,6 +300,23 @@ void CognitiveRiskLayer::updateCosts(
   }
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
   publishStatus(true, "", age_s, active_cells, maximum_written);
+}
+
+bool CognitiveRiskLayer::containsActiveRisk(
+  const bio_nav_interfaces::msg::PlanningPrior & prior)
+{
+  if (
+    !prior.risk_healthy || !std::isfinite(prior.risk_threshold) ||
+    prior.risk_threshold < 0.0F || prior.risk_threshold >= 1.0F)
+  {
+    return false;
+  }
+  return std::any_of(
+    prior.dynamic_cost.begin(), prior.dynamic_cost.end(),
+    [&prior](const float probability) {
+      return std::isfinite(probability) &&
+             probability >= prior.risk_threshold;
+    });
 }
 
 uint8_t CognitiveRiskLayer::mapRiskCost(
