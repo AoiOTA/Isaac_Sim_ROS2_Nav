@@ -31,7 +31,15 @@ def _write_profile(path, *, frequency=10.0, model_dt=0.1,
 
 
 @pytest.mark.parametrize(
-    "profile_name", ["stable", "performance", "dynamic_avoidance"]
+    "profile_name",
+    [
+        "stable",
+        "performance",
+        "dynamic_avoidance",
+        "bio_nav_planning_only",
+        "bio_nav_risk_only",
+        "bio_nav_tiebreak_risk",
+    ],
 )
 def test_shipped_nav2_profiles_satisfy_mppi_timing_contract(profile_name):
     profile = validate_nav2_profile_params_file(
@@ -124,3 +132,36 @@ def test_launch_validates_profile_before_constructing_node_actions():
     first_action = source.index("actions = [LogInfo", validation)
     first_node = source.index("actions.append(Node(", first_action)
     assert validation < first_action < first_node
+
+
+def test_bio_nav_planner_helper_does_not_inherit_planner_server_name():
+    source = (
+        PACKAGE_ROOT.parent
+        / "bio_nav_fusion"
+        / "src"
+        / "bio_nav_grid_based.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "rclcpp::NodeOptions().use_global_arguments(false)" in source
+    assert '"bio_nav_goal_prior_client"' in source
+    assert "clock_ = node->get_clock();" in source
+    assert "client_node_->get_clock()" not in source
+
+
+def test_cognitive_risk_layer_latches_bridge_absolute_reset_epoch():
+    source = (
+        PACKAGE_ROOT.parent
+        / "bio_nav_fusion"
+        / "src"
+        / "cognitive_risk_layer.cpp"
+    ).read_text(encoding="utf-8")
+
+    assert "if (!reset_epoch_initialized_)" in source
+    assert "reset_epoch_ = message->reset_epoch;" in source
+    assert '"/simulation/reset_event"' in (
+        PACKAGE_ROOT.parent
+        / "bio_nav_fusion"
+        / "include"
+        / "bio_nav_fusion"
+        / "cognitive_risk_layer.hpp"
+    ).read_text(encoding="utf-8")

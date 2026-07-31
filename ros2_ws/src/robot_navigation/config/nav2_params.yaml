@@ -239,7 +239,10 @@ local_costmap:
         observation_sources: scan
 
         scan:
-          topic: /scan
+          # Local control uses the self-filtered projection so mapped and
+          # unmapped obstacles remain visible inside the legacy /scan
+          # projection's 0.40 m self-return exclusion radius.
+          topic: /scan_safety
           max_obstacle_height: 0.50
 
           clearing: true
@@ -247,9 +250,9 @@ local_costmap:
           data_type: LaserScan
 
           raytrace_max_range: 25.0
-          raytrace_min_range: 0.40
+          raytrace_min_range: 0.05
           obstacle_max_range: 25.0
-          obstacle_min_range: 0.40
+          obstacle_min_range: 0.05
 
       # Keep RGB-D observations in an independent layer. This prevents the
       # LiDAR clearing rays from clearing low obstacles marked by the camera.
@@ -528,10 +531,12 @@ collision_monitor:
 
     StopZone:
       type: polygon
-      # Physical footprint is x=[-0.230, 0.255], y=+/-0.210 m.  This zone keeps
-      # a 20--30 mm emergency shell, rather than the former 60 mm lateral shell
-      # that was continuously triggered by parallel walls in narrow passages.
-      points: "[[0.285, 0.230], [0.285, -0.230], [-0.250, -0.230], [-0.250, 0.230]]"
+      # Physical footprint is x=[-0.230, 0.255], y=+/-0.210 m.  Preserve the
+      # narrow 20 mm lateral shell that avoids parallel-wall false stops, but
+      # reserve 175 mm longitudinal stopping distance ahead of the footprint.
+      # At the 0.70 m/s command limit this covers one 10 Hz scan interval plus
+      # monitor/controller actuation latency and a small residual margin.
+      points: "[[0.430, 0.230], [0.430, -0.230], [-0.250, -0.230], [-0.250, 0.230]]"
 
       action_type: stop
       min_points: 3
@@ -542,14 +547,11 @@ collision_monitor:
 
     SlowdownZone:
       type: polygon
-      # Keep a useful warning shell around StopZone without continuously
-      # catching parallel walls in a valid narrow corridor.  The physical
-      # footprint is y=+/-0.210 m and the emergency shell is y=+/-0.230 m.
-      # Keep the warning shell just outside the 20 mm StopZone shell.  The
-      # former 5 mm lateral expansion was repeatedly occupied by parallel
-      # wall returns in the valid G3→G4 passage, causing needless crawl/stop
-      # cycles.  Hard StopZone protection remains unchanged.
-      points: "[[0.36, 0.232], [0.36, -0.232], [-0.30, -0.232], [-0.30, 0.232]]"
+      # Keep a useful longitudinal warning shell around StopZone without
+      # catching parallel walls in a valid narrow corridor.  The lateral
+      # bounds remain only 22 mm outside the physical footprint; expanding
+      # them further previously caused needless crawl/stop cycles in G3→G4.
+      points: "[[0.55, 0.232], [0.55, -0.232], [-0.30, -0.232], [-0.30, 0.232]]"
 
       action_type: slowdown
       min_points: 6
@@ -578,17 +580,15 @@ collision_monitor:
       visualize: false
       enabled: false
 
-    # The low RGB-D test box is below the LiDAR plane.  Feed the same depth
-    # cloud that marks the VoxelLayer into the last-resort safety monitor, so
-    # an unmodelled local-costmap gap cannot become a physical contact.
-    # RGB-D is fused into both costmaps; keep Collision Monitor's hard stop on
-    # LiDAR only so ordinary near-field depth returns cannot deadlock a valid
-    # doorway traversal.  Physical contact remains an independent verdict.
-    observation_sources: [scan]
+    # The mapping/localization /scan intentionally excludes everything within
+    # 0.40 m to remove rendered chassis returns. Collision Monitor instead
+    # consumes the independent self-filtered projection whose 0.05 m minimum
+    # range covers the complete StopZone without changing SLAM input.
+    observation_sources: [scan_safety]
 
-    scan:
+    scan_safety:
       type: scan
-      topic: /scan
+      topic: /scan_safety
       enabled: true
 
     camera_depth:

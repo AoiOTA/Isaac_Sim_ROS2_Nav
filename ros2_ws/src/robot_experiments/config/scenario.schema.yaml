@@ -36,6 +36,7 @@ properties:
           robot: {type: string, minLength: 1}
           nav2: {type: string, minLength: 1}
           dynamic_obstacles: {type: string, minLength: 1}
+          appearance: {type: string, minLength: 1}
       simulation:
         type: object
         additionalProperties: false
@@ -67,6 +68,8 @@ properties:
                 seed: {type: integer, minimum: 0}
                 case_id: {type: string, minLength: 1}
                 variant_id: {type: string, minLength: 1}
+                appearance_profile_id: {type: string, minLength: 1}
+                condition_id: {type: string, minLength: 1}
           timeout_sec: {type: number, exclusiveMinimum: 0}
           leg_timeout_sec: {type: number, exclusiveMinimum: 0}
       goal:

@@ -1,0 +1,9 @@
+<library path="bio_nav_costmap_plugin">
+  <class
+    type="bio_nav_fusion::CognitiveRiskLayer"
+    base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Fail-clearing, non-lethal Module2 dynamic-risk layer for Global Costmap.
+    </description>
+  </class>
+</library>

@@ -120,24 +120,51 @@ def test_g2_g3_gate_triggers_southbound_at_y_2_6_in_the_narrow_lane():
     )
 
 
+def test_local_bypass_gate_arms_early_on_the_calibrated_northbound_lane():
+    """Prevent the late gate that froze the actor in the robot swept arc."""
+    scenario = load_dynamic_scenario(
+        ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+    )
+    case = scenario.cases["local_bypass"]
+    manager = object.__new__(DynamicObstacleManager)
+
+    assert case.gate.threshold == pytest.approx(-2.60)
+    assert manager._gate_passed(
+        case, {"x": -0.60, "y": -2.59, "vy": 0.30, "speed": 0.30}
+    )
+    # It remains direction-, speed-, and calibrated-lane-gated; merely
+    # entering the broad room cannot re-arm this one-shot interaction.
+    assert not manager._gate_passed(
+        case, {"x": -0.60, "y": -2.61, "vy": 0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -0.80, "y": -2.50, "vy": 0.30, "speed": 0.30}
+    )
+    assert not manager._gate_passed(
+        case, {"x": -0.60, "y": -2.50, "vy": -0.30, "speed": 0.30}
+    )
+
+
 def test_g5_g1_gate_arms_on_the_northbound_ingress_before_the_doorway():
-    """Regression for the recorded route: it approaches the doorway northbound."""
+    """Allow the full smooth crossing time before the G5->G1 conflict."""
     scenario = load_dynamic_scenario(
         ROOT / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
     )
     case = scenario.cases["g5_g1_crossing"]
     manager = object.__new__(DynamicObstacleManager)
 
+    assert case.gate.threshold == pytest.approx(-2.90)
+    assert case.gate.max_distance_to_obstacle_start_m == pytest.approx(2.00)
     assert manager._gate_passed(
-        case, {"x": -1.75, "y": -1.90, "vy": 0.30, "speed": 0.30}
+        case, {"x": -2.03, "y": -2.89, "vy": 0.30, "speed": 0.30}
     )
-    # The broad-room ingress, a too-distant northbound pose, and the later
-    # southbound doorway pose must not arm it.
+    # It must still reject a pre-threshold pose, a pose outside the calibrated
+    # ingress lane, and the later southbound doorway exit.
     assert not manager._gate_passed(
-        case, {"x": -1.84, "y": -1.93, "vy": 0.30, "speed": 0.30}
+        case, {"x": -2.03, "y": -2.91, "vy": 0.30, "speed": 0.30}
     )
     assert not manager._gate_passed(
-        case, {"x": -1.95, "y": -2.45, "vy": 0.30, "speed": 0.30}
+        case, {"x": -2.11, "y": -2.89, "vy": 0.30, "speed": 0.30}
     )
     assert not manager._gate_passed(
         case, {"x": -1.14, "y": -0.85, "vy": -0.30, "speed": 0.30}

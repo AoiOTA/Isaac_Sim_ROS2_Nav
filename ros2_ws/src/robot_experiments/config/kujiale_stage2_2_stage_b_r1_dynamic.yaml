@@ -1,0 +1,90 @@
+# Stage B-R1 immutable dynamic seed bank. The actor config and inline contract
+# are byte-for-byte equivalent in behavior to the frozen v32 dynamic scenario.
+schema_version: 1
+scenario:
+  id: kujiale_stage2_2_stage_b_r1_dynamic
+  type: dynamic
+  spawn_pose_name: long_route_start_g1
+  map_version: warehouse_new
+  posegraph_version: warehouse_new
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml
+    appearance: ../../../../isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml
+  simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
+  runs:
+    matrix:
+      - {seed: 10610, case_id: authorization_only, variant_id: auth_v1, condition_id: stage_b_r1_dynamic_authorization, appearance_profile_id: baseline}
+      - {seed: 11610, case_id: authorization_only, variant_id: auth_v1, condition_id: stage_b_r1_dynamic_authorization, appearance_profile_id: baseline}
+      - {seed: 10611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 11611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 10623, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10624, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 10801, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10802, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 10803, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10804, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 10805, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10806, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 10807, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10808, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: bright_cool}
+      - {seed: 10809, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 10810, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 11201, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11202, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 11203, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11204, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 11205, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11206, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_appearance, appearance_profile_id: bright_cool}
+      - {seed: 11207, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11208, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 11209, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 11210, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 12611, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 12612, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      # Fresh, indivisible formal qualification banks. Actor variants and the
+      # frozen physical contract are unchanged.
+      - {seed: 13801, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13802, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 13803, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13804, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 13805, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13806, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 13807, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13808, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: bright_cool}
+      - {seed: 13809, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 13810, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 14201, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14202, case_id: full_route_three_stage, variant_id: v1, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+      - {seed: 14203, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14204, case_id: full_route_three_stage, variant_id: v2, condition_id: dynamic_appearance, appearance_profile_id: bright_warm}
+      - {seed: 14205, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14206, case_id: full_route_three_stage, variant_id: v3, condition_id: dynamic_appearance, appearance_profile_id: bright_cool}
+      - {seed: 14207, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14208, case_id: full_route_three_stage, variant_id: v4, condition_id: dynamic_appearance, appearance_profile_id: dim_warm}
+      - {seed: 14209, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_baseline, appearance_profile_id: baseline}
+      - {seed: 14210, case_id: full_route_three_stage, variant_id: v5, condition_id: dynamic_appearance, appearance_profile_id: dim_cool}
+    timeout_sec: 720.0
+    leg_timeout_sec: 210.0
+  goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
+  route:
+    - {id: G2, frame_id: map, position: [0.80, 4.80], yaw_deg: -160.0, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-2.20, 3.25], yaw_deg: -105.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-3.00, -0.45], yaw_deg: -68.0, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-2.20, -2.95], yaw_deg: -42.0, require_orientation: true}
+    - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
+  success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0, minimum_reverse_distance_m: 0.0, maximum_reverse_distance_fraction: 1.0, minimum_curved_distance_fraction: 0.0, maximum_stopped_time_fraction: 1.0}
+  obstacles:
+    layout_id: kujiale_dynamic_avoidance_v4
+    static: []
+    trajectories:
+      - {id: crossing_actor, trigger_group: G2, motion: crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.70, 0.00]}, {time_sec: 4.2, position: [-1.20, 0.00]}]}
+      - {id: oncoming_actor, trigger_group: G2, motion: oncoming, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.70, 0.80]}, {time_sec: 6.0, position: [-0.10, -1.20]}]}
+      - {id: same_direction_slow_actor, trigger_group: G2, motion: same_direction_slow, shape: box, repeat: false, dimensions: [0.45, 0.45], waypoints: [{time_sec: 0.0, position: [-0.35, -0.10]}, {time_sec: 4.2, position: [-0.35, 0.65]}, {time_sec: 8.6, position: [0.45, 0.65]}, {time_sec: 15.3, position: [0.45, -0.55]}]}
+      - {id: local_bypass_actor, trigger_group: G2, motion: local_bypass, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [-1.65, -0.20]}, {time_sec: 1.47, position: [-0.95, -0.20]}]}
+      - {id: g2_g3_exit_actor, trigger_group: G3, motion: g2_g3_exit, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [-0.40, 1.00]}, {time_sec: 4.11, position: [-0.40, -0.70]}]}
+      - {id: g5_g1_crossing_actor, trigger_group: G1, motion: g5_g1_crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [-0.90, -1.30]}, {time_sec: 1.47, position: [-0.20, -1.30]}]}
+      - {id: temporary_block_actor, trigger_group: G2, motion: temporary_block, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.95, 0.15]}, {time_sec: 5.0, position: [0.95, 0.15]}]}

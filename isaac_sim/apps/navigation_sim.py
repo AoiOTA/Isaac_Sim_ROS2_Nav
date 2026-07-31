@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -179,6 +180,79 @@ def _parser() -> argparse.ArgumentParser:
         type=str,
         default="baseline",
         help="initial appearance profile ID; the runner may switch it between resets",
+    )
+    parser.add_argument(
+        "--odom-phase-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2B Isaac-only odometry phase "
+            "trace and run its fixed command sequence"
+        ),
+    )
+    parser.add_argument(
+        "--r2c1-free-space-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C1 reset-separated free-space "
+            "odometry probe trace; requires the frozen Kujiale mapping_start "
+            "diagnostic configuration"
+        ),
+    )
+    parser.add_argument(
+        "--r2c2-free-space-envelope",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C2 no-motion 3D free-space "
+            "envelope trace at the frozen Kujiale mapping_start configuration"
+        ),
+    )
+    parser.add_argument(
+        "--r2c2a-free-space-envelope",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C2A no-motion 3D free-space "
+            "envelope trace with frozen invisible-collider bounds fallback"
+        ),
+    )
+    parser.add_argument(
+        "--r2c2a-collision-bounds-config",
+        type=Path,
+        default=None,
+        help="frozen R2C2A collision-bounds fallback configuration",
+    )
+    parser.add_argument(
+        "--r2c3-free-space-motion-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2C3 envelope-bound, "
+            "reset-separated free-space motion and odometry trace"
+        ),
+    )
+    parser.add_argument(
+        "--r2c3-collision-bounds-config",
+        type=Path,
+        default=None,
+        help="frozen R2C3 collision-bounds fallback configuration",
+    )
+    parser.add_argument(
+        "--r2d2-live-pose-delta-trace",
+        type=Path,
+        default=None,
+        help=(
+            "write a default-off Stage 2.2-R2D2 armed live Shadow trace; "
+            "requires the frozen R2D2 diagnostic configuration"
+        ),
+    )
+    parser.add_argument(
+        "--r2d2-collision-bounds-config",
+        type=Path,
+        default=None,
+        help="frozen R2D2 collision-bounds fallback configuration",
     )
     return parser
 
@@ -357,6 +431,15 @@ def run(
     camera_selection: object,
     appearance_profiles: object,
     initial_appearance_profile: str,
+    odom_phase_trace_path: Path | None = None,
+    r2c1_free_space_trace_path: Path | None = None,
+    r2c2_free_space_envelope_path: Path | None = None,
+    r2c2a_free_space_envelope_path: Path | None = None,
+    r2c2a_collision_bounds_config_path: Path | None = None,
+    r2c3_free_space_motion_trace_path: Path | None = None,
+    r2c3_collision_bounds_config_path: Path | None = None,
+    r2d2_live_pose_delta_trace_path: Path | None = None,
+    r2d2_collision_bounds_config_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -390,6 +473,13 @@ def run(
     node = None
     reset_bridge = None
     appearance_manager = None
+    odom_phase_trace = None
+    r2c1_trace = None
+    r2c2_trace = None
+    r2c2a_trace = None
+    r2c1_observer_node = None
+    r2c1_observer_executor = None
+    r2c1_observer_thread = None
     rclpy_started = False
     failed = False
     try:
@@ -411,6 +501,41 @@ def run(
         # transient unresolved reference cannot make the canonical camera
         # frames appear missing on a restart.
         stage.Load()
+        probe_end_timecode = None
+        if (
+            odom_phase_trace_path is not None
+            or r2c1_free_space_trace_path is not None
+            or r2c2_free_space_envelope_path is not None
+            or r2c2a_free_space_envelope_path is not None
+            or r2c3_free_space_motion_trace_path is not None
+            or r2d2_live_pose_delta_trace_path is not None
+        ):
+            # The warehouse Stage's normal end code is shorter than the
+            # frozen 61-second probe.  This transient extension is scoped to
+            # the default-off diagnostic mode and is never saved to USD.
+            if (
+                r2c2_free_space_envelope_path is not None
+                or r2c2a_free_space_envelope_path is not None
+            ):
+                required_end = int(math.ceil(5.0 * config.simulation.rendering_hz))
+            elif (
+                r2c1_free_space_trace_path is not None
+                or r2c3_free_space_motion_trace_path is not None
+                or r2d2_live_pose_delta_trace_path is not None
+            ):
+                from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                    SegmentedFreeSpaceScript,
+                )
+                required_end = SegmentedFreeSpaceScript.required_end_timecode(
+                    config.simulation.rendering_hz
+                )
+            else:
+                from isaac_sim.src.diagnostics.odom_phase_trace import OdomPhaseScript
+                required_end = OdomPhaseScript.required_end_timecode(
+                    config.simulation.rendering_hz
+                )
+            probe_end_timecode = max(int(stage.GetEndTimeCode()), required_end)
+            stage.SetEndTimeCode(probe_end_timecode)
         for _ in range(3):
             app.update()
         # Configure coherent Timeline/RunLoop/Fabric periods before the first
@@ -585,9 +710,726 @@ def run(
 
         graph_handles = RosGraphBuilder(config, sensors).build()
         graph_references: dict[str, object] = {"all": graph_handles}
+        if graph_handles.odometry is not None:
+            graph_references["odometry"] = graph_handles.odometry
+        odom_graph_epoch = 0
         camera_graph_paths = tuple(
             camera.graph_path for camera in sensors.cameras
         )
+
+        odom_phase_script = None
+        odom_phase_publisher = None
+        if odom_phase_trace_path is not None:
+            from geometry_msgs.msg import Twist
+            from nav_msgs.msg import Odometry
+            from tf2_msgs.msg import TFMessage
+            from isaac_sim.src.diagnostics.odom_phase_trace import (
+                OdomPhaseScript,
+                OdomPhaseTrace,
+            )
+
+            odom_phase_trace = OdomPhaseTrace(
+                odom_phase_trace_path,
+                stage_end_timecode=probe_end_timecode,
+            )
+            odom_phase_script = OdomPhaseScript()
+            odom_phase_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            node.create_subscription(
+                Odometry,
+                "/odom",
+                odom_phase_trace.record_odom,
+                10,
+            )
+            node.create_subscription(TFMessage, "/tf", odom_phase_trace.record_tf, 10)
+
+        r2c1_script = None
+        r2c1_publisher = None
+        r2c1_state: dict[str, object] | None = None
+        if (
+            r2c1_free_space_trace_path is not None
+            or r2c3_free_space_motion_trace_path is not None
+            or r2d2_live_pose_delta_trace_path is not None
+        ):
+            from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+            from nav_msgs.msg import Odometry
+            from std_msgs.msg import Bool
+            from tf2_msgs.msg import TFMessage
+            from rclpy.executors import SingleThreadedExecutor
+            from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                REQUIRED_CLEARANCE_M,
+                R2C1Trace,
+                SegmentedFreeSpaceScript,
+                is_leaf_collision_prim,
+                minimum_xy_clearance,
+            )
+
+            from pxr import Usd, UsdGeom, UsdPhysics
+            r2d2_mode = r2d2_live_pose_delta_trace_path is not None
+            r2c3_mode = r2c3_free_space_motion_trace_path is not None or r2d2_mode
+            r2c3_preflight = None
+            trace_schema = None
+            trace_path = r2c1_free_space_trace_path
+            trace_manifest: dict[str, object]
+            collider_trace_rows: list[dict[str, object]] = []
+
+            if not r2c3_mode:
+                # Preserve the historical R2C1 two-dimensional preflight
+                # exactly.  R2C3 uses the separate three-dimensional branch
+                # below and never changes old trace behavior.
+                cache = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), [UsdGeom.Tokens.default_]
+                )
+                static_bounds_xy: list[tuple[float, float, float, float]] = []
+                aggregate_collision_parent_count = 0
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    prim_path = str(prim.GetPath())
+                    if prim_path.startswith(config.robot.articulation_root):
+                        continue
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    if not is_leaf_collision_prim(
+                        prim,
+                        collision_api=UsdPhysics.CollisionAPI,
+                        prim_range=Usd.PrimRange,
+                    ):
+                        aggregate_collision_parent_count += 1
+                        continue
+                    bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                    lower, upper = bounds.GetMin(), bounds.GetMax()
+                    if float(upper[2]) - float(lower[2]) <= 0.12:
+                        continue
+                    static_bounds_xy.append((
+                        float(lower[0]), float(lower[1]),
+                        float(upper[0]), float(upper[1]),
+                    ))
+                start_position, start_orientation = robot.get_world_pose()
+                start_yaw = math.atan2(
+                    2.0 * (
+                        start_orientation[0] * start_orientation[3]
+                        + start_orientation[1] * start_orientation[2]
+                    ),
+                    1.0 - 2.0 * (
+                        start_orientation[2] ** 2
+                        + start_orientation[3] ** 2
+                    ),
+                )
+                clearance_by_segment = {
+                    segment.segment_id: minimum_xy_clearance(
+                        start_xy=(
+                            float(start_position[0]),
+                            float(start_position[1]),
+                        ),
+                        yaw_rad=start_yaw,
+                        segment=segment,
+                        obstacle_bounds_xy=static_bounds_xy,
+                    )
+                    for segment in SegmentedFreeSpaceScript.segments
+                }
+                trace_manifest = {
+                    "environment_source_asset": str(
+                        config.environment.source_asset
+                    ),
+                    "environment_project_stage": str(
+                        config.environment.project_stage
+                    ),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(
+                        config.spawn.poses_file.read_bytes()
+                    ).hexdigest(),
+                    "config_sha256": hashlib.sha256(
+                        repr(config).encode("utf-8")
+                    ).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(
+                        config.files.robot.read_bytes()
+                    ).hexdigest(),
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "physics_dt_s": 1.0 / config.simulation.physics_hz,
+                    "render_dt_s": 1.0 / config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "camera_enabled": False,
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "seed": "stage2_2_r2c1_frozen_seed",
+                    "reset_random_seed": dynamic_scenario.seed,
+                    "dedicated_delivery_executor": True,
+                    "delivery_recorder_mode": "dedicated",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "static_collision_bound_count": len(static_bounds_xy),
+                    "aggregate_collision_parent_excluded_count": (
+                        aggregate_collision_parent_count
+                    ),
+                    "swept_clearance_m": clearance_by_segment,
+                    "probe_segments": [
+                        segment.segment_id
+                        for segment in SegmentedFreeSpaceScript.segments
+                    ],
+                }
+            else:
+                from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                    yaw_from_wxyz,
+                )
+                from isaac_sim.src.diagnostics.r2c2_free_space_envelope import (
+                    Bounds3D,
+                    Collider,
+                    SUPPORT_HEIGHT_VARIATION_M,
+                    assess_envelope,
+                )
+                from isaac_sim.src.diagnostics.r2c2a_invisible_collision_bounds import (
+                    load_collision_bounds_config,
+                    resolve_collision_bounds,
+                )
+                from isaac_sim.src.diagnostics.r2c3_free_space_motion import (
+                    FROZEN_SEED,
+                    SCHEMA as R2C3_SCHEMA,
+                    evaluate_envelope_preflight,
+                )
+                from isaac_sim.src.diagnostics.r2d2_live_pose_delta import (
+                    FROZEN_SEED as R2D2_FROZEN_SEED,
+                    SCHEMA as R2D2_SCHEMA,
+                )
+                from isaac_sim.src.yaml_utils import load_mapping
+
+                selected_collision_bounds_path = (
+                    r2d2_collision_bounds_config_path
+                    if r2d2_mode
+                    else r2c3_collision_bounds_config_path
+                )
+                if selected_collision_bounds_path is None:
+                    raise RuntimeError("R2C3/R2D2 requires a collision-bounds configuration")
+                bounds_config = load_collision_bounds_config(selected_collision_bounds_path)
+                if (
+                    bounds_config.source_asset_name
+                    != config.environment.source_asset.name
+                ):
+                    raise RuntimeError(
+                        "R2C3 collision-bounds configuration does not match "
+                        "the source USD"
+                    )
+                robot_geometry = load_mapping(config.files.robot)
+                footprint = robot_geometry.get("footprint")
+                wheel_radius = robot_geometry.get("wheel_radius")
+                if (
+                    not isinstance(footprint, list)
+                    or not isinstance(wheel_radius, (int, float))
+                ):
+                    raise RuntimeError(
+                        "R2C3 requires robot footprint and wheel_radius"
+                    )
+                footprint_points = [
+                    [float(value) for value in point] for point in footprint
+                ]
+                purposes = [
+                    UsdGeom.Tokens.default_,
+                    UsdGeom.Tokens.render,
+                    UsdGeom.Tokens.proxy,
+                    UsdGeom.Tokens.guide,
+                ]
+                normal_bbox_cache = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), purposes, False, False
+                )
+                invisible_bbox_cache = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(), purposes, False, True
+                )
+
+                def r2c3_bounds_for(cache, prim) -> Bounds3D:
+                    bounds = cache.ComputeWorldBound(
+                        prim
+                    ).ComputeAlignedRange()
+                    lower, upper = bounds.GetMin(), bounds.GetMax()
+                    return Bounds3D(
+                        float(lower[0]),
+                        float(lower[1]),
+                        float(lower[2]),
+                        float(upper[0]),
+                        float(upper[1]),
+                        float(upper[2]),
+                    )
+
+                def r2c3_collision_enabled(prim) -> bool:
+                    attribute = UsdPhysics.CollisionAPI(
+                        prim
+                    ).GetCollisionEnabledAttr()
+                    value = attribute.Get() if attribute.IsValid() else True
+                    return bool(True if value is None else value)
+
+                def r2c3_finite_transform(prim) -> bool:
+                    matrix = UsdGeom.Xformable(
+                        prim
+                    ).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                    return all(
+                        math.isfinite(float(value))
+                        for row in matrix
+                        for value in row
+                    )
+
+                def r2c3_descendant_facts(
+                    prim,
+                ) -> tuple[tuple[str, ...], tuple[str, ...], bool, str]:
+                    gprims: list[str] = []
+                    nested_collisions: list[str] = []
+                    visibility: list[str] = []
+                    finite = True
+                    for descendant in Usd.PrimRange(prim):
+                        if descendant == prim:
+                            continue
+                        if descendant.HasAPI(UsdPhysics.CollisionAPI):
+                            nested_collisions.append(
+                                str(descendant.GetPath())
+                            )
+                        if descendant.IsActive() and descendant.IsA(
+                            UsdGeom.Gprim
+                        ):
+                            gprims.append(str(descendant.GetPath()))
+                            imageable = UsdGeom.Imageable(descendant)
+                            visibility.append(
+                                str(
+                                    imageable.ComputeVisibility(
+                                        Usd.TimeCode.Default()
+                                    )
+                                )
+                            )
+                            finite = (
+                                finite
+                                and r2c3_bounds_for(
+                                    invisible_bbox_cache, descendant
+                                ).finite()
+                                and r2c3_finite_transform(descendant)
+                            )
+                    effective_visibility = (
+                        ",".join(sorted(set(visibility)))
+                        if visibility
+                        else "none"
+                    )
+                    return (
+                        tuple(gprims),
+                        tuple(nested_collisions),
+                        finite,
+                        effective_visibility,
+                    )
+
+                r2c3_colliders: list[Collider] = []
+                r2c3_metadata: dict[str, dict[str, object]] = {}
+                source_leaf_count = 0
+                aggregate_count = 0
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    path = str(prim.GetPath())
+                    aggregate = not is_leaf_collision_prim(
+                        prim,
+                        collision_api=UsdPhysics.CollisionAPI,
+                        prim_range=Usd.PrimRange,
+                    )
+                    if path.startswith(config.robot.articulation_root):
+                        continue
+                    if aggregate:
+                        aggregate_count += 1
+                        bounds = r2c3_bounds_for(normal_bbox_cache, prim)
+                        r2c3_colliders.append(
+                            Collider(
+                                path,
+                                bounds,
+                                r2c3_collision_enabled(prim),
+                                aggregate=True,
+                            )
+                        )
+                        r2c3_metadata[path] = {
+                            "bounds_source": "AGGREGATE_EXCLUDED",
+                            "source_gprim_paths": [],
+                            "effective_visibility": "not_applicable",
+                            "fallback_reason": (
+                                "AGGREGATE_COLLISION_PARENT"
+                            ),
+                            "collision_schema_noncanonical": (
+                                not prim.IsA(UsdGeom.Gprim)
+                            ),
+                            "fallback_bounds_source_delta_m": None,
+                        }
+                        continue
+                    if path.startswith("/Root/"):
+                        source_leaf_count += 1
+                    (
+                        gprims,
+                        nested_collisions,
+                        descendants_finite,
+                        effective_visibility,
+                    ) = r2c3_descendant_facts(prim)
+                    resolution = resolve_collision_bounds(
+                        path=path,
+                        primary_bounds=r2c3_bounds_for(
+                            normal_bbox_cache, prim
+                        ),
+                        fallback_bounds=r2c3_bounds_for(
+                            invisible_bbox_cache, prim
+                        ),
+                        collision_enabled=r2c3_collision_enabled(prim),
+                        is_leaf_collision=True,
+                        active_gprim_paths=gprims,
+                        descendant_collision_paths=nested_collisions,
+                        descendants_finite=descendants_finite,
+                        effective_visibility=effective_visibility,
+                        collision_schema_noncanonical=(
+                            not prim.IsA(UsdGeom.Gprim)
+                        ),
+                        config=bounds_config,
+                    )
+                    fields = resolution.trace_fields()
+                    if (
+                        resolution.bounds_source
+                        == "INVISIBLE_COLLISION_SUBTREE_FALLBACK"
+                    ):
+                        source_bounds = r2c3_bounds_for(
+                            invisible_bbox_cache,
+                            stage.GetPrimAtPath(gprims[0]),
+                        )
+                        source_delta = (
+                            max(
+                                abs(left - right)
+                                for left, right in zip(
+                                    (
+                                        resolution.bounds.min_x,
+                                        resolution.bounds.min_y,
+                                        resolution.bounds.min_z,
+                                        resolution.bounds.max_x,
+                                        resolution.bounds.max_y,
+                                        resolution.bounds.max_z,
+                                    ),
+                                    (
+                                        source_bounds.min_x,
+                                        source_bounds.min_y,
+                                        source_bounds.min_z,
+                                        source_bounds.max_x,
+                                        source_bounds.max_y,
+                                        source_bounds.max_z,
+                                    ),
+                                )
+                            )
+                            if source_bounds.finite()
+                            else math.inf
+                        )
+                        fields[
+                            "fallback_bounds_source_delta_m"
+                        ] = source_delta
+                    else:
+                        fields["fallback_bounds_source_delta_m"] = None
+                    r2c3_colliders.append(
+                        Collider(
+                            path,
+                            resolution.bounds,
+                            r2c3_collision_enabled(prim),
+                        )
+                    )
+                    r2c3_metadata[path] = fields
+
+                frozen_fallback_paths = tuple(
+                    item.collision_prim for item in bounds_config.fallbacks
+                )
+                clearance_by_segment = {
+                    segment.segment_id: math.nan
+                    for segment in SegmentedFreeSpaceScript.segments
+                }
+                trace_path = (
+                    r2d2_live_pose_delta_trace_path
+                    if r2d2_mode
+                    else r2c3_free_space_motion_trace_path
+                )
+                trace_schema = R2D2_SCHEMA if r2d2_mode else R2C3_SCHEMA
+                trace_manifest = {
+                    "environment_source_asset": str(
+                        config.environment.source_asset
+                    ),
+                    "environment_source_sha256": hashlib.sha256(
+                        config.environment.source_asset.read_bytes()
+                    ).hexdigest(),
+                    "environment_project_stage": str(
+                        config.environment.project_stage
+                    ),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(
+                        config.spawn.poses_file.read_bytes()
+                    ).hexdigest(),
+                    "config_sha256": hashlib.sha256(
+                        repr(config).encode("utf-8")
+                    ).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(
+                        config.files.robot.read_bytes()
+                    ).hexdigest(),
+                    "collision_bounds_config_path": str(selected_collision_bounds_path),
+                    "collision_bounds_config_sha256": hashlib.sha256(
+                        selected_collision_bounds_path.read_bytes()
+                    ).hexdigest(),
+                    "collision_bounds_config_schema": (
+                        "bio_nav_stage2_2_r2c2a_collision_bounds_config_v1"
+                    ),
+                    "fallback_mappings": [
+                        {
+                            "collision_prim": item.collision_prim,
+                            "source_gprim": item.source_gprim,
+                        }
+                        for item in bounds_config.fallbacks
+                    ],
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "physics_dt_s": 1.0 / config.simulation.physics_hz,
+                    "render_dt_s": 1.0 / config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "module2_shadow_expected": bool(r2d2_mode),
+                    "camera_enabled": bool(r2d2_mode),
+                    "camera_profile": (
+                        camera_selection.profile.name if r2d2_mode else "off"
+                    ),
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "seed": R2D2_FROZEN_SEED if r2d2_mode else FROZEN_SEED,
+                    "r2d2_mode": bool(r2d2_mode),
+                    "reset_random_seed": dynamic_scenario.seed,
+                    "dedicated_delivery_executor": True,
+                    "delivery_recorder_mode": "dedicated",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "support_height_variation_m": (
+                        SUPPORT_HEIGHT_VARIATION_M
+                    ),
+                    "wheel_radius_m": float(wheel_radius),
+                    "footprint": footprint_points,
+                    "source_leaf_collision_count": source_leaf_count,
+                    "aggregate_collision_parent_excluded_count": (
+                        aggregate_count
+                    ),
+                    "probe_segments": [
+                        segment.segment_id
+                        for segment in SegmentedFreeSpaceScript.segments
+                    ],
+                }
+                for collider in r2c3_colliders:
+                    collider_trace_rows.append({
+                        "kind": "collider_bounds",
+                        "path": collider.path,
+                        "bounds": collider.bounds.as_dict(),
+                        "enabled": collider.enabled,
+                        "aggregate": collider.aggregate,
+                        **r2c3_metadata[collider.path],
+                    })
+
+                def capture_r2c3_preflight(
+                    segment_id: str,
+                ):
+                    position, orientation = robot.get_world_pose()
+                    yaw = yaw_from_wxyz(
+                        tuple(float(item) for item in orientation)
+                    )
+                    current_cache = UsdGeom.BBoxCache(
+                        Usd.TimeCode.Default(), purposes, False, False
+                    )
+                    robot_bounds: list[Bounds3D] = []
+                    for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                        if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                            continue
+                        path = str(prim.GetPath())
+                        if not path.startswith(
+                            config.robot.articulation_root
+                        ):
+                            continue
+                        if is_leaf_collision_prim(
+                            prim,
+                            collision_api=UsdPhysics.CollisionAPI,
+                            prim_range=Usd.PrimRange,
+                        ):
+                            robot_bounds.append(
+                                r2c3_bounds_for(current_cache, prim)
+                            )
+                    if (
+                        not robot_bounds
+                        or not all(item.finite() for item in robot_bounds)
+                    ):
+                        raise RuntimeError(
+                            "R2C3 robot collision envelope is unavailable"
+                        )
+                    robot_envelope = Bounds3D(
+                        min(item.min_x for item in robot_bounds),
+                        min(item.min_y for item in robot_bounds),
+                        min(item.min_z for item in robot_bounds),
+                        max(item.max_x for item in robot_bounds),
+                        max(item.max_y for item in robot_bounds),
+                        max(item.max_z for item in robot_bounds),
+                    )
+                    support_plane_z = (
+                        float(position[2]) - float(wheel_radius)
+                    )
+                    classified, assessments = assess_envelope(
+                        footprint=footprint_points,
+                        start_x=float(position[0]),
+                        start_y=float(position[1]),
+                        start_yaw=yaw,
+                        support_plane_z=support_plane_z,
+                        robot_max_z=robot_envelope.max_z,
+                        colliders=r2c3_colliders,
+                    )
+                    for item in classified:
+                        item.update(r2c3_metadata[item["path"]])
+                    assessment = next(
+                        item
+                        for item in assessments
+                        if item.segment_id == segment_id
+                    )
+                    preflight = evaluate_envelope_preflight(
+                        assessment=assessment,
+                        classified_colliders=classified,
+                        frozen_fallback_paths=frozen_fallback_paths,
+                    )
+                    classification_sha256 = hashlib.sha256(
+                        json.dumps(
+                            classified,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    return (
+                        preflight,
+                        robot_envelope,
+                        support_plane_z,
+                        [float(item) for item in position],
+                        yaw,
+                        classification_sha256,
+                    )
+
+                r2c3_preflight = capture_r2c3_preflight
+
+            if trace_path is None:
+                raise RuntimeError("free-space diagnostic trace path missing")
+            r2c1_trace = R2C1Trace(
+                trace_path,
+                manifest=trace_manifest,
+                **({} if trace_schema is None else {"schema": trace_schema}),
+            )
+            for row in collider_trace_rows:
+                r2c1_trace.write(row)
+            r2c1_script = SegmentedFreeSpaceScript()
+            r2c1_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            # R2D2 runs without a SLAM/AMCL scan publisher.  Its diagnostic
+            # therefore publishes the same calibrated Module3 map pose that a
+            # localization reset would publish, after each reset completes.
+            # This is an R2D2-only seed for the Shadow Bridge, never a Nav2
+            # localization correction or control input.
+            r2d2_initialpose_publisher = (
+                node.create_publisher(PoseWithCovarianceStamped, "/initialpose", 10)
+                if r2d2_mode
+                else None
+            )
+            r2c1_state = {
+                "segment_index": -1,
+                "segment_started_at": None,
+                "pending_reset": None,
+                "reset_epoch": 0,
+                "active": False,
+                "clearance_by_segment": clearance_by_segment,
+                "last_trigger": None,
+                "observer_loop_sequence": -1,
+                "r2c3_mode": r2c3_mode,
+                "r2d2_mode": r2d2_mode,
+                "armed": not r2d2_mode,
+                "preflight": r2c3_preflight,
+                "preflight_done": not r2c3_mode,
+            }
+            if r2d2_mode:
+                from std_srvs.srv import Trigger
+                from isaac_sim.src.diagnostics.r2d2_live_pose_delta import ARM_SERVICE
+
+                def arm_r2d2(_request, response):
+                    if bool(r2c1_state["armed"]):
+                        response.success = False
+                        response.message = "R2D2 diagnostic is already armed"
+                        return response
+                    r2c1_state["armed"] = True
+                    r2c1_trace.write({
+                        "kind": "armed",
+                        "reset_epoch": int(r2c1_state["reset_epoch"]),
+                        "service": ARM_SERVICE,
+                    })
+                    response.success = True
+                    response.message = "R2D2 live Shadow diagnostic armed"
+                    return response
+
+                node.create_service(Trigger, ARM_SERVICE, arm_r2d2)
+            # A dedicated diagnostic node/executor prevents the main loop's
+            # non-blocking spin from becoming a sampling/receipt bottleneck.
+            r2c1_observer_node = Node(
+                (
+                    "isaac_r2d2_odom_observer"
+                    if r2d2_mode
+                    else "isaac_r2c3_odom_observer"
+                    if r2c3_mode
+                    else "isaac_r2c1_odom_observer"
+                ),
+                namespace=config.ros2.namespace,
+                parameter_overrides=[Parameter("use_sim_time", value=True)],
+                automatically_declare_parameters_from_overrides=True,
+            )
+            r2c1_observer_executor = SingleThreadedExecutor()
+            r2c1_observer_executor.add_node(r2c1_observer_node)
+            r2c1_observer_node.create_subscription(
+                Odometry, "/odom",
+                lambda message: r2c1_trace.record_odom(
+                    message,
+                    arrival_loop_sequence=int(r2c1_state["observer_loop_sequence"]),
+                ), 100,
+            )
+            if r2d2_mode:
+                from sensor_msgs.msg import CameraInfo, Image
+                from rclpy.qos import qos_profile_sensor_data
+
+                def r2d2_camera_receipt(message, kind: str) -> None:
+                    stamp = message.header.stamp
+                    r2c1_trace.write({
+                        "kind": kind,
+                        "reset_epoch": int(r2c1_state["reset_epoch"]),
+                        "stamp_ns": int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+                        "width": int(getattr(message, "width", 0)),
+                        "height": int(getattr(message, "height", 0)),
+                    })
+
+                r2c1_observer_node.create_subscription(
+                    Image, "/camera/front/image_raw",
+                    lambda message: r2d2_camera_receipt(message, "camera_receive"),
+                    qos_profile_sensor_data,
+                )
+                r2c1_observer_node.create_subscription(
+                    CameraInfo, "/camera/front/camera_info",
+                    lambda message: r2d2_camera_receipt(message, "camera_info_receive"),
+                    qos_profile_sensor_data,
+                )
+            r2c1_observer_node.create_subscription(
+                TFMessage, "/tf",
+                lambda message: r2c1_trace.record_tf(
+                    message,
+                    arrival_loop_sequence=int(r2c1_state["observer_loop_sequence"]),
+                ), 100,
+            )
+            r2c1_observer_node.create_subscription(
+                Bool, "/simulation/collision",
+                lambda message: r2c1_trace.record_collision(
+                    message, reset_epoch=int(r2c1_state["reset_epoch"])
+                ), 100,
+            )
+            import threading
+            r2c1_observer_thread = threading.Thread(
+                target=r2c1_observer_executor.spin,
+                name=(
+                    "r2d2-odom-observer"
+                    if r2d2_mode
+                    else "r2c3-odom-observer"
+                    if r2c3_mode
+                    else "r2c1-odom-observer"
+                ),
+                daemon=True,
+            )
+            r2c1_observer_thread.start()
 
         from isaac_sim.src.bridge.reset_service import ResetServiceBridge
         from isaac_sim.src.ground_truth.recorder import GroundTruthRecorder
@@ -632,6 +1474,7 @@ def run(
             graph_references["control"] = build_control_graph(config)
 
         def reset_odometry(mode: str) -> None:
+            nonlocal odom_graph_epoch
             if mode != config.simulation.odometry_mode:
                 raise RuntimeError(
                     f"reset requested odometry={mode}, running mode={config.simulation.odometry_mode}"
@@ -640,7 +1483,13 @@ def run(
             if mode == "ideal":
                 from isaac_sim.graphs.odometry_graph import build_odometry_graph
 
-                graph_references["odometry"] = build_odometry_graph(config)
+                previous = graph_references.get("odometry")
+                if previous is not None:
+                    previous.retire()
+                odom_graph_epoch += 1
+                graph_references["odometry"] = build_odometry_graph(
+                    config, epoch=odom_graph_epoch
+                )
 
         def reset_ground_truth_path() -> None:
             collision_monitor.reset()
@@ -676,6 +1525,335 @@ def run(
                 f"{startup_reset.errors}"
             )
 
+        r2c2_state: dict[str, object] | None = None
+        if r2c2_free_space_envelope_path is not None:
+            from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                is_leaf_collision_prim,
+                yaw_from_wxyz,
+            )
+            from isaac_sim.src.diagnostics.r2c2_free_space_envelope import (
+                Bounds3D,
+                Collider,
+                EnvelopeTrace,
+                REQUIRED_CLEARANCE_M,
+                SUPPORT_HEIGHT_VARIATION_M,
+                assess_envelope,
+            )
+            from isaac_sim.src.yaml_utils import load_mapping
+            from pxr import Usd, UsdGeom, UsdPhysics
+
+            robot_geometry = load_mapping(config.files.robot)
+            footprint = robot_geometry.get("footprint")
+            wheel_radius = robot_geometry.get("wheel_radius")
+            if not isinstance(footprint, list) or not isinstance(wheel_radius, (int, float)):
+                raise RuntimeError("R2C2 requires robot footprint and wheel_radius")
+            footprint_points = [[float(value) for value in point] for point in footprint]
+            r2c2_trace = EnvelopeTrace(
+                r2c2_free_space_envelope_path,
+                manifest={
+                    "environment_source_asset": str(config.environment.source_asset),
+                    "environment_project_stage": str(config.environment.project_stage),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(config.spawn.poses_file.read_bytes()).hexdigest(),
+                    "config_sha256": hashlib.sha256(repr(config).encode("utf-8")).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(config.files.robot.read_bytes()).hexdigest(),
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "camera_enabled": False,
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "support_height_variation_m": SUPPORT_HEIGHT_VARIATION_M,
+                    "wheel_radius_m": float(wheel_radius),
+                    "footprint": footprint_points,
+                },
+            )
+
+            def bounds_for(prim) -> Bounds3D:
+                # Jackal's replacement wheel colliders intentionally use the
+                # USD ``guide`` purpose.  A default-only BBoxCache silently
+                # drops them and makes the physical collision envelope appear
+                # absent.  R2C2 is an audit of collision geometry, so include
+                # every geometry purpose rather than only render/default data.
+                bounds = UsdGeom.BBoxCache(
+                    Usd.TimeCode.Default(),
+                    [
+                        UsdGeom.Tokens.default_,
+                        UsdGeom.Tokens.render,
+                        UsdGeom.Tokens.proxy,
+                        UsdGeom.Tokens.guide,
+                    ],
+                ).ComputeWorldBound(prim).ComputeAlignedRange()
+                lower, upper = bounds.GetMin(), bounds.GetMax()
+                return Bounds3D(
+                    float(lower[0]), float(lower[1]), float(lower[2]),
+                    float(upper[0]), float(upper[1]), float(upper[2]),
+                )
+
+            def collision_enabled(prim) -> bool:
+                attribute = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr()
+                value = attribute.Get() if attribute.IsValid() else True
+                return bool(True if value is None else value)
+
+            def capture_r2c2_envelope() -> None:
+                position, orientation = robot.get_world_pose()
+                yaw = yaw_from_wxyz(tuple(float(item) for item in orientation))
+                robot_bounds: list[Bounds3D] = []
+                colliders: list[Collider] = []
+                aggregate_paths: list[str] = []
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    path = str(prim.GetPath())
+                    aggregate = not is_leaf_collision_prim(
+                        prim, collision_api=UsdPhysics.CollisionAPI, prim_range=Usd.PrimRange
+                    )
+                    if path.startswith(config.robot.articulation_root):
+                        if not aggregate:
+                            robot_bounds.append(bounds_for(prim))
+                        continue
+                    if aggregate:
+                        aggregate_paths.append(path)
+                        colliders.append(Collider(path, bounds_for(prim), collision_enabled(prim), aggregate=True))
+                    else:
+                        colliders.append(Collider(path, bounds_for(prim), collision_enabled(prim)))
+                if not robot_bounds or not all(item.finite() for item in robot_bounds):
+                    raise RuntimeError("R2C2 robot collision envelope is unavailable")
+                robot_envelope = Bounds3D(
+                    min(item.min_x for item in robot_bounds), min(item.min_y for item in robot_bounds), min(item.min_z for item in robot_bounds),
+                    max(item.max_x for item in robot_bounds), max(item.max_y for item in robot_bounds), max(item.max_z for item in robot_bounds),
+                )
+                support_plane_z = float(position[2]) - float(wheel_radius)
+                classified, assessments = assess_envelope(
+                    footprint=footprint_points, start_x=float(position[0]), start_y=float(position[1]), start_yaw=yaw,
+                    support_plane_z=support_plane_z, robot_max_z=robot_envelope.max_z,
+                    colliders=colliders,
+                )
+                if any(item["classification"] in {"INVALID", "DISABLED"} for item in classified):
+                    receipt = "STATIC_COLLIDER_CLASSIFICATION_INVALID"
+                elif not all(item.support_coverage == 1.0 and item.support_height_variation_m <= SUPPORT_HEIGHT_VARIATION_M for item in assessments):
+                    receipt = "SUPPORT_SURFACE_CONTRACT_INVALID"
+                elif not all(item.minimum_clearance_m >= REQUIRED_CLEARANCE_M for item in assessments):
+                    receipt = "SWEEP_CLEARANCE_INSUFFICIENT"
+                else:
+                    receipt = "FREE_SPACE_ENVELOPE_VALID"
+                r2c2_trace.record(
+                    robot_envelope=robot_envelope, support_plane_z=support_plane_z,
+                    colliders=classified, assessments=assessments, receipt=receipt,
+                )
+                r2c2_trace.write({
+                    "schema": "bio_nav_stage2_2_r2c2_free_space_envelope_v1", "kind": "capture",
+                    "robot_position": [float(item) for item in position], "robot_yaw_rad": yaw,
+                    "aggregate_collision_paths": aggregate_paths,
+                })
+
+            r2c2_state = {"settle_until": None, "captured": False, "capture": capture_r2c2_envelope}
+
+        r2c2a_state: dict[str, object] | None = None
+        if r2c2a_free_space_envelope_path is not None:
+            if r2c2a_collision_bounds_config_path is None:
+                raise RuntimeError("R2C2A requires a collision-bounds configuration")
+            from isaac_sim.src.diagnostics.r2c1_free_space_probe import (
+                is_leaf_collision_prim,
+                yaw_from_wxyz,
+            )
+            from isaac_sim.src.diagnostics.r2c2_free_space_envelope import (
+                Bounds3D,
+                Collider,
+                EnvelopeTrace,
+                REQUIRED_CLEARANCE_M,
+                SUPPORT_HEIGHT_VARIATION_M,
+                assess_envelope,
+            )
+            from isaac_sim.src.diagnostics.r2c2a_invisible_collision_bounds import (
+                SCHEMA as R2C2A_SCHEMA,
+                load_collision_bounds_config,
+                resolve_collision_bounds,
+            )
+            from isaac_sim.src.yaml_utils import load_mapping
+            from pxr import Usd, UsdGeom, UsdPhysics
+
+            bounds_config = load_collision_bounds_config(r2c2a_collision_bounds_config_path)
+            if bounds_config.source_asset_name != config.environment.source_asset.name:
+                raise RuntimeError("R2C2A collision-bounds configuration does not match the source USD")
+            robot_geometry = load_mapping(config.files.robot)
+            footprint = robot_geometry.get("footprint")
+            wheel_radius = robot_geometry.get("wheel_radius")
+            if not isinstance(footprint, list) or not isinstance(wheel_radius, (int, float)):
+                raise RuntimeError("R2C2A requires robot footprint and wheel_radius")
+            footprint_points = [[float(value) for value in point] for point in footprint]
+            r2c2a_trace = EnvelopeTrace(
+                r2c2a_free_space_envelope_path,
+                schema=R2C2A_SCHEMA,
+                manifest={
+                    "environment_source_asset": str(config.environment.source_asset),
+                    "environment_project_stage": str(config.environment.project_stage),
+                    "spawn_pose_name": config.spawn.selected,
+                    "spawn_poses_sha256": hashlib.sha256(config.spawn.poses_file.read_bytes()).hexdigest(),
+                    "config_sha256": hashlib.sha256(repr(config).encode("utf-8")).hexdigest(),
+                    "robot_config_sha256": hashlib.sha256(config.files.robot.read_bytes()).hexdigest(),
+                    "collision_bounds_config_path": str(r2c2a_collision_bounds_config_path),
+                    "collision_bounds_config_sha256": hashlib.sha256(r2c2a_collision_bounds_config_path.read_bytes()).hexdigest(),
+                    "collision_bounds_config_schema": "bio_nav_stage2_2_r2c2a_collision_bounds_config_v1",
+                    "fallback_mappings": [
+                        {"collision_prim": item.collision_prim, "source_gprim": item.source_gprim}
+                        for item in bounds_config.fallbacks
+                    ],
+                    "physics_hz": config.simulation.physics_hz,
+                    "rendering_hz": config.simulation.rendering_hz,
+                    "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+                    "nav2_enabled": False,
+                    "module2_enabled": False,
+                    "camera_enabled": False,
+                    "scene": "kujiale",
+                    "spawn": "mapping_start",
+                    "appearance_profile": "baseline",
+                    "required_clearance_m": REQUIRED_CLEARANCE_M,
+                    "support_height_variation_m": SUPPORT_HEIGHT_VARIATION_M,
+                    "wheel_radius_m": float(wheel_radius),
+                    "footprint": footprint_points,
+                },
+            )
+            purposes = [
+                UsdGeom.Tokens.default_, UsdGeom.Tokens.render,
+                UsdGeom.Tokens.proxy, UsdGeom.Tokens.guide,
+            ]
+            normal_bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), purposes, False, False)
+            invisible_bbox_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), purposes, False, True)
+
+            def bounds_for(cache, prim) -> Bounds3D:
+                bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                lower, upper = bounds.GetMin(), bounds.GetMax()
+                return Bounds3D(
+                    float(lower[0]), float(lower[1]), float(lower[2]),
+                    float(upper[0]), float(upper[1]), float(upper[2]),
+                )
+
+            def collision_enabled(prim) -> bool:
+                attribute = UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr()
+                value = attribute.Get() if attribute.IsValid() else True
+                return bool(True if value is None else value)
+
+            def finite_transform(prim) -> bool:
+                matrix = UsdGeom.Xformable(prim).ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+                return all(math.isfinite(float(value)) for row in matrix for value in row)
+
+            def descendant_facts(prim) -> tuple[tuple[str, ...], tuple[str, ...], bool, str]:
+                gprims: list[str] = []
+                nested_collisions: list[str] = []
+                visibility: list[str] = []
+                finite = True
+                for descendant in Usd.PrimRange(prim):
+                    if descendant == prim:
+                        continue
+                    if descendant.HasAPI(UsdPhysics.CollisionAPI):
+                        nested_collisions.append(str(descendant.GetPath()))
+                    if descendant.IsActive() and descendant.IsA(UsdGeom.Gprim):
+                        gprims.append(str(descendant.GetPath()))
+                        imageable = UsdGeom.Imageable(descendant)
+                        visibility.append(str(imageable.ComputeVisibility(Usd.TimeCode.Default())))
+                        finite = finite and bounds_for(invisible_bbox_cache, descendant).finite() and finite_transform(descendant)
+                effective_visibility = ",".join(sorted(set(visibility))) if visibility else "none"
+                return tuple(gprims), tuple(nested_collisions), finite, effective_visibility
+
+            def capture_r2c2a_envelope() -> None:
+                position, orientation = robot.get_world_pose()
+                yaw = yaw_from_wxyz(tuple(float(item) for item in orientation))
+                robot_bounds: list[Bounds3D] = []
+                colliders: list[Collider] = []
+                metadata: dict[str, dict[str, object]] = {}
+                invalid_bounds = False
+                aggregate_paths: list[str] = []
+                source_leaf_count = 0
+                for prim in Usd.PrimRange(stage.GetPseudoRoot()):
+                    if not prim.HasAPI(UsdPhysics.CollisionAPI):
+                        continue
+                    path = str(prim.GetPath())
+                    aggregate = not is_leaf_collision_prim(
+                        prim, collision_api=UsdPhysics.CollisionAPI, prim_range=Usd.PrimRange
+                    )
+                    if path.startswith(config.robot.articulation_root):
+                        if not aggregate:
+                            robot_bounds.append(bounds_for(normal_bbox_cache, prim))
+                        continue
+                    if aggregate:
+                        aggregate_paths.append(path)
+                        colliders.append(Collider(path, bounds_for(normal_bbox_cache, prim), collision_enabled(prim), aggregate=True))
+                        metadata[path] = {
+                            "bounds_source": "AGGREGATE_EXCLUDED", "source_gprim_paths": [],
+                            "effective_visibility": "not_applicable", "fallback_reason": "AGGREGATE_COLLISION_PARENT",
+                            "collision_schema_noncanonical": not prim.IsA(UsdGeom.Gprim),
+                        }
+                        continue
+                    if path.startswith("/Root/"):
+                        source_leaf_count += 1
+                    gprims, nested_collisions, descendants_finite, effective_visibility = descendant_facts(prim)
+                    resolution = resolve_collision_bounds(
+                        path=path, primary_bounds=bounds_for(normal_bbox_cache, prim),
+                        fallback_bounds=bounds_for(invisible_bbox_cache, prim),
+                        collision_enabled=collision_enabled(prim), is_leaf_collision=True,
+                        active_gprim_paths=gprims, descendant_collision_paths=nested_collisions,
+                        descendants_finite=descendants_finite, effective_visibility=effective_visibility,
+                        collision_schema_noncanonical=not prim.IsA(UsdGeom.Gprim), config=bounds_config,
+                    )
+                    fields = resolution.trace_fields()
+                    if resolution.bounds_source == "INVISIBLE_COLLISION_SUBTREE_FALLBACK":
+                        source_bounds = bounds_for(invisible_bbox_cache, stage.GetPrimAtPath(gprims[0]))
+                        source_delta = max(
+                            abs(left - right)
+                            for left, right in zip(
+                                (resolution.bounds.min_x, resolution.bounds.min_y, resolution.bounds.min_z, resolution.bounds.max_x, resolution.bounds.max_y, resolution.bounds.max_z),
+                                (source_bounds.min_x, source_bounds.min_y, source_bounds.min_z, source_bounds.max_x, source_bounds.max_y, source_bounds.max_z),
+                            )
+                        ) if source_bounds.finite() else math.inf
+                        fields["fallback_bounds_source_delta_m"] = source_delta
+                        invalid_bounds = invalid_bounds or not math.isfinite(source_delta) or source_delta > 1.0e-6
+                    else:
+                        fields["fallback_bounds_source_delta_m"] = None
+                    invalid_bounds = invalid_bounds or not resolution.valid
+                    colliders.append(Collider(path, resolution.bounds, collision_enabled(prim)))
+                    metadata[path] = fields
+                if not robot_bounds or not all(item.finite() for item in robot_bounds):
+                    raise RuntimeError("R2C2A robot collision envelope is unavailable")
+                robot_envelope = Bounds3D(
+                    min(item.min_x for item in robot_bounds), min(item.min_y for item in robot_bounds), min(item.min_z for item in robot_bounds),
+                    max(item.max_x for item in robot_bounds), max(item.max_y for item in robot_bounds), max(item.max_z for item in robot_bounds),
+                )
+                support_plane_z = float(position[2]) - float(wheel_radius)
+                classified, assessments = assess_envelope(
+                    footprint=footprint_points, start_x=float(position[0]), start_y=float(position[1]), start_yaw=yaw,
+                    support_plane_z=support_plane_z, robot_max_z=robot_envelope.max_z, colliders=colliders,
+                )
+                for item in classified:
+                    item.update(metadata[item["path"]])
+                if invalid_bounds:
+                    receipt = "COLLISION_BOUNDS_FALLBACK_INVALID"
+                elif any(item["classification"] in {"INVALID", "DISABLED"} for item in classified):
+                    receipt = "STATIC_COLLIDER_CLASSIFICATION_INVALID"
+                elif not all(item.support_coverage == 1.0 and item.support_height_variation_m <= SUPPORT_HEIGHT_VARIATION_M for item in assessments):
+                    receipt = "SUPPORT_SURFACE_CONTRACT_INVALID"
+                elif not all(item.minimum_clearance_m >= REQUIRED_CLEARANCE_M for item in assessments):
+                    receipt = "SWEEP_CLEARANCE_INSUFFICIENT"
+                else:
+                    receipt = "FREE_SPACE_ENVELOPE_VALID"
+                r2c2a_trace.record(
+                    robot_envelope=robot_envelope, support_plane_z=support_plane_z,
+                    colliders=classified, assessments=assessments, receipt=receipt,
+                )
+                r2c2a_trace.write({
+                    "schema": R2C2A_SCHEMA, "kind": "capture",
+                    "robot_position": [float(item) for item in position], "robot_yaw_rad": yaw,
+                    "aggregate_collision_paths": aggregate_paths, "source_leaf_collision_count": source_leaf_count,
+                    "fallback_collision_count": sum(1 for item in classified if item["bounds_source"] == "INVISIBLE_COLLISION_SUBTREE_FALLBACK"),
+                    "primary_collision_count": sum(1 for item in classified if item["bounds_source"] == "VISIBLE_WORLD_BBOX"),
+                })
+
+            r2c2a_state = {"settle_until": None, "captured": False, "capture": capture_r2c2a_envelope}
+
         max_frames = config.simulation.max_frames
         frame = 0
         node.get_logger().info(
@@ -694,6 +1872,62 @@ def run(
             f"max_frames={max_frames or 'unlimited'}"
         )
         while app.is_running() and (max_frames == 0 or frame < max_frames):
+            if r2c1_state is not None and r2c1_script is not None:
+                r2c1_state["observer_loop_sequence"] = frame
+                if (
+                    not bool(r2c1_state["active"])
+                    and r2c1_state["pending_reset"] is None
+                    and bool(r2c1_state["armed"])
+                    and int(r2c1_state["segment_index"]) + 1 < len(r2c1_script.segments)
+                ):
+                    segment_index = int(r2c1_state["segment_index"]) + 1
+                    segment = r2c1_script.segments[segment_index]
+                    if not bool(r2c1_state["r2c3_mode"]):
+                        clearance_m = float(
+                            r2c1_state["clearance_by_segment"][
+                                segment.segment_id
+                            ]
+                        )
+                        valid = clearance_m >= REQUIRED_CLEARANCE_M
+                        r2c1_trace.record_preflight(
+                            segment_index=segment_index,
+                            segment_id=segment.segment_id,
+                            clearance_m=clearance_m,
+                            valid=valid,
+                        )
+                        if not valid:
+                            raise RuntimeError(
+                                "R2C1 free-space preflight failed: "
+                                f"clearance={clearance_m:.3f}m < "
+                                f"{REQUIRED_CLEARANCE_M:.3f}m"
+                            )
+                    r2c1_state["segment_index"] = segment_index
+                    r2c1_state["reset_epoch"] = int(r2c1_state["reset_epoch"]) + 1
+                    transaction = reset_bridge.start_reset(
+                        ResetRequest(
+                            pose_name="mapping_start",
+                            navigation_mode=config.simulation.navigation_mode,
+                            odometry_mode=config.simulation.odometry_mode,
+                            random_seed=dynamic_scenario.seed,
+                        )
+                    )
+                    r2c1_state["pending_reset"] = transaction
+                    r2c1_trace.record_segment_reset(
+                        segment_index=segment_index,
+                        segment_id=segment.segment_id,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        simulation_time_s=float(SimulationManager.get_simulation_time()),
+                        status="started",
+                    )
+            if odom_phase_trace is not None:
+                odom_phase_trace.snapshot(
+                    phase="before_app_update",
+                    loop_sequence=frame,
+                    simulation_time=float(SimulationManager.get_simulation_time()),
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    command=None,
+                )
             app.update()
             rclpy.spin_once(node, timeout_sec=0.0)
             if startup_reset.finished and startup_reset.errors:
@@ -702,10 +1936,276 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
+            if r2c2_state is not None and startup_reset.finished:
+                if r2c2_state["settle_until"] is None:
+                    r2c2_state["settle_until"] = simulation_time + 2.0
+                elif not bool(r2c2_state["captured"]) and simulation_time >= float(r2c2_state["settle_until"]):
+                    capture = r2c2_state["capture"]
+                    if not callable(capture):
+                        raise RuntimeError("R2C2 envelope capture is unavailable")
+                    capture()
+                    r2c2_state["captured"] = True
+            if r2c2a_state is not None and startup_reset.finished:
+                if r2c2a_state["settle_until"] is None:
+                    r2c2a_state["settle_until"] = simulation_time + 2.0
+                elif not bool(r2c2a_state["captured"]) and simulation_time >= float(r2c2a_state["settle_until"]):
+                    capture = r2c2a_state["capture"]
+                    if not callable(capture):
+                        raise RuntimeError("R2C2A envelope capture is unavailable")
+                    capture()
+                    r2c2a_state["captured"] = True
+            r2c1_after_app_payload = None
+            if r2c1_state is not None and r2c1_script is not None:
+                pending = r2c1_state["pending_reset"]
+                if pending is not None and pending.finished:
+                    if pending.errors:
+                        raise RuntimeError(f"R2C1 segment reset failed: {pending.errors}")
+                    segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                    r2c1_state["pending_reset"] = None
+                    r2c1_state["segment_started_at"] = simulation_time
+                    r2c1_state["active"] = True
+                    r2c1_state["preflight_done"] = not bool(
+                        r2c1_state["r2c3_mode"]
+                    )
+                    if r2d2_initialpose_publisher is not None:
+                        initialpose = PoseWithCovarianceStamped()
+                        initialpose.header.stamp = node.get_clock().now().to_msg()
+                        initialpose.header.frame_id = "map"
+                        initialpose.pose.pose.position.x = float(selected_pose.map.position[0])
+                        initialpose.pose.pose.position.y = float(selected_pose.map.position[1])
+                        yaw = math.radians(float(selected_pose.map.yaw_deg))
+                        initialpose.pose.pose.orientation.z = math.sin(yaw * 0.5)
+                        initialpose.pose.pose.orientation.w = math.cos(yaw * 0.5)
+                        initialpose.pose.covariance[0] = float(selected_pose.map.position_stddev_m) ** 2
+                        initialpose.pose.covariance[7] = float(selected_pose.map.position_stddev_m) ** 2
+                        initialpose.pose.covariance[35] = math.radians(float(selected_pose.map.yaw_stddev_deg)) ** 2
+                        r2d2_initialpose_publisher.publish(initialpose)
+                        r2c1_trace.write({
+                            "kind": "r2d2_initialpose_published",
+                            "reset_epoch": int(r2c1_state["reset_epoch"]),
+                            "stamp_ns": int(initialpose.header.stamp.sec) * 1_000_000_000 + int(initialpose.header.stamp.nanosec),
+                            "frame_id": "map",
+                        })
+                    r2c1_trace.record_segment_reset(
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        simulation_time_s=simulation_time,
+                        status="complete",
+                    )
+                if bool(r2c1_state["active"]):
+                    segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                    elapsed = simulation_time - float(r2c1_state["segment_started_at"])
+                    _, _, segment_phase = r2c1_script.phase(elapsed, segment)
+                    r2c1_after_app_payload = r2c1_trace.snapshot(
+                        phase="after_app_update", loop_sequence=frame,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id, segment_phase=segment_phase,
+                        simulation_time_s=simulation_time, robot=robot,
+                        motion_assist=motion_assist,
+                    )
+                    previous = r2c1_state["last_trigger"]
+                    if previous is not None:
+                        r2c1_trace.record_realized_next(
+                            trigger_loop_sequence=int(previous["loop_sequence"]),
+                            reset_epoch=int(previous["reset_epoch"]),
+                            simulation_time_s=simulation_time,
+                            payload=r2c1_after_app_payload,
+                        )
+                        r2c1_state["last_trigger"] = None
+                    if (
+                        bool(r2c1_state["r2c3_mode"])
+                        and not bool(r2c1_state["preflight_done"])
+                        and elapsed >= r2c1_script.settle_s
+                    ):
+                        capture = r2c1_state["preflight"]
+                        if not callable(capture):
+                            raise RuntimeError(
+                                "R2C3 envelope preflight is unavailable"
+                            )
+                        (
+                            preflight,
+                            robot_envelope,
+                            support_plane_z,
+                            robot_position,
+                            robot_yaw,
+                            classification_sha256,
+                        ) = capture(segment.segment_id)
+                        r2c1_state["clearance_by_segment"][
+                            segment.segment_id
+                        ] = preflight.minimum_clearance_m
+                        r2c1_trace.write({
+                            "kind": "robot_envelope",
+                            "segment_index": int(
+                                r2c1_state["segment_index"]
+                            ),
+                            "segment_id": segment.segment_id,
+                            "reset_epoch": int(
+                                r2c1_state["reset_epoch"]
+                            ),
+                            "bounds": robot_envelope.as_dict(),
+                            "support_plane_z": support_plane_z,
+                            "robot_position": robot_position,
+                            "robot_yaw_rad": robot_yaw,
+                        })
+                        r2c1_trace.write({
+                            "kind": "segment_envelope_preflight",
+                            "segment_index": int(
+                                r2c1_state["segment_index"]
+                            ),
+                            "reset_epoch": int(
+                                r2c1_state["reset_epoch"]
+                            ),
+                            "classification_sha256": (
+                                classification_sha256
+                            ),
+                            **preflight.trace_fields(),
+                        })
+                        r2c1_trace.record_preflight(
+                            segment_index=int(
+                                r2c1_state["segment_index"]
+                            ),
+                            segment_id=segment.segment_id,
+                            clearance_m=preflight.minimum_clearance_m,
+                            valid=preflight.valid,
+                        )
+                        r2c1_state["preflight_done"] = True
+                        if not preflight.valid:
+                            raise RuntimeError(
+                                "R2C3 envelope preflight failed for "
+                                f"{segment.segment_id}: "
+                                f"coverage={preflight.support_coverage:.6f}, "
+                                "height_variation="
+                                f"{preflight.support_height_variation_m:.6f}m, "
+                                "clearance="
+                                f"{preflight.minimum_clearance_m:.6f}m, "
+                                "fallback_delta="
+                                f"{preflight.fallback_source_delta_max_m:.6g}m"
+                            )
+            command = None
+            if odom_phase_script is not None and odom_phase_publisher is not None:
+                command = odom_phase_script.command(simulation_time)
+                if command is not None:
+                    from geometry_msgs.msg import Twist
+
+                    message = Twist()
+                    message.linear.x = command[0]
+                    message.angular.z = command[1]
+                    odom_phase_publisher.publish(message)
+            if odom_phase_trace is not None:
+                odom_phase_trace.snapshot(
+                    phase="after_app_update",
+                    loop_sequence=frame,
+                    simulation_time=simulation_time,
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    command=command,
+                )
+            r2c1_segment_phase = None
+            if r2c1_state is not None and r2c1_script is not None and bool(r2c1_state["active"]):
+                segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                elapsed = simulation_time - float(r2c1_state["segment_started_at"])
+                linear_x, angular_z, r2c1_segment_phase = r2c1_script.phase(elapsed, segment)
+                if elapsed >= r2c1_script.segment_duration_s():
+                    r2c1_trace.record_segment_end(
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        clearance_m=float(r2c1_state["clearance_by_segment"][segment.segment_id]),
+                    )
+                    r2c1_state["active"] = False
+                    r2c1_segment_phase = None
+                elif r2c1_publisher is not None:
+                    from geometry_msgs.msg import Twist
+                    message = Twist()
+                    message.linear.x = linear_x
+                    message.angular.z = angular_z
+                    r2c1_publisher.publish(message)
             dynamic_manager.update(simulation_time, dynamic_robot_state())
             collision_monitor.update(simulation_time)
             if not idle_brake.update():
                 motion_assist.update()
+            if odom_phase_trace is not None:
+                odom_phase_trace.snapshot(
+                    phase="after_motion_assist_update",
+                    loop_sequence=frame,
+                    simulation_time=simulation_time,
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    command=command,
+                )
+            r2c1_post_assist_payload = None
+            if r2c1_state is not None and r2c1_script is not None and bool(r2c1_state["active"]):
+                segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                r2c1_post_assist_payload = r2c1_trace.snapshot(
+                    phase="after_motion_assist_update", loop_sequence=frame,
+                    reset_epoch=int(r2c1_state["reset_epoch"]),
+                    segment_index=int(r2c1_state["segment_index"]),
+                    segment_id=segment.segment_id,
+                    segment_phase=str(r2c1_segment_phase or "idle"),
+                    simulation_time_s=simulation_time, robot=robot,
+                    motion_assist=motion_assist,
+                )
+            odom_publish = None
+            should_publish_ideal_odom = (
+                config.simulation.odometry_mode == "ideal"
+                and r2c2_state is None
+                and r2c2a_state is None
+                and (r2c1_state is None or bool(r2c1_state["active"]))
+            )
+            if should_publish_ideal_odom:
+                ideal_odom = graph_references.get("odometry")
+                if ideal_odom is None:
+                    raise RuntimeError("ideal odometry graph is unavailable after motion assist")
+                if (
+                    r2c1_state is not None
+                    and r2c1_script is not None
+                    and bool(r2c1_state["r2c3_mode"])
+                ):
+                    segment = r2c1_script.segments[
+                        int(r2c1_state["segment_index"])
+                    ]
+                    r2c1_trace.register_trigger_context(
+                        simulation_time_s=simulation_time,
+                        loop_sequence=frame,
+                        reset_epoch=int(r2c1_state["reset_epoch"]),
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        segment_phase=str(r2c1_segment_phase or "idle"),
+                    )
+                odom_publish = ideal_odom.trigger(frame)
+                if odom_phase_trace is not None:
+                    odom_phase_trace.record_odom_trigger(
+                        odom_publish, simulation_time=simulation_time
+                    )
+                    # Drain now so normal probe rows carry the originating
+                    # trigger loop.  Header-stamp association stays active
+                    # for delayed DDS callbacks and fails closed if it differs.
+                    rclpy.spin_once(node, timeout_sec=0.0)
+                    odom_phase_trace.snapshot(
+                        phase="after_odom_trigger",
+                        loop_sequence=frame,
+                        simulation_time=simulation_time,
+                        robot=robot,
+                        motion_assist=motion_assist,
+                        command=command,
+                        odom_publish=odom_publish,
+                    )
+                if r2c1_state is not None and r2c1_script is not None:
+                    segment = r2c1_script.segments[int(r2c1_state["segment_index"])]
+                    r2c1_trace.record_trigger(
+                        odom_publish, simulation_time_s=simulation_time,
+                        loop_sequence=frame, reset_epoch=int(r2c1_state["reset_epoch"]),
+                        segment_index=int(r2c1_state["segment_index"]),
+                        segment_id=segment.segment_id,
+                        segment_phase=str(r2c1_segment_phase or "idle"),
+                        post_assist_payload=(r2c1_post_assist_payload or r2c1_after_app_payload or {}),
+                    )
+                    r2c1_state["last_trigger"] = {
+                        "loop_sequence": frame,
+                        "reset_epoch": int(r2c1_state["reset_epoch"]),
+                    }
             if ground_truth is not None:
                 ground_truth.update(simulation_time)
             if third_person_camera is not None:
@@ -719,6 +2219,19 @@ def run(
                     )
                     camera_binding_reported = True
             frame += 1
+            if r2c2_state is not None and bool(r2c2_state["captured"]):
+                break
+            if r2c2a_state is not None and bool(r2c2a_state["captured"]):
+                break
+            if (
+                r2c1_state is not None and r2c1_script is not None
+                and int(r2c1_state["segment_index"]) + 1 >= len(r2c1_script.segments)
+                and not bool(r2c1_state["active"])
+                and r2c1_state["pending_reset"] is None
+            ):
+                break
+            if odom_phase_script is not None and odom_phase_script.complete(simulation_time):
+                break
     except Exception:
         # Kit's fast-shutdown path terminates Python with os._exit().  Print
         # initialization/runtime failures before close() so their traceback and
@@ -727,6 +2240,24 @@ def run(
         traceback.print_exc()
         raise
     finally:
+        if r2c1_observer_executor is not None:
+            try:
+                r2c1_observer_executor.shutdown(timeout_sec=2.0)
+            except Exception as exc:
+                print(
+                    f"warning: failed to stop R2C1 observer executor cleanly: {exc}",
+                    file=sys.stderr,
+                )
+        if r2c1_observer_thread is not None:
+            r2c1_observer_thread.join(timeout=2.0)
+        if r2c1_observer_node is not None:
+            try:
+                r2c1_observer_node.destroy_node()
+            except Exception as exc:
+                print(
+                    f"warning: failed to destroy R2C1 observer node cleanly: {exc}",
+                    file=sys.stderr,
+                )
         if runtime is not None:
             try:
                 runtime.stop()
@@ -773,6 +2304,14 @@ def run(
                 )
         if node is not None:
             node.destroy_node()
+        if odom_phase_trace is not None:
+            odom_phase_trace.close()
+        if r2c1_trace is not None:
+            r2c1_trace.close()
+        if r2c2_trace is not None:
+            r2c2_trace.close()
+        if r2c2a_trace is not None:
+            r2c2a_trace.close()
         if rclpy_started:
             import rclpy
 
@@ -783,6 +2322,62 @@ def run(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    diagnostic_modes = [
+        args.odom_phase_trace is not None,
+        args.r2c1_free_space_trace is not None,
+        args.r2c2_free_space_envelope is not None,
+        args.r2c2a_free_space_envelope is not None,
+        args.r2c3_free_space_motion_trace is not None,
+        args.r2d2_live_pose_delta_trace is not None,
+    ]
+    if sum(diagnostic_modes) > 1:
+        raise ValueError(
+            "odom phase, R2C1, R2C2, R2C2A, R2C3 and R2D2 diagnostic modes "
+            "are mutually exclusive"
+        )
+    if args.r2c2a_collision_bounds_config is not None and args.r2c2a_free_space_envelope is None:
+        raise ValueError("--r2c2a-collision-bounds-config requires --r2c2a-free-space-envelope")
+    if args.r2c2a_free_space_envelope is not None:
+        if args.r2c2a_collision_bounds_config is None:
+            raise ValueError("R2C2A requires --r2c2a-collision-bounds-config")
+        if not args.r2c2a_collision_bounds_config.expanduser().resolve().is_file():
+            raise ValueError(f"R2C2A collision-bounds config not found: {args.r2c2a_collision_bounds_config}")
+    if (
+        args.r2c3_collision_bounds_config is not None
+        and args.r2c3_free_space_motion_trace is None
+    ):
+        raise ValueError(
+            "--r2c3-collision-bounds-config requires "
+            "--r2c3-free-space-motion-trace"
+        )
+    if args.r2c3_free_space_motion_trace is not None:
+        if args.r2c3_collision_bounds_config is None:
+            raise ValueError(
+                "R2C3 requires --r2c3-collision-bounds-config"
+            )
+        if not (
+            args.r2c3_collision_bounds_config.expanduser().resolve().is_file()
+        ):
+            raise ValueError(
+                "R2C3 collision-bounds config not found: "
+                f"{args.r2c3_collision_bounds_config}"
+            )
+    if (
+        args.r2d2_collision_bounds_config is not None
+        and args.r2d2_live_pose_delta_trace is None
+    ):
+        raise ValueError(
+            "--r2d2-collision-bounds-config requires "
+            "--r2d2-live-pose-delta-trace"
+        )
+    if args.r2d2_live_pose_delta_trace is not None:
+        if args.r2d2_collision_bounds_config is None:
+            raise ValueError("R2D2 requires --r2d2-collision-bounds-config")
+        if not args.r2d2_collision_bounds_config.expanduser().resolve().is_file():
+            raise ValueError(
+                "R2D2 collision-bounds config not found: "
+                f"{args.r2d2_collision_bounds_config}"
+            )
     _apply_cli_overrides(args)
     config = load_project_config(args.config)
     appearance_config = args.appearance_config.expanduser().resolve()
@@ -805,6 +2400,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         dynamic_scenario = replace(
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
         )
+    if (
+        args.r2c1_free_space_trace is not None
+        or args.r2c2_free_space_envelope is not None
+        or args.r2c2a_free_space_envelope is not None
+        or args.r2c3_free_space_motion_trace is not None
+        or args.r2d2_live_pose_delta_trace is not None
+    ):
+        if config.simulation.odometry_mode != "ideal":
+            raise ValueError("R2C diagnostic modes require --mode ideal")
+        if config.spawn.selected != "mapping_start":
+            raise ValueError("R2C diagnostic modes require --spawn-pose mapping_start")
+        if config.environment.source_asset.name != "kujiale_0026_A_to_B_door_open.usd":
+            raise ValueError("R2C diagnostic modes require the frozen Kujiale source USD")
+        if dynamic_scenario.enabled:
+            raise ValueError("R2C diagnostic modes require --no-dynamic-obstacles")
+        expected_camera_profile = (
+            "monitoring"
+            if args.r2d2_live_pose_delta_trace is not None
+            else "off"
+        )
+        if camera_selection.profile.name != expected_camera_profile:
+            raise ValueError(
+                "R2D2 requires --camera-profile monitoring"
+                if args.r2d2_live_pose_delta_trace is not None
+                else "R2C diagnostic modes require --camera-profile off"
+            )
+        if config.third_person_camera.enabled:
+            raise ValueError("R2C diagnostic modes require --no-third-person-camera")
+        if args.appearance_profile != "baseline":
+            raise ValueError("R2C diagnostic modes require --appearance-profile baseline")
     calibration = "calibrated" if selected_pose.map.calibrated else "uncalibrated"
     if args.validate_only:
         # This process exits immediately after validation, so importing pxr
@@ -841,6 +2466,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         camera_selection,
         appearance_profiles,
         args.appearance_profile,
+        None if args.odom_phase_trace is None else args.odom_phase_trace.expanduser().resolve(),
+        None if args.r2c1_free_space_trace is None else args.r2c1_free_space_trace.expanduser().resolve(),
+        None if args.r2c2_free_space_envelope is None else args.r2c2_free_space_envelope.expanduser().resolve(),
+        None if args.r2c2a_free_space_envelope is None else args.r2c2a_free_space_envelope.expanduser().resolve(),
+        None if args.r2c2a_collision_bounds_config is None else args.r2c2a_collision_bounds_config.expanduser().resolve(),
+        None if args.r2c3_free_space_motion_trace is None else args.r2c3_free_space_motion_trace.expanduser().resolve(),
+        None if args.r2c3_collision_bounds_config is None else args.r2c3_collision_bounds_config.expanduser().resolve(),
+        None if args.r2d2_live_pose_delta_trace is None else args.r2d2_live_pose_delta_trace.expanduser().resolve(),
+        None if args.r2d2_collision_bounds_config is None else args.r2d2_collision_bounds_config.expanduser().resolve(),
     )
     return 0
 

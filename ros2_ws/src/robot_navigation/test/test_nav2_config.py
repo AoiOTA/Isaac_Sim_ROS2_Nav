@@ -74,7 +74,9 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert global_voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
     assert global_voxel['camera_depth']['clearing'] is True
     assert global_voxel['camera_depth']['observation_persistence'] == 1.0
-    assert local['obstacle_layer']['scan']['topic'] == '/scan'
+    assert local['obstacle_layer']['scan']['topic'] == '/scan_safety'
+    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.05
+    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
     assert global_costmap['obstacle_layer']['scan']['topic'] == '/scan'
 
 
@@ -98,7 +100,7 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
     local = stable['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = stable['global_costmap']['global_costmap'][
         'ros__parameters']
-    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.40
+    assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.05
     assert local['obstacle_layer']['scan']['inf_is_valid'] is False
     assert global_costmap['obstacle_layer']['scan']['raytrace_min_range'] == 0.40
     assert global_costmap['obstacle_layer']['scan']['inf_is_valid'] is False
@@ -112,6 +114,7 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
 def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     dynamic = _profile('dynamic_avoidance')
     controller_server = dynamic['controller_server']['ros__parameters']
+    behavior_server = dynamic['behavior_server']['ros__parameters']
     controller = controller_server['FollowPath']
     local = dynamic['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
@@ -131,17 +134,25 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert controller['wz_max'] == 3.40
     assert controller['ax_max'] == 3.50
     assert controller['az_max'] == 6.50
-    assert controller['CostCritic']['cost_weight'] == 2.50
+    # G2 dynamic-safety repair: enlarge only the dynamic pre-contact cost
+    # envelope and its MPPI weight.  Hard collision handling remains in the
+    # shared base configuration.
+    assert controller['CostCritic']['cost_weight'] == 4.00
     assert controller['CostCritic']['near_collision_cost'] == 20
     assert controller['PathFollowCritic']['cost_weight'] == 14.0
+    # v25 confines costmap-ahead reverse checking to dynamic recovery.  The
+    # shared/static profile retains its validated zero-look-ahead behavior.
+    assert behavior_server['simulate_ahead_time'] == 1.0
+    assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
     assert local['update_frequency'] == 10.0
     assert local['publish_frequency'] == 5.0
     assert local['plugins'] == [
         'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
-    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.10
-    # Dynamic-only 0.60 m inflation preserves the >=0.10 m actor-clearance
-    # campaign gate without modifying actor geometry or trajectories.
-    assert local['inflation_layer']['inflation_radius'] == 0.60
+    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
+    # Dynamic-only 0.75 m inflation moves the soft response before the
+    # >=0.10 m actor-clearance boundary without modifying actor geometry or
+    # trajectories.
+    assert local['inflation_layer']['inflation_radius'] == 0.75
     base_local = _config()['local_costmap']['local_costmap']['ros__parameters']
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
     base_controller = _config()['controller_server']['ros__parameters']['FollowPath']
@@ -202,7 +213,10 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert navigator['default_server_timeout'] >= 500
     assert collision['cmd_vel_in_topic'] == '/cmd_vel_smoothed'
     assert collision['cmd_vel_out_topic'] == '/cmd_vel'
-    assert collision['observation_sources'] == ['scan']
+    assert collision['observation_sources'] == ['scan_safety']
+    assert collision['scan_safety']['topic'] == '/scan_safety'
+    assert collision['scan_safety']['type'] == 'scan'
+    assert collision['scan_safety']['enabled'] is True
     assert set(collision['polygons']) == {
         'StopZone', 'SlowdownZone', 'ApproachZone'}
 
@@ -278,9 +292,10 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     slowdown_x = [point[0] for point in slowdown]
     slowdown_y = [point[1] for point in slowdown]
 
-    # Emergency stop still encloses every physical corner with at least a
-    # 20 mm shell, while remaining narrow enough for indoor doorways.
-    assert max(stop_x) - max(physical_x) >= 0.019
+    # Emergency stop reserves at least 170 mm ahead for a 10 Hz scan interval
+    # plus actuation latency, while its narrow lateral shell remains suitable
+    # for indoor doorways.
+    assert max(stop_x) - max(physical_x) >= 0.17
     assert min(physical_x) - min(stop_x) >= 0.019
     assert max(stop_y) - max(physical_y) >= 0.019
     assert min(physical_y) - min(stop_y) >= 0.019
@@ -294,6 +309,7 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     # indoor corridor.  The slowdown shell remains outside the emergency stop
     # shell while retaining enough speed for stable MPPI path tracking.
     assert max(slowdown_y) == 0.232
+    assert max(slowdown_x) - max(stop_x) >= 0.10
     assert collision['SlowdownZone']['min_points'] == 6
     assert 0.85 <= collision['SlowdownZone']['slowdown_ratio'] <= 0.92
     assert collision['ApproachZone']['time_before_collision'] >= 1.0

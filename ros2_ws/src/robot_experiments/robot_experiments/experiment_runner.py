@@ -80,6 +80,73 @@ class CommandSample:
     stamp_s: float
 
 
+PREGOAL_AUTHORIZATION_RECEIPT = "R2C4_R2_PREGOAL_AUTHORIZED"
+
+
+def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
+    """Canonical, evidence-only identity for a fenced experiment route."""
+
+    return {
+        "scenario_id": str(scenario_id),
+        "run_index": int(run_index),
+        "seed": int(selection.seed),
+        "condition_id": str(selection.condition_id),
+        "appearance_profile_id": str(selection.appearance_profile_id or ""),
+        # The audited contract reserves this field for dynamic actor variants.
+        # Bind it from the scenario identity as well as the ordinary
+        # ``dynamic_*`` condition namespace: authorization-only conditions use
+        # a stage-prefixed name but still run the frozen dynamic actor contract.
+        # Static matrices may still use a local scenario variant such as v1,
+        # which is not a dynamic-runtime identity.
+        "dynamic_variant_id": (
+            str(selection.variant_id or "")
+            if (
+                str(selection.condition_id).startswith("dynamic_")
+                or str(scenario_id).endswith("_dynamic")
+            )
+            else ""
+        ),
+    }
+
+
+def validate_pregoal_authorization(
+    path: Path, *, scenario_id: str, run_index: int, selection: RunSelection,
+    expected_receipt: str = PREGOAL_AUTHORIZATION_RECEIPT,
+    expected_schema: str = "", expected_campaign: str = "",
+    expected_prereg_sha256: str = "",
+) -> dict[str, object]:
+    """Load an explicitly version-bound authorization without trusting a launcher flag."""
+
+    if not path.is_file():
+        raise ConfigurationError("pre-goal authorization receipt is missing")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigurationError("pre-goal authorization receipt is invalid") from exc
+    if not isinstance(value, dict):
+        raise ConfigurationError("pre-goal authorization receipt must be an object")
+    if value.get("pass") is not True or value.get("receipt") != expected_receipt:
+        raise ConfigurationError("pre-goal authorization receipt is not passing")
+    for key, expected in (("schema", expected_schema), ("campaign", expected_campaign), ("prereg_sha256", expected_prereg_sha256)):
+        if expected and value.get(key) != expected:
+            raise ConfigurationError(f"pre-goal authorization {key} mismatch")
+    identity = value.get("identity")
+    if identity != _pregoal_identity(scenario_id, run_index, selection):
+        raise ConfigurationError("pre-goal authorization identity mismatch")
+    completed_wall_ns = value.get("completed_wall_ns")
+    if not isinstance(completed_wall_ns, int) or completed_wall_ns <= 0:
+        raise ConfigurationError("pre-goal authorization completion timestamp is invalid")
+    return value
+
+
+def _boolean_parameter(value: object, name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+        return value.strip().lower() == "true"
+    raise ConfigurationError(f"{name} must be boolean")
+
+
 def _dynamic_interaction_acceptance(
     *,
     scenario_type: str,
@@ -229,10 +296,14 @@ class ExperimentRunner(Node):
         if self._scenario.appearance_config_file is not None and self._nav2_profile not in {
             "stable",
             "dynamic_avoidance",
+            "bio_nav_planning_only",
+            "bio_nav_risk_only",
+            "bio_nav_tiebreak_risk",
         }:
             raise ConfigurationError(
-                "appearance benchmark requires nav2_profile:=stable or "
-                "nav2_profile:=dynamic_avoidance"
+                "appearance benchmark requires stable, dynamic_avoidance, "
+                "bio_nav_planning_only, bio_nav_risk_only, or "
+                "bio_nav_tiebreak_risk"
             )
         robot_config = (
             Path(robot_override).expanduser().resolve()
@@ -313,34 +384,67 @@ class ExperimentRunner(Node):
             self._run_indices: tuple[int, ...] | None = indices
         else:
             self._run_indices = None
-        resume = self.declare_parameter("resume", False).value
-        if isinstance(resume, bool):
-            self._resume = resume
-        elif isinstance(resume, str) and resume.strip().lower() in {"true", "false"}:
-            self._resume = resume.strip().lower() == "true"
-        else:
-            raise ConfigurationError("resume must be boolean")
-        require_successful_resume = self.declare_parameter(
-            "require_successful_resume", False
-        ).value
-        if isinstance(require_successful_resume, bool):
-            self._require_successful_resume = require_successful_resume
-        elif (
-            isinstance(require_successful_resume, str)
-            and require_successful_resume.strip().lower() in {"true", "false"}
-        ):
-            self._require_successful_resume = (
-                require_successful_resume.strip().lower() == "true"
-            )
-        else:
-            raise ConfigurationError("require_successful_resume must be boolean")
-        record_evidence = self.declare_parameter("record_evidence", True).value
-        if isinstance(record_evidence, bool):
-            self._record_evidence = record_evidence
-        elif isinstance(record_evidence, str) and record_evidence.strip().lower() in {"true", "false"}:
-            self._record_evidence = record_evidence.strip().lower() == "true"
-        else:
-            raise ConfigurationError("record_evidence must be boolean")
+        self._resume = _boolean_parameter(
+            self.declare_parameter("resume", False).value, "resume"
+        )
+        self._require_successful_resume = _boolean_parameter(
+            self.declare_parameter("require_successful_resume", False).value,
+            "require_successful_resume",
+        )
+        self._record_evidence = _boolean_parameter(
+            self.declare_parameter("record_evidence", True).value,
+            "record_evidence",
+        )
+        self._require_pregoal_authorization = _boolean_parameter(
+            self.declare_parameter("require_pregoal_authorization", False).value,
+            "require_pregoal_authorization",
+        )
+        self._authorization_only = _boolean_parameter(
+            self.declare_parameter("authorization_only", False).value,
+            "authorization_only",
+        )
+        self._pregoal_expected_receipt = str(
+            self.declare_parameter("pregoal_expected_receipt", PREGOAL_AUTHORIZATION_RECEIPT).value
+        ).strip()
+        self._pregoal_expected_schema = str(
+            self.declare_parameter("pregoal_expected_schema", "").value
+        ).strip()
+        self._pregoal_expected_campaign = str(
+            self.declare_parameter("pregoal_expected_campaign", "").value
+        ).strip()
+        self._pregoal_expected_prereg_sha256 = str(
+            self.declare_parameter("pregoal_expected_prereg_sha256", "").value
+        ).strip()
+        authorization_path = str(
+            self.declare_parameter("pregoal_authorization_path", "").value
+        ).strip()
+        lifecycle_path = str(
+            self.declare_parameter("lifecycle_jsonl_path", "").value
+        ).strip()
+        self._pregoal_authorization_path = (
+            Path(authorization_path).expanduser().resolve()
+            if authorization_path
+            else None
+        )
+        self._lifecycle_jsonl_path = (
+            Path(lifecycle_path).expanduser().resolve() if lifecycle_path else None
+        )
+        self._pregoal_authorization_sha256: str | None = None
+        self._active_run_index: int | None = None
+        self._goal_dispatch_recorded = False
+        if self._require_pregoal_authorization:
+            if self._pregoal_authorization_path is None:
+                raise ConfigurationError("pre-goal authorization path is required")
+            if self._lifecycle_jsonl_path is None:
+                raise ConfigurationError("lifecycle JSONL path is required")
+            if self._lifecycle_jsonl_path.exists():
+                raise ConfigurationError("lifecycle JSONL must not reuse an existing file")
+            if self._run_indices is None or len(self._run_indices) != 1:
+                raise ConfigurationError("pre-goal authorization requires exactly one run index")
+            if not self._pregoal_expected_receipt:
+                raise ConfigurationError("pre-goal expected receipt is required")
+        elif self._authorization_only:
+            raise ConfigurationError("authorization_only requires pre-goal authorization")
         self._reset_service_name = str(
             self.declare_parameter("reset_service", "/simulation/reset").value
         )
@@ -496,6 +600,12 @@ class ExperimentRunner(Node):
         self._scan_subscription = self.create_subscription(
             LaserScan, "/scan", self._scan_callback, sensor_qos
         )
+        self._safety_scan_subscription = self.create_subscription(
+            LaserScan,
+            "/scan_safety",
+            self._safety_scan_callback,
+            sensor_qos,
+        )
         self._local_costmap_subscription = self.create_subscription(
             Costmap,
             "/local_costmap/costmap_raw",
@@ -613,8 +723,47 @@ class ExperimentRunner(Node):
         self._appearance_rgb_snapshot_complete = False
         self._depth_frame: dict[str, Any] | None = None
         self._scan_frame: dict[str, Any] | None = None
+        self._safety_scan_frame: dict[str, Any] | None = None
         self._local_costmap: Costmap | None = None
         self._global_costmap: Costmap | None = None
+        self._goal_dispatch_recorded = False
+
+    def _lifecycle_event(self, event: str) -> None:
+        """Append an immutable phase record for a topology-fenced run."""
+
+        if not self._require_pregoal_authorization:
+            return
+        if (
+            self._lifecycle_jsonl_path is None
+            or self._active_selection is None
+            or self._active_run_index is None
+        ):
+            raise ConfigurationError("lifecycle context is unavailable")
+        value = {
+            "event": str(event),
+            "wall_ns": time.time_ns(),
+            "monotonic_ns": time.monotonic_ns(),
+            "ros_stamp_s": self._clock_seconds(),
+            "identity": _pregoal_identity(
+                self._scenario.scenario_id,
+                self._active_run_index,
+                self._active_selection,
+            ),
+            "pregoal_authorization_sha256": self._pregoal_authorization_sha256,
+            # This records the value that the installed runner actually
+            # consumed.  A launcher argument alone is not sufficient
+            # evidence for authorization-only gates.
+            "nav2_profile": self._nav2_profile,
+            "authorization_only": self._authorization_only,
+        }
+        try:
+            self._lifecycle_jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lifecycle_jsonl_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(value, sort_keys=True) + "\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise ConfigurationError("lifecycle JSONL write failed") from exc
 
     def _clock_callback(self, message: Clock) -> None:
         if message.clock.sec != 0 or message.clock.nanosec != 0:
@@ -729,13 +878,21 @@ class ExperimentRunner(Node):
             "data": bytes(message.data),
         }
 
-    def _scan_callback(self, message: LaserScan) -> None:
-        self._scan_frame = {
+    @staticmethod
+    def _scan_value(message: LaserScan) -> dict[str, Any]:
+        return {
+            "frame_id": str(message.header.frame_id),
             "angle_min": float(message.angle_min), "angle_increment": float(message.angle_increment),
             "range_min": float(message.range_min), "range_max": float(message.range_max),
             "stamp_s": message.header.stamp.sec + message.header.stamp.nanosec * 1.0e-9,
             "ranges": [float(value) for value in message.ranges],
         }
+
+    def _scan_callback(self, message: LaserScan) -> None:
+        self._scan_frame = self._scan_value(message)
+
+    def _safety_scan_callback(self, message: LaserScan) -> None:
+        self._safety_scan_frame = self._scan_value(message)
 
     def _local_costmap_callback(self, message: Costmap) -> None:
         self._local_costmap = message
@@ -924,23 +1081,34 @@ class ExperimentRunner(Node):
         }
 
     def _verify_dynamic_runtime_contract(self) -> None:
-        if not self._isaac_parameter_client.wait_for_services(
-            timeout_sec=self._service_timeout_sec
-        ):
-            self._raise_if_shutdown()
-            raise RuntimeError("Isaac parameter services are unavailable")
         names = [
             "dynamic_obstacles_enabled",
             "dynamic_obstacles_config_sha256",
             "dynamic_obstacle_ids",
         ]
-        future = self._isaac_parameter_client.get_parameters(names)
-        deadline = time.monotonic() + self._service_timeout_sec
-        if not self._wait_future(future, deadline):
-            raise TimeoutError(
-                "reading the Isaac dynamic obstacle contract timed out"
-            )
-        response = future.result()
+        # Isaac may advertise its parameter services before the first request
+        # can be serviced after a cold simulation start.  Retry the read-only
+        # verification before any reset or goal is issued; this is not a
+        # navigation retry and preserves the pre-goal isolation boundary.
+        response = None
+        for attempt in range(3):
+            if self._isaac_parameter_client.wait_for_services(
+                timeout_sec=self._service_timeout_sec
+            ):
+                future = self._isaac_parameter_client.get_parameters(names)
+                if self._wait_future(
+                    future, time.monotonic() + self._service_timeout_sec
+                ):
+                    response = future.result()
+                    break
+            if attempt < 2:
+                self.get_logger().warning(
+                    "Isaac dynamic obstacle contract is not ready; retrying pre-goal verification"
+                )
+                self._spin_once(1.0)
+        if response is None:
+            self._raise_if_shutdown()
+            raise TimeoutError("reading the Isaac dynamic obstacle contract timed out")
         if response is None or len(response.values) != len(names):
             raise RuntimeError(
                 "Isaac returned an incomplete dynamic obstacle contract"
@@ -1117,19 +1285,27 @@ class ExperimentRunner(Node):
         the robot and publishing one zero velocity is not an isolation boundary:
         the old action can publish again on the next controller cycle.
         """
-        if not self._cancel_navigation_client.wait_for_service(
-            timeout_sec=self._service_timeout_sec
-        ):
+        response = None
+        for attempt in range(3):
+            if self._cancel_navigation_client.wait_for_service(
+                timeout_sec=self._service_timeout_sec
+            ):
+                request = CancelGoal.Request()
+                request.goal_info = GoalInfo()
+                future = self._cancel_navigation_client.call_async(request)
+                if self._wait_future(
+                    future, time.monotonic() + self._service_timeout_sec
+                ):
+                    response = future.result()
+                    break
+            if attempt < 2:
+                self.get_logger().warning(
+                    "NavigateToPose cancel service is not ready; retrying before reset"
+                )
+                self._spin_once(1.0)
+        if response is None:
             self._raise_if_shutdown()
-            raise RuntimeError("NavigateToPose cancel service is unavailable")
-        request = CancelGoal.Request()
-        request.goal_info = GoalInfo()
-        future = self._cancel_navigation_client.call_async(request)
-        if not self._wait_future(
-            future, time.monotonic() + self._service_timeout_sec
-        ):
             raise TimeoutError("cancelling stale NavigateToPose goals timed out")
-        response = future.result()
         accepted_codes = {
             CancelGoal.Response.ERROR_NONE,
             CancelGoal.Response.ERROR_REJECTED,
@@ -1317,6 +1493,7 @@ class ExperimentRunner(Node):
         self._cancel_stale_navigation_goal()
         self._clear_localization_buffer()
         self._set_reset_seed(seed, case_id, variant_id, appearance_profile_id)
+        self._lifecycle_event("reset_requested")
         if not self._reset_client.wait_for_service(timeout_sec=self._service_timeout_sec):
             self._raise_if_shutdown()
             raise RuntimeError(f"reset service unavailable: {self._reset_service_name}")
@@ -1328,6 +1505,7 @@ class ExperimentRunner(Node):
         if response is None or not response.success:
             message = "no response" if response is None else response.message
             raise RuntimeError(f"simulation reset failed: {message}")
+        self._lifecycle_event("reset_succeeded")
         self._clear_navigation_costmaps()
         self._clear_run_state()
         if not self._wait_until(
@@ -1490,6 +1668,9 @@ class ExperimentRunner(Node):
                         poses_remaining,
                     )
                 )
+                if not self._goal_dispatch_recorded:
+                    self._lifecycle_event("goal_dispatched")
+                    self._goal_dispatch_recorded = True
                 send_future = self._navigate_client.send_goal_async(
                     self._goal_message(specification),
                     feedback_callback=self._navigation_feedback_callback,
@@ -2145,7 +2326,23 @@ class ExperimentRunner(Node):
                 "segments": segments,
                 "complete": all(item["complete"] for item in segments.values()),
             }
-            if not dynamic_behavior["complete"]:
+            # The frozen G2/Confirmation contract independently verifies actor
+            # arming, motion, retirement, safety and paired interaction.  Its
+            # evidence gate intentionally treats this calibrated follow-window
+            # observation as a diagnostic, not as a navigation failure.  Keep
+            # the legacy pilot scenario strict, while preserving that contract
+            # for the qualification scenarios.
+            qualification_dynamic = self._scenario.scenario_id in {
+                "kujiale_stage2_2_g2_gate_dynamic",
+                "kujiale_stage2_2_g2_confirmation_dynamic",
+                # This isolated Module3-only smoke shares the formal
+                # telemetry/actor contract, but treats the calibrated
+                # right-side-bypass classifier as diagnostic.  The smoke's
+                # independent runner validates physical collision freedom and
+                # the local-bypass minimum clearance instead.
+                "kujiale_g2_dynamic_safety_smoke",
+            }
+            if not dynamic_behavior["complete"] and not qualification_dynamic:
                 reasons.append("three_stage_dynamic_behavior_not_observed")
         if self._dynamic_guard_aborted:
             reasons.append("dynamic_near_contact_abort")
@@ -2436,15 +2633,28 @@ class ExperimentRunner(Node):
         (root / f"{name}.json").write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
         return self._write_pgm(root / f"{name}.pgm", width, height, pixels)
 
-    def _write_scan_snapshot(self, root: Path) -> bool:
-        frame = self._scan_frame
+    @staticmethod
+    def _write_scan_snapshot(
+        root: Path,
+        stem: str,
+        frame: dict[str, Any] | None,
+    ) -> bool:
         if frame is None or not frame["ranges"]:
             return False
-        with (root / "scan.csv").open("w", newline="", encoding="utf-8") as stream:
+        with (root / f"{stem}.csv").open(
+            "w", newline="", encoding="utf-8"
+        ) as stream:
             writer = csv.DictWriter(stream, fieldnames=["index", "angle_rad", "range_m"])
             writer.writeheader()
             writer.writerows({"index": index, "angle_rad": frame["angle_min"] + index * frame["angle_increment"], "range_m": value} for index, value in enumerate(frame["ranges"]))
-        (root / "scan.json").write_text(json.dumps({key: value for key, value in frame.items() if key != "ranges"}, indent=2, sort_keys=True), encoding="utf-8")
+        (root / f"{stem}.json").write_text(
+            json.dumps(
+                {key: value for key, value in frame.items() if key != "ranges"},
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+        )
         return True
 
     def _begin_run_evidence(self, run_index: int, seed: int) -> Path:
@@ -2462,9 +2672,13 @@ class ExperimentRunner(Node):
             return root
         topics = [
             "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
-            "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan", "/optimal_trajectory",
-            "/local_costmap/costmap_raw", "/global_costmap/costmap_raw", "/scan",
-            "/camera/front/image_raw", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision",
+            "/cmd_vel_nav", "/cmd_vel_smoothed",
+            "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan",
+            "/optimal_trajectory", "/trajectories",
+            "/local_costmap/costmap_raw", "/global_costmap/costmap_raw",
+            "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
+            "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
+            "/bio_nav/module2/planning_prior", "/diagnostics",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
         log = (root / "bag_record.log").open("wb")
@@ -2520,11 +2734,15 @@ class ExperimentRunner(Node):
         depth_complete = self._write_depth_snapshot(root)
         local_costmap_complete = self._write_costmap_snapshot(root, "local_costmap", self._local_costmap)
         global_costmap_complete = self._write_costmap_snapshot(root, "global_costmap", self._global_costmap)
-        scan_complete = self._write_scan_snapshot(root)
+        scan_complete = self._write_scan_snapshot(
+            root, "scan", self._scan_frame)
+        safety_scan_complete = self._write_scan_snapshot(
+            root, "scan_safety", self._safety_scan_frame)
         required_files = {
             "run_manifest.json", "events.jsonl", "ground_truth.csv.gz", "odom.csv.gz",
             "cmd_vel.csv.gz", "obstacles.csv.gz", "dynamic_obstacles.csv.gz", "leg_metrics.csv", "depth_frame.pgm",
-            "depth_frame.json", "scan.csv", "scan.json", "local_costmap.pgm",
+            "depth_frame.json", "scan.csv", "scan.json",
+            "scan_safety.csv", "scan_safety.json", "local_costmap.pgm",
             "local_costmap.json", "global_costmap.pgm", "global_costmap.json",
         }
         if self._scenario.appearance_config_file is not None:
@@ -2533,7 +2751,8 @@ class ExperimentRunner(Node):
                 "appearance_rgb_before_goal.json",
             }
         data_complete = (
-            bag_complete and depth_complete and scan_complete and local_costmap_complete
+            bag_complete and depth_complete and scan_complete
+            and safety_scan_complete and local_costmap_complete
             and global_costmap_complete
             and (
                 self._scenario.appearance_config_file is None
@@ -2561,6 +2780,7 @@ class ExperimentRunner(Node):
                 "depth_frame": depth_complete,
                 "appearance_rgb_before_goal": self._appearance_rgb_snapshot_complete,
                 "scan": scan_complete,
+                "scan_safety": safety_scan_complete,
                 "local_costmap": local_costmap_complete,
                 "global_costmap": global_costmap_complete,
                 "required_files": sorted(required_files),
@@ -2689,7 +2909,12 @@ class ExperimentRunner(Node):
             raise TimeoutError("timed out waiting for a non-zero /clock")
         self._verify_dynamic_runtime_contract()
         self._verify_appearance_runtime_contract()
-        self._verify_collision_monitor_active()
+        # Authorization-only cold starts never dispatch a goal or evaluate a
+        # route.  Collision Monitor readiness is therefore not part of their
+        # no-navigation contract and can race Nav2 lifecycle activation.
+        # Route runs retain the authoritative monitor check below this branch.
+        if not self._authorization_only:
+            self._verify_collision_monitor_active()
         manifests: list[dict[str, Any]] = []
         selections = self._scenario.run_matrix or tuple(
             RunSelection(seed) for seed in self._scenario.seeds
@@ -2699,6 +2924,25 @@ class ExperimentRunner(Node):
                 continue
             seed = selection.seed
             self._active_selection = selection
+            self._active_run_index = run_index
+            if self._require_pregoal_authorization:
+                assert self._pregoal_authorization_path is not None
+                validate_pregoal_authorization(
+                    self._pregoal_authorization_path,
+                    scenario_id=self._scenario.scenario_id,
+                    run_index=run_index,
+                    selection=selection,
+                    expected_receipt=self._pregoal_expected_receipt,
+                    expected_schema=self._pregoal_expected_schema,
+                    expected_campaign=self._pregoal_expected_campaign,
+                    expected_prereg_sha256=self._pregoal_expected_prereg_sha256,
+                )
+                self._pregoal_authorization_sha256 = hashlib.sha256(
+                    self._pregoal_authorization_path.read_bytes()
+                ).hexdigest()
+                self._lifecycle_event("runner_started")
+                if self._authorization_only:
+                    return [{"authorization_only": True, "run_index": run_index, "seed": seed}]
             existing_root = self._evidence_root_for(run_index, seed)
             if self._record_evidence and existing_root.exists():
                 if not self._resume:
@@ -2735,6 +2979,7 @@ class ExperimentRunner(Node):
                 )
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
+                    self._lifecycle_event("evidence_started")
                 nav2_succeeded, timed_out, nav2_status = self._navigate()
                 final_still = self._wait_for_final_stillness()
             except Exception as exc:  # Preserve a manifest for every attempted run.

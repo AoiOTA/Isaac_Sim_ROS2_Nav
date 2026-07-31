@@ -1,0 +1,11 @@
+schema: bio_nav_stage2_2_r2c2a_collision_bounds_config_v1
+source_asset_name: kujiale_0026_A_to_B_door_open.usd
+fallbacks:
+  - collision_prim: /Root/Meshes/other/door_handle_0000/Meshes/door_handle_0000
+    source_gprim: /Root/Meshes/other/door_handle_0000/Meshes/door_handle_0000/mesh_0000/SM_Clutter_0000_Part_0000_575
+  - collision_prim: /Root/Meshes/other/door_handle_0001/Meshes/door_handle_0001
+    source_gprim: /Root/Meshes/other/door_handle_0001/Meshes/door_handle_0001/mesh_0000/SM_Clutter_0000_Part_0000_575
+  - collision_prim: /Root/Meshes/other/door_handle_0002/Meshes/door_handle_0002
+    source_gprim: /Root/Meshes/other/door_handle_0002/Meshes/door_handle_0002/mesh_0000/SM_Clutter_0000_Part_0000_575
+  - collision_prim: /Root/Meshes/other/door_handle_0003/Meshes/door_handle_0003
+    source_gprim: /Root/Meshes/other/door_handle_0003/Meshes/door_handle_0003/mesh_0000/SM_Clutter_0000_Part_0000_575

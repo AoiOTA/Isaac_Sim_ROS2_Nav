@@ -43,11 +43,24 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
         spec.validate()
         assert "ground_truth" not in repr(spec).lower()
     control = specs[0]
+    odometry = specs[-1]
     assert control.on_demand is True
     node_types = dict(control.nodes)
     assert node_types["OnPhysicsStep"] \
         == "isaacsim.core.nodes.OnPhysicsStep"
     assert "OnPlaybackTick" not in node_types
+    assert odometry.on_demand is True
+    odometry_nodes = dict(odometry.nodes)
+    assert odometry_nodes["OnImpulseEvent"] == "omni.graph.action.OnImpulseEvent"
+    assert "OnPlaybackTick" not in odometry_nodes
+    assert (
+        "OnImpulseEvent.outputs:execOut",
+        "PublishOdometry.inputs:execIn",
+    ) in odometry.connections
+    assert (
+        "OnImpulseEvent.outputs:execOut",
+        "PublishOdomTF.inputs:execIn",
+    ) in odometry.connections
     assert [
         name
         for name, node_type in control.nodes

@@ -28,8 +28,10 @@ local_costmap:
     ros__parameters:
       obstacle_layer:
         scan:
-          # Retain the historical static-camera/LiDAR clearing contract.
-          raytrace_min_range: 0.40
+          # The global/SLAM /scan contract remains at 0.40 m. The local
+          # controller now consumes /scan_safety and must retain its
+          # self-filtered footprint-adjacent returns.
+          raytrace_min_range: 0.05
           inf_is_valid: false
 
 global_costmap:

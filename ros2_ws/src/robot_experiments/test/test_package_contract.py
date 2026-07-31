@@ -52,6 +52,7 @@ def test_package_metadata_declares_runtime_contract():
         "static_benchmark.yaml",
         "dynamic.yaml",
         "dynamic_benchmark.yaml",
+        "kujiale_contact_observability_dynamic.yaml",
         "kujiale_static_visual.yaml",
         "kujiale_dynamic_visual.yaml",
         "kujiale_dynamic_visual_g2_g3.yaml",
@@ -82,6 +83,35 @@ def test_visual_route_wrapper_disables_all_project_evidence_output():
     assert "if self._record_evidence:" in runner
 
 
+def test_experiment_telemetry_records_contact_identity_diagnostics():
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    assert '"/simulation/collision_diagnostics"' in runner
+
+
+def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    for topic in (
+        "/lidar/points_raw",
+        "/lidar/points_scan",
+        "/scan",
+        "/scan_safety",
+        "/local_costmap/costmap_raw",
+        "/optimal_trajectory",
+        "/trajectories",
+        "/cmd_vel_nav",
+        "/cmd_vel_smoothed",
+        "/cmd_vel",
+    ):
+        assert f'"{topic}"' in runner
+    for artifact in (
+        "scan_safety.csv",
+        "scan_safety.json",
+    ):
+        assert f'"{artifact}"' in runner
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()
@@ -101,6 +131,29 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert "stopping ${active_mode} ROS launch process group" in wrapper
 
 
+def test_g2_dynamic_safety_smoke_is_single_route_and_module2_free():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_g2_dynamic_safety_smoke.sh").read_text()
+    assert "kujiale_g2_dynamic_safety_smoke.yaml" in wrapper
+    assert "run_kujiale_4x20_isaac.sh\" dynamic --headless" in wrapper
+    assert "nav2_profile:=dynamic_avoidance" in wrapper
+    assert "FollowPath.CostCritic.cost_weight" in wrapper
+    assert "inflation_layer.inflation_radius" in wrapper
+    for actor_id in ("local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor"):
+        assert actor_id in wrapper
+    assert '"minimum_clearance_m_by_actor"' in wrapper
+    assert "< 0.10" not in wrapper
+    assert "module2" not in wrapper.lower()
+
+
+def test_authorization_isaac_uses_rgb_ingress_without_depth_navigation_profile():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_kujiale_authorization_isaac.sh").read_text()
+    assert '--camera-profile monitoring' in wrapper
+    assert '--camera-profile off' not in wrapper
+    assert 'run_kujiale_4x20_isaac.sh' in wrapper
+
+
 def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
     root = PACKAGE_ROOT.parents[2]
     controller = (root / "scripts" / "run_kujiale_4x20.sh").read_text()
@@ -113,11 +166,46 @@ def test_4x20_preflight_does_not_require_ripgrep_after_sourcing_ros():
     assert "evidence, never a second current pilot result." in controller
 
 
+def test_r2d1_replacement_supervisor_is_isolated_and_never_claims_gate_status():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_stage2_2_r2d1_replacement.sh").read_text()
+    assert "stage2_2_r2d1_replacement_${campaign_id}" in wrapper
+    assert "kujiale_stage2_2_r2d1_replacement_${mode}.yaml" in wrapper
+    assert "start_stage static" in wrapper
+    assert "validate_stage static" in wrapper
+    assert "stop_stage" in wrapper
+    assert "start_stage dynamic" in wrapper
+    assert "validate_stage dynamic" in wrapper
+    assert "development-audit-only" in wrapper
+    assert "not a formal Gate" in wrapper
+    assert "git_dirty" in wrapper
+    assert "telemetry/telemetry_0.mcap" in wrapper
+    assert "kill -INT --" in wrapper
+
+
 def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     assert "from launch_ros.parameter_descriptions import ParameterValue" in launch_source
     assert '"run_indices": ParameterValue(' in launch_source
     assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
+
+
+def test_experiment_launch_exposes_fail_closed_pregoal_evidence_fence():
+    launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    assert 'DeclareLaunchArgument("require_pregoal_authorization"' in launch_source
+    assert 'DeclareLaunchArgument("pregoal_authorization_path"' in launch_source
+    assert 'DeclareLaunchArgument("lifecycle_jsonl_path"' in launch_source
+    for name in (
+        "pregoal_expected_receipt",
+        "pregoal_expected_schema",
+        "pregoal_expected_campaign",
+        "pregoal_expected_prereg_sha256",
+    ):
+        assert f'DeclareLaunchArgument("{name}"' in launch_source
+        assert f'"{name}": LaunchConfiguration(' in launch_source
+    assert "pre-goal authorization requires exactly one run index" in runner
+    assert 'self._lifecycle_event("goal_dispatched")' in runner
 
 
 def test_4x20_pilot_resume_requires_a_previous_success_and_preserves_formal_failures():
@@ -159,7 +247,9 @@ def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
     # A read-only /cmd_vel subscription is allowed for motion-quality metrics.
     assert "create_subscription(" in source
     assert '"command_topic", "/cmd_vel"' in source
-    assert "/initialpose" not in source
+    # The evidence recorder may subscribe to /initialpose, but the runner
+    # must never create a publisher or construct an initial-pose command.
+    assert "create_publisher(PoseWithCovarianceStamped" not in source
     assert "self._scenario.goal" in source
     assert "_verify_dynamic_runtime_contract" in source
     assert "dynamic_obstacles_config_sha256" in source

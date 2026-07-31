@@ -40,9 +40,12 @@ if [[ "${operation}" == "navigation" ]]; then
       nav2_profile:=*) nav2_profile="${argument#nav2_profile:=}" ;;
     esac
   done
-  if [[ "${nav2_profile}" == "dynamic_avoidance" ]] \
+  if [[ "${nav2_profile}" == "dynamic_avoidance" \
+        || "${nav2_profile}" == "bio_nav_planning_only" \
+        || "${nav2_profile}" == "bio_nav_risk_only" \
+        || "${nav2_profile}" == "bio_nav_tiebreak_risk" ]] \
       && ! ros2 pkg prefix spatio_temporal_voxel_layer >/dev/null 2>&1; then
-    die "nav2_profile:=dynamic_avoidance requires STVL for temporal RGB-D voxel clearing; install it once with: sudo apt install ros-jazzy-spatio-temporal-voxel-layer"
+    die "selected dynamic/BioNav profile requires STVL for temporal RGB-D voxel clearing; install it once with: sudo apt install ros-jazzy-spatio-temporal-voxel-layer"
   fi
 fi
 if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; then
