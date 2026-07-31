@@ -191,6 +191,13 @@ std::string CognitiveRiskLayer::validatePrior(
   {
     return "risk_unhealthy";
   }
+  // `risk_healthy` is the high-level health result, but the rejection mask
+  // carries the reason (OOD, low reliability, non-finite input, etc.).  Treat
+  // either signal as authoritative so an inconsistent upstream message cannot
+  // leave a cognitive cost in the Global Costmap.
+  if (prior->risk_rejection_mask != 0U) {
+    return "risk_rejected";
+  }
   if (
     prior->map_version != expected_map_version ||
     prior->reset_epoch != reset_epoch)
@@ -306,7 +313,8 @@ bool CognitiveRiskLayer::containsActiveRisk(
   const bio_nav_interfaces::msg::PlanningPrior & prior)
 {
   if (
-    !prior.risk_healthy || !std::isfinite(prior.risk_threshold) ||
+    !prior.risk_healthy || prior.risk_rejection_mask != 0U ||
+    !std::isfinite(prior.risk_threshold) ||
     prior.risk_threshold < 0.0F || prior.risk_threshold >= 1.0F)
   {
     return false;

@@ -68,6 +68,7 @@ def test_risk_only_uses_stock_planner_and_identity_bound_global_layer():
         == RISK_QUALIFICATION_SHA
     )
     assert layer["minimum_consecutive_active_messages"] == 2
+    assert layer["max_message_age_s"] == 0.5
 
 
 def test_combined_enables_both_components_without_changing_local_costmap():

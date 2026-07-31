@@ -89,7 +89,7 @@ def build_profile(
             "enabled": True,
             "prior_topic": "/bio_nav/module2/planning_prior",
             "reset_topic": "/simulation/reset_event",
-            "max_message_age_s": 0.75,
+            "max_message_age_s": 0.5,
             "minimum_reliability": 0.2,
             "maximum_cost": 80,
             # At the 5 Hz prior rate this rejects isolated appearance spikes

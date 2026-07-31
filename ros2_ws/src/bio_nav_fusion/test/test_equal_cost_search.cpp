@@ -91,6 +91,9 @@ TEST(CognitiveRiskLayer, active_risk_requires_a_healthy_threshold_crossing)
   EXPECT_FALSE(CognitiveRiskLayer::containsActiveRisk(prior));
   prior.dynamic_cost[42] = 0.5F;
   EXPECT_TRUE(CognitiveRiskLayer::containsActiveRisk(prior));
+  prior.risk_rejection_mask = 4;
+  EXPECT_FALSE(CognitiveRiskLayer::containsActiveRisk(prior));
+  prior.risk_rejection_mask = 0;
   prior.risk_healthy = false;
   EXPECT_FALSE(CognitiveRiskLayer::containsActiveRisk(prior));
   prior.risk_healthy = true;
@@ -129,6 +132,10 @@ TEST(CognitiveRiskLayer, fault_matrix_rejects_untrusted_risk_inputs)
   prior.risk_reliability = std::numeric_limits<float>::quiet_NaN();
   EXPECT_EQ(validate(), "risk_unhealthy");
   prior.risk_reliability = 0.9F;
+
+  prior.risk_rejection_mask = 4;
+  EXPECT_EQ(validate(), "risk_rejected");
+  prior.risk_rejection_mask = 0;
 
   prior.map_version = "old-map";
   EXPECT_EQ(validate(), "map_reset_mismatch");

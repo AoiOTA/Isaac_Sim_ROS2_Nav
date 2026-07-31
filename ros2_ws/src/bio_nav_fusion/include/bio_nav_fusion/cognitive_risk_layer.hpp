@@ -57,7 +57,10 @@ private:
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr latest_;
   uint32_t reset_epoch_{0};
   bool reset_epoch_initialized_{false};
-  double max_message_age_s_{0.75};
+  // A stale Module2 risk prior must disappear before it can survive a full
+  // 5 Hz input gap.  This mirrors the profile contract rather than relying
+  // on the generated YAML alone.
+  double max_message_age_s_{0.5};
   double minimum_reliability_{0.2};
   int maximum_cost_{80};
   int minimum_consecutive_active_messages_{2};

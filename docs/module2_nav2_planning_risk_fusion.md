@@ -40,10 +40,11 @@ fail-closed 模板，不能直接作为合格运行身份。
 `CognitiveRiskLayer` 只挂在 Global Costmap：
 
 1. 检查 map/reset/model/qualification hash、消息年龄、finite、health、
-   reliability 和 OOD；
+   reliability、OOD 及 `risk_rejection_mask`；任一拒绝位非零即回退；
 2. 低于冻结阈值的格为 0，其余映射到 `1..80`；
 3. 使用 `max(existing_cost, cognitive_cost)`，因此不能清除真实障碍；
-4. 健康输入停止后风险线性衰减；消息过期或身份失败时清空整层。
+4. 健康输入停止后风险最多线性衰减 `0.8 s`；消息年龄超过 `0.5 s`、
+   拒绝位非零或身份失败时在下一周期清空整层。
 
 Local Costmap、MPPI 采样和 Collision Monitor 不订阅 Module2 topic。
 
