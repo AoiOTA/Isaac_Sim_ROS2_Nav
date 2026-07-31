@@ -1,7 +1,7 @@
 # 当前实现文件索引
 
-> 最近复核：2026-07-30<br>
-> 适用分支：`codex/stage2-2-nearfield-safety`
+> 最近复核：2026-07-31<br>
+> 适用分支：`feat/planning-risk-fusion-v0.1`
 
 本索引只列出当前 Kujiale `warehouse_new` 导航与 4×20 实验的操作入口、权威配置、
 实现和测试。构建产物、运行日志、批量证据、外观预览输出和已不再作为操作入口的兼容代码，
@@ -18,6 +18,8 @@
 | 指标定义与交付表述 | [`kujiale_4x20_metric_definitions.md`](kujiale_4x20_metric_definitions.md) |
 | 启动、续跑、pilot 或报告问题 | [`troubleshooting.md`](troubleshooting.md)、[`kujiale_4x20_execution_lessons.md`](kujiale_4x20_execution_lessons.md) |
 | Topic、TF、模式和配置所有权 | [`interfaces.md`](interfaces.md) |
+| Module2 规划/风险如何接入 Nav2 | [`module2_nav2_planning_risk_fusion.md`](module2_nav2_planning_risk_fusion.md) |
+| RViz 中如何观察 Module2 | [`module2_rviz_visualization.md`](module2_rviz_visualization.md) |
 
 ## 文档
 
@@ -36,12 +38,17 @@
 | `docs/development.md` | 开发环境和当前代码改动的验证命令。 |
 | `docs/documentation_status.md` | 当前文档的事实来源和维护规则。 |
 | `docs/branch_governance.md` | 历史源仓 `main`、开放 PR 分支、发布仓 baseline 与离线 archive 的边界。 |
+| `docs/module2_nav2_planning_risk_fusion.md` | Module2 tie-break、Global Costmap 风险、身份门控和传统 fallback。 |
+| `docs/module2_rviz_visualization.md` | Marker namespaces、raw costmap 配色、操作与诊断。 |
+| `docs/reproduction/planning-risk-fusion-v0.1.md` | Integration underlay、构建测试、身份 profile 和故障回退复现。 |
 
 ## 操作脚本
 
 | 文件 | 当前职责 |
 | --- | --- |
 | `scripts/setup_ros_env.sh` | 加载 ROS 2 Jazzy 与工作区环境；任何 ROS 命令前先 source。 |
+| `scripts/build_ros2.sh` | 构建 Module3；融合分支会从 Integration underlay 唯一加载 `bio_nav_interfaces`。 |
+| `scripts/generate_bionav_fusion_profile.py` | 用真实 map/qualification/model SHA 生成 fail-closed 的可选融合 profile。 |
 | `scripts/run_kujiale_4x20_all.sh` | 推荐的一键监督器：构建、静态40轮、动态40轮、阶段报告和总报告；支持 `--resume` 与 `--dynamic-only`。 |
 | `scripts/run_kujiale_4x20.sh` | 4×20 控制器：预检、pilot、配对批次、报告与状态查询。 |
 | `scripts/run_kujiale_4x20_isaac.sh` | 静态或动态 4×20 阶段的 Isaac 启动器。 |
@@ -69,6 +76,9 @@
 | `ros2_ws/src/robot_experiments/config/kujiale_4x20_dynamic_pair.yaml` | 动态基准与动态＋外观的40轮矩阵。 |
 | `ros2_ws/src/robot_navigation/config/nav2_params.yaml` | `stable` 的静态 Nav2 基线。 |
 | `ros2_ws/src/robot_navigation/config/nav2_dynamic_avoidance.yaml` | `dynamic_avoidance` 的 MPPI、STVL 与动态避障覆盖层。 |
+| `ros2_ws/src/robot_navigation/config/nav2_bio_nav_planning_only.yaml` | 只启用认知规划 tie-break 的显式 profile。 |
+| `ros2_ws/src/robot_navigation/config/nav2_bio_nav_risk_only.yaml` | 只启用 Global Costmap 认知软风险的显式 profile。 |
+| `ros2_ws/src/robot_navigation/config/nav2_bio_nav_tiebreak_risk.yaml` | 同时启用规划与风险的显式 fail-closed 模板。 |
 | `ros2_ws/src/robot_perception/config/self_filter_optional.yaml` | Navigation 近场安全点云的 padded-footprint 自滤波边界。 |
 | `ros2_ws/src/robot_perception/config/pointcloud_to_laserscan_safety.yaml` | `/scan_safety` 的独立投影合同；保留旧投影参数并使用 `range_min=0.05 m`。 |
 
@@ -77,6 +87,7 @@
 | 文件 | 当前职责 |
 | --- | --- |
 | `isaac_sim/apps/navigation_sim.py` | Isaac 场景、机器人、传感器、障碍、外观 Session Layer 与 ROS Bridge 的主入口。 |
+| `ros2_ws/src/bio_nav_fusion/` | `BioNavGridBased` 与 `CognitiveRiskLayer` 插件；接口来自 Integration。 |
 | `isaac_sim/apps/appearance_preview.py` | 无 ROS 的客厅外观预览渲染入口。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 单轮/批量 reset、目标序列、证据与严格结果写入。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 4×20 校验、统计、GT 轨迹、HTML/PDF/Markdown 报告生成；已发布快照自动采用 GitHub Raw 图片链接。 |

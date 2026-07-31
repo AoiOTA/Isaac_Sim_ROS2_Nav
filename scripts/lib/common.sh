@@ -88,6 +88,39 @@ source_ros() {
   validate_runtime_environment
 }
 
+source_bio_nav_interfaces_underlay() {
+  local candidate
+  local -a candidates=()
+
+  if ros2 pkg prefix bio_nav_interfaces >/dev/null 2>&1; then
+    return 0
+  fi
+  [[ -d "${PROJECT_ROOT}/ros2_ws/src/bio_nav_fusion" ]] || return 0
+
+  if [[ -n "${BIO_NAV_INTERFACES_SETUP:-}" ]]; then
+    candidates+=("${BIO_NAV_INTERFACES_SETUP}")
+  fi
+  candidates+=(
+    "${PROJECT_ROOT}/../Bio_Nav_Integration/ros2_ws/install/setup.bash"
+    "${PROJECT_ROOT}/../../repos/Bio_Nav_Integration/ros2_ws/install/setup.bash"
+    "${PROJECT_ROOT}/../../../repos/Bio_Nav_Integration/ros2_ws/install/setup.bash"
+  )
+  for candidate in "${candidates[@]}"; do
+    [[ -f "${candidate}" ]] || continue
+    set +u
+    # shellcheck disable=SC1090
+    source "${candidate}"
+    set -u
+    if ros2 pkg prefix bio_nav_interfaces >/dev/null 2>&1; then
+      export BIO_NAV_INTERFACES_SETUP="${candidate}"
+      log_info "using BioNav interfaces underlay: ${candidate}"
+      return 0
+    fi
+  done
+
+  die "bio_nav_fusion requires bio_nav_interfaces; build Integration first and set BIO_NAV_INTERFACES_SETUP=/absolute/path/to/Bio_Nav_Integration/ros2_ws/install/setup.bash"
+}
+
 prepare_runtime_directory() {
   require_command flock
   if [[ -L "${ISAAC_NAV_RUNTIME_DIR}" ]]; then
