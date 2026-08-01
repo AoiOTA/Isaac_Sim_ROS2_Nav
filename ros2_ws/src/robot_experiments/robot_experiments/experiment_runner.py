@@ -2687,7 +2687,9 @@ class ExperimentRunner(Node):
             "/optimal_trajectory", "/trajectories",
             "/local_costmap/costmap_raw", "/global_costmap/costmap_raw",
             "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
-            "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
+            "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points",
+            "/experiment/paired_appearance/baseline/image_raw", "/experiment/paired_appearance/variant/image_raw", "/experiment/paired_appearance/state",
+            "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
             "/bio_nav/module2/planning_prior", "/diagnostics",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]

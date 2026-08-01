@@ -115,6 +115,18 @@ def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
         assert f'"{artifact}"' in runner
 
 
+def test_experiment_telemetry_records_deterministic_appearance_pairs():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    for topic in (
+        "/experiment/paired_appearance/baseline/image_raw",
+        "/experiment/paired_appearance/variant/image_raw",
+        "/experiment/paired_appearance/state",
+    ):
+        assert f'"{topic}"' in runner
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()
