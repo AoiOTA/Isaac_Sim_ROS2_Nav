@@ -18,8 +18,30 @@ def create_or_open_project_stage(path: str | Path):
             import omni.usd
 
             context = omni.usd.get_context()
-            if context.open_stage(str(path)):
+            current = context.get_stage()
+            current_path = ""
+            if current is not None:
+                layer = current.GetRootLayer()
+                current_path = layer.realPath or layer.identifier
+            if current_path and not current_path.startswith("anon:") and (
+                Path(current_path).resolve() == path
+            ):
+                stage = current
+            elif current is not None:
+                # SimulationApp starts with an anonymous context Stage.  Isaac
+                # 6 refuses to synchronously open the project stage while that
+                # Stage remains attached; silently falling back to pxr.Usd
+                # creates a second Stage that sensors cannot see.
+                if not context.can_close_stage() or not context.close_stage():
+                    raise StageLoadError(
+                        "could not close the existing Kit Stage before project open"
+                    )
+            if stage is None and context.open_stage(str(path)):
                 stage = context.get_stage()
+            if stage is None:
+                raise StageLoadError(f"Kit context failed to open project stage {path}")
+        except StageLoadError:
+            raise
         except (ImportError, RuntimeError):
             # Pure USD tests run without a Kit application. Runtime code must
             # use the context branch so sensors and OmniGraph share this stage.
