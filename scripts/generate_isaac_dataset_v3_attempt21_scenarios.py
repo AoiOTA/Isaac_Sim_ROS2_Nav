@@ -45,7 +45,7 @@ def build_matrix(prereg: dict[str, Any], *, phase: str, mode: str) -> list[dict[
     for offset, seed in enumerate(_seed_range(prereg, phase, mode)):
         appearance = APPEARANCES[offset % len(APPEARANCES)]
         case_id = "static" if mode == "static" else DYNAMIC_CASES[offset % len(DYNAMIC_CASES)]
-        variant_id = "dataset_v3_v1" if mode == "static" else f"attempt21_v{offset % 5 + 1}"
+        variant_id = "dataset_v3_v1" if mode == "static" else f"v{offset % 5 + 1}"
         pair_id = f"{phase}-{mode}-{seed}"
         for profile in ("baseline", appearance):
             matrix.append(

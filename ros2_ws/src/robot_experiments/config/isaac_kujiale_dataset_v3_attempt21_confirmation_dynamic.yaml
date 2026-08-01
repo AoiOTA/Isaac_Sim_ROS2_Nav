@@ -19,102 +19,102 @@ scenario:
     matrix:
     - seed: 18901
       case_id: full_route_three_stage
-      variant_id: attempt21_v1
+      variant_id: v1
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18901
       case_id: full_route_three_stage
-      variant_id: attempt21_v1
+      variant_id: v1
       condition_id: dynamic_appearance
       appearance_profile_id: dim_warm
     - seed: 18902
       case_id: crossing
-      variant_id: attempt21_v2
+      variant_id: v2
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18902
       case_id: crossing
-      variant_id: attempt21_v2
+      variant_id: v2
       condition_id: dynamic_appearance
       appearance_profile_id: dim_cool
     - seed: 18903
       case_id: oncoming
-      variant_id: attempt21_v3
+      variant_id: v3
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18903
       case_id: oncoming
-      variant_id: attempt21_v3
+      variant_id: v3
       condition_id: dynamic_appearance
       appearance_profile_id: bright_warm
     - seed: 18904
       case_id: same_direction_slow
-      variant_id: attempt21_v4
+      variant_id: v4
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18904
       case_id: same_direction_slow
-      variant_id: attempt21_v4
+      variant_id: v4
       condition_id: dynamic_appearance
       appearance_profile_id: bright_cool
     - seed: 18905
       case_id: temporary_block
-      variant_id: attempt21_v5
+      variant_id: v5
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18905
       case_id: temporary_block
-      variant_id: attempt21_v5
+      variant_id: v5
       condition_id: dynamic_appearance
       appearance_profile_id: dim_warm
     - seed: 18906
       case_id: full_route_three_stage
-      variant_id: attempt21_v1
+      variant_id: v1
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18906
       case_id: full_route_three_stage
-      variant_id: attempt21_v1
+      variant_id: v1
       condition_id: dynamic_appearance
       appearance_profile_id: dim_cool
     - seed: 18907
       case_id: crossing
-      variant_id: attempt21_v2
+      variant_id: v2
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18907
       case_id: crossing
-      variant_id: attempt21_v2
+      variant_id: v2
       condition_id: dynamic_appearance
       appearance_profile_id: bright_warm
     - seed: 18908
       case_id: oncoming
-      variant_id: attempt21_v3
+      variant_id: v3
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18908
       case_id: oncoming
-      variant_id: attempt21_v3
+      variant_id: v3
       condition_id: dynamic_appearance
       appearance_profile_id: bright_cool
     - seed: 18909
       case_id: same_direction_slow
-      variant_id: attempt21_v4
+      variant_id: v4
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18909
       case_id: same_direction_slow
-      variant_id: attempt21_v4
+      variant_id: v4
       condition_id: dynamic_appearance
       appearance_profile_id: dim_warm
     - seed: 18910
       case_id: temporary_block
-      variant_id: attempt21_v5
+      variant_id: v5
       condition_id: dynamic_baseline
       appearance_profile_id: baseline
     - seed: 18910
       case_id: temporary_block
-      variant_id: attempt21_v5
+      variant_id: v5
       condition_id: dynamic_appearance
       appearance_profile_id: dim_cool
     timeout_sec: 720.0

@@ -41,3 +41,21 @@ def test_attempt21_scenarios_do_not_change_default_navigation_profiles():
         scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
         assert "nav2_profile" not in scenario
         assert scenario["map_version"] == "warehouse_new"
+
+
+def test_attempt21_dynamic_variants_exist_in_every_selected_obstacle_case():
+    dynamic_config = yaml.safe_load(
+        (
+            CONFIG.parents[3]
+            / "isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    cases = dynamic_config["cases"]
+    case_sets = dynamic_config["case_sets"]
+    for phase in ("development", "gate", "confirmation"):
+        source = CONFIG / f"isaac_kujiale_dataset_v3_attempt21_{phase}_dynamic.yaml"
+        matrix = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]["runs"]["matrix"]
+        for run in matrix:
+            selected = case_sets.get(run["case_id"], [run["case_id"]])
+            for case_id in selected:
+                assert run["variant_id"] in cases[case_id]["variants"]
