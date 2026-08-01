@@ -129,3 +129,21 @@ def test_attempt_07_gate_and_confirmation_use_sixth_seed_family() -> None:
             f"isaac_kujiale_dataset_v2_attempt_07_{phase}_{mode}"
         )
         assert [row.seed for row in scenario.run_matrix] == list(seeds)
+
+
+def test_attempt_20_gate_and_confirmation_use_fresh_seventh_seed_family() -> None:
+    expected = {
+        ("gate", "static"): range(18001, 18011),
+        ("gate", "dynamic"): range(18101, 18111),
+        ("confirmation", "static"): range(18201, 18211),
+        ("confirmation", "dynamic"): range(18301, 18311),
+    }
+    for (phase, mode), seeds in expected.items():
+        scenario = load_scenario(
+            CONFIG
+            / f"isaac_kujiale_dataset_v2_attempt_20_{phase}_{mode}.yaml"
+        )
+        assert scenario.scenario_id == (
+            f"isaac_kujiale_dataset_v2_attempt_20_{phase}_{mode}"
+        )
+        assert [row.seed for row in scenario.run_matrix] == list(seeds)
