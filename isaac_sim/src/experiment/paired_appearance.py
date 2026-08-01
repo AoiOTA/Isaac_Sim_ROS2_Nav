@@ -98,8 +98,8 @@ class PairedAppearanceCapture:
         self._annotator = rep.AnnotatorRegistry.get_annotator("rgb")
         self._annotator.attach(render_product)
         image_qos = QoSProfile(
-            depth=2,
-            reliability=ReliabilityPolicy.BEST_EFFORT,
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
         self._baseline_publisher = node.create_publisher(
