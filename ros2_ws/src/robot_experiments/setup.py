@@ -1,8 +1,15 @@
-from glob import glob
+import os
+from pathlib import Path
 from setuptools import find_packages, setup
 
 
 package_name = "robot_experiments"
+package_root = Path(__file__).resolve().parent
+
+
+def source_paths(directory: str, pattern: str) -> list[str]:
+    """Keep package data rooted at source even when colcon invokes setup from build/."""
+    return [os.path.relpath(path, Path.cwd()) for path in sorted((package_root / directory).glob(pattern))]
 
 
 setup(
@@ -12,8 +19,8 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/config", glob("config/*.yaml") + glob("config/*.json")),
-        (f"share/{package_name}/launch", glob("launch/*.launch.py")),
+        (f"share/{package_name}/config", source_paths("config", "*.yaml") + source_paths("config", "*.json")),
+        (f"share/{package_name}/launch", source_paths("launch", "*.launch.py")),
     ],
     install_requires=["setuptools", "PyYAML"],
     zip_safe=True,

@@ -1,5 +1,11 @@
 # Isaac Sim 6.0.1 + ROS 2 Jazzy：酷家乐 RGB-D 导航
 
+> 当前融合开发状态（2026-07-31）：`feat/planning-risk-fusion-v0.1` 包含可选的
+> Module2 规划 tie-break、Global Costmap 软风险层和 RViz 认知叠加。它已通过
+> 单元测试与 ROS 2 构建/测试，但不代表真实 Isaac Gate/Confirmation 已通过。
+> `stable`、`dynamic_avoidance` 仍是传统导航默认配置；融合 profile 只能显式
+> 选择并绑定真实身份 SHA 后使用。
+
 ## 演示视频（4×速，直接预览）
 
 ### 动态避障演示
@@ -49,9 +55,15 @@ export PROJECT_ROOT="$PWD"
 git lfs install
 git lfs pull
 ./scripts/import_assets.sh
+export BIO_NAV_INTERFACES_SETUP=/absolute/path/to/Bio_Nav_Integration/ros2_ws/install/setup.bash
 ./scripts/build_ros2.sh
 ./scripts/preflight.sh
 ```
+
+`bio_nav_fusion` 的消息/服务定义由 Integration 仓库的
+`bio_nav_interfaces` 唯一维护。先构建 Integration；脚本会自动查找最终统一目录
+中的兄弟仓库，也可通过上述环境变量显式指定 underlay。不要把接口源码复制进
+Module3。
 
 脚本默认使用 ROS 2 Jazzy、`ROS_DOMAIN_ID=42` 和 `rmw_fastrtps_cpp`。需要直接执行 `ros2` 命令时，先运行：
 
@@ -210,6 +222,9 @@ cd "$PROJECT_ROOT"
 | 查看正式结果、配置边界与复核方法 | [验证台账](docs/verification.md) |
 | 查看当前文档的事实来源与职责 | [文档状态](docs/documentation_status.md) |
 | 查看 Module3 原始源仓、两个发布仓、分支、标签和本地 remote 的一一对应关系 | [分支与标签目录](docs/branch_governance.md) |
+| 理解 Module2 如何接入 Nav2、规划与风险如何融合 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
+| 操作 RViz 中的 Module2 认知叠加 | [Module2 RViz 可视化](docs/module2_rviz_visualization.md) |
+| 复现 v0.1 工程验证 | [规划/风险融合 v0.1 复现](docs/reproduction/planning-risk-fusion-v0.1.md) |
 
 ## 验证
 

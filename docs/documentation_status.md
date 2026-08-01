@@ -1,8 +1,8 @@
 # 文档状态与事实来源
 
-> 最近复核：2026-07-26
+> 最近复核：2026-07-30
 >
-> 适用分支：`main`
+> 适用分支：`codex/stage2-2-nearfield-safety`
 
 本仓库只保留当前可执行手册、运行契约、验证台账与恢复手册。执行命令或判断当前行为时，
 始终以脚本、配置和测试所对应的当前文档为准。
@@ -20,7 +20,7 @@
 - Localization/Navigation 默认地图是酷家乐 `warehouse_new`；
 - `warehouse_new` 只批准普通 Ideal Localization/Navigation，Realistic 或显式 Pose Graph 定位会被启动脚本拒绝；
 - 标准人工导航使用两个终端、受管 RViz 和 **2D Goal Pose**，不存在项目私有目标桥；
-- Nav2 有两套明确 profile：默认 `stable` 完整复现静态 20 轮基线（Local + Global 标准 `VoxelLayer`）；`dynamic_avoidance` 使用 Local STVL 时序清除且 Global Costmap 不接收 RGB-D，避免移动 actor 留下全局残影；Collision Monitor 两套 profile 均只使用 `/scan`；
+- Nav2 有两套明确 profile：默认 `stable` 使用标准 `VoxelLayer`，`dynamic_avoidance` 使用 Local STVL 时序清除且 Global Costmap 不接收 RGB-D；两套 profile 的 Local Costmap 与 Collision Monitor 使用自滤波后的 `/scan_safety`，SLAM、定位和 Global Costmap 仍使用原 `/scan`；
 - 三阶段动态可视化的现行入口是 `run_kujiale_dynamic_isaac.sh`、`run_kujiale_three_stage_visual.sh` 与 `nav2_profile:=dynamic_avoidance`。G1→G2、G2→G3、G5→G1 分别使用独立 actor，成功到达下一航点后才退役；
 - 当前正式操作入口是 `run_kujiale_4x20_all.sh`：一条命令自动管理静态/动态两套栈、四组各20轮、报告和`--resume`。静态40轮完成即保留 `static_2x20`，动态40轮完成即保留 `dynamic_2x20`，同一批次四组完成后才写根目录总4×20报告；`--dynamic-only` 可只重跑动态两组。正式批次 `20260725-210035` 已完成并通过：静态两组20/20，动态两组19/20，四组物理无碰撞均20/20。
 - 单轮 GUI/RViz 诊断提供静态/动态自动完整 G2–G5–G1 路线；它们均不计入4×20证据。

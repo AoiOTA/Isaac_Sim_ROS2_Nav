@@ -1,14 +1,14 @@
 # Module3 源仓、发布仓与引用目录
 
 `AoiOTA/Isaac_Sim_ROS2_Nav` 是 Module3 最初的仓库，也是当前唯一的功能事实源。默认本地工作仓
-为 `/home/lyb/Workspace/Isaac_Sim_ROS2_Nav`。`AoiOTA/Bio_Nav_Module3` 与
+为 `${BIO_NAV_MODULE3_ROOT}`（由统一 `workspace.env` 导出）。`AoiOTA/Bio_Nav_Module3` 与
 `HDU-ASL/Bio_Nav_Module3` 都是从该源仓派生的发布仓，不是独立的功能来源。
 
 ## 仓库对应关系
 
 | 角色 | Git 仓库或本地目录 | 规则 |
 | --- | --- | --- |
-| 本地工作仓 | `/home/lyb/Workspace/Isaac_Sim_ROS2_Nav` | 只在这里维护 Module3 源代码；`main` 跟踪 `origin/main`。 |
+| 本地工作仓 | `${BIO_NAV_MODULE3_ROOT}` | 只在这里维护 Module3 源代码；`main` 跟踪 `origin/main`。 |
 | 原始源仓 | `AoiOTA/Isaac_Sim_ROS2_Nav` | `origin`；Module3 功能主线和开放 PR 的唯一来源。 |
 | AoiOTA 发布仓 | `AoiOTA/Bio_Nav_Module3` | 本地 remote 名为 `module3-aoi`；发布 `main` 必须来自源仓。 |
 | HDU-ASL 发布仓 | `HDU-ASL/Bio_Nav_Module3` | 本地 remote 名为 `module3-hdu`；镜像发布 `main`，另保留所有者分支。 |

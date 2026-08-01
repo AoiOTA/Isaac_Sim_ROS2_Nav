@@ -53,7 +53,8 @@
 重新生成所有地图：
 
 ```bash
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+source /home/lyb/Workspace/Bio_Nav/workspace.env
+cd "${BIO_NAV_MODULE3_ROOT}"
 python3 scripts/generate_kujiale_long_route_maps.py
 ```
 
@@ -90,7 +91,8 @@ python3 scripts/generate_kujiale_long_route_maps.py
 完成动态 pilot 和40轮并生成动态 `2×20` 报告，最后才生成同一批次的总 `4×20` 报告；不需要另开终端或手动切换：
 
 ```bash
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+source /home/lyb/Workspace/Bio_Nav/workspace.env
+cd "${BIO_NAV_MODULE3_ROOT}"
 ./scripts/run_kujiale_4x20_all.sh
 ```
 

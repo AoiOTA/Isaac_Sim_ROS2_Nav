@@ -64,7 +64,8 @@ data/reports/kujiale_4x20_<CAMPAIGN_ID>/
 报告与证据输出不提交 Git。若只更新报告器而不改变原始证据，可重绘既有报告：
 
 ```bash
-cd /home/lyb/Workspace/Isaac_Sim_ROS2_Nav
+source /home/lyb/Workspace/Bio_Nav/workspace.env
+cd "${BIO_NAV_MODULE3_ROOT}"
 ./scripts/run_kujiale_4x20.sh report 20260725-210035 --replace
 ```
 

@@ -570,6 +570,61 @@ Visualization Manager:
       Name: Navigation
     - Class: rviz_common/Group
       Displays:
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 Live Overlay
+          Namespaces:
+            Canvas: true
+            Dynamic Risk: true
+            Motion Belief: true
+            Motion Peak: true
+            Status: true
+            Visual Candidate: false
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/module2/rviz_markers
+          Value: true
+        - Alpha: 0.25
+          Binary representation: false
+          Binary threshold: 100
+          Class: rviz_default_plugins/Map
+          Color Scheme: costmap
+          Draw Behind: false
+          Enabled: false
+          Name: Module2 Dynamic Risk Raw
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/module2/dynamic_cost_grid
+          Use Timestamp: false
+          Value: false
+        - Alpha: 0.22
+          Binary representation: false
+          Binary threshold: 100
+          Class: rviz_default_plugins/Map
+          Color Scheme: costmap
+          Draw Behind: false
+          Enabled: false
+          Name: Module2 Motion Belief Raw
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/module2/place_belief_grid
+          Use Timestamp: false
+          Value: false
+      Enabled: true
+      Name: Module2 Cognitive Overlay
+    - Class: rviz_common/Group
+      Displays:
         - Alpha: 0.949999988079071
           Class: rviz_default_plugins/Polygon
           Color: 255; 35; 35

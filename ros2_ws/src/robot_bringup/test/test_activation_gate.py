@@ -347,5 +347,7 @@ def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
     assert "CancelGoal, '/navigate_to_pose/_action/cancel_goal'" in source
     assert "'/global_costmap/clear_entirely_global_costmap'" in source
     assert "'/local_costmap/clear_entirely_local_costmap'" in source
+    assert "self.declare_parameter('immutable_map_node', 'map_server')" in source
+    assert 'Repairing immutable map lifecycle' in source
     assert 'except (KeyboardInterrupt, ExternalShutdownException):' in source
     assert 'if node is not None:\n            node.destroy_node()' in source

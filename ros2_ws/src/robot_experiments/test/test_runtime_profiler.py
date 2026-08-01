@@ -30,7 +30,9 @@ def test_plan_required_topics_and_tf_chains_are_profiled():
     assert set(TOPIC_NAMES) == {
         "clock",
         "pointcloud",
+        "pointcloud_safety",
         "scan",
+        "scan_safety",
         "imu",
         "joint_states",
         "wheel_odom",

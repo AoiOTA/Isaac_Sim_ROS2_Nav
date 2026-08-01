@@ -187,6 +187,11 @@ def _launch_setup(context):
         {
             'use_sim_time': use_sim_time,
             'use_self_filter': use_self_filter,
+            # Mapping/localization retain the frozen /scan contract. Only
+            # navigation starts the parallel self-filtered near-field stream
+            # consumed by the local safety chain.
+            'enable_safety_scan': (
+                'true' if selection.operation == 'navigation' else 'false'),
         },
     )
     if interactive.use_rviz:
@@ -307,7 +312,9 @@ def _launch_setup(context):
                 'nav2_profile_params_file': str(nav2_profile_params_file),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
-                    if nav2_profile == 'dynamic_avoidance'
+                    if nav2_profile in {
+                        'dynamic_avoidance', 'bio_nav_planning_only',
+                        'bio_nav_risk_only', 'bio_nav_tiebreak_risk'}
                     else 'voxel_grid'
                 ),
             },
@@ -437,7 +444,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav2_profile',
             default_value='stable',
-            description='stable or performance Nav2 parameter overlay'),
+            description=(
+                'stable, performance, dynamic_avoidance, or optional BioNav '
+                'planning-only, risk-only, combined parameter overlay')),
         DeclareLaunchArgument(
             'nav2_profile_params_file',
             default_value='',

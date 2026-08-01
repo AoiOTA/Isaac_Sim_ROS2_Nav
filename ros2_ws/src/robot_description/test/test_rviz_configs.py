@@ -153,6 +153,24 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         'Value'] == '/transformed_global_plan'
     assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is True
 
+    module2 = _named(config, 'Module2 Live Overlay')
+    _assert_topic(
+        module2,
+        '/bio_nav/module2/rviz_markers',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert module2['Enabled'] is True
+    assert module2['Namespaces']['Motion Belief'] is True
+    assert module2['Namespaces']['Motion Peak'] is True
+    assert module2['Namespaces']['Dynamic Risk'] is True
+    assert module2['Namespaces']['Status'] is True
+    assert module2['Namespaces']['Visual Candidate'] is False
+    raw_risk = _named(config, 'Module2 Dynamic Risk Raw')
+    assert raw_risk['Enabled'] is False
+    assert raw_risk['Color Scheme'] == 'costmap'
+    assert raw_risk['Topic']['Value'] == '/bio_nav/module2/dynamic_cost_grid'
+
     depth_cloud = _named(config, 'Depth PointCloud2')
     _assert_topic(
         depth_cloud,

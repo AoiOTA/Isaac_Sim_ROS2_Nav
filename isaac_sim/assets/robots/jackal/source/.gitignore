@@ -1,4 +1,6 @@
 # NVIDIA binary runtime assets. Use ../../../../tools/import_assets.py.
 *.usd
-configuration/
+# Match both a generated directory and the runtime symlink used by clean
+# worktrees to reference the locally imported Jackal configuration assets.
+configuration
 !.gitignore

@@ -13,7 +13,7 @@
 | 出生点 | `long_route_start_g1`，map `[0.45, -5.35, 90°]` |
 | 里程计 | Isaac Ideal `/odom` 与 `odom -> base_link` |
 | 定位 TF | 已标定、按出生点对齐的 `map -> odom` |
-| 导航输入 | `/scan` 与 `/camera/front/depth/points` |
+| 导航输入 | 地图链 `/scan`；近场安全链 `/scan_safety`；RGB-D `/camera/front/depth/points` |
 | ROS | Jazzy、Domain `42`、`rmw_fastrtps_cpp` |
 
 `warehouse_new` 只支持 Ideal Localization/Navigation。`realistic`、`posegraph_calibration:=true` 或运行中热切换出生点都会被启动契约拒绝或造成不可复核状态。
@@ -121,7 +121,12 @@ Nav2 lifecycle activation completed
 - **Marked Voxels (3D)**：`stable` profile 的 Nav2 VoxelLayer。
 - **Temporal Voxels (3D)**：`dynamic_avoidance` profile 的 Local STVL。
 
-`stable` 在 Local 和 Global Costmap 使用 `depth_voxel_layer`，用于低矮静态障碍。`dynamic_avoidance` 用 Local STVL 替代该层，并让 Global Costmap 只使用静态地图和 `/scan`，避免移动 actor 留下全局残影。Collision Monitor 始终只消费 `/scan`；RGB-D 不进入 SLAM、EKF 或里程计。
+`stable` 在 Local 和 Global Costmap 使用 `depth_voxel_layer`，用于低矮静态障碍。`dynamic_avoidance` 用 Local STVL 替代该层，并让 Global Costmap 只使用静态地图和 `/scan`，避免移动 actor 留下全局残影。两套 profile 的 Local Costmap 与 Collision Monitor 消费独立的 `/scan_safety`；SLAM、定位和 Global Costmap 仍消费原 `/scan`。RGB-D 不进入 SLAM、EKF 或里程计。
+
+Navigation 模式会将 `/lidar/points_raw` 变换到 `base_link`，删除物理 footprint 加
+`5 mm` padding 内的自体点后发布 `/lidar/points_scan`，再投影为
+`range_min=0.05 m` 的 `/scan_safety`。原 `/scan` 的 frame、频率、投影范围和消费者
+不变。若安全点云 TF 不可用或数据格式无效，自滤波节点丢弃该帧，不以未过滤点云降级。
 
 快速检查：
 
@@ -130,6 +135,8 @@ source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
 ros2 topic info /camera/front/depth/points --verbose
 ros2 topic hz /camera/front/depth/points
 ros2 topic echo /local_costmap/voxel_grid --once
+ros2 topic hz /scan_safety
+ros2 topic echo /scan_safety --once
 ```
 
 若只看到深度点云但没有体素，先检查相机 profile、相机 TF、点云 QoS 和局部 Costmap；动态 profile 应查看 `Temporal Voxels (3D)`，不要将其与标准 `VoxelGrid` 混用。

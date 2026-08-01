@@ -46,10 +46,13 @@ controller_server:
         # 9.0 inflation decay used by this map, cost 20 is reached roughly
         # 0.50 m from a lethal actor cell: just outside the 0.33 m
         # circumscribed robot bound plus the actor guard's 0.14 m clearance.
-        # This makes MPPI deviate before the kinematic actor has to safety
-        # yield, while full-footprint collision checking remains unchanged.
+        # The v23 G2 route showed that the former 0.60 m envelope could still
+        # let a fast local-bypass actor reach its own guard while the robot
+        # was committed to the same swept arc.  Keep hard footprint collision
+        # checking unchanged, but make the dynamic-only soft cost salient
+        # early enough for the next MPPI rollout to choose a different arc.
         near_collision_cost: 20
-        cost_weight: 2.50
+        cost_weight: 4.00
       PathFollowCritic:
         cost_weight: 14.0
 
@@ -76,20 +79,19 @@ local_costmap:
           inf_is_valid: true
           raytrace_min_range: 0.0
           raytrace_max_range: 25.0
-          # Preserve LiDAR marking for a dynamic cube after its closest face
-          # crosses the former 0.40 m cut-off.  Otherwise the local costmap
-          # clears the actor precisely during the near-field bypass and MPPI
-          # can select a sub-0.10 m path.  0.10 m remains below valid robot
-          # exterior returns and is used only by this dynamic profile.
-          obstacle_min_range: 0.10
+          # /scan_safety has already removed the padded robot envelope, so the
+          # local controller may retain obstacle returns throughout the
+          # footprint-adjacent safety shell.
+          obstacle_min_range: 0.05
           obstacle_max_range: 25.0
       inflation_layer:
-        # Dynamic actors are 0.40 m cubes.  Extend the base 0.40 m
-        # inflation envelope by 0.20 m so the selected MPPI trajectory
-        # maintains the campaign's required >=0.10 m actor clearance instead
-        # of merely avoiding a physical collision at the footprint boundary.
-        # This overlay is dynamic-only; the static profile is unchanged.
-        inflation_radius: 0.60
+        # Dynamic actors are 0.40 m cubes.  The v23 G2 safety failure reached
+        # the actor-side guard before the controller changed its arc.  Use a
+        # 0.75 m dynamic-only envelope so the 15 Hz controller receives a
+        # meaningful gradient before the >=0.10 m acceptance boundary.  The
+        # static profile, physical footprint, and hard collision test remain
+        # unchanged.
+        inflation_radius: 0.75
       # STVL is a drop-in Costmap2D voxel plugin.  It consumes the same RGB-D
       # PointCloud2 as the base VoxelLayer but tracks an age per voxel.
       depth_stvl_layer:
@@ -164,6 +166,20 @@ global_costmap:
           raytrace_max_range: 25.0
           obstacle_min_range: 0.40
           obstacle_max_range: 25.0
+
+behavior_server:
+  ros__parameters:
+    # v25 G2 safety repair: dynamic runs must never issue the shared
+    # dead-end-recovery BackUp command without a costmap look-ahead.  The v24
+    # physical-contact evidence latched while the robot was reversing at
+    # -0.18 m/s after the dynamic actor had already parked elsewhere.  Keep
+    # the base profile's 0.0 setting for its validated narrow static passage,
+    # but make BackUp predict one second of the reverse sweep here.  A blocked
+    # recovery returns failure to the existing RoundRobin, which can Spin,
+    # Wait, and replan; it must not blindly reverse into an occupied cell.
+    # This does not change any actor geometry, trajectory, Collision Monitor,
+    # physical-contact criterion, or normal MPPI tracking command.
+    simulate_ahead_time: 1.0
 
 velocity_smoother:
   ros__parameters:

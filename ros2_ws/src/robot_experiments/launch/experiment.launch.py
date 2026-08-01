@@ -27,6 +27,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument("output_directory", default_value="data/experiment_runs"),
             DeclareLaunchArgument("record_evidence", default_value="true"),
+            DeclareLaunchArgument("record_bag", default_value="true"),
+            DeclareLaunchArgument("authorization_only", default_value="false"),
             DeclareLaunchArgument("resume", default_value="false"),
             DeclareLaunchArgument("require_successful_resume", default_value="false"),
             DeclareLaunchArgument("run_indices", default_value=""),
@@ -36,6 +38,15 @@ def generate_launch_description():
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
+            # Evidence-only fence used by Stage 2.2-R2C4-R2.  These values do
+            # not alter localization, planning, costmaps, or control.
+            DeclareLaunchArgument("require_pregoal_authorization", default_value="false"),
+            DeclareLaunchArgument("pregoal_authorization_path", default_value=""),
+            DeclareLaunchArgument("lifecycle_jsonl_path", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_receipt", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_schema", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_campaign", default_value=""),
+            DeclareLaunchArgument("pregoal_expected_prereg_sha256", default_value=""),
             Node(
                 package="robot_experiments",
                 executable="experiment_runner",
@@ -48,6 +59,10 @@ def generate_launch_description():
                         "spawn_poses_file": LaunchConfiguration("spawn_poses_file"),
                         "output_directory": LaunchConfiguration("output_directory"),
                         "record_evidence": LaunchConfiguration("record_evidence"),
+                        "record_bag": LaunchConfiguration("record_bag"),
+                        "authorization_only": ParameterValue(
+                            LaunchConfiguration("authorization_only"), value_type=bool
+                        ),
                         "resume": LaunchConfiguration("resume"),
                         "require_successful_resume": ParameterValue(
                             LaunchConfiguration("require_successful_resume"),
@@ -65,6 +80,28 @@ def generate_launch_description():
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
                         "dynamic_seed": LaunchConfiguration("dynamic_seed"),
+                        "require_pregoal_authorization": ParameterValue(
+                            LaunchConfiguration("require_pregoal_authorization"),
+                            value_type=bool,
+                        ),
+                        "pregoal_authorization_path": LaunchConfiguration(
+                            "pregoal_authorization_path"
+                        ),
+                        "lifecycle_jsonl_path": LaunchConfiguration(
+                            "lifecycle_jsonl_path"
+                        ),
+                        "pregoal_expected_receipt": LaunchConfiguration(
+                            "pregoal_expected_receipt"
+                        ),
+                        "pregoal_expected_schema": LaunchConfiguration(
+                            "pregoal_expected_schema"
+                        ),
+                        "pregoal_expected_campaign": LaunchConfiguration(
+                            "pregoal_expected_campaign"
+                        ),
+                        "pregoal_expected_prereg_sha256": LaunchConfiguration(
+                            "pregoal_expected_prereg_sha256"
+                        ),
                     }
                 ],
             ),
