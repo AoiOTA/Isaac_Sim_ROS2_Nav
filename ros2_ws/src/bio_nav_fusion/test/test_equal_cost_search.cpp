@@ -3,6 +3,7 @@
 
 #include "bio_nav_fusion/bio_nav_grid_based.hpp"
 #include "bio_nav_fusion/cognitive_risk_layer.hpp"
+#include "bio_nav_fusion/local_risk_grid_layer.hpp"
 #include "gtest/gtest.h"
 #include "nav2_costmap_2d/cost_values.hpp"
 
@@ -153,4 +154,44 @@ TEST(CognitiveRiskLayer, fault_matrix_rejects_untrusted_risk_inputs)
 
   prior.dynamic_cost[7] = std::numeric_limits<float>::quiet_NaN();
   EXPECT_EQ(validate(), "nonfinite");
+}
+
+TEST(LocalRiskGridLayer, validates_local_geometry_identity_and_health)
+{
+  using bio_nav_fusion::LocalRiskGridLayer;
+  bio_nav_interfaces::msg::LocalRiskGrid grid;
+  grid.schema_version = "bio_nav_local_risk_grid_v1";
+  grid.header.frame_id = "base_link";
+  grid.width = 32;
+  grid.height = 32;
+  grid.resolution = 0.5F;
+  grid.origin_x = -8.0F;
+  grid.origin_y = -8.0F;
+  grid.horizon_s = 0.8F;
+  grid.healthy = true;
+  grid.reliability = 0.9F;
+  grid.ood_probability = 0.1F;
+  grid.reset_epoch = 3;
+  grid.map_version = "map";
+  grid.model_sha256 = "model";
+  grid.qualification_receipt_sha256 = "qualification";
+  grid.risk.fill(0.0F);
+  EXPECT_EQ(
+    LocalRiskGridLayer::validateGrid(
+      &grid, 0.1, 0.5, 0.6, 0.4, 3, "map", "model", "qualification"),
+    "");
+  grid.rejection_mask = 4;
+  EXPECT_EQ(
+    LocalRiskGridLayer::validateGrid(
+      &grid, 0.1, 0.5, 0.6, 0.4, 3, "map", "model", "qualification"),
+    "risk_unhealthy");
+}
+
+TEST(LocalRiskGridLayer, risk_cost_is_strictly_nonlethal)
+{
+  using bio_nav_fusion::LocalRiskGridLayer;
+  EXPECT_EQ(LocalRiskGridLayer::mapRiskCost(0.49F, 0.5F, 80), 0);
+  EXPECT_EQ(LocalRiskGridLayer::mapRiskCost(0.5F, 0.5F, 80), 1);
+  EXPECT_EQ(LocalRiskGridLayer::mapRiskCost(1.0F, 0.5F, 80), 80);
+  EXPECT_LT(LocalRiskGridLayer::mapRiskCost(1.0F, 0.5F, 252), 254);
 }

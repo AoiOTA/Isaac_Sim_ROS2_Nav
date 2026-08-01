@@ -46,6 +46,7 @@ ament_target_dependencies(bio_nav_planner_plugin
 
 add_library(bio_nav_costmap_plugin SHARED
   src/cognitive_risk_layer.cpp
+  src/local_risk_grid_layer.cpp
 )
 target_include_directories(bio_nav_costmap_plugin PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

@@ -21,6 +21,8 @@ def test_nav2_profiles_are_bounded_and_normalized():
         'bio_nav_risk_only'
     assert validate_nav2_profile('bio_nav_tiebreak_risk') == \
         'bio_nav_tiebreak_risk'
+    assert validate_nav2_profile('bio_nav_rgbd_risk_shadow') == \
+        'bio_nav_rgbd_risk_shadow'
     with pytest.raises(ValueError, match='nav2_profile'):
         validate_nav2_profile('benchmark-custom')
 
