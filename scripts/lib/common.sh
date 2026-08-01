@@ -89,10 +89,11 @@ source_ros() {
 }
 
 source_bio_nav_interfaces_underlay() {
-  local candidate
+  local candidate interface_prefix
   local -a candidates=()
 
-  if ros2 pkg prefix bio_nav_interfaces >/dev/null 2>&1; then
+  if interface_prefix="$(ros2 pkg prefix bio_nav_interfaces 2>/dev/null)" \
+      && [[ -f "${interface_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/local_risk_grid.hpp" ]]; then
     return 0
   fi
   [[ -d "${PROJECT_ROOT}/ros2_ws/src/bio_nav_fusion" ]] || return 0
@@ -101,6 +102,9 @@ source_bio_nav_interfaces_underlay() {
     candidates+=("${BIO_NAV_INTERFACES_SETUP}")
   fi
   candidates+=(
+    "${PROJECT_ROOT}/../Bio_Nav_Integration/install/setup.bash"
+    "${PROJECT_ROOT}/../../repos/Bio_Nav_Integration/install/setup.bash"
+    "${PROJECT_ROOT}/../../../repos/Bio_Nav_Integration/install/setup.bash"
     "${PROJECT_ROOT}/../Bio_Nav_Integration/ros2_ws/install/setup.bash"
     "${PROJECT_ROOT}/../../repos/Bio_Nav_Integration/ros2_ws/install/setup.bash"
     "${PROJECT_ROOT}/../../../repos/Bio_Nav_Integration/ros2_ws/install/setup.bash"
@@ -111,14 +115,16 @@ source_bio_nav_interfaces_underlay() {
     # shellcheck disable=SC1090
     source "${candidate}"
     set -u
-    if ros2 pkg prefix bio_nav_interfaces >/dev/null 2>&1; then
+    interface_prefix="$(ros2 pkg prefix bio_nav_interfaces 2>/dev/null || true)"
+    if [[ -n "${interface_prefix}" \
+          && -f "${interface_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/local_risk_grid.hpp" ]]; then
       export BIO_NAV_INTERFACES_SETUP="${candidate}"
       log_info "using BioNav interfaces underlay: ${candidate}"
       return 0
     fi
   done
 
-  die "bio_nav_fusion requires bio_nav_interfaces; build Integration first and set BIO_NAV_INTERFACES_SETUP=/absolute/path/to/Bio_Nav_Integration/ros2_ws/install/setup.bash"
+  die "bio_nav_fusion requires the Attempt-21 bio_nav_interfaces build; build Integration first and set BIO_NAV_INTERFACES_SETUP=/absolute/path/to/Bio_Nav_Integration/install/setup.bash"
 }
 
 prepare_runtime_directory() {
