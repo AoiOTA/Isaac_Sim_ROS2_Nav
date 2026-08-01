@@ -1,0 +1,43 @@
+from pathlib import Path
+
+import yaml
+
+
+CONFIG = Path(__file__).resolve().parents[1] / "config"
+SEEDS = {
+    ("development", "static"): (18401, 18440),
+    ("development", "dynamic"): (18501, 18540),
+    ("gate", "static"): (18601, 18610),
+    ("gate", "dynamic"): (18701, 18710),
+    ("confirmation", "static"): (18801, 18810),
+    ("confirmation", "dynamic"): (18901, 18910),
+}
+
+
+def test_attempt21_scenarios_are_adjacent_renderer_only_pairs():
+    for (phase, mode), (first, last) in SEEDS.items():
+        source = CONFIG / f"isaac_kujiale_dataset_v3_attempt21_{phase}_{mode}.yaml"
+        payload = yaml.safe_load(source.read_text(encoding="utf-8"))
+        scenario = payload["scenario"]
+        matrix = scenario["runs"]["matrix"]
+        assert scenario["id"] == f"isaac_kujiale_dataset_v3_attempt21_{phase}_{mode}"
+        assert len(matrix) == 2 * (last - first + 1)
+        for offset, seed in enumerate(range(first, last + 1)):
+            baseline, appearance = matrix[2 * offset : 2 * offset + 2]
+            assert baseline["seed"] == appearance["seed"] == seed
+            assert baseline["case_id"] == appearance["case_id"]
+            assert baseline["variant_id"] == appearance["variant_id"]
+            assert baseline["appearance_profile_id"] == "baseline"
+            assert appearance["appearance_profile_id"] in {
+                "dim_warm", "dim_cool", "bright_warm", "bright_cool"
+            }
+            assert baseline["condition_id"] == f"{mode}_baseline"
+            assert appearance["condition_id"] == f"{mode}_appearance"
+
+
+def test_attempt21_scenarios_do_not_change_default_navigation_profiles():
+    for phase, mode in SEEDS:
+        source = CONFIG / f"isaac_kujiale_dataset_v3_attempt21_{phase}_{mode}.yaml"
+        scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+        assert "nav2_profile" not in scenario
+        assert scenario["map_version"] == "warehouse_new"
