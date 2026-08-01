@@ -315,7 +315,9 @@ def _launch_setup(context):
                     if nav2_profile in {
                         'dynamic_avoidance', 'bio_nav_planning_only',
                         'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
-                        'bio_nav_rgbd_risk_shadow'}
+                        'bio_nav_rgbd_risk_shadow',
+                        'bio_nav_rgbd_risk_ab',
+                        'bio_nav_rgbd_risk_static_opt_in'}
                     else 'voxel_grid'
                 ),
             },
@@ -447,7 +449,8 @@ def generate_launch_description():
             default_value='stable',
             description=(
                 'stable, performance, dynamic_avoidance, or optional BioNav '
-                'planning-only, risk-only, combined, RGB-D risk Shadow overlay')),
+                'planning-only, risk-only, combined, RGB-D risk Shadow, '
+                'controlled RGB-D static A/B, or explicit static opt-in overlay')),
         DeclareLaunchArgument(
             'nav2_profile_params_file',
             default_value='',
