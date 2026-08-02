@@ -31,6 +31,7 @@ STATIC_V5_SEEDS = {
     "confirmation": (22801, 22810),
 }
 STATIC_ONLINE_V6_SEEDS = tuple(range(22401, 22421))
+STATIC_ONLINE_V7_SEEDS = tuple(range(23001, 23011))
 
 
 def test_attempt21_scenarios_are_adjacent_renderer_only_pairs():
@@ -137,6 +138,18 @@ def test_attempt21_static_online_v6_is_reserved_for_motion_repair():
     matrix = scenario["runs"]["matrix"]
     assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V6_SEEDS
     assert all(row["variant_id"] == "attempt21_static_ab_v6" for row in matrix)
+
+
+def test_attempt21_static_online_v7_uses_ten_fresh_user_approved_routes():
+    source = CONFIG / "isaac_kujiale_attempt21_static_ab_v7.yaml"
+    scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_ab_v7"
+    matrix = scenario["runs"]["matrix"]
+    assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V7_SEEDS
+    assert all(row["variant_id"] == "attempt21_static_ab_v7" for row in matrix)
+    assert [row["appearance_profile_id"] for row in matrix] == [
+        "baseline", "dim_warm", "dim_cool", "bright_warm", "bright_cool"
+    ] * 2
 
 
 def test_attempt21_dynamic_variants_exist_in_every_selected_obstacle_case():
