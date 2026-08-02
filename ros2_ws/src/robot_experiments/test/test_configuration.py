@@ -240,31 +240,38 @@ def test_4x20_static_and_dynamic_pairs_are_balanced_and_seed_paired():
 
 
 def test_attempt21_static_ab_uses_fresh_frozen_rows_and_six_map_extrinsic_obstacles():
-    scenario = load_scenario(CONFIG / "isaac_kujiale_attempt21_static_ab.yaml")
-    assert scenario.scenario_type == "static"
-    assert [row.seed for row in scenario.run_matrix] == list(range(19001, 19021))
-    assert {row.condition_id for row in scenario.run_matrix} == {"static_ab"}
-    assert {row.variant_id for row in scenario.run_matrix} == {
-        "attempt21_static_ab_v1"
-    }
-    assert Counter(row.appearance_profile_id for row in scenario.run_matrix) == Counter(
-        {
-            "baseline": 4,
-            "dim_warm": 4,
-            "dim_cool": 4,
-            "bright_warm": 4,
-            "bright_cool": 4,
-        }
+    revisions = (
+        ("isaac_kujiale_attempt21_static_ab.yaml", 19001, "attempt21_static_ab_v1"),
+        ("isaac_kujiale_attempt21_static_ab_v2.yaml", 19101, "attempt21_static_ab_v2"),
     )
-    assert [item["id"] for item in scenario.obstacles["static"]] == [
-        "rgbd_low_box_west",
-        "rgbd_low_box_center",
-        "rgbd_low_box_east",
-        "rgbd_low_box_north",
-        "rgbd_low_bar_east",
-        "rgbd_low_bar_north",
-    ]
-    assert scenario.obstacle_trajectories == ()
+    for filename, first_seed, variant_id in revisions:
+        scenario = load_scenario(CONFIG / filename)
+        assert scenario.scenario_type == "static"
+        assert [row.seed for row in scenario.run_matrix] == list(
+            range(first_seed, first_seed + 20)
+        )
+        assert {row.condition_id for row in scenario.run_matrix} == {"static_ab"}
+        assert {row.variant_id for row in scenario.run_matrix} == {variant_id}
+        assert Counter(
+            row.appearance_profile_id for row in scenario.run_matrix
+        ) == Counter(
+            {
+                "baseline": 4,
+                "dim_warm": 4,
+                "dim_cool": 4,
+                "bright_warm": 4,
+                "bright_cool": 4,
+            }
+        )
+        assert [item["id"] for item in scenario.obstacles["static"]] == [
+            "rgbd_low_box_west",
+            "rgbd_low_box_center",
+            "rgbd_low_box_east",
+            "rgbd_low_box_north",
+            "rgbd_low_bar_east",
+            "rgbd_low_bar_north",
+        ]
+        assert scenario.obstacle_trajectories == ()
 
 
 def test_r2c4_development_matrix_is_new_and_balanced():
