@@ -6,13 +6,16 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "bio_nav_interfaces/msg/local_risk_grid.hpp"
 #include "bio_nav_interfaces/msg/risk_layer_status.hpp"
+#include "geometry_msgs/msg/point.hpp"
 #include "nav2_costmap_2d/costmap_layer.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
 #include "std_msgs/msg/empty.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace bio_nav_fusion
 {
@@ -52,6 +55,10 @@ private:
   void publishStatus(
     bool applied, const std::string & reason, double age_s,
     uint32_t active_cells, uint8_t maximum_cost);
+  void publishVisualization(
+    bool applied, const std::string & reason,
+    const std::vector<geometry_msgs::msg::Point> & points,
+    const std::vector<uint8_t> & costs, uint8_t maximum_cost);
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::LocalRiskGrid::SharedPtr latest_;
@@ -77,6 +84,10 @@ private:
   rclcpp::Subscription<std_msgs::msg::Empty>::SharedPtr reset_subscription_;
   rclcpp_lifecycle::LifecyclePublisher<
     bio_nav_interfaces::msg::RiskLayerStatus>::SharedPtr status_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<
+    visualization_msgs::msg::MarkerArray>::SharedPtr visualization_publisher_;
+  double robot_x_{0.0};
+  double robot_y_{0.0};
 };
 
 }  // namespace bio_nav_fusion

@@ -576,6 +576,8 @@ Visualization Manager:
           Namespaces:
             Canvas: true
             Dynamic Risk: true
+            Local BEV Label: true
+            Local BEV Prediction: true
             Motion Belief: true
             Motion Peak: true
             Status: true
@@ -586,6 +588,31 @@ Visualization Manager:
             History Policy: Keep Last
             Reliability Policy: Reliable
             Value: /bio_nav/module2/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 Applied Nav2 Risk
+          Namespaces:
+            Nav2 Risk Status: true
+            Projected Global Risk: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/local_risk_layer/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 Planning Decision
+          Namespaces:
+            Planning Decision: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/planner/rviz_markers
           Value: true
         - Alpha: 0.25
           Binary representation: false

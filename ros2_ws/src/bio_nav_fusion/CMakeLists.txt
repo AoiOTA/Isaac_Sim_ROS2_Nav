@@ -20,6 +20,7 @@ find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_library(bio_nav_planner_plugin SHARED
   src/bio_nav_grid_based.cpp
@@ -43,6 +44,7 @@ ament_target_dependencies(bio_nav_planner_plugin
   std_msgs
   tf2
   tf2_geometry_msgs
+  visualization_msgs
 )
 
 add_library(bio_nav_costmap_plugin SHARED
@@ -72,6 +74,7 @@ ament_target_dependencies(bio_nav_costmap_plugin
   std_msgs
   tf2
   tf2_geometry_msgs
+  visualization_msgs
 )
 
 pluginlib_export_plugin_description_file(nav2_core bio_nav_planners.xml)

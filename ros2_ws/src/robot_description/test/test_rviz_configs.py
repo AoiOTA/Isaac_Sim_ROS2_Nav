@@ -164,8 +164,27 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert module2['Namespaces']['Motion Belief'] is True
     assert module2['Namespaces']['Motion Peak'] is True
     assert module2['Namespaces']['Dynamic Risk'] is True
+    assert module2['Namespaces']['Local BEV Prediction'] is True
+    assert module2['Namespaces']['Local BEV Label'] is True
     assert module2['Namespaces']['Status'] is True
     assert module2['Namespaces']['Visual Candidate'] is False
+    applied = _named(config, 'Module2 Applied Nav2 Risk')
+    _assert_topic(
+        applied,
+        '/bio_nav/local_risk_layer/rviz_markers',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert applied['Namespaces']['Projected Global Risk'] is True
+    assert applied['Namespaces']['Nav2 Risk Status'] is True
+    planning = _named(config, 'Module2 Planning Decision')
+    _assert_topic(
+        planning,
+        '/bio_nav/planner/rviz_markers',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert planning['Namespaces']['Planning Decision'] is True
     raw_risk = _named(config, 'Module2 Dynamic Risk Raw')
     assert raw_risk['Enabled'] is False
     assert raw_risk['Color Scheme'] == 'costmap'

@@ -99,6 +99,9 @@ void LocalRiskGridLayer::onInitialize()
     options);
   status_publisher_ = node->create_publisher<bio_nav_interfaces::msg::RiskLayerStatus>(
     "/bio_nav/local_risk_layer/status", rclcpp::QoS(10).reliable());
+  visualization_publisher_ = node->create_publisher<
+    visualization_msgs::msg::MarkerArray>(
+    "/bio_nav/local_risk_layer/rviz_markers", rclcpp::QoS(1).reliable());
   matchSize();
   resetMaps();
 }
@@ -108,12 +111,18 @@ void LocalRiskGridLayer::activate()
   if (status_publisher_) {
     status_publisher_->on_activate();
   }
+  if (visualization_publisher_) {
+    visualization_publisher_->on_activate();
+  }
 }
 
 void LocalRiskGridLayer::deactivate()
 {
   if (status_publisher_) {
     status_publisher_->on_deactivate();
+  }
+  if (visualization_publisher_) {
+    visualization_publisher_->on_deactivate();
   }
 }
 
@@ -153,6 +162,8 @@ void LocalRiskGridLayer::updateBounds(
   double robot_x, double robot_y, double, double * min_x, double * min_y,
   double * max_x, double * max_y)
 {
+  robot_x_ = robot_x;
+  robot_y_ = robot_y;
   if (shadow_only_) {
     // A non-writing Shadow must not enlarge the aggregate update bounds: even
     // a tiny artificial window makes downstream layers (notably inflation)
@@ -276,6 +287,7 @@ void LocalRiskGridLayer::updateCosts(
       updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     }
     publishStatus(false, enabled_ ? reason : "disabled", age_s, 0, 0);
+    publishVisualization(false, enabled_ ? reason : "disabled", {}, {}, 0);
     return;
   }
 
@@ -294,12 +306,15 @@ void LocalRiskGridLayer::updateCosts(
       updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     }
     publishStatus(false, "tf_invalid", age_s, 0, 0);
+    publishVisualization(false, "tf_invalid", {}, {}, 0);
     return;
   }
 
   std::array<bool, 1024> next_active{};
   uint32_t active_count = 0;
   uint8_t maximum_written = 0;
+  std::vector<geometry_msgs::msg::Point> visualization_points;
+  std::vector<uint8_t> visualization_costs;
   for (std::size_t index = 0; index < grid->risk.size(); ++index) {
     const auto threshold = previous_active[index] ? clear_threshold_ : activation_threshold_;
     const float probability = grid->risk[index];
@@ -343,6 +358,8 @@ void LocalRiskGridLayer::updateCosts(
       continue;
     }
     setCost(mx, my, std::max(getCost(mx, my), cost));
+    visualization_points.push_back(global.point);
+    visualization_costs.push_back(cost);
     ++active_count;
     maximum_written = std::max(maximum_written, cost);
   }
@@ -358,6 +375,81 @@ void LocalRiskGridLayer::updateCosts(
   publishStatus(
     !shadow_only_, shadow_only_ ? "shadow_only" : "", age_s,
     active_count, maximum_written);
+  publishVisualization(
+    !shadow_only_, shadow_only_ ? "shadow_only" : "",
+    visualization_points, visualization_costs, maximum_written);
+}
+
+void LocalRiskGridLayer::publishVisualization(
+  bool applied, const std::string & reason,
+  const std::vector<geometry_msgs::msg::Point> & points,
+  const std::vector<uint8_t> & costs, uint8_t maximum_cost)
+{
+  if (!visualization_publisher_ || !visualization_publisher_->is_activated()) {
+    return;
+  }
+  visualization_msgs::msg::MarkerArray array;
+  visualization_msgs::msg::Marker clear;
+  clear.header.frame_id = layered_costmap_->getGlobalFrameID();
+  clear.header.stamp = clock_->now();
+  clear.ns = "Module2 Applied Risk";
+  clear.id = 0;
+  clear.action = visualization_msgs::msg::Marker::DELETEALL;
+  array.markers.push_back(clear);
+
+  visualization_msgs::msg::Marker cells;
+  cells.header = clear.header;
+  cells.ns = "Projected Global Risk";
+  cells.id = 1;
+  cells.type = visualization_msgs::msg::Marker::CUBE_LIST;
+  cells.action = visualization_msgs::msg::Marker::ADD;
+  cells.pose.orientation.w = 1.0;
+  cells.scale.x = 0.46;
+  cells.scale.y = 0.46;
+  cells.scale.z = 0.24;
+  cells.lifetime = rclcpp::Duration::from_seconds(0.75);
+  cells.points = points;
+  for (const auto cost : costs) {
+    std_msgs::msg::ColorRGBA color;
+    const auto relative = std::clamp(static_cast<float>(cost) / 80.0F, 0.0F, 1.0F);
+    color.r = 0.55F + 0.40F * relative;
+    color.g = 0.10F;
+    color.b = 1.0F;
+    color.a = 0.40F + 0.45F * relative;
+    cells.colors.push_back(color);
+  }
+  array.markers.push_back(cells);
+
+  visualization_msgs::msg::Marker status;
+  status.header = clear.header;
+  status.ns = "Nav2 Risk Status";
+  status.id = 2;
+  status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+  status.action = visualization_msgs::msg::Marker::ADD;
+  status.pose.position.x = robot_x_;
+  status.pose.position.y = robot_y_ - 1.3;
+  status.pose.position.z = 1.8;
+  status.pose.orientation.w = 1.0;
+  status.scale.z = 0.30;
+  status.lifetime = rclcpp::Duration::from_seconds(0.75);
+  if (applied) {
+    status.text = "NAV2 GLOBAL RISK: APPLIED (purple)\n" +
+      std::to_string(points.size()) + " cells, max cost=" +
+      std::to_string(maximum_cost) + " nonlethal\nMODULE3 owns safety and cmd_vel";
+    status.color.r = 0.85F;
+    status.color.g = 0.25F;
+    status.color.b = 1.0F;
+    status.color.a = 1.0F;
+  } else {
+    status.text = "NAV2 GLOBAL RISK: NOT APPLIED\nreason=" + reason +
+      "\nMODULE3 traditional safety remains active";
+    status.color.r = 0.65F;
+    status.color.g = 0.65F;
+    status.color.b = 0.65F;
+    status.color.a = 1.0F;
+  }
+  array.markers.push_back(status);
+  visualization_publisher_->publish(array);
 }
 
 void LocalRiskGridLayer::publishStatus(

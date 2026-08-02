@@ -152,6 +152,9 @@ void BioNavGridBased::configure(
   decision_publisher_ = node->create_publisher<
     bio_nav_interfaces::msg::PlannerDecision>(
     "/bio_nav/planner/decision", rclcpp::QoS(10).reliable());
+  visualization_publisher_ = node->create_publisher<
+    visualization_msgs::msg::MarkerArray>(
+    "/bio_nav/planner/rviz_markers", rclcpp::QoS(1).reliable());
 
   stock_ = std::make_unique<TieBreakSmacPlanner2D>();
   stock_->configure(parent, name_ + "_fallback", tf, costmap_ros_);
@@ -202,6 +205,7 @@ void BioNavGridBased::cleanup()
     stock_.reset();
   }
   decision_publisher_.reset();
+  visualization_publisher_.reset();
   costmap_ros_.reset();
   clock_.reset();
 }
@@ -214,12 +218,18 @@ void BioNavGridBased::activate()
   if (decision_publisher_) {
     decision_publisher_->on_activate();
   }
+  if (visualization_publisher_) {
+    visualization_publisher_->on_activate();
+  }
 }
 
 void BioNavGridBased::deactivate()
 {
   if (decision_publisher_) {
     decision_publisher_->on_deactivate();
+  }
+  if (visualization_publisher_) {
+    visualization_publisher_->on_deactivate();
   }
   if (stock_) {
     stock_->deactivate();
@@ -252,6 +262,8 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
   const geometry_msgs::msg::PoseStamped & goal,
   std::function<bool()> cancel_checker)
 {
+  visualization_x_ = start.pose.position.x;
+  visualization_y_ = start.pose.position.y;
   const double begin_s = clock_->now().seconds();
   uint32_t reset_epoch = 0;
   std::string map_version;
@@ -520,6 +532,47 @@ void BioNavGridBased::publishDecision(
   decision.motion_core_sha256 = motion_core_sha256_;
   decision.module3_map_sha256 = expected_module3_map_sha256_;
   decision_publisher_->publish(decision);
+  if (visualization_publisher_ && visualization_publisher_->is_activated()) {
+    visualization_msgs::msg::MarkerArray array;
+    visualization_msgs::msg::Marker clear;
+    clear.header.frame_id = global_frame_;
+    clear.header.stamp = decision.stamp;
+    clear.ns = "Module2 Planning";
+    clear.id = 0;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    array.markers.push_back(clear);
+    visualization_msgs::msg::Marker status;
+    status.header = clear.header;
+    status.ns = "Planning Decision";
+    status.id = 1;
+    status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    status.action = visualization_msgs::msg::Marker::ADD;
+    status.pose.position.x = visualization_x_;
+    status.pose.position.y = visualization_y_ + 1.2;
+    status.pose.position.z = 2.2;
+    status.pose.orientation.w = 1.0;
+    status.scale.z = 0.32;
+    status.lifetime = rclcpp::Duration::from_seconds(4.0);
+    if (used) {
+      status.text = "MODULE2 PLANNING PRIOR: ADOPTED\nexpanded=" +
+        std::to_string(expanded_nodes) + " latency=" +
+        std::to_string(static_cast<int>(std::lround(latency_ms))) +
+        " ms\nMODULE3/Nav2 owns final path and cmd_vel";
+      status.color.r = 0.0F;
+      status.color.g = 1.0F;
+      status.color.b = 0.85F;
+      status.color.a = 1.0F;
+    } else {
+      status.text = "MODULE2 PLANNING PRIOR: FALLBACK\nreason=" + fallback_reason +
+        "\nstock Nav2 plan remains authoritative";
+      status.color.r = 1.0F;
+      status.color.g = 0.65F;
+      status.color.b = 0.0F;
+      status.color.a = 1.0F;
+    }
+    array.markers.push_back(status);
+    visualization_publisher_->publish(array);
+  }
 }
 
 }  // namespace bio_nav_fusion

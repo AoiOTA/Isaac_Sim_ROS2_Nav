@@ -18,6 +18,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp/executors/single_threaded_executor.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
+#include "visualization_msgs/msg/marker_array.hpp"
 
 namespace bio_nav_fusion
 {
@@ -83,6 +84,8 @@ private:
   std::unique_ptr<TieBreakSmacPlanner2D> stock_;
   rclcpp_lifecycle::LifecyclePublisher<
     bio_nav_interfaces::msg::PlannerDecision>::SharedPtr decision_publisher_;
+  rclcpp_lifecycle::LifecyclePublisher<
+    visualization_msgs::msg::MarkerArray>::SharedPtr visualization_publisher_;
   rclcpp::Node::SharedPtr client_node_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> client_executor_;
   std::thread client_thread_;
@@ -106,6 +109,8 @@ private:
   int service_timeout_ms_{100};
   double maximum_prior_age_s_{0.5};
   std::atomic<uint64_t> sequence_{0};
+  double visualization_x_{0.0};
+  double visualization_y_{0.0};
 };
 
 }  // namespace bio_nav_fusion
