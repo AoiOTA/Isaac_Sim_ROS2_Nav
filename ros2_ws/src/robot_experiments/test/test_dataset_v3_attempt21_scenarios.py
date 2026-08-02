@@ -36,19 +36,19 @@ STATIC_ONLINE_V8_SEEDS = tuple(range(23101, 23111))
 STATIC_ONLINE_V10_SEEDS = tuple(range(23301, 23311))
 STATIC_ONLINE_V11_SEEDS = tuple(range(23401, 23411))
 STATIC_ONLINE_V12_SEEDS = tuple(range(23501, 23511))
-STATIC_FUSION_SUPPLEMENT_V14_SEEDS = tuple(range(23601, 23611))
+STATIC_FUSION_SUPPLEMENT_V15_SEEDS = tuple(range(23601, 23611))
 STATIC_ONLINE_V9_SEEDS = tuple(range(23201, 23211))
 
 
-def test_attempt21_static_v14_fusion_supplement_preserves_six_obstacles():
-    source = CONFIG / "isaac_kujiale_attempt21_static_fusion_supplement_v14.yaml"
+def test_attempt21_static_v15_fusion_supplement_preserves_six_obstacles():
+    source = CONFIG / "isaac_kujiale_attempt21_static_fusion_supplement_v15.yaml"
     scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
-    assert scenario["id"] == "isaac_kujiale_attempt21_static_fusion_supplement_v14"
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_fusion_supplement_v15"
     assert tuple(row["seed"] for row in scenario["runs"]["matrix"]) == (
-        STATIC_FUSION_SUPPLEMENT_V14_SEEDS
+        STATIC_FUSION_SUPPLEMENT_V15_SEEDS
     )
     assert all(
-        row["variant_id"] == "attempt21_static_fusion_supplement_v14"
+        row["variant_id"] == "attempt21_static_fusion_supplement_v15"
         for row in scenario["runs"]["matrix"]
     )
     assert len(scenario["obstacles"]["static"]) == 6

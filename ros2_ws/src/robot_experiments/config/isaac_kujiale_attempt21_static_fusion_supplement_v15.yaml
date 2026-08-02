@@ -2,7 +2,7 @@
 # The six post-map RGB-D obstacles and ContactSensor task contract are unchanged.
 schema_version: 1
 scenario:
-  id: isaac_kujiale_attempt21_static_fusion_supplement_v14
+  id: isaac_kujiale_attempt21_static_fusion_supplement_v15
   type: static
   spawn_pose_name: long_route_start_g1
   map_version: warehouse_new
@@ -16,16 +16,16 @@ scenario:
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
-      - {seed: 23601, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: baseline}
-      - {seed: 23602, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: dim_warm}
-      - {seed: 23603, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: dim_cool}
-      - {seed: 23604, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: bright_warm}
-      - {seed: 23605, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: bright_cool}
-      - {seed: 23606, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: baseline}
-      - {seed: 23607, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: dim_warm}
-      - {seed: 23608, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: dim_cool}
-      - {seed: 23609, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: bright_warm}
-      - {seed: 23610, case_id: static, variant_id: attempt21_static_fusion_supplement_v14, condition_id: static_ab, appearance_profile_id: bright_cool}
+      - {seed: 23601, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: baseline}
+      - {seed: 23602, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: dim_warm}
+      - {seed: 23603, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: dim_cool}
+      - {seed: 23604, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: bright_warm}
+      - {seed: 23605, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: bright_cool}
+      - {seed: 23606, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: baseline}
+      - {seed: 23607, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: dim_warm}
+      - {seed: 23608, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: dim_cool}
+      - {seed: 23609, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: bright_warm}
+      - {seed: 23610, case_id: static, variant_id: attempt21_static_fusion_supplement_v15, condition_id: static_ab, appearance_profile_id: bright_cool}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
