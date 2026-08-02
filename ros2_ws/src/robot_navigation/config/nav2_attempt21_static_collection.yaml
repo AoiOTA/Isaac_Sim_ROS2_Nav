@@ -1,0 +1,58 @@
+# Attempt-21 static Dataset/Gate profile.
+#
+# Keep the verified stable controller budget and the default costmap contract.
+# Only the rear half of the Collision Monitor polygons is tapered to the
+# padded physical footprint.  A rectangular shell repeatedly locked the robot
+# in the G1->G2 doorway on harmless wall returns behind the axle.  The full
+# 0.175 m forward emergency-stop reserve and the front lateral shell remain.
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    FollowPath:
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 700
+      vx_std: 0.35
+      wz_std: 0.75
+      vx_max: 0.75
+      wz_max: 1.35
+      ax_max: 1.25
+      ax_min: -1.10
+      az_max: 3.50
+      gamma: 0.015
+      CostCritic:
+        cost_weight: 1.35
+      PathFollowCritic:
+        cost_weight: 10.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      obstacle_layer:
+        scan:
+          raytrace_min_range: 0.05
+          inf_is_valid: false
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      obstacle_layer:
+        scan:
+          raytrace_min_range: 0.40
+          inf_is_valid: false
+
+velocity_smoother:
+  ros__parameters:
+    smoothing_frequency: 20.0
+    max_velocity: [0.75, 0.0, 1.35]
+    min_velocity: [-0.25, 0.0, -1.35]
+    max_accel: [1.25, 0.0, 3.50]
+    max_decel: [-1.10, 0.0, -3.50]
+    feedback: OPEN_LOOP
+
+collision_monitor:
+  ros__parameters:
+    StopZone:
+      points: "[[0.430, 0.230], [0.430, -0.230], [0.000, -0.230], [-0.250, -0.215], [-0.250, 0.215], [0.000, 0.230]]"
+    SlowdownZone:
+      points: "[[0.550, 0.232], [0.550, -0.232], [0.000, -0.232], [-0.300, -0.217], [-0.300, 0.217], [0.000, 0.232]]"

@@ -344,6 +344,27 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30
 
 
+def test_attempt21_static_collection_tapers_only_the_rear_safety_shell():
+    profile = _profile('attempt21_static_collection')
+    collision = profile['collision_monitor']['ros__parameters']
+    stop = ast.literal_eval(collision['StopZone']['points'])
+    slowdown = ast.literal_eval(collision['SlowdownZone']['points'])
+
+    # Preserve the stable profile's forward stopping distance and full front
+    # shell.  Only returns behind the axle use the padded physical half-width.
+    assert max(x for x, _ in stop) == 0.430
+    assert max(y for x, y in stop if x >= 0.0) == 0.230
+    assert min(y for x, y in stop if x >= 0.0) == -0.230
+    assert max(y for x, y in stop if x < 0.0) == 0.215
+    assert min(y for x, y in stop if x < 0.0) == -0.215
+    assert min(x for x, _ in stop) <= -0.250
+
+    assert max(x for x, _ in slowdown) > max(x for x, _ in stop)
+    assert min(x for x, _ in slowdown) < min(x for x, _ in stop)
+    assert max(y for x, y in slowdown if x < 0.0) == 0.217
+    assert min(y for x, y in slowdown if x < 0.0) == -0.217
+
+
 def test_dead_end_recovery_backs_up_before_attempting_spin():
     config = _config()
     behavior = _params(config, 'behavior_server')
