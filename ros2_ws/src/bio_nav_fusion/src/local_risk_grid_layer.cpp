@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "geometry_msgs/msg/point_stamped.hpp"
+#include "nav2_costmap_2d/cost_values.hpp"
 #include "nav2_util/node_utils.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "tf2/time.h"
@@ -102,8 +103,14 @@ void LocalRiskGridLayer::onInitialize()
   visualization_publisher_ = node->create_publisher<
     visualization_msgs::msg::MarkerArray>(
     "/bio_nav/local_risk_layer/rviz_markers", rclcpp::QoS(1).reliable());
+  // CostmapLayer otherwise starts as NO_INFORMATION. max(NO_INFORMATION,
+  // risk_cost) stays unknown, so status can claim cells were applied while
+  // the private layer contributes no risk. A sparse additive/max layer must
+  // be FREE_SPACE everywhere except the cells explicitly written below.
+  default_value_ = nav2_costmap_2d::FREE_SPACE;
   matchSize();
   resetMaps();
+  previous_bounds_valid_ = false;
 }
 
 void LocalRiskGridLayer::activate()
@@ -174,11 +181,81 @@ void LocalRiskGridLayer::updateBounds(
     return;
   }
   useExtraBounds(min_x, min_y, max_x, max_y);
-  // The local grid is 16 m square. A yaw-independent radius safely covers
-  // every transformed corner without assuming map/base alignment.
-  constexpr double radius = 11.4;
-  touch(robot_x - radius, robot_y - radius, min_x, min_y, max_x, max_y);
-  touch(robot_x + radius, robot_y + radius, min_x, min_y, max_x, max_y);
+  // Include the previous sparse footprint once so the layered costmap can
+  // clear cells that disappeared. Touching the full 16 m BEV every cycle
+  // needlessly forces the static and inflation layers to recompute the whole
+  // Global Costmap and measurably perturbs navigation timing.
+  if (previous_bounds_valid_) {
+    touch(previous_min_x_, previous_min_y_, min_x, min_y, max_x, max_y);
+    touch(previous_max_x_, previous_max_y_, min_x, min_y, max_x, max_y);
+  }
+
+  bio_nav_interfaces::msg::LocalRiskGrid::SharedPtr grid;
+  std::array<bool, 1024> previous_active{};
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    grid = latest_;
+    previous_active = active_cells_;
+  }
+  const double age_s = grid ?
+    (clock_->now() - rclcpp::Time(grid->header.stamp)).seconds() :
+    std::numeric_limits<double>::infinity();
+  const auto reason = validateGrid(
+    grid.get(), age_s, max_message_age_s_, minimum_reliability_,
+    maximum_ood_probability_, reset_epoch_, expected_map_version_,
+    expected_model_sha256_, expected_qualification_sha256_);
+  bool current_valid = false;
+  double current_min_x = std::numeric_limits<double>::infinity();
+  double current_min_y = std::numeric_limits<double>::infinity();
+  double current_max_x = -std::numeric_limits<double>::infinity();
+  double current_max_y = -std::numeric_limits<double>::infinity();
+  if (enabled_ && reason.empty()) {
+    try {
+      const auto transform = tf_->lookupTransform(
+        layered_costmap_->getGlobalFrameID(), grid->header.frame_id,
+        rclcpp::Time(grid->header.stamp),
+        tf2::durationFromSec(transform_tolerance_s_));
+      for (std::size_t index = 0; index < grid->risk.size(); ++index) {
+        const auto threshold = previous_active[index] ?
+          clear_threshold_ : activation_threshold_;
+        if (grid->visibility[index] == 0U || grid->risk[index] < threshold) {
+          continue;
+        }
+        const auto row = static_cast<unsigned int>(index / 32U);
+        const auto column = static_cast<unsigned int>(index % 32U);
+        geometry_msgs::msg::PointStamped local;
+        local.header = grid->header;
+        local.point.x = grid->origin_x +
+          (static_cast<double>(column) + 0.5) * grid->resolution;
+        local.point.y = grid->origin_y +
+          (static_cast<double>(row) + 0.5) * grid->resolution;
+        if (std::hypot(local.point.x, local.point.y) < minimum_projection_range_m_) {
+          continue;
+        }
+        geometry_msgs::msg::PointStamped global;
+        tf2::doTransform(local, global, transform);
+        const auto half_cell = 0.5 * static_cast<double>(grid->resolution);
+        current_min_x = std::min(current_min_x, global.point.x - half_cell);
+        current_min_y = std::min(current_min_y, global.point.y - half_cell);
+        current_max_x = std::max(current_max_x, global.point.x + half_cell);
+        current_max_y = std::max(current_max_y, global.point.y + half_cell);
+        current_valid = true;
+      }
+    } catch (const tf2::TransformException &) {
+      current_valid = false;
+    }
+  }
+  if (current_valid) {
+    touch(current_min_x, current_min_y, min_x, min_y, max_x, max_y);
+    touch(current_max_x, current_max_y, min_x, min_y, max_x, max_y);
+  }
+  previous_bounds_valid_ = current_valid;
+  if (current_valid) {
+    previous_min_x_ = current_min_x;
+    previous_min_y_ = current_min_y;
+    previous_max_x_ = current_max_x;
+    previous_max_y_ = current_max_y;
+  }
   current_ = true;
 }
 

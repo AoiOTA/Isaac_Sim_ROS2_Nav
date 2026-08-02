@@ -88,6 +88,11 @@ private:
     visualization_msgs::msg::MarkerArray>::SharedPtr visualization_publisher_;
   double robot_x_{0.0};
   double robot_y_{0.0};
+  bool previous_bounds_valid_{false};
+  double previous_min_x_{0.0};
+  double previous_min_y_{0.0};
+  double previous_max_x_{0.0};
+  double previous_max_y_{0.0};
 };
 
 }  // namespace bio_nav_fusion
