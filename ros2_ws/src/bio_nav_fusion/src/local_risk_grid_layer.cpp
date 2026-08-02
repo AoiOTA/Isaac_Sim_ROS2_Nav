@@ -48,6 +48,9 @@ void LocalRiskGridLayer::onInitialize()
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".clear_threshold", rclcpp::ParameterValue(clear_threshold_));
   nav2_util::declare_parameter_if_not_declared(
+    node, name_ + ".minimum_projection_range_m",
+    rclcpp::ParameterValue(minimum_projection_range_m_));
+  nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".maximum_cost", rclcpp::ParameterValue(maximum_cost_));
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".expected_map_version", rclcpp::ParameterValue(expected_map_version_));
@@ -67,6 +70,8 @@ void LocalRiskGridLayer::onInitialize()
   node->get_parameter(name_ + ".maximum_ood_probability", maximum_ood_probability_);
   node->get_parameter(name_ + ".activation_threshold", activation_threshold_);
   node->get_parameter(name_ + ".clear_threshold", clear_threshold_);
+  node->get_parameter(
+    name_ + ".minimum_projection_range_m", minimum_projection_range_m_);
   node->get_parameter(name_ + ".maximum_cost", maximum_cost_);
   node->get_parameter(name_ + ".expected_map_version", expected_map_version_);
   node->get_parameter(name_ + ".expected_model_sha256", expected_model_sha256_);
@@ -79,6 +84,7 @@ void LocalRiskGridLayer::onInitialize()
   maximum_cost_ = std::clamp(maximum_cost_, 1, 80);
   activation_threshold_ = std::clamp(activation_threshold_, 0.01, 0.99);
   clear_threshold_ = std::clamp(clear_threshold_, 0.0, activation_threshold_);
+  minimum_projection_range_m_ = std::clamp(minimum_projection_range_m_, 0.0, 8.0);
 
   rclcpp::SubscriptionOptions options;
   options.callback_group = callback_group_;
@@ -300,7 +306,6 @@ void LocalRiskGridLayer::updateCosts(
     if (grid->visibility[index] == 0U || probability < threshold) {
       continue;
     }
-    next_active[index] = true;
     const auto cost = mapRiskCost(
       probability, static_cast<float>(threshold), maximum_cost_);
     if (shadow_only_) {
@@ -308,6 +313,7 @@ void LocalRiskGridLayer::updateCosts(
       // the deliberately tiny costmap audit window above.
       ++active_count;
       maximum_written = std::max(maximum_written, cost);
+      next_active[index] = true;
       continue;
     }
     const auto row = static_cast<unsigned int>(index / 32U);
@@ -316,6 +322,13 @@ void LocalRiskGridLayer::updateCosts(
     local.header = grid->header;
     local.point.x = grid->origin_x + (static_cast<double>(column) + 0.5) * grid->resolution;
     local.point.y = grid->origin_y + (static_cast<double>(row) + 0.5) * grid->resolution;
+    // The robot's existing Local Costmap, RGB-D obstacle layer, and Collision
+    // Monitor own near-field safety.  A controlled Global Costmap overlay may
+    // exclude that region to avoid double-inflating robot-relative evidence.
+    if (std::hypot(local.point.x, local.point.y) < minimum_projection_range_m_) {
+      continue;
+    }
+    next_active[index] = true;
     geometry_msgs::msg::PointStamped global;
     tf2::doTransform(local, global, transform);
     unsigned int mx = 0;

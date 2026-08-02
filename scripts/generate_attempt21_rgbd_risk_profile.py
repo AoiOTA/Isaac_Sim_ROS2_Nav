@@ -44,11 +44,19 @@ def build_profile(
     risk_model_sha256: str,
     risk_qualification_sha256: str,
     shadow_only: bool,
+    minimum_projection_range_m: float = 0.0,
+    maximum_cost: int = 80,
 ) -> dict:
     model_sha = require_sha256(risk_model_sha256, "risk_model_sha256")
     qualification_sha = require_sha256(
         risk_qualification_sha256, "risk_qualification_sha256"
     )
+    minimum_range = float(minimum_projection_range_m)
+    if not 0.0 <= minimum_range <= 8.0:
+        raise ValueError("minimum_projection_range_m must be in [0, 8]")
+    bounded_cost = int(maximum_cost)
+    if not 1 <= bounded_cost <= 80:
+        raise ValueError("maximum_cost must be in [1, 80]")
     source = yaml.safe_load(stable_profile.read_text(encoding="utf-8"))
     result = deepcopy(source)
     parameters = (
@@ -76,7 +84,8 @@ def build_profile(
         "maximum_ood_probability": 0.4,
         "activation_threshold": 0.5,
         "clear_threshold": 0.4,
-        "maximum_cost": 80,
+        "minimum_projection_range_m": minimum_range,
+        "maximum_cost": bounded_cost,
         "expected_map_version": WAREHOUSE_NEW_OCCUPANCY_VERSION,
         "expected_model_sha256": model_sha,
         "expected_qualification_sha256": qualification_sha,
@@ -111,6 +120,21 @@ def main() -> None:
         default="",
         help="required SHA-256 of the A/B authorization or final static delivery",
     )
+    parser.add_argument(
+        "--minimum-projection-range-m",
+        type=float,
+        default=0.0,
+        help=(
+            "exclude closer LocalRiskGrid cells from Global Costmap writes; "
+            "the existing Local Costmap and Collision Monitor retain near-field ownership"
+        ),
+    )
+    parser.add_argument(
+        "--maximum-cost",
+        type=int,
+        default=80,
+        help="nonlethal Global Costmap ceiling (1..80)",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
 
@@ -133,6 +157,8 @@ def main() -> None:
         risk_model_sha256=args.risk_model_sha256,
         risk_qualification_sha256=args.risk_qualification_sha256,
         shadow_only=not (args.controlled_static_ab or args.static_opt_in),
+        minimum_projection_range_m=args.minimum_projection_range_m,
+        maximum_cost=args.maximum_cost,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(
@@ -169,7 +195,8 @@ def main() -> None:
         "risk_qualification_sha256": require_sha256(
             args.risk_qualification_sha256, "risk_qualification_sha256"
         ),
-        "maximum_cost": 80,
+        "maximum_cost": args.maximum_cost,
+        "minimum_projection_range_m": args.minimum_projection_range_m,
         "local_costmap_modified": False,
         "stable_default_modified": False,
         "dynamic_default_modified": False,

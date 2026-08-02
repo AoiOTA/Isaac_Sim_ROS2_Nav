@@ -65,6 +65,7 @@ private:
   double maximum_ood_probability_{0.4};
   double activation_threshold_{0.5};
   double clear_threshold_{0.4};
+  double minimum_projection_range_m_{0.0};
   int maximum_cost_{80};
   std::string expected_map_version_;
   std::string expected_model_sha256_;

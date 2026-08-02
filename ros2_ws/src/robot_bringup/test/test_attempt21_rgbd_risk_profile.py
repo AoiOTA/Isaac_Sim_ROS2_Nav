@@ -40,6 +40,7 @@ def test_shadow_profile_is_nonwriting_and_identity_bound():
     assert risk["expected_model_sha256"] == "1" * 64
     assert risk["expected_qualification_sha256"] == "2" * 64
     assert risk["maximum_cost"] == 80
+    assert risk["minimum_projection_range_m"] == 0.0
 
 
 def test_controlled_ab_changes_only_global_overlay_and_stays_nonlethal():
@@ -51,10 +52,13 @@ def test_controlled_ab_changes_only_global_overlay_and_stays_nonlethal():
         risk_model_sha256="3" * 64,
         risk_qualification_sha256="4" * 64,
         shadow_only=False,
+        minimum_projection_range_m=1.0,
+        maximum_cost=20,
     )
     risk = layer(profile)["local_rgbd_risk_layer"]
     assert risk["shadow_only"] is False
-    assert risk["maximum_cost"] == 80
+    assert risk["maximum_cost"] == 20
+    assert risk["minimum_projection_range_m"] == 1.0
     assert profile["local_costmap"] == stable["local_costmap"]
     assert profile["controller_server"] == stable["controller_server"]
 
@@ -71,6 +75,37 @@ def test_profile_rejects_unbound_identity():
         assert "risk_model_sha256" in str(error)
     else:
         raise AssertionError("profile accepted an invalid model identity")
+
+
+def test_profile_rejects_out_of_bounds_projection_range():
+    try:
+        MODULE.build_profile(
+            STABLE,
+            risk_model_sha256="1" * 64,
+            risk_qualification_sha256="2" * 64,
+            shadow_only=False,
+            minimum_projection_range_m=8.1,
+        )
+    except ValueError as error:
+        assert "minimum_projection_range_m" in str(error)
+    else:
+        raise AssertionError("profile accepted an out-of-bounds projection range")
+
+
+def test_profile_rejects_lethal_or_zero_cost_ceiling():
+    for value in (0, 81):
+        try:
+            MODULE.build_profile(
+                STABLE,
+                risk_model_sha256="1" * 64,
+                risk_qualification_sha256="2" * 64,
+                shadow_only=False,
+                maximum_cost=value,
+            )
+        except ValueError as error:
+            assert "maximum_cost" in str(error)
+        else:
+            raise AssertionError("profile accepted an unsafe cost ceiling")
 
 
 def test_static_opt_in_cli_requires_and_binds_final_delivery_sha(tmp_path):
