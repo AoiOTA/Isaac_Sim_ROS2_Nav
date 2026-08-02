@@ -147,22 +147,16 @@ void LocalRiskGridLayer::updateBounds(
   double robot_x, double robot_y, double, double * min_x, double * min_y,
   double * max_x, double * max_y)
 {
-  useExtraBounds(min_x, min_y, max_x, max_y);
   if (shadow_only_) {
-    // Shadow must execute validation/status logic without making the Global
-    // Costmap recompute the full 16 m BEV on every cycle.  A small audit
-    // window is sufficient to schedule updateCosts; no master costs are
-    // written in this mode.
-    constexpr double audit_radius = 0.05;
-    touch(
-      robot_x - audit_radius, robot_y - audit_radius,
-      min_x, min_y, max_x, max_y);
-    touch(
-      robot_x + audit_radius, robot_y + audit_radius,
-      min_x, min_y, max_x, max_y);
+    // A non-writing Shadow must not enlarge the aggregate update bounds: even
+    // a tiny artificial window makes downstream layers (notably inflation)
+    // recompute master costs and can change planner timing/behaviour.  The
+    // obstacle/static layers already schedule regular updateCosts calls, so
+    // Shadow validation and status publication remain observable there.
     current_ = true;
     return;
   }
+  useExtraBounds(min_x, min_y, max_x, max_y);
   // The local grid is 16 m square. A yaw-independent radius safely covers
   // every transformed corner without assuming map/base alignment.
   constexpr double radius = 11.4;
