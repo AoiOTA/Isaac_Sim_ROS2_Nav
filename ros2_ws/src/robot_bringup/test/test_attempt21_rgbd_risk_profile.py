@@ -11,6 +11,12 @@ SCRIPT = WORKSPACE_ROOT / "scripts" / "generate_attempt21_rgbd_risk_profile.py"
 STABLE = (
     PACKAGE_ROOT.parent / "robot_navigation" / "config" / "nav2_stable.yaml"
 )
+STATIC_BASELINE = (
+    PACKAGE_ROOT.parent
+    / "robot_navigation"
+    / "config"
+    / "nav2_attempt21_static_collection.yaml"
+)
 SPEC = spec_from_file_location("attempt21_profile", SCRIPT)
 MODULE = module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -136,3 +142,41 @@ def test_static_opt_in_cli_requires_and_binds_final_delivery_sha(tmp_path):
     assert receipt["static_opt_in_costmap_write_enabled"] is True
     assert receipt["static_delivery_sha256"] == "3" * 64
     assert receipt["general_active_fusion_authorized"] is False
+    assert receipt["base_profile"] == str(STATIC_BASELINE.resolve())
+    profile = __import__("yaml").safe_load(output.read_text(encoding="utf-8"))
+    baseline = __import__("yaml").safe_load(
+        STATIC_BASELINE.read_text(encoding="utf-8")
+    )
+    assert profile["bt_navigator"] == baseline["bt_navigator"]
+    assert profile["collision_monitor"] == baseline["collision_monitor"]
+
+
+def test_controlled_static_cli_defaults_to_complete_static_baseline(tmp_path):
+    output = tmp_path / "controlled.yaml"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--risk-model-sha256",
+            "1" * 64,
+            "--risk-qualification-sha256",
+            "2" * 64,
+            "--controlled-static-ab",
+            "--authorization-sha256",
+            "3" * 64,
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    profile = __import__("yaml").safe_load(output.read_text(encoding="utf-8"))
+    baseline = __import__("yaml").safe_load(
+        STATIC_BASELINE.read_text(encoding="utf-8")
+    )
+    assert profile["bt_navigator"] == baseline["bt_navigator"]
+    assert profile["collision_monitor"] == baseline["collision_monitor"]
+    assert profile["controller_server"] == baseline["controller_server"]
+    assert profile["local_costmap"] == baseline["local_costmap"]

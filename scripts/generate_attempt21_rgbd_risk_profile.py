@@ -100,7 +100,11 @@ def main() -> None:
     parser.add_argument(
         "--stable-profile",
         type=Path,
-        default=root / "ros2_ws/src/robot_navigation/config/nav2_stable.yaml",
+        default=None,
+        help=(
+            "base profile to preserve byte-for-semantics; controlled static "
+            "modes default to nav2_attempt21_static_collection.yaml"
+        ),
     )
     parser.add_argument("--risk-model-sha256", required=True)
     parser.add_argument("--risk-qualification-sha256", required=True)
@@ -148,12 +152,20 @@ def main() -> None:
             "--authorization-sha256 requires --controlled-static-ab or --static-opt-in"
         )
 
+    base_profile = args.stable_profile
+    if base_profile is None:
+        base_profile = root / "ros2_ws/src/robot_navigation/config" / (
+            "nav2_attempt21_static_collection.yaml"
+            if args.controlled_static_ab or args.static_opt_in
+            else "nav2_stable.yaml"
+        )
+    base_profile = base_profile.resolve()
     output = args.output.resolve()
     receipt_path = output.with_suffix(output.suffix + ".receipt.json")
     if output.exists() or receipt_path.exists():
         raise FileExistsError(f"refusing to overwrite frozen profile {output}")
     payload = build_profile(
-        args.stable_profile.resolve(),
+        base_profile,
         risk_model_sha256=args.risk_model_sha256,
         risk_qualification_sha256=args.risk_qualification_sha256,
         shadow_only=not (args.controlled_static_ab or args.static_opt_in),
@@ -172,6 +184,9 @@ def main() -> None:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "profile": str(output),
         "profile_sha256": sha256_file(output),
+        "base_profile": str(base_profile),
+        "base_profile_sha256": sha256_file(base_profile),
+        "base_profile_semantics_preserved": True,
         "shadow_only": not (args.controlled_static_ab or args.static_opt_in),
         "qualification_scope": (
             "static_hazard_opt_in_active"

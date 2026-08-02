@@ -32,6 +32,7 @@ STATIC_V5_SEEDS = {
 }
 STATIC_ONLINE_V6_SEEDS = tuple(range(22401, 22421))
 STATIC_ONLINE_V7_SEEDS = tuple(range(23001, 23011))
+STATIC_ONLINE_V8_SEEDS = tuple(range(23101, 23111))
 
 
 def test_attempt21_scenarios_are_adjacent_renderer_only_pairs():
@@ -147,6 +148,18 @@ def test_attempt21_static_online_v7_uses_ten_fresh_user_approved_routes():
     matrix = scenario["runs"]["matrix"]
     assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V7_SEEDS
     assert all(row["variant_id"] == "attempt21_static_ab_v7" for row in matrix)
+    assert [row["appearance_profile_id"] for row in matrix] == [
+        "baseline", "dim_warm", "dim_cool", "bright_warm", "bright_cool"
+    ] * 2
+
+
+def test_attempt21_static_online_v8_uses_fresh_profile_repair_routes():
+    source = CONFIG / "isaac_kujiale_attempt21_static_ab_v8.yaml"
+    scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_ab_v8"
+    matrix = scenario["runs"]["matrix"]
+    assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V8_SEEDS
+    assert all(row["variant_id"] == "attempt21_static_ab_v8" for row in matrix)
     assert [row["appearance_profile_id"] for row in matrix] == [
         "baseline", "dim_warm", "dim_cool", "bright_warm", "bright_cool"
     ] * 2
