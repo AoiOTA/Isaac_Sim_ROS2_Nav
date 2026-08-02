@@ -267,7 +267,14 @@ void LocalRiskGridLayer::updateCosts(
       std::lock_guard<std::mutex> lock(mutex_);
       active_cells_.fill(false);
     }
-    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    // A Shadow layer must never merge its private map into the master map,
+    // including fail-closed cycles.  CostmapLayer's default value is
+    // NO_INFORMATION, so merging a reset Shadow map here can otherwise mark
+    // the audit window unknown and perturb the planner even though no risk
+    // cell was accepted.
+    if (!shadow_only_) {
+      updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    }
     publishStatus(false, enabled_ ? reason : "disabled", age_s, 0, 0);
     return;
   }
@@ -283,7 +290,9 @@ void LocalRiskGridLayer::updateCosts(
       std::lock_guard<std::mutex> lock(mutex_);
       active_cells_.fill(false);
     }
-    updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    if (!shadow_only_) {
+      updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    }
     publishStatus(false, "tf_invalid", age_s, 0, 0);
     return;
   }
