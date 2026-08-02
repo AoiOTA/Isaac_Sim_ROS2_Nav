@@ -723,6 +723,7 @@ class ExperimentRunner(Node):
         self._maximum_route_recoveries = 0
         self._collision_seen = False
         self._collision_detected = False
+        self._isaac_contact_sensor_collision_detected = False
         self._localization_seen = False
         self._localization_lost = False
         self._lock_status_seen = False
@@ -822,7 +823,11 @@ class ExperimentRunner(Node):
 
     def _collision_callback(self, message: Bool) -> None:
         self._collision_seen = True
-        self._collision_detected = self._collision_detected or bool(message.data)
+        detected = bool(message.data)
+        self._isaac_contact_sensor_collision_detected = (
+            self._isaac_contact_sensor_collision_detected or detected
+        )
+        self._collision_detected = self._collision_detected or detected
 
     def _collision_lock_callback(self, message: CollisionMonitorState) -> None:
         self._lock_status_seen = True
@@ -2206,12 +2211,21 @@ class ExperimentRunner(Node):
                 "maximum_sat_overlap_m": maximum_static_overlap_m,
                 "maximum_accepted_overlap_m": allowed_static_overlap_m,
                 "exceeds_acceptance_overlap": static_contact_exceeds_acceptance,
+                "diagnostic_only": (
+                    self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                ),
                 "acceptance_policy": (
-                    "contact_sensor_or_overlap_above_configured_tolerance"
+                    "contact_sensor_only_static_geometry_diagnostic"
+                    if self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                    else "contact_sensor_or_overlap_above_configured_tolerance"
                 ),
             }
         )
-        if requires_static_contact_gate and static_contact_exceeds_acceptance:
+        if (
+            requires_static_contact_gate
+            and static_contact_exceeds_acceptance
+            and not self._scenario.success.static_geometric_overlap_is_diagnostic_only
+        ):
             self._collision_detected = True
         goal_x, goal_y = self._scenario.goal.position
         position_error = math.hypot(gt.x - goal_x, gt.y - goal_y) if gt else 0.0
@@ -2366,9 +2380,16 @@ class ExperimentRunner(Node):
         if (
             requires_static_contact_gate
             and static_contact["contact_detected"]
-            and not static_contact_exceeds_acceptance
+            and (
+                self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                or not static_contact_exceeds_acceptance
+            )
         ):
-            warnings.append("static_geometric_overlap_within_diagnostic_tolerance")
+            warnings.append(
+                "static_geometric_overlap_diagnostic_only"
+                if self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                else "static_geometric_overlap_within_diagnostic_tolerance"
+            )
         if interaction_acceptance["clearance_warning_below_0_10m"]:
             warnings.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}
@@ -2877,6 +2898,9 @@ class ExperimentRunner(Node):
             "nav2_profile": manifest.get("nav2_profile"),
             "strict_success": strict_success,
             "physical_collision_free": not self._collision_detected,
+            "isaac_contact_sensor_collision_detected": (
+                self._isaac_contact_sensor_collision_detected
+            ),
             "static_geometric_contact": manifest.get(
                 "static_geometric_contact", {}
             ),

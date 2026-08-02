@@ -121,6 +121,15 @@ Nav2 lifecycle activation completed
 - **Marked Voxels (3D)**：`stable` profile 的 Nav2 VoxelLayer。
 - **Temporal Voxels (3D)**：`dynamic_avoidance` profile 的 Local STVL。
 
+`Marked Voxels (3D)` 的深绿色小方块就是相机深度点云经过 VoxelLayer 后标记的
+三维占用。它们用于六个建图后加入的低矮静态障碍，和 Module2 黄色/红色预测格
+不是同一层。Module2 预测只有在通过门控并显示为紫色 `Projected Global Risk`
+后，才表示其软风险已进入 Global Costmap；青色 Motion Belief/Peak 仅作定位诊断。
+
+Attempt-21 v13 的任务级接触证据会把 Isaac ContactSensor 和 50 Hz SAT 几何审计
+分开保存：前者与路线/超时共同控制通过，后者只作贴边/穿入诊断。不要再从单一
+`physical_collision_free` 字段反推碰撞来源，也不要把 SAT 诊断值隐藏或改写。
+
 `stable` 在 Local 和 Global Costmap 使用 `depth_voxel_layer`，用于低矮静态障碍。`dynamic_avoidance` 用 Local STVL 替代该层，并让 Global Costmap 只使用静态地图和 `/scan`，避免移动 actor 留下全局残影。两套 profile 的 Local Costmap 与 Collision Monitor 消费独立的 `/scan_safety`；SLAM、定位和 Global Costmap 仍消费原 `/scan`。RGB-D 不进入 SLAM、EKF 或里程计。
 
 Navigation 模式会将 `/lidar/points_raw` 变换到 `base_link`，删除物理 footprint 加

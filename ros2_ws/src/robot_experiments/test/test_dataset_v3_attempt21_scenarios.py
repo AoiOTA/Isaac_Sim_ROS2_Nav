@@ -214,6 +214,22 @@ def test_attempt21_static_online_v12_uses_user_accepted_task_contact_contract():
     assert len(scenario["obstacles"]["static"]) == 6
 
 
+def test_attempt21_static_v13_separates_contact_sensor_from_sat_diagnostic():
+    source = CONFIG / "isaac_kujiale_attempt21_static_task_sensor_v13.yaml"
+    scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_task_sensor_v13"
+    matrix = scenario["runs"]["matrix"]
+    assert tuple(row["seed"] for row in matrix) == tuple(range(23505, 23511))
+    assert all(
+        row["variant_id"] == "attempt21_static_task_sensor_v13"
+        for row in matrix
+    )
+    assert scenario["success"]["maximum_static_geometric_overlap_m"] == 0.010
+    assert scenario["success"]["static_geometric_overlap_is_diagnostic_only"] is True
+    assert scenario["obstacles"]["trajectories"] == []
+    assert len(scenario["obstacles"]["static"]) == 6
+
+
 def test_attempt21_dynamic_variants_exist_in_every_selected_obstacle_case():
     dynamic_config = yaml.safe_load(
         (

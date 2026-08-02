@@ -6,7 +6,9 @@ Module3/Nav2 始终负责 SLAM/定位、地图、障碍合法性、全局与局�
 Collision Monitor 和 `/cmd_vel`。Module2 只提供可拒绝的认知先验：
 
 - goal-conditioned SR grid 用于等主代价候选的 tie-break；
-- 校准后的 16×16 dynamic cost 用于 Global Costmap 非 lethal 软风险；
+- Attempt-21 的 `base_link` 32×32、0.5 m/cell `LocalRiskGrid` 由 Module3 在消息
+  时间戳按权威 TF 投影为 Global Costmap 非 lethal 软风险；旧 16×16 dynamic cost
+  只保留兼容；
 - 健康、可靠度、OOD、TTL 和身份 hash。
 
 Module2 不修正位姿、不清除 LiDAR/RGB-D 障碍、不写 Local Costmap、不直接控制
@@ -37,16 +39,32 @@ fail-closed 模板，不能直接作为合格运行身份。
 
 ## 风险路径
 
-`CognitiveRiskLayer` 只挂在 Global Costmap：
+Attempt-21 使用 `LocalRiskGridLayer`，仍然只挂在 Global Costmap：
 
 1. 检查 map/reset/model/qualification hash、消息年龄、finite、health、
    reliability、OOD 及 `risk_rejection_mask`；任一拒绝位非零即回退；
-2. 低于冻结阈值的格为 0，其余映射到 `1..80`；
+2. 在消息时间戳把 `base_link` 局部格投影到 global frame；低于冻结阈值的格为
+   0，其余映射到 `1..80`；
 3. 使用 `max(existing_cost, cognitive_cost)`，因此不能清除真实障碍；
 4. 健康输入停止后风险最多线性衰减 `0.8 s`；消息年龄超过 `0.5 s`、
    拒绝位非零或身份失败时在下一周期清空整层。
 
 Local Costmap、MPPI 采样和 Collision Monitor 不订阅 Module2 topic。
+
+六个建图后加入的低矮静态障碍仍由 RGB-D → `depth_voxel_layer` → Local/Global
+Costmap 的传统 Module3 链负责。Module2 风险只能增加软代价，不能替代绿色体素、
+清除传统障碍或把 cost 写成 lethal。
+
+## RViz 中如何确认“预测”和“应用”
+
+- 黄色/红色 `Local BEV Prediction`：Module2 预测，尚未证明 Nav2 接受；
+- 紫色 `Projected Global Risk`：Module3 完成身份、时效、health/OOD 与 TF 门控后
+  实际加入 Global Costmap 的软风险；
+- 深绿色 `Marked Voxels (3D)`：传统 RGB-D VoxelLayer 的真实静态障碍链；
+- 青色 `Motion Belief`/`Motion Peak`：定位诊断，不参与正式定位和控制。
+
+最终以 `/bio_nav/local_risk_layer/status` 与 `/bio_nav/planner/decision` 为准，不能只
+根据 RViz 某种颜色宣布融合生效。
 
 ## 启动
 

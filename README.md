@@ -6,6 +6,12 @@
 > `stable`、`dynamic_avoidance` 仍是传统导航默认配置；融合 profile 只能显式
 > 选择并绑定真实身份 SHA 后使用。
 
+> Attempt-21 当前阶段只验证 Kujiale26 六个建图后加入的静态障碍。冻结 v12 因
+> `23505/risk_only` 的 SAT 最大重叠 26.1 mm 按旧 10 mm 规则正确 fail-stop，旧 receipt
+> 不回写。用户随后确认采用任务级口径；v13 将 Isaac ContactSensor 与 SAT 分字段：
+> 规定全屋路线完成、ContactSensor 未触发且无超时/卡死即通过，SAT 无论数值均保留
+> 为只读诊断，不再单独控制结果。该工程 task-level 结果不伪装成 v12 正式 PASS。
+
 ## 演示视频（4×速，直接预览）
 
 ### 动态避障演示
