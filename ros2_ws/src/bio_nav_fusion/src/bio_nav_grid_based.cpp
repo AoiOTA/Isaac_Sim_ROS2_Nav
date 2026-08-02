@@ -551,20 +551,19 @@ void BioNavGridBased::publishDecision(
     status.pose.position.y = visualization_y_ + 1.2;
     status.pose.position.z = 2.2;
     status.pose.orientation.w = 1.0;
-    status.scale.z = 0.32;
+    status.scale.z = 0.16;
     status.lifetime = rclcpp::Duration::from_seconds(4.0);
     if (used) {
-      status.text = "MODULE2 PLANNING PRIOR: ADOPTED\nexpanded=" +
-        std::to_string(expanded_nodes) + " latency=" +
+      status.text = "M2 PLANNING ADOPTED | expanded=" +
+        std::to_string(expanded_nodes) + " | latency=" +
         std::to_string(static_cast<int>(std::lround(latency_ms))) +
-        " ms\nMODULE3/Nav2 owns final path and cmd_vel";
+        " ms";
       status.color.r = 0.0F;
       status.color.g = 1.0F;
       status.color.b = 0.85F;
       status.color.a = 1.0F;
     } else {
-      status.text = "MODULE2 PLANNING PRIOR: FALLBACK\nreason=" + fallback_reason +
-        "\nstock Nav2 plan remains authoritative";
+      status.text = "M2 PLANNING FALLBACK | " + fallback_reason;
       status.color.r = 1.0F;
       status.color.g = 0.65F;
       status.color.b = 0.0F;

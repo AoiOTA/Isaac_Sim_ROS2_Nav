@@ -483,7 +483,7 @@ void LocalRiskGridLayer::publishVisualization(
   cells.pose.orientation.w = 1.0;
   cells.scale.x = 0.46;
   cells.scale.y = 0.46;
-  cells.scale.z = 0.24;
+  cells.scale.z = 0.14;
   cells.lifetime = rclcpp::Duration::from_seconds(0.75);
   cells.points = points;
   for (const auto cost : costs) {
@@ -492,7 +492,7 @@ void LocalRiskGridLayer::publishVisualization(
     color.r = 0.55F + 0.40F * relative;
     color.g = 0.10F;
     color.b = 1.0F;
-    color.a = 0.40F + 0.45F * relative;
+    color.a = 0.30F + 0.45F * relative;
     cells.colors.push_back(color);
   }
   array.markers.push_back(cells);
@@ -507,19 +507,18 @@ void LocalRiskGridLayer::publishVisualization(
   status.pose.position.y = robot_y_ - 1.3;
   status.pose.position.z = 1.8;
   status.pose.orientation.w = 1.0;
-  status.scale.z = 0.30;
+  status.scale.z = 0.16;
   status.lifetime = rclcpp::Duration::from_seconds(0.75);
   if (applied) {
-    status.text = "NAV2 GLOBAL RISK: APPLIED (purple)\n" +
-      std::to_string(points.size()) + " cells, max cost=" +
-      std::to_string(maximum_cost) + " nonlethal\nMODULE3 owns safety and cmd_vel";
+    status.text = "M2->NAV2 RISK APPLIED | cells=" +
+      std::to_string(points.size()) + " | max=" +
+      std::to_string(maximum_cost);
     status.color.r = 0.85F;
     status.color.g = 0.25F;
     status.color.b = 1.0F;
     status.color.a = 1.0F;
   } else {
-    status.text = "NAV2 GLOBAL RISK: NOT APPLIED\nreason=" + reason +
-      "\nMODULE3 traditional safety remains active";
+    status.text = "M2->NAV2 RISK NOT APPLIED | " + reason;
     status.color.r = 0.65F;
     status.color.g = 0.65F;
     status.color.b = 0.65F;

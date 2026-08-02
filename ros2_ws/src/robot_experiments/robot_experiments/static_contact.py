@@ -65,9 +65,9 @@ def convex_contact_depth(
     first: Sequence[Point],
     second: Sequence[Point],
     *,
-    numerical_margin_m: float = 0.002,
+    numerical_margin_m: float = 0.0,
 ) -> float | None:
-    """Return the minimum SAT overlap, including a 2 mm contact tolerance."""
+    """Return SAT overlap only when the two closed polygons really touch."""
 
     if numerical_margin_m < 0.0 or not math.isfinite(numerical_margin_m):
         raise ValueError("numerical contact margin must be finite and non-negative")
@@ -89,7 +89,7 @@ def static_contact_summary(
     obstacle_state: Sequence[Mapping[str, Any]],
     footprint: Sequence[Point],
     *,
-    numerical_margin_m: float = 0.002,
+    numerical_margin_m: float = 0.0,
 ) -> dict[str, Any]:
     """Compare every GT pose with every active map-frame static obstacle."""
 

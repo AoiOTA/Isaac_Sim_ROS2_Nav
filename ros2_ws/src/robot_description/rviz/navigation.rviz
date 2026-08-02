@@ -576,7 +576,7 @@ Visualization Manager:
           Namespaces:
             Canvas: true
             Dynamic Risk: true
-            Local BEV Label: true
+            Local BEV Label: false
             Local BEV Prediction: true
             Motion Belief: true
             Motion Peak: true
@@ -593,7 +593,7 @@ Visualization Manager:
           Enabled: true
           Name: Module2 Applied Nav2 Risk
           Namespaces:
-            Nav2 Risk Status: true
+            Nav2 Risk Status: false
             Projected Global Risk: true
           Topic:
             Depth: 1
@@ -606,7 +606,7 @@ Visualization Manager:
           Enabled: true
           Name: Module2 Planning Decision
           Namespaces:
-            Planning Decision: true
+            Planning Decision: false
           Topic:
             Depth: 1
             Durability Policy: Volatile

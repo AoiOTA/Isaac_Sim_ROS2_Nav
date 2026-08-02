@@ -39,6 +39,17 @@ def test_sat_distinguishes_clear_and_contact() -> None:
     assert convex_contact_depth(contact, box, numerical_margin_m=0.0) == pytest.approx(0.1)
 
 
+def test_default_contact_contract_accepts_any_positive_clearance() -> None:
+    obstacle_box = ((0.3, -0.1), (0.5, -0.1), (0.5, 0.1), (0.3, 0.1))
+    robot_with_1mm_clearance = (
+        (-0.2, -0.1),
+        (0.299, -0.1),
+        (0.299, 0.1),
+        (-0.2, 0.1),
+    )
+    assert convex_contact_depth(robot_with_1mm_clearance, obstacle_box) is None
+
+
 def test_static_contact_catches_low_wheel_or_footprint_contact() -> None:
     result = static_contact_summary(
         [Pose(0.0, 0.0, 0.0, 1.0), Pose(0.4, 0.0, 0.0, 2.0)],
