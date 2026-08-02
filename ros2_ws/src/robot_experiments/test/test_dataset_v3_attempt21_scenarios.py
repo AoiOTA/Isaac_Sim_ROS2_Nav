@@ -26,6 +26,10 @@ STATIC_V4_SEEDS = {
     "gate": (21601, 21610),
     "confirmation": (21801, 21810),
 }
+STATIC_V5_SEEDS = {
+    "gate": (22601, 22610),
+    "confirmation": (22801, 22810),
+}
 STATIC_ONLINE_V6_SEEDS = tuple(range(22401, 22421))
 
 
@@ -105,6 +109,22 @@ def test_attempt21_static_v4_uses_motion_repair_seed_families():
         seeds = [row["seed"] for row in scenario["runs"]["matrix"]]
         assert scenario["id"] == (
             f"isaac_kujiale_dataset_v3_attempt21_{phase}_static_v4"
+        )
+        assert seeds[::2] == list(range(first, last + 1))
+        assert seeds[1::2] == list(range(first, last + 1))
+
+
+def test_attempt21_static_v5_uses_action_ack_repair_seed_families():
+    for phase, (first, last) in STATIC_V5_SEEDS.items():
+        source = CONFIG / (
+            f"isaac_kujiale_dataset_v3_attempt21_{phase}_static_v5.yaml"
+        )
+        text = source.read_text(encoding="utf-8")
+        assert "Attempt-21 prereg SHA256:" in text
+        scenario = yaml.safe_load(text)["scenario"]
+        seeds = [row["seed"] for row in scenario["runs"]["matrix"]]
+        assert scenario["id"] == (
+            f"isaac_kujiale_dataset_v3_attempt21_{phase}_static_v5"
         )
         assert seeds[::2] == list(range(first, last + 1))
         assert seeds[1::2] == list(range(first, last + 1))

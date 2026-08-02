@@ -5,6 +5,15 @@
 # padded physical footprint.  A rectangular shell repeatedly locked the robot
 # in the G1->G2 doorway on harmless wall returns behind the axle.  The full
 # 0.175 m forward emergency-stop reserve and the front lateral shell remain.
+bt_navigator:
+  ros__parameters:
+    # v4 Gate seed 21610 proved that a FollowPath goal can be accepted and
+    # executed by controller_server while bt_navigator times out waiting for
+    # the action acknowledgement. This is only the internal action/service
+    # handshake budget in milliseconds; it does not extend a route timeout,
+    # accept an aborted NavigateToPose result, or change any navigation metric.
+    default_server_timeout: 30000
+
 controller_server:
   ros__parameters:
     controller_frequency: 10.0

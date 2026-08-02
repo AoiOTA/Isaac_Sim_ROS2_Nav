@@ -346,6 +346,7 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
 
 def test_attempt21_static_collection_tapers_only_the_rear_safety_shell():
     profile = _profile('attempt21_static_collection')
+    navigator = profile['bt_navigator']['ros__parameters']
     collision = profile['collision_monitor']['ros__parameters']
     stop = ast.literal_eval(collision['StopZone']['points'])
     slowdown = ast.literal_eval(collision['SlowdownZone']['points'])
@@ -363,6 +364,7 @@ def test_attempt21_static_collection_tapers_only_the_rear_safety_shell():
     assert min(x for x, _ in slowdown) < min(x for x, _ in stop)
     assert max(y for x, y in slowdown if x < 0.0) == 0.217
     assert min(y for x, y in slowdown if x < 0.0) == -0.217
+    assert navigator['default_server_timeout'] == 30000
 
 
 def test_dead_end_recovery_backs_up_before_attempting_spin():
