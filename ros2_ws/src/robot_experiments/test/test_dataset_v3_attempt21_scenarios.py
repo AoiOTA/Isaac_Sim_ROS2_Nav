@@ -54,7 +54,11 @@ def test_attempt21_scenarios_do_not_change_default_navigation_profiles():
 
 
 def test_attempt21_static_collection_profile_is_appearance_safe():
-    assert "attempt21_static_collection" in APPEARANCE_NAV2_PROFILES
+    assert {
+        "attempt21_static_collection",
+        "bio_nav_rgbd_risk_shadow",
+        "bio_nav_rgbd_risk_ab",
+    } <= APPEARANCE_NAV2_PROFILES
 
 
 def test_attempt21_static_v2_uses_fresh_formal_seed_families():

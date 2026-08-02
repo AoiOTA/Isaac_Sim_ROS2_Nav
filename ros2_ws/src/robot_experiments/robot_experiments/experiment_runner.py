@@ -88,6 +88,8 @@ APPEARANCE_NAV2_PROFILES = frozenset({
     "bio_nav_risk_only",
     "bio_nav_tiebreak_risk",
     "attempt21_static_collection",
+    "bio_nav_rgbd_risk_shadow",
+    "bio_nav_rgbd_risk_ab",
 })
 
 
@@ -306,9 +308,8 @@ class ExperimentRunner(Node):
             and self._nav2_profile not in APPEARANCE_NAV2_PROFILES
         ):
             raise ConfigurationError(
-                "appearance benchmark requires stable, dynamic_avoidance, "
-                "bio_nav_planning_only, bio_nav_risk_only, or "
-                "bio_nav_tiebreak_risk, or attempt21_static_collection"
+                "appearance benchmark requires a registered appearance-safe "
+                "Nav2 profile"
             )
         robot_config = (
             Path(robot_override).expanduser().resolve()
