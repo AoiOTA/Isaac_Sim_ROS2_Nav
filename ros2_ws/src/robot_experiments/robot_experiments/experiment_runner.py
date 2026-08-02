@@ -1156,36 +1156,69 @@ class ExperimentRunner(Node):
         }
 
     def _verify_collision_monitor_active(self) -> None:
-        if not self._collision_monitor_state_client.wait_for_service(
-            timeout_sec=self._service_timeout_sec
-        ):
-            self._raise_if_shutdown()
-            raise RuntimeError(
-                "Collision Monitor lifecycle state service is unavailable"
+        """Require a stable ACTIVE monitor while tolerating lifecycle churn.
+
+        A fresh runner can overlap the tail of the previous route's reset and
+        shutdown work.  During that narrow window the lifecycle service may be
+        discoverable while one GetState request never receives a response.
+        Querying once for the full service timeout therefore creates a false
+        formal failure.  Use short queries inside one bounded recovery window,
+        and still fail closed unless ACTIVE is continuously observed.
+        """
+
+        deadline = time.monotonic() + self._reset_recovery_timeout_sec
+        active_since: float | None = None
+        latest_state = "service_unavailable"
+        while rclpy.ok():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError(
+                    "Collision Monitor did not become stably active before "
+                    f"the recovery deadline: {latest_state}"
+                )
+            if not self._collision_monitor_state_client.wait_for_service(
+                timeout_sec=min(0.1, remaining)
+            ):
+                latest_state = "service_unavailable"
+                active_since = None
+                self._spin_once(
+                    min(0.1, max(0.0, deadline - time.monotonic()))
+                )
+                continue
+
+            future = self._collision_monitor_state_client.call_async(
+                GetState.Request()
             )
-        future = self._collision_monitor_state_client.call_async(
-            GetState.Request()
-        )
-        if not self._wait_future(
-            future, time.monotonic() + self._service_timeout_sec
-        ):
-            raise TimeoutError(
-                "reading Collision Monitor lifecycle state timed out"
+            query_deadline = min(deadline, time.monotonic() + 1.0)
+            if not self._wait_future(future, query_deadline):
+                future.cancel()
+                latest_state = "query_timeout"
+                active_since = None
+                continue
+            response = future.result()
+            if response is None:
+                latest_state = "no_response"
+                active_since = None
+                continue
+            latest_state = response.current_state.label
+            if response.current_state.id != State.PRIMARY_STATE_ACTIVE:
+                active_since = None
+                self._spin_once(
+                    min(0.1, max(0.0, deadline - time.monotonic()))
+                )
+                continue
+            if active_since is None:
+                active_since = time.monotonic()
+            elif (
+                time.monotonic() - active_since
+                >= self._nav2_active_stability_sec
+            ):
+                self._collision_monitor_active = True
+                return
+            self._spin_once(
+                min(0.1, max(0.0, deadline - time.monotonic()))
             )
-        response = future.result()
-        if (
-            response is None
-            or response.current_state.id != State.PRIMARY_STATE_ACTIVE
-        ):
-            label = (
-                "no response"
-                if response is None
-                else response.current_state.label
-            )
-            raise RuntimeError(
-                f"Collision Monitor is not active: {label}"
-            )
-        self._collision_monitor_active = True
+        raise ExternalShutdownException()
 
     def _wait_for_nav2_managed_nodes_active(self) -> None:
         """Wait for a stable active Nav2 set after a physical reset.

@@ -127,6 +127,18 @@ def test_experiment_telemetry_records_deterministic_appearance_pairs():
         assert f'"{topic}"' in runner
 
 
+def test_collision_monitor_startup_check_retries_short_queries_and_requires_stability():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    assert "deadline = time.monotonic() + self._reset_recovery_timeout_sec" in runner
+    assert "query_deadline = min(deadline, time.monotonic() + 1.0)" in runner
+    assert "future.cancel()" in runner
+    assert 'latest_state = "query_timeout"' in runner
+    assert "time.monotonic() - active_since" in runner
+    assert ">= self._nav2_active_stability_sec" in runner
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()
