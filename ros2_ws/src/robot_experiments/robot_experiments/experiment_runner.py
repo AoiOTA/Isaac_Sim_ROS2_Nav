@@ -60,6 +60,7 @@ from .scenario import (
     validate_navigation_runner_scenario,
 )
 from .spawn_poses import SpawnPose, load_spawn_pose
+from .static_contact import load_robot_footprint, static_contact_summary
 
 
 @dataclass(frozen=True)
@@ -322,6 +323,7 @@ class ExperimentRunner(Node):
             else self._scenario.resolve_path(self._scenario.nav2_config_file)
         )
         self._robot_config_hash = configuration_sha256(robot_config)
+        self._robot_footprint = load_robot_footprint(robot_config)
         self._nav2_config_hash = configuration_sha256(nav2_config)
         self._workspace_root = Path(__file__).resolve().parents[4]
         self._provenance = _campaign_provenance(
@@ -2173,6 +2175,21 @@ class ExperimentRunner(Node):
     ) -> dict[str, Any]:
         gt = self._ground_truth_samples[-1] if self._ground_truth_samples else None
         odom = self._odom_samples[-1] if self._odom_samples else None
+        requires_static_contact_gate = bool(
+            self._scenario.scenario_type == "static"
+            and self._scenario.obstacles.get("static", [])
+        )
+        static_contact = static_contact_summary(
+            self._ground_truth_samples,
+            [
+                item
+                for item in self._obstacle_state.get("obstacles", [])
+                if isinstance(item, Mapping)
+            ],
+            self._robot_footprint,
+        )
+        if requires_static_contact_gate and static_contact["contact_detected"]:
+            self._collision_detected = True
         goal_x, goal_y = self._scenario.goal.position
         position_error = math.hypot(gt.x - goal_x, gt.y - goal_y) if gt else 0.0
         goal_yaw = math.radians(self._scenario.goal.yaw_deg)
@@ -2185,6 +2202,8 @@ class ExperimentRunner(Node):
                 or self._collision_monitor_active
             )
         ) or not self._scenario.success.require_safety_observations
+        if requires_static_contact_gate:
+            safety_complete = bool(safety_complete and static_contact["observed"])
         thresholds = SingleRunThresholds(
             position_tolerance_m=self._scenario.success.position_tolerance_m,
             orientation_tolerance_rad=math.radians(
@@ -2502,6 +2521,10 @@ class ExperimentRunner(Node):
                 "complete": dynamic_interaction_complete,
                 "guard_aborted": self._dynamic_guard_aborted,
                 "safety_yield": self._dynamic_safety_yield,
+            },
+            "static_geometric_contact": {
+                **static_contact,
+                "required": requires_static_contact_gate,
             },
             "dynamic_behavior": dynamic_behavior,
             "physics_dt": self._scenario.physics_dt,
@@ -2825,6 +2848,9 @@ class ExperimentRunner(Node):
             "nav2_profile": manifest.get("nav2_profile"),
             "strict_success": strict_success,
             "physical_collision_free": not self._collision_detected,
+            "static_geometric_contact": manifest.get(
+                "static_geometric_contact", {}
+            ),
             "data_complete": data_complete,
             "checksums_verified": False,
             "evidence": {

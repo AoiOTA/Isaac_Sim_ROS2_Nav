@@ -139,14 +139,17 @@ def test_collision_monitor_startup_check_retries_short_queries_and_requires_stab
     assert ">= self._nav2_active_stability_sec" in runner
 
 
-def test_attempt21_shadow_uses_a_minimal_costmap_audit_window():
+def test_attempt21_shadow_does_not_change_aggregate_costmap_bounds():
     fusion = (
         PACKAGE_ROOT.parent
         / "bio_nav_fusion/src/local_risk_grid_layer.cpp"
     ).read_text()
-    assert "constexpr double audit_radius = 0.05" in fusion
-    assert "Shadow diagnostics describe the complete local BEV" in fusion
     assert "if (shadow_only_)" in fusion
+    shadow_block = fusion.split("if (shadow_only_)", 1)[1].split("}", 1)[0]
+    assert "must not enlarge the aggregate update bounds" in shadow_block
+    assert "touch(" not in shadow_block
+    assert "current_ = true" in shadow_block
+    assert "return;" in shadow_block
 
 
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
