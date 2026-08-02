@@ -22,6 +22,10 @@ STATIC_V3_SEEDS = {
     "gate": (20601, 20610),
     "confirmation": (20801, 20810),
 }
+STATIC_V4_SEEDS = {
+    "gate": (21601, 21610),
+    "confirmation": (21801, 21810),
+}
 
 
 def test_attempt21_scenarios_are_adjacent_renderer_only_pairs():
@@ -84,6 +88,22 @@ def test_attempt21_static_v3_uses_fresh_formal_seed_families():
         seeds = [row["seed"] for row in scenario["runs"]["matrix"]]
         assert scenario["id"] == (
             f"isaac_kujiale_dataset_v3_attempt21_{phase}_static_v3"
+        )
+        assert seeds[::2] == list(range(first, last + 1))
+        assert seeds[1::2] == list(range(first, last + 1))
+
+
+def test_attempt21_static_v4_uses_motion_repair_seed_families():
+    for phase, (first, last) in STATIC_V4_SEEDS.items():
+        source = CONFIG / (
+            f"isaac_kujiale_dataset_v3_attempt21_{phase}_static_v4.yaml"
+        )
+        text = source.read_text(encoding="utf-8")
+        assert "Attempt-21 prereg SHA256:" in text
+        scenario = yaml.safe_load(text)["scenario"]
+        seeds = [row["seed"] for row in scenario["runs"]["matrix"]]
+        assert scenario["id"] == (
+            f"isaac_kujiale_dataset_v3_attempt21_{phase}_static_v4"
         )
         assert seeds[::2] == list(range(first, last + 1))
         assert seeds[1::2] == list(range(first, last + 1))
