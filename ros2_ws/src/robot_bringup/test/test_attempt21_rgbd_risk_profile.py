@@ -38,6 +38,7 @@ def test_shadow_profile_is_nonwriting_and_identity_bound():
     assert parameters["plugins"] == [
         "static_layer",
         "obstacle_layer",
+        "depth_voxel_layer",
         "local_rgbd_risk_layer",
         "inflation_layer",
     ]
@@ -67,6 +68,13 @@ def test_controlled_ab_changes_only_global_overlay_and_stays_nonlethal():
     assert risk["minimum_projection_range_m"] == 1.0
     assert profile["local_costmap"] == stable["local_costmap"]
     assert profile["controller_server"] == stable["controller_server"]
+    assert layer(profile)["plugins"] == [
+        "static_layer",
+        "obstacle_layer",
+        "depth_voxel_layer",
+        "local_rgbd_risk_layer",
+        "inflation_layer",
+    ]
 
 
 def test_profile_rejects_unbound_identity():
@@ -180,3 +188,14 @@ def test_controlled_static_cli_defaults_to_complete_static_baseline(tmp_path):
     assert profile["collision_monitor"] == baseline["collision_monitor"]
     assert profile["controller_server"] == baseline["controller_server"]
     assert profile["local_costmap"] == baseline["local_costmap"]
+    assert layer(profile)["plugins"] == [
+        "static_layer",
+        "obstacle_layer",
+        "depth_voxel_layer",
+        "local_rgbd_risk_layer",
+        "inflation_layer",
+    ]
+    receipt = json.loads(
+        output.with_suffix(".yaml.receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt["global_depth_voxel_layer_preserved"] is True

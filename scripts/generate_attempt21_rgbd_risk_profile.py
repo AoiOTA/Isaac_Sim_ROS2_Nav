@@ -23,6 +23,33 @@ WAREHOUSE_NEW_OCCUPANCY_VERSION = (
 )
 
 
+def effective_global_plugins(
+    overlay_profile: Path, overlay_parameters: dict
+) -> list[str]:
+    """Resolve the complete plugin list inherited by a ROS parameter overlay."""
+
+    explicit = overlay_parameters.get("plugins")
+    if explicit is not None:
+        return list(explicit)
+    defaults_path = overlay_profile.parent / "nav2_params.yaml"
+    if not defaults_path.is_file():
+        raise ValueError(
+            "overlay has no global plugins and adjacent nav2_params.yaml is absent"
+        )
+    defaults = yaml.safe_load(defaults_path.read_text(encoding="utf-8"))
+    plugins = (
+        defaults.get("global_costmap", {})
+        .get("global_costmap", {})
+        .get("ros__parameters", {})
+        .get("plugins")
+    )
+    if not plugins or "depth_voxel_layer" not in plugins:
+        raise ValueError(
+            "effective static Global Costmap must retain depth_voxel_layer"
+        )
+    return list(plugins)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     digest.update(path.read_bytes())
@@ -64,11 +91,7 @@ def build_profile(
         .setdefault("global_costmap", {})
         .setdefault("ros__parameters", {})
     )
-    plugins = list(
-        parameters.get(
-            "plugins", ["static_layer", "obstacle_layer", "inflation_layer"]
-        )
-    )
+    plugins = effective_global_plugins(stable_profile, parameters)
     if "local_rgbd_risk_layer" not in plugins:
         plugins.insert(plugins.index("inflation_layer"), "local_rgbd_risk_layer")
     parameters["plugins"] = plugins
@@ -187,6 +210,15 @@ def main() -> None:
         "base_profile": str(base_profile),
         "base_profile_sha256": sha256_file(base_profile),
         "base_profile_semantics_preserved": True,
+        "effective_global_plugins": payload["global_costmap"]["global_costmap"][
+            "ros__parameters"
+        ]["plugins"],
+        "global_depth_voxel_layer_preserved": (
+            "depth_voxel_layer"
+            in payload["global_costmap"]["global_costmap"]["ros__parameters"][
+                "plugins"
+            ]
+        ),
         "shadow_only": not (args.controlled_static_ab or args.static_opt_in),
         "qualification_scope": (
             "static_hazard_opt_in_active"
