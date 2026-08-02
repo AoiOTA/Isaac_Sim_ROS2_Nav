@@ -36,7 +36,24 @@ STATIC_ONLINE_V8_SEEDS = tuple(range(23101, 23111))
 STATIC_ONLINE_V10_SEEDS = tuple(range(23301, 23311))
 STATIC_ONLINE_V11_SEEDS = tuple(range(23401, 23411))
 STATIC_ONLINE_V12_SEEDS = tuple(range(23501, 23511))
+STATIC_FUSION_SUPPLEMENT_V14_SEEDS = tuple(range(23601, 23611))
 STATIC_ONLINE_V9_SEEDS = tuple(range(23201, 23211))
+
+
+def test_attempt21_static_v14_fusion_supplement_preserves_six_obstacles():
+    source = CONFIG / "isaac_kujiale_attempt21_static_fusion_supplement_v14.yaml"
+    scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_fusion_supplement_v14"
+    assert tuple(row["seed"] for row in scenario["runs"]["matrix"]) == (
+        STATIC_FUSION_SUPPLEMENT_V14_SEEDS
+    )
+    assert all(
+        row["variant_id"] == "attempt21_static_fusion_supplement_v14"
+        for row in scenario["runs"]["matrix"]
+    )
+    assert len(scenario["obstacles"]["static"]) == 6
+    assert scenario["obstacles"]["trajectories"] == []
+    assert scenario["success"]["static_geometric_overlap_is_diagnostic_only"] is True
 
 
 def test_attempt21_scenarios_are_adjacent_renderer_only_pairs():
