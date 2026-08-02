@@ -2,6 +2,8 @@ from pathlib import Path
 
 import yaml
 
+from robot_experiments.experiment_runner import APPEARANCE_NAV2_PROFILES
+
 
 CONFIG = Path(__file__).resolve().parents[1] / "config"
 SEEDS = {
@@ -41,6 +43,10 @@ def test_attempt21_scenarios_do_not_change_default_navigation_profiles():
         scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
         assert "nav2_profile" not in scenario
         assert scenario["map_version"] == "warehouse_new"
+
+
+def test_attempt21_static_collection_profile_is_appearance_safe():
+    assert "attempt21_static_collection" in APPEARANCE_NAV2_PROFILES
 
 
 def test_attempt21_dynamic_variants_exist_in_every_selected_obstacle_case():

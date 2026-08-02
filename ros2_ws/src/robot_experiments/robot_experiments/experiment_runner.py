@@ -81,6 +81,14 @@ class CommandSample:
 
 
 PREGOAL_AUTHORIZATION_RECEIPT = "R2C4_R2_PREGOAL_AUTHORIZED"
+APPEARANCE_NAV2_PROFILES = frozenset({
+    "stable",
+    "dynamic_avoidance",
+    "bio_nav_planning_only",
+    "bio_nav_risk_only",
+    "bio_nav_tiebreak_risk",
+    "attempt21_static_collection",
+})
 
 
 def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
@@ -293,17 +301,14 @@ class ExperimentRunner(Node):
         self._nav2_profile = str(
             self.declare_parameter("nav2_profile", "").value
         ).strip()
-        if self._scenario.appearance_config_file is not None and self._nav2_profile not in {
-            "stable",
-            "dynamic_avoidance",
-            "bio_nav_planning_only",
-            "bio_nav_risk_only",
-            "bio_nav_tiebreak_risk",
-        }:
+        if (
+            self._scenario.appearance_config_file is not None
+            and self._nav2_profile not in APPEARANCE_NAV2_PROFILES
+        ):
             raise ConfigurationError(
                 "appearance benchmark requires stable, dynamic_avoidance, "
                 "bio_nav_planning_only, bio_nav_risk_only, or "
-                "bio_nav_tiebreak_risk"
+                "bio_nav_tiebreak_risk, or attempt21_static_collection"
             )
         robot_config = (
             Path(robot_override).expanduser().resolve()
