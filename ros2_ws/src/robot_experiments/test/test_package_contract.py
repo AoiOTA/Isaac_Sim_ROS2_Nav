@@ -139,6 +139,16 @@ def test_collision_monitor_startup_check_retries_short_queries_and_requires_stab
     assert ">= self._nav2_active_stability_sec" in runner
 
 
+def test_attempt21_shadow_uses_a_minimal_costmap_audit_window():
+    fusion = (
+        PACKAGE_ROOT.parent
+        / "bio_nav_fusion/src/local_risk_grid_layer.cpp"
+    ).read_text()
+    assert "constexpr double audit_radius = 0.05" in fusion
+    assert "Shadow diagnostics describe the complete local BEV" in fusion
+    assert "if (shadow_only_)" in fusion
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()

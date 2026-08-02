@@ -148,6 +148,21 @@ void LocalRiskGridLayer::updateBounds(
   double * max_x, double * max_y)
 {
   useExtraBounds(min_x, min_y, max_x, max_y);
+  if (shadow_only_) {
+    // Shadow must execute validation/status logic without making the Global
+    // Costmap recompute the full 16 m BEV on every cycle.  A small audit
+    // window is sufficient to schedule updateCosts; no master costs are
+    // written in this mode.
+    constexpr double audit_radius = 0.05;
+    touch(
+      robot_x - audit_radius, robot_y - audit_radius,
+      min_x, min_y, max_x, max_y);
+    touch(
+      robot_x + audit_radius, robot_y + audit_radius,
+      min_x, min_y, max_x, max_y);
+    current_ = true;
+    return;
+  }
   // The local grid is 16 m square. A yaw-independent radius safely covers
   // every transformed corner without assuming map/base alignment.
   constexpr double radius = 11.4;
@@ -283,6 +298,15 @@ void LocalRiskGridLayer::updateCosts(
       continue;
     }
     next_active[index] = true;
+    const auto cost = mapRiskCost(
+      probability, static_cast<float>(threshold), maximum_cost_);
+    if (shadow_only_) {
+      // Shadow diagnostics describe the complete local BEV, independent of
+      // the deliberately tiny costmap audit window above.
+      ++active_count;
+      maximum_written = std::max(maximum_written, cost);
+      continue;
+    }
     const auto row = static_cast<unsigned int>(index / 32U);
     const auto column = static_cast<unsigned int>(index % 32U);
     geometry_msgs::msg::PointStamped local;
@@ -302,7 +326,6 @@ void LocalRiskGridLayer::updateCosts(
     {
       continue;
     }
-    const auto cost = mapRiskCost(probability, static_cast<float>(threshold), maximum_cost_);
     setCost(mx, my, std::max(getCost(mx, my), cost));
     ++active_count;
     maximum_written = std::max(maximum_written, cost);
