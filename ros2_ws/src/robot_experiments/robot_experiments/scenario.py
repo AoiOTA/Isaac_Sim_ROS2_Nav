@@ -70,6 +70,7 @@ class SuccessSettings:
     maximum_reverse_distance_fraction: float
     minimum_curved_distance_fraction: float
     maximum_stopped_time_fraction: float
+    maximum_static_geometric_overlap_m: float
 
 
 @dataclass(frozen=True)
@@ -812,6 +813,7 @@ def load_scenario(path: str | Path) -> Scenario:
             "maximum_reverse_distance_fraction",
             "minimum_curved_distance_fraction",
             "maximum_stopped_time_fraction",
+            "maximum_static_geometric_overlap_m",
         },
         "scenario.success",
     )
@@ -973,6 +975,11 @@ def load_scenario(path: str | Path) -> Scenario:
             maximum_stopped_time_fraction=_fraction(
                 success_raw.get("maximum_stopped_time_fraction", 1.0),
                 "scenario.success.maximum_stopped_time_fraction",
+            ),
+            maximum_static_geometric_overlap_m=_positive(
+                success_raw.get("maximum_static_geometric_overlap_m", 0.0),
+                "scenario.success.maximum_static_geometric_overlap_m",
+                allow_zero=True,
             ),
         ),
         obstacles=dict(obstacles),

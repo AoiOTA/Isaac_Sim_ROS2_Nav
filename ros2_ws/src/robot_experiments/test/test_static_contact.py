@@ -5,6 +5,7 @@ import pytest
 
 from robot_experiments.static_contact import (
     convex_contact_depth,
+    exceeds_overlap_tolerance,
     load_robot_footprint,
     static_contact_summary,
 )
@@ -60,6 +61,20 @@ def test_static_contact_catches_low_wheel_or_footprint_contact() -> None:
     assert result["contact_detected"] is True
     assert result["contacts"][0]["first_stamp_s"] == 2.0
     assert result["control_input"] is False
+    assert result["maximum_sat_overlap_m"] > 0.0
+    assert exceeds_overlap_tolerance(result, 0.0) is True
+    assert exceeds_overlap_tolerance(result, 0.200) is False
+
+
+def test_overlap_tolerance_rejects_visible_penetration() -> None:
+    result = static_contact_summary(
+        [Pose(0.4, 0.0, 0.0, 2.0)],
+        [obstacle(0.65, 0.0)],
+        FOOTPRINT,
+    )
+    assert exceeds_overlap_tolerance(result, 0.001) is True
+    with pytest.raises(ValueError, match="finite and non-negative"):
+        exceeds_overlap_tolerance(result, -0.001)
 
 
 def test_static_contact_requires_both_pose_and_obstacle_evidence() -> None:

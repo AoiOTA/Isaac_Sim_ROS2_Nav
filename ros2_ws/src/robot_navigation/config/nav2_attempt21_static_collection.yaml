@@ -61,6 +61,11 @@ velocity_smoother:
 
 collision_monitor:
   ros__parameters:
+    # Preserve the proven 9124afd split: RGB-D feeds VoxelLayer planning while
+    # Collision Monitor consumes only the lower-latency safety scan. Directly
+    # adding the camera cloud made a 0.416 s frame-age excursion fail-closed
+    # and deadlock an otherwise valid doorway in the v11 diagnostic pilot.
+    observation_sources: [scan_safety]
     StopZone:
       points: "[[0.430, 0.230], [0.430, -0.230], [0.000, -0.230], [-0.250, -0.215], [-0.250, 0.215], [0.000, 0.230]]"
     SlowdownZone:

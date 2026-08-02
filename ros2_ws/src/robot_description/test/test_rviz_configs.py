@@ -166,7 +166,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert module2['Namespaces']['Dynamic Risk'] is True
     assert module2['Namespaces']['Local BEV Prediction'] is True
     assert module2['Namespaces']['Local BEV Label'] is False
-    assert module2['Namespaces']['Status'] is True
+    assert module2['Namespaces']['Status'] is False
     assert module2['Namespaces']['Visual Candidate'] is False
     applied = _named(config, 'Module2 Applied Nav2 Risk')
     _assert_topic(
@@ -207,8 +207,10 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert voxel_grid['Class'] == 'robot_rviz_plugins/Voxel Grid'
     assert voxel_grid['Topic']['Value'] == '/local_costmap/voxel_grid'
     assert voxel_grid['Enabled'] is True
+    assert voxel_grid['Value'] is True
     assert voxel_grid['Color Transformer'] == 'FlatColor'
     assert voxel_grid['Style'] == 'Boxes'
+    assert voxel_grid['Size (m)'] == pytest.approx(0.05)
     temporal_voxels = _named(config, 'Temporal Voxels (3D)')
     assert temporal_voxels['Class'] == 'rviz_default_plugins/PointCloud2'
     assert temporal_voxels['Topic']['Value'] == (

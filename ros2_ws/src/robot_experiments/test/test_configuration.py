@@ -275,6 +275,15 @@ def test_attempt21_static_ab_uses_fresh_frozen_rows_and_six_map_extrinsic_obstac
         assert scenario.obstacle_trajectories == ()
 
 
+def test_attempt21_static_ab_v12_uses_engineering_contact_tolerance():
+    scenario = load_scenario(CONFIG / "isaac_kujiale_attempt21_static_ab_v12.yaml")
+    assert [row.seed for row in scenario.run_matrix] == list(range(23501, 23511))
+    assert scenario.success.maximum_static_geometric_overlap_m == pytest.approx(0.010)
+    assert {row.variant_id for row in scenario.run_matrix} == {
+        "attempt21_static_ab_v12"
+    }
+
+
 def test_r2c4_development_matrix_is_new_and_balanced():
     static = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_development_static.yaml")
     dynamic = load_scenario(CONFIG / "kujiale_stage2_2_r2c4_development_dynamic.yaml")

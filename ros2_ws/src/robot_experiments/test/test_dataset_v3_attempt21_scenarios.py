@@ -34,6 +34,8 @@ STATIC_ONLINE_V6_SEEDS = tuple(range(22401, 22421))
 STATIC_ONLINE_V7_SEEDS = tuple(range(23001, 23011))
 STATIC_ONLINE_V8_SEEDS = tuple(range(23101, 23111))
 STATIC_ONLINE_V10_SEEDS = tuple(range(23301, 23311))
+STATIC_ONLINE_V11_SEEDS = tuple(range(23401, 23411))
+STATIC_ONLINE_V12_SEEDS = tuple(range(23501, 23511))
 STATIC_ONLINE_V9_SEEDS = tuple(range(23201, 23211))
 
 
@@ -185,6 +187,29 @@ def test_attempt21_static_online_v10_uses_fresh_exact_contact_routes():
     matrix = scenario["runs"]["matrix"]
     assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V10_SEEDS
     assert all(row["variant_id"] == "attempt21_static_ab_v10" for row in matrix)
+    assert scenario["obstacles"]["trajectories"] == []
+    assert len(scenario["obstacles"]["static"]) == 6
+
+
+def test_attempt21_static_online_v11_uses_fresh_module3_safety_repair_routes():
+    source = CONFIG / "isaac_kujiale_attempt21_static_ab_v11.yaml"
+    scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_ab_v11"
+    matrix = scenario["runs"]["matrix"]
+    assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V11_SEEDS
+    assert all(row["variant_id"] == "attempt21_static_ab_v11" for row in matrix)
+    assert scenario["obstacles"]["trajectories"] == []
+    assert len(scenario["obstacles"]["static"]) == 6
+
+
+def test_attempt21_static_online_v12_uses_user_accepted_task_contact_contract():
+    source = CONFIG / "isaac_kujiale_attempt21_static_ab_v12.yaml"
+    scenario = yaml.safe_load(source.read_text(encoding="utf-8"))["scenario"]
+    assert scenario["id"] == "isaac_kujiale_attempt21_static_ab_v12"
+    matrix = scenario["runs"]["matrix"]
+    assert tuple(row["seed"] for row in matrix) == STATIC_ONLINE_V12_SEEDS
+    assert all(row["variant_id"] == "attempt21_static_ab_v12" for row in matrix)
+    assert scenario["success"]["maximum_static_geometric_overlap_m"] == 0.010
     assert scenario["obstacles"]["trajectories"] == []
     assert len(scenario["obstacles"]["static"]) == 6
 

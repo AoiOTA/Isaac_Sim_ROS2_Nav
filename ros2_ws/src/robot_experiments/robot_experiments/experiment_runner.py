@@ -60,7 +60,11 @@ from .scenario import (
     validate_navigation_runner_scenario,
 )
 from .spawn_poses import SpawnPose, load_spawn_pose
-from .static_contact import load_robot_footprint, static_contact_summary
+from .static_contact import (
+    exceeds_overlap_tolerance,
+    load_robot_footprint,
+    static_contact_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -2188,7 +2192,26 @@ class ExperimentRunner(Node):
             ],
             self._robot_footprint,
         )
-        if requires_static_contact_gate and static_contact["contact_detected"]:
+        maximum_static_overlap_m = float(
+            static_contact["maximum_sat_overlap_m"]
+        )
+        allowed_static_overlap_m = (
+            self._scenario.success.maximum_static_geometric_overlap_m
+        )
+        static_contact_exceeds_acceptance = exceeds_overlap_tolerance(
+            static_contact, allowed_static_overlap_m
+        )
+        static_contact.update(
+            {
+                "maximum_sat_overlap_m": maximum_static_overlap_m,
+                "maximum_accepted_overlap_m": allowed_static_overlap_m,
+                "exceeds_acceptance_overlap": static_contact_exceeds_acceptance,
+                "acceptance_policy": (
+                    "contact_sensor_or_overlap_above_configured_tolerance"
+                ),
+            }
+        )
+        if requires_static_contact_gate and static_contact_exceeds_acceptance:
             self._collision_detected = True
         goal_x, goal_y = self._scenario.goal.position
         position_error = math.hypot(gt.x - goal_x, gt.y - goal_y) if gt else 0.0
@@ -2340,6 +2363,12 @@ class ExperimentRunner(Node):
         if not dynamic_interaction_complete:
             reasons.append("dynamic_obstacle_interaction_incomplete")
         warnings: list[str] = []
+        if (
+            requires_static_contact_gate
+            and static_contact["contact_detected"]
+            and not static_contact_exceeds_acceptance
+        ):
+            warnings.append("static_geometric_overlap_within_diagnostic_tolerance")
         if interaction_acceptance["clearance_warning_below_0_10m"]:
             warnings.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}

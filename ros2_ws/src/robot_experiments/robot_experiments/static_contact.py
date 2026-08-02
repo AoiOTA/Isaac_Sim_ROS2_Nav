@@ -148,6 +148,33 @@ def static_contact_summary(
         "numerical_margin_m": numerical_margin_m,
         "contact_detected": bool(contacts),
         "contact_sample_count": contact_sample_count,
+        "maximum_sat_overlap_m": max(
+            (
+                float(item["maximum_sat_overlap_m"])
+                for item in contacts.values()
+            ),
+            default=0.0,
+        ),
         "contacts": sorted(contacts.values(), key=lambda item: item["obstacle_id"]),
         "control_input": False,
     }
+
+
+def exceeds_overlap_tolerance(
+    summary: Mapping[str, Any], maximum_accepted_overlap_m: float
+) -> bool:
+    """Classify geometric overlap while preserving the zero-tolerance default."""
+
+    if (
+        maximum_accepted_overlap_m < 0.0
+        or not math.isfinite(maximum_accepted_overlap_m)
+    ):
+        raise ValueError("maximum accepted overlap must be finite and non-negative")
+    if summary.get("contact_detected") is not True:
+        return False
+    maximum = float(summary.get("maximum_sat_overlap_m", 0.0))
+    return (
+        maximum >= 0.0
+        if maximum_accepted_overlap_m == 0.0
+        else maximum > maximum_accepted_overlap_m
+    )
