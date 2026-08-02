@@ -68,7 +68,10 @@ private:
     bool used, const std::string & fallback_reason, double primary_cost,
     uint64_t expanded_nodes, double latency_ms, uint32_t reset_epoch,
     const std::string & map_version, const std::string & goal_hash,
-    const std::string & snapshot_sha256);
+    const std::string & snapshot_sha256,
+    const std::string & qualification_sha256,
+    const std::string & motion_core_sha256,
+    const std::string & module3_map_sha256);
   nav_msgs::msg::Path stockPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,

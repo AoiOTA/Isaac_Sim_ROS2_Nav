@@ -247,13 +247,18 @@ nav_msgs::msg::Path BioNavGridBased::stockPlan(
     (clock_->now().seconds() - begin_s) * 1000.0;
   uint32_t reset_epoch = 0;
   std::string map_version;
+  std::string qualification_sha256;
+  std::string motion_core_sha256;
   {
     std::lock_guard<std::mutex> lock(identity_mutex_);
     reset_epoch = reset_epoch_;
     map_version = map_version_;
+    qualification_sha256 = qualification_sha256_;
+    motion_core_sha256 = motion_core_sha256_;
   }
   publishDecision(
-    false, reason, 0.0, 0, latency_ms, reset_epoch, map_version, "", "");
+    false, reason, 0.0, 0, latency_ms, reset_epoch, map_version, "", "",
+    qualification_sha256, motion_core_sha256, expected_module3_map_sha256_);
   return path;
 }
 
@@ -339,7 +344,9 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
     (clock_->now().seconds() - begin_s) * 1000.0;
   publishDecision(
     true, "", metrics.primary_cost, metrics.expanded_nodes, latency_ms,
-    reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256);
+    reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256,
+    prior.qualification_receipt_sha256, prior.motion_core_sha256,
+    prior.module3_map_sha256);
   return path;
 }
 
@@ -510,7 +517,10 @@ void BioNavGridBased::publishDecision(
   bool used, const std::string & fallback_reason, double primary_cost,
   uint64_t expanded_nodes, double latency_ms, uint32_t reset_epoch,
   const std::string & map_version, const std::string & goal_hash,
-  const std::string & snapshot_sha256)
+  const std::string & snapshot_sha256,
+  const std::string & qualification_sha256,
+  const std::string & motion_core_sha256,
+  const std::string & module3_map_sha256)
 {
   if (!decision_publisher_ || !decision_publisher_->is_activated()) {
     return;
@@ -528,9 +538,9 @@ void BioNavGridBased::publishDecision(
   decision.map_version = map_version;
   decision.goal_hash = goal_hash;
   decision.snapshot_sha256 = snapshot_sha256;
-  decision.qualification_receipt_sha256 = qualification_sha256_;
-  decision.motion_core_sha256 = motion_core_sha256_;
-  decision.module3_map_sha256 = expected_module3_map_sha256_;
+  decision.qualification_receipt_sha256 = qualification_sha256;
+  decision.motion_core_sha256 = motion_core_sha256;
+  decision.module3_map_sha256 = module3_map_sha256;
   decision_publisher_->publish(decision);
   if (visualization_publisher_ && visualization_publisher_->is_activated()) {
     visualization_msgs::msg::MarkerArray array;
