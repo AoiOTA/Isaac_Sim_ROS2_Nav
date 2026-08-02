@@ -243,6 +243,7 @@ def test_attempt21_static_ab_uses_fresh_frozen_rows_and_six_map_extrinsic_obstac
     revisions = (
         ("isaac_kujiale_attempt21_static_ab.yaml", 19001, "attempt21_static_ab_v1"),
         ("isaac_kujiale_attempt21_static_ab_v2.yaml", 19101, "attempt21_static_ab_v2"),
+        ("isaac_kujiale_attempt21_static_ab_v3.yaml", 19201, "attempt21_static_ab_v3"),
     )
     for filename, first_seed, variant_id in revisions:
         scenario = load_scenario(CONFIG / filename)
