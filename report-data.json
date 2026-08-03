@@ -50,6 +50,20 @@
     "isaac_contact_sensor_collision_forbidden": true,
     "sat_overlap_diagnostic_only": true
   },
+  "v16_delivery": {
+    "status": "STATIC_TASK_STAGE_PASS",
+    "task_result": "PASS",
+    "formal_result": "NOT_APPLICABLE",
+    "qualification_scope": "static_hazard_task_level_opt_in_active",
+    "delivery_sha256": "45d2f35694ffe0db9d1f0e1e42f7016383496fde8bce94132f6f0fa91e74d71c",
+    "profile": "nav2_bio_nav_rgbd_risk_static_opt_in.yaml",
+    "profile_sha256": "e90c57a8433aeb0e090d8cb267911ce3b3d2b238c187dfe669a8c03612c89a62",
+    "explicit_selection_required": true,
+    "stable_default_modified": false,
+    "dynamic_avoidance_default_modified": false,
+    "global_depth_voxel_layer_preserved": true,
+    "local_costmap_modified": false
+  },
   "formal_result": "NOT_APPLICABLE",
   "general_active_fusion_authorized": false
 }
