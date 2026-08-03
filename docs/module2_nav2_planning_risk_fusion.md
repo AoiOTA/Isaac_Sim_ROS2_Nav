@@ -68,7 +68,20 @@ Costmap 的传统 Module3 链负责。Module2 风险只能增加软代价，不�
 
 ## 启动
 
-先启动 Integration bridge/Module2 服务并确认身份，再显式选择 profile：
+当前 Attempt-21 静态可视化推荐使用 Integration 的单终端入口；它会统一管理
+Module2、Bridge、Nav2、RViz 与自动路线，并绑定对应 evidence/profile 身份：
+
+```bash
+bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
+```
+
+支持 `planning-only`、`risk-only`、`combined`、`static-opt-in` 和 `all`；完整说明见
+[v16 单终端手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+该入口只生成工程可视化记录，不会重跑或覆盖冻结的 Development/Gate/Confirmation/
+Shadow/A-B evidence。
+
+若仅调试 Module3 侧 profile，可先独立启动 Integration bridge/Module2 服务并确认
+身份，再显式选择 profile：
 
 ```bash
 ./scripts/run_ros.sh navigation \
@@ -128,3 +141,10 @@ base risk identity 的全零 qualification SHA 写入消息。修复后，消息
 采用的 goal-prior qualification、motion-core 和 Module3 map SHA；导航行为、任务结果
 和首条原始证据均未改写。判断 planning 是否采用仍应同时查看
 `cognitive_tiebreak_used`、`fallback_reason` 与身份字段，不能只看单个 SHA。
+
+当前完整架构、域适配/训练流程与全部阶段指标分别见：
+
+- [Bio_Nav 整体类脑导航系统架构](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md)；
+- [Attempt-21 静态全部实验结果](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md)；
+- [Module2 Isaac 域适配](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_miniworld_to_isaac_domain_adaptation.md)；
+- [Module2 训练流水线](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_training_pipeline.md)。
