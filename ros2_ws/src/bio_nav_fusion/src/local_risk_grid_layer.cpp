@@ -503,11 +503,11 @@ void LocalRiskGridLayer::publishVisualization(
   status.id = 2;
   status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
   status.action = visualization_msgs::msg::Marker::ADD;
-  status.pose.position.x = robot_x_;
-  status.pose.position.y = robot_y_ - 1.3;
+  status.pose.position.x = 0.0;
+  status.pose.position.y = 5.7;
   status.pose.position.z = 1.8;
   status.pose.orientation.w = 1.0;
-  status.scale.z = 0.16;
+  status.scale.z = 0.12;
   status.lifetime = rclcpp::Duration::from_seconds(0.75);
   if (applied) {
     status.text = "M2->NAV2 RISK APPLIED | cells=" +

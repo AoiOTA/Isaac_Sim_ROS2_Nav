@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <functional>
 
+#include "nav_msgs/msg/path.hpp"
 #include "nav2_smac_planner/smac_planner_2d.hpp"
 
 namespace bio_nav_fusion
@@ -14,6 +15,9 @@ struct TieBreakPlanMetrics
 {
   double primary_cost{0.0};
   uint64_t expanded_nodes{0};
+  bool path_changed{false};
+  nav_msgs::msg::Path zero_tie_reference;
+  nav_msgs::msg::Path tie_break_result;
 };
 
 /// SmacPlanner2D-compatible search with an exact lexicographic queue key:

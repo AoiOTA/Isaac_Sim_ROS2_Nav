@@ -452,7 +452,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Billboards
-          Line Width: 0.10000000149011612
+          Line Width: 0.14000000059604645
           Name: Global Plan
           Offset:
             X: 0
@@ -575,12 +575,12 @@ Visualization Manager:
           Name: Module2 Live Overlay
           Namespaces:
             Canvas: true
-            Dynamic Risk: true
+            Dynamic Risk: false
             Local BEV Label: false
             Local BEV Prediction: true
             Motion Belief: true
             Motion Peak: true
-            Status: false
+            Status: true
             Visual Candidate: false
           Topic:
             Depth: 1
@@ -593,7 +593,7 @@ Visualization Manager:
           Enabled: true
           Name: Module2 Applied Nav2 Risk
           Namespaces:
-            Nav2 Risk Status: false
+            Nav2 Risk Status: true
             Projected Global Risk: true
           Topic:
             Depth: 1
@@ -606,7 +606,9 @@ Visualization Manager:
           Enabled: true
           Name: Module2 Planning Decision
           Namespaces:
-            Planning Decision: false
+            Planning Decision: true
+            SR Tie-Break Result: true
+            SR Zero-Tie Reference: true
           Topic:
             Depth: 1
             Durability Policy: Volatile

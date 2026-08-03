@@ -163,10 +163,10 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert module2['Enabled'] is True
     assert module2['Namespaces']['Motion Belief'] is True
     assert module2['Namespaces']['Motion Peak'] is True
-    assert module2['Namespaces']['Dynamic Risk'] is True
+    assert module2['Namespaces']['Dynamic Risk'] is False
     assert module2['Namespaces']['Local BEV Prediction'] is True
     assert module2['Namespaces']['Local BEV Label'] is False
-    assert module2['Namespaces']['Status'] is False
+    assert module2['Namespaces']['Status'] is True
     assert module2['Namespaces']['Visual Candidate'] is False
     applied = _named(config, 'Module2 Applied Nav2 Risk')
     _assert_topic(
@@ -176,7 +176,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         durability='Volatile',
     )
     assert applied['Namespaces']['Projected Global Risk'] is True
-    assert applied['Namespaces']['Nav2 Risk Status'] is False
+    assert applied['Namespaces']['Nav2 Risk Status'] is True
     planning = _named(config, 'Module2 Planning Decision')
     _assert_topic(
         planning,
@@ -184,7 +184,9 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         reliability='Reliable',
         durability='Volatile',
     )
-    assert planning['Namespaces']['Planning Decision'] is False
+    assert planning['Namespaces']['Planning Decision'] is True
+    assert planning['Namespaces']['SR Zero-Tie Reference'] is True
+    assert planning['Namespaces']['SR Tie-Break Result'] is True
     raw_risk = _named(config, 'Module2 Dynamic Risk Raw')
     assert raw_risk['Enabled'] is False
     assert raw_risk['Color Scheme'] == 'costmap'

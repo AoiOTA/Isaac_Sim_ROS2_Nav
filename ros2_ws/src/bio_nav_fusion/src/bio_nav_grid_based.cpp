@@ -258,7 +258,8 @@ nav_msgs::msg::Path BioNavGridBased::stockPlan(
   }
   publishDecision(
     false, reason, 0.0, 0, latency_ms, reset_epoch, map_version, "", "",
-    qualification_sha256, motion_core_sha256, expected_module3_map_sha256_);
+    qualification_sha256, motion_core_sha256, expected_module3_map_sha256_,
+    nullptr);
   return path;
 }
 
@@ -346,7 +347,7 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
     true, "", metrics.primary_cost, metrics.expanded_nodes, latency_ms,
     reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256,
     prior.qualification_receipt_sha256, prior.motion_core_sha256,
-    prior.module3_map_sha256);
+    prior.module3_map_sha256, &metrics);
   return path;
 }
 
@@ -520,7 +521,8 @@ void BioNavGridBased::publishDecision(
   const std::string & snapshot_sha256,
   const std::string & qualification_sha256,
   const std::string & motion_core_sha256,
-  const std::string & module3_map_sha256)
+  const std::string & module3_map_sha256,
+  const TieBreakPlanMetrics * tie_metrics)
 {
   if (!decision_publisher_ || !decision_publisher_->is_activated()) {
     return;
@@ -557,17 +559,20 @@ void BioNavGridBased::publishDecision(
     status.id = 1;
     status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     status.action = visualization_msgs::msg::Marker::ADD;
-    status.pose.position.x = visualization_x_;
-    status.pose.position.y = visualization_y_ + 1.2;
-    status.pose.position.z = 2.2;
+    status.pose.position.x = 0.0;
+    status.pose.position.y = 6.2;
+    status.pose.position.z = 1.8;
     status.pose.orientation.w = 1.0;
-    status.scale.z = 0.16;
-    status.lifetime = rclcpp::Duration::from_seconds(4.0);
+    status.scale.z = 0.12;
+    status.lifetime = rclcpp::Duration::from_seconds(15.0);
     if (used) {
-      status.text = "M2 PLANNING ADOPTED | expanded=" +
+      const bool path_changed = tie_metrics != nullptr && tie_metrics->path_changed;
+      status.text = "PLAN SR: ADOPTED | path delta=" +
+        std::string(path_changed ? "YES" : "NO") + " | cost=" +
+        std::to_string(primary_cost) + "\nexpanded=" +
         std::to_string(expanded_nodes) + " | latency=" +
         std::to_string(static_cast<int>(std::lround(latency_ms))) +
-        " ms";
+        "ms | gray=zero-SR | yellow=Nav2 | green=SR | display +/-0.14m";
       status.color.r = 0.0F;
       status.color.g = 1.0F;
       status.color.b = 0.85F;
@@ -580,6 +585,54 @@ void BioNavGridBased::publishDecision(
       status.color.a = 1.0F;
     }
     array.markers.push_back(status);
+
+    if (used && tie_metrics != nullptr) {
+      auto add_path_marker = [&array, &clear](
+        const nav_msgs::msg::Path & path, const std::string & marker_namespace,
+        int marker_id, float red, float green, float blue, float alpha,
+        float width, float height, float lateral_offset)
+        {
+          visualization_msgs::msg::Marker marker;
+          marker.header = clear.header;
+          marker.ns = marker_namespace;
+          marker.id = marker_id;
+          marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+          marker.action = visualization_msgs::msg::Marker::ADD;
+          marker.pose.orientation.w = 1.0;
+          marker.scale.x = width;
+          marker.color.r = red;
+          marker.color.g = green;
+          marker.color.b = blue;
+          marker.color.a = alpha;
+          for (std::size_t index = 0; index < path.poses.size(); ++index) {
+            const auto & pose = path.poses[index];
+            geometry_msgs::msg::Point point;
+            point.x = pose.pose.position.x;
+            point.y = pose.pose.position.y;
+            point.z = height;
+            if (path.poses.size() > 1 && std::abs(lateral_offset) > 1.0e-6F) {
+              const auto & previous = path.poses[index == 0 ? 0 : index - 1].pose.position;
+              const auto & next = path.poses[
+                index + 1 < path.poses.size() ? index + 1 : index].pose.position;
+              const double dx = next.x - previous.x;
+              const double dy = next.y - previous.y;
+              const double length = std::hypot(dx, dy);
+              if (length > 1.0e-9) {
+                point.x -= dy / length * lateral_offset;
+                point.y += dx / length * lateral_offset;
+              }
+            }
+            marker.points.push_back(point);
+          }
+          array.markers.push_back(marker);
+        };
+      add_path_marker(
+        tie_metrics->zero_tie_reference, "SR Zero-Tie Reference", 2,
+        0.72F, 0.72F, 0.72F, 0.95F, 0.09F, 0.42F, -0.14F);
+      add_path_marker(
+        tie_metrics->tie_break_result, "SR Tie-Break Result", 3,
+        0.0F, 1.0F, 0.55F, 0.98F, 0.09F, 0.50F, 0.14F);
+    }
     visualization_publisher_->publish(array);
   }
 }

@@ -335,11 +335,31 @@ nav_msgs::msg::Path TieBreakSmacPlanner2D::createPlanWithTieBreak(
   }
   metrics.primary_cost = result.primary_cost;
   metrics.expanded_nodes = result.expanded_nodes;
-  plan.poses.reserve(result.path.size());
+  metrics.path_changed = baseline.path.size() != result.path.size();
+  if (!metrics.path_changed) {
+    for (std::size_t index = 0; index < result.path.size(); ++index) {
+      if (
+        std::abs(baseline.path[index].x - result.path[index].x) > 1.0e-6F ||
+        std::abs(baseline.path[index].y - result.path[index].y) > 1.0e-6F)
+      {
+        metrics.path_changed = true;
+        break;
+      }
+    }
+  }
+  metrics.zero_tie_reference.header = plan.header;
+  metrics.zero_tie_reference.poses.reserve(baseline.path.size());
+  for (auto iterator = baseline.path.rbegin(); iterator != baseline.path.rend(); ++iterator) {
+    pose.pose = nav2_smac_planner::getWorldCoords(iterator->x, iterator->y, costmap);
+    metrics.zero_tie_reference.poses.push_back(pose);
+  }
+  metrics.tie_break_result.header = plan.header;
+  metrics.tie_break_result.poses.reserve(result.path.size());
   for (auto iterator = result.path.rbegin(); iterator != result.path.rend(); ++iterator) {
     pose.pose = nav2_smac_planner::getWorldCoords(iterator->x, iterator->y, costmap);
-    plan.poses.push_back(pose);
+    metrics.tie_break_result.poses.push_back(pose);
   }
+  plan = metrics.tie_break_result;
   if (_raw_plan_publisher->get_subscription_count() > 0) {
     _raw_plan_publisher->publish(plan);
   }

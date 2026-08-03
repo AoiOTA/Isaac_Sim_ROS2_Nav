@@ -24,8 +24,8 @@ Isaac 复用规则和输出审计见
 | `Motion Belief` | motion-only place belief 的 Top-32 稀疏热度；不是障碍物 | 随机器人运动更新 |
 | `Motion Peak` | 当前最高概率认知格的扁平青色圆环；不是机器人 footprint | 随 belief 峰值移动 |
 | `Local BEV Prediction` | Module2 在 `base_link` 下的局部风险预测，黄色到红色；尚不等于 Nav2 cost | 每次有效 RGB-D 推理更新 |
-| `Dynamic Risk` | 旧 16×16 兼容风险表示 | 兼容路径收到风险时变化 |
-| `Status` | health、age、reliability、fallback/identity 摘要 | 默认关闭，需要文字诊断时开启 |
+| `Dynamic Risk` | 旧 16×16 兼容风险表示 | 默认关闭，仅复现 Attempt-07 时开启 |
+| `Status` | health、age、reliability、fallback/identity 摘要 | 默认开启，缩小并固定在状态区 |
 | `Visual Candidate` | 未获 carry 资格的视觉候选 | 默认关闭，诊断用 |
 
 主 topic 为：
@@ -54,9 +54,9 @@ Isaac 复用规则和输出审计见
 
 1. 使用项目保存的 `navigation.rviz` 启动 RViz。
 2. 展开 `Module2 Cognitive Overlay`，确认 `Module2 Live Overlay` 为 Enabled。
-3. 展开 MarkerArray 的 Namespaces；日常观察优先保留 `Motion Belief`、
-   `Motion Peak` 和 `Local BEV Prediction`。`Status` 与 `Local BEV Label`
-   默认关闭，避免大段文字遮挡地图。
+3. 展开 MarkerArray 的 Namespaces；日常观察保留 `Motion Belief`、
+   `Motion Peak`、`Local BEV Prediction` 和缩小后的 `Status`。`Visual Candidate`、
+   旧 `Dynamic Risk` 与重复的 `Local BEV Label` 默认关闭。
 4. 若需要看完整热图，再开启两个 Raw Map，并检查 `Color Scheme=costmap`。
 5. 发送 2D Goal Pose 后观察：
    - Motion Peak 是否随机器人移动；
@@ -87,9 +87,10 @@ Module3 安全链，不是 Module2 输出，也不会因为 Module2 fail-closed 
 证据；footprint-vs-box SAT overlap 继续显示和入档，但只作几何诊断。RViz 中视觉上
 贴边并不自动等于 ContactSensor 碰撞，报告必须分别列出两者。
 
-v15 静态补充实验中还需打开 `/bio_nav/planner/rviz_markers`。青色 planning marker
-只在 `PlannerDecision.cognitive_tiebreak_used=true` 时表示 Module2 planning prior 被采用；
-橙色为 stock fallback。combined 必须同时核对青色 planning adoption、紫色 applied
+v15 静态补充实验中还需打开 `/bio_nav/planner/rviz_markers`。灰线表示同一次搜索的
+零-SR参考路径，青绿色表示 SR tie-break 结果，`path changed=YES/NO` 说明路径是否实际
+变化。两条诊断线只在 RViz 中左右偏移 -0.14/+0.14 m，黄色最终 Global Plan 保持真实
+中心坐标；橙色为 stock fallback。combined 必须同时核对 planning adoption、紫色 applied
 risk 和绿色 RGB-D voxel，三者分别来自不同通道，不能用其中一种颜色替代另两种证据。
 
 v15 最终实测中，planning-only 的 adopted coverage 为 1189/1205（98.67%），combined
