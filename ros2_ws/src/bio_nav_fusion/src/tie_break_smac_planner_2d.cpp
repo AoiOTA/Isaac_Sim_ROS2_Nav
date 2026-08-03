@@ -12,6 +12,7 @@
 #include <limits>
 #include <memory>
 #include <queue>
+#include <set>
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
@@ -80,6 +81,7 @@ struct OpenWorse
 struct SearchResult
 {
   Node2D::CoordinateVector path;
+  std::vector<uint64_t> expanded_indices;
   float primary_cost{0.0F};
   uint64_t expanded_nodes{0};
   bool success{false};
@@ -171,6 +173,7 @@ public:
       }
       ++iterations;
       current->visited();
+      expanded_indices_.push_back(current->getIndex());
       if (current == goal) {
         return backtrace(current, iterations);
       }
@@ -221,11 +224,12 @@ private:
     return iterator->second.get();
   }
 
-  static SearchResult backtrace(Node2D * node, uint64_t iterations)
+  SearchResult backtrace(Node2D * node, uint64_t iterations)
   {
     SearchResult result;
     result.primary_cost = node->getAccumulatedCost();
     result.expanded_nodes = iterations;
+    result.expanded_indices = expanded_indices_;
     result.success = node->backtracePath(result.path);
     return result;
   }
@@ -239,6 +243,7 @@ private:
   double max_planning_time_;
   const std::array<float, 256> & score_;
   std::unordered_map<uint64_t, std::unique_ptr<Node2D>> graph_;
+  std::vector<uint64_t> expanded_indices_;
 };
 
 }  // namespace
@@ -335,29 +340,121 @@ nav_msgs::msg::Path TieBreakSmacPlanner2D::createPlanWithTieBreak(
   }
   metrics.primary_cost = result.primary_cost;
   metrics.expanded_nodes = result.expanded_nodes;
-  metrics.path_changed = baseline.path.size() != result.path.size();
-  if (!metrics.path_changed) {
-    for (std::size_t index = 0; index < result.path.size(); ++index) {
-      if (
-        std::abs(baseline.path[index].x - result.path[index].x) > 1.0e-6F ||
-        std::abs(baseline.path[index].y - result.path[index].y) > 1.0e-6F)
-      {
-        metrics.path_changed = true;
-        break;
+  metrics.zero_sr_expanded_nodes = baseline.expanded_nodes;
+  metrics.expanded_node_delta =
+    static_cast<int64_t>(result.expanded_nodes) -
+    static_cast<int64_t>(baseline.expanded_nodes);
+  const std::set<uint64_t> baseline_expanded(
+    baseline.expanded_indices.begin(), baseline.expanded_indices.end());
+  const std::set<uint64_t> result_expanded(
+    result.expanded_indices.begin(), result.expanded_indices.end());
+  for (const auto index : baseline_expanded) {
+    metrics.zero_sr_only_expanded_cell_count += result_expanded.count(index) == 0;
+  }
+  for (const auto index : result_expanded) {
+    metrics.sr_only_expanded_cell_count += baseline_expanded.count(index) == 0;
+  }
+  metrics.search_changed =
+    metrics.zero_sr_only_expanded_cell_count > 0 ||
+    metrics.sr_only_expanded_cell_count > 0 ||
+    metrics.expanded_node_delta != 0;
+  using Cell = std::pair<int, int>;
+  const auto cell = [](const auto & coordinates) -> Cell {
+      return {
+        static_cast<int>(std::lround(coordinates.x)),
+        static_cast<int>(std::lround(coordinates.y))};
+    };
+  std::set<Cell> baseline_cells;
+  std::set<Cell> result_cells;
+  for (const auto & coordinates : baseline.path) {
+    baseline_cells.insert(cell(coordinates));
+  }
+  for (const auto & coordinates : result.path) {
+    result_cells.insert(cell(coordinates));
+  }
+  for (const auto & coordinates : baseline.path) {
+    metrics.zero_sr_only_cell_count += result_cells.count(cell(coordinates)) == 0;
+  }
+  for (const auto & coordinates : result.path) {
+    metrics.sr_only_cell_count += baseline_cells.count(cell(coordinates)) == 0;
+  }
+  metrics.path_changed =
+    metrics.zero_sr_only_cell_count > 0 || metrics.sr_only_cell_count > 0;
+  const auto grid_path_length = [](const auto & path) {
+      double length = 0.0;
+      for (std::size_t index = 1; index < path.size(); ++index) {
+        length += std::hypot(
+          static_cast<double>(path[index].x - path[index - 1].x),
+          static_cast<double>(path[index].y - path[index - 1].y));
       }
+      return length;
+    };
+  const double resolution = costmap->getResolution();
+  metrics.path_length_delta_m =
+    (grid_path_length(result.path) - grid_path_length(baseline.path)) * resolution;
+  const std::size_t sample_count = std::max(baseline.path.size(), result.path.size());
+  if (sample_count > 0) {
+    for (std::size_t sample = 0; sample < sample_count; ++sample) {
+      const auto scaled_index = [sample, sample_count](std::size_t size) {
+          if (size <= 1 || sample_count <= 1) {
+            return std::size_t{0};
+          }
+          return static_cast<std::size_t>(std::lround(
+            static_cast<double>(sample) * static_cast<double>(size - 1) /
+            static_cast<double>(sample_count - 1)));
+        };
+      const auto & baseline_point = baseline.path[scaled_index(baseline.path.size())];
+      const auto & result_point = result.path[scaled_index(result.path.size())];
+      metrics.max_path_delta_m = std::max(
+        metrics.max_path_delta_m,
+        std::hypot(
+          static_cast<double>(baseline_point.x - result_point.x),
+          static_cast<double>(baseline_point.y - result_point.y)) * resolution);
     }
   }
   metrics.zero_tie_reference.header = plan.header;
+  metrics.zero_sr_only_cells.header = plan.header;
+  metrics.zero_sr_only_expanded_cells.header = plan.header;
   metrics.zero_tie_reference.poses.reserve(baseline.path.size());
   for (auto iterator = baseline.path.rbegin(); iterator != baseline.path.rend(); ++iterator) {
     pose.pose = nav2_smac_planner::getWorldCoords(iterator->x, iterator->y, costmap);
     metrics.zero_tie_reference.poses.push_back(pose);
+    if (result_cells.count(cell(*iterator)) == 0) {
+      metrics.zero_sr_only_cells.poses.push_back(pose);
+    }
   }
   metrics.tie_break_result.header = plan.header;
+  metrics.sr_only_cells.header = plan.header;
+  metrics.sr_only_expanded_cells.header = plan.header;
   metrics.tie_break_result.poses.reserve(result.path.size());
   for (auto iterator = result.path.rbegin(); iterator != result.path.rend(); ++iterator) {
     pose.pose = nav2_smac_planner::getWorldCoords(iterator->x, iterator->y, costmap);
     metrics.tie_break_result.poses.push_back(pose);
+    if (baseline_cells.count(cell(*iterator)) == 0) {
+      metrics.sr_only_cells.poses.push_back(pose);
+    }
+  }
+  for (const auto index : baseline_expanded) {
+    if (result_expanded.count(index) != 0) {
+      continue;
+    }
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    costmap->indexToCells(static_cast<unsigned int>(index), mx, my);
+    pose.pose = nav2_smac_planner::getWorldCoords(
+      static_cast<float>(mx), static_cast<float>(my), costmap);
+    metrics.zero_sr_only_expanded_cells.poses.push_back(pose);
+  }
+  for (const auto index : result_expanded) {
+    if (baseline_expanded.count(index) != 0) {
+      continue;
+    }
+    unsigned int mx = 0;
+    unsigned int my = 0;
+    costmap->indexToCells(static_cast<unsigned int>(index), mx, my);
+    pose.pose = nav2_smac_planner::getWorldCoords(
+      static_cast<float>(mx), static_cast<float>(my), costmap);
+    metrics.sr_only_expanded_cells.poses.push_back(pose);
   }
   plan = metrics.tie_break_result;
   if (_raw_plan_publisher->get_subscription_count() > 0) {

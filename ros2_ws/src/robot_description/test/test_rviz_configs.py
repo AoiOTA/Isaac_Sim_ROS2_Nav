@@ -176,6 +176,7 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
         durability='Volatile',
     )
     assert applied['Namespaces']['Projected Global Risk'] is True
+    assert applied['Namespaces']['Risk Cost Raised'] is True
     assert applied['Namespaces']['Nav2 Risk Status'] is True
     planning = _named(config, 'Module2 Planning Decision')
     _assert_topic(
@@ -187,6 +188,31 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert planning['Namespaces']['Planning Decision'] is True
     assert planning['Namespaces']['SR Zero-Tie Reference'] is True
     assert planning['Namespaces']['SR Tie-Break Result'] is True
+    assert planning['Namespaces']['SR Zero-Tie Only Cells'] is True
+    assert planning['Namespaces']['SR Selected Only Cells'] is True
+    assert planning['Namespaces']['SR Search Selected-Only Cells'] is True
+    assert planning['Namespaces']['SR Search Zero-Only Cells'] is True
+    risk_probe = _named(config, 'Module2 Risk On-Off Impact')
+    _assert_topic(
+        risk_probe,
+        '/bio_nav/risk_impact_probe/rviz_markers',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert risk_probe['Enabled'] is True
+    assert risk_probe['Namespaces']['Risk OFF Reference Path'] is True
+    assert risk_probe['Namespaces']['Risk ON Selected Path'] is True
+    assert risk_probe['Namespaces']['Risk Impact Status'] is True
+    probe_plan = _named(config, 'SR Impact Probe Final Plan')
+    _assert_topic(
+        probe_plan,
+        '/bio_nav/planner/sr_impact_probe_plan',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    assert probe_plan['Enabled'] is True
+    assert probe_plan['Color'] == '255; 215; 0'
+    assert probe_plan['Line Width'] >= 0.18
     raw_risk = _named(config, 'Module2 Dynamic Risk Raw')
     assert raw_risk['Enabled'] is False
     assert raw_risk['Color Scheme'] == 'costmap'

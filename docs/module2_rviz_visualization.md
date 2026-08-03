@@ -9,6 +9,16 @@ bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21
 入口默认校验 Isaac GUI，避免误复用 headless。`all` 固定比较 baseline、risk-only、
 planning-only、combined，并生成四臂同表摘要。
 
+若只想确认 SR 是否至少一次真实改变了离散全局路径，可运行：
+
+```bash
+bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh sr-impact
+```
+
+该模式只调用 planning action，不发送导航目标或 `/cmd_vel`。找到
+`path_changed=true` 后，`SR Impact Probe Final Plan` 用黄色粗线显示 SR 选中路径，
+同时保留灰色零 SR 与绿色 SR 的真实路径/独占格子；所有坐标均无显示偏移。
+
 它用一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 与自动全屋路线。四种模式、
 Isaac 复用规则和输出审计见
 [用户手册 8.0 节](user_manual.md#80-module2-attempt-21-单终端入口)。
@@ -76,7 +86,8 @@ Module3 安全链，不是 Module2 输出，也不会因为 Module2 fail-closed 
 |---|---|---|
 | 深绿色小体素 | RGB-D → Nav2 VoxelLayer | 是，形成传统障碍 cost |
 | 黄色/红色局部格 | Module2 `LocalRiskGrid` 预测 | 否，仅表示预测 |
-| 紫色全局格 | Module3 接受并投影后的风险层 | 是，但仅为最高 80 的非 lethal 软代价 |
+| 紫色全局格 | Module3 接受并投影后的风险候选 | 已进入风险层，但可能被更高的既有 cost 遮蔽 |
+| 橙色高格 | Risk Cost Raised | 是，相对 static/voxel/obstacle 后的 Global Costmap 数值确实升高 |
 | 青色稀疏格与圆环 | Module1 motion belief / peak | 否，只作定位诊断 |
 
 因此“看见红格”不能证明 Nav2 已使用 Module2；必须同时看到紫色投影，或检查
@@ -87,10 +98,11 @@ Module3 安全链，不是 Module2 输出，也不会因为 Module2 fail-closed 
 证据；footprint-vs-box SAT overlap 继续显示和入档，但只作几何诊断。RViz 中视觉上
 贴边并不自动等于 ContactSensor 碰撞，报告必须分别列出两者。
 
-v15 静态补充实验中还需打开 `/bio_nav/planner/rviz_markers`。灰线表示同一次搜索的
-零-SR参考路径，青绿色表示 SR tie-break 结果，`path changed=YES/NO` 说明路径是否实际
-变化。两条诊断线只在 RViz 中左右偏移 -0.14/+0.14 m，黄色最终 Global Plan 保持真实
-中心坐标；橙色为 stock fallback。combined 必须同时核对 planning adoption、紫色 applied
+v15 静态补充实验中还需打开 `/bio_nav/planner/rviz_markers`。状态栏持久显示
+`SR SEARCH: CHANGED/UNCHANGED`、SR/零-SR扩展节点数与最终路径状态。灰色/青色小格
+分别是两次搜索各自独有的扩展节点；仅在实际改路时才绘制灰色零-SR参考、青绿色 SR
+结果及路径独占格。所有路径保持真实坐标，黄色仍是最终 Global Plan；
+橙色为 stock fallback。combined 必须同时核对 planning adoption、紫色 applied
 risk 和绿色 RGB-D voxel，三者分别来自不同通道，不能用其中一种颜色替代另两种证据。
 
 v15 最终实测中，planning-only 的 adopted coverage 为 1189/1205（98.67%），combined
