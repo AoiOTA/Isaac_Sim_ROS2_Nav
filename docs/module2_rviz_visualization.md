@@ -8,7 +8,7 @@ bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21
 
 它用一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 与自动全屋路线。四种模式、
 Isaac 复用规则和输出审计见
-[v16 单终端可视化手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+[用户手册 8.0 节](user_manual.md#80-module2-attempt-21-单终端入口)。
 
 ## 默认看到什么
 
