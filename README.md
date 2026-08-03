@@ -17,7 +17,9 @@
 > planning-only 与 combined 各 10 条静态诊断：两组均 10/10、ContactSensor 0，规划
 > adopted 为 98.67%/97.19%，combined risk valid 为 97.55%。实验全程复用同一 Isaac，
 > 未做冷启动；仍保留双 RGB-D VoxelLayer。该结果完成本阶段静态工程任务，但不改写
-> 冻结 v12 formal FAIL，也不扩大动态、多场景或通用主动融合授权。
+> 冻结 v12 formal FAIL，也不扩大动态、多场景或通用主动融合授权。v16 现已加入
+> `nav2_bio_nav_rgbd_risk_static_opt_in.yaml`：它绑定通过验证的模型/qualification SHA，
+> 只在显式选择 `nav2_profile:=bio_nav_rgbd_risk_static_opt_in` 时启用，默认 profile 不变。
 
 ## 演示视频（4×速，直接预览）
 

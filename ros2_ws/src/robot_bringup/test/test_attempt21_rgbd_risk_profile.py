@@ -17,6 +17,12 @@ STATIC_BASELINE = (
     / "config"
     / "nav2_attempt21_static_collection.yaml"
 )
+TASK_LEVEL_OPT_IN = (
+    PACKAGE_ROOT.parent
+    / "robot_navigation"
+    / "config"
+    / "nav2_bio_nav_rgbd_risk_static_opt_in.yaml"
+)
 SPEC = spec_from_file_location("attempt21_profile", SCRIPT)
 MODULE = module_from_spec(SPEC)
 assert SPEC.loader is not None
@@ -148,6 +154,7 @@ def test_static_opt_in_cli_requires_and_binds_final_delivery_sha(tmp_path):
     )
     assert receipt["qualification_scope"] == "static_hazard_opt_in_active"
     assert receipt["static_opt_in_costmap_write_enabled"] is True
+    assert receipt["task_level_delivery"] is False
     assert receipt["static_delivery_sha256"] == "3" * 64
     assert receipt["general_active_fusion_authorized"] is False
     assert receipt["base_profile"] == str(STATIC_BASELINE.resolve())
@@ -157,6 +164,86 @@ def test_static_opt_in_cli_requires_and_binds_final_delivery_sha(tmp_path):
     )
     assert profile["bt_navigator"] == baseline["bt_navigator"]
     assert profile["collision_monitor"] == baseline["collision_monitor"]
+
+
+def test_task_level_static_opt_in_is_explicitly_labeled(tmp_path):
+    output = tmp_path / "task-static-opt-in.yaml"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--risk-model-sha256",
+            "1" * 64,
+            "--risk-qualification-sha256",
+            "2" * 64,
+            "--static-opt-in",
+            "--task-level-delivery",
+            "--authorization-sha256",
+            "3" * 64,
+            "--output",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    receipt = json.loads(
+        output.with_suffix(".yaml.receipt.json").read_text(encoding="utf-8")
+    )
+    assert receipt["qualification_scope"] == (
+        "static_hazard_task_level_opt_in_active"
+    )
+    assert receipt["task_level_delivery"] is True
+    assert receipt["static_opt_in_costmap_write_enabled"] is True
+    assert receipt["general_active_fusion_authorized"] is False
+
+
+def test_task_level_delivery_flag_requires_static_opt_in(tmp_path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--risk-model-sha256",
+            "1" * 64,
+            "--risk-qualification-sha256",
+            "2" * 64,
+            "--task-level-delivery",
+            "--output",
+            str(tmp_path / "invalid.yaml"),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert "requires --static-opt-in" in result.stderr
+
+
+def test_frozen_task_level_opt_in_keeps_voxel_safety_and_exact_identity():
+    import yaml
+
+    profile = yaml.safe_load(TASK_LEVEL_OPT_IN.read_text(encoding="utf-8"))
+    parameters = layer(profile)
+    assert parameters["plugins"] == [
+        "static_layer",
+        "obstacle_layer",
+        "depth_voxel_layer",
+        "local_rgbd_risk_layer",
+        "inflation_layer",
+    ]
+    risk = parameters["local_rgbd_risk_layer"]
+    assert risk["shadow_only"] is False
+    assert risk["maximum_cost"] == 80
+    assert risk["expected_model_sha256"] == (
+        "d916c69cfd62d52b87f9ba6a3f322759285c4f8fad8de30710764dcc48855d1e"
+    )
+    assert risk["expected_qualification_sha256"] == (
+        "a5393abf92d41903de8d79897ae70494a4da965faa6bbd6301b926903d1867e4"
+    )
+    assert profile["collision_monitor"]["ros__parameters"][
+        "observation_sources"
+    ] == ["scan_safety"]
 
 
 def test_controlled_static_cli_defaults_to_complete_static_baseline(tmp_path):

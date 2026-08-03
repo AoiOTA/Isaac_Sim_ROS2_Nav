@@ -148,6 +148,14 @@ def main() -> None:
         help="required SHA-256 of the A/B authorization or final static delivery",
     )
     parser.add_argument(
+        "--task-level-delivery",
+        action="store_true",
+        help=(
+            "mark an explicit static opt-in as user-approved engineering "
+            "task-level evidence rather than a formal static-stage PASS"
+        ),
+    )
+    parser.add_argument(
         "--minimum-projection-range-m",
         type=float,
         default=0.0,
@@ -164,6 +172,9 @@ def main() -> None:
     )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+
+    if args.task_level_delivery and not args.static_opt_in:
+        parser.error("--task-level-delivery requires --static-opt-in")
 
     authorization_sha = ""
     if args.controlled_static_ab or args.static_opt_in:
@@ -221,7 +232,9 @@ def main() -> None:
         ),
         "shadow_only": not (args.controlled_static_ab or args.static_opt_in),
         "qualification_scope": (
-            "static_hazard_opt_in_active"
+            "static_hazard_task_level_opt_in_active"
+            if args.static_opt_in and args.task_level_delivery
+            else "static_hazard_opt_in_active"
             if args.static_opt_in
             else "controlled_static_ab_only"
             if args.controlled_static_ab
@@ -229,6 +242,7 @@ def main() -> None:
         ),
         "controlled_ab_costmap_write_enabled": bool(args.controlled_static_ab),
         "static_opt_in_costmap_write_enabled": bool(args.static_opt_in),
+        "task_level_delivery": bool(args.task_level_delivery),
         "authorization_sha256": authorization_sha,
         "ab_authorization_sha256": (
             authorization_sha if args.controlled_static_ab else ""

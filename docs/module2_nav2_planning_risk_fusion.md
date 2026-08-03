@@ -115,6 +115,13 @@ v15 的静态任务判定沿用用户确认的工程口径：五段全屋导航�
 且独立 Isaac ContactSensor 未触发即为通过。footprint-vs-box SAT 重叠与间隙大小
 完整保存但只用于几何诊断，不单独否决任务。
 
+v16 将通过的静态任务级 evidence 冻结为显式 profile
+`nav2_bio_nav_rgbd_risk_static_opt_in.yaml`。该 overlay 保留 Global
+`depth_voxel_layer`，仅增加最大 cost 80 的 `local_rgbd_risk_layer`，不修改 Local
+Costmap、Collision Monitor、`stable` 或 `dynamic_avoidance`。它不是默认入口，也不
+代表动态、多场景或 general active fusion；只有操作者明确传入
+`nav2_profile:=bio_nav_rgbd_risk_static_opt_in` 才会选择。
+
 首条 `23601/planning_only` 暴露过一个只影响审计显示的问题：规划器内部已经通过
 goal-prior 身份 Gate 并在 131/131 条决策中采用 Module2，但 `PlannerDecision` 错把
 base risk identity 的全零 qualification SHA 写入消息。修复后，消息改为发布实际被
