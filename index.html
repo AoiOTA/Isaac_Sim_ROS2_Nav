@@ -94,6 +94,15 @@
   <p class="muted">v15 使用全新 23601–23610，继续保留 Local/Global RGB-D VoxelLayer。Planning-only 导航时间/路径中位数为 81.11 s / 39.93 m；Combined 为 84.17 s / 39.90 m。planning adopted/fallback 与 risk applied 分别按 topic 统计。该补充为 engineering diagnostic，不自动扩大 active authorization。</p>
   <p class="callout warning">20 条接受路线中只有一次允许的重试：<code>23604/combined attempt-1</code> 因 <code>follow_path</code> action 回执时序提前 aborted，但 ContactSensor 未触发，控制器随后记录到达；原失败证据保留，attempt-2 完成任务。另有首条 planning-only 的审计消息 identity 显示问题，已在不改变导航行为的情况下修复，后续路线均发布实际采用的 SR 身份。</p>
 
+  <h2>当前文档与一键复现</h2>
+  <div class="grid">
+    <div class="card"><h3>整体架构</h3><div>Module1、Module2、Integration、Module3/Nav2 的数据流、所有权和 fail-closed 边界。</div><p><a href="https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md" style="color:var(--cyan)">打开架构文档</a></p></div>
+    <div class="card"><h3>全部实验指标</h3><div>Development、Gate、Confirmation、Shadow、A/B、Planning-only、Combined 与传统 Module3 的统一结果表。</div><p><a href="https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md" style="color:var(--cyan)">打开结果汇总</a></p></div>
+    <div class="card"><h3>单终端手册</h3><div>一条命令启动 Isaac Sim、Module2、Bridge、Nav2、RViz 和静态全屋路线。</div><p><a href="https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md" style="color:var(--cyan)">打开 v16 使用手册</a></p></div>
+  </div>
+  <pre class="card"><code>bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined</code></pre>
+  <p class="muted">将模式替换为 <code>planning-only</code>、<code>risk-only</code>、<code>static-opt-in</code>，或使用 <code>all</code> 顺序展示四条链路。该入口是人工工程可视化，不改写冻结实验。</p>
+
   <h2>授权范围</h2>
   <div class="grid"><div class="card"><h3 class="pass">已验证</h3><div>静态 RGB-D risk 的离线资格、fresh Gate/Confirmation、Shadow、10 对 task-level risk-only A/B，以及 planning-only / combined 各 10 条补充实验。</div></div><div class="card"><h3 class="pass">显式可用</h3><div><code>bio_nav_rgbd_risk_static_opt_in</code> 已绑定模型与 qualification SHA；仅在操作者显式选择时启用。</div></div><div class="card"><h3 style="color:var(--amber)">仍不授权</h3><div>动态障碍、多场景、视觉定位接管、通用主动融合、Local Costmap 写入和直接速度控制。</div></div></div>
   <p class="callout">v16 delivery 为 <code>STATIC_TASK_STAGE_PASS</code>，formal result 为 <code>NOT_APPLICABLE</code>。profile 保留 Global RGB-D VoxelLayer，只叠加最大 cost 80 的 Module2 风险；<code>stable</code>、<code>dynamic_avoidance</code>、Collision Monitor 和速度控制均未修改。</p>

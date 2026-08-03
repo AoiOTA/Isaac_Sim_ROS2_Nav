@@ -50,7 +50,7 @@
     "isaac_contact_sensor_collision_forbidden": true,
     "sat_overlap_diagnostic_only": true
   },
-  "v16_delivery": {
+    "v16_delivery": {
     "status": "STATIC_TASK_STAGE_PASS",
     "task_result": "PASS",
     "formal_result": "NOT_APPLICABLE",
@@ -62,8 +62,22 @@
     "stable_default_modified": false,
     "dynamic_avoidance_default_modified": false,
     "global_depth_voxel_layer_preserved": true,
-    "local_costmap_modified": false
-  },
-  "formal_result": "NOT_APPLICABLE",
+        "local_costmap_modified": false
+    },
+    "current_documentation": {
+        "architecture": "https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md",
+        "all_experiment_results": "https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md",
+        "visual_manual": "https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md",
+        "one_terminal_launcher": "scripts/run_attempt21_static_visual_experiment.sh",
+        "modes": [
+            "planning-only",
+            "risk-only",
+            "combined",
+            "static-opt-in",
+            "all"
+        ],
+        "qualification_scope": "engineering_manual_visual_only"
+    },
+    "formal_result": "NOT_APPLICABLE",
   "general_active_fusion_authorized": false
 }
