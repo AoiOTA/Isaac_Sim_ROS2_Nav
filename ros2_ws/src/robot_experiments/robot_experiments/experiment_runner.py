@@ -60,6 +60,11 @@ from .scenario import (
     validate_navigation_runner_scenario,
 )
 from .spawn_poses import SpawnPose, load_spawn_pose
+from .static_contact import (
+    exceeds_overlap_tolerance,
+    load_robot_footprint,
+    static_contact_summary,
+)
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,16 @@ class CommandSample:
 
 
 PREGOAL_AUTHORIZATION_RECEIPT = "R2C4_R2_PREGOAL_AUTHORIZED"
+APPEARANCE_NAV2_PROFILES = frozenset({
+    "stable",
+    "dynamic_avoidance",
+    "bio_nav_planning_only",
+    "bio_nav_risk_only",
+    "bio_nav_tiebreak_risk",
+    "attempt21_static_collection",
+    "bio_nav_rgbd_risk_shadow",
+    "bio_nav_rgbd_risk_ab",
+})
 
 
 def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
@@ -293,17 +308,13 @@ class ExperimentRunner(Node):
         self._nav2_profile = str(
             self.declare_parameter("nav2_profile", "").value
         ).strip()
-        if self._scenario.appearance_config_file is not None and self._nav2_profile not in {
-            "stable",
-            "dynamic_avoidance",
-            "bio_nav_planning_only",
-            "bio_nav_risk_only",
-            "bio_nav_tiebreak_risk",
-        }:
+        if (
+            self._scenario.appearance_config_file is not None
+            and self._nav2_profile not in APPEARANCE_NAV2_PROFILES
+        ):
             raise ConfigurationError(
-                "appearance benchmark requires stable, dynamic_avoidance, "
-                "bio_nav_planning_only, bio_nav_risk_only, or "
-                "bio_nav_tiebreak_risk"
+                "appearance benchmark requires a registered appearance-safe "
+                "Nav2 profile"
             )
         robot_config = (
             Path(robot_override).expanduser().resolve()
@@ -316,6 +327,7 @@ class ExperimentRunner(Node):
             else self._scenario.resolve_path(self._scenario.nav2_config_file)
         )
         self._robot_config_hash = configuration_sha256(robot_config)
+        self._robot_footprint = load_robot_footprint(robot_config)
         self._nav2_config_hash = configuration_sha256(nav2_config)
         self._workspace_root = Path(__file__).resolve().parents[4]
         self._provenance = _campaign_provenance(
@@ -711,6 +723,7 @@ class ExperimentRunner(Node):
         self._maximum_route_recoveries = 0
         self._collision_seen = False
         self._collision_detected = False
+        self._isaac_contact_sensor_collision_detected = False
         self._localization_seen = False
         self._localization_lost = False
         self._lock_status_seen = False
@@ -810,7 +823,11 @@ class ExperimentRunner(Node):
 
     def _collision_callback(self, message: Bool) -> None:
         self._collision_seen = True
-        self._collision_detected = self._collision_detected or bool(message.data)
+        detected = bool(message.data)
+        self._isaac_contact_sensor_collision_detected = (
+            self._isaac_contact_sensor_collision_detected or detected
+        )
+        self._collision_detected = self._collision_detected or detected
 
     def _collision_lock_callback(self, message: CollisionMonitorState) -> None:
         self._lock_status_seen = True
@@ -1151,36 +1168,69 @@ class ExperimentRunner(Node):
         }
 
     def _verify_collision_monitor_active(self) -> None:
-        if not self._collision_monitor_state_client.wait_for_service(
-            timeout_sec=self._service_timeout_sec
-        ):
-            self._raise_if_shutdown()
-            raise RuntimeError(
-                "Collision Monitor lifecycle state service is unavailable"
+        """Require a stable ACTIVE monitor while tolerating lifecycle churn.
+
+        A fresh runner can overlap the tail of the previous route's reset and
+        shutdown work.  During that narrow window the lifecycle service may be
+        discoverable while one GetState request never receives a response.
+        Querying once for the full service timeout therefore creates a false
+        formal failure.  Use short queries inside one bounded recovery window,
+        and still fail closed unless ACTIVE is continuously observed.
+        """
+
+        deadline = time.monotonic() + self._reset_recovery_timeout_sec
+        active_since: float | None = None
+        latest_state = "service_unavailable"
+        while rclpy.ok():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise TimeoutError(
+                    "Collision Monitor did not become stably active before "
+                    f"the recovery deadline: {latest_state}"
+                )
+            if not self._collision_monitor_state_client.wait_for_service(
+                timeout_sec=min(0.1, remaining)
+            ):
+                latest_state = "service_unavailable"
+                active_since = None
+                self._spin_once(
+                    min(0.1, max(0.0, deadline - time.monotonic()))
+                )
+                continue
+
+            future = self._collision_monitor_state_client.call_async(
+                GetState.Request()
             )
-        future = self._collision_monitor_state_client.call_async(
-            GetState.Request()
-        )
-        if not self._wait_future(
-            future, time.monotonic() + self._service_timeout_sec
-        ):
-            raise TimeoutError(
-                "reading Collision Monitor lifecycle state timed out"
+            query_deadline = min(deadline, time.monotonic() + 1.0)
+            if not self._wait_future(future, query_deadline):
+                future.cancel()
+                latest_state = "query_timeout"
+                active_since = None
+                continue
+            response = future.result()
+            if response is None:
+                latest_state = "no_response"
+                active_since = None
+                continue
+            latest_state = response.current_state.label
+            if response.current_state.id != State.PRIMARY_STATE_ACTIVE:
+                active_since = None
+                self._spin_once(
+                    min(0.1, max(0.0, deadline - time.monotonic()))
+                )
+                continue
+            if active_since is None:
+                active_since = time.monotonic()
+            elif (
+                time.monotonic() - active_since
+                >= self._nav2_active_stability_sec
+            ):
+                self._collision_monitor_active = True
+                return
+            self._spin_once(
+                min(0.1, max(0.0, deadline - time.monotonic()))
             )
-        response = future.result()
-        if (
-            response is None
-            or response.current_state.id != State.PRIMARY_STATE_ACTIVE
-        ):
-            label = (
-                "no response"
-                if response is None
-                else response.current_state.label
-            )
-            raise RuntimeError(
-                f"Collision Monitor is not active: {label}"
-            )
-        self._collision_monitor_active = True
+        raise ExternalShutdownException()
 
     def _wait_for_nav2_managed_nodes_active(self) -> None:
         """Wait for a stable active Nav2 set after a physical reset.
@@ -2134,6 +2184,49 @@ class ExperimentRunner(Node):
     ) -> dict[str, Any]:
         gt = self._ground_truth_samples[-1] if self._ground_truth_samples else None
         odom = self._odom_samples[-1] if self._odom_samples else None
+        requires_static_contact_gate = bool(
+            self._scenario.scenario_type == "static"
+            and self._scenario.obstacles.get("static", [])
+        )
+        static_contact = static_contact_summary(
+            self._ground_truth_samples,
+            [
+                item
+                for item in self._obstacle_state.get("obstacles", [])
+                if isinstance(item, Mapping)
+            ],
+            self._robot_footprint,
+        )
+        maximum_static_overlap_m = float(
+            static_contact["maximum_sat_overlap_m"]
+        )
+        allowed_static_overlap_m = (
+            self._scenario.success.maximum_static_geometric_overlap_m
+        )
+        static_contact_exceeds_acceptance = exceeds_overlap_tolerance(
+            static_contact, allowed_static_overlap_m
+        )
+        static_contact.update(
+            {
+                "maximum_sat_overlap_m": maximum_static_overlap_m,
+                "maximum_accepted_overlap_m": allowed_static_overlap_m,
+                "exceeds_acceptance_overlap": static_contact_exceeds_acceptance,
+                "diagnostic_only": (
+                    self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                ),
+                "acceptance_policy": (
+                    "contact_sensor_only_static_geometry_diagnostic"
+                    if self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                    else "contact_sensor_or_overlap_above_configured_tolerance"
+                ),
+            }
+        )
+        if (
+            requires_static_contact_gate
+            and static_contact_exceeds_acceptance
+            and not self._scenario.success.static_geometric_overlap_is_diagnostic_only
+        ):
+            self._collision_detected = True
         goal_x, goal_y = self._scenario.goal.position
         position_error = math.hypot(gt.x - goal_x, gt.y - goal_y) if gt else 0.0
         goal_yaw = math.radians(self._scenario.goal.yaw_deg)
@@ -2146,6 +2239,8 @@ class ExperimentRunner(Node):
                 or self._collision_monitor_active
             )
         ) or not self._scenario.success.require_safety_observations
+        if requires_static_contact_gate:
+            safety_complete = bool(safety_complete and static_contact["observed"])
         thresholds = SingleRunThresholds(
             position_tolerance_m=self._scenario.success.position_tolerance_m,
             orientation_tolerance_rad=math.radians(
@@ -2282,6 +2377,19 @@ class ExperimentRunner(Node):
         if not dynamic_interaction_complete:
             reasons.append("dynamic_obstacle_interaction_incomplete")
         warnings: list[str] = []
+        if (
+            requires_static_contact_gate
+            and static_contact["contact_detected"]
+            and (
+                self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                or not static_contact_exceeds_acceptance
+            )
+        ):
+            warnings.append(
+                "static_geometric_overlap_diagnostic_only"
+                if self._scenario.success.static_geometric_overlap_is_diagnostic_only
+                else "static_geometric_overlap_within_diagnostic_tolerance"
+            )
         if interaction_acceptance["clearance_warning_below_0_10m"]:
             warnings.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}
@@ -2463,6 +2571,10 @@ class ExperimentRunner(Node):
                 "complete": dynamic_interaction_complete,
                 "guard_aborted": self._dynamic_guard_aborted,
                 "safety_yield": self._dynamic_safety_yield,
+            },
+            "static_geometric_contact": {
+                **static_contact,
+                "required": requires_static_contact_gate,
             },
             "dynamic_behavior": dynamic_behavior,
             "physics_dt": self._scenario.physics_dt,
@@ -2687,7 +2799,9 @@ class ExperimentRunner(Node):
             "/optimal_trajectory", "/trajectories",
             "/local_costmap/costmap_raw", "/global_costmap/costmap_raw",
             "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
-            "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points", "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
+            "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points",
+            "/experiment/paired_appearance/baseline/image_raw", "/experiment/paired_appearance/variant/image_raw", "/experiment/paired_appearance/state",
+            "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
             "/bio_nav/module2/planning_prior", "/diagnostics",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
@@ -2784,6 +2898,12 @@ class ExperimentRunner(Node):
             "nav2_profile": manifest.get("nav2_profile"),
             "strict_success": strict_success,
             "physical_collision_free": not self._collision_detected,
+            "isaac_contact_sensor_collision_detected": (
+                self._isaac_contact_sensor_collision_detected
+            ),
+            "static_geometric_contact": manifest.get(
+                "static_geometric_contact", {}
+            ),
             "data_complete": data_complete,
             "checksums_verified": False,
             "evidence": {

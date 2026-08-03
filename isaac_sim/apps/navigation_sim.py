@@ -473,6 +473,7 @@ def run(
     node = None
     reset_bridge = None
     appearance_manager = None
+    paired_appearance_capture = None
     odom_phase_trace = None
     r2c1_trace = None
     r2c2_trace = None
@@ -638,6 +639,20 @@ def run(
             config,
             camera_profile=camera_selection.profile.name,
         ).create_all()
+        if sensors.cameras:
+            from isaac_sim.src.experiment.paired_appearance import (
+                PairedAppearanceCapture,
+            )
+
+            paired_camera = sensors.cameras[0]
+            paired_appearance_capture = PairedAppearanceCapture(
+                node=node,
+                render_product=paired_camera.render_product,
+                appearance_manager=appearance_manager,
+                appearance_profiles=appearance_profiles,
+                width=paired_camera.width,
+                height=paired_camera.height,
+            )
         if dynamic_scenario.coordinate_frame == "map" and not selected_pose.map.calibrated:
             raise ValueError("map-coordinate obstacles require a calibrated selected spawn pose")
         def map_to_usd(position):
@@ -1936,6 +1951,8 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
+            if paired_appearance_capture is not None and startup_reset.finished:
+                paired_appearance_capture.update(simulation_time)
             if r2c2_state is not None and startup_reset.finished:
                 if r2c2_state["settle_until"] is None:
                     r2c2_state["settle_until"] = simulation_time + 2.0
@@ -2240,6 +2257,14 @@ def run(
         traceback.print_exc()
         raise
     finally:
+        if paired_appearance_capture is not None:
+            try:
+                paired_appearance_capture.close()
+            except Exception as exc:
+                print(
+                    f"warning: failed to close paired appearance capture cleanly: {exc}",
+                    file=sys.stderr,
+                )
         if r2c1_observer_executor is not None:
             try:
                 r2c1_observer_executor.shutdown(timeout_sec=2.0)

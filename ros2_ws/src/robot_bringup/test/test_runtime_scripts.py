@@ -154,6 +154,12 @@ def test_common_resolves_project_root_from_unrelated_temporary_directory(tmp_pat
     assert result.stdout == str(REPOSITORY_ROOT)
 
 
+def test_common_requires_current_attempt21_interfaces_underlay():
+    source = COMMON.read_text(encoding='utf-8')
+    assert 'Bio_Nav_Integration/install/setup.bash' in source
+    assert 'bio_nav_interfaces/msg/local_risk_grid.hpp' in source
+
+
 @pytest.mark.parametrize(
     ('name', 'value', 'expected'),
     [

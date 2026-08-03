@@ -6,7 +6,9 @@ Module3/Nav2 始终负责 SLAM/定位、地图、障碍合法性、全局与局�
 Collision Monitor 和 `/cmd_vel`。Module2 只提供可拒绝的认知先验：
 
 - goal-conditioned SR grid 用于等主代价候选的 tie-break；
-- 校准后的 16×16 dynamic cost 用于 Global Costmap 非 lethal 软风险；
+- Attempt-21 的 `base_link` 32×32、0.5 m/cell `LocalRiskGrid` 由 Module3 在消息
+  时间戳按权威 TF 投影为 Global Costmap 非 lethal 软风险；旧 16×16 dynamic cost
+  只保留兼容；
 - 健康、可靠度、OOD、TTL 和身份 hash。
 
 Module2 不修正位姿、不清除 LiDAR/RGB-D 障碍、不写 Local Costmap、不直接控制
@@ -37,16 +39,32 @@ fail-closed 模板，不能直接作为合格运行身份。
 
 ## 风险路径
 
-`CognitiveRiskLayer` 只挂在 Global Costmap：
+Attempt-21 使用 `LocalRiskGridLayer`，仍然只挂在 Global Costmap：
 
 1. 检查 map/reset/model/qualification hash、消息年龄、finite、health、
    reliability、OOD 及 `risk_rejection_mask`；任一拒绝位非零即回退；
-2. 低于冻结阈值的格为 0，其余映射到 `1..80`；
+2. 在消息时间戳把 `base_link` 局部格投影到 global frame；低于冻结阈值的格为
+   0，其余映射到 `1..80`；
 3. 使用 `max(existing_cost, cognitive_cost)`，因此不能清除真实障碍；
 4. 健康输入停止后风险最多线性衰减 `0.8 s`；消息年龄超过 `0.5 s`、
    拒绝位非零或身份失败时在下一周期清空整层。
 
 Local Costmap、MPPI 采样和 Collision Monitor 不订阅 Module2 topic。
+
+六个建图后加入的低矮静态障碍仍由 RGB-D → `depth_voxel_layer` → Local/Global
+Costmap 的传统 Module3 链负责。Module2 风险只能增加软代价，不能替代绿色体素、
+清除传统障碍或把 cost 写成 lethal。
+
+## RViz 中如何确认“预测”和“应用”
+
+- 黄色/红色 `Local BEV Prediction`：Module2 预测，尚未证明 Nav2 接受；
+- 紫色 `Projected Global Risk`：Module3 完成身份、时效、health/OOD 与 TF 门控后
+  实际加入 Global Costmap 的软风险；
+- 深绿色 `Marked Voxels (3D)`：传统 RGB-D VoxelLayer 的真实静态障碍链；
+- 青色 `Motion Belief`/`Motion Peak`：定位诊断，不参与正式定位和控制。
+
+最终以 `/bio_nav/local_risk_layer/status` 与 `/bio_nav/planner/decision` 为准，不能只
+根据 RViz 某种颜色宣布融合生效。
 
 ## 启动
 
@@ -85,3 +103,28 @@ python3 -m pytest -q \
 Local Costmap 不变，并核验 `BioNavGridBased`、MPPI timing 与 mode contract。通过后仍须
 运行 `./scripts/build_ros2.sh`，再以新 install 启动 Isaac；未重建的 install 不能作为当前
 源码的运行时验证证据。
+
+Attempt-21 v15 静态补充沿用上述所有权边界，但不复用会删掉 Global
+`depth_voxel_layer` 的动态 profile。Integration 的 profile 生成器从已验证静态配置、
+冻结 planning template 与 v12 risk overlay 合并，并在启动前检查 combined 同时保留
+`depth_voxel_layer` 和 `local_rgbd_risk_layer`。该实验只有在 v13 task-level 10 对
+PASS 后才允许运行，结果仍为 engineering diagnostic，不修改 `stable`、
+`dynamic_avoidance` 或通用 active authorization。
+
+v15 的静态任务判定沿用用户确认的工程口径：五段全屋导航完成、无卡死/timeout，
+且独立 Isaac ContactSensor 未触发即为通过。footprint-vs-box SAT 重叠与间隙大小
+完整保存但只用于几何诊断，不单独否决任务。
+
+v16 将通过的静态任务级 evidence 冻结为显式 profile
+`nav2_bio_nav_rgbd_risk_static_opt_in.yaml`。该 overlay 保留 Global
+`depth_voxel_layer`，仅增加最大 cost 80 的 `local_rgbd_risk_layer`，不修改 Local
+Costmap、Collision Monitor、`stable` 或 `dynamic_avoidance`。它不是默认入口，也不
+代表动态、多场景或 general active fusion；只有操作者明确传入
+`nav2_profile:=bio_nav_rgbd_risk_static_opt_in` 才会选择。
+
+首条 `23601/planning_only` 暴露过一个只影响审计显示的问题：规划器内部已经通过
+goal-prior 身份 Gate 并在 131/131 条决策中采用 Module2，但 `PlannerDecision` 错把
+base risk identity 的全零 qualification SHA 写入消息。修复后，消息改为发布实际被
+采用的 goal-prior qualification、motion-core 和 Module3 map SHA；导航行为、任务结果
+和首条原始证据均未改写。判断 planning 是否采用仍应同时查看
+`cognitive_tiebreak_used`、`fallback_reason` 与身份字段，不能只看单个 SHA。

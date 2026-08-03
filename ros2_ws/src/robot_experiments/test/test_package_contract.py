@@ -115,6 +115,43 @@ def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
         assert f'"{artifact}"' in runner
 
 
+def test_experiment_telemetry_records_deterministic_appearance_pairs():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    for topic in (
+        "/experiment/paired_appearance/baseline/image_raw",
+        "/experiment/paired_appearance/variant/image_raw",
+        "/experiment/paired_appearance/state",
+    ):
+        assert f'"{topic}"' in runner
+
+
+def test_collision_monitor_startup_check_retries_short_queries_and_requires_stability():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text()
+    assert "deadline = time.monotonic() + self._reset_recovery_timeout_sec" in runner
+    assert "query_deadline = min(deadline, time.monotonic() + 1.0)" in runner
+    assert "future.cancel()" in runner
+    assert 'latest_state = "query_timeout"' in runner
+    assert "time.monotonic() - active_since" in runner
+    assert ">= self._nav2_active_stability_sec" in runner
+
+
+def test_attempt21_shadow_does_not_change_aggregate_costmap_bounds():
+    fusion = (
+        PACKAGE_ROOT.parent
+        / "bio_nav_fusion/src/local_risk_grid_layer.cpp"
+    ).read_text()
+    assert "if (shadow_only_)" in fusion
+    shadow_block = fusion.split("if (shadow_only_)", 1)[1].split("}", 1)[0]
+    assert "must not enlarge the aggregate update bounds" in shadow_block
+    assert "touch(" not in shadow_block
+    assert "current_ = true" in shadow_block
+    assert "return;" in shadow_block
+
+
 def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_kujiale_4x20_all.sh").read_text()

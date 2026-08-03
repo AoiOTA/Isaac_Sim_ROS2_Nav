@@ -576,9 +576,11 @@ Visualization Manager:
           Namespaces:
             Canvas: true
             Dynamic Risk: true
+            Local BEV Label: false
+            Local BEV Prediction: true
             Motion Belief: true
             Motion Peak: true
-            Status: true
+            Status: false
             Visual Candidate: false
           Topic:
             Depth: 1
@@ -586,6 +588,31 @@ Visualization Manager:
             History Policy: Keep Last
             Reliability Policy: Reliable
             Value: /bio_nav/module2/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 Applied Nav2 Risk
+          Namespaces:
+            Nav2 Risk Status: false
+            Projected Global Risk: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/local_risk_layer/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 Planning Decision
+          Namespaces:
+            Planning Decision: false
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/planner/rviz_markers
           Value: true
         - Alpha: 0.25
           Binary representation: false
@@ -651,7 +678,7 @@ Visualization Manager:
             Reliability Policy: Reliable
             Value: /collision_monitor/slowdown_zone
           Value: true
-        - Alpha: 0.8500000238418579
+        - Alpha: 0.6499999761581421
           Class: rviz_default_plugins/Polygon
           Color: 255; 235; 40
           Enabled: true
@@ -737,7 +764,7 @@ Visualization Manager:
           Position Transformer: XYZ
           Selectable: true
           Size (Pixels): 5
-          Size (m): 0.07999999821186066
+          Size (m): 0.05000000074505806
           Style: Boxes
           Topic:
             Depth: 2
@@ -748,11 +775,10 @@ Visualization Manager:
             Value: /local_costmap/voxel_grid
           Use Fixed Frame: true
           Use rainbow: false
-          # This is a diagnostic RGB-D view.  It retains short-lived depth
-          # marks by design, which makes a moving actor look like a strip.
-          # Keep the sensor fused into the Local Costmap, but hide this debug
-          # overlay by default in navigation and dynamic-avoidance sessions.
-          Value: false
+          # Static Attempt-21 view: bright green boxes are the actual RGB-D
+          # VoxelLayer marks consumed by the Local Costmap.  They are distinct
+          # from Module2's yellow/red prediction and purple applied risk.
+          Value: true
         # STVL publishes sensor_msgs/PointCloud2. Its dynamic-profile output
         # is remapped to a dedicated topic so it can coexist with the legacy
         # nav2_msgs/VoxelGrid display above in the same RViz process.
