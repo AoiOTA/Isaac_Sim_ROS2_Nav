@@ -623,9 +623,29 @@ Visualization Manager:
           Value: true
         - Class: rviz_default_plugins/MarkerArray
           Enabled: true
+          Name: Module2 SR Full-House Impact
+          Namespaces:
+            SR Full Route Selected: true
+            SR Full Route Selected-Only Search: true
+            SR Full Route Status: true
+            SR Full Route Waypoint Labels: true
+            SR Full Route Waypoints: true
+            SR Full Route Zero Reference: true
+            SR Full Route Zero-Only Search: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/sr_impact_probe/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
           Name: Module2 Risk On-Off Impact
           Namespaces:
             Risk Impact Status: true
+            Risk Impact Waypoint Labels: true
+            Risk Impact Waypoints: true
             Risk OFF Reference Path: true
             Risk ON Selected Path: true
           Topic:

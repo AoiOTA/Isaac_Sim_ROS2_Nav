@@ -192,6 +192,20 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert planning['Namespaces']['SR Selected Only Cells'] is True
     assert planning['Namespaces']['SR Search Selected-Only Cells'] is True
     assert planning['Namespaces']['SR Search Zero-Only Cells'] is True
+    sr_probe = _named(config, 'Module2 SR Full-House Impact')
+    _assert_topic(
+        sr_probe,
+        '/bio_nav/sr_impact_probe/rviz_markers',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert sr_probe['Enabled'] is True
+    assert sr_probe['Namespaces']['SR Full Route Zero Reference'] is True
+    assert sr_probe['Namespaces']['SR Full Route Selected'] is True
+    assert sr_probe['Namespaces']['SR Full Route Zero-Only Search'] is True
+    assert sr_probe['Namespaces']['SR Full Route Selected-Only Search'] is True
+    assert sr_probe['Namespaces']['SR Full Route Waypoints'] is True
+    assert sr_probe['Namespaces']['SR Full Route Waypoint Labels'] is True
     risk_probe = _named(config, 'Module2 Risk On-Off Impact')
     _assert_topic(
         risk_probe,
@@ -203,6 +217,8 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert risk_probe['Namespaces']['Risk OFF Reference Path'] is True
     assert risk_probe['Namespaces']['Risk ON Selected Path'] is True
     assert risk_probe['Namespaces']['Risk Impact Status'] is True
+    assert risk_probe['Namespaces']['Risk Impact Waypoints'] is True
+    assert risk_probe['Namespaces']['Risk Impact Waypoint Labels'] is True
     probe_plan = _named(config, 'SR Impact Probe Final Plan')
     _assert_topic(
         probe_plan,

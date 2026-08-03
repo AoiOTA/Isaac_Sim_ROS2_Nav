@@ -9,15 +9,32 @@ bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21
 入口默认校验 Isaac GUI，避免误复用 headless。`all` 固定比较 baseline、risk-only、
 planning-only、combined，并生成四臂同表摘要。
 
-若只想确认 SR 是否至少一次真实改变了离散全局路径，可运行：
+若要检查完整五段 SR 搜索过程和离散全局路径，可运行：
 
 ```bash
 bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh sr-impact
 ```
 
-该模式只调用 planning action，不发送导航目标或 `/cmd_vel`。找到
-`path_changed=true` 后，`SR Impact Probe Final Plan` 用黄色粗线显示 SR 选中路径，
-同时保留灰色零 SR 与绿色 SR 的真实路径/独占格子；所有坐标均无显示偏移。
+该模式只调用五段 planning action，不发送导航目标或 `/cmd_vel`。灰色宽线和绿色细线
+显示完整 `G1→G2→G3→G4→G5→G1` 零-SR/SR路线，灰/青小格累计显示五段独有搜索
+节点，青色航点标明 G1–G5。状态文字报告搜索/路径变化段数和总扩展节点；所有坐标均
+无横向显示偏移。
+
+2026-08-03 新鲜五段运行中，五段均 adopted，但 SR/零-SR总扩展节点同为 14352，
+search/path changed 均为 0/5；灰/绿路线重合是这次现场结果，不能把 adopted 冒充改路。
+
+完整 Risk OFF/ON 全屋路线对照使用：
+
+```bash
+bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh risk-impact
+```
+
+灰线与橙线分别连接完整 `G1→G2→G3→G4→G5→G1` 五段规划结果；黄色圆点及 G1–G5
+标签标明航点。状态文字给出改路段数、全路线最大偏移和总长度差。该模式同样只规划、
+不发送导航目标或速度命令。
+
+同日新鲜五段运行中 Risk 改变 2/5 段：`G1→G2` 最大偏移 0.0499 m，`G2→G3`
+最大偏移 0.0218 m，其余三段相同；全路线长度差为 -0.0108 m。
 
 它用一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 与自动全屋路线。四种模式、
 Isaac 复用规则和输出审计见
