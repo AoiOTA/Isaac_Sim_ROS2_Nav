@@ -19,6 +19,8 @@ find_package(rclcpp_lifecycle REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(visualization_msgs REQUIRED)
 
 add_library(bio_nav_planner_plugin SHARED
   src/bio_nav_grid_based.cpp
@@ -42,11 +44,20 @@ ament_target_dependencies(bio_nav_planner_plugin
   std_msgs
   tf2
   tf2_geometry_msgs
+  visualization_msgs
 )
 
 add_library(bio_nav_costmap_plugin SHARED
   src/cognitive_risk_layer.cpp
+  src/local_risk_grid_layer.cpp
 )
+
+add_executable(local_risk_grid_shadow_auditor
+  src/local_risk_grid_shadow_auditor.cpp)
+target_link_libraries(
+  local_risk_grid_shadow_auditor bio_nav_costmap_plugin)
+ament_target_dependencies(local_risk_grid_shadow_auditor
+  bio_nav_interfaces rclcpp std_msgs tf2 tf2_ros)
 target_include_directories(bio_nav_costmap_plugin PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
@@ -63,17 +74,22 @@ ament_target_dependencies(bio_nav_costmap_plugin
   std_msgs
   tf2
   tf2_geometry_msgs
+  visualization_msgs
 )
 
 pluginlib_export_plugin_description_file(nav2_core bio_nav_planners.xml)
 pluginlib_export_plugin_description_file(
   nav2_costmap_2d bio_nav_costmap_plugins.xml)
 
-install(TARGETS bio_nav_planner_plugin bio_nav_costmap_plugin
+install(TARGETS
+  bio_nav_planner_plugin
+  bio_nav_costmap_plugin
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
 )
+install(TARGETS local_risk_grid_shadow_auditor
+  RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(FILES bio_nav_planners.xml bio_nav_costmap_plugins.xml
   DESTINATION share/${PROJECT_NAME})
@@ -98,5 +114,5 @@ endif()
 ament_export_include_directories(include)
 ament_export_libraries(bio_nav_planner_plugin bio_nav_costmap_plugin)
 ament_export_dependencies(
-  bio_nav_interfaces nav2_core nav2_costmap_2d nav2_smac_planner)
+  bio_nav_interfaces nav2_core nav2_costmap_2d nav2_smac_planner tf2_ros)
 ament_package()

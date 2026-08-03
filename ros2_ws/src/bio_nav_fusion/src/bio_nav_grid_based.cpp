@@ -152,6 +152,9 @@ void BioNavGridBased::configure(
   decision_publisher_ = node->create_publisher<
     bio_nav_interfaces::msg::PlannerDecision>(
     "/bio_nav/planner/decision", rclcpp::QoS(10).reliable());
+  visualization_publisher_ = node->create_publisher<
+    visualization_msgs::msg::MarkerArray>(
+    "/bio_nav/planner/rviz_markers", rclcpp::QoS(1).reliable());
 
   stock_ = std::make_unique<TieBreakSmacPlanner2D>();
   stock_->configure(parent, name_ + "_fallback", tf, costmap_ros_);
@@ -202,6 +205,7 @@ void BioNavGridBased::cleanup()
     stock_.reset();
   }
   decision_publisher_.reset();
+  visualization_publisher_.reset();
   costmap_ros_.reset();
   clock_.reset();
 }
@@ -214,12 +218,18 @@ void BioNavGridBased::activate()
   if (decision_publisher_) {
     decision_publisher_->on_activate();
   }
+  if (visualization_publisher_) {
+    visualization_publisher_->on_activate();
+  }
 }
 
 void BioNavGridBased::deactivate()
 {
   if (decision_publisher_) {
     decision_publisher_->on_deactivate();
+  }
+  if (visualization_publisher_) {
+    visualization_publisher_->on_deactivate();
   }
   if (stock_) {
     stock_->deactivate();
@@ -237,13 +247,18 @@ nav_msgs::msg::Path BioNavGridBased::stockPlan(
     (clock_->now().seconds() - begin_s) * 1000.0;
   uint32_t reset_epoch = 0;
   std::string map_version;
+  std::string qualification_sha256;
+  std::string motion_core_sha256;
   {
     std::lock_guard<std::mutex> lock(identity_mutex_);
     reset_epoch = reset_epoch_;
     map_version = map_version_;
+    qualification_sha256 = qualification_sha256_;
+    motion_core_sha256 = motion_core_sha256_;
   }
   publishDecision(
-    false, reason, 0.0, 0, latency_ms, reset_epoch, map_version, "", "");
+    false, reason, 0.0, 0, latency_ms, reset_epoch, map_version, "", "",
+    qualification_sha256, motion_core_sha256, expected_module3_map_sha256_);
   return path;
 }
 
@@ -252,6 +267,8 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
   const geometry_msgs::msg::PoseStamped & goal,
   std::function<bool()> cancel_checker)
 {
+  visualization_x_ = start.pose.position.x;
+  visualization_y_ = start.pose.position.y;
   const double begin_s = clock_->now().seconds();
   uint32_t reset_epoch = 0;
   std::string map_version;
@@ -327,7 +344,9 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
     (clock_->now().seconds() - begin_s) * 1000.0;
   publishDecision(
     true, "", metrics.primary_cost, metrics.expanded_nodes, latency_ms,
-    reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256);
+    reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256,
+    prior.qualification_receipt_sha256, prior.motion_core_sha256,
+    prior.module3_map_sha256);
   return path;
 }
 
@@ -498,7 +517,10 @@ void BioNavGridBased::publishDecision(
   bool used, const std::string & fallback_reason, double primary_cost,
   uint64_t expanded_nodes, double latency_ms, uint32_t reset_epoch,
   const std::string & map_version, const std::string & goal_hash,
-  const std::string & snapshot_sha256)
+  const std::string & snapshot_sha256,
+  const std::string & qualification_sha256,
+  const std::string & motion_core_sha256,
+  const std::string & module3_map_sha256)
 {
   if (!decision_publisher_ || !decision_publisher_->is_activated()) {
     return;
@@ -516,10 +538,50 @@ void BioNavGridBased::publishDecision(
   decision.map_version = map_version;
   decision.goal_hash = goal_hash;
   decision.snapshot_sha256 = snapshot_sha256;
-  decision.qualification_receipt_sha256 = qualification_sha256_;
-  decision.motion_core_sha256 = motion_core_sha256_;
-  decision.module3_map_sha256 = expected_module3_map_sha256_;
+  decision.qualification_receipt_sha256 = qualification_sha256;
+  decision.motion_core_sha256 = motion_core_sha256;
+  decision.module3_map_sha256 = module3_map_sha256;
   decision_publisher_->publish(decision);
+  if (visualization_publisher_ && visualization_publisher_->is_activated()) {
+    visualization_msgs::msg::MarkerArray array;
+    visualization_msgs::msg::Marker clear;
+    clear.header.frame_id = global_frame_;
+    clear.header.stamp = decision.stamp;
+    clear.ns = "Module2 Planning";
+    clear.id = 0;
+    clear.action = visualization_msgs::msg::Marker::DELETEALL;
+    array.markers.push_back(clear);
+    visualization_msgs::msg::Marker status;
+    status.header = clear.header;
+    status.ns = "Planning Decision";
+    status.id = 1;
+    status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+    status.action = visualization_msgs::msg::Marker::ADD;
+    status.pose.position.x = visualization_x_;
+    status.pose.position.y = visualization_y_ + 1.2;
+    status.pose.position.z = 2.2;
+    status.pose.orientation.w = 1.0;
+    status.scale.z = 0.16;
+    status.lifetime = rclcpp::Duration::from_seconds(4.0);
+    if (used) {
+      status.text = "M2 PLANNING ADOPTED | expanded=" +
+        std::to_string(expanded_nodes) + " | latency=" +
+        std::to_string(static_cast<int>(std::lround(latency_ms))) +
+        " ms";
+      status.color.r = 0.0F;
+      status.color.g = 1.0F;
+      status.color.b = 0.85F;
+      status.color.a = 1.0F;
+    } else {
+      status.text = "M2 PLANNING FALLBACK | " + fallback_reason;
+      status.color.r = 1.0F;
+      status.color.g = 0.65F;
+      status.color.b = 0.0F;
+      status.color.a = 1.0F;
+    }
+    array.markers.push_back(status);
+    visualization_publisher_->publish(array);
+  }
 }
 
 }  // namespace bio_nav_fusion

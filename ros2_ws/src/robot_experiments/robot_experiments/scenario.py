@@ -70,6 +70,8 @@ class SuccessSettings:
     maximum_reverse_distance_fraction: float
     minimum_curved_distance_fraction: float
     maximum_stopped_time_fraction: float
+    maximum_static_geometric_overlap_m: float
+    static_geometric_overlap_is_diagnostic_only: bool
 
 
 @dataclass(frozen=True)
@@ -812,6 +814,8 @@ def load_scenario(path: str | Path) -> Scenario:
             "maximum_reverse_distance_fraction",
             "minimum_curved_distance_fraction",
             "maximum_stopped_time_fraction",
+            "maximum_static_geometric_overlap_m",
+            "static_geometric_overlap_is_diagnostic_only",
         },
         "scenario.success",
     )
@@ -821,6 +825,13 @@ def load_scenario(path: str | Path) -> Scenario:
     safety_required = success_raw.get("require_safety_observations", False)
     if not isinstance(safety_required, bool):
         raise ConfigurationError("scenario.success.require_safety_observations must be boolean")
+    static_overlap_diagnostic_only = success_raw.get(
+        "static_geometric_overlap_is_diagnostic_only", False
+    )
+    if not isinstance(static_overlap_diagnostic_only, bool):
+        raise ConfigurationError(
+            "scenario.success.static_geometric_overlap_is_diagnostic_only must be boolean"
+        )
 
     position_tolerance = _positive(
         success_raw.get("position_tolerance_m", PLAN_POSITION_TOLERANCE_M),
@@ -973,6 +984,14 @@ def load_scenario(path: str | Path) -> Scenario:
             maximum_stopped_time_fraction=_fraction(
                 success_raw.get("maximum_stopped_time_fraction", 1.0),
                 "scenario.success.maximum_stopped_time_fraction",
+            ),
+            maximum_static_geometric_overlap_m=_positive(
+                success_raw.get("maximum_static_geometric_overlap_m", 0.0),
+                "scenario.success.maximum_static_geometric_overlap_m",
+                allow_zero=True,
+            ),
+            static_geometric_overlap_is_diagnostic_only=(
+                static_overlap_diagnostic_only
             ),
         ),
         obstacles=dict(obstacles),

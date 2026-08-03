@@ -6,4 +6,11 @@
       Fail-clearing, non-lethal Module2 dynamic-risk layer for Global Costmap.
     </description>
   </class>
+  <class
+    type="bio_nav_fusion::LocalRiskGridLayer"
+    base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Timestamped base_link RGB-D risk projected by Module3 TF into the Global Costmap.
+    </description>
+  </class>
 </library>
