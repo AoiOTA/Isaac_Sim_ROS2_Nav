@@ -9,6 +9,14 @@ bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21
 入口默认校验 Isaac GUI，避免误复用 headless。`all` 固定比较 baseline、risk-only、
 planning-only、combined，并生成四臂同表摘要。
 
+公开的 Combined 联合截图与演示视频可直接查看：
+
+- [Isaac Sim + RViz Combined 截图](https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/29c1ec5fff94fd373d8b88c521544988c689f7e5/docs/report_assets/attempt21_module2_nav2_effect/combined_isaac_rviz.png)
+- [Combined 导航演示视频](https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/29c1ec5fff94fd373d8b88c521544988c689f7e5/docs/report_assets/attempt21_module2_nav2_effect/combined_navigation_demo.mp4)
+
+截图左侧是 Isaac Sim 低矮障碍现场，右侧是同一时刻的 RViz 全局/局部路径、Module2
+risk、Costmap 写入与 SR 状态。视频是讲解素材，不替代冻结 receipt。
+
 若要检查完整五段 SR 搜索过程和离散全局路径，可运行：
 
 ```bash

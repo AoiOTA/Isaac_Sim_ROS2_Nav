@@ -258,6 +258,7 @@ cd "$PROJECT_ROOT"
 | 理解 Module2 如何接入 Nav2、规划与风险如何融合 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
 | 操作 RViz 中的 Module2 认知叠加 | [Module2 RViz 可视化](docs/module2_rviz_visualization.md) |
 | 查看 Attempt-21 静态接入、RViz 与量化结果 | [Module2 × Nav2 静态图文报告](docs/reports/attempt21-static-v13/index.html) |
+| 查看 Combined Isaac Sim + RViz 演示 | [公开报告与内嵌视频](https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#module2-combined-demo) |
 | 从全局理解 Module1/Module2/Integration/Module3 架构 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
 | 汇总 Development→Gate→Confirmation→Shadow→A/B→Combined 指标 | [公开静态图文报告](https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#metrics) |
 | 单终端运行 planning/risk/combined/static opt-in | [用户手册 8.0 节](docs/user_manual.md#80-module2-attempt-21-单终端入口) |
