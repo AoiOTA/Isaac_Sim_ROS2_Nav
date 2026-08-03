@@ -74,6 +74,16 @@ Module3 安全链，不是 Module2 输出，也不会因为 Module2 fail-closed 
 证据；footprint-vs-box SAT overlap 继续显示和入档，但只作几何诊断。RViz 中视觉上
 贴边并不自动等于 ContactSensor 碰撞，报告必须分别列出两者。
 
+v15 静态补充实验中还需打开 `/bio_nav/planner/rviz_markers`。青色 planning marker
+只在 `PlannerDecision.cognitive_tiebreak_used=true` 时表示 Module2 planning prior 被采用；
+橙色为 stock fallback。combined 必须同时核对青色 planning adoption、紫色 applied
+risk 和绿色 RGB-D voxel，三者分别来自不同通道，不能用其中一种颜色替代另两种证据。
+
+v15 最终实测中，planning-only 的 adopted coverage 为 1189/1205（98.67%），combined
+为 1175/1209（97.19%），combined risk valid coverage 均值为 97.55%；两组均完成
+10/10 路线且 ContactSensor 0。RViz 可以直观看到上述通道，但精确比例仍以冻结的
+`PlannerDecision`、risk status 和聚合 receipt 为准。
+
 ## 命令行核对
 
 ```bash

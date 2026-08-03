@@ -10,7 +10,14 @@
 > `23505/risk_only` 的 SAT 最大重叠 26.1 mm 按旧 10 mm 规则正确 fail-stop，旧 receipt
 > 不回写。用户随后确认采用任务级口径；v13 将 Isaac ContactSensor 与 SAT 分字段：
 > 规定全屋路线完成、ContactSensor 未触发且无超时/卡死即通过，SAT 无论数值均保留
-> 为只读诊断，不再单独控制结果。该工程 task-level 结果不伪装成 v12 正式 PASS。
+> 为只读诊断，不再单独控制结果。v13 最终 baseline/risk-only 均 10/10、ContactSensor
+> 与 timeout 均为 0，risk valid coverage 97.76%，工程 task-level 结果为 PASS；它不
+> 伪装成 v12 正式 PASS。
+> v13 task-level 10 对通过后，Integration 使用全新 23601–23610 完成了 v15 的
+> planning-only 与 combined 各 10 条静态诊断：两组均 10/10、ContactSensor 0，规划
+> adopted 为 98.67%/97.19%，combined risk valid 为 97.55%。实验全程复用同一 Isaac，
+> 未做冷启动；仍保留双 RGB-D VoxelLayer。该结果完成本阶段静态工程任务，但不改写
+> 冻结 v12 formal FAIL，也不扩大动态、多场景或通用主动融合授权。
 
 ## 演示视频（4×速，直接预览）
 
@@ -230,6 +237,7 @@ cd "$PROJECT_ROOT"
 | 查看 Module3 原始源仓、两个发布仓、分支、标签和本地 remote 的一一对应关系 | [分支与标签目录](docs/branch_governance.md) |
 | 理解 Module2 如何接入 Nav2、规划与风险如何融合 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
 | 操作 RViz 中的 Module2 认知叠加 | [Module2 RViz 可视化](docs/module2_rviz_visualization.md) |
+| 查看 Attempt-21 静态接入、RViz 与量化结果 | [Module2 × Nav2 静态图文报告](docs/reports/attempt21-static-v13/index.html) |
 | 复现 v0.1 工程验证 | [规划/风险融合 v0.1 复现](docs/reproduction/planning-risk-fusion-v0.1.md) |
 
 ## 验证

@@ -1,0 +1,55 @@
+{
+  "schema": "bio_nav_attempt21_static_public_report_v1",
+  "generated_at": "2026-08-03",
+  "scope": "Kujiale26 static-only engineering task-level",
+  "offline": {
+    "development": {"risk_recall": 0.9845, "risk_precision": 0.9377},
+    "fresh_gate_v5": {"risk_recall": 0.9836, "risk_precision": 0.9376, "visual_place_p95_m": 0.6032},
+    "fresh_confirmation_v5": {"risk_recall": 0.9849, "risk_precision": 0.9380, "visual_place_p95_m": 0.5950}
+  },
+  "v13_task_ab": {
+    "task_result": "PASS",
+    "baseline_completed": 10,
+    "risk_only_completed": 10,
+    "contact_sensor_collisions": 0,
+    "timeouts": 0,
+    "risk_valid_coverage": 0.9775768535262206,
+    "risk_active_status_count": 1429,
+    "maximum_risk_cost": 80,
+    "sat_diagnostic_max_overlap_m": 0.002311256780637705,
+    "navigation_time_p95_degradation_informational": 0.1503276454367268,
+    "path_p95_degradation_informational": 0.014573572513179553
+  },
+  "v15_fusion_supplement": {
+    "task_result": "PASS",
+    "planning_only": {
+      "completed": 10,
+      "contact_sensor_collisions": 0,
+      "planner_adopted": 1189,
+      "planner_decisions": 1205,
+      "planner_adopted_coverage": 0.9867219917012449,
+      "duration_median_sec": 81.10833333350047,
+      "path_length_median_m": 39.92758335504712
+    },
+    "combined": {
+      "completed": 10,
+      "contact_sensor_collisions": 0,
+      "planner_adopted": 1175,
+      "planner_decisions": 1209,
+      "planner_adopted_coverage": 0.9718775847808105,
+      "risk_valid_coverage": 0.9754630584970749,
+      "duration_median_sec": 84.16666666650008,
+      "path_length_median_m": 39.90341917648108
+    },
+    "accepted_retries": 1,
+    "isaac_cold_starts": 0
+  },
+  "acceptance": {
+    "task_completion_required": true,
+    "timeout_or_stuck_forbidden": true,
+    "isaac_contact_sensor_collision_forbidden": true,
+    "sat_overlap_diagnostic_only": true
+  },
+  "formal_result": "NOT_APPLICABLE",
+  "general_active_fusion_authorized": false
+}

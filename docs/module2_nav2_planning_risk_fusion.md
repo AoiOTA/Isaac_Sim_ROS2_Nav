@@ -103,3 +103,21 @@ python3 -m pytest -q \
 Local Costmap 不变，并核验 `BioNavGridBased`、MPPI timing 与 mode contract。通过后仍须
 运行 `./scripts/build_ros2.sh`，再以新 install 启动 Isaac；未重建的 install 不能作为当前
 源码的运行时验证证据。
+
+Attempt-21 v15 静态补充沿用上述所有权边界，但不复用会删掉 Global
+`depth_voxel_layer` 的动态 profile。Integration 的 profile 生成器从已验证静态配置、
+冻结 planning template 与 v12 risk overlay 合并，并在启动前检查 combined 同时保留
+`depth_voxel_layer` 和 `local_rgbd_risk_layer`。该实验只有在 v13 task-level 10 对
+PASS 后才允许运行，结果仍为 engineering diagnostic，不修改 `stable`、
+`dynamic_avoidance` 或通用 active authorization。
+
+v15 的静态任务判定沿用用户确认的工程口径：五段全屋导航完成、无卡死/timeout，
+且独立 Isaac ContactSensor 未触发即为通过。footprint-vs-box SAT 重叠与间隙大小
+完整保存但只用于几何诊断，不单独否决任务。
+
+首条 `23601/planning_only` 暴露过一个只影响审计显示的问题：规划器内部已经通过
+goal-prior 身份 Gate 并在 131/131 条决策中采用 Module2，但 `PlannerDecision` 错把
+base risk identity 的全零 qualification SHA 写入消息。修复后，消息改为发布实际被
+采用的 goal-prior qualification、motion-core 和 Module3 map SHA；导航行为、任务结果
+和首条原始证据均未改写。判断 planning 是否采用仍应同时查看
+`cognitive_tiebreak_used`、`fallback_reason` 与身份字段，不能只看单个 SHA。
