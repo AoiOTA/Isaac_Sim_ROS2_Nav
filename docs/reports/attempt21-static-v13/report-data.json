@@ -44,6 +44,13 @@
     "accepted_retries": 1,
     "isaac_cold_starts": 0
   },
+  "four_arm_online_comparison": {
+    "comparison_note": "v13 and v15 use different seed families; this is a side-by-side summary, not a four-arm paired significance test",
+    "baseline": {"campaign": "v13", "completed": 10, "contact_sensor_collisions": 0, "duration_median_sec": 81.25000000049988, "path_length_median_m": 39.91141819928578},
+    "risk_only": {"campaign": "v13", "completed": 10, "contact_sensor_collisions": 0, "duration_median_sec": 83.3333333334997, "path_length_median_m": 40.07245039956028, "risk_valid_coverage": 0.9775768535262206},
+    "planning_only": {"campaign": "v15", "completed": 10, "contact_sensor_collisions": 0, "duration_median_sec": 81.10833333350047, "path_length_median_m": 39.92758335504712, "planner_adopted_coverage": 0.9867219917012449},
+    "combined": {"campaign": "v15", "completed": 10, "contact_sensor_collisions": 0, "duration_median_sec": 84.16666666650008, "path_length_median_m": 39.90341917648108, "planner_adopted_coverage": 0.9718775847808105, "risk_valid_coverage": 0.9754630584970749}
+  },
   "acceptance": {
     "task_completion_required": true,
     "timeout_or_stuck_forbidden": true,
@@ -70,8 +77,9 @@
         "visual_manual": "https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#manual",
         "one_terminal_launcher": "scripts/run_attempt21_static_visual_experiment.sh",
         "modes": [
-            "planning-only",
+            "baseline",
             "risk-only",
+            "planning-only",
             "combined",
             "static-opt-in",
             "all"

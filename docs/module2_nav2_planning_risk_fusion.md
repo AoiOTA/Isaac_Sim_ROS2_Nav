@@ -75,6 +75,9 @@ Module2、Bridge、Nav2、RViz 与自动路线，并绑定对应 evidence/profil
 bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
 ```
 
+若要并排看传统基线、单独 risk、单独 planning 与组合效果，使用模式 `all`。脚本默认
+要求 GUI Isaac，并把四臂同一路线的结果写入 `four-arm-comparison.json` / `.md`。
+
 支持 `planning-only`、`risk-only`、`combined`、`static-opt-in` 和 `all`；完整说明见
 [用户手册 8.0 节](user_manual.md#80-module2-attempt-21-单终端入口)。
 该入口只生成工程可视化记录，不会重跑或覆盖冻结的 Development/Gate/Confirmation/

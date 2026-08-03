@@ -77,19 +77,18 @@
   </tbody></table>
   <p class="muted">静态阶段的 onset/clear 不是动态 actor 开始/停止运动，而是机器人移动时，未建图静态障碍进入局部可见风险区域和离开该区域后的因果响应：Gate 与 Confirmation 的 onset P95 均为 0.2 s，clear P95 均为 0.4 s。</p>
 
-  <h2>在线静态 A/B</h2>
-  <table id="ab-table"><thead><tr><th>Arm</th><th>成功路线</th><th>碰撞</th><th>时间 P95 退化</th><th>路径 P95 退化</th></tr></thead><tbody>
-    <tr><td>Baseline</td><td class="pass">10 / 10</td><td class="pass">0</td><td>—</td><td>—</td></tr>
-    <tr><td>Risk-only</td><td class="pass">10 / 10</td><td class="pass">0</td><td>+15.03%（信息项）</td><td>+1.46%（信息项）</td></tr>
+  <h2>四臂在线静态结果</h2>
+  <table id="four-arm-table"><thead><tr><th>Arm</th><th>Planning</th><th>Risk</th><th>完整路线</th><th>ContactSensor</th><th>时长中位数</th><th>路径中位数</th><th>Planning adopted</th><th>Risk valid</th></tr></thead><tbody>
+    <tr><td>Baseline</td><td>关闭</td><td>关闭</td><td class="pass">10 / 10</td><td class="pass">0</td><td>81.25 s</td><td>39.91 m</td><td>—</td><td>—</td></tr>
+    <tr><td>Risk-only</td><td>关闭</td><td>开启</td><td class="pass">10 / 10</td><td class="pass">0</td><td>83.33 s</td><td>40.07 m</td><td>—</td><td>97.76% aggregate</td></tr>
+    <tr><td>Planning-only</td><td>开启</td><td>关闭</td><td class="pass">10 / 10</td><td class="pass">0</td><td>81.11 s</td><td>39.93 m</td><td id="planning-adopted">98.67%</td><td>—</td></tr>
+    <tr><td>Combined</td><td>开启</td><td>开启</td><td class="pass">10 / 10</td><td class="pass">0</td><td>84.17 s</td><td>39.90 m</td><td id="combined-adopted">97.19%</td><td id="combined-risk">97.55%</td></tr>
   </tbody></table>
+  <p class="muted">四组均为每臂 10 条接受路线。Baseline/risk-only 来自 v13 的 23501–23510；planning-only/combined 来自 v15 的 23601–23610，因此这张表用于统一展示，不冒充同 seed 四臂统计显著性检验。</p>
   <img alt="10 对 baseline 与 risk-only 导航时间和路径长度" src="assets/static-task-ab.svg">
   <p class="callout warning">冻结 v12 在 23505/risk-only 完成五段路线后，因 SAT 最大重叠 26.10 mm 超过旧 10 mm 阈值正确 fail-stop。v13 不回写该 receipt，而是按本阶段任务口径把 Isaac ContactSensor 与 SAT 分字段：完整导航流程完成、无卡死/timeout 且 ContactSensor 0 次即通过；间隙大小和 SAT 数值不单独否决。最终 10 对路线全部完成，风险有效覆盖 97.76%，1429 个周期实际施加；SAT 最大 2.31 mm 仅公开为诊断。v13 是 engineering task-level PASS，不冒充 v12 formal PASS。</p>
 
-  <h2>Planning-only 与 Combined 静态补充</h2>
-  <table><thead><tr><th>Arm</th><th>路线</th><th>任务结果</th><th>Planning adopted</th><th>Risk valid</th></tr></thead><tbody>
-    <tr><td>Planning-only</td><td class="pass">10 / 10，碰撞 0</td><td class="pass" id="planning-result">PASS</td><td id="planning-adopted">98.67%（1189/1205）</td><td>—</td></tr>
-    <tr><td>Combined</td><td class="pass">10 / 10，碰撞 0</td><td class="pass" id="combined-result">PASS</td><td id="combined-adopted">97.19%（1175/1209）</td><td id="combined-risk">97.55%</td></tr>
-  </tbody></table>
+  <h3>Planning-only 与 Combined 静态补充</h3>
   <img alt="v15 planning-only 与 combined 任务完成、规划采用和风险有效覆盖" src="assets/static-fusion-supplement.svg">
   <p class="muted">v15 使用全新 23601–23610，继续保留 Local/Global RGB-D VoxelLayer。Planning-only 导航时间/路径中位数为 81.11 s / 39.93 m；Combined 为 84.17 s / 39.90 m。planning adopted/fallback 与 risk applied 分别按 topic 统计。该补充为 engineering diagnostic，不自动扩大 active authorization。</p>
   <p class="callout warning">20 条接受路线中只有一次允许的重试：<code>23604/combined attempt-1</code> 因 <code>follow_path</code> action 回执时序提前 aborted，但 ContactSensor 未触发，控制器随后记录到达；原失败证据保留，attempt-2 完成任务。另有首条 planning-only 的审计消息 identity 显示问题，已在不改变导航行为的情况下修复，后续路线均发布实际采用的 SR 身份。</p>
@@ -101,7 +100,7 @@
     <div class="card"><h3>单终端手册</h3><div>一条命令启动 Isaac Sim、Module2、Bridge、Nav2、RViz 和静态全屋路线。</div><p><a href="#manual" style="color:var(--cyan)">查看当前命令</a></p></div>
   </div>
   <pre class="card"><code>bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined</code></pre>
-  <p class="muted">将模式替换为 <code>planning-only</code>、<code>risk-only</code>、<code>static-opt-in</code>，或使用 <code>all</code> 顺序展示四条链路。该入口是人工工程可视化，不改写冻结实验。</p>
+  <p class="muted">将模式替换为 <code>baseline</code>、<code>risk-only</code>、<code>planning-only</code>、<code>static-opt-in</code>；使用 <code>all</code> 会按 baseline → risk-only → planning-only → combined 顺序运行同一个 run-index，并生成一份四臂 JSON/Markdown 对比。入口默认要求 Isaac GUI；若已有 headless 实例会先明确退出，不再静默复用。该入口是人工工程可视化，不改写冻结实验。</p>
 
   <h2>授权范围</h2>
   <div class="grid"><div class="card"><h3 class="pass">已验证</h3><div>静态 RGB-D risk 的离线资格、fresh Gate/Confirmation、Shadow、10 对 task-level risk-only A/B，以及 planning-only / combined 各 10 条补充实验。</div></div><div class="card"><h3 class="pass">显式可用</h3><div><code>bio_nav_rgbd_risk_static_opt_in</code> 已绑定模型与 qualification SHA；仅在操作者显式选择时启用。</div></div><div class="card"><h3 style="color:var(--amber)">仍不授权</h3><div>动态障碍、多场景、视觉定位接管、通用主动融合、Local Costmap 写入和直接速度控制。</div></div></div>

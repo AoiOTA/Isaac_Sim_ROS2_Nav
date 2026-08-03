@@ -6,6 +6,9 @@
 bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
 ```
 
+入口默认校验 Isaac GUI，避免误复用 headless。`all` 固定比较 baseline、risk-only、
+planning-only、combined，并生成四臂同表摘要。
+
 它用一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 与自动全屋路线。四种模式、
 Isaac 复用规则和输出审计见
 [用户手册 8.0 节](user_manual.md#80-module2-attempt-21-单终端入口)。

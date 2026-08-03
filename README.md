@@ -123,6 +123,10 @@ cd "$PROJECT_ROOT"
 bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
 ```
 
+该入口默认要求并启动 Isaac GUI；若 ROS Domain 中已有 `--headless` Isaac，会明确退出而
+不静默复用。使用 `all` 可按 baseline、risk-only、planning-only、combined 运行同一
+run-index，并在输出目录生成四臂并排对比。
+
 将末尾模式替换为 `planning-only`、`risk-only`、`static-opt-in`，或使用 `all`
 依次观察四条链路。该入口生成的是工程/人工可视化记录，不修改冻结的 Development、
 Gate、Confirmation、Shadow 或 A/B 结果。完整模式语义、输出与 Isaac 复用规则见
