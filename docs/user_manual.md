@@ -298,6 +298,25 @@ HTML 报告在分组摘要后首先展示“实验设计与指标口径”：包
 
 单轮 visual runner 自动发送 `G2 → G3 → G4 → G5 → G1`，不需要在 RViz 手动发布目标。这些命令仅用于观察 RGB-D、Costmap、MPPI 与障碍行为；不生成正式80轮证据，也不能替代正式结论。
 
+### 8.0 Module2 Attempt-21 单终端入口
+
+统一 Bio_Nav 工作区已经提供单终端 wrapper；它会启动或复用静态 Isaac，并管理
+Module2、Bridge、Nav2、RViz 与自动路线：
+
+```bash
+bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
+```
+
+支持 `planning-only`、`risk-only`、`combined`、`static-opt-in` 和 `all`。其中
+`combined` 最适合同时观察 planning prior 与 RGB-D BEV risk；`static-opt-in` 对应
+v16 最终静态任务级显式 profile。脚本会复用身份可验证的 operator-owned Isaac，且
+退出时不会停止它；如由脚本自行启动 Isaac，则只停止自己拥有的进程。详情见
+[Attempt-21 v16 单终端手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+
+这些运行始终标记为 `engineering_manual_visual_only`，不能替代或改写冻结的正式实验
+receipt。静态任务是否完成以全屋路线完成、无超时/卡死且 Isaac ContactSensor 不触发
+为准；SAT overlap/clearance 只作诊断。
+
 每次只运行一套 Isaac 和 ROS。静态切换到动态前，先在静态 ROS 终端按 Ctrl+C，等待有序关闭后再停止静态 Isaac。
 
 ### 8.1 静态单轮

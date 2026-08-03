@@ -114,6 +114,20 @@ cd "$PROJECT_ROOT"
 
 等待 `Nav2 lifecycle activation completed` 后，在 RViz 中使用 **2D Goal Pose** 发布目标。完整的 Reset、RGB-D 显示和人工导航步骤见 [用户手册](docs/user_manual.md)。
 
+### Attempt-21 Module2 静态接入：单终端启动
+
+若已按 `/home/lyb/Workspace/Bio_Nav/workspace.env` 配置统一工作区，可在任意目录只用
+一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 和自动全屋路线：
+
+```bash
+bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
+```
+
+将末尾模式替换为 `planning-only`、`risk-only`、`static-opt-in`，或使用 `all`
+依次观察四条链路。该入口生成的是工程/人工可视化记录，不修改冻结的 Development、
+Gate、Confirmation、Shadow 或 A/B 结果。完整模式语义、输出与 Isaac 复用规则见
+[Attempt-21 v16 单终端手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+
 ## 正式 4×20 批量运行
 
 一条命令会构建工作区，依次运行静态 pilot＋40轮、生成静态 `2×20` 报告、受控停止静态栈、运行动态 pilot＋40轮、生成动态 `2×20` 报告，最后生成同一批次的总 `4×20` 报告：
@@ -240,6 +254,9 @@ cd "$PROJECT_ROOT"
 | 理解 Module2 如何接入 Nav2、规划与风险如何融合 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
 | 操作 RViz 中的 Module2 认知叠加 | [Module2 RViz 可视化](docs/module2_rviz_visualization.md) |
 | 查看 Attempt-21 静态接入、RViz 与量化结果 | [Module2 × Nav2 静态图文报告](docs/reports/attempt21-static-v13/index.html) |
+| 从全局理解 Module1/Module2/Integration/Module3 架构 | [整体类脑导航系统架构](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md) |
+| 汇总 Development→Gate→Confirmation→Shadow→A/B→Combined 指标 | [Attempt-21 静态实验结果总表](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md) |
+| 单终端运行 planning/risk/combined/static opt-in | [Attempt-21 v16 可视化使用手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md) |
 | 复现 v0.1 工程验证 | [规划/风险融合 v0.1 复现](docs/reproduction/planning-risk-fusion-v0.1.md) |
 
 ## 验证

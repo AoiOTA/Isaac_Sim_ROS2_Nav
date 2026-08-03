@@ -1,5 +1,15 @@
 # Module2 RViz 可视化
 
+当前静态 Attempt-21 建议直接运行：
+
+```bash
+bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
+```
+
+它用一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 与自动全屋路线。四种模式、
+Isaac 复用规则和输出审计见
+[v16 单终端可视化手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+
 ## 默认看到什么
 
 `ros2_ws/src/robot_description/rviz/navigation.rviz` 已包含
