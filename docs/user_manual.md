@@ -307,6 +307,10 @@ Module2、Bridge、Nav2、RViz 与自动路线：
 bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
 ```
 
+这是 GUI 可视化入口：它会拒绝静默复用现有 `--headless` Isaac，并提示先在所属终端
+停止该实例。若要把传统 baseline、risk-only、planning-only、combined 放在同一次
+工程对比中，使用 `all`；输出根目录会生成 `four-arm-comparison.json` 和 `.md`。
+
 支持 `planning-only`、`risk-only`、`combined`、`static-opt-in` 和 `all`。其中
 `combined` 最适合同时观察 planning prior 与 RGB-D BEV risk；`static-opt-in` 对应
 v16 最终静态任务级显式 profile。脚本会复用身份可验证的 operator-owned Isaac，且
