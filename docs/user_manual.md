@@ -311,7 +311,8 @@ bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21
 `combined` 最适合同时观察 planning prior 与 RGB-D BEV risk；`static-opt-in` 对应
 v16 最终静态任务级显式 profile。脚本会复用身份可验证的 operator-owned Isaac，且
 退出时不会停止它；如由脚本自行启动 Isaac，则只停止自己拥有的进程。详情见
-[Attempt-21 v16 单终端手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+[Module2 × Nav2 规划/风险融合](module2_nav2_planning_risk_fusion.md)和
+[公开图文报告](https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#manual)。
 
 这些运行始终标记为 `engineering_manual_visual_only`，不能替代或改写冻结的正式实验
 receipt。静态任务是否完成以全屋路线完成、无超时/卡死且 Isaac ContactSensor 不触发

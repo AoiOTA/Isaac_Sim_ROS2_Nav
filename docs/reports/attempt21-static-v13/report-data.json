@@ -65,9 +65,9 @@
         "local_costmap_modified": false
     },
     "current_documentation": {
-        "architecture": "https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md",
-        "all_experiment_results": "https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md",
-        "visual_manual": "https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md",
+        "architecture": "https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#architecture",
+        "all_experiment_results": "https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#metrics",
+        "visual_manual": "https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#manual",
         "one_terminal_launcher": "scripts/run_attempt21_static_visual_experiment.sh",
         "modes": [
             "planning-only",

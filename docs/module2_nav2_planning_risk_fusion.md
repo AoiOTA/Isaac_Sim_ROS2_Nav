@@ -76,7 +76,7 @@ bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21
 ```
 
 支持 `planning-only`、`risk-only`、`combined`、`static-opt-in` 和 `all`；完整说明见
-[v16 单终端手册](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md)。
+[用户手册 8.0 节](user_manual.md#80-module2-attempt-21-单终端入口)。
 该入口只生成工程可视化记录，不会重跑或覆盖冻结的 Development/Gate/Confirmation/
 Shadow/A-B evidence。
 
@@ -142,9 +142,11 @@ base risk identity 的全零 qualification SHA 写入消息。修复后，消息
 和首条原始证据均未改写。判断 planning 是否采用仍应同时查看
 `cognitive_tiebreak_used`、`fallback_reason` 与身份字段，不能只看单个 SHA。
 
-当前完整架构、域适配/训练流程与全部阶段指标分别见：
+当前公开架构、RViz 语义与全部阶段指标分别见：
 
-- [Bio_Nav 整体类脑导航系统架构](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md)；
-- [Attempt-21 静态全部实验结果](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md)；
-- [Module2 Isaac 域适配](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_miniworld_to_isaac_domain_adaptation.md)；
-- [Module2 训练流水线](https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_training_pipeline.md)。
+- [Module2 RViz 可视化](module2_rviz_visualization.md)；
+- [Attempt-21 公开静态图文报告](https://aoiota.github.io/Isaac_Sim_ROS2_Nav/)；
+- [用户手册 8.0：单终端入口](user_manual.md#80-module2-attempt-21-单终端入口)。
+
+完整域适配、训练流水线和机器 evidence 仍由统一 Bio_Nav Integration 工作区维护；公开
+报告只发布当前已冻结、可对外说明的架构和指标，不暴露本地数据路径。

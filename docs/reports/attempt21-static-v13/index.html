@@ -25,7 +25,7 @@
     <div class="card"><div class="muted">v16 explicit profile</div><div class="metric pass">READY</div><div>静态任务级 opt-in；默认配置不变</div></div>
   </section>
 
-  <h2>接入结构</h2>
+  <h2 id="architecture">接入结构</h2>
   <div class="flow">
     <div class="node"><strong>Isaac RGB-D</strong><br><span class="muted">RGB、对齐 depth、标定、pose delta</span></div>
     <div class="node risk"><strong>Module2</strong><br><span class="muted">RGB-D lift → BEV → causal risk</span></div>
@@ -64,7 +64,7 @@
   <img alt="Kujiale26 全屋路线中的绿色 RGB-D marked voxels、全局路径和局部路径" src="assets/rviz-voxel-baseline.png">
   <p class="muted">深绿色小方块是 Nav2 VoxelLayer 标记的低矮障碍；黄色线为全局计划、蓝色线为局部执行路径。该画面取自 v11 pilot 23402，仅用于解释同一传统体素链，不冒充 v12 正式 A/B 截图；它证明相机体素链在工作，不等同于 Module2 风险已经应用。</p>
 
-  <h2>离线资格数据</h2>
+  <h2 id="metrics">离线资格数据</h2>
   <img alt="Attempt-21 静态 Risk recall precision 与 Visual Place P95 图表" src="assets/offline-qualification.svg">
   <table><thead><tr><th>阶段</th><th>Risk recall</th><th>Risk precision</th><th>Visual place P95</th><th>结论</th></tr></thead><tbody>
     <tr><td>Development finalist</td><td>98.45%</td><td>93.77%</td><td>开发校准独立轨</td><td class="pass">PASS</td></tr>
@@ -94,11 +94,11 @@
   <p class="muted">v15 使用全新 23601–23610，继续保留 Local/Global RGB-D VoxelLayer。Planning-only 导航时间/路径中位数为 81.11 s / 39.93 m；Combined 为 84.17 s / 39.90 m。planning adopted/fallback 与 risk applied 分别按 topic 统计。该补充为 engineering diagnostic，不自动扩大 active authorization。</p>
   <p class="callout warning">20 条接受路线中只有一次允许的重试：<code>23604/combined attempt-1</code> 因 <code>follow_path</code> action 回执时序提前 aborted，但 ContactSensor 未触发，控制器随后记录到达；原失败证据保留，attempt-2 完成任务。另有首条 planning-only 的审计消息 identity 显示问题，已在不改变导航行为的情况下修复，后续路线均发布实际采用的 SR 身份。</p>
 
-  <h2>当前文档与一键复现</h2>
+  <h2 id="manual">当前文档与一键复现</h2>
   <div class="grid">
-    <div class="card"><h3>整体架构</h3><div>Module1、Module2、Integration、Module3/Nav2 的数据流、所有权和 fail-closed 边界。</div><p><a href="https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/bio_nav_cognitive_navigation_system_architecture.md" style="color:var(--cyan)">打开架构文档</a></p></div>
-    <div class="card"><h3>全部实验指标</h3><div>Development、Gate、Confirmation、Shadow、A/B、Planning-only、Combined 与传统 Module3 的统一结果表。</div><p><a href="https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/attempt21_static_all_experiment_results.md" style="color:var(--cyan)">打开结果汇总</a></p></div>
-    <div class="card"><h3>单终端手册</h3><div>一条命令启动 Isaac Sim、Module2、Bridge、Nav2、RViz 和静态全屋路线。</div><p><a href="https://github.com/AoiOTA/Bio_Nav_Integration/blob/main/docs/module2_nav2_visual_experiment_manual_v16.md" style="color:var(--cyan)">打开 v16 使用手册</a></p></div>
+    <div class="card"><h3>整体架构</h3><div>Module1、Module2、Integration、Module3/Nav2 的数据流、所有权和 fail-closed 边界。</div><p><a href="#architecture" style="color:var(--cyan)">查看接入结构</a></p></div>
+    <div class="card"><h3>全部实验指标</h3><div>Development、Gate、Confirmation、Shadow、A/B、Planning-only、Combined 与传统 Module3 的统一结果表。</div><p><a href="#metrics" style="color:var(--cyan)">查看结果指标</a></p></div>
+    <div class="card"><h3>单终端手册</h3><div>一条命令启动 Isaac Sim、Module2、Bridge、Nav2、RViz 和静态全屋路线。</div><p><a href="#manual" style="color:var(--cyan)">查看当前命令</a></p></div>
   </div>
   <pre class="card"><code>bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined</code></pre>
   <p class="muted">将模式替换为 <code>planning-only</code>、<code>risk-only</code>、<code>static-opt-in</code>，或使用 <code>all</code> 顺序展示四条链路。该入口是人工工程可视化，不改写冻结实验。</p>
