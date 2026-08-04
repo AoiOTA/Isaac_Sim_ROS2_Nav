@@ -111,6 +111,26 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
     assert smoother['max_accel'] == [1.25, 0.0, 3.50]
 
 
+def test_attempt22_reachability_profile_is_preinflation_and_observer_only():
+    profile = _profile('attempt22_reachability_shadow')
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
+        'reachability_observer_layer', 'inflation_layer']
+    observer = global_costmap['reachability_observer_layer']
+    assert observer['plugin'] == \
+        'bio_nav_fusion::ReachabilityObserverLayer'
+    assert observer['enabled'] is True
+    assert observer['output_topic'] == \
+        '/global_costmap/reachability_observer_input'
+    assert profile['planner_server']['ros__parameters']['GridBased'][
+        'plugin'] == 'nav2_smac_planner::SmacPlanner2D'
+    assert 'cognitive_risk_layer' not in global_costmap['plugins']
+    assert 'local_rgbd_risk_layer' not in global_costmap['plugins']
+
+
 def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     dynamic = _profile('dynamic_avoidance')
     controller_server = dynamic['controller_server']['ros__parameters']

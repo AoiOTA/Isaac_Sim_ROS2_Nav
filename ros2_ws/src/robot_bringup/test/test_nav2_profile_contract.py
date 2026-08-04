@@ -40,6 +40,7 @@ def _write_profile(path, *, frequency=10.0, model_dt=0.1,
         "bio_nav_risk_only",
         "bio_nav_tiebreak_risk",
         "attempt21_static_collection",
+        "attempt22_reachability_shadow",
         "bio_nav_rgbd_risk_shadow",
     ],
 )

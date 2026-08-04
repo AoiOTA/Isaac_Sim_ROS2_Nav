@@ -23,6 +23,8 @@ def test_nav2_profiles_are_bounded_and_normalized():
         'bio_nav_tiebreak_risk'
     assert validate_nav2_profile('attempt21_static_collection') == \
         'attempt21_static_collection'
+    assert validate_nav2_profile('attempt22_reachability_shadow') == \
+        'attempt22_reachability_shadow'
     assert validate_nav2_profile('bio_nav_rgbd_risk_shadow') == \
         'bio_nav_rgbd_risk_shadow'
     assert validate_nav2_profile('bio_nav_rgbd_risk_ab') == \

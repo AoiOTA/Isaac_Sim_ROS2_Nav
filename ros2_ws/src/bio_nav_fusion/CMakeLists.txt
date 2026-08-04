@@ -50,6 +50,7 @@ ament_target_dependencies(bio_nav_planner_plugin
 add_library(bio_nav_costmap_plugin SHARED
   src/cognitive_risk_layer.cpp
   src/local_risk_grid_layer.cpp
+  src/reachability_observer_layer.cpp
 )
 
 add_executable(local_risk_grid_shadow_auditor

@@ -3,6 +3,7 @@
 
 #include "bio_nav_fusion/bio_nav_grid_based.hpp"
 #include "bio_nav_fusion/cognitive_risk_layer.hpp"
+#include "bio_nav_fusion/reachability_observer_layer.hpp"
 #include "bio_nav_fusion/local_risk_grid_layer.hpp"
 #include "gtest/gtest.h"
 #include "nav2_costmap_2d/cost_values.hpp"
@@ -67,6 +68,17 @@ TEST(BioNavGridBased, module2_identity_must_be_recent_for_cognitive_planning)
   EXPECT_FALSE(BioNavGridBased::priorIdentityFresh(-0.1, 0.5));
   EXPECT_FALSE(BioNavGridBased::priorIdentityFresh(
       std::numeric_limits<double>::quiet_NaN(), 0.5));
+}
+
+TEST(ReachabilityObserverLayer, occupancy_snapshot_is_conservative)
+{
+  using bio_nav_fusion::ReachabilityObserverLayer;
+  EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(0), 0);
+  EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(126), 50);
+  EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(252), 100);
+  EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(253), 100);
+  EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(254), 100);
+  EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(255), -1);
 }
 
 TEST(CognitiveRiskLayer, calibrated_cost_is_thresholded_nonlethal_and_decays)
