@@ -129,6 +129,15 @@ def test_attempt22_reachability_profile_is_preinflation_and_observer_only():
         'plugin'] == 'nav2_smac_planner::SmacPlanner2D'
     assert 'cognitive_risk_layer' not in global_costmap['plugins']
     assert 'local_rgbd_risk_layer' not in global_costmap['plugins']
+    follow_path = profile['controller_server']['ros__parameters']['FollowPath']
+    assert follow_path['critics'][-1] == 'PredictiveRiskCritic'
+    critic = follow_path['PredictiveRiskCritic']
+    assert critic['enabled'] is True
+    assert critic['shadow_only'] is True
+    assert critic['active_authorized'] is False
+    assert critic['expected_model_sha256'] == 64 * '0'
+    assert critic['expected_calibration_sha256'] == 64 * '0'
+    assert critic['expected_qualification_sha256'] == 64 * '0'
 
 
 def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():

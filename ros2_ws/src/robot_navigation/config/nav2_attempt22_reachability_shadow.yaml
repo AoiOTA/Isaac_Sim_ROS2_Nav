@@ -10,6 +10,29 @@ controller_server:
       time_steps: 20
       model_dt: 0.10
       batch_size: 700
+      critics:
+        - ConstraintCritic
+        - CostCritic
+        - GoalCritic
+        - GoalAngleCritic
+        - PathAlignCritic
+        - PathFollowCritic
+        - PathAngleCritic
+        - PreferForwardCritic
+        - PredictiveRiskCritic
+      PredictiveRiskCritic:
+        enabled: true
+        shadow_only: true
+        active_authorized: false
+        risk_weight: 0.5
+        risk_topic: /bio_nav/module2/predictive_risk_grid
+        audit_topic: /bio_nav/module3/predictive_risk_critic_audit
+        expected_frame: base_link
+        expected_map_version: warehouse_new-8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
+        expected_model_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        expected_calibration_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        expected_qualification_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        reset_epoch: 0
 
 global_costmap:
   global_costmap:
