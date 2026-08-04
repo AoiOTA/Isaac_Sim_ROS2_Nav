@@ -98,6 +98,15 @@ APPEARANCE_NAV2_PROFILES = frozenset({
 })
 
 
+def _strict_success_from_leg_count(
+    result: object, leg_count: int, route_pose_count: int
+) -> bool:
+    """Bind strict success to the actual dispatch contract."""
+
+    expected_leg_count = route_pose_count or 1
+    return result == "success" and leg_count == expected_leg_count
+
+
 def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
     """Canonical, evidence-only identity for a fenced experiment route."""
 
@@ -2885,10 +2894,12 @@ class ExperimentRunner(Node):
             )
             and all((root / name).is_file() for name in required_files)
         )
-        # The redesigned long route dispatches G2–G5 and then closes the loop
-        # at G1.  It therefore has six legs, not the obsolete eight-waypoint
-        # route that preceded this campaign.
-        strict_success = manifest.get("result") == "success" and len(legs) == len(self._scenario.route)
+        # A route matrix dispatches one leg per declared route pose.  Focused
+        # scenarios omit ``route`` and dispatch the single ``goal`` instead,
+        # so their successful one-leg evidence must not be compared with 0.
+        strict_success = _strict_success_from_leg_count(
+            manifest.get("result"), len(legs), len(self._scenario.route)
+        )
         summary = {
             "campaign": "kujiale_long_range",
             "kind": self._scenario.scenario_type,

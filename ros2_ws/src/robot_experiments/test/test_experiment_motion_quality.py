@@ -5,11 +5,19 @@ from types import SimpleNamespace
 import pytest
 
 from robot_experiments.experiment_runner import (
+    _strict_success_from_leg_count,
     CommandSample,
     ExperimentRunner,
     OdometrySample,
     _dynamic_interaction_acceptance,
 )
+
+
+def test_strict_success_counts_single_goal_when_route_is_omitted():
+    assert _strict_success_from_leg_count("success", 1, 0)
+    assert _strict_success_from_leg_count("success", 5, 5)
+    assert not _strict_success_from_leg_count("success", 0, 0)
+    assert not _strict_success_from_leg_count("failure", 1, 0)
 
 
 def test_motion_quality_measures_reverse_curves_and_turn_reversals():
