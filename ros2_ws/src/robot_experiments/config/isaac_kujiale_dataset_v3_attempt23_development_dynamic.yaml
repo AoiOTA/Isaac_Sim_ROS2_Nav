@@ -1,0 +1,288 @@
+# Attempt-23 development dynamic set at the tightened 0.32 m/s envelope,
+# used only to re-anchor the Module3 local-qualification thresholds (plan 4.6)
+# after the actor speed envelope change; development scope, not Shadow evidence.
+schema_version: 1
+scenario:
+  id: isaac_kujiale_dataset_v3_attempt23_development_dynamic
+  type: dynamic
+  spawn_pose_name: long_route_start_g1
+  map_version: warehouse_new
+  posegraph_version: warehouse_new
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/kujiale_long_range_dynamic_attempt23.yaml
+  simulation:
+    physics_dt: 0.016666666666666666
+    rtf: 1.0
+  runs:
+    matrix:
+    - seed: 31001
+      case_id: full_route_three_stage
+      variant_id: v1
+      condition_id: attempt23_development_dynamic
+    - seed: 31002
+      case_id: crossing
+      variant_id: v2
+      condition_id: attempt23_development_dynamic
+    - seed: 31003
+      case_id: oncoming
+      variant_id: v3
+      condition_id: attempt23_development_dynamic
+    - seed: 31004
+      case_id: same_direction_slow
+      variant_id: v4
+      condition_id: attempt23_development_dynamic
+    - seed: 31005
+      case_id: temporary_block
+      variant_id: v5
+      condition_id: attempt23_development_dynamic
+    - seed: 31006
+      case_id: full_route_three_stage
+      variant_id: v1
+      condition_id: attempt23_development_dynamic
+    - seed: 31007
+      case_id: crossing
+      variant_id: v2
+      condition_id: attempt23_development_dynamic
+    - seed: 31008
+      case_id: oncoming
+      variant_id: v3
+      condition_id: attempt23_development_dynamic
+    - seed: 31009
+      case_id: same_direction_slow
+      variant_id: v4
+      condition_id: attempt23_development_dynamic
+    - seed: 31010
+      case_id: temporary_block
+      variant_id: v5
+      condition_id: attempt23_development_dynamic
+    - seed: 31011
+      case_id: full_route_three_stage
+      variant_id: v1
+      condition_id: attempt23_development_dynamic
+    - seed: 31012
+      case_id: crossing
+      variant_id: v2
+      condition_id: attempt23_development_dynamic
+    - seed: 31013
+      case_id: oncoming
+      variant_id: v3
+      condition_id: attempt23_development_dynamic
+    - seed: 31014
+      case_id: same_direction_slow
+      variant_id: v4
+      condition_id: attempt23_development_dynamic
+    - seed: 31015
+      case_id: temporary_block
+      variant_id: v5
+      condition_id: attempt23_development_dynamic
+    - seed: 31016
+      case_id: full_route_three_stage
+      variant_id: v1
+      condition_id: attempt23_development_dynamic
+    - seed: 31017
+      case_id: crossing
+      variant_id: v2
+      condition_id: attempt23_development_dynamic
+    - seed: 31018
+      case_id: oncoming
+      variant_id: v3
+      condition_id: attempt23_development_dynamic
+    - seed: 31019
+      case_id: same_direction_slow
+      variant_id: v4
+      condition_id: attempt23_development_dynamic
+    - seed: 31020
+      case_id: temporary_block
+      variant_id: v5
+      condition_id: attempt23_development_dynamic
+    timeout_sec: 720.0
+    leg_timeout_sec: 210.0
+  goal:
+    frame_id: map
+    position:
+    - 0.45
+    - -5.35
+    yaw_deg: 90.0
+    require_orientation: true
+  route:
+  - id: G2
+    frame_id: map
+    position:
+    - 0.8
+    - 4.8
+    yaw_deg: -160.0
+    require_orientation: true
+  - id: G3
+    frame_id: map
+    position:
+    - -2.2
+    - 3.25
+    yaw_deg: -105.0
+    require_orientation: true
+  - id: G4
+    frame_id: map
+    position:
+    - -3.0
+    - -0.45
+    yaw_deg: -68.0
+    require_orientation: true
+  - id: G5
+    frame_id: map
+    position:
+    - -2.2
+    - -2.95
+    yaw_deg: -42.0
+    require_orientation: true
+  - id: G1
+    frame_id: map
+    position:
+    - 0.45
+    - -5.35
+    yaw_deg: 90.0
+    require_orientation: true
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 20.0
+    require_safety_observations: true
+    minimum_ground_truth_path_length_m: 20.0
+    minimum_reverse_distance_m: 0.0
+    maximum_reverse_distance_fraction: 1.0
+    minimum_curved_distance_fraction: 0.0
+    maximum_stopped_time_fraction: 1.0
+  obstacles:
+    layout_id: kujiale_dynamic_avoidance_v4
+    static: []
+    trajectories:
+    - id: crossing_actor
+      trigger_group: G2
+      motion: crossing
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.4
+      - 0.4
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - 0.7
+        - 0.0
+      - time_sec: 4.2
+        position:
+        - -1.2
+        - 0.0
+    - id: oncoming_actor
+      trigger_group: G2
+      motion: oncoming
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.4
+      - 0.4
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - 0.7
+        - 0.8
+      - time_sec: 6.0
+        position:
+        - -0.1
+        - -1.2
+    - id: same_direction_slow_actor
+      trigger_group: G2
+      motion: same_direction_slow
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.45
+      - 0.45
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - -0.35
+        - -0.1
+      - time_sec: 4.2
+        position:
+        - -0.35
+        - 0.65
+      - time_sec: 8.6
+        position:
+        - 0.45
+        - 0.65
+      - time_sec: 15.3
+        position:
+        - 0.45
+        - -0.55
+    - id: local_bypass_actor
+      trigger_group: G2
+      motion: local_bypass
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.4
+      - 0.4
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - -1.65
+        - -0.2
+      - time_sec: 1.47
+        position:
+        - -0.95
+        - -0.2
+    - id: g2_g3_exit_actor
+      trigger_group: G3
+      motion: g2_g3_exit
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.4
+      - 0.4
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - -0.4
+        - 1.0
+      - time_sec: 4.11
+        position:
+        - -0.4
+        - -0.7
+    - id: g5_g1_crossing_actor
+      trigger_group: G1
+      motion: g5_g1_crossing
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.4
+      - 0.4
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - -0.9
+        - -1.3
+      - time_sec: 1.47
+        position:
+        - -0.2
+        - -1.3
+    - id: temporary_block_actor
+      trigger_group: G2
+      motion: temporary_block
+      shape: box
+      repeat: false
+      dimensions:
+      - 0.4
+      - 0.4
+      waypoints:
+      - time_sec: 0.0
+        position:
+        - 0.95
+        - 0.15
+      - time_sec: 5.0
+        position:
+        - 0.95
+        - 0.15
