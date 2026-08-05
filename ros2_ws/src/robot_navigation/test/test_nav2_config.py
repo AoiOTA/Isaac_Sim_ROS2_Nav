@@ -263,19 +263,16 @@ def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
     assert depth['camera_depth_clear']['decay_acceleration'] == 15.0
     assert local['inflation_layer']['inflation_radius'] == 0.75
 
-    # The global side keeps the read-only ReachabilityObserverLayer before
-    # the depth voxel layer so the observer input stays free of camera-depth
-    # residue while the planner still sees the low static obstacles.
+    # The global side drops the depth layer against dynamic residue but
+    # keeps the read-only ReachabilityObserverLayer global prior snapshot.
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'reachability_observer_layer',
-        'depth_voxel_layer', 'inflation_layer']
+        'inflation_layer']
     observer = global_costmap['reachability_observer_layer']
     assert observer['plugin'] == 'bio_nav_fusion::ReachabilityObserverLayer'
     assert observer['enabled'] is True
     assert observer['output_topic'] == \
         '/global_costmap/reachability_observer_input'
-    assert global_costmap['depth_voxel_layer']['plugin'] == \
-        'nav2_costmap_2d::VoxelLayer'
     assert profile['planner_server']['ros__parameters']['GridBased'][
         'plugin'] == 'nav2_smac_planner::SmacPlanner2D'
 
