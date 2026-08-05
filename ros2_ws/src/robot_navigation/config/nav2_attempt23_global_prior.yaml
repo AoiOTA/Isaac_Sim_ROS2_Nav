@@ -54,12 +54,8 @@ controller_server:
         # circumscribed robot bound plus the actor guard's 0.14 m clearance.
         # Hard footprint collision checking stays unchanged from the base
         # configuration (consider_footprint: true).
-        # cost_weight raised 4.0 -> 6.0 after the Global Shadow static segment
-        # showed the dynamic envelope clipping the 16 cm rgbd_low_box_center
-        # by a few mm (seed 31601/31602); a stronger cost penalty pushes MPPI
-        # trajectories further off the low static obstacles.
         near_collision_cost: 20
-        cost_weight: 6.00
+        cost_weight: 4.00
       PathFollowCritic:
         cost_weight: 14.0
 

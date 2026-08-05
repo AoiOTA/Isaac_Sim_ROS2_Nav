@@ -250,7 +250,7 @@ def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
     assert controller['ax_max'] == 3.50
     assert controller['gamma'] == 0.030
     assert controller['CostCritic']['near_collision_cost'] == 20
-    assert controller['CostCritic']['cost_weight'] == 6.00
+    assert controller['CostCritic']['cost_weight'] == 4.00
     assert controller['PathFollowCritic']['cost_weight'] == 14.0
 
     # Local costmap keeps the STVL depth layer and the 0.75 m envelope.
