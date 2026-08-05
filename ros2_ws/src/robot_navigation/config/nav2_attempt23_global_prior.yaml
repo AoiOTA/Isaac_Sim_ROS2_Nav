@@ -194,5 +194,14 @@ collision_monitor:
     # projection as the only Module3 look-ahead layer.  StopZone and
     # SlowdownZone remain unchanged from the base nav2_params.yaml and stay
     # the final LiDAR safety layers.
+    #
+    # time_before_collision is shortened from the 1.00 s stock default to
+    # 0.50 s: the Global Shadow dynamic segment (seed 31704,
+    # same_direction_slow) showed the 1.00 s projection repeatedly rescaling
+    # the command in narrow corridors until the robot fell behind a yielding
+    # actor and deadlocked (collision_monitor_locked + timeout).  0.50 s
+    # keeps the predictive protection for genuinely fast approaches without
+    # over-slowing steady following.
     ApproachZone:
       enabled: true
+      time_before_collision: 0.50
