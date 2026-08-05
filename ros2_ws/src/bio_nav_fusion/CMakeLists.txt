@@ -55,24 +55,6 @@ add_library(bio_nav_costmap_plugin SHARED
   src/reachability_observer_layer.cpp
 )
 
-add_library(bio_nav_mppi_critic SHARED
-  src/predictive_risk_critic.cpp
-)
-target_include_directories(bio_nav_mppi_critic PUBLIC
-  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
-)
-ament_target_dependencies(bio_nav_mppi_critic
-  bio_nav_interfaces
-  nav2_costmap_2d
-  nav2_mppi_controller
-  pluginlib
-  rclcpp
-  rclcpp_lifecycle
-  rcutils
-  tf2
-)
-
 add_executable(local_risk_grid_shadow_auditor
   src/local_risk_grid_shadow_auditor.cpp)
 target_link_libraries(
@@ -101,13 +83,10 @@ ament_target_dependencies(bio_nav_costmap_plugin
 pluginlib_export_plugin_description_file(nav2_core bio_nav_planners.xml)
 pluginlib_export_plugin_description_file(
   nav2_costmap_2d bio_nav_costmap_plugins.xml)
-pluginlib_export_plugin_description_file(
-  nav2_mppi_controller bio_nav_mppi_critics.xml)
 
 install(TARGETS
   bio_nav_planner_plugin
   bio_nav_costmap_plugin
-  bio_nav_mppi_critic
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -115,7 +94,7 @@ install(TARGETS
 install(TARGETS local_risk_grid_shadow_auditor
   RUNTIME DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
-install(FILES bio_nav_planners.xml bio_nav_costmap_plugins.xml bio_nav_mppi_critics.xml
+install(FILES bio_nav_planners.xml bio_nav_costmap_plugins.xml
   DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
@@ -133,23 +112,11 @@ if(BUILD_TESTING)
     test_plugin_loader_isolation test/test_plugin_loader_isolation.cpp)
   ament_target_dependencies(test_plugin_loader_isolation
     nav2_core nav2_costmap_2d pluginlib)
-
-  ament_add_gtest(
-    test_predictive_risk_critic test/test_predictive_risk_critic.cpp)
-  target_link_libraries(
-    test_predictive_risk_critic bio_nav_mppi_critic)
-  ament_target_dependencies(test_predictive_risk_critic
-    bio_nav_interfaces nav2_mppi_controller)
-
-  ament_add_gtest(
-    test_mppi_plugin_loader test/test_mppi_plugin_loader.cpp)
-  ament_target_dependencies(test_mppi_plugin_loader
-    nav2_mppi_controller pluginlib)
 endif()
 
 ament_export_include_directories(include)
 ament_export_libraries(
-  bio_nav_planner_plugin bio_nav_costmap_plugin bio_nav_mppi_critic)
+  bio_nav_planner_plugin bio_nav_costmap_plugin)
 ament_export_dependencies(
   bio_nav_interfaces nav2_core nav2_costmap_2d nav2_mppi_controller
   nav2_smac_planner tf2_ros)

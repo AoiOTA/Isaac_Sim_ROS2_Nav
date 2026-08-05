@@ -1,9 +1,0 @@
-<library path="bio_nav_mppi_critic">
-  <class
-    type="mppi::critics::PredictiveRiskCritic"
-    base_class_type="mppi::critics::CriticFunction">
-    <description>
-      Attempt-22 fail-closed predictive-risk scorer with non-mutating Shadow audit.
-    </description>
-  </class>
-</library>
