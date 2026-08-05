@@ -282,10 +282,12 @@ def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
     assert smoother['max_velocity'] == [1.20, 0.0, 3.40]
     assert smoother['max_accel'] == [3.50, 0.0, 6.50]
 
-    # ApproachZone becomes the only Module3 predictive layer; StopZone and
-    # SlowdownZone stay as defined in the base configuration.
+    # The ApproachZone predictive layer was evaluated and rejected on the
+    # Global Shadow evidence: it deadlocked the corridor-follow dynamic case
+    # (seed 31704/31709).  StopZone and SlowdownZone stay as defined in the
+    # base configuration as the LiDAR safety layers.
     assert profile['collision_monitor']['ros__parameters']['ApproachZone'][
-        'enabled'] is True
+        'enabled'] is False
 
 
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
