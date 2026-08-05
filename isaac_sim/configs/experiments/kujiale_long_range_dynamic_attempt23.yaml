@@ -10,6 +10,7 @@
 # family (seeds 31704/31709), which the plan 4.6 qualification gate cannot
 # absorb; tightening the actor speed envelope is the sanctioned remediation.
 # The difficulty reduction is recorded in the Attempt-23 report.
+schema_version: 4
 seed: 7401
 enabled: false
 coordinate_frame: map
