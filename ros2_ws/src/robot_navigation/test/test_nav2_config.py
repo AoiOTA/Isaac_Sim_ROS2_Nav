@@ -222,6 +222,72 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
         assert scan['raytrace_min_range'] == 0.0
 
 
+def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
+    profile = _profile('attempt23_global_prior')
+    controller_server = profile['controller_server']['ros__parameters']
+    controller = controller_server['FollowPath']
+    local = profile['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    # Attempt-23 removes the deleted PredictiveRiskCritic entirely: local
+    # avoidance is stock Nav2 only and nothing consumes Module2 risk grids.
+    assert controller['critics'] == [
+        'ConstraintCritic', 'CostCritic', 'GoalCritic', 'GoalAngleCritic',
+        'PathAlignCritic', 'PathFollowCritic', 'PathAngleCritic',
+        'PreferForwardCritic']
+    assert 'PredictiveRiskCritic' not in controller
+
+    # The dynamic MPPI envelope carries over from nav2_dynamic_avoidance.
+    assert controller_server['controller_frequency'] == 15.0
+    assert controller['time_steps'] == 30
+    assert math.isclose(controller['model_dt'], 1.0 / 15.0)
+    assert math.isclose(
+        controller['time_steps'] * controller['model_dt'], 2.0)
+    assert controller['batch_size'] == 500
+    assert controller['vx_std'] == 0.90
+    assert controller['vx_max'] == 1.20
+    assert controller['ax_max'] == 3.50
+    assert controller['gamma'] == 0.030
+    assert controller['CostCritic']['near_collision_cost'] == 20
+    assert controller['CostCritic']['cost_weight'] == 4.00
+    assert controller['PathFollowCritic']['cost_weight'] == 14.0
+
+    # Local costmap keeps the STVL depth layer and the 0.75 m envelope.
+    assert local['plugins'] == [
+        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
+    depth = local['depth_stvl_layer']
+    assert depth['plugin'] == (
+        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
+    assert depth['voxel_decay'] == 0.75
+    assert depth['camera_depth_clear']['decay_acceleration'] == 15.0
+    assert local['inflation_layer']['inflation_radius'] == 0.75
+
+    # The global side drops the depth layer against dynamic residue but
+    # keeps the read-only ReachabilityObserverLayer global prior snapshot.
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'reachability_observer_layer',
+        'inflation_layer']
+    observer = global_costmap['reachability_observer_layer']
+    assert observer['plugin'] == 'bio_nav_fusion::ReachabilityObserverLayer'
+    assert observer['enabled'] is True
+    assert observer['output_topic'] == \
+        '/global_costmap/reachability_observer_input'
+    assert profile['planner_server']['ros__parameters']['GridBased'][
+        'plugin'] == 'nav2_smac_planner::SmacPlanner2D'
+
+    assert profile['behavior_server']['ros__parameters'][
+        'simulate_ahead_time'] == 1.0
+    smoother = profile['velocity_smoother']['ros__parameters']
+    assert smoother['max_velocity'] == [1.20, 0.0, 3.40]
+    assert smoother['max_accel'] == [3.50, 0.0, 6.50]
+
+    # ApproachZone becomes the only Module3 predictive layer; StopZone and
+    # SlowdownZone stay as defined in the base configuration.
+    assert profile['collision_monitor']['ros__parameters']['ApproachZone'][
+        'enabled'] is True
+
+
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     config = _config()
     navigator = _params(config, 'bt_navigator')
