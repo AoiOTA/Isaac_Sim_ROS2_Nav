@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""Generate Attempt-23 campaign scenarios from the attempt23 prereg seed table.
+
+The Attempt-23 campaigns do not use the Attempt-21/22 paired-appearance
+matrix (the risk chain that needed appearance variants is deleted), so every
+seed produces exactly one run.  Scenario geometry follows the established
+long-range templates: static runs reuse the five-leg warehouse route and the
+static low-obstacle layout; dynamic runs reuse the full-route dynamic
+choreography with the five case variants cycled per seed.
+"""
+
+from __future__ import annotations
+
+import argparse
+from copy import deepcopy
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+
+ATTEMPT_ID = "attempt-23-global-prior-only-srdr-v2"
+ATTEMPT_LABEL = "attempt23"
+DYNAMIC_CASES = (
+    "full_route_three_stage",
+    "crossing",
+    "oncoming",
+    "same_direction_slow",
+    "temporary_block",
+)
+# prereg seeds key -> (mode, expected count)
+SEGMENTS = {
+    "global_shadow": ("global_shadow", 20),
+    "global_ab": ("global_ab", 30),
+    "global_power_reserve": ("global_power_reserve", 10),
+    "final_confirmation": ("final_confirmation", 30),
+    "confirmation_reserve": ("confirmation_reserve", 10),
+}
+MODES = ("static", "dynamic")
+
+
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _segment_seeds(prereg: dict[str, Any], segment: str, mode: str) -> range:
+    key = f"{segment}_{mode}"
+    if key not in prereg.get("seeds", {}):
+        raise ValueError(f"attempt23 prereg lacks seeds.{key}")
+    first, last = prereg["seeds"][key]
+    seeds = range(int(first), int(last) + 1)
+    _, expected = SEGMENTS[segment]
+    if len(seeds) != expected:
+        raise ValueError(f"{key} must contain {expected} seeds, got {len(seeds)}")
+    return seeds
+
+
+def build_matrix(prereg: dict[str, Any], *, segment: str, mode: str) -> list[dict[str, Any]]:
+    matrix: list[dict[str, Any]] = []
+    for offset, seed in enumerate(_segment_seeds(prereg, segment, mode)):
+        if mode == "static":
+            case_id = "static"
+            variant_id = "dataset_v3_v1"
+        else:
+            case_id = DYNAMIC_CASES[offset % len(DYNAMIC_CASES)]
+            variant_id = f"v{offset % 5 + 1}"
+        matrix.append(
+            {
+                "seed": int(seed),
+                "case_id": case_id,
+                "variant_id": variant_id,
+                "condition_id": f"{ATTEMPT_LABEL}_{segment}_{mode}",
+            }
+        )
+    return matrix
+
+
+def build_scenario(
+    base: dict[str, Any], prereg: dict[str, Any], *, segment: str, mode: str
+) -> dict[str, Any]:
+    payload = deepcopy(base)
+    scenario = payload["scenario"]
+    scenario["id"] = f"isaac_kujiale_dataset_v3_{ATTEMPT_LABEL}_{segment}_{mode}"
+    # Attempt-23 never pairs appearances; the risk chain that consumed them
+    # is deleted, so appearance capture is dropped from the configs.
+    scenario.get("configs", {}).pop("appearance", None)
+    scenario["runs"]["matrix"] = build_matrix(prereg, segment=segment, mode=mode)
+    return payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--prereg", type=Path, required=True)
+    parser.add_argument(
+        "--output-directory",
+        type=Path,
+        default=Path("ros2_ws/src/robot_experiments/config"),
+    )
+    parser.add_argument("--segment", action="append", choices=list(SEGMENTS))
+    parser.add_argument("--mode", action="append", choices=MODES)
+    args = parser.parse_args()
+    prereg_path = args.prereg.resolve()
+    prereg = json.loads(prereg_path.read_text(encoding="utf-8"))
+    if prereg.get("attempt_id") != ATTEMPT_ID:
+        raise ValueError("preregistration is not the Attempt-23 v2 prereg")
+    if prereg.get("formal_collection_authorized", False) is not False:
+        raise ValueError("formal collection must remain closed during scenario generation")
+    config = Path(__file__).resolve().parents[1] / "ros2_ws/src/robot_experiments/config"
+    bases = {
+        "static": yaml.safe_load(
+            (config / "isaac_kujiale_dataset_v2_smoke_static.yaml").read_text()
+        ),
+        "dynamic": yaml.safe_load(
+            (config / "isaac_kujiale_dataset_v3_attempt22_development_dynamic.yaml").read_text()
+        ),
+    }
+    output = args.output_directory.resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    segments = tuple(dict.fromkeys(args.segment or ("global_shadow",)))
+    modes = tuple(dict.fromkeys(args.mode or MODES))
+    generated = []
+    for segment in segments:
+        for mode in modes:
+            target = output / (
+                f"isaac_kujiale_dataset_v3_{ATTEMPT_LABEL}_{segment}_{mode}.yaml"
+            )
+            payload = build_scenario(bases[mode], prereg, segment=segment, mode=mode)
+            target.write_text(
+                "# Generated by scripts/generate_isaac_dataset_v3_attempt23_scenarios.py.\n"
+                f"# attempt23 prereg SHA256: {sha256_file(prereg_path)}.\n"
+                + yaml.safe_dump(payload, sort_keys=False),
+                encoding="utf-8",
+            )
+            generated.append(str(target))
+    print("\n".join(generated))
+
+
+if __name__ == "__main__":
+    main()
