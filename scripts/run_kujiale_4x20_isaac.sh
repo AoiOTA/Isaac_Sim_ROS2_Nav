@@ -20,7 +20,7 @@ case "${mode}" in
     obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_static.yaml"
     ;;
   dynamic)
-    obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+    obstacle_config="${ISAAC_NAV_DYNAMIC_OBSTACLE_CONFIG:-${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml}"
     ;;
   *) die "mode must be static or dynamic, got: ${mode}" ;;
 esac
