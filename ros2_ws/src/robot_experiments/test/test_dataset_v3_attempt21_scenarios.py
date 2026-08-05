@@ -94,6 +94,10 @@ def test_attempt21_static_collection_profile_is_appearance_safe():
     } <= APPEARANCE_NAV2_PROFILES
 
 
+def test_attempt23_global_prior_profile_is_appearance_safe():
+    assert "attempt23_global_prior" in APPEARANCE_NAV2_PROFILES
+
+
 def test_attempt21_static_v2_uses_fresh_formal_seed_families():
     for phase, (first, last) in STATIC_V2_SEEDS.items():
         source = CONFIG / (
