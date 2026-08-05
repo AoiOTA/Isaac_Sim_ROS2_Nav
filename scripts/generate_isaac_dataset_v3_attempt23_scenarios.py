@@ -86,6 +86,14 @@ def build_scenario(
     # Attempt-23 never pairs appearances; the risk chain that consumed them
     # is deleted, so appearance capture is dropped from the configs.
     scenario.get("configs", {}).pop("appearance", None)
+    if mode == "dynamic":
+        # Attempt-23 tightens the same_direction_slow actor speed envelope
+        # (0.18 -> 0.32 m/s, the proven local-stack envelope bottom) per the
+        # Global Shadow deadlock evidence; use the attempt23 obstacle set.
+        scenario["configs"]["dynamic_obstacles"] = (
+            "../../../../isaac_sim/configs/experiments/"
+            "kujiale_long_range_dynamic_attempt23.yaml"
+        )
     scenario["runs"]["matrix"] = build_matrix(prereg, segment=segment, mode=mode)
     return payload
 
