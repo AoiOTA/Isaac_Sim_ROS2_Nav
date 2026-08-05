@@ -21,6 +21,7 @@ NAV2_PROFILES = frozenset({
     'attempt21_static_collection',
     'attempt22_reachability_shadow',
     'attempt23_global_prior',
+    'attempt23_static_observer',
     'bio_nav_rgbd_risk_shadow', 'bio_nav_rgbd_risk_ab',
     'bio_nav_rgbd_risk_static_opt_in'})
 

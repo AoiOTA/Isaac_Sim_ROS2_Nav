@@ -1,0 +1,49 @@
+# Attempt-23 static-scene local stack: the proven static (stable) MPPI budget
+# plus the read-only reachability observer layer for the Integration sidecar.
+#
+# The aggressive dynamic envelope used for the dynamic Shadow segment brushes
+# and can physically contact the 16 cm low obstacles on the tight static
+# route (seed 31614 hit rgbd_low_bar_north on the ContactSensor).  The static
+# scene has no dynamic actors, so the gentler verified static budget is the
+# correct local stack here; every experiment arm shares it, preserving the
+# causal attribution.  The reachability observer sits after all
+# obstacle-marking layers and before inflation, and publishes a read-only
+# snapshot; it does not modify the Nav2 costmap and does not authorize
+# Module2 guidance.
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    FollowPath:
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 700
+      critics:
+        - ConstraintCritic
+        - CostCritic
+        - GoalCritic
+        - GoalAngleCritic
+        - PathAlignCritic
+        - PathFollowCritic
+        - PathAngleCritic
+        - PreferForwardCritic
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins:
+        - static_layer
+        - obstacle_layer
+        - depth_voxel_layer
+        - reachability_observer_layer
+        - inflation_layer
+      reachability_observer_layer:
+        plugin: bio_nav_fusion::ReachabilityObserverLayer
+        enabled: true
+        output_topic: /global_costmap/reachability_observer_input
+
+planner_server:
+  ros__parameters:
+    planner_plugins: [GridBased]
+    GridBased:
+      # The Module3 global planner remains the stock SmacPlanner2D.
+      plugin: nav2_smac_planner::SmacPlanner2D
