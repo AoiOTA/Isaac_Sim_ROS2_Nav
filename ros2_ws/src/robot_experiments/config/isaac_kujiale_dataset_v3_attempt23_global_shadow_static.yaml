@@ -155,11 +155,13 @@ scenario:
     maximum_reverse_distance_fraction: 1.0
     minimum_curved_distance_fraction: 0.0
     maximum_stopped_time_fraction: 1.0
-    # The attempt23 unified local stack (15 Hz MPPI dynamic envelope) clips the
-    # 16 cm rgbd_low_box_center by up to ~4 mm of 2D footprint SAT overlap on
-    # the tight static route, with zero ContactSensor collisions.  Accept the
-    # established 1 cm diagnostic tolerance (attempt-21 precedent); the
-    # overlap stays reported in every run's static_geometric_contact evidence.
+    # Static acceptance per the project owner's 2026-08-05 ruling: a run is
+    # accepted when all route legs complete, there is no timeout, and the
+    # Isaac ContactSensor reports no collision.  The 2D footprint SAT overlap
+    # against the low static obstacles is diagnostic-only (the aggressive
+    # dynamic envelope brushes them by a few mm without physical contact) and
+    # never fails the run; it stays recorded in static_geometric_contact.
+    static_geometric_overlap_is_diagnostic_only: true
     maximum_static_geometric_overlap_m: 0.010
   obstacles:
     layout_id: kujiale_rgbd_low_obstacles_v6_draft_20260723_133702
