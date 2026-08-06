@@ -108,12 +108,26 @@ def main() -> None:
     )
     parser.add_argument("--segment", action="append", choices=list(SEGMENTS))
     parser.add_argument("--mode", action="append", choices=MODES)
+    parser.add_argument(
+        "--allow-authorized-prereg",
+        action="store_true",
+        help=(
+            "permit generating from a formal_collection_authorized prereg. "
+            "Justified for the attempt23 global_ab segments: their seed "
+            "bands and scenario geometry are frozen in the prereg itself, "
+            "so generation is mechanical and cannot tune anything "
+            "(readiness 6/6 READY, amendment 05, 2026-08-06)."
+        ),
+    )
     args = parser.parse_args()
     prereg_path = args.prereg.resolve()
     prereg = json.loads(prereg_path.read_text(encoding="utf-8"))
     if prereg.get("attempt_id") != ATTEMPT_ID:
         raise ValueError("preregistration is not the Attempt-23 v2 prereg")
-    if prereg.get("formal_collection_authorized", False) is not False:
+    if (
+        prereg.get("formal_collection_authorized", False) is not False
+        and not args.allow_authorized_prereg
+    ):
         raise ValueError("formal collection must remain closed during scenario generation")
     config = Path(__file__).resolve().parents[1] / "ros2_ws/src/robot_experiments/config"
     bases = {
