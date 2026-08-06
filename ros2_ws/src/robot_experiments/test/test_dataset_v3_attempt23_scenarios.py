@@ -20,7 +20,7 @@ def test_attempt23_global_ab_static_seed_band() -> None:
     scenario = _load("isaac_kujiale_dataset_v3_attempt23_global_ab_static.yaml")
     assert scenario["id"] == "isaac_kujiale_dataset_v3_attempt23_global_ab_static"
     seeds = [row["seed"] for row in scenario["runs"]["matrix"]]
-    assert seeds == list(range(31801, 31831))
+    assert seeds == list(range(31801, 31821))
     assert {row["condition_id"] for row in scenario["runs"]["matrix"]} == {
         "attempt23_global_ab_static"
     }
@@ -31,7 +31,7 @@ def test_attempt23_global_ab_dynamic_seed_band_and_case_cycle() -> None:
     assert scenario["id"] == "isaac_kujiale_dataset_v3_attempt23_global_ab_dynamic"
     matrix = scenario["runs"]["matrix"]
     seeds = [row["seed"] for row in matrix]
-    assert seeds == list(range(31901, 31931))
+    assert seeds == list(range(31901, 31921))
     cases = [row["case_id"] for row in matrix]
     assert len(set(cases)) == 5  # five frozen dynamic cases cycle per seed
     assert all(

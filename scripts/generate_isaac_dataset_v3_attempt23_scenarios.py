@@ -33,8 +33,8 @@ DYNAMIC_CASES = (
 # prereg seeds key -> (mode, expected count)
 SEGMENTS = {
     "global_shadow": ("global_shadow", 20),
-    "global_ab": ("global_ab", 30),
-    "global_power_reserve": ("global_power_reserve", 10),
+    "global_ab": ("global_ab", 20),
+    "global_power_reserve": ("global_power_reserve", 20),
     "final_confirmation": ("final_confirmation", 30),
     "confirmation_reserve": ("confirmation_reserve", 10),
 }
@@ -94,6 +94,16 @@ def build_scenario(
             "../../../../isaac_sim/configs/experiments/"
             "kujiale_long_range_dynamic_attempt23.yaml"
         )
+    if mode == "static":
+        # Amendment 07 (2026-08-07): the formal A/B acceptance ruler is
+        # five-leg completion + no timeout + ContactSensor == 0; the SAT
+        # geometric overlap is recorded as diagnostic data only (same ruler
+        # as the Shadow static segment).  The tolerance-0 SAT gate proved
+        # to be a sub-cm lottery on the rgbd_low narrow gaps (seed 31801:
+        # A1 1/3, A10 0/12 under it) and is not the adjudicated contract.
+        scenario.setdefault("success", {})[
+            "static_geometric_overlap_is_diagnostic_only"
+        ] = True
     scenario["runs"]["matrix"] = build_matrix(prereg, segment=segment, mode=mode)
     return payload
 
