@@ -38,6 +38,11 @@ def generate_launch_description():
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
+            # Attempt-23 paired A/B: the guidance sidecar hosts the
+            # runner-facing NavigateToPose server; campaigns point the runner
+            # at it through this override.  The default preserves every
+            # existing campaign byte-for-byte.
+            DeclareLaunchArgument("navigate_action", default_value="/navigate_to_pose"),
             # Evidence-only fence used by Stage 2.2-R2C4-R2.  These values do
             # not alter localization, planning, costmaps, or control.
             DeclareLaunchArgument("require_pregoal_authorization", default_value="false"),
@@ -80,6 +85,7 @@ def generate_launch_description():
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
                         "dynamic_seed": LaunchConfiguration("dynamic_seed"),
+                        "navigate_action": LaunchConfiguration("navigate_action"),
                         "require_pregoal_authorization": ParameterValue(
                             LaunchConfiguration("require_pregoal_authorization"),
                             value_type=bool,
