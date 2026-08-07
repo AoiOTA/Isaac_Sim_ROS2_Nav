@@ -81,6 +81,47 @@ TEST(ReachabilityObserverLayer, occupancy_snapshot_is_conservative)
   EXPECT_EQ(ReachabilityObserverLayer::occupancyValue(255), -1);
 }
 
+TEST(ReachabilityObserverLayer, low_obstacle_density_accumulates_and_decays)
+{
+  using bio_nav_fusion::ReachabilityObserverLayer;
+  // Only lethal markings count as low-obstacle observations.
+  EXPECT_NEAR(
+    ReachabilityObserverLayer::lowObstacleDensityUpdate(
+      0.0F, nav2_costmap_2d::LETHAL_OBSTACLE, 0.99),
+    0.01F, 1e-6);
+  EXPECT_EQ(
+    ReachabilityObserverLayer::lowObstacleDensityUpdate(
+      0.0F, nav2_costmap_2d::INSCRIBED_INFLATED_OBSTACLE, 0.99),
+    0.0F);
+  EXPECT_NEAR(
+    ReachabilityObserverLayer::lowObstacleDensityUpdate(
+      0.5F, nav2_costmap_2d::NO_INFORMATION, 0.99),
+    0.495F, 1e-6);
+  // Persistent occupation saturates to 1, clearance decays back to 0.
+  float density = 0.0F;
+  for (int index = 0; index < 2000; ++index) {
+    density = ReachabilityObserverLayer::lowObstacleDensityUpdate(
+      density, nav2_costmap_2d::LETHAL_OBSTACLE, 0.99);
+  }
+  EXPECT_GT(density, 0.999F);
+  for (int index = 0; index < 2000; ++index) {
+    density = ReachabilityObserverLayer::lowObstacleDensityUpdate(
+      density, nav2_costmap_2d::FREE_SPACE, 0.99);
+  }
+  EXPECT_LT(density, 0.001F);
+}
+
+TEST(ReachabilityObserverLayer, low_obstacle_density_quantizes_to_occupancy)
+{
+  using bio_nav_fusion::ReachabilityObserverLayer;
+  EXPECT_EQ(ReachabilityObserverLayer::lowObstacleDensityValue(0.0F), 0);
+  EXPECT_EQ(ReachabilityObserverLayer::lowObstacleDensityValue(1.0F), 100);
+  EXPECT_EQ(ReachabilityObserverLayer::lowObstacleDensityValue(0.506F), 51);
+  // Out-of-range input clamps instead of wrapping.
+  EXPECT_EQ(ReachabilityObserverLayer::lowObstacleDensityValue(-1.0F), 0);
+  EXPECT_EQ(ReachabilityObserverLayer::lowObstacleDensityValue(2.0F), 100);
+}
+
 TEST(CognitiveRiskLayer, calibrated_cost_is_thresholded_nonlethal_and_decays)
 {
   using bio_nav_fusion::CognitiveRiskLayer;
