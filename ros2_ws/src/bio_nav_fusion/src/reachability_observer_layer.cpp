@@ -191,12 +191,17 @@ void ReachabilityObserverLayer::updateCosts(
   }
   cached_grid_.header.stamp = stamp;
   cached_grid_.header.frame_id = layered_costmap_->getGlobalFrameID();
-  publisher_->publish(cached_grid_);
   if (track_low_obstacles) {
     // Same stamp/frame as the observer input: consumers pair the channels.
+    // Publish the density channel FIRST: the Integration reachability node
+    // pairs at observer-input processing time, so the density frame for this
+    // stamp must already be on the wire (2026-08-07 smoke evidence: the
+    // input-first order left every published graph with an empty density
+    // channel).
     cached_low_obstacle_grid_.header = cached_grid_.header;
     low_obstacle_publisher_->publish(cached_low_obstacle_grid_);
   }
+  publisher_->publish(cached_grid_);
   // Deliberately do not call setCost/updateWith*: master_grid is read-only here.
   current_ = true;
 }
