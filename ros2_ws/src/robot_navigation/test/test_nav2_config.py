@@ -288,7 +288,10 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
         'a19_d2_dynamic': (0.6, 700),
     }
     for name, (tolerance, batch) in expected.items():
-        parameters = _attempt28_candidate(name)[
+        candidate = _attempt28_candidate(name)
+        assert candidate['planner_server']['ros__parameters']['GridBased'][
+            'tolerance'] == 0.0
+        parameters = candidate[
             'controller_server']['ros__parameters']
         assert parameters['failure_tolerance'] == tolerance
         assert parameters['publish_zero_velocity'] is True

@@ -1,5 +1,11 @@
 # Attempt28 A19 diagnostic D0 delta.  The stock MPPI budget is retained;
-# only A19's crossing goal checker is added.
+# A19 also requires exact through-pose cells so the planner cannot substitute
+# a wall-adjacent cell for a frozen footprint-feasible tube waypoint.
+planner_server:
+  ros__parameters:
+    GridBased:
+      tolerance: 0.0
+
 controller_server:
   ros__parameters:
     failure_tolerance: 0.3
