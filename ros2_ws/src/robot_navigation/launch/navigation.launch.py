@@ -17,6 +17,9 @@ def generate_launch_description():
         'navigate_through_poses_with_dead_end_recovery.xml')
     params_file = LaunchConfiguration('nav2_params_file')
     profile_params_file = LaunchConfiguration('nav2_profile_params_file')
+    candidate_params_file = LaunchConfiguration('nav2_candidate_params_file')
+    cycle_trace_library = LaunchConfiguration('attempt27_cycle_trace_library')
+    cycle_trace_output = LaunchConfiguration('attempt27_cycle_trace_output')
     voxel_grid_topic = LaunchConfiguration('voxel_grid_topic')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
@@ -36,6 +39,14 @@ def generate_launch_description():
             'nav2_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(
             'nav2_profile_params_file', default_value=str(default_profile)),
+        DeclareLaunchArgument(
+            'nav2_candidate_params_file',
+            default_value=str(package_share / 'config' /
+                              'nav2_attempt27_no_candidate.yaml')),
+        DeclareLaunchArgument('attempt27_cycle_trace_library',
+                              default_value=''),
+        DeclareLaunchArgument('attempt27_cycle_trace_output',
+                              default_value='/dev/null'),
         # STVL publishes a PointCloud2 named voxel_grid, while Nav2's built-in
         # VoxelLayer publishes nav2_msgs/VoxelGrid on that name.  The dynamic
         # profile remaps STVL to an independent topic so RViz can display both
@@ -49,7 +60,12 @@ def generate_launch_description():
             name='controller_server',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file],
+            parameters=[params_file, profile_params_file,
+                        candidate_params_file],
+            additional_env={
+                'LD_PRELOAD': cycle_trace_library,
+                'BIO_NAV_ATTEMPT27_CYCLE_TRACE': cycle_trace_output,
+            },
             remappings=[
                 ('cmd_vel', '/cmd_vel_nav'),
                 ('voxel_grid', voxel_grid_topic),
@@ -61,7 +77,8 @@ def generate_launch_description():
             name='planner_server',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file],
+            parameters=[params_file, profile_params_file,
+                        candidate_params_file],
         ),
         Node(
             package='nav2_behaviors',
@@ -69,7 +86,8 @@ def generate_launch_description():
             name='behavior_server',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file],
+            parameters=[params_file, profile_params_file,
+                        candidate_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
         Node(
@@ -79,6 +97,7 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 params_file,
+                candidate_params_file,
                 {
                     'default_nav_to_pose_bt_xml': str(
                         default_nav_to_pose_bt),
@@ -93,7 +112,8 @@ def generate_launch_description():
             name='velocity_smoother',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file],
+            parameters=[params_file, profile_params_file,
+                        candidate_params_file],
             remappings=[('cmd_vel', '/cmd_vel_nav')],
         ),
         Node(
@@ -102,7 +122,8 @@ def generate_launch_description():
             name='collision_monitor',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file],
+            parameters=[params_file, profile_params_file,
+                        candidate_params_file],
         ),
         Node(
             package='nav2_lifecycle_manager',

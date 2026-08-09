@@ -23,6 +23,12 @@ def _params(config, node):
     return config[node]['ros__parameters']
 
 
+def _attempt27_candidate(name):
+    return yaml.safe_load(
+        (PACKAGE_ROOT / 'config' /
+         f'nav2_attempt27_{name}.yaml').read_text())
+
+
 def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     config = _config()
     planner = _params(config, 'planner_server')['GridBased']
@@ -220,6 +226,49 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
         assert scan['observation_persistence'] == 0.0
         assert scan['inf_is_valid'] is True
         assert scan['raytrace_min_range'] == 0.0
+
+
+def test_attempt27_a1_and_a18_profiles_are_explicitly_isolated():
+    stock = _attempt27_candidate('no_candidate')
+    assert stock == {'controller_server': {'ros__parameters': {}}}
+
+    expected = {
+        'a18_d0': (0.3, None),
+        'a18_d1': (0.6, None),
+        'a18_d2_static': (0.6, 900),
+        'a18_d2_dynamic': (0.6, 700),
+    }
+    for name, (tolerance, batch) in expected.items():
+        parameters = _attempt27_candidate(name)[
+            'controller_server']['ros__parameters']
+        assert parameters['failure_tolerance'] == tolerance
+        assert parameters['publish_zero_velocity'] is True
+        assert parameters['controller_plugins'] == ['FollowPath']
+        assert parameters['progress_checker_plugins'] == ['progress_checker']
+        assert parameters['goal_checker_plugins'] == [
+            'goal_checker', 'a18_crossing_goal_checker']
+        checker = parameters['a18_crossing_goal_checker']
+        assert checker['plugin'] == 'nav2_controller::SimpleGoalChecker'
+        assert checker['stateful'] is False
+        assert checker['xy_goal_tolerance'] == 0.05
+        assert math.isclose(checker['yaw_goal_tolerance'], math.pi)
+        if batch is None:
+            assert 'FollowPath' not in parameters
+        else:
+            assert parameters['FollowPath']['batch_size'] == batch
+
+
+def test_attempt27_launch_has_a_separate_candidate_parameter_layer():
+    launch_source = (PACKAGE_ROOT / 'launch' /
+                     'navigation.launch.py').read_text()
+    tree = ast.parse(launch_source)
+    assert tree is not None
+    assert 'nav2_candidate_params_file' in launch_source
+    # The controller must receive base, stock profile, then candidate delta.
+    parameter_layers = (
+        'parameters=[params_file, profile_params_file,\n'
+        '                        candidate_params_file]')
+    assert parameter_layers in launch_source
 
 
 def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():

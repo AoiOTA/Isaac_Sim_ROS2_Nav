@@ -2701,6 +2701,21 @@ class ExperimentRunner(Node):
                 "navigation_odom": len(navigation_odom),
                 "navigation_commands": len(self._command_samples),
             },
+            "navigation_active_window": {
+                "start_stamp_s": self._navigation_start_stamp_s,
+                "end_stamp_s": self._navigation_end_stamp_s,
+                "duration_s": (
+                    None
+                    if self._navigation_start_stamp_s is None
+                    or self._navigation_end_stamp_s is None
+                    else max(
+                        0.0,
+                        self._navigation_end_stamp_s
+                        - self._navigation_start_stamp_s,
+                    )
+                ),
+                "source": "experiment_runner_navigation_action_interval",
+            },
             "metrics": {
                 "ground_truth_position_error_m": position_error,
                 "ground_truth_orientation_error_rad": orientation_error,

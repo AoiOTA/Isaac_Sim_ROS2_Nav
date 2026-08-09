@@ -1,0 +1,14 @@
+# Attempt27 A18 diagnostic D0 delta.  D0 retains stock MPPI budgets and the
+# stock global failure tolerance; only A18's selectable goal checker is added.
+controller_server:
+  ros__parameters:
+    failure_tolerance: 0.3
+    publish_zero_velocity: true
+    controller_plugins: [FollowPath]
+    progress_checker_plugins: [progress_checker]
+    goal_checker_plugins: [goal_checker, a18_crossing_goal_checker]
+    a18_crossing_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: false
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 3.141592654
