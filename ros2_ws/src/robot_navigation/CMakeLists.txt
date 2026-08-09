@@ -10,12 +10,17 @@ target_compile_features(attempt27_cycle_trace PUBLIC cxx_std_17)
 target_link_libraries(attempt27_cycle_trace dl)
 ament_target_dependencies(attempt27_cycle_trace geometry_msgs nav2_core)
 
+add_library(attempt28_cycle_trace SHARED src/attempt28_cycle_trace.cpp)
+target_compile_features(attempt28_cycle_trace PUBLIC cxx_std_17)
+target_link_libraries(attempt28_cycle_trace dl)
+ament_target_dependencies(attempt28_cycle_trace geometry_msgs nav2_core)
+
 install(DIRECTORY behavior_trees config launch
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
 )
 
-install(TARGETS attempt27_cycle_trace
+install(TARGETS attempt27_cycle_trace attempt28_cycle_trace
   LIBRARY DESTINATION lib
 )
 
@@ -42,6 +47,13 @@ if(BUILD_TESTING)
       $<TARGET_FILE:attempt27_cycle_trace_probe>
       $<TARGET_FILE:attempt27_cycle_trace_original_mock>
       $<TARGET_FILE:attempt27_cycle_trace>)
+
+  add_test(NAME attempt28_cycle_trace_equivalence
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/test/test_attempt28_cycle_trace.py
+      $<TARGET_FILE:attempt27_cycle_trace_probe>
+      $<TARGET_FILE:attempt27_cycle_trace_original_mock>
+      $<TARGET_FILE:attempt28_cycle_trace>)
 
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)

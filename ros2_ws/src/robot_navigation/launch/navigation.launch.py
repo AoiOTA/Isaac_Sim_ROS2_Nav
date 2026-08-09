@@ -20,6 +20,10 @@ def generate_launch_description():
     candidate_params_file = LaunchConfiguration('nav2_candidate_params_file')
     cycle_trace_library = LaunchConfiguration('attempt27_cycle_trace_library')
     cycle_trace_output = LaunchConfiguration('attempt27_cycle_trace_output')
+    attempt28_cycle_trace_library = LaunchConfiguration(
+        'attempt28_cycle_trace_library')
+    attempt28_cycle_trace_output = LaunchConfiguration(
+        'attempt28_cycle_trace_output')
     voxel_grid_topic = LaunchConfiguration('voxel_grid_topic')
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
@@ -47,6 +51,10 @@ def generate_launch_description():
                               default_value=''),
         DeclareLaunchArgument('attempt27_cycle_trace_output',
                               default_value='/dev/null'),
+        DeclareLaunchArgument('attempt28_cycle_trace_library',
+                              default_value=cycle_trace_library),
+        DeclareLaunchArgument('attempt28_cycle_trace_output',
+                              default_value=cycle_trace_output),
         # STVL publishes a PointCloud2 named voxel_grid, while Nav2's built-in
         # VoxelLayer publishes nav2_msgs/VoxelGrid on that name.  The dynamic
         # profile remaps STVL to an independent topic so RViz can display both
@@ -63,8 +71,9 @@ def generate_launch_description():
             parameters=[params_file, profile_params_file,
                         candidate_params_file],
             additional_env={
-                'LD_PRELOAD': cycle_trace_library,
+                'LD_PRELOAD': attempt28_cycle_trace_library,
                 'BIO_NAV_ATTEMPT27_CYCLE_TRACE': cycle_trace_output,
+                'BIO_NAV_ATTEMPT28_CYCLE_TRACE': attempt28_cycle_trace_output,
             },
             remappings=[
                 ('cmd_vel', '/cmd_vel_nav'),

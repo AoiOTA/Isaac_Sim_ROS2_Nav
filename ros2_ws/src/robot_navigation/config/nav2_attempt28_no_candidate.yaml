@@ -1,0 +1,4 @@
+# Explicit third-layer profile for the frozen stock A1 arm.  It is empty by
+# design and must not load the A19 crossing goal checker.
+controller_server:
+  ros__parameters: {}

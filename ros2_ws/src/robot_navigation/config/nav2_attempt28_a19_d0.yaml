@@ -1,0 +1,14 @@
+# Attempt28 A19 diagnostic D0 delta.  The stock MPPI budget is retained;
+# only A19's crossing goal checker is added.
+controller_server:
+  ros__parameters:
+    failure_tolerance: 0.3
+    publish_zero_velocity: true
+    controller_plugins: [FollowPath]
+    progress_checker_plugins: [progress_checker]
+    goal_checker_plugins: [goal_checker, a19_crossing_goal_checker]
+    a19_crossing_goal_checker:
+      plugin: nav2_controller::SimpleGoalChecker
+      stateful: false
+      xy_goal_tolerance: 0.05
+      yaw_goal_tolerance: 3.141592654

@@ -104,12 +104,42 @@ def test_experiment_telemetry_records_attempt26_complete_sensor_and_planning_top
         "/ground_truth/odom",
         "/bio_nav/attempt26/a17/events",
         "/bio_nav/attempt27/a18/events",
+        "/bio_nav/attempt28/a19/events",
         "/global_costmap/reachability_observer_input",
         "/bio_nav/module3/reachability_graph",
         "/global_costmap/reachability_low_obstacle_density",
     ):
         assert f'"{topic}"' in runner
     assert "Subscribed to topic '/ground_truth/odom'" in runner
+
+
+def test_attempt28_scenario_seed_domains_are_frozen_and_disjoint():
+    expected = {
+        ('engineering', 'static'): list(range(34001, 34041)),
+        ('engineering', 'dynamic'): list(range(34051, 34091)),
+        ('diagnostic', 'static'): list(range(34101, 34107)),
+        ('diagnostic', 'dynamic'): list(range(34151, 34157)),
+        ('smoke', 'static'): list(range(34201, 34207)),
+        ('smoke', 'dynamic'): list(range(34251, 34257)),
+        ('calibration', 'static'): list(range(34301, 34311)),
+        ('calibration', 'dynamic'): list(range(34351, 34361)),
+        ('heldout', 'static'): list(range(34401, 34431)),
+        ('heldout', 'dynamic'): list(range(34451, 34491)),
+        ('formal', 'static'): list(range(34501, 34531)),
+        ('formal', 'dynamic'): list(range(34551, 34591)),
+    }
+    observed = set()
+    for (stage, mode), seeds in expected.items():
+        path = PACKAGE_ROOT / 'config' / (
+            f'isaac_kujiale_dataset_v3_attempt28_{stage}_{mode}.yaml')
+        document = yaml.safe_load(path.read_text())
+        scenario = document['scenario']
+        actual = [row['seed'] for row in scenario['runs']['matrix']]
+        assert scenario['id'] == (
+            f'isaac_kujiale_dataset_v3_attempt28_{stage}_{mode}')
+        assert actual == seeds
+        assert not observed.intersection(actual)
+        observed.update(actual)
 
 
 def test_attempt26_simple_research_evidence_disables_integrity_files():
