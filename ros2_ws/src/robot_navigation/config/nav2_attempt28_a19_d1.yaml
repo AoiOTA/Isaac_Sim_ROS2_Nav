@@ -21,6 +21,12 @@ controller_server:
       xy_goal_tolerance: 0.05
       yaw_goal_tolerance: 3.141592654
     FollowPath:
+      # A19 paths are sampled on a 0.05 m grid and may contain tight portal
+      # corners. The MPPI default searches roughly half the local costmap for
+      # the Euclidean-nearest pose, which can prune across an unexecuted corner
+      # when a later leg passes close to the robot. Restrict pruning to the
+      # next one or two grid poses so progress remains path-order preserving.
+      max_robot_pose_search_dist: 0.10
       # Keep D1's candidate bank concentrated on continuous portal-following
       # controls.  These values match the validated stable envelope while the
       # active dynamic profile still supplies 30 x 0.0667 s rollouts at 15 Hz.
