@@ -19,6 +19,8 @@ namespace
 std::atomic<uint64_t> cycle_counter{0};
 std::once_flag open_once;
 int trace_fd = -1;
+constexpr const char * compute_symbol =
+  "_ZN20nav2_mppi_controller14MPPIController23computeVelocityCommandsERKN13geometry_msgs3msg12PoseStamped_ISaIvEEERKNS2_6Twist_IS4_EEPN9nav2_core11GoalCheckerE";
 
 uint64_t steady_ns()
 {
@@ -54,6 +56,20 @@ void emit(const char * event, uint64_t cycle_id, bool exception_flag)
   const ssize_t ignored = ::write(trace_fd, line.data(), line.size());
   (void)ignored;
 }
+
+void * resolve_original_compute()
+{
+  if (void * symbol = dlsym(RTLD_NEXT, compute_symbol)) {
+    return symbol;
+  }
+  // pluginlib loads controller plugins with local ELF scope, so RTLD_NEXT
+  // cannot see the original even though the object is already resident.
+  void * handle = dlopen("libmppi_controller.so", RTLD_NOW | RTLD_NOLOAD);
+  if (handle == nullptr) {
+    return nullptr;
+  }
+  return dlsym(handle, compute_symbol);
+}
 }  // namespace
 
 namespace nav2_mppi_controller
@@ -66,9 +82,7 @@ geometry_msgs::msg::TwistStamped MPPIController::computeVelocityCommands(
   using Original = geometry_msgs::msg::TwistStamped (*)(
     MPPIController *, const geometry_msgs::msg::PoseStamped &,
     const geometry_msgs::msg::Twist &, nav2_core::GoalChecker *);
-  static Original original = reinterpret_cast<Original>(dlsym(
-    RTLD_NEXT,
-    "_ZN20nav2_mppi_controller14MPPIController23computeVelocityCommandsERKN13geometry_msgs3msg12PoseStamped_ISaIvEEERKNS2_6Twist_IS4_EEPN9nav2_core11GoalCheckerE"));
+  static Original original = reinterpret_cast<Original>(resolve_original_compute());
   if (original == nullptr) {
     throw std::runtime_error(
       "Attempt28 trace could not resolve the original MPPI compute method");

@@ -1,6 +1,7 @@
 #include <dlfcn.h>
 
 #include <array>
+#include <cstdlib>
 #include <iomanip>
 #include <iostream>
 #include <stdexcept>
@@ -12,7 +13,9 @@ int main(int argc, char ** argv)
   if (argc != 2) {
     return 2;
   }
-  void * library = dlopen(argv[1], RTLD_NOW | RTLD_GLOBAL);
+  const bool local_scope = std::getenv("BIO_NAV_TRACE_TEST_LOCAL") != nullptr;
+  void * library = dlopen(
+    argv[1], RTLD_NOW | (local_scope ? RTLD_LOCAL : RTLD_GLOBAL));
   if (library == nullptr) {
     throw std::runtime_error(dlerror());
   }
@@ -21,9 +24,13 @@ int main(int argc, char ** argv)
     const geometry_msgs::msg::PoseStamped &,
     const geometry_msgs::msg::Twist &,
     nav2_core::GoalChecker *);
-  auto method = reinterpret_cast<Method>(dlsym(
-      RTLD_DEFAULT,
-      "_ZN20nav2_mppi_controller14MPPIController23computeVelocityCommandsERKN13geometry_msgs3msg12PoseStamped_ISaIvEEERKNS2_6Twist_IS4_EEPN9nav2_core11GoalCheckerE"));
+  constexpr const char * symbol =
+    "_ZN20nav2_mppi_controller14MPPIController23computeVelocityCommandsERKN13geometry_msgs3msg12PoseStamped_ISaIvEEERKNS2_6Twist_IS4_EEPN9nav2_core11GoalCheckerE";
+  void * resolved = dlsym(RTLD_DEFAULT, symbol);
+  if (resolved == nullptr) {
+    resolved = dlsym(library, symbol);
+  }
+  auto method = reinterpret_cast<Method>(resolved);
   if (method == nullptr) {
     throw std::runtime_error(dlerror());
   }

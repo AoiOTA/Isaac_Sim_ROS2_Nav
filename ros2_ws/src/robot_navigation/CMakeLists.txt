@@ -30,6 +30,8 @@ if(BUILD_TESTING)
 
   add_library(attempt27_cycle_trace_original_mock SHARED
     test/attempt27_cycle_trace_original_mock.cpp)
+  set_target_properties(attempt27_cycle_trace_original_mock PROPERTIES
+    OUTPUT_NAME mppi_controller)
   target_compile_features(attempt27_cycle_trace_original_mock PUBLIC cxx_std_17)
   ament_target_dependencies(attempt27_cycle_trace_original_mock
     geometry_msgs nav2_core)
