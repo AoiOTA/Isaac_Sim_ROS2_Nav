@@ -283,7 +283,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
 
     expected = {
         'a19_d0': (0.3, None),
-        'a19_d1': (0.6, None),
+        'a19_d1': (0.6, 'bounded_portal'),
         'a19_d2_static': (0.6, 900),
         'a19_d2_dynamic': (0.6, 700),
     }
@@ -306,6 +306,18 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
         assert math.isclose(checker['yaw_goal_tolerance'], math.pi)
         if batch is None:
             assert 'FollowPath' not in parameters
+        elif batch == 'bounded_portal':
+            follow_path = parameters['FollowPath']
+            assert follow_path['vx_std'] == 0.35
+            assert follow_path['wz_std'] == 0.75
+            assert follow_path['vx_max'] == 0.75
+            assert follow_path['wz_max'] == 1.35
+            assert follow_path['ax_max'] == 1.25
+            assert follow_path['ax_min'] == -1.10
+            assert follow_path['az_max'] == 3.50
+            assert follow_path['gamma'] == 0.015
+            assert follow_path['CostCritic']['near_collision_cost'] == 253
+            assert follow_path['CostCritic']['cost_weight'] == 1.35
         else:
             assert parameters['FollowPath']['batch_size'] == batch
 
