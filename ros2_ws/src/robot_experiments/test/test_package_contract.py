@@ -110,7 +110,15 @@ def test_experiment_telemetry_records_attempt26_complete_sensor_and_planning_top
         "/global_costmap/reachability_low_obstacle_density",
     ):
         assert f'"{topic}"' in runner
-    assert "Subscribed to topic '/ground_truth/odom'" in runner
+    for topic in (
+        "/ground_truth/odom",
+        "/tf",
+        "/local_costmap/costmap_raw",
+        "/global_costmap/costmap_raw",
+        "/bio_nav/attempt28/a19/events",
+    ):
+        assert f'"{topic}"' in runner
+    assert "required-topic discovery timed out" in runner
 
 
 def test_attempt28_scenario_seed_domains_are_frozen_and_disjoint():

@@ -2914,18 +2914,35 @@ class ExperimentRunner(Node):
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
             )
             log.close()
-            ready_line = "Subscribed to topic '/ground_truth/odom'"
+            # A run may dispatch immediately after evidence startup.  Waiting
+            # for only ground truth allowed its first guidance event to refer
+            # to a costmap frame published while rosbag was still discovering
+            # the raw costmap endpoints.  Freeze all inputs needed by the
+            # Attempt28 independent oracle before any navigation goal.
+            ready_topics = (
+                "/ground_truth/odom",
+                "/tf",
+                "/local_costmap/costmap_raw",
+                "/global_costmap/costmap_raw",
+                "/bio_nav/attempt28/a19/events",
+            )
             deadline = time.monotonic() + 30.0
             while time.monotonic() < deadline:
-                if ready_line in (root / "bag_record.log").read_text(
+                recorder_log = (root / "bag_record.log").read_text(
                     encoding="utf-8", errors="replace"
+                )
+                if all(
+                    f"Subscribed to topic '{topic}'" in recorder_log
+                    for topic in ready_topics
                 ):
                     break
                 if self._bag_process.poll() is not None:
                     raise ConfigurationError("rosbag recorder exited before topic discovery")
                 time.sleep(0.1)
             else:
-                raise ConfigurationError("rosbag recorder topic discovery timed out")
+                raise ConfigurationError(
+                    "rosbag recorder required-topic discovery timed out"
+                )
         except OSError:
             log.close()
         return root
