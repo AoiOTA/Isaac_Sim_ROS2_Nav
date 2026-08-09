@@ -308,7 +308,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
             assert 'FollowPath' not in parameters
         elif batch == 'bounded_portal':
             follow_path = parameters['FollowPath']
-            assert follow_path['max_robot_pose_search_dist'] == 0.10
+            assert follow_path['max_robot_pose_search_dist'] == 0.21
             assert follow_path['PathAngleCritic']['mode'] == 1
             assert follow_path['PreferForwardCritic']['enabled'] is False
             assert follow_path['vx_std'] == 0.35

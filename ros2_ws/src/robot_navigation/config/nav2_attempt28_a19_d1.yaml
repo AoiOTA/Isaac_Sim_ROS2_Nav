@@ -24,9 +24,11 @@ controller_server:
       # A19 paths are sampled on a 0.05 m grid and may contain tight portal
       # corners. The MPPI default searches roughly half the local costmap for
       # the Euclidean-nearest pose, which can prune across an unexecuted corner
-      # when a later leg passes close to the robot. Restrict pruning to the
-      # next one or two grid poses so progress remains path-order preserving.
-      max_robot_pose_search_dist: 0.10
+      # when a later leg passes close to the robot. The 0.21 m bound includes
+      # the measured four-pose recovery distance at portal-152 while excluding
+      # the measured five-pose nonlocal corner jump in the same controller
+      # cycle. Reverse-neutral critics below handle the recovered path leg.
+      max_robot_pose_search_dist: 0.21
       # A bounded reverse correction is required when the robot has already
       # turned more than 90 degrees away from the next tight portal leg. In
       # this mode PathAngleCritic may align the chassis opposite the path and
