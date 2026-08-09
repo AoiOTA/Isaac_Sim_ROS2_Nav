@@ -91,6 +91,72 @@ def test_experiment_telemetry_records_contact_identity_diagnostics():
     assert '"/simulation/collision_diagnostics"' in runner
 
 
+def test_experiment_telemetry_records_attempt26_complete_sensor_and_planning_topics():
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    for topic in (
+        "/camera/front/image_raw",
+        "/camera/front/depth/image_raw",
+        "/lidar/points_raw",
+        "/imu/data",
+        "/tf",
+        "/tf_static",
+        "/odom",
+        "/ground_truth/odom",
+        "/bio_nav/attempt26/a17/events",
+        "/global_costmap/reachability_observer_input",
+        "/bio_nav/module3/reachability_graph",
+        "/global_costmap/reachability_low_obstacle_density",
+    ):
+        assert f'"{topic}"' in runner
+    assert "Subscribed to topic '/ground_truth/odom'" in runner
+
+
+def test_attempt26_simple_research_evidence_disables_integrity_files():
+    from robot_experiments.experiment_runner import _without_integrity_fields
+
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    launch = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
+    assert 'declare_parameter("simple_research_evidence", False)' in runner
+    assert "if self._simple_research_evidence:" in runner
+    assert "if not self._simple_research_evidence:\n                    write_run_report" in runner
+    assert 'DeclareLaunchArgument("simple_research_evidence"' in launch
+    evidence = _without_integrity_fields({
+        "shape": "box",
+        "robot_config_hash": "legacy",
+        "appearance": {"sha256": "legacy", "profile_id": "baseline"},
+    })
+    assert evidence == {
+        "shape": "box",
+        "appearance": {"profile_id": "baseline"},
+    }
+
+
+def test_attempt26_simple_evidence_records_robot_footprint_for_geometry_oracle():
+    runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    assert '"robot_footprint_xy_m"' in runner
+
+
+def test_attempt26_generated_scenario_matrices_have_the_frozen_development_sizes():
+    from robot_experiments.scenario import load_scenario
+
+    expected = {
+        "preexecution_static": (9, 32651, 32659),
+        "smoke_static": (6, 32726, 32731),
+        "smoke_dynamic": (6, 32775, 32780),
+        "calibration_static": (10, 32811, 32820),
+        "calibration_dynamic": (10, 32917, 32926),
+        "heldout_static": (30, 33001, 33030),
+        "heldout_dynamic": (40, 33101, 33140),
+    }
+    config_root = PACKAGE_ROOT / "config"
+    for suffix, (count, first, last) in expected.items():
+        scenario = load_scenario(
+            config_root / f"isaac_kujiale_dataset_v3_attempt26_{suffix}.yaml"
+        )
+        seeds = [selection.seed for selection in scenario.run_matrix]
+        assert (len(seeds), seeds[0], seeds[-1]) == (count, first, last)
+
+
 def test_experiment_telemetry_records_the_complete_nearfield_safety_chain():
     runner = (
         PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"

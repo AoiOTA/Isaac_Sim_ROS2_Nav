@@ -30,6 +30,8 @@ DYNAMIC_MOTIONS = frozenset(
     {
         "crossing", "oncoming", "same_direction_slow", "local_bypass",
         "temporary_block", "g2_g3_exit", "g5_g1_crossing", "custom",
+        "explicit_collision", "near_no_collision", "low_speed_brush",
+        "dynamic_crossing",
     }
 )
 DYNAMIC_GEOMETRY_TOLERANCE_M = 1.0e-4
@@ -702,6 +704,7 @@ def validate_dynamic_runtime_contract(
     runtime_config_hash: str,
     runtime_obstacle_ids: tuple[str, ...],
     expected_config_hash: str | None,
+    compare_config_hash: bool = True,
 ) -> None:
     """Verify the Isaac process is running the physical obstacle set claimed."""
     if scenario.scenario_type == "static":
@@ -715,7 +718,9 @@ def validate_dynamic_runtime_contract(
             raise ConfigurationError(
                 "static physical-obstacle scenario requires Isaac --dynamic-obstacles"
             )
-        if not expected_config_hash or runtime_config_hash != expected_config_hash:
+        if compare_config_hash and (
+            not expected_config_hash or runtime_config_hash != expected_config_hash
+        ):
             raise ConfigurationError(
                 "Isaac static obstacle configuration hash does not match the scenario"
             )
@@ -735,7 +740,9 @@ def validate_dynamic_runtime_contract(
         raise ConfigurationError(
             "dynamic scenario requires Isaac --dynamic-obstacles"
         )
-    if not expected_config_hash or runtime_config_hash != expected_config_hash:
+    if compare_config_hash and (
+        not expected_config_hash or runtime_config_hash != expected_config_hash
+    ):
         raise ConfigurationError(
             "Isaac dynamic obstacle configuration hash does not match the "
             "scenario"

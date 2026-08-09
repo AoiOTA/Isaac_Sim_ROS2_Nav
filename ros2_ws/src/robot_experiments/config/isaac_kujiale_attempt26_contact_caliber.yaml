@@ -1,0 +1,75 @@
+schema_version: 1
+scenario:
+  id: isaac_kujiale_attempt26_contact_caliber
+  type: dynamic
+  spawn_pose_name: long_route_start_g1
+  map_version: warehouse_new
+  posegraph_version: warehouse_new
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_params.yaml
+    dynamic_obstacles: ../../../../isaac_sim/configs/experiments/attempt26_contact_caliber.yaml
+  simulation:
+    physics_dt: 0.016666666666666666
+    rtf: 1.0
+  runs:
+    matrix:
+    - {seed: 32601, case_id: explicit_collision, variant_id: v1, condition_id: attempt26_contact_caliber}
+    - {seed: 32602, case_id: explicit_collision, variant_id: v2, condition_id: attempt26_contact_caliber}
+    - {seed: 32603, case_id: explicit_collision, variant_id: v3, condition_id: attempt26_contact_caliber}
+    - {seed: 32604, case_id: explicit_collision, variant_id: v4, condition_id: attempt26_contact_caliber}
+    - {seed: 32605, case_id: explicit_collision, variant_id: v5, condition_id: attempt26_contact_caliber}
+    - {seed: 32606, case_id: near_no_collision, variant_id: v1, condition_id: attempt26_contact_caliber}
+    - {seed: 32607, case_id: near_no_collision, variant_id: v2, condition_id: attempt26_contact_caliber}
+    - {seed: 32608, case_id: near_no_collision, variant_id: v3, condition_id: attempt26_contact_caliber}
+    - {seed: 32609, case_id: near_no_collision, variant_id: v4, condition_id: attempt26_contact_caliber}
+    - {seed: 32610, case_id: near_no_collision, variant_id: v5, condition_id: attempt26_contact_caliber}
+    - {seed: 32611, case_id: low_speed_brush, variant_id: v1, condition_id: attempt26_contact_caliber}
+    - {seed: 32612, case_id: low_speed_brush, variant_id: v2, condition_id: attempt26_contact_caliber}
+    - {seed: 32613, case_id: low_speed_brush, variant_id: v3, condition_id: attempt26_contact_caliber}
+    - {seed: 32614, case_id: low_speed_brush, variant_id: v4, condition_id: attempt26_contact_caliber}
+    - {seed: 32615, case_id: low_speed_brush, variant_id: v5, condition_id: attempt26_contact_caliber}
+    - {seed: 32616, case_id: dynamic_crossing, variant_id: v1, condition_id: attempt26_contact_caliber}
+    - {seed: 32617, case_id: dynamic_crossing, variant_id: v2, condition_id: attempt26_contact_caliber}
+    - {seed: 32618, case_id: dynamic_crossing, variant_id: v3, condition_id: attempt26_contact_caliber}
+    - {seed: 32619, case_id: dynamic_crossing, variant_id: v4, condition_id: attempt26_contact_caliber}
+    - {seed: 32620, case_id: dynamic_crossing, variant_id: v5, condition_id: attempt26_contact_caliber}
+    timeout_sec: 120.0
+    leg_timeout_sec: 90.0
+  goal:
+    frame_id: map
+    position: [0.80, -3.30]
+    yaw_deg: 45.0
+    require_orientation: true
+  route:
+  - id: G2
+    frame_id: map
+    position: [0.45, -3.80]
+    yaw_deg: 90.0
+    require_orientation: true
+  - id: G3
+    frame_id: map
+    position: [0.80, -3.30]
+    yaw_deg: 45.0
+    require_orientation: true
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 20.0
+    require_safety_observations: true
+    minimum_ground_truth_path_length_m: 0.50
+    minimum_reverse_distance_m: 0.0
+    maximum_reverse_distance_fraction: 1.0
+    minimum_curved_distance_fraction: 0.0
+    maximum_stopped_time_fraction: 1.0
+  obstacles:
+    layout_id: attempt26_contact_caliber_v1
+    static: []
+    trajectories:
+    - {id: attempt26_explicit_collision_actor, trigger_group: G2, motion: explicit_collision, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.45, -4.70]}, {time_sec: 3.0, position: [0.45, -5.60]}]}
+    - {id: attempt26_near_no_collision_actor, trigger_group: G2, motion: near_no_collision, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.95, -4.70]}, {time_sec: 3.0, position: [0.95, -5.60]}]}
+    - {id: attempt26_low_speed_brush_actor, trigger_group: G2, motion: low_speed_brush, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [0.855, -4.70]}, {time_sec: 9.0, position: [0.855, -5.60]}]}
+    - {id: attempt26_dynamic_crossing_actor, trigger_group: G2, motion: dynamic_crossing, shape: box, repeat: false, dimensions: [0.40, 0.40], waypoints: [{time_sec: 0.0, position: [-0.20, -4.90]}, {time_sec: 3.0, position: [1.10, -4.90]}]}

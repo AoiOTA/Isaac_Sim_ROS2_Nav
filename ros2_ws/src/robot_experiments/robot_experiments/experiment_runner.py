@@ -281,11 +281,32 @@ def _sample_from_odometry(message: Odometry) -> OdometrySample | None:
     return OdometrySample(*values, received_at=time.monotonic())
 
 
+def _without_integrity_fields(value: Any) -> Any:
+    """Remove legacy integrity fields before writing simple research evidence."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _without_integrity_fields(child)
+            for key, child in value.items()
+            if str(key).lower() not in {"sha", "sha256", "hash", "checksum", "digest"}
+            and not str(key).lower().endswith(
+                ("_sha", "_sha256", "_hash", "_checksum", "_digest", "_hashes")
+            )
+        }
+    if isinstance(value, list):
+        return [_without_integrity_fields(child) for child in value]
+    return value
+
+
 class ExperimentRunner(Node):
     """Sequential runner; ground truth is sampled but never republished or controlled from."""
 
     def __init__(self) -> None:
         super().__init__("experiment_runner")
+        self._simple_research_evidence = _boolean_parameter(
+            self.declare_parameter("simple_research_evidence", False).value,
+            "simple_research_evidence",
+        )
         scenario_file = str(self.declare_parameter("scenario_file", "").value).strip()
         if not scenario_file:
             raise ConfigurationError("scenario_file is required")
@@ -338,12 +359,22 @@ class ExperimentRunner(Node):
             if nav2_override
             else self._scenario.resolve_path(self._scenario.nav2_config_file)
         )
-        self._robot_config_hash = configuration_sha256(robot_config)
+        self._robot_config_hash = (
+            None if self._simple_research_evidence else configuration_sha256(robot_config)
+        )
         self._robot_footprint = load_robot_footprint(robot_config)
-        self._nav2_config_hash = configuration_sha256(nav2_config)
+        self._nav2_config_hash = (
+            None if self._simple_research_evidence else configuration_sha256(nav2_config)
+        )
         self._workspace_root = Path(__file__).resolve().parents[4]
-        self._provenance = _campaign_provenance(
-            self._workspace_root, self._scenario.map_version, self._scenario.posegraph_version
+        self._provenance = (
+            {}
+            if self._simple_research_evidence
+            else _campaign_provenance(
+                self._workspace_root,
+                self._scenario.map_version,
+                self._scenario.posegraph_version,
+            )
         )
         self._dynamic_config_hash = None
         if self._scenario.dynamic_config_file is not None:
@@ -353,7 +384,8 @@ class ExperimentRunner(Node):
             validate_dynamic_physical_contract(
                 self._scenario, self._spawn_pose, dynamic_config
             )
-            self._dynamic_config_hash = configuration_sha256(dynamic_config)
+            if not self._simple_research_evidence:
+                self._dynamic_config_hash = configuration_sha256(dynamic_config)
         self._appearance_config_hash: str | None = None
         if self._scenario.appearance_config_file is not None:
             appearance_config = self._scenario.resolve_path(
@@ -363,7 +395,8 @@ class ExperimentRunner(Node):
                 raise ConfigurationError(
                     f"appearance configuration does not exist: {appearance_config}"
                 )
-            self._appearance_config_hash = configuration_sha256(appearance_config)
+            if not self._simple_research_evidence:
+                self._appearance_config_hash = configuration_sha256(appearance_config)
         self._optimal_reference: Mapping[str, Any] | None = None
         self._optimal_reference_hash: str | None = None
         if self._scenario.optimal_reference_file is not None:
@@ -384,7 +417,8 @@ class ExperimentRunner(Node):
             ):
                 raise ConfigurationError("optimal reference is incomplete or unconverged")
             self._optimal_reference = reference
-            self._optimal_reference_hash = configuration_sha256(reference_path)
+            if not self._simple_research_evidence:
+                self._optimal_reference_hash = configuration_sha256(reference_path)
 
         self._output_directory = Path(
             str(self.declare_parameter("output_directory", "data/experiment_runs").value)
@@ -708,7 +742,9 @@ class ExperimentRunner(Node):
             ),
         )
         self._tf_buffer = Buffer()
-        self._tf_listener = TransformListener(self._tf_buffer, self, spin_thread=False)
+        self._tf_listener = TransformListener(
+            self._tf_buffer, None, spin_thread=True
+        )
         self._dynamic_runtime_contract: dict[str, Any] = {
             "verified": False,
         }
@@ -743,7 +779,6 @@ class ExperimentRunner(Node):
         self._collision_monitor_locked = False
         self._tf_ever_available = False
         self._last_tf_stamp_s: float | None = None
-        self._last_tf_ok_at: float | None = None
         self._tf_interrupted = False
         self._leg_results: list[dict[str, Any]] = []
         self._obstacle_events: list[dict[str, Any]] = []
@@ -989,10 +1024,14 @@ class ExperimentRunner(Node):
             self._tf_ever_available = True
             if self._last_tf_stamp_s != stamp_s:
                 self._last_tf_stamp_s = stamp_s
-                self._last_tf_ok_at = now
         else:
-            if self._tf_ever_available and self._last_tf_ok_at is not None:
-                if now - self._last_tf_ok_at >= self._tf_gap_tolerance_sec:
+            clock_s = self._clock_seconds()
+            if (
+                self._tf_ever_available
+                and self._last_tf_stamp_s is not None
+                and clock_s is not None
+            ):
+                if clock_s - self._last_tf_stamp_s >= self._tf_gap_tolerance_sec:
                     self._tf_interrupted = True
                     self._localization_lost = True
 
@@ -1063,8 +1102,11 @@ class ExperimentRunner(Node):
             if not self._wait_until(
                 lambda: self._appearance_state is not None
                 and self._appearance_state.get("profile_id") == appearance_profile_id
-                and self._appearance_state.get("config_sha256")
-                == self._appearance_config_hash,
+                and (
+                    self._simple_research_evidence
+                    or self._appearance_state.get("config_sha256")
+                    == self._appearance_config_hash
+                ),
                 self._service_timeout_sec,
             ):
                 raise TimeoutError(
@@ -1079,12 +1121,13 @@ class ExperimentRunner(Node):
         ):
             self._raise_if_shutdown()
             raise RuntimeError("Isaac appearance parameter services are unavailable")
-        names = [
-            "appearance_config_sha256",
-            "appearance_inventory_sha256",
-            "appearance_light_count",
-            "appearance_material_color_input_count",
-        ]
+        names = ["appearance_light_count", "appearance_material_color_input_count"]
+        if not self._simple_research_evidence:
+            names = [
+                "appearance_config_sha256",
+                "appearance_inventory_sha256",
+                *names,
+            ]
         future = self._isaac_parameter_client.get_parameters(names)
         if not self._wait_future(
             future, time.monotonic() + self._service_timeout_sec
@@ -1093,17 +1136,19 @@ class ExperimentRunner(Node):
         response = future.result()
         if response is None or len(response.values) != len(names):
             raise RuntimeError("Isaac returned an incomplete appearance contract")
-        config_hash, inventory_hash, light_count, material_count = (
-            parameter_value_to_python(value) for value in response.values
-        )
-        if config_hash != self._appearance_config_hash:
-            raise RuntimeError(
-                "Isaac appearance configuration hash does not match the scenario"
-            )
+        values = [parameter_value_to_python(value) for value in response.values]
+        if self._simple_research_evidence:
+            light_count, material_count = values
+        else:
+            config_hash, inventory_hash, light_count, material_count = values
+            if config_hash != self._appearance_config_hash:
+                raise RuntimeError(
+                    "Isaac appearance configuration hash does not match the scenario"
+                )
+            if not isinstance(inventory_hash, str) or len(inventory_hash) != 64:
+                raise RuntimeError("Isaac appearance inventory contract is invalid")
         if (
-            not isinstance(inventory_hash, str)
-            or len(inventory_hash) != 64
-            or not isinstance(light_count, int)
+            not isinstance(light_count, int)
             or not isinstance(material_count, int)
             or light_count <= 0
             or material_count <= 0
@@ -1111,18 +1156,77 @@ class ExperimentRunner(Node):
             raise RuntimeError("Isaac appearance inventory contract is invalid")
         self._appearance_runtime_contract = {
             "verified": True,
-            "config_sha256": config_hash,
-            "inventory_sha256": inventory_hash,
             "light_count": light_count,
             "material_color_input_count": material_count,
         }
+        if not self._simple_research_evidence:
+            self._appearance_runtime_contract.update({
+                "config_sha256": config_hash,
+                "inventory_sha256": inventory_hash,
+            })
 
     def _verify_dynamic_runtime_contract(self) -> None:
-        names = [
-            "dynamic_obstacles_enabled",
-            "dynamic_obstacles_config_sha256",
-            "dynamic_obstacle_ids",
-        ]
+        names = ["dynamic_obstacles_enabled", "dynamic_obstacle_ids"]
+        if not self._simple_research_evidence:
+            names.insert(1, "dynamic_obstacles_config_sha256")
+        if self._simple_research_evidence:
+            if not self._isaac_parameter_client.wait_for_services(
+                timeout_sec=self._service_timeout_sec
+            ):
+                raise TimeoutError(
+                    "Isaac dynamic obstacle parameter service is unavailable"
+                )
+            future = self._isaac_parameter_client.get_parameters(names)
+            if not self._wait_future(
+                future, time.monotonic() + self._service_timeout_sec
+            ):
+                raise TimeoutError(
+                    "reading the Isaac dynamic obstacle contract timed out"
+                )
+            response = future.result()
+        else:
+            response = self._read_dynamic_runtime_contract_with_legacy_retry(names)
+        if response is None or len(response.values) != len(names):
+            raise RuntimeError(
+                "Isaac returned an incomplete dynamic obstacle contract"
+            )
+        values = [parameter_value_to_python(value) for value in response.values]
+        if self._simple_research_evidence:
+            enabled, obstacle_ids = values
+            config_hash = ""
+        else:
+            enabled, config_hash, obstacle_ids = values
+        if not isinstance(enabled, bool):
+            raise RuntimeError("Isaac dynamic_obstacles_enabled is not boolean")
+        if not self._simple_research_evidence and (
+            not isinstance(config_hash, str) or not config_hash
+        ):
+            raise RuntimeError(
+                "Isaac dynamic_obstacles_config_sha256 is invalid"
+            )
+        if (
+            not isinstance(obstacle_ids, list)
+            or not all(isinstance(value, str) for value in obstacle_ids)
+        ):
+            raise RuntimeError("Isaac dynamic_obstacle_ids is invalid")
+        runtime_ids = tuple(obstacle_ids)
+        validate_dynamic_runtime_contract(
+            self._scenario,
+            runtime_enabled=enabled,
+            runtime_config_hash=config_hash,
+            runtime_obstacle_ids=runtime_ids,
+            expected_config_hash=self._dynamic_config_hash,
+            compare_config_hash=not self._simple_research_evidence,
+        )
+        self._dynamic_runtime_contract = {
+            "verified": True,
+            "enabled": enabled,
+            "obstacle_ids": list(runtime_ids),
+        }
+        if not self._simple_research_evidence:
+            self._dynamic_runtime_contract["config_sha256"] = config_hash
+
+    def _read_dynamic_runtime_contract_with_legacy_retry(self, names):
         # Isaac may advertise its parameter services before the first request
         # can be serviced after a cold simulation start.  Retry the read-only
         # verification before any reset or goal is issued; this is not a
@@ -1146,38 +1250,7 @@ class ExperimentRunner(Node):
         if response is None:
             self._raise_if_shutdown()
             raise TimeoutError("reading the Isaac dynamic obstacle contract timed out")
-        if response is None or len(response.values) != len(names):
-            raise RuntimeError(
-                "Isaac returned an incomplete dynamic obstacle contract"
-            )
-        enabled, config_hash, obstacle_ids = (
-            parameter_value_to_python(value) for value in response.values
-        )
-        if not isinstance(enabled, bool):
-            raise RuntimeError("Isaac dynamic_obstacles_enabled is not boolean")
-        if not isinstance(config_hash, str) or not config_hash:
-            raise RuntimeError(
-                "Isaac dynamic_obstacles_config_sha256 is invalid"
-            )
-        if (
-            not isinstance(obstacle_ids, list)
-            or not all(isinstance(value, str) for value in obstacle_ids)
-        ):
-            raise RuntimeError("Isaac dynamic_obstacle_ids is invalid")
-        runtime_ids = tuple(obstacle_ids)
-        validate_dynamic_runtime_contract(
-            self._scenario,
-            runtime_enabled=enabled,
-            runtime_config_hash=config_hash,
-            runtime_obstacle_ids=runtime_ids,
-            expected_config_hash=self._dynamic_config_hash,
-        )
-        self._dynamic_runtime_contract = {
-            "verified": True,
-            "enabled": enabled,
-            "config_sha256": config_hash,
-            "obstacle_ids": list(runtime_ids),
-        }
+        return response
 
     def _verify_collision_monitor_active(self) -> None:
         """Require a stable ACTIVE monitor while tolerating lifecycle churn.
@@ -2487,8 +2560,11 @@ class ExperimentRunner(Node):
                 self._appearance_runtime_contract.get("verified")
                 and self._appearance_state is not None
                 and self._appearance_state.get("profile_id") == requested_appearance
-                and self._appearance_state.get("config_sha256")
-                == self._appearance_config_hash
+                and (
+                    self._simple_research_evidence
+                    or self._appearance_state.get("config_sha256")
+                    == self._appearance_config_hash
+                )
             )
         )
         if not appearance_ready:
@@ -2532,6 +2608,10 @@ class ExperimentRunner(Node):
             "random_seed": seed,
             "map_version": self._scenario.map_version,
             "posegraph_version": self._scenario.posegraph_version,
+            "robot_footprint_xy_m": [
+                [float(point[0]), float(point[1])]
+                for point in self._robot_footprint
+            ],
             "provenance": dict(self._provenance),
             "robot_config_hash": self._robot_config_hash,
             "nav2_config_hash": self._nav2_config_hash,
@@ -2810,11 +2890,14 @@ class ExperimentRunner(Node):
             "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan",
             "/optimal_trajectory", "/trajectories",
             "/local_costmap/costmap_raw", "/global_costmap/costmap_raw",
-            "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
+            "/global_costmap/costmap",
+            "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety", "/imu/data",
             "/camera/front/image_raw", "/camera/front/camera_info", "/camera/front/depth/image_raw", "/camera/front/depth/points",
             "/experiment/paired_appearance/baseline/image_raw", "/experiment/paired_appearance/variant/image_raw", "/experiment/paired_appearance/state",
             "/simulation/collision", "/simulation/collision_diagnostics", "/simulation/reset_event", "/initialpose",
-            "/bio_nav/module2/planning_prior", "/diagnostics",
+            "/bio_nav/module2/planning_prior", "/bio_nav/attempt26/a17/events", "/diagnostics",
+            "/global_costmap/reachability_observer_input", "/bio_nav/module3/reachability_graph",
+            "/global_costmap/reachability_low_obstacle_density",
             "/experiment/obstacles/state", "/experiment/appearance/state", "/collision_monitor_state",
         ]
         log = (root / "bag_record.log").open("wb")
@@ -2823,6 +2906,19 @@ class ExperimentRunner(Node):
                 [ros2, "bag", "record", "--use-sim-time", "--storage", "mcap", "--storage-preset-profile", "zstd_fast", "--output", str(root / "telemetry"), *topics],
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
             )
+            log.close()
+            ready_line = "Subscribed to topic '/ground_truth/odom'"
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if ready_line in (root / "bag_record.log").read_text(
+                    encoding="utf-8", errors="replace"
+                ):
+                    break
+                if self._bag_process.poll() is not None:
+                    raise ConfigurationError("rosbag recorder exited before topic discovery")
+                time.sleep(0.1)
+            else:
+                raise ConfigurationError("rosbag recorder topic discovery timed out")
         except OSError:
             log.close()
         return root
@@ -2919,7 +3015,6 @@ class ExperimentRunner(Node):
                 "static_geometric_contact", {}
             ),
             "data_complete": data_complete,
-            "checksums_verified": False,
             "evidence": {
                 "mcap_zstd": bag_complete,
                 "mcap_required": self._record_bag,
@@ -2941,6 +3036,8 @@ class ExperimentRunner(Node):
             "legs": legs,
         }
         (root / "run_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        if self._simple_research_evidence:
+            return
         checksums = []
         for path in sorted(item for item in root.rglob("*") if item.is_file() and item.name != "checksums.sha256"):
             checksums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
@@ -3153,10 +3250,13 @@ class ExperimentRunner(Node):
             manifest["dynamic_selection"] = {
                 "case_id": selection.case_id, "variant_id": selection.variant_id,
             }
+            if self._simple_research_evidence:
+                manifest = _without_integrity_fields(manifest)
             if self._record_evidence:
                 timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
                 stem = f"{self._scenario.scenario_id}-run-{run_index:04d}-seed-{seed}-{timestamp}"
-                write_run_report(manifest, self._output_directory, stem)
+                if not self._simple_research_evidence:
+                    write_run_report(manifest, self._output_directory, stem)
                 if root is None:
                     root = self._begin_run_evidence(run_index, seed)
                 self._write_run_evidence(manifest, seed, run_index, root, bag_complete)

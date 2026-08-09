@@ -28,6 +28,7 @@ def generate_launch_description():
             DeclareLaunchArgument("output_directory", default_value="data/experiment_runs"),
             DeclareLaunchArgument("record_evidence", default_value="true"),
             DeclareLaunchArgument("record_bag", default_value="true"),
+            DeclareLaunchArgument("simple_research_evidence", default_value="false"),
             DeclareLaunchArgument("authorization_only", default_value="false"),
             DeclareLaunchArgument("resume", default_value="false"),
             DeclareLaunchArgument("require_successful_resume", default_value="false"),
@@ -65,6 +66,9 @@ def generate_launch_description():
                         "output_directory": LaunchConfiguration("output_directory"),
                         "record_evidence": LaunchConfiguration("record_evidence"),
                         "record_bag": LaunchConfiguration("record_bag"),
+                        "simple_research_evidence": ParameterValue(
+                            LaunchConfiguration("simple_research_evidence"), value_type=bool
+                        ),
                         "authorization_only": ParameterValue(
                             LaunchConfiguration("authorization_only"), value_type=bool
                         ),

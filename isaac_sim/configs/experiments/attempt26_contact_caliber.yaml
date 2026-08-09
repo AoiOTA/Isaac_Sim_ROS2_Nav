@@ -1,0 +1,78 @@
+schema_version: 4
+seed: 32601
+enabled: true
+coordinate_frame: map
+spawn_pose_name: long_route_start_g1
+safety:
+  guard_clearance_m: 0.0001
+  min_clearance_m: 0.00001
+cases:
+  explicit_collision:
+    trigger_group: G2
+    gate: {axis: y, threshold: -5.30, direction: positive, min_speed_mps: 0.01, x_range: [0.0, 0.9]}
+    obstacle:
+      id: attempt26_explicit_collision_actor
+      size: [0.40, 0.40, 1.00]
+      mass: 20.0
+      waypoints: [[0.45, -4.70, 0.50], [0.45, -5.60, 0.50]]
+      speed: 0.35
+      max_acceleration: 0.75
+      post_motion: park
+    variants:
+      v1: {seed: 32601, start_delay_sec: 0.00}
+      v2: {seed: 32602, start_delay_sec: 0.02}
+      v3: {seed: 32603, start_delay_sec: 0.04}
+      v4: {seed: 32604, start_delay_sec: 0.06}
+      v5: {seed: 32605, start_delay_sec: 0.08}
+  near_no_collision:
+    trigger_group: G2
+    gate: {axis: y, threshold: -5.30, direction: positive, min_speed_mps: 0.01, x_range: [0.0, 0.9]}
+    obstacle:
+      id: attempt26_near_no_collision_actor
+      size: [0.40, 0.40, 1.00]
+      mass: 20.0
+      waypoints: [[0.95, -4.70, 0.50], [0.95, -5.60, 0.50]]
+      speed: 0.35
+      max_acceleration: 0.75
+      post_motion: park
+    variants:
+      v1: {seed: 32606, start_delay_sec: 0.00}
+      v2: {seed: 32607, start_delay_sec: 0.02}
+      v3: {seed: 32608, start_delay_sec: 0.04}
+      v4: {seed: 32609, start_delay_sec: 0.06}
+      v5: {seed: 32610, start_delay_sec: 0.08}
+  low_speed_brush:
+    trigger_group: G2
+    gate: {axis: y, threshold: -5.30, direction: positive, min_speed_mps: 0.01, x_range: [0.0, 0.9]}
+    obstacle:
+      id: attempt26_low_speed_brush_actor
+      size: [0.40, 0.40, 1.00]
+      mass: 20.0
+      waypoints: [[0.855, -4.70, 0.50], [0.855, -5.60, 0.50]]
+      speed: 0.10
+      max_acceleration: 0.25
+      post_motion: park
+    variants:
+      v1: {seed: 32611, start_delay_sec: 0.00}
+      v2: {seed: 32612, start_delay_sec: 0.02}
+      v3: {seed: 32613, start_delay_sec: 0.04}
+      v4: {seed: 32614, start_delay_sec: 0.06}
+      v5: {seed: 32615, start_delay_sec: 0.08}
+  dynamic_crossing:
+    trigger_group: G2
+    gate: {axis: y, threshold: -5.30, direction: positive, min_speed_mps: 0.01, x_range: [0.0, 0.9]}
+    obstacle:
+      id: attempt26_dynamic_crossing_actor
+      size: [0.40, 0.40, 1.00]
+      mass: 20.0
+      waypoints: [[-0.20, -4.90, 0.50], [1.10, -4.90, 0.50]]
+      speed: 0.45
+      max_acceleration: 0.75
+      post_motion: park
+    variants:
+      v1: {seed: 32616, start_delay_sec: 0.00}
+      v2: {seed: 32617, start_delay_sec: 0.02}
+      v3: {seed: 32618, start_delay_sec: 0.04}
+      v4: {seed: 32619, start_delay_sec: 0.06}
+      v5: {seed: 32620, start_delay_sec: 0.08}
+case_sets: {}
