@@ -103,6 +103,7 @@ def test_experiment_telemetry_records_attempt26_complete_sensor_and_planning_top
         "/odom",
         "/ground_truth/odom",
         "/bio_nav/attempt26/a17/events",
+        "/bio_nav/attempt27/a18/events",
         "/global_costmap/reachability_observer_input",
         "/bio_nav/module3/reachability_graph",
         "/global_costmap/reachability_low_obstacle_density",
