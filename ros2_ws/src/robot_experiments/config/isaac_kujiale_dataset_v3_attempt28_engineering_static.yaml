@@ -176,6 +176,166 @@ scenario:
       case_id: static
       variant_id: dataset_v3_v1
       condition_id: attempt28_engineering_static
+    - seed: 34601
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34602
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34603
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34604
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34605
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34606
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34607
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34608
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34609
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34610
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34611
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34612
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34613
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34614
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34615
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34616
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34617
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34618
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34619
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34620
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34621
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34622
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34623
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34624
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34625
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34626
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34627
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34628
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34629
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34630
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34631
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34632
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34633
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34634
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34635
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34636
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34637
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34638
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34639
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34640
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal:

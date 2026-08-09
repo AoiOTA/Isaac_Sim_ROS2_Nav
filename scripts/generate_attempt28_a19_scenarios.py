@@ -16,7 +16,13 @@ BASE = {
     "dynamic": CONFIG / "isaac_kujiale_dataset_v3_attempt23_global_shadow_dynamic.yaml",
 }
 SEEDS = {
-    ("engineering", "static"): range(34001, 34041),
+    # The first static Engineering pool was consumed by attributable repair
+    # iterations.  Keep qualification ranges untouched and add a disjoint,
+    # non-qualification reserve instead of reusing evidence or borrowing a
+    # Diagnostic/Smoke/Calibration/Heldout/Formal seed.
+    ("engineering", "static"): (
+        *range(34001, 34041), *range(34601, 34641)
+    ),
     ("engineering", "dynamic"): range(34051, 34091),
     ("diagnostic", "static"): range(34101, 34107),
     ("diagnostic", "dynamic"): range(34151, 34157),
