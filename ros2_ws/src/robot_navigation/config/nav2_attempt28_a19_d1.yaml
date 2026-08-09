@@ -27,6 +27,17 @@ controller_server:
       # when a later leg passes close to the robot. Restrict pruning to the
       # next one or two grid poses so progress remains path-order preserving.
       max_robot_pose_search_dist: 0.10
+      # A bounded reverse correction is required when the robot has already
+      # turned more than 90 degrees away from the next tight portal leg. In
+      # this mode PathAngleCritic may align the chassis opposite the path and
+      # follow that leg in reverse instead of demanding a long in-place turn.
+      PathAngleCritic:
+        mode: 1
+      # Do not simultaneously penalize the reverse solution selected above.
+      # Reverse speed remains physically bounded by the base vx_min=-0.15 m/s;
+      # all footprint collision critics and the A19 CostPolicy stay active.
+      PreferForwardCritic:
+        enabled: false
       # Keep D1's candidate bank concentrated on continuous portal-following
       # controls.  These values match the validated stable envelope while the
       # active dynamic profile still supplies 30 x 0.0667 s rollouts at 15 Hz.
