@@ -1169,23 +1169,13 @@ class ExperimentRunner(Node):
         names = ["dynamic_obstacles_enabled", "dynamic_obstacle_ids"]
         if not self._simple_research_evidence:
             names.insert(1, "dynamic_obstacles_config_sha256")
-        if self._simple_research_evidence:
-            if not self._isaac_parameter_client.wait_for_services(
-                timeout_sec=self._service_timeout_sec
-            ):
-                raise TimeoutError(
-                    "Isaac dynamic obstacle parameter service is unavailable"
-                )
-            future = self._isaac_parameter_client.get_parameters(names)
-            if not self._wait_future(
-                future, time.monotonic() + self._service_timeout_sec
-            ):
-                raise TimeoutError(
-                    "reading the Isaac dynamic obstacle contract timed out"
-                )
-            response = future.result()
-        else:
-            response = self._read_dynamic_runtime_contract_with_legacy_retry(names)
+        # A persistent Isaac process serves multiple campaign runs.  A newly
+        # created recorder can discover its parameter services while the first
+        # request is still racing DDS endpoint matching, regardless of whether
+        # the run requests full or simple evidence.  Keep the same bounded,
+        # pre-goal read-only retry in both modes; only the requested fields and
+        # subsequent hash comparison differ.
+        response = self._read_dynamic_runtime_contract_with_legacy_retry(names)
         if response is None or len(response.values) != len(names):
             raise RuntimeError(
                 "Isaac returned an incomplete dynamic obstacle contract"

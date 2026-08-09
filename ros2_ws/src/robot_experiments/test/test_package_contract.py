@@ -397,6 +397,17 @@ def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
     assert "odom.stamp_s > sample_stamp_barrier_s" in source
 
 
+def test_simple_evidence_uses_bounded_dynamic_contract_retry_too():
+    source = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
+    method = source.split("    def _verify_dynamic_runtime_contract", 1)[1].split(
+        "    def _read_dynamic_runtime_contract_with_legacy_retry", 1
+    )[0]
+    assert method.count(
+        "response = self._read_dynamic_runtime_contract_with_legacy_retry(names)"
+    ) == 1
+    assert "self._isaac_parameter_client.get_parameters(names)" not in method
+
+
 def test_initial_pose_contract_waits_for_clock_and_uses_reliable_qos():
     source = (PACKAGE_ROOT / "robot_experiments" / "initial_pose_publisher.py").read_text()
     assert '"/clock"' in source
