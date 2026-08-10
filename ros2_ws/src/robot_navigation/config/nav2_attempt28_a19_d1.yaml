@@ -57,14 +57,14 @@ controller_server:
       # intent is now supplied by the mode-2 path orientation, while this small
       # term continues to break otherwise equal forward choices.
       PreferForwardCritic:
-        # The mode-2 PathAngle critic already binds motion direction to the
-        # fully audited path orientations. In v82 portal-168, retaining this
-        # opposing forward prior produced 453 positive commands during the
-        # required reverse approach and consumed the route deadline. Disable
-        # the redundant prior; collision, CostCritic and velocity bounds are
-        # unchanged.
-        enabled: false
-        cost_weight: 2.0
+        # Mode-2 PathAngle binds motion direction to the audited orientation,
+        # but v83 showed that removing the forward basin entirely makes
+        # portal-152 abort. Keep the tie-break at half the v82 weight: enough
+        # to preserve the portal-152 basin while reducing its opposition to
+        # portal-168's required reverse path. Collision, CostCritic and
+        # velocity bounds remain unchanged.
+        enabled: true
+        cost_weight: 1.0
         threshold_to_consider: 0.20
       # Keep D1's candidate bank concentrated on continuous portal-following
       # controls.  These values match the validated stable envelope while the
