@@ -6,7 +6,7 @@ planner_server:
 
 "/local_costmap/local_costmap":
   ros__parameters:
-    width: 4
+    width: 5
     height: 5
 
 controller_server:

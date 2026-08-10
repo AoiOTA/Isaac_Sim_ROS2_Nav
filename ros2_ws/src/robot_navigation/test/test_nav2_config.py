@@ -291,7 +291,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
         candidate = _attempt28_candidate(name)
         local = candidate[
             '/local_costmap/local_costmap']['ros__parameters']
-        assert local['width'] == 4
+        assert local['width'] == 5
         assert local['height'] == 5
         assert candidate['planner_server']['ros__parameters']['GridBased'][
             'tolerance'] == 0.0

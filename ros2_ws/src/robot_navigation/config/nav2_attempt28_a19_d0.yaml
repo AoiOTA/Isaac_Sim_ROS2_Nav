@@ -8,12 +8,13 @@ planner_server:
 
 # The complete A19 portal slice and padded footprint must be represented by
 # the rolling local costmap before FollowPath is dispatched.  A 4.0 m window
-# clipped the immutable portal-122 slice by 45.5 mm in local Y while the robot
-# was stationary. Nav2 declares window dimensions as integer metres, so keep
-# X at 4 m and extend Y to the next valid size, 5 m.
+# clipped the immutable portal-122 slice by 45.5 mm in local Y, and the later
+# portal-169 slice exceeded the 4 m local X window by 365 mm. Nav2 declares
+# window dimensions as integer metres, so use the next valid 5 m size on both
+# axes for A19 only.
 "/local_costmap/local_costmap":
   ros__parameters:
-    width: 4
+    width: 5
     height: 5
 
 controller_server:

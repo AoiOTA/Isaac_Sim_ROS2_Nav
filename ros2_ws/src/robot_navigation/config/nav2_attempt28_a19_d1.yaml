@@ -10,9 +10,9 @@ planner_server:
 
 "/local_costmap/local_costmap":
   ros__parameters:
-    # Complete-footprint local evidence at portal-122 needs 45.5 mm beyond
-    # the base Y window. Nav2 accepts integer-metre dimensions only.
-    width: 4
+    # Portal-122 needs 45.5 mm beyond the base Y window and portal-169 needs
+    # 365 mm beyond the base X window. Nav2 accepts integer metres only.
+    width: 5
     height: 5
 
 controller_server:
