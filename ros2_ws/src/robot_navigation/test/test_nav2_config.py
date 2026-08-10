@@ -312,7 +312,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
             assert follow_path['PathAngleCritic']['mode'] == 1
             assert follow_path['PreferForwardCritic'] == {
                 'enabled': True,
-                'cost_weight': 2.0,
+                'cost_weight': 6.0,
                 'threshold_to_consider': 0.20,
             }
             assert follow_path['vx_std'] == 0.35

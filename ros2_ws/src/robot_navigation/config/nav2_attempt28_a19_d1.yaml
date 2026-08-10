@@ -35,16 +35,17 @@ controller_server:
       # follow that leg in reverse instead of demanding a long in-place turn.
       PathAngleCritic:
         mode: 1
-      # Keep reverse available, but add only a small forward tie-break while
+      # Keep reverse available, but add a bounded forward tie-break while
       # the robot is more than 0.20 m from the portal terminal.  With mode 1
       # and no directional prior, the forward and reverse rollout basins can
       # receive nearly equal weights at a tight corner; their weighted control
-      # average then collapses toward zero.  Weight 2.0 contributes at most
-      # 0.6 cost for the full bounded -0.15 m/s reverse horizon, far below the
-      # former weight-30 penalty that suppressed required reverse recovery.
+      # average then collapses toward zero.  Weight 2.0 remained seed-sensitive
+      # at portal-152.  Weight 6.0 contributes at most 1.8 cost for the full
+      # bounded -0.15 m/s reverse horizon, still five times below the former
+      # weight-30 penalty that suppressed required reverse recovery.
       PreferForwardCritic:
         enabled: true
-        cost_weight: 2.0
+        cost_weight: 6.0
         threshold_to_consider: 0.20
       # Keep D1's candidate bank concentrated on continuous portal-following
       # controls.  These values match the validated stable envelope while the
