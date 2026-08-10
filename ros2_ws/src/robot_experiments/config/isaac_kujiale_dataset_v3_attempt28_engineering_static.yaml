@@ -336,6 +336,10 @@ scenario:
       case_id: static
       variant_id: dataset_v3_v1
       condition_id: attempt28_engineering_static
+    - seed: 34641
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal:
