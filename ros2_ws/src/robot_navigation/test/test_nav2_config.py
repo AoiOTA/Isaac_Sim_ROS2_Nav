@@ -316,7 +316,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
             assert follow_path['max_robot_pose_search_dist'] == 0.21
             assert follow_path['PathAngleCritic']['mode'] == 2
             assert follow_path['PathAngleCritic'][
-                'threshold_to_consider'] == 0.20
+                'threshold_to_consider'] == checker['xy_goal_tolerance'] == 0.02
             assert follow_path['PreferForwardCritic'] == {
                 'enabled': True,
                 'cost_weight': 1.0,

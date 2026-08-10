@@ -48,13 +48,15 @@ controller_server:
       # Mode 2 consumes those feasible path orientations. Mode 1 only chooses
       # whichever of forward/reverse is angularly closer and therefore cannot
       # distinguish an intended reverse approach from the undesired reverse
-      # basin observed at portal-152. Keep the orientation critic active until
-      # the same 0.20 m terminal band where PreferForward turns off; the base
-      # 0.70 m threshold disabled direction scoring before portal-152's west-
-      # to-north corner and let forward motion carry the robot past the bend.
+      # basin observed at portal-152.  v95 then proved that the former 0.20 m
+      # terminal threshold also disabled the only audited reverse-direction
+      # signal before portal-168 completed its last 1 cm of crossing margin.
+      # Keep mode-2 direction scoring active until the A19-only 0.02 m goal
+      # tolerance.  PreferForward still turns off at 0.20 m, so the terminal
+      # band follows the audited path direction without a competing prior.
       PathAngleCritic:
         mode: 2
-        threshold_to_consider: 0.20
+        threshold_to_consider: 0.02
       # Keep a small forward tie-break while allowing an explicitly audited
       # long reverse approach.  Weight 6.0 was introduced while PathAngle used
       # mode 1; after mode 2 began consuming the audited path orientations it
