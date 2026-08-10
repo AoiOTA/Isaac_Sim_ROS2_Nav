@@ -66,6 +66,13 @@ controller_server:
       vx_std: 0.35
       wz_std: 0.75
       vx_max: 0.75
+      # v77 completed 15/16 audited crossings without a controller abort but
+      # spent 115 portal-168 command samples pinned at the inherited
+      # -0.15 m/s floor.  Match the already-frozen velocity_smoother reverse
+      # limit so an explicitly oriented, fully audited reverse path can clear
+      # the portal inside the leg budget.  Forward speed and every collision
+      # boundary remain unchanged.
+      vx_min: -0.25
       wz_max: 1.35
       ax_max: 1.25
       ax_min: -1.10

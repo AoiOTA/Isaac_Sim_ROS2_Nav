@@ -324,6 +324,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
             assert follow_path['vx_std'] == 0.35
             assert follow_path['wz_std'] == 0.75
             assert follow_path['vx_max'] == 0.75
+            assert follow_path['vx_min'] == -0.25
             assert follow_path['wz_max'] == 1.35
             assert follow_path['ax_max'] == 1.25
             assert follow_path['ax_min'] == -1.10
