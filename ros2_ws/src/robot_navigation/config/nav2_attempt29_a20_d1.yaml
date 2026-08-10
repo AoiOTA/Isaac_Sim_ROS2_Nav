@@ -1,0 +1,75 @@
+# Attempt29 A20 diagnostic D1 delta.  Same dynamic sensor / STVL base and the
+# same validated bounded MPPI sampling envelope as Attempt28 A19 D1, but the
+# A19 failure families are removed structurally: the direction-agnostic
+# TubeProgressCritic replaces both PathAngleCritic (whose 0.20 m / 0.02 m
+# threshold_to_consider created a terminal dead band) and PreferForwardCritic
+# (whose forward bias fought audited reverse approaches), and the
+# BoxGoalChecker replaces the point-tolerance SimpleGoalChecker with a
+# goal-frame box (tight longitudinal, free lateral, free yaw).
+planner_server:
+  ros__parameters:
+    GridBased:
+      tolerance: 0.0
+
+"/local_costmap/local_costmap":
+  ros__parameters:
+    # Portal-122 needs 45.5 mm beyond the base Y window and portal-169 needs
+    # 365 mm beyond the base X window. Nav2 accepts integer metres only.
+    width: 5
+    height: 5
+
+controller_server:
+  ros__parameters:
+    failure_tolerance: 0.6
+    publish_zero_velocity: true
+    controller_plugins: [FollowPath]
+    progress_checker_plugins: [progress_checker]
+    goal_checker_plugins: [goal_checker, a20_crossing_goal_checker]
+    a20_crossing_goal_checker:
+      plugin: bio_nav_a20_nav2_plugins::BoxGoalChecker
+      stateful: false
+      # Tight along the portal crossing direction, free across it, yaw free.
+      xy_goal_tolerance_longitudinal: 0.05
+      xy_goal_tolerance_lateral: 0.15
+      yaw_goal_tolerance: 3.141592654
+    FollowPath:
+      # The sampled-trajectory MarkerArray and duplicate optimal-path stream
+      # are visualization-only (see Attempt28 note); the optimizer, critics,
+      # commands and controller-cycle trace are unchanged.
+      visualize: false
+      # A20 critic set: PathAngleCritic and PreferForwardCritic are dropped;
+      # their directional semantics are superseded by the direction-agnostic
+      # TubeProgressCritic, which stays active to the very end of the path
+      # (no threshold_to_consider dead band, no forward bias).
+      critics: [ConstraintCritic, CostCritic, GoalCritic, GoalAngleCritic,
+        PathAlignCritic, PathFollowCritic, TubeProgressCritic]
+      TubeProgressCritic:
+        enabled: true
+        cost_weight: 6.0
+      # A19 paths are sampled on a 0.05 m grid and may contain tight portal
+      # corners. The 0.21 m bound includes the measured four-pose recovery
+      # distance at portal-152 while excluding the measured five-pose
+      # nonlocal corner jump in the same controller cycle.
+      max_robot_pose_search_dist: 0.21
+      # Keep D1's candidate bank concentrated on continuous portal-following
+      # controls.  These values match the validated stable envelope while the
+      # active dynamic profile still supplies 30 x 0.0667 s rollouts at 15 Hz.
+      vx_std: 0.35
+      wz_std: 0.75
+      vx_max: 0.75
+      # Match the frozen velocity_smoother reverse limit so an explicitly
+      # oriented, fully audited reverse path can clear the portal inside the
+      # leg budget.  Forward speed and every collision boundary unchanged.
+      vx_min: -0.25
+      wz_max: 1.35
+      ax_max: 1.25
+      ax_min: -1.10
+      az_max: 3.50
+      gamma: 0.015
+      CostCritic:
+        # A19 independently hard-rejects 254/255 footprint intersections.
+        # Cost 253 remains a soft ranking signal; using the dynamic base's
+        # near_collision_cost=20 made every pose of a valid narrow-portal path
+        # critical and caused controller oscillation instead of traversal.
+        near_collision_cost: 253
+        cost_weight: 1.35

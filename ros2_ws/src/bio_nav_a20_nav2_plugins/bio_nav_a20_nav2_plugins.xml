@@ -1,0 +1,21 @@
+<class_libraries>
+  <library path="bio_nav_a20_nav2_plugins">
+    <class
+      type="bio_nav_a20_nav2_plugins::TubeProgressCritic"
+      base_class_type="mppi::critics::CriticFunction">
+      <description>
+        Direction-agnostic path-progress critic: scores each trajectory by
+        the fraction of the reference path arc length it covers, with no
+        terminal dead band and no forward-velocity bias.
+      </description>
+    </class>
+    <class
+      type="bio_nav_a20_nav2_plugins::BoxGoalChecker"
+      base_class_type="nav2_core::GoalChecker">
+      <description>
+        Goal-frame box goal checker with separate longitudinal and lateral
+        tolerances and an independent (optionally free) yaw tolerance.
+      </description>
+    </class>
+  </library>
+</class_libraries>
