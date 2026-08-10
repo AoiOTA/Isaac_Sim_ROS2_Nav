@@ -340,6 +340,82 @@ scenario:
       case_id: static
       variant_id: dataset_v3_v1
       condition_id: attempt28_engineering_static
+    - seed: 34642
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34643
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34644
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34645
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34646
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34647
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34648
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34649
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34650
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34651
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34652
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34653
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34654
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34655
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34656
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34657
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34658
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34659
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
+    - seed: 34660
+      case_id: static
+      variant_id: dataset_v3_v1
+      condition_id: attempt28_engineering_static
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal:

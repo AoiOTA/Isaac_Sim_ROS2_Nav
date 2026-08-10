@@ -124,7 +124,7 @@ def test_experiment_telemetry_records_attempt26_complete_sensor_and_planning_top
 def test_attempt28_scenario_seed_domains_are_frozen_and_disjoint():
     expected = {
         ('engineering', 'static'): (
-            list(range(34001, 34041)) + list(range(34601, 34642))
+            list(range(34001, 34041)) + list(range(34601, 34661))
         ),
         ('engineering', 'dynamic'): list(range(34051, 34091)),
         ('diagnostic', 'static'): list(range(34101, 34107)),
