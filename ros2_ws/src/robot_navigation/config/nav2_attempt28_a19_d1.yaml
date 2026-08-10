@@ -25,7 +25,7 @@ controller_server:
     a19_crossing_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
       stateful: false
-      xy_goal_tolerance: 0.05
+      xy_goal_tolerance: 0.02
       yaw_goal_tolerance: 3.141592654
     FollowPath:
       # A19 paths are sampled on a 0.05 m grid and may contain tight portal

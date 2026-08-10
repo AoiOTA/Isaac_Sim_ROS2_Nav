@@ -306,7 +306,7 @@ def test_attempt28_a1_and_a19_profiles_are_explicitly_isolated():
         checker = parameters['a19_crossing_goal_checker']
         assert checker['plugin'] == 'nav2_controller::SimpleGoalChecker'
         assert checker['stateful'] is False
-        assert checker['xy_goal_tolerance'] == 0.05
+        assert checker['xy_goal_tolerance'] == 0.02
         assert math.isclose(checker['yaw_goal_tolerance'], math.pi)
         if batch is None:
             assert 'FollowPath' not in parameters
