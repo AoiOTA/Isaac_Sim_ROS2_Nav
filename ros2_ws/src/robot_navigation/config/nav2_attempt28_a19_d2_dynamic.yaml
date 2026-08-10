@@ -4,6 +4,12 @@ planner_server:
     GridBased:
       tolerance: 0.0
 
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      width: 4.2
+      height: 4.2
+
 controller_server:
   ros__parameters:
     failure_tolerance: 0.6

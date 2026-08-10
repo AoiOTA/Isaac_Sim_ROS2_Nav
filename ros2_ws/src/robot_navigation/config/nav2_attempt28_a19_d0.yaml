@@ -6,6 +6,16 @@ planner_server:
     GridBased:
       tolerance: 0.0
 
+# The complete A19 portal slice and padded footprint must be represented by
+# the rolling local costmap before FollowPath is dispatched.  A 4.0 m window
+# clipped the immutable portal-122 slice by 45.5 mm while the robot was
+# stationary; 4.2 m retains at least one 0.05 m cell of measured coverage.
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      width: 4.2
+      height: 4.2
+
 controller_server:
   ros__parameters:
     failure_tolerance: 0.3
