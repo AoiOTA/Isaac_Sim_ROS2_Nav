@@ -29,12 +29,14 @@ controller_server:
       # the measured five-pose nonlocal corner jump in the same controller
       # cycle. Reverse-neutral critics below handle the recovered path leg.
       max_robot_pose_search_dist: 0.21
-      # A bounded reverse correction is required when the robot has already
-      # turned more than 90 degrees away from the next tight portal leg. In
-      # this mode PathAngleCritic may align the chassis opposite the path and
-      # follow that leg in reverse instead of demanding a long in-place turn.
+      # A bounded reverse correction is required when the audited A19 path
+      # explicitly preserves a live heading opposite its positional travel.
+      # Mode 2 consumes those feasible path orientations. Mode 1 only chooses
+      # whichever of forward/reverse is angularly closer and therefore cannot
+      # distinguish an intended reverse approach from the undesired reverse
+      # basin observed at portal-152.
       PathAngleCritic:
-        mode: 1
+        mode: 2
       # Keep reverse available, but add a bounded forward tie-break while
       # the robot is more than 0.20 m from the portal terminal.  With mode 1
       # and no directional prior, the forward and reverse rollout basins can
