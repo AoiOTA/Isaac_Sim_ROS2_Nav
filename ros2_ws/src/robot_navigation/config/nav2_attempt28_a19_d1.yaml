@@ -8,13 +8,12 @@ planner_server:
     GridBased:
       tolerance: 0.0
 
-local_costmap:
-  local_costmap:
-    ros__parameters:
-      # Complete-footprint local evidence at portal-122 needs 45.5 mm beyond
-      # the base 4.0 m rolling window; keep a full extra 0.05 m cell per side.
-      width: 4.2
-      height: 4.2
+"/local_costmap/local_costmap":
+  ros__parameters:
+    # Complete-footprint local evidence at portal-122 needs 45.5 mm beyond
+    # the base Y window. Nav2 accepts integer-metre dimensions only.
+    width: 4
+    height: 5
 
 controller_server:
   ros__parameters:
