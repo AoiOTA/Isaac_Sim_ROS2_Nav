@@ -28,6 +28,13 @@ controller_server:
       xy_goal_tolerance: 0.02
       yaw_goal_tolerance: 3.141592654
     FollowPath:
+      # The sampled-trajectory MarkerArray and duplicate optimal-path stream
+      # are visualization-only and are not part of Attempt28 static evidence.
+      # Recording them produced roughly 1 GiB per 138 s Engineering run and
+      # reduced Isaac simulation progress enough that the unchanged 180 s leg
+      # wall budget expired before the final audited portal action. The MPPI
+      # optimizer, critics, commands and controller-cycle trace are unchanged.
+      visualize: false
       # A19 paths are sampled on a 0.05 m grid and may contain tight portal
       # corners. The MPPI default searches roughly half the local costmap for
       # the Euclidean-nearest pose, which can prune across an unexecuted corner
