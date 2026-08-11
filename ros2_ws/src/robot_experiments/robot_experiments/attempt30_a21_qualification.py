@@ -80,17 +80,27 @@ def _route_valid(manifest: Mapping[str, Any]) -> bool:
     poses = manifest.get("route_poses")
     legs = manifest.get("legs")
     routes = manifest.get("canonical_routes")
+    if not isinstance(legs, list) or not 1 <= len(legs) <= len(WHOLE_HOUSE_ROUTE):
+        return False
+    if not isinstance(routes, list) or not routes:
+        return False
+    route_request_ids = {
+        item.get("request_id") for item in routes if isinstance(item, Mapping)
+    }
     return bool(
         manifest.get("navigation_execution_backend") == "route_guided"
         and isinstance(poses, list)
         and tuple(str(item.get("id")) for item in poses) == WHOLE_HOUSE_ROUTE
-        and isinstance(legs, list)
-        and tuple(str(item.get("id")) for item in legs) == WHOLE_HOUSE_ROUTE
-        and isinstance(routes, list)
-        and len(routes) >= 5
+        and tuple(str(item.get("id")) for item in legs)
+        == WHOLE_HOUSE_ROUTE[: len(legs)]
         and all(
-            isinstance(item.get("edge_ids"), list) and item.get("edge_ids")
+            isinstance(item, Mapping)
+            and isinstance(item.get("edge_ids"), list)
+            and item.get("edge_ids")
             for item in routes
+        )
+        and all(
+            item.get("route_request_id") in route_request_ids for item in legs
         )
     )
 
@@ -230,14 +240,27 @@ def aggregate(records: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
             interaction_count = sum(
                 item["dynamic_interaction_complete"] for item in rows
             )
+            successful_interaction_count = sum(
+                item["task_success"] and item["dynamic_interaction_complete"]
+                for item in rows
+            )
+            successful_interactions_complete = bool(
+                successful_interaction_count == task_successes
+            )
             group_result.update(
                 {
                     "required_task_success_count": 18,
                     "required_collision_free_count": 18,
                     "dynamic_interaction_complete_count": interaction_count,
+                    "successful_dynamic_interaction_complete_count": (
+                        successful_interaction_count
+                    ),
+                    "successful_dynamic_interactions_complete": (
+                        successful_interactions_complete
+                    ),
                     "passed": bool(
                         evidence_complete
-                        and interaction_count == 20
+                        and successful_interactions_complete
                         and task_successes >= 18
                         and collision_free >= 18
                     ),

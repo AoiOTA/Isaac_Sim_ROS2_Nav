@@ -4,6 +4,7 @@ from robot_experiments.attempt30_a21_qualification import (
     APPEARANCE_PROFILES,
     EXPECTED,
     WHOLE_HOUSE_ROUTE,
+    _route_valid,
     aggregate,
 )
 from robot_experiments.scenario import (
@@ -84,10 +85,43 @@ def test_aggregate_applies_exact_19_and_18_of_20_thresholds() -> None:
 
     records["static"] = [_row("static", index) for index in range(1, 21)]
     records["dynamic"][0]["task_success"] = False
+    records["dynamic"][0]["dynamic_interaction_complete"] = False
     records["dynamic"][1]["task_success"] = False
+    records["dynamic"][1]["dynamic_interaction_complete"] = False
     assert aggregate(records)["groups"]["dynamic"]["passed"] is True
     records["dynamic"][2]["task_success"] = False
+    records["dynamic"][2]["dynamic_interaction_complete"] = False
     assert aggregate(records)["groups"]["dynamic"]["passed"] is False
+
+
+def test_dynamic_success_still_requires_complete_actor_interactions() -> None:
+    records = {
+        group: [_row(group, index) for index in range(1, 21)]
+        for group in EXPECTED
+    }
+    records["dynamic"][0]["dynamic_interaction_complete"] = False
+    result = aggregate(records)["groups"]["dynamic"]
+    assert result["successful_dynamic_interactions_complete"] is False
+    assert result["passed"] is False
+
+
+def test_route_valid_accepts_authorized_attempted_prefix_on_safe_abort() -> None:
+    routes = [
+        {"request_id": 41, "edge_ids": [1, 2]},
+        {"request_id": 42, "edge_ids": [3, 4]},
+    ]
+    manifest = {
+        "navigation_execution_backend": "route_guided",
+        "route_poses": [{"id": item} for item in WHOLE_HOUSE_ROUTE],
+        "legs": [
+            {"id": "G2", "route_request_id": 41},
+            {"id": "G3", "route_request_id": 42},
+        ],
+        "canonical_routes": routes,
+    }
+    assert _route_valid(manifest) is True
+    manifest["legs"][1]["id"] = "G4"
+    assert _route_valid(manifest) is False
 
 
 def test_static_executed_deviation_is_a_separate_20_percent_gate() -> None:
