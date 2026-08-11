@@ -22,10 +22,7 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      # Dynamic actors and qualification obstacles are high LiDAR-visible
-      # cubes.  Do not add front-camera voxels that cannot be cleared after a
-      # moving actor leaves the FOV; /scan_safety marks and clears them.
-      plugins: [obstacle_layer, inflation_layer]
+      plugins: [obstacle_layer, depth_voxel_layer, inflation_layer]
       obstacle_layer:
         scan:
           raytrace_min_range: 0.05

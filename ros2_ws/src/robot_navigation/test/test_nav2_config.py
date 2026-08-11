@@ -161,7 +161,7 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     assert 'velocity_smoother' not in dynamic
     local = dynamic['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
-    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']
+    assert local['plugins'] == base_local['plugins']
     assert local['obstacle_layer']['scan'] == {
         'raytrace_min_range': 0.05,
         'inf_is_valid': False,
@@ -182,7 +182,9 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
     assert 'near_collision_cost' not in base_controller['FollowPath']['CostCritic']
-    assert 'depth_voxel_layer' in base_local
+    base_depth = base_local['depth_voxel_layer']
+    assert base_depth['plugin'] == 'nav2_costmap_2d::VoxelLayer'
+    assert base_depth['camera_depth']['marking'] is True
 
 
 def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
