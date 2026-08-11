@@ -1,6 +1,7 @@
 from geometry_msgs.msg import TransformStamped
 import math
 import rclpy
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from std_srvs.srv import Empty
 from tf2_ros import TransformBroadcaster
@@ -79,7 +80,7 @@ def main(args=None) -> None:
     node = IdealLocalizationTransform()
     try:
         rclpy.spin(node)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
         node.destroy_node()

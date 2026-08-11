@@ -34,6 +34,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 DEFAULT_MANAGED_NODES = [
     'controller_server',
     'planner_server',
+    'route_server',
     'behavior_server',
     'velocity_smoother',
     'collision_monitor',

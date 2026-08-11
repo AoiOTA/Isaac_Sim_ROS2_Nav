@@ -509,3 +509,26 @@ def test_dead_end_recovery_backs_up_before_attempting_spin():
         assert 0.45 <= float(backup.attrib['backup_dist']) <= 0.65
         assert 0.15 <= float(backup.attrib['backup_speed']) <= 0.20
         assert float(backup.attrib['time_allowance']) >= 5.0
+
+
+def test_a21_route_bt_uses_native_goal_updater_and_metric_owners():
+    tree_path = PACKAGE_ROOT / 'behavior_trees' / 'navigate_route_lookahead.xml'
+    tree = ElementTree.parse(tree_path).getroot()
+    assert tree.find('.//GoalUpdater') is not None
+    assert tree.find('.//ComputePathToPose') is not None
+    assert tree.find('.//FollowPath') is not None
+    rate = tree.find('.//RateController')
+    assert rate is not None
+    assert rate.attrib['hz'] == '@PLANNER_RATE_HZ@'
+    recovery = tree.find('.//RecoveryNode')
+    assert recovery is not None
+    assert recovery.attrib['number_of_retries'] == '@TRANSIENT_RETRY_COUNT@'
+    wait = recovery.find('.//Wait')
+    assert wait is not None
+    assert wait.attrib['wait_duration'] == '@TRANSIENT_RETRY_WAIT_S@'
+
+    launch = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text()
+    assert 'execute_route_navigation' in launch
+    assert 'navigate_route_lookahead.xml' in launch
+    assert '_write_route_guided_bt' in launch
+    assert "defaults['metric_planning']" in launch

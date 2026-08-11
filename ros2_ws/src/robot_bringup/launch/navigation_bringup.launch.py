@@ -26,6 +26,7 @@ def generate_launch_description():
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument('nav2_profile', default_value='stable'),
         DeclareLaunchArgument('nav2_profile_params_file', default_value=''),
+        DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
@@ -64,6 +65,7 @@ def generate_launch_description():
                 'nav2_profile': LaunchConfiguration('nav2_profile'),
                 'nav2_profile_params_file': LaunchConfiguration(
                     'nav2_profile_params_file'),
+                'module2_enabled': LaunchConfiguration('module2_enabled'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(

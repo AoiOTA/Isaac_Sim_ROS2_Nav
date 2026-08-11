@@ -393,6 +393,7 @@ def test_gate_repairs_partial_resume_without_terminating(tmp_path):
         ]
         assert direct_events == [
             'direct:map_server:activate',
+            'direct:route_server:activate',
             'direct:behavior_server:activate',
             'direct:velocity_smoother:activate',
             'direct:collision_monitor:activate',

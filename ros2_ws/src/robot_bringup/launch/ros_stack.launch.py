@@ -310,6 +310,9 @@ def _launch_setup(context):
                 'autostart': 'false',
                 'nav2_params_file': runtime_files.nav2_params_file,
                 'nav2_profile_params_file': str(nav2_profile_params_file),
+                'structural_map_file': selection.occupancy_map_file,
+                'module2_enabled': LaunchConfiguration(
+                    'module2_enabled').perform(context),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -455,6 +458,7 @@ def generate_launch_description():
             'nav2_profile_params_file',
             default_value='',
             description='explicit benchmark/custom Nav2 overlay YAML'),
+        DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
