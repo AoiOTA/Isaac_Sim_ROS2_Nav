@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import csv
 import gzip
 import json
@@ -71,14 +72,15 @@ def main() -> None:
     colors = ["#2563eb", "#7c3aed", "#0891b2", "#be123c", "#9333ea"]
     progress = manifest["route_progress"]
     route_lines = []
-    for request_id, color in enumerate(colors, 1):
+    request_ids = list(dict.fromkeys(item["request_id"] for item in progress))
+    for request_id, color in zip(request_ids, colors):
         rows = [item for item in progress if item["request_id"] == request_id]
         projected = [item["projected_point"] for item in rows]
         lookahead = [item["lookahead"] for item in rows]
         axis.plot(
             [point[0] for point in projected], [point[1] for point in projected],
             color=color, linewidth=2.4, alpha=0.88, zorder=6,
-            label=f"Route projection leg {request_id}",
+            label=f"Route projection request {request_id}",
         )
         axis.scatter(
             [point[0] for point in lookahead[::12]],
@@ -86,10 +88,44 @@ def main() -> None:
             s=10, color="#f59e0b", alpha=0.75, zorder=7,
         )
         route_lines.append(
-            f"L{request_id}: route "
+            f"request {request_id}: route "
             f"{max(item['arc_length_m'] + item['remaining_m'] for item in rows):.2f}m, "
             f"max lateral {max(item['lateral_error_m'] for item in rows):.3f}m"
         )
+
+    actor_path = run / "dynamic_obstacles.csv.gz"
+    if actor_path.is_file():
+        with gzip.open(actor_path, "rt", encoding="utf-8") as stream:
+            actor_rows = list(csv.DictReader(stream))
+        required_actors = set(
+            manifest.get("dynamic_interaction", {}).get("expected_ids", [])
+        )
+        actor_colors = {
+            "local_bypass_actor": "#f97316",
+            "g2_g3_exit_actor": "#06b6d4",
+            "g5_g1_crossing_actor": "#eab308",
+        }
+        for actor_id in sorted(required_actors):
+            rows = [item for item in actor_rows if item["id"] == actor_id]
+            moving = [
+                ast.literal_eval(item["position"])
+                for item in rows
+                if item["state"] in {"moving", "parked", "retired"}
+            ]
+            if not moving:
+                continue
+            color = actor_colors.get(actor_id, "#ec4899")
+            axis.plot(
+                [point[0] for point in moving], [point[1] for point in moving],
+                color=color, linewidth=2.0, alpha=0.9, linestyle="--",
+                zorder=9, label=actor_id,
+            )
+            end_x, end_y = moving[-1][:2]
+            axis.add_patch(Rectangle(
+                (end_x - 0.2, end_y - 0.2), 0.4, 0.4,
+                facecolor=color, edgecolor="#111827", linewidth=0.8,
+                alpha=0.45, zorder=9,
+            ))
     with gzip.open(run / "ground_truth.csv.gz", "rt") as stream:
         ground_truth = list(csv.DictReader(stream))
     gt_x = [float(row["x"]) for row in ground_truth]
@@ -117,10 +153,25 @@ def main() -> None:
         axis.scatter(x, y, marker="*", s=85, color="#dc2626", zorder=11)
         axis.text(x + 0.08, y + 0.08, item["id"], fontsize=9, weight="bold")
 
-    route_lines.append(
-        f"executed deviation {summary['path_deviation_percent']:.2f}%; "
-        f"planned {summary['planned_path_deviation_percent']:.2f}%; contact/SAT 0"
+    executed = summary.get("path_deviation_percent")
+    planned = summary.get("planned_path_deviation_percent")
+    deviation = (
+        f"executed deviation {executed:.2f}%; planned {planned:.2f}%"
+        if isinstance(executed, (int, float)) and isinstance(planned, (int, float))
+        else "deviation unavailable (run did not finish)"
     )
+    contact = summary.get("static_geometric_contact", {})
+    route_lines.append(
+        f"{deviation}; physical collision-free={summary.get('physical_collision_free')}; "
+        f"SAT max={float(contact.get('maximum_sat_overlap_m', 0.0)):.3f}m"
+    )
+    interaction = manifest.get("dynamic_interaction", {})
+    if interaction:
+        route_lines.append(
+            "dynamic actors completed "
+            f"{len(interaction.get('completed_ids', []))}/"
+            f"{len(interaction.get('expected_ids', []))}"
+        )
     health = summary["module2_health"]
     route_lines.append(
         f"Module2 healthy {health['healthy_count']}/{health['response_count']}"
@@ -140,7 +191,7 @@ def main() -> None:
     axis.set_aspect("equal")
     axis.grid(alpha=0.15)
     handles, labels = axis.get_legend_handles_labels()
-    axis.legend(handles[-6:], labels[-6:], loc="lower left", fontsize=7)
+    axis.legend(handles, labels, loc="lower left", fontsize=7)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(args.output, dpi=200)
     plt.close(figure)

@@ -94,6 +94,9 @@ def test_three_stage_case_set_selects_the_ordered_route_interactions():
     ]
     assert [item.trigger_group for item in selected] == ["G2", "G3", "G1"]
     assert selected[0].waypoints[-1] == pytest.approx((-0.95, -0.20, 0.50))
+    assert [item.obstacle.post_motion for item in selected] == [
+        "park", "retire", "retire",
+    ]
 
 
 def test_g2_g3_gate_triggers_southbound_at_y_2_6_in_the_narrow_lane():
