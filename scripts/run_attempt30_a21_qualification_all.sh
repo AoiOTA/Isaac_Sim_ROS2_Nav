@@ -17,10 +17,11 @@ orchestration_mode="${2:-full}"
     || "${orchestration_mode}" == "pilot-static" \
     || "${orchestration_mode}" == "diagnostic-direct-static" \
     || "${orchestration_mode}" == "diagnostic-dynamic-profile-static" \
+    || "${orchestration_mode}" == "diagnostic-static-repeat" \
     || "${orchestration_mode}" == "diagnostic-dynamic-repeat" \
     || "${orchestration_mode}" == "pilot-dynamic" \
     || "${orchestration_mode}" == "run-dynamic" ]] \
-  || die "mode must be full, pilot-static, diagnostic-direct-static, diagnostic-dynamic-profile-static, diagnostic-dynamic-repeat, pilot-dynamic or run-dynamic"
+  || die "mode must be full, pilot-static, diagnostic-direct-static, diagnostic-dynamic-profile-static, diagnostic-static-repeat, diagnostic-dynamic-repeat, pilot-dynamic or run-dynamic"
 control="${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_${campaign}/orchestrator"
 attempt30_integration_root="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-gvg-route"
 mkdir -p "${control}"
@@ -218,6 +219,19 @@ if [[ "${orchestration_mode}" == "diagnostic-dynamic-repeat" ]]; then
   exit 0
 fi
 start_stack static
+if [[ "${orchestration_mode}" == "diagnostic-static-repeat" ]]; then
+  # Exercise the same reset epochs that exposed the final60c G4 cusp without
+  # creating or replacing formal rows.  Eight full-house runs preserve the
+  # original six obstacles and include seeds 8504/8508 from both failures.
+  "${SCRIPT_DIR}/run_experiment.sh" \
+    "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_static.yaml" \
+    "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/static_repeat" \
+    navigation_execution_backend:=route_guided \
+    record_bag:=false record_evidence:=true nav2_profile:=stable \
+    resume:=false run_indices:=1,2,3,4,5,6,7,8
+  stop_stack
+  exit 0
+fi
 if [[ "${orchestration_mode}" == "diagnostic-direct-static" ]]; then
   "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" preflight static
   "${SCRIPT_DIR}/run_experiment.sh" \

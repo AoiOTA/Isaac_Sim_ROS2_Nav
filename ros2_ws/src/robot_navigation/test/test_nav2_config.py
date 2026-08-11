@@ -443,6 +443,11 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert planner['tolerance'] == 0.10
     assert planner['tolerance'] < _params(config, 'controller_server')[
         'goal_checker']['xy_goal_tolerance']
+    # Preserve the raw collision-aware 8-connected path.  The optional
+    # gradient smoother produced duplicate points and a local 178-degree cusp
+    # at the G3-to-G4 turn in final60c runs 0004 and 0008.
+    assert planner['smoother']['max_iterations'] == 0
+    assert planner['smoother']['do_refinement'] is False
     assert controller['CostCritic']['consider_footprint'] is True
     assert controller['CostCritic']['cost_weight'] <= 2.5
     assert controller['CostCritic']['trajectory_point_step'] == 1

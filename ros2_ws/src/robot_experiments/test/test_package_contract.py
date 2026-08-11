@@ -243,6 +243,17 @@ def test_attempt30_repeat_diagnostic_is_nonformal_and_pins_its_integration_under
     assert 'ros2 pkg prefix bio_nav_ros_bridge' in supervisor
 
 
+def test_attempt30_static_repeat_replays_both_failed_reset_epochs_nonformally():
+    root = PACKAGE_ROOT.parents[2]
+    supervisor = (
+        root / "scripts" / "run_attempt30_a21_qualification_all.sh"
+    ).read_text()
+    assert '"diagnostic-static-repeat"' in supervisor
+    assert 'attempt30_a21_diagnostic_${campaign}/static_repeat' in supervisor
+    assert 'run_indices:=1,2,3,4,5,6,7,8' in supervisor
+    assert 'attempt30_a21_qualification_static.yaml' in supervisor
+
+
 def test_experiment_launch_exposes_fail_closed_pregoal_evidence_fence():
     launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
