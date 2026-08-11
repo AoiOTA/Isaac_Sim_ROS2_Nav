@@ -167,7 +167,7 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
         'inf_is_valid': False,
     }
     assert local['depth_voxel_layer']['camera_depth'] == {
-        'max_obstacle_height': 0.20,
+        'clearing': True,
     }
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'inflation_layer',

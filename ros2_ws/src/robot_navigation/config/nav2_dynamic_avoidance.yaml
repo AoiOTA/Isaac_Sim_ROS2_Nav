@@ -29,9 +29,9 @@ local_costmap:
           inf_is_valid: false
       depth_voxel_layer:
         camera_depth:
-          # Preserve 0.16 m RGB-D-only static boxes.  Full-route actors start
-          # at z=0.233 m and are intentionally owned by clearing LiDAR.
-          max_obstacle_height: 0.20
+          # Ray-clear departed moving actors, but inherit the base one-second
+          # persistence and 0.50 m height band needed by static low obstacles.
+          clearing: true
 
 global_costmap:
   global_costmap:
