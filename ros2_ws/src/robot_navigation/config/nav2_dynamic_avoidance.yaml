@@ -1,23 +1,18 @@
 # Overlay used only by the reproducible Kujiale dynamic-obstacle experiments.
 #
-# Keep RGB-D fusion enabled and use the same Nav2 VoxelLayer that completed the
-# whole-house static mission.  Dynamic runs turn on PointCloud2 ray clearing
-# and remove observation persistence; high LiDAR-visible actors are also
-# independently marked and cleared by the 2D obstacle layer.
-#
-# LiDAR remains an independent 2D obstacle layer.  The exact whole-house
-# no-actor diagnostic proved that the former 15 Hz / 30-step, high-noise MPPI
-# envelope plus 0.75 m local inflation failed the static G2->G3 junction.  A
-# dynamic profile must not close control space that is physically traversable.
-# Inherit the validated base MPPI, footprint-aware CostCritic, 0.40 m soft
-# inflation and velocity smoother.  Dynamic safety remains in RGB-D/LiDAR
-# clearing, hard footprint collision checking, Collision Monitor, the
-# actor clearance guard and the dynamic-only BackUp look-ahead below.
+# The exact whole-house no-actor diagnostics proved that the former dynamic
+# MPPI, inflation and alternative voxel/scan settings made the physically
+# traversable G2->G3 junction fail even when no actor existed.  Keep the
+# whole-house-validated base controller and costmaps unchanged.  Dynamic actors
+# remain visible to the shared RGB-D VoxelLayer and the independent LiDAR
+# ObstacleLayer; hard footprint collision checking, Collision Monitor and the
+# actor clearance guard remain authoritative safety layers.
+
 controller_server:
   ros__parameters:
     # Profiles must declare a complete MPPI timing tuple for the pre-launch
     # Jazzy timing contract.  Repeat only the validated base timing budget;
-    # all control/noise/critic limits continue to inherit from the base file.
+    # all control/noise/critic limits inherit from the base file.
     controller_frequency: 10.0
     FollowPath:
       time_steps: 20
@@ -27,70 +22,24 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      # The RGB-D and LiDAR inputs provide new frames at roughly 6--8 Hz in
-      # the loaded Isaac scene.  A 20 Hz costmap only recomputed the same depth
-      # observations and contended with the 20 Hz MPPI loop in this shared
-      # controller_server process.  Ten updates per second still consumes the
-      # next sensor frame within 0.10 s while leaving a deterministic MPPI
-      # compute window; publish at 5 Hz to avoid redundant full-grid RViz I/O.
-      update_frequency: 10.0
-      publish_frequency: 5.0
       plugins: [obstacle_layer, depth_voxel_layer, inflation_layer]
       obstacle_layer:
-        enabled: true
-        observation_sources: scan
         scan:
-          clearing: true
-          marking: true
-          data_type: LaserScan
-          observation_persistence: 0.0
-          inf_is_valid: true
-          raytrace_min_range: 0.0
-          raytrace_max_range: 25.0
-          # /scan_safety has already removed the padded robot envelope, so the
-          # local controller may retain obstacle returns throughout the
-          # footprint-adjacent safety shell.
-          obstacle_min_range: 0.05
-          obstacle_max_range: 25.0
-      depth_voxel_layer:
-        # All geometry, height limits and footprint clearing inherit from the
-        # whole-house-validated base VoxelLayer.  Dynamic runs change only the
-        # observation lifetime and enable depth-ray clearing.
-        camera_depth:
-          clearing: true
-          observation_persistence: 0.0
+          raytrace_min_range: 0.05
+          inf_is_valid: false
 
 global_costmap:
   global_costmap:
     ros__parameters:
-      # The common base profile includes global RGB-D for static low boxes.
-      # A moving actor must not be retained there, so dynamic runs keep the
-      # static map plus LiDAR and use only rolling local depth for RGB-D.
-      plugins: [static_layer, obstacle_layer, inflation_layer]
+      plugins: [static_layer, obstacle_layer, depth_voxel_layer, inflation_layer]
       obstacle_layer:
-        enabled: true
-        observation_sources: scan
         scan:
-          clearing: true
-          marking: true
-          data_type: LaserScan
-          observation_persistence: 0.0
-          inf_is_valid: true
-          raytrace_min_range: 0.0
-          raytrace_max_range: 25.0
-          obstacle_min_range: 0.40
-          obstacle_max_range: 25.0
+          raytrace_min_range: 0.40
+          inf_is_valid: false
 
 behavior_server:
   ros__parameters:
-    # v25 G2 safety repair: dynamic runs must never issue the shared
-    # dead-end-recovery BackUp command without a costmap look-ahead.  The v24
-    # physical-contact evidence latched while the robot was reversing at
-    # -0.18 m/s after the dynamic actor had already parked elsewhere.  Keep
-    # the base profile's 0.0 setting for its validated narrow static passage,
-    # but make BackUp predict one second of the reverse sweep here.  A blocked
-    # recovery returns failure to the existing RoundRobin, which can Spin,
-    # Wait, and replan; it must not blindly reverse into an occupied cell.
-    # This does not change any actor geometry, trajectory, Collision Monitor,
-    # physical-contact criterion, or normal MPPI tracking command.
+    # Dynamic runs must never issue the shared dead-end-recovery BackUp command
+    # without checking its swept costmap footprint.  This affects only the
+    # recovery behavior; normal MPPI commands and actor geometry are unchanged.
     simulate_ahead_time: 1.0

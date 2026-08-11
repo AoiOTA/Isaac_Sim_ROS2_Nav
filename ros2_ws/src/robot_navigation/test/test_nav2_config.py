@@ -140,12 +140,10 @@ def test_attempt22_reachability_profile_is_preinflation_and_observer_only():
     assert critic['expected_qualification_sha256'] == 64 * '0'
 
 
-def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
+def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     dynamic = _profile('dynamic_avoidance')
     controller_server = dynamic['controller_server']['ros__parameters']
     behavior_server = dynamic['behavior_server']['ros__parameters']
-    local = dynamic['local_costmap']['local_costmap']['ros__parameters']
-    global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
     base = _config()
     base_controller = base['controller_server']['ros__parameters']
     base_local = base['local_costmap']['local_costmap']['ros__parameters']
@@ -161,6 +159,21 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
         },
     }
     assert 'velocity_smoother' not in dynamic
+    local = dynamic['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
+    assert local['plugins'] == base_local['plugins']
+    assert local['obstacle_layer']['scan'] == {
+        'raytrace_min_range': 0.05,
+        'inf_is_valid': False,
+    }
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
+        'inflation_layer',
+    ]
+    assert global_costmap['obstacle_layer']['scan'] == {
+        'raytrace_min_range': 0.40,
+        'inf_is_valid': False,
+    }
     assert base_controller['controller_frequency'] == 10.0
     assert base_controller['FollowPath']['time_steps'] == 20
     assert base_controller['FollowPath']['batch_size'] == 700
@@ -168,33 +181,11 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     # shared/static profile retains its validated zero-look-ahead behavior.
     assert behavior_server['simulate_ahead_time'] == 1.0
     assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
-    assert local['update_frequency'] == 10.0
-    assert local['publish_frequency'] == 5.0
-    assert local['plugins'] == [
-        'obstacle_layer', 'depth_voxel_layer', 'inflation_layer']
-    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
-    assert 'inflation_layer' not in local
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
     assert 'near_collision_cost' not in base_controller['FollowPath']['CostCritic']
-    # Dynamic runs deliberately do not inherit the base profile's global
-    # RGB-D VoxelLayer.  The rolling local VoxelLayer owns RGB-D marking and
-    # clearing, while global dynamic observations come from LiDAR.
-    assert global_costmap['plugins'] == [
-        'static_layer', 'obstacle_layer', 'inflation_layer']
-    depth = local['depth_voxel_layer']
-    assert set(depth) == {'camera_depth'}
-    assert depth['camera_depth']['clearing'] is True
-    assert depth['camera_depth']['observation_persistence'] == 0.0
     base_depth = base_local['depth_voxel_layer']
     assert base_depth['plugin'] == 'nav2_costmap_2d::VoxelLayer'
     assert base_depth['camera_depth']['marking'] is True
-    for costmap in (local, global_costmap):
-        scan = costmap['obstacle_layer']['scan']
-        assert scan['clearing'] is True
-        assert scan['marking'] is True
-        assert scan['observation_persistence'] == 0.0
-        assert scan['inf_is_valid'] is True
-        assert scan['raytrace_min_range'] == 0.0
 
 
 def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
