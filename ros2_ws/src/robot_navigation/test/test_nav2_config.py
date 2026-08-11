@@ -167,8 +167,7 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
         'inf_is_valid': False,
     }
     assert global_costmap['plugins'] == [
-        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
-        'inflation_layer',
+        'static_layer', 'obstacle_layer', 'inflation_layer',
     ]
     assert global_costmap['obstacle_layer']['scan'] == {
         'raytrace_min_range': 0.40,

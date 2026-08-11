@@ -31,7 +31,10 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
-      plugins: [static_layer, obstacle_layer, depth_voxel_layer, inflation_layer]
+      # A front-camera VoxelLayer cannot clear an actor after it leaves the
+      # global field of view.  Keep dynamic RGB-D local; the global planner
+      # uses the static map plus independently clearing LiDAR observations.
+      plugins: [static_layer, obstacle_layer, inflation_layer]
       obstacle_layer:
         scan:
           raytrace_min_range: 0.40
