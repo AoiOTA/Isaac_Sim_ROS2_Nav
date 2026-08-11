@@ -27,6 +27,13 @@ local_costmap:
         scan:
           raytrace_min_range: 0.05
           inf_is_valid: false
+      depth_voxel_layer:
+        # Moving actors share the camera layer with static low obstacles.  Use
+        # the validated VoxelLayer geometry but clear observed departure rays
+        # immediately instead of retaining a completed actor in the aisle.
+        camera_depth:
+          clearing: true
+          observation_persistence: 0.0
 
 global_costmap:
   global_costmap:
