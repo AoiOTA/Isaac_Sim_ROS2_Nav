@@ -86,11 +86,16 @@ trap 'stop_stack' EXIT INT TERM HUP
 
 start_stack() {
   local mode="$1" profile="${2:-}"
+  local session_index=1 session_prefix
   local integration_root="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-gvg-route"
   local module2_runtime_root="/home/lyb/Workspace/Bio_Nav/worktrees/module2/attempt30-a21-runtime-fbfdc8d"
   local asset_root="/home/lyb/Workspace/Bio_Nav/artifacts/releases/isaac-nav-fusion-v0.1.0-engineering"
   local socket_path="${ISAAC_NAV_RUNTIME_DIR}/module2.sock"
   local snapshot_map_version
+  while compgen -G "${control}/${mode}-session-${session_index}-*" >/dev/null; do
+    session_index=$((session_index + 1))
+  done
+  session_prefix="${control}/${mode}-session-${session_index}"
   if [[ -z "${profile}" ]]; then
     profile="stable"
     [[ "${mode}" == "dynamic" ]] && profile="dynamic_avoidance"
@@ -105,51 +110,51 @@ start_stack() {
   mkdir -p "${ISAAC_NAV_RUNTIME_DIR}"
   rm -f "${socket_path}"
   "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" "${mode}" --headless \
-    >"${control}/${mode}-isaac.log" 2>&1 & isaac_pid=$!
+    >"${session_prefix}-isaac.log" 2>&1 & isaac_pid=$!
   "${SCRIPT_DIR}/run_ros.sh" navigation odometry_mode:=ideal \
     spawn_pose_name:=long_route_start_g1 nav2_profile:="${profile}" \
     interactive:=false use_rviz:=false \
-    >"${control}/${mode}-nav2.log" 2>&1 & ros_pid=$!
+    >"${session_prefix}-nav2.log" 2>&1 & ros_pid=$!
   BIO_NAV_SOCKET_PATH="${socket_path}" \
     "${integration_root}/scripts/run_module2_server.sh" \
     --module2-root "${module2_runtime_root}" \
     --isaac-head-adapter "${asset_root}/isaac-risk-adapter/isaac_head.pt" \
     --risk-adapter "${asset_root}/isaac-risk-adapter/risk_calibration.json" \
     --allow-synthetic-isaac-adapter --force-reference-mamba \
-    >"${control}/${mode}-module2.log" 2>&1 & module2_pid=$!
+    >"${session_prefix}-module2.log" 2>&1 & module2_pid=$!
   local socket_deadline=$((SECONDS + 120))
   while ((SECONDS < socket_deadline)) && [[ ! -S "${socket_path}" ]]; do
-    kill -0 "${module2_pid}" 2>/dev/null || die "Module2 exited; inspect ${control}/${mode}-module2.log"
+    kill -0 "${module2_pid}" 2>/dev/null || die "Module2 exited; inspect ${session_prefix}-module2.log"
     sleep 1
   done
   [[ -S "${socket_path}" ]] || die "Module2 socket timed out: ${socket_path}"
   "${integration_root}/scripts/run_ros_bridge.sh" \
     -p use_sim_time:=true -p "socket_path:=${socket_path}" \
     -p motion_source:=pose_delta -p suppress_unhealthy_frames:=true \
-    -p "audit_jsonl_path:=${control}/${mode}-module2-audit.jsonl" \
-    >"${control}/${mode}-module2-bridge.log" 2>&1 & bridge_pid=$!
+    -p "audit_jsonl_path:=${session_prefix}-module2-audit.jsonl" \
+    >"${session_prefix}-module2-bridge.log" 2>&1 & bridge_pid=$!
   "${integration_root}/scripts/run_goal_prior_bridge.sh" \
     -p use_sim_time:=true -p "snapshot_path:=${asset_root}/sr-snapshot" \
     -p max_prior_age_s:=0.75 \
-    >"${control}/${mode}-goal-prior.log" 2>&1 & goal_prior_pid=$!
+    >"${session_prefix}-goal-prior.log" 2>&1 & goal_prior_pid=$!
   "${SCRIPT_DIR}/run_attempt30_a21_edge_prior.sh" \
     "goal_prior_map_version:=${snapshot_map_version}" \
-    >"${control}/${mode}-edge-prior.log" 2>&1 & prior_pid=$!
+    >"${session_prefix}-edge-prior.log" 2>&1 & prior_pid=$!
   local deadline=$((SECONDS + 900))
   while ((SECONDS < deadline)); do
-    kill -0 "${isaac_pid}" 2>/dev/null || die "Isaac exited; inspect ${control}/${mode}-isaac.log"
-    kill -0 "${ros_pid}" 2>/dev/null || die "Nav2 exited; inspect ${control}/${mode}-nav2.log"
-    kill -0 "${module2_pid}" 2>/dev/null || die "Module2 exited; inspect ${control}/${mode}-module2.log"
-    kill -0 "${bridge_pid}" 2>/dev/null || die "Module2 ROS bridge exited; inspect ${control}/${mode}-module2-bridge.log"
-    kill -0 "${goal_prior_pid}" 2>/dev/null || die "goal prior exited; inspect ${control}/${mode}-goal-prior.log"
-    kill -0 "${prior_pid}" 2>/dev/null || die "edge prior bridge exited; inspect ${control}/${mode}-edge-prior.log"
+    kill -0 "${isaac_pid}" 2>/dev/null || die "Isaac exited; inspect ${session_prefix}-isaac.log"
+    kill -0 "${ros_pid}" 2>/dev/null || die "Nav2 exited; inspect ${session_prefix}-nav2.log"
+    kill -0 "${module2_pid}" 2>/dev/null || die "Module2 exited; inspect ${session_prefix}-module2.log"
+    kill -0 "${bridge_pid}" 2>/dev/null || die "Module2 ROS bridge exited; inspect ${session_prefix}-module2-bridge.log"
+    kill -0 "${goal_prior_pid}" 2>/dev/null || die "goal prior exited; inspect ${session_prefix}-goal-prior.log"
+    kill -0 "${prior_pid}" 2>/dev/null || die "edge prior bridge exited; inspect ${session_prefix}-edge-prior.log"
     if "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" preflight "${mode}" \
-      >"${control}/${mode}-preflight.log" 2>&1; then
+      >"${session_prefix}-preflight.log" 2>&1; then
       return 0
     fi
     sleep 5
   done
-  tail -n 80 "${control}/${mode}-preflight.log" >&2 || true
+  tail -n 80 "${session_prefix}-preflight.log" >&2 || true
   die "${mode} stack preflight timed out"
 }
 
