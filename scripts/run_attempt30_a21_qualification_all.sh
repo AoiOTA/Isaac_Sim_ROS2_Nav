@@ -16,9 +16,10 @@ orchestration_mode="${2:-full}"
 [[ "${orchestration_mode}" == "full" \
     || "${orchestration_mode}" == "pilot-static" \
     || "${orchestration_mode}" == "diagnostic-direct-static" \
+    || "${orchestration_mode}" == "diagnostic-dynamic-profile-static" \
     || "${orchestration_mode}" == "pilot-dynamic" \
     || "${orchestration_mode}" == "run-dynamic" ]] \
-  || die "mode must be full, pilot-static, diagnostic-direct-static, pilot-dynamic or run-dynamic"
+  || die "mode must be full, pilot-static, diagnostic-direct-static, diagnostic-dynamic-profile-static, pilot-dynamic or run-dynamic"
 control="${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_${campaign}/orchestrator"
 mkdir -p "${control}"
 isaac_pid=""; ros_pid=""; module2_pid=""; bridge_pid=""; goal_prior_pid=""; prior_pid=""
@@ -156,10 +157,18 @@ source_ros --require-workspace
     --packages-select robot_experiments robot_route_planner robot_navigation robot_bringup \
     --allow-overriding robot_experiments robot_route_planner robot_navigation robot_bringup
 )
-if [[ "${orchestration_mode}" == "pilot-dynamic" \
+if [[ "${orchestration_mode}" == "diagnostic-dynamic-profile-static" \
+    || "${orchestration_mode}" == "pilot-dynamic" \
     || "${orchestration_mode}" == "run-dynamic" ]]; then
   start_stack dynamic
-  if [[ "${orchestration_mode}" == "pilot-dynamic" ]]; then
+  if [[ "${orchestration_mode}" == "diagnostic-dynamic-profile-static" ]]; then
+    "${SCRIPT_DIR}/run_experiment.sh" \
+      "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_static.yaml" \
+      "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/dynamic_profile_static" \
+      navigation_execution_backend:=route_guided \
+      record_bag:=false record_evidence:=true nav2_profile:=dynamic_avoidance \
+      resume:=false run_indices:=1
+  elif [[ "${orchestration_mode}" == "pilot-dynamic" ]]; then
     "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" pilot dynamic "${campaign}"
   else
     "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" run dynamic "${campaign}"
