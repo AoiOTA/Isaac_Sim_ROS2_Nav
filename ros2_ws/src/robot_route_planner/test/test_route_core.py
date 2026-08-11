@@ -10,6 +10,7 @@ from robot_route_planner.ros_node import (
     CostmapSnapshot,
     RouteCoordinator,
     footprint_is_free,
+    navigation_result_succeeded,
     populate_fresh_goal,
     select_live_feasible_lookahead,
     select_map_pose,
@@ -284,9 +285,10 @@ def test_navigation_result_retires_old_leg_before_publishing_completion() -> Non
     coordinator.node = SimpleNamespace(
         get_logger=lambda: SimpleNamespace(info=lambda _message: None)
     )
-    future = SimpleNamespace(
-        result=lambda: SimpleNamespace(result=SimpleNamespace(error_code=0))
-    )
+    future = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=4,
+        result=SimpleNamespace(error_code=205),
+    ))
 
     coordinator._on_navigation_result(future)
 
@@ -294,6 +296,17 @@ def test_navigation_result_retires_old_leg_before_publishing_completion() -> Non
     assert not coordinator.route_active
     assert coordinator.tracker is None
     assert coordinator.navigation_goal_handle is None
+
+
+def test_navigation_action_status_is_authoritative_over_error_detail() -> None:
+    assert navigation_result_succeeded(SimpleNamespace(
+        status=4,
+        result=SimpleNamespace(error_code=205),
+    ))
+    assert not navigation_result_succeeded(SimpleNamespace(
+        status=6,
+        result=SimpleNamespace(error_code=0),
+    ))
 
 
 def test_runtime_state_and_persistent_structural_change() -> None:

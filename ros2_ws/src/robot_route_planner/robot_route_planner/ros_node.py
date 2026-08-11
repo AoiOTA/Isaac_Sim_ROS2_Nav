@@ -39,6 +39,17 @@ def populate_fresh_goal(target, source, header) -> None:
     target.pose = source.pose
 
 
+def navigation_result_succeeded(wrapped) -> bool:
+    """Use the ROS action terminal status over a stale Nav2 error detail."""
+
+    if wrapped is None:
+        return False
+    status = getattr(wrapped, "status", None)
+    if status is not None:
+        return int(status) == 4  # action_msgs/GoalStatus.STATUS_SUCCEEDED
+    return int(wrapped.result.error_code) == 0
+
+
 @dataclass(frozen=True)
 class CostmapSnapshot:
     """Immutable geometry and values from one live Nav2 global costmap."""
@@ -757,7 +768,7 @@ class RouteCoordinator:
         # own publication races that new goal and can erase it before
         # ComputeRoute is requested.
         self._finish_active_route()
-        if wrapped is not None and result_code == 0:
+        if navigation_result_succeeded(wrapped):
             completed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
             completed.data = True
             self.goal_complete_pub.publish(completed)
