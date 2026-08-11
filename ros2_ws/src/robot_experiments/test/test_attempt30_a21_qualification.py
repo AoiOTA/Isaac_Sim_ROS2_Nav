@@ -27,6 +27,7 @@ def test_exact_qualification_manifests_use_whole_house_route() -> None:
         assert tuple(goal.goal_id for goal in scenario.route) == WHOLE_HOUSE_ROUTE
     assert len(scenarios["static"].obstacles["static"]) == 6
     assert len(scenarios["appearance"].obstacles["static"]) == 6
+    assert scenarios["dynamic"].obstacles["static"] == []
     assert sorted(
         selection.appearance_profile_id
         for selection in scenarios["appearance"].run_matrix

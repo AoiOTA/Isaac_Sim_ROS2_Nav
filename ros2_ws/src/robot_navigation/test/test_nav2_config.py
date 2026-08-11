@@ -161,14 +161,14 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     assert 'velocity_smoother' not in dynamic
     local = dynamic['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
-    assert local['plugins'] == base_local['plugins']
+    # The frozen dynamic qualification has no RGB-D-only static props; its
+    # full-height actors are owned by the clearing LiDAR layer.
     assert local['obstacle_layer']['scan'] == {
         'raytrace_min_range': 0.05,
         'inf_is_valid': False,
     }
-    assert local['depth_voxel_layer']['camera_depth'] == {
-        'clearing': True,
-    }
+    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']
+    assert 'depth_voxel_layer' not in local
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'inflation_layer',
     ]
