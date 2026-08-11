@@ -39,6 +39,7 @@ setup(
             "kujiale_campaign = robot_experiments.kujiale_campaign:main",
             "dynamic_avoidance_campaign = robot_experiments.dynamic_avoidance_campaign:main",
             "kujiale_4x20_campaign = robot_experiments.kujiale_4x20_campaign:main",
+            "attempt30_a21_qualification = robot_experiments.attempt30_a21_qualification:main",
             "kujiale_reference = robot_experiments.kujiale_reference:main",
         ],
     },

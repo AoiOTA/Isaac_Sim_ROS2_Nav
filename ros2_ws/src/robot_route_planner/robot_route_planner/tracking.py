@@ -55,9 +55,45 @@ def _point_at(polyline: np.ndarray, distance: float) -> tuple[float, float]:
 
 
 class RouteTracker:
-    def __init__(self, graph: Graph, edge_ids: list[int], settings: dict) -> None:
+    def __init__(
+        self,
+        graph: Graph,
+        edge_ids: list[int],
+        settings: dict,
+        *,
+        route_segments_xy: list[np.ndarray] | None = None,
+    ) -> None:
         edge_map = graph.edge_by_id()
-        self.edges: list[Edge] = [edge_map[edge_id] for edge_id in edge_ids]
+        if route_segments_xy is None:
+            self.edges = [edge_map[edge_id] for edge_id in edge_ids]
+        else:
+            if len(route_segments_xy) != len(edge_ids):
+                raise ValueError("route segments must match canonical edge IDs")
+            self.edges = []
+            for edge_id, points in zip(edge_ids, route_segments_xy):
+                source = edge_map[edge_id]
+                polyline = np.asarray(points, dtype=np.float64)
+                length = float(
+                    np.linalg.norm(np.diff(polyline, axis=0), axis=1).sum()
+                )
+                self.edges.append(
+                    Edge(
+                        id=source.id,
+                        from_node=source.from_node,
+                        to_node=source.to_node,
+                        polyline_xy=polyline,
+                        length_m=length,
+                        min_clearance_m=source.min_clearance_m,
+                        mean_clearance_m=source.mean_clearance_m,
+                        p05_clearance_m=source.p05_clearance_m,
+                        nominal_width_m=source.nominal_width_m,
+                        max_curvature_per_m=source.max_curvature_per_m,
+                        bottleneck=source.bottleneck,
+                        static_traversability=source.static_traversability,
+                        predecessor_ids=source.predecessor_ids,
+                        metadata=source.metadata,
+                    )
+                )
         if not self.edges:
             raise ValueError("canonical route must contain at least one edge")
         self.settings = settings
@@ -66,6 +102,22 @@ class RouteTracker:
         )
         self.progress_m = 0.0
         self.edge_index = 0
+
+    def point_at_distance_ahead(self, distance_m: float) -> tuple[float, float]:
+        """Return a point on this Route without mutating tracked progress."""
+
+        global_arc = min(
+            float(self.offsets[-1]),
+            self.progress_m + max(0.0, float(distance_m)),
+        )
+        edge_index = min(
+            int(np.searchsorted(self.offsets, global_arc, side="right") - 1),
+            len(self.edges) - 1,
+        )
+        return _point_at(
+            self.edges[edge_index].polyline_xy,
+            global_arc - float(self.offsets[edge_index]),
+        )
 
     def update(self, position_xy: tuple[float, float]) -> Progress:
         point = np.asarray(position_xy, dtype=np.float64)
@@ -102,15 +154,14 @@ class RouteTracker:
             projected = (math.nan, math.nan)
         total = float(self.offsets[-1])
         remaining = max(0.0, total - self.progress_m)
+        # The support graph now attaches at footprint-feasible dense points and
+        # the tracker uses the exact ordered support segments returned by Route
+        # Server. Preserve the macro route until genuinely near its tail; an
+        # entire short Route must not be bypassed merely because it fits inside
+        # the lookahead horizon.
         final = remaining <= float(self.settings["final_goal_switch_distance_m"])
-        lookahead_global = min(total, self.progress_m + float(self.settings["lookahead_m"]))
-        lookahead_edge = min(
-            int(np.searchsorted(self.offsets, lookahead_global, side="right") - 1),
-            len(self.edges) - 1,
-        )
-        lookahead = _point_at(
-            self.edges[lookahead_edge].polyline_xy,
-            lookahead_global - float(self.offsets[lookahead_edge]),
+        lookahead = self.point_at_distance_ahead(
+            float(self.settings["lookahead_m"])
         )
         return Progress(
             edge_id=self.edges[self.edge_index].id,

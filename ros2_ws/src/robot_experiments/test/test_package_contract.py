@@ -275,7 +275,7 @@ def test_incremental_map_comparison_has_an_installed_cli():
     ) in setup_source
 
 
-def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
+def test_runner_only_publishes_a21_route_goals_and_never_controls_or_localizes_robot():
     source = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
     tree = ast.parse(source)
     attribute_calls = {
@@ -283,7 +283,12 @@ def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert "create_publisher" not in attribute_calls
+    # Final Qualification adds one explicit mission-dispatch publisher.  The
+    # coordinator, Nav2 and Module3 remain the only planning/control owners.
+    assert "create_publisher" in attribute_calls
+    assert source.count("self.create_publisher(") == 1
+    assert 'PoseStamped, "/bio_nav/route_goal"' in source
+    assert 'Twist, "/cmd_vel"' not in source
     # A read-only /cmd_vel subscription is allowed for motion-quality metrics.
     assert "create_subscription(" in source
     assert '"command_topic", "/cmd_vel"' in source

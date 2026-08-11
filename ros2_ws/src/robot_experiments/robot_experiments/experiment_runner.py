@@ -26,7 +26,7 @@ from lifecycle_msgs.srv import GetState
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.msg import CollisionMonitorState, Costmap
 from nav2_msgs.srv import ClearEntireCostmap
-from nav_msgs.msg import Odometry
+from nav_msgs.msg import Odometry, Path as NavPath
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.executors import ExternalShutdownException
@@ -41,6 +41,13 @@ from sensor_msgs.msg import Image, LaserScan
 from std_msgs.msg import Bool, Empty as EmptyMessage, String
 from std_srvs.srv import Empty, Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
+
+from bio_nav_interfaces.msg import (
+    CanonicalRoute,
+    EdgePriorArray,
+    NavigationGraph,
+    RouteProgress,
+)
 
 from .configuration import ConfigurationError
 from .metrics import (
@@ -108,6 +115,39 @@ def _strict_success_from_leg_count(
 
     expected_leg_count = route_pose_count or 1
     return result == "success" and leg_count == expected_leg_count
+
+
+def _record_tracked_route_length(
+    routes: list[dict[str, Any]], request_id: int, arc_length_m: float,
+    remaining_m: float,
+) -> None:
+    """Replace full canonical-edge length with the trimmed Route geometry."""
+
+    tracked_length_m = float(arc_length_m) + float(remaining_m)
+    if not math.isfinite(tracked_length_m) or tracked_length_m < 0.0:
+        return
+    for route in reversed(routes):
+        if int(route.get("request_id", -1)) != int(request_id):
+            continue
+        previous = route.get("planned_length_m")
+        route.setdefault("canonical_full_edge_length_m", previous)
+        measured = route.get("tracked_route_length_m")
+        if not isinstance(measured, (int, float)) or tracked_length_m > float(measured):
+            route["tracked_route_length_m"] = tracked_length_m
+            route["planned_length_m"] = tracked_length_m
+        return
+
+
+def _edge_prior_statistics(priors: list[Any]) -> dict[str, float | int]:
+    costs = [max(0.0, float(item.cost_delta_m)) for item in priors]
+    risks = [max(0.0, float(item.learned_risk)) for item in priors]
+    return {
+        "prior_count": len(priors),
+        "positive_cost_count": sum(value > 0.0 for value in costs),
+        "total_cost_delta_m": sum(costs),
+        "maximum_cost_delta_m": max(costs, default=0.0),
+        "maximum_learned_risk": max(risks, default=0.0),
+    }
 
 
 def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
@@ -483,6 +523,18 @@ class ExperimentRunner(Node):
         self._action_name = str(
             self.declare_parameter("navigate_action", "/navigate_to_pose").value
         )
+        self._navigation_execution_backend = str(
+            self.declare_parameter(
+                "navigation_execution_backend", "navigate_to_pose"
+            ).value
+        ).strip()
+        if self._navigation_execution_backend not in {
+            "navigate_to_pose",
+            "route_guided",
+        }:
+            raise ConfigurationError(
+                "navigation_execution_backend must be navigate_to_pose or route_guided"
+            )
         self._service_timeout_sec = float(
             self.declare_parameter("service_timeout_sec", 30.0).value
         )
@@ -650,6 +702,50 @@ class ExperimentRunner(Node):
             self._global_costmap_callback,
             reliable,
         )
+        route_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._route_goal_publisher = self.create_publisher(
+            PoseStamped, "/bio_nav/route_goal", reliable
+        )
+        self._navigation_graph_subscription = self.create_subscription(
+            NavigationGraph,
+            "/bio_nav/navigation_graph",
+            self._navigation_graph_callback,
+            route_qos,
+        )
+        self._canonical_route_subscription = self.create_subscription(
+            CanonicalRoute,
+            "/bio_nav/canonical_route",
+            self._canonical_route_callback,
+            route_qos,
+        )
+        self._route_goal_complete_subscription = self.create_subscription(
+            Bool,
+            "/bio_nav/route_goal_complete",
+            self._route_goal_complete_callback,
+            reliable,
+        )
+        self._edge_prior_subscription = self.create_subscription(
+            EdgePriorArray,
+            "/bio_nav/module2/edge_priors",
+            self._edge_prior_callback,
+            route_qos,
+        )
+        self._route_progress_subscription = self.create_subscription(
+            RouteProgress,
+            "/bio_nav/route_progress",
+            self._route_progress_callback,
+            reliable,
+        )
+        self._smac_plan_subscription = self.create_subscription(
+            NavPath,
+            "/plan",
+            self._smac_plan_callback,
+            reliable,
+        )
         self._reset_client = self.create_client(Trigger, self._reset_service_name)
         self._localization_buffer_client = self.create_client(
             Empty, "/slam_toolbox/clear_localization_buffer"
@@ -677,19 +773,22 @@ class ExperimentRunner(Node):
                 ).value
             ),
         )
+        managed_node_names = [
+            "controller_server",
+            "planner_server",
+            "behavior_server",
+            "velocity_smoother",
+            "collision_monitor",
+            "bt_navigator",
+        ]
+        if self._navigation_execution_backend == "route_guided":
+            managed_node_names.insert(0, "route_server")
         self._nav2_managed_state_clients = tuple(
             (
                 node_name,
                 self.create_client(GetState, f"/{node_name}/get_state"),
             )
-            for node_name in (
-                "controller_server",
-                "planner_server",
-                "behavior_server",
-                "velocity_smoother",
-                "collision_monitor",
-                "bt_navigator",
-            )
+            for node_name in managed_node_names
         )
         self._costmap_clear_clients = (
             (
@@ -721,6 +820,10 @@ class ExperimentRunner(Node):
         self._active_evidence_root: Path | None = None
         self._bag_process: subprocess.Popen[bytes] | None = None
         self._active_selection: RunSelection | None = None
+        self._navigation_graph: NavigationGraph | None = None
+        self._canonical_route_epoch = 0
+        self._route_goal_complete_epoch = 0
+        self._latest_route_goal_complete = False
         self._clear_run_state()
 
     def _clear_run_state(self) -> None:
@@ -759,6 +862,11 @@ class ExperimentRunner(Node):
         self._safety_scan_frame: dict[str, Any] | None = None
         self._local_costmap: Costmap | None = None
         self._global_costmap: Costmap | None = None
+        self._minimum_safety_scan_range_m: float | None = None
+        self._canonical_routes: list[dict[str, Any]] = []
+        self._module2_prior_responses: list[dict[str, Any]] = []
+        self._route_progress_samples: list[dict[str, Any]] = []
+        self._smac_plans: list[dict[str, Any]] = []
         self._goal_dispatch_recorded = False
 
     def _lifecycle_event(self, event: str) -> None:
@@ -930,6 +1038,112 @@ class ExperimentRunner(Node):
 
     def _safety_scan_callback(self, message: LaserScan) -> None:
         self._safety_scan_frame = self._scan_value(message)
+        valid = [
+            float(value)
+            for value in message.ranges
+            if math.isfinite(float(value))
+            and float(message.range_min) <= float(value) <= float(message.range_max)
+        ]
+        if self._navigation_active and valid:
+            sample_minimum = min(valid)
+            self._minimum_safety_scan_range_m = (
+                sample_minimum
+                if self._minimum_safety_scan_range_m is None
+                else min(self._minimum_safety_scan_range_m, sample_minimum)
+            )
+
+    def _navigation_graph_callback(self, message: NavigationGraph) -> None:
+        self._navigation_graph = message
+
+    def _canonical_route_callback(self, message: CanonicalRoute) -> None:
+        self._canonical_route_epoch += 1
+        graph = self._navigation_graph
+        edge_lengths = (
+            {int(edge.id): float(edge.length_m) for edge in graph.edges}
+            if graph is not None
+            and str(graph.graph_id) == str(message.graph_id)
+            and int(graph.revision) == int(message.graph_revision)
+            else {}
+        )
+        edge_ids = [int(value) for value in message.edge_ids]
+        missing = [edge_id for edge_id in edge_ids if edge_id not in edge_lengths]
+        planned_length = (
+            sum(edge_lengths[edge_id] for edge_id in edge_ids)
+            if edge_ids and not missing
+            else None
+        )
+        if self._navigation_active:
+            self._canonical_routes.append(
+                {
+                    "request_id": int(message.request_id),
+                    "graph_id": str(message.graph_id),
+                    "graph_revision": int(message.graph_revision),
+                    "node_ids": [int(value) for value in message.node_ids],
+                    "edge_ids": edge_ids,
+                    "planned_length_m": planned_length,
+                    "missing_edge_ids": missing,
+                    "route_cost_m": float(message.total_cost_m),
+                }
+            )
+
+    def _route_goal_complete_callback(self, message: Bool) -> None:
+        self._route_goal_complete_epoch += 1
+        self._latest_route_goal_complete = bool(message.data)
+
+    def _edge_prior_callback(self, message: EdgePriorArray) -> None:
+        if not self._navigation_active:
+            return
+        self._module2_prior_responses.append(
+            {
+                "request_id": int(message.request_id),
+                "graph_id": str(message.graph_id),
+                "graph_revision": int(message.graph_revision),
+                "healthy": bool(message.healthy),
+                "model_id": str(message.model_id),
+                **_edge_prior_statistics(list(message.priors)),
+            }
+        )
+
+    def _route_progress_callback(self, message: RouteProgress) -> None:
+        if not self._navigation_active:
+            return
+        _record_tracked_route_length(
+            self._canonical_routes,
+            int(message.request_id),
+            float(message.arc_length_m),
+            float(message.remaining_m),
+        )
+        self._route_progress_samples.append(
+            {
+                "request_id": int(message.request_id),
+                "edge_id": int(message.edge_id),
+                "edge_index": int(message.edge_index),
+                "arc_length_m": float(message.arc_length_m),
+                "lateral_error_m": float(message.lateral_error_m),
+                "remaining_m": float(message.remaining_m),
+                "projected_point": [
+                    float(message.projected_point.x),
+                    float(message.projected_point.y),
+                ],
+                "lookahead": [
+                    float(message.lookahead_goal.pose.position.x),
+                    float(message.lookahead_goal.pose.position.y),
+                ],
+            }
+        )
+
+    def _smac_plan_callback(self, message: NavPath) -> None:
+        if not self._navigation_active or not message.poses:
+            return
+        self._smac_plans.append(
+            {
+                "frame_id": str(message.header.frame_id),
+                "points": [
+                    [float(pose.pose.position.x), float(pose.pose.position.y)]
+                    for pose in message.poses
+                ],
+            }
+        )
 
     def _local_costmap_callback(self, message: Costmap) -> None:
         self._local_costmap = message
@@ -1710,6 +1924,11 @@ class ExperimentRunner(Node):
                 raise RuntimeError(f"obstacle completion failed for {group}: {detail}")
 
     def _navigate(self) -> tuple[bool, bool, int]:
+        if self._navigation_execution_backend == "route_guided":
+            return self._navigate_route_guided()
+        return self._navigate_direct()
+
+    def _navigate_direct(self) -> tuple[bool, bool, int]:
         if not self._navigate_client.wait_for_server(
             timeout_sec=self._service_timeout_sec
         ):
@@ -1833,6 +2052,149 @@ class ExperimentRunner(Node):
                     "duration_sec": max(0.0, self._clock_seconds() - leg_start_stamp),
                     "ground_truth_length_m": path_length([(sample.x, sample.y) for sample in leg_gt]),
                 })
+                self._minimum_poses_remaining = len(specifications) - index - 1
+            return True, False, GoalStatus.STATUS_SUCCEEDED
+        finally:
+            self._navigation_end_stamp_s = self._clock_seconds()
+            self._navigation_active = False
+
+    def _navigate_route_guided(self) -> tuple[bool, bool, int]:
+        """Execute every declared mission leg through the A21 coordinator.
+
+        A leg is accepted only after a fresh CanonicalRoute arrives.  Its
+        terminal result is the coordinator's fresh route_goal_complete Bool,
+        which in turn reflects the internal Nav2 NavigateToPose result.  The
+        runner never performs graph search itself.
+        """
+
+        if not self._wait_until(
+            lambda: self._navigation_graph is not None
+            and self._route_goal_publisher.get_subscription_count() > 0,
+            self._service_timeout_sec,
+        ):
+            raise RuntimeError(
+                "A21 route-guided backend unavailable: graph or coordinator missing"
+            )
+        specifications = (
+            self._scenario.route
+            if self._scenario.route
+            else (self._scenario.goal,)
+        )
+        overall_deadline = time.monotonic() + self._scenario.timeout_sec
+        self._navigation_active = True
+        self._navigation_start_stamp_s = self._clock_seconds()
+        try:
+            for index, specification in enumerate(specifications):
+                identifier = specification.goal_id or f"G{index + 1}"
+                leg_start_stamp = self._clock_seconds()
+                leg_gt_start = len(self._ground_truth_samples)
+                route_epoch = self._canonical_route_epoch
+                completion_epoch = self._route_goal_complete_epoch
+                route_record_start = len(self._canonical_routes)
+                poses_remaining = len(specifications) - index
+                self._minimum_poses_remaining = (
+                    poses_remaining
+                    if self._minimum_poses_remaining is None
+                    else min(self._minimum_poses_remaining, poses_remaining)
+                )
+                if not self._goal_dispatch_recorded:
+                    self._lifecycle_event("goal_dispatched")
+                    self._goal_dispatch_recorded = True
+                self._route_goal_publisher.publish(
+                    self._pose_message(specification)
+                )
+                route_wait = min(
+                    self._service_timeout_sec,
+                    max(0.0, overall_deadline - time.monotonic()),
+                )
+                accepted = self._wait_until(
+                    lambda: self._canonical_route_epoch > route_epoch
+                    and len(self._canonical_routes) > route_record_start,
+                    route_wait,
+                )
+                if not accepted:
+                    self._leg_results.append(
+                        {
+                            "id": identifier,
+                            "nav2_status": GoalStatus.STATUS_ABORTED,
+                            "accepted": False,
+                            "route_guided": True,
+                            "failure_reason": "canonical_route_timeout",
+                        }
+                    )
+                    return False, False, GoalStatus.STATUS_ABORTED
+
+                initial_route = self._canonical_routes[route_record_start]
+                self._trigger_obstacle_group(specification.goal_id)
+                leg_deadline = min(
+                    overall_deadline,
+                    time.monotonic() + self._scenario.leg_timeout_sec,
+                )
+                while (
+                    self._route_goal_complete_epoch <= completion_epoch
+                    and time.monotonic() < leg_deadline
+                    and not self._dynamic_guard_aborted
+                ):
+                    self._spin_once(
+                        min(0.1, max(0.0, leg_deadline - time.monotonic()))
+                    )
+                terminal = self._route_goal_complete_epoch > completion_epoch
+                guard_aborted = self._dynamic_guard_aborted
+                if not terminal:
+                    self._cancel_stale_navigation_goal()
+                    # Let the coordinator observe the cancelled action and
+                    # publish its false terminal result before the next reset.
+                    self._wait_until(
+                        lambda: self._route_goal_complete_epoch > completion_epoch,
+                        min(2.0, self._service_timeout_sec),
+                    )
+                    self._leg_results.append(
+                        {
+                            "id": identifier,
+                            "nav2_status": GoalStatus.STATUS_CANCELED,
+                            "accepted": True,
+                            "route_guided": True,
+                            "timed_out": not guard_aborted,
+                            "dynamic_safety_aborted": guard_aborted,
+                            "planned_route_length_m": initial_route.get(
+                                "planned_length_m"
+                            ),
+                            "route_request_id": initial_route.get("request_id"),
+                            "route_edge_ids": initial_route.get("edge_ids", []),
+                        }
+                    )
+                    return False, not guard_aborted, GoalStatus.STATUS_CANCELED
+
+                succeeded = self._latest_route_goal_complete
+                status = (
+                    GoalStatus.STATUS_SUCCEEDED
+                    if succeeded
+                    else GoalStatus.STATUS_ABORTED
+                )
+                leg_gt = self._ground_truth_samples[leg_gt_start:]
+                leg_result = {
+                    "id": identifier,
+                    "nav2_status": status,
+                    "accepted": True,
+                    "route_guided": True,
+                    "timed_out": False,
+                    "duration_sec": max(
+                        0.0, self._clock_seconds() - leg_start_stamp
+                    ),
+                    "ground_truth_length_m": path_length(
+                        [(sample.x, sample.y) for sample in leg_gt]
+                    ),
+                    "planned_route_length_m": initial_route.get(
+                        "planned_length_m"
+                    ),
+                    "route_request_id": initial_route.get("request_id"),
+                    "route_edge_ids": initial_route.get("edge_ids", []),
+                    "route_history": self._canonical_routes[route_record_start:],
+                }
+                self._leg_results.append(leg_result)
+                if not succeeded:
+                    return False, False, status
+                self._complete_obstacle_group(specification.goal_id)
                 self._minimum_poses_remaining = len(specifications) - index - 1
             return True, False, GoalStatus.STATUS_SUCCEEDED
         finally:
@@ -2294,7 +2656,17 @@ class ExperimentRunner(Node):
         reasons = list(evaluation.failure_reasons)
         reference_length = None
         path_deviation_percent = None
+        planned_path_length = None
+        planned_path_deviation_percent = None
         reference_legs: dict[str, float] = {}
+        planned_leg_lengths = [
+            float(leg["planned_route_length_m"])
+            for leg in self._leg_results
+            if isinstance(leg.get("planned_route_length_m"), (int, float))
+            and math.isfinite(float(leg["planned_route_length_m"]))
+        ]
+        if planned_leg_lengths:
+            planned_path_length = sum(planned_leg_lengths)
         if self._optimal_reference is not None:
             reference_length = float(self._optimal_reference["total_length_m_0_05"])
             for item in self._optimal_reference["legs"]:
@@ -2308,6 +2680,13 @@ class ExperimentRunner(Node):
                 path_deviation_percent = abs(
                     ground_truth_path_length - reference_length
                 ) / reference_length * 100.0
+                if (
+                    planned_path_length is not None
+                    and len(planned_leg_lengths) == len(self._leg_results)
+                ):
+                    planned_path_deviation_percent = abs(
+                        planned_path_length - reference_length
+                    ) / reference_length * 100.0
                 if path_deviation_percent > 20.0:
                     reasons.append("ground_truth_path_deviation_exceeds_20_percent")
                 for leg in self._leg_results:
@@ -2461,6 +2840,7 @@ class ExperimentRunner(Node):
             # the legacy pilot scenario strict, while preserving that contract
             # for the qualification scenarios.
             qualification_dynamic = self._scenario.scenario_id in {
+                "attempt30_a21_qualification_dynamic",
                 "kujiale_stage2_2_g2_gate_dynamic",
                 "kujiale_stage2_2_g2_confirmation_dynamic",
                 # This isolated Module3-only smoke shares the formal
@@ -2527,6 +2907,54 @@ class ExperimentRunner(Node):
         reasons = list(dict.fromkeys(reasons))
         warnings = list(dict.fromkeys(warnings))
         result = "success" if not reasons else "failure"
+        footprint_radius_m = max(
+            math.hypot(x, y) for x, y in self._robot_footprint
+        )
+        minimum_clearance_m = (
+            max(0.0, self._minimum_safety_scan_range_m - footprint_radius_m)
+            if self._minimum_safety_scan_range_m is not None
+            else None
+        )
+        module2_response_count = len(self._module2_prior_responses)
+        module2_healthy_count = sum(
+            1 for item in self._module2_prior_responses if item["healthy"]
+        )
+        graph = self._navigation_graph
+        navigation_graph = (
+            {
+                "graph_id": str(graph.graph_id),
+                "revision": int(graph.revision),
+                "map_version": str(graph.map_version),
+                "nodes": [
+                    {
+                        "id": int(node.id),
+                        "position": [
+                            float(node.position.x), float(node.position.y)
+                        ],
+                        "degree": int(node.degree),
+                        "node_type": int(node.node_type),
+                        "clearance_m": float(node.clearance_m),
+                    }
+                    for node in graph.nodes
+                ],
+                "edges": [
+                    {
+                        "id": int(edge.id),
+                        "from_node": int(edge.from_node),
+                        "to_node": int(edge.to_node),
+                        "length_m": float(edge.length_m),
+                        "min_clearance_m": float(edge.min_clearance_m),
+                        "polyline": [
+                            [float(point.x), float(point.y)]
+                            for point in edge.polyline
+                        ],
+                    }
+                    for edge in graph.edges
+                ],
+            }
+            if graph is not None
+            else None
+        )
         return {
             "scenario_id": self._scenario.scenario_id,
             "random_seed": seed,
@@ -2536,6 +2964,7 @@ class ExperimentRunner(Node):
             "robot_config_hash": self._robot_config_hash,
             "nav2_config_hash": self._nav2_config_hash,
             "nav2_profile": self._nav2_profile,
+            "navigation_execution_backend": self._navigation_execution_backend,
             "optimal_reference_hash": self._optimal_reference_hash,
             "dynamic_runtime_contract": dict(
                 self._dynamic_runtime_contract
@@ -2562,6 +2991,10 @@ class ExperimentRunner(Node):
                 for specification in self._scenario.route
             ],
             "legs": list(self._leg_results),
+            "canonical_routes": list(self._canonical_routes),
+            "navigation_graph": navigation_graph,
+            "route_progress": list(self._route_progress_samples),
+            "smac_plans": list(self._smac_plans),
             "obstacle_trajectories": list(self._scenario.obstacle_trajectories),
             "obstacle_events": list(self._obstacle_events),
             "dynamic_interaction": {
@@ -2627,6 +3060,25 @@ class ExperimentRunner(Node):
                 "ground_truth_path_length_m": ground_truth_path_length,
                 "optimal_reference_path_length_m": reference_length,
                 "path_deviation_percent": path_deviation_percent,
+                "planned_path_length_m": planned_path_length,
+                "planned_path_deviation_percent": planned_path_deviation_percent,
+                "execution_time_sec": (
+                    max(
+                        0.0,
+                        self._navigation_end_stamp_s
+                        - self._navigation_start_stamp_s,
+                    )
+                    if self._navigation_start_stamp_s is not None
+                    and self._navigation_end_stamp_s is not None
+                    else None
+                ),
+                "minimum_safety_scan_range_m": self._minimum_safety_scan_range_m,
+                "minimum_clearance_m": minimum_clearance_m,
+                "minimum_clearance_method": (
+                    "safety_scan_minus_footprint_circumscribed_radius"
+                    if minimum_clearance_m is not None
+                    else "unavailable"
+                ),
                 "odom_path_length_m": path_length(
                     [(sample.x, sample.y) for sample in self._odom_samples]
                 ),
@@ -2638,6 +3090,19 @@ class ExperimentRunner(Node):
                 "route_feedback_count": self._route_feedback_count,
                 "minimum_poses_remaining": self._minimum_poses_remaining,
                 "maximum_route_recoveries": self._maximum_route_recoveries,
+            },
+            "module2_health": {
+                "response_count": module2_response_count,
+                "healthy_count": module2_healthy_count,
+                "healthy_fraction": (
+                    module2_healthy_count / module2_response_count
+                    if module2_response_count
+                    else None
+                ),
+                "model_ids": sorted(
+                    {item["model_id"] for item in self._module2_prior_responses}
+                ),
+                "responses": list(self._module2_prior_responses),
             },
             "observability": {
                 "collision_status_seen": self._collision_seen,
@@ -2653,6 +3118,12 @@ class ExperimentRunner(Node):
                     self._collision_monitor_active
                 ),
                 "map_to_odom_seen": self._tf_ever_available,
+                "localization_healthy": bool(
+                    self._localization_seen
+                    and not self._localization_lost
+                    and self._tf_ever_available
+                    and not self._tf_interrupted
+                ),
             },
         }
 
@@ -2808,6 +3279,10 @@ class ExperimentRunner(Node):
             "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
             "/cmd_vel_nav", "/cmd_vel_smoothed",
             "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan",
+            "/bio_nav/navigation_graph", "/bio_nav/canonical_route",
+            "/bio_nav/route_progress", "/bio_nav/route_lookahead_goal",
+            "/bio_nav/route_goal", "/bio_nav/route_goal_complete",
+            "/bio_nav/module2/edge_priors",
             "/optimal_trajectory", "/trajectories",
             "/local_costmap/costmap_raw", "/global_costmap/costmap_raw",
             "/lidar/points_raw", "/lidar/points_scan", "/scan", "/scan_safety",
@@ -2865,7 +3340,7 @@ class ExperimentRunner(Node):
         self._write_gzip_csv(root / "obstacles.csv.gz", ["id", "state", "stamp_s"], obstacle_rows)
         legs = list(manifest.get("legs", []))
         with (root / "leg_metrics.csv").open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=["id", "nav2_status", "accepted", "timed_out", "duration_sec", "ground_truth_length_m", "reference_length_m"], extrasaction="ignore")
+            writer = csv.DictWriter(stream, fieldnames=["id", "nav2_status", "accepted", "timed_out", "duration_sec", "ground_truth_length_m", "reference_length_m", "planned_route_length_m", "route_request_id", "route_edge_ids"], extrasaction="ignore")
             writer.writeheader(); writer.writerows(legs)
         depth_complete = self._write_depth_snapshot(root)
         local_costmap_complete = self._write_costmap_snapshot(root, "local_costmap", self._local_costmap)
@@ -2910,6 +3385,9 @@ class ExperimentRunner(Node):
             "condition_id": manifest.get("condition_id"),
             "appearance_profile_id": manifest.get("appearance", {}).get("profile_id"),
             "nav2_profile": manifest.get("nav2_profile"),
+            "navigation_execution_backend": manifest.get(
+                "navigation_execution_backend"
+            ),
             "strict_success": strict_success,
             "physical_collision_free": not self._collision_detected,
             "isaac_contact_sensor_collision_detected": (
@@ -2933,6 +3411,25 @@ class ExperimentRunner(Node):
             },
             "path_deviation_percent": manifest.get("metrics", {}).get(
                 "path_deviation_percent"
+            ),
+            "planned_path_deviation_percent": manifest.get("metrics", {}).get(
+                "planned_path_deviation_percent"
+            ),
+            "planned_path_length_m": manifest.get("metrics", {}).get(
+                "planned_path_length_m"
+            ),
+            "execution_time_sec": manifest.get("metrics", {}).get(
+                "execution_time_sec"
+            ),
+            "minimum_clearance_m": manifest.get("metrics", {}).get(
+                "minimum_clearance_m"
+            ),
+            "localization_healthy": manifest.get("observability", {}).get(
+                "localization_healthy"
+            ),
+            "module2_health": manifest.get("module2_health", {}),
+            "unexpected_abort": bool(
+                manifest.get("nav2_status") != GoalStatus.STATUS_SUCCEEDED
             ),
             "dynamic_interaction_complete": bool(
                 manifest.get("dynamic_interaction", {}).get("complete", False)

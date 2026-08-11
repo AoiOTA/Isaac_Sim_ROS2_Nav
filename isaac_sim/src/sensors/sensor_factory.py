@@ -743,8 +743,14 @@ class SensorFactory:
         import omni.usd
         from isaacsim.sensors.experimental.rtx import RtxCamera
         from pxr import Gf, UsdGeom
+        from isaac_sim.src.stage.scene_composer import author_configured_static_frames
 
         stage = omni.usd.get_context().get_stage()
+        # Reassert the project-layer specs immediately before Camera creation:
+        # Kit may complete the referenced Jackal payload after stage validation.
+        author_configured_static_frames(
+            stage, self.config.robot.base_link_prim, self.config.files.robot
+        )
         for frame_path in (
             f"{self.config.robot.base_link_prim}/camera_link/{definition.link_frame}",
             expected_parent,

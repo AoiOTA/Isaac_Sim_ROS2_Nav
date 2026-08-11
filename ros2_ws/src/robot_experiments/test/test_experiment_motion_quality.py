@@ -5,12 +5,41 @@ from types import SimpleNamespace
 import pytest
 
 from robot_experiments.experiment_runner import (
+    _edge_prior_statistics,
+    _record_tracked_route_length,
     _strict_success_from_leg_count,
     CommandSample,
     ExperimentRunner,
     OdometrySample,
     _dynamic_interaction_acceptance,
 )
+
+
+def test_tracked_route_length_replaces_untrimmed_canonical_edge_sum():
+    routes = [{"request_id": 7, "planned_length_m": 14.65}]
+
+    _record_tracked_route_length(routes, 7, 0.07, 11.87)
+    _record_tracked_route_length(routes, 7, 11.88, 0.07)
+
+    assert routes[0]["canonical_full_edge_length_m"] == pytest.approx(14.65)
+    assert routes[0]["tracked_route_length_m"] == pytest.approx(11.95)
+    assert routes[0]["planned_length_m"] == pytest.approx(11.95)
+
+
+def test_edge_prior_statistics_preserve_nonzero_learned_cost_evidence():
+    priors = [
+        SimpleNamespace(cost_delta_m=0.0, learned_risk=0.0),
+        SimpleNamespace(cost_delta_m=0.55, learned_risk=1.0),
+        SimpleNamespace(cost_delta_m=0.07, learned_risk=0.58),
+    ]
+
+    assert _edge_prior_statistics(priors) == {
+        "prior_count": 3,
+        "positive_cost_count": 2,
+        "total_cost_delta_m": pytest.approx(0.62),
+        "maximum_cost_delta_m": pytest.approx(0.55),
+        "maximum_learned_risk": pytest.approx(1.0),
+    }
 
 
 def test_strict_success_counts_single_goal_when_route_is_omitted():

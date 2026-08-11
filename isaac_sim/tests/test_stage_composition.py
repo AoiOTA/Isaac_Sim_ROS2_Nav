@@ -29,6 +29,7 @@ from isaac_sim.src.stage.physics_setup import (  # noqa: E402
 )
 from isaac_sim.src.stage.scene_composer import (  # noqa: E402
     SceneComposer,
+    author_configured_static_frames,
     ensure_kujiale_g5_doorway_floor_fill,
 )
 from isaac_sim.src.stage.stage_loader import (  # noqa: E402
@@ -86,6 +87,23 @@ def test_composed_stage_has_exactly_one_expected_physics_scene():
     assert [str(scene.GetPath()) for scene in scenes] == [config.simulation.expected_physics_scene]
     assert UsdGeom.GetStageMetersPerUnit(stage) == pytest.approx(1.0)
     assert UsdGeom.GetStageUpAxis(stage) == UsdGeom.Tokens.z
+
+
+def test_configured_static_frames_are_root_authored_and_idempotent():
+    config = _config()
+    stage = SceneComposer(config).compose(save=False)
+    first = author_configured_static_frames(
+        stage, config.robot.base_link_prim, config.files.robot
+    )
+    second = author_configured_static_frames(
+        stage, config.robot.base_link_prim, config.files.robot
+    )
+    assert first == second
+    assert (
+        f"{config.robot.base_link_prim}/camera_link/camera_front_link/"
+        "camera_front_optical_frame"
+    ) in second
+    validate_sensor_frames(stage, config.robot.base_link_prim)
 
 
 def test_missing_physics_scene_is_created_once():

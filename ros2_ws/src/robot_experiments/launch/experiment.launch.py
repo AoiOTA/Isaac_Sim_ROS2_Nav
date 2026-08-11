@@ -43,6 +43,14 @@ def generate_launch_description():
             # at it through this override.  The default preserves every
             # existing campaign byte-for-byte.
             DeclareLaunchArgument("navigate_action", default_value="/navigate_to_pose"),
+            DeclareLaunchArgument(
+                "navigation_execution_backend",
+                default_value="navigate_to_pose",
+                description=(
+                    "navigate_to_pose for legacy direct dispatch; route_guided "
+                    "for the A21 Route Server/coordinator data path"
+                ),
+            ),
             # Evidence-only fence used by Stage 2.2-R2C4-R2.  These values do
             # not alter localization, planning, costmaps, or control.
             DeclareLaunchArgument("require_pregoal_authorization", default_value="false"),
@@ -86,6 +94,9 @@ def generate_launch_description():
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
                         "dynamic_seed": LaunchConfiguration("dynamic_seed"),
                         "navigate_action": LaunchConfiguration("navigate_action"),
+                        "navigation_execution_backend": LaunchConfiguration(
+                            "navigation_execution_backend"
+                        ),
                         "require_pregoal_authorization": ParameterValue(
                             LaunchConfiguration("require_pregoal_authorization"),
                             value_type=bool,

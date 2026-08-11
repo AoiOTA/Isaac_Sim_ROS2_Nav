@@ -56,10 +56,33 @@ def export_route_support_graph(
         canonical_nodes[node.id] = support_node(np.asarray(node.position_xy))
 
     segments = []
+    physical_samples: dict[
+        tuple[int, int, tuple[float, ...]], tuple[np.ndarray, np.ndarray]
+    ] = {}
     for edge in sorted(graph.edges, key=lambda item: item.id):
         if edge.static_traversability == Traversability.INFEASIBLE:
             continue
-        points, distances = _resample(edge.polyline_xy, support_spacing_m)
+        forward = edge.from_node < edge.to_node or (
+            edge.from_node == edge.to_node
+            and tuple(edge.polyline_xy[0]) <= tuple(edge.polyline_xy[-1])
+        )
+        normalized = edge.polyline_xy if forward else edge.polyline_xy[::-1]
+        physical_key = (
+            min(edge.from_node, edge.to_node),
+            max(edge.from_node, edge.to_node),
+            tuple(float(value) for value in np.round(normalized, 6).ravel()),
+        )
+        if physical_key not in physical_samples:
+            physical_samples[physical_key] = _resample(
+                normalized, support_spacing_m
+            )
+        physical_points, physical_distances = physical_samples[physical_key]
+        if forward:
+            points = physical_points
+            distances = physical_distances
+        else:
+            points = physical_points[::-1].copy()
+            distances = physical_distances[-1] - physical_distances[::-1]
         ids = [support_node(point) for point in points]
         for index, (start, end) in enumerate(zip(ids[:-1], ids[1:])):
             if start == end:

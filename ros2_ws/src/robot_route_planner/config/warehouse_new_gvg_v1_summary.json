@@ -17,7 +17,7 @@
   "node_count": 40,
   "revision": 1,
   "support_edge_count": 416,
-  "support_node_count": 377,
+  "support_node_count": 209,
   "total_undirected_length_m": 47.21682940543219,
   "traversability": {
     "FEASIBLE": 46,

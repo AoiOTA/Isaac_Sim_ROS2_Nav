@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, replace
 from pathlib import Path
-import json
 import math
 import tempfile
 
 import numpy as np
 
 from .defaults import load_engineering_defaults
-from .feasibility import apply_footprint_feasibility
+from .feasibility import apply_footprint_feasibility, classify_edge
 from .gvg import build_gvg
 from .map_io import OccupancyMap, load_occupancy_map
 from .route_cost import edge_cost
@@ -19,6 +19,167 @@ from .runtime_edges import RuntimeEdgeManager, RuntimeState
 from .stable_ids import stabilize_graph_ids
 from .structural_updates import StructuralChangeMonitor
 from .tracking import RouteTracker
+
+
+def select_map_pose(
+    map_frame_id: str,
+    odometry_frame_id: str | None,
+    odometry_xy: tuple[float, float] | None,
+    tf_xy: tuple[float, float] | None,
+) -> tuple[float, float] | None:
+    """Prefer an explicit map-frame pose over a potentially transient TF."""
+    if odometry_xy is not None and odometry_frame_id == map_frame_id:
+        return odometry_xy
+    return tf_xy
+
+
+def populate_fresh_goal(target, source, header) -> None:
+    """Copy a final goal pose while retaining the newest progress timestamp."""
+    target.header = header
+    target.pose = source.pose
+
+
+@dataclass(frozen=True)
+class CostmapSnapshot:
+    """Immutable geometry and values from one live Nav2 global costmap."""
+
+    values: np.ndarray
+    resolution_m: float
+    origin_xy: tuple[float, float]
+    frame_id: str
+
+
+def footprint_is_free(
+    costmap: CostmapSnapshot,
+    position_xy: tuple[float, float],
+    yaw_rad: float,
+    footprint_xy: np.ndarray,
+    lethal_cost: int = 253,
+) -> bool:
+    """Check a posed footprint against live lethal/unknown costmap cells."""
+
+    rotation = np.asarray(
+        [
+            [math.cos(yaw_rad), -math.sin(yaw_rad)],
+            [math.sin(yaw_rad), math.cos(yaw_rad)],
+        ],
+        dtype=np.float64,
+    )
+    polygon = np.asarray(footprint_xy, dtype=np.float64) @ rotation.T
+    polygon += np.asarray(position_xy, dtype=np.float64)
+    resolution = float(costmap.resolution_m)
+    origin = np.asarray(costmap.origin_xy, dtype=np.float64)
+    height, width = costmap.values.shape
+    lower = np.floor((polygon.min(axis=0) - origin) / resolution).astype(int)
+    upper = np.floor((polygon.max(axis=0) - origin) / resolution).astype(int)
+    if lower[0] < 0 or lower[1] < 0 or upper[0] >= width or upper[1] >= height:
+        return False
+
+    columns = np.arange(lower[0], upper[0] + 1)
+    rows = np.arange(lower[1], upper[1] + 1)
+    grid_x, grid_y = np.meshgrid(
+        origin[0] + (columns + 0.5) * resolution,
+        origin[1] + (rows + 0.5) * resolution,
+    )
+    points = np.column_stack((grid_x.ravel(), grid_y.ravel()))
+    inside = np.zeros(len(points), dtype=bool)
+    previous = polygon[-1]
+    for current in polygon:
+        crosses = (current[1] > points[:, 1]) != (previous[1] > points[:, 1])
+        denominator = previous[1] - current[1]
+        x_crossing = (
+            (previous[0] - current[0])
+            * (points[:, 1] - current[1])
+            / (denominator if abs(denominator) > 1.0e-12 else 1.0e-12)
+            + current[0]
+        )
+        inside ^= crosses & (points[:, 0] < x_crossing)
+        previous = current
+    row_grid, column_grid = np.meshgrid(rows, columns, indexing="ij")
+    selected_rows = row_grid.ravel()[inside]
+    selected_columns = column_grid.ravel()[inside]
+    if np.any(costmap.values[selected_rows, selected_columns] >= lethal_cost):
+        return False
+
+    for start, end in zip(polygon, np.roll(polygon, -1, axis=0)):
+        count = max(
+            2,
+            int(math.ceil(np.linalg.norm(end - start) / (0.5 * resolution))),
+        )
+        for fraction in np.linspace(0.0, 1.0, count):
+            point = start + fraction * (end - start)
+            column, row = np.floor((point - origin) / resolution).astype(int)
+            if costmap.values[row, column] >= lethal_cost:
+                return False
+    return True
+
+
+def select_live_feasible_lookahead(
+    tracker: RouteTracker,
+    current_xy: tuple[float, float],
+    progress,
+    costmap: CostmapSnapshot | None,
+    footprint_xy: np.ndarray,
+    nominal_distance_m: float,
+    sample_spacing_m: float,
+):
+    """Advance only the metric target past a live obstacle on the same Route."""
+
+    if progress.use_final_goal or costmap is None:
+        return progress
+    maximum = min(progress.remaining_m, 2.0 * nominal_distance_m)
+    spacing = max(float(sample_spacing_m), float(costmap.resolution_m))
+    distances = np.arange(nominal_distance_m, maximum + 0.5 * spacing, spacing)
+    for distance in distances:
+        candidate = tracker.point_at_distance_ahead(float(distance))
+        yaw = math.atan2(
+            candidate[1] - current_xy[1], candidate[0] - current_xy[0]
+        )
+        if footprint_is_free(costmap, candidate, yaw, footprint_xy):
+            return replace(progress, lookahead_xy=candidate)
+    return progress
+
+
+def select_support_attachment(
+    occupancy: OccupancyMap,
+    support_nodes: dict[int, tuple[float, float]],
+    position_xy: tuple[float, float],
+    footprint_settings: dict,
+    *,
+    departing: bool,
+) -> int:
+    """Choose the nearest support point with a direct feasible connector."""
+
+    ordered = sorted(
+        support_nodes.items(),
+        key=lambda item: (math.dist(position_xy, item[1]), item[0]),
+    )
+    if not ordered:
+        raise ValueError("Route support graph contains no nodes")
+    for node_id, node_xy in ordered:
+        if math.dist(position_xy, node_xy) <= occupancy.resolution_m:
+            return node_id
+        endpoints = (
+            np.asarray([position_xy, node_xy], dtype=np.float64)
+            if departing
+            else np.asarray([node_xy, position_xy], dtype=np.float64)
+        )
+        if classify_edge(
+            occupancy,
+            endpoints,
+            footprint_polygon_m=np.asarray(
+                footprint_settings["polygon_m"], dtype=np.float64
+            ),
+            footprint_padding_m=float(footprint_settings["padding_m"]),
+            padded_inscribed_radius_m=float(
+                footprint_settings["padded_inscribed_radius_m"]
+            ),
+            sweep_sample_spacing_m=float(
+                footprint_settings["sweep_sample_spacing_m"]
+            ),
+        ).name == "FEASIBLE":
+            return node_id
+    return ordered[0][0]
 
 
 class RouteCoordinator:
@@ -35,6 +196,7 @@ class RouteCoordinator:
         )
         from geometry_msgs.msg import PoseStamped
         from nav2_msgs.action import ComputeRoute, NavigateToPose
+        from nav2_msgs.msg import Costmap
         from nav2_msgs.srv import DynamicEdges, SetRouteGraph
         from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.action import ActionClient
@@ -88,6 +250,13 @@ class RouteCoordinator:
             self.graph,
             support_spacing_m=float(self.defaults["graph"]["route_support_spacing_m"]),
         )
+        self.support_node_positions = {
+            int(feature["properties"]["id"]): tuple(
+                float(value) for value in feature["geometry"]["coordinates"]
+            )
+            for feature in self.support.geojson["features"]
+            if feature["geometry"]["type"] == "Point"
+        }
         self.runtime = RuntimeEdgeManager(
             self.defaults["runtime_edges"], self.defaults["route_cost"]
         )
@@ -103,6 +272,16 @@ class RouteCoordinator:
         self.latest_priors: dict[int, tuple[float, float]] = {}
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
+        self.latest_pose_frame_id: str | None = None
+        self.latest_global_costmap: CostmapSnapshot | None = None
+        footprint = np.asarray(
+            self.defaults["footprint"]["polygon_m"], dtype=np.float64
+        )
+        padding = float(self.defaults["footprint"]["padding_m"])
+        norms = np.linalg.norm(footprint, axis=1)
+        self.guidance_footprint = footprint + (
+            footprint / np.maximum(norms[:, None], 1.0e-12) * padding
+        )
         self.route_active = False
         self.navigation_goal_pending = False
         self.navigation_goal_handle = None
@@ -187,15 +366,15 @@ class RouteCoordinator:
             qos,
         )
         node.create_subscription(
-            Bool,
-            str(node.get_parameter("goal_complete_topic").value),
-            self._on_goal_complete,
-            qos,
-        )
-        node.create_subscription(
             Odometry,
             str(node.get_parameter("odometry_topic").value),
             self._on_odometry,
+            qos,
+        )
+        node.create_subscription(
+            Costmap,
+            "/global_costmap/costmap_raw",
+            self._on_global_costmap,
             qos,
         )
         self.tf_buffer = Buffer()
@@ -235,8 +414,37 @@ class RouteCoordinator:
             float(message.pose.pose.position.x),
             float(message.pose.pose.position.y),
         )
+        self.latest_pose_frame_id = str(message.header.frame_id)
+
+    def _on_global_costmap(self, message) -> None:
+        width = int(message.metadata.size_x)
+        height = int(message.metadata.size_y)
+        values = np.asarray(message.data, dtype=np.uint8)
+        if width <= 0 or height <= 0 or values.size != width * height:
+            return
+        self.latest_global_costmap = CostmapSnapshot(
+            values=values.reshape(height, width),
+            resolution_m=float(message.metadata.resolution),
+            origin_xy=(
+                float(message.metadata.origin.position.x),
+                float(message.metadata.origin.position.y),
+            ),
+            frame_id=str(message.header.frame_id),
+        )
 
     def _current_xy(self) -> tuple[float, float] | None:
+        # Qualification and ideal-odometry launches provide a high-rate pose
+        # already expressed in map. Prefer that explicit contract: a reset can
+        # briefly leave a cached map->base_link transform internally
+        # inconsistent with map-frame ground truth, which must not advance the
+        # monotonic Route tracker to a distant edge. Localized /odom inputs are
+        # not map-frame, so they continue through the normal TF path below.
+        if (
+            self.latest_pose_xy is not None
+            and self.latest_pose_frame_id == self.frame_id
+        ):
+            return self.latest_pose_xy
+        tf_xy = None
         try:
             transform = self.tf_buffer.lookup_transform(
                 self.frame_id,
@@ -248,12 +456,18 @@ class RouteCoordinator:
                 # immediately use the odometry fallback when it is absent.
                 timeout=self.Duration(seconds=0.0),
             )
-            return (
+            tf_xy = (
                 float(transform.transform.translation.x),
                 float(transform.transform.translation.y),
             )
         except Exception:
-            return self.latest_pose_xy
+            pass
+        return select_map_pose(
+            self.frame_id,
+            self.latest_pose_frame_id,
+            self.latest_pose_xy,
+            tf_xy,
+        )
 
     def _on_goal(self, goal) -> None:
         if self.navigation_goal_handle is not None:
@@ -308,11 +522,16 @@ class RouteCoordinator:
             self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
             self._prepare_route({})
 
-    def _nearest_node(self, xy: tuple[float, float]) -> int:
-        return min(
-            self.graph.nodes,
-            key=lambda node: (math.dist(node.position_xy, xy), node.id),
-        ).id
+    def _nearest_support_node(
+        self, xy: tuple[float, float], *, departing: bool
+    ) -> int:
+        return select_support_attachment(
+            self.map,
+            self.support_node_positions,
+            xy,
+            self.defaults["footprint"],
+            departing=departing,
+        )
 
     def _prepare_route(self, priors: dict[int, tuple[float, float]]) -> None:
         current = self._current_xy()
@@ -323,8 +542,8 @@ class RouteCoordinator:
             float(self.pending_goal.pose.position.x),
             float(self.pending_goal.pose.position.y),
         )
-        start_node = self._nearest_node(current)
-        goal_node = self._nearest_node(goal_xy)
+        start_node = self._nearest_support_node(current, departing=True)
+        goal_node = self._nearest_support_node(goal_xy, departing=False)
         request = self.DynamicEdges.Request()
         runtime_view = self.runtime.route_cost_view()
         edge_map = self.graph.edge_by_id()
@@ -369,8 +588,8 @@ class RouteCoordinator:
             self.node.get_logger().warning("route services are not ready")
             return
         goal = self.ComputeRoute.Goal()
-        goal.start_id = int(self.support.canonical_to_support_nodes[start_node])
-        goal.goal_id = int(self.support.canonical_to_support_nodes[goal_node])
+        goal.start_id = int(start_node)
+        goal.goal_id = int(goal_node)
         goal.use_start = True
         goal.use_poses = False
         future = self.route_client.send_goal_async(goal)
@@ -391,16 +610,37 @@ class RouteCoordinator:
             self.node.get_logger().warning(f"ComputeRoute failed with error {code}")
             return
         canonical_ids = []
+        route_segments: list[list[tuple[float, float]]] = []
         for support_edge in wrapped.result.route.edges:
-            canonical = self.support.support_to_canonical_edge.get(int(support_edge.edgeid))
-            if canonical is not None and (not canonical_ids or canonical_ids[-1] != canonical):
+            canonical = self.support.support_to_canonical_edge.get(
+                int(support_edge.edgeid)
+            )
+            if canonical is None:
+                continue
+            start = (float(support_edge.start.x), float(support_edge.start.y))
+            end = (float(support_edge.end.x), float(support_edge.end.y))
+            if not canonical_ids or canonical_ids[-1] != canonical:
                 canonical_ids.append(canonical)
+                route_segments.append([start, end])
+            else:
+                route_segments[-1].append(end)
         if not canonical_ids:
             self.node.get_logger().warning("ComputeRoute returned no canonical edges")
             return
         edge_map = self.graph.edge_by_id()
-        node_ids = [edge_map[canonical_ids[0]].from_node]
-        node_ids.extend(edge_map[edge_id].to_node for edge_id in canonical_ids)
+        node_ids = []
+        for index, (canonical, points) in enumerate(
+            zip(canonical_ids, route_segments)
+        ):
+            edge = edge_map[canonical]
+            starts_forward = math.dist(
+                points[0], tuple(edge.polyline_xy[0])
+            ) <= math.dist(points[0], tuple(edge.polyline_xy[-1]))
+            source = edge.from_node if starts_forward else edge.to_node
+            target = edge.to_node if starts_forward else edge.from_node
+            if index == 0:
+                node_ids.append(source)
+            node_ids.append(target)
         message = self.CanonicalRoute()
         message.header.stamp = self._now().to_msg()
         message.header.frame_id = self.frame_id
@@ -412,7 +652,12 @@ class RouteCoordinator:
         message.total_cost_m = float(wrapped.result.route.route_cost)
         self.route_pub.publish(message)
         self.tracker = RouteTracker(
-            self.graph, canonical_ids, self.defaults["route_tracking"]
+            self.graph,
+            canonical_ids,
+            self.defaults["route_tracking"],
+            route_segments_xy=[
+                np.asarray(points, dtype=np.float64) for points in route_segments
+            ],
         )
         self.navigation_failed = False
 
@@ -423,6 +668,23 @@ class RouteCoordinator:
         if current is None:
             return
         progress = self.tracker.update(current)
+        if (
+            self.latest_global_costmap is not None
+            and self.latest_global_costmap.frame_id == self.frame_id
+        ):
+            progress = select_live_feasible_lookahead(
+                self.tracker,
+                current,
+                progress,
+                self.latest_global_costmap,
+                self.guidance_footprint,
+                nominal_distance_m=float(
+                    self.defaults["route_tracking"]["lookahead_m"]
+                ),
+                sample_spacing_m=float(
+                    self.defaults["footprint"]["sweep_sample_spacing_m"]
+                ),
+            )
         message = self.RouteProgress()
         message.header.stamp = self._now().to_msg()
         message.header.frame_id = self.frame_id
@@ -435,12 +697,20 @@ class RouteCoordinator:
         message.projected_point.x = progress.projected_xy[0]
         message.projected_point.y = progress.projected_xy[1]
         if progress.use_final_goal:
-            message.lookahead_goal = self.pending_goal
+            # GoalUpdater rejects a goal whose stamp is older than the moving
+            # lookahead it already accepted. Refresh only the header; preserve
+            # the user's exact final pose and orientation.
+            populate_fresh_goal(
+                message.lookahead_goal, self.pending_goal, message.header
+            )
         else:
             message.lookahead_goal.header = message.header
             message.lookahead_goal.pose.position.x = progress.lookahead_xy[0]
             message.lookahead_goal.pose.position.y = progress.lookahead_xy[1]
-            yaw = math.atan2(progress.lookahead_xy[1] - current[1], progress.lookahead_xy[0] - current[0])
+            yaw = math.atan2(
+                progress.lookahead_xy[1] - current[1],
+                progress.lookahead_xy[0] - current[0],
+            )
             message.lookahead_goal.pose.orientation.z = math.sin(yaw * 0.5)
             message.lookahead_goal.pose.orientation.w = math.cos(yaw * 0.5)
         self.progress_pub.publish(message)
@@ -480,15 +750,19 @@ class RouteCoordinator:
 
     def _on_navigation_result(self, future) -> None:
         wrapped = future.result()
-        self.navigation_goal_handle = None
         result_code = -1 if wrapped is None else int(wrapped.result.error_code)
+        # Retire the completed leg before publishing its terminal event.  The
+        # qualification runner can dispatch the next whole-house waypoint as
+        # soon as it receives this Bool.  Clearing via a subscription to our
+        # own publication races that new goal and can erase it before
+        # ComputeRoute is requested.
+        self._finish_active_route()
         if wrapped is not None and result_code == 0:
             completed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
             completed.data = True
             self.goal_complete_pub.publish(completed)
             self.node.get_logger().info("route-guided navigation completed")
             return
-        self.navigation_failed = True
         failed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
         failed.data = False
         self.goal_complete_pub.publish(failed)
@@ -587,11 +861,9 @@ class RouteCoordinator:
             if not self.route_active:
                 self._rebuild_structural_graph()
 
-    def _on_goal_complete(self, message) -> None:
-        if not message.data:
-            return
-        if self.navigation_goal_handle is not None:
-            self.navigation_goal_handle.cancel_goal_async()
+    def _finish_active_route(self) -> None:
+        """Synchronously retire one coordinator-owned Nav2 action."""
+
         self.route_active = False
         self.pending_goal = None
         self.tracker = None
@@ -666,6 +938,13 @@ class RouteCoordinator:
         self.graph = graph
         self.map = occupancy
         self.support = support
+        self.support_node_positions = {
+            int(feature["properties"]["id"]): tuple(
+                float(value) for value in feature["geometry"]["coordinates"]
+            )
+            for feature in support.geojson["features"]
+            if feature["geometry"]["type"] == "Point"
+        }
         self.structural_monitor.accept_rebuild()
         self.pending_structural_map = None
         self._publish_graph()
