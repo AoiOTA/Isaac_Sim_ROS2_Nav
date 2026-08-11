@@ -7,54 +7,24 @@
 # keeps the same PointCloud2 input while expiring unobserved voxels and
 # accelerating that expiration inside the current camera frustum.
 #
-# LiDAR remains an independent 2D obstacle layer.  The static map, footprint,
-# MPPI, velocity smoother, and collision monitor are unchanged from the base
-# configuration.
+# LiDAR remains an independent 2D obstacle layer.  The exact whole-house
+# no-actor diagnostic proved that the former 15 Hz / 30-step, high-noise MPPI
+# envelope plus 0.75 m local inflation failed the static G2->G3 junction.  A
+# dynamic profile must not close control space that is physically traversable.
+# Inherit the validated base MPPI, footprint-aware CostCritic, 0.40 m soft
+# inflation and velocity smoother.  Dynamic safety remains in temporal STVL,
+# LiDAR clearing, hard footprint collision checking, Collision Monitor, the
+# actor clearance guard and the dynamic-only BackUp look-ahead below.
 controller_server:
   ros__parameters:
-    # On the complete Isaac + STVL + RViz workload, the former 500 x 40 MPPI
-    # update took about 70 ms (P90 about 80 ms).  Requesting 20 Hz therefore
-    # produced alternating long compute periods and immediate catch-up bursts
-    # instead of a real 50 ms cadence.  A 12.5 Hz / 25-step trial was smooth
-    # but reacted too late in the fastest crossing.  Fifteen hertz with 30
-    # steps removes 25% of the rollout work, budgets 66.7 ms per update, and
-    # retains a faster obstacle-response interval.
-    controller_frequency: 15.0
+    # Profiles must declare a complete MPPI timing tuple for the pre-launch
+    # Jazzy timing contract.  Repeat only the validated base timing budget;
+    # all control/noise/critic limits continue to inherit from the base file.
+    controller_frequency: 10.0
     FollowPath:
-      # Preserve the complete two-second look-ahead and sequence shifting at
-      # the measured sustainable controller period.
-      time_steps: 30
-      model_dt: 0.0666666667
-      batch_size: 500
-
-      # Dynamic-only evasive envelope.  The static base profile deliberately
-      # retains the validated feasibility-tuning limits instead.
-      vx_std: 0.90
-      wz_std: 3.40
-      vx_max: 1.20
-      wz_max: 3.40
-      ax_max: 3.50
-      ax_min: -3.50
-      az_max: 6.50
-      gamma: 0.030
-      TrajectoryVisualizer:
-        trajectory_step: 25
-        time_step: 5
-      CostCritic:
-        # Jazzy's default near_collision_cost=253 only applies the 300-point
-        # critical penalty at the inscribed-inflation boundary.  With the
-        # 9.0 inflation decay used by this map, cost 20 is reached roughly
-        # 0.50 m from a lethal actor cell: just outside the 0.33 m
-        # circumscribed robot bound plus the actor guard's 0.14 m clearance.
-        # The v23 G2 route showed that the former 0.60 m envelope could still
-        # let a fast local-bypass actor reach its own guard while the robot
-        # was committed to the same swept arc.  Keep hard footprint collision
-        # checking unchanged, but make the dynamic-only soft cost salient
-        # early enough for the next MPPI rollout to choose a different arc.
-        near_collision_cost: 20
-        cost_weight: 4.00
-      PathFollowCritic:
-        cost_weight: 14.0
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 700
 
 local_costmap:
   local_costmap:
@@ -84,14 +54,6 @@ local_costmap:
           # footprint-adjacent safety shell.
           obstacle_min_range: 0.05
           obstacle_max_range: 25.0
-      inflation_layer:
-        # Dynamic actors are 0.40 m cubes.  The v23 G2 safety failure reached
-        # the actor-side guard before the controller changed its arc.  Use a
-        # 0.75 m dynamic-only envelope so the 15 Hz controller receives a
-        # meaningful gradient before the >=0.10 m acceptance boundary.  The
-        # static profile, physical footprint, and hard collision test remain
-        # unchanged.
-        inflation_radius: 0.75
       # STVL is a drop-in Costmap2D voxel plugin.  It consumes the same RGB-D
       # PointCloud2 as the base VoxelLayer but tracks an age per voxel.
       depth_stvl_layer:
@@ -180,14 +142,3 @@ behavior_server:
     # This does not change any actor geometry, trajectory, Collision Monitor,
     # physical-contact criterion, or normal MPPI tracking command.
     simulate_ahead_time: 1.0
-
-velocity_smoother:
-  ros__parameters:
-    # Keep the faster dynamic envelope independent from the historical static
-    # profile, while emitting bounded commands on Isaac's 60 Hz physics tick.
-    smoothing_frequency: 60.0
-    max_velocity: [1.20, 0.0, 3.40]
-    min_velocity: [-0.25, 0.0, -3.40]
-    max_accel: [3.50, 0.0, 6.50]
-    max_decel: [-3.50, 0.0, -6.50]
-    feedback: OPEN_LOOP

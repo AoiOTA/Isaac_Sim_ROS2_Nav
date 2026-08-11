@@ -144,31 +144,26 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     dynamic = _profile('dynamic_avoidance')
     controller_server = dynamic['controller_server']['ros__parameters']
     behavior_server = dynamic['behavior_server']['ros__parameters']
-    controller = controller_server['FollowPath']
     local = dynamic['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
+    base = _config()
+    base_controller = base['controller_server']['ros__parameters']
+    base_local = base['local_costmap']['local_costmap']['ros__parameters']
 
-    assert controller_server['controller_frequency'] == 15.0
-    assert controller['time_steps'] == 30
-    assert math.isclose(controller['model_dt'], 1.0 / 15.0)
-    assert math.isclose(
-        controller['model_dt'],
-        1.0 / controller_server['controller_frequency'])
-    assert math.isclose(
-        controller['time_steps'] * controller['model_dt'], 2.0)
-    assert controller['batch_size'] == 500
-    assert controller['vx_std'] == 0.90
-    assert controller['wz_std'] == 3.40
-    assert controller['vx_max'] == 1.20
-    assert controller['wz_max'] == 3.40
-    assert controller['ax_max'] == 3.50
-    assert controller['az_max'] == 6.50
-    # G2 dynamic-safety repair: enlarge only the dynamic pre-contact cost
-    # envelope and its MPPI weight.  Hard collision handling remains in the
-    # shared base configuration.
-    assert controller['CostCritic']['cost_weight'] == 4.00
-    assert controller['CostCritic']['near_collision_cost'] == 20
-    assert controller['PathFollowCritic']['cost_weight'] == 14.0
+    # Dynamic perception must not replace the whole-house-validated MPPI or
+    # widen static-wall soft inflation until a feasible corridor disappears.
+    assert controller_server == {
+        'controller_frequency': 10.0,
+        'FollowPath': {
+            'time_steps': 20,
+            'model_dt': 0.10,
+            'batch_size': 700,
+        },
+    }
+    assert 'velocity_smoother' not in dynamic
+    assert base_controller['controller_frequency'] == 10.0
+    assert base_controller['FollowPath']['time_steps'] == 20
+    assert base_controller['FollowPath']['batch_size'] == 700
     # v25 confines costmap-ahead reverse checking to dynamic recovery.  The
     # shared/static profile retains its validated zero-look-ahead behavior.
     assert behavior_server['simulate_ahead_time'] == 1.0
@@ -178,14 +173,9 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert local['plugins'] == [
         'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
     assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
-    # Dynamic-only 0.75 m inflation moves the soft response before the
-    # >=0.10 m actor-clearance boundary without modifying actor geometry or
-    # trajectories.
-    assert local['inflation_layer']['inflation_radius'] == 0.75
-    base_local = _config()['local_costmap']['local_costmap']['ros__parameters']
+    assert 'inflation_layer' not in local
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
-    base_controller = _config()['controller_server']['ros__parameters']['FollowPath']
-    assert 'near_collision_cost' not in base_controller['CostCritic']
+    assert 'near_collision_cost' not in base_controller['FollowPath']['CostCritic']
     # Dynamic runs deliberately do not inherit the base profile's global
     # RGB-D VoxelLayer: a front-facing camera cannot reliably clear a moving
     # actor after it leaves the field of view.  The rolling local STVL owns
