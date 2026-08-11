@@ -17,10 +17,12 @@ orchestration_mode="${2:-full}"
     || "${orchestration_mode}" == "pilot-static" \
     || "${orchestration_mode}" == "diagnostic-direct-static" \
     || "${orchestration_mode}" == "diagnostic-dynamic-profile-static" \
+    || "${orchestration_mode}" == "diagnostic-dynamic-repeat" \
     || "${orchestration_mode}" == "pilot-dynamic" \
     || "${orchestration_mode}" == "run-dynamic" ]] \
-  || die "mode must be full, pilot-static, diagnostic-direct-static, diagnostic-dynamic-profile-static, pilot-dynamic or run-dynamic"
+  || die "mode must be full, pilot-static, diagnostic-direct-static, diagnostic-dynamic-profile-static, diagnostic-dynamic-repeat, pilot-dynamic or run-dynamic"
 control="${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_${campaign}/orchestrator"
+attempt30_integration_root="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-gvg-route"
 mkdir -p "${control}"
 isaac_pid=""; ros_pid=""; module2_pid=""; bridge_pid=""; goal_prior_pid=""; prior_pid=""
 
@@ -87,7 +89,7 @@ trap 'stop_stack' EXIT INT TERM HUP
 start_stack() {
   local mode="$1" profile="${2:-}"
   local session_index=1 session_prefix
-  local integration_root="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-gvg-route"
+  local integration_root="${attempt30_integration_root}"
   local module2_runtime_root="/home/lyb/Workspace/Bio_Nav/worktrees/module2/attempt30-a21-runtime-fbfdc8d"
   local asset_root="/home/lyb/Workspace/Bio_Nav/artifacts/releases/isaac-nav-fusion-v0.1.0-engineering"
   local socket_path="${ISAAC_NAV_RUNTIME_DIR}/module2.sock"
@@ -158,7 +160,20 @@ start_stack() {
   die "${mode} stack preflight timed out"
 }
 
+# Pin ROS package discovery to the same Integration worktree used below for
+# Module2 launchers.  Without this explicit underlay, a caller's ambient shell
+# can resolve bio_nav_ros_bridge from another checkout and silently load a
+# missing or stale A21 engineering-defaults file.
+require_file "${attempt30_integration_root}/install/setup.bash"
+require_file "${attempt30_integration_root}/install/bio_nav_ros_bridge/share/bio_nav_ros_bridge/config/engineering_defaults.yaml"
+set +u
+# shellcheck disable=SC1091
+source "${attempt30_integration_root}/install/setup.bash"
+set -u
 source_ros --require-workspace
+[[ "$(ros2 pkg prefix bio_nav_ros_bridge 2>/dev/null)" == \
+    "${attempt30_integration_root}/install/bio_nav_ros_bridge" ]] \
+  || die "bio_nav_ros_bridge did not resolve from the Attempt30 Integration worktree"
 (
   cd "${PROJECT_ROOT}/ros2_ws"
   colcon build --symlink-install \
@@ -184,6 +199,21 @@ if [[ "${orchestration_mode}" == "pilot-dynamic" \
   else
     "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" run dynamic "${campaign}"
   fi
+  stop_stack
+  exit 0
+fi
+if [[ "${orchestration_mode}" == "diagnostic-dynamic-repeat" ]]; then
+  # Exercise five consecutive resets in one long-lived stack.  This is
+  # deliberately stored outside the formal campaign tree: it diagnoses
+  # temporal voxel decay and reset isolation without creating qualification
+  # rows or weakening the immutable fail-stop campaign.
+  start_stack dynamic
+  "${SCRIPT_DIR}/run_experiment.sh" \
+    "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_dynamic.yaml" \
+    "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/dynamic_repeat" \
+    navigation_execution_backend:=route_guided \
+    record_bag:=false record_evidence:=true nav2_profile:=dynamic_avoidance \
+    resume:=false run_indices:=1,2,3,4,5
   stop_stack
   exit 0
 fi

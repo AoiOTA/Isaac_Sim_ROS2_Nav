@@ -230,6 +230,19 @@ def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
 
 
+def test_attempt30_repeat_diagnostic_is_nonformal_and_pins_its_integration_underlay():
+    root = PACKAGE_ROOT.parents[2]
+    supervisor = (
+        root / "scripts" / "run_attempt30_a21_qualification_all.sh"
+    ).read_text()
+    assert '"diagnostic-dynamic-repeat"' in supervisor
+    assert 'attempt30_a21_diagnostic_${campaign}/dynamic_repeat' in supervisor
+    assert 'run_indices:=1,2,3,4,5' in supervisor
+    assert 'attempt30_integration_root=' in supervisor
+    assert 'source "${attempt30_integration_root}/install/setup.bash"' in supervisor
+    assert 'ros2 pkg prefix bio_nav_ros_bridge' in supervisor
+
+
 def test_experiment_launch_exposes_fail_closed_pregoal_evidence_fence():
     launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()

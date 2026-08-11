@@ -161,16 +161,49 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     assert 'velocity_smoother' not in dynamic
     local = dynamic['local_costmap']['local_costmap']['ros__parameters']
     global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
-    # The frozen dynamic qualification has no RGB-D-only static props; its
-    # full-height actors are owned by the clearing LiDAR layer.
+    # The frozen dynamic qualification has no RGB-D-only static props.  LiDAR
+    # clears its own layer, while STVL gives RGB-D marks a bounded lifetime so
+    # a retired actor cannot persist indefinitely in the depth layer.
     assert local['obstacle_layer']['scan'] == {
         'raytrace_min_range': 0.05,
         'inf_is_valid': False,
     }
-    assert local['plugins'] == base_local['plugins']
-    assert local['depth_voxel_layer']['camera_depth'] == {
-        'clearing': True,
+    assert local['plugins'] == [
+        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer',
+    ]
+    assert 'depth_voxel_layer' not in local['plugins']
+    depth = local['depth_stvl_layer']
+    assert depth['plugin'] == (
+        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
+    assert depth['voxel_decay'] == 0.75
+    assert depth['decay_model'] == 0
+    assert depth['observation_sources'] == (
+        'camera_depth_mark camera_depth_clear')
+    assert depth['camera_depth_mark'] == {
+        'data_type': 'PointCloud2',
+        'topic': '/camera/front/depth/points',
+        'marking': True,
+        'clearing': False,
+        'obstacle_range': 2.0,
+        'min_obstacle_height': 0.05,
+        'max_obstacle_height': 0.50,
+        'expected_update_rate': 0.0,
         'observation_persistence': 0.0,
+        'filter': 'voxel',
+        'voxel_min_points': 0,
+        'clear_after_reading': True,
+    }
+    assert depth['camera_depth_clear'] == {
+        'data_type': 'PointCloud2',
+        'topic': '/camera/front/depth/points',
+        'marking': False,
+        'clearing': True,
+        'min_z': 0.05,
+        'max_z': 2.5,
+        'vertical_fov_angle': 1.272,
+        'horizontal_fov_angle': 1.839,
+        'decay_acceleration': 15.0,
+        'model_type': 0,
     }
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'inflation_layer',
@@ -191,6 +224,12 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     base_depth = base_local['depth_voxel_layer']
     assert base_depth['plugin'] == 'nav2_costmap_2d::VoxelLayer'
     assert base_depth['camera_depth']['marking'] is True
+    dependencies = {
+        item.text
+        for item in ElementTree.parse(PACKAGE_ROOT / 'package.xml').getroot()
+        .findall('exec_depend')
+    }
+    assert 'spatio_temporal_voxel_layer' in dependencies
 
 
 def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
