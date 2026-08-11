@@ -167,8 +167,11 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
         'raytrace_min_range': 0.05,
         'inf_is_valid': False,
     }
-    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']
-    assert 'depth_voxel_layer' not in local
+    assert local['plugins'] == base_local['plugins']
+    assert local['depth_voxel_layer']['camera_depth'] == {
+        'clearing': True,
+        'observation_persistence': 0.0,
+    }
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'inflation_layer',
     ]

@@ -4,10 +4,11 @@
 # MPPI, inflation and alternative voxel/scan settings made the physically
 # traversable G2->G3 junction fail even when no actor existed.  Keep the
 # whole-house-validated base controller unchanged.  The frozen dynamic
-# qualification scenario has no RGB-D-only static props; its 1.0 m actors all
-# intersect the 0.333 m LiDAR plane.  Use the independently clearing scan layer
-# for those actors so a completed crossing cannot leave a persistent camera
-# voxel trail.  Static and appearance runs retain the base RGB-D VoxelLayer.
+# qualification scenario has no RGB-D-only static props, so its local camera
+# layer may ray-clear every current frame instead of retaining observations.
+# This preserves RGB-D protection for low scene geometry while LiDAR and depth
+# clearing both remove a completed 1.0 m actor.  Static and appearance runs
+# retain the base non-clearing, one-second-persistence camera policy.
 
 controller_server:
   ros__parameters:
@@ -23,11 +24,15 @@ controller_server:
 local_costmap:
   local_costmap:
     ros__parameters:
-      plugins: [obstacle_layer, inflation_layer]
+      plugins: [obstacle_layer, depth_voxel_layer, inflation_layer]
       obstacle_layer:
         scan:
           raytrace_min_range: 0.05
           inf_is_valid: false
+      depth_voxel_layer:
+        camera_depth:
+          clearing: true
+          observation_persistence: 0.0
 global_costmap:
   global_costmap:
     ros__parameters:
