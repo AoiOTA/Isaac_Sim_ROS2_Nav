@@ -228,6 +228,10 @@ def generate_launch_description():
                 profile_params_file,
                 str(a21_overlay),
             ],
+            # Route Server and Planner Server otherwise both publish /plan.
+            # Keep /plan an unambiguous Smac evidence topic; Route Server's
+            # own visualization remains available under its explicit owner.
+            remappings=[('plan', '/route_server/plan')],
         ),
         Node(
             package='nav2_behaviors',

@@ -547,3 +547,4 @@ def test_a21_route_bt_uses_native_goal_updater_and_metric_owners():
     assert 'navigate_route_lookahead.xml' in launch
     assert '_write_route_guided_bt' in launch
     assert "defaults['metric_planning']" in launch
+    assert "remappings=[('plan', '/route_server/plan')]" in launch
