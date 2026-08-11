@@ -1,5 +1,7 @@
 # Schema v4: calibrated single cases plus ordered full-route case sets.
-# Every actor is a high LiDAR-visible 0.40 x 0.40 x 1.00 m kinematic cube.
+# Full-route actors occupy the LiDAR height band but sit above the RGB-D low-
+# obstacle band.  This lets clearing LaserScan observations own moving actors
+# while the persistent camera voxel layer continues to protect 0.16 m boxes.
 # Goal acceptance only arms it. Motion is released once the robot crosses the
 # spatial gate in the specified direction at >= 0.20 m/s.
 schema_version: 4
@@ -69,7 +71,7 @@ cases:
       # This is the verified smooth-interaction trajectory: the actor clears
       # the robot's near-field while leaving enough time for a continuous
       # right-side arc instead of forcing late high-curvature corrections.
-      {id: local_bypass_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-1.65, -0.20, 0.50], [-0.95, -0.20, 0.50]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
+      {id: local_bypass_actor, size: [0.40, 0.40, 0.20], mass: 20.0, waypoints: [[-1.65, -0.20, 0.333], [-0.95, -0.20, 0.333]], speed: 0.80, max_acceleration: 1.60, post_motion: park}
     variants:
       v1: {seed: 7441, start_delay_sec: 0.00}
       v2: {seed: 7442, start_delay_sec: 0.05}
@@ -88,7 +90,7 @@ cases:
       # The endpoint is inside the only usable G2->G3 junction.  Retire after
       # the guarded crossing completes so the actor cannot become a permanent
       # static blocker for the remainder of the same leg.
-      {id: g2_g3_exit_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.40, 1.00, 0.50], [-0.40, -0.70, 0.50]], speed: 0.65, max_acceleration: 0.90, post_motion: retire}
+      {id: g2_g3_exit_actor, size: [0.40, 0.40, 0.20], mass: 20.0, waypoints: [[-0.40, 1.00, 0.333], [-0.40, -0.70, 0.333]], speed: 0.65, max_acceleration: 0.90, post_motion: retire}
     variants:
       v1: {seed: 7461, start_delay_sec: 0.00}
       v2: {seed: 7462, start_delay_sec: 0.05}
@@ -111,7 +113,7 @@ cases:
       # The final point is on the later G5->G1 centreline.  As with the G3
       # actor, retire only after the guarded crossing finishes instead of
       # converting the completed dynamic interaction into a static blockage.
-      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.90, -1.30, 0.50], [-0.20, -1.30, 0.50]], speed: 0.32, max_acceleration: 1.60, post_motion: retire}
+      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 0.20], mass: 20.0, waypoints: [[-0.90, -1.30, 0.333], [-0.20, -1.30, 0.333]], speed: 0.32, max_acceleration: 1.60, post_motion: retire}
     variants:
       v1: {seed: 7471, start_delay_sec: 0.00}
       v2: {seed: 7472, start_delay_sec: 0.05}

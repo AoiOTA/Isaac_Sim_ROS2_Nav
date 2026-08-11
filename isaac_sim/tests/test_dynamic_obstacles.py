@@ -93,10 +93,19 @@ def test_three_stage_case_set_selects_the_ordered_route_interactions():
         "local_bypass_actor", "g2_g3_exit_actor", "g5_g1_crossing_actor",
     ]
     assert [item.trigger_group for item in selected] == ["G2", "G3", "G1"]
-    assert selected[0].waypoints[-1] == pytest.approx((-0.95, -0.20, 0.50))
+    assert selected[0].waypoints[-1] == pytest.approx((-0.95, -0.20, 0.333))
     assert [item.obstacle.post_motion for item in selected] == [
         "park", "retire", "retire",
     ]
+    # Static low boxes top out at 0.16 m.  Selected moving actors sit above
+    # the dynamic depth cutoff (0.20 m) while intersecting the 0.333 m LiDAR
+    # plane, so only the clearing LaserScan layer owns their occupancy.
+    for item in selected:
+        lower = item.waypoints[0][2] - item.obstacle.size[2] / 2.0
+        upper = item.waypoints[0][2] + item.obstacle.size[2] / 2.0
+        assert item.obstacle.size[2] == pytest.approx(0.20)
+        assert lower > 0.20
+        assert lower < 0.333 < upper
 
 
 def test_g2_g3_gate_triggers_southbound_at_y_2_6_in_the_narrow_lane():
