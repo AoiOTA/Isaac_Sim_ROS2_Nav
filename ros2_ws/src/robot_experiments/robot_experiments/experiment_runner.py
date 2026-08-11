@@ -70,6 +70,7 @@ from .spawn_poses import SpawnPose, load_spawn_pose
 from .static_contact import (
     exceeds_overlap_tolerance,
     load_robot_footprint,
+    select_declared_static_obstacles,
     static_contact_summary,
 )
 
@@ -2564,11 +2565,10 @@ class ExperimentRunner(Node):
         )
         static_contact = static_contact_summary(
             self._ground_truth_samples,
-            [
-                item
-                for item in self._obstacle_state.get("obstacles", [])
-                if isinstance(item, Mapping)
-            ],
+            select_declared_static_obstacles(
+                self._obstacle_state.get("obstacles", []),
+                self._scenario.obstacles.get("static", []),
+            ),
             self._robot_footprint,
         )
         maximum_static_overlap_m = float(

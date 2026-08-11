@@ -160,6 +160,30 @@ def static_contact_summary(
     }
 
 
+def select_declared_static_obstacles(
+    obstacle_state: Sequence[Mapping[str, Any]],
+    declared_static: Sequence[Mapping[str, Any]],
+) -> list[Mapping[str, Any]]:
+    """Keep only runtime obstacles declared static by the scenario.
+
+    Dynamic actor snapshots contain waiting, moving and retired geometry whose
+    pose is not valid for the robot's entire GT history.  Feeding that final
+    snapshot to the static SAT sweep creates false contacts.  Time-varying
+    actors are checked by the contact sensor and dynamic interaction evidence.
+    """
+
+    identifiers = {
+        str(item["id"])
+        for item in declared_static
+        if isinstance(item, Mapping) and isinstance(item.get("id"), str)
+    }
+    return [
+        item
+        for item in obstacle_state
+        if isinstance(item, Mapping) and item.get("id") in identifiers
+    ]
+
+
 def exceeds_overlap_tolerance(
     summary: Mapping[str, Any], maximum_accepted_overlap_m: float
 ) -> bool:
