@@ -85,13 +85,16 @@ stop_stack() {
 trap 'stop_stack' EXIT INT TERM HUP
 
 start_stack() {
-  local mode="$1" profile="stable"
+  local mode="$1" profile="${2:-}"
   local integration_root="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-gvg-route"
   local module2_runtime_root="/home/lyb/Workspace/Bio_Nav/worktrees/module2/attempt30-a21-runtime-fbfdc8d"
   local asset_root="/home/lyb/Workspace/Bio_Nav/artifacts/releases/isaac-nav-fusion-v0.1.0-engineering"
   local socket_path="${ISAAC_NAV_RUNTIME_DIR}/module2.sock"
   local snapshot_map_version
-  [[ "${mode}" == "dynamic" ]] && profile="dynamic_avoidance"
+  if [[ -z "${profile}" ]]; then
+    profile="stable"
+    [[ "${mode}" == "dynamic" ]] && profile="dynamic_avoidance"
+  fi
   require_file "${asset_root}/HYDRATION_COMPLETE.json"
   require_file "${asset_root}/sr-snapshot/manifest.json"
   require_file "${integration_root}/scripts/run_module2_server.sh"
@@ -157,18 +160,21 @@ source_ros --require-workspace
     --packages-select robot_experiments robot_route_planner robot_navigation robot_bringup \
     --allow-overriding robot_experiments robot_route_planner robot_navigation robot_bringup
 )
-if [[ "${orchestration_mode}" == "diagnostic-dynamic-profile-static" \
-    || "${orchestration_mode}" == "pilot-dynamic" \
+if [[ "${orchestration_mode}" == "diagnostic-dynamic-profile-static" ]]; then
+  start_stack static dynamic_avoidance
+  "${SCRIPT_DIR}/run_experiment.sh" \
+    "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_static.yaml" \
+    "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/dynamic_profile_static" \
+    navigation_execution_backend:=route_guided \
+    record_bag:=false record_evidence:=true nav2_profile:=dynamic_avoidance \
+    resume:=false run_indices:=1
+  stop_stack
+  exit 0
+fi
+if [[ "${orchestration_mode}" == "pilot-dynamic" \
     || "${orchestration_mode}" == "run-dynamic" ]]; then
   start_stack dynamic
-  if [[ "${orchestration_mode}" == "diagnostic-dynamic-profile-static" ]]; then
-    "${SCRIPT_DIR}/run_experiment.sh" \
-      "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_static.yaml" \
-      "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/dynamic_profile_static" \
-      navigation_execution_backend:=route_guided \
-      record_bag:=false record_evidence:=true nav2_profile:=dynamic_avoidance \
-      resume:=false run_indices:=1
-  elif [[ "${orchestration_mode}" == "pilot-dynamic" ]]; then
+  if [[ "${orchestration_mode}" == "pilot-dynamic" ]]; then
     "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" pilot dynamic "${campaign}"
   else
     "${SCRIPT_DIR}/run_attempt30_a21_qualification.sh" run dynamic "${campaign}"
