@@ -171,38 +171,23 @@ def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
     assert local['update_frequency'] == 10.0
     assert local['publish_frequency'] == 5.0
     assert local['plugins'] == [
-        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
+        'obstacle_layer', 'depth_voxel_layer', 'inflation_layer']
     assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
     assert 'inflation_layer' not in local
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
     assert 'near_collision_cost' not in base_controller['FollowPath']['CostCritic']
     # Dynamic runs deliberately do not inherit the base profile's global
-    # RGB-D VoxelLayer: a front-facing camera cannot reliably clear a moving
-    # actor after it leaves the field of view.  The rolling local STVL owns
-    # dynamic RGB-D marking and temporal expiry instead.
+    # RGB-D VoxelLayer.  The rolling local VoxelLayer owns RGB-D marking and
+    # clearing, while global dynamic observations come from LiDAR.
     assert global_costmap['plugins'] == [
         'static_layer', 'obstacle_layer', 'inflation_layer']
-    depth = local['depth_stvl_layer']
-    assert depth['plugin'] == (
-        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
-    assert depth['enabled'] is True
-    assert depth['voxel_decay'] == 0.75
-    assert depth['decay_model'] == 0
-    assert depth['voxel_size'] == 0.05
-    assert depth['publish_voxel_map'] is True
-    assert depth['observation_sources'] == (
-        'camera_depth_mark camera_depth_clear')
-    marking = depth['camera_depth_mark']
-    clearing = depth['camera_depth_clear']
-    assert marking['topic'] == '/camera/front/depth/points'
-    assert marking['marking'] is True
-    assert marking['clearing'] is False
-    assert marking['observation_persistence'] == 0.0
-    assert clearing['topic'] == marking['topic']
-    assert clearing['marking'] is False
-    assert clearing['clearing'] is True
-    assert clearing['decay_acceleration'] == 15.0
-    assert clearing['model_type'] == 0
+    depth = local['depth_voxel_layer']
+    assert set(depth) == {'camera_depth'}
+    assert depth['camera_depth']['clearing'] is True
+    assert depth['camera_depth']['observation_persistence'] == 0.0
+    base_depth = base_local['depth_voxel_layer']
+    assert base_depth['plugin'] == 'nav2_costmap_2d::VoxelLayer'
+    assert base_depth['camera_depth']['marking'] is True
     for costmap in (local, global_costmap):
         scan = costmap['obstacle_layer']['scan']
         assert scan['clearing'] is True
