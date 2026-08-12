@@ -16,7 +16,7 @@ from robot_route_planner.ros_node import (
     select_map_pose,
     select_support_attachment,
 )
-from robot_route_planner.route_cost import shortest_route
+from robot_route_planner.route_cost import edge_cost_breakdown, shortest_route
 from robot_route_planner.route_support import export_route_support_graph
 from robot_route_planner.runtime_edges import RuntimeEdgeManager, RuntimeState
 from robot_route_planner.stable_ids import stabilize_graph_ids
@@ -117,6 +117,24 @@ def test_prior_changes_route_and_blocked_edge_reroutes() -> None:
         graph, 1, 4, _cost_settings(), runtime={1: (0.0, True)}
     )
     assert rerouted == [3, 4]
+
+
+def test_module2_delta_is_capped_and_confidence_applied_exactly_once() -> None:
+    edge = _graph().edge_by_id()[2]
+    value = edge_cost_breakdown(
+        edge,
+        _cost_settings(),
+        prior_cost_delta_m=10.0,
+        prior_confidence=0.4,
+        runtime_penalty_m=0.3,
+    )
+    assert value.requested_module2_delta_m == 10.0
+    assert value.applied_module2_delta_m == 0.25 * edge.length_m * 0.4
+    assert value.final_cost_m == (
+        value.structural_cost_m
+        + value.applied_module2_delta_m
+        + value.runtime_penalty_m
+    )
 
 
 def test_tracker_crosses_edge_boundary_and_switches_to_final_goal() -> None:

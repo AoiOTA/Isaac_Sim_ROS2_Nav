@@ -30,7 +30,7 @@ require_campaign() {
 }
 
 preflight() {
-  local group="$1" available_gib topics
+  local group="$1" available_gib topics services
   require_group "${group}"
   source_ros --require-workspace
   available_gib="$(df -Pk "${PROJECT_ROOT}" | awk 'NR == 2 { print int($4 / 1024 / 1024) }')"
@@ -42,16 +42,22 @@ preflight() {
   topics="$(ros2 topic list 2>/dev/null || true)"
   for topic in /clock /ground_truth/odom /odom /scan_safety /simulation/collision \
     /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress \
-    /bio_nav/route_goal_complete /bio_nav/module2/edge_priors; do
+    /bio_nav/route_goal_complete /bio_nav/cognitive_map/constraints \
+    /bio_nav/module2/planning_prior /bio_nav/module2/edge_priors \
+    /bio_nav/module2/srdr_edge_diagnostics /bio_nav/route_edge_costs \
+    /bio_nav/v310/rviz; do
     grep -qx "${topic}" <<<"${topics}" || die "required live topic is absent: ${topic}"
   done
+  services="$(ros2 service list 2>/dev/null || true)"
+  grep -qx "/bio_nav/get_goal_planning_prior" <<<"${services}" \
+    || die "V3.10 same-session goal-prior service is absent"
   if [[ "${group}" == "appearance" ]]; then
     grep -qx "/experiment/appearance/state" <<<"${topics}" \
       || die "appearance state topic is absent"
   fi
   timeout 8s bash -c 'ros2 run tf2_ros tf2_echo map base_link 2>&1 | grep -qm 1 "Translation"' \
     || die "map -> base_link TF is unavailable"
-  ros2 lifecycle get /route_server 2>/dev/null | grep -qi active \
+  timeout 8s ros2 lifecycle get /route_server 2>/dev/null | grep -qi active \
     || die "Nav2 Route Server is not active"
   log_info "A21 ${group} preflight passed; free=${available_gib} GiB; bags=disabled"
 }

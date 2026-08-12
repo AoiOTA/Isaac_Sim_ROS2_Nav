@@ -190,6 +190,8 @@ def generate_launch_description():
     structural_map_file = LaunchConfiguration('structural_map_file')
     module2_enabled = LaunchConfiguration('module2_enabled')
     execute_route_navigation = LaunchConfiguration('execute_route_navigation')
+    module2_response_timeout_s = LaunchConfiguration(
+        'module2_response_timeout_s')
     lifecycle_nodes = [
         'controller_server',
         'planner_server',
@@ -210,6 +212,7 @@ def generate_launch_description():
         DeclareLaunchArgument('structural_map_file', default_value=''),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('execute_route_navigation', default_value='true'),
+        DeclareLaunchArgument('module2_response_timeout_s', default_value='0.0'),
         # STVL publishes a PointCloud2 named voxel_grid, while Nav2's built-in
         # VoxelLayer publishes nav2_msgs/VoxelGrid on that name.  The dynamic
         # profile remaps STVL to an independent topic so RViz can display both
@@ -304,6 +307,7 @@ def generate_launch_description():
                 'engineering_defaults_file': str(defaults_file),
                 'map_yaml': structural_map_file,
                 'module2_enabled': module2_enabled,
+                'module2_response_timeout_s': module2_response_timeout_s,
                 'execute_navigation': execute_route_navigation,
                 'route_guided_bt_xml': str(route_guided_bt),
             }],

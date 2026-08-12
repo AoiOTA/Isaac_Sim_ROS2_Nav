@@ -35,6 +35,7 @@ setup(
             "visualize_runtime = robot_route_planner.runtime_visualize:main",
             "probe_structural = robot_route_planner.structural_probe:main",
             "probe_closed_loop = robot_route_planner.closed_loop_probe:main",
+            "export_v310_cognitive_pair = robot_route_planner.cognitive_pair:main",
         ],
     },
 )

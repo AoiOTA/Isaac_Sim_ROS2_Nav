@@ -1,4 +1,4 @@
-"""Aggregate the exact Attempt30/A21 3x20 Final Qualification campaign."""
+"""Aggregate the exact Attempt30/A21 V3.10 3x20 engineering campaign."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ import math
 from pathlib import Path
 from statistics import mean
 from typing import Any, Iterable, Mapping
+
+from robot_experiments.v310_evidence import write_v310_evidence
 
 
 EXPECTED = {
@@ -306,8 +308,8 @@ def aggregate(records: Mapping[str, list[dict[str, Any]]]) -> dict[str, Any]:
             )
         groups[group] = group_result
     return {
-        "schema": "attempt30_a21_final_qualification_v1",
-        "campaign": "Attempt30/A21 Final Qualification",
+        "schema": "attempt30_a21_v310_engineering_validation_v1",
+        "campaign": "Attempt30/A21 V3.10 Engineering Validation",
         "authorized_route": "G1 -> G2 -> G3 -> G4 -> G5 -> G1",
         "total_run_count": sum(value["run_count"] for value in groups.values()),
         "groups": groups,
@@ -475,7 +477,7 @@ def write_visuals(records: Mapping[str, list[dict[str, Any]]], output: Path) -> 
         axis.set_aspect("equal", adjustable="box")
         axis.grid(alpha=0.15)
         axis.legend(loc="best", fontsize=7)
-        target = output / f"qualification_{group}_route_smac_overlay.png"
+        target = output / f"engineering_{group}_route_smac_overlay.png"
         figure.savefig(target, dpi=180)
         plt.close(figure)
         written.append(target.name)
@@ -487,7 +489,7 @@ def write_visuals(records: Mapping[str, list[dict[str, Any]]], output: Path) -> 
         axis.imshow(image)
         axis.set_title(profile)
         axis.axis("off")
-    target = output / "qualification_appearance_profiles.png"
+    target = output / "engineering_appearance_profiles.png"
     figure.savefig(target, dpi=180)
     plt.close(figure)
     written.append(target.name)
@@ -499,7 +501,8 @@ def write_outputs(
 ) -> None:
     output.mkdir(parents=True, exist_ok=True)
     report["visual_evidence"] = write_visuals(records, output)
-    (output / "qualification.json").write_text(
+    report["v310_evidence"] = write_v310_evidence(records, output)
+    (output / "engineering_validation.json").write_text(
         json.dumps(report, indent=2, sort_keys=True), encoding="utf-8"
     )
     with (output / "runs.csv").open("w", newline="", encoding="utf-8") as stream:
@@ -516,7 +519,7 @@ def write_outputs(
             for item in rows:
                 writer.writerow({key: item.get(key) for key in fields} | {"group": group})
     lines = [
-        "# Attempt30/A21 Final Qualification",
+        "# Attempt30/A21 V3.10 Engineering Validation",
         "",
         f"Overall: **{'PASS' if report['passed'] else 'FAIL'}**",
         "",
@@ -532,7 +535,9 @@ def write_outputs(
             f"{value['collision_free_success_count']}/20 | "
             f"{'PASS' if value['passed'] else 'FAIL'} |"
         )
-    (output / "qualification.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (output / "engineering_validation.md").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8"
+    )
 
 
 def main() -> None:

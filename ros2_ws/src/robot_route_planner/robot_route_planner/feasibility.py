@@ -60,6 +60,36 @@ def _polygon_is_free(
     return bool(np.all(occupancy.free[mask.astype(bool)]))
 
 
+def footprint_pose_is_free(
+    occupancy: OccupancyMap,
+    center_xy: tuple[float, float],
+    yaw_rad: float,
+    *,
+    footprint_polygon_m: np.ndarray,
+    footprint_padding_m: float,
+) -> bool:
+    """Public conservative footprint predicate used by cognitive tiling."""
+
+    polygon = np.asarray(footprint_polygon_m, dtype=np.float64)
+    if polygon.ndim != 2 or polygon.shape[1] != 2:
+        raise ValueError("footprint polygon must be [N,2]")
+    radial = np.linalg.norm(polygon, axis=1)
+    padded = polygon.copy()
+    nonzero = radial > np.finfo(float).eps
+    padded[nonzero] += (
+        float(footprint_padding_m)
+        * polygon[nonzero]
+        / radial[nonzero, None]
+    )
+    return _polygon_is_free(
+        occupancy,
+        float(center_xy[0]),
+        float(center_xy[1]),
+        float(yaw_rad),
+        padded,
+    )
+
+
 def _endpoints_disconnected_after_disk_erosion(
     occupancy: OccupancyMap,
     start_xy: np.ndarray,
@@ -139,4 +169,8 @@ def apply_footprint_feasibility(
     return graph
 
 
-__all__ = ["apply_footprint_feasibility", "classify_edge"]
+__all__ = [
+    "apply_footprint_feasibility",
+    "classify_edge",
+    "footprint_pose_is_free",
+]

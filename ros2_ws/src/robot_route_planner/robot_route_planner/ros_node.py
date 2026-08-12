@@ -10,10 +10,14 @@ import tempfile
 import numpy as np
 
 from .defaults import load_engineering_defaults
+from .cognitive_constraints import (
+    build_cognitive_constraints,
+    occupancy_grid_version,
+)
 from .feasibility import apply_footprint_feasibility, classify_edge
 from .gvg import build_gvg
 from .map_io import OccupancyMap, load_occupancy_map
-from .route_cost import edge_cost
+from .route_cost import edge_cost_breakdown
 from .route_support import export_route_support_graph, save_route_support
 from .runtime_edges import RuntimeEdgeManager, RuntimeState
 from .stable_ids import stabilize_graph_ids
@@ -197,8 +201,11 @@ class RouteCoordinator:
     def __init__(self, node) -> None:
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
+            CognitiveMapConstraints,
+            CognitiveTransition,
             EdgePriorArray,
             NavigationGraph,
+            RouteEdgeCostArray,
             RouteContext,
             RouteProgress,
             RuntimeEdgeObservation,
@@ -224,12 +231,14 @@ class RouteCoordinator:
             ("frame_id", "map"),
             ("base_frame_id", "base_link"),
             ("module2_enabled", True),
+            ("module2_response_timeout_s", 0.0),
             ("execute_navigation", True),
             ("route_guided_bt_xml", ""),
             ("route_goal_topic", "/bio_nav/route_goal"),
             ("edge_prior_topic", "/bio_nav/module2/edge_priors"),
             ("runtime_observation_topic", "/bio_nav/runtime_edge_observation"),
             ("structural_map_topic", "/bio_nav/structural_map"),
+            ("occupancy_map_topic", "/map"),
             ("goal_complete_topic", "/bio_nav/route_goal_complete"),
             ("odometry_topic", "/ground_truth/odom"),
             ("compute_route_action", "/compute_route"),
@@ -243,6 +252,11 @@ class RouteCoordinator:
         if not defaults_path.is_file() or not map_path.is_file():
             raise RuntimeError("engineering_defaults_file and map_yaml are required")
         self.defaults = load_engineering_defaults(defaults_path)
+        self.module2_response_timeout_s = float(
+            node.get_parameter("module2_response_timeout_s").value
+        )
+        if self.module2_response_timeout_s < 0.0:
+            raise ValueError("module2_response_timeout_s must be non-negative")
         self.map = load_occupancy_map(
             map_path,
             unknown_is_occupied=bool(self.defaults["graph"]["unknown_is_occupied"]),
@@ -285,6 +299,8 @@ class RouteCoordinator:
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
+        self.live_map_version: str | None = None
+        self.cognitive_constraints_cache = None
         footprint = np.asarray(
             self.defaults["footprint"]["polygon_m"], dtype=np.float64
         )
@@ -317,6 +333,9 @@ class RouteCoordinator:
         self.RouteProgress = RouteProgress
         self.RuntimeEdgeStateArray = RuntimeEdgeStateArray
         self.StructuralGraphStatus = StructuralGraphStatus
+        self.CognitiveMapConstraints = CognitiveMapConstraints
+        self.CognitiveTransition = CognitiveTransition
+        self.RouteEdgeCostArray = RouteEdgeCostArray
         qos_latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -352,6 +371,16 @@ class RouteCoordinator:
         self.status_pub = node.create_publisher(
             StructuralGraphStatus, "/bio_nav/structural_graph_status", qos_latched
         )
+        self.cognitive_constraints_pub = node.create_publisher(
+            CognitiveMapConstraints,
+            "/bio_nav/cognitive_map/constraints",
+            qos_latched,
+        )
+        self.route_edge_cost_pub = node.create_publisher(
+            RouteEdgeCostArray,
+            "/bio_nav/route_edge_costs",
+            qos_latched,
+        )
         node.create_subscription(
             PoseStamped,
             str(node.get_parameter("route_goal_topic").value),
@@ -375,6 +404,12 @@ class RouteCoordinator:
             str(node.get_parameter("structural_map_topic").value),
             self._on_structural_map,
             qos,
+        )
+        node.create_subscription(
+            OccupancyGrid,
+            str(node.get_parameter("occupancy_map_topic").value),
+            self._on_occupancy_map,
+            qos_latched,
         )
         node.create_subscription(
             Odometry,
@@ -443,6 +478,87 @@ class RouteCoordinator:
             frame_id=str(message.header.frame_id),
         )
 
+    def _on_occupancy_map(self, message) -> None:
+        """Bind cognitive constraints to the exact live ROS map bytes."""
+
+        try:
+            version = occupancy_grid_version(
+                width=int(message.info.width),
+                height=int(message.info.height),
+                resolution=float(message.info.resolution),
+                origin_x=float(message.info.origin.position.x),
+                origin_y=float(message.info.origin.position.y),
+                data=np.asarray(message.data, dtype=np.int8),
+            )
+            static_height, static_width = self.map.free.shape
+            if (
+                int(message.info.width) != static_width
+                or int(message.info.height) != static_height
+                or not math.isclose(
+                    float(message.info.resolution),
+                    self.map.resolution_m,
+                    abs_tol=1.0e-6,
+                )
+                or not np.allclose(
+                    (
+                        float(message.info.origin.position.x),
+                        float(message.info.origin.position.y),
+                    ),
+                    self.map.origin_xy_m,
+                    atol=1.0e-5,
+                )
+            ):
+                raise ValueError("live /map geometry differs from the frozen structural map")
+            if version != self.live_map_version:
+                self.live_map_version = version
+                self.cognitive_constraints_cache = None
+            self._publish_cognitive_constraints()
+        except Exception as exc:
+            self.live_map_version = None
+            self.cognitive_constraints_cache = None
+            self.node.get_logger().warning(f"cognitive map rejected: {exc}")
+
+    def _publish_cognitive_constraints(self) -> None:
+        if self.live_map_version is None:
+            return
+        cache_key = (self.live_map_version, int(self.graph.revision))
+        cached = self.cognitive_constraints_cache
+        if cached is None or cached[0] != cache_key:
+            value = build_cognitive_constraints(
+                self.map,
+                map_version=self.live_map_version,
+                graph_revision=self.graph.revision,
+                footprint_settings=self.defaults["footprint"],
+                t_map_canvas=np.eye(3, dtype=np.float64),
+                stable_duration_s=0.0,
+                persistent_confirmed=True,
+            )
+            self.cognitive_constraints_cache = (cache_key, value)
+        else:
+            value = cached[1]
+        message = self.CognitiveMapConstraints()
+        message.header.stamp = self._now().to_msg()
+        message.header.frame_id = self.frame_id
+        message.map_version = value.map_version
+        message.cognitive_tile_id = value.cognitive_tile_id
+        message.tile_revision = value.tile_revision
+        message.graph_id = self.graph.graph_id
+        message.graph_revision = value.graph_revision
+        message.grid_width = 16
+        message.grid_height = 16
+        message.resolution_m = 1.0
+        message.t_map_canvas = value.t_map_canvas.reshape(-1).tolist()
+        message.reachable_state_mask = value.reachable_state_mask.tolist()
+        for source, target in value.verified_transitions:
+            transition = self.CognitiveTransition()
+            transition.from_state = int(source)
+            transition.to_state = int(target)
+            message.verified_transitions.append(transition)
+        message.structural_confidence = value.structural_confidence
+        message.stable_duration_s = value.stable_duration_s
+        message.persistent_confirmed = value.persistent_confirmed
+        self.cognitive_constraints_pub.publish(message)
+
     def _current_xy(self) -> tuple[float, float] | None:
         # Qualification and ideal-odometry launches provide a high-rate pose
         # already expressed in map. Prefer that explicit contract: a reset can
@@ -500,8 +616,11 @@ class RouteCoordinator:
         context.module2_enabled = self.module2_enabled
         self.context_pub.publish(context)
         if self.module2_enabled:
+            timeout_s = self.module2_response_timeout_s or float(
+                self.defaults["module2_edge_prior"]["response_timeout_s"]
+            )
             self.pending_deadline_ns = int(self._now().nanoseconds) + int(
-                float(self.defaults["module2_edge_prior"]["response_timeout_s"]) * 1.0e9
+                timeout_s * 1.0e9
             )
         else:
             self.pending_deadline_ns = None
@@ -516,6 +635,17 @@ class RouteCoordinator:
         ):
             return
         self.pending_deadline_ns = None
+        edge_ids = {int(edge.id) for edge in self.graph.edges}
+        observed_ids = [int(item.edge_id) for item in message.priors]
+        if len(observed_ids) != len(set(observed_ids)) or not set(observed_ids).issubset(
+            edge_ids
+        ):
+            self.node.get_logger().warning(
+                "Module2 prior contains duplicate or nonexistent graph edges; ignored"
+            )
+            self.latest_priors = {}
+            self._prepare_route({})
+            return
         priors = {
             int(item.edge_id): (float(item.cost_delta_m), float(item.confidence))
             for item in message.priors
@@ -556,6 +686,14 @@ class RouteCoordinator:
         start_node = self._nearest_support_node(current, departing=True)
         goal_node = self._nearest_support_node(goal_xy, departing=False)
         request = self.DynamicEdges.Request()
+        from bio_nav_interfaces.msg import RouteEdgeCost
+
+        cost_message = self.RouteEdgeCostArray()
+        cost_message.header.stamp = self._now().to_msg()
+        cost_message.header.frame_id = self.frame_id
+        cost_message.request_id = self.request_id
+        cost_message.graph_id = self.graph.graph_id
+        cost_message.graph_revision = self.graph.revision
         runtime_view = self.runtime.route_cost_view()
         edge_map = self.graph.edge_by_id()
         for canonical_id, support_ids in self.support.canonical_to_support_edges.items():
@@ -566,19 +704,36 @@ class RouteCoordinator:
                 request.closed_edges.extend(support_ids)
             else:
                 request.opened_edges.extend(support_ids)
-            total = edge_cost(
+            breakdown = edge_cost_breakdown(
                 edge,
                 self.defaults["route_cost"],
                 prior_cost_delta_m=prior[0],
                 prior_confidence=prior[1],
                 runtime_penalty_m=runtime_penalty,
+                blocked=blocked,
             )
-            extra = max(0.0, total - edge.length_m)
+            diagnostic = RouteEdgeCost()
+            diagnostic.edge_id = int(edge.id)
+            diagnostic.structural_cost_m = breakdown.structural_cost_m
+            diagnostic.requested_module2_delta_m = (
+                breakdown.requested_module2_delta_m
+            )
+            diagnostic.applied_module2_delta_m = breakdown.applied_module2_delta_m
+            diagnostic.runtime_penalty_m = breakdown.runtime_penalty_m
+            diagnostic.final_cost_m = breakdown.final_cost_m
+            diagnostic.blocked = breakdown.blocked
+            cost_message.costs.append(diagnostic)
+            extra = (
+                0.0
+                if breakdown.blocked
+                else max(0.0, breakdown.final_cost_m - edge.length_m)
+            )
             for support_id in support_ids:
                 adjustment = __import__("nav2_msgs.msg", fromlist=["EdgeCost"]).EdgeCost()
                 adjustment.edgeid = int(support_id)
                 adjustment.cost = float(extra / max(1, len(support_ids)))
                 request.adjust_edges.append(adjustment)
+        self.route_edge_cost_pub.publish(cost_message)
         if not self.dynamic_client.service_is_ready():
             self.node.get_logger().warning("DynamicEdges service unavailable")
             return
@@ -959,6 +1114,7 @@ class RouteCoordinator:
         self.structural_monitor.accept_rebuild()
         self.pending_structural_map = None
         self._publish_graph()
+        self._publish_cognitive_constraints()
         self._publish_structural_status(
             self.StructuralGraphStatus.READY, "rebuilt graph active"
         )

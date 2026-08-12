@@ -165,7 +165,7 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
         'FollowPath': {
             'time_steps': 20,
             'model_dt': 0.10,
-                'batch_size': 700,
+            'batch_size': 700,
         },
     }
     assert 'velocity_smoother' not in dynamic

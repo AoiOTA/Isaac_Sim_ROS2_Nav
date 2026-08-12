@@ -15,9 +15,9 @@ navigation stack with direct engineering feedback.
 - Use official Nav2 Route Server for graph search. Because its edges are straight
   endpoint segments, split canonical curved polylines into support segments and
   track the canonical polyline for lookahead.
-- Keep one direction-aware MPPI controller. Smac Lattice is the primary planner;
-  Smac 2D is the baseline/fallback profile. The original mission goal checker is
-  the only navigation-success authority.
+- Keep one direction-aware MPPI controller. Smac 2D is the accepted primary
+  planner; Smac Lattice remains a diagnostic alternative. The original mission
+  goal checker is the only navigation-success authority.
 - Temporary obstacles change runtime edge state; only persistent structural-map
   updates rebuild the graph. Live costmap observations must not rewrite the
   structural graph.
@@ -30,7 +30,9 @@ navigation stack with direct engineering feedback.
   space, clearance, raw/thinned/pruned GVD, GVG junctions/endpoints/edges,
   footprint feasibility, graph alignment, Route Server route, projection,
   lookahead, Smac path, blocked-edge reroute, and structural rebuild as relevant.
-  Store shared evidence in Integration `docs/evidence/attempt30_a21/`.
+  Store new shared evidence in Integration
+  `docs/evidence/attempt30_a21_v310/`; the old `attempt30_a21` evidence is
+  immutable history.
 - Do not mark a phase complete when tests pass but the visual has wall hugging,
   obstacle intrusion, breaks/spurs, bad junctions/endpoints, isolated branches,
   shortcuts, route jumps, wrong-corridor Smac, or direction errors. Diagnose and
@@ -38,3 +40,23 @@ navigation stack with direct engineering feedback.
   cases, recovery ladders, fallback chains, or portal-style hacks. Visual review
   never replaces automated free-space, connectivity, clearance, footprint,
   route-edge, lethal-cost, or planner-success validation.
+
+## V3.10 execution scope
+
+- This worktree is `codex/attempt30-a21-v310-srdr-rviz-navigation`, created
+  from exact Module3 commit `4caae47fabf8f09ed4274756e8a82ee48accb747`.
+- The paired Integration worktree is
+  `/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz`
+  at base commit `b375d9049d2c99ac989fd966fc7bfbd3733663bf`.
+- Module3 publishes footprint-swept reachable cognitive states and verified
+  directed transitions. It never performs Module2 cognitive learning or
+  materializes `M_SR`/`M_DR`.
+- Module2 V3.10 is additive and fail-open. A missing, stale, nonfinite,
+  timed-out, or revision-mismatched prior contributes zero; physical
+  infeasibility and BLOCKED edges remain authoritative.
+- A guidance experiment may only rank edges already present and feasible in
+  the current NavigationGraph. Preserve the real 3 -> 48 GVG cycle and never
+  synthesize a shortcut or fake alternative.
+- Use ROS domain 151 and lock
+  `/tmp/isaac_sim_ros2_nav_1000_a21_v310_q151`. Preserve all other worktrees,
+  branches, and run data.

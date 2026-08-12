@@ -13,6 +13,7 @@ from robot_experiments.scenario import (
     load_scenario,
     validate_navigation_runner_scenario,
 )
+from robot_experiments.v310_evidence import _real_alternatives
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "config"
@@ -162,7 +163,28 @@ def test_qualification_csv_uses_lf_line_endings(tmp_path, monkeypatch) -> None:
         "robot_experiments.attempt30_a21_qualification.write_visuals",
         lambda _records, _output: [],
     )
+    monkeypatch.setattr(
+        "robot_experiments.attempt30_a21_qualification.write_v310_evidence",
+        lambda _records, _output: [],
+    )
     write_outputs(records, aggregate(records), tmp_path)
     payload = (tmp_path / "runs.csv").read_bytes()
     assert b"\r\n" not in payload
     assert payload.count(b"\n") == 61
+
+
+def test_v310_guidance_alternatives_use_only_recorded_graph_edges() -> None:
+    manifest = {
+        "navigation_graph": {
+            "edges": [
+                {"id": 1, "from_node": 1, "to_node": 2, "length_m": 1.0},
+                {"id": 2, "from_node": 2, "to_node": 4, "length_m": 1.0},
+                {"id": 3, "from_node": 1, "to_node": 3, "length_m": 1.2},
+                {"id": 4, "from_node": 3, "to_node": 4, "length_m": 1.2},
+            ]
+        }
+    }
+    alternatives = _real_alternatives(
+        manifest, 1, 4, {1: 1.0, 2: 1.0, 3: 1.2, 4: 1.2}
+    )
+    assert alternatives == [(2.0, (1, 2)), (2.4, (3, 4))]

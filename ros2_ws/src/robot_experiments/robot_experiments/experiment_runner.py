@@ -46,7 +46,10 @@ from bio_nav_interfaces.msg import (
     CanonicalRoute,
     EdgePriorArray,
     NavigationGraph,
+    PlanningPrior,
+    RouteEdgeCostArray,
     RouteProgress,
+    SRDREdgeDiagnosticArray,
 )
 
 from .configuration import ConfigurationError
@@ -149,6 +152,12 @@ def _edge_prior_statistics(priors: list[Any]) -> dict[str, float | int]:
         "maximum_cost_delta_m": max(costs, default=0.0),
         "maximum_learned_risk": max(risks, default=0.0),
     }
+
+
+def _diagnostic_float(value: Any) -> float | None:
+    """Encode diagnostic-only NaN/Inf as JSON null, never as a cost value."""
+    parsed = float(value)
+    return parsed if math.isfinite(parsed) else None
 
 
 def _pregoal_identity(scenario_id: str, run_index: int, selection: RunSelection) -> dict[str, object]:
@@ -464,6 +473,19 @@ class ExperimentRunner(Node):
             self.declare_parameter("record_bag", True).value,
             "record_bag",
         )
+        self._require_module2_planning_ready = _boolean_parameter(
+            self.declare_parameter("require_module2_planning_ready", False).value,
+            "require_module2_planning_ready",
+        )
+        self._module2_planning_ready_timeout_sec = float(
+            self.declare_parameter(
+                "module2_planning_ready_timeout_sec", 30.0
+            ).value
+        )
+        if self._module2_planning_ready_timeout_sec <= 0.0:
+            raise ConfigurationError(
+                "module2_planning_ready_timeout_sec must be positive"
+            )
         if self._record_bag and not self._record_evidence:
             raise ConfigurationError(
                 "record_bag requires record_evidence"
@@ -735,6 +757,24 @@ class ExperimentRunner(Node):
             self._edge_prior_callback,
             route_qos,
         )
+        self._planning_prior_subscription = self.create_subscription(
+            PlanningPrior,
+            "/bio_nav/module2/planning_prior",
+            self._planning_prior_callback,
+            reliable,
+        )
+        self._srdr_edge_diagnostic_subscription = self.create_subscription(
+            SRDREdgeDiagnosticArray,
+            "/bio_nav/module2/srdr_edge_diagnostics",
+            self._srdr_edge_diagnostic_callback,
+            route_qos,
+        )
+        self._route_edge_cost_subscription = self.create_subscription(
+            RouteEdgeCostArray,
+            "/bio_nav/route_edge_costs",
+            self._route_edge_cost_callback,
+            route_qos,
+        )
         self._route_progress_subscription = self.create_subscription(
             RouteProgress,
             "/bio_nav/route_progress",
@@ -866,6 +906,12 @@ class ExperimentRunner(Node):
         self._minimum_safety_scan_range_m: float | None = None
         self._canonical_routes: list[dict[str, Any]] = []
         self._module2_prior_responses: list[dict[str, Any]] = []
+        self._planning_prior_samples: list[dict[str, Any]] = []
+        self._latest_planning_prior_readiness: dict[str, Any] | None = None
+        self._planning_prior_ready_streak = 0
+        self._last_planning_field_stamp_s: float | None = None
+        self._srdr_edge_diagnostics: list[dict[str, Any]] = []
+        self._route_edge_costs: list[dict[str, Any]] = []
         self._route_progress_samples: list[dict[str, Any]] = []
         self._smac_plans: list[dict[str, Any]] = []
         self._goal_dispatch_recorded = False
@@ -1102,6 +1148,146 @@ class ExperimentRunner(Node):
                 "healthy": bool(message.healthy),
                 "model_id": str(message.model_id),
                 **_edge_prior_statistics(list(message.priors)),
+            }
+        )
+
+    def _planning_prior_callback(self, message: PlanningPrior) -> None:
+        stamp_s = float(message.stamp.sec) + float(message.stamp.nanosec) / 1.0e9
+        place = [float(value) for value in message.place_belief]
+        dynamic = [float(value) for value in message.dynamic_cost]
+        self._latest_planning_prior_readiness = {
+            "stamp_s": stamp_s,
+            "module2_healthy": bool(message.module2_healthy),
+            "place_entropy_normalized": float(
+                message.place_entropy_normalized
+            ),
+            "context_uncertainty": float(message.context_uncertainty),
+        }
+        readiness = self._latest_planning_prior_readiness
+        if (
+            readiness["module2_healthy"]
+            and readiness["place_entropy_normalized"] <= 0.55
+            and readiness["context_uncertainty"] <= 0.55
+        ):
+            self._planning_prior_ready_streak += 1
+        else:
+            self._planning_prior_ready_streak = 0
+        if not self._navigation_active:
+            return
+        scalar = {
+            "stamp_s": stamp_s,
+            "sequence": int(message.sequence),
+            "model_id": str(message.model_id),
+            "map_version": str(message.map_version),
+            "cognitive_tile_id": str(message.cognitive_tile_id),
+            "tile_revision": int(message.tile_revision),
+            "graph_revision": int(message.graph_revision),
+            "active_slot_id": int(message.active_slot_id),
+            "module2_healthy": bool(message.module2_healthy),
+            "trusted_write": bool(message.trusted_write),
+            "place_peak": max(place) if place else 0.0,
+            "place_argmax": int(max(range(len(place)), key=place.__getitem__)) if place else -1,
+            "place_entropy_normalized": float(message.place_entropy_normalized),
+            "place_mean_canvas_m": [
+                float(value) for value in message.place_mean_canvas_m
+            ],
+            "dynamic_presence_probability": float(
+                message.dynamic_presence_probability
+            ),
+            "risk_exposure_rate": float(
+                sum(probability * cost for probability, cost in zip(place, dynamic))
+            ),
+            "context_uncertainty": float(message.context_uncertainty),
+        }
+        # Keep every scalar sample for time integration, but only retain the
+        # six 256-state fields at 5 s cadence. This is sufficient for static,
+        # dynamic and appearance heatmaps without inflating each run manifest.
+        if (
+            self._last_planning_field_stamp_s is None
+            or stamp_s - self._last_planning_field_stamp_s >= 5.0
+        ):
+            scalar.update(
+                {
+                    "place_belief": place,
+                    "value_sr": [float(value) for value in message.value_sr],
+                    "future_cost_dr": [
+                        float(value) for value in message.future_cost_dr
+                    ],
+                    "dynamic_cost": dynamic,
+                    "remap_rates": [
+                        float(value) for value in message.remap_rates
+                    ],
+                    "transient_suppression": [
+                        float(value) for value in message.transient_suppression
+                    ],
+                }
+            )
+            self._last_planning_field_stamp_s = stamp_s
+        self._planning_prior_samples.append(scalar)
+
+    def _srdr_edge_diagnostic_callback(
+        self, message: SRDREdgeDiagnosticArray
+    ) -> None:
+        if not self._navigation_active:
+            return
+        self._srdr_edge_diagnostics.append(
+            {
+                "request_id": int(message.request_id),
+                "graph_id": str(message.graph_id),
+                "graph_revision": int(message.graph_revision),
+                "model_id": str(message.model_id),
+                "edges": [
+                    {
+                        "edge_id": int(item.edge_id),
+                        "from_node": int(item.from_node),
+                        "to_node": int(item.to_node),
+                        "sample_count": int(item.sample_count),
+                        "valid_sample_count": int(item.valid_sample_count),
+                        "sample_coverage": float(item.sample_coverage),
+                        "sr_score": _diagnostic_float(item.sr_score),
+                        "sr_penalty_m": _diagnostic_float(item.sr_penalty_m),
+                        "dr_score": _diagnostic_float(item.dr_score),
+                        "dr_penalty_m": _diagnostic_float(item.dr_penalty_m),
+                        "requested_delta_m": _diagnostic_float(
+                            item.requested_delta_m
+                        ),
+                        "confidence": _diagnostic_float(item.confidence),
+                        "usable": bool(item.usable),
+                        "rejection_reason": str(item.rejection_reason),
+                    }
+                    for item in message.diagnostics
+                ],
+            }
+        )
+
+    def _route_edge_cost_callback(self, message: RouteEdgeCostArray) -> None:
+        if not self._navigation_active:
+            return
+        self._route_edge_costs.append(
+            {
+                "request_id": int(message.request_id),
+                "graph_id": str(message.graph_id),
+                "graph_revision": int(message.graph_revision),
+                "edges": [
+                    {
+                        "edge_id": int(item.edge_id),
+                        "structural_cost_m": _diagnostic_float(
+                            item.structural_cost_m
+                        ),
+                        "requested_module2_delta_m": _diagnostic_float(
+                            item.requested_module2_delta_m
+                        ),
+                        "applied_module2_delta_m": _diagnostic_float(
+                            item.applied_module2_delta_m
+                        ),
+                        "runtime_penalty_m": _diagnostic_float(
+                            item.runtime_penalty_m
+                        ),
+                        "final_cost_m": _diagnostic_float(item.final_cost_m),
+                        "blocked": bool(item.blocked),
+                    }
+                    for item in message.costs
+                ],
             }
         )
 
@@ -2992,6 +3178,9 @@ class ExperimentRunner(Node):
             ],
             "legs": list(self._leg_results),
             "canonical_routes": list(self._canonical_routes),
+            "planning_prior_samples": list(self._planning_prior_samples),
+            "srdr_edge_diagnostics": list(self._srdr_edge_diagnostics),
+            "route_edge_costs": list(self._route_edge_costs),
             "navigation_graph": navigation_graph,
             "route_progress": list(self._route_progress_samples),
             "smac_plans": list(self._smac_plans),
@@ -3620,6 +3809,13 @@ class ExperimentRunner(Node):
                     selection.variant_id,
                     selection.appearance_profile_id,
                 )
+                if self._require_module2_planning_ready and not self._wait_until(
+                    lambda: self._planning_prior_ready_streak >= 5,
+                    self._module2_planning_ready_timeout_sec,
+                ):
+                    raise RuntimeError(
+                        "Module2 planning prior did not become goal-query ready"
+                    )
                 if self._record_evidence:
                     root = self._begin_run_evidence(run_index, seed)
                     self._lifecycle_event("evidence_started")

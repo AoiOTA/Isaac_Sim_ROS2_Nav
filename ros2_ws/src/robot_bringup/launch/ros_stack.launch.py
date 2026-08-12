@@ -313,6 +313,8 @@ def _launch_setup(context):
                 'structural_map_file': selection.occupancy_map_file,
                 'module2_enabled': LaunchConfiguration(
                     'module2_enabled').perform(context),
+                'module2_response_timeout_s': LaunchConfiguration(
+                    'module2_response_timeout_s').perform(context),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -459,6 +461,8 @@ def generate_launch_description():
             default_value='',
             description='explicit benchmark/custom Nav2 overlay YAML'),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
+        DeclareLaunchArgument(
+            'module2_response_timeout_s', default_value='0.0'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(

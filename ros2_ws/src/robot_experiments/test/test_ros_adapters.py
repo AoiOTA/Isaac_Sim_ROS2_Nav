@@ -6,7 +6,10 @@ import pytest
 pytest.importorskip("rclpy")
 from nav_msgs.msg import Odometry  # noqa: E402
 
-from robot_experiments.experiment_runner import _sample_from_odometry  # noqa: E402
+from robot_experiments.experiment_runner import (  # noqa: E402
+    _diagnostic_float,
+    _sample_from_odometry,
+)
 
 
 def test_odometry_sampler_rejects_nonfinite_data_and_extracts_yaw():
@@ -25,3 +28,9 @@ def test_odometry_sampler_rejects_nonfinite_data_and_extracts_yaw():
     assert sample.stamp_s == pytest.approx(12.5)
     message.pose.pose.position.x = float("nan")
     assert _sample_from_odometry(message) is None
+
+
+def test_nonfinite_read_only_diagnostic_is_encoded_as_json_null():
+    assert _diagnostic_float(float("nan")) is None
+    assert _diagnostic_float(float("inf")) is None
+    assert _diagnostic_float(1.25) == 1.25
