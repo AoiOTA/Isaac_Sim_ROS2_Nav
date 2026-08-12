@@ -40,8 +40,8 @@ def _a21_nav2_parameters(defaults):
         'cache_obstacle_heuristic': bool(metric['cache_obstacle_heuristic']),
         'smooth_path': bool(metric['smooth_path']),
     })
-    baseline = dict(common)
-    baseline.update({
+    grid_2d = dict(common)
+    grid_2d.update({
         'plugin': 'nav2_smac_planner::SmacPlanner2D',
         'cost_travel_multiplier': 1.2,
         'use_final_approach_orientation': False,
@@ -49,9 +49,15 @@ def _a21_nav2_parameters(defaults):
     return {
         'planner': {
             'expected_planner_frequency': float(metric['planner_rate_hz']),
-            'planner_plugins': ['GridBased', 'GridBaseline'],
-            'GridBased': lattice,
-            'GridBaseline': baseline,
+            # Route Server owns macro-corridor selection.  The default metric
+            # planner should therefore produce a locally continuous grid path,
+            # not re-introduce a second nonholonomic route choice.  Repeated
+            # Lattice replans at the G4 turn emitted start-cell reversals and
+            # intermittent Start-occupied/no-path failures.  Keep Lattice as
+            # an explicit diagnostic alternative rather than the BT default.
+            'planner_plugins': ['GridBased', 'GridLattice'],
+            'GridBased': grid_2d,
+            'GridLattice': lattice,
         },
         'controller': {
             'FollowPath': {

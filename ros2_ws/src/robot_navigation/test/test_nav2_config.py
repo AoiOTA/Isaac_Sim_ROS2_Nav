@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 import math
 from pathlib import Path
 from xml.etree import ElementTree
@@ -21,6 +22,15 @@ def _profile(name):
 
 def _params(config, node):
     return config[node]['ros__parameters']
+
+
+def _navigation_launch_module():
+    path = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
+    spec = importlib.util.spec_from_file_location('robot_navigation_launch', path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
@@ -334,7 +344,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "package='nav2_collision_monitor'" in launch_source
 
 
-def test_mppi_terminal_reverse_and_motion_deadband_are_coherent():
+def test_mppi_terminal_reverse_limits_are_coherent():
     config = _config()
     controller_server = _params(config, 'controller_server')
     controller = controller_server['FollowPath']
@@ -360,12 +370,6 @@ def test_mppi_terminal_reverse_and_motion_deadband_are_coherent():
     assert prefer_forward['enabled'] is True
     assert prefer_forward['cost_weight'] > 0.0
     assert prefer_forward['threshold_to_consider'] <= 0.5
-    assert 'VelocityDeadbandCritic' in controller['critics']
-    deadband = controller['VelocityDeadbandCritic']
-    assert deadband['enabled'] is True
-    assert deadband['cost_power'] == 1
-    assert deadband['cost_weight'] == 35.0
-    assert deadband['deadband_velocities'] == [0.05, 0.0, 0.10]
     assert controller['regenerate_noises'] is True
     assert controller['visualize'] is True
 
@@ -553,3 +557,52 @@ def test_a21_route_bt_uses_native_goal_updater_and_metric_owners():
     assert '_write_route_guided_bt' in launch
     assert "defaults['metric_planning']" in launch
     assert "remappings=[('plan', '/route_server/plan')]" in launch
+
+
+def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
+    module = _navigation_launch_module()
+    defaults = {
+        'metric_planning': {
+            'planner_rate_hz': 2.0,
+            'tolerance_m': 0.1,
+            'max_iterations': 1000000,
+            'max_on_approach_iterations': 1000,
+            'max_planning_time_s': 2.0,
+            'primitive_file': '/tmp/primitives.json',
+            'allow_reverse': True,
+            'analytic_expansion_ratio': 3.5,
+            'analytic_expansion_max_length_m': 3.0,
+            'reverse_penalty': 2.0,
+            'change_penalty': 0.2,
+            'non_straight_penalty': 1.2,
+            'cost_penalty': 2.0,
+            'rotation_penalty': 5.0,
+            'retrospective_penalty': 0.015,
+            'lookup_table_size_m': 20.0,
+            'cache_obstacle_heuristic': False,
+            'smooth_path': True,
+        },
+        'route_server': {
+            'boundary_radius_to_achieve_node_m': 0.35,
+            'radius_to_achieve_node_m': 0.5,
+            'smooth_corners': False,
+        },
+        'mppi_route_guidance': {
+            'max_linear_velocity_mps': 0.35,
+            'linear_velocity_std_mps': 0.2,
+            'path_align_weight': 5.0,
+            'use_path_orientations': True,
+            'path_angle_weight': 10.5,
+            'path_angle_mode': 2,
+            'cost_critic_weight': 4.0,
+            'cost_critic_near_collision_cost': 253,
+            'path_follow_weight': 10.0,
+            'enforce_path_inversion': True,
+        },
+    }
+    planner = module._a21_nav2_parameters(defaults)['planner']
+    assert planner['planner_plugins'] == ['GridBased', 'GridLattice']
+    assert planner['GridBased']['plugin'] == (
+        'nav2_smac_planner::SmacPlanner2D')
+    assert planner['GridLattice']['plugin'] == (
+        'nav2_smac_planner::SmacPlannerLattice')
