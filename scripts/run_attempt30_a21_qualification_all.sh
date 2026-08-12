@@ -165,13 +165,17 @@ start_stack() {
 # Module2 launchers.  Without this explicit underlay, a caller's ambient shell
 # can resolve bio_nav_ros_bridge from another checkout and silently load a
 # missing or stale A21 engineering-defaults file.
-require_file "${attempt30_integration_root}/install/setup.bash"
+require_file "${attempt30_integration_root}/install/local_setup.bash"
 require_file "${attempt30_integration_root}/install/bio_nav_ros_bridge/share/bio_nav_ros_bridge/config/engineering_defaults.yaml"
+# Source the base ROS and Module3 workspace first.  Then place the exact
+# Attempt30 Integration overlay last; otherwise the Module3-generated prefix
+# chain can re-promote another bio_nav_ros_bridge checkout after provenance was
+# apparently pinned.
+source_ros --require-workspace
 set +u
 # shellcheck disable=SC1091
-source "${attempt30_integration_root}/install/setup.bash"
+source "${attempt30_integration_root}/install/local_setup.bash"
 set -u
-source_ros --require-workspace
 [[ "$(ros2 pkg prefix bio_nav_ros_bridge 2>/dev/null)" == \
     "${attempt30_integration_root}/install/bio_nav_ros_bridge" ]] \
   || die "bio_nav_ros_bridge did not resolve from the Attempt30 Integration worktree"

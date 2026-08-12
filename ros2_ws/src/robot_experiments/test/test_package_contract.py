@@ -239,7 +239,7 @@ def test_attempt30_repeat_diagnostic_is_nonformal_and_pins_its_integration_under
     assert 'attempt30_a21_diagnostic_${campaign}/dynamic_repeat' in supervisor
     assert 'run_indices:=1,2,3,4,5' in supervisor
     assert 'attempt30_integration_root=' in supervisor
-    assert 'source "${attempt30_integration_root}/install/setup.bash"' in supervisor
+    assert 'source "${attempt30_integration_root}/install/local_setup.bash"' in supervisor
     assert 'ros2 pkg prefix bio_nav_ros_bridge' in supervisor
 
 
@@ -251,6 +251,8 @@ def test_attempt30_static_repeat_replays_both_failed_reset_epochs_nonformally():
     assert '"diagnostic-static-repeat"' in supervisor
     assert 'attempt30_a21_diagnostic_${campaign}/static_warmup' in supervisor
     assert 'attempt30_a21_diagnostic_${campaign}/static_repeat' in supervisor
+    assert supervisor.index('source_ros --require-workspace') < supervisor.index(
+        'source "${attempt30_integration_root}/install/local_setup.bash"')
     assert 'resume:=false run_indices:=1\n' in supervisor
     assert 'run_indices:=1,2,3,4,5,6,7,8' in supervisor
     assert 'attempt30_a21_qualification_static.yaml' in supervisor
