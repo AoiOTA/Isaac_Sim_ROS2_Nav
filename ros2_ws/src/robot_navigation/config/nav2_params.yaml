@@ -427,16 +427,14 @@ planner_server:
       use_final_approach_orientation: false
 
       smoother:
-        # final60c runs 0004/0008 repeatedly stalled before the G4 turn on a
-        # smoothed plan containing duplicate points and a ~178 degree local
-        # backtrack.  SmacPlanner2D's raw 8-connected A* path is already
-        # collision-aware; bypass the optional gradient smoother so MPPI is
-        # never asked to follow a smoothing-induced cusp.
-        max_iterations: 0
+        # Keep the standard smoother: an isolated-topic diagnostic showed the
+        # raw 8-connected path itself contains one-cell reversals, disproving
+        # the earlier mixed-topic hypothesis that smoothing created them.
+        max_iterations: 1000
         w_smooth: 0.30
         w_data: 0.20
         tolerance: 0.0000000001
-        do_refinement: false
+        do_refinement: true
 
 
 behavior_server:
