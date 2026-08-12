@@ -7,6 +7,7 @@ from robot_experiments.attempt30_a21_qualification import (
     _route_projection_tracks,
     _route_valid,
     aggregate,
+    write_outputs,
 )
 from robot_experiments.scenario import (
     load_scenario,
@@ -150,3 +151,18 @@ def test_route_projection_tracks_do_not_join_separate_requests() -> None:
         (41, [[0.0, 0.0], [1.0, 0.0]]),
         (42, [[9.0, 9.0], [9.0, 10.0]]),
     ]
+
+
+def test_qualification_csv_uses_lf_line_endings(tmp_path, monkeypatch) -> None:
+    records = {
+        group: [_row(group, index) for index in range(1, 21)]
+        for group in EXPECTED
+    }
+    monkeypatch.setattr(
+        "robot_experiments.attempt30_a21_qualification.write_visuals",
+        lambda _records, _output: [],
+    )
+    write_outputs(records, aggregate(records), tmp_path)
+    payload = (tmp_path / "runs.csv").read_bytes()
+    assert b"\r\n" not in payload
+    assert payload.count(b"\n") == 61

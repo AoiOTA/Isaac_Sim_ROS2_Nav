@@ -510,7 +510,7 @@ def write_outputs(
             "planned_deviation_percent", "execution_time_sec", "minimum_clearance_m",
             "localization_healthy", "unexpected_abort", "dynamic_interaction_complete",
         ]
-        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer = csv.DictWriter(stream, fieldnames=fields, lineterminator="\n")
         writer.writeheader()
         for group, rows in records.items():
             for item in rows:
