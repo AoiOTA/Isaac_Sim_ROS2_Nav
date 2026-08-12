@@ -66,7 +66,7 @@ def _a21_nav2_parameters(defaults):
                 'critics': [
                     'ConstraintCritic', 'CostCritic', 'GoalCritic',
                     'GoalAngleCritic', 'PathAlignCritic', 'PathFollowCritic',
-                    'PathAngleCritic',
+                    'PathAngleCritic', 'VelocityDeadbandCritic',
                 ],
                 'PathAlignCritic': {
                     'cost_weight': float(mppi['path_align_weight']),
@@ -84,6 +84,20 @@ def _a21_nav2_parameters(defaults):
                 },
                 'PathFollowCritic': {
                     'cost_weight': float(mppi['path_follow_weight']),
+                },
+                # final60d G5 failures spent 85--88% of aligned samples below
+                # 0.05 m/s, while all 34 successful rows spent 0% there.
+                # Penalize ineffective sampled trajectories without changing
+                # velocity bounds, collision checks, Route or recovery logic.
+                'VelocityDeadbandCritic': {
+                    'enabled': True,
+                    'cost_power': 1,
+                    'cost_weight': float(mppi['velocity_deadband_weight']),
+                    'deadband_velocities': [
+                        float(mppi['velocity_deadband_mps']),
+                        0.0,
+                        float(mppi['angular_deadband_radps']),
+                    ],
                 },
                 'enforce_path_inversion': bool(mppi['enforce_path_inversion']),
             },

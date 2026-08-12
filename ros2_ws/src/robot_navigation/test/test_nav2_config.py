@@ -597,12 +597,24 @@ def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
             'cost_critic_weight': 4.0,
             'cost_critic_near_collision_cost': 253,
             'path_follow_weight': 10.0,
+            'velocity_deadband_weight': 35.0,
+            'velocity_deadband_mps': 0.05,
+            'angular_deadband_radps': 0.10,
             'enforce_path_inversion': True,
         },
     }
-    planner = module._a21_nav2_parameters(defaults)['planner']
+    parameters = module._a21_nav2_parameters(defaults)
+    planner = parameters['planner']
     assert planner['planner_plugins'] == ['GridBased', 'GridLattice']
     assert planner['GridBased']['plugin'] == (
         'nav2_smac_planner::SmacPlanner2D')
     assert planner['GridLattice']['plugin'] == (
         'nav2_smac_planner::SmacPlannerLattice')
+    controller = parameters['controller']['FollowPath']
+    assert controller['critics'][-1] == 'VelocityDeadbandCritic'
+    assert controller['VelocityDeadbandCritic'] == {
+        'enabled': True,
+        'cost_power': 1,
+        'cost_weight': 35.0,
+        'deadband_velocities': [0.05, 0.0, 0.10],
+    }
