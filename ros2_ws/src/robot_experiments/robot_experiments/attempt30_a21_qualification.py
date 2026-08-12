@@ -324,6 +324,27 @@ def _read_gt(root: Path) -> tuple[list[float], list[float]]:
     return ([float(row["x"]) for row in rows], [float(row["y"]) for row in rows])
 
 
+def _route_projection_tracks(
+    manifest: Mapping[str, Any],
+) -> list[tuple[int, list[list[float]]]]:
+    """Return projection tracks without joining separate route requests."""
+    tracks: dict[int, list[list[float]]] = {}
+    for sample in manifest.get("route_progress", []):
+        if not isinstance(sample, Mapping):
+            continue
+        request_id = sample.get("request_id")
+        point = sample.get("projected_point")
+        if (
+            not isinstance(request_id, int)
+            or not isinstance(point, list)
+            or len(point) != 2
+            or not all(isinstance(value, (int, float)) for value in point)
+        ):
+            continue
+        tracks.setdefault(request_id, []).append([float(point[0]), float(point[1])])
+    return list(tracks.items())
+
+
 def _draw_context(axis, first: Mapping[str, Any]) -> None:
     root = first["root"]
     pgm, metadata = root / "global_costmap.pgm", root / "global_costmap.json"
@@ -360,20 +381,17 @@ def _draw_context(axis, first: Mapping[str, Any]) -> None:
                 alpha=0.35,
                 zorder=1,
             )
-    edge_map = {int(edge["id"]): edge for edge in graph.get("edges", [])}
-    for route in manifest.get("canonical_routes", []):
-        for edge_id in route.get("edge_ids", []):
-            edge = edge_map.get(int(edge_id))
-            if edge and len(edge.get("polyline", [])) >= 2:
-                points = edge["polyline"]
-                axis.plot(
-                    [point[0] for point in points],
-                    [point[1] for point in points],
-                    color="#2563eb",
-                    linewidth=1.4,
-                    alpha=0.7,
-                    zorder=3,
-                )
+    for track_index, (_, points) in enumerate(_route_projection_tracks(manifest)):
+        if len(points) >= 2:
+            axis.plot(
+                [point[0] for point in points],
+                [point[1] for point in points],
+                color="#2563eb",
+                linewidth=1.4,
+                alpha=0.7,
+                zorder=3,
+                label="Selected Route projection" if track_index == 0 else None,
+            )
     for plan in manifest.get("smac_plans", [])[::max(1, len(manifest.get("smac_plans", [])) // 30 or 1)]:
         points = plan.get("points", [])
         if len(points) >= 2:
@@ -387,17 +405,13 @@ def _draw_context(axis, first: Mapping[str, Any]) -> None:
             )
     progress = manifest.get("route_progress", [])
     if progress:
-        projected = [item["projected_point"] for item in progress]
-        lookahead = [item["lookahead"] for item in progress]
-        axis.scatter(
-            [item[0] for item in projected[::10]],
-            [item[1] for item in projected[::10]],
-            s=4,
-            color="#0ea5e9",
-            alpha=0.5,
-            zorder=4,
-            label="Route projection",
-        )
+        lookahead = [
+            item["lookahead"]
+            for item in progress
+            if isinstance(item, Mapping)
+            and isinstance(item.get("lookahead"), list)
+            and len(item["lookahead"]) == 2
+        ]
         axis.scatter(
             [item[0] for item in lookahead[::10]],
             [item[1] for item in lookahead[::10]],
@@ -426,16 +440,41 @@ def write_visuals(records: Mapping[str, list[dict[str, Any]]], output: Path) -> 
     for group, rows in records.items():
         figure, axis = plt.subplots(figsize=(9, 10), constrained_layout=True)
         _draw_context(axis, rows[0])
+        full_count = sum(bool(row["task_success"]) for row in rows)
+        partial_count = len(rows) - full_count
+        full_label_added = False
+        partial_label_added = False
         for row in rows:
             x, y = _read_gt(row["root"])
-            axis.plot(x, y, color=colors[group], linewidth=0.8, alpha=0.25, zorder=5)
+            is_full = bool(row["task_success"])
+            label = None
+            if is_full and not full_label_added:
+                label = "Completed ground truth"
+                full_label_added = True
+            elif not is_full and not partial_label_added:
+                label = "Partial ground truth (failed run)"
+                partial_label_added = True
+            axis.plot(
+                x,
+                y,
+                color=colors[group] if is_full else "#111827",
+                linewidth=0.8 if is_full else 1.1,
+                linestyle="-" if is_full else "--",
+                alpha=0.25 if is_full else 0.8,
+                zorder=5,
+                label=label,
+            )
             if x:
                 axis.scatter(x[0], y[0], s=12, color="#16a34a", zorder=6)
-        axis.set_title(f"Attempt30/A21 {group}: 20 whole-house trajectories")
+        title = f"Attempt30/A21 {group}: {full_count} full trajectories"
+        if partial_count:
+            title += f" + {partial_count} partial failed tracks"
+        axis.set_title(title)
         axis.set_xlabel("map x (m)")
         axis.set_ylabel("map y (m)")
         axis.set_aspect("equal", adjustable="box")
         axis.grid(alpha=0.15)
+        axis.legend(loc="best", fontsize=7)
         target = output / f"qualification_{group}_route_smac_overlay.png"
         figure.savefig(target, dpi=180)
         plt.close(figure)

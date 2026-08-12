@@ -4,6 +4,7 @@ from robot_experiments.attempt30_a21_qualification import (
     APPEARANCE_PROFILES,
     EXPECTED,
     WHOLE_HOUSE_ROUTE,
+    _route_projection_tracks,
     _route_valid,
     aggregate,
 )
@@ -134,3 +135,18 @@ def test_static_executed_deviation_is_a_separate_20_percent_gate() -> None:
     assert result["collision_free_success_count"] == 20
     assert result["executed_deviation_percent"]["passed"] is False
     assert result["passed"] is False
+
+
+def test_route_projection_tracks_do_not_join_separate_requests() -> None:
+    manifest = {
+        "route_progress": [
+            {"request_id": 41, "projected_point": [0.0, 0.0]},
+            {"request_id": 41, "projected_point": [1.0, 0.0]},
+            {"request_id": 42, "projected_point": [9.0, 9.0]},
+            {"request_id": 42, "projected_point": [9.0, 10.0]},
+        ]
+    }
+    assert _route_projection_tracks(manifest) == [
+        (41, [[0.0, 0.0], [1.0, 0.0]]),
+        (42, [[9.0, 9.0], [9.0, 10.0]]),
+    ]
