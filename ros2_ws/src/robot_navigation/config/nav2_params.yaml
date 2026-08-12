@@ -85,12 +85,11 @@ controller_server:
       vy_std: 0.00
       wz_std: 0.75
 
-      # Routine Route-guided tracking is forward-only.  The G4 failures showed
-      # that a merely penalized negative sample can still win repeatedly and
-      # oscillate below the progress threshold at a tight turn.  Recovery-tree
-      # BackUp remains independently available through the velocity smoother.
+      # Preserve a bounded reverse sample for terminal-pose centring.  A
+      # forward-only validation reached the G3 position tolerance but could
+      # not settle its required yaw, so reversing cannot be removed globally.
       vx_max: 0.75
-      vx_min: 0.0
+      vx_min: -0.15
       vy_max: 0.00
       wz_max: 1.35
 
@@ -121,6 +120,7 @@ controller_server:
         - PathFollowCritic
         - PathAngleCritic
         - PreferForwardCritic
+        - VelocityDeadbandCritic
 
       ConstraintCritic:
         enabled: true
@@ -195,15 +195,25 @@ controller_server:
         max_angle_to_furthest: 0.45
         mode: 0
 
-      # 与路径角度 critic 协同强化前进路径选择。恢复行为可短距离倒车，
-      # 但正常 MPPI 路径跟踪不生成负线速度。
+      # 与路径角度 critic 协同强化前进路径选择，同时保留终点有限倒车。
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        # Keep the critic as a positive forward prior even though vx_min is the
-        # hard routine-tracking boundary; BackUp is a separate behavior action.
+        # Penalize routine reverse motion while keeping it feasible for the
+        # last centimetres of terminal position/yaw convergence.
         cost_weight: 30.0
         threshold_to_consider: 0.5
+
+      # Failed G4 turns spent 33--37% of controller samples at near-zero
+      # translation and about 25% in tiny reverse commands, while successful
+      # turns spent only 1--4% there.  Penalize trajectories that live below
+      # the Jackal's effective motion deadband; this preserves both signs of
+      # velocity and all collision checks but rewards decisive turn progress.
+      VelocityDeadbandCritic:
+        enabled: true
+        cost_power: 1
+        cost_weight: 35.0
+        deadband_velocities: [0.05, 0.0, 0.10]
 
 
 local_costmap:

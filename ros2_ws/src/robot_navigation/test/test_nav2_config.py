@@ -334,7 +334,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "package='nav2_collision_monitor'" in launch_source
 
 
-def test_mppi_forward_tracking_and_recovery_reverse_limits_are_coherent():
+def test_mppi_terminal_reverse_and_motion_deadband_are_coherent():
     config = _config()
     controller_server = _params(config, 'controller_server')
     controller = controller_server['FollowPath']
@@ -344,7 +344,7 @@ def test_mppi_forward_tracking_and_recovery_reverse_limits_are_coherent():
         == 'nav2_controller::PoseProgressChecker'
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
-    assert controller['vx_min'] == 0.0
+    assert -0.20 <= controller['vx_min'] <= -0.10
     assert controller['vx_std'] == 0.35
     assert controller['vx_max'] == 0.75
     assert controller['wz_std'] == 0.75
@@ -360,6 +360,12 @@ def test_mppi_forward_tracking_and_recovery_reverse_limits_are_coherent():
     assert prefer_forward['enabled'] is True
     assert prefer_forward['cost_weight'] > 0.0
     assert prefer_forward['threshold_to_consider'] <= 0.5
+    assert 'VelocityDeadbandCritic' in controller['critics']
+    deadband = controller['VelocityDeadbandCritic']
+    assert deadband['enabled'] is True
+    assert deadband['cost_power'] == 1
+    assert deadband['cost_weight'] == 35.0
+    assert deadband['deadband_velocities'] == [0.05, 0.0, 0.10]
     assert controller['regenerate_noises'] is True
     assert controller['visualize'] is True
 
@@ -369,8 +375,8 @@ def test_mppi_forward_tracking_and_recovery_reverse_limits_are_coherent():
     assert smoother['smoothing_frequency'] == 20.0
     assert smoother['max_velocity'] == [
         controller['vx_max'], 0.0, controller['wz_max']]
-    # Routine MPPI tracking stays forward-only, while the command chain must
-    # pass the behavior server's bounded negative BackUp recovery velocity.
+    # Both MPPI terminal centring and the behavior server's BackUp remain
+    # inside the command chain's bounded negative velocity envelope.
     assert -0.30 <= smoother['min_velocity'][0] <= -0.18
     assert smoother['min_velocity'][1:] == [0.0, -controller['wz_max']]
     assert smoother['max_accel'] == [
