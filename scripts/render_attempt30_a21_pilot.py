@@ -18,6 +18,19 @@ from matplotlib.patches import Polygon, Rectangle
 import yaml
 
 
+def deviation_annotation(summary: dict) -> str:
+    """Describe static deviation without treating dynamic N/A as failure."""
+    executed = summary.get("path_deviation_percent")
+    planned = summary.get("planned_path_deviation_percent")
+    if isinstance(executed, (int, float)) and isinstance(planned, (int, float)):
+        return f"executed deviation {executed:.2f}%; planned {planned:.2f}%"
+    if summary.get("kind") == "dynamic":
+        return "deviation not applicable to dynamic runs"
+    if summary.get("strict_success"):
+        return "deviation unavailable"
+    return "deviation unavailable (run did not finish)"
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -153,13 +166,7 @@ def main() -> None:
         axis.scatter(x, y, marker="*", s=85, color="#dc2626", zorder=11)
         axis.text(x + 0.08, y + 0.08, item["id"], fontsize=9, weight="bold")
 
-    executed = summary.get("path_deviation_percent")
-    planned = summary.get("planned_path_deviation_percent")
-    deviation = (
-        f"executed deviation {executed:.2f}%; planned {planned:.2f}%"
-        if isinstance(executed, (int, float)) and isinstance(planned, (int, float))
-        else "deviation unavailable (run did not finish)"
-    )
+    deviation = deviation_annotation(summary)
     contact = summary.get("static_geometric_contact", {})
     route_lines.append(
         f"{deviation}; physical collision-free={summary.get('physical_collision_free')}; "
