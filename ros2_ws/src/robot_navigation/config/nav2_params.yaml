@@ -63,10 +63,13 @@ controller_server:
       time_steps: 20
       model_dt: 0.10
       # The seven-run static campaign exposed repeated cases where the fixed
-      # 500-sample bank contained no collision-free rollout for a transient
-      # local-costmap state.  700 remains well within the 10 Hz controller
-      # budget while materially increasing the chance of a feasible bypass.
-      batch_size: 700
+      # A 700-sample bank still produced two rare G4 progress stalls across
+      # final60c even though warmup-aligned replays passed 9/9.  MPPI has no
+      # configurable RNG seed and successful replays still showed transient
+      # exhausted banks.  Use 1000 collision-checked samples to reduce that
+      # stochastic miss probability without changing horizon, critics or
+      # iteration count; runtime diagnostics must preserve the 10 Hz budget.
+      batch_size: 1000
       iteration_count: 1
       # Do not immediately escalate a single exhausted candidate bank to the
       # BT recovery tree.  Retry with freshly sampled controls first; this

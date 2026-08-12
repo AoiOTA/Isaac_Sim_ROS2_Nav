@@ -21,7 +21,7 @@ controller_server:
     FollowPath:
       time_steps: 20
       model_dt: 0.10
-      batch_size: 700
+      batch_size: 1000
 
 local_costmap:
   local_costmap:
