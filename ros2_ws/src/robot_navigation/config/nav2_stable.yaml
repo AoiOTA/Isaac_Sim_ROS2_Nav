@@ -7,7 +7,7 @@ controller_server:
       # 20 x 0.10 s = 2.0 s prediction horizon.
       time_steps: 20
       model_dt: 0.10
-      batch_size: 1000
+      batch_size: 700
 
       vx_std: 0.35
       wz_std: 0.75

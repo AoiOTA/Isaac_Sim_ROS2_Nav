@@ -38,7 +38,7 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     assert 'TrajectoryVisualizer' not in controller
     assert controller['time_steps'] == 20
     assert math.isclose(controller['model_dt'], 0.10)
-    assert controller['batch_size'] == 1000
+    assert controller['batch_size'] == 700
     assert controller['vx_std'] == 0.35
     assert controller['retry_attempt_limit'] == 3
     assert controller['regenerate_noises'] is True
@@ -88,7 +88,7 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
     assert parameters['controller_frequency'] == 10.0
     assert follow_path['time_steps'] == 20
     assert math.isclose(follow_path['model_dt'], 0.10)
-    assert follow_path['batch_size'] == 1000
+    assert follow_path['batch_size'] == 700
     assert math.isclose(follow_path['time_steps'] * follow_path['model_dt'], 2.0)
     assert follow_path['vx_std'] == 0.35
     assert follow_path['wz_std'] == 0.75
@@ -155,7 +155,7 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
         'FollowPath': {
             'time_steps': 20,
             'model_dt': 0.10,
-                'batch_size': 1000,
+                'batch_size': 700,
         },
     }
     assert 'velocity_smoother' not in dynamic
@@ -214,7 +214,7 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     }
     assert base_controller['controller_frequency'] == 10.0
     assert base_controller['FollowPath']['time_steps'] == 20
-    assert base_controller['FollowPath']['batch_size'] == 1000
+    assert base_controller['FollowPath']['batch_size'] == 700
     # v25 confines costmap-ahead reverse checking to dynamic recovery.  The
     # shared/static profile retains its validated zero-look-ahead behavior.
     assert behavior_server['simulate_ahead_time'] == 1.0
@@ -334,7 +334,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "package='nav2_collision_monitor'" in launch_source
 
 
-def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
+def test_mppi_forward_tracking_and_recovery_reverse_limits_are_coherent():
     config = _config()
     controller_server = _params(config, 'controller_server')
     controller = controller_server['FollowPath']
@@ -344,7 +344,7 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
         == 'nav2_controller::PoseProgressChecker'
     assert controller_server['progress_checker'][
         'required_movement_angle'] > 0.0
-    assert -0.20 <= controller['vx_min'] <= -0.10
+    assert controller['vx_min'] == 0.0
     assert controller['vx_std'] == 0.35
     assert controller['vx_max'] == 0.75
     assert controller['wz_std'] == 0.75

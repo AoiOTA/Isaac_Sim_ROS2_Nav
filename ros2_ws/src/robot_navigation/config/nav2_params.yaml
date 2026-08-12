@@ -63,13 +63,11 @@ controller_server:
       time_steps: 20
       model_dt: 0.10
       # The seven-run static campaign exposed repeated cases where the fixed
-      # A 700-sample bank still produced two rare G4 progress stalls across
-      # final60c even though warmup-aligned replays passed 9/9.  MPPI has no
-      # configurable RNG seed and successful replays still showed transient
-      # exhausted banks.  Use 1000 collision-checked samples to reduce that
-      # stochastic miss probability without changing horizon, critics or
-      # iteration count; runtime diagnostics must preserve the 10 Hz budget.
-      batch_size: 1000
+      # 500-sample bank contained no collision-free rollout for a transient
+      # local-costmap state.  700 remains within the 10 Hz controller budget.
+      # A 1000-sample validation failed its first warmup at the same G4 turn,
+      # proving that a larger bank does not repair that progress stall.
+      batch_size: 700
       iteration_count: 1
       # Do not immediately escalate a single exhausted candidate bank to the
       # BT recovery tree.  Retry with freshly sampled controls first; this
@@ -77,9 +75,6 @@ controller_server:
       # without changing the action timeout or accepting a less-safe path.
       retry_attempt_limit: 3
 
-      # Permit a small reverse sample near tight terminal poses.  This lets
-      # MPPI re-centres at the G1 return point after a dynamic interaction instead of remaining
-      # a few centimetres outside the acceptance circle until timeout.
       # A fresh noise bank is required for retry_attempt_limit to explore a
       # different control set after a short-lived RGB-D / LaserScan costmap
       # change.  Reusing the same exhausted bank was the common source of the
@@ -90,10 +85,12 @@ controller_server:
       vy_std: 0.00
       wz_std: 0.75
 
-      # Forward motion remains strongly preferred, but a bounded reverse
-      # sample is available for terminal-pose recovery in narrow rooms.
+      # Routine Route-guided tracking is forward-only.  The G4 failures showed
+      # that a merely penalized negative sample can still win repeatedly and
+      # oscillate below the progress threshold at a tight turn.  Recovery-tree
+      # BackUp remains independently available through the velocity smoother.
       vx_max: 0.75
-      vx_min: -0.15
+      vx_min: 0.0
       vy_max: 0.00
       wz_max: 1.35
 
@@ -203,9 +200,8 @@ controller_server:
       PreferForwardCritic:
         enabled: true
         cost_power: 1
-        # Reverse remains available only when a terminal pose genuinely needs
-        # it.  A strong prior prevents low-box avoidance from oscillating
-        # between forward and reverse samples in the open S→G1 area.
+        # Keep the critic as a positive forward prior even though vx_min is the
+        # hard routine-tracking boundary; BackUp is a separate behavior action.
         cost_weight: 30.0
         threshold_to_consider: 0.5
 
