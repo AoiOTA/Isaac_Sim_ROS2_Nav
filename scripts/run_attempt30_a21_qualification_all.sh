@@ -220,9 +220,15 @@ if [[ "${orchestration_mode}" == "diagnostic-dynamic-repeat" ]]; then
 fi
 start_stack static
 if [[ "${orchestration_mode}" == "diagnostic-static-repeat" ]]; then
-  # Exercise the same reset epochs that exposed the final60c G4 cusp without
-  # creating or replacing formal rows.  Eight full-house runs preserve the
-  # original six obstacles and include seeds 8504/8508 from both failures.
+  # Match the formal stack history: its pilot consumes one mission/reset
+  # before formal indices 1--8.  Keep the warmup and repeats non-formal while
+  # preserving the original full-house route and six static obstacles.
+  "${SCRIPT_DIR}/run_experiment.sh" \
+    "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_static.yaml" \
+    "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/static_warmup" \
+    navigation_execution_backend:=route_guided \
+    record_bag:=false record_evidence:=true nav2_profile:=stable \
+    resume:=false run_indices:=1
   "${SCRIPT_DIR}/run_experiment.sh" \
     "${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/attempt30_a21_qualification_static.yaml" \
     "${PROJECT_ROOT}/data/experiment_runs/attempt30_a21_diagnostic_${campaign}/static_repeat" \

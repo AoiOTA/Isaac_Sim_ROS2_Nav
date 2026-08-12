@@ -249,7 +249,9 @@ def test_attempt30_static_repeat_replays_both_failed_reset_epochs_nonformally():
         root / "scripts" / "run_attempt30_a21_qualification_all.sh"
     ).read_text()
     assert '"diagnostic-static-repeat"' in supervisor
+    assert 'attempt30_a21_diagnostic_${campaign}/static_warmup' in supervisor
     assert 'attempt30_a21_diagnostic_${campaign}/static_repeat' in supervisor
+    assert 'resume:=false run_indices:=1\n' in supervisor
     assert 'run_indices:=1,2,3,4,5,6,7,8' in supervisor
     assert 'attempt30_a21_qualification_static.yaml' in supervisor
 
