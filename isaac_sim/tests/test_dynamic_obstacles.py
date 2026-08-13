@@ -226,6 +226,30 @@ def test_trigger_arms_a_selected_actor_exactly_once_and_keeps_it_hidden():
     assert [event["event"] for event in events] == ["armed"]
 
 
+def test_trigger_activation_starts_selected_actor_before_goal_publication():
+    manager = object.__new__(DynamicObstacleManager)
+    events = []
+    enabled = []
+    runtime = SimpleNamespace(
+        spec=SimpleNamespace(obstacle_id="focus_actor", trigger_group="FOCUS"),
+        state="waiting", retired=False, armed_at=None, gate_at=None,
+        motion_at=None,
+    )
+    case = SimpleNamespace(obstacle=runtime.spec, activation="trigger")
+    manager._runtime = {"focus_actor": runtime}
+    manager._selected_cases = (case,)
+    manager._case_by_obstacle_id = {"focus_actor": case}
+    manager.scenario = SimpleNamespace(is_case_matrix=True)
+    manager._event = lambda kind, stamp, **detail: events.append(kind)
+    manager._set_enabled = lambda item, value: enabled.append((item, value))
+
+    assert manager.trigger("FOCUS", 4.0) == ("focus_actor",)
+    assert runtime.state == "moving"
+    assert runtime.motion_at == 4.0
+    assert enabled == [(runtime, True)]
+    assert events == ["armed", "motion_start"]
+
+
 def test_goal_completion_retires_only_armed_or_parked_matching_actor():
     manager = object.__new__(DynamicObstacleManager)
     events = []

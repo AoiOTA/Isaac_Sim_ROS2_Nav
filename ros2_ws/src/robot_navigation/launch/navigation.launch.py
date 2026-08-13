@@ -118,7 +118,7 @@ def _a21_nav2_parameters(defaults):
     }
 
 
-def _write_a21_overlay(parameters, graph_file):
+def _write_a21_overlay(parameters):
     document = {
         'controller_server': {
             'ros__parameters': parameters['controller'],
@@ -127,10 +127,12 @@ def _write_a21_overlay(parameters, graph_file):
             'ros__parameters': parameters['planner'],
         },
         'route_server': {
-            'ros__parameters': {
-                **parameters['route'],
-                'graph_filepath': str(graph_file),
-            },
+            # ``graph_filepath`` is intentionally supplied only by the launch
+            # argument below.  An exact-node value in this overlay has higher
+            # ROS parameter precedence than a later launch dictionary (which
+            # is emitted as ``/**``), so keeping the warehouse default here
+            # silently defeated benchmark-specific graph selection.
+            'ros__parameters': parameters['route'],
         },
     }
     with tempfile.NamedTemporaryFile(
@@ -173,7 +175,7 @@ def generate_launch_description():
     defaults_file = bridge_share / 'config' / 'engineering_defaults.yaml'
     defaults = yaml.safe_load(defaults_file.read_text(encoding='utf-8'))
     a21 = _a21_nav2_parameters(defaults)
-    a21_overlay = _write_a21_overlay(a21, graph_file)
+    a21_overlay = _write_a21_overlay(a21)
     default_nav_to_pose_bt = package_share / 'behavior_trees' / (
         'navigate_to_pose_with_dead_end_recovery.xml')
     default_nav_through_poses_bt = package_share / 'behavior_trees' / (
@@ -188,6 +190,9 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration('use_sim_time')
     autostart = LaunchConfiguration('autostart')
     structural_map_file = LaunchConfiguration('structural_map_file')
+    route_graph_file = LaunchConfiguration('route_graph_file')
+    feasible_only_largest_component = LaunchConfiguration(
+        'feasible_only_largest_component')
     module2_enabled = LaunchConfiguration('module2_enabled')
     execute_route_navigation = LaunchConfiguration('execute_route_navigation')
     module2_response_timeout_s = LaunchConfiguration(
@@ -210,6 +215,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav2_profile_params_file', default_value=str(default_profile)),
         DeclareLaunchArgument('structural_map_file', default_value=''),
+        DeclareLaunchArgument(
+            'route_graph_file', default_value=str(graph_file)),
+        DeclareLaunchArgument(
+            'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('execute_route_navigation', default_value='true'),
         DeclareLaunchArgument('module2_response_timeout_s', default_value='0.0'),
@@ -250,6 +259,7 @@ def generate_launch_description():
                 params_file,
                 profile_params_file,
                 str(a21_overlay),
+                {'graph_filepath': route_graph_file},
             ],
             # Route Server and Planner Server otherwise both publish /plan.
             # Keep /plan an unambiguous Smac evidence topic; Route Server's
@@ -306,6 +316,8 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
                 'engineering_defaults_file': str(defaults_file),
                 'map_yaml': structural_map_file,
+                'feasible_only_largest_component': (
+                    feasible_only_largest_component),
                 'module2_enabled': module2_enabled,
                 'module2_response_timeout_s': module2_response_timeout_s,
                 'execute_navigation': execute_route_navigation,

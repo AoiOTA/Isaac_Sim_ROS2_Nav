@@ -313,6 +313,10 @@ def _launch_setup(context):
                 'structural_map_file': selection.occupancy_map_file,
                 'module2_enabled': LaunchConfiguration(
                     'module2_enabled').perform(context),
+                'route_graph_file': LaunchConfiguration(
+                    'route_graph_file').perform(context),
+                'feasible_only_largest_component': LaunchConfiguration(
+                    'feasible_only_largest_component').perform(context),
                 'module2_response_timeout_s': LaunchConfiguration(
                     'module2_response_timeout_s').perform(context),
                 'voxel_grid_topic': (
@@ -461,6 +465,9 @@ def generate_launch_description():
             default_value='',
             description='explicit benchmark/custom Nav2 overlay YAML'),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
+        DeclareLaunchArgument('route_graph_file', default_value=''),
+        DeclareLaunchArgument(
+            'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument(
             'module2_response_timeout_s', default_value='0.0'),
         DeclareLaunchArgument(

@@ -122,3 +122,15 @@ def test_custom_environment_keeps_default_follow_camera_enabled(
     _apply_cli_overrides(args)
 
     assert "ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED" not in os.environ
+
+
+def test_dynamic_case_variant_and_seed_are_explicit_cli_inputs() -> None:
+    args = _parser().parse_args([
+        "--dynamic-case-id", "q36_04_crossing",
+        "--dynamic-variant-id", "v3",
+        "--dynamic-seed", "9363",
+    ])
+
+    assert args.dynamic_case_id == "q36_04_crossing"
+    assert args.dynamic_variant_id == "v3"
+    assert args.dynamic_seed == 9363

@@ -104,6 +104,7 @@ def test_reset_manager_executes_every_hook_in_fixed_order():
     )
     assert simulation.calls == ["pause", "step:False", "play"]
     assert calls == ["zero", "controller", "odom:ideal", "gt", "dynamic:123", "costmaps"]
+    assert robot.calls[0][0] == "pose"
 
 
 def test_invalid_reset_request_is_rejected():

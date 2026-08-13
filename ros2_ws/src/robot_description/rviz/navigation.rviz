@@ -572,6 +572,34 @@ Visualization Manager:
       Displays:
         - Class: rviz_default_plugins/MarkerArray
           Enabled: true
+          Name: Module2 V3.10 SRDR and Real GVG
+          Namespaces:
+            bridge_dr: true
+            bridge_module2: true
+            bridge_sr: true
+            executed_trajectory: true
+            module2_dr: true
+            module2_dynamic_cost: false
+            module2_p_corr: true
+            module2_remap: false
+            module2_sr: true
+            module3_final_cost: true
+            module3_gvg_edges: true
+            module3_gvg_nodes: true
+            moving_lookahead: true
+            route_projection: true
+            selected_canonical_route: true
+            smac_plan: true
+            v310_status: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/v310/rviz
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
           Name: Module2 Live Overlay
           Namespaces:
             Canvas: true

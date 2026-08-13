@@ -1,0 +1,27 @@
+schema_version: 1
+name: attempt30_a21_multiroute_v1
+revision: 1
+status: rejected_baseline
+classification: engineering_benchmark_only
+bounds_xy_m: [-8.0, -8.0, 8.0, 8.0]
+resolution_m: 0.05
+base_environment:
+  asset_relative_path: Isaac/Environments/Grid/default_environment.usd
+
+# One topology-first 3x3 courtyard lattice. The four boundary walls and nine
+# equal collision blocks are the physical source of every Occupancy/GVD/GVG
+# branch and loop. No graph node or edge is authored by this file.
+obstacles:
+  - {id: boundary_south, role: outer_boundary, center: [0.0, -7.875, 0.50], size: [16.0, 0.25, 1.0], yaw_deg: 0.0}
+  - {id: boundary_north, role: outer_boundary, center: [0.0, 7.875, 0.50], size: [16.0, 0.25, 1.0], yaw_deg: 0.0}
+  - {id: boundary_west, role: outer_boundary, center: [-7.875, 0.0, 0.50], size: [0.25, 16.0, 1.0], yaw_deg: 0.0}
+  - {id: boundary_east, role: outer_boundary, center: [7.875, 0.0, 0.50], size: [0.25, 16.0, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_sw, role: courtyard_block, center: [-4.8, -4.8, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_s, role: courtyard_block, center: [0.0, -4.8, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_se, role: courtyard_block, center: [4.8, -4.8, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_w, role: courtyard_block, center: [-4.8, 0.0, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_c, role: courtyard_block, center: [0.0, 0.0, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_e, role: courtyard_block, center: [4.8, 0.0, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_nw, role: courtyard_block, center: [-4.8, 4.8, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_n, role: courtyard_block, center: [0.0, 4.8, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}
+  - {id: courtyard_ne, role: courtyard_block, center: [4.8, 4.8, 0.50], size: [2.2, 2.2, 1.0], yaw_deg: 0.0}

@@ -130,6 +130,24 @@ def _parser() -> argparse.ArgumentParser:
         help="override the physical obstacle schema for a frozen experiment campaign",
     )
     parser.add_argument(
+        "--dynamic-case-id",
+        type=str,
+        default="",
+        help="select one named schema-v3/v4 dynamic case or schema-v4 case set",
+    )
+    parser.add_argument(
+        "--dynamic-variant-id",
+        type=str,
+        default="",
+        help="select one named variant for every selected dynamic case",
+    )
+    parser.add_argument(
+        "--dynamic-seed",
+        type=int,
+        default=None,
+        help="override the scenario reset seed without mutating its YAML",
+    )
+    parser.add_argument(
         "--third-person-camera",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -431,6 +449,9 @@ def run(
     camera_selection: object,
     appearance_profiles: object,
     initial_appearance_profile: str,
+    dynamic_case_id: str = "",
+    dynamic_variant_id: str = "",
+    dynamic_seed: int | None = None,
     odom_phase_trace_path: Path | None = None,
     r2c1_free_space_trace_path: Path | None = None,
     r2c2_free_space_envelope_path: Path | None = None,
@@ -567,10 +588,19 @@ def run(
 
         rclpy.init(args=[])
         rclpy_started = True
+        parameter_overrides = [Parameter("use_sim_time", value=True)]
+        if dynamic_case_id:
+            parameter_overrides.append(
+                Parameter("dynamic_case_id", value=dynamic_case_id)
+            )
+        if dynamic_variant_id:
+            parameter_overrides.append(
+                Parameter("dynamic_variant_id", value=dynamic_variant_id)
+            )
         node = Node(
             "isaac_navigation_sim",
             namespace=config.ros2.namespace,
-            parameter_overrides=[Parameter("use_sim_time", value=True)],
+            parameter_overrides=parameter_overrides,
             automatically_declare_parameters_from_overrides=True,
         )
         read_only = ParameterDescriptor(read_only=True)
@@ -683,7 +713,6 @@ def run(
         dynamic_manager.bind_ros(
             node, lambda: float(SimulationManager.get_simulation_time())
         )
-        collision_monitor = CollisionMonitor(config.robot.base_link_prim, node)
         runtime.reset()
 
         robot = ArticulationRuntime(
@@ -697,6 +726,7 @@ def run(
             config.robot.wheel_joints,
             JointGroups(config.robot.front_wheel_joints, config.robot.rear_wheel_joints),
         ).validate(robot.get_dof_names())
+        collision_monitor = CollisionMonitor(config.robot.base_link_prim, node)
         spawn_manager = SpawnPoseManager(robot, load_spawn_poses(config.spawn.poses_file))
         spawn_manager.apply_usd_pose(config.spawn.selected)
         camera_binding_reported = False
@@ -1531,13 +1561,29 @@ def run(
                 pose_name=config.spawn.selected,
                 navigation_mode=config.simulation.navigation_mode,
                 odometry_mode=config.simulation.odometry_mode,
-                random_seed=dynamic_scenario.seed,
+                random_seed=(
+                    dynamic_scenario.seed
+                    if dynamic_seed is None
+                    else dynamic_seed
+                ),
             )
         )
         if startup_reset.finished and startup_reset.errors:
             raise RuntimeError(
                 "startup reset transaction failed: "
                 f"{startup_reset.errors}"
+            )
+        actual_spawn_position, _ = robot.get_world_pose()
+        spawn_position_error_m = math.dist(
+            actual_spawn_position,
+            selected_pose.usd.position,
+        )
+        if spawn_position_error_m > 0.02:
+            raise RuntimeError(
+                "startup reset did not place the live articulation at the "
+                f"selected spawn: error_m={spawn_position_error_m:.6f}, "
+                f"expected={selected_pose.usd.position}, "
+                f"actual={actual_spawn_position}"
             )
 
         r2c2_state: dict[str, object] | None = None
@@ -2491,6 +2537,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         camera_selection,
         appearance_profiles,
         args.appearance_profile,
+        args.dynamic_case_id,
+        args.dynamic_variant_id,
+        args.dynamic_seed,
         None if args.odom_phase_trace is None else args.odom_phase_trace.expanduser().resolve(),
         None if args.r2c1_free_space_trace is None else args.r2c1_free_space_trace.expanduser().resolve(),
         None if args.r2c2_free_space_envelope is None else args.r2c2_free_space_envelope.expanduser().resolve(),

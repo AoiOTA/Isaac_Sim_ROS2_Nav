@@ -200,16 +200,35 @@ class ArticulationRuntime:
         )
 
     def set_world_pose(self, position: Sequence[float], orientation_wxyz: Sequence[float]) -> None:
-        self.articulation.set_world_poses(positions=[list(position)], orientations=[list(orientation_wxyz)])
+        from isaacsim.core.experimental.utils import backend as backend_utils
+
+        # Reset transactions pause the Timeline.  The default experimental
+        # backend can then resolve to USD/Fabric even though the live PhysX
+        # tensor view is valid, which authors a pose without teleporting the
+        # active articulation. Runtime pose/state operations must target PhysX.
+        with backend_utils.use_backend("tensor"):
+            self.articulation.set_world_poses(
+                positions=[list(position)],
+                orientations=[list(orientation_wxyz)],
+            )
 
     def get_world_pose(self) -> tuple[tuple[float, float, float], tuple[float, float, float, float]]:
-        positions, orientations = self.articulation.get_world_poses()
+        from isaacsim.core.experimental.utils import backend as backend_utils
+
+        with backend_utils.use_backend("tensor"):
+            positions, orientations = self.articulation.get_world_poses()
         position = tuple(float(v) for v in positions.numpy()[0])
         orientation = tuple(float(v) for v in orientations.numpy()[0])
         return position, orientation  # type: ignore[return-value]
 
     def set_base_velocities(self, linear: Sequence[float], angular: Sequence[float]) -> None:
-        self.articulation.set_velocities(linear_velocities=[list(linear)], angular_velocities=[list(angular)])
+        from isaacsim.core.experimental.utils import backend as backend_utils
+
+        with backend_utils.use_backend("tensor"):
+            self.articulation.set_velocities(
+                linear_velocities=[list(linear)],
+                angular_velocities=[list(angular)],
+            )
 
     def get_base_velocities(
         self,
@@ -217,7 +236,10 @@ class ArticulationRuntime:
         tuple[float, float, float],
         tuple[float, float, float],
     ]:
-        linear, angular = self.articulation.get_velocities()
+        from isaacsim.core.experimental.utils import backend as backend_utils
+
+        with backend_utils.use_backend("tensor"):
+            linear, angular = self.articulation.get_velocities()
         return (
             tuple(float(value) for value in linear.numpy()[0]),
             tuple(float(value) for value in angular.numpy()[0]),
@@ -226,12 +248,18 @@ class ArticulationRuntime:
     def set_joint_velocities(self, values: Sequence[float]) -> None:
         if len(values) != self.num_dof:
             raise ArticulationRuntimeError(f"expected {self.num_dof} joint velocities, got {len(values)}")
-        self.articulation.set_dof_velocities([list(values)])
+        from isaacsim.core.experimental.utils import backend as backend_utils
+
+        with backend_utils.use_backend("tensor"):
+            self.articulation.set_dof_velocities([list(values)])
 
     def set_joint_velocity_targets(self, values: Sequence[float]) -> None:
         if len(values) != self.num_dof:
             raise ArticulationRuntimeError(f"expected {self.num_dof} joint targets, got {len(values)}")
-        self.articulation.set_dof_velocity_targets([list(values)])
+        from isaacsim.core.experimental.utils import backend as backend_utils
+
+        with backend_utils.use_backend("tensor"):
+            self.articulation.set_dof_velocity_targets([list(values)])
 
     def zero_all_velocities(self) -> None:
         zeros = [0.0] * self.num_dof

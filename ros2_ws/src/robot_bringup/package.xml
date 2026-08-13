@@ -26,6 +26,7 @@
   <exec_depend>robot_navigation</exec_depend>
   <exec_depend>robot_odometry</exec_depend>
   <exec_depend>robot_perception</exec_depend>
+  <exec_depend>robot_route_planner</exec_depend>
   <exec_depend>robot_teleop</exec_depend>
   <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>rmw_fastrtps_cpp</exec_depend>

@@ -8,7 +8,7 @@ import cv2
 import numpy as np
 
 from .map_io import OccupancyMap
-from .models import Graph, Traversability
+from .models import Graph, NodeType, Traversability
 
 
 def _sample_polyline(points: np.ndarray, spacing_m: float) -> np.ndarray:
@@ -169,8 +169,73 @@ def apply_footprint_feasibility(
     return graph
 
 
+def retain_largest_feasible_component(graph: Graph) -> dict[str, int]:
+    """Retain only the largest connected graph proven feasible by footprint sweep."""
+
+    physical = [edge for edge in graph.edges if edge.from_node < edge.to_node]
+    raw_nodes = len(graph.nodes)
+    raw_edges = len(physical)
+    raw_unknown = sum(
+        edge.static_traversability == Traversability.UNKNOWN for edge in graph.edges
+    )
+    adjacency: dict[int, set[int]] = {}
+    for edge in graph.edges:
+        if edge.static_traversability != Traversability.FEASIBLE:
+            continue
+        adjacency.setdefault(edge.from_node, set()).add(edge.to_node)
+        adjacency.setdefault(edge.to_node, set()).add(edge.from_node)
+    unseen = set(adjacency)
+    components = []
+    while unseen:
+        component = {unseen.pop()}
+        queue = list(component)
+        while queue:
+            node = queue.pop()
+            for other in adjacency.get(node, ()):
+                if other in unseen:
+                    unseen.remove(other)
+                    component.add(other)
+                    queue.append(other)
+        components.append(component)
+    if not components:
+        raise RuntimeError("graph has no footprint-feasible component")
+    retained = max(components, key=lambda value: (len(value), -min(value)))
+    graph.edges = [
+        edge
+        for edge in graph.edges
+        if edge.static_traversability == Traversability.FEASIBLE
+        and edge.from_node in retained
+        and edge.to_node in retained
+    ]
+    degree: dict[int, int] = {node: 0 for node in retained}
+    for edge in graph.edges:
+        if edge.from_node < edge.to_node:
+            degree[edge.from_node] += 1
+            degree[edge.to_node] += 1
+    graph.nodes = [node for node in graph.nodes if node.id in retained]
+    for node in graph.nodes:
+        node.degree = degree[node.id]
+        if node.degree == 1:
+            node.node_type = NodeType.ENDPOINT
+        elif node.degree >= 3:
+            node.node_type = NodeType.JUNCTION
+        else:
+            node.node_type = NodeType.LOOP_ANCHOR
+    retained_physical = sum(
+        edge.from_node < edge.to_node for edge in graph.edges
+    )
+    return {
+        "raw_node_count": raw_nodes,
+        "raw_physical_edge_count": raw_edges,
+        "raw_unknown_directed_edge_count": raw_unknown,
+        "discarded_node_count": raw_nodes - len(graph.nodes),
+        "discarded_physical_edge_count": raw_edges - retained_physical,
+    }
+
+
 __all__ = [
     "apply_footprint_feasibility",
     "classify_edge",
     "footprint_pose_is_free",
+    "retain_largest_feasible_component",
 ]

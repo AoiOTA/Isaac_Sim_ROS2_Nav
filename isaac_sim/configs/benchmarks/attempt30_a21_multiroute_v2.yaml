@@ -1,0 +1,31 @@
+schema_version: 1
+name: attempt30_a21_multiroute_v2
+revision: 2
+status: candidate
+classification: engineering_benchmark_only
+bounds_xy_m: [-8.0, -8.0, 8.0, 8.0]
+resolution_m: 0.05
+base_environment:
+  asset_relative_path: Isaac/Environments/Grid/default_environment.usd
+
+# V2 deliberately breaks the V1 lattice symmetry. Unequal rotated volumes,
+# staggered rows and two diagonal infill blocks create irregular junctions,
+# unequal route costs and mixed-width passages. Every obstacle is still one
+# physical Collision cube; the GVG remains derived exclusively from rasterized
+# geometry.
+obstacles:
+  - {id: boundary_south, role: outer_boundary, center: [0.0, -7.875, 0.50], size: [16.0, 0.25, 1.0], yaw_deg: 0.0}
+  - {id: boundary_north, role: outer_boundary, center: [0.0, 7.875, 0.50], size: [16.0, 0.25, 1.0], yaw_deg: 0.0}
+  - {id: boundary_west, role: outer_boundary, center: [-7.875, 0.0, 0.50], size: [0.25, 16.0, 1.0], yaw_deg: 0.0}
+  - {id: boundary_east, role: outer_boundary, center: [7.875, 0.0, 0.50], size: [0.25, 16.0, 1.0], yaw_deg: 0.0}
+  - {id: island_sw, role: courtyard_block, center: [-4.95, -4.70, 0.55], size: [2.75, 1.55, 1.10], yaw_deg: 18.0}
+  - {id: island_s, role: courtyard_block, center: [-0.55, -5.05, 0.55], size: [1.55, 2.65, 1.10], yaw_deg: -12.0}
+  - {id: island_se, role: courtyard_block, center: [4.55, -4.45, 0.55], size: [2.65, 1.65, 1.10], yaw_deg: -24.0}
+  - {id: island_w, role: courtyard_block, center: [-4.55, -0.35, 0.55], size: [1.55, 3.05, 1.10], yaw_deg: -14.0}
+  - {id: island_c, role: courtyard_block, center: [0.15, -0.25, 0.55], size: [2.45, 1.45, 1.10], yaw_deg: 23.0}
+  - {id: island_e, role: courtyard_block, center: [4.80, 0.30, 0.55], size: [1.65, 2.75, 1.10], yaw_deg: 13.0}
+  - {id: island_nw, role: courtyard_block, center: [-4.90, 4.55, 0.55], size: [2.75, 1.50, 1.10], yaw_deg: -21.0}
+  - {id: island_n, role: courtyard_block, center: [-0.35, 4.95, 0.55], size: [1.65, 2.70, 1.10], yaw_deg: 9.0}
+  - {id: island_ne, role: courtyard_block, center: [4.45, 4.55, 0.55], size: [2.55, 1.75, 1.10], yaw_deg: 27.0}
+  - {id: infill_nw, role: courtyard_block, center: [-2.30, 2.00, 0.50], size: [0.80, 1.65, 1.00], yaw_deg: 39.0}
+  - {id: infill_ne, role: courtyard_block, center: [2.45, 2.25, 0.50], size: [0.95, 1.85, 1.00], yaw_deg: -34.0}

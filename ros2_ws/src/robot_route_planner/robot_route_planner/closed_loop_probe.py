@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import time
 
@@ -24,7 +25,15 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 
-from bio_nav_interfaces.msg import CanonicalRoute, NavigationGraph, RouteProgress
+from bio_nav_interfaces.msg import (
+    CanonicalRoute,
+    EdgePriorArray,
+    NavigationGraph,
+    PlanningPrior,
+    RouteEdgeCostArray,
+    RouteProgress,
+    SRDREdgeDiagnosticArray,
+)
 
 from .defaults import load_engineering_defaults
 from .feasibility import _polygon_is_free, apply_footprint_feasibility
@@ -54,6 +63,10 @@ class ClosedLoopProbe(Node):
         self.plan_count = 0
         self.turn_plan_snapshots = []
         self.route_history = []
+        self.planning_prior_history = []
+        self.edge_prior_history = []
+        self.srdr_edge_diagnostic_history = []
+        self.route_edge_cost_history = []
         self.obstacle_states = []
         self.physical_collision = False
         self.scan_min_ranges = []
@@ -70,6 +83,30 @@ class ClosedLoopProbe(Node):
         )
         self.create_subscription(
             CanonicalRoute, "/bio_nav/canonical_route", self._route, latched
+        )
+        self.create_subscription(
+            PlanningPrior,
+            "/bio_nav/module2/planning_prior",
+            self._planning_prior,
+            10,
+        )
+        self.create_subscription(
+            EdgePriorArray,
+            "/bio_nav/module2/edge_priors",
+            self._edge_prior,
+            latched,
+        )
+        self.create_subscription(
+            SRDREdgeDiagnosticArray,
+            "/bio_nav/module2/srdr_edge_diagnostics",
+            self._srdr_edge_diagnostics,
+            latched,
+        )
+        self.create_subscription(
+            RouteEdgeCostArray,
+            "/bio_nav/route_edge_costs",
+            self._route_edge_costs,
+            latched,
         )
         self.create_subscription(
             RouteProgress, "/bio_nav/route_progress", self._progress, 20
@@ -105,6 +142,124 @@ class ClosedLoopProbe(Node):
         }
         if not self.route_history or record != self.route_history[-1]:
             self.route_history.append(record)
+
+    def _planning_prior(self, message) -> None:
+        dynamic = np.asarray(message.dynamic_cost, dtype=float)
+        sr = np.asarray(message.value_sr, dtype=float)
+        dr = np.asarray(message.future_cost_dr, dtype=float)
+        record = {
+            "sequence": int(message.sequence),
+            "reset_epoch": int(message.reset_epoch),
+            "map_version": str(message.map_version),
+            "model_id": str(message.model_id),
+            "cognitive_tile_id": str(message.cognitive_tile_id),
+            "tile_revision": int(message.tile_revision),
+            "graph_revision": int(message.graph_revision),
+            "module2_healthy": bool(message.module2_healthy),
+            "input_healthy": bool(message.input_healthy),
+            "trusted_write": bool(message.trusted_write),
+            "place_entropy_normalized": float(message.place_entropy_normalized),
+            "context_uncertainty": float(message.context_uncertainty),
+            "dynamic_presence_probability": float(
+                message.dynamic_presence_probability
+            ),
+            "risk_healthy": bool(message.risk_healthy),
+            "input_age_ms": float(message.input_age_ms),
+            "inference_latency_ms": float(message.inference_latency_ms),
+            "dynamic_cost_min_max": [float(dynamic.min()), float(dynamic.max())],
+            "value_sr_min_max": [float(sr.min()), float(sr.max())],
+            "future_cost_dr_min_max": [float(dr.min()), float(dr.max())],
+        }
+        if not self.planning_prior_history or record != self.planning_prior_history[-1]:
+            self.planning_prior_history.append(record)
+            self.planning_prior_history = self.planning_prior_history[-100:]
+
+    def _edge_prior(self, message) -> None:
+        record = {
+            "request_id": int(message.request_id),
+            "graph_revision": int(message.graph_revision),
+            "model_id": str(message.model_id),
+            "healthy": bool(message.healthy),
+            "positive_cost_count": sum(
+                float(item.cost_delta_m) > 0.0 for item in message.priors
+            ),
+            "priors": [
+                {
+                    "edge_id": int(item.edge_id),
+                    "cost_delta_m": float(item.cost_delta_m),
+                    "learned_risk": float(item.learned_risk),
+                    "confidence": float(item.confidence),
+                }
+                for item in message.priors
+            ],
+        }
+        if not self.edge_prior_history or record != self.edge_prior_history[-1]:
+            self.edge_prior_history.append(record)
+
+    def _srdr_edge_diagnostics(self, message) -> None:
+        record = {
+            "request_id": int(message.request_id),
+            "graph_revision": int(message.graph_revision),
+            "model_id": str(message.model_id),
+            "usable_count": sum(bool(item.usable) for item in message.diagnostics),
+            "positive_sr_count": sum(
+                float(item.sr_penalty_m) > 0.0 for item in message.diagnostics
+            ),
+            "positive_dr_count": sum(
+                float(item.dr_penalty_m) > 0.0 for item in message.diagnostics
+            ),
+            "diagnostics": [
+                {
+                    "edge_id": int(item.edge_id),
+                    "from_node": int(item.from_node),
+                    "to_node": int(item.to_node),
+                    "sample_count": int(item.sample_count),
+                    "valid_sample_count": int(item.valid_sample_count),
+                    "sample_coverage": float(item.sample_coverage),
+                    "sr_score": float(item.sr_score),
+                    "sr_penalty_m": float(item.sr_penalty_m),
+                    "dr_score": float(item.dr_score),
+                    "dr_penalty_m": float(item.dr_penalty_m),
+                    "requested_delta_m": float(item.requested_delta_m),
+                    "confidence": float(item.confidence),
+                    "usable": bool(item.usable),
+                    "rejection_reason": str(item.rejection_reason),
+                }
+                for item in message.diagnostics
+            ],
+        }
+        if (
+            not self.srdr_edge_diagnostic_history
+            or record != self.srdr_edge_diagnostic_history[-1]
+        ):
+            self.srdr_edge_diagnostic_history.append(record)
+
+    def _route_edge_costs(self, message) -> None:
+        record = {
+            "request_id": int(message.request_id),
+            "graph_revision": int(message.graph_revision),
+            "positive_applied_count": sum(
+                float(item.applied_module2_delta_m) > 0.0 for item in message.costs
+            ),
+            "costs": [
+                {
+                    "edge_id": int(item.edge_id),
+                    "structural_cost_m": float(item.structural_cost_m),
+                    "requested_module2_delta_m": float(
+                        item.requested_module2_delta_m
+                    ),
+                    "applied_module2_delta_m": float(
+                        item.applied_module2_delta_m
+                    ),
+                    "runtime_penalty_m": float(item.runtime_penalty_m),
+                    "final_cost_m": float(item.final_cost_m),
+                    "blocked": bool(item.blocked),
+                }
+                for item in message.costs
+            ],
+        }
+        if not self.route_edge_cost_history or record != self.route_edge_cost_history[-1]:
+            self.route_edge_cost_history.append(record)
 
     def _progress(self, message) -> None:
         self.progress = message
@@ -328,8 +483,19 @@ def _export(
                 actor_min_clearance = min(actor_min_clearance, float(clearance))
     actor_indices = [item[2] for item in actor_track]
     obstacle_end_index = max(actor_indices) if actor_indices else 0
+    actor_center_clearances = [
+        math.dist(trajectory[index, :2], (x, y))
+        for x, y, index in actor_track
+        if 0 <= index < len(trajectory)
+    ]
     evidence = {
         "classification": "engineering_evidence_not_qualification",
+        "ros_domain_id": int(
+            os.environ.get(
+                "ATTEMPT30_A21_TRIAL_DOMAIN_ID",
+                os.environ.get("ROS_DOMAIN_ID", "0"),
+            )
+        ),
         "completed": node.completed,
         "failed": node.failed,
         "elapsed_s": elapsed_s,
@@ -339,6 +505,10 @@ def _export(
             None if node.route is None else int(node.route.graph_revision)
         ),
         "route_history": node.route_history,
+        "planning_prior_history": node.planning_prior_history,
+        "edge_prior_history": node.edge_prior_history,
+        "srdr_edge_diagnostic_history": node.srdr_edge_diagnostic_history,
+        "route_edge_cost_history": node.route_edge_cost_history,
         "odometry_samples": len(trajectory),
         "travelled_distance_m": travelled,
         "final_goal_error_m": goal_error,
@@ -358,6 +528,15 @@ def _export(
         "obstacle_actor_track_xy_index": actor_track,
         "obstacle_min_clearance_m": (
             None if math.isinf(actor_min_clearance) else actor_min_clearance
+        ),
+        "obstacle_center_min_distance_m": (
+            None if not actor_center_clearances else min(actor_center_clearances)
+        ),
+        "obstacle_center_exposure_s_under_1m": (
+            0.05 * sum(value < 1.0 for value in actor_center_clearances)
+        ),
+        "obstacle_center_exposure_s_under_1_5m": (
+            0.05 * sum(value < 1.5 for value in actor_center_clearances)
         ),
         "scan_min_range_m": (
             None if not node.scan_min_ranges else min(node.scan_min_ranges)
@@ -489,6 +668,13 @@ def main(argv=None) -> None:
     parser.add_argument("--output-image", required=True)
     parser.add_argument("--timeout", type=float, default=180.0)
     parser.add_argument("--obstacle-group")
+    parser.add_argument(
+        "--experiment-arm",
+        choices=("baseline", "sr_only", "dr_only", "srdr"),
+    )
+    parser.add_argument("--query-id")
+    parser.add_argument("--dynamic-case-id")
+    parser.add_argument("--dynamic-variant-id")
     args = parser.parse_args(argv)
     rclpy.init()
     node = ClosedLoopProbe(tuple(args.goal))
@@ -536,9 +722,26 @@ def main(argv=None) -> None:
     if trigger_response is not None:
         evidence["obstacle_trigger_group"] = args.obstacle_group
         evidence["obstacle_trigger_response"] = trigger_response
-        Path(args.output_json).write_text(
-            json.dumps(evidence, indent=2, sort_keys=True) + "\n"
-        )
+    if args.experiment_arm:
+        switches = {
+            "baseline": (False, False),
+            "sr_only": (True, False),
+            "dr_only": (False, True),
+            "srdr": (True, True),
+        }
+        sr_enabled, dr_enabled = switches[args.experiment_arm]
+        evidence["experiment_arm"] = args.experiment_arm
+        evidence["sr_enabled"] = sr_enabled
+        evidence["dr_enabled"] = dr_enabled
+    if args.query_id:
+        evidence["query_id"] = args.query_id
+    if args.dynamic_case_id:
+        evidence["dynamic_case_id"] = args.dynamic_case_id
+    if args.dynamic_variant_id:
+        evidence["dynamic_variant_id"] = args.dynamic_variant_id
+    Path(args.output_json).write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+    )
     node.destroy_node()
     rclpy.shutdown()
     compact = {key: evidence[key] for key in (

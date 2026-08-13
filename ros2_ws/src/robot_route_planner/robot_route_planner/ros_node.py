@@ -14,7 +14,11 @@ from .cognitive_constraints import (
     build_cognitive_constraints,
     occupancy_grid_version,
 )
-from .feasibility import apply_footprint_feasibility, classify_edge
+from .feasibility import (
+    apply_footprint_feasibility,
+    classify_edge,
+    retain_largest_feasible_component,
+)
 from .gvg import build_gvg
 from .map_io import OccupancyMap, load_occupancy_map
 from .route_cost import edge_cost_breakdown
@@ -232,6 +236,7 @@ class RouteCoordinator:
             ("base_frame_id", "base_link"),
             ("module2_enabled", True),
             ("module2_response_timeout_s", 0.0),
+            ("feasible_only_largest_component", False),
             ("execute_navigation", True),
             ("route_guided_bt_xml", ""),
             ("route_goal_topic", "/bio_nav/route_goal"),
@@ -261,6 +266,9 @@ class RouteCoordinator:
             map_path,
             unknown_is_occupied=bool(self.defaults["graph"]["unknown_is_occupied"]),
         )
+        self.feasible_only_largest_component = bool(
+            node.get_parameter("feasible_only_largest_component").value
+        )
         self.graph = apply_footprint_feasibility(
             build_gvg(
                 self.map,
@@ -271,6 +279,8 @@ class RouteCoordinator:
             self.map,
             self.defaults["footprint"],
         )
+        if self.feasible_only_largest_component:
+            retain_largest_feasible_component(self.graph)
         self.support = export_route_support_graph(
             self.graph,
             support_spacing_m=float(self.defaults["graph"]["route_support_spacing_m"]),
@@ -294,6 +304,7 @@ class RouteCoordinator:
         self.pending_goal = None
         self.pending_deadline_ns: int | None = None
         self.request_id = 0
+        self.last_context_publish_ns = 0
         self.latest_priors: dict[int, tuple[float, float]] = {}
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
@@ -606,15 +617,7 @@ class RouteCoordinator:
         self.pending_goal = goal
         self.route_active = True
         self.latest_priors = {}
-        context = self.RouteContext()
-        context.header.stamp = self._now().to_msg()
-        context.header.frame_id = self.frame_id
-        context.request_id = self.request_id
-        context.graph_id = self.graph.graph_id
-        context.graph_revision = self.graph.revision
-        context.final_goal = goal
-        context.module2_enabled = self.module2_enabled
-        self.context_pub.publish(context)
+        self._publish_route_context()
         if self.module2_enabled:
             timeout_s = self.module2_response_timeout_s or float(
                 self.defaults["module2_edge_prior"]["response_timeout_s"]
@@ -625,6 +628,20 @@ class RouteCoordinator:
         else:
             self.pending_deadline_ns = None
             self._prepare_route({})
+
+    def _publish_route_context(self) -> None:
+        if self.pending_goal is None:
+            return
+        context = self.RouteContext()
+        context.header.stamp = self._now().to_msg()
+        context.header.frame_id = self.frame_id
+        context.request_id = self.request_id
+        context.graph_id = self.graph.graph_id
+        context.graph_revision = self.graph.revision
+        context.final_goal = self.pending_goal
+        context.module2_enabled = self.module2_enabled
+        self.context_pub.publish(context)
+        self.last_context_publish_ns = int(self._now().nanoseconds)
 
     def _on_priors(self, message) -> None:
         if (
@@ -960,6 +977,24 @@ class RouteCoordinator:
             self._prepare_route(self.latest_priors)
 
     def _runtime_tick(self) -> None:
+        # Refresh Module2's learned risk field while the mission is active.
+        # The request identity is unchanged, so a new healthy prior may update
+        # Route Server costs without fabricating a new navigation request.
+        refresh_period_ns = int(
+            float(
+                self.defaults["module2_edge_prior"].get(
+                    "active_refresh_period_s", 5.0
+                )
+            )
+            * 1.0e9
+        )
+        if (
+            self.module2_enabled
+            and self.pending_goal is not None
+            and int(self._now().nanoseconds) - self.last_context_publish_ns
+            >= refresh_period_ns
+        ):
+            self._publish_route_context()
         changed = self.runtime.tick(self._now().nanoseconds / 1.0e9)
         if changed:
             self._publish_runtime_states()
@@ -1058,6 +1093,8 @@ class RouteCoordinator:
                 candidate_map,
                 self.defaults["footprint"],
             )
+            if self.feasible_only_largest_component:
+                retain_largest_feasible_component(candidate)
             candidate = stabilize_graph_ids(candidate, self.graph, self.defaults["graph"])
             support = export_route_support_graph(
                 candidate,

@@ -121,14 +121,27 @@ class DynamicObstacleManager:
                 and not runtime.retired
                 and (not self._selected_cases or identifier in self._case_by_obstacle_id)
             ):
-                runtime.state, runtime.armed_at, runtime.gate_at = "armed", simulation_time, None
+                case = self._case_by_obstacle_id.get(identifier)
+                activation = getattr(case, "activation", "spatial_gate")
+                runtime.state, runtime.armed_at, runtime.gate_at = (
+                    "moving" if activation == "trigger" else "armed",
+                    simulation_time,
+                    None,
+                )
                 # Schema v4 deliberately keeps an armed actor hidden until the
                 # spatial gate.  Otherwise it becomes a static global-costmap
                 # obstacle for several seconds before the interaction.
-                if not self.scenario.is_case_matrix:
+                if not self.scenario.is_case_matrix or activation == "trigger":
                     self._set_enabled(runtime, True)
+                if activation == "trigger":
+                    runtime.motion_at = simulation_time
                 activated.append(identifier)
                 self._event("armed", simulation_time, obstacle_id=identifier, group=group)
+                if activation == "trigger":
+                    self._event(
+                        "motion_start", simulation_time,
+                        obstacle_id=identifier, activation="trigger",
+                    )
         return tuple(activated)
 
     def complete(self, group: str, simulation_time: float) -> tuple[str, ...]:

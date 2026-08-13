@@ -1,0 +1,45 @@
+# Engineering-only causal-benefit stressor for V4 query Q36_51.
+#
+# The static map and every GVG branch remain unchanged and footprint-feasible.
+# This actor is visible and moving before the initial branch decision so DR can
+# affect routing, while the central SR route never intersects its motion band.
+# It makes a finite set of crossings in the open, footprint-passable outer
+# branch, then retires.  Five timing variants cover the measured arrival window
+# without changing the static geometry or permanently blocking the branch.
+schema_version: 4
+seed: 9361
+enabled: true
+coordinate_frame: map
+spawn_pose_name: q36_51_start
+safety: {guard_clearance_m: 0.50, min_clearance_m: 0.15}
+cases:
+  outer_east_crossing:
+    trigger_group: BENEFIT
+    activation: trigger
+    gate:
+      axis: y
+      threshold: -5.50
+      direction: positive
+      min_speed_mps: 0.20
+      x_range: [6.20, 7.20]
+    obstacle:
+      id: outer_east_crossing_actor
+      size: [0.55, 0.55, 1.00]
+      mass: 20.0
+      waypoints:
+        - [7.25, -3.25, 0.50]
+        - [6.60, -3.25, 0.50]
+        - [7.25, -3.25, 0.50]
+        - [6.60, -3.25, 0.50]
+        - [7.25, -3.25, 0.50]
+        - [6.20, -3.25, 0.50]
+      speed: 0.10
+      max_acceleration: 0.30
+      post_motion: retire
+    variants:
+      v1: {seed: 9361, start_delay_sec: 0.00}
+      v2: {seed: 9362, start_delay_sec: 2.00}
+      v3: {seed: 9363, start_delay_sec: 4.00}
+      v4: {seed: 9364, start_delay_sec: 6.00}
+      v5: {seed: 9365, start_delay_sec: 8.00}
+case_sets: {}
