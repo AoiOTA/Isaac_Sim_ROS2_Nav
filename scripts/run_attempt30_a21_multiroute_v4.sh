@@ -69,20 +69,28 @@ if [[ "${mode}" == "prior" ]]; then
   require_file "${integration_root}/install/setup.bash"
   require_file "${integration_root}/ros2_ws/src/bio_nav_ros_bridge/bio_nav_common/v310.py"
   export BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT="${integration_root}"
-  exec "${SCRIPT_DIR}/run_attempt30_a21_edge_prior.sh" \
+  prior_arguments=(
     "socket_path:=${socket_path}" \
     use_sim_time:=true \
     "guidance_profile:=${arm_profile}" \
+    "adaptation_method:=${ATTEMPT30_A21_ADAPTATION_METHOD:-cognitive}" \
     goal_prior_retry_window_s:=4.5
+  )
+  [[ -z "${ATTEMPT30_A21_AUDIT_JSONL_PATH:-}" ]] \
+    || prior_arguments+=("audit_jsonl_path:=${ATTEMPT30_A21_AUDIT_JSONL_PATH}")
+  [[ -z "${ATTEMPT30_A21_INCREMENTAL_PARENT_NPZ:-}" ]] \
+    || prior_arguments+=("incremental_parent_npz:=${ATTEMPT30_A21_INCREMENTAL_PARENT_NPZ}")
+  exec "${SCRIPT_DIR}/run_attempt30_a21_edge_prior.sh" "${prior_arguments[@]}"
 fi
 
 evidence_root="${ATTEMPT30_A21_V4_EVIDENCE_ROOT:-${PROJECT_ROOT}/../../integration/attempt30-a21-v310-srdr-rviz/docs/evidence/attempt30_a21_v310/multiroute_benchmark_v4}"
 evidence_root="$(realpath -e "${evidence_root}")"
-asset="${evidence_root}/attempt30_a21_multiroute_v4.usda"
-map_file="${evidence_root}/attempt30_a21_multiroute_v4.yaml"
-graph_file="${evidence_root}/attempt30_a21_multiroute_v4.geojson"
-spawn_file="${evidence_root}/attempt30_a21_multiroute_v4.spawn.yaml"
-candidates="${evidence_root}/attempt30_a21_multiroute_v4_execution_candidates.json"
+benchmark_stem="${ATTEMPT30_A21_BENCHMARK_STEM:-attempt30_a21_multiroute_v4}"
+asset="${evidence_root}/${benchmark_stem}.usda"
+map_file="${evidence_root}/${benchmark_stem}.yaml"
+graph_file="${evidence_root}/${benchmark_stem}.geojson"
+spawn_file="${evidence_root}/${benchmark_stem}.spawn.yaml"
+candidates="${evidence_root}/${benchmark_stem}_execution_candidates.json"
 for path in "${asset}" "${map_file}" "${graph_file}" "${spawn_file}" "${candidates}"; do
   require_file "${path}"
 done
