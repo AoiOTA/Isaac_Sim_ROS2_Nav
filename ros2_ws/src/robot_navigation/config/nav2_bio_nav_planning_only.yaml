@@ -94,6 +94,16 @@ local_costmap:
 global_costmap:
   global_costmap:
     ros__parameters:
+      # Attempt30's generated benchmark is an immutable 16 x 16 m map. Nav2
+      # Jazzy otherwise falls back to a 12 x 12 m master costmap after the
+      # StaticLayer briefly adopts the incoming map, excluding boundary starts
+      # such as Q02_58 at x=-6.42 m. Keep this benchmark-only constraint out of
+      # the shared base profile so other physical maps retain their geometry.
+      rolling_window: false
+      width: 16
+      height: 16
+      origin_x: -8.0
+      origin_y: -8.0
       plugins:
       - static_layer
       - obstacle_layer

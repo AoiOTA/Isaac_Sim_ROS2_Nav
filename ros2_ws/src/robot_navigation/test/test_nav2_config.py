@@ -146,6 +146,18 @@ def test_planning_only_scan_layers_have_a_strict_clearing_margin():
         'static_layer', 'obstacle_layer', 'inflation_layer']
 
 
+def test_attempt30_planning_only_profile_binds_the_16m_global_costmap():
+    profile = _profile('bio_nav_planning_only')
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    assert global_costmap['rolling_window'] is False
+    assert global_costmap['width'] == 16
+    assert global_costmap['height'] == 16
+    assert global_costmap['origin_x'] == -8.0
+    assert global_costmap['origin_y'] == -8.0
+
+
 def test_attempt22_reachability_profile_is_preinflation_and_observer_only():
     profile = _profile('attempt22_reachability_shadow')
     global_costmap = profile['global_costmap']['global_costmap'][

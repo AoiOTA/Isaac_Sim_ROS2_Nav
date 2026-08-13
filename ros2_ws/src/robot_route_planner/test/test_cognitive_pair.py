@@ -6,8 +6,10 @@ import numpy as np
 
 from robot_route_planner.cognitive_pair import (
     _canvas_points_to_map,
+    live_occupancy_identity,
     persistent_local_change,
 )
+from robot_route_planner.cognitive_constraints import occupancy_grid_version
 from robot_route_planner.map_io import OccupancyMap
 
 
@@ -35,3 +37,23 @@ def test_canvas_centers_are_transformed_back_into_nonzero_map_region() -> None:
     )
     assert np.allclose(mapped[0], (-30.0, 120.0))
     assert np.allclose(mapped[1], (-22.5, 112.5))
+
+
+def test_live_occupancy_identity_matches_map_server_binary_grid() -> None:
+    free = np.asarray(((True, False), (False, True)), dtype=bool)
+    occupancy = OccupancyMap(
+        free=free,
+        resolution_m=0.05,
+        origin_xy_m=(-8.0, -8.0),
+        map_version="unused",
+        yaml_path=Path("map.yaml"),
+    )
+    expected = occupancy_grid_version(
+        width=2,
+        height=2,
+        resolution=float(np.float32(0.05)),
+        origin_x=-8.0,
+        origin_y=-8.0,
+        data=np.flipud(np.where(free, 0, 100)).astype(np.int8),
+    )
+    assert live_occupancy_identity(occupancy) == expected

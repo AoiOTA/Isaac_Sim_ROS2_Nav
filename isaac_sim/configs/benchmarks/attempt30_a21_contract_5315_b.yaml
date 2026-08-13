@@ -1,0 +1,41 @@
+schema_version: 1
+name: attempt30_a21_contract_5315_b
+revision: 5
+status: candidate
+classification: engineering_benchmark_only
+bounds_xy_m: [-8.0, -8.0, 8.0, 8.0]
+resolution_m: 0.05
+base_environment:
+  asset_relative_path: Isaac/Environments/Grid/default_environment.usd
+obstacles:
+  - {id: boundary_south, role: outer_boundary, center: [0.0, -7.875, 0.60], size: [16.0, 0.25, 1.20], yaw_deg: 0.0}
+  - {id: boundary_north, role: outer_boundary, center: [0.0, 7.875, 0.60], size: [16.0, 0.25, 1.20], yaw_deg: 0.0}
+  - {id: boundary_west, role: outer_boundary, center: [-7.875, 0.0, 0.60], size: [0.25, 16.0, 1.20], yaw_deg: 0.0}
+  - {id: boundary_east, role: outer_boundary, center: [7.875, 0.0, 0.60], size: [0.25, 16.0, 1.20], yaw_deg: 0.0}
+  - {id: sw_t_stem, role: structural_wall, center: [-5.25, -5.20, 0.65], size: [0.50, 3.00, 1.30], yaw_deg: 8.0}
+  - {id: sw_t_cap, role: structural_wall, center: [-4.60, -4.00, 0.65], size: [2.80, 0.50, 1.30], yaw_deg: 8.0}
+  - {id: s_channel_w, role: bottleneck_wall, center: [-1.60, -5.30, 0.65], size: [0.40, 3.80, 1.30], yaw_deg: -4.0}
+  - {id: s_channel_e, role: bottleneck_wall, center: [-0.35, -5.20, 0.65], size: [0.40, 3.50, 1.30], yaw_deg: -4.0}
+  - {id: se_u_base, role: dead_end_wall, center: [4.80, -6.05, 0.65], size: [3.00, 0.45, 1.30], yaw_deg: -10.0}
+  - {id: se_u_wing_w, role: dead_end_wall, center: [3.55, -4.90, 0.65], size: [0.45, 2.70, 1.30], yaw_deg: -10.0}
+  - {id: se_u_wing_e, role: dead_end_wall, center: [6.05, -5.15, 0.65], size: [0.45, 2.20, 1.30], yaw_deg: -10.0}
+  - {id: w_l_stem, role: structural_wall, center: [-5.55, -0.45, 0.65], size: [0.45, 3.50, 1.30], yaw_deg: -6.0}
+  - {id: w_l_cap, role: structural_wall, center: [-4.45, 1.00, 0.65], size: [2.60, 0.45, 1.30], yaw_deg: -6.0}
+  - {id: c_cross_horizontal, role: structural_wall, center: [0.05, -0.10, 0.70], size: [3.40, 0.45, 1.40], yaw_deg: 15.0}
+  - {id: c_cross_vertical, role: structural_wall, center: [0.05, -0.10, 0.70], size: [0.45, 3.20, 1.40], yaw_deg: 15.0}
+  - {id: e_channel_w, role: bottleneck_wall, center: [4.45, 0.10, 0.65], size: [0.40, 3.80, 1.30], yaw_deg: 4.0}
+  - {id: e_channel_e, role: bottleneck_wall, center: [5.75, 0.25, 0.65], size: [0.40, 3.30, 1.30], yaw_deg: 4.0}
+  - {id: nw_u_base, role: dead_end_wall, center: [-5.05, 3.55, 0.65], size: [3.00, 0.45, 1.30], yaw_deg: 12.0}
+  - {id: nw_u_wing_w, role: dead_end_wall, center: [-6.30, 4.65, 0.65], size: [0.45, 2.60, 1.30], yaw_deg: 12.0}
+  - {id: nw_u_wing_e, role: dead_end_wall, center: [-3.85, 4.40, 0.65], size: [0.45, 2.20, 1.30], yaw_deg: 12.0}
+  - {id: n_channel_s, role: bottleneck_wall, center: [-0.55, 4.30, 0.65], size: [3.80, 0.40, 1.30], yaw_deg: -5.0}
+  - {id: n_channel_n, role: bottleneck_wall, center: [-0.45, 5.55, 0.65], size: [3.45, 0.40, 1.30], yaw_deg: -5.0}
+  - {id: ne_t_stem, role: structural_wall, center: [5.20, 4.95, 0.65], size: [0.50, 3.00, 1.30], yaw_deg: -14.0}
+  - {id: ne_t_cap, role: structural_wall, center: [4.40, 3.75, 0.65], size: [2.80, 0.50, 1.30], yaw_deg: -14.0}
+  - {id: divider_sw, role: structural_wall, center: [-2.85, -2.20, 0.60], size: [2.30, 0.40, 1.20], yaw_deg: -35.0}
+  - {id: divider_se, role: structural_wall, center: [2.45, -2.45, 0.60], size: [0.40, 2.40, 1.20], yaw_deg: 25.0}
+  - {id: divider_nw, role: structural_wall, center: [-2.55, 2.10, 0.60], size: [0.40, 2.30, 1.20], yaw_deg: 35.0}
+  - {id: divider_ne, role: structural_wall, center: [2.35, 2.35, 0.60], size: [2.50, 0.40, 1.20], yaw_deg: -25.0}
+  # Persistent B-only obstacle. Its 0.96 m footprint occupies the cognitive
+  # state centred at (0.5,-2.5) and removes its six swept legal transitions.
+  - {id: persistent_b_obstacle, role: courtyard_block, center: [0.50, -2.50, 0.60], size: [0.96, 0.96, 1.20], yaw_deg: 0.0}
