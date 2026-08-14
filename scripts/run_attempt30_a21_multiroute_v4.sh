@@ -146,11 +146,11 @@ fi
 
 source_ros --require-workspace
 # The generated Module3 setup records whichever Integration underlay was active
-# at build time. Reassert the Attempt30 pair with local_setup files so the
+# at build time. Reassert the selected Integration/Module3 pair so the
 # experiment cannot resolve engineering defaults or interfaces from main.
 set +u
 # shellcheck disable=SC1091
-source "${integration_root}/install/local_setup.bash"
+source "${integration_setup}"
 # shellcheck disable=SC1091
 source "${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"
 set -u
