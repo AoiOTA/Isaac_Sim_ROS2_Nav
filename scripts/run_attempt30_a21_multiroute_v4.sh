@@ -51,7 +51,7 @@ else
   arm_profile="${ATTEMPT30_A21_GUIDANCE_PROFILE:-sr_medium}"
 fi
 
-integration_root="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz"
+integration_root="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz}"
 socket_path="${ISAAC_NAV_RUNTIME_DIR}/module2-v310.sock"
 
 if [[ "${mode}" == "module2" ]]; then

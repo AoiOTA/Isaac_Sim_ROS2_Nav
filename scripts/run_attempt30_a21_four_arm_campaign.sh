@@ -4,8 +4,9 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-INTEGRATION_ROOT="/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz"
-EVIDENCE_ROOT="${INTEGRATION_ROOT}/docs/evidence/attempt30_a21_v310/multiroute_benchmark_v4"
+INTEGRATION_ROOT="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz}"
+EVIDENCE_ROOT="${ATTEMPT30_A21_V4_EVIDENCE_ROOT:-${INTEGRATION_ROOT}/docs/evidence/attempt30_a21_v310/multiroute_benchmark_v4}"
+CAMPAIGN_OUTPUT_ROOT="${ATTEMPT30_A21_CAMPAIGN_OUTPUT_ROOT:-${EVIDENCE_ROOT}/four_arm_engineering}"
 TRIAL_RUNNER="${SCRIPT_DIR}/run_attempt30_a21_four_arm_trial.sh"
 SUMMARIZER="${SCRIPT_DIR}/summarize_attempt30_a21_multiroute_modes.py"
 MAP_FILE="${EVIDENCE_ROOT}/attempt30_a21_multiroute_v4.yaml"
@@ -38,7 +39,7 @@ for required in "${TRIAL_RUNNER}" "${SUMMARIZER}" "${MAP_FILE}" "${DEFAULTS}"; d
   [[ -f "${required}" ]] || { echo "required file missing: ${required}" >&2; exit 2; }
 done
 
-campaign_root="${EVIDENCE_ROOT}/four_arm_engineering/${campaign_id}"
+campaign_root="${CAMPAIGN_OUTPUT_ROOT}/${campaign_id}"
 [[ ! -e "${campaign_root}" ]] || {
   echo "refusing to reuse campaign path: ${campaign_root}" >&2
   exit 2
