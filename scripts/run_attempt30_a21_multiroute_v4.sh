@@ -52,10 +52,10 @@ else
 fi
 
 integration_root="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz}"
-integration_setup="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_SETUP:-${integration_root}/install/setup.bash}"
+integration_setup="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_SETUP:-${integration_root}/install/local_setup.bash}"
 if [[ ! -f "${integration_setup}" \
-    && -f "${integration_root}/ros2_ws/install/setup.bash" ]]; then
-  integration_setup="${integration_root}/ros2_ws/install/setup.bash"
+    && -f "${integration_root}/ros2_ws/install/local_setup.bash" ]]; then
+  integration_setup="${integration_root}/ros2_ws/install/local_setup.bash"
 fi
 socket_path="${ISAAC_NAV_RUNTIME_DIR}/module2-v310.sock"
 
@@ -148,7 +148,10 @@ source_ros --require-workspace
 # The generated Module3 setup records whichever Integration underlay was active
 # at build time. Reassert the selected Integration/Module3 pair so the
 # experiment cannot resolve engineering defaults or interfaces from main.
+unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH ROS_PACKAGE_PATH PYTHONPATH
 set +u
+# shellcheck disable=SC1091
+source "${ROS_SETUP}"
 # shellcheck disable=SC1091
 source "${integration_setup}"
 # shellcheck disable=SC1091
