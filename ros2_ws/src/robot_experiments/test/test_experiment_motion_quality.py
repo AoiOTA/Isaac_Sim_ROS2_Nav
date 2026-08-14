@@ -249,6 +249,21 @@ def test_failed_pilot_evidence_is_retried_only_when_successful_resume_is_require
     assert runner._completed_resume_manifest(root, 2, selection) is None
 
 
+def test_checksum_finalization_updates_summary_and_covers_final_bytes(tmp_path):
+    root = tmp_path / "run-0001-seed-19301"
+    root.mkdir()
+    summary = {"checksums_verified": False, "strict_success": True}
+    (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (root / "evidence.json").write_text('{"complete": true}\n', encoding="utf-8")
+
+    ExperimentRunner._finalize_checksums(root, summary)
+
+    stored_summary = json.loads((root / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["checksums_verified"] is True
+    assert stored_summary["checksums_verified"] is True
+    assert ExperimentRunner._checksums_are_verified(root)
+
+
 def test_g5_g1_crossing_requires_left_side_pass_while_actor_exists():
     ground_truth = [
         OdometrySample(-0.85, -1.42, 0.0, 0.4, 0.0, 1.00, 0.0),

@@ -3939,24 +3939,38 @@ class ExperimentRunner(Node):
         (root / "run_summary.json").write_text(
             json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
         )
-        checksums = []
-        for path in sorted(item for item in root.rglob("*") if item.is_file() and item.name != "checksums.sha256"):
-            checksums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
-        (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+        self._finalize_checksums(root, summary)
         return summary
+
+    @staticmethod
+    def _finalize_checksums(root: Path, summary: dict[str, Any]) -> None:
+        def inventory() -> list[str]:
+            return [
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}"
+                for path in sorted(
+                    item
+                    for item in root.rglob("*")
+                    if item.is_file() and item.name != "checksums.sha256"
+                )
+            ]
+
+        checksums = inventory()
+        (root / "checksums.sha256").write_text(
+            "\n".join(checksums) + "\n", encoding="utf-8"
+        )
         # Verify the manifest just written instead of claiming checksum health.
-        verified = all(
+        summary["checksums_verified"] = all(
             hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest
             for digest, relative in (line.split("  ", 1) for line in checksums)
         )
-        summary["checksums_verified"] = verified
-        (root / "run_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-        # run_summary changed after the first manifest; regenerate exactly once
-        # so the final file is itself included in the checksum inventory.
-        checksums = []
-        for path in sorted(item for item in root.rglob("*") if item.is_file() and item.name != "checksums.sha256"):
-            checksums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
-        (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+        (root / "run_summary.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+        )
+        # run_summary changed after verification; regenerate exactly once so
+        # the final file is itself included in the checksum inventory.
+        (root / "checksums.sha256").write_text(
+            "\n".join(inventory()) + "\n", encoding="utf-8"
+        )
 
     def _evidence_root_for(self, run_index: int, seed: int) -> Path:
         return (
