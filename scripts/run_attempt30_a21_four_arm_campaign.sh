@@ -11,6 +11,11 @@ TRIAL_RUNNER="${SCRIPT_DIR}/run_attempt30_a21_four_arm_trial.sh"
 SUMMARIZER="${SCRIPT_DIR}/summarize_attempt30_a21_multiroute_modes.py"
 MAP_FILE="${EVIDENCE_ROOT}/attempt30_a21_multiroute_v4.yaml"
 DEFAULTS="${INTEGRATION_ROOT}/ros2_ws/src/bio_nav_ros_bridge/config/engineering_defaults.yaml"
+INTEGRATION_SETUP="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_SETUP:-${INTEGRATION_ROOT}/install/local_setup.bash}"
+if [[ ! -f "${INTEGRATION_SETUP}" \
+    && -f "${INTEGRATION_ROOT}/ros2_ws/install/local_setup.bash" ]]; then
+  INTEGRATION_SETUP="${INTEGRATION_ROOT}/ros2_ws/install/local_setup.bash"
+fi
 
 campaign_id="${1:-}"
 query_id="${2:-}"
@@ -35,7 +40,7 @@ esac
   echo "campaign needs 20 consecutive ROS domains in the range 0..232" >&2
   exit 2
 }
-for required in "${TRIAL_RUNNER}" "${SUMMARIZER}" "${MAP_FILE}" "${DEFAULTS}"; do
+for required in "${TRIAL_RUNNER}" "${SUMMARIZER}" "${MAP_FILE}" "${DEFAULTS}" "${INTEGRATION_SETUP}"; do
   [[ -f "${required}" ]] || { echo "required file missing: ${required}" >&2; exit 2; }
 done
 
@@ -140,7 +145,7 @@ done
 unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH ROS_PACKAGE_PATH PYTHONPATH
 set +u
 source /opt/ros/jazzy/setup.bash
-source "${INTEGRATION_ROOT}/install/local_setup.bash"
+source "${INTEGRATION_SETUP}"
 source "${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"
 set -u
 python3 "${SUMMARIZER}" \

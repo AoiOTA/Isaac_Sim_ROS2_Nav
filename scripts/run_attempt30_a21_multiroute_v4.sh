@@ -52,6 +52,11 @@ else
 fi
 
 integration_root="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt30-a21-v310-srdr-rviz}"
+integration_setup="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_SETUP:-${integration_root}/install/setup.bash}"
+if [[ ! -f "${integration_setup}" \
+    && -f "${integration_root}/ros2_ws/install/setup.bash" ]]; then
+  integration_setup="${integration_root}/ros2_ws/install/setup.bash"
+fi
 socket_path="${ISAAC_NAV_RUNTIME_DIR}/module2-v310.sock"
 
 if [[ "${mode}" == "module2" ]]; then
@@ -66,9 +71,10 @@ fi
 if [[ "${mode}" == "prior" ]]; then
   [[ "${arm}" != "baseline" ]] \
     || die "Baseline is SR=false, DR=false and must not launch the edge-prior bridge"
-  require_file "${integration_root}/install/setup.bash"
+  require_file "${integration_setup}"
   require_file "${integration_root}/ros2_ws/src/bio_nav_ros_bridge/bio_nav_common/v310.py"
   export BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT="${integration_root}"
+  export BIO_NAV_ATTEMPT30_V310_INTEGRATION_SETUP="${integration_setup}"
   prior_arguments=(
     "socket_path:=${socket_path}" \
     use_sim_time:=true \

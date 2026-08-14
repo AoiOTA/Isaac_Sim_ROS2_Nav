@@ -8,6 +8,11 @@ INTEGRATION_ROOT="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_ROOT:-/home/lyb/Workspace
 EVIDENCE_ROOT="${ATTEMPT30_A21_V4_EVIDENCE_ROOT:-${INTEGRATION_ROOT}/docs/evidence/attempt30_a21_v310/multiroute_benchmark_v4}"
 BENCHMARK_STEM="${ATTEMPT30_A21_BENCHMARK_STEM:-attempt30_a21_multiroute_v4}"
 DEFAULTS="${INTEGRATION_ROOT}/ros2_ws/src/bio_nav_ros_bridge/config/engineering_defaults.yaml"
+INTEGRATION_SETUP="${BIO_NAV_ATTEMPT30_V310_INTEGRATION_SETUP:-${INTEGRATION_ROOT}/install/local_setup.bash}"
+if [[ ! -f "${INTEGRATION_SETUP}" \
+    && -f "${INTEGRATION_ROOT}/ros2_ws/install/local_setup.bash" ]]; then
+  INTEGRATION_SETUP="${INTEGRATION_ROOT}/ros2_ws/install/local_setup.bash"
+fi
 MAP_FILE="${EVIDENCE_ROOT}/${BENCHMARK_STEM}.yaml"
 CANDIDATES="${EVIDENCE_ROOT}/${BENCHMARK_STEM}_execution_candidates.json"
 RUNNER="${SCRIPT_DIR}/run_attempt30_a21_multiroute_v4.sh"
@@ -40,7 +45,7 @@ else
   esac
   dynamic_config="${PROJECT_ROOT}/isaac_sim/configs/benchmarks/${dynamic_stem}.yaml"
 fi
-for required in "${RUNNER}" "${DEFAULTS}" "${MAP_FILE}" "${CANDIDATES}" "${dynamic_config}"; do
+for required in "${RUNNER}" "${DEFAULTS}" "${MAP_FILE}" "${CANDIDATES}" "${dynamic_config}" "${INTEGRATION_SETUP}"; do
   [[ -f "${required}" ]] || { echo "required file is missing: ${required}" >&2; exit 2; }
 done
 
@@ -53,7 +58,7 @@ source_attempt30_ros() {
   # shellcheck disable=SC1091
   source /opt/ros/jazzy/setup.bash
   # shellcheck disable=SC1091
-  source "${INTEGRATION_ROOT}/install/local_setup.bash"
+  source "${INTEGRATION_SETUP}"
   # shellcheck disable=SC1091
   source "${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"
   set -u
