@@ -220,6 +220,11 @@ def test_outdoor_initial_pose_accepts_best_effort_clock_and_scan():
     assert 'default_value="0.35"' in launch_source
     assert "TimerAction(" in launch_source
     assert "period=2.0" in launch_source
+    assert 'executable="v310_visualizer"' in launch_source
+    assert '"region_config_file": str(files["region_config_file"])' in launch_source
+    assert '"waypoint_config_file": str(files["waypoint_config_file"])' in launch_source
+    assert 'description_share / "rviz" / "rivermark.rviz"' in launch_source
+    assert 'DeclareLaunchArgument("use_rviz", default_value="true")' in launch_source
 
     demo_source = (PROJECT_ROOT / "scripts" / "run_rivermark_demo.sh").read_text(
         encoding="utf-8"
@@ -229,6 +234,75 @@ def test_outdoor_initial_pose_accepts_best_effort_clock_and_scan():
     assert "RIVERMARK_LINEAR_SPEED_STD_MPS" in demo_source
     assert "RIVERMARK_RENDERING_HZ" in demo_source
     assert "ISAAC_NAV__SIMULATION__RENDERING_HZ" in demo_source
+    assert 'waypoint_config_file:="${demo_dir}/rivermark_demo_goals.yaml"' in demo_source
+    assert 'use_rviz:="${rviz_enabled}"' in demo_source
+    assert 'RIVERMARK_MODULE2_STARTUP_TIMEOUT_S' in demo_source
+    assert '[[ ! -S "${socket}" ]]' in demo_source
+    assert 'kill -0 "${module2_pid}"' in demo_source
+    assert 'if [[ -n "${guidance_profile}" ]]' in demo_source
+    assert 'bridge_launch_args+=(guidance_profile:="${guidance_profile}")' in demo_source
+    assert 'RIVERMARK_BRIDGE_STARTUP_TIMEOUT_S' in demo_source
+    assert 'grep -Fxq /bio_nav_ros_bridge' in demo_source
+    assert 'grep -Fxq /bio_nav_edge_prior_bridge' in demo_source
+
+
+def test_visual_launcher_waits_for_complete_runtime_and_cleans_process_groups():
+    source = (PROJECT_ROOT / "scripts" / "run_rivermark_demo.sh").read_text(
+        encoding="utf-8"
+    )
+
+    # Module2 must finish loading before the 12 GB USD competes for resources,
+    # and RViz must not open until Isaac publishes real sensor messages.
+    module2_start = source.index("Starting Rivermark Module2 before Isaac")
+    isaac_start = source.index('"${module3_root}/scripts/run_isaac.sh"')
+    sensor_ready = source.index("Rivermark Isaac sensors ready")
+    nav2_start = source.index(
+        "setsid -- ros2 launch robot_bringup rivermark_navigation.launch.py"
+    )
+    assert module2_start < isaac_start < sensor_ready < nav2_start
+
+    assert 'remove_stale_module2_runtime "${socket}"' in source
+    stale_cleanup = source[
+        source.index("remove_stale_module2_runtime()"):
+        source.index("cleanup()")
+    ]
+    assert "expected probe status" in stale_cleanup
+    assert "return 0" in stale_cleanup
+    assert 'setsid -- conda run --no-capture-output' in source
+    assert 'PointCloud2,\n    "/lidar/points_raw"' in source
+    assert 'required = {"clock", "lidar_points_raw", "odom"}' in source
+    assert 'LaserScan, "/scan"' not in source
+    assert "except KeyboardInterrupt:" in source
+    assert "if rclpy.ok():" in source
+    assert 'remember_process_group "${isaac_pid}"' in source
+    assert 'stop_managed_process_groups INT' in source
+    assert 'stop_managed_process_groups KILL' in source
+    assert 'isaac-console.log' in source
+    assert '>"${isaac_console_log}" 2>&1 &' in source
+    assert 'recent actionable log lines' in source
+
+
+def test_manual_rviz_launcher_disables_automatic_waypoint_publication():
+    manual_source = (
+        PROJECT_ROOT / "scripts" / "run_rivermark_manual.sh"
+    ).read_text(encoding="utf-8")
+    visual_source = (
+        PROJECT_ROOT / "scripts" / "run_rivermark_visual.sh"
+    ).read_text(encoding="utf-8")
+    demo_source = (
+        PROJECT_ROOT / "scripts" / "run_rivermark_demo.sh"
+    ).read_text(encoding="utf-8")
+    rviz_source = (
+        PROJECT_ROOT
+        / "ros2_ws/src/robot_description/rviz/rivermark.rviz"
+    ).read_text(encoding="utf-8")
+
+    assert "export RIVERMARK_AUTO_GOAL=0" in manual_source
+    assert "export RIVERMARK_VISUAL_ROUTE=0" in manual_source
+    assert 'RIVERMARK_AUTO_GOAL="${RIVERMARK_AUTO_GOAL:-1}"' in visual_source
+    assert "Rivermark manual navigation ready" in demo_source
+    assert "Class: rviz_default_plugins/SetGoal" in rviz_source
+    assert "Value: /bio_nav/route_goal" in rviz_source
 
 
 def test_frozen_route_server_graph_and_support_mapping_share_one_id_space():

@@ -54,10 +54,35 @@ def _polygon_is_free(
         or np.any(pixels[:, 1] >= width)
     ):
         return False
-    polygon = np.column_stack((pixels[:, 1], pixels[:, 0])).astype(np.int32)
-    mask = np.zeros_like(occupancy.free, dtype=np.uint8)
-    cv2.fillConvexPoly(mask, polygon, 1)
-    return bool(np.all(occupancy.free[mask.astype(bool)]))
+    # Rasterize only the footprint's local bounding box.  The former full-map
+    # mask allocated and zeroed a 1600x1600 array for every sampled pose.  A
+    # 1 m cognitive transition contains dozens of poses, so entering a new
+    # tile could write tens of gigabytes and block the single ROS executor for
+    # several seconds even though the footprint covers only a few hundred
+    # cells.
+    minimum_row = int(pixels[:, 0].min())
+    maximum_row = int(pixels[:, 0].max())
+    minimum_column = int(pixels[:, 1].min())
+    maximum_column = int(pixels[:, 1].max())
+    polygon = np.column_stack(
+        (
+            pixels[:, 1] - minimum_column,
+            pixels[:, 0] - minimum_row,
+        )
+    ).astype(np.int32)
+    local_mask = np.zeros(
+        (
+            maximum_row - minimum_row + 1,
+            maximum_column - minimum_column + 1,
+        ),
+        dtype=np.uint8,
+    )
+    cv2.fillConvexPoly(local_mask, polygon, 1)
+    local_free = occupancy.free[
+        minimum_row : maximum_row + 1,
+        minimum_column : maximum_column + 1,
+    ]
+    return bool(np.all(local_free[local_mask.astype(bool)]))
 
 
 def footprint_pose_is_free(

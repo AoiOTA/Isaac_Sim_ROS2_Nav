@@ -22,6 +22,27 @@ def test_dynamic_obstacle_phases_are_seeded_and_repeatable():
     assert scenario.enabled is False
 
 
+def test_disabled_dynamic_scenario_still_publishes_empty_layer_health():
+    manager = DynamicObstacleManager.__new__(DynamicObstacleManager)
+    manager.scenario = SimpleNamespace(enabled=False)
+    manager._last_publish_time = -math.inf
+    manager._runtime = {}
+    manager._selected_cases = (
+        SimpleNamespace(
+            obstacle=SimpleNamespace(obstacle_id="configured_but_not_authored")
+        ),
+    )
+    published = []
+    manager._marker_publisher = SimpleNamespace(publish=published.append)
+    manager._marker_type = lambda: SimpleNamespace(markers=[])
+
+    manager.update(3.25)
+
+    assert len(published) == 1
+    assert published[0].markers == []
+    assert manager._last_publish_time == pytest.approx(3.25)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [

@@ -301,8 +301,30 @@ class DynamicObstacleManager:
                     markers.markers.append(path)
             self._marker_publisher.publish(markers)
 
+    def _publish_disabled(self, simulation_time: float) -> None:
+        """Publish a healthy but intentionally empty dynamic-actor layer."""
+        if simulation_time - self._last_publish_time < .05:
+            return
+        self._last_publish_time = simulation_time
+        if hasattr(self, "_state_publisher"):
+            from std_msgs.msg import String
+            msg = String()
+            msg.data = json.dumps(self.state(), separators=(",", ":"))
+            self._state_publisher.publish(msg)
+        if getattr(self, "_marker_publisher", None) is not None:
+            # A disabled scenario retains its configured case matrix, but it
+            # deliberately authors no actor runtimes.  Do not call _publish(),
+            # which resolves selected cases through self._runtime.
+            self._marker_publisher.publish(self._marker_type())
+
     def update(self, simulation_time: float, robot: dict[str, float] | None = None) -> None:
-        if not self.scenario.enabled: return
+        if not self.scenario.enabled:
+            # Keep the ROS visualization/status contract alive in static and
+            # appearance runs.  An empty MarkerArray tells RViz that the layer
+            # is healthy and intentionally empty instead of leaving an orange
+            # "no message received" status that looks like a failed runtime.
+            self._publish_disabled(simulation_time)
+            return
         self._last_robot = robot
         from pxr import Gf
         for runtime in self._runtime.values():

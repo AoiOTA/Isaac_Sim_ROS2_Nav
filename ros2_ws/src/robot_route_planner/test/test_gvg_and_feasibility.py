@@ -1,8 +1,10 @@
 from pathlib import Path
+import math
 
+import cv2
 import numpy as np
 
-from robot_route_planner.feasibility import classify_edge
+from robot_route_planner.feasibility import _polygon_is_free, classify_edge
 from robot_route_planner.diagnostics import count_simple_routes, graph_diagnostics
 from robot_route_planner.gvg import build_gvg
 from robot_route_planner.map_io import OccupancyMap, load_occupancy_map
@@ -89,6 +91,38 @@ def test_feasible_unknown_and_disconnected_are_distinct() -> None:
         split, np.asarray([[0.5, 2.0], [3.0, 2.0]]), **common
     )
     assert infeasible == Traversability.INFEASIBLE
+
+
+def test_local_footprint_raster_matches_full_map_reference() -> None:
+    free = np.ones((100, 120), dtype=bool)
+    free[38:54, 55:70] = False
+    occupancy = OccupancyMap(
+        free, 0.05, (-3.0, -2.5), "local-mask", Path("map.yaml")
+    )
+    footprint = np.asarray(
+        [[0.28, 0.20], [0.28, -0.20], [-0.28, -0.20], [-0.28, 0.20]],
+        dtype=np.float64,
+    )
+
+    def full_map_reference(x: float, y: float, yaw: float) -> bool:
+        rotation = np.asarray(
+            [[math.cos(yaw), -math.sin(yaw)], [math.sin(yaw), math.cos(yaw)]]
+        )
+        world = footprint @ rotation.T + np.asarray([x, y])
+        pixels = np.asarray(
+            [occupancy.world_to_pixel(point[0], point[1]) for point in world],
+            dtype=np.int32,
+        )
+        polygon = np.column_stack((pixels[:, 1], pixels[:, 0])).astype(np.int32)
+        mask = np.zeros_like(free, dtype=np.uint8)
+        cv2.fillConvexPoly(mask, polygon, 1)
+        return bool(np.all(free[mask.astype(bool)]))
+
+    for x, y in ((-1.5, -1.0), (0.0, 0.0), (0.25, 0.25), (1.5, 1.0)):
+        for yaw in (0.0, 0.4, 0.5 * math.pi, -0.8):
+            assert _polygon_is_free(occupancy, x, y, yaw, footprint) is (
+                full_map_reference(x, y, yaw)
+            )
 
 
 def test_real_map_pruning_preserves_cycles_and_probe_alternatives() -> None:

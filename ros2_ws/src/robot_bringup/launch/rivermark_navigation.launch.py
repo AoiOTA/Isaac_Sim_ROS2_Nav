@@ -10,6 +10,7 @@ from launch.actions import (
     OpaqueFunction,
     TimerAction,
 )
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -26,12 +27,18 @@ def _include(package: str, launch_file: str, arguments: dict[str, str]):
 
 def _setup(context):
     files = {}
-    for name in ("map_file", "route_graph_file", "region_config_file"):
+    for name in (
+        "map_file",
+        "route_graph_file",
+        "region_config_file",
+        "waypoint_config_file",
+    ):
         value = Path(LaunchConfiguration(name).perform(context)).expanduser().resolve()
         if not value.is_file():
             raise RuntimeError(f"{name} does not exist: {value}")
         files[name] = value
     use_sim_time = LaunchConfiguration("use_sim_time").perform(context)
+    description_share = Path(get_package_share_directory("robot_description"))
     return [
         _include(
             "robot_description",
@@ -95,6 +102,39 @@ def _setup(context):
                 }
             ],
         ),
+        Node(
+            package="bio_nav_ros_bridge",
+            executable="v310_visualizer",
+            name="bio_nav_attempt31_outdoor_visualizer",
+            output="screen",
+            parameters=[
+                {
+                    "use_sim_time": ParameterValue(
+                        LaunchConfiguration("use_sim_time"), value_type=bool
+                    ),
+                    "region_config_file": str(files["region_config_file"]),
+                    "waypoint_config_file": str(files["waypoint_config_file"]),
+                }
+            ],
+        ),
+        Node(
+            package="rviz2",
+            executable="rviz2",
+            name="rivermark_rviz",
+            output="screen",
+            arguments=[
+                "-d",
+                str(description_share / "rviz" / "rivermark.rviz"),
+            ],
+            parameters=[
+                {
+                    "use_sim_time": ParameterValue(
+                        LaunchConfiguration("use_sim_time"), value_type=bool
+                    )
+                }
+            ],
+            condition=IfCondition(LaunchConfiguration("use_rviz")),
+        ),
         # The Nav2 StaticLayer is transient-local, but if it configures in the
         # narrow interval before this launch's map_server becomes active it can
         # retain its 12 m default window for the whole mission.  Give the map
@@ -147,10 +187,12 @@ def generate_launch_description():
             DeclareLaunchArgument("map_file"),
             DeclareLaunchArgument("route_graph_file"),
             DeclareLaunchArgument("region_config_file"),
+            DeclareLaunchArgument("waypoint_config_file"),
             DeclareLaunchArgument("start_x"),
             DeclareLaunchArgument("start_y"),
             DeclareLaunchArgument("start_yaw_deg", default_value="0.0"),
             DeclareLaunchArgument("module2_enabled", default_value="false"),
+            DeclareLaunchArgument("use_rviz", default_value="true"),
             # Long-range outdoor execution uses the historically validated
             # Jackal envelope, not A21's conservative indoor 0.35 m/s cap.
             DeclareLaunchArgument(

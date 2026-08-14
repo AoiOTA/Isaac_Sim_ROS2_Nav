@@ -166,24 +166,116 @@ cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/ros2_ws
 colcon build --symlink-install
 ```
 
-静态几何基线：
+## 四种单终端可视化导航
+
+四个入口都由一个前台脚本管理 Module2、Module3、Isaac Sim GUI、ROS 2/Nav2 和室外专用
+RViz，不需要预先 `source` ROS 环境，也不需要再开终端启动其他组件。它们的区别仅在于
+场景扰动和目标来源：
+
+| 模式 | 目标来源 | 场景 | 正常完成/就绪标志 |
+| --- | --- | --- | --- |
+| 静态 | 自动 G1→G5 | baseline，无移动 actor | `Rivermark five-waypoint visual navigation completed` |
+| 动态 | 自动 G1→G5 | G2→G5 分别触发迎面、横穿、同向慢车、临时阻塞 | `Rivermark five-waypoint visual navigation completed` |
+| 外观 | 自动 G1→G5 | 改变灯光强度、色温和材质色相，物理几何不变 | `Rivermark five-waypoint visual navigation completed` |
+| 手动 | RViz `2D Goal Pose` | baseline，无预发航点 | `Rivermark manual navigation ready` |
+
+### 1. 静态五航点导航
+
+从任意目录复制下面完整的一行：
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav
-ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh off static
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh static
 ```
 
-启用可选 Module2 edge prior：
+脚本等待 Isaac 发布真实 `/clock`、`/odom` 和 `/lidar/points_raw`，再启动 Nav2 与 RViz。
+看到 `dispatching G1 (1/5)` 后，机器人会依次导航至 G1、G2、G3、G4、G5。观察重点是
+0.05 m 物理 Occupancy、静态路沿/建筑物、16×16 当前 tile、tile 切换、Module2 bounded
+prior、Module3 最终路线、Smac plan、MPPI 轨迹、Local Costmap 和安全 footprint。
+
+### 2. 动态五航点导航
 
 ```bash
-ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh module2 static
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh dynamic
 ```
 
-启用物理移动障碍：
+仍自动执行 G1→G5，但使用固定的 `full_route_four_stage` / `v3` 动态场景：G2 触发迎面
+小车，G3 触发横穿小车，G4 触发同向慢车，G5 触发进入、短暂停留并驶离的临时阻塞。
+actor 由对应航段的空间门控激活，不是在场景加载后立即一起运动。RViz 中应同时看到
+`Rivermark Physical Dynamic Actors`、Local Costmap/LiDAR 障碍、MPPI 局部避障以及
+Module2 dynamic cost；最终碰撞安全和 `/cmd_vel` 仍由 Module3/Nav2 持有。
+
+### 3. 外观/光照变化五航点导航
+
+默认使用 `bright_warm`：
 
 ```bash
-ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh off dynamic
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh appearance bright_warm
 ```
+
+最后一个参数可替换为以下四个 profile 之一：
+
+| profile | 灯光强度 | 色温 | 材质色相偏移 |
+| --- | ---: | ---: | ---: |
+| `dim_warm` | 0.4× | 3000 K | +35° |
+| `dim_cool` | 0.4× | 7500 K | −35° |
+| `bright_warm` | 1.6× | 3000 K | +35° |
+| `bright_cool` | 1.6× | 7500 K | −35° |
+
+该模式仍自动执行同一 G1→G5，且不改变碰撞几何、Occupancy 或 GVG，也不启用动态
+actor。Isaac 画面用于确认颜色/光照变化，RViz 用于确认定位、tile、Module2/Module3 和导航链没有因
+外观扰动而失效。若不显式提供 profile，visual launcher 默认采用 `bright_warm`。
+
+### 4. RViz 手动目标导航
+
+```bash
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_manual.sh static
+```
+
+该入口不会启动 G1→G5 runner，也不会提前发布任何目标。按以下顺序操作：
+
+1. 等终端明确出现 `Rivermark manual navigation ready; use RViz 2D Goal Pose on the map`；
+2. 在 RViz 顶部点击 `2D Goal Pose`；
+3. 在 0.05 m 物理地图的可通行道路上按住鼠标左键，并拖出目标朝向后松开；
+4. 观察终端的 Route Coordinator/Route Server 接收信息，以及 RViz 中新生成的
+   CanonicalRoute、Smac plan、MPPI trajectory 和执行轨迹；
+5. 到达后可继续点击下一个目标；导航过程中点击新目标会取消当前目标并重新路由。
+
+RViz 工具固定发布 `/bio_nav/route_goal`，因此手动目标仍依次经过 Module3 GVG/Route
+Server、Module2 bounded prior、Smac 和 MPPI，并没有绕过 Route Coordinator 直接向
+Nav2 发目标。目标应放在真实道路内部；路沿、建筑物、喷泉或图外区域可能因 footprint
+不可行而被拒绝，这属于正确的物理约束。
+
+### 通用启动、退出与故障判断
+
+1. 四条命令每次只能运行一条；不要在同一 GPU 上并行启动第二个 Rivermark Isaac。
+2. 冷启动 12 GB 场景时，Isaac 窗口先出现而 RViz 尚未出现属于正常状态。等待终端从
+   `Waiting for Rivermark Isaac sensor readiness` 进入
+   `Rivermark Isaac sensors ready; starting Nav2 and RViz`，不要在加载期重复执行命令。
+3. 自动三种模式用 `dispatching G1 (1/5)` 判断导航已经开始；每一段会依次输出
+   `completed G1` 到 `completed G5`。完成后栈仍保留供观察，需按一次 `Ctrl+C` 退出。
+4. 手动模式必须等 `Rivermark manual navigation ready` 后再点击目标。
+5. 退出时只按一次 `Ctrl+C`，等终端重新出现 shell 提示符后再启动下一模式。脚本会按
+   进程组清理 Isaac、Nav2/RViz、Module2 和 Bridge。
+6. 若提示 Isaac single-instance lock，说明已有实例仍在运行；先回到原终端正常
+   `Ctrl+C`，不要直接再启动一份。运行日志位于
+   `/run/user/1000/bionav-rivermark-231/isaac-console.log`。
+7. 复制命令时不要连同 `lyb@...$` shell 提示符一起复制，也不要在变量名前加 `~`。
+   如果终端出现字面量 `^[[200~`，按 `Ctrl+C` 后手动重新输入以 `env ROS_DOMAIN_ID=231`
+   开头的命令部分。
+8. 这些 visual/manual 入口用于交互演示和工程检查，不启动正式 campaign recorder，也不
+   产生可用于资格结论的 20 轮证据。正式采集仍使用后文的 campaign 入口。
+
+需要 geometry-only 对照时再直接调用底层 `./scripts/run_rivermark_demo.sh off static`。
+
+可视化入口按依赖顺序启动：先让 Module2 建立独立 socket，再加载 Isaac；收到 Isaac
+真实 `/clock`、`/odom` 和 `/lidar/points_raw` 后才打开 Nav2/RViz。因此冷启动期间只看到
+Isaac 加载是正常的，RViz 不会再提前显示缺 TF、缺 Costmap、缺 Marker 的半初始化界面。
+脚本会清理同一 runtime 下已失联且 socket 路径不存在的旧 Module2，并为 Module2、
+Isaac、Nav2/RViz、Bridge 分配独立进程组；启动失败或 `Ctrl+C` 都会按组回收，避免只剩
+Isaac 的假死窗口。静态/外观场景仍会发布空的动态 actor MarkerArray，表示该图层健康但
+当前没有 actor，而不是显示 `No messages received`。原始 USD 的重复 Hydra curve/foliage
+警告不会再刷满交互终端，而是写入当前 runtime 的 `isaac-console.log`；若 Isaac 真正退出，
+启动脚本会把最近的异常栈摘要打印到终端。
 
 无显示器 smoke 可附加：
 
@@ -204,6 +296,52 @@ ROS_DOMAIN_ID=231 ./scripts/trigger_rivermark_blockage.sh clear
 ```
 
 这是明确标注的 **ENGINEERING INJECTION**，用于演示 `RuntimeEdgeState` 的持久确认、关闭边与重路由；它不是传感器推断结果，也不能作为避障率或 qualification 证据。真实动态障碍仍由 LiDAR/RGB-D、Local Costmap、MPPI 与 Collision Monitor 处理。
+
+## 室外 RViz 分层语义
+
+非 headless 的 `run_rivermark_demo.sh` 默认启动 Attempt31 专用
+`rivermark.rviz`。该视图把静态拓扑、低频 edge handoff 和 2 Hz live tile 分到
+`/bio_nav/v310/rviz_static`、`/bio_nav/v310/rviz_edges`、`/bio_nav/v310/rviz`，并继续
+使用 namespace 分离语义，避免把 Module2 的认知建议和 Module3 的物理执行画成同一种
+含义，也避免切 tile 时清空并重建 1.5 万条 GVG edge：
+
+| 层 | RViz namespace | 含义 |
+| --- | --- | --- |
+| 全部分区 | `outdoor_tile_cores` | 12 m core/stride 的逻辑区域网格 |
+| 当前 tile | `active_tile_canvas_16x16`、`active_tile_cells` | 真实 16×16、1 m/cell Module2 canvas |
+| tile 切换 | `previous_tile_switch`、`tile_switch_direction`、`tile_switch_event` | 上一 tile、切换方向、ID 与累计次数 |
+| Module2 认知 | `module2_p_corr`、`module2_place_peak`、`module2_sr`、`module2_dr` | 位置置信、峰值、SR 与 DR |
+| Module2 风险/更新 | `module2_dynamic_cost`、`module2_remap` | 动态代价与 A→B remap rate |
+| Module2→edge | `bridge_sr`、`bridge_dr`、`bridge_module2` | 在真实 GVG edge 上请求的有界增量 |
+| Module3 物理图 | `module3_gvg_edges`、`module3_runtime_blocked` | 可行 GVG 与 runtime 关闭边 |
+| Module3 最终路线 | `selected_canonical_route`、`smac_plan`、`moving_lookahead` | 最终路线、规划和在线执行目标 |
+| 权限状态 | `ownership_module2`、`ownership_module3`、`ownership_handoff` | prior 健康/回退、物理裁决权和实际 applied delta |
+
+Module2 面板会显示 model、tile、tile/graph revision、healthy、trusted、prior age、
+entropy 和 context uncertainty。超过 stale 门槛、unhealthy、OFF 或未通过 write gate
+时使用橙色 `GEOMETRY-ONLY FALLBACK`；只有新鲜且健康可信时显示绿色
+`ACTIVE / BOUNDED`。Module3 面板始终明确标注为 physical/final route authority。
+
+`Module3 Global Costmap` 是 `StaticLayer + ObstacleLayer + InflationLayer` 的合成结果，
+其中墙体周围整圈青/紫色梯度是正常的 inflation cost，并不是历史 LiDAR 点。为避免把
+该梯度误读成全局地图污染，Attempt31 的 RViz 默认只显示 0.05 m 物理 Occupancy 和
+Local Costmap；Global Costmap 保留在 Displays 中但默认关闭，需要诊断最终规划代价时
+可手动勾选。`Outdoor LiDAR Obstacles` 只显示最新一帧，不再累计 0.15 s 的视觉拖影。
+
+真实扫描残留由参数合同处理，而不是靠隐藏图层：Rivermark 的 Local/Global
+ObstacleLayer 均为 `observation_persistence=0`、`clearing=true`、`inf_is_valid=true`，
+障碍只标记到 24 m、自由射线清除到 25 m，并开启 footprint clearing。全局层不加载
+RGB-D Voxel/STVL，因此移动 actor 离开后不会留下另一个不可清除的深度层轨迹；启动时
+仍由现有生命周期流程完整清除 Local/Global Costmap 一次。
+
+tile 首次进入仍需生成 16×16 footprint/transition 约束，但实现仅栅格化 footprint 的
+局部包围盒。Rivermark `region_43` 的同输入 benchmark 从 5.24 s 降至 0.46 s，reachable
+mask 和 308 条 verified transition 不变；RViz live stream 同时从约 684 KB/帧降至约
+29 KB/帧。当前已运行的进程不会热替换 Python 代码，更新后需 `Ctrl+C` 并重新执行入口。
+
+正式 headless 批量默认 `RIVERMARK_RVIZ=0`，不让渲染 UI 影响采集性能；需要调试
+headless 运行时也可以显式设置 `RIVERMARK_RVIZ=1`。RViz 是工程可解释性界面，
+不替代逐轮 evidence、checksum 或 qualification 门禁。
 
 ## 已知边界
 

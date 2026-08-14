@@ -152,7 +152,6 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert _named(config, 'Transformed Reference Plan')['Topic'][
         'Value'] == '/transformed_global_plan'
     assert _named(config, 'MPPI Candidate Trajectories')['Enabled'] is True
-
     module2 = _named(config, 'Module2 Live Overlay')
     _assert_topic(
         module2,
@@ -263,6 +262,92 @@ def test_navigation_workflow_has_complete_official_nav2_interaction():
     assert temporal_voxels['Color Transformer'] == 'FlatColor'
     assert temporal_voxels['Style'] == 'Boxes'
     assert temporal_voxels['Size (m)'] == pytest.approx(0.05)
+
+
+def test_rivermark_workflow_exposes_tiles_module2_and_module3_authority():
+    config = _config('rivermark.rviz')
+    manager = config['Visualization Manager']
+    assert manager['Global Options']['Fixed Frame'] == 'map'
+    _assert_topic(
+        _named(config, 'Rivermark Physical Occupancy 0.05m'),
+        '/map',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    physical_map = _named(config, 'Rivermark Physical Occupancy 0.05m')
+    global_costmap = _named(config, 'Module3 Global Costmap')
+    lidar = _named(config, 'Outdoor LiDAR Obstacles')
+    assert physical_map['Enabled'] is True
+    # The combined costmap includes the static map's inflation gradient.  It
+    # remains available as a diagnostic toggle but must not obscure /map by
+    # default or look like accumulated scan residue.
+    assert global_costmap['Enabled'] is False
+    assert global_costmap['Value'] is False
+    assert global_costmap['Alpha'] <= 0.20
+    assert lidar['Decay Time'] == 0
+    unified = _named(config, 'Attempt31 Live Tile and Execution')
+    _assert_topic(
+        unified,
+        '/bio_nav/v310/rviz',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    static = _named(config, 'Attempt31 Outdoor Static Topology')
+    _assert_topic(
+        static,
+        '/bio_nav/v310/rviz_static',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    edge = _named(config, 'Attempt31 Module2 Module3 Edge Handoff')
+    _assert_topic(
+        edge,
+        '/bio_nav/v310/rviz_edges',
+        reliability='Reliable',
+        durability='Transient Local',
+    )
+    required = {
+        'active_tile_canvas_16x16',
+        'active_tile_cells',
+        'active_tile_core_12x12',
+        'tile_switch_direction',
+        'tile_switch_event',
+        'module2_p_corr',
+        'module2_sr',
+        'module2_dr',
+        'module2_dynamic_cost',
+        'module2_remap',
+        'bridge_module2',
+        'module3_gvg_edges',
+        'selected_canonical_route',
+        'module3_runtime_blocked',
+        'ownership_module2',
+        'ownership_module3',
+        'ownership_handoff',
+    }
+    enabled_namespaces = {
+        name
+        for display in (unified, static, edge)
+        for name, enabled in display['Namespaces'].items()
+        if enabled
+    }
+    assert required <= enabled_namespaces
+    assert _named(config, 'Module3 Local Costmap')['Enabled'] is True
+    assert _named(config, 'Module3 MPPI Optimal Trajectory')['Enabled'] is True
+    actors = _named(config, 'Rivermark Physical Dynamic Actors')
+    _assert_topic(
+        actors,
+        '/experiment/dynamic_obstacles/markers',
+        reliability='Reliable',
+        durability='Volatile',
+    )
+    assert actors['Namespaces']['dynamic_obstacles'] is True
+    assert actors['Namespaces']['dynamic_future_trajectory'] is True
+    goal_tool = next(
+        tool for tool in manager['Tools']
+        if tool['Class'] == 'rviz_default_plugins/SetGoal'
+    )
+    assert goal_tool['Topic']['Value'] == '/bio_nav/route_goal'
 
 
 def test_robot_description_cmake_installs_all_rviz_configs():

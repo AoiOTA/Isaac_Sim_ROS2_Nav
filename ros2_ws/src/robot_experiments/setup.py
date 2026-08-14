@@ -46,6 +46,7 @@ setup(
             "report_v310_guidance = robot_experiments.v310_guidance_report:main",
             "kujiale_reference = robot_experiments.kujiale_reference:main",
             "rivermark_reference = robot_experiments.rivermark_reference:main",
+            "rivermark_visual_route = robot_experiments.rivermark_visual_route:main",
         ],
     },
 )

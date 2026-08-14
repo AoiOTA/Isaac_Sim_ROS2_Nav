@@ -1938,7 +1938,11 @@ def run(
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
             f"max_frames={max_frames or 'unlimited'}"
         )
-        while app.is_running() and (max_frames == 0 or frame < max_frames):
+        while (
+            app.is_running()
+            and rclpy.ok()
+            and (max_frames == 0 or frame < max_frames)
+        ):
             if r2c1_state is not None and r2c1_script is not None:
                 r2c1_state["observer_loop_sequence"] = frame
                 if (
@@ -1996,7 +2000,15 @@ def run(
                     command=None,
                 )
             app.update()
-            rclpy.spin_once(node, timeout_sec=0.0)
+            try:
+                rclpy.spin_once(node, timeout_sec=0.0)
+            except Exception:
+                # A single Ctrl+C reaches Isaac and the ROS launch trees at
+                # the same time.  If another handler already shut the shared
+                # rclpy context down, leave the simulation loop cleanly.
+                if not rclpy.ok():
+                    break
+                raise
             if startup_reset.finished and startup_reset.errors:
                 raise RuntimeError(
                     "startup reset transaction failed: "

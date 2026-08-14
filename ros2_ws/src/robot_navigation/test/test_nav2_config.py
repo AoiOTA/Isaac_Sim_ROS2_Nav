@@ -121,6 +121,31 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
     assert smoother['max_accel'] == [1.25, 0.0, 3.50]
 
 
+def test_planning_only_scan_layers_have_a_strict_clearing_margin():
+    profile = _profile('bio_nav_planning_only')
+    local = profile['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    # Rivermark publishes +inf for an empty beam.  Accept it as free space,
+    # retain no scan history, and clear farther than either layer can mark.
+    for costmap in (local, global_costmap):
+        obstacle = costmap['obstacle_layer']
+        scan = obstacle['scan']
+        assert obstacle['footprint_clearing_enabled'] is True
+        assert scan['clearing'] is True
+        assert scan['marking'] is True
+        assert scan['observation_persistence'] == 0.0
+        assert scan['inf_is_valid'] is True
+        assert scan['obstacle_max_range'] == 24.0
+        assert scan['raytrace_max_range'] == 25.0
+        assert scan['obstacle_max_range'] < scan['raytrace_max_range']
+
+    # The outdoor global costmap has no long-lived depth voxel layer.
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'inflation_layer']
+
+
 def test_attempt22_reachability_profile_is_preinflation_and_observer_only():
     profile = _profile('attempt22_reachability_shadow')
     global_costmap = profile['global_costmap']['global_costmap'][
