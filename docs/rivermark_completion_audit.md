@@ -1,8 +1,19 @@
 # Attempt31 Rivermark 完成性审计
 
-审计日期：2026-08-14。事实源为 Attempt31 当前代码、Rivermark 实际运行
+审计日期：2026-08-14；Final 更新：2026-08-15。事实源为 Attempt31 当前代码、Rivermark 实际运行
 evidence，以及 `qualification_v3` 派生报告；不以计划意图或单元测试替代真实
 导航结果。
+
+## Final 更新
+
+历史 Attempt31 口径和下方表格保持不变。独立的 Final clean-revision 已完成 Static、
+Dynamic、Appearance 各 20 轮，三组均 20/20 成功且无碰撞，状态为
+`FORMAL_QUALIFICATION_PASS`。它新增四个静态障碍、强化四类动态威胁并均衡四种
+外观颜色 profile，不覆盖本审计引用的 Attempt31 60 轮。
+
+V4 Q36_04、Q14_45、Q36_51 四臂工程验证共 60/60 完成且无碰撞；结果具有 query/arm
+依赖性，最终分类为 `ENGINEERING_EVIDENCE_NOT_QUALIFICATION`，不支持 Module2 普遍
+因果收益声明。原始 Final/V4 evidence 已写入 NAS 并由 checksum manifest 封存。
 
 ## 用户最终范围
 
@@ -22,7 +33,7 @@ evidence，以及 `qualification_v3` 派生报告；不以计划意图或单元�
 | 静态同起止点路径偏差 ≤20% | 最大 3.256%，中位 1.416% | 冻结 0.05 m A* reference 和 20 轮 GT 轨迹 | PASS |
 | 动态异构导航成功率 ≥90% | 18/20，90%；失败轮 10、20 原样计入 | dynamic-v2 20 轮；四 actor 合同 20/20，完整交互 18/20 | PASS |
 | 光照、颜色变化稳定导航 | 20/20；四个 profile 各 5 轮 | appearance 20 轮，20/20 实际修改灯光和材质颜色 | PASS |
-| 同等数值质量下收敛学习时间提升 ≥20% | 20 个 paired case，最小 99.473%，中位 99.526% | `convergence_paired.csv` 与 contract summary | PASS |
+| 同等数值质量下在线适配计算耗时改善 ≥20% | 20 个 paired case，最小 99.473%，中位 99.526%；不是训练或导航时间 | `convergence_paired.csv` 与 contract summary | PASS（compute-only） |
 | A→B 连续地图更新效率提升 ≥30% | 20 次 paired update，最小 30.313%，中位 37.182% | `map_update_paired.csv`、region_22 A/B 数据与 parent-child smoke | PASS |
 | 分区域避免重复计算 | 16×16 canvas；动态批次 cache 16 entries / 320 hits / 16 misses | `runtime_tile_cache_contract.json` | PASS |
 | 进入新区域时切换且导航连续 | 每轮跨 13–15 个 region；五航点仍是一个连续任务 | dynamic 20 轮 `planning_prior_samples`、CanonicalRoute 和 GT | PASS |

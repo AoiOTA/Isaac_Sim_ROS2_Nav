@@ -4,23 +4,30 @@
 Route Server、Nav2、MPPI、Collision Monitor 和 `/cmd_vel`。当前开发主线是
 **Final Rivermark 室外五航点导航收口**；酷家乐室内任务和 Attempt31 证据仍保留为兼容与历史复现入口。
 
-## 当前状态（2026-08-14）
+## 当前状态（2026-08-15）
 
-Final clean-revision 已完成代码与预注册指标准备，尚未把 pilot 或新的 3×20 报告写成
-PASS。它使用独立分支 `codex/final-outdoor-navigation` 和独立场景 identity，不改写
-Attempt31 的任何原始轮次：
+Final clean-revision 已完成正式静态、动态、外观各 20 轮并通过 fail-closed 资格汇总。
+它使用独立分支 `codex/final-outdoor-navigation` 和独立场景 identity，不改写 Attempt31
+的任何原始轮次：
 
 | Final 项目 | 冻结实现 | 当前状态 |
 | --- | --- | --- |
-| 静态物理障碍 | 4 个 map-frame stationary box，均位于可通行地图格并切入旧 nominal route | 代码/离线门控完成，pilot 待执行 |
-| 动态威胁 | 四 actor 峰值 0.45–0.60 m/s，5 个时序 variant 各重复 4 次 | 代码/离线门控完成，pilot 待执行 |
-| 正式统计 | 静态、动态、外观各 20；每轮 G1–G5、无碰撞、证据完整 | 未启动 |
+| 静态物理障碍 | 4 个 map-frame stationary box，均位于可通行地图格并切入旧 nominal route | 20/20 成功且无碰撞，四障碍覆盖 PASS |
+| 动态威胁 | 四 actor 峰值 0.45–0.60 m/s，5 个时序 variant 各重复 4 次 | 20/20 成功且无碰撞，威胁/交互门 PASS |
+| 外观颜色 | `dim_warm`、`dim_cool`、`bright_warm`、`bright_cool` 各 5 轮 | 20/20 成功且无碰撞 |
+| 正式统计 | 静态、动态、外观各 20；每轮 G1–G5、无碰撞、证据完整 | `FORMAL_QUALIFICATION_PASS` |
 | fail-stop | 首个 goal dispatch 前写 `TRIAL_DISPATCHED.json`；dispatch 后失败立即停止且不补轮 | 已实现并测试 |
 | 动态有效性 | 每 actor 的峰值速度、轨迹进度、相对闭合速度、TTC、2.5 m 暴露和最近距离 | 已实现并测试 |
 | 99.53% 口径 | 仅为 adaptation compute latency reduction；不属于导航成功率或端到端加速 | 已修正 |
 
-Final 资格只有在 pilot、三组 20/20 和 `final_rivermark_qualification` 全部通过后才能
-写成 PASS。下面的 Attempt31 结果继续作为已冻结历史基线，而不是 Final 结果。
+Final `final_rivermark_qualification` 已通过。资格收据提交在 Integration 的
+`docs/evidence/final_navigation/outdoor_final_qualification/`；原始 evidence 封存在
+`/mnt/nas_home/Bio_Nav_Data/Attempt32_Final_Qualification_20260814/final_rivermark/formal_036191f`。
+下面的 Attempt31 结果继续作为已冻结历史基线，而不是 Final 结果。
+
+V4 的 Q36_04、Q14_45、Q36_51 四臂工程验证也已完成，共 60/60 完成且无碰撞。
+Q36_04 未观察到因果收益，Q14_45 观察到风险信号但不改线，Q36_51 的 SR-only 5/5
+改线；因此只能写作场景/arm 依赖的工程证据，不能宣称 Module2 普遍提升。
 
 Attempt31 已在独立 Module3/Integration 工作树完成实现、3×20 正式运行和
 fail-closed 资格汇总。60 轮原始 evidence 的冻结代码基线为 Module3
@@ -38,7 +45,7 @@ fail-closed 资格汇总。60 轮原始 evidence 的冻结代码基线为 Module
 | 认知分区 | 16×16 cell、1 m/cell；12 m core/stride + 每侧 2 m halo | PASS |
 | 分 tile 缓存 | 16 entries、320 hits、16 misses；跨区导航不中断 | PASS |
 | Module2 在线消费 | dynamic-v2 20/20 有健康 prior、正 edge delta 和选中路线代价变化 | PASS（非因果声明） |
-| 收敛时间 | 20 组 paired case 最小提升 99.473%，要求 ≥20% | PASS |
+| 在线适配计算耗时 | 20 组 paired case 最小提升 99.473%，要求 ≥20%；不是训练或导航时间 | PASS（compute-only） |
 | A→B 地图更新 | 20 组 paired update 最小提升 30.313%，要求 ≥30% | PASS |
 | Module2 四臂因果矩阵 | 不在 Rivermark 运行 | `DEFERRED_TO_V4` |
 
@@ -232,7 +239,8 @@ Rivermark 的 Module2 结论分成两类，不能混用：
 2. 16×16 `region_22` paired benchmark 证明缓存收敛和 parent-child 增量更新效率。
 
 它们都不能证明 OFF、SR-only、DR-only、SRDR 哪一臂带来因果性能改善。四臂静态
-因果矩阵由 V4 单独验证，不在 Rivermark qualification 中运行。
+因果矩阵已由 V4 单独验证，不在 Rivermark qualification 中运行；最终结果为
+`ENGINEERING_MIXED_SCENE_DEPENDENT`。
 
 Persistent blockage 入口仅用于工程演示：
 
@@ -249,8 +257,8 @@ ROS_DOMAIN_ID=231 ./scripts/trigger_rivermark_blockage.sh clear
 当前 Final 增量回归结果：
 
 - Final 专项：48 passed；
-- Module3 全量 Isaac/robot_experiments：475 passed、11 skipped；历史 reference JSON
-  的绝对 worktree 路径已在 Final 派生文件中修正并复测通过。
+- 仓库级非 Isaac/ROS：817 passed、1 skipped、14 deselected；
+- ROS/colcon：739 tests、0 errors、0 failures、5 skipped。
 
 历史 Attempt31 收尾工作树回归结果：
 

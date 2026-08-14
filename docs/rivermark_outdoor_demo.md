@@ -6,8 +6,9 @@
 `/home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation`，分支为
 `codex/final-outdoor-navigation`。Final clean-revision 不修改 Attempt31 的冻结轮次，
 新增 4 个静态物理障碍、强化四阶段动态 actor，并把正式口径改成每组 20/20、
-post-dispatch fail-stop。当前实现和离线测试已完成，pilot 与新的 3×20 尚未执行，
-因此 Final 状态仍是 `PILOT_PENDING`，不能提前写为 PASS。
+post-dispatch fail-stop。Final 静态、动态、外观各 20 轮已完成，三组均 20/20 成功且
+无碰撞，Final 状态为 `FORMAL_QUALIFICATION_PASS`。历史 Attempt31 轮次和 STOP 证据
+保持独立、未改写。
 
 Final 静态配置是 `final_rivermark_static_obstacles.yaml`：四个 0.70 m × 0.70 m
 stationary box 分别切入旧路线的四个区段，同时其完整外接矩形已逐格验证在自由地图内。
@@ -21,7 +22,7 @@ Final 命令：
 ```bash
 cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
 
-# 先各跑一轮 pilot；任一 dispatch 后失败都会停止并保留 evidence
+# 以下命令用于新 revision 的复核；任一 dispatch 后失败都会停止并保留 evidence
 ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh static off --run-indices 1 \
   --output data/experiment_runs/final_rivermark/pilots/rev1/static_off
 ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh dynamic medium --run-indices 1 \
@@ -30,8 +31,8 @@ ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh appearance medium --
   --output data/experiment_runs/final_rivermark/pilots/rev1/appearance_medium
 ```
 
-只有三个 pilot 都通过、配置哈希冻结且工作树干净后，才去掉 `--run-indices 1` 运行
-正式 3×20。资格报告入口为 `final_rivermark_qualification`，指标合同为
+新的正式 campaign 仍必须在三个 pilot、配置哈希冻结且工作树干净后才可去掉
+`--run-indices 1`。已完成 Final 批次的资格报告入口为 `final_rivermark_qualification`，指标合同为
 `data/rivermark_demo/final_rivermark_metric_contract.yaml`。每个 pilot 结束后先运行
 `final_rivermark_pilot_check`；该入口会重新计算逐文件 checksum，并验证
 `TRIAL_DISPATCHED.json`、G1–G5、碰撞、证据和该组的 Final metric gate。
@@ -54,7 +55,7 @@ Attempt31 在独立 Module3/Integration worktree 中打通 Rivermark 室外科�
 
 动态 v1（配置 SHA-256 `de40eebc36e99f2c1399e2fa2f084654dae0c0e69815edcff39fbc578f33b8f2`）先完成了不可变的 20 轮，结果为 16/20 严格成功、20/20 无碰撞，原报告 `formal_20260814_v075_r30_cache/qualification/attempt31_rivermark_qualification.json` 保持 **STOP**。v2 没有改写 v1 行或放宽 1.5 m 门槛；它在新配置哈希和新 evidence 根下前移 crossing/temporary-block 的预注册触发时序，并以独立 20 轮重新评价。v2 两个失败轮仍原样计入，未补跑替换。
 
-16×16 `region_22` 原始 paired benchmark 各有 20 行且质量检查全通过：收敛时间最小改进 99.473%，地图连续更新最小改进 30.313%。Module2 四臂静态因果矩阵不在 Rivermark 运行，仍标记 `DEFERRED_TO_V4`，不参与本次 PASS。
+16×16 `region_22` 原始 paired benchmark 各有 20 行且质量检查全通过：在线适配计算耗时最小改进 99.473%，地图连续更新最小改进 30.313%。前者不是训练时间或端到端导航提速。Module2 四臂静态因果矩阵不在 Rivermark 运行，不参与本次 PASS；后续 V4 三组已完成并得到场景依赖的混合工程结论。
 
 Module2 是否真正进入室外调用链由独立的 `runtime_consumption_only` 门禁证明，
 不采用四臂因果推断：dynamic-v2 的 20/20 轮都有健康 V3.10 prior、跨越至少
@@ -62,8 +63,8 @@ Module2 是否真正进入室外调用链由独立的 `runtime_consumption_only`
 cost snapshot 被 Module2 增量改变。全部请求/代价 snapshot 对齐，最终代价满足
 `structural + runtime + applied_module2_delta`，没有突破 Module3 的 requested-delta
 上界；20 轮累计应用增量为 527.932 m。该证据只证明“请求被 Route Server 有界
-消费并进入选中路线代价”，不证明 SR/DR/SRDR 哪一臂带来因果性能提升，后者仍由
-V4 负责。
+消费并进入选中路线代价”，不证明 SR/DR/SRDR 哪一臂带来因果性能提升。V4 后续结果
+显示不同 query/arm 的效果不一致，不能据此宣称普遍因果收益。
 
 ## 地图与物理语义
 
@@ -147,7 +148,7 @@ python3 scripts/render_rivermark_scenarios.py
 
 ## Module2 验证边界
 
-Rivermark 正式范围为静态、动态、外观三组各 20 轮，不运行 Module2 四臂静态因果矩阵。Module2 的 Baseline、SR-only、DR-only、SRDR matched-arm 因果验证由后续 V4 实验负责，不能从 Rivermark 的单一 `medium` 配置推断四臂结论。Rivermark 仅保存 Module2 在线请求、响应、cost delta、模型 ID、健康状态、CanonicalRoute 和真实轨迹，用于证明室外链路确实消费了 Module2 输出；这些运行证据不替代 V4 因果验证。
+Rivermark 正式范围为静态、动态、外观三组各 20 轮，不运行 Module2 四臂静态因果矩阵。Module2 的 Baseline、SR-only、DR-only、SRDR matched-arm 因果验证已由 V4 的 Q36_04、Q14_45、Q36_51 独立执行，不能从 Rivermark 的单一 `medium` 配置推断四臂结论。V4 共 60/60 完成且无碰撞，但结果具有 query/arm 依赖性，不支持普遍提升。Rivermark 仅保存 Module2 在线请求、响应、cost delta、模型 ID、健康状态、CanonicalRoute 和真实轨迹，用于证明室外链路确实消费了 Module2 输出；这些运行证据不替代 V4 因果验证。
 
 Rivermark 启用 tile-local edge projection：覆盖率只在 canonical edge 落入当前 16×16 canvas 的真实采样段上计算，至少需要 3 个局部样本，请求增量再按局部段占整条 edge 的比例缩放。不在当前 tile、物理不可达或覆盖不足的 edge 均保持零增量；该机制不切割/新建 GVG edge，也不改变 Module3 的可达性与最终 cost cap。
 
@@ -156,7 +157,7 @@ Rivermark 启用 tile-local edge projection：覆盖率只在 canonical edge 落
 - 相同数值质量下，缓存 `M_SR @ goal` / `M_DR @ dynamic_cost` 的旧相对数值为最小 99.47%、中位 99.53%。Final 将它重命名为 **adaptation compute latency reduction**：classic p50/p95 为 4.587/4.661 ms，cached p50/p95 为 0.022/0.023 ms，中位 speedup 211.16×，最大质量误差 `1.69e-8`。计时明确排除 ROS、Isaac、启动和渲染，因此不再作为导航成功率、避障率或端到端加速来表述，也不参与 Final 导航资格门控。
 - A 到局部持久障碍 B 的 20 次 parent-full / child-delta paired update，最小改进 30.31%，中位 37.18%，门槛为不低于 30%。父状态 hash 保持不变，child delta 删除 6 条 transition，物理支持映射不变。
 
-上述两个计算基准只证明认知计算合同；不能单独替代真实五航点导航和避障证据，也不能替代后续 V4 四臂因果验证。
+上述两个计算基准只证明认知计算合同；不能单独替代真实五航点导航和避障证据，也不能替代已独立完成的 V4 四臂因果验证。
 
 历史 Attempt31 批量复核入口（只用于复现冻结结果，不是 Final 新 campaign）：
 
