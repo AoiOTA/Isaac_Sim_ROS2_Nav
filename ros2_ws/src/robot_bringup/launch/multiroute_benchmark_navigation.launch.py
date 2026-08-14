@@ -80,6 +80,12 @@ def _setup(context):
                 "module2_enabled": LaunchConfiguration("module2_enabled").perform(context),
                 "execute_route_navigation": "true",
                 "voxel_grid_topic": "stvl_voxel_grid",
+                "region_config_file": LaunchConfiguration(
+                    "region_config_file"
+                ).perform(context),
+                "region_switch_min_dwell_s": LaunchConfiguration(
+                    "region_switch_min_dwell_s"
+                ).perform(context),
             },
         ),
     ]
@@ -98,6 +104,10 @@ def generate_launch_description():
             DeclareLaunchArgument("map_to_odom_y"),
             DeclareLaunchArgument("map_to_odom_yaw_deg"),
             DeclareLaunchArgument("module2_enabled", default_value="false"),
+            DeclareLaunchArgument("region_config_file", default_value=""),
+            DeclareLaunchArgument(
+                "region_switch_min_dwell_s", default_value="0.5"
+            ),
             DeclareLaunchArgument(
                 "nav2_profile_params_file",
                 default_value=str(

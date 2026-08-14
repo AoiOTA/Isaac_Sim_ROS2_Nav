@@ -1,0 +1,63 @@
+{
+  "base_route_length_m": 146.66158460358767,
+  "base_route_support_edges": 605,
+  "blocked_edge_used_in_reroute": false,
+  "blocked_support_edge": 22916,
+  "choice_space_after_pruning": {
+    "component_count": 31,
+    "cycle_count": 63,
+    "goal_node": 650,
+    "node_count": 642,
+    "physical_edge_count": 674,
+    "start_goal_alternative_route_count": 63,
+    "start_goal_route_count": 64,
+    "start_goal_route_count_capped": true,
+    "start_node": 21
+  },
+  "choice_space_before_pruning": {
+    "component_count": 41,
+    "cycle_count": 63,
+    "goal_node": 650,
+    "node_count": 674,
+    "physical_edge_count": 696,
+    "start_goal_alternative_route_count": 63,
+    "start_goal_route_count": 64,
+    "start_goal_route_count_capped": true,
+    "start_node": 21
+  },
+  "classification": "engineering_visual_evidence",
+  "graph_components": 31,
+  "graph_nodes": 642,
+  "graph_physical_edges": 675,
+  "graph_polyline_free_containment_failures": 0,
+  "images": [
+    "phase1_gvd_overlay.png",
+    "phase2_gvg_before_after_pruning.png",
+    "phase3_footprint_feasibility.png",
+    "phase5_selected_route.png",
+    "phase6_route_projection_lookahead.png"
+  ],
+  "isolated_nodes": 0,
+  "lookahead_distance_ahead_m": 2.8936065599586773,
+  "node_types": {
+    "ENDPOINT": 286,
+    "JUNCTION": 356
+  },
+  "projection_lateral_error_m": 0.12000000000000455,
+  "pruning_removed_cycles": 0,
+  "pruning_removed_nodes": 32,
+  "pruning_removed_physical_edges": 22,
+  "raw_ridge_pixels": 83137,
+  "reroute_length_m": 147.6046962394529,
+  "reroute_support_edges": 609,
+  "route_goal_support_node": 20,
+  "route_start_support_node": 616,
+  "skeleton_min_clearance_m": 0.22360680997371674,
+  "skeleton_obstacle_overlap_pixels": 0,
+  "skeleton_pixels": 34255,
+  "traversability": {
+    "FEASIBLE": 826,
+    "INFEASIBLE": 6,
+    "UNKNOWN": 518
+  }
+}

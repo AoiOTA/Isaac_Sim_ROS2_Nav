@@ -323,3 +323,21 @@ def test_three_stage_actor_footprints_keep_wall_clearance_in_occupancy_grid():
                     assert image.getpixel((column, row)) >= 250, (
                         case.case_id, x, y
                     )
+
+
+def test_rivermark_four_stage_gates_match_each_route_approach_direction():
+    scenario = load_dynamic_scenario(
+        ROOT / "data/rivermark_demo/rivermark_dynamic.yaml"
+    )
+    manager = object.__new__(DynamicObstacleManager)
+    probes = {
+        "oncoming": {"x": -8.0, "y": 130.7, "vy": -0.2, "speed": 0.2},
+        "crossing": {"x": -18.0, "y": 147.1, "vy": 0.2, "speed": 0.2},
+        "same_direction_slow": {"x": -26.0, "y": 164.1, "vy": 0.2, "speed": 0.2},
+        "temporary_block": {"x": -43.0, "y": 174.1, "vy": 0.2, "speed": 0.2},
+    }
+    for case_id, robot in probes.items():
+        case = scenario.cases[case_id]
+        assert manager._gate_passed(case, robot), case_id
+        wrong_direction = dict(robot, vy=-robot["vy"])
+        assert not manager._gate_passed(case, wrong_direction), case_id

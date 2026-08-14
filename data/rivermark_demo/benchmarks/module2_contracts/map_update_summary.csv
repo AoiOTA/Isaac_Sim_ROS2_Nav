@@ -1,0 +1,2 @@
+schema,scenario,full_method,incremental_method,timer_scope,repeat_count,median_improvement_percent,minimum_improvement_percent,target_improvement_percent,quality_pass,target_pass
+bio_nav.v310.contract_5_3_15.v1,real cognitive region rivermark_a:region_22 A to local persistent-obstacle B,fresh ParentChildMemoryBankV30 parent B materialization,frozen ParentChildMemoryBankV30 child delta and tombstones,"cognitive update only; excludes SLAM, ROS, simulator and rendering",20,37.18200447450357,30.31296566959477,30.0,True,True

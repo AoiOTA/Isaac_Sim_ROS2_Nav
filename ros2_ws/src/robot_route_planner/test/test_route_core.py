@@ -293,7 +293,12 @@ def test_navigation_result_retires_old_leg_before_publishing_completion() -> Non
 
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.route_active = True
-    coordinator.pending_goal = object()
+    coordinator.pending_goal = SimpleNamespace(
+        pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0))
+    )
+    coordinator.route_goal_completion_tolerance_m = 0.25
+    coordinator.navigation_goal_targets_final = True
+    coordinator._current_xy = lambda: (1.0, 2.0)
     coordinator.tracker = object()
     coordinator.navigation_goal_pending = True
     coordinator.navigation_goal_handle = object()
@@ -314,6 +319,74 @@ def test_navigation_result_retires_old_leg_before_publishing_completion() -> Non
     assert not coordinator.route_active
     assert coordinator.tracker is None
     assert coordinator.navigation_goal_handle is None
+
+
+def test_intermediate_lookahead_success_continues_same_leg() -> None:
+    events = []
+
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.route_active = True
+    coordinator.pending_goal = SimpleNamespace(
+        pose=SimpleNamespace(position=SimpleNamespace(x=10.0, y=0.0))
+    )
+    coordinator.route_goal_completion_tolerance_m = 0.20
+    coordinator.navigation_goal_targets_final = False
+    coordinator._current_xy = lambda: (2.8, 0.0)
+    coordinator.tracker = object()
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_handle = object()
+    coordinator.navigation_failed = False
+    coordinator.goal_complete_pub = SimpleNamespace(
+        publish=lambda message: events.append(message.data)
+    )
+    coordinator.node = SimpleNamespace(
+        get_logger=lambda: SimpleNamespace(info=lambda _message: None)
+    )
+    future = SimpleNamespace(
+        result=lambda: SimpleNamespace(
+            status=4,
+            result=SimpleNamespace(error_code=0),
+        )
+    )
+
+    coordinator._on_navigation_result(future)
+
+    assert events == []
+    assert coordinator.route_active
+    assert coordinator.pending_goal is not None
+    assert coordinator.tracker is not None
+    assert coordinator.navigation_goal_handle is None
+
+
+def test_final_goal_success_accepts_gt_pose_inside_campaign_gate() -> None:
+    events = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.route_active = True
+    coordinator.pending_goal = SimpleNamespace(
+        pose=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0))
+    )
+    coordinator.route_goal_completion_tolerance_m = 0.25
+    coordinator.navigation_goal_targets_final = True
+    coordinator._current_xy = lambda: (0.223, 0.0)
+    coordinator.tracker = object()
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_handle = object()
+    coordinator.navigation_failed = False
+    coordinator.pending_structural_map = None
+    coordinator.goal_complete_pub = SimpleNamespace(
+        publish=lambda message: events.append(message.data)
+    )
+    coordinator.node = SimpleNamespace(
+        get_logger=lambda: SimpleNamespace(info=lambda _message: None)
+    )
+    future = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=4, result=SimpleNamespace(error_code=0),
+    ))
+
+    coordinator._on_navigation_result(future)
+
+    assert events == [True]
+    assert coordinator.pending_goal is None
 
 
 def test_navigation_action_status_is_authoritative_over_error_detail() -> None:

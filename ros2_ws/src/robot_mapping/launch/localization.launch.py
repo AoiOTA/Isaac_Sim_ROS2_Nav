@@ -101,7 +101,12 @@ def _launch_setup(context):
         ),
         condition=IfCondition(autostart),
     )
-    actions = [map_node, activate_map, configure_map]
+    # Install the inactive-state handler before starting the lifecycle
+    # process.  A 1600x1600 map normally takes long enough to hide this race,
+    # but a loaded simulator can schedule CONFIGURE completion before a later
+    # RegisterEventHandler action executes, leaving map_server inactive and
+    # Nav2 on its 100x100 default costmap.
+    actions = [activate_map, map_node, configure_map]
     if use_posegraph_localization:
         slam_node = LifecycleNode(
             package='slam_toolbox',
@@ -149,7 +154,7 @@ def _launch_setup(context):
             condition=IfCondition(autostart),
         )
         # Register the transition handler before emitting CONFIGURE.
-        actions.extend([slam_node, activate_slam, configure_slam])
+        actions.extend([activate_slam, slam_node, configure_slam])
     else:
         actions.extend([
             LogInfo(msg=(

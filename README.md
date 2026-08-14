@@ -33,6 +33,10 @@ https://github.com/user-attachments/assets/39970d48-47df-428b-8d7d-276d2fd7db9d
 
 本仓库提供 Clearpath Jackal 在酷家乐室内场景中的 Isaac Sim 导航闭环：2D LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset，以及可复核的全屋 4×20 鲁棒性实验。
 
+## Attempt31 Rivermark 室外科研 Demo
+
+独立 Attempt31 worktree 已增加 Rivermark 室外原型：保留当前 80 m × 80 m 范围，使用 1600×1600、0.05 m/格的实物对齐栅格、全局 GVG、Route Server、连续认知区域与可选 Module2 edge prior。2026-08-14 核心 static/dynamic-v2/appearance 3×20 fail-closed qualification v3 已 PASS；动态 v1 的 16/20 STOP 仍保留为不可变修复前基线。运行命令、对齐图、正式结果、动态障碍和工程 blockage 注入见 [Attempt31 Rivermark 使用说明](docs/rivermark_outdoor_demo.md)，逐项指标与原 plan 的完成性对照见 [Attempt31 完成性审计](docs/rivermark_completion_audit.md)。该入口不修改 A21 室内默认链路；Module2 四臂因果验证延后到 V4。
+
 当前默认运行组合：
 
 ```text

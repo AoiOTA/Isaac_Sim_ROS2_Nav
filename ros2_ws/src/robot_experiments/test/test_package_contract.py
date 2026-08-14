@@ -171,6 +171,49 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert "stopping ${active_mode} ROS launch process group" in wrapper
 
 
+def test_experiment_manifest_records_consumed_attempt31_arm():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"experiment_arm": self._experiment_arm or None' in runner
+
+
+def test_rivermark_campaign_binds_runtime_profile_and_checks_child_evidence():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_rivermark_campaign.sh").read_text()
+
+    assert "nav2_profile:=bio_nav_planning_only" in wrapper
+    assert "Rivermark evidence count mismatch" in wrapper
+    assert 'summary.get("experiment_arm") == arm' in wrapper
+    assert "ROS_DOMAIN_ID must be an integer in [0, 232]" in wrapper
+    assert 'runs.get("matrix", runs.get("seeds", []))' in wrapper
+    assert "collision rates are evaluated later" in wrapper
+    assert "runtime_controller_contract.json" in wrapper
+    assert 'controller_max_linear_velocity_mps="0.75"' in wrapper
+    assert 'controller_linear_velocity_std_mps="0.35"' in wrapper
+    assert 'rendering_hz="30"' in wrapper
+    assert "resume:=true" in wrapper
+    assert "runtime_tile_cache_contract.json" in wrapper
+
+
+def test_large_global_costmap_is_latest_state_not_reliable_backlog():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text(encoding="utf-8")
+    route_node = (
+        PACKAGE_ROOT.parent
+        / "robot_route_planner"
+        / "robot_route_planner"
+        / "ros_node.py"
+    ).read_text(encoding="utf-8")
+
+    for source in (runner, route_node):
+        assert '"/global_costmap/costmap_raw"' in source
+        assert "ReliabilityPolicy.BEST_EFFORT" in source
+        assert "depth=1" in source
+
+
 def test_g2_dynamic_safety_smoke_is_single_route_and_module2_free():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_g2_dynamic_safety_smoke.sh").read_text()
@@ -327,6 +370,8 @@ def test_runner_only_publishes_a21_route_goals_and_never_controls_or_localizes_r
     assert "_verify_dynamic_runtime_contract" in source
     assert "dynamic_obstacles_config_sha256" in source
     assert '"/simulation/localization_seeded"' in source
+    assert "localization_seed_event_grace_sec" in source
+    assert "post-reset spawn-aligned TF/sample recovery gate" in source
     assert "stamp_s > tf_stamp_barrier_s" in source
     assert "ExternalShutdownException" in source
     assert "ExperimentIsolationError" in source

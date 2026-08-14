@@ -1,0 +1,52 @@
+classification: research_demo_engineering_output
+selected_candidate: A
+selection_reason: 'explicit plaza ROI: dense curbs, buildings, street furniture, roundabout,
+  and route alternatives'
+candidate_comparison:
+  A:
+    score:
+    - 1
+    - 1
+    - 63
+    - 674
+    - -31
+    free_fraction: 0.730219140625
+    choice_space:
+      component_count: 31
+      cycle_count: 63
+      goal_node: 650
+      node_count: 642
+      physical_edge_count: 674
+      start_goal_alternative_route_count: 63
+      start_goal_route_count: 64
+      start_goal_route_count_capped: true
+      start_node: 21
+  B:
+    score:
+    - 0
+    - 1
+    - 55
+    - 511
+    - -33
+    free_fraction: 0.98626015625
+    choice_space:
+      component_count: 33
+      cycle_count: 55
+      goal_node: 453
+      node_count: 489
+      physical_edge_count: 511
+      start_goal_alternative_route_count: 63
+      start_goal_route_count: 64
+      start_goal_route_count_capped: true
+      start_node: 128
+map_yaml: /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_selected.yaml
+route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_selected.geojson
+regions: /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_regions.yaml
+spawn_poses: /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark.spawn.yaml
+demo_goals: /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_demo_goals.yaml
+dynamic_obstacles: /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_dynamic.yaml
+dynamic_crossing_map_xy:
+- -18.48840026565304
+- 149.91155419137027
+demo_endpoint_policy: interior canonical nodes, boundary>=5m, clearance>=1m
+demo_route_length_m: 126.53359622375328

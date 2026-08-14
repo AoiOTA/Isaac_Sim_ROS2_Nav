@@ -11,6 +11,7 @@ import numpy as np
 
 from .defaults import load_engineering_defaults
 from .cognitive_constraints import (
+    CognitiveConstraintsCache,
     build_cognitive_constraints,
     occupancy_grid_version,
 )
@@ -23,6 +24,7 @@ from .gvg import build_gvg
 from .map_io import OccupancyMap, load_occupancy_map
 from .route_cost import edge_cost_breakdown
 from .route_support import export_route_support_graph, save_route_support
+from .regions import RegionSelector, load_region_config
 from .runtime_edges import RuntimeEdgeManager, RuntimeState
 from .stable_ids import stabilize_graph_ids
 from .structural_updates import StructuralChangeMonitor
@@ -236,6 +238,11 @@ class RouteCoordinator:
             ("base_frame_id", "base_link"),
             ("module2_enabled", True),
             ("module2_response_timeout_s", 0.0),
+            # Ground-truth confirmation uses the campaign's 0.25 m waypoint
+            # gate.  Nav2 evaluates its 0.20 m goal checker in the odom/local
+            # pose, so requiring 0.20 m again in GT can reject a valid final
+            # action because of the small frame/pose sampling difference.
+            ("route_goal_completion_tolerance_m", 0.25),
             ("feasible_only_largest_component", False),
             ("execute_navigation", True),
             ("route_guided_bt_xml", ""),
@@ -246,6 +253,8 @@ class RouteCoordinator:
             ("occupancy_map_topic", "/map"),
             ("goal_complete_topic", "/bio_nav/route_goal_complete"),
             ("odometry_topic", "/ground_truth/odom"),
+            ("region_config_file", ""),
+            ("region_switch_min_dwell_s", 0.5),
             ("compute_route_action", "/compute_route"),
             ("navigate_to_pose_action", "/navigate_to_pose"),
             ("dynamic_edges_service", "/route_server/DynamicEdgesScorer/adjust_edges"),
@@ -260,8 +269,13 @@ class RouteCoordinator:
         self.module2_response_timeout_s = float(
             node.get_parameter("module2_response_timeout_s").value
         )
+        self.route_goal_completion_tolerance_m = float(
+            node.get_parameter("route_goal_completion_tolerance_m").value
+        )
         if self.module2_response_timeout_s < 0.0:
             raise ValueError("module2_response_timeout_s must be non-negative")
+        if self.route_goal_completion_tolerance_m <= 0.0:
+            raise ValueError("route_goal_completion_tolerance_m must be positive")
         self.map = load_occupancy_map(
             map_path,
             unknown_is_occupied=bool(self.defaults["graph"]["unknown_is_occupied"]),
@@ -311,7 +325,22 @@ class RouteCoordinator:
         self.latest_pose_frame_id: str | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
         self.live_map_version: str | None = None
-        self.cognitive_constraints_cache = None
+        self.cognitive_constraints_cache = CognitiveConstraintsCache()
+        node.declare_parameter("cognitive_tile_cache_entries", 0)
+        node.declare_parameter("cognitive_tile_cache_hits", 0)
+        node.declare_parameter("cognitive_tile_cache_misses", 0)
+        region_config_file = str(node.get_parameter("region_config_file").value).strip()
+        self.region_selector = None
+        if region_config_file:
+            region_config = load_region_config(region_config_file)
+            if region_config.map_frame != str(node.get_parameter("frame_id").value):
+                raise ValueError("region config map_frame differs from frame_id")
+            self.region_selector = RegionSelector(
+                region_config,
+                min_dwell_s=float(
+                    node.get_parameter("region_switch_min_dwell_s").value
+                ),
+            )
         footprint = np.asarray(
             self.defaults["footprint"]["polygon_m"], dtype=np.float64
         )
@@ -323,6 +352,7 @@ class RouteCoordinator:
         self.route_active = False
         self.navigation_goal_pending = False
         self.navigation_goal_handle = None
+        self.navigation_goal_targets_final = False
         self.navigation_failed = False
         self.frame_id = str(node.get_parameter("frame_id").value)
         self.base_frame_id = str(node.get_parameter("base_frame_id").value)
@@ -353,6 +383,16 @@ class RouteCoordinator:
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE)
+        # This is a latest-state input, not an event stream.  Rivermark's
+        # 1600x1600 full costmap is 2.56 MB per publication; a reliable depth
+        # 10 queue can delay action-result callbacks behind stale grids and
+        # stop the robot between route lookaheads.  One best-effort snapshot
+        # preserves fail-closed footprint checks without creating a backlog.
+        costmap_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.graph_pub = node.create_publisher(
             NavigationGraph, "/bio_nav/navigation_graph", qos_latched
         )
@@ -432,7 +472,7 @@ class RouteCoordinator:
             Costmap,
             "/global_costmap/costmap_raw",
             self._on_global_costmap,
-            qos,
+            costmap_qos,
         )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, node)
@@ -460,6 +500,7 @@ class RouteCoordinator:
             self._publish_progress,
         )
         node.create_timer(1.0, self._runtime_tick)
+        node.create_timer(0.2, self._region_tick)
         self._publish_graph()
         self._publish_structural_status(StructuralGraphStatus.READY, "initial graph ready")
 
@@ -472,6 +513,22 @@ class RouteCoordinator:
             float(message.pose.pose.position.y),
         )
         self.latest_pose_frame_id = str(message.header.frame_id)
+
+    def _region_tick(self) -> None:
+        if self.region_selector is None:
+            return
+        current = self._current_xy()
+        if current is None:
+            return
+        previous = self.region_selector.current
+        selected = self.region_selector.select(
+            current, self._now().nanoseconds / 1.0e9
+        )
+        if selected != previous:
+            self.node.get_logger().info(
+                f"active cognitive region: {selected.region_id}"
+            )
+            self._publish_cognitive_constraints()
 
     def _on_global_costmap(self, message) -> None:
         width = int(message.metadata.size_x)
@@ -522,31 +579,44 @@ class RouteCoordinator:
                 raise ValueError("live /map geometry differs from the frozen structural map")
             if version != self.live_map_version:
                 self.live_map_version = version
-                self.cognitive_constraints_cache = None
+                self.cognitive_constraints_cache.invalidate()
             self._publish_cognitive_constraints()
         except Exception as exc:
             self.live_map_version = None
-            self.cognitive_constraints_cache = None
+            self.cognitive_constraints_cache.invalidate()
             self.node.get_logger().warning(f"cognitive map rejected: {exc}")
 
     def _publish_cognitive_constraints(self) -> None:
         if self.live_map_version is None:
             return
-        cache_key = (self.live_map_version, int(self.graph.revision))
-        cached = self.cognitive_constraints_cache
-        if cached is None or cached[0] != cache_key:
+        region = None if self.region_selector is None else self.region_selector.current
+        if self.region_selector is not None and region is None:
+            return
+        transform = (
+            np.eye(3, dtype=np.float64)
+            if region is None
+            else region.t_map_canvas
+        )
+        tile_id = None if region is None else region.region_id
+        cache_key = (
+            self.live_map_version,
+            int(self.graph.revision),
+            tile_id,
+        )
+        value = self.cognitive_constraints_cache.get(cache_key)
+        if value is None:
             value = build_cognitive_constraints(
                 self.map,
                 map_version=self.live_map_version,
                 graph_revision=self.graph.revision,
                 footprint_settings=self.defaults["footprint"],
-                t_map_canvas=np.eye(3, dtype=np.float64),
+                t_map_canvas=transform,
                 stable_duration_s=0.0,
                 persistent_confirmed=True,
+                cognitive_tile_id=tile_id,
             )
-            self.cognitive_constraints_cache = (cache_key, value)
-        else:
-            value = cached[1]
+            self.cognitive_constraints_cache.put(cache_key, value)
+        self._publish_cognitive_cache_parameters()
         message = self.CognitiveMapConstraints()
         message.header.stamp = self._now().to_msg()
         message.header.frame_id = self.frame_id
@@ -569,6 +639,21 @@ class RouteCoordinator:
         message.stable_duration_s = value.stable_duration_s
         message.persistent_confirmed = value.persistent_confirmed
         self.cognitive_constraints_pub.publish(message)
+
+    def _publish_cognitive_cache_parameters(self) -> None:
+        from rclpy.parameter import Parameter
+
+        cache = self.cognitive_constraints_cache
+        self.node.set_parameters(
+            [
+                Parameter(
+                    "cognitive_tile_cache_entries",
+                    value=len(cache.values),
+                ),
+                Parameter("cognitive_tile_cache_hits", value=cache.hits),
+                Parameter("cognitive_tile_cache_misses", value=cache.misses),
+            ]
+        )
 
     def _current_xy(self) -> tuple[float, float] | None:
         # Qualification and ideal-odometry launches provide a high-rate pose
@@ -612,11 +697,17 @@ class RouteCoordinator:
             self.navigation_goal_handle.cancel_goal_async()
         self.navigation_goal_handle = None
         self.navigation_goal_pending = False
+        self.navigation_goal_targets_final = False
         self.navigation_failed = False
         self.request_id += 1
         self.pending_goal = goal
         self.route_active = True
         self.latest_priors = {}
+        self.node.get_logger().info(
+            "received route goal request "
+            f"{self.request_id}: ({goal.pose.position.x:.3f}, "
+            f"{goal.pose.position.y:.3f})"
+        )
         self._publish_route_context()
         if self.module2_enabled:
             timeout_s = self.module2_response_timeout_s or float(
@@ -702,6 +793,10 @@ class RouteCoordinator:
         )
         start_node = self._nearest_support_node(current, departing=True)
         goal_node = self._nearest_support_node(goal_xy, departing=False)
+        self.node.get_logger().info(
+            f"preparing route request {self.request_id}: "
+            f"support {start_node}->{goal_node}"
+        )
         request = self.DynamicEdges.Request()
         from bio_nav_interfaces.msg import RouteEdgeCost
 
@@ -770,6 +865,10 @@ class RouteCoordinator:
         if response is None or not response.success or not self.route_client.server_is_ready():
             self.node.get_logger().warning("route services are not ready")
             return
+        self.node.get_logger().info(
+            f"edge update accepted for route request {self.request_id}: "
+            f"support {start_node}->{goal_node}"
+        )
         goal = self.ComputeRoute.Goal()
         goal.start_id = int(start_node)
         goal.goal_id = int(goal_node)
@@ -792,6 +891,19 @@ class RouteCoordinator:
             code = -1 if wrapped is None else int(wrapped.result.error_code)
             self.node.get_logger().warning(f"ComputeRoute failed with error {code}")
             return
+        returned_edges = wrapped.result.route.edges
+        if returned_edges:
+            first = returned_edges[0]
+            last = returned_edges[-1]
+            self.node.get_logger().info(
+                "Route Server ordered support edges: "
+                f"first={int(first.edgeid)} "
+                f"({first.start.x:.3f},{first.start.y:.3f})->"
+                f"({first.end.x:.3f},{first.end.y:.3f}), "
+                f"last={int(last.edgeid)} "
+                f"({last.start.x:.3f},{last.start.y:.3f})->"
+                f"({last.end.x:.3f},{last.end.y:.3f})"
+            )
         canonical_ids = []
         route_segments: list[list[tuple[float, float]]] = []
         for support_edge in wrapped.result.route.edges:
@@ -833,6 +945,10 @@ class RouteCoordinator:
         message.node_ids = node_ids
         message.edge_ids = canonical_ids
         message.total_cost_m = float(wrapped.result.route.route_cost)
+        self.node.get_logger().info(
+            f"canonical route ready for request {self.request_id}: "
+            f"{len(canonical_ids)} edges, cost {message.total_cost_m:.3f} m"
+        )
         self.route_pub.publish(message)
         self.tracker = RouteTracker(
             self.graph,
@@ -899,6 +1015,9 @@ class RouteCoordinator:
         self.progress_pub.publish(message)
         self.lookahead_pub.publish(message.lookahead_goal)
         self.goal_update_pub.publish(message.lookahead_goal)
+        # Bind a later action success to whether the last goal update carried
+        # the user's exact final pose, not merely a nearby route lookahead.
+        self.navigation_goal_targets_final = bool(progress.use_final_goal)
         if (
             self.execute_navigation
             and not self.navigation_failed
@@ -934,6 +1053,38 @@ class RouteCoordinator:
     def _on_navigation_result(self, future) -> None:
         wrapped = future.result()
         result_code = -1 if wrapped is None else int(wrapped.result.error_code)
+        if navigation_result_succeeded(wrapped):
+            current = self._current_xy()
+            completion_confirmed = False
+            final_xy = None
+            if current is not None and self.pending_goal is not None:
+                final_xy = (
+                    float(self.pending_goal.pose.position.x),
+                    float(self.pending_goal.pose.position.y),
+                )
+                completion_confirmed = (
+                    bool(getattr(self, "navigation_goal_targets_final", False))
+                    and math.dist(current, final_xy)
+                    <= self.route_goal_completion_tolerance_m
+                )
+            if not completion_confirmed:
+                # A route lookahead is intentionally a short moving Nav2
+                # goal. Reaching it advances the same leg; it is not a
+                # waypoint completion. Retire only this child action so the
+                # progress timer dispatches the next steer target. Missing
+                # map pose also stays fail-closed and cannot complete a leg.
+                self.navigation_goal_pending = False
+                self.navigation_goal_handle = None
+                self.navigation_failed = False
+                suffix = (
+                    "map pose unavailable"
+                    if final_xy is None
+                    else f"final goal is ({final_xy[0]:.3f}, {final_xy[1]:.3f})"
+                )
+                self.node.get_logger().info(
+                    f"intermediate route lookahead reached; continuing because {suffix}"
+                )
+                return
         # Retire the completed leg before publishing its terminal event.  The
         # qualification runner can dispatch the next whole-house waypoint as
         # soon as it receives this Bool.  Clearing via a subscription to our
@@ -1070,6 +1221,7 @@ class RouteCoordinator:
         self.tracker = None
         self.navigation_goal_pending = False
         self.navigation_goal_handle = None
+        self.navigation_goal_targets_final = False
         self.navigation_failed = False
         if self.pending_structural_map is not None:
             self._rebuild_structural_graph()
@@ -1141,6 +1293,7 @@ class RouteCoordinator:
         self.graph = graph
         self.map = occupancy
         self.support = support
+        self.cognitive_constraints_cache.invalidate()
         self.support_node_positions = {
             int(feature["properties"]["id"]): tuple(
                 float(value) for value in feature["geometry"]["coordinates"]

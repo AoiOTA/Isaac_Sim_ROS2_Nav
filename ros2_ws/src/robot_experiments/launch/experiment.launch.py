@@ -35,6 +35,7 @@ def generate_launch_description():
             DeclareLaunchArgument("robot_config_file", default_value=""),
             DeclareLaunchArgument("nav2_config_file", default_value=""),
             DeclareLaunchArgument("nav2_profile", default_value=""),
+            DeclareLaunchArgument("experiment_arm", default_value=""),
             DeclareLaunchArgument("dynamic_case_id", default_value=""),
             DeclareLaunchArgument("dynamic_variant_id", default_value=""),
             DeclareLaunchArgument("dynamic_seed", default_value="0"),
@@ -90,6 +91,11 @@ def generate_launch_description():
                         "robot_config_file": LaunchConfiguration("robot_config_file"),
                         "nav2_config_file": LaunchConfiguration("nav2_config_file"),
                         "nav2_profile": LaunchConfiguration("nav2_profile"),
+                        # Values such as "off" are valid arm identifiers but
+                        # YAML would otherwise coerce them to boolean false.
+                        "experiment_arm": ParameterValue(
+                            LaunchConfiguration("experiment_arm"), value_type=str
+                        ),
                         "dynamic_case_id": LaunchConfiguration("dynamic_case_id"),
                         "dynamic_variant_id": LaunchConfiguration("dynamic_variant_id"),
                         "dynamic_seed": LaunchConfiguration("dynamic_seed"),

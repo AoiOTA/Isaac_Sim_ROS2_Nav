@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from robot_route_planner.cognitive_constraints import (
+    CognitiveConstraintsCache,
     build_cognitive_constraints,
     occupancy_grid_version,
 )
@@ -74,3 +75,53 @@ def test_occupancy_grid_version_binds_geometry_and_exact_int8_bytes() -> None:
     assert first == second
     assert first != changed
     assert len(first) == 64
+
+
+def test_cognitive_constraints_accept_stable_outdoor_region_identity() -> None:
+    occupancy = OccupancyMap(
+        np.ones((400, 400), dtype=bool),
+        0.05,
+        (92.0, 192.0),
+        "outdoor",
+        Path("map.yaml"),
+    )
+    transform = np.asarray(((1.0, 0.0, -100.0), (0.0, 1.0, -200.0), (0.0, 0.0, 1.0)))
+    value = build_cognitive_constraints(
+        occupancy,
+        map_version="rivermark",
+        graph_revision=3,
+        footprint_settings=_footprint(),
+        t_map_canvas=transform,
+        cognitive_tile_id="rivermark:r00c00",
+    )
+    assert value.cognitive_tile_id == "rivermark:r00c00"
+    assert np.array_equal(value.t_map_canvas, transform)
+    assert value.reachable_state_mask.all()
+
+
+def test_tile_cache_reuses_revision_bound_constraints_and_invalidates_values() -> None:
+    occupancy = OccupancyMap(
+        np.ones((320, 320), dtype=bool),
+        0.05,
+        (-8.0, -8.0),
+        "outdoor",
+        Path("map.yaml"),
+    )
+    value = build_cognitive_constraints(
+        occupancy,
+        map_version="map-a",
+        graph_revision=4,
+        footprint_settings=_footprint(),
+        cognitive_tile_id="tile-07",
+    )
+    key = ("map-a", 4, "tile-07")
+    cache = CognitiveConstraintsCache()
+
+    assert cache.get(key) is None
+    cache.put(key, value)
+    assert cache.get(key) is value
+    assert (cache.hits, cache.misses, len(cache.values)) == (1, 1, 1)
+
+    cache.invalidate()
+    assert cache.get(key) is None
+    assert (cache.hits, cache.misses, len(cache.values)) == (1, 2, 0)

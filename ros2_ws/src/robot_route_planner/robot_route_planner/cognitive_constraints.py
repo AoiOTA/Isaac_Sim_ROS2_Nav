@@ -34,6 +34,42 @@ class CognitiveConstraints:
     persistent_confirmed: bool
 
 
+@dataclass
+class CognitiveConstraintsCache:
+    """Revision-bound reusable results for logical 16x16 outdoor tiles."""
+
+    values: dict[tuple[str, int, str | None], CognitiveConstraints]
+    hits: int = 0
+    misses: int = 0
+
+    def __init__(self) -> None:
+        self.values = {}
+        self.hits = 0
+        self.misses = 0
+
+    def get(
+        self, key: tuple[str, int, str | None]
+    ) -> CognitiveConstraints | None:
+        value = self.values.get(key)
+        if value is None:
+            self.misses += 1
+        else:
+            self.hits += 1
+        return value
+
+    def put(
+        self,
+        key: tuple[str, int, str | None],
+        value: CognitiveConstraints,
+    ) -> None:
+        self.values[key] = value
+
+    def invalidate(self) -> None:
+        """Drop stale values while retaining cumulative audit counters."""
+
+        self.values.clear()
+
+
 def occupancy_grid_version(
     *,
     width: int,
@@ -92,6 +128,7 @@ def build_cognitive_constraints(
     t_map_canvas: np.ndarray | None = None,
     stable_duration_s: float = 0.0,
     persistent_confirmed: bool = True,
+    cognitive_tile_id: str | None = None,
 ) -> CognitiveConstraints:
     """Rasterize only footprint-valid cells and swept 4-neighbour motions."""
 
@@ -148,10 +185,15 @@ def build_cognitive_constraints(
                 transitions.append((int(source), int(target)))
     transition_array = np.asarray(transitions, dtype=np.int64).reshape(-1, 2)
     confidence = 1.0 if reachable.any() and len(transition_array) else 0.0
-    tile_digest = hashlib.sha256()
-    tile_digest.update(str(map_version).encode("utf-8"))
-    tile_digest.update(transform.tobytes())
-    tile_id = f"canvas16:{tile_digest.hexdigest()[:16]}"
+    if cognitive_tile_id is None:
+        tile_digest = hashlib.sha256()
+        tile_digest.update(str(map_version).encode("utf-8"))
+        tile_digest.update(transform.tobytes())
+        tile_id = f"canvas16:{tile_digest.hexdigest()[:16]}"
+    else:
+        tile_id = str(cognitive_tile_id).strip()
+        if not tile_id:
+            raise ValueError("cognitive_tile_id must be non-empty")
     return CognitiveConstraints(
         map_version=str(map_version),
         cognitive_tile_id=tile_id,
@@ -168,6 +210,7 @@ def build_cognitive_constraints(
 
 __all__ = [
     "CognitiveConstraints",
+    "CognitiveConstraintsCache",
     "build_cognitive_constraints",
     "occupancy_grid_version",
 ]

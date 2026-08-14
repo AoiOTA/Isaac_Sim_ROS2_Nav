@@ -618,3 +618,18 @@ def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
         'cost_weight': 35.0,
         'deadband_velocities': [0.05, 0.0, 0.10],
     }
+
+
+def test_navigation_launch_has_last_precedence_controller_envelope():
+    source = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text(
+        encoding='utf-8')
+
+    assert "'controller_max_linear_velocity_mps'" in source
+    assert "'controller_linear_velocity_std_mps'" in source
+    assert 'controller_server:' in source
+    assert 'vx_max: $(var controller_max_linear_velocity_mps)' in source
+    assert 'vx_std: $(var controller_linear_velocity_std_mps)' in source
+    assert 'ParameterFile(' in source
+    assert 'allow_substs=True' in source
+    assert source.index('str(a21_overlay),') < source.index(
+        'ParameterFile(')

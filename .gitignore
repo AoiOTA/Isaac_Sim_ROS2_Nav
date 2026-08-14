@@ -86,6 +86,10 @@ dist/
 # Runtime-composed stages (for example the custom-robot migration profile).
 /data/runtime/
 
+# Attempt31 ROI probes and regenerated visual comparisons are local engineering
+# outputs. Curated selected Demo assets live under data/rivermark_demo/.
+/runs/
+
 # Generated maps and pose graphs are ignored by default. Curated large maps
 # must be managed with Git LFS or an external artifact store.
 /data/maps/.staging/

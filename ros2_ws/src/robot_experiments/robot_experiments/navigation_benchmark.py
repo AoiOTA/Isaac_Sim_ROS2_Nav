@@ -116,6 +116,9 @@ def summarize_navigation_benchmark(
     )
 
     path_runs: list[dict[str, Any]] = []
+    optimal_cache: dict[
+        tuple[tuple[float, float], ...], tuple[float, list[dict[str, Any]]]
+    ] = {}
     for manifest in static:
         if manifest.get("result") != "success":
             continue
@@ -125,14 +128,52 @@ def summarize_navigation_benchmark(
         executed = float(metrics.get("ground_truth_path_length_m", math.nan))
         start = manifest.get("map_start_pose")
         goal = manifest.get("goal_pose")
+        route = manifest.get("route_poses")
         if not isinstance(start, Mapping) or not isinstance(goal, Mapping):
             raise NavigationBenchmarkError(
                 "map_start_pose and goal_pose must be mappings"
             )
-        optimal = reference.shortest_path_length(
-            start.get("position", ()),
-            goal.get("position", ()),
+        targets = (
+            route
+            if isinstance(route, list) and route
+            else [goal]
         )
+        if not all(isinstance(item, Mapping) for item in targets):
+            raise NavigationBenchmarkError("route_poses must contain mappings")
+        positions = [start.get("position", ())] + [
+            item.get("position", ()) for item in targets
+        ]
+        try:
+            mission_key = tuple(
+                (float(position[0]), float(position[1]))
+                for position in positions
+            )
+        except (IndexError, TypeError, ValueError) as exc:
+            raise NavigationBenchmarkError(
+                "mission positions must contain finite map x/y coordinates"
+            ) from exc
+        if mission_key not in optimal_cache:
+            legs = []
+            for index, (leg_start, leg_goal) in enumerate(
+                zip(mission_key, mission_key[1:])
+            ):
+                length = reference.shortest_path_length(leg_start, leg_goal)
+                identifier = targets[index].get("id")
+                legs.append(
+                    {
+                        "id": (
+                            str(identifier)
+                            if isinstance(identifier, str) and identifier
+                            else f"G{index + 1}"
+                        ),
+                        "length_m": length,
+                    }
+                )
+            optimal_cache[mission_key] = (
+                sum(item["length_m"] for item in legs),
+                legs,
+            )
+        optimal, optimal_legs = optimal_cache[mission_key]
         deviation = path_length_deviation_percent(executed, optimal)
         path_runs.append(
             {
@@ -141,6 +182,7 @@ def summarize_navigation_benchmark(
                 "random_seed": manifest["random_seed"],
                 "executed_length_m": executed,
                 "optimal_length_m": optimal,
+                "optimal_legs": optimal_legs,
                 "deviation_percent": deviation,
                 "passed": deviation <= PLAN_PATH_DEVIATION_MAX_PERCENT,
             }

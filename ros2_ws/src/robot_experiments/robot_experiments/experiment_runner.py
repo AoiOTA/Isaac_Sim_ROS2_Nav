@@ -111,6 +111,19 @@ APPEARANCE_NAV2_PROFILES = frozenset({
     "attempt23_global_prior",
 })
 
+# A scenario lists every physical actor so the startup contract can compare
+# IDs and geometry.  These named Isaac schema-v4 case sets select the subset
+# that is actually armed during one full-route run.
+DYNAMIC_CASE_SET_MOTIONS = {
+    "full_route_three_stage": frozenset(
+        {"local_bypass", "g2_g3_exit", "g5_g1_crossing"}
+    ),
+    "full_route_four_stage": frozenset(
+        {"oncoming", "crossing", "same_direction_slow", "temporary_block"}
+    ),
+}
+EXPERIMENT_ARMS = frozenset({"off", "sr_medium", "dr_medium", "medium"})
+
 
 def _strict_success_from_leg_count(
     result: object, leg_count: int, route_pose_count: int
@@ -224,6 +237,16 @@ def _boolean_parameter(value: object, name: str) -> bool:
     raise ConfigurationError(f"{name} must be boolean")
 
 
+def _reset_dynamic_selection(
+    scenario_type: str, selection: RunSelection
+) -> tuple[str | None, str | None]:
+    """Only dynamic scenarios may select a dynamic-obstacle state machine."""
+
+    if scenario_type == "dynamic":
+        return selection.case_id, selection.variant_id
+    return None, None
+
+
 def _dynamic_interaction_acceptance(
     *,
     scenario_type: str,
@@ -233,6 +256,7 @@ def _dynamic_interaction_acceptance(
     retired_ids: set[str],
     clearance_by_actor: Mapping[str, float],
     evidence_complete: bool,
+    maximum_pairing_clearance_m: float | None = None,
 ) -> dict[str, bool | float | str]:
     """Evaluate dynamic evidence under the collision-free acceptance policy.
 
@@ -246,9 +270,22 @@ def _dynamic_interaction_acceptance(
             "minimum_clearance_complete": True,
             "clearance_warning_below_0_10m": False,
             "minimum_clearance_requirement_m": 0.0,
+            "maximum_pairing_clearance_m": 0.0,
+            "close_interaction_complete": True,
             "acceptance_policy": "not_applicable",
         }
     clearance_observed = expected_ids <= set(clearance_by_actor)
+    close_interaction_complete = bool(
+        maximum_pairing_clearance_m is None
+        or (
+            clearance_observed
+            and all(
+                float(clearance_by_actor[identifier])
+                <= maximum_pairing_clearance_m
+                for identifier in expected_ids
+            )
+        )
+    )
     clearance_warning = (
         clearance_observed
         and any(float(value) < 0.10 for value in clearance_by_actor.values())
@@ -259,6 +296,7 @@ def _dynamic_interaction_acceptance(
             and expected_ids <= completed_ids
             and expected_ids <= retired_ids
             and clearance_observed
+            and close_interaction_complete
             and evidence_complete
         ),
         # Preserve the historical field for report compatibility. Under the
@@ -270,7 +308,17 @@ def _dynamic_interaction_acceptance(
         ),
         "clearance_warning_below_0_10m": bool(clearance_warning),
         "minimum_clearance_requirement_m": 0.0,
-        "acceptance_policy": "physical_collision_free",
+        "maximum_pairing_clearance_m": (
+            float(maximum_pairing_clearance_m)
+            if maximum_pairing_clearance_m is not None
+            else 0.0
+        ),
+        "close_interaction_complete": close_interaction_complete,
+        "acceptance_policy": (
+            "physical_collision_free_and_close_pairing"
+            if maximum_pairing_clearance_m is not None
+            else "physical_collision_free"
+        ),
     }
 
 
@@ -370,6 +418,13 @@ class ExperimentRunner(Node):
         self._nav2_profile = str(
             self.declare_parameter("nav2_profile", "").value
         ).strip()
+        self._experiment_arm = str(
+            self.declare_parameter("experiment_arm", "").value
+        ).strip()
+        if self._experiment_arm and self._experiment_arm not in EXPERIMENT_ARMS:
+            raise ConfigurationError(
+                f"experiment_arm must be one of {sorted(EXPERIMENT_ARMS)}"
+            )
         if (
             self._scenario.appearance_config_file is not None
             and self._nav2_profile not in APPEARANCE_NAV2_PROFILES
@@ -576,6 +631,11 @@ class ExperimentRunner(Node):
         self._reset_recovery_timeout_sec = float(
             self.declare_parameter("reset_recovery_timeout_sec", 30.0).value
         )
+        self._localization_seed_event_grace_sec = float(
+            self.declare_parameter(
+                "localization_seed_event_grace_sec", 2.0
+            ).value
+        )
         self._reset_tf_stability_sec = float(
             self.declare_parameter("reset_tf_stability_sec", 0.5).value
         )
@@ -599,6 +659,7 @@ class ExperimentRunner(Node):
             self._tf_gap_tolerance_sec,
             self._collision_lock_timeout_sec,
             self._reset_recovery_timeout_sec,
+            self._localization_seed_event_grace_sec,
             self._reset_tf_stability_sec,
             self._reset_tf_translation_tolerance_m,
             self._reset_tf_yaw_tolerance_rad,
@@ -723,7 +784,11 @@ class ExperimentRunner(Node):
             Costmap,
             "/global_costmap/costmap_raw",
             self._global_costmap_callback,
-            reliable,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.BEST_EFFORT,
+                durability=DurabilityPolicy.VOLATILE,
+            ),
         )
         route_qos = QoSProfile(
             depth=1,
@@ -942,6 +1007,7 @@ class ExperimentRunner(Node):
             # consumed.  A launcher argument alone is not sufficient
             # evidence for authorization-only gates.
             "nav2_profile": self._nav2_profile,
+            "experiment_arm": self._experiment_arm or None,
             "authorization_only": self._authorization_only,
         }
         try:
@@ -1337,6 +1403,36 @@ class ExperimentRunner(Node):
 
     def _global_costmap_callback(self, message: Costmap) -> None:
         self._global_costmap = message
+
+    def _global_costmap_covers_mission(self) -> bool:
+        """Reject Nav2's temporary 100x100 default map before goal dispatch."""
+
+        message = self._global_costmap
+        if message is None or str(message.header.frame_id) != "map":
+            return False
+        metadata = message.metadata
+        resolution = float(metadata.resolution)
+        width = int(metadata.size_x)
+        height = int(metadata.size_y)
+        origin_x = float(metadata.origin.position.x)
+        origin_y = float(metadata.origin.position.y)
+        values = (resolution, origin_x, origin_y)
+        if (
+            width <= 0 or height <= 0 or resolution <= 0.0
+            or not all(math.isfinite(value) for value in values)
+        ):
+            return False
+        maximum_x = origin_x + width * resolution
+        maximum_y = origin_y + height * resolution
+        points = [self._spawn_pose.map.position]
+        points.extend(specification.position for specification in self._scenario.route)
+        if not self._scenario.route:
+            points.append(self._scenario.goal.position)
+        return all(
+            origin_x <= float(point[0]) < maximum_x
+            and origin_y <= float(point[1]) < maximum_y
+            for point in points
+        )
 
     @staticmethod
     def _raise_if_shutdown() -> None:
@@ -1981,11 +2077,19 @@ class ExperimentRunner(Node):
         self._clear_run_state()
         if not self._wait_until(
             lambda: self._localization_seed_epoch > previous_seed_epoch,
-            self._reset_recovery_timeout_sec,
+            self._localization_seed_event_grace_sec,
         ):
-            raise TimeoutError(
-                "simulation reset recovery timed out waiting for a fresh-scan "
-                "localization seed event"
+            # The notification is an observability receipt, not the actual
+            # localization safety boundary.  DDS can occasionally drop this
+            # one-shot volatile event even though /initialpose was consumed.
+            # Continue to the strictly-new TF/sample gate below; it requires a
+            # post-reset map->odom publication, spawn-aligned map->base, fresh
+            # odom/Ground Truth, and a stable transform.  If initial seeding
+            # genuinely did not occur, that objective gate still fails closed.
+            self.get_logger().warning(
+                "fresh-scan localization seed event was not observed within "
+                f"{self._localization_seed_event_grace_sec:.1f}s; relying on "
+                "the post-reset spawn-aligned TF/sample recovery gate"
             )
         # Snapshot after Isaac has published the initial-pose message.  A subsequent,
         # strictly newer map->odom publication is then required before the
@@ -1997,6 +2101,14 @@ class ExperimentRunner(Node):
             sample_stamp_barrier_s,
         )
         self._wait_for_nav2_managed_nodes_active()
+        if not self._wait_until(
+            self._global_costmap_covers_mission,
+            self._reset_recovery_timeout_sec,
+        ):
+            raise TimeoutError(
+                "simulation reset recovery timed out waiting for a full map-frame "
+                "global costmap covering the complete mission"
+            )
         if appearance_profile_id is not None and not self._wait_until(
             lambda: self._rgb_frame is not None,
             self._service_timeout_sec,
@@ -2045,10 +2157,8 @@ class ExperimentRunner(Node):
             if self._active_selection is not None
             else None
         )
-        if selected_case == "full_route_three_stage":
-            selected_motions = {
-                "local_bypass", "g2_g3_exit", "g5_g1_crossing",
-            }
+        if selected_case in DYNAMIC_CASE_SET_MOTIONS:
+            selected_motions = DYNAMIC_CASE_SET_MOTIONS[selected_case]
         elif selected_case:
             selected_motions = {selected_case}
         else:
@@ -2890,12 +3000,12 @@ class ExperimentRunner(Node):
             if isinstance(item, Mapping) and isinstance(item.get("id"), str)
         }
         if self._active_selection is not None and self._active_selection.case_id:
-            if self._active_selection.case_id == "full_route_three_stage":
+            if self._active_selection.case_id in DYNAMIC_CASE_SET_MOTIONS:
                 expected_dynamic_ids = {
                     str(item["id"]) for item in self._scenario.obstacle_trajectories
-                    if item.get("motion") in {
-                        "local_bypass", "g2_g3_exit", "g5_g1_crossing"
-                    }
+                    if item.get("motion") in DYNAMIC_CASE_SET_MOTIONS[
+                        self._active_selection.case_id
+                    ]
                 }
             else:
                 expected_dynamic_ids = {
@@ -2932,6 +3042,11 @@ class ExperimentRunner(Node):
                     clearance_by_actor.get(identifier, math.inf),
                     float(clearance),
                 )
+        selected_case = (
+            self._active_selection.case_id
+            if self._active_selection is not None
+            else None
+        )
         interaction_acceptance = _dynamic_interaction_acceptance(
             scenario_type=self._scenario.scenario_type,
             expected_ids=expected_dynamic_ids,
@@ -2943,6 +3058,9 @@ class ExperimentRunner(Node):
                 self._depth_frame is not None
                 and self._scan_frame is not None
                 and self._local_costmap is not None
+            ),
+            maximum_pairing_clearance_m=(
+                1.5 if selected_case == "full_route_four_stage" else None
             ),
         )
         clearance_complete = bool(
@@ -2970,11 +3088,6 @@ class ExperimentRunner(Node):
         if interaction_acceptance["clearance_warning_below_0_10m"]:
             warnings.append("dynamic_min_clearance_below_0_10m")
         dynamic_behavior: dict[str, Any] = {"required": False, "complete": True}
-        selected_case = (
-            self._active_selection.case_id
-            if self._active_selection is not None
-            else None
-        )
         if selected_case == "local_bypass":
             dynamic_behavior = self._local_right_bypass_metrics(
                 self._ground_truth_samples,
@@ -3038,6 +3151,27 @@ class ExperimentRunner(Node):
             }
             if not dynamic_behavior["complete"] and not qualification_dynamic:
                 reasons.append("three_stage_dynamic_behavior_not_observed")
+        elif selected_case == "full_route_four_stage":
+            maximum_pairing_clearance_m = float(
+                interaction_acceptance["maximum_pairing_clearance_m"]
+            )
+            close_actor_ids = sorted(
+                identifier for identifier in expected_dynamic_ids
+                if identifier in clearance_by_actor
+                and clearance_by_actor[identifier] <= maximum_pairing_clearance_m
+            )
+            dynamic_behavior = {
+                "required": True,
+                "contract": "four_stage_close_pairing",
+                "maximum_pairing_clearance_m": maximum_pairing_clearance_m,
+                "close_actor_ids": close_actor_ids,
+                "minimum_clearance_m_by_actor": clearance_by_actor,
+                "complete": bool(
+                    interaction_acceptance["close_interaction_complete"]
+                ),
+            }
+            if not dynamic_behavior["complete"]:
+                reasons.append("four_stage_dynamic_behavior_not_observed")
         if self._dynamic_guard_aborted:
             reasons.append("dynamic_near_contact_abort")
         if self._dynamic_safety_yield:
@@ -3150,6 +3284,9 @@ class ExperimentRunner(Node):
             "robot_config_hash": self._robot_config_hash,
             "nav2_config_hash": self._nav2_config_hash,
             "nav2_profile": self._nav2_profile,
+            # A launcher argument is not sufficient four-arm provenance;
+            # persist the value consumed by the installed runner.
+            "experiment_arm": self._experiment_arm or None,
             "navigation_execution_backend": self._navigation_execution_backend,
             "optimal_reference_hash": self._optimal_reference_hash,
             "dynamic_runtime_contract": dict(
@@ -3195,6 +3332,12 @@ class ExperimentRunner(Node):
                 "minimum_clearance_complete": clearance_complete,
                 "minimum_clearance_requirement_m": interaction_acceptance[
                     "minimum_clearance_requirement_m"
+                ],
+                "maximum_pairing_clearance_m": interaction_acceptance[
+                    "maximum_pairing_clearance_m"
+                ],
+                "close_interaction_complete": interaction_acceptance[
+                    "close_interaction_complete"
                 ],
                 "clearance_warning_below_0_10m": interaction_acceptance[
                     "clearance_warning_below_0_10m"
@@ -3574,6 +3717,7 @@ class ExperimentRunner(Node):
             "condition_id": manifest.get("condition_id"),
             "appearance_profile_id": manifest.get("appearance", {}).get("profile_id"),
             "nav2_profile": manifest.get("nav2_profile"),
+            "experiment_arm": manifest.get("experiment_arm"),
             "navigation_execution_backend": manifest.get(
                 "navigation_execution_backend"
             ),
@@ -3803,10 +3947,13 @@ class ExperimentRunner(Node):
             root: Path | None = None
             bag_complete = False
             try:
+                reset_case_id, reset_variant_id = _reset_dynamic_selection(
+                    self._scenario.scenario_type, selection
+                )
                 self._reset_simulation(
                     seed,
-                    selection.case_id,
-                    selection.variant_id,
+                    reset_case_id,
+                    reset_variant_id,
                     selection.appearance_profile_id,
                 )
                 if self._require_module2_planning_ready and not self._wait_until(

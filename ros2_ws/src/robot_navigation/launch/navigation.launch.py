@@ -6,6 +6,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetParameter
+from launch_ros.parameter_descriptions import ParameterFile
 import yaml
 
 
@@ -142,6 +143,21 @@ def _write_a21_overlay(parameters):
         return Path(stream.name)
 
 
+def _write_controller_envelope_overlay():
+    """Create an exact-node, launch-substituted final controller overlay."""
+    document = """controller_server:
+  ros__parameters:
+    FollowPath:
+      vx_max: $(var controller_max_linear_velocity_mps)
+      vx_std: $(var controller_linear_velocity_std_mps)
+"""
+    with tempfile.NamedTemporaryFile(
+            mode='w', prefix='controller_envelope_', suffix='.yaml',
+            delete=False, encoding='utf-8') as stream:
+        stream.write(document)
+        return Path(stream.name)
+
+
 def _write_route_guided_bt(template_file, metric_defaults):
     template = template_file.read_text(encoding='utf-8')
     replacements = {
@@ -176,6 +192,7 @@ def generate_launch_description():
     defaults = yaml.safe_load(defaults_file.read_text(encoding='utf-8'))
     a21 = _a21_nav2_parameters(defaults)
     a21_overlay = _write_a21_overlay(a21)
+    controller_envelope_overlay = _write_controller_envelope_overlay()
     default_nav_to_pose_bt = package_share / 'behavior_trees' / (
         'navigate_to_pose_with_dead_end_recovery.xml')
     default_nav_through_poses_bt = package_share / 'behavior_trees' / (
@@ -197,6 +214,9 @@ def generate_launch_description():
     execute_route_navigation = LaunchConfiguration('execute_route_navigation')
     module2_response_timeout_s = LaunchConfiguration(
         'module2_response_timeout_s')
+    region_config_file = LaunchConfiguration('region_config_file')
+    region_switch_min_dwell_s = LaunchConfiguration(
+        'region_switch_min_dwell_s')
     lifecycle_nodes = [
         'controller_server',
         'planner_server',
@@ -222,6 +242,20 @@ def generate_launch_description():
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('execute_route_navigation', default_value='true'),
         DeclareLaunchArgument('module2_response_timeout_s', default_value='0.0'),
+        DeclareLaunchArgument('region_config_file', default_value=''),
+        DeclareLaunchArgument('region_switch_min_dwell_s', default_value='0.5'),
+        # Preserve the qualified A21 values by default, but let an outdoor
+        # caller bind a last-precedence controller envelope explicitly.
+        DeclareLaunchArgument(
+            'controller_max_linear_velocity_mps',
+            default_value=format(
+                float(defaults['mppi_route_guidance'][
+                    'max_linear_velocity_mps']), '.12g')),
+        DeclareLaunchArgument(
+            'controller_linear_velocity_std_mps',
+            default_value=format(
+                float(defaults['mppi_route_guidance'][
+                    'linear_velocity_std_mps']), '.12g')),
         # STVL publishes a PointCloud2 named voxel_grid, while Nav2's built-in
         # VoxelLayer publishes nav2_msgs/VoxelGrid on that name.  The dynamic
         # profile remaps STVL to an independent topic so RViz can display both
@@ -235,7 +269,16 @@ def generate_launch_description():
             name='controller_server',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file, str(a21_overlay)],
+            parameters=[
+                params_file,
+                profile_params_file,
+                str(a21_overlay),
+                # A node-specific params file wins over the node-specific A21
+                # overlay.  A plain launch dictionary becomes a /** wildcard
+                # file and cannot override an exact controller_server entry.
+                ParameterFile(
+                    str(controller_envelope_overlay), allow_substs=True),
+            ],
             remappings=[
                 ('cmd_vel', '/cmd_vel_nav'),
                 ('voxel_grid', voxel_grid_topic),
@@ -320,6 +363,8 @@ def generate_launch_description():
                     feasible_only_largest_component),
                 'module2_enabled': module2_enabled,
                 'module2_response_timeout_s': module2_response_timeout_s,
+                'region_config_file': region_config_file,
+                'region_switch_min_dwell_s': region_switch_min_dwell_s,
                 'execute_navigation': execute_route_navigation,
                 'route_guided_bt_xml': str(route_guided_bt),
             }],

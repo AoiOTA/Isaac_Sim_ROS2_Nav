@@ -640,6 +640,12 @@ def run(
             str(config.spawn.poses_file),
             read_only,
         )
+        node.declare_parameter(
+            "physics_hz", float(config.simulation.physics_hz), read_only
+        )
+        node.declare_parameter(
+            "rendering_hz", float(config.simulation.rendering_hz), read_only
+        )
 
         from isaac_sim.src.experiment.appearance import AppearanceManager
 

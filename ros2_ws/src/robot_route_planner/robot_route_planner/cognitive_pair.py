@@ -12,6 +12,7 @@ import numpy as np
 from .cognitive_constraints import build_cognitive_constraints
 from .defaults import load_engineering_defaults
 from .map_io import OccupancyMap, load_occupancy_map
+from .regions import load_region_config
 
 
 def _map_identity(map_yaml: Path) -> str:
@@ -27,10 +28,24 @@ def _map_identity(map_yaml: Path) -> str:
     return digest.hexdigest()
 
 
-def _state_centers() -> np.ndarray:
+def _state_centers_canvas() -> np.ndarray:
     axis = -8.0 + (np.arange(16, dtype=np.float64) + 0.5)
     xx, yy = np.meshgrid(axis, axis, indexing="xy")
     return np.column_stack((xx.reshape(-1), yy.reshape(-1)))
+
+
+def _canvas_points_to_map(
+    points: np.ndarray, t_map_canvas: np.ndarray
+) -> np.ndarray:
+    """Transform canvas XY into the continuous global map frame."""
+
+    transform = np.asarray(t_map_canvas, dtype=np.float64).reshape(3, 3)
+    inverse = np.linalg.inv(transform)
+    homogeneous = np.column_stack(
+        (np.asarray(points, dtype=np.float64).reshape(-1, 2), np.ones(len(points)))
+    )
+    mapped = (inverse @ homogeneous.T).T
+    return mapped[:, :2] / mapped[:, 2:3]
 
 
 def persistent_local_change(
@@ -67,8 +82,10 @@ def build_physical_pair(
     engineering_defaults: str | Path,
     *,
     obstacle_radius_m: float = 0.48,
+    t_map_canvas: np.ndarray | None = None,
+    cognitive_tile_id: str | None = None,
 ) -> tuple[object, object, dict[str, object]]:
-    """Build A and a local-persistent B from the real warehouse occupancy."""
+    """Build A and a local-persistent B inside one real cognitive region."""
 
     map_path = Path(map_yaml).expanduser().resolve()
     defaults = load_engineering_defaults(engineering_defaults)
@@ -77,17 +94,24 @@ def build_physical_pair(
         unknown_is_occupied=bool(defaults["graph"]["unknown_is_occupied"]),
     )
     identity = _map_identity(map_path)
+    transform = (
+        np.eye(3, dtype=np.float64)
+        if t_map_canvas is None
+        else np.asarray(t_map_canvas, dtype=np.float64).reshape(3, 3)
+    )
     value_a = build_cognitive_constraints(
         occupancy_a,
         map_version=identity,
         graph_revision=1,
         footprint_settings=defaults["footprint"],
         persistent_confirmed=True,
+        t_map_canvas=transform,
+        cognitive_tile_id=cognitive_tile_id,
     )
     degree = np.zeros(256, dtype=np.int64)
     for source, _target in value_a.verified_transitions:
         degree[int(source)] += 1
-    centers = _state_centers()
+    centers = _canvas_points_to_map(_state_centers_canvas(), transform)
     candidates = np.flatnonzero(value_a.reachable_state_mask & (degree >= 3))
     if candidates.size == 0:
         raise RuntimeError("warehouse map has no suitable reachable interior state")
@@ -107,6 +131,8 @@ def build_physical_pair(
         stable_duration_s=float(
             defaults["structural_updates"]["stable_for_s"]
         ),
+        t_map_canvas=transform,
+        cognitive_tile_id=value_a.cognitive_tile_id,
     )
     edges_a = {tuple(map(int, pair)) for pair in value_a.verified_transitions}
     edges_b = {tuple(map(int, pair)) for pair in value_b.verified_transitions}
@@ -147,6 +173,8 @@ def export_physical_pair(
     output_prefix: str | Path,
     *,
     obstacle_radius_m: float = 0.48,
+    t_map_canvas: np.ndarray | None = None,
+    cognitive_tile_id: str | None = None,
 ) -> dict[str, Path]:
     """Write NPZ, JSON and a human-readable topology delta PNG."""
 
@@ -154,6 +182,8 @@ def export_physical_pair(
         map_yaml,
         engineering_defaults,
         obstacle_radius_m=obstacle_radius_m,
+        t_map_canvas=t_map_canvas,
+        cognitive_tile_id=cognitive_tile_id,
     )
     prefix = Path(output_prefix).expanduser().resolve()
     prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -205,7 +235,7 @@ def export_physical_pair(
     for axis, image, title in zip(
         axes[0],
         (occupancy_a.free, occupancy_b.free, occupancy_delta),
-        ("Warehouse parent A", "Warehouse persistent B", "Physical A-B occupied"),
+        ("Region parent A", "Region persistent B", "Physical A-B occupied"),
     ):
         axis.imshow(
             image,
@@ -232,7 +262,7 @@ def export_physical_pair(
         axis.set_ylabel("canvas row")
         figure.colorbar(view, ax=axis, fraction=0.046)
     figure.suptitle(
-        "V3.10 real warehouse persistent local structural change\n"
+        "V3.10 physical persistent local structural change\n"
         f"state {metadata['obstacle_state']} at {metadata['obstacle_center_map_m']} m"
     )
     figure.savefig(png_path, dpi=180)
@@ -246,12 +276,33 @@ def main() -> None:
     parser.add_argument("--engineering-defaults", required=True)
     parser.add_argument("--output-prefix", required=True)
     parser.add_argument("--obstacle-radius-m", type=float, default=0.48)
+    parser.add_argument("--region-config")
+    parser.add_argument("--region-id")
     arguments = parser.parse_args()
+    transform = None
+    tile_id = None
+    if bool(arguments.region_config) != bool(arguments.region_id):
+        parser.error("--region-config and --region-id must be supplied together")
+    if arguments.region_config:
+        config = load_region_config(arguments.region_config)
+        matches = [
+            region for region in config.regions
+            if region.region_id == arguments.region_id
+        ]
+        if len(matches) != 1:
+            parser.error(
+                f"unknown region-id {arguments.region_id!r}; "
+                f"available={tuple(region.region_id for region in config.regions)}"
+            )
+        transform = matches[0].t_map_canvas
+        tile_id = matches[0].region_id
     paths = export_physical_pair(
         arguments.map_yaml,
         arguments.engineering_defaults,
         arguments.output_prefix,
         obstacle_radius_m=arguments.obstacle_radius_m,
+        t_map_canvas=transform,
+        cognitive_tile_id=tile_id,
     )
     print(json.dumps({key: str(value) for key, value in paths.items()}, indent=2))
 

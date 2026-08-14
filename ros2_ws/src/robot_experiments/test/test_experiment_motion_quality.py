@@ -12,7 +12,9 @@ from robot_experiments.experiment_runner import (
     ExperimentRunner,
     OdometrySample,
     _dynamic_interaction_acceptance,
+    _reset_dynamic_selection,
 )
+from robot_experiments.scenario import RunSelection
 
 
 def test_tracked_route_length_replaces_untrimmed_canonical_edge_sum():
@@ -286,11 +288,50 @@ def test_focused_dynamic_case_skips_unselected_intermediate_goal_groups():
     assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
     assert runner._selected_dynamic_groups_for_goal("G1") == ["G1"]
 
+    runner._scenario.obstacle_trajectories = (
+        {"id": "oncoming", "motion": "oncoming", "trigger_group": "G2"},
+        {"id": "crossing", "motion": "crossing", "trigger_group": "G3"},
+        {"id": "following", "motion": "same_direction_slow", "trigger_group": "G4"},
+        {"id": "block", "motion": "temporary_block", "trigger_group": "G5"},
+    )
+    runner._active_selection = SimpleNamespace(case_id="full_route_four_stage")
+    assert runner._selected_dynamic_groups_for_goal("G2") == ["G2"]
+    assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
+    assert runner._selected_dynamic_groups_for_goal("G4") == ["G4"]
+    assert runner._selected_dynamic_groups_for_goal("G5") == ["G5"]
+
 
 def test_runner_has_no_actor_lifecycle_costmap_clear_workaround():
     assert not hasattr(
         ExperimentRunner, "_request_pending_dynamic_trail_clears"
     )
+
+
+def test_global_costmap_readiness_rejects_default_window_and_covers_all_goals():
+    runner = object.__new__(ExperimentRunner)
+    runner._spawn_pose = SimpleNamespace(map=SimpleNamespace(position=(21.2, 120.0)))
+    runner._scenario = SimpleNamespace(
+        route=(
+            SimpleNamespace(position=(1.5, 131.8)),
+            SimpleNamespace(position=(-42.6, 180.6)),
+        ),
+        goal=SimpleNamespace(position=(-42.6, 180.6)),
+    )
+    metadata = SimpleNamespace(
+        resolution=0.05,
+        size_x=100,
+        size_y=100,
+        origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)),
+    )
+    runner._global_costmap = SimpleNamespace(
+        header=SimpleNamespace(frame_id="map"), metadata=metadata
+    )
+    assert not runner._global_costmap_covers_mission()
+
+    metadata.size_x = metadata.size_y = 1600
+    metadata.origin.position.x = -52.0182
+    metadata.origin.position.y = 111.603
+    assert runner._global_costmap_covers_mission()
 
 
 def test_collision_free_policy_keeps_low_clearance_as_warning():
@@ -310,6 +351,18 @@ def test_collision_free_policy_keeps_low_clearance_as_warning():
     assert status["clearance_warning_below_0_10m"] is True
     assert status["minimum_clearance_requirement_m"] == 0.0
     assert status["acceptance_policy"] == "physical_collision_free"
+
+
+def test_static_appearance_profile_does_not_select_dynamic_obstacle_case():
+    appearance = RunSelection(
+        9201, "static", "v1", "dim_warm", "rivermark_appearance"
+    )
+    dynamic = RunSelection(9101, "full_route_four_stage", "v1")
+
+    assert _reset_dynamic_selection("static", appearance) == (None, None)
+    assert _reset_dynamic_selection("dynamic", dynamic) == (
+        "full_route_four_stage", "v1"
+    )
 
 
 @pytest.mark.parametrize(
