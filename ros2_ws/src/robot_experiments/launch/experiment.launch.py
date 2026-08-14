@@ -31,6 +31,8 @@ def generate_launch_description():
             DeclareLaunchArgument("authorization_only", default_value="false"),
             DeclareLaunchArgument("resume", default_value="false"),
             DeclareLaunchArgument("require_successful_resume", default_value="false"),
+            DeclareLaunchArgument("fail_stop", default_value="false"),
+            DeclareLaunchArgument("fail_stop_metric_contract", default_value=""),
             DeclareLaunchArgument("run_indices", default_value=""),
             DeclareLaunchArgument("robot_config_file", default_value=""),
             DeclareLaunchArgument("nav2_config_file", default_value=""),
@@ -81,6 +83,12 @@ def generate_launch_description():
                         "require_successful_resume": ParameterValue(
                             LaunchConfiguration("require_successful_resume"),
                             value_type=bool,
+                        ),
+                        "fail_stop": ParameterValue(
+                            LaunchConfiguration("fail_stop"), value_type=bool
+                        ),
+                        "fail_stop_metric_contract": LaunchConfiguration(
+                            "fail_stop_metric_contract"
                         ),
                         # A single index such as "2" would otherwise be
                         # inferred as an INTEGER by launch, while the runner

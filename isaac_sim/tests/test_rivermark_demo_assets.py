@@ -3,6 +3,7 @@ import json
 
 import cv2
 import math
+import pytest
 import yaml
 
 from isaac_sim.src.experiment.scenario import load_dynamic_scenario
@@ -132,6 +133,83 @@ def test_dynamic_full_route_uses_four_heterogeneous_interactions():
     assert len(selected[-1].waypoints) == 3
     assert selected[1].variants[-1].start_delay_sec == 1.0
     assert selected[-1].variants[-1].dwell_sec == 1.2
+
+
+def test_final_static_layout_authors_four_stationary_boxes_on_free_cells():
+    metadata = yaml.safe_load(
+        (DEMO_ROOT / "rivermark_selected.yaml").read_text(encoding="utf-8")
+    )
+    image = cv2.imread(
+        str(DEMO_ROOT / metadata["image"]), cv2.IMREAD_GRAYSCALE
+    )
+    origin_x, origin_y, _ = (float(value) for value in metadata["origin"])
+    resolution = float(metadata["resolution"])
+    height, width = image.shape
+    physical = load_dynamic_scenario(
+        DEMO_ROOT / "final_rivermark_static_obstacles.yaml"
+    )
+
+    assert len(physical.obstacles) == 4
+    assert all(item.mode == "stationary" for item in physical.obstacles)
+    for obstacle in physical.obstacles:
+        half_x, half_y = obstacle.size[0] / 2.0, obstacle.size[1] / 2.0
+        minimum_column = math.floor(
+            (obstacle.start[0] - half_x - origin_x) / resolution
+        )
+        maximum_column = math.floor(
+            (obstacle.start[0] + half_x - origin_x) / resolution
+        )
+        minimum_bottom_row = math.floor(
+            (obstacle.start[1] - half_y - origin_y) / resolution
+        )
+        maximum_bottom_row = math.floor(
+            (obstacle.start[1] + half_y - origin_y) / resolution
+        )
+        assert 0 <= minimum_column <= maximum_column < width
+        assert 0 <= minimum_bottom_row <= maximum_bottom_row < height
+        for column in range(minimum_column, maximum_column + 1):
+            for bottom_row in range(minimum_bottom_row, maximum_bottom_row + 1):
+                assert image[height - 1 - bottom_row, column] >= 250
+
+
+def test_final_dynamic_layout_is_faster_and_keeps_all_four_stages():
+    physical = load_dynamic_scenario(
+        DEMO_ROOT / "final_rivermark_dynamic.yaml"
+    )
+    selected = physical.selected_cases("full_route_four_stage")
+
+    assert [item.case_id for item in selected] == [
+        "oncoming", "crossing", "same_direction_slow", "temporary_block"
+    ]
+    assert [item.obstacle.speed for item in selected] == pytest.approx(
+        [0.60, 0.55, 0.45, 0.50]
+    )
+    assert all(len(item.variants) == 5 for item in selected)
+
+
+def test_final_campaign_wrapper_enables_fail_stop_and_new_scenario_identity():
+    source = (PROJECT_ROOT / "scripts/run_final_rivermark_campaign.sh").read_text(
+        encoding="utf-8"
+    )
+    campaign = (PROJECT_ROOT / "scripts/run_rivermark_campaign.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "RIVERMARK_SCENARIO_REVISION=final_rivermark" in source
+    assert "RIVERMARK_FAIL_STOP=1" in source
+    assert 'fail_stop:="${fail_stop}"' in campaign
+    assert 'require_successful_resume:="${fail_stop}"' in campaign
+
+
+def test_final_visual_wrapper_selects_enhanced_static_and_dynamic_configs():
+    source = (PROJECT_ROOT / "scripts/run_rivermark_visual.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'RIVERMARK_VISUAL_REVISION:-final' in source
+    assert "final_rivermark_static_obstacles.yaml" in source
+    assert "final_rivermark_dynamic.yaml" in source
+    assert "RIVERMARK_PHYSICAL_OBSTACLES=1" in source
 
 
 def test_dynamic_actor_swept_boxes_stay_on_verified_free_map_cells():

@@ -49,6 +49,22 @@ export RIVERMARK_VISUAL_ROUTE="${RIVERMARK_VISUAL_ROUTE:-1}"
 export RIVERMARK_APPEARANCE_PROFILE="${profile}"
 export RIVERMARK_DYNAMIC_CASE="full_route_four_stage"
 export RIVERMARK_DYNAMIC_VARIANT="v3"
+visual_revision="${RIVERMARK_VISUAL_REVISION:-final}"
+if [[ "${visual_revision}" == "final" ]]; then
+  if [[ "${scenario}" == "static" ]]; then
+    export RIVERMARK_OBSTACLE_CONFIG="${module3_root}/data/rivermark_demo/final_rivermark_static_obstacles.yaml"
+    export RIVERMARK_PHYSICAL_OBSTACLES=1
+  elif [[ "${scenario}" == "dynamic" ]]; then
+    export RIVERMARK_OBSTACLE_CONFIG="${module3_root}/data/rivermark_demo/final_rivermark_dynamic.yaml"
+    export RIVERMARK_PHYSICAL_OBSTACLES=1
+  else
+    export RIVERMARK_OBSTACLE_CONFIG="${module3_root}/data/rivermark_demo/final_rivermark_dynamic.yaml"
+    export RIVERMARK_PHYSICAL_OBSTACLES=0
+  fi
+elif [[ "${visual_revision}" != "attempt31" ]]; then
+  echo "RIVERMARK_VISUAL_REVISION must be final or attempt31" >&2
+  exit 2
+fi
 
 if [[ "${RIVERMARK_AUTO_GOAL}" == "0" ]]; then
   echo "Starting one-terminal Rivermark ${scenario} manual-goal navigation"
@@ -57,7 +73,7 @@ else
   echo "Starting one-terminal Rivermark ${scenario} navigation"
 fi
 echo "Module2 + Module3 + Isaac GUI + dedicated outdoor RViz"
-echo "appearance_profile=${profile}; Ctrl+C stops the complete stack"
+echo "appearance_profile=${profile}; visual_revision=${visual_revision}; Ctrl+C stops the complete stack"
 
 exec "${module3_root}/scripts/run_rivermark_demo.sh" \
   module2 "${scenario}" "${profile}"

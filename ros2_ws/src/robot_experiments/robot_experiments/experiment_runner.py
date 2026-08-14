@@ -18,6 +18,8 @@ import subprocess
 import time
 from typing import Any, Mapping
 
+import yaml
+
 from action_msgs.msg import GoalInfo, GoalStatus
 from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import PoseStamped, Twist
@@ -520,6 +522,32 @@ class ExperimentRunner(Node):
             self.declare_parameter("require_successful_resume", False).value,
             "require_successful_resume",
         )
+        self._fail_stop = _boolean_parameter(
+            self.declare_parameter("fail_stop", False).value,
+            "fail_stop",
+        )
+        fail_stop_metric_contract = str(
+            self.declare_parameter("fail_stop_metric_contract", "").value
+        ).strip()
+        self._fail_stop_metric_contract = (
+            Path(fail_stop_metric_contract).expanduser().resolve()
+            if fail_stop_metric_contract
+            else None
+        )
+        if (
+            self._fail_stop_metric_contract is not None
+            and not self._fail_stop
+        ):
+            raise ConfigurationError(
+                "fail_stop_metric_contract requires fail_stop"
+            )
+        if (
+            self._fail_stop_metric_contract is not None
+            and not self._fail_stop_metric_contract.is_file()
+        ):
+            raise ConfigurationError(
+                "fail_stop metric contract does not exist"
+            )
         self._record_evidence = _boolean_parameter(
             self.declare_parameter("record_evidence", True).value,
             "record_evidence",
@@ -1018,6 +1046,55 @@ class ExperimentRunner(Node):
                 os.fsync(stream.fileno())
         except OSError as exc:
             raise ConfigurationError("lifecycle JSONL write failed") from exc
+
+    def _record_trial_dispatched(self) -> None:
+        """Persist the trial boundary immediately before the first goal write."""
+
+        if self._goal_dispatch_recorded:
+            return
+        if not self._record_evidence:
+            self._lifecycle_event("goal_dispatched")
+            self._goal_dispatch_recorded = True
+            return
+        if (
+            self._active_evidence_root is None
+            or self._active_selection is None
+            or self._active_run_index is None
+        ):
+            raise ConfigurationError(
+                "trial dispatch requires an active evidence identity"
+            )
+        target = self._active_evidence_root / "TRIAL_DISPATCHED.json"
+        if target.exists():
+            raise ConfigurationError("trial dispatch receipt already exists")
+        receipt = {
+            "schema": "bio_nav.trial_dispatched.v1",
+            "scenario_id": self._scenario.scenario_id,
+            "run_index": self._active_run_index,
+            "seed": self._active_selection.seed,
+            "condition_id": self._active_selection.condition_id,
+            "dynamic_case_id": self._active_selection.case_id,
+            "dynamic_variant_id": self._active_selection.variant_id,
+            "experiment_arm": self._experiment_arm or None,
+            "navigation_execution_backend": self._navigation_execution_backend,
+            "wall_time_utc": datetime.now(timezone.utc).isoformat(),
+            "wall_ns": time.time_ns(),
+            "monotonic_ns": time.monotonic_ns(),
+            "ros_stamp_s": self._clock_seconds(),
+        }
+        try:
+            with target.open("x", encoding="utf-8") as stream:
+                stream.write(
+                    json.dumps(receipt, indent=2, sort_keys=True) + "\n"
+                )
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            raise ConfigurationError(
+                "trial dispatch receipt write failed"
+            ) from exc
+        self._lifecycle_event("goal_dispatched")
+        self._goal_dispatch_recorded = True
 
     def _clock_callback(self, message: Clock) -> None:
         if message.clock.sec != 0 or message.clock.nanosec != 0:
@@ -2255,8 +2332,7 @@ class ExperimentRunner(Node):
                     )
                 )
                 if not self._goal_dispatch_recorded:
-                    self._lifecycle_event("goal_dispatched")
-                    self._goal_dispatch_recorded = True
+                    self._record_trial_dispatched()
                 send_future = self._navigate_client.send_goal_async(
                     self._goal_message(specification),
                     feedback_callback=self._navigation_feedback_callback,
@@ -2395,8 +2471,7 @@ class ExperimentRunner(Node):
                     else min(self._minimum_poses_remaining, poses_remaining)
                 )
                 if not self._goal_dispatch_recorded:
-                    self._lifecycle_event("goal_dispatched")
-                    self._goal_dispatch_recorded = True
+                    self._record_trial_dispatched()
                 self._route_goal_publisher.publish(
                     self._pose_message(specification)
                 )
@@ -3647,7 +3722,82 @@ class ExperimentRunner(Node):
         root = self._active_evidence_root
         return bool(root and (root / "telemetry" / "metadata.yaml").is_file() and any((root / "telemetry").glob("*.mcap")))
 
-    def _write_run_evidence(self, manifest: Mapping[str, Any], seed: int, run_index: int, root: Path, bag_complete: bool) -> None:
+    def _final_trial_metric_gate(
+        self,
+        root: Path,
+        summary: Mapping[str, Any],
+        manifest: Mapping[str, Any],
+        run_index: int,
+        seed: int,
+    ) -> dict[str, Any]:
+        if self._fail_stop_metric_contract is None:
+            return {"applicable": False, "passed": True}
+        contract = yaml.safe_load(
+            self._fail_stop_metric_contract.read_text(encoding="utf-8")
+        )
+        if contract.get("schema") != "bio_nav.final_rivermark_metric_contract.v1":
+            raise ConfigurationError("unsupported fail-stop metric contract")
+        primary = contract["primary_navigation_metrics"]
+        record = {
+            "summary_path": str(root / "run_summary.json"),
+            "summary": dict(summary),
+            "manifest": dict(manifest),
+            "scenario_id": self._scenario.scenario_id,
+            "run_index": run_index,
+            "seed": seed,
+        }
+        from .final_rivermark_qualification import (
+            _dynamic_threat_coverage,
+            _static_encounter_coverage,
+        )
+
+        if self._scenario.scenario_id == "final_rivermark_static":
+            evaluation = _static_encounter_coverage(
+                [record], primary["static"]
+            )["runs"][0]
+            detail = "static_obstacle_encounter_coverage"
+        elif self._scenario.scenario_id == "final_rivermark_dynamic":
+            evaluation = _dynamic_threat_coverage(
+                [record], primary["dynamic"]
+            )["runs"][0]
+            detail = "dynamic_threat_coverage"
+        elif self._scenario.scenario_id == "final_rivermark_appearance":
+            appearance = manifest.get("appearance", {})
+            profile = summary.get("appearance_profile_id")
+            evaluation = {
+                "profile_id": profile,
+                "appearance_ready": bool(
+                    isinstance(appearance, Mapping)
+                    and appearance.get("ready") is True
+                    and isinstance(profile, str)
+                    and profile in primary["appearance"]["profiles"]
+                ),
+            }
+            evaluation["passed"] = evaluation["appearance_ready"]
+            detail = "appearance_application"
+        else:
+            raise ConfigurationError(
+                "fail-stop metric contract is only valid for Final Rivermark scenarios"
+            )
+        return {
+            "applicable": True,
+            "passed": bool(evaluation["passed"]),
+            "gate": detail,
+            "contract_path": str(self._fail_stop_metric_contract),
+            "contract_sha256": hashlib.sha256(
+                self._fail_stop_metric_contract.read_bytes()
+            ).hexdigest(),
+            "evaluation": evaluation,
+        }
+
+    def _write_run_evidence(
+        self,
+        manifest: Mapping[str, Any],
+        seed: int,
+        run_index: int,
+        root: Path,
+        bag_complete: bool,
+    ) -> dict[str, Any]:
         """Write the immutable per-run evidence set consumed by the campaign report."""
         (root / "run_manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         timeline = [
@@ -3682,7 +3832,7 @@ class ExperimentRunner(Node):
         safety_scan_complete = self._write_scan_snapshot(
             root, "scan_safety", self._safety_scan_frame)
         required_files = {
-            "run_manifest.json", "events.jsonl", "ground_truth.csv.gz", "odom.csv.gz",
+            "TRIAL_DISPATCHED.json", "run_manifest.json", "events.jsonl", "ground_truth.csv.gz", "odom.csv.gz",
             "cmd_vel.csv.gz", "obstacles.csv.gz", "dynamic_obstacles.csv.gz", "leg_metrics.csv", "depth_frame.pgm",
             "depth_frame.json", "scan.csv", "scan.json",
             "scan_safety.csv", "scan_safety.json", "local_costmap.pgm",
@@ -3771,10 +3921,29 @@ class ExperimentRunner(Node):
             "legs": legs,
         }
         (root / "run_summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        try:
+            final_trial_metric_gate = self._final_trial_metric_gate(
+                root, summary, manifest, run_index, seed
+            )
+        except Exception as exc:
+            final_trial_metric_gate = {
+                "applicable": self._fail_stop_metric_contract is not None,
+                "passed": False,
+                "error": f"{type(exc).__name__}:{exc}",
+            }
+        summary["final_trial_metric_gate"] = final_trial_metric_gate
+        (root / "FINAL_TRIAL_METRICS.json").write_text(
+            json.dumps(final_trial_metric_gate, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (root / "run_summary.json").write_text(
+            json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8"
+        )
         checksums = []
         for path in sorted(item for item in root.rglob("*") if item.is_file() and item.name != "checksums.sha256"):
             checksums.append(f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.relative_to(root)}")
         (root / "checksums.sha256").write_text("\n".join(checksums) + "\n", encoding="utf-8")
+        return summary
         # Verify the manifest just written instead of claiming checksum health.
         verified = all(
             hashlib.sha256((root / relative).read_bytes()).hexdigest() == digest
@@ -3946,6 +4115,7 @@ class ExperimentRunner(Node):
             isolation_error: ExperimentIsolationError | None = None
             root: Path | None = None
             bag_complete = False
+            run_summary: dict[str, Any] | None = None
             try:
                 reset_case_id, reset_variant_id = _reset_dynamic_selection(
                     self._scenario.scenario_type, selection
@@ -3999,13 +4169,37 @@ class ExperimentRunner(Node):
                 write_run_report(manifest, self._output_directory, stem)
                 if root is None:
                     root = self._begin_run_evidence(run_index, seed)
-                self._write_run_evidence(manifest, seed, run_index, root, bag_complete)
+                run_summary = self._write_run_evidence(
+                    manifest, seed, run_index, root, bag_complete
+                )
             else:
                 stem = f"{self._scenario.scenario_id}-run-{run_index:04d}-seed-{seed}"
             manifests.append(manifest)
             self.get_logger().info(f"completed {stem}: {manifest['result']}")
             if isolation_error is not None:
                 raise isolation_error
+            if self._fail_stop and not (
+                run_summary is not None
+                and run_summary.get("strict_success") is True
+                and run_summary.get("physical_collision_free") is True
+                and run_summary.get("data_complete") is True
+                and run_summary.get("checksums_verified") is True
+                and run_summary.get("final_trial_metric_gate", {}).get(
+                    "passed"
+                ) is True
+            ):
+                raise RuntimeError(
+                    "fail-stop campaign trial failed after dispatch: "
+                    f"run_index={run_index}, result={manifest.get('result')}, "
+                    "collision_free="
+                    f"{None if run_summary is None else run_summary.get('physical_collision_free')}, "
+                    "data_complete="
+                    f"{None if run_summary is None else run_summary.get('data_complete')}, "
+                    "checksums_verified="
+                    f"{None if run_summary is None else run_summary.get('checksums_verified')}, "
+                    "final_trial_metric_gate="
+                    f"{None if run_summary is None else run_summary.get('final_trial_metric_gate', {}).get('passed')}"
+                )
         return manifests
 
 

@@ -1,6 +1,40 @@
-# Attempt31 Rivermark 室外导航科研 Demo
+# Rivermark 室外导航：Final 收口与 Attempt31 历史基线
 
 ## 当前结论
+
+当前可写开发工作树为
+`/home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation`，分支为
+`codex/final-outdoor-navigation`。Final clean-revision 不修改 Attempt31 的冻结轮次，
+新增 4 个静态物理障碍、强化四阶段动态 actor，并把正式口径改成每组 20/20、
+post-dispatch fail-stop。当前实现和离线测试已完成，pilot 与新的 3×20 尚未执行，
+因此 Final 状态仍是 `PILOT_PENDING`，不能提前写为 PASS。
+
+Final 静态配置是 `final_rivermark_static_obstacles.yaml`：四个 0.70 m × 0.70 m
+stationary box 分别切入旧路线的四个区段，同时其完整外接矩形已逐格验证在自由地图内。
+Final 动态配置是 `final_rivermark_dynamic.yaml`：迎面、横穿、同向和临时阻塞 actor
+峰值分别为 0.60、0.55、0.45、0.50 m/s。有效动态交互不再只凭“actor 出现且进入
+1.5 m”判定，而要求每个 actor 同时通过峰值速度、至少 90% 轨迹进度、相对闭合速度、
+TTC、2.5 m 内暴露时长、最近距离、manager clearance 和物理无碰撞门控。
+
+Final 命令：
+
+```bash
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
+
+# 先各跑一轮 pilot；任一 dispatch 后失败都会停止并保留 evidence
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh static off --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/static_off
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh dynamic medium --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/dynamic_medium
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh appearance medium --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/appearance_medium
+```
+
+只有三个 pilot 都通过、配置哈希冻结且工作树干净后，才去掉 `--run-indices 1` 运行
+正式 3×20。资格报告入口为 `final_rivermark_qualification`，指标合同为
+`data/rivermark_demo/final_rivermark_metric_contract.yaml`。每个 pilot 结束后先运行
+`final_rivermark_pilot_check`；该入口会重新计算逐文件 checksum，并验证
+`TRIAL_DISPATCHED.json`、G1–G5、碰撞、证据和该组的 Final metric gate。
 
 Attempt31 在独立 Module3/Integration worktree 中打通 Rivermark 室外科研原型，不修改 A21 工作树，也不改变 A21 室内默认入口。当前选择中央环岛与道路区域（Candidate A），保留完整 **80 m × 80 m** 地图；唯一导航栅格为 **1600 × 1600、0.05 m/格**，不再裁成 48 m × 48 m。
 
@@ -119,15 +153,15 @@ Rivermark 启用 tile-local edge projection：覆盖率只在 canonical edge 落
 
 16×16 cognitive tile 的收敛/连续更新指标使用真实 Rivermark `region_22` A/B 对：
 
-- 相同数值质量下，缓存 `M_SR @ goal` / `M_DR @ dynamic_cost` 相对经典迭代更新的 20 个 paired case，最小学习时间改进 99.47%，中位 99.53%，门槛为不低于 20%。
+- 相同数值质量下，缓存 `M_SR @ goal` / `M_DR @ dynamic_cost` 的旧相对数值为最小 99.47%、中位 99.53%。Final 将它重命名为 **adaptation compute latency reduction**：classic p50/p95 为 4.587/4.661 ms，cached p50/p95 为 0.022/0.023 ms，中位 speedup 211.16×，最大质量误差 `1.69e-8`。计时明确排除 ROS、Isaac、启动和渲染，因此不再作为导航成功率、避障率或端到端加速来表述，也不参与 Final 导航资格门控。
 - A 到局部持久障碍 B 的 20 次 parent-full / child-delta paired update，最小改进 30.31%，中位 37.18%，门槛为不低于 30%。父状态 hash 保持不变，child delta 删除 6 条 transition，物理支持映射不变。
 
 上述两个计算基准只证明认知计算合同；不能单独替代真实五航点导航和避障证据，也不能替代后续 V4 四臂因果验证。
 
-批量入口示例：
+历史 Attempt31 批量复核入口（只用于复现冻结结果，不是 Final 新 campaign）：
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
 
 # 静态 Baseline；正式批量省略 --run-indices
 ROS_DOMAIN_ID=232 ./scripts/run_rivermark_campaign.sh \
@@ -159,10 +193,10 @@ cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav
 ./scripts/import_assets.sh
 ./scripts/prepare_rivermark_demo.sh
 
-cd /home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt31-outdoor-nav/ros2_ws
+cd /home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/ros2_ws
 colcon build --symlink-install
 
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/ros2_ws
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/ros2_ws
 colcon build --symlink-install
 ```
 
@@ -170,7 +204,8 @@ colcon build --symlink-install
 
 四个入口都由一个前台脚本管理 Module2、Module3、Isaac Sim GUI、ROS 2/Nav2 和室外专用
 RViz，不需要预先 `source` ROS 环境，也不需要再开终端启动其他组件。它们的区别仅在于
-场景扰动和目标来源：
+场景扰动和目标来源。Final 工作树默认使用增强静态/动态配置；只有复现 Attempt31
+历史视觉行为时才显式设置 `RIVERMARK_VISUAL_REVISION=attempt31`：
 
 | 模式 | 目标来源 | 场景 | 正常完成/就绪标志 |
 | --- | --- | --- | --- |
@@ -184,7 +219,7 @@ RViz，不需要预先 `source` ROS 环境，也不需要再开终端启动其�
 从任意目录复制下面完整的一行：
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh static
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh static
 ```
 
 脚本等待 Isaac 发布真实 `/clock`、`/odom` 和 `/lidar/points_raw`，再启动 Nav2 与 RViz。
@@ -195,7 +230,7 @@ prior、Module3 最终路线、Smac plan、MPPI 轨迹、Local Costmap 和安全
 ### 2. 动态五航点导航
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh dynamic
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh dynamic
 ```
 
 仍自动执行 G1→G5，但使用固定的 `full_route_four_stage` / `v3` 动态场景：G2 触发迎面
@@ -209,7 +244,7 @@ Module2 dynamic cost；最终碰撞安全和 `/cmd_vel` 仍由 Module3/Nav2 持�
 默认使用 `bright_warm`：
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh appearance bright_warm
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh appearance bright_warm
 ```
 
 最后一个参数可替换为以下四个 profile 之一：
@@ -228,7 +263,7 @@ actor。Isaac 画面用于确认颜色/光照变化，RViz 用于确认定位、
 ### 4. RViz 手动目标导航
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_manual.sh static
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation && env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_manual.sh static
 ```
 
 该入口不会启动 G1→G5 runner，也不会提前发布任何目标。按以下顺序操作：

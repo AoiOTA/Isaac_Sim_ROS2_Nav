@@ -1,4 +1,4 @@
-# Attempt31 / Rivermark outdoor research demo
+# Final Rivermark outdoor navigation qualification
 
 These rules apply only to this worktree.
 
@@ -15,10 +15,21 @@ These rules apply only to this worktree.
 - Reuse existing A21 launch, graph, runtime-edge, Smac, MPPI, Collision Monitor,
   Isaac robot, sensors, and dynamic-actor code. Avoid unrelated refactors and
   production/qualification/governance machinery.
-- Develop only on `codex/attempt31-outdoor-nav-navigation` in this worktree.
-  Do not edit, clean, stage, or launch from Attempt30 or historical worktrees.
+- Develop only on `codex/final-outdoor-navigation` in this worktree. Treat
+  every Attempt30/31/32 worktree and its raw, STOP, diagnostic, or accepted
+  evidence as read-only.
 - The paired Integration worktree is
-  `/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt31-outdoor-nav`.
+  `/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation`.
+- The user authorized a fresh clean-revision Rivermark campaign with enhanced
+  static obstacles, stronger dynamic interactions, and static/dynamic/
+  appearance 3 x 20.  New evidence must use a new campaign identity and must
+  never be mixed with Attempt31 rows.
+- The user also authorized the remaining V4 query campaigns after the 3 x 20
+  closeout.  Derive the runnable set from the frozen V4 matrix and preserve
+  every earlier STOP or completed campaign unchanged.
+- Fail-stop on collision, incomplete evidence, invalid threat/interactions,
+  stale runtime ownership, or cleanup failure.  Do not relax acceptance gates
+  during a running campaign.
 - `/home/lyb/Rivermark/rivermark.usd` is the source asset. Derived maps,
   overlays, and demo configs belong in this worktree or its run directory.
 - Do not start a second Isaac Sim while an unrelated A21 run is active.

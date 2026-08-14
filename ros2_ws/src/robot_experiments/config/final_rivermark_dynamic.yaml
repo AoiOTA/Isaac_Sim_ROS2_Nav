@@ -1,0 +1,60 @@
+schema_version: 1
+scenario:
+  id: final_rivermark_dynamic
+  type: dynamic
+  spawn_pose_name: rivermark_start
+  map_version: rivermark_0_05_v1
+  posegraph_version: rivermark_static_map_v1
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_bio_nav_planning_only.yaml
+    dynamic_obstacles: ../../../../data/rivermark_demo/final_rivermark_dynamic.yaml
+  simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
+  runs:
+    matrix:
+      - {seed: 19401, case_id: full_route_four_stage, variant_id: v1, condition_id: final_rivermark_dynamic}
+      - {seed: 19402, case_id: full_route_four_stage, variant_id: v2, condition_id: final_rivermark_dynamic}
+      - {seed: 19403, case_id: full_route_four_stage, variant_id: v3, condition_id: final_rivermark_dynamic}
+      - {seed: 19404, case_id: full_route_four_stage, variant_id: v4, condition_id: final_rivermark_dynamic}
+      - {seed: 19405, case_id: full_route_four_stage, variant_id: v5, condition_id: final_rivermark_dynamic}
+      - {seed: 19406, case_id: full_route_four_stage, variant_id: v1, condition_id: final_rivermark_dynamic}
+      - {seed: 19407, case_id: full_route_four_stage, variant_id: v2, condition_id: final_rivermark_dynamic}
+      - {seed: 19408, case_id: full_route_four_stage, variant_id: v3, condition_id: final_rivermark_dynamic}
+      - {seed: 19409, case_id: full_route_four_stage, variant_id: v4, condition_id: final_rivermark_dynamic}
+      - {seed: 19410, case_id: full_route_four_stage, variant_id: v5, condition_id: final_rivermark_dynamic}
+      - {seed: 19411, case_id: full_route_four_stage, variant_id: v1, condition_id: final_rivermark_dynamic}
+      - {seed: 19412, case_id: full_route_four_stage, variant_id: v2, condition_id: final_rivermark_dynamic}
+      - {seed: 19413, case_id: full_route_four_stage, variant_id: v3, condition_id: final_rivermark_dynamic}
+      - {seed: 19414, case_id: full_route_four_stage, variant_id: v4, condition_id: final_rivermark_dynamic}
+      - {seed: 19415, case_id: full_route_four_stage, variant_id: v5, condition_id: final_rivermark_dynamic}
+      - {seed: 19416, case_id: full_route_four_stage, variant_id: v1, condition_id: final_rivermark_dynamic}
+      - {seed: 19417, case_id: full_route_four_stage, variant_id: v2, condition_id: final_rivermark_dynamic}
+      - {seed: 19418, case_id: full_route_four_stage, variant_id: v3, condition_id: final_rivermark_dynamic}
+      - {seed: 19419, case_id: full_route_four_stage, variant_id: v4, condition_id: final_rivermark_dynamic}
+      - {seed: 19420, case_id: full_route_four_stage, variant_id: v5, condition_id: final_rivermark_dynamic}
+    timeout_sec: 1500.0
+    leg_timeout_sec: 480.0
+  goal: {id: G5, frame_id: map, position: [-42.6432, 180.578], yaw_deg: -98.13004614639033, require_orientation: true}
+  route:
+    - {id: G1, frame_id: map, position: [1.521014, 131.813786], yaw_deg: 135.0, require_orientation: true}
+    - {id: G2, frame_id: map, position: [-15.524852, 138.328084], yaw_deg: 90.5257523467108, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-23.4432, 158.46382], yaw_deg: 90.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-36.675295, 172.938296], yaw_deg: 138.17990203448392, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-42.6432, 180.578], yaw_deg: -98.13004614639033, require_orientation: true}
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 20.0
+    require_safety_observations: true
+    minimum_ground_truth_path_length_m: 100.0
+  obstacles:
+    layout_id: final_rivermark_four_stage_v1
+    static: []
+    trajectories:
+      - {id: rivermark_oncoming_cart, trigger_group: G2, motion: oncoming, shape: box, repeat: false, dimensions: [0.8, 0.6], waypoints: [{time_sec: 0.0, position: [-12.0035, 129.2125]}, {time_sec: 8.0, position: [-7.5585, 131.4975]}]}
+      - {id: rivermark_crossing_cart, trigger_group: G3, motion: crossing, shape: box, repeat: false, dimensions: [0.8, 0.6], waypoints: [{time_sec: 0.0, position: [-16.9516, 150.855]}, {time_sec: 9.5, position: [-20.469, 148.3825]}]}
+      - {id: rivermark_same_direction_cart, trigger_group: G4, motion: same_direction_slow, shape: box, repeat: false, dimensions: [0.8, 0.6], waypoints: [{time_sec: 0.0, position: [-24.943, 168.578]}, {time_sec: 19.0, position: [-32.943, 168.578]}]}
+      - {id: rivermark_temporary_block_cart, trigger_group: G5, motion: temporary_block, shape: box, repeat: false, dimensions: [0.8, 0.6], waypoints: [{time_sec: 0.0, position: [-44.244, 176.403]}, {time_sec: 6.5, position: [-46.944, 177.708]}, {time_sec: 13.0, position: [-49.644, 179.013]}]}

@@ -2,7 +2,9 @@
 set -Eeuo pipefail
 
 module3_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt31-outdoor-nav}"
+integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation}"
+scenario_revision="${RIVERMARK_SCENARIO_REVISION:-attempt31_rivermark}"
+fail_stop="${RIVERMARK_FAIL_STOP:-0}"
 usage() {
   echo "usage: $0 static|dynamic|appearance off|sr_medium|dr_medium|medium [--run-indices 1,2] [--output DIR] [--no-bag]"
 }
@@ -43,13 +45,14 @@ done
 case "${condition}" in static|dynamic|appearance) ;; *) echo "condition must be static, dynamic or appearance" >&2; exit 2 ;; esac
 case "${arm}" in off|sr_medium|dr_medium|medium) ;; *) echo "arm must be off, sr_medium, dr_medium or medium" >&2; exit 2 ;; esac
 [[ "${startup_timeout_sec}" =~ ^[1-9][0-9]*$ ]] || { echo "startup timeout must be positive" >&2; exit 2; }
+[[ "${fail_stop}" == "0" || "${fail_stop}" == "1" ]] || { echo "RIVERMARK_FAIL_STOP must be 0 or 1" >&2; exit 2; }
 
-scenario_file="${module3_root}/ros2_ws/src/robot_experiments/config/attempt31_rivermark_${condition}.yaml"
+scenario_file="${module3_root}/ros2_ws/src/robot_experiments/config/${scenario_revision}_${condition}.yaml"
 spawn_file="${module3_root}/data/rivermark_demo/rivermark.spawn.yaml"
 [[ -f "${scenario_file}" ]] || { echo "missing ${scenario_file}" >&2; exit 2; }
 [[ -f "${spawn_file}" ]] || { echo "missing ${spawn_file}" >&2; exit 2; }
 if [[ -z "${output_directory}" ]]; then
-  output_directory="${module3_root}/data/experiment_runs/attempt31_rivermark/${condition}/${arm}"
+  output_directory="${module3_root}/data/experiment_runs/${scenario_revision}/${condition}/${arm}"
 fi
 mkdir -p "${output_directory}/orchestrator"
 
@@ -79,6 +82,17 @@ if [[ "${arm}" != "off" ]]; then
 fi
 isaac_condition="static"
 [[ "${condition}" == "dynamic" ]] && isaac_condition="dynamic"
+obstacle_config="${module3_root}/data/rivermark_demo/rivermark_dynamic.yaml"
+physical_obstacles="0"
+if [[ "${scenario_revision}" == "final_rivermark" ]]; then
+  if [[ "${condition}" == "static" ]]; then
+    obstacle_config="${module3_root}/data/rivermark_demo/final_rivermark_static_obstacles.yaml"
+    physical_obstacles="1"
+  elif [[ "${condition}" == "dynamic" ]]; then
+    obstacle_config="${module3_root}/data/rivermark_demo/final_rivermark_dynamic.yaml"
+    physical_obstacles="1"
+  fi
+fi
 
 demo_pid=""
 cleanup() {
@@ -102,6 +116,8 @@ RIVERMARK_GUIDANCE_PROFILE="${guidance_profile}" \
 RIVERMARK_MAX_LINEAR_SPEED_MPS="${controller_max_linear_velocity_mps}" \
 RIVERMARK_LINEAR_SPEED_STD_MPS="${controller_linear_velocity_std_mps}" \
 RIVERMARK_RENDERING_HZ="${rendering_hz}" \
+RIVERMARK_OBSTACLE_CONFIG="${obstacle_config}" \
+RIVERMARK_PHYSICAL_OBSTACLES="${physical_obstacles}" \
 BIO_NAV_INTEGRATION_ROOT="${integration_root}" \
 "${module3_root}/scripts/run_rivermark_demo.sh" "${demo_mode}" "${isaac_condition}" \
   > >(filter_runtime_log >>"${output_directory}/orchestrator/runtime.log") 2>&1 &
@@ -280,10 +296,17 @@ launch_args=(
   record_evidence:=true
   record_bag:="${record_bag}"
   resume:=true
+  require_successful_resume:="${fail_stop}"
+  fail_stop:="${fail_stop}"
   navigation_execution_backend:=route_guided
   nav2_profile:=bio_nav_planning_only
   experiment_arm:="${arm}"
 )
+if [[ "${scenario_revision}" == "final_rivermark" ]]; then
+  launch_args+=(
+    fail_stop_metric_contract:="${module3_root}/data/rivermark_demo/final_rivermark_metric_contract.yaml"
+  )
+fi
 if [[ -n "${run_indices}" ]]; then
   launch_args+=(run_indices:="${run_indices}")
 fi
@@ -312,6 +335,52 @@ for ((runner_attempt = 1; runner_attempt <= max_runner_attempts; runner_attempt+
   runner_status="${PIPESTATUS[0]}"
   set -e
   observed_run_count="$(find "${output_directory}/runs" -name run_summary.json -type f 2>/dev/null | wc -l)"
+  dispatched_trial_status=0
+  python3 - "${output_directory}/runs" <<'PY' || dispatched_trial_status=$?
+import json
+from pathlib import Path
+import sys
+
+root = Path(sys.argv[1])
+for receipt in sorted(root.rglob("TRIAL_DISPATCHED.json")):
+    summary_path = receipt.with_name("run_summary.json")
+    if not summary_path.is_file():
+        print(
+            f"post-dispatch evidence is incomplete; fail-stop: {receipt.parent}",
+            file=sys.stderr,
+        )
+        raise SystemExit(42)
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    if not all(
+        summary.get(field) is True
+        for field in (
+            "strict_success",
+            "physical_collision_free",
+            "data_complete",
+            "checksums_verified",
+        )
+    ):
+        print(
+            f"post-dispatch trial failed; fail-stop: {summary_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(42)
+    metric_gate = summary.get("final_trial_metric_gate", {})
+    if metric_gate.get("applicable") is True and metric_gate.get("passed") is not True:
+        print(
+            f"post-dispatch Final trial metric gate failed; fail-stop: {summary_path}",
+            file=sys.stderr,
+        )
+        raise SystemExit(42)
+PY
+  if [[ "${fail_stop}" == "1" && "${dispatched_trial_status}" == "42" ]]; then
+    echo "Rivermark formal campaign stopped on immutable post-dispatch evidence" >&2
+    exit 6
+  fi
+  if [[ "${dispatched_trial_status}" != "0" ]]; then
+    echo "Rivermark dispatched-trial audit failed unexpectedly: status=${dispatched_trial_status}" >&2
+    exit 5
+  fi
   if [[ "${observed_run_count}" == "${expected_run_count}" ]]; then
     break
   fi

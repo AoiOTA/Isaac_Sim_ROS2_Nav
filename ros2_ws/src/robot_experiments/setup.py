@@ -43,6 +43,8 @@ setup(
             "kujiale_4x20_campaign = robot_experiments.kujiale_4x20_campaign:main",
             "attempt30_a21_qualification = robot_experiments.attempt30_a21_qualification:main",
             "attempt31_rivermark_qualification = robot_experiments.attempt31_rivermark_qualification:main",
+            "final_rivermark_qualification = robot_experiments.final_rivermark_qualification:main",
+            "final_rivermark_pilot_check = robot_experiments.final_rivermark_qualification:pilot_main",
             "report_v310_guidance = robot_experiments.v310_guidance_report:main",
             "kujiale_reference = robot_experiments.kujiale_reference:main",
             "rivermark_reference = robot_experiments.rivermark_reference:main",

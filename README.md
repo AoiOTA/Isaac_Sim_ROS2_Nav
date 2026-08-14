@@ -2,9 +2,25 @@
 
 本仓库负责 Bio_Nav 的物理导航主链：场景与传感器、地图与 TF、全局 GVG、
 Route Server、Nav2、MPPI、Collision Monitor 和 `/cmd_vel`。当前开发主线是
-**Attempt31 Rivermark 室外五航点导航**；酷家乐室内任务仍保留为兼容和历史复现入口。
+**Final Rivermark 室外五航点导航收口**；酷家乐室内任务和 Attempt31 证据仍保留为兼容与历史复现入口。
 
 ## 当前状态（2026-08-14）
+
+Final clean-revision 已完成代码与预注册指标准备，尚未把 pilot 或新的 3×20 报告写成
+PASS。它使用独立分支 `codex/final-outdoor-navigation` 和独立场景 identity，不改写
+Attempt31 的任何原始轮次：
+
+| Final 项目 | 冻结实现 | 当前状态 |
+| --- | --- | --- |
+| 静态物理障碍 | 4 个 map-frame stationary box，均位于可通行地图格并切入旧 nominal route | 代码/离线门控完成，pilot 待执行 |
+| 动态威胁 | 四 actor 峰值 0.45–0.60 m/s，5 个时序 variant 各重复 4 次 | 代码/离线门控完成，pilot 待执行 |
+| 正式统计 | 静态、动态、外观各 20；每轮 G1–G5、无碰撞、证据完整 | 未启动 |
+| fail-stop | 首个 goal dispatch 前写 `TRIAL_DISPATCHED.json`；dispatch 后失败立即停止且不补轮 | 已实现并测试 |
+| 动态有效性 | 每 actor 的峰值速度、轨迹进度、相对闭合速度、TTC、2.5 m 暴露和最近距离 | 已实现并测试 |
+| 99.53% 口径 | 仅为 adaptation compute latency reduction；不属于导航成功率或端到端加速 | 已修正 |
+
+Final 资格只有在 pilot、三组 20/20 和 `final_rivermark_qualification` 全部通过后才能
+写成 PASS。下面的 Attempt31 结果继续作为已冻结历史基线，而不是 Final 结果。
 
 Attempt31 已在独立 Module3/Integration 工作树完成实现、3×20 正式运行和
 fail-closed 资格汇总。60 轮原始 evidence 的冻结代码基线为 Module3
@@ -83,18 +99,18 @@ map pose + current region + CanonicalRoute
 ### 1. 准备资产和构建
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
 git lfs pull
 ./scripts/import_assets.sh
 ./scripts/prepare_rivermark_demo.sh
 
-cd /home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt31-outdoor-nav/ros2_ws
+cd /home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/ros2_ws
 source /opt/ros/jazzy/setup.bash
 colcon build --symlink-install
 
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/ros2_ws
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/ros2_ws
 source /opt/ros/jazzy/setup.bash
-source /home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt31-outdoor-nav/ros2_ws/install/local_setup.bash
+source /home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/ros2_ws/install/local_setup.bash
 colcon build --symlink-install
 ```
 
@@ -108,7 +124,7 @@ colcon build --symlink-install
 目标。按一次 `Ctrl+C` 会清理整套栈。
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
 
 # 静态导航
 ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh static
@@ -167,29 +183,44 @@ Module2 没启动或 prior 超时不会留下“看似仍有效”的绿色状�
 ### 3. 批量实验
 
 ```bash
-cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
 
 # 指定 --run-indices 可做 pilot；省略时运行配置中的完整 20 轮
-ROS_DOMAIN_ID=232 ./scripts/run_rivermark_campaign.sh static off --run-indices 1
-ROS_DOMAIN_ID=232 ./scripts/run_rivermark_campaign.sh dynamic medium
-ROS_DOMAIN_ID=232 ./scripts/run_rivermark_campaign.sh appearance medium
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh static off --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/static_off
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh dynamic medium --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/dynamic_medium
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh appearance medium --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/appearance_medium
 ```
 
-runner 会持续写逐轮 JSON/CSV/checksum。除非明确使用 `--no-bag`，还会记录 rosbag；
-关闭 rosbag 不等于不记录实验数据。一次失败不会自动把整个 20 轮从头重做：已完成轮次
-保持不变，runner 只做有上限的断点恢复。正式失败轮必须计入，不能用补跑覆盖。
+pilot 通过并冻结场景哈希后，去掉 `--run-indices 1` 才能运行完整 20 轮。Final wrapper
+对 pre-dispatch 基础设施错误保留有界重试；一旦 `TRIAL_DISPATCHED.json` 已写入，任何
+任务、碰撞、证据或 checksum 失败都会停止 campaign，失败轮原样保留且禁止补跑替换。
+单轮结束后使用 `final_rivermark_pilot_check` 复算 checksum 和预注册交互门控，例如：
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/local_setup.bash
+ros2 run robot_experiments final_rivermark_pilot_check \
+  --group static \
+  --root data/experiment_runs/final_rivermark/pilots/rev1/static_off/runs \
+  --metric-contract data/rivermark_demo/final_rivermark_metric_contract.yaml \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/static_off/pilot_check.json
+```
 
 只读取已完成 evidence 生成资格报告：
 
 ```bash
 source /opt/ros/jazzy/setup.bash
 source ros2_ws/install/local_setup.bash
-ros2 run robot_experiments attempt31_rivermark_qualification \
-  --static-root data/experiment_runs/attempt31_rivermark/static/off/runs \
-  --dynamic-root data/experiment_runs/attempt31_rivermark/dynamic/medium/runs \
-  --appearance-root data/experiment_runs/attempt31_rivermark/appearance/medium/runs \
+ros2 run robot_experiments final_rivermark_qualification \
+  --static-root data/experiment_runs/final_rivermark/static/off/runs \
+  --dynamic-root data/experiment_runs/final_rivermark/dynamic/medium/runs \
+  --appearance-root data/experiment_runs/final_rivermark/appearance/medium/runs \
+  --metric-contract data/rivermark_demo/final_rivermark_metric_contract.yaml \
   --contract-summary data/rivermark_demo/benchmarks/module2_contracts/contract_benchmark_summary.json \
-  --output data/experiment_runs/attempt31_rivermark/qualification/qualification.json
+  --output data/experiment_runs/final_rivermark/qualification/qualification.json
 ```
 
 ## Module2 与 tile 证据边界
@@ -215,7 +246,13 @@ ROS_DOMAIN_ID=231 ./scripts/trigger_rivermark_blockage.sh clear
 
 ## 验证
 
-当前 Attempt31 收尾工作树回归结果：
+当前 Final 增量回归结果：
+
+- Final 专项：48 passed；
+- Module3 全量 Isaac/robot_experiments：475 passed、11 skipped；历史 reference JSON
+  的绝对 worktree 路径已在 Final 派生文件中修正并复测通过。
+
+历史 Attempt31 收尾工作树回归结果：
 
 - 仓库级 pytest：807 passed，12 skipped；
 - `robot_experiments` 安装态：310 passed；

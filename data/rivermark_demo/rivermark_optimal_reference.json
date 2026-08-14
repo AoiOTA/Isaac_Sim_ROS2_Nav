@@ -39,16 +39,16 @@
     }
   ],
   "map": {
-    "image": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_selected.pgm",
+    "image": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/data/rivermark_demo/rivermark_selected.pgm",
     "image_sha256": "a3fdbe36f09a62586364799f93b259d30868c6770f9d4e08ffa8d6fd11c320a0",
     "native_resolution_m": 0.05,
-    "yaml": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_selected.yaml",
+    "yaml": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/data/rivermark_demo/rivermark_selected.yaml",
     "yaml_sha256": "bbd8e75c83bb3a3d481005a7388e7176a70675a0708071fc05b896a45e5d68ea"
   },
   "scenario": {
-    "file": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/ros2_ws/src/robot_experiments/config/attempt31_rivermark_static.yaml",
+    "file": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/ros2_ws/src/robot_experiments/config/attempt31_rivermark_static.yaml",
     "sha256": "4a4f03440877de61f0a57780c097e5ccf15dabc7770788ad9a786a52aae5aab2",
-    "spawn_file": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark.spawn.yaml",
+    "spawn_file": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/data/rivermark_demo/rivermark.spawn.yaml",
     "spawn_pose_name": "rivermark_start",
     "spawn_sha256": "9b6b7b8685f878f3880acf0cb094aec354bfed1c77ddfeb276fa9463586890f1"
   },

@@ -105,6 +105,12 @@ class DynamicObstacleManager:
             runtime.phase, runtime.progress, runtime.velocity_mps, runtime.min_clearance_m = phases[identifier], 0.0, 0.0, math.inf
             runtime.position_map = runtime.spec.start; runtime.translate_op.Set(Gf.Vec3d(*self._world_position(runtime.spec.start)))
             self._set_enabled(runtime, active and runtime.spec.trigger_group is None)
+            if active and runtime.spec.mode == "stationary":
+                # A stationary schema-v2 obstacle is a persistent physical
+                # object, not an actor waiting for a trigger.  Marking it as
+                # parked keeps both its RViz marker and clearance telemetry
+                # live for the complete navigation run.
+                runtime.state = "parked"
         self._event(
             "reset", 0.0, seed=seed,
             case_id=case_id,
@@ -331,6 +337,13 @@ class DynamicObstacleManager:
             if runtime.retired or runtime.state == "waiting": continue
             case = self._case_by_obstacle_id.get(runtime.spec.obstacle_id)
             variant = self._selected_variants.get(case.case_id) if case is not None else None
+            if runtime.state == "parked":
+                if robot is not None:
+                    clearance = self._guard_clearance(runtime, robot)
+                    runtime.min_clearance_m = min(
+                        runtime.min_clearance_m, clearance
+                    )
+                continue
             if runtime.state == "safety_yield":
                 if robot is None:
                     continue

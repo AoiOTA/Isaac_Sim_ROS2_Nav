@@ -2,9 +2,10 @@
 set -Eeuo pipefail
 
 module3_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/attempt31-outdoor-nav}"
+integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation}"
 demo_dir="${RIVERMARK_DEMO_DIR:-${module3_root}/data/rivermark_demo}"
 asset="${RIVERMARK_USD:-/home/lyb/Rivermark/rivermark.usd}"
+obstacle_config="${RIVERMARK_OBSTACLE_CONFIG:-${demo_dir}/rivermark_dynamic.yaml}"
 mode="${1:-off}"
 scenario="${2:-static}"
 appearance_profile="${3:-${RIVERMARK_APPEARANCE_PROFILE:-}}"
@@ -79,7 +80,7 @@ for path in \
   "${demo_dir}/rivermark_regions.yaml" \
   "${demo_dir}/rivermark.spawn.yaml" \
   "${demo_dir}/rivermark_demo_goals.yaml" \
-  "${demo_dir}/rivermark_dynamic.yaml" \
+  "${obstacle_config}" \
   "${demo_dir}/rivermark_appearance_profiles.yaml"; do
   [[ -f "${path}" ]] || { echo "missing ${path}; run prepare_rivermark_demo.sh first" >&2; exit 2; }
 done
@@ -254,7 +255,19 @@ cleanup() {
 trap 'cleanup $?' EXIT
 trap 'exit 130' INT TERM
 
+physical_obstacles="${RIVERMARK_PHYSICAL_OBSTACLES:-}"
+if [[ -z "${physical_obstacles}" ]]; then
+  physical_obstacles="0"
+  [[ "${scenario}" == "dynamic" ]] && physical_obstacles="1"
+fi
+if [[ "${physical_obstacles}" != "0" && "${physical_obstacles}" != "1" ]]; then
+  echo "RIVERMARK_PHYSICAL_OBSTACLES must be 0 or 1" >&2
+  exit 2
+fi
 dynamic_args=(--no-dynamic-obstacles)
+if [[ "${physical_obstacles}" == "1" ]]; then
+  dynamic_args=(--dynamic-obstacles)
+fi
 if [[ "${scenario}" == "dynamic" ]]; then
   dynamic_case="${RIVERMARK_DYNAMIC_CASE:-full_route_four_stage}"
   dynamic_variant="${RIVERMARK_DYNAMIC_VARIANT:-v3}"
@@ -340,7 +353,7 @@ env \
   --spawn-pose rivermark_start \
   --camera-profile rgbd_navigation \
   --navigation-mode localization \
-  --dynamic-obstacle-config "${demo_dir}/rivermark_dynamic.yaml" \
+  --dynamic-obstacle-config "${obstacle_config}" \
   --appearance-config "${demo_dir}/rivermark_appearance_profiles.yaml" \
   --appearance-profile "${appearance_profile}" \
   "${isaac_runtime_args[@]}" \
