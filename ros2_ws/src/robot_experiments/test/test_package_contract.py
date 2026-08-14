@@ -190,6 +190,9 @@ def test_rivermark_campaign_binds_runtime_profile_and_checks_child_evidence():
     assert 'runs.get("matrix", runs.get("seeds", []))' in wrapper
     assert "collision rates are evaluated later" in wrapper
     assert "runtime_controller_contract.json" in wrapper
+    assert "timeout 5 ros2 lifecycle get /controller_server" in wrapper
+    assert "timeout 5 ros2 service type /simulation/reset" in wrapper
+    assert 'timeout 5 ros2 param get "${node}" "${parameter}"' in wrapper
     assert 'controller_max_linear_velocity_mps="0.75"' in wrapper
     assert 'controller_linear_velocity_std_mps="0.35"' in wrapper
     assert 'rendering_hz="30"' in wrapper

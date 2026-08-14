@@ -165,13 +165,13 @@ while (( SECONDS < deadline )); do
     echo "Rivermark runtime exited during startup" >&2
     exit 4
   }
-  reset_type="$(ros2 service type /simulation/reset 2>/dev/null || true)"
-  nav_state="$(ros2 lifecycle get /bt_navigator 2>/dev/null || true)"
-  controller_state="$(ros2 lifecycle get /controller_server 2>/dev/null || true)"
-  planner_state="$(ros2 lifecycle get /planner_server 2>/dev/null || true)"
-  collision_state="$(ros2 lifecycle get /collision_monitor 2>/dev/null || true)"
-  route_subscriptions="$(ros2 topic info /bio_nav/route_goal 2>/dev/null | awk '/Subscription count:/ {print $3}' || true)"
-  gt_type="$(ros2 topic type /ground_truth/odom 2>/dev/null || true)"
+  reset_type="$(timeout 5 ros2 service type /simulation/reset 2>/dev/null || true)"
+  nav_state="$(timeout 5 ros2 lifecycle get /bt_navigator 2>/dev/null || true)"
+  controller_state="$(timeout 5 ros2 lifecycle get /controller_server 2>/dev/null || true)"
+  planner_state="$(timeout 5 ros2 lifecycle get /planner_server 2>/dev/null || true)"
+  collision_state="$(timeout 5 ros2 lifecycle get /collision_monitor 2>/dev/null || true)"
+  route_subscriptions="$(timeout 5 ros2 topic info /bio_nav/route_goal 2>/dev/null | awk '/Subscription count:/ {print $3}' || true)"
+  gt_type="$(timeout 5 ros2 topic type /ground_truth/odom 2>/dev/null || true)"
   if [[ "${reset_type}" == "std_srvs/srv/Trigger" ]] \
       && [[ "${nav_state}" == active* ]] \
       && [[ "${controller_state}" == active* ]] \
@@ -213,7 +213,7 @@ fi
 read_double_parameter() {
   local node="$1"
   local parameter="$2"
-  ros2 param get "${node}" "${parameter}" 2>/dev/null \
+  timeout 5 ros2 param get "${node}" "${parameter}" 2>/dev/null \
     | awk -F': ' '/Double value is:/ {print $2}'
 }
 observed_vx_max="$(read_double_parameter /controller_server FollowPath.vx_max)"
