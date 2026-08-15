@@ -68,10 +68,11 @@ SHA-256: 8abd0a9a9f98ba0f819035ec1dde91fbdf3c459d7490978b01bfebdd35b9af5a
 曲线、点和渲染阴影。启动入口会拒绝任何不是 1600×1600、0.05 m/格的地图。
 
 除上述自研 top-down 方式外，仓库还提供 Isaac 内置 Occupancy Map Generator
-（`isaacsim.asset.gen.omap` 的 PhysX `Generator` 接口）的全场景建图入口
+（`isaacsim.asset.gen.omap` 的 PhysX `Generator` 接口）的建图入口
 `isaac_sim/tools/rivermark_occupancy_generate.py`：经 Integration final 分支的
-`./scripts/run_final_outdoor_mapping.sh` 一条命令调用，以 0.05 m/格对整张
-rivermark.usd 生成占用图，导出 map_server 兼容的 pgm+yaml 到 workspace
+`./scripts/run_final_outdoor_mapping.sh` 一条命令调用，按生产地图同一配方对原
+80 m × 80 m candidate A 窗口以 0.05 m/格生成占用图（不做全场景体素化），导出
+map_server 兼容的 pgm+yaml 到 workspace
 `runs/operator_maps/<version>/`（`MAPPING_OUTPUT_ROOT` 与 `RIVERMARK_MAP_VERSION`
 可覆盖，已存在的地图产物绝不覆盖）。该入口是工程/操作员工具，不作为资格证据；
 自研 `rivermark_prepare.py` 保持为对照实现。
