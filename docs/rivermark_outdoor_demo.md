@@ -78,8 +78,9 @@ cost snapshot 被 Module2 增量改变。全部请求/代价 snapshot 对齐，�
 
 除自研 top-down 管线外，也可经 Integration final 分支的
 `./scripts/run_final_outdoor_mapping.sh` 一条命令调用 Isaac 内置 Occupancy Map
-Generator（底层为 `isaac_sim/tools/rivermark_occupancy_generate.py`）生成全场景
-0.05 m/格占用图，产物写 workspace `runs/operator_maps/<version>/`；该入口为
+Generator（底层为 `isaac_sim/tools/rivermark_occupancy_generate.py`）对原
+80 m × 80 m candidate A 窗口生成 0.05 m/格占用图（与生产地图同一配方，不做全场景
+体素化），产物写 workspace `runs/operator_maps/<version>/`；该入口为
 工程/操作员工具而非资格证据，`rivermark_prepare.py` 保持为对照实现。
 
 实物对齐图：
