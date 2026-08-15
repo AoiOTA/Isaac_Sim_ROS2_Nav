@@ -7,6 +7,13 @@ in a separate design-plan document.
 
 > 最近复核：2026-07-26。执行命令优先使用 [`user_manual.md`](user_manual.md)；以本文件、启动脚本和配置为准。
 
+> Scope boundary (2026-08-15): the body of this document is the Kujiale/Isaac
+> bringup-era runtime contract. It remains valid for the historical
+> compatibility entry points it describes. The Final Rivermark outdoor
+> contract is defined in
+> [Final Rivermark interfaces (2026-08-15)](#final-rivermark-interfaces-2026-08-15)
+> at the end of this document.
+
 ## Mode pairing
 
 | ROS operation | Isaac `--navigation-mode` | SLAM executable | Pose Graph requirement | Occupancy map requirement | Nav2 |
@@ -618,3 +625,94 @@ serialized Pose Graph and SLAM Toolbox for `map -> odom`.
 `NavigateToPose` runner rejects it deliberately; execute it through
 `incremental_mapping` bringup, save a versioned map/Pose Graph pair, and compare
 the resulting artifacts and elapsed mapping time explicitly.
+
+## Final Rivermark interfaces (2026-08-15)
+
+This section is the runtime contract of the Final Rivermark outdoor navigation
+stack on branch `codex/final-outdoor-navigation`. It complements, and does not
+replace, the Kujiale bringup contract above. Qualification results and their
+evidence boundaries are tracked in
+[`rivermark_completion_audit.md`](rivermark_completion_audit.md); this section
+documents interfaces only.
+
+### ROS domains
+
+| `ROS_DOMAIN_ID` | Use |
+| --- | --- |
+| `231` | GUI single-run and demo entry points (`run_rivermark_visual.sh`, `run_rivermark_manual.sh`, `run_rivermark_demo.sh`) |
+| `232` | Campaign batches (`run_final_rivermark_campaign.sh`; historical `run_rivermark_campaign.sh`) |
+
+One run never mixes the two domains; formal campaign evidence is collected
+only on domain 232.
+
+### Structural route and graph interfaces
+
+- `CanonicalRoute` (`bio_nav_interfaces/msg/CanonicalRoute.msg`) is the single
+  route carrier: `header`, `request_id`, `graph_id`, `graph_revision`,
+  `node_ids[]`, `edge_ids[]`, `total_cost_m`. The Route Server, route
+  progress tracking, and every Module2 prior request bind the same
+  `graph_id`/`graph_revision` pair.
+- Runtime edge state (`bio_nav_interfaces/msg/RuntimeEdgeState.msg`) is one of
+  `OPEN`, `SUSPECT`, `BLOCKED`, `UNKNOWN`, with `penalty_m`,
+  `consecutive_failures`, and first-failure/last-observed/state-change stamps.
+  Lethal occupancy and `BLOCKED` runtime state always win over any learned
+  prior.
+- Graph revision: the Module3-owned global GVG stamps `graph_id` and
+  `graph_revision` on `CanonicalRoute`, `RouteContext`, `RouteEdgeCost`, and
+  `RuntimeEdgeStateArray`. A prior or route stamped with a different revision
+  than the current graph is stale and must not be applied.
+
+### Module2 edge prior interface
+
+Module2 priors reach Module3 only through the Integration workspace package
+`bio_nav_interfaces`:
+
+- `EdgePrior.msg`: `edge_id`, `cost_delta_m`, `learned_risk`, `confidence`.
+- `EdgePriorArray.msg`: `header`, `request_id`, `graph_id`, `graph_revision`,
+  `ttl`, `model_id`, `healthy`, `EdgePrior[] priors`.
+- `GetEdgePriors.srv`: the request carries `RouteContext context` and
+  `NavigationGraph graph`; the response carries `success`, `error`, and one
+  `EdgePriorArray`.
+
+Contract rules:
+
+- A response is valid only for the exact `graph_id`/`graph_revision` of its
+  request and for the model identity `module2_srdr_v310_seed20260822`.
+- `cost_delta_m` values are bounded and non-negative; Module3 clamps them to
+  the requested per-edge delta bound and keeps the final cost authority.
+- Stale (past `ttl` or revision-mismatched), `healthy=false`, NaN, or
+  model-identity-mismatched priors are zeroed. The interface is additive and
+  fail-open: Module3 falls back to the geometry-only route and never treats a
+  missing prior as either a blockage or a clearance.
+
+### Visualization topics
+
+| Topic | Content | Publication rule |
+| --- | --- | --- |
+| `/bio_nav/v310/rviz_static` | full GVG, tile cores, waypoints | republished only when the graph changes |
+| `/bio_nav/v310/rviz_edges` | Module2→Module3 edge handoff (requested and applied bounded deltas) | republished on data change |
+| `/bio_nav/v310/rviz` | current 16×16 tile, execution state, ownership status | 2 Hz |
+
+Splitting static topology, low-frequency edge handoff, and live state into
+three topics keeps their RViz namespaces separate, so a tile switch never
+clears and rebuilds the full GVG layer. Whenever the prior chain is stale,
+unhealthy, off, or fails the write gate, the Module2 panel and the edge layer
+explicitly show `GEOMETRY-ONLY FALLBACK` instead of implying an active Module2
+contribution.
+
+### Configuration identities
+
+| File | Role |
+| --- | --- |
+| `data/rivermark_demo/final_rivermark_static_obstacles.yaml` | Final static obstacle set (four 0.70 m × 0.70 m stationary boxes) |
+| `data/rivermark_demo/final_rivermark_dynamic.yaml` | Final dynamic actor kinematics (head-on, crossing, same-direction, temporary block) |
+| `data/rivermark_demo/final_rivermark_metric_contract.yaml` | Final metric gates consumed by `final_rivermark_qualification` |
+
+### Single continuous map frame
+
+The Rivermark stack keeps one continuous global `map` frame and one global
+GVG. A cognitive-region switch only updates `cognitive_tile_id` and
+`T_map_canvas`; it never resets TF, localization, Nav2, the global graph, or
+the active navigation task. Module2 may reset its own recurrent context at a
+region boundary, but Module3 continuously owns physical reachability and the
+final route.
