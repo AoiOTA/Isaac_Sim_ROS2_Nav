@@ -154,23 +154,23 @@ Visualization Manager:
         active_tile_canvas_16x16: true
         active_tile_cells: true
         active_tile_core_12x12: true
-        active_tile_status: true
+        active_tile_status: false
         executed_trajectory: true
         module2_dr: true
         module2_dynamic_cost: true
         module2_p_corr: true
-        module2_place_peak: true
+        module2_place_peak: false
         module2_remap: true
         module2_sr: true
         moving_lookahead: true
-        ownership_handoff: true
-        ownership_module2: true
-        ownership_module3: true
+        ownership_handoff: false
+        ownership_module2: false
+        ownership_module3: false
         previous_tile_switch: true
         route_projection: true
         smac_plan: true
         tile_switch_direction: true
-        tile_switch_event: true
+        tile_switch_event: false
       Topic:
         Depth: 1
         Durability Policy: Transient Local
@@ -183,7 +183,7 @@ Visualization Manager:
       Name: Rivermark Physical Dynamic Actors
       Namespaces:
         dynamic_future_trajectory: true
-        dynamic_obstacle_status: true
+        dynamic_obstacle_status: false
         dynamic_obstacles: true
       Topic:
         Depth: 5

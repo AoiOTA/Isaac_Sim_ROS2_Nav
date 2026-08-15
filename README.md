@@ -180,6 +180,11 @@ RIVERMARK_RVIZ=0 ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh off static
 - 所有权面板：Module2 的 ACTIVE/GUARDED/STALE/OFF，Module3 的物理最终裁决，
   以及实际 applied edge 数量和累计增量。
 
+注：ownership/active_tile_status/tile_switch_event/dynamic_obstacle_status 与
+place_peak 等状态文字默认隐藏，可在 RViz 面板按 namespace 手动开启。
+退出说明：Ctrl+C 触发有界清理（INT 3 s→TERM 2 s→KILL），清理期间再按一次
+Ctrl+C 立即强杀且不留残留进程。
+
 marker 按更新频率拆成 `/bio_nav/v310/rviz_static`（GVG/tile core/航点，仅图变化时）、
 `/bio_nav/v310/rviz_edges`（Module2→Module3 edge handoff，按数据变化）和
 `/bio_nav/v310/rviz`（当前 tile/执行状态，2 Hz）。RViz 中仍可按 namespace 独立开关；
