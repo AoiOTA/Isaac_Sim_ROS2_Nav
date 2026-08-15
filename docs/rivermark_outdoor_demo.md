@@ -76,6 +76,12 @@ cost snapshot 被 Module2 增量改变。全部请求/代价 snapshot 对齐，�
 - 非物理 `BasisCurves`、`NurbsCurves` 和 `Points` 不参与碰撞体补全，也不参与导航障碍判定。
 - 生成时只在匿名 session layer 为可见实体网格补碰撞，不回写源 USD。
 
+除自研 top-down 管线外，也可经 Integration final 分支的
+`./scripts/run_final_outdoor_mapping.sh` 一条命令调用 Isaac 内置 Occupancy Map
+Generator（底层为 `isaac_sim/tools/rivermark_occupancy_generate.py`）生成全场景
+0.05 m/格占用图，产物写 workspace `runs/operator_maps/<version>/`；该入口为
+工程/操作员工具而非资格证据，`rivermark_prepare.py` 保持为对照实现。
+
 实物对齐图：
 
 ![Rivermark RGB 与路沿边界对齐](../data/rivermark_demo/rivermark_edge_alignment.png)
