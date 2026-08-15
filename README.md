@@ -285,6 +285,21 @@ git diff --check
 | Module2 与 Nav2 历史融合设计 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
 | 仓库与远端治理 | [分支与标签目录](docs/branch_governance.md) |
 
+## Final 汇总与架构文档（Integration 仓库）
+
+以下文档位于配对的 Integration 工作树
+`/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/docs/final_closure/`（分支
+`codex/final-indoor-outdoor-navigation`），是本仓库 Final 结果在整体项目口径下的汇总：
+
+| 目标 | 文档 |
+| --- | --- |
+| 室内静态/动态/外观 60 轮结果与指标 | `results_indoor_60.md` |
+| 室外静态/动态/外观 60 轮结果与指标（含本仓库 Final 资格口径） | `results_outdoor_60.md` |
+| V4 五组四臂 100 行结果与指标 | `results_v4_100.md` |
+| Module2 作用机制与有效证据 | `module2_effectiveness_evidence.md` |
+| 五项工程验收指标总表与资格矩阵 | `results_master_summary.md` |
+| 整体导航架构（Module1/Module2/Module3 与 Integration） | `final_navigation_architecture.md` |
+
 ## 历史兼容入口：Kujiale / Attempt21
 
 酷家乐室内 `stable`、`dynamic_avoidance` 和显式 static opt-in 仍保留，不因
