@@ -13,4 +13,11 @@
       Timestamped base_link RGB-D risk projected by Module3 TF into the Global Costmap.
     </description>
   </class>
+  <class
+    type="bio_nav_fusion::ReachabilityObserverLayer"
+    base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Read-only pre-inflation Global Costmap snapshot for Attempt-22 reachability.
+    </description>
+  </class>
 </library>

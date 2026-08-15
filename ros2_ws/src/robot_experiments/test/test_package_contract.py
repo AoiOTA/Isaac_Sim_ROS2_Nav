@@ -171,6 +171,52 @@ def test_4x20_one_command_supervisor_keeps_stage_lifecycles_separate():
     assert "stopping ${active_mode} ROS launch process group" in wrapper
 
 
+def test_experiment_manifest_records_consumed_attempt31_arm():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert '"experiment_arm": self._experiment_arm or None' in runner
+
+
+def test_rivermark_campaign_binds_runtime_profile_and_checks_child_evidence():
+    root = PACKAGE_ROOT.parents[2]
+    wrapper = (root / "scripts" / "run_rivermark_campaign.sh").read_text()
+
+    assert "nav2_profile:=bio_nav_planning_only" in wrapper
+    assert "Rivermark evidence count mismatch" in wrapper
+    assert 'summary.get("experiment_arm") == arm' in wrapper
+    assert "ROS_DOMAIN_ID must be an integer in [0, 232]" in wrapper
+    assert 'runs.get("matrix", runs.get("seeds", []))' in wrapper
+    assert "collision rates are evaluated later" in wrapper
+    assert "runtime_controller_contract.json" in wrapper
+    assert "timeout 5 ros2 lifecycle get /controller_server" in wrapper
+    assert "timeout 5 ros2 service type /simulation/reset" in wrapper
+    assert 'timeout 5 ros2 param get "${node}" "${parameter}"' in wrapper
+    assert 'controller_max_linear_velocity_mps="0.75"' in wrapper
+    assert 'controller_linear_velocity_std_mps="0.35"' in wrapper
+    assert 'rendering_hz="30"' in wrapper
+    assert "resume:=true" in wrapper
+    assert "runtime_tile_cache_contract.json" in wrapper
+
+
+def test_large_global_costmap_is_latest_state_not_reliable_backlog():
+    runner = (
+        PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py"
+    ).read_text(encoding="utf-8")
+    route_node = (
+        PACKAGE_ROOT.parent
+        / "robot_route_planner"
+        / "robot_route_planner"
+        / "ros_node.py"
+    ).read_text(encoding="utf-8")
+
+    for source in (runner, route_node):
+        assert '"/global_costmap/costmap_raw"' in source
+        assert "ReliabilityPolicy.BEST_EFFORT" in source
+        assert "depth=1" in source
+
+
 def test_g2_dynamic_safety_smoke_is_single_route_and_module2_free():
     root = PACKAGE_ROOT.parents[2]
     wrapper = (root / "scripts" / "run_g2_dynamic_safety_smoke.sh").read_text()
@@ -230,6 +276,34 @@ def test_experiment_launch_forces_run_indices_to_the_runner_string_contract():
     assert 'LaunchConfiguration("run_indices"), value_type=str' in launch_source
 
 
+def test_attempt30_repeat_diagnostic_is_nonformal_and_pins_its_integration_underlay():
+    root = PACKAGE_ROOT.parents[2]
+    supervisor = (
+        root / "scripts" / "run_attempt30_a21_qualification_all.sh"
+    ).read_text()
+    assert '"diagnostic-dynamic-repeat"' in supervisor
+    assert 'attempt30_a21_diagnostic_${campaign}/dynamic_repeat' in supervisor
+    assert 'run_indices:=1,2,3,4,5' in supervisor
+    assert 'attempt30_integration_root=' in supervisor
+    assert 'source "${attempt30_integration_root}/install/local_setup.bash"' in supervisor
+    assert 'ros2 pkg prefix bio_nav_ros_bridge' in supervisor
+
+
+def test_attempt30_static_repeat_replays_both_failed_reset_epochs_nonformally():
+    root = PACKAGE_ROOT.parents[2]
+    supervisor = (
+        root / "scripts" / "run_attempt30_a21_qualification_all.sh"
+    ).read_text()
+    assert '"diagnostic-static-repeat"' in supervisor
+    assert 'attempt30_a21_diagnostic_${campaign}/static_warmup' in supervisor
+    assert 'attempt30_a21_diagnostic_${campaign}/static_repeat' in supervisor
+    assert supervisor.index('source_ros --require-workspace') < supervisor.index(
+        'source "${attempt30_integration_root}/install/local_setup.bash"')
+    assert 'resume:=false run_indices:=1\n' in supervisor
+    assert 'run_indices:=1,2,3,4,5,6,7,8' in supervisor
+    assert 'attempt30_a21_qualification_static.yaml' in supervisor
+
+
 def test_experiment_launch_exposes_fail_closed_pregoal_evidence_fence():
     launch_source = (PACKAGE_ROOT / "launch" / "experiment.launch.py").read_text()
     runner = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
@@ -275,7 +349,7 @@ def test_incremental_map_comparison_has_an_installed_cli():
     ) in setup_source
 
 
-def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
+def test_runner_only_publishes_a21_route_goals_and_never_controls_or_localizes_robot():
     source = (PACKAGE_ROOT / "robot_experiments" / "experiment_runner.py").read_text()
     tree = ast.parse(source)
     attribute_calls = {
@@ -283,7 +357,12 @@ def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
     }
-    assert "create_publisher" not in attribute_calls
+    # Final Qualification adds one explicit mission-dispatch publisher.  The
+    # coordinator, Nav2 and Module3 remain the only planning/control owners.
+    assert "create_publisher" in attribute_calls
+    assert source.count("self.create_publisher(") == 1
+    assert 'PoseStamped, "/bio_nav/route_goal"' in source
+    assert 'Twist, "/cmd_vel"' not in source
     # A read-only /cmd_vel subscription is allowed for motion-quality metrics.
     assert "create_subscription(" in source
     assert '"command_topic", "/cmd_vel"' in source
@@ -294,6 +373,8 @@ def test_runner_has_no_publishers_and_never_controls_or_localizes_robot():
     assert "_verify_dynamic_runtime_contract" in source
     assert "dynamic_obstacles_config_sha256" in source
     assert '"/simulation/localization_seeded"' in source
+    assert "localization_seed_event_grace_sec" in source
+    assert "post-reset spawn-aligned TF/sample recovery gate" in source
     assert "stamp_s > tf_stamp_barrier_s" in source
     assert "ExternalShutdownException" in source
     assert "ExperimentIsolationError" in source

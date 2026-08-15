@@ -452,7 +452,7 @@ Visualization Manager:
           Head Length: 0.20000000298023224
           Length: 0.30000001192092896
           Line Style: Billboards
-          Line Width: 0.10000000149011612
+          Line Width: 0.14000000059604645
           Name: Global Plan
           Offset:
             X: 0
@@ -572,15 +572,43 @@ Visualization Manager:
       Displays:
         - Class: rviz_default_plugins/MarkerArray
           Enabled: true
+          Name: Module2 V3.10 SRDR and Real GVG
+          Namespaces:
+            bridge_dr: true
+            bridge_module2: true
+            bridge_sr: true
+            executed_trajectory: true
+            module2_dr: true
+            module2_dynamic_cost: false
+            module2_p_corr: true
+            module2_remap: false
+            module2_sr: true
+            module3_final_cost: true
+            module3_gvg_edges: true
+            module3_gvg_nodes: true
+            moving_lookahead: true
+            route_projection: true
+            selected_canonical_route: true
+            smac_plan: true
+            v310_status: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/v310/rviz
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
           Name: Module2 Live Overlay
           Namespaces:
             Canvas: true
-            Dynamic Risk: true
+            Dynamic Risk: false
             Local BEV Label: false
             Local BEV Prediction: true
             Motion Belief: true
             Motion Peak: true
-            Status: false
+            Status: true
             Visual Candidate: false
           Topic:
             Depth: 1
@@ -593,8 +621,9 @@ Visualization Manager:
           Enabled: true
           Name: Module2 Applied Nav2 Risk
           Namespaces:
-            Nav2 Risk Status: false
+            Nav2 Risk Status: true
             Projected Global Risk: true
+            Risk Cost Raised: true
           Topic:
             Depth: 1
             Durability Policy: Volatile
@@ -606,13 +635,81 @@ Visualization Manager:
           Enabled: true
           Name: Module2 Planning Decision
           Namespaces:
-            Planning Decision: false
+            Planning Decision: true
+            SR Selected Only Cells: true
+            SR Search Selected-Only Cells: true
+            SR Search Zero-Only Cells: true
+            SR Tie-Break Result: true
+            SR Zero-Tie Only Cells: true
+            SR Zero-Tie Reference: true
           Topic:
             Depth: 1
             Durability Policy: Volatile
             History Policy: Keep Last
             Reliability Policy: Reliable
             Value: /bio_nav/planner/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 SR Full-House Impact
+          Namespaces:
+            SR Full Route Selected: true
+            SR Full Route Selected-Only Search: true
+            SR Full Route Status: true
+            SR Full Route Waypoint Labels: true
+            SR Full Route Waypoints: true
+            SR Full Route Zero Reference: true
+            SR Full Route Zero-Only Search: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/sr_impact_probe/rviz_markers
+          Value: true
+        - Class: rviz_default_plugins/MarkerArray
+          Enabled: true
+          Name: Module2 Risk On-Off Impact
+          Namespaces:
+            Risk Impact Status: true
+            Risk Impact Waypoint Labels: true
+            Risk Impact Waypoints: true
+            Risk OFF Reference Path: true
+            Risk ON Selected Path: true
+          Topic:
+            Depth: 1
+            Durability Policy: Volatile
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/risk_impact_probe/rviz_markers
+          Value: true
+        - Alpha: 1
+          Buffer Length: 1
+          Class: rviz_default_plugins/Path
+          Color: 255; 215; 0
+          Enabled: true
+          Head Diameter: 0.30000001192092896
+          Head Length: 0.20000000298023224
+          Length: 0.30000001192092896
+          Line Style: Billboards
+          Line Width: 0.18000000715255737
+          Name: SR Impact Probe Final Plan
+          Offset:
+            X: 0
+            Y: 0
+            Z: 0.05999999865889549
+          Pose Color: 255; 215; 0
+          Pose Style: None
+          Radius: 0.029999999329447746
+          Shaft Diameter: 0.10000000149011612
+          Shaft Length: 0.10000000149011612
+          Topic:
+            Depth: 1
+            Durability Policy: Transient Local
+            Filter size: 10
+            History Policy: Keep Last
+            Reliability Policy: Reliable
+            Value: /bio_nav/planner/sr_impact_probe_plan
           Value: true
         - Alpha: 0.25
           Binary representation: false

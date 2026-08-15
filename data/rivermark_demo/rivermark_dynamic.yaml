@@ -1,0 +1,141 @@
+schema_version: 4
+seed: 20260813
+enabled: true
+coordinate_frame: map
+spawn_pose_name: rivermark_start
+safety:
+  guard_clearance_m: 0.45
+  min_clearance_m: 0.10
+cases:
+  # G1->G2: the robot is south-west bound on this support-graph segment while
+  # the cart approaches north-east on the same lane.
+  oncoming:
+    trigger_group: G2
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 130.8
+      direction: negative
+      min_speed_mps: 0.05
+      x_range: [-12.5, -5.0]
+      max_distance_to_obstacle_start_m: 8.0
+    obstacle:
+      id: rivermark_oncoming_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-12.0035, 129.2125, 6.71]
+        - [-7.5585, 131.4975, 6.71]
+      speed: 0.42
+      max_acceleration: 0.35
+      post_motion: retire
+    variants:
+      v1: {seed: 9201, start_delay_sec: 0.0, dwell_sec: 0.0}
+      v2: {seed: 9202, start_delay_sec: 0.3, dwell_sec: 0.0}
+      v3: {seed: 9203, start_delay_sec: 0.6, dwell_sec: 0.0}
+      v4: {seed: 9204, start_delay_sec: 0.9, dwell_sec: 0.0}
+      v5: {seed: 9205, start_delay_sec: 1.2, dwell_sec: 0.0}
+
+  # G2->G3: perpendicular crossing at the measured support-route midpoint.
+  crossing:
+    trigger_group: G3
+    activation: spatial_gate
+    gate:
+      axis: y
+      # Start near the physical conflict point.  The former 140 m gate let the
+      # cart retire 3.39 m before the robot arrived and was not a real pairing.
+      threshold: 147.0
+      direction: positive
+      min_speed_mps: 0.05
+      x_range: [-25.0, 0.0]
+      max_distance_to_obstacle_start_m: 16.0
+    obstacle:
+      id: rivermark_crossing_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-16.9516, 150.855, 6.71]
+        - [-20.469, 148.3825, 6.71]
+      speed: 0.35
+      max_acceleration: 0.35
+      post_motion: retire
+    variants:
+      v1: {seed: 9301, start_delay_sec: 0.0, dwell_sec: 0.0}
+      # V1 formal evidence showed the old 1.6 s v5 tail repeatedly missed
+      # the registered 1.5 m close-pairing window by 4--21 mm.  Keep the
+      # geometry, speed and acceptance threshold fixed while shifting the
+      # five deterministic phases earlier for a robust physical encounter.
+      v2: {seed: 9302, start_delay_sec: 0.25, dwell_sec: 0.0}
+      v3: {seed: 9303, start_delay_sec: 0.5, dwell_sec: 0.0}
+      v4: {seed: 9304, start_delay_sec: 0.75, dwell_sec: 0.0}
+      v5: {seed: 9305, start_delay_sec: 1.0, dwell_sec: 0.0}
+
+  # G3->G4: a slower cart travels west in front of the robot on the same
+  # direction segment, forcing a follow/overtake decision rather than a cross.
+  same_direction_slow:
+    trigger_group: G4
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 164.0
+      direction: positive
+      min_speed_mps: 0.05
+      x_range: [-29.0, -23.0]
+      max_distance_to_obstacle_start_m: 8.0
+    obstacle:
+      id: rivermark_same_direction_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-24.943, 168.578, 6.71]
+        - [-32.943, 168.578, 6.71]
+      speed: 0.24
+      max_acceleration: 0.25
+      post_motion: retire
+    variants:
+      v1: {seed: 9401, start_delay_sec: 0.0, dwell_sec: 0.0}
+      v2: {seed: 9402, start_delay_sec: 0.3, dwell_sec: 0.0}
+      v3: {seed: 9403, start_delay_sec: 0.6, dwell_sec: 0.0}
+      v4: {seed: 9404, start_delay_sec: 0.9, dwell_sec: 0.0}
+      v5: {seed: 9405, start_delay_sec: 1.2, dwell_sec: 0.0}
+
+  # G4->G5: enter along the road corridor, dwell at its support-route
+  # midpoint, then clear forward.  Crossing the roadside curb would be an
+  # invalid physical trajectory, so all three poses remain in the drive lane.
+  temporary_block:
+    trigger_group: G5
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 174.0
+      direction: positive
+      min_speed_mps: 0.05
+      x_range: [-50.0, -39.0]
+      max_distance_to_obstacle_start_m: 10.0
+    obstacle:
+      id: rivermark_temporary_block_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-44.244, 176.403, 6.71]
+        - [-46.944, 177.708, 6.71]
+        - [-49.644, 179.013, 6.71]
+      speed: 0.35
+      max_acceleration: 0.35
+      post_motion: retire
+    variants:
+      v1: {seed: 9501, start_delay_sec: 0.0, dwell_sec: 0.4}
+      # Complete the temporary blockage before the stopped G5 robot can pin
+      # the kinematic actor in safety_yield.  The actor still enters, dwells
+      # and clears inside the same verified drive-lane trajectory.
+      v2: {seed: 9502, start_delay_sec: 0.2, dwell_sec: 0.6}
+      v3: {seed: 9503, start_delay_sec: 0.4, dwell_sec: 0.8}
+      v4: {seed: 9504, start_delay_sec: 0.6, dwell_sec: 1.0}
+      v5: {seed: 9505, start_delay_sec: 0.8, dwell_sec: 1.2}
+
+case_sets:
+  full_route_four_stage:
+    - oncoming
+    - crossing
+    - same_direction_slow
+    - temporary_block

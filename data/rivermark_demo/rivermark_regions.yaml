@@ -1,0 +1,754 @@
+schema_version: 1
+scene_id: rivermark_a
+map_frame: map
+regions:
+- id: rivermark_a:region_00
+  center_map_xy:
+  - -42.0
+  - 114.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 108.0
+  - - -36.0
+    - 108.0
+  - - -36.0
+    - 120.0
+  - - -48.0
+    - 120.0
+  priority: 0
+- id: rivermark_a:region_01
+  center_map_xy:
+  - -30.0
+  - 114.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 108.0
+  - - -24.0
+    - 108.0
+  - - -24.0
+    - 120.0
+  - - -36.0
+    - 120.0
+  priority: 0
+- id: rivermark_a:region_02
+  center_map_xy:
+  - -18.0
+  - 114.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 108.0
+  - - -12.0
+    - 108.0
+  - - -12.0
+    - 120.0
+  - - -24.0
+    - 120.0
+  priority: 0
+- id: rivermark_a:region_03
+  center_map_xy:
+  - 18.0
+  - 114.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 108.0
+  - - 24.0
+    - 108.0
+  - - 24.0
+    - 120.0
+  - - 12.0
+    - 120.0
+  priority: 0
+- id: rivermark_a:region_04
+  center_map_xy:
+  - 30.0
+  - 114.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 24.0
+    - 108.0
+  - - 36.0
+    - 108.0
+  - - 36.0
+    - 120.0
+  - - 24.0
+    - 120.0
+  priority: 0
+- id: rivermark_a:region_05
+  center_map_xy:
+  - -42.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 120.0
+  - - -36.0
+    - 120.0
+  - - -36.0
+    - 132.0
+  - - -48.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_06
+  center_map_xy:
+  - -30.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 120.0
+  - - -24.0
+    - 120.0
+  - - -24.0
+    - 132.0
+  - - -36.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_07
+  center_map_xy:
+  - -18.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 120.0
+  - - -12.0
+    - 120.0
+  - - -12.0
+    - 132.0
+  - - -24.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_08
+  center_map_xy:
+  - -6.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -12.0
+    - 120.0
+  - - 0.0
+    - 120.0
+  - - 0.0
+    - 132.0
+  - - -12.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_09
+  center_map_xy:
+  - 6.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 0.0
+    - 120.0
+  - - 12.0
+    - 120.0
+  - - 12.0
+    - 132.0
+  - - 0.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_10
+  center_map_xy:
+  - 18.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 120.0
+  - - 24.0
+    - 120.0
+  - - 24.0
+    - 132.0
+  - - 12.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_11
+  center_map_xy:
+  - 30.0
+  - 126.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 24.0
+    - 120.0
+  - - 36.0
+    - 120.0
+  - - 36.0
+    - 132.0
+  - - 24.0
+    - 132.0
+  priority: 0
+- id: rivermark_a:region_12
+  center_map_xy:
+  - -42.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 132.0
+  - - -36.0
+    - 132.0
+  - - -36.0
+    - 144.0
+  - - -48.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_13
+  center_map_xy:
+  - -30.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 132.0
+  - - -24.0
+    - 132.0
+  - - -24.0
+    - 144.0
+  - - -36.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_14
+  center_map_xy:
+  - -18.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 132.0
+  - - -12.0
+    - 132.0
+  - - -12.0
+    - 144.0
+  - - -24.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_15
+  center_map_xy:
+  - -6.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -12.0
+    - 132.0
+  - - 0.0
+    - 132.0
+  - - 0.0
+    - 144.0
+  - - -12.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_16
+  center_map_xy:
+  - 6.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 0.0
+    - 132.0
+  - - 12.0
+    - 132.0
+  - - 12.0
+    - 144.0
+  - - 0.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_17
+  center_map_xy:
+  - 18.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 132.0
+  - - 24.0
+    - 132.0
+  - - 24.0
+    - 144.0
+  - - 12.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_18
+  center_map_xy:
+  - 30.0
+  - 138.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 24.0
+    - 132.0
+  - - 36.0
+    - 132.0
+  - - 36.0
+    - 144.0
+  - - 24.0
+    - 144.0
+  priority: 0
+- id: rivermark_a:region_19
+  center_map_xy:
+  - -54.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -60.0
+    - 144.0
+  - - -48.0
+    - 144.0
+  - - -48.0
+    - 156.0
+  - - -60.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_20
+  center_map_xy:
+  - -42.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 144.0
+  - - -36.0
+    - 144.0
+  - - -36.0
+    - 156.0
+  - - -48.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_21
+  center_map_xy:
+  - -30.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 144.0
+  - - -24.0
+    - 144.0
+  - - -24.0
+    - 156.0
+  - - -36.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_22
+  center_map_xy:
+  - -18.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 144.0
+  - - -12.0
+    - 144.0
+  - - -12.0
+    - 156.0
+  - - -24.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_23
+  center_map_xy:
+  - -6.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -12.0
+    - 144.0
+  - - 0.0
+    - 144.0
+  - - 0.0
+    - 156.0
+  - - -12.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_24
+  center_map_xy:
+  - 6.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 0.0
+    - 144.0
+  - - 12.0
+    - 144.0
+  - - 12.0
+    - 156.0
+  - - 0.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_25
+  center_map_xy:
+  - 18.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 144.0
+  - - 24.0
+    - 144.0
+  - - 24.0
+    - 156.0
+  - - 12.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_26
+  center_map_xy:
+  - 30.0
+  - 150.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 24.0
+    - 144.0
+  - - 36.0
+    - 144.0
+  - - 36.0
+    - 156.0
+  - - 24.0
+    - 156.0
+  priority: 0
+- id: rivermark_a:region_27
+  center_map_xy:
+  - -54.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -60.0
+    - 156.0
+  - - -48.0
+    - 156.0
+  - - -48.0
+    - 168.0
+  - - -60.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_28
+  center_map_xy:
+  - -42.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 156.0
+  - - -36.0
+    - 156.0
+  - - -36.0
+    - 168.0
+  - - -48.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_29
+  center_map_xy:
+  - -30.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 156.0
+  - - -24.0
+    - 156.0
+  - - -24.0
+    - 168.0
+  - - -36.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_30
+  center_map_xy:
+  - -18.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 156.0
+  - - -12.0
+    - 156.0
+  - - -12.0
+    - 168.0
+  - - -24.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_31
+  center_map_xy:
+  - -6.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -12.0
+    - 156.0
+  - - 0.0
+    - 156.0
+  - - 0.0
+    - 168.0
+  - - -12.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_32
+  center_map_xy:
+  - 6.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 0.0
+    - 156.0
+  - - 12.0
+    - 156.0
+  - - 12.0
+    - 168.0
+  - - 0.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_33
+  center_map_xy:
+  - 18.0
+  - 162.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 156.0
+  - - 24.0
+    - 156.0
+  - - 24.0
+    - 168.0
+  - - 12.0
+    - 168.0
+  priority: 0
+- id: rivermark_a:region_34
+  center_map_xy:
+  - -54.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -60.0
+    - 168.0
+  - - -48.0
+    - 168.0
+  - - -48.0
+    - 180.0
+  - - -60.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_35
+  center_map_xy:
+  - -42.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 168.0
+  - - -36.0
+    - 168.0
+  - - -36.0
+    - 180.0
+  - - -48.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_36
+  center_map_xy:
+  - -30.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 168.0
+  - - -24.0
+    - 168.0
+  - - -24.0
+    - 180.0
+  - - -36.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_37
+  center_map_xy:
+  - -18.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 168.0
+  - - -12.0
+    - 168.0
+  - - -12.0
+    - 180.0
+  - - -24.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_38
+  center_map_xy:
+  - -6.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -12.0
+    - 168.0
+  - - 0.0
+    - 168.0
+  - - 0.0
+    - 180.0
+  - - -12.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_39
+  center_map_xy:
+  - 6.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 0.0
+    - 168.0
+  - - 12.0
+    - 168.0
+  - - 12.0
+    - 180.0
+  - - 0.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_40
+  center_map_xy:
+  - 18.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 168.0
+  - - 24.0
+    - 168.0
+  - - 24.0
+    - 180.0
+  - - 12.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_41
+  center_map_xy:
+  - 30.0
+  - 174.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 24.0
+    - 168.0
+  - - 36.0
+    - 168.0
+  - - 36.0
+    - 180.0
+  - - 24.0
+    - 180.0
+  priority: 0
+- id: rivermark_a:region_42
+  center_map_xy:
+  - -54.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -60.0
+    - 180.0
+  - - -48.0
+    - 180.0
+  - - -48.0
+    - 192.0
+  - - -60.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_43
+  center_map_xy:
+  - -42.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -48.0
+    - 180.0
+  - - -36.0
+    - 180.0
+  - - -36.0
+    - 192.0
+  - - -48.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_44
+  center_map_xy:
+  - -30.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -36.0
+    - 180.0
+  - - -24.0
+    - 180.0
+  - - -24.0
+    - 192.0
+  - - -36.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_45
+  center_map_xy:
+  - -18.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -24.0
+    - 180.0
+  - - -12.0
+    - 180.0
+  - - -12.0
+    - 192.0
+  - - -24.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_46
+  center_map_xy:
+  - -6.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - -12.0
+    - 180.0
+  - - 0.0
+    - 180.0
+  - - 0.0
+    - 192.0
+  - - -12.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_47
+  center_map_xy:
+  - 6.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 0.0
+    - 180.0
+  - - 12.0
+    - 180.0
+  - - 12.0
+    - 192.0
+  - - 0.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_48
+  center_map_xy:
+  - 18.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 12.0
+    - 180.0
+  - - 24.0
+    - 180.0
+  - - 24.0
+    - 192.0
+  - - 12.0
+    - 192.0
+  priority: 0
+- id: rivermark_a:region_49
+  center_map_xy:
+  - 30.0
+  - 186.0
+  yaw_deg: 0.0
+  core_polygon_map:
+  - - 24.0
+    - 180.0
+  - - 36.0
+    - 180.0
+  - - 36.0
+    - 192.0
+  - - 24.0
+    - 192.0
+  priority: 0

@@ -24,6 +24,7 @@ namespace bio_nav_fusion
 {
 
 class TieBreakSmacPlanner2D;
+struct TieBreakPlanMetrics;
 
 struct GridSearchResult
 {
@@ -71,7 +72,8 @@ private:
     const std::string & snapshot_sha256,
     const std::string & qualification_sha256,
     const std::string & motion_core_sha256,
-    const std::string & module3_map_sha256);
+    const std::string & module3_map_sha256,
+    const TieBreakPlanMetrics * tie_metrics);
   nav_msgs::msg::Path stockPlan(
     const geometry_msgs::msg::PoseStamped & start,
     const geometry_msgs::msg::PoseStamped & goal,

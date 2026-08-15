@@ -1,0 +1,241 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Selection
+    Name: Selection
+  - Class: rviz_common/Tool Properties
+    Name: Tool Properties
+  - Class: rviz_common/Views
+    Name: Views
+  - Class: rviz_common/Time
+    Name: Time
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Alpha: 0.82
+      Class: rviz_default_plugins/Map
+      Enabled: true
+      Name: Rivermark Physical Occupancy 0.05m
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /map
+      Value: true
+    - Alpha: 0.18
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Enabled: false
+      Name: Module3 Global Costmap
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /global_costmap/costmap
+      Value: false
+    - Alpha: 0.62
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Enabled: true
+      Name: Module3 Local Costmap
+      Topic:
+        Depth: 1
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/costmap
+      Value: true
+    - Class: rviz_default_plugins/RobotModel
+      Description Source: Topic
+      Description Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /robot_description
+      Enabled: true
+      Name: Module3 Jackal Physical Authority
+      Value: true
+    - Alpha: 1
+      Class: rviz_default_plugins/Polygon
+      Color: 255; 70; 30
+      Enabled: true
+      Name: Module3 Safety Footprint
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/published_footprint
+      Value: true
+    - Class: rviz_default_plugins/LaserScan
+      Color: 255; 45; 45
+      Color Transformer: FlatColor
+      Decay Time: 0
+      Enabled: true
+      Name: Outdoor LiDAR Obstacles
+      Position Transformer: XYZ
+      Size (Pixels): 3
+      Style: Points
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Color: 20; 255; 210
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.10
+      Name: Module3 Smac Plan
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /plan
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Color: 255; 125; 30
+      Enabled: true
+      Line Style: Lines
+      Line Width: 0.08
+      Name: Module3 MPPI Optimal Trajectory
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /optimal_trajectory
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Attempt31 Outdoor Static Topology
+      Namespaces:
+        module3_gvg_edges: true
+        module3_gvg_nodes: false
+        outdoor_five_waypoints: true
+        outdoor_tile_cores: true
+        outdoor_waypoint_labels: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /bio_nav/v310/rviz_static
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Attempt31 Module2 Module3 Edge Handoff
+      Namespaces:
+        bridge_dr: true
+        bridge_module2: true
+        bridge_sr: true
+        module3_final_cost: false
+        module3_runtime_blocked: true
+        module3_runtime_suspect: true
+        selected_canonical_route: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /bio_nav/v310/rviz_edges
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Attempt31 Live Tile and Execution
+      Namespaces:
+        active_tile_canvas_16x16: true
+        active_tile_cells: true
+        active_tile_core_12x12: true
+        active_tile_status: true
+        executed_trajectory: true
+        module2_dr: true
+        module2_dynamic_cost: true
+        module2_p_corr: true
+        module2_place_peak: true
+        module2_remap: true
+        module2_sr: true
+        moving_lookahead: true
+        ownership_handoff: true
+        ownership_module2: true
+        ownership_module3: true
+        previous_tile_switch: true
+        route_projection: true
+        smac_plan: true
+        tile_switch_direction: true
+        tile_switch_event: true
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /bio_nav/v310/rviz
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Rivermark Physical Dynamic Actors
+      Namespaces:
+        dynamic_future_trajectory: true
+        dynamic_obstacle_status: true
+        dynamic_obstacles: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /experiment/dynamic_obstacles/markers
+      Value: true
+    - Class: rviz_default_plugins/TF
+      Enabled: false
+      Name: TF map-odom-base_link
+      Show Axes: false
+      Show Names: false
+      Value: false
+  Enabled: true
+  Global Options:
+    Background Color: 22; 27; 36
+    Fixed Frame: map
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/Interact
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+    - Class: rviz_default_plugins/Measure
+    - Class: rviz_default_plugins/SetGoal
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /bio_nav/route_goal
+  Transformation:
+    Current:
+      Class: rviz_default_plugins/TF
+  Value: true
+  Views:
+    Current:
+      Angle: 0
+      Class: rviz_default_plugins/TopDownOrtho
+      Invert Z Axis: false
+      Name: Rivermark 80m Top Down
+      Near Clip Distance: 0.01
+      Scale: 95
+      Target Frame: map
+      Value: TopDownOrtho (rviz_default_plugins)
+      X: -12
+      Y: 152
+    Saved: ~
+Window Geometry:
+  Height: 1000
+  Width: 1600
+  X: 80
+  Y: 40

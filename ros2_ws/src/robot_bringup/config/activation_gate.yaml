@@ -22,6 +22,7 @@ nav2_activation_gate:
     managed_nodes:
       - controller_server
       - planner_server
+      - route_server
       - behavior_server
       - velocity_smoother
       - collision_monitor

@@ -1,3 +1,7 @@
+> **适用范围定界（2026-08-15）**：本台账覆盖 Kujiale / Attempt21–31 历史验证，记录截至 2026-08-03。<br>
+> 当前 Final Rivermark 资格台账见 [`rivermark_completion_audit.md`](rivermark_completion_audit.md) 与 Integration 工作树 `docs/final_closure/` 收据（分支 `codex/final-indoor-outdoor-navigation`）。<br>
+> 正文历史记录原样有效，未改写。
+
 # Kujiale 4×20 验证台账
 
 > 最近复核：2026-07-26<br>

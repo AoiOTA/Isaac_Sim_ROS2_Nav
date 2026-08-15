@@ -13,14 +13,15 @@ mode="$1"; shift
 environment_root="${KUJIALE_ENVIRONMENT_ROOT:-/home/lyb/kujiale_usd_rooms_20260717}"
 require_directory "${environment_root}"
 appearance="${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml"
+spawn_pose="${ISAAC_NAV_ATTEMPT30_SPAWN_POSE:-long_route_start_g1}"
 require_file "${appearance}"
 
 case "${mode}" in
   static)
-    obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_static.yaml"
+    obstacle_config="${ISAAC_NAV_STATIC_OBSTACLE_CONFIG:-${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_static.yaml}"
     ;;
   dynamic)
-    obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml"
+    obstacle_config="${ISAAC_NAV_DYNAMIC_OBSTACLE_CONFIG:-${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml}"
     ;;
   *) die "mode must be static or dynamic, got: ${mode}" ;;
 esac
@@ -30,7 +31,7 @@ exec "${SCRIPT_DIR}/run_isaac.sh" \
   --environment-root "${environment_root}" \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --spawn-poses-file "${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml" \
-  --spawn-pose long_route_start_g1 \
+  --spawn-pose "${spawn_pose}" \
   --navigation-mode localization \
   --mode ideal \
   --camera-profile rgbd_navigation \

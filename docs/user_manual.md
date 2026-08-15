@@ -318,6 +318,11 @@ v16 最终静态任务级显式 profile。脚本会复用身份可验证的 oper
 [Module2 × Nav2 规划/风险融合](module2_nav2_planning_risk_fusion.md)和
 [公开图文报告](https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#manual)。
 
+报告已嵌入新的 Isaac Sim + RViz Combined 联合截图和约 33.73 秒演示视频。也可直接
+打开[公开截图](https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/29c1ec5fff94fd373d8b88c521544988c689f7e5/docs/report_assets/attempt21_module2_nav2_effect/combined_isaac_rviz.png)
+或[公开视频](https://raw.githubusercontent.com/AoiOTA/Isaac_Sim_ROS2_Nav/29c1ec5fff94fd373d8b88c521544988c689f7e5/docs/report_assets/attempt21_module2_nav2_effect/combined_navigation_demo.mp4)。
+两个链接绑定不可变资产提交，其他电脑无需本地素材即可查看。
+
 这些运行始终标记为 `engineering_manual_visual_only`，不能替代或改写冻结的正式实验
 receipt。静态任务是否完成以全屋路线完成、无超时/卡死且 Isaac ContactSensor 不触发
 为准；SAT overlap/clearance 只作诊断。

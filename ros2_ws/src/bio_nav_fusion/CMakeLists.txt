@@ -10,12 +10,14 @@ find_package(bio_nav_interfaces REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav2_core REQUIRED)
 find_package(nav2_costmap_2d REQUIRED)
+find_package(nav2_mppi_controller REQUIRED)
 find_package(nav2_smac_planner REQUIRED)
 find_package(nav2_util REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(rcutils REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
@@ -50,6 +52,7 @@ ament_target_dependencies(bio_nav_planner_plugin
 add_library(bio_nav_costmap_plugin SHARED
   src/cognitive_risk_layer.cpp
   src/local_risk_grid_layer.cpp
+  src/reachability_observer_layer.cpp
 )
 
 add_executable(local_risk_grid_shadow_auditor
@@ -112,7 +115,9 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_include_directories(include)
-ament_export_libraries(bio_nav_planner_plugin bio_nav_costmap_plugin)
+ament_export_libraries(
+  bio_nav_planner_plugin bio_nav_costmap_plugin)
 ament_export_dependencies(
-  bio_nav_interfaces nav2_core nav2_costmap_2d nav2_smac_planner tf2_ros)
+  bio_nav_interfaces nav2_core nav2_costmap_2d nav2_mppi_controller
+  nav2_smac_planner tf2_ros)
 ament_package()

@@ -15,6 +15,9 @@ TEST(BioNavFusionPlugins, risk_layer_does_not_preload_stock_smac_factory)
   const auto local_risk_layer = costmap_loader.createUniqueInstance(
     "bio_nav_fusion::LocalRiskGridLayer");
   ASSERT_NE(local_risk_layer, nullptr);
+  const auto reachability_observer = costmap_loader.createUniqueInstance(
+    "bio_nav_fusion::ReachabilityObserverLayer");
+  ASSERT_NE(reachability_observer, nullptr);
 
   pluginlib::ClassLoader<nav2_core::GlobalPlanner> planner_loader(
     "nav2_core", "nav2_core::GlobalPlanner");

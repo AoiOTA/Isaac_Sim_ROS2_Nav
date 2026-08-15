@@ -1,0 +1,33 @@
+# Engineering-only moving-risk field for V4 query Q36_04.  The actor crosses
+# the slightly shorter west-centre branch while the 4%-longer east-centre loop
+# remains clear.  It retires after finite motion and cannot close either route.
+schema_version: 4
+seed: 9641
+enabled: true
+coordinate_frame: map
+spawn_pose_name: q36_04_start
+safety: {guard_clearance_m: 0.50, min_clearance_m: 0.20}
+cases:
+  q36_04_crossing:
+    trigger_group: FOCUS
+    activation: trigger
+    gate: {axis: y, threshold: -6.20, direction: positive, min_speed_mps: 0.05, x_range: [1.15, 1.80]}
+    obstacle:
+      id: q36_04_crossing_actor
+      size: [0.45, 0.45, 1.00]
+      mass: 20.0
+      waypoints:
+        - [0.15, -2.90, 0.50]
+        - [-1.20, -2.10, 0.50]
+        - [0.15, -2.90, 0.50]
+        - [-1.45, -1.90, 0.50]
+      speed: 0.35
+      max_acceleration: 0.75
+      post_motion: retire
+    variants:
+      v1: {seed: 9641, start_delay_sec: 0.00}
+      v2: {seed: 9642, start_delay_sec: 0.30}
+      v3: {seed: 9643, start_delay_sec: 0.60}
+      v4: {seed: 9644, start_delay_sec: 0.90}
+      v5: {seed: 9645, start_delay_sec: 1.20}
+case_sets: {}

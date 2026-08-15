@@ -1,0 +1,56 @@
+schema: bio_nav.final_rivermark_metric_contract.v1
+campaign_policy:
+  run_count_per_group: 20
+  post_dispatch_fail_stop: true
+  require_strict_success_every_run: true
+  require_collision_free_every_run: true
+  require_complete_evidence_every_run: true
+  require_five_waypoint_completion_every_run: true
+
+primary_navigation_metrics:
+  static:
+    expected_obstacle_ids:
+      - rivermark_static_arc12
+      - rivermark_static_arc28
+      - rivermark_static_arc44
+      - rivermark_static_arc60
+    maximum_encounter_center_distance_m: 1.50
+    minimum_manager_clearance_m: 0.0
+    maximum_stationary_speed_mps: 0.02
+    maximum_path_deviation_percent: 20.0
+  dynamic:
+    exposure_distance_m: 2.50
+    minimum_exposure_duration_sec: 0.50
+    maximum_encounter_center_distance_m: 2.20
+    maximum_time_to_collision_sec: 8.0
+    minimum_relative_closing_speed_mps: 0.25
+    minimum_manager_clearance_m: 0.0
+    actors:
+      rivermark_oncoming_cart:
+        minimum_peak_speed_mps: 0.54
+        minimum_progress: 0.90
+      rivermark_crossing_cart:
+        minimum_peak_speed_mps: 0.49
+        minimum_progress: 0.90
+      rivermark_same_direction_cart:
+        minimum_peak_speed_mps: 0.40
+        minimum_progress: 0.90
+      rivermark_temporary_block_cart:
+        minimum_peak_speed_mps: 0.45
+        minimum_progress: 0.90
+  appearance:
+    profiles: [dim_warm, dim_cool, bright_warm, bright_cool]
+    repeats_per_profile: 5
+
+secondary_compute_metrics:
+  adaptation_compute_latency_reduction_percent:
+    scope: compute_only
+    required_reporting:
+      - classic_latency_p50_ms
+      - classic_latency_p95_ms
+      - cognitive_latency_p50_ms
+      - cognitive_latency_p95_ms
+      - speedup_ratio
+      - quality_error
+    prohibited_interpretation: navigation_success_or_end_to_end_speed_improvement
+    gating_for_navigation_qualification: false

@@ -10,7 +10,9 @@ export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_$
 export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"
 
 readonly ISAAC_NAV_EXPECTED_ROS_DISTRO="jazzy"
-readonly ISAAC_NAV_EXPECTED_DOMAIN_ID="42"
+# Domain 42 remains the normal default.  Engineering runs may select another
+# domain to avoid an already-running ROS graph without stopping that graph.
+readonly ISAAC_NAV_EXPECTED_DOMAIN_ID="${ISAAC_NAV_EXPECTED_DOMAIN_ID:-42}"
 readonly ISAAC_NAV_EXPECTED_RMW="rmw_fastrtps_cpp"
 
 log_info() {

@@ -1,0 +1,24 @@
+# Session-layer-only appearance perturbations for Attempt31 Rivermark.
+# Geometry, collision, occupancy, route graph and dynamic motion are unchanged.
+schema_version: 1
+profiles:
+  baseline:
+    light_intensity_scale: 1.0
+    color_temperature_k: null
+    material_hue_shift_deg: 0.0
+  dim_warm:
+    light_intensity_scale: 0.4
+    color_temperature_k: 3000
+    material_hue_shift_deg: 35.0
+  dim_cool:
+    light_intensity_scale: 0.4
+    color_temperature_k: 7500
+    material_hue_shift_deg: -35.0
+  bright_warm:
+    light_intensity_scale: 1.6
+    color_temperature_k: 3000
+    material_hue_shift_deg: 35.0
+  bright_cool:
+    light_intensity_scale: 1.6
+    color_temperature_k: 7500
+    material_hue_shift_deg: -35.0

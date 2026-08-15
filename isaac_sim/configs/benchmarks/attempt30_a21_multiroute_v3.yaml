@@ -1,0 +1,61 @@
+schema_version: 1
+name: attempt30_a21_multiroute_v3
+revision: 3
+status: candidate
+classification: engineering_benchmark_only
+bounds_xy_m: [-8.0, -8.0, 8.0, 8.0]
+resolution_m: 0.05
+base_environment:
+  asset_relative_path: Isaac/Environments/Grid/default_environment.usd
+
+# V3 is an asymmetric gallery/alley field, not a repeated obstacle lattice.
+# Overlapping rotated cubes form L, U and kinked physical islands with unequal
+# openings. The compound shapes are intentional geometry; Occupancy and GVG
+# are generated from their exact union and never receive authored graph edges.
+obstacles:
+  - {id: boundary_south, role: outer_boundary, center: [0.0, -7.875, 0.50], size: [16.0, 0.25, 1.0], yaw_deg: 0.0}
+  - {id: boundary_north, role: outer_boundary, center: [0.0, 7.875, 0.50], size: [16.0, 0.25, 1.0], yaw_deg: 0.0}
+  - {id: boundary_west, role: outer_boundary, center: [-7.875, 0.0, 0.50], size: [0.25, 16.0, 1.0], yaw_deg: 0.0}
+  - {id: boundary_east, role: outer_boundary, center: [7.875, 0.0, 0.50], size: [0.25, 16.0, 1.0], yaw_deg: 0.0}
+
+  # South-west L island.
+  - {id: sw_long, role: courtyard_block, center: [-5.00, -5.10, 0.60], size: [2.80, 0.65, 1.20], yaw_deg: 14.0}
+  - {id: sw_return, role: courtyard_block, center: [-5.90, -4.15, 0.60], size: [0.65, 2.25, 1.20], yaw_deg: 14.0}
+
+  # South kink island.
+  - {id: s_spine, role: courtyard_block, center: [-0.80, -5.15, 0.55], size: [0.65, 2.60, 1.10], yaw_deg: -10.0}
+  - {id: s_cap, role: courtyard_block, center: [0.00, -4.15, 0.55], size: [2.10, 0.65, 1.10], yaw_deg: -10.0}
+
+  # South-east U island with an unequal north opening.
+  - {id: se_base, role: courtyard_block, center: [4.55, -5.25, 0.60], size: [2.60, 0.60, 1.20], yaw_deg: -12.0}
+  - {id: se_wing_w, role: courtyard_block, center: [3.50, -4.35, 0.60], size: [0.60, 2.20, 1.20], yaw_deg: -12.0}
+  - {id: se_wing_e, role: courtyard_block, center: [5.65, -4.55, 0.60], size: [0.60, 1.80, 1.20], yaw_deg: -12.0}
+
+  # West hooked wall.
+  - {id: w_diag, role: courtyard_block, center: [-5.15, -0.35, 0.60], size: [0.65, 3.00, 1.20], yaw_deg: 18.0}
+  - {id: w_hook, role: courtyard_block, center: [-4.35, 0.75, 0.60], size: [1.80, 0.65, 1.20], yaw_deg: 18.0}
+
+  # Central offset S island creates unequal upper/lower crossings.
+  - {id: c_low, role: courtyard_block, center: [-0.45, -0.75, 0.65], size: [2.60, 0.65, 1.30], yaw_deg: 20.0}
+  - {id: c_joint, role: courtyard_block, center: [0.55, 0.10, 0.65], size: [0.65, 2.00, 1.30], yaw_deg: 20.0}
+  - {id: c_high, role: courtyard_block, center: [1.15, 1.15, 0.65], size: [2.40, 0.65, 1.30], yaw_deg: -20.0}
+
+  # East hooked wall, rotated opposite the west island.
+  - {id: e_diag, role: courtyard_block, center: [5.15, 0.45, 0.60], size: [0.65, 3.00, 1.20], yaw_deg: -16.0}
+  - {id: e_hook, role: courtyard_block, center: [4.35, 1.60, 0.60], size: [1.80, 0.65, 1.20], yaw_deg: -16.0}
+
+  # North-west U island opening toward the centre.
+  - {id: nw_base, role: courtyard_block, center: [-4.70, 4.05, 0.60], size: [2.50, 0.60, 1.20], yaw_deg: -12.0}
+  - {id: nw_wing_w, role: courtyard_block, center: [-5.75, 4.95, 0.60], size: [0.60, 2.10, 1.20], yaw_deg: -12.0}
+  - {id: nw_wing_e, role: courtyard_block, center: [-3.60, 5.20, 0.60], size: [0.60, 1.70, 1.20], yaw_deg: -12.0}
+
+  # North kink and north-east L islands.
+  - {id: n_spine, role: courtyard_block, center: [-0.80, 4.10, 0.55], size: [0.65, 2.00, 1.10], yaw_deg: 8.0}
+  - {id: n_cap, role: courtyard_block, center: [0.00, 5.05, 0.55], size: [2.10, 0.65, 1.10], yaw_deg: 8.0}
+  - {id: ne_long, role: courtyard_block, center: [4.50, 4.25, 0.60], size: [2.50, 0.65, 1.20], yaw_deg: 25.0}
+  - {id: ne_return, role: courtyard_block, center: [5.55, 5.20, 0.60], size: [0.65, 2.10, 1.20], yaw_deg: 25.0}
+
+  # Two small diagonal physical islands break long sight lines without
+  # closing the adjacent padded-footprint passages.
+  - {id: infill_nw, role: courtyard_block, center: [-2.35, 2.05, 0.50], size: [0.75, 1.55, 1.00], yaw_deg: 38.0}
+  - {id: infill_se, role: courtyard_block, center: [2.65, -2.10, 0.50], size: [0.80, 1.65, 1.00], yaw_deg: -33.0}

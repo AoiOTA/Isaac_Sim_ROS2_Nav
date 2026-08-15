@@ -7,6 +7,7 @@ from robot_experiments.static_contact import (
     convex_contact_depth,
     exceeds_overlap_tolerance,
     load_robot_footprint,
+    select_declared_static_obstacles,
     static_contact_summary,
 )
 
@@ -80,6 +81,18 @@ def test_overlap_tolerance_rejects_visible_penetration() -> None:
 def test_static_contact_requires_both_pose_and_obstacle_evidence() -> None:
     assert static_contact_summary([], [obstacle(0.0, 0.0)], FOOTPRINT)["observed"] is False
     assert static_contact_summary([Pose(0.0, 0.0, 0.0, 1.0)], [], FOOTPRINT)["observed"] is False
+
+
+def test_static_contact_excludes_time_varying_actor_snapshots() -> None:
+    state = [
+        obstacle(0.0, 0.0),
+        {**obstacle(1.0, 0.0), "id": "moving_actor", "state": "moving"},
+    ]
+    selected = select_declared_static_obstacles(
+        state, [{"id": "low_box"}]
+    )
+    assert [item["id"] for item in selected] == ["low_box"]
+    assert select_declared_static_obstacles(state, []) == []
 
 
 def test_loads_checked_in_robot_footprint() -> None:

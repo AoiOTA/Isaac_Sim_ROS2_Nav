@@ -1,0 +1,48 @@
+{
+  "artifacts": {
+    "convergence_curve": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/benchmarks/module2_contracts/convergence_curve.png",
+    "map_delta": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/benchmarks/module2_contracts/parent_full_incremental_delta.png"
+  },
+  "convergence": {
+    "case_count": 20,
+    "classic_baseline": "iterative discounted value update to max-delta tolerance",
+    "cognitive_method": "cached M_SR@goal and M_DR@dynamic_cost",
+    "gamma": 0.95,
+    "median_improvement_percent": 99.52641248501757,
+    "minimum_improvement_percent": 99.47340379479598,
+    "navigation_equivalence": "requires separate real Module3/Nav2 validation",
+    "numerical_ridge": 1e-08,
+    "quality_pass": true,
+    "scenario": "cognitive region rivermark_a:region_22; paired goal and dynamic-risk context change",
+    "schema": "bio_nav.v310.contract_5_3_13.v1",
+    "target_improvement_percent": 20.0,
+    "target_pass": true,
+    "timer_scope": "adaptation computation only; excludes ROS, simulator, startup and rendering",
+    "tolerance": 1e-09
+  },
+  "map_update": {
+    "full_method": "fresh ParentChildMemoryBankV30 parent B materialization",
+    "incremental_method": "frozen ParentChildMemoryBankV30 child delta and tombstones",
+    "median_improvement_percent": 37.18200447450357,
+    "minimum_improvement_percent": 30.31296566959477,
+    "quality_pass": true,
+    "repeat_count": 20,
+    "scenario": "real cognitive region rivermark_a:region_22 A to local persistent-obstacle B",
+    "schema": "bio_nav.v310.contract_5_3_15.v1",
+    "target_improvement_percent": 30.0,
+    "target_pass": true,
+    "timer_scope": "cognitive update only; excludes SLAM, ROS, simulator and rendering"
+  },
+  "runtime_parent_child_smoke": {
+    "active_slot_id": 1,
+    "added_transition_count": 0,
+    "dirty_state_count": 4,
+    "dr_residual": 6.661338147750939e-16,
+    "map_update_mode": "parent_child_incremental",
+    "parent_hash_unchanged": true,
+    "pass": true,
+    "physical_support_equal": true,
+    "removed_transition_count": 6,
+    "sr_residual": 6.661338147750939e-16
+  }
+}

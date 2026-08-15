@@ -85,7 +85,10 @@ cases:
     # while the robot is still turning into the aisle.
     gate: {axis: y, threshold: 2.60, direction: negative, min_speed_mps: 0.20, x_range: [-0.55, -0.25]}
     obstacle:
-      {id: g2_g3_exit_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.40, 1.00, 0.50], [-0.40, -0.70, 0.50]], speed: 0.65, max_acceleration: 0.90, post_motion: park}
+      # The endpoint is inside the only usable G2->G3 junction.  Retire after
+      # the guarded crossing completes so the actor cannot become a permanent
+      # static blocker for the remainder of the same leg.
+      {id: g2_g3_exit_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.40, 1.00, 0.50], [-0.40, -0.70, 0.50]], speed: 0.65, max_acceleration: 0.90, post_motion: retire}
     variants:
       v1: {seed: 7461, start_delay_sec: 0.00}
       v2: {seed: 7462, start_delay_sec: 0.05}
@@ -105,7 +108,10 @@ cases:
     obstacle:
       # Shift the swept band 0.15 m out of the doorway (north) while retaining
       # a >= 0.05 m static-map margin for the 0.40 m actor footprint.
-      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.90, -1.30, 0.50], [-0.20, -1.30, 0.50]], speed: 0.32, max_acceleration: 1.60, post_motion: park}
+      # The final point is on the later G5->G1 centreline.  As with the G3
+      # actor, retire only after the guarded crossing finishes instead of
+      # converting the completed dynamic interaction into a static blockage.
+      {id: g5_g1_crossing_actor, size: [0.40, 0.40, 1.00], mass: 20.0, waypoints: [[-0.90, -1.30, 0.50], [-0.20, -1.30, 0.50]], speed: 0.32, max_acceleration: 1.60, post_motion: retire}
     variants:
       v1: {seed: 7471, start_delay_sec: 0.00}
       v2: {seed: 7472, start_delay_sec: 0.05}
@@ -124,6 +130,7 @@ cases:
       v4: {seed: 7434, dwell_sec: 1.50}
       v5: {seed: 7435, dwell_sec: 1.80}
 case_sets:
-  # Exactly one actor is armed for each of G2, G3, and G1.  Goal completion
-  # retires the preceding actor before the next goal is dispatched.
+  # Exactly one actor is armed for each of G2, G3, and G1.  Actors that park
+  # are retired at goal completion; crossing actors self-retire after their
+  # guarded motion completes so they do not occupy a later route segment.
   full_route_three_stage: [local_bypass, g2_g3_exit, g5_g1_crossing]

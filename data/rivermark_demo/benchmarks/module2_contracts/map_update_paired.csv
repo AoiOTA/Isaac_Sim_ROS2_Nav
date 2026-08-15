@@ -1,0 +1,21 @@
+scenario,repeat,full_time_ns,incremental_time_ns,improvement_percent,dirty_states,reused_states,changed_transitions,transition_equal,sr_max_abs_error,dr_max_abs_error,no_wall_crossing,quality_pass
+cognitive region rivermark_a:region_22,0,12189153,7201947,40.91511526682781,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,1,8402938,5012544,40.3477212375005,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,2,7114708,4684580,34.15639826680167,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,3,7464207,4327066,42.02912646983129,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,4,7731367,4727983,38.84673952226042,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,5,7322736,4486822,38.72751933157224,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,6,7123797,4942448,30.620594607061374,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,7,8080438,4510863,44.1755137530911,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,8,7013335,4644140,33.78128950064413,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,9,7792183,5060716,35.05393802994617,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,10,7275170,4339147,40.35676142275713,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,11,7731886,4753768,38.51735527399136,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,12,7282524,5074975,30.31296566959477,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,13,8127022,4897966,39.73233984108816,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,14,7797015,4561576,41.495867328714894,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,15,7805243,5435571,30.36000288524009,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,16,7495623,4987827,33.45680539162655,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,17,7517139,4906947,34.72321051932125,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,18,7114574,4876613,31.45600846937568,4,199,6,True,0.0,0.0,True,True
+cognitive region rivermark_a:region_22,19,7522267,4825786,35.84665367501579,4,199,6,True,0.0,0.0,True,True

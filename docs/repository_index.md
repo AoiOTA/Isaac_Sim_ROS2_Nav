@@ -1,16 +1,18 @@
 # 当前实现文件索引
 
-> 最近复核：2026-07-31<br>
-> 适用分支：`feat/planning-risk-fusion-v0.1`
+> 最近复核：2026-08-15<br>
+> 适用分支：`codex/final-outdoor-navigation`
 
 本索引只列出当前 Kujiale `warehouse_new` 导航与 4×20 实验的操作入口、权威配置、
 实现和测试。构建产物、运行日志、批量证据、外观预览输出和已不再作为操作入口的兼容代码，
-均不在此列出。
+均不在此列出。本索引现覆盖 Final/Rivermark 主线与 Kujiale 历史兼容入口。
 
 ## 从哪里开始
 
 | 目标 | 首先阅读/运行 |
 | --- | --- |
+| Final 室外运行与结果 | [`../README.md`](../README.md)、[`rivermark_outdoor_demo.md`](rivermark_outdoor_demo.md)、[`rivermark_completion_audit.md`](rivermark_completion_audit.md) |
+| 项目级汇总与架构（Integration 仓库） | Integration 工作树 `docs/final_closure/` 六文档（路径前缀 `/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/`）：`results_master_summary.md`、`results_indoor_60.md`、`results_outdoor_60.md`、`results_v4_100.md`、`module2_effectiveness_evidence.md`、`final_navigation_architecture.md` |
 | 快速理解项目与正式结果 | [`../README.md`](../README.md)、[`verification.md`](verification.md) |
 | 正常运行、GUI/RViz 单轮或一键批量 | [`user_manual.md`](user_manual.md) |
 | 4×20 矩阵、外观、报告、复测 | [`kujiale_4x20_appearance_benchmark_plan.md`](kujiale_4x20_appearance_benchmark_plan.md) |
@@ -25,12 +27,14 @@
 
 | 文件 | 当前职责 |
 | --- | --- |
+| `docs/rivermark_outdoor_demo.md` | Final/Rivermark 室外导航收口、Attempt31 历史基线与 3×20 运行的权威入口。 |
+| `docs/rivermark_completion_audit.md` | Attempt31 完成性审计与 Final clean-revision 3×20（FORMAL_QUALIFICATION_PASS）更新。 |
 | `README.md` | 项目总览、结果摘要、视频和常用命令。 |
 | `docs/user_manual.md` | 运行、GUI/RViz 单轮、4×20、外观预览与日常排障的用户手册。 |
 | `docs/kujiale_4x20_appearance_benchmark_plan.md` | 当前正式实验规格与唯一批量运行流程。 |
 | `docs/kujiale_4x20_metric_definitions.md` | 静态/动态避障成功率、路径偏差、导航成功率的通用公式和文字定义。 |
 | `docs/kujiale_long_route_map.md` | `warehouse_new` 路线、G1–G5、六个静态障碍与三阶段 actor 参数。 |
-| `docs/verification.md` | 正式 campaign 的结果、适用边界和复核方法。 |
+| `docs/verification.md` | 历史验证台账（Kujiale/Attempt21~31）：正式 campaign 的结果、适用边界和复核方法。 |
 | `docs/kujiale_4x20_execution_lessons.md` | pilot、supervisor、续跑、动态重跑、报告与推送的恢复规则。 |
 | `docs/interfaces.md` | 运行时 Topic、TF、地图、模式与 Nav2 profile 契约。 |
 | `docs/calibration.md` | 当前地图 bundle、出生点和新地图接入流程。 |
@@ -46,6 +50,13 @@
 
 | 文件 | 当前职责 |
 | --- | --- |
+| `scripts/import_assets.sh` | 资产导入。 |
+| `scripts/prepare_rivermark_demo.sh` | Rivermark 地图/图/航点资产生成。 |
+| `scripts/run_rivermark_visual.sh` | static/dynamic/appearance 三种 GUI 单轮，自动 G1→G5。 |
+| `scripts/run_rivermark_manual.sh` | RViz 手动目标单轮。 |
+| `scripts/run_rivermark_demo.sh` | geometry-only 对照与参数化调试。 |
+| `scripts/run_final_rivermark_campaign.sh` | Final 20 轮 campaign：pre-dispatch 有界重试 + post-dispatch fail-stop。 |
+| `scripts/trigger_rivermark_blockage.sh` | persistent blockage 工程演示注入。 |
 | `scripts/setup_ros_env.sh` | 加载 ROS 2 Jazzy 与工作区环境；任何 ROS 命令前先 source。 |
 | `scripts/build_ros2.sh` | 构建 Module3；融合分支会从 Integration underlay 唯一加载 `bio_nav_interfaces`。 |
 | `scripts/generate_bionav_fusion_profile.py` | 用真实 map/qualification/model SHA 生成 fail-closed 的可选融合 profile。 |
@@ -65,6 +76,12 @@
 
 | 文件 | 当前职责 |
 | --- | --- |
+| `data/rivermark_demo/final_rivermark_static_obstacles.yaml` | Final 静态场景：4 个 0.70 m 静态 box。 |
+| `data/rivermark_demo/final_rivermark_dynamic.yaml` | Final 动态场景：迎面/横穿/同向/临时阻塞四演员，峰值 0.60/0.55/0.45/0.50 m/s。 |
+| `data/rivermark_demo/final_rivermark_metric_contract.yaml` | Final 度量合同（`bio_nav.final_rivermark_metric_contract.v1`）。 |
+| `data/rivermark_demo/rivermark_regions.yaml` | Rivermark 认知区域划分（`rivermark_a`）。 |
+| `data/rivermark_demo/rivermark_demo_goals.yaml` | Rivermark 演示起点、目标与 G1–G5 航点。 |
+| `data/rivermark_demo/rivermark_selected.geojson` / `.pgm` / `.yaml` | Rivermark 地图工件（1600×1600、0.05 m/格）。 |
 | `data/maps/manifests/warehouse_new.yaml` | 当前地图四工件、哈希、场景和标定的权威 bundle 清单。 |
 | `data/maps/occupancy/warehouse_new.yaml` / `.pgm` | 4×20、GUI、Nav2 与报告绘图共同使用的 OccupancyGrid。 |
 | `data/maps/posegraphs/warehouse_new.posegraph` / `.data` | 与该 OccupancyGrid 绑定的 Pose Graph 工件。 |
@@ -86,10 +103,13 @@
 
 | 文件 | 当前职责 |
 | --- | --- |
+| `ros2_ws/src/robot_experiments/` | `final_rivermark_qualification` 与 `final_rivermark_pilot_check` 控制台入口。 |
+| `ros2_ws/src/robot_description/rviz/rivermark.rviz` | 室外专用 RViz 配置。 |
 | `isaac_sim/apps/navigation_sim.py` | Isaac 场景、机器人、传感器、障碍、外观 Session Layer 与 ROS Bridge 的主入口。 |
 | `ros2_ws/src/bio_nav_fusion/` | `BioNavGridBased` 与 `CognitiveRiskLayer` 插件；接口来自 Integration。 |
 | `isaac_sim/apps/appearance_preview.py` | 无 ROS 的客厅外观预览渲染入口。 |
-| `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 单轮/批量 reset、目标序列、证据与严格结果写入。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/experiment_runner.py` | 单轮/批量 reset、目标序列、证据与严格结果写入；Rivermark 单轮证据与严格结果。 |
+| `ros2_ws/src/robot_experiments/robot_experiments/v310_evidence.py` | 从冻结运行清单离线派生 Attempt30/A21 V3.10 研究证据。 |
 | `ros2_ws/src/robot_experiments/robot_experiments/kujiale_4x20_campaign.py` | 4×20 校验、统计、GT 轨迹、HTML/PDF/Markdown 报告生成；已发布快照自动采用 GitHub Raw 图片链接。 |
 | `ros2_ws/src/robot_experiments/launch/experiment.launch.py` | 4×20 runner 的 ROS launch 参数类型与运行入口。 |
 | `ros2_ws/src/robot_perception/src/lidar_self_filter_node.cpp` | `/lidar/points_raw` 到 `/lidar/points_scan` 的 TF、自体点删除与 fail-closed 节点。 |
@@ -106,6 +126,7 @@
 
 | 目录 | 内容 |
 | --- | --- |
+| `data/experiment_runs/final_rivermark/` | Final 原始轮次：本地证据不提交 Git；正式封存于 NAS `Attempt32_Final_Qualification_20260814`。 |
 | `data/experiment_runs/kujiale_4x20_<ID>/` | 原始逐轮证据、orchestrator 日志、隔离的不完整轮次。 |
 | `data/reports/kujiale_4x20_<ID>/` | 总报告、静态/动态子报告和可移交的 `index_portable.html`。 |
 | `docs/report_assets/README.md`、`docs/report_assets/<report-dir>/` | 已发布 campaign 的 PNG 快照及发布规则；用于让报告 HTML 通过 GitHub Raw 链接跨电脑显示图片。 |

@@ -1,0 +1,33 @@
+# Engineering-only moving-risk field for V4 query Q14_45.  This long-route
+# negative control crosses the early northeast-bound leg, then retires; no static
+# corridor or GVG edge is removed.
+schema_version: 4
+seed: 9441
+enabled: true
+coordinate_frame: map
+spawn_pose_name: q14_45_start
+safety: {guard_clearance_m: 0.50, min_clearance_m: 0.20}
+cases:
+  q14_45_crossing:
+    trigger_group: FOCUS
+    activation: trigger
+    gate: {axis: y, threshold: -6.40, direction: positive, min_speed_mps: 0.05, x_range: [-3.65, -3.00]}
+    obstacle:
+      id: q14_45_crossing_actor
+      size: [0.45, 0.45, 1.00]
+      mass: 20.0
+      waypoints:
+        - [-4.20, -5.00, 0.50]
+        - [-2.30, -5.00, 0.50]
+        - [-4.20, -5.00, 0.50]
+        - [-2.30, -5.00, 0.50]
+      speed: 0.35
+      max_acceleration: 0.75
+      post_motion: retire
+    variants:
+      v1: {seed: 9441, start_delay_sec: 0.00}
+      v2: {seed: 9442, start_delay_sec: 0.30}
+      v3: {seed: 9443, start_delay_sec: 0.60}
+      v4: {seed: 9444, start_delay_sec: 0.90}
+      v5: {seed: 9445, start_delay_sec: 1.20}
+case_sets: {}

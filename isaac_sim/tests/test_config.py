@@ -76,6 +76,7 @@ def test_nested_environment_overrides_are_typed():
             ISAAC_NAV__SIMULATION__MAX_FRAMES="17",
             ISAAC_NAV__SIMULATION__PACING_MODE="unbounded",
             ISAAC_NAV__SIMULATION__TARGET_REALTIME_FACTOR="1.25",
+            ISAAC_NAV__SIMULATION__RENDERING_HZ="30",
             ISAAC_NAV__ROS2__DOMAIN_ID="42",
             ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED="false",
             ISAAC_NAV__THIRD_PERSON_CAMERA__DISTANCE_M="4.75",
@@ -87,6 +88,7 @@ def test_nested_environment_overrides_are_typed():
     assert config.simulation.max_frames == 17
     assert config.simulation.pacing_mode == "unbounded"
     assert config.simulation.target_realtime_factor == pytest.approx(1.25)
+    assert config.simulation.rendering_hz == pytest.approx(30.0)
     assert config.ros2.domain_id == 42
     assert config.third_person_camera.enabled is False
     assert config.third_person_camera.distance_m == pytest.approx(4.75)

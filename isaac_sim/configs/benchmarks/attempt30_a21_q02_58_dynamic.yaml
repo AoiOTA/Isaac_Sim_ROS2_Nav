@@ -1,0 +1,33 @@
+# Engineering-only moving-risk field for V4 query Q02_58.  The actor crosses
+# the early north-east approach, reverses twice to expose motion to RGB-D, then
+# retires.  The static graph and every alternate branch remain unchanged.
+schema_version: 4
+seed: 9251
+enabled: true
+coordinate_frame: map
+spawn_pose_name: q02_58_start
+safety: {guard_clearance_m: 0.50, min_clearance_m: 0.20}
+cases:
+  q02_58_crossing:
+    trigger_group: FOCUS
+    activation: trigger
+    gate: {axis: y, threshold: -3.20, direction: positive, min_speed_mps: 0.05, x_range: [-6.70, -6.10]}
+    obstacle:
+      id: q02_58_crossing_actor
+      size: [0.45, 0.45, 1.00]
+      mass: 20.0
+      waypoints:
+        - [-4.75, -2.55, 0.50]
+        - [-4.75, -1.05, 0.50]
+        - [-4.75, -2.55, 0.50]
+        - [-4.75, -0.70, 0.50]
+      speed: 0.35
+      max_acceleration: 0.75
+      post_motion: retire
+    variants:
+      v1: {seed: 9251, start_delay_sec: 0.00}
+      v2: {seed: 9252, start_delay_sec: 0.30}
+      v3: {seed: 9253, start_delay_sec: 0.60}
+      v4: {seed: 9254, start_delay_sec: 0.90}
+      v5: {seed: 9255, start_delay_sec: 1.20}
+case_sets: {}

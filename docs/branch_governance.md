@@ -10,8 +10,12 @@
 | --- | --- | --- |
 | 本地工作仓 | `${BIO_NAV_MODULE3_ROOT}` | 只在这里维护 Module3 源代码；`main` 跟踪 `origin/main`。 |
 | 原始源仓 | `AoiOTA/Isaac_Sim_ROS2_Nav` | `origin`；Module3 功能主线和开放 PR 的唯一来源。 |
-| AoiOTA 发布仓 | `AoiOTA/Bio_Nav_Module3` | 本地 remote 名为 `module3-aoi`；发布 `main` 必须来自源仓。 |
-| HDU-ASL 发布仓 | `HDU-ASL/Bio_Nav_Module3` | 本地 remote 名为 `module3-hdu`；镜像发布 `main`，另保留所有者分支。 |
+| AoiOTA 发布仓 | `AoiOTA/Bio_Nav_Module3` | 本地 remote 名为 `aoiota-bio-nav-module3` 与 `module3-aoi`（同一仓库的两个别名）；发布 `main` 必须来自源仓。 |
+| HDU-ASL 发布仓 | `HDU-ASL/Bio_Nav_Module3` | 本地 remote 名为 `bio-nav-module3` 与 `module3-hdu`（同一仓库的两个别名）；镜像发布 `main`，另保留所有者分支。 |
+
+注：上表 remote 名为现行配置；2026-07-31 行文时仅使用旧别名 `module3-aoi`（AoiOTA 发布仓）与
+`module3-hdu`（HDU-ASL 发布仓）。现行新增的 `aoiota-bio-nav-module3` 与 `bio-nav-module3` 分别与
+旧别名指向同一仓库，旧别名保留且仍然有效。
 
 整理完成后，三个远端的 `main` 必须解析到同一个完整 commit SHA。发布仓不得在自己的 `main`
 上产生源仓没有的功能提交；需要发布时，先在源仓审查和合并，再将同一提交快进到两个发布仓。
@@ -47,6 +51,18 @@ Integration 输入，不是仍在开发的分支。整理完成后只由 annotat
 旧 `codex/kujiale-navigation-mapping@478aa656...` 已被源仓 `main` 完整包含，不再提供独立
 功能。发布仓曾有同 tree、不同 commit 的同名分支，继续保留只会制造镜像失配，因此只在 bundle
 中恢复。
+
+## Final 分支发布状态（2026-08-15）
+
+`codex/final-outdoor-navigation` 是 Final Rivermark 室外收口与 V4 四臂工程验证的开发/发布分支。
+HEAD `efd51ba67358881d5f0089baf976f97ec5268913` 已推送全部三个远端
+（`origin` → AoiOTA/Isaac_Sim_ROS2_Nav，`aoiota-bio-nav-module3`/`module3-aoi` →
+AoiOTA/Bio_Nav_Module3，`bio-nav-module3`/`module3-hdu` → HDU-ASL/Bio_Nav_Module3），并经
+`git ls-remote` 核验三个远端指向同一 SHA。
+
+历史 Attempt30/31 分支（`codex/attempt30-a21-v310-srdr-rviz-navigation`、
+`codex/attempt31-outdoor-nav-navigation` 等）为冻结证据线，不在本次发布范围内；其跨远端同步状态
+保持 0/0（各远端互比 ahead/behind 均为 0）。
 
 ## 治理后的标签
 

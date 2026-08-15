@@ -131,3 +131,42 @@ def test_navigation_benchmark_enforces_rates_and_path_deviation(tmp_path):
     assert summary["path_optimality"]["maximum_deviation_percent"] \
         == pytest.approx(10.0)
     assert summary["passed"] is True
+
+
+def test_navigation_benchmark_sums_declared_route_legs(tmp_path):
+    static_directory = tmp_path / "static_route"
+    dynamic_directory = tmp_path / "dynamic_route"
+    static_directory.mkdir()
+    dynamic_directory.mkdir()
+    static = _manifest("static", 1, True, 8.0)
+    static["goal_pose"]["position"] = [0.5, 0.5]
+    static["route_poses"] = [
+        {
+            "id": "G1", "frame_id": "map", "position": [4.5, 0.5],
+            "yaw_deg": 0.0, "require_orientation": False,
+        },
+        {
+            "id": "G2", "frame_id": "map", "position": [0.5, 0.5],
+            "yaw_deg": 180.0, "require_orientation": False,
+        },
+    ]
+    (static_directory / "1.json").write_text(
+        json.dumps(static), encoding="utf-8"
+    )
+    (dynamic_directory / "1.json").write_text(
+        json.dumps(_manifest("dynamic", 1, True, 4.0)), encoding="utf-8"
+    )
+    map_file = _write_map(tmp_path / "route_map", [[254] * 5 for _ in range(5)])
+    summary = summarize_navigation_benchmark(
+        static_directories=[static_directory],
+        dynamic_directories=[dynamic_directory],
+        map_file=map_file,
+        clearance_m=0.0,
+        minimum_static_runs=1,
+        minimum_dynamic_runs=1,
+    )
+    run = summary["path_optimality"]["runs"][0]
+    assert run["optimal_length_m"] == pytest.approx(8.0)
+    assert [leg["id"] for leg in run["optimal_legs"]] == ["G1", "G2"]
+    assert run["deviation_percent"] == pytest.approx(0.0)
+    assert summary["passed"] is True

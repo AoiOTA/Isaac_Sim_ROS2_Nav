@@ -1,0 +1,39 @@
+schema_version: 1
+scenario:
+  id: attempt31_rivermark_static
+  type: static
+  spawn_pose_name: rivermark_start
+  map_version: rivermark_0_05_v1
+  posegraph_version: rivermark_static_map_v1
+  configs:
+    robot: ../../../../isaac_sim/configs/robots/jackal.yaml
+    nav2: ../../robot_navigation/config/nav2_bio_nav_planning_only.yaml
+    optimal_reference: ../../../../data/rivermark_demo/rivermark_optimal_reference.json
+  simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
+  runs:
+    seeds: [9001, 9002, 9003, 9004, 9005, 9006, 9007, 9008, 9009, 9010, 9011, 9012, 9013, 9014, 9015, 9016, 9017, 9018, 9019, 9020]
+    # RTX/LiDAR load measured below real time in the first full five-leg
+    # outdoor pilot.  These are wall-clock isolation bounds, not performance
+    # targets; leave enough budget for the complete 126 m mission.
+    timeout_sec: 1500.0
+    leg_timeout_sec: 480.0
+  goal: {id: G5, frame_id: map, position: [-42.6432, 180.578], yaw_deg: -98.13004614639033, require_orientation: true}
+  route:
+    - {id: G1, frame_id: map, position: [1.521014, 131.813786], yaw_deg: 135.0, require_orientation: true}
+    - {id: G2, frame_id: map, position: [-15.524852, 138.328084], yaw_deg: 90.5257523467108, require_orientation: true}
+    - {id: G3, frame_id: map, position: [-23.4432, 158.46382], yaw_deg: 90.0, require_orientation: true}
+    - {id: G4, frame_id: map, position: [-36.675295, 172.938296], yaw_deg: 138.17990203448392, require_orientation: true}
+    - {id: G5, frame_id: map, position: [-42.6432, 180.578], yaw_deg: -98.13004614639033, require_orientation: true}
+  success:
+    position_tolerance_m: 0.25
+    orientation_tolerance_deg: 10.0
+    final_linear_speed_mps: 0.02
+    final_angular_speed_radps: 0.05
+    final_still_duration_sec: 1.0
+    final_still_timeout_sec: 20.0
+    require_safety_observations: true
+    minimum_ground_truth_path_length_m: 100.0
+  obstacles:
+    layout_id: rivermark_static_v1
+    static: []
+    trajectories: []

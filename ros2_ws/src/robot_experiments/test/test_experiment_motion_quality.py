@@ -5,11 +5,50 @@ from types import SimpleNamespace
 import pytest
 
 from robot_experiments.experiment_runner import (
+    _edge_prior_statistics,
+    _record_tracked_route_length,
+    _strict_success_from_leg_count,
     CommandSample,
     ExperimentRunner,
     OdometrySample,
     _dynamic_interaction_acceptance,
+    _reset_dynamic_selection,
 )
+from robot_experiments.scenario import RunSelection
+
+
+def test_tracked_route_length_replaces_untrimmed_canonical_edge_sum():
+    routes = [{"request_id": 7, "planned_length_m": 14.65}]
+
+    _record_tracked_route_length(routes, 7, 0.07, 11.87)
+    _record_tracked_route_length(routes, 7, 11.88, 0.07)
+
+    assert routes[0]["canonical_full_edge_length_m"] == pytest.approx(14.65)
+    assert routes[0]["tracked_route_length_m"] == pytest.approx(11.95)
+    assert routes[0]["planned_length_m"] == pytest.approx(11.95)
+
+
+def test_edge_prior_statistics_preserve_nonzero_learned_cost_evidence():
+    priors = [
+        SimpleNamespace(cost_delta_m=0.0, learned_risk=0.0),
+        SimpleNamespace(cost_delta_m=0.55, learned_risk=1.0),
+        SimpleNamespace(cost_delta_m=0.07, learned_risk=0.58),
+    ]
+
+    assert _edge_prior_statistics(priors) == {
+        "prior_count": 3,
+        "positive_cost_count": 2,
+        "total_cost_delta_m": pytest.approx(0.62),
+        "maximum_cost_delta_m": pytest.approx(0.55),
+        "maximum_learned_risk": pytest.approx(1.0),
+    }
+
+
+def test_strict_success_counts_single_goal_when_route_is_omitted():
+    assert _strict_success_from_leg_count("success", 1, 0)
+    assert _strict_success_from_leg_count("success", 5, 5)
+    assert not _strict_success_from_leg_count("success", 0, 0)
+    assert not _strict_success_from_leg_count("failure", 1, 0)
 
 
 def test_motion_quality_measures_reverse_curves_and_turn_reversals():
@@ -210,6 +249,21 @@ def test_failed_pilot_evidence_is_retried_only_when_successful_resume_is_require
     assert runner._completed_resume_manifest(root, 2, selection) is None
 
 
+def test_checksum_finalization_updates_summary_and_covers_final_bytes(tmp_path):
+    root = tmp_path / "run-0001-seed-19301"
+    root.mkdir()
+    summary = {"checksums_verified": False, "strict_success": True}
+    (root / "run_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (root / "evidence.json").write_text('{"complete": true}\n', encoding="utf-8")
+
+    ExperimentRunner._finalize_checksums(root, summary)
+
+    stored_summary = json.loads((root / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["checksums_verified"] is True
+    assert stored_summary["checksums_verified"] is True
+    assert ExperimentRunner._checksums_are_verified(root)
+
+
 def test_g5_g1_crossing_requires_left_side_pass_while_actor_exists():
     ground_truth = [
         OdometrySample(-0.85, -1.42, 0.0, 0.4, 0.0, 1.00, 0.0),
@@ -249,11 +303,50 @@ def test_focused_dynamic_case_skips_unselected_intermediate_goal_groups():
     assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
     assert runner._selected_dynamic_groups_for_goal("G1") == ["G1"]
 
+    runner._scenario.obstacle_trajectories = (
+        {"id": "oncoming", "motion": "oncoming", "trigger_group": "G2"},
+        {"id": "crossing", "motion": "crossing", "trigger_group": "G3"},
+        {"id": "following", "motion": "same_direction_slow", "trigger_group": "G4"},
+        {"id": "block", "motion": "temporary_block", "trigger_group": "G5"},
+    )
+    runner._active_selection = SimpleNamespace(case_id="full_route_four_stage")
+    assert runner._selected_dynamic_groups_for_goal("G2") == ["G2"]
+    assert runner._selected_dynamic_groups_for_goal("G3") == ["G3"]
+    assert runner._selected_dynamic_groups_for_goal("G4") == ["G4"]
+    assert runner._selected_dynamic_groups_for_goal("G5") == ["G5"]
+
 
 def test_runner_has_no_actor_lifecycle_costmap_clear_workaround():
     assert not hasattr(
         ExperimentRunner, "_request_pending_dynamic_trail_clears"
     )
+
+
+def test_global_costmap_readiness_rejects_default_window_and_covers_all_goals():
+    runner = object.__new__(ExperimentRunner)
+    runner._spawn_pose = SimpleNamespace(map=SimpleNamespace(position=(21.2, 120.0)))
+    runner._scenario = SimpleNamespace(
+        route=(
+            SimpleNamespace(position=(1.5, 131.8)),
+            SimpleNamespace(position=(-42.6, 180.6)),
+        ),
+        goal=SimpleNamespace(position=(-42.6, 180.6)),
+    )
+    metadata = SimpleNamespace(
+        resolution=0.05,
+        size_x=100,
+        size_y=100,
+        origin=SimpleNamespace(position=SimpleNamespace(x=0.0, y=0.0)),
+    )
+    runner._global_costmap = SimpleNamespace(
+        header=SimpleNamespace(frame_id="map"), metadata=metadata
+    )
+    assert not runner._global_costmap_covers_mission()
+
+    metadata.size_x = metadata.size_y = 1600
+    metadata.origin.position.x = -52.0182
+    metadata.origin.position.y = 111.603
+    assert runner._global_costmap_covers_mission()
 
 
 def test_collision_free_policy_keeps_low_clearance_as_warning():
@@ -273,6 +366,18 @@ def test_collision_free_policy_keeps_low_clearance_as_warning():
     assert status["clearance_warning_below_0_10m"] is True
     assert status["minimum_clearance_requirement_m"] == 0.0
     assert status["acceptance_policy"] == "physical_collision_free"
+
+
+def test_static_appearance_profile_does_not_select_dynamic_obstacle_case():
+    appearance = RunSelection(
+        9201, "static", "v1", "dim_warm", "rivermark_appearance"
+    )
+    dynamic = RunSelection(9101, "full_route_four_stage", "v1")
+
+    assert _reset_dynamic_selection("static", appearance) == (None, None)
+    assert _reset_dynamic_selection("dynamic", dynamic) == (
+        "full_route_four_stage", "v1"
+    )
 
 
 @pytest.mark.parametrize(

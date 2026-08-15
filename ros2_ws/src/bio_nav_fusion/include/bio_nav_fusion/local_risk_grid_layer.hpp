@@ -2,6 +2,7 @@
 #define BIO_NAV_FUSION__LOCAL_RISK_GRID_LAYER_HPP_
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -13,6 +14,7 @@
 #include "geometry_msgs/msg/point.hpp"
 #include "nav2_costmap_2d/costmap_layer.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "rclcpp_lifecycle/lifecycle_publisher.hpp"
 #include "std_msgs/msg/empty.hpp"
 #include "visualization_msgs/msg/marker_array.hpp"
@@ -54,11 +56,19 @@ private:
   void resetCallback(const std_msgs::msg::Empty::SharedPtr message);
   void publishStatus(
     bool applied, const std::string & reason, double age_s,
-    uint32_t active_cells, uint8_t maximum_cost);
+    uint32_t active_cells, uint8_t maximum_cost,
+    uint32_t raised_cells, uint32_t masked_cells,
+    uint8_t maximum_cost_increase);
   void publishVisualization(
     bool applied, const std::string & reason,
     const std::vector<geometry_msgs::msg::Point> & points,
-    const std::vector<uint8_t> & costs, uint8_t maximum_cost);
+    const std::vector<uint8_t> & costs,
+    const std::vector<geometry_msgs::msg::Point> & raised_points,
+    const std::vector<uint8_t> & cost_increases,
+    uint8_t maximum_cost, uint32_t masked_cells,
+    uint8_t maximum_cost_increase);
+  rcl_interfaces::msg::SetParametersResult onParametersSet(
+    const std::vector<rclcpp::Parameter> & parameters);
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::LocalRiskGrid::SharedPtr latest_;
@@ -66,6 +76,7 @@ private:
   uint32_t reset_epoch_{0};
   bool reset_epoch_initialized_{false};
   bool shadow_only_{true};
+  std::atomic_bool enabled_runtime_{true};
   double max_message_age_s_{0.5};
   double transform_tolerance_s_{0.05};
   double minimum_reliability_{0.6};
@@ -86,6 +97,8 @@ private:
     bio_nav_interfaces::msg::RiskLayerStatus>::SharedPtr status_publisher_;
   rclcpp_lifecycle::LifecyclePublisher<
     visualization_msgs::msg::MarkerArray>::SharedPtr visualization_publisher_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr
+    parameter_callback_handle_;
   double robot_x_{0.0};
   double robot_y_{0.0};
   bool previous_bounds_valid_{false};

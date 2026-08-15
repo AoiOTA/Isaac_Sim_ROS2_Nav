@@ -62,6 +62,7 @@ void LocalRiskGridLayer::onInitialize()
   nav2_util::declare_parameter_if_not_declared(
     node, name_ + ".initial_reset_epoch", rclcpp::ParameterValue(0));
   node->get_parameter(name_ + ".enabled", enabled_);
+  enabled_runtime_.store(enabled_);
   node->get_parameter(name_ + ".shadow_only", shadow_only_);
   node->get_parameter(name_ + ".risk_topic", risk_topic_);
   node->get_parameter(name_ + ".reset_topic", reset_topic_);
@@ -103,6 +104,8 @@ void LocalRiskGridLayer::onInitialize()
   visualization_publisher_ = node->create_publisher<
     visualization_msgs::msg::MarkerArray>(
     "/bio_nav/local_risk_layer/rviz_markers", rclcpp::QoS(1).reliable());
+  parameter_callback_handle_ = node->add_on_set_parameters_callback(
+    std::bind(&LocalRiskGridLayer::onParametersSet, this, std::placeholders::_1));
   // CostmapLayer otherwise starts as NO_INFORMATION. max(NO_INFORMATION,
   // risk_cost) stays unknown, so status can claim cells were applied while
   // the private layer contributes no risk. A sparse additive/max layer must
@@ -111,6 +114,25 @@ void LocalRiskGridLayer::onInitialize()
   matchSize();
   resetMaps();
   previous_bounds_valid_ = false;
+}
+
+rcl_interfaces::msg::SetParametersResult LocalRiskGridLayer::onParametersSet(
+  const std::vector<rclcpp::Parameter> & parameters)
+{
+  rcl_interfaces::msg::SetParametersResult result;
+  result.successful = true;
+  for (const auto & parameter : parameters) {
+    if (parameter.get_name() != name_ + ".enabled") {
+      continue;
+    }
+    if (parameter.get_type() != rclcpp::ParameterType::PARAMETER_BOOL) {
+      result.successful = false;
+      result.reason = name_ + ".enabled must be boolean";
+      return result;
+    }
+    enabled_runtime_.store(parameter.as_bool());
+  }
+  return result;
 }
 
 void LocalRiskGridLayer::activate()
@@ -209,7 +231,8 @@ void LocalRiskGridLayer::updateBounds(
   double current_min_y = std::numeric_limits<double>::infinity();
   double current_max_x = -std::numeric_limits<double>::infinity();
   double current_max_y = -std::numeric_limits<double>::infinity();
-  if (enabled_ && reason.empty()) {
+  const bool enabled = enabled_runtime_.load();
+  if (enabled && reason.empty()) {
     try {
       const auto transform = tf_->lookupTransform(
         layered_costmap_->getGlobalFrameID(), grid->header.frame_id,
@@ -350,7 +373,8 @@ void LocalRiskGridLayer::updateCosts(
     grid.get(), age_s, max_message_age_s_, minimum_reliability_,
     maximum_ood_probability_, reset_epoch_, expected_map_version_,
     expected_model_sha256_, expected_qualification_sha256_);
-  if (!enabled_ || !reason.empty()) {
+  const bool enabled = enabled_runtime_.load();
+  if (!enabled || !reason.empty()) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       active_cells_.fill(false);
@@ -363,8 +387,9 @@ void LocalRiskGridLayer::updateCosts(
     if (!shadow_only_) {
       updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     }
-    publishStatus(false, enabled_ ? reason : "disabled", age_s, 0, 0);
-    publishVisualization(false, enabled_ ? reason : "disabled", {}, {}, 0);
+    publishStatus(false, enabled ? reason : "disabled", age_s, 0, 0, 0, 0, 0);
+    publishVisualization(
+      false, enabled ? reason : "disabled", {}, {}, {}, {}, 0, 0, 0);
     return;
   }
 
@@ -382,16 +407,21 @@ void LocalRiskGridLayer::updateCosts(
     if (!shadow_only_) {
       updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     }
-    publishStatus(false, "tf_invalid", age_s, 0, 0);
-    publishVisualization(false, "tf_invalid", {}, {}, 0);
+    publishStatus(false, "tf_invalid", age_s, 0, 0, 0, 0, 0);
+    publishVisualization(false, "tf_invalid", {}, {}, {}, {}, 0, 0, 0);
     return;
   }
 
   std::array<bool, 1024> next_active{};
   uint32_t active_count = 0;
   uint8_t maximum_written = 0;
+  uint32_t raised_count = 0;
+  uint32_t masked_count = 0;
+  uint8_t maximum_cost_increase = 0;
   std::vector<geometry_msgs::msg::Point> visualization_points;
   std::vector<uint8_t> visualization_costs;
+  std::vector<geometry_msgs::msg::Point> raised_points;
+  std::vector<uint8_t> cost_increases;
   for (std::size_t index = 0; index < grid->risk.size(); ++index) {
     const auto threshold = previous_active[index] ? clear_threshold_ : activation_threshold_;
     const float probability = grid->risk[index];
@@ -434,9 +464,22 @@ void LocalRiskGridLayer::updateCosts(
     {
       continue;
     }
+    const auto existing_master_cost = master_grid.getCost(mx, my);
     setCost(mx, my, std::max(getCost(mx, my), cost));
     visualization_points.push_back(global.point);
     visualization_costs.push_back(cost);
+    if (
+      existing_master_cost != nav2_costmap_2d::NO_INFORMATION &&
+      cost > existing_master_cost)
+    {
+      const auto increase = static_cast<uint8_t>(cost - existing_master_cost);
+      raised_points.push_back(global.point);
+      cost_increases.push_back(increase);
+      ++raised_count;
+      maximum_cost_increase = std::max(maximum_cost_increase, increase);
+    } else {
+      ++masked_count;
+    }
     ++active_count;
     maximum_written = std::max(maximum_written, cost);
   }
@@ -451,16 +494,22 @@ void LocalRiskGridLayer::updateCosts(
   }
   publishStatus(
     !shadow_only_, shadow_only_ ? "shadow_only" : "", age_s,
-    active_count, maximum_written);
+    active_count, maximum_written, raised_count, masked_count,
+    maximum_cost_increase);
   publishVisualization(
     !shadow_only_, shadow_only_ ? "shadow_only" : "",
-    visualization_points, visualization_costs, maximum_written);
+    visualization_points, visualization_costs, raised_points, cost_increases,
+    maximum_written, masked_count, maximum_cost_increase);
 }
 
 void LocalRiskGridLayer::publishVisualization(
   bool applied, const std::string & reason,
   const std::vector<geometry_msgs::msg::Point> & points,
-  const std::vector<uint8_t> & costs, uint8_t maximum_cost)
+  const std::vector<uint8_t> & costs,
+  const std::vector<geometry_msgs::msg::Point> & raised_points,
+  const std::vector<uint8_t> & cost_increases,
+  uint8_t maximum_cost, uint32_t masked_cells,
+  uint8_t maximum_cost_increase)
 {
   if (!visualization_publisher_ || !visualization_publisher_->is_activated()) {
     return;
@@ -483,7 +532,7 @@ void LocalRiskGridLayer::publishVisualization(
   cells.pose.orientation.w = 1.0;
   cells.scale.x = 0.46;
   cells.scale.y = 0.46;
-  cells.scale.z = 0.14;
+  cells.scale.z = 0.08;
   cells.lifetime = rclcpp::Duration::from_seconds(0.75);
   cells.points = points;
   for (const auto cost : costs) {
@@ -492,10 +541,34 @@ void LocalRiskGridLayer::publishVisualization(
     color.r = 0.55F + 0.40F * relative;
     color.g = 0.10F;
     color.b = 1.0F;
-    color.a = 0.30F + 0.45F * relative;
+    color.a = 0.18F + 0.28F * relative;
     cells.colors.push_back(color);
   }
   array.markers.push_back(cells);
+
+  visualization_msgs::msg::Marker raised;
+  raised.header = clear.header;
+  raised.ns = "Risk Cost Raised";
+  raised.id = 3;
+  raised.type = visualization_msgs::msg::Marker::CUBE_LIST;
+  raised.action = visualization_msgs::msg::Marker::ADD;
+  raised.pose.orientation.w = 1.0;
+  raised.scale.x = 0.34;
+  raised.scale.y = 0.34;
+  raised.scale.z = 0.22;
+  raised.points = raised_points;
+  for (const auto increase : cost_increases) {
+    std_msgs::msg::ColorRGBA color;
+    const auto relative = std::clamp(
+      static_cast<float>(increase) / 80.0F, 0.0F, 1.0F);
+    color.r = 1.0F;
+    color.g = 0.58F - 0.42F * relative;
+    color.b = 0.08F + 0.30F * relative;
+    color.a = 0.72F + 0.24F * relative;
+    raised.colors.push_back(color);
+  }
+  raised.lifetime = rclcpp::Duration::from_seconds(0.75);
+  array.markers.push_back(raised);
 
   visualization_msgs::msg::Marker status;
   status.header = clear.header;
@@ -503,16 +576,20 @@ void LocalRiskGridLayer::publishVisualization(
   status.id = 2;
   status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
   status.action = visualization_msgs::msg::Marker::ADD;
-  status.pose.position.x = robot_x_;
-  status.pose.position.y = robot_y_ - 1.3;
+  status.pose.position.x = 0.0;
+  status.pose.position.y = 5.7;
   status.pose.position.z = 1.8;
   status.pose.orientation.w = 1.0;
-  status.scale.z = 0.16;
+  status.scale.z = 0.12;
   status.lifetime = rclcpp::Duration::from_seconds(0.75);
   if (applied) {
-    status.text = "M2->NAV2 RISK APPLIED | cells=" +
-      std::to_string(points.size()) + " | max=" +
-      std::to_string(maximum_cost);
+    status.text = "RISK COSTMAP EFFECT | projected=" +
+      std::to_string(points.size()) + " | raised=" +
+      std::to_string(raised_points.size()) + " | max delta=+" +
+      std::to_string(maximum_cost_increase) +
+      "\nmasked by existing=" + std::to_string(masked_cells) +
+      " | max risk cost=" + std::to_string(maximum_cost) +
+      " | non-lethal";
     status.color.r = 0.85F;
     status.color.g = 0.25F;
     status.color.b = 1.0F;
@@ -530,7 +607,9 @@ void LocalRiskGridLayer::publishVisualization(
 
 void LocalRiskGridLayer::publishStatus(
   bool applied, const std::string & reason, double age_s,
-  uint32_t active_cells, uint8_t maximum_cost)
+  uint32_t active_cells, uint8_t maximum_cost,
+  uint32_t raised_cells, uint32_t masked_cells,
+  uint8_t maximum_cost_increase)
 {
   if (!status_publisher_ || !status_publisher_->is_activated()) {
     return;
@@ -543,6 +622,9 @@ void LocalRiskGridLayer::publishStatus(
     static_cast<float>(age_s * 1000.0) : std::numeric_limits<float>::infinity();
   status.active_cell_count = active_cells;
   status.maximum_cost = maximum_cost;
+  status.raised_cell_count = raised_cells;
+  status.masked_by_existing_cost_count = masked_cells;
+  status.maximum_cost_increase = maximum_cost_increase;
   status.reset_epoch = reset_epoch_;
   status.map_version = expected_map_version_;
   {

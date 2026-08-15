@@ -1,274 +1,319 @@
-# Isaac Sim 6.0.1 + ROS 2 Jazzy：酷家乐 RGB-D 导航
+# Bio_Nav Module3：Isaac Sim 6.0.1 + ROS 2 Jazzy 导航
 
-> 当前融合开发状态（2026-07-31）：`feat/planning-risk-fusion-v0.1` 包含可选的
-> Module2 规划 tie-break、Global Costmap 软风险层和 RViz 认知叠加。它已通过
-> 单元测试与 ROS 2 构建/测试，但不代表真实 Isaac Gate/Confirmation 已通过。
-> `stable`、`dynamic_avoidance` 仍是传统导航默认配置；融合 profile 只能显式
-> 选择并绑定真实身份 SHA 后使用。
+本仓库负责 Bio_Nav 的物理导航主链：场景与传感器、地图与 TF、全局 GVG、
+Route Server、Nav2、MPPI、Collision Monitor 和 `/cmd_vel`。当前开发主线是
+**Final Rivermark 室外五航点导航收口**；酷家乐室内任务和 Attempt31 证据仍保留为兼容与历史复现入口。
 
-> Attempt-21 当前阶段只验证 Kujiale26 六个建图后加入的静态障碍。冻结 v12 因
-> `23505/risk_only` 的 SAT 最大重叠 26.1 mm 按旧 10 mm 规则正确 fail-stop，旧 receipt
-> 不回写。用户随后确认采用任务级口径；v13 将 Isaac ContactSensor 与 SAT 分字段：
-> 规定全屋路线完成、ContactSensor 未触发且无超时/卡死即通过，SAT 无论数值均保留
-> 为只读诊断，不再单独控制结果。v13 最终 baseline/risk-only 均 10/10、ContactSensor
-> 与 timeout 均为 0，risk valid coverage 97.76%，工程 task-level 结果为 PASS；它不
-> 伪装成 v12 正式 PASS。
-> v13 task-level 10 对通过后，Integration 使用全新 23601–23610 完成了 v15 的
-> planning-only 与 combined 各 10 条静态诊断：两组均 10/10、ContactSensor 0，规划
-> adopted 为 98.67%/97.19%，combined risk valid 为 97.55%。实验全程复用同一 Isaac，
-> 未做冷启动；仍保留双 RGB-D VoxelLayer。该结果完成本阶段静态工程任务，但不改写
-> 冻结 v12 formal FAIL，也不扩大动态、多场景或通用主动融合授权。v16 现已加入
-> `nav2_bio_nav_rgbd_risk_static_opt_in.yaml`：它绑定通过验证的模型/qualification SHA，
-> 只在显式选择 `nav2_profile:=bio_nav_rgbd_risk_static_opt_in` 时启用，默认 profile 不变。
+## 当前状态（2026-08-15）
 
-## 演示视频（4×速，直接预览）
+Final clean-revision 已完成正式静态、动态、外观各 20 轮并通过 fail-closed 资格汇总。
+它使用独立分支 `codex/final-outdoor-navigation` 和独立场景 identity，不改写 Attempt31
+的任何原始轮次：
 
-### 动态避障演示
-https://github.com/user-attachments/assets/0fc1c31f-ace7-4b53-a463-b525a2521f4d
+| Final 项目 | 冻结实现 | 当前状态 |
+| --- | --- | --- |
+| 静态物理障碍 | 4 个 map-frame stationary box，均位于可通行地图格并切入旧 nominal route | 20/20 成功且无碰撞，四障碍覆盖 PASS |
+| 动态威胁 | 四 actor 峰值 0.45–0.60 m/s，5 个时序 variant 各重复 4 次 | 20/20 成功且无碰撞，威胁/交互门 PASS |
+| 外观颜色 | `dim_warm`、`dim_cool`、`bright_warm`、`bright_cool` 各 5 轮 | 20/20 成功且无碰撞 |
+| 正式统计 | 静态、动态、外观各 20；每轮 G1–G5、无碰撞、证据完整 | `FORMAL_QUALIFICATION_PASS` |
+| fail-stop | 首个 goal dispatch 前写 `TRIAL_DISPATCHED.json`；dispatch 后失败立即停止且不补轮 | 已实现并测试 |
+| 动态有效性 | 每 actor 的峰值速度、轨迹进度、相对闭合速度、TTC、2.5 m 暴露和最近距离 | 已实现并测试 |
+| 99.53% 口径 | 仅为 adaptation compute latency reduction；不属于导航成功率或端到端加速 | 已修正 |
 
-### 静态避障演示
-https://github.com/user-attachments/assets/39970d48-47df-428b-8d7d-276d2fd7db9d
+Final `final_rivermark_qualification` 已通过。资格收据提交在 Integration 的
+`docs/evidence/final_navigation/outdoor_final_qualification/`；原始 evidence 封存在
+`/mnt/nas_home/Bio_Nav_Data/Attempt32_Final_Qualification_20260814/final_rivermark/formal_036191f`。
+下面的 Attempt31 结果继续作为已冻结历史基线，而不是 Final 结果。
 
----
+V4 的 Q36_04、Q14_45、Q36_51 四臂工程验证也已完成，共 60/60 完成且无碰撞。
+Q36_04 未观察到因果收益，Q14_45 观察到风险信号但不改线，Q36_51 的 SR-only 5/5
+改线；因此只能写作场景/arm 依赖的工程证据，不能宣称 Module2 普遍提升。
 
-本仓库提供 Clearpath Jackal 在酷家乐室内场景中的 Isaac Sim 导航闭环：2D LiDAR、前向 RGB-D、Nav2、RViz、确定性 Reset，以及可复核的全屋 4×20 鲁棒性实验。
+Attempt31 已在独立 Module3/Integration 工作树完成实现、3×20 正式运行和
+fail-closed 资格汇总。60 轮原始 evidence 的冻结代码基线为 Module3
+`7ff1cec7...`、Integration `056dd6af6...`；其后的 RViz/交互演示收尾只做回归验证，
+不回填或改写资格 evidence。
 
-当前默认运行组合：
+| 项目 | 当前实现/结果 | 状态 |
+| --- | --- | --- |
+| 物理地图 | 80 m × 80 m，1600×1600，0.05 m/格 | PASS |
+| 地图生成 | top-down RGB/depth + PhysX occupancy + 高度跃迁/路沿 | PASS |
+| 导航任务 | `start → G1 → G2 → G3 → G4 → G5`，总参考长度 113.0562 m | PASS |
+| 静态实验 | 20/20 严格成功，20/20 无碰撞，最大路径偏差 3.256% | PASS |
+| 动态实验 | 18/20 严格成功，20/20 无碰撞，四阶段 actor 合同 20/20 | PASS |
+| 外观实验 | 四种光照/颜色 profile 各 5 轮，共 20/20 | PASS |
+| 认知分区 | 16×16 cell、1 m/cell；12 m core/stride + 每侧 2 m halo | PASS |
+| 分 tile 缓存 | 16 entries、320 hits、16 misses；跨区导航不中断 | PASS |
+| Module2 在线消费 | dynamic-v2 20/20 有健康 prior、正 edge delta 和选中路线代价变化 | PASS（非因果声明） |
+| 在线适配计算耗时 | 20 组 paired case 最小提升 99.473%，要求 ≥20%；不是训练或导航时间 | PASS（compute-only） |
+| A→B 地图更新 | 20 组 paired update 最小提升 30.313%，要求 ≥30% | PASS |
+| Module2 四臂因果矩阵 | 不在 Rivermark 运行 | `DEFERRED_TO_V4` |
+
+最终资格报告为：
 
 ```text
-场景:      kujiale_0026_A_to_B_door_open.usd
-地图:      warehouse_new
-出生点:    long_route_start_g1（map: [0.45, -5.35, 90°]）
-定位:      Ideal Odometry；按出生点对齐 map -> odom
-导航输入:  /scan + /camera/front/depth/points
+data/experiment_runs/attempt31_rivermark/formal_20260814_v075_r30_cache/
+  qualification_v3/attempt31_rivermark_qualification.json
+SHA-256: 8abd0a9a9f98ba0f819035ec1dde91fbdf3c459d7490978b01bfebdd35b9af5a
 ```
 
-`warehouse_new` 只支持 Ideal Localization/Navigation；`realistic` 和 `posegraph_calibration:=true` 会被启动契约拒绝。
+`data/experiment_runs/` 是本地原始 evidence，不提交 Git。仓库中保留可复核的地图、
+配置、paired benchmark、图表、脚本和资格汇总代码。dynamic-v1 的 16/20 STOP
+保持不可变；dynamic-v2 使用新配置哈希和新 evidence 根，没有删除或替换失败轮。
 
-## 当前正式结果：4×20 外观鲁棒性实验
+## 地图与五航点示意
 
-当前正式实验包含四组、每组20轮：静态基准、静态＋外观变化、动态基准、动态＋外观变化。外观扰动通过匿名 USD Session Layer 改变光照和材质颜色，不修改原始 USD、几何、碰撞、地图或动态障碍运动学。
+导航地图不是从俯视 RGB 简单阈值化得到的。生成器联合使用深度、PhysX occupancy
+和局部高度跃迁；0.03 m 以上的局部路沿会形成占据边界，同时排除无物理碰撞语义的
+曲线、点和渲染阴影。启动入口会拒绝任何不是 1600×1600、0.05 m/格的地图。
 
-正式批次 `20260725-210035` 已完成，根报告为 `complete=true`、`passed=true`、`issues=[]`：
+![Rivermark RGB、物理边界与路沿对齐](data/rivermark_demo/rivermark_edge_alignment.png)
 
-| 组别 | 严格成功 | 物理无碰撞 | 结论 |
-| --- | ---: | ---: | --- |
-| 静态基准 | 20/20 | 20/20 | 最大路径偏差 10.1687% |
-| 静态＋外观 | 20/20 | 20/20 | 最大路径偏差 10.1442% |
-| 动态基准 | 19/20 | 20/20 | 通过 18/20 门槛 |
-| 动态＋外观 | 19/20 | 20/20 | 通过 18/20 门槛 |
+![Rivermark 栅格地图三联验证](data/rivermark_demo/rivermark_map_validation.png)
 
-结果仅适用于当前冻结的地图、场景、Nav2 profile、外观矩阵、actor 配置和验收规则。完整证据边界见 [验证台账](docs/verification.md)，执行问题与恢复规则见 [4×20 执行复盘](docs/kujiale_4x20_execution_lessons.md)。
+静态、动态和外观三组使用同一套五航点。下图左侧是正式静态轨迹，右侧是
+dynamic-v2 机器人与四个物理 actor 的实测轨迹，不是手绘示意。
 
-对外使用静态/动态避障率、路径偏差和导航成功率时，请采用[通用指标定义与对外表述](docs/kujiale_4x20_metric_definitions.md)。该文档以 LaTeX 给出 \(\mathrm{ASR}_{\mathrm{s}}\)、\(\mathrm{ASR}_{\mathrm{d}}\)、\(\delta_i\) 和 \(\mathrm{NSR}\) 的完整定义、统计边界和适用条件。当前静态避障成功率为 `40/40=100%`、动态避障成功率为 `38/40=95%`、总体导航成功率为 `78/80=97.5%`；理论最优路径偏差仅适用于静态固定障碍参考。
+![Rivermark 五航点静态与动态场景](data/rivermark_demo/rivermark_five_waypoint_scenarios.png)
 
-## 首次准备
+## 架构与所有权
+
+```text
+Rivermark USD + collision/depth
+  → 0.05 m OccupancyGrid（1600×1600）
+  → 全局 GVG / nav2_route / CanonicalRoute
+  → Smac + MPPI + Collision Monitor
+  → /cmd_vel → Isaac Jackal
+
+map pose + current region + CanonicalRoute
+  → 16×16 cognitive constraints + route-aligned local goal
+  → optional Module2 edge prior
+  → 有上界的 edge-cost 增量
+```
+
+- Module3 始终拥有物理可达性、edge 合法性、最终路线、局部避障和控制权。
+- Integration 负责区域约束、`T_map_canvas`、真实路线上的 lookahead 和 Module2 通信。
+- Module2 只能返回有界、非负 edge prior；不能创建边、解除 `BLOCKED`、修改 TF、
+  定位、Costmap 主安全链或直接控制机器人。
+- prior 超时、不健康、NaN、身份不匹配或覆盖不足时，系统回退 geometry-only。
+
+全场只有一个连续 `map` 和一个全局 GVG。进入新区域时只切换
+`cognitive_tile_id`、`T_map_canvas` 和 Module2 短期上下文；不会重启 Isaac/Nav2，
+不会重置 `map→odom`，也不会中断当前五航点任务。
+
+## 快速开始
+
+### 1. 准备资产和构建
 
 ```bash
-cd /your/path/Isaac_Sim_ROS2_Nav
-export PROJECT_ROOT="$PWD"
-git lfs install
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
 git lfs pull
 ./scripts/import_assets.sh
-export BIO_NAV_INTERFACES_SETUP=/absolute/path/to/Bio_Nav_Integration/ros2_ws/install/setup.bash
-./scripts/build_ros2.sh
-./scripts/preflight.sh
+./scripts/prepare_rivermark_demo.sh
+
+cd /home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/ros2_ws
+source /opt/ros/jazzy/setup.bash
+colcon build --symlink-install
+
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation/ros2_ws
+source /opt/ros/jazzy/setup.bash
+source /home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/ros2_ws/install/local_setup.bash
+colcon build --symlink-install
 ```
 
-`bio_nav_fusion` 的消息/服务定义由 Integration 仓库的
-`bio_nav_interfaces` 唯一维护。先构建 Integration；脚本会自动查找最终统一目录
-中的兄弟仓库，也可通过上述环境变量显式指定 underlay。不要把接口源码复制进
-Module3。
+默认源场景为 `/home/lyb/Rivermark/rivermark.usd`；可通过 `RIVERMARK_USD` 指向
+同一资产的其他只读位置。
 
-脚本默认使用 ROS 2 Jazzy、`ROS_DOMAIN_ID=42` 和 `rmw_fastrtps_cpp`。需要直接执行 `ros2` 命令时，先运行：
+### 2. 单轮可视化
+
+下面四条就是日常演示入口。每条命令都在**当前一个终端**内同时管理 Isaac Sim GUI、
+室外专用 RViz、Module2 和 Module3；前三条自动执行 G1→G5，第四条只接收 RViz 手动
+目标。按一次 `Ctrl+C` 会清理整套栈。
 
 ```bash
-source "$PROJECT_ROOT/scripts/setup_ros_env.sh"
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
+
+# 静态导航
+ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh static
+
+# 动态导航：G2--G5 四阶段物理移动障碍
+ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh dynamic
+
+# 外观/光照变化导航；默认 bright_warm
+ROS_DOMAIN_ID=231 ./scripts/run_rivermark_visual.sh appearance bright_warm
+
+# 手动导航：不预发航点，在 RViz 中使用 2D Goal Pose
+env ROS_DOMAIN_ID=231 ./scripts/run_rivermark_manual.sh static
 ```
 
-## 手动导航（Isaac GUI + RViz）
+外观 profile 还可替换为 `dim_warm`、`dim_cool` 或 `bright_cool`。底层
+`run_rivermark_demo.sh` 仍保留给 geometry-only 对照和参数化调试；上面的 visual wrapper
+固定启用完整 Module2/Module3/RViz 链路。第一次需要冷启动 12 GB 场景；同一实验组的
+后续轮次由 campaign runner 复用运行栈，不会每轮重启 Isaac。静态、动态、外观组之间
+可以重启。四种模式的完整逐步操作、就绪标志、退出和故障判断见
+[Rivermark 室外演示说明](docs/rivermark_outdoor_demo.md#四种单终端可视化导航)。
 
-先确认没有另一套项目 Isaac 或 ROS 会话。若提示锁被占用，先执行 `./scripts/diagnose.sh`；不要使用宽泛的 `pkill` 或手动删除锁文件。
-
-终端 A 启动 Isaac GUI：
+无显示器 smoke：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/run_isaac.sh \
-  --environment-usd kujiale_0026_A_to_B_door_open.usd \
-  --navigation-mode localization \
-  --mode ideal \
-  --spawn-pose long_route_start_g1 \
-  --camera-profile rgbd_navigation
+RIVERMARK_HEADLESS=1 RIVERMARK_MAX_STEPS=3000 \
+  ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh off static
 ```
 
-终端 B 启动 Navigation 和 RViz：
+### 室外专用 RViz
+
+GUI 单轮默认启动 `robot_description/rviz/rivermark.rviz`；headless campaign 默认不
+启动 RViz。可显式覆盖：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  spawn_pose_name:=long_route_start_g1 \
-  nav2_profile:=stable
+RIVERMARK_RVIZ=1 ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh module2 static
+RIVERMARK_RVIZ=0 ROS_DOMAIN_ID=231 ./scripts/run_rivermark_demo.sh off static
 ```
 
-等待 `Nav2 lifecycle activation completed` 后，在 RViz 中使用 **2D Goal Pose** 发布目标。完整的 Reset、RGB-D 显示和人工导航步骤见 [用户手册](docs/user_manual.md)。
+专用视图不是室内配置换地图，而是同时展示：
 
-### Attempt-21 Module2 静态接入：单终端启动
+- 室外物理层：0.05 m Occupancy、LiDAR、Global/Local Costmap、Jackal footprint；
+- 全局导航层：GVG、CanonicalRoute、Smac、MPPI、实走轨迹、projection/lookahead；
+- 分 tile 层：全部 12 m core、当前 16×16 canvas、256 cells、上一 tile、切换箭头；
+- Module2 层：place belief/peak、SR、DR、dynamic cost、remap rate 和 edge delta；
+- Module3 层：结构图状态、runtime suspect/blocked edge、最终 edge cost 和路线进度；
+- 所有权面板：Module2 的 ACTIVE/GUARDED/STALE/OFF，Module3 的物理最终裁决，
+  以及实际 applied edge 数量和累计增量。
 
-若已按 `/home/lyb/Workspace/Bio_Nav/workspace.env` 配置统一工作区，可在任意目录只用
-一个终端启动 Isaac Sim、Module2、Bridge、Nav2、RViz 和自动全屋路线：
+marker 按更新频率拆成 `/bio_nav/v310/rviz_static`（GVG/tile core/航点，仅图变化时）、
+`/bio_nav/v310/rviz_edges`（Module2→Module3 edge handoff，按数据变化）和
+`/bio_nav/v310/rviz`（当前 tile/执行状态，2 Hz）。RViz 中仍可按 namespace 独立开关；
+切 tile 时不会再 `DELETEALL` 并重建整张 GVG。
+Module2 没启动或 prior 超时不会留下“看似仍有效”的绿色状态，而会明确显示
+`GEOMETRY-ONLY FALLBACK`。
+
+### 3. 批量实验
 
 ```bash
-bash /home/lyb/Workspace/Bio_Nav/repos/Bio_Nav_Integration/scripts/run_attempt21_static_visual_experiment.sh combined
+cd /home/lyb/Workspace/Bio_Nav/worktrees/module3/final-outdoor-navigation
+
+# 指定 --run-indices 可做 pilot；省略时运行配置中的完整 20 轮
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh static off --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/static_off
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh dynamic medium --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/dynamic_medium
+ROS_DOMAIN_ID=232 ./scripts/run_final_rivermark_campaign.sh appearance medium --run-indices 1 \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/appearance_medium
 ```
 
-该入口默认要求并启动 Isaac GUI；若 ROS Domain 中已有 `--headless` Isaac，会明确退出而
-不静默复用。使用 `all` 可按 baseline、risk-only、planning-only、combined 运行同一
-run-index，并在输出目录生成四臂并排对比。
-
-将末尾模式替换为 `planning-only`、`risk-only`、`static-opt-in`，或使用 `all`
-依次观察四条链路。该入口生成的是工程/人工可视化记录，不修改冻结的 Development、
-Gate、Confirmation、Shadow 或 A/B 结果。完整模式语义、输出与 Isaac 复用规则见
-[用户手册 8.0 节](docs/user_manual.md#80-module2-attempt-21-单终端入口)。
-
-## 正式 4×20 批量运行
-
-一条命令会构建工作区，依次运行静态 pilot＋40轮、生成静态 `2×20` 报告、受控停止静态栈、运行动态 pilot＋40轮、生成动态 `2×20` 报告，最后生成同一批次的总 `4×20` 报告：
+pilot 通过并冻结场景哈希后，去掉 `--run-indices 1` 才能运行完整 20 轮。Final wrapper
+对 pre-dispatch 基础设施错误保留有界重试；一旦 `TRIAL_DISPATCHED.json` 已写入，任何
+任务、碰撞、证据或 checksum 失败都会停止 campaign，失败轮原样保留且禁止补跑替换。
+单轮结束后使用 `final_rivermark_pilot_check` 复算 checksum 和预注册交互门控，例如：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/run_kujiale_4x20_all.sh
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/local_setup.bash
+ros2 run robot_experiments final_rivermark_pilot_check \
+  --group static \
+  --root data/experiment_runs/final_rivermark/pilots/rev1/static_off/runs \
+  --metric-contract data/rivermark_demo/final_rivermark_metric_contract.yaml \
+  --output data/experiment_runs/final_rivermark/pilots/rev1/static_off/pilot_check.json
 ```
 
-省略批次 ID 时会自动生成 `YYYYMMDD-HHMMSS`。指定 ID 或在相同代码、配置下断点续跑：
+只读取已完成 evidence 生成资格报告：
 
 ```bash
-./scripts/run_kujiale_4x20_all.sh 20260726-120000
-./scripts/run_kujiale_4x20_all.sh 20260726-120000 --resume --skip-build
+source /opt/ros/jazzy/setup.bash
+source ros2_ws/install/local_setup.bash
+ros2 run robot_experiments final_rivermark_qualification \
+  --static-root data/experiment_runs/final_rivermark/static/off/runs \
+  --dynamic-root data/experiment_runs/final_rivermark/dynamic/medium/runs \
+  --appearance-root data/experiment_runs/final_rivermark/appearance/medium/runs \
+  --metric-contract data/rivermark_demo/final_rivermark_metric_contract.yaml \
+  --contract-summary data/rivermark_demo/benchmarks/module2_contracts/contract_benchmark_summary.json \
+  --output data/experiment_runs/final_rivermark/qualification/qualification.json
 ```
 
-若只需要在同一配置下续跑动态阶段：
+## Module2 与 tile 证据边界
+
+Rivermark 的 Module2 结论分成两类，不能混用：
+
+1. `runtime_consumption_only` 证明 prior 请求真实到达 Route Server，并在有界条件下
+   改变选中路线的 cost snapshot。dynamic-v2 的 20 轮均满足该合同。
+2. 16×16 `region_22` paired benchmark 证明缓存收敛和 parent-child 增量更新效率。
+
+它们都不能证明 OFF、SR-only、DR-only、SRDR 哪一臂带来因果性能改善。四臂静态
+因果矩阵已由 V4 单独验证，不在 Rivermark qualification 中运行；最终结果为
+`ENGINEERING_MIXED_SCENE_DEPENDENT`。
+
+Persistent blockage 入口仅用于工程演示：
 
 ```bash
-./scripts/run_kujiale_4x20_all.sh <CAMPAIGN_ID> --dynamic-only --resume --skip-build
+ROS_DOMAIN_ID=231 ./scripts/trigger_rivermark_blockage.sh blocked
+ROS_DOMAIN_ID=231 ./scripts/trigger_rivermark_blockage.sh clear
 ```
 
-如果修改了动态代码、Nav2 参数、actor 配置或验收规则，不能对旧动态证据直接使用 `--resume`；应使用新批次 ID 运行 `--dynamic-only`，或严格按 [执行复盘](docs/kujiale_4x20_execution_lessons.md) 替换同一 ID 下的全部动态证据。
+该注入用于观察重复确认、关闭边和重路由，不属于传感器因果证据，也不计入正式
+避障率。真实动态障碍仍由 LiDAR/RGB-D、Local Costmap、MPPI 和 Collision Monitor 处理。
 
-报告目录为 `data/reports/kujiale_4x20_<campaign_id>/`。每份报告包含 HTML、PDF、Markdown、PNG、CSV、JSON 和证据索引；报告即使未通过也会生成，退出码 `2` 表示批次完成但未通过门槛或证据不完整。已发布 campaign 的 `index.html` 和 `index_portable.html` 都将地图、统计图、逐轮 GT 路径及五种固定客厅外观示意图引用为 GitHub Raw 链接；复制 HTML 到另一台电脑后只需能访问 GitHub，即可预览、筛选与打开原图，无需携带 `figures/` 目录。未发布图片快照的新报告仍使用相对 PNG 路径。HTML、PDF 和 Markdown 都包含五档外观的灯光强度、色温、材质色相偏移和同一客厅机位示意图；它们说明实验变量，不替代逐轮 RGB 证据。两种 HTML 都将四组实验显示为 S1–D2 中文卡片，明确说明静态/动态障碍与外观变量；地图、统计图、外观图和逐轮轨迹可点击进入当前页放大预览，演示视频则使用明确的“放大视频”按钮进入大尺寸播放器，并均保留在新标签页打开原文件的后备入口。完整4×20报告还内嵌“实验如何执行”和“指标定义与本次结果”：静态/动态避障成功率公式、静态路径偏差公式及静态/动态/总体导航成功率公式。HTML 还可按实验组、seed、外观配置、动态变体和结果筛选每轮路径：静态图叠加六个静态障碍，动态图叠加本轮实际触发 actor 的轨迹、起终点和方向。
+## 验证
 
-完整实验矩阵、外观定义、报告与门槛见 [4×20 运行手册](docs/kujiale_4x20_appearance_benchmark_plan.md)。
+当前 Final 增量回归结果：
 
-## 光照/颜色大图预览（非前向相机）
+- Final 专项：48 passed；
+- 仓库级非 Isaac/ROS：817 passed、1 skipped、14 deselected；
+- ROS/colcon：739 tests、0 errors、0 failures、5 skipped。
 
-正式实验保存的 `appearance_rgb_before_goal.ppm` 是 320×180 的前向 RGB-D 证据图，不能用于观察全屋外观。需要核验光照、色温和材质颜色时，使用下面的独立 headless 工具导出固定**客厅观察位**的 **1920×1080 场景视角**，画面以客厅家具、墙面、地面和灯光为主体；它不启动 ROS/Nav2、不运行实验，也不会修改原始 USD 或正式证据。
+历史 Attempt31 收尾工作树回归结果：
+
+- 仓库级 pytest：807 passed，12 skipped；
+- `robot_experiments` 安装态：310 passed；
+- ROS 汇总：591 tests，0 errors，0 failures，1 skipped；
+- 60 个正式轮次和资格报告 checksum 全部通过。
+
+常规本地检查：
 
 ```bash
-cd "$PROJECT_ROOT"
-./scripts/capture_kujiale_appearance_preview.sh
+./scripts/test.sh
+git diff --check
 ```
-
-命令会打印新目录，例如 `data/appearance_previews/kujiale_appearance_<UTC时间>/index.html`。打开该 `index.html`，点击任一图片即可在新页面查看原始分辨率。只看一个配置时：
-
-```bash
-./scripts/capture_kujiale_appearance_preview.sh --profile bright_warm
-```
-
-截图工具与其他 Isaac 进程互斥；先停止正在运行的 Isaac，再执行。启动时会跳过历史 minidump 上传，避免旧的 Isaac 崩溃转储阻塞本次截图；该图仅用于外观核验，**不是**正式 4×20 统计或运行证据。
-
-## 全屋单轮可视化（不计入正式证据）
-
-两种单轮模式都会自动发送 `G2 → G3 → G4 → G5 → G1`。运行前确保没有其他项目栈；从静态切换到动态时，先按 Ctrl+C 停止静态 ROS，再停止静态 Isaac。
-
-### 静态单轮
-
-```bash
-# 终端 A：Isaac GUI + 六个静态 RGB-D 障碍
-cd "$PROJECT_ROOT"
-./scripts/run_kujiale_4x20_isaac.sh static
-
-# 终端 B：Navigation + RViz
-cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  spawn_pose_name:=long_route_start_g1 \
-  nav2_profile:=stable
-
-# 终端 C：自动发送全屋航点
-cd "$PROJECT_ROOT"
-./scripts/run_visual_route.sh static
-```
-
-### 动态单轮
-
-```bash
-# 终端 A：Isaac GUI + 三阶段动态 actor
-cd "$PROJECT_ROOT"
-./scripts/run_kujiale_dynamic_isaac.sh
-
-# 终端 B：Navigation + RViz
-cd "$PROJECT_ROOT"
-./scripts/run_ros.sh navigation \
-  odometry_mode:=ideal \
-  spawn_pose_name:=long_route_start_g1 \
-  nav2_profile:=dynamic_avoidance
-
-# 终端 C：自动发送全屋航点并触发三阶段 actor
-cd "$PROJECT_ROOT"
-./scripts/run_kujiale_three_stage_visual.sh full --variant 1 --seed 7501
-```
-
-动态单轮默认不写正式证据；仅在需要调试记录时，在终端 C 末尾加 `--record`。更详细的观察项、聚焦单段和停止顺序见 [用户手册第8节](docs/user_manual.md#8-可视化单轮全屋长距离测试isaac-gui--rviz)。
-
-## RGB-D 感知边界
-
-`rgbd_navigation` 发布：
-
-```text
-/camera/front/image_raw
-/camera/front/camera_info
-/camera/front/depth/points
-```
-
-`stable` profile 在 Local 和 Global Costmap 使用 `depth_voxel_layer`，用于低矮静态障碍；`dynamic_avoidance` 在 Local Costmap 使用时空 STVL，Global Costmap 仅使用静态图和 `/scan`，避免移动 actor 留下全局残影。Collision Monitor 始终只订阅 `/scan`；RGB-D 不参与 SLAM、EKF 或 Collision Monitor。
-
-## 常用操作
-
-| 目标 | 命令 |
-| --- | --- |
-| 仅启动定位与 TF | `./scripts/run_ros.sh localization odometry_mode:=ideal` |
-| 从零建图 | Isaac：`--navigation-mode mapping --mode ideal`；ROS：`./scripts/run_ros.sh mapping odometry_mode:=ideal` |
-| 保存新地图 | `./scripts/save_map.sh <新版本名>`，完成标定后才能使用 `initial_pose_source:=auto` |
-| 查看受管进程和锁 | `./scripts/diagnose.sh` |
-| 安全预览清理 | `./scripts/clean_runtime.sh --dry-run` |
 
 ## 文档入口
 
 | 目标 | 文档 |
 | --- | --- |
-| 执行正式实验、理解外观矩阵与报告 | [4×20 运行手册](docs/kujiale_4x20_appearance_benchmark_plan.md) |
-| 排查 pilot、supervisor、续跑或动态复测 | [4×20 执行复盘](docs/kujiale_4x20_execution_lessons.md) |
-| 查看地图、航点、静态障碍和动态 actor 路线 | [全屋路线地图](docs/kujiale_long_route_map.md) |
-| 查看运行契约、Topic、TF、QoS 和所有权 | [接口文档](docs/interfaces.md) |
-| 诊断启动、锁、DDS、RViz、Reset 或 Nav2 问题 | [排障手册](docs/troubleshooting.md) |
-| 查看正式结果、配置边界与复核方法 | [验证台账](docs/verification.md) |
-| 查看当前文档的事实来源与职责 | [文档状态](docs/documentation_status.md) |
-| 查看 Module3 原始源仓、两个发布仓、分支、标签和本地 remote 的一一对应关系 | [分支与标签目录](docs/branch_governance.md) |
-| 理解 Module2 如何接入 Nav2、规划与风险如何融合 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
-| 操作 RViz 中的 Module2 认知叠加 | [Module2 RViz 可视化](docs/module2_rviz_visualization.md) |
-| 查看 Attempt-21 静态接入、RViz 与量化结果 | [Module2 × Nav2 静态图文报告](docs/reports/attempt21-static-v13/index.html) |
-| 从全局理解 Module1/Module2/Integration/Module3 架构 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
-| 汇总 Development→Gate→Confirmation→Shadow→A/B→Combined 指标 | [公开静态图文报告](https://aoiota.github.io/Isaac_Sim_ROS2_Nav/#metrics) |
-| 单终端运行 planning/risk/combined/static opt-in | [用户手册 8.0 节](docs/user_manual.md#80-module2-attempt-21-单终端入口) |
-| 复现 v0.1 工程验证 | [规划/风险融合 v0.1 复现](docs/reproduction/planning-risk-fusion-v0.1.md) |
+| Attempt31 完整运行、地图、航点和证据说明 | [Rivermark 室外导航手册](docs/rivermark_outdoor_demo.md) |
+| Attempt31 指标、P0–P8 与完成性 | [Rivermark 完成性审计](docs/rivermark_completion_audit.md) |
+| 通用 Topic、TF、QoS 与职责 | [接口文档](docs/interfaces.md) |
+| Isaac、DDS、RViz、Reset 与 Nav2 排障 | [排障手册](docs/troubleshooting.md) |
+| Module2 与 Nav2 历史融合设计 | [Module2 × Nav2 规划/风险融合](docs/module2_nav2_planning_risk_fusion.md) |
+| 仓库与远端治理 | [分支与标签目录](docs/branch_governance.md) |
 
-## 验证
+## Final 汇总与架构文档（Integration 仓库）
 
-```bash
-./scripts/test.sh
-./scripts/test.sh --with-isaac
-git diff --check
-```
+以下文档位于配对的 Integration 工作树
+`/home/lyb/Workspace/Bio_Nav/worktrees/integration/final-indoor-outdoor-navigation/docs/final_closure/`（分支
+`codex/final-indoor-outdoor-navigation`），是本仓库 Final 结果在整体项目口径下的汇总：
 
-运行 ROS 集成测试前，停止同一 ROS Domain 42 中的 Isaac 仿真，避免真实 `/clock` 与测试夹具冲突。
+| 目标 | 文档 |
+| --- | --- |
+| 室内静态/动态/外观 60 轮结果与指标 | `results_indoor_60.md` |
+| 室外静态/动态/外观 60 轮结果与指标（含本仓库 Final 资格口径） | `results_outdoor_60.md` |
+| V4 五组四臂 100 行结果与指标 | `results_v4_100.md` |
+| Module2 作用机制与有效证据 | `module2_effectiveness_evidence.md` |
+| 五项工程验收指标总表与资格矩阵 | `results_master_summary.md` |
+| 整体导航架构（Module1/Module2/Module3 与 Integration） | `final_navigation_architecture.md` |
+
+## 历史兼容入口：Kujiale / Attempt21
+
+酷家乐室内 `stable`、`dynamic_avoidance` 和显式 static opt-in 仍保留，不因
+Attempt31 改写。历史 4×20、Attempt21 v12/v13/v15/v16、冻结 STOP/PASS 及其 receipt
+必须按原文档和原提交解释，不能用 Rivermark 结果回填。
+
+- [酷家乐用户手册](docs/user_manual.md)
+- [4×20 外观鲁棒性实验计划](docs/kujiale_4x20_appearance_benchmark_plan.md)
+- [4×20 执行复盘](docs/kujiale_4x20_execution_lessons.md)
+- [历史验证台账](docs/verification.md)
+
+## 已知边界
+
+- 当前 Rivermark 是 Ideal Odometry 科研 Demo，不代表真实传感器定位或室外泛化。
+- 源场景部分 foliage point-instancer 缺少 prototype，首次加载会产生渲染 warning；
+  它不参与导航碰撞或栅格生成。
+- 少量缺失材质只影响显示，不改变地图、碰撞体或正式任务几何。

@@ -13,6 +13,7 @@ _isaac_nav_setup_ros_env() {
   local restart_daemon=false
   local script_dir project_root ros_setup workspace_setup
   local nounset_was_enabled=false
+  local expected_domain_id="${ISAAC_NAV_EXPECTED_DOMAIN_ID:-42}"
   local ros2_cli
 
   case "${1:-}" in
@@ -55,9 +56,9 @@ _isaac_nav_setup_ros_env() {
     printf '[isaac-nav] error: run ./scripts/build_ros2.sh first\n' >&2
     return 1
   }
-  if [[ -n "${ROS_DOMAIN_ID:-}" && "${ROS_DOMAIN_ID}" != 42 ]]; then
-    printf '[isaac-nav] error: ROS_DOMAIN_ID must be 42; got %s\n' \
-      "${ROS_DOMAIN_ID}" >&2
+  if [[ -n "${ROS_DOMAIN_ID:-}" && "${ROS_DOMAIN_ID}" != "${expected_domain_id}" ]]; then
+    printf '[isaac-nav] error: ROS_DOMAIN_ID must be %s; got %s\n' \
+      "${expected_domain_id}" "${ROS_DOMAIN_ID}" >&2
     return 1
   fi
   if [[ -n "${RMW_IMPLEMENTATION:-}" \
@@ -87,7 +88,7 @@ _isaac_nav_setup_ros_env() {
 
   export PROJECT_ROOT="${project_root}"
   export ROS_SETUP="${ros_setup}"
-  export ROS_DOMAIN_ID=42
+  export ROS_DOMAIN_ID="${expected_domain_id}"
   export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
   if [[ "${ROS_DISTRO:-}" != jazzy ]]; then

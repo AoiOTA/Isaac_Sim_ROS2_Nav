@@ -38,6 +38,7 @@ STATIC_ONLINE_V11_SEEDS = tuple(range(23401, 23411))
 STATIC_ONLINE_V12_SEEDS = tuple(range(23501, 23511))
 STATIC_FUSION_SUPPLEMENT_V15_SEEDS = tuple(range(23601, 23611))
 STATIC_ONLINE_V9_SEEDS = tuple(range(23201, 23211))
+ATTEMPT22_DYNAMIC_DEVELOPMENT_SEEDS = tuple(range(31101, 31141))
 
 
 def test_attempt21_static_v15_fusion_supplement_preserves_six_obstacles():
@@ -91,6 +92,10 @@ def test_attempt21_static_collection_profile_is_appearance_safe():
         "bio_nav_rgbd_risk_shadow",
         "bio_nav_rgbd_risk_ab",
     } <= APPEARANCE_NAV2_PROFILES
+
+
+def test_attempt23_global_prior_profile_is_appearance_safe():
+    assert "attempt23_global_prior" in APPEARANCE_NAV2_PROFILES
 
 
 def test_attempt21_static_v2_uses_fresh_formal_seed_families():
@@ -263,3 +268,23 @@ def test_attempt21_dynamic_variants_exist_in_every_selected_obstacle_case():
             selected = case_sets.get(run["case_id"], [run["case_id"]])
             for case_id in selected:
                 assert run["variant_id"] in cases[case_id]["variants"]
+
+
+def test_attempt22_dynamic_development_uses_frozen_new_seed_family():
+    source = CONFIG / "isaac_kujiale_dataset_v3_attempt22_development_dynamic.yaml"
+    text = source.read_text(encoding="utf-8")
+    assert "attempt22 prereg SHA256:" in text
+    scenario = yaml.safe_load(text)["scenario"]
+    assert scenario["id"] == (
+        "isaac_kujiale_dataset_v3_attempt22_development_dynamic"
+    )
+    matrix = scenario["runs"]["matrix"]
+    assert tuple(row["seed"] for row in matrix[::2]) == (
+        ATTEMPT22_DYNAMIC_DEVELOPMENT_SEEDS
+    )
+    assert tuple(row["seed"] for row in matrix[1::2]) == (
+        ATTEMPT22_DYNAMIC_DEVELOPMENT_SEEDS
+    )
+    assert all(row["condition_id"] == "dynamic_baseline" for row in matrix[::2])
+    assert all(row["condition_id"] == "dynamic_appearance" for row in matrix[1::2])
+    assert "nav2_profile" not in scenario

@@ -93,16 +93,21 @@ class CollisionMonitor:
         from std_msgs.msg import Bool, String
 
         if sensor is None:
+            from isaacsim.core.experimental.utils import backend as backend_utils
             from isaacsim.sensors.experimental.physics import Contact, ContactSensor
 
-            sensor = ContactSensor(
-                Contact.create(
-                    f"{base_link_prim}/navigation_contact_sensor",
-                    min_threshold=1.0,
-                    max_threshold=1.0e9,
-                    radius=-1.0,
+            # The Fabric mirror can lag newly composed referenced assets during
+            # short-lived headless trials. Sensor authoring is a USD operation;
+            # resolve the rigid-body ancestor against the authoritative Stage.
+            with backend_utils.use_backend("usd"):
+                sensor = ContactSensor(
+                    Contact.create(
+                        f"{base_link_prim}/navigation_contact_sensor",
+                        min_threshold=1.0,
+                        max_threshold=1.0e9,
+                        radius=-1.0,
+                    )
                 )
-            )
         self._sensor = sensor
         self._raw_contact_data_enabled = False
         self._raw_contact_data_error = ""

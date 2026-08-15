@@ -1,0 +1,22 @@
+{
+  "added_transitions": 0,
+  "cognitive_tile_id": "rivermark_a:region_22",
+  "map_version": "01173f02f973f25c94ada35ef4e7b8ba84e74469520d953a8aad967fd0b2e6bb",
+  "new_states": 0,
+  "obstacle_center_map_m": [
+    -11.5,
+    142.5
+  ],
+  "obstacle_radius_m": 0.48,
+  "obstacle_state": 14,
+  "persistent_confirmed": true,
+  "reachable_a": 204,
+  "reachable_b": 203,
+  "removed_states": 1,
+  "removed_transitions": 6,
+  "schema": "bio_nav.v310.physical_cognitive_pair.v1",
+  "shared_states": 203,
+  "source_map_yaml": "/home/lyb/Workspace/Bio_Nav/worktrees/module3/attempt31-outdoor-nav/data/rivermark_demo/rivermark_selected.yaml",
+  "transitions_a": 728,
+  "transitions_b": 722
+}

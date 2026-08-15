@@ -105,6 +105,12 @@ class DynamicObstacleManager:
             runtime.phase, runtime.progress, runtime.velocity_mps, runtime.min_clearance_m = phases[identifier], 0.0, 0.0, math.inf
             runtime.position_map = runtime.spec.start; runtime.translate_op.Set(Gf.Vec3d(*self._world_position(runtime.spec.start)))
             self._set_enabled(runtime, active and runtime.spec.trigger_group is None)
+            if active and runtime.spec.mode == "stationary":
+                # A stationary schema-v2 obstacle is a persistent physical
+                # object, not an actor waiting for a trigger.  Marking it as
+                # parked keeps both its RViz marker and clearance telemetry
+                # live for the complete navigation run.
+                runtime.state = "parked"
         self._event(
             "reset", 0.0, seed=seed,
             case_id=case_id,
@@ -121,14 +127,27 @@ class DynamicObstacleManager:
                 and not runtime.retired
                 and (not self._selected_cases or identifier in self._case_by_obstacle_id)
             ):
-                runtime.state, runtime.armed_at, runtime.gate_at = "armed", simulation_time, None
+                case = self._case_by_obstacle_id.get(identifier)
+                activation = getattr(case, "activation", "spatial_gate")
+                runtime.state, runtime.armed_at, runtime.gate_at = (
+                    "moving" if activation == "trigger" else "armed",
+                    simulation_time,
+                    None,
+                )
                 # Schema v4 deliberately keeps an armed actor hidden until the
                 # spatial gate.  Otherwise it becomes a static global-costmap
                 # obstacle for several seconds before the interaction.
-                if not self.scenario.is_case_matrix:
+                if not self.scenario.is_case_matrix or activation == "trigger":
                     self._set_enabled(runtime, True)
+                if activation == "trigger":
+                    runtime.motion_at = simulation_time
                 activated.append(identifier)
                 self._event("armed", simulation_time, obstacle_id=identifier, group=group)
+                if activation == "trigger":
+                    self._event(
+                        "motion_start", simulation_time,
+                        obstacle_id=identifier, activation="trigger",
+                    )
         return tuple(activated)
 
     def complete(self, group: str, simulation_time: float) -> tuple[str, ...]:
@@ -288,14 +307,43 @@ class DynamicObstacleManager:
                     markers.markers.append(path)
             self._marker_publisher.publish(markers)
 
+    def _publish_disabled(self, simulation_time: float) -> None:
+        """Publish a healthy but intentionally empty dynamic-actor layer."""
+        if simulation_time - self._last_publish_time < .05:
+            return
+        self._last_publish_time = simulation_time
+        if hasattr(self, "_state_publisher"):
+            from std_msgs.msg import String
+            msg = String()
+            msg.data = json.dumps(self.state(), separators=(",", ":"))
+            self._state_publisher.publish(msg)
+        if getattr(self, "_marker_publisher", None) is not None:
+            # A disabled scenario retains its configured case matrix, but it
+            # deliberately authors no actor runtimes.  Do not call _publish(),
+            # which resolves selected cases through self._runtime.
+            self._marker_publisher.publish(self._marker_type())
+
     def update(self, simulation_time: float, robot: dict[str, float] | None = None) -> None:
-        if not self.scenario.enabled: return
+        if not self.scenario.enabled:
+            # Keep the ROS visualization/status contract alive in static and
+            # appearance runs.  An empty MarkerArray tells RViz that the layer
+            # is healthy and intentionally empty instead of leaving an orange
+            # "no message received" status that looks like a failed runtime.
+            self._publish_disabled(simulation_time)
+            return
         self._last_robot = robot
         from pxr import Gf
         for runtime in self._runtime.values():
             if runtime.retired or runtime.state == "waiting": continue
             case = self._case_by_obstacle_id.get(runtime.spec.obstacle_id)
             variant = self._selected_variants.get(case.case_id) if case is not None else None
+            if runtime.state == "parked":
+                if robot is not None:
+                    clearance = self._guard_clearance(runtime, robot)
+                    runtime.min_clearance_m = min(
+                        runtime.min_clearance_m, clearance
+                    )
+                continue
             if runtime.state == "safety_yield":
                 if robot is None:
                     continue

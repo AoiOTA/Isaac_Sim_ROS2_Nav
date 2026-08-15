@@ -13,6 +13,11 @@ def generate_launch_description():
         / 'launch'
         / 'ros_stack.launch.py'
     )
+    default_route_graph = (
+        Path(get_package_share_directory('robot_route_planner'))
+        / 'config'
+        / 'warehouse_new_gvg_v1.geojson'
+    )
     return LaunchDescription([
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
@@ -26,6 +31,11 @@ def generate_launch_description():
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument('nav2_profile', default_value='stable'),
         DeclareLaunchArgument('nav2_profile_params_file', default_value=''),
+        DeclareLaunchArgument('module2_enabled', default_value='true'),
+        DeclareLaunchArgument(
+            'route_graph_file', default_value=str(default_route_graph)),
+        DeclareLaunchArgument(
+            'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
@@ -64,6 +74,10 @@ def generate_launch_description():
                 'nav2_profile': LaunchConfiguration('nav2_profile'),
                 'nav2_profile_params_file': LaunchConfiguration(
                     'nav2_profile_params_file'),
+                'module2_enabled': LaunchConfiguration('module2_enabled'),
+                'route_graph_file': LaunchConfiguration('route_graph_file'),
+                'feasible_only_largest_component': LaunchConfiguration(
+                    'feasible_only_largest_component'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(

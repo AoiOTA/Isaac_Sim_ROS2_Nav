@@ -6,9 +6,11 @@
 #include <cmath>
 #include <functional>
 #include <future>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <queue>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
@@ -258,7 +260,8 @@ nav_msgs::msg::Path BioNavGridBased::stockPlan(
   }
   publishDecision(
     false, reason, 0.0, 0, latency_ms, reset_epoch, map_version, "", "",
-    qualification_sha256, motion_core_sha256, expected_module3_map_sha256_);
+    qualification_sha256, motion_core_sha256, expected_module3_map_sha256_,
+    nullptr);
   return path;
 }
 
@@ -346,7 +349,7 @@ nav_msgs::msg::Path BioNavGridBased::createPlan(
     true, "", metrics.primary_cost, metrics.expanded_nodes, latency_ms,
     reset_epoch, map_version, prior.goal_hash, prior.snapshot_sha256,
     prior.qualification_receipt_sha256, prior.motion_core_sha256,
-    prior.module3_map_sha256);
+    prior.module3_map_sha256, &metrics);
   return path;
 }
 
@@ -520,7 +523,8 @@ void BioNavGridBased::publishDecision(
   const std::string & snapshot_sha256,
   const std::string & qualification_sha256,
   const std::string & motion_core_sha256,
-  const std::string & module3_map_sha256)
+  const std::string & module3_map_sha256,
+  const TieBreakPlanMetrics * tie_metrics)
 {
   if (!decision_publisher_ || !decision_publisher_->is_activated()) {
     return;
@@ -534,6 +538,20 @@ void BioNavGridBased::publishDecision(
   decision.primary_path_cost = primary_cost;
   decision.expanded_nodes = expanded_nodes;
   decision.planning_latency_ms = static_cast<float>(latency_ms);
+  if (tie_metrics != nullptr) {
+    decision.zero_sr_expanded_nodes = tie_metrics->zero_sr_expanded_nodes;
+    decision.expanded_node_delta = tie_metrics->expanded_node_delta;
+    decision.search_changed = tie_metrics->search_changed;
+    decision.zero_sr_only_expanded_cell_count =
+      tie_metrics->zero_sr_only_expanded_cell_count;
+    decision.sr_only_expanded_cell_count =
+      tie_metrics->sr_only_expanded_cell_count;
+    decision.path_changed = tie_metrics->path_changed;
+    decision.zero_sr_only_cell_count = tie_metrics->zero_sr_only_cell_count;
+    decision.sr_only_cell_count = tie_metrics->sr_only_cell_count;
+    decision.max_path_delta_m = static_cast<float>(tie_metrics->max_path_delta_m);
+    decision.path_length_delta_m = static_cast<float>(tie_metrics->path_length_delta_m);
+  }
   decision.reset_epoch = reset_epoch;
   decision.map_version = map_version;
   decision.goal_hash = goal_hash;
@@ -557,20 +575,56 @@ void BioNavGridBased::publishDecision(
     status.id = 1;
     status.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
     status.action = visualization_msgs::msg::Marker::ADD;
-    status.pose.position.x = visualization_x_;
-    status.pose.position.y = visualization_y_ + 1.2;
-    status.pose.position.z = 2.2;
+    status.pose.position.x = 0.0;
+    status.pose.position.y = 6.2;
+    status.pose.position.z = 1.8;
     status.pose.orientation.w = 1.0;
     status.scale.z = 0.16;
-    status.lifetime = rclcpp::Duration::from_seconds(4.0);
+    // Planning may stop publishing after a goal succeeds.  Keep the last
+    // decision visible until the next DELETEALL instead of silently expiring.
+    status.lifetime = rclcpp::Duration::from_seconds(0.0);
     if (used) {
-      status.text = "M2 PLANNING ADOPTED | expanded=" +
-        std::to_string(expanded_nodes) + " | latency=" +
-        std::to_string(static_cast<int>(std::lround(latency_ms))) +
-        " ms";
-      status.color.r = 0.0F;
-      status.color.g = 1.0F;
-      status.color.b = 0.85F;
+      const bool path_changed = tie_metrics != nullptr && tie_metrics->path_changed;
+      const auto decimal = [](double value, int precision) {
+          std::ostringstream stream;
+          stream << std::fixed << std::setprecision(precision) << value;
+          return stream.str();
+        };
+      const auto zero_only = tie_metrics == nullptr ? 0U :
+        tie_metrics->zero_sr_only_cell_count;
+      const auto sr_only = tie_metrics == nullptr ? 0U : tie_metrics->sr_only_cell_count;
+      const double max_delta = tie_metrics == nullptr ? 0.0 : tie_metrics->max_path_delta_m;
+      const double length_delta = tie_metrics == nullptr ? 0.0 :
+        tie_metrics->path_length_delta_m;
+      const auto zero_expanded = tie_metrics == nullptr ? 0U :
+        tie_metrics->zero_sr_expanded_nodes;
+      const auto sr_expanded = tie_metrics == nullptr ? 0U :
+        tie_metrics->expanded_nodes;
+      const auto zero_search_only = tie_metrics == nullptr ? 0U :
+        tie_metrics->zero_sr_only_expanded_cell_count;
+      const auto sr_search_only = tie_metrics == nullptr ? 0U :
+        tie_metrics->sr_only_expanded_cell_count;
+      const double reduction_percent = zero_expanded == 0 ? 0.0 :
+        100.0 * (static_cast<double>(zero_expanded) -
+        static_cast<double>(sr_expanded)) / static_cast<double>(zero_expanded);
+      status.text = std::string("SR SEARCH: ") +
+        (tie_metrics != nullptr && tie_metrics->search_changed ? "CHANGED" : "UNCHANGED") +
+        " | nodes SR=" + std::to_string(sr_expanded) +
+        " vs zero=" + std::to_string(zero_expanded) +
+        " | reduction=" + (reduction_percent >= 0.0 ? "+" : "") +
+        decimal(reduction_percent, 1) + "%" +
+        "\nsearch-only SR=" + std::to_string(sr_search_only) +
+        " / zero=" + std::to_string(zero_search_only) +
+        " | FINAL PATH " + (path_changed ? "CHANGED" : "UNCHANGED") +
+        "\npath-only SR=" + std::to_string(sr_only) +
+        " cells | zero-SR-only=" + std::to_string(zero_only) +
+        " | max shift=" + decimal(max_delta, 2) + "m | length delta=" +
+        (length_delta >= 0.0 ? "+" : "") + decimal(length_delta, 2) + "m" +
+        " | equal primary=" + decimal(primary_cost, 2);
+      const bool search_changed = tie_metrics != nullptr && tie_metrics->search_changed;
+      status.color.r = path_changed ? 0.0F : (search_changed ? 0.0F : 1.0F);
+      status.color.g = path_changed ? 1.0F : (search_changed ? 0.92F : 0.82F);
+      status.color.b = path_changed ? 0.35F : (search_changed ? 1.0F : 0.0F);
       status.color.a = 1.0F;
     } else {
       status.text = "M2 PLANNING FALLBACK | " + fallback_reason;
@@ -580,6 +634,111 @@ void BioNavGridBased::publishDecision(
       status.color.a = 1.0F;
     }
     array.markers.push_back(status);
+
+    if (used && tie_metrics != nullptr) {
+      auto add_path_marker = [&array, &clear](
+        const nav_msgs::msg::Path & path, const std::string & marker_namespace,
+        int marker_id, float red, float green, float blue, float alpha,
+        float width, float height)
+        {
+          visualization_msgs::msg::Marker marker;
+          marker.header = clear.header;
+          marker.ns = marker_namespace;
+          marker.id = marker_id;
+          marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+          marker.action = visualization_msgs::msg::Marker::ADD;
+          marker.pose.orientation.w = 1.0;
+          marker.scale.x = width;
+          marker.color.r = red;
+          marker.color.g = green;
+          marker.color.b = blue;
+          marker.color.a = alpha;
+          for (const auto & pose : path.poses) {
+            geometry_msgs::msg::Point point;
+            point.x = pose.pose.position.x;
+            point.y = pose.pose.position.y;
+            point.z = height;
+            marker.points.push_back(point);
+          }
+          array.markers.push_back(marker);
+        };
+      auto add_cell_marker = [&array, &clear](
+        const nav_msgs::msg::Path & path, const std::string & marker_namespace,
+        int marker_id, float red, float green, float blue)
+        {
+          visualization_msgs::msg::Marker marker;
+          marker.header = clear.header;
+          marker.ns = marker_namespace;
+          marker.id = marker_id;
+          marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
+          marker.action = visualization_msgs::msg::Marker::ADD;
+          marker.pose.orientation.w = 1.0;
+          marker.scale.x = 0.28;
+          marker.scale.y = 0.28;
+          marker.scale.z = 0.08;
+          marker.color.r = red;
+          marker.color.g = green;
+          marker.color.b = blue;
+          marker.color.a = 0.98F;
+          for (const auto & pose : path.poses) {
+            geometry_msgs::msg::Point point;
+            point.x = pose.pose.position.x;
+            point.y = pose.pose.position.y;
+            point.z = 0.58;
+            marker.points.push_back(point);
+          }
+          array.markers.push_back(marker);
+      };
+      auto add_search_marker = [&array, &clear](
+        const nav_msgs::msg::Path & path, const std::string & marker_namespace,
+        int marker_id, float red, float green, float blue)
+        {
+          visualization_msgs::msg::Marker marker;
+          marker.header = clear.header;
+          marker.ns = marker_namespace;
+          marker.id = marker_id;
+          marker.type = visualization_msgs::msg::Marker::CUBE_LIST;
+          marker.action = visualization_msgs::msg::Marker::ADD;
+          marker.pose.orientation.w = 1.0;
+          marker.scale.x = 0.065;
+          marker.scale.y = 0.065;
+          marker.scale.z = 0.035;
+          marker.color.r = red;
+          marker.color.g = green;
+          marker.color.b = blue;
+          marker.color.a = 0.58F;
+          for (const auto & pose : path.poses) {
+            geometry_msgs::msg::Point point;
+            point.x = pose.pose.position.x;
+            point.y = pose.pose.position.y;
+            point.z = 0.24;
+            marker.points.push_back(point);
+          }
+          array.markers.push_back(marker);
+        };
+      if (tie_metrics->search_changed) {
+        add_search_marker(
+          tie_metrics->zero_sr_only_expanded_cells, "SR Search Zero-Only Cells", 6,
+          0.60F, 0.60F, 0.60F);
+        add_search_marker(
+          tie_metrics->sr_only_expanded_cells, "SR Search Selected-Only Cells", 7,
+          0.0F, 0.92F, 1.0F);
+      }
+      if (tie_metrics->path_changed) {
+        add_path_marker(
+          tie_metrics->zero_tie_reference, "SR Zero-Tie Reference", 2,
+          0.70F, 0.70F, 0.70F, 0.62F, 0.07F, 0.38F);
+        add_path_marker(
+          tie_metrics->tie_break_result, "SR Tie-Break Result", 3,
+          0.0F, 0.95F, 0.42F, 0.72F, 0.07F, 0.44F);
+        add_cell_marker(
+          tie_metrics->zero_sr_only_cells, "SR Zero-Tie Only Cells", 4,
+          0.72F, 0.72F, 0.72F);
+        add_cell_marker(
+          tie_metrics->sr_only_cells, "SR Selected Only Cells", 5,
+          0.0F, 1.0F, 0.30F);
+      }
+    }
     visualization_publisher_->publish(array);
   }
 }

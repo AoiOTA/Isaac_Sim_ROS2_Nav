@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
+
 from isaac_sim.src.config import ProjectConfig
 from isaac_sim.src.stage.asset_validator import dependency_report, validate_default_prim, validate_prim
 from isaac_sim.src.stage.physics_setup import ensure_physics_scene
@@ -18,6 +22,55 @@ from isaac_sim.src.stage.stage_loader import (
 
 _KUJIALE_DOORWAY_ASSET = "kujiale_0026_A_to_B_door_open.usd"
 _KUJIALE_DOORWAY_FILL_PATH = "/World/EnvironmentRepairs/kujiale_g5_doorway_floor_fill"
+
+
+def author_configured_static_frames(stage, base_link_prim: str, robot_config: Path) -> tuple[str, ...]:
+    """Author the robot's configured fixed-frame tree in the project layer.
+
+    The NVIDIA Jackal reference can finish payload composition after the first
+    Kit updates.  Root-layer frame specs keep camera/LiDAR/IMU ownership stable
+    without editing the imported binary asset or duplicating sensor geometry.
+    """
+
+    from pxr import Gf, UsdGeom, UsdPhysics
+
+    document = yaml.safe_load(Path(robot_config).read_text(encoding="utf-8"))
+    transforms = document.get("static_transforms") if isinstance(document, dict) else None
+    if not isinstance(transforms, list):
+        raise ValueError("robot static_transforms must be a list")
+    paths = {"base_link": str(base_link_prim)}
+    authored: list[str] = []
+    for index, item in enumerate(transforms):
+        if not isinstance(item, dict):
+            raise ValueError(f"static_transforms[{index}] must be an object")
+        parent, child = item.get("parent"), item.get("child")
+        translation, rotation = item.get("translation"), item.get("rotation_xyzw")
+        if parent not in paths or not isinstance(child, str) or not child:
+            raise ValueError(f"static_transforms[{index}] has an unresolved frame")
+        if (
+            not isinstance(translation, list)
+            or len(translation) != 3
+            or not isinstance(rotation, list)
+            or len(rotation) != 4
+        ):
+            raise ValueError(f"static_transforms[{index}] pose is invalid")
+        path = f"{paths[parent]}/{child}"
+        existing = stage.GetPrimAtPath(path)
+        if existing.IsValid() and existing.GetTypeName() not in {"", "Xform"}:
+            raise ValueError(f"configured static frame has incompatible type: {path}")
+        frame = UsdGeom.Xform.Define(stage, path).GetPrim()
+        if frame.HasAPI(UsdPhysics.RigidBodyAPI):
+            raise ValueError(f"configured static frame must not be a rigid body: {path}")
+        xform = UsdGeom.Xformable(frame)
+        xform.ClearXformOpOrder()
+        xform.AddTranslateOp().Set(Gf.Vec3d(*(float(value) for value in translation)))
+        x, y, z, w = (float(value) for value in rotation)
+        xform.AddOrientOp(precision=UsdGeom.XformOp.PrecisionFloat).Set(
+            Gf.Quatf(w, x, y, z)
+        )
+        paths[child] = path
+        authored.append(path)
+    return tuple(authored)
 
 
 def ensure_kujiale_g5_doorway_floor_fill(stage, source_asset) -> bool:
@@ -99,6 +152,9 @@ class SceneComposer:
         ensure_kujiale_g5_doorway_floor_fill(stage, config.environment.source_asset)
         robot_prim = ensure_xform(stage, config.robot.runtime_prim_path)
         ensure_reference(robot_prim, config.robot.asset_path)
+        author_configured_static_frames(
+            stage, config.robot.base_link_prim, config.files.robot
+        )
         ensure_physics_scene(stage, config.simulation.expected_physics_scene)
         validate_prim(stage, config.robot.base_link_prim, "Xform")
         if save:

@@ -59,6 +59,7 @@ class DynamicCase:
     gate: RobotGate
     max_acceleration: float
     variants: tuple[DynamicVariant, ...]
+    activation: str = "spatial_gate"
 
     def variant(self, variant_id: str | int | None) -> DynamicVariant:
         if variant_id is None:
@@ -140,9 +141,18 @@ def _load_case_matrix(data: dict[str, object], schema_version: int) -> DynamicSc
     for case_id, raw in raw_cases.items():
         if not isinstance(case_id, str) or not case_id or not isinstance(raw, dict):
             raise ValueError("dynamic cases must have non-empty string ids and mappings")
-        allowed_case = {"trigger_group", "gate", "obstacle", "variants"}
+        allowed_case = {
+            "trigger_group", "gate", "obstacle", "variants", "activation"
+        }
         reject_unknown(raw, allowed_case, context=f"dynamic case {case_id}")
-        require_keys(raw, allowed_case, context=f"dynamic case {case_id}")
+        require_keys(
+            raw,
+            {"trigger_group", "gate", "obstacle", "variants"},
+            context=f"dynamic case {case_id}",
+        )
+        activation = raw.get("activation", "spatial_gate")
+        if activation not in {"spatial_gate", "trigger"}:
+            raise ValueError(f"{case_id}.activation must be spatial_gate or trigger")
         group = raw["trigger_group"]
         if not isinstance(group, str) or not group:
             raise ValueError(f"{case_id}.trigger_group must be non-empty")
@@ -209,7 +219,7 @@ def _load_case_matrix(data: dict[str, object], schema_version: int) -> DynamicSc
                                      RobotGate(axis, require_number(gate_raw["threshold"], context=f"{case_id}.gate.threshold"), direction,
                                                require_number(gate_raw["min_speed_mps"], context=f"{case_id}.gate.min_speed_mps", positive=True), x_range,
                                                max_distance_to_obstacle_start_m),
-                                     require_number(obstacle_raw["max_acceleration"], context=f"{case_id}.obstacle.max_acceleration", positive=True), tuple(variants))
+                                     require_number(obstacle_raw["max_acceleration"], context=f"{case_id}.obstacle.max_acceleration", positive=True), tuple(variants), activation)
         all_specs.append(spec)
     case_sets: dict[str, tuple[str, ...]] = {}
     if schema_version >= 4:

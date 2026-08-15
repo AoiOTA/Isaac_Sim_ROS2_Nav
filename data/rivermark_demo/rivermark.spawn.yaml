@@ -1,0 +1,21 @@
+schema_version: 1
+spawn_poses:
+  rivermark_start:
+    usd:
+      position:
+      - 21.2068
+      - 119.978
+      - 6.2735
+      yaw_deg: 136.49593386440827
+    map:
+      position:
+      - 21.2068
+      - 119.978
+      yaw_deg: 136.49593386440827
+      # The selected Occupancy is authored directly in Rivermark USD/world XY,
+      # so map_T_usd is identity at this frozen spawn.
+      calibrated: true
+      map_version: rivermark_0_05_v1
+      map_bundle_sha256: 01173f02f973f25c94ada35ef4e7b8ba84e74469520d953a8aad967fd0b2e6bb
+      position_stddev_m: 0.0
+      yaw_stddev_deg: 0.0

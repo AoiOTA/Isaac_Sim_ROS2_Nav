@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
 
 class StageLoadError(RuntimeError):
@@ -12,12 +13,53 @@ class StageLoadError(RuntimeError):
 def create_or_open_project_stage(path: str | Path):
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        # Seed a file-backed layer first, then attach it through Kit below.
+        # Returning this standalone pxr Stage would create a split brain where
+        # local validation passes but RTX/PhysX remain on Kit's anonymous Stage.
+        from pxr import Usd
+
+        seeded = Usd.Stage.CreateNew(str(path))
+        if seeded is None or not seeded.GetRootLayer().Save():
+            raise StageLoadError(f"failed to seed project stage {path}")
     stage = None
     if path.exists():
         try:
             import omni.usd
 
             context = omni.usd.get_context()
+            import omni.kit.app
+
+            def wait_for_stable_context_stage():
+                deadline = time.monotonic() + 15.0
+                stable = None
+                stable_updates = 0
+                while time.monotonic() < deadline:
+                    candidate = context.get_stage()
+                    candidate_path = ""
+                    if candidate is not None:
+                        layer = candidate.GetRootLayer()
+                        candidate_path = layer.realPath or layer.identifier
+                    matching = (
+                        candidate_path
+                        and not candidate_path.startswith("anon:")
+                        and Path(candidate_path).resolve() == path
+                        and context.get_stage_loading_status()[2] == 0
+                    )
+                    if matching:
+                        if candidate is stable:
+                            stable_updates += 1
+                        else:
+                            stable = candidate
+                            stable_updates = 1
+                        if stable_updates >= 5:
+                            return candidate
+                    else:
+                        stable = None
+                        stable_updates = 0
+                    omni.kit.app.get_app().update()
+                return None
+
             current = context.get_stage()
             current_path = ""
             if current is not None:
@@ -26,7 +68,7 @@ def create_or_open_project_stage(path: str | Path):
             if current_path and not current_path.startswith("anon:") and (
                 Path(current_path).resolve() == path
             ):
-                stage = current
+                stage = wait_for_stable_context_stage()
             elif current is not None:
                 # SimulationApp starts with an anonymous context Stage.  Isaac
                 # 6 refuses to synchronously open the project stage while that
@@ -37,12 +79,16 @@ def create_or_open_project_stage(path: str | Path):
                         "could not close the existing Kit Stage before project open"
                     )
             if stage is None and context.open_stage(str(path)):
-                stage = context.get_stage()
+                # Isaac Sim 6.0 may acknowledge open_stage() before the Kit
+                # context switches away from its anonymous startup Stage.
+                # Composing into that stale object passes local validation but
+                # leaves RTX/PhysX attached to a different, uncomposed Stage.
+                stage = wait_for_stable_context_stage()
             if stage is None:
                 raise StageLoadError(f"Kit context failed to open project stage {path}")
         except StageLoadError:
             raise
-        except (ImportError, RuntimeError):
+        except ImportError:
             # Pure USD tests run without a Kit application. Runtime code must
             # use the context branch so sensors and OmniGraph share this stage.
             stage = None

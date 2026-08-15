@@ -1,4 +1,5 @@
 import ast
+import importlib.util
 import math
 from pathlib import Path
 from xml.etree import ElementTree
@@ -21,6 +22,15 @@ def _profile(name):
 
 def _params(config, node):
     return config[node]['ros__parameters']
+
+
+def _navigation_launch_module():
+    path = PACKAGE_ROOT / 'launch' / 'navigation.launch.py'
+    spec = importlib.util.spec_from_file_location('robot_navigation_launch', path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
@@ -111,86 +121,230 @@ def test_stable_overlay_restores_the_verified_static_mppi_budget():
     assert smoother['max_accel'] == [1.25, 0.0, 3.50]
 
 
-def test_dynamic_avoidance_overlay_uses_temporal_rgbd_voxels():
-    dynamic = _profile('dynamic_avoidance')
-    controller_server = dynamic['controller_server']['ros__parameters']
-    behavior_server = dynamic['behavior_server']['ros__parameters']
-    controller = controller_server['FollowPath']
-    local = dynamic['local_costmap']['local_costmap']['ros__parameters']
-    global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
+def test_planning_only_scan_layers_have_a_strict_clearing_margin():
+    profile = _profile('bio_nav_planning_only')
+    local = profile['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
 
-    assert controller_server['controller_frequency'] == 15.0
-    assert controller['time_steps'] == 30
-    assert math.isclose(controller['model_dt'], 1.0 / 15.0)
-    assert math.isclose(
-        controller['model_dt'],
-        1.0 / controller_server['controller_frequency'])
-    assert math.isclose(
-        controller['time_steps'] * controller['model_dt'], 2.0)
-    assert controller['batch_size'] == 500
-    assert controller['vx_std'] == 0.90
-    assert controller['wz_std'] == 3.40
-    assert controller['vx_max'] == 1.20
-    assert controller['wz_max'] == 3.40
-    assert controller['ax_max'] == 3.50
-    assert controller['az_max'] == 6.50
-    # G2 dynamic-safety repair: enlarge only the dynamic pre-contact cost
-    # envelope and its MPPI weight.  Hard collision handling remains in the
-    # shared base configuration.
-    assert controller['CostCritic']['cost_weight'] == 4.00
-    assert controller['CostCritic']['near_collision_cost'] == 20
-    assert controller['PathFollowCritic']['cost_weight'] == 14.0
-    # v25 confines costmap-ahead reverse checking to dynamic recovery.  The
-    # shared/static profile retains its validated zero-look-ahead behavior.
-    assert behavior_server['simulate_ahead_time'] == 1.0
-    assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
-    assert local['update_frequency'] == 10.0
-    assert local['publish_frequency'] == 5.0
-    assert local['plugins'] == [
-        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
-    assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
-    # Dynamic-only 0.75 m inflation moves the soft response before the
-    # >=0.10 m actor-clearance boundary without modifying actor geometry or
-    # trajectories.
-    assert local['inflation_layer']['inflation_radius'] == 0.75
-    base_local = _config()['local_costmap']['local_costmap']['ros__parameters']
-    assert base_local['inflation_layer']['inflation_radius'] == 0.40
-    base_controller = _config()['controller_server']['ros__parameters']['FollowPath']
-    assert 'near_collision_cost' not in base_controller['CostCritic']
-    # Dynamic runs deliberately do not inherit the base profile's global
-    # RGB-D VoxelLayer: a front-facing camera cannot reliably clear a moving
-    # actor after it leaves the field of view.  The rolling local STVL owns
-    # dynamic RGB-D marking and temporal expiry instead.
-    assert global_costmap['plugins'] == [
-        'static_layer', 'obstacle_layer', 'inflation_layer']
-    depth = local['depth_stvl_layer']
-    assert depth['plugin'] == (
-        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
-    assert depth['enabled'] is True
-    assert depth['voxel_decay'] == 0.75
-    assert depth['decay_model'] == 0
-    assert depth['voxel_size'] == 0.05
-    assert depth['publish_voxel_map'] is True
-    assert depth['observation_sources'] == (
-        'camera_depth_mark camera_depth_clear')
-    marking = depth['camera_depth_mark']
-    clearing = depth['camera_depth_clear']
-    assert marking['topic'] == '/camera/front/depth/points'
-    assert marking['marking'] is True
-    assert marking['clearing'] is False
-    assert marking['observation_persistence'] == 0.0
-    assert clearing['topic'] == marking['topic']
-    assert clearing['marking'] is False
-    assert clearing['clearing'] is True
-    assert clearing['decay_acceleration'] == 15.0
-    assert clearing['model_type'] == 0
+    # Rivermark publishes +inf for an empty beam.  Accept it as free space,
+    # retain no scan history, and clear farther than either layer can mark.
     for costmap in (local, global_costmap):
-        scan = costmap['obstacle_layer']['scan']
+        obstacle = costmap['obstacle_layer']
+        scan = obstacle['scan']
+        assert obstacle['footprint_clearing_enabled'] is True
         assert scan['clearing'] is True
         assert scan['marking'] is True
         assert scan['observation_persistence'] == 0.0
         assert scan['inf_is_valid'] is True
-        assert scan['raytrace_min_range'] == 0.0
+        assert scan['obstacle_max_range'] == 24.0
+        assert scan['raytrace_max_range'] == 25.0
+        assert scan['obstacle_max_range'] < scan['raytrace_max_range']
+
+    # The outdoor global costmap has no long-lived depth voxel layer.
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'inflation_layer']
+
+
+def test_attempt30_planning_only_profile_binds_the_16m_global_costmap():
+    profile = _profile('bio_nav_planning_only')
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    assert global_costmap['rolling_window'] is False
+    assert global_costmap['width'] == 16
+    assert global_costmap['height'] == 16
+    assert global_costmap['origin_x'] == -8.0
+    assert global_costmap['origin_y'] == -8.0
+
+
+def test_attempt22_reachability_profile_is_preinflation_and_observer_only():
+    profile = _profile('attempt22_reachability_shadow')
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
+        'reachability_observer_layer', 'inflation_layer']
+    observer = global_costmap['reachability_observer_layer']
+    assert observer['plugin'] == \
+        'bio_nav_fusion::ReachabilityObserverLayer'
+    assert observer['enabled'] is True
+    assert observer['output_topic'] == \
+        '/global_costmap/reachability_observer_input'
+    assert profile['planner_server']['ros__parameters']['GridBased'][
+        'plugin'] == 'nav2_smac_planner::SmacPlanner2D'
+    assert 'cognitive_risk_layer' not in global_costmap['plugins']
+    assert 'local_rgbd_risk_layer' not in global_costmap['plugins']
+    follow_path = profile['controller_server']['ros__parameters']['FollowPath']
+    assert follow_path['critics'][-1] == 'PredictiveRiskCritic'
+    critic = follow_path['PredictiveRiskCritic']
+    assert critic['enabled'] is True
+    assert critic['shadow_only'] is True
+    assert critic['active_authorized'] is False
+    assert critic['expected_model_sha256'] == 64 * '0'
+    assert critic['expected_calibration_sha256'] == 64 * '0'
+    assert critic['expected_qualification_sha256'] == 64 * '0'
+
+
+def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
+    dynamic = _profile('dynamic_avoidance')
+    controller_server = dynamic['controller_server']['ros__parameters']
+    behavior_server = dynamic['behavior_server']['ros__parameters']
+    base = _config()
+    base_controller = base['controller_server']['ros__parameters']
+    base_local = base['local_costmap']['local_costmap']['ros__parameters']
+
+    # Dynamic perception must not replace the whole-house-validated MPPI or
+    # widen static-wall soft inflation until a feasible corridor disappears.
+    assert controller_server == {
+        'controller_frequency': 10.0,
+        'FollowPath': {
+            'time_steps': 20,
+            'model_dt': 0.10,
+            'batch_size': 700,
+        },
+    }
+    assert 'velocity_smoother' not in dynamic
+    local = dynamic['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = dynamic['global_costmap']['global_costmap']['ros__parameters']
+    # The frozen dynamic qualification has no RGB-D-only static props.  LiDAR
+    # clears its own layer, while STVL gives RGB-D marks a bounded lifetime so
+    # a retired actor cannot persist indefinitely in the depth layer.
+    assert local['obstacle_layer']['scan'] == {
+        'raytrace_min_range': 0.05,
+        'inf_is_valid': False,
+    }
+    assert local['plugins'] == [
+        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer',
+    ]
+    assert 'depth_voxel_layer' not in local['plugins']
+    depth = local['depth_stvl_layer']
+    assert depth['plugin'] == (
+        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
+    assert depth['voxel_decay'] == 0.75
+    assert depth['decay_model'] == 0
+    assert depth['observation_sources'] == (
+        'camera_depth_mark camera_depth_clear')
+    assert depth['camera_depth_mark'] == {
+        'data_type': 'PointCloud2',
+        'topic': '/camera/front/depth/points',
+        'marking': True,
+        'clearing': False,
+        'obstacle_range': 2.0,
+        'min_obstacle_height': 0.05,
+        'max_obstacle_height': 0.50,
+        'expected_update_rate': 0.0,
+        'observation_persistence': 0.0,
+        'filter': 'voxel',
+        'voxel_min_points': 0,
+        'clear_after_reading': True,
+    }
+    assert depth['camera_depth_clear'] == {
+        'data_type': 'PointCloud2',
+        'topic': '/camera/front/depth/points',
+        'marking': False,
+        'clearing': True,
+        'min_z': 0.05,
+        'max_z': 2.5,
+        'vertical_fov_angle': 1.272,
+        'horizontal_fov_angle': 1.839,
+        'decay_acceleration': 15.0,
+        'model_type': 0,
+    }
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'inflation_layer',
+    ]
+    assert global_costmap['obstacle_layer']['scan'] == {
+        'raytrace_min_range': 0.40,
+        'inf_is_valid': False,
+    }
+    assert base_controller['controller_frequency'] == 10.0
+    assert base_controller['FollowPath']['time_steps'] == 20
+    assert base_controller['FollowPath']['batch_size'] == 700
+    # v25 confines costmap-ahead reverse checking to dynamic recovery.  The
+    # shared/static profile retains its validated zero-look-ahead behavior.
+    assert behavior_server['simulate_ahead_time'] == 1.0
+    assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
+    assert base_local['inflation_layer']['inflation_radius'] == 0.40
+    assert 'near_collision_cost' not in base_controller['FollowPath']['CostCritic']
+    base_depth = base_local['depth_voxel_layer']
+    assert base_depth['plugin'] == 'nav2_costmap_2d::VoxelLayer'
+    assert base_depth['camera_depth']['marking'] is True
+    dependencies = {
+        item.text
+        for item in ElementTree.parse(PACKAGE_ROOT / 'package.xml').getroot()
+        .findall('exec_depend')
+    }
+    assert 'spatio_temporal_voxel_layer' in dependencies
+
+
+def test_attempt23_global_prior_profile_is_risk_free_and_dynamic_ready():
+    profile = _profile('attempt23_global_prior')
+    controller_server = profile['controller_server']['ros__parameters']
+    controller = controller_server['FollowPath']
+    local = profile['local_costmap']['local_costmap']['ros__parameters']
+    global_costmap = profile['global_costmap']['global_costmap'][
+        'ros__parameters']
+
+    # Attempt-23 removes the deleted PredictiveRiskCritic entirely: local
+    # avoidance is stock Nav2 only and nothing consumes Module2 risk grids.
+    assert controller['critics'] == [
+        'ConstraintCritic', 'CostCritic', 'GoalCritic', 'GoalAngleCritic',
+        'PathAlignCritic', 'PathFollowCritic', 'PathAngleCritic',
+        'PreferForwardCritic']
+    assert 'PredictiveRiskCritic' not in controller
+
+    # The dynamic MPPI envelope carries over from nav2_dynamic_avoidance.
+    assert controller_server['controller_frequency'] == 15.0
+    assert controller['time_steps'] == 30
+    assert math.isclose(controller['model_dt'], 1.0 / 15.0)
+    assert math.isclose(
+        controller['time_steps'] * controller['model_dt'], 2.0)
+    assert controller['batch_size'] == 500
+    assert controller['vx_std'] == 0.90
+    assert controller['vx_max'] == 1.20
+    assert controller['ax_max'] == 3.50
+    assert controller['gamma'] == 0.030
+    assert controller['CostCritic']['near_collision_cost'] == 20
+    assert controller['CostCritic']['cost_weight'] == 4.00
+    assert controller['PathFollowCritic']['cost_weight'] == 14.0
+
+    # Local costmap keeps the STVL depth layer and the 0.75 m envelope.
+    assert local['plugins'] == [
+        'obstacle_layer', 'depth_stvl_layer', 'inflation_layer']
+    depth = local['depth_stvl_layer']
+    assert depth['plugin'] == (
+        'spatio_temporal_voxel_layer/SpatioTemporalVoxelLayer')
+    assert depth['voxel_decay'] == 0.75
+    assert depth['camera_depth_clear']['decay_acceleration'] == 15.0
+    assert local['inflation_layer']['inflation_radius'] == 0.75
+
+    # The global side drops the depth layer against dynamic residue but
+    # keeps the read-only ReachabilityObserverLayer global prior snapshot.
+    assert global_costmap['plugins'] == [
+        'static_layer', 'obstacle_layer', 'reachability_observer_layer',
+        'inflation_layer']
+    observer = global_costmap['reachability_observer_layer']
+    assert observer['plugin'] == 'bio_nav_fusion::ReachabilityObserverLayer'
+    assert observer['enabled'] is True
+    assert observer['output_topic'] == \
+        '/global_costmap/reachability_observer_input'
+    assert profile['planner_server']['ros__parameters']['GridBased'][
+        'plugin'] == 'nav2_smac_planner::SmacPlanner2D'
+
+    assert profile['behavior_server']['ros__parameters'][
+        'simulate_ahead_time'] == 1.0
+    smoother = profile['velocity_smoother']['ros__parameters']
+    assert smoother['max_velocity'] == [1.20, 0.0, 3.40]
+    assert smoother['max_accel'] == [3.50, 0.0, 6.50]
+
+    # The ApproachZone predictive layer was evaluated and rejected on the
+    # Global Shadow evidence: it deadlocked the corridor-follow dynamic case
+    # (seed 31704/31709).  StopZone and SlowdownZone stay as defined in the
+    # base configuration as the LiDAR safety layers.
+    assert profile['collision_monitor']['ros__parameters']['ApproachZone'][
+        'enabled'] is False
 
 
 def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
@@ -227,7 +381,7 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "package='nav2_collision_monitor'" in launch_source
 
 
-def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
+def test_mppi_terminal_reverse_limits_are_coherent():
     config = _config()
     controller_server = _params(config, 'controller_server')
     controller = controller_server['FollowPath']
@@ -262,8 +416,8 @@ def test_mppi_turning_reverse_and_smoothing_limits_are_coherent():
     assert smoother['smoothing_frequency'] == 20.0
     assert smoother['max_velocity'] == [
         controller['vx_max'], 0.0, controller['wz_max']]
-    # Routine MPPI tracking stays forward-only, while the command chain must
-    # pass the behavior server's bounded negative BackUp recovery velocity.
+    # Both MPPI terminal centring and the behavior server's BackUp remain
+    # inside the command chain's bounded negative velocity envelope.
     assert -0.30 <= smoother['min_velocity'][0] <= -0.18
     assert smoother['min_velocity'][1:] == [0.0, -controller['wz_max']]
     assert smoother['max_accel'] == [
@@ -336,6 +490,10 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert planner['tolerance'] == 0.10
     assert planner['tolerance'] < _params(config, 'controller_server')[
         'goal_checker']['xy_goal_tolerance']
+    # Retain smoothing after the isolated-topic diagnostic disproved the
+    # earlier mixed-topic attribution and exposed reversals in raw grid paths.
+    assert planner['smoother']['max_iterations'] == 1000
+    assert planner['smoother']['do_refinement'] is True
     assert controller['CostCritic']['consider_footprint'] is True
     assert controller['CostCritic']['cost_weight'] <= 2.5
     assert controller['CostCritic']['trajectory_point_step'] == 1
@@ -412,3 +570,103 @@ def test_dead_end_recovery_backs_up_before_attempting_spin():
         assert 0.45 <= float(backup.attrib['backup_dist']) <= 0.65
         assert 0.15 <= float(backup.attrib['backup_speed']) <= 0.20
         assert float(backup.attrib['time_allowance']) >= 5.0
+
+
+def test_a21_route_bt_uses_native_goal_updater_and_metric_owners():
+    tree_path = PACKAGE_ROOT / 'behavior_trees' / 'navigate_route_lookahead.xml'
+    tree = ElementTree.parse(tree_path).getroot()
+    assert tree.find('.//GoalUpdater') is not None
+    assert tree.find('.//ComputePathToPose') is not None
+    assert tree.find('.//FollowPath') is not None
+    rate = tree.find('.//RateController')
+    assert rate is not None
+    assert rate.attrib['hz'] == '@PLANNER_RATE_HZ@'
+    recovery = tree.find('.//RecoveryNode')
+    assert recovery is not None
+    assert recovery.attrib['number_of_retries'] == '@TRANSIENT_RETRY_COUNT@'
+    wait = recovery.find('.//Wait')
+    assert wait is not None
+    assert wait.attrib['wait_duration'] == '@TRANSIENT_RETRY_WAIT_S@'
+
+    launch = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text()
+    assert 'execute_route_navigation' in launch
+    assert 'navigate_route_lookahead.xml' in launch
+    assert '_write_route_guided_bt' in launch
+    assert "defaults['metric_planning']" in launch
+    assert "remappings=[('plan', '/route_server/plan')]" in launch
+
+
+def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
+    module = _navigation_launch_module()
+    defaults = {
+        'metric_planning': {
+            'planner_rate_hz': 2.0,
+            'tolerance_m': 0.1,
+            'max_iterations': 1000000,
+            'max_on_approach_iterations': 1000,
+            'max_planning_time_s': 2.0,
+            'primitive_file': '/tmp/primitives.json',
+            'allow_reverse': True,
+            'analytic_expansion_ratio': 3.5,
+            'analytic_expansion_max_length_m': 3.0,
+            'reverse_penalty': 2.0,
+            'change_penalty': 0.2,
+            'non_straight_penalty': 1.2,
+            'cost_penalty': 2.0,
+            'rotation_penalty': 5.0,
+            'retrospective_penalty': 0.015,
+            'lookup_table_size_m': 20.0,
+            'cache_obstacle_heuristic': False,
+            'smooth_path': True,
+        },
+        'route_server': {
+            'boundary_radius_to_achieve_node_m': 0.35,
+            'radius_to_achieve_node_m': 0.5,
+            'smooth_corners': False,
+        },
+        'mppi_route_guidance': {
+            'max_linear_velocity_mps': 0.35,
+            'linear_velocity_std_mps': 0.2,
+            'path_align_weight': 5.0,
+            'use_path_orientations': True,
+            'path_angle_weight': 10.5,
+            'path_angle_mode': 2,
+            'cost_critic_weight': 4.0,
+            'cost_critic_near_collision_cost': 253,
+            'path_follow_weight': 10.0,
+            'velocity_deadband_weight': 35.0,
+            'velocity_deadband_mps': 0.05,
+            'angular_deadband_radps': 0.10,
+            'enforce_path_inversion': True,
+        },
+    }
+    parameters = module._a21_nav2_parameters(defaults)
+    planner = parameters['planner']
+    assert planner['planner_plugins'] == ['GridBased', 'GridLattice']
+    assert planner['GridBased']['plugin'] == (
+        'nav2_smac_planner::SmacPlanner2D')
+    assert planner['GridLattice']['plugin'] == (
+        'nav2_smac_planner::SmacPlannerLattice')
+    controller = parameters['controller']['FollowPath']
+    assert controller['critics'][-1] == 'VelocityDeadbandCritic'
+    assert controller['VelocityDeadbandCritic'] == {
+        'enabled': True,
+        'cost_power': 1,
+        'cost_weight': 35.0,
+        'deadband_velocities': [0.05, 0.0, 0.10],
+    }
+
+
+def test_navigation_launch_has_last_precedence_controller_envelope():
+    source = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text(
+        encoding='utf-8')
+
+    assert "'controller_max_linear_velocity_mps'" in source
+    assert "'controller_linear_velocity_std_mps'" in source
+    assert 'controller_server:' in source
+    assert 'vx_max: $(var controller_max_linear_velocity_mps)' in source
+    assert 'vx_std: $(var controller_linear_velocity_std_mps)' in source
+    assert 'ParameterFile(' in source
+    assert 'allow_substs=True' in source
+    assert source.index('str(a21_overlay),') < source.index(
+        'ParameterFile(')

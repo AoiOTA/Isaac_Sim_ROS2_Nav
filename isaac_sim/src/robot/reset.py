@@ -75,12 +75,16 @@ class ResetManager:
         try:
             self.hooks.send_zero_velocity()
             self.hooks.clear_controller_state()
-            self.spawn_manager.apply_usd_pose(request.pose_name)
             self.hooks.reset_odometry(request.odometry_mode)
             self.hooks.reset_ground_truth_path()
             self.hooks.reset_dynamic_obstacles(request.random_seed)
             self.hooks.clear_costmaps()
+            # Flush newly rebuilt graphs and the paused USD -> PhysX scene
+            # import before teleporting.  On a freshly opened file-backed Kit
+            # Stage, the first step otherwise restores the articulation's USD
+            # origin after a successful tensor-backend set_world_poses().
             self.simulation.step(render=False)
+            self.spawn_manager.apply_usd_pose(request.pose_name)
             if request.navigation_mode == "localization":
                 # The concrete hook must apply the calibration gate before ROS publication.
                 self.hooks.publish_map_initial_pose(request.pose_name)

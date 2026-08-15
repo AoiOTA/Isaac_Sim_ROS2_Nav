@@ -22,6 +22,27 @@ def test_dynamic_obstacle_phases_are_seeded_and_repeatable():
     assert scenario.enabled is False
 
 
+def test_disabled_dynamic_scenario_still_publishes_empty_layer_health():
+    manager = DynamicObstacleManager.__new__(DynamicObstacleManager)
+    manager.scenario = SimpleNamespace(enabled=False)
+    manager._last_publish_time = -math.inf
+    manager._runtime = {}
+    manager._selected_cases = (
+        SimpleNamespace(
+            obstacle=SimpleNamespace(obstacle_id="configured_but_not_authored")
+        ),
+    )
+    published = []
+    manager._marker_publisher = SimpleNamespace(publish=published.append)
+    manager._marker_type = lambda: SimpleNamespace(markers=[])
+
+    manager.update(3.25)
+
+    assert len(published) == 1
+    assert published[0].markers == []
+    assert manager._last_publish_time == pytest.approx(3.25)
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -94,6 +115,16 @@ def test_three_stage_case_set_selects_the_ordered_route_interactions():
     ]
     assert [item.trigger_group for item in selected] == ["G2", "G3", "G1"]
     assert selected[0].waypoints[-1] == pytest.approx((-0.95, -0.20, 0.50))
+    assert [item.obstacle.post_motion for item in selected] == [
+        "park", "retire", "retire",
+    ]
+    # Actors retain the established full-height geometry and intersect the
+    # 0.333 m LiDAR plane as well as the RGB-D obstacle band.
+    for item in selected:
+        lower = item.waypoints[0][2] - item.obstacle.size[2] / 2.0
+        upper = item.waypoints[0][2] + item.obstacle.size[2] / 2.0
+        assert item.obstacle.size[2] == pytest.approx(1.00)
+        assert lower <= 0.333 < upper
 
 
 def test_g2_g3_gate_triggers_southbound_at_y_2_6_in_the_narrow_lane():
@@ -216,6 +247,30 @@ def test_trigger_arms_a_selected_actor_exactly_once_and_keeps_it_hidden():
     assert [event["event"] for event in events] == ["armed"]
 
 
+def test_trigger_activation_starts_selected_actor_before_goal_publication():
+    manager = object.__new__(DynamicObstacleManager)
+    events = []
+    enabled = []
+    runtime = SimpleNamespace(
+        spec=SimpleNamespace(obstacle_id="focus_actor", trigger_group="FOCUS"),
+        state="waiting", retired=False, armed_at=None, gate_at=None,
+        motion_at=None,
+    )
+    case = SimpleNamespace(obstacle=runtime.spec, activation="trigger")
+    manager._runtime = {"focus_actor": runtime}
+    manager._selected_cases = (case,)
+    manager._case_by_obstacle_id = {"focus_actor": case}
+    manager.scenario = SimpleNamespace(is_case_matrix=True)
+    manager._event = lambda kind, stamp, **detail: events.append(kind)
+    manager._set_enabled = lambda item, value: enabled.append((item, value))
+
+    assert manager.trigger("FOCUS", 4.0) == ("focus_actor",)
+    assert runtime.state == "moving"
+    assert runtime.motion_at == 4.0
+    assert enabled == [(runtime, True)]
+    assert events == ["armed", "motion_start"]
+
+
 def test_goal_completion_retires_only_armed_or_parked_matching_actor():
     manager = object.__new__(DynamicObstacleManager)
     events = []
@@ -289,3 +344,21 @@ def test_three_stage_actor_footprints_keep_wall_clearance_in_occupancy_grid():
                     assert image.getpixel((column, row)) >= 250, (
                         case.case_id, x, y
                     )
+
+
+def test_rivermark_four_stage_gates_match_each_route_approach_direction():
+    scenario = load_dynamic_scenario(
+        ROOT / "data/rivermark_demo/rivermark_dynamic.yaml"
+    )
+    manager = object.__new__(DynamicObstacleManager)
+    probes = {
+        "oncoming": {"x": -8.0, "y": 130.7, "vy": -0.2, "speed": 0.2},
+        "crossing": {"x": -18.0, "y": 147.1, "vy": 0.2, "speed": 0.2},
+        "same_direction_slow": {"x": -26.0, "y": 164.1, "vy": 0.2, "speed": 0.2},
+        "temporary_block": {"x": -43.0, "y": 174.1, "vy": 0.2, "speed": 0.2},
+    }
+    for case_id, robot in probes.items():
+        case = scenario.cases[case_id]
+        assert manager._gate_passed(case, robot), case_id
+        wrong_direction = dict(robot, vy=-robot["vy"])
+        assert not manager._gate_passed(case, wrong_direction), case_id

@@ -1,0 +1,124 @@
+schema_version: 4
+seed: 20260814
+enabled: true
+coordinate_frame: map
+spawn_pose_name: rivermark_start
+safety:
+  guard_clearance_m: 0.45
+  min_clearance_m: 0.10
+cases:
+  oncoming:
+    trigger_group: G2
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 130.8
+      direction: negative
+      min_speed_mps: 0.05
+      x_range: [-12.5, -5.0]
+      max_distance_to_obstacle_start_m: 8.0
+    obstacle:
+      id: rivermark_oncoming_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-12.0035, 129.2125, 6.71]
+        - [-7.5585, 131.4975, 6.71]
+      speed: 0.60
+      max_acceleration: 0.50
+      post_motion: retire
+    variants:
+      v1: {seed: 19601, start_delay_sec: 0.0, dwell_sec: 0.0}
+      v2: {seed: 19602, start_delay_sec: 0.2, dwell_sec: 0.0}
+      v3: {seed: 19603, start_delay_sec: 0.4, dwell_sec: 0.0}
+      v4: {seed: 19604, start_delay_sec: 0.6, dwell_sec: 0.0}
+      v5: {seed: 19605, start_delay_sec: 0.8, dwell_sec: 0.0}
+
+  crossing:
+    trigger_group: G3
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 147.0
+      direction: positive
+      min_speed_mps: 0.05
+      x_range: [-25.0, 0.0]
+      max_distance_to_obstacle_start_m: 16.0
+    obstacle:
+      id: rivermark_crossing_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-16.9516, 150.855, 6.71]
+        - [-20.469, 148.3825, 6.71]
+      speed: 0.55
+      max_acceleration: 0.50
+      post_motion: retire
+    variants:
+      v1: {seed: 19701, start_delay_sec: 0.0, dwell_sec: 0.0}
+      v2: {seed: 19702, start_delay_sec: 0.15, dwell_sec: 0.0}
+      v3: {seed: 19703, start_delay_sec: 0.30, dwell_sec: 0.0}
+      v4: {seed: 19704, start_delay_sec: 0.45, dwell_sec: 0.0}
+      v5: {seed: 19705, start_delay_sec: 0.60, dwell_sec: 0.0}
+
+  same_direction_slow:
+    trigger_group: G4
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 164.0
+      direction: positive
+      min_speed_mps: 0.05
+      x_range: [-29.0, -23.0]
+      max_distance_to_obstacle_start_m: 8.0
+    obstacle:
+      id: rivermark_same_direction_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-24.943, 168.578, 6.71]
+        - [-32.943, 168.578, 6.71]
+      speed: 0.45
+      max_acceleration: 0.45
+      post_motion: retire
+    variants:
+      v1: {seed: 19801, start_delay_sec: 0.0, dwell_sec: 0.0}
+      v2: {seed: 19802, start_delay_sec: 0.15, dwell_sec: 0.0}
+      v3: {seed: 19803, start_delay_sec: 0.30, dwell_sec: 0.0}
+      v4: {seed: 19804, start_delay_sec: 0.45, dwell_sec: 0.0}
+      v5: {seed: 19805, start_delay_sec: 0.60, dwell_sec: 0.0}
+
+  temporary_block:
+    trigger_group: G5
+    activation: spatial_gate
+    gate:
+      axis: y
+      threshold: 174.0
+      direction: positive
+      min_speed_mps: 0.05
+      x_range: [-50.0, -39.0]
+      max_distance_to_obstacle_start_m: 10.0
+    obstacle:
+      id: rivermark_temporary_block_cart
+      size: [0.8, 0.6, 1.0]
+      mass: 30.0
+      waypoints:
+        - [-44.244, 176.403, 6.71]
+        - [-46.944, 177.708, 6.71]
+        - [-49.644, 179.013, 6.71]
+      speed: 0.50
+      max_acceleration: 0.50
+      post_motion: retire
+    variants:
+      v1: {seed: 19901, start_delay_sec: 0.0, dwell_sec: 0.5}
+      v2: {seed: 19902, start_delay_sec: 0.15, dwell_sec: 0.7}
+      v3: {seed: 19903, start_delay_sec: 0.30, dwell_sec: 0.9}
+      v4: {seed: 19904, start_delay_sec: 0.45, dwell_sec: 1.1}
+      v5: {seed: 19905, start_delay_sec: 0.60, dwell_sec: 1.3}
+
+case_sets:
+  full_route_four_stage:
+    - oncoming
+    - crossing
+    - same_direction_slow
+    - temporary_block

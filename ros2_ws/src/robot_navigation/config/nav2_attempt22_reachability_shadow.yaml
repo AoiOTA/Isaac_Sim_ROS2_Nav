@@ -1,0 +1,56 @@
+# Attempt-22 development-only profile.
+#
+# The reachability observer sits after all obstacle-marking layers and before
+# inflation. It publishes a read-only snapshot for the Integration sidecar;
+# it does not modify the Nav2 costmap and does not authorize Module2 guidance.
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    FollowPath:
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 700
+      critics:
+        - ConstraintCritic
+        - CostCritic
+        - GoalCritic
+        - GoalAngleCritic
+        - PathAlignCritic
+        - PathFollowCritic
+        - PathAngleCritic
+        - PreferForwardCritic
+        - PredictiveRiskCritic
+      PredictiveRiskCritic:
+        enabled: true
+        shadow_only: true
+        active_authorized: false
+        risk_weight: 0.5
+        risk_topic: /bio_nav/module2/predictive_risk_grid
+        audit_topic: /bio_nav/module3/predictive_risk_critic_audit
+        expected_frame: base_link
+        expected_map_version: warehouse_new-8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
+        expected_model_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        expected_calibration_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        expected_qualification_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+        reset_epoch: 0
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins:
+        - static_layer
+        - obstacle_layer
+        - depth_voxel_layer
+        - reachability_observer_layer
+        - inflation_layer
+      reachability_observer_layer:
+        plugin: bio_nav_fusion::ReachabilityObserverLayer
+        enabled: true
+        output_topic: /global_costmap/reachability_observer_input
+
+planner_server:
+  ros__parameters:
+    planner_plugins: [GridBased]
+    GridBased:
+      # The Shadow profile deliberately preserves the Module3 stock planner.
+      plugin: nav2_smac_planner::SmacPlanner2D

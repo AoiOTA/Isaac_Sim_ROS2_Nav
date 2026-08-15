@@ -1,0 +1,35 @@
+# Engineering-only moving-risk field for V4 query Q01_50.  Motion is placed on
+# the short structural route where the measured Baseline and DR-only tracks are
+# separated by more than 3 m; the near-equal south bypass remains free.
+schema_version: 4
+seed: 9151
+enabled: true
+coordinate_frame: map
+spawn_pose_name: q01_50_start
+safety: {guard_clearance_m: 0.50, min_clearance_m: 0.15}
+cases:
+  q01_50_crossing:
+    trigger_group: FOCUS
+    activation: trigger
+    gate: {axis: y, threshold: 1.90, direction: negative, min_speed_mps: 0.05, x_range: [-6.75, -6.10]}
+    obstacle:
+      id: q01_50_crossing_actor
+      size: [0.45, 0.45, 1.00]
+      mass: 20.0
+      waypoints:
+        - [-1.20, 1.80, 0.50]
+        - [0.75, 1.80, 0.50]
+        - [-1.20, 1.80, 0.50]
+        - [0.75, 1.80, 0.50]
+        - [-1.20, 1.80, 0.50]
+        - [0.75, 1.80, 0.50]
+      speed: 0.20
+      max_acceleration: 0.50
+      post_motion: retire
+    variants:
+      v1: {seed: 9151, start_delay_sec: 0.00}
+      v2: {seed: 9152, start_delay_sec: 0.30}
+      v3: {seed: 9153, start_delay_sec: 0.60}
+      v4: {seed: 9154, start_delay_sec: 0.90}
+      v5: {seed: 9155, start_delay_sec: 1.20}
+case_sets: {}

@@ -1,0 +1,25 @@
+<!--
+  A21 route-guided navigation.
+
+  Route Server owns the macro route. The coordinator publishes a continuously
+  advancing pose on /goal_update. Native GoalUpdater samples the newest pose at
+  the regular Planner Server rate, Smac computes from the current robot pose,
+  and MPPI follows the latest metric path without stopping at graph nodes.
+-->
+<root BTCPP_format="4" main_tree_to_execute="MainTree">
+  <BehaviorTree ID="MainTree">
+    <PipelineSequence name="RouteGuidedNavigation">
+      <ControllerSelector selected_controller="{selected_controller}" default_controller="FollowPath" topic_name="controller_selector"/>
+      <PlannerSelector selected_planner="{selected_planner}" default_planner="GridBased" topic_name="planner_selector"/>
+      <RateController hz="@PLANNER_RATE_HZ@">
+        <GoalUpdater input_goal="{goal}" output_goal="{route_lookahead}">
+          <RecoveryNode number_of_retries="@TRANSIENT_RETRY_COUNT@" name="RouteLookaheadPlanningPatience">
+            <ComputePathToPose goal="{route_lookahead}" path="{path}" planner_id="{selected_planner}" error_code_id="{compute_path_error_code}"/>
+            <Wait wait_duration="@TRANSIENT_RETRY_WAIT_S@"/>
+          </RecoveryNode>
+        </GoalUpdater>
+      </RateController>
+      <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+    </PipelineSequence>
+  </BehaviorTree>
+</root>
