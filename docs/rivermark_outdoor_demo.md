@@ -290,8 +290,11 @@ Nav2 发目标。目标应放在真实道路内部；路沿、建筑物、喷泉
 3. 自动三种模式用 `dispatching G1 (1/5)` 判断导航已经开始；每一段会依次输出
    `completed G1` 到 `completed G5`。完成后栈仍保留供观察，需按一次 `Ctrl+C` 退出。
 4. 手动模式必须等 `Rivermark manual navigation ready` 后再点击目标。
-5. 退出时只按一次 `Ctrl+C`，等终端重新出现 shell 提示符后再启动下一模式。脚本会按
-   进程组清理 Isaac、Nav2/RViz、Module2 和 Bridge。
+5. 退出时只按一次 `Ctrl+C`，supervisor 按依赖逆序有界清理（每组件 INT 3 s → TERM 2 s
+   → KILL，全程通常 ≤50 s），清理末尾还会按 ROS domain 做 graceful 残留清扫（Module2
+   server 链等逃逸进程组的子进程也会被回收）；清理期间再按一次 `Ctrl+C` 会立即强杀
+   所有组件并做残留清扫，保证无残留进程。等终端重新出现 shell 提示符、且
+   `ROS_DOMAIN_ID=231 ros2 node list` 为空后再启动下一模式。
 6. 若提示 Isaac single-instance lock，说明已有实例仍在运行；先回到原终端正常
    `Ctrl+C`，不要直接再启动一份。运行日志位于
    `/run/user/1000/bionav-rivermark-231/isaac-console.log`。
