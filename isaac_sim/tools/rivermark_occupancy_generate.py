@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Generate a full-scene Rivermark occupancy map with Isaac's OMap Generator.
+"""Generate the proven 80x80 m Rivermark occupancy window with Isaac's OMap Generator.
+
+This is the bounded successor of the original full-scene attempt: it reuses the
+production recipe from ``rivermark_prepare.py`` (candidate A window, 0.05 m/cell,
+z offsets [-0.25, 1.65] m) instead of voxelizing the whole stage, which froze
+the workstation in earlier attempts.
 
 Engineering/operator tool only: the output is a convenience map for manual
 inspection and map_server experiments, not qualification evidence.  The
@@ -8,8 +13,8 @@ reference implementation for the audited navigation map.
 
 The script opens ``rivermark.usd`` (read-only; override with ``RIVERMARK_USD``
 or ``--usd``), enables the official ``isaacsim.asset.gen.omap`` extension,
-runs its PhysX ``Generator`` over the whole stage at 0.05 m/cell, and exports
-a ROS map_server compatible pgm+yaml pair to
+runs its PhysX ``Generator`` over the 80x80 m candidate window at 0.05 m/cell,
+and exports a ROS map_server compatible pgm+yaml pair to
 ``${MAPPING_OUTPUT_ROOT:-~/Workspace/Bio_Nav/runs/operator_maps}/<version>/``
 where ``<version>`` comes from ``RIVERMARK_MAP_VERSION`` or ``--map-version``.
 Existing map files are never overwritten.  No ROS dependency.
@@ -87,6 +92,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mapping-height-m", type=float, default=0.35)
     parser.add_argument("--minimum-z-offset-m", type=float, default=-0.25)
     parser.add_argument("--maximum-z-offset-m", type=float, default=1.65)
+    parser.add_argument(
+        "--window-m",
+        type=float,
+        default=80.0,
+        help="generation window size in metres (default: 80, the proven production extent)",
+    )
+    parser.add_argument("--center-x", type=float, default=DEFAULT_SEED_X)
+    parser.add_argument("--center-y", type=float, default=DEFAULT_SEED_Y)
     parser.add_argument(
         "--min-free-fraction",
         type=float,
@@ -327,9 +340,14 @@ def run(args: argparse.Namespace) -> int:
         ) = _author_session_mesh_colliders(stage, app)
         del session_collider_layer
 
-        bounds_min, bounds_max, bounds_method, bounds_skipped = _full_scene_bounds(
-            stage
-        )
+        # Proven production recipe: generate only the original 80x80 m
+        # candidate-A window (same as rivermark_prepare.py), never the full
+        # stage world bounds -- full-stage voxelization at 0.05 m/cell is what
+        # froze the workstation in earlier attempts.
+        half = 0.5 * float(args.window_m)
+        bounds_min = [float(args.center_x) - half, float(args.center_y) - half, 0.0]
+        bounds_max = [float(args.center_x) + half, float(args.center_y) + half, 0.0]
+        bounds_method, bounds_skipped = "candidate_window_80m", 0
 
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
