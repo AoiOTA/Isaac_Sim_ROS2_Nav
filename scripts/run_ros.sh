@@ -59,38 +59,69 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
   map_file=""
   odometry_mode="ideal"
   posegraph_calibration="false"
+  localization_backend=""
+  localization_backend_explicit=false
   for argument in "${launch_args[@]}"; do
     case "${argument}" in
       posegraph_file:=*) posegraph_file="${argument#posegraph_file:=}" ;;
       map_file:=*) map_file="${argument#map_file:=}" ;;
       odometry_mode:=*) odometry_mode="${argument#odometry_mode:=}" ;;
       posegraph_calibration:=*) posegraph_calibration="${argument#posegraph_calibration:=}" ;;
+      localization_backend:=*)
+        localization_backend="${argument#localization_backend:=}"
+        localization_backend_explicit=true
+        ;;
     esac
   done
-  if [[ -z "${posegraph_file}" ]]; then
-    if [[ -n "${map_file}" ]]; then
-      map_prefix="${map_file%.yaml}"
-      posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/$(basename "${map_prefix}")"
+  # An empty localization_backend keeps the historical pairing: Ideal
+  # odometry with the ideal backend, anything else with slam_toolbox.
+  if [[ -z "${localization_backend}" ]]; then
+    if [[ "${odometry_mode}" == "ideal" ]]; then
+      localization_backend="ideal"
     else
-      posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/${default_map_version}"
+      localization_backend="slam_toolbox"
     fi
-    require_file "${posegraph_file}.posegraph"
-    require_file "${posegraph_file}.data"
-    launch_args+=("posegraph_file:=${posegraph_file}")
   fi
-  if [[ -z "${map_file}" ]]; then
-    posegraph_prefix="${posegraph_file%.posegraph}"
-    posegraph_prefix="${posegraph_prefix%.data}"
-    map_file="${PROJECT_ROOT}/data/maps/occupancy/$(basename "${posegraph_prefix}").yaml"
+  case "${localization_backend}" in
+    ideal|amcl|slam_toolbox) ;;
+    *) die "localization_backend must be ideal, amcl or slam_toolbox, got: ${localization_backend}" ;;
+  esac
+  if [[ "${localization_backend}" == "amcl" ]]; then
+    # AMCL localizes against the occupancy map alone: no posegraph is
+    # resolved here and the warehouse_new posegraph guard below does not
+    # apply.  The occupancy map is the only required artifact.
+    [[ -n "${map_file}" ]] \
+      || die "localization_backend:=amcl requires an explicit map_file:=<occupancy yaml>"
     require_file "${map_file}"
-    launch_args+=("map_file:=${map_file}")
+  else
+    if [[ -z "${posegraph_file}" ]]; then
+      if [[ -n "${map_file}" ]]; then
+        map_prefix="${map_file%.yaml}"
+        posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/$(basename "${map_prefix}")"
+      else
+        posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/${default_map_version}"
+      fi
+      require_file "${posegraph_file}.posegraph"
+      require_file "${posegraph_file}.data"
+      launch_args+=("posegraph_file:=${posegraph_file}")
+    fi
+    if [[ -z "${map_file}" ]]; then
+      posegraph_prefix="${posegraph_file%.posegraph}"
+      posegraph_prefix="${posegraph_prefix%.data}"
+      map_file="${PROJECT_ROOT}/data/maps/occupancy/$(basename "${posegraph_prefix}").yaml"
+      require_file "${map_file}"
+      launch_args+=("map_file:=${map_file}")
+    fi
+    posegraph_version="$(basename "${posegraph_file%.posegraph}")"
+    posegraph_version="${posegraph_version%.data}"
+    if [[ "${posegraph_version}" == "warehouse_new" ]] \
+        && [[ "${odometry_mode}" != "ideal" \
+              || "${posegraph_calibration}" == "true" ]]; then
+      die "warehouse_new is calibrated for normal Ideal localization/navigation only; rebuild it with scan matching before Realistic or Pose Graph localization"
+    fi
   fi
-  posegraph_version="$(basename "${posegraph_file%.posegraph}")"
-  posegraph_version="${posegraph_version%.data}"
-  if [[ "${posegraph_version}" == "warehouse_new" ]] \
-      && [[ "${odometry_mode}" != "ideal" \
-            || "${posegraph_calibration}" == "true" ]]; then
-    die "warehouse_new is calibrated for normal Ideal localization/navigation only; rebuild it with scan matching before Realistic or Pose Graph localization"
+  if [[ "${localization_backend_explicit}" != true ]]; then
+    launch_args+=("localization_backend:=${localization_backend}")
   fi
 fi
 

@@ -36,3 +36,22 @@ operations:
     posegraph_required: true
     occupancy_map_required: true
     starts_nav2: true
+
+# map->odom TF ownership per localization backend.  The odom->base_link
+# owner rule documented in the modes above is unchanged: Isaac Sim publishes
+# it in ideal odometry mode, robot_localization (EKF) in realistic mode.
+# Only the realistic odometry mode may select amcl or slam_toolbox; ideal
+# odometry always pairs with the ideal backend.
+localization_backends:
+  ideal:
+    map_to_odom_publisher: ideal_localization_tf
+    requires_occupancy_map: true
+    requires_posegraph: true
+  amcl:
+    map_to_odom_publisher: localization_continuity_guard
+    requires_occupancy_map: true
+    requires_posegraph: false
+  slam_toolbox:
+    map_to_odom_publisher: slam_toolbox
+    requires_occupancy_map: true
+    requires_posegraph: true

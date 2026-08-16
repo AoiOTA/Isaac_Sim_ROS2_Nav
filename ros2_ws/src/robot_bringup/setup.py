@@ -26,9 +26,13 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'amcl_clear_localization_buffer = '
+            'robot_bringup.amcl_clear_localization_buffer:main',
             'ideal_localization_tf = '
             'robot_bringup.ideal_localization_tf:main',
             'initial_pose_policy = robot_bringup.initial_pose_policy:main',
+            'localization_continuity_guard = '
+            'robot_bringup.localization_continuity_guard:main',
             'map_manifest = robot_bringup.map_manifest:main',
             'nav2_activation_gate = robot_bringup.activation_gate:main',
             'ordered_shutdown = robot_bringup.ordered_shutdown:main',

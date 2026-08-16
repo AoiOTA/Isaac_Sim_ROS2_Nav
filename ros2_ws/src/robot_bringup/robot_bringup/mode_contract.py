@@ -15,6 +15,7 @@ OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
 ODOMETRY_MODES = frozenset({'ideal', 'realistic'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
+LOCALIZATION_BACKENDS = frozenset({'ideal', 'amcl', 'slam_toolbox'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
     'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
@@ -38,6 +39,7 @@ class ModeSelection:
     map_manifest_file: str = ''
     map_version: str = ''
     map_bundle_sha256: str = ''
+    localization_backend: str = ''
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,19 @@ def validate_nav2_profile(value):
     return profile
 
 
+def resolve_localization_backend(odometry_mode, localization_backend=''):
+    """Fill an empty localization backend from the odometry mode.
+
+    Ideal odometry pairs with ideal localization; realistic odometry keeps
+    the historical SLAM Toolbox pose-graph localization default, so legacy
+    callers that never pass a backend keep their behavior.
+    """
+    backend = localization_backend.strip().lower()
+    if backend:
+        return backend
+    return 'ideal' if odometry_mode == 'ideal' else 'slam_toolbox'
+
+
 def validate_mode(
     operation,
     odometry_mode,
@@ -215,11 +230,21 @@ def validate_mode(
     initial_pose_source='auto',
     spawn_poses_file='',
     spawn_pose_name='mapping_start',
+    localization_backend='',
 ):
-    """Reject combinations that violate TF and SLAM ownership contracts."""
+    """Reject combinations that violate TF and SLAM ownership contracts.
+
+    The localization backend selects the map->odom owner: ideal publishes a
+    fresh transform through ideal_localization_tf, amcl localizes the
+    estimated odometry against the occupancy map, and slam_toolbox keeps the
+    serialized pose-graph localization.  An empty backend derives from the
+    odometry mode (ideal->ideal, realistic->slam_toolbox).
+    """
     operation = operation.strip().lower()
     odometry_mode = odometry_mode.strip().lower()
     structure_tf_source = structure_tf_source.strip().lower()
+    backend = resolve_localization_backend(
+        odometry_mode, localization_backend)
     prefix = posegraph_prefix(posegraph_file)
     occupancy_map = map_file.strip()
     manifest_path = map_manifest_file.strip()
@@ -228,11 +253,18 @@ def validate_mode(
     _require_choice('odometry_mode', odometry_mode, ODOMETRY_MODES)
     _require_choice(
         'structure_tf_source', structure_tf_source, STRUCTURE_TF_SOURCES)
+    _require_choice(
+        'localization_backend', backend, LOCALIZATION_BACKENDS)
 
     if odometry_mode == 'ideal' and structure_tf_source == 'rsp':
         raise ValueError(
             'ideal odometry is an Isaac-owned mode; structure_tf_source=rsp '
             'is reserved for the realistic/standard ROS ownership mode')
+
+    if odometry_mode == 'ideal' and backend != 'ideal':
+        raise ValueError(
+            f'localization_backend={backend} requires realistic odometry; '
+            'ideal odometry owns map->odom through ideal_localization_tf')
 
     if operation == 'mapping' and prefix:
         raise ValueError(
@@ -240,20 +272,32 @@ def validate_mode(
             'baseline mapping mode')
     saved_map_operation = operation in {
         'incremental_mapping', 'localization', 'navigation'}
+    # AMCL consumes the occupancy map and laser scan only; the serialized
+    # pose graph remains a SLAM Toolbox input.  Mapping operations still
+    # require it because they resume SLAM Toolbox mapping from it.
+    amcl_localization = (
+        backend == 'amcl' and operation in {'localization', 'navigation'})
     if saved_map_operation:
-        if not prefix:
-            raise ValueError(
-                f'posegraph_file is required for {operation} mode')
-        if check_posegraph_files:
-            missing = [
-                prefix + suffix
-                for suffix in ('.posegraph', '.data')
-                if not Path(prefix + suffix).is_file()
-            ]
-            if missing:
+        if amcl_localization:
+            if prefix:
                 raise ValueError(
-                    'serialized pose graph is incomplete; missing: '
-                    + ', '.join(missing))
+                    'posegraph_file is a SLAM Toolbox input and must be '
+                    'empty with localization_backend=amcl')
+        else:
+            if not prefix:
+                raise ValueError(
+                    f'posegraph_file is required for {operation} mode with '
+                    f'localization_backend={backend}')
+            if check_posegraph_files:
+                missing = [
+                    prefix + suffix
+                    for suffix in ('.posegraph', '.data')
+                    if not Path(prefix + suffix).is_file()
+                ]
+                if missing:
+                    raise ValueError(
+                        'serialized pose graph is incomplete; missing: '
+                        + ', '.join(missing))
     if operation in {'localization', 'navigation'}:
         if not occupancy_map:
             raise ValueError(
@@ -267,7 +311,8 @@ def validate_mode(
 
     map_version = ''
     map_bundle_sha256 = ''
-    if saved_map_operation and check_posegraph_files:
+    if saved_map_operation and check_posegraph_files \
+            and not amcl_localization:
         if not manifest_path:
             version = Path(prefix).name
             map_root = Path(prefix).parent.parent
@@ -318,6 +363,7 @@ def validate_mode(
         map_manifest_file=manifest_path,
         map_version=map_version,
         map_bundle_sha256=map_bundle_sha256,
+        localization_backend=backend,
     )
 
 

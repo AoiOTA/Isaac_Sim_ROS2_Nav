@@ -29,3 +29,9 @@ nav2_activation_gate:
       - bt_navigator
     initial_pose_source: auto
     initial_pose_reseed_service: /initial_pose/reseed
+    # Localization backend owning map->odom.  Empty, ideal, and slam_toolbox
+    # keep the data-freshness-only readiness contract; amcl additionally
+    # requires /<localization_node>/get_state to report ACTIVE before Nav2
+    # may activate.
+    localization_backend: ''
+    localization_node: amcl

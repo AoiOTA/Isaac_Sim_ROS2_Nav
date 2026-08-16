@@ -3,6 +3,7 @@ import threading
 from types import SimpleNamespace
 
 from nav2_msgs.srv import ManageLifecycleNodes
+import yaml
 
 from robot_bringup.activation_gate import Nav2ActivationGate
 from robot_bringup.lifecycle_policy import RetryPolicy
@@ -351,3 +352,148 @@ def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
     assert 'Repairing immutable map lifecycle' in source
     assert 'except (KeyboardInterrupt, ExternalShutdownException):' in source
     assert 'if node is not None:\n            node.destroy_node()' in source
+
+
+class _LocalizationFuture:
+    def __init__(self, response=None, exception=None):
+        self._response = response
+        self._exception = exception
+        self._callbacks = []
+
+    def result(self):
+        if self._exception is not None:
+            raise self._exception
+        return self._response
+
+    def add_done_callback(self, callback):
+        self._callbacks.append(callback)
+
+    def fire(self):
+        for callback in self._callbacks:
+            callback(self)
+
+
+class _LocalizationStateClient:
+    def __init__(self, label='active', ready=True):
+        self.label = label
+        self.ready = ready
+        self.calls = 0
+        self.futures = []
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        del request
+        self.calls += 1
+        future = _LocalizationFuture(response=SimpleNamespace(
+            current_state=SimpleNamespace(label=self.label)))
+        self.futures.append(future)
+        return future
+
+
+def _localization_gate(backend='amcl', **client_kwargs):
+    logger = _Logger()
+    client = _LocalizationStateClient(**client_kwargs)
+    gate = SimpleNamespace(
+        _localization_backend=backend,
+        _localization_node='amcl',
+        _localization_active=False,
+        _localization_query_in_flight=False,
+        _localization_query_token=None,
+        _localization_state_client=client,
+        _state_query_lock=threading.RLock(),
+        _generation=1,
+        _last_failure='',
+        get_logger=lambda: logger,
+    )
+    gate._localization_state_done = lambda *args, **kwargs: (
+        Nav2ActivationGate._localization_state_done(
+            gate, *args, **kwargs))
+    return gate, client, logger
+
+
+def test_non_amcl_backends_skip_the_localization_lifecycle_check():
+    for backend in ('', 'ideal', 'slam_toolbox'):
+        gate, client, _ = _localization_gate(backend=backend)
+        assert Nav2ActivationGate._localization_readiness(gate) == []
+        assert client.calls == 0
+
+
+def test_amcl_backend_waits_for_the_get_state_service():
+    gate, client, _ = _localization_gate(ready=False)
+    assert Nav2ActivationGate._localization_readiness(gate) == \
+        ['/amcl/get_state']
+    assert client.calls == 0
+
+
+def test_amcl_active_response_latches_localization_readiness():
+    gate, client, logger = _localization_gate(label='active')
+    assert Nav2ActivationGate._localization_readiness(gate) == \
+        ['AMCL lifecycle query']
+    # A second poll while the query is in flight does not re-issue it.
+    assert Nav2ActivationGate._localization_readiness(gate) == \
+        ['AMCL lifecycle query']
+    assert client.calls == 1
+
+    client.futures[0].fire()
+    assert gate._localization_active
+    assert Nav2ActivationGate._localization_readiness(gate) == []
+    assert any(
+        'lifecycle is ACTIVE' in message for _, message in logger.messages)
+
+
+def test_amcl_inactive_response_keeps_waiting_and_requeries():
+    gate, client, _ = _localization_gate(label='inactive')
+    Nav2ActivationGate._localization_readiness(gate)
+    client.futures[0].fire()
+    assert not gate._localization_active
+    assert "'inactive'" in gate._last_failure
+
+    # The next poll issues a fresh query instead of latching the failure.
+    client.label = 'active'
+    assert Nav2ActivationGate._localization_readiness(gate) == \
+        ['AMCL lifecycle query']
+    assert client.calls == 2
+    client.futures[1].fire()
+    assert gate._localization_active
+
+
+def test_amcl_get_state_exception_is_recorded_without_latching():
+    gate, client, logger = _localization_gate()
+    Nav2ActivationGate._localization_readiness(gate)
+    token = gate._localization_query_token
+    Nav2ActivationGate._localization_state_done(
+        gate,
+        _LocalizationFuture(exception=RuntimeError('service disappeared')),
+        generation=1,
+        token=token,
+    )
+    assert not gate._localization_active
+    assert not gate._localization_query_in_flight
+    assert 'service disappeared' in gate._last_failure
+    assert any(
+        'service disappeared' in message
+        for level, message in logger.messages if level == 'warning')
+
+
+def test_stale_localization_query_cannot_latch_a_new_epoch():
+    gate, client, _ = _localization_gate(label='active')
+    Nav2ActivationGate._localization_readiness(gate)
+    gate._generation = 2  # epoch invalidation while the query is in flight
+    client.futures[0].fire()
+    assert not gate._localization_active
+
+
+def test_gate_declares_the_localization_backend_contract():
+    source = (
+        PACKAGE_ROOT / 'robot_bringup' / 'activation_gate.py'
+    ).read_text()
+    assert "self.declare_parameter('localization_backend', '')" in source
+    assert "self.declare_parameter('localization_node', 'amcl')" in source
+    assert "f'/{self._localization_node}/get_state'" in source
+    parameters = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'activation_gate.yaml').read_text())
+    gate_parameters = parameters['nav2_activation_gate']['ros__parameters']
+    assert gate_parameters['localization_backend'] == ''
+    assert gate_parameters['localization_node'] == 'amcl'

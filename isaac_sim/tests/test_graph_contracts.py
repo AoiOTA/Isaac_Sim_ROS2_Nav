@@ -172,6 +172,72 @@ def test_tf_ownership_requires_exactly_one_publisher():
         expected_tf_owners("ideal", "rsp")
 
 
+def test_map_to_odom_owner_follows_localization_backend():
+    # Backend omitted: derived from the odometry mode.  The ideal default is
+    # the corrected owner (the stale hardcode claimed slam_toolbox even
+    # though ideal mode's real publisher is ideal_localization_tf).
+    assert expected_tf_owners("ideal")["map->odom"] == "ideal_localization_tf"
+    assert expected_tf_owners("realistic")["map->odom"] == "slam_toolbox"
+    # Explicit backend selects the sole map->odom publisher.
+    assert (
+        expected_tf_owners("realistic", localization_backend="ideal")["map->odom"]
+        == "ideal_localization_tf"
+    )
+    assert (
+        expected_tf_owners("realistic", localization_backend="amcl")["map->odom"]
+        == "localization_continuity_guard"
+    )
+    assert (
+        expected_tf_owners("realistic", localization_backend="slam_toolbox")["map->odom"]
+        == "slam_toolbox"
+    )
+    # An explicit backend also applies in ideal mode.
+    assert (
+        expected_tf_owners("ideal", localization_backend="amcl")["map->odom"]
+        == "localization_continuity_guard"
+    )
+
+
+def test_unknown_localization_backend_is_rejected():
+    with pytest.raises(TfOwnershipError, match="unknown localization backend"):
+        expected_tf_owners("realistic", localization_backend="cartographer")
+    with pytest.raises(TfOwnershipError, match="unknown localization backend"):
+        validate_tf_publishers("ideal", {}, localization_backend="")
+
+
+def test_ideal_rsp_rejection_still_applies_with_explicit_backend():
+    with pytest.raises(TfOwnershipError, match="ideal odometry requires"):
+        expected_tf_owners("ideal", "rsp", "amcl")
+
+
+def test_amcl_ownership_rejects_duplicate_and_conflicting_publishers():
+    expected = expected_tf_owners("realistic", localization_backend="amcl")
+    publishers = {key: [owner] for key, owner in expected.items()}
+    validate_tf_publishers("realistic", publishers, localization_backend="amcl")
+
+    duplicated = {key: list(value) for key, value in publishers.items()}
+    duplicated["map->odom"].append("slam_toolbox")
+    with pytest.raises(TfOwnershipError, match="sole owner"):
+        validate_tf_publishers("realistic", duplicated, localization_backend="amcl")
+
+    conflicting = {key: list(value) for key, value in publishers.items()}
+    conflicting["map->odom"] = ["slam_toolbox"]
+    with pytest.raises(TfOwnershipError, match="sole owner"):
+        validate_tf_publishers("realistic", conflicting, localization_backend="amcl")
+
+
+def test_world_frame_remains_forbidden_with_explicit_backend():
+    publishers = {
+        key: [owner]
+        for key, owner in expected_tf_owners(
+            "realistic", localization_backend="amcl"
+        ).items()
+    }
+    publishers["world->odom"] = ["isaac"]
+    with pytest.raises(TfOwnershipError, match="world frame"):
+        validate_tf_publishers("realistic", publishers, localization_backend="amcl")
+
+
 def test_topic_and_qos_contracts_are_absolute_and_encoded():
     topics = load_topics(ROOT / "isaac_sim/configs/ros2_bridge/topics.yaml")
     qos = load_qos_profiles(ROOT / "isaac_sim/configs/ros2_bridge/qos.yaml")

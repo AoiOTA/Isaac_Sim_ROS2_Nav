@@ -1,4 +1,11 @@
-"""Publish a simple map pose for the Attempt31 ideal-localization demo."""
+"""AMCL Initial Pose Seed publisher for the Rivermark outdoor demo.
+
+Publishes the configured map-frame pose on /initialpose a finite number of
+times after startup, and again after each simulation reset once a fresh
+clock and scan have arrived.  AMCL consumes the message as its initial pose
+seed; the covariance diagonal is derived from the initial_pose_std_*
+parameters rather than being hardcoded.
+"""
 
 from __future__ import annotations
 
@@ -20,6 +27,15 @@ class OutdoorInitialPose(Node):
         self.x = float(self.declare_parameter("x", 0.0).value)
         self.y = float(self.declare_parameter("y", 0.0).value)
         self.yaw_deg = float(self.declare_parameter("yaw_deg", 0.0).value)
+        self.std_x_m = float(
+            self.declare_parameter("initial_pose_std_x_m", 0.10).value
+        )
+        self.std_y_m = float(
+            self.declare_parameter("initial_pose_std_y_m", 0.10).value
+        )
+        self.std_yaw_deg = float(
+            self.declare_parameter("initial_pose_std_yaw_deg", 5.0).value
+        )
         self.publish_count = int(self.declare_parameter("publish_count", 5).value)
         self.period_s = float(self.declare_parameter("publish_period_s", 0.5).value)
         self.clock_ready = False
@@ -67,9 +83,9 @@ class OutdoorInitialPose(Node):
         half = 0.5 * math.radians(self.yaw_deg)
         message.pose.pose.orientation.z = math.sin(half)
         message.pose.pose.orientation.w = math.cos(half)
-        message.pose.covariance[0] = 0.05**2
-        message.pose.covariance[7] = 0.05**2
-        message.pose.covariance[35] = math.radians(2.0) ** 2
+        message.pose.covariance[0] = self.std_x_m**2
+        message.pose.covariance[7] = self.std_y_m**2
+        message.pose.covariance[35] = math.radians(self.std_yaw_deg) ** 2
         self.publisher.publish(message)
         self.published += 1
         if self.published == self.publish_count:

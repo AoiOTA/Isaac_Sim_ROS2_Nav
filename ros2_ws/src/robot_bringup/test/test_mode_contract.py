@@ -111,6 +111,143 @@ def test_localization_requires_existing_occupancy_map(tmp_path):
         )
 
 
+def test_localization_backend_matrix(tmp_path):
+    prefix = tmp_path / 'warehouse_v001'
+    prefix.with_suffix('.posegraph').write_bytes(b'posegraph')
+    prefix.with_suffix('.data').write_bytes(b'data')
+    occupancy_map = tmp_path / 'warehouse_v001.yaml'
+    occupancy_map.write_text('image: warehouse_v001.pgm\n')
+
+    # ideal + ideal PASS, explicitly and through the empty-backend default.
+    ideal = validate_mode(
+        'localization', 'ideal', 'isaac', str(prefix), str(occupancy_map),
+        check_posegraph_files=False, localization_backend='ideal')
+    assert ideal.localization_backend == 'ideal'
+    derived_ideal = validate_mode(
+        'localization', 'ideal', 'isaac', str(prefix), str(occupancy_map),
+        check_posegraph_files=False)
+    assert derived_ideal.localization_backend == 'ideal'
+
+    # realistic + amcl PASS: the occupancy map is required but the serialized
+    # pose graph is not, even with file checks enabled.
+    amcl = validate_mode(
+        'navigation', 'realistic', 'isaac', '', str(occupancy_map),
+        localization_backend='amcl')
+    assert amcl.localization_backend == 'amcl'
+    assert amcl.posegraph_prefix == ''
+    assert amcl.occupancy_map_file == str(occupancy_map)
+
+    # realistic + slam_toolbox PASS, explicitly and as the legacy default.
+    slam = validate_mode(
+        'navigation', 'realistic', 'isaac', str(prefix), str(occupancy_map),
+        check_posegraph_files=False, localization_backend='slam_toolbox')
+    assert slam.localization_backend == 'slam_toolbox'
+    derived_slam = validate_mode(
+        'navigation', 'realistic', 'isaac', str(prefix), str(occupancy_map),
+        check_posegraph_files=False)
+    assert derived_slam.localization_backend == 'slam_toolbox'
+
+    # ideal + amcl and ideal + slam_toolbox FAIL.
+    with pytest.raises(ValueError, match='requires realistic odometry'):
+        validate_mode(
+            'navigation', 'ideal', 'isaac', '', str(occupancy_map),
+            check_posegraph_files=False, localization_backend='amcl')
+    with pytest.raises(ValueError, match='requires realistic odometry'):
+        validate_mode(
+            'localization', 'ideal', 'isaac', str(prefix),
+            str(occupancy_map), check_posegraph_files=False,
+            localization_backend='slam_toolbox')
+
+    # amcl without an occupancy map FAILs.
+    with pytest.raises(ValueError, match='map_file is required'):
+        validate_mode(
+            'navigation', 'realistic', 'isaac', '', '',
+            localization_backend='amcl')
+    with pytest.raises(ValueError, match='does not exist'):
+        validate_mode(
+            'localization', 'realistic', 'isaac', '',
+            str(tmp_path / 'missing.yaml'), localization_backend='amcl')
+
+    # slam_toolbox without a pose graph FAILs.
+    with pytest.raises(ValueError, match='posegraph_file is required'):
+        validate_mode(
+            'navigation', 'realistic', 'isaac', '', str(occupancy_map),
+            localization_backend='slam_toolbox')
+
+    # Unknown backend values FAIL.
+    with pytest.raises(ValueError, match='localization_backend'):
+        validate_mode(
+            'mapping', 'ideal', 'isaac', check_posegraph_files=False,
+            localization_backend='cartographer')
+
+    # AMCL rejects a SLAM Toolbox pose-graph input.
+    with pytest.raises(ValueError, match='must be empty'):
+        validate_mode(
+            'localization', 'realistic', 'isaac', str(prefix),
+            str(occupancy_map), check_posegraph_files=False,
+            localization_backend='amcl')
+
+
+def test_localization_backend_ownership_is_documented():
+    document = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())
+    backends = document['localization_backends']
+    assert backends['ideal']['map_to_odom_publisher'] == \
+        'ideal_localization_tf'
+    assert backends['amcl']['map_to_odom_publisher'] == \
+        'localization_continuity_guard'
+    assert backends['slam_toolbox']['map_to_odom_publisher'] == \
+        'slam_toolbox'
+    assert backends['amcl']['requires_posegraph'] is False
+    assert backends['amcl']['requires_occupancy_map'] is True
+    assert backends['slam_toolbox']['requires_posegraph'] is True
+
+
+def test_core_launch_plumbs_localization_backend_everywhere():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    core = (launch_dir / 'ros_stack.launch.py').read_text()
+    assert "DeclareLaunchArgument(\n            'localization_backend'," \
+        in core
+    assert 'localization_backend=LaunchConfiguration(' in core
+    # localization.launch.py and nav2_activation_gate both receive the
+    # resolved backend, and the mode banner logs it.
+    assert core.count("'localization_backend': localization_backend") == 2
+    assert 'localization={localization_backend}' in core
+    for operation in (
+            'mapping', 'incremental_mapping', 'localization', 'navigation'):
+        wrapper = (
+            launch_dir / f'{operation}_bringup.launch.py').read_text()
+        assert "DeclareLaunchArgument('localization_backend', " \
+            "default_value='')" in wrapper
+        assert "'localization_backend': LaunchConfiguration(" in wrapper
+
+
+def test_rivermark_launch_supports_the_estimated_localization_chain():
+    source = (
+        PACKAGE_ROOT / 'launch' / 'rivermark_navigation.launch.py'
+    ).read_text()
+    assert 'DeclareLaunchArgument("odometry_mode", default_value="ideal")' \
+        in source
+    assert 'DeclareLaunchArgument("localization_backend", ' \
+        'default_value="ideal")' in source
+    for name in (
+            'wheel_odometry_params_file',
+            'ekf_params_file',
+            'amcl_params_file'):
+        assert f'DeclareLaunchArgument(\n                "{name}",' in source
+    assert 'odometry_share / "config" / "wheel_odometry.yaml"' in source
+    assert 'localization_share / "config" / "ekf.yaml"' in source
+    assert 'mapping_share / "config" / "amcl.yaml"' in source
+    assert 'if odometry_mode == "realistic":' in source
+    assert '"wheel_odometry.launch.py"' in source
+    assert '"ekf.launch.py"' in source
+    assert '"localization_backend": localization_backend' in source
+    assert 'use_posegraph_localization' not in source
+    # Nav2 keeps autostart with the delayed-start mechanism.
+    assert '"autostart": "true"' in source
+    assert 'TimerAction(\n            period=2.0,' in source
+
+
 def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     document = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())
@@ -235,7 +372,10 @@ def test_ideal_posegraph_calibration_is_explicit_and_localization_only():
     assert 'posegraph_calibration must be true or false' in core_source
     assert 'posegraph_calibration is only valid for Ideal localization' \
         in core_source
-    assert 'or posegraph_calibration' in core_source
+    # The calibration diagnostic swaps the map->odom owner to SLAM Toolbox
+    # through the backend argument instead of the legacy boolean.
+    assert 'if posegraph_calibration' in core_source
+    assert "'localization_backend': localization_backend" in core_source
     assert "'posegraph_calibration'" in localization_source
 
 

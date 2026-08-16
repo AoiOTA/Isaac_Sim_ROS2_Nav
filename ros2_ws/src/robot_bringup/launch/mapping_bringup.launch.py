@@ -15,6 +15,7 @@ def generate_launch_description():
     )
     return LaunchDescription([
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
+        DeclareLaunchArgument('localization_backend', default_value=''),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('robot_description_file', default_value=''),
@@ -50,6 +51,8 @@ def generate_launch_description():
             launch_arguments={
                 'operation': 'mapping',
                 'odometry_mode': LaunchConfiguration('odometry_mode'),
+                'localization_backend': LaunchConfiguration(
+                    'localization_backend'),
                 'structure_tf_source': LaunchConfiguration(
                     'structure_tf_source'),
                 'posegraph_file': '',

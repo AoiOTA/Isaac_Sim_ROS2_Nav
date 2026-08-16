@@ -23,6 +23,7 @@ from robot_bringup.lifecycle_policy import lifecycle_decision
 from robot_bringup.lifecycle_policy import LifecycleAction
 from robot_bringup.lifecycle_policy import normalization_transition
 from robot_bringup.lifecycle_policy import RetryPolicy
+from robot_bringup.mode_contract import LOCALIZATION_BACKENDS
 from robot_bringup.readiness import ReadinessConfig, ReadinessTracker
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
@@ -68,6 +69,8 @@ class Nav2ActivationGate(Node):
         self.declare_parameter('initial_pose_source', 'auto')
         self.declare_parameter(
             'initial_pose_reseed_service', '/initial_pose/reseed')
+        self.declare_parameter('localization_backend', '')
+        self.declare_parameter('localization_node', 'amcl')
 
         self._startup_timeout = self._positive_parameter('startup_timeout')
         self._recovery_timeout = self._positive_parameter(
@@ -116,6 +119,17 @@ class Nav2ActivationGate(Node):
             self.get_parameter('initial_pose_source').value)
         if self._initial_pose_source not in {'auto', 'rviz'}:
             raise ValueError('initial_pose_source must be auto or rviz')
+        self._localization_backend = str(
+            self.get_parameter('localization_backend').value).strip().lower()
+        if (self._localization_backend
+                and self._localization_backend not in LOCALIZATION_BACKENDS):
+            expected = ', '.join(sorted(LOCALIZATION_BACKENDS))
+            raise ValueError(
+                f'localization_backend must be empty or one of [{expected}]')
+        self._localization_node = str(
+            self.get_parameter('localization_node').value).strip('/')
+        if not self._localization_node:
+            raise ValueError('localization_node must not be empty')
 
         self._tracker = ReadinessTracker(readiness_config)
         self._started_at = time.monotonic()
@@ -144,6 +158,9 @@ class Nav2ActivationGate(Node):
         self._map_operation_token = None
         self._map_activation_attempts = 0
         self._next_map_attempt_at = self._started_at
+        self._localization_active = False
+        self._localization_query_in_flight = False
+        self._localization_query_token = None
 
         self._recovering = False
         self._recovery_started_at = None
@@ -205,6 +222,13 @@ class Nav2ActivationGate(Node):
             GetState, f'/{self._immutable_map_node}/get_state')
         self._map_change_state_client = self.create_client(
             ChangeState, f'/{self._immutable_map_node}/change_state')
+        # AMCL owns map->odom in the estimated-odometry stack; Nav2 must not
+        # activate before the AMCL lifecycle reports ACTIVE.
+        self._localization_state_client = (
+            self.create_client(
+                GetState, f'/{self._localization_node}/get_state')
+            if self._localization_backend == 'amcl' else None
+        )
         self._cancel_goal_client = self.create_client(
             CancelGoal, '/navigate_to_pose/_action/cancel_goal')
         self._global_clear_client = self.create_client(
@@ -326,7 +350,81 @@ class Nav2ActivationGate(Node):
         if missing or service_missing:
             self._log_waiting(now, missing + service_missing)
             return
+        localization_missing = self._localization_readiness()
+        if localization_missing:
+            self._log_waiting(now, localization_missing)
+            return
         self._start_state_query('activation')
+
+    def _localization_readiness(self):
+        """Poll the localization lifecycle when the backend requires it.
+
+        Only the AMCL backend adds a lifecycle-ACTIVE precondition to Nav2
+        activation; the ideal and slam_toolbox backends keep the existing
+        data-freshness contract.
+        """
+        if self._localization_backend != 'amcl':
+            return []
+        if self._localization_active:
+            return []
+        service = f'/{self._localization_node}/get_state'
+        with self._state_query_lock:
+            if self._localization_query_in_flight:
+                return ['AMCL lifecycle query']
+            if not self._localization_state_client.service_is_ready():
+                return [service]
+            token = object()
+            generation = self._generation
+            self._localization_query_in_flight = True
+            self._localization_query_token = token
+            try:
+                future = self._localization_state_client.call_async(
+                    GetState.Request())
+            except Exception as exc:
+                self._localization_query_in_flight = False
+                self._localization_query_token = None
+                self._last_failure = (
+                    f'{service} raised {type(exc).__name__}: {exc}')
+                self.get_logger().warning(self._last_failure)
+                return ['AMCL lifecycle query failed']
+            future.add_done_callback(partial(
+                self._localization_state_done,
+                generation=generation,
+                token=token,
+            ))
+            return ['AMCL lifecycle query']
+
+    def _localization_state_done(self, future, *, generation, token):
+        try:
+            response = future.result()
+            if response is None:
+                raise RuntimeError('empty response')
+            state = str(response.current_state.label).lower()
+            error = None
+        except Exception as exc:
+            state = ''
+            error = exc
+        with self._state_query_lock:
+            if (generation != self._generation
+                    or token is not self._localization_query_token):
+                return
+            self._localization_query_in_flight = False
+            self._localization_query_token = None
+            if error is not None:
+                self._last_failure = (
+                    f'/{self._localization_node}/get_state failed: '
+                    f'{type(error).__name__}: {error}')
+                self.get_logger().warning(self._last_failure)
+                return
+            if state != 'active':
+                self._last_failure = (
+                    f'/{self._localization_node} lifecycle state is '
+                    f'{state!r}; waiting for active')
+                return
+            self._localization_active = True
+            self.get_logger().info(
+                f'/{self._localization_node} lifecycle is ACTIVE; '
+                'localization readiness satisfied')
 
     def _ensure_immutable_map_active(self, now):
         """Repair a missed launch transition before waiting indefinitely on /map."""
@@ -986,6 +1084,9 @@ class Nav2ActivationGate(Node):
             self._manager_request_token = None
             self._map_operation_in_flight = False
             self._map_operation_token = None
+            self._localization_active = False
+            self._localization_query_in_flight = False
+            self._localization_query_token = None
             self._recovery_service_in_flight = False
             self._recovery_service_operation = None
             self._activation_verifying = False

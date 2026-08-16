@@ -20,23 +20,27 @@ ekf_filter_node:
     odom0: /wheel/odom
     # State vector order:
     # x, y, z, roll, pitch, yaw, vx, vy, vz, vroll, vpitch, vyaw, ax, ay, az
-    # Skid-steer wheel speed is reliable for body-forward velocity, but the
-    # left/right difference is biased by tire scrub at low-speed turns.
-    # Fuse yaw rate exclusively from the IMU below.
+    # Calibration against ground truth (validation doc section 0.2) disproved
+    # the earlier scrub-bias assumption: wheel yaw rate reads only +2.6%
+    # high on 360-degree turns while the IMU yaw rate reads +8.4% high, so
+    # the wheel differential is the better yaw source in this simulation.
     odom0_config: [false, false, false,
                    false, false, false,
                    true,  false, false,
-                   false, false, false,
+                   false, false, true,
                    false, false, false]
     odom0_queue_size: 10
     odom0_differential: false
     odom0_relative: false
 
     imu0: /imu/data
+    # IMU yaw rate is disabled: ground-truth calibration (section 0.2)
+    # measured it reading +8.4% high on 360-degree turns versus +2.6% for
+    # the wheel differential fused above.  No other IMU channel is consumed.
     imu0_config: [false, false, false,
                   false, false, false,
                   false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false]
     imu0_queue_size: 20
     imu0_differential: false

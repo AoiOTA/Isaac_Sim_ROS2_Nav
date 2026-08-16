@@ -26,6 +26,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'odom_calibration_driver = '
+            'robot_odometry.calibration_driver:main',
             'wheel_odometry_node = robot_odometry.wheel_odometry_node:main',
         ],
     },

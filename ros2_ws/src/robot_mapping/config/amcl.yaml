@@ -1,0 +1,57 @@
+amcl:
+  ros__parameters:
+    use_sim_time: true
+    global_frame_id: map
+    odom_frame_id: odom
+    base_frame_id: base_link
+    # map->odom 由 localization_continuity_guard 基于 /amcl_pose 过滤后
+    # 唯一发布（防模式捕获跳变进入 Nav2）；AMCL 自身不再广播 TF。
+    tf_broadcast: false
+    transform_tolerance: 0.50
+    robot_model_type: nav2_amcl::DifferentialMotionModel
+    # v4（冒烟 #13）：#10-#12 三次在同一门区被错误模式捕获（yaw +20°、
+    # 持续西南偏置）——典型 kidnapped/mode-capture，#12 概率模型未改善
+    # 且发散更深，回退 likelihood_field；启用增广随机位姿注入
+    # （recovery_alpha_slow/fast）实现捕获后恢复，max_beams 360 提升
+    # 模式鉴别力。
+    laser_model_type: likelihood_field
+    do_beamskip: false
+    recovery_alpha_slow: 0.002
+    recovery_alpha_fast: 0.10
+    laser_min_range: -1.0      # 采用雷达规格
+    laser_max_range: -1.0
+    # v2 整定（依据 estimated_odometry_amcl_validation.md §0.2/§0.3 实测）：
+    # v1(2.0) 似然场过宽，行进间 yaw 误差 ~5°，窄通道被 collision
+    # monitor StopZone 拦截后 NavFn 起点陷入膨胀区。收紧到 0.6 提高
+    # 位姿精度；动态障碍环境再与 beam skipping 做配对实验。
+    laser_likelihood_max_dist: 0.6
+    # 扫描原生 720 线（0.5°），v1 用 90 束过稀，v2 提升到 180（每 4 束取 1）。
+    max_beams: 360
+    # 更紧的似然场需要更多粒子避免粒子匮乏。
+    min_particles: 1000
+    max_particles: 3000
+    pf_err: 0.05
+    # v4b：resample_interval 1→2（经典抗粒子贫化，保持多样性防模式捕获）。
+    pf_z: 0.99
+    resample_interval: 2
+    # 实测（§0.2 GT 离线标定）：wheel odom 线性误差 ≤0.4%、角度 +3%，
+    # 轮差 yaw rate 优于 IMU（+8.4%，已从 EKF 禁用）。系统性漂移由
+    # 轮差融合接管；alpha 取 #10 实测表现最好的 0.35（瞬跳可恢复）。
+    alpha1: 0.35
+    alpha2: 0.35
+    alpha3: 0.10
+    alpha4: 0.10
+    # 更频繁更新，减小两次校正间的漂移与瞬跳幅度（v3：update_min_a
+    # 0.025→0.01，针对杂物区 yaw 瞬跳）。
+    update_min_d: 0.025
+    update_min_a: 0.01
+    sigma_hit: 0.15
+    # 静态场景：提高 hit 权重、降低 rand 权重，锐化测量模型。
+    z_hit: 0.80
+    z_rand: 0.20
+    z_max: 0.05
+    z_short: 0.05
+    lambda_short: 0.10
+    set_initial_pose: false
+    always_reset_initial_pose: true
+    first_map_only: true

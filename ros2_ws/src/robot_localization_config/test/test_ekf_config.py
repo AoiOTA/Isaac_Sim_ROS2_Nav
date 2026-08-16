@@ -23,7 +23,7 @@ def test_ekf_owns_only_local_odom_transform():
     assert params['publish_tf'] is True
 
 
-def test_ekf_fuses_wheel_vx_and_imu_wz_without_skid_yaw_bias():
+def test_ekf_fuses_wheel_vx_and_wheel_wz_after_gt_calibration():
     params = _params()
     wheel_enabled = {
         index for index, enabled in enumerate(params['odom0_config']) if enabled}
@@ -33,6 +33,10 @@ def test_ekf_fuses_wheel_vx_and_imu_wz_without_skid_yaw_bias():
     assert params['imu0'] == '/imu/data'
     assert len(params['odom0_config']) == 15
     assert len(params['imu0_config']) == 15
-    assert wheel_enabled == {6}
-    assert imu_enabled == {11}
+    # Ground-truth calibration (validation doc section 0.2) measured the
+    # wheel differential at +2.6% yaw-rate error versus +8.4% for the IMU,
+    # so the EKF fuses body-forward velocity and yaw rate from the wheels
+    # and consumes no IMU channel.
+    assert wheel_enabled == {6, 11}
+    assert imu_enabled == set()
     assert params['imu0_remove_gravitational_acceleration'] is False

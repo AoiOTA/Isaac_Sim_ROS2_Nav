@@ -378,6 +378,9 @@ def validate_configuration(
     expected_tf_owners(
         config.simulation.odometry_mode,
         config.simulation.structure_tf_source,
+        # Optional flat app-level override; unset or empty derives the
+        # localization backend from the odometry mode.
+        localization_backend=os.environ.get("ISAAC_NAV__LOCALIZATION_BACKEND") or None,
     )
     dynamic_scenario = load_dynamic_scenario(config.files.dynamic_obstacles)
     return selected_pose, dynamic_scenario, camera_selection

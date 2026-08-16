@@ -1,4 +1,10 @@
-"""Minimal ideal-localization Nav2 stack for the Attempt31 Rivermark demo."""
+"""Rivermark Nav2 stack with selectable ideal or estimated localization.
+
+The default ideal odometry mode reproduces the qualified Attempt31 demo
+(Isaac ideal odometry plus ideal_localization_tf).  The realistic mode runs
+wheel odometry and the EKF instead, and localization_backend=amcl lets AMCL
+own the map->odom transform for the Attempt31 Rivermark demo.
+"""
 
 from pathlib import Path
 
@@ -38,8 +44,29 @@ def _setup(context):
             raise RuntimeError(f"{name} does not exist: {value}")
         files[name] = value
     use_sim_time = LaunchConfiguration("use_sim_time").perform(context)
+    odometry_mode = (
+        LaunchConfiguration("odometry_mode").perform(context).strip().lower()
+    )
+    if odometry_mode not in {"ideal", "realistic"}:
+        raise RuntimeError("odometry_mode must be ideal or realistic")
+    localization_backend = (
+        LaunchConfiguration("localization_backend")
+        .perform(context)
+        .strip()
+        .lower()
+    )
+    if localization_backend not in {"ideal", "amcl", "slam_toolbox"}:
+        raise RuntimeError(
+            "localization_backend must be ideal, amcl, or slam_toolbox"
+        )
+    if odometry_mode == "ideal" and localization_backend != "ideal":
+        raise RuntimeError(
+            f"localization_backend={localization_backend} requires realistic "
+            "odometry; ideal odometry owns map->odom through "
+            "ideal_localization_tf"
+        )
     description_share = Path(get_package_share_directory("robot_description"))
-    return [
+    actions = [
         _include(
             "robot_description",
             "description.launch.py",
@@ -54,13 +81,48 @@ def _setup(context):
                 "enable_safety_scan": "true",
             },
         ),
+    ]
+    if odometry_mode == "realistic":
+        # Estimated odometry chain: wheel velocities + IMU yaw rate fused by
+        # the EKF into /odom and the odom->base_link TF.
+        actions.extend(
+            [
+                _include(
+                    "robot_odometry",
+                    "wheel_odometry.launch.py",
+                    {
+                        "use_sim_time": use_sim_time,
+                        "wheel_odometry_params_file": LaunchConfiguration(
+                            "wheel_odometry_params_file"
+                        ).perform(context),
+                    },
+                ),
+                _include(
+                    "robot_localization_config",
+                    "ekf.launch.py",
+                    {
+                        "use_sim_time": use_sim_time,
+                        "ekf_params_file": LaunchConfiguration(
+                            "ekf_params_file"
+                        ).perform(context),
+                    },
+                ),
+            ]
+        )
+    actions.extend(
+        [
         _include(
             "robot_mapping",
             "localization.launch.py",
             {
                 "use_sim_time": use_sim_time,
                 "autostart": "true",
-                "use_posegraph_localization": "false",
+                # The backend selects the map->odom owner; with amcl the
+                # ideal_localization_tf node is not started.
+                "localization_backend": localization_backend,
+                "amcl_params_file": LaunchConfiguration(
+                    "amcl_params_file"
+                ).perform(context),
                 "map_file": str(files["map_file"]),
                 # Isaac's ideal odometry is reset to zero at the selected
                 # spawn. Align that local origin with the Rivermark map pose.
@@ -176,14 +238,39 @@ def _setup(context):
                 )
             ],
         ),
-    ]
+    ])
+    return actions
 
 
 def generate_launch_description():
     navigation_share = Path(get_package_share_directory("robot_navigation"))
+    odometry_share = Path(get_package_share_directory("robot_odometry"))
+    localization_share = Path(
+        get_package_share_directory("robot_localization_config")
+    )
+    mapping_share = Path(get_package_share_directory("robot_mapping"))
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_sim_time", default_value="true"),
+            # The ideal defaults preserve the qualified Attempt31 behavior;
+            # odometry_mode=realistic with localization_backend=amcl runs the
+            # wheel-odometry + EKF + AMCL estimated localization chain.
+            DeclareLaunchArgument("odometry_mode", default_value="ideal"),
+            DeclareLaunchArgument("localization_backend", default_value="ideal"),
+            DeclareLaunchArgument(
+                "wheel_odometry_params_file",
+                default_value=str(
+                    odometry_share / "config" / "wheel_odometry.yaml"
+                ),
+            ),
+            DeclareLaunchArgument(
+                "ekf_params_file",
+                default_value=str(localization_share / "config" / "ekf.yaml"),
+            ),
+            DeclareLaunchArgument(
+                "amcl_params_file",
+                default_value=str(mapping_share / "config" / "amcl.yaml"),
+            ),
             DeclareLaunchArgument("map_file"),
             DeclareLaunchArgument("route_graph_file"),
             DeclareLaunchArgument("region_config_file"),

@@ -150,6 +150,14 @@ def test_unknown_override_is_rejected():
         )
 
 
+def test_flat_localization_backend_override_is_exempt_from_nested_check():
+    config = load_project_config(
+        CONFIG,
+        _environment(ISAAC_NAV__LOCALIZATION_BACKEND="amcl"),
+    )
+    assert config.simulation.odometry_mode == "ideal"
+
+
 def test_ideal_rsp_tf_ownership_is_rejected():
     with pytest.raises(ConfigError, match="ideal odometry requires"):
         load_project_config(

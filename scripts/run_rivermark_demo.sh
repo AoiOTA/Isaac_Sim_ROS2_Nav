@@ -18,6 +18,8 @@ guidance_profile="${RIVERMARK_GUIDANCE_PROFILE:-}"
 controller_max_linear_velocity_mps="${RIVERMARK_MAX_LINEAR_SPEED_MPS:-0.75}"
 controller_linear_velocity_std_mps="${RIVERMARK_LINEAR_SPEED_STD_MPS:-0.35}"
 rendering_hz="${RIVERMARK_RENDERING_HZ:-30}"
+odometry_mode="${RIVERMARK_ODOMETRY_MODE:-ideal}"
+localization_backend="${RIVERMARK_LOCALIZATION_BACKEND:-ideal}"
 
 if [[ "${mode}" != "off" && "${mode}" != "module2" ]]; then
   echo "usage: $0 [off|module2] [static|dynamic|appearance] [appearance-profile]" >&2
@@ -41,6 +43,16 @@ if [[ "${ground_truth}" != "0" && "${ground_truth}" != "1" ]]; then
 fi
 if [[ "${visual_route}" != "0" && "${visual_route}" != "1" ]]; then
   echo "RIVERMARK_VISUAL_ROUTE must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${odometry_mode}" != "ideal" && "${odometry_mode}" != "realistic" ]]; then
+  echo "RIVERMARK_ODOMETRY_MODE must be ideal or realistic" >&2
+  exit 2
+fi
+if [[ "${localization_backend}" != "ideal" \
+    && "${localization_backend}" != "amcl" \
+    && "${localization_backend}" != "slam_toolbox" ]]; then
+  echo "RIVERMARK_LOCALIZATION_BACKEND must be ideal, amcl or slam_toolbox" >&2
   exit 2
 fi
 if [[ "${scenario}" == "appearance" && "${appearance_profile}" == "baseline" ]]; then
@@ -348,6 +360,7 @@ env \
   ISAAC_NAV__SIMULATION__RENDERING_HZ="${rendering_hz}" \
   BIO_NAV_INTERFACES_SETUP="${integration_root}/ros2_ws/install/local_setup.bash" \
   "${module3_root}/scripts/run_isaac.sh" \
+  --mode "${odometry_mode}" \
   --environment-usd "${asset}" \
   --spawn-poses-file "${demo_dir}/rivermark.spawn.yaml" \
   --spawn-pose rivermark_start \
@@ -452,6 +465,8 @@ setsid -- ros2 launch robot_bringup rivermark_navigation.launch.py \
   start_x:="${start_x}" start_y:="${start_y}" start_yaw_deg:="${start_yaw}" \
   controller_max_linear_velocity_mps:="${controller_max_linear_velocity_mps}" \
   controller_linear_velocity_std_mps:="${controller_linear_velocity_std_mps}" \
+  odometry_mode:="${odometry_mode}" \
+  localization_backend:="${localization_backend}" \
   use_rviz:="${rviz_enabled}" \
   module2_enabled:="$([[ "${mode}" == "module2" ]] && echo true || echo false)" &
 ros_pid=$!

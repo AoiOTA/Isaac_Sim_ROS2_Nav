@@ -1,0 +1,27 @@
+{
+  "input": "/home/lyb/Workspace/Bio_Nav/runs/operator_maps/kujiale_realistic_v6/kujiale_realistic_v6",
+  "origin_map_xy": [
+    -5.1000000000000005,
+    -6.1
+  ],
+  "output": "/tmp/v6_aligned/kujiale_realistic_v6_aligned",
+  "rotation_ccw_deg": 90,
+  "schema_version": 1,
+  "shape_yx": [
+    238,
+    153
+  ],
+  "spawn_cell_check": {
+    "expected": 254,
+    "map_xy": [
+      0.45,
+      -5.35
+    ],
+    "pgm_value": 254,
+    "row_col": [
+      222,
+      111
+    ]
+  },
+  "tool": "align_slam_map_to_warehouse_frame.py"
+}

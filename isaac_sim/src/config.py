@@ -83,10 +83,18 @@ def _expand(value: Any, env: Mapping[str, str]) -> Any:
     return value
 
 
+# Flat single-segment ``ISAAC_NAV__*`` variables consumed directly by the app
+# layer (navigation_sim) rather than as nested ``SECTION__FIELD`` overrides.
+# They are exempt from the unknown-override check below.
+_FLAT_APP_OVERRIDES = frozenset({"ISAAC_NAV__LOCALIZATION_BACKEND"})
+
+
 def _apply_nested_overrides(data: dict[str, Any], env: Mapping[str, str]) -> None:
     prefix = "ISAAC_NAV__"
     for env_key, raw_value in sorted(env.items()):
         if not env_key.startswith(prefix):
+            continue
+        if env_key in _FLAT_APP_OVERRIDES:
             continue
         path = [part.lower() for part in env_key[len(prefix) :].split("__") if part]
         if not path:

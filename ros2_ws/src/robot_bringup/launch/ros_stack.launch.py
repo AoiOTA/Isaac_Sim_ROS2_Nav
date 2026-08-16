@@ -74,6 +74,8 @@ def _launch_setup(context):
         spawn_poses_file=spawn_poses_file,
         spawn_pose_name=LaunchConfiguration(
             'spawn_pose_name').perform(context),
+        localization_backend=LaunchConfiguration(
+            'localization_backend').perform(context),
     )
     selected_spawn = None
     if (selection.operation in {'localization', 'navigation'}
@@ -95,6 +97,12 @@ def _launch_setup(context):
             and selection.odometry_mode == 'ideal'):
         raise RuntimeError(
             'posegraph_calibration is only valid for Ideal localization')
+    # The calibration diagnostic swaps the ideal map->odom publisher for SLAM
+    # Toolbox pose-graph localization while keeping ideal odometry.
+    localization_backend = (
+        'slam_toolbox'
+        if posegraph_calibration
+        else selection.localization_backend)
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
     if (selection.operation == 'incremental_mapping'
             and initial_pose_source != 'auto'):
@@ -147,6 +155,7 @@ def _launch_setup(context):
         'ROS stack mode: '
         f'operation={selection.operation}, '
         f'odometry={selection.odometry_mode}, '
+        f'localization={localization_backend}, '
         f'structure_tf={selection.structure_tf_source}, '
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
         f'nav2_profile={nav2_profile}, '
@@ -266,12 +275,10 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'posegraph_file': selection.posegraph_prefix,
                     'map_file': selection.occupancy_map_file,
-                    'use_posegraph_localization': (
-                        'true'
-                        if (selection.odometry_mode == 'realistic'
-                            or posegraph_calibration)
-                        else 'false'
-                    ),
+                    # The backend selects the map->odom owner; with AMCL the
+                    # posegraph stays empty and ideal_localization_tf is not
+                    # started.
+                    'localization_backend': localization_backend,
                     'map_to_odom_x': (
                         str(selected_spawn.map.position[0])
                         if selected_spawn is not None else '0.0'
@@ -346,6 +353,7 @@ def _launch_setup(context):
                 {
                     'use_sim_time': use_sim_time,
                     'initial_pose_source': initial_pose_source,
+                    'localization_backend': localization_backend,
                 },
             ],
         )
@@ -430,6 +438,12 @@ def generate_launch_description():
             'odometry_mode',
             default_value='ideal',
             description='ideal or realistic'),
+        DeclareLaunchArgument(
+            'localization_backend',
+            default_value='',
+            description=(
+                'ideal, amcl, or slam_toolbox; empty derives from '
+                'odometry_mode (ideal->ideal, realistic->slam_toolbox)')),
         DeclareLaunchArgument(
             'structure_tf_source',
             default_value='isaac',
