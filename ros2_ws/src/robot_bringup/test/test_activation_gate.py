@@ -497,3 +497,157 @@ def test_gate_declares_the_localization_backend_contract():
     gate_parameters = parameters['nav2_activation_gate']['ros__parameters']
     assert gate_parameters['localization_backend'] == ''
     assert gate_parameters['localization_node'] == 'amcl'
+
+
+class _GuardCancelFuture:
+    def __init__(self, response=None):
+        self._response = response
+        self._callbacks = []
+
+    def add_done_callback(self, callback):
+        self._callbacks.append(callback)
+
+    def fire(self):
+        for callback in self._callbacks:
+            callback(self)
+
+    def result(self):
+        return self._response
+
+
+class _GuardCancelClient:
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.calls = 0
+        self.futures = []
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        del request
+        self.calls += 1
+        future = _GuardCancelFuture(response=SimpleNamespace(return_code=0))
+        self.futures.append(future)
+        return future
+
+
+def _guard_status_gate(*, activated=True, recovering=False, ready=True):
+    logger = _Logger()
+    client = _GuardCancelClient(ready=ready)
+    gate = SimpleNamespace(
+        _activated=activated,
+        _recovering=recovering,
+        _guard_cancel_in_flight=False,
+        _guard_cancel_token=None,
+        _cancel_goal_client=client,
+        _state_query_lock=threading.RLock(),
+        _generation=1,
+        _last_guard_status=None,
+        _stale_pending_since=None,
+        _guard_stale_cancel_grace=2.0,
+        get_logger=lambda: logger,
+    )
+    gate._guard_cancel_done = lambda *args, **kwargs: (
+        Nav2ActivationGate._guard_cancel_done(gate, *args, **kwargs))
+    gate._cancel_goal_for_guard = lambda status: (
+        Nav2ActivationGate._cancel_goal_for_guard(gate, status))
+    gate._maybe_cancel_for_stale_guard = lambda now: (
+        Nav2ActivationGate._maybe_cancel_for_stale_guard(gate, now))
+    return gate, client, logger
+
+
+def _send_guard_status(gate, status):
+    Nav2ActivationGate._guard_status_callback(
+        gate, SimpleNamespace(data=status))
+
+
+def test_guard_relocalization_pending_cancels_goal_without_reseed():
+    gate, client, logger = _guard_status_gate()
+
+    _send_guard_status(gate, 'RELOCALIZATION_PENDING')
+
+    assert client.calls == 1
+    assert gate._guard_cancel_in_flight
+    assert any(
+        'no initial-pose reseed' in message
+        for level, message in logger.messages if level == 'warning')
+    # Completing the cancel releases the in-flight reservation.
+    client.futures[0].fire()
+    assert not gate._guard_cancel_in_flight
+    assert gate._guard_cancel_token is None
+
+
+def test_guard_stale_status_cancels_goal_only_after_grace():
+    gate, client, _ = _guard_status_gate()
+
+    _send_guard_status(gate, 'STALE')
+    # A brief STALE blip (e.g. AMCL pausing right after a waypoint parks the
+    # robot) must not kill the active goal.
+    assert client.calls == 0
+    gate._maybe_cancel_for_stale_guard(
+        gate._stale_pending_since + 0.5)
+    assert client.calls == 0
+
+    # Once the STALE state persists past the grace period the goal is
+    # cancelled through the guard path.
+    gate._maybe_cancel_for_stale_guard(
+        gate._stale_pending_since + 2.5)
+    assert client.calls == 1
+
+
+def test_guard_stale_recovery_before_grace_never_cancels():
+    gate, client, _ = _guard_status_gate()
+
+    _send_guard_status(gate, 'STALE')
+    _send_guard_status(gate, 'TRACKING')
+    gate._maybe_cancel_for_stale_guard(10_000.0)
+
+    assert client.calls == 0
+    assert gate._stale_pending_since is None
+
+
+def test_guard_tracking_status_leaves_goal_alone():
+    gate, client, logger = _guard_status_gate()
+
+    _send_guard_status(gate, 'TRACKING')
+    _send_guard_status(gate, 'HOLDING')
+
+    assert client.calls == 0
+    assert logger.messages == []
+
+
+def test_guard_status_ignored_before_activation_or_during_recovery():
+    gate, client, _ = _guard_status_gate(activated=False)
+    _send_guard_status(gate, 'STALE')
+    assert client.calls == 0
+
+    gate, client, _ = _guard_status_gate(recovering=True)
+    _send_guard_status(gate, 'RELOCALIZATION_PENDING')
+    assert client.calls == 0
+
+
+def test_guard_cancel_unavailable_service_only_warns():
+    gate, client, logger = _guard_status_gate(ready=False)
+
+    _send_guard_status(gate, 'STALE')
+    gate._maybe_cancel_for_stale_guard(
+        gate._stale_pending_since + 2.5)
+
+    assert client.calls == 0
+    assert not gate._guard_cancel_in_flight
+    assert any(
+        'cancel service unavailable' in message
+        for level, message in logger.messages if level == 'warning')
+
+
+def test_guard_cancel_stale_generation_is_ignored():
+    gate, client, _ = _guard_status_gate()
+
+    _send_guard_status(gate, 'STALE')
+    gate._maybe_cancel_for_stale_guard(
+        gate._stale_pending_since + 2.5)
+    gate._generation = 2  # epoch invalidation while the cancel is in flight
+    client.futures[0].fire()
+
+    assert gate._guard_cancel_in_flight

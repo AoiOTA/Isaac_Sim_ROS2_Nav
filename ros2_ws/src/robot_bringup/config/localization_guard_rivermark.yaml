@@ -1,0 +1,16 @@
+# Rivermark outdoor continuity-guard envelope.
+#
+# The rivermark map is large and feature-sparse compared with the indoor
+# warehouse, so AMCL legitimately runs a wider steady-state covariance
+# (observed 2026-08-17 smoke: sigma_xy 0.10-0.16 m, sigma_yaw 5.0-8.0 deg).
+# The indoor defaults (0.15 m / 5.0 deg) would hold the guard in HOLDING for
+# most of the run; these limits keep the covariance-burst detection
+# meaningful for the outdoor chain.  All other guard parameters keep their
+# code defaults.
+localization_continuity_guard:
+  ros__parameters:
+    max_sigma_xy_m: 0.20
+    max_sigma_yaw_deg: 10.0
+    # Sparse-map AMCL can converge stably to a wrong mode; freeze + diagnose
+    # instead of rebasing into it (2026-08-17 outdoor smoke evidence).
+    allow_autonomous_rebase: false

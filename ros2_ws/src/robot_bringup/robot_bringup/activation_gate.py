@@ -28,6 +28,7 @@ from robot_bringup.readiness import ReadinessConfig, ReadinessTracker
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -71,6 +72,10 @@ class Nav2ActivationGate(Node):
             'initial_pose_reseed_service', '/initial_pose/reseed')
         self.declare_parameter('localization_backend', '')
         self.declare_parameter('localization_node', 'amcl')
+        # Grace period before a guard-reported STALE cancels the active goal;
+        # brief AMCL publication gaps (e.g. right after a waypoint completes
+        # and the robot parks) self-recover and must not kill navigation.
+        self.declare_parameter('guard_stale_cancel_grace_s', 2.0)
 
         self._startup_timeout = self._positive_parameter('startup_timeout')
         self._recovery_timeout = self._positive_parameter(
@@ -171,6 +176,8 @@ class Nav2ActivationGate(Node):
         self._recovery_stage_attempts = 0
         self._recovery_pause_verifying = False
         self._recovery_resume_verifying = False
+        self._guard_cancel_in_flight = False
+        self._guard_cancel_token = None
 
         best_effort = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -203,6 +210,16 @@ class Nav2ActivationGate(Node):
             '/simulation/reset_event',
             self._reset_callback,
             reliable,
+        )
+        self._guard_stale_cancel_grace = self._positive_parameter(
+            'guard_stale_cancel_grace_s')
+        self._last_guard_status = None
+        self._stale_pending_since = None
+        self._guard_status_subscription = self.create_subscription(
+            String,
+            '/localization_guard/status',
+            self._guard_status_callback,
+            transient_local,
         )
 
         self._tf_buffer = Buffer(node=self)
@@ -292,6 +309,97 @@ class Nav2ActivationGate(Node):
                 self._attempts = 0
                 self._next_attempt_at = time.monotonic()
 
+    def _guard_status_callback(self, message):
+        """Cancel the active Nav2 goal on a guard-reported localization break.
+
+        Only the cancel half of the recovery chain runs here: the
+        continuity guard owns map->odom while it relocalizes, so reseeding
+        the initial pose would race the guard rebase.  RELOCALIZATION_PENDING
+        cancels immediately; STALE must persist beyond
+        guard_stale_cancel_grace_s (checked on the readiness timer) so brief
+        AMCL publication gaps while parked cannot kill an active goal.
+        """
+        status = message.data.strip()
+        self._last_guard_status = status
+        if status == 'RELOCALIZATION_PENDING':
+            self._stale_pending_since = None
+            self._cancel_goal_for_guard(status)
+            return
+        if status == 'STALE':
+            if self._stale_pending_since is None:
+                self._stale_pending_since = time.monotonic()
+            return
+        self._stale_pending_since = None
+
+    def _maybe_cancel_for_stale_guard(self, now):
+        pending = self._stale_pending_since
+        if pending is None or now - pending < self._guard_stale_cancel_grace:
+            return
+        self._stale_pending_since = None
+        if self._last_guard_status == 'STALE':
+            self._cancel_goal_for_guard('STALE')
+
+    def _cancel_goal_for_guard(self, status):
+        with self._state_query_lock:
+            if not self._activated or self._recovering:
+                return
+            if self._guard_cancel_in_flight:
+                return
+            if not self._cancel_goal_client.service_is_ready():
+                self.get_logger().warning(
+                    f'localization guard status={status}: NavigateToPose '
+                    'cancel service unavailable; goal left running')
+                return
+            token = object()
+            generation = self._generation
+            self._guard_cancel_in_flight = True
+            self._guard_cancel_token = token
+            self.get_logger().warning(
+                f'localization guard status={status}: cancelling active '
+                'NavigateToPose goal (no initial-pose reseed)')
+            try:
+                future = self._cancel_goal_client.call_async(
+                    CancelGoal.Request())
+            except Exception as exc:
+                self._guard_cancel_in_flight = False
+                self._guard_cancel_token = None
+                self.get_logger().warning(
+                    f'localization guard status={status}: failed to queue '
+                    f'goal cancel: {type(exc).__name__}: {exc}')
+                return
+            future.add_done_callback(partial(
+                self._guard_cancel_done,
+                generation=generation,
+                token=token,
+            ))
+
+    def _guard_cancel_done(self, future, *, generation, token):
+        try:
+            response = future.result()
+            error = None
+        except Exception as exc:
+            response = None
+            error = exc
+        with self._state_query_lock:
+            if (generation != self._generation
+                    or token is not self._guard_cancel_token):
+                return
+            self._guard_cancel_in_flight = False
+            self._guard_cancel_token = None
+            if error is not None:
+                self.get_logger().warning(
+                    'guard-triggered goal cancel raised '
+                    f'{type(error).__name__}: {error}')
+                return
+            return_code = getattr(response, 'return_code', None)
+            if return_code not in (None, CancelGoal.Response.ERROR_NONE):
+                self.get_logger().warning(
+                    'guard-triggered goal cancel reported '
+                    f'return_code={return_code}')
+                return
+            self.get_logger().info(
+                'guard-triggered NavigateToPose goal cancel completed')
+
     def _scan_callback(self, message):
         stamp = message.header.stamp
         stamp_s = stamp.sec + stamp.nanosec * 1.0e-9
@@ -311,6 +419,7 @@ class Nav2ActivationGate(Node):
         if self._fatal_error is not None:
             raise RuntimeError(self._fatal_error)
 
+        self._maybe_cancel_for_stale_guard(now)
         self._observe_map_to_odom(now)
         if self._recovering:
             if now - self._recovery_started_at >= self._recovery_timeout:
@@ -1092,6 +1201,8 @@ class Nav2ActivationGate(Node):
             self._activation_verifying = False
             self._recovery_pause_verifying = False
             self._recovery_resume_verifying = False
+            self._guard_cancel_in_flight = False
+            self._guard_cancel_token = None
 
     def _set_recovery_stage(self, stage):
         self._recovery_stage = stage
