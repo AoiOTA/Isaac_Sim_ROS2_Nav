@@ -2,8 +2,13 @@ wheel_odometry:
   ros__parameters:
     use_sim_time: true
     wheel_radius: 0.098
-    # Must match robot.controller.wheel_distance, not the geometric wheel span.
-    track_width: 0.800
+    # Odometry-side effective track width, calibrated offline against ground
+    # truth (validation doc section 0.2, 2026-08-16): the controller-side
+    # wheel_distance is 0.800, but measured in-place +360/-360 turns showed
+    # the wheel odometry over-reading yaw by +2.6%/+3.1% (mean x1.0285), so
+    # the odometry kinematics uses 0.800 x 1.0285 = 0.823 to cancel the
+    # systematic yaw gain.  The controller keeps its own 0.800.
+    track_width: 0.823
     left_joint_names:
       - front_left_wheel_joint
       - rear_left_wheel_joint
@@ -12,6 +17,18 @@ wheel_odometry:
       - rear_right_wheel_joint
     publish_rate: 50.0
     max_integration_step: 0.25
+    # Hold the last pose and inflate covariance x100 when no fresh
+    # /joint_states sample arrives within this window (s); a STALE
+    # diagnostic is published on /diagnostics while the stream is down.
+    joint_state_timeout_s: 0.1
+    # Same-side front/rear wheel speed spread above this (rad/s) is treated
+    # as slip: covariance x10 plus a slip_detected diagnostic flag.
+    # TODO: re-check against slip-scenario calibration data before tuning.
+    same_side_diff_threshold_radps: 3.0
+    # Left/right mean wheel speed difference above this (rad/s) counts as a
+    # turn and inflates the yaw covariance by turn_yaw_covariance_scale.
+    turn_diff_threshold_radps: 1.0
+    turn_yaw_covariance_scale: 2.0
     odom_frame: odom
     base_frame: base_link
     pose_covariance_diagonal: [0.0025, 0.0025, 1000000.0, 1000000.0, 1000000.0, 0.01]

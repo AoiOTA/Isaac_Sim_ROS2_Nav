@@ -109,14 +109,17 @@ def test_ros_adapter_relies_on_rclpy_builtin_sim_time_parameter():
         assert "declare_parameter('use_sim_time'" not in source_file.read()
 
 
-def test_realistic_odometry_uses_the_controller_effective_track_width():
+def test_realistic_odometry_uses_the_calibrated_effective_track_width():
     root = Path(__file__).resolve().parents[4]
     robot = yaml.safe_load(
         (root / 'isaac_sim/configs/robots/jackal.yaml').read_text())
     odometry = yaml.safe_load(
         (Path(__file__).resolve().parents[1]
          / 'config/wheel_odometry.yaml').read_text())
+    # Odometry kinematics uses the GT-calibrated effective track width
+    # (0.823 = controller 0.800 x 1.0285 yaw-gain correction, validation doc
+    # section 0.2); it intentionally differs from the controller-side value.
     assert odometry['wheel_odometry']['ros__parameters']['track_width'] \
-        == pytest.approx(robot['controller']['wheel_distance'])
+        == pytest.approx(0.823)
     assert robot['controller']['wheel_distance'] \
         > robot['geometric_track_width']
