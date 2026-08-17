@@ -36,7 +36,7 @@ case "${mode}" in
   *) die "mode must be static or dynamic, got: ${mode}" ;;
 esac
 
-export ISAAC_NAV__GROUND_TRUTH__ENABLED=true
+export ISAAC_NAV__GROUND_TRUTH__ENABLED="${ISAAC_NAV__GROUND_TRUTH__ENABLED:-true}"
 exec "${SCRIPT_DIR}/run_isaac.sh" \
   --environment-root "${environment_root}" \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \

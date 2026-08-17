@@ -386,7 +386,7 @@ set -u
 # TF/costmap/marker data for roughly a minute and looks frozen while Isaac is
 # still building the stage.  One ROS process waits for actual fresh messages.
 isaac_readiness_status=0
-python3 - "${isaac_pid}" "${RIVERMARK_ISAAC_READY_TIMEOUT_S:-180}" <<'PY' \
+python3 - "${isaac_pid}" "${RIVERMARK_ISAAC_READY_TIMEOUT_S:-180}" "${RIVERMARK_ODOMETRY_MODE:-ideal}" <<'PY' \
   || isaac_readiness_status=$?
 import os
 import sys
@@ -401,6 +401,7 @@ from sensor_msgs.msg import PointCloud2
 
 isaac_pid = int(sys.argv[1])
 timeout_s = float(sys.argv[2])
+odometry_mode = sys.argv[3].strip().lower()
 deadline = time.monotonic() + timeout_s
 last_report = 0.0
 received = set()
@@ -422,7 +423,12 @@ node.create_subscription(
     qos,
 )
 node.create_subscription(Odometry, "/odom", lambda _: received.add("odom"), qos)
-required = {"clock", "lidar_points_raw", "odom"}
+# In realistic (wheel/EKF) mode /odom is published by the EKF, which only
+# starts with the Nav2 stack after this barrier — requiring it here would
+# deadlock startup.  Only the ideal mode has Isaac-owned /odom up front.
+required = {"clock", "lidar_points_raw"}
+if odometry_mode == "ideal":
+    required.add("odom")
 try:
     while time.monotonic() < deadline and received != required:
         try:

@@ -716,6 +716,12 @@ class ExperimentRunner(Node):
             self._ground_truth_callback,
             reliable,
         )
+        # When the simulator runs with ground truth disabled, the reset
+        # recovery cannot wait for spawn-aligned GT samples; the live
+        # map->base TF alignment check still applies.
+        self._expect_ground_truth = bool(
+            self.declare_parameter("expect_ground_truth", True).value
+        )
         self._odom_subscription = self.create_subscription(
             Odometry,
             str(self.declare_parameter("odom_topic", "/odom").value),
@@ -1982,11 +1988,13 @@ class ExperimentRunner(Node):
                 self._odom_samples
                 and now - self._odom_samples[-1].received_at <= self._odom_max_age_sec
             )
-            ground_truth_ready = bool(
-                self._ground_truth_samples
-                and now - self._ground_truth_samples[-1].received_at
-                <= self._odom_max_age_sec
-            )
+            ground_truth_ready = True
+            if self._expect_ground_truth:
+                ground_truth_ready = bool(
+                    self._ground_truth_samples
+                    and now - self._ground_truth_samples[-1].received_at
+                    <= self._odom_max_age_sec
+                )
             if odom_ready:
                 odom = self._odom_samples[-1]
                 odom_ready = (
@@ -2000,7 +2008,7 @@ class ExperimentRunner(Node):
                     and abs(wrap_angle(odom.yaw_rad))
                     <= self._reset_tf_yaw_tolerance_rad
                 )
-            if ground_truth_ready:
+            if ground_truth_ready and self._ground_truth_samples:
                 ground_truth = self._ground_truth_samples[-1]
                 expected_x, expected_y = self._spawn_pose.map.position
                 expected_yaw = math.radians(
