@@ -64,3 +64,17 @@ spawn_poses:
       map_bundle_sha256: 8986d311a09c6109d5b0b50a8e254722fa3820aa646d3efca0a1a3ef5fbaf723
       position_stddev_m: 0.05
       yaw_stddev_deg: 1.0
+  long_route_start_g1_v17:
+    usd:
+      # Same physical spawn as long_route_start_g1; rebound to the
+      # kujiale_realistic_v17 SLAM frame whose origin is the mapping start.
+      position: [2.45, 5.15, 0.0635]
+      yaw_deg: 270.0
+    map:
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      calibrated: true
+      map_version: kujiale_realistic_v17
+      map_bundle_sha256: 05af9736ac02f0188dfa7947cb72c68c7381acbc4bd1084b2be4df60550ed957
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0

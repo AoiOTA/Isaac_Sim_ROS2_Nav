@@ -1,0 +1,26 @@
+{
+  "choice_space": {
+    "component_count": 2,
+    "cycle_count": 1,
+    "goal_node": 42,
+    "node_count": 36,
+    "physical_edge_count": 35,
+    "start_goal_alternative_route_count": 1,
+    "start_goal_route_count": 2,
+    "start_goal_route_count_capped": false,
+    "start_node": 39
+  },
+  "classification": "engineering_output_only",
+  "directed_edge_count": 70,
+  "graph_id": "kujiale_realistic_v17:gvg_v1",
+  "map_version": "kujiale_realistic_v17",
+  "node_count": 36,
+  "revision": 1,
+  "support_edge_count": 374,
+  "support_node_count": 188,
+  "total_undirected_length_m": 43.16305427771219,
+  "traversability": {
+    "FEASIBLE": 42,
+    "UNKNOWN": 28
+  }
+}
