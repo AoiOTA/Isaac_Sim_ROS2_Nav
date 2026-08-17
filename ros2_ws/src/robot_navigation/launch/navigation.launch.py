@@ -3,17 +3,29 @@ import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
+from launch.actions import SetEnvironmentVariable, SetLaunchConfiguration
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterFile
 import yaml
 
 
-def _a21_nav2_parameters(defaults):
+# D1 estimated-localization (wheel odometry + EKF + AMCL) planning
+# economics.  The AMCL pose carries ~0.15 m p95 error, so Smac trades travel
+# cost for corridor clearance and MPPI follows the route corridor less
+# rigidly.  Kept module3-local: the integration engineering_defaults.yaml
+# only carries the estimated_localization and route_cost keys consumed by
+# the route coordinator.
+ESTIMATED_COST_TRAVEL_MULTIPLIER = 2.0
+ESTIMATED_PATH_FOLLOW_CRITIC_WEIGHT = 5.0
+
+
+def _a21_nav2_parameters(defaults, localization_backend=''):
     metric = defaults['metric_planning']
     route = defaults['route_server']
     mppi = defaults['mppi_route_guidance']
+    estimated = localization_backend == 'amcl'
     common = {
         'tolerance': float(metric['tolerance_m']),
         'downsample_costmap': False,
@@ -44,7 +56,8 @@ def _a21_nav2_parameters(defaults):
     grid_2d = dict(common)
     grid_2d.update({
         'plugin': 'nav2_smac_planner::SmacPlanner2D',
-        'cost_travel_multiplier': 1.2,
+        'cost_travel_multiplier': (
+            ESTIMATED_COST_TRAVEL_MULTIPLIER if estimated else 1.2),
         'use_final_approach_orientation': False,
     })
     return {
@@ -84,7 +97,9 @@ def _a21_nav2_parameters(defaults):
                         mppi['cost_critic_near_collision_cost']),
                 },
                 'PathFollowCritic': {
-                    'cost_weight': float(mppi['path_follow_weight']),
+                    'cost_weight': (
+                        ESTIMATED_PATH_FOLLOW_CRITIC_WEIGHT if estimated
+                        else float(mppi['path_follow_weight'])),
                 },
                 # final60d G5 failures spent 85--88% of aligned samples below
                 # 0.05 m/s, while all 34 successful rows spent 0% there.
@@ -158,6 +173,30 @@ def _write_controller_envelope_overlay():
         return Path(stream.name)
 
 
+def _select_a21_overlay(context, overlays):
+    """
+    Bind the generated A21 overlay matching the localization backend.
+
+    The AMCL estimated-localization chain plans with the D1 clearance
+    economics; every other backend keeps the qualified A21 values.
+    """
+    backend = LaunchConfiguration('localization_backend').perform(
+        context).strip().lower()
+    if backend not in {'', 'ideal', 'amcl', 'slam_toolbox'}:
+        raise RuntimeError(
+            'localization_backend must be ideal, amcl, or slam_toolbox')
+    if backend == 'amcl':
+        return [
+            LogInfo(msg=(
+                'localization_backend=amcl: A21 Nav2 overlay uses the '
+                'estimated-localization clearance economics')),
+            SetLaunchConfiguration(
+                'a21_overlay_file', str(overlays['estimated'])),
+        ]
+    return [SetLaunchConfiguration(
+        'a21_overlay_file', str(overlays['standard']))]
+
+
 def _write_route_guided_bt(template_file, metric_defaults):
     template = template_file.read_text(encoding='utf-8')
     replacements = {
@@ -190,8 +229,14 @@ def generate_launch_description():
     graph_file = route_share / 'config' / 'warehouse_new_gvg_v1.geojson'
     defaults_file = bridge_share / 'config' / 'engineering_defaults.yaml'
     defaults = yaml.safe_load(defaults_file.read_text(encoding='utf-8'))
-    a21 = _a21_nav2_parameters(defaults)
-    a21_overlay = _write_a21_overlay(a21)
+    # The AMCL estimated-localization chain plans with the D1 clearance
+    # economics; the backend is a launch argument, so both variants are
+    # rendered eagerly and bound by _select_a21_overlay at launch time.
+    a21_overlays = {
+        'standard': _write_a21_overlay(_a21_nav2_parameters(defaults)),
+        'estimated': _write_a21_overlay(_a21_nav2_parameters(
+            defaults, localization_backend='amcl')),
+    }
     controller_envelope_overlay = _write_controller_envelope_overlay()
     default_nav_to_pose_bt = package_share / 'behavior_trees' / (
         'navigate_to_pose_with_dead_end_recovery.xml')
@@ -217,6 +262,7 @@ def generate_launch_description():
     region_config_file = LaunchConfiguration('region_config_file')
     region_switch_min_dwell_s = LaunchConfiguration(
         'region_switch_min_dwell_s')
+    localization_backend = LaunchConfiguration('localization_backend')
     lifecycle_nodes = [
         'controller_server',
         'planner_server',
@@ -244,6 +290,9 @@ def generate_launch_description():
         DeclareLaunchArgument('module2_response_timeout_s', default_value='0.0'),
         DeclareLaunchArgument('region_config_file', default_value=''),
         DeclareLaunchArgument('region_switch_min_dwell_s', default_value='0.5'),
+        # Empty keeps the qualified A21 values; amcl selects the D1
+        # estimated-localization overlay and route-cost clearance margins.
+        DeclareLaunchArgument('localization_backend', default_value=''),
         # Preserve the qualified A21 values by default, but let an outdoor
         # caller bind a last-precedence controller envelope explicitly.
         DeclareLaunchArgument(
@@ -263,6 +312,8 @@ def generate_launch_description():
         DeclareLaunchArgument('voxel_grid_topic', default_value='voxel_grid'),
         SetEnvironmentVariable('RCUTILS_LOGGING_BUFFERED_STREAM', '1'),
         SetParameter('use_sim_time', use_sim_time),
+        OpaqueFunction(
+            function=_select_a21_overlay, kwargs={'overlays': a21_overlays}),
         Node(
             package='nav2_controller',
             executable='controller_server',
@@ -272,7 +323,7 @@ def generate_launch_description():
             parameters=[
                 params_file,
                 profile_params_file,
-                str(a21_overlay),
+                LaunchConfiguration('a21_overlay_file'),
                 # A node-specific params file wins over the node-specific A21
                 # overlay.  A plain launch dictionary becomes a /** wildcard
                 # file and cannot override an exact controller_server entry.
@@ -290,7 +341,8 @@ def generate_launch_description():
             name='planner_server',
             output='screen',
             sigterm_timeout='15.0',
-            parameters=[params_file, profile_params_file, str(a21_overlay)],
+            parameters=[params_file, profile_params_file,
+                        LaunchConfiguration('a21_overlay_file')],
         ),
         Node(
             package='nav2_route',
@@ -301,7 +353,7 @@ def generate_launch_description():
             parameters=[
                 params_file,
                 profile_params_file,
-                str(a21_overlay),
+                LaunchConfiguration('a21_overlay_file'),
                 {'graph_filepath': route_graph_file},
             ],
             # Route Server and Planner Server otherwise both publish /plan.
@@ -359,6 +411,7 @@ def generate_launch_description():
                 'use_sim_time': use_sim_time,
                 'engineering_defaults_file': str(defaults_file),
                 'map_yaml': structural_map_file,
+                'localization_backend': localization_backend,
                 'feasible_only_largest_component': (
                     feasible_only_largest_component),
                 'module2_enabled': module2_enabled,

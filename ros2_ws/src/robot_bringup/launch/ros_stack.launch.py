@@ -76,6 +76,8 @@ def _launch_setup(context):
             'spawn_pose_name').perform(context),
         localization_backend=LaunchConfiguration(
             'localization_backend').perform(context),
+        route_graph_file=LaunchConfiguration(
+            'route_graph_file').perform(context),
     )
     selected_spawn = None
     if (selection.operation in {'localization', 'navigation'}
@@ -267,33 +269,38 @@ def _launch_setup(context):
                 },
             ))
     else:
-        actions.extend([
-            _include(
-                'robot_mapping',
-                'localization.launch.py',
-                {
-                    'use_sim_time': use_sim_time,
-                    'posegraph_file': selection.posegraph_prefix,
-                    'map_file': selection.occupancy_map_file,
-                    # The backend selects the map->odom owner; with AMCL the
-                    # posegraph stays empty and ideal_localization_tf is not
-                    # started.
-                    'localization_backend': localization_backend,
-                    'map_to_odom_x': (
-                        str(selected_spawn.map.position[0])
-                        if selected_spawn is not None else '0.0'
-                    ),
-                    'map_to_odom_y': (
-                        str(selected_spawn.map.position[1])
-                        if selected_spawn is not None else '0.0'
-                    ),
-                    'map_to_odom_yaw_deg': (
-                        str(selected_spawn.map.yaw_deg)
-                        if selected_spawn is not None else '0.0'
-                    ),
-                },
+        localization_arguments = {
+            'use_sim_time': use_sim_time,
+            'posegraph_file': selection.posegraph_prefix,
+            'map_file': selection.occupancy_map_file,
+            # The backend selects the map->odom owner; with AMCL the
+            # posegraph stays empty and ideal_localization_tf is not
+            # started.
+            'localization_backend': localization_backend,
+            'map_to_odom_x': (
+                str(selected_spawn.map.position[0])
+                if selected_spawn is not None else '0.0'
             ),
-        ])
+            'map_to_odom_y': (
+                str(selected_spawn.map.position[1])
+                if selected_spawn is not None else '0.0'
+            ),
+            'map_to_odom_yaw_deg': (
+                str(selected_spawn.map.yaw_deg)
+                if selected_spawn is not None else '0.0'
+            ),
+        }
+        # Empty keeps localization.launch.py's own amcl.yaml default; the
+        # estimated isaac_compute entrypoint passes amcl_isaac_odom.yaml.
+        amcl_params_file = LaunchConfiguration(
+            'amcl_params_file').perform(context).strip()
+        if amcl_params_file:
+            localization_arguments['amcl_params_file'] = amcl_params_file
+        actions.append(_include(
+            'robot_mapping',
+            'localization.launch.py',
+            localization_arguments,
+        ))
         if initial_pose_source == 'auto':
             actions.append(_include(
                 'robot_experiments',
@@ -309,34 +316,47 @@ def _launch_setup(context):
             ))
 
     if selection.operation == 'navigation':
+        navigation_arguments = {
+            'use_sim_time': use_sim_time,
+            'autostart': 'false',
+            'nav2_params_file': runtime_files.nav2_params_file,
+            'nav2_profile_params_file': str(nav2_profile_params_file),
+            'structural_map_file': selection.occupancy_map_file,
+            # The backend selects the A21 overlay economics and the
+            # route-cost clearance margins inside navigation.launch.py.
+            'localization_backend': localization_backend,
+            'module2_enabled': LaunchConfiguration(
+                'module2_enabled').perform(context),
+            'route_graph_file': LaunchConfiguration(
+                'route_graph_file').perform(context),
+            'feasible_only_largest_component': LaunchConfiguration(
+                'feasible_only_largest_component').perform(context),
+            'module2_response_timeout_s': LaunchConfiguration(
+                'module2_response_timeout_s').perform(context),
+            'voxel_grid_topic': (
+                'stvl_voxel_grid'
+                if nav2_profile in {
+                    'dynamic_avoidance', 'estimated_dynamic',
+                    'bio_nav_planning_only',
+                    'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
+                    'bio_nav_rgbd_risk_shadow',
+                    'bio_nav_rgbd_risk_ab',
+                    'bio_nav_rgbd_risk_static_opt_in'}
+                else 'voxel_grid'
+            ),
+        }
+        # Empty keeps the navigation.launch.py default (the engineering
+        # defaults envelope); a non-empty value binds the last-precedence
+        # controller velocity envelope (e.g. the estimated-chain seam cap).
+        controller_max_velocity = LaunchConfiguration(
+            'controller_max_linear_velocity_mps').perform(context).strip()
+        if controller_max_velocity:
+            navigation_arguments['controller_max_linear_velocity_mps'] = (
+                controller_max_velocity)
         actions.append(_include(
             'robot_navigation',
             'navigation.launch.py',
-            {
-                'use_sim_time': use_sim_time,
-                'autostart': 'false',
-                'nav2_params_file': runtime_files.nav2_params_file,
-                'nav2_profile_params_file': str(nav2_profile_params_file),
-                'structural_map_file': selection.occupancy_map_file,
-                'module2_enabled': LaunchConfiguration(
-                    'module2_enabled').perform(context),
-                'route_graph_file': LaunchConfiguration(
-                    'route_graph_file').perform(context),
-                'feasible_only_largest_component': LaunchConfiguration(
-                    'feasible_only_largest_component').perform(context),
-                'module2_response_timeout_s': LaunchConfiguration(
-                    'module2_response_timeout_s').perform(context),
-                'voxel_grid_topic': (
-                    'stvl_voxel_grid'
-                    if nav2_profile in {
-                        'dynamic_avoidance', 'bio_nav_planning_only',
-                        'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
-                        'bio_nav_rgbd_risk_shadow',
-                        'bio_nav_rgbd_risk_ab',
-                        'bio_nav_rgbd_risk_static_opt_in'}
-                    else 'voxel_grid'
-                ),
-            },
+            navigation_arguments,
         ))
         gate_config = (
             Path(get_package_share_directory('robot_bringup'))
@@ -466,12 +486,26 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'amcl_params_file',
+            default_value='',
+            description=(
+                'optional AMCL params YAML override; empty uses the '
+                'robot_mapping localization.launch.py default (amcl.yaml)')),
+        DeclareLaunchArgument(
+            'controller_max_linear_velocity_mps',
+            default_value='',
+            description=(
+                'optional last-precedence controller velocity envelope; '
+                'empty uses the engineering-defaults value inside '
+                'navigation.launch.py')),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument(
             'nav2_profile',
             default_value='stable',
             description=(
-                'stable, performance, dynamic_avoidance, or optional BioNav '
+                'stable, performance, dynamic_avoidance, estimated_static, '
+                'estimated_dynamic, or optional BioNav '
                 'planning-only, risk-only, combined, RGB-D risk Shadow, '
                 'controlled RGB-D static A/B, or explicit static opt-in overlay')),
         DeclareLaunchArgument(

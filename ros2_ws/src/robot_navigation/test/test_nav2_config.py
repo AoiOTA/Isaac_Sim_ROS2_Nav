@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 from xml.etree import ElementTree
 
+import pytest
 import yaml
 
 
@@ -596,9 +597,8 @@ def test_a21_route_bt_uses_native_goal_updater_and_metric_owners():
     assert "remappings=[('plan', '/route_server/plan')]" in launch
 
 
-def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
-    module = _navigation_launch_module()
-    defaults = {
+def _a21_defaults():
+    return {
         'metric_planning': {
             'planner_rate_hz': 2.0,
             'tolerance_m': 0.1,
@@ -640,7 +640,11 @@ def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
             'enforce_path_inversion': True,
         },
     }
-    parameters = module._a21_nav2_parameters(defaults)
+
+
+def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
+    module = _navigation_launch_module()
+    parameters = module._a21_nav2_parameters(_a21_defaults())
     planner = parameters['planner']
     assert planner['planner_plugins'] == ['GridBased', 'GridLattice']
     assert planner['GridBased']['plugin'] == (
@@ -668,5 +672,135 @@ def test_navigation_launch_has_last_precedence_controller_envelope():
     assert 'vx_std: $(var controller_linear_velocity_std_mps)' in source
     assert 'ParameterFile(' in source
     assert 'allow_substs=True' in source
-    assert source.index('str(a21_overlay),') < source.index(
-        'ParameterFile(')
+    assert source.index("LaunchConfiguration('a21_overlay_file'),") < (
+        source.index('ParameterFile('))
+
+
+def test_a21_estimated_overlay_carries_the_d1_clearance_economics():
+    module = _navigation_launch_module()
+    standard = module._a21_nav2_parameters(_a21_defaults())
+    estimated = module._a21_nav2_parameters(
+        _a21_defaults(), localization_backend='amcl')
+
+    assert standard['planner']['GridBased']['cost_travel_multiplier'] == 1.2
+    assert estimated['planner']['GridBased'][
+        'cost_travel_multiplier'] == 2.0
+    assert standard['controller']['FollowPath']['PathFollowCritic'][
+        'cost_weight'] == 10.0
+    assert estimated['controller']['FollowPath']['PathFollowCritic'][
+        'cost_weight'] == 5.0
+    # Every other generated value stays on the qualified A21 defaults.
+    standard['planner']['GridBased'].pop('cost_travel_multiplier')
+    estimated['planner']['GridBased'].pop('cost_travel_multiplier')
+    assert standard['planner'] == estimated['planner']
+    standard_critic = standard['controller']['FollowPath'].pop(
+        'PathFollowCritic')
+    estimated_critic = estimated['controller']['FollowPath'].pop(
+        'PathFollowCritic')
+    assert standard_critic != estimated_critic
+    assert standard['controller'] == estimated['controller']
+    assert standard['route'] == estimated['route']
+
+
+def test_navigation_launch_binds_the_estimated_overlay_for_amcl():
+    source = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text(
+        encoding='utf-8')
+
+    assert "DeclareLaunchArgument('localization_backend'" in source
+    assert '_select_a21_overlay' in source
+    assert "SetLaunchConfiguration(\n                'a21_overlay_file'" \
+        in source
+    assert source.count("LaunchConfiguration('a21_overlay_file')") == 3
+    # The route coordinator consumes the backend for its route-cost margins.
+    assert "'localization_backend': localization_backend," in source
+
+
+def test_a21_overlay_selection_follows_the_localization_backend():
+    from launch import LaunchContext
+    from launch.utilities import perform_substitutions
+    module = _navigation_launch_module()
+    overlays = {'standard': '/tmp/standard.yaml',
+                'estimated': '/tmp/estimated.yaml'}
+
+    for backend, expected in (('', '/tmp/standard.yaml'),
+                              ('ideal', '/tmp/standard.yaml'),
+                              ('slam_toolbox', '/tmp/standard.yaml'),
+                              ('amcl', '/tmp/estimated.yaml'),
+                              (' AMCL ', '/tmp/estimated.yaml')):
+        context = LaunchContext()
+        context.launch_configurations['localization_backend'] = backend
+        bound = module._select_a21_overlay(context, overlays)[-1]
+        assert perform_substitutions(context, bound.name) == \
+            'a21_overlay_file'
+        assert perform_substitutions(context, bound.value) == expected
+
+    context = LaunchContext()
+    context.launch_configurations['localization_backend'] = 'cartographer'
+    with pytest.raises(RuntimeError, match='localization_backend'):
+        module._select_a21_overlay(context, overlays)
+
+
+def test_estimated_profiles_soften_global_decay_and_narrow_halo():
+    for name in ('estimated_static', 'estimated_dynamic'):
+        profile = _profile(name)
+        parameters = profile['controller_server']['ros__parameters']
+        follow_path = parameters['FollowPath']
+        assert parameters['controller_frequency'] == 10.0
+        assert follow_path['time_steps'] == 20
+        assert math.isclose(follow_path['model_dt'], 0.10)
+        assert follow_path['batch_size'] == 700
+        global_costmap = profile['global_costmap']['global_costmap'][
+            'ros__parameters']
+        assert global_costmap['inflation_layer'][
+            'cost_scaling_factor'] == 6.0
+        # D2' (user-authorized 2026-08-17): the estimated profiles narrow
+        # the inflation halo to 0.30 m on both costmaps; the frozen 0.40 m
+        # stays in nav2_params.yaml for the qualified baselines.
+        assert math.isclose(
+            global_costmap['inflation_layer']['inflation_radius'], 0.30)
+        local = profile['local_costmap']['local_costmap']['ros__parameters']
+        assert math.isclose(
+            local['inflation_layer']['inflation_radius'], 0.30)
+        assert 'PathFollowCritic' not in follow_path
+
+
+def test_estimated_static_profile_preserves_the_stable_envelope():
+    estimated = _profile('estimated_static')
+    stable = _profile('stable')
+
+    assert estimated['velocity_smoother'] == stable['velocity_smoother']
+    # The only deliberate local-costmap delta is the D2' inflation halo.
+    estimated_local = estimated['local_costmap']['local_costmap'][
+        'ros__parameters']
+    stable_local = stable['local_costmap']['local_costmap'][
+        'ros__parameters']
+    assert math.isclose(
+        estimated_local.pop('inflation_layer')['inflation_radius'], 0.30)
+    assert 'inflation_layer' not in stable_local
+    assert estimated_local == stable_local
+    assert estimated['global_costmap']['global_costmap']['ros__parameters'][
+        'obstacle_layer'] == stable['global_costmap']['global_costmap'][
+            'ros__parameters']['obstacle_layer']
+
+
+def test_estimated_dynamic_profile_preserves_the_dynamic_perception_stack():
+    estimated = _profile('estimated_dynamic')
+    dynamic = _profile('dynamic_avoidance')
+
+    # The only deliberate local-costmap delta is the D2' inflation halo.
+    estimated_local = estimated['local_costmap']['local_costmap'][
+        'ros__parameters']
+    dynamic_local = dynamic['local_costmap']['local_costmap'][
+        'ros__parameters']
+    assert math.isclose(
+        estimated_local.pop('inflation_layer')['inflation_radius'], 0.30)
+    assert 'inflation_layer' not in dynamic_local
+    assert estimated_local == dynamic_local
+    assert estimated['behavior_server'] == dynamic['behavior_server']
+    estimated_global = estimated['global_costmap']['global_costmap'][
+        'ros__parameters']
+    dynamic_global = dynamic['global_costmap']['global_costmap'][
+        'ros__parameters']
+    assert estimated_global['plugins'] == dynamic_global['plugins']
+    assert estimated_global['obstacle_layer'] == dynamic_global[
+        'obstacle_layer']

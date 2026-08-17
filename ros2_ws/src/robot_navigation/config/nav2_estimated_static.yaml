@@ -1,0 +1,74 @@
+# Estimated-localization (wheel odometry + EKF + AMCL) static profile.
+#
+# Clone of the validated nav2_stable.yaml static budget plus the D1
+# clearance economics for the estimated chain: the AMCL pose carries
+# ~0.15 m p95 error (engineering_defaults.yaml estimated_localization), so
+# the global planner softens its obstacle cost decay to prefer wider
+# corridors.
+#
+# D2': inflation_radius 0.40 -> 0.30 m on both costmaps.  Smoke evidence
+# (D0'/D1/E-A, 2026-08-17) shows the 0.40 m shell fills every ~0.8-1.0 m
+# pinch with soft cost and, combined with AMCL smear, drives MPPI into
+# "failed to make progress" oscillation at the junction/foyer seams.
+# The user explicitly authorized relaxing inflation_radius for the
+# estimated chain only (2026-08-17); nav2_params.yaml keeps the frozen
+# 0.40 m, and the StopZone/footprint safety shells are untouched.
+#
+# The generated A21 overlay in navigation.launch.py outranks this file for
+# GridBased.cost_travel_multiplier and FollowPath.PathFollowCritic; with
+# localization_backend=amcl that overlay already emits the matching D1
+# values (2.0 / 5.0) from its ESTIMATED_* constants, so they are not
+# repeated here.
+
+controller_server:
+  ros__parameters:
+    # Profiles must declare a complete MPPI timing tuple for the pre-launch
+    # Jazzy timing contract; keep the validated static budget.
+    controller_frequency: 10.0
+    FollowPath:
+      # 20 x 0.10 s = 2.0 s prediction horizon.
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 700
+    progress_checker:
+      # D3: double the patience so slow seam threading (estimated chain
+      # runs a reduced velocity envelope) is not declared stuck early.
+      movement_time_allowance: 40.0
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      obstacle_layer:
+        scan:
+          # Same contract as nav2_stable.yaml: the local controller consumes
+          # the self-filtered /scan_safety near-field stream.
+          raytrace_min_range: 0.05
+          inf_is_valid: false
+      inflation_layer:
+        # D2' (user-authorized): narrower soft halo so MPPI keeps a feasible
+        # trajectory set inside ~0.8-1.0 m seams under AMCL pose error.
+        inflation_radius: 0.30
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      obstacle_layer:
+        scan:
+          raytrace_min_range: 0.40
+          inf_is_valid: false
+      inflation_layer:
+        # D1: soften the global obstacle cost decay (base 9.0) so the Smac
+        # global planner prefers wider corridors under AMCL pose error.
+        cost_scaling_factor: 6.0
+        # D2' (user-authorized): see the header comment.
+        inflation_radius: 0.30
+
+velocity_smoother:
+  ros__parameters:
+    # Same historical static drive envelope as nav2_stable.yaml.
+    smoothing_frequency: 20.0
+    max_velocity: [0.75, 0.0, 1.35]
+    min_velocity: [-0.25, 0.0, -1.35]
+    max_accel: [1.25, 0.0, 3.50]
+    max_decel: [-1.10, 0.0, -3.50]
+    feedback: OPEN_LOOP

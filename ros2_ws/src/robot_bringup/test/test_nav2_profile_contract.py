@@ -43,6 +43,8 @@ def _write_profile(path, *, frequency=10.0, model_dt=0.1,
         "attempt22_reachability_shadow",
         "attempt23_global_prior",
         "bio_nav_rgbd_risk_shadow",
+        "estimated_static",
+        "estimated_dynamic",
     ],
 )
 def test_shipped_nav2_profiles_satisfy_mppi_timing_contract(profile_name):

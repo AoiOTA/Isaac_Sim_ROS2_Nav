@@ -54,6 +54,9 @@ def generate_launch_description():
                 'PROJECT_ROOT', default_value='')),
         DeclareLaunchArgument('use_self_filter', default_value='false'),
         DeclareLaunchArgument('use_sim_time', default_value='true'),
+        DeclareLaunchArgument('amcl_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'controller_max_linear_velocity_mps', default_value=''),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(str(core_launch)),
             launch_arguments={
@@ -92,6 +95,9 @@ def generate_launch_description():
                 'project_root': LaunchConfiguration('project_root'),
                 'use_self_filter': LaunchConfiguration('use_self_filter'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'amcl_params_file': LaunchConfiguration('amcl_params_file'),
+                'controller_max_linear_velocity_mps': LaunchConfiguration(
+                    'controller_max_linear_velocity_mps'),
             }.items(),
         ),
     ])

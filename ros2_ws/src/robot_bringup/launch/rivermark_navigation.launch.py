@@ -3,7 +3,10 @@
 The default ideal odometry mode reproduces the qualified Attempt31 demo
 (Isaac ideal odometry plus ideal_localization_tf).  The realistic mode runs
 wheel odometry and the EKF instead, and localization_backend=amcl lets AMCL
-own the map->odom transform for the Attempt31 Rivermark demo.
+own the map->odom transform for the Attempt31 Rivermark demo.  Ideal
+odometry may also pair with amcl (Isaac Compute Odometry keeps
+odom->base_link; localization_continuity_guard owns map->odom); only
+slam_toolbox still requires realistic odometry.
 """
 
 from pathlib import Path
@@ -59,11 +62,12 @@ def _setup(context):
         raise RuntimeError(
             "localization_backend must be ideal, amcl, or slam_toolbox"
         )
-    if odometry_mode == "ideal" and localization_backend != "ideal":
+    if odometry_mode == "ideal" and localization_backend == "slam_toolbox":
         raise RuntimeError(
-            f"localization_backend={localization_backend} requires realistic "
-            "odometry; ideal odometry owns map->odom through "
-            "ideal_localization_tf"
+            "localization_backend=slam_toolbox requires realistic odometry; "
+            "ideal odometry pairs with ideal or amcl: Isaac Compute Odometry "
+            "owns odom->base_link and localization_continuity_guard owns "
+            "map->odom from AMCL output"
         )
     description_share = Path(get_package_share_directory("robot_description"))
     actions = [
@@ -123,6 +127,16 @@ def _setup(context):
                 "amcl_params_file": LaunchConfiguration(
                     "amcl_params_file"
                 ).perform(context),
+                # Outdoor AMCL runs a wider covariance envelope on the
+                # sparse rivermark map; without this the guard would hold
+                # for most of the run (2026-08-17 smoke evidence).
+                "guard_params_file": str(
+                    Path(
+                        get_package_share_directory("robot_bringup")
+                    )
+                    / "config"
+                    / "localization_guard_rivermark.yaml"
+                ),
                 "map_file": str(files["map_file"]),
                 # Isaac's ideal odometry is reset to zero at the selected
                 # spawn. Align that local origin with the Rivermark map pose.
@@ -217,6 +231,10 @@ def _setup(context):
                         "structural_map_file": str(files["map_file"]),
                         "route_graph_file": str(files["route_graph_file"]),
                         "region_config_file": str(files["region_config_file"]),
+                        # The backend selects the A21 overlay economics and
+                        # the route-cost clearance margins for the estimated
+                        # localization chain.
+                        "localization_backend": localization_backend,
                         # The frozen Route Server asset contains every feasible
                         # component. The coordinator must export the identical
                         # support-node ID space; pruning only its private copy

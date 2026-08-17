@@ -161,6 +161,15 @@ def _launch_setup(context):
         # Register the transition handler before emitting CONFIGURE.
         actions.extend([activate_slam, slam_node, configure_slam])
     elif backend == AMCL_LOCALIZATION_BACKEND:
+        # Resolve the params file in Python: upstream wrapper launches forward
+        # an empty string, which masks the DeclareLaunchArgument default
+        # (launch configurations are shared launch-wide), so the Declare
+        # default only covers direct launches of this file.
+        amcl_params_file = (
+            LaunchConfiguration('amcl_params_file').perform(context).strip()
+            or str(Path(
+                get_package_share_directory('robot_mapping'))
+                / 'config' / 'amcl.yaml'))
         amcl_node = LifecycleNode(
             package='nav2_amcl',
             executable='amcl',
@@ -168,7 +177,7 @@ def _launch_setup(context):
             namespace='',
             output='screen',
             parameters=[
-                LaunchConfiguration('amcl_params_file'),
+                amcl_params_file,
                 {
                     'use_sim_time': LaunchConfiguration('use_sim_time'),
                 },
@@ -217,14 +226,22 @@ def _launch_setup(context):
         # AMCL no longer broadcasts TF (tf_broadcast: false).  The
         # continuity guard turns /amcl_pose plus the EKF odom->base_link
         # into the sole map->odom, frozen through mode-capture jumps.
+        # Environments with a legitimately wider AMCL covariance envelope
+        # (e.g. the sparse-feature rivermark outdoor map) pass an explicit
+        # guard params file; empty keeps the code defaults.
+        guard_parameters = [{
+            'use_sim_time': LaunchConfiguration('use_sim_time'),
+        }]
+        guard_params_file = LaunchConfiguration(
+            'guard_params_file').perform(context).strip()
+        if guard_params_file:
+            guard_parameters.insert(0, guard_params_file)
         continuity_guard = Node(
             package='robot_bringup',
             executable='localization_continuity_guard',
             name='localization_continuity_guard',
             output='screen',
-            parameters=[{
-                'use_sim_time': LaunchConfiguration('use_sim_time'),
-            }],
+            parameters=guard_parameters,
         )
         actions.extend(
             [activate_amcl, amcl_node, clear_buffer_shim, continuity_guard,
@@ -263,6 +280,7 @@ def generate_launch_description():
             'localization_params_file', default_value=str(default_config)),
         DeclareLaunchArgument(
             'amcl_params_file', default_value=str(default_amcl_config)),
+        DeclareLaunchArgument('guard_params_file', default_value=''),
         DeclareLaunchArgument(
             'localization_backend',
             default_value='',
