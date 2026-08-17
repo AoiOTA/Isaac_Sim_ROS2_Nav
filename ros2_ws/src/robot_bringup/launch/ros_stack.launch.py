@@ -234,6 +234,20 @@ def _launch_setup(context):
         ])
 
     if selection.operation in {'mapping', 'incremental_mapping'}:
+        # Ideal odometry normally keeps scan matching off (ground-truth
+        # poses).  ideal_mapping_scan_matching:=true keeps it on so the
+        # serialized pose graph contains graph vertices/edges - the
+        # vertex-less archive from the default Ideal profile crashes
+        # localization_slam_toolbox_node on its first scan.
+        ideal_scan_matching = (
+            LaunchConfiguration('ideal_mapping_scan_matching')
+            .perform(context).strip().lower() in {'true', '1', 'yes', 'on'})
+        # ideal_mapping_do_loop_closing:=true additionally enables loop
+        # closure for Ideal mapping (off by default: ground-truth poses
+        # need no global correction and symmetric aisles can mis-snap).
+        ideal_loop_closing = (
+            LaunchConfiguration('ideal_mapping_do_loop_closing')
+            .perform(context).strip().lower() in {'true', '1', 'yes', 'on'})
         actions.append(_include(
             'robot_mapping',
             'mapping.launch.py',
@@ -246,11 +260,13 @@ def _launch_setup(context):
                 'use_scan_matching': (
                     'false'
                     if selection.odometry_mode == 'ideal'
+                    and not ideal_scan_matching
                     else 'true'
                 ),
                 'do_loop_closing': (
                     'false'
                     if selection.odometry_mode == 'ideal'
+                    and not ideal_loop_closing
                     else 'true'
                 ),
             },
@@ -471,6 +487,22 @@ def generate_launch_description():
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'ideal_mapping_scan_matching',
+            default_value='false',
+            description=(
+                'Keep scan matching ON for Ideal-odometry mapping. The '
+                'default Ideal profile records a vertex-less scan archive '
+                'that cannot serve SLAM Toolbox localization; true writes '
+                'graph vertices/edges while keeping Ideal ground-truth '
+                'poses and no loop closing.')),
+        DeclareLaunchArgument(
+            'ideal_mapping_do_loop_closing',
+            default_value='false',
+            description=(
+                'Enable loop closure for Ideal-odometry mapping. Off by '
+                'default: Ideal ground-truth poses need no global '
+                'correction and symmetric aisles can mis-snap.')),
         # Keep the manifest explicit at the core-launch boundary so direct
         # users get the same map-integrity validation as the wrapper launches.
         DeclareLaunchArgument(
