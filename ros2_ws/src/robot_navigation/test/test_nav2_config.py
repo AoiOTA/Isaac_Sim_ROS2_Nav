@@ -740,6 +740,44 @@ def test_a21_overlay_selection_follows_the_localization_backend():
         module._select_a21_overlay(context, overlays)
 
 
+def test_controller_envelope_rebinds_empty_pass_throughs_to_defaults():
+    from launch import LaunchContext
+    from launch.utilities import perform_substitutions
+    module = _navigation_launch_module()
+    envelope_defaults = {
+        'controller_max_linear_velocity_mps': '0.35',
+        'controller_linear_velocity_std_mps': '0.2',
+    }
+
+    # Launch configurations are global: a parent's empty pass-through sets
+    # the name and masks the DeclareLaunchArgument defaults, which would
+    # render an unparseable ``vx_max:`` in the envelope overlay.
+    context = LaunchContext()
+    context.launch_configurations['controller_max_linear_velocity_mps'] = ''
+    context.launch_configurations['controller_linear_velocity_std_mps'] = ' '
+    actions = module._resolve_controller_envelope(context, envelope_defaults)
+    assert len(actions) == 2
+    for action in actions:
+        name = perform_substitutions(context, action.name)
+        assert perform_substitutions(context, action.value) == \
+            envelope_defaults[name]
+
+    # An explicit caller envelope stays bound.
+    context = LaunchContext()
+    context.launch_configurations['controller_max_linear_velocity_mps'] = \
+        '0.25'
+    context.launch_configurations['controller_linear_velocity_std_mps'] = \
+        '0.2'
+    assert module._resolve_controller_envelope(
+        context, envelope_defaults) == []
+
+    source = (PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text(
+        encoding='utf-8')
+    assert 'function=_resolve_controller_envelope' in source
+    assert source.index('function=_resolve_controller_envelope') < (
+        source.index("package='nav2_controller'"))
+
+
 def test_estimated_profiles_soften_global_decay_and_narrow_halo():
     for name in ('estimated_static', 'estimated_dynamic'):
         profile = _profile(name)

@@ -197,6 +197,24 @@ def _select_a21_overlay(context, overlays):
         'a21_overlay_file', str(overlays['standard']))]
 
 
+def _resolve_controller_envelope(context, envelope_defaults):
+    """
+    Re-bind empty controller envelope arguments to the qualified defaults.
+
+    Launch configurations are global to the whole launch: a parent that
+    declares an empty pass-through (navigation_bringup and ros_stack use ''
+    to mean "keep the default") still sets the name, which silently masks
+    the defaults declared below.  The envelope overlay would then render an
+    empty ``vx_max`` that controller_server cannot parse.  Treat empty as
+    "keep the qualified envelope".
+    """
+    return [
+        SetLaunchConfiguration(name, default)
+        for name, default in envelope_defaults.items()
+        if not LaunchConfiguration(name).perform(context).strip()
+    ]
+
+
 def _write_route_guided_bt(template_file, metric_defaults):
     template = template_file.read_text(encoding='utf-8')
     replacements = {
@@ -238,6 +256,14 @@ def generate_launch_description():
             defaults, localization_backend='amcl')),
     }
     controller_envelope_overlay = _write_controller_envelope_overlay()
+    controller_envelope_defaults = {
+        'controller_max_linear_velocity_mps': format(
+            float(defaults['mppi_route_guidance'][
+                'max_linear_velocity_mps']), '.12g'),
+        'controller_linear_velocity_std_mps': format(
+            float(defaults['mppi_route_guidance'][
+                'linear_velocity_std_mps']), '.12g'),
+    }
     default_nav_to_pose_bt = package_share / 'behavior_trees' / (
         'navigate_to_pose_with_dead_end_recovery.xml')
     default_nav_through_poses_bt = package_share / 'behavior_trees' / (
@@ -295,16 +321,16 @@ def generate_launch_description():
         DeclareLaunchArgument('localization_backend', default_value=''),
         # Preserve the qualified A21 values by default, but let an outdoor
         # caller bind a last-precedence controller envelope explicitly.
+        # Empty pass-throughs from parent launches are re-bound to these
+        # defaults by _resolve_controller_envelope below.
         DeclareLaunchArgument(
             'controller_max_linear_velocity_mps',
-            default_value=format(
-                float(defaults['mppi_route_guidance'][
-                    'max_linear_velocity_mps']), '.12g')),
+            default_value=controller_envelope_defaults[
+                'controller_max_linear_velocity_mps']),
         DeclareLaunchArgument(
             'controller_linear_velocity_std_mps',
-            default_value=format(
-                float(defaults['mppi_route_guidance'][
-                    'linear_velocity_std_mps']), '.12g')),
+            default_value=controller_envelope_defaults[
+                'controller_linear_velocity_std_mps']),
         # STVL publishes a PointCloud2 named voxel_grid, while Nav2's built-in
         # VoxelLayer publishes nav2_msgs/VoxelGrid on that name.  The dynamic
         # profile remaps STVL to an independent topic so RViz can display both
@@ -314,6 +340,9 @@ def generate_launch_description():
         SetParameter('use_sim_time', use_sim_time),
         OpaqueFunction(
             function=_select_a21_overlay, kwargs={'overlays': a21_overlays}),
+        OpaqueFunction(
+            function=_resolve_controller_envelope,
+            kwargs={'envelope_defaults': controller_envelope_defaults}),
         Node(
             package='nav2_controller',
             executable='controller_server',
