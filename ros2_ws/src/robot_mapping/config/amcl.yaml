@@ -35,12 +35,13 @@ amcl:
     pf_z: 0.99
     resample_interval: 2
     # 实测（§0.2 GT 离线标定）：wheel odom 线性误差 ≤0.4%、角度 +3%，
-    # 轮差 yaw rate 优于 IMU（+8.4%，已从 EKF 禁用）。系统性漂移由
-    # 轮差融合接管；alpha 取 #10 实测表现最好的 0.35（瞬跳可恢复）。
-    alpha1: 0.35
-    alpha2: 0.35
-    alpha3: 0.10
-    alpha4: 0.10
+    # 轮差 yaw rate 优于原始 IMU（+8.4%）。2026-08-17 起 IMU 经
+    # imu_yaw_scale（x0.922）标定后重新融入 EKF（±360° 回转实测 EKF yaw
+    # 误差 ±0.1%），粒子噪声同步下调（0.35/0.10 -> 0.15/0.08）。
+    alpha1: 0.15
+    alpha2: 0.15
+    alpha3: 0.08
+    alpha4: 0.08
     # 更频繁更新，减小两次校正间的漂移与瞬跳幅度（v3：update_min_a
     # 0.025→0.01，针对杂物区 yaw 瞬跳）。
     update_min_d: 0.025

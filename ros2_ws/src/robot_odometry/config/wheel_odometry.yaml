@@ -33,3 +33,12 @@ wheel_odometry:
     base_frame: base_link
     pose_covariance_diagonal: [0.0025, 0.0025, 1000000.0, 1000000.0, 1000000.0, 0.01]
     twist_covariance_diagonal: [0.0025, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 0.01]
+
+# Calibrated IMU yaw-rate relay: the IMU over-reads yaw rate by a
+# systematic x1.085 gain against ground truth (validation doc section 0.2),
+# so the EKF fuses this scaled stream instead of the raw /imu/data.
+imu_yaw_scale:
+  ros__parameters:
+    yaw_rate_scale: 0.922
+    yaw_rate_bias_radps: 0.0
+    yaw_rate_covariance: 0.005

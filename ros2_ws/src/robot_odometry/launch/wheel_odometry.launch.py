@@ -24,4 +24,15 @@ def generate_launch_description():
                 {'use_sim_time': LaunchConfiguration('use_sim_time')},
             ],
         ),
+        # Calibrated IMU yaw-rate relay; the EKF fuses /imu/data_scaled.
+        Node(
+            package='robot_odometry',
+            executable='imu_yaw_scale_node',
+            name='imu_yaw_scale',
+            output='screen',
+            parameters=[
+                LaunchConfiguration('wheel_odometry_params_file'),
+                {'use_sim_time': LaunchConfiguration('use_sim_time')},
+            ],
+        ),
     ])
