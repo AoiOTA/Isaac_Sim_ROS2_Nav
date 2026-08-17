@@ -1,0 +1,26 @@
+{
+  "choice_space": {
+    "component_count": 2,
+    "cycle_count": 1,
+    "goal_node": 38,
+    "node_count": 32,
+    "physical_edge_count": 31,
+    "start_goal_alternative_route_count": 1,
+    "start_goal_route_count": 2,
+    "start_goal_route_count_capped": false,
+    "start_node": 4
+  },
+  "classification": "engineering_output_only",
+  "directed_edge_count": 62,
+  "graph_id": "warehouse_new_realistic:gvg_v1",
+  "map_version": "warehouse_new_realistic",
+  "node_count": 32,
+  "revision": 1,
+  "support_edge_count": 378,
+  "support_node_count": 190,
+  "total_undirected_length_m": 44.130905972369085,
+  "traversability": {
+    "FEASIBLE": 34,
+    "UNKNOWN": 28
+  }
+}

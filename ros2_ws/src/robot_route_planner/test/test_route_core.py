@@ -16,7 +16,11 @@ from robot_route_planner.ros_node import (
     select_map_pose,
     select_support_attachment,
 )
-from robot_route_planner.route_cost import edge_cost_breakdown, shortest_route
+from robot_route_planner.route_cost import (
+    edge_cost_breakdown,
+    resolve_route_cost_settings,
+    shortest_route,
+)
 from robot_route_planner.route_support import export_route_support_graph
 from robot_route_planner.runtime_edges import RuntimeEdgeManager, RuntimeState
 from robot_route_planner.stable_ids import stabilize_graph_ids
@@ -135,6 +139,45 @@ def test_module2_delta_is_capped_and_confidence_applied_exactly_once() -> None:
         + value.applied_module2_delta_m
         + value.runtime_penalty_m
     )
+
+
+def _estimated_cost_settings():
+    return {
+        **_cost_settings(),
+        "estimated_minimum_clearance_m": 0.30,
+        "estimated_preferred_clearance_m": 0.50,
+        "estimated_clearance_penalty_weight": 1.0,
+    }
+
+
+def test_amcl_backend_widens_the_route_cost_clearance_margins() -> None:
+    resolved = resolve_route_cost_settings(
+        _estimated_cost_settings(), localization_backend="amcl")
+
+    assert resolved["minimum_clearance_m"] == 0.30
+    assert resolved["preferred_clearance_m"] == 0.50
+    assert resolved["clearance_penalty_weight"] == 1.0
+    # Unrelated route-cost keys pass through untouched.
+    assert resolved["max_prior_cost_ratio_of_edge_length"] == 0.25
+    assert resolved["numeric_epsilon"] == 1.0e-9
+
+
+def test_standard_backends_keep_the_qualified_route_cost_margins() -> None:
+    for backend in ("", "ideal", "slam_toolbox"):
+        resolved = resolve_route_cost_settings(
+            _estimated_cost_settings(), localization_backend=backend)
+        assert resolved["minimum_clearance_m"] == 0.215
+        assert resolved["preferred_clearance_m"] == 0.385
+        assert resolved["clearance_penalty_weight"] == 0.5
+
+
+def test_missing_estimated_keys_fail_open_to_standard_margins() -> None:
+    resolved = resolve_route_cost_settings(
+        _cost_settings(), localization_backend="amcl")
+
+    assert resolved["minimum_clearance_m"] == 0.215
+    assert resolved["preferred_clearance_m"] == 0.385
+    assert resolved["clearance_penalty_weight"] == 0.5
 
 
 def test_tracker_crosses_edge_boundary_and_switches_to_final_goal() -> None:

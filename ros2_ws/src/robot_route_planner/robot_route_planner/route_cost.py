@@ -20,6 +20,32 @@ class EdgeCostBreakdown:
     blocked: bool
 
 
+_ESTIMATED_CLEARANCE_KEYS = (
+    ("estimated_minimum_clearance_m", "minimum_clearance_m"),
+    ("estimated_preferred_clearance_m", "preferred_clearance_m"),
+    ("estimated_clearance_penalty_weight", "clearance_penalty_weight"),
+)
+
+
+def resolve_route_cost_settings(
+    route_cost_defaults: Mapping[str, float],
+    localization_backend: str = "",
+) -> dict[str, float]:
+    """Return the effective route-cost settings for the localization backend.
+
+    The AMCL estimated-localization chain carries ~0.15 m p95 pose error, so
+    the engineering-defaults ``estimated_*`` keys widen the clearance
+    economics.  Every other backend keeps the qualified A21 values, and a
+    defaults file without estimated keys fails open to them as well.
+    """
+    settings = dict(route_cost_defaults)
+    if localization_backend.strip().lower() == "amcl":
+        for estimated_key, standard_key in _ESTIMATED_CLEARANCE_KEYS:
+            if estimated_key in settings:
+                settings[standard_key] = float(settings[estimated_key])
+    return settings
+
+
 def edge_cost_breakdown(
     edge: Edge,
     settings: Mapping[str, float],
@@ -133,5 +159,6 @@ __all__ = [
     "EdgeCostBreakdown",
     "edge_cost",
     "edge_cost_breakdown",
+    "resolve_route_cost_settings",
     "shortest_route",
 ]

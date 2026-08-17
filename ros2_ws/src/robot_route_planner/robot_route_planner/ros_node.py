@@ -22,7 +22,7 @@ from .feasibility import (
 )
 from .gvg import build_gvg
 from .map_io import OccupancyMap, load_occupancy_map
-from .route_cost import edge_cost_breakdown
+from .route_cost import edge_cost_breakdown, resolve_route_cost_settings
 from .route_support import export_route_support_graph, save_route_support
 from .regions import RegionSelector, load_region_config
 from .runtime_edges import RuntimeEdgeManager, RuntimeState
@@ -236,6 +236,9 @@ class RouteCoordinator:
             ("map_yaml", ""),
             ("frame_id", "map"),
             ("base_frame_id", "base_link"),
+            # Empty keeps the qualified A21 route-cost clearance margins;
+            # amcl switches to the engineering-defaults estimated_* keys.
+            ("localization_backend", ""),
             ("module2_enabled", True),
             ("module2_response_timeout_s", 0.0),
             # Ground-truth confirmation uses the campaign's 0.25 m waypoint
@@ -266,6 +269,22 @@ class RouteCoordinator:
         if not defaults_path.is_file() or not map_path.is_file():
             raise RuntimeError("engineering_defaults_file and map_yaml are required")
         self.defaults = load_engineering_defaults(defaults_path)
+        self.localization_backend = str(
+            node.get_parameter("localization_backend").value
+        ).strip().lower()
+        self.route_cost_settings = resolve_route_cost_settings(
+            self.defaults["route_cost"], self.localization_backend
+        )
+        if self.localization_backend == "amcl":
+            self.node.get_logger().info(
+                "estimated localization route cost: "
+                f"minimum_clearance_m="
+                f"{self.route_cost_settings['minimum_clearance_m']}, "
+                f"preferred_clearance_m="
+                f"{self.route_cost_settings['preferred_clearance_m']}, "
+                f"clearance_penalty_weight="
+                f"{self.route_cost_settings['clearance_penalty_weight']}"
+            )
         self.module2_response_timeout_s = float(
             node.get_parameter("module2_response_timeout_s").value
         )
@@ -288,7 +307,7 @@ class RouteCoordinator:
                 self.map,
                 self.defaults["graph"],
                 self.defaults["footprint"],
-                self.defaults["route_cost"],
+                self.route_cost_settings,
             ),
             self.map,
             self.defaults["footprint"],
@@ -307,7 +326,7 @@ class RouteCoordinator:
             if feature["geometry"]["type"] == "Point"
         }
         self.runtime = RuntimeEdgeManager(
-            self.defaults["runtime_edges"], self.defaults["route_cost"]
+            self.defaults["runtime_edges"], self.route_cost_settings
         )
         self.structural_monitor = StructuralChangeMonitor(
             self.map.free,
@@ -818,7 +837,7 @@ class RouteCoordinator:
                 request.opened_edges.extend(support_ids)
             breakdown = edge_cost_breakdown(
                 edge,
-                self.defaults["route_cost"],
+                self.route_cost_settings,
                 prior_cost_delta_m=prior[0],
                 prior_confidence=prior[1],
                 runtime_penalty_m=runtime_penalty,
@@ -945,9 +964,13 @@ class RouteCoordinator:
         message.node_ids = node_ids
         message.edge_ids = canonical_ids
         message.total_cost_m = float(wrapped.result.route.route_cost)
+        min_edge_clearance = min(
+            edge_map[canonical].min_clearance_m for canonical in canonical_ids
+        )
         self.node.get_logger().info(
             f"canonical route ready for request {self.request_id}: "
-            f"{len(canonical_ids)} edges, cost {message.total_cost_m:.3f} m"
+            f"{len(canonical_ids)} edges, cost {message.total_cost_m:.3f} m, "
+            f"min edge clearance {min_edge_clearance:.3f} m"
         )
         self.route_pub.publish(message)
         self.tracker = RouteTracker(
@@ -1239,7 +1262,7 @@ class RouteCoordinator:
                     candidate_map,
                     self.defaults["graph"],
                     self.defaults["footprint"],
-                    self.defaults["route_cost"],
+                    self.route_cost_settings,
                     revision=self.graph.revision + 1,
                 ),
                 candidate_map,
