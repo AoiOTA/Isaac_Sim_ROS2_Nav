@@ -6,6 +6,7 @@ import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
+import json
 import math
 import os
 from pathlib import Path
@@ -36,6 +37,7 @@ _ROOT_FIELDS = {
     "source",
     "occupancy_grid",
     "pose_graph",
+    "route_graph",
     "calibration",
     "notes",
 }
@@ -83,6 +85,14 @@ class MapArtifact:
 
 
 @dataclass(frozen=True)
+class RouteGraphArtifact:
+    role: str
+    path: str
+    sha256: str
+    resolved_path: Path
+
+
+@dataclass(frozen=True)
 class MapCalibration:
     calibrated: bool
     spawn_pose_profile: str | None
@@ -103,6 +113,7 @@ class MapManifest:
     bundle_sha256: str
     artifacts: tuple[MapArtifact, ...]
     calibration: MapCalibration
+    route_graph: tuple[RouteGraphArtifact, ...] = ()
 
     @property
     def occupancy_yaml(self) -> Path:
@@ -113,8 +124,18 @@ class MapManifest:
         return self.artifacts[1].resolved_path
 
     @property
-    def posegraph_prefix(self) -> Path:
-        return self.artifacts[2].resolved_path.with_suffix("")
+    def posegraph_prefix(self) -> Path | None:
+        for artifact in self.artifacts:
+            if artifact.role == "posegraph":
+                return artifact.resolved_path.with_suffix("")
+        return None
+
+    @property
+    def route_graph_geojson(self) -> Path | None:
+        for artifact in self.route_graph:
+            if artifact.role == "geojson":
+                return artifact.resolved_path
+        return None
 
 
 def _mapping(value: Any, location: str) -> Mapping[str, Any]:
@@ -409,6 +430,93 @@ def _validate_occupancy_metadata(
     return yaml_resolution, width, height, yaml_origin
 
 
+_ROUTE_GRAPH_FIELDS = {"geojson", "support_map", "summary"}
+
+
+def _validate_route_graph(
+    project_root: Path,
+    raw_section: Any,
+    map_version: str,
+    *,
+    verify_files: bool,
+) -> tuple[RouteGraphArtifact, ...]:
+    """Verify the optional GVG route-graph trio bound to a map bundle."""
+    if raw_section is None:
+        return ()
+    section = _mapping(raw_section, "route_graph")
+    if set(section) != _ROUTE_GRAPH_FIELDS:
+        raise MapManifestError(
+            "route_graph must contain exactly geojson, support_map, and "
+            "summary"
+        )
+    artifacts: list[RouteGraphArtifact] = []
+    for role in ("geojson", "support_map", "summary"):
+        entry = _mapping(section[role], f"route_graph.{role}")
+        if set(entry) != {"path", "sha256"}:
+            raise MapManifestError(
+                f"route_graph.{role} must contain exactly path and sha256"
+            )
+        content_hash = entry["sha256"]
+        if not isinstance(content_hash, str) or not _SHA256.fullmatch(
+            content_hash
+        ):
+            raise MapManifestError(
+                f"route_graph.{role}.sha256 must be a lowercase SHA256 digest"
+            )
+        resolved = _safe_project_path(
+            project_root, entry["path"], f"route_graph.{role}.path"
+        )
+        if verify_files:
+            if not resolved.is_file():
+                raise MapManifestError(
+                    f"route graph artifact does not exist: {resolved}"
+                )
+            if resolved.is_symlink():
+                raise MapManifestError(
+                    f"route graph artifact must not be a symlink: {resolved}"
+                )
+            with resolved.open("rb") as stream:
+                if stream.read(len(_LFS_POINTER)).startswith(_LFS_POINTER):
+                    raise MapManifestError(
+                        "route graph artifact is an unhydrated Git LFS "
+                        f"pointer: {resolved}; run git lfs pull"
+                    )
+            actual_hash = _sha256(resolved)
+            if actual_hash != content_hash:
+                raise MapManifestError(
+                    f"route graph artifact SHA256 mismatch for {resolved}: "
+                    f"manifest={content_hash}, actual={actual_hash}"
+                )
+        artifacts.append(
+            RouteGraphArtifact(
+                role=role,
+                path=entry["path"],
+                sha256=content_hash,
+                resolved_path=resolved,
+            )
+        )
+    if verify_files:
+        summary_path = next(
+            item.resolved_path for item in artifacts if item.role == "summary"
+        )
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise MapManifestError(
+                f"cannot parse route graph summary {summary_path}: {exc}"
+            ) from exc
+        summary_version = _mapping(
+            summary, "route graph summary"
+        ).get("map_version")
+        if summary_version != map_version:
+            raise MapManifestError(
+                "route graph summary map_version does not match map "
+                f"manifest: summary={summary_version!r}, "
+                f"manifest={map_version!r}"
+            )
+    return tuple(artifacts)
+
+
 def load_map_manifest(
     manifest_path: str | Path,
     *,
@@ -416,7 +524,7 @@ def load_map_manifest(
     verify_files: bool = True,
     enforce_manifest_path: bool = True,
 ) -> MapManifest:
-    """Load and verify one indivisible four-artifact map bundle."""
+    """Load and verify one map bundle and its optional route-graph trio."""
     requested_source = Path(manifest_path).expanduser().absolute()
     root = (
         Path(project_root).expanduser().resolve()
@@ -452,7 +560,12 @@ def load_map_manifest(
     artifacts: list[MapArtifact] = []
     occupancy_section: Mapping[str, Any] | None = None
     for section_name in ("occupancy_grid", "pose_graph"):
-        section = _mapping(document.get(section_name), section_name)
+        raw_section = document.get(section_name)
+        if raw_section is None and section_name == "pose_graph":
+            # Occupancy-only bundles serve AMCL localization, which never
+            # consumes a serialized SLAM Toolbox pose graph.
+            continue
+        section = _mapping(raw_section, section_name)
         _reject_unknown(
             section,
             _OCCUPANCY_FIELDS
@@ -499,6 +612,13 @@ def load_map_manifest(
             "map bundle SHA256 mismatch: "
             f"manifest={declared_bundle}, computed={actual_bundle}"
         )
+
+    route_graph = _validate_route_graph(
+        root,
+        document.get("route_graph"),
+        map_version,
+        verify_files=verify_files,
+    )
 
     calibration_doc = _mapping(document.get("calibration"), "calibration")
     _reject_unknown(calibration_doc, _CALIBRATION_FIELDS, "calibration")
@@ -606,6 +726,7 @@ def load_map_manifest(
         map_version=map_version,
         bundle_sha256=declared_bundle,
         artifacts=tuple(artifacts),
+        route_graph=route_graph,
         calibration=MapCalibration(
             calibrated=calibrated,
             spawn_pose_profile=profile,

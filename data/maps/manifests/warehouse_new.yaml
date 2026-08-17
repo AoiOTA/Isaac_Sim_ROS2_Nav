@@ -36,6 +36,16 @@ pose_graph:
       path: data/maps/posegraphs/warehouse_new.data
       bytes: 4325736
       sha256: 1c466428190a54bbb3135216e71d01d9c93ac660ff86b4c089540fb9eefb64d2
+route_graph:
+  geojson:
+    path: ros2_ws/src/robot_route_planner/config/warehouse_new_gvg_v1.geojson
+    sha256: ae10348c18a824966423c47eda2ef08e159726e630f33fb8cfe21f8eab79cb24
+  support_map:
+    path: ros2_ws/src/robot_route_planner/config/warehouse_new_gvg_v1_support_map.json
+    sha256: c87a9fbd942a1f0c56b4a2794d15bcd05dd4c4308c256e71a8a7283899659116
+  summary:
+    path: ros2_ws/src/robot_route_planner/config/warehouse_new_gvg_v1_summary.json
+    sha256: 6ca61cd926943bd3fdd07631d92d97afbe1488c4625ec2cd279a427214bfbc6c
 calibration:
   calibrated: true
   spawn_pose_profile: mapping_start
@@ -53,3 +63,4 @@ notes:
   - The large .posegraph file is stored through Git LFS.
   - Ideal Mapping disabled scan matching and loop closure, keeping map-to-odom anchored at identity.
   - Occupancy-grid scan correlation at the spawn placed all sampled endpoints within 0.075 m of occupied cells; the identity mean raster distance was 0.0028 m.
+  - The route_graph trio binds the warehouse_new_gvg_v1 GVG baseline graph to this bundle; summary.map_version must equal map_version.

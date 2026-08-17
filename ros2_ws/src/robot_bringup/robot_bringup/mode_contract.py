@@ -19,6 +19,7 @@ LOCALIZATION_BACKENDS = frozenset({'ideal', 'amcl', 'slam_toolbox'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
     'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
+    'estimated_static', 'estimated_dynamic',
     'attempt21_static_collection',
     'attempt22_reachability_shadow',
     'attempt23_global_prior',
@@ -231,14 +232,23 @@ def validate_mode(
     spawn_poses_file='',
     spawn_pose_name='mapping_start',
     localization_backend='',
+    route_graph_file='',
 ):
     """Reject combinations that violate TF and SLAM ownership contracts.
 
     The localization backend selects the map->odom owner: ideal publishes a
-    fresh transform through ideal_localization_tf, amcl localizes the
-    estimated odometry against the occupancy map, and slam_toolbox keeps the
-    serialized pose-graph localization.  An empty backend derives from the
-    odometry mode (ideal->ideal, realistic->slam_toolbox).
+    fresh transform through ideal_localization_tf, amcl localizes against
+    the occupancy map and republishes through the
+    localization_continuity_guard, and slam_toolbox keeps the serialized
+    pose-graph localization.  An empty backend derives from the odometry
+    mode (ideal->ideal, realistic->slam_toolbox).  slam_toolbox requires
+    realistic odometry; ideal odometry pairs with ideal or amcl.
+
+    When the occupancy map hits a bundle manifest, the manifest verifies the
+    occupancy pair and the GVG route-graph trio SHA256s plus
+    summary.map_version; a provided route_graph_file must then be the
+    manifested geojson.  An empty route_graph_file means launch falls back
+    to its default graph, which is the manifested trio by convention.
     """
     operation = operation.strip().lower()
     odometry_mode = odometry_mode.strip().lower()
@@ -248,6 +258,7 @@ def validate_mode(
     prefix = posegraph_prefix(posegraph_file)
     occupancy_map = map_file.strip()
     manifest_path = map_manifest_file.strip()
+    route_graph = route_graph_file.strip()
 
     _require_choice('operation', operation, OPERATIONS)
     _require_choice('odometry_mode', odometry_mode, ODOMETRY_MODES)
@@ -261,10 +272,13 @@ def validate_mode(
             'ideal odometry is an Isaac-owned mode; structure_tf_source=rsp '
             'is reserved for the realistic/standard ROS ownership mode')
 
-    if odometry_mode == 'ideal' and backend != 'ideal':
+    # Only slam_toolbox still requires realistic odometry.  ideal+amcl is
+    # allowed: Isaac Compute Odometry owns odom->base_link and the
+    # localization_continuity_guard republishes AMCL output as map->odom.
+    if odometry_mode == 'ideal' and backend == 'slam_toolbox':
         raise ValueError(
             f'localization_backend={backend} requires realistic odometry; '
-            'ideal odometry owns map->odom through ideal_localization_tf')
+            'ideal odometry pairs with ideal or amcl localization')
 
     if operation == 'mapping' and prefix:
         raise ValueError(
@@ -324,6 +338,11 @@ def validate_mode(
             )
         except MapManifestError as exc:
             raise ValueError(str(exc)) from exc
+        if manifest.posegraph_prefix is None:
+            raise ValueError(
+                f'map manifest {manifest.map_version!r} declares no '
+                'pose_graph; SLAM Toolbox localization requires a '
+                'pose-graph bundle')
         requested_prefix = Path(prefix).expanduser().absolute()
         if requested_prefix != manifest.posegraph_prefix:
             raise ValueError(
@@ -338,6 +357,7 @@ def validate_mode(
             raise ValueError(
                 'map_file does not match map manifest: '
                 f'{occupancy_map} != {manifest.occupancy_yaml}')
+        _bind_route_graph(manifest, route_graph)
         try:
             validate_initial_pose_contract(
                 manifest,
@@ -353,6 +373,36 @@ def validate_mode(
             occupancy_map = str(manifest.occupancy_yaml)
         map_version = manifest.map_version
         map_bundle_sha256 = manifest.bundle_sha256
+    elif amcl_localization and check_posegraph_files:
+        # AMCL consumes the occupancy map only, so the map itself selects
+        # the bundle manifest: data/maps/occupancy/<version>.yaml ->
+        # data/maps/manifests/<version>.yaml.  A map with no manifest stays
+        # unmanaged; a hit binds the occupancy pair and the GVG route-graph
+        # trio (trio SHA256s and summary.map_version are checked at load).
+        if not manifest_path:
+            version = Path(occupancy_map).stem
+            map_root = Path(occupancy_map).parent.parent
+            derived = map_root / 'manifests' / f'{version}.yaml'
+            if derived.is_file():
+                manifest_path = str(derived)
+        if manifest_path:
+            try:
+                manifest = load_map_manifest(
+                    manifest_path,
+                    project_root=project_root or None,
+                )
+            except MapManifestError as exc:
+                raise ValueError(str(exc)) from exc
+            requested_occupancy = Path(occupancy_map).expanduser().absolute()
+            if requested_occupancy != manifest.occupancy_yaml:
+                raise ValueError(
+                    'map_file does not match map manifest: '
+                    f'{occupancy_map} != {manifest.occupancy_yaml}')
+            _bind_route_graph(manifest, route_graph)
+            manifest_path = str(manifest.source)
+            occupancy_map = str(manifest.occupancy_yaml)
+            map_version = manifest.map_version
+            map_bundle_sha256 = manifest.bundle_sha256
 
     return ModeSelection(
         operation=operation,
@@ -371,3 +421,25 @@ def _require_choice(name, value, choices):
     if value not in choices:
         expected = ', '.join(sorted(choices))
         raise ValueError(f'{name} must be one of [{expected}], got {value!r}')
+
+
+def _bind_route_graph(manifest, route_graph):
+    """Bind a requested route graph to the manifest-declared GVG trio.
+
+    The trio SHA256s and summary.map_version are already verified by
+    load_map_manifest; an explicit route_graph_file must resolve to the
+    manifested geojson.  An empty value means launch falls back to its
+    default graph, which is the manifested trio by convention.
+    """
+    if not route_graph:
+        return
+    geojson = manifest.route_graph_geojson
+    if geojson is None:
+        raise ValueError(
+            f'route_graph_file is provided but map {manifest.map_version!r} '
+            'declares no route_graph in its manifest')
+    requested = Path(route_graph).expanduser().absolute()
+    if requested != geojson:
+        raise ValueError(
+            'route_graph_file does not match map manifest: '
+            f'{route_graph} != {geojson}')

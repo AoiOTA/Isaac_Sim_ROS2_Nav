@@ -1,6 +1,9 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
+from robot_bringup.map_manifest import compute_bundle_sha256
 from robot_bringup.mode_contract import posegraph_prefix
 from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
@@ -9,6 +12,7 @@ import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_nav2_profiles_are_bounded_and_normalized():
@@ -31,6 +35,8 @@ def test_nav2_profiles_are_bounded_and_normalized():
         'bio_nav_rgbd_risk_ab'
     assert validate_nav2_profile('bio_nav_rgbd_risk_static_opt_in') == \
         'bio_nav_rgbd_risk_static_opt_in'
+    assert validate_nav2_profile('estimated_static') == 'estimated_static'
+    assert validate_nav2_profile('estimated_dynamic') == 'estimated_dynamic'
     with pytest.raises(ValueError, match='nav2_profile'):
         validate_nav2_profile('benchmark-custom')
 
@@ -147,11 +153,23 @@ def test_localization_backend_matrix(tmp_path):
         check_posegraph_files=False)
     assert derived_slam.localization_backend == 'slam_toolbox'
 
-    # ideal + amcl and ideal + slam_toolbox FAIL.
-    with pytest.raises(ValueError, match='requires realistic odometry'):
-        validate_mode(
-            'navigation', 'ideal', 'isaac', '', str(occupancy_map),
-            check_posegraph_files=False, localization_backend='amcl')
+    # ideal + amcl PASS: Isaac Compute Odometry owns odom->base_link and the
+    # continuity guard owns map->odom from AMCL output.
+    ideal_amcl = validate_mode(
+        'navigation', 'ideal', 'isaac', '', str(occupancy_map),
+        check_posegraph_files=False, localization_backend='amcl')
+    assert ideal_amcl.localization_backend == 'amcl'
+    assert ideal_amcl.odometry_mode == 'ideal'
+    modes_doc = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())
+    assert modes_doc['modes']['ideal_isaac']['odom_to_base_publisher'] == \
+        'Isaac Sim'
+    assert modes_doc['localization_backends']['amcl'][
+        'map_to_odom_publisher'] == 'localization_continuity_guard'
+    assert modes_doc['localization_backends']['amcl'][
+        'allowed_odometry_modes'] == ['ideal', 'realistic']
+
+    # ideal + slam_toolbox still FAILs.
     with pytest.raises(ValueError, match='requires realistic odometry'):
         validate_mode(
             'localization', 'ideal', 'isaac', str(prefix),
@@ -209,9 +227,9 @@ def test_core_launch_plumbs_localization_backend_everywhere():
     assert "DeclareLaunchArgument(\n            'localization_backend'," \
         in core
     assert 'localization_backend=LaunchConfiguration(' in core
-    # localization.launch.py and nav2_activation_gate both receive the
-    # resolved backend, and the mode banner logs it.
-    assert core.count("'localization_backend': localization_backend") == 2
+    # localization.launch.py, navigation.launch.py and nav2_activation_gate
+    # all receive the resolved backend, and the mode banner logs it.
+    assert core.count("'localization_backend': localization_backend") == 3
     assert 'localization={localization_backend}' in core
     for operation in (
             'mapping', 'incremental_mapping', 'localization', 'navigation'):
@@ -466,3 +484,170 @@ def test_stack_does_not_try_to_order_shutdown_after_sigint_broadcast():
     ).read_text(encoding='utf-8')
     assert 'OnShutdown' not in source
     assert "'robot_bringup.ordered_shutdown'" not in source
+
+
+
+def _write_route_graph_bundle(root, version='warehouse_amcl'):
+    """Stage an occupancy-only manifest bundle bound to a GVG trio."""
+    occupancy = root / 'data/maps/occupancy'
+    manifests = root / 'data/maps/manifests'
+    graphs = root / 'graphs'
+    for directory in (occupancy, manifests, graphs):
+        directory.mkdir(parents=True)
+    (occupancy / f'{version}.pgm').write_bytes(b'P5\n1 1\n255\n\x00')
+    (occupancy / f'{version}.yaml').write_text(
+        f'image: {version}.pgm\n'
+        'resolution: 0.05\n'
+        'origin: [0.0, 0.0, 0.0]\n')
+    trio = {
+        'geojson': graphs / f'{version}_gvg_v1.geojson',
+        'support_map': graphs / f'{version}_gvg_v1_support_map.json',
+        'summary': graphs / f'{version}_gvg_v1_summary.json',
+    }
+    trio['geojson'].write_text(
+        '{"type": "FeatureCollection", "features": []}')
+    trio['support_map'].write_text('{"nodes": []}')
+    trio['summary'].write_text(json.dumps({'map_version': version}))
+    occupancy_files = []
+    bundle_entries = []
+    for role, name in (
+            ('yaml', f'{version}.yaml'), ('image', f'{version}.pgm')):
+        payload = (occupancy / name).read_bytes()
+        occupancy_files.append({
+            'role': role,
+            'path': f'data/maps/occupancy/{name}',
+            'bytes': len(payload),
+            'sha256': hashlib.sha256(payload).hexdigest(),
+        })
+        bundle_entries.append((
+            role,
+            f'data/maps/occupancy/{name}',
+            len(payload),
+            occupancy_files[-1]['sha256'],
+        ))
+    manifest = {
+        'schema_version': 1,
+        'map_version': version,
+        'bundle_sha256': compute_bundle_sha256(bundle_entries),
+        'occupancy_grid': {'files': occupancy_files},
+        'route_graph': {
+            role: {
+                'path': path.relative_to(root).as_posix(),
+                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            for role, path in trio.items()
+        },
+        'calibration': {
+            'calibrated': False,
+            'spawn_pose_profile': None,
+            'bundle_sha256': None,
+            'calibrated_at': None,
+            'calibration_method': None,
+        },
+    }
+    manifest_path = manifests / f'{version}.yaml'
+    manifest_path.write_text(yaml.safe_dump(manifest, sort_keys=False))
+    return manifest_path, trio
+
+
+def _refresh_route_graph_entry(manifest_path, path, role):
+    document = yaml.safe_load(manifest_path.read_text())
+    document['route_graph'][role]['sha256'] = hashlib.sha256(
+        path.read_bytes()).hexdigest()
+    manifest_path.write_text(yaml.safe_dump(document, sort_keys=False))
+
+
+def test_amcl_binds_route_graph_to_the_map_manifest(tmp_path):
+    manifest_path, trio = _write_route_graph_bundle(tmp_path)
+    map_file = tmp_path / 'data/maps/occupancy/warehouse_amcl.yaml'
+
+    for odometry_mode in ('ideal', 'realistic'):
+        selection = validate_mode(
+            'navigation', odometry_mode, 'isaac', '', str(map_file),
+            localization_backend='amcl',
+            route_graph_file=str(trio['geojson']))
+        assert selection.map_version == 'warehouse_amcl'
+        assert selection.map_bundle_sha256 != ''
+        assert selection.map_manifest_file == str(manifest_path)
+        assert selection.occupancy_map_file == str(map_file)
+        # An empty route_graph_file falls back to the launch default, which
+        # is the manifested trio; the trio is still SHA256-verified at load.
+        defaulted = validate_mode(
+            'navigation', odometry_mode, 'isaac', '', str(map_file),
+            localization_backend='amcl')
+        assert defaulted.map_version == 'warehouse_amcl'
+
+
+def test_amcl_rejects_map_graph_mismatch(tmp_path):
+    # Forged geojson content breaks the trio SHA256 contract.
+    root = tmp_path / 'forged'
+    _, trio = _write_route_graph_bundle(root)
+    map_file = root / 'data/maps/occupancy/warehouse_amcl.yaml'
+    trio['geojson'].write_text(
+        '{"type": "FeatureCollection", "features": [1]}')
+    with pytest.raises(ValueError, match='SHA256 mismatch'):
+        validate_mode(
+            'navigation', 'realistic', 'isaac', '', str(map_file),
+            localization_backend='amcl',
+            route_graph_file=str(trio['geojson']))
+
+    # A summary bound to another map version is rejected.
+    root = tmp_path / 'skewed'
+    manifest_path, trio = _write_route_graph_bundle(root)
+    map_file = root / 'data/maps/occupancy/warehouse_amcl.yaml'
+    trio['summary'].write_text(json.dumps({'map_version': 'other_map'}))
+    _refresh_route_graph_entry(manifest_path, trio['summary'], 'summary')
+    with pytest.raises(ValueError, match='map_version does not match'):
+        validate_mode(
+            'navigation', 'ideal', 'isaac', '', str(map_file),
+            localization_backend='amcl',
+            route_graph_file=str(trio['geojson']))
+
+    # A route graph path other than the manifested geojson is rejected.
+    root = tmp_path / 'alias'
+    _, trio = _write_route_graph_bundle(root)
+    map_file = root / 'data/maps/occupancy/warehouse_amcl.yaml'
+    elsewhere = root / 'graphs' / 'elsewhere.geojson'
+    elsewhere.write_text('{}')
+    with pytest.raises(ValueError, match='route_graph_file does not match'):
+        validate_mode(
+            'navigation', 'realistic', 'isaac', '', str(map_file),
+            localization_backend='amcl',
+            route_graph_file=str(elsewhere))
+
+    # A hit manifest without a route_graph section cannot bind a graph.
+    root = tmp_path / 'bare'
+    manifest_path, trio = _write_route_graph_bundle(root)
+    map_file = root / 'data/maps/occupancy/warehouse_amcl.yaml'
+    document = yaml.safe_load(manifest_path.read_text())
+    del document['route_graph']
+    manifest_path.write_text(yaml.safe_dump(document, sort_keys=False))
+    with pytest.raises(ValueError, match='declares no route_graph'):
+        validate_mode(
+            'navigation', 'realistic', 'isaac', '', str(map_file),
+            localization_backend='amcl',
+            route_graph_file=str(trio['geojson']))
+
+
+def test_repository_warehouse_manifests_bind_their_gvg_trios():
+    for version in ('warehouse_new', 'warehouse_new_realistic'):
+        map_file = (
+            REPOSITORY_ROOT / 'data/maps/occupancy' / f'{version}.yaml')
+        graph = (
+            REPOSITORY_ROOT / 'ros2_ws/src/robot_route_planner/config'
+            / f'{version}_gvg_v1.geojson')
+        for odometry_mode in ('ideal', 'realistic'):
+            selection = validate_mode(
+                'navigation', odometry_mode, 'isaac', '', str(map_file),
+                localization_backend='amcl', route_graph_file=str(graph))
+            assert selection.map_version == version
+        other = 'warehouse_new_realistic' if version == 'warehouse_new' \
+            else 'warehouse_new'
+        wrong_graph = (
+            REPOSITORY_ROOT / 'ros2_ws/src/robot_route_planner/config'
+            / f'{other}_gvg_v1.geojson')
+        with pytest.raises(ValueError, match='does not match map manifest'):
+            validate_mode(
+                'navigation', 'realistic', 'isaac', '', str(map_file),
+                localization_backend='amcl',
+                route_graph_file=str(wrong_graph))

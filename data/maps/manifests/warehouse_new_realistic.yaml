@@ -1,0 +1,47 @@
+schema_version: 1
+map_version: warehouse_new_realistic
+created_at: "2026-08-16"
+availability: local_generated
+artifact_policy: occupancy_pair_plus_route_graph_no_posegraph
+bundle_sha256: cff376741c63697a09785c39c4a62a6d803d951ef504d460f33881a8be31d5f8
+source:
+  environment_asset: kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  robot: jackal
+  odometry_mode: realistic
+  localization_backend: amcl
+  alignment_tool: align_slam_map_to_warehouse_frame.py
+  input_map: runs/operator_maps/kujiale_realistic_v6/kujiale_realistic_v6
+occupancy_grid:
+  resolution_m: 0.05
+  width_cells: 153
+  height_cells: 238
+  origin: [-5.1000000000000005, -6.1, 0.0]
+  files:
+    - role: yaml
+      path: data/maps/occupancy/warehouse_new_realistic.yaml
+      bytes: 160
+      sha256: 8d960549facf488f1725d273146e7f546e2e9b645dac8f3b935d05b4b02682b0
+    - role: image
+      path: data/maps/occupancy/warehouse_new_realistic.pgm
+      bytes: 36429
+      sha256: cf66df75ced4dc59a769318cacd4c745cccb19b6f1e83baa0eaf0fd3a5945b01
+route_graph:
+  geojson:
+    path: ros2_ws/src/robot_route_planner/config/warehouse_new_realistic_gvg_v1.geojson
+    sha256: 1c08101b2e86d8034e49ca5e1f4a2e0c98a3d2622a72478d6a159a9592de7506
+  support_map:
+    path: ros2_ws/src/robot_route_planner/config/warehouse_new_realistic_gvg_v1_support_map.json
+    sha256: 8a64ff6a7ff9c2c398d157fc6b33f0fc246eaa77422d226ea4c6c64034b919e9
+  summary:
+    path: ros2_ws/src/robot_route_planner/config/warehouse_new_realistic_gvg_v1_summary.json
+    sha256: df6db4bce9ca82561a3d37accb2c4fb763cc125086ca8f7dcd1daf31b062e192
+calibration:
+  calibrated: false
+  spawn_pose_profile: null
+  bundle_sha256: null
+  calibrated_at: null
+  calibration_method: null
+notes:
+  - Occupancy-only bundle for the realistic odometry + AMCL chain; no SLAM Toolbox pose graph exists for this map.
+  - Occupancy pair derived from runs/operator_maps/kujiale_realistic_v6 via align_slam_map_to_warehouse_frame.py (see warehouse_new_realistic.receipt.json).
+  - The route_graph trio binds warehouse_new_realistic_gvg_v1 to this bundle; summary.map_version must equal map_version.
