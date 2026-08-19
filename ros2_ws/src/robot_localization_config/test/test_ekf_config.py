@@ -53,3 +53,6 @@ def test_ekf_launch_profiles_remap_the_single_filtered_output_to_odom():
     assert "{'wheel_imu', 'wheel_imu_lidar'}" in source
     assert "f'ekf_{profile}.yaml'" in source
     assert "('odometry/filtered', '/odom')" in source
+    assert "'lidar_odometry_validated', default_value='false'" in source
+    assert "profile == 'wheel_imu_lidar'" in source
+    assert 'lidar_odometry_validated:=true' in source

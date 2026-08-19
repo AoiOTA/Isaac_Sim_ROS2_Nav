@@ -118,16 +118,25 @@ def _launch_setup(context):
     ekf_profile = LaunchConfiguration('ekf_profile').perform(context).strip()
     lidar_odometry_backend = LaunchConfiguration(
         'lidar_odometry_backend').perform(context).strip().lower()
+    lidar_validated_value = LaunchConfiguration(
+        'lidar_odometry_validated').perform(context).strip().lower()
     if ekf_profile not in {'wheel_imu', 'wheel_imu_lidar'}:
         raise RuntimeError(
             'ekf_profile must be wheel_imu or wheel_imu_lidar')
     if lidar_odometry_backend not in {'off', 'rf2o'}:
         raise RuntimeError('lidar_odometry_backend must be off or rf2o')
+    if lidar_validated_value not in {'true', 'false'}:
+        raise RuntimeError('lidar_odometry_validated must be true or false')
     if (ekf_profile == 'wheel_imu_lidar'
             and lidar_odometry_backend != 'rf2o'):
         raise RuntimeError(
             'ekf_profile=wheel_imu_lidar requires '
             'lidar_odometry_backend=rf2o')
+    if (ekf_profile == 'wheel_imu_lidar'
+            and lidar_validated_value != 'true'):
+        raise RuntimeError(
+            'ekf_profile=wheel_imu_lidar is shadow-only until explicitly '
+            'enabled with lidar_odometry_validated:=true')
     localization_profile = LaunchConfiguration(
         'localization_profile').perform(context).strip().lower()
     if localization_profile not in {'kujiale', 'rivermark'}:
@@ -256,6 +265,7 @@ def _launch_setup(context):
                 {
                     'use_sim_time': use_sim_time,
                     'ekf_profile': ekf_profile,
+                    'lidar_odometry_validated': lidar_validated_value,
                     'ekf_params_file': LaunchConfiguration(
                         'ekf_params_file').perform(context),
                 },
@@ -494,6 +504,8 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
         DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
+        DeclareLaunchArgument(
+            'lidar_odometry_validated', default_value='false'),
         DeclareLaunchArgument('ekf_params_file', default_value=''),
         DeclareLaunchArgument(
             'lidar_odometry_backend', default_value='off'),

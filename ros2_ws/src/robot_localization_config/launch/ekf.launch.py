@@ -14,6 +14,14 @@ def _launch_setup(context):
     if profile not in {'wheel_imu', 'wheel_imu_lidar'}:
         raise RuntimeError(
             'ekf_profile must be wheel_imu or wheel_imu_lidar')
+    lidar_validated_value = LaunchConfiguration(
+        'lidar_odometry_validated').perform(context).strip().lower()
+    if lidar_validated_value not in {'true', 'false'}:
+        raise RuntimeError('lidar_odometry_validated must be true or false')
+    if profile == 'wheel_imu_lidar' and lidar_validated_value != 'true':
+        raise RuntimeError(
+            'ekf_profile=wheel_imu_lidar is shadow-only until explicitly '
+            'enabled with lidar_odometry_validated:=true')
     requested = LaunchConfiguration('ekf_params_file').perform(context).strip()
     params_file = (
         Path(requested).expanduser()
@@ -39,6 +47,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
+        DeclareLaunchArgument(
+            'lidar_odometry_validated', default_value='false'),
         DeclareLaunchArgument(
             'ekf_params_file', default_value='',
             description='Optional explicit EKF YAML; profile selects default'),

@@ -218,6 +218,22 @@ def test_ideal_mapping_anchors_map_to_ground_truth_odometry():
     assert "if selection.odometry_mode == 'ideal'" in core_source
 
 
+def test_three_source_lidar_fusion_requires_explicit_validation():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    core_source = (launch_dir / 'ros_stack.launch.py').read_text()
+
+    assert "'lidar_odometry_validated', default_value='false'" in core_source
+    assert "ekf_profile == 'wheel_imu_lidar'" in core_source
+    assert "lidar_validated_value != 'true'" in core_source
+    assert 'lidar_odometry_validated:=true' in core_source
+    for wrapper in (
+            'navigation_bringup.launch.py',
+            'localization_bringup.launch.py'):
+        source = (launch_dir / wrapper).read_text()
+        assert "'lidar_odometry_validated', default_value='false'" in source
+        assert "'lidar_odometry_validated': LaunchConfiguration(" in source
+
+
 def test_incremental_and_localization_modes_include_initial_pose():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()

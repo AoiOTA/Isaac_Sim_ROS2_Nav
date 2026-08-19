@@ -36,3 +36,31 @@
   checkout-sensitive and was deliberately left untouched.
 - Next: reviewer may run the bounded no-Isaac launch smoke from the built
   overlay, then proceed to runtime localization/navigation validation.
+
+## 2026-08-20 — V6 A3 fixed-revision RF2O shadow runtime
+
+- Hypothesis: vendoring a fixed official RF2O revision with a true single-node
+  Jazzy wrapper can provide usable topic-only LiDAR odometry without changing
+  TF ownership or prematurely enabling three-source fusion.
+- Branch/worktree/commit: `cognitive-navigation`;
+  `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`;
+  commit containing `docs/handoff/V6_A3_RF2O_VENDOR.md`.
+- Upstream/configuration: MAPIRlab RF2O commit `b38c68e46387b98845ecbfeb6660292f967a00d3`;
+  `/lidar/odom`; `odom -> base_link`; `publish_tf:=false`; conservative
+  parameterized covariance; `lidar_odometry_validated:=false` by default.
+- Commands: fixed-SHA temporary clone verification; focused `rosdep
+  --ignore-src`; Jazzy + allowed Integration selective colcon build/test;
+  direct validation-gate negative launch; isolated-domain static-TF plus
+  deterministic LaserScan/clock smoke; flake8/xmllint/diff check.
+- Core result: build PASS; tests `18 + 14 + 204` passed; gate negative test
+  exited 1 as intended; synthetic smoke produced 44 finite, nonzero,
+  stamp-monotonic messages with positive covariance and correct frames; exactly
+  one RF2O node, no hidden listener/algorithm node, and zero `/tf` publishers.
+- Evidence/reproducer: `docs/handoff/V6_A3_RF2O_VENDOR.md` and
+  `ros2_ws/src/robot_odometry/test/rf2o_synthetic_smoke.py`; generated build
+  artifacts remain under `ros2_ws/build`, `install`, and `log` and are not
+  committed.
+- Verdict: **PASS (vendor/build/unit/synthetic ROS smoke)**.
+- Deferred: bag/Isaac ATE/RPE, covariance calibration, real-sensor robustness,
+  and formal qualification. No usable bag exists in this allowed worktree, so
+  three-source fusion remains fail-closed shadow.
