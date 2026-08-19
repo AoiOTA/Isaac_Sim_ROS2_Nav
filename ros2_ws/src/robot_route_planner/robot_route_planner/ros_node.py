@@ -34,6 +34,41 @@ from .tracking import RouteTracker
 DEFAULT_ROUTE_ODOMETRY_TOPIC = "/odom"
 
 
+def edge_prior_is_usable(
+    *,
+    healthy: bool,
+    model_id: str,
+    stamp_ns: int,
+    now_ns: int,
+    max_age_s: float,
+    priors: list[tuple[int, float, float, float]],
+) -> tuple[bool, str]:
+    """Validate the bounded, fresh Module2 hint before it affects routing."""
+
+    if not healthy:
+        return False, "producer unhealthy"
+    if not model_id.strip():
+        return False, "model_id is empty"
+    if stamp_ns <= 0:
+        return False, "timestamp is invalid"
+    age_s = (now_ns - stamp_ns) / 1.0e9
+    if age_s < 0.0:
+        return False, "timestamp is in the future"
+    if age_s > max_age_s:
+        return False, f"prior is stale ({age_s:.3f}s > {max_age_s:.3f}s)"
+    for edge_id, cost_delta_m, learned_risk, confidence in priors:
+        values = (cost_delta_m, learned_risk, confidence)
+        if not all(math.isfinite(value) for value in values):
+            return False, f"edge {edge_id} contains a non-finite value"
+        if cost_delta_m < 0.0:
+            return False, f"edge {edge_id} has a negative cost delta"
+        if not 0.0 <= learned_risk <= 1.0:
+            return False, f"edge {edge_id} learned_risk is outside [0, 1]"
+        if not 0.0 <= confidence <= 1.0:
+            return False, f"edge {edge_id} confidence is outside [0, 1]"
+    return True, "fresh and healthy"
+
+
 def validate_route_odometry_topic(topic: str) -> str:
     """Reject evaluation-only ground-truth inputs from online route tracking."""
 
@@ -266,6 +301,7 @@ class RouteCoordinator:
             ("base_frame_id", "base_link"),
             ("module2_enabled", True),
             ("module2_response_timeout_s", 0.0),
+            ("module2_prior_ttl_s", 2.0),
             # Final route confirmation uses the campaign's 0.25 m waypoint
             # gate. Nav2 evaluates its 0.20 m goal checker in the local pose,
             # so requiring 0.20 m again can reject a valid final action due to
@@ -298,6 +334,9 @@ class RouteCoordinator:
         self.module2_response_timeout_s = float(
             node.get_parameter("module2_response_timeout_s").value
         )
+        self.module2_prior_ttl_s = float(
+            node.get_parameter("module2_prior_ttl_s").value
+        )
         self.route_goal_completion_tolerance_m = float(
             node.get_parameter("route_goal_completion_tolerance_m").value
         )
@@ -312,6 +351,8 @@ class RouteCoordinator:
         )
         if self.module2_response_timeout_s < 0.0:
             raise ValueError("module2_response_timeout_s must be non-negative")
+        if self.module2_prior_ttl_s <= 0.0:
+            raise ValueError("module2_prior_ttl_s must be positive")
         if self.route_goal_completion_tolerance_m <= 0.0:
             raise ValueError("route_goal_completion_tolerance_m must be positive")
         if self.odometry_max_age_s <= 0.0:
@@ -360,6 +401,7 @@ class RouteCoordinator:
         self.request_id = 0
         self.last_context_publish_ns = 0
         self.latest_priors: dict[int, tuple[float, float]] = {}
+        self.latest_priors_stamp_ns: int | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
@@ -744,6 +786,7 @@ class RouteCoordinator:
         self.pending_goal = goal
         self.route_active = True
         self.latest_priors = {}
+        self.latest_priors_stamp_ns = None
         self.node.get_logger().info(
             "received route goal request "
             f"{self.request_id}: ({goal.pose.position.x:.3f}, "
@@ -793,13 +836,44 @@ class RouteCoordinator:
                 "Module2 prior contains duplicate or nonexistent graph edges; ignored"
             )
             self.latest_priors = {}
+            self.latest_priors_stamp_ns = None
+            self._prepare_route({})
+            return
+        stamp_ns = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
+        rows = [
+            (
+                int(item.edge_id),
+                float(item.cost_delta_m),
+                float(item.learned_risk),
+                float(item.confidence),
+            )
+            for item in message.priors
+        ]
+        usable, reason = edge_prior_is_usable(
+            healthy=bool(message.healthy),
+            model_id=str(message.model_id),
+            stamp_ns=stamp_ns,
+            now_ns=int(self._now().nanoseconds),
+            max_age_s=self.module2_prior_ttl_s,
+            priors=rows,
+        )
+        if not usable:
+            self.latest_priors = {}
+            self.latest_priors_stamp_ns = None
+            self.node.get_logger().warning(
+                f"Module2 edge prior rejected ({reason}); using geometry-only route"
+            )
             self._prepare_route({})
             return
         priors = {
-            int(item.edge_id): (float(item.cost_delta_m), float(item.confidence))
-            for item in message.priors
-        } if message.healthy else {}
+            edge_id: (cost_delta_m, confidence)
+            for edge_id, cost_delta_m, _learned_risk, confidence in rows
+        }
         self.latest_priors = priors
+        self.latest_priors_stamp_ns = stamp_ns
         self._prepare_route(priors)
 
     def _check_prior_timeout(self) -> None:
@@ -809,6 +883,8 @@ class RouteCoordinator:
             and int(self._now().nanoseconds) >= self.pending_deadline_ns
         ):
             self.pending_deadline_ns = None
+            self.latest_priors = {}
+            self.latest_priors_stamp_ns = None
             self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
             self._prepare_route({})
 
@@ -1169,6 +1245,17 @@ class RouteCoordinator:
             self._prepare_route(self.latest_priors)
 
     def _runtime_tick(self) -> None:
+        now_ns = int(self._now().nanoseconds)
+        if self.latest_priors_stamp_ns is not None:
+            age_s = (now_ns - self.latest_priors_stamp_ns) / 1.0e9
+            if age_s < 0.0 or age_s > self.module2_prior_ttl_s:
+                self.latest_priors = {}
+                self.latest_priors_stamp_ns = None
+                self.node.get_logger().warning(
+                    "Module2 edge prior expired; restoring geometry-only route"
+                )
+                if self.pending_goal is not None:
+                    self._prepare_route({})
         # Refresh Module2's learned risk field while the mission is active.
         # The request identity is unchanged, so a new healthy prior may update
         # Route Server costs without fabricating a new navigation request.
@@ -1183,10 +1270,14 @@ class RouteCoordinator:
         if (
             self.module2_enabled
             and self.pending_goal is not None
-            and int(self._now().nanoseconds) - self.last_context_publish_ns
+            and now_ns - self.last_context_publish_ns
             >= refresh_period_ns
         ):
             self._publish_route_context()
+            timeout_s = self.module2_response_timeout_s or float(
+                self.defaults["module2_edge_prior"]["response_timeout_s"]
+            )
+            self.pending_deadline_ns = now_ns + int(timeout_s * 1.0e9)
         changed = self.runtime.tick(self._now().nanoseconds / 1.0e9)
         if changed:
             self._publish_runtime_states()
@@ -1259,6 +1350,9 @@ class RouteCoordinator:
 
         self.route_active = False
         self.pending_goal = None
+        self.pending_deadline_ns = None
+        self.latest_priors = {}
+        self.latest_priors_stamp_ns = None
         self.tracker = None
         self.navigation_goal_pending = False
         self.navigation_goal_handle = None

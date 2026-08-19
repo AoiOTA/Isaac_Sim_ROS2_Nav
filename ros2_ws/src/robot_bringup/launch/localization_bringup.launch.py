@@ -25,6 +25,15 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
+        DeclareLaunchArgument('ekf_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'lidar_odometry_backend', default_value='off'),
+        DeclareLaunchArgument(
+            'lidar_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'localization_profile', default_value='kujiale'),
+        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument(
             'spawn_poses_file',
@@ -62,6 +71,15 @@ def generate_launch_description():
                     'robot_description_file'),
                 'wheel_odometry_params_file': LaunchConfiguration(
                     'wheel_odometry_params_file'),
+                'ekf_profile': LaunchConfiguration('ekf_profile'),
+                'ekf_params_file': LaunchConfiguration('ekf_params_file'),
+                'lidar_odometry_backend': LaunchConfiguration(
+                    'lidar_odometry_backend'),
+                'lidar_odometry_params_file': LaunchConfiguration(
+                    'lidar_odometry_params_file'),
+                'localization_profile': LaunchConfiguration(
+                    'localization_profile'),
+                'amcl_params_file': LaunchConfiguration('amcl_params_file'),
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),

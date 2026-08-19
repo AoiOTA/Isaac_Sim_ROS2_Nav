@@ -11,6 +11,7 @@ from robot_route_planner.ros_node import (
     CostmapSnapshot,
     DEFAULT_ROUTE_ODOMETRY_TOPIC,
     RouteCoordinator,
+    edge_prior_is_usable,
     footprint_is_free,
     navigation_result_succeeded,
     populate_fresh_goal,
@@ -25,6 +26,107 @@ from robot_route_planner.runtime_edges import RuntimeEdgeManager, RuntimeState
 from robot_route_planner.stable_ids import stabilize_graph_ids
 from robot_route_planner.structural_updates import StructuralChangeMonitor
 from robot_route_planner.tracking import RouteTracker
+
+
+def test_edge_prior_requires_fresh_health_model_and_finite_bounds() -> None:
+    valid = dict(
+        healthy=True,
+        model_id="srdr-v310",
+        stamp_ns=9_500_000_000,
+        now_ns=10_000_000_000,
+        max_age_s=2.0,
+        priors=[(7, 1.5, 0.4, 0.8)],
+    )
+    assert edge_prior_is_usable(**valid) == (True, "fresh and healthy")
+
+    for replacement, reason in (
+        ({"healthy": False}, "unhealthy"),
+        ({"model_id": ""}, "model_id"),
+        ({"stamp_ns": 0}, "timestamp"),
+        ({"stamp_ns": 10_500_000_000}, "future"),
+        ({"stamp_ns": 7_000_000_000}, "stale"),
+        ({"priors": [(7, float("nan"), 0.4, 0.8)]}, "non-finite"),
+        ({"priors": [(7, -0.1, 0.4, 0.8)]}, "negative"),
+        ({"priors": [(7, 1.0, 1.1, 0.8)]}, "learned_risk"),
+        ({"priors": [(7, 1.0, 0.4, 1.1)]}, "confidence"),
+    ):
+        candidate = {**valid, **replacement}
+        usable, detail = edge_prior_is_usable(**candidate)
+        assert usable is False
+        assert reason in detail
+
+
+def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
+    replans = []
+    warnings = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.pending_deadline_ns = 2_000_000_000
+    coordinator.latest_priors = {7: (1.0, 0.8)}
+    coordinator.latest_priors_stamp_ns = 1_000_000_000
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator.module2_enabled = False
+    coordinator.last_context_publish_ns = 0
+    coordinator.defaults = {
+        'module2_edge_prior': {
+            'active_refresh_period_s': 5.0,
+            'response_timeout_s': 0.5,
+        },
+    }
+    coordinator.runtime = SimpleNamespace(tick=lambda _now: False)
+    now = SimpleNamespace(nanoseconds=3_100_000_000)
+    coordinator._now = lambda: now
+    coordinator._prepare_route = lambda priors: replans.append(priors)
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        info=lambda message: warnings.append(message),
+        warning=lambda message: warnings.append(message),
+    ))
+
+    coordinator._check_prior_timeout()
+    assert coordinator.pending_deadline_ns is None
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_priors_stamp_ns is None
+    assert replans == [{}]
+
+    coordinator.latest_priors = {7: (1.0, 0.8)}
+    coordinator.latest_priors_stamp_ns = 1_000_000_000
+    coordinator._runtime_tick()
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_priors_stamp_ns is None
+    assert replans == [{}, {}]
+    assert any('geometry-only' in message for message in warnings)
+
+
+def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.pending_deadline_ns = None
+    coordinator.latest_priors = {}
+    coordinator.latest_priors_stamp_ns = None
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator.module2_enabled = True
+    coordinator.module2_response_timeout_s = 0.0
+    coordinator.last_context_publish_ns = 0
+    coordinator.defaults = {
+        'module2_edge_prior': {
+            'active_refresh_period_s': 5.0,
+            'response_timeout_s': 0.5,
+        },
+    }
+    coordinator.runtime = SimpleNamespace(tick=lambda _now: False)
+    now = SimpleNamespace(nanoseconds=6_000_000_000)
+    coordinator._now = lambda: now
+    published = []
+
+    def publish_context():
+        published.append(True)
+        coordinator.last_context_publish_ns = now.nanoseconds
+
+    coordinator._publish_route_context = publish_context
+    coordinator._runtime_tick()
+
+    assert published == [True]
+    assert coordinator.pending_deadline_ns == 6_500_000_000
 
 
 def _edge(edge_id, source, target, points, clearance=0.5):

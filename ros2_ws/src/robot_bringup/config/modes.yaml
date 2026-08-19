@@ -4,16 +4,31 @@ modes:
     odometry_mode: ideal
     structure_tf_source: isaac
     odom_to_base_publisher: Isaac Sim
+    map_to_odom_publisher: ideal_localization_tf
     structure_tf_publisher: Isaac Sim
   realistic_isaac:
     odometry_mode: realistic
     structure_tf_source: isaac
     odom_to_base_publisher: robot_localization
+    map_to_odom_publisher: AMCL
     structure_tf_publisher: Isaac Sim
   realistic_rsp:
     odometry_mode: realistic
     structure_tf_source: rsp
     odom_to_base_publisher: robot_localization
+    map_to_odom_publisher: AMCL
+    structure_tf_publisher: robot_state_publisher
+  estimated_isaac:
+    odometry_mode: estimated
+    structure_tf_source: isaac
+    odom_to_base_publisher: robot_localization
+    map_to_odom_publisher: AMCL
+    structure_tf_publisher: Isaac Sim
+  estimated_rsp:
+    odometry_mode: estimated
+    structure_tf_source: rsp
+    odom_to_base_publisher: robot_localization
+    map_to_odom_publisher: AMCL
     structure_tf_publisher: robot_state_publisher
 
 operations:
@@ -27,12 +42,12 @@ operations:
     publishes_initialpose: true
     starts_nav2: false
   localization:
-    slam_executable: localization_slam_toolbox_node
+    localization_backend: amcl
     posegraph_required: true
     occupancy_map_required: true
     starts_nav2: false
   navigation:
-    slam_executable: localization_slam_toolbox_node
+    localization_backend: amcl
     posegraph_required: true
     occupancy_map_required: true
     starts_nav2: true

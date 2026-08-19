@@ -35,16 +35,19 @@ def test_nav2_profiles_are_bounded_and_normalized():
         validate_nav2_profile('benchmark-custom')
 
 
-def test_three_tf_ownership_modes_are_accepted():
+def test_estimated_and_legacy_realistic_tf_ownership_modes_are_accepted():
     ideal = validate_mode(
         'mapping', 'ideal', 'isaac', check_posegraph_files=False)
     realistic_isaac = validate_mode(
         'mapping', 'realistic', 'isaac', check_posegraph_files=False)
     realistic_rsp = validate_mode(
         'mapping', 'realistic', 'rsp', check_posegraph_files=False)
+    estimated_rsp = validate_mode(
+        'mapping', 'estimated', 'rsp', check_posegraph_files=False)
     assert ideal.odometry_mode == 'ideal'
     assert realistic_isaac.structure_tf_source == 'isaac'
     assert realistic_rsp.structure_tf_source == 'rsp'
+    assert estimated_rsp.odometry_mode == 'estimated'
 
 
 def test_invalid_choices_and_ideal_rsp_fail_fast():
@@ -115,7 +118,8 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     document = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())
     assert set(document['modes']) == {
-        'ideal_isaac', 'realistic_isaac', 'realistic_rsp'}
+        'ideal_isaac', 'realistic_isaac', 'realistic_rsp',
+        'estimated_isaac', 'estimated_rsp'}
     assert document['operations']['mapping']['publishes_initialpose'] is False
     assert document['operations']['incremental_mapping'][
         'posegraph_required'] is True
@@ -125,6 +129,8 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     assert document['operations']['navigation'][
         'occupancy_map_required'] is True
     assert document['operations']['navigation']['starts_nav2'] is True
+    assert document['operations']['localization'][
+        'localization_backend'] == 'amcl'
 
 
 def test_stable_operation_launch_entries_delegate_to_core_contract():
@@ -226,16 +232,15 @@ def test_incremental_and_localization_modes_include_initial_pose():
     assert "'spawn_pose_name'" in core_source
 
 
-def test_ideal_posegraph_calibration_is_explicit_and_localization_only():
+def test_posegraph_calibration_is_explicitly_retired_from_localization():
     launch_dir = PACKAGE_ROOT / 'launch'
     core_source = (launch_dir / 'ros_stack.launch.py').read_text()
     localization_source = (
         launch_dir / 'localization_bringup.launch.py').read_text()
 
     assert 'posegraph_calibration must be true or false' in core_source
-    assert 'posegraph_calibration is only valid for Ideal localization' \
+    assert 'posegraph_calibration is retired from localization bringup' \
         in core_source
-    assert 'or posegraph_calibration' in core_source
     assert "'posegraph_calibration'" in localization_source
 
 

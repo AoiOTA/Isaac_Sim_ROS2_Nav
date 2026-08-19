@@ -13,7 +13,7 @@ from .map_manifest import validate_initial_pose_contract
 
 OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
-ODOMETRY_MODES = frozenset({'ideal', 'realistic'})
+ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',

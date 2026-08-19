@@ -586,4 +586,4 @@ def test_ros_launcher_defaults_navigation_to_warehouse_new_bundle():
     assert 'default_map_version="warehouse_new"' in source
     assert 'posegraph_file:=${posegraph_file}' in source
     assert 'map_file:=${map_file}' in source
-    assert 'warehouse_new is calibrated for normal Ideal' in source
+    assert 'AMCL for estimated localization' in source

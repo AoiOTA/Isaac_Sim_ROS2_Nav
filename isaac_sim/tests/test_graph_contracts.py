@@ -155,6 +155,7 @@ def test_rtx_world_frame_is_the_inverse_selected_spawn_pose():
 
 def test_tf_ownership_requires_exactly_one_publisher():
     expected = expected_tf_owners("realistic")
+    assert expected["map->odom"] == "amcl"
     validate_tf_publishers("realistic", {key: [owner] for key, owner in expected.items()})
     duplicated = {key: [owner] for key, owner in expected.items()}
     duplicated["odom->base_link"].append("isaac")
@@ -170,6 +171,10 @@ def test_tf_ownership_requires_exactly_one_publisher():
     )
     with pytest.raises(TfOwnershipError, match="ideal odometry requires"):
         expected_tf_owners("ideal", "rsp")
+    assert expected_tf_owners("ideal")["map->odom"] == "ideal_localization_tf"
+    assert expected_tf_owners("estimated")["odom->base_link"] == (
+        "robot_localization"
+    )
 
 
 def test_topic_and_qos_contracts_are_absolute_and_encoded():

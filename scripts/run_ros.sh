@@ -67,6 +67,10 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
       posegraph_calibration:=*) posegraph_calibration="${argument#posegraph_calibration:=}" ;;
     esac
   done
+  case "${odometry_mode}" in
+    ideal|realistic|estimated) ;;
+    *) die "odometry_mode must be ideal, realistic, or estimated" ;;
+  esac
   if [[ -z "${posegraph_file}" ]]; then
     if [[ -n "${map_file}" ]]; then
       map_prefix="${map_file%.yaml}"
@@ -85,12 +89,8 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
     require_file "${map_file}"
     launch_args+=("map_file:=${map_file}")
   fi
-  posegraph_version="$(basename "${posegraph_file%.posegraph}")"
-  posegraph_version="${posegraph_version%.data}"
-  if [[ "${posegraph_version}" == "warehouse_new" ]] \
-      && [[ "${odometry_mode}" != "ideal" \
-            || "${posegraph_calibration}" == "true" ]]; then
-    die "warehouse_new is calibrated for normal Ideal localization/navigation only; rebuild it with scan matching before Realistic or Pose Graph localization"
+  if [[ "${posegraph_calibration}" == "true" ]]; then
+    die "posegraph_calibration is retired from localization bringup; use mapping to rebuild maps and AMCL for estimated localization"
   fi
 fi
 

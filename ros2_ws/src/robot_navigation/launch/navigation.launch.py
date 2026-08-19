@@ -214,6 +214,7 @@ def generate_launch_description():
     execute_route_navigation = LaunchConfiguration('execute_route_navigation')
     module2_response_timeout_s = LaunchConfiguration(
         'module2_response_timeout_s')
+    module2_prior_ttl_s = LaunchConfiguration('module2_prior_ttl_s')
     region_config_file = LaunchConfiguration('region_config_file')
     region_switch_min_dwell_s = LaunchConfiguration(
         'region_switch_min_dwell_s')
@@ -242,6 +243,7 @@ def generate_launch_description():
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('execute_route_navigation', default_value='true'),
         DeclareLaunchArgument('module2_response_timeout_s', default_value='0.0'),
+        DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
         DeclareLaunchArgument('region_config_file', default_value=''),
         DeclareLaunchArgument('region_switch_min_dwell_s', default_value='0.5'),
         # Preserve the qualified A21 values by default, but let an outdoor
@@ -363,6 +365,7 @@ def generate_launch_description():
                     feasible_only_largest_component),
                 'module2_enabled': module2_enabled,
                 'module2_response_timeout_s': module2_response_timeout_s,
+                'module2_prior_ttl_s': module2_prior_ttl_s,
                 'region_config_file': region_config_file,
                 'region_switch_min_dwell_s': region_switch_min_dwell_s,
                 'execute_navigation': execute_route_navigation,

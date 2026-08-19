@@ -90,11 +90,10 @@ def _launch_setup(context):
     if posegraph_calibration_value not in {'true', 'false'}:
         raise RuntimeError('posegraph_calibration must be true or false')
     posegraph_calibration = posegraph_calibration_value == 'true'
-    if posegraph_calibration and not (
-            selection.operation == 'localization'
-            and selection.odometry_mode == 'ideal'):
+    if posegraph_calibration:
         raise RuntimeError(
-            'posegraph_calibration is only valid for Ideal localization')
+            'posegraph_calibration is retired from localization bringup; '
+            'use mapping to rebuild maps and AMCL for estimated localization')
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
     if (selection.operation == 'incremental_mapping'
             and initial_pose_source != 'auto'):
@@ -114,7 +113,33 @@ def _launch_setup(context):
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     odometry_share = Path(get_package_share_directory('robot_odometry'))
+    mapping_share = Path(get_package_share_directory('robot_mapping'))
     navigation_share = Path(get_package_share_directory('robot_navigation'))
+    ekf_profile = LaunchConfiguration('ekf_profile').perform(context).strip()
+    lidar_odometry_backend = LaunchConfiguration(
+        'lidar_odometry_backend').perform(context).strip().lower()
+    if ekf_profile not in {'wheel_imu', 'wheel_imu_lidar'}:
+        raise RuntimeError(
+            'ekf_profile must be wheel_imu or wheel_imu_lidar')
+    if lidar_odometry_backend not in {'off', 'rf2o'}:
+        raise RuntimeError('lidar_odometry_backend must be off or rf2o')
+    if (ekf_profile == 'wheel_imu_lidar'
+            and lidar_odometry_backend != 'rf2o'):
+        raise RuntimeError(
+            'ekf_profile=wheel_imu_lidar requires '
+            'lidar_odometry_backend=rf2o')
+    localization_profile = LaunchConfiguration(
+        'localization_profile').perform(context).strip().lower()
+    if localization_profile not in {'kujiale', 'rivermark'}:
+        raise RuntimeError(
+            'localization_profile must be kujiale or rivermark')
+    requested_amcl_params = LaunchConfiguration(
+        'amcl_params_file').perform(context).strip()
+    amcl_params_file = (
+        Path(requested_amcl_params).expanduser()
+        if requested_amcl_params
+        else mapping_share / 'config' / f'amcl_{localization_profile}.yaml'
+    )
     nav2_profile = validate_nav2_profile(
         LaunchConfiguration('nav2_profile').perform(context))
     requested_nav2_overlay = LaunchConfiguration(
@@ -204,7 +229,7 @@ def _launch_setup(context):
     else:
         actions.append(perception)
 
-    if selection.odometry_mode == 'realistic':
+    if selection.odometry_mode in {'realistic', 'estimated'}:
         actions.extend([
             _include(
                 'robot_odometry',
@@ -216,9 +241,24 @@ def _launch_setup(context):
                 },
             ),
             _include(
+                'robot_odometry',
+                'lidar_odometry.launch.py',
+                {
+                    'use_sim_time': use_sim_time,
+                    'lidar_odometry_backend': lidar_odometry_backend,
+                    'lidar_odometry_params_file': LaunchConfiguration(
+                        'lidar_odometry_params_file').perform(context),
+                },
+            ),
+            _include(
                 'robot_localization_config',
                 'ekf.launch.py',
-                {'use_sim_time': use_sim_time},
+                {
+                    'use_sim_time': use_sim_time,
+                    'ekf_profile': ekf_profile,
+                    'ekf_params_file': LaunchConfiguration(
+                        'ekf_params_file').perform(context),
+                },
             ),
         ])
 
@@ -264,14 +304,13 @@ def _launch_setup(context):
                 'localization.launch.py',
                 {
                     'use_sim_time': use_sim_time,
-                    'posegraph_file': selection.posegraph_prefix,
                     'map_file': selection.occupancy_map_file,
-                    'use_posegraph_localization': (
-                        'true'
-                        if (selection.odometry_mode == 'realistic'
-                            or posegraph_calibration)
-                        else 'false'
+                    'localization_backend': (
+                        'ideal'
+                        if selection.odometry_mode == 'ideal'
+                        else 'amcl'
                     ),
+                    'amcl_params_file': str(amcl_params_file),
                     'map_to_odom_x': (
                         str(selected_spawn.map.position[0])
                         if selected_spawn is not None else '0.0'
@@ -319,6 +358,8 @@ def _launch_setup(context):
                     'feasible_only_largest_component').perform(context),
                 'module2_response_timeout_s': LaunchConfiguration(
                     'module2_response_timeout_s').perform(context),
+                'module2_prior_ttl_s': LaunchConfiguration(
+                    'module2_prior_ttl_s').perform(context),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -429,7 +470,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'odometry_mode',
             default_value='ideal',
-            description='ideal or realistic'),
+            description='ideal, realistic compatibility, or estimated'),
         DeclareLaunchArgument(
             'structure_tf_source',
             default_value='isaac',
@@ -452,6 +493,15 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
+        DeclareLaunchArgument('ekf_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'lidar_odometry_backend', default_value='off'),
+        DeclareLaunchArgument(
+            'lidar_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'localization_profile', default_value='kujiale'),
+        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument(
             'nav2_profile',
@@ -470,6 +520,7 @@ def generate_launch_description():
             'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument(
             'module2_response_timeout_s', default_value='0.0'),
+        DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(

@@ -28,6 +28,15 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
+        DeclareLaunchArgument('ekf_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'lidar_odometry_backend', default_value='off'),
+        DeclareLaunchArgument(
+            'lidar_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'localization_profile', default_value='kujiale'),
+        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument('nav2_profile', default_value='stable'),
         DeclareLaunchArgument('nav2_profile_params_file', default_value=''),
@@ -36,6 +45,7 @@ def generate_launch_description():
             'route_graph_file', default_value=str(default_route_graph)),
         DeclareLaunchArgument(
             'feasible_only_largest_component', default_value='false'),
+        DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
@@ -70,6 +80,15 @@ def generate_launch_description():
                     'robot_description_file'),
                 'wheel_odometry_params_file': LaunchConfiguration(
                     'wheel_odometry_params_file'),
+                'ekf_profile': LaunchConfiguration('ekf_profile'),
+                'ekf_params_file': LaunchConfiguration('ekf_params_file'),
+                'lidar_odometry_backend': LaunchConfiguration(
+                    'lidar_odometry_backend'),
+                'lidar_odometry_params_file': LaunchConfiguration(
+                    'lidar_odometry_params_file'),
+                'localization_profile': LaunchConfiguration(
+                    'localization_profile'),
+                'amcl_params_file': LaunchConfiguration('amcl_params_file'),
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),
                 'nav2_profile': LaunchConfiguration('nav2_profile'),
                 'nav2_profile_params_file': LaunchConfiguration(
@@ -78,6 +97,8 @@ def generate_launch_description():
                 'route_graph_file': LaunchConfiguration('route_graph_file'),
                 'feasible_only_largest_component': LaunchConfiguration(
                     'feasible_only_largest_component'),
+                'module2_prior_ttl_s': LaunchConfiguration(
+                    'module2_prior_ttl_s'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(

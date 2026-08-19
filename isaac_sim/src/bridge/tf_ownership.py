@@ -12,7 +12,7 @@ def expected_tf_owners(
 ) -> dict[str, str]:
     if odometry_mode == "ideal":
         odom_owner = "isaac"
-    elif odometry_mode == "realistic":
+    elif odometry_mode in {"realistic", "estimated"}:
         odom_owner = "robot_localization"
     else:
         raise TfOwnershipError(f"unknown odometry mode {odometry_mode!r}")
@@ -25,7 +25,11 @@ def expected_tf_owners(
             "ideal odometry requires Isaac-owned structure TF"
         )
     return {
-        "map->odom": "slam_toolbox",
+        "map->odom": (
+            "ideal_localization_tf"
+            if odometry_mode == "ideal"
+            else "amcl"
+        ),
         "odom->base_link": odom_owner,
         "base_link->wheel_links": structure_tf_source,
         "base_link->sensor_links": structure_tf_source,
