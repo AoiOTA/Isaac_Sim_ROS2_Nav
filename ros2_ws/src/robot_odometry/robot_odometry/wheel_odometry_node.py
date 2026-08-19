@@ -40,10 +40,6 @@ class WheelOdometryNode(Node):
             [0.0025, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 0.01],
         )
 
-        publish_rate = float(self.get_parameter('publish_rate').value)
-        if not math.isfinite(publish_rate) or publish_rate <= 0.0:
-            raise ValueError('publish_rate must be finite and positive')
-
         config = WheelOdometryConfig(
             wheel_radius=float(self.get_parameter('wheel_radius').value),
             track_width=float(self.get_parameter('track_width').value),
@@ -61,7 +57,7 @@ class WheelOdometryNode(Node):
             self.get_parameter('pose_covariance_diagonal').value)
         self._twist_covariance = covariance_from_diagonal(
             self.get_parameter('twist_covariance_diagonal').value)
-        self._latest_joint_sample = None
+        self._last_joint_stamp_ns = None
         self._last_rejection = None
 
         reliable_qos = QoSProfile(
@@ -86,18 +82,38 @@ class WheelOdometryNode(Node):
             self._reset_event_callback,
             reliable_qos,
         )
-        self._timer = self.create_timer(1.0 / publish_rate, self._timer_callback)
-
     def _joint_state_callback(self, message):
-        self._latest_joint_sample = (list(message.name), list(message.velocity))
+        stamp_ns = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
+        if stamp_ns <= 0:
+            reason = 'invalid_or_zero_stamp'
+        elif (
+            self._last_joint_stamp_ns is not None
+            and stamp_ns <= self._last_joint_stamp_ns
+        ):
+            reason = (
+                'duplicate_stamp'
+                if stamp_ns == self._last_joint_stamp_ns
+                else 'time_regression'
+            )
+        else:
+            reason = None
 
-    def _timer_callback(self):
-        if self._latest_joint_sample is None:
+        if reason is not None:
+            if reason != self._last_rejection:
+                self.get_logger().warning(
+                    f'Wheel odometry sample rejected: {reason}')
+                self._last_rejection = reason
             return
-        now = self.get_clock().now()
-        names, velocities = self._latest_joint_sample
+
+        self._last_joint_stamp_ns = stamp_ns
         result = self._integrator.update(
-            names, velocities, now.nanoseconds * 1.0e-9)
+            list(message.name),
+            list(message.velocity),
+            stamp_ns * 1.0e-9,
+        )
         if not result.accepted:
             if result.reason != self._last_rejection:
                 self.get_logger().warning(
@@ -106,7 +122,8 @@ class WheelOdometryNode(Node):
             return
 
         self._last_rejection = None
-        self._odom_publisher.publish(self._to_message(result.sample, now.to_msg()))
+        self._odom_publisher.publish(
+            self._to_message(result.sample, message.header.stamp))
 
     def _to_message(self, sample, stamp):
         message = Odometry()
@@ -136,7 +153,7 @@ class WheelOdometryNode(Node):
 
     def _reset_state(self):
         self._integrator.reset()
-        self._latest_joint_sample = None
+        self._last_joint_stamp_ns = None
         self._last_rejection = None
 
 
