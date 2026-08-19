@@ -31,16 +31,44 @@ from .structural_updates import StructuralChangeMonitor
 from .tracking import RouteTracker
 
 
+DEFAULT_ROUTE_ODOMETRY_TOPIC = "/odom"
+
+
+def validate_route_odometry_topic(topic: str) -> str:
+    """Reject evaluation-only ground-truth inputs from online route tracking."""
+
+    value = topic.strip()
+    normalized_segments = value.lower().replace("-", "_").split("/")
+    if any(
+        segment == "groundtruth" or segment.startswith("ground_truth")
+        for segment in normalized_segments
+    ):
+        raise ValueError(
+            "RouteCoordinator odometry_topic must not use ground-truth data"
+        )
+    return value
+
+
 def select_map_pose(
     map_frame_id: str,
     odometry_frame_id: str | None,
     odometry_xy: tuple[float, float] | None,
+    odometry_age_s: float | None,
+    odometry_max_age_s: float,
     tf_xy: tuple[float, float] | None,
 ) -> tuple[float, float] | None:
-    """Prefer an explicit map-frame pose over a potentially transient TF."""
-    if odometry_xy is not None and odometry_frame_id == map_frame_id:
+    """Prefer map->base TF; accept only a fresh, explicitly map-frame fallback."""
+
+    if tf_xy is not None:
+        return tf_xy
+    if (
+        odometry_xy is not None
+        and odometry_frame_id == map_frame_id
+        and odometry_age_s is not None
+        and 0.0 <= odometry_age_s <= odometry_max_age_s
+    ):
         return odometry_xy
-    return tf_xy
+    return None
 
 
 def populate_fresh_goal(target, source, header) -> None:
@@ -238,10 +266,10 @@ class RouteCoordinator:
             ("base_frame_id", "base_link"),
             ("module2_enabled", True),
             ("module2_response_timeout_s", 0.0),
-            # Ground-truth confirmation uses the campaign's 0.25 m waypoint
-            # gate.  Nav2 evaluates its 0.20 m goal checker in the odom/local
-            # pose, so requiring 0.20 m again in GT can reject a valid final
-            # action because of the small frame/pose sampling difference.
+            # Final route confirmation uses the campaign's 0.25 m waypoint
+            # gate. Nav2 evaluates its 0.20 m goal checker in the local pose,
+            # so requiring 0.20 m again can reject a valid final action due to
+            # the small frame/pose sampling difference.
             ("route_goal_completion_tolerance_m", 0.25),
             ("feasible_only_largest_component", False),
             ("execute_navigation", True),
@@ -252,7 +280,8 @@ class RouteCoordinator:
             ("structural_map_topic", "/bio_nav/structural_map"),
             ("occupancy_map_topic", "/map"),
             ("goal_complete_topic", "/bio_nav/route_goal_complete"),
-            ("odometry_topic", "/ground_truth/odom"),
+            ("odometry_topic", DEFAULT_ROUTE_ODOMETRY_TOPIC),
+            ("odometry_max_age_s", 0.5),
             ("region_config_file", ""),
             ("region_switch_min_dwell_s", 0.5),
             ("compute_route_action", "/compute_route"),
@@ -272,10 +301,21 @@ class RouteCoordinator:
         self.route_goal_completion_tolerance_m = float(
             node.get_parameter("route_goal_completion_tolerance_m").value
         )
+        self.odometry_topic = validate_route_odometry_topic(
+            str(node.get_parameter("odometry_topic").value)
+        )
+        validate_route_odometry_topic(
+            str(node.resolve_topic_name(self.odometry_topic))
+        )
+        self.odometry_max_age_s = float(
+            node.get_parameter("odometry_max_age_s").value
+        )
         if self.module2_response_timeout_s < 0.0:
             raise ValueError("module2_response_timeout_s must be non-negative")
         if self.route_goal_completion_tolerance_m <= 0.0:
             raise ValueError("route_goal_completion_tolerance_m must be positive")
+        if self.odometry_max_age_s <= 0.0:
+            raise ValueError("odometry_max_age_s must be positive")
         self.map = load_occupancy_map(
             map_path,
             unknown_is_occupied=bool(self.defaults["graph"]["unknown_is_occupied"]),
@@ -323,6 +363,7 @@ class RouteCoordinator:
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
+        self.latest_pose_stamp_ns: int | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
         self.live_map_version: str | None = None
         self.cognitive_constraints_cache = CognitiveConstraintsCache()
@@ -464,7 +505,7 @@ class RouteCoordinator:
         )
         node.create_subscription(
             Odometry,
-            str(node.get_parameter("odometry_topic").value),
+            self.odometry_topic,
             self._on_odometry,
             qos,
         )
@@ -513,6 +554,10 @@ class RouteCoordinator:
             float(message.pose.pose.position.y),
         )
         self.latest_pose_frame_id = str(message.header.frame_id)
+        self.latest_pose_stamp_ns = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
 
     def _region_tick(self) -> None:
         if self.region_selector is None:
@@ -656,17 +701,6 @@ class RouteCoordinator:
         )
 
     def _current_xy(self) -> tuple[float, float] | None:
-        # Qualification and ideal-odometry launches provide a high-rate pose
-        # already expressed in map. Prefer that explicit contract: a reset can
-        # briefly leave a cached map->base_link transform internally
-        # inconsistent with map-frame ground truth, which must not advance the
-        # monotonic Route tracker to a distant edge. Localized /odom inputs are
-        # not map-frame, so they continue through the normal TF path below.
-        if (
-            self.latest_pose_xy is not None
-            and self.latest_pose_frame_id == self.frame_id
-        ):
-            return self.latest_pose_xy
         tf_xy = None
         try:
             transform = self.tf_buffer.lookup_transform(
@@ -685,10 +719,17 @@ class RouteCoordinator:
             )
         except Exception:
             pass
+        odometry_age_s = None
+        if self.latest_pose_stamp_ns is not None:
+            odometry_age_s = (
+                self._now().nanoseconds - self.latest_pose_stamp_ns
+            ) / 1.0e9
         return select_map_pose(
             self.frame_id,
             self.latest_pose_frame_id,
             self.latest_pose_xy,
+            odometry_age_s,
+            self.odometry_max_age_s,
             tf_xy,
         )
 

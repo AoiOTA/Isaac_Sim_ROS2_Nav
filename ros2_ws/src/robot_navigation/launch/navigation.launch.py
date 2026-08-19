@@ -367,6 +367,7 @@ def generate_launch_description():
                 'region_switch_min_dwell_s': region_switch_min_dwell_s,
                 'execute_navigation': execute_route_navigation,
                 'route_guided_bt_xml': str(route_guided_bt),
+                'odometry_topic': '/odom',
             }],
         ),
         Node(

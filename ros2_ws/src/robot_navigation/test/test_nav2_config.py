@@ -594,6 +594,7 @@ def test_a21_route_bt_uses_native_goal_updater_and_metric_owners():
     assert '_write_route_guided_bt' in launch
     assert "defaults['metric_planning']" in launch
     assert "remappings=[('plan', '/route_server/plan')]" in launch
+    assert "'odometry_topic': '/odom'" in launch
 
 
 def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():

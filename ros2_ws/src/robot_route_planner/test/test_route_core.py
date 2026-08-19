@@ -3,11 +3,13 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
 from robot_route_planner.map_io import OccupancyMap
 from robot_route_planner.ros_node import (
     CostmapSnapshot,
+    DEFAULT_ROUTE_ODOMETRY_TOPIC,
     RouteCoordinator,
     footprint_is_free,
     navigation_result_succeeded,
@@ -15,6 +17,7 @@ from robot_route_planner.ros_node import (
     select_live_feasible_lookahead,
     select_map_pose,
     select_support_attachment,
+    validate_route_odometry_topic,
 )
 from robot_route_planner.route_cost import edge_cost_breakdown, shortest_route
 from robot_route_planner.route_support import export_route_support_graph
@@ -267,10 +270,43 @@ def test_live_costmap_advances_blocked_lookahead_on_same_route() -> None:
     )
 
 
-def test_map_frame_odometry_wins_over_transient_tf_and_odom_frame_uses_tf() -> None:
-    assert select_map_pose("map", "map", (1.0, 2.0), (9.0, 8.0)) == (1.0, 2.0)
-    assert select_map_pose("map", "odom", (1.0, 2.0), (9.0, 8.0)) == (9.0, 8.0)
-    assert select_map_pose("map", None, None, None) is None
+def test_route_odometry_topic_defaults_to_odom_and_allows_explicit_estimates() -> None:
+    assert DEFAULT_ROUTE_ODOMETRY_TOPIC == "/odom"
+    assert validate_route_odometry_topic("/wheel/odom") == "/wheel/odom"
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "/ground_truth/odom",
+        "/isaac/ground-truth/pose",
+        "/sim/groundtruth/odom",
+    ],
+)
+def test_route_odometry_topic_rejects_ground_truth(topic: str) -> None:
+    with pytest.raises(ValueError, match="must not use ground-truth"):
+        validate_route_odometry_topic(topic)
+
+
+def test_map_pose_prefers_tf_over_fresh_map_frame_odometry() -> None:
+    assert select_map_pose(
+        "map", "map", (1.0, 2.0), 0.1, 0.5, (9.0, 8.0)
+    ) == (9.0, 8.0)
+
+
+def test_map_pose_fallback_requires_fresh_map_frame_odometry() -> None:
+    assert select_map_pose(
+        "map", "map", (1.0, 2.0), 0.1, 0.5, None
+    ) == (1.0, 2.0)
+    assert select_map_pose(
+        "map", "odom", (1.0, 2.0), 0.1, 0.5, None
+    ) is None
+    assert select_map_pose(
+        "map", "map", (1.0, 2.0), 0.6, 0.5, None
+    ) is None
+    assert select_map_pose(
+        "map", "map", (1.0, 2.0), -0.1, 0.5, None
+    ) is None
 
 
 def test_final_goal_copy_refreshes_header_without_changing_pose() -> None:
@@ -358,7 +394,7 @@ def test_intermediate_lookahead_success_continues_same_leg() -> None:
     assert coordinator.navigation_goal_handle is None
 
 
-def test_final_goal_success_accepts_gt_pose_inside_campaign_gate() -> None:
+def test_final_goal_success_accepts_map_pose_inside_campaign_gate() -> None:
     events = []
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.route_active = True
