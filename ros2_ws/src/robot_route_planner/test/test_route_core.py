@@ -28,6 +28,28 @@ from robot_route_planner.structural_updates import StructuralChangeMonitor
 from robot_route_planner.tracking import RouteTracker
 
 
+def _edge_prior_message(
+    *, request_id: int, stamp_ns: int, model_id: str = 'srdr-v310'
+):
+    return SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(
+            sec=stamp_ns // 1_000_000_000,
+            nanosec=stamp_ns % 1_000_000_000,
+        )),
+        request_id=request_id,
+        graph_id='test:gvg_v1',
+        graph_revision=3,
+        model_id=model_id,
+        healthy=True,
+        priors=[SimpleNamespace(
+            edge_id=7,
+            cost_delta_m=1.0,
+            learned_risk=0.4,
+            confidence=0.8,
+        )],
+    )
+
+
 def test_edge_prior_requires_fresh_health_model_and_finite_bounds() -> None:
     valid = dict(
         healthy=True,
@@ -62,8 +84,20 @@ def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.pending_goal = object()
     coordinator.pending_deadline_ns = 2_000_000_000
+    coordinator.pending_prior_request_id = 4
+    coordinator.pending_prior_graph_id = 'test:gvg_v1'
+    coordinator.pending_prior_graph_revision = 3
+    coordinator.pending_prior_started_ns = 1_000_000_000
+    coordinator.pending_prior_model_id = None
+    coordinator.request_id = 4
+    coordinator.graph = SimpleNamespace(
+        graph_id='test:gvg_v1',
+        revision=3,
+        edges=[SimpleNamespace(id=7)],
+    )
     coordinator.latest_priors = {7: (1.0, 0.8)}
     coordinator.latest_priors_stamp_ns = 1_000_000_000
+    coordinator.latest_prior_model_id = 'srdr-v310'
     coordinator.module2_prior_ttl_s = 2.0
     coordinator.module2_enabled = False
     coordinator.last_context_publish_ns = 0
@@ -88,6 +122,12 @@ def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
     assert coordinator.latest_priors_stamp_ns is None
     assert replans == [{}]
 
+    coordinator._on_priors(_edge_prior_message(
+        request_id=4, stamp_ns=3_000_000_000))
+    assert coordinator.latest_priors == {}
+    assert coordinator.latest_priors_stamp_ns is None
+    assert replans == [{}]
+
     coordinator.latest_priors = {7: (1.0, 0.8)}
     coordinator.latest_priors_stamp_ns = 1_000_000_000
     coordinator._runtime_tick()
@@ -97,12 +137,87 @@ def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
     assert any('geometry-only' in message for message in warnings)
 
 
+def test_prior_from_old_refresh_generation_is_rejected() -> None:
+    replans = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.pending_deadline_ns = 6_500_000_000
+    coordinator.pending_prior_request_id = 8
+    coordinator.pending_prior_graph_id = 'test:gvg_v1'
+    coordinator.pending_prior_graph_revision = 3
+    coordinator.pending_prior_started_ns = 5_500_000_000
+    coordinator.pending_prior_model_id = 'srdr-v310'
+    coordinator.request_id = 8
+    coordinator.graph = SimpleNamespace(
+        graph_id='test:gvg_v1',
+        revision=3,
+        edges=[SimpleNamespace(id=7)],
+    )
+    coordinator.latest_priors = {}
+    coordinator.latest_priors_stamp_ns = None
+    coordinator.latest_prior_model_id = 'srdr-v310'
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=6_000_000_000)
+    coordinator._prepare_route = lambda priors: replans.append(priors)
+
+    coordinator._on_priors(_edge_prior_message(
+        request_id=8, stamp_ns=5_400_000_000))
+
+    assert coordinator.pending_deadline_ns == 6_500_000_000
+    assert coordinator.latest_priors == {}
+    assert replans == []
+
+
+def test_matching_prior_for_new_request_is_accepted() -> None:
+    replans = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.pending_deadline_ns = 6_500_000_000
+    coordinator.pending_prior_request_id = 9
+    coordinator.pending_prior_graph_id = 'test:gvg_v1'
+    coordinator.pending_prior_graph_revision = 3
+    coordinator.pending_prior_started_ns = 5_500_000_000
+    coordinator.pending_prior_model_id = None
+    coordinator.request_id = 9
+    coordinator.graph = SimpleNamespace(
+        graph_id='test:gvg_v1',
+        revision=3,
+        edges=[SimpleNamespace(id=7)],
+    )
+    coordinator.latest_priors = {}
+    coordinator.latest_priors_stamp_ns = None
+    coordinator.latest_prior_model_id = None
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=6_000_000_000)
+    coordinator._prepare_route = lambda priors: replans.append(priors)
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        warning=lambda _message: None,
+    ))
+
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=5_800_000_000))
+
+    assert coordinator.pending_deadline_ns is None
+    assert coordinator.latest_priors == {7: (1.0, 0.8)}
+    assert coordinator.latest_priors_stamp_ns == 5_800_000_000
+    assert coordinator.latest_prior_model_id == 'srdr-v310'
+    assert replans == [{7: (1.0, 0.8)}]
+
+
 def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.pending_goal = object()
     coordinator.pending_deadline_ns = None
+    coordinator.pending_prior_request_id = None
+    coordinator.pending_prior_graph_id = None
+    coordinator.pending_prior_graph_revision = None
+    coordinator.pending_prior_started_ns = None
+    coordinator.pending_prior_model_id = None
+    coordinator.request_id = 12
+    coordinator.graph = SimpleNamespace(graph_id='test:gvg_v1', revision=3)
     coordinator.latest_priors = {}
     coordinator.latest_priors_stamp_ns = None
+    coordinator.latest_prior_model_id = None
     coordinator.module2_prior_ttl_s = 2.0
     coordinator.module2_enabled = True
     coordinator.module2_response_timeout_s = 0.0
@@ -127,6 +242,8 @@ def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
 
     assert published == [True]
     assert coordinator.pending_deadline_ns == 6_500_000_000
+    assert coordinator.pending_prior_request_id == 12
+    assert coordinator.pending_prior_started_ns == 6_000_000_000
 
 
 def _edge(edge_id, source, target, points, clearance=0.5):

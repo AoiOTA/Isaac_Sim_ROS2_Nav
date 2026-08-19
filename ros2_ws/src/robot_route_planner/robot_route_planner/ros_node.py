@@ -398,10 +398,16 @@ class RouteCoordinator:
         self.pending_structural_map: OccupancyMap | None = None
         self.pending_goal = None
         self.pending_deadline_ns: int | None = None
+        self.pending_prior_request_id: int | None = None
+        self.pending_prior_graph_id: str | None = None
+        self.pending_prior_graph_revision: int | None = None
+        self.pending_prior_started_ns: int | None = None
+        self.pending_prior_model_id: str | None = None
         self.request_id = 0
         self.last_context_publish_ns = 0
         self.latest_priors: dict[int, tuple[float, float]] = {}
         self.latest_priors_stamp_ns: int | None = None
+        self.latest_prior_model_id: str | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
@@ -787,22 +793,38 @@ class RouteCoordinator:
         self.route_active = True
         self.latest_priors = {}
         self.latest_priors_stamp_ns = None
+        self.latest_prior_model_id = None
         self.node.get_logger().info(
             "received route goal request "
             f"{self.request_id}: ({goal.pose.position.x:.3f}, "
             f"{goal.pose.position.y:.3f})"
         )
-        self._publish_route_context()
         if self.module2_enabled:
-            timeout_s = self.module2_response_timeout_s or float(
-                self.defaults["module2_edge_prior"]["response_timeout_s"]
-            )
-            self.pending_deadline_ns = int(self._now().nanoseconds) + int(
-                timeout_s * 1.0e9
-            )
+            self._arm_prior_request(int(self._now().nanoseconds))
         else:
-            self.pending_deadline_ns = None
+            self._clear_pending_prior_request()
+        self._publish_route_context()
+        if not self.module2_enabled:
             self._prepare_route({})
+
+    def _arm_prior_request(self, now_ns: int) -> None:
+        timeout_s = self.module2_response_timeout_s or float(
+            self.defaults["module2_edge_prior"]["response_timeout_s"]
+        )
+        self.pending_deadline_ns = now_ns + int(timeout_s * 1.0e9)
+        self.pending_prior_request_id = self.request_id
+        self.pending_prior_graph_id = self.graph.graph_id
+        self.pending_prior_graph_revision = self.graph.revision
+        self.pending_prior_started_ns = now_ns
+        self.pending_prior_model_id = self.latest_prior_model_id
+
+    def _clear_pending_prior_request(self) -> None:
+        self.pending_deadline_ns = None
+        self.pending_prior_request_id = None
+        self.pending_prior_graph_id = None
+        self.pending_prior_graph_revision = None
+        self.pending_prior_started_ns = None
+        self.pending_prior_model_id = None
 
     def _publish_route_context(self) -> None:
         if self.pending_goal is None:
@@ -819,14 +841,30 @@ class RouteCoordinator:
         self.last_context_publish_ns = int(self._now().nanoseconds)
 
     def _on_priors(self, message) -> None:
+        now_ns = int(self._now().nanoseconds)
+        stamp_ns = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
         if (
             self.pending_goal is None
+            or self.pending_deadline_ns is None
+            or now_ns >= self.pending_deadline_ns
+            or self.pending_prior_request_id != self.request_id
+            or self.pending_prior_graph_id != self.graph.graph_id
+            or self.pending_prior_graph_revision != self.graph.revision
+            or self.pending_prior_started_ns is None
+            or stamp_ns < self.pending_prior_started_ns
             or int(message.request_id) != self.request_id
             or str(message.graph_id) != self.graph.graph_id
             or int(message.graph_revision) != self.graph.revision
+            or (
+                self.pending_prior_model_id is not None
+                and str(message.model_id) != self.pending_prior_model_id
+            )
         ):
             return
-        self.pending_deadline_ns = None
+        self._clear_pending_prior_request()
         edge_ids = {int(edge.id) for edge in self.graph.edges}
         observed_ids = [int(item.edge_id) for item in message.priors]
         if len(observed_ids) != len(set(observed_ids)) or not set(observed_ids).issubset(
@@ -839,10 +877,6 @@ class RouteCoordinator:
             self.latest_priors_stamp_ns = None
             self._prepare_route({})
             return
-        stamp_ns = (
-            int(message.header.stamp.sec) * 1_000_000_000
-            + int(message.header.stamp.nanosec)
-        )
         rows = [
             (
                 int(item.edge_id),
@@ -856,7 +890,7 @@ class RouteCoordinator:
             healthy=bool(message.healthy),
             model_id=str(message.model_id),
             stamp_ns=stamp_ns,
-            now_ns=int(self._now().nanoseconds),
+            now_ns=now_ns,
             max_age_s=self.module2_prior_ttl_s,
             priors=rows,
         )
@@ -874,6 +908,7 @@ class RouteCoordinator:
         }
         self.latest_priors = priors
         self.latest_priors_stamp_ns = stamp_ns
+        self.latest_prior_model_id = str(message.model_id)
         self._prepare_route(priors)
 
     def _check_prior_timeout(self) -> None:
@@ -882,7 +917,7 @@ class RouteCoordinator:
             and self.pending_deadline_ns is not None
             and int(self._now().nanoseconds) >= self.pending_deadline_ns
         ):
-            self.pending_deadline_ns = None
+            self._clear_pending_prior_request()
             self.latest_priors = {}
             self.latest_priors_stamp_ns = None
             self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
@@ -1273,11 +1308,8 @@ class RouteCoordinator:
             and now_ns - self.last_context_publish_ns
             >= refresh_period_ns
         ):
+            self._arm_prior_request(now_ns)
             self._publish_route_context()
-            timeout_s = self.module2_response_timeout_s or float(
-                self.defaults["module2_edge_prior"]["response_timeout_s"]
-            )
-            self.pending_deadline_ns = now_ns + int(timeout_s * 1.0e9)
         changed = self.runtime.tick(self._now().nanoseconds / 1.0e9)
         if changed:
             self._publish_runtime_states()
@@ -1350,9 +1382,10 @@ class RouteCoordinator:
 
         self.route_active = False
         self.pending_goal = None
-        self.pending_deadline_ns = None
+        self._clear_pending_prior_request()
         self.latest_priors = {}
         self.latest_priors_stamp_ns = None
+        self.latest_prior_model_id = None
         self.tracker = None
         self.navigation_goal_pending = False
         self.navigation_goal_handle = None

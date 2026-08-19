@@ -48,7 +48,7 @@ def _setup(context):
             {
                 "use_sim_time": use_sim_time,
                 "autostart": "true",
-                "use_posegraph_localization": "false",
+                "localization_backend": "ideal",
                 "map_file": str(required["map_file"]),
                 "map_to_odom_x": LaunchConfiguration("map_to_odom_x").perform(context),
                 "map_to_odom_y": LaunchConfiguration("map_to_odom_y").perform(context),

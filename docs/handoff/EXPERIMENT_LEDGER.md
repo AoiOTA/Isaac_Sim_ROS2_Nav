@@ -13,3 +13,26 @@
 - Blocker: full Module3 build requires `bio_nav_interfaces` from the allowed Integration worktree install, which was absent. RF2O is absent from `/opt/ros/jazzy`.
 - Unrun: ROS runtime, TF/topic observation, Isaac runtime, AMCL convergence, Nav2 navigation, odometry metrics, scene calibration, and formal qualification.
 - Next: rebuild with the allowed Integration overlay when ready; then no-Isaac launch smoke, followed by actual RF2O installation and runtime calibration.
+
+## 2026-08-20 — V6 Stage 1 prior lifecycle and legacy Ideal wrappers
+
+- Hypothesis: consuming the pending prior window on timeout and binding each
+  response to the live request/graph/refresh/model identity prevents late
+  learned costs from re-entering geometry-only routing; explicit Ideal launch
+  arguments prevent the new AMCL default from changing legacy wrappers.
+- Branch/worktree/commit: `cognitive-navigation`;
+  `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`;
+  commit recorded by the task handoff after submission.
+- Commands: focused source pytest; pure Jazzy plus allowed Integration
+  `local_setup.bash` `colcon build --packages-up-to robot_route_planner
+  robot_bringup`; focused colcon route/bringup tests; new launch-test flake8;
+  `git diff --check`.
+- Core result: `72 passed, 1 skipped` source tests; 13-package build PASS;
+  focused colcon tests `27 passed` route plus `21 passed` bringup.
+- Verdict: **PASS (implementation/build/unit and offline launch expansion)**.
+- Unrun: ROS/Isaac/Nav2 runtime, 8-second no-Isaac launch smoke, and formal
+  qualification.
+- Warning: the unrelated full-suite frozen-JSON absolute-path assertion is
+  checkout-sensitive and was deliberately left untouched.
+- Next: reviewer may run the bounded no-Isaac launch smoke from the built
+  overlay, then proceed to runtime localization/navigation validation.

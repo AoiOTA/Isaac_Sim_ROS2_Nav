@@ -60,7 +60,7 @@ def _setup(context):
             {
                 "use_sim_time": use_sim_time,
                 "autostart": "true",
-                "use_posegraph_localization": "false",
+                "localization_backend": "ideal",
                 "map_file": str(files["map_file"]),
                 # Isaac's ideal odometry is reset to zero at the selected
                 # spawn. Align that local origin with the Rivermark map pose.
