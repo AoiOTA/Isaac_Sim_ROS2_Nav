@@ -1,5 +1,12 @@
 <library path="bio_nav_costmap_plugin">
   <class
+    type="bio_nav_fusion::CognitiveObstacleLayer"
+    base_class_type="nav2_costmap_2d::Layer">
+    <description>
+      Fail-open Module2 cognitive obstacle layer with shadow and active modes.
+    </description>
+  </class>
+  <class
     type="bio_nav_fusion::CognitiveRiskLayer"
     base_class_type="nav2_costmap_2d::Layer">
     <description>

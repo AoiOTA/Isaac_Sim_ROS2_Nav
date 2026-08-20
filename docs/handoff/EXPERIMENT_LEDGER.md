@@ -37,6 +37,29 @@
 - Next: reviewer may run the bounded no-Isaac launch smoke from the built
   overlay, then proceed to runtime localization/navigation validation.
 
+## 2026-08-20 — V6 C2/C3/D3 Module3 cognitive consumers
+
+- Hypothesis: typed Module2 V6 candidates can influence Costmap, MPPI and the
+  one Route Server without acquiring physical legality, TF, control or safety
+  ownership.
+- Branch/worktree: `cognitive-navigation` at the permitted Module3 worktree;
+  implementation commit recorded after submission.
+- Inputs: Integration interfaces `e16929d2369c0d5fce7cbaa5e07dbc0465a901f0`;
+  Module2 producer `15e4c2bb9257345b43404864e751874f03bfcb82`.
+- Commands: temporary exact-source interface archive/build; pure Jazzy plus
+  temporary-interface `colcon build --packages-up-to` for fusion, route,
+  navigation and bringup; `bio_nav_fusion` colcon tests; focused and full Route
+  consumer/profile pytest; Python compilation; `git diff --check`.
+- Core result: temporary interface build PASS; 14-package consumer build PASS;
+  C++/plugin-loader `15 tests, 0 failures`; Python `77 passed, 1 skipped` due
+  unavailable optional `pxr`.
+- Verdict: **PASS (implementation/build/unit and fixture validation only)**.
+- Unrun: Isaac/ROS/Nav2 runtime, live Costmap/MPPI/Route Server behavior,
+  navigation closure, metrics, visual evidence and formal qualification.
+- Next: fresh reviewer should first verify live off/shadow byte identity and
+  status sequencing, then active Costmap/critic ranking and atomic graph
+  switch/GVG fallback before any end-to-end claim.
+
 ## 2026-08-20 — V6 A3 fixed-revision RF2O shadow runtime
 
 - Hypothesis: vendoring a fixed official RF2O revision with a true single-node

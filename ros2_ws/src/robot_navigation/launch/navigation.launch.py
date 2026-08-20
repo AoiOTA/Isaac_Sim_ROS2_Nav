@@ -215,6 +215,7 @@ def generate_launch_description():
     module2_response_timeout_s = LaunchConfiguration(
         'module2_response_timeout_s')
     module2_prior_ttl_s = LaunchConfiguration('module2_prior_ttl_s')
+    cognitive_graph_mode = LaunchConfiguration('cognitive_graph_mode')
     region_config_file = LaunchConfiguration('region_config_file')
     region_switch_min_dwell_s = LaunchConfiguration(
         'region_switch_min_dwell_s')
@@ -244,6 +245,9 @@ def generate_launch_description():
         DeclareLaunchArgument('execute_route_navigation', default_value='true'),
         DeclareLaunchArgument('module2_response_timeout_s', default_value='0.0'),
         DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
+        DeclareLaunchArgument(
+            'cognitive_graph_mode', default_value='gvg',
+            description='gvg, shadow, hybrid, or primary'),
         DeclareLaunchArgument('region_config_file', default_value=''),
         DeclareLaunchArgument('region_switch_min_dwell_s', default_value='0.5'),
         # Preserve the qualified A21 values by default, but let an outdoor
@@ -366,6 +370,7 @@ def generate_launch_description():
                 'module2_enabled': module2_enabled,
                 'module2_response_timeout_s': module2_response_timeout_s,
                 'module2_prior_ttl_s': module2_prior_ttl_s,
+                'cognitive_graph_mode': cognitive_graph_mode,
                 'region_config_file': region_config_file,
                 'region_switch_min_dwell_s': region_switch_min_dwell_s,
                 'execute_navigation': execute_route_navigation,

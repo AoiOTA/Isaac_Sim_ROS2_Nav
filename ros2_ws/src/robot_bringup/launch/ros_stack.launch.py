@@ -380,6 +380,8 @@ def _launch_setup(context):
                     'module2_response_timeout_s').perform(context),
                 'module2_prior_ttl_s': LaunchConfiguration(
                     'module2_prior_ttl_s').perform(context),
+                'cognitive_graph_mode': LaunchConfiguration(
+                    'cognitive_graph_mode').perform(context),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -543,6 +545,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'module2_response_timeout_s', default_value='0.0'),
         DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
+        DeclareLaunchArgument(
+            'cognitive_graph_mode', default_value='gvg',
+            description='gvg, shadow, hybrid, or primary'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(

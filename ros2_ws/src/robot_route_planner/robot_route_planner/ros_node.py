@@ -15,6 +15,11 @@ from .cognitive_constraints import (
     build_cognitive_constraints,
     occupancy_grid_version,
 )
+from .cognitive_graph_adapter import (
+    CognitiveGraphIdentity,
+    build_hybrid_graph,
+    validate_cognitive_graph_candidate,
+)
 from .feasibility import (
     apply_footprint_feasibility,
     classify_edge,
@@ -271,6 +276,7 @@ class RouteCoordinator:
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
             CognitiveMapConstraints,
+            CognitivePlaceGraphCandidate,
             CognitiveTransition,
             EdgePriorArray,
             NavigationGraph,
@@ -290,7 +296,7 @@ class RouteCoordinator:
         from rclpy.duration import Duration
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from rclpy.time import Time
-        from std_msgs.msg import Bool
+        from std_msgs.msg import Bool, Empty
         from tf2_ros import Buffer, TransformListener
 
         self.node = node
@@ -324,6 +330,13 @@ class RouteCoordinator:
             ("navigate_to_pose_action", "/navigate_to_pose"),
             ("dynamic_edges_service", "/route_server/DynamicEdgesScorer/adjust_edges"),
             ("set_route_graph_service", "/route_server/set_route_graph"),
+            ("cognitive_graph_mode", "gvg"),
+            ("cognitive_graph_topic", "/bio_nav/module2/cognitive_place_graph"),
+            ("cognitive_graph_reset_epoch", 0),
+            ("cognitive_graph_session_id", ""),
+            ("cognitive_graph_tile_id", ""),
+            ("cognitive_graph_tile_revision", 0),
+            ("cognitive_graph_model_id", ""),
         ):
             node.declare_parameter(name, default)
         defaults_path = Path(str(node.get_parameter("engineering_defaults_file").value))
@@ -349,6 +362,13 @@ class RouteCoordinator:
         self.odometry_max_age_s = float(
             node.get_parameter("odometry_max_age_s").value
         )
+        self.cognitive_graph_mode = str(
+            node.get_parameter("cognitive_graph_mode").value
+        ).strip().lower()
+        if self.cognitive_graph_mode not in {"gvg", "shadow", "hybrid", "primary"}:
+            raise ValueError(
+                "cognitive_graph_mode must be gvg, shadow, hybrid, or primary"
+            )
         if self.module2_response_timeout_s < 0.0:
             raise ValueError("module2_response_timeout_s must be non-negative")
         if self.module2_prior_ttl_s <= 0.0:
@@ -379,6 +399,21 @@ class RouteCoordinator:
         self.support = export_route_support_graph(
             self.graph,
             support_spacing_m=float(self.defaults["graph"]["route_support_spacing_m"]),
+        )
+        self.gvg_graph = self.graph
+        self.gvg_support = self.support
+        self.cognitive_graph_last_sequence = 0
+        self.cognitive_graph_switch_pending = False
+        self.primary_fallback_used = False
+        self.cognitive_graph_identity = CognitiveGraphIdentity(
+            int(node.get_parameter("cognitive_graph_reset_epoch").value),
+            str(node.get_parameter("cognitive_graph_session_id").value),
+            self.map.map_version,
+            str(node.get_parameter("cognitive_graph_tile_id").value),
+            int(node.get_parameter("cognitive_graph_tile_revision").value),
+            self.gvg_graph.graph_id,
+            self.gvg_graph.revision,
+            str(node.get_parameter("cognitive_graph_model_id").value),
         )
         self.support_node_positions = {
             int(feature["properties"]["id"]): tuple(
@@ -464,6 +499,7 @@ class RouteCoordinator:
         self.RuntimeEdgeStateArray = RuntimeEdgeStateArray
         self.StructuralGraphStatus = StructuralGraphStatus
         self.CognitiveMapConstraints = CognitiveMapConstraints
+        self.CognitivePlaceGraphCandidate = CognitivePlaceGraphCandidate
         self.CognitiveTransition = CognitiveTransition
         self.RouteEdgeCostArray = RouteEdgeCostArray
         qos_latched = QoSProfile(
@@ -563,6 +599,19 @@ class RouteCoordinator:
             self._on_global_costmap,
             costmap_qos,
         )
+        node.create_subscription(
+            Empty,
+            "/simulation/reset_event",
+            self._on_reset_event,
+            qos,
+        )
+        if self.cognitive_graph_mode != "gvg":
+            node.create_subscription(
+                CognitivePlaceGraphCandidate,
+                str(node.get_parameter("cognitive_graph_topic").value),
+                self._on_cognitive_graph,
+                qos_latched,
+            )
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, node)
         self.route_client = ActionClient(
@@ -605,6 +654,184 @@ class RouteCoordinator:
         self.latest_pose_stamp_ns = (
             int(message.header.stamp.sec) * 1_000_000_000
             + int(message.header.stamp.nanosec)
+        )
+
+    def _on_reset_event(self, _message) -> None:
+        identity = self.cognitive_graph_identity
+        self.cognitive_graph_identity = CognitiveGraphIdentity(
+            identity.reset_epoch + 1,
+            identity.recurrent_session_id,
+            identity.map_version,
+            identity.cognitive_tile_id,
+            identity.tile_revision,
+            self.gvg_graph.graph_id,
+            self.gvg_graph.revision,
+            identity.model_id,
+        )
+        self.cognitive_graph_last_sequence = 0
+        self.latest_priors = {}
+        self.latest_priors_stamp_ns = None
+        self.primary_fallback_used = False
+        if self.graph.graph_id != self.gvg_graph.graph_id:
+            self._fallback_to_gvg_once("simulation reset invalidated cognitive graph")
+
+    def _on_cognitive_graph(self, message) -> None:
+        if self.cognitive_graph_switch_pending:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                "cognitive graph rejected: SetRouteGraph switch already pending",
+            )
+            return
+        identity = self.cognitive_graph_identity
+        if not identity.recurrent_session_id:
+            identity = CognitiveGraphIdentity(
+                identity.reset_epoch,
+                str(message.recurrent_session_id),
+                identity.map_version,
+                str(message.cognitive_tile_id),
+                int(message.tile_revision),
+                identity.source_physical_graph_id,
+                identity.source_physical_graph_revision,
+                str(message.model_id),
+            )
+            self.cognitive_graph_identity = identity
+        try:
+            candidate = validate_cognitive_graph_candidate(
+                message,
+                now_ns=int(self._now().nanoseconds),
+                expected=identity,
+                last_source_sequence=self.cognitive_graph_last_sequence,
+                occupancy=self.map,
+                footprint=self.defaults["footprint"],
+            )
+            selected = candidate.graph
+            if self.cognitive_graph_mode == "hybrid":
+                selected = build_hybrid_graph(
+                    self.gvg_graph,
+                    candidate,
+                    occupancy=self.map,
+                    footprint=self.defaults["footprint"],
+                )
+        except Exception as error:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                f"cognitive graph rejected: {error}",
+            )
+            if self.cognitive_graph_mode == "primary":
+                self._fallback_to_gvg_once(f"candidate rejected: {error}")
+            return
+        self.cognitive_graph_last_sequence = candidate.source_sequence
+        if self.cognitive_graph_mode == "shadow":
+            self._publish_structural_status(
+                self.StructuralGraphStatus.READY,
+                "cognitive graph accepted in shadow; GVG remains selected",
+            )
+            return
+        self._request_graph_switch(
+            selected,
+            f"cognitive graph selected mode={self.cognitive_graph_mode} "
+            f"sequence={candidate.source_sequence} "
+            f"tile={candidate.identity.cognitive_tile_id}:"
+            f"{candidate.identity.tile_revision}",
+            fallback=False,
+        )
+
+    def _request_graph_switch(self, graph, detail: str, *, fallback: bool) -> None:
+        try:
+            support = export_route_support_graph(
+                graph,
+                support_spacing_m=float(
+                    self.defaults["graph"]["route_support_spacing_m"]
+                ),
+            )
+            directory = Path(tempfile.gettempdir()) / "bio_nav_v6_cognitive_graph"
+            directory.mkdir(parents=True, exist_ok=True)
+            suffix = "gvg_fallback" if fallback else "selected"
+            geojson = directory / f"{suffix}.geojson"
+            mapping = directory / f"{suffix}_support_map.json"
+            save_route_support(support, geojson, mapping)
+        except Exception as error:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                f"graph export rejected: {error}",
+            )
+            return
+        if not self.set_graph_client.service_is_ready():
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                "cognitive graph fallback: SetRouteGraph unavailable"
+                if fallback else "cognitive graph rejected: SetRouteGraph unavailable",
+            )
+            if not fallback and self.cognitive_graph_mode == "primary":
+                self._fallback_to_gvg_once("SetRouteGraph unavailable")
+            return
+        self.cognitive_graph_switch_pending = True
+        request = self.SetRouteGraph.Request()
+        request.graph_filepath = str(geojson)
+        future = self.set_graph_client.call_async(request)
+        future.add_done_callback(
+            lambda completed: self._finish_cognitive_graph_switch(
+                completed, graph, support, detail, fallback
+            )
+        )
+
+    def _finish_cognitive_graph_switch(
+        self, future, graph, support, detail: str, fallback: bool
+    ) -> None:
+        self.cognitive_graph_switch_pending = False
+        try:
+            response = future.result()
+        except Exception as error:
+            response = None
+            detail = f"SetRouteGraph exception: {error}"
+        if response is None or not response.success:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                f"cognitive graph {'fallback' if fallback else 'rejected'}: {detail}",
+            )
+            if not fallback and self.cognitive_graph_mode == "primary":
+                self._fallback_to_gvg_once(detail)
+            return
+        self.graph = graph
+        self.support = support
+        self.support_node_positions = {
+            int(feature["properties"]["id"]): tuple(
+                float(value) for value in feature["geometry"]["coordinates"]
+            )
+            for feature in support.geojson["features"]
+            if feature["geometry"]["type"] == "Point"
+        }
+        self.latest_priors = {}
+        self.latest_priors_stamp_ns = None
+        self.latest_prior_model_id = None
+        self.cognitive_constraints_cache.invalidate()
+        self._publish_graph()
+        self._publish_cognitive_constraints()
+        self._publish_structural_status(
+            self.StructuralGraphStatus.READY,
+            f"cognitive graph {'fallback applied' if fallback else 'applied'}: {detail}",
+        )
+        if self.pending_goal is not None:
+            self._prepare_route({})
+
+    def _fallback_to_gvg_once(self, reason: str) -> None:
+        if self.graph.graph_id == self.gvg_graph.graph_id:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.READY,
+                f"cognitive graph fallback retained GVG: {reason}",
+            )
+            return
+        if self.primary_fallback_used:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                f"cognitive graph fallback already used: {reason}",
+            )
+            return
+        self.primary_fallback_used = True
+        self._request_graph_switch(
+            self.gvg_graph,
+            reason,
+            fallback=True,
         )
 
     def _region_tick(self) -> None:
@@ -782,6 +1009,7 @@ class RouteCoordinator:
         )
 
     def _on_goal(self, goal) -> None:
+        self.primary_fallback_used = False
         if self.navigation_goal_handle is not None:
             self.navigation_goal_handle.cancel_goal_async()
         self.navigation_goal_handle = None
@@ -1033,6 +1261,8 @@ class RouteCoordinator:
         handle = future.result()
         if handle is None or not handle.accepted:
             self.node.get_logger().warning("ComputeRoute rejected")
+            if self.cognitive_graph_mode == "primary":
+                self._fallback_to_gvg_once("ComputeRoute rejected")
             return
         result_future = handle.get_result_async()
         result_future.add_done_callback(self._on_route_result)
@@ -1042,6 +1272,10 @@ class RouteCoordinator:
         if wrapped is None or int(wrapped.result.error_code) != 0:
             code = -1 if wrapped is None else int(wrapped.result.error_code)
             self.node.get_logger().warning(f"ComputeRoute failed with error {code}")
+            if self.cognitive_graph_mode == "primary":
+                self._fallback_to_gvg_once(
+                    f"ComputeRoute failed with error {code}"
+                )
             return
         returned_edges = wrapped.result.route.edges
         if returned_edges:
@@ -1461,6 +1695,19 @@ class RouteCoordinator:
         self.graph = graph
         self.map = occupancy
         self.support = support
+        self.gvg_graph = graph
+        self.gvg_support = support
+        self.cognitive_graph_last_sequence = 0
+        self.cognitive_graph_identity = CognitiveGraphIdentity(
+            self.cognitive_graph_identity.reset_epoch,
+            self.cognitive_graph_identity.recurrent_session_id,
+            occupancy.map_version,
+            self.cognitive_graph_identity.cognitive_tile_id,
+            self.cognitive_graph_identity.tile_revision,
+            graph.graph_id,
+            graph.revision,
+            self.cognitive_graph_identity.model_id,
+        )
         self.cognitive_constraints_cache.invalidate()
         self.support_node_positions = {
             int(feature["properties"]["id"]): tuple(

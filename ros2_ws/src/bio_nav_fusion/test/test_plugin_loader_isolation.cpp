@@ -3,6 +3,7 @@
 #include "gtest/gtest.h"
 #include "nav2_core/global_planner.hpp"
 #include "nav2_costmap_2d/layer.hpp"
+#include "nav2_mppi_controller/critic_function.hpp"
 #include "pluginlib/class_loader.hpp"
 
 TEST(BioNavFusionPlugins, risk_layer_does_not_preload_stock_smac_factory)
@@ -12,6 +13,9 @@ TEST(BioNavFusionPlugins, risk_layer_does_not_preload_stock_smac_factory)
   const auto risk_layer = costmap_loader.createUniqueInstance(
     "bio_nav_fusion::CognitiveRiskLayer");
   ASSERT_NE(risk_layer, nullptr);
+  const auto obstacle_layer = costmap_loader.createUniqueInstance(
+    "bio_nav_fusion::CognitiveObstacleLayer");
+  ASSERT_NE(obstacle_layer, nullptr);
   const auto local_risk_layer = costmap_loader.createUniqueInstance(
     "bio_nav_fusion::LocalRiskGridLayer");
   ASSERT_NE(local_risk_layer, nullptr);
@@ -24,4 +28,10 @@ TEST(BioNavFusionPlugins, risk_layer_does_not_preload_stock_smac_factory)
   const auto stock_planner = planner_loader.createUniqueInstance(
     "nav2_smac_planner::SmacPlanner2D");
   EXPECT_NE(stock_planner, nullptr);
+
+  pluginlib::ClassLoader<mppi::critics::CriticFunction> critic_loader(
+    "nav2_mppi_controller", "mppi::critics::CriticFunction");
+  const auto cognitive_critic = critic_loader.createUniqueInstance(
+    "mppi::critics::CognitiveRiskCritic");
+  EXPECT_NE(cognitive_critic, nullptr);
 }

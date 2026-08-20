@@ -7,17 +7,54 @@ controller_server:
       time_steps: 20
       model_dt: 0.10
       batch_size: 700
+      critics:
+        - ConstraintCritic
+        - CostCritic
+        - GoalCritic
+        - GoalAngleCritic
+        - PathAlignCritic
+        - PathFollowCritic
+        - PathAngleCritic
+        - VelocityDeadbandCritic
+        - CognitiveRiskCritic
+      CognitiveRiskCritic:
+        enabled: true
+        mode: active
+        obstacle_topic: /bio_nav/module2/cognitive_obstacles
+        planning_prior_topic: /bio_nav/module2/planning_prior
+        maximum_age_s: 0.5
+        maximum_ood_probability: 0.2
+        obstacle_weight: 4.0
+        direction_weight: 1.0
+        novelty_weight: 0.5
+        uncertainty_weight: 0.5
 
 local_costmap:
   local_costmap:
     ros__parameters:
-      plugins: [obstacle_layer, inflation_layer]
+      plugins: [obstacle_layer, cognitive_obstacle_layer, inflation_layer]
       depth_voxel_layer:
         enabled: false
+      cognitive_obstacle_layer:
+        plugin: bio_nav_fusion::CognitiveObstacleLayer
+        enabled: true
+        mode: active
+        maximum_age_s: 0.5
+        maximum_soft_cost: 80
+        collision_min_height_m: 0.02
+        collision_max_height_m: 0.45
 
 global_costmap:
   global_costmap:
     ros__parameters:
-      plugins: [static_layer, obstacle_layer, inflation_layer]
+      plugins: [static_layer, obstacle_layer, cognitive_obstacle_layer, inflation_layer]
       depth_voxel_layer:
         enabled: false
+      cognitive_obstacle_layer:
+        plugin: bio_nav_fusion::CognitiveObstacleLayer
+        enabled: true
+        mode: active
+        maximum_age_s: 0.5
+        maximum_soft_cost: 80
+        collision_min_height_m: 0.02
+        collision_max_height_m: 0.45

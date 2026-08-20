@@ -49,6 +49,8 @@ def generate_launch_description():
             'feasible_only_largest_component', default_value='false'),
         DeclareLaunchArgument('module2_prior_ttl_s', default_value='2.0'),
         DeclareLaunchArgument(
+            'cognitive_graph_mode', default_value='gvg'),
+        DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
                 'ISAAC_NAV_SPAWN_POSES', default_value='')),
@@ -103,6 +105,8 @@ def generate_launch_description():
                     'feasible_only_largest_component'),
                 'module2_prior_ttl_s': LaunchConfiguration(
                     'module2_prior_ttl_s'),
+                'cognitive_graph_mode': LaunchConfiguration(
+                    'cognitive_graph_mode'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(

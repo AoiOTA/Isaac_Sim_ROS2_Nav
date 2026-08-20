@@ -51,3 +51,21 @@ operations:
     posegraph_required: true
     occupancy_map_required: true
     starts_nav2: true
+
+cognitive_profiles:
+  M0:
+    obstacle_layer_mode: 'off'
+    risk_critic_mode: 'off'
+    cognitive_graph_mode: gvg
+  M1:
+    obstacle_layer_mode: shadow
+    risk_critic_mode: shadow
+    cognitive_graph_mode: shadow
+  M2:
+    obstacle_layer_mode: active
+    risk_critic_mode: shadow
+    cognitive_graph_mode: hybrid
+  M3:
+    obstacle_layer_mode: active
+    risk_critic_mode: active
+    cognitive_graph_mode: primary
