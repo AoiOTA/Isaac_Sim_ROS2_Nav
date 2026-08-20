@@ -138,6 +138,21 @@ class CostmapSnapshot:
     frame_id: str
 
 
+@dataclass(frozen=True)
+class RouteCallbackGeneration:
+    request_id: int
+    graph_generation: int
+    graph_id: str
+    graph_revision: int
+
+
+@dataclass(frozen=True)
+class GraphSwitchGeneration:
+    switch_generation: int
+    route_request_id: int | None
+    base_graph_generation: int
+
+
 def footprint_is_free(
     costmap: CostmapSnapshot,
     position_xy: tuple[float, float],
@@ -404,6 +419,8 @@ class RouteCoordinator:
         self.gvg_support = self.support
         self.cognitive_graph_last_sequence = 0
         self.cognitive_graph_switch_pending = False
+        self.graph_generation = 0
+        self.graph_switch_generation = 0
         self.primary_fallback_used = False
         self.cognitive_graph_identity = CognitiveGraphIdentity(
             int(node.get_parameter("cognitive_graph_reset_epoch").value),
@@ -443,6 +460,9 @@ class RouteCoordinator:
         self.latest_priors: dict[int, tuple[float, float]] = {}
         self.latest_priors_stamp_ns: int | None = None
         self.latest_prior_model_id: str | None = None
+        self.latest_priors_request_id: int | None = None
+        self.latest_priors_graph_id: str | None = None
+        self.latest_priors_graph_revision: int | None = None
         self.tracker: RouteTracker | None = None
         self.latest_pose_xy: tuple[float, float] | None = None
         self.latest_pose_frame_id: str | None = None
@@ -645,6 +665,46 @@ class RouteCoordinator:
     def _now(self):
         return self.node.get_clock().now()
 
+    def _route_callback_generation(self) -> RouteCallbackGeneration:
+        return RouteCallbackGeneration(
+            int(self.request_id),
+            int(getattr(self, "graph_generation", 0)),
+            str(self.graph.graph_id),
+            int(self.graph.revision),
+        )
+
+    def _route_callback_is_current(
+        self, generation: RouteCallbackGeneration | None
+    ) -> bool:
+        if generation is None:
+            return True
+        return (
+            self.pending_goal is not None
+            and generation == self._route_callback_generation()
+        )
+
+    def _graph_switch_callback_is_current(
+        self, generation: GraphSwitchGeneration | None
+    ) -> bool:
+        if generation is None:
+            return True
+        return (
+            generation.switch_generation
+            == int(getattr(self, "graph_switch_generation", 0))
+            and generation.base_graph_generation
+            == int(getattr(self, "graph_generation", 0))
+            and (
+                generation.route_request_id is None
+                or generation.route_request_id == int(self.request_id)
+            )
+        )
+
+    def _primary_fallback_available(self) -> bool:
+        return (
+            getattr(self, "cognitive_graph_mode", "gvg") == "primary"
+            and not getattr(self, "primary_fallback_used", False)
+        )
+
     def _on_odometry(self, message) -> None:
         self.latest_pose_xy = (
             float(message.pose.pose.position.x),
@@ -658,24 +718,36 @@ class RouteCoordinator:
 
     def _on_reset_event(self, _message) -> None:
         identity = self.cognitive_graph_identity
+        self.graph_generation = int(getattr(self, "graph_generation", 0)) + 1
+        self.graph_switch_generation = int(
+            getattr(self, "graph_switch_generation", 0)
+        ) + 1
+        self.cognitive_graph_switch_pending = False
         self.cognitive_graph_identity = CognitiveGraphIdentity(
             identity.reset_epoch + 1,
-            identity.recurrent_session_id,
+            '',
             identity.map_version,
-            identity.cognitive_tile_id,
-            identity.tile_revision,
+            '',
+            0,
             self.gvg_graph.graph_id,
             self.gvg_graph.revision,
-            identity.model_id,
+            '',
         )
         self.cognitive_graph_last_sequence = 0
-        self.latest_priors = {}
-        self.latest_priors_stamp_ns = None
+        self._clear_pending_prior_request()
+        self._clear_latest_priors()
+        self.cognitive_constraints_cache.invalidate()
         self.primary_fallback_used = False
         if self.graph.graph_id != self.gvg_graph.graph_id:
             self._fallback_to_gvg_once("simulation reset invalidated cognitive graph")
 
     def _on_cognitive_graph(self, message) -> None:
+        if self.pending_goal is not None and self.primary_fallback_used:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                "cognitive graph rejected: current goal is locked to GVG fallback",
+            )
+            return
         if self.cognitive_graph_switch_pending:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -683,6 +755,7 @@ class RouteCoordinator:
             )
             return
         identity = self.cognitive_graph_identity
+        bind_identity = not identity.recurrent_session_id
         if not identity.recurrent_session_id:
             identity = CognitiveGraphIdentity(
                 identity.reset_epoch,
@@ -694,7 +767,6 @@ class RouteCoordinator:
                 identity.source_physical_graph_revision,
                 str(message.model_id),
             )
-            self.cognitive_graph_identity = identity
         try:
             candidate = validate_cognitive_graph_candidate(
                 message,
@@ -717,9 +789,11 @@ class RouteCoordinator:
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"cognitive graph rejected: {error}",
             )
-            if self.cognitive_graph_mode == "primary":
+            if self._primary_fallback_available():
                 self._fallback_to_gvg_once(f"candidate rejected: {error}")
             return
+        if bind_identity:
+            self.cognitive_graph_identity = candidate.identity
         self.cognitive_graph_last_sequence = candidate.source_sequence
         if self.cognitive_graph_mode == "shadow":
             self._publish_structural_status(
@@ -755,6 +829,8 @@ class RouteCoordinator:
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"graph export rejected: {error}",
             )
+            if not fallback and self._primary_fallback_available():
+                self._fallback_to_gvg_once(f"graph export rejected: {error}")
             return
         if not self.set_graph_client.service_is_ready():
             self._publish_structural_status(
@@ -762,22 +838,39 @@ class RouteCoordinator:
                 "cognitive graph fallback: SetRouteGraph unavailable"
                 if fallback else "cognitive graph rejected: SetRouteGraph unavailable",
             )
-            if not fallback and self.cognitive_graph_mode == "primary":
+            if not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once("SetRouteGraph unavailable")
             return
         self.cognitive_graph_switch_pending = True
+        self.graph_switch_generation = int(
+            getattr(self, "graph_switch_generation", 0)
+        ) + 1
+        generation = GraphSwitchGeneration(
+            self.graph_switch_generation,
+            int(self.request_id) if self.pending_goal is not None else None,
+            int(getattr(self, "graph_generation", 0)),
+        )
         request = self.SetRouteGraph.Request()
         request.graph_filepath = str(geojson)
         future = self.set_graph_client.call_async(request)
         future.add_done_callback(
             lambda completed: self._finish_cognitive_graph_switch(
-                completed, graph, support, detail, fallback
+                completed, graph, support, detail, fallback, generation
             )
         )
 
     def _finish_cognitive_graph_switch(
-        self, future, graph, support, detail: str, fallback: bool
+        self, future, graph, support, detail: str, fallback: bool,
+        generation: GraphSwitchGeneration | None = None,
     ) -> None:
+        if not self._graph_switch_callback_is_current(generation):
+            if (
+                generation is not None
+                and generation.switch_generation
+                == int(getattr(self, "graph_switch_generation", 0))
+            ):
+                self.cognitive_graph_switch_pending = False
+            return
         self.cognitive_graph_switch_pending = False
         try:
             response = future.result()
@@ -789,11 +882,12 @@ class RouteCoordinator:
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"cognitive graph {'fallback' if fallback else 'rejected'}: {detail}",
             )
-            if not fallback and self.cognitive_graph_mode == "primary":
+            if not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once(detail)
             return
         self.graph = graph
         self.support = support
+        self.graph_generation = int(getattr(self, "graph_generation", 0)) + 1
         self.support_node_positions = {
             int(feature["properties"]["id"]): tuple(
                 float(value) for value in feature["geometry"]["coordinates"]
@@ -801,9 +895,7 @@ class RouteCoordinator:
             for feature in support.geojson["features"]
             if feature["geometry"]["type"] == "Point"
         }
-        self.latest_priors = {}
-        self.latest_priors_stamp_ns = None
-        self.latest_prior_model_id = None
+        self._clear_latest_priors()
         self.cognitive_constraints_cache.invalidate()
         self._publish_graph()
         self._publish_cognitive_constraints()
@@ -812,15 +904,16 @@ class RouteCoordinator:
             f"cognitive graph {'fallback applied' if fallback else 'applied'}: {detail}",
         )
         if self.pending_goal is not None:
+            if self.navigation_goal_handle is not None:
+                self.navigation_goal_handle.cancel_goal_async()
+            self.navigation_goal_handle = None
+            self.navigation_goal_pending = False
+            self.navigation_goal_targets_final = False
+            self.navigation_failed = False
+            self.tracker = None
             self._prepare_route({})
 
     def _fallback_to_gvg_once(self, reason: str) -> None:
-        if self.graph.graph_id == self.gvg_graph.graph_id:
-            self._publish_structural_status(
-                self.StructuralGraphStatus.READY,
-                f"cognitive graph fallback retained GVG: {reason}",
-            )
-            return
         if self.primary_fallback_used:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -828,6 +921,14 @@ class RouteCoordinator:
             )
             return
         self.primary_fallback_used = True
+        if self.graph.graph_id == self.gvg_graph.graph_id:
+            self._publish_structural_status(
+                self.StructuralGraphStatus.READY,
+                f"cognitive graph fallback retained GVG: {reason}",
+            )
+            if getattr(self, "pending_goal", None) is not None:
+                self._prepare_route({})
+            return
         self._request_graph_switch(
             self.gvg_graph,
             reason,
@@ -1019,9 +1120,7 @@ class RouteCoordinator:
         self.request_id += 1
         self.pending_goal = goal
         self.route_active = True
-        self.latest_priors = {}
-        self.latest_priors_stamp_ns = None
-        self.latest_prior_model_id = None
+        self._clear_latest_priors()
         self.node.get_logger().info(
             "received route goal request "
             f"{self.request_id}: ({goal.pose.position.x:.3f}, "
@@ -1053,6 +1152,51 @@ class RouteCoordinator:
         self.pending_prior_graph_revision = None
         self.pending_prior_started_ns = None
         self.pending_prior_model_id = None
+
+    def _clear_latest_priors(self) -> None:
+        self.latest_priors = {}
+        self.latest_priors_stamp_ns = None
+        self.latest_prior_model_id = None
+        self.latest_priors_request_id = None
+        self.latest_priors_graph_id = None
+        self.latest_priors_graph_revision = None
+
+    def _priors_for_consumption(
+        self, priors: dict[int, tuple[float, float]]
+    ) -> dict[int, tuple[float, float]]:
+        """Recheck TTL and route identity at the exact DynamicEdges use site."""
+
+        if not priors:
+            return {}
+        now_ns = int(self._now().nanoseconds)
+        stamp_ns = self.latest_priors_stamp_ns
+        age_s = (
+            math.inf if stamp_ns is None else (now_ns - int(stamp_ns)) / 1.0e9
+        )
+        request_id = getattr(self, "latest_priors_request_id", self.request_id)
+        graph_id = getattr(
+            self, "latest_priors_graph_id", self.graph.graph_id
+        )
+        graph_revision = getattr(
+            self, "latest_priors_graph_revision", self.graph.revision
+        )
+        model_id = str(self.latest_prior_model_id or '')
+        if (
+            age_s < 0.0
+            or age_s > self.module2_prior_ttl_s
+            or request_id != self.request_id
+            or graph_id != self.graph.graph_id
+            or graph_revision != self.graph.revision
+            or not model_id
+        ):
+            if priors == self.latest_priors:
+                self._clear_latest_priors()
+            self.node.get_logger().warning(
+                "Module2 edge prior expired or changed identity at consumption; "
+                "using geometry-only route"
+            )
+            return {}
+        return priors
 
     def _publish_route_context(self) -> None:
         if self.pending_goal is None:
@@ -1101,8 +1245,7 @@ class RouteCoordinator:
             self.node.get_logger().warning(
                 "Module2 prior contains duplicate or nonexistent graph edges; ignored"
             )
-            self.latest_priors = {}
-            self.latest_priors_stamp_ns = None
+            self._clear_latest_priors()
             self._prepare_route({})
             return
         rows = [
@@ -1114,8 +1257,19 @@ class RouteCoordinator:
             )
             for item in message.priors
         ]
+        out_of_distribution = any(
+            bool(getattr(message, name, False))
+            for name in ("out_of_distribution", "ood", "ood_detected")
+        )
+        trusted = bool(getattr(message, "trusted_write", True))
+        rejection_mask = int(getattr(message, "rejection_mask", 0))
         usable, reason = edge_prior_is_usable(
-            healthy=bool(message.healthy),
+            healthy=(
+                bool(message.healthy)
+                and trusted
+                and rejection_mask == 0
+                and not out_of_distribution
+            ),
             model_id=str(message.model_id),
             stamp_ns=stamp_ns,
             now_ns=now_ns,
@@ -1123,8 +1277,7 @@ class RouteCoordinator:
             priors=rows,
         )
         if not usable:
-            self.latest_priors = {}
-            self.latest_priors_stamp_ns = None
+            self._clear_latest_priors()
             self.node.get_logger().warning(
                 f"Module2 edge prior rejected ({reason}); using geometry-only route"
             )
@@ -1137,6 +1290,9 @@ class RouteCoordinator:
         self.latest_priors = priors
         self.latest_priors_stamp_ns = stamp_ns
         self.latest_prior_model_id = str(message.model_id)
+        self.latest_priors_request_id = int(message.request_id)
+        self.latest_priors_graph_id = str(message.graph_id)
+        self.latest_priors_graph_revision = int(message.graph_revision)
         self._prepare_route(priors)
 
     def _check_prior_timeout(self) -> None:
@@ -1146,8 +1302,7 @@ class RouteCoordinator:
             and int(self._now().nanoseconds) >= self.pending_deadline_ns
         ):
             self._clear_pending_prior_request()
-            self.latest_priors = {}
-            self.latest_priors_stamp_ns = None
+            self._clear_latest_priors()
             self.node.get_logger().info("Module2 edge prior timed out; using geometry-only route")
             self._prepare_route({})
 
@@ -1163,6 +1318,7 @@ class RouteCoordinator:
         )
 
     def _prepare_route(self, priors: dict[int, tuple[float, float]]) -> None:
+        priors = self._priors_for_consumption(priors)
         current = self._current_xy()
         if current is None or self.pending_goal is None:
             self.node.get_logger().warning("route request has no map pose")
@@ -1171,8 +1327,24 @@ class RouteCoordinator:
             float(self.pending_goal.pose.position.x),
             float(self.pending_goal.pose.position.y),
         )
-        start_node = self._nearest_support_node(current, departing=True)
-        goal_node = self._nearest_support_node(goal_xy, departing=False)
+        generation = self._route_callback_generation()
+        graph = self.graph
+        support = self.support
+        support_node_positions = dict(self.support_node_positions)
+        start_node = select_support_attachment(
+            self.map,
+            support_node_positions,
+            current,
+            self.defaults["footprint"],
+            departing=True,
+        )
+        goal_node = select_support_attachment(
+            self.map,
+            support_node_positions,
+            goal_xy,
+            self.defaults["footprint"],
+            departing=False,
+        )
         self.node.get_logger().info(
             f"preparing route request {self.request_id}: "
             f"support {start_node}->{goal_node}"
@@ -1184,11 +1356,11 @@ class RouteCoordinator:
         cost_message.header.stamp = self._now().to_msg()
         cost_message.header.frame_id = self.frame_id
         cost_message.request_id = self.request_id
-        cost_message.graph_id = self.graph.graph_id
-        cost_message.graph_revision = self.graph.revision
+        cost_message.graph_id = graph.graph_id
+        cost_message.graph_revision = graph.revision
         runtime_view = self.runtime.route_cost_view()
-        edge_map = self.graph.edge_by_id()
-        for canonical_id, support_ids in self.support.canonical_to_support_edges.items():
+        edge_map = graph.edge_by_id()
+        for canonical_id, support_ids in support.canonical_to_support_edges.items():
             edge = edge_map[canonical_id]
             prior = priors.get(canonical_id, (0.0, 0.0))
             runtime_penalty, blocked = runtime_view.get(canonical_id, (0.0, False))
@@ -1228,22 +1400,36 @@ class RouteCoordinator:
         self.route_edge_cost_pub.publish(cost_message)
         if not self.dynamic_client.service_is_ready():
             self.node.get_logger().warning("DynamicEdges service unavailable")
+            if self._primary_fallback_available():
+                self._fallback_to_gvg_once("DynamicEdges unavailable")
             return
         future = self.dynamic_client.call_async(request)
         future.add_done_callback(
             lambda completed, start=start_node, goal=goal_node: self._after_edge_update(
-                completed, start, goal
+                completed, start, goal, generation
             )
         )
 
-    def _after_edge_update(self, future, start_node: int, goal_node: int) -> None:
+    def _after_edge_update(
+        self,
+        future,
+        start_node: int,
+        goal_node: int,
+        generation: RouteCallbackGeneration | None = None,
+    ) -> None:
+        if not self._route_callback_is_current(generation):
+            return
         try:
             response = future.result()
         except Exception as error:
             self.node.get_logger().warning(f"edge update failed: {error}")
+            if self._primary_fallback_available():
+                self._fallback_to_gvg_once(f"DynamicEdges failed: {error}")
             return
         if response is None or not response.success or not self.route_client.server_is_ready():
             self.node.get_logger().warning("route services are not ready")
+            if self._primary_fallback_available():
+                self._fallback_to_gvg_once("DynamicEdges rejected or route unavailable")
             return
         self.node.get_logger().info(
             f"edge update accepted for route request {self.request_id}: "
@@ -1255,24 +1441,40 @@ class RouteCoordinator:
         goal.use_start = True
         goal.use_poses = False
         future = self.route_client.send_goal_async(goal)
-        future.add_done_callback(self._on_route_goal_handle)
+        future.add_done_callback(
+            lambda completed: self._on_route_goal_handle(completed, generation)
+        )
 
-    def _on_route_goal_handle(self, future) -> None:
+    def _on_route_goal_handle(
+        self,
+        future,
+        generation: RouteCallbackGeneration | None = None,
+    ) -> None:
+        if not self._route_callback_is_current(generation):
+            return
         handle = future.result()
         if handle is None or not handle.accepted:
             self.node.get_logger().warning("ComputeRoute rejected")
-            if self.cognitive_graph_mode == "primary":
+            if self._primary_fallback_available():
                 self._fallback_to_gvg_once("ComputeRoute rejected")
             return
         result_future = handle.get_result_async()
-        result_future.add_done_callback(self._on_route_result)
+        result_future.add_done_callback(
+            lambda completed: self._on_route_result(completed, generation)
+        )
 
-    def _on_route_result(self, future) -> None:
+    def _on_route_result(
+        self,
+        future,
+        generation: RouteCallbackGeneration | None = None,
+    ) -> None:
+        if not self._route_callback_is_current(generation):
+            return
         wrapped = future.result()
         if wrapped is None or int(wrapped.result.error_code) != 0:
             code = -1 if wrapped is None else int(wrapped.result.error_code)
             self.node.get_logger().warning(f"ComputeRoute failed with error {code}")
-            if self.cognitive_graph_mode == "primary":
+            if self._primary_fallback_available():
                 self._fallback_to_gvg_once(
                     f"ComputeRoute failed with error {code}"
                 )
@@ -1307,6 +1509,10 @@ class RouteCoordinator:
                 route_segments[-1].append(end)
         if not canonical_ids:
             self.node.get_logger().warning("ComputeRoute returned no canonical edges")
+            if self._primary_fallback_available():
+                self._fallback_to_gvg_once(
+                    "ComputeRoute returned no canonical edges"
+                )
             return
         edge_map = self.graph.edge_by_id()
         node_ids = []
@@ -1419,13 +1625,29 @@ class RouteCoordinator:
         goal.pose = first_lookahead
         goal.behavior_tree = self.route_guided_bt_xml
         self.navigation_goal_pending = True
+        generation = self._route_callback_generation()
         future = self.navigation_client.send_goal_async(goal)
-        future.add_done_callback(self._on_navigation_goal_handle)
+        future.add_done_callback(
+            lambda completed: self._on_navigation_goal_handle(completed, generation)
+        )
 
-    def _on_navigation_goal_handle(self, future) -> None:
+    def _on_navigation_goal_handle(
+        self,
+        future,
+        generation: RouteCallbackGeneration | None = None,
+    ) -> None:
+        if not self._route_callback_is_current(generation):
+            return
         self.navigation_goal_pending = False
         handle = future.result()
         if handle is None or not handle.accepted:
+            if (
+                self._primary_fallback_available()
+            ):
+                self.navigation_failed = False
+                self.tracker = None
+                self._fallback_to_gvg_once("NavigateToPose rejected")
+                return
             self.navigation_failed = True
             failed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
             failed.data = False
@@ -1434,9 +1656,17 @@ class RouteCoordinator:
             return
         self.navigation_goal_handle = handle
         result_future = handle.get_result_async()
-        result_future.add_done_callback(self._on_navigation_result)
+        result_future.add_done_callback(
+            lambda completed: self._on_navigation_result(completed, generation)
+        )
 
-    def _on_navigation_result(self, future) -> None:
+    def _on_navigation_result(
+        self,
+        future,
+        generation: RouteCallbackGeneration | None = None,
+    ) -> None:
+        if not self._route_callback_is_current(generation):
+            return
         wrapped = future.result()
         result_code = -1 if wrapped is None else int(wrapped.result.error_code)
         if navigation_result_succeeded(wrapped):
@@ -1471,6 +1701,18 @@ class RouteCoordinator:
                     f"intermediate route lookahead reached; continuing because {suffix}"
                 )
                 return
+        elif (
+            self._primary_fallback_available()
+        ):
+            self.navigation_goal_pending = False
+            self.navigation_goal_handle = None
+            self.navigation_goal_targets_final = False
+            self.navigation_failed = False
+            self.tracker = None
+            self._fallback_to_gvg_once(
+                f"NavigateToPose failed with error {result_code}"
+            )
+            return
         # Retire the completed leg before publishing its terminal event.  The
         # qualification runner can dispatch the next whole-house waypoint as
         # soon as it receives this Bool.  Clearing via a subscription to our
@@ -1518,8 +1760,7 @@ class RouteCoordinator:
         if self.latest_priors_stamp_ns is not None:
             age_s = (now_ns - self.latest_priors_stamp_ns) / 1.0e9
             if age_s < 0.0 or age_s > self.module2_prior_ttl_s:
-                self.latest_priors = {}
-                self.latest_priors_stamp_ns = None
+                self._clear_latest_priors()
                 self.node.get_logger().warning(
                     "Module2 edge prior expired; restoring geometry-only route"
                 )
@@ -1617,9 +1858,7 @@ class RouteCoordinator:
         self.route_active = False
         self.pending_goal = None
         self._clear_pending_prior_request()
-        self.latest_priors = {}
-        self.latest_priors_stamp_ns = None
-        self.latest_prior_model_id = None
+        self._clear_latest_priors()
         self.tracker = None
         self.navigation_goal_pending = False
         self.navigation_goal_handle = None

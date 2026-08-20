@@ -11,7 +11,7 @@ from robot_route_planner.cognitive_graph_adapter import (
 )
 from robot_route_planner.map_io import OccupancyMap
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
-from robot_route_planner.ros_node import RouteCoordinator
+from robot_route_planner.ros_node import GraphSwitchGeneration, RouteCoordinator
 
 
 FOOTPRINT = {
@@ -128,6 +128,11 @@ def test_candidate_inverse_transform_and_hybrid_keep_only_feasible_edges():
     assert hybrid.graph_id.startswith('physical:hybrid:')
     assert any(edge.metadata.get('source') == 'module3_connector' for edge in hybrid.edges)
     assert all(edge.static_traversability == Traversability.FEASIBLE for edge in hybrid.edges)
+    neighbours = {node.id: set() for node in hybrid.nodes}
+    for edge in hybrid.edges:
+        neighbours[edge.from_node].add(edge.to_node)
+        neighbours[edge.to_node].add(edge.from_node)
+    assert all(node.degree == len(neighbours[node.id]) for node in hybrid.nodes)
 
 
 def test_stale_malformed_and_wall_crossing_candidates_are_rejected():
@@ -162,6 +167,118 @@ def test_stale_malformed_and_wall_crossing_candidates_are_rejected():
         )
 
 
+def test_edge_endpoints_and_directed_connectivity_are_enforced():
+    disconnected = _candidate()
+    disconnected.edges[0].polyline_canvas[0] = _point(-0.4, 0.0)
+    with pytest.raises(ValueError, match='endpoints'):
+        validate_cognitive_graph_candidate(
+            disconnected,
+            now_ns=10_100_000_000,
+            expected=_identity(),
+            last_source_sequence=6,
+            occupancy=_map(),
+            footprint=FOOTPRINT,
+        )
+
+    one_way = _candidate()
+    one_way.edges[0].directionality = one_way.edges[0].DIRECTION_DIRECTED
+    with pytest.raises(ValueError, match='strongly connected'):
+        validate_cognitive_graph_candidate(
+            one_way,
+            now_ns=10_100_000_000,
+            expected=_identity(),
+            last_source_sequence=6,
+            occupancy=_map(),
+            footprint=FOOTPRINT,
+        )
+
+    reverse = SimpleNamespace(**vars(one_way.edges[0]))
+    reverse.edge_id = 'e1'
+    reverse.source_node_id = 'b'
+    reverse.target_node_id = 'a'
+    reverse.source_state_id = 2
+    reverse.target_state_id = 1
+    reverse.polyline_canvas = list(reversed(one_way.edges[0].polyline_canvas))
+    one_way.edges.append(reverse)
+    validated = validate_cognitive_graph_candidate(
+        one_way,
+        now_ns=10_100_000_000,
+        expected=_identity(),
+        last_source_sequence=6,
+        occupancy=_map(),
+        footprint=FOOTPRINT,
+    )
+    assert {(edge.from_node, edge.to_node) for edge in validated.graph.edges} == {
+        (1, 2), (2, 1)
+    }
+
+
+def test_first_invalid_candidate_does_not_bind_generation_identity():
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = None
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_mode = 'shadow'
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, '', 'map', '', 0, 'physical', 4, '')
+    coordinator.map = _map()
+    coordinator.defaults = {'footprint': FOOTPRINT}
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=10_100_000_000)
+    coordinator._publish_structural_status = lambda *_args: None
+    invalid = _candidate()
+    invalid.source_physical_graph_revision = 99
+
+    coordinator._on_cognitive_graph(invalid)
+
+    assert coordinator.cognitive_graph_identity == CognitiveGraphIdentity(
+        3, '', 'map', '', 0, 'physical', 4, '')
+    assert coordinator.cognitive_graph_last_sequence == 0
+
+
+def test_reset_clears_candidate_generation_state():
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.cognitive_graph_identity = _identity()
+    coordinator.gvg_graph = _physical_graph()
+    coordinator.graph = Graph('cognitive', 5, 'map', 0.05, [], [])
+    coordinator.graph_generation = 4
+    coordinator.graph_switch_generation = 7
+    coordinator.cognitive_graph_switch_pending = True
+    coordinator.cognitive_graph_last_sequence = 9
+    coordinator.pending_deadline_ns = 1
+    coordinator.pending_prior_request_id = 2
+    coordinator.pending_prior_graph_id = 'cognitive'
+    coordinator.pending_prior_graph_revision = 5
+    coordinator.pending_prior_started_ns = 1
+    coordinator.pending_prior_model_id = 'model'
+    coordinator.latest_priors = {1: (1.0, 1.0)}
+    coordinator.latest_priors_stamp_ns = 1
+    coordinator.latest_prior_model_id = 'model'
+    coordinator.latest_priors_request_id = 2
+    coordinator.latest_priors_graph_id = 'cognitive'
+    coordinator.latest_priors_graph_revision = 5
+    coordinator.cognitive_constraints_cache = SimpleNamespace(
+        invalidate=lambda: None)
+    fallbacks = []
+    coordinator._fallback_to_gvg_once = lambda reason: fallbacks.append(reason)
+
+    coordinator._on_reset_event(None)
+
+    identity = coordinator.cognitive_graph_identity
+    assert identity.reset_epoch == 4
+    assert identity.recurrent_session_id == ''
+    assert identity.cognitive_tile_id == ''
+    assert identity.tile_revision == 0
+    assert identity.model_id == ''
+    assert coordinator.cognitive_graph_last_sequence == 0
+    assert coordinator.latest_priors == {}
+    assert coordinator.graph_generation == 5
+    assert coordinator.graph_switch_generation == 8
+    assert fallbacks == ['simulation reset invalidated cognitive graph']
+
+
 def test_primary_fallback_is_single_and_whole_graph():
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
     coordinator.primary_fallback_used = False
@@ -178,3 +295,44 @@ def test_primary_fallback_is_single_and_whole_graph():
     coordinator._fallback_to_gvg_once('route failed again')
 
     assert switches == [('physical', 'route failed', True)]
+
+
+def test_set_route_graph_rejection_requests_one_whole_gvg_fallback():
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_switch_pending = True
+    coordinator.graph = Graph('cognitive', 5, 'map', 0.05, [], [])
+    coordinator.gvg_graph = _physical_graph()
+    coordinator.StructuralGraphStatus = SimpleNamespace(LAST_KNOWN_GOOD=2)
+    coordinator._publish_structural_status = lambda *_args: None
+    switches = []
+    coordinator._request_graph_switch = lambda graph, reason, fallback: switches.append(
+        (graph.graph_id, reason, fallback)
+    )
+    rejected = SimpleNamespace(
+        result=lambda: SimpleNamespace(success=False))
+
+    coordinator._finish_cognitive_graph_switch(
+        rejected, coordinator.graph, None, 'selected rejected', False)
+    coordinator._finish_cognitive_graph_switch(
+        rejected, coordinator.graph, None, 'selected rejected again', False)
+
+    assert switches == [('physical', 'selected rejected', True)]
+
+
+def test_old_set_route_graph_callback_generation_is_discarded():
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.request_id = 9
+    coordinator.graph_generation = 4
+    coordinator.graph_switch_generation = 7
+    coordinator.cognitive_graph_switch_pending = True
+    old = GraphSwitchGeneration(7, 8, 4)
+    evaluated = []
+    future = SimpleNamespace(result=lambda: evaluated.append(True))
+
+    coordinator._finish_cognitive_graph_switch(
+        future, _physical_graph(), None, 'old switch', False, old)
+
+    assert evaluated == []
+    assert coordinator.cognitive_graph_switch_pending is False

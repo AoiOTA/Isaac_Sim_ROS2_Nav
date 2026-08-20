@@ -161,6 +161,7 @@ def validate_cognitive_graph_candidate(
         or not message.trusted_write
         or int(message.rejection_mask) != 0
         or not re.fullmatch(r'cpg-[0-9a-f]{24}', str(message.graph_id))
+        or int(message.topology_revision) < 1
         or int(message.value_sequence) < 1
         or not observed.recurrent_session_id
         or not observed.cognitive_tile_id
@@ -173,6 +174,7 @@ def validate_cognitive_graph_candidate(
     ) * occupancy.resolution_m
     nodes = []
     node_ids = {}
+    node_positions = {}
     for index, item in enumerate(message.nodes):
         external = str(item.node_id)
         if not external or external in node_ids:
@@ -189,6 +191,7 @@ def validate_cognitive_graph_candidate(
         row, column = occupancy.world_to_pixel(*position)
         node_id = index + 1
         node_ids[external] = node_id
+        node_positions[external] = position
         nodes.append(Node(
             node_id,
             position,
@@ -201,6 +204,11 @@ def validate_cognitive_graph_candidate(
         raise ValueError('cognitive graph requires at least two nodes')
     edges = []
     directed_pairs = set()
+    endpoint_tolerance_m = max(
+        1.0e-6,
+        1.5 * occupancy.resolution_m,
+        1.5 * float(footprint['sweep_sample_spacing_m']),
+    )
     for item in message.edges:
         source_name = str(item.source_node_id)
         target_name = str(item.target_node_id)
@@ -215,8 +223,29 @@ def validate_cognitive_graph_candidate(
             [_to_map(inverse, point.x, point.y) for point in item.polyline_canvas],
             dtype=np.float64,
         )
+        numeric_values = (
+            float(item.transition_probability),
+            float(item.evidence),
+        )
+        if (
+            not all(math.isfinite(value) for value in numeric_values)
+            or not 0.0 <= numeric_values[0] <= 1.0
+            or numeric_values[1] < 0.0
+            or int(item.source_state_id) < 0
+            or int(item.target_state_id) < 0
+            or int(item.success_count) < 0
+            or int(item.failure_count) < 0
+        ):
+            raise ValueError('edge has invalid numeric evidence')
         if float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum()) <= 1.0e-6:
             raise ValueError('edge has zero length')
+        if (
+            math.dist(tuple(points[0]), node_positions[source_name])
+            > endpoint_tolerance_m
+            or math.dist(tuple(points[-1]), node_positions[target_name])
+            > endpoint_tolerance_m
+        ):
+            raise ValueError('edge polyline endpoints do not match referenced nodes')
         directions = [(source_name, target_name, points)]
         if int(item.directionality) == int(item.DIRECTION_BIDIRECTIONAL):
             directions.append((target_name, source_name, points[::-1].copy()))
@@ -242,20 +271,32 @@ def validate_cognitive_graph_candidate(
                 },
             ))
     adjacency = {node.id: set() for node in nodes}
+    reverse_adjacency = {node.id: set() for node in nodes}
     for edge in edges:
         adjacency[edge.from_node].add(edge.to_node)
-        adjacency[edge.to_node].add(edge.from_node)
-    visited = {nodes[0].id}
-    pending = [nodes[0].id]
-    while pending:
-        current = pending.pop()
-        for other in adjacency[current] - visited:
-            visited.add(other)
-            pending.append(other)
-    if len(visited) != len(nodes):
-        raise ValueError('cognitive graph is disconnected')
+        reverse_adjacency[edge.to_node].add(edge.from_node)
+
+    def reachable(edges_by_source: dict[int, set[int]]) -> set[int]:
+        visited = {nodes[0].id}
+        pending = [nodes[0].id]
+        while pending:
+            current = pending.pop()
+            for other in edges_by_source[current] - visited:
+                visited.add(other)
+                pending.append(other)
+        return visited
+
+    if (
+        len(reachable(adjacency)) != len(nodes)
+        or len(reachable(reverse_adjacency)) != len(nodes)
+    ):
+        raise ValueError('cognitive graph is not strongly connected')
+    neighbours = {node.id: set() for node in nodes}
+    for edge in edges:
+        neighbours[edge.from_node].add(edge.to_node)
+        neighbours[edge.to_node].add(edge.from_node)
     for node in nodes:
-        node.degree = len(adjacency[node.id])
+        node.degree = len(neighbours[node.id])
         node.node_type = NodeType.ENDPOINT if node.degree == 1 else (
             NodeType.JUNCTION if node.degree >= 3 else NodeType.LOOP_ANCHOR
         )
@@ -331,6 +372,15 @@ def build_hybrid_graph(
         next_edge += 2
     graph.graph_id = f'{physical.graph_id}:hybrid:{cognitive.topology_revision}'
     graph.revision = max(physical.revision + 1, cognitive.topology_revision)
+    neighbours = {node.id: set() for node in graph.nodes}
+    for edge in graph.edges:
+        neighbours[edge.from_node].add(edge.to_node)
+        neighbours[edge.to_node].add(edge.from_node)
+    for node in graph.nodes:
+        node.degree = len(neighbours[node.id])
+        node.node_type = NodeType.ENDPOINT if node.degree == 1 else (
+            NodeType.JUNCTION if node.degree >= 3 else NodeType.LOOP_ANCHOR
+        )
     return graph
 
 

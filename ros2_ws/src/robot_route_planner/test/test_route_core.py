@@ -246,6 +246,83 @@ def test_active_prior_refresh_arms_a_bounded_response_deadline() -> None:
     assert coordinator.pending_prior_started_ns == 6_000_000_000
 
 
+def test_stale_prior_is_removed_at_consumption_between_timer_ticks() -> None:
+    warnings = []
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.request_id = 5
+    coordinator.graph = SimpleNamespace(graph_id='test:gvg_v1', revision=3)
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator.latest_priors = {7: (1.0, 0.8)}
+    coordinator.latest_priors_stamp_ns = 1_000_000_000
+    coordinator.latest_prior_model_id = 'srdr-v310'
+    coordinator.latest_priors_request_id = 5
+    coordinator.latest_priors_graph_id = 'test:gvg_v1'
+    coordinator.latest_priors_graph_revision = 3
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=3_100_000_000)
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        warning=lambda message: warnings.append(message),
+    ))
+
+    assert coordinator._priors_for_consumption(
+        coordinator.latest_priors
+    ) == {}
+    assert coordinator.latest_priors == {}
+    assert any('geometry-only' in message for message in warnings)
+
+
+def test_old_dynamic_edges_callback_generation_is_discarded() -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.request_id = 4
+    coordinator.graph_generation = 2
+    coordinator.graph = SimpleNamespace(graph_id='graph-a', revision=3)
+    generation = coordinator._route_callback_generation()
+    coordinator.graph_generation = 3
+    evaluated = []
+    future = SimpleNamespace(result=lambda: evaluated.append(True))
+
+    coordinator._after_edge_update(future, 1, 2, generation)
+
+    assert evaluated == []
+
+
+@pytest.mark.parametrize('failure_kind', ('dynamic', 'route', 'navigation'))
+def test_primary_async_failures_request_exactly_one_fallback(failure_kind) -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.request_id = 6
+    coordinator.graph_generation = 2
+    coordinator.graph = SimpleNamespace(graph_id='cognitive', revision=5)
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.primary_fallback_used = False
+    coordinator.navigation_goal_pending = True
+    coordinator.navigation_failed = False
+    coordinator.tracker = object()
+    coordinator.goal_complete_pub = SimpleNamespace(publish=lambda _message: None)
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        warning=lambda _message: None,
+    ))
+    reasons = []
+
+    def fallback(reason):
+        coordinator.primary_fallback_used = True
+        reasons.append(reason)
+
+    coordinator._fallback_to_gvg_once = fallback
+    rejected = SimpleNamespace(result=lambda: SimpleNamespace(
+        success=False, accepted=False,
+    ))
+    for _ in range(2):
+        if failure_kind == 'dynamic':
+            coordinator._after_edge_update(rejected, 1, 2)
+        elif failure_kind == 'route':
+            coordinator._on_route_goal_handle(rejected)
+        else:
+            coordinator._on_navigation_goal_handle(rejected)
+
+    assert len(reasons) == 1
+
+
 def _edge(edge_id, source, target, points, clearance=0.5):
     polyline = np.asarray(points, dtype=float)
     length = float(np.linalg.norm(np.diff(polyline, axis=0), axis=1).sum())
