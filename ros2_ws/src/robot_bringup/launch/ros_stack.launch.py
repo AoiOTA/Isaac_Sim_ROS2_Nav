@@ -17,9 +17,10 @@ import yaml
 
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
-from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import cognitive_nav2_parameters
+from robot_bringup.mode_contract import validate_cognitive_graph_mode
 from robot_bringup.mode_contract import validate_cognitive_profile
+from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
@@ -37,6 +38,7 @@ _TELEOP_SPEED_ARGUMENTS = (
     ('teleop_max_linear_speed', 'max_linear_speed'),
     ('teleop_max_angular_speed', 'max_angular_speed'),
 )
+
 
 def _write_cognitive_nav2_overlay(profile):
     """Write the exact-node overlay that must follow the A21 overlay."""
@@ -183,10 +185,20 @@ def _launch_setup(context):
         )
     except ValueError as exc:
         raise RuntimeError(f'invalid cognitive_profile: {exc}') from exc
+    try:
+        cognitive_graph_mode = validate_cognitive_graph_mode(
+            LaunchConfiguration('cognitive_graph_mode').perform(context))
+    except ValueError as exc:
+        raise RuntimeError(f'invalid cognitive_graph_mode: {exc}') from exc
     cognitive_overlay_file = None
     if nav2_profile == 'v6_low_obstacle_isolation':
         cognitive_overlay_file = _write_cognitive_nav2_overlay(
             cognitive_profile)
+    module2_enabled = (
+        'true' if cognitive_profile.module2_enabled else 'false'
+    ) if nav2_profile == 'v6_low_obstacle_isolation' else (
+        LaunchConfiguration('module2_enabled').perform(context)
+    )
     requested_nav2_overlay = LaunchConfiguration(
         'nav2_profile_params_file').perform(context).strip()
     nav2_profile_params_file = Path(requested_nav2_overlay).expanduser() \
@@ -221,6 +233,8 @@ def _launch_setup(context):
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
         f'nav2_profile={nav2_profile}, '
         f'cognitive_profile={cognitive_profile.name}, '
+        f'module2_enabled={module2_enabled}, '
+        f'cognitive_graph_mode={cognitive_graph_mode}, '
         f'controller_frequency='
         f'{nav2_controller_profile.controller_frequency:g}Hz, '
         f'model_dt={nav2_controller_profile.model_dt:g}s, '
@@ -393,8 +407,7 @@ def _launch_setup(context):
                 'nav2_params_file': runtime_files.nav2_params_file,
                 'nav2_profile_params_file': str(nav2_profile_params_file),
                 'structural_map_file': selection.occupancy_map_file,
-                'module2_enabled': LaunchConfiguration(
-                    'module2_enabled').perform(context),
+                'module2_enabled': module2_enabled,
                 'route_graph_file': LaunchConfiguration(
                     'route_graph_file').perform(context),
                 'feasible_only_largest_component': LaunchConfiguration(
@@ -403,12 +416,7 @@ def _launch_setup(context):
                     'module2_response_timeout_s').perform(context),
                 'module2_prior_ttl_s': LaunchConfiguration(
                     'module2_prior_ttl_s').perform(context),
-                'cognitive_graph_mode': (
-                    cognitive_profile.cognitive_graph_mode
-                    if nav2_profile == 'v6_low_obstacle_isolation'
-                    else LaunchConfiguration(
-                        'cognitive_graph_mode').perform(context)
-                ),
+                'cognitive_graph_mode': cognitive_graph_mode,
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -443,6 +451,10 @@ def _launch_setup(context):
                 {
                     'use_sim_time': use_sim_time,
                     'initial_pose_source': initial_pose_source,
+                    'startup_timeout': LaunchConfiguration(
+                        'activation_startup_timeout'),
+                    'startup_timeout_policy': LaunchConfiguration(
+                        'activation_startup_policy'),
                 },
             ],
         )
@@ -574,7 +586,9 @@ def generate_launch_description():
             description='explicit benchmark/custom Nav2 overlay YAML'),
         DeclareLaunchArgument(
             'cognitive_profile', default_value='M0',
-            description='M0, M1, M2, or M3 cognitive write contract'),
+            description=(
+                'M0, M1, M2, or M3 Module2 local-planning contract; '
+                'independent from cognitive_graph_mode')),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('route_graph_file', default_value=''),
         DeclareLaunchArgument(
@@ -585,6 +599,12 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cognitive_graph_mode', default_value='gvg',
             description='gvg, shadow, hybrid, or primary'),
+        DeclareLaunchArgument(
+            'activation_startup_timeout', default_value='120.0',
+            description='bounded Nav2 activation readiness deadline'),
+        DeclareLaunchArgument(
+            'activation_startup_policy', default_value='fail_closed',
+            description='fail_closed or wait_for_seed'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(

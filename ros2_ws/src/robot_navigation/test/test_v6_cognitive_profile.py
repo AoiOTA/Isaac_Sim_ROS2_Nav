@@ -32,18 +32,18 @@ def test_m0_m3_modes_preserve_shadow_and_control_ownership():
     assert modes['M0'] == {
         'obstacle_layer_mode': 'off',
         'risk_critic_mode': 'off',
-        'cognitive_graph_mode': 'gvg',
+        'module2_enabled': False,
     }
     assert modes['M1']['obstacle_layer_mode'] == 'shadow'
     assert modes['M1']['risk_critic_mode'] == 'shadow'
-    assert modes['M1']['cognitive_graph_mode'] == 'shadow'
+    assert modes['M1']['module2_enabled'] is True
     assert modes['M2'] == {
         'obstacle_layer_mode': 'active',
         'risk_critic_mode': 'off',
-        'cognitive_graph_mode': 'hybrid',
+        'module2_enabled': True,
     }
     assert modes['M3'] == {
         'obstacle_layer_mode': 'active',
         'risk_critic_mode': 'active',
-        'cognitive_graph_mode': 'primary',
+        'module2_enabled': True,
     }

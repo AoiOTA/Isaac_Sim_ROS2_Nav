@@ -22,6 +22,8 @@ RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
 RUN_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_isaac.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
+RUN_V6_LOW_OBSTACLES = (
+    REPOSITORY_ROOT / 'scripts' / 'run_v6_kujiale_low_obstacles.sh')
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
 
@@ -165,6 +167,16 @@ def test_common_requires_only_the_allowed_v6_integration_underlay():
     assert 'bio_nav_interfaces/msg/local_risk_grid.hpp' in source
     assert 'source_ros --require-integration-underlay' in BUILD_ROS2.read_text(
         encoding='utf-8')
+
+
+def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
+    source = RUN_V6_LOW_OBSTACLES.read_text(encoding='utf-8')
+    assert 'run_ros_profile gvg fail_closed auto M3' in source
+    assert 'run_ros_profile gvg wait_for_seed rviz M1' in source
+    assert 'C/shadow entrypoints fix cognitive_graph_mode=gvg' in source
+    assert '^(shadow|hybrid|primary)$' in source
+    assert 'run_ros_profile "${graph_mode}" fail_closed auto M3' in source
+    assert 'cognitive_graph_mode:="${graph_mode}"' in source
 
 
 @pytest.mark.parametrize(

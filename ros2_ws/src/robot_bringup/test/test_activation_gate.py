@@ -328,6 +328,54 @@ def test_required_recovery_failure_retries_then_fails_without_advancing():
     assert 'clear global costmap' in fatals[0]
 
 
+def test_shadow_wait_policy_keeps_gate_nonfatal_after_startup_timeout():
+    logger = _Logger()
+    fatals = []
+    gate = SimpleNamespace(
+        _started_at=10.0,
+        _startup_timeout=5.0,
+        _startup_timeout_policy='wait_for_seed',
+        _startup_timeout_reported=False,
+        _tracker=SimpleNamespace(
+            missing_requirements=lambda now: ['stable map->odom']),
+        _last_failure='',
+        _managed_nodes=['controller_server'],
+        _set_fatal=fatals.append,
+        get_logger=lambda: logger,
+    )
+
+    assert not Nav2ActivationGate._handle_startup_timeout(gate, 15.1)
+    assert not Nav2ActivationGate._handle_startup_timeout(gate, 20.0)
+    assert fatals == []
+    assert logger.messages == [(
+        'warning',
+        'Nav2 activation gate timed out after 5.1s; '
+        'missing=stable map->odom; last_failure=none; '
+        "managed_nodes=['controller_server']; "
+        'startup_timeout_policy=wait_for_seed, continuing diagnostics '
+        'with Nav2 inactive',
+    )]
+
+
+def test_autonomy_policy_fails_closed_after_startup_timeout():
+    fatals = []
+    gate = SimpleNamespace(
+        _started_at=10.0,
+        _startup_timeout=5.0,
+        _startup_timeout_policy='fail_closed',
+        _startup_timeout_reported=False,
+        _tracker=SimpleNamespace(
+            missing_requirements=lambda now: ['initial pose seed']),
+        _last_failure='',
+        _managed_nodes=['controller_server'],
+        _set_fatal=fatals.append,
+    )
+
+    assert Nav2ActivationGate._handle_startup_timeout(gate, 15.1)
+    assert len(fatals) == 1
+    assert 'missing=initial pose seed' in fatals[0]
+
+
 def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
     source = (
         PACKAGE_ROOT / 'robot_bringup' / 'activation_gate.py'

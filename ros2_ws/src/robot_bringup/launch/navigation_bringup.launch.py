@@ -52,6 +52,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cognitive_graph_mode', default_value='gvg'),
         DeclareLaunchArgument(
+            'activation_startup_timeout', default_value='120.0'),
+        DeclareLaunchArgument(
+            'activation_startup_policy', default_value='fail_closed'),
+        DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
                 'ISAAC_NAV_SPAWN_POSES', default_value='')),
@@ -110,6 +114,10 @@ def generate_launch_description():
                     'module2_prior_ttl_s'),
                 'cognitive_graph_mode': LaunchConfiguration(
                     'cognitive_graph_mode'),
+                'activation_startup_timeout': LaunchConfiguration(
+                    'activation_startup_timeout'),
+                'activation_startup_policy': LaunchConfiguration(
+                    'activation_startup_policy'),
                 'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
                 'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'initial_pose_source': LaunchConfiguration(

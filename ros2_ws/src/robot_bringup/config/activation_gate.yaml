@@ -6,6 +6,10 @@ nav2_activation_gate:
     # readiness budget only; it does not relax map, TF, collision, or route
     # acceptance contracts.
     startup_timeout: 120.0
+    # Normal autonomy remains bounded and fail-closed. Shadow enrollment may
+    # override this with wait_for_seed to keep localization diagnostics alive
+    # without activating Nav2 before an initial-pose seed is available.
+    startup_timeout_policy: fail_closed
     recovery_timeout: 30.0
     recovery_service_timeout: 3.0
     check_period: 0.10

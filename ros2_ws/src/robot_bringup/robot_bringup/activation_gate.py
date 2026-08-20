@@ -48,6 +48,7 @@ class Nav2ActivationGate(Node):
     def __init__(self):
         super().__init__('nav2_activation_gate')
         self.declare_parameter('startup_timeout', 30.0)
+        self.declare_parameter('startup_timeout_policy', 'fail_closed')
         self.declare_parameter('recovery_timeout', 30.0)
         self.declare_parameter('recovery_service_timeout', 3.0)
         self.declare_parameter('check_period', 0.10)
@@ -70,6 +71,13 @@ class Nav2ActivationGate(Node):
             'initial_pose_reseed_service', '/initial_pose/reseed')
 
         self._startup_timeout = self._positive_parameter('startup_timeout')
+        self._startup_timeout_policy = str(
+            self.get_parameter('startup_timeout_policy').value
+        ).strip().lower()
+        if self._startup_timeout_policy not in {
+                'fail_closed', 'wait_for_seed'}:
+            raise ValueError(
+                'startup_timeout_policy must be fail_closed or wait_for_seed')
         self._recovery_timeout = self._positive_parameter(
             'recovery_timeout')
         self._recovery_service_timeout = self._positive_parameter(
@@ -120,6 +128,7 @@ class Nav2ActivationGate(Node):
         self._tracker = ReadinessTracker(readiness_config)
         self._started_at = time.monotonic()
         self._last_status_at = self._started_at
+        self._startup_timeout_reported = False
         self._next_attempt_at = self._started_at
         self._attempts = 0
         self._last_failure = ''
@@ -299,13 +308,7 @@ class Nav2ActivationGate(Node):
             return
         if self._activated:
             return
-        if now - self._started_at >= self._startup_timeout:
-            missing = ', '.join(self._tracker.missing_requirements(now))
-            self._set_fatal(
-                f'Nav2 activation gate timed out after '
-                f'{now - self._started_at:.1f}s; missing={missing or "none"}; '
-                f'last_failure={self._last_failure or "none"}; '
-                f'managed_nodes={self._managed_nodes}')
+        if self._handle_startup_timeout(now):
             return
         if (self._request_in_flight or self._state_query_in_flight
                 or self._snapshot_in_flight):
@@ -327,6 +330,33 @@ class Nav2ActivationGate(Node):
             self._log_waiting(now, missing + service_missing)
             return
         self._start_state_query('activation')
+
+    def _handle_startup_timeout(self, now):
+        """Apply the explicit startup deadline policy.
+
+        ``wait_for_seed`` is an enrollment mode: readiness checks and their
+        diagnostics continue, but Nav2 remains inactive until every normal
+        requirement is satisfied. All other gate failures remain fatal.
+        """
+        elapsed = now - self._started_at
+        if elapsed < self._startup_timeout:
+            return False
+        missing = ', '.join(self._tracker.missing_requirements(now))
+        detail = (
+            f'Nav2 activation gate timed out after {elapsed:.1f}s; '
+            f'missing={missing or "none"}; '
+            f'last_failure={self._last_failure or "none"}; '
+            f'managed_nodes={self._managed_nodes}'
+        )
+        if self._startup_timeout_policy == 'wait_for_seed':
+            if not self._startup_timeout_reported:
+                self.get_logger().warning(
+                    f'{detail}; startup_timeout_policy=wait_for_seed, '
+                    'continuing diagnostics with Nav2 inactive')
+                self._startup_timeout_reported = True
+            return False
+        self._set_fatal(detail)
+        return True
 
     def _ensure_immutable_map_active(self, now):
         """Repair a missed launch transition before waiting indefinitely on /map."""

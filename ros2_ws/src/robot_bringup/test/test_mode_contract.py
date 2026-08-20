@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import pytest
-from robot_bringup.mode_contract import posegraph_prefix
 from robot_bringup.mode_contract import cognitive_nav2_parameters
+from robot_bringup.mode_contract import posegraph_prefix
+from robot_bringup.mode_contract import validate_cognitive_graph_mode
 from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
@@ -54,17 +55,17 @@ def test_v6_low_obstacle_profile_keeps_valid_mppi_timing():
 def test_m0_m3_contract_drives_final_nav2_modes_and_critic_list():
     modes_file = PACKAGE_ROOT / 'config' / 'modes.yaml'
     expected = {
-        'M0': ('off', 'off', 'gvg'),
-        'M1': ('shadow', 'shadow', 'shadow'),
-        'M2': ('active', 'off', 'hybrid'),
-        'M3': ('active', 'active', 'primary'),
+        'M0': ('off', 'off', False),
+        'M1': ('shadow', 'shadow', True),
+        'M2': ('active', 'off', True),
+        'M3': ('active', 'active', True),
     }
     for name, values in expected.items():
         profile = validate_cognitive_profile(name, modes_file)
         assert (
             profile.obstacle_layer_mode,
             profile.risk_critic_mode,
-            profile.cognitive_graph_mode,
+            profile.module2_enabled,
         ) == values
         final = cognitive_nav2_parameters(profile)
         follow_path = final['controller_server']['ros__parameters'][
@@ -74,6 +75,13 @@ def test_m0_m3_contract_drives_final_nav2_modes_and_critic_list():
         for costmap in ('local_costmap', 'global_costmap'):
             assert final[costmap][costmap]['ros__parameters'][
                 'cognitive_obstacle_layer']['mode'] == values[0]
+
+
+def test_graph_mode_is_an_independent_validated_experiment_axis():
+    for mode in ('gvg', 'shadow', 'hybrid', 'primary'):
+        assert validate_cognitive_graph_mode(mode.upper()) == mode
+    with pytest.raises(ValueError, match='cognitive_graph_mode'):
+        validate_cognitive_graph_mode('M3')
 
 
 def test_final_cognitive_overlay_replaces_the_later_a21_critic_list():
@@ -236,6 +244,8 @@ def test_robot_runtime_files_are_explicit_and_checked(tmp_path):
 def test_navigation_uses_activation_gate_instead_of_autostart():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+    bringup_source = (
+        PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
     nav_source = (
         PACKAGE_ROOT.parent
         / 'robot_navigation'
@@ -255,6 +265,23 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
         in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
     assert 'validate_nav2_profile_params_file(' in core_source
     assert 'invalid nav2_profile_params_file:' in core_source
+    assert "'startup_timeout_policy': LaunchConfiguration(" in core_source
+    assert "'activation_startup_policy', default_value='fail_closed'" \
+        in core_source
+    assert "'activation_startup_timeout': LaunchConfiguration(" \
+        in bringup_source
+    assert "'activation_startup_policy': LaunchConfiguration(" \
+        in bringup_source
+
+
+def test_v6_local_arms_do_not_select_the_cognitive_graph_mode():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+    assert "'cognitive_graph_mode': cognitive_graph_mode" in core_source
+    assert 'cognitive_profile.cognitive_graph_mode' not in core_source
+    assert "'true' if cognitive_profile.module2_enabled else 'false'" \
+        in core_source
+    assert "'module2_enabled': module2_enabled" in core_source
 
 
 def test_only_navigation_enables_the_parallel_nearfield_safety_scan():

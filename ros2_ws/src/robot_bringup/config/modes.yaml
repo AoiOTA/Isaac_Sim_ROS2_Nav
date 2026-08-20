@@ -56,16 +56,16 @@ cognitive_profiles:
   M0:
     obstacle_layer_mode: 'off'
     risk_critic_mode: 'off'
-    cognitive_graph_mode: gvg
+    module2_enabled: false
   M1:
     obstacle_layer_mode: shadow
     risk_critic_mode: shadow
-    cognitive_graph_mode: shadow
+    module2_enabled: true
   M2:
     obstacle_layer_mode: active
     risk_critic_mode: 'off'
-    cognitive_graph_mode: hybrid
+    module2_enabled: true
   M3:
     obstacle_layer_mode: active
     risk_critic_mode: active
-    cognitive_graph_mode: primary
+    module2_enabled: true

@@ -26,11 +26,12 @@ NAV2_PROFILES = frozenset({
     'bio_nav_rgbd_risk_shadow', 'bio_nav_rgbd_risk_ab',
     'bio_nav_rgbd_risk_static_opt_in'})
 COGNITIVE_PROFILES = frozenset({'M0', 'M1', 'M2', 'M3'})
+COGNITIVE_GRAPH_MODES = frozenset({'gvg', 'shadow', 'hybrid', 'primary'})
 _COGNITIVE_PROFILE_CONTRACT = {
-    'M0': ('off', 'off', 'gvg'),
-    'M1': ('shadow', 'shadow', 'shadow'),
-    'M2': ('active', 'off', 'hybrid'),
-    'M3': ('active', 'active', 'primary'),
+    'M0': ('off', 'off', False),
+    'M1': ('shadow', 'shadow', True),
+    'M2': ('active', 'off', True),
+    'M3': ('active', 'active', True),
 }
 _A21_COGNITIVE_CRITICS = (
     'ConstraintCritic', 'CostCritic', 'GoalCritic', 'GoalAngleCritic',
@@ -79,12 +80,12 @@ class Nav2ControllerProfile:
 
 @dataclass(frozen=True)
 class CognitiveProfile:
-    """Executable cognitive write and graph-routing contract."""
+    """Executable Module2 local-planning write contract."""
 
     name: str
     obstacle_layer_mode: str
     risk_critic_mode: str
-    cognitive_graph_mode: str
+    module2_enabled: bool
 
 
 def validate_cognitive_profile(value, modes_file):
@@ -103,10 +104,14 @@ def validate_cognitive_profile(value, modes_file):
         root.get('cognitive_profiles'), 'cognitive_profiles')
     configured = _profile_mapping(
         profiles.get(name), f'cognitive_profiles.{name}')
+    module2_enabled = configured.get('module2_enabled')
+    if not isinstance(module2_enabled, bool):
+        raise ValueError(
+            f'cognitive_profiles.{name}.module2_enabled must be boolean')
     actual = (
         str(configured.get('obstacle_layer_mode', '')).strip().lower(),
         str(configured.get('risk_critic_mode', '')).strip().lower(),
-        str(configured.get('cognitive_graph_mode', '')).strip().lower(),
+        module2_enabled,
     )
     expected = _COGNITIVE_PROFILE_CONTRACT[name]
     if actual != expected:
@@ -114,6 +119,13 @@ def validate_cognitive_profile(value, modes_file):
             f'cognitive_profiles.{name} violates M0-M3 contract: '
             f'expected {expected}, got {actual}')
     return CognitiveProfile(name, *actual)
+
+
+def validate_cognitive_graph_mode(value):
+    """Validate the graph experiment arm independently from M0--M3."""
+    mode = value.strip().lower()
+    _require_choice('cognitive_graph_mode', mode, COGNITIVE_GRAPH_MODES)
+    return mode
 
 
 def cognitive_nav2_parameters(profile):

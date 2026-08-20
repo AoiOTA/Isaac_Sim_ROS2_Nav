@@ -8,30 +8,66 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 profile="${1:-}"
-[[ -n "${profile}" ]] \
-  || die "usage: $0 isaac|ros|runner [M0|M1|M2|M3] [arguments...]"
+[[ -n "${profile}" ]] || die \
+  "usage: $0 isaac|ros|shadow|ros-d|runner [mode] [arguments...]"
 shift
 
 scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
 require_file "${scenario_file}"
+
+reject_graph_override() {
+  local argument
+  for argument in "$@"; do
+    [[ "${argument}" != cognitive_graph_mode:=* ]] || die \
+      "C/shadow entrypoints fix cognitive_graph_mode=gvg; use ros-d for D experiments"
+  done
+}
+
+run_ros_profile() {
+  local graph_mode="$1"
+  local activation_policy="$2"
+  local initial_pose_source="$3"
+  local default_cognitive_profile="$4"
+  shift 4
+  local cognitive_profile="${V6_COGNITIVE_PROFILE:-${default_cognitive_profile}}"
+  if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
+    cognitive_profile="$1"
+    shift
+  fi
+  [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] || die \
+    "V6 cognitive profile must be M0, M1, M2, or M3; got: ${cognitive_profile}"
+  export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
+  exec "${SCRIPT_DIR}/run_ros.sh" navigation \
+    odometry_mode:=estimated localization_profile:=kujiale \
+    nav2_profile:=v6_low_obstacle_isolation \
+    cognitive_profile:="${cognitive_profile}" \
+    cognitive_graph_mode:="${graph_mode}" \
+    initial_pose_source:="${initial_pose_source}" \
+    activation_startup_policy:="${activation_policy}" "$@"
+}
 
 case "${profile}" in
   isaac)
     exec "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" v6-low-obstacles "$@"
     ;;
   ros)
-    cognitive_profile="${V6_COGNITIVE_PROFILE:-M3}"
-    if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
-      cognitive_profile="$1"
-      shift
-    fi
-    [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] \
-      || die "V6 cognitive profile must be M0, M1, M2, or M3; got: ${cognitive_profile}"
-    export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
-    exec "${SCRIPT_DIR}/run_ros.sh" navigation \
-      odometry_mode:=estimated localization_profile:=kujiale \
-      nav2_profile:=v6_low_obstacle_isolation \
-      cognitive_profile:="${cognitive_profile}" "$@"
+    # C experiment: only M0--M3 changes; the physical graph stays GVG.
+    reject_graph_override "$@"
+    run_ros_profile gvg fail_closed auto M3 "$@"
+    ;;
+  shadow)
+    # Reproducible zero-seed enrollment: retain the full localization stack,
+    # keep the local Module2 arm shadow-only, and never activate Nav2 until a
+    # valid RViz initial-pose seed satisfies the normal readiness contract.
+    reject_graph_override "$@"
+    run_ros_profile gvg wait_for_seed rviz M1 "$@"
+    ;;
+  ros-d)
+    graph_mode="${1:-}"
+    [[ "${graph_mode}" =~ ^(shadow|hybrid|primary)$ ]] || die \
+      "V6 D graph mode must be shadow, hybrid, or primary; got: ${graph_mode:-empty}"
+    shift
+    run_ros_profile "${graph_mode}" fail_closed auto M3 "$@"
     ;;
   runner)
     output_directory="${1:-${PROJECT_ROOT}/data/experiment_runs/v6_kujiale_low_obstacles}"
@@ -41,5 +77,5 @@ case "${profile}" in
       scenario_file:="${scenario_file}" \
       output_directory:="${output_directory}" "$@"
     ;;
-  *) die "profile must be isaac, ros, or runner; got: ${profile}" ;;
+  *) die "profile must be isaac, ros, shadow, ros-d, or runner; got: ${profile}" ;;
 esac
