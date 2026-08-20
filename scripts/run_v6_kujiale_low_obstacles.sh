@@ -9,7 +9,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 
 profile="${1:-}"
 [[ -n "${profile}" ]] \
-  || die "usage: $0 isaac|ros|runner [arguments...]"
+  || die "usage: $0 isaac|ros|runner [M0|M1|M2|M3] [arguments...]"
 shift
 
 scenario_file="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
@@ -20,9 +20,18 @@ case "${profile}" in
     exec "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" v6-low-obstacles "$@"
     ;;
   ros)
+    cognitive_profile="${V6_COGNITIVE_PROFILE:-M3}"
+    if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
+      cognitive_profile="$1"
+      shift
+    fi
+    [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] \
+      || die "V6 cognitive profile must be M0, M1, M2, or M3; got: ${cognitive_profile}"
+    export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
     exec "${SCRIPT_DIR}/run_ros.sh" navigation \
       odometry_mode:=estimated localization_profile:=kujiale \
-      nav2_profile:=v6_low_obstacle_isolation "$@"
+      nav2_profile:=v6_low_obstacle_isolation \
+      cognitive_profile:="${cognitive_profile}" "$@"
     ;;
   runner)
     output_directory="${1:-${PROJECT_ROOT}/data/experiment_runs/v6_kujiale_low_obstacles}"

@@ -45,7 +45,8 @@ public:
   static std::string validateMessage(
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
     int64_t now_ns, const Identity & expected, uint64_t last_sequence,
-    double maximum_age_s);
+    double maximum_age_s, double maximum_ood_probability,
+    bool enforce_identity = true);
   static uint8_t obstacleCost(
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
     int maximum_soft_cost, double collision_min_height_m,
@@ -60,16 +61,22 @@ private:
     const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message);
   void publishStatus(
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
-    bool applied, const std::string & reason, double age_s);
+    bool applied, const std::string & reason, double age_s,
+    uint32_t active_cells = 0, uint8_t maximum_cost = 0,
+    uint32_t raised_cells = 0, uint32_t masked_cells = 0,
+    uint8_t maximum_cost_increase = 0);
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr latest_;
   Identity expected_;
   uint64_t last_sequence_{0};
   bool have_sequence_{false};
+  bool identity_bound_{false};
+  bool identity_parameters_configured_{false};
   std::string mode_{"off"};
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   double maximum_age_s_{0.5};
+  double maximum_ood_probability_{0.2};
   int maximum_soft_cost_{80};
   double collision_min_height_m_{0.02};
   double collision_max_height_m_{0.45};

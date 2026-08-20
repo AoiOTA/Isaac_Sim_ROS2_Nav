@@ -33,13 +33,15 @@ public:
     const std::vector<std::array<double, 3>> & trajectory,
     const std::vector<ObstacleSample> & obstacles,
     const std::array<double, 5> & direction_weights,
-    double novelty, double uncertainty, double obstacle_weight,
+    double robot_yaw, double novelty, double uncertainty, double obstacle_weight,
     double direction_weight, double novelty_weight,
     double uncertainty_weight);
   static std::string validateInputs(
     const bio_nav_interfaces::msg::CognitiveObstacleArray * obstacles,
     const bio_nav_interfaces::msg::PlanningPrior * prior, int64_t now_ns,
     double maximum_age_s, double maximum_ood_probability);
+  static std::string validateDirectionPrior(
+    const bio_nav_interfaces::msg::PlanningPrior & prior);
 
 private:
   void obstacleCallback(

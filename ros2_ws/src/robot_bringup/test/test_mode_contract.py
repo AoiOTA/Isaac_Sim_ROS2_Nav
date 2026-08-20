@@ -2,6 +2,8 @@ from pathlib import Path
 
 import pytest
 from robot_bringup.mode_contract import posegraph_prefix
+from robot_bringup.mode_contract import cognitive_nav2_parameters
+from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
@@ -47,6 +49,46 @@ def test_v6_low_obstacle_profile_keeps_valid_mppi_timing():
     assert profile.model_dt == 0.10
     assert profile.time_steps == 20
     assert profile.batch_size == 700
+
+
+def test_m0_m3_contract_drives_final_nav2_modes_and_critic_list():
+    modes_file = PACKAGE_ROOT / 'config' / 'modes.yaml'
+    expected = {
+        'M0': ('off', 'off', 'gvg'),
+        'M1': ('shadow', 'shadow', 'shadow'),
+        'M2': ('active', 'off', 'hybrid'),
+        'M3': ('active', 'active', 'primary'),
+    }
+    for name, values in expected.items():
+        profile = validate_cognitive_profile(name, modes_file)
+        assert (
+            profile.obstacle_layer_mode,
+            profile.risk_critic_mode,
+            profile.cognitive_graph_mode,
+        ) == values
+        final = cognitive_nav2_parameters(profile)
+        follow_path = final['controller_server']['ros__parameters'][
+            'FollowPath']
+        assert follow_path['critics'][-1] == 'CognitiveRiskCritic'
+        assert follow_path['CognitiveRiskCritic']['mode'] == values[1]
+        for costmap in ('local_costmap', 'global_costmap'):
+            assert final[costmap][costmap]['ros__parameters'][
+                'cognitive_obstacle_layer']['mode'] == values[0]
+
+
+def test_final_cognitive_overlay_replaces_the_later_a21_critic_list():
+    a21_follow_path = {
+        'critics': ['ConstraintCritic', 'VelocityDeadbandCritic'],
+        'VelocityDeadbandCritic': {'enabled': True},
+    }
+    profile = validate_cognitive_profile(
+        'M3', PACKAGE_ROOT / 'config' / 'modes.yaml')
+    final_follow_path = cognitive_nav2_parameters(profile)[
+        'controller_server']['ros__parameters']['FollowPath']
+    merged = {**a21_follow_path, **final_follow_path}
+    assert merged['VelocityDeadbandCritic']['enabled'] is True
+    assert merged['critics'][-2:] == [
+        'VelocityDeadbandCritic', 'CognitiveRiskCritic']
 
 
 def test_estimated_and_legacy_realistic_tf_ownership_modes_are_accepted():
@@ -204,7 +246,9 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
     assert "executable='nav2_activation_gate'" in core_source
     assert "DeclareLaunchArgument('autostart', default_value='false')" \
         in nav_source
-    assert "parameters=[params_file, profile_params_file]" in nav_source
+    assert "'cognitive_profile_params_file'" in nav_source
+    assert nav_source.index('str(a21_overlay),') < nav_source.index(
+        'cognitive_profile_params_file,')
     assert "DeclareLaunchArgument('nav2_profile', default_value='stable')" \
         in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
     assert "DeclareLaunchArgument('nav2_profile_params_file', default_value='')" \

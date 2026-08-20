@@ -670,4 +670,4 @@ def test_navigation_launch_has_last_precedence_controller_envelope():
     assert 'ParameterFile(' in source
     assert 'allow_substs=True' in source
     assert source.index('str(a21_overlay),') < source.index(
-        'ParameterFile(')
+        'cognitive_profile_params_file,') < source.index('ParameterFile(')

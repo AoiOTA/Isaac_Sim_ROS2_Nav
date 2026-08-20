@@ -18,6 +18,8 @@ def test_c4_profile_routes_cognition_through_plugins_not_raw_depth():
         params = document[costmap_name][costmap_name]['ros__parameters']
         assert 'cognitive_obstacle_layer' in params['plugins']
         assert params['cognitive_obstacle_layer']['mode'] == 'active'
+        assert params['cognitive_obstacle_layer'][
+            'maximum_ood_probability'] == 0.2
         assert params['depth_voxel_layer']['enabled'] is False
         assert all('stvl' not in plugin.lower() for plugin in params['plugins'])
 
@@ -35,7 +37,11 @@ def test_m0_m3_modes_preserve_shadow_and_control_ownership():
     assert modes['M1']['obstacle_layer_mode'] == 'shadow'
     assert modes['M1']['risk_critic_mode'] == 'shadow'
     assert modes['M1']['cognitive_graph_mode'] == 'shadow'
-    assert modes['M2']['cognitive_graph_mode'] == 'hybrid'
+    assert modes['M2'] == {
+        'obstacle_layer_mode': 'active',
+        'risk_critic_mode': 'off',
+        'cognitive_graph_mode': 'hybrid',
+    }
     assert modes['M3'] == {
         'obstacle_layer_mode': 'active',
         'risk_critic_mode': 'active',

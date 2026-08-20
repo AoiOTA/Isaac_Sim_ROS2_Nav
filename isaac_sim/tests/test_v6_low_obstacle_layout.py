@@ -242,8 +242,14 @@ def test_explicit_profile_keeps_rgbd_topics_but_not_direct_costmap_input():
     assert front["depth_points"]["enabled"] is True
     assert manifest["sensors"]["depth_points_direct_to_costmap"] is False
     assert "/camera/front/depth/points" not in overlay
-    assert "plugins: [obstacle_layer, inflation_layer]" in overlay
-    assert "plugins: [static_layer, obstacle_layer, inflation_layer]" in overlay
+    assert (
+        "plugins: [obstacle_layer, cognitive_obstacle_layer, inflation_layer]"
+        in overlay
+    )
+    assert (
+        "plugins: [static_layer, obstacle_layer, cognitive_obstacle_layer, inflation_layer]"
+        in overlay
+    )
     assert "run_kujiale_4x20_isaac.sh\" v6-low-obstacles" in wrapper
     assert "v6_low_obstacle_isolation" in wrapper
     assert "--camera-profile rgbd_navigation" in default_isaac

@@ -33,6 +33,26 @@ bool unit(double value)
   return std::isfinite(value) && value >= 0.0 && value <= 1.0;
 }
 
+bool identityFieldsPresent(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
+{
+  return !message.recurrent_session_id.empty() && !message.map_version.empty() &&
+         !message.cognitive_tile_id.empty() && !message.model_id.empty();
+}
+
+bool sameIdentity(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  const CognitiveObstacleLayer::Identity & expected)
+{
+  return message.reset_epoch == expected.reset_epoch &&
+         message.recurrent_session_id == expected.recurrent_session_id &&
+         message.map_version == expected.map_version &&
+         message.cognitive_tile_id == expected.cognitive_tile_id &&
+         message.tile_revision == expected.tile_revision &&
+         message.graph_revision == expected.graph_revision &&
+         message.model_id == expected.model_id;
+}
+
 }  // namespace
 
 CognitiveObstacleLayer::CognitiveObstacleLayer()
@@ -55,6 +75,7 @@ void CognitiveObstacleLayer::onInitialize()
   declare("mode", mode_);
   declare("obstacle_topic", obstacle_topic_);
   declare("maximum_age_s", maximum_age_s_);
+  declare("maximum_ood_probability", maximum_ood_probability_);
   declare("maximum_soft_cost", maximum_soft_cost_);
   declare("collision_min_height_m", collision_min_height_m_);
   declare("collision_max_height_m", collision_max_height_m_);
@@ -69,6 +90,8 @@ void CognitiveObstacleLayer::onInitialize()
   node->get_parameter(name_ + ".mode", mode_);
   node->get_parameter(name_ + ".obstacle_topic", obstacle_topic_);
   node->get_parameter(name_ + ".maximum_age_s", maximum_age_s_);
+  node->get_parameter(
+    name_ + ".maximum_ood_probability", maximum_ood_probability_);
   node->get_parameter(name_ + ".maximum_soft_cost", maximum_soft_cost_);
   node->get_parameter(name_ + ".collision_min_height_m", collision_min_height_m_);
   node->get_parameter(name_ + ".collision_max_height_m", collision_max_height_m_);
@@ -87,7 +110,24 @@ void CognitiveObstacleLayer::onInitialize()
   expected_.reset_epoch = static_cast<uint32_t>(std::max(0, reset_epoch));
   expected_.tile_revision = static_cast<uint64_t>(std::max(0, tile_revision));
   expected_.graph_revision = static_cast<uint64_t>(std::max(0, graph_revision));
+  const bool any_identity_parameter =
+    !expected_.recurrent_session_id.empty() || !expected_.map_version.empty() ||
+    !expected_.cognitive_tile_id.empty() || !expected_.model_id.empty();
+  const bool complete_identity_parameter =
+    !expected_.recurrent_session_id.empty() && !expected_.map_version.empty() &&
+    !expected_.cognitive_tile_id.empty() && !expected_.model_id.empty();
+  if (any_identity_parameter && !complete_identity_parameter) {
+    throw std::runtime_error(
+            "CognitiveObstacleLayer expected identity must be complete or omitted");
+  }
+  identity_parameters_configured_ = complete_identity_parameter;
+  identity_bound_ = identity_parameters_configured_;
   maximum_soft_cost_ = std::clamp(maximum_soft_cost_, 1, 80);
+  if (!std::isfinite(maximum_age_s_) || maximum_age_s_ <= 0.0 ||
+    !unit(maximum_ood_probability_))
+  {
+    throw std::runtime_error("CognitiveObstacleLayer age/OOD gates are invalid");
+  }
   if (mode_ != "off" && mode_ != "shadow" && mode_ != "active") {
     throw std::runtime_error("CognitiveObstacleLayer mode must be off, shadow, or active");
   }
@@ -126,6 +166,10 @@ void CognitiveObstacleLayer::reset()
   std::lock_guard<std::mutex> lock(mutex_);
   latest_.reset();
   have_sequence_ = false;
+  if (!identity_parameters_configured_) {
+    expected_ = Identity{};
+    identity_bound_ = false;
+  }
   resetMaps();
   current_ = true;
 }
@@ -133,39 +177,36 @@ void CognitiveObstacleLayer::reset()
 std::string CognitiveObstacleLayer::validateMessage(
   const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
   int64_t now_ns, const Identity & expected, uint64_t last_sequence,
-  double maximum_age_s)
+  double maximum_age_s, double maximum_ood_probability, bool enforce_identity)
 {
   const int64_t source_ns = stampNs(message.header.stamp);
   const double ttl_s = durationSeconds(message.ttl);
   const double age_s = static_cast<double>(now_ns - source_ns) * 1.0e-9;
   if (message.schema_version != "bio_nav_cognitive_obstacles_v1") {return "schema";}
   if (message.header.frame_id != "base_link") {return "frame";}
+  if (!identityFieldsPresent(message)) {return "identity";}
   if (source_ns <= 0 || !std::isfinite(ttl_s) || ttl_s <= 0.0 || ttl_s > 0.5 ||
     !std::isfinite(age_s) || age_s < 0.0 || age_s > std::min(ttl_s, maximum_age_s))
   {
     return "stale";
   }
-  if (last_sequence != std::numeric_limits<uint64_t>::max() &&
-    message.sequence <= last_sequence)
+  if (message.sequence == 0U ||
+    (last_sequence != std::numeric_limits<uint64_t>::max() &&
+    message.sequence <= last_sequence))
   {
     return "sequence";
   }
-  if (message.reset_epoch != expected.reset_epoch ||
-    message.recurrent_session_id != expected.recurrent_session_id ||
-    message.map_version != expected.map_version ||
-    message.cognitive_tile_id != expected.cognitive_tile_id ||
-    message.tile_revision != expected.tile_revision ||
-    message.graph_revision != expected.graph_revision ||
-    message.model_id != expected.model_id)
-  {
-    return "identity";
-  }
   if (!message.input_healthy || !message.module2_healthy ||
-    !message.trusted_write || message.rejection_mask != 0U)
+    !message.observation_valid || !message.trusted_write ||
+    message.rejection_mask != 0U)
   {
     return "untrusted";
   }
-  if (!unit(message.reliability) || !unit(message.ood_probability)) {return "nonfinite";}
+  if (!unit(message.reliability) || !unit(message.ood_probability) ||
+    message.ood_probability > maximum_ood_probability)
+  {
+    return "ood";
+  }
   for (const auto & obstacle : message.obstacles) {
     if (obstacle.id.empty() || obstacle.class_id != "unknown_low_obstacle" ||
       !std::isfinite(obstacle.pose_xy_m[0]) || !std::isfinite(obstacle.pose_xy_m[1]) ||
@@ -173,6 +214,7 @@ std::string CognitiveObstacleLayer::validateMessage(
       !std::isfinite(obstacle.height_m) || obstacle.height_m < 0.0 ||
       !unit(obstacle.confidence) || !unit(obstacle.reliability) ||
       !unit(obstacle.ood_probability) ||
+      obstacle.ood_probability > maximum_ood_probability ||
       !std::isfinite(obstacle.position_stddev_m[0]) ||
       !std::isfinite(obstacle.position_stddev_m[1]) ||
       obstacle.position_stddev_m[0] < 0.0 || obstacle.position_stddev_m[1] < 0.0 ||
@@ -187,6 +229,7 @@ std::string CognitiveObstacleLayer::validateMessage(
       return "obstacle_stale";
     }
   }
+  if (enforce_identity && !sameIdentity(message, expected)) {return "identity";}
   return "";
 }
 
@@ -215,23 +258,23 @@ void CognitiveObstacleLayer::obstacleCallback(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message)
 {
   const auto now = clock_->now();
-  Identity expected;
-  uint64_t last = 0;
+  std::string reason;
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (expected_.recurrent_session_id.empty()) {
-      expected_ = Identity{
-        message->reset_epoch, message->recurrent_session_id, message->map_version,
-        message->cognitive_tile_id, message->tile_revision, message->graph_revision,
-        message->model_id};
-    }
-    expected = expected_;
-    last = have_sequence_ ? last_sequence_ : std::numeric_limits<uint64_t>::max();
-  }
-  const auto reason = validateMessage(*message, now.nanoseconds(), expected, last, maximum_age_s_);
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
+    const bool enforce_identity = identity_bound_;
+    const auto last = have_sequence_ ?
+      last_sequence_ : std::numeric_limits<uint64_t>::max();
+    reason = validateMessage(
+      *message, now.nanoseconds(), expected_, last, maximum_age_s_,
+      maximum_ood_probability_, enforce_identity);
     if (reason.empty()) {
+      if (!identity_bound_) {
+        expected_ = Identity{
+          message->reset_epoch, message->recurrent_session_id, message->map_version,
+          message->cognitive_tile_id, message->tile_revision, message->graph_revision,
+          message->model_id};
+        identity_bound_ = true;
+      }
       latest_ = message;
       last_sequence_ = message->sequence;
       have_sequence_ = true;
@@ -241,7 +284,9 @@ void CognitiveObstacleLayer::obstacleCallback(
   }
   addExtraBounds(-1000.0, -1000.0, 1000.0, 1000.0);
   const double age_s = static_cast<double>(now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
-  publishStatus(*message, reason.empty() && mode_ == "active", reason, age_s);
+  const std::string status_reason = reason.empty() ?
+    (mode_ == "shadow" ? "shadow" : "offered") : reason;
+  publishStatus(*message, false, status_reason, age_s);
 }
 
 void CognitiveObstacleLayer::updateBounds(
@@ -276,9 +321,11 @@ void CognitiveObstacleLayer::updateCosts(
     prior_sequence = message && message->sequence > 0 ?
       message->sequence - 1 : std::numeric_limits<uint64_t>::max();
   }
-  if (!modeWritesCostmap(mode_) || !message ||
-    !validateMessage(*message, clock_->now().nanoseconds(), expected,
-      prior_sequence, maximum_age_s_).empty())
+  const auto now = clock_->now();
+  const auto validation_reason = message ? validateMessage(
+    *message, now.nanoseconds(), expected, prior_sequence, maximum_age_s_,
+    maximum_ood_probability_, true) : std::string("missing");
+  if (!modeWritesCostmap(mode_) || !message || !validation_reason.empty())
   {
     if (message && mode_ == "active") {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -286,6 +333,11 @@ void CognitiveObstacleLayer::updateCosts(
     }
     if (modeWritesCostmap(mode_)) {
       updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+      if (message && !validation_reason.empty()) {
+        const double age_s = static_cast<double>(
+          now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
+        publishStatus(*message, false, validation_reason, age_s);
+      }
     }
     return;
   }
@@ -298,8 +350,16 @@ void CognitiveObstacleLayer::updateCosts(
     std::lock_guard<std::mutex> lock(mutex_);
     latest_.reset();
     updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+    const double age_s = static_cast<double>(
+      now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
+    publishStatus(*message, false, "tf", age_s);
     return;
   }
+  uint32_t active_cells = 0;
+  uint32_t raised_cells = 0;
+  uint32_t masked_cells = 0;
+  uint8_t maximum_cost = 0;
+  uint8_t maximum_cost_increase = 0;
   for (const auto & obstacle : message->obstacles) {
     geometry_msgs::msg::PointStamped source;
     geometry_msgs::msg::PointStamped target;
@@ -322,17 +382,46 @@ void CognitiveObstacleLayer::updateCosts(
           mx >= 0 && my >= 0 && mx < static_cast<int>(getSizeInCellsX()) &&
           my < static_cast<int>(getSizeInCellsY()))
         {
-          setCost(mx, my, std::max(getCost(mx, my), cost));
+          const auto private_before = getCost(mx, my);
+          const auto private_after = std::max(private_before, cost);
+          if (private_after > private_before) {
+            ++active_cells;
+            maximum_cost = std::max(maximum_cost, private_after);
+            const auto master_before = master_grid.getCost(mx, my);
+            if (master_before != nav2_costmap_2d::NO_INFORMATION &&
+              private_after <= master_before)
+            {
+              ++masked_cells;
+            } else {
+              ++raised_cells;
+              maximum_cost_increase = std::max<uint8_t>(
+                maximum_cost_increase,
+                master_before == nav2_costmap_2d::NO_INFORMATION ?
+                private_after :
+                static_cast<uint8_t>(private_after - master_before));
+            }
+            setCost(mx, my, private_after);
+          }
         }
       }
     }
   }
   updateWithMax(master_grid, min_i, min_j, max_i, max_j);
+  const bool applied = raised_cells > 0U;
+  const std::string reason = applied ? "" :
+    (active_cells > 0U ? "masked" : "no_costmap_cells");
+  const double age_s = static_cast<double>(
+    now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
+  publishStatus(
+    *message, applied, reason, age_s, active_cells, maximum_cost,
+    raised_cells, masked_cells, maximum_cost_increase);
 }
 
 void CognitiveObstacleLayer::publishStatus(
   const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
-  bool applied, const std::string & reason, double age_s)
+  bool applied, const std::string & reason, double age_s,
+  uint32_t active_cells, uint8_t maximum_cost, uint32_t raised_cells,
+  uint32_t masked_cells, uint8_t maximum_cost_increase)
 {
   if (!status_publisher_ || !status_publisher_->is_activated()) {return;}
   bio_nav_interfaces::msg::RiskLayerStatus status;
@@ -341,13 +430,18 @@ void CognitiveObstacleLayer::publishStatus(
   status.mode = mode_;
   status.offered = true;
   status.applied = applied;
-  status.rejected = !reason.empty();
+  status.rejected = !reason.empty() && reason != "offered" && reason != "shadow";
   status.source_sequence = message.sequence;
   status.recurrent_session_id = message.recurrent_session_id;
   status.rejection_mask = message.rejection_mask;
   status.fallback_reason = reason;
   status.message_age_ms = std::isfinite(age_s) ? age_s * 1000.0 :
     std::numeric_limits<float>::infinity();
+  status.active_cell_count = active_cells;
+  status.maximum_cost = maximum_cost;
+  status.raised_cell_count = raised_cells;
+  status.masked_by_existing_cost_count = masked_cells;
+  status.maximum_cost_increase = maximum_cost_increase;
   status.reset_epoch = message.reset_epoch;
   status.map_version = message.map_version;
   status_publisher_->publish(status);

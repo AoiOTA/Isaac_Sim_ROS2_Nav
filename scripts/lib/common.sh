@@ -8,8 +8,10 @@ export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-/home/lyb/isaacsim_assets/Assets/Is
 export ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
 export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"
+export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration/ros2_ws/install/setup.bash}"
 
 readonly ISAAC_NAV_EXPECTED_ROS_DISTRO="jazzy"
+readonly BIO_NAV_ALLOWED_INTEGRATION_ROOT="/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration"
 # Domain 42 remains the normal default.  Engineering runs may select another
 # domain to avoid an already-running ROS graph without stopping that graph.
 readonly ISAAC_NAV_EXPECTED_DOMAIN_ID="${ISAAC_NAV_EXPECTED_DOMAIN_ID:-42}"
@@ -60,23 +62,88 @@ validate_runtime_environment() {
   export FASTDDS_DEFAULT_PROFILES_FILE="${ISAAC_NAV_FASTDDS_PROFILE}"
 }
 
+reset_ros_overlay_environment() {
+  unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH ROS_PACKAGE_PATH
+}
+
+validate_v6_integration_underlay() {
+  local setup_path setup_real allowed_real bridge_prefix interfaces_prefix
+  setup_path="${BIO_NAV_INTEGRATION_SETUP}"
+  require_file "${setup_path}"
+  setup_real="$(readlink -f "${setup_path}")"
+  allowed_real="$(readlink -f "${BIO_NAV_ALLOWED_INTEGRATION_ROOT}")"
+  [[ "${setup_real}" == "${allowed_real}"/* \
+      && ("${setup_real}" == */setup.bash \
+      || "${setup_real}" == */local_setup.bash) ]] || die \
+    "V6 Integration underlay setup must resolve inside ${allowed_real}; got ${setup_real}"
+
+  bridge_prefix="$(ros2 pkg prefix bio_nav_ros_bridge 2>/dev/null || true)"
+  interfaces_prefix="$(ros2 pkg prefix bio_nav_interfaces 2>/dev/null || true)"
+  [[ -n "${bridge_prefix}" && "$(readlink -f "${bridge_prefix}")" == "${allowed_real}"/* ]] || die \
+    "bio_nav_ros_bridge did not resolve inside the allowed Integration worktree; build it with: cd ${allowed_real}/ros2_ws && source /opt/ros/jazzy/setup.bash && colcon build --symlink-install; then source ${allowed_real}/ros2_ws/install/setup.bash"
+  [[ -n "${interfaces_prefix}" && "$(readlink -f "${interfaces_prefix}")" == "${allowed_real}"/* ]] || die \
+    "bio_nav_interfaces did not resolve inside the allowed Integration worktree; build it with: cd ${allowed_real}/ros2_ws && source /opt/ros/jazzy/setup.bash && colcon build --symlink-install; then source ${allowed_real}/ros2_ws/install/setup.bash"
+  require_file "${bridge_prefix}/share/bio_nav_ros_bridge/config/engineering_defaults.yaml"
+  local obstacle_header prior_header
+  obstacle_header="${interfaces_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/detail/cognitive_obstacle_array__struct.hpp"
+  prior_header="${interfaces_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/detail/planning_prior__struct.hpp"
+  require_file "${interfaces_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/local_risk_grid.hpp"
+  require_file "${obstacle_header}"
+  require_file "${prior_header}"
+  grep -q 'observation_valid' "${obstacle_header}" || die \
+    "bio_nav_interfaces underlay is stale: CognitiveObstacleArray.observation_valid is missing; rebuild with: cd ${allowed_real}/ros2_ws && source /opt/ros/jazzy/setup.bash && colcon build --symlink-install --packages-select bio_nav_interfaces bio_nav_ros_bridge"
+  grep -q 'local_direction_schema_version' "${prior_header}" || die \
+    "bio_nav_interfaces underlay is stale: PlanningPrior local-direction schema is missing; rebuild with: cd ${allowed_real}/ros2_ws && source /opt/ros/jazzy/setup.bash && colcon build --symlink-install --packages-select bio_nav_interfaces bio_nav_ros_bridge"
+}
+
+source_v6_integration_underlay() {
+  require_file "${BIO_NAV_INTEGRATION_SETUP}"
+  set +u
+  # shellcheck disable=SC1090
+  source "${BIO_NAV_INTEGRATION_SETUP}"
+  set -u
+  validate_v6_integration_underlay
+  log_info "using allowed V6 Integration underlay: ${BIO_NAV_INTEGRATION_SETUP}"
+}
+
 source_ros() {
   local require_workspace=false
+  local require_integration=false
   if [[ "${1:-}" == "--require-workspace" ]]; then
     require_workspace=true
+  elif [[ "${1:-}" == "--require-integration-underlay" ]]; then
+    require_integration=true
   elif [[ -n "${1:-}" ]]; then
-    die "source_ros accepts only --require-workspace"
+    die "source_ros accepts only --require-workspace or --require-integration-underlay"
+  fi
+  if [[ "${ISAAC_NAV_REQUIRE_V6_INTEGRATION:-0}" == 1 ]]; then
+    require_integration=true
   fi
 
   require_file "${ROS_SETUP}"
+  if [[ "${require_integration}" == true ]]; then
+    reset_ros_overlay_environment
+  fi
   # ROS-generated setup scripts reference optional variables before defining
   # them, so nounset must be suspended only while they are sourced.
   set +u
   # shellcheck disable=SC1090
   source "${ROS_SETUP}"
 
+  if [[ "${require_integration}" == true ]]; then
+    source_v6_integration_underlay
+  fi
+
   local workspace_setup="${PROJECT_ROOT}/ros2_ws/install/setup.bash"
-  if [[ -f "${workspace_setup}" ]]; then
+  if [[ "${require_integration}" == true ]]; then
+    # setup.bash replays the underlays captured at the previous build.  V6
+    # already sourced its pinned Integration underlay explicitly, so source
+    # only this worktree's overlay and do not reintroduce a stale underlay.
+    workspace_setup="${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"
+  fi
+  if [[ -f "${workspace_setup}" && ("${require_workspace}" == true \
+      || "${require_integration}" == false) ]]; then
+    set +u
     # shellcheck disable=SC1091
     source "${workspace_setup}"
   elif [[ "${require_workspace}" == true ]]; then
@@ -87,46 +154,15 @@ source_ros() {
 
   [[ "${ROS_DISTRO:-}" == "${ISAAC_NAV_EXPECTED_ROS_DISTRO}" ]] \
     || die "ROS_DISTRO must be ${ISAAC_NAV_EXPECTED_ROS_DISTRO}; got ${ROS_DISTRO:-unset}"
+  if [[ "${require_integration}" == true ]]; then
+    validate_v6_integration_underlay
+  fi
   validate_runtime_environment
 }
 
 source_bio_nav_interfaces_underlay() {
-  local candidate interface_prefix
-  local -a candidates=()
-
-  if interface_prefix="$(ros2 pkg prefix bio_nav_interfaces 2>/dev/null)" \
-      && [[ -f "${interface_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/local_risk_grid.hpp" ]]; then
-    return 0
-  fi
   [[ -d "${PROJECT_ROOT}/ros2_ws/src/bio_nav_fusion" ]] || return 0
-
-  if [[ -n "${BIO_NAV_INTERFACES_SETUP:-}" ]]; then
-    candidates+=("${BIO_NAV_INTERFACES_SETUP}")
-  fi
-  candidates+=(
-    "${PROJECT_ROOT}/../Bio_Nav_Integration/install/setup.bash"
-    "${PROJECT_ROOT}/../../repos/Bio_Nav_Integration/install/setup.bash"
-    "${PROJECT_ROOT}/../../../repos/Bio_Nav_Integration/install/setup.bash"
-    "${PROJECT_ROOT}/../Bio_Nav_Integration/ros2_ws/install/setup.bash"
-    "${PROJECT_ROOT}/../../repos/Bio_Nav_Integration/ros2_ws/install/setup.bash"
-    "${PROJECT_ROOT}/../../../repos/Bio_Nav_Integration/ros2_ws/install/setup.bash"
-  )
-  for candidate in "${candidates[@]}"; do
-    [[ -f "${candidate}" ]] || continue
-    set +u
-    # shellcheck disable=SC1090
-    source "${candidate}"
-    set -u
-    interface_prefix="$(ros2 pkg prefix bio_nav_interfaces 2>/dev/null || true)"
-    if [[ -n "${interface_prefix}" \
-          && -f "${interface_prefix}/include/bio_nav_interfaces/bio_nav_interfaces/msg/local_risk_grid.hpp" ]]; then
-      export BIO_NAV_INTERFACES_SETUP="${candidate}"
-      log_info "using BioNav interfaces underlay: ${candidate}"
-      return 0
-    fi
-  done
-
-  die "bio_nav_fusion requires the Attempt-21 bio_nav_interfaces build; build Integration first and set BIO_NAV_INTERFACES_SETUP=/absolute/path/to/Bio_Nav_Integration/install/setup.bash"
+  source_v6_integration_underlay
 }
 
 prepare_runtime_directory() {

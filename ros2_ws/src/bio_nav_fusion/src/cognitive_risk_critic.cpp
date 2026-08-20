@@ -3,11 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <numeric>
 
 #include "geometry_msgs/msg/point_stamped.hpp"
 #include "pluginlib/class_list_macros.hpp"
 #include "rclcpp/create_publisher.hpp"
 #include "tf2/time.h"
+#include "tf2/utils.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 namespace bio_nav_fusion
@@ -51,6 +53,11 @@ void CognitiveRiskCritic::initialize()
   getParam(uncertainty_weight_, "uncertainty_weight", uncertainty_weight_);
   if (mode_ != "off" && mode_ != "shadow" && mode_ != "active") {
     throw std::runtime_error("CognitiveRiskCritic mode must be off, shadow, or active");
+  }
+  if (!std::isfinite(maximum_age_s_) || maximum_age_s_ <= 0.0 ||
+    !unit(maximum_ood_probability_))
+  {
+    throw std::runtime_error("CognitiveRiskCritic age/OOD gates are invalid");
   }
   auto node = parent_.lock();
   auto parameters = node->get_node_parameters_interface();
@@ -105,17 +112,21 @@ std::string CognitiveRiskCritic::validateInputs(
     return "stale";
   }
   if (obstacles->schema_version != "bio_nav_cognitive_obstacles_v1" ||
+    (prior->schema_version != "bio_nav_planning_prior_v4" &&
+    prior->schema_version != "bio_nav_planning_prior_v310") ||
     obstacles->header.frame_id != "base_link" ||
     !obstacles->input_healthy || !obstacles->module2_healthy ||
+    !obstacles->observation_valid ||
     !obstacles->trusted_write || obstacles->rejection_mask != 0U ||
     !prior->input_healthy || !prior->module2_healthy || !prior->trusted_write ||
-    !prior->context_trusted || prior->trust_rejection_mask != 0U ||
-    !prior->local_direction_input_healthy ||
-    !prior->local_direction_module2_healthy ||
-    !prior->local_direction_trusted_write ||
-    prior->local_direction_rejection_mask != 0U)
+    !prior->context_trusted || prior->trust_rejection_mask != 0U)
   {
     return "unhealthy";
+  }
+  if (obstacles->sequence == 0U || prior->sequence == 0U ||
+    obstacles->sequence != prior->sequence)
+  {
+    return "sequence";
   }
   if (obstacles->reset_epoch != prior->reset_epoch ||
     obstacles->recurrent_session_id != prior->recurrent_session_id ||
@@ -135,8 +146,46 @@ std::string CognitiveRiskCritic::validateInputs(
   {
     return "ood";
   }
-  for (double value : prior->local_direction_weights) {
-    if (!unit(value)) {return "nonfinite";}
+  for (const auto & obstacle : obstacles->obstacles) {
+    if (!std::isfinite(obstacle.pose_xy_m[0]) ||
+      !std::isfinite(obstacle.pose_xy_m[1]) ||
+      !std::isfinite(obstacle.radius_m) || obstacle.radius_m <= 0.0 ||
+      !unit(obstacle.confidence) || !unit(obstacle.reliability) ||
+      !unit(obstacle.ood_probability))
+    {
+      return "nonfinite";
+    }
+    if (obstacle.ood_probability > maximum_ood_probability) {return "ood";}
+  }
+  return "";
+}
+
+std::string CognitiveRiskCritic::validateDirectionPrior(
+  const bio_nav_interfaces::msg::PlanningPrior & prior)
+{
+  if (prior.local_direction_schema_version != "bio_nav_local_direction_prior_v1") {
+    return "direction_schema";
+  }
+  if (prior.local_direction_frame_id != "base_link") {return "direction_frame";}
+  if (prior.local_direction_source_sequence == 0U ||
+    prior.local_direction_source_sequence != prior.sequence)
+  {
+    return "direction_sequence";
+  }
+  if (!prior.local_direction_input_healthy ||
+    !prior.local_direction_module2_healthy ||
+    !prior.local_direction_trusted_write ||
+    prior.local_direction_rejection_mask != 0U)
+  {
+    return "direction_untrusted";
+  }
+  double total = 0.0;
+  for (double value : prior.local_direction_weights) {
+    if (!unit(value)) {return "direction_nonfinite";}
+    total += value;
+  }
+  if (!std::isfinite(total) || std::abs(total - 1.0) > 1.0e-3) {
+    return "direction_normalization";
   }
   return "";
 }
@@ -145,7 +194,7 @@ double CognitiveRiskCritic::trajectoryScore(
   const std::vector<std::array<double, 3>> & trajectory,
   const std::vector<ObstacleSample> & obstacles,
   const std::array<double, 5> & direction_weights,
-  double novelty, double uncertainty, double obstacle_weight,
+  double robot_yaw, double novelty, double uncertainty, double obstacle_weight,
   double direction_weight, double novelty_weight, double uncertainty_weight)
 {
   if (trajectory.empty()) {return 0.0;}
@@ -158,20 +207,27 @@ double CognitiveRiskCritic::trajectoryScore(
         (clearance <= 0.0 ? 2.0 : std::exp(-clearance / 0.35));
     }
   }
-  const auto preferred = static_cast<std::size_t>(std::distance(
-      direction_weights.begin(),
-      std::max_element(direction_weights.begin(), direction_weights.begin() + 4)));
-  constexpr std::array<double, 4> headings{0.5 * M_PI, 0.0, -0.5 * M_PI, M_PI};
   double travelled_heading = trajectory.back()[2];
   if (trajectory.size() >= 2) {
     travelled_heading = std::atan2(
       trajectory.back()[1] - trajectory.front()[1],
       trajectory.back()[0] - trajectory.front()[0]);
   }
-  const double deviation = std::abs(wrap(travelled_heading - headings[preferred])) / M_PI;
+  const double direction_x = direction_weights[1] - direction_weights[3];
+  const double direction_y = direction_weights[0] - direction_weights[2];
+  const double direction_vector = std::hypot(direction_x, direction_y);
+  const double total_weight = std::accumulate(
+    direction_weights.begin(), direction_weights.end(), 0.0);
+  double direction_cost = 0.0;
+  if (direction_vector > 1.0e-9 && total_weight > 1.0e-9) {
+    const double preferred_heading = robot_yaw + std::atan2(direction_y, direction_x);
+    const double deviation =
+      std::abs(wrap(travelled_heading - preferred_heading)) / M_PI;
+    direction_cost = deviation * std::min(1.0, direction_vector / total_weight);
+  }
   const double horizon = static_cast<double>(trajectory.size());
   return std::max(0.0,
-      obstacle_weight * obstacle_cost + direction_weight * deviation +
+      obstacle_weight * obstacle_cost + direction_weight * direction_cost +
       novelty_weight * novelty * horizon +
       uncertainty_weight * uncertainty * horizon);
 }
@@ -216,8 +272,12 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       item.confidence * item.reliability * (1.0 - item.ood_probability)});
   }
   std::array<double, 5> direction{};
-  std::copy(prior->local_direction_weights.begin(),
-    prior->local_direction_weights.end(), direction.begin());
+  const auto direction_reason = validateDirectionPrior(*prior);
+  if (direction_reason.empty()) {
+    std::copy(prior->local_direction_weights.begin(),
+      prior->local_direction_weights.end(), direction.begin());
+  }
+  const double robot_yaw = tf2::getYaw(transform.transform.rotation);
   const auto batch = data.trajectories.x.shape(0);
   const auto steps = data.trajectories.x.shape(1);
   for (std::size_t index = 0; index < batch; ++index) {
@@ -229,11 +289,11 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
         data.trajectories.yaws(index, step)});
     }
     data.costs(index) += static_cast<float>(trajectoryScore(
-        trajectory, samples, direction, prior->novelty_probability,
+        trajectory, samples, direction, robot_yaw, prior->novelty_probability,
         prior->context_uncertainty, obstacle_weight_, direction_weight_,
         novelty_weight_, uncertainty_weight_));
   }
-  publishStatus(prior->sequence, true, "");
+  publishStatus(prior->sequence, true, direction_reason);
 }
 
 void CognitiveRiskCritic::publishStatus(
@@ -246,7 +306,8 @@ void CognitiveRiskCritic::publishStatus(
   status.mode = mode_;
   status.offered = sequence > 0;
   status.applied = applied;
-  status.rejected = reason != "" && reason != "shadow" && reason != "offered";
+  status.rejected = !applied && reason != "" && reason != "shadow" &&
+    reason != "offered";
   status.source_sequence = sequence;
   status.fallback_reason = reason;
   status_publisher_->publish(status);

@@ -1,4 +1,5 @@
 from pathlib import Path
+import tempfile
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -12,10 +13,13 @@ from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
+import yaml
 
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import validate_mode
+from robot_bringup.mode_contract import cognitive_nav2_parameters
+from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
@@ -33,6 +37,15 @@ _TELEOP_SPEED_ARGUMENTS = (
     ('teleop_max_linear_speed', 'max_linear_speed'),
     ('teleop_max_angular_speed', 'max_angular_speed'),
 )
+
+def _write_cognitive_nav2_overlay(profile):
+    """Write the exact-node overlay that must follow the A21 overlay."""
+    document = cognitive_nav2_parameters(profile)
+    with tempfile.NamedTemporaryFile(
+            mode='w', prefix=f'v6_cognitive_{profile.name.lower()}_',
+            suffix='.yaml', delete=False, encoding='utf-8') as stream:
+        yaml.safe_dump(document, stream, sort_keys=False)
+        return Path(stream.name)
 
 
 def _shutdown_if_gate_exited(context):
@@ -162,6 +175,18 @@ def _launch_setup(context):
     )
     nav2_profile = validate_nav2_profile(
         LaunchConfiguration('nav2_profile').perform(context))
+    bringup_share = Path(get_package_share_directory('robot_bringup'))
+    try:
+        cognitive_profile = validate_cognitive_profile(
+            LaunchConfiguration('cognitive_profile').perform(context),
+            bringup_share / 'config' / 'modes.yaml',
+        )
+    except ValueError as exc:
+        raise RuntimeError(f'invalid cognitive_profile: {exc}') from exc
+    cognitive_overlay_file = None
+    if nav2_profile == 'v6_low_obstacle_isolation':
+        cognitive_overlay_file = _write_cognitive_nav2_overlay(
+            cognitive_profile)
     requested_nav2_overlay = LaunchConfiguration(
         'nav2_profile_params_file').perform(context).strip()
     nav2_profile_params_file = Path(requested_nav2_overlay).expanduser() \
@@ -195,6 +220,7 @@ def _launch_setup(context):
         f'structure_tf={selection.structure_tf_source}, '
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
         f'nav2_profile={nav2_profile}, '
+        f'cognitive_profile={cognitive_profile.name}, '
         f'controller_frequency='
         f'{nav2_controller_profile.controller_frequency:g}Hz, '
         f'model_dt={nav2_controller_profile.model_dt:g}s, '
@@ -361,10 +387,7 @@ def _launch_setup(context):
             ))
 
     if selection.operation == 'navigation':
-        actions.append(_include(
-            'robot_navigation',
-            'navigation.launch.py',
-            {
+        navigation_arguments = {
                 'use_sim_time': use_sim_time,
                 'autostart': 'false',
                 'nav2_params_file': runtime_files.nav2_params_file,
@@ -380,8 +403,12 @@ def _launch_setup(context):
                     'module2_response_timeout_s').perform(context),
                 'module2_prior_ttl_s': LaunchConfiguration(
                     'module2_prior_ttl_s').perform(context),
-                'cognitive_graph_mode': LaunchConfiguration(
-                    'cognitive_graph_mode').perform(context),
+                'cognitive_graph_mode': (
+                    cognitive_profile.cognitive_graph_mode
+                    if nav2_profile == 'v6_low_obstacle_isolation'
+                    else LaunchConfiguration(
+                        'cognitive_graph_mode').perform(context)
+                ),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -392,7 +419,14 @@ def _launch_setup(context):
                         'bio_nav_rgbd_risk_static_opt_in'}
                     else 'voxel_grid'
                 ),
-            },
+            }
+        if cognitive_overlay_file is not None:
+            navigation_arguments['cognitive_profile_params_file'] = str(
+                cognitive_overlay_file)
+        actions.append(_include(
+            'robot_navigation',
+            'navigation.launch.py',
+            navigation_arguments,
         ))
         gate_config = (
             Path(get_package_share_directory('robot_bringup'))
@@ -538,6 +572,9 @@ def generate_launch_description():
             'nav2_profile_params_file',
             default_value='',
             description='explicit benchmark/custom Nav2 overlay YAML'),
+        DeclareLaunchArgument(
+            'cognitive_profile', default_value='M0',
+            description='M0, M1, M2, or M3 cognitive write contract'),
         DeclareLaunchArgument('module2_enabled', default_value='true'),
         DeclareLaunchArgument('route_graph_file', default_value=''),
         DeclareLaunchArgument(

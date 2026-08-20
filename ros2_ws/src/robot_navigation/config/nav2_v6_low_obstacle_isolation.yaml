@@ -40,6 +40,7 @@ local_costmap:
         enabled: true
         mode: active
         maximum_age_s: 0.5
+        maximum_ood_probability: 0.2
         maximum_soft_cost: 80
         collision_min_height_m: 0.02
         collision_max_height_m: 0.45
@@ -55,6 +56,7 @@ global_costmap:
         enabled: true
         mode: active
         maximum_age_s: 0.5
+        maximum_ood_probability: 0.2
         maximum_soft_cost: 80
         collision_min_height_m: 0.02
         collision_max_height_m: 0.45

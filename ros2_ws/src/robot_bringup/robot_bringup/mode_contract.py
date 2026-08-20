@@ -25,6 +25,18 @@ NAV2_PROFILES = frozenset({
     'attempt23_static_observer',
     'bio_nav_rgbd_risk_shadow', 'bio_nav_rgbd_risk_ab',
     'bio_nav_rgbd_risk_static_opt_in'})
+COGNITIVE_PROFILES = frozenset({'M0', 'M1', 'M2', 'M3'})
+_COGNITIVE_PROFILE_CONTRACT = {
+    'M0': ('off', 'off', 'gvg'),
+    'M1': ('shadow', 'shadow', 'shadow'),
+    'M2': ('active', 'off', 'hybrid'),
+    'M3': ('active', 'active', 'primary'),
+}
+_A21_COGNITIVE_CRITICS = (
+    'ConstraintCritic', 'CostCritic', 'GoalCritic', 'GoalAngleCritic',
+    'PathAlignCritic', 'PathFollowCritic', 'PathAngleCritic',
+    'VelocityDeadbandCritic', 'CognitiveRiskCritic',
+)
 
 
 @dataclass(frozen=True)
@@ -63,6 +75,79 @@ class Nav2ControllerProfile:
     @property
     def controller_period(self):
         return 1.0 / self.controller_frequency
+
+
+@dataclass(frozen=True)
+class CognitiveProfile:
+    """Executable cognitive write and graph-routing contract."""
+
+    name: str
+    obstacle_layer_mode: str
+    risk_critic_mode: str
+    cognitive_graph_mode: str
+
+
+def validate_cognitive_profile(value, modes_file):
+    """Load M0--M3 from the shipped contract and reject semantic drift."""
+    name = value.strip().upper()
+    _require_choice('cognitive_profile', name, COGNITIVE_PROFILES)
+    source = Path(modes_file).expanduser()
+    if not source.is_file():
+        raise ValueError(f'cognitive modes file does not exist: {source}')
+    try:
+        document = yaml.safe_load(source.read_text(encoding='utf-8'))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ValueError(f'invalid cognitive modes file {source}: {exc}') from exc
+    root = _profile_mapping(document, 'modes root')
+    profiles = _profile_mapping(
+        root.get('cognitive_profiles'), 'cognitive_profiles')
+    configured = _profile_mapping(
+        profiles.get(name), f'cognitive_profiles.{name}')
+    actual = (
+        str(configured.get('obstacle_layer_mode', '')).strip().lower(),
+        str(configured.get('risk_critic_mode', '')).strip().lower(),
+        str(configured.get('cognitive_graph_mode', '')).strip().lower(),
+    )
+    expected = _COGNITIVE_PROFILE_CONTRACT[name]
+    if actual != expected:
+        raise ValueError(
+            f'cognitive_profiles.{name} violates M0-M3 contract: '
+            f'expected {expected}, got {actual}')
+    return CognitiveProfile(name, *actual)
+
+
+def cognitive_nav2_parameters(profile):
+    """Return the last-precedence exact-node parameters for M0--M3."""
+    return {
+        'controller_server': {
+            'ros__parameters': {
+                'FollowPath': {
+                    'critics': list(_A21_COGNITIVE_CRITICS),
+                    'CognitiveRiskCritic': {
+                        'mode': profile.risk_critic_mode,
+                    },
+                },
+            },
+        },
+        'local_costmap': {
+            'local_costmap': {
+                'ros__parameters': {
+                    'cognitive_obstacle_layer': {
+                        'mode': profile.obstacle_layer_mode,
+                    },
+                },
+            },
+        },
+        'global_costmap': {
+            'global_costmap': {
+                'ros__parameters': {
+                    'cognitive_obstacle_layer': {
+                        'mode': profile.obstacle_layer_mode,
+                    },
+                },
+            },
+        },
+    }
 
 
 def _profile_mapping(value, location):

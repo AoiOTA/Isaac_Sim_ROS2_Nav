@@ -230,6 +230,7 @@ bio_nav_interfaces::msg::CognitiveObstacleArray obstacleFixture()
   message.ttl.nanosec = 500000000U;
   message.input_healthy = true;
   message.module2_healthy = true;
+  message.observation_valid = true;
   message.trusted_write = true;
   message.reliability = 0.9;
   message.ood_probability = 0.1;
@@ -261,6 +262,7 @@ bio_nav_interfaces::msg::PlanningPrior planningPriorFixture()
   prior.tile_revision = 2;
   prior.graph_revision = 4;
   prior.model_id = "model";
+  prior.schema_version = "bio_nav_planning_prior_v4";
   prior.input_healthy = true;
   prior.module2_healthy = true;
   prior.trusted_write = true;
@@ -270,6 +272,7 @@ bio_nav_interfaces::msg::PlanningPrior planningPriorFixture()
   prior.novelty_probability = 0.2F;
   prior.context_uncertainty = 0.1F;
   prior.local_direction_ttl.nanosec = 500000000U;
+  prior.local_direction_schema_version = "bio_nav_local_direction_prior_v1";
   prior.local_direction_source_sequence = 7;
   prior.local_direction_frame_id = "base_link";
   prior.local_direction_input_healthy = true;
@@ -292,8 +295,14 @@ TEST(CognitiveObstacleLayer, strict_gate_and_hard_threshold_are_fail_open)
     3, "session", "map", "tile", 2, 4, "model"};
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
-      message, 10100000000LL, identity, 6, 0.5),
+      message, 10100000000LL, identity, 6, 0.5, 0.2),
     "");
+  message.ood_probability = 0.3;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10100000000LL, identity, 6, 0.5, 0.2),
+    "ood");
+  message.ood_probability = 0.1;
   EXPECT_EQ(
     CognitiveObstacleLayer::obstacleCost(message.obstacles[0], 80, 0.02, 0.45),
     nav2_costmap_2d::LETHAL_OBSTACLE);
@@ -304,13 +313,13 @@ TEST(CognitiveObstacleLayer, strict_gate_and_hard_threshold_are_fail_open)
   EXPECT_LE(soft, 80U);
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
-      message, 10600000000LL, identity, 6, 0.5),
+      message, 10600000000LL, identity, 6, 0.5, 0.2),
     "stale");
   message.header.stamp.sec = 10;
   message.recurrent_session_id = "wrong";
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
-      message, 10100000000LL, identity, 6, 0.5),
+      message, 10100000000LL, identity, 6, 0.5, 0.2),
     "identity");
 }
 
@@ -326,15 +335,36 @@ TEST(CognitiveRiskCritic, nearer_and_more_directionally_deviant_cost_more)
   const std::vector<std::array<double, 3>> west{
     {0.0, 1.5, M_PI}, {-0.9, 1.5, M_PI}};
   const auto near_cost = Critic::trajectoryScore(
-    near, obstacles, east, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
+    near, obstacles, east, 0.0, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
   const auto far_cost = Critic::trajectoryScore(
-    far, obstacles, east, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
+    far, obstacles, east, 0.0, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
   const auto west_cost = Critic::trajectoryScore(
-    west, {}, east, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
+    west, {}, east, 0.0, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
   const auto east_cost = Critic::trajectoryScore(
-    far, {}, east, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
+    far, {}, east, 0.0, 0.2, 0.1, 4.0, 1.0, 0.5, 0.5);
   EXPECT_GT(near_cost, far_cost);
   EXPECT_GT(west_cost, east_cost);
+}
+
+TEST(CognitiveRiskCritic, base_direction_uses_robot_yaw_and_stay_has_no_bias)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::array<double, 5> east{0.0, 1.0, 0.0, 0.0, 0.0};
+  const std::array<double, 5> zero{};
+  const std::array<double, 5> stay{0.0, 0.0, 0.0, 0.0, 1.0};
+  const std::vector<std::array<double, 3>> north{
+    {0.0, 0.0, 0.5 * M_PI}, {0.0, 1.0, 0.5 * M_PI}};
+  const std::vector<std::array<double, 3>> east_path{
+    {0.0, 0.0, 0.0}, {1.0, 0.0, 0.0}};
+  const auto rotated_match = Critic::trajectoryScore(
+    north, {}, east, 0.5 * M_PI, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+  const auto rotated_miss = Critic::trajectoryScore(
+    east_path, {}, east, 0.5 * M_PI, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+  EXPECT_LT(rotated_match, rotated_miss);
+  EXPECT_DOUBLE_EQ(Critic::trajectoryScore(
+      north, {}, zero, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0.0);
+  EXPECT_DOUBLE_EQ(Critic::trajectoryScore(
+      north, {}, stay, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0), 0.0);
 }
 
 TEST(CognitiveRiskCritic, stale_or_ood_inputs_score_zero_by_rejection)
@@ -344,9 +374,15 @@ TEST(CognitiveRiskCritic, stale_or_ood_inputs_score_zero_by_rejection)
   auto prior = planningPriorFixture();
   EXPECT_EQ(Critic::validateInputs(
       &obstacles, &prior, 10100000000LL, 0.5, 0.2), "");
+  EXPECT_EQ(Critic::validateDirectionPrior(prior), "");
   EXPECT_EQ(Critic::validateInputs(
       &obstacles, &prior, 10600000000LL, 0.5, 0.2), "stale");
   prior.visual_ood_probability = 0.8F;
   EXPECT_EQ(Critic::validateInputs(
       &obstacles, &prior, 10100000000LL, 0.5, 0.2), "ood");
+
+  prior = planningPriorFixture();
+  prior.local_direction_frame_id = "module2_canvas";
+  prior.local_direction_trusted_write = false;
+  EXPECT_EQ(Critic::validateDirectionPrior(prior), "direction_frame");
 }

@@ -15,6 +15,7 @@ import yaml
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY_ROOT = PACKAGE_ROOT.parents[2]
 COMMON = REPOSITORY_ROOT / 'scripts' / 'lib' / 'common.sh'
+BUILD_ROS2 = REPOSITORY_ROOT / 'scripts' / 'build_ros2.sh'
 CLEAN_RUNTIME = REPOSITORY_ROOT / 'scripts' / 'clean_runtime.sh'
 PERFORMANCE_MODE = REPOSITORY_ROOT / 'scripts' / 'performance_mode.sh'
 RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
@@ -154,10 +155,16 @@ def test_common_resolves_project_root_from_unrelated_temporary_directory(tmp_pat
     assert result.stdout == str(REPOSITORY_ROOT)
 
 
-def test_common_requires_current_attempt21_interfaces_underlay():
+def test_common_requires_only_the_allowed_v6_integration_underlay():
     source = COMMON.read_text(encoding='utf-8')
-    assert 'Bio_Nav_Integration/install/setup.bash' in source
+    assert '/worktrees/cognitive-navigation/bio_nav_intergration' in source
+    assert '/repos/' not in source
+    assert 'validate_v6_integration_underlay' in source
+    assert 'engineering_defaults.yaml' in source
+    assert 'ros2 pkg prefix bio_nav_ros_bridge' in source
     assert 'bio_nav_interfaces/msg/local_risk_grid.hpp' in source
+    assert 'source_ros --require-integration-underlay' in BUILD_ROS2.read_text(
+        encoding='utf-8')
 
 
 @pytest.mark.parametrize(

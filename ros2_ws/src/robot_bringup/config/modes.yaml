@@ -63,7 +63,7 @@ cognitive_profiles:
     cognitive_graph_mode: shadow
   M2:
     obstacle_layer_mode: active
-    risk_critic_mode: shadow
+    risk_critic_mode: 'off'
     cognitive_graph_mode: hybrid
   M3:
     obstacle_layer_mode: active
