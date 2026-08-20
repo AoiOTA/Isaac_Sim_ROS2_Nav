@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from robot_localization_config.ekf_input_policy import ekf_uses_lidar
+from robot_localization_config.ekf_input_policy import validate_lidar_gate
 import yaml
 
 
@@ -54,5 +57,29 @@ def test_ekf_launch_profiles_remap_the_single_filtered_output_to_odom():
     assert "f'ekf_{profile}.yaml'" in source
     assert "('odometry/filtered', '/odom')" in source
     assert "'lidar_odometry_validated', default_value='false'" in source
-    assert "profile == 'wheel_imu_lidar'" in source
-    assert 'lidar_odometry_validated:=true' in source
+    assert 'validate_lidar_gate(' in source
+
+
+def test_loaded_ekf_file_controls_lidar_validation_gate():
+    wheel_only = PACKAGE_ROOT / 'config' / 'ekf_wheel_imu.yaml'
+    three_source = PACKAGE_ROOT / 'config' / 'ekf_wheel_imu_lidar.yaml'
+
+    assert ekf_uses_lidar(wheel_only) is False
+    assert validate_lidar_gate(wheel_only, False) is False
+    assert ekf_uses_lidar(three_source) is True
+    with pytest.raises(ValueError, match='lidar_odometry_validated:=true'):
+        validate_lidar_gate(three_source, False)
+    assert validate_lidar_gate(three_source, True) is True
+
+
+def test_unknown_or_unparseable_custom_ekf_fails_closed(tmp_path):
+    unknown = tmp_path / 'unknown.yaml'
+    unknown.write_text(
+        'ekf_filter_node:\n  ros__parameters:\n    odom0: /mystery/odom\n')
+    malformed = tmp_path / 'malformed.yaml'
+    malformed.write_text('ekf_filter_node: [')
+
+    with pytest.raises(ValueError, match='unrecognized EKF sensor input'):
+        ekf_uses_lidar(unknown)
+    with pytest.raises(ValueError, match='cannot parse EKF params file'):
+        ekf_uses_lidar(malformed)

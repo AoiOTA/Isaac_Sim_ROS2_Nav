@@ -223,9 +223,9 @@ def test_three_source_lidar_fusion_requires_explicit_validation():
     core_source = (launch_dir / 'ros_stack.launch.py').read_text()
 
     assert "'lidar_odometry_validated', default_value='false'" in core_source
-    assert "ekf_profile == 'wheel_imu_lidar'" in core_source
-    assert "lidar_validated_value != 'true'" in core_source
-    assert 'lidar_odometry_validated:=true' in core_source
+    assert 'validate_lidar_gate(' in core_source
+    assert "'ekf_params_file': str(ekf_params_file)" in core_source
+    assert 'if ekf_uses_lidar and lidar_odometry_backend' in core_source
     for wrapper in (
             'navigation_bringup.launch.py',
             'localization_bringup.launch.py'):

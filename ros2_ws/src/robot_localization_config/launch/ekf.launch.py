@@ -5,6 +5,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from robot_localization_config.ekf_input_policy import validate_lidar_gate
 
 
 def _launch_setup(context):
@@ -18,10 +19,6 @@ def _launch_setup(context):
         'lidar_odometry_validated').perform(context).strip().lower()
     if lidar_validated_value not in {'true', 'false'}:
         raise RuntimeError('lidar_odometry_validated must be true or false')
-    if profile == 'wheel_imu_lidar' and lidar_validated_value != 'true':
-        raise RuntimeError(
-            'ekf_profile=wheel_imu_lidar is shadow-only until explicitly '
-            'enabled with lidar_odometry_validated:=true')
     requested = LaunchConfiguration('ekf_params_file').perform(context).strip()
     params_file = (
         Path(requested).expanduser()
@@ -30,6 +27,11 @@ def _launch_setup(context):
     )
     if not params_file.is_file():
         raise RuntimeError(f'EKF params file does not exist: {params_file}')
+    try:
+        validate_lidar_gate(
+            params_file, lidar_validated_value == 'true')
+    except ValueError as exc:
+        raise RuntimeError(f'invalid EKF input policy: {exc}') from exc
     return [Node(
         package='robot_localization',
         executable='ekf_node',

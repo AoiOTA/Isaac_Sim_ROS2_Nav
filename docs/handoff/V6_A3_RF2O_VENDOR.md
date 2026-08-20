@@ -18,10 +18,10 @@
   initialization; publish only `/lidar/odom`, stamped from strictly increasing
   scans, with frames `odom -> base_link`; never publish `/tf`; finite positive
   parameterized pose/twist covariance.
-- Shadow gate: `wheel_imu_lidar` fails closed unless
-  `lidar_odometry_validated:=true` is explicitly supplied. Default remains
-  false. The direct EKF negative launch test exited 1 with the intended gate
-  message.
+- Shadow gate: the final loaded EKF YAML, including an explicit custom file,
+  is parsed fail-closed. Any recognized LiDAR input requires
+  `lidar_odometry_validated:=true`; canonical wheel+IMU remains allowed with
+  false, while unknown inputs or malformed YAML are rejected.
 - Dependency/build commands: Jazzy plus the allowed Integration
   `install/local_setup.bash`; `rosdep install --from-paths
   src/rf2o_laser_odometry --ignore-src -r -y`; `colcon build
@@ -29,14 +29,17 @@
   robot_localization_config robot_bringup`.
 - Build result: PASS, 14 dependency packages built; the final focused RF2O and
   robot_odometry rebuild also passed.
-- Test result: PASS — `robot_odometry 18/18`,
-  `robot_localization_config 14/14`, `robot_bringup 204/204`; RF2O launch and
+- Test result after reviewer amendment: PASS — `robot_odometry 19/19`,
+  `robot_localization_config 18 total/0 failed`, `robot_bringup 204/204`; RF2O launch and
   synthetic publisher flake8 PASS; RF2O package XML valid; `git diff --check`
   PASS.
-- Synthetic ROS smoke: PASS on isolated `ROS_DOMAIN_ID=183`, no Isaac. Static
-  `base_link -> laser` plus deterministic translated room scans and `/clock`
-  produced 44 `/lidar/odom` messages: finite, nonzero, strictly monotonic
-  stamps, positive covariance, correct frames. `ros2 node list -a` showed one
+- Synthetic ROS smoke: PASS, no Isaac. Repeated stationary room scans on domain
+  187 produced one finite valid odometry sample and `motion_detected=false`;
+  the complete scan degeneracy then caused RF2O to reject further solutions.
+  Translated room scans on domain 188 produced 68 finite, strictly monotonic
+  samples with `motion_detected=true`, positive covariance and correct frames.
+  Motion is computed from relative x/y/yaw and planar twist; quaternion w is
+  excluded. The earlier `ros2 node list -a` check showed one
   `rf2o_laser_odometry_node` and no `transform_listener_impl`/algorithm node.
   `/tf` reported publisher count 0; smoke observed `dynamic_tf_count=0`.
   Reproducer: `ros2_ws/src/robot_odometry/test/rf2o_synthetic_smoke.py`.

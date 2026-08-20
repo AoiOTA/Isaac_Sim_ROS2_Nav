@@ -64,3 +64,26 @@
 - Deferred: bag/Isaac ATE/RPE, covariance calibration, real-sensor robustness,
   and formal qualification. No usable bag exists in this allowed worktree, so
   three-source fusion remains fail-closed shadow.
+
+## 2026-08-20 — V6 A3 reviewer gate and motion amendment
+
+- Goal: bind LiDAR validation to the final loaded EKF YAML rather than the
+  profile label, and prevent constant quaternion w from satisfying synthetic
+  motion evidence.
+- Changes: shared fail-closed EKF input classifier used by direct EKF and core
+  bringup; relative x/y/yaw plus planar-twist `motion_detected`; explicit
+  stationary and moving smoke modes.
+- Build/test: pure Jazzy + allowed Integration build PASS (14 packages);
+  `robot_localization_config` 18 total/0 failed, `robot_odometry` 19/19, and
+  `robot_bringup` 204/204.
+- Actual launch matrix: profile `wheel_imu` plus custom three-source YAML and
+  validation false rejected RC=1; the same YAML with true started; profile
+  `wheel_imu_lidar` plus actual canonical wheel-only YAML and false started.
+- Synthetic smoke: stationary repeated scans PASS with
+  `motion_detected=false`, one valid odometry sample before RF2O rejected the
+  degenerate identical pairs; translated room scans PASS with 68 valid samples
+  and `motion_detected=true`. Both retained finite data, positive covariance,
+  correct frames, monotonic stamps and zero dynamic TF publication.
+- Verdict: **PASS (reviewer amendment build/unit/launch/synthetic smoke)**.
+- Deferred unchanged: Isaac/bag ATE/RPE, covariance calibration, and formal
+  qualification.

@@ -1,10 +1,13 @@
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
+from nav_msgs.msg import Odometry
 import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 RF2O_ROOT = PACKAGE_ROOT.parent / 'rf2o_laser_odometry'
+SMOKE_PATH = PACKAGE_ROOT / 'test' / 'rf2o_synthetic_smoke.py'
 
 
 def test_rf2o_is_topic_only_and_cannot_publish_a_second_tf_tree():
@@ -90,3 +93,20 @@ def test_vendor_records_fixed_upstream_revision_and_license():
     assert '<depend>nav_msgs</depend>' in package_xml
     assert '<depend>boost</depend>' in package_xml
     assert 'cmake_modules' not in package_xml
+
+
+def test_synthetic_motion_metric_rejects_static_and_detects_room_motion():
+    spec = spec_from_file_location('rf2o_synthetic_smoke', SMOKE_PATH)
+    smoke = module_from_spec(spec)
+    spec.loader.exec_module(smoke)
+
+    stationary = [Odometry(), Odometry()]
+    for message in stationary:
+        message.pose.pose.orientation.w = 1.0
+    moving = [Odometry(), Odometry()]
+    for message in moving:
+        message.pose.pose.orientation.w = 1.0
+    moving[1].pose.pose.position.x = 0.1
+
+    assert smoke.planar_motion_detected(stationary) is False
+    assert smoke.planar_motion_detected(moving) is True

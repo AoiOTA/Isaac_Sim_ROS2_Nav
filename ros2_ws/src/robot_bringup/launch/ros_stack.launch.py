@@ -20,6 +20,7 @@ from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
 from robot_experiments.spawn_poses import load_spawn_pose
+from robot_localization_config.ekf_input_policy import validate_lidar_gate
 
 
 _TELEOP_SPEED_ARGUMENTS = (
@@ -127,16 +128,26 @@ def _launch_setup(context):
         raise RuntimeError('lidar_odometry_backend must be off or rf2o')
     if lidar_validated_value not in {'true', 'false'}:
         raise RuntimeError('lidar_odometry_validated must be true or false')
-    if (ekf_profile == 'wheel_imu_lidar'
-            and lidar_odometry_backend != 'rf2o'):
+    localization_config_share = Path(
+        get_package_share_directory('robot_localization_config'))
+    requested_ekf_params = LaunchConfiguration(
+        'ekf_params_file').perform(context).strip()
+    ekf_params_file = (
+        Path(requested_ekf_params).expanduser()
+        if requested_ekf_params
+        else localization_config_share / 'config' / f'ekf_{ekf_profile}.yaml'
+    )
+    if not ekf_params_file.is_file():
+        raise RuntimeError(f'EKF params file does not exist: {ekf_params_file}')
+    try:
+        ekf_uses_lidar = validate_lidar_gate(
+            ekf_params_file, lidar_validated_value == 'true')
+    except ValueError as exc:
+        raise RuntimeError(f'invalid EKF input policy: {exc}') from exc
+    if ekf_uses_lidar and lidar_odometry_backend != 'rf2o':
         raise RuntimeError(
-            'ekf_profile=wheel_imu_lidar requires '
+            'loaded EKF params reference LiDAR odometry and require '
             'lidar_odometry_backend=rf2o')
-    if (ekf_profile == 'wheel_imu_lidar'
-            and lidar_validated_value != 'true'):
-        raise RuntimeError(
-            'ekf_profile=wheel_imu_lidar is shadow-only until explicitly '
-            'enabled with lidar_odometry_validated:=true')
     localization_profile = LaunchConfiguration(
         'localization_profile').perform(context).strip().lower()
     if localization_profile not in {'kujiale', 'rivermark'}:
@@ -266,8 +277,7 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'ekf_profile': ekf_profile,
                     'lidar_odometry_validated': lidar_validated_value,
-                    'ekf_params_file': LaunchConfiguration(
-                        'ekf_params_file').perform(context),
+                    'ekf_params_file': str(ekf_params_file),
                 },
             ),
         ])
