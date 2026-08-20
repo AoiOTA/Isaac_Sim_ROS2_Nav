@@ -1,0 +1,40 @@
+schema_version: 1
+kind: v6_kujiale_low_obstacle_layout
+layout_id: kujiale_v6_low_obstacles_frozen_r1_20260820
+status: frozen
+revision: 1
+frozen_date: "2026-08-20"
+coordinate_frame: map
+source_usd: kujiale_0026_A_to_B_door_open.usd
+source_usd_mutated: false
+occupancy_map: ../../../data/maps/occupancy/warehouse_new.yaml
+obstacle_config: v6_kujiale_low_obstacles_frozen.yaml
+activation_profile: v6-low-obstacles
+map_to_usd:
+  x: 2.9-map_x
+  y: -0.2-map_y
+  yaw_offset_deg: 180.0
+sensors:
+  lidar_plane_z_m: 0.333
+  rgbd_origin_z_m: 0.218
+  camera_profile: rgbd_navigation
+  image_topic: /camera/front/image_raw
+  depth_image_topic: /camera/front/depth/image_raw
+  depth_points_topic: /camera/front/depth/points
+  depth_points_direct_to_costmap: false
+geometry_contract:
+  obstacle_bottom_z_m: 0.0
+  obstacle_top_z_m: 0.16
+  wheel_vertical_extent_m: [0.0, 0.196]
+  robot_max_footprint_dimension_m: 0.485
+  lateral_safety_margin_each_side_m: 0.05
+  minimum_pairwise_net_clearance_m: 0.585
+  minimum_open_bypass_side_m: 1.9
+  maximum_route_proximity_m: 1.5
+obstacles:
+  - {id: v6_low_box_west, map_position: [-0.853013, -0.961904, 0.08], usd_position: [3.753013, 0.761904, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: v6_low_box_center, map_position: [-2.135744, -0.876959, 0.08], usd_position: [5.035744, 0.676959, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: v6_low_box_east, map_position: [0.366563, 0.667950, 0.08], usd_position: [2.533437, -0.867950, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: v6_low_box_north, map_position: [0.126442, -0.579985, 0.08], usd_position: [2.773558, 0.379985, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: v6_low_bar_east, map_position: [1.300000, 0.033996, 0.08], usd_position: [1.600000, -0.233996, 0.08], size: [0.60, 0.30, 0.16]}
+  - {id: v6_low_bar_north, map_position: [-0.703143, 0.252652, 0.08], usd_position: [3.603143, -0.452652, 0.08], size: [0.60, 0.30, 0.16]}

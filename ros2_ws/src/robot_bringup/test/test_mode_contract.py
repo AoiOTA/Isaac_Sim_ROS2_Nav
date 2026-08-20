@@ -4,6 +4,7 @@ import pytest
 from robot_bringup.mode_contract import posegraph_prefix
 from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
+from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
 import yaml
 
@@ -15,6 +16,8 @@ def test_nav2_profiles_are_bounded_and_normalized():
     assert validate_nav2_profile(' Stable ') == 'stable'
     assert validate_nav2_profile('PERFORMANCE') == 'performance'
     assert validate_nav2_profile('dynamic_avoidance') == 'dynamic_avoidance'
+    assert validate_nav2_profile('v6_low_obstacle_isolation') == \
+        'v6_low_obstacle_isolation'
     assert validate_nav2_profile('bio_nav_planning_only') == \
         'bio_nav_planning_only'
     assert validate_nav2_profile('bio_nav_risk_only') == \
@@ -33,6 +36,17 @@ def test_nav2_profiles_are_bounded_and_normalized():
         'bio_nav_rgbd_risk_static_opt_in'
     with pytest.raises(ValueError, match='nav2_profile'):
         validate_nav2_profile('benchmark-custom')
+
+
+def test_v6_low_obstacle_profile_keeps_valid_mppi_timing():
+    profile = validate_nav2_profile_params_file(
+        PACKAGE_ROOT.parent
+        / 'robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml'
+    )
+    assert profile.controller_frequency == 10.0
+    assert profile.model_dt == 0.10
+    assert profile.time_steps == 20
+    assert profile.batch_size == 700
 
 
 def test_estimated_and_legacy_realistic_tf_ownership_modes_are_accepted():

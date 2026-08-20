@@ -1,0 +1,23 @@
+# C4 isolation overlay: preserve RGB-D publication for Module1/2 and evidence,
+# but do not let raw depth points write either Nav2 Costmap directly.
+controller_server:
+  ros__parameters:
+    controller_frequency: 10.0
+    FollowPath:
+      time_steps: 20
+      model_dt: 0.10
+      batch_size: 700
+
+local_costmap:
+  local_costmap:
+    ros__parameters:
+      plugins: [obstacle_layer, inflation_layer]
+      depth_voxel_layer:
+        enabled: false
+
+global_costmap:
+  global_costmap:
+    ros__parameters:
+      plugins: [static_layer, obstacle_layer, inflation_layer]
+      depth_voxel_layer:
+        enabled: false

@@ -87,3 +87,27 @@
 - Verdict: **PASS (reviewer amendment build/unit/launch/synthetic smoke)**.
 - Deferred unchanged: Isaac/bag ATE/RPE, covariance calibration, and formal
   qualification.
+
+## 2026-08-20 — V6 C4 Kujiale frozen low-obstacle layout
+
+- Goal: freeze a separate six-obstacle Kujiale layout without editing the USD,
+  map, existing draft layout, or existing static/dynamic campaign defaults.
+- Branch/worktree/start: `cognitive-navigation`;
+  `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`;
+  `f81c690f2064a5711ecfe8ea68edcabc3e41915e`.
+- Layout: `kujiale_v6_low_obstacles_frozen_r1_20260820`; five original centers
+  retained; east bar x minimally adjusted to 1.300000 m to raise the nearest
+  pair clearance above the 0.585 m robot-plus-margin contract.
+- Profile: explicit `run_v6_kujiale_low_obstacles.sh` and additive
+  `v6-low-obstacles` Isaac mode; default-off physical YAML; dedicated
+  experiment scenario; dedicated Nav2 isolation overlay.
+- Sensor contract: RGB, depth image, and depth points remain published under
+  `rgbd_navigation`; raw depth points are absent from the V6 Costmap overlay.
+- Commands: wrapper `bash -n`; focused pytest covering new layout, obstacle
+  parser regression, scenario parsing, and Nav2 profile timing; `git diff
+  --check`.
+- Result: `103 passed`; no static geometry/contract failure.
+- Verdict: **PASS (frozen configuration and static tests only)**.
+- Unrun: Isaac/ROS/Nav2, camera visibility, contact, bypass behavior, estimated
+  localization, causal experiment, and formal qualification.
+- Handoff: `docs/handoff/V6_C4_LOW_OBSTACLE_LAYOUT.md`.

@@ -17,6 +17,7 @@ ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
+    'v6_low_obstacle_isolation',
     'bio_nav_risk_only', 'bio_nav_tiebreak_risk',
     'attempt21_static_collection',
     'attempt22_reachability_shadow',

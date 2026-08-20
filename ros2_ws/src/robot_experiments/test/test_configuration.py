@@ -50,6 +50,25 @@ def test_example_scenarios_parse(filename, scenario_type, seed_count):
     assert scenario.success.orientation_tolerance_deg <= 10.0
 
 
+def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
+    scenario = load_scenario(CONFIG / "v6_kujiale_low_obstacles_static.yaml")
+    assert scenario.scenario_id == "v6_kujiale_low_obstacles_static"
+    assert scenario.scenario_type == "static"
+    assert [row.seed for row in scenario.run_matrix] == [8601]
+    assert {row.condition_id for row in scenario.run_matrix} == {
+        "v6_low_obstacles"
+    }
+    assert scenario.dynamic_config_file == (
+        "../../../../isaac_sim/configs/experiments/"
+        "v6_kujiale_low_obstacles_frozen.yaml"
+    )
+    assert scenario.obstacles["layout_id"] == (
+        "kujiale_v6_low_obstacles_frozen_r1_20260820"
+    )
+    assert len(scenario.obstacles["static"]) == 6
+    assert scenario.obstacle_trajectories == ()
+
+
 def test_dynamic_scenario_preserves_reproducible_trajectories():
     scenario = load_scenario(CONFIG / "dynamic.yaml")
     assert {item["motion"] for item in scenario.obstacle_trajectories} == {

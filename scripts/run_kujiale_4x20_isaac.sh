@@ -8,7 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/common.sh
 source "${SCRIPT_DIR}/lib/common.sh"
 
-[[ $# -ge 1 ]] || die "usage: $0 static|dynamic [run_isaac.sh options]"
+[[ $# -ge 1 ]] \
+  || die "usage: $0 static|dynamic|v6-low-obstacles [run_isaac.sh options]"
 mode="$1"; shift
 environment_root="${KUJIALE_ENVIRONMENT_ROOT:-/home/lyb/kujiale_usd_rooms_20260717}"
 require_directory "${environment_root}"
@@ -23,7 +24,10 @@ case "${mode}" in
   dynamic)
     obstacle_config="${ISAAC_NAV_DYNAMIC_OBSTACLE_CONFIG:-${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml}"
     ;;
-  *) die "mode must be static or dynamic, got: ${mode}" ;;
+  v6-low-obstacles)
+    obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    ;;
+  *) die "mode must be static, dynamic, or v6-low-obstacles, got: ${mode}" ;;
 esac
 
 export ISAAC_NAV__GROUND_TRUTH__ENABLED=true
