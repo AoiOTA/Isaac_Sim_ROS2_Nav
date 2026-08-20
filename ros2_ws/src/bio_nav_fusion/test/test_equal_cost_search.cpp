@@ -228,6 +228,12 @@ bio_nav_interfaces::msg::CognitiveObstacleArray obstacleFixture()
   message.schema_version = "bio_nav_cognitive_obstacles_v1";
   message.model_id = "model";
   message.ttl.nanosec = 500000000U;
+  message.validation_stamp.sec = 10;
+  message.validation_ttl.nanosec = 500000000U;
+  message.source_odom_stamp.sec = 10;
+  message.validation_odom_stamp.sec = 10;
+  message.validation_mode =
+    bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_FRESH;
   message.input_healthy = true;
   message.module2_healthy = true;
   message.observation_valid = true;
@@ -246,7 +252,25 @@ bio_nav_interfaces::msg::CognitiveObstacleArray obstacleFixture()
   obstacle.position_stddev_m = {0.05, 0.05};
   obstacle.count = 3;
   obstacle.last_seen.sec = 10;
+  obstacle.motion_class = bio_nav_interfaces::msg::CognitiveObstacle::MOTION_UNKNOWN;
   message.obstacles.push_back(obstacle);
+  return message;
+}
+
+bio_nav_interfaces::msg::CognitiveObstacleArray staticRevalidatedObstacleFixture()
+{
+  auto message = obstacleFixture();
+  message.validation_stamp.sec = 11;
+  message.source_age.sec = 1;
+  message.validation_ttl.nanosec = 500000000U;
+  message.validation_odom_stamp.sec = 11;
+  message.validation_mode =
+    bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_STATIC_DEPTH_REVALIDATED;
+  message.validation_sensor_mask =
+    bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_SENSOR_DEPTH;
+  message.obstacles[0].motion_class =
+    bio_nav_interfaces::msg::CognitiveObstacle::MOTION_STATIC;
+  message.obstacles[0].static_confirmed = true;
   return message;
 }
 
@@ -314,13 +338,147 @@ TEST(CognitiveObstacleLayer, strict_gate_and_hard_threshold_are_fail_open)
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
       message, 10600000000LL, identity, 6, 0.5, 0.2),
-    "stale");
+    "validation_stale");
   message.header.stamp.sec = 10;
   message.recurrent_session_id = "wrong";
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
       message, 10100000000LL, identity, 6, 0.5, 0.2),
     "identity");
+}
+
+TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timeline)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  auto message = staticRevalidatedObstacleFixture();
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 11100000000LL, identity, 6, 0.5, 0.2),
+    "");
+
+  auto changed = message;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11600000000LL, identity, 6, 0.5, 0.2),
+    "validation_stale");
+
+  changed = message;
+  changed.header.stamp.sec = 8;
+  changed.source_age.sec = 3;
+  changed.source_odom_stamp.sec = 8;
+  changed.obstacles[0].last_seen.sec = 8;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "source_age");
+
+  changed = message;
+  changed.source_age.nanosec = 1U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "source_age");
+
+  changed = message;
+  changed.header.stamp = changed.validation_stamp;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "source_age");
+
+  changed = message;
+  changed.validation_odom_stamp.sec = 10;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed, 11100000000LL, identity, 6, 0.5, 0.2),
+    "odom_time");
+}
+
+TEST(CognitiveObstacleLayer, static_depth_revalidation_rejects_unconfirmed_items_and_mask)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  auto message = staticRevalidatedObstacleFixture();
+  message.validation_sensor_mask = 0U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 11100000000LL, identity, 6, 0.5, 0.2),
+    "validation_sensor");
+
+  message = staticRevalidatedObstacleFixture();
+  message.obstacles[0].motion_class =
+    bio_nav_interfaces::msg::CognitiveObstacle::MOTION_DYNAMIC;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 11100000000LL, identity, 6, 0.5, 0.2),
+    "static_confirmation");
+
+  message.obstacles[0].motion_class =
+    bio_nav_interfaces::msg::CognitiveObstacle::MOTION_UNKNOWN;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 11100000000LL, identity, 6, 0.5, 0.2),
+    "static_confirmation");
+
+  message.obstacles[0].motion_class =
+    bio_nav_interfaces::msg::CognitiveObstacle::MOTION_STATIC;
+  message.obstacles[0].static_confirmed = false;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 11100000000LL, identity, 6, 0.5, 0.2),
+    "static_confirmation");
+}
+
+TEST(CognitiveObstacleLayer, future_tolerance_and_identity_fail_open)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  auto message = obstacleFixture();
+  message.header.stamp.nanosec = 50000000U;
+  message.validation_stamp.nanosec = 50000000U;
+  message.source_odom_stamp.nanosec = 50000000U;
+  message.validation_odom_stamp.nanosec = 50000000U;
+  message.obstacles[0].last_seen.nanosec = 50000000U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10000000000LL, identity, 6, 0.5, 0.2),
+    "");
+  message.header.stamp.nanosec = 50000001U;
+  message.validation_stamp.nanosec = 50000001U;
+  message.source_odom_stamp.nanosec = 50000001U;
+  message.validation_odom_stamp.nanosec = 50000001U;
+  message.obstacles[0].last_seen.nanosec = 50000001U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10000000000LL, identity, 6, 0.5, 0.2),
+    "validation_stale");
+
+  message = obstacleFixture();
+  message.map_version = "other";
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10100000000LL, identity, 6, 0.5, 0.2),
+    "identity");
+}
+
+TEST(CognitiveObstacleLayer, shadow_never_raises_and_active_uses_max_merge)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  EXPECT_EQ(CognitiveObstacleLayer::mergeCellCost("shadow", 40U, 80U), 40U);
+  EXPECT_EQ(CognitiveObstacleLayer::mergeCellCost("off", 40U, 80U), 40U);
+  EXPECT_EQ(CognitiveObstacleLayer::mergeCellCost("active", 40U, 80U), 80U);
+  EXPECT_EQ(CognitiveObstacleLayer::mergeCellCost("active", 90U, 80U), 90U);
+}
+
+TEST(CognitiveObstacleLayer, tf_failure_has_explicit_zero_raise_fail_open_contract)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  EXPECT_STREQ(CognitiveObstacleLayer::tfFailureReason(), "tf");
+  EXPECT_EQ(CognitiveObstacleLayer::mergeCellCost("active", 40U, 0U), 40U);
 }
 
 TEST(CognitiveRiskCritic, nearer_and_more_directionally_deviant_cost_more)

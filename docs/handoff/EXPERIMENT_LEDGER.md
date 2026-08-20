@@ -207,3 +207,24 @@
   PID records were retained under the evidence directory. No standalone exact
   launch-command transcript exists in that directory.
 - Handoff: `docs/handoff/V6_M1_SHADOW_ENGINEERING_20260821.md`.
+
+## 2026-08-21 — V6 Module3 obstacle validation consumer
+
+- Goal: consume only fresh or depth-revalidated confirmed-static cognitive
+  obstacles while preserving fail-open, max-only Costmap authority.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `b71fdf31644bd8a89dea70a91929e3bc537f8657`.
+- Interface underlay: permitted Integration worktree at
+  `4f294be1b9f2f0eff3fc27199082cb22b9ab9cdb`.
+- Changes: exact dual-timeline/source-age and odometry gates; 0.5 s validation
+  TTL and 50 ms future tolerance; strict fresh/static-depth modes; validation
+  timestamp TF; private-layer clear on rejection; structured existing status
+  fields; max-only active and zero-write shadow contracts.
+- Validation: fresh interface build PASS; fresh `bio_nav_fusion` clean build
+  PASS; colcon result 21 tests/0 failures; focused profile pytest 7 passed;
+  `git diff --check` PASS. Temporary root:
+  `/tmp/bionav_m3_obstacle_final.3stwVY`.
+- Verdict: **PASS (implementation and code-level tests only)**.
+- Unrun: live ROS/TF/Costmap, Isaac, Nav2 navigation, evidence campaign, and
+  formal qualification.
+- Handoff: `docs/handoff/V6_M3_OBSTACLE_VALIDATION_CONSUMER_20260821.md`.

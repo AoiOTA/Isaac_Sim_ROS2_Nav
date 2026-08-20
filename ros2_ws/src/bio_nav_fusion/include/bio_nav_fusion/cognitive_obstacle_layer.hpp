@@ -1,6 +1,7 @@
 #ifndef BIO_NAV_FUSION__COGNITIVE_OBSTACLE_LAYER_HPP_
 #define BIO_NAV_FUSION__COGNITIVE_OBSTACLE_LAYER_HPP_
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -51,10 +52,17 @@ public:
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
     int maximum_soft_cost, double collision_min_height_m,
     double collision_max_height_m);
+  static uint8_t mergeCellCost(
+    const std::string & mode, uint8_t existing_cost, uint8_t offered_cost)
+  {
+    return modeWritesCostmap(mode) ?
+           std::max(existing_cost, offered_cost) : existing_cost;
+  }
   static bool modeWritesCostmap(const std::string & mode)
   {
     return mode == "active";
   }
+  static const char * tfFailureReason() {return "tf";}
 
 private:
   void obstacleCallback(

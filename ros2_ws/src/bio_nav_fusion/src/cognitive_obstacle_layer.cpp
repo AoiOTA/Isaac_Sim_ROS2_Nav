@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <sstream>
 #include <utility>
 
 #include "geometry_msgs/msg/point_stamped.hpp"
@@ -20,6 +21,21 @@ namespace
 int64_t stampNs(const builtin_interfaces::msg::Time & stamp)
 {
   return static_cast<int64_t>(stamp.sec) * 1000000000LL + stamp.nanosec;
+}
+
+int64_t durationNs(const builtin_interfaces::msg::Duration & duration)
+{
+  return static_cast<int64_t>(duration.sec) * 1000000000LL + duration.nanosec;
+}
+
+bool validStamp(const builtin_interfaces::msg::Time & stamp)
+{
+  return stamp.sec >= 0 && stamp.nanosec < 1000000000U && stampNs(stamp) > 0;
+}
+
+bool validNonnegativeDuration(const builtin_interfaces::msg::Duration & duration)
+{
+  return duration.sec >= 0 && duration.nanosec < 1000000000U;
 }
 
 double durationSeconds(const builtin_interfaces::msg::Duration & duration)
@@ -180,15 +196,66 @@ std::string CognitiveObstacleLayer::validateMessage(
   double maximum_age_s, double maximum_ood_probability, bool enforce_identity)
 {
   const int64_t source_ns = stampNs(message.header.stamp);
+  const int64_t validation_ns = stampNs(message.validation_stamp);
+  const int64_t source_age_ns = durationNs(message.source_age);
+  const int64_t source_odom_ns = stampNs(message.source_odom_stamp);
+  const int64_t validation_odom_ns = stampNs(message.validation_odom_stamp);
   const double ttl_s = durationSeconds(message.ttl);
-  const double age_s = static_cast<double>(now_ns - source_ns) * 1.0e-9;
+  const double validation_ttl_s = durationSeconds(message.validation_ttl);
+  const double validation_age_s = static_cast<double>(now_ns - validation_ns) * 1.0e-9;
+  constexpr int64_t kMaximumSourceAgeNs = 2000000000LL;
+  constexpr int64_t kFutureToleranceNs = 50000000LL;
   if (message.schema_version != "bio_nav_cognitive_obstacles_v1") {return "schema";}
   if (message.header.frame_id != "base_link") {return "frame";}
   if (!identityFieldsPresent(message)) {return "identity";}
-  if (source_ns <= 0 || !std::isfinite(ttl_s) || ttl_s <= 0.0 || ttl_s > 0.5 ||
-    !std::isfinite(age_s) || age_s < 0.0 || age_s > std::min(ttl_s, maximum_age_s))
+  if (!validStamp(message.header.stamp) ||
+    !validStamp(message.validation_stamp) || validation_ns < source_ns)
   {
-    return "stale";
+    return "validation_time";
+  }
+  if (!validNonnegativeDuration(message.source_age) || source_age_ns > kMaximumSourceAgeNs ||
+    validation_ns - source_ns != source_age_ns)
+  {
+    return "source_age";
+  }
+  if (!validNonnegativeDuration(message.ttl) || !std::isfinite(ttl_s) ||
+    ttl_s <= 0.0 || ttl_s > 0.5 ||
+    !validNonnegativeDuration(message.validation_ttl) ||
+    !std::isfinite(validation_ttl_s) || validation_ttl_s <= 0.0 ||
+    validation_ttl_s > 0.5)
+  {
+    return "ttl";
+  }
+  if (!std::isfinite(validation_age_s) || now_ns + kFutureToleranceNs < validation_ns ||
+    validation_age_s > std::min(validation_ttl_s, maximum_age_s))
+  {
+    return "validation_stale";
+  }
+  if (!validStamp(message.source_odom_stamp) ||
+    !validStamp(message.validation_odom_stamp) || validation_odom_ns < source_odom_ns ||
+    validation_odom_ns - source_odom_ns != source_age_ns ||
+    now_ns + kFutureToleranceNs < validation_odom_ns)
+  {
+    return "odom_time";
+  }
+  if (message.validation_mode ==
+    bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_FRESH)
+  {
+    if (validation_ns != source_ns || source_age_ns != 0 ||
+      validation_odom_ns != source_odom_ns)
+    {
+      return "fresh_mismatch";
+    }
+  } else if (message.validation_mode ==
+    bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_STATIC_DEPTH_REVALIDATED)
+  {
+    if ((message.validation_sensor_mask &
+      bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_SENSOR_DEPTH) == 0U)
+    {
+      return "validation_sensor";
+    }
+  } else {
+    return "validation_mode";
   }
   if (message.sequence == 0U ||
     (last_sequence != std::numeric_limits<uint64_t>::max() &&
@@ -222,9 +289,17 @@ std::string CognitiveObstacleLayer::validateMessage(
     {
       return "obstacle";
     }
+    if (message.validation_mode ==
+      bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_STATIC_DEPTH_REVALIDATED &&
+      (obstacle.motion_class !=
+      bio_nav_interfaces::msg::CognitiveObstacle::MOTION_STATIC ||
+      !obstacle.static_confirmed))
+    {
+      return "static_confirmation";
+    }
     const int64_t seen_ns = stampNs(obstacle.last_seen);
-    if (seen_ns <= 0 || seen_ns > now_ns ||
-      static_cast<double>(now_ns - seen_ns) * 1.0e-9 > ttl_s)
+    if (!validStamp(obstacle.last_seen) || seen_ns > source_ns ||
+      static_cast<double>(source_ns - seen_ns) * 1.0e-9 > ttl_s)
     {
       return "obstacle_stale";
     }
@@ -280,10 +355,12 @@ void CognitiveObstacleLayer::obstacleCallback(
       have_sequence_ = true;
     } else {
       latest_.reset();
+      resetMaps();
     }
   }
   addExtraBounds(-1000.0, -1000.0, 1000.0, 1000.0);
-  const double age_s = static_cast<double>(now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
+  const double age_s = static_cast<double>(
+    now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
   const std::string status_reason = reason.empty() ?
     (mode_ == "shadow" ? "shadow" : "offered") : reason;
   publishStatus(*message, false, status_reason, age_s);
@@ -345,14 +422,14 @@ void CognitiveObstacleLayer::updateCosts(
   try {
     transform = tf_->lookupTransform(
       layered_costmap_->getGlobalFrameID(), message->header.frame_id,
-      rclcpp::Time(message->header.stamp), tf2::durationFromSec(0.0));
+      rclcpp::Time(message->validation_stamp), tf2::durationFromSec(0.0));
   } catch (const std::exception &) {
     std::lock_guard<std::mutex> lock(mutex_);
     latest_.reset();
     updateWithMax(master_grid, min_i, min_j, max_i, max_j);
     const double age_s = static_cast<double>(
-      now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
-    publishStatus(*message, false, "tf", age_s);
+      now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
+    publishStatus(*message, false, tfFailureReason(), age_s);
     return;
   }
   uint32_t active_cells = 0;
@@ -364,6 +441,7 @@ void CognitiveObstacleLayer::updateCosts(
     geometry_msgs::msg::PointStamped source;
     geometry_msgs::msg::PointStamped target;
     source.header = message->header;
+    source.header.stamp = message->validation_stamp;
     source.point.x = obstacle.pose_xy_m[0];
     source.point.y = obstacle.pose_xy_m[1];
     tf2::doTransform(source, target, transform);
@@ -383,7 +461,7 @@ void CognitiveObstacleLayer::updateCosts(
           my < static_cast<int>(getSizeInCellsY()))
         {
           const auto private_before = getCost(mx, my);
-          const auto private_after = std::max(private_before, cost);
+          const auto private_after = mergeCellCost(mode_, private_before, cost);
           if (private_after > private_before) {
             ++active_cells;
             maximum_cost = std::max(maximum_cost, private_after);
@@ -411,7 +489,7 @@ void CognitiveObstacleLayer::updateCosts(
   const std::string reason = applied ? "" :
     (active_cells > 0U ? "masked" : "no_costmap_cells");
   const double age_s = static_cast<double>(
-    now.nanoseconds() - stampNs(message->header.stamp)) * 1.0e-9;
+    now.nanoseconds() - stampNs(message->validation_stamp)) * 1.0e-9;
   publishStatus(
     *message, applied, reason, age_s, active_cells, maximum_cost,
     raised_cells, masked_cells, maximum_cost_increase);
@@ -434,7 +512,18 @@ void CognitiveObstacleLayer::publishStatus(
   status.source_sequence = message.sequence;
   status.recurrent_session_id = message.recurrent_session_id;
   status.rejection_mask = message.rejection_mask;
-  status.fallback_reason = reason;
+  std::ostringstream detail;
+  detail << "validation_mode=" << static_cast<unsigned int>(message.validation_mode)
+         << ";source_age_ms=" << durationSeconds(message.source_age) * 1000.0
+         << ";rejection_reason=" << reason
+         << ";confirmed_count=" << std::count_if(
+    message.obstacles.begin(), message.obstacles.end(),
+    [](const auto & obstacle) {
+      return obstacle.motion_class ==
+             bio_nav_interfaces::msg::CognitiveObstacle::MOTION_STATIC &&
+             obstacle.static_confirmed;
+    });
+  status.fallback_reason = detail.str();
   status.message_age_ms = std::isfinite(age_s) ? age_s * 1000.0 :
     std::numeric_limits<float>::infinity();
   status.active_cell_count = active_cells;
