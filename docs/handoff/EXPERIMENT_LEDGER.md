@@ -134,3 +134,18 @@
 - Unrun: Isaac/ROS/Nav2, camera visibility, contact, bypass behavior, estimated
   localization, causal experiment, and formal qualification.
 - Handoff: `docs/handoff/V6_C4_LOW_OBSTACLE_LAYOUT.md`.
+
+## 2026-08-20 — V6 estimated/Isaac odometry-mode alignment
+
+- Goal: prevent the V6 estimated chain from also enabling Isaac ideal `/odom`
+  and `odom -> base_link`, without changing legacy static/dynamic defaults.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `1b175aa8d3c1e23305ae9e7e924cb4d1b6c4309c`.
+- Change: `v6-low-obstacles` now defaults Isaac to `realistic`; static/dynamic
+  retain `ideal`; explicit trailing caller options override profile defaults.
+- Validation: wrapper/V6 entry `bash -n` PASS; new focused script contract
+  pytest `1 passed`. A combined sibling selection was `1 passed, 1 failed`
+  because the existing Costmap-overlay assertion expects an obsolete one-line
+  plugin list; that tracked overlay was not changed by this amendment.
+- Verdict: **PASS (shell syntax and focused static contract only)**.
+- Unrun: live ROS/Isaac publisher counts, TF ownership and navigation closure.

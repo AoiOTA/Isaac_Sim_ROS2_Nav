@@ -15,6 +15,7 @@ environment_root="${KUJIALE_ENVIRONMENT_ROOT:-/home/lyb/kujiale_usd_rooms_202607
 require_directory "${environment_root}"
 appearance="${PROJECT_ROOT}/isaac_sim/configs/experiments/kujiale_appearance_profiles.yaml"
 spawn_pose="${ISAAC_NAV_ATTEMPT30_SPAWN_POSE:-long_route_start_g1}"
+odometry_mode="ideal"
 require_file "${appearance}"
 
 case "${mode}" in
@@ -26,18 +27,20 @@ case "${mode}" in
     ;;
   v6-low-obstacles)
     obstacle_config="${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    odometry_mode="realistic"
     ;;
   *) die "mode must be static, dynamic, or v6-low-obstacles, got: ${mode}" ;;
 esac
 
 export ISAAC_NAV__GROUND_TRUTH__ENABLED=true
+# Explicit caller options are last and therefore override profile defaults.
 exec "${SCRIPT_DIR}/run_isaac.sh" \
   --environment-root "${environment_root}" \
   --environment-usd kujiale_0026_A_to_B_door_open.usd \
   --spawn-poses-file "${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml" \
   --spawn-pose "${spawn_pose}" \
   --navigation-mode localization \
-  --mode ideal \
+  --mode "${odometry_mode}" \
   --camera-profile rgbd_navigation \
   --dynamic-obstacle-config "${obstacle_config}" \
   --dynamic-obstacles \

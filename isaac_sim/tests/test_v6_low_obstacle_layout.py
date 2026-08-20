@@ -252,3 +252,19 @@ def test_explicit_profile_keeps_rgbd_topics_but_not_direct_costmap_input():
     assert "kujiale_long_range_static.yaml" in static_branch
     assert "kujiale_long_range_dynamic.yaml" in dynamic_branch
     assert "v6_kujiale_low_obstacles_frozen.yaml" in v6_branch
+
+
+def test_v6_isaac_profile_defaults_realistic_without_changing_legacy_modes():
+    source = (
+        ROOT / "scripts/run_kujiale_4x20_isaac.sh"
+    ).read_text(encoding="utf-8")
+    before_case, case_body = source.split('case "${mode}" in', 1)
+    static_branch, after_static = case_body.split("  dynamic)", 1)
+    dynamic_branch, v6_branch = after_static.split("  v6-low-obstacles)", 1)
+
+    assert 'odometry_mode="ideal"' in before_case
+    assert 'odometry_mode="realistic"' not in static_branch
+    assert 'odometry_mode="realistic"' not in dynamic_branch
+    assert 'odometry_mode="realistic"' in v6_branch
+    assert '--mode "${odometry_mode}"' in source
+    assert source.index('--mode "${odometry_mode}"') < source.index('"$@"')
