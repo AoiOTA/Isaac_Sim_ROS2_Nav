@@ -29,6 +29,7 @@ class WheelOdometryNode(Node):
         self.declare_parameter('right_joint_names', list(DEFAULT_RIGHT_JOINTS))
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('max_integration_step', 0.25)
+        self.declare_parameter('stamp_diagnostic_interval', 1000)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
         self.declare_parameter(
@@ -58,7 +59,14 @@ class WheelOdometryNode(Node):
         self._twist_covariance = covariance_from_diagonal(
             self.get_parameter('twist_covariance_diagonal').value)
         self._last_joint_stamp_ns = None
-        self._last_rejection = None
+        self._stamp_diagnostic_interval = max(
+            1, int(self.get_parameter('stamp_diagnostic_interval').value))
+        self._stamp_counters = {
+            'accepted': 0,
+            'duplicate': 0,
+            'backward': 0,
+        }
+        self._warned_rejections = set()
 
         reliable_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -102,10 +110,12 @@ class WheelOdometryNode(Node):
             reason = None
 
         if reason is not None:
-            if reason != self._last_rejection:
-                self.get_logger().warning(
-                    f'Wheel odometry sample rejected: {reason}')
-                self._last_rejection = reason
+            if reason == 'duplicate_stamp':
+                self._record_stamp_event('duplicate', warning=True)
+            elif reason == 'time_regression':
+                self._record_stamp_event('backward', warning=True)
+            else:
+                self._warn_rejection(reason)
             return
 
         self._last_joint_stamp_ns = stamp_ns
@@ -115,15 +125,35 @@ class WheelOdometryNode(Node):
             stamp_ns * 1.0e-9,
         )
         if not result.accepted:
-            if result.reason != self._last_rejection:
-                self.get_logger().warning(
-                    f'Wheel odometry sample rejected: {result.reason}')
-                self._last_rejection = result.reason
+            self._warn_rejection(result.reason)
             return
 
-        self._last_rejection = None
+        self._record_stamp_event('accepted')
         self._odom_publisher.publish(
             self._to_message(result.sample, message.header.stamp))
+
+    def _record_stamp_event(self, event, warning=False):
+        self._stamp_counters[event] += 1
+        count = self._stamp_counters[event]
+        first_warning = warning and count == 1
+        periodic = count % self._stamp_diagnostic_interval == 0
+        if not first_warning and not periodic:
+            return
+
+        counters = ', '.join(
+            f'{name}={value}' for name, value in self._stamp_counters.items())
+        message = f'Wheel odometry stamp diagnostics: {counters}'
+        if warning:
+            self.get_logger().warning(message)
+        else:
+            self.get_logger().info(message)
+
+    def _warn_rejection(self, reason):
+        if reason in self._warned_rejections:
+            return
+        self._warned_rejections.add(reason)
+        self.get_logger().warning(
+            f'Wheel odometry sample rejected: {reason}')
 
     def _to_message(self, sample, stamp):
         message = Odometry()
@@ -154,7 +184,6 @@ class WheelOdometryNode(Node):
     def _reset_state(self):
         self._integrator.reset()
         self._last_joint_stamp_ns = None
-        self._last_rejection = None
 
 
 def main(args=None):

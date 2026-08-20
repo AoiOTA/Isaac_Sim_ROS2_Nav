@@ -49,6 +49,7 @@ setup(
             "kujiale_reference = robot_experiments.kujiale_reference:main",
             "rivermark_reference = robot_experiments.rivermark_reference:main",
             "rivermark_visual_route = robot_experiments.rivermark_visual_route:main",
+            "estimated_state_evaluator = robot_experiments.estimated_state_evaluator:main",
         ],
     },
 )

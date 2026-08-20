@@ -27,9 +27,13 @@ class _Publisher:
 class _Logger:
     def __init__(self):
         self.warnings = []
+        self.infos = []
 
     def warning(self, message):
         self.warnings.append(message)
+
+    def info(self, message):
+        self.infos.append(message)
 
 
 def _adapter():
@@ -42,11 +46,21 @@ def _adapter():
         _pose_covariance=[0.0] * 36,
         _twist_covariance=[0.0] * 36,
         _last_joint_stamp_ns=None,
-        _last_rejection=None,
+        _stamp_diagnostic_interval=1000,
+        _stamp_counters={
+            'accepted': 0,
+            'duplicate': 0,
+            'backward': 0,
+        },
+        _warned_rejections=set(),
         _odom_publisher=publisher,
         get_logger=lambda: logger,
     )
     adapter._to_message = MethodType(WheelOdometryNode._to_message, adapter)
+    adapter._record_stamp_event = MethodType(
+        WheelOdometryNode._record_stamp_event, adapter)
+    adapter._warn_rejection = MethodType(
+        WheelOdometryNode._warn_rejection, adapter)
     return adapter, publisher
 
 
@@ -115,3 +129,43 @@ def test_no_timer_path_can_reintegrate_a_stopped_input():
     assert not hasattr(WheelOdometryNode, '_timer_callback')
     assert adapter._integrator.pose == pytest.approx(pose_when_input_stops)
     assert len(publisher.messages) == 1
+
+
+def test_alternating_duplicate_samples_are_rejected_without_warning_storm():
+    adapter, publisher = _adapter()
+
+    for index in range(2001):
+        stamp_ns = 4_000_000_000 + index * 10_000_000
+        sample = _joint_state(stamp_ns)
+        _consume(adapter, sample)
+        _consume(adapter, sample)
+
+    logger = adapter.get_logger()
+    assert len(publisher.messages) == 2001
+    assert adapter._stamp_counters == {
+        'accepted': 2001,
+        'duplicate': 2001,
+        'backward': 0,
+    }
+    assert len(logger.warnings) == 3
+    assert 'duplicate=1' in logger.warnings[0]
+    assert 'duplicate=1000' in logger.warnings[1]
+    assert 'duplicate=2000' in logger.warnings[2]
+    assert len(logger.infos) == 2
+
+
+def test_backward_samples_remain_rejected_and_report_periodically():
+    adapter, publisher = _adapter()
+    _consume(adapter, _joint_state(10_000_000_000))
+    pose = adapter._integrator.pose
+
+    for index in range(1001):
+        _consume(adapter, _joint_state(9_000_000_000 - index))
+
+    logger = adapter.get_logger()
+    assert len(publisher.messages) == 1
+    assert adapter._integrator.pose == pytest.approx(pose)
+    assert adapter._stamp_counters['backward'] == 1001
+    assert len(logger.warnings) == 2
+    assert 'backward=1' in logger.warnings[0]
+    assert 'backward=1000' in logger.warnings[1]
