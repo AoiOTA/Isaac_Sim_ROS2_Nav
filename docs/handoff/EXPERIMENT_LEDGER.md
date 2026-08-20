@@ -182,3 +182,28 @@
 - Verdict: **PASS (shell syntax and isolated argv contracts only)**.
 - Unrun: ROS/Isaac, live topic and TF ownership, navigation, metrics, and
   qualification. Handoff: `docs/handoff/V6_SHADOW_RF2O_WRAPPER_20260820.md`.
+
+## 2026-08-21 — V6 M1 shadow live engineering observation
+
+- Goal: observe M1 cognitive-obstacle telemetry while confirming that shadow
+  mode cannot affect control; evidence directory:
+  `/tmp/v6_live_m1_shadow.UDx2Bz`.
+- Revisions: Integration `430e977884202d9800235b73eab320dd68e5f325`,
+  Module2 `163dbdc4a469c37aced5a1a7c673b84b2765efe4`, Module3
+  `faddfbd3b840450dfa49c1e6b87771a3613cd907` on `cognitive-navigation`.
+- 30.01 s result: `14/14` obstacle messages nonempty, 18 objects throughout;
+  observation/input/Module2 health true, trusted write false, TTL at most 0.5 s,
+  stable identity, and sequence `3022 -> 3118`.
+- Isolation: layer and critic `applied=false`, raised cells 0; `/cmd_vel`
+  messages/nonzero `0/0`, `/initialpose=0`, `/goal_pose=0`. AMCL/Nav2 were
+  active. RGB-D was enabled while the direct classic obstacle layer was used;
+  voxel/STVL were absent from the runtime Costmap plugin lists.
+- Limitations: layer samples fell back stale at about 1.7 s; scan invisibility
+  was unverified; after Module2 stop the core Nav2 lifecycle remained active but
+  no fresh layer status was captured.
+- Verdict: **PASS for M1 telemetry/control isolation; PARTIAL overall**. This is
+  not M2 active/causal navigation/formal qualification evidence.
+- Cleanup: all run-owned launch and monitor processes were stopped; logs and
+  PID records were retained under the evidence directory. No standalone exact
+  launch-command transcript exists in that directory.
+- Handoff: `docs/handoff/V6_M1_SHADOW_ENGINEERING_20260821.md`.
