@@ -149,3 +149,21 @@
   plugin list; that tracked overlay was not changed by this amendment.
 - Verdict: **PASS (shell syntax and focused static contract only)**.
 - Unrun: live ROS/Isaac publisher counts, TF ownership and navigation closure.
+
+## 2026-08-20 — V6 activation-gate exact override amendment
+
+- Goal: make launch-time gate policy/source/timeout/sim-time overrides use the
+  same exact `nav2_activation_gate` key as the default parameter file.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `cb50199f3a7fd8ae61c6060c8addd938a2679ea7`.
+- Change: replace the launch-generated wildcard parameter dictionary with a
+  later exact-node runtime YAML; keep autonomy defaults `fail_closed/auto`.
+- Validation: changed Python `py_compile` PASS; focused pytest `67 passed`;
+  full `robot_bringup/test` pytest `214 passed`; clean pure-Jazzy
+  `robot_bringup` build PASS at `/tmp/bionav_gate_exact_build.HtXiti`.
+- Real parameter evidence: Jazzy `rclpy` loaded default plus runtime files into
+  a same-name Node for both `fail_closed/auto` and `wait_for_seed/rviz`.
+- Verdict: **PASS (implementation, parameter parsing, unit tests, clean build)**.
+- Unrun: ROS graph, Isaac, Nav2, live 120-second/reseed behavior, navigation,
+  evidence, and formal qualification. Handoff:
+  `docs/handoff/V6_GATE_EXACT_OVERRIDE_20260820.md`.

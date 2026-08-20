@@ -50,6 +50,35 @@ def _write_cognitive_nav2_overlay(profile):
         return Path(stream.name)
 
 
+def _write_activation_gate_runtime_overlay(
+        *, use_sim_time, initial_pose_source, startup_timeout,
+        startup_timeout_policy):
+    """Write runtime overrides under the gate's exact ROS node key."""
+    normalized_use_sim_time = str(use_sim_time).strip().lower()
+    if normalized_use_sim_time not in {'true', 'false'}:
+        raise RuntimeError('use_sim_time must be true or false')
+    try:
+        normalized_startup_timeout = float(startup_timeout)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(
+            'activation_startup_timeout must be a number') from exc
+    document = {
+        'nav2_activation_gate': {
+            'ros__parameters': {
+                'use_sim_time': normalized_use_sim_time == 'true',
+                'initial_pose_source': initial_pose_source,
+                'startup_timeout': normalized_startup_timeout,
+                'startup_timeout_policy': startup_timeout_policy,
+            },
+        },
+    }
+    with tempfile.NamedTemporaryFile(
+            mode='w', prefix='nav2_activation_gate_runtime_',
+            suffix='.yaml', delete=False, encoding='utf-8') as stream:
+        yaml.safe_dump(document, stream, sort_keys=False)
+        return Path(stream.name)
+
+
 def _shutdown_if_gate_exited(context):
     """Stop the stack on gate failure without re-emitting global shutdown."""
     if context.is_shutdown:
@@ -441,6 +470,14 @@ def _launch_setup(context):
             / 'config'
             / 'activation_gate.yaml'
         )
+        gate_runtime_overlay = _write_activation_gate_runtime_overlay(
+            use_sim_time=use_sim_time,
+            initial_pose_source=initial_pose_source,
+            startup_timeout=LaunchConfiguration(
+                'activation_startup_timeout').perform(context),
+            startup_timeout_policy=LaunchConfiguration(
+                'activation_startup_policy').perform(context),
+        )
         activation_gate = Node(
             package='robot_bringup',
             executable='nav2_activation_gate',
@@ -448,14 +485,7 @@ def _launch_setup(context):
             output='screen',
             parameters=[
                 str(gate_config),
-                {
-                    'use_sim_time': use_sim_time,
-                    'initial_pose_source': initial_pose_source,
-                    'startup_timeout': LaunchConfiguration(
-                        'activation_startup_timeout'),
-                    'startup_timeout_policy': LaunchConfiguration(
-                        'activation_startup_policy'),
-                },
+                str(gate_runtime_overlay),
             ],
         )
         actions.extend([

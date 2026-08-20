@@ -265,7 +265,9 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
         in (PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
     assert 'validate_nav2_profile_params_file(' in core_source
     assert 'invalid nav2_profile_params_file:' in core_source
-    assert "'startup_timeout_policy': LaunchConfiguration(" in core_source
+    assert 'gate_runtime_overlay = ' \
+        '_write_activation_gate_runtime_overlay(' in core_source
+    assert 'str(gate_runtime_overlay),' in core_source
     assert "'activation_startup_policy', default_value='fail_closed'" \
         in core_source
     assert "'activation_startup_timeout': LaunchConfiguration(" \
