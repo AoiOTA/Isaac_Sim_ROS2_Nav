@@ -171,12 +171,82 @@ def test_common_requires_only_the_allowed_v6_integration_underlay():
 
 def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
     source = RUN_V6_LOW_OBSTACLES.read_text(encoding='utf-8')
-    assert 'run_ros_profile gvg fail_closed auto M3' in source
-    assert 'run_ros_profile gvg wait_for_seed rviz M1' in source
+    assert 'run_ros_profile gvg fail_closed auto M3 standard' in source
+    assert 'run_ros_profile gvg wait_for_seed rviz M1 rf2o-shadow' in source
     assert 'C/shadow entrypoints fix cognitive_graph_mode=gvg' in source
     assert '^(shadow|hybrid|primary)$' in source
-    assert 'run_ros_profile "${graph_mode}" fail_closed auto M3' in source
+    assert ('run_ros_profile "${graph_mode}" fail_closed auto M3 standard'
+            in source)
     assert 'cognitive_graph_mode:="${graph_mode}"' in source
+
+
+def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
+    scripts = tmp_path / 'scripts'
+    (scripts / 'lib').mkdir(parents=True)
+    (tmp_path / 'ros2_ws' / 'src' / 'robot_experiments' / 'config').mkdir(
+        parents=True)
+    shutil.copy2(RUN_V6_LOW_OBSTACLES, scripts / RUN_V6_LOW_OBSTACLES.name)
+    (scripts / 'lib' / 'common.sh').write_text(
+        f'''PROJECT_ROOT="{tmp_path}"
+require_file() {{ [[ -f "$1" ]]; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+''',
+        encoding='utf-8',
+    )
+    (tmp_path / 'ros2_ws' / 'src' / 'robot_experiments' / 'config'
+     / 'v6_kujiale_low_obstacles_static.yaml').touch()
+    fake_run_ros = scripts / 'run_ros.sh'
+    fake_run_ros.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n',
+        encoding='utf-8',
+    )
+    fake_run_ros.chmod(0o755)
+
+    result = subprocess.run(
+        [str(scripts / RUN_V6_LOW_OBSTACLES.name), *arguments],
+        cwd=tmp_path,
+        env=_environment(),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.splitlines()
+
+
+def test_v6_shadow_argv_defaults_to_topic_only_rf2o_with_wheel_imu(tmp_path):
+    arguments = _v6_wrapper_argv(tmp_path, 'shadow')
+
+    assert 'ekf_profile:=wheel_imu' in arguments
+    assert 'lidar_odometry_backend:=rf2o' in arguments
+    assert 'lidar_odometry_validated:=false' in arguments
+    assert 'odometry_mode:=estimated' in arguments
+
+
+def test_v6_shadow_trailing_odometry_overrides_remain_last(tmp_path):
+    arguments = _v6_wrapper_argv(
+        tmp_path,
+        'shadow',
+        'M2',
+        'ekf_profile:=wheel_imu_lidar',
+        'lidar_odometry_validated:=true',
+    )
+
+    assert 'cognitive_profile:=M2' in arguments
+    assert arguments.index('ekf_profile:=wheel_imu') < arguments.index(
+        'ekf_profile:=wheel_imu_lidar')
+    assert arguments.index('lidar_odometry_validated:=false') < (
+        arguments.index('lidar_odometry_validated:=true'))
+
+
+def test_v6_nonshadow_ros_argv_keeps_lidar_defaults_implicit(tmp_path):
+    arguments = _v6_wrapper_argv(tmp_path, 'ros', 'M0')
+
+    assert 'cognitive_profile:=M0' in arguments
+    assert not any(argument.startswith('lidar_odometry_')
+                   for argument in arguments)
+    assert not any(argument.startswith('ekf_profile:=')
+                   for argument in arguments)
 
 
 @pytest.mark.parametrize(

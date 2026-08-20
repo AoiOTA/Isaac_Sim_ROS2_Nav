@@ -28,14 +28,23 @@ run_ros_profile() {
   local activation_policy="$2"
   local initial_pose_source="$3"
   local default_cognitive_profile="$4"
-  shift 4
+  local odometry_defaults="$5"
+  shift 5
   local cognitive_profile="${V6_COGNITIVE_PROFILE:-${default_cognitive_profile}}"
+  local -a odometry_args=()
   if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
     cognitive_profile="$1"
     shift
   fi
   [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] || die \
     "V6 cognitive profile must be M0, M1, M2, or M3; got: ${cognitive_profile}"
+  if [[ "${odometry_defaults}" == "rf2o-shadow" ]]; then
+    odometry_args=(
+      ekf_profile:=wheel_imu
+      lidar_odometry_backend:=rf2o
+      lidar_odometry_validated:=false
+    )
+  fi
   export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
     odometry_mode:=estimated localization_profile:=kujiale \
@@ -43,7 +52,8 @@ run_ros_profile() {
     cognitive_profile:="${cognitive_profile}" \
     cognitive_graph_mode:="${graph_mode}" \
     initial_pose_source:="${initial_pose_source}" \
-    activation_startup_policy:="${activation_policy}" "$@"
+    activation_startup_policy:="${activation_policy}" \
+    "${odometry_args[@]}" "$@"
 }
 
 case "${profile}" in
@@ -53,21 +63,21 @@ case "${profile}" in
   ros)
     # C experiment: only M0--M3 changes; the physical graph stays GVG.
     reject_graph_override "$@"
-    run_ros_profile gvg fail_closed auto M3 "$@"
+    run_ros_profile gvg fail_closed auto M3 standard "$@"
     ;;
   shadow)
     # Reproducible zero-seed enrollment: retain the full localization stack,
     # keep the local Module2 arm shadow-only, and never activate Nav2 until a
     # valid RViz initial-pose seed satisfies the normal readiness contract.
     reject_graph_override "$@"
-    run_ros_profile gvg wait_for_seed rviz M1 "$@"
+    run_ros_profile gvg wait_for_seed rviz M1 rf2o-shadow "$@"
     ;;
   ros-d)
     graph_mode="${1:-}"
     [[ "${graph_mode}" =~ ^(shadow|hybrid|primary)$ ]] || die \
       "V6 D graph mode must be shadow, hybrid, or primary; got: ${graph_mode:-empty}"
     shift
-    run_ros_profile "${graph_mode}" fail_closed auto M3 "$@"
+    run_ros_profile "${graph_mode}" fail_closed auto M3 standard "$@"
     ;;
   runner)
     output_directory="${1:-${PROJECT_ROOT}/data/experiment_runs/v6_kujiale_low_obstacles}"

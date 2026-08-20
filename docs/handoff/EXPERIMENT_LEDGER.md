@@ -167,3 +167,18 @@
 - Unrun: ROS graph, Isaac, Nav2, live 120-second/reseed behavior, navigation,
   evidence, and formal qualification. Handoff:
   `docs/handoff/V6_GATE_EXACT_OVERRIDE_20260820.md`.
+
+## 2026-08-20 — V6 shadow wrapper RF2O default
+
+- Goal: start topic-only RF2O from the V6 `shadow` entry while keeping the
+  default EKF on wheel+IMU and preserving non-shadow defaults.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `1438caca4362205650d54a58022924f6073ecc48`.
+- Change: shadow argv now defaults to `ekf_profile:=wheel_imu`,
+  `lidar_odometry_backend:=rf2o`, and
+  `lidar_odometry_validated:=false`; caller overrides remain trailing.
+- Validation: wrapper `bash -n` PASS; focused argv contracts `4 passed`; full
+  runtime-script pytest `30 passed`.
+- Verdict: **PASS (shell syntax and isolated argv contracts only)**.
+- Unrun: ROS/Isaac, live topic and TF ownership, navigation, metrics, and
+  qualification. Handoff: `docs/handoff/V6_SHADOW_RF2O_WRAPPER_20260820.md`.
