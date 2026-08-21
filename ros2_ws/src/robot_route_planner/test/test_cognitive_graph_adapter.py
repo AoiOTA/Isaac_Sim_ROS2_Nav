@@ -1,8 +1,10 @@
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import robot_route_planner.ros_node as ros_node_module
 
 from robot_route_planner.cognitive_graph_adapter import (
     CognitiveGraphFeedback,
@@ -591,6 +593,152 @@ def test_rebuild_reset_fresh_goal_late_success_does_not_commit_old_graph():
     assert coordinator.pending_goal is goal
     assert coordinator.requests == [
         ('physical', 'stale structural rebuild success', True)]
+
+
+def test_cognitive_validation_crossing_reset_is_discarded(monkeypatch):
+    coordinator = _feedback_coordinator(graph_id='physical', revision=4)
+    coordinator.pending_goal = None
+    coordinator.request_id = 8
+    coordinator.graph_generation = 4
+    coordinator.reset_generation = 0
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.cognitive_graph_identity = _identity()
+    coordinator.map = _map()
+    coordinator.gvg_graph = coordinator.graph
+    coordinator.defaults = {'footprint': FOOTPRINT}
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator._now = lambda: SimpleNamespace(
+        nanoseconds=10_100_000_000, to_msg=lambda: object())
+    coordinator._publish_structural_status = lambda *_args: None
+    switches = []
+    coordinator._request_graph_switch = (
+        lambda graph, detail, **kwargs: switches.append((graph, detail, kwargs))
+    )
+    validation_ready = threading.Event()
+    release_validation = threading.Event()
+    original_validate = ros_node_module.validate_cognitive_graph_candidate
+
+    def blocked_validate(*args, **kwargs):
+        result = original_validate(*args, **kwargs)
+        validation_ready.set()
+        assert release_validation.wait(timeout=2.0)
+        return result
+
+    monkeypatch.setattr(
+        ros_node_module, 'validate_cognitive_graph_candidate', blocked_validate)
+    worker = threading.Thread(
+        target=coordinator._on_cognitive_graph,
+        args=(_candidate(sequence=8),),
+    )
+    worker.start()
+    assert validation_ready.wait(timeout=2.0)
+    with coordinator._route_state_lock():
+        coordinator.request_id = 9
+        coordinator.reset_generation = 1
+        coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+            4, '', 'map', '', 0, 'physical', 4, '')
+    release_validation.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert switches == []
+    assert coordinator.cognitive_graph_last_sequence == 0
+    assert coordinator.cognitive_graph_identity.reset_epoch == 4
+    assert coordinator.cognitive_graph_validation_pub.messages == []
+
+
+def test_route_graph_transaction_paths_are_unique_and_do_not_cross_write(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        ros_node_module.tempfile, 'gettempdir', lambda: str(tmp_path))
+    first = GraphSwitchGeneration(7, 10, 4, 1, 3, 'graph-a', 5)
+    second = GraphSwitchGeneration(8, 11, 4, 1, 4, 'graph-b', 6)
+
+    first_graph, first_map = RouteCoordinator._graph_transaction_paths(
+        'selected', first)
+    second_graph, second_map = RouteCoordinator._graph_transaction_paths(
+        'selected', second)
+    first_graph.write_text('first-graph', encoding='utf-8')
+    first_map.write_text('first-map', encoding='utf-8')
+    second_graph.write_text('second-graph', encoding='utf-8')
+    second_map.write_text('second-map', encoding='utf-8')
+
+    assert first_graph != second_graph
+    assert first_map != second_map
+    assert 'switch_7_selected_' in first_graph.parent.name
+    assert 'switch_8_selected_' in second_graph.parent.name
+    assert first_graph.read_text(encoding='utf-8') == 'first-graph'
+    assert first_map.read_text(encoding='utf-8') == 'first-map'
+    assert second_graph.read_text(encoding='utf-8') == 'second-graph'
+    assert second_map.read_text(encoding='utf-8') == 'second-map'
+
+
+def test_reassert_transaction_is_reserved_before_export(monkeypatch):
+    graph = _physical_graph()
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.graph = graph
+    coordinator.support = SimpleNamespace(geojson={'features': []})
+    coordinator.gvg_graph = graph
+    coordinator.gvg_support = coordinator.support
+    coordinator.desired_graph = graph
+    coordinator.desired_support = coordinator.support
+    coordinator.desired_graph_generation = 2
+    coordinator.graph_generation = 4
+    coordinator.graph_switch_generation = 6
+    coordinator.reset_generation = 1
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_coherent = False
+    coordinator.graph_reassert_required = True
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_feedback_pending = None
+    coordinator.pending_goal = object()
+    coordinator.request_id = 10
+    coordinator.defaults = {'graph': {'route_support_spacing_m': 0.20}}
+    coordinator.SetRouteGraph = SimpleNamespace(
+        Request=lambda: SimpleNamespace(graph_filepath=''))
+    submitted_paths = []
+    coordinator.set_graph_client = SimpleNamespace(
+        service_is_ready=lambda: True,
+        call_async=lambda request: (
+            submitted_paths.append(request.graph_filepath)
+            or SimpleNamespace(add_done_callback=lambda _callback: None)
+        ),
+    )
+    export_ready = threading.Event()
+    release_export = threading.Event()
+    original_export = ros_node_module.export_route_support_graph
+
+    def blocked_export(*args, **kwargs):
+        result = original_export(*args, **kwargs)
+        export_ready.set()
+        assert release_export.wait(timeout=2.0)
+        return result
+
+    monkeypatch.setattr(
+        ros_node_module, 'export_route_support_graph', blocked_export)
+    worker = threading.Thread(
+        target=coordinator._request_graph_switch,
+        args=(graph, 'reset reassert'),
+        kwargs={'fallback': True},
+    )
+    worker.start()
+    assert export_ready.wait(timeout=2.0)
+    with coordinator._route_state_lock():
+        assert coordinator.graph_transaction_generation is not None
+        assert coordinator.graph_coherent is False
+        assert coordinator.graph_reassert_required is True
+        assert coordinator._desired_graph_is_coherent_locked() is False
+    release_export.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert len(submitted_paths) == 1
+    assert 'switch_7_gvg_fallback_' in submitted_paths[0]
 
 
 def test_shadow_validation_ack_is_not_an_execution_outcome():

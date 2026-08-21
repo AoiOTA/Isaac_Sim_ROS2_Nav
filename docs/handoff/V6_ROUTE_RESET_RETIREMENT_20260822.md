@@ -100,3 +100,42 @@ active goal reset produces one abort terminal, old request IDs never reappear,
 late accepted handles are cancelled, no stale NavigateToPose or nonzero command
 crosses StopGate release, and a fresh post-reset goal is the only route that can
 resume motion.
+
+## Second concurrency-review blocker amendment
+
+- Start HEAD: `5d4de361c5d1f7a9f7f6ea9e33b6ef36c04d18dd`; the MotionBenchmark STOP
+  evidence repair at that HEAD is retained unchanged.
+- Route terminals now use a dedicated output lock. A reset can retire route
+  state concurrently, but its abort terminal cannot be followed by an older
+  `NavigateToPose` rejection/result terminal. Async DynamicEdges,
+  ComputeRoute, and NavigateToPose fallbacks carry the original route
+  generation and cannot set `primary_fallback_used` for a fresh request.
+- `graph_reassert_required` is independent of local graph identity. Reset,
+  preemption, and stale successful graph callbacks keep routing fail closed
+  until the desired GVG has received a successful Route Server transaction;
+  the transaction is reserved before graph export, eliminating the previous
+  coherent/no-transaction window.
+- Cognitive candidate validation captures request, graph, reset generation,
+  and reset epoch before physical validation. The same token is atomically
+  rechecked before desired-graph/transaction reservation and again before
+  `SetRouteGraph`; a validation crossing reset is discarded without changing
+  fresh state.
+- Every cognitive/fallback/structural graph export uses a new immutable temp
+  directory whose prefix binds reset, desired, and switch generations. Files
+  are complete before their unique GeoJSON path is passed to Route Server, so
+  concurrent or stale exports cannot overwrite a submitted request path.
+- Deterministic tests cover reset ordering against old navigation rejection,
+  old ComputeRoute rejection against a fresh request, candidate validation
+  crossing reset, fail-closed reassert during blocked export, and distinct
+  non-cross-writing transaction paths.
+- Validation: focused source-first/no-cache route/graph **78 passed**; complete
+  `robot_route_planner` **102 passed, 1 skipped** (`pxr` unavailable); focused
+  MotionBenchmark/reset-receipt/ResetStopGate/ActivationGate regression set
+  **42 passed**; fresh isolated package build PASS and `colcon test` **103
+  tests, 0 errors, 0 failures, 1 skipped** using
+  `/tmp/v6_route_second_build.Xl1fS6` and
+  `/tmp/v6_route_second_install.qGmRab`; `py_compile` and `git diff --check`
+  PASS.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. The active-reset live review described above remains pending.

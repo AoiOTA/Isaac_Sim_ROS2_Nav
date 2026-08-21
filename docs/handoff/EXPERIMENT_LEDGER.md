@@ -808,6 +808,36 @@
   remain pending an explicitly authorized live review.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
+## 2026-08-22 — V6 RouteCoordinator second concurrency-review amendment
+
+- Goal/hypothesis: close the remaining reset interleavings after a callback's
+  current-generation check, keep desired-GVG compensation fail closed through
+  Route Server confirmation, discard cognitive validation crossing reset, and
+  remove shared graph-export filenames.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `5d4de361c5d1f7a9f7f6ea9e33b6ef36c04d18dd`; fixed-main ancestor
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Changes: dedicated terminal-order lock; generation-fenced async fallback;
+  explicit Route Server reassert requirement; transaction reservation before
+  export; request/graph/reset/reset-epoch cognitive validation token; unique
+  immutable reset/desired/switch-bound graph export directories; submission
+  revalidation and stale compensation for cognitive and structural graphs.
+- Tests: deterministic old-navigation-terminal/reset ordering, old
+  ComputeRoute rejection versus fresh request, cognitive validation crossing
+  reset, blocked-export reassert gate, and distinct file/content isolation.
+  Existing route retirement, stale graph/rebuild, empty transient edge,
+  MotionBenchmark receipt/STOP, ResetStopGate, and ActivationGate tests remain
+  passing.
+- Validation: focused route/graph **78 passed**; complete route package **102
+  passed, 1 skipped** (`pxr` unavailable); related regression set **42
+  passed**; fresh isolated build PASS and `colcon test` **103 tests, 0 errors,
+  0 failures, 1 skipped** at `/tmp/v6_route_second_build.Xl1fS6`; changed
+  `py_compile` and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. Active-reset live closure remains pending.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 reset seed receipt and final command ResetStopGate
 
 - Goal: close the CLI/startup/Trigger reset-seed divergence and remove Isaac's

@@ -372,7 +372,7 @@ def test_primary_async_failures_request_exactly_one_fallback(failure_kind) -> No
     ))
     reasons = []
 
-    def fallback(reason):
+    def fallback(reason, *_args, **_kwargs):
         coordinator.primary_fallback_used = True
         reasons.append(reason)
 
@@ -612,6 +612,113 @@ def test_reset_waits_for_navigation_handle_check_and_cancels_committed_handle() 
     assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
 
 
+def test_reset_terminal_cannot_be_overtaken_by_old_navigation_rejection() -> None:
+    coordinator = _reset_route_coordinator()
+    coordinator.cognitive_graph_feedback_active = None
+    generation = coordinator._route_callback_generation()
+    events = []
+    old_publish_entered = threading.Event()
+    release_old_publish = threading.Event()
+    reset_state_retired = threading.Event()
+
+    class OrderedCompletePublisher:
+        def publish(self, _message):
+            name = threading.current_thread().name
+            events.append((name, 'complete'))
+            if name == 'old-navigation':
+                old_publish_entered.set()
+                assert release_old_publish.wait(timeout=2.0)
+
+    class OrderedResultPublisher:
+        def publish(self, _message):
+            events.append((threading.current_thread().name, 'result'))
+
+    coordinator.goal_complete_pub = OrderedCompletePublisher()
+    coordinator.goal_result_pub = OrderedResultPublisher()
+    original_retire = coordinator._retire_active_route_for_reset
+
+    def observed_retire():
+        result = original_retire()
+        reset_state_retired.set()
+        return result
+
+    coordinator._retire_active_route_for_reset = observed_retire
+    callback_thread = threading.Thread(
+        name='old-navigation',
+        target=coordinator._on_navigation_goal_handle,
+        args=(SimpleNamespace(result=lambda: SimpleNamespace(accepted=False)), generation),
+    )
+    callback_thread.start()
+    assert old_publish_entered.wait(timeout=2.0)
+    reset_thread = threading.Thread(
+        name='reset', target=coordinator._on_reset_event, args=(None,))
+    reset_thread.start()
+    assert reset_state_retired.wait(timeout=2.0)
+    assert reset_thread.is_alive()
+    release_old_publish.set()
+    callback_thread.join(timeout=2.0)
+    reset_thread.join(timeout=2.0)
+
+    assert not callback_thread.is_alive()
+    assert not reset_thread.is_alive()
+    assert events == [
+        ('old-navigation', 'complete'),
+        ('reset', 'complete'),
+        ('reset', 'result'),
+    ]
+
+
+def test_old_compute_rejection_cannot_mark_fresh_goal_fallback() -> None:
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.pending_goal = object()
+    coordinator.request_id = 6
+    coordinator.graph_generation = 2
+    coordinator.graph = SimpleNamespace(graph_id='cognitive', revision=5)
+    coordinator.gvg_graph = SimpleNamespace(graph_id='physical', revision=4)
+    coordinator.gvg_support = object()
+    coordinator.support = object()
+    coordinator.desired_graph = coordinator.graph
+    coordinator.desired_support = coordinator.support
+    coordinator.desired_graph_generation = 1
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.primary_fallback_used = False
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        warning=lambda _message: None))
+    reconciliations = []
+    coordinator._ensure_desired_graph = lambda reason: reconciliations.append(reason)
+    generation = coordinator._route_callback_generation()
+    fallback_entered = threading.Event()
+    release_fallback = threading.Event()
+    original_fallback = coordinator._fallback_to_gvg_once
+
+    def blocked_fallback(reason, token=None):
+        fallback_entered.set()
+        assert release_fallback.wait(timeout=2.0)
+        return original_fallback(reason, token)
+
+    coordinator._fallback_to_gvg_once = blocked_fallback
+    callback_thread = threading.Thread(
+        target=coordinator._on_route_goal_handle,
+        args=(SimpleNamespace(result=lambda: SimpleNamespace(accepted=False)), generation),
+    )
+    callback_thread.start()
+    assert fallback_entered.wait(timeout=2.0)
+    with coordinator._route_state_lock():
+        coordinator.request_id = 7
+        coordinator.pending_goal = object()
+        coordinator.primary_fallback_used = False
+    release_fallback.set()
+    callback_thread.join(timeout=2.0)
+
+    assert not callback_thread.is_alive()
+    assert coordinator.primary_fallback_used is False
+    assert coordinator.desired_graph.graph_id == 'cognitive'
+    assert reconciliations == []
+
+
 def test_runtime_empty_snapshot_uses_requested_graph_identity() -> None:
     class RuntimeArray:
         def __init__(self):
@@ -686,6 +793,7 @@ def test_new_goal_preemption_clears_old_tracker_before_context_and_can_restart()
     assert coordinator.graph_reconciliations[-1] == (
         'new goal requires Route Server GVG')
     coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
     coordinator._resume_pending_goal_after_graph_coherent()
     assert observed == [(42, None, goal)]
     assert coordinator.route_active is True
@@ -703,6 +811,7 @@ def test_new_goal_preemption_clears_old_tracker_before_context_and_can_restart()
     assert coordinator.request_id == 44
     assert prepared == []
     coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
     coordinator._resume_pending_goal_after_graph_coherent()
     assert prepared == [{}]
 
