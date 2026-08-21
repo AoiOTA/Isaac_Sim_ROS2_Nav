@@ -1172,3 +1172,26 @@
   stationary handoff and its bounded conclusion are unchanged.
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
+
+## 2026-08-22 — V6 IMU regime evidence-contract amendment
+
+- Goal: prevent partial, misidentified, malformed, or misaligned diagnostic
+  evidence from selecting a new global IMU yaw scale.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `7b6b01f48fafdeb9985463e0cda6f49ababb2e71`.
+- Changes: explicit diagnostic-only 10 s stationary reset/zero report; strict
+  nine-primitive/seed/generation/receipt/segment contract; exact MCAP types and
+  finite/strict-stamp checks; provenance-bearing goal input; common-overlap
+  union-grid integration; four-attribute phase gate; unique `flat20_start` and
+  locked Grid/dynamics-off runner/provenance; required ROS bag/runtime deps;
+  AST loop-order test. `yaw_scale=0.9294` and RF2O off are unchanged.
+- Validation: source-first/no-cache **110 passed**; pycompile, YAML/loader,
+  `bash -n`, source-first post-build import, and `git diff --check` PASS; fresh
+  isolated `robot_experiments` build PASS at
+  `/tmp/v6_imu_evidence_build.yizdjX` with install
+  `/tmp/v6_imu_evidence_install.l2zy4u` and log
+  `/tmp/v6_imu_evidence_log.POQ9cz`.
+- Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/MCAP/motion/goal
+  runtime or formal qualification was run; live regime decision remains
+  pending.
+- Handoff: `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.

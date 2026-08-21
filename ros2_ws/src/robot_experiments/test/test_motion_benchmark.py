@@ -20,6 +20,7 @@ from robot_experiments.motion_benchmark import (
     MotionSegment,
     MotionThresholds,
     ResetStopGateStatus,
+    StationaryReference,
     StampedObservation,
     validate_motion_dispatch,
     wait_for_motion_dispatch_barrier,
@@ -489,6 +490,51 @@ def test_motion_benchmark_config_covers_required_primitives():
         "rapid_spin_reversal",
     } <= identifiers
     assert config.command_rate_hz >= 20.0
+    assert config.stationary_reference is None
+
+
+def test_optional_stationary_reference_has_own_reset_zero_and_report():
+    published = []
+    reference = StationaryReference("stationary_reference", 10.0, 8609)
+    receipt = {
+        "requested_seed": 8609, "actual_seed": 8609,
+        "generation": 4, "pose": "flat20_start",
+    }
+    node = SimpleNamespace(
+        _config=SimpleNamespace(stationary_reference=reference, command_rate_hz=20.0),
+        _samples=[], _collision_detected=False, _recording=False,
+        _segment_index=-1, _segment_started_at=0.0,
+        _command_linear=0.0, _command_angular=0.0,
+        _current_reset_receipt=None, _clock_s=0.0,
+        _publish=lambda linear, angular: published.append((linear, angular)),
+        _assert_sim_clock_live=lambda: None,
+    )
+
+    def reset(seed):
+        assert seed == 8609
+        node._current_reset_receipt = receipt
+        return receipt
+
+    def spin(_timeout):
+        node._clock_s += 0.1
+        if node._recording:
+            node._samples.append(MotionSample(
+                received_at=node._clock_s, stamp_s=node._clock_s,
+                x=0.0, y=0.0, yaw=0.0, linear_speed=0.0, angular_speed=0.0,
+                segment_index=-1, segment_elapsed=node._clock_s,
+                command_linear=0.0, command_angular=0.0,
+            ))
+
+    node._reset = reset
+    node._spin_once = spin
+    result = MotionBenchmarkNode._stationary_reference(node)
+    assert result["passed"] is True
+    assert result["reset_seed"] == 8609
+    assert result["reset_receipt"] == receipt
+    assert result["measured_duration_sec"] >= 9.9
+    assert result["collision_detected"] is False
+    assert result["final_zero_published"] is True
+    assert published and set(published) == {(0.0, 0.0)}
 
 
 def test_motion_benchmark_rejects_duplicate_primitive_ids(tmp_path):

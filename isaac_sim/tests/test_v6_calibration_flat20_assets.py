@@ -60,6 +60,9 @@ def test_external_grid_is_the_only_environment_asset_and_spawn_is_identity():
     assert manifest["source"]["external_environment_asset"] == str(EXTERNAL_GRID)
     assert not (ROOT / "isaac_sim/assets/environments/v6_calibration_flat_20m.usda").exists()
     pose = load_spawn_poses(SPAWN)["mapping_start"]
+    diagnostic_pose = load_spawn_poses(SPAWN)["flat20_start"]
+    assert diagnostic_pose.usd == pose.usd
+    assert diagnostic_pose.map == pose.map
     assert pose.usd.position == (0.0, 0.0, 0.0635)
     assert pose.usd.yaw_deg == pose.map.yaw_deg == 0.0
     assert pose.map.position == (0.0, 0.0)

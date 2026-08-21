@@ -62,6 +62,13 @@ class MotionPrimitive:
 
 
 @dataclass(frozen=True)
+class StationaryReference:
+    identifier: str
+    duration_sec: float
+    reset_seed: int
+
+
+@dataclass(frozen=True)
 class MotionThresholds:
     linear_mae_mps: float
     angular_mae_radps: float
@@ -85,6 +92,7 @@ class MotionConfig:
     sim_clock_stall_timeout_sec: float
     thresholds: MotionThresholds
     primitives: tuple[MotionPrimitive, ...]
+    stationary_reference: StationaryReference | None = None
 
 
 @dataclass(frozen=True)
@@ -327,6 +335,7 @@ def load_motion_config(path: str | Path) -> MotionConfig:
         "sim_clock_stall_timeout_sec",
         "thresholds",
         "primitives",
+        "stationary_reference",
     }
     unknown = set(document) - allowed
     if unknown:
@@ -443,6 +452,43 @@ def load_motion_config(path: str | Path) -> MotionConfig:
             segments.append(segment)
         primitives.append(MotionPrimitive(identifier, tuple(segments)))
 
+    stationary_reference = None
+    raw_stationary = document.get("stationary_reference")
+    if raw_stationary is not None:
+        if not isinstance(raw_stationary, dict) or set(raw_stationary) != {
+            "id",
+            "duration_sec",
+            "reset_seed",
+        }:
+            raise MotionBenchmarkError(
+                "stationary_reference requires exactly id, duration_sec, reset_seed"
+            )
+        identifier = raw_stationary["id"]
+        reset_seed_value = raw_stationary["reset_seed"]
+        if not isinstance(identifier, str) or not identifier:
+            raise MotionBenchmarkError("stationary_reference.id must be non-empty")
+        if (
+            isinstance(reset_seed_value, bool)
+            or not isinstance(reset_seed_value, int)
+            or reset_seed_value < 0
+        ):
+            raise MotionBenchmarkError(
+                "stationary_reference.reset_seed must be a non-negative integer"
+            )
+        stationary_reference = StationaryReference(
+            identifier=identifier,
+            duration_sec=_finite_number(
+                raw_stationary["duration_sec"],
+                "stationary_reference.duration_sec",
+                positive=True,
+            ),
+            reset_seed=reset_seed_value,
+        )
+        if identifier in identifiers:
+            raise MotionBenchmarkError(
+                "stationary_reference.id must not duplicate a primitive id"
+            )
+
     config = MotionConfig(
         spawn_pose_name=spawn_pose_name,
         reset_seed=reset_seed,
@@ -482,6 +528,7 @@ def load_motion_config(path: str | Path) -> MotionConfig:
         ),
         thresholds=thresholds,
         primitives=tuple(primitives),
+        stationary_reference=stationary_reference,
     )
     if config.state_freshness_sec >= config.reset_settle_sec:
         raise MotionBenchmarkError(
@@ -1156,9 +1203,137 @@ class MotionBenchmarkNode(Node):
                 next_publish += period
             self._spin_once(0.01)
 
+    @staticmethod
+    def _segment_contract(primitive: MotionPrimitive) -> list[dict[str, float]]:
+        return [
+            {
+                "duration_sec": segment.duration_sec,
+                "linear_x": segment.linear_x,
+                "angular_z": segment.angular_z,
+            }
+            for segment in primitive.segments
+        ]
+
+    def _stationary_reference(self) -> dict[str, Any] | None:
+        reference = self._config.stationary_reference
+        if reference is None:
+            return None
+        self._samples = []
+        self._collision_detected = False
+        self._recording = False
+        self._segment_index = -1
+        self._segment_started_at = 0.0
+        self._command_linear = 0.0
+        self._command_angular = 0.0
+        self._current_reset_receipt = None
+        try:
+            self._reset(reference.reset_seed)
+            self._recording = True
+            if self._clock_s is None:
+                self._stop("stationary_reference_clock_missing")
+            assert self._clock_s is not None
+            start_s = self._clock_s
+            self._segment_started_at = start_s
+            deadline = start_s + reference.duration_sec
+            period = 1.0 / self._config.command_rate_hz
+            next_publish = time.monotonic()
+            zero_command_count = 0
+            while self._clock_s is None or self._clock_s < deadline:
+                self._assert_sim_clock_live()
+                now = time.monotonic()
+                if now >= next_publish:
+                    self._publish(0.0, 0.0)
+                    zero_command_count += 1
+                    next_publish += period
+                self._spin_once(0.01)
+            self._publish(0.0, 0.0)
+            zero_command_count += 1
+        except MotionSafetyStop as exc:
+            self._recording = False
+            self._publish(0.0, 0.0)
+            stopped: dict[str, Any] = {
+                "id": reference.identifier,
+                "passed": False,
+                "stopped": True,
+                "outcome": "STOP",
+                "failure_reasons": [str(exc)],
+                "collision_detected": self._collision_detected,
+                "sample_count": len(self._samples),
+                "segments": [],
+                "requested_duration_sec": reference.duration_sec,
+                "measured_duration_sec": None,
+                "zero_command_count": 1,
+                "final_zero_published": True,
+                "reset_seed": reference.reset_seed,
+            }
+            if self._current_reset_receipt is not None:
+                stopped["reset_receipt"] = self._current_reset_receipt
+            return stopped
+        finally:
+            self._recording = False
+
+        measured_duration = (
+            self._samples[-1].stamp_s - self._samples[0].stamp_s
+            if len(self._samples) >= 2
+            else 0.0
+        )
+        displacements = (
+            [
+                math.hypot(sample.x - self._samples[0].x, sample.y - self._samples[0].y)
+                for sample in self._samples
+            ]
+            if self._samples else []
+        )
+        max_displacement = (
+            max(displacements)
+            if displacements and all(math.isfinite(value) for value in displacements)
+            else None
+        )
+        failures: list[str] = []
+        if not self._samples:
+            failures.append("no_estimated_odometry_samples")
+        if measured_duration + 0.05 < reference.duration_sec:
+            failures.append("stationary_duration_short")
+        if not math.isfinite(measured_duration):
+            failures.append("stationary_duration_nonfinite")
+        if self._collision_detected:
+            failures.append("collision_detected")
+        if displacements and max_displacement is None:
+            failures.append("stationary_odometry_nonfinite")
+        elif max_displacement is not None and max_displacement > 0.02:
+            failures.append("stationary_odometry_displacement")
+        return {
+            "id": reference.identifier,
+            "passed": not failures,
+            "stopped": False,
+            "outcome": "COMPLETED",
+            "failure_reasons": failures,
+            "collision_detected": self._collision_detected,
+            "sample_count": len(self._samples),
+            "segments": [],
+            "requested_duration_sec": reference.duration_sec,
+            "measured_duration_sec": measured_duration,
+            "max_odometry_displacement_m": max_displacement,
+            "zero_command_count": zero_command_count,
+            "final_zero_published": True,
+            "reset_seed": reference.reset_seed,
+            "reset_receipt": self._current_reset_receipt,
+        }
+
     def run(self) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
+        stationary = (
+            MotionBenchmarkNode._stationary_reference(self)
+            if getattr(self._config, "stationary_reference", None) is not None
+            else None
+        )
+        stationary_blocked = bool(
+            stationary is not None
+            and (not stationary.get("passed", False) or stationary.get("stopped", False))
+        )
         for index, primitive in enumerate(self._config.primitives):
+            if stationary_blocked:
+                break
             # Clear all result-bearing primitive state before logging, reset,
             # or any other operation that can fail.  A STOP must describe only
             # the primitive whose reset/dispatch/playback was attempted.
@@ -1185,10 +1360,14 @@ class MotionBenchmarkNode(Node):
                 stopped: dict[str, Any] = {
                     "id": primitive.identifier,
                     "passed": False,
+                    "stopped": True,
                     "outcome": "STOP",
                     "failure_reasons": [str(exc)],
                     "collision_detected": self._collision_detected,
                     "sample_count": len(self._samples),
+                    "segments": MotionBenchmarkNode._segment_contract(primitive),
+                    "reset_seed": self._config.reset_seed + index,
+                    "final_zero_published": True,
                 }
                 if self._current_reset_receipt is not None:
                     stopped["reset_receipt"] = self._current_reset_receipt
@@ -1207,12 +1386,30 @@ class MotionBenchmarkNode(Node):
                 self._config.steady_window_sec,
             )
             result["reset_receipt"] = self._current_reset_receipt
+            result["reset_seed"] = self._config.reset_seed + index
+            result["stopped"] = False
+            result["outcome"] = "COMPLETED"
+            result["final_zero_published"] = True
             results.append(result)
             self.get_logger().info(
                 f"completed {primitive.identifier}: "
                 f"{'pass' if result['passed'] else 'failure'}"
             )
         self._publish(0.0, 0.0)
+        collision_detected = bool(
+            (stationary or {}).get("collision_detected", False)
+            or any(result.get("collision_detected", False) for result in results)
+        )
+        stopped = bool(
+            (stationary or {}).get("stopped", False)
+            or any(result.get("stopped", False) for result in results)
+        )
+        complete = len(results) == len(self._config.primitives)
+        passed = bool(
+            complete
+            and all(result["passed"] for result in results)
+            and (stationary is None or stationary.get("passed", False))
+        )
         return {
             "schema_version": 1,
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -1234,15 +1431,20 @@ class MotionBenchmarkNode(Node):
             "collision_monitor_required_state": "active",
             "reset_stop_gate_generation_match_required": True,
             "thresholds": self._config.thresholds.__dict__,
-            "passed": all(result["passed"] for result in results),
-            "stopped": any(
-                result.get("outcome") == "STOP" for result in results
-            ),
+            "passed": passed,
+            "stopped": stopped,
+            "collision_detected": collision_detected,
+            "sample_count": sum(
+                int(result.get("sample_count", 0)) for result in results
+            ) + int((stationary or {}).get("sample_count", 0)),
+            "segment_count": sum(len(result.get("segments", [])) for result in results),
+            "final_zero_published": True,
             "primitive_count": len(results),
             "passed_primitive_count": sum(
                 bool(result["passed"]) for result in results
             ),
             "reset_receipts": list(self._reset_receipts),
+            "stationary_reference": stationary,
             "primitives": results,
         }
 

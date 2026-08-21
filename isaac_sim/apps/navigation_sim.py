@@ -67,6 +67,53 @@ from isaac_sim.src.stage.physics_setup import (
 from isaac_sim.src.stage.scene_composer import SceneComposer
 
 
+V6_IMU_REGIME_GRID_USD = Path(
+    "/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/"
+    "default_environment.usd"
+).resolve()
+V6_IMU_REGIME_SPAWN_FILE = (
+    PROJECT_ROOT
+    / "isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
+).resolve()
+
+
+def imu_regime_trace_provenance(config: ProjectConfig, dynamic_scenario: object) -> dict[str, object]:
+    """Fail closed when the trace is not the bounded flat20 experiment."""
+
+    requirements = {
+        "environment_usd": str(V6_IMU_REGIME_GRID_USD),
+        "spawn_poses_file": str(V6_IMU_REGIME_SPAWN_FILE),
+        "spawn_pose": "flat20_start",
+        "odometry_mode": "realistic",
+        "navigation_mode": "mapping",
+        "dynamic_obstacles_enabled": False,
+        "ground_truth_enabled": True,
+    }
+    actual = {
+        "environment_usd": str(config.environment.source_asset.resolve()),
+        "spawn_poses_file": str(config.spawn.poses_file.resolve()),
+        "spawn_pose": config.spawn.selected,
+        "odometry_mode": config.simulation.odometry_mode,
+        "navigation_mode": config.simulation.navigation_mode,
+        "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+        "ground_truth_enabled": bool(config.ground_truth.enabled),
+    }
+    mismatches = {
+        key: {"expected": expected, "actual": actual[key]}
+        for key, expected in requirements.items()
+        if actual[key] != expected
+    }
+    if mismatches:
+        raise ValueError(
+            "V6 IMU regime trace requires the locked flat20 configuration: "
+            + json.dumps(mismatches, sort_keys=True)
+        )
+    return {
+        "contract": "v6_imu_regime_flat20_v1",
+        **actual,
+    }
+
+
 def effective_reset_seed(dynamic_seed: int | None, scenario_seed: int) -> int:
     """Resolve the one seed used by startup and the first Trigger reset."""
 
@@ -816,7 +863,10 @@ def run(
             )
 
             imu_regime_phase_trace = ImuRegimePhaseTrace(
-                imu_regime_phase_trace_path
+                imu_regime_phase_trace_path,
+                provenance=imu_regime_trace_provenance(
+                    config, dynamic_scenario
+                ),
             )
             imu_regime_graph_reader = make_imu_graph_reader(
                 og.Controller.attribute
@@ -2626,6 +2676,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         dynamic_scenario = replace(
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
         )
+    if args.imu_regime_phase_trace is not None:
+        imu_regime_trace_provenance(config, dynamic_scenario)
     if (
         args.r2c1_free_space_trace is not None
         or args.r2c2_free_space_envelope is not None

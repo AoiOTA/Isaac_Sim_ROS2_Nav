@@ -122,6 +122,31 @@ def test_missing_graph_attributes_are_observable_not_fabricated():
     assert row["publish_imu_timestamp_s"] == {"value": None, "error": None}
 
 
+@pytest.mark.parametrize(
+    "key_value,error_fragment",
+    [
+        ({"read": [0.0, 1.0]}, "3-vector"),
+        ({"read": [0.0, float("nan"), 1.0]}, "non-finite"),
+        ({"time": float("inf")}, "non-finite"),
+    ],
+)
+def test_graph_reader_reports_invalid_shape_and_nonfinite(key_value, error_fragment):
+    def lookup(path):
+        if "angVel" in path:
+            value = key_value.get("read", [0.0, 0.0, 0.0])
+        elif "angularVelocity" in path:
+            value = [0.0, 0.0, 0.0]
+        else:
+            value = key_value.get("time", 1.0)
+        return _Attribute(value)
+
+    row = make_imu_graph_reader(lookup)()
+    assert any(
+        field["error"] is not None and error_fragment in field["error"]
+        for field in row.values()
+    )
+
+
 def test_navigation_flag_is_passive_and_not_a_command_diagnostic_mode():
     source = (
         __import__("pathlib").Path(__file__).resolve().parents[1]
@@ -134,6 +159,32 @@ def test_navigation_flag_is_passive_and_not_a_command_diagnostic_mode():
         __import__("pathlib").Path(__file__).resolve().parents[1]
         / "src/diagnostics/imu_regime_phase_trace.py"
     ).read_text(encoding="utf-8")
+
+
+def test_locked_flat20_runner_and_trace_provenance_contract():
+    root = __import__("pathlib").Path(__file__).resolve().parents[2]
+    runner = (root / "scripts/run_v6_imu_regime_diagnostic_isaac.sh").read_text()
+    assert "default_environment.usd" in runner
+    assert "v6_calibration_flat_20m.spawn.yaml" in runner
+    assert "--spawn-pose flat20_start" in runner
+    assert "--no-dynamic-obstacles" in runner
+    assert "--imu-regime-phase-trace" in runner
+    navigation = __import__("isaac_sim.apps.navigation_sim", fromlist=["imu_regime_trace_provenance"])
+    config = SimpleNamespace(
+        environment=SimpleNamespace(source_asset=navigation.V6_IMU_REGIME_GRID_USD),
+        spawn=SimpleNamespace(poses_file=navigation.V6_IMU_REGIME_SPAWN_FILE, selected="flat20_start"),
+        simulation=SimpleNamespace(odometry_mode="realistic", navigation_mode="mapping"),
+        ground_truth=SimpleNamespace(enabled=True),
+    )
+    provenance = navigation.imu_regime_trace_provenance(
+        config, SimpleNamespace(enabled=False)
+    )
+    assert provenance["contract"] == "v6_imu_regime_flat20_v1"
+    config.spawn.selected = "mapping_start"
+    with pytest.raises(ValueError, match="locked flat20"):
+        navigation.imu_regime_trace_provenance(
+            config, SimpleNamespace(enabled=False)
+        )
 
 
 class _Publisher:

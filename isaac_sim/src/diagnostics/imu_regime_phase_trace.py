@@ -18,6 +18,29 @@ _GRAPH_ATTRIBUTES = {
 }
 
 
+def _validated_graph_value(key: str, value: Any) -> float | list[float] | None:
+    """Keep missing values visible and reject malformed/non-finite values."""
+
+    if value is None:
+        return None
+    if key in {"read_imu_ang_vel", "publish_imu_angular_velocity"}:
+        try:
+            result = [float(item) for item in value]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("expected a 3-vector") from exc
+        if len(result) != 3:
+            raise ValueError(f"expected a 3-vector, got length {len(result)}")
+        if not all(math.isfinite(item) for item in result):
+            raise ValueError("3-vector contains a non-finite value")
+        return result
+    if isinstance(value, bool):
+        raise ValueError("timestamp must be numeric")
+    result = float(value)
+    if not math.isfinite(result):
+        raise ValueError("timestamp is non-finite")
+    return result
+
+
 def _json_value(value: Any) -> Any:
     """Normalize runtime vector/scalar values without inventing missing data."""
 
@@ -110,7 +133,8 @@ def make_imu_graph_reader(attribute_lookup: Callable[[str], Any]) -> Callable[[]
                 result[key] = {"value": None, "error": lookup_errors[key]}
                 continue
             try:
-                result[key] = {"value": _json_value(attributes[key].get()), "error": None}
+                value = _validated_graph_value(key, attributes[key].get())
+                result[key] = {"value": value, "error": None}
             except Exception as exc:
                 result[key] = {
                     "value": None,
@@ -124,7 +148,13 @@ def make_imu_graph_reader(attribute_lookup: Callable[[str], Any]) -> Callable[[]
 class ImuRegimePhaseTrace:
     """Buffered JSONL writer. Callers provide already-observed loop boundaries."""
 
-    def __init__(self, path: Path, *, flush_loops: int = 60) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        flush_loops: int = 60,
+        provenance: dict[str, object] | None = None,
+    ) -> None:
         if isinstance(flush_loops, bool) or int(flush_loops) <= 0:
             raise ValueError("flush_loops must be positive")
         self.path = Path(path).expanduser().resolve()
@@ -134,7 +164,14 @@ class ImuRegimePhaseTrace:
         self._buffer: list[dict[str, object]] = []
         self._pending: dict[str, object] | None = None
         self._last_reset_generation: int | None = None
-        self._write_rows([{"schema": SCHEMA, "kind": "manifest", "passive": True}])
+        manifest: dict[str, object] = {
+            "schema": SCHEMA,
+            "kind": "manifest",
+            "passive": True,
+        }
+        if provenance is not None:
+            manifest["provenance"] = _json_value(provenance)
+        self._write_rows([manifest])
 
     def _write_rows(self, rows: list[dict[str, object]]) -> None:
         for row in rows:

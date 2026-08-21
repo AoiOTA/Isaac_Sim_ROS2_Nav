@@ -1,10 +1,13 @@
-# The stationary reference is an external passive 10 s window before this
-# MotionBenchmark sequence. MotionBenchmark itself increments reset_seed by
-# primitive index, performs exactly one reset per primitive, has no retry path,
-# and publishes a final zero after every primitive.
+# The optional stationary prelude is enabled only for this diagnostic. It has
+# its own reset/receipt/generation, continuously publishes zero for 10 s, and
+# is reported independently from the nine motion primitives.
 schema_version: 1
-spawn_pose_name: mapping_start
+spawn_pose_name: flat20_start
 reset_seed: 8610
+stationary_reference:
+  id: stationary_reference
+  duration_sec: 10.0
+  reset_seed: 8609
 command_rate_hz: 20.0
 reset_settle_sec: 0.6
 final_settle_sec: 0.8

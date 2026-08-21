@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import math
 from pathlib import Path
 
@@ -68,6 +69,30 @@ def test_motion_assist_remains_after_the_physics_sensor_step():
     source = (
         Path(__file__).parents[1] / "apps" / "navigation_sim.py"
     ).read_text(encoding="utf-8")
-    loop_start = source.index("            app.update()")
-    assist_update = source.index("                motion_assist.update()")
-    assert loop_start < assist_update
+    tree = ast.parse(source)
+
+    def call_path(node):
+        parts = []
+        value = node
+        while isinstance(value, ast.Attribute):
+            parts.append(value.attr)
+            value = value.value
+        if isinstance(value, ast.Name):
+            parts.append(value.id)
+        return ".".join(reversed(parts))
+
+    loops = [node for node in ast.walk(tree) if isinstance(node, ast.While)]
+    navigation_loop = next(
+        node for node in loops
+        if any(
+            isinstance(item, ast.Call) and call_path(item.func) == "motion_assist.update"
+            for item in ast.walk(node)
+        )
+    )
+    calls = {
+        call_path(item.func): item.lineno
+        for item in ast.walk(navigation_loop)
+        if isinstance(item, ast.Call)
+        and call_path(item.func) in {"app.update", "motion_assist.update", "ground_truth.update"}
+    }
+    assert calls["app.update"] < calls["motion_assist.update"] < calls["ground_truth.update"]
