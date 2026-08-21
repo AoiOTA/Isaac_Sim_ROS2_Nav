@@ -47,3 +47,49 @@ def test_case_variant_and_full_response_are_preserved():
     assert receipt["case_id"] == "crossing"
     assert receipt["variant_id"] == "medium"
     assert receipt["full_response"] == message
+
+
+def test_case_and_variant_may_contain_delimiter_and_escaped_quotes():
+    case = 'valid};case "east"'
+    variant = 'variant};with "quotes"'
+    message = (
+        "complete; reset_receipt="
+        '{"case_id":"valid};case \\"east\\"","generation":4,'
+        '"odometry":"realistic","pose":"mapping_start","seed":8601,'
+        '"variant_id":"variant};with \\"quotes\\""}; suffix'
+    )
+    receipt = parse_reset_receipt(
+        message,
+        requested_seed=8601,
+        requested_case_id=case,
+        requested_variant_id=variant,
+    )
+    assert receipt["case_id"] == case
+    assert receipt["variant_id"] == variant
+
+
+@pytest.mark.parametrize(
+    "message, error",
+    [
+        ("no receipt here", "no reset_receipt"),
+        (
+            'reset_receipt={"seed":1}junk',
+            "trailing junk",
+        ),
+        (
+            'reset_receipt={"case_id":7,"generation":1,'
+            '"odometry":"realistic","pose":"mapping_start","seed":1,'
+            '"variant_id":""}',
+            "string fields",
+        ),
+        (
+            'reset_receipt={"case_id":"","generation":true,'
+            '"odometry":"realistic","pose":"mapping_start","seed":1,'
+            '"variant_id":""}',
+            "seed/generation",
+        ),
+    ],
+)
+def test_malformed_or_wrong_typed_receipts_are_rejected(message, error):
+    with pytest.raises(ResetReceiptError, match=error):
+        parse_reset_receipt(message, requested_seed=1)

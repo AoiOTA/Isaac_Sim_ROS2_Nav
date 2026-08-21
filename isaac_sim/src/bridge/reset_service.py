@@ -225,6 +225,7 @@ class ResetServiceBridge:
         default_reset_seed: int,
         simulation_time: Callable[[], float],
         reset_stop_gate: Any | None = None,
+        external_recovery_release_required: bool = True,
         service_name: str = "/simulation/reset",
     ) -> None:
         from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -259,6 +260,10 @@ class ResetServiceBridge:
             raise ResetServiceError("default_reset_seed must be a non-negative integer")
         if not callable(simulation_time):
             raise ResetServiceError("simulation_time must be callable")
+        if not isinstance(external_recovery_release_required, bool):
+            raise ResetServiceError(
+                "external_recovery_release_required must be bool"
+            )
 
         self.node = node
         self.spawn_manager = spawn_manager
@@ -270,6 +275,9 @@ class ResetServiceBridge:
         self._configured_odometry_mode = odometry_mode
         self._default_pose_name = default_pose_name
         self._reset_stop_gate = reset_stop_gate
+        self._external_recovery_release_required = (
+            external_recovery_release_required
+        )
         self._callback_group = ReentrantCallbackGroup()
         self._steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._Future = Future
@@ -576,31 +584,44 @@ class ResetServiceBridge:
     def _finish_transaction(self, transaction: _ResetTransaction) -> None:
         if transaction.timeout_timer is not None:
             transaction.timeout_timer.cancel()
-        if self._active_transaction is transaction:
-            self._active_transaction = None
+        try:
+            if transaction.errors:
+                # A failed/expired transaction is not a valid recovery epoch.
+                # Do not arm an initial pose while stale reset calls may still
+                # mutate wheel/EKF/costmap state.
+                self._initial_pose_republisher.cancel()
+                self._deferred_initial_pose_name = None
+                return
 
-        if transaction.errors:
-            # A failed/expired transaction is not a valid recovery epoch.  In
-            # particular, do not arm an initial pose while stale reset calls
-            # may still mutate wheel/EKF/costmap state.
-            self._initial_pose_republisher.cancel()
-            self._deferred_initial_pose_name = None
-            return
+            if (
+                getattr(self, "_reset_stop_gate", None) is not None
+                and transaction.stop_generation is not None
+            ):
+                self._reset_stop_gate.mark_reset_complete(
+                    transaction.stop_generation
+                )
+                if not getattr(
+                    self, "_external_recovery_release_required", True
+                ):
+                    # Mapping, teleop, and diagnostics have no ActivationGate.
+                    # Release only this successful transaction's generation.
+                    self._reset_stop_gate.release(
+                        transaction.stop_generation,
+                        source="reset_transaction_complete",
+                    )
 
-        if (
-            getattr(self, "_reset_stop_gate", None) is not None
-            and transaction.stop_generation is not None
-        ):
-            self._reset_stop_gate.mark_reset_complete(
-                transaction.stop_generation
-            )
-
-        # This event is the recovery epoch boundary.  It must be emitted only
-        # after every queued wheel/EKF/costmap reset future has resolved.
-        self._reset_event_publisher.publish(self._EmptyMessage())
-        if transaction.initial_pose_name is not None:
-            self._deferred_initial_pose_name = transaction.initial_pose_name
-            self._apply_initial_pose_policy()
+            # This event is the recovery epoch boundary.  It must be emitted
+            # only after every queued ROS reset future has resolved.
+            self._reset_event_publisher.publish(self._EmptyMessage())
+            if transaction.initial_pose_name is not None:
+                self._deferred_initial_pose_name = transaction.initial_pose_name
+                self._apply_initial_pose_policy()
+        finally:
+            # Keep the transaction exclusive through generation completion and
+            # optional same-generation release.  An early Trigger cannot begin
+            # a newer HOLD between mark_reset_complete() and release().
+            if self._active_transaction is transaction:
+                self._active_transaction = None
 
     def send_zero_velocity(self) -> None:
         if getattr(self, "_reset_stop_gate", None) is None:

@@ -1530,6 +1530,10 @@ def run(
                 SimulationManager.get_simulation_time()
             ),
             reset_stop_gate=reset_stop_gate,
+            external_recovery_release_required=(
+                config.simulation.navigation_mode == "localization"
+                and not diagnostic_command_mode
+            ),
         )
         from isaac_sim.src.bridge.kidnap_service import KidnapServiceBridge
 
@@ -1621,7 +1625,6 @@ def run(
                 dynamic_variant_id=dynamic_variant_id,
             )
         )
-        startup_stop_released = False
         if startup_reset.finished and startup_reset.errors:
             raise RuntimeError(
                 "startup reset transaction failed: "
@@ -2062,17 +2065,6 @@ def run(
                     "startup reset transaction failed: "
                     f"{startup_reset.errors}"
                 )
-            if startup_reset.finished and not startup_stop_released:
-                if startup_reset.stop_generation is None:
-                    raise RuntimeError("startup reset has no stop-gate generation")
-                # Nav2 may not exist yet.  The startup transaction has already
-                # rebuilt controller state and placed the articulation; this
-                # direct same-process release only permits future commands.
-                reset_stop_gate.release(
-                    startup_reset.stop_generation,
-                    source="startup_reset_complete",
-                )
-                startup_stop_released = True
             simulation_time = float(SimulationManager.get_simulation_time())
             if paired_appearance_capture is not None and startup_reset.finished:
                 paired_appearance_capture.update(simulation_time)

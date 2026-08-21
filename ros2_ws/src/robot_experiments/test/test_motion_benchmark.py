@@ -9,11 +9,14 @@ import yaml
 from robot_experiments.motion_benchmark import (
     evaluate_motion_primitive,
     load_motion_config,
+    MotionDispatchBarrier,
     MotionBenchmarkError,
     MotionPrimitive,
     MotionSample,
     MotionSegment,
     MotionThresholds,
+    ResetStopGateStatus,
+    wait_for_motion_dispatch_barrier,
 )
 
 
@@ -27,6 +30,89 @@ def test_motion_benchmark_is_upstream_of_final_command_authority():
     ).read_text(encoding="utf-8")
     assert 'Twist, "/cmd_vel_nav", reliable' in source
     assert 'Twist, "/cmd_vel", reliable' not in source
+
+
+def _gate_status(generation: int, held: bool, received_at: float):
+    return ResetStopGateStatus(
+        generation=generation,
+        held=held,
+        eligible_generation=generation if held else None,
+        received_at=received_at,
+    )
+
+
+def test_motion_dispatch_waits_for_delayed_same_generation_release():
+    barrier = MotionDispatchBarrier(7, reset_started_at=1.0, settle_sec=0.1)
+    assert not barrier.observe(
+        gate_status=_gate_status(7, True, 1.1),
+        collision_monitor_active=True,
+        estimated_state_ready=True,
+        now=1.1,
+    )
+    assert not barrier.observe(
+        gate_status=_gate_status(7, False, 1.2),
+        collision_monitor_active=True,
+        estimated_state_ready=True,
+        now=1.2,
+    )
+    assert barrier.observe(
+        gate_status=_gate_status(7, False, 1.3),
+        collision_monitor_active=True,
+        estimated_state_ready=True,
+        now=1.3,
+    )
+
+
+def test_motion_dispatch_never_release_times_out():
+    now = [0.0]
+    held = _gate_status(3, True, 0.1)
+    barrier = MotionDispatchBarrier(3, reset_started_at=0.0, settle_sec=0.0)
+
+    def spin_once(_timeout):
+        now[0] += 0.05
+
+    with pytest.raises(TimeoutError, match="gate_released=False"):
+        wait_for_motion_dispatch_barrier(
+            barrier,
+            spin_once=spin_once,
+            snapshot=lambda: (held, True, True),
+            timeout_sec=0.2,
+            monotonic=lambda: now[0],
+        )
+
+
+def test_motion_dispatch_rejects_wrong_reset_generation():
+    barrier = MotionDispatchBarrier(8, reset_started_at=2.0, settle_sec=0.0)
+    with pytest.raises(RuntimeError, match="generation mismatch"):
+        barrier.observe(
+            gate_status=_gate_status(9, False, 2.1),
+            collision_monitor_active=True,
+            estimated_state_ready=True,
+            now=2.1,
+        )
+
+
+def test_motion_dispatch_success_requires_collision_monitor_and_estimated_state():
+    barrier = MotionDispatchBarrier(5, reset_started_at=1.0, settle_sec=0.0)
+    released = _gate_status(5, False, 1.1)
+    assert not barrier.observe(
+        gate_status=released,
+        collision_monitor_active=False,
+        estimated_state_ready=True,
+        now=1.1,
+    )
+    assert not barrier.observe(
+        gate_status=released,
+        collision_monitor_active=True,
+        estimated_state_ready=False,
+        now=1.2,
+    )
+    assert barrier.observe(
+        gate_status=released,
+        collision_monitor_active=True,
+        estimated_state_ready=True,
+        now=1.3,
+    )
 
 
 def test_motion_benchmark_config_covers_required_primitives():

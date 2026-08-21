@@ -14,6 +14,8 @@ import time
 from typing import Any, Mapping
 
 from geometry_msgs.msg import Twist
+from lifecycle_msgs.msg import State
+from lifecycle_msgs.srv import GetState
 from nav_msgs.msg import Odometry
 import rclpy
 from rclpy.executors import ExternalShutdownException
@@ -23,7 +25,7 @@ from rclpy.parameter_client import AsyncParameterClient
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
 from rosgraph_msgs.msg import Clock
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 import yaml
@@ -84,6 +86,132 @@ class MotionSample:
     segment_elapsed: float
     command_linear: float
     command_angular: float
+
+
+@dataclass(frozen=True)
+class ResetStopGateStatus:
+    generation: int
+    held: bool
+    eligible_generation: int | None
+    received_at: float
+
+
+def parse_reset_stop_gate_status(
+    payload: str, *, received_at: float
+) -> ResetStopGateStatus:
+    """Parse the existing ResetStopGate authority status strictly."""
+
+    try:
+        document = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid reset stop gate status: {exc}") from exc
+    if not isinstance(document, dict):
+        raise RuntimeError("invalid reset stop gate status: expected object")
+    generation = document.get("generation")
+    held = document.get("held")
+    eligible = document.get("eligible_generation")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+        or not isinstance(held, bool)
+        or (
+            eligible is not None
+            and (
+                isinstance(eligible, bool)
+                or not isinstance(eligible, int)
+                or eligible != generation
+            )
+        )
+        or (not held and eligible is not None)
+    ):
+        raise RuntimeError("invalid reset stop gate status fields")
+    return ResetStopGateStatus(
+        generation=generation,
+        held=held,
+        eligible_generation=eligible,
+        received_at=float(received_at),
+    )
+
+
+@dataclass
+class MotionDispatchBarrier:
+    """Generation-fenced readiness required before any nonzero command."""
+
+    generation: int
+    reset_started_at: float
+    settle_sec: float
+    stable_since: float | None = None
+    gate_seen: bool = False
+    gate_released: bool = False
+    collision_monitor_active: bool = False
+    estimated_state_ready: bool = False
+
+    def observe(
+        self,
+        *,
+        gate_status: ResetStopGateStatus | None,
+        collision_monitor_active: bool,
+        estimated_state_ready: bool,
+        now: float,
+    ) -> bool:
+        if (
+            gate_status is not None
+            and gate_status.received_at > self.reset_started_at
+        ):
+            self.gate_seen = True
+            if gate_status.generation != self.generation:
+                raise RuntimeError(
+                    "reset stop gate generation mismatch: "
+                    f"receipt={self.generation}, status={gate_status.generation}"
+                )
+            self.gate_released = not gate_status.held
+        self.collision_monitor_active = bool(collision_monitor_active)
+        self.estimated_state_ready = bool(estimated_state_ready)
+        ready_now = (
+            self.gate_seen
+            and self.gate_released
+            and self.collision_monitor_active
+            and self.estimated_state_ready
+        )
+        if not ready_now:
+            self.stable_since = None
+            return False
+        if self.stable_since is None:
+            self.stable_since = now
+            return self.settle_sec == 0.0
+        return now - self.stable_since >= self.settle_sec
+
+    def timeout_detail(self) -> str:
+        return (
+            "motion dispatch barrier timed out: "
+            f"generation={self.generation}, gate_seen={self.gate_seen}, "
+            f"gate_released={self.gate_released}, "
+            f"collision_monitor_active={self.collision_monitor_active}, "
+            f"estimated_state_ready={self.estimated_state_ready}"
+        )
+
+
+def wait_for_motion_dispatch_barrier(
+    barrier: MotionDispatchBarrier,
+    *,
+    spin_once,
+    snapshot,
+    timeout_sec: float,
+    monotonic=time.monotonic,
+) -> None:
+    deadline = monotonic() + timeout_sec
+    while monotonic() < deadline:
+        spin_once(0.05)
+        gate_status, collision_active, estimated_ready = snapshot()
+        if barrier.observe(
+            gate_status=gate_status,
+            collision_monitor_active=collision_active,
+            estimated_state_ready=estimated_ready,
+            now=monotonic(),
+        ):
+            return
+    raise TimeoutError(barrier.timeout_detail())
 
 
 def _finite_number(value: Any, name: str, *, positive: bool = False) -> float:
@@ -504,7 +632,21 @@ class MotionBenchmarkNode(Node):
             self._collision_callback,
             reliable,
         )
+        gate_status_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._gate_status_subscription = self.create_subscription(
+            String,
+            "/simulation/reset_stop_gate/status",
+            self._gate_status_callback,
+            gate_status_qos,
+        )
         self._reset_client = self.create_client(Trigger, "/simulation/reset")
+        self._collision_state_client = self.create_client(
+            GetState, "/collision_monitor/get_state"
+        )
         self._isaac_parameters = AsyncParameterClient(
             self, "/isaac_navigation_sim"
         )
@@ -517,6 +659,10 @@ class MotionBenchmarkNode(Node):
         self._samples: list[MotionSample] = []
         self._recording = False
         self._collision_detected = False
+        self._gate_status: ResetStopGateStatus | None = None
+        self._gate_status_error: str | None = None
+        self._collision_state_future = None
+        self._collision_monitor_active = False
         self._segment_index = -1
         self._segment_started_at = 0.0
         self._command_linear = 0.0
@@ -589,6 +735,14 @@ class MotionBenchmarkNode(Node):
                 self._collision_detected or bool(message.data)
             )
 
+    def _gate_status_callback(self, message: String) -> None:
+        try:
+            self._gate_status = parse_reset_stop_gate_status(
+                message.data, received_at=time.monotonic()
+            )
+        except RuntimeError as exc:
+            self._gate_status_error = str(exc)
+
     def _spin_once(self, timeout: float = 0.05) -> None:
         if not rclpy.ok():
             raise ExternalShutdownException()
@@ -608,6 +762,32 @@ class MotionBenchmarkNode(Node):
         message.linear.x = float(linear)
         message.angular.z = float(angular)
         self._publisher.publish(message)
+
+    def _poll_collision_monitor_active(self) -> bool:
+        future = self._collision_state_future
+        if future is not None and future.done():
+            self._collision_state_future = None
+            try:
+                response = future.result()
+            except Exception as exc:
+                raise RuntimeError(
+                    "CollisionMonitor lifecycle query failed: "
+                    f"{type(exc).__name__}: {exc}"
+                ) from exc
+            if response is None:
+                raise RuntimeError("CollisionMonitor lifecycle query returned no response")
+            self._collision_monitor_active = (
+                response.current_state.id == State.PRIMARY_STATE_ACTIVE
+            )
+        if (
+            not self._collision_monitor_active
+            and self._collision_state_future is None
+            and self._collision_state_client.service_is_ready()
+        ):
+            self._collision_state_future = self._collision_state_client.call_async(
+                GetState.Request()
+            )
+        return self._collision_monitor_active
 
     def _reset(self, seed: int) -> dict[str, Any]:
         self._publish(0.0, 0.0)
@@ -633,6 +813,14 @@ class MotionBenchmarkNode(Node):
             raise RuntimeError("/simulation/reset is unavailable")
         barrier = time.monotonic()
         barrier_clock = self._clock_s
+        self._gate_status_error = None
+        self._collision_monitor_active = False
+        pending_state = self._collision_state_future
+        if pending_state is not None and not pending_state.done():
+            cancel = getattr(pending_state, "cancel", None)
+            if callable(cancel):
+                cancel()
+        self._collision_state_future = None
         reset_response = self._wait_future(
             self._reset_client.call_async(Trigger.Request()),
             30.0,
@@ -650,12 +838,17 @@ class MotionBenchmarkNode(Node):
             reset_response.message,
             requested_seed=seed,
         )
-        stable_since: float | None = None
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline:
-            self._spin_once(0.05)
+        dispatch_barrier = MotionDispatchBarrier(
+            generation=receipt["generation"],
+            reset_started_at=barrier,
+            settle_sec=self._config.reset_settle_sec,
+        )
+
+        def snapshot():
+            if self._gate_status_error is not None:
+                raise RuntimeError(self._gate_status_error)
             sample = self._latest_odometry
-            if (
+            estimated_ready = (
                 sample is not None
                 and sample.received_at > barrier
                 and self._clock_s is not None
@@ -663,19 +856,20 @@ class MotionBenchmarkNode(Node):
                 and abs(sample.linear_speed) <= 0.02
                 and abs(sample.angular_speed) <= 0.05
                 and self._estimated_tf_ready()
-            ):
-                if stable_since is None:
-                    stable_since = time.monotonic()
-                elif (
-                    time.monotonic() - stable_since
-                    >= self._config.reset_settle_sec
-                ):
-                    return receipt
-            else:
-                stable_since = None
-        raise TimeoutError(
-            "estimated odometry/clock/odom->base_link TF did not settle after reset"
+            )
+            return (
+                self._gate_status,
+                self._poll_collision_monitor_active(),
+                estimated_ready,
+            )
+
+        wait_for_motion_dispatch_barrier(
+            dispatch_barrier,
+            spin_once=self._spin_once,
+            snapshot=snapshot,
+            timeout_sec=15.0,
         )
+        return receipt
 
     def _estimated_tf_ready(self) -> bool:
         try:

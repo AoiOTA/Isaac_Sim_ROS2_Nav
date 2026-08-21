@@ -751,6 +751,38 @@
   no collision; any violation is FAIL/STOP.
 - Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
 
+## 2026-08-22 — ResetStopGate reviewer-blocker amendment
+
+- Goal/hypothesis: prevent mapping/teleop/diagnostic resets from remaining
+  permanently held, preserve generation-fenced ActivationGate release for
+  Navigation, prevent MotionBenchmark from dispatching before the final gate
+  and CollisionMonitor are ready, and parse complete reset receipt JSON.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `b28bdf56ccb7edf61dc176bfe3d8c49a0e3b03cc`; fixed Module3 main
+  `22d66470c4b903349b2467dc876490bbebfc0083` remained an ancestor.
+- Implementation: `ResetServiceBridge` has an explicit external-release
+  contract. Successful non-navigation/diagnostic transactions auto-release
+  only their captured generation; Navigation waits for ActivationGate;
+  exceptions/timeouts remain HOLD. Startup uses this same finalizer, whose
+  exclusivity now spans completion/release to close the early-Trigger race.
+- MotionBenchmark consumes the existing ResetStopGate status authority and
+  `/collision_monitor/get_state`; same receipt generation released,
+  CollisionMonitor active, and stable post-reset clock/odom/TF are mandatory
+  before nonzero command dispatch. Receipt extraction uses marker plus
+  `JSONDecoder.raw_decode` and strict types.
+- Validation actually run: source-first/no-cache focused pytest **141 passed**;
+  changed-file `py_compile`, relevant YAML/XML parse, and diff check PASS;
+  fresh isolated `robot_experiments` + `robot_bringup` build and installed
+  imports PASS at `/tmp/bionav_reset_gate_build.OvPN5Z`.
+- Verdict: **PASS (code/build/unit only)**; reviewer blockers are closed at
+  code level. **Live behavior remains UNVERIFIED** because no Isaac, ROS graph,
+  Nav2, navigation, visual evidence, engineering run, or formal qualification
+  was launched.
+- Remaining risk/next step: an authorized live reviewer must confirm mapping,
+  Navigation recovery, R2C segment resets, MotionBenchmark delayed release,
+  unique `/cmd_vel_sim` authority, and zero output throughout HOLD.
+- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
+
 ## 2026-08-21 — V6 critic revalidation TF/cursor blocker rework
 
 - Goal: fix reviewer blockers where static-revalidated points used an old

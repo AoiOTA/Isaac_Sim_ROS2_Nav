@@ -430,6 +430,129 @@ def test_successful_transaction_emits_event_before_initial_pose_policy():
     assert bridge._deferred_initial_pose_name == "mapping_start"
 
 
+class RecordingStopGate:
+    def __init__(self, events):
+        self.events = events
+        self.generation = 0
+        self.held = True
+        self.eligible = None
+        self.on_release = None
+
+    def hold(self):
+        self.generation += 1
+        self.held = True
+        self.eligible = None
+        self.events.append(("hold", self.generation))
+        return self.generation
+
+    def mark_reset_complete(self, generation):
+        assert generation == self.generation
+        assert self.held
+        self.eligible = generation
+        self.events.append(("complete", generation))
+
+    def release(self, generation, *, source):
+        assert generation == self.generation == self.eligible
+        assert self.held
+        self.held = False
+        self.eligible = None
+        self.events.append(("release", generation, source))
+        if self.on_release is not None:
+            self.on_release()
+
+
+def _finalization_bridge(events, gate, *, external_release):
+    return SimpleNamespace(
+        _active_transaction=None,
+        _manager=object(),
+        _reset_stop_gate=gate,
+        _external_recovery_release_required=external_release,
+        _reset_event_publisher=FakePublisher(events),
+        _EmptyMessage=lambda: object(),
+        _initial_pose_republisher=SimpleNamespace(cancel=lambda: None),
+        _deferred_initial_pose_name=None,
+        _apply_initial_pose_policy=lambda: None,
+    )
+
+
+def test_non_navigation_success_auto_releases_same_generation():
+    events = []
+    gate = RecordingStopGate(events)
+    generation = gate.hold()
+    bridge = _finalization_bridge(events, gate, external_release=False)
+
+    def assert_new_reset_is_still_excluded():
+        with pytest.raises(ResetServiceError, match="another reset transaction"):
+            ResetServiceBridge.start_reset(
+                bridge,
+                ResetRequest("mapping_start", "mapping", "ideal", 1),
+            )
+
+    gate.on_release = assert_new_reset_is_still_excluded
+    transaction = _ResetTransaction(
+        generation=1,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(bridge, tx),
+        stop_generation=generation,
+    )
+    bridge._active_transaction = transaction
+    transaction.timeout_timer = FakeTimer()
+    transaction.seal()
+
+    assert not gate.held
+    assert events == [
+        ("hold", generation),
+        ("complete", generation),
+        ("release", generation, "reset_transaction_complete"),
+        "reset_event",
+    ]
+
+
+def test_navigation_success_remains_held_for_external_generation_release():
+    events = []
+    gate = RecordingStopGate(events)
+    generation = gate.hold()
+    bridge = _finalization_bridge(events, gate, external_release=True)
+    transaction = _ResetTransaction(
+        generation=2,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(bridge, tx),
+        stop_generation=generation,
+    )
+    bridge._active_transaction = transaction
+    transaction.timeout_timer = FakeTimer()
+    transaction.seal()
+
+    assert gate.held
+    assert gate.eligible == generation
+    assert events == [
+        ("hold", generation),
+        ("complete", generation),
+        "reset_event",
+    ]
+
+
+def test_failed_transaction_never_marks_complete_or_auto_releases():
+    events = []
+    gate = RecordingStopGate(events)
+    generation = gate.hold()
+    bridge = _finalization_bridge(events, gate, external_release=False)
+    transaction = _ResetTransaction(
+        generation=3,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(bridge, tx),
+        stop_generation=generation,
+    )
+    bridge._active_transaction = transaction
+    transaction.timeout_timer = FakeTimer()
+    transaction.record_error("reset", "failed")
+    transaction.seal()
+
+    assert gate.held
+    assert gate.eligible is None
+    assert events == [("hold", generation)]
+
+
 def test_close_cancels_active_reset_without_emitting_epoch_event():
     events = []
     pending = CancellableFakeFuture()

@@ -16,6 +16,30 @@ Date: 2026-08-22
 - The committed IMU `yaw_scale=0.9294` baseline and critic semantics were not
   changed.
 
+### Reviewer-blocker amendment
+
+- Amendment start: `b28bdf56ccb7edf61dc176bfe3d8c49a0e3b03cc` on the same
+  permitted worktree/branch. This handoff's current commit closes the review
+  blockers at code/build/unit level only.
+- Reset release ownership is now explicit. Navigation/localization mode keeps
+  the current generation held for ActivationGate; mapping/teleop and explicit
+  R2C diagnostic command modes auto-release only after their complete reset
+  transaction succeeds. A failed transaction remains held, with no timeout
+  release.
+- Startup and Trigger resets now use the same `ResetServiceBridge` finalizer.
+  The active transaction remains exclusive through `mark_reset_complete()`
+  and optional same-generation release, so an early Trigger cannot create a
+  newer HOLD in that interval. `navigation_sim` no longer performs an
+  unconditional startup release.
+- MotionBenchmark now waits for a post-request ResetStopGate status matching
+  the receipt generation with HOLD cleared, an active CollisionMonitor
+  lifecycle state, and continuously settled new-epoch clock/odometry/TF before
+  returning from reset and dispatching any nonzero `/cmd_vel_nav`. Missing,
+  never-released, malformed, or wrong-generation status times out or STOPs.
+- Reset receipt extraction now uses `json.JSONDecoder.raw_decode` after the
+  explicit marker. Legal JSON strings may contain `};` and escaped quotes;
+  directly appended trailing junk and wrong field types are rejected.
+
 ## Seed and receipt contract
 
 - `effective_reset_seed` is the explicit CLI `--dynamic-seed` when supplied,
@@ -48,10 +72,13 @@ The normal Navigation chain is now:
   parameter service only after fresh-epoch recovery and the managed-node state
   snapshot (including `collision_monitor`) are active. A stale generation is
   rejected and cannot release a newer HOLD.
-- Startup has no Nav2 recovery owner yet. After the startup transaction and all
-  queued reset futures finish, `navigation_sim` releases the same-process
-  generation directly. Release publishes one final zero and never replays a
-  cached pre-reset command; motion requires a subsequent fresh message.
+- Startup and subsequent Trigger resets share the same release policy. In
+  Navigation/localization mode, ActivationGate releases the eligible current
+  generation after lifecycle readiness. Mapping/teleop and explicit diagnostic
+  command modes have no ActivationGate, so the successful transaction
+  finalizer auto-releases its captured generation. Release publishes one final
+  zero and never replays a cached pre-reset command; motion requires a fresh
+  subsequent message.
 - Command-generating Isaac diagnostics use `/cmd_vel_diagnostic` only when an
   explicit diagnostic CLI mode selects that gate input. Motion benchmark is
   upstream on `/cmd_vel_nav`. In the default Navigation profile, Collision
@@ -94,6 +121,21 @@ it does not repair, invalidate, or requalify the IMU finding.
 - `colcon test` for the isolated bringup package did not start tests because
   colcon required unbuilt workspace dependency `package.sh` files. The same
   source-first bringup tests are included in the 124-pass focused run.
+
+Reviewer-blocker amendment validation:
+
+- Source-first/no-cache focused reset, control-graph, ActivationGate/bringup,
+  receipt, MotionBenchmark, and experiments contract pytest: **141 passed**.
+  Added cases cover auto-release, external release, failure HOLD, release-time
+  reset exclusion, delayed/never/wrong-generation dispatch gates,
+  CollisionMonitor/estimated-state readiness, and `valid};case`/escaped quote
+  receipt strings.
+- Fresh isolated `robot_experiments` + `robot_bringup` build and installed
+  imports: PASS at `/tmp/bionav_reset_gate_build.OvPN5Z`.
+- Changed-file `py_compile`, relevant YAML/XML parse, and `git diff --check`:
+  PASS.
+- No Isaac, ROS graph, Nav2, navigation, visual evidence, engineering campaign,
+  or formal qualification was run. Live closure remains **UNVERIFIED**.
 
 ## Reviewer-only live closure still required
 

@@ -1,3 +1,4 @@
+import json
 import time
 
 from action_msgs.srv import CancelGoal
@@ -5,6 +6,8 @@ from builtin_interfaces.msg import Time
 from geometry_msgs.msg import TransformStamped
 from lifecycle_msgs.msg import State, Transition
 from lifecycle_msgs.srv import ChangeState, GetState
+from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.srv import SetParameters
 from nav2_msgs.srv import ClearEntireCostmap
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
@@ -18,7 +21,7 @@ from robot_bringup.activation_gate import DEFAULT_MANAGED_NODES
 from robot_bringup.activation_gate import Nav2ActivationGate
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
@@ -44,6 +47,9 @@ class _LifecycleFixture(Node):
         self.sim_stamp = 10.0
         self._rollback_next = False
         self._partial_resume_once = partial_resume_once
+        self._stop_generation = 1
+        self._stop_held = True
+        self._stop_eligible = 1
 
         self._clock_publisher = self.create_publisher(Clock, '/clock', 10)
         self._scan = self.create_publisher(LaserScan, '/scan', 10)
@@ -57,6 +63,13 @@ class _LifecycleFixture(Node):
             OccupancyGrid, '/map', map_qos)
         self._reset_event = self.create_publisher(
             Empty, '/simulation/reset_event', 10)
+        stop_status_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._stop_status = self.create_publisher(
+            String, '/simulation/reset_stop_gate/status', stop_status_qos)
         self._tf = TransformBroadcaster(self)
 
         self._state_services = [
@@ -112,13 +125,47 @@ class _LifecycleFixture(Node):
             '/initial_pose/reseed',
             self._trigger_reseed,
         )
+        self._stop_release = self.create_service(
+            SetParameters,
+            '/isaac_navigation_sim/set_parameters',
+            self._release_stop_gate,
+        )
         self._timer = self.create_timer(0.02, self._publish_inputs)
 
     def request_rollback(self):
+        self._begin_reset_generation()
         self._rollback_next = True
 
     def request_reset(self):
+        self._begin_reset_generation()
         self._reset_event.publish(Empty())
+
+    def _begin_reset_generation(self):
+        self._stop_generation += 1
+        self._stop_held = True
+        self._stop_eligible = self._stop_generation
+
+    def _release_stop_gate(self, request, response):
+        successful = False
+        reason = 'missing release generation'
+        if len(request.parameters) == 1:
+            parameter = request.parameters[0]
+            generation = parameter.value.integer_value
+            successful = (
+                parameter.name == 'reset_stop_gate_release_generation'
+                and self._stop_held
+                and generation == self._stop_generation
+                and generation == self._stop_eligible
+            )
+            reason = '' if successful else 'generation mismatch'
+        if successful:
+            self._stop_held = False
+            self._stop_eligible = None
+        response.results = [SetParametersResult(
+            successful=successful,
+            reason=reason,
+        )]
+        return response
 
     def _get_state(self, request, response, node_name):
         del request
@@ -260,6 +307,14 @@ class _LifecycleFixture(Node):
         transform.child_frame_id = 'odom'
         transform.transform.rotation.w = 1.0
         self._tf.sendTransform(transform)
+
+        status = String()
+        status.data = json.dumps({
+            'generation': self._stop_generation,
+            'held': self._stop_held,
+            'eligible_generation': self._stop_eligible,
+        })
+        self._stop_status.publish(status)
 
 
 def _spin_until(executor, predicate, timeout):

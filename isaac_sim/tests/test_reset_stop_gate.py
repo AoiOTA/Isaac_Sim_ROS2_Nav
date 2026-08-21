@@ -78,3 +78,22 @@ def test_navigation_profile_has_one_final_external_command_authority():
     ).read_text(encoding="utf-8")
     assert 'Twist, "/cmd_vel_diagnostic", 1' in navigation_source
     assert 'create_publisher(Twist, "/cmd_vel", 1)' not in navigation_source
+
+
+def test_startup_and_trigger_resets_share_one_release_owner_contract():
+    navigation_source = (
+        ROOT / "isaac_sim/apps/navigation_sim.py"
+    ).read_text(encoding="utf-8")
+    bridge_source = (
+        ROOT / "isaac_sim/src/bridge/reset_service.py"
+    ).read_text(encoding="utf-8")
+
+    assert "startup_stop_released" not in navigation_source
+    assert "startup_reset_complete" not in navigation_source
+    assert "external_recovery_release_required=(" in navigation_source
+    assert (
+        'config.simulation.navigation_mode == "localization"'
+        in navigation_source
+    )
+    assert "and not diagnostic_command_mode" in navigation_source
+    assert 'source="reset_transaction_complete"' in bridge_source
