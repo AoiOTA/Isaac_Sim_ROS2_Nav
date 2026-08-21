@@ -808,6 +808,34 @@
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
+## 2026-08-22 — V6 RouteCoordinator HOLD graph-output/dispatch fence
+
+- Goal: close the two remaining HOLD races between cognitive/structural final
+  validation and `SetRouteGraph` dispatch, and prevent old cognitive/fallback
+  outputs after reset retirement.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `dc09e9eebb0c73cc23d4c72eddf0e6bdc05a9944`.
+- Changes: output-lock then state-lock revalidation for cognitive graph error,
+  validation and fallback outputs; output-serialized cognitive/structural
+  request construction, `call_async`, future and callback registration; an
+  explicit current reset-completion token for the necessary GVG reassert while
+  HOLD remains closed.
+- Deterministic coverage: export error, unavailable service, request exception,
+  cognitive/structural dispatch, fallback success/request outputs, reset-GVG
+  positive path, and same-generation release positive path.
+- Validation: focused graph adapter **64 passed**; full route package **147
+  passed, 1 skipped** (`pxr` unavailable); associated reset/gate/mode/
+  benchmark/reset-receipt/IMU/localization/EKF tests **200 passed**; fresh
+  isolated build PASS at `/tmp/v6_route_dispatch_build.Qy6KPR` with final
+  `colcon test-result` **148 tests, 0 errors, 0 failures, 1 skipped**; changed-
+  file `py_compile` and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
+  evidence campaign, or formal qualification was run.
+- Remaining risk/next: the planned fresh active-reset live rerun must still
+  verify DDS/executor timing, zero old output/command through HOLD, and fresh
+  goal recovery.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 IMU duration, goal-MCAP, and installed-resource closure
 
 - Goal: close the remaining evidence-contract paths that could promote a

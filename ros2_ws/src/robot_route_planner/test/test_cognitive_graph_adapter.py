@@ -440,8 +440,8 @@ def test_primary_fallback_is_single_and_whole_graph():
     coordinator.graph = Graph('cognitive', 5, 'map', 0.05, [], [])
     coordinator.StructuralGraphStatus = SimpleNamespace(LAST_KNOWN_GOOD=2)
     switches = []
-    coordinator._request_graph_switch = lambda graph, reason, fallback: switches.append(
-        (graph.graph_id, reason, fallback)
+    coordinator._request_graph_switch = lambda graph, reason, **kwargs: switches.append(
+        (graph.graph_id, reason, kwargs['fallback'])
     )
     coordinator._publish_structural_status = lambda *_args: None
 
@@ -461,8 +461,8 @@ def test_set_route_graph_rejection_requests_one_whole_gvg_fallback():
     coordinator.StructuralGraphStatus = SimpleNamespace(LAST_KNOWN_GOOD=2)
     coordinator._publish_structural_status = lambda *_args: None
     switches = []
-    coordinator._request_graph_switch = lambda graph, reason, fallback: switches.append(
-        (graph.graph_id, reason, fallback)
+    coordinator._request_graph_switch = lambda graph, reason, **kwargs: switches.append(
+        (graph.graph_id, reason, kwargs['fallback'])
     )
     rejected = SimpleNamespace(
         result=lambda: SimpleNamespace(success=False))
@@ -905,6 +905,248 @@ def _structural_liveness_coordinator(monkeypatch):
         ros_node_module, 'export_route_support_graph',
         lambda *_args, **_kwargs: support)
     return coordinator, rebuilt
+
+
+def _insert_reset_hold(coordinator, generation=2):
+    """Install HOLD through the production output->state lock order."""
+
+    with coordinator._route_output_lock():
+        with coordinator._route_state_lock():
+            coordinator.reset_hold_barrier = True
+            coordinator.reset_intent_generation = generation
+            coordinator.reset_event_completed_generation = None
+            coordinator.reset_generation = int(
+                getattr(coordinator, 'reset_generation', 0)) + 1
+            coordinator.request_id = int(getattr(coordinator, 'request_id', 0)) + 1
+            coordinator.graph_generation = int(
+                getattr(coordinator, 'graph_generation', 0)) + 1
+
+
+def test_cognitive_export_error_crossing_hold_has_no_status_or_ack(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, '', 'map', '', 0, 'physical', 4, '')
+    statuses = []
+    validations = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+    coordinator._publish_graph_validation = (
+        lambda *args, **kwargs: validations.append((args, kwargs)))
+    export_entered = threading.Event()
+    release_export = threading.Event()
+
+    def failed_export(*_args, **_kwargs):
+        export_entered.set()
+        assert release_export.wait(timeout=2.0)
+        raise RuntimeError('export failed')
+
+    monkeypatch.setattr(
+        ros_node_module, 'export_route_support_graph', failed_export)
+    worker = threading.Thread(
+        target=coordinator._request_graph_switch,
+        args=(Graph('candidate', 5, 'map', 0.05, [], []), 'candidate'),
+        kwargs={'fallback': False, 'feedback': _feedback()},
+    )
+    worker.start()
+    assert export_entered.wait(timeout=2.0)
+    _insert_reset_hold(coordinator)
+    release_export.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert statuses == []
+    assert validations == []
+    assert coordinator.set_graph_client.calls == []
+
+
+def test_cognitive_unavailable_crossing_hold_has_no_status_or_ack(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    statuses = []
+    validations = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+    coordinator._publish_graph_validation = (
+        lambda *args, **kwargs: validations.append((args, kwargs)))
+    readiness_entered = threading.Event()
+    release_readiness = threading.Event()
+
+    def unavailable():
+        readiness_entered.set()
+        assert release_readiness.wait(timeout=2.0)
+        return False
+
+    coordinator.set_graph_client.service_is_ready = unavailable
+    worker = threading.Thread(
+        target=coordinator._request_graph_switch,
+        args=(Graph('candidate', 5, 'map', 0.05, [], []), 'candidate'),
+        kwargs={'fallback': False, 'feedback': _feedback()},
+    )
+    worker.start()
+    assert readiness_entered.wait(timeout=2.0)
+    _insert_reset_hold(coordinator)
+    release_readiness.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert statuses == []
+    assert validations == []
+    assert coordinator.set_graph_client.calls == []
+
+
+def test_cognitive_call_exception_rechecks_hold_before_error_output(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+
+    def hold_then_raise(request):
+        coordinator.set_graph_client.calls.append(request.graph_filepath)
+        with coordinator._route_state_lock():
+            coordinator.reset_hold_barrier = True
+        raise RuntimeError('call failed after hold')
+
+    coordinator.set_graph_client.call_async = hold_then_raise
+    coordinator._request_graph_switch(
+        Graph('candidate', 5, 'map', 0.05, [], []),
+        'candidate',
+        fallback=False,
+    )
+
+    assert len(coordinator.set_graph_client.calls) == 1
+    assert statuses == []
+
+
+def test_cognitive_dispatch_loses_to_hold_before_final_output_lock(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    export_entered = threading.Event()
+    release_export = threading.Event()
+    original_save = ros_node_module.save_route_support
+
+    def blocked_save(*args, **kwargs):
+        export_entered.set()
+        assert release_export.wait(timeout=2.0)
+        return original_save(*args, **kwargs)
+
+    monkeypatch.setattr(ros_node_module, 'save_route_support', blocked_save)
+    worker = threading.Thread(
+        target=coordinator._request_graph_switch,
+        args=(Graph('candidate', 5, 'map', 0.05, [], []), 'candidate'),
+        kwargs={'fallback': False},
+    )
+    worker.start()
+    assert export_entered.wait(timeout=2.0)
+    _insert_reset_hold(coordinator)
+    release_export.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert coordinator.set_graph_client.calls == []
+
+
+def test_structural_dispatch_loses_to_hold_before_final_output_lock(monkeypatch):
+    coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    coordinator.pending_structural_map = _map(wall=True)
+    with coordinator._route_state_lock():
+        coordinator._refresh_structural_intent_locked()
+    export_entered = threading.Event()
+    release_export = threading.Event()
+
+    def blocked_save(*_args, **_kwargs):
+        export_entered.set()
+        assert release_export.wait(timeout=2.0)
+
+    monkeypatch.setattr(ros_node_module, 'save_route_support', blocked_save)
+    worker = threading.Thread(target=coordinator._try_deferred_structural_rebuild)
+    worker.start()
+    assert export_entered.wait(timeout=2.0)
+    _insert_reset_hold(coordinator)
+    release_export.set()
+    worker.join(timeout=2.0)
+
+    assert not worker.is_alive()
+    assert coordinator.set_graph_client.calls == []
+
+
+def test_completion_owned_gvg_reassert_dispatches_while_hold_is_active(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+
+    coordinator._ensure_desired_graph(
+        'reset GVG', allow_reset_reassert=2)
+
+    assert len(coordinator.set_graph_client.calls) == 1
+    coordinator.set_graph_client.futures[0].finish(success=True)
+    assert coordinator.graph_coherent is True
+    assert coordinator.graph_reassert_required is False
+
+
+def test_same_generation_release_allows_fresh_graph_dispatch(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+    coordinator._ensure_desired_graph('ordinary dispatch held')
+    assert coordinator.set_graph_client.calls == []
+
+    coordinator.reset_hold_barrier = False
+    coordinator._ensure_desired_graph('fresh dispatch after release')
+
+    assert len(coordinator.set_graph_client.calls) == 1
+
+
+def test_fallback_success_outputs_are_silent_while_hold_is_active(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.pending_reroute_outcome = (_feedback(), '1', 'e0')
+    graph_publications = []
+    constraint_publications = []
+    statuses = []
+    outcomes = []
+    coordinator._publish_graph = lambda: graph_publications.append(True)
+    coordinator._publish_cognitive_constraints = (
+        lambda **_kwargs: constraint_publications.append(True))
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+    coordinator._publish_edge_outcome = (
+        lambda *args, **kwargs: outcomes.append((args, kwargs)))
+
+    coordinator._finish_cognitive_graph_switch(
+        SimpleNamespace(result=lambda: SimpleNamespace(success=True)),
+        coordinator.gvg_graph,
+        coordinator.gvg_support,
+        'fallback success crossing HOLD',
+        True,
+    )
+
+    assert coordinator.graph_coherent is True
+    assert graph_publications == []
+    assert constraint_publications == []
+    assert statuses == []
+    assert outcomes == []
+
+
+def test_old_fallback_request_and_status_are_silent_after_hold(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.primary_fallback_used = False
+    coordinator.reset_hold_barrier = True
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+
+    coordinator._fallback_to_gvg_once(
+        'old callback',
+        request_id=coordinator.request_id,
+        reset_generation=coordinator.reset_generation,
+    )
+
+    assert coordinator.primary_fallback_used is False
+    assert coordinator.set_graph_client.calls == []
+    assert statuses == []
 
 
 def test_reassert_service_unavailable_rejection_backoff_and_no_storm(monkeypatch):

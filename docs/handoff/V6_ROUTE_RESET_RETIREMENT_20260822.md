@@ -337,3 +337,41 @@ Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
 navigation, visual evidence, engineering campaign, or formal qualification was
 run. A fresh active-reset live rerun remains required to verify executor/DDS
 ordering, zero old-epoch output and command through HOLD, and fresh-goal recovery.
+
+## HOLD graph-output and Route Server dispatch amendment
+
+- Start HEAD: `dc09e9eebb0c73cc23d4c72eddf0e6bdc05a9944`; all earlier
+  route-retirement, deferred-rebuild, reset-stop, benchmark, and IMU work is
+  retained unchanged.
+- Cognitive graph export errors, service-unavailable results, request-call
+  exceptions, validation acknowledgements, fallback outcomes, graph/runtime
+  publications, and structural status now use the established output-lock then
+  state-lock final fence. The captured route-input identity and cognitive
+  validation identity must still be current and HOLD must remain open before
+  an old callback can emit an output.
+- Cognitive and structural `SetRouteGraph` final submission now holds the
+  output lock from its last state/token/transaction check through request
+  construction, `call_async`, future registration, and callback registration.
+  No service call is made while the state lock is held. A HOLD that wins before
+  this critical section yields zero request; once submission owns the output
+  lock, reset retirement cannot interpose between the final check and dispatch.
+- Reset completion carries an explicit status-generation token. Only that
+  completion-owned, still-current GVG reassert may submit while HOLD remains
+  active; ordinary cognitive, fallback, retry, and structural submissions stay
+  fenced. The token survives bounded retry and cannot authorize a later reset.
+- Deterministic tests cover export error, service unavailable, request
+  exception, cognitive/structural final dispatch, fallback-success outputs,
+  old fallback request/status, held reset-GVG reassert success, and fresh
+  same-generation release dispatch.
+- Validation: focused graph adapter **64 passed**; complete source-first
+  `robot_route_planner` **147 passed, 1 skipped** (`pxr` unavailable); the
+  associated reset/gate/benchmark/IMU/localization/EKF static regression set
+  passed **200 tests**. Fresh isolated package build passed at
+  `/tmp/v6_route_dispatch_build.Qy6KPR` with install
+  `/tmp/v6_route_dispatch_install.Hf0ucn`; final `colcon test-result` was **148
+  tests, 0 errors, 0 failures, 1 skipped**, log
+  `/tmp/v6_route_dispatch_final_test_log.DNvdJi`. Changed-file `py_compile`
+  and `git diff --check` passed.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. The fresh active-reset live rerun remains required.
