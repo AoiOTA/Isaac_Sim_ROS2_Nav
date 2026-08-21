@@ -716,6 +716,34 @@
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
+## 2026-08-22 — V6 RouteCoordinator reset retirement
+
+- Goal/hypothesis: synchronously retire every old-epoch route/action intent on
+  simulation reset so StopGate release cannot resume an old tracker or dispatch
+  a stale NavigateToPose goal; also clear an old tracker before normal goal
+  preemption exposes the new request.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `0a0fdf8adccaf95bfdf4d933993fa926ba6f3be4`, fixed-main ancestor
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Changes: added request/graph generation fencing and synchronous route state
+  retirement; best-effort accepted-handle cancellation after clearing state;
+  stale pending-action acceptance cancellation; runtime edge and epoch-bound
+  pose/costmap/TF/region/structural-candidate cleanup; preemption tracker
+  retirement; and one active-reset Bool false plus JSON abort terminal on
+  `/bio_nav/route_goal_result`. No active route produces no terminal.
+- Validation: focused source-first/no-cache route/reset tests **69 passed**;
+  complete route package **93 passed, 1 skipped** (`pxr` unavailable); changed
+  Python `py_compile` and `git diff --check` PASS; fresh isolated build PASS and
+  `colcon test` **94 tests, 0 errors, 0 failures, 1 skipped** at
+  `/tmp/bionav_route_reset.0m4Bm7`.
+- Verdict: **PASS (code/build/unit only)**. No ROS, Isaac, Nav2, navigation,
+  visual evidence, campaign, or formal qualification was run.
+- Remaining blocker: StopGate active-reset live closure remains pending the
+  combined read-only reviewer; verify exactly one abort terminal, no old route
+  publications/action dispatch or post-release command, idempotent cancel-all,
+  and successful fresh-goal restart.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 reset seed receipt and final command ResetStopGate
 
 - Goal: close the CLI/startup/Trigger reset-seed divergence and remove Isaac's

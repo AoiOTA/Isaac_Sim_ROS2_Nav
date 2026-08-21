@@ -1,3 +1,4 @@
+import json
 import math
 from pathlib import Path
 from types import SimpleNamespace
@@ -5,6 +6,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from robot_route_planner.cognitive_graph_adapter import CognitiveGraphIdentity
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
 from robot_route_planner.map_io import OccupancyMap
 from robot_route_planner.ros_node import (
@@ -386,6 +388,230 @@ def test_primary_async_failures_request_exactly_one_fallback(failure_kind) -> No
             coordinator._on_navigation_goal_handle(rejected)
 
     assert len(reasons) == 1
+
+
+class _CapturePublisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
+
+
+class _AcceptedHandle:
+    accepted = True
+
+    def __init__(self):
+        self.cancel_calls = 0
+
+    def cancel_goal_async(self):
+        self.cancel_calls += 1
+
+
+def _reset_route_coordinator(*, active=True, handle=None):
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.route_active = active
+    coordinator.pending_goal = object() if active else None
+    coordinator.request_id = 41
+    coordinator.graph_generation = 3
+    coordinator.graph_switch_generation = 7
+    coordinator.graph = SimpleNamespace(graph_id='physical', revision=4)
+    coordinator.gvg_graph = coordinator.graph
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        8, 'old-session', 'map-v1', 'old-tile', 3, 'physical', 4, 'model')
+    coordinator.cognitive_graph_switch_pending = True
+    coordinator.cognitive_graph_last_sequence = 9
+    coordinator.cognitive_graph_feedback_active = object()
+    coordinator.cognitive_graph_feedback_pending = object()
+    coordinator.cognitive_feedback_sequences = {(4, 'outcome', 'edge'): 2}
+    coordinator.cognitive_validation_terminal = {(4, 'edge')}
+    coordinator.cognitive_outcome_terminal = {(4, '1')}
+    coordinator.pending_reroute_outcome = object()
+    coordinator.cognitive_reroute_revision = 2
+    coordinator.primary_fallback_used = True
+    coordinator.tracker = object()
+    coordinator.navigation_goal_pending = handle is None and active
+    coordinator.navigation_goal_handle = handle
+    coordinator.navigation_goal_targets_final = True
+    coordinator.navigation_failed = True
+    coordinator.pending_deadline_ns = 2
+    coordinator.pending_prior_request_id = 41
+    coordinator.pending_prior_graph_id = 'physical'
+    coordinator.pending_prior_graph_revision = 4
+    coordinator.pending_prior_started_ns = 1
+    coordinator.pending_prior_model_id = 'model'
+    coordinator.latest_priors = {1: (1.0, 0.5)}
+    coordinator.latest_priors_stamp_ns = 1
+    coordinator.latest_prior_model_id = 'model'
+    coordinator.latest_priors_request_id = 41
+    coordinator.latest_priors_graph_id = 'physical'
+    coordinator.latest_priors_graph_revision = 4
+    coordinator.latest_pose_xy = (1.0, 2.0)
+    coordinator.latest_pose_frame_id = 'map'
+    coordinator.latest_pose_stamp_ns = 1
+    coordinator.latest_global_costmap = object()
+    coordinator.last_context_publish_ns = 1
+    coordinator.runtime = SimpleNamespace(edges={1: object()})
+    coordinator.pending_structural_map = object()
+    coordinator.structural_monitor = SimpleNamespace(
+        last_candidate=object(), first_stable_s=1.0, stable_count=3)
+    coordinator.cognitive_constraints_cache = SimpleNamespace(
+        invalidations=0)
+
+    def invalidate():
+        coordinator.cognitive_constraints_cache.invalidations += 1
+
+    coordinator.cognitive_constraints_cache.invalidate = invalidate
+    coordinator.region_selector = SimpleNamespace(
+        current=object(), last_switch_s=1.0)
+    coordinator.tf_buffer = SimpleNamespace(clear_calls=0)
+
+    def clear_tf():
+        coordinator.tf_buffer.clear_calls += 1
+
+    coordinator.tf_buffer.clear = clear_tf
+    coordinator.goal_complete_pub = _CapturePublisher()
+    coordinator.goal_result_pub = _CapturePublisher()
+    coordinator.context_pub = _CapturePublisher()
+    coordinator.progress_pub = _CapturePublisher()
+    coordinator.lookahead_pub = _CapturePublisher()
+    coordinator.goal_update_pub = _CapturePublisher()
+    coordinator.route_pub = _CapturePublisher()
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        info=lambda _message: None, warning=lambda _message: None))
+    coordinator._fallback_to_gvg_once = lambda _reason: pytest.fail(
+        'physical graph reset must not request fallback')
+    return coordinator
+
+
+def test_active_reset_retires_state_cancels_once_and_publishes_one_terminal() -> None:
+    handle = _AcceptedHandle()
+    coordinator = _reset_route_coordinator(handle=handle)
+
+    coordinator._on_reset_event(None)
+
+    assert coordinator.request_id == 42
+    assert coordinator.graph_generation == 4
+    assert coordinator.graph_switch_generation == 8
+    assert coordinator.route_active is False
+    assert coordinator.pending_goal is None
+    assert coordinator.tracker is None
+    assert coordinator.navigation_goal_pending is False
+    assert coordinator.navigation_goal_handle is None
+    assert coordinator.navigation_goal_targets_final is False
+    assert coordinator.navigation_failed is False
+    assert coordinator.pending_deadline_ns is None
+    assert coordinator.latest_priors == {}
+    assert coordinator.pending_reroute_outcome is None
+    assert coordinator.runtime.edges == {}
+    assert coordinator.latest_pose_xy is None
+    assert coordinator.latest_pose_frame_id is None
+    assert coordinator.latest_pose_stamp_ns is None
+    assert coordinator.latest_global_costmap is None
+    assert coordinator.pending_structural_map is None
+    assert coordinator.structural_monitor.last_candidate is None
+    assert coordinator.cognitive_constraints_cache.invalidations == 1
+    assert coordinator.region_selector.current is None
+    assert coordinator.tf_buffer.clear_calls == 1
+    assert handle.cancel_calls == 1
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+    assert len(coordinator.goal_result_pub.messages) == 1
+    assert json.loads(coordinator.goal_result_pub.messages[0].data) == {
+        'request_id': 41,
+        'status': 'aborted',
+        'reason': 'simulation_reset',
+        'reset_epoch': 9,
+    }
+
+    coordinator._on_reset_event(None)
+    assert handle.cancel_calls == 1
+    assert len(coordinator.goal_complete_pub.messages) == 1
+    assert len(coordinator.goal_result_pub.messages) == 1
+
+
+def test_reset_pending_action_late_accept_is_cancelled_and_result_is_ignored() -> None:
+    coordinator = _reset_route_coordinator()
+    generation = coordinator._route_callback_generation()
+    coordinator._on_reset_event(None)
+    late_handle = _AcceptedHandle()
+    handle_result_calls = []
+    coordinator._on_navigation_goal_handle(
+        SimpleNamespace(result=lambda: handle_result_calls.append(True) or late_handle),
+        generation,
+    )
+
+    assert handle_result_calls == [True]
+    assert late_handle.cancel_calls == 1
+    assert coordinator.navigation_goal_handle is None
+    terminal_count = len(coordinator.goal_complete_pub.messages)
+    result_calls = []
+    coordinator._on_navigation_result(
+        SimpleNamespace(result=lambda: result_calls.append(True)), generation)
+    assert result_calls == []
+    assert len(coordinator.goal_complete_pub.messages) == terminal_count
+    assert len(coordinator.goal_result_pub.messages) == 1
+
+
+def test_post_reset_timers_and_route_callback_cannot_publish_old_request() -> None:
+    coordinator = _reset_route_coordinator()
+    generation = coordinator._route_callback_generation()
+    coordinator._on_reset_event(None)
+    coordinator._current_xy = lambda: pytest.fail('retired tracker was evaluated')
+    coordinator._publish_progress()
+    coordinator._publish_route_context()
+    route_result_calls = []
+    coordinator._on_route_result(
+        SimpleNamespace(result=lambda: route_result_calls.append(True)), generation)
+
+    assert route_result_calls == []
+    assert coordinator.context_pub.messages == []
+    assert coordinator.progress_pub.messages == []
+    assert coordinator.lookahead_pub.messages == []
+    assert coordinator.goal_update_pub.messages == []
+    assert coordinator.route_pub.messages == []
+
+
+def test_reset_without_active_route_does_not_publish_fake_terminal() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+
+    coordinator._on_reset_event(None)
+
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+
+def test_new_goal_preemption_clears_old_tracker_before_context_and_can_restart() -> None:
+    handle = _AcceptedHandle()
+    coordinator = _reset_route_coordinator(handle=handle)
+    coordinator.module2_enabled = True
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=10)
+    coordinator._arm_prior_request = lambda _now: None
+    observed = []
+
+    def publish_context():
+        observed.append((coordinator.request_id, coordinator.tracker, coordinator.pending_goal))
+
+    coordinator._publish_route_context = publish_context
+    goal = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+        x=3.0, y=4.0)))
+    coordinator._on_goal(goal)
+
+    assert handle.cancel_calls == 1
+    assert observed == [(42, None, goal)]
+    assert coordinator.route_active is True
+    assert coordinator.navigation_goal_pending is False
+
+    coordinator._on_reset_event(None)
+    coordinator.module2_enabled = False
+    prepared = []
+    coordinator._prepare_route = lambda priors: prepared.append(priors)
+    coordinator._publish_route_context = lambda: None
+    fresh_goal = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+        x=5.0, y=6.0)))
+    coordinator._on_goal(fresh_goal)
+    assert coordinator.pending_goal is fresh_goal
+    assert coordinator.request_id == 44
+    assert prepared == [{}]
 
 
 def _edge(edge_id, source, target, points, clearance=0.5):

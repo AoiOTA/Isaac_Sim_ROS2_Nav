@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+import json
 import math
 import tempfile
 
@@ -316,7 +317,7 @@ class RouteCoordinator:
         from rclpy.duration import Duration
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from rclpy.time import Time
-        from std_msgs.msg import Bool, Empty
+        from std_msgs.msg import Bool, Empty, String
         from tf2_ros import Buffer, TransformListener
 
         self.node = node
@@ -586,6 +587,9 @@ class RouteCoordinator:
             Bool,
             str(node.get_parameter("goal_complete_topic").value),
             qos,
+        )
+        self.goal_result_pub = node.create_publisher(
+            String, "/bio_nav/route_goal_result", qos
         )
         self.runtime_pub = node.create_publisher(
             RuntimeEdgeStateArray, "/bio_nav/runtime_edge_states", qos_latched
@@ -879,12 +883,100 @@ class RouteCoordinator:
             + int(message.header.stamp.nanosec)
         )
 
-    def _on_reset_event(self, _message) -> None:
-        identity = self.cognitive_graph_identity
+    def _retire_route_state(self):
+        """Clear coordinator-owned route intent without rebuilding the graph."""
+
+        handle = getattr(self, "navigation_goal_handle", None)
+        self.route_active = False
+        self.pending_goal = None
+        self._clear_pending_prior_request()
+        self._clear_latest_priors()
+        self.tracker = None
+        self.navigation_goal_pending = False
+        self.navigation_goal_handle = None
+        self.navigation_goal_targets_final = False
+        self.navigation_failed = False
+        self.pending_reroute_outcome = None
+        return handle
+
+    def _cancel_navigation_handle(self, handle) -> None:
+        if handle is None:
+            return
+        try:
+            handle.cancel_goal_async()
+        except Exception as error:
+            self.node.get_logger().warning(
+                f"NavigateToPose cancellation failed: {error}"
+            )
+
+    def _retire_active_route_for_reset(self):
+        """Fence and synchronously retire all state owned by the old epoch."""
+
+        was_active = bool(getattr(self, "route_active", False))
+        old_request_id = int(getattr(self, "request_id", 0))
+        old_goal = getattr(self, "pending_goal", None)
+        old_handle = getattr(self, "navigation_goal_handle", None)
+
+        # Advance every asynchronous route/graph fence before clearing state.
+        self.request_id = old_request_id + 1
         self.graph_generation = int(getattr(self, "graph_generation", 0)) + 1
         self.graph_switch_generation = int(
             getattr(self, "graph_switch_generation", 0)
         ) + 1
+        self._retire_route_state()
+
+        runtime = getattr(self, "runtime", None)
+        runtime_edges = None if runtime is None else getattr(runtime, "edges", None)
+        if runtime_edges is not None:
+            runtime_edges.clear()
+        self.latest_pose_xy = None
+        self.latest_pose_frame_id = None
+        self.latest_pose_stamp_ns = None
+        self.latest_global_costmap = None
+        self.last_context_publish_ns = 0
+        self.pending_structural_map = None
+        structural_monitor = getattr(self, "structural_monitor", None)
+        if structural_monitor is not None:
+            structural_monitor.last_candidate = None
+            structural_monitor.first_stable_s = None
+            structural_monitor.stable_count = 0
+        cache = getattr(self, "cognitive_constraints_cache", None)
+        if cache is not None:
+            cache.invalidate()
+        region_selector = getattr(self, "region_selector", None)
+        if region_selector is not None:
+            region_selector.current = None
+            region_selector.last_switch_s = -math.inf
+        tf_buffer = getattr(self, "tf_buffer", None)
+        clear_tf = None if tf_buffer is None else getattr(tf_buffer, "clear", None)
+        if clear_tf is not None:
+            clear_tf()
+        return was_active, old_request_id, old_goal, old_handle
+
+    def _publish_reset_abort_terminal(
+        self, request_id: int, reset_epoch: int
+    ) -> None:
+        failed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
+        failed.data = False
+        self.goal_complete_pub.publish(failed)
+        result = __import__("std_msgs.msg", fromlist=["String"]).String()
+        result.data = json.dumps(
+            {
+                "request_id": int(request_id),
+                "status": "aborted",
+                "reason": "simulation_reset",
+                "reset_epoch": int(reset_epoch),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        self.goal_result_pub.publish(result)
+
+    def _on_reset_event(self, _message) -> None:
+        identity = self.cognitive_graph_identity
+        was_active, old_request_id, _old_goal, old_handle = (
+            self._retire_active_route_for_reset()
+        )
         self.cognitive_graph_switch_pending = False
         self.cognitive_graph_identity = CognitiveGraphIdentity(
             identity.reset_epoch + 1,
@@ -904,10 +996,12 @@ class RouteCoordinator:
         self.cognitive_outcome_terminal = set()
         self.pending_reroute_outcome = None
         self.cognitive_reroute_revision = 0
-        self._clear_pending_prior_request()
-        self._clear_latest_priors()
-        self.cognitive_constraints_cache.invalidate()
         self.primary_fallback_used = False
+        self._cancel_navigation_handle(old_handle)
+        if was_active:
+            self._publish_reset_abort_terminal(
+                old_request_id, self.cognitive_graph_identity.reset_epoch
+            )
         if self.graph.graph_id != self.gvg_graph.graph_id:
             self._fallback_to_gvg_once("simulation reset invalidated cognitive graph")
 
@@ -1375,18 +1469,15 @@ class RouteCoordinator:
         )
 
     def _on_goal(self, goal) -> None:
+        # Fence old action callbacks and remove its tracker before exposing the
+        # new request to the prior/context path.
+        self.request_id += 1
+        previous_handle = self._retire_route_state()
+        self._cancel_navigation_handle(previous_handle)
         self.primary_fallback_used = False
         self.pending_reroute_outcome = None
-        if self.navigation_goal_handle is not None:
-            self.navigation_goal_handle.cancel_goal_async()
-        self.navigation_goal_handle = None
-        self.navigation_goal_pending = False
-        self.navigation_goal_targets_final = False
-        self.navigation_failed = False
-        self.request_id += 1
         self.pending_goal = goal
         self.route_active = True
-        self._clear_latest_priors()
         self.node.get_logger().info(
             "received route goal request "
             f"{self.request_id}: ({goal.pose.position.x:.3f}, "
@@ -1912,10 +2003,12 @@ class RouteCoordinator:
         future,
         generation: RouteCallbackGeneration | None = None,
     ) -> None:
+        handle = future.result()
         if not self._route_callback_is_current(generation):
+            if handle is not None and handle.accepted:
+                self._cancel_navigation_handle(handle)
             return
         self.navigation_goal_pending = False
-        handle = future.result()
         if handle is None or not handle.accepted:
             self._publish_navigation_edge_failure("navigate_to_pose_rejected")
             if (
@@ -2147,15 +2240,7 @@ class RouteCoordinator:
     def _finish_active_route(self) -> None:
         """Synchronously retire one coordinator-owned Nav2 action."""
 
-        self.route_active = False
-        self.pending_goal = None
-        self._clear_pending_prior_request()
-        self._clear_latest_priors()
-        self.tracker = None
-        self.navigation_goal_pending = False
-        self.navigation_goal_handle = None
-        self.navigation_goal_targets_final = False
-        self.navigation_failed = False
+        self._retire_route_state()
         if self.pending_structural_map is not None:
             self._rebuild_structural_graph()
 
