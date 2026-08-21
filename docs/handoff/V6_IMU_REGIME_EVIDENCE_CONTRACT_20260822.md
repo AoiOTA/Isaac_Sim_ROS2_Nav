@@ -334,3 +334,43 @@ Verdict is **PASS (CODE / BUILD / UNIT ONLY)**. No Isaac, ROS graph, LiDAR
 readiness probe, stationary window, primitive, MCAP, navigation goal, scale
 selection, or formal qualification was run for this amendment. Attempt 3 is
 **PENDING**. `yaw_scale=0.9294` and RF2O-off remain unchanged.
+
+## Sim-time and exact flat20 geometry amendment
+
+- Amendment start HEAD:
+  `78d49a1f9d3cc9ece74400682ff5ab55d7efabc0`.
+- `v6_imu_lidar_preflight` now creates its node with a locked
+  `use_sim_time=true` override, rejects attempts to disable that parameter,
+  disables global ROS arguments, and verifies that its node clock is
+  `ROS_TIME`. The entry point consumes only its two documented application
+  options and explicitly rejects `--ros-args`; it therefore cannot silently
+  reinterpret `--output` or accept a caller-provided system-time override.
+- A zero or non-finite simulation clock is STOP and does not produce an age.
+  Once `/clock` is positive, freshness is computed only from the node's ROS
+  simulation time and each message's header stamp. A system-epoch `now`
+  against simulation stamps is a tested stale STOP counterexample.
+- The analyzer no longer accepts any seven stationary objects with the right
+  seed. It performs a complete, strong-type structured comparison of the
+  installed `v6_calibration_grid_features.yaml`: exact ordered IDs, cube
+  dimensions/height/scale, positions, masses, start/end, stationary/parked
+  policy, zero velocity, delay/jitter, coordinate frame, seed, and count.
+  Renamed, 9 x 9, displaced, mass-changed, moving, nonzero-velocity,
+  reseeded, and missing-object fixtures all fail with
+  `obstacle_config_mismatch`. Installed-resource resolution is covered by the
+  same comparison rather than a hard-coded identity-only report. Both
+  `flat20_start` and its `mapping_start` authoring alias must retain the exact
+  map/USD origin and orientation; the legacy bundle digest is not used as
+  geometry authority.
+- Validation: source-first focused tests **72 passed**; fresh isolated
+  `robot_experiments` build PASS at
+  `/tmp/v6_imu_simtime_build.woJmcR`, install
+  `/tmp/v6_imu_simtime_install.b6pBGp`, log
+  `/tmp/v6_imu_simtime_log.3NGRES`; fresh-installed import plus the same tests
+  **72 passed**; installed analyzer/preflight `--help`, entry-node ROS_TIME/
+  zero-clock test, changed-file `py_compile`, and `git diff --check` PASS.
+
+Verdict remains **PASS (code/build/unit only)**. No Isaac, live ROS graph,
+LiDAR readiness capture, stationary/primitive session, MCAP, calibration
+selection, or formal qualification was run. Attempt 3 remains **PENDING**;
+`yaw_scale=0.9294`, RF2O-off, CollisionMonitor, route/reset/benchmark, and
+critic semantics are unchanged.

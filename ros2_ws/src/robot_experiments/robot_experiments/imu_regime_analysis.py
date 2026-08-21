@@ -68,6 +68,75 @@ EXPECTED_STATIONARY = {
     "duration_sec": 10.0,
     "reset_seed": 8609,
 }
+EXPECTED_FLAT20_OBSTACLE_CONFIG = {
+    "schema_version": 2,
+    "seed": 20260821,
+    "enabled": True,
+    "coordinate_frame": "map",
+    "spawn_pose_name": "mapping_start",
+    "obstacles": [
+        {
+            "id": "flat20_wall_west", "mode": "stationary",
+            "trigger_group": None, "size": [0.20, 20.20, 1.00],
+            "mass": 200.0, "start": [-10.00, 0.00, 0.50],
+            "end": [-10.00, 0.00, 0.50], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+        {
+            "id": "flat20_wall_east", "mode": "stationary",
+            "trigger_group": None, "size": [0.20, 20.20, 1.00],
+            "mass": 200.0, "start": [10.00, 0.00, 0.50],
+            "end": [10.00, 0.00, 0.50], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+        {
+            "id": "flat20_wall_south", "mode": "stationary",
+            "trigger_group": None, "size": [20.20, 0.20, 1.00],
+            "mass": 200.0, "start": [0.00, -10.00, 0.50],
+            "end": [0.00, -10.00, 0.50], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+        {
+            "id": "flat20_wall_north", "mode": "stationary",
+            "trigger_group": None, "size": [20.20, 0.20, 1.00],
+            "mass": 200.0, "start": [0.00, 10.00, 0.50],
+            "end": [0.00, 10.00, 0.50], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+        {
+            "id": "flat20_feature_southwest", "mode": "stationary",
+            "trigger_group": None, "size": [0.80, 1.20, 1.20],
+            "mass": 100.0, "start": [-6.00, -4.00, 0.60],
+            "end": [-6.00, -4.00, 0.60], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+        {
+            "id": "flat20_feature_northeast", "mode": "stationary",
+            "trigger_group": None, "size": [1.40, 0.60, 1.50],
+            "mass": 100.0, "start": [6.00, 5.00, 0.75],
+            "end": [6.00, 5.00, 0.75], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+        {
+            "id": "flat20_feature_northwest", "mode": "stationary",
+            "trigger_group": None, "size": [0.60, 1.60, 1.00],
+            "mass": 100.0, "start": [-3.00, 7.00, 0.50],
+            "end": [-3.00, 7.00, 0.50], "speed": 0.0,
+            "delay_sec": 0.0, "jitter_sec": 0.0, "post_motion": "hold",
+        },
+    ],
+}
+EXPECTED_FLAT20_SPAWN_GEOMETRY = {
+    "usd": {"position": [0.0, 0.0, 0.0635], "yaw_deg": 0.0},
+    "map": {
+        "position": [0.0, 0.0],
+        "yaw_deg": 0.0,
+        "calibrated": True,
+        "map_version": "flat20_v1",
+        "position_stddev_m": 0.0,
+        "yaw_stddev_deg": 0.0,
+    },
+}
 EXPECTED_TRACE_PROVENANCE = {
     "contract": "v6_imu_regime_flat20_features_v2",
     "environment_usd": (
@@ -119,6 +188,36 @@ def _evidence_issue(verdict: str, code: str, detail: str) -> EvidenceError:
     if verdict not in {"FAIL", "AMBIGUOUS"}:
         raise ValueError("invalid evidence verdict")
     return EvidenceError(verdict, code, detail)
+
+
+def _same_typed_structure(actual: Any, expected: Any) -> bool:
+    """Compare a YAML contract without bool/int or int/float coercion."""
+
+    if type(actual) is not type(expected):
+        return False
+    if isinstance(expected, dict):
+        return actual.keys() == expected.keys() and all(
+            _same_typed_structure(actual[key], value)
+            for key, value in expected.items()
+        )
+    if isinstance(expected, list):
+        return len(actual) == len(expected) and all(
+            _same_typed_structure(left, right)
+            for left, right in zip(actual, expected)
+        )
+    return actual == expected
+
+
+def _spawn_geometry_view(pose: Any) -> Any:
+    """Select geometric fields; the legacy bundle digest is not authority."""
+
+    if not isinstance(pose, dict) or not isinstance(pose.get("map"), dict):
+        return pose
+    expected_map = EXPECTED_FLAT20_SPAWN_GEOMETRY["map"]
+    return {
+        "usd": pose.get("usd"),
+        "map": {key: pose["map"].get(key) for key in expected_map},
+    }
 
 
 @dataclass(frozen=True)
@@ -237,26 +336,12 @@ def resolve_diagnostic_resources(
         raise _evidence_issue("FAIL", "resource_yaml_invalid", f"diagnostic resource YAML is invalid: {exc}") from exc
     if not isinstance(config, dict) or config.get("schema_version") != 1:
         raise _evidence_issue("FAIL", "diagnostic_config_invalid", "diagnostic config schema is invalid")
-    obstacles = obstacle_config.get("obstacles") if isinstance(obstacle_config, dict) else None
-    moving = [] if not isinstance(obstacles, list) else [
-        item for item in obstacles
-        if not isinstance(item, dict)
-        or item.get("mode") != "stationary"
-        or item.get("start") != item.get("end")
-        or item.get("speed") != 0.0
-    ]
-    if (
-        not isinstance(obstacle_config, dict)
-        or obstacle_config.get("schema_version") != 2
-        or obstacle_config.get("seed") != 20260821
-        or obstacle_config.get("enabled") is not True
-        or obstacle_config.get("coordinate_frame") != "map"
-        or obstacle_config.get("spawn_pose_name") != "mapping_start"
-        or not isinstance(obstacles, list)
-        or len(obstacles) != 7
-        or moving
-    ):
-        raise _evidence_issue("FAIL", "obstacle_config_mismatch", "flat20 feature obstacle contract changed")
+    if not _same_typed_structure(obstacle_config, EXPECTED_FLAT20_OBSTACLE_CONFIG):
+        raise _evidence_issue(
+            "FAIL", "obstacle_config_mismatch",
+            "flat20 cube IDs, dimensions, poses, masses, or stationary policy changed",
+        )
+    obstacles = obstacle_config["obstacles"]
     stationary = config.get("stationary_reference")
     primitives = config.get("primitives")
     thresholds = config.get("thresholds")
@@ -310,16 +395,18 @@ def resolve_diagnostic_resources(
         )
     poses = spawn.get("spawn_poses") if isinstance(spawn, dict) else None
     flat20 = poses.get("flat20_start") if isinstance(poses, dict) else None
-    mapping = flat20.get("map") if isinstance(flat20, dict) else None
-    usd = flat20.get("usd") if isinstance(flat20, dict) else None
+    mapping_start = poses.get("mapping_start") if isinstance(poses, dict) else None
     if (
-        spawn.get("schema_version") != 1
-        or not isinstance(mapping, dict)
-        or not isinstance(usd, dict)
-        or mapping.get("calibrated") is not True
-        or mapping.get("map_version") != "flat20_v1"
-        or usd.get("position") != [0.0, 0.0, 0.0635]
-        or usd.get("yaw_deg") != 0.0
+        not isinstance(spawn, dict)
+        or spawn.get("schema_version") != 1
+        or not isinstance(poses, dict)
+        or set(poses) != {"flat20_start", "mapping_start"}
+        or not _same_typed_structure(
+            _spawn_geometry_view(flat20), EXPECTED_FLAT20_SPAWN_GEOMETRY
+        )
+        or not _same_typed_structure(
+            _spawn_geometry_view(mapping_start), EXPECTED_FLAT20_SPAWN_GEOMETRY
+        )
     ):
         raise _evidence_issue("FAIL", "spawn_resource_mismatch", "flat20 spawn resource contract changed")
     identity = {
@@ -332,6 +419,30 @@ def resolve_diagnostic_resources(
             "seed": obstacle_config["seed"],
             "obstacle_count": len(obstacles),
             "moving_obstacle_count": 0,
+            "prim_type": "UsdGeom.Cube",
+            "cube_size": 1.0,
+            "rotation_xyzw": [0.0, 0.0, 0.0, 1.0],
+            "collision_enabled": True,
+            "rigid_body_enabled": True,
+            "kinematic_enabled": True,
+            "obstacles": [
+                {
+                    "id": item["id"],
+                    "size": item["size"],
+                    "scale": item["size"],
+                    "position": item["start"],
+                    "height_m": item["size"][2],
+                    "mass": item["mass"],
+                    "stationary": item["mode"] == "stationary",
+                    "parked": (
+                        item["mode"] == "stationary"
+                        and item["post_motion"] == "hold"
+                    ),
+                    "velocity_mps": item["speed"],
+                    "post_motion": item["post_motion"],
+                }
+                for item in obstacles
+            ],
         },
         "stationary": {
             "id": stationary["id"],

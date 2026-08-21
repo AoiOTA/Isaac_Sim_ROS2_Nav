@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import struct
+import sys
 import time
 from typing import Any, Sequence
 
@@ -120,11 +121,17 @@ def observe(state: TopicState, message: Any, *, pointcloud: bool) -> None:
 def evaluate(
     states: dict[str, TopicState], *, now_s: float, min_messages: int, max_age_sec: float
 ) -> dict[str, Any]:
+    clock_ready = math.isfinite(now_s) and now_s > 0.0
     topics = {}
     for topic, state in sorted(states.items()):
-        age = None if state.last_stamp_s is None else now_s - state.last_stamp_s
+        age = (
+            None
+            if state.last_stamp_s is None or not clock_ready
+            else now_s - state.last_stamp_s
+        )
         ready = (
-            state.count >= min_messages
+            clock_ready
+            and state.count >= min_messages
             and not state.stamp_violation
             and state.finite_return_seen
             and age is not None
@@ -138,22 +145,95 @@ def evaluate(
             "strict_stamps": not state.stamp_violation,
             "finite_return_seen": state.finite_return_seen,
         }
-    return {"verdict": "PASS" if all(item["ready"] for item in topics.values()) else "STOP", "topics": topics}
+    return {
+        "verdict": (
+            "PASS"
+            if clock_ready and all(item["ready"] for item in topics.values())
+            else "STOP"
+        ),
+        "clock": {
+            "ready": clock_ready,
+            "now_s": now_s if math.isfinite(now_s) else None,
+            "required_type": "ROS_TIME",
+        },
+        "topics": topics,
+    }
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def create_preflight_node(*, context: Any = None) -> Any:
+    """Create a node whose time authority is locked to ROS simulation time."""
+
+    import rclpy
+    from rcl_interfaces.msg import SetParametersResult
+    from rclpy.clock import ClockType
+    from rclpy.parameter import Parameter
+
+    node = rclpy.create_node(
+        "v6_imu_lidar_preflight",
+        context=context,
+        cli_args=[],
+        use_global_arguments=False,
+        parameter_overrides=[Parameter("use_sim_time", value=True)],
+        automatically_declare_parameters_from_overrides=True,
+    )
+
+    def lock_sim_time(parameters: Sequence[Any]) -> SetParametersResult:
+        for parameter in parameters:
+            if parameter.name == "use_sim_time" and parameter.value is not True:
+                return SetParametersResult(
+                    successful=False,
+                    reason="V6 IMU LiDAR preflight requires use_sim_time=true",
+                )
+        return SetParametersResult(successful=True)
+
+    node.add_on_set_parameters_callback(lock_sim_time)
+    if node.get_parameter("use_sim_time").value is not True:
+        node.destroy_node()
+        raise RuntimeError("V6 IMU LiDAR preflight requires use_sim_time=true")
+    if node.get_clock().clock_type != ClockType.ROS_TIME:
+        node.destroy_node()
+        raise RuntimeError("V6 IMU LiDAR preflight requires a ROS_TIME clock")
+    return node
+
+
+def sim_time_now_s(node: Any) -> float:
+    """Return ROS simulation time, or NaN when the locked authority is lost."""
+
+    from rclpy.clock import ClockType
+
+    if (
+        node.get_parameter("use_sim_time").value is not True
+        or node.get_clock().clock_type != ClockType.ROS_TIME
+    ):
+        return math.nan
+    return node.get_clock().now().nanoseconds * 1.0e-9
+
+
+def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--output", type=Path)
-    args = parser.parse_args(argv)
+    cli_args = list(sys.argv[1:] if argv is None else argv)
+    if "--ros-args" in cli_args:
+        parser.error(
+            "ROS arguments are not accepted; this entry point locks "
+            "use_sim_time=true and requires no ROS remap or parameter arguments"
+        )
+    return parser.parse_args(cli_args)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
     config_path, contract = load_contract(args.config)
 
     import rclpy
     from rclpy.qos import qos_profile_sensor_data
     from sensor_msgs.msg import LaserScan, PointCloud2
 
-    rclpy.init(args=None)
-    node = rclpy.create_node("v6_imu_lidar_preflight")
+    # argparse consumes the complete locked entry-point CLI.  Passing an empty
+    # list prevents application options from being reinterpreted as ROS args.
+    rclpy.init(args=[])
+    node = create_preflight_node()
     states = {topic: TopicState() for topic in contract["topics"]}
     subscriptions = []
     for topic, message_type in contract["topics"].items():
@@ -171,7 +251,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(node, timeout_sec=0.05)
-            now_s = node.get_clock().now().nanoseconds * 1.0e-9
+            now_s = sim_time_now_s(node)
             result = evaluate(
                 states,
                 now_s=now_s,
@@ -181,7 +261,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if result["verdict"] == "PASS":
                 break
         else:
-            now_s = node.get_clock().now().nanoseconds * 1.0e-9
+            now_s = sim_time_now_s(node)
             result = evaluate(
                 states,
                 now_s=now_s,

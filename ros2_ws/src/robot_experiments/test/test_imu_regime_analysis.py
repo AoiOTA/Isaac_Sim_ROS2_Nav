@@ -608,6 +608,70 @@ def test_installed_resource_manifest_resolves_real_share_layout(monkeypatch, tmp
     assert resources.spawn_poses_path == (share / "environments/v6_calibration_flat_20m.spawn.yaml").resolve()
     assert resources.obstacle_config_path == (share / "config/v6_calibration_grid_features.yaml").resolve()
     assert resources.identity["contract"] == "v6_imu_regime_flat20_v2"
+    geometry = resources.identity["obstacle_config"]
+    assert geometry["prim_type"] == "UsdGeom.Cube"
+    assert geometry["cube_size"] == 1.0
+    assert geometry["rotation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
+    assert geometry["collision_enabled"] is True
+    assert geometry["rigid_body_enabled"] is True
+    assert geometry["kinematic_enabled"] is True
+    assert [item["id"] for item in geometry["obstacles"]] == [
+        "flat20_wall_west", "flat20_wall_east", "flat20_wall_south",
+        "flat20_wall_north", "flat20_feature_southwest",
+        "flat20_feature_northeast", "flat20_feature_northwest",
+    ]
+    assert all(item["scale"] == item["size"] for item in geometry["obstacles"])
+    assert all(item["height_m"] == item["size"][2] for item in geometry["obstacles"])
+    assert all(item["parked"] and item["stationary"] for item in geometry["obstacles"])
+    assert all(item["velocity_mps"] == 0.0 for item in geometry["obstacles"])
+
+    installed_features = share / "config/v6_calibration_grid_features.yaml"
+    changed = yaml.safe_load(installed_features.read_text(encoding="utf-8"))
+    changed["obstacles"][4]["start"] = [-5.5, -4.0, 0.6]
+    installed_features.write_text(yaml.safe_dump(changed), encoding="utf-8")
+    with pytest.raises(EvidenceError) as raised:
+        resolve_diagnostic_resources()
+    assert raised.value.code == "obstacle_config_mismatch"
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda data: data["obstacles"][0].__setitem__("id", "renamed_wall"),
+        lambda data: data["obstacles"][0].__setitem__("size", [9.0, 9.0, 9.0]),
+        lambda data: data["obstacles"][0].__setitem__("start", [-9.0, 0.0, 0.5]),
+        lambda data: data["obstacles"][0].__setitem__("mass", 1.0),
+        lambda data: data["obstacles"][0].__setitem__("mode", "linear"),
+        lambda data: data["obstacles"][0].__setitem__("speed", 0.1),
+        lambda data: data.__setitem__("seed", 20260822),
+        lambda data: data["obstacles"].pop(),
+    ],
+    ids=(
+        "renamed", "nine_by_nine", "moved_origin", "mass", "moving_mode",
+        "velocity", "seed", "count",
+    ),
+)
+def test_flat20_obstacle_geometry_is_exact(mutate, tmp_path):
+    obstacle = yaml.safe_load(FEATURES.read_text(encoding="utf-8"))
+    mutate(obstacle)
+    changed = tmp_path / "changed_features.yaml"
+    changed.write_text(yaml.safe_dump(obstacle), encoding="utf-8")
+    with pytest.raises(EvidenceError) as raised:
+        resolve_diagnostic_resources(CONFIG, SPAWN, changed)
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "obstacle_config_mismatch"
+
+
+@pytest.mark.parametrize("pose_name", ["flat20_start", "mapping_start"])
+def test_flat20_spawn_origin_and_alias_are_exact(pose_name, tmp_path):
+    spawn = yaml.safe_load(SPAWN.read_text(encoding="utf-8"))
+    spawn["spawn_poses"][pose_name]["map"]["position"] = [1.0, 0.0]
+    changed = tmp_path / "changed_spawn.yaml"
+    changed.write_text(yaml.safe_dump(spawn), encoding="utf-8")
+    with pytest.raises(EvidenceError) as raised:
+        resolve_diagnostic_resources(CONFIG, changed, FEATURES)
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "spawn_resource_mismatch"
 
 
 def _goal_records(

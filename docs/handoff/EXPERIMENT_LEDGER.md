@@ -808,6 +808,33 @@
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
+## 2026-08-22 — V6 IMU preflight sim-time and flat20 geometry closure
+
+- Goal: close the remaining preflight clock-domain and installed-feature
+  geometry review blockers without changing `yaw_scale=0.9294`, RF2O-off,
+  command authority, route/reset/benchmark, or critic behavior.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `78d49a1f9d3cc9ece74400682ff5ab55d7efabc0`.
+- Changes: the read-only LiDAR gate locks `use_sim_time=true`, verifies a
+  `ROS_TIME` clock, rejects ROS CLI overrides, and treats zero/non-finite clock
+  as STOP. Freshness uses ROS simulation `now` against message header stamps.
+  The offline analyzer now strongly compares the complete installed flat20
+  feature YAML, including exact seven IDs, cube size/height/scale, pose, mass,
+  stationary/parked/zero-velocity policy, seed, and count. Geometry, motion,
+  seed, and count mutation fixtures fail closed; both spawn aliases bind the
+  exact map/USD origin without treating the legacy digest as authority.
+- Validation: source-first focused **72 passed**; fresh isolated package build
+  PASS at `/tmp/v6_imu_simtime_build.woJmcR`, install
+  `/tmp/v6_imu_simtime_install.b6pBGp`, log
+  `/tmp/v6_imu_simtime_log.3NGRES`; fresh-installed import and focused tests
+  **72 passed**; installed analyzer/preflight `--help`, node clock test,
+  `py_compile`, and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No Isaac, live readiness, ROS/Nav2
+  navigation, stationary/primitive/MCAP run, scale selection, or formal
+  qualification was performed. Attempt 3 remains **PENDING**.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
 ## 2026-08-22 — V6 RouteCoordinator late-join startup reset baseline
 
 - Goal: recover the expected transient-local depth-1 startup sequence where a
