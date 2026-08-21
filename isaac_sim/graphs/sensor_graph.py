@@ -48,7 +48,13 @@ def core_sensor_graph_spec(config: ProjectConfig, imu_prim: str) -> GraphSpec:
         ("PublishIMU.inputs:queueSize", 5),
         ("PublishIMU.inputs:qosProfile", qos["sensor_data"]),
     )
-    return GraphSpec("/World/Graphs/Sensors", nodes, connections, values)
+    return GraphSpec(
+        "/World/Graphs/Sensors",
+        nodes,
+        connections,
+        values,
+        on_demand=True,
+    )
 
 
 def lidar_graph_spec(config: ProjectConfig, render_product_path: str) -> GraphSpec:

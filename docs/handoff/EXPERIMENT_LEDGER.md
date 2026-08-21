@@ -535,3 +535,23 @@
   Estimated parameter acceptance before any affected Rivermark/PRIMARY rerun.
 - Handoff:
   `docs/handoff/V6_MOTION_ASSIST_YAW_CONSISTENCY_20260821.md`.
+
+## 2026-08-21 — V6 core sensor on-demand execution
+
+- Goal: remove the Isaac materialization fatal caused by placing
+  `OnPhysicsStep` in a core Sensors graph using the default execution
+  evaluator.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `c96f434811b5c698b1d5157d91e5af1a23500eed`.
+- Change: `/World/Graphs/Sensors` now materializes with
+  `GRAPH_PIPELINE_STAGE_ONDEMAND`, matching the Control graph contract; its
+  nodes, physics-step edges, topics, frames, QoS, target prims, and timestamps
+  are unchanged, and the separate RTX LiDAR graph is untouched.
+- Validation: changed Python compile PASS; focused graph contracts `7 passed`;
+  all static Isaac tests `186 passed, 11 skipped` (existing optional
+  `pxr`-unavailable stage-composition skips); `git diff --check` PASS.
+- Verdict: **PASS (implementation/static-test only)**. No Isaac/ROS/Nav2 was
+  launched. A fresh live retry must confirm graph materialization and
+  once-per-physics-step Clock/JointState/IMU publication.
+- Handoff:
+  `docs/handoff/V6_CORE_SENSOR_ONDEMAND_20260821.md`.

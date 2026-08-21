@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -8,6 +10,7 @@ from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
+from isaac_sim.graphs.spec import materialize_graph
 from isaac_sim.graphs.tf_graph import rtx_world_transform, structure_tf_graph_spec
 from isaac_sim.src.bridge.tf_ownership import (
     TfOwnershipError,
@@ -122,6 +125,7 @@ def test_core_sensors_publish_once_per_physics_step():
         "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
     )
     spec.validate()
+    assert spec.on_demand is True
     node_types = dict(spec.nodes)
     assert node_types["OnPhysicsStep"] == "isaacsim.core.nodes.OnPhysicsStep"
     assert list(node_types.values()).count("isaacsim.core.nodes.OnPhysicsStep") == 1
@@ -146,6 +150,68 @@ def test_core_sensors_publish_once_per_physics_step():
             destination == f"{target}.inputs:execIn"
             for _, destination in connections
         ) == 1
+
+
+def test_core_sensors_materialize_on_demand(monkeypatch):
+    spec = core_sensor_graph_spec(
+        _config(),
+        "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
+    )
+    captured = {}
+    on_demand_stage = object()
+
+    class Controller:
+        Keys = SimpleNamespace(
+            CREATE_NODES="create_nodes",
+            CONNECT="connect",
+            SET_VALUES="set_values",
+            CREATE_ATTRIBUTES="create_attributes",
+        )
+
+        @staticmethod
+        def edit(graph_description, edit):
+            captured["graph_description"] = graph_description
+            captured["edit"] = edit
+            return "graph", "nodes", None, None
+
+    class Prim:
+        @staticmethod
+        def IsValid():
+            return False
+
+    stage = SimpleNamespace(GetPrimAtPath=lambda _path: Prim())
+    core = ModuleType("omni.graph.core")
+    core.Controller = Controller
+    core.GraphPipelineStage = SimpleNamespace(
+        GRAPH_PIPELINE_STAGE_ONDEMAND=on_demand_stage,
+    )
+    graph = ModuleType("omni.graph")
+    graph.core = core
+    usd = ModuleType("omni.usd")
+    usd.get_context = lambda: SimpleNamespace(get_stage=lambda: stage)
+    omni = ModuleType("omni")
+    omni.__path__ = []
+    omni.graph = graph
+    omni.usd = usd
+    usdrt = ModuleType("usdrt")
+    usdrt.Sdf = SimpleNamespace(Path=lambda path: path)
+    for name, module in {
+        "omni": omni,
+        "omni.graph": graph,
+        "omni.graph.core": core,
+        "omni.usd": usd,
+        "usdrt": usdrt,
+    }.items():
+        monkeypatch.setitem(sys.modules, name, module)
+
+    graph_result, nodes_result = materialize_graph(spec)
+
+    assert (graph_result, nodes_result) == ("graph", "nodes")
+    assert captured["graph_description"] == {
+        "graph_path": "/World/Graphs/Sensors",
+        "pipeline_stage": on_demand_stage,
+    }
+    assert "evaluator_name" not in captured["graph_description"]
 
 
 def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
