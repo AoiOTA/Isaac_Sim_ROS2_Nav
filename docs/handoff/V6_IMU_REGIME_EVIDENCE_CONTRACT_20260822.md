@@ -273,3 +273,64 @@ Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph,
 navigation, live MCAP capture, calibration selection, or formal qualification
 was run. The live regime capture is still pending; `yaw_scale=0.9294` and
 RF2O-off remain unchanged.
+
+## Flat20 LiDAR-feature readiness amendment
+
+- Amendment start HEAD:
+  `aa9d2d73d2f2dc843f29a086fbfb71db5b06f4d2`.
+- Attempt 1 evidence is
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_20260821T210119Z`.
+  Verdict is **STOP / NO ENGINEERING CAPTURE / NOT FORMAL**. Isaac stopped at
+  7.587 s in `SceneComposer` because the archive lacked the external
+  `jackal_original.usd` binary. ROS, stationary seed 8609, all primitives, and
+  MCAP never started. Authority is `STOP.md` plus `logs/isaac.log`.
+- Attempt 2 evidence is
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt2_20260821T210842Z`.
+  Verdict is **STOP / NO ENGINEERING CAPTURE / NOT FORMAL**. Asset import/check,
+  scene validation, Integration plus 14 Module3 packages, domain 100, IMU,
+  odometry, ground truth, and authority checks passed. The final 10 s readiness
+  window nevertheless observed zero messages on `/lidar/points_raw`,
+  `/lidar/points_scan`, `/scan`, and `/scan_safety`; seed 8609, the nine
+  primitives, MCAP, and the analyzer did not start. Authority is `STOP.md`,
+  `summary.json`, and `provenance/pre_benchmark_contract_final.json`.
+- Root cause was the locked runner's explicit `--no-dynamic-obstacles`. The
+  plain Grid USD has no vertical LiDAR geometry. The already versioned
+  `v6_calibration_grid_features.yaml` contains four boundary walls and three
+  asymmetric full-LiDAR-height features, but the failed runner never authored
+  them.
+- The runner now resolves that YAML from the installed `robot_experiments`
+  package share and passes `--dynamic-obstacle-config ... --dynamic-obstacles`.
+  The legacy CLI name only enables authoring: the locked config has seed
+  20260821, seven stationary objects, fixed start=end, speed zero, and therefore
+  **zero moving objects**. CollisionMonitor and `/cmd_vel` authority are not
+  changed or bypassed.
+- Passive phase provenance now fails closed unless obstacle authoring is true,
+  the resolved feature file has exact bounded content, seed 20260821, seven
+  objects, and moving-object count zero. The offline analyzer resolves the same
+  installed feature resource and rejects missing/mismatched path, content, or
+  provenance. Source-first use must pass the complete `--config`,
+  `--spawn-poses-file`, and `--obstacle-config` resource set.
+- Added the read-only installed entry point `v6_imu_lidar_preflight`. Before
+  seed 8609 is dispatched, it requires at least two live messages on raw cloud,
+  filtered cloud, mapping scan, and safety scan; header stamps must be strictly
+  increasing, newest age must be below 0.4 s, and every stream must expose a
+  finite return. It publishes no command and returns STOP on timeout or any
+  contract failure:
+
+```bash
+ros2 run robot_experiments v6_imu_lidar_preflight \
+  --output /absolute/attempt3/provenance/lidar_readiness.json
+```
+
+- Source-first/no-cache related tests: **173 passed**. A smaller new-contract
+  set reported **72 passed**. `py_compile`, runner `bash -n`, YAML/resource
+  loading, installed analyzer/preflight `--help`, installed resource resolution,
+  and `git diff --check` passed. Fresh isolated `robot_experiments` build passed
+  at `/tmp/v6_imu_lidar_build.0BdhgV`, install
+  `/tmp/v6_imu_lidar_install.W9631i`, log
+  `/tmp/v6_imu_lidar_log.n99ktJ`.
+
+Verdict is **PASS (CODE / BUILD / UNIT ONLY)**. No Isaac, ROS graph, LiDAR
+readiness probe, stationary window, primitive, MCAP, navigation goal, scale
+selection, or formal qualification was run for this amendment. Attempt 3 is
+**PENDING**. `yaw_scale=0.9294` and RF2O-off remain unchanged.

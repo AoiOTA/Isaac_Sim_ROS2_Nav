@@ -24,7 +24,15 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/config", source_paths("config", "*.yaml") + source_paths("config", "*.json")),
+        (
+            f"share/{package_name}/config",
+            source_paths("config", "*.yaml")
+            + source_paths("config", "*.json")
+            + external_paths(
+                package_root.parents[2] / "isaac_sim/configs/experiments",
+                "v6_calibration_grid_features.yaml",
+            ),
+        ),
         (
             f"share/{package_name}/environments",
             external_paths(
@@ -67,6 +75,7 @@ setup(
             "v6_low_obstacle_causal = robot_experiments.v6_low_obstacle_causal:main",
             "v6_localization_causal = robot_experiments.v6_localization_causal:main",
             "imu_regime_analysis = robot_experiments.imu_regime_analysis:main",
+            "v6_imu_lidar_preflight = robot_experiments.v6_imu_lidar_preflight:main",
         ],
     },
 )

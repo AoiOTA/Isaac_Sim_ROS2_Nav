@@ -1,0 +1,12 @@
+schema_version: 1
+contract: v6_imu_flat20_lidar_readiness_v1
+timeout_sec: 15.0
+min_messages: 2
+max_age_sec: 0.4
+strict_header_stamps: true
+require_finite_returns: true
+topics:
+  /lidar/points_raw: sensor_msgs/msg/PointCloud2
+  /lidar/points_scan: sensor_msgs/msg/PointCloud2
+  /scan: sensor_msgs/msg/LaserScan
+  /scan_safety: sensor_msgs/msg/LaserScan

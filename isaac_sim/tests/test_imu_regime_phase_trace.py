@@ -167,7 +167,9 @@ def test_locked_flat20_runner_and_trace_provenance_contract():
     assert "default_environment.usd" in runner
     assert "v6_calibration_flat_20m.spawn.yaml" in runner
     assert "--spawn-pose flat20_start" in runner
-    assert "--no-dynamic-obstacles" in runner
+    assert "--dynamic-obstacles" in runner
+    assert "--dynamic-obstacle-config \"${FEATURE_CONFIG}\"" in runner
+    assert "--no-dynamic-obstacles" not in runner
     assert "ros2 pkg prefix robot_experiments" in runner
     assert "v6_imu_regime_resources.json" in runner
     assert "--imu-regime-diagnostic-config" in runner
@@ -178,18 +180,26 @@ def test_locked_flat20_runner_and_trace_provenance_contract():
         spawn=SimpleNamespace(poses_file=navigation.V6_IMU_REGIME_SPAWN_FILE, selected="flat20_start"),
         simulation=SimpleNamespace(odometry_mode="realistic", navigation_mode="mapping"),
         ground_truth=SimpleNamespace(enabled=True),
+        files=SimpleNamespace(dynamic_obstacles=navigation.V6_IMU_REGIME_FEATURE_CONFIG),
     )
+    scenario = __import__(
+        "isaac_sim.src.experiment.scenario", fromlist=["load_dynamic_scenario"]
+    ).load_dynamic_scenario(navigation.V6_IMU_REGIME_FEATURE_CONFIG)
     provenance = navigation.imu_regime_trace_provenance(
-        config, SimpleNamespace(enabled=False)
+        config, scenario
     )
-    assert provenance["contract"] == "v6_imu_regime_flat20_v1"
+    assert provenance["contract"] == "v6_imu_regime_flat20_features_v2"
+    assert provenance["obstacle_authoring_enabled"] is True
+    assert provenance["obstacle_seed"] == 20260821
+    assert provenance["obstacle_count"] == 7
+    assert provenance["moving_obstacle_count"] == 0
     assert provenance["diagnostic_config_file"] == str(
         navigation.V6_IMU_REGIME_DIAGNOSTIC_CONFIG
     )
     config.spawn.selected = "mapping_start"
     with pytest.raises(ValueError, match="locked flat20"):
         navigation.imu_regime_trace_provenance(
-            config, SimpleNamespace(enabled=False)
+            config, scenario
         )
 
 

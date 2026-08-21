@@ -1467,3 +1467,40 @@
   actual executor/DDS ordering, exactly-once GVG compensation, zero old output
   and command during HOLD, and fresh-goal recovery.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
+## 2026-08-22 — V6 flat20 IMU LiDAR-feature readiness closure
+
+- Goal: remove the identified flat20 LiDAR-readiness blocker without changing
+  the frozen IMU scale, RF2O policy, CollisionMonitor, route/reset/critic, or
+  command authority.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `aa9d2d73d2f2dc843f29a086fbfb71db5b06f4d2`.
+- Attempt 1:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_20260821T210119Z`;
+  **STOP / NO ENGINEERING CAPTURE / NOT FORMAL**, missing archived external
+  `jackal_original.usd`, no ROS/stationary/primitive/MCAP. Attempt 2:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt2_20260821T210842Z`;
+  same verdict; asset/scene/build/domain/IMU/odom/GT/authority checks passed but
+  all four LiDAR readiness streams remained zero for the final 10 s, so no
+  benchmark/MCAP/analyzer ran.
+- Root cause/change: the runner had disabled obstacle authoring on a bare Grid
+  USD. It now authors the installed `v6_calibration_grid_features.yaml`: seed
+  20260821, four walls plus three asymmetric LiDAR-height features, all seven
+  stationary, zero moving objects. Trace and analyzer provenance bind the same
+  installed resource and fail closed on missing/mismatch.
+- Added read-only `v6_imu_lidar_preflight`: raw/filtered cloud plus mapping/
+  safety scan each need two live messages, strict stamps, age below 0.4 s, and
+  finite returns before seed 8609. It publishes no command and does not bypass
+  CollisionMonitor.
+- Validation: related source-first/no-cache **173 passed**; new-contract subset
+  **72 passed**; fresh isolated package build/install PASS at
+  `/tmp/v6_imu_lidar_build.0BdhgV` and
+  `/tmp/v6_imu_lidar_install.W9631i`, log
+  `/tmp/v6_imu_lidar_log.n99ktJ`; installed resource/entrypoint checks,
+  `py_compile`, YAML, runner `bash -n`, and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. Attempt 3 is **PENDING**; no Isaac,
+  ROS graph, live readiness, stationary, primitive, MCAP, navigation,
+  calibration decision, or formal qualification was run. `yaw_scale=0.9294`
+  and RF2O-off remain unchanged.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.

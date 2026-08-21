@@ -77,6 +77,13 @@ def test_stationary_runtime_geometry_has_exact_walls_and_asymmetric_features():
     assert scenario.spawn_pose_name == "mapping_start"
     assert len(scenario.obstacles) == 7
     assert all(item.mode == "stationary" and item.start == item.end for item in scenario.obstacles)
+    assert scenario.seed == 20260821
+    assert all(item.speed == 0.0 for item in scenario.obstacles)
+    assert all(
+        item.start[2] - item.size[2] / 2.0 <= 0.333
+        < item.start[2] + item.size[2] / 2.0
+        for item in scenario.obstacles
+    )
     walls = scenario.obstacles[:4]
     assert [item.obstacle_id for item in walls] == [
         "flat20_wall_west", "flat20_wall_east",

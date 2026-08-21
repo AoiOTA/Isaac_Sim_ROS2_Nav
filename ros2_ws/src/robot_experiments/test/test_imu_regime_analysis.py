@@ -35,6 +35,7 @@ from robot_experiments.motion_benchmark import load_motion_config
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE_ROOT / "config/v6_imu_regime_diagnostic.yaml"
 SPAWN = PACKAGE_ROOT.parents[2] / "isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
+FEATURES = PACKAGE_ROOT.parents[2] / "isaac_sim/configs/experiments/v6_calibration_grid_features.yaml"
 
 
 def _series(scale: float, *, duplicate: bool = False):
@@ -445,6 +446,7 @@ def test_structured_output_survives_truncated_report(tmp_path):
         benchmark_report=benchmark,
         config_path=CONFIG,
         spawn_poses_path=SPAWN,
+        obstacle_config_path=FEATURES,
     )
     assert result["verdict"] == "AMBIGUOUS"
     assert result["evidence_errors"][0]["code"] == "benchmark_unreadable"
@@ -564,17 +566,21 @@ def test_wrong_explicit_config_and_phase_config_source_fail(tmp_path):
     wrong = tmp_path / "wrong.yaml"
     wrong.write_text(yaml.safe_dump(config), encoding="utf-8")
     with pytest.raises(EvidenceError) as raised:
-        resolve_diagnostic_resources(wrong, SPAWN)
+        resolve_diagnostic_resources(wrong, SPAWN, FEATURES)
     assert raised.value.code == "diagnostic_config_mismatch"
 
-    resources = resolve_diagnostic_resources(CONFIG, SPAWN)
+    resources = resolve_diagnostic_resources(CONFIG, SPAWN, FEATURES)
     provenance = {
-        "contract": "v6_imu_regime_flat20_v1",
+        "contract": "v6_imu_regime_flat20_features_v2",
         "environment_usd": "/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/default_environment.usd",
         "spawn_poses_file": str(SPAWN.resolve()),
         "spawn_pose": "flat20_start",
         "odometry_mode": "realistic", "navigation_mode": "mapping",
-        "dynamic_obstacles_enabled": False, "ground_truth_enabled": True,
+        "obstacle_authoring_enabled": True,
+        "obstacle_config_file": str(FEATURES.resolve()),
+        "obstacle_config_id": "v6_calibration_grid_features",
+        "obstacle_seed": 20260821, "obstacle_count": 7,
+        "moving_obstacle_count": 0, "ground_truth_enabled": True,
         "diagnostic_config_file": str(wrong.resolve()),
     }
     phase = [{
@@ -593,12 +599,14 @@ def test_installed_resource_manifest_resolves_real_share_layout(monkeypatch, tmp
     shutil.copy2(CONFIG, share / "config/v6_imu_regime_diagnostic.yaml")
     shutil.copy2(PACKAGE_ROOT / "config/v6_imu_regime_resources.json", share / "config/v6_imu_regime_resources.json")
     shutil.copy2(SPAWN, share / "environments/v6_calibration_flat_20m.spawn.yaml")
+    shutil.copy2(FEATURES, share / "config/v6_calibration_grid_features.yaml")
     packages = SimpleNamespace(get_package_share_directory=lambda _name: str(share))
     monkeypatch.setitem(sys.modules, "ament_index_python", SimpleNamespace(packages=packages))
     monkeypatch.setitem(sys.modules, "ament_index_python.packages", packages)
     resources = resolve_diagnostic_resources()
     assert resources.config_path == (share / "config/v6_imu_regime_diagnostic.yaml").resolve()
     assert resources.spawn_poses_path == (share / "environments/v6_calibration_flat_20m.spawn.yaml").resolve()
+    assert resources.obstacle_config_path == (share / "config/v6_calibration_grid_features.yaml").resolve()
     assert resources.identity["contract"] == "v6_imu_regime_flat20_v2"
 
 

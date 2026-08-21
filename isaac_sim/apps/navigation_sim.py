@@ -79,6 +79,10 @@ V6_IMU_REGIME_DIAGNOSTIC_CONFIG = (
     PROJECT_ROOT
     / "ros2_ws/src/robot_experiments/config/v6_imu_regime_diagnostic.yaml"
 ).resolve()
+V6_IMU_REGIME_FEATURE_CONFIG = (
+    PROJECT_ROOT
+    / "isaac_sim/configs/experiments/v6_calibration_grid_features.yaml"
+).resolve()
 
 
 def imu_regime_trace_provenance(
@@ -95,9 +99,20 @@ def imu_regime_trace_provenance(
         "spawn_pose": "flat20_start",
         "odometry_mode": "realistic",
         "navigation_mode": "mapping",
-        "dynamic_obstacles_enabled": False,
+        "obstacle_authoring_enabled": True,
+        "obstacle_config_file": str(config.files.dynamic_obstacles.resolve()),
+        "obstacle_config_id": "v6_calibration_grid_features",
+        "obstacle_seed": 20260821,
+        "obstacle_count": 7,
+        "moving_obstacle_count": 0,
         "ground_truth_enabled": True,
     }
+    moving_obstacle_count = sum(
+        item.mode != "stationary"
+        or item.start != item.end
+        or item.speed != 0.0
+        for item in dynamic_scenario.obstacles
+    )
     actual = {
         "environment_usd": str(config.environment.source_asset.resolve()),
         "spawn_poses_file": str(config.spawn.poses_file.resolve()),
@@ -105,7 +120,12 @@ def imu_regime_trace_provenance(
         "spawn_pose": config.spawn.selected,
         "odometry_mode": config.simulation.odometry_mode,
         "navigation_mode": config.simulation.navigation_mode,
-        "dynamic_obstacles_enabled": bool(dynamic_scenario.enabled),
+        "obstacle_authoring_enabled": bool(dynamic_scenario.enabled),
+        "obstacle_config_file": str(config.files.dynamic_obstacles.resolve()),
+        "obstacle_config_id": "v6_calibration_grid_features",
+        "obstacle_seed": dynamic_scenario.seed,
+        "obstacle_count": len(dynamic_scenario.obstacles),
+        "moving_obstacle_count": moving_obstacle_count,
         "ground_truth_enabled": bool(config.ground_truth.enabled),
     }
     mismatches = {
@@ -117,6 +137,7 @@ def imu_regime_trace_provenance(
     for label, candidate, canonical in (
         ("spawn_poses_file", config.spawn.poses_file.resolve(), V6_IMU_REGIME_SPAWN_FILE),
         ("diagnostic_config_file", diagnostic_config_path.resolve(), V6_IMU_REGIME_DIAGNOSTIC_CONFIG),
+        ("obstacle_config_file", config.files.dynamic_obstacles.resolve(), V6_IMU_REGIME_FEATURE_CONFIG),
     ):
         try:
             if candidate.read_bytes() != canonical.read_bytes():
@@ -132,7 +153,7 @@ def imu_regime_trace_provenance(
             )
         )
     return {
-        "contract": "v6_imu_regime_flat20_v1",
+        "contract": "v6_imu_regime_flat20_features_v2",
         **actual,
     }
 

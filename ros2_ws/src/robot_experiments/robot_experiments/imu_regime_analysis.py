@@ -69,7 +69,7 @@ EXPECTED_STATIONARY = {
     "reset_seed": 8609,
 }
 EXPECTED_TRACE_PROVENANCE = {
-    "contract": "v6_imu_regime_flat20_v1",
+    "contract": "v6_imu_regime_flat20_features_v2",
     "environment_usd": (
         "/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/"
         "Grid/default_environment.usd"
@@ -77,7 +77,11 @@ EXPECTED_TRACE_PROVENANCE = {
     "spawn_pose": "flat20_start",
     "odometry_mode": "realistic",
     "navigation_mode": "mapping",
-    "dynamic_obstacles_enabled": False,
+    "obstacle_authoring_enabled": True,
+    "obstacle_config_id": "v6_calibration_grid_features",
+    "obstacle_seed": 20260821,
+    "obstacle_count": 7,
+    "moving_obstacle_count": 0,
     "ground_truth_enabled": True,
 }
 EXPECTED_TOPIC_TYPES = {
@@ -141,6 +145,7 @@ class McapStreams(dict[str, list[ScalarSample | YawSample]]):
 class DiagnosticResources:
     config_path: Path
     spawn_poses_path: Path
+    obstacle_config_path: Path
     config: dict[str, Any]
     identity: dict[str, Any]
 
@@ -164,7 +169,7 @@ def _finite(value: Any, *, name: str, positive: bool = False) -> float:
     return result
 
 
-def _installed_resource_paths() -> tuple[Path, Path]:
+def _installed_resource_paths() -> tuple[Path, Path, Path]:
     try:
         from ament_index_python.packages import get_package_share_directory
     except ImportError as exc:
@@ -193,39 +198,65 @@ def _installed_resource_paths() -> tuple[Path, Path]:
         or manifest.get("contract") != "v6_imu_regime_flat20_v2"
         or not isinstance(manifest.get("diagnostic_config"), str)
         or not isinstance(manifest.get("spawn_poses"), str)
+        or not isinstance(manifest.get("obstacle_config"), str)
     ):
         raise _evidence_issue("FAIL", "resource_manifest_invalid", "installed IMU resource manifest is invalid")
     return (
         (share / manifest["diagnostic_config"]).resolve(),
         (share / manifest["spawn_poses"]).resolve(),
+        (share / manifest["obstacle_config"]).resolve(),
     )
 
 
 def resolve_diagnostic_resources(
     config_path: Path | None = None,
     spawn_poses_path: Path | None = None,
+    obstacle_config_path: Path | None = None,
 ) -> DiagnosticResources:
     """Resolve and validate the exact source-first or installed contract."""
 
-    if (config_path is None) != (spawn_poses_path is None):
+    provided = (config_path, spawn_poses_path, obstacle_config_path)
+    if any(item is None for item in provided) and any(item is not None for item in provided):
         raise _evidence_issue(
-            "FAIL", "resource_pair_required",
-            "--config and --spawn-poses-file must be supplied together",
+            "FAIL", "resource_set_required",
+            "--config, --spawn-poses-file, and --obstacle-config must be supplied together",
         )
     if config_path is None:
-        config_path, spawn_poses_path = _installed_resource_paths()
-    assert config_path is not None and spawn_poses_path is not None
+        config_path, spawn_poses_path, obstacle_config_path = _installed_resource_paths()
+    assert config_path is not None and spawn_poses_path is not None and obstacle_config_path is not None
     config_path = config_path.expanduser().resolve()
     spawn_poses_path = spawn_poses_path.expanduser().resolve()
-    if not config_path.is_file() or not spawn_poses_path.is_file():
-        raise _evidence_issue("AMBIGUOUS", "resource_missing", "diagnostic config or flat20 spawn resource is missing")
+    obstacle_config_path = obstacle_config_path.expanduser().resolve()
+    if not config_path.is_file() or not spawn_poses_path.is_file() or not obstacle_config_path.is_file():
+        raise _evidence_issue("AMBIGUOUS", "resource_missing", "diagnostic config, flat20 spawn, or obstacle resource is missing")
     try:
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         spawn = yaml.safe_load(spawn_poses_path.read_text(encoding="utf-8"))
+        obstacle_config = yaml.safe_load(obstacle_config_path.read_text(encoding="utf-8"))
     except (OSError, yaml.YAMLError) as exc:
         raise _evidence_issue("FAIL", "resource_yaml_invalid", f"diagnostic resource YAML is invalid: {exc}") from exc
     if not isinstance(config, dict) or config.get("schema_version") != 1:
         raise _evidence_issue("FAIL", "diagnostic_config_invalid", "diagnostic config schema is invalid")
+    obstacles = obstacle_config.get("obstacles") if isinstance(obstacle_config, dict) else None
+    moving = [] if not isinstance(obstacles, list) else [
+        item for item in obstacles
+        if not isinstance(item, dict)
+        or item.get("mode") != "stationary"
+        or item.get("start") != item.get("end")
+        or item.get("speed") != 0.0
+    ]
+    if (
+        not isinstance(obstacle_config, dict)
+        or obstacle_config.get("schema_version") != 2
+        or obstacle_config.get("seed") != 20260821
+        or obstacle_config.get("enabled") is not True
+        or obstacle_config.get("coordinate_frame") != "map"
+        or obstacle_config.get("spawn_pose_name") != "mapping_start"
+        or not isinstance(obstacles, list)
+        or len(obstacles) != 7
+        or moving
+    ):
+        raise _evidence_issue("FAIL", "obstacle_config_mismatch", "flat20 feature obstacle contract changed")
     stationary = config.get("stationary_reference")
     primitives = config.get("primitives")
     thresholds = config.get("thresholds")
@@ -295,6 +326,13 @@ def resolve_diagnostic_resources(
         "contract": "v6_imu_regime_flat20_v2",
         "resolved_config_path": str(config_path),
         "resolved_spawn_poses_path": str(spawn_poses_path),
+        "resolved_obstacle_config_path": str(obstacle_config_path),
+        "obstacle_config": {
+            "id": "v6_calibration_grid_features",
+            "seed": obstacle_config["seed"],
+            "obstacle_count": len(obstacles),
+            "moving_obstacle_count": 0,
+        },
         "stationary": {
             "id": stationary["id"],
             "duration_sec": float(stationary["duration_sec"]),
@@ -304,7 +342,7 @@ def resolve_diagnostic_resources(
         "segments": matrix,
         "thresholds": threshold_identity,
     }
-    return DiagnosticResources(config_path, spawn_poses_path, config, identity)
+    return DiagnosticResources(config_path, spawn_poses_path, obstacle_config_path, config, identity)
 
 
 def _unwrap(values: Sequence[float]) -> list[float]:
@@ -1164,6 +1202,7 @@ def validate_phase_trace(
         **EXPECTED_TRACE_PROVENANCE,
         "spawn_poses_file": str(resources.spawn_poses_path),
         "diagnostic_config_file": str(resources.config_path),
+        "obstacle_config_file": str(resources.obstacle_config_path),
     }
     mismatches = {
         key: {"expected": value, "actual": provenance.get(key)}
@@ -2101,6 +2140,7 @@ def run_analysis(
     goal_mcap: Path | None = None,
     config_path: Path | None = None,
     spawn_poses_path: Path | None = None,
+    obstacle_config_path: Path | None = None,
 ) -> dict[str, object]:
     inputs = {
         "mcap": str(mcap),
@@ -2110,11 +2150,13 @@ def run_analysis(
         "goal_mcap": None if goal_mcap is None else str(goal_mcap),
         "config": None if config_path is None else str(config_path),
         "spawn_poses_file": None if spawn_poses_path is None else str(spawn_poses_path),
+        "obstacle_config": None if obstacle_config_path is None else str(obstacle_config_path),
     }
     try:
-        resources = resolve_diagnostic_resources(config_path, spawn_poses_path)
+        resources = resolve_diagnostic_resources(config_path, spawn_poses_path, obstacle_config_path)
         inputs["config"] = str(resources.config_path)
         inputs["spawn_poses_file"] = str(resources.spawn_poses_path)
+        inputs["obstacle_config"] = str(resources.obstacle_config_path)
         try:
             report = _load_json(benchmark_report)
         except (OSError, json.JSONDecodeError) as exc:
@@ -2258,6 +2300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--goal-mcap", type=Path)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--spawn-poses-file", type=Path)
+    parser.add_argument("--obstacle-config", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     result = run_analysis(
@@ -2279,6 +2322,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             None
             if args.spawn_poses_file is None
             else args.spawn_poses_file.expanduser().resolve()
+        ),
+        obstacle_config_path=(
+            None
+            if args.obstacle_config is None
+            else args.obstacle_config.expanduser().resolve()
         ),
     )
     output = args.output.expanduser().resolve()

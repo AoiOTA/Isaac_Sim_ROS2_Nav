@@ -18,8 +18,9 @@ PACKAGE_SHARE="${PACKAGE_PREFIX}/share/robot_experiments"
 SPAWN_FILE="${PACKAGE_SHARE}/environments/v6_calibration_flat_20m.spawn.yaml"
 DIAGNOSTIC_CONFIG="${PACKAGE_SHARE}/config/v6_imu_regime_diagnostic.yaml"
 RESOURCE_MANIFEST="${PACKAGE_SHARE}/config/v6_imu_regime_resources.json"
+FEATURE_CONFIG="${PACKAGE_SHARE}/config/v6_calibration_grid_features.yaml"
 
-if [[ ! -f "${GRID_USD}" || ! -f "${SPAWN_FILE}" || ! -f "${DIAGNOSTIC_CONFIG}" || ! -f "${RESOURCE_MANIFEST}" ]]; then
+if [[ ! -f "${GRID_USD}" || ! -f "${SPAWN_FILE}" || ! -f "${DIAGNOSTIC_CONFIG}" || ! -f "${RESOURCE_MANIFEST}" || ! -f "${FEATURE_CONFIG}" ]]; then
   echo "locked installed flat20 asset/config/resource manifest is missing" >&2
   exit 66
 fi
@@ -32,7 +33,8 @@ exec "${SCRIPT_DIR}/run_isaac.sh" \
   --environment-usd "${GRID_USD}" \
   --spawn-poses-file "${SPAWN_FILE}" \
   --spawn-pose flat20_start \
-  --no-dynamic-obstacles \
+  --dynamic-obstacle-config "${FEATURE_CONFIG}" \
+  --dynamic-obstacles \
   --camera-profile off \
   --no-third-person-camera \
   --appearance-profile baseline \
