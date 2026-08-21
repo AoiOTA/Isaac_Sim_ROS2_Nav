@@ -172,11 +172,11 @@ def test_common_requires_only_the_allowed_v6_integration_underlay():
 
 def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
     source = RUN_V6_LOW_OBSTACLES.read_text(encoding='utf-8')
-    assert 'run_ros_profile gvg fail_closed auto M3 standard' in source
+    assert 'run_ros_profile gvg fail_closed auto M3 final' in source
     assert 'run_ros_profile gvg wait_for_seed rviz M1 rf2o-shadow' in source
     assert 'C/shadow entrypoints fix cognitive_graph_mode=gvg' in source
     assert '^(shadow|hybrid|primary)$' in source
-    assert ('run_ros_profile "${graph_mode}" fail_closed auto M3 standard'
+    assert ('run_ros_profile "${graph_mode}" fail_closed auto M3 final'
             in source)
     assert 'cognitive_graph_mode:="${graph_mode}"' in source
 
@@ -240,14 +240,25 @@ def test_v6_shadow_trailing_odometry_overrides_remain_last(tmp_path):
         arguments.index('lidar_odometry_validated:=true'))
 
 
-def test_v6_nonshadow_ros_argv_keeps_lidar_defaults_implicit(tmp_path):
+def test_v6_nonshadow_ros_argv_fixes_final_estimated_policy(tmp_path):
     arguments = _v6_wrapper_argv(tmp_path, 'ros', 'M0')
 
     assert 'cognitive_profile:=M0' in arguments
-    assert not any(argument.startswith('lidar_odometry_')
-                   for argument in arguments)
-    assert not any(argument.startswith('ekf_profile:=')
-                   for argument in arguments)
+    assert 'ekf_profile:=wheel_imu' in arguments
+    assert 'lidar_odometry_backend:=off' in arguments
+    assert 'lidar_odometry_validated:=false' in arguments
+    assert any(argument.startswith('imu_calibration_params_file:=')
+               and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
+               for argument in arguments)
+
+
+def test_v6_primary_argv_fixes_final_estimated_policy(tmp_path):
+    arguments = _v6_wrapper_argv(tmp_path, 'ros-d', 'primary')
+
+    assert 'cognitive_graph_mode:=primary' in arguments
+    assert 'ekf_profile:=wheel_imu' in arguments
+    assert 'lidar_odometry_backend:=off' in arguments
+    assert 'lidar_odometry_validated:=false' in arguments
 
 
 def _v6_rivermark_argv(
@@ -313,9 +324,12 @@ def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_primary(tmp_path):
     assert 'localization_map_contract:=occupancy_only' in arguments
     assert 'localization_owner:=amcl' in arguments
     assert 'localization_profile:=rivermark' in arguments
-    assert 'ekf_profile:=wheel_imu_lidar' in arguments
-    assert 'lidar_odometry_backend:=rf2o' in arguments
-    assert 'lidar_odometry_validated:=true' in arguments
+    assert 'ekf_profile:=wheel_imu' in arguments
+    assert 'lidar_odometry_backend:=off' in arguments
+    assert 'lidar_odometry_validated:=false' in arguments
+    assert any(argument.startswith('imu_calibration_params_file:=')
+               and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
+               for argument in arguments)
     assert 'nav2_profile:=v6_low_obstacle_isolation' in arguments
     assert 'cognitive_profile:=M3' in arguments
     assert 'cognitive_graph_mode:=primary' in arguments

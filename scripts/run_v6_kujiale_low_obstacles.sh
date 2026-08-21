@@ -23,6 +23,18 @@ reject_graph_override() {
   done
 }
 
+reject_final_estimated_policy_override() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      ekf_profile:=*|imu_calibration_params_file:=*|\
+      lidar_odometry_backend:=*|lidar_odometry_validated:=*)
+        die "V6 PRIMARY fixes wheel+calibrated-IMU with RF2O off; rejected override: ${argument}"
+        ;;
+    esac
+  done
+}
+
 run_ros_profile() {
   local graph_mode="$1"
   local activation_policy="$2"
@@ -44,6 +56,13 @@ run_ros_profile() {
       lidar_odometry_backend:=rf2o
       lidar_odometry_validated:=false
     )
+  elif [[ "${odometry_defaults}" == "final" ]]; then
+    odometry_args=(
+      ekf_profile:=wheel_imu
+      imu_calibration_params_file:="${PROJECT_ROOT}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml"
+      lidar_odometry_backend:=off
+      lidar_odometry_validated:=false
+    )
   fi
   export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
@@ -63,7 +82,7 @@ case "${profile}" in
   ros)
     # C experiment: only M0--M3 changes; the physical graph stays GVG.
     reject_graph_override "$@"
-    run_ros_profile gvg fail_closed auto M3 standard "$@"
+    run_ros_profile gvg fail_closed auto M3 final "$@"
     ;;
   shadow)
     # Reproducible zero-seed enrollment: retain the full localization stack,
@@ -77,7 +96,10 @@ case "${profile}" in
     [[ "${graph_mode}" =~ ^(shadow|hybrid|primary)$ ]] || die \
       "V6 D graph mode must be shadow, hybrid, or primary; got: ${graph_mode:-empty}"
     shift
-    run_ros_profile "${graph_mode}" fail_closed auto M3 standard "$@"
+    if [[ "${graph_mode}" == "primary" ]]; then
+      reject_final_estimated_policy_override "$@"
+    fi
+    run_ros_profile "${graph_mode}" fail_closed auto M3 final "$@"
     ;;
   runner)
     output_directory="${1:-${PROJECT_ROOT}/data/experiment_runs/v6_kujiale_low_obstacles}"

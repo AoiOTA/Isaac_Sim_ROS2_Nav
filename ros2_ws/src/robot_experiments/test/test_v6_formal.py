@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from robot_experiments.v6_formal import (
     CAPTURE_SCHEMA,
@@ -239,6 +240,13 @@ def test_all_manifests_are_complete_candidates_but_not_formally_frozen(path):
     assert len(manifest.mission_legs) == 5
     assert manifest.frozen is False
     assert manifest.missing_required_values == ()
+    assert manifest.estimated_policy == {
+        "ekf_profile": "wheel_imu",
+        "lidar_odometry_backend": "off",
+        "lidar_odometry_validated": False,
+        "rf2o_decision": "not_validated_off",
+        "imu_calibration_profile": "isaac_v6_calibrated",
+    }
     with pytest.raises(V6ContractError, match="scene_contract_frozen is false"):
         authorize_manifest(manifest, mode="formal")
     assert authorize_manifest(manifest, mode="pilot") == NOT_QUALIFIED
@@ -367,6 +375,65 @@ def test_pilot_lint_reports_not_qualified_and_does_not_create_output(tmp_path, c
 def test_dispatch_pilot_requires_pilot(capsys):
     assert cli(["--manifest", str(MANIFESTS["kujiale_static"]), "--dispatch-pilot"]) == 2
     assert "--dispatch-pilot requires --pilot" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {
+            "ekf_profile": "wheel_imu",
+            "lidar_odometry_backend": "rf2o",
+            "lidar_odometry_validated": False,
+            "rf2o_decision": "shadow",
+        },
+        {
+            "ekf_profile": "wheel_imu_lidar",
+            "lidar_odometry_backend": "rf2o",
+            "lidar_odometry_validated": True,
+            "rf2o_decision": "active_fused",
+        },
+    ],
+)
+def test_formal_rejects_rf2o_shadow_or_fused_policy(tmp_path, policy):
+    raw = yaml.safe_load(MANIFESTS["kujiale_static"].read_text())
+    raw["runtime"].update(policy)
+    raw["scene_contract_frozen"] = True
+    path = tmp_path / "policy.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+
+    manifest = load_manifest(path)
+    with pytest.raises(V6ContractError, match="final Estimated policy mismatch"):
+        authorize_manifest(manifest, mode="formal")
+
+
+def test_engineering_policy_override_is_explicit_and_not_qualified(
+    tmp_path, capsys
+):
+    raw = yaml.safe_load(MANIFESTS["kujiale_static"].read_text())
+    raw["runtime"].update({
+        "lidar_odometry_backend": "rf2o",
+        "lidar_odometry_validated": False,
+        "rf2o_decision": "shadow",
+    })
+    path = tmp_path / "shadow.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    manifest = load_manifest(path)
+
+    with pytest.raises(V6ContractError, match="requires explicit engineering override"):
+        authorize_manifest(manifest, mode="pilot")
+    assert authorize_manifest(
+        manifest,
+        mode="pilot",
+        allow_engineering_policy_override=True,
+    ) == NOT_QUALIFIED
+
+    assert cli([
+        "--manifest", str(path), "--pilot",
+        "--allow-engineering-estimated-policy-override",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["formal_qualification"] == NOT_QUALIFIED
+    assert result["engineering_estimated_policy_override"] is True
 
 
 def test_evidence_jsonl_is_append_only_rows(tmp_path):

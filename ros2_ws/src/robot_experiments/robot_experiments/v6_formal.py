@@ -24,6 +24,13 @@ NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
 PRE_RESET_NEGATIVE_WINDOW_S = 1.0
+FINAL_ESTIMATED_POLICY = {
+    "ekf_profile": "wheel_imu",
+    "lidar_odometry_backend": "off",
+    "lidar_odometry_validated": False,
+    "rf2o_decision": "not_validated_off",
+    "imu_calibration_profile": "isaac_v6_calibrated",
+}
 
 # Runtime subscriptions are a reviewable firewall.  Keep Ground Truth in the
 # passive evaluator, never in this dispatcher.
@@ -123,6 +130,7 @@ class Manifest:
     scene_id: str
     category: str
     localization_seed_source: str
+    estimated_policy: Mapping[str, Any]
     frozen: bool
     reset_pose: Mapping[str, Any]
     mission_legs: tuple[MissionLeg, ...]
@@ -157,6 +165,29 @@ def _finite_float(value: Any, path: str) -> float:
     if not math.isfinite(result):
         raise V6ContractError(f"{path} must be finite numeric")
     return result
+
+
+def _estimated_policy(runtime: Mapping[str, Any]) -> Mapping[str, Any]:
+    policy = {name: runtime.get(name) for name in FINAL_ESTIMATED_POLICY}
+    for name in (
+        "ekf_profile",
+        "lidar_odometry_backend",
+        "rf2o_decision",
+        "imu_calibration_profile",
+    ):
+        if not isinstance(policy[name], str) or not policy[name]:
+            raise V6ContractError(f"runtime.{name} must be a non-empty string")
+    if not isinstance(policy["lidar_odometry_validated"], bool):
+        raise V6ContractError("runtime.lidar_odometry_validated must be boolean")
+    return policy
+
+
+def _estimated_policy_mismatches(manifest: Manifest) -> tuple[str, ...]:
+    return tuple(
+        f"runtime.{name}={manifest.estimated_policy.get(name)!r}"
+        for name, expected in FINAL_ESTIMATED_POLICY.items()
+        if manifest.estimated_policy.get(name) != expected
+    )
 
 
 def _pose(raw: Mapping[str, Any], path: str) -> tuple[str, float, float, float]:
@@ -256,6 +287,7 @@ def load_manifest(path: str | Path) -> Manifest:
         scene_id=str(scene.get("id", "")),
         category=category,
         localization_seed_source=str(runtime["localization_seed_source"]),
+        estimated_policy=_estimated_policy(runtime),
         frozen=frozen,
         reset_pose=reset_pose,
         mission_legs=tuple(mission_legs),
@@ -264,18 +296,36 @@ def load_manifest(path: str | Path) -> Manifest:
     )
 
 
-def authorize_manifest(manifest: Manifest, *, mode: str) -> str:
+def authorize_manifest(
+    manifest: Manifest,
+    *,
+    mode: str,
+    allow_engineering_policy_override: bool = False,
+) -> str:
     """Return qualification label or fail before ROS/runtime mutation."""
 
     if mode not in {"formal", "pilot"}:
         raise V6ContractError("mode must be formal or pilot")
+    mismatches = _estimated_policy_mismatches(manifest)
     if mode == "formal":
+        if allow_engineering_policy_override:
+            raise V6ContractError("estimated policy override is pilot-only")
+        if mismatches:
+            raise V6ContractError(
+                "formal dispatch refused: final Estimated policy mismatch: "
+                + ", ".join(mismatches)
+            )
         if not manifest.frozen:
             raise V6ContractError("formal dispatch refused: scene_contract_frozen is false")
         if manifest.missing_required_values:
             missing = ", ".join(manifest.missing_required_values)
             raise V6ContractError(f"formal dispatch refused: missing {missing}")
         return "FORMAL_ELIGIBLE"
+    if mismatches and not allow_engineering_policy_override:
+        raise V6ContractError(
+            "pilot Estimated policy mismatch requires explicit engineering override: "
+            + ", ".join(mismatches)
+        )
     return NOT_QUALIFIED
 
 
@@ -1218,6 +1268,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
+    parser.add_argument(
+        "--allow-engineering-estimated-policy-override",
+        action="store_true",
+        help="pilot-only; the result remains NOT_QUALIFIED",
+    )
     parser.add_argument("--allow-formal-dispatch", action="store_true")
     parser.add_argument("--output-jsonl")
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
@@ -1231,14 +1286,28 @@ def cli(argv: list[str] | None = None) -> int:
     try:
         if args.dispatch_pilot and not args.pilot:
             raise V6ContractError("--dispatch-pilot requires --pilot")
+        if args.allow_engineering_estimated_policy_override and not args.pilot:
+            raise V6ContractError(
+                "--allow-engineering-estimated-policy-override requires --pilot"
+            )
         manifest = load_manifest(args.manifest)
         mode = "pilot" if args.pilot else "formal"
-        qualification = authorize_manifest(manifest, mode=mode)
+        qualification = authorize_manifest(
+            manifest,
+            mode=mode,
+            allow_engineering_policy_override=(
+                args.allow_engineering_estimated_policy_override
+            ),
+        )
         if args.pilot and not args.dispatch_pilot:
             print(json.dumps({
                 "qualification": ENGINEERING_PILOT,
                 "formal_qualification": qualification,
                 "dispatch": False,
+                "estimated_policy": dict(manifest.estimated_policy),
+                "engineering_estimated_policy_override": (
+                    args.allow_engineering_estimated_policy_override
+                ),
                 "scene_contract_frozen": manifest.frozen,
                 "missing_required_values": manifest.missing_required_values,
             }, sort_keys=True))

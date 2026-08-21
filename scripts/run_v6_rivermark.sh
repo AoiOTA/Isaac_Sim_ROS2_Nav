@@ -109,7 +109,8 @@ for argument in "$@"; do
     odometry_mode:=*|structure_tf_source:=*|posegraph_file:=*|\
     localization_map_contract:=*|localization_owner:=*|\
     map_file:=*|route_graph_file:=*|localization_profile:=*|\
-    ekf_profile:=*|lidar_odometry_backend:=*|\
+    ekf_profile:=*|imu_calibration_params_file:=*|\
+    lidar_odometry_backend:=*|\
     lidar_odometry_validated:=*|nav2_profile:=*|\
     cognitive_profile:=*|cognitive_graph_mode:=*|\
     interactive:=*|use_rviz:=*)
@@ -128,9 +129,10 @@ exec "${SCRIPT_DIR}/run_ros.sh" navigation \
   map_file:="${occupancy_map}" \
   route_graph_file:="${route_graph}" \
   localization_profile:=rivermark \
-  ekf_profile:=wheel_imu_lidar \
-  lidar_odometry_backend:=rf2o \
-  lidar_odometry_validated:=true \
+  ekf_profile:=wheel_imu \
+  imu_calibration_params_file:="${PROJECT_ROOT}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml" \
+  lidar_odometry_backend:=off \
+  lidar_odometry_validated:=false \
   nav2_profile:=v6_low_obstacle_isolation \
   cognitive_profile:=M3 \
   cognitive_graph_mode:=primary \

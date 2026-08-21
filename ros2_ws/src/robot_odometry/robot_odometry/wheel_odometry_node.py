@@ -4,6 +4,7 @@ import math
 
 from nav_msgs.msg import Odometry
 import rclpy
+from rclpy._rclpy_pybind11 import RCLError
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
@@ -67,6 +68,8 @@ class WheelOdometryNode(Node):
             'backward': 0,
         }
         self._warned_rejections = set()
+        self._shutting_down = False
+        self._shutdown_suppressed_callbacks = 0
 
         reliable_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -91,6 +94,10 @@ class WheelOdometryNode(Node):
             reliable_qos,
         )
     def _joint_state_callback(self, message):
+        if self._shutting_down or not self.context.ok():
+            self._shutdown_suppressed_callbacks += 1
+            return
+
         stamp_ns = (
             int(message.header.stamp.sec) * 1_000_000_000
             + int(message.header.stamp.nanosec)
@@ -129,8 +136,14 @@ class WheelOdometryNode(Node):
             return
 
         self._record_stamp_event('accepted')
-        self._odom_publisher.publish(
-            self._to_message(result.sample, message.header.stamp))
+        try:
+            self._odom_publisher.publish(
+                self._to_message(result.sample, message.header.stamp))
+        except RCLError:
+            if self._shutting_down or not self.context.ok():
+                self._shutdown_suppressed_callbacks += 1
+                return
+            raise
 
     def _record_stamp_event(self, event, warning=False):
         self._stamp_counters[event] += 1
@@ -184,6 +197,10 @@ class WheelOdometryNode(Node):
     def _reset_state(self):
         self._integrator.reset()
         self._last_joint_stamp_ns = None
+
+    def destroy_node(self):
+        self._shutting_down = True
+        return super().destroy_node()
 
 
 def main(args=None):

@@ -1,7 +1,9 @@
+import inspect
 import math
 from types import MethodType, SimpleNamespace
 
 import pytest
+from rclpy._rclpy_pybind11 import RCLError
 from robot_odometry.kinematics import WheelOdometry
 from robot_odometry.kinematics import WheelOdometryConfig
 from robot_odometry.wheel_odometry_node import WheelOdometryNode
@@ -36,6 +38,14 @@ class _Logger:
         self.infos.append(message)
 
 
+class _Context:
+    def __init__(self, valid=True):
+        self.valid = valid
+
+    def ok(self):
+        return self.valid
+
+
 def _adapter():
     publisher = _Publisher()
     logger = _Logger()
@@ -53,6 +63,9 @@ def _adapter():
             'backward': 0,
         },
         _warned_rejections=set(),
+        _shutting_down=False,
+        _shutdown_suppressed_callbacks=0,
+        context=_Context(),
         _odom_publisher=publisher,
         get_logger=lambda: logger,
     )
@@ -129,6 +142,57 @@ def test_no_timer_path_can_reintegrate_a_stopped_input():
     assert not hasattr(WheelOdometryNode, '_timer_callback')
     assert adapter._integrator.pose == pytest.approx(pose_when_input_stops)
     assert len(publisher.messages) == 1
+
+
+def test_callback_after_shutdown_never_integrates_or_publishes():
+    adapter, publisher = _adapter()
+    adapter._shutting_down = True
+
+    _consume(adapter, _joint_state(3_100_000_000))
+
+    assert publisher.messages == []
+    assert adapter._integrator.pose == pytest.approx((0.0, 0.0, 0.0))
+    assert adapter._stamp_counters == {
+        'accepted': 0,
+        'duplicate': 0,
+        'backward': 0,
+    }
+    assert adapter._shutdown_suppressed_callbacks == 1
+
+
+def test_runtime_publish_rclerror_is_not_swallowed():
+    adapter, _ = _adapter()
+
+    class _FailingPublisher:
+        def publish(self, message):
+            del message
+            raise RCLError('runtime publisher failure')
+
+    adapter._odom_publisher = _FailingPublisher()
+    with pytest.raises(RCLError, match='runtime publisher failure'):
+        _consume(adapter, _joint_state(3_200_000_000))
+
+
+def test_shutdown_race_publish_rclerror_is_suppressed():
+    adapter, _ = _adapter()
+
+    class _ShutdownPublisher:
+        def publish(self, message):
+            del message
+            adapter._shutting_down = True
+            raise RCLError('context is not valid')
+
+    adapter._odom_publisher = _ShutdownPublisher()
+    _consume(adapter, _joint_state(3_300_000_000))
+
+    assert adapter._shutdown_suppressed_callbacks == 1
+    assert adapter._stamp_counters['accepted'] == 1
+
+
+def test_destroy_marks_shutdown_before_destroying_ros_entities():
+    method = inspect.getsource(WheelOdometryNode.destroy_node)
+    assert method.index('self._shutting_down = True') < method.index(
+        'super().destroy_node()')
 
 
 def test_alternating_duplicate_samples_are_rejected_without_warning_storm():

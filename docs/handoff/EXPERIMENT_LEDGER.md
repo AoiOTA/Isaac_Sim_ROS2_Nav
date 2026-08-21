@@ -577,3 +577,25 @@
   retest or calibration/PRIMARY/qualification run was performed.
 - Handoff:
   `docs/handoff/V6_IMU_RAW_CORRECTED_CALIBRATION_20260821.md`.
+
+## 2026-08-21 — V6 Estimated final policy freeze
+
+- Goal: freeze V6 final Estimated state to wheel + calibrated IMU with RF2O
+  off, and prevent the wheel publisher shutdown race.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `4b57893bfbf430aead98e5c19d1c445149c54d55`.
+- Input evidence: `/tmp/v6_imu_calibration_live.VAf50R`; RF2O shadow about
+  10 Hz versus the 15 Hz floor, with no fused rows, so promotion remains
+  blocked.
+- Changes: all six V6 final manifests and final/PRIMARY wrappers select
+  `wheel_imu`, calibrated IMU, RF2O `off`, and unvalidated; formal preflight
+  rejects shadow/fused policy drift; an explicit pilot override remains
+  `NOT_QUALIFIED`; wheel callbacks/publish now fail quietly only during
+  confirmed shutdown while live-context `RCLError` remains visible.
+- Validation: changed Python compile, shell syntax, and diff check PASS;
+  focused `98 passed`; isolated 3-package build PASS at
+  `/dev/shm/v6_final_policy_build.kx9nXV`.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2 or
+  qualification run was launched. Rivermark/PRIMARY runtime evidence remains
+  to be collected under the frozen policy.
+- Handoff: `docs/handoff/V6_ESTIMATED_FINAL_POLICY_20260821.md`.

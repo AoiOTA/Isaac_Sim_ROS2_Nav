@@ -11,6 +11,11 @@ runtime:
   ground_truth_policy: evaluator_only
   direct_rgbd_costmap_enabled: false
   localization_seed_source: b5_cognitive
+  ekf_profile: wheel_imu
+  lidar_odometry_backend: "off"
+  lidar_odometry_validated: false
+  rf2o_decision: not_validated_off
+  imu_calibration_profile: isaac_v6_calibrated
 required_runtime_values:
   scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
   occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/warehouse_new.yaml
