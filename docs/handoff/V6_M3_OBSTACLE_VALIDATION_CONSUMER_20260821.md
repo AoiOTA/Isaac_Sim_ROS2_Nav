@@ -70,3 +70,23 @@ colcon test --build-base /tmp/bionav_m3_obstacle_final.3stwVY/m3_build \
   or formal qualification was run. The TF-failure branch and max-only behavior
   have focused contract coverage, but live Costmap clearing still requires the
   later authorized runtime stage.
+
+## FRESH and continuous-validation amendment
+
+- Starting Module3 HEAD: `3481749d459f545714a0bea3c89be60a76691809`.
+- `VALIDATION_FRESH` now accepts the producer's canonical zero/zero odometry
+  stamps. If odometry stamps are present, both must be valid and exactly equal;
+  the fresh sensor mask must be zero. Static depth revalidation retains its
+  positive, exact dual-odometry timeline requirement.
+- Admission ordering is now the compound cursor
+  `(source_sequence, source_stamp, validation_stamp)`. A new source must advance
+  sequence and source time. The same source may only advance through a static
+  depth revalidation with the identical source stamp and a strictly newer
+  validation stamp; fresh duplicates, equal/backward validation, identity drift,
+  and source-time regression fail open.
+- An accepted refresh replaces `latest_`, advances the validation clock and is
+  reapplied after the private layer reset already performed by `updateCosts()`;
+  reset clears the whole admission cursor.
+- Isolated `bio_nav_fusion` build and tests PASS at
+  `/tmp/v6_obstacle_consumer_refresh.YAfw9B`: 24 tests, 0 failures. No
+  ROS/Isaac/Nav2 runtime or qualification campaign was launched.

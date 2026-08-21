@@ -396,6 +396,146 @@ TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timel
     "odom_time");
 }
 
+TEST(CognitiveObstacleLayer, fresh_accepts_zero_odom_and_rejects_nonzero_mismatch)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  const CognitiveObstacleLayer::AcceptanceCursor no_prior;
+  auto message = obstacleFixture();
+  message.source_odom_stamp.sec = 0;
+  message.validation_odom_stamp.sec = 0;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10100000000LL, identity, no_prior, 0.5, 0.2),
+    "");
+
+  message.source_odom_stamp.sec = 10;
+  message.validation_odom_stamp.sec = 10;
+  message.validation_odom_stamp.nanosec = 1U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10100000000LL, identity, no_prior, 0.5, 0.2),
+    "odom_time");
+
+  message = obstacleFixture();
+  message.validation_sensor_mask =
+    bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_SENSOR_DEPTH;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 10100000000LL, identity, no_prior, 0.5, 0.2),
+    "fresh_mismatch");
+}
+
+TEST(CognitiveObstacleLayer, static_revalidation_requires_positive_odom_endpoints)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  auto message = staticRevalidatedObstacleFixture();
+  message.source_odom_stamp.sec = 0;
+  message.validation_odom_stamp.sec = 0;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 11100000000LL, identity,
+      CognitiveObstacleLayer::AcceptanceCursor{}, 0.5, 0.2),
+    "odom_time");
+}
+
+TEST(CognitiveObstacleLayer, same_source_static_validation_refresh_is_monotonic)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  CognitiveObstacleLayer::AcceptanceCursor accepted;
+  auto fresh = obstacleFixture();
+  fresh.source_odom_stamp.sec = 0;
+  fresh.validation_odom_stamp.sec = 0;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      fresh, 10100000000LL, identity, accepted, 0.5, 0.2),
+    "");
+  CognitiveObstacleLayer::recordAccepted(fresh, accepted);
+
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      fresh, 10100000000LL, identity, accepted, 0.5, 0.2),
+    "sequence");
+
+  auto refresh = staticRevalidatedObstacleFixture();
+  refresh.obstacles[0].pose_xy_m[0] = 1.5;
+  refresh.obstacles[0].count = 2;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      refresh, 11100000000LL, identity, accepted, 0.5, 0.2),
+    "");
+  const auto refreshed_cost = CognitiveObstacleLayer::obstacleCost(
+    refresh.obstacles[0], 80, 0.02, 0.45);
+  EXPECT_LT(refreshed_cost, nav2_costmap_2d::LETHAL_OBSTACLE);
+  CognitiveObstacleLayer::recordAccepted(refresh, accepted);
+  EXPECT_EQ(accepted.source_sequence, 7U);
+  EXPECT_EQ(accepted.source_stamp_ns, 10000000000LL);
+  EXPECT_EQ(accepted.validation_stamp_ns, 11000000000LL);
+
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      refresh, 11100000000LL, identity, accepted, 0.5, 0.2),
+    "validation_regression");
+
+  auto backward = refresh;
+  backward.validation_stamp.sec = 10;
+  backward.validation_stamp.nanosec = 500000000U;
+  backward.source_age.sec = 0;
+  backward.source_age.nanosec = 500000000U;
+  backward.validation_odom_stamp.sec = 10;
+  backward.validation_odom_stamp.nanosec = 500000000U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      backward, 10600000000LL, identity, accepted, 0.5, 0.2),
+    "validation_regression");
+
+  auto changed_source = refresh;
+  changed_source.header.stamp.nanosec = 100000000U;
+  changed_source.validation_stamp.nanosec = 200000000U;
+  changed_source.source_age.nanosec = 100000000U;
+  changed_source.source_odom_stamp.nanosec = 100000000U;
+  changed_source.validation_odom_stamp.nanosec = 200000000U;
+  changed_source.obstacles[0].last_seen.nanosec = 100000000U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed_source, 11300000000LL, identity, accepted, 0.5, 0.2),
+    "source_mismatch");
+
+  auto changed_identity = refresh;
+  changed_identity.validation_stamp.nanosec = 100000000U;
+  changed_identity.source_age.nanosec = 100000000U;
+  changed_identity.validation_odom_stamp.nanosec = 100000000U;
+  changed_identity.map_version = "other";
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      changed_identity, 11200000000LL, identity, accepted, 0.5, 0.2),
+    "identity");
+
+  auto regressed_source = obstacleFixture();
+  regressed_source.sequence = 8;
+  regressed_source.header.stamp.sec = 9;
+  regressed_source.validation_stamp.sec = 9;
+  regressed_source.source_odom_stamp.sec = 0;
+  regressed_source.validation_odom_stamp.sec = 0;
+  regressed_source.obstacles[0].last_seen.sec = 9;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      regressed_source, 9100000000LL, identity, accepted, 0.5, 0.2),
+    "source_regression");
+
+  accepted.reset();
+  EXPECT_FALSE(accepted.valid);
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      fresh, 10100000000LL, identity, accepted, 0.5, 0.2),
+    "");
+}
+
 TEST(CognitiveObstacleLayer, static_depth_revalidation_rejects_unconfirmed_items_and_mask)
 {
   using bio_nav_fusion::CognitiveObstacleLayer;

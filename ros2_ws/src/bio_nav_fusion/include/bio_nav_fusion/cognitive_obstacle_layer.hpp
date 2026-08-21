@@ -30,6 +30,22 @@ public:
     std::string model_id;
   };
 
+  struct AcceptanceCursor
+  {
+    bool valid{false};
+    uint64_t source_sequence{0};
+    int64_t source_stamp_ns{0};
+    int64_t validation_stamp_ns{0};
+
+    void reset()
+    {
+      valid = false;
+      source_sequence = 0;
+      source_stamp_ns = 0;
+      validation_stamp_ns = 0;
+    }
+  };
+
   CognitiveObstacleLayer();
   void onInitialize() override;
   void activate() override;
@@ -45,9 +61,17 @@ public:
 
   static std::string validateMessage(
     const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    int64_t now_ns, const Identity & expected, const AcceptanceCursor & accepted,
+    double maximum_age_s, double maximum_ood_probability,
+    bool enforce_identity = true);
+  static std::string validateMessage(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
     int64_t now_ns, const Identity & expected, uint64_t last_sequence,
     double maximum_age_s, double maximum_ood_probability,
     bool enforce_identity = true);
+  static void recordAccepted(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+    AcceptanceCursor & accepted);
   static uint8_t obstacleCost(
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
     int maximum_soft_cost, double collision_min_height_m,
@@ -77,8 +101,7 @@ private:
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr latest_;
   Identity expected_;
-  uint64_t last_sequence_{0};
-  bool have_sequence_{false};
+  AcceptanceCursor accepted_;
   bool identity_bound_{false};
   bool identity_parameters_configured_{false};
   std::string mode_{"off"};

@@ -599,3 +599,24 @@
   qualification run was launched. Rivermark/PRIMARY runtime evidence remains
   to be collected under the frozen policy.
 - Handoff: `docs/handoff/V6_ESTIMATED_FINAL_POLICY_20260821.md`.
+
+## 2026-08-21 — V6 obstacle FRESH/continuous-validation consumer amendment
+
+- Goal: align Module3 obstacle admission with FRESH zero-odom semantics and
+  permit bounded continuous depth revalidation of one source observation.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `3481749d459f545714a0bea3c89be60a76691809`.
+- Changes: FRESH accepts zero/zero odometry stamps and requires a zero sensor
+  mask; present FRESH odometry stamps must match. Static revalidation keeps its
+  strict positive dual timeline. A compound source/validation cursor permits
+  only strictly newer same-source static refreshes and rejects duplicate,
+  backward, identity-drift, and new-source time-regression inputs. Reset clears
+  the cursor; accepted refreshes replace the prior payload and validation TTL.
+- Validation: isolated `bio_nav_fusion` build PASS; gtests PASS, 24 tests / 0
+  errors / 0 failures / 0 skipped; `git diff --check` PASS. Build root:
+  `/tmp/v6_obstacle_consumer_refresh.YAfw9B`.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2,
+  engineering evidence, or qualification campaign was run; live costmap refresh
+  and stale-cell clearing remain runtime validation work.
+- Handoff:
+  `docs/handoff/V6_M3_OBSTACLE_VALIDATION_CONSUMER_20260821.md`.

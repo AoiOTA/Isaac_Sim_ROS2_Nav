@@ -33,6 +33,11 @@ bool validStamp(const builtin_interfaces::msg::Time & stamp)
   return stamp.sec >= 0 && stamp.nanosec < 1000000000U && stampNs(stamp) > 0;
 }
 
+bool zeroStamp(const builtin_interfaces::msg::Time & stamp)
+{
+  return stamp.sec == 0 && stamp.nanosec == 0U;
+}
+
 bool validNonnegativeDuration(const builtin_interfaces::msg::Duration & duration)
 {
   return duration.sec >= 0 && duration.nanosec < 1000000000U;
@@ -181,7 +186,7 @@ void CognitiveObstacleLayer::reset()
 {
   std::lock_guard<std::mutex> lock(mutex_);
   latest_.reset();
-  have_sequence_ = false;
+  accepted_.reset();
   if (!identity_parameters_configured_) {
     expected_ = Identity{};
     identity_bound_ = false;
@@ -192,7 +197,7 @@ void CognitiveObstacleLayer::reset()
 
 std::string CognitiveObstacleLayer::validateMessage(
   const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
-  int64_t now_ns, const Identity & expected, uint64_t last_sequence,
+  int64_t now_ns, const Identity & expected, const AcceptanceCursor & accepted,
   double maximum_age_s, double maximum_ood_probability, bool enforce_identity)
 {
   const int64_t source_ns = stampNs(message.header.stamp);
@@ -231,24 +236,35 @@ std::string CognitiveObstacleLayer::validateMessage(
   {
     return "validation_stale";
   }
-  if (!validStamp(message.source_odom_stamp) ||
-    !validStamp(message.validation_odom_stamp) || validation_odom_ns < source_odom_ns ||
-    validation_odom_ns - source_odom_ns != source_age_ns ||
-    now_ns + kFutureToleranceNs < validation_odom_ns)
-  {
-    return "odom_time";
-  }
   if (message.validation_mode ==
     bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_FRESH)
   {
     if (validation_ns != source_ns || source_age_ns != 0 ||
-      validation_odom_ns != source_odom_ns)
+      message.validation_sensor_mask != 0U)
     {
       return "fresh_mismatch";
+    }
+    const bool source_odom_zero = zeroStamp(message.source_odom_stamp);
+    const bool validation_odom_zero = zeroStamp(message.validation_odom_stamp);
+    if (source_odom_zero != validation_odom_zero ||
+      (!source_odom_zero &&
+      (!validStamp(message.source_odom_stamp) ||
+      !validStamp(message.validation_odom_stamp) ||
+      validation_odom_ns != source_odom_ns ||
+      now_ns + kFutureToleranceNs < validation_odom_ns)))
+    {
+      return "odom_time";
     }
   } else if (message.validation_mode ==
     bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_STATIC_DEPTH_REVALIDATED)
   {
+    if (!validStamp(message.source_odom_stamp) ||
+      !validStamp(message.validation_odom_stamp) || validation_odom_ns < source_odom_ns ||
+      validation_odom_ns - source_odom_ns != source_age_ns ||
+      now_ns + kFutureToleranceNs < validation_odom_ns)
+    {
+      return "odom_time";
+    }
     if ((message.validation_sensor_mask &
       bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_SENSOR_DEPTH) == 0U)
     {
@@ -257,11 +273,22 @@ std::string CognitiveObstacleLayer::validateMessage(
   } else {
     return "validation_mode";
   }
-  if (message.sequence == 0U ||
-    (last_sequence != std::numeric_limits<uint64_t>::max() &&
-    message.sequence <= last_sequence))
-  {
-    return "sequence";
+  if (message.sequence == 0U) {return "sequence";}
+  if (accepted.valid) {
+    if (message.sequence < accepted.source_sequence) {return "sequence";}
+    if (message.sequence > accepted.source_sequence) {
+      if (source_ns <= accepted.source_stamp_ns) {return "source_regression";}
+    } else {
+      if (message.validation_mode !=
+        bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_STATIC_DEPTH_REVALIDATED)
+      {
+        return "sequence";
+      }
+      if (source_ns != accepted.source_stamp_ns) {return "source_mismatch";}
+      if (validation_ns <= accepted.validation_stamp_ns) {
+        return "validation_regression";
+      }
+    }
   }
   if (!message.input_healthy || !message.module2_healthy ||
     !message.observation_valid || !message.trusted_write ||
@@ -308,6 +335,31 @@ std::string CognitiveObstacleLayer::validateMessage(
   return "";
 }
 
+std::string CognitiveObstacleLayer::validateMessage(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  int64_t now_ns, const Identity & expected, uint64_t last_sequence,
+  double maximum_age_s, double maximum_ood_probability, bool enforce_identity)
+{
+  if (last_sequence != std::numeric_limits<uint64_t>::max() &&
+    message.sequence <= last_sequence)
+  {
+    return "sequence";
+  }
+  return validateMessage(
+    message, now_ns, expected, AcceptanceCursor{}, maximum_age_s,
+    maximum_ood_probability, enforce_identity);
+}
+
+void CognitiveObstacleLayer::recordAccepted(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  AcceptanceCursor & accepted)
+{
+  accepted.valid = true;
+  accepted.source_sequence = message.sequence;
+  accepted.source_stamp_ns = stampNs(message.header.stamp);
+  accepted.validation_stamp_ns = stampNs(message.validation_stamp);
+}
+
 uint8_t CognitiveObstacleLayer::obstacleCost(
   const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
   int maximum_soft_cost, double collision_min_height_m,
@@ -337,10 +389,8 @@ void CognitiveObstacleLayer::obstacleCallback(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool enforce_identity = identity_bound_;
-    const auto last = have_sequence_ ?
-      last_sequence_ : std::numeric_limits<uint64_t>::max();
     reason = validateMessage(
-      *message, now.nanoseconds(), expected_, last, maximum_age_s_,
+      *message, now.nanoseconds(), expected_, accepted_, maximum_age_s_,
       maximum_ood_probability_, enforce_identity);
     if (reason.empty()) {
       if (!identity_bound_) {
@@ -351,8 +401,7 @@ void CognitiveObstacleLayer::obstacleCallback(
         identity_bound_ = true;
       }
       latest_ = message;
-      last_sequence_ = message->sequence;
-      have_sequence_ = true;
+      recordAccepted(*message, accepted_);
     } else {
       latest_.reset();
       resetMaps();
@@ -390,17 +439,15 @@ void CognitiveObstacleLayer::updateCosts(
     static_cast<unsigned int>(std::max(0, max_j)));
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message;
   Identity expected;
-  uint64_t prior_sequence = 0;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     message = latest_;
     expected = expected_;
-    prior_sequence = message && message->sequence > 0 ?
-      message->sequence - 1 : std::numeric_limits<uint64_t>::max();
   }
   const auto now = clock_->now();
+  const AcceptanceCursor no_ordering_gate;
   const auto validation_reason = message ? validateMessage(
-    *message, now.nanoseconds(), expected, prior_sequence, maximum_age_s_,
+    *message, now.nanoseconds(), expected, no_ordering_gate, maximum_age_s_,
     maximum_ood_probability_, true) : std::string("missing");
   if (!modeWritesCostmap(mode_) || !message || !validation_reason.empty())
   {
