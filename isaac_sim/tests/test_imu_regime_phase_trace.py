@@ -168,6 +168,9 @@ def test_locked_flat20_runner_and_trace_provenance_contract():
     assert "v6_calibration_flat_20m.spawn.yaml" in runner
     assert "--spawn-pose flat20_start" in runner
     assert "--no-dynamic-obstacles" in runner
+    assert "ros2 pkg prefix robot_experiments" in runner
+    assert "v6_imu_regime_resources.json" in runner
+    assert "--imu-regime-diagnostic-config" in runner
     assert "--imu-regime-phase-trace" in runner
     navigation = __import__("isaac_sim.apps.navigation_sim", fromlist=["imu_regime_trace_provenance"])
     config = SimpleNamespace(
@@ -180,6 +183,9 @@ def test_locked_flat20_runner_and_trace_provenance_contract():
         config, SimpleNamespace(enabled=False)
     )
     assert provenance["contract"] == "v6_imu_regime_flat20_v1"
+    assert provenance["diagnostic_config_file"] == str(
+        navigation.V6_IMU_REGIME_DIAGNOSTIC_CONFIG
+    )
     config.spawn.selected = "mapping_start"
     with pytest.raises(ValueError, match="locked flat20"):
         navigation.imu_regime_trace_provenance(

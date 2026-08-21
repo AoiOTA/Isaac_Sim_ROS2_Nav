@@ -75,14 +75,23 @@ V6_IMU_REGIME_SPAWN_FILE = (
     PROJECT_ROOT
     / "isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
 ).resolve()
+V6_IMU_REGIME_DIAGNOSTIC_CONFIG = (
+    PROJECT_ROOT
+    / "ros2_ws/src/robot_experiments/config/v6_imu_regime_diagnostic.yaml"
+).resolve()
 
 
-def imu_regime_trace_provenance(config: ProjectConfig, dynamic_scenario: object) -> dict[str, object]:
+def imu_regime_trace_provenance(
+    config: ProjectConfig,
+    dynamic_scenario: object,
+    diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
+) -> dict[str, object]:
     """Fail closed when the trace is not the bounded flat20 experiment."""
 
     requirements = {
         "environment_usd": str(V6_IMU_REGIME_GRID_USD),
-        "spawn_poses_file": str(V6_IMU_REGIME_SPAWN_FILE),
+        "spawn_poses_file": str(config.spawn.poses_file.resolve()),
+        "diagnostic_config_file": str(diagnostic_config_path.resolve()),
         "spawn_pose": "flat20_start",
         "odometry_mode": "realistic",
         "navigation_mode": "mapping",
@@ -92,6 +101,7 @@ def imu_regime_trace_provenance(config: ProjectConfig, dynamic_scenario: object)
     actual = {
         "environment_usd": str(config.environment.source_asset.resolve()),
         "spawn_poses_file": str(config.spawn.poses_file.resolve()),
+        "diagnostic_config_file": str(diagnostic_config_path.resolve()),
         "spawn_pose": config.spawn.selected,
         "odometry_mode": config.simulation.odometry_mode,
         "navigation_mode": config.simulation.navigation_mode,
@@ -103,10 +113,23 @@ def imu_regime_trace_provenance(config: ProjectConfig, dynamic_scenario: object)
         for key, expected in requirements.items()
         if actual[key] != expected
     }
-    if mismatches:
+    resource_errors = []
+    for label, candidate, canonical in (
+        ("spawn_poses_file", config.spawn.poses_file.resolve(), V6_IMU_REGIME_SPAWN_FILE),
+        ("diagnostic_config_file", diagnostic_config_path.resolve(), V6_IMU_REGIME_DIAGNOSTIC_CONFIG),
+    ):
+        try:
+            if candidate.read_bytes() != canonical.read_bytes():
+                resource_errors.append(f"{label}_content_mismatch")
+        except OSError as exc:
+            resource_errors.append(f"{label}_unreadable:{exc}")
+    if mismatches or resource_errors:
         raise ValueError(
             "V6 IMU regime trace requires the locked flat20 configuration: "
-            + json.dumps(mismatches, sort_keys=True)
+            + json.dumps(
+                {"field_mismatches": mismatches, "resource_errors": resource_errors},
+                sort_keys=True,
+            )
         )
     return {
         "contract": "v6_imu_regime_flat20_v1",
@@ -275,6 +298,12 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="write a passive, default-off V6 IMU/MotionAssist/GT phase trace",
+    )
+    parser.add_argument(
+        "--imu-regime-diagnostic-config",
+        type=Path,
+        default=V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
+        help="resolved installed/source V6 IMU diagnostic YAML recorded in trace provenance",
     )
     parser.add_argument(
         "--r2c1-free-space-trace",
@@ -538,6 +567,7 @@ def run(
     r2d2_live_pose_delta_trace_path: Path | None = None,
     r2d2_collision_bounds_config_path: Path | None = None,
     imu_regime_phase_trace_path: Path | None = None,
+    imu_regime_diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
 ) -> None:
     configure_process_environment(config)
 
@@ -865,7 +895,7 @@ def run(
             imu_regime_phase_trace = ImuRegimePhaseTrace(
                 imu_regime_phase_trace_path,
                 provenance=imu_regime_trace_provenance(
-                    config, dynamic_scenario
+                    config, dynamic_scenario, imu_regime_diagnostic_config_path
                 ),
             )
             imu_regime_graph_reader = make_imu_graph_reader(
@@ -2677,7 +2707,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             dynamic_scenario, enabled=bool(args.dynamic_obstacles)
         )
     if args.imu_regime_phase_trace is not None:
-        imu_regime_trace_provenance(config, dynamic_scenario)
+        imu_regime_trace_provenance(
+            config,
+            dynamic_scenario,
+            args.imu_regime_diagnostic_config.expanduser().resolve(),
+        )
     if (
         args.r2c1_free_space_trace is not None
         or args.r2c2_free_space_envelope is not None
@@ -2761,6 +2795,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             if args.imu_regime_phase_trace is None
             else args.imu_regime_phase_trace.expanduser().resolve()
         ),
+        args.imu_regime_diagnostic_config.expanduser().resolve(),
     )
     return 0
 

@@ -10,10 +10,17 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 TRACE_PATH="$1"
 GRID_USD="/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/default_environment.usd"
-SPAWN_FILE="${PROJECT_ROOT}/isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
+PACKAGE_PREFIX="$(ros2 pkg prefix robot_experiments 2>/dev/null)" || {
+  echo "installed robot_experiments package is unavailable" >&2
+  exit 69
+}
+PACKAGE_SHARE="${PACKAGE_PREFIX}/share/robot_experiments"
+SPAWN_FILE="${PACKAGE_SHARE}/environments/v6_calibration_flat_20m.spawn.yaml"
+DIAGNOSTIC_CONFIG="${PACKAGE_SHARE}/config/v6_imu_regime_diagnostic.yaml"
+RESOURCE_MANIFEST="${PACKAGE_SHARE}/config/v6_imu_regime_resources.json"
 
-if [[ ! -f "${GRID_USD}" || ! -f "${SPAWN_FILE}" ]]; then
-  echo "locked flat20 asset or spawn profile is missing" >&2
+if [[ ! -f "${GRID_USD}" || ! -f "${SPAWN_FILE}" || ! -f "${DIAGNOSTIC_CONFIG}" || ! -f "${RESOURCE_MANIFEST}" ]]; then
+  echo "locked installed flat20 asset/config/resource manifest is missing" >&2
   exit 66
 fi
 
@@ -29,4 +36,5 @@ exec "${SCRIPT_DIR}/run_isaac.sh" \
   --camera-profile off \
   --no-third-person-camera \
   --appearance-profile baseline \
+  --imu-regime-diagnostic-config "${DIAGNOSTIC_CONFIG}" \
   --imu-regime-phase-trace "${TRACE_PATH}"

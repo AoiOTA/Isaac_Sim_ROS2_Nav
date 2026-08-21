@@ -592,6 +592,10 @@ def evaluate_motion_primitive(
         mean_angular = _mean(angular_values)
         segment_value: dict[str, Any] = {
             "segment_index": index,
+            # Evidence-only contract field: the analyzer independently checks
+            # this against the same installed diagnostic YAML and the phase
+            # command-window duration. It does not change playback timing.
+            "duration_sec": segment.duration_sec,
             "command_linear_mps": segment.linear_x,
             "command_angular_radps": segment.angular_z,
             "steady_sample_count": len(selected),

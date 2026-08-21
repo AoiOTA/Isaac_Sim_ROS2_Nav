@@ -10,6 +10,8 @@ from pathlib import Path
 import statistics
 from typing import Any, Iterable, Sequence
 
+import yaml
+
 
 K_MIN = 0.90
 K_MAX = 1.02
@@ -41,6 +43,26 @@ EXPECTED_COMMANDS = (
     ((0.25, 0.50),),
     ((0.25, 0.45), (0.25, -0.45), (0.25, 0.45)),
 )
+EXPECTED_DURATIONS = (
+    (12.566,),
+    (12.566,),
+    (4.0,),
+    (4.0,),
+    (4.0,),
+    (4.0,),
+    (4.0,),
+    (4.0,),
+    (2.5, 5.0, 2.5),
+)
+EXPECTED_THRESHOLDS = {
+    "linear_mae_mps": 0.06,
+    "angular_mae_radps": 0.12,
+    "radius_relative_error_percent": 20.0,
+    "tracking_fraction": 0.85,
+    "transition_latency_sec": 0.45,
+    "overshoot_ratio": 1.25,
+    "wrong_direction_fraction": 0.05,
+}
 EXPECTED_STATIONARY = {
     "id": "stationary_reference",
     "duration_sec": 10.0,
@@ -63,6 +85,16 @@ EXPECTED_TOPIC_TYPES = {
     "/imu/data": "sensor_msgs/msg/Imu",
     "/ground_truth/odom": "nav_msgs/msg/Odometry",
 }
+GOAL_TOPIC_TYPES = {
+    "/imu/data_raw": "sensor_msgs/msg/Imu",
+    "/ground_truth/odom": "nav_msgs/msg/Odometry",
+    "/cmd_vel": "geometry_msgs/msg/Twist",
+    "/simulation/reset_event": "std_msgs/msg/Empty",
+    "/simulation/collision": "std_msgs/msg/Bool",
+    "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
+    "/rosout": "rcl_interfaces/msg/Log",
+}
+RESOURCE_MANIFEST = "v6_imu_regime_resources.json"
 
 
 class EvidenceError(RuntimeError):
@@ -99,6 +131,176 @@ class McapStreams(dict[str, list[ScalarSample | YawSample]]):
     def __init__(self, *args: Any, provenance: dict[str, Any], **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self.provenance = provenance
+
+
+@dataclass(frozen=True)
+class DiagnosticResources:
+    config_path: Path
+    spawn_poses_path: Path
+    config: dict[str, Any]
+    identity: dict[str, Any]
+
+
+def _strict_int(value: Any, *, name: str, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise _evidence_issue("FAIL", "integer_contract", f"{name} must be an integer >= {minimum}")
+    return value
+
+
+def _finite(value: Any, *, name: str, positive: bool = False) -> float:
+    if isinstance(value, bool):
+        raise _evidence_issue("FAIL", "numeric_contract", f"{name} must be numeric")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise _evidence_issue("FAIL", "numeric_contract", f"{name} must be numeric") from exc
+    if not math.isfinite(result) or (positive and result <= 0.0):
+        qualifier = "positive and finite" if positive else "finite"
+        raise _evidence_issue("FAIL", "numeric_contract", f"{name} must be {qualifier}")
+    return result
+
+
+def _installed_resource_paths() -> tuple[Path, Path]:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+    except ImportError as exc:
+        raise _evidence_issue(
+            "AMBIGUOUS", "installed_resources_unavailable",
+            "ament_index_python is unavailable; pass explicit --config and --spawn-poses-file",
+        ) from exc
+    try:
+        share = Path(get_package_share_directory("robot_experiments")).resolve()
+    except Exception as exc:
+        raise _evidence_issue(
+            "AMBIGUOUS", "installed_resources_unavailable",
+            f"robot_experiments package share is unavailable: {exc}",
+        ) from exc
+    manifest_path = share / "config" / RESOURCE_MANIFEST
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _evidence_issue(
+            "AMBIGUOUS", "resource_manifest_unreadable",
+            f"installed IMU resource manifest is unavailable: {exc}",
+        ) from exc
+    if (
+        not isinstance(manifest, dict)
+        or manifest.get("schema_version") != 1
+        or manifest.get("contract") != "v6_imu_regime_flat20_v2"
+        or not isinstance(manifest.get("diagnostic_config"), str)
+        or not isinstance(manifest.get("spawn_poses"), str)
+    ):
+        raise _evidence_issue("FAIL", "resource_manifest_invalid", "installed IMU resource manifest is invalid")
+    return (
+        (share / manifest["diagnostic_config"]).resolve(),
+        (share / manifest["spawn_poses"]).resolve(),
+    )
+
+
+def resolve_diagnostic_resources(
+    config_path: Path | None = None,
+    spawn_poses_path: Path | None = None,
+) -> DiagnosticResources:
+    """Resolve and validate the exact source-first or installed contract."""
+
+    if (config_path is None) != (spawn_poses_path is None):
+        raise _evidence_issue(
+            "FAIL", "resource_pair_required",
+            "--config and --spawn-poses-file must be supplied together",
+        )
+    if config_path is None:
+        config_path, spawn_poses_path = _installed_resource_paths()
+    assert config_path is not None and spawn_poses_path is not None
+    config_path = config_path.expanduser().resolve()
+    spawn_poses_path = spawn_poses_path.expanduser().resolve()
+    if not config_path.is_file() or not spawn_poses_path.is_file():
+        raise _evidence_issue("AMBIGUOUS", "resource_missing", "diagnostic config or flat20 spawn resource is missing")
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        spawn = yaml.safe_load(spawn_poses_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise _evidence_issue("FAIL", "resource_yaml_invalid", f"diagnostic resource YAML is invalid: {exc}") from exc
+    if not isinstance(config, dict) or config.get("schema_version") != 1:
+        raise _evidence_issue("FAIL", "diagnostic_config_invalid", "diagnostic config schema is invalid")
+    stationary = config.get("stationary_reference")
+    primitives = config.get("primitives")
+    thresholds = config.get("thresholds")
+    if not isinstance(stationary, dict) or not isinstance(primitives, list) or not isinstance(thresholds, dict):
+        raise _evidence_issue("FAIL", "diagnostic_config_invalid", "diagnostic config is incomplete")
+    _strict_int(config.get("reset_seed"), name="config.reset_seed")
+    _strict_int(stationary.get("reset_seed"), name="config.stationary_reference.reset_seed")
+    if (
+        config.get("spawn_pose_name") != "flat20_start"
+        or stationary.get("id") != EXPECTED_STATIONARY["id"]
+        or stationary.get("reset_seed") != EXPECTED_STATIONARY["reset_seed"]
+        or _finite(stationary.get("duration_sec"), name="stationary duration", positive=True)
+        != EXPECTED_STATIONARY["duration_sec"]
+        or config.get("reset_seed") != EXPECTED_SEEDS[0]
+        or tuple(item.get("id") if isinstance(item, dict) else None for item in primitives)
+        != EXPECTED_PRIMITIVE_IDS
+    ):
+        raise _evidence_issue("FAIL", "diagnostic_config_mismatch", "diagnostic identity/order/seed/stationary contract changed")
+    matrix: list[list[dict[str, float]]] = []
+    for identifier, primitive, commands, durations in zip(
+        EXPECTED_PRIMITIVE_IDS, primitives, EXPECTED_COMMANDS, EXPECTED_DURATIONS
+    ):
+        segments = primitive.get("segments") if isinstance(primitive, dict) else None
+        if not isinstance(segments, list) or len(segments) != len(commands):
+            raise _evidence_issue("FAIL", "diagnostic_config_mismatch", f"{identifier} segment count changed")
+        observed: list[dict[str, float]] = []
+        for index, (segment, command, duration) in enumerate(zip(segments, commands, durations)):
+            if not isinstance(segment, dict):
+                raise _evidence_issue("FAIL", "diagnostic_config_mismatch", f"{identifier}[{index}] is invalid")
+            actual = (
+                _finite(segment.get("linear_x"), name=f"{identifier}[{index}].linear_x"),
+                _finite(segment.get("angular_z"), name=f"{identifier}[{index}].angular_z"),
+            )
+            actual_duration = _finite(segment.get("duration_sec"), name=f"{identifier}[{index}].duration_sec", positive=True)
+            if actual != command or actual_duration != duration:
+                raise _evidence_issue("FAIL", "diagnostic_config_mismatch", f"{identifier}[{index}] command/duration changed")
+            observed.append({"duration_sec": actual_duration, "linear_x": actual[0], "angular_z": actual[1]})
+        matrix.append(observed)
+    threshold_identity = {
+        str(key): _finite(value, name=f"thresholds.{key}", positive=True)
+        for key, value in sorted(thresholds.items())
+    }
+    if (
+        threshold_identity != EXPECTED_THRESHOLDS
+        or _finite(config.get("command_rate_hz"), name="config.command_rate_hz", positive=True)
+        != 20.0
+    ):
+        raise _evidence_issue(
+            "FAIL", "diagnostic_config_mismatch",
+            "diagnostic thresholds or command rate changed",
+        )
+    poses = spawn.get("spawn_poses") if isinstance(spawn, dict) else None
+    flat20 = poses.get("flat20_start") if isinstance(poses, dict) else None
+    mapping = flat20.get("map") if isinstance(flat20, dict) else None
+    usd = flat20.get("usd") if isinstance(flat20, dict) else None
+    if (
+        spawn.get("schema_version") != 1
+        or not isinstance(mapping, dict)
+        or not isinstance(usd, dict)
+        or mapping.get("calibrated") is not True
+        or mapping.get("map_version") != "flat20_v1"
+        or usd.get("position") != [0.0, 0.0, 0.0635]
+        or usd.get("yaw_deg") != 0.0
+    ):
+        raise _evidence_issue("FAIL", "spawn_resource_mismatch", "flat20 spawn resource contract changed")
+    identity = {
+        "contract": "v6_imu_regime_flat20_v2",
+        "resolved_config_path": str(config_path),
+        "resolved_spawn_poses_path": str(spawn_poses_path),
+        "stationary": {
+            "id": stationary["id"],
+            "duration_sec": float(stationary["duration_sec"]),
+            "reset_seed": stationary["reset_seed"],
+        },
+        "primitive_ids": list(EXPECTED_PRIMITIVE_IDS),
+        "segments": matrix,
+        "thresholds": threshold_identity,
+    }
+    return DiagnosticResources(config_path, spawn_poses_path, config, identity)
 
 
 def _unwrap(values: Sequence[float]) -> list[float]:
@@ -419,8 +621,12 @@ def _interval_intersection(interval_sets: Sequence[Sequence[Sequence[float]]]) -
     return current
 
 
-def validate_goal_evidence(goal: dict[str, Any] | None) -> dict[str, Any]:
-    """Validate explicit goal provenance before using any yaw samples."""
+def validate_goal_evidence(
+    goal: dict[str, Any] | None,
+    *,
+    expected_mcap: Path | None = None,
+) -> dict[str, Any]:
+    """Validate metadata plus arrays derived by :func:`load_goal_mcap`."""
 
     if goal is None:
         raise _evidence_issue("AMBIGUOUS", "goal_missing", "goal evidence is missing")
@@ -433,6 +639,8 @@ def validate_goal_evidence(goal: dict[str, Any] | None) -> dict[str, Any]:
         "reset_receipt",
         "outcome",
         "collision_detected",
+        "bag_verified",
+        "goal_window",
         "raw_integrated_yaw_rad",
         "ground_truth_relative_yaw_rad",
     }
@@ -441,13 +649,30 @@ def validate_goal_evidence(goal: dict[str, Any] | None) -> dict[str, Any]:
         raise _evidence_issue(
             "AMBIGUOUS", "goal_truncated", f"goal evidence missing fields: {sorted(missing)}"
         )
-    if goal["schema_version"] != 1 or goal["source"] != "goal_mcap_derived":
+    if (
+        goal["schema_version"] != 1
+        or goal["source"] != "goal_mcap_derived"
+        or goal["bag_verified"] is not True
+    ):
         raise _evidence_issue("FAIL", "goal_provenance_invalid", "goal schema/source is invalid")
     if not isinstance(goal["source_mcap"], str) or not goal["source_mcap"]:
         raise _evidence_issue("AMBIGUOUS", "goal_source_missing", "goal source MCAP is missing")
+    try:
+        source_mcap = Path(goal["source_mcap"]).expanduser().resolve()
+    except (TypeError, ValueError, OSError) as exc:
+        raise _evidence_issue("FAIL", "goal_source_invalid", "goal source MCAP path is invalid") from exc
+    if expected_mcap is not None and source_mcap != expected_mcap.expanduser().resolve():
+        raise _evidence_issue("FAIL", "goal_source_mismatch", "goal metadata source_mcap does not match --goal-mcap")
     receipt = goal["reset_receipt"]
     if (
         not isinstance(receipt, dict)
+        or any(
+            isinstance(receipt.get(key), bool)
+            or not isinstance(receipt.get(key), int)
+            or receipt[key] < 0
+            for key in ("requested_seed", "actual_seed")
+        )
+        or receipt.get("requested_seed") != receipt.get("actual_seed")
         or isinstance(receipt.get("generation"), bool)
         or not isinstance(receipt.get("generation"), int)
         or receipt["generation"] < 1
@@ -459,6 +684,13 @@ def validate_goal_evidence(goal: dict[str, Any] | None) -> dict[str, Any]:
         raise _evidence_issue("FAIL", "goal_outcome_invalid", "goal outcome/collision field is invalid")
     if goal["collision_detected"]:
         raise _evidence_issue("FAIL", "goal_collision", "goal evidence reports a collision")
+    window = goal["goal_window"]
+    if not isinstance(window, dict):
+        raise _evidence_issue("FAIL", "goal_window_invalid", "goal window is invalid")
+    start_s = _finite(window.get("start_s"), name="goal_window.start_s")
+    end_s = _finite(window.get("end_s"), name="goal_window.end_s")
+    if end_s <= start_s:
+        raise _evidence_issue("FAIL", "goal_window_invalid", "goal window is empty or reversed")
     raw = goal.get("raw_integrated_yaw_rad")
     gt = goal.get("ground_truth_relative_yaw_rad")
     if not isinstance(raw, list) or not isinstance(gt, list) or len(raw) != len(gt) or len(raw) < 3:
@@ -470,7 +702,12 @@ def validate_goal_evidence(goal: dict[str, Any] | None) -> dict[str, Any]:
         raise _evidence_issue("FAIL", "goal_samples_invalid", "goal yaw arrays are not numeric")
     if not all(math.isfinite(value) for value in (*raw_values, *gt_values)):
         raise _evidence_issue("FAIL", "goal_samples_nonfinite", "goal yaw arrays contain non-finite values")
-    return {**goal, "raw_integrated_yaw_rad": raw_values, "ground_truth_relative_yaw_rad": gt_values}
+    return {
+        **goal,
+        "source_mcap": str(source_mcap),
+        "raw_integrated_yaw_rad": raw_values,
+        "ground_truth_relative_yaw_rad": gt_values,
+    }
 
 
 def goal_identity_non_degrade_interval(goal: dict[str, Any] | None) -> list[list[float]] | None:
@@ -507,7 +744,13 @@ def _validate_receipt(
     if not required.issubset(receipt):
         raise _evidence_issue("AMBIGUOUS", "receipt_truncated", f"{scope} receipt is incomplete")
     if (
-        receipt["requested_seed"] != seed
+        isinstance(receipt["requested_seed"], bool)
+        or not isinstance(receipt["requested_seed"], int)
+        or isinstance(receipt["actual_seed"], bool)
+        or not isinstance(receipt["actual_seed"], int)
+        or isinstance(seed, bool)
+        or not isinstance(seed, int)
+        or receipt["requested_seed"] != seed
         or receipt["actual_seed"] != seed
         or receipt["pose"] != pose
         or isinstance(receipt["generation"], bool)
@@ -518,7 +761,10 @@ def _validate_receipt(
     return receipt
 
 
-def validate_benchmark_report(report: Any) -> dict[str, Any]:
+def validate_benchmark_report(
+    report: Any,
+    resources: DiagnosticResources | None = None,
+) -> dict[str, Any]:
     """Enforce the complete stationary + nine-primitive report contract."""
 
     if not isinstance(report, dict):
@@ -534,6 +780,7 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
         "segment_count", "final_zero_published", "spawn_pose_name",
         "stationary_reference", "primitives", "reset_receipts",
         "primitive_count", "passed_primitive_count",
+        "thresholds", "command_rate_hz",
     ):
         _require_report_field(report, key, "benchmark report")
     primitives = report["primitives"]
@@ -551,6 +798,26 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
     pose = report["spawn_pose_name"]
     if pose != "flat20_start":
         raise _evidence_issue("FAIL", "benchmark_pose", "benchmark pose is not flat20_start")
+    expected_thresholds = (
+        EXPECTED_THRESHOLDS
+        if resources is None
+        else resources.identity["thresholds"]
+    )
+    thresholds = report["thresholds"]
+    if not isinstance(thresholds, dict) or set(thresholds) != set(expected_thresholds):
+        raise _evidence_issue("FAIL", "benchmark_thresholds", "benchmark thresholds do not match the resolved config")
+    for key, expected in expected_thresholds.items():
+        if isinstance(thresholds[key], bool) or not isinstance(thresholds[key], (int, float)):
+            raise _evidence_issue("FAIL", "benchmark_thresholds", f"benchmark threshold {key} has invalid type")
+        actual = float(thresholds[key])
+        if not math.isfinite(actual) or actual != float(expected):
+            raise _evidence_issue("FAIL", "benchmark_thresholds", f"benchmark threshold {key} changed")
+    command_rate_hz = _finite(report["command_rate_hz"], name="benchmark.command_rate_hz", positive=True)
+    expected_rate = 20.0 if resources is None else _finite(
+        resources.config.get("command_rate_hz"), name="config.command_rate_hz", positive=True
+    )
+    if command_rate_hz != expected_rate:
+        raise _evidence_issue("FAIL", "benchmark_rate", "benchmark command rate does not match the resolved config")
 
     stationary = report["stationary_reference"]
     if not isinstance(stationary, dict):
@@ -570,6 +837,8 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
         _require_report_field(stationary, key, "stationary reference")
     if (
         stationary["id"] != EXPECTED_STATIONARY["id"]
+        or isinstance(stationary["reset_seed"], bool)
+        or not isinstance(stationary["reset_seed"], int)
         or stationary["reset_seed"] != EXPECTED_STATIONARY["reset_seed"]
         or stationary["requested_duration_sec"] != EXPECTED_STATIONARY["duration_sec"]
     ):
@@ -608,10 +877,10 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
             stationary["reset_receipt"], seed=8609, pose=pose, scope="stationary"
         )
     ]
-    for index, (primitive, expected_id, seed, segment_count, expected_commands) in enumerate(
+    for index, (primitive, expected_id, seed, segment_count, expected_commands, expected_durations) in enumerate(
         zip(
             primitives, EXPECTED_PRIMITIVE_IDS, EXPECTED_SEEDS,
-            EXPECTED_SEGMENT_COUNTS, EXPECTED_COMMANDS,
+            EXPECTED_SEGMENT_COUNTS, EXPECTED_COMMANDS, EXPECTED_DURATIONS,
         )
     ):
         assert isinstance(primitive, dict)
@@ -627,7 +896,11 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
             "reset_receipt", "reset_seed", "final_zero_published",
         ):
             _require_report_field(primitive, key, scope)
-        if primitive["reset_seed"] != seed:
+        if (
+            isinstance(primitive["reset_seed"], bool)
+            or not isinstance(primitive["reset_seed"], int)
+            or primitive["reset_seed"] != seed
+        ):
             raise _evidence_issue("FAIL", "benchmark_seed", f"{scope} seed mismatch")
         if (
             primitive["passed"] is not True
@@ -644,14 +917,14 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
             or len(primitive["segments"]) != segment_count
         ):
             raise _evidence_issue("AMBIGUOUS", "benchmark_samples", f"{scope} samples/segments are incomplete")
-        for segment_index, (segment, expected_command) in enumerate(
-            zip(primitive["segments"], expected_commands)
+        for segment_index, (segment, expected_command, expected_duration) in enumerate(
+            zip(primitive["segments"], expected_commands, expected_durations)
         ):
             if not isinstance(segment, dict):
                 raise _evidence_issue("FAIL", "benchmark_segment_type", f"{scope} segment is not an object")
             required_segment = {
                 "segment_index", "command_linear_mps", "command_angular_radps",
-                "steady_sample_count",
+                "steady_sample_count", "duration_sec",
             }
             if not required_segment.issubset(segment):
                 raise _evidence_issue("AMBIGUOUS", "benchmark_segment_truncated", f"{scope} segment is incomplete")
@@ -659,6 +932,10 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
                 segment["segment_index"] != segment_index
                 or segment["command_linear_mps"] != expected_command[0]
                 or segment["command_angular_radps"] != expected_command[1]
+                or isinstance(segment["duration_sec"], bool)
+                or not isinstance(segment["duration_sec"], (int, float))
+                or not math.isfinite(float(segment["duration_sec"]))
+                or float(segment["duration_sec"]) != expected_duration
             ):
                 raise _evidence_issue("FAIL", "benchmark_segment_contract", f"{scope} segment command/order mismatch")
             if (
@@ -672,8 +949,8 @@ def validate_benchmark_report(report: Any) -> dict[str, Any]:
         )
 
     generations = [receipt["generation"] for receipt in receipts]
-    if any(right <= left for left, right in zip(generations, generations[1:])):
-        raise _evidence_issue("FAIL", "generation_order", "reset generations are not strictly increasing")
+    if generations != list(range(generations[0], generations[0] + len(generations))):
+        raise _evidence_issue("FAIL", "generation_gap", "stationary and nine primitive reset generations are not consecutive")
     top_receipts = report["reset_receipts"]
     if not isinstance(top_receipts, list):
         raise _evidence_issue("FAIL", "top_receipts_type", "top reset receipts must be a list")
@@ -733,7 +1010,10 @@ def summarize(
         )
     )
     explicit_invalid = any(
-        item.get("status") in {"DATA_INVALID", "STAMP_INVALID", "PHASE_TRACE_INVALID"}
+        item.get("status") in {
+            "DATA_INVALID", "STAMP_INVALID", "PHASE_TRACE_INVALID",
+            "DURATION_INVALID",
+        }
         for item in invalid
     )
     any_empty_interval = (
@@ -811,7 +1091,10 @@ def _load_phase(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_phase_trace(phase: Sequence[dict[str, Any]]) -> dict[str, Any]:
+def validate_phase_trace(
+    phase: Sequence[dict[str, Any]],
+    resources: DiagnosticResources,
+) -> dict[str, Any]:
     if not phase:
         raise _evidence_issue("AMBIGUOUS", "phase_empty", "phase trace is empty")
     manifest = phase[0]
@@ -822,11 +1105,11 @@ def validate_phase_trace(phase: Sequence[dict[str, Any]]) -> dict[str, Any]:
     provenance = manifest.get("provenance")
     if not isinstance(provenance, dict):
         raise _evidence_issue("AMBIGUOUS", "phase_provenance_missing", "phase provenance is missing")
-    expected_spawn = str(
-        Path(__file__).resolve().parents[4]
-        / "isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
-    )
-    expected = {**EXPECTED_TRACE_PROVENANCE, "spawn_poses_file": expected_spawn}
+    expected = {
+        **EXPECTED_TRACE_PROVENANCE,
+        "spawn_poses_file": str(resources.spawn_poses_path),
+        "diagnostic_config_file": str(resources.config_path),
+    }
     mismatches = {
         key: {"expected": value, "actual": provenance.get(key)}
         for key, value in expected.items()
@@ -924,6 +1207,291 @@ def load_mcap(path: Path) -> McapStreams:
     return McapStreams(streams, provenance=provenance)
 
 
+def _record_stamp_s(message: Any, recorded_ns: Any, *, topic: str) -> float:
+    stamp = None
+    if topic in {"/imu/data_raw", "/ground_truth/odom"}:
+        stamp = getattr(getattr(message, "header", None), "stamp", None)
+    elif topic == "/rosout":
+        stamp = getattr(message, "stamp", None)
+    if stamp is not None:
+        sec = getattr(stamp, "sec", None)
+        nanosec = getattr(stamp, "nanosec", None)
+        if (
+            isinstance(sec, bool)
+            or not isinstance(sec, int)
+            or isinstance(nanosec, bool)
+            or not isinstance(nanosec, int)
+            or nanosec < 0
+            or nanosec >= 1_000_000_000
+        ):
+            raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has an invalid message stamp")
+        value = float(sec) + float(nanosec) * 1.0e-9
+    else:
+        if isinstance(recorded_ns, bool) or not isinstance(recorded_ns, int):
+            raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has an invalid bag stamp")
+        value = float(recorded_ns) * 1.0e-9
+    if not math.isfinite(value) or value < 0.0:
+        raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has a non-finite/negative stamp")
+    return value
+
+
+def _reset_receipt_from_log(message: Any) -> dict[str, Any] | None:
+    text = getattr(message, "msg", None)
+    if not isinstance(text, str) or "reset_receipt=" not in text:
+        return None
+    tail = text.split("reset_receipt=", 1)[1]
+    try:
+        value, _end = json.JSONDecoder().raw_decode(tail)
+    except json.JSONDecodeError as exc:
+        raise _evidence_issue("FAIL", "goal_reset_log_invalid", "goal MCAP contains a malformed reset receipt log") from exc
+    if not isinstance(value, dict):
+        raise _evidence_issue("FAIL", "goal_reset_log_invalid", "goal MCAP reset receipt is not an object")
+    return value
+
+
+def _validate_goal_metadata(metadata: Any, goal_mcap: Path) -> dict[str, Any]:
+    if not isinstance(metadata, dict):
+        raise _evidence_issue("FAIL", "goal_wrong_type", "goal metadata must be an object")
+    required = {
+        "schema_version", "source", "source_mcap", "reset_receipt",
+        "outcome", "collision_detected",
+    }
+    missing = required - set(metadata)
+    if missing:
+        raise _evidence_issue("AMBIGUOUS", "goal_truncated", f"goal metadata missing fields: {sorted(missing)}")
+    if metadata["schema_version"] != 1 or metadata["source"] != "goal_mcap_outcome_metadata":
+        raise _evidence_issue("FAIL", "goal_provenance_invalid", "goal metadata schema/source is invalid")
+    if not isinstance(metadata["source_mcap"], str) or not metadata["source_mcap"]:
+        raise _evidence_issue("AMBIGUOUS", "goal_source_missing", "goal metadata source_mcap is missing")
+    try:
+        source = Path(metadata["source_mcap"]).expanduser().resolve()
+    except (OSError, ValueError) as exc:
+        raise _evidence_issue("FAIL", "goal_source_invalid", "goal metadata source_mcap is invalid") from exc
+    if source != goal_mcap.expanduser().resolve():
+        raise _evidence_issue("FAIL", "goal_source_mismatch", "goal metadata source_mcap does not match --goal-mcap")
+    receipt = metadata["reset_receipt"]
+    if not isinstance(receipt, dict):
+        raise _evidence_issue("FAIL", "goal_reset_invalid", "goal metadata reset receipt is invalid")
+    for key in ("requested_seed", "actual_seed"):
+        _strict_int(receipt.get(key), name=f"goal.reset_receipt.{key}")
+    generation = _strict_int(receipt.get("generation"), name="goal.reset_receipt.generation", minimum=1)
+    if (
+        receipt["requested_seed"] != receipt["actual_seed"]
+        or not isinstance(receipt.get("pose"), str)
+        or not receipt["pose"]
+        or generation < 1
+    ):
+        raise _evidence_issue("FAIL", "goal_reset_invalid", "goal metadata reset receipt is inconsistent")
+    if metadata["outcome"] != "SUCCEEDED" or not isinstance(metadata["collision_detected"], bool):
+        raise _evidence_issue("FAIL", "goal_outcome_invalid", "goal metadata outcome/collision is invalid")
+    if metadata["collision_detected"]:
+        raise _evidence_issue("FAIL", "goal_collision", "goal metadata reports a collision")
+    return metadata
+
+
+def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
+    """Derive goal yaw arrays and all authority facts directly from one MCAP."""
+
+    path = path.expanduser().resolve()
+    metadata = _validate_goal_metadata(metadata, path)
+    try:
+        import rosbag2_py
+        from rclpy.serialization import deserialize_message
+        from rosidl_runtime_py.utilities import get_message
+    except ImportError as exc:
+        raise _evidence_issue("AMBIGUOUS", "mcap_backend_missing", "rosbag2_py MCAP support is unavailable") from exc
+    reader = rosbag2_py.SequentialReader()
+    reader.open(
+        rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"),
+        rosbag2_py.ConverterOptions("", ""),
+    )
+    topic_types = {item.name: item.type for item in reader.get_all_topics_and_types()}
+    missing = [topic for topic in GOAL_TOPIC_TYPES if topic not in topic_types]
+    if missing:
+        raise _evidence_issue("AMBIGUOUS", "goal_mcap_topics_missing", f"goal MCAP missing required topics: {missing}")
+    wrong = {
+        topic: {"expected": expected, "actual": topic_types[topic]}
+        for topic, expected in GOAL_TOPIC_TYPES.items()
+        if topic_types[topic] != expected
+    }
+    if wrong:
+        raise _evidence_issue("FAIL", "goal_mcap_topic_type", f"goal MCAP topic types mismatch: {wrong}")
+    message_types = {topic: get_message(topic_types[topic]) for topic in GOAL_TOPIC_TYPES}
+    raw: list[ScalarSample] = []
+    gt: list[YawSample] = []
+    commands: list[tuple[float, float, float]] = []
+    reset_events: list[float] = []
+    collisions: list[tuple[float, bool]] = []
+    completions: list[tuple[float, bool]] = []
+    receipt_logs: list[tuple[float, dict[str, Any]]] = []
+    topic_stamps: dict[str, list[float]] = {topic: [] for topic in GOAL_TOPIC_TYPES}
+    epoch_started = False
+    while reader.has_next():
+        topic, payload, recorded_ns = reader.read_next()
+        if topic not in message_types:
+            continue
+        message = deserialize_message(payload, message_types[topic])
+        stamp_s = _record_stamp_s(message, recorded_ns, topic=topic)
+        if topic == "/simulation/reset_event":
+            topic_stamps[topic].append(stamp_s)
+            reset_events.append(stamp_s)
+            epoch_started = True
+            continue
+        # A recorder normally starts before the requested reset. Pre-reset
+        # sensor and command samples belong to the retired epoch and may have
+        # larger header stamps than the fresh epoch; never mix them.
+        if not epoch_started:
+            continue
+        topic_stamps[topic].append(stamp_s)
+        if topic == "/imu/data_raw":
+            angular = getattr(message, "angular_velocity", None)
+            values = [getattr(angular, key, None) for key in ("x", "y", "z")]
+            try:
+                numbers = [float(value) for value in values]
+            except (TypeError, ValueError) as exc:
+                raise _evidence_issue("FAIL", "goal_imu_invalid", "goal raw IMU angular velocity is invalid") from exc
+            if not all(math.isfinite(value) for value in numbers):
+                raise _evidence_issue("FAIL", "goal_imu_nonfinite", "goal raw IMU angular velocity is non-finite")
+            raw.append(ScalarSample(stamp_s, numbers[2]))
+        elif topic == "/ground_truth/odom":
+            orientation = getattr(getattr(getattr(message, "pose", None), "pose", None), "orientation", None)
+            try:
+                quaternion = [float(getattr(orientation, key)) for key in ("x", "y", "z", "w")]
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise _evidence_issue("FAIL", "goal_gt_invalid", "goal ground-truth quaternion is invalid") from exc
+            if not all(math.isfinite(value) for value in quaternion):
+                raise _evidence_issue("FAIL", "goal_gt_nonfinite", "goal ground-truth quaternion is non-finite")
+            norm = math.sqrt(sum(value * value for value in quaternion))
+            if abs(norm - 1.0) > 1.0e-3:
+                raise _evidence_issue("FAIL", "goal_gt_quaternion_norm", f"goal ground-truth quaternion norm is {norm}")
+            x, y, z, w = quaternion
+            yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
+            gt.append(YawSample(stamp_s, yaw))
+        elif topic == "/cmd_vel":
+            linear = getattr(getattr(message, "linear", None), "x", None)
+            angular = getattr(getattr(message, "angular", None), "z", None)
+            try:
+                values = (float(linear), float(angular))
+            except (TypeError, ValueError) as exc:
+                raise _evidence_issue("FAIL", "goal_command_invalid", "goal command is invalid") from exc
+            if not all(math.isfinite(value) for value in values):
+                raise _evidence_issue("FAIL", "goal_command_nonfinite", "goal command is non-finite")
+            commands.append((stamp_s, values[0], values[1]))
+        elif topic == "/simulation/collision":
+            value = getattr(message, "data", None)
+            if not isinstance(value, bool):
+                raise _evidence_issue("FAIL", "goal_collision_type", "goal collision sample is not boolean")
+            collisions.append((stamp_s, value))
+        elif topic == "/bio_nav/route_goal_complete":
+            value = getattr(message, "data", None)
+            if not isinstance(value, bool):
+                raise _evidence_issue("FAIL", "goal_outcome_type", "goal completion sample is not boolean")
+            completions.append((stamp_s, value))
+        elif topic == "/rosout":
+            receipt = _reset_receipt_from_log(message)
+            if receipt is not None:
+                receipt_logs.append((stamp_s, receipt))
+    for topic, stamps in topic_stamps.items():
+        if any(right <= left for left, right in zip(stamps, stamps[1:])):
+            raise _evidence_issue("FAIL", "goal_stamp_order", f"{topic} stamps are not strictly increasing")
+    if len(reset_events) != 1 or len(receipt_logs) != 1:
+        verdict = "AMBIGUOUS" if not reset_events or not receipt_logs else "FAIL"
+        raise _evidence_issue(verdict, "goal_reset_count", "goal MCAP must contain exactly one reset event and one reset receipt")
+    bag_receipt = receipt_logs[0][1]
+    for key in ("seed", "generation"):
+        _strict_int(bag_receipt.get(key), name=f"goal bag reset {key}", minimum=1 if key == "generation" else 0)
+    metadata_receipt = metadata["reset_receipt"]
+    if (
+        bag_receipt.get("seed") != metadata_receipt["actual_seed"]
+        or bag_receipt.get("generation") != metadata_receipt["generation"]
+        or bag_receipt.get("pose") != metadata_receipt["pose"]
+    ):
+        raise _evidence_issue("FAIL", "goal_reset_mismatch", "goal MCAP reset receipt does not match metadata")
+    reset_s = reset_events[0]
+    successful = [stamp for stamp, value in completions if value and stamp > reset_s]
+    if len(successful) != 1:
+        verdict = "AMBIGUOUS" if not successful else "FAIL"
+        raise _evidence_issue(verdict, "goal_outcome_count", "goal MCAP must contain exactly one fresh successful route completion")
+    completed_s = successful[0]
+    collision_window = [value for stamp, value in collisions if reset_s <= stamp <= completed_s]
+    if not collision_window:
+        raise _evidence_issue("AMBIGUOUS", "goal_collision_missing", "goal MCAP has no collision samples in the goal epoch")
+    if any(collision_window):
+        raise _evidence_issue("FAIL", "goal_collision", "goal MCAP reports a collision")
+    nonzero = [
+        item for item in commands
+        if reset_s < item[0] < completed_s
+        and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
+    ]
+    if len(nonzero) < 3:
+        raise _evidence_issue("AMBIGUOUS", "goal_command_missing", "goal MCAP has insufficient nonzero command evidence")
+    start_s = nonzero[0][0]
+    end_s = nonzero[-1][0]
+    if end_s - start_s < MIN_WINDOW_DURATION_S:
+        raise _evidence_issue("AMBIGUOUS", "goal_window_short", "goal MCAP command window is too short")
+    command_gaps = [right[0] - left[0] for left, right in zip(nonzero, nonzero[1:])]
+    if command_gaps and max(command_gaps) > 1.0:
+        raise _evidence_issue("AMBIGUOUS", "goal_command_gap", "goal MCAP nonzero command coverage has a gap above 1 s")
+    raw_window = _window_scalar(raw, start_s, end_s)
+    gt_window = _window_yaw(gt, start_s, end_s)
+    if len(raw_window) < 3 or len(gt_window) < 3:
+        raise _evidence_issue("AMBIGUOUS", "goal_samples_insufficient", "goal MCAP yaw streams do not cover the command window")
+    quality = {"raw": _stamp_quality(raw_window), "ground_truth": _stamp_quality(gt_window)}
+    if any(
+        item["duplicate_count"] or item["backward_count"]
+        or item["nonfinite_count"] or item["nonfinite_value_count"]
+        for item in quality.values()
+    ):
+        raise _evidence_issue("FAIL", "goal_samples_invalid", "goal MCAP yaw stamps/values are invalid")
+    t0 = max(raw_window[0].stamp_s, gt_window[0].stamp_s)
+    t1 = min(raw_window[-1].stamp_s, gt_window[-1].stamp_s)
+    grid = sorted({
+        t0, t1,
+        *[item.stamp_s for item in raw_window if t0 <= item.stamp_s <= t1],
+        *[item.stamp_s for item in gt_window if t0 <= item.stamp_s <= t1],
+    })
+    raw_values = [_interpolate([item.stamp_s for item in raw_window], [item.value for item in raw_window], stamp) for stamp in grid]
+    gt_unwrapped = _unwrap([item.yaw_rad for item in gt_window])
+    gt_values = [_interpolate([item.stamp_s for item in gt_window], gt_unwrapped, stamp) for stamp in grid]
+    if len(grid) < 3 or any(value is None for value in (*raw_values, *gt_values)):
+        raise _evidence_issue("AMBIGUOUS", "goal_common_grid", "goal MCAP has no complete common yaw grid")
+    _, integrated = _integral([
+        ScalarSample(stamp, float(value)) for stamp, value in zip(grid, raw_values)
+    ])
+    relative_gt = [float(value) - float(gt_values[0]) for value in gt_values]
+    derived = {
+        "schema_version": 1,
+        "source": "goal_mcap_derived",
+        "source_mcap": str(path),
+        "reset_receipt": dict(metadata_receipt),
+        "outcome": "SUCCEEDED",
+        "collision_detected": False,
+        "bag_verified": True,
+        "goal_window": {
+            "start_s": start_s,
+            "end_s": end_s,
+            "duration_s": end_s - start_s,
+            "route_completed_s": completed_s,
+            "common_t0_s": t0,
+            "common_t1_s": t1,
+            "common_grid_count": len(grid),
+            "nonzero_command_count": len(nonzero),
+            "maximum_nonzero_command_gap_s": max(command_gaps) if command_gaps else None,
+        },
+        "raw_integrated_yaw_rad": integrated,
+        "ground_truth_relative_yaw_rad": relative_gt,
+        "mcap_provenance": {
+            "path": str(path),
+            "storage_id": "mcap",
+            "topic_types": {topic: topic_types[topic] for topic in GOAL_TOPIC_TYPES},
+            "topic_counts": {topic: len(topic_stamps[topic]) for topic in GOAL_TOPIC_TYPES},
+            "reset_event_count": len(reset_events),
+            "reset_receipt_log_count": len(receipt_logs),
+        },
+    }
+    return validate_goal_evidence(derived, expected_mcap=path)
+
+
 def command_windows(
     phase: Sequence[dict[str, Any]], report: dict[str, Any]
 ) -> list[dict[str, object]]:
@@ -944,15 +1512,39 @@ def command_windows(
             str(primitive["id"]), count, False
         )
 
+    observed_generations = set()
+    for row in loops:
+        for key in ("reset_generation", "reset_generation_after_ground_truth"):
+            value = row.get(key)
+            if value is None and key == "reset_generation_after_ground_truth":
+                continue
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise _evidence_issue("FAIL", "phase_generation_type", "phase reset generation is not an integer")
+            observed_generations.add(value)
+    first_generation = min(generation_contract)
+    hidden = sorted(
+        generation for generation in observed_generations
+        if generation >= first_generation and generation not in generation_contract
+    )
+    if hidden:
+        raise _evidence_issue("FAIL", "phase_hidden_reset", f"phase trace contains hidden reset generations: {hidden}")
+
     runs: dict[int, list[dict[str, object]]] = {
         generation: [] for generation in generation_contract
     }
     active: dict[str, object] | None = None
     for row in loops:
         try:
-            before_generation = int(row["reset_generation"])
+            before_generation = row["reset_generation"]
             after_raw = row.get("reset_generation_after_ground_truth")
-            generation = before_generation if after_raw is None else int(after_raw)
+            generation = before_generation if after_raw is None else after_raw
+            if (
+                isinstance(before_generation, bool)
+                or not isinstance(before_generation, int)
+                or isinstance(generation, bool)
+                or not isinstance(generation, int)
+            ):
+                raise TypeError("generation type")
             stamp = float(row["simulation_time_after_app_s"])
         except (KeyError, TypeError, ValueError):
             raise _evidence_issue("AMBIGUOUS", "phase_truncated", "phase loop is missing generation/time")
@@ -988,16 +1580,22 @@ def command_windows(
                 "angular": command[1],
                 "start_s": stamp,
                 "end_s": stamp,
+                "stamps": [stamp],
             }
         else:
             active["end_s"] = stamp
+            stamps = active["stamps"]
+            assert isinstance(stamps, list)
+            stamps.append(stamp)
     if active is not None:
         runs[int(active["generation"])].append(active)
 
     windows: list[dict[str, object]] = []
-    primitive_commands = {
-        identifier: commands
-        for identifier, commands in zip(EXPECTED_PRIMITIVE_IDS, EXPECTED_COMMANDS)
+    primitive_contracts = {
+        identifier: tuple(zip(commands, durations))
+        for identifier, commands, durations in zip(
+            EXPECTED_PRIMITIVE_IDS, EXPECTED_COMMANDS, EXPECTED_DURATIONS
+        )
     }
     for generation, (identifier, expected_count, is_stationary) in generation_contract.items():
         candidates = runs[generation]
@@ -1012,8 +1610,12 @@ def command_windows(
                 raise _evidence_issue("AMBIGUOUS", "stationary_phase_window", "exact stationary 10 s phase window is unavailable")
             selected = dict(zero[0])
             selected["id"] = identifier
-            selected["end_s"] = float(selected["start_s"]) + 10.0
+            selected["expected_duration_s"] = EXPECTED_STATIONARY["duration_sec"]
+            selected["observed_command_duration_s"] = float(selected["end_s"]) - float(selected["start_s"])
+            selected["duration_tolerance_s"] = 0.25
+            selected["end_s"] = float(selected["start_s"]) + EXPECTED_STATIONARY["duration_sec"]
             selected.pop("key", None)
+            selected.pop("stamps", None)
             windows.append(selected)
             continue
         nonzero = [
@@ -1029,7 +1631,8 @@ def command_windows(
         observed_commands = tuple(
             (float(item["linear"]), float(item["angular"])) for item in nonzero
         )
-        if observed_commands != primitive_commands[identifier]:
+        contracts = primitive_contracts[identifier]
+        if observed_commands != tuple(item[0] for item in contracts):
             raise _evidence_issue(
                 "FAIL", "primitive_phase_commands",
                 f"{identifier} phase commands do not match the report contract",
@@ -1040,7 +1643,30 @@ def command_windows(
                 f"{identifier}[{index}]" if expected_count > 1 else identifier
             )
             selected["segment_index"] = index
+            expected_duration = float(contracts[index][1])
+            stamps = [float(value) for value in selected.get("stamps", [])]
+            periods = [right - left for left, right in zip(stamps, stamps[1:]) if right > left]
+            phase_period = statistics.median(periods) if periods else None
+            if phase_period is None or not math.isfinite(phase_period) or phase_period <= 0.0:
+                raise _evidence_issue("AMBIGUOUS", "primitive_phase_period", f"{selected['id']} phase period is unavailable")
+            tolerance = min(max(2.0 * phase_period, 0.02 * expected_duration), 0.25)
+            observed_duration = float(selected["end_s"]) - float(selected["start_s"])
+            if observed_duration < expected_duration - tolerance:
+                raise _evidence_issue(
+                    "AMBIGUOUS", "primitive_phase_short",
+                    f"{selected['id']} command window {observed_duration:.3f}s is shorter than {expected_duration:.3f}s",
+                )
+            if observed_duration > expected_duration + tolerance:
+                raise _evidence_issue(
+                    "FAIL", "primitive_phase_long",
+                    f"{selected['id']} command window {observed_duration:.3f}s exceeds {expected_duration:.3f}s",
+                )
+            selected["expected_duration_s"] = expected_duration
+            selected["observed_command_duration_s"] = observed_duration
+            selected["duration_tolerance_s"] = tolerance
+            selected["phase_period_s"] = phase_period
             selected.pop("key", None)
+            selected.pop("stamps", None)
             windows.append(selected)
     return windows
 
@@ -1207,24 +1833,33 @@ def run_analysis(
     phase_jsonl: Path,
     benchmark_report: Path,
     goal_evaluator: Path | None = None,
+    goal_mcap: Path | None = None,
+    config_path: Path | None = None,
+    spawn_poses_path: Path | None = None,
 ) -> dict[str, object]:
     inputs = {
         "mcap": str(mcap),
         "phase_jsonl": str(phase_jsonl),
         "benchmark_report": str(benchmark_report),
         "goal_evaluator": None if goal_evaluator is None else str(goal_evaluator),
+        "goal_mcap": None if goal_mcap is None else str(goal_mcap),
+        "config": None if config_path is None else str(config_path),
+        "spawn_poses_file": None if spawn_poses_path is None else str(spawn_poses_path),
     }
     try:
+        resources = resolve_diagnostic_resources(config_path, spawn_poses_path)
+        inputs["config"] = str(resources.config_path)
+        inputs["spawn_poses_file"] = str(resources.spawn_poses_path)
         try:
             report = _load_json(benchmark_report)
         except (OSError, json.JSONDecodeError) as exc:
             raise _evidence_issue("AMBIGUOUS", "benchmark_unreadable", f"benchmark report is unavailable/truncated: {exc}") from exc
-        validate_benchmark_report(report)
+        validate_benchmark_report(report, resources)
         try:
             phase = _load_phase(phase_jsonl)
         except OSError as exc:
             raise _evidence_issue("AMBIGUOUS", "phase_unreadable", f"phase trace is unavailable: {exc}") from exc
-        phase_provenance = validate_phase_trace(phase)
+        phase_provenance = validate_phase_trace(phase, resources)
         try:
             streams = load_mcap(mcap)
         except EvidenceError:
@@ -1256,13 +1891,49 @@ def run_analysis(
                 result["status"] = "PHASE_TRACE_INVALID"
             elif phase_status == "AMBIGUOUS" and result.get("status") == "OK":
                 result["status"] = "PHASE_TRACE_INSUFFICIENT"
+            expected_duration = float(window["expected_duration_s"])
+            tolerance = float(window["duration_tolerance_s"])
+            observed_command_duration = float(window["observed_command_duration_s"])
+            coverage = result.get("coverage")
+            coverage_duration = (
+                float(coverage["duration_s"])
+                if isinstance(coverage, dict)
+                and isinstance(coverage.get("duration_s"), (int, float))
+                else None
+            )
+            duration_status = "OK"
+            if coverage_duration is None:
+                duration_status = "AMBIGUOUS"
+            elif coverage_duration < expected_duration - tolerance - 1.0e-6:
+                duration_status = "AMBIGUOUS"
+                if result.get("status") == "OK":
+                    result["status"] = "DURATION_INSUFFICIENT"
+            elif coverage_duration > expected_duration + tolerance + 1.0e-6:
+                duration_status = "FAIL"
+                result["status"] = "DURATION_INVALID"
+            result["duration_contract"] = {
+                "status": duration_status,
+                "expected_duration_s": expected_duration,
+                "observed_command_duration_s": observed_command_duration,
+                "common_stream_coverage_duration_s": coverage_duration,
+                "tolerance_s": tolerance,
+                "tolerance_policy": "max(two_phase_periods,2_percent),capped_0.25s",
+            }
             results.append(result)
         goal = None
-        if goal_evaluator is not None:
+        if goal_mcap is not None and goal_evaluator is None:
+            raise _evidence_issue("AMBIGUOUS", "goal_metadata_missing", "--goal-mcap requires --goal-evaluator metadata")
+        if goal_mcap is not None and goal_evaluator is not None:
             try:
-                goal = _load_json(goal_evaluator)
+                goal_metadata = _load_json(goal_evaluator)
             except (OSError, json.JSONDecodeError) as exc:
                 raise _evidence_issue("AMBIGUOUS", "goal_unreadable", f"goal evidence is unavailable/truncated: {exc}") from exc
+            try:
+                goal = load_goal_mcap(goal_mcap, goal_metadata)
+            except EvidenceError:
+                raise
+            except Exception as exc:
+                raise _evidence_issue("AMBIGUOUS", "goal_mcap_unreadable", f"goal MCAP could not be read: {type(exc).__name__}: {exc}") from exc
         phase_valid = all(
             item.get("phase_metrics", {}).get("status") == "OK"
             for item in results
@@ -1278,9 +1949,21 @@ def run_analysis(
             stationary_valid=stationary_valid,
             phase_valid=phase_valid,
         )
+        if goal_mcap is None:
+            summary["goal_evidence_issue"] = {
+                "verdict": "AMBIGUOUS",
+                "code": "goal_mcap_missing",
+                "detail": "--goal-mcap is required; JSON arrays are never goal authority",
+            }
+            if summary["verdict"] not in {"FAIL"}:
+                summary["verdict"] = "AMBIGUOUS"
         summary["inputs"] = inputs
         summary["mcap_provenance"] = getattr(streams, "provenance", None)
         summary["phase_provenance"] = phase_provenance
+        summary["resolved_diagnostic_config"] = resources.identity
+        summary["goal_mcap_provenance"] = (
+            None if goal is None else goal.get("mcap_provenance")
+        )
         summary["phase_trace_loop_count"] = sum(row.get("kind") == "loop" for row in phase)
         summary["command_window_count"] = len(windows)
         summary["evidence_errors"] = []
@@ -1307,6 +1990,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--phase-jsonl", type=Path, required=True)
     parser.add_argument("--benchmark-report", type=Path, required=True)
     parser.add_argument("--goal-evaluator", type=Path)
+    parser.add_argument("--goal-mcap", type=Path)
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--spawn-poses-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     result = run_analysis(
@@ -1317,6 +2003,17 @@ def main(argv: Sequence[str] | None = None) -> int:
             None
             if args.goal_evaluator is None
             else args.goal_evaluator.expanduser().resolve()
+        ),
+        goal_mcap=(
+            None if args.goal_mcap is None else args.goal_mcap.expanduser().resolve()
+        ),
+        config_path=(
+            None if args.config is None else args.config.expanduser().resolve()
+        ),
+        spawn_poses_path=(
+            None
+            if args.spawn_poses_file is None
+            else args.spawn_poses_file.expanduser().resolve()
         ),
     )
     output = args.output.expanduser().resolve()

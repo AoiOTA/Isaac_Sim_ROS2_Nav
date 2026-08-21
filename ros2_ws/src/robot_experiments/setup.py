@@ -12,6 +12,11 @@ def source_paths(directory: str, pattern: str) -> list[str]:
     return [os.path.relpath(path, Path.cwd()) for path in sorted((package_root / directory).glob(pattern))]
 
 
+def external_paths(directory: Path, pattern: str) -> list[str]:
+    """Install a bounded repository resource without depending on cwd."""
+    return [os.path.relpath(path, Path.cwd()) for path in sorted(directory.glob(pattern))]
+
+
 setup(
     name=package_name,
     version="0.1.0",
@@ -20,6 +25,13 @@ setup(
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
         (f"share/{package_name}/config", source_paths("config", "*.yaml") + source_paths("config", "*.json")),
+        (
+            f"share/{package_name}/environments",
+            external_paths(
+                package_root.parents[2] / "isaac_sim/configs/environments",
+                "v6_calibration_flat_20m.spawn.yaml",
+            ),
+        ),
         (f"share/{package_name}/launch", source_paths("launch", "*.launch.py")),
     ],
     install_requires=["setuptools", "PyYAML"],

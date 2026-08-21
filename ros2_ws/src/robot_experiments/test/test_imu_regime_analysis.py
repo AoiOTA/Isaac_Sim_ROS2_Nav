@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
+import shutil
 import sys
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from robot_experiments.imu_regime_analysis import (
     EvidenceError,
@@ -17,17 +20,21 @@ from robot_experiments.imu_regime_analysis import (
     analyze_segment,
     command_windows,
     goal_identity_non_degrade_interval,
+    load_goal_mcap,
     load_mcap,
     phase_window_metrics,
     summarize,
     run_analysis,
+    resolve_diagnostic_resources,
     validate_benchmark_report,
+    validate_phase_trace,
 )
 from robot_experiments.motion_benchmark import load_motion_config
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE_ROOT / "config/v6_imu_regime_diagnostic.yaml"
+SPAWN = PACKAGE_ROOT.parents[2] / "isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
 
 
 def _series(scale: float, *, duplicate: bool = False):
@@ -233,13 +240,15 @@ def _benchmark_report():
         "reset_receipt": _receipt(8609, 1),
     }
     primitives = []
-    for index, (identifier, count, commands) in enumerate(zip(EXPECTED_PRIMITIVE_IDS, EXPECTED_SEGMENT_COUNTS, EXPECTED_COMMANDS)):
+    durations = ((12.566,), (12.566,), *((4.0,) for _ in range(6)), (2.5, 5.0, 2.5))
+    for index, (identifier, count, commands, primitive_durations) in enumerate(zip(EXPECTED_PRIMITIVE_IDS, EXPECTED_SEGMENT_COUNTS, EXPECTED_COMMANDS, durations)):
         primitives.append({
             "id": identifier, "passed": True, "stopped": False,
             "collision_detected": False, "sample_count": 100,
             "segments": [
                 {
                     "segment_index": segment_index,
+                    "duration_sec": primitive_durations[segment_index],
                     "command_linear_mps": command[0],
                     "command_angular_radps": command[1],
                     "steady_sample_count": 10,
@@ -255,6 +264,13 @@ def _benchmark_report():
         "sample_count": 1000, "segment_count": 11,
         "primitive_count": 9, "passed_primitive_count": 9,
         "final_zero_published": True, "spawn_pose_name": "flat20_start",
+        "command_rate_hz": 20.0,
+        "thresholds": {
+            "linear_mae_mps": 0.06, "angular_mae_radps": 0.12,
+            "radius_relative_error_percent": 20.0, "tracking_fraction": 0.85,
+            "transition_latency_sec": 0.45, "overshoot_ratio": 1.25,
+            "wrong_direction_fraction": 0.05,
+        },
         "stationary_reference": stationary, "primitives": primitives,
         "reset_receipts": receipts,
     }
@@ -278,16 +294,18 @@ def test_command_windows_require_stationary_and_three_s_segments():
 
     for stamp in (0.0, 5.0, 10.0):
         add(1, stamp, (0.0, 0.0))
-    for generation, commands in zip(range(2, 10), EXPECTED_COMMANDS[:8]):
+    durations = (12.566, 12.566, 4.0, 4.0, 4.0, 4.0, 4.0, 4.0)
+    for generation, commands, duration in zip(range(2, 10), EXPECTED_COMMANDS[:8], durations):
         stamp = generation * 20.0
         add(generation, stamp, commands[0])
-        add(generation, stamp + 1.0, commands[0])
-        add(generation, stamp + 1.1, (0.0, 0.0))
+        add(generation, stamp + duration, commands[0])
+        add(generation, stamp + duration + 0.1, (0.0, 0.0))
     stamp = 200.0
-    for index, target in enumerate(((0.25, 0.45), (0.25, -0.45), (0.25, 0.45))):
-        add(10, stamp + index * 2.0, target)
-        add(10, stamp + index * 2.0 + 1.0, target)
-    add(10, stamp + 6.1, (0.0, 0.0))
+    for index, (target, duration) in enumerate(zip(((0.25, 0.45), (0.25, -0.45), (0.25, 0.45)), (2.5, 5.0, 2.5))):
+        add(10, stamp, target)
+        add(10, stamp + duration, target)
+        stamp += duration + 0.1
+    add(10, stamp, (0.0, 0.0))
     windows = command_windows(rows, report)
     assert len(windows) == 12
     assert windows[0]["id"] == "stationary_reference"
@@ -328,8 +346,11 @@ def test_report_contract_classifies_truncation_and_zero_samples_ambiguous():
 def test_goal_contract_rejects_nonfinite_and_requires_source():
     goal = {
         "schema_version": 1, "source": "goal_mcap_derived",
-        "source_mcap": "/tmp/goal.mcap", "reset_receipt": {"generation": 1, "pose": "goal"},
+        "source_mcap": "/tmp/goal.mcap", "reset_receipt": {
+            "requested_seed": 7, "actual_seed": 7, "generation": 1, "pose": "goal"
+        },
         "outcome": "SUCCEEDED", "collision_detected": False,
+        "bag_verified": True, "goal_window": {"start_s": 1.0, "end_s": 2.0},
         "raw_integrated_yaw_rad": [0.0, 0.5, 1.0],
         "ground_truth_relative_yaw_rad": [0.0, 0.49, 0.98],
     }
@@ -388,7 +409,293 @@ def test_structured_output_survives_truncated_report(tmp_path):
         mcap=tmp_path / "bag",
         phase_jsonl=tmp_path / "phase.jsonl",
         benchmark_report=benchmark,
+        config_path=CONFIG,
+        spawn_poses_path=SPAWN,
     )
     assert result["verdict"] == "AMBIGUOUS"
     assert result["evidence_errors"][0]["code"] == "benchmark_unreadable"
     assert result["segments"] == []
+
+
+def _complete_phase_rows(duration_override=None, *, stationary_duration=10.0):
+    rows = []
+    sequence = 0
+
+    def add(generation, stamp, target):
+        nonlocal sequence
+        rows.append({
+            "kind": "loop", "loop_sequence": sequence,
+            "reset_generation": generation,
+            "reset_generation_after_ground_truth": generation,
+            "simulation_time_after_app_s": stamp,
+            "assist": {"target": list(target)},
+        })
+        sequence += 1
+
+    add(1, 0.0, (0.0, 0.0))
+    add(1, stationary_duration, (0.0, 0.0))
+    cursor = 20.0
+    durations = ((12.566,), (12.566,), *((4.0,) for _ in range(6)), (2.5, 5.0, 2.5))
+    for primitive_index, (generation, commands, primitive_durations) in enumerate(
+        zip(range(2, 11), EXPECTED_COMMANDS, durations)
+    ):
+        for segment_index, (command, duration) in enumerate(zip(commands, primitive_durations)):
+            actual = (
+                duration_override
+                if duration_override == (primitive_index, segment_index, "short")
+                else duration
+            )
+            if actual == (primitive_index, segment_index, "short"):
+                raise AssertionError("invalid test override")
+            if duration_override == (primitive_index, segment_index):
+                actual = 0.6 if duration <= 4.0 else 1.0
+            add(generation, cursor, command)
+            add(generation, cursor + actual, command)
+            cursor += actual + 0.1
+        add(generation, cursor, (0.0, 0.0))
+        cursor += 2.0
+    return rows
+
+
+@pytest.mark.parametrize(
+    "primitive_index,segment_index",
+    [
+        (primitive_index, segment_index)
+        for primitive_index, count in enumerate(EXPECTED_SEGMENT_COUNTS)
+        for segment_index in range(count)
+    ],
+)
+def test_every_short_primitive_window_is_never_candidate(primitive_index, segment_index):
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(
+            _complete_phase_rows((primitive_index, segment_index)),
+            _benchmark_report(),
+        )
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code == "primitive_phase_short"
+
+
+def test_short_stationary_window_is_ambiguous():
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(
+            _complete_phase_rows(stationary_duration=1.0),
+            _benchmark_report(),
+        )
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code == "stationary_phase_window"
+
+
+def test_report_duration_threshold_and_generation_contracts_fail_closed():
+    import copy
+
+    report = _benchmark_report()
+    report["primitives"][0]["segments"][0]["duration_sec"] = 0.6
+    with pytest.raises(EvidenceError) as raised:
+        validate_benchmark_report(report)
+    assert raised.value.code == "benchmark_segment_contract"
+
+    report = _benchmark_report()
+    report["thresholds"]["angular_mae_radps"] = 0.2
+    with pytest.raises(EvidenceError) as raised:
+        validate_benchmark_report(report)
+    assert raised.value.code == "benchmark_thresholds"
+
+    for field, value in (("reset_seed", 8610.0), ("reset_seed", True)):
+        report = _benchmark_report()
+        report["primitives"][0][field] = value
+        with pytest.raises(EvidenceError) as raised:
+            validate_benchmark_report(report)
+        assert raised.value.code == "benchmark_seed"
+
+    report = _benchmark_report()
+    report["primitives"][4]["reset_receipt"]["generation"] += 1
+    report["reset_receipts"] = [
+        report["stationary_reference"]["reset_receipt"],
+        *[item["reset_receipt"] for item in report["primitives"]],
+    ]
+    with pytest.raises(EvidenceError) as raised:
+        validate_benchmark_report(report)
+    assert raised.value.code == "generation_gap"
+
+    report = _benchmark_report()
+    report["primitives"][0]["reset_receipt"]["actual_seed"] = 8610.0
+    with pytest.raises(EvidenceError) as raised:
+        validate_benchmark_report(report)
+    assert raised.value.code == "receipt_mismatch"
+
+
+def test_wrong_explicit_config_and_phase_config_source_fail(tmp_path):
+    config = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    config["primitives"][0]["segments"][0]["duration_sec"] = 1.0
+    wrong = tmp_path / "wrong.yaml"
+    wrong.write_text(yaml.safe_dump(config), encoding="utf-8")
+    with pytest.raises(EvidenceError) as raised:
+        resolve_diagnostic_resources(wrong, SPAWN)
+    assert raised.value.code == "diagnostic_config_mismatch"
+
+    resources = resolve_diagnostic_resources(CONFIG, SPAWN)
+    provenance = {
+        "contract": "v6_imu_regime_flat20_v1",
+        "environment_usd": "/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/default_environment.usd",
+        "spawn_poses_file": str(SPAWN.resolve()),
+        "spawn_pose": "flat20_start",
+        "odometry_mode": "realistic", "navigation_mode": "mapping",
+        "dynamic_obstacles_enabled": False, "ground_truth_enabled": True,
+        "diagnostic_config_file": str(wrong.resolve()),
+    }
+    phase = [{
+        "kind": "manifest", "schema": "bio_nav_v6_imu_regime_phase_trace_v1",
+        "passive": True, "provenance": provenance,
+    }]
+    with pytest.raises(EvidenceError) as raised:
+        validate_phase_trace(phase, resources)
+    assert raised.value.code == "phase_provenance_mismatch"
+
+
+def test_installed_resource_manifest_resolves_real_share_layout(monkeypatch, tmp_path):
+    share = tmp_path / "share/robot_experiments"
+    (share / "config").mkdir(parents=True)
+    (share / "environments").mkdir()
+    shutil.copy2(CONFIG, share / "config/v6_imu_regime_diagnostic.yaml")
+    shutil.copy2(PACKAGE_ROOT / "config/v6_imu_regime_resources.json", share / "config/v6_imu_regime_resources.json")
+    shutil.copy2(SPAWN, share / "environments/v6_calibration_flat_20m.spawn.yaml")
+    packages = SimpleNamespace(get_package_share_directory=lambda _name: str(share))
+    monkeypatch.setitem(sys.modules, "ament_index_python", SimpleNamespace(packages=packages))
+    monkeypatch.setitem(sys.modules, "ament_index_python.packages", packages)
+    resources = resolve_diagnostic_resources()
+    assert resources.config_path == (share / "config/v6_imu_regime_diagnostic.yaml").resolve()
+    assert resources.spawn_poses_path == (share / "environments/v6_calibration_flat_20m.spawn.yaml").resolve()
+    assert resources.identity["contract"] == "v6_imu_regime_flat20_v2"
+
+
+def _goal_records(*, collision=False, completion=True, raw_nonfinite=False, second_reset=False, duplicate_raw=False):
+    def stamp(value):
+        sec = int(value)
+        return SimpleNamespace(sec=sec, nanosec=int(round((value - sec) * 1e9)))
+
+    def imu(value, rate):
+        return SimpleNamespace(
+            header=SimpleNamespace(stamp=stamp(value)),
+            angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=rate),
+        )
+
+    def odom(value, yaw):
+        return SimpleNamespace(
+            header=SimpleNamespace(stamp=stamp(value)),
+            pose=SimpleNamespace(pose=SimpleNamespace(orientation=SimpleNamespace(
+                x=0.0, y=0.0, z=math.sin(yaw / 2.0), w=math.cos(yaw / 2.0)
+            ))),
+        )
+
+    def twist(linear, angular):
+        return SimpleNamespace(
+            linear=SimpleNamespace(x=linear), angular=SimpleNamespace(z=angular)
+        )
+
+    receipt = json.dumps({
+        "pose": "goal", "seed": 42, "odometry": "realistic",
+        "generation": 2, "case_id": "", "variant_id": "",
+    }, separators=(",", ":"), sort_keys=True)
+    raw_times = (2.0, 2.5, 2.5 if duplicate_raw else 3.0)
+    records = [
+        ("/simulation/reset_event", SimpleNamespace(), int(1.0e9)),
+        ("/rosout", SimpleNamespace(stamp=stamp(1.1), msg=f"complete; reset_receipt={receipt}"), int(1.1e9)),
+        ("/simulation/collision", SimpleNamespace(data=False), int(1.5e9)),
+    ]
+    for index, value in enumerate(raw_times):
+        records.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), int(value * 1e9)))
+    for value in (2.0, 2.5, 3.0):
+        records.append(("/ground_truth/odom", odom(value, 0.5 * (value - 2.0)), int(value * 1e9)))
+        records.append(("/cmd_vel", twist(0.25, 0.4), int(value * 1e9)))
+    records.extend([
+        ("/simulation/collision", SimpleNamespace(data=collision), int(2.5e9)),
+        ("/simulation/collision", SimpleNamespace(data=False), int(3.4e9)),
+        ("/bio_nav/route_goal_complete", SimpleNamespace(data=completion), int(3.5e9)),
+    ])
+    if second_reset:
+        records.append(("/simulation/reset_event", SimpleNamespace(), int(1.2e9)))
+    return records
+
+
+def _goal_types():
+    return {
+        "/imu/data_raw": "sensor_msgs/msg/Imu",
+        "/ground_truth/odom": "nav_msgs/msg/Odometry",
+        "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/simulation/reset_event": "std_msgs/msg/Empty",
+        "/simulation/collision": "std_msgs/msg/Bool",
+        "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
+        "/rosout": "rcl_interfaces/msg/Log",
+    }
+
+
+def _goal_metadata(path):
+    return {
+        "schema_version": 1, "source": "goal_mcap_outcome_metadata",
+        "source_mcap": str(path.resolve()),
+        "reset_receipt": {
+            "requested_seed": 42, "actual_seed": 42,
+            "generation": 2, "pose": "goal",
+        },
+        "outcome": "SUCCEEDED", "collision_detected": False,
+        # These untrusted arrays must be ignored in favor of MCAP derivation.
+        "raw_integrated_yaw_rad": [999.0],
+        "ground_truth_relative_yaw_rad": [999.0],
+    }
+
+
+def test_goal_mcap_derives_arrays_and_ignores_manual_arrays(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(monkeypatch, _goal_types(), _goal_records())
+    result = load_goal_mcap(bag, _goal_metadata(bag))
+    assert result["bag_verified"] is True
+    assert result["outcome"] == "SUCCEEDED"
+    assert result["collision_detected"] is False
+    assert result["raw_integrated_yaw_rad"] != [999.0]
+    assert result["ground_truth_relative_yaw_rad"] != [999.0]
+    assert result["goal_window"]["start_s"] == pytest.approx(2.0)
+    assert result["goal_window"]["end_s"] == pytest.approx(3.0)
+
+
+@pytest.mark.parametrize(
+    "record_options,metadata_mutation,expected_verdict,expected_code",
+    [
+        ({"raw_nonfinite": True}, None, "FAIL", "goal_imu_nonfinite"),
+        ({"collision": True}, None, "FAIL", "goal_collision"),
+        ({"second_reset": True}, None, "FAIL", "goal_reset_count"),
+        ({"completion": False}, None, "AMBIGUOUS", "goal_outcome_count"),
+        ({"duplicate_raw": True}, None, "FAIL", "goal_stamp_order"),
+        ({}, ("outcome", "FAILED"), "FAIL", "goal_outcome_invalid"),
+    ],
+)
+def test_goal_mcap_adversarial_contract(
+    monkeypatch, tmp_path, record_options, metadata_mutation,
+    expected_verdict, expected_code,
+):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(monkeypatch, _goal_types(), _goal_records(**record_options))
+    metadata = _goal_metadata(bag)
+    if metadata_mutation is not None:
+        metadata[metadata_mutation[0]] = metadata_mutation[1]
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, metadata)
+    assert raised.value.verdict == expected_verdict
+    assert raised.value.code == expected_code
+
+
+def test_goal_mcap_path_and_reset_number_types_fail(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(monkeypatch, _goal_types(), _goal_records())
+    metadata = _goal_metadata(bag)
+    metadata["source_mcap"] = str(tmp_path / "other")
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, metadata)
+    assert raised.value.code == "goal_source_mismatch"
+
+    for field, value in (("actual_seed", 42.0), ("generation", True)):
+        metadata = _goal_metadata(bag)
+        metadata["reset_receipt"][field] = value
+        with pytest.raises(EvidenceError) as raised:
+            load_goal_mcap(bag, metadata)
+        assert raised.value.verdict == "FAIL"
+        assert raised.value.code == "integer_contract"

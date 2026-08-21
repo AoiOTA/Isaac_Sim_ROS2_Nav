@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "contract": "v6_imu_regime_flat20_v2",
+  "diagnostic_config": "config/v6_imu_regime_diagnostic.yaml",
+  "spawn_poses": "environments/v6_calibration_flat_20m.spawn.yaml"
+}

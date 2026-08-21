@@ -64,3 +64,78 @@ qualification was run. Live closure remains pending. Keep `0.9294` during the
 capture and run the locked flat20 session: stationary, all nine primitives,
 then the separately provenance-bearing Kujiale Estimated goal. Only the full
 contract can produce `PASS_CANDIDATE` or `CONFIRMED_NO_GLOBAL_CONSTANT`.
+
+## Final duration, goal-MCAP, and installed-resource closure
+
+- Follow-up start HEAD:
+  `238be5522f74b6f25af76e5baa3d0980ea7c7be6`.
+- The analyzer now resolves the diagnostic YAML and flat20 spawn YAML through
+  the installed `robot_experiments` package-share manifest by default. A
+  source-first invocation must pass both absolute `--config` and
+  `--spawn-poses-file` paths. The trace manifest records both resolved paths;
+  `__file__.parents` is no longer used for evidence identity.
+- The locked Isaac runner resolves those same installed resources with
+  `ros2 pkg prefix robot_experiments` and passes the diagnostic config to the
+  passive trace CLI. The installed spawn/config content must match the bounded
+  source contract. A stale underlay without the manifest exits before Isaac.
+- Report thresholds, command rate, every requested segment duration, command
+  and order are checked against the resolved config. Phase command duration
+  and the raw/corrected/GT common-window duration must cover the configured
+  `12.566 s` rotations, `4 s` arcs, and `2.5/5/2.5 s` S segments within
+  `max(two phase periods, 2%)`, capped at `0.25 s`. Short `0.6/1 s` windows
+  cannot become candidates.
+- Stationary plus nine motion reset receipts require exact Python `int`
+  seeds/generations (booleans and floats rejected), identical top/primitive
+  receipts, and ten consecutive generations. Extra phase generations at or
+  after the stationary generation are hidden-reset `FAIL`.
+- Goal evidence now requires `--goal-mcap`. The analyzer derives the motion
+  window, common-grid raw-IMU integral, and GT-relative yaw directly from the
+  MCAP. Required topics are `/imu/data_raw`, `/ground_truth/odom`, `/cmd_vel`,
+  `/simulation/reset_event`, `/simulation/collision`,
+  `/bio_nav/route_goal_complete`, and `/rosout`. It requires one reset event,
+  one parseable reset receipt log, one fresh successful route completion,
+  collision-free samples, finite typed data, strict fresh-epoch stamps, and
+  nonzero-command coverage. Pre-reset samples are excluded by record order.
+- `--goal-evaluator` is metadata only, with
+  `source=goal_mcap_outcome_metadata`; its resolved `source_mcap`, requested
+  and actual seed, generation, pose, outcome, and collision fields must match
+  the bag. Any arrays in that JSON are ignored. Omitting `--goal-mcap` is
+  `AMBIGUOUS`; path/type/nonfinite/stamp/reset/outcome/collision mismatch is
+  fail closed.
+
+Installed entrypoints for the next authorized capture are:
+
+```bash
+PREFIX="$(ros2 pkg prefix robot_experiments)"
+ros2 run robot_experiments motion_benchmark \
+  --config "$PREFIX/share/robot_experiments/config/v6_imu_regime_diagnostic.yaml" \
+  --output /absolute/path/motion_report.json
+
+ros2 run robot_experiments imu_regime_analysis \
+  --mcap /absolute/path/flat20_mcap \
+  --phase-jsonl /absolute/path/phase.jsonl \
+  --benchmark-report /absolute/path/motion_report.json \
+  --goal-mcap /absolute/path/goal_mcap \
+  --goal-evaluator /absolute/path/goal_metadata.json \
+  --output /absolute/path/imu_regime_analysis.json
+```
+
+Final validation for this follow-up is code/build/unit only:
+
+- focused source-first/no-cache IMU, ordinary MotionBenchmark, phase, graph,
+  and reset-gate tests: **80 passed**;
+- full `robot_experiments` plus related Isaac selection: **506 passed, 1
+  unrelated pre-existing frozen-reference absolute-path failure**;
+- fresh isolated build/install:
+  `/tmp/v6_imu_contract_build.BJXc1r`,
+  `/tmp/v6_imu_contract_install.KHMxhH`, and
+  `/tmp/v6_imu_contract_log.45afly`;
+- installed-package focused tests: **37 passed**; installed `ros2 run
+  robot_experiments imu_regime_analysis --help`, package-share manifest,
+  config/spawn lookup, and import identity: PASS;
+- `py_compile`, YAML/resource loading, `bash -n`, and `git diff --check`: PASS.
+
+No Isaac, ROS graph, MotionBenchmark live run, MCAP capture, navigation goal,
+calibration choice, or formal qualification was performed. The frozen
+`yaw_scale=0.9294` and RF2O-off policy remain unchanged; live closure is still
+pending.

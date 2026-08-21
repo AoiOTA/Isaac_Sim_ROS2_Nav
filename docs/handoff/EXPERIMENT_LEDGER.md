@@ -750,6 +750,33 @@
   active-reset review before making an engineering-runtime claim.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
+## 2026-08-22 — V6 IMU duration, goal-MCAP, and installed-resource closure
+
+- Goal: close the remaining evidence-contract paths that could promote a
+  short primitive, hand-authored goal yaw array, stale source-tree resource,
+  non-integer seed/generation, or hidden reset.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `238be5522f74b6f25af76e5baa3d0980ea7c7be6`.
+- Changes: installed package-share manifest for the diagnostic config and
+  flat20 spawn resource; installed-path runner/provenance; config/report/phase/
+  common-grid duration and threshold checks; exact integer and consecutive
+  reset receipts; direct `--goal-mcap` derivation from raw IMU, GT, final
+  command, reset event/receipt log, collision, and route completion. Goal JSON
+  is metadata-only and manual arrays are ignored. MotionBenchmark gained only
+  an evidence report `duration_sec` field; playback behavior is unchanged.
+- Validation: focused source-first/no-cache **80 passed**; full package plus
+  related Isaac **506 passed** with one unrelated frozen-reference absolute-
+  path mismatch; fresh isolated build/install PASS at
+  `/tmp/v6_imu_contract_build.BJXc1r`,
+  `/tmp/v6_imu_contract_install.KHMxhH`,
+  `/tmp/v6_imu_contract_log.45afly`; installed focused **37 passed** and real
+  `ros2 run`/package-share lookup PASS; pycompile, `bash -n`, and diff check
+  PASS.
+- Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/MCAP/motion/goal
+  runtime or formal qualification was run. `yaw_scale=0.9294` and RF2O off are
+  unchanged; live regime capture remains pending.
+- Handoff: `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
 ## 2026-08-22 — V6 IMU regime diagnostic instrumentation
 
 - Goal/hypothesis: add passive loop-phase evidence and a reproducible offline
