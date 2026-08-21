@@ -501,7 +501,11 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
         "generation": 4, "pose": "flat20_start",
     }
     node = SimpleNamespace(
-        _config=SimpleNamespace(stationary_reference=reference, command_rate_hz=20.0),
+        _config=SimpleNamespace(
+            stationary_reference=reference,
+            command_rate_hz=20.0,
+            final_settle_sec=0.8,
+        ),
         _samples=[], _collision_detected=False, _recording=False,
         _segment_index=-1, _segment_started_at=0.0,
         _command_linear=0.0, _command_angular=0.0,
@@ -527,6 +531,7 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
 
     node._reset = reset
     node._spin_once = spin
+    node._settle = MethodType(MotionBenchmarkNode._settle, node)
     result = MotionBenchmarkNode._stationary_reference(node)
     assert result["passed"] is True
     assert result["reset_seed"] == 8609
@@ -534,7 +539,62 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
     assert result["measured_duration_sec"] >= 9.9
     assert result["collision_detected"] is False
     assert result["final_zero_published"] is True
+    schedule = result["segment_schedule"]
+    assert len(schedule) == 1
+    assert schedule[0]["segment_index"] == 0
+    assert schedule[0]["start_sim_s"] == 0.0
+    assert 10.0 <= schedule[0]["end_sim_s"] <= 10.11
+    assert schedule[0]["expected_duration_s"] == 10.0
+    assert schedule[0]["command_linear_mps"] == 0.0
+    assert schedule[0]["command_angular_radps"] == 0.0
+    assert schedule[0]["intent_publish_count"] > 0
+    assert schedule[0]["completion"] == "COMPLETED"
+    assert schedule[0]["truncated"] is False
+    assert result["final_zero_publish_receipt"]["publish_count"] > 0
+    assert (
+        result["final_zero_publish_receipt"]["last_sim_s"]
+        - result["final_zero_publish_receipt"]["first_sim_s"]
+        >= 0.8
+    )
     assert published and set(published) == {(0.0, 0.0)}
+
+
+def test_play_segment_records_immutable_truncated_schedule_on_stop(monkeypatch):
+    published = []
+    node = SimpleNamespace(
+        _config=SimpleNamespace(command_rate_hz=20.0),
+        _clock_s=1.0,
+        _segment_schedule=[],
+        _publish=lambda linear, angular: published.append((linear, angular)),
+        _assert_sim_clock_live=lambda: None,
+    )
+    calls = [0]
+
+    def spin(_timeout):
+        calls[0] += 1
+        node._clock_s += 0.05
+        if calls[0] == 3:
+            raise MotionSafetyStop("forced_stop")
+
+    node._spin_once = spin
+    monkeypatch.setattr(
+        "robot_experiments.motion_benchmark.time.monotonic",
+        lambda: 10.0 + calls[0] * 0.1,
+    )
+    with pytest.raises(MotionSafetyStop, match="forced_stop"):
+        MotionBenchmarkNode._play_segment(
+            node, 0, MotionSegment(1.0, 0.2, -0.5)
+        )
+    receipt = node._segment_schedule[0]
+    assert receipt["segment_index"] == 0
+    assert receipt["start_sim_s"] == 1.0
+    assert receipt["end_sim_s"] == pytest.approx(1.15)
+    assert receipt["expected_duration_s"] == 1.0
+    assert receipt["command_linear_mps"] == 0.2
+    assert receipt["command_angular_radps"] == -0.5
+    assert receipt["intent_publish_count"] > 0
+    assert receipt["completion"] == "TRUNCATED"
+    assert receipt["truncated"] is True
 
 
 def test_motion_benchmark_rejects_duplicate_primitive_ids(tmp_path):

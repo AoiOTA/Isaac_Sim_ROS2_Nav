@@ -9,12 +9,16 @@ from types import SimpleNamespace
 
 import pytest
 import yaml
+import robot_experiments.imu_regime_analysis as imu_analysis
 
 from robot_experiments.imu_regime_analysis import (
     EvidenceError,
     EXPECTED_COMMANDS,
     EXPECTED_PRIMITIVE_IDS,
     EXPECTED_SEGMENT_COUNTS,
+    CommandSample,
+    McapStreams,
+    ResetSample,
     ScalarSample,
     YawSample,
     analyze_segment,
@@ -313,6 +317,106 @@ def test_command_windows_require_stationary_and_three_s_segments():
     assert [item["id"] for item in windows[-3:]] == ["s_route[0]", "s_route[1]", "s_route[2]"]
 
 
+def _session_a_command_streams(report):
+    topics = ("/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim")
+    streams = {topic: [] for topic in topics}
+    streams["/simulation/reset_event"] = []
+    entries = [report["stationary_reference"], *report["primitives"]]
+    commands = [((0.0, 0.0),), *EXPECTED_COMMANDS]
+    durations = [(10.0,), (12.566,), (12.566,), *((4.0,) for _ in range(6)), (2.5, 5.0, 2.5)]
+    phase = []
+    for epoch_index, (entry, entry_commands, entry_durations) in enumerate(zip(entries, commands, durations)):
+        base = epoch_index * 30.0
+        streams["/simulation/reset_event"].append(ResetSample(base, base))
+        generation = entry["reset_receipt"]["generation"]
+        phase.append({"kind": "loop", "reset_generation": generation, "reset_generation_after_ground_truth": generation})
+        start = base + 1.0
+        for topic in topics:
+            streams[topic].append(CommandSample(base + 0.1, 0.0, 0.0, base + 0.1))
+            streams[topic].append(CommandSample(start - 0.1, 0.0, 0.0, start - 0.1))
+        for command, duration in zip(entry_commands, entry_durations):
+            count = math.ceil(duration / 0.05)
+            for sample_index in range(count):
+                stamp = start + sample_index * 0.05
+                for topic in topics:
+                    streams[topic].append(CommandSample(stamp, command[0], command[1], stamp))
+            start += duration
+        for sample_index in range(18):
+            stamp = start + sample_index * 0.05
+            for topic in topics:
+                streams[topic].append(CommandSample(stamp, 0.0, 0.0, stamp))
+    return McapStreams(streams, provenance={}), phase
+
+
+def test_mcap_intent_restores_one_cw_and_three_s_segments_despite_downstream_plateaus():
+    report = _benchmark_report()
+    streams, phase = _session_a_command_streams(report)
+    # Downstream ramp/plateau values are coverage only and cannot split intent.
+    for topic in ("/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"):
+        samples = list(streams[topic])
+        for index, sample in enumerate(samples):
+            if sample.angular_radps == -0.5 and index % 3 == 0:
+                samples[index] = CommandSample(sample.stamp_s, sample.linear_mps / 2.0, -0.35, sample.recorded_s)
+        streams[topic] = samples
+    windows = command_windows(phase, report, streams)
+    assert sum(item["id"] == "cw_360" for item in windows) == 1
+    assert [item["id"] for item in windows[-3:]] == ["s_route[0]", "s_route[1]", "s_route[2]"]
+
+
+@pytest.mark.parametrize("mutation,code", [
+    ("intent_missing", "intent_missing"),
+    ("intent_sign", "intent_missing"),
+    ("intent_duration", "intent_missing"),
+    ("final_leak", "final_nav_zero"),
+    ("hidden_reset", "phase_hidden_reset"),
+])
+def test_session_a_binding_rejects_missing_wrong_short_leak_and_hidden_reset(mutation, code):
+    report = _benchmark_report()
+    streams, phase = _session_a_command_streams(report)
+    generation = report["primitives"][0]["reset_receipt"]["generation"]
+    reset = streams["/simulation/reset_event"][1]
+    next_reset = streams["/simulation/reset_event"][2]
+    nav = streams["/cmd_vel_nav"]
+    epoch = [sample for sample in nav if reset.recorded_s <= sample.recorded_s < next_reset.recorded_s]
+    if mutation == "intent_missing":
+        streams["/cmd_vel_nav"] = [sample for sample in nav if sample not in epoch or sample.angular_radps != -0.5]
+    elif mutation == "intent_sign":
+        streams["/cmd_vel_nav"] = [
+            CommandSample(sample.stamp_s, sample.linear_mps, 0.5, sample.recorded_s)
+            if sample in epoch and sample.angular_radps == -0.5 else sample for sample in nav
+        ]
+    elif mutation == "intent_duration":
+        matching = [sample for sample in epoch if sample.angular_radps == -0.5]
+        streams["/cmd_vel_nav"] = [sample for sample in nav if sample not in matching[len(matching) // 4:]]
+    elif mutation == "final_leak":
+        last = max(sample.stamp_s for sample in epoch)
+        streams["/cmd_vel_nav"].append(CommandSample(last, 0.1, 0.1, last))
+        streams["/cmd_vel_nav"].sort(key=lambda sample: sample.recorded_s)
+    else:
+        phase.append({"kind": "loop", "reset_generation": 99, "reset_generation_after_ground_truth": 99})
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(phase, report, streams)
+    assert raised.value.code == code
+
+
+def test_phase_crossing_is_rejected_and_final_sim_zero_defects_are_classified():
+    crossing = [_phase_row(0, generation=3)]
+    crossing[0]["reset_generation_after_ground_truth"] = 4
+    assert phase_window_metrics(crossing, start_s=1.0, end_s=1.0, reset_generation=3)["status"] == "FAIL"
+
+    report = _benchmark_report()
+    streams, phase = _session_a_command_streams(report)
+    reset = streams["/simulation/reset_event"][1]
+    next_reset = streams["/simulation/reset_event"][2]
+    sim = streams["/cmd_vel_sim"]
+    epoch = [sample for sample in sim if reset.recorded_s <= sample.recorded_s < next_reset.recorded_s]
+    zeros = [sample for sample in epoch if sample.angular_radps == 0.0 and sample.stamp_s > reset.stamp_s + 13.0]
+    streams["/cmd_vel_sim"] = [sample for sample in sim if sample not in zeros[2:-2]]
+    windows = command_windows(phase, report, streams)
+    cw = next(item for item in windows if item["id"] == "cw_360")
+    assert any(item["code"] in {"final_sim_zero_short", "final_sim_zero_gap"} for item in cw["capture_issues"])
+
+
 def test_report_contract_rejects_extra_duplicate_stop_collision_and_receipt():
     report = _benchmark_report()
     assert validate_benchmark_report(report) is report
@@ -337,6 +441,44 @@ def test_report_contract_classifies_truncation_and_zero_samples_ambiguous():
     with pytest.raises(EvidenceError) as raised:
         validate_benchmark_report(report)
     assert raised.value.verdict == "AMBIGUOUS"
+
+
+def test_schema2_schedule_receipts_are_required_and_truncation_fails_closed():
+    import copy
+
+    report = _benchmark_report()
+    report["schema_version"] = 2
+    report["final_settle_sec"] = 0.8
+    entries = [report["stationary_reference"], *report["primitives"]]
+    commands = [((0.0, 0.0),), *EXPECTED_COMMANDS]
+    durations = [(10.0,), (12.566,), (12.566,), *((4.0,) for _ in range(6)), (2.5, 5.0, 2.5)]
+    for epoch_index, (entry, entry_commands, entry_durations) in enumerate(zip(entries, commands, durations)):
+        cursor = epoch_index * 30.0 + 1.0
+        entry["segment_schedule"] = []
+        for segment_index, (command, duration) in enumerate(zip(entry_commands, entry_durations)):
+            entry["segment_schedule"].append({
+                "segment_index": segment_index,
+                "start_sim_s": cursor,
+                "end_sim_s": cursor + duration,
+                "expected_duration_s": duration,
+                "command_linear_mps": command[0],
+                "command_angular_radps": command[1],
+                "intent_publish_count": math.ceil(duration * 20.0),
+                "completion": "COMPLETED",
+                "truncated": False,
+            })
+            cursor += duration
+        entry["final_zero_publish_receipt"] = {
+            "first_sim_s": cursor, "last_sim_s": cursor + 0.8,
+            "publish_count": 16,
+        }
+    assert validate_benchmark_report(report) is report
+    stopped = copy.deepcopy(report)
+    stopped["primitives"][0]["segment_schedule"][0]["completion"] = "TRUNCATED"
+    stopped["primitives"][0]["segment_schedule"][0]["truncated"] = True
+    with pytest.raises(EvidenceError) as raised:
+        validate_benchmark_report(stopped)
+    assert raised.value.code == "benchmark_schedule_contract"
     report = _benchmark_report()
     report["primitives"][0]["sample_count"] = 0
     with pytest.raises(EvidenceError) as raised:
@@ -451,6 +593,63 @@ def test_structured_output_survives_truncated_report(tmp_path):
     assert result["verdict"] == "AMBIGUOUS"
     assert result["evidence_errors"][0]["code"] == "benchmark_unreadable"
     assert result["segments"] == []
+
+
+def test_performance_failure_keeps_segment_metrics_but_never_authorizes_scale(monkeypatch, tmp_path):
+    report = _benchmark_report()
+    report["passed"] = False
+    report["primitives"][2]["passed"] = False
+    report["passed_primitive_count"] = 8
+    benchmark = tmp_path / "benchmark.json"
+    benchmark.write_text(json.dumps(report), encoding="utf-8")
+    phase_path = tmp_path / "phase.jsonl"
+    phase_path.write_text('{}\n', encoding="utf-8")
+    raw, corrected, gt = _series(0.93)
+    streams = McapStreams({
+        "/imu/data_raw": raw,
+        "/imu/data": corrected,
+        "/ground_truth/odom": gt,
+    }, provenance={})
+    identifiers = [
+        "stationary_reference", *EXPECTED_PRIMITIVE_IDS[:-1],
+        "s_route[0]", "s_route[1]", "s_route[2]",
+    ]
+    commands = [
+        (0.0, 0.0), *[item[0] for item in EXPECTED_COMMANDS[:-1]],
+        *EXPECTED_COMMANDS[-1],
+    ]
+    windows = [
+        {
+            "id": identifier, "generation": index + 1,
+            "linear": command[0], "angular": command[1],
+            "start_s": 0.0, "end_s": 10.0,
+            "expected_duration_s": 10.0,
+            "observed_command_duration_s": 10.0,
+            "duration_tolerance_s": 0.25,
+            "capture_issues": [],
+        }
+        for index, (identifier, command) in enumerate(zip(identifiers, commands))
+    ]
+    monkeypatch.setattr(imu_analysis, "validate_phase_trace", lambda phase, resources: {})
+    monkeypatch.setattr(imu_analysis, "load_mcap", lambda path: streams)
+    monkeypatch.setattr(imu_analysis, "command_windows", lambda phase, report, streams: windows)
+    monkeypatch.setattr(imu_analysis, "phase_window_metrics", lambda *args, **kwargs: {"status": "OK"})
+    result = run_analysis(
+        mcap=tmp_path / "bag",
+        phase_jsonl=phase_path,
+        benchmark_report=benchmark,
+        config_path=CONFIG,
+        spawn_poses_path=SPAWN,
+        obstacle_config_path=FEATURES,
+    )
+    assert result["performance_status"] == "FAIL"
+    assert result["verdict"] == "FAIL"
+    assert result["scale_selection_authorized"] is False
+    assert len(result["segments"]) == 12
+    assert all(item["k_star"] is not None for item in result["segments"])
+    assert all(item["raw_aligned_rmse_rad"] is not None for item in result["segments"])
+    assert all(item["raw_aligned_p95_rad"] is not None for item in result["segments"])
+    assert all(item["scale_interval_le_5deg"] for item in result["segments"])
 
 
 def _complete_phase_rows(duration_override=None, *, stationary_duration=10.0):

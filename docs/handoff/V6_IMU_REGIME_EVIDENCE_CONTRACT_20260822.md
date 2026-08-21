@@ -374,3 +374,68 @@ LiDAR readiness capture, stationary/primitive session, MCAP, calibration
 selection, or formal qualification was run. Attempt 3 remains **PENDING**;
 `yaw_scale=0.9294`, RF2O-off, CollisionMonitor, route/reset/benchmark, and
 critic semantics are unchanged.
+
+## Smoother-aware schedule and Attempt 3 retroactive analysis
+
+- Amendment start HEAD:
+  `6af4fde9b6b6eaa095f4c0f25ff34a561766ecc8`.
+- MotionBenchmark report schema 2 adds an immutable per-segment simulation
+  schedule receipt: index, start/end simulation time, expected duration,
+  upstream `/cmd_vel_nav` linear/angular intent, publish count, and
+  completed/truncated status. The stationary reference records the same
+  schedule shape. Final-zero booleans remain only for schema-1 compatibility;
+  schema 2 records zero publish time/count receipts and the analyzer derives
+  authority from downstream MCAP evidence. Command values, playback timing,
+  thresholds, reset/gate logic, and ordinary benchmark evaluation are
+  unchanged.
+- The Session A analyzer now requires exact MCAP types and finite samples for
+  `/clock`, `/simulation/reset_event`, `/cmd_vel_nav`,
+  `/cmd_vel_smoothed`, `/cmd_vel`, and `/cmd_vel_sim` in addition to the yaw
+  streams. Reset events, consecutive report generations, the report schedule,
+  and upstream intent bind each primitive. Smoother/CollisionMonitor/gate
+  ramps are coverage evidence only: CW/CCW/arcs remain one segment and the S
+  route is exactly `(+0.45,2.5 s) -> (-0.45,5.0 s) -> (+0.45,2.5 s)`.
+  Generation-crossing phase rows are excluded/fail closed.
+- Final-stop evidence requires a final upstream zero, bounded downstream-zero
+  latency, at least 0.8 s continuous `/cmd_vel_sim` zero coverage, no later
+  nonzero command in the reset epoch, and command-chain gap/coverage checks.
+  Hidden resets, wrong/missing/truncated intent, HOLD leaks, non-finite data,
+  and short/gapped/missing final-zero coverage cannot authorize a scale.
+- `capture_contract_status` is independent from `performance_status`.
+  Performance failure does not erase segment evidence: k-star, endpoint error,
+  aligned RMSE/P95, and <=5 degree intervals remain in the output. Overall is
+  still FAIL and `scale_selection_authorized=false`; neither
+  `PASS_CANDIDATE` nor `CONFIRMED_NO_GLOBAL_CONSTANT` is promoted through a
+  failed benchmark. A no-goal run remains non-PASS.
+- Attempt 3 was re-analyzed without altering its original artifacts:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt3_20260821T220048Z/analysis/smoother_schedule_v2/imu_regime_analysis.json`.
+  Twelve windows were recovered. Verdict is **FAIL / NOT FORMAL** with
+  `performance_status=FAIL`, `capture_contract_status=AMBIGUOUS`, and
+  `scale_selection_authorized=false`. The capture ambiguity is explicit:
+  stationary plus the eight single-segment primitives lack the required 0.8 s
+  final `/cmd_vel_sim` zero coverage in this old capture; the S-route final
+  zero tail is long enough. This does not invalidate the computed diagnostic
+  values: pure-spin k-star is 0.928739 CW and 0.929535 CCW; arc values span
+  0.914476--0.981557; S segments are 0.908586, 0.918064, and 0.925207. The
+  segment <=5 degree intersection is `[0.9162, 0.9417]`, but it is not a scale
+  selection because performance failed and goal evidence is absent.
+- Validation: source-first and fresh-installed focused suites each report
+  **97 passed**. Fresh isolated build/install PASS at
+  `/tmp/v6_imu_schedule_final3_build.YDJFR2` and
+  `/tmp/v6_imu_schedule_final3_install.usJHFc`, log
+  `/tmp/v6_imu_schedule_final3_log.G2E8gL`. Installed import identity, installed
+  `imu_regime_analysis --help`, changed-file `py_compile`, and
+  `git diff --check` PASS.
+
+Verdict for this amendment is **PASS (code/build/unit plus retroactive offline
+analysis)**. It is not a new live capture, navigation goal, calibration
+selection, or formal qualification. Attempt 4 must use schema-2 schedules and
+the full 0.8 s downstream zero receipt; the Kujiale goal run remains pending.
+`yaw_scale=0.9294` and RF2O-off are unchanged.
+
+The wider package regression collected 530 tests and reported **529 passed, 1
+unrelated path-sensitive failure** in `test_rivermark_reference`: its frozen
+reference embeds a different historical absolute worktree path. No runtime or
+numeric value differed, and this amendment did not inspect or change that
+out-of-scope reference. The focused source-first and fresh-installed suites
+above remain the acceptance result.

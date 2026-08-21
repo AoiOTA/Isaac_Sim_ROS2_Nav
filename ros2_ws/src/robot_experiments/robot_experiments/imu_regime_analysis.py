@@ -19,6 +19,8 @@ K_STEP = 0.0001
 YAW_LIMIT_RAD = math.radians(5.0)
 MAX_SAMPLE_GAP_S = 0.25
 MIN_WINDOW_DURATION_S = 0.50
+FINAL_SETTLE_SEC = 0.80
+COMMAND_ZERO_EPS = 1.0e-12
 EXPECTED_PRIMITIVE_IDS = (
     "cw_360",
     "ccw_360",
@@ -157,6 +159,12 @@ EXPECTED_TOPIC_TYPES = {
     "/imu/data_raw": "sensor_msgs/msg/Imu",
     "/imu/data": "sensor_msgs/msg/Imu",
     "/ground_truth/odom": "nav_msgs/msg/Odometry",
+    "/clock": "rosgraph_msgs/msg/Clock",
+    "/simulation/reset_event": "std_msgs/msg/Empty",
+    "/cmd_vel_nav": "geometry_msgs/msg/Twist",
+    "/cmd_vel_smoothed": "geometry_msgs/msg/Twist",
+    "/cmd_vel": "geometry_msgs/msg/Twist",
+    "/cmd_vel_sim": "geometry_msgs/msg/Twist",
 }
 GOAL_TOPIC_TYPES = {
     "/imu/data_raw": "sensor_msgs/msg/Imu",
@@ -232,7 +240,21 @@ class YawSample:
     yaw_rad: float
 
 
-class McapStreams(dict[str, list[ScalarSample | YawSample]]):
+@dataclass(frozen=True)
+class CommandSample:
+    stamp_s: float
+    linear_mps: float
+    angular_radps: float
+    recorded_s: float
+
+
+@dataclass(frozen=True)
+class ResetSample:
+    stamp_s: float
+    recorded_s: float
+
+
+class McapStreams(dict[str, list[Any]]):
     """Topic samples plus the exact bag/type/count provenance used."""
 
     def __init__(self, *args: Any, provenance: dict[str, Any], **kwargs: Any) -> None:
@@ -943,11 +965,7 @@ def validate_benchmark_report(
 
     if not isinstance(report, dict):
         raise _evidence_issue("FAIL", "benchmark_wrong_type", "benchmark report must be an object")
-    if (
-        report.get("passed") is False
-        or report.get("stopped") is True
-        or report.get("collision_detected") is True
-    ):
+    if report.get("stopped") is True or report.get("collision_detected") is True:
         raise _evidence_issue("FAIL", "benchmark_explicit_failure", "benchmark reports failure/STOP/collision")
     for key in (
         "passed", "stopped", "collision_detected", "sample_count",
@@ -997,8 +1015,7 @@ def validate_benchmark_report(
     if not isinstance(stationary, dict):
         raise _evidence_issue("AMBIGUOUS", "stationary_missing", "stationary reference is missing")
     if (
-        stationary.get("passed") is False
-        or stationary.get("stopped") is True
+        stationary.get("stopped") is True
         or stationary.get("collision_detected") is True
     ):
         raise _evidence_issue("FAIL", "stationary_explicit_failure", "stationary reference reports failure/STOP/collision")
@@ -1018,10 +1035,8 @@ def validate_benchmark_report(
     ):
         raise _evidence_issue("FAIL", "stationary_contract", "stationary identity/seed/duration mismatch")
     if (
-        stationary["passed"] is not True
-        or stationary["stopped"] is not False
+        stationary["stopped"] is not False
         or stationary["collision_detected"] is not False
-        or stationary["final_zero_published"] is not True
     ):
         raise _evidence_issue("FAIL", "stationary_explicit_failure", "stationary reference did not pass")
     if (
@@ -1060,8 +1075,7 @@ def validate_benchmark_report(
         assert isinstance(primitive, dict)
         scope = f"primitive {expected_id}"
         if (
-            primitive.get("passed") is False
-            or primitive.get("stopped") is True
+            primitive.get("stopped") is True
             or primitive.get("collision_detected") is True
         ):
             raise _evidence_issue("FAIL", "benchmark_explicit_failure", f"{scope} reports failure/STOP/collision")
@@ -1077,10 +1091,8 @@ def validate_benchmark_report(
         ):
             raise _evidence_issue("FAIL", "benchmark_seed", f"{scope} seed mismatch")
         if (
-            primitive["passed"] is not True
-            or primitive["stopped"] is not False
+            primitive["stopped"] is not False
             or primitive["collision_detected"] is not False
-            or primitive["final_zero_published"] is not True
         ):
             raise _evidence_issue("FAIL", "benchmark_explicit_failure", f"{scope} did not pass")
         if (
@@ -1134,16 +1146,82 @@ def validate_benchmark_report(
         raise _evidence_issue("FAIL", "top_receipts_mismatch", "top reset receipts do not match entries")
     expected_sample_count = sum(int(item["sample_count"]) for item in primitives) + int(stationary["sample_count"])
     if (
-        report["passed"] is not True
-        or report["stopped"] is not False
+        report["stopped"] is not False
         or report["collision_detected"] is not False
-        or report["final_zero_published"] is not True
         or report["sample_count"] != expected_sample_count
         or report["segment_count"] != sum(EXPECTED_SEGMENT_COUNTS)
         or report["primitive_count"] != len(EXPECTED_PRIMITIVE_IDS)
-        or report["passed_primitive_count"] != len(EXPECTED_PRIMITIVE_IDS)
+        or report["passed_primitive_count"] != sum(
+            item.get("passed") is True for item in primitives
+        )
     ):
         raise _evidence_issue("FAIL", "benchmark_top_mismatch", "top benchmark status/counts are inconsistent")
+    schema_version = report.get("schema_version", 1)
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise _evidence_issue("FAIL", "benchmark_schema", "benchmark schema_version is invalid")
+    if schema_version >= 2:
+        if _finite(report.get("final_settle_sec"), name="benchmark.final_settle_sec", positive=True) != FINAL_SETTLE_SEC:
+            raise _evidence_issue("FAIL", "benchmark_final_settle", "benchmark final settle contract changed")
+        schedule_entries = [stationary, *primitives]
+        expected_entry_commands = [
+            ((0.0, 0.0),), *EXPECTED_COMMANDS,
+        ]
+        expected_entry_durations = [
+            (EXPECTED_STATIONARY["duration_sec"],), *EXPECTED_DURATIONS,
+        ]
+        for entry, commands, durations in zip(
+            schedule_entries, expected_entry_commands, expected_entry_durations
+        ):
+            scope = str(entry.get("id"))
+            schedule = entry.get("segment_schedule")
+            if not isinstance(schedule, list) or len(schedule) != len(commands):
+                raise _evidence_issue("AMBIGUOUS", "benchmark_schedule_missing", f"{scope} schedule receipt is missing")
+            previous_end = None
+            for segment_index, (receipt, command, duration) in enumerate(zip(schedule, commands, durations)):
+                if not isinstance(receipt, dict):
+                    raise _evidence_issue("FAIL", "benchmark_schedule_type", f"{scope} schedule receipt is invalid")
+                required_schedule = {
+                    "segment_index", "start_sim_s", "end_sim_s",
+                    "expected_duration_s", "command_linear_mps",
+                    "command_angular_radps", "intent_publish_count",
+                    "completion", "truncated",
+                }
+                if not required_schedule.issubset(receipt):
+                    raise _evidence_issue("AMBIGUOUS", "benchmark_schedule_truncated", f"{scope} schedule receipt is incomplete")
+                start_s = _finite(receipt["start_sim_s"], name=f"{scope}.schedule.start")
+                end_s = _finite(receipt["end_sim_s"], name=f"{scope}.schedule.end")
+                count = receipt["intent_publish_count"]
+                if (
+                    receipt["segment_index"] != segment_index
+                    or receipt["expected_duration_s"] != duration
+                    or (receipt["command_linear_mps"], receipt["command_angular_radps"]) != command
+                    or isinstance(count, bool) or not isinstance(count, int) or count <= 0
+                    or receipt["completion"] != "COMPLETED"
+                    or receipt["truncated"] is not False
+                    or end_s < start_s + duration
+                    or (previous_end is not None and start_s < previous_end)
+                ):
+                    raise _evidence_issue("FAIL", "benchmark_schedule_contract", f"{scope} schedule receipt does not match the primitive")
+                previous_end = end_s
+            zero_receipt = entry.get("final_zero_publish_receipt")
+            if (
+                not isinstance(zero_receipt, dict)
+                or isinstance(zero_receipt.get("publish_count"), bool)
+                or not isinstance(zero_receipt.get("publish_count"), int)
+                or zero_receipt["publish_count"] <= 0
+            ):
+                raise _evidence_issue("AMBIGUOUS", "benchmark_zero_receipt", f"{scope} final zero publish receipt is missing")
+            zero_first = _finite(
+                zero_receipt.get("first_sim_s"), name=f"{scope}.final_zero.first"
+            )
+            zero_last = _finite(
+                zero_receipt.get("last_sim_s"), name=f"{scope}.final_zero.last"
+            )
+            if zero_last < zero_first:
+                raise _evidence_issue(
+                    "FAIL", "benchmark_zero_receipt",
+                    f"{scope} final zero publish receipt is reversed",
+                )
     return report
 
 
@@ -1315,11 +1393,20 @@ def validate_phase_trace(
         "diagnostic_config_file": str(resources.config_path),
         "obstacle_config_file": str(resources.obstacle_config_path),
     }
-    mismatches = {
-        key: {"expected": value, "actual": provenance.get(key)}
-        for key, value in expected.items()
-        if provenance.get(key) != value
+    resource_path_keys = {
+        "spawn_poses_file", "diagnostic_config_file", "obstacle_config_file",
     }
+    mismatches = {}
+    for key, value in expected.items():
+        actual = provenance.get(key)
+        matches = actual == value
+        if key in resource_path_keys and isinstance(actual, str):
+            # Archived sessions preserve their fresh source snapshot paths.
+            # The content is validated from the caller's resolved resources;
+            # the trace must still identify the exact canonical filename.
+            matches = Path(actual).name == Path(str(value)).name
+        if not matches:
+            mismatches[key] = {"expected": value, "actual": actual}
     if mismatches:
         raise _evidence_issue("FAIL", "phase_provenance_mismatch", f"phase provenance mismatch: {mismatches}")
     loops = [row for row in phase[1:] if row.get("kind") == "loop"]
@@ -1336,7 +1423,7 @@ def validate_phase_trace(
 
 
 def load_mcap(path: Path) -> McapStreams:
-    """Read the three required topics through the installed rosbag2 MCAP API."""
+    """Read yaw, schedule, reset, and command-chain evidence from one MCAP."""
 
     try:
         import rosbag2_py
@@ -1355,22 +1442,55 @@ def load_mcap(path: Path) -> McapStreams:
     }
     required = tuple(EXPECTED_TOPIC_TYPES)
     missing = [topic for topic in required if topic not in topic_types]
-    if missing:
-        raise _evidence_issue("AMBIGUOUS", "mcap_topics_missing", f"MCAP missing required topics: {missing}")
     wrong_types = {
         topic: {"expected": EXPECTED_TOPIC_TYPES[topic], "actual": topic_types[topic]}
         for topic in required
-        if topic_types[topic] != EXPECTED_TOPIC_TYPES[topic]
+        if topic in topic_types and topic_types[topic] != EXPECTED_TOPIC_TYPES[topic]
     }
     if wrong_types:
         raise _evidence_issue("FAIL", "mcap_topic_type", f"MCAP topic types mismatch: {wrong_types}")
+    if missing:
+        raise _evidence_issue("AMBIGUOUS", "mcap_topics_missing", f"MCAP missing required topics: {missing}")
     message_types = {topic: get_message(topic_types[topic]) for topic in required}
-    streams: dict[str, list[ScalarSample | YawSample]] = {topic: [] for topic in required}
+    streams: dict[str, list[Any]] = {topic: [] for topic in required}
+    latest_clock_s: float | None = None
+    recorded_stamps: list[float] = []
     while reader.has_next():
-        topic, payload, _recorded_ns = reader.read_next()
+        topic, payload, recorded_ns = reader.read_next()
         if topic not in message_types:
             continue
         message = deserialize_message(payload, message_types[topic])
+        if isinstance(recorded_ns, bool) or not isinstance(recorded_ns, int):
+            raise _evidence_issue("FAIL", "mcap_record_stamp", f"{topic} has an invalid MCAP timestamp")
+        recorded_s = float(recorded_ns) * 1.0e-9
+        if not math.isfinite(recorded_s) or recorded_s < 0.0:
+            raise _evidence_issue("FAIL", "mcap_record_stamp", f"{topic} has a non-finite MCAP timestamp")
+        recorded_stamps.append(recorded_s)
+        if topic == "/clock":
+            stamp = message.clock
+            stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+            if not math.isfinite(stamp_s) or stamp_s < 0.0:
+                raise _evidence_issue("FAIL", "mcap_clock_nonfinite", "/clock is invalid")
+            latest_clock_s = stamp_s
+            streams[topic].append(ScalarSample(recorded_s, stamp_s))
+            continue
+        if topic == "/simulation/reset_event":
+            if latest_clock_s is None:
+                raise _evidence_issue("AMBIGUOUS", "reset_clock_missing", "reset event precedes the first /clock sample")
+            streams[topic].append(ResetSample(latest_clock_s, recorded_s))
+            continue
+        if topic.startswith("/cmd_vel") or topic == "/cmd_vel":
+            if latest_clock_s is None:
+                raise _evidence_issue("AMBIGUOUS", "command_clock_missing", f"{topic} precedes the first /clock sample")
+            try:
+                linear = float(message.linear.x)
+                angular = float(message.angular.z)
+            except (AttributeError, TypeError, ValueError) as exc:
+                raise _evidence_issue("FAIL", "mcap_command_invalid", f"{topic} command is invalid") from exc
+            if not math.isfinite(linear) or not math.isfinite(angular):
+                raise _evidence_issue("FAIL", "mcap_command_nonfinite", f"{topic} command is non-finite")
+            streams[topic].append(CommandSample(latest_clock_s, linear, angular, recorded_s))
+            continue
         stamp = message.header.stamp
         stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
         if not math.isfinite(stamp_s) or stamp_s <= 0.0:
@@ -1398,17 +1518,24 @@ def load_mcap(path: Path) -> McapStreams:
             streams[topic].append(
                 ScalarSample(stamp_s, values[2])
             )
-    for topic, samples in streams.items():
+    for topic in ("/imu/data_raw", "/imu/data", "/ground_truth/odom"):
+        samples = streams[topic]
         if len(samples) < 3:
             raise _evidence_issue("AMBIGUOUS", "mcap_samples_insufficient", f"{topic} has fewer than 3 samples")
         quality = _stamp_quality(samples)
         if quality["duplicate_count"] or quality["backward_count"]:
             raise _evidence_issue("FAIL", "mcap_stamp_order", f"{topic} stamps are not strictly increasing")
+    for topic in ("/clock", "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"):
+        if len(streams[topic]) < 3:
+            raise _evidence_issue("AMBIGUOUS", "mcap_samples_insufficient", f"{topic} has fewer than 3 samples")
+    if not streams["/simulation/reset_event"]:
+        raise _evidence_issue("AMBIGUOUS", "mcap_reset_missing", "MCAP has no reset event")
     provenance = {
         "path": str(path.resolve()),
         "storage_id": "mcap",
         "read_order": "file",
         "yaw_time_basis": "header_stamp_in_file_publish_order",
+        "schedule_time_basis": "latest_clock_at_mcap_publish_order",
         "topic_types": {topic: topic_types[topic] for topic in required},
         "topic_counts": {topic: len(streams[topic]) for topic in required},
     }
@@ -1907,7 +2034,7 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     return validate_goal_evidence(derived, expected_mcap=path)
 
 
-def command_windows(
+def _phase_command_windows(
     phase: Sequence[dict[str, Any]], report: dict[str, Any]
 ) -> list[dict[str, object]]:
     """Recover exactly one stationary, eight single, and three S windows."""
@@ -2083,6 +2210,258 @@ def command_windows(
             selected.pop("key", None)
             selected.pop("stamps", None)
             windows.append(selected)
+    return windows
+
+
+def _is_command(sample: CommandSample, command: tuple[float, float]) -> bool:
+    return (
+        abs(sample.linear_mps - command[0]) <= COMMAND_ZERO_EPS
+        and abs(sample.angular_radps - command[1]) <= COMMAND_ZERO_EPS
+    )
+
+
+def _is_zero_command(sample: CommandSample) -> bool:
+    return _is_command(sample, (0.0, 0.0))
+
+
+def _command_runs(
+    samples: Sequence[CommandSample], command: tuple[float, float], *, maximum_gap_s: float
+) -> list[list[CommandSample]]:
+    runs: list[list[CommandSample]] = []
+    active: list[CommandSample] = []
+    for sample in samples:
+        if _is_command(sample, command):
+            if active and sample.stamp_s - active[-1].stamp_s > maximum_gap_s:
+                runs.append(active)
+                active = []
+            active.append(sample)
+        elif active:
+            runs.append(active)
+            active = []
+    if active:
+        runs.append(active)
+    return runs
+
+
+def _epoch_samples(
+    samples: Sequence[CommandSample], start_recorded_s: float, end_recorded_s: float
+) -> list[CommandSample]:
+    return [
+        sample for sample in samples
+        if start_recorded_s <= sample.recorded_s < end_recorded_s
+    ]
+
+
+def _require_zero_range(
+    samples: Sequence[CommandSample], *, start_s: float, end_s: float,
+    topic: str, minimum_samples: int = 1,
+) -> dict[str, Any]:
+    selected = [sample for sample in samples if start_s <= sample.stamp_s <= end_s]
+    if len(selected) < minimum_samples:
+        raise _evidence_issue("AMBIGUOUS", "command_zero_coverage", f"{topic} has insufficient zero coverage")
+    if any(not _is_zero_command(sample) for sample in selected):
+        raise _evidence_issue("FAIL", "command_zero_leak", f"{topic} has a nonzero command in a required-zero window")
+    gaps = [right.stamp_s - left.stamp_s for left, right in zip(selected, selected[1:])]
+    maximum_gap = max(gaps) if gaps else 0.0
+    if maximum_gap > MAX_SAMPLE_GAP_S:
+        raise _evidence_issue("AMBIGUOUS", "command_stream_gap", f"{topic} zero coverage gap exceeds {MAX_SAMPLE_GAP_S} s")
+    return {"count": len(selected), "maximum_gap_s": maximum_gap}
+
+
+def command_windows(
+    phase: Sequence[dict[str, Any]], report: dict[str, Any],
+    streams: McapStreams | None = None,
+) -> list[dict[str, object]]:
+    """Bind report schedules to reset generations and upstream intent.
+
+    Without MCAP streams this retains the unit-level legacy phase helper.  An
+    official analysis always supplies streams and never splits a primitive on
+    velocity-smoother, CollisionMonitor, or reset-gate ramp plateaus.
+    """
+
+    if streams is None:
+        return _phase_command_windows(phase, report)
+    loops = [row for row in phase if row.get("kind") == "loop"]
+    receipts = [
+        report["stationary_reference"]["reset_receipt"],
+        *[item["reset_receipt"] for item in report["primitives"]],
+    ]
+    resets = list(streams["/simulation/reset_event"])
+    if len(resets) != len(receipts):
+        verdict = "AMBIGUOUS" if len(resets) < len(receipts) else "FAIL"
+        raise _evidence_issue(verdict, "reset_event_count", f"expected {len(receipts)} reset events, got {len(resets)}")
+    generations = [int(receipt["generation"]) for receipt in receipts]
+    observed_generations = {
+        row.get("reset_generation") for row in loops
+        if isinstance(row.get("reset_generation"), int)
+        and not isinstance(row.get("reset_generation"), bool)
+    }
+    hidden = sorted(
+        generation for generation in observed_generations
+        if generation >= generations[0] and generation not in generations
+    )
+    missing = sorted(set(generations) - observed_generations)
+    if hidden:
+        raise _evidence_issue("FAIL", "phase_hidden_reset", f"phase trace contains hidden generations: {hidden}")
+    if missing:
+        raise _evidence_issue("AMBIGUOUS", "phase_generation_missing", f"phase trace misses generations: {missing}")
+
+    entries = [report["stationary_reference"], *report["primitives"]]
+    expected_commands = [((0.0, 0.0),), *EXPECTED_COMMANDS]
+    expected_durations = [(EXPECTED_STATIONARY["duration_sec"],), *EXPECTED_DURATIONS]
+    rate = float(report["command_rate_hz"])
+    intent_gap = max(3.0 / rate, 0.10)
+    schema_version = int(report.get("schema_version", 1))
+    topics = ("/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim")
+    windows: list[dict[str, object]] = []
+    for epoch_index, (entry, receipt, reset, commands, durations) in enumerate(zip(
+        entries, receipts, resets, expected_commands, expected_durations
+    )):
+        epoch_record_end = (
+            resets[epoch_index + 1].recorded_s
+            if epoch_index + 1 < len(resets) else math.inf
+        )
+        epoch = {
+            topic: _epoch_samples(
+                streams[topic], reset.recorded_s, epoch_record_end
+            ) for topic in topics
+        }
+        nav = epoch["/cmd_vel_nav"]
+        capture_issues: list[dict[str, str]] = []
+        if not nav:
+            raise _evidence_issue("AMBIGUOUS", "intent_missing", f"{entry['id']} has no /cmd_vel_nav samples")
+        report_schedule = entry.get("segment_schedule") if schema_version >= 2 else None
+        selected_schedules: list[dict[str, Any]] = []
+        search_after = -math.inf
+        for segment_index, (command, duration) in enumerate(zip(commands, durations)):
+            matching = [
+                run for run in _command_runs(nav, command, maximum_gap_s=intent_gap)
+                if run[-1].stamp_s >= search_after
+            ]
+            minimum_count = max(2, math.floor(duration * rate * 0.75))
+            matching = [run for run in matching if len(run) >= minimum_count]
+            if not matching:
+                raise _evidence_issue("AMBIGUOUS", "intent_missing", f"{entry['id']}[{segment_index}] intent plateau is missing")
+            run = matching[0]
+            if len(matching) > 1 and segment_index == 0 and len(commands) == 1:
+                raise _evidence_issue("FAIL", "intent_duplicate", f"{entry['id']} has multiple matching intent plateaus")
+            if report_schedule is not None:
+                schedule = dict(report_schedule[segment_index])
+                start_s = float(schedule["start_sim_s"])
+                end_s = float(schedule["end_sim_s"])
+                if abs(run[0].stamp_s - start_s) > intent_gap:
+                    raise _evidence_issue("FAIL", "intent_schedule_start", f"{entry['id']}[{segment_index}] intent does not bind to schedule start")
+                bound_run = [sample for sample in run if start_s <= sample.stamp_s < end_s]
+                if int(schedule["intent_publish_count"]) != len(bound_run):
+                    raise _evidence_issue("FAIL", "intent_publish_count", f"{entry['id']}[{segment_index}] publish count mismatch")
+            else:
+                start_s = run[0].stamp_s
+                end_s = start_s + float(duration)
+                bound_run = [sample for sample in run if start_s <= sample.stamp_s < end_s]
+                schedule = {
+                    "segment_index": segment_index,
+                    "start_sim_s": start_s,
+                    "end_sim_s": end_s,
+                    "expected_duration_s": float(duration),
+                    "command_linear_mps": command[0],
+                    "command_angular_radps": command[1],
+                    "intent_publish_count": len(bound_run),
+                    "completion": "COMPLETED",
+                    "truncated": False,
+                    "receipt_source": "retroactive_mcap_intent_plus_v1_report",
+                }
+            if len(bound_run) < minimum_count:
+                raise _evidence_issue("AMBIGUOUS", "intent_missing", f"{entry['id']}[{segment_index}] intent samples are incomplete")
+            last_covered_s = bound_run[-1].stamp_s + 1.0 / rate
+            boundary_tolerance = min(max(2.0 / rate, 0.02 * duration), 0.25)
+            if last_covered_s < end_s - boundary_tolerance or last_covered_s > end_s + boundary_tolerance:
+                raise _evidence_issue("AMBIGUOUS", "intent_duration", f"{entry['id']}[{segment_index}] intent duration does not cover schedule")
+            schedule["intent_first_sim_s"] = bound_run[0].stamp_s
+            schedule["intent_last_sim_s"] = bound_run[-1].stamp_s
+            schedule["boundary_tolerance_s"] = boundary_tolerance
+            selected_schedules.append(schedule)
+            search_after = end_s - boundary_tolerance
+
+        first_start = float(selected_schedules[0]["start_sim_s"])
+        for topic in topics:
+            _require_zero_range(
+                epoch[topic], start_s=reset.stamp_s,
+                end_s=max(reset.stamp_s, first_start - intent_gap), topic=topic,
+                minimum_samples=1 if topic == "/cmd_vel_sim" else 0,
+            )
+        final_end = float(selected_schedules[-1]["end_sim_s"])
+        nav_after = [sample for sample in nav if sample.stamp_s >= final_end - intent_gap]
+        nav_zero = [sample for sample in nav_after if _is_zero_command(sample)]
+        nav_leaks = [
+            sample for sample in nav_after
+            if sample.stamp_s >= final_end + intent_gap and not _is_zero_command(sample)
+        ]
+        if not nav_zero or nav_leaks:
+            raise _evidence_issue("FAIL", "final_nav_zero", f"{entry['id']} has nonzero/missing final /cmd_vel_nav")
+        sim_after = [sample for sample in epoch["/cmd_vel_sim"] if sample.stamp_s >= final_end]
+        first_zero_index = next(
+            (index for index, sample in enumerate(sim_after) if _is_zero_command(sample)),
+            None,
+        )
+        if first_zero_index is None:
+            raise _evidence_issue("AMBIGUOUS", "final_sim_zero_missing", f"{entry['id']} has no final /cmd_vel_sim zero")
+        zero_tail = sim_after[first_zero_index:]
+        if any(not _is_zero_command(sample) for sample in zero_tail):
+            raise _evidence_issue("FAIL", "final_sim_zero_leak", f"{entry['id']} has nonzero /cmd_vel_sim after final zero")
+        latency = zero_tail[0].stamp_s - final_end
+        if latency > FINAL_SETTLE_SEC:
+            raise _evidence_issue("FAIL", "final_sim_zero_latency", f"{entry['id']} final /cmd_vel_sim zero latency is {latency:.3f} s")
+        zero_duration = zero_tail[-1].stamp_s - zero_tail[0].stamp_s
+        if zero_duration + 1.0 / rate < FINAL_SETTLE_SEC:
+            capture_issues.append({
+                "verdict": "AMBIGUOUS", "code": "final_sim_zero_short",
+                "detail": f"{entry['id']} final /cmd_vel_sim zero coverage is short",
+            })
+        zero_gaps = [right.stamp_s - left.stamp_s for left, right in zip(zero_tail, zero_tail[1:])]
+        if zero_gaps and max(zero_gaps) > MAX_SAMPLE_GAP_S:
+            capture_issues.append({
+                "verdict": "AMBIGUOUS", "code": "final_sim_zero_gap",
+                "detail": f"{entry['id']} final /cmd_vel_sim zero has a gap",
+            })
+
+        for schedule in selected_schedules:
+            start_s = float(schedule["start_sim_s"])
+            end_s = float(schedule["end_sim_s"])
+            coverage = {}
+            for topic in topics:
+                selected = [sample for sample in epoch[topic] if start_s <= sample.stamp_s <= end_s]
+                if len(selected) < 2:
+                    raise _evidence_issue("AMBIGUOUS", "command_schedule_coverage", f"{topic} does not cover {entry['id']}")
+                gaps = [right.stamp_s - left.stamp_s for left, right in zip(selected, selected[1:])]
+                maximum_gap = max(gaps) if gaps else 0.0
+                if maximum_gap > MAX_SAMPLE_GAP_S:
+                    raise _evidence_issue("AMBIGUOUS", "command_stream_gap", f"{topic} schedule gap exceeds {MAX_SAMPLE_GAP_S} s")
+                coverage[topic] = {"count": len(selected), "maximum_gap_s": maximum_gap}
+            identifier = str(entry["id"])
+            if len(selected_schedules) > 1:
+                identifier = f"{identifier}[{schedule['segment_index']}]"
+            windows.append({
+                "id": identifier,
+                "generation": int(receipt["generation"]),
+                "segment_index": int(schedule["segment_index"]),
+                "linear": float(schedule["command_linear_mps"]),
+                "angular": float(schedule["command_angular_radps"]),
+                "start_s": start_s,
+                "end_s": end_s,
+                "expected_duration_s": float(schedule["expected_duration_s"]),
+                "observed_command_duration_s": float(schedule["intent_last_sim_s"]) - float(schedule["intent_first_sim_s"]),
+                "duration_tolerance_s": float(schedule["boundary_tolerance_s"]),
+                "schedule_receipt": schedule,
+                "command_chain_coverage": coverage,
+                "final_zero": {
+                    "nav_zero_count": len(nav_zero),
+                    "sim_zero_count": len(zero_tail),
+                    "sim_zero_latency_s": latency,
+                    "sim_zero_duration_s": zero_duration,
+                    "sim_zero_maximum_gap_s": max(zero_gaps) if zero_gaps else 0.0,
+                },
+                "capture_issues": list(capture_issues),
+            })
     return windows
 
 
@@ -2273,6 +2652,13 @@ def run_analysis(
         except (OSError, json.JSONDecodeError) as exc:
             raise _evidence_issue("AMBIGUOUS", "benchmark_unreadable", f"benchmark report is unavailable/truncated: {exc}") from exc
         validate_benchmark_report(report, resources)
+        performance_status = (
+            "PASS"
+            if report.get("passed") is True
+            and report["stationary_reference"].get("passed") is True
+            and all(item.get("passed") is True for item in report["primitives"])
+            else "FAIL"
+        )
         try:
             phase = _load_phase(phase_jsonl)
         except OSError as exc:
@@ -2284,7 +2670,15 @@ def run_analysis(
             raise
         except Exception as exc:
             raise _evidence_issue("AMBIGUOUS", "mcap_unreadable", f"MCAP could not be read: {type(exc).__name__}: {exc}") from exc
-        windows = command_windows(phase, report)
+        windows = command_windows(phase, report, streams)
+        capture_issues = []
+        seen_capture_issues = set()
+        for window in windows:
+            for issue in window.get("capture_issues", []):
+                key = (issue.get("verdict"), issue.get("code"), issue.get("detail"))
+                if key not in seen_capture_issues:
+                    seen_capture_issues.add(key)
+                    capture_issues.append(issue)
         results = []
         for window in windows:
             start_s = float(window["start_s"])
@@ -2367,6 +2761,25 @@ def run_analysis(
             stationary_valid=stationary_valid,
             phase_valid=phase_valid,
         )
+        regime_result = summary["verdict"]
+        summary["capture_contract_status"] = (
+            "FAIL" if any(item["verdict"] == "FAIL" for item in capture_issues)
+            else "AMBIGUOUS" if capture_issues else "PASS"
+        )
+        summary["performance_status"] = performance_status
+        summary["regime_analysis_status"] = regime_result
+        summary["scale_selection_authorized"] = bool(
+            performance_status == "PASS"
+            and regime_result == "PASS_CANDIDATE"
+            and goal_mcap is not None
+            and not capture_issues
+        )
+        if performance_status == "FAIL":
+            summary["verdict"] = "FAIL"
+            summary["scale_selection_authorized"] = False
+        elif capture_issues and summary["verdict"] != "FAIL":
+            summary["verdict"] = summary["capture_contract_status"]
+            summary["scale_selection_authorized"] = False
         if goal_mcap is None:
             summary["goal_evidence_issue"] = {
                 "verdict": "AMBIGUOUS",
@@ -2375,6 +2788,7 @@ def run_analysis(
             }
             if summary["verdict"] not in {"FAIL"}:
                 summary["verdict"] = "AMBIGUOUS"
+            summary["scale_selection_authorized"] = False
         summary["inputs"] = inputs
         summary["mcap_provenance"] = getattr(streams, "provenance", None)
         summary["phase_provenance"] = phase_provenance
@@ -2384,11 +2798,15 @@ def run_analysis(
         )
         summary["phase_trace_loop_count"] = sum(row.get("kind") == "loop" for row in phase)
         summary["command_window_count"] = len(windows)
-        summary["evidence_errors"] = []
+        summary["evidence_errors"] = capture_issues
         return summary
     except EvidenceError as exc:
         return {
             "verdict": exc.verdict,
+            "capture_contract_status": exc.verdict,
+            "performance_status": "UNKNOWN",
+            "regime_analysis_status": "NOT_EVALUATED",
+            "scale_selection_authorized": False,
             "segments": [],
             "bins": {},
             "goal_identity_non_degrade_interval": None,

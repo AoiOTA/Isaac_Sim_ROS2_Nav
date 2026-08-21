@@ -750,6 +750,45 @@
   active-reset review before making an engineering-runtime claim.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
+## 2026-08-22 — V6 IMU smoother-aware schedule evidence and Attempt 3 retroactive analysis
+
+- Goal: bind Session A segments to reset generation plus upstream intent
+  without treating velocity-smoother/CollisionMonitor/gate plateaus as segment
+  boundaries, and retain useful IMU metrics when the benchmark performance
+  gate fails.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `6af4fde9b6b6eaa095f4c0f25ff34a561766ecc8`.
+- Changes: MotionBenchmark schema 2 records immutable sim-time segment and
+  stationary schedules plus zero publish receipts; playback commands/timing
+  and thresholds are unchanged. The analyzer consumes exact `/clock`, reset,
+  upstream intent, smoother, final command, and gate-output MCAP streams;
+  verifies generation/schedule/intent binding, HOLD and stream coverage, and
+  downstream final-zero continuity; and separates capture from performance
+  verdicts. A failed performance gate keeps all segment k-star, endpoint,
+  RMSE/P95, and interval metrics but forces overall FAIL and
+  `scale_selection_authorized=false`.
+- Retroactive input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt3_20260821T220048Z`.
+  New derived output only:
+  `analysis/smoother_schedule_v2/imu_regime_analysis.json`; originals were not
+  changed. Result: 12 windows; **FAIL / NOT FORMAL**;
+  performance FAIL, capture AMBIGUOUS, no scale authorization. The old capture
+  lacks 0.8 s final `/cmd_vel_sim` zero coverage for stationary plus eight
+  single primitives. Pure-spin k-star is 0.928739/0.929535; all segment
+  <=5-degree intervals intersect at `[0.9162,0.9417]`, but goal evidence and
+  an acceptable performance run are absent.
+- Validation: source-first/fresh-installed focused suites **97 passed**;
+  isolated build/install PASS at `/tmp/v6_imu_schedule_final3_build.YDJFR2`
+  and `/tmp/v6_imu_schedule_final3_install.usJHFc`, log
+  `/tmp/v6_imu_schedule_final3_log.G2E8gL`; installed entrypoint/import,
+  `py_compile`, and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit plus retroactive offline analysis only)**.
+  Attempt 4 and the goal run remain pending. `yaw_scale=0.9294`, RF2O-off,
+  route/reset/gate policy, command values, and thresholds are unchanged.
+- Wider package regression: **529 passed, 1 unrelated path-sensitive
+  failure** in the frozen Rivermark-reference absolute-path comparison; no
+  runtime/numeric mismatch and no out-of-scope fix attempted.
+
 ## 2026-08-22 — V6 active-reset HOLD-intent repair
 
 - Goal/hypothesis: close the active-reset live failure where RouteCoordinator

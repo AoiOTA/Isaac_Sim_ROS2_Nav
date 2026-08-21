@@ -836,6 +836,7 @@ class MotionBenchmarkNode(Node):
         self._command_angular = 0.0
         self._reset_receipts: list[dict[str, Any]] = []
         self._current_reset_receipt: dict[str, Any] | None = None
+        self._segment_schedule: list[dict[str, Any]] = []
 
     def _clock_callback(self, message: Clock) -> None:
         stamp_s = (
@@ -1157,7 +1158,7 @@ class MotionBenchmarkNode(Node):
         ):
             self._stop("sim_clock_stalled_during_motion")
 
-    def _play_segment(self, index: int, segment: MotionSegment) -> None:
+    def _play_segment(self, index: int, segment: MotionSegment) -> dict[str, Any]:
         period = 1.0 / self._config.command_rate_hz
         self._segment_index = index
         waiting_since = time.monotonic()
@@ -1174,15 +1175,35 @@ class MotionBenchmarkNode(Node):
         self._command_angular = segment.angular_z
         next_publish = time.monotonic()
         deadline = self._segment_started_at + segment.duration_sec
-        while self._clock_s is None or self._clock_s < deadline:
-            self._assert_sim_clock_live()
-            now = time.monotonic()
-            if now >= next_publish:
-                self._publish(segment.linear_x, segment.angular_z)
-                next_publish += period
-            self._spin_once(0.01)
+        publish_count = 0
+        completed = False
+        try:
+            while self._clock_s is None or self._clock_s < deadline:
+                self._assert_sim_clock_live()
+                now = time.monotonic()
+                if now >= next_publish:
+                    self._publish(segment.linear_x, segment.angular_z)
+                    publish_count += 1
+                    next_publish += period
+                self._spin_once(0.01)
+            completed = True
+        finally:
+            end_s = self._clock_s
+            receipt = {
+                "segment_index": index,
+                "start_sim_s": self._segment_started_at,
+                "end_sim_s": end_s,
+                "expected_duration_s": segment.duration_sec,
+                "command_linear_mps": segment.linear_x,
+                "command_angular_radps": segment.angular_z,
+                "intent_publish_count": publish_count,
+                "completion": "COMPLETED" if completed else "TRUNCATED",
+                "truncated": not completed,
+            }
+            self._segment_schedule.append(receipt)
+        return receipt
 
-    def _settle(self) -> None:
+    def _settle(self) -> dict[str, Any]:
         period = 1.0 / self._config.command_rate_hz
         self._segment_index = -1
         waiting_since = time.monotonic()
@@ -1199,13 +1220,23 @@ class MotionBenchmarkNode(Node):
         self._command_angular = 0.0
         next_publish = time.monotonic()
         deadline = self._segment_started_at + self._config.final_settle_sec
+        publish_count = 0
         while self._clock_s is None or self._clock_s < deadline:
             self._assert_sim_clock_live()
             now = time.monotonic()
             if now >= next_publish:
                 self._publish(0.0, 0.0)
+                publish_count += 1
                 next_publish += period
             self._spin_once(0.01)
+        return {
+            "first_sim_s": self._segment_started_at,
+            "last_sim_s": self._clock_s,
+            "publish_count": publish_count,
+            "requested_duration_s": self._config.final_settle_sec,
+            "command_linear_mps": 0.0,
+            "command_angular_radps": 0.0,
+        }
 
     @staticmethod
     def _segment_contract(primitive: MotionPrimitive) -> list[dict[str, float]]:
@@ -1230,6 +1261,7 @@ class MotionBenchmarkNode(Node):
         self._command_linear = 0.0
         self._command_angular = 0.0
         self._current_reset_receipt = None
+        self._segment_schedule = []
         try:
             self._reset(reference.reset_seed)
             self._recording = True
@@ -1242,6 +1274,7 @@ class MotionBenchmarkNode(Node):
             period = 1.0 / self._config.command_rate_hz
             next_publish = time.monotonic()
             zero_command_count = 0
+            completed = False
             while self._clock_s is None or self._clock_s < deadline:
                 self._assert_sim_clock_live()
                 now = time.monotonic()
@@ -1250,8 +1283,11 @@ class MotionBenchmarkNode(Node):
                     zero_command_count += 1
                     next_publish += period
                 self._spin_once(0.01)
-            self._publish(0.0, 0.0)
-            zero_command_count += 1
+            completed = True
+            segment_end_s = self._clock_s
+            self._recording = False
+            final_zero_receipt = self._settle()
+            zero_command_count += int(final_zero_receipt["publish_count"])
         except MotionSafetyStop as exc:
             self._recording = False
             self._publish(0.0, 0.0)
@@ -1268,6 +1304,22 @@ class MotionBenchmarkNode(Node):
                 "measured_duration_sec": None,
                 "zero_command_count": 1,
                 "final_zero_published": True,
+                "segment_schedule": [{
+                    "segment_index": 0,
+                    "start_sim_s": locals().get("start_s"),
+                    "end_sim_s": self._clock_s,
+                    "expected_duration_s": reference.duration_sec,
+                    "command_linear_mps": 0.0,
+                    "command_angular_radps": 0.0,
+                    "intent_publish_count": locals().get("zero_command_count", 0),
+                    "completion": "COMPLETED" if locals().get("completed", False) else "TRUNCATED",
+                    "truncated": not locals().get("completed", False),
+                }],
+                "final_zero_publish_receipt": {
+                    "first_sim_s": self._clock_s,
+                    "last_sim_s": self._clock_s,
+                    "publish_count": 1,
+                },
                 "reset_seed": reference.reset_seed,
             }
             if self._current_reset_receipt is not None:
@@ -1320,6 +1372,18 @@ class MotionBenchmarkNode(Node):
             "max_odometry_displacement_m": max_displacement,
             "zero_command_count": zero_command_count,
             "final_zero_published": True,
+            "segment_schedule": [{
+                "segment_index": 0,
+                "start_sim_s": start_s,
+                "end_sim_s": segment_end_s,
+                "expected_duration_s": reference.duration_sec,
+                "command_linear_mps": 0.0,
+                "command_angular_radps": 0.0,
+                "intent_publish_count": zero_command_count - 1,
+                "completion": "COMPLETED",
+                "truncated": False,
+            }],
+            "final_zero_publish_receipt": final_zero_receipt,
             "reset_seed": reference.reset_seed,
             "reset_receipt": self._current_reset_receipt,
         }
@@ -1349,6 +1413,7 @@ class MotionBenchmarkNode(Node):
             self._command_linear = 0.0
             self._command_angular = 0.0
             self._current_reset_receipt = None
+            self._segment_schedule = []
             self.get_logger().info(
                 f"running motion primitive {primitive.identifier}"
             )
@@ -1357,7 +1422,7 @@ class MotionBenchmarkNode(Node):
                 self._recording = True
                 for segment_index, segment in enumerate(primitive.segments):
                     self._play_segment(segment_index, segment)
-                self._settle()
+                final_zero_receipt = self._settle()
             except MotionSafetyStop as exc:
                 self._recording = False
                 self._publish(0.0, 0.0)
@@ -1370,8 +1435,14 @@ class MotionBenchmarkNode(Node):
                     "collision_detected": self._collision_detected,
                     "sample_count": len(self._samples),
                     "segments": MotionBenchmarkNode._segment_contract(primitive),
+                    "segment_schedule": list(self._segment_schedule),
                     "reset_seed": self._config.reset_seed + index,
                     "final_zero_published": True,
+                    "final_zero_publish_receipt": {
+                        "first_sim_s": getattr(self, "_clock_s", None),
+                        "last_sim_s": getattr(self, "_clock_s", None),
+                        "publish_count": 1,
+                    },
                 }
                 if self._current_reset_receipt is not None:
                     stopped["reset_receipt"] = self._current_reset_receipt
@@ -1394,12 +1465,19 @@ class MotionBenchmarkNode(Node):
             result["stopped"] = False
             result["outcome"] = "COMPLETED"
             result["final_zero_published"] = True
+            result["segment_schedule"] = list(self._segment_schedule)
+            result["final_zero_publish_receipt"] = final_zero_receipt
             results.append(result)
             self.get_logger().info(
                 f"completed {primitive.identifier}: "
                 f"{'pass' if result['passed'] else 'failure'}"
             )
         self._publish(0.0, 0.0)
+        top_final_zero_receipt = {
+            "first_sim_s": getattr(self, "_clock_s", None),
+            "last_sim_s": getattr(self, "_clock_s", None),
+            "publish_count": 1,
+        }
         collision_detected = bool(
             (stationary or {}).get("collision_detected", False)
             or any(result.get("collision_detected", False) for result in results)
@@ -1415,7 +1493,7 @@ class MotionBenchmarkNode(Node):
             and (stationary is None or stationary.get("passed", False))
         )
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
             "spawn_pose_name": self._config.spawn_pose_name,
             "command_rate_hz": self._config.command_rate_hz,
@@ -1443,6 +1521,8 @@ class MotionBenchmarkNode(Node):
             ) + int((stationary or {}).get("sample_count", 0)),
             "segment_count": sum(len(result.get("segments", [])) for result in results),
             "final_zero_published": True,
+            "final_settle_sec": getattr(self._config, "final_settle_sec", None),
+            "final_zero_publish_receipt": top_final_zero_receipt,
             "primitive_count": len(results),
             "passed_primitive_count": sum(
                 bool(result["passed"]) for result in results
