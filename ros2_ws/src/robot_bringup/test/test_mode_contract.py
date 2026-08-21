@@ -178,6 +178,82 @@ def test_localization_requires_existing_occupancy_map(tmp_path):
         )
 
 
+def test_rivermark_occupancy_only_accepts_amcl_without_posegraph(tmp_path):
+    occupancy_map = tmp_path / 'rivermark_selected.yaml'
+    occupancy_map.write_text('image: rivermark_selected.pgm\n')
+    route_graph = tmp_path / 'rivermark_selected.geojson'
+    route_graph.write_text('{"type": "FeatureCollection", "features": []}\n')
+
+    selection = validate_mode(
+        'navigation',
+        'estimated',
+        'isaac',
+        posegraph_file='',
+        map_file=str(occupancy_map),
+        localization_map_contract='occupancy_only',
+        localization_owner='amcl',
+        route_graph_file=str(route_graph),
+    )
+
+    assert selection.posegraph_prefix == ''
+    assert selection.occupancy_map_file == str(occupancy_map)
+    assert selection.route_graph_file == str(route_graph)
+    assert selection.localization_map_contract == 'occupancy_only'
+    assert selection.localization_owner == 'amcl'
+    assert selection.map_manifest_file == ''
+
+
+def test_occupancy_only_rejects_missing_assets_and_wrong_owner(tmp_path):
+    occupancy_map = tmp_path / 'rivermark_selected.yaml'
+    occupancy_map.write_text('image: rivermark_selected.pgm\n')
+    route_graph = tmp_path / 'rivermark_selected.geojson'
+    route_graph.write_text('{"type": "FeatureCollection", "features": []}\n')
+
+    with pytest.raises(ValueError, match='occupancy map YAML does not exist'):
+        validate_mode(
+            'navigation', 'estimated', 'isaac',
+            map_file=str(tmp_path / 'missing.yaml'),
+            localization_map_contract='occupancy_only',
+            localization_owner='amcl',
+            route_graph_file=str(route_graph),
+        )
+    with pytest.raises(ValueError, match='route graph does not exist'):
+        validate_mode(
+            'navigation', 'estimated', 'isaac',
+            map_file=str(occupancy_map),
+            localization_map_contract='occupancy_only',
+            localization_owner='amcl',
+            route_graph_file=str(tmp_path / 'missing.geojson'),
+        )
+    with pytest.raises(ValueError, match='requires localization_owner=amcl'):
+        validate_mode(
+            'navigation', 'ideal', 'isaac',
+            map_file=str(occupancy_map),
+            localization_map_contract='occupancy_only',
+            route_graph_file=str(route_graph),
+        )
+    with pytest.raises(ValueError, match='conflicts with odometry_mode'):
+        validate_mode(
+            'navigation', 'estimated', 'isaac',
+            map_file=str(occupancy_map),
+            localization_map_contract='occupancy_only',
+            localization_owner='ideal',
+            route_graph_file=str(route_graph),
+        )
+
+
+def test_legacy_navigation_defaults_to_posegraph_bundle():
+    with pytest.raises(ValueError, match='posegraph_file is required'):
+        validate_mode(
+            'navigation',
+            'estimated',
+            'isaac',
+            posegraph_file='',
+            map_file='/tmp/warehouse_new.yaml',
+            route_graph_file='/tmp/warehouse_new.geojson',
+        )
+
+
 def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     document = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())
@@ -192,6 +268,14 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
         'occupancy_map_required'] is True
     assert document['operations']['navigation'][
         'occupancy_map_required'] is True
+    assert document['localization_map_contracts']['posegraph_bundle'][
+        'posegraph_required'] is True
+    assert document['localization_map_contracts']['occupancy_only'] == {
+        'localization_owner': 'amcl',
+        'posegraph_required': False,
+        'occupancy_map_required': True,
+        'route_graph_required': True,
+    }
     assert document['operations']['navigation']['starts_nav2'] is True
     assert document['operations']['localization'][
         'localization_backend'] == 'amcl'
@@ -274,6 +358,30 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
         in bringup_source
     assert "'activation_startup_policy': LaunchConfiguration(" \
         in bringup_source
+
+
+def test_occupancy_only_launch_uses_map_server_amcl_and_no_fake_posegraph():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+    mapping_source = (
+        PACKAGE_ROOT.parent / 'robot_mapping' / 'launch'
+        / 'localization.launch.py').read_text()
+    navigation_source = (
+        PACKAGE_ROOT / 'launch' / 'navigation_bringup.launch.py').read_text()
+
+    assert "'localization_map_contract', default_value='posegraph_bundle'" \
+        in core_source
+    assert "'localization_backend': selection.localization_owner" \
+        in core_source
+    assert "'route_graph_file': selection.route_graph_file" in core_source
+    assert "selection.odometry_mode in {'realistic', 'estimated'}" \
+        in core_source
+    assert "executable='map_server'" in mapping_source
+    assert "if backend == 'amcl':" in mapping_source
+    assert "executable='amcl'" in mapping_source
+    assert 'fake_posegraph' not in core_source
+    assert "'localization_map_contract': LaunchConfiguration(" \
+        in navigation_source
 
 
 def test_v6_local_arms_do_not_select_the_cognitive_graph_mode():

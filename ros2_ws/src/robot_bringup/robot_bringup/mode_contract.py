@@ -15,6 +15,9 @@ OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
 ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
+LOCALIZATION_MAP_CONTRACTS = frozenset({
+    'posegraph_bundle', 'occupancy_only'})
+LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'amcl'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
     'v6_low_obstacle_isolation',
@@ -49,6 +52,9 @@ class ModeSelection:
     structure_tf_source: str
     posegraph_prefix: str
     occupancy_map_file: str
+    localization_map_contract: str
+    localization_owner: str
+    route_graph_file: str
     map_manifest_file: str = ''
     map_version: str = ''
     map_bundle_sha256: str = ''
@@ -313,6 +319,9 @@ def validate_mode(
     initial_pose_source='auto',
     spawn_poses_file='',
     spawn_pose_name='mapping_start',
+    localization_map_contract='posegraph_bundle',
+    localization_owner='auto',
+    route_graph_file='',
 ):
     """Reject combinations that violate TF and SLAM ownership contracts."""
     operation = operation.strip().lower()
@@ -321,16 +330,64 @@ def validate_mode(
     prefix = posegraph_prefix(posegraph_file)
     occupancy_map = map_file.strip()
     manifest_path = map_manifest_file.strip()
+    map_contract = localization_map_contract.strip().lower()
+    requested_localization_owner = localization_owner.strip().lower()
+    route_graph = route_graph_file.strip()
 
     _require_choice('operation', operation, OPERATIONS)
     _require_choice('odometry_mode', odometry_mode, ODOMETRY_MODES)
     _require_choice(
         'structure_tf_source', structure_tf_source, STRUCTURE_TF_SOURCES)
+    _require_choice(
+        'localization_map_contract', map_contract,
+        LOCALIZATION_MAP_CONTRACTS)
+    _require_choice(
+        'localization_owner', requested_localization_owner,
+        LOCALIZATION_OWNERS)
 
     if odometry_mode == 'ideal' and structure_tf_source == 'rsp':
         raise ValueError(
             'ideal odometry is an Isaac-owned mode; structure_tf_source=rsp '
             'is reserved for the realistic/standard ROS ownership mode')
+
+    localization_operation = operation in {'localization', 'navigation'}
+    expected_localization_owner = (
+        'ideal' if odometry_mode == 'ideal' else 'amcl')
+    if localization_operation:
+        resolved_localization_owner = (
+            expected_localization_owner
+            if requested_localization_owner == 'auto'
+            else requested_localization_owner
+        )
+        if resolved_localization_owner != expected_localization_owner:
+            raise ValueError(
+                f'localization_owner={resolved_localization_owner} conflicts '
+                f'with odometry_mode={odometry_mode}; expected '
+                f'{expected_localization_owner}')
+    else:
+        if requested_localization_owner != 'auto':
+            raise ValueError(
+                'localization_owner is valid only for localization or '
+                'navigation mode')
+        resolved_localization_owner = 'none'
+
+    if map_contract == 'occupancy_only':
+        if not localization_operation:
+            raise ValueError(
+                'localization_map_contract=occupancy_only is valid only for '
+                'localization or navigation mode')
+        if resolved_localization_owner != 'amcl':
+            raise ValueError(
+                'localization_map_contract=occupancy_only requires '
+                'localization_owner=amcl')
+        if prefix:
+            raise ValueError(
+                'posegraph_file must be empty for the occupancy_only '
+                'localization map contract')
+        if not route_graph:
+            raise ValueError(
+                'route_graph_file is required for the occupancy_only '
+                'localization map contract')
 
     if operation == 'mapping' and prefix:
         raise ValueError(
@@ -338,7 +395,7 @@ def validate_mode(
             'baseline mapping mode')
     saved_map_operation = operation in {
         'incremental_mapping', 'localization', 'navigation'}
-    if saved_map_operation:
+    if saved_map_operation and map_contract == 'posegraph_bundle':
         if not prefix:
             raise ValueError(
                 f'posegraph_file is required for {operation} mode')
@@ -352,20 +409,25 @@ def validate_mode(
                 raise ValueError(
                     'serialized pose graph is incomplete; missing: '
                     + ', '.join(missing))
-    if operation in {'localization', 'navigation'}:
+    if localization_operation:
         if not occupancy_map:
             raise ValueError(
                 f'map_file is required for {operation} mode')
         if check_posegraph_files and not Path(occupancy_map).is_file():
             raise ValueError(
                 f'occupancy map YAML does not exist: {occupancy_map}')
+        if (map_contract == 'occupancy_only' and check_posegraph_files
+                and not Path(route_graph).is_file()):
+            raise ValueError(
+                f'route graph does not exist: {route_graph}')
     elif occupancy_map:
         raise ValueError(
             f'map_file is not an input to {operation} mode')
 
     map_version = ''
     map_bundle_sha256 = ''
-    if saved_map_operation and check_posegraph_files:
+    if (saved_map_operation and map_contract == 'posegraph_bundle'
+            and check_posegraph_files):
         if not manifest_path:
             version = Path(prefix).name
             map_root = Path(prefix).parent.parent
@@ -413,6 +475,9 @@ def validate_mode(
         structure_tf_source=structure_tf_source,
         posegraph_prefix=prefix,
         occupancy_map_file=occupancy_map,
+        localization_map_contract=map_contract,
+        localization_owner=resolved_localization_owner,
+        route_graph_file=route_graph,
         map_manifest_file=manifest_path,
         map_version=map_version,
         map_bundle_sha256=map_bundle_sha256,

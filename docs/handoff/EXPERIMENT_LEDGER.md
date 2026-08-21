@@ -374,3 +374,25 @@
   campaign, or formal qualification was performed.
 - Handoff:
   `docs/handoff/V6_FORMAL_MULTILEG_ENGINEERING_PILOT_20260821.md`.
+
+## 2026-08-21 — V6 Rivermark occupancy-only estimated bringup
+
+- Goal: make the six Rivermark engineering-pilot scene/stack pairings runnable
+  without fabricating a missing SLAM Toolbox posegraph.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `e7d0a1d3ac1cbd3598bcc670817ea3ea59b00079`.
+- Changes: explicit fail-closed `occupancy_only` localization map contract;
+  AMCL/occupancy/route-GeoJSON validation; legacy posegraph-bundle default
+  retained; paired `isaac|ros` static/dynamic/appearance wrapper fixed to
+  realistic Isaac sensors, RGB-D, passive GT, estimated EKF+AMCL, M3, PRIMARY
+  and no RViz.
+- Validation: shell syntax and changed Python compile PASS; contract plus new
+  wrapper tests `32 passed`; isolated `robot_bringup` build PASS at
+  `/tmp/v6_rivermark_bringup.iJSG4n`; `git diff --check` PASS. The broader
+  runtime-script file had `60 passed` plus one unrelated pre-existing strict
+  shell-style failure outside this task's ownership.
+- Verdict: **PASS (implementation/build/unit only)**;
+  **ENGINEERING_PILOT_NOT_RUN**. No ROS/Isaac/Nav2, scene freeze, evidence
+  capture, or qualification was run.
+- Handoff:
+  `docs/handoff/V6_RIVERMARK_OCCUPANCY_ONLY_BRINGUP_20260821.md`.

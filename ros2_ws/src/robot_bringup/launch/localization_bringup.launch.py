@@ -17,6 +17,10 @@ def generate_launch_description():
         DeclareLaunchArgument('odometry_mode', default_value='ideal'),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
+        DeclareLaunchArgument(
+            'localization_map_contract', default_value='posegraph_bundle'),
+        DeclareLaunchArgument('localization_owner', default_value='auto'),
+        DeclareLaunchArgument('route_graph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
         DeclareLaunchArgument('map_manifest_file', default_value=''),
@@ -62,6 +66,11 @@ def generate_launch_description():
                 'structure_tf_source': LaunchConfiguration(
                     'structure_tf_source'),
                 'posegraph_file': LaunchConfiguration('posegraph_file'),
+                'localization_map_contract': LaunchConfiguration(
+                    'localization_map_contract'),
+                'localization_owner': LaunchConfiguration(
+                    'localization_owner'),
+                'route_graph_file': LaunchConfiguration('route_graph_file'),
                 'ceres_num_threads': LaunchConfiguration(
                     'ceres_num_threads'),
                 'map_file': LaunchConfiguration('map_file'),

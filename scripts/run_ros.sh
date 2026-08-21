@@ -58,12 +58,18 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
   posegraph_file=""
   map_file=""
   odometry_mode="ideal"
+  localization_map_contract="posegraph_bundle"
+  localization_owner="auto"
+  route_graph_file=""
   posegraph_calibration="false"
   for argument in "${launch_args[@]}"; do
     case "${argument}" in
       posegraph_file:=*) posegraph_file="${argument#posegraph_file:=}" ;;
       map_file:=*) map_file="${argument#map_file:=}" ;;
       odometry_mode:=*) odometry_mode="${argument#odometry_mode:=}" ;;
+      localization_map_contract:=*) localization_map_contract="${argument#localization_map_contract:=}" ;;
+      localization_owner:=*) localization_owner="${argument#localization_owner:=}" ;;
+      route_graph_file:=*) route_graph_file="${argument#route_graph_file:=}" ;;
       posegraph_calibration:=*) posegraph_calibration="${argument#posegraph_calibration:=}" ;;
     esac
   done
@@ -71,7 +77,28 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
     ideal|realistic|estimated) ;;
     *) die "odometry_mode must be ideal, realistic, or estimated" ;;
   esac
-  if [[ -z "${posegraph_file}" ]]; then
+  case "${localization_map_contract}" in
+    posegraph_bundle|occupancy_only) ;;
+    *) die "localization_map_contract must be posegraph_bundle or occupancy_only" ;;
+  esac
+  case "${localization_owner}" in
+    auto|ideal|amcl) ;;
+    *) die "localization_owner must be auto, ideal, or amcl" ;;
+  esac
+  if [[ "${localization_map_contract}" == "occupancy_only" ]]; then
+    [[ -z "${posegraph_file}" ]] || die \
+      "posegraph_file must be empty for localization_map_contract=occupancy_only"
+    [[ "${localization_owner}" != "ideal" ]] || die \
+      "localization_map_contract=occupancy_only requires localization_owner=amcl"
+    [[ "${odometry_mode}" != "ideal" ]] || die \
+      "localization_map_contract=occupancy_only requires AMCL odometry ownership"
+    [[ -n "${map_file}" ]] || die \
+      "map_file is required for localization_map_contract=occupancy_only"
+    [[ -n "${route_graph_file}" ]] || die \
+      "route_graph_file is required for localization_map_contract=occupancy_only"
+    require_file "${map_file}"
+    require_file "${route_graph_file}"
+  elif [[ -z "${posegraph_file}" ]]; then
     if [[ -n "${map_file}" ]]; then
       map_prefix="${map_file%.yaml}"
       posegraph_file="${PROJECT_ROOT}/data/maps/posegraphs/$(basename "${map_prefix}")"

@@ -119,6 +119,12 @@ def _launch_setup(context):
         spawn_poses_file=spawn_poses_file,
         spawn_pose_name=LaunchConfiguration(
             'spawn_pose_name').perform(context),
+        localization_map_contract=LaunchConfiguration(
+            'localization_map_contract').perform(context),
+        localization_owner=LaunchConfiguration(
+            'localization_owner').perform(context),
+        route_graph_file=LaunchConfiguration(
+            'route_graph_file').perform(context),
     )
     selected_spawn = None
     if (selection.operation in {'localization', 'navigation'}
@@ -259,6 +265,8 @@ def _launch_setup(context):
         f'operation={selection.operation}, '
         f'odometry={selection.odometry_mode}, '
         f'structure_tf={selection.structure_tf_source}, '
+        f'localization_map_contract={selection.localization_map_contract}, '
+        f'localization_owner={selection.localization_owner}, '
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
         f'nav2_profile={nav2_profile}, '
         f'cognitive_profile={cognitive_profile.name}, '
@@ -394,11 +402,7 @@ def _launch_setup(context):
                 {
                     'use_sim_time': use_sim_time,
                     'map_file': selection.occupancy_map_file,
-                    'localization_backend': (
-                        'ideal'
-                        if selection.odometry_mode == 'ideal'
-                        else 'amcl'
-                    ),
+                    'localization_backend': selection.localization_owner,
                     'amcl_params_file': str(amcl_params_file),
                     'map_to_odom_x': (
                         str(selected_spawn.map.position[0])
@@ -437,8 +441,7 @@ def _launch_setup(context):
                 'nav2_profile_params_file': str(nav2_profile_params_file),
                 'structural_map_file': selection.occupancy_map_file,
                 'module2_enabled': module2_enabled,
-                'route_graph_file': LaunchConfiguration(
-                    'route_graph_file').perform(context),
+                'route_graph_file': selection.route_graph_file,
                 'feasible_only_largest_component': LaunchConfiguration(
                     'feasible_only_largest_component').perform(context),
                 'module2_response_timeout_s': LaunchConfiguration(
@@ -574,6 +577,12 @@ def generate_launch_description():
             default_value='isaac',
             description='isaac or rsp'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
+        DeclareLaunchArgument(
+            'localization_map_contract', default_value='posegraph_bundle',
+            description='posegraph_bundle or explicit AMCL occupancy_only'),
+        DeclareLaunchArgument(
+            'localization_owner', default_value='auto',
+            description='auto, ideal, or amcl'),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
         # Keep the manifest explicit at the core-launch boundary so direct

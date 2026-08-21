@@ -24,6 +24,7 @@ RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
 RUN_V6_LOW_OBSTACLES = (
     REPOSITORY_ROOT / 'scripts' / 'run_v6_kujiale_low_obstacles.sh')
+RUN_V6_RIVERMARK = REPOSITORY_ROOT / 'scripts' / 'run_v6_rivermark.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
 
@@ -247,6 +248,118 @@ def test_v6_nonshadow_ros_argv_keeps_lidar_defaults_implicit(tmp_path):
                    for argument in arguments)
     assert not any(argument.startswith('ekf_profile:=')
                    for argument in arguments)
+
+
+def _v6_rivermark_argv(
+        tmp_path: Path, *arguments: str) -> tuple[list[str], dict[str, str]]:
+    scripts = tmp_path / 'scripts'
+    (scripts / 'lib').mkdir(parents=True)
+    shutil.copy2(RUN_V6_RIVERMARK, scripts / RUN_V6_RIVERMARK.name)
+    (scripts / 'lib' / 'common.sh').write_text(
+        f'''PROJECT_ROOT="{tmp_path}"
+require_file() {{ [[ -f "$1" ]]; }}
+die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+''',
+        encoding='utf-8',
+    )
+    demo = tmp_path / 'data' / 'rivermark_demo'
+    demo.mkdir(parents=True)
+    for name in (
+        'rivermark.spawn.yaml',
+        'rivermark_selected.yaml',
+        'rivermark_selected.geojson',
+        'rivermark_demo_goals.yaml',
+        'final_rivermark_static_obstacles.yaml',
+        'final_rivermark_dynamic.yaml',
+        'rivermark_appearance_profiles.yaml',
+    ):
+        (demo / name).touch()
+    environment_usd = tmp_path / 'rivermark.usd'
+    environment_usd.touch()
+    for executable in ('run_isaac.sh', 'run_ros.sh'):
+        target = scripts / executable
+        target.write_text(
+            '#!/usr/bin/env bash\n'
+            'printf "GROUND_TRUTH=%s\\n" '
+            '"${ISAAC_NAV__GROUND_TRUTH__ENABLED:-}"\n'
+            'printf "SCENARIO=%s\\n" "${V6_RIVERMARK_SCENARIO:-}"\n'
+            'printf "GOALS=%s\\n" "${V6_RIVERMARK_GOALS_FILE:-}"\n'
+            'printf "%s\\n" "$@"\n',
+            encoding='utf-8',
+        )
+        target.chmod(0o755)
+
+    result = subprocess.run(
+        [str(scripts / RUN_V6_RIVERMARK.name), *arguments],
+        cwd=tmp_path,
+        env=_environment(RIVERMARK_USD=str(environment_usd)),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    metadata = dict(line.split('=', 1) for line in lines[:3])
+    return lines[3:], metadata
+
+
+def test_v6_rivermark_ros_argv_is_estimated_occupancy_only_primary(tmp_path):
+    arguments, metadata = _v6_rivermark_argv(
+        tmp_path, 'ros', 'static')
+
+    assert arguments[0] == 'navigation'
+    assert 'odometry_mode:=estimated' in arguments
+    assert 'structure_tf_source:=isaac' in arguments
+    assert 'localization_map_contract:=occupancy_only' in arguments
+    assert 'localization_owner:=amcl' in arguments
+    assert 'localization_profile:=rivermark' in arguments
+    assert 'ekf_profile:=wheel_imu_lidar' in arguments
+    assert 'lidar_odometry_backend:=rf2o' in arguments
+    assert 'lidar_odometry_validated:=true' in arguments
+    assert 'nav2_profile:=v6_low_obstacle_isolation' in arguments
+    assert 'cognitive_profile:=M3' in arguments
+    assert 'cognitive_graph_mode:=primary' in arguments
+    assert 'use_rviz:=false' in arguments
+    assert not any(argument.startswith('posegraph_file:=')
+                   for argument in arguments)
+    assert any(argument.endswith('/rivermark_selected.yaml')
+               for argument in arguments)
+    assert any(argument.endswith('/rivermark_selected.geojson')
+               for argument in arguments)
+    assert metadata['SCENARIO'] == 'static'
+    assert metadata['GOALS'].endswith('/rivermark_demo_goals.yaml')
+
+
+def test_v6_rivermark_isaac_argv_covers_three_pilot_scenes(tmp_path):
+    static, static_metadata = _v6_rivermark_argv(
+        tmp_path / 'static', 'isaac', 'static')
+    dynamic, dynamic_metadata = _v6_rivermark_argv(
+        tmp_path / 'dynamic', 'isaac', 'dynamic')
+    appearance, appearance_metadata = _v6_rivermark_argv(
+        tmp_path / 'appearance', 'isaac', 'appearance', 'dim_cool')
+
+    for arguments, metadata in (
+            (static, static_metadata),
+            (dynamic, dynamic_metadata),
+            (appearance, appearance_metadata)):
+        assert '--environment-usd' in arguments
+        assert '--spawn-pose' in arguments
+        assert 'rivermark_start' in arguments
+        assert '--mode' in arguments
+        assert 'realistic' in arguments
+        assert '--structure-tf-source' in arguments
+        assert 'isaac' in arguments
+        assert '--camera-profile' in arguments
+        assert 'rgbd_navigation' in arguments
+        assert metadata['GROUND_TRUTH'] == 'true'
+
+    assert 'final_rivermark_static_obstacles.yaml' in ' '.join(static)
+    assert '--dynamic-obstacles' in static
+    assert 'final_rivermark_dynamic.yaml' in ' '.join(dynamic)
+    assert 'full_route_four_stage' in dynamic
+    assert 'v3' in dynamic
+    assert '--no-dynamic-obstacles' in appearance
+    assert 'dim_cool' in appearance
 
 
 @pytest.mark.parametrize(
