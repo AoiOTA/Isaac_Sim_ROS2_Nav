@@ -84,6 +84,8 @@ ament_target_dependencies(bio_nav_costmap_plugin
 add_library(bio_nav_mppi_critic_plugin SHARED
   src/cognitive_risk_critic.cpp
 )
+target_link_libraries(
+  bio_nav_mppi_critic_plugin bio_nav_costmap_plugin)
 target_include_directories(bio_nav_mppi_critic_plugin PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>

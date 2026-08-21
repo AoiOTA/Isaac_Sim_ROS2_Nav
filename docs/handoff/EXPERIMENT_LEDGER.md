@@ -656,3 +656,31 @@
   evidence was run; both live Costmap consumers still require observation.
 - Handoff:
   `docs/handoff/V6_OBSTACLE_STATIC_SOURCE_AGE_20260821.md`.
+
+## 2026-08-21 — V6 critic static-revalidation freshness alignment
+
+- Goal: prevent MPPI's `CognitiveRiskCritic` from rejecting a static obstacle
+  that the Costmap layer accepts on a fresh depth-revalidation timeline.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `e55ccc13fbd01479cd1ad20aefca800f9e218d73`.
+- Changes: critic obstacle admission now reuses
+  `CognitiveObstacleLayer::validateMessage()` with the planning-prior identity,
+  so dual-timeline freshness, static confirmation, identity, trust, OOD, and
+  malformed-data gates have one verdict. Planning-prior freshness remains a
+  separate 0.5-second fail-open gate; critic authority and scoring are
+  unchanged.
+- Validation: fresh isolated `bio_nav_interfaces` plus `bio_nav_fusion` build
+  PASS at `/tmp/bio_nav_module3_critic.JLGsAi`; focused fusion gtest PASS,
+  28/28; plugin loader isolation PASS, 1/1; `git diff --check` PASS. The first
+  build at `/tmp/bio_nav_module3_critic.mUTBid` stopped before compiling this
+  change because a pre-existing interface overlay lacked generated headers;
+  the successful run rebuilt the interface from the allowed source.
+- Verdict: **PASS (implementation/build/unit only)**. No active MPPI, ROS,
+  Nav2, Isaac, navigation, engineering evidence, or qualification campaign was
+  run.
+- Next: in an authorized live run, publish one source observation older than
+  0.5 seconds with a fresh static-depth validation and confirm both Costmap and
+  critic status report applied, then allow the validation TTL to expire and
+  confirm zero cognitive cost.
+- Handoff:
+  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.

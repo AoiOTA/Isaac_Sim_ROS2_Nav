@@ -318,6 +318,19 @@ bio_nav_interfaces::msg::PlanningPrior planningPriorFixture()
   return prior;
 }
 
+std::string layerObstacleVerdict(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & obstacles,
+  const bio_nav_interfaces::msg::PlanningPrior & prior, int64_t now_ns)
+{
+  const bio_nav_fusion::CognitiveObstacleLayer::Identity identity{
+    prior.reset_epoch, prior.recurrent_session_id, prior.map_version,
+    prior.cognitive_tile_id, prior.tile_revision, prior.graph_revision,
+    prior.model_id};
+  return bio_nav_fusion::CognitiveObstacleLayer::validateMessage(
+    obstacles, now_ns, identity,
+    bio_nav_fusion::CognitiveObstacleLayer::AcceptanceCursor{}, 0.5, 0.2);
+}
+
 }  // namespace
 
 TEST(CognitiveObstacleLayer, strict_gate_and_hard_threshold_are_fail_open)
@@ -766,7 +779,7 @@ TEST(CognitiveRiskCritic, stale_or_ood_inputs_score_zero_by_rejection)
       &obstacles, &prior, 10100000000LL, 0.5, 0.2), "");
   EXPECT_EQ(Critic::validateDirectionPrior(prior), "");
   EXPECT_EQ(Critic::validateInputs(
-      &obstacles, &prior, 10600000000LL, 0.5, 0.2), "stale");
+      &obstacles, &prior, 10600000000LL, 0.5, 0.2), "validation_stale");
   prior.visual_ood_probability = 0.8F;
   EXPECT_EQ(Critic::validateInputs(
       &obstacles, &prior, 10100000000LL, 0.5, 0.2), "ood");
@@ -775,4 +788,73 @@ TEST(CognitiveRiskCritic, stale_or_ood_inputs_score_zero_by_rejection)
   prior.local_direction_frame_id = "module2_canvas";
   prior.local_direction_trusted_write = false;
   EXPECT_EQ(Critic::validateDirectionPrior(prior), "direction_frame");
+}
+
+TEST(CognitiveRiskCritic, static_depth_revalidation_uses_fresh_validation_timeline)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  auto obstacles = staticRevalidatedObstacleFixture();
+  auto prior = planningPriorFixture();
+  prior.stamp.sec = 11;
+  const int64_t now_ns = 11100000000LL;
+
+  const auto layer_reason = layerObstacleVerdict(obstacles, prior, now_ns);
+  const auto critic_reason = Critic::validateInputs(
+    &obstacles, &prior, now_ns, 0.5, 0.2);
+  EXPECT_EQ(layer_reason, "");
+  EXPECT_EQ(critic_reason, layer_reason);
+}
+
+TEST(CognitiveRiskCritic, expired_static_validation_and_live_source_fail_open)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  auto prior = planningPriorFixture();
+
+  auto obstacles = staticRevalidatedObstacleFixture();
+  prior.stamp.sec = 11;
+  prior.stamp.nanosec = 600000000U;
+  const int64_t static_now_ns = 11600000000LL;
+  auto layer_reason = layerObstacleVerdict(obstacles, prior, static_now_ns);
+  auto critic_reason = Critic::validateInputs(
+    &obstacles, &prior, static_now_ns, 0.5, 0.2);
+  EXPECT_EQ(layer_reason, "validation_stale");
+  EXPECT_EQ(critic_reason, layer_reason);
+
+  obstacles = obstacleFixture();
+  prior.stamp.sec = 10;
+  prior.stamp.nanosec = 600000000U;
+  const int64_t live_now_ns = 10600000000LL;
+  layer_reason = layerObstacleVerdict(obstacles, prior, live_now_ns);
+  critic_reason = Critic::validateInputs(
+    &obstacles, &prior, live_now_ns, 0.5, 0.2);
+  EXPECT_EQ(layer_reason, "validation_stale");
+  EXPECT_EQ(critic_reason, layer_reason);
+}
+
+TEST(CognitiveRiskCritic, obstacle_identity_ood_and_trust_match_layer_fail_open)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const int64_t now_ns = 10100000000LL;
+  const auto prior = planningPriorFixture();
+
+  auto obstacles = obstacleFixture();
+  obstacles.map_version = "wrong";
+  EXPECT_EQ(layerObstacleVerdict(obstacles, prior, now_ns), "identity");
+  EXPECT_EQ(
+    Critic::validateInputs(&obstacles, &prior, now_ns, 0.5, 0.2),
+    layerObstacleVerdict(obstacles, prior, now_ns));
+
+  obstacles = obstacleFixture();
+  obstacles.ood_probability = 0.3;
+  EXPECT_EQ(layerObstacleVerdict(obstacles, prior, now_ns), "ood");
+  EXPECT_EQ(
+    Critic::validateInputs(&obstacles, &prior, now_ns, 0.5, 0.2),
+    layerObstacleVerdict(obstacles, prior, now_ns));
+
+  obstacles = obstacleFixture();
+  obstacles.trusted_write = false;
+  EXPECT_EQ(layerObstacleVerdict(obstacles, prior, now_ns), "untrusted");
+  EXPECT_EQ(
+    Critic::validateInputs(&obstacles, &prior, now_ns, 0.5, 0.2),
+    layerObstacleVerdict(obstacles, prior, now_ns));
 }

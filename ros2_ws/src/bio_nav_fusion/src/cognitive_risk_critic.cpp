@@ -1,5 +1,7 @@
 #include "bio_nav_fusion/cognitive_risk_critic.hpp"
 
+#include "bio_nav_fusion/cognitive_obstacle_layer.hpp"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -100,13 +102,18 @@ std::string CognitiveRiskCritic::validateInputs(
   double maximum_age_s, double maximum_ood_probability)
 {
   if (!obstacles || !prior) {return "missing";}
-  const double obstacle_ttl = durationSeconds(obstacles->ttl);
-  const double obstacle_age = (now_ns - stampNs(obstacles->header.stamp)) * 1.0e-9;
+  const CognitiveObstacleLayer::Identity obstacle_identity{
+    prior->reset_epoch, prior->recurrent_session_id, prior->map_version,
+    prior->cognitive_tile_id, prior->tile_revision, prior->graph_revision,
+    prior->model_id};
+  const auto obstacle_reason = CognitiveObstacleLayer::validateMessage(
+    *obstacles, now_ns, obstacle_identity,
+    CognitiveObstacleLayer::AcceptanceCursor{}, maximum_age_s,
+    maximum_ood_probability);
+  if (!obstacle_reason.empty()) {return obstacle_reason;}
   const double prior_age = (now_ns - stampNs(prior->stamp)) * 1.0e-9;
   const double direction_ttl = durationSeconds(prior->local_direction_ttl);
-  if (obstacle_ttl <= 0.0 || obstacle_ttl > 0.5 || direction_ttl <= 0.0 ||
-    direction_ttl > 0.5 || obstacle_age < 0.0 || prior_age < 0.0 ||
-    obstacle_age > std::min(obstacle_ttl, maximum_age_s) ||
+  if (direction_ttl <= 0.0 || direction_ttl > 0.5 || prior_age < 0.0 ||
     prior_age > std::min(direction_ttl, maximum_age_s))
   {
     return "stale";
