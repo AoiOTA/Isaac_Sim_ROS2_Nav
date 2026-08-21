@@ -716,6 +716,41 @@
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
+## 2026-08-22 — V6 reset seed receipt and final command ResetStopGate
+
+- Goal: close the CLI/startup/Trigger reset-seed divergence and remove Isaac's
+  second final `/cmd_vel` publisher without changing IMU or critic semantics.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `9671be168266cb639e04e4c1baf46e1d353c0720`; implementation `20bc5df`.
+- Seed result: one effective CLI-or-scenario seed initializes startup and the
+  reset parameter. Trigger responses carry actual seed/generation/pose/
+  odometry/case/variant; ExperimentRunner, V6Formal, and MotionBenchmark retain
+  full responses and STOP on mismatch. Tests cover `8601`, fallback, the
+  `8601 -> 8602` change, and mismatch rejection.
+- Authority result: Collision Monitor owns external Navigation `/cmd_vel`;
+  same-process ResetStopGate alone publishes `/cmd_vel_sim` to the control
+  graph, IdleBrake, and MotionAssist. HOLD begins before Timeline pause,
+  continuously zeros on steady wall time, spans asynchronous recovery, and is
+  released only by the current eligible generation after ActivationGate
+  confirms managed nodes including Collision Monitor active. Startup release
+  is same-process after startup transaction completion and never replays cache.
+- Existing evidence retained, not rerun:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_estimated_dynamic_smoke_20260821T150407Z`.
+  It remains mixed-route **ENGINEERING FAIL** for IMU non-degradation despite
+  successful/collision-free navigation; seed `8601 -> 0` and dual `/cmd_vel`
+  ownership were separate debts addressed only at code-contract level here.
+- Validation: source-first/no-cache focused pytest **124 passed**; py_compile,
+  YAML, XML, installed imports, and diff check PASS; fresh isolated
+  `robot_experiments` and sanitized `robot_bringup` builds PASS under `/tmp`.
+  Isolated `colcon test` did not start because unbuilt workspace dependency
+  hooks were absent; the same bringup tests passed source-first.
+- Verdict: **PASS (implementation/build/unit only); AMBIGUOUS live closure**.
+  No Isaac, ROS, Nav2, navigation, visual evidence, engineering campaign, or
+  formal qualification was run. Reviewer must verify unique topic publishers,
+  zero HOLD through active-goal reset/recovery, no stale command, no slip, and
+  no collision; any violation is FAIL/STOP.
+- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
+
 ## 2026-08-21 — V6 critic revalidation TF/cursor blocker rework
 
 - Goal: fix reviewer blockers where static-revalidated points used an old
