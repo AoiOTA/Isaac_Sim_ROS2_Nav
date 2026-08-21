@@ -19,6 +19,7 @@ from .cognitive_graph_adapter import (
     CognitiveGraphFeedback,
     CognitiveGraphIdentity,
     build_hybrid_graph,
+    cognitive_graph_candidate_is_mature,
     cognitive_graph_feedback,
     validate_cognitive_graph_candidate,
 )
@@ -327,6 +328,7 @@ class RouteCoordinator:
             ("module2_enabled", True),
             ("module2_response_timeout_s", 0.0),
             ("module2_prior_ttl_s", 2.0),
+            ("cognitive_goal_prior_wait_s", 4.0),
             # Final route confirmation uses the campaign's 0.25 m waypoint
             # gate. Nav2 evaluates its 0.20 m goal checker in the local pose,
             # so requiring 0.20 m again can reject a valid final action due to
@@ -369,6 +371,9 @@ class RouteCoordinator:
         self.module2_prior_ttl_s = float(
             node.get_parameter("module2_prior_ttl_s").value
         )
+        self.cognitive_goal_prior_wait_s = float(
+            node.get_parameter("cognitive_goal_prior_wait_s").value
+        )
         self.route_goal_completion_tolerance_m = float(
             node.get_parameter("route_goal_completion_tolerance_m").value
         )
@@ -392,6 +397,14 @@ class RouteCoordinator:
             raise ValueError("module2_response_timeout_s must be non-negative")
         if self.module2_prior_ttl_s <= 0.0:
             raise ValueError("module2_prior_ttl_s must be positive")
+        if (
+            self.cognitive_graph_mode in {"primary", "hybrid"}
+            and not 3.5 <= self.cognitive_goal_prior_wait_s <= 4.0
+        ):
+            raise ValueError(
+                "cognitive_goal_prior_wait_s must be in [3.5, 4.0] "
+                "for primary/hybrid"
+            )
         if self.route_goal_completion_tolerance_m <= 0.0:
             raise ValueError("route_goal_completion_tolerance_m must be positive")
         if self.odometry_max_age_s <= 0.0:
@@ -899,6 +912,15 @@ class RouteCoordinator:
             self._fallback_to_gvg_once("simulation reset invalidated cognitive graph")
 
     def _on_cognitive_graph(self, message) -> None:
+        if (
+            self.cognitive_graph_mode in {"primary", "hybrid"}
+            and not cognitive_graph_candidate_is_mature(message)
+        ):
+            self._publish_structural_status(
+                self.StructuralGraphStatus.READY,
+                "cognitive_graph_immature_gvg_bootstrap",
+            )
+            return
         feedback = replace(
             cognitive_graph_feedback(message),
             validated_graph_id=str(self.graph.graph_id),
@@ -976,7 +998,7 @@ class RouteCoordinator:
                 validated_graph_revision=int(self.graph.revision),
             )
             self._publish_graph_validation(
-                feedback, accepted=True,
+                feedback, accepted=False,
                 reason="physically_validated_shadow_not_selected",
             )
             self._publish_structural_status(
@@ -1382,6 +1404,11 @@ class RouteCoordinator:
         timeout_s = self.module2_response_timeout_s or float(
             self.defaults["module2_edge_prior"]["response_timeout_s"]
         )
+        if getattr(self, "cognitive_graph_mode", "gvg") in {"primary", "hybrid"}:
+            timeout_s = max(
+                timeout_s,
+                float(getattr(self, "cognitive_goal_prior_wait_s", 4.0)),
+            )
         self.pending_deadline_ns = now_ns + int(timeout_s * 1.0e9)
         self.pending_prior_request_id = self.request_id
         self.pending_prior_graph_id = self.graph.graph_id

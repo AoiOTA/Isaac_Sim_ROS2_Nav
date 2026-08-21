@@ -127,6 +127,32 @@ def _candidate(*, stamp_ns=10_000_000_000, sequence=7, transform=None):
     )
 
 
+def _revalidated_candidate(
+    *, source_ns=6_000_000_000, validation_ns=10_000_000_000,
+    source_age_s=4.0, candidate_ttl_s=0.5,
+):
+    message = _candidate(stamp_ns=validation_ns)
+    message.source_stamp = SimpleNamespace(
+        sec=source_ns // 1_000_000_000,
+        nanosec=source_ns % 1_000_000_000,
+    )
+    message.validation_stamp = SimpleNamespace(
+        sec=validation_ns // 1_000_000_000,
+        nanosec=validation_ns % 1_000_000_000,
+    )
+    message.source_age = SimpleNamespace(
+        sec=int(source_age_s),
+        nanosec=int(round((source_age_s - int(source_age_s)) * 1.0e9)),
+    )
+    message.candidate_ttl = SimpleNamespace(
+        sec=int(candidate_ttl_s),
+        nanosec=int(round((candidate_ttl_s - int(candidate_ttl_s)) * 1.0e9)),
+    )
+    message.validation_mode = 'identity_revalidated_static_graph'
+    message.observation_valid = True
+    return message
+
+
 def _physical_graph():
     nodes = [
         Node(1, (-1.2, 0.5), 1, NodeType.ENDPOINT, 1.0),
@@ -170,6 +196,65 @@ def test_candidate_inverse_transform_and_hybrid_keep_only_feasible_edges():
         neighbours[edge.from_node].add(edge.to_node)
         neighbours[edge.to_node].add(edge.from_node)
     assert all(node.degree == len(neighbours[node.id]) for node in hybrid.nodes)
+
+
+def test_static_graph_revalidation_preserves_old_source_age() -> None:
+    validated = validate_cognitive_graph_candidate(
+        _revalidated_candidate(),
+        now_ns=10_100_000_000,
+        expected=_identity(),
+        last_source_sequence=6,
+        occupancy=_map(),
+        footprint=FOOTPRINT,
+    )
+    assert validated.source_sequence == 7
+
+
+@pytest.mark.parametrize(
+    ('changes', 'reason'),
+    (
+        ({'source_ns': 4_900_000_000, 'source_age_s': 5.1}, 'provenance'),
+        ({'validation_ns': 9_500_000_000, 'source_age_s': 3.5}, 'stale'),
+        ({'source_ns': 10_100_000_000, 'source_age_s': -0.1}, 'provenance'),
+        ({'source_age_s': 3.0}, 'provenance'),
+        ({'candidate_ttl_s': 0.6}, 'provenance'),
+    ),
+)
+def test_static_graph_revalidation_rejects_bad_provenance(changes, reason) -> None:
+    with pytest.raises(ValueError, match=reason):
+        validate_cognitive_graph_candidate(
+            _revalidated_candidate(**changes),
+            now_ns=10_100_000_000,
+            expected=_identity(),
+            last_source_sequence=6,
+            occupancy=_map(),
+            footprint=FOOTPRINT,
+        )
+
+
+@pytest.mark.parametrize(
+    ('field', 'value'),
+    (
+        ('observation_valid', False),
+        ('recurrent_session_id', 'other'),
+        ('map_version', 'other-map'),
+        ('cognitive_tile_id', 'other-tile'),
+        ('source_physical_graph_id', 'other-physical'),
+        ('source_physical_graph_revision', 99),
+    ),
+)
+def test_static_graph_revalidation_rejects_health_and_context(field, value) -> None:
+    message = _revalidated_candidate()
+    setattr(message, field, value)
+    with pytest.raises(ValueError):
+        validate_cognitive_graph_candidate(
+            message,
+            now_ns=10_100_000_000,
+            expected=_identity(),
+            last_source_sequence=6,
+            occupancy=_map(),
+            footprint=FOOTPRINT,
+        )
 
 
 def test_stale_malformed_and_wall_crossing_candidates_are_rejected():
@@ -419,12 +504,57 @@ def test_shadow_validation_ack_is_not_an_execution_outcome():
     coordinator._on_cognitive_graph(_candidate())
 
     ack = coordinator.cognitive_graph_validation_pub.messages[0]
-    assert ack.accepted is True
+    assert ack.accepted is False
     assert ack.reason == 'physically_validated_shadow_not_selected'
     assert ack.validated_graph_id == 'physical'
     assert ack.validated_graph_revision == 4
-    assert ack.validated_edge_id == '1'
+    assert ack.validated_edge_id == ''
     assert coordinator.cognitive_edge_outcome_pub.messages == []
+
+
+@pytest.mark.parametrize('shape', ('one_node', 'zero_edge', 'no_mapping'))
+def test_immature_primary_candidate_retains_gvg_and_later_matures(shape):
+    coordinator = _feedback_coordinator(graph_id='physical', revision=4)
+    coordinator.pending_goal = None
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.cognitive_graph_identity = _identity()
+    coordinator.map = _map()
+    coordinator.defaults = {'footprint': FOOTPRINT}
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator._now = lambda: SimpleNamespace(
+        nanoseconds=10_100_000_000, to_msg=lambda: object())
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda status, detail: statuses.append((status, detail))
+    )
+    switches = []
+    coordinator._request_graph_switch = (
+        lambda graph, detail, **kwargs: switches.append((graph, detail, kwargs))
+    )
+    immature = _candidate()
+    if shape == 'one_node':
+        immature.nodes = immature.nodes[:1]
+        immature.edges = []
+    elif shape == 'zero_edge':
+        immature.edges = []
+    else:
+        immature.edges[0].edge_id = ''
+
+    coordinator._on_cognitive_graph(immature)
+
+    assert coordinator.graph.graph_id == 'physical'
+    assert coordinator.primary_fallback_used is False
+    assert coordinator.cognitive_graph_validation_pub.messages == []
+    assert switches == []
+    assert statuses[-1][1] == 'cognitive_graph_immature_gvg_bootstrap'
+
+    coordinator._on_cognitive_graph(_candidate(sequence=8))
+    assert len(switches) == 1
+    assert switches[0][2]['fallback'] is False
 
 
 def test_set_route_graph_accepts_only_after_success_and_reject_does_not_bind():

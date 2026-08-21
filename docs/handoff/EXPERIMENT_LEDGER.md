@@ -424,3 +424,26 @@
   qualification is claimed.
 - Handoff:
   `docs/handoff/V6_ESTIMATED_CALIBRATION_RUNNER_20260821.md`.
+
+## 2026-08-21 — V6 Module3 PRIMARY authority consumer amendment
+
+- Goal: consume Integration's typed static-graph revalidation provenance,
+  retain GVG during immature cognitive-graph bootstrap, and wait long enough
+  for the bounded V6 goal-prior retry.
+- Worktree / parent / dependency: permitted Module3 `cognitive-navigation` at
+  `9c515892aeb76a2eef0363e91f6d870e99ecdd10`; Integration interfaces from the
+  permitted worktree at `9373d9d9155198f8c84ac2f888e2c76b7b9ebc03`.
+- Changes: legacy direct freshness preserved; static revalidation checks exact
+  source/validation age, bounded validation/arrival TTL, health, identity,
+  physical graph and numeric topology; immature PRIMARY/hybrid candidates keep
+  GVG without SetRouteGraph/edge ack/fallback; shadow is observational;
+  PRIMARY/hybrid prior wait is 4.0 s while legacy modes remain unchanged.
+- Validation: changed Python compile PASS; focused `64 passed`; full package
+  `88 passed, 1 skipped`; isolated Integration-interface build PASS and colcon
+  test `89 tests, 0 errors, 0 failures, 1 skipped` at
+  `/tmp/v6_m3_primary_cleanbuild.BErizZ`; `git diff --check` PASS. The skip is the
+  optional `pxr` benchmark in the unit environment.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2/live
+  PRIMARY/evidence/qualification campaign was run.
+- Handoff:
+  `docs/handoff/V6_MODULE3_PRIMARY_AUTHORITY_CONSUMER_20260821.md`.

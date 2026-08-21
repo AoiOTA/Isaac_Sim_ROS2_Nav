@@ -15,6 +15,10 @@ from .map_io import OccupancyMap
 from .models import Edge, Graph, Node, NodeType, Traversability
 
 
+STATIC_GRAPH_REVALIDATION_MODE = 'identity_revalidated_static_graph'
+MAX_STATIC_GRAPH_SOURCE_AGE_S = 5.0
+
+
 @dataclass(frozen=True)
 class CognitiveGraphIdentity:
     reset_epoch: int
@@ -105,6 +109,66 @@ def _duration_s(duration) -> float:
     return float(duration.sec) + float(duration.nanosec) * 1.0e-9
 
 
+def cognitive_graph_candidate_is_mature(message) -> bool:
+    """Return whether a candidate has enough external topology to replace GVG."""
+
+    nodes = tuple(getattr(message, 'nodes', ()))
+    edges = tuple(getattr(message, 'edges', ()))
+    return (
+        len(nodes) >= 2
+        and len(edges) >= 1
+        and all(str(getattr(edge, 'edge_id', '')).strip() for edge in edges)
+    )
+
+
+def _validate_candidate_freshness(message, now_ns: int) -> None:
+    """Validate legacy direct freshness or the typed static revalidation proof."""
+
+    ttl_s = _duration_s(message.ttl)
+    arrival_age_s = (int(now_ns) - _stamp_ns(message.header.stamp)) / 1.0e9
+    mode = str(getattr(message, 'validation_mode', '')).strip()
+    if mode in ('', 'direct', 'fresh'):
+        if (
+            not math.isfinite(ttl_s)
+            or not 0.0 < ttl_s <= 0.5
+            or not math.isfinite(arrival_age_s)
+            or arrival_age_s < 0.0
+            or arrival_age_s > ttl_s
+        ):
+            raise ValueError('candidate is stale or has invalid schema/frame')
+        return
+    if mode != STATIC_GRAPH_REVALIDATION_MODE:
+        raise ValueError('candidate has unsupported validation_mode')
+
+    source_ns = _stamp_ns(message.source_stamp)
+    validation_ns = _stamp_ns(message.validation_stamp)
+    source_age_s = _duration_s(message.source_age)
+    candidate_ttl_s = _duration_s(message.candidate_ttl)
+    validation_age_s = (int(now_ns) - validation_ns) / 1.0e9
+    expected_source_age_s = (validation_ns - source_ns) / 1.0e9
+    if (
+        source_ns <= 0
+        or validation_ns <= 0
+        or source_ns > validation_ns
+        or not math.isfinite(source_age_s)
+        or source_age_s < 0.0
+        or source_age_s > MAX_STATIC_GRAPH_SOURCE_AGE_S
+        or not math.isclose(source_age_s, expected_source_age_s, abs_tol=1.0e-6)
+        or not math.isfinite(candidate_ttl_s)
+        or not 0.0 < candidate_ttl_s <= 0.5
+        or not math.isfinite(ttl_s)
+        or not 0.0 < ttl_s <= 0.5
+        or not math.isfinite(validation_age_s)
+        or validation_age_s < 0.0
+        or validation_age_s > candidate_ttl_s
+        or not math.isfinite(arrival_age_s)
+        or arrival_age_s < 0.0
+        or arrival_age_s > ttl_s
+        or not bool(getattr(message, 'observation_valid', False))
+    ):
+        raise ValueError('candidate static revalidation provenance is invalid or stale')
+
+
 def _inverse_rigid_transform(values) -> np.ndarray:
     transform = np.asarray(values, dtype=np.float64).reshape(3, 3)
     if not np.isfinite(transform).all():
@@ -184,18 +248,12 @@ def validate_cognitive_graph_candidate(
 ) -> ValidatedCognitiveGraph:
     """Reject any candidate that is not fresh, exact, rigid and physically free."""
 
-    ttl_s = _duration_s(message.ttl)
-    age_s = (int(now_ns) - _stamp_ns(message.header.stamp)) / 1.0e9
     if (
         message.schema_version != 'bio_nav_cognitive_place_graph_v1'
         or message.header.frame_id != 'module2_canvas'
-        or not math.isfinite(ttl_s)
-        or not 0.0 < ttl_s <= 0.5
-        or not math.isfinite(age_s)
-        or age_s < 0.0
-        or age_s > ttl_s
     ):
         raise ValueError('candidate is stale or has invalid schema/frame')
+    _validate_candidate_freshness(message, now_ns)
     if int(message.source_sequence) <= int(last_source_sequence):
         raise ValueError('candidate source_sequence is not monotonic')
     observed = CognitiveGraphIdentity(

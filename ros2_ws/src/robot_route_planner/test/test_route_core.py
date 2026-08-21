@@ -137,6 +137,71 @@ def test_prior_timeout_and_ttl_restore_geometry_only_routing() -> None:
     assert any('geometry-only' in message for message in warnings)
 
 
+def _prior_wait_coordinator(*, mode='primary', timeout_s=0.25):
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.cognitive_graph_mode = mode
+    coordinator.cognitive_goal_prior_wait_s = 4.0
+    coordinator.module2_response_timeout_s = 0.0
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator.defaults = {
+        'module2_edge_prior': {'response_timeout_s': timeout_s},
+    }
+    coordinator.request_id = 9
+    coordinator.graph = SimpleNamespace(
+        graph_id='test:gvg_v1', revision=3,
+        edges=[SimpleNamespace(id=7)],
+    )
+    coordinator.pending_goal = object()
+    coordinator.latest_prior_model_id = None
+    coordinator.latest_priors = {}
+    coordinator.latest_priors_stamp_ns = None
+    coordinator.latest_priors_request_id = None
+    coordinator.latest_priors_graph_id = None
+    coordinator.latest_priors_graph_revision = None
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        info=lambda _message: None, warning=lambda _message: None,
+    ))
+    coordinator._now_ns = 1_000_000_000
+    coordinator._now = lambda: SimpleNamespace(
+        nanoseconds=coordinator._now_ns)
+    coordinator.prepared = []
+    coordinator._prepare_route = lambda priors: coordinator.prepared.append(priors)
+    coordinator._arm_prior_request(coordinator._now_ns)
+    return coordinator
+
+
+def test_primary_wait_accepts_2p8s_prior_and_identity_zero_falls_back() -> None:
+    coordinator = _prior_wait_coordinator()
+    assert coordinator.pending_deadline_ns == 5_000_000_000
+    coordinator._now_ns = 3_800_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=3_800_000_000))
+    assert coordinator.prepared == [{7: (1.0, 0.8)}]
+
+    zero = _prior_wait_coordinator()
+    zero._now_ns = 2_000_000_000
+    message = _edge_prior_message(request_id=9, stamp_ns=2_000_000_000)
+    message.priors = []
+    zero._on_priors(message)
+    assert zero.prepared == [{}]
+
+
+def test_primary_timeout_and_late_prior_are_generation_safe() -> None:
+    coordinator = _prior_wait_coordinator()
+    coordinator._now_ns = 5_000_000_000
+    coordinator._check_prior_timeout()
+    assert coordinator.prepared == [{}]
+    coordinator._now_ns = 5_100_000_000
+    coordinator._on_priors(_edge_prior_message(
+        request_id=9, stamp_ns=5_100_000_000))
+    assert coordinator.prepared == [{}]
+
+
+def test_legacy_gvg_prior_timeout_remains_unchanged() -> None:
+    coordinator = _prior_wait_coordinator(mode='gvg', timeout_s=0.25)
+    assert coordinator.pending_deadline_ns == 1_250_000_000
+
+
 def test_prior_from_old_refresh_generation_is_rejected() -> None:
     replans = []
     coordinator = RouteCoordinator.__new__(RouteCoordinator)
