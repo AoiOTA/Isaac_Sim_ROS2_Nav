@@ -51,6 +51,7 @@ setup(
             "rivermark_visual_route = robot_experiments.rivermark_visual_route:main",
             "estimated_state_evaluator = robot_experiments.estimated_state_evaluator:main",
             "v6_formal_episode = robot_experiments.v6_formal:main",
+            "v6_low_obstacle_causal = robot_experiments.v6_low_obstacle_causal:main",
         ],
     },
 )

@@ -301,3 +301,30 @@
   scene-contract freeze, and formal qualification.
 - Handoff:
   `docs/handoff/V6_FORMAL_SINGLE_EPISODE_RUNNER_20260821.md`.
+
+## 2026-08-21 — V6 low-obstacle M0--M3 causal runner/evaluator skeleton
+
+- Goal: freeze the 12-row counterbalanced M0--M3 engineering matrix and add a
+  pure offline causal evaluator without running or fabricating experiments.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `734330df30b7d0838ecf6b9b6b761892976fb706`.
+- Frozen identity: Kujiale low-obstacle layout r1, seed `8601`, G1 to G2,
+  PRIMARY/GVG, direct RGB-D Costmap off, 180 seconds; exact order
+  `M0 M1 M2 M3 / M3 M2 M1 M0 / M1 M3 M0 M2`.
+- Contracts: M0 disables Module2 UDS/bridge socket while preserving the same
+  Integration estimated-autonomy localization; dispatcher zero-GT; passive GT
+  recorder separate; exactly-once reset state plan; stale typed obstacles
+  stop/fail open.
+- Evaluator: synchronized scan invisibility and typed spatial matching;
+  path Hausdorff/length; passive clearance/collision/success; M1 isolation;
+  M2/M3 clearance/collision/direction checks; M3 offline critic attribution
+  remains `AMBIGUOUS` without trajectory separation; visualization-input JSON.
+- Validation: new Python `py_compile` PASS; wrapper `bash -n` PASS; focused
+  causal + V6 formal pytest `38 passed`; `git diff --check` PASS; isolated
+  `robot_experiments` build PASS at
+  `/tmp/v6_low_obstacle_causal_build.S2ysce`; installed manifest inspection
+  returned `ENGINEERING_CAUSAL_NOT_RUN 12`.
+- Verdict: **PASS (implementation/build/unit only)**;
+  **ENGINEERING_CAUSAL_NOT_RUN** for live evidence. No ROS/Isaac/Nav2,
+  12-row campaign, causal result, visual result, or formal qualification ran.
+- Handoff: `docs/handoff/V6_LOW_OBSTACLE_CAUSAL_RUNNER_20260821.md`.

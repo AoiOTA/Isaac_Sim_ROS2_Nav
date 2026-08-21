@@ -1,0 +1,120 @@
+schema_version: bio_nav_v6_low_obstacle_causal_manifest_v1
+qualification: ENGINEERING_CAUSAL_NOT_RUN
+
+identity:
+  scene_id: v6_kujiale_low_obstacles_static
+  obstacle_layout_id: kujiale_v6_low_obstacles_frozen_r1_20260820
+  scene_contract_frozen: true
+  seed: 8601
+  start: {id: G1, reset_pose_name: long_route_start_g1}
+  goal: {id: G2, frame_id: map, x: 0.80, y: 4.80, yaw_deg: -160.0}
+  timeout_sec: 180.0
+  route_backend: primary
+  graph_backend: gvg
+  direct_rgbd_costmap_enabled: false
+  exactly_once_reset: true
+
+localization_contract:
+  startup_profile: estimated_autonomy
+  structure_tf_source: isaac
+  estimated_odom_topic: /odom
+  global_pose_topic: /amcl_pose
+  map_to_odom_owner: amcl
+  localization_seeded_topic: /simulation/localization_seeded
+  preserve_when_module2_disabled: true
+
+freshness:
+  typed_obstacle_ttl_sec: 0.5
+  future_tolerance_sec: 0.05
+  stale_action: stop_and_fail_open
+  fail_open_requires_zero_layer_write: true
+  fail_open_requires_critic_not_applied: true
+
+arms:
+  M0:
+    module2_uds_enabled: false
+    integration_bridge_enabled: false
+    integration_process_required: true
+    localization_contract: same_estimated_autonomy
+    module3_mode: M0
+    obstacle_layer_mode: "off"
+    critic_mode: "off"
+  M1:
+    module2_uds_enabled: true
+    integration_bridge_enabled: true
+    integration_process_required: true
+    localization_contract: same_estimated_autonomy
+    module3_mode: M1
+    obstacle_layer_mode: shadow
+    critic_mode: shadow
+  M2:
+    module2_uds_enabled: true
+    integration_bridge_enabled: true
+    integration_process_required: true
+    localization_contract: same_estimated_autonomy
+    module3_mode: M2
+    obstacle_layer_mode: active
+    critic_mode: "off"
+  M3:
+    module2_uds_enabled: true
+    integration_bridge_enabled: true
+    integration_process_required: true
+    localization_contract: same_estimated_autonomy
+    module3_mode: M3
+    obstacle_layer_mode: active
+    critic_mode: active
+
+run_order:
+  - {run_id: v6-lowobs-r1-m0, repeat: 1, arm: M0}
+  - {run_id: v6-lowobs-r1-m1, repeat: 1, arm: M1}
+  - {run_id: v6-lowobs-r1-m2, repeat: 1, arm: M2}
+  - {run_id: v6-lowobs-r1-m3, repeat: 1, arm: M3}
+  - {run_id: v6-lowobs-r2-m3, repeat: 2, arm: M3}
+  - {run_id: v6-lowobs-r2-m2, repeat: 2, arm: M2}
+  - {run_id: v6-lowobs-r2-m1, repeat: 2, arm: M1}
+  - {run_id: v6-lowobs-r2-m0, repeat: 2, arm: M0}
+  - {run_id: v6-lowobs-r3-m1, repeat: 3, arm: M1}
+  - {run_id: v6-lowobs-r3-m3, repeat: 3, arm: M3}
+  - {run_id: v6-lowobs-r3-m0, repeat: 3, arm: M0}
+  - {run_id: v6-lowobs-r3-m2, repeat: 3, arm: M2}
+
+capture:
+  dispatcher_topics:
+    - /odom
+    - /amcl_pose
+    - /scan
+    - /camera/depth/image_rect_raw
+    - /bio_nav/cognitive_obstacles
+    - /bio_nav/cognitive_obstacle_layer/status
+    - /bio_nav/local_risk_layer/status
+    - /bio_nav/cognitive_risk_critic/status
+    - /bio_nav/module2/goal_planning_prior
+    - /global_costmap/costmap
+    - /local_costmap/costmap
+    - /plan
+    - /optimal_trajectory
+    - /cmd_vel
+    - /bio_nav/canonical_route
+    - /bio_nav/route_progress
+    - /bio_nav/route_goal_complete
+  passive_evaluator_topics:
+    - /ground_truth/odom
+    - /simulation/collision
+    - /simulation/collision_diagnostics
+  synchronized_sample_fields:
+    - stamp_ns
+    - frame_id
+    - scan_point_count
+    - scan_hits_in_obstacle_footprints
+    - rgbd_obstacle_footprints
+    - typed_obstacles
+
+criteria:
+  typed_spatial_match_tolerance_m: 0.20
+  m1_m0_path_hausdorff_max_m: 0.15
+  m1_m0_path_length_delta_max_fraction: 0.05
+  active_clearance_gain_min_m: 0.20
+  m3_m2_trajectory_separation_min_m: 0.05
+  repeats_required: 3
+  active_no_new_collision_required: true
+  active_direction_consistency_required: true
