@@ -54,6 +54,7 @@ setup(
             "v6_formal_episode = robot_experiments.v6_formal:main",
             "v6_low_obstacle_causal = robot_experiments.v6_low_obstacle_causal:main",
             "v6_localization_causal = robot_experiments.v6_localization_causal:main",
+            "imu_regime_analysis = robot_experiments.imu_regime_analysis:main",
         ],
     },
 )

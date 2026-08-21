@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 from isaac_sim.src.config import GroundTruthConfig
 from isaac_sim.src.ground_truth.transforms import Pose2D, compute_map_t_usd, usd_pose_to_map
@@ -11,6 +12,17 @@ from isaac_sim.src.robot.spawn_pose_manager import SpawnPose, require_map_calibr
 
 class GroundTruthError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class GroundTruthReceipt:
+    """Read-only facts for the Ground Truth sample published by ``update``."""
+
+    stamp_ns: int
+    simulation_time_s: float
+    position_xyz: tuple[float, float, float]
+    yaw_rad: float
+    post_assist_yaw_rate_radps: float
 
 
 def _yaw_from_wxyz(q: tuple[float, float, float, float]) -> float:
@@ -61,10 +73,11 @@ class GroundTruthRecorder:
         self._path.header.frame_id = self.config.frame_id
         self._last_path_time = -math.inf
 
-    def update(self, simulation_time: float) -> None:
+    def update(self, simulation_time: float) -> GroundTruthReceipt | None:
         if simulation_time - self._last_odom_time < 1.0 / self.config.odom_hz:
-            return
+            return None
         position, orientation_wxyz = self.robot.get_world_pose()
+        _linear_velocity, angular_velocity = self.robot.get_base_velocities()
         usd_pose = Pose2D(position[0], position[1], _yaw_from_wxyz(orientation_wxyz))
         map_pose = usd_pose_to_map(self.map_t_usd, usd_pose)
         stamp = _stamp_from_seconds(simulation_time)
@@ -84,6 +97,14 @@ class GroundTruthRecorder:
         self._odom_publisher.publish(message)
         self._last_odom_time = simulation_time
 
+        receipt = GroundTruthReceipt(
+            stamp_ns=int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec),
+            simulation_time_s=float(simulation_time),
+            position_xyz=(float(map_pose.x), float(map_pose.y), float(position[2])),
+            yaw_rad=float(map_pose.yaw),
+            post_assist_yaw_rate_radps=float(angular_velocity[2]),
+        )
+
         if simulation_time - self._last_path_time >= 1.0 / self.config.path_hz:
             from geometry_msgs.msg import PoseStamped
 
@@ -94,3 +115,4 @@ class GroundTruthRecorder:
             self._path.poses.append(pose)
             self._path_publisher.publish(self._path)
             self._last_path_time = simulation_time
+        return receipt

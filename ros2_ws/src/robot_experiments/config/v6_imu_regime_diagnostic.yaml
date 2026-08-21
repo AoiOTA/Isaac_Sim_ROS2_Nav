@@ -1,0 +1,63 @@
+# The stationary reference is an external passive 10 s window before this
+# MotionBenchmark sequence. MotionBenchmark itself increments reset_seed by
+# primitive index, performs exactly one reset per primitive, has no retry path,
+# and publishes a final zero after every primitive.
+schema_version: 1
+spawn_pose_name: mapping_start
+reset_seed: 8610
+command_rate_hz: 20.0
+reset_settle_sec: 0.6
+final_settle_sec: 0.8
+steady_window_sec: 0.35
+state_freshness_sec: 0.25
+stamp_coherence_sec: 0.50
+sim_clock_stall_timeout_sec: 0.50
+thresholds:
+  linear_mae_mps: 0.06
+  angular_mae_radps: 0.12
+  radius_relative_error_percent: 20.0
+  tracking_fraction: 0.85
+  transition_latency_sec: 0.45
+  overshoot_ratio: 1.25
+  wrong_direction_fraction: 0.05
+primitives:
+  # seed=8610, retry=0, final_zero=true
+  - id: cw_360
+    segments:
+      - {duration_sec: 12.566, linear_x: 0.0, angular_z: -0.50}
+  # seed=8611, retry=0, final_zero=true
+  - id: ccw_360
+    segments:
+      - {duration_sec: 12.566, linear_x: 0.0, angular_z: 0.50}
+  # The 4 s arcs travel at most 1.0 m and stay inside the mapping_start
+  # diagnostic free-space neighborhood used by the existing motion probe.
+  # seed=8612, retry=0, final_zero=true
+  - id: arc_v005_cw
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.05, angular_z: -0.50}
+  # seed=8613, retry=0, final_zero=true
+  - id: arc_v005_ccw
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.05, angular_z: 0.50}
+  # seed=8614, retry=0, final_zero=true
+  - id: arc_v010_cw
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.10, angular_z: -0.50}
+  # seed=8615, retry=0, final_zero=true
+  - id: arc_v010_ccw
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.10, angular_z: 0.50}
+  # seed=8616, retry=0, final_zero=true
+  - id: arc_v025_cw
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.25, angular_z: -0.50}
+  # seed=8617, retry=0, final_zero=true
+  - id: arc_v025_ccw
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.25, angular_z: 0.50}
+  # seed=8618, retry=0, final_zero=true
+  - id: s_route
+    segments:
+      - {duration_sec: 2.5, linear_x: 0.25, angular_z: 0.45}
+      - {duration_sec: 5.0, linear_x: 0.25, angular_z: -0.45}
+      - {duration_sec: 2.5, linear_x: 0.25, angular_z: 0.45}

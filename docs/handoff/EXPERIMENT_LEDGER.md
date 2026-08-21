@@ -716,6 +716,37 @@
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
+## 2026-08-22 — V6 IMU regime diagnostic instrumentation
+
+- Goal/hypothesis: add passive loop-phase evidence and a reproducible offline
+  scale-intersection analysis so the pure-rotation versus mixed-route conflict
+  can be tested without changing the frozen 0.9294 scale during capture.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `7df6be9b95de31f1c6b41aa9c5f7d8135f799134`.
+- Changes: default-off getter-only IMU/MotionAssist/GT phase JSONL; frozen GT
+  publication receipt; strict nine-primitive MotionBenchmark diagnostic YAML;
+  rosbag2_py MCAP offline analyzer and console entry point. The trace is not a
+  command diagnostic mode and adds no publisher, control setter, graph
+  evaluation, app update, sleep, or command. Missing attributes remain
+  explicit errors/nulls. No yaw-scale, RF2O, reset, route, Integration, or
+  Module2 changes.
+- Validation: source-first/no-cache focused plus regression pytest **82
+  passed**; final new-only tests **12 passed**; py_compile, strict YAML and
+  `load_motion_config`, source-first import, and `git diff --check` PASS; fresh
+  isolated `robot_experiments` build PASS at
+  `/tmp/v6_imu_regime_final_build.trCpFF` with install
+  `/tmp/v6_imu_regime_final_install.NxCfJS` and log
+  `/tmp/v6_imu_regime_final_log.UMrBl3`.
+- Verdict: **PASS (CODE / BUILD / UNIT ONLY)**. No Isaac, ROS graph, MCAP,
+  benchmark primitive, stationary window, navigation goal, visual evidence,
+  engineering campaign, or formal qualification was run. This is not new
+  calibration evidence and does not change `yaw_scale=0.9294` or RF2O-off.
+- Next: bounded same-session stationary + CW/CCW + bilateral low/normal-speed
+  arcs + S route + Kujiale goal capture, then offline scan. Missing required
+  streams/attributes or stamp anomalies must remain FAIL/AMBIGUOUS.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_DIAGNOSTIC_INSTRUMENTATION_20260822.md`.
+
 ## 2026-08-22 — MotionBenchmark STOP evidence isolation and receipt retention
 
 - Goal/hypothesis: ensure a reset/dispatch STOP is attributable only to its

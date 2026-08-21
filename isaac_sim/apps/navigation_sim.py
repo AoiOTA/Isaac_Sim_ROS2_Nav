@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path
 import sys
+import time
 import traceback
 from typing import Sequence
 
@@ -221,6 +222,12 @@ def _parser() -> argparse.ArgumentParser:
             "write a default-off Stage 2.2-R2B Isaac-only odometry phase "
             "trace and run its fixed command sequence"
         ),
+    )
+    parser.add_argument(
+        "--imu-regime-phase-trace",
+        type=Path,
+        default=None,
+        help="write a passive, default-off V6 IMU/MotionAssist/GT phase trace",
     )
     parser.add_argument(
         "--r2c1-free-space-trace",
@@ -483,6 +490,7 @@ def run(
     r2c3_collision_bounds_config_path: Path | None = None,
     r2d2_live_pose_delta_trace_path: Path | None = None,
     r2d2_collision_bounds_config_path: Path | None = None,
+    imu_regime_phase_trace_path: Path | None = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -505,6 +513,7 @@ def run(
     kidnap_bridge = None
     appearance_manager = None
     paired_appearance_capture = None
+    imu_regime_phase_trace = None
     odom_phase_trace = None
     r2c1_trace = None
     r2c2_trace = None
@@ -797,6 +806,21 @@ def run(
         camera_graph_paths = tuple(
             camera.graph_path for camera in sensors.cameras
         )
+
+        imu_regime_graph_reader = None
+        if imu_regime_phase_trace_path is not None:
+            import omni.graph.core as og
+            from isaac_sim.src.diagnostics.imu_regime_phase_trace import (
+                ImuRegimePhaseTrace,
+                make_imu_graph_reader,
+            )
+
+            imu_regime_phase_trace = ImuRegimePhaseTrace(
+                imu_regime_phase_trace_path
+            )
+            imu_regime_graph_reader = make_imu_graph_reader(
+                og.Controller.attribute
+            )
 
         odom_phase_script = None
         odom_phase_publisher = None
@@ -1994,6 +2018,17 @@ def run(
             and rclpy.ok()
             and (max_frames == 0 or frame < max_frames)
         ):
+            if imu_regime_phase_trace is not None:
+                imu_regime_phase_trace.begin_loop(
+                    loop_sequence=frame,
+                    reset_generation=reset_stop_gate.generation,
+                    simulation_time_s=float(
+                        SimulationManager.get_simulation_time()
+                    ),
+                    before_app_monotonic_ns=time.monotonic_ns(),
+                    robot=robot,
+                    motion_assist=motion_assist,
+                )
             if r2c1_state is not None and r2c1_script is not None:
                 r2c1_state["observer_loop_sequence"] = frame
                 if (
@@ -2051,6 +2086,7 @@ def run(
                     command=None,
                 )
             app.update()
+            after_app_monotonic_ns = time.monotonic_ns()
             try:
                 rclpy.spin_once(node, timeout_sec=0.0)
             except Exception:
@@ -2066,6 +2102,17 @@ def run(
                     f"{startup_reset.errors}"
                 )
             simulation_time = float(SimulationManager.get_simulation_time())
+            if imu_regime_phase_trace is not None:
+                imu_regime_phase_trace.after_app(
+                    simulation_time_s=simulation_time,
+                    after_app_monotonic_ns=after_app_monotonic_ns,
+                    robot=robot,
+                    imu_graph=(
+                        imu_regime_graph_reader()
+                        if imu_regime_graph_reader is not None
+                        else {}
+                    ),
+                )
             if paired_appearance_capture is not None and startup_reset.finished:
                 paired_appearance_capture.update(simulation_time)
             if r2c2_state is not None and startup_reset.finished:
@@ -2256,8 +2303,16 @@ def run(
                     r2c1_publisher.publish(message)
             dynamic_manager.update(simulation_time, dynamic_robot_state())
             collision_monitor.update(simulation_time)
+            motion_assist_applied = False
             if not idle_brake.update():
-                motion_assist.update()
+                motion_assist_applied = motion_assist.update()
+            if imu_regime_phase_trace is not None:
+                imu_regime_phase_trace.after_assist(
+                    after_assist_monotonic_ns=time.monotonic_ns(),
+                    robot=robot,
+                    motion_assist=motion_assist,
+                    applied=motion_assist_applied,
+                )
             if odom_phase_trace is not None:
                 odom_phase_trace.snapshot(
                     phase="after_motion_assist_update",
@@ -2338,8 +2393,21 @@ def run(
                         "loop_sequence": frame,
                         "reset_epoch": int(r2c1_state["reset_epoch"]),
                     }
+            ground_truth_receipt = None
+            before_ground_truth_monotonic_ns = time.monotonic_ns()
             if ground_truth is not None:
-                ground_truth.update(simulation_time)
+                ground_truth_receipt = ground_truth.update(simulation_time)
+            if imu_regime_phase_trace is not None:
+                imu_regime_phase_trace.finish_loop(
+                    before_ground_truth_monotonic_ns=(
+                        before_ground_truth_monotonic_ns
+                    ),
+                    after_ground_truth_monotonic_ns=time.monotonic_ns(),
+                    ground_truth_receipt=ground_truth_receipt,
+                    reset_generation_after_ground_truth=(
+                        reset_stop_gate.generation
+                    ),
+                )
             if third_person_camera is not None:
                 third_person_camera.bind_viewport()
                 if (
@@ -2462,6 +2530,8 @@ def run(
             node.destroy_node()
         if odom_phase_trace is not None:
             odom_phase_trace.close()
+        if imu_regime_phase_trace is not None:
+            imu_regime_phase_trace.close()
         if r2c1_trace is not None:
             r2c1_trace.close()
         if r2c2_trace is not None:
@@ -2634,6 +2704,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         None if args.r2c3_collision_bounds_config is None else args.r2c3_collision_bounds_config.expanduser().resolve(),
         None if args.r2d2_live_pose_delta_trace is None else args.r2d2_live_pose_delta_trace.expanduser().resolve(),
         None if args.r2d2_collision_bounds_config is None else args.r2d2_collision_bounds_config.expanduser().resolve(),
+        (
+            None
+            if args.imu_regime_phase_trace is None
+            else args.imu_regime_phase_trace.expanduser().resolve()
+        ),
     )
     return 0
 
