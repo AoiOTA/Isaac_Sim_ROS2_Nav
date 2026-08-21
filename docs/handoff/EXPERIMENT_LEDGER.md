@@ -1700,3 +1700,37 @@
   Attempt 4 remains **PENDING**. No ROS/Isaac/navigation/evidence/formal run.
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
+## 2026-08-22 — V6 active-reset exactly-once probe
+
+- Goal: replace Attempt4's split reviewer timing with one continuously
+  observable, exactly-once, fail-stop active-reset runner.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `89c052fb078e96d97af891c8fc8410ec36c2d753`.
+- Attempt4 input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt4_20260821T224036Z`;
+  retained as **ENGINEERING FAIL / STOP / NOT FORMAL** because the old route
+  terminated before Trigger and the external harness missed the earlier active
+  boundary. Attempt5 remains pending and must use a fresh episode.
+- Changes: new `active_reset_probe` entry point with a pure monotonic state
+  machine and ROS adapter; reliable/volatile long-lived route publisher;
+  exactly-once old/fresh goals and Trigger; strict active, receipt, generation-2
+  gate, old abort/silence, reset landing drift, fresh success/GT error, collision,
+  and four-command-chain postzero checks; atomically refreshed JSON evidence.
+- Deterministic coverage: subscriber/endpoints wait, retained startup exclusion,
+  exactly-once actions, active timeout, pre-reset terminal, 0.5 s reset delay,
+  receipt mismatch, gate order/HOLD leakage, teleport versus drift, old silence,
+  fresh route/success/failure, and postzero pass/fail.
+- Validation: focused source-first **52 passed** (14 probe-state plus 38
+  retained package-contract tests); changed-file flake8, `py_compile`, and
+  `git diff --check` PASS. Fresh ordinary isolated build/install PASS at
+  `/tmp/v6_active_reset_probe_commit_build.vDaiVx`, install
+  `/tmp/v6_active_reset_probe_commit_install.lmarja`, log
+  `/tmp/v6_active_reset_probe_commit_log.FD2IDl`; installed help and console entry
+  point PASS. An initial `--symlink-install` attempt failed before packaging
+  because existing external-resource paths escape a `/tmp` build base; the
+  corrected non-symlink isolated build is the cited result.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2,
+  navigation, reset, evidence collection, engineering campaign, or formal
+  qualification was run.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.

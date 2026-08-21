@@ -76,6 +76,7 @@ setup(
             "v6_localization_causal = robot_experiments.v6_localization_causal:main",
             "imu_regime_analysis = robot_experiments.imu_regime_analysis:main",
             "v6_imu_lidar_preflight = robot_experiments.v6_imu_lidar_preflight:main",
+            "active_reset_probe = robot_experiments.active_reset_probe:main",
         ],
     },
 )
