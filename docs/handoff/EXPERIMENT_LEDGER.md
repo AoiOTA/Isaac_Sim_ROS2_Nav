@@ -600,6 +600,37 @@
   to be collected under the frozen policy.
 - Handoff: `docs/handoff/V6_ESTIMATED_FINAL_POLICY_20260821.md`.
 
+## 2026-08-21 — V6 IMU regime dependence; global candidate rejected
+
+- Goal: reconcile the accepted flat20 rotation calibration with the later
+  mixed-motion failure without changing the wheel+IMU/RF2O-off architecture.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `f63fd23ab9dfe9b19d9d5f2e7f44c7d8eff90ca0`.
+- Mixed-route runtime evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_estimated_dynamic_smoke_20260821T150407Z`;
+  exact snapshot Integration `2dd3aa937ae470d497cd97722302281efcc2e3f0`,
+  Module3 `3dc2830c1da5b5f441191217220bc120058bd4b2`, Module2
+  `2925f806c88b1551d1c48ca89d1c1c5adf2ba748`.
+- Result: navigation succeeded (`51.93 s`, final goal error `0.195 m`, zero
+  actual/physical collisions), but `0.9294`
+  worsened raw-to-corrected aligned yaw RMSE from `0.08527` to `0.12342 rad`,
+  full endpoint absolute error from `0.08447` to `0.21168 rad`, and goal-window
+  endpoint absolute error from `0.13643` to `0.18516 rad`. Verdict:
+  **ENGINEERING FAIL**; formal qualification was not run.
+- Tradeoff: old rotation closure `<=5 deg` permits
+  `k=[0.917435, 0.940927]`; mixed-route full-window identity non-degradation
+  requires `k=[0.962746, 1.0]`. The empty intersection rejects one global
+  constant. Offline route fits `0.9814` (full) and `0.9700` (goal) remain
+  diagnostic candidates only; the dirty `0.9814` code/config WIP was rejected
+  and `0.9294` remains the committed rotation-valid baseline.
+- Separate debts: requested dynamic seed `8601` became reset seed `0`; strict
+  `/cmd_vel` unique-publisher evidence also failed because collision monitor
+  and Isaac reset-zero publishing coexisted. Neither debt is folded into the
+  IMU scale conclusion.
+- Verdict: **ENGINEERING FAIL (mixed route); rotation baseline remains valid**.
+  No ROS/Isaac/Nav2/evidence/qualification run was launched by this amendment.
+- Handoff: `docs/handoff/V6_IMU_REGIME_DEPENDENCE_20260821.md`.
+
 ## 2026-08-21 — V6 obstacle FRESH/continuous-validation consumer amendment
 
 - Goal: align Module3 obstacle admission with FRESH zero-odom semantics and

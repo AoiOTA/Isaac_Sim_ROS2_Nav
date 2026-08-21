@@ -1,5 +1,13 @@
 # V6 IMU raw/corrected calibration amendment
 
+> Later evidence boundary (2026-08-21): `0.9294` was subsequently validated on
+> three CW plus three CCW flat20 pure rotations: corrected IMU and EKF yaw
+> scales were approximately `0.999--1.002`, with closure below `0.63 deg`.
+> A later Kujiale mixed-motion route nevertheless failed IMU non-degradation.
+> This is regime dependence, not a retraction of the rotation result. A global
+> `0.9814` replacement is rejected; see
+> `V6_IMU_REGIME_DEPENDENCE_20260821.md`.
+
 ## Scope
 
 - Worktree/branch: permitted Module3 `cognitive-navigation` worktree.

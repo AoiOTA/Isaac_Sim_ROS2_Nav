@@ -2,6 +2,14 @@
 
 Date: 2026-08-21
 
+> Later evidence boundary (2026-08-21): the flat20 result remains valid for
+> three CW plus three CCW pure rotations (`0.9294` corrected IMU/EKF scale near
+> `1.0`, closure below `0.63 deg`), and S-route met the reference in two of
+> three runs. A later Kujiale mixed-motion route failed IMU non-degradation.
+> A global `0.9814` replacement is rejected because it conflicts with the
+> rotation-valid range. The wheel+IMU architecture and RF2O-off decision remain
+> unchanged; see `V6_IMU_REGIME_DEPENDENCE_20260821.md`.
+
 ## Result
 
 - Worktree/branch/start: permitted Module3 `cognitive-navigation` worktree at
