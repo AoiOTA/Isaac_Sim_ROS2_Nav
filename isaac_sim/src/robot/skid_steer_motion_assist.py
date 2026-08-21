@@ -26,9 +26,12 @@ def _bounded_step(
 
 
 def _yaw_command_scale(linear_speed: float) -> float:
-    """Blend the separately calibrated in-place and arc yaw responses."""
+    """Keep in-place yaw exact while preserving the calibrated arc response."""
 
-    blend = min(abs(float(linear_speed)) / 0.20, 1.0)
+    speed = abs(float(linear_speed))
+    if speed == 0.0:
+        return 1.0
+    blend = min(speed / 0.20, 1.0)
     return 0.925 + 0.075 * blend
 
 
@@ -117,7 +120,12 @@ class SkidSteerMotionAssistState:
 
 
 class SkidSteerMotionAssist:
-    """ROS adapter correcting PhysX skid-steer curvature under-response."""
+    """ROS adapter correcting PhysX skid-steer curvature under-response.
+
+    ``update`` runs after the current physics step has published its sensor
+    samples.  Pure-yaw correction must therefore remain unit scale so it does
+    not introduce a post-sensor IMU/ground-truth angular-rate disagreement.
+    """
 
     def __init__(
         self,

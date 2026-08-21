@@ -514,3 +514,24 @@
   no covariance value was guessed here.
 - Handoff:
   `docs/handoff/V6_CORE_SENSOR_PHYSICS_STEP_20260821.md`.
+
+## 2026-08-21 — V6 motion-assist pure-yaw consistency amendment
+
+- Goal: remove the flat-calibration IMU/GT pure-yaw scale inconsistency without
+  disabling skid-steer assist or changing its nonzero arc behavior.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `74270f90e310bff0acfaa2b16e970c85928ca713`.
+- Input evidence: raw IMU/GT yaw scale mean `1.081260` versus
+  `1 / 0.925 = 1.081081` (`0.0166%` difference); assist is applied after the
+  current physics-step sensor publication.
+- Change: pure in-place yaw scale is exactly `1.0`; nonzero arc interpolation,
+  linear correction, acceleration/timeout behavior and all configuration are
+  unchanged. Static coverage locks the post-physics-step execution order.
+- Validation: changed Python compile PASS; focused motion/graph contracts
+  `11 passed`; all Isaac static tests `185 passed, 11 skipped` (optional `pxr`
+  unavailable); no Isaac/ROS/Nav2 runtime was launched.
+- Verdict: **PASS (implementation/static-test only)**. Live retest remains:
+  six flat20 rotations plus duplicate equal-stamp sensor checks, followed by
+  Estimated parameter acceptance before any affected Rivermark/PRIMARY rerun.
+- Handoff:
+  `docs/handoff/V6_MOTION_ASSIST_YAW_CONSISTENCY_20260821.md`.
