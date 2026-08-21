@@ -1,3 +1,4 @@
+import ast
 import json
 import math
 from pathlib import Path
@@ -126,7 +127,21 @@ def test_motion_dispatcher_uses_reset_response_estimated_readiness_and_tf_only()
     assert '"/ground_truth/' not in motion_source
     assert '"/odom"' in motion_source
     assert 'reset_response.success' in motion_source
-    assert 'lookup_transform("odom", "base_link", Time())' in motion_source
+    motion_tree = ast.parse(motion_source)
+    assert any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "lookup_transform"
+        and len(node.args) >= 3
+        and isinstance(node.args[0], ast.Constant)
+        and node.args[0].value == "odom"
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "base_link"
+        and isinstance(node.args[2], ast.Call)
+        and isinstance(node.args[2].func, ast.Name)
+        and node.args[2].func.id == "Time"
+        for node in ast.walk(motion_tree)
+    )
     assert 'math.hypot(sample.x, sample.y)' not in motion_source
     assert "'/ground_truth/odom'" in evaluator_source
     assert "evaluator_only_ground_truth" in evaluator_source

@@ -280,11 +280,15 @@ def test_sim_clock_freeze_publishes_zero_and_records_stop(monkeypatch):
             reset_seed=3,
             spawn_pose_name="mapping_start",
             command_rate_hz=20.0,
+            reset_settle_sec=0.60,
+            state_freshness_sec=0.25,
+            stamp_coherence_sec=0.50,
             thresholds=_thresholds(),
             sim_clock_stall_timeout_sec=0.10,
         ),
         _clock_observation=_observation(1.0, 5.0),
         _reset_receipts=[],
+        _current_reset_receipt=None,
         _samples=[],
         _collision_detected=False,
         _recording=False,
@@ -310,6 +314,163 @@ def test_sim_clock_freeze_publishes_zero_and_records_stop(monkeypatch):
         "sim_clock_stalled_during_motion"
     ]
     assert published and all(command == (0.0, 0.0) for command in published)
+    assert report["reset_settle_sec"] == 0.60
+    assert report["state_freshness_sec"] == 0.25
+    assert report["stamp_coherence_sec"] == 0.50
+    assert report["sim_clock_stall_timeout_sec"] == 0.10
+    assert report["dispatch_barrier_timeout_sec"] == 15.0
+    assert report["collision_monitor_state_freshness_sec"] == 0.25
+    assert report["collision_monitor_query_timeout_sec"] == 2.0
+    assert report["collision_monitor_required_state"] == "active"
+    assert report["reset_stop_gate_generation_match_required"] is True
+
+
+def test_second_primitive_dispatch_stop_has_fresh_state_and_receipt(monkeypatch):
+    published = []
+    primitives = (
+        MotionPrimitive("first", (MotionSegment(1.0, 0.2, 0.0),)),
+        MotionPrimitive("second", (MotionSegment(1.0, 0.2, 0.0),)),
+    )
+    node = SimpleNamespace(
+        _config=SimpleNamespace(
+            primitives=primitives,
+            reset_seed=41,
+            spawn_pose_name="mapping_start",
+            command_rate_hz=20.0,
+            reset_settle_sec=0.60,
+            final_settle_sec=0.80,
+            steady_window_sec=0.20,
+            state_freshness_sec=0.25,
+            stamp_coherence_sec=0.50,
+            sim_clock_stall_timeout_sec=0.50,
+            thresholds=_thresholds(),
+        ),
+        _reset_receipts=[],
+        _current_reset_receipt=None,
+        _samples=[object()],
+        _collision_detected=True,
+        _recording=True,
+        _segment_index=99,
+        _segment_started_at=99.0,
+        _command_linear=99.0,
+        _command_angular=99.0,
+        _gate_status=None,
+        _gate_status_error=None,
+        _collision_state_future=None,
+        _collision_monitor_active=False,
+        _collision_state_received_at=None,
+        _publish=lambda linear, angular: published.append((linear, angular)),
+        get_logger=lambda: SimpleNamespace(
+            info=lambda message: None,
+            error=lambda message: None,
+        ),
+    )
+
+    def receipt(seed, generation):
+        return {
+            "requested_seed": seed,
+            "actual_seed": seed,
+            "generation": generation,
+            "pose": "mapping_start",
+            "odometry": "estimated",
+            "case_id": "",
+            "variant_id": "",
+            "full_response": (
+                "reset complete; reset_receipt="
+                f'{{"seed":{seed},"generation":{generation},'
+                '"pose":"mapping_start","odometry":"estimated",'
+                '"case_id":"","variant_id":""}'
+            ),
+        }
+
+    current_seed = [None]
+
+    class IsaacParameters:
+        @staticmethod
+        def wait_for_services(timeout_sec):
+            return True
+
+        @staticmethod
+        def set_parameters(parameters):
+            current_seed[0] = next(
+                parameter.value
+                for parameter in parameters
+                if parameter.name == "reset_seed"
+            )
+            return SimpleNamespace(
+                results=[SimpleNamespace(successful=True)]
+            )
+
+    class ResetClient:
+        @staticmethod
+        def wait_for_service(timeout_sec):
+            return True
+
+        @staticmethod
+        def call_async(request):
+            seed = current_seed[0]
+            generation = seed - 40
+            return SimpleNamespace(
+                success=True,
+                message=receipt(seed, generation)["full_response"],
+            )
+
+    def wait_for_dispatch(barrier, **kwargs):
+        node._gate_status = _gate_status(
+            barrier.generation,
+            False,
+            barrier.reset_started_at + 0.01,
+        )
+        if barrier.generation == 2:
+            raise TimeoutError("gate held")
+
+    node._isaac_parameters = IsaacParameters()
+    node._reset_client = ResetClient()
+    node._wait_future = lambda future, timeout: future
+    node._spin_once = lambda timeout: None
+    node._query_collision_monitor_active = lambda: True
+    node._estimated_state_ready = lambda **kwargs: True
+    node._reset = MethodType(MotionBenchmarkNode._reset, node)
+    node._stop = MethodType(MotionBenchmarkNode._stop, node)
+    monkeypatch.setattr(
+        "robot_experiments.motion_benchmark.wait_for_motion_dispatch_barrier",
+        wait_for_dispatch,
+    )
+
+    def play_segment(index, segment):
+        node._samples.append(
+            MotionSample(
+                received_at=1.0,
+                stamp_s=1.0,
+                x=0.0,
+                y=0.0,
+                yaw=0.0,
+                linear_speed=segment.linear_x,
+                angular_speed=segment.angular_z,
+                segment_index=index,
+                segment_elapsed=0.5,
+                command_linear=segment.linear_x,
+                command_angular=segment.angular_z,
+            )
+        )
+        node._collision_detected = True
+
+    node._play_segment = play_segment
+    node._settle = lambda: None
+
+    report = MotionBenchmarkNode.run(node)
+
+    first, stopped = report["primitives"]
+    assert first["id"] == "first"
+    assert first["sample_count"] == 1
+    assert first["collision_detected"] is True
+    assert first["reset_receipt"] == receipt(41, 1)
+    assert stopped["id"] == "second"
+    assert stopped["outcome"] == "STOP"
+    assert stopped["sample_count"] == 0
+    assert stopped["collision_detected"] is False
+    assert stopped["reset_receipt"] == receipt(42, 2)
+    assert report["reset_receipts"] == [receipt(41, 1), receipt(42, 2)]
 
 
 def test_motion_benchmark_config_covers_required_primitives():

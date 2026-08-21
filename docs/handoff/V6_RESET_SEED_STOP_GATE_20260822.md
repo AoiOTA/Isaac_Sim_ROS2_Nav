@@ -201,3 +201,40 @@ Required checks remain:
 5. Repeat reset, service-unavailable, timeout, and stale-release cases remain
    held. Any nonzero internal command, second final publisher, stale release,
    slip, or collision is **FAIL / STOP**.
+
+## MotionBenchmark STOP evidence amendment
+
+- Branch/worktree/start: `cognitive-navigation` in the permitted Module3
+  worktree, starting at `9cd4b81963f7ddc06cdeb648cf49d2ce5a790331`;
+  fixed Module3 main `22d66470c4b903349b2467dc876490bbebfc0083`
+  remained an ancestor and the tracked worktree was clean. The amendment
+  commit is the commit containing this handoff and is reported to master.
+- Evidence isolation: before each primitive can log, reset, enter the dispatch
+  barrier, or play motion, MotionBenchmark clears its samples, collision flag,
+  recording/segment/command state, and current receipt. A second-primitive
+  dispatch STOP therefore records `sample_count: 0` and
+  `collision_detected: false` without changing the completed first row.
+- Receipt retention: as soon as a successful Trigger response is parsed, its
+  seed, generation, case/variant identifiers, pose/odometry, and full response
+  are retained in both current-primitive and top-level receipt state. A later
+  dispatch-barrier STOP includes that receipt instead of losing it.
+- Report reproducibility: the JSON now records the decision inputs
+  `reset_settle_sec`, `state_freshness_sec`, `stamp_coherence_sec`,
+  `sim_clock_stall_timeout_sec`, `dispatch_barrier_timeout_sec`,
+  CollisionMonitor state/query freshness thresholds and required active state,
+  ResetStopGate generation-match requirement, plus the existing motion
+  thresholds.
+- Contract tests: the format-sensitive TF source-string check is now an AST
+  assertion for a semantic `lookup_transform(odom, base_link, Time())` call.
+  The focused MotionBenchmark/V6 tests passed **39 tests**; the source-first,
+  no-cache benchmark/reset/estimated-state/ResetStopGate/ActivationGate suite
+  passed **106 tests**. The suite covers retained second-reset receipts,
+  isolated STOP rows, and the existing clock-stall zero-command/STOP behavior.
+- Fresh isolated `robot_experiments` build and installed-module import: PASS at
+  `/tmp/bionav_motion_evidence.u42NYu`; the imported
+  `motion_benchmark.py` resolved from that fresh install. Changed-file
+  `py_compile` and final `git diff --check` are recorded with the commit handoff.
+- Verdict: **PASS (code/build/unit evidence closure only)**. No Isaac, ROS
+  graph, Nav2, navigation, visual evidence, engineering campaign, or formal
+  qualification was run. Live reviewer closure remains **PENDING** under the
+  unchanged reviewer-only checks above.

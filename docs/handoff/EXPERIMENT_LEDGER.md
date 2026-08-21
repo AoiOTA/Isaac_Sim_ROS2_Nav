@@ -716,6 +716,37 @@
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
+## 2026-08-22 — MotionBenchmark STOP evidence isolation and receipt retention
+
+- Goal/hypothesis: ensure a reset/dispatch STOP is attributable only to its
+  current primitive and remains reproducible from the emitted report.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `9cd4b81963f7ddc06cdeb648cf49d2ce5a790331`; fixed Module3 main
+  `22d66470c4b903349b2467dc876490bbebfc0083` remained an ancestor. Final commit
+  is the commit containing this ledger row and is reported to master.
+- Changes: primitive samples/collision/recording/segment/command/current-receipt
+  state is cleared before every fallible primitive step. Parsed reset receipts
+  are immediately retained before the dispatch barrier, so STOP rows and the
+  top-level list include seed/generation/case/variant/full response. Reports
+  now include reset settle, state freshness, stamp coherence, clock stall,
+  dispatch timeout, CollisionMonitor, ResetStopGate, and motion thresholds.
+  The estimated-calibration TF contract uses AST semantics instead of an exact
+  source-format string.
+- Validation: source-first/no-cache focused MotionBenchmark/V6 pytest **39
+  passed**; expanded benchmark/reset/estimated-state/ResetStopGate/
+  ActivationGate contract pytest **106 passed**; fresh isolated
+  `robot_experiments` build and installed import PASS at
+  `/tmp/bionav_motion_evidence.u42NYu`; changed-file `py_compile` and final
+  `git diff --check` are recorded in the commit handoff.
+- Result: **PASS (code/build/unit evidence closure only)**. The second primitive
+  dispatch-STOP test records zero samples, no inherited collision, an intact
+  complete receipt, and an unchanged first row. Clock-stall zero output/STOP
+  remains covered.
+- Limits/next: no Isaac, ROS graph, Nav2, navigation, visual evidence,
+  engineering campaign, or formal qualification was run. Live reviewer
+  closure remains **PENDING**; route handoff and route code are unchanged.
+- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
+
 ## 2026-08-22 — V6 RouteCoordinator reset retirement
 
 - Goal/hypothesis: synchronously retire every old-epoch route/action intent on

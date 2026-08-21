@@ -44,6 +44,8 @@ class MotionSafetyStop(RuntimeError):
 DEFAULT_STATE_FRESHNESS_SEC = 0.25
 DEFAULT_STAMP_COHERENCE_SEC = 0.50
 DEFAULT_SIM_CLOCK_STALL_TIMEOUT_SEC = 0.50
+MOTION_DISPATCH_TIMEOUT_SEC = 15.0
+COLLISION_MONITOR_QUERY_TIMEOUT_SEC = 2.0
 
 
 @dataclass(frozen=True)
@@ -782,6 +784,7 @@ class MotionBenchmarkNode(Node):
         self._command_linear = 0.0
         self._command_angular = 0.0
         self._reset_receipts: list[dict[str, Any]] = []
+        self._current_reset_receipt: dict[str, Any] | None = None
 
     def _clock_callback(self, message: Clock) -> None:
         stamp_s = (
@@ -932,11 +935,13 @@ class MotionBenchmarkNode(Node):
             if callable(cancel):
                 cancel()
         self._collision_state_future = None
-        if not self._collision_state_client.wait_for_service(timeout_sec=2.0):
+        if not self._collision_state_client.wait_for_service(
+            timeout_sec=COLLISION_MONITOR_QUERY_TIMEOUT_SEC
+        ):
             return False
         response = self._wait_future(
             self._collision_state_client.call_async(GetState.Request()),
-            2.0,
+            COLLISION_MONITOR_QUERY_TIMEOUT_SEC,
         )
         if response is None:
             return False
@@ -1049,6 +1054,8 @@ class MotionBenchmarkNode(Node):
             reset_response.message,
             requested_seed=seed,
         )
+        self._current_reset_receipt = receipt
+        self._reset_receipts.append(receipt)
         dispatch_barrier = MotionDispatchBarrier(
             generation=receipt["generation"],
             reset_started_at=barrier,
@@ -1069,7 +1076,7 @@ class MotionBenchmarkNode(Node):
                 dispatch_barrier,
                 spin_once=self._spin_once,
                 snapshot=snapshot,
-                timeout_sec=15.0,
+                timeout_sec=MOTION_DISPATCH_TIMEOUT_SEC,
             )
             # The settle result is not cached authority.  Query CollisionMonitor
             # again and resample gate/clock/odom/TF at the dispatch instant.
@@ -1152,15 +1159,22 @@ class MotionBenchmarkNode(Node):
     def run(self) -> dict[str, Any]:
         results: list[dict[str, Any]] = []
         for index, primitive in enumerate(self._config.primitives):
+            # Clear all result-bearing primitive state before logging, reset,
+            # or any other operation that can fail.  A STOP must describe only
+            # the primitive whose reset/dispatch/playback was attempted.
+            self._samples = []
+            self._collision_detected = False
+            self._recording = False
+            self._segment_index = -1
+            self._segment_started_at = 0.0
+            self._command_linear = 0.0
+            self._command_angular = 0.0
+            self._current_reset_receipt = None
             self.get_logger().info(
                 f"running motion primitive {primitive.identifier}"
             )
-            receipt: dict[str, Any] | None = None
             try:
-                receipt = self._reset(self._config.reset_seed + index)
-                self._reset_receipts.append(receipt)
-                self._samples = []
-                self._collision_detected = False
+                self._reset(self._config.reset_seed + index)
                 self._recording = True
                 for segment_index, segment in enumerate(primitive.segments):
                     self._play_segment(segment_index, segment)
@@ -1176,8 +1190,8 @@ class MotionBenchmarkNode(Node):
                     "collision_detected": self._collision_detected,
                     "sample_count": len(self._samples),
                 }
-                if receipt is not None:
-                    stopped["reset_receipt"] = receipt
+                if self._current_reset_receipt is not None:
+                    stopped["reset_receipt"] = self._current_reset_receipt
                 results.append(stopped)
                 self.get_logger().error(
                     f"stopped {primitive.identifier}: {exc}"
@@ -1192,7 +1206,7 @@ class MotionBenchmarkNode(Node):
                 self._config.thresholds,
                 self._config.steady_window_sec,
             )
-            result["reset_receipt"] = receipt
+            result["reset_receipt"] = self._current_reset_receipt
             results.append(result)
             self.get_logger().info(
                 f"completed {primitive.identifier}: "
@@ -1204,6 +1218,21 @@ class MotionBenchmarkNode(Node):
             "recorded_at_utc": datetime.now(timezone.utc).isoformat(),
             "spawn_pose_name": self._config.spawn_pose_name,
             "command_rate_hz": self._config.command_rate_hz,
+            "reset_settle_sec": self._config.reset_settle_sec,
+            "state_freshness_sec": self._config.state_freshness_sec,
+            "stamp_coherence_sec": self._config.stamp_coherence_sec,
+            "sim_clock_stall_timeout_sec": (
+                self._config.sim_clock_stall_timeout_sec
+            ),
+            "dispatch_barrier_timeout_sec": MOTION_DISPATCH_TIMEOUT_SEC,
+            "collision_monitor_state_freshness_sec": (
+                self._config.state_freshness_sec
+            ),
+            "collision_monitor_query_timeout_sec": (
+                COLLISION_MONITOR_QUERY_TIMEOUT_SEC
+            ),
+            "collision_monitor_required_state": "active",
+            "reset_stop_gate_generation_match_required": True,
             "thresholds": self._config.thresholds.__dict__,
             "passed": all(result["passed"] for result in results),
             "stopped": any(
