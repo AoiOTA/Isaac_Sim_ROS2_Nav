@@ -23,6 +23,102 @@ COMMAND_TOPICS = (
     "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"
 )
 TERMINAL_PHASES = {"PASS", "STOP"}
+TOPOLOGY_CHECKPOINTS = ("prepublish", "pre_reset", "post_release", "pre_fresh")
+DEFAULT_ROUTE_SUBSCRIBERS = (
+    "/bio_nav_route_coordinator",
+    "/rosbag2_recorder",
+)
+MAX_COVERAGE_GAP_S = 0.25
+
+
+def _node_full_name(node_namespace: str, node_name: str) -> str:
+    namespace = str(node_namespace or "/").rstrip("/")
+    return f"{namespace}/{node_name}" if namespace else f"/{node_name}"
+
+
+def _gid_hex(endpoint_gid: Any) -> str:
+    try:
+        return bytes(endpoint_gid).hex()
+    except (TypeError, ValueError):
+        return str(endpoint_gid)
+
+
+def _endpoint_document(info: Any) -> dict[str, str]:
+    return {
+        "node": _node_full_name(info.node_namespace, info.node_name),
+        "node_name": str(info.node_name),
+        "node_namespace": str(info.node_namespace),
+        "gid": _gid_hex(info.endpoint_gid),
+    }
+
+
+def validate_topology_snapshot(
+    snapshot: dict[str, Any], expected_route_subscribers: tuple[str, ...]
+) -> list[str]:
+    """Return exact identity/count violations for the safety-critical graph."""
+    requirements = (
+        ("/cmd_vel", "publishers", ("/collision_monitor",)),
+        ("/cmd_vel_sim", "publishers", ("/isaac_navigation_sim",)),
+        ("/bio_nav/route_goal", "publishers", ("/v6_active_reset_probe",)),
+        (
+            "/bio_nav/route_goal",
+            "subscriptions",
+            tuple(sorted(expected_route_subscribers)),
+        ),
+    )
+    errors: list[str] = []
+    topics = snapshot.get("topics", {})
+    for topic, direction, expected in requirements:
+        observed = tuple(sorted(
+            row.get("node", "") for row in topics.get(topic, {}).get(direction, [])
+        ))
+        if observed != tuple(sorted(expected)):
+            errors.append(
+                f"{topic}:{direction}:expected={sorted(expected)}:"
+                f"observed={list(observed)}"
+            )
+    return errors
+
+
+def _coverage_summary(
+    samples: list[dict[str, Any]], start: float | None, end: float | None
+) -> dict[str, Any]:
+    """Summarize bounded callback coverage without claiming source order."""
+    ordered = sorted(samples, key=lambda row: float(row["monotonic_s"]))
+    times = [float(row["monotonic_s"]) for row in ordered]
+    gaps = [later - earlier for earlier, later in zip(times, times[1:])]
+    return {
+        "count": len(ordered),
+        "first_monotonic_s": times[0] if times else None,
+        "last_monotonic_s": times[-1] if times else None,
+        "max_gap_s": max(gaps, default=None),
+        "start_edge_delay_s": None if not times or start is None else times[0] - start,
+        "end_edge_lead_s": None if not times or end is None else end - times[-1],
+        "samples": ordered,
+    }
+
+
+def _position_coverage_summary(
+    samples: list[dict[str, Any]],
+    start: float | None,
+    end: float | None,
+    expected_xy: tuple[float, float],
+) -> dict[str, Any]:
+    summary = _coverage_summary(samples, start, end)
+    positions = [(float(row["x"]), float(row["y"])) for row in samples]
+    anchor = positions[0] if positions else None
+    summary.update({
+        "span_m": None if anchor is None else max(
+            (math.dist(anchor, xy) for xy in positions), default=0.0
+        ),
+        "landing_error_first_m": (
+            None if anchor is None else math.dist(anchor, expected_xy)
+        ),
+        "landing_error_last_m": (
+            None if not positions else math.dist(positions[-1], expected_xy)
+        ),
+    })
+    return summary
 
 
 @dataclass(frozen=True)
@@ -41,10 +137,12 @@ class ProbeConfig:
     postzero_s: float = 1.0
     active_displacement_m: float = 0.10
     reset_stable_drift_m: float = 0.02
+    reset_landing_xy: tuple[float, float] = (0.45, -5.35)
+    reset_odom_landing_xy: tuple[float, float] = (0.0, 0.0)
+    reset_landing_error_m: float = 0.10
     fresh_goal_xy: tuple[float, float] = (0.685, -3.975535)
     fresh_goal_error_m: float = 0.30
     fresh_edges: tuple[int, ...] = (51, 52)
-    allow_fresh_support_equivalent: bool = False
 
 
 @dataclass
@@ -56,13 +154,17 @@ class ProbeMachine:
     stop_reason: str | None = None
     timestamps: dict[str, float] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=lambda: {
-        "old_publish": 0, "fresh_publish": 0, "reset_call": 0,
+        "old_publish_attempt": 0, "old_publish": 0,
+        "fresh_publish_attempt": 0, "fresh_publish": 0,
+        "reset_call": 0, "reset_done_callback": 0,
         "canonical": 0, "progress": 0, "lookahead": 0,
         "goal_update": 0, "old_bool": 0, "old_result": 0,
         "fresh_bool": 0, "fresh_result": 0,
         "hold_cmd_vel_sim_nonzero": 0,
     })
     endpoint_detail: dict[str, Any] = field(default_factory=dict)
+    topology_checks: list[dict[str, Any]] = field(default_factory=list)
+    topology_baseline: dict[str, Any] | None = None
     old_request_id: int | None = None
     fresh_request_id: int | None = None
     old_edges: list[int] = field(default_factory=list)
@@ -87,8 +189,14 @@ class ProbeMachine:
     fresh_bool_value: bool | None = None
     fresh_result_value: dict[str, Any] | None = None
     old_activity_after_terminal: int = 0
+    latest_odom_xy: tuple[float, float] | None = None
+    hold_cmd_vel_sim_samples: list[dict[str, Any]] = field(default_factory=list)
+    reset_position_samples: dict[str, list[dict[str, Any]]] = field(
+        default_factory=lambda: {"ground_truth": [], "odometry": []}
+    )
+    hold_collision_samples: list[dict[str, Any]] = field(default_factory=list)
     post_commands: dict[str, dict[str, Any]] = field(default_factory=lambda: {
-        topic: {"total": 0, "nonzero": 0, "last_zero": False}
+        topic: {"total": 0, "nonzero": 0, "last_zero": False, "samples": []}
         for topic in COMMAND_TOPICS
     })
 
@@ -107,12 +215,42 @@ class ProbeMachine:
         if self.phase != "WAIT_ENDPOINTS":
             return
         self.endpoint_detail = dict(detail)
-        if not all(bool(value) for value in detail.values()):
+        if detail.get("ready") is not True:
             return
         if self.latest_gt_xy is None:
             return
         self.phase = "PUBLISH_OLD_ONCE"
         self._time("endpoints_ready", now)
+
+    def topology_checked(
+        self,
+        label: str,
+        snapshot: dict[str, Any],
+        errors: list[str],
+        now: float,
+    ) -> None:
+        """Record and compare one exact safety-critical ROS graph snapshot."""
+        expected_index = len(self.topology_checks)
+        if label not in TOPOLOGY_CHECKPOINTS or (
+            expected_index >= len(TOPOLOGY_CHECKPOINTS)
+            or label != TOPOLOGY_CHECKPOINTS[expected_index]
+        ):
+            self.stop(f"topology_checkpoint_order_invalid:{label}", now)
+            return
+        record = {
+            "label": label,
+            "monotonic_s": float(now),
+            "snapshot": snapshot,
+            "errors": list(errors),
+        }
+        self.topology_checks.append(record)
+        if errors:
+            self.stop(f"topology_contract_failed:{label}:{errors[0]}", now)
+            return
+        if self.topology_baseline is None:
+            self.topology_baseline = snapshot
+        elif snapshot != self.topology_baseline:
+            self.stop(f"topology_changed:{label}", now)
 
     def old_published(self, now: float) -> None:
         """Record the sole old-goal publication."""
@@ -153,10 +291,13 @@ class ProbeMachine:
             if self.fresh_request_id is None:
                 self.fresh_request_id = int(request_id)
                 self.fresh_edges_observed = list(edge_ids)
-                if tuple(edge_ids) == self.config.fresh_edges:
+                if (
+                    self.old_request_id is None
+                    or self.fresh_request_id <= self.old_request_id
+                ):
+                    self.stop("fresh_request_id_not_newer", now)
+                elif tuple(edge_ids) == self.config.fresh_edges:
                     self.fresh_edges_equivalence = "canonical_exact"
-                elif self.config.allow_fresh_support_equivalent and edge_ids:
-                    self.fresh_edges_equivalence = "support_equivalent_allowed"
                 else:
                     self.stop("fresh_canonical_edges_mismatch", now)
             elif int(request_id) != self.fresh_request_id:
@@ -210,19 +351,27 @@ class ProbeMachine:
             self._maybe_active_ready(now)
         hold_seen = any(item["reason"] == "hold" for item in self.gate_sequence)
         released = any(item["reason"].startswith("released:") for item in self.gate_sequence)
-        if topic == "/cmd_vel_sim" and hold_seen and not released and nonzero:
-            self.counts["hold_cmd_vel_sim_nonzero"] += 1
-            self.stop("hold_cmd_vel_sim_nonzero", now)
+        if topic == "/cmd_vel_sim" and hold_seen and not released:
+            self.hold_cmd_vel_sim_samples.append({
+                "monotonic_s": float(now), "nonzero": bool(nonzero)
+            })
+            if nonzero:
+                self.counts["hold_cmd_vel_sim_nonzero"] += 1
+                self.stop("hold_cmd_vel_sim_nonzero", now)
         if self.phase == "POSTZERO":
             row = self.post_commands[topic]
             row["total"] += 1
             row["nonzero"] += int(nonzero)
             row["last_zero"] = not nonzero
+            row["samples"].append({
+                "monotonic_s": float(now), "nonzero": bool(nonzero)
+            })
 
     def ground_truth(self, x: float, y: float, now: float) -> None:
         """Consume one evaluator-only ground-truth position."""
         xy = (float(x), float(y))
         self.latest_gt_xy = xy
+        self._capture_reset_position("ground_truth", xy, now)
         if self.old_start_xy is not None and self.counts["reset_call"] == 0:
             self.old_displacement_m = max(
                 self.old_displacement_m, math.dist(self.old_start_xy, xy)
@@ -251,8 +400,35 @@ class ProbeMachine:
                     self.stop("reset_landing_drift_exceeded", now)
             self._advance_reset_observation(now)
 
+    def odometry(self, x: float, y: float, now: float) -> None:
+        """Consume estimated odometry for independent reset-stability coverage."""
+        xy = (float(x), float(y))
+        self.latest_odom_xy = xy
+        self._capture_reset_position("odometry", xy, now)
+
+    def _capture_reset_position(
+        self, source: str, xy: tuple[float, float], now: float
+    ) -> None:
+        reasons = [item["reason"] for item in self.gate_sequence]
+        if (
+            self.reset_event_seen
+            and "reset_complete" in reasons
+            and not any(reason.startswith("released:") for reason in reasons)
+        ):
+            self.reset_position_samples[source].append({
+                "monotonic_s": float(now), "x": xy[0], "y": xy[1]
+            })
+
     def collision_event(self, collided: bool, now: float) -> None:
         """Latch physical collision and fail immediately when true."""
+        reasons = [item["reason"] for item in self.gate_sequence]
+        if (
+            "hold" in reasons
+            and not any(reason.startswith("released:") for reason in reasons)
+        ):
+            self.hold_collision_samples.append({
+                "monotonic_s": float(now), "collided": bool(collided)
+            })
         self.collision = self.collision or bool(collided)
         if collided:
             self.stop("physical_collision", now)
@@ -362,21 +538,102 @@ class ProbeMachine:
         if not valid:
             self.stop("gate_status_incoherent", now)
             return
-        if not self.gate_sequence or item != {
-            key: self.gate_sequence[-1][key] for key in item
-        }:
-            self.gate_sequence.append({**item, "monotonic": float(now)})
-        reasons = [row["reason"] for row in self.gate_sequence]
-        expected_order = {"hold": 0, "reset_complete": 1}
-        rank = 2 if reason.startswith("released:") else expected_order[reason]
-        previous_rank = -1
-        if len(reasons) > 1:
-            prior = reasons[-2]
-            previous_rank = 2 if prior.startswith("released:") else expected_order[prior]
-        if rank < previous_rank or (rank > previous_rank + 1 and previous_rank >= 0):
+        expected_reason = (
+            "hold" if not self.gate_sequence else
+            "reset_complete" if len(self.gate_sequence) == 1 else
+            "released:"
+        )
+        if (
+            (expected_reason == "released:" and not reason.startswith(expected_reason))
+            or (expected_reason != "released:" and reason != expected_reason)
+        ):
             self.stop("gate_status_order_invalid", now)
             return
+        if self.gate_sequence and now <= self.gate_sequence[-1]["received_monotonic_s"]:
+            self.stop("gate_status_received_time_not_increasing", now)
+            return
+        self.gate_sequence.append({**item, "received_monotonic_s": float(now)})
+        if reason.startswith("released:"):
+            self._validate_release_coverage(now)
+            if self.phase == "STOP":
+                return
         self._advance_reset_observation(now)
+
+    @staticmethod
+    def _coverage_contract_errors(
+        summary: dict[str, Any], *, require_zero_key: str | None = None
+    ) -> list[str]:
+        errors: list[str] = []
+        if summary["count"] < 2:
+            errors.append("count_lt_2")
+        max_gap = summary["max_gap_s"]
+        if max_gap is None or max_gap > MAX_COVERAGE_GAP_S:
+            errors.append("max_gap")
+        start_delay = summary["start_edge_delay_s"]
+        if start_delay is None or abs(start_delay) > MAX_COVERAGE_GAP_S:
+            errors.append("start_edge")
+        end_lead = summary["end_edge_lead_s"]
+        if end_lead is None or abs(end_lead) > MAX_COVERAGE_GAP_S:
+            errors.append("end_edge")
+        if require_zero_key is not None and any(
+            bool(row[require_zero_key]) for row in summary["samples"]
+        ):
+            errors.append("nonzero_or_true")
+        return errors
+
+    def _validate_release_coverage(self, release_time: float) -> None:
+        hold_time = self.gate_sequence[0]["received_monotonic_s"]
+        stable_time = self.gate_sequence[1]["received_monotonic_s"]
+        command = _coverage_summary(
+            self.hold_cmd_vel_sim_samples, hold_time, release_time
+        )
+        errors = self._coverage_contract_errors(
+            command, require_zero_key="nonzero"
+        )
+        if errors:
+            self.stop("hold_cmd_vel_sim_coverage_failed:" + ",".join(errors), release_time)
+            return
+        collision = _coverage_summary(
+            self.hold_collision_samples, hold_time, release_time
+        )
+        errors = self._coverage_contract_errors(
+            collision, require_zero_key="collided"
+        )
+        if errors:
+            self.stop("hold_collision_coverage_failed:" + ",".join(errors), release_time)
+            return
+        for source in ("ground_truth", "odometry"):
+            expected_xy = (
+                self.config.reset_landing_xy
+                if source == "ground_truth"
+                else self.config.reset_odom_landing_xy
+            )
+            summary = _position_coverage_summary(
+                self.reset_position_samples[source],
+                stable_time,
+                release_time,
+                expected_xy,
+            )
+            errors = self._coverage_contract_errors(summary)
+            if summary["span_m"] is None or (
+                summary["span_m"] > self.config.reset_stable_drift_m
+            ):
+                errors.append("span")
+            landing_errors = (
+                summary["landing_error_first_m"],
+                summary["landing_error_last_m"],
+            )
+            if any(
+                value is None or value > self.config.reset_landing_error_m
+                for value in landing_errors
+            ):
+                errors.append("landing_error")
+            if errors:
+                self.stop(
+                    f"reset_{source}_coverage_failed:" + ",".join(errors),
+                    release_time,
+                )
+                return
 
     def reset_event(self, now: float) -> None:
         """Consume the one reset event belonging to this Trigger call."""
@@ -442,6 +699,8 @@ class ProbeMachine:
                 self.fresh_request_id is None
                 or item.get("request_id") != self.fresh_request_id
                 or item.get("status") != "succeeded"
+                or item.get("reason") != "final_goal_distance_confirmed"
+                or item.get("reset_epoch") != self.config.reset_generation
             ):
                 self.stop("fresh_result_contract_mismatch", now)
                 return
@@ -455,6 +714,7 @@ class ProbeMachine:
                 or item.get("request_id") != self.old_request_id
                 or item.get("status") != "aborted"
                 or item.get("reason") != "simulation_reset"
+                or item.get("reset_epoch") != self.config.reset_generation
             ):
                 self.stop("old_result_contract_mismatch", now)
                 return
@@ -540,10 +800,16 @@ class ProbeMachine:
                 self.stop("fresh_success_timeout", now)
         elif self.phase == "POSTZERO":
             if now - self.timestamps["postzero_started"] >= self.config.postzero_s:
-                invalid = [
-                    topic for topic, row in self.post_commands.items()
-                    if row["total"] == 0 or row["nonzero"] != 0 or not row["last_zero"]
-                ]
+                start = self.timestamps["postzero_started"]
+                end = start + self.config.postzero_s
+                invalid = []
+                for topic, row in self.post_commands.items():
+                    summary = _coverage_summary(row["samples"], start, end)
+                    errors = self._coverage_contract_errors(
+                        summary, require_zero_key="nonzero"
+                    )
+                    if errors or row["nonzero"] != 0 or not row["last_zero"]:
+                        invalid.append(topic)
                 if invalid:
                     self.stop("postzero_contract_failed:" + ",".join(invalid), now)
                 elif self.collision:
@@ -554,12 +820,34 @@ class ProbeMachine:
 
     def document(self) -> dict[str, Any]:
         """Return the complete machine-readable evidence snapshot."""
+        hold_time = next((
+            row["received_monotonic_s"] for row in self.gate_sequence
+            if row["reason"] == "hold"
+        ), None)
+        stable_time = next((
+            row["received_monotonic_s"] for row in self.gate_sequence
+            if row["reason"] == "reset_complete"
+        ), None)
+        release_time = next((
+            row["received_monotonic_s"] for row in self.gate_sequence
+            if row["reason"].startswith("released:")
+        ), None)
+        postzero_start = self.timestamps.get("postzero_started")
+        postzero_end = (
+            None if postzero_start is None
+            else postzero_start + self.config.postzero_s
+        )
         return {
             "schema": "bio_nav.active_reset_probe.v1",
             "phase": self.phase,
-            "verdict": "PASS" if self.phase == "PASS" else (
+            "verdict": "PROVISIONAL_PASS_REQUIRES_BAG_ORDER" if self.phase == "PASS" else (
                 "STOP" if self.phase == "STOP" else "RUNNING"
             ),
+            "claim_boundary": {
+                "engineering_pass": False,
+                "requires_external_bag_order_analysis": True,
+                "callback_times_are_receive_order_not_source_order": True,
+            },
             "stop_reason": self.stop_reason,
             "config": asdict(self.config),
             "timestamps_monotonic_s": dict(self.timestamps),
@@ -573,6 +861,7 @@ class ProbeMachine:
             ),
             "counts": dict(self.counts),
             "endpoints": dict(self.endpoint_detail),
+            "topology_checks": list(self.topology_checks),
             "old": {
                 "request_id": self.old_request_id,
                 "edges": self.old_edges,
@@ -588,6 +877,33 @@ class ProbeMachine:
                 "event_seen": self.reset_event_seen,
                 "landing_xy": self.reset_landing_xy,
                 "stable_max_drift_m": self.reset_stable_max_drift_m,
+                "raw_callback_times_monotonic_s": {
+                    "reset_event": self.timestamps.get("reset_event"),
+                    "reset_receipt": self.timestamps.get("reset_receipt"),
+                    "gate_hold": hold_time,
+                    "gate_reset_complete": stable_time,
+                    "gate_released": release_time,
+                },
+                "coverage": {
+                    "cmd_vel_sim_hold_to_release": _coverage_summary(
+                        self.hold_cmd_vel_sim_samples, hold_time, release_time
+                    ),
+                    "collision_hold_to_release": _coverage_summary(
+                        self.hold_collision_samples, hold_time, release_time
+                    ),
+                    "ground_truth_stable_to_release": _position_coverage_summary(
+                        self.reset_position_samples["ground_truth"],
+                        stable_time,
+                        release_time,
+                        self.config.reset_landing_xy,
+                    ),
+                    "odometry_stable_to_release": _position_coverage_summary(
+                        self.reset_position_samples["odometry"],
+                        stable_time,
+                        release_time,
+                        self.config.reset_odom_landing_xy,
+                    ),
+                },
             },
             "fresh": {
                 "request_id": self.fresh_request_id,
@@ -596,12 +912,21 @@ class ProbeMachine:
                 "terminal_bool": self.fresh_bool_value,
                 "result": self.fresh_result_value,
                 "latest_gt_xy": self.latest_gt_xy,
+                "latest_odom_xy": self.latest_odom_xy,
                 "goal_error_m": None if self.latest_gt_xy is None else math.dist(
                     self.latest_gt_xy, self.config.fresh_goal_xy
                 ),
             },
             "collision": self.collision,
-            "postzero": self.post_commands,
+            "postzero": {
+                topic: {
+                    **row,
+                    "coverage": _coverage_summary(
+                        row["samples"], postzero_start, postzero_end
+                    ),
+                }
+                for topic, row in self.post_commands.items()
+            },
         }
 
 
@@ -640,19 +965,43 @@ def _arguments(argv: list[str] | None = None) -> argparse.Namespace:
         type=float,
         default=(0.685, -3.975535, 1.570796327),
     )
-    parser.add_argument("--expected-route-subscribers", type=int, default=2)
+    parser.add_argument(
+        "--expected-route-subscriber",
+        action="append",
+        dest="expected_route_subscribers",
+        help=(
+            "exact fully-qualified subscriber identity; repeat once per expected "
+            "subscriber (default: bio_nav_route_coordinator and rosbag2_recorder)"
+        ),
+    )
     parser.add_argument("--reset-seed", type=int, default=8601)
     parser.add_argument("--fresh-edges", type=_parse_edges, default=(51, 52))
-    parser.add_argument("--allow-fresh-support-equivalent", action="store_true")
+    parser.add_argument(
+        "--reset-landing-xy", nargs=2, type=float, default=(0.45, -5.35)
+    )
+    parser.add_argument(
+        "--reset-odom-landing-xy", nargs=2, type=float, default=(0.0, 0.0)
+    )
     parser.add_argument("--endpoint-timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
-    if args.expected_route_subscribers < 1:
-        parser.error("--expected-route-subscribers must be positive")
+    args.expected_route_subscribers = tuple(
+        args.expected_route_subscribers or DEFAULT_ROUTE_SUBSCRIBERS
+    )
+    if (
+        not args.expected_route_subscribers
+        or len(set(args.expected_route_subscribers))
+        != len(args.expected_route_subscribers)
+        or any(not name.startswith("/") for name in args.expected_route_subscribers)
+    ):
+        parser.error("expected route subscriber identities must be unique absolute names")
     if args.reset_seed < 0:
         parser.error("--reset-seed must be non-negative")
     if args.endpoint_timeout <= 0.0:
         parser.error("--endpoint-timeout must be positive")
-    if not all(math.isfinite(value) for value in (*args.old_goal, *args.fresh_goal)):
+    if not all(math.isfinite(value) for value in (
+        *args.old_goal, *args.fresh_goal,
+        *args.reset_landing_xy, *args.reset_odom_landing_xy,
+    )):
         parser.error("goal coordinates must be finite")
     return args
 
@@ -684,15 +1033,16 @@ def _run_ros(args: argparse.Namespace) -> int:
             )
             config = ProbeConfig(
                 reset_seed=args.reset_seed,
+                reset_landing_xy=tuple(args.reset_landing_xy),
+                reset_odom_landing_xy=tuple(args.reset_odom_landing_xy),
                 fresh_goal_xy=(args.fresh_goal[0], args.fresh_goal[1]),
                 fresh_edges=tuple(args.fresh_edges),
-                allow_fresh_support_equivalent=args.allow_fresh_support_equivalent,
             )
             self.machine = ProbeMachine(config)
             self.started = time.monotonic()
             self._old_goal = tuple(args.old_goal)
             self._fresh_goal = tuple(args.fresh_goal)
-            self._expected_subscribers = args.expected_route_subscribers
+            self._expected_subscribers = tuple(args.expected_route_subscribers)
             self._endpoint_timeout = args.endpoint_timeout
             self._reset_future = None
             self._last_persist = -math.inf
@@ -749,6 +1099,16 @@ def _run_ros(args: argparse.Namespace) -> int:
                 best_effort,
             )
             self.create_subscription(
+                Odometry,
+                "/odometry/filtered",
+                lambda m: self._event(
+                    self.machine.odometry,
+                    float(m.pose.pose.position.x),
+                    float(m.pose.pose.position.y),
+                ),
+                best_effort,
+            )
+            self.create_subscription(
                 Bool,
                 "/simulation/collision",
                 lambda m: self._event(
@@ -783,8 +1143,13 @@ def _run_ros(args: argparse.Namespace) -> int:
         def _event(self, callback, *values) -> None:
             now = time.monotonic()
             previous = self.machine.phase
-            callback(*values, now)
-            self._drive(now)
+            try:
+                callback(*values, now)
+                self._drive(now)
+            except Exception as exc:
+                self.machine.stop(
+                    f"callback_exception:{type(exc).__name__}:{exc}", now
+                )
             self._persist(force=self.machine.phase != previous)
 
         def _persist(self, *, force: bool = False) -> None:
@@ -794,27 +1159,81 @@ def _run_ros(args: argparse.Namespace) -> int:
             # latency-critical active-ready -> Trigger path.
             if not force and now - self._last_persist < 0.05:
                 return
-            atomic_write_json(args.output, self.machine.document())
+            try:
+                atomic_write_json(args.output, self.machine.document())
+            except Exception as exc:
+                self.machine.stop(
+                    f"json_write_exception:{type(exc).__name__}:{exc}", now
+                )
+                try:
+                    atomic_write_json(args.output, self.machine.document())
+                except Exception as terminal_exc:
+                    # The caller also prints the same terminal document.  This
+                    # field prevents a failed write from being mistaken for a
+                    # successful persistent receipt.
+                    self.machine.endpoint_detail["terminal_json_write_error"] = (
+                        f"{type(terminal_exc).__name__}:{terminal_exc}"
+                    )
+                    return
             self._last_persist = now
+
+        def _topology_snapshot(self) -> dict[str, Any]:
+            topics: dict[str, Any] = {}
+            for topic in ("/cmd_vel", "/cmd_vel_sim", "/bio_nav/route_goal"):
+                publishers = sorted(
+                    (_endpoint_document(info) for info in
+                     self.get_publishers_info_by_topic(topic)),
+                    key=lambda row: (row["node"], row["gid"]),
+                )
+                subscriptions = sorted(
+                    (_endpoint_document(info) for info in
+                     self.get_subscriptions_info_by_topic(topic)),
+                    key=lambda row: (row["node"], row["gid"]),
+                )
+                topics[topic] = {
+                    "publishers": publishers,
+                    "subscriptions": subscriptions,
+                    "publisher_count": len(publishers),
+                    "subscription_count": len(subscriptions),
+                }
+            return {"topics": topics}
+
+        def _check_topology(self, label: str, now: float) -> bool:
+            snapshot = self._topology_snapshot()
+            errors = validate_topology_snapshot(
+                snapshot, self._expected_subscribers
+            )
+            self.machine.topology_checked(label, snapshot, errors, now)
+            return self.machine.phase != "STOP"
 
         def _endpoints(self) -> dict[str, Any]:
             topics = (
                 "/bio_nav/canonical_route", "/bio_nav/route_progress",
                 "/bio_nav/route_lookahead_goal", "/goal_update",
                 "/bio_nav/route_goal_complete", "/bio_nav/route_goal_result",
-                "/ground_truth/odom", "/simulation/collision",
+                "/ground_truth/odom", "/odometry/filtered", "/simulation/collision",
                 "/simulation/reset_stop_gate/status", "/simulation/reset_event",
                 *COMMAND_TOPICS,
             )
-            return {
-                "route_goal_subscribers": (
-                    self._goal_pub.get_subscription_count()
-                    >= self._expected_subscribers
-                ),
+            topology = self._topology_snapshot()
+            topology_errors = validate_topology_snapshot(
+                topology, self._expected_subscribers
+            )
+            availability = {
                 "reset_service": self._reset_client.service_is_ready(),
                 "ground_truth_sample": self.machine.latest_gt_xy is not None,
+                "odometry_sample": self.machine.latest_odom_xy is not None,
                 "gate_released_baseline": self.machine.baseline_gate_released,
-                **{f"publisher:{topic}": self.count_publishers(topic) >= 1 for topic in topics},
+                **{
+                    f"publisher:{topic}": self.count_publishers(topic) >= 1
+                    for topic in topics
+                },
+            }
+            return {
+                "ready": not topology_errors and all(availability.values()),
+                "availability": availability,
+                "topology": topology,
+                "topology_errors": topology_errors,
             }
 
         def _publish_goal(self, values: tuple[float, float, float]) -> None:
@@ -830,31 +1249,62 @@ def _run_ros(args: argparse.Namespace) -> int:
         def _tick(self) -> None:
             now = time.monotonic()
             previous = self.machine.phase
-            if self.machine.phase == "WAIT_ENDPOINTS":
-                self.machine.endpoints_ready(now, self._endpoints())
-                if now - self.started > self._endpoint_timeout:
-                    self.machine.stop("endpoint_timeout", now)
-            self.machine.tick(now)
-            self._drive(now)
+            try:
+                if self.machine.phase == "WAIT_ENDPOINTS":
+                    self.machine.endpoints_ready(now, self._endpoints())
+                    if now - self.started > self._endpoint_timeout:
+                        self.machine.stop("endpoint_timeout", now)
+                self.machine.tick(now)
+                self._drive(now)
+            except Exception as exc:
+                self.machine.stop(
+                    f"tick_exception:{type(exc).__name__}:{exc}", now
+                )
             self._persist(force=self.machine.phase != previous)
 
         def _drive(self, now: float) -> None:
             """Execute state-owned exactly-once side effects immediately."""
             if self.machine.phase == "PUBLISH_OLD_ONCE":
+                if not self._check_topology("prepublish", now):
+                    return
+                self.machine.counts["old_publish_attempt"] += 1
+                if self.machine.counts["old_publish_attempt"] != 1:
+                    self.machine.stop("old_goal_publish_attempt_repeated", now)
+                    return
                 self._publish_goal(self._old_goal)
                 self.machine.old_published(now)
             elif self.machine.phase == "CALL_RESET_ONCE":
+                if not self._check_topology("pre_reset", now):
+                    return
+                if not self._reset_client.service_is_ready():
+                    self.machine.stop("reset_service_disappeared_before_call", now)
+                    return
                 self.machine.reset_call_started(now)
                 if self.machine.phase != "STOP":
                     self._reset_future = self._reset_client.call_async(Trigger.Request())
                     self._reset_future.add_done_callback(self._reset_done)
+            elif self.machine.phase == "QUIET" and not any(
+                row["label"] == "post_release" for row in self.machine.topology_checks
+            ):
+                self._check_topology("post_release", now)
             elif self.machine.phase == "PUBLISH_FRESH_ONCE":
+                if not self._check_topology("pre_fresh", now):
+                    return
+                self.machine.counts["fresh_publish_attempt"] += 1
+                if self.machine.counts["fresh_publish_attempt"] != 1:
+                    self.machine.stop("fresh_goal_publish_attempt_repeated", now)
+                    return
                 self._publish_goal(self._fresh_goal)
                 self.machine.fresh_published(now)
 
         def _reset_done(self, future) -> None:
             now = time.monotonic()
             try:
+                self.machine.counts["reset_done_callback"] += 1
+                if self.machine.counts["reset_done_callback"] != 1:
+                    self.machine.stop("reset_done_callback_repeated", now)
+                    self._persist(force=True)
+                    return
                 response = future.result()
             except Exception as exc:
                 self.machine.stop(f"reset_service_exception:{type(exc).__name__}:{exc}", now)
@@ -863,6 +1313,12 @@ def _run_ros(args: argparse.Namespace) -> int:
                     self.machine.stop("reset_service_no_response", now)
                 else:
                     self.machine.reset_response(bool(response.success), str(response.message), now)
+            try:
+                self._drive(now)
+            except Exception as exc:
+                self.machine.stop(
+                    f"done_callback_exception:{type(exc).__name__}:{exc}", now
+                )
             self._persist(force=True)
 
     def _twist_nonzero(message) -> bool:
@@ -872,22 +1328,66 @@ def _run_ros(args: argparse.Namespace) -> int:
         )
         return any(abs(float(value)) > 1.0e-6 for value in values)
 
+    node = None
     rclpy.init()
-    node = ActiveResetProbeNode()
     try:
+        node = ActiveResetProbeNode()
         while rclpy.ok() and node.machine.phase not in TERMINAL_PHASES:
             rclpy.spin_once(node, timeout_sec=0.1)
-        node._persist(force=True)
-        print(json.dumps(node.machine.document(), sort_keys=True))
-        return 0 if node.machine.phase == "PASS" else 20
+    except Exception as exc:
+        if node is None:
+            raise
+        node.machine.stop(
+            f"spin_exception:{type(exc).__name__}:{exc}", time.monotonic()
+        )
     finally:
-        node.destroy_node()
-        rclpy.shutdown()
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception as exc:
+                node.machine.stop(
+                    f"destroy_node_exception:{type(exc).__name__}:{exc}",
+                    time.monotonic(),
+                )
+        try:
+            rclpy.shutdown()
+        except Exception as exc:
+            if node is None:
+                raise
+            node.machine.stop(
+                f"shutdown_exception:{type(exc).__name__}:{exc}", time.monotonic()
+            )
+    assert node is not None
+    node._persist(force=True)
+    document = node.machine.document()
+    print(json.dumps(document, sort_keys=True))
+    return 0 if node.machine.phase == "PASS" else 20
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run one active-reset probe and return zero only on PASS."""
-    return _run_ros(_arguments(argv))
+    args = _arguments(argv)
+    try:
+        return _run_ros(args)
+    except Exception as exc:
+        document = {
+            "schema": "bio_nav.active_reset_probe.v1",
+            "phase": "STOP",
+            "verdict": "STOP",
+            "stop_reason": f"entrypoint_exception:{type(exc).__name__}:{exc}",
+            "claim_boundary": {
+                "engineering_pass": False,
+                "requires_external_bag_order_analysis": True,
+            },
+        }
+        try:
+            atomic_write_json(args.output, document)
+        except Exception as write_exc:
+            document["terminal_json_write_error"] = (
+                f"{type(write_exc).__name__}:{write_exc}"
+            )
+        print(json.dumps(document, sort_keys=True))
+        return 20
 
 
 if __name__ == "__main__":

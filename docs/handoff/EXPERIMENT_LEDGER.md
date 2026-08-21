@@ -1762,3 +1762,38 @@
 - Verdict: **PASS (code/build/unit plus retrospective offline analysis)**.
   Attempt 4 prospective schema-2 live capture remains **PENDING**;
   `yaw_scale=0.9294` and RF2O-off are unchanged.
+
+## 2026-08-22 — V6 active-reset probe evidence-contract amendment
+
+- Goal: close the independent cc7 probe-review blockers before any Attempt5
+  live episode, without changing route/reset/IMU/control implementations.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `8825e606245df83d8bd755e84dff0730c9d11aa1`. Final change is the
+  ledger-containing commit.
+- Changed: `active_reset_probe.py`, its focused tests, this ledger, and
+  `V6_ACTIVE_RESET_PROBE_20260822.md` only.
+- Contract: exact endpoint-info identities/GIDs/counts at four invariant graph
+  checkpoints; exact newer request and epoch/status/reason/edge terminals;
+  0.25 s edge/gap and two-sample minimum coverage for HOLD command/collision,
+  stable GT/odom, and all four 1.0 s postzero streams; map and odom landing
+  errors are evaluated in their respective frames. All support-equivalent
+  routing was removed.
+- Claim boundary: callback times are explicitly receive order, not cross-topic
+  source order. An in-process success reports
+  `PROVISIONAL_PASS_REQUIRES_BAG_ORDER` with `engineering_pass=false`; only a
+  finalized-bag ordering analysis may promote Attempt5.
+- Failure behavior: endpoint, goal publish, Trigger dispatch, future callback,
+  JSON persistence, spin and teardown exceptions produce STOP; side-effect
+  attempt counters prevent exception-driven retries.
+- Validation: source-first focused **58 passed** (20 probe plus 38 retained
+  package-contract tests); package-configured flake8, `py_compile`, and
+  `git diff --check` PASS. Fresh isolated build/install PASS at
+  `/tmp/v6_active_reset_probe_fix_build.D38WEx`, install
+  `/tmp/v6_active_reset_probe_fix_install.51b4zR`, log
+  `/tmp/v6_active_reset_probe_fix_log.ozbzdC`. Installed-module path assertion,
+  the same **58 passed**, `ros2 run ... --help`, and the direct installed console
+  entry point PASS.
+- Verdict: **PASS (code/build/unit only)**. Attempt5 remains **PENDING**. No ROS
+  graph, Isaac, Nav2, navigation, reset, bag/evidence episode, engineering
+  campaign, or formal qualification was run.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
