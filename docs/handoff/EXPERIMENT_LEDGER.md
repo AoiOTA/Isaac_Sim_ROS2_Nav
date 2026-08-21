@@ -770,3 +770,33 @@
   unverified.
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
+
+## 2026-08-21 — V6 critic real-timestamp obstacle-independence amendment
+
+- Goal/hypothesis: align the critic with the real Integration V3.10 contract:
+  static depth refresh republishes the cached obstacle with a fresh validation
+  timeline but preserves the original source sequence/stamp, and does not
+  republish a same-sequence fresh `PlanningPrior`.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `fea521b5b849c381d29191659ea97b291e7a0aeb`.
+- Changes: trusted obstacle admission, cursor, freshness, identity, and
+  validation-time TF are independent of planning-prior availability. A prior
+  now gates only context/novelty/uncertainty/local-direction components and is
+  suppressed when missing, stale, untrusted, OOD, identity/session
+  incompatible, or sequence mismatched. Trusted higher-epoch/new-session
+  obstacle reset rebind no longer depends on an accepted prior. Status names
+  `obstacle_applied` and every prior component outcome. Static test helpers no
+  longer retime priors, and the moving validation-TF test uses no prior.
+- Validation: fresh allowed Integration interface + Module3 fusion build PASS
+  at `/tmp/bio_nav_module3_critic_independent.pbOLuY`; focused
+  `test_equal_cost_search` 35/35 and plugin loader 1/1 PASS; `git diff --check`
+  PASS. Tests cover real old-prior/static-refresh timestamps, fresh
+  different-sequence and missing priors, legal fresh pairs, obstacle fail-open
+  gates, ordinary LIVE, validation-time TF, callback interleaving, and
+  no-prior monotonic reset/replay rejection.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS graph, active
+  MPPI, Nav2, Isaac, navigation, visual evidence, engineering campaign, or
+  formal qualification was run. Live callback/status behavior and active-MPPI
+  influence remain unverified.
+- Handoff:
+  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.

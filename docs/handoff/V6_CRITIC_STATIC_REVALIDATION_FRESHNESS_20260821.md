@@ -1,6 +1,107 @@
-# V6 critic callback admission and reset-epoch rebind repair
+# V6 critic static-revalidation and obstacle-independence repair
 
-## 2026-08-21 component-trust amendment (current)
+## 2026-08-21 real-timestamp obstacle-independence amendment (current)
+
+### Scope and result
+
+- Starting HEAD: `fea521b5b849c381d29191659ea97b291e7a0aeb` on the permitted
+  Module3 `cognitive-navigation` worktree. The fixed Module3 main
+  `22d66470c4b903349b2467dc876490bbebfc0083` remained its ancestor.
+- Goal: remove the false assumption that Integration V3.10 republishes a
+  same-sequence fresh planning prior when it refreshes a cached static
+  obstacle. `PlanningPrior.stamp` is the inference source stamp; static depth
+  revalidation refreshes only the obstacle validation timeline.
+- Verdict: **PASS (code/build/unit only)**. Result commit: the commit containing
+  this handoff.
+
+### Change
+
+- Obstacle admission and scoring no longer depend on a planning prior. The
+  callback uses the same trusted-write, health, identity, dual-timeline,
+  finite/OOD, ordering, and static-confirmation validator as
+  `CognitiveObstacleLayer`, records its own accepted cursor, and preserves the
+  last accepted snapshot on rejection. `score()` rechecks the accepted
+  obstacle and uses `validation_stamp` for TF.
+- A missing, stale, untrusted, OOD, identity/session-incompatible, or
+  different-sequence prior suppresses context, novelty, uncertainty, and local
+  direction only. It cannot suppress an otherwise accepted obstacle. A prior
+  must retain its real positive inference stamp and pass the basic health,
+  trust, OOD, identity, and matching-inference-sequence gates before any prior
+  component can contribute. Context and local direction retain their own
+  component gates.
+- Same-instance reset rebind follows only an accepted obstacle. It requires a
+  strictly higher reset epoch, a new recurrent session, and unchanged
+  map/tile/tile-revision/graph/model identity. The source/validation cursor is
+  reset only after that candidate passes the obstacle validator. Old epochs,
+  replay, untrusted candidates, and arbitrary identity changes cannot rebind;
+  no accepted or fresh planning prior is required.
+- Status uses `obstacle_applied=true` for the accepted obstacle and explicitly
+  reports each prior component as applied or suppressed with its reason. A
+  basically valid prior is described as `prior_accepted`, not as an overall
+  applied control influence. Obstacle rejection remains explicit as
+  `obstacle_rejected=<reason>`.
+- The test helper for static revalidation changes obstacle source and
+  validation stamps only. It never changes `PlanningPrior.stamp`. The
+  validation-time moving/rotating TF test now scores the static obstacle with
+  no prior instead of manufacturing a validation-time prior.
+- No Integration or Module2 source was changed, no prior was replayed or
+  synthesized on the production path, and no `GoalPlanningPrior` subscription
+  was added. The critic remains additive/nonnegative; Module3 TF, Costmap,
+  collision handling, Nav2, and `/cmd_vel` authority are unchanged.
+
+### Validation
+
+- Fresh isolated build root:
+  `/tmp/bio_nav_module3_critic_independent.pbOLuY`.
+- Allowed Integration `bio_nav_interfaces` plus Module3 `bio_nav_fusion`:
+  PASS, 2/2 packages.
+- Focused `test_equal_cost_search`: PASS, 35/35 gtest cases. Production-time
+  cases cover an old source/sequence obstacle with a fresh validation and the
+  original matching but stale prior; a fresh different-sequence prior; no
+  prior; a legal fresh original pair; stale/untrusted/OOD/nonfinite obstacle
+  rejection; validation-time TF; ordinary LIVE behavior; callback
+  interleaving; and trusted higher-epoch/no-prior rebind with old-epoch replay
+  rejection.
+- `test_plugin_loader_isolation`: PASS, 1/1.
+- `git diff --check`: PASS before commit.
+
+Commands:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon --log-base /tmp/bio_nav_module3_critic_independent.pbOLuY/log_build build \
+  --base-paths \
+    /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration/ros2_ws/src/bio_nav_interfaces \
+    /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/bio_nav_fusion \
+  --packages-up-to bio_nav_fusion \
+  --build-base /tmp/bio_nav_module3_critic_independent.pbOLuY/build \
+  --install-base /tmp/bio_nav_module3_critic_independent.pbOLuY/install \
+  --cmake-args -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+source /tmp/bio_nav_module3_critic_independent.pbOLuY/install/setup.bash
+colcon --log-base /tmp/bio_nav_module3_critic_independent.pbOLuY/log_test_equal test \
+  --packages-select bio_nav_fusion \
+  --build-base /tmp/bio_nav_module3_critic_independent.pbOLuY/build \
+  --install-base /tmp/bio_nav_module3_critic_independent.pbOLuY/install \
+  --ctest-args -R '^test_equal_cost_search$' --output-on-failure
+
+ctest --test-dir \
+  /tmp/bio_nav_module3_critic_independent.pbOLuY/build/bio_nav_fusion \
+  -R '^test_plugin_loader_isolation$' --output-on-failure
+```
+
+### Correction and remaining risk
+
+- This amendment supersedes the earlier handoff statements that a fresh basic
+  obstacle/prior pair exists for every static refresh or that such a pair is
+  required for reset rebind. Those statements were based on a test helper that
+  incorrectly copied `validation_stamp` into `PlanningPrior.stamp`. Earlier
+  sections remain below only as historical provenance.
+- No ROS graph, active MPPI, Nav2, Isaac, navigation, visual evidence,
+  engineering campaign, or formal qualification was run. Live callback/status
+  observation and nonzero active-MPPI obstacle influence remain unverified.
+
+## 2026-08-21 component-trust amendment (superseded)
 
 ### Scope and result
 

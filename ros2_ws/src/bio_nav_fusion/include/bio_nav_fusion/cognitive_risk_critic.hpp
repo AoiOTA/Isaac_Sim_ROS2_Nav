@@ -48,6 +48,10 @@ public:
     const CognitiveObstacleLayer::AcceptanceCursor & accepted,
     bool enforce_identity, double maximum_age_s,
     double maximum_ood_probability);
+  static std::string validatePriorComponents(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray * obstacles,
+    const bio_nav_interfaces::msg::PlanningPrior * prior, int64_t now_ns,
+    double maximum_age_s, double maximum_ood_probability);
   static std::string validateDirectionPrior(
     const bio_nav_interfaces::msg::PlanningPrior & prior,
     double prior_age_s = 0.0);
@@ -60,11 +64,13 @@ private:
   void priorCallback(
     const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message);
   void publishStatus(uint64_t sequence, bool applied, const std::string & reason);
+  static std::string appliedStatus(
+    const std::string & prior_reason, const std::string & context_reason,
+    const std::string & direction_reason);
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles_;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior_;
-  bio_nav_interfaces::msg::PlanningPrior::SharedPtr accepted_prior_;
   CognitiveObstacleLayer::Identity expected_;
   CognitiveObstacleLayer::AcceptanceCursor accepted_;
   bool identity_bound_{false};

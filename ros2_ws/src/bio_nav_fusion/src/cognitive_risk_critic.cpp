@@ -32,6 +32,11 @@ bool unit(double value)
   return std::isfinite(value) && value >= 0.0 && value <= 1.0;
 }
 
+bool validStamp(const builtin_interfaces::msg::Time & stamp)
+{
+  return stamp.sec >= 0 && stamp.nanosec < 1000000000U && stampNs(stamp) > 0;
+}
+
 double wrap(double angle)
 {
   return std::atan2(std::sin(angle), std::cos(angle));
@@ -57,18 +62,6 @@ bool sameStableIdentity(
          message.model_id == expected.model_id;
 }
 
-bool sameResetContext(
-  const bio_nav_interfaces::msg::PlanningPrior & candidate,
-  const bio_nav_interfaces::msg::PlanningPrior & accepted)
-{
-  return candidate.schema_version == accepted.schema_version &&
-         candidate.local_direction_schema_version == accepted.local_direction_schema_version &&
-         candidate.local_direction_graph_id == accepted.local_direction_graph_id &&
-         candidate.source_physical_graph_id == accepted.source_physical_graph_id &&
-         candidate.source_physical_graph_revision == accepted.source_physical_graph_revision &&
-         candidate.topology_revision == accepted.topology_revision;
-}
-
 }  // namespace
 
 void CognitiveRiskCritic::initialize()
@@ -77,7 +70,6 @@ void CognitiveRiskCritic::initialize()
     std::lock_guard<std::mutex> lock(mutex_);
     obstacles_.reset();
     prior_.reset();
-    accepted_prior_.reset();
     expected_ = CognitiveObstacleLayer::Identity{};
     accepted_.reset();
     identity_bound_ = false;
@@ -123,18 +115,17 @@ void CognitiveRiskCritic::obstacleCallback(
 {
   const auto now_ns = parent_.lock()->get_clock()->now().nanoseconds();
   std::lock_guard<std::mutex> lock(mutex_);
-  const bool reset_rebind_candidate = identity_bound_ && prior_ && accepted_prior_ &&
+  const bool reset_rebind_candidate = identity_bound_ &&
     message->reset_epoch > expected_.reset_epoch &&
     message->recurrent_session_id != expected_.recurrent_session_id &&
-    sameStableIdentity(*message, expected_) &&
-    sameResetContext(*prior_, *accepted_prior_);
+    sameStableIdentity(*message, expected_);
   const auto candidate_identity = identityOf(*message);
-  const CognitiveObstacleLayer::AcceptanceCursor empty_cursor;
   std::string reason;
   if (reset_rebind_candidate) {
-    reason = validateInputs(
-      message.get(), prior_.get(), now_ns, candidate_identity, empty_cursor,
-      true, maximum_age_s_, maximum_ood_probability_);
+    reason = CognitiveObstacleLayer::validateMessage(
+      *message, now_ns, candidate_identity,
+      CognitiveObstacleLayer::AcceptanceCursor{}, maximum_age_s_,
+      maximum_ood_probability_, true);
   } else {
     reason = CognitiveObstacleLayer::validateMessage(
       *message, now_ns, expected_, accepted_, maximum_age_s_,
@@ -153,12 +144,6 @@ void CognitiveRiskCritic::obstacleCallback(
   identity_bound_ = true;
   obstacles_ = message;
   CognitiveObstacleLayer::recordAccepted(*message, accepted_);
-  const auto pair_reason = validateInputs(
-    obstacles_.get(), prior_.get(), now_ns, expected_, empty_cursor, true,
-    maximum_age_s_, maximum_ood_probability_);
-  if (pair_reason.empty()) {
-    accepted_prior_ = prior_;
-  }
 }
 
 void CognitiveRiskCritic::priorCallback(
@@ -167,16 +152,10 @@ void CognitiveRiskCritic::priorCallback(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     prior_ = message;
-    const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
-    const auto now_ns = parent_.lock()->get_clock()->now().nanoseconds();
-    const auto pair_reason = validateInputs(
-      obstacles_.get(), prior_.get(), now_ns, expected_, no_ordering_gate,
-      identity_bound_, maximum_age_s_, maximum_ood_probability_);
-    if (pair_reason.empty()) {
-      accepted_prior_ = prior_;
-    }
   }
-  publishStatus(message->sequence, false, mode_ == "shadow" ? "shadow" : "offered");
+  if (mode_ == "shadow") {
+    publishStatus(message->sequence, false, "shadow");
+  }
 }
 
 std::string CognitiveRiskCritic::validateInputs(
@@ -208,26 +187,34 @@ std::string CognitiveRiskCritic::validateInputs(
     *obstacles, now_ns, expected, accepted, maximum_age_s,
     maximum_ood_probability, enforce_identity);
   if (!obstacle_reason.empty()) {return obstacle_reason;}
+  return validatePriorComponents(
+    obstacles, prior, now_ns, maximum_age_s, maximum_ood_probability);
+}
+
+std::string CognitiveRiskCritic::validatePriorComponents(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray * obstacles,
+  const bio_nav_interfaces::msg::PlanningPrior * prior, int64_t now_ns,
+  double maximum_age_s, double maximum_ood_probability)
+{
+  if (!obstacles) {return "obstacle_missing";}
+  if (!prior) {return "prior_missing";}
+  if (!validStamp(prior->stamp)) {return "prior_time";}
   const double prior_age = (now_ns - stampNs(prior->stamp)) * 1.0e-9;
-  if (prior_age < 0.0 || prior_age > maximum_age_s) {
-    return "stale";
+  if (!std::isfinite(prior_age) || prior_age < 0.0 || prior_age > maximum_age_s) {
+    return "prior_stale";
   }
-  if (obstacles->schema_version != "bio_nav_cognitive_obstacles_v1" ||
-    (prior->schema_version != "bio_nav_planning_prior_v4" &&
+  if ((prior->schema_version != "bio_nav_planning_prior_v4" &&
     prior->schema_version != "bio_nav_planning_prior_v310") ||
-    obstacles->header.frame_id != "base_link" ||
-    !obstacles->input_healthy || !obstacles->module2_healthy ||
-    !obstacles->observation_valid ||
-    !obstacles->trusted_write || obstacles->rejection_mask != 0U ||
-    !prior->input_healthy || !prior->module2_healthy || !prior->trusted_write ||
+    !prior->input_healthy || !prior->module2_healthy ||
+    !prior->observation_valid || !prior->trusted_write ||
     prior->trust_rejection_mask != 0U)
   {
-    return "unhealthy";
+    return "prior_untrusted";
   }
   if (obstacles->sequence == 0U || prior->sequence == 0U ||
     obstacles->sequence != prior->sequence)
   {
-    return "sequence";
+    return "prior_sequence";
   }
   if (obstacles->reset_epoch != prior->reset_epoch ||
     obstacles->recurrent_session_id != prior->recurrent_session_id ||
@@ -237,26 +224,16 @@ std::string CognitiveRiskCritic::validateInputs(
     obstacles->graph_revision != prior->graph_revision ||
     obstacles->model_id != prior->model_id)
   {
-    return "generation";
+    return "prior_identity";
   }
-  if (!unit(obstacles->reliability) || !unit(obstacles->ood_probability) ||
-    !unit(prior->novelty_probability) || !unit(prior->context_uncertainty) ||
-    !unit(prior->visual_reliability) || !unit(prior->visual_ood_probability) ||
-    obstacles->ood_probability > maximum_ood_probability ||
-    prior->visual_ood_probability > maximum_ood_probability)
+  if (!unit(prior->novelty_probability) || !unit(prior->context_uncertainty) ||
+    !unit(prior->visual_reliability) || !unit(prior->visual_ood_probability))
   {
-    return "ood";
+    return "prior_nonfinite";
   }
-  for (const auto & obstacle : obstacles->obstacles) {
-    if (!std::isfinite(obstacle.pose_xy_m[0]) ||
-      !std::isfinite(obstacle.pose_xy_m[1]) ||
-      !std::isfinite(obstacle.radius_m) || obstacle.radius_m <= 0.0 ||
-      !unit(obstacle.confidence) || !unit(obstacle.reliability) ||
-      !unit(obstacle.ood_probability))
-    {
-      return "nonfinite";
-    }
-    if (obstacle.ood_probability > maximum_ood_probability) {return "ood";}
+  if (prior->visual_ood_probability > maximum_ood_probability)
+  {
+    return "prior_ood";
   }
   return "";
 }
@@ -354,11 +331,13 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
     expected = expected_;
   }
   const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
-  reason = validateInputs(
-    obstacles.get(), prior.get(), now.nanoseconds(), expected,
-    no_ordering_gate, true, maximum_age_s_, maximum_ood_probability_);
+  reason = obstacles ? CognitiveObstacleLayer::validateMessage(
+    *obstacles, now.nanoseconds(), expected, no_ordering_gate,
+    maximum_age_s_, maximum_ood_probability_, true) : "obstacle_missing";
   if (!reason.empty()) {
-    publishStatus(prior ? prior->sequence : 0U, false, reason);
+    publishStatus(
+      obstacles ? obstacles->sequence : 0U, false,
+      "obstacle_rejected=" + reason);
     return;
   }
   std::vector<ObstacleSample> samples;
@@ -369,7 +348,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       costmap_ros_->getGlobalFrameID(), obstacles->header.frame_id,
       rclcpp::Time(obstacles->validation_stamp), tf2::durationFromSec(0.0));
   } catch (const tf2::TransformException &) {
-    publishStatus(prior->sequence, false, "tf");
+    publishStatus(obstacles->sequence, false, "obstacle_rejected=tf");
     return;
   }
   for (const auto & item : obstacles->obstacles) {
@@ -385,9 +364,24 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       item.confidence * item.reliability * (1.0 - item.ood_probability)});
   }
   std::array<double, 5> direction{};
-  const double prior_age_s = (now.nanoseconds() - stampNs(prior->stamp)) * 1.0e-9;
-  const auto direction_reason = validateDirectionPrior(*prior, prior_age_s);
-  if (direction_reason.empty()) {
+  const auto prior_reason = validatePriorComponents(
+    obstacles.get(), prior.get(), now.nanoseconds(), maximum_age_s_,
+    maximum_ood_probability_);
+  std::string context_reason;
+  std::string direction_reason;
+  double novelty = 0.0;
+  double uncertainty = 0.0;
+  if (prior_reason.empty()) {
+    context_reason = prior->context_trusted ? "" : "context_untrusted";
+    if (context_reason.empty()) {
+      novelty = prior->novelty_probability;
+      uncertainty = prior->context_uncertainty;
+    }
+    const double prior_age_s =
+      (now.nanoseconds() - stampNs(prior->stamp)) * 1.0e-9;
+    direction_reason = validateDirectionPrior(*prior, prior_age_s);
+  }
+  if (prior_reason.empty() && direction_reason.empty()) {
     std::copy(prior->local_direction_weights.begin(),
       prior->local_direction_weights.end(), direction.begin());
   }
@@ -404,21 +398,38 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
     }
     data.costs(index) += static_cast<float>(trajectoryScore(
         trajectory, samples, direction, robot_yaw,
-        prior->context_trusted ? prior->novelty_probability : 0.0,
-        prior->context_trusted ? prior->context_uncertainty : 0.0,
+        novelty, uncertainty,
         obstacle_weight_, direction_weight_,
         novelty_weight_, uncertainty_weight_));
   }
-  std::string component_status = "obstacle_applied";
-  if (!prior->context_trusted) {
-    component_status +=
-      ";novelty_suppressed=context_untrusted"
-      ";uncertainty_suppressed=context_untrusted";
+  publishStatus(
+    obstacles->sequence, true,
+    appliedStatus(prior_reason, context_reason, direction_reason));
+}
+
+std::string CognitiveRiskCritic::appliedStatus(
+  const std::string & prior_reason, const std::string & context_reason,
+  const std::string & direction_reason)
+{
+  std::string status = "obstacle_applied=true";
+  if (!prior_reason.empty()) {
+    return status + ";prior_suppressed=" + prior_reason +
+           ";context_suppressed=" + prior_reason +
+           ";novelty_suppressed=" + prior_reason +
+           ";uncertainty_suppressed=" + prior_reason +
+           ";direction_suppressed=" + prior_reason;
   }
-  if (!direction_reason.empty()) {
-    component_status += ";direction_suppressed=" + direction_reason;
+  status += ";prior_accepted=true";
+  if (context_reason.empty()) {
+    status += ";context_applied=true;novelty_applied=true;uncertainty_applied=true";
+  } else {
+    status += ";context_suppressed=" + context_reason +
+      ";novelty_suppressed=" + context_reason +
+      ";uncertainty_suppressed=" + context_reason;
   }
-  publishStatus(prior->sequence, true, component_status);
+  status += direction_reason.empty() ?
+    ";direction_applied=true" : ";direction_suppressed=" + direction_reason;
+  return status;
 }
 
 void CognitiveRiskCritic::publishStatus(
