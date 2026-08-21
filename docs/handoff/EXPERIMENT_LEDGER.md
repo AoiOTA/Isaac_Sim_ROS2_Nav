@@ -1563,3 +1563,38 @@
   and RF2O-off remain unchanged.
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
+## 2026-08-22 — V6 RouteCoordinator cross-topic late-join reset merge
+
+- Goal: make volatile Empty reset events and transient-local gate status
+  generation-idempotent under either callback order, including missed Empty or
+  missed completion, without weakening runtime missing-HOLD fail-closed rules.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `aab15690c64017775ec025acd51fe03f0cf5c210`.
+- Triggering evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt2_20260821T212047Z/`;
+  retained as **ENGINEERING FAIL / STOP / NOT FORMAL**. Attempt 3 remains
+  pending.
+- Changes: pristine event-first uses a bounded 0.5 s unbound completion hint;
+  strict HOLD/completion/release can bind it to one physical reset without a
+  second request/epoch advance. Same-generation `reset_complete` now owns the
+  empty runtime/GVG completion when Empty is missed. Release opens only after
+  completion reconciliation. Event-only legacy operation resumes after the
+  grace; non-pristine missing-HOLD and invalid transitions stay held.
+- Deterministic coverage: event/completion/release,
+  completion/event/release, event/HOLD/completion/release, HOLD/completion with
+  no event, HOLD/event/completion, event/release with completion missed,
+  event-only timeout, non-pristine negative orders, 500 concurrent
+  event/completion rounds, and retained active-reset/output/graph retry tests.
+- Validation: focused **75 passed**; full source-first route package **175
+  passed, 1 skipped** (`pxr` unavailable); fresh isolated build/test PASS at
+  `/tmp/v6_route_cross_topic_build.OkpE4E` with install
+  `/tmp/v6_route_cross_topic_install.OXFzsb` and log
+  `/tmp/v6_route_cross_topic_log.GLwmz6`; colcon result **176 tests, 0 errors,
+  0 failures, 1 skipped**; changed-file `py_compile` and `git diff --check`
+  PASS. One earlier build invocation had global `--log-base` in the wrong CLI
+  position and exited during argument parsing before any build; the corrected
+  fresh invocation is the cited result.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
+  visual evidence, engineering campaign, or formal qualification was run.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.

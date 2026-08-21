@@ -465,3 +465,50 @@ ordering, zero old-epoch output and command through HOLD, and fresh-goal recover
   then one active reset with zero old-epoch output/command and fresh-goal
   recovery. No Isaac, ROS graph, navigation, visual review, engineering PASS,
   or formal qualification was run by this amendment.
+
+## Cross-topic late-join reset merge amendment
+
+- Start HEAD: `aab15690c64017775ec025acd51fe03f0cf5c210`; the prior
+  route/reset, benchmark, IMU evidence, and LiDAR-readiness commits remain
+  retained. Triggering evidence remains live Attempt 2 at
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt2_20260821T212047Z/`;
+  it remains **ENGINEERING FAIL / STOP / NOT FORMAL**. Attempt 3 is pending.
+- Root cause extension: `/simulation/reset_event` is volatile while
+  `/simulation/reset_stop_gate/status` is reliable/transient-local depth 1.
+  Their callbacks therefore have no cross-topic total order. The prior
+  startup-completion amendment covered completion-first only; event-first was
+  irreversibly handled as legacy, and a HOLD followed by `reset_complete` still
+  depended on receiving the volatile Empty event.
+- Change: a pristine first Empty now advances the coordinator reset state once
+  but remains an unbound completion hint for 0.5 steady seconds. A first strict
+  HOLD, `reset_complete`, or released snapshot binds that already-completed
+  physical reset to its generation without a second request/epoch advance.
+  Completion/release reconciliation publishes one empty runtime snapshot and
+  one completion-owned GVG reassert before release opens the route barrier. A
+  same-generation `reset_complete` after HOLD now performs the same completion
+  work even when Empty was missed; a later Empty is idempotent. Event-only
+  legacy deployments resume after the bounded grace. Non-pristine missing-HOLD
+  status sequences, late status after legacy resolution, malformed, backward,
+  and conflicting transitions remain fail closed.
+- Deterministic tests cover event/completion/release, completion/event/release,
+  event/HOLD/completion/release, HOLD/completion/release without Empty,
+  HOLD/event/completion/release, event/release with completion missed, bounded
+  event-only fallback, non-pristine missing-HOLD orders, and 500 concurrent
+  event/completion rounds. Existing active HOLD retirement/cancel/terminal,
+  callback/output fences, graph transaction/retry, and deferred rebuild tests
+  remain passing.
+- Validation: focused RouteCoordinator **75 passed**; complete source-first
+  route package **175 passed, 1 skipped** (optional `pxr` unavailable). Fresh
+  isolated build/test passed with build
+  `/tmp/v6_route_cross_topic_build.OkpE4E`, install
+  `/tmp/v6_route_cross_topic_install.OXFzsb`, and log
+  `/tmp/v6_route_cross_topic_log.GLwmz6`; `colcon test-result` reported **176
+  tests, 0 errors, 0 failures, 1 skipped**. Changed-file `py_compile` and
+  `git diff --check` passed. The first build command placed global
+  `--log-base` after the `build` subcommand and exited during argument parsing;
+  it performed no build, and the corrected fresh invocation above passed.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. Active-reset live Attempt 3 remains required to validate real DDS
+  ordering, startup release, one active reset, zero old-epoch output/command,
+  and fresh-goal recovery.
