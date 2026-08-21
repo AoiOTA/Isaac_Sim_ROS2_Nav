@@ -399,3 +399,81 @@ def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
     assert 'Repairing immutable map lifecycle' in source
     assert 'except (KeyboardInterrupt, ExternalShutdownException):' in source
     assert 'if node is not None:\n            node.destroy_node()' in source
+
+
+def test_reset_stop_gate_status_tracks_current_release_generation():
+    fatals = []
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _stop_gate_generation=None,
+        _stop_gate_eligible_generation=None,
+        _stop_gate_held=True,
+        _set_fatal=fatals.append,
+    )
+    Nav2ActivationGate._stop_gate_status_callback(
+        gate,
+        SimpleNamespace(data=(
+            '{"eligible_generation":4,"generation":4,'
+            '"held":true,"reason":"reset_complete"}'
+        )),
+    )
+    assert fatals == []
+    assert gate._stop_gate_generation == 4
+    assert gate._stop_gate_eligible_generation == 4
+    assert gate._stop_gate_held is True
+
+
+def test_stale_stop_gate_release_completion_cannot_release_new_epoch():
+    old_token = object()
+    new_token = object()
+    finalized = []
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _stop_gate_generation=5,
+        _stop_gate_release_token=new_token,
+        _stop_gate_release_in_flight=True,
+        _stop_gate_held=True,
+        _stop_gate_eligible_generation=5,
+        _set_fatal=lambda reason: (_ for _ in ()).throw(
+            AssertionError(reason)),
+        _finalize_active=lambda **kwargs: finalized.append(kwargs),
+    )
+    response = SimpleNamespace(results=[SimpleNamespace(successful=True)])
+    Nav2ActivationGate._stop_gate_release_done(
+        gate,
+        _Future(response=response),
+        generation=4,
+        recovered=True,
+        token=old_token,
+    )
+    assert gate._stop_gate_held is True
+    assert gate._stop_gate_release_token is new_token
+    assert finalized == []
+
+
+def test_current_stop_gate_release_failure_is_fatal_and_remains_held():
+    token = object()
+    fatals = []
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _stop_gate_generation=6,
+        _stop_gate_release_token=token,
+        _stop_gate_release_in_flight=True,
+        _stop_gate_held=True,
+        _stop_gate_eligible_generation=6,
+        _set_fatal=fatals.append,
+        _finalize_active=lambda **kwargs: (_ for _ in ()).throw(
+            AssertionError(kwargs)),
+    )
+    response = SimpleNamespace(
+        results=[SimpleNamespace(successful=False, reason='mismatch')]
+    )
+    Nav2ActivationGate._stop_gate_release_done(
+        gate,
+        _Future(response=response),
+        generation=6,
+        recovered=True,
+        token=token,
+    )
+    assert gate._stop_gate_held is True
+    assert fatals and 'release failed' in fatals[0]

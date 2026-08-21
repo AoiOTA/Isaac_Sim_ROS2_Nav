@@ -48,6 +48,8 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     control = specs[0]
     odometry = specs[-1]
     assert control.on_demand is True
+    assert dict(control.values)["SubscribeTwist.inputs:topicName"] \
+        == "/cmd_vel_sim"
     node_types = dict(control.nodes)
     assert node_types["OnPhysicsStep"] \
         == "isaacsim.core.nodes.OnPhysicsStep"

@@ -18,6 +18,11 @@ from typing import Any, Mapping
 
 import yaml
 
+from robot_experiments.reset_receipt import (
+    ResetReceiptError,
+    parse_reset_receipt,
+)
+
 
 SCHEMA_VERSION = "bio_nav_v6_single_episode_manifest_v1"
 NOT_QUALIFIED = "NOT_QUALIFIED"
@@ -61,6 +66,7 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/bio_nav/cognitive_obstacle_layer/status",
     "/bio_nav/cognitive_risk_critic/status",
     "/cmd_vel",
+    "/cmd_vel_sim",
     "/simulation/collision",
     "/simulation/collision_diagnostics",
     "/diagnostics",
@@ -82,6 +88,7 @@ CAPTURE_SCHEMA = {
     "/bio_nav/cognitive_risk_critic/status": "RiskLayerStatus",
     "/bio_nav/module3/cognitive_edge_outcome": "CognitiveEdgeOutcome",
     "/cmd_vel": "Twist",
+    "/cmd_vel_sim": "Twist",
     "/simulation/collision": "Bool",
     "/simulation/collision_diagnostics": "String",
     "/bio_nav/route_goal_result": "String",
@@ -750,6 +757,7 @@ class V6FormalNode:
         self.appearance_state: dict[str, Any] | None = None
         self.dynamic_actions = DynamicActionLedger()
         self.dynamic_clients: dict[tuple[str, str], Any] = {}
+        self.reset_receipt: dict[str, Any] | None = None
         self._types = {
             "PoseStamped": PoseStamped,
             "Trigger": Trigger,
@@ -802,6 +810,7 @@ class V6FormalNode:
             sub(RiskLayerStatus, "/bio_nav/cognitive_obstacle_layer/status", self._capture_callback("/bio_nav/cognitive_obstacle_layer/status")),
             sub(RiskLayerStatus, "/bio_nav/cognitive_risk_critic/status", self._capture_callback("/bio_nav/cognitive_risk_critic/status")),
             sub(Twist, "/cmd_vel", self._capture_callback("/cmd_vel")),
+            sub(Twist, "/cmd_vel_sim", self._capture_callback("/cmd_vel_sim")),
             sub(Bool, "/simulation/collision", self._collision),
             sub(String, "/simulation/collision_diagnostics", self._capture_callback("/simulation/collision_diagnostics")),
             sub(DiagnosticArray, "/diagnostics", self._diagnostics),
@@ -1141,6 +1150,18 @@ class V6FormalNode:
         self.guard.record_reset_response(response.success if response is not None else None)
         if self.guard.state == "STOP":
             return self.result()
+        try:
+            self.reset_receipt = parse_reset_receipt(
+                response.message,
+                requested_seed=self.episode.seed,
+                requested_case_id=self.episode.dynamic_case_id,
+                requested_variant_id=self.episode.variant_id,
+            )
+        except ResetReceiptError as exc:
+            self.guard.stop(f"reset_receipt_mismatch:{exc}")
+            self._write("reset_receipt_rejected", detail=str(exc))
+            return self.result()
+        self._write("reset_receipt", **self.reset_receipt)
         if not self._spin_until(
             lambda: self.guard.b5_bootstrap_ready or self.guard.state == "STOP",
             reset_timeout_sec,
@@ -1211,6 +1232,7 @@ class V6FormalNode:
             "stop_reason": self.guard.stop_reason,
             "reset_calls": self.guard.reset_calls,
             "reset_events": self.guard.reset_events,
+            "reset_receipt": dict(getattr(self, "reset_receipt", None) or {}),
             "goal_publications": self.guard.goal_publications,
             "route_progress_messages": self.guard.route_progress_messages,
             "route_completion_messages": self.guard.route_completion_messages,

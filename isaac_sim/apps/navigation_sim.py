@@ -66,6 +66,15 @@ from isaac_sim.src.stage.physics_setup import (
 from isaac_sim.src.stage.scene_composer import SceneComposer
 
 
+def effective_reset_seed(dynamic_seed: int | None, scenario_seed: int) -> int:
+    """Resolve the one seed used by startup and the first Trigger reset."""
+
+    seed = scenario_seed if dynamic_seed is None else dynamic_seed
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
+        raise ValueError("effective reset seed must be a non-negative integer")
+    return seed
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run the Isaac Sim + ROS 2 Jackal navigation simulation"
@@ -492,6 +501,7 @@ def run(
     camera_graph_paths: tuple[str, ...] = ()
     node = None
     reset_bridge = None
+    reset_stop_gate = None
     kidnap_bridge = None
     appearance_manager = None
     paired_appearance_capture = None
@@ -647,6 +657,24 @@ def run(
             "rendering_hz", float(config.simulation.rendering_hz), read_only
         )
 
+        from isaac_sim.src.bridge.reset_stop_gate import ResetStopGate
+
+        diagnostic_command_mode = any((
+            odom_phase_trace_path is not None,
+            r2c1_free_space_trace_path is not None,
+            r2c3_free_space_motion_trace_path is not None,
+            r2d2_live_pose_delta_trace_path is not None,
+        ))
+        reset_stop_gate = ResetStopGate(
+            node,
+            input_topic=(
+                "/cmd_vel_diagnostic"
+                if diagnostic_command_mode
+                else "/cmd_vel"
+            ),
+        )
+        effective_seed = effective_reset_seed(dynamic_seed, dynamic_scenario.seed)
+
         from isaac_sim.src.experiment.appearance import AppearanceManager
 
         appearance_manager = AppearanceManager(stage, appearance_profiles)
@@ -747,6 +775,7 @@ def run(
             node,
             robot,
             articulation_settings,
+            topic_name="/cmd_vel_sim",
             clock=lambda: float(SimulationManager.get_simulation_time()),
         )
         motion_assist = SkidSteerMotionAssist(
@@ -754,6 +783,7 @@ def run(
             robot,
             articulation_settings,
             physics_dt=1.0 / config.simulation.physics_hz,
+            topic_name="/cmd_vel_sim",
             clock=lambda: float(SimulationManager.get_simulation_time()),
         )
 
@@ -784,7 +814,9 @@ def run(
                 stage_end_timecode=probe_end_timecode,
             )
             odom_phase_script = OdomPhaseScript()
-            odom_phase_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            odom_phase_publisher = node.create_publisher(
+                Twist, "/cmd_vel_diagnostic", 1
+            )
             node.create_subscription(
                 Odometry,
                 "/odom",
@@ -1362,7 +1394,9 @@ def run(
             for row in collider_trace_rows:
                 r2c1_trace.write(row)
             r2c1_script = SegmentedFreeSpaceScript()
-            r2c1_publisher = node.create_publisher(Twist, "/cmd_vel", 1)
+            r2c1_publisher = node.create_publisher(
+                Twist, "/cmd_vel_diagnostic", 1
+            )
             # R2D2 runs without a SLAM/AMCL scan publisher.  Its diagnostic
             # therefore publishes the same calibrated Module3 map pose that a
             # localization reset would publish, after each reset completes.
@@ -1491,9 +1525,11 @@ def run(
             default_pose_name=config.spawn.selected,
             navigation_mode=config.simulation.navigation_mode,
             odometry_mode=config.simulation.odometry_mode,
+            default_reset_seed=effective_seed,
             simulation_time=lambda: float(
                 SimulationManager.get_simulation_time()
             ),
+            reset_stop_gate=reset_stop_gate,
         )
         from isaac_sim.src.bridge.kidnap_service import KidnapServiceBridge
 
@@ -1579,12 +1615,13 @@ def run(
                 navigation_mode=config.simulation.navigation_mode,
                 odometry_mode=config.simulation.odometry_mode,
                 random_seed=(
-                    dynamic_scenario.seed
-                    if dynamic_seed is None
-                    else dynamic_seed
+                    effective_seed
                 ),
+                dynamic_case_id=dynamic_case_id,
+                dynamic_variant_id=dynamic_variant_id,
             )
         )
+        startup_stop_released = False
         if startup_reset.finished and startup_reset.errors:
             raise RuntimeError(
                 "startup reset transaction failed: "
@@ -2025,6 +2062,17 @@ def run(
                     "startup reset transaction failed: "
                     f"{startup_reset.errors}"
                 )
+            if startup_reset.finished and not startup_stop_released:
+                if startup_reset.stop_generation is None:
+                    raise RuntimeError("startup reset has no stop-gate generation")
+                # Nav2 may not exist yet.  The startup transaction has already
+                # rebuilt controller state and placed the articulation; this
+                # direct same-process release only permits future commands.
+                reset_stop_gate.release(
+                    startup_reset.stop_generation,
+                    source="startup_reset_complete",
+                )
+                startup_stop_released = True
             simulation_time = float(SimulationManager.get_simulation_time())
             if paired_appearance_capture is not None and startup_reset.finished:
                 paired_appearance_capture.update(simulation_time)
@@ -2400,6 +2448,14 @@ def run(
             except Exception as exc:
                 print(
                     f"warning: failed to close reset bridge cleanly: {exc}",
+                    file=sys.stderr,
+                )
+        if reset_stop_gate is not None:
+            try:
+                reset_stop_gate.close()
+            except Exception as exc:
+                print(
+                    f"warning: failed to close reset stop gate cleanly: {exc}",
                     file=sys.stderr,
                 )
         if appearance_manager is not None:

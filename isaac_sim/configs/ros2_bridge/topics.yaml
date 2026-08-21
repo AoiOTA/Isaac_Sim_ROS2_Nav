@@ -4,7 +4,7 @@ pointcloud: /lidar/points_raw
 imu: /imu/data_raw
 joint_states: /joint_states
 odom: /odom
-cmd_vel: /cmd_vel
+cmd_vel: /cmd_vel_sim
 ground_truth_odom: /ground_truth/odom
 ground_truth_path: /ground_truth/path
 camera_front_image: /camera/front/image_raw

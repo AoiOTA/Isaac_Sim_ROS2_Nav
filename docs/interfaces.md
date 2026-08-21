@@ -131,9 +131,11 @@ Managed RViz/Teleop processes use the same environment and PID registry as the m
 | Name | Type | Producer/owner | Consumer or purpose | Expected frame/rate |
 | --- | --- | --- | --- | --- |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Isaac | every simulated-time ROS node | about 60 Hz |
-| `/cmd_vel` | `geometry_msgs/msg/Twist` | Nav2 Collision Monitor or manual mapping teleop | Isaac wheel controller | `base_link` convention |
+| `/cmd_vel` | `geometry_msgs/msg/Twist` | Nav2 Collision Monitor or manual mapping teleop | Isaac ResetStopGate | final external authority; `base_link` convention |
 | `/cmd_vel_nav` | `geometry_msgs/msg/Twist` | Nav2 controller/behaviors | Velocity Smoother | Navigation only |
 | `/cmd_vel_smoothed` | `geometry_msgs/msg/Twist` | Velocity Smoother | Collision Monitor | Navigation only |
+| `/cmd_vel_sim` | `geometry_msgs/msg/Twist` | Isaac ResetStopGate only | Isaac wheel controller, IdleBrake, MotionAssist | private reset-fenced command |
+| `/simulation/reset_stop_gate/status` | `std_msgs/msg/String` JSON | Isaac ResetStopGate | ActivationGate generation fence | transient-local HOLD/eligible/released state |
 | `/joint_states` | `sensor_msgs/msg/JointState` | Isaac | Wheel Odom and RobotModel | simulator tick |
 | `/imu/data` | `sensor_msgs/msg/Imu` | Isaac | EKF in Realistic mode | `imu_link`, configured 60 Hz |
 | `/lidar/points_raw` | `sensor_msgs/msg/PointCloud2` | Isaac RTX LiDAR | legacy projection and near-field self filter | `rtx_world`, nominal 10 Hz; Best Effort + Volatile |
@@ -293,7 +295,9 @@ Candidate Trajectories** before a performance-sensitive run.
 
 The production Collision Monitor consumes `/scan_safety` directly. Its command chain
 is `/cmd_vel_nav -> /cmd_vel_smoothed -> /cmd_vel`, and only its output owns the
-final Navigation `/cmd_vel`. The committed freshness boundary is
+final Navigation `/cmd_vel`. Isaac's same-process ResetStopGate is the sole
+publisher of private `/cmd_vel_sim`; reset HOLD continuously publishes zero and
+release never replays a cached command. The committed freshness boundary is
 `source_timeout: 0.40 s`, with `transform_tolerance: 0.20 s`: a sustained scan
 outage or a scan whose frame cannot transform to `base_link` is invalid input
 and must stop the robot. One or two missing nominal 10 Hz samples remain inside
@@ -330,7 +334,7 @@ per-epoch counters, and rejects a delayed command that names the old epoch.
 | `clock` | best effort | volatile | keep last / 1 | `/clock` |
 | `sensor_data` | best effort | volatile | keep last / 5 | point cloud, IMU |
 | `camera_sensor_data` | best effort | volatile | keep last / 2 | front RGB Image and CameraInfo |
-| `command` | reliable | volatile | keep last / 1 | `/cmd_vel` subscription |
+| `command` | reliable | volatile | keep last / 1 | ResetStopGate `/cmd_vel` input and `/cmd_vel_sim` control subscription |
 | `state` | reliable | volatile | keep last / 10 | JointState, Ideal `/odom` |
 | `tf` | reliable | volatile | keep last / 100 | Isaac dynamic TF |
 | `static_tf` | reliable | transient local | keep last / 1 | Isaac static TF |
@@ -349,7 +353,7 @@ The control graph is an on-demand graph driven by
 
 On every physics step it:
 
-1. polls `/cmd_vel`, retaining the subscriber's most recently received Twist
+1. polls `/cmd_vel_sim`, retaining the ResetStopGate output's most recently received Twist
    when no new message is available;
 2. executes `DifferentialController`;
 3. supplies `OnPhysicsStep.deltaSimulationTime` directly to the controller's

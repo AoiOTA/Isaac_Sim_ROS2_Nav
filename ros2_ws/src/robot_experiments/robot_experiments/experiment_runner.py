@@ -63,6 +63,7 @@ from .metrics import (
     wrap_angle,
 )
 from .report import configuration_sha256, write_run_report
+from .reset_receipt import parse_reset_receipt
 from .scenario import (
     RunSelection,
     Scenario,
@@ -954,6 +955,7 @@ class ExperimentRunner(Node):
         self._active_evidence_root: Path | None = None
         self._bag_process: subprocess.Popen[bytes] | None = None
         self._active_selection: RunSelection | None = None
+        self._reset_receipt: dict[str, Any] | None = None
         self._navigation_graph: NavigationGraph | None = None
         self._canonical_route_epoch = 0
         self._route_goal_complete_epoch = 0
@@ -2149,9 +2151,16 @@ class ExperimentRunner(Node):
         if response is None or not response.success:
             message = "no response" if response is None else response.message
             raise RuntimeError(f"simulation reset failed: {message}")
+        receipt = parse_reset_receipt(
+            response.message,
+            requested_seed=seed,
+            requested_case_id=case_id or "",
+            requested_variant_id=variant_id or "",
+        )
         self._lifecycle_event("reset_succeeded")
         self._clear_navigation_costmaps()
         self._clear_run_state()
+        self._reset_receipt = receipt
         if not self._wait_until(
             lambda: self._localization_seed_epoch > previous_seed_epoch,
             self._localization_seed_event_grace_sec,
@@ -3353,6 +3362,7 @@ class ExperimentRunner(Node):
         return {
             "scenario_id": self._scenario.scenario_id,
             "random_seed": seed,
+            "reset_receipt": dict(getattr(self, "_reset_receipt", None) or {}),
             "map_version": self._scenario.map_version,
             "posegraph_version": self._scenario.posegraph_version,
             "provenance": dict(self._provenance),
@@ -3684,7 +3694,7 @@ class ExperimentRunner(Node):
             return root
         topics = [
             "/clock", "/ground_truth/odom", "/odom", "/tf", "/tf_static", "/cmd_vel",
-            "/cmd_vel_nav", "/cmd_vel_smoothed",
+            "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel_sim",
             "/navigate_to_pose/_action/status", "/plan", "/transformed_global_plan",
             "/bio_nav/navigation_graph", "/bio_nav/canonical_route",
             "/bio_nav/route_progress", "/bio_nav/route_lookahead_goal",

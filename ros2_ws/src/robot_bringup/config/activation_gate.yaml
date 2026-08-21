@@ -33,3 +33,4 @@ nav2_activation_gate:
       - bt_navigator
     initial_pose_source: auto
     initial_pose_reseed_service: /initial_pose/reseed
+    reset_stop_gate_parameter_service: /isaac_navigation_sim/set_parameters

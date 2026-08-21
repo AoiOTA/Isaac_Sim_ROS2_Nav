@@ -1,6 +1,7 @@
 """Activate and recover Nav2 after time-aware readiness checks."""
 
 from functools import partial
+import json
 import math
 import threading
 import time
@@ -10,11 +11,13 @@ from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState, GetState
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.clock import Clock as RclpyClock
 from rclpy.clock import ClockType
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.time import Time
@@ -26,7 +29,7 @@ from robot_bringup.lifecycle_policy import RetryPolicy
 from robot_bringup.readiness import ReadinessConfig, ReadinessTracker
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -69,6 +72,10 @@ class Nav2ActivationGate(Node):
         self.declare_parameter('initial_pose_source', 'auto')
         self.declare_parameter(
             'initial_pose_reseed_service', '/initial_pose/reseed')
+        self.declare_parameter(
+            'reset_stop_gate_parameter_service',
+            '/isaac_navigation_sim/set_parameters',
+        )
 
         self._startup_timeout = self._positive_parameter('startup_timeout')
         self._startup_timeout_policy = str(
@@ -163,6 +170,11 @@ class Nav2ActivationGate(Node):
         self._recovery_stage_attempts = 0
         self._recovery_pause_verifying = False
         self._recovery_resume_verifying = False
+        self._stop_gate_generation = None
+        self._stop_gate_eligible_generation = None
+        self._stop_gate_held = True
+        self._stop_gate_release_in_flight = False
+        self._stop_gate_release_token = None
 
         best_effort = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -196,6 +208,12 @@ class Nav2ActivationGate(Node):
             self._reset_callback,
             reliable,
         )
+        self._stop_gate_status_subscription = self.create_subscription(
+            String,
+            '/simulation/reset_stop_gate/status',
+            self._stop_gate_status_callback,
+            transient_local,
+        )
 
         self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -227,6 +245,10 @@ class Nav2ActivationGate(Node):
         reseed_service = str(
             self.get_parameter('initial_pose_reseed_service').value)
         self._reseed_client = self.create_client(Trigger, reseed_service)
+        stop_gate_service = str(
+            self.get_parameter('reset_stop_gate_parameter_service').value)
+        self._stop_gate_release_client = self.create_client(
+            SetParameters, stop_gate_service)
 
         # Readiness, retry, and recovery deadlines are wall-monotonic. A ROS
         # time timer can stall or execute unpredictably during /clock reset.
@@ -259,6 +281,40 @@ class Nav2ActivationGate(Node):
     def _reset_callback(self, message):
         del message
         self._handle_epoch_event(self._tracker.mark_reset())
+
+    def _stop_gate_status_callback(self, message):
+        try:
+            document = json.loads(str(message.data))
+            generation = document['generation']
+            held = document['held']
+            eligible = document.get('eligible_generation')
+            if (
+                isinstance(generation, bool)
+                or not isinstance(generation, int)
+                or generation < 0
+                or not isinstance(held, bool)
+                or (
+                    eligible is not None
+                    and (
+                        isinstance(eligible, bool)
+                        or not isinstance(eligible, int)
+                        or eligible < 0
+                    )
+                )
+            ):
+                raise ValueError('invalid generation/held fields')
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            self._set_fatal(f'invalid reset stop gate status: {exc}')
+            return
+        with self._state_query_lock:
+            if (
+                self._stop_gate_generation is not None
+                and generation < self._stop_gate_generation
+            ):
+                return
+            self._stop_gate_generation = generation
+            self._stop_gate_eligible_generation = eligible
+            self._stop_gate_held = held
 
     def _handle_epoch_event(self, event):
         with self._state_query_lock:
@@ -311,7 +367,8 @@ class Nav2ActivationGate(Node):
         if self._handle_startup_timeout(now):
             return
         if (self._request_in_flight or self._state_query_in_flight
-                or self._snapshot_in_flight):
+                or self._snapshot_in_flight
+                or self._stop_gate_release_in_flight):
             return
         if now < self._next_attempt_at:
             return
@@ -972,6 +1029,76 @@ class Nav2ActivationGate(Node):
                 f'retrying in {delay:.2f}s')
 
     def _mark_active(self, *, recovered):
+        """Release the current reset generation before declaring readiness."""
+
+        if self._stop_gate_release_in_flight:
+            return
+        generation = self._stop_gate_generation
+        if not self._stop_gate_held:
+            self._finalize_active(recovered=recovered)
+            return
+        if generation is None or self._stop_gate_eligible_generation != generation:
+            self._set_fatal(
+                'Nav2 active but reset stop gate has no eligible current generation')
+            return
+        if not self._stop_gate_release_client.service_is_ready():
+            self._set_fatal(
+                'Nav2 active but reset stop gate parameter service is unavailable')
+            return
+        token = object()
+        request = SetParameters.Request()
+        request.parameters = [
+            Parameter(
+                'reset_stop_gate_release_generation',
+                value=generation,
+            ).to_parameter_msg()
+        ]
+        self._stop_gate_release_in_flight = True
+        self._stop_gate_release_token = token
+        future = self._stop_gate_release_client.call_async(request)
+        future.add_done_callback(partial(
+            self._stop_gate_release_done,
+            generation=generation,
+            recovered=recovered,
+            token=token,
+        ))
+
+    def _stop_gate_release_done(
+            self, future, *, generation, recovered, token):
+        try:
+            response = future.result()
+            results = [] if response is None else list(response.results)
+            if len(results) != 1 or not results[0].successful:
+                reason = (
+                    'empty response'
+                    if response is None
+                    else getattr(results[0], 'reason', 'rejected')
+                    if results
+                    else 'missing parameter result'
+                )
+                raise RuntimeError(reason)
+        except Exception as exc:
+            error = f'{type(exc).__name__}: {exc}'
+        else:
+            error = None
+        with self._state_query_lock:
+            if (
+                token is not self._stop_gate_release_token
+                or generation != self._stop_gate_generation
+            ):
+                return
+            self._stop_gate_release_in_flight = False
+            self._stop_gate_release_token = None
+            if error is not None:
+                self._set_fatal(
+                    f'reset stop gate release failed for generation '
+                    f'{generation}: {error}')
+                return
+            self._stop_gate_held = False
+            self._stop_gate_eligible_generation = None
+            self._finalize_active(recovered=recovered)
+
+    def _finalize_active(self, *, recovered):
         self._activated = True
         self._recovering = False
         self._activation_verifying = False
@@ -1021,6 +1148,8 @@ class Nav2ActivationGate(Node):
             self._activation_verifying = False
             self._recovery_pause_verifying = False
             self._recovery_resume_verifying = False
+            self._stop_gate_release_in_flight = False
+            self._stop_gate_release_token = None
 
     def _set_recovery_stage(self, stage):
         self._recovery_stage = stage
@@ -1034,7 +1163,8 @@ class Nav2ActivationGate(Node):
             if now < self._next_attempt_at:
                 return
             if (self._request_in_flight or self._state_query_in_flight
-                    or self._snapshot_in_flight):
+                    or self._snapshot_in_flight
+                    or self._stop_gate_release_in_flight):
                 return
             if self._recovery_service_in_flight:
                 operation = self._recovery_service_operation

@@ -20,6 +20,15 @@ from robot_experiments.motion_benchmark import (
 CONFIG = Path(__file__).resolve().parents[1] / "config/motion_benchmark.yaml"
 
 
+def test_motion_benchmark_is_upstream_of_final_command_authority():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "robot_experiments/motion_benchmark.py"
+    ).read_text(encoding="utf-8")
+    assert 'Twist, "/cmd_vel_nav", reliable' in source
+    assert 'Twist, "/cmd_vel", reliable' not in source
+
+
 def test_motion_benchmark_config_covers_required_primitives():
     config = load_motion_config(CONFIG)
     identifiers = {primitive.identifier for primitive in config.primitives}

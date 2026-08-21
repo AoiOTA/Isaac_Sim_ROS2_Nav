@@ -8,6 +8,7 @@ side-effects and makes the reset callback straightforward to unit test.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import math
 from typing import Any, Callable
 
@@ -30,6 +31,7 @@ class _ResetTransaction:
     errors: list[str] = field(default_factory=list)
     skipped: list[str] = field(default_factory=list)
     initial_pose_name: str | None = None
+    stop_generation: int | None = None
     sealed: bool = False
     finished: bool = False
     timed_out: bool = False
@@ -220,10 +222,12 @@ class ResetServiceBridge:
         default_pose_name: str,
         navigation_mode: str,
         odometry_mode: str,
+        default_reset_seed: int,
         simulation_time: Callable[[], float],
+        reset_stop_gate: Any | None = None,
         service_name: str = "/simulation/reset",
     ) -> None:
-        from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
+        from geometry_msgs.msg import PoseWithCovarianceStamped
         from nav2_msgs.srv import ClearEntireCostmap
         from rclpy.callback_groups import ReentrantCallbackGroup
         from rclpy.clock import Clock
@@ -247,6 +251,12 @@ class ResetServiceBridge:
             raise ResetServiceError("odometry_mode must be ideal or realistic")
         if not default_pose_name:
             raise ResetServiceError("default_pose_name must be non-empty")
+        if (
+            isinstance(default_reset_seed, bool)
+            or not isinstance(default_reset_seed, int)
+            or default_reset_seed < 0
+        ):
+            raise ResetServiceError("default_reset_seed must be a non-negative integer")
         if not callable(simulation_time):
             raise ResetServiceError("simulation_time must be callable")
 
@@ -259,6 +269,7 @@ class ResetServiceBridge:
         self._configured_navigation_mode = navigation_mode
         self._configured_odometry_mode = odometry_mode
         self._default_pose_name = default_pose_name
+        self._reset_stop_gate = reset_stop_gate
         self._callback_group = ReentrantCallbackGroup()
         self._steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._Future = Future
@@ -269,14 +280,13 @@ class ResetServiceBridge:
         self._deferred_initial_pose_name: str | None = None
 
         self._PoseWithCovarianceStamped = PoseWithCovarianceStamped
-        self._Twist = Twist
         self._EmptyMessage = EmptyMessage
         self._EmptyService = Empty
         self._SetPose = SetPose
         self._ClearEntireCostmap = ClearEntireCostmap
         self._String = String
 
-        self._declare_parameter("reset_seed", 0)
+        self._declare_parameter("reset_seed", default_reset_seed)
         # Selection is intentionally reset-scoped: a campaign can choose one
         # physical case/variant without mutating the immutable simulation YAML.
         self._declare_parameter("dynamic_case_id", "")
@@ -315,7 +325,6 @@ class ResetServiceBridge:
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
-        self._cmd_vel_publisher = node.create_publisher(Twist, "/cmd_vel", reliable)
         self._reset_event_publisher = node.create_publisher(
             EmptyMessage, "/simulation/reset_event", reliable
         )
@@ -392,12 +401,16 @@ class ResetServiceBridge:
         pose_name = self.node.get_parameter("reset_pose_name").value
         navigation_mode = self.node.get_parameter("navigation_mode").value
         odometry_mode = self.node.get_parameter("odometry_mode").value
+        case_id = self.node.get_parameter("dynamic_case_id").value
+        variant_id = self.node.get_parameter("dynamic_variant_id").value
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
             raise ResetServiceError("reset_seed must be a non-negative integer")
         if not isinstance(pose_name, str) or not pose_name:
             raise ResetServiceError("reset_pose_name must be non-empty")
         if not isinstance(navigation_mode, str) or not isinstance(odometry_mode, str):
             raise ResetServiceError("navigation_mode and odometry_mode must be strings")
+        if not isinstance(case_id, str) or not isinstance(variant_id, str):
+            raise ResetServiceError("dynamic case and variant IDs must be strings")
         if navigation_mode != self._configured_navigation_mode:
             raise ResetServiceError(
                 "navigation_mode is immutable at runtime: "
@@ -420,7 +433,14 @@ class ResetServiceBridge:
                 f"configured={self._default_pose_name!r}, "
                 f"requested={pose_name!r}"
             )
-        return ResetRequest(pose_name, navigation_mode, odometry_mode, seed)
+        return ResetRequest(
+            pose_name,
+            navigation_mode,
+            odometry_mode,
+            seed,
+            dynamic_case_id=case_id,
+            dynamic_variant_id=variant_id,
+        )
 
     def start_reset(self, reset_request: ResetRequest) -> _ResetTransaction:
         """Start one reset without blocking Kit's main thread.
@@ -461,6 +481,9 @@ class ResetServiceBridge:
             clock=self._steady_clock,
         )
         try:
+            reset_stop_gate = getattr(self, "_reset_stop_gate", None)
+            if reset_stop_gate is not None:
+                transaction.stop_generation = reset_stop_gate.hold()
             self._manager.reset(reset_request)
         except Exception as exc:
             transaction.record_error("simulation reset", exc)
@@ -518,10 +541,22 @@ class ResetServiceBridge:
             f"odometry={reset_request.odometry_mode}, "
             f"generation={transaction.generation}"
         )
+        receipt = json.dumps(
+            {
+                "pose": reset_request.pose_name,
+                "seed": reset_request.random_seed,
+                "odometry": reset_request.odometry_mode,
+                "generation": transaction.generation,
+                "case_id": reset_request.dynamic_case_id,
+                "variant_id": reset_request.dynamic_variant_id,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
         if transaction.errors:
             response.message = (
                 f"simulation reset transaction failed: {summary}; "
-                f"errors={transaction.errors}"
+                f"reset_receipt={receipt}; errors={transaction.errors}"
             )
             self.node.get_logger().error(response.message)
         else:
@@ -532,6 +567,7 @@ class ResetServiceBridge:
             )
             response.message = (
                 f"simulation reset transaction complete: {summary}{skipped}; "
+                f"reset_receipt={receipt}; "
                 "reset_event emitted after all queued ROS reset calls completed"
             )
             self.node.get_logger().info(response.message)
@@ -551,6 +587,14 @@ class ResetServiceBridge:
             self._deferred_initial_pose_name = None
             return
 
+        if (
+            getattr(self, "_reset_stop_gate", None) is not None
+            and transaction.stop_generation is not None
+        ):
+            self._reset_stop_gate.mark_reset_complete(
+                transaction.stop_generation
+            )
+
         # This event is the recovery epoch boundary.  It must be emitted only
         # after every queued wheel/EKF/costmap reset future has resolved.
         self._reset_event_publisher.publish(self._EmptyMessage())
@@ -559,7 +603,9 @@ class ResetServiceBridge:
             self._apply_initial_pose_policy()
 
     def send_zero_velocity(self) -> None:
-        self._cmd_vel_publisher.publish(self._Twist())
+        if getattr(self, "_reset_stop_gate", None) is None:
+            raise ResetServiceError("reset stop gate is unavailable")
+        self._reset_stop_gate.publish_zero()
 
     def _queue_service_call(self, client: Any, request: Any, label: str) -> bool:
         transaction = self._active_transaction

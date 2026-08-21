@@ -1,4 +1,4 @@
-"""`/cmd_vel` to four wheel-joint velocity targets."""
+"""Private gated velocity topic to four wheel-joint velocity targets."""
 
 from __future__ import annotations
 

@@ -42,6 +42,8 @@ class ResetRequest:
     navigation_mode: str
     odometry_mode: str
     random_seed: int
+    dynamic_case_id: str = ""
+    dynamic_variant_id: str = ""
 
     def __post_init__(self) -> None:
         if self.navigation_mode not in {"mapping", "localization"}:
@@ -50,6 +52,11 @@ class ResetRequest:
             raise ResetError("odometry_mode must be ideal or realistic")
         if isinstance(self.random_seed, bool) or not isinstance(self.random_seed, int) or self.random_seed < 0:
             raise ResetError("random_seed must be a non-negative integer")
+        if (
+            not isinstance(self.dynamic_case_id, str)
+            or not isinstance(self.dynamic_variant_id, str)
+        ):
+            raise ResetError("dynamic case and variant IDs must be strings")
 
 
 class ResetManager:

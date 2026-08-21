@@ -60,7 +60,7 @@ class IdleBrake:
         robot,
         settings: ArticulationPhysicsConfig,
         *,
-        topic_name: str = "/cmd_vel",
+        topic_name: str = "/cmd_vel_sim",
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         from geometry_msgs.msg import Twist

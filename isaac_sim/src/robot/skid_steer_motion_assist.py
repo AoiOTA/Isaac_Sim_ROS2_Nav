@@ -134,7 +134,7 @@ class SkidSteerMotionAssist:
         settings: ArticulationPhysicsConfig,
         *,
         physics_dt: float,
-        topic_name: str = "/cmd_vel",
+        topic_name: str = "/cmd_vel_sim",
         clock: Callable[[], float],
     ) -> None:
         from geometry_msgs.msg import Twist

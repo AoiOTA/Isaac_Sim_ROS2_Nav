@@ -28,6 +28,8 @@ from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 import yaml
 
+from robot_experiments.reset_receipt import parse_reset_receipt
+
 
 class MotionBenchmarkError(ValueError):
     """Raised when a motion benchmark configuration or run is invalid."""
@@ -474,7 +476,11 @@ class MotionBenchmarkNode(Node):
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self._publisher = self.create_publisher(Twist, "/cmd_vel", reliable)
+        # This calibration driver is upstream of velocity smoothing and
+        # Collision Monitor; it never becomes a second final /cmd_vel owner.
+        self._publisher = self.create_publisher(
+            Twist, "/cmd_vel_nav", reliable
+        )
         clock_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -515,6 +521,7 @@ class MotionBenchmarkNode(Node):
         self._segment_started_at = 0.0
         self._command_linear = 0.0
         self._command_angular = 0.0
+        self._reset_receipts: list[dict[str, Any]] = []
 
     def _clock_callback(self, message: Clock) -> None:
         self._clock_s = (
@@ -602,7 +609,7 @@ class MotionBenchmarkNode(Node):
         message.angular.z = float(angular)
         self._publisher.publish(message)
 
-    def _reset(self, seed: int) -> None:
+    def _reset(self, seed: int) -> dict[str, Any]:
         self._publish(0.0, 0.0)
         if not self._isaac_parameters.wait_for_services(timeout_sec=10.0):
             raise RuntimeError("Isaac parameter services are unavailable")
@@ -639,6 +646,10 @@ class MotionBenchmarkNode(Node):
                     else reset_response.message
                 )
             )
+        receipt = parse_reset_receipt(
+            reset_response.message,
+            requested_seed=seed,
+        )
         stable_since: float | None = None
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
@@ -659,7 +670,7 @@ class MotionBenchmarkNode(Node):
                     time.monotonic() - stable_since
                     >= self._config.reset_settle_sec
                 ):
-                    return
+                    return receipt
             else:
                 stable_since = None
         raise TimeoutError(
@@ -713,7 +724,8 @@ class MotionBenchmarkNode(Node):
             self.get_logger().info(
                 f"running motion primitive {primitive.identifier}"
             )
-            self._reset(self._config.reset_seed + index)
+            receipt = self._reset(self._config.reset_seed + index)
+            self._reset_receipts.append(receipt)
             self._samples = []
             self._collision_detected = False
             self._recording = True
@@ -728,6 +740,7 @@ class MotionBenchmarkNode(Node):
                 self._config.thresholds,
                 self._config.steady_window_sec,
             )
+            result["reset_receipt"] = receipt
             results.append(result)
             self.get_logger().info(
                 f"completed {primitive.identifier}: "
@@ -745,6 +758,7 @@ class MotionBenchmarkNode(Node):
             "passed_primitive_count": sum(
                 bool(result["passed"]) for result in results
             ),
+            "reset_receipts": list(self._reset_receipts),
             "primitives": results,
         }
 

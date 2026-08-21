@@ -118,6 +118,8 @@ def test_localization_reset_pose_is_immutable_manifest_bound_profile():
         "reset_pose_name": SimpleNamespace(value="other_map_pose"),
         "navigation_mode": SimpleNamespace(value="localization"),
         "odometry_mode": SimpleNamespace(value="ideal"),
+        "dynamic_case_id": SimpleNamespace(value=""),
+        "dynamic_variant_id": SimpleNamespace(value=""),
     }
     bridge = SimpleNamespace(
         node=SimpleNamespace(get_parameter=parameters.__getitem__),
@@ -507,6 +509,45 @@ def test_startup_reset_returns_pending_transaction_without_blocking():
     assert transaction.finished
 
 
+def test_reset_stop_hold_is_synchronous_before_reset_manager_pause_path():
+    events = []
+
+    class Gate:
+        def hold(self):
+            events.append("hold")
+            return 3
+
+    class Manager:
+        def reset(self, request):
+            del request
+            events.append("manager_reset")
+
+    bridge = SimpleNamespace(
+        _manager=Manager(),
+        _reset_stop_gate=Gate(),
+        _active_transaction=None,
+        _pending_futures=set(),
+        _initial_pose_republisher=SimpleNamespace(cancel=lambda: None),
+        _deferred_initial_pose_name=None,
+        _transaction_generation=0,
+        _Future=FakeCompletion,
+        node=SimpleNamespace(
+            executor=None,
+            create_timer=lambda *args, **kwargs: FakeTimer(),
+        ),
+        _transaction_timeout_sec=1.0,
+        _callback_group=object(),
+        _steady_clock=object(),
+        _finish_transaction=lambda tx: None,
+    )
+    transaction = ResetServiceBridge.start_reset(
+        bridge,
+        ResetRequest("mapping_start", "mapping", "ideal", 8601),
+    )
+    assert events == ["hold", "manager_reset"]
+    assert transaction.stop_generation == 3
+
+
 def test_repeated_reset_is_rejected_while_generation_is_active():
     bridge = SimpleNamespace(
         _manager=object(),
@@ -572,3 +613,5 @@ def test_reset_service_response_waits_for_transaction_completion(errors):
     assert events[1] == (
         "response_failure" if errors else "response_success"
     )
+    assert 'reset_receipt={"case_id":"","generation":12' in response.message
+    assert '"seed":0,"variant_id":""}' in response.message
