@@ -11,28 +11,43 @@ runtime:
   ground_truth_policy: evaluator_only
   direct_rgbd_costmap_enabled: false
 required_runtime_values:
-  scene_asset: null
-  dynamic_asset_manifest: null
-  reset_pose: null
-  route_goal: null
+  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/warehouse_new.yaml
+  posegraph_required: true
+  posegraph_file: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/posegraphs/warehouse_new.posegraph
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml
+  reset_pose_name: long_route_start_g1
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_route_planner/config/warehouse_new_gvg_v1.geojson
+  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_dynamic_avoidance.yaml
+  frozen_obstacle_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
+  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/kujiale_long_range_dynamic.yaml
+  physical_obstacles_enabled: true
+mission:
+  reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
+  legs:
+    - {id: G2, frame_id: map, x: 0.80, y: 4.80, yaw_deg: -160.0, dynamic_trigger_group: G2}
+    - {id: G3, frame_id: map, x: -2.20, y: 3.25, yaw_deg: -105.0, dynamic_trigger_group: G3}
+    - {id: G4, frame_id: map, x: -3.00, y: -0.45, yaw_deg: -68.0}
+    - {id: G5, frame_id: map, x: -2.20, y: -2.95, yaw_deg: -42.0}
+    - {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0, dynamic_trigger_group: G1}
 episodes:
-  - {seed: 7301, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7302, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7303, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7304, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7305, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7306, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7307, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7308, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7309, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7310, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7311, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7312, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7313, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7314, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7315, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7316, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7317, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7318, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7319, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
-  - {seed: 7320, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7301, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7302, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7303, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7304, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7305, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7306, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7307, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7308, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7309, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7310, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7311, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7312, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7313, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7314, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7315, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7316, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7317, variant_id: v2, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7318, variant_id: v3, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7319, variant_id: v4, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}
+  - {seed: 7320, variant_id: v5, reset_pose_name: long_route_start_g1, dynamic_case_id: full_route_three_stage}

@@ -1,4 +1,4 @@
-"""V6 single-episode estimated-autonomy dispatcher.
+"""V6 estimated-autonomy episode dispatcher and engineering pilot adapter.
 
 This module deliberately does not share the legacy experiment runner.  The
 dispatcher owns reset and RouteCoordinator goal sequencing only.  Ground Truth
@@ -21,6 +21,7 @@ import yaml
 
 SCHEMA_VERSION = "bio_nav_v6_single_episode_manifest_v1"
 NOT_QUALIFIED = "NOT_QUALIFIED"
+ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
 
 # Runtime subscriptions are a reviewable firewall.  Keep Ground Truth in the
@@ -36,6 +37,7 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/bio_nav/canonical_route",
     "/bio_nav/route_progress",
     "/bio_nav/route_goal_complete",
+    "/bio_nav/route_goal_result",
     "/bio_nav/module2/cognitive_place_graph",
     "/bio_nav/module2/goal_planning_prior",
     "/bio_nav/module3/cognitive_graph_validation_ack",
@@ -48,6 +50,8 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/simulation/collision",
     "/simulation/collision_diagnostics",
     "/diagnostics",
+    "/experiment/obstacles/state",
+    "/experiment/appearance/state",
 )
 
 CAPTURE_SCHEMA = {
@@ -65,6 +69,9 @@ CAPTURE_SCHEMA = {
     "/cmd_vel": "Twist",
     "/simulation/collision": "Bool",
     "/simulation/collision_diagnostics": "String",
+    "/bio_nav/route_goal_result": "String",
+    "/experiment/obstacles/state": "String",
+    "/experiment/appearance/state": "String",
 }
 
 if any(topic.startswith(GT_PREFIX) for topic in DISPATCH_SUBSCRIPTION_TOPICS):
@@ -75,6 +82,13 @@ class V6ContractError(RuntimeError):
     """A fail-closed V6 manifest or episode contract violation."""
 
 
+def append_evidence_jsonl(path: Path, event: str, **payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {"event": event, "wall_time_ns": time.time_ns(), **payload}
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, sort_keys=True) + "\n")
+
+
 @dataclass(frozen=True)
 class Episode:
     seed: int
@@ -82,7 +96,16 @@ class Episode:
     appearance_profile_id: str | None
     reset_pose_name: str
     dynamic_case_id: str
-    goal: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class MissionLeg:
+    goal_id: str
+    frame_id: str
+    x: float
+    y: float
+    yaw_deg: float
+    dynamic_trigger_group: str
 
 
 @dataclass(frozen=True)
@@ -92,6 +115,8 @@ class Manifest:
     scene_id: str
     category: str
     frozen: bool
+    reset_pose: Mapping[str, Any]
+    mission_legs: tuple[MissionLeg, ...]
     episodes: tuple[Episode, ...]
     missing_required_values: tuple[str, ...]
 
@@ -106,9 +131,35 @@ def _missing_required_values(raw: Mapping[str, Any]) -> tuple[str, ...]:
     required = _mapping(raw.get("required_runtime_values"), "required_runtime_values")
     missing: list[str] = []
     for name, value in required.items():
+        if value is None and name == "posegraph_file" and required.get("posegraph_required") is False:
+            continue
         if value is None or value == "":
             missing.append(f"required_runtime_values.{name}")
     return tuple(sorted(missing))
+
+
+def _finite_float(value: Any, path: str) -> float:
+    if isinstance(value, bool):
+        raise V6ContractError(f"{path} must be finite numeric")
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise V6ContractError(f"{path} must be finite numeric") from exc
+    if not math.isfinite(result):
+        raise V6ContractError(f"{path} must be finite numeric")
+    return result
+
+
+def _pose(raw: Mapping[str, Any], path: str) -> tuple[str, float, float, float]:
+    frame_id = str(raw.get("frame_id", ""))
+    if frame_id != "map":
+        raise V6ContractError(f"{path}.frame_id must be map")
+    return (
+        frame_id,
+        _finite_float(raw.get("x"), f"{path}.x"),
+        _finite_float(raw.get("y"), f"{path}.y"),
+        _finite_float(raw.get("yaw_deg"), f"{path}.yaw_deg"),
+    )
 
 
 def load_manifest(path: str | Path) -> Manifest:
@@ -141,6 +192,32 @@ def load_manifest(path: str | Path) -> Manifest:
     if category not in {"static", "dynamic", "appearance"}:
         raise V6ContractError("scene.category must be static, dynamic, or appearance")
 
+    mission = _mapping(raw.get("mission"), "mission")
+    reset_pose = _mapping(mission.get("reset_pose"), "mission.reset_pose")
+    _, reset_x, reset_y, _ = _pose(reset_pose, "mission.reset_pose")
+    mission_rows = mission.get("legs")
+    if not isinstance(mission_rows, list) or len(mission_rows) != 5:
+        raise V6ContractError("mission.legs must contain exactly five rows")
+    mission_legs: list[MissionLeg] = []
+    previous_xy = (reset_x, reset_y)
+    seen_ids: set[str] = set()
+    for index, leg_value in enumerate(mission_rows):
+        leg = _mapping(leg_value, f"mission.legs[{index}]")
+        goal_id = str(leg.get("id", ""))
+        if not goal_id or goal_id in seen_ids:
+            raise V6ContractError(f"mission.legs[{index}].id must be unique and non-empty")
+        frame_id, x, y, yaw_deg = _pose(leg, f"mission.legs[{index}]")
+        if math.hypot(x - previous_xy[0], y - previous_xy[1]) <= 1.0e-6:
+            raise V6ContractError(f"mission.legs[{index}] is a zero-distance goal")
+        trigger_group = str(leg.get("dynamic_trigger_group", ""))
+        if category != "dynamic" and trigger_group:
+            raise V6ContractError("static/appearance mission legs cannot trigger actors")
+        mission_legs.append(MissionLeg(goal_id, frame_id, x, y, yaw_deg, trigger_group))
+        seen_ids.add(goal_id)
+        previous_xy = (x, y)
+    if category == "dynamic" and not any(row.dynamic_trigger_group for row in mission_legs):
+        raise V6ContractError("dynamic mission must declare trigger groups")
+
     rows = raw.get("episodes")
     if not isinstance(rows, list) or len(rows) != 20:
         raise V6ContractError("episodes must contain exactly 20 rows")
@@ -161,7 +238,6 @@ def load_manifest(path: str | Path) -> Manifest:
                 ),
                 reset_pose_name=str(row.get("reset_pose_name", "")),
                 dynamic_case_id=str(row.get("dynamic_case_id", "")),
-                goal=_mapping(row.get("goal", {}), f"episodes[{index}].goal"),
             )
         )
     return Manifest(
@@ -170,6 +246,8 @@ def load_manifest(path: str | Path) -> Manifest:
         scene_id=str(scene.get("id", "")),
         category=category,
         frozen=frozen,
+        reset_pose=reset_pose,
+        mission_legs=tuple(mission_legs),
         episodes=tuple(episodes),
         missing_required_values=_missing_required_values(raw),
     )
@@ -223,6 +301,9 @@ class EpisodeGuard:
     route_progress_messages: int = 0
     route_completion_messages: int = 0
     route_succeeded: bool = False
+    mission_leg_ids: tuple[str, ...] = ()
+    completed_leg_ids: list[str] = field(default_factory=list)
+    current_leg_progress_messages: int = 0
 
     def stop(self, reason: str) -> None:
         if self.state != "STOP":
@@ -293,29 +374,68 @@ class EpisodeGuard:
     def goal_ready(self) -> bool:
         return self.state == "GOAL_READY" and not self.stop_reason
 
-    def record_goal_publication(self) -> None:
-        if not self.goal_ready or self.goal_publications:
+    def record_goal_publication(self, goal_id: str | None = None) -> None:
+        first_leg = self.goal_publications == 0
+        if (first_leg and not self.goal_ready) or (not first_leg and self.state != "LEG_SUCCEEDED"):
             self.stop("route_goal_publication_not_authorized")
             raise V6ContractError(self.stop_reason)
-        self.goal_publications = 1
+        if self.goal_publications >= max(1, len(self.mission_leg_ids)):
+            self.stop("extra_route_goal_publication")
+            raise V6ContractError(self.stop_reason)
+        if self.mission_leg_ids:
+            expected = self.mission_leg_ids[self.goal_publications]
+            if goal_id != expected:
+                self.stop(f"mission_leg_order:{goal_id}!={expected}")
+                raise V6ContractError(self.stop_reason)
+        self.goal_publications += 1
+        self.current_leg_progress_messages = 0
         self.state = "NAVIGATING"
 
     def record_route_progress(self) -> None:
         if self.state == "NAVIGATING":
             self.route_progress_messages += 1
+            self.current_leg_progress_messages += 1
 
     def record_route_completion(self, succeeded: bool) -> None:
         if self.state != "NAVIGATING":
             return
         self.route_completion_messages += 1
-        if self.route_completion_messages > 1:
-            self.stop("duplicate_route_completion")
-            return
         self.route_succeeded = bool(succeeded)
-        if not self.route_progress_messages:
+        if not self.current_leg_progress_messages:
             self.stop("route_completed_without_progress")
+        elif not succeeded:
+            self.state = "FAILED"
         else:
-            self.state = "SUCCEEDED" if succeeded else "FAILED"
+            if self.mission_leg_ids:
+                self.completed_leg_ids.append(
+                    self.mission_leg_ids[self.goal_publications - 1]
+                )
+            final_leg = self.goal_publications >= max(1, len(self.mission_leg_ids))
+            self.state = "SUCCEEDED" if final_leg else "LEG_SUCCEEDED"
+
+
+@dataclass
+class DynamicActionLedger:
+    """Claim each dynamic service action once; a failed claim is never retried."""
+
+    claimed: set[tuple[str, str]] = field(default_factory=set)
+    events: list[dict[str, Any]] = field(default_factory=list)
+
+    def claim(self, group: str, action: str) -> None:
+        if action not in {"trigger", "complete"}:
+            raise V6ContractError(f"unknown dynamic action {action}")
+        key = (group, action)
+        if key in self.claimed:
+            raise V6ContractError(f"dynamic action retry forbidden: {group}/{action}")
+        if action == "complete" and (group, "trigger") not in self.claimed:
+            raise V6ContractError(f"dynamic completion before trigger: {group}")
+        self.claimed.add(key)
+        self.events.append({"group": group, "action": action, "result": "claimed"})
+
+    def record(self, group: str, action: str, result: str, detail: str = "") -> None:
+        self.events.append(
+            {"group": group, "action": action, "result": result, "detail": detail}
+        )
 
 
 def _message_summary(message: Any) -> dict[str, Any]:
@@ -345,7 +465,14 @@ def _message_summary(message: Any) -> dict[str, Any]:
 class V6FormalNode:
     """Runtime adapter, imported lazily so manifest checks need no ROS graph."""
 
-    def __init__(self, manifest: Manifest, episode: Episode, output_jsonl: Path):
+    def __init__(
+        self,
+        manifest: Manifest,
+        episode: Episode,
+        output_jsonl: Path,
+        *,
+        qualification: str = "FORMAL_ELIGIBLE",
+    ):
         import rclpy
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
@@ -376,11 +503,19 @@ class V6FormalNode:
         self.manifest = manifest
         self.episode = episode
         self.output_jsonl = output_jsonl
-        self.guard = EpisodeGuard()
+        self.qualification = qualification
+        self.guard = EpisodeGuard(
+            mission_leg_ids=tuple(item.goal_id for item in manifest.mission_legs)
+        )
         self.facts = ReadinessFacts()
         self.latest_prior_epoch: int | None = None
         self.canonical_route_count = 0
         self.collision = False
+        self.route_goal_results: list[dict[str, Any]] = []
+        self.obstacle_state_messages: list[dict[str, Any]] = []
+        self.appearance_state: dict[str, Any] | None = None
+        self.dynamic_actions = DynamicActionLedger()
+        self.dynamic_clients: dict[tuple[str, str], Any] = {}
         self._types = {
             "PoseStamped": PoseStamped,
             "Trigger": Trigger,
@@ -414,6 +549,7 @@ class V6FormalNode:
             sub(CanonicalRoute, "/bio_nav/canonical_route", self._canonical_route, latched),
             sub(RouteProgress, "/bio_nav/route_progress", self._route_progress),
             sub(Bool, "/bio_nav/route_goal_complete", self._route_complete),
+            sub(String, "/bio_nav/route_goal_result", self._route_result),
             sub(CognitivePlaceGraphCandidate, "/bio_nav/module2/cognitive_place_graph", self._capture_callback("/bio_nav/module2/cognitive_place_graph"), latched),
             sub(GoalPlanningPrior, "/bio_nav/module2/goal_planning_prior", self._goal_prior),
             sub(CognitiveGraphValidationAck, "/bio_nav/module3/cognitive_graph_validation_ack", self._capture_callback("/bio_nav/module3/cognitive_graph_validation_ack")),
@@ -426,13 +562,12 @@ class V6FormalNode:
             sub(Bool, "/simulation/collision", self._collision),
             sub(String, "/simulation/collision_diagnostics", self._capture_callback("/simulation/collision_diagnostics")),
             sub(DiagnosticArray, "/diagnostics", self._capture_callback("/diagnostics")),
+            sub(String, "/experiment/obstacles/state", self._obstacle_state),
+            sub(String, "/experiment/appearance/state", self._appearance_state, latched),
         ]
 
     def _write(self, event: str, **payload: Any) -> None:
-        self.output_jsonl.parent.mkdir(parents=True, exist_ok=True)
-        row = {"event": event, "wall_time_ns": time.time_ns(), **payload}
-        with self.output_jsonl.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(row, sort_keys=True) + "\n")
+        append_evidence_jsonl(self.output_jsonl, event, **payload)
 
     def _capture(self, topic: str, message: Any) -> None:
         self._write("topic", topic=topic, message=_message_summary(message))
@@ -468,6 +603,28 @@ class V6FormalNode:
     def _route_complete(self, message: Any) -> None:
         self.guard.record_route_completion(bool(message.data))
         self._capture("/bio_nav/route_goal_complete", message)
+
+    def _route_result(self, message: Any) -> None:
+        row = self._json_message(message)
+        self.route_goal_results.append(row)
+        self._capture("/bio_nav/route_goal_result", message)
+
+    @staticmethod
+    def _json_message(message: Any) -> dict[str, Any]:
+        try:
+            value = json.loads(str(message.data))
+        except (AttributeError, json.JSONDecodeError):
+            return {"raw": str(getattr(message, "data", ""))}
+        return value if isinstance(value, dict) else {"value": value}
+
+    def _obstacle_state(self, message: Any) -> None:
+        row = self._json_message(message)
+        self.obstacle_state_messages.append(row)
+        self._write("obstacle_state", state=row)
+
+    def _appearance_state(self, message: Any) -> None:
+        self.appearance_state = self._json_message(message)
+        self._write("appearance_state", state=self.appearance_state)
 
     def _collision(self, message: Any) -> None:
         self.collision = self.collision or bool(message.data)
@@ -519,21 +676,75 @@ class V6FormalNode:
             raise V6ContractError("Isaac rejected episode parameters")
         self._write("episode_parameters_set", seed=self.episode.seed)
 
-    def _goal_message(self):
+    def _goal_message(self, leg: MissionLeg):
         PoseStamped = self._types["PoseStamped"]
-        raw = self.episode.goal
         message = PoseStamped()
-        message.header.frame_id = str(raw["frame_id"])
+        message.header.frame_id = leg.frame_id
         message.header.stamp = self.node.get_clock().now().to_msg()
-        message.pose.position.x = float(raw["x"])
-        message.pose.position.y = float(raw["y"])
-        yaw = math.radians(float(raw["yaw_deg"]))
+        message.pose.position.x = leg.x
+        message.pose.position.y = leg.y
+        yaw = math.radians(leg.yaw_deg)
         message.pose.orientation.z = math.sin(yaw / 2.0)
         message.pose.orientation.w = math.cos(yaw / 2.0)
         return message
 
+    def _call_dynamic_action(self, group: str, action: str, timeout_sec: float) -> bool:
+        if not group:
+            return True
+        try:
+            self.dynamic_actions.claim(group, action)
+        except V6ContractError as exc:
+            self.guard.stop(str(exc))
+            return False
+        Trigger = self._types["Trigger"]
+        key = (group, action)
+        client = self.dynamic_clients.get(key)
+        if client is None:
+            client = self.node.create_client(
+                Trigger, f"/experiment/obstacles/{group}/{action}"
+            )
+            self.dynamic_clients[key] = client
+        self._write("dynamic_action", group=group, action=action, phase="call")
+        if not client.wait_for_service(timeout_sec=timeout_sec):
+            reason = f"dynamic_{action}_service_unavailable:{group}"
+            self.dynamic_actions.record(group, action, "service_unavailable")
+            self.guard.stop(reason)
+            return False
+        future = client.call_async(Trigger.Request())
+        if not self._spin_until(future.done, timeout_sec):
+            reason = f"dynamic_{action}_timeout:{group}"
+            self.dynamic_actions.record(group, action, "timeout")
+            self.guard.stop(reason)
+            return False
+        response = future.result()
+        if response is None or response.success is not True:
+            detail = "no response" if response is None else str(response.message)
+            reason = f"dynamic_{action}_rejected:{group}:{detail}"
+            self.dynamic_actions.record(group, action, "rejected", detail)
+            self.guard.stop(reason)
+            return False
+        detail = str(response.message)
+        self.dynamic_actions.record(group, action, "accepted", detail)
+        self._write(
+            "dynamic_action",
+            group=group,
+            action=action,
+            phase="response",
+            success=True,
+            detail=detail,
+        )
+        return True
+
     def run(self, *, readiness_timeout_sec: float, reset_timeout_sec: float, navigation_timeout_sec: float) -> dict[str, Any]:
-        self._write("episode_start", qualification="FORMAL_ELIGIBLE", manifest=str(self.manifest.path), seed=self.episode.seed)
+        self._write(
+            "episode_start",
+            qualification=self.qualification,
+            formal_qualification=NOT_QUALIFIED if self.qualification == ENGINEERING_PILOT else "FORMAL_ELIGIBLE",
+            manifest=str(self.manifest.path),
+            seed=self.episode.seed,
+            scene_contract_frozen=self.manifest.frozen,
+            runtime_values=dict(self.manifest.raw["required_runtime_values"]),
+        )
         ready = self._spin_until(
             lambda: (self._refresh_endpoint_facts() is None)
             and not self.facts.missing()
@@ -545,6 +756,15 @@ class V6FormalNode:
             return self.result()
         self.guard.arm_reset(self.facts, self.latest_prior_epoch)
         self._set_episode_parameters(reset_timeout_sec)
+        if self.manifest.category == "appearance":
+            expected_profile = self.episode.appearance_profile_id
+            if not self._spin_until(
+                lambda: self.appearance_state is not None
+                and self.appearance_state.get("profile_id") == expected_profile,
+                reset_timeout_sec,
+            ):
+                self.guard.stop(f"appearance_profile_not_observed:{expected_profile}")
+                return self.result()
 
         Trigger = self._types["Trigger"]
         self.guard.record_reset_call()
@@ -562,22 +782,56 @@ class V6FormalNode:
         if not self.guard.goal_ready:
             return self.result()
 
-        route_baseline = self.canonical_route_count
-        self.guard.record_goal_publication()
-        self.route_goal_publisher.publish(self._goal_message())
-        self._write("route_goal_published", topic="/bio_nav/route_goal")
-        if not self._spin_until(
-            lambda: self.guard.state in {"SUCCEEDED", "FAILED", "STOP"},
-            navigation_timeout_sec,
-        ):
-            self.guard.stop("route_completion_timeout")
-        if self.canonical_route_count <= route_baseline:
-            self.guard.stop("canonical_route_missing")
+        for index, leg in enumerate(self.manifest.mission_legs):
+            route_baseline = self.canonical_route_count
+            result_baseline = len(self.route_goal_results)
+            triggered = False
+            if leg.dynamic_trigger_group:
+                triggered = self._call_dynamic_action(
+                    leg.dynamic_trigger_group, "trigger", reset_timeout_sec
+                )
+                if not triggered:
+                    break
+            self.guard.record_goal_publication(leg.goal_id)
+            self.route_goal_publisher.publish(self._goal_message(leg))
+            self._write(
+                "route_goal_published",
+                topic="/bio_nav/route_goal",
+                leg_id=leg.goal_id,
+                leg_index=index,
+                result_messages_before=result_baseline,
+            )
+            completed = self._spin_until(
+                lambda: self.guard.state in {"LEG_SUCCEEDED", "SUCCEEDED", "FAILED", "STOP"},
+                navigation_timeout_sec,
+            )
+            if not completed:
+                self.guard.stop(f"route_completion_timeout:{leg.goal_id}")
+            if triggered:
+                self._call_dynamic_action(
+                    leg.dynamic_trigger_group, "complete", reset_timeout_sec
+                )
+            if self.canonical_route_count <= route_baseline:
+                self.guard.stop(f"canonical_route_missing:{leg.goal_id}")
+            self._write(
+                "mission_leg_result",
+                leg_id=leg.goal_id,
+                state=self.guard.state,
+                route_progress_messages=self.guard.current_leg_progress_messages,
+                route_result_messages=len(self.route_goal_results) - result_baseline,
+            )
+            if self.guard.state not in {"LEG_SUCCEEDED", "SUCCEEDED"}:
+                break
         return self.result()
 
     def result(self) -> dict[str, Any]:
         row = {
-            "qualification": "FORMAL_ELIGIBLE",
+            "qualification": self.qualification,
+            "formal_qualification": (
+                NOT_QUALIFIED
+                if self.qualification == ENGINEERING_PILOT
+                else "FORMAL_ELIGIBLE"
+            ),
             "state": self.guard.state,
             "stop_reason": self.guard.stop_reason,
             "reset_calls": self.guard.reset_calls,
@@ -585,10 +839,49 @@ class V6FormalNode:
             "goal_publications": self.guard.goal_publications,
             "route_progress_messages": self.guard.route_progress_messages,
             "route_completion_messages": self.guard.route_completion_messages,
+            "completed_leg_ids": list(self.guard.completed_leg_ids),
+            "route_goal_results": list(self.route_goal_results),
+            "dynamic_actions": list(self.dynamic_actions.events),
+            "actor_states": self._actor_state_summary(),
+            "appearance": self._appearance_summary(),
             "collision": self.collision,
         }
         self._write("episode_result", **row)
         return row
+
+    def _actor_state_summary(self) -> dict[str, list[str]]:
+        summary: dict[str, set[str]] = {}
+        for snapshot in self.obstacle_state_messages:
+            obstacles = snapshot.get("obstacles", [])
+            if not isinstance(obstacles, list):
+                continue
+            for obstacle in obstacles:
+                if not isinstance(obstacle, Mapping):
+                    continue
+                obstacle_id = str(obstacle.get("id", ""))
+                state = str(obstacle.get("state", ""))
+                if obstacle_id and state:
+                    summary.setdefault(obstacle_id, set()).add(state)
+        return {name: sorted(states) for name, states in sorted(summary.items())}
+
+    def _appearance_summary(self) -> dict[str, Any]:
+        if self.appearance_state is None:
+            return {"observed": False}
+        counts = self.appearance_state.get("applied_counts", {})
+        return {
+            "observed": True,
+            "profile_id": self.appearance_state.get("profile_id"),
+            "light_intensity_scale": self.appearance_state.get("overrides", {}).get(
+                "light_intensity_scale"
+            ),
+            "material_hue_shift_deg": self.appearance_state.get("overrides", {}).get(
+                "material_hue_shift_deg"
+            ),
+            "lights_applied": counts.get("lights") if isinstance(counts, Mapping) else None,
+            "material_inputs_applied": (
+                counts.get("material_color_inputs") if isinstance(counts, Mapping) else None
+            ),
+        }
 
     def destroy(self) -> None:
         self.node.destroy_node()
@@ -598,7 +891,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", required=True)
     parser.add_argument("--episode-index", type=int, default=0)
-    parser.add_argument("--mode", choices=("formal", "pilot"), default="formal")
+    parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--dispatch-pilot", action="store_true")
     parser.add_argument("--allow-formal-dispatch", action="store_true")
     parser.add_argument("--output-jsonl")
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
@@ -610,20 +904,25 @@ def build_parser() -> argparse.ArgumentParser:
 def cli(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.dispatch_pilot and not args.pilot:
+            raise V6ContractError("--dispatch-pilot requires --pilot")
         manifest = load_manifest(args.manifest)
-        qualification = authorize_manifest(manifest, mode=args.mode)
-        if args.mode == "pilot":
+        mode = "pilot" if args.pilot else "formal"
+        qualification = authorize_manifest(manifest, mode=mode)
+        if args.pilot and not args.dispatch_pilot:
             print(json.dumps({
-                "qualification": qualification,
+                "qualification": ENGINEERING_PILOT,
+                "formal_qualification": qualification,
                 "dispatch": False,
                 "scene_contract_frozen": manifest.frozen,
                 "missing_required_values": manifest.missing_required_values,
             }, sort_keys=True))
             return 0
-        if not args.allow_formal_dispatch:
+        if not args.pilot and not args.allow_formal_dispatch:
             raise V6ContractError("formal dispatch requires --allow-formal-dispatch")
         if args.output_jsonl is None:
-            raise V6ContractError("formal dispatch requires --output-jsonl")
+            kind = "pilot" if args.pilot else "formal"
+            raise V6ContractError(f"{kind} dispatch requires --output-jsonl")
         if not 0 <= args.episode_index < len(manifest.episodes):
             raise V6ContractError("episode-index out of range")
         import rclpy
@@ -632,6 +931,7 @@ def cli(argv: list[str] | None = None) -> int:
             manifest,
             manifest.episodes[args.episode_index],
             Path(args.output_jsonl).expanduser().resolve(),
+            qualification=ENGINEERING_PILOT if args.pilot else "FORMAL_ELIGIBLE",
         )
         try:
             result = adapter.run(

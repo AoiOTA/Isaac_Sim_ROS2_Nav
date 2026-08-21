@@ -353,3 +353,24 @@
 - Remaining: live Trigger/Kit behavior, route-idle adapter enforcement, actual
   S1/S2 preflights, core 60 execution, passive evidence capture, and review.
 - Handoff: `docs/handoff/V6_LOCALIZATION_CAUSAL_RUNNER_20260821.md`.
+
+## 2026-08-21 — V6 formal multi-leg engineering-pilot amendment
+
+- Goal: replace the final-goal-only formal draft with complete five-leg
+  candidate scenes and an explicitly non-qualified live engineering adapter.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `5b6e7b8854151c385790801cd96b645ad8eaad68`.
+- Changes: filled six unfrozen candidate manifests with exact assets, calibrated
+  missions, dynamic cases/variants and appearance profiles; sequential PRIMARY
+  route-goal dispatch; exact-once dynamic trigger/complete with fail-stop;
+  obstacle/appearance/causal/control JSONL capture; explicit
+  `--pilot --dispatch-pilot` labelled `ENGINEERING_PILOT/NOT_QUALIFIED`.
+- Validation: Python compile and shell syntax PASS; focused formal pytest
+  `42 passed`; formal/causal/package regression `98 passed`; isolated
+  `robot_experiments` build PASS at
+  `/tmp/v6_formal_multileg_build.a5pQGC`; `git diff --check` PASS.
+- Verdict: **PASS (implementation/build/unit only)**;
+  **ENGINEERING_PILOT_NOT_RUN**. No ROS/Isaac/Nav2 pilot, scene freeze, evidence
+  campaign, or formal qualification was performed.
+- Handoff:
+  `docs/handoff/V6_FORMAL_MULTILEG_ENGINEERING_PILOT_20260821.md`.

@@ -1,7 +1,7 @@
 schema_version: bio_nav_v6_single_episode_manifest_v1
 scene_contract_frozen: false
 scene: {id: v6_final_kujiale_static, world: kujiale, category: static}
-runtime: &v6_runtime
+runtime:
   startup_profile: estimated_autonomy
   cognitive_mode: active
   causal_level: L3
@@ -11,27 +11,43 @@ runtime: &v6_runtime
   ground_truth_policy: evaluator_only
   direct_rgbd_costmap_enabled: false
 required_runtime_values:
-  scene_asset: null
-  reset_pose: null
-  route_goal: null
+  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/warehouse_new.yaml
+  posegraph_required: true
+  posegraph_file: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/posegraphs/warehouse_new.posegraph
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml
+  reset_pose_name: long_route_start_g1
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_route_planner/config/warehouse_new_gvg_v1.geojson
+  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_params.yaml
+  frozen_obstacle_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
+  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
+  physical_obstacles_enabled: true
+mission:
+  reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
+  legs:
+    - {id: G2, frame_id: map, x: 0.80, y: 4.80, yaw_deg: -160.0}
+    - {id: G3, frame_id: map, x: -2.20, y: 3.25, yaw_deg: -105.0}
+    - {id: G4, frame_id: map, x: -3.00, y: -0.45, yaw_deg: -68.0}
+    - {id: G5, frame_id: map, x: -2.20, y: -2.95, yaw_deg: -42.0}
+    - {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
 episodes:
-  - {seed: 7201, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7202, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7203, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7204, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7205, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7206, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7207, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7208, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7209, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7210, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7211, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7212, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7213, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7214, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7215, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7216, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7217, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7218, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7219, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
-  - {seed: 7220, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7201, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7202, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7203, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7204, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7205, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7206, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7207, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7208, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7209, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7210, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7211, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7212, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7213, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7214, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7215, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7216, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7217, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7218, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7219, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7220, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
