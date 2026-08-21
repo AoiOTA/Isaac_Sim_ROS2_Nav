@@ -578,6 +578,8 @@ class RouteCoordinator:
         self.startup_reset_event_pending = False
         self.startup_reset_event_deadline_steady_s: float | None = None
         self.startup_reset_event_legacy_completed = False
+        self.startup_reset_event_invalidated = False
+        self.startup_reset_status_authority_seen = False
         self.reset_hold_barrier = True
         self.structural_generation = 0
         self.desired_graph_generation = 0
@@ -1805,21 +1807,41 @@ class RouteCoordinator:
     def _fail_closed_reset_status(self, detail: str) -> None:
         with self._route_output_lock():
             with self._route_state_lock():
+                self.startup_reset_status_authority_seen = True
+                self._retire_startup_reset_event_locked(invalidated=True)
                 self.reset_hold_barrier = True
         self.node.get_logger().error(
             f"reset stop gate status rejected; route goals held: {detail}"
         )
 
-    def _startup_reset_completion_is_safe_locked(self) -> bool:
+    def _startup_reset_completion_is_safe_locked(
+        self, *, allow_status_baseline: bool = False
+    ) -> bool:
         """Accept one late-join completion only before any route-era state."""
 
         runtime = getattr(self, "runtime", None)
         runtime_edges = {} if runtime is None else getattr(runtime, "edges", {})
         desired = getattr(self, "desired_graph", None)
         gvg = getattr(self, "gvg_graph", None)
+        status_generation = getattr(self, "reset_status_generation", None)
+        status_snapshot = getattr(self, "reset_status_snapshot", None)
+        no_status_authority = bool(
+            status_generation is None
+            and status_snapshot is None
+            and not getattr(
+                self, "startup_reset_status_authority_seen", False
+            )
+        )
+        normal_status_baseline = bool(
+            allow_status_baseline
+            and getattr(self, "startup_reset_status_authority_seen", False)
+            and status_generation is not None
+            and status_snapshot is not None
+            and status_snapshot.generation == int(status_generation)
+            and status_snapshot.reason in {"initialized", "closed"}
+        )
         return bool(
-            getattr(self, "reset_status_generation", None) is None
-            and getattr(self, "reset_status_snapshot", None) is None
+            (no_status_authority or normal_status_baseline)
             and getattr(self, "reset_intent_generation", None) is None
             and getattr(self, "reset_event_completed_generation", None) is None
             and getattr(self, "reset_release_seen_generation", None) is None
@@ -1866,14 +1888,50 @@ class RouteCoordinator:
             and not bool(getattr(self, "cognitive_graph_switch_pending", False))
         )
 
-    def _startup_reset_event_can_bind_locked(self) -> bool:
+    def _retire_startup_reset_event_locked(
+        self, *, invalidated: bool
+    ) -> None:
+        """Retire an unbound Empty without publishing reset completion."""
+
+        self.startup_reset_event_pending = False
+        self.startup_reset_event_deadline_steady_s = None
+        self.startup_reset_event_legacy_completed = False
+        self.startup_reset_event_invalidated = bool(invalidated)
+
+    def _startup_reset_event_can_bind_locked(
+        self,
+        status: ResetStopGateStatus,
+        *,
+        now_steady_s: float | None = None,
+    ) -> bool:
         """Return whether an unbound pristine Empty may adopt gate identity."""
 
+        if not getattr(self, "startup_reset_event_pending", False):
+            return False
+        deadline = getattr(self, "startup_reset_event_deadline_steady_s", None)
+        now_s = self._steady_now() if now_steady_s is None else float(now_steady_s)
+        if deadline is not None and now_s >= float(deadline):
+            # A status callback that loses the deadline race cannot revive the
+            # old unscoped Empty as a new strict generation.
+            self._retire_startup_reset_event_locked(invalidated=True)
+            self.reset_hold_barrier = True
+            return False
+
+        seen = getattr(self, "reset_status_generation", None)
+        previous = getattr(self, "reset_status_snapshot", None)
+        no_status_baseline = seen is None and previous is None
+        normal_status_baseline = bool(
+            seen is not None
+            and previous is not None
+            and previous.generation == int(seen)
+            and previous.reason in {"initialized", "closed"}
+            and status.reason == "hold"
+            and status.generation >= int(seen)
+        )
         return bool(
-            getattr(self, "startup_reset_event_pending", False)
-            and not getattr(self, "startup_reset_event_legacy_completed", False)
-            and getattr(self, "reset_status_generation", None) is None
-            and getattr(self, "reset_status_snapshot", None) is None
+            not getattr(self, "startup_reset_event_legacy_completed", False)
+            and not getattr(self, "startup_reset_event_invalidated", False)
+            and (no_status_baseline or normal_status_baseline)
             and getattr(self, "reset_intent_generation", None) is None
             and getattr(self, "reset_event_completed_generation", None) is None
             and getattr(self, "reset_release_seen_generation", None) is None
@@ -1908,6 +1966,8 @@ class RouteCoordinator:
         self.reset_release_seen_generation = None
         self.startup_reset_event_pending = False
         self.startup_reset_event_deadline_steady_s = None
+        self.startup_reset_event_invalidated = False
+        self.startup_reset_event_legacy_completed = False
         self.reset_hold_barrier = True
 
     def _startup_reset_event_tick(
@@ -1927,11 +1987,20 @@ class RouteCoordinator:
                     and deadline is not None
                     and now_s >= float(deadline)
                 ):
-                    self.startup_reset_event_pending = False
-                    self.startup_reset_event_deadline_steady_s = None
-                    self.startup_reset_event_legacy_completed = True
-                    self.reset_hold_barrier = False
-                    complete = True
+                    if getattr(
+                        self, "startup_reset_status_authority_seen", False
+                    ):
+                        self._retire_startup_reset_event_locked(
+                            invalidated=True
+                        )
+                        self.reset_hold_barrier = True
+                    else:
+                        self.startup_reset_event_pending = False
+                        self.startup_reset_event_deadline_steady_s = None
+                        self.startup_reset_event_legacy_completed = True
+                        self.startup_reset_event_invalidated = False
+                        self.reset_hold_barrier = False
+                        complete = True
             if complete:
                 self._publish_reset_completion(None)
 
@@ -1954,6 +2023,26 @@ class RouteCoordinator:
             with self._route_state_lock():
                 seen = getattr(self, "reset_status_generation", None)
                 previous = getattr(self, "reset_status_snapshot", None)
+                if (
+                    getattr(self, "startup_reset_event_pending", False)
+                    and status.reason in {"initialized", "closed"}
+                ):
+                    # A normal baseline proves that strict status authority is
+                    # present.  The Empty remains bindable to the later HOLD,
+                    # but it may never fall back to legacy auto-open.
+                    deadline = getattr(
+                        self, "startup_reset_event_deadline_steady_s", None
+                    )
+                    if (
+                        deadline is not None
+                        and self._steady_now() >= float(deadline)
+                    ):
+                        self._retire_startup_reset_event_locked(
+                            invalidated=True
+                        )
+                    else:
+                        self.startup_reset_event_deadline_steady_s = None
+                    self.reset_hold_barrier = True
                 if seen is not None and status.generation < int(seen):
                     self.reset_hold_barrier = True
                     failure = (
@@ -1963,7 +2052,7 @@ class RouteCoordinator:
                 elif (
                     seen is None
                     and status.reason in {"hold", "reset_complete"}
-                    and self._startup_reset_event_can_bind_locked()
+                    and self._startup_reset_event_can_bind_locked(status)
                 ):
                     # The volatile Empty won the cross-topic race.  It already
                     # advanced the pristine coordinator exactly once; attach
@@ -1975,7 +2064,7 @@ class RouteCoordinator:
                 elif (
                     seen is None
                     and status.reason.startswith("released:")
-                    and self._startup_reset_event_can_bind_locked()
+                    and self._startup_reset_event_can_bind_locked(status)
                 ):
                     # Depth-1 status may have advanced from completion to
                     # release before this late join receives it.  Reconcile
@@ -1986,7 +2075,14 @@ class RouteCoordinator:
                 elif seen is None and status.reason.startswith("released:"):
                     # A transient-local released snapshot is the normal startup
                     # baseline.  It carries no reset terminal of its own.
-                    if getattr(self, "startup_reset_event_legacy_completed", False):
+                    if (
+                        getattr(
+                            self, "startup_reset_event_legacy_completed", False
+                        )
+                        or getattr(
+                            self, "startup_reset_event_invalidated", False
+                        )
+                    ):
                         self.reset_status_generation = status.generation
                         self.reset_status_snapshot = status
                         self.reset_hold_barrier = True
@@ -2002,6 +2098,16 @@ class RouteCoordinator:
                     self.reset_status_generation = status.generation
                     self.reset_status_snapshot = status
                     self.reset_hold_barrier = True
+                elif (
+                    status.reason == "hold"
+                    and self._startup_reset_event_can_bind_locked(status)
+                ):
+                    # The transient-local baseline arrived before or after the
+                    # volatile Empty.  HOLD now gives that already-completed
+                    # physical reset its strict identity without advancing the
+                    # route/reset epoch a second time.
+                    self._bind_startup_reset_event_locked(status)
+                    startup_completion = True
                 elif (
                     seen is None
                     and status.reason == "reset_complete"
@@ -2037,6 +2143,10 @@ class RouteCoordinator:
                         self.reset_intent_generation = status.generation
                         self.reset_event_completed_generation = None
                         self.reset_release_seen_generation = None
+                        self.startup_reset_event_pending = False
+                        self.startup_reset_event_deadline_steady_s = None
+                        self.startup_reset_event_legacy_completed = False
+                        self.startup_reset_event_invalidated = False
                         self.reset_hold_barrier = True
                         reset = self._begin_simulation_reset_locked()
                         was_active, old_request_id, old_handle, reset_epoch = reset
@@ -2083,6 +2193,10 @@ class RouteCoordinator:
                             "conflicting same-generation reset status: "
                             f"generation={status.generation}, reason={status.reason}"
                         )
+                self.startup_reset_status_authority_seen = True
+                if failure is not None:
+                    self._retire_startup_reset_event_locked(invalidated=True)
+                    self.reset_hold_barrier = True
             if terminal is not None:
                 old_request_id, reset_epoch = terminal
                 self._publish_route_terminal_pair(
@@ -2145,10 +2259,14 @@ class RouteCoordinator:
                 elif getattr(self, "startup_reset_event_pending", False):
                     # Duplicate volatile delivery while the pristine event is
                     # waiting briefly for transient-local generation identity.
+                    self.reset_hold_barrier = True
                     return
                 else:
-                    startup_pending = (
-                        self._startup_reset_completion_is_safe_locked()
+                    startup_pending = self._startup_reset_completion_is_safe_locked(
+                        allow_status_baseline=True
+                    )
+                    status_authority_seen = getattr(
+                        self, "startup_reset_status_authority_seen", False
                     )
                     reset = self._begin_simulation_reset_locked()
                     was_active, old_request_id, old_handle, reset_epoch = reset
@@ -2158,16 +2276,27 @@ class RouteCoordinator:
                         # The timer resolves event-only legacy deployments.
                         self.startup_reset_event_pending = True
                         self.startup_reset_event_deadline_steady_s = (
-                            self._steady_now() + 0.5
+                            None
+                            if status_authority_seen
+                            else self._steady_now() + 0.5
                         )
                         self.startup_reset_event_legacy_completed = False
+                        self.startup_reset_event_invalidated = False
+                        self.reset_hold_barrier = True
+                    elif status_authority_seen:
+                        # Once a status authority has appeared, an unscoped
+                        # Empty can never use the legacy completion/open path.
+                        self._retire_startup_reset_event_locked(
+                            invalidated=True
+                        )
                         self.reset_hold_barrier = True
                     else:
                         self.startup_reset_event_legacy_completed = True
+                        self.startup_reset_event_invalidated = False
                         self.reset_hold_barrier = False
                     if was_active:
                         terminal = (old_request_id, reset_epoch)
-                    complete = not startup_pending
+                    complete = not startup_pending and not status_authority_seen
             if terminal is not None:
                 old_request_id, reset_epoch = terminal
                 self._publish_route_terminal_pair(

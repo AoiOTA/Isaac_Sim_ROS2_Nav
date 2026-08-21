@@ -512,3 +512,46 @@ ordering, zero old-epoch output and command through HOLD, and fresh-goal recover
   was run. Active-reset live Attempt 3 remains required to validate real DDS
   ordering, startup release, one active reset, zero old-epoch output/command,
   and fresh-goal recovery.
+
+## Startup hint authority/deadline safety amendment
+
+- Start HEAD: `bccbd3e00cf32686434b4f0f6dc21f7cc19b9c74`; scope is limited to
+  RouteCoordinator reset-status handling, its deterministic tests, and this
+  handoff/ledger. IMU, ResetStopGate producer, ActivationGate, critic, command,
+  and event contracts are unchanged.
+- A malformed, backward, or conflicting status now atomically marks strict
+  status authority as observed, retires the unbound startup Empty and its
+  steady timer, and keeps the route barrier held. That timer can no longer
+  publish completion or reopen the route after the hint is invalidated.
+- Normal `initialized`/`closed` snapshots also establish status authority. An
+  Empty arriving before or after that baseline remains held with legacy fallback
+  disabled; a later HOLD binds the same already-completed physical reset, then
+  completion/release performs exactly one request/epoch advance, empty runtime
+  snapshot, and GVG reconciliation. Both callback orders and both baseline
+  reasons are covered.
+- Hint binding checks the steady deadline while holding the same output/state
+  locks used by the timer and status callback. An already-expired hint is
+  deterministically retired before a HOLD can bind it; a later strict reset is
+  a new reset rather than a merge. Event-only operation with no observed status
+  authority retains the bounded legacy fallback.
+- Deterministic coverage includes malformed/conflicting status plus timer,
+  `initialized`/`closed` before and after Empty, deadline expiry before timer
+  callback, late baseline after expiry, both timer/status orders, a new strict
+  reset after legacy expiry, and 500 concurrent baseline/Empty rounds with no
+  double request/epoch/completion. Existing active-reset, output, graph retry,
+  and callback fences remain in the complete package regression.
+- Validation: focused RouteCoordinator **86 passed**; complete source-first
+  `robot_route_planner` **186 passed, 1 skipped** (existing optional `pxr`
+  unavailable); associated reset/gate/mode/benchmark/IMU/localization/EKF
+  regression **232 passed**. Fresh isolated package build/test passed at
+  `/tmp/v6_route_hint_build.NVrz8b`, install
+  `/tmp/v6_route_hint_install.bTHSo4`, and log
+  `/tmp/v6_route_hint_log.FK8WjM`; `colcon test-result` reported **187 tests,
+  0 errors, 0 failures, 1 skipped**. Changed-file `py_compile` and
+  `git diff --check` passed. The first associated-test command stopped during
+  collection on the stale repository overlay's pre-V6 `bio_nav_interfaces`;
+  the cited rerun sourced the allowed Integration worktree generated interface
+  first and passed.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. Active-reset live Attempt 3 remains **PENDING**.

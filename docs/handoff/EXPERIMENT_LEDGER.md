@@ -1598,3 +1598,35 @@
 - Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
   visual evidence, engineering campaign, or formal qualification was run.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
+## 2026-08-22 — V6 startup reset hint authority/deadline safety
+
+- Goal: close the two late-join reviewer HIGH blockers without changing IMU,
+  ResetStopGate producer, ActivationGate, critic, command, or event contracts.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `bccbd3e00cf32686434b4f0f6dc21f7cc19b9c74`.
+- Changes: malformed/backward/conflicting status atomically invalidates the
+  startup Empty hint/timer and holds the barrier; `initialized`/`closed`
+  establishes strict status authority and disables legacy auto-open while
+  retaining a same-physical-reset HOLD binding in either callback order;
+  bind/timer/status deadline decisions are steady-time and lock-linearized;
+  expired hints cannot bind a new generation, while status-free event-only
+  legacy fallback remains available.
+- Deterministic coverage: malformed/conflicting status then timer, both normal
+  baseline reasons and callback orders, expiry before timer/HOLD, late baseline
+  after expiry, both timer/status orders, new reset after expiry, and 500
+  concurrent baseline/Empty rounds with one request/epoch/completion.
+- Validation: focused **86 passed**; full route package **186 passed, 1
+  skipped** (`pxr` unavailable); associated reset/gate/mode/benchmark/IMU/
+  localization/EKF **232 passed**; fresh isolated build/test PASS at
+  `/tmp/v6_route_hint_build.NVrz8b`, install
+  `/tmp/v6_route_hint_install.bTHSo4`, log
+  `/tmp/v6_route_hint_log.FK8WjM`; colcon result **187 tests, 0 errors, 0
+  failures, 1 skipped**; `py_compile` and `git diff --check` PASS. One initial
+  associated-test collection used a stale repository overlay and failed on
+  missing `CanonicalRoute`; the source-first rerun used the allowed Integration
+  worktree generated interface and passed.
+- Verdict: **PASS (code/build/unit only)**. Attempt 3 remains **PENDING**; no
+  ROS/Isaac/Nav2/navigation, visual evidence, engineering campaign, or formal
+  qualification was run.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
