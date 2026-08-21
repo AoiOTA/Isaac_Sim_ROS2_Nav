@@ -1,0 +1,38 @@
+schema_version: bio_nav_v6_single_episode_manifest_v1
+scene_contract_frozen: false
+scene: {id: v6_final_kujiale_dynamic, world: kujiale, category: dynamic}
+runtime:
+  startup_profile: estimated_autonomy
+  cognitive_mode: active
+  causal_level: L3
+  module_level: M3
+  route_backend: primary
+  structure_tf_source: isaac
+  ground_truth_policy: evaluator_only
+  direct_rgbd_costmap_enabled: false
+required_runtime_values:
+  scene_asset: null
+  dynamic_asset_manifest: null
+  reset_pose: null
+  route_goal: null
+episodes:
+  - {seed: 7301, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7302, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7303, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7304, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7305, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7306, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7307, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7308, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7309, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7310, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7311, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7312, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7313, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7314, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7315, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7316, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7317, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7318, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7319, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 7320, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}

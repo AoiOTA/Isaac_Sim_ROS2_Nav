@@ -1,0 +1,38 @@
+schema_version: bio_nav_v6_single_episode_manifest_v1
+scene_contract_frozen: false
+scene: {id: v6_final_rivermark_dynamic, world: rivermark, category: dynamic}
+runtime:
+  startup_profile: estimated_autonomy
+  cognitive_mode: active
+  causal_level: L3
+  module_level: M3
+  route_backend: primary
+  structure_tf_source: isaac
+  ground_truth_policy: evaluator_only
+  direct_rgbd_costmap_enabled: false
+required_runtime_values:
+  scene_asset: null
+  dynamic_asset_manifest: null
+  reset_pose: null
+  route_goal: null
+episodes:
+  - {seed: 19401, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19402, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19403, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19404, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19405, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19406, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19407, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19408, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19409, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19410, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19411, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19412, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19413, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19414, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19415, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19416, variant_id: v1, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19417, variant_id: v2, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19418, variant_id: v3, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19419, variant_id: v4, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}
+  - {seed: 19420, variant_id: v5, reset_pose_name: "", dynamic_case_id: full_route, goal: {}}

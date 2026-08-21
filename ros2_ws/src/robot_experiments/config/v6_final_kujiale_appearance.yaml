@@ -1,0 +1,38 @@
+schema_version: bio_nav_v6_single_episode_manifest_v1
+scene_contract_frozen: false
+scene: {id: v6_final_kujiale_appearance, world: kujiale, category: appearance}
+runtime:
+  startup_profile: estimated_autonomy
+  cognitive_mode: active
+  causal_level: L3
+  module_level: M3
+  route_backend: primary
+  structure_tf_source: isaac
+  ground_truth_policy: evaluator_only
+  direct_rgbd_costmap_enabled: false
+required_runtime_values:
+  scene_asset: null
+  appearance_asset_manifest: null
+  reset_pose: null
+  route_goal: null
+episodes:
+  - {seed: 7201, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7202, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7203, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7204, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7205, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7206, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7207, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7208, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7209, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7210, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7211, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7212, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7213, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7214, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7215, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7216, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7217, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7218, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7219, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 7220, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}

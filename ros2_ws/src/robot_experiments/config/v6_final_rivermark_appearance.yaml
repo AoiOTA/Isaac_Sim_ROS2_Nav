@@ -1,0 +1,38 @@
+schema_version: bio_nav_v6_single_episode_manifest_v1
+scene_contract_frozen: false
+scene: {id: v6_final_rivermark_appearance, world: rivermark, category: appearance}
+runtime:
+  startup_profile: estimated_autonomy
+  cognitive_mode: active
+  causal_level: L3
+  module_level: M3
+  route_backend: primary
+  structure_tf_source: isaac
+  ground_truth_policy: evaluator_only
+  direct_rgbd_costmap_enabled: false
+required_runtime_values:
+  scene_asset: null
+  appearance_asset_manifest: null
+  reset_pose: null
+  route_goal: null
+episodes:
+  - {seed: 19501, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19502, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19503, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19504, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19505, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19506, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19507, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19508, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19509, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19510, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19511, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19512, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19513, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19514, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19515, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19516, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19517, variant_id: v1, appearance_profile_id: dim_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19518, variant_id: v1, appearance_profile_id: dim_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19519, variant_id: v1, appearance_profile_id: bright_warm, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19520, variant_id: v1, appearance_profile_id: bright_cool, reset_pose_name: "", dynamic_case_id: "", goal: {}}

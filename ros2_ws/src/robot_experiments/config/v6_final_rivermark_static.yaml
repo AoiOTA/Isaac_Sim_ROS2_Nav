@@ -1,0 +1,37 @@
+schema_version: bio_nav_v6_single_episode_manifest_v1
+scene_contract_frozen: false
+scene: {id: v6_final_rivermark_static, world: rivermark, category: static}
+runtime:
+  startup_profile: estimated_autonomy
+  cognitive_mode: active
+  causal_level: L3
+  module_level: M3
+  route_backend: primary
+  structure_tf_source: isaac
+  ground_truth_policy: evaluator_only
+  direct_rgbd_costmap_enabled: false
+required_runtime_values:
+  scene_asset: null
+  reset_pose: null
+  route_goal: null
+episodes:
+  - {seed: 19301, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19302, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19303, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19304, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19305, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19306, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19307, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19308, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19309, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19310, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19311, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19312, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19313, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19314, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19315, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19316, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19317, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19318, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19319, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}
+  - {seed: 19320, variant_id: v1, reset_pose_name: "", dynamic_case_id: "", goal: {}}

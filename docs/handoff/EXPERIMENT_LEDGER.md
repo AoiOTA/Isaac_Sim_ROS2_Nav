@@ -277,3 +277,27 @@
   EKF xy ATE RMSE `0.0689 m`; AMCL xy ATE RMSE `0.0629 m`.
 - Verdict: **PASS (engineering smoke only; not qualification)**.
 - Handoff: `docs/handoff/V6_A7_ESTIMATED_NAV_SMOKE_20260821.md`.
+
+## 2026-08-21 — V6 formal single-episode runner contract
+
+- Goal: add the minimal Module3 runtime-side contract for a future V6 pilot or
+  formal episode without permitting draft manifests to dispatch.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `5d40626dbf3c8c29dfa577a7fb0b5c31ba43b61f`.
+- Changes: independent zero-GT dispatcher; RouteCoordinator PRIMARY goal;
+  exactly-once reset with endpoint/readiness, bridge epoch +1, and B5 seed
+  gates; causal/control topic capture schema; six 20-row draft manifests;
+  default-disabled wrapper and `NOT_QUALIFIED` pilot inspection.
+- Draft matrix: Kujiale `7201..7220`, `7301..7320`, `7201..7220` and Rivermark
+  `19301..19320`, `19401..19420`, `19501..19520`; dynamic `v1..v5` four each;
+  four appearance profiles five each. All are explicitly unfrozen with missing
+  asset/reset/route placeholders and formal fail-closed.
+- Validation: changed Python `py_compile` PASS; focused pytest `26 passed`;
+  wrapper `bash -n` PASS; `git diff --check` PASS; isolated
+  `robot_experiments` build PASS at `/tmp/v6_formal_build.D1EGxV`; installed
+  pilot inspection returned `NOT_QUALIFIED` without output creation.
+- Verdict: **PASS (implementation/build/unit only)**.
+- Unrun: ROS/Isaac/Nav2, live reset/route/capture, pilot episode, evidence,
+  scene-contract freeze, and formal qualification.
+- Handoff:
+  `docs/handoff/V6_FORMAL_SINGLE_EPISODE_RUNNER_20260821.md`.
