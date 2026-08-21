@@ -786,6 +786,28 @@
   and release, and a successful fresh post-release goal.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
+## 2026-08-22 — V6 IMU reset/request timestamp boundary closure
+
+- Goal: prevent a reset-equal stale nonzero command from entering a recorded
+  route request's successful goal window without rejecting a legitimate
+  no-request attempt whose first command is stamped at reset.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `1d3a2d8d990c85daa24c25dd282e818a36dc5329`.
+- Changes: the recorded-request pre-motion fence is now
+  `reset_s <= t < request_s`; the no-request conservative path explicitly
+  retains reset as its valid attempt boundary. Added reset-equal, strict
+  pre/post-reset, request-boundary, and no-request positive adversarial tests.
+- Validation: source-first **47 passed**; fresh isolated build/install PASS at
+  `/tmp/v6_imu_reset_boundary_build.lrnEgy` and
+  `/tmp/v6_imu_reset_boundary_install.Vw4VgR` (log
+  `/tmp/v6_imu_reset_boundary_log.okL1lC`); installed **47 passed**; installed
+  import identity and `imu_regime_analysis --help` PASS. Terminal, stream-gap,
+  duration, and installed-share regressions remain passing.
+- Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/MCAP/navigation live
+  run or formal qualification; live regime closure remains pending.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
 ## 2026-08-22 — V6 IMU duration, goal-MCAP, and installed-resource closure
 
 - Goal: close the remaining evidence-contract paths that could promote a

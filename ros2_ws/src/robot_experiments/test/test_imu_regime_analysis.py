@@ -580,6 +580,7 @@ def _goal_records(
     *, collision=False, completion=True, completions=None, raw_nonfinite=False,
     second_reset=False, duplicate_raw=False, raw_gap=False,
     corrected_gap=False, route_request=False, post_terminal_command=False,
+    extra_commands=(), sample_start=2.0, sample_count=11,
 ):
     def stamp(value):
         sec = int(value)
@@ -617,7 +618,7 @@ def _goal_records(
         "pose": "goal", "seed": 42, "odometry": "realistic",
         "generation": 2, "case_id": "", "variant_id": "",
     }, separators=(",", ":"), sort_keys=True)
-    sample_times = [2.0 + index * 0.1 for index in range(11)]
+    sample_times = [sample_start + index * 0.1 for index in range(sample_count)]
     raw_times = list(sample_times)
     if raw_gap:
         raw_times = [value for value in raw_times if value < 2.4 or value > 2.9]
@@ -630,6 +631,10 @@ def _goal_records(
     ]
     if route_request:
         records.append(("/bio_nav/route_goal", goal(), int(1.8e9)))
+    records.extend(
+        ("/cmd_vel", twist(linear, angular), int(value * 1e9))
+        for value, linear, angular in extra_commands
+    )
     for index, value in enumerate(raw_times):
         records.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), int(value * 1e9)))
     for value in sample_times:
@@ -738,6 +743,51 @@ def test_goal_mcap_binds_single_route_request_and_checks_metadata(monkeypatch, t
     with pytest.raises(EvidenceError) as raised:
         load_goal_mcap(bag, metadata)
     assert raised.value.code == "goal_request_mismatch"
+
+
+@pytest.mark.parametrize("stamp_s", [1.0, 1.4])
+def test_goal_mcap_recorded_request_rejects_nonzero_from_reset_until_request(
+    monkeypatch, tmp_path, stamp_s,
+):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(
+            route_request=True,
+            extra_commands=((stamp_s, 0.1, 0.1),),
+        ),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag, route_request=True))
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "goal_command_before_request"
+
+
+def test_goal_mcap_recorded_request_ignores_pre_reset_and_accepts_request_boundary(
+    monkeypatch, tmp_path,
+):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(
+            route_request=True,
+            extra_commands=((0.9, 0.1, 0.1), (1.8, 0.25, 0.4)),
+        ),
+    )
+    result = load_goal_mcap(bag, _goal_metadata(bag, route_request=True))
+    assert result["goal_window"]["start_s"] == pytest.approx(1.8)
+    assert result["goal_window"]["binding_source"] == "route_goal_pose_stamped"
+
+
+def test_goal_mcap_without_request_accepts_first_nonzero_at_reset(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(),
+        _goal_records(sample_start=1.0, sample_count=21),
+    )
+    result = load_goal_mcap(bag, _goal_metadata(bag))
+    assert result["goal_window"]["start_s"] == pytest.approx(1.0)
+    assert result["goal_window"]["binding_source"] == "reset_terminal_single_command_attempt"
 
 
 @pytest.mark.parametrize(

@@ -178,3 +178,33 @@ Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP
 capture, navigation, scale selection, or qualification was run. Live capture
 must include the new terminal/coverage provenance before any yaw-scale
 decision; `yaw_scale=0.9294` and RF2O-off remain unchanged.
+
+## Reset/request timestamp boundary closure
+
+- Follow-up start HEAD:
+  `1d3a2d8d990c85daa24c25dd282e818a36dc5329`.
+- When a `PoseStamped` route request is recorded, the pre-request nonzero
+  command fence is now exactly `reset_s <= t < request_s`. A stale nonzero
+  command stamped exactly at reset therefore fails with
+  `goal_command_before_request`; a command strictly before reset is excluded,
+  while the request timestamp itself remains the valid lower bound.
+- When no route request topic is recorded, the conservative
+  `reset_terminal_single_command_attempt` path is explicit: reset is the
+  attempt boundary, so a legitimate first nonzero command at exactly reset is
+  retained instead of being misclassified as pre-request motion.
+- Source-first and fresh-installed focused tests each report **47 passed**.
+  Adversarial coverage includes reset-equal rejection, strict pre/post-reset
+  behavior, request-boundary acceptance, and a valid no-request first command;
+  terminal multiplicity, raw/corrected gap, command-duration, and installed
+  package-share contracts remain passing.
+- Fresh isolated package build/install: PASS at
+  `/tmp/v6_imu_reset_boundary_build.lrnEgy` and
+  `/tmp/v6_imu_reset_boundary_install.Vw4VgR`, with log at
+  `/tmp/v6_imu_reset_boundary_log.okL1lC`. The installed import resolves to
+  that prefix and installed `ros2 run robot_experiments imu_regime_analysis
+  --help` passes.
+
+Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP,
+navigation, calibration selection, or formal qualification was run; the live
+regime capture is still pending. Frozen `yaw_scale=0.9294` and RF2O-off are
+unchanged.

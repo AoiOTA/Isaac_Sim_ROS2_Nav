@@ -1549,11 +1549,21 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         raise _evidence_issue("AMBIGUOUS", "goal_collision_missing", "goal MCAP has no collision samples in the goal epoch")
     if any(collision_window):
         raise _evidence_issue("FAIL", "goal_collision", "goal MCAP reports a collision")
-    abnormal_before = [
-        item for item in commands
-        if reset_s < item[0] < request_s
-        and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
-    ]
+    # A recorded request gives this epoch an authoritative lower motion
+    # boundary.  Include the reset timestamp so a stale command emitted in the
+    # same executor instant as reset cannot be attributed to the new request.
+    # Without a recorded request, reset itself is the conservative attempt
+    # boundary and a legitimate first command at that timestamp must remain in
+    # the single-command-attempt window below.
+    abnormal_before = (
+        [
+            item for item in commands
+            if reset_s <= item[0] < request_s
+            and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
+        ]
+        if route_requests
+        else []
+    )
     abnormal_after = [
         item for item in commands
         if item[0] >= completed_s
