@@ -565,6 +565,8 @@ def test_reset_stale_cognitive_success_requests_gvg_compensation():
     assert coordinator.graph.graph_id == 'physical'
     assert coordinator.graph_transaction_generation is None
     assert coordinator.graph_coherent is False
+    coordinator.graph_retry_due_steady_s = 0.0
+    coordinator._graph_reconciliation_tick()
     assert coordinator.requests == [
         ('physical', 'stale SetRouteGraph success', True)]
 
@@ -591,6 +593,8 @@ def test_rebuild_reset_fresh_goal_late_success_does_not_commit_old_graph():
     assert coordinator.gvg_graph.graph_id == 'physical'
     assert coordinator.map is old_map
     assert coordinator.pending_goal is goal
+    coordinator.graph_retry_due_steady_s = 0.0
+    coordinator._graph_reconciliation_tick()
     assert coordinator.requests == [
         ('physical', 'stale structural rebuild success', True)]
 
@@ -739,6 +743,292 @@ def test_reassert_transaction_is_reserved_before_export(monkeypatch):
     assert not worker.is_alive()
     assert len(submitted_paths) == 1
     assert 'switch_7_gvg_fallback_' in submitted_paths[0]
+
+
+class _DeferredGraphFuture:
+    def __init__(self):
+        self.callback = None
+        self.response = None
+        self.error = None
+
+    def add_done_callback(self, callback):
+        self.callback = callback
+
+    def result(self):
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+    def finish(self, *, success=None, error=None):
+        self.error = error
+        self.response = (
+            None if success is None else SimpleNamespace(success=bool(success))
+        )
+        assert self.callback is not None
+        self.callback(self)
+
+
+class _SetGraphClient:
+    def __init__(self):
+        self.ready = True
+        self.raise_call = False
+        self.calls = []
+        self.futures = []
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        self.calls.append(request.graph_filepath)
+        if self.raise_call:
+            raise RuntimeError('call failed')
+        future = _DeferredGraphFuture()
+        self.futures.append(future)
+        return future
+
+
+def _reassert_liveness_coordinator(monkeypatch):
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    graph = _physical_graph()
+    support = SimpleNamespace(geojson={'features': []})
+    coordinator.graph = graph
+    coordinator.support = support
+    coordinator.gvg_graph = graph
+    coordinator.gvg_support = support
+    coordinator.desired_graph = graph
+    coordinator.desired_support = support
+    coordinator.desired_graph_generation = 2
+    coordinator.graph_generation = 4
+    coordinator.graph_switch_generation = 6
+    coordinator.reset_generation = 1
+    coordinator.graph_coherent = False
+    coordinator.graph_reassert_required = True
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_transaction_future = None
+    coordinator.graph_transaction_deadline_steady_s = None
+    coordinator.graph_transaction_kind = None
+    coordinator.graph_retry_key = None
+    coordinator.graph_retry_attempt = 0
+    coordinator.graph_retry_due_steady_s = None
+    coordinator.graph_retry_reason = ''
+    coordinator.graph_retry_kind = 'switch'
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_feedback_pending = None
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.pending_reroute_outcome = None
+    coordinator.cognitive_constraints_cache = SimpleNamespace(invalidate=lambda: None)
+    coordinator.pending_goal = object()
+    coordinator.route_active = True
+    coordinator.request_id = 10
+    coordinator.navigation_goal_handle = None
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_targets_final = False
+    coordinator.navigation_failed = False
+    coordinator.module2_enabled = False
+    coordinator.defaults = {'graph': {'route_support_spacing_m': 0.20}}
+    coordinator.SetRouteGraph = SimpleNamespace(
+        Request=lambda: SimpleNamespace(graph_filepath=''))
+    coordinator.set_graph_client = _SetGraphClient()
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        info=lambda *_args: None, warning=lambda *_args: None))
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator._publish_structural_status = lambda *_args: None
+    coordinator._publish_graph = lambda: None
+    coordinator._publish_cognitive_constraints = lambda: None
+    coordinator._clear_latest_priors = lambda: None
+    coordinator._clear_pending_prior_request = lambda: None
+    coordinator._publish_route_context = lambda: None
+    coordinator.prepared = []
+    coordinator._prepare_route = lambda priors: coordinator.prepared.append(priors)
+    coordinator.steady_s = 10.0
+    coordinator._steady_now = lambda: coordinator.steady_s
+    monkeypatch.setattr(ros_node_module, 'save_route_support', lambda *_args: None)
+    return coordinator
+
+
+def test_reassert_service_unavailable_rejection_backoff_and_no_storm(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    client = coordinator.set_graph_client
+    client.ready = False
+
+    coordinator._ensure_desired_graph('reset GVG')
+    assert client.calls == []
+    assert coordinator.graph_retry_due_steady_s == pytest.approx(10.25)
+    coordinator._ensure_desired_graph('duplicate reset GVG')
+    assert client.calls == []
+    assert coordinator.graph_retry_due_steady_s == pytest.approx(10.25)
+    coordinator.steady_s = 10.24
+    coordinator._graph_reconciliation_tick()
+    assert client.calls == []
+
+    client.ready = True
+    coordinator.steady_s = 10.25
+    coordinator._graph_reconciliation_tick()
+    assert len(client.calls) == 1
+    for expected_delay in (0.5, 1.0, 2.0, 2.0):
+        client.futures[-1].finish(success=False)
+        due = coordinator.graph_retry_due_steady_s
+        assert due - coordinator.steady_s == pytest.approx(expected_delay)
+        coordinator._graph_reconciliation_tick()
+        assert len(client.calls) == len(client.futures)
+        coordinator.steady_s = due
+        coordinator._graph_reconciliation_tick()
+        assert len(client.calls) == len(client.futures)
+    assert len(client.calls) == 5
+    assert coordinator.graph_coherent is False
+    assert coordinator.graph_reassert_required is True
+    assert coordinator.prepared == []
+
+
+def test_reassert_call_exception_retries_on_steady_clock(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.set_graph_client.raise_call = True
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=123)  # frozen ROS clock
+
+    coordinator._ensure_desired_graph('reset GVG')
+    assert len(coordinator.set_graph_client.calls) == 1
+    assert coordinator.graph_retry_due_steady_s == pytest.approx(10.25)
+    coordinator.steady_s = 10.25
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 2
+    assert coordinator.graph_retry_due_steady_s == pytest.approx(10.75)
+
+
+def test_cognitive_retry_preserves_validation_context(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.set_graph_client.raise_call = True
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, '', 'map', '', 0, 'physical', 4, '')
+    coordinator.cognitive_graph_last_sequence = 0
+    validations = []
+    coordinator._publish_graph_validation = (
+        lambda feedback, accepted, reason: validations.append(
+            (feedback, accepted, reason)))
+    cognitive = Graph('candidate:primary', 5, 'map', 0.05, [], [])
+    feedback = _feedback()
+    candidate = SimpleNamespace(identity=_identity(), source_sequence=7)
+
+    coordinator._request_graph_switch(
+        cognitive,
+        'candidate switch',
+        fallback=False,
+        feedback=feedback,
+        candidate=candidate,
+    )
+    assert coordinator.graph_retry_switch_context[2:4] == (feedback, candidate)
+    coordinator.set_graph_client.raise_call = False
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    assert coordinator.graph_transaction_switch_context[2:4] == (
+        feedback, candidate)
+    coordinator.set_graph_client.futures[0].finish(success=True)
+
+    assert coordinator.cognitive_graph_identity == candidate.identity
+    assert validations == [(feedback, True, 'set_route_graph_accepted')]
+
+
+def test_hung_timeout_late_failure_is_harmless_after_recovery(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator._ensure_desired_graph('reset GVG')
+    first = coordinator.set_graph_client.futures[0]
+    assert coordinator.graph_transaction_deadline_steady_s == pytest.approx(12.0)
+
+    coordinator.steady_s = 12.0
+    coordinator._graph_reconciliation_tick()
+    assert coordinator.graph_transaction_generation is None
+    assert coordinator.graph_retry_due_steady_s == pytest.approx(12.25)
+    coordinator.steady_s = 12.25
+    coordinator._graph_reconciliation_tick()
+    second = coordinator.set_graph_client.futures[1]
+    second.finish(success=True)
+    assert coordinator.graph_coherent is True
+    assert coordinator.prepared == [{}]
+
+    first.finish(success=False)
+    assert coordinator.graph_coherent is True
+    assert coordinator.graph_retry_due_steady_s is None
+
+
+def test_hung_timeout_late_success_fails_closed_and_compensates(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator._ensure_desired_graph('reset GVG')
+    first = coordinator.set_graph_client.futures[0]
+    coordinator.steady_s = 12.0
+    coordinator._graph_reconciliation_tick()
+    coordinator.steady_s = 12.25
+    coordinator._graph_reconciliation_tick()
+    coordinator.set_graph_client.futures[1].finish(success=True)
+    assert coordinator.graph_coherent is True
+
+    first.finish(success=True)
+    assert coordinator.graph_coherent is False
+    assert coordinator.graph_reassert_required is True
+    due = coordinator.graph_retry_due_steady_s
+    coordinator.steady_s = due
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 3
+
+
+@pytest.mark.parametrize('kind', ('switch', 'structural'))
+def test_hung_graph_transaction_crossing_reset_eventually_requests_fresh_gvg(
+    kind,
+):
+    cognitive = Graph('cognitive', 5, 'map', 0.05, [], [])
+    coordinator, transaction = _pending_graph_transaction(cognitive)
+    coordinator.graph_transaction_future = _DeferredGraphFuture()
+    coordinator.graph_transaction_deadline_steady_s = 12.0
+    coordinator.graph_transaction_kind = kind
+    coordinator.steady_s = 10.0
+    coordinator._steady_now = lambda: coordinator.steady_s
+
+    coordinator._on_reset_event(None)
+    assert coordinator.requests == []
+    coordinator.steady_s = 12.0
+    coordinator._graph_reconciliation_tick()
+
+    assert coordinator.requests == [
+        ('physical', 'simulation reset requires Route Server GVG', True)]
+    assert coordinator.graph_coherent is False
+
+
+def test_pending_goal_waits_for_reassert_success_before_prepare(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator._ensure_desired_graph('new goal GVG')
+    assert coordinator.prepared == []
+    coordinator.set_graph_client.futures[0].finish(success=True)
+    assert coordinator.prepared == [{}]
+
+
+def test_goal_arriving_during_unbound_reassert_requires_request_bound_retry(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.pending_goal = None
+    coordinator.route_active = False
+    coordinator._ensure_desired_graph('reset GVG without goal')
+    first = coordinator.set_graph_client.futures[0]
+
+    coordinator.request_id = 11
+    coordinator.pending_goal = object()
+    coordinator.route_active = True
+    with coordinator._route_state_lock():
+        coordinator._set_desired_graph_locked(
+            coordinator.gvg_graph,
+            coordinator.gvg_support,
+            require_reassert=True,
+        )
+    coordinator._ensure_desired_graph('new goal requires request-bound GVG')
+    first.finish(success=True)
+    assert coordinator.graph_coherent is False
+    assert coordinator.prepared == []
+
+    coordinator.graph_retry_due_steady_s = coordinator.steady_s
+    coordinator._graph_reconciliation_tick()
+    second = coordinator.set_graph_client.futures[1]
+    assert coordinator.graph_transaction_generation.route_request_id == 11
+    second.finish(success=True)
+    assert coordinator.prepared == [{}]
 
 
 def test_shadow_validation_ack_is_not_an_execution_outcome():

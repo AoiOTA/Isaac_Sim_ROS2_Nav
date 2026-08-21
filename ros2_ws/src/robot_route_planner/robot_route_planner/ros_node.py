@@ -8,6 +8,7 @@ import json
 import math
 import tempfile
 import threading
+import time
 
 import numpy as np
 
@@ -337,6 +338,7 @@ class RouteCoordinator:
         from nav2_msgs.srv import DynamicEdges, SetRouteGraph
         from nav_msgs.msg import OccupancyGrid, Odometry
         from rclpy.action import ActionClient
+        from rclpy.clock import Clock, ClockType
         from rclpy.duration import Duration
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from rclpy.time import Time
@@ -481,6 +483,16 @@ class RouteCoordinator:
         self.graph_coherent = True
         self.graph_reassert_required = False
         self.graph_transaction_generation: GraphSwitchGeneration | None = None
+        self.graph_transaction_future = None
+        self.graph_transaction_deadline_steady_s: float | None = None
+        self.graph_transaction_kind: str | None = None
+        self.graph_transaction_switch_context = None
+        self.graph_retry_key = None
+        self.graph_retry_attempt = 0
+        self.graph_retry_due_steady_s: float | None = None
+        self.graph_retry_reason = ""
+        self.graph_retry_kind = "switch"
+        self.graph_retry_switch_context = None
         self.primary_fallback_used = False
         self.cognitive_graph_identity = CognitiveGraphIdentity(
             int(node.get_parameter("cognitive_graph_reset_epoch").value),
@@ -584,6 +596,8 @@ class RouteCoordinator:
         self.CognitivePlaceGraphCandidate = CognitivePlaceGraphCandidate
         self.CognitiveTransition = CognitiveTransition
         self.RouteEdgeCostArray = RouteEdgeCostArray
+        self.Bool = Bool
+        self.String = String
         qos_latched = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -734,11 +748,20 @@ class RouteCoordinator:
         )
         node.create_timer(1.0, self._runtime_tick)
         node.create_timer(0.2, self._region_tick)
+        self._graph_reconciliation_clock = Clock(clock_type=ClockType.STEADY_TIME)
+        node.create_timer(
+            0.1,
+            self._graph_reconciliation_tick,
+            clock=self._graph_reconciliation_clock,
+        )
         self._publish_graph()
         self._publish_structural_status(StructuralGraphStatus.READY, "initial graph ready")
 
     def _now(self):
         return self.node.get_clock().now()
+
+    def _steady_now(self) -> float:
+        return time.monotonic()
 
     def _route_state_lock(self):
         """Return the shared state lock, including for lightweight unit fixtures."""
@@ -768,16 +791,22 @@ class RouteCoordinator:
         requested = self._graph_identity(graph)
         current = getattr(self, "desired_graph", None)
         changed = current is None or self._graph_identity(current) != requested
+        pending = getattr(self, "graph_transaction_generation", None)
         if changed:
             self.desired_graph_generation = int(
                 getattr(self, "desired_graph_generation", 0)
             ) + 1
             self.graph_reassert_required = False
+            self.graph_retry_key = None
+            self.graph_retry_attempt = 0
+            self.graph_retry_due_steady_s = None
+            self.graph_retry_switch_context = None
         if require_reassert:
+            self.graph_reassert_required = True
+        if changed and pending is not None:
             self.graph_reassert_required = True
         self.desired_graph = graph
         self.desired_support = support
-        pending = getattr(self, "graph_transaction_generation", None)
         self.graph_coherent = (
             self._graph_identity(self.graph) == requested
             and pending is None
@@ -789,6 +818,159 @@ class RouteCoordinator:
         return bool(getattr(self, "graph_coherent", True)) and (
             self._graph_identity(self.graph) == self._graph_identity(desired)
         ) and not bool(getattr(self, "graph_reassert_required", False))
+
+    def _graph_retry_key_locked(self):
+        graph = getattr(self, "desired_graph", None)
+        if graph is None:
+            graph = getattr(self, "gvg_graph", self.graph)
+        route_request_id = (
+            int(getattr(self, "request_id", 0))
+            if getattr(self, "pending_goal", None) is not None
+            else None
+        )
+        return (
+            int(getattr(self, "reset_generation", 0)),
+            int(getattr(self, "desired_graph_generation", 0)),
+            route_request_id,
+            *self._graph_identity(graph),
+        )
+
+    def _clear_graph_retry_locked(self) -> None:
+        self.graph_retry_key = None
+        self.graph_retry_attempt = 0
+        self.graph_retry_due_steady_s = None
+        self.graph_retry_reason = ""
+        self.graph_retry_kind = "switch"
+        self.graph_retry_switch_context = None
+
+    def _schedule_graph_retry_locked(
+        self,
+        reason: str,
+        *,
+        kind: str = "switch",
+        immediate: bool = False,
+        now_steady_s: float | None = None,
+        switch_context=None,
+    ) -> None:
+        now_s = self._steady_now() if now_steady_s is None else float(now_steady_s)
+        key = self._graph_retry_key_locked()
+        if getattr(self, "graph_retry_key", None) != key:
+            attempt = 0
+        else:
+            attempt = int(getattr(self, "graph_retry_attempt", 0)) + (
+                0 if immediate else 1
+            )
+        delay_s = 0.0 if immediate else min(0.25 * (2 ** attempt), 2.0)
+        self.graph_retry_key = key
+        self.graph_retry_attempt = attempt
+        self.graph_retry_due_steady_s = now_s + delay_s
+        self.graph_retry_reason = str(reason)
+        self.graph_retry_kind = str(kind)
+        self.graph_retry_switch_context = switch_context
+        self.graph_reassert_required = True
+        self.graph_coherent = False
+
+    def _register_graph_transaction_future(
+        self, generation: GraphSwitchGeneration, future, kind: str
+    ) -> None:
+        with self._route_state_lock():
+            if getattr(self, "graph_transaction_generation", None) == generation:
+                self.graph_transaction_future = future
+                self.graph_transaction_deadline_steady_s = self._steady_now() + 2.0
+                self.graph_transaction_kind = str(kind)
+
+    def _clear_graph_transaction_future_locked(
+        self, generation: GraphSwitchGeneration | None, future
+    ) -> None:
+        if (
+            generation is None
+            or (
+                getattr(self, "graph_transaction_generation", None) == generation
+                and getattr(self, "graph_transaction_future", None) is future
+            )
+        ):
+            self.graph_transaction_future = None
+            self.graph_transaction_deadline_steady_s = None
+            self.graph_transaction_kind = None
+
+    def _graph_reconciliation_tick(self) -> None:
+        """Retry Route Server authority from a steady clock without request storms."""
+
+        now_s = self._steady_now()
+        graph = None
+        reason = ""
+        fallback = False
+        retry_kind = "switch"
+        switch_context = None
+        with self._route_state_lock():
+            transaction = getattr(self, "graph_transaction_generation", None)
+            deadline = getattr(
+                self, "graph_transaction_deadline_steady_s", None
+            )
+            if transaction is not None and deadline is not None and now_s >= deadline:
+                timed_kind = getattr(self, "graph_transaction_kind", None) or "switch"
+                timed_context = getattr(
+                    self, "graph_transaction_switch_context", None
+                )
+                self.graph_transaction_generation = None
+                self.cognitive_graph_switch_pending = False
+                self.cognitive_graph_feedback_pending = None
+                self.graph_transaction_future = None
+                self.graph_transaction_deadline_steady_s = None
+                self.graph_transaction_kind = None
+                self.graph_transaction_switch_context = None
+                retry_already_targets_desired = (
+                    getattr(self, "graph_retry_key", None)
+                    == self._graph_retry_key_locked()
+                    and getattr(self, "graph_retry_due_steady_s", None) is not None
+                )
+                if not retry_already_targets_desired:
+                    self._schedule_graph_retry_locked(
+                        "SetRouteGraph request timed out",
+                        kind=timed_kind,
+                        now_steady_s=now_s,
+                        switch_context=timed_context,
+                    )
+                transaction = None
+            if transaction is not None:
+                return
+            due_s = getattr(self, "graph_retry_due_steady_s", None)
+            if due_s is None or now_s < float(due_s):
+                return
+            if getattr(self, "graph_retry_key", None) != self._graph_retry_key_locked():
+                self._schedule_graph_retry_locked(
+                    "desired graph generation changed",
+                    immediate=True,
+                    now_steady_s=now_s,
+                )
+            retry_kind = str(getattr(self, "graph_retry_kind", "switch"))
+            reason = str(getattr(self, "graph_retry_reason", "graph reconciliation"))
+            switch_context = getattr(self, "graph_retry_switch_context", None)
+            self.graph_retry_due_steady_s = None
+            if retry_kind == "structural":
+                pass
+            else:
+                graph = getattr(self, "desired_graph", self.gvg_graph)
+                fallback = self._graph_identity(graph) == self._graph_identity(
+                    self.gvg_graph
+                )
+        if retry_kind == "structural":
+            self._rebuild_structural_graph()
+        elif graph is not None:
+            if switch_context is None:
+                self._request_graph_switch(graph, reason, fallback=fallback)
+            else:
+                saved_detail, saved_fallback, feedback, candidate, validation = (
+                    switch_context
+                )
+                self._request_graph_switch(
+                    graph,
+                    saved_detail,
+                    fallback=saved_fallback,
+                    feedback=feedback,
+                    candidate=candidate,
+                    expected_validation=validation,
+                )
 
     @staticmethod
     def _graph_transaction_paths(
@@ -976,9 +1158,11 @@ class RouteCoordinator:
             == int(getattr(self, "graph_switch_generation", 0))
             and generation.base_graph_generation
             == int(getattr(self, "graph_generation", 0))
-            and (
-                generation.route_request_id is None
-                or generation.route_request_id == int(self.request_id)
+            and generation.route_request_id
+            == (
+                int(self.request_id)
+                if getattr(self, "pending_goal", None) is not None
+                else None
             )
         )
 
@@ -994,9 +1178,11 @@ class RouteCoordinator:
             == int(getattr(self, "graph_generation", 0))
             and self._graph_identity(getattr(self, "desired_graph", graph))
             == self._graph_identity(graph)
-            and (
-                generation.route_request_id is None
-                or generation.route_request_id == int(getattr(self, "request_id", 0))
+            and generation.route_request_id
+            == (
+                int(getattr(self, "request_id", 0))
+                if getattr(self, "pending_goal", None) is not None
+                else None
             )
         )
 
@@ -1087,69 +1273,96 @@ class RouteCoordinator:
             clear_tf()
         return was_active, old_request_id, old_goal, old_handle
 
-    def _publish_reset_abort_terminal(
-        self, request_id: int, reset_epoch: int
+    def _publish_route_terminal_pair(
+        self,
+        *,
+        success: bool,
+        request_id: int,
+        status: str,
+        reason: str,
+        reset_epoch: int,
     ) -> None:
-        with self._route_output_lock():
-            failed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
-            failed.data = False
-            self.goal_complete_pub.publish(failed)
-            result = __import__("std_msgs.msg", fromlist=["String"]).String()
-            result.data = json.dumps(
-                {
-                    "request_id": int(request_id),
-                    "status": "aborted",
-                    "reason": "simulation_reset",
-                    "reset_epoch": int(reset_epoch),
-                },
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            self.goal_result_pub.publish(result)
+        bool_type = getattr(self, "Bool", None)
+        string_type = getattr(self, "String", None)
+        if bool_type is None or string_type is None:
+            try:
+                messages = __import__("std_msgs.msg", fromlist=["Bool", "String"])
+                bool_type = messages.Bool
+                string_type = messages.String
+            except ModuleNotFoundError:
+                class _Message:
+                    data = None
+
+                bool_type = string_type = _Message
+        terminal = bool_type()
+        terminal.data = bool(success)
+        self.goal_complete_pub.publish(terminal)
+        result = string_type()
+        result.data = json.dumps(
+            {
+                "request_id": int(request_id),
+                "status": str(status),
+                "reason": str(reason),
+                "reset_epoch": int(reset_epoch),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        result_pub = getattr(self, "goal_result_pub", None)
+        if result_pub is not None:
+            result_pub.publish(result)
 
     def _on_reset_event(self, _message) -> None:
-        with self._route_state_lock():
-            identity = self.cognitive_graph_identity
-            was_active, old_request_id, _old_goal, old_handle = (
-                self._retire_active_route_for_reset()
-            )
-            self.reset_generation = int(getattr(self, "reset_generation", 0)) + 1
-            self.structural_generation = int(
-                getattr(self, "structural_generation", 0)
-            ) + 1
-            self.cognitive_graph_identity = CognitiveGraphIdentity(
-                identity.reset_epoch + 1,
-                '',
-                identity.map_version,
-                '',
-                0,
-                self.gvg_graph.graph_id,
-                self.gvg_graph.revision,
-                '',
-            )
-            self.cognitive_graph_last_sequence = 0
-            self.cognitive_graph_feedback_active = None
-            self.cognitive_graph_feedback_pending = None
-            self.cognitive_feedback_sequences = {}
-            self.cognitive_validation_terminal = set()
-            self.cognitive_outcome_terminal = set()
-            self.pending_reroute_outcome = None
-            self.cognitive_reroute_revision = 0
-            self.primary_fallback_used = False
-            self._set_desired_graph_locked(
-                self.gvg_graph,
-                getattr(self, "gvg_support", getattr(self, "support", None)),
-                require_reassert=True,
-            )
-            # A reset must reassert Route Server authority even when the local
-            # object already says GVG.  An older in-flight transaction keeps
-            # ownership until its response is consumed, then compensates.
-            self.graph_coherent = False
+        with self._route_output_lock():
+            with self._route_state_lock():
+                identity = self.cognitive_graph_identity
+                was_active, old_request_id, _old_goal, old_handle = (
+                    self._retire_active_route_for_reset()
+                )
+                self.reset_generation = int(
+                    getattr(self, "reset_generation", 0)
+                ) + 1
+                self.structural_generation = int(
+                    getattr(self, "structural_generation", 0)
+                ) + 1
+                self.cognitive_graph_identity = CognitiveGraphIdentity(
+                    identity.reset_epoch + 1,
+                    '',
+                    identity.map_version,
+                    '',
+                    0,
+                    self.gvg_graph.graph_id,
+                    self.gvg_graph.revision,
+                    '',
+                )
+                self.cognitive_graph_last_sequence = 0
+                self.cognitive_graph_feedback_active = None
+                self.cognitive_graph_feedback_pending = None
+                self.cognitive_feedback_sequences = {}
+                self.cognitive_validation_terminal = set()
+                self.cognitive_outcome_terminal = set()
+                self.pending_reroute_outcome = None
+                self.cognitive_reroute_revision = 0
+                self.primary_fallback_used = False
+                self._set_desired_graph_locked(
+                    self.gvg_graph,
+                    getattr(self, "gvg_support", getattr(self, "support", None)),
+                    require_reassert=True,
+                )
+                # A reset must reassert Route Server authority even when the local
+                # object already says GVG.  An older in-flight transaction keeps
+                # ownership until timeout/completion, then compensates.
+                self.graph_coherent = False
+                reset_epoch = int(self.cognitive_graph_identity.reset_epoch)
+            if was_active:
+                self._publish_route_terminal_pair(
+                    success=False,
+                    request_id=old_request_id,
+                    status="aborted",
+                    reason="simulation_reset",
+                    reset_epoch=reset_epoch,
+                )
         self._cancel_navigation_handle(old_handle)
-        if was_active:
-            self._publish_reset_abort_terminal(
-                old_request_id, self.cognitive_graph_identity.reset_epoch
-            )
         try:
             self._publish_runtime_states(graph=self.gvg_graph)
         except Exception as error:
@@ -1302,6 +1515,9 @@ class RouteCoordinator:
         feedback: CognitiveGraphFeedback | None = None, candidate=None,
         expected_validation: CognitiveValidationGeneration | None = None,
     ) -> None:
+        switch_context = (
+            str(detail), bool(fallback), feedback, candidate, expected_validation
+        )
         with self._route_state_lock():
             if (
                 expected_validation is not None
@@ -1320,6 +1536,13 @@ class RouteCoordinator:
             ):
                 return
             self._set_desired_graph_locked(graph, support=None)
+            retry_waiting = (
+                getattr(self, "graph_retry_key", None)
+                == self._graph_retry_key_locked()
+                and getattr(self, "graph_retry_due_steady_s", None) is not None
+            )
+            if retry_waiting:
+                return
             if getattr(self, "graph_transaction_generation", None) is not None:
                 # Consume and compensate the in-flight request before starting
                 # another Route Server transaction.
@@ -1339,6 +1562,10 @@ class RouteCoordinator:
                 int(graph.revision),
             )
             self.graph_transaction_generation = generation
+            self.graph_transaction_future = None
+            self.graph_transaction_deadline_steady_s = None
+            self.graph_transaction_kind = "switch"
+            self.graph_transaction_switch_context = switch_context
             self.cognitive_graph_switch_pending = True
             self.cognitive_graph_feedback_pending = feedback
         try:
@@ -1358,11 +1585,15 @@ class RouteCoordinator:
                 )
                 if self.graph_transaction_generation == generation:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
                     self.cognitive_graph_feedback_pending = None
-                self.graph_coherent = False
+                self._schedule_graph_retry_locked(
+                    "graph export invalidated" if invalidated
+                    else f"graph export rejected: {error}",
+                    switch_context=None if invalidated else switch_context,
+                )
             if invalidated:
-                self._ensure_desired_graph("graph export invalidated")
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -1391,13 +1622,15 @@ class RouteCoordinator:
                 )
                 if self.graph_transaction_generation == generation:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
                     self.cognitive_graph_feedback_pending = None
-                self.graph_coherent = False
-            if invalidated:
-                self._ensure_desired_graph(
+                self._schedule_graph_retry_locked(
                     "graph switch invalidated while service unavailable"
+                    if invalidated else "SetRouteGraph unavailable",
+                    switch_context=None if invalidated else switch_context,
                 )
+            if invalidated:
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -1435,13 +1668,16 @@ class RouteCoordinator:
             if not transaction_current:
                 if self.graph_transaction_generation == generation:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
                     self.cognitive_graph_feedback_pending = None
-                self.graph_coherent = False
+                self._schedule_graph_retry_locked(
+                    "graph switch invalidated before submit",
+                    switch_context=None,
+                )
             else:
                 self.desired_support = support
         if not transaction_current:
-            self._ensure_desired_graph("graph switch invalidated before submit")
             return
         request = self.SetRouteGraph.Request()
         request.graph_filepath = str(geojson)
@@ -1454,19 +1690,22 @@ class RouteCoordinator:
                 )
                 if self.graph_transaction_generation == generation:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
                     self.cognitive_graph_feedback_pending = None
-                self.graph_coherent = False
-            if invalidated:
-                self._ensure_desired_graph(
+                self._schedule_graph_retry_locked(
                     "graph switch invalidated during request failure"
+                    if invalidated else f"SetRouteGraph request failed: {error}",
+                    switch_context=None if invalidated else switch_context,
                 )
+            if invalidated:
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"SetRouteGraph request failed: {error}",
             )
             return
+        self._register_graph_transaction_future(generation, future, "switch")
         future.add_done_callback(
             lambda completed: self._finish_cognitive_graph_switch(
                 completed, graph, support, detail, fallback, generation,
@@ -1488,19 +1727,24 @@ class RouteCoordinator:
             detail = f"SetRouteGraph exception: {error}"
         succeeded = bool(response is not None and getattr(response, "success", False))
         requested_identity = self._graph_identity(graph)
-        reconcile = False
         commit = False
         pending_outcome = None
         cancel_handle = None
         prepare_pending_goal = False
-        needs_reassert = False
+        current_failure = False
         with self._route_state_lock():
             transaction_matches = (
                 generation is None
                 or getattr(self, "graph_transaction_generation", None) == generation
             )
+            transaction_context = (
+                getattr(self, "graph_transaction_switch_context", None)
+                if transaction_matches else None
+            )
+            self._clear_graph_transaction_future_locked(generation, future)
             if transaction_matches:
                 self.graph_transaction_generation = None
+                self.graph_transaction_switch_context = None
                 self.cognitive_graph_switch_pending = False
                 self.cognitive_graph_feedback_pending = None
             desired = getattr(self, "desired_graph", graph)
@@ -1512,9 +1756,11 @@ class RouteCoordinator:
                 == int(getattr(self, "desired_graph_generation", 0))
                 and generation.base_graph_generation
                 == int(getattr(self, "graph_generation", 0))
-                and (
-                    generation.route_request_id is None
-                    or generation.route_request_id == int(self.request_id)
+                and generation.route_request_id
+                == (
+                    int(self.request_id)
+                    if getattr(self, "pending_goal", None) is not None
+                    else None
                 )
             )
             commit = bool(
@@ -1554,6 +1800,7 @@ class RouteCoordinator:
                 self.cognitive_constraints_cache.invalidate()
                 self.graph_reassert_required = False
                 self.graph_coherent = True
+                self._clear_graph_retry_locked()
                 if self.pending_goal is not None:
                     cancel_handle = self.navigation_goal_handle
                     self.navigation_goal_handle = None
@@ -1566,19 +1813,36 @@ class RouteCoordinator:
                 if succeeded:
                     # A stale success may have changed Route Server state even
                     # though it cannot commit local state.
-                    self.graph_reassert_required = True
-                self.graph_coherent = False
-                reconcile = requested_identity != desired_identity
-            needs_reassert = bool(
-                getattr(self, "graph_reassert_required", False)
-            )
+                    retry_context = (
+                        getattr(self, "graph_retry_switch_context", None)
+                        if getattr(self, "graph_retry_key", None)
+                        == self._graph_retry_key_locked()
+                        else None
+                    )
+                    self._schedule_graph_retry_locked(
+                        "stale SetRouteGraph success",
+                        switch_context=retry_context,
+                    )
+                else:
+                    current_failure = bool(
+                        transaction_matches
+                        and generation_current
+                        and requested_identity == desired_identity
+                    )
+                    if current_failure:
+                        self._schedule_graph_retry_locked(
+                            "current SetRouteGraph rejection",
+                            switch_context=transaction_context,
+                        )
 
         if not succeeded:
+            if not current_failure:
+                return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"cognitive graph {'fallback' if fallback else 'rejected'}: {detail}",
             )
-            if feedback is not None:
+            if feedback is not None and (generation is None or generation_current):
                 self._publish_graph_validation(
                     replace(
                         feedback,
@@ -1587,9 +1851,7 @@ class RouteCoordinator:
                     ), accepted=False,
                     reason=f"set_route_graph_rejected: {detail}",
                 )
-            if reconcile or needs_reassert:
-                self._ensure_desired_graph("stale SetRouteGraph completion")
-            elif not fallback and self._primary_fallback_available():
+            if current_failure and not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once(
                     detail,
                     request_id=(
@@ -1605,7 +1867,6 @@ class RouteCoordinator:
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "stale SetRouteGraph success; reconciling desired graph",
             )
-            self._ensure_desired_graph("stale SetRouteGraph success")
             return
         if not fallback and feedback is not None:
             self._publish_graph_validation(
@@ -1631,6 +1892,13 @@ class RouteCoordinator:
     def _ensure_desired_graph(self, reason: str) -> None:
         with self._route_state_lock():
             if getattr(self, "graph_transaction_generation", None) is not None:
+                self._schedule_graph_retry_locked(reason, immediate=True)
+                return
+            if (
+                getattr(self, "graph_retry_key", None)
+                == self._graph_retry_key_locked()
+                and getattr(self, "graph_retry_due_steady_s", None) is not None
+            ):
                 return
             graph = getattr(self, "desired_graph", self.gvg_graph)
             fallback = self._graph_identity(graph) == self._graph_identity(
@@ -2505,9 +2773,14 @@ class RouteCoordinator:
         fallback = False
         edge_failure = None
         late_handle = None
+        terminal_snapshot = None
+        rebuild = False
         with self._route_output_lock():
             with self._route_state_lock():
-                current = self._route_callback_is_current(generation)
+                current = (
+                    self._route_callback_is_current(generation)
+                    and bool(getattr(self, "navigation_goal_pending", False))
+                )
                 if current:
                     self.navigation_goal_pending = False
                     if handle is None or not handle.accepted:
@@ -2520,7 +2793,18 @@ class RouteCoordinator:
                             self.navigation_failed = False
                             self.tracker = None
                         else:
-                            self.navigation_failed = True
+                            terminal_snapshot = (
+                                int(getattr(self, "request_id", 0)),
+                                int(getattr(
+                                    getattr(self, "cognitive_graph_identity", None),
+                                    "reset_epoch", 0,
+                                )),
+                            )
+                            self._retire_route_state()
+                            rebuild = (
+                                getattr(self, "pending_structural_map", None)
+                                is not None
+                            )
                     else:
                         self.navigation_goal_handle = handle
             if not current:
@@ -2533,10 +2817,15 @@ class RouteCoordinator:
                         feedback, validated_edge_id, candidate_edge_id,
                         success=False, reason="navigate_to_pose_rejected",
                     )
-                if not fallback:
-                    failed = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
-                    failed.data = False
-                    self.goal_complete_pub.publish(failed)
+                if terminal_snapshot is not None:
+                    request_id, reset_epoch = terminal_snapshot
+                    self._publish_route_terminal_pair(
+                        success=False,
+                        request_id=request_id,
+                        status="failed",
+                        reason="navigate_to_pose_rejected",
+                        reset_epoch=reset_epoch,
+                    )
         if not current:
             self._cancel_navigation_handle(late_handle)
             return
@@ -2549,6 +2838,8 @@ class RouteCoordinator:
                 self.node.get_logger().warning(
                     "route-guided NavigateToPose rejected"
                 )
+                if rebuild:
+                    self._rebuild_structural_graph()
             return
         result_future = handle.get_result_async()
         result_future.add_done_callback(
@@ -2568,9 +2859,13 @@ class RouteCoordinator:
         fallback = False
         edge = None
         rebuild = False
+        terminal_snapshot = None
         with self._route_output_lock():
             with self._route_state_lock():
-                if not self._route_callback_is_current(generation):
+                if (
+                    not self._route_callback_is_current(generation)
+                    or getattr(self, "navigation_goal_handle", None) is None
+                ):
                     return
                 completion_confirmed = False
                 final_xy = None
@@ -2605,6 +2900,19 @@ class RouteCoordinator:
                     fallback = True
                 else:
                     edge = self._cognitive_route_edge()
+                    terminal_snapshot = (
+                        int(getattr(self, "request_id", 0)),
+                        int(getattr(
+                            getattr(self, "cognitive_graph_identity", None),
+                            "reset_epoch", 0,
+                        )),
+                        bool(succeeded),
+                        (
+                            "final_goal_distance_confirmed"
+                            if succeeded
+                            else f"navigate_to_pose_failed_error_{result_code}"
+                        ),
+                    )
                     self._retire_route_state()
                     rebuild = (
                         getattr(self, "pending_structural_map", None) is not None
@@ -2619,10 +2927,15 @@ class RouteCoordinator:
                         else f"navigate_to_pose_failed_error_{result_code}"
                     ),
                 )
-            if intermediate_suffix is None and not fallback:
-                terminal = __import__("std_msgs.msg", fromlist=["Bool"]).Bool()
-                terminal.data = bool(succeeded)
-                self.goal_complete_pub.publish(terminal)
+            if terminal_snapshot is not None:
+                request_id, reset_epoch, terminal_success, reason = terminal_snapshot
+                self._publish_route_terminal_pair(
+                    success=terminal_success,
+                    request_id=request_id,
+                    status="succeeded" if terminal_success else "failed",
+                    reason=reason,
+                    reset_epoch=reset_epoch,
+                )
         if intermediate_suffix is not None:
             self.node.get_logger().info(
                 "intermediate route lookahead reached; continuing because "
@@ -2809,7 +3122,9 @@ class RouteCoordinator:
             return
         if not self.set_graph_client.service_is_ready():
             with self._route_state_lock():
-                self.graph_coherent = False
+                self._schedule_graph_retry_locked(
+                    "SetRouteGraph service unavailable", kind="structural"
+                )
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "SetRouteGraph service unavailable",
@@ -2851,6 +3166,10 @@ class RouteCoordinator:
                 int(candidate.revision),
             )
             self.graph_transaction_generation = transaction
+            self.graph_transaction_future = None
+            self.graph_transaction_deadline_steady_s = None
+            self.graph_transaction_kind = "structural"
+            self.graph_transaction_switch_context = None
             self.cognitive_graph_switch_pending = True
         try:
             geojson, mapping = self._graph_transaction_paths(
@@ -2869,10 +3188,14 @@ class RouteCoordinator:
                 )
                 if self.graph_transaction_generation == transaction:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
-                self.graph_coherent = False
+                self._schedule_graph_retry_locked(
+                    "structural export invalidated" if invalidated
+                    else f"rebuild export failed: {error}",
+                    kind="switch" if invalidated else "structural",
+                )
             if invalidated:
-                self._ensure_desired_graph("structural export invalidated")
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -2893,10 +3216,13 @@ class RouteCoordinator:
             if not transaction_current:
                 if self.graph_transaction_generation == transaction:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
-                self.graph_coherent = False
+                self._schedule_graph_retry_locked(
+                    "structural rebuild invalidated before submit",
+                    kind="switch",
+                )
         if not transaction_current:
-            self._ensure_desired_graph("structural rebuild invalidated before submit")
             return
         request = self.SetRouteGraph.Request()
         request.graph_filepath = str(geojson)
@@ -2914,18 +3240,21 @@ class RouteCoordinator:
                 )
                 if self.graph_transaction_generation == transaction:
                     self.graph_transaction_generation = None
+                    self.graph_transaction_switch_context = None
                     self.cognitive_graph_switch_pending = False
-                self.graph_coherent = False
-            if invalidated:
-                self._ensure_desired_graph(
+                self._schedule_graph_retry_locked(
                     "structural rebuild invalidated during request failure"
+                    if invalidated else f"SetRouteGraph rebuild request failed: {error}",
+                    kind="switch" if invalidated else "structural",
                 )
+            if invalidated:
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"SetRouteGraph rebuild request failed: {error}",
             )
             return
+        self._register_graph_transaction_future(transaction, future, "structural")
         future.add_done_callback(
             lambda completed: self._finish_rebuild(
                 completed, candidate, candidate_map, support,
@@ -2945,14 +3274,16 @@ class RouteCoordinator:
             self.node.get_logger().warning(f"SetRouteGraph failed: {error}")
         succeeded = bool(response is not None and response.success)
         commit = False
-        reconcile = False
+        current_failure = False
         with self._route_state_lock():
             transaction_matches = (
                 transaction is None
                 or getattr(self, "graph_transaction_generation", None) == transaction
             )
+            self._clear_graph_transaction_future_locked(transaction, future)
             if transaction_matches:
                 self.graph_transaction_generation = None
+                self.graph_transaction_switch_context = None
                 self.cognitive_graph_switch_pending = False
             desired = getattr(self, "desired_graph", graph)
             requested_identity = self._graph_identity(graph)
@@ -3006,25 +3337,36 @@ class RouteCoordinator:
                 self.pending_structural_map = None
                 self.graph_reassert_required = False
                 self.graph_coherent = True
+                self._clear_graph_retry_locked()
             else:
                 if succeeded:
-                    self.graph_reassert_required = True
-                self.graph_coherent = False
-                reconcile = requested_identity != desired_identity
+                    self._schedule_graph_retry_locked(
+                        "stale structural rebuild success", kind="switch"
+                    )
+                else:
+                    current_failure = bool(
+                        transaction_matches
+                        and generation_current
+                        and requested_identity == desired_identity
+                    )
+                    if current_failure:
+                        self._schedule_graph_retry_locked(
+                            "Route Server rejected rebuilt graph",
+                            kind="structural",
+                        )
         if not succeeded:
+            if not current_failure:
+                return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "Route Server rejected rebuilt graph",
             )
-            if reconcile:
-                self._ensure_desired_graph("stale structural rebuild completion")
             return
         if not commit:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "stale structural rebuild success; reconciling desired graph",
             )
-            self._ensure_desired_graph("stale structural rebuild success")
             return
         self._publish_graph()
         self._publish_cognitive_constraints()

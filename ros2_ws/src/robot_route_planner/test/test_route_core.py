@@ -614,6 +614,7 @@ def test_reset_waits_for_navigation_handle_check_and_cancels_committed_handle() 
 
 def test_reset_terminal_cannot_be_overtaken_by_old_navigation_rejection() -> None:
     coordinator = _reset_route_coordinator()
+    coordinator.pending_structural_map = None
     coordinator.cognitive_graph_feedback_active = None
     generation = coordinator._route_callback_generation()
     events = []
@@ -653,7 +654,7 @@ def test_reset_terminal_cannot_be_overtaken_by_old_navigation_rejection() -> Non
     reset_thread = threading.Thread(
         name='reset', target=coordinator._on_reset_event, args=(None,))
     reset_thread.start()
-    assert reset_state_retired.wait(timeout=2.0)
+    reset_thread.join(timeout=0.05)
     assert reset_thread.is_alive()
     release_old_publish.set()
     callback_thread.join(timeout=2.0)
@@ -663,9 +664,78 @@ def test_reset_terminal_cannot_be_overtaken_by_old_navigation_rejection() -> Non
     assert not reset_thread.is_alive()
     assert events == [
         ('old-navigation', 'complete'),
-        ('reset', 'complete'),
-        ('reset', 'result'),
+        ('old-navigation', 'result'),
     ]
+    assert reset_state_retired.is_set()
+
+
+def test_reset_wins_terminal_race_and_late_rejection_is_silent() -> None:
+    coordinator = _reset_route_coordinator()
+    coordinator.cognitive_graph_feedback_active = None
+    generation = coordinator._route_callback_generation()
+    events = []
+    reset_retired = threading.Event()
+    release_reset = threading.Event()
+    original_retire = coordinator._retire_active_route_for_reset
+
+    class OrderedPublisher:
+        def __init__(self, kind):
+            self.kind = kind
+
+        def publish(self, _message):
+            events.append((threading.current_thread().name, self.kind))
+
+    coordinator.goal_complete_pub = OrderedPublisher('complete')
+    coordinator.goal_result_pub = OrderedPublisher('result')
+
+    def blocked_retire():
+        result = original_retire()
+        reset_retired.set()
+        assert release_reset.wait(timeout=2.0)
+        return result
+
+    coordinator._retire_active_route_for_reset = blocked_retire
+    reset_thread = threading.Thread(
+        name='reset', target=coordinator._on_reset_event, args=(None,))
+    reset_thread.start()
+    assert reset_retired.wait(timeout=2.0)
+    callback_thread = threading.Thread(
+        name='old-navigation',
+        target=coordinator._on_navigation_goal_handle,
+        args=(SimpleNamespace(result=lambda: SimpleNamespace(accepted=False)), generation),
+    )
+    callback_thread.start()
+    callback_thread.join(timeout=0.05)
+    assert callback_thread.is_alive()
+    release_reset.set()
+    reset_thread.join(timeout=2.0)
+    callback_thread.join(timeout=2.0)
+
+    assert not reset_thread.is_alive()
+    assert not callback_thread.is_alive()
+    assert events == [('reset', 'complete'), ('reset', 'result')]
+
+
+def test_navigation_rejection_retires_once_and_duplicate_callback_is_silent() -> None:
+    coordinator = _reset_route_coordinator()
+    coordinator.pending_structural_map = None
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_mode = 'gvg'
+    generation = coordinator._route_callback_generation()
+
+    rejected = SimpleNamespace(result=lambda: SimpleNamespace(accepted=False))
+    coordinator._on_navigation_goal_handle(rejected, generation)
+    coordinator._on_navigation_goal_handle(rejected, generation)
+
+    assert coordinator.route_active is False
+    assert coordinator.pending_goal is None
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+    assert [json.loads(message.data) for message in coordinator.goal_result_pub.messages] == [{
+        'request_id': 41,
+        'status': 'failed',
+        'reason': 'navigate_to_pose_rejected',
+        'reset_epoch': 8,
+    }]
 
 
 def test_old_compute_rejection_cannot_mark_fresh_goal_fallback() -> None:
@@ -1130,6 +1200,7 @@ def test_navigation_result_retires_old_leg_before_publishing_completion() -> Non
     coordinator.navigation_failed = True
     coordinator.pending_structural_map = None
     coordinator.goal_complete_pub = Publisher()
+    coordinator.goal_result_pub = _CapturePublisher()
     coordinator.node = SimpleNamespace(
         get_logger=lambda: SimpleNamespace(info=lambda _message: None)
     )
@@ -1144,6 +1215,12 @@ def test_navigation_result_retires_old_leg_before_publishing_completion() -> Non
     assert not coordinator.route_active
     assert coordinator.tracker is None
     assert coordinator.navigation_goal_handle is None
+    assert json.loads(coordinator.goal_result_pub.messages[0].data) == {
+        'request_id': 0,
+        'status': 'succeeded',
+        'reason': 'final_goal_distance_confirmed',
+        'reset_epoch': 0,
+    }
 
 
 def test_intermediate_lookahead_success_continues_same_leg() -> None:
@@ -1164,6 +1241,7 @@ def test_intermediate_lookahead_success_continues_same_leg() -> None:
     coordinator.goal_complete_pub = SimpleNamespace(
         publish=lambda message: events.append(message.data)
     )
+    coordinator.goal_result_pub = _CapturePublisher()
     coordinator.node = SimpleNamespace(
         get_logger=lambda: SimpleNamespace(info=lambda _message: None)
     )
@@ -1201,6 +1279,7 @@ def test_final_goal_success_accepts_map_pose_inside_campaign_gate() -> None:
     coordinator.goal_complete_pub = SimpleNamespace(
         publish=lambda message: events.append(message.data)
     )
+    coordinator.goal_result_pub = _CapturePublisher()
     coordinator.node = SimpleNamespace(
         get_logger=lambda: SimpleNamespace(info=lambda _message: None)
     )
@@ -1212,6 +1291,30 @@ def test_final_goal_success_accepts_map_pose_inside_campaign_gate() -> None:
 
     assert events == [True]
     assert coordinator.pending_goal is None
+    assert json.loads(coordinator.goal_result_pub.messages[0].data)['status'] == 'succeeded'
+
+
+def test_final_navigation_failure_publishes_one_bool_json_pair() -> None:
+    coordinator = _reset_route_coordinator()
+    coordinator.pending_structural_map = None
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_mode = 'gvg'
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_handle = object()
+    generation = coordinator._route_callback_generation()
+    future = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=6, result=SimpleNamespace(error_code=207)))
+
+    coordinator._on_navigation_result(future, generation)
+    coordinator._on_navigation_result(future, generation)
+
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+    assert [json.loads(message.data) for message in coordinator.goal_result_pub.messages] == [{
+        'request_id': 41,
+        'status': 'failed',
+        'reason': 'navigate_to_pose_failed_error_207',
+        'reset_epoch': 8,
+    }]
 
 
 def test_navigation_action_status_is_authoritative_over_error_detail() -> None:

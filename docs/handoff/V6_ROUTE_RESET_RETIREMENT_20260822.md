@@ -101,6 +101,58 @@ late accepted handles are cancelled, no stale NavigateToPose or nonzero command
 crosses StopGate release, and a fresh post-reset goal is the only route that can
 resume motion.
 
+## Final terminal and Route Server reassert-liveness amendment
+
+- Start HEAD: `ea6f532554177f8256c194f67449dae622b009a8`; the reset gate,
+  benchmark STOP evidence, route-generation fences, and passive IMU diagnostics
+  already present at that HEAD are retained unchanged.
+- Non-fallback `NavigateToPose` rejection now checks the route generation and
+  synchronously retires the current route while holding the same output/state
+  lock order used by reset. Rejection, reset, final success, and final failure
+  each emit exactly one paired Bool plus JSON result. JSON includes
+  `request_id`, `reset_epoch`, `status`, and `reason`; rejection uses
+  `status=failed`, `reason=navigate_to_pose_rejected`. Fallback, intermediate
+  lookahead success, preemption, and duplicate late callbacks remain
+  non-terminal. A pending structural rebuild is triggered once after terminal
+  retirement using the existing semantics.
+- Route Server graph reconciliation now runs from a dedicated 0.1 s steady
+  clock. Each transaction records its future, kind, and a 2.0 s steady deadline.
+  Retry identity binds reset generation, desired-graph generation, optional
+  route request ID, graph ID, and revision. Failures use bounded backoff
+  0.25/0.5/1.0/2.0 s; one tick dispatches at most one transaction, and duplicate
+  triggers cannot bypass an armed retry.
+- Service unavailability, export/call exceptions, current rejection/exception,
+  and timeout remain fail closed (`graph_coherent=false`, reassert required)
+  and schedule retry without recursive submission. Timed-out futures are not
+  cancelled. Every late response is consumed: a stale failure cannot damage a
+  recovered coherent graph, while stale success fails closed and schedules a
+  generation-fenced compensation. Cognitive and structural transactions both
+  carry deadlines; a reset crossing either kind preserves the fresh desired-GVG
+  retry. Service readiness, export, call, publish, cancel, and route preparation
+  remain outside the route state lock.
+- Deterministic coverage includes both reset/rejection barrier orders, duplicate
+  rejection/result callbacks, final success/failure pairs, service unavailable,
+  call exception, rejection backoff/no-storm, hung timeout, late failure after
+  recovery, late-success compensation, cognitive/structural timeout crossing
+  reset, frozen ROS time with advancing steady time, and pending-goal preparation
+  only after successful reassert.
+- Validation: focused route/graph **90 passed**; complete source-first/no-cache
+  `robot_route_planner/test` **114 passed, 1 skipped** (existing `pxr` import is
+  unavailable); associated reset-seed/ResetStopGate/IMU/MotionBenchmark/reset
+  receipt regression **65 passed** after sourcing `/opt/ros/jazzy/setup.bash`;
+  `py_compile` and `git diff --check` PASS. Fresh isolated package build and
+  constrained `colcon test` PASS at
+  `/tmp/v6_route_terminal_final_build.NRRMgN`, install
+  `/tmp/v6_route_terminal_final_install.R7UZTF`, log
+  `/tmp/v6_route_terminal_final_log.ujW3QY`; result: **115 tests, 0 errors,
+  0 failures, 1 skipped**. An initial `colcon test` invocation from the broad
+  workspace root stopped at duplicate package-name discovery and ran 0 tests;
+  the cited rerun was constrained to the allowed Module3 `ros2_ws`.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, evidence campaign, or formal qualification was run. Executor,
+  action-server, DDS ordering, and live active-reset/reassert behavior remain
+  unverified and require the already planned active-reset live review.
+
 ## Second concurrency-review blocker amendment
 
 - Start HEAD: `5d4de361c5d1f7a9f7f6ea9e33b6ef36c04d18dd`; the MotionBenchmark STOP

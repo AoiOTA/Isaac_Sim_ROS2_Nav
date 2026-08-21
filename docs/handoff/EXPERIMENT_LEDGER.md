@@ -716,6 +716,40 @@
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
 
+## 2026-08-22 — V6 route terminal and graph reassert-liveness repair
+
+- Goal: close the final RouteCoordinator review blockers: exactly-once paired
+  route terminals under reset/rejection concurrency, and bounded steady-clock
+  Route Server reassertion after unavailable, rejected, exceptional, or hung
+  `SetRouteGraph` transactions.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `ea6f532554177f8256c194f67449dae622b009a8`.
+- Changes: rejection/reset/final outcomes share an output/state lock order,
+  synchronously retire current route state, and emit one Bool+JSON pair;
+  duplicate late callbacks, fallback, intermediate success, and preemption are
+  silent. Added a 0.1 s steady reconciliation timer, 2.0 s transaction deadline,
+  generation/route/graph-bound retry key, 0.25-to-2.0 s capped backoff, no-storm
+  dispatch, uncancelled late-future consumption, stale-failure isolation, and
+  stale-success fail-closed compensation for cognitive and structural requests.
+- Validation: focused route/graph **90 passed**; full route package **114
+  passed, 1 skipped** (`pxr` unavailable); associated reset/gate/IMU/benchmark
+  regression **65 passed**; isolated `robot_route_planner` colcon build/test
+  PASS at `/tmp/v6_route_terminal_final_build.NRRMgN` with install
+  `/tmp/v6_route_terminal_final_install.R7UZTF`; colcon result **115 tests,
+  0 errors, 0 failures, 1 skipped**; `py_compile` and `git diff --check` PASS.
+  The first associated-test invocation lacked the ROS environment and had
+  three collection errors; the source-first rerun after
+  `source /opt/ros/jazzy/setup.bash` is the cited passing result. An initial
+  colcon-test invocation from the workspace root stopped during duplicate-name
+  discovery and ran 0 tests; the passing rerun was constrained to the allowed
+  Module3 `ros2_ws`.
+- Result: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation runtime,
+  visual evidence, engineering campaign, or formal qualification was run.
+- Remaining risk/next step: executor/action-server/DDS timing and actual active
+  reset/reassert behavior are still unverified; run the planned bounded live
+  active-reset review before making an engineering-runtime claim.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 IMU regime diagnostic instrumentation
 
 - Goal/hypothesis: add passive loop-phase evidence and a reproducible offline
