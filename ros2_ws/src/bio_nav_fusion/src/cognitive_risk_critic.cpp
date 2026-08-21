@@ -37,13 +37,47 @@ double wrap(double angle)
   return std::atan2(std::sin(angle), std::cos(angle));
 }
 
+CognitiveObstacleLayer::Identity identityOf(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
+{
+  return CognitiveObstacleLayer::Identity{
+    message.reset_epoch, message.recurrent_session_id, message.map_version,
+    message.cognitive_tile_id, message.tile_revision, message.graph_revision,
+    message.model_id};
+}
+
+bool sameStableIdentity(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray & message,
+  const CognitiveObstacleLayer::Identity & expected)
+{
+  return message.map_version == expected.map_version &&
+         message.cognitive_tile_id == expected.cognitive_tile_id &&
+         message.tile_revision == expected.tile_revision &&
+         message.graph_revision == expected.graph_revision &&
+         message.model_id == expected.model_id;
+}
+
+bool sameResetContext(
+  const bio_nav_interfaces::msg::PlanningPrior & candidate,
+  const bio_nav_interfaces::msg::PlanningPrior & accepted)
+{
+  return candidate.schema_version == accepted.schema_version &&
+         candidate.local_direction_schema_version == accepted.local_direction_schema_version &&
+         candidate.local_direction_graph_id == accepted.local_direction_graph_id &&
+         candidate.source_physical_graph_id == accepted.source_physical_graph_id &&
+         candidate.source_physical_graph_revision == accepted.source_physical_graph_revision &&
+         candidate.topology_revision == accepted.topology_revision;
+}
+
 }  // namespace
 
 void CognitiveRiskCritic::initialize()
 {
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    accepted_obstacles_.reset();
+    obstacles_.reset();
+    prior_.reset();
+    accepted_prior_.reset();
     expected_ = CognitiveObstacleLayer::Identity{};
     accepted_.reset();
     identity_bound_ = false;
@@ -87,8 +121,44 @@ void CognitiveRiskCritic::initialize()
 void CognitiveRiskCritic::obstacleCallback(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message)
 {
+  const auto now_ns = parent_.lock()->get_clock()->now().nanoseconds();
   std::lock_guard<std::mutex> lock(mutex_);
+  const bool reset_rebind_candidate = identity_bound_ && prior_ && accepted_prior_ &&
+    message->reset_epoch > expected_.reset_epoch &&
+    message->recurrent_session_id != expected_.recurrent_session_id &&
+    sameStableIdentity(*message, expected_) &&
+    sameResetContext(*prior_, *accepted_prior_);
+  const auto candidate_identity = identityOf(*message);
+  const CognitiveObstacleLayer::AcceptanceCursor empty_cursor;
+  std::string reason;
+  if (reset_rebind_candidate) {
+    reason = validateInputs(
+      message.get(), prior_.get(), now_ns, candidate_identity, empty_cursor,
+      true, maximum_age_s_, maximum_ood_probability_);
+  } else {
+    reason = CognitiveObstacleLayer::validateMessage(
+      *message, now_ns, expected_, accepted_, maximum_age_s_,
+      maximum_ood_probability_, identity_bound_);
+  }
+  if (!reason.empty()) {
+    return;
+  }
+  if (reset_rebind_candidate) {
+    obstacles_.reset();
+    accepted_.reset();
+    expected_ = candidate_identity;
+  } else if (!identity_bound_) {
+    expected_ = candidate_identity;
+  }
+  identity_bound_ = true;
   obstacles_ = message;
+  CognitiveObstacleLayer::recordAccepted(*message, accepted_);
+  const auto pair_reason = validateInputs(
+    obstacles_.get(), prior_.get(), now_ns, expected_, empty_cursor, true,
+    maximum_age_s_, maximum_ood_probability_);
+  if (pair_reason.empty()) {
+    accepted_prior_ = prior_;
+  }
 }
 
 void CognitiveRiskCritic::priorCallback(
@@ -97,6 +167,14 @@ void CognitiveRiskCritic::priorCallback(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     prior_ = message;
+    const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
+    const auto now_ns = parent_.lock()->get_clock()->now().nanoseconds();
+    const auto pair_reason = validateInputs(
+      obstacles_.get(), prior_.get(), now_ns, expected_, no_ordering_gate,
+      identity_bound_, maximum_age_s_, maximum_ood_probability_);
+    if (pair_reason.empty()) {
+      accepted_prior_ = prior_;
+    }
   }
   publishStatus(message->sequence, false, mode_ == "shadow" ? "shadow" : "offered");
 }
@@ -263,31 +341,19 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
   if (!enabled_ || mode_ != "active") {return;}
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior;
+  CognitiveObstacleLayer::Identity expected;
   std::string reason;
   const auto now = parent_.lock()->get_clock()->now();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     obstacles = obstacles_;
     prior = prior_;
-    const bool new_obstacle_snapshot = obstacles && obstacles != accepted_obstacles_;
-    const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
-    reason = validateInputs(
-      obstacles.get(), prior.get(), now.nanoseconds(), expected_,
-      new_obstacle_snapshot ? accepted_ : no_ordering_gate,
-      identity_bound_, maximum_age_s_, maximum_ood_probability_);
-    if (reason.empty() && new_obstacle_snapshot) {
-      if (!identity_bound_) {
-        expected_ = CognitiveObstacleLayer::Identity{
-          obstacles->reset_epoch, obstacles->recurrent_session_id,
-          obstacles->map_version, obstacles->cognitive_tile_id,
-          obstacles->tile_revision, obstacles->graph_revision,
-          obstacles->model_id};
-        identity_bound_ = true;
-      }
-      CognitiveObstacleLayer::recordAccepted(*obstacles, accepted_);
-      accepted_obstacles_ = obstacles;
-    }
+    expected = expected_;
   }
+  const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
+  reason = validateInputs(
+    obstacles.get(), prior.get(), now.nanoseconds(), expected,
+    no_ordering_gate, true, maximum_age_s_, maximum_ood_probability_);
   if (!reason.empty()) {
     publishStatus(prior ? prior->sequence : 0U, false, reason);
     return;

@@ -709,3 +709,34 @@
   launched; live callback/TF timing remains unverified.
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
+
+## 2026-08-21 — V6 critic callback admission/reset blocker repair
+
+- Goal: align critic callback cursor advancement with the Costmap layer and
+  recover one live critic instance after Integration advances `reset_epoch` and
+  changes recurrent session.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `1e77edce4fec62ad0387f32c59e9925b0a898096`.
+- Changes: obstacle callback now validates and advances the shared compound
+  cursor immediately and preserves the last accepted snapshot on rejection;
+  score only revalidates that snapshot against the current prior. Because MPPI
+  exposes no per-critic reset hook, rebind requires a strictly higher epoch,
+  changed session, fully matching fresh/trusted obstacle+prior pair, and
+  unchanged map/tile/graph/model identity plus prior schema/route context before
+  atomically replacing the old state. Old epoch replay, arbitrary identity
+  drift, and untrusted pairs remain rejected.
+- Validation: fresh allowed Integration interface + Module3 fusion build PASS
+  at `/tmp/bio_nav_module3_critic_admission.Bzf9rD`; focused package result 35
+  tests / 0 errors / 0 failures / 0 skipped; plugin loader 1/1 PASS; `git diff
+  --check` PASS. Callback tests cover newer-obstacle/lower-prior interleaving,
+  duplicate/backward/source regression, first binding, same-instance trusted
+  reset, old replay, changed map/route, and untrusted reset. Existing
+  validation-time TF, LIVE, repeat-score, moving/rotating, and fail-open cases
+  remain covered.
+- Verdict: **PASS (implementation/build/unit only)**. No active MPPI,
+  ROS/Nav2/Isaac, navigation, engineering evidence, or qualification run was
+  launched. Live stream ordering across reset remains unverified; obstacle-first
+  reset delivery safely waits for a later obstacle publication after the new
+  prior is present.
+- Handoff:
+  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.

@@ -37,7 +37,9 @@ public:
     critic.direction_weight_ = 0.0F;
     critic.novelty_weight_ = 0.0F;
     critic.uncertainty_weight_ = 0.0F;
-    critic.accepted_obstacles_.reset();
+    critic.obstacles_.reset();
+    critic.prior_.reset();
+    critic.accepted_prior_.reset();
     critic.expected_ = CognitiveObstacleLayer::Identity{};
     critic.accepted_.reset();
     critic.identity_bound_ = false;
@@ -48,9 +50,45 @@ public:
     const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr & obstacles,
     const bio_nav_interfaces::msg::PlanningPrior::SharedPtr & prior)
   {
+    if (prior) {
+      critic.priorCallback(prior);
+    }
+    if (obstacles) {
+      critic.obstacleCallback(obstacles);
+    }
+  }
+
+  static void offerObstacle(
+    CognitiveRiskCritic & critic,
+    const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr & obstacles)
+  {
+    critic.obstacleCallback(obstacles);
+  }
+
+  static void offerPrior(
+    CognitiveRiskCritic & critic,
+    const bio_nav_interfaces::msg::PlanningPrior::SharedPtr & prior)
+  {
+    critic.priorCallback(prior);
+  }
+
+  static CognitiveObstacleLayer::Identity identity(CognitiveRiskCritic & critic)
+  {
     std::lock_guard<std::mutex> lock(critic.mutex_);
-    critic.obstacles_ = obstacles;
-    critic.prior_ = prior;
+    return critic.expected_;
+  }
+
+  static CognitiveObstacleLayer::AcceptanceCursor cursor(CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.accepted_;
+  }
+
+  static bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles(
+    CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.obstacles_;
   }
 
   static void useDirectionOnly(CognitiveRiskCritic & critic)
@@ -377,7 +415,11 @@ bio_nav_interfaces::msg::PlanningPrior planningPriorFixture()
   prior.context_uncertainty = 0.1F;
   prior.local_direction_ttl.nanosec = 500000000U;
   prior.local_direction_schema_version = "bio_nav_local_direction_prior_v1";
+  prior.local_direction_graph_id = "route-graph";
   prior.local_direction_source_sequence = 7;
+  prior.source_physical_graph_id = "physical-graph";
+  prior.source_physical_graph_revision = 5;
+  prior.topology_revision = 6;
   prior.local_direction_frame_id = "base_link";
   prior.local_direction_input_healthy = true;
   prior.local_direction_module2_healthy = true;
@@ -1107,13 +1149,13 @@ TEST(CognitiveRiskCritic, score_fails_open_for_missing_expired_bad_ood_and_untru
   expect_zero(untrusted);
 }
 
-TEST(CognitiveRiskCritic, score_cursor_matches_layer_and_reset_rebinds_identity)
+TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_accepted)
 {
   using Critic = bio_nav_fusion::CognitiveRiskCritic;
   using Layer = bio_nav_fusion::CognitiveObstacleLayer;
   auto costmap = makeCriticTestCostmap();
-  const int64_t refresh_ns = costmap->now().nanoseconds() - 20000000LL;
-  const int64_t source_ns = refresh_ns - 200000000LL;
+  const int64_t refresh_ns = costmap->now().nanoseconds() - 10000000LL;
+  const int64_t source_ns = refresh_ns - 20000000LL;
   ASSERT_TRUE(addTransform(costmap, source_ns, 0.0));
   ASSERT_TRUE(addTransform(costmap, refresh_ns, 0.0));
 
@@ -1132,33 +1174,23 @@ TEST(CognitiveRiskCritic, score_cursor_matches_layer_and_reset_rebinds_identity)
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(fresh),
     std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 7U);
   Layer::recordAccepted(fresh, layer_cursor);
 
-  EXPECT_EQ(
-    Layer::validateMessage(
-      fresh, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
+  auto duplicate = std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(fresh);
+  EXPECT_EQ(Layer::validateMessage(
+      *duplicate, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
     "sequence");
-  EXPECT_EQ(
-    Critic::validateInputs(
-      &fresh, &prior, costmap->now().nanoseconds(), expected, layer_cursor,
-      true, 0.5, 0.2),
-    "sequence");
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
-    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(fresh),
-    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
-  EXPECT_FLOAT_EQ(scoreAt(critic, 1.0F, 0.0F), 0.0F);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(critic, duplicate);
+  EXPECT_NE(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic), duplicate);
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
 
   auto refresh = staticRevalidatedObstacleFixture();
   retimeStatic(refresh, prior, source_ns, refresh_ns);
-  EXPECT_EQ(
-    Layer::validateMessage(
-      refresh, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
-    "");
-  EXPECT_EQ(
-    Critic::validateInputs(
-      &refresh, &prior, costmap->now().nanoseconds(), expected, layer_cursor,
-      true, 0.5, 0.2),
-    "");
+  EXPECT_EQ(Layer::validateMessage(
+      refresh, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2), "");
   bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
     critic,
     std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(refresh),
@@ -1166,69 +1198,188 @@ TEST(CognitiveRiskCritic, score_cursor_matches_layer_and_reset_rebinds_identity)
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
   Layer::recordAccepted(refresh, layer_cursor);
 
-  EXPECT_EQ(
-    Layer::validateMessage(
-      refresh, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
-    "validation_regression");
-  EXPECT_EQ(
-    Critic::validateInputs(
-      &refresh, &prior, costmap->now().nanoseconds(), expected, layer_cursor,
-      true, 0.5, 0.2),
-    "validation_regression");
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
-    critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(refresh),
-    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
-  EXPECT_FLOAT_EQ(scoreAt(critic, 1.0F, 0.0F), 0.0F);
-
   auto backward = refresh;
   const int64_t backward_ns = refresh_ns - 10000000LL;
   retimeStatic(backward, prior, source_ns, backward_ns);
-  EXPECT_EQ(
-    Layer::validateMessage(
+  EXPECT_EQ(Layer::validateMessage(
       backward, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
     "validation_regression");
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(backward));
   EXPECT_EQ(
-    Critic::validateInputs(
-      &backward, &prior, costmap->now().nanoseconds(), expected, layer_cursor,
-      true, 0.5, 0.2),
-    "validation_regression");
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).validation_stamp_ns,
+    refresh_ns);
+
+  auto source_regression = obstacleFixture();
+  source_regression.sequence = 8;
+  retimeFresh(source_regression, prior, source_ns);
+  EXPECT_EQ(Layer::validateMessage(
+      source_regression, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
+    "source_regression");
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
     critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(backward),
-    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
-  EXPECT_FLOAT_EQ(scoreAt(critic, 1.0F, 0.0F), 0.0F);
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(source_regression));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 7U);
 
   auto changed = obstacleFixture();
-  auto changed_prior = planningPriorFixture();
-  const int64_t changed_ns = costmap->now().nanoseconds() - 10000000LL;
-  retimeFresh(changed, changed_prior, changed_ns);
+  retimeFresh(changed, prior, refresh_ns);
   changed.sequence = 8;
-  changed_prior.sequence = 8;
-  changed_prior.local_direction_source_sequence = 8;
   changed.map_version = "new-map";
-  changed_prior.map_version = "new-map";
-  ASSERT_TRUE(addTransform(costmap, changed_ns, 0.0));
-  EXPECT_EQ(
-    Layer::validateMessage(
+  EXPECT_EQ(Layer::validateMessage(
       changed, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
     "identity");
-  EXPECT_EQ(
-    Critic::validateInputs(
-      &changed, &changed_prior, costmap->now().nanoseconds(), expected,
-      layer_cursor, true, 0.5, 0.2),
-    "identity");
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
-    critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed),
-    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(changed_prior));
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+}
+
+TEST(CognitiveRiskCritic, obstacle_callback_advances_before_prior_pairing_like_layer)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  using Layer = bio_nav_fusion::CognitiveObstacleLayer;
+  auto costmap = makeCriticTestCostmap();
+  const int64_t newer_ns = costmap->now().nanoseconds() - 10000000LL;
+  const int64_t lower_ns = newer_ns - 10000000LL;
+  ASSERT_TRUE(addTransform(costmap, newer_ns, 0.0));
+
+  auto newer = obstacleFixture();
+  newer.sequence = 9;
+  auto newer_prior = planningPriorFixture();
+  newer_prior.sequence = 9;
+  newer_prior.local_direction_source_sequence = 9;
+  retimeFresh(newer, newer_prior, newer_ns);
+
+  Critic critic;
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(critic, costmap);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(newer));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 9U);
   EXPECT_FLOAT_EQ(scoreAt(critic, 1.0F, 0.0F), 0.0F);
 
-  Critic reset_critic;
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(reset_critic, costmap);
+  auto lower = obstacleFixture();
+  lower.sequence = 8;
+  auto lower_prior = planningPriorFixture();
+  lower_prior.sequence = 8;
+  lower_prior.local_direction_source_sequence = 8;
+  retimeFresh(lower, lower_prior, lower_ns);
+  Layer::AcceptanceCursor layer_cursor;
+  Layer::recordAccepted(newer, layer_cursor);
+  const Layer::Identity expected{
+    newer.reset_epoch, newer.recurrent_session_id, newer.map_version,
+    newer.cognitive_tile_id, newer.tile_revision, newer.graph_revision,
+    newer.model_id};
+  EXPECT_EQ(Layer::validateMessage(
+      lower, costmap->now().nanoseconds(), expected, layer_cursor, 0.5, 0.2),
+    "sequence");
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(lower_prior));
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(lower));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 9U);
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->sequence, 9U);
+  EXPECT_FLOAT_EQ(scoreAt(critic, 1.0F, 0.0F), 0.0F);
+
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(newer_prior));
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+}
+
+TEST(CognitiveRiskCritic, same_instance_rebinds_only_on_trusted_monotonic_reset_pair)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  auto costmap = makeCriticTestCostmap();
+  const int64_t old_ns = costmap->now().nanoseconds() - 30000000LL;
+  const int64_t reset_ns = costmap->now().nanoseconds() - 10000000LL;
+  ASSERT_TRUE(addTransform(costmap, old_ns, 0.0));
+  ASSERT_TRUE(addTransform(costmap, reset_ns, 0.0));
+
+  auto old_obstacles = obstacleFixture();
+  auto old_prior = planningPriorFixture();
+  retimeFresh(old_obstacles, old_prior, old_ns);
+
+  Critic critic;
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(critic, costmap);
   bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
-    reset_critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed),
-    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(changed_prior));
-  EXPECT_GT(scoreAt(reset_critic, 1.0F, 0.0F), 1.0F);
+    critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(old_obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(old_prior));
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+
+  auto reset_obstacles = obstacleFixture();
+  auto reset_prior = planningPriorFixture();
+  reset_obstacles.reset_epoch = 4;
+  reset_prior.reset_epoch = 4;
+  reset_obstacles.recurrent_session_id = "session-reset";
+  reset_prior.recurrent_session_id = "session-reset";
+  reset_obstacles.sequence = 1;
+  reset_prior.sequence = 1;
+  reset_prior.local_direction_source_sequence = 1;
+  retimeFresh(reset_obstacles, reset_prior, reset_ns);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(reset_prior));
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(reset_obstacles));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  EXPECT_EQ(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).recurrent_session_id,
+    "session-reset");
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 1U);
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(old_obstacles));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
+  EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+
+  auto changed_map_obstacles = reset_obstacles;
+  auto changed_map_prior = reset_prior;
+  changed_map_obstacles.reset_epoch = 5;
+  changed_map_prior.reset_epoch = 5;
+  changed_map_obstacles.recurrent_session_id = "session-changed-map";
+  changed_map_prior.recurrent_session_id = "session-changed-map";
+  changed_map_obstacles.map_version = "other-map";
+  changed_map_prior.map_version = "other-map";
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(changed_map_prior));
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed_map_obstacles));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
+
+  auto changed_route_obstacles = reset_obstacles;
+  auto changed_route_prior = reset_prior;
+  changed_route_obstacles.reset_epoch = 5;
+  changed_route_prior.reset_epoch = 5;
+  changed_route_obstacles.recurrent_session_id = "session-changed-route";
+  changed_route_prior.recurrent_session_id = "session-changed-route";
+  changed_route_prior.source_physical_graph_id = "other-physical-graph";
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(changed_route_prior));
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed_route_obstacles));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
+
+  auto untrusted_obstacles = reset_obstacles;
+  auto untrusted_prior = reset_prior;
+  untrusted_obstacles.reset_epoch = 5;
+  untrusted_prior.reset_epoch = 5;
+  untrusted_obstacles.recurrent_session_id = "session-untrusted";
+  untrusted_prior.recurrent_session_id = "session-untrusted";
+  untrusted_obstacles.sequence = 1;
+  untrusted_prior.sequence = 1;
+  untrusted_prior.local_direction_source_sequence = 1;
+  untrusted_prior.trusted_write = false;
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(untrusted_prior));
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(untrusted_obstacles));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
 }

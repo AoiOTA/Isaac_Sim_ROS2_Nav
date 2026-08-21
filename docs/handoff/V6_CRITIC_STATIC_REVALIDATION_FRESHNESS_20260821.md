@@ -1,76 +1,93 @@
-# V6 critic static-revalidation TF and acceptance-state rework
+# V6 critic callback admission and reset-epoch rebind repair
 
 ## Scope
 
-- Goal: align `CognitiveRiskCritic` obstacle admission and TF time with
-  `CognitiveObstacleLayer` for `VALIDATION_STATIC_DEPTH_REVALIDATED`.
+- Goal: close the reviewer blockers in `CognitiveRiskCritic` callback ordering
+  and same-instance reset recovery while retaining the earlier
+  static-revalidation TF/freshness behavior.
 - Branch/worktree: `cognitive-navigation` in the permitted Module3 worktree.
-- Rework starting HEAD: `6a64e4a67cd866759e07ca3db2dfed77efa8153b`.
+- Repair starting HEAD: `1e77edce4fec62ad0387f32c59e9925b0a898096`.
 - Result commit: the commit containing this handoff.
 
 ## Change
 
-- `CognitiveRiskCritic::validateInputs()` delegates obstacle validation to
-  `CognitiveObstacleLayer::validateMessage()` using the same compound
-  acceptance cursor and bound identity contract as the Costmap layer.
-- Only a newly received obstacle snapshot goes through the cursor ordering
-  gate. An already accepted snapshot is rechecked without the ordering gate so
-  MPPI can score it on every cycle until freshness or trust validation fails.
-- The cursor, bound identity, and accepted snapshot are protected by the
-  critic's input mutex and reset during critic initialization. A changed
-  identity rejects like the bound Costmap layer; a fresh critic initialization
-  can bind the new identity.
-- Accepted obstacle points and robot yaw now use `validation_stamp` for TF.
-  The validator requires it to equal the source stamp for ordinary `FRESH`
-  input, while static revalidation uses the fresh validation-time pose that
-  Integration already compensated into `base_link`.
-- A static source up to five seconds old is therefore eligible while its depth
-  validation is fresh and all dual-timeline, static-confirmation, identity,
-  trust, OOD, and obstacle-data checks pass.
-- Expired validation, expired ordinary/FRESH input, identity drift, untrusted
-  writes, OOD, and malformed obstacle data still reject before scoring, so the
-  critic adds zero cognitive cost.
-- Planning-prior TTL/freshness, direction-prior handling, scoring weights,
-  control, physical safety ownership, Costmap ownership, and MPPI authority are
-  unchanged.
+- The obstacle callback now runs the same
+  `CognitiveObstacleLayer::validateMessage()` gate as the Costmap layer and
+  immediately advances the persistent source/validation cursor. It stores only
+  accepted snapshots. Duplicate, backward, source-regressed, malformed,
+  untrusted, OOD, or identity-changing callbacks leave the latest accepted
+  snapshot intact.
+- `score()` reuses that accepted snapshot without a second ordering admission.
+  It still rechecks obstacle/prior identity and sequence pairing, prior TTL,
+  obstacle validation TTL, trust, health, schema, OOD, and finite data on every
+  cycle. Missing or mismatched pairs therefore add zero cognitive cost.
+- Nav2 Jazzy's MPPI `CriticFunction` API exposes no reset or lifecycle hook to
+  an individual critic; controller reset does not call a critic reset method.
+  Same-instance rebind therefore uses the two canonical input streams as the
+  reset authority. Under the input mutex, rebind is allowed only when:
+  - the candidate `reset_epoch` is strictly greater than the bound epoch;
+  - the recurrent session changes;
+  - obstacle and current planning prior have the same complete identity and
+    sequence and both pass the existing freshness/health/trust/schema gates;
+  - map version, cognitive tile, tile revision, graph revision, model ID, prior
+    schema, local-direction graph, physical graph ID/revision, and topology
+    revision remain equal to the last accepted pair.
+- On that proof, the old obstacle/cursor/identity state is cleared and the
+  already validated new obstacle/prior pair is bound atomically. Same-epoch
+  identity changes, epoch rollback/replay, changed map/tile/graph/model, and
+  untrusted reset pairs cannot rebind.
+- Initialization now clears both input pointers as well as cursor and identity.
+  All callback, rebind, and snapshot state stays under one mutex; scoring copies
+  immutable shared pointers and identity under that mutex before validation, so
+  it does not hold the lock across TF or trajectory work.
+- Validation-time TF, moving/rotating trajectory score behavior, ordinary LIVE
+  behavior, direction-prior handling, scoring weights, Costmap ownership,
+  physical safety ownership, and MPPI control authority are unchanged.
 
 ## Validation
 
-- Final isolated build root:
-  `/tmp/bio_nav_module3_critic_rework_final.TIm4by`.
-- Fresh build of allowed Integration `bio_nav_interfaces` and Module3
-  `bio_nav_fusion`: PASS.
-- `test_equal_cost_search`: PASS, package summary 32 tests / 0 errors / 0
-  failures / 0 skipped. New score-level coverage injects moving `map <-
-  base_link` TF samples and calls `score()` to check static validation-time
-  placement and yaw, ordinary LIVE source/effective-time placement, repeat
-  scoring of an accepted snapshot, expired/missing/bad/OOD/untrusted zero cost,
-  cursor duplicate/regression rejection, bound identity rejection, and
-  reset/rebind.
+- Isolated build root:
+  `/tmp/bio_nav_module3_critic_admission.Bzf9rD`.
+- Fresh allowed Integration `bio_nav_interfaces` plus Module3
+  `bio_nav_fusion` build: PASS, 2/2 packages.
+- Focused `test_equal_cost_search`: PASS, package summary 35 tests / 0 errors /
+  0 failures / 0 skipped.
 - `test_plugin_loader_isolation`: PASS, 1/1.
 - `git diff --check`: PASS before commit.
+- The first build-shell invocation stopped before colcon because `set -u`
+  conflicts with `/opt/ros/jazzy/setup.bash`; rerunning without nounset produced
+  the successful isolated results above.
+
+The focused score/callback tests retain validation-time TF with translated and
+rotated frames, ordinary LIVE placement, repeated scoring, and missing,
+expired, malformed, OOD, and untrusted zero-cost behavior. New tests drive the
+real private callback entry through the test peer and cover first binding,
+duplicate/backward/source-regression/identity rejection, newer obstacle before
+prior pairing, lower-sequence rejection matching the layer, same-instance
+  trusted epoch rebind, old-epoch replay rejection, changed-map/route rejection,
+  and untrusted reset rejection.
 
 Commands:
 
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon --log-base /tmp/bio_nav_module3_critic_rework_final.TIm4by/log_build build \
+colcon --log-base /tmp/bio_nav_module3_critic_admission.Bzf9rD/log_build build \
   --base-paths \
     /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration/ros2_ws/src/bio_nav_interfaces \
     /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/bio_nav_fusion \
   --packages-up-to bio_nav_fusion \
-  --build-base /tmp/bio_nav_module3_critic_rework_final.TIm4by/build \
-  --install-base /tmp/bio_nav_module3_critic_rework_final.TIm4by/install \
+  --build-base /tmp/bio_nav_module3_critic_admission.Bzf9rD/build \
+  --install-base /tmp/bio_nav_module3_critic_admission.Bzf9rD/install \
   --cmake-args -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
-source /tmp/bio_nav_module3_critic_rework_final.TIm4by/install/setup.bash
-colcon --log-base /tmp/bio_nav_module3_critic_rework_final.TIm4by/log_test_equal test \
+source /tmp/bio_nav_module3_critic_admission.Bzf9rD/install/setup.bash
+colcon --log-base /tmp/bio_nav_module3_critic_admission.Bzf9rD/log_test_final test \
   --packages-select bio_nav_fusion \
-  --build-base /tmp/bio_nav_module3_critic_rework_final.TIm4by/build \
-  --install-base /tmp/bio_nav_module3_critic_rework_final.TIm4by/install \
+  --build-base /tmp/bio_nav_module3_critic_admission.Bzf9rD/build \
+  --install-base /tmp/bio_nav_module3_critic_admission.Bzf9rD/install \
   --ctest-args -R '^test_equal_cost_search$' --output-on-failure
 
-ctest --test-dir /tmp/bio_nav_module3_critic_rework_final.TIm4by/build/bio_nav_fusion \
+ctest --test-dir /tmp/bio_nav_module3_critic_admission.Bzf9rD/build/bio_nav_fusion \
   -R '^test_plugin_loader_isolation$' --output-on-failure
 ```
 
@@ -78,8 +95,11 @@ ctest --test-dir /tmp/bio_nav_module3_critic_rework_final.TIm4by/build/bio_nav_f
 
 - Verdict: **PASS (implementation/build/unit only)**.
 - No active MPPI, ROS graph, Nav2, Isaac, navigation, engineering evidence, or
-  formal qualification was run. Runtime callback scheduling and live TF-buffer
-  behavior remain unverified.
-- Next authorized runtime check: move the robot between source and validation
-  time, observe Costmap and critic status/placement on the same fresh static
-  revalidation, then expire `validation_ttl` and confirm zero cognitive cost.
+  formal qualification was run. Live callback scheduling and the producer
+  ordering of the new prior/obstacle pair remain unverified. If the obstacle
+  arrives before the matching new-epoch prior, it is safely rejected and a
+  later obstacle publication is required after the prior arrives.
+- Next authorized runtime check: keep one MPPI controller instance alive across
+  an Integration reset, observe a strictly higher epoch/new session on both
+  streams, confirm critic status returns to applied, then replay the old epoch
+  and confirm it cannot displace the new accepted snapshot.

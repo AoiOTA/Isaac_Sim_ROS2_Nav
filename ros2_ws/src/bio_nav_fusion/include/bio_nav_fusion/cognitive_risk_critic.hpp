@@ -62,8 +62,8 @@ private:
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles_;
-  bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr accepted_obstacles_;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior_;
+  bio_nav_interfaces::msg::PlanningPrior::SharedPtr accepted_prior_;
   CognitiveObstacleLayer::Identity expected_;
   CognitiveObstacleLayer::AcceptanceCursor accepted_;
   bool identity_bound_{false};
