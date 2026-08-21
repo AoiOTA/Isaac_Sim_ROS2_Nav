@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 import threading
@@ -136,17 +136,25 @@ class ResetStopGate:
 
     def mark_reset_complete(self, generation: int) -> None:
         with self._lock:
-            self.state.mark_reset_complete(generation)
+            staged = replace(self.state)
+            staged.mark_reset_complete(generation)
             self.publish_zero()
-            self._publish_status("reset_complete")
+            self._publish_status("reset_complete", state=staged)
+            self.state.eligible_generation = staged.eligible_generation
 
     def release(self, generation: int, *, source: str) -> None:
         with self._lock:
-            self.state.release(generation)
+            # Publish the prospective released status while command handling
+            # is still locked and the live state is still HOLD.  A publisher
+            # failure therefore cannot leave the articulation gate open.
+            staged = replace(self.state)
+            staged.release(generation)
             # Leave one explicit zero at the epoch boundary.  No cached input
             # exists, so movement requires a fresh post-release command.
             self.publish_zero()
-            self._publish_status(f"released:{source}")
+            self._publish_status(f"released:{source}", state=staged)
+            self.state.held = staged.held
+            self.state.eligible_generation = staged.eligible_generation
 
     def publish_zero(self) -> None:
         self._publisher.publish(self._Twist())
@@ -186,13 +194,16 @@ class ResetStopGate:
             return self._SetParametersResult(successful=False, reason=str(exc))
         return self._SetParametersResult(successful=True)
 
-    def _publish_status(self, reason: str) -> None:
+    def _publish_status(
+        self, reason: str, *, state: ResetStopGateState | None = None
+    ) -> None:
+        status = self.state if state is None else state
         message = self._String()
         message.data = json.dumps(
             {
-                "generation": self.state.generation,
-                "held": self.state.held,
-                "eligible_generation": self.state.eligible_generation,
+                "generation": status.generation,
+                "held": status.held,
+                "eligible_generation": status.eligible_generation,
                 "reason": reason,
             },
             sort_keys=True,

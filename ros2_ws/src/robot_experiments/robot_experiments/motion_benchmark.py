@@ -37,6 +37,15 @@ class MotionBenchmarkError(ValueError):
     """Raised when a motion benchmark configuration or run is invalid."""
 
 
+class MotionSafetyStop(RuntimeError):
+    """Raised after a fail-closed zero command ends a benchmark run."""
+
+
+DEFAULT_STATE_FRESHNESS_SEC = 0.25
+DEFAULT_STAMP_COHERENCE_SEC = 0.50
+DEFAULT_SIM_CLOCK_STALL_TIMEOUT_SEC = 0.50
+
+
 @dataclass(frozen=True)
 class MotionSegment:
     duration_sec: float
@@ -69,6 +78,9 @@ class MotionConfig:
     reset_settle_sec: float
     final_settle_sec: float
     steady_window_sec: float
+    state_freshness_sec: float
+    stamp_coherence_sec: float
+    sim_clock_stall_timeout_sec: float
     thresholds: MotionThresholds
     primitives: tuple[MotionPrimitive, ...]
 
@@ -94,6 +106,70 @@ class ResetStopGateStatus:
     held: bool
     eligible_generation: int | None
     received_at: float
+
+
+@dataclass(frozen=True)
+class StampedObservation:
+    """One ROS stream's latest arrival, stamp, and forward progress time."""
+
+    received_at: float
+    stamp_s: float
+    progressed_at: float
+
+
+def estimated_state_is_fresh(
+    *,
+    clock: StampedObservation | None,
+    odometry: StampedObservation | None,
+    transform: StampedObservation | None,
+    reset_started_at: float,
+    now: float,
+    max_age_sec: float,
+    stamp_coherence_sec: float,
+) -> bool:
+    """Require continuously advancing, mutually coherent estimated state."""
+
+    observations = (clock, odometry, transform)
+    if any(observation is None for observation in observations):
+        return False
+    assert clock is not None and odometry is not None and transform is not None
+    for observation in observations:
+        assert observation is not None
+        if (
+            observation.received_at <= reset_started_at
+            or observation.progressed_at <= reset_started_at
+            or now - observation.received_at > max_age_sec
+            or now - observation.progressed_at > max_age_sec
+            or not math.isfinite(observation.stamp_s)
+            or observation.stamp_s < 0.0
+        ):
+            return False
+    return (
+        abs(odometry.stamp_s - clock.stamp_s) <= stamp_coherence_sec
+        and abs(transform.stamp_s - clock.stamp_s) <= stamp_coherence_sec
+    )
+
+
+def validate_motion_dispatch(
+    *,
+    generation: int,
+    reset_started_at: float,
+    gate_status: ResetStopGateStatus | None,
+    collision_monitor_active: bool,
+    estimated_state_ready: bool,
+) -> None:
+    """Final instantaneous authority check immediately before nonzero output."""
+
+    if gate_status is None or gate_status.received_at <= reset_started_at:
+        raise MotionSafetyStop("reset_stop_gate_status_missing_at_dispatch")
+    if gate_status.generation != generation:
+        raise MotionSafetyStop("reset_stop_gate_generation_changed_at_dispatch")
+    if gate_status.held:
+        raise MotionSafetyStop("reset_stop_gate_held_at_dispatch")
+    if not collision_monitor_active:
+        raise MotionSafetyStop("collision_monitor_inactive_at_dispatch")
+    if not estimated_state_ready:
+        raise MotionSafetyStop("estimated_state_stale_at_dispatch")
 
 
 def parse_reset_stop_gate_status(
@@ -164,6 +240,10 @@ class MotionDispatchBarrier:
                 raise RuntimeError(
                     "reset stop gate generation mismatch: "
                     f"receipt={self.generation}, status={gate_status.generation}"
+                )
+            if self.gate_released and gate_status.held:
+                raise RuntimeError(
+                    "reset stop gate returned to HOLD during dispatch settle"
                 )
             self.gate_released = not gate_status.held
         self.collision_monitor_active = bool(collision_monitor_active)
@@ -240,6 +320,9 @@ def load_motion_config(path: str | Path) -> MotionConfig:
         "reset_settle_sec",
         "final_settle_sec",
         "steady_window_sec",
+        "state_freshness_sec",
+        "stamp_coherence_sec",
+        "sim_clock_stall_timeout_sec",
         "thresholds",
         "primitives",
     }
@@ -358,7 +441,7 @@ def load_motion_config(path: str | Path) -> MotionConfig:
             segments.append(segment)
         primitives.append(MotionPrimitive(identifier, tuple(segments)))
 
-    return MotionConfig(
+    config = MotionConfig(
         spawn_pose_name=spawn_pose_name,
         reset_seed=reset_seed,
         command_rate_hz=_finite_number(
@@ -373,9 +456,36 @@ def load_motion_config(path: str | Path) -> MotionConfig:
         steady_window_sec=_finite_number(
             document.get("steady_window_sec"), "steady_window_sec", positive=True
         ),
+        state_freshness_sec=_finite_number(
+            document.get(
+                "state_freshness_sec", DEFAULT_STATE_FRESHNESS_SEC
+            ),
+            "state_freshness_sec",
+            positive=True,
+        ),
+        stamp_coherence_sec=_finite_number(
+            document.get(
+                "stamp_coherence_sec", DEFAULT_STAMP_COHERENCE_SEC
+            ),
+            "stamp_coherence_sec",
+            positive=True,
+        ),
+        sim_clock_stall_timeout_sec=_finite_number(
+            document.get(
+                "sim_clock_stall_timeout_sec",
+                DEFAULT_SIM_CLOCK_STALL_TIMEOUT_SEC,
+            ),
+            "sim_clock_stall_timeout_sec",
+            positive=True,
+        ),
         thresholds=thresholds,
         primitives=tuple(primitives),
     )
+    if config.state_freshness_sec >= config.reset_settle_sec:
+        raise MotionBenchmarkError(
+            "state_freshness_sec must be smaller than reset_settle_sec"
+        )
+    return config
 
 
 def _mean(values: list[float]) -> float | None:
@@ -655,7 +765,10 @@ class MotionBenchmarkNode(Node):
             self._tf_buffer, self, spin_thread=False
         )
         self._latest_odometry: MotionSample | None = None
+        self._odom_progressed_at: float | None = None
         self._clock_s: float | None = None
+        self._clock_observation: StampedObservation | None = None
+        self._tf_observation: StampedObservation | None = None
         self._samples: list[MotionSample] = []
         self._recording = False
         self._collision_detected = False
@@ -663,6 +776,7 @@ class MotionBenchmarkNode(Node):
         self._gate_status_error: str | None = None
         self._collision_state_future = None
         self._collision_monitor_active = False
+        self._collision_state_received_at: float | None = None
         self._segment_index = -1
         self._segment_started_at = 0.0
         self._command_linear = 0.0
@@ -670,8 +784,21 @@ class MotionBenchmarkNode(Node):
         self._reset_receipts: list[dict[str, Any]] = []
 
     def _clock_callback(self, message: Clock) -> None:
-        self._clock_s = (
+        stamp_s = (
             message.clock.sec + message.clock.nanosec * 1.0e-9
+        )
+        now = time.monotonic()
+        previous = self._clock_observation
+        progressed_at = (
+            now
+            if previous is None or stamp_s > previous.stamp_s
+            else previous.progressed_at
+        )
+        self._clock_s = stamp_s
+        self._clock_observation = StampedObservation(
+            received_at=now,
+            stamp_s=stamp_s,
+            progressed_at=progressed_at,
         )
 
     def _odom_callback(self, message: Odometry) -> None:
@@ -693,6 +820,8 @@ class MotionBenchmarkNode(Node):
             + message.header.stamp.nanosec * 1.0e-9
         )
         previous = self._latest_odometry
+        if previous is None or stamp_s > previous.stamp_s:
+            self._odom_progressed_at = now
         linear_speed = 0.0
         angular_speed = 0.0
         if previous is not None:
@@ -740,6 +869,7 @@ class MotionBenchmarkNode(Node):
             self._gate_status = parse_reset_stop_gate_status(
                 message.data, received_at=time.monotonic()
             )
+            self._gate_status_error = None
         except RuntimeError as exc:
             self._gate_status_error = str(exc)
 
@@ -764,6 +894,7 @@ class MotionBenchmarkNode(Node):
         self._publisher.publish(message)
 
     def _poll_collision_monitor_active(self) -> bool:
+        now = time.monotonic()
         future = self._collision_state_future
         if future is not None and future.done():
             self._collision_state_future = None
@@ -779,15 +910,95 @@ class MotionBenchmarkNode(Node):
             self._collision_monitor_active = (
                 response.current_state.id == State.PRIMARY_STATE_ACTIVE
             )
+            self._collision_state_received_at = now
         if (
-            not self._collision_monitor_active
-            and self._collision_state_future is None
+            self._collision_state_future is None
             and self._collision_state_client.service_is_ready()
         ):
             self._collision_state_future = self._collision_state_client.call_async(
                 GetState.Request()
             )
+        return (
+            self._collision_monitor_active
+            and self._collision_state_received_at is not None
+            and now - self._collision_state_received_at
+            <= self._config.state_freshness_sec
+        )
+
+    def _query_collision_monitor_active(self) -> bool:
+        pending = self._collision_state_future
+        if pending is not None and not pending.done():
+            cancel = getattr(pending, "cancel", None)
+            if callable(cancel):
+                cancel()
+        self._collision_state_future = None
+        if not self._collision_state_client.wait_for_service(timeout_sec=2.0):
+            return False
+        response = self._wait_future(
+            self._collision_state_client.call_async(GetState.Request()),
+            2.0,
+        )
+        if response is None:
+            return False
+        self._collision_monitor_active = (
+            response.current_state.id == State.PRIMARY_STATE_ACTIVE
+        )
+        self._collision_state_received_at = time.monotonic()
         return self._collision_monitor_active
+
+    def _observe_estimated_tf(self) -> StampedObservation | None:
+        try:
+            transform = self._tf_buffer.lookup_transform(
+                "odom", "base_link", Time()
+            )
+        except TransformException:
+            return None
+        now = time.monotonic()
+        stamp_s = (
+            transform.header.stamp.sec
+            + transform.header.stamp.nanosec * 1.0e-9
+        )
+        previous = self._tf_observation
+        progressed_at = (
+            now
+            if previous is None or stamp_s > previous.stamp_s
+            else previous.progressed_at
+        )
+        self._tf_observation = StampedObservation(
+            received_at=now,
+            stamp_s=stamp_s,
+            progressed_at=progressed_at,
+        )
+        return self._tf_observation
+
+    def _estimated_state_ready(self, *, reset_started_at: float) -> bool:
+        sample = self._latest_odometry
+        odometry = None
+        if sample is not None and self._odom_progressed_at is not None:
+            odometry = StampedObservation(
+                received_at=sample.received_at,
+                stamp_s=sample.stamp_s,
+                progressed_at=self._odom_progressed_at,
+            )
+        ready = estimated_state_is_fresh(
+            clock=self._clock_observation,
+            odometry=odometry,
+            transform=self._observe_estimated_tf(),
+            reset_started_at=reset_started_at,
+            now=time.monotonic(),
+            max_age_sec=self._config.state_freshness_sec,
+            stamp_coherence_sec=self._config.stamp_coherence_sec,
+        )
+        return bool(
+            ready
+            and sample is not None
+            and abs(sample.linear_speed) <= 0.02
+            and abs(sample.angular_speed) <= 0.05
+        )
+
+    def _stop(self, reason: str) -> None:
+        self._publish(0.0, 0.0)
+        raise MotionSafetyStop(reason)
 
     def _reset(self, seed: int) -> dict[str, Any]:
         self._publish(0.0, 0.0)
@@ -812,9 +1023,9 @@ class MotionBenchmarkNode(Node):
         if not self._reset_client.wait_for_service(timeout_sec=10.0):
             raise RuntimeError("/simulation/reset is unavailable")
         barrier = time.monotonic()
-        barrier_clock = self._clock_s
         self._gate_status_error = None
         self._collision_monitor_active = False
+        self._collision_state_received_at = None
         pending_state = self._collision_state_future
         if pending_state is not None and not pending_state.done():
             cancel = getattr(pending_state, "cancel", None)
@@ -847,48 +1058,66 @@ class MotionBenchmarkNode(Node):
         def snapshot():
             if self._gate_status_error is not None:
                 raise RuntimeError(self._gate_status_error)
-            sample = self._latest_odometry
-            estimated_ready = (
-                sample is not None
-                and sample.received_at > barrier
-                and self._clock_s is not None
-                and (barrier_clock is None or self._clock_s > barrier_clock)
-                and abs(sample.linear_speed) <= 0.02
-                and abs(sample.angular_speed) <= 0.05
-                and self._estimated_tf_ready()
-            )
             return (
                 self._gate_status,
                 self._poll_collision_monitor_active(),
-                estimated_ready,
+                self._estimated_state_ready(reset_started_at=barrier),
             )
 
-        wait_for_motion_dispatch_barrier(
-            dispatch_barrier,
-            spin_once=self._spin_once,
-            snapshot=snapshot,
-            timeout_sec=15.0,
-        )
+        try:
+            wait_for_motion_dispatch_barrier(
+                dispatch_barrier,
+                spin_once=self._spin_once,
+                snapshot=snapshot,
+                timeout_sec=15.0,
+            )
+            # The settle result is not cached authority.  Query CollisionMonitor
+            # again and resample gate/clock/odom/TF at the dispatch instant.
+            collision_active = self._query_collision_monitor_active()
+            validate_motion_dispatch(
+                generation=receipt["generation"],
+                reset_started_at=barrier,
+                gate_status=self._gate_status,
+                collision_monitor_active=collision_active,
+                estimated_state_ready=self._estimated_state_ready(
+                    reset_started_at=barrier
+                ),
+            )
+        except (RuntimeError, TimeoutError) as exc:
+            self._stop(f"motion_dispatch_stop:{exc}")
         return receipt
 
-    def _estimated_tf_ready(self) -> bool:
-        try:
-            self._tf_buffer.lookup_transform("odom", "base_link", Time())
-        except TransformException:
-            return False
-        return True
+    def _assert_sim_clock_live(self) -> None:
+        observation = self._clock_observation
+        now = time.monotonic()
+        if (
+            observation is None
+            or now - observation.received_at
+            > self._config.sim_clock_stall_timeout_sec
+            or now - observation.progressed_at
+            > self._config.sim_clock_stall_timeout_sec
+        ):
+            self._stop("sim_clock_stalled_during_motion")
 
     def _play_segment(self, index: int, segment: MotionSegment) -> None:
         period = 1.0 / self._config.command_rate_hz
         self._segment_index = index
+        waiting_since = time.monotonic()
         while self._clock_s is None:
+            if (
+                time.monotonic() - waiting_since
+                > self._config.sim_clock_stall_timeout_sec
+            ):
+                self._stop("sim_clock_missing_during_motion")
             self._spin_once(0.05)
+        self._assert_sim_clock_live()
         self._segment_started_at = self._clock_s
         self._command_linear = segment.linear_x
         self._command_angular = segment.angular_z
         next_publish = time.monotonic()
         deadline = self._segment_started_at + segment.duration_sec
         while self._clock_s is None or self._clock_s < deadline:
+            self._assert_sim_clock_live()
             now = time.monotonic()
             if now >= next_publish:
                 self._publish(segment.linear_x, segment.angular_z)
@@ -898,14 +1127,22 @@ class MotionBenchmarkNode(Node):
     def _settle(self) -> None:
         period = 1.0 / self._config.command_rate_hz
         self._segment_index = -1
+        waiting_since = time.monotonic()
         while self._clock_s is None:
+            if (
+                time.monotonic() - waiting_since
+                > self._config.sim_clock_stall_timeout_sec
+            ):
+                self._stop("sim_clock_missing_during_settle")
             self._spin_once(0.05)
+        self._assert_sim_clock_live()
         self._segment_started_at = self._clock_s
         self._command_linear = 0.0
         self._command_angular = 0.0
         next_publish = time.monotonic()
         deadline = self._segment_started_at + self._config.final_settle_sec
         while self._clock_s is None or self._clock_s < deadline:
+            self._assert_sim_clock_live()
             now = time.monotonic()
             if now >= next_publish:
                 self._publish(0.0, 0.0)
@@ -918,15 +1155,36 @@ class MotionBenchmarkNode(Node):
             self.get_logger().info(
                 f"running motion primitive {primitive.identifier}"
             )
-            receipt = self._reset(self._config.reset_seed + index)
-            self._reset_receipts.append(receipt)
-            self._samples = []
-            self._collision_detected = False
-            self._recording = True
-            for segment_index, segment in enumerate(primitive.segments):
-                self._play_segment(segment_index, segment)
-            self._settle()
-            self._recording = False
+            receipt: dict[str, Any] | None = None
+            try:
+                receipt = self._reset(self._config.reset_seed + index)
+                self._reset_receipts.append(receipt)
+                self._samples = []
+                self._collision_detected = False
+                self._recording = True
+                for segment_index, segment in enumerate(primitive.segments):
+                    self._play_segment(segment_index, segment)
+                self._settle()
+            except MotionSafetyStop as exc:
+                self._recording = False
+                self._publish(0.0, 0.0)
+                stopped: dict[str, Any] = {
+                    "id": primitive.identifier,
+                    "passed": False,
+                    "outcome": "STOP",
+                    "failure_reasons": [str(exc)],
+                    "collision_detected": self._collision_detected,
+                    "sample_count": len(self._samples),
+                }
+                if receipt is not None:
+                    stopped["reset_receipt"] = receipt
+                results.append(stopped)
+                self.get_logger().error(
+                    f"stopped {primitive.identifier}: {exc}"
+                )
+                break
+            finally:
+                self._recording = False
             result = evaluate_motion_primitive(
                 primitive,
                 self._samples,
@@ -948,6 +1206,9 @@ class MotionBenchmarkNode(Node):
             "command_rate_hz": self._config.command_rate_hz,
             "thresholds": self._config.thresholds.__dict__,
             "passed": all(result["passed"] for result in results),
+            "stopped": any(
+                result.get("outcome") == "STOP" for result in results
+            ),
             "primitive_count": len(results),
             "passed_primitive_count": sum(
                 bool(result["passed"]) for result in results

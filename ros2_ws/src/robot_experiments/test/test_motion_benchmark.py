@@ -2,20 +2,26 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from types import MethodType, SimpleNamespace
 
 import pytest
 import yaml
 
 from robot_experiments.motion_benchmark import (
+    estimated_state_is_fresh,
     evaluate_motion_primitive,
     load_motion_config,
     MotionDispatchBarrier,
     MotionBenchmarkError,
+    MotionBenchmarkNode,
     MotionPrimitive,
+    MotionSafetyStop,
     MotionSample,
     MotionSegment,
     MotionThresholds,
     ResetStopGateStatus,
+    StampedObservation,
+    validate_motion_dispatch,
     wait_for_motion_dispatch_barrier,
 )
 
@@ -113,6 +119,197 @@ def test_motion_dispatch_success_requires_collision_monitor_and_estimated_state(
         estimated_state_ready=True,
         now=1.3,
     )
+
+
+def _observation(received_at, stamp_s, progressed_at=None):
+    return StampedObservation(
+        received_at=received_at,
+        stamp_s=stamp_s,
+        progressed_at=(received_at if progressed_at is None else progressed_at),
+    )
+
+
+def test_motion_dispatch_snapshot_once_becomes_stale_before_settle():
+    now = [0.0]
+    released = _gate_status(6, False, 0.01)
+    one_shot = _observation(0.05, 10.0)
+    barrier = MotionDispatchBarrier(6, reset_started_at=0.0, settle_sec=0.30)
+
+    def spin_once(_timeout):
+        now[0] += 0.05
+
+    def snapshot():
+        ready = estimated_state_is_fresh(
+            clock=one_shot,
+            odometry=one_shot,
+            transform=one_shot,
+            reset_started_at=0.0,
+            now=now[0],
+            max_age_sec=0.10,
+            stamp_coherence_sec=0.10,
+        )
+        return released, True, ready
+
+    with pytest.raises(TimeoutError, match="estimated_state_ready=False"):
+        wait_for_motion_dispatch_barrier(
+            barrier,
+            spin_once=spin_once,
+            snapshot=snapshot,
+            timeout_sec=0.50,
+            monotonic=lambda: now[0],
+        )
+
+
+@pytest.mark.parametrize("stale_stream", ["odometry", "transform"])
+def test_estimated_state_rejects_stale_odom_or_tf(stale_stream):
+    streams = {
+        "clock": _observation(0.95, 10.0),
+        "odometry": _observation(0.95, 10.0),
+        "transform": _observation(0.95, 10.0),
+    }
+    streams[stale_stream] = _observation(0.50, 10.0)
+    assert not estimated_state_is_fresh(
+        **streams,
+        reset_started_at=0.0,
+        now=1.0,
+        max_age_sec=0.20,
+        stamp_coherence_sec=0.20,
+    )
+
+
+def test_estimated_state_rejects_stamp_clock_incoherence():
+    assert not estimated_state_is_fresh(
+        clock=_observation(0.95, 10.0),
+        odometry=_observation(0.95, 9.0),
+        transform=_observation(0.95, 10.0),
+        reset_started_at=0.0,
+        now=1.0,
+        max_age_sec=0.20,
+        stamp_coherence_sec=0.20,
+    )
+
+
+def test_motion_dispatch_passes_with_continuously_advancing_coherent_state():
+    now = [0.0]
+    released = _gate_status(11, False, 0.01)
+    barrier = MotionDispatchBarrier(11, reset_started_at=0.0, settle_sec=0.15)
+
+    def spin_once(_timeout):
+        now[0] += 0.05
+
+    def snapshot():
+        current = _observation(now[0], 20.0 + now[0])
+        return (
+            released,
+            True,
+            estimated_state_is_fresh(
+                clock=current,
+                odometry=current,
+                transform=current,
+                reset_started_at=0.0,
+                now=now[0],
+                max_age_sec=0.10,
+                stamp_coherence_sec=0.10,
+            ),
+        )
+
+    wait_for_motion_dispatch_barrier(
+        barrier,
+        spin_once=spin_once,
+        snapshot=snapshot,
+        timeout_sec=0.50,
+        monotonic=lambda: now[0],
+    )
+
+
+def test_dispatch_rechecks_collision_monitor_after_settle():
+    with pytest.raises(MotionSafetyStop, match="collision_monitor_inactive"):
+        validate_motion_dispatch(
+            generation=4,
+            reset_started_at=1.0,
+            gate_status=_gate_status(4, False, 1.1),
+            collision_monitor_active=False,
+            estimated_state_ready=True,
+        )
+
+
+def test_final_collision_query_replaces_cached_active_with_inactive():
+    calls = []
+    response = SimpleNamespace(current_state=SimpleNamespace(id=2))
+    future = SimpleNamespace()
+    client = SimpleNamespace(
+        wait_for_service=lambda timeout_sec: True,
+        call_async=lambda request: calls.append(request) or future,
+    )
+    node = SimpleNamespace(
+        _collision_state_future=None,
+        _collision_state_client=client,
+        _collision_monitor_active=True,
+        _collision_state_received_at=0.0,
+        _wait_future=lambda value, timeout: response,
+    )
+
+    assert not MotionBenchmarkNode._query_collision_monitor_active(node)
+    assert len(calls) == 1
+    assert not node._collision_monitor_active
+
+
+def test_gate_returning_to_hold_during_settle_is_stop_condition():
+    barrier = MotionDispatchBarrier(12, reset_started_at=1.0, settle_sec=0.2)
+    assert not barrier.observe(
+        gate_status=_gate_status(12, False, 1.1),
+        collision_monitor_active=True,
+        estimated_state_ready=True,
+        now=1.1,
+    )
+    with pytest.raises(RuntimeError, match="returned to HOLD"):
+        barrier.observe(
+            gate_status=_gate_status(12, True, 1.2),
+            collision_monitor_active=True,
+            estimated_state_ready=True,
+            now=1.2,
+        )
+
+
+def test_sim_clock_freeze_publishes_zero_and_records_stop(monkeypatch):
+    published = []
+    primitive = MotionPrimitive("freeze", (MotionSegment(1.0, 0.2, 0.0),))
+    node = SimpleNamespace(
+        _config=SimpleNamespace(
+            primitives=(primitive,),
+            reset_seed=3,
+            spawn_pose_name="mapping_start",
+            command_rate_hz=20.0,
+            thresholds=_thresholds(),
+            sim_clock_stall_timeout_sec=0.10,
+        ),
+        _clock_observation=_observation(1.0, 5.0),
+        _reset_receipts=[],
+        _samples=[],
+        _collision_detected=False,
+        _recording=False,
+        _publish=lambda linear, angular: published.append((linear, angular)),
+        _reset=lambda seed: {"seed": seed, "generation": 1},
+        _settle=lambda: None,
+        get_logger=lambda: SimpleNamespace(info=lambda message: None, error=lambda message: None),
+    )
+    node._stop = MethodType(MotionBenchmarkNode._stop, node)
+    node._play_segment = lambda index, segment: (
+        MotionBenchmarkNode._assert_sim_clock_live(node)
+    )
+    monkeypatch.setattr(
+        "robot_experiments.motion_benchmark.time.monotonic", lambda: 1.2
+    )
+
+    report = MotionBenchmarkNode.run(node)
+
+    assert report["stopped"]
+    assert not report["passed"]
+    assert report["primitives"][0]["outcome"] == "STOP"
+    assert report["primitives"][0]["failure_reasons"] == [
+        "sim_clock_stalled_during_motion"
+    ]
+    assert published and all(command == (0.0, 0.0) for command in published)
 
 
 def test_motion_benchmark_config_covers_required_primitives():

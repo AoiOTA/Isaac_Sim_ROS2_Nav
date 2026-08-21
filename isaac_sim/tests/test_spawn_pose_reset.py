@@ -372,6 +372,12 @@ class FakePublisher:
         self.events.append("reset_event")
 
 
+class FailingPublisher:
+    def publish(self, message):
+        del message
+        raise RuntimeError("publisher rejected reset event")
+
+
 def test_timeout_failure_does_not_emit_reset_event_or_arm_initial_pose():
     events = []
     cancelled = []
@@ -502,9 +508,9 @@ def test_non_navigation_success_auto_releases_same_generation():
     assert not gate.held
     assert events == [
         ("hold", generation),
+        "reset_event",
         ("complete", generation),
         ("release", generation, "reset_transaction_complete"),
-        "reset_event",
     ]
 
 
@@ -527,8 +533,75 @@ def test_navigation_success_remains_held_for_external_generation_release():
     assert gate.eligible == generation
     assert events == [
         ("hold", generation),
-        ("complete", generation),
         "reset_event",
+        ("complete", generation),
+    ]
+
+
+@pytest.mark.parametrize("failure", ["reset_event", "initial_pose"])
+def test_critical_finalization_failure_keeps_non_navigation_gate_held(failure):
+    events = []
+    gate = RecordingStopGate(events)
+    generation = gate.hold()
+    bridge = _finalization_bridge(events, gate, external_release=False)
+    if failure == "reset_event":
+        bridge._reset_event_publisher = FailingPublisher()
+    else:
+        bridge._apply_initial_pose_policy = lambda: (_ for _ in ()).throw(
+            RuntimeError("initial pose policy failed")
+        )
+    transaction = _ResetTransaction(
+        generation=12,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(bridge, tx),
+        initial_pose_name=(
+            "mapping_start" if failure == "initial_pose" else None
+        ),
+        stop_generation=generation,
+    )
+    bridge._active_transaction = transaction
+    transaction.timeout_timer = FakeTimer()
+    transaction.seal()
+
+    assert transaction.errors
+    assert "transaction finalization" in transaction.errors[0]
+    assert gate.held
+    assert gate.eligible is None
+    assert not any(
+        isinstance(event, tuple) and event[0] == "release" for event in events
+    )
+
+
+def test_release_failure_is_transaction_failure_and_keeps_gate_held():
+    events = []
+
+    class FailingReleaseStopGate(RecordingStopGate):
+        def release(self, generation, *, source):
+            del generation, source
+            raise RuntimeError("release status publication failed")
+
+    gate = FailingReleaseStopGate(events)
+    generation = gate.hold()
+    bridge = _finalization_bridge(events, gate, external_release=False)
+    transaction = _ResetTransaction(
+        generation=13,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(bridge, tx),
+        stop_generation=generation,
+    )
+    bridge._active_transaction = transaction
+    transaction.timeout_timer = FakeTimer()
+    transaction.seal()
+
+    assert transaction.errors == [
+        "transaction finalization: RuntimeError: release status publication failed"
+    ]
+    assert gate.held
+    assert gate.eligible == generation
+    assert events == [
+        ("hold", generation),
+        "reset_event",
+        ("complete", generation),
     ]
 
 

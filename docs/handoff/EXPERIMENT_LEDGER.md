@@ -811,6 +811,35 @@
   unique `/cmd_vel_sim` authority, and zero output throughout HOLD.
 - Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
 
+## 2026-08-22 — ResetStopGate final-review freshness amendment
+
+- Goal/hypothesis: keep non-navigation resets HOLD through every critical
+  finalization action, and prevent MotionBenchmark nonzero dispatch from a
+  one-shot or frozen clock/odom/TF snapshot or stale CollisionMonitor result.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `3e607ccbee920ac3b7df9c0a43f4a897cf60909e`; fixed Module3 main
+  `22d66470c4b903349b2467dc876490bbebfc0083` remained an ancestor. Final commit
+  is the commit containing this ledger row and is reported in the master
+  handoff.
+- Changes: reset event and initial-pose policy now precede gate eligibility;
+  staged gate status publication cannot open the live state on exception.
+  MotionBenchmark requires continuously fresh/coherent clock, odom, and TF,
+  performs a final CollisionMonitor lifecycle query, fail-stops generation or
+  gate changes, and records clock-stall zero output as `FAIL/STOP`.
+- Config: `state_freshness_sec=0.25`, `stamp_coherence_sec=0.50`,
+  `sim_clock_stall_timeout_sec=0.50`; motion settle remains `0.60 s` and config
+  validation requires freshness shorter than settle.
+- Validation actually run: source-first/no-cache focused pytest **51 passed**;
+  sanitized broader contract and RouteCoordinator pytest **249 passed**;
+  fresh sanitized `--packages-up-to robot_bringup` build **14 packages PASS**
+  at `/tmp/bionav_gate_fresh.pXhLQh/install_up_to2`; installed imports,
+  changed-file `py_compile`, YAML, XML, and diff checks PASS. An inherited stale
+  overlay caused an initial collection failure and was removed before the
+  passing run.
+- Verdict: **PASS (code/build/unit only)**. No Isaac/ROS/Nav2/navigation run or
+  formal qualification was performed; live closure remains **UNVERIFIED**.
+- Handoff: `docs/handoff/V6_RESET_SEED_STOP_GATE_20260822.md`.
+
 ## 2026-08-21 — V6 critic revalidation TF/cursor blocker rework
 
 - Goal: fix reviewer blockers where static-revalidated points used an old

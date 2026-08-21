@@ -5,6 +5,9 @@ command_rate_hz: 20.0
 reset_settle_sec: 0.6
 final_settle_sec: 0.8
 steady_window_sec: 0.35
+state_freshness_sec: 0.25
+stamp_coherence_sec: 0.50
+sim_clock_stall_timeout_sec: 0.50
 thresholds:
   linear_mae_mps: 0.06
   angular_mae_radps: 0.12

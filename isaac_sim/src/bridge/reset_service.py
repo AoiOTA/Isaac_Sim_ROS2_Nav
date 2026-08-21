@@ -593,6 +593,17 @@ class ResetServiceBridge:
                 self._deferred_initial_pose_name = None
                 return
 
+            # This event is the recovery epoch boundary.  It must be emitted
+            # only after every queued ROS reset future has resolved.
+            self._reset_event_publisher.publish(self._EmptyMessage())
+            if transaction.initial_pose_name is not None:
+                self._deferred_initial_pose_name = transaction.initial_pose_name
+                self._apply_initial_pose_policy()
+
+            # Keep the final command gate held until every safety-critical
+            # finalization action above has succeeded.  Logging and the reset
+            # service response are intentionally outside this boundary: they
+            # describe the result but cannot make the reset safe to release.
             if (
                 getattr(self, "_reset_stop_gate", None) is not None
                 and transaction.stop_generation is not None
@@ -609,13 +620,6 @@ class ResetServiceBridge:
                         transaction.stop_generation,
                         source="reset_transaction_complete",
                     )
-
-            # This event is the recovery epoch boundary.  It must be emitted
-            # only after every queued ROS reset future has resolved.
-            self._reset_event_publisher.publish(self._EmptyMessage())
-            if transaction.initial_pose_name is not None:
-                self._deferred_initial_pose_name = transaction.initial_pose_name
-                self._apply_initial_pose_policy()
         finally:
             # Keep the transaction exclusive through generation completion and
             # optional same-generation release.  An early Trigger cannot begin

@@ -137,6 +137,54 @@ Reviewer-blocker amendment validation:
 - No Isaac, ROS graph, Nav2, navigation, visual evidence, engineering campaign,
   or formal qualification was run. Live closure remains **UNVERIFIED**.
 
+## Final-review freshness and release-finalization amendment
+
+- Branch/worktree/start: `cognitive-navigation` in the permitted Module3
+  worktree, starting at `3e607ccbee920ac3b7df9c0a43f4a897cf60909e`;
+  fixed Module3 main `22d66470c4b903349b2467dc876490bbebfc0083`
+  remained an ancestor. The amendment commit is the commit containing this
+  handoff and is reported in the master handoff.
+- Reset transaction hypothesis: non-navigation auto-release is safe only
+  after the reset futures, `/simulation/reset_event`, initial-pose policy, and
+  ResetStopGate status transitions all succeed. The finalizer now performs
+  those critical actions before eligibility/release. ResetStopGate stages
+  completion/release status while the live command gate remains HOLD, so a
+  zero/status publication exception cannot leave it open. Receipt construction
+  and logging remain noncritical description outside the release boundary.
+- Motion dispatch hypothesis: a one-time clock/odom/TF snapshot is not a safe
+  motion barrier. Clock, odom, and `odom -> base_link` TF now carry wall receipt,
+  ROS stamp, and forward-progress times. They must keep advancing within
+  `state_freshness_sec: 0.25`, remain within
+  `stamp_coherence_sec: 0.50` of simulation clock, and stay valid throughout
+  the `0.60 s` settle. CollisionMonitor is polled during settle and queried
+  again immediately before dispatch. Gate generation/HOLD changes, stale or
+  incoherent state, or an inactive final CollisionMonitor query produce STOP
+  before any nonzero command.
+- Motion watchdog: a non-advancing `/clock` for
+  `sim_clock_stall_timeout_sec: 0.50` during playback immediately publishes
+  zero, records the primitive as `FAIL/STOP`, and ends the benchmark report.
+- Changed runtime/config/tests: `isaac_sim/src/bridge/{reset_service.py,
+  reset_stop_gate.py}`, `robot_experiments/{motion_benchmark.py,
+  config/motion_benchmark.yaml}`, and their focused tests. RouteCoordinator,
+  receipt/seed parsing, ActivationGate, R2C/non-navigation auto-release,
+  Navigation external release, and early-Trigger exclusion were regression
+  tested without source changes.
+- Validation actually run: source-first/no-cache focused pytest **51 passed**;
+  sanitized broader reset/control/ActivationGate/receipt/MotionBenchmark/V6
+  adapter plus RouteCoordinator pytest **249 passed**. The first broader run
+  inherited a stale overlay and failed collection; after removing inherited
+  overlay paths and putting current allowed-worktree sources first, it passed.
+- Fresh build: `robot_experiments` isolated build passed, then a sanitized
+  `--packages-up-to robot_bringup` build passed for **14 packages** at
+  `/tmp/bionav_gate_fresh.pXhLQh/install_up_to2`. Installed MotionBenchmark and
+  ActivationGate imports resolved from that fresh install. Changed-file
+  `py_compile`, motion YAML load/relationship check, relevant package XML,
+  and `git diff --check` passed.
+- Verdict: **PASS (code/build/unit only)**. No Isaac, live ROS graph, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. Live behavior remains **UNVERIFIED** and requires the already-listed
+  authorized reviewer closure.
+
 ## Reviewer-only live closure still required
 
 Run the authorized Navigation reviewer with an active goal and Trigger reset.

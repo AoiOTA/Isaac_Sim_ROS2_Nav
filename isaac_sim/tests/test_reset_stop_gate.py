@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+import threading
+from types import SimpleNamespace
 
 import pytest
 
 from isaac_sim.src.bridge.reset_stop_gate import (
+    ResetStopGate,
     ResetStopGateError,
     ResetStopGateState,
 )
@@ -56,6 +59,48 @@ def test_release_never_carries_command_state_between_epochs():
         "held": False,
         "eligible_generation": None,
     }
+
+
+def test_release_status_publication_failure_leaves_live_gate_held():
+    state = ResetStopGateState()
+    generation = state.hold()
+    state.mark_reset_complete(generation)
+    published_zero = []
+
+    def fail_status(reason, *, state=None):
+        del reason, state
+        raise RuntimeError("status publisher failed")
+
+    gate = SimpleNamespace(
+        state=state,
+        _lock=threading.RLock(),
+        publish_zero=lambda: published_zero.append(True),
+        _publish_status=fail_status,
+    )
+    with pytest.raises(RuntimeError, match="status publisher failed"):
+        ResetStopGate.release(gate, generation, source="test")
+
+    assert state.held
+    assert state.eligible_generation == generation
+    assert published_zero == [True]
+
+
+def test_completion_status_publication_failure_does_not_make_gate_eligible():
+    state = ResetStopGateState()
+    generation = state.hold()
+    gate = SimpleNamespace(
+        state=state,
+        _lock=threading.RLock(),
+        publish_zero=lambda: None,
+        _publish_status=lambda reason, state=None: (_ for _ in ()).throw(
+            RuntimeError("completion status publisher failed")
+        ),
+    )
+    with pytest.raises(RuntimeError, match="completion status publisher failed"):
+        ResetStopGate.mark_reset_complete(gate, generation)
+
+    assert state.held
+    assert state.eligible_generation is None
 
 
 def test_navigation_profile_has_one_final_external_command_authority():
