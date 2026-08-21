@@ -191,3 +191,41 @@ resume motion.
 - Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
   navigation, visual evidence, engineering campaign, or formal qualification
   was run. The active-reset live review described above remains pending.
+
+## Deferred structural-rebuild intent amendment
+
+- Start HEAD: `deb275252190a6eacbc9f08a0c9ad76773a172f4`; reset StopGate,
+  MotionBenchmark evidence, IMU diagnostics, and prior route fixes at that HEAD
+  are retained unchanged.
+- A persistent structural-map candidate is now represented by one coalescing
+  intent fenced by candidate generation/object identity, request ID, physical
+  graph generation, and reset generation. Reset clears the intent; a new goal
+  keeps the latest candidate pending and prevents structural submission until
+  that route retires.
+- Terminal route retirement still precedes its exactly-once Bool/JSON output.
+  If a cognitive or structural `SetRouteGraph` transaction owns the server at
+  that instant, the candidate is retained instead of being lost. Transaction
+  success, rejection, exception, the 2 s steady timeout, late completion, and
+  service recovery all flow through the existing serialized reconciliation and
+  bounded 0.25/0.5/1.0/2.0 s retry path. No service, file, cancellation, or
+  publication call was moved under the route-state lock.
+- Latest-candidate coalescing prevents duplicate timer/callback wakeups from
+  producing a request storm. A stale structural success cannot commit an old
+  map; Route Server authority is first reconciled, then exactly one current
+  idle candidate is submitted. Permanently unresolved timed-out futures remain
+  an observed non-blocking resource risk because ROS futures are not cancelled.
+- Deterministic tests cover cognitive switch success/rejection/exception,
+  structural service unavailable/rejection/exception, both transaction timeout
+  and late-success paths, reset clearing, active-goal delay followed by terminal
+  wakeup, duplicate terminal/tick suppression, and latest-candidate coalescing.
+- Validation: focused route/graph **101 passed**; complete source-first/no-cache
+  `robot_route_planner/test` **125 passed, 1 skipped** (existing optional `pxr`
+  import unavailable); associated ResetStopGate/MotionBenchmark/reset receipt,
+  IMU/localization and EKF regression **87 passed** after sourcing Jazzy.
+  `py_compile` and `git diff --check` PASS. Fresh isolated build and `colcon
+  test` PASS at `/tmp/bio_nav_route_deferred.jMe0m0`: **126 tests, 0 errors,
+  0 failures, 1 skipped**.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. Active reset plus live structural-change timing remains pending the
+  planned runtime review.

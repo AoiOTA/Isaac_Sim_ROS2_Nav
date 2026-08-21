@@ -179,6 +179,20 @@ class StructuralRebuildGeneration:
     desired_generation: int
     requested_graph_id: str
     requested_graph_revision: int
+    base_graph_generation: int
+    candidate_generation: int
+    candidate_identity: int
+
+
+@dataclass(frozen=True)
+class StructuralRebuildIntent:
+    """Latest persistent-map candidate fenced to one idle route epoch."""
+
+    candidate_generation: int
+    candidate_identity: int
+    request_id: int
+    base_graph_generation: int
+    reset_generation: int
 
 
 def footprint_is_free(
@@ -520,6 +534,8 @@ class RouteCoordinator:
             self.defaults["structural_updates"],
         )
         self.pending_structural_map: OccupancyMap | None = None
+        self.structural_candidate_generation = 0
+        self.pending_structural_intent: StructuralRebuildIntent | None = None
         self.pending_goal = None
         self.pending_deadline_ns: int | None = None
         self.pending_prior_request_id: int | None = None
@@ -843,6 +859,60 @@ class RouteCoordinator:
         self.graph_retry_kind = "switch"
         self.graph_retry_switch_context = None
 
+    def _refresh_structural_intent_locked(
+        self,
+    ) -> StructuralRebuildIntent | None:
+        candidate = getattr(self, "pending_structural_map", None)
+        if candidate is None:
+            self.pending_structural_intent = None
+            return None
+        previous = getattr(self, "pending_structural_intent", None)
+        candidate_generation = int(
+            getattr(self, "structural_candidate_generation", 0)
+        )
+        if previous is None or previous.candidate_identity != id(candidate):
+            candidate_generation += 1
+            self.structural_candidate_generation = candidate_generation
+        intent = StructuralRebuildIntent(
+            candidate_generation,
+            id(candidate),
+            int(getattr(self, "request_id", 0)),
+            int(getattr(self, "graph_generation", 0)),
+            int(getattr(self, "reset_generation", 0)),
+        )
+        self.pending_structural_intent = intent
+        return intent
+
+    def _structural_intent_is_current_locked(
+        self, intent: StructuralRebuildIntent
+    ) -> bool:
+        candidate = getattr(self, "pending_structural_map", None)
+        return bool(
+            candidate is not None
+            and getattr(self, "pending_structural_intent", None) == intent
+            and id(candidate) == intent.candidate_identity
+            and int(getattr(self, "request_id", 0)) == intent.request_id
+            and int(getattr(self, "graph_generation", 0))
+            == intent.base_graph_generation
+            and int(getattr(self, "reset_generation", 0))
+            == intent.reset_generation
+        )
+
+    def _try_deferred_structural_rebuild(self) -> None:
+        """Submit the latest candidate once graph authority and route are idle."""
+
+        with self._route_state_lock():
+            if (
+                getattr(self, "pending_structural_map", None) is None
+                or bool(getattr(self, "route_active", False))
+                or getattr(self, "pending_goal", None) is not None
+                or getattr(self, "graph_transaction_generation", None) is not None
+                or getattr(self, "graph_retry_due_steady_s", None) is not None
+            ):
+                return
+            self._refresh_structural_intent_locked()
+        self._rebuild_structural_graph()
+
     def _schedule_graph_retry_locked(
         self,
         reason: str,
@@ -902,6 +972,7 @@ class RouteCoordinator:
         fallback = False
         retry_kind = "switch"
         switch_context = None
+        deferred_structural = False
         with self._route_state_lock():
             transaction = getattr(self, "graph_transaction_generation", None)
             deadline = getattr(
@@ -935,26 +1006,35 @@ class RouteCoordinator:
             if transaction is not None:
                 return
             due_s = getattr(self, "graph_retry_due_steady_s", None)
-            if due_s is None or now_s < float(due_s):
+            if due_s is None:
+                deferred_structural = bool(
+                    getattr(self, "pending_structural_map", None) is not None
+                    and not bool(getattr(self, "route_active", False))
+                    and getattr(self, "pending_goal", None) is None
+                )
+            elif now_s < float(due_s):
                 return
-            if getattr(self, "graph_retry_key", None) != self._graph_retry_key_locked():
+            if due_s is None:
+                pass
+            elif getattr(self, "graph_retry_key", None) != self._graph_retry_key_locked():
                 self._schedule_graph_retry_locked(
                     "desired graph generation changed",
                     immediate=True,
                     now_steady_s=now_s,
                 )
-            retry_kind = str(getattr(self, "graph_retry_kind", "switch"))
-            reason = str(getattr(self, "graph_retry_reason", "graph reconciliation"))
-            switch_context = getattr(self, "graph_retry_switch_context", None)
-            self.graph_retry_due_steady_s = None
-            if retry_kind == "structural":
-                pass
-            else:
-                graph = getattr(self, "desired_graph", self.gvg_graph)
-                fallback = self._graph_identity(graph) == self._graph_identity(
-                    self.gvg_graph
+            if due_s is not None:
+                retry_kind = str(getattr(self, "graph_retry_kind", "switch"))
+                reason = str(
+                    getattr(self, "graph_retry_reason", "graph reconciliation")
                 )
-        if retry_kind == "structural":
+                switch_context = getattr(self, "graph_retry_switch_context", None)
+                self.graph_retry_due_steady_s = None
+                if retry_kind != "structural":
+                    graph = getattr(self, "desired_graph", self.gvg_graph)
+                    fallback = self._graph_identity(graph) == self._graph_identity(
+                        self.gvg_graph
+                    )
+        if deferred_structural or retry_kind == "structural":
             self._rebuild_structural_graph()
         elif graph is not None:
             if switch_context is None:
@@ -1255,6 +1335,10 @@ class RouteCoordinator:
         self.latest_global_costmap = None
         self.last_context_publish_ns = 0
         self.pending_structural_map = None
+        self.pending_structural_intent = None
+        self.structural_candidate_generation = int(
+            getattr(self, "structural_candidate_generation", 0)
+        ) + 1
         structural_monitor = getattr(self, "structural_monitor", None)
         if structural_monitor is not None:
             structural_monitor.last_candidate = None
@@ -1837,6 +1921,7 @@ class RouteCoordinator:
 
         if not succeeded:
             if not current_failure:
+                self._try_deferred_structural_rebuild()
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -1861,12 +1946,14 @@ class RouteCoordinator:
                         None if generation is None else generation.reset_generation
                     ),
                 )
+            self._try_deferred_structural_rebuild()
             return
         if not commit:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "stale SetRouteGraph success; reconciling desired graph",
             )
+            self._try_deferred_structural_rebuild()
             return
         if not fallback and feedback is not None:
             self._publish_graph_validation(
@@ -1888,6 +1975,7 @@ class RouteCoordinator:
         )
         if prepare_pending_goal:
             self._resume_pending_goal_after_graph_coherent()
+        self._try_deferred_structural_rebuild()
 
     def _ensure_desired_graph(self, reason: str) -> None:
         with self._route_state_lock():
@@ -2160,6 +2248,11 @@ class RouteCoordinator:
             )
             self.request_id += 1
             previous_handle = self._retire_route_state()
+            if (
+                getattr(self, "graph_retry_kind", "switch") == "structural"
+                and getattr(self, "graph_retry_due_steady_s", None) is not None
+            ):
+                self._clear_graph_retry_locked()
             self.primary_fallback_used = False
             self.pending_reroute_outcome = None
             self.pending_goal = goal
@@ -3063,7 +3156,7 @@ class RouteCoordinator:
             return
         now_s = self._now().nanoseconds / 1.0e9
         if self.structural_monitor.observe(free, now_s):
-            self.pending_structural_map = OccupancyMap(
+            candidate_map = OccupancyMap(
                 free=free,
                 # Structural snapshots are required to match the current grid
                 # shape. Reuse its canonical metric geometry as well: ROS
@@ -3075,23 +3168,35 @@ class RouteCoordinator:
                 map_version=f"{self.map.map_version}:structural",
                 yaml_path=self.map.yaml_path,
             )
-            if not self.route_active:
-                self._rebuild_structural_graph()
+            with self._route_state_lock():
+                self.pending_structural_map = candidate_map
+                self._refresh_structural_intent_locked()
+            self._try_deferred_structural_rebuild()
 
     def _finish_active_route(self) -> None:
         """Synchronously retire one coordinator-owned Nav2 action."""
 
-        self._retire_route_state()
-        if self.pending_structural_map is not None:
-            self._rebuild_structural_graph()
+        with self._route_state_lock():
+            self._retire_route_state()
+            if getattr(self, "pending_structural_map", None) is not None:
+                self._refresh_structural_intent_locked()
+        self._try_deferred_structural_rebuild()
 
     def _rebuild_structural_graph(self) -> None:
         with self._route_state_lock():
             candidate_map = self.pending_structural_map
-            if candidate_map is None or self.route_active:
+            if (
+                candidate_map is None
+                or self.route_active
+                or self.pending_goal is not None
+                or getattr(self, "graph_transaction_generation", None) is not None
+                or getattr(self, "graph_retry_due_steady_s", None) is not None
+            ):
                 return
-            request_id = int(self.request_id)
-            reset_generation = int(getattr(self, "reset_generation", 0))
+            intent = self._refresh_structural_intent_locked()
+            if intent is None:
+                return
+            base_graph = self.graph
         self._publish_structural_status(
             self.StructuralGraphStatus.REBUILDING, "persistent structural update"
         )
@@ -3102,19 +3207,26 @@ class RouteCoordinator:
                     self.defaults["graph"],
                     self.defaults["footprint"],
                     self.defaults["route_cost"],
-                    revision=self.graph.revision + 1,
+                    revision=base_graph.revision + 1,
                 ),
                 candidate_map,
                 self.defaults["footprint"],
             )
             if self.feasible_only_largest_component:
                 retain_largest_feasible_component(candidate)
-            candidate = stabilize_graph_ids(candidate, self.graph, self.defaults["graph"])
+            candidate = stabilize_graph_ids(
+                candidate, base_graph, self.defaults["graph"]
+            )
             support = export_route_support_graph(
                 candidate,
                 support_spacing_m=float(self.defaults["graph"]["route_support_spacing_m"]),
             )
         except Exception as error:
+            with self._route_state_lock():
+                if self._structural_intent_is_current_locked(intent):
+                    self._schedule_graph_retry_locked(
+                        f"structural rebuild failed: {error}", kind="structural"
+                    )
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"rebuild failed: {error}",
@@ -3122,9 +3234,10 @@ class RouteCoordinator:
             return
         if not self.set_graph_client.service_is_ready():
             with self._route_state_lock():
-                self._schedule_graph_retry_locked(
-                    "SetRouteGraph service unavailable", kind="structural"
-                )
+                if self._structural_intent_is_current_locked(intent):
+                    self._schedule_graph_retry_locked(
+                        "SetRouteGraph service unavailable", kind="structural"
+                    )
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "SetRouteGraph service unavailable",
@@ -3132,10 +3245,9 @@ class RouteCoordinator:
             return
         with self._route_state_lock():
             if (
-                self.pending_structural_map is not candidate_map
+                not self._structural_intent_is_current_locked(intent)
                 or self.route_active
-                or int(self.request_id) != request_id
-                or int(getattr(self, "reset_generation", 0)) != reset_generation
+                or self.pending_goal is not None
             ):
                 return
             if getattr(self, "graph_transaction_generation", None) is not None:
@@ -3146,21 +3258,24 @@ class RouteCoordinator:
             self._set_desired_graph_locked(candidate, support)
             self.graph_coherent = False
             rebuild_generation = StructuralRebuildGeneration(
-                request_id,
-                reset_generation,
+                intent.request_id,
+                intent.reset_generation,
                 int(self.structural_generation),
                 int(getattr(self, "desired_graph_generation", 0)),
                 str(candidate.graph_id),
                 int(candidate.revision),
+                intent.base_graph_generation,
+                intent.candidate_generation,
+                intent.candidate_identity,
             )
             self.graph_switch_generation = int(
                 getattr(self, "graph_switch_generation", 0)
             ) + 1
             transaction = GraphSwitchGeneration(
                 self.graph_switch_generation,
-                request_id,
+                intent.request_id,
                 int(getattr(self, "graph_generation", 0)),
-                reset_generation,
+                intent.reset_generation,
                 int(getattr(self, "desired_graph_generation", 0)),
                 str(candidate.graph_id),
                 int(candidate.revision),
@@ -3179,9 +3294,9 @@ class RouteCoordinator:
         except Exception as error:
             with self._route_state_lock():
                 invalidated = (
-                    int(self.request_id) != request_id
+                    not self._structural_intent_is_current_locked(intent)
                     or int(getattr(self, "reset_generation", 0))
-                    != reset_generation
+                    != intent.reset_generation
                     or self._graph_identity(
                         getattr(self, "desired_graph", candidate)
                     ) != self._graph_identity(candidate)
@@ -3205,9 +3320,10 @@ class RouteCoordinator:
         with self._route_state_lock():
             transaction_current = (
                 self.graph_transaction_generation == transaction
-                and int(self.request_id) == request_id
+                and self._structural_intent_is_current_locked(intent)
+                and int(self.request_id) == intent.request_id
                 and int(getattr(self, "reset_generation", 0))
-                == reset_generation
+                == intent.reset_generation
                 and not self.route_active
                 and self.pending_goal is None
                 and self._graph_identity(getattr(self, "desired_graph", candidate))
@@ -3231,9 +3347,9 @@ class RouteCoordinator:
         except Exception as error:
             with self._route_state_lock():
                 invalidated = (
-                    int(self.request_id) != request_id
+                    not self._structural_intent_is_current_locked(intent)
                     or int(getattr(self, "reset_generation", 0))
-                    != reset_generation
+                    != intent.reset_generation
                     or self._graph_identity(
                         getattr(self, "desired_graph", candidate)
                     ) != self._graph_identity(candidate)
@@ -3290,12 +3406,21 @@ class RouteCoordinator:
             desired_identity = self._graph_identity(desired)
             generation_current = generation is None or (
                 generation.request_id == int(self.request_id)
+                and generation.base_graph_generation
+                == int(getattr(self, "graph_generation", 0))
                 and generation.reset_generation
                 == int(getattr(self, "reset_generation", 0))
                 and generation.structural_generation
                 == int(getattr(self, "structural_generation", 0))
                 and generation.desired_generation
                 == int(getattr(self, "desired_graph_generation", 0))
+                and getattr(self, "pending_structural_intent", None) is not None
+                and generation.candidate_generation
+                == self.pending_structural_intent.candidate_generation
+                and generation.candidate_identity
+                == self.pending_structural_intent.candidate_identity
+                and id(getattr(self, "pending_structural_map", None))
+                == generation.candidate_identity
                 and not self.route_active
                 and self.pending_goal is None
             )
@@ -3335,6 +3460,7 @@ class RouteCoordinator:
                 }
                 self.structural_monitor.accept_rebuild()
                 self.pending_structural_map = None
+                self.pending_structural_intent = None
                 self.graph_reassert_required = False
                 self.graph_coherent = True
                 self._clear_graph_retry_locked()
@@ -3356,23 +3482,27 @@ class RouteCoordinator:
                         )
         if not succeeded:
             if not current_failure:
+                self._try_deferred_structural_rebuild()
                 return
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "Route Server rejected rebuilt graph",
             )
+            self._try_deferred_structural_rebuild()
             return
         if not commit:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "stale structural rebuild success; reconciling desired graph",
             )
+            self._try_deferred_structural_rebuild()
             return
         self._publish_graph()
         self._publish_cognitive_constraints()
         self._publish_structural_status(
             self.StructuralGraphStatus.READY, "rebuilt graph active"
         )
+        self._try_deferred_structural_rebuild()
 
     def _publish_graph(self) -> None:
         from bio_nav_interfaces.msg import NavigationEdge, NavigationGraph, NavigationNode

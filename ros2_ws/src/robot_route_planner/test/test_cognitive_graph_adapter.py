@@ -578,7 +578,8 @@ def test_rebuild_reset_fresh_goal_late_success_does_not_commit_old_graph():
     rebuilt_map = _map(wall=True)
     support = SimpleNamespace(geojson={'features': []})
     generation = StructuralRebuildGeneration(
-        10, 0, 3, 1, rebuilt.graph_id, rebuilt.revision)
+        10, 0, 3, 1, rebuilt.graph_id, rebuilt.revision,
+        4, 1, id(rebuilt_map))
     goal = SimpleNamespace(pose=SimpleNamespace(
         position=SimpleNamespace(x=1.0, y=2.0)))
 
@@ -847,6 +848,64 @@ def _reassert_liveness_coordinator(monkeypatch):
     return coordinator
 
 
+def _install_recording_structural_intent(coordinator):
+    candidate = object()
+    coordinator.pending_structural_map = candidate
+    coordinator.structural_candidate_generation = 0
+    coordinator.pending_structural_intent = None
+    with coordinator._route_state_lock():
+        coordinator._refresh_structural_intent_locked()
+    coordinator.structural_submits = []
+
+    def submit_latest():
+        if (
+            coordinator.graph_transaction_generation is not None
+            or coordinator.route_active
+            or coordinator.pending_goal is not None
+            or coordinator.graph_retry_due_steady_s is not None
+        ):
+            return
+        coordinator.structural_submits.append(
+            coordinator.pending_structural_intent.candidate_generation)
+        coordinator.pending_structural_map = None
+        coordinator.pending_structural_intent = None
+
+    coordinator._rebuild_structural_graph = submit_latest
+    return candidate
+
+
+def _structural_liveness_coordinator(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.StructuralGraphStatus.REBUILDING = 3
+    coordinator.defaults.update({'footprint': {}, 'route_cost': {}})
+    coordinator.map = _map()
+    coordinator.pending_goal = None
+    coordinator.route_active = False
+    coordinator.structural_generation = 0
+    coordinator.structural_candidate_generation = 0
+    coordinator.pending_structural_intent = None
+    coordinator.feasible_only_largest_component = False
+    coordinator.structural_monitor = SimpleNamespace(accept_rebuild=lambda: None)
+    coordinator.cognitive_graph_identity = _identity()
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.support_node_positions = {}
+    coordinator._publish_graph = lambda: None
+    coordinator._publish_cognitive_constraints = lambda: None
+    rebuilt = Graph('rebuilt', 5, 'map:structural', 0.05, [], [])
+    support = SimpleNamespace(geojson={'features': []})
+    monkeypatch.setattr(ros_node_module, 'build_gvg', lambda *_args, **_kwargs: rebuilt)
+    monkeypatch.setattr(
+        ros_node_module, 'apply_footprint_feasibility',
+        lambda graph, *_args, **_kwargs: graph)
+    monkeypatch.setattr(
+        ros_node_module, 'stabilize_graph_ids',
+        lambda graph, *_args, **_kwargs: graph)
+    monkeypatch.setattr(
+        ros_node_module, 'export_route_support_graph',
+        lambda *_args, **_kwargs: support)
+    return coordinator, rebuilt
+
+
 def test_reassert_service_unavailable_rejection_backoff_and_no_storm(monkeypatch):
     coordinator = _reassert_liveness_coordinator(monkeypatch)
     client = coordinator.set_graph_client
@@ -879,6 +938,225 @@ def test_reassert_service_unavailable_rejection_backoff_and_no_storm(monkeypatch
     assert coordinator.graph_coherent is False
     assert coordinator.graph_reassert_required is True
     assert coordinator.prepared == []
+
+
+@pytest.mark.parametrize('first_outcome', ('rejected', 'exception'))
+def test_deferred_structural_intent_survives_switch_failure_until_recovery(
+    monkeypatch, first_outcome,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.pending_goal = None
+    coordinator.route_active = False
+    _install_recording_structural_intent(coordinator)
+
+    coordinator._ensure_desired_graph('idle graph switch')
+    first = coordinator.set_graph_client.futures[0]
+    if first_outcome == 'exception':
+        first.finish(error=RuntimeError('switch failed'))
+    else:
+        first.finish(success=False)
+    assert coordinator.structural_submits == []
+
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    coordinator.set_graph_client.futures[1].finish(success=True)
+
+    assert coordinator.structural_submits == [1]
+
+
+def test_deferred_structural_intent_wakes_after_switch_success_once(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.pending_goal = None
+    coordinator.route_active = False
+    _install_recording_structural_intent(coordinator)
+
+    coordinator._ensure_desired_graph('idle graph switch')
+    coordinator.set_graph_client.futures[0].finish(success=True)
+    coordinator._graph_reconciliation_tick()
+
+    assert coordinator.structural_submits == [1]
+
+
+def test_hung_switch_recovery_wakes_structural_and_late_success_does_not_repeat(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.pending_goal = None
+    coordinator.route_active = False
+    _install_recording_structural_intent(coordinator)
+
+    coordinator._ensure_desired_graph('idle graph switch')
+    first = coordinator.set_graph_client.futures[0]
+    coordinator.steady_s = 12.0
+    coordinator._graph_reconciliation_tick()
+    assert coordinator.structural_submits == []
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    coordinator.set_graph_client.futures[1].finish(success=True)
+    first.finish(success=True)
+
+    assert coordinator.structural_submits == [1]
+
+
+def test_structural_service_unavailable_retains_latest_with_bounded_retry(
+    monkeypatch,
+):
+    coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    candidate = _map(wall=True)
+    coordinator.pending_structural_map = candidate
+    with coordinator._route_state_lock():
+        intent = coordinator._refresh_structural_intent_locked()
+    coordinator.set_graph_client.ready = False
+
+    coordinator._try_deferred_structural_rebuild()
+    first_due = coordinator.graph_retry_due_steady_s
+    coordinator._try_deferred_structural_rebuild()
+
+    assert coordinator.pending_structural_map is candidate
+    assert coordinator.pending_structural_intent == intent
+    assert coordinator.set_graph_client.calls == []
+    assert first_due == pytest.approx(10.25)
+    assert coordinator.graph_retry_due_steady_s == first_due
+
+    coordinator.set_graph_client.ready = True
+    coordinator.steady_s = first_due
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 1
+    coordinator.set_graph_client.futures[0].finish(success=True)
+    assert coordinator.pending_structural_map is None
+
+
+def test_structural_candidate_coalesces_while_transaction_is_in_flight(
+    monkeypatch,
+):
+    coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    first_map = _map(wall=True)
+    coordinator.pending_structural_map = first_map
+    with coordinator._route_state_lock():
+        first_intent = coordinator._refresh_structural_intent_locked()
+    coordinator._try_deferred_structural_rebuild()
+    first_future = coordinator.set_graph_client.futures[0]
+
+    latest_map = _map(wall=False)
+    coordinator.pending_structural_map = latest_map
+    with coordinator._route_state_lock():
+        latest_intent = coordinator._refresh_structural_intent_locked()
+    coordinator._try_deferred_structural_rebuild()
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 1
+    assert latest_intent.candidate_generation == first_intent.candidate_generation + 1
+
+    first_future.finish(success=True)
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    coordinator.set_graph_client.futures[1].finish(success=True)
+    assert len(coordinator.set_graph_client.calls) == 3
+    coordinator.set_graph_client.futures[2].finish(success=True)
+
+    assert coordinator.pending_structural_map is None
+    assert coordinator.map is latest_map
+
+
+@pytest.mark.parametrize('first_outcome', ('rejected', 'exception'))
+def test_structural_transaction_failure_retains_candidate_and_retries(
+    monkeypatch, first_outcome,
+):
+    coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    candidate = _map(wall=True)
+    coordinator.pending_structural_map = candidate
+    with coordinator._route_state_lock():
+        coordinator._refresh_structural_intent_locked()
+    coordinator._try_deferred_structural_rebuild()
+    first = coordinator.set_graph_client.futures[0]
+
+    if first_outcome == 'exception':
+        first.finish(error=RuntimeError('structural transaction failed'))
+    else:
+        first.finish(success=False)
+    assert coordinator.pending_structural_map is candidate
+    assert coordinator.graph_retry_kind == 'structural'
+
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 2
+    coordinator.set_graph_client.futures[1].finish(success=True)
+    assert coordinator.pending_structural_map is None
+
+
+def test_hung_structural_transaction_recovers_and_late_success_cannot_recommit(
+    monkeypatch,
+):
+    coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    old_map = coordinator.map
+    candidate = _map(wall=True)
+    coordinator.pending_structural_map = candidate
+    with coordinator._route_state_lock():
+        coordinator._refresh_structural_intent_locked()
+    coordinator._try_deferred_structural_rebuild()
+    first = coordinator.set_graph_client.futures[0]
+
+    coordinator.steady_s = 12.0
+    coordinator._graph_reconciliation_tick()
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    coordinator.set_graph_client.futures[1].finish(success=True)
+    committed_generation = coordinator.graph_generation
+    assert coordinator.map is candidate
+
+    first.finish(success=True)
+    assert coordinator.map is candidate
+    assert coordinator.map is not old_map
+    assert coordinator.graph_generation == committed_generation
+    assert coordinator.pending_structural_map is None
+
+
+def test_reset_clears_in_flight_structural_intent_and_late_success_is_stale(
+    monkeypatch,
+):
+    coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    old_map = coordinator.map
+    coordinator.pending_structural_map = _map(wall=True)
+    with coordinator._route_state_lock():
+        coordinator._refresh_structural_intent_locked()
+    coordinator._try_deferred_structural_rebuild()
+    first = coordinator.set_graph_client.futures[0]
+
+    coordinator._on_reset_event(None)
+    assert coordinator.pending_structural_map is None
+    assert coordinator.pending_structural_intent is None
+    first.finish(success=True)
+
+    assert coordinator.map is old_map
+    assert coordinator.pending_structural_map is None
+
+
+def test_navigation_terminal_defers_structural_until_graph_transaction_retires(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.cognitive_graph_mode = 'gvg'
+    coordinator.navigation_goal_pending = True
+    coordinator.goal_complete_pub = _Publisher()
+    coordinator.goal_result_pub = _Publisher()
+    coordinator.cognitive_graph_identity = _identity()
+    generation = coordinator._route_callback_generation()
+    _install_recording_structural_intent(coordinator)
+    coordinator._ensure_desired_graph('active route graph transaction')
+    first = coordinator.set_graph_client.futures[0]
+
+    rejected = SimpleNamespace(result=lambda: SimpleNamespace(accepted=False))
+    coordinator._on_navigation_goal_handle(rejected, generation)
+    coordinator._on_navigation_goal_handle(rejected, generation)
+    assert coordinator.structural_submits == []
+    assert len(coordinator.goal_complete_pub.messages) == 1
+    assert len(coordinator.goal_result_pub.messages) == 1
+
+    first.finish(success=True)
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    coordinator.set_graph_client.futures[1].finish(success=True)
+
+    assert coordinator.structural_submits == [1]
 
 
 def test_reassert_call_exception_retries_on_steady_clock(monkeypatch):

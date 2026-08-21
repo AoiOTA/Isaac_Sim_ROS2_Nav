@@ -1195,3 +1195,26 @@
   runtime or formal qualification was run; live regime decision remains
   pending.
 - Handoff: `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
+## 2026-08-22 — V6 deferred structural rebuild after route terminal
+
+- Goal: retain the latest persistent structural-map candidate when a route
+  terminal races an existing Route Server graph transaction, without duplicate
+  terminal output or `SetRouteGraph` request storms.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `deb275252190a6eacbc9f08a0c9ad76773a172f4`.
+- Changes: one candidate/request/graph/reset-fenced structural intent; reset
+  clearing; active-goal deferral; completion/timeout/late-callback wakeup through
+  the existing steady reconciliation and bounded retry path; stale candidates
+  cannot commit map/GVG state.
+- Validation: focused route/graph **101 passed**; complete route package **125
+  passed, 1 skipped** (`pxr` unavailable); associated reset/gate/benchmark/IMU/
+  localization/EKF **87 passed**; fresh isolated build and `colcon test` at
+  `/tmp/bio_nav_route_deferred.jMe0m0` **126 tests, 0 failures, 1 skipped**;
+  `py_compile` and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
+  evidence campaign, or formal qualification was run.
+- Remaining risk/next: permanently unresolved timed-out futures can accumulate;
+  active-reset plus live structural-change behavior remains for the planned
+  runtime review.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
