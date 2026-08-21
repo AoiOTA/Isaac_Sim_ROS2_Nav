@@ -237,3 +237,39 @@ Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP
 capture, navigation, calibration selection, or formal qualification was run.
 The live regime capture remains pending; `yaw_scale=0.9294` and RF2O-off are
 unchanged.
+
+## Explicit MCAP file-order authority closure
+
+- Follow-up start HEAD:
+  `4aa311783582c4df75d48217b761090fec2326ca`.
+- Both diagnostic and goal MCAP readers now require an explicit
+  `rosbag2_py.ReadOrder(sort_by=ReadOrderSortBy.File, reverse=False)` storage
+  acknowledgement before consuming evidence. Missing API support, an
+  exception, or a non-true storage response is structured
+  `AMBIGUOUS/mcap_file_order_unavailable`; the reader never silently accepts
+  the rosbag2 default received-timestamp order.
+- Raw IMU, corrected IMU, and ground-truth header stamps remain in MCAP file
+  publish order for duplicate/backward validation. Their header domain alone
+  drives yaw windowing, maximum gaps, interpolation, and integration; no sort
+  can hide a file-order header regression.
+- Reset, command, collision, route request, route terminal, and receipt-log
+  event times use bag received timestamps and are explicitly sorted after
+  collection. Received-time jitter therefore cannot change yaw-stream header
+  order, while event boundaries remain deterministic in their own clock
+  domain. Output provenance records both time bases and the file read order.
+- Real `rosbag2_py.SequentialWriter` MCAP tests cover a positive bag with
+  adjacent received timestamps reversed while file/header order increases,
+  plus file-order raw-header duplicate and corrected-header backward failures.
+  Existing single-attempt, reset/request boundary, terminal, and 0.25-second
+  stream-gap regressions remain in the same focused suite.
+- Source-first focused tests: **56 passed**. Fresh isolated package build PASS
+  at `/tmp/v6_imu_file_order_build.qBwj0i`, with install
+  `/tmp/v6_imu_file_order_install.ukM3HM` and log
+  `/tmp/v6_imu_file_order_log.3K0ILK`; fresh-installed focused tests:
+  **56 passed**. Installed import identity, installed `imu_regime_analysis
+  --help`, changed-file `py_compile`, and `git diff --check` pass.
+
+Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph,
+navigation, live MCAP capture, calibration selection, or formal qualification
+was run. The live regime capture is still pending; `yaw_scale=0.9294` and
+RF2O-off remain unchanged.

@@ -1408,3 +1408,29 @@
   unchanged.
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
+## 2026-08-22 — V6 IMU MCAP file-order authority
+
+- Goal: prevent rosbag received-time sorting or jitter from reordering yaw
+  headers and hiding file/publish-order duplicate or backward stamps.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `4aa311783582c4df75d48217b761090fec2326ca`.
+- Changes: both MCAP readers require confirmed `ReadOrderSortBy.File`; missing
+  support is structured `AMBIGUOUS`. Raw/corrected/GT retain file order and use
+  header time for order/gap/window/integration. Reset/command/terminal/request
+  and other event streams use received time and are sorted only after
+  collection. Result provenance exposes both domains.
+- Adversarial coverage: real rosbag2 MCAP with adjacent received-time inversion
+  and increasing file/header order passes; real file-order raw duplicate and
+  corrected backward headers fail. Existing single-attempt, reset/request
+  boundary, terminal, and gap regressions remain passing.
+- Validation: source-first **56 passed**; fresh build/install PASS at
+  `/tmp/v6_imu_file_order_build.qBwj0i` and
+  `/tmp/v6_imu_file_order_install.ukM3HM`, log
+  `/tmp/v6_imu_file_order_log.3K0ILK`; fresh-installed **56 passed**; installed
+  import/entrypoint, changed-file `py_compile`, and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No Isaac, ROS graph, navigation,
+  live MCAP, calibration choice, or formal qualification was run. Live regime
+  closure remains pending; `yaw_scale=0.9294` and RF2O-off are unchanged.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.

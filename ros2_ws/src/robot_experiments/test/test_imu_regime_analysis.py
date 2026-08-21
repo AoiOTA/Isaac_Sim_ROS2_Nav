@@ -370,6 +370,14 @@ def test_goal_contract_rejects_nonfinite_and_requires_source():
 
 
 def _install_fake_mcap(monkeypatch, topic_types, records=()):
+    class ReadOrderSortBy:
+        File = "file"
+
+    class ReadOrder:
+        def __init__(self, sort_by=None, reverse=False):
+            self.sort_by = sort_by
+            self.reverse = reverse
+
     class Reader:
         def __init__(self):
             self.records = list(records)
@@ -380,6 +388,9 @@ def _install_fake_mcap(monkeypatch, topic_types, records=()):
         def get_all_topics_and_types(self):
             return [SimpleNamespace(name=name, type=value) for name, value in topic_types.items()]
 
+        def set_read_order(self, order):
+            return order.sort_by == ReadOrderSortBy.File and order.reverse is False
+
         def has_next(self):
             return bool(self.records)
 
@@ -388,6 +399,8 @@ def _install_fake_mcap(monkeypatch, topic_types, records=()):
 
     rosbag = SimpleNamespace(
         SequentialReader=Reader,
+        ReadOrder=ReadOrder,
+        ReadOrderSortBy=ReadOrderSortBy,
         StorageOptions=lambda **kwargs: kwargs,
         ConverterOptions=lambda *args: args,
     )
@@ -408,6 +421,19 @@ def test_mcap_exact_topic_types_fail_closed(monkeypatch, tmp_path):
         load_mcap(tmp_path / "bag")
     assert raised.value.verdict == "FAIL"
     assert raised.value.code == "mcap_topic_type"
+
+
+def test_mcap_without_confirmed_file_order_is_ambiguous(monkeypatch, tmp_path):
+    _install_fake_mcap(monkeypatch, {
+        "/imu/data_raw": "sensor_msgs/msg/Imu",
+        "/imu/data": "sensor_msgs/msg/Imu",
+        "/ground_truth/odom": "nav_msgs/msg/Odometry",
+    })
+    del sys.modules["rosbag2_py"].ReadOrderSortBy
+    with pytest.raises(EvidenceError) as raised:
+        load_mcap(tmp_path / "bag")
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code == "mcap_file_order_unavailable"
 
 
 def test_structured_output_survives_truncated_report(tmp_path):
@@ -719,6 +745,55 @@ def _goal_metadata(path, *, route_request=False):
     return result
 
 
+def _write_real_goal_mcap(path, records, topic_types):
+    rosbag2_py = pytest.importorskip("rosbag2_py")
+    serialization = pytest.importorskip("rclpy.serialization")
+    utilities = pytest.importorskip("rosidl_runtime_py.utilities")
+    writer = rosbag2_py.SequentialWriter()
+    writer.open(
+        rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"),
+        rosbag2_py.ConverterOptions("", ""),
+    )
+    message_types = {}
+    for index, (topic, type_name) in enumerate(topic_types.items()):
+        writer.create_topic(rosbag2_py.TopicMetadata(
+            id=index, name=topic, type=type_name, serialization_format="cdr",
+        ))
+        message_types[topic] = utilities.get_message(type_name)
+
+    def copy_stamp(target, source):
+        target.sec = int(source.sec)
+        target.nanosec = int(source.nanosec)
+
+    for topic, source, received_ns in records:
+        if topic not in message_types:
+            continue
+        message = message_types[topic]()
+        if topic in {"/imu/data_raw", "/imu/data"}:
+            copy_stamp(message.header.stamp, source.header.stamp)
+            message.angular_velocity.x = float(source.angular_velocity.x)
+            message.angular_velocity.y = float(source.angular_velocity.y)
+            message.angular_velocity.z = float(source.angular_velocity.z)
+        elif topic == "/ground_truth/odom":
+            copy_stamp(message.header.stamp, source.header.stamp)
+            source_q = source.pose.pose.orientation
+            target_q = message.pose.pose.orientation
+            target_q.x = float(source_q.x)
+            target_q.y = float(source_q.y)
+            target_q.z = float(source_q.z)
+            target_q.w = float(source_q.w)
+        elif topic == "/cmd_vel":
+            message.linear.x = float(source.linear.x)
+            message.angular.z = float(source.angular.z)
+        elif topic in {"/simulation/collision", "/bio_nav/route_goal_complete"}:
+            message.data = bool(source.data)
+        elif topic == "/rosout":
+            copy_stamp(message.stamp, source.stamp)
+            message.msg = str(source.msg)
+        writer.write(topic, serialization.serialize_message(message), int(received_ns))
+    writer.close()
+
+
 def test_goal_mcap_derives_arrays_and_ignores_manual_arrays(monkeypatch, tmp_path):
     bag = tmp_path / "goal"
     _install_fake_mcap(monkeypatch, _goal_types(), _goal_records())
@@ -752,6 +827,54 @@ def test_goal_mcap_imu_headers_are_authoritative_over_jittered_bag_time(monkeypa
     assert result["stream_coverage"]["maximum_gap_s"]["raw"] == pytest.approx(0.1)
     assert result["stream_coverage"]["maximum_gap_s"]["corrected"] == pytest.approx(0.1)
     assert result["corrected_integrated_yaw_rad"][-1] == pytest.approx(0.465)
+
+
+def test_real_goal_mcap_file_order_preserves_headers_across_received_inversion(tmp_path):
+    bag = tmp_path / "goal"
+    records = _goal_records(extra_commands=(
+        (2.1, 0.25, 0.4),
+        (1.9, 0.25, 0.4),
+    ))
+    raw_indices = [
+        index for index, (topic, _message, _received_ns) in enumerate(records)
+        if topic == "/imu/data_raw"
+    ]
+    first = raw_indices[1]
+    second = raw_indices[2]
+    topic, message, _received_ns = records[first]
+    records[first] = (topic, message, 102_200_000_000)
+    topic, message, _received_ns = records[second]
+    records[second] = (topic, message, 102_100_000_000)
+    _write_real_goal_mcap(bag, records, _goal_types())
+
+    result = load_goal_mcap(bag, _goal_metadata(bag))
+
+    assert result["mcap_provenance"]["read_order"] == "file"
+    assert result["mcap_provenance"]["yaw_time_basis"] == "header_stamp_in_file_publish_order"
+    assert result["mcap_provenance"]["event_time_basis"] == "received_timestamp_sorted_after_collection"
+    assert result["goal_window"]["start_s"] == pytest.approx(1.9)
+    assert result["stream_coverage"]["maximum_gap_s"]["raw"] == pytest.approx(0.1)
+
+
+@pytest.mark.parametrize(
+    "record_options",
+    [
+        {"duplicate_raw": True},
+        {"backward_corrected": True},
+    ],
+)
+def test_real_goal_mcap_file_order_exposes_header_duplicate_and_backward(
+    tmp_path, record_options,
+):
+    bag = tmp_path / "goal"
+    topic_types = _goal_types(corrected="backward_corrected" in record_options)
+    _write_real_goal_mcap(bag, _goal_records(**record_options), topic_types)
+
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag))
+
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "goal_stamp_order"
 
 
 @pytest.mark.parametrize(

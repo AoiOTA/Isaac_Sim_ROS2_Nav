@@ -1116,6 +1116,36 @@ def _load_phase(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _set_file_read_order(reader: Any, rosbag2_py: Any) -> None:
+    """Require storage/file iteration order before consuming evidence."""
+
+    order_type = getattr(rosbag2_py, "ReadOrder", None)
+    sort_type = getattr(rosbag2_py, "ReadOrderSortBy", None)
+    file_order = getattr(sort_type, "File", None) if sort_type is not None else None
+    setter = getattr(reader, "set_read_order", None)
+    if order_type is None or file_order is None or not callable(setter):
+        raise _evidence_issue(
+            "AMBIGUOUS", "mcap_file_order_unavailable",
+            "rosbag2_py cannot explicitly select MCAP file read order",
+        )
+    try:
+        try:
+            order = order_type(sort_by=file_order, reverse=False)
+        except TypeError:
+            order = order_type(file_order, False)
+        accepted = setter(order)
+    except Exception as exc:
+        raise _evidence_issue(
+            "AMBIGUOUS", "mcap_file_order_unavailable",
+            f"rosbag2_py rejected MCAP file read order: {exc}",
+        ) from exc
+    if accepted is not True:
+        raise _evidence_issue(
+            "AMBIGUOUS", "mcap_file_order_unavailable",
+            "MCAP storage did not confirm file read order",
+        )
+
+
 def validate_phase_trace(
     phase: Sequence[dict[str, Any]],
     resources: DiagnosticResources,
@@ -1169,6 +1199,7 @@ def load_mcap(path: Path) -> McapStreams:
         rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"),
         rosbag2_py.ConverterOptions("", ""),
     )
+    _set_file_read_order(reader, rosbag2_py)
     topic_types = {
         item.name: item.type for item in reader.get_all_topics_and_types()
     }
@@ -1226,6 +1257,8 @@ def load_mcap(path: Path) -> McapStreams:
     provenance = {
         "path": str(path.resolve()),
         "storage_id": "mcap",
+        "read_order": "file",
+        "yaw_time_basis": "header_stamp_in_file_publish_order",
         "topic_types": {topic: topic_types[topic] for topic in required},
         "topic_counts": {topic: len(streams[topic]) for topic in required},
     }
@@ -1239,8 +1272,6 @@ def _record_stamp_s(message: Any, recorded_ns: Any, *, topic: str) -> float:
         stamp = getattr(getattr(message, "header", None), "stamp", None)
         if stamp is None:
             raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has no header stamp")
-    elif topic == "/rosout":
-        stamp = getattr(message, "stamp", None)
     if stamp is not None:
         sec = getattr(stamp, "sec", None)
         nanosec = getattr(stamp, "nanosec", None)
@@ -1398,6 +1429,7 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         rosbag2_py.StorageOptions(uri=str(path), storage_id="mcap"),
         rosbag2_py.ConverterOptions("", ""),
     )
+    _set_file_read_order(reader, rosbag2_py)
     topic_types = {item.name: item.type for item in reader.get_all_topics_and_types()}
     missing = [topic for topic in GOAL_TOPIC_TYPES if topic not in topic_types]
     if missing:
@@ -1501,9 +1533,20 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
             receipt = _reset_receipt_from_log(message)
             if receipt is not None:
                 receipt_logs.append((stamp_s, receipt))
-    for topic, stamps in topic_stamps.items():
+    # The yaw streams retain file/publish order so a duplicate or backward
+    # header cannot be hidden by sorting. Event topics instead use rosbag
+    # received timestamps and are explicitly ordered only after collection;
+    # received-time jitter must not reorder the yaw header evidence.
+    for topic in ("/imu/data_raw", "/imu/data", "/ground_truth/odom"):
+        stamps = topic_stamps.get(topic, [])
         if any(right <= left for left, right in zip(stamps, stamps[1:])):
             raise _evidence_issue("FAIL", "goal_stamp_order", f"{topic} stamps are not strictly increasing")
+    reset_events.sort()
+    commands.sort(key=lambda item: item[0])
+    collisions.sort(key=lambda item: item[0])
+    completions.sort(key=lambda item: item[0])
+    route_requests.sort(key=lambda item: item[0])
+    receipt_logs.sort(key=lambda item: item[0])
     if len(reset_events) != 1 or len(receipt_logs) != 1:
         verdict = "AMBIGUOUS" if not reset_events or not receipt_logs else "FAIL"
         raise _evidence_issue(verdict, "goal_reset_count", "goal MCAP must contain exactly one reset event and one reset receipt")
@@ -1699,6 +1742,9 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         "mcap_provenance": {
             "path": str(path),
             "storage_id": "mcap",
+            "read_order": "file",
+            "yaw_time_basis": "header_stamp_in_file_publish_order",
+            "event_time_basis": "received_timestamp_sorted_after_collection",
             "topic_types": {topic: topic_types[topic] for topic in selected_topic_types},
             "topic_counts": {topic: len(topic_stamps[topic]) for topic in selected_topic_types},
             "reset_event_count": len(reset_events),
