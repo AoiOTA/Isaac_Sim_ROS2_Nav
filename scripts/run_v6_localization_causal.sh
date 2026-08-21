@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 usage() {
   echo "usage: $0 manifest|plan|evaluate|run [arguments...]" >&2
