@@ -62,6 +62,42 @@ bool sameStableIdentity(
          message.model_id == expected.model_id;
 }
 
+bool sameIdentity(
+  const CognitiveObstacleLayer::Identity & lhs,
+  const CognitiveObstacleLayer::Identity & rhs)
+{
+  return lhs.reset_epoch == rhs.reset_epoch &&
+         lhs.recurrent_session_id == rhs.recurrent_session_id &&
+         lhs.map_version == rhs.map_version &&
+         lhs.cognitive_tile_id == rhs.cognitive_tile_id &&
+         lhs.tile_revision == rhs.tile_revision &&
+         lhs.graph_revision == rhs.graph_revision &&
+         lhs.model_id == rhs.model_id;
+}
+
+bool sameStableIdentity(
+  const CognitiveObstacleLayer::Identity & lhs,
+  const CognitiveObstacleLayer::Identity & rhs)
+{
+  return lhs.map_version == rhs.map_version &&
+         lhs.cognitive_tile_id == rhs.cognitive_tile_id &&
+         lhs.tile_revision == rhs.tile_revision &&
+         lhs.graph_revision == rhs.graph_revision &&
+         lhs.model_id == rhs.model_id;
+}
+
+bool sameRouteContext(
+  const CognitiveRiskCritic::RouteContext & lhs,
+  const CognitiveRiskCritic::RouteContext & rhs)
+{
+  return lhs.planning_schema == rhs.planning_schema &&
+         lhs.direction_schema == rhs.direction_schema &&
+         lhs.route_graph_id == rhs.route_graph_id &&
+         lhs.physical_graph_id == rhs.physical_graph_id &&
+         lhs.physical_graph_revision == rhs.physical_graph_revision &&
+         lhs.topology_revision == rhs.topology_revision;
+}
+
 }  // namespace
 
 void CognitiveRiskCritic::initialize()
@@ -73,6 +109,15 @@ void CognitiveRiskCritic::initialize()
     expected_ = CognitiveObstacleLayer::Identity{};
     accepted_.reset();
     identity_bound_ = false;
+    route_context_ = RouteContext{};
+    route_identity_ = CognitiveObstacleLayer::Identity{};
+    route_context_bound_ = false;
+    pending_rebind_identity_ = CognitiveObstacleLayer::Identity{};
+    pending_rebind_ = false;
+    last_rejected_offer_ = RejectedOffer{};
+    last_status_sequence_ = 0;
+    last_status_applied_ = false;
+    last_status_reason_.clear();
   }
   auto getParam = parameters_handler_->getParamGetter(name_);
   getParam(mode_, "mode", mode_);
@@ -114,36 +159,69 @@ void CognitiveRiskCritic::obstacleCallback(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message)
 {
   const auto now_ns = parent_.lock()->get_clock()->now().nanoseconds();
-  std::lock_guard<std::mutex> lock(mutex_);
-  const bool reset_rebind_candidate = identity_bound_ &&
-    message->reset_epoch > expected_.reset_epoch &&
-    message->recurrent_session_id != expected_.recurrent_session_id &&
-    sameStableIdentity(*message, expected_);
-  const auto candidate_identity = identityOf(*message);
   std::string reason;
-  if (reset_rebind_candidate) {
-    reason = CognitiveObstacleLayer::validateMessage(
-      *message, now_ns, candidate_identity,
-      CognitiveObstacleLayer::AcceptanceCursor{}, maximum_age_s_,
-      maximum_ood_probability_, true);
-  } else {
-    reason = CognitiveObstacleLayer::validateMessage(
-      *message, now_ns, expected_, accepted_, maximum_age_s_,
-      maximum_ood_probability_, identity_bound_);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const bool reset_rebind_candidate = identity_bound_ &&
+      message->reset_epoch > expected_.reset_epoch &&
+      message->recurrent_session_id != expected_.recurrent_session_id &&
+      sameStableIdentity(*message, expected_);
+    const auto candidate_identity = identityOf(*message);
+    if (reset_rebind_candidate &&
+      (!pending_rebind_ || !sameIdentity(candidate_identity, pending_rebind_identity_)))
+    {
+      reason = "reset_route_context_missing";
+    } else if (!identity_bound_ && route_context_bound_ &&
+      !sameIdentity(candidate_identity, route_identity_))
+    {
+      reason = "route_context_identity";
+    } else if (reset_rebind_candidate) {
+      reason = CognitiveObstacleLayer::validateMessage(
+        *message, now_ns, candidate_identity,
+        CognitiveObstacleLayer::AcceptanceCursor{}, maximum_age_s_,
+        maximum_ood_probability_, true);
+    } else {
+      reason = CognitiveObstacleLayer::validateMessage(
+        *message, now_ns, expected_, accepted_, maximum_age_s_,
+        maximum_ood_probability_, identity_bound_);
+    }
+    if (reason.empty()) {
+      if (reset_rebind_candidate) {
+        obstacles_.reset();
+        accepted_.reset();
+        expected_ = candidate_identity;
+        route_identity_ = candidate_identity;
+        pending_rebind_ = false;
+      } else if (!identity_bound_) {
+        expected_ = candidate_identity;
+        if (route_context_bound_) {
+          route_identity_ = candidate_identity;
+        }
+      }
+      identity_bound_ = true;
+      obstacles_ = message;
+      CognitiveObstacleLayer::recordAccepted(*message, accepted_);
+    } else {
+      const bool duplicate_rejection = last_rejected_offer_.valid &&
+        last_rejected_offer_.sequence == message->sequence &&
+        last_rejected_offer_.reset_epoch == message->reset_epoch &&
+        last_rejected_offer_.recurrent_session_id == message->recurrent_session_id &&
+        last_rejected_offer_.reason == reason;
+      if (duplicate_rejection) {
+        return;
+      }
+      last_rejected_offer_ = RejectedOffer{
+        message->sequence, message->reset_epoch,
+        message->recurrent_session_id, reason, true};
+    }
   }
   if (!reason.empty()) {
-    return;
+    publishStatus(
+      message->sequence, false,
+      "offer_rejected=" + reason +
+      ";offer_reset_epoch=" + std::to_string(message->reset_epoch) +
+      ";offer_session=" + message->recurrent_session_id);
   }
-  if (reset_rebind_candidate) {
-    obstacles_.reset();
-    accepted_.reset();
-    expected_ = candidate_identity;
-  } else if (!identity_bound_) {
-    expected_ = candidate_identity;
-  }
-  identity_bound_ = true;
-  obstacles_ = message;
-  CognitiveObstacleLayer::recordAccepted(*message, accepted_);
 }
 
 void CognitiveRiskCritic::priorCallback(
@@ -152,10 +230,83 @@ void CognitiveRiskCritic::priorCallback(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     prior_ = message;
+    const auto offered_identity = priorIdentityOf(*message);
+    if (identity_bound_ && offered_identity.reset_epoch > expected_.reset_epoch &&
+      offered_identity.recurrent_session_id != expected_.recurrent_session_id)
+    {
+      pending_rebind_ = false;
+    }
+    if (validateRouteContext(*message).empty()) {
+      const auto candidate_identity = offered_identity;
+      const auto candidate_context = routeContextOf(*message);
+      if (!route_context_bound_) {
+        if (!identity_bound_ || sameIdentity(candidate_identity, expected_)) {
+          route_context_ = candidate_context;
+          route_identity_ = candidate_identity;
+          route_context_bound_ = true;
+        }
+      } else if (identity_bound_ &&
+        candidate_identity.reset_epoch > expected_.reset_epoch &&
+        candidate_identity.recurrent_session_id != expected_.recurrent_session_id &&
+        sameStableIdentity(candidate_identity, expected_) &&
+        sameRouteContext(candidate_context, route_context_))
+      {
+        pending_rebind_identity_ = candidate_identity;
+        pending_rebind_ = true;
+      } else if (identity_bound_ && sameIdentity(candidate_identity, expected_) &&
+        sameRouteContext(candidate_context, route_context_))
+      {
+        route_identity_ = candidate_identity;
+      }
+    }
   }
   if (mode_ == "shadow") {
     publishStatus(message->sequence, false, "shadow");
   }
+}
+
+std::string CognitiveRiskCritic::validateRouteContext(
+  const bio_nav_interfaces::msg::PlanningPrior & prior)
+{
+  if ((prior.schema_version != "bio_nav_planning_prior_v4" &&
+    prior.schema_version != "bio_nav_planning_prior_v310") ||
+    prior.local_direction_schema_version != "bio_nav_local_direction_prior_v1")
+  {
+    return "reset_route_context_schema";
+  }
+  if (!prior.input_healthy || !prior.module2_healthy || !prior.observation_valid ||
+    !prior.trusted_write || prior.trust_rejection_mask != 0U)
+  {
+    return "reset_route_context_untrusted";
+  }
+  if (prior.reset_epoch == 0U || prior.recurrent_session_id.empty() ||
+    prior.map_version.empty() || prior.cognitive_tile_id.empty() ||
+    prior.tile_revision == 0U || prior.graph_revision == 0U ||
+    prior.model_id.empty() || prior.local_direction_graph_id.empty() ||
+    prior.source_physical_graph_id.empty() ||
+    prior.source_physical_graph_revision == 0U || prior.topology_revision == 0U)
+  {
+    return "reset_route_context_missing";
+  }
+  return "";
+}
+
+CognitiveRiskCritic::RouteContext CognitiveRiskCritic::routeContextOf(
+  const bio_nav_interfaces::msg::PlanningPrior & prior)
+{
+  return RouteContext{
+    prior.schema_version, prior.local_direction_schema_version,
+    prior.local_direction_graph_id, prior.source_physical_graph_id,
+    prior.source_physical_graph_revision, prior.topology_revision};
+}
+
+CognitiveObstacleLayer::Identity CognitiveRiskCritic::priorIdentityOf(
+  const bio_nav_interfaces::msg::PlanningPrior & prior)
+{
+  return CognitiveObstacleLayer::Identity{
+    prior.reset_epoch, prior.recurrent_session_id, prior.map_version,
+    prior.cognitive_tile_id, prior.tile_revision, prior.graph_revision,
+    prior.model_id};
 }
 
 std::string CognitiveRiskCritic::validateInputs(
@@ -310,10 +461,11 @@ double CognitiveRiskCritic::trajectoryScore(
     direction_cost = deviation * std::min(1.0, direction_vector / total_weight);
   }
   const double horizon = static_cast<double>(trajectory.size());
-  return std::max(0.0,
-      obstacle_weight * obstacle_cost + direction_weight * direction_cost +
-      novelty_weight * novelty * horizon +
-      uncertainty_weight * uncertainty * horizon);
+  const double score =
+    obstacle_weight * obstacle_cost + direction_weight * direction_cost +
+    novelty_weight * novelty * horizon +
+    uncertainty_weight * uncertainty * horizon;
+  return std::isfinite(score) && score > 0.0 ? score : 0.0;
 }
 
 void CognitiveRiskCritic::score(mppi::CriticData & data)
@@ -322,6 +474,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior;
   CognitiveObstacleLayer::Identity expected;
+  RejectedOffer rejected_offer;
   std::string reason;
   const auto now = parent_.lock()->get_clock()->now();
   {
@@ -329,6 +482,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
     obstacles = obstacles_;
     prior = prior_;
     expected = expected_;
+    rejected_offer = last_rejected_offer_;
   }
   const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
   reason = obstacles ? CognitiveObstacleLayer::validateMessage(
@@ -388,6 +542,13 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
   const double robot_yaw = tf2::getYaw(transform.transform.rotation);
   const auto batch = data.trajectories.x.shape(0);
   const auto steps = data.trajectories.x.shape(1);
+  constexpr float cost_delta_epsilon = 1.0e-6F;
+  bool obstacle_applied = false;
+  bool novelty_applied = false;
+  bool uncertainty_applied = false;
+  bool direction_applied = false;
+  const std::array<double, 5> no_direction{};
+  const std::vector<ObstacleSample> no_obstacles;
   for (std::size_t index = 0; index < batch; ++index) {
     std::vector<std::array<double, 3>> trajectory;
     trajectory.reserve(steps);
@@ -396,22 +557,72 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
         data.trajectories.x(index, step), data.trajectories.y(index, step),
         data.trajectories.yaws(index, step)});
     }
-    data.costs(index) += static_cast<float>(trajectoryScore(
-        trajectory, samples, direction, robot_yaw,
-        novelty, uncertainty,
-        obstacle_weight_, direction_weight_,
-        novelty_weight_, uncertainty_weight_));
+    const auto apply_component = [&](double component, bool & component_applied) {
+        if (!std::isfinite(component) || component <= cost_delta_epsilon) {
+          return;
+        }
+        const float before = data.costs(index);
+        if (!std::isfinite(before)) {
+          return;
+        }
+        const double candidate = static_cast<double>(before) + component;
+        if (!std::isfinite(candidate) ||
+          candidate > static_cast<double>(std::numeric_limits<float>::max()))
+        {
+          return;
+        }
+        const float after = static_cast<float>(candidate);
+        if (std::isfinite(after) && after - before > cost_delta_epsilon) {
+          data.costs(index) = after;
+          component_applied = true;
+        }
+      };
+    apply_component(
+      trajectoryScore(
+        trajectory, samples, no_direction, robot_yaw, 0.0, 0.0,
+        obstacle_weight_, 0.0, 0.0, 0.0), obstacle_applied);
+    apply_component(
+      trajectoryScore(
+        trajectory, no_obstacles, no_direction, robot_yaw, novelty, 0.0,
+        0.0, 0.0, novelty_weight_, 0.0), novelty_applied);
+    apply_component(
+      trajectoryScore(
+        trajectory, no_obstacles, no_direction, robot_yaw, 0.0, uncertainty,
+        0.0, 0.0, 0.0, uncertainty_weight_), uncertainty_applied);
+    apply_component(
+      trajectoryScore(
+        trajectory, no_obstacles, direction, robot_yaw, 0.0, 0.0,
+        0.0, direction_weight_, 0.0, 0.0), direction_applied);
+  }
+  const bool applied = obstacle_applied || novelty_applied ||
+    uncertainty_applied || direction_applied;
+  auto status_reason = appliedStatus(
+    prior_reason, context_reason, direction_reason, obstacle_applied,
+    novelty_applied, uncertainty_applied, direction_applied);
+  status_reason += ";accepted_source_sequence=" + std::to_string(obstacles->sequence);
+  if (rejected_offer.valid) {
+    status_reason +=
+      ";latest_rejected_offer_sequence=" + std::to_string(rejected_offer.sequence) +
+      ";latest_rejected_offer_reset_epoch=" +
+      std::to_string(rejected_offer.reset_epoch) +
+      ";latest_rejected_offer_session=" + rejected_offer.recurrent_session_id +
+      ";latest_rejected_offer_reason=" + rejected_offer.reason;
   }
   publishStatus(
-    obstacles->sequence, true,
-    appliedStatus(prior_reason, context_reason, direction_reason));
+    obstacles->sequence, applied, status_reason);
 }
 
 std::string CognitiveRiskCritic::appliedStatus(
   const std::string & prior_reason, const std::string & context_reason,
-  const std::string & direction_reason)
+  const std::string & direction_reason, bool obstacle_applied,
+  bool novelty_applied, bool uncertainty_applied, bool direction_applied)
 {
-  std::string status = "obstacle_applied=true";
+  const bool applied = obstacle_applied || novelty_applied ||
+    uncertainty_applied || direction_applied;
+  std::string status = applied ? "cost_delta_applied=true" :
+    "cost_delta_applied=false;zero_cost_delta";
+  status += obstacle_applied ? ";obstacle_applied=true" :
+    ";obstacle_applied=false;obstacle_suppressed=zero_cost_delta";
   if (!prior_reason.empty()) {
     return status + ";prior_suppressed=" + prior_reason +
            ";context_suppressed=" + prior_reason +
@@ -421,20 +632,36 @@ std::string CognitiveRiskCritic::appliedStatus(
   }
   status += ";prior_accepted=true";
   if (context_reason.empty()) {
-    status += ";context_applied=true;novelty_applied=true;uncertainty_applied=true";
+    const bool context_applied = novelty_applied || uncertainty_applied;
+    status += context_applied ? ";context_applied=true" :
+      ";context_applied=false;context_suppressed=zero_cost_delta";
+    status += novelty_applied ? ";novelty_applied=true" :
+      ";novelty_applied=false;novelty_suppressed=zero_cost_delta";
+    status += uncertainty_applied ? ";uncertainty_applied=true" :
+      ";uncertainty_applied=false;uncertainty_suppressed=zero_cost_delta";
   } else {
     status += ";context_suppressed=" + context_reason +
       ";novelty_suppressed=" + context_reason +
       ";uncertainty_suppressed=" + context_reason;
   }
-  status += direction_reason.empty() ?
-    ";direction_applied=true" : ";direction_suppressed=" + direction_reason;
+  if (!direction_reason.empty()) {
+    status += ";direction_applied=false;direction_suppressed=" + direction_reason;
+  } else {
+    status += direction_applied ? ";direction_applied=true" :
+      ";direction_applied=false;direction_suppressed=zero_cost_delta";
+  }
   return status;
 }
 
 void CognitiveRiskCritic::publishStatus(
   uint64_t sequence, bool applied, const std::string & reason)
 {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_status_sequence_ = sequence;
+    last_status_applied_ = applied;
+    last_status_reason_ = reason;
+  }
   if (!status_publisher_) {return;}
   bio_nav_interfaces::msg::RiskLayerStatus status;
   status.stamp = parent_.lock()->get_clock()->now();
@@ -443,7 +670,7 @@ void CognitiveRiskCritic::publishStatus(
   status.offered = sequence > 0;
   status.applied = applied;
   status.rejected = !applied && reason != "" && reason != "shadow" &&
-    reason != "offered";
+    reason != "offered" && reason.find("zero_cost_delta") == std::string::npos;
   status.source_sequence = sequence;
   status.fallback_reason = reason;
   status_publisher_->publish(status);

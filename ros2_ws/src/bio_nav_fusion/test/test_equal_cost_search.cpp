@@ -42,6 +42,15 @@ public:
     critic.expected_ = CognitiveObstacleLayer::Identity{};
     critic.accepted_.reset();
     critic.identity_bound_ = false;
+    critic.route_context_ = CognitiveRiskCritic::RouteContext{};
+    critic.route_identity_ = CognitiveObstacleLayer::Identity{};
+    critic.route_context_bound_ = false;
+    critic.pending_rebind_identity_ = CognitiveObstacleLayer::Identity{};
+    critic.pending_rebind_ = false;
+    critic.last_rejected_offer_ = CognitiveRiskCritic::RejectedOffer{};
+    critic.last_status_sequence_ = 0;
+    critic.last_status_applied_ = false;
+    critic.last_status_reason_.clear();
   }
 
   static void setInputs(
@@ -104,12 +113,55 @@ public:
     critic.uncertainty_weight_ = 1.0F;
   }
 
+  static void useContextOnly(CognitiveRiskCritic & critic)
+  {
+    critic.obstacle_weight_ = 0.0F;
+    critic.direction_weight_ = 0.0F;
+    critic.novelty_weight_ = 1.0F;
+    critic.uncertainty_weight_ = 0.0F;
+  }
+
+  static void useZeroWeights(CognitiveRiskCritic & critic)
+  {
+    critic.obstacle_weight_ = 0.0F;
+    critic.direction_weight_ = 0.0F;
+    critic.novelty_weight_ = 0.0F;
+    critic.uncertainty_weight_ = 0.0F;
+  }
+
   static std::string appliedStatus(
     const std::string & prior_reason, const std::string & context_reason,
-    const std::string & direction_reason)
+    const std::string & direction_reason, bool obstacle_applied = true,
+    bool novelty_applied = false, bool uncertainty_applied = false,
+    bool direction_applied = false)
   {
     return CognitiveRiskCritic::appliedStatus(
-      prior_reason, context_reason, direction_reason);
+      prior_reason, context_reason, direction_reason, obstacle_applied,
+      novelty_applied, uncertainty_applied, direction_applied);
+  }
+
+  static CognitiveRiskCritic::RejectedOffer lastRejected(CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.last_rejected_offer_;
+  }
+
+  static bool lastStatusApplied(CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.last_status_applied_;
+  }
+
+  static uint64_t lastStatusSequence(CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.last_status_sequence_;
+  }
+
+  static std::string lastStatusReason(CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.last_status_reason_;
   }
 };
 
@@ -1090,7 +1142,7 @@ TEST(CognitiveRiskCritic, static_revalidation_survives_stale_missing_and_mismatc
   EXPECT_EQ(
     bio_nav_fusion::CognitiveRiskCriticTestPeer::appliedStatus(
       "prior_stale", "", ""),
-    "obstacle_applied=true;prior_suppressed=prior_stale"
+    "cost_delta_applied=true;obstacle_applied=true;prior_suppressed=prior_stale"
     ";context_suppressed=prior_stale;novelty_suppressed=prior_stale"
     ";uncertainty_suppressed=prior_stale;direction_suppressed=prior_stale");
   const auto component_status =
@@ -1363,6 +1415,16 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed));
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+  const auto rejected = bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic);
+  EXPECT_TRUE(rejected.valid);
+  EXPECT_EQ(rejected.sequence, 8U);
+  EXPECT_EQ(rejected.reason, "identity");
+  EXPECT_TRUE(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(critic));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusSequence(critic), 7U);
+  const auto status = bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(critic);
+  EXPECT_NE(status.find("accepted_source_sequence=7"), std::string::npos);
+  EXPECT_NE(status.find("latest_rejected_offer_sequence=8"), std::string::npos);
+  EXPECT_NE(status.find("latest_rejected_offer_reason=identity"), std::string::npos);
 }
 
 TEST(CognitiveRiskCritic, obstacle_callback_advances_before_prior_pairing_like_layer)
@@ -1416,7 +1478,7 @@ TEST(CognitiveRiskCritic, obstacle_callback_advances_before_prior_pairing_like_l
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
 }
 
-TEST(CognitiveRiskCritic, same_instance_rebinds_from_trusted_monotonic_obstacle_without_prior)
+TEST(CognitiveRiskCritic, reset_rebind_requires_unchanged_route_context_prior)
 {
   using Critic = bio_nav_fusion::CognitiveRiskCritic;
   auto costmap = makeCriticTestCostmap();
@@ -1430,9 +1492,12 @@ TEST(CognitiveRiskCritic, same_instance_rebinds_from_trusted_monotonic_obstacle_
 
   Critic critic;
   bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(critic, costmap);
+  auto old_prior = productionV310PriorFixture();
+  retimeFresh(old_obstacles, old_prior, old_ns);
   bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
     critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(old_obstacles), nullptr);
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(old_obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(old_prior));
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
 
   auto reset_obstacles = obstacleFixture();
@@ -1440,6 +1505,21 @@ TEST(CognitiveRiskCritic, same_instance_rebinds_from_trusted_monotonic_obstacle_
   reset_obstacles.recurrent_session_id = "session-reset";
   reset_obstacles.sequence = 1;
   retimeFreshObstacle(reset_obstacles, reset_ns);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+    critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(reset_obstacles));
+  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 3U);
+  EXPECT_EQ(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).reason,
+    "reset_route_context_missing");
+
+  auto reset_prior = old_prior;
+  reset_prior.reset_epoch = 4;
+  reset_prior.recurrent_session_id = "session-reset";
+  reset_prior.sequence = 99;
+  reset_prior.local_direction_source_sequence = 99;
+  reset_prior.stamp = stampFromNs(old_ns - 5000000000LL);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+    critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(reset_prior));
   bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(reset_obstacles));
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
@@ -1455,25 +1535,150 @@ TEST(CognitiveRiskCritic, same_instance_rebinds_from_trusted_monotonic_obstacle_
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
 
-  auto changed_map_obstacles = reset_obstacles;
-  changed_map_obstacles.reset_epoch = 5;
-  changed_map_obstacles.recurrent_session_id = "session-changed-map";
-  changed_map_obstacles.map_version = "other-map";
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
-    critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed_map_obstacles));
-  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
-  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
-  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
+  const auto expect_reset_rejected = [&](auto mutate_prior, auto mutate_obstacle) {
+      auto candidate_prior = reset_prior;
+      candidate_prior.reset_epoch = 5;
+      candidate_prior.recurrent_session_id = "session-rejected";
+      mutate_prior(candidate_prior);
+      bio_nav_fusion::CognitiveRiskCriticTestPeer::offerPrior(
+        critic, std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(candidate_prior));
+      auto candidate_obstacles = reset_obstacles;
+      candidate_obstacles.reset_epoch = 5;
+      candidate_obstacles.recurrent_session_id = "session-rejected";
+      mutate_obstacle(candidate_obstacles);
+      bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
+        critic,
+        std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(candidate_obstacles));
+      EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+      EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
+    };
+  const auto no_prior_change = [](auto &) {};
+  const auto no_obstacle_change = [](auto &) {};
+  expect_reset_rejected(
+    [](auto & prior) {prior.local_direction_graph_id = "changed-route";},
+    no_obstacle_change);
+  expect_reset_rejected(
+    [](auto & prior) {++prior.source_physical_graph_revision;},
+    no_obstacle_change);
+  expect_reset_rejected(
+    [](auto & prior) {++prior.topology_revision;},
+    no_obstacle_change);
+  expect_reset_rejected(
+    [](auto & prior) {prior.schema_version = "changed-schema";},
+    no_obstacle_change);
+  expect_reset_rejected(
+    no_prior_change,
+    [](auto & obstacles) {obstacles.map_version = "spoof-map";});
+}
 
-  auto untrusted_obstacles = reset_obstacles;
-  untrusted_obstacles.reset_epoch = 5;
-  untrusted_obstacles.recurrent_session_id = "session-untrusted";
-  untrusted_obstacles.sequence = 1;
-  untrusted_obstacles.trusted_write = false;
-  bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
-    critic,
-    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(untrusted_obstacles));
-  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
-  EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::obstacles(critic)->reset_epoch, 4U);
+TEST(CognitiveRiskCritic, applied_status_tracks_real_positive_component_deltas)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  auto costmap = makeCriticTestCostmap();
+  const int64_t source_ns = costmap->now().nanoseconds() - 10000000LL;
+  ASSERT_TRUE(addTransform(costmap, source_ns, 0.0));
+  auto obstacles = obstacleFixture();
+  auto prior = planningPriorFixture();
+  retimeFresh(obstacles, prior, source_ns);
+
+  const auto make_critic = [&]() {
+      auto critic = std::make_unique<Critic>();
+      bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(*critic, costmap);
+      return critic;
+    };
+
+  auto empty = obstacles;
+  empty.obstacles.clear();
+  auto empty_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *empty_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(empty),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_FLOAT_EQ(scoreAt(*empty_critic, 1.0F, 0.0F), 0.0F);
+  EXPECT_FALSE(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(*empty_critic));
+  EXPECT_NE(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(*empty_critic).find(
+      "zero_cost_delta;obstacle_applied=false"),
+    std::string::npos);
+
+  auto zero_weight_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::useZeroWeights(*zero_weight_critic);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *zero_weight_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_FLOAT_EQ(scoreAt(*zero_weight_critic, 1.0F, 0.0F), 0.0F);
+  EXPECT_FALSE(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(*zero_weight_critic));
+
+  auto far_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *far_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_FLOAT_EQ(scoreAt(*far_critic, 1000.0F, 1000.0F), 0.0F);
+  EXPECT_FALSE(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(*far_critic));
+
+  auto obstacle_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *obstacle_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_GT(scoreAt(*obstacle_critic, 1.0F, 0.0F), 0.0F);
+  EXPECT_TRUE(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(*obstacle_critic));
+  EXPECT_NE(
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(*obstacle_critic).find(
+      "obstacle_applied=true"),
+    std::string::npos);
+
+  auto context_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::useContextOnly(*context_critic);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *context_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_GT(scoreAt(*context_critic, 1.0F, 0.0F), 0.0F);
+  const auto context_status =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(*context_critic);
+  EXPECT_NE(context_status.find("obstacle_applied=false"), std::string::npos);
+  EXPECT_NE(context_status.find("context_applied=true"), std::string::npos);
+  EXPECT_NE(context_status.find("novelty_applied=true"), std::string::npos);
+
+  auto direction_critic = make_critic();
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::useDirectionOnly(*direction_critic);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    *direction_critic,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_GT(scoreAt(*direction_critic, 1.0F, 0.0F, static_cast<float>(M_PI)), 0.0F);
+  const auto direction_status =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(*direction_critic);
+  EXPECT_NE(direction_status.find("obstacle_applied=false"), std::string::npos);
+  EXPECT_NE(direction_status.find("direction_applied=true"), std::string::npos);
+}
+
+TEST(CognitiveRiskCritic, nonfinite_or_negative_component_never_changes_cost)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  const std::vector<std::array<double, 3>> trajectory{{0.0, 0.0, 0.0}};
+  const std::array<double, 5> direction{};
+  std::vector<Critic::ObstacleSample> obstacles{{
+      0.0, 0.0, 0.1, std::numeric_limits<double>::quiet_NaN()}};
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, obstacles, direction, 0.0, 0.0, 0.0,
+      1.0, 0.0, 0.0, 0.0),
+    0.0);
+  obstacles[0].confidence = 1.0;
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, obstacles, direction, 0.0, 0.0, 0.0,
+      -1.0, 0.0, 0.0, 0.0),
+    0.0);
+  EXPECT_DOUBLE_EQ(
+    Critic::trajectoryScore(
+      trajectory, obstacles, direction, 0.0,
+      std::numeric_limits<double>::infinity(), 0.0,
+      0.0, 0.0, 1.0, 0.0),
+    0.0);
 }

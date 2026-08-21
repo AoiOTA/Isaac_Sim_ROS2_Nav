@@ -498,7 +498,11 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         collision = _bool(passive.get("collision"), "passive.collision")
         success = _bool(passive.get("success"), "passive.success")
 
-        online_applied = critic.get("applied") is True
+        critic_reason = str(critic.get("reason", critic.get("fallback_reason", "")))
+        online_applied = (
+            critic.get("applied") is True
+            and "cost_delta_applied=true" in critic_reason
+        )
         offline_scores = critic.get("offline_reconstructed_scores", [])
         if online_applied:
             critic_participation = "online_applied"

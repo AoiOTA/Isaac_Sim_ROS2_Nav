@@ -27,6 +27,25 @@ public:
     double confidence{0.0};
   };
 
+  struct RouteContext
+  {
+    std::string planning_schema;
+    std::string direction_schema;
+    std::string route_graph_id;
+    std::string physical_graph_id;
+    uint64_t physical_graph_revision{0};
+    uint64_t topology_revision{0};
+  };
+
+  struct RejectedOffer
+  {
+    uint64_t sequence{0};
+    uint32_t reset_epoch{0};
+    std::string recurrent_session_id;
+    std::string reason;
+    bool valid{false};
+  };
+
   void initialize() override;
   void score(mppi::CriticData & data) override;
 
@@ -66,7 +85,14 @@ private:
   void publishStatus(uint64_t sequence, bool applied, const std::string & reason);
   static std::string appliedStatus(
     const std::string & prior_reason, const std::string & context_reason,
-    const std::string & direction_reason);
+    const std::string & direction_reason, bool obstacle_applied,
+    bool novelty_applied, bool uncertainty_applied, bool direction_applied);
+  static std::string validateRouteContext(
+    const bio_nav_interfaces::msg::PlanningPrior & prior);
+  static RouteContext routeContextOf(
+    const bio_nav_interfaces::msg::PlanningPrior & prior);
+  static CognitiveObstacleLayer::Identity priorIdentityOf(
+    const bio_nav_interfaces::msg::PlanningPrior & prior);
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles_;
@@ -74,6 +100,15 @@ private:
   CognitiveObstacleLayer::Identity expected_;
   CognitiveObstacleLayer::AcceptanceCursor accepted_;
   bool identity_bound_{false};
+  RouteContext route_context_;
+  CognitiveObstacleLayer::Identity route_identity_;
+  bool route_context_bound_{false};
+  CognitiveObstacleLayer::Identity pending_rebind_identity_;
+  bool pending_rebind_{false};
+  RejectedOffer last_rejected_offer_;
+  uint64_t last_status_sequence_{0};
+  bool last_status_applied_{false};
+  std::string last_status_reason_;
   std::string mode_{"off"};
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   std::string prior_topic_{"/bio_nav/module2/planning_prior"};

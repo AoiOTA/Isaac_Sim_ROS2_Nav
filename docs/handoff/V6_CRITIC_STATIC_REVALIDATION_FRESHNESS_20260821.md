@@ -270,3 +270,77 @@ ctest --test-dir /tmp/bio_nav_module3_critic_admission.Bzf9rD/build/bio_nav_fusi
   an Integration reset, observe a strictly higher epoch/new session on both
   streams, confirm critic status returns to applied, then replay the old epoch
   and confirm it cannot displace the new accepted snapshot.
+
+## 2026-08-21 route-context rebind and applied-truth amendment
+
+### Scope and result
+
+- Starting HEAD: `3dc2830c1da5b5f441191217220bc120058bd4b2` on the permitted
+  Module3 `cognitive-navigation` worktree; fixed main ancestry and tracked-clean
+  preflight passed.
+- Goal: close the two follow-up reviewer blockers without changing Integration,
+  Module2, `GoalPlanningPrior`, Costmap ownership, safety ownership, or the
+  stationary-runtime handoff.
+- Verdict: **PASS (implementation/build/unit only)**. This amendment supersedes
+  the earlier claim that a higher-epoch obstacle alone can rebind the critic.
+
+### Change
+
+- A higher-epoch/new-session obstacle can no longer rebind from obstacle
+  identity alone. The critic first binds a basic-compatible `PlanningPrior`
+  route context: planning/local-direction schemas, route graph ID, physical
+  graph ID/revision, topology revision, and the complete
+  map/tile/graph/model/session/reset identity. Core input/module health,
+  observation validity, trusted-write, and rejection-mask gates must pass.
+- Rebind accepts only an unchanged route context relative to the old stable
+  context and the exact pending new identity. Prior source age and sequence are
+  intentionally not scoring gates for this identity proof, so a stale or
+  different-sequence prior may authorize the context; it still cannot add
+  context or direction cost. Obstacle-first delivery reports
+  `reset_route_context_missing`; the next compatible obstacle after the prior
+  performs rebind. Changed route/physical revision/topology/schema, stable
+  identity spoofing, and old-epoch replay do not rebind.
+- `RiskLayerStatus.applied` and component `*_applied` text now reflect actual,
+  finite positive changes to `data.costs` above `1e-6`, not merely successful
+  input admission. Empty obstacle arrays, zero weights, and trajectories with
+  zero effective contribution report `zero_cost_delta`, `applied=false`, and
+  `obstacle_applied=false`. Context/direction may independently set overall
+  applied while obstacle remains false. Nonfinite, overflowing, or negative
+  component scores fail open and never mutate costs.
+- Every distinct rejected obstacle callback publishes an independent rejected
+  offer status and is retained under the critic mutex. Later scoring of the old
+  accepted snapshot names both `accepted_source_sequence` and the latest
+  rejected offer identity/reason, so it cannot imply the rejected offer was
+  applied. Exact duplicate rejections are suppressed to avoid callback spam.
+- The low-obstacle causal evaluator now recognizes `online_applied` only when
+  status contains `cost_delta_applied=true`; legacy or overall-zero-delta
+  `applied=true` evidence cannot claim online participation. Individual zero
+  components may still coexist with a positive overall delta.
+
+### Validation
+
+- Fresh isolated allowed Integration `bio_nav_interfaces` + Module3
+  `bio_nav_fusion` build: PASS, 2 packages. Build/install roots:
+  `ros2_ws/build_critic_fix_kOEv7h` and
+  `ros2_ws/install_critic_fix_8raZSf`.
+- Focused CTest: `test_equal_cost_search` PASS and
+  `test_plugin_loader_isolation` PASS (2/2 executables).
+- Source-first Python focused tests: low-obstacle causal, localization causal,
+  and bringup mode contract: **52 passed**.
+- `git diff --check`: PASS after documentation update.
+- Test coverage retains the real V3.10 old-source static refresh with stale,
+  different-sequence, and missing priors; validation-time TF; callback cursor;
+  off/shadow/mode and safety contracts. New cases cover stale-prior route
+  authorization, reset pending/rebind/replay, route/revision/topology/schema and
+  spoof rejection, empty/zero/far/positive component deltas, context-only and
+  direction-only deltas, nonfinite/negative fail-open scoring, rejected-offer
+  observability, and causal online-applied truth.
+
+### Remaining risk
+
+- No ROS graph, active MPPI, Nav2, Isaac, navigation, visual evidence,
+  engineering campaign, or formal qualification was run. Live DDS callback
+  ordering, status observation, and active-MPPI influence remain unverified.
+- `GoalPlanningPrior` remains unconnected. Goal-conditioned direction and the
+  earlier stationary run are not validated or changed by this code/build/unit
+  amendment.

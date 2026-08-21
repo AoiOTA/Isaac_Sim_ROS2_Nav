@@ -830,3 +830,31 @@
 - Next: fresh current-HEAD, at-most-180-second, low-speed single-goal active-M3
   pilot; any moving authority gap measured in seconds is **FAIL / STOP**.
 - Handoff: `docs/handoff/V6_OFFICIAL_STATIONARY_FRESH_20260821.md`.
+
+## 2026-08-21 — V6 critic route-context rebind and applied-truth repair
+
+- Goal: prevent route-ambiguous same-instance reset rebind and prevent admitted
+  but zero-delta critic cycles from being reported as online-applied.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `3dc2830c1da5b5f441191217220bc120058bd4b2`.
+- Changes: higher-epoch rebind now waits for a health/trust-compatible
+  `PlanningPrior` carrying the exact new session/reset and unchanged planning
+  schema, local schema, route graph, physical graph/revision, topology, and
+  stable map/tile/graph/model identity. Stale or sequence-mismatched prior data
+  can prove route identity but remains suppressed from scoring. Actual finite
+  positive cost-vector deltas determine overall/component applied flags;
+  empty/zero/far contributions report `zero_cost_delta`. Distinct callback
+  rejection status preserves rejected offer identity while old accepted scoring
+  names its own source. The causal evaluator requires the new positive-delta
+  marker before reporting `online_applied`.
+- Validation: fresh allowed Integration interfaces + Module3 fusion build PASS
+  (2 packages) at `ros2_ws/build_critic_fix_kOEv7h` and
+  `ros2_ws/install_critic_fix_8raZSf`; focused equal-cost and plugin-loader
+  CTests PASS (2/2 executables); source-first causal/localization/mode pytest
+  **52 passed**; `git diff --check` PASS after docs.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS graph, active
+  MPPI, Nav2, Isaac, navigation, visual evidence, engineering campaign, or
+  formal qualification was run. `GoalPlanningPrior` remains unconnected; the
+  stationary handoff and its bounded conclusion are unchanged.
+- Handoff:
+  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.

@@ -173,6 +173,50 @@ def test_m3_offline_score_without_trajectory_separation_is_ambiguous(tmp_path):
     assert "M3_critic_has_no_trajectory_separation" in summary.reasons
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "cost_delta_applied=false;zero_cost_delta;obstacle_applied=false",
+        "obstacle_applied=true",
+    ],
+)
+def test_zero_or_unproven_online_delta_is_not_reported_applied(tmp_path, reason):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    row = _evidence(manifest, run)
+    row["critic"].update({"applied": True, "reason": reason})
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.critic_participation == "offline_reconstructed"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "cost_delta_applied=true;obstacle_applied=true",
+        (
+            "cost_delta_applied=true;obstacle_applied=false;"
+            "obstacle_suppressed=zero_cost_delta;context_applied=true"
+        ),
+    ],
+)
+def test_positive_online_delta_is_reported_applied(tmp_path, reason):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    row = _evidence(manifest, run)
+    row["critic"].update({
+        "applied": True,
+        "reason": reason,
+    })
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.critic_participation == "online_applied"
+
+
 def test_ttl_expiry_is_stop_fail_open_and_never_causal_pass(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
