@@ -416,3 +416,52 @@ ordering, zero old-epoch output and command through HOLD, and fresh-goal recover
   was run. The planned fresh active-reset live rerun remains required to
   verify executor/DDS ordering, observed GVG reconciliation, zero old-epoch
   output/command through HOLD, and fresh-goal recovery.
+
+## Late-join startup completion baseline amendment
+
+- Start HEAD: `ba941acddadc785fd0938be24e28ef13fd65f8a5`; the prior route-reset,
+  ResetStopGate, benchmark, IMU, and LiDAR-readiness amendments remain retained.
+- Live Attempt 2 evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt2_20260821T212047Z/`.
+  Verdict: **ENGINEERING FAIL / STOP / NOT FORMAL**, before any goal or Trigger
+  request. At `1787347473.815673754`, RouteCoordinator joined after Isaac's
+  startup reset and rejected transient-local generation 1 `reset_complete` as
+  `higher generation did not begin with HOLD`. At `1787347479.391320030`, it
+  rejected generation 1 `released:activation_gate` as
+  `same-generation transition without reset HOLD`; route goals remained held.
+  Primary evidence is `summary.md`, `metrics/status_sequence.json`, and
+  `setup_bag_analysis.json` in that directory.
+- Root cause: the reliable/transient-local ResetStopGate status intentionally
+  has depth 1. A late-joining RouteCoordinator can therefore receive the
+  current `reset_complete` snapshot without the earlier HOLD event. The prior
+  state machine treated this expected startup snapshot as an invalid runtime
+  transition and could never accept the same-generation release.
+- Change: one strict startup-only completion baseline is accepted only when no
+  reset status/intent exists, all route and input generations are pristine,
+  there is no active/pending navigation or route, and no graph/retry/structural
+  transaction exists. It synchronizes the status intent and completed
+  generation, advances the coordinator reset epoch, emits the empty runtime
+  snapshot, and requests the completion-owned GVG reassert while retaining the
+  HOLD barrier. It emits no route terminal, performs no navigation cancel, and
+  does not fabricate a HOLD. Only a legal same-generation release opens the
+  barrier. Duplicate completion is idempotent; backward/conflicting state,
+  active/old state, and later runtime completion without HOLD remain fail
+  closed. The existing first-released startup baseline and legacy Empty-event
+  path are unchanged.
+- Deterministic tests cover startup completion/release/fresh-goal preparation,
+  no fake terminal, duplicate/backward/conflict, old-state rejection, later
+  completion without HOLD, the existing first-released baseline, and
+  completion reconciliation ordering against a concurrent release callback.
+- Validation: focused RouteCoordinator file **64 passed**; complete source-first
+  route package **164 passed, 1 skipped** (existing optional `pxr` unavailable).
+  Fresh isolated build/test passed with build
+  `/tmp/v6_route_startup_build.6AfGxd`, install
+  `/tmp/v6_route_startup_install.sqc5Ow`, and log
+  `/tmp/v6_route_startup_log.LPvRP3`; `colcon test-result` reported **165 tests,
+  0 errors, 0 failures, 1 skipped**.
+- Verdict: **PASS (code/build/unit only)**. Attempt 2 remains STOP evidence and
+  is not promoted. Active-reset live Attempt 3 is **PENDING** and must confirm
+  actual DDS late-join ordering, successful startup release and fresh goal,
+  then one active reset with zero old-epoch output/command and fresh-goal
+  recovery. No Isaac, ROS graph, navigation, visual review, engineering PASS,
+  or formal qualification was run by this amendment.

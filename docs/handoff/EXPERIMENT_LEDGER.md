@@ -808,6 +808,38 @@
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
 
+## 2026-08-22 — V6 RouteCoordinator late-join startup reset baseline
+
+- Goal: recover the expected transient-local depth-1 startup sequence where a
+  late RouteCoordinator first sees `reset_complete`, without weakening the
+  missing-HOLD fail-closed rule after route-era state exists.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `ba941acddadc785fd0938be24e28ef13fd65f8a5`.
+- Attempt 2 evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt2_20260821T212047Z/`;
+  **ENGINEERING FAIL / STOP / NOT FORMAL** before goal/Trigger. At
+  `1787347473.815673754`, generation 1 `reset_complete` was rejected as
+  `higher generation did not begin with HOLD`; at `1787347479.391320030`, the
+  same-generation release was rejected as
+  `same-generation transition without reset HOLD`. Evidence files:
+  `summary.md`, `metrics/status_sequence.json`, `setup_bag_analysis.json`.
+- Change: accept first strict `reset_complete` only for a provably pristine
+  coordinator; synchronize intent/completion, reset/GVG baseline, and keep the
+  barrier held until same-generation release. No fake HOLD, route terminal, or
+  navigation cancellation. Duplicate is idempotent; backward/conflict,
+  active/old state, and later no-HOLD completion remain fail closed; first
+  released and legacy Empty-event behavior remain.
+- Validation: RouteCoordinator file **64 passed**; complete source-first route
+  package **164 passed, 1 skipped** (`pxr` unavailable); fresh isolated
+  build/test PASS at `/tmp/v6_route_startup_build.6AfGxd`, install
+  `/tmp/v6_route_startup_install.sqc5Ow`, log
+  `/tmp/v6_route_startup_log.LPvRP3`; colcon result **165 tests, 0 errors, 0
+  failures, 1 skipped**.
+- Verdict: **PASS (code/build/unit only)**. Attempt 2 remains STOP. Attempt 3
+  is **PENDING**; no Isaac/ROS/Nav2/navigation/live engineering or formal
+  qualification was run by this amendment.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 RouteCoordinator HOLD graph-output/dispatch fence
 
 - Goal: close the two remaining HOLD races between cognitive/structural final

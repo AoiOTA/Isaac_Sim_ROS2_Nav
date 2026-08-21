@@ -527,6 +527,55 @@ def _gate_status(generation, held, reason, eligible=None):
     }))
 
 
+def _startup_reset_route_coordinator():
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.request_id = 0
+    coordinator.graph_generation = 0
+    coordinator.graph_switch_generation = 0
+    coordinator.reset_generation = 0
+    coordinator.structural_generation = 0
+    coordinator.desired_graph_generation = 0
+    coordinator.reset_status_generation = None
+    coordinator.reset_status_snapshot = None
+    coordinator.reset_intent_generation = None
+    coordinator.reset_event_completed_generation = None
+    coordinator.reset_release_seen_generation = None
+    coordinator.reset_hold_barrier = True
+    coordinator.tracker = None
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_handle = None
+    coordinator.navigation_goal_targets_final = False
+    coordinator.navigation_failed = False
+    coordinator.pending_deadline_ns = None
+    coordinator.pending_prior_request_id = None
+    coordinator.latest_priors = {}
+    coordinator.latest_priors_stamp_ns = None
+    coordinator.latest_priors_request_id = None
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_feedback_pending = None
+    coordinator.pending_reroute_outcome = None
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_transaction_future = None
+    coordinator.graph_transaction_deadline_steady_s = None
+    coordinator.graph_transaction_kind = None
+    coordinator.graph_retry_key = None
+    coordinator.graph_retry_due_steady_s = None
+    coordinator.pending_structural_map = None
+    coordinator.pending_structural_intent = None
+    coordinator.structural_candidate_generation = 0
+    coordinator.structural_observation_generation = 0
+    coordinator.runtime.edges = {}
+    coordinator.latest_pose_xy = None
+    coordinator.latest_global_costmap = None
+    coordinator.desired_graph = coordinator.gvg_graph
+    coordinator.desired_support = None
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    return coordinator
+
+
 def test_reset_stop_gate_status_parser_rejects_malformed_or_incoherent_state() -> None:
     valid = parse_reset_stop_gate_status(json.dumps({
         'generation': 4,
@@ -623,6 +672,146 @@ def test_startup_released_baseline_synchronizes_without_fake_terminal() -> None:
     assert coordinator.goal_complete_pub.messages == []
     assert coordinator.goal_result_pub.messages == []
     assert coordinator.request_id == 41
+
+
+def test_startup_reset_complete_baseline_reconciles_then_release_accepts_goal() -> None:
+    coordinator = _startup_reset_route_coordinator()
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, True, 'reset_complete', eligible=7))
+
+    assert coordinator.reset_status_generation == 7
+    assert coordinator.reset_intent_generation == 7
+    assert coordinator.reset_event_completed_generation == 7
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.reset_generation == 1
+    assert coordinator.request_id == 1
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.graph_reconciliations == [
+        'simulation reset requires Route Server GVG']
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, False, 'released:activation_gate'))
+    assert coordinator.reset_hold_barrier is False
+
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator.module2_enabled = False
+    prepared = []
+    coordinator._prepare_route = lambda priors: prepared.append(priors)
+    coordinator._publish_route_context = lambda: None
+    fresh_goal = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+        x=5.0, y=6.0)))
+    coordinator._on_goal(fresh_goal)
+
+    assert coordinator.pending_goal is fresh_goal
+    assert prepared == [{}]
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+
+def test_startup_reset_complete_duplicate_is_idempotent_and_bad_followups_hold() -> None:
+    coordinator = _startup_reset_route_coordinator()
+    complete = _gate_status(7, True, 'reset_complete', eligible=7)
+
+    coordinator._on_reset_stop_gate_status(complete)
+    coordinator._on_reset_stop_gate_status(complete)
+
+    assert coordinator.reset_generation == 1
+    assert coordinator.request_id == 1
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(6, False, 'released:activation_gate'))
+    coordinator._on_reset_stop_gate_status(_gate_status(7, True, 'hold'))
+
+    assert coordinator.reset_status_generation == 7
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.reset_generation == 1
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+
+def test_first_reset_complete_with_active_route_state_remains_fail_closed() -> None:
+    coordinator = _reset_route_coordinator(active=True)
+    coordinator.reset_status_generation = None
+    coordinator.reset_status_snapshot = None
+    coordinator.reset_hold_barrier = True
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, True, 'reset_complete', eligible=7))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, False, 'released:activation_gate'))
+
+    assert coordinator.reset_status_generation == 7
+    assert coordinator.reset_intent_generation is None
+    assert coordinator.reset_event_completed_generation is None
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.request_id == 41
+    assert coordinator.runtime_snapshots == []
+    assert coordinator.graph_reconciliations == []
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+
+def test_runtime_completion_without_hold_is_not_startup_baseline() -> None:
+    coordinator = _startup_reset_route_coordinator()
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, False, 'released:activation_gate'))
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(8, True, 'reset_complete', eligible=8))
+
+    assert coordinator.reset_status_generation == 8
+    assert coordinator.reset_intent_generation is None
+    assert coordinator.reset_event_completed_generation is None
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.reset_generation == 0
+    assert coordinator.runtime_snapshots == []
+
+
+def test_startup_completion_reconciliation_precedes_concurrent_release() -> None:
+    coordinator = _startup_reset_route_coordinator()
+    reconciliation_entered = threading.Event()
+    allow_reconciliation = threading.Event()
+    release_returned = threading.Event()
+
+    def reconcile(_reason, **_kwargs):
+        reconciliation_entered.set()
+        assert allow_reconciliation.wait(timeout=2.0)
+
+    coordinator._ensure_desired_graph = reconcile
+    completion_thread = threading.Thread(
+        target=coordinator._on_reset_stop_gate_status,
+        args=(_gate_status(7, True, 'reset_complete', eligible=7),),
+    )
+    release_thread = threading.Thread(
+        target=lambda: (
+            coordinator._on_reset_stop_gate_status(
+                _gate_status(7, False, 'released:activation_gate')),
+            release_returned.set(),
+        ),
+    )
+
+    completion_thread.start()
+    assert reconciliation_entered.wait(timeout=2.0)
+    release_thread.start()
+    assert not release_returned.wait(timeout=0.05)
+    allow_reconciliation.set()
+    completion_thread.join(timeout=2.0)
+    release_thread.join(timeout=2.0)
+
+    assert not completion_thread.is_alive()
+    assert not release_thread.is_alive()
+    assert coordinator.reset_event_completed_generation == 7
+    assert coordinator.reset_release_seen_generation == 7
+    assert coordinator.reset_hold_barrier is False
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
 
 
 def test_hold_without_event_stays_fail_closed_and_rejects_new_goal() -> None:

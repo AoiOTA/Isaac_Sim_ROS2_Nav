@@ -1798,6 +1798,62 @@ class RouteCoordinator:
             f"reset stop gate status rejected; route goals held: {detail}"
         )
 
+    def _startup_reset_completion_is_safe_locked(self) -> bool:
+        """Accept one late-join completion only before any route-era state."""
+
+        runtime = getattr(self, "runtime", None)
+        runtime_edges = {} if runtime is None else getattr(runtime, "edges", {})
+        desired = getattr(self, "desired_graph", None)
+        gvg = getattr(self, "gvg_graph", None)
+        return bool(
+            getattr(self, "reset_status_generation", None) is None
+            and getattr(self, "reset_status_snapshot", None) is None
+            and getattr(self, "reset_intent_generation", None) is None
+            and getattr(self, "reset_event_completed_generation", None) is None
+            and getattr(self, "reset_release_seen_generation", None) is None
+            and int(getattr(self, "reset_generation", 0)) == 0
+            and int(getattr(self, "request_id", 0)) == 0
+            and int(getattr(self, "graph_generation", 0)) == 0
+            and int(getattr(self, "graph_switch_generation", 0)) == 0
+            and int(getattr(self, "structural_generation", 0)) == 0
+            and int(getattr(self, "desired_graph_generation", 0)) == 0
+            and not bool(getattr(self, "route_active", False))
+            and getattr(self, "pending_goal", None) is None
+            and getattr(self, "tracker", None) is None
+            and not bool(getattr(self, "navigation_goal_pending", False))
+            and getattr(self, "navigation_goal_handle", None) is None
+            and not bool(getattr(self, "navigation_goal_targets_final", False))
+            and not bool(getattr(self, "navigation_failed", False))
+            and getattr(self, "pending_deadline_ns", None) is None
+            and getattr(self, "pending_prior_request_id", None) is None
+            and not bool(getattr(self, "latest_priors", {}))
+            and getattr(self, "latest_priors_stamp_ns", None) is None
+            and getattr(self, "latest_priors_request_id", None) is None
+            and int(getattr(self, "cognitive_graph_last_sequence", 0)) == 0
+            and getattr(self, "cognitive_graph_feedback_active", None) is None
+            and getattr(self, "cognitive_graph_feedback_pending", None) is None
+            and not bool(getattr(self, "pending_reroute_outcome", None))
+            and not bool(runtime_edges)
+            and getattr(self, "latest_pose_xy", None) is None
+            and getattr(self, "latest_global_costmap", None) is None
+            and getattr(self, "graph_transaction_generation", None) is None
+            and getattr(self, "graph_transaction_future", None) is None
+            and getattr(self, "graph_transaction_deadline_steady_s", None) is None
+            and getattr(self, "graph_transaction_kind", None) is None
+            and getattr(self, "graph_retry_key", None) is None
+            and getattr(self, "graph_retry_due_steady_s", None) is None
+            and not bool(getattr(self, "graph_reassert_required", False))
+            and bool(getattr(self, "graph_coherent", True))
+            and desired is not None
+            and gvg is not None
+            and self._graph_identity(desired) == self._graph_identity(gvg)
+            and getattr(self, "pending_structural_map", None) is None
+            and getattr(self, "pending_structural_intent", None) is None
+            and int(getattr(self, "structural_candidate_generation", 0)) == 0
+            and int(getattr(self, "structural_observation_generation", 0)) == 0
+            and not bool(getattr(self, "cognitive_graph_switch_pending", False))
+        )
+
     def _on_reset_stop_gate_status(self, message) -> None:
         """Retire active route intent at HOLD, before reset completion arrives."""
 
@@ -1810,6 +1866,7 @@ class RouteCoordinator:
         old_handle = None
         terminal = None
         failure = None
+        startup_completion = False
         with self._route_output_lock():
             with self._route_state_lock():
                 seen = getattr(self, "reset_status_generation", None)
@@ -1830,6 +1887,26 @@ class RouteCoordinator:
                     self.reset_status_generation = status.generation
                     self.reset_status_snapshot = status
                     self.reset_hold_barrier = True
+                elif (
+                    seen is None
+                    and status.reason == "reset_complete"
+                    and self._startup_reset_completion_is_safe_locked()
+                ):
+                    # With transient-local depth 1, a coordinator that joins
+                    # after Isaac reset may see completion but not the earlier
+                    # HOLD.  Synchronize that already-complete generation only
+                    # while the coordinator is provably pristine.  This is not
+                    # a synthetic HOLD: there is no old route terminal or
+                    # navigation cancellation, and release remains mandatory.
+                    self.reset_status_generation = status.generation
+                    self.reset_status_snapshot = status
+                    self.reset_intent_generation = status.generation
+                    self.reset_event_completed_generation = status.generation
+                    self.reset_release_seen_generation = None
+                    self.reset_hold_barrier = True
+                    reset = self._begin_simulation_reset_locked()
+                    _was_active, _old_request_id, old_handle, _reset_epoch = reset
+                    startup_completion = True
                 elif seen is None or status.generation > int(seen):
                     if status.reason != "hold":
                         self.reset_status_generation = status.generation
@@ -1887,6 +1964,10 @@ class RouteCoordinator:
                     reason="simulation_reset",
                     reset_epoch=reset_epoch,
                 )
+            if startup_completion:
+                # Keep completion reconciliation ordered before a concurrent
+                # same-generation release callback.
+                self._publish_reset_completion(status.generation)
         self._cancel_navigation_handle(old_handle)
         if failure is not None:
             self.node.get_logger().error(
