@@ -13,6 +13,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from sensor_msgs.msg import Imu
 
 from robot_experiments.estimated_state_metrics import evaluate_trajectory
 from robot_experiments.estimated_state_metrics import PoseSample
@@ -60,6 +61,12 @@ class EstimatedStateEvaluator(Node):
         self._arm = str(self.get_parameter('arm').value)
 
         self._odom_samples = []
+        self._wheel_odom_samples = []
+        self._lidar_odom_samples = []
+        self._imu_data_samples = []
+        self._imu_last_stamp_ns = None
+        self._imu_last_angular_z = None
+        self._imu_integrated_yaw = 0.0
         self._amcl_samples = []
         self._ground_truth_samples = []
         qos = QoSProfile(
@@ -70,6 +77,12 @@ class EstimatedStateEvaluator(Node):
         )
         self._odom_subscription = self.create_subscription(
             Odometry, '/odom', self._odom_callback, qos)
+        self._wheel_odom_subscription = self.create_subscription(
+            Odometry, '/wheel/odom', self._wheel_odom_callback, qos)
+        self._lidar_odom_subscription = self.create_subscription(
+            Odometry, '/lidar/odom', self._lidar_odom_callback, qos)
+        self._imu_data_subscription = self.create_subscription(
+            Imu, '/imu/data', self._imu_data_callback, qos)
         self._amcl_subscription = self.create_subscription(
             PoseWithCovarianceStamped,
             '/amcl_pose',
@@ -87,6 +100,36 @@ class EstimatedStateEvaluator(Node):
 
     def _odom_callback(self, message):
         self._odom_samples.append(_odometry_sample(message))
+
+    def _wheel_odom_callback(self, message):
+        self._wheel_odom_samples.append(_odometry_sample(message))
+
+    def _lidar_odom_callback(self, message):
+        self._lidar_odom_samples.append(_odometry_sample(message))
+
+    def _imu_data_callback(self, message):
+        stamp_ns = _stamp_ns(message.header.stamp)
+        angular_z = float(message.angular_velocity.z)
+        if (
+            self._imu_last_stamp_ns is not None
+            and stamp_ns > self._imu_last_stamp_ns
+            and math.isfinite(angular_z)
+            and math.isfinite(self._imu_last_angular_z)
+        ):
+            delta_sec = (stamp_ns - self._imu_last_stamp_ns) / 1.0e9
+            self._imu_integrated_yaw += (
+                0.5 * (self._imu_last_angular_z + angular_z) * delta_sec
+            )
+        if math.isfinite(angular_z):
+            self._imu_last_stamp_ns = stamp_ns
+            self._imu_last_angular_z = angular_z
+            self._imu_data_samples.append(PoseSample(
+                stamp_ns=stamp_ns,
+                x=0.0,
+                y=0.0,
+                yaw=self._imu_integrated_yaw,
+                covariance=None,
+            ))
 
     def _amcl_callback(self, message):
         self._amcl_samples.append(PoseSample(
@@ -110,6 +153,27 @@ class EstimatedStateEvaluator(Node):
                 max_time_offset_ns=self._max_time_offset_ns,
                 time_offset_step_ns=self._time_offset_step_ns,
             ),
+            'wheel_odom': evaluate_trajectory(
+                self._wheel_odom_samples,
+                self._ground_truth_samples,
+                self._max_time_delta_ns,
+                max_time_offset_ns=self._max_time_offset_ns,
+                time_offset_step_ns=self._time_offset_step_ns,
+            ),
+            'lidar_odom': evaluate_trajectory(
+                self._lidar_odom_samples,
+                self._ground_truth_samples,
+                self._max_time_delta_ns,
+                max_time_offset_ns=self._max_time_offset_ns,
+                time_offset_step_ns=self._time_offset_step_ns,
+            ),
+            'imu_data': evaluate_trajectory(
+                self._imu_data_samples,
+                self._ground_truth_samples,
+                self._max_time_delta_ns,
+                max_time_offset_ns=self._max_time_offset_ns,
+                time_offset_step_ns=self._time_offset_step_ns,
+            ),
             'amcl_pose': evaluate_trajectory(
                 self._amcl_samples,
                 self._ground_truth_samples,
@@ -118,14 +182,24 @@ class EstimatedStateEvaluator(Node):
                 time_offset_step_ns=self._time_offset_step_ns,
             ),
         }
+        results['imu_data'].summary['valid_axes'] = ['yaw']
+        results['imu_data'].summary['xy_metrics_valid'] = False
+        results['imu_data'].summary['integration_method'] = (
+            'trapezoidal_raw_angular_velocity_z'
+        )
         summary = {
-            'schema_version': 2,
+            'schema_version': 3,
             'generated_at_utc': datetime.now(timezone.utc).isoformat(),
             'evaluator_only_ground_truth': True,
             'passive_evaluator': True,
             'episode_id': self._episode_id,
             'arm': self._arm,
             'ground_truth_topic': '/ground_truth/odom',
+            'stream_contracts': {
+                'wheel_odom': 'wheel pose scale and yaw against evaluator-only ground truth',
+                'lidar_odom': 'RF2O pose trajectory; never proxied by fused odom',
+                'imu_data': 'raw angular_velocity.z trapezoidal integration and yaw bias',
+            },
             'ground_truth': {
                 'input': stream_diagnostics(self._ground_truth_samples),
             },

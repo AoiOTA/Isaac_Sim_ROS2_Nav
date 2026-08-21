@@ -1,0 +1,18 @@
+# Persistent localization geometry for the V6 flat calibration arena.
+schema_version: 2
+seed: 20260821
+enabled: true
+coordinate_frame: map
+spawn_pose_name: mapping_start
+obstacles:
+  # The 20.2 m outer footprint matches the 404 x 404, 0.05 m occupancy grid.
+  # Inner wall faces are exactly at +/-9.9 m.
+  - {id: flat20_wall_west, mode: stationary, trigger_group: null, size: [0.20, 20.20, 1.00], mass: 200.0, start: [-10.00, 0.00, 0.50], end: [-10.00, 0.00, 0.50], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: flat20_wall_east, mode: stationary, trigger_group: null, size: [0.20, 20.20, 1.00], mass: 200.0, start: [10.00, 0.00, 0.50], end: [10.00, 0.00, 0.50], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: flat20_wall_south, mode: stationary, trigger_group: null, size: [20.20, 0.20, 1.00], mass: 200.0, start: [0.00, -10.00, 0.50], end: [0.00, -10.00, 0.50], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: flat20_wall_north, mode: stationary, trigger_group: null, size: [20.20, 0.20, 1.00], mass: 200.0, start: [0.00, 10.00, 0.50], end: [0.00, 10.00, 0.50], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  # Asymmetric, full-LiDAR-height features remain well outside every primitive
+  # motion envelope. Their unequal footprints break rotational symmetry.
+  - {id: flat20_feature_southwest, mode: stationary, trigger_group: null, size: [0.80, 1.20, 1.20], mass: 100.0, start: [-6.00, -4.00, 0.60], end: [-6.00, -4.00, 0.60], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: flat20_feature_northeast, mode: stationary, trigger_group: null, size: [1.40, 0.60, 1.50], mass: 100.0, start: [6.00, 5.00, 0.75], end: [6.00, 5.00, 0.75], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}
+  - {id: flat20_feature_northwest, mode: stationary, trigger_group: null, size: [0.60, 1.60, 1.00], mass: 100.0, start: [-3.00, 7.00, 0.50], end: [-3.00, 7.00, 0.50], speed: 0.0, delay_sec: 0.0, jitter_sec: 0.0, post_motion: hold}

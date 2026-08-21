@@ -447,3 +447,28 @@
   PRIMARY/evidence/qualification campaign was run.
 - Handoff:
   `docs/handoff/V6_MODULE3_PRIMARY_AUTHORITY_CONSUMER_20260821.md`.
+
+## 2026-08-21 — V6 flat Estimated State calibration amendment
+
+- Goal: move 3 m/360/S calibration out of the narrow indoor scene, record
+  wheel/IMU/RF2O separately, and make collision/dispatcher/promotion evaluation
+  fail closed without running calibration.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `df0b985a0a13fa4aa48dd396f8f5d37f417c4ae1`.
+- Environment: official Grid `default_environment.usd` collision plane; runtime
+  stationary config adds four boundary walls plus three asymmetric features;
+  calibrated identity spawn; deterministic 404 x 404, 0.05 m flat20 map.
+- Contracts: supplemental revision/exclusion mapping; six passive streams;
+  RF2O-only shadow promotion; meaningful-motion scale denominators;
+  primitive-specific gates; dispatcher/collision invalidation; matched
+  canonical-route plus route-progress acceptance before Rivermark timeout.
+- Validation: changed Python compile PASS; focused regression `67 passed`;
+  related Isaac static `52 passed`; shell/diff checks PASS; isolated
+  `robot_experiments` build PASS at
+  `/tmp/v6_flat20_robot_experiments.YT6lXC`; 45-row manifest smoke PASS at
+  `/tmp/v6_flat20_manifest.xuLCJH`.
+- Verdict: **PASS (implementation/build/unit only)**;
+  **CALIBRATION_NOT_RUN**. No Isaac/ROS/Nav2, tuning, RF2O promotion, PRIMARY
+  replay, evidence campaign, or qualification was run.
+- Handoff:
+  `docs/handoff/V6_FLAT_ESTIMATED_CALIBRATION_AMENDMENT_20260821.md`.

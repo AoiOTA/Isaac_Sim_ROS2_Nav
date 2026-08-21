@@ -1,0 +1,37 @@
+schema_version: 1
+map_version: flat20_v1
+availability: calibration_only
+source:
+  external_environment_asset: /home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/default_environment.usd
+  environment_contract: official_grid_collision_plane
+  static_feature_config: isaac_sim/configs/experiments/v6_calibration_grid_features.yaml
+  robot: jackal
+  spawn_pose_name: mapping_start
+occupancy_grid:
+  resolution_m: 0.05
+  width_cells: 404
+  height_cells: 404
+  origin: [-10.1, -10.1, 0.0]
+  yaml: data/maps/v6_calibration_flat_20m.yaml
+  image: data/maps/v6_calibration_flat_20m.pgm
+geometry:
+  wall_inner_faces_m: [-9.9, 9.9]
+  wall_height_m: 1.0
+  wall_thickness_m: 0.2
+  feature_ids:
+    - flat20_feature_southwest
+    - flat20_feature_northeast
+    - flat20_feature_northwest
+calibration:
+  calibrated: true
+  spawn_pose_profile: mapping_start
+  map_bundle_sha256: 72497a1f8a280cf8c6df41e585bc9368bbb0d48e6b5ef8d2955ad8f14b02f1d9
+  bundle_definition: sha256(image_bytes + yaml_bytes + static_feature_config_bytes)
+  usd_base_position: [0.0, 0.0, 0.0635]
+  usd_base_yaw_deg: 0.0
+  map_base_position: [0.0, 0.0]
+  map_base_yaw_deg: 0.0
+notes:
+  - The external Grid asset supplies the flat collision plane; no duplicate ground USD is tracked.
+  - Boundary and feature cubes are authored by the existing stationary-obstacle runtime.
+  - This synthetic map is only for estimated-state calibration and is excluded from PRIMARY evidence.

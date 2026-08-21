@@ -112,6 +112,11 @@ def test_ros_adapter_is_evaluator_only_and_requires_explicit_output_dir():
     setup_source = (package_root / 'setup.py').read_text(encoding='utf-8')
 
     assert "Odometry, '/odom'" in source
+    assert "Odometry, '/wheel/odom'" in source
+    assert "Odometry, '/lidar/odom'" in source
+    assert "'lidar_odom': evaluate_trajectory(" in source
+    assert "Imu, '/imu/data'" in source
+    assert "'imu_data': evaluate_trajectory(" in source
     assert "'/amcl_pose'" in source
     assert "'/ground_truth/odom'" in source
     assert "declare_parameter('output_dir', '')" in source

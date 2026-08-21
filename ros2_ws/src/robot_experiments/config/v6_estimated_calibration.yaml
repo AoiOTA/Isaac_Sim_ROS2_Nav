@@ -10,7 +10,29 @@ execution:
   reset_service: /simulation/reset
   readiness_topics: [/clock, /odom, /tf]
   dispatcher_topics: [/clock, /odom, /tf, /amcl_pose]
-  passive_evaluator_topics: [/odom, /amcl_pose, /ground_truth/odom]
+  passive_evaluator_topics: [/odom, /wheel/odom, /lidar/odom, /imu/data, /amcl_pose, /ground_truth/odom]
+  dispatcher_result_file: dispatcher_result.json
+  dispatcher_success_status: SUCCEEDED
+  collision_field: collision_detected
+  rivermark_route_acceptance:
+    canonical_route_topic: /bio_nav/canonical_route
+    route_progress_topic: /bio_nav/route_progress
+    acceptance_timeout_sec: 15.0
+    resend_count: 0
+    route_timeout_starts_after_acceptance: true
+indoor_environment:
+  environment_usd: /home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/default_environment.usd
+  spawn_poses_file: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml
+  spawn_pose_name: mapping_start
+  map_yaml: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/v6_calibration_flat_20m.yaml
+  static_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_calibration_grid_features.yaml
+  map_version: flat20_v1
+supplement:
+  revision: v6_estimated_calibration_flat20_supplement_r1
+  exclusion_mapping:
+    prior_narrow_indoor_calibration: excluded_environment_mismatch
+    prior_primary_evidence: unchanged_not_reclassified
+    rivermark_calibration_rows: unchanged_separate_environment
 arms:
   - id: "off"
     launch_arguments:
@@ -57,12 +79,16 @@ thresholds:
     s_route: {maximum_aligned_ate_p95_m: 0.15, maximum_aligned_yaw_p95_deg: 5.0}
     rivermark: {maximum_amcl_absolute_ate_p95_m: 0.35, maximum_amcl_absolute_yaw_p95_deg: 8.0}
   engineering_recommendation:
-    minimum_frequency_hz: 30.0
+    minimum_frequency_hz:
+      odom: 30.0
+      lidar_odom: 15.0
+      amcl_pose: 1.0
     maximum_pose_step_m: 0.50
     maximum_yaw_step_deg: 30.0
     maximum_time_offset_ms: 100.0
     minimum_scale: 0.90
     maximum_scale: 1.10
+    maximum_shadow_aligned_ate_p95_m: 0.15
     fused_improvement_fraction: 0.05
     fused_no_regression_fraction: 0.10
     covariance_coverage_is_diagnostic_only: true

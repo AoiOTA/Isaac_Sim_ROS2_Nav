@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
@@ -21,8 +22,83 @@ import yaml
 SCHEMA_VERSION = 1
 ARM_ORDER = ("off", "shadow", "fused")
 PRIMITIVE_ORDER = ("straight_3m", "ccw_360", "cw_360", "s_route")
-PASSIVE_EVALUATOR_TOPICS = ("/odom", "/amcl_pose", "/ground_truth/odom")
+PASSIVE_EVALUATOR_TOPICS = (
+    "/odom", "/wheel/odom", "/lidar/odom", "/imu/data",
+    "/amcl_pose", "/ground_truth/odom",
+)
 DISPATCHER_TOPICS = ("/clock", "/odom", "/tf", "/amcl_pose")
+RECORDED_ESTIMATE_STREAMS = (
+    "odom", "wheel_odom", "lidar_odom", "imu_data", "amcl_pose",
+)
+STREAM_MINIMUM_FREQUENCY_HZ = {
+    "odom": 30.0,
+    "lidar_odom": 15.0,
+    "amcl_pose": 1.0,
+}
+SHADOW_MAXIMUM_ALIGNED_ATE_P95_M = 0.15
+
+
+@dataclass
+class RivermarkRouteAcceptance:
+    """Pure fail-closed request handshake for the future live adapter."""
+
+    request_id: int
+    published_at_sec: float
+    acceptance_timeout_sec: float
+    route_timeout_sec: float
+    canonical_route_seen: bool = False
+    route_progress_seen: bool = False
+    accepted_at_sec: float | None = None
+    failed_at_sec: float | None = None
+    failure_reason: str | None = None
+
+    @property
+    def state(self) -> str:
+        if self.failure_reason is not None:
+            return "FAIL"
+        if self.accepted_at_sec is not None:
+            return "ACCEPTED"
+        return "AWAITING_ACCEPTANCE"
+
+    @property
+    def route_timeout_started_at_sec(self) -> float | None:
+        return self.accepted_at_sec
+
+    @property
+    def route_deadline_sec(self) -> float | None:
+        if self.accepted_at_sec is None:
+            return None
+        return self.accepted_at_sec + self.route_timeout_sec
+
+    @property
+    def resend_allowed(self) -> bool:
+        return False
+
+    def observe(self, topic: str, request_id: int, now_sec: float) -> bool:
+        if self.state != "AWAITING_ACCEPTANCE" or int(request_id) != self.request_id:
+            return False
+        if now_sec >= self.published_at_sec + self.acceptance_timeout_sec:
+            self.poll(now_sec)
+            return False
+        if topic == "/bio_nav/canonical_route":
+            self.canonical_route_seen = True
+        elif topic == "/bio_nav/route_progress":
+            self.route_progress_seen = True
+        else:
+            return False
+        if self.canonical_route_seen and self.route_progress_seen:
+            self.accepted_at_sec = float(now_sec)
+            return True
+        return False
+
+    def poll(self, now_sec: float) -> str:
+        if (
+            self.state == "AWAITING_ACCEPTANCE"
+            and now_sec >= self.published_at_sec + self.acceptance_timeout_sec
+        ):
+            self.failed_at_sec = float(now_sec)
+            self.failure_reason = "route_acceptance_timeout_no_resend"
+        return self.state
 
 
 def _default_config_path() -> Path:
@@ -61,11 +137,49 @@ def load_config(path: str | Path = DEFAULT_CONFIG) -> dict[str, Any]:
         raise CalibrationContractError("dispatcher must not consume ground truth")
     if tuple(document["execution"].get("passive_evaluator_topics", ())) != PASSIVE_EVALUATOR_TOPICS:
         raise CalibrationContractError("passive evaluator topic contract changed")
+    if (
+        document["execution"].get("dispatcher_result_file") != "dispatcher_result.json"
+        or document["execution"].get("dispatcher_success_status") != "SUCCEEDED"
+        or document["execution"].get("collision_field") != "collision_detected"
+    ):
+        raise CalibrationContractError("dispatcher result/collision contract changed")
+    route_acceptance = document["execution"].get("rivermark_route_acceptance", {})
+    if route_acceptance != {
+        "canonical_route_topic": "/bio_nav/canonical_route",
+        "route_progress_topic": "/bio_nav/route_progress",
+        "acceptance_timeout_sec": 15.0,
+        "resend_count": 0,
+        "route_timeout_starts_after_acceptance": True,
+    }:
+        raise CalibrationContractError("Rivermark route acceptance contract changed")
     if document["execution"].get("reset_count_per_episode") != 1 or document["execution"].get("retry_count") != 0:
         raise CalibrationContractError("each episode requires exactly one reset and no retry")
     fused = arms[-1]
     if fused.get("requires_shadow_validation") is not True:
         raise CalibrationContractError("fused arm must require shadow validation")
+    environment = document.get("indoor_environment", {})
+    expected_environment = Path(
+        "/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Environments/Grid/default_environment.usd"
+    )
+    if Path(environment.get("environment_usd", "")) != expected_environment:
+        raise CalibrationContractError("indoor calibration must use the official Grid default_environment")
+    for field in ("environment_usd", "spawn_poses_file", "map_yaml", "static_obstacle_config"):
+        if not Path(environment.get(field, "")).is_file():
+            raise CalibrationContractError(f"indoor calibration {field} is missing")
+    if environment.get("spawn_pose_name") != "mapping_start" or environment.get("map_version") != "flat20_v1":
+        raise CalibrationContractError("flat20 spawn/map contract changed")
+    supplement = document.get("supplement", {})
+    if supplement.get("revision") != "v6_estimated_calibration_flat20_supplement_r1":
+        raise CalibrationContractError("flat20 supplemental revision changed")
+    if supplement.get("exclusion_mapping") != {
+        "prior_narrow_indoor_calibration": "excluded_environment_mismatch",
+        "prior_primary_evidence": "unchanged_not_reclassified",
+        "rivermark_calibration_rows": "unchanged_separate_environment",
+    }:
+        raise CalibrationContractError("flat20 evidence exclusion mapping changed")
+    frequency = document.get("thresholds", {}).get("engineering_recommendation", {}).get("minimum_frequency_hz")
+    if frequency != STREAM_MINIMUM_FREQUENCY_HZ:
+        raise CalibrationContractError("stream-specific frequency contract changed")
     return document
 
 
@@ -87,7 +201,11 @@ def build_manifest(config: Mapping[str, Any]) -> dict[str, Any]:
                     scenario_id=primitive["id"],
                     repeat=repeat,
                     seed=seed + index,
-                    execution={"type": "cmd_vel_primitive", "segments": primitive["segments"]},
+                    execution={
+                        "type": "cmd_vel_primitive",
+                        "segments": primitive["segments"],
+                        **dict(config["indoor_environment"]),
+                    },
                 ))
         route = config["rivermark"]
         for repeat in range(1, int(config["repeats"]) + 1):
@@ -106,6 +224,9 @@ def build_manifest(config: Mapping[str, Any]) -> dict[str, Any]:
                     "start": route["start"],
                     "wrapper": route["wrapper"],
                     "goal": route["goal"],
+                    "acceptance_handshake": dict(
+                        config["execution"]["rivermark_route_acceptance"]
+                    ),
                 },
             ))
     if len(episodes) != 45:
@@ -122,6 +243,8 @@ def build_manifest(config: Mapping[str, Any]) -> dict[str, Any]:
         "passive_evaluator_topics": list(PASSIVE_EVALUATOR_TOPICS),
         "ground_truth_firewall": True,
         "thresholds": config["thresholds"],
+        "supplement": config["supplement"],
+        "indoor_environment": config["indoor_environment"],
         "episodes": episodes,
     }
 
@@ -153,7 +276,7 @@ def assess_shadow_promotion(evaluation: Mapping[str, Any] | None) -> dict[str, A
     if len(rows) != 15:
         failures.append("shadow_requires_15_evaluated_episodes")
     for row in rows:
-        metrics = row.get("selected_metrics")
+        metrics = row.get("stream_metrics", {}).get("lidar_odom")
         if row.get("status") != "EVALUATED" or not isinstance(metrics, dict):
             failures.append(f"{row.get('episode_id', 'unknown')}:not_evaluated")
             continue
@@ -165,14 +288,52 @@ def assess_shadow_promotion(evaluation: Mapping[str, Any] | None) -> dict[str, A
             "backward_stamps": diagnostics.get("backward_stamps") == 0,
             "pose_jumps": diagnostics.get("pose_jump_count") == 0,
             "yaw_jumps": diagnostics.get("yaw_jump_count") == 0,
-            "frequency": _at_least(diagnostics.get("frequency_hz"), 30.0),
-            "linear_scale": _between_or_na(scale.get("linear"), 0.90, 1.10),
-            "yaw_scale": _between_or_na(scale.get("yaw"), 0.90, 1.10),
+            "frequency": _at_least(diagnostics.get("frequency_hz"), 15.0),
+            "matched_samples": _at_least(association.get("matched_count"), 1),
             "time_offset": _at_most_abs(association.get("best_estimate_time_offset_ms"), 100.0),
             "covariance_finite": covariance.get("finite_fraction") == 1.0,
             "covariance_symmetric": covariance.get("symmetric_fraction") == 1.0,
             "covariance_psd": covariance.get("positive_semidefinite_fraction") == 1.0,
         }
+        scenario = row.get("scenario_id")
+        endpoint = (metrics.get("endpoint") or {}).get("aligned", {})
+        if scenario == "straight_3m":
+            checks.update({
+                "linear_scale_denominator": scale.get("linear_denominator_valid") is True,
+                "linear_scale": _between(scale.get("linear"), 0.90, 1.10),
+                "longitudinal_error": _at_most_abs(endpoint.get("longitudinal_error_m"), 0.10),
+                "lateral_error": _at_most_abs(endpoint.get("lateral_error_m"), 0.10),
+            })
+        elif scenario in ("ccw_360", "cw_360"):
+            checks.update({
+                "yaw_scale_denominator": scale.get("yaw_denominator_valid") is True,
+                "yaw_scale": _between(scale.get("yaw"), 0.90, 1.10),
+                "yaw_closure": _at_most_abs(endpoint.get("yaw_error_rad"), math.radians(5.0)),
+                "position_closure": _at_most_abs(endpoint.get("position_error_m"), 0.20),
+            })
+        elif scenario == "s_route":
+            checks.update({
+                "aligned_ate": _at_most_abs(
+                    metrics.get("aligned_ate", {}).get("xy_m", {}).get("p95_abs"),
+                    SHADOW_MAXIMUM_ALIGNED_ATE_P95_M,
+                ),
+                "aligned_yaw": _at_most_abs(
+                    metrics.get("aligned_ate", {}).get("yaw_rad", {}).get("p95_abs"),
+                    math.radians(5.0),
+                ),
+            })
+        elif scenario == "rivermark_static_start_to_g1":
+            checks.update({
+                "rivermark_lidar_ate": _at_most_abs(
+                    metrics.get("absolute_ate", {}).get("xy_m", {}).get("p95_abs"), 0.35
+                ),
+                "rivermark_lidar_yaw": _at_most_abs(
+                    metrics.get("absolute_ate", {}).get("yaw_rad", {}).get("p95_abs"),
+                    math.radians(8.0),
+                ),
+            })
+        else:
+            checks["known_scenario"] = False
         failures.extend(f"{row['episode_id']}:{name}" for name, passed in checks.items() if not passed)
     return {
         "passed": not failures,
@@ -216,31 +377,62 @@ def evaluate_campaign(manifest: Mapping[str, Any], results_root: str | Path) -> 
     root = Path(results_root).expanduser().resolve()
     rows = []
     for episode in manifest["episodes"]:
+        dispatcher_path = root / episode["episode_id"] / "dispatcher_result.json"
+        dispatcher_result, dispatcher_failure = _load_dispatcher_result(
+            dispatcher_path, episode["episode_id"]
+        )
+        if dispatcher_failure is not None:
+            rows.append({
+                **_episode_identity(episode),
+                "status": "INVALID" if dispatcher_path.is_file() else "NOT_RUN",
+                "reason": dispatcher_failure,
+                "threshold_assessment": {
+                    "passed": False,
+                    "failure_reasons": [dispatcher_failure],
+                },
+                "dispatcher_result": dispatcher_result,
+            })
+            continue
         report_path = root / episode["episode_id"] / "estimated_state_metrics.json"
         if not report_path.is_file():
             rows.append({**_episode_identity(episode), "status": "NOT_RUN", "reason": "metrics_report_missing"})
             continue
         report = json.loads(report_path.read_text(encoding="utf-8"))
         stream = "amcl_pose" if episode["environment"] == "rivermark" else "odom"
-        metrics = report.get("estimates", {}).get(stream)
+        stream_metrics = report.get("estimates", {})
+        metrics = stream_metrics.get(stream)
         if not isinstance(metrics, dict):
             rows.append({**_episode_identity(episode), "status": "NOT_RUN", "reason": f"{stream}_metrics_missing"})
             continue
-        threshold = assess_episode_thresholds(episode, metrics)
+        threshold = assess_episode_thresholds(episode, metrics, stream=stream)
         rows.append({
             **_episode_identity(episode),
             "status": "EVALUATED",
             "selected_stream": stream,
             "selected_metrics": metrics,
+            "stream_metrics": {
+                name: value for name, value in stream_metrics.items()
+                if name in RECORDED_ESTIMATE_STREAMS and isinstance(value, dict)
+            },
+            "stream_frequency_assessment": assess_stream_frequencies(stream_metrics),
             "threshold_assessment": threshold,
             "source_report": str(report_path),
+            "dispatcher_result": dispatcher_result,
+            "dispatcher_result_source": str(dispatcher_path),
         })
+    if any(row["status"] == "INVALID" for row in rows):
+        campaign_status = "INVALID"
+    elif all(row["status"] == "EVALUATED" for row in rows):
+        campaign_status = "EVALUATED"
+    else:
+        campaign_status = "INCOMPLETE_NOT_RUN"
     summary = {
         "schema_version": SCHEMA_VERSION,
         "campaign_id": manifest["campaign_id"],
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "status": "EVALUATED" if all(row["status"] == "EVALUATED" for row in rows) else "INCOMPLETE_NOT_RUN",
+        "status": campaign_status,
         "episode_count": len(rows),
+        "thresholds": manifest["thresholds"],
         "evaluated_count": sum(row["status"] == "EVALUATED" for row in rows),
         "threshold_pass_count": sum(row.get("threshold_assessment", {}).get("passed") is True for row in rows),
         "episodes": rows,
@@ -252,11 +444,53 @@ def evaluate_campaign(manifest: Mapping[str, Any], results_root: str | Path) -> 
     return summary
 
 
-def assess_episode_thresholds(episode: Mapping[str, Any], metrics: Mapping[str, Any]) -> dict[str, Any]:
+def assess_stream_frequencies(stream_metrics: Mapping[str, Any]) -> dict[str, Any]:
+    result = {}
+    for stream, minimum_hz in STREAM_MINIMUM_FREQUENCY_HZ.items():
+        metrics = stream_metrics.get(stream)
+        frequency = metrics.get("input", {}).get("frequency_hz") if isinstance(metrics, dict) else None
+        result[stream] = {
+            "minimum_hz": minimum_hz,
+            "measured_hz": frequency,
+            "passed": _at_least(frequency, minimum_hz),
+            "missing": not isinstance(metrics, dict),
+        }
+    return result
+
+
+def _load_dispatcher_result(
+    path: Path, episode_id: str
+) -> tuple[dict[str, Any] | None, str | None]:
+    if not path.is_file():
+        return None, "dispatcher_result_missing"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None, "dispatcher_result_invalid"
+    if not isinstance(document, dict) or document.get("episode_id") != episode_id:
+        return document if isinstance(document, dict) else None, "dispatcher_result_episode_mismatch"
+    collision = document.get("collision_detected")
+    if not isinstance(collision, bool):
+        return document, "dispatcher_collision_missing"
+    if collision:
+        return document, "collision_detected"
+    if document.get("status") != "SUCCEEDED":
+        return document, "dispatcher_not_succeeded"
+    return document, None
+
+
+def assess_episode_thresholds(
+    episode: Mapping[str, Any],
+    metrics: Mapping[str, Any],
+    *,
+    stream: str | None = None,
+) -> dict[str, Any]:
     failures = []
     diagnostics = metrics.get("input", {})
-    if not _at_least(diagnostics.get("frequency_hz"), 30.0):
-        failures.append("frequency_below_30hz")
+    selected_stream = stream or ("amcl_pose" if episode["environment"] == "rivermark" else "odom")
+    minimum_frequency_hz = STREAM_MINIMUM_FREQUENCY_HZ[selected_stream]
+    if not _at_least(diagnostics.get("frequency_hz"), minimum_frequency_hz):
+        failures.append(f"{selected_stream}_frequency_below_{minimum_frequency_hz:g}hz")
     if diagnostics.get("backward_stamps") != 0:
         failures.append("backward_stamp")
     if diagnostics.get("pose_jump_count") != 0 or diagnostics.get("yaw_jump_count") != 0:
@@ -291,6 +525,8 @@ def assess_episode_thresholds(episode: Mapping[str, Any], metrics: Mapping[str, 
         "failure_reasons": failures,
         "covariance_coverage_is_diagnostic_only": True,
         "threshold_class": "plan_reference_and_engineering_recommendation",
+        "selected_stream": selected_stream,
+        "minimum_frequency_hz": minimum_frequency_hz,
     }
 
 
@@ -400,8 +636,8 @@ def _at_most_abs(value, threshold):
     return isinstance(value, (int, float)) and math.isfinite(value) and abs(value) <= threshold
 
 
-def _between_or_na(value, minimum, maximum):
-    return value is None or (isinstance(value, (int, float)) and math.isfinite(value) and minimum <= value <= maximum)
+def _between(value, minimum, maximum):
+    return isinstance(value, (int, float)) and math.isfinite(value) and minimum <= value <= maximum
 
 
 def _write_json(path: Path, value: Mapping[str, Any]) -> None:

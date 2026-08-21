@@ -8,6 +8,10 @@ import math
 from typing import Optional, Sequence, Tuple
 
 
+MINIMUM_LINEAR_SCALE_DENOMINATOR_M = 0.5
+MINIMUM_YAW_SCALE_DENOMINATOR_RAD = 0.5
+
+
 @dataclass(frozen=True)
 class PoseSample:
     """One planar pose sample and its optional flattened covariance."""
@@ -153,7 +157,13 @@ def evaluate_trajectory(
         'rpe_fixed_1s': empty_pose_metric(),
         'rpe_fixed_1m': empty_pose_metric(),
         'endpoint': None,
-        'scale': {'linear': None, 'yaw': None, 'yaw_change_bias_rad': None},
+        'scale': {
+            'linear': None,
+            'yaw': None,
+            'yaw_change_bias_rad': None,
+            'minimum_linear_denominator_m': MINIMUM_LINEAR_SCALE_DENOMINATOR_M,
+            'minimum_yaw_denominator_rad': MINIMUM_YAW_SCALE_DENOMINATOR_RAD,
+        },
         'covariance_consistency': _empty_covariance_consistency(),
         'planar_nees': {'status': 'NOT_AVAILABLE', 'count': 0, 'summary': _metric_summary([])},
         'nis': {
@@ -414,14 +424,28 @@ def _scale_summary(pairs):
     truth_path = sum(math.hypot(current[1].x - previous[1].x, current[1].y - previous[1].y) for previous, current in zip(pairs, pairs[1:]))
     estimate_yaw = sum(wrap_angle(current[0].yaw - previous[0].yaw) for previous, current in zip(pairs, pairs[1:]))
     truth_yaw = sum(wrap_angle(current[1].yaw - previous[1].yaw) for previous, current in zip(pairs, pairs[1:]))
+    duration_sec = (pairs[-1][1].stamp_ns - pairs[0][1].stamp_ns) / 1.0e9
+    yaw_bias = estimate_yaw - truth_yaw
     return {
-        'linear': estimate_path / truth_path if truth_path > 1.0e-9 else None,
-        'yaw': estimate_yaw / truth_yaw if abs(truth_yaw) > 1.0e-9 else None,
+        'linear': (
+            estimate_path / truth_path
+            if truth_path >= MINIMUM_LINEAR_SCALE_DENOMINATOR_M else None
+        ),
+        'yaw': (
+            estimate_yaw / truth_yaw
+            if abs(truth_yaw) >= MINIMUM_YAW_SCALE_DENOMINATOR_RAD else None
+        ),
+        'minimum_linear_denominator_m': MINIMUM_LINEAR_SCALE_DENOMINATOR_M,
+        'minimum_yaw_denominator_rad': MINIMUM_YAW_SCALE_DENOMINATOR_RAD,
+        'linear_denominator_valid': truth_path >= MINIMUM_LINEAR_SCALE_DENOMINATOR_M,
+        'yaw_denominator_valid': abs(truth_yaw) >= MINIMUM_YAW_SCALE_DENOMINATOR_RAD,
         'estimate_path_length_m': estimate_path,
         'ground_truth_path_length_m': truth_path,
         'estimate_yaw_change_rad': estimate_yaw,
         'ground_truth_yaw_change_rad': truth_yaw,
-        'yaw_change_bias_rad': estimate_yaw - truth_yaw,
+        'yaw_change_bias_rad': yaw_bias,
+        'yaw_change_bias_rad_per_sec': yaw_bias / duration_sec if duration_sec > 0.0 else None,
+        'ground_truth_duration_sec': duration_sec,
     }
 
 

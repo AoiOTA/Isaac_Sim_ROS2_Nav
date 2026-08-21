@@ -1,0 +1,14 @@
+schema_version: 1
+spawn_poses:
+  mapping_start:
+    usd:
+      position: [0.0, 0.0, 0.0635]
+      yaw_deg: 0.0
+    map:
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      calibrated: true
+      map_version: flat20_v1
+      map_bundle_sha256: 72497a1f8a280cf8c6df41e585bc9368bbb0d48e6b5ef8d2955ad8f14b02f1d9
+      position_stddev_m: 0.0
+      yaw_stddev_deg: 0.0
