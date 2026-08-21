@@ -439,3 +439,47 @@ reference embeds a different historical absolute worktree path. No runtime or
 numeric value differed, and this amendment did not inspect or change that
 out-of-scope reference. The focused source-first and fresh-installed suites
 above remain the acceptance result.
+
+## Schema-2 capture-boundary amendment
+
+- Amendment start HEAD:
+  `503cceb15a6517f3a0436a09817b594f009dfcf8`.
+- The stationary schedule receipt now counts only publishes in its requested
+  `[start_sim_s,end_sim_s)` 10 s window. The subsequent 0.8 s zero settle has
+  its own start/end, publish count, requested duration, and command receipt;
+  the analyzer binds that count back to `/cmd_vel_nav` in MCAP rather than
+  mixing settle publishes into stationary intent.
+- Schema-2 command evidence now requires finite, ordered samples covering both
+  ends of every schedule, maximum internal gap no larger than 0.25 s, and the
+  same boundary/gap proof for the reset HOLD and final settle. During the
+  stationary schedule all of `/cmd_vel_nav`, `/cmd_vel_smoothed`, `/cmd_vel`,
+  and `/cmd_vel_sim` must remain zero for the full window. A single nonzero
+  sample is FAIL; a missing boundary or internal dropout is AMBIGUOUS.
+- `/clock` must be positive and strictly increasing in MCAP file order.
+  Command samples retain file order, permit explicitly counted duplicate
+  simulation stamps, reject backward simulation/receive stamps, and reject
+  non-finite values. Gap helpers no longer ignore negative or non-finite gaps.
+  Malformed/non-finite `simulation_time_after_app_s` is reported as structured
+  `phase_simulation_time_invalid` evidence rather than escaping as a raw
+  conversion exception.
+- Schema-1 reports remain readable for retroactive segment metrics, but now
+  carry `benchmark_schema_v1_capture_ambiguity`; scale selection has a hard
+  `schema_version >= 2` requirement. The existing Attempt 3 offline result
+  therefore remains FAIL/AMBIGUOUS with metrics retained and
+  `scale_selection_authorized=false`; its artifacts were not modified or
+  promoted.
+- Validation: source-first focused **114 passed**; fresh isolated build/install
+  PASS at `/tmp/v6_imu_schema2_final_build.d34e4i` and
+  `/tmp/v6_imu_schema2_final_install.UciJmK`, log
+  `/tmp/v6_imu_schema2_final_log.kNJ411`; fresh-installed focused **114
+  passed**; installed import identity and `imu_regime_analysis --help`,
+  changed-file `py_compile`, and `git diff --check` PASS. Wider source-first
+  package regression: **546 passed, 1 unrelated path-sensitive failure** in
+  the pre-existing frozen `rivermark_optimal_reference.json` absolute path.
+
+Verdict is **PASS (code/build/unit only)**. No ROS graph, Isaac simulation,
+navigation, new MCAP, calibration selection, evidence campaign, or formal
+qualification ran. Attempt 4 remains **PENDING** and must produce the first
+live schema-2 capture satisfying these boundary receipts. `yaw_scale=0.9294`,
+RF2O-off, playback commands/thresholds, route/reset/gate, and critic behavior
+are unchanged.

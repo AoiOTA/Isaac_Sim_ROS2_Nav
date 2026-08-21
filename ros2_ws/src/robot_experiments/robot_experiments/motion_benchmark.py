@@ -1273,21 +1273,24 @@ class MotionBenchmarkNode(Node):
             deadline = start_s + reference.duration_sec
             period = 1.0 / self._config.command_rate_hz
             next_publish = time.monotonic()
-            zero_command_count = 0
+            intent_publish_count = 0
             completed = False
             while self._clock_s is None or self._clock_s < deadline:
                 self._assert_sim_clock_live()
                 now = time.monotonic()
                 if now >= next_publish:
                     self._publish(0.0, 0.0)
-                    zero_command_count += 1
+                    intent_publish_count += 1
                     next_publish += period
                 self._spin_once(0.01)
             completed = True
             segment_end_s = self._clock_s
             self._recording = False
             final_zero_receipt = self._settle()
-            zero_command_count += int(final_zero_receipt["publish_count"])
+            zero_command_count = (
+                intent_publish_count
+                + int(final_zero_receipt["publish_count"])
+            )
         except MotionSafetyStop as exc:
             self._recording = False
             self._publish(0.0, 0.0)
@@ -1311,7 +1314,9 @@ class MotionBenchmarkNode(Node):
                     "expected_duration_s": reference.duration_sec,
                     "command_linear_mps": 0.0,
                     "command_angular_radps": 0.0,
-                    "intent_publish_count": locals().get("zero_command_count", 0),
+                    "intent_publish_count": locals().get(
+                        "intent_publish_count", 0
+                    ),
                     "completion": "COMPLETED" if locals().get("completed", False) else "TRUNCATED",
                     "truncated": not locals().get("completed", False),
                 }],
@@ -1379,7 +1384,9 @@ class MotionBenchmarkNode(Node):
                 "expected_duration_s": reference.duration_sec,
                 "command_linear_mps": 0.0,
                 "command_angular_radps": 0.0,
-                "intent_publish_count": zero_command_count - 1,
+                # This receipt covers only the requested 10 s interval.  The
+                # following settle publishes have their own time/count receipt.
+                "intent_publish_count": intent_publish_count,
                 "completion": "COMPLETED",
                 "truncated": False,
             }],

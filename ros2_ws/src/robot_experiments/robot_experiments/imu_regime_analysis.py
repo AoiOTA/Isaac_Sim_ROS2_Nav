@@ -18,6 +18,7 @@ K_MAX = 1.02
 K_STEP = 0.0001
 YAW_LIMIT_RAD = math.radians(5.0)
 MAX_SAMPLE_GAP_S = 0.25
+COMMAND_BOUNDARY_TOLERANCE_S = 0.25
 MIN_WINDOW_DURATION_S = 0.50
 FINAL_SETTLE_SEC = 0.80
 COMMAND_ZERO_EPS = 1.0e-12
@@ -519,11 +520,15 @@ def _stamp_quality(samples: Sequence[ScalarSample | YawSample]) -> dict[str, obj
 
 
 def _maximum_gap(samples: Sequence[ScalarSample | YawSample]) -> float | None:
-    gaps = [
-        right.stamp_s - left.stamp_s
-        for left, right in zip(samples, samples[1:])
-        if math.isfinite(right.stamp_s - left.stamp_s)
-    ]
+    gaps: list[float] = []
+    for left, right in zip(samples, samples[1:]):
+        gap = right.stamp_s - left.stamp_s
+        if not math.isfinite(gap) or gap <= 0.0:
+            raise _evidence_issue(
+                "FAIL", "sample_gap_invalid",
+                "sample stamps contain a non-positive or non-finite gap",
+            )
+        gaps.append(gap)
     return max(gaps) if gaps else None
 
 
@@ -1206,6 +1211,11 @@ def validate_benchmark_report(
             zero_receipt = entry.get("final_zero_publish_receipt")
             if (
                 not isinstance(zero_receipt, dict)
+                or not {
+                    "first_sim_s", "last_sim_s", "publish_count",
+                    "requested_duration_s", "command_linear_mps",
+                    "command_angular_radps",
+                }.issubset(zero_receipt)
                 or isinstance(zero_receipt.get("publish_count"), bool)
                 or not isinstance(zero_receipt.get("publish_count"), int)
                 or zero_receipt["publish_count"] <= 0
@@ -1217,10 +1227,15 @@ def validate_benchmark_report(
             zero_last = _finite(
                 zero_receipt.get("last_sim_s"), name=f"{scope}.final_zero.last"
             )
-            if zero_last < zero_first:
+            if (
+                zero_receipt["requested_duration_s"] != FINAL_SETTLE_SEC
+                or zero_receipt["command_linear_mps"] != 0.0
+                or zero_receipt["command_angular_radps"] != 0.0
+                or zero_last - zero_first + 1.0e-9 < FINAL_SETTLE_SEC
+            ):
                 raise _evidence_issue(
                     "FAIL", "benchmark_zero_receipt",
-                    f"{scope} final zero publish receipt is reversed",
+                    f"{scope} final zero publish receipt changed or is short",
                 )
     return report
 
@@ -1373,6 +1388,28 @@ def _set_file_read_order(reader: Any, rosbag2_py: Any) -> None:
         )
 
 
+def _phase_simulation_time(row: dict[str, Any], *, scope: str) -> float:
+    value = row.get("simulation_time_after_app_s")
+    if isinstance(value, bool):
+        raise _evidence_issue(
+            "FAIL", "phase_simulation_time_invalid",
+            f"{scope} simulation_time_after_app_s is invalid",
+        )
+    try:
+        result = float(value)
+    except (TypeError, ValueError) as exc:
+        raise _evidence_issue(
+            "FAIL", "phase_simulation_time_invalid",
+            f"{scope} simulation_time_after_app_s is not numeric",
+        ) from exc
+    if not math.isfinite(result) or result < 0.0:
+        raise _evidence_issue(
+            "FAIL", "phase_simulation_time_invalid",
+            f"{scope} simulation_time_after_app_s is non-finite/negative",
+        )
+    return result
+
+
 def validate_phase_trace(
     phase: Sequence[dict[str, Any]],
     resources: DiagnosticResources,
@@ -1414,6 +1451,8 @@ def validate_phase_trace(
         raise _evidence_issue("FAIL", "phase_extra_rows", "phase trace contains unexpected row kinds")
     if any(row.get("incomplete") is True for row in loops):
         raise _evidence_issue("AMBIGUOUS", "phase_incomplete", "phase trace contains an incomplete loop")
+    for index, row in enumerate(loops):
+        _phase_simulation_time(row, scope=f"phase loop {index}")
     sequences = [row.get("loop_sequence") for row in loops]
     if any(isinstance(value, bool) or not isinstance(value, int) for value in sequences):
         raise _evidence_issue("FAIL", "phase_sequence_type", "phase loop sequence is invalid")
@@ -1469,8 +1508,13 @@ def load_mcap(path: Path) -> McapStreams:
         if topic == "/clock":
             stamp = message.clock
             stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
-            if not math.isfinite(stamp_s) or stamp_s < 0.0:
+            if not math.isfinite(stamp_s) or stamp_s <= 0.0:
                 raise _evidence_issue("FAIL", "mcap_clock_nonfinite", "/clock is invalid")
+            if latest_clock_s is not None and stamp_s <= latest_clock_s:
+                raise _evidence_issue(
+                    "FAIL", "mcap_clock_order",
+                    "/clock is not strictly increasing in MCAP file order",
+                )
             latest_clock_s = stamp_s
             streams[topic].append(ScalarSample(recorded_s, stamp_s))
             continue
@@ -1528,6 +1572,23 @@ def load_mcap(path: Path) -> McapStreams:
     for topic in ("/clock", "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"):
         if len(streams[topic]) < 3:
             raise _evidence_issue("AMBIGUOUS", "mcap_samples_insufficient", f"{topic} has fewer than 3 samples")
+    command_stamp_duplicates: dict[str, int] = {}
+    for topic in ("/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"):
+        samples = streams[topic]
+        duplicate_count = 0
+        for left, right in zip(samples, samples[1:]):
+            if right.recorded_s < left.recorded_s:
+                raise _evidence_issue(
+                    "FAIL", "mcap_command_file_order",
+                    f"{topic} receive timestamps move backward in file order",
+                )
+            if right.stamp_s < left.stamp_s:
+                raise _evidence_issue(
+                    "FAIL", "mcap_command_clock_order",
+                    f"{topic} simulation stamps move backward in file order",
+                )
+            duplicate_count += int(right.stamp_s == left.stamp_s)
+        command_stamp_duplicates[topic] = duplicate_count
     if not streams["/simulation/reset_event"]:
         raise _evidence_issue("AMBIGUOUS", "mcap_reset_missing", "MCAP has no reset event")
     provenance = {
@@ -1536,6 +1597,9 @@ def load_mcap(path: Path) -> McapStreams:
         "read_order": "file",
         "yaw_time_basis": "header_stamp_in_file_publish_order",
         "schedule_time_basis": "latest_clock_at_mcap_publish_order",
+        "clock_order_contract": "strict_positive_increasing_file_order",
+        "command_clock_order_contract": "nondecreasing_file_order_duplicates_allowed",
+        "command_clock_duplicate_counts": command_stamp_duplicates,
         "topic_types": {topic: topic_types[topic] for topic in required},
         "topic_counts": {topic: len(streams[topic]) for topic in required},
     }
@@ -2230,6 +2294,19 @@ def _command_runs(
     runs: list[list[CommandSample]] = []
     active: list[CommandSample] = []
     for sample in samples:
+        if not all(math.isfinite(value) for value in (
+            sample.stamp_s, sample.recorded_s,
+            sample.linear_mps, sample.angular_radps,
+        )):
+            raise _evidence_issue(
+                "FAIL", "command_sample_nonfinite",
+                "command evidence contains a non-finite stamp or value",
+            )
+        if active and sample.stamp_s < active[-1].stamp_s:
+            raise _evidence_issue(
+                "FAIL", "command_sample_order",
+                "command evidence moves backward inside a plateau",
+            )
         if _is_command(sample, command):
             if active and sample.stamp_s - active[-1].stamp_s > maximum_gap_s:
                 runs.append(active)
@@ -2256,16 +2333,87 @@ def _require_zero_range(
     samples: Sequence[CommandSample], *, start_s: float, end_s: float,
     topic: str, minimum_samples: int = 1,
 ) -> dict[str, Any]:
+    return _require_command_coverage(
+        samples, start_s=start_s, end_s=end_s, topic=topic,
+        minimum_samples=minimum_samples, require_zero=True,
+    )
+
+
+def _require_command_coverage(
+    samples: Sequence[CommandSample], *, start_s: float, end_s: float,
+    topic: str, minimum_samples: int = 2, require_zero: bool = False,
+    boundary_tolerance_s: float = COMMAND_BOUNDARY_TOLERANCE_S,
+) -> dict[str, Any]:
+    """Require both boundaries, internal cadence, order, and finite values."""
+
+    if (
+        not math.isfinite(start_s) or not math.isfinite(end_s)
+        or end_s < start_s
+        or not math.isfinite(boundary_tolerance_s)
+        or boundary_tolerance_s <= 0.0
+        or boundary_tolerance_s > MAX_SAMPLE_GAP_S
+    ):
+        raise _evidence_issue(
+            "FAIL", "command_coverage_contract",
+            f"{topic} coverage bounds/tolerance are invalid",
+        )
+    previous_stamp: float | None = None
+    previous_recorded: float | None = None
+    for sample in samples:
+        values = (
+            sample.stamp_s, sample.recorded_s,
+            sample.linear_mps, sample.angular_radps,
+        )
+        if not all(math.isfinite(value) for value in values):
+            raise _evidence_issue(
+                "FAIL", "command_sample_nonfinite",
+                f"{topic} contains a non-finite stamp or value",
+            )
+        if (
+            previous_stamp is not None and sample.stamp_s < previous_stamp
+        ) or (
+            previous_recorded is not None and sample.recorded_s < previous_recorded
+        ):
+            raise _evidence_issue(
+                "FAIL", "command_sample_order",
+                f"{topic} command evidence moves backward",
+            )
+        previous_stamp = sample.stamp_s
+        previous_recorded = sample.recorded_s
     selected = [sample for sample in samples if start_s <= sample.stamp_s <= end_s]
     if len(selected) < minimum_samples:
-        raise _evidence_issue("AMBIGUOUS", "command_zero_coverage", f"{topic} has insufficient zero coverage")
-    if any(not _is_zero_command(sample) for sample in selected):
+        raise _evidence_issue(
+            "AMBIGUOUS", "command_zero_coverage" if require_zero else "command_schedule_coverage",
+            f"{topic} has insufficient {'zero ' if require_zero else ''}coverage",
+        )
+    start_gap = selected[0].stamp_s - start_s
+    end_gap = end_s - selected[-1].stamp_s
+    if start_gap > boundary_tolerance_s or end_gap > boundary_tolerance_s:
+        raise _evidence_issue(
+            "AMBIGUOUS", "command_boundary_coverage",
+            f"{topic} does not cover both window boundaries",
+        )
+    if require_zero and any(not _is_zero_command(sample) for sample in selected):
         raise _evidence_issue("FAIL", "command_zero_leak", f"{topic} has a nonzero command in a required-zero window")
     gaps = [right.stamp_s - left.stamp_s for left, right in zip(selected, selected[1:])]
+    if any(not math.isfinite(gap) or gap < 0.0 for gap in gaps):
+        raise _evidence_issue(
+            "FAIL", "command_sample_order",
+            f"{topic} has an invalid internal gap",
+        )
     maximum_gap = max(gaps) if gaps else 0.0
     if maximum_gap > MAX_SAMPLE_GAP_S:
         raise _evidence_issue("AMBIGUOUS", "command_stream_gap", f"{topic} zero coverage gap exceeds {MAX_SAMPLE_GAP_S} s")
-    return {"count": len(selected), "maximum_gap_s": maximum_gap}
+    return {
+        "count": len(selected),
+        "first_sim_s": selected[0].stamp_s,
+        "last_sim_s": selected[-1].stamp_s,
+        "start_boundary_gap_s": start_gap,
+        "end_boundary_gap_s": end_gap,
+        "boundary_tolerance_s": boundary_tolerance_s,
+        "maximum_gap_s": maximum_gap,
+        "all_zero": all(_is_zero_command(sample) for sample in selected),
+    }
 
 
 def command_windows(
@@ -2328,33 +2476,49 @@ def command_windows(
         }
         nav = epoch["/cmd_vel_nav"]
         capture_issues: list[dict[str, str]] = []
+        if schema_version < 2:
+            capture_issues.append({
+                "verdict": "AMBIGUOUS",
+                "code": "benchmark_schema_v1_capture_ambiguity",
+                "detail": (
+                    "schema-v1 has no prospective schedule/final-settle receipts; "
+                    "retroactive metrics are readable but cannot authorize scale selection"
+                ),
+            })
         if not nav:
             raise _evidence_issue("AMBIGUOUS", "intent_missing", f"{entry['id']} has no /cmd_vel_nav samples")
         report_schedule = entry.get("segment_schedule") if schema_version >= 2 else None
         selected_schedules: list[dict[str, Any]] = []
         search_after = -math.inf
         for segment_index, (command, duration) in enumerate(zip(commands, durations)):
-            matching = [
-                run for run in _command_runs(nav, command, maximum_gap_s=intent_gap)
-                if run[-1].stamp_s >= search_after
-            ]
             minimum_count = max(2, math.floor(duration * rate * 0.75))
-            matching = [run for run in matching if len(run) >= minimum_count]
-            if not matching:
-                raise _evidence_issue("AMBIGUOUS", "intent_missing", f"{entry['id']}[{segment_index}] intent plateau is missing")
-            run = matching[0]
-            if len(matching) > 1 and segment_index == 0 and len(commands) == 1:
-                raise _evidence_issue("FAIL", "intent_duplicate", f"{entry['id']} has multiple matching intent plateaus")
             if report_schedule is not None:
                 schedule = dict(report_schedule[segment_index])
                 start_s = float(schedule["start_sim_s"])
                 end_s = float(schedule["end_sim_s"])
-                if abs(run[0].stamp_s - start_s) > intent_gap:
-                    raise _evidence_issue("FAIL", "intent_schedule_start", f"{entry['id']}[{segment_index}] intent does not bind to schedule start")
-                bound_run = [sample for sample in run if start_s <= sample.stamp_s < end_s]
+                in_window = [
+                    sample for sample in nav
+                    if start_s <= sample.stamp_s < end_s
+                ]
+                if any(not _is_command(sample, command) for sample in in_window):
+                    raise _evidence_issue(
+                        "FAIL", "intent_schedule_value",
+                        f"{entry['id']}[{segment_index}] intent changes inside its schedule",
+                    )
+                bound_run = in_window
                 if int(schedule["intent_publish_count"]) != len(bound_run):
                     raise _evidence_issue("FAIL", "intent_publish_count", f"{entry['id']}[{segment_index}] publish count mismatch")
             else:
+                matching = [
+                    run for run in _command_runs(nav, command, maximum_gap_s=intent_gap)
+                    if run[-1].stamp_s >= search_after
+                ]
+                matching = [run for run in matching if len(run) >= minimum_count]
+                if not matching:
+                    raise _evidence_issue("AMBIGUOUS", "intent_missing", f"{entry['id']}[{segment_index}] intent plateau is missing")
+                run = matching[0]
+                if len(matching) > 1 and segment_index == 0 and len(commands) == 1:
+                    raise _evidence_issue("FAIL", "intent_duplicate", f"{entry['id']} has multiple matching intent plateaus")
                 start_s = run[0].stamp_s
                 end_s = start_s + float(duration)
                 bound_run = [sample for sample in run if start_s <= sample.stamp_s < end_s]
@@ -2383,13 +2547,37 @@ def command_windows(
             search_after = end_s - boundary_tolerance
 
         first_start = float(selected_schedules[0]["start_sim_s"])
-        for topic in topics:
-            _require_zero_range(
-                epoch[topic], start_s=reset.stamp_s,
-                end_s=max(reset.stamp_s, first_start - intent_gap), topic=topic,
-                minimum_samples=1 if topic == "/cmd_vel_sim" else 0,
-            )
+        if schema_version >= 2:
+            for topic in topics:
+                _require_zero_range(
+                    epoch[topic], start_s=reset.stamp_s,
+                    end_s=max(reset.stamp_s, first_start - intent_gap), topic=topic,
+                    minimum_samples=2,
+                )
         final_end = float(selected_schedules[-1]["end_sim_s"])
+        settle_coverage: dict[str, dict[str, Any]] = {}
+        if schema_version >= 2:
+            zero_receipt = entry["final_zero_publish_receipt"]
+            settle_start = float(zero_receipt["first_sim_s"])
+            settle_end = float(zero_receipt["last_sim_s"])
+            expected_zero_count = int(zero_receipt["publish_count"])
+            bound_nav_zero = [
+                sample for sample in nav
+                if settle_start <= sample.stamp_s < settle_end
+            ]
+            if len(bound_nav_zero) != expected_zero_count:
+                raise _evidence_issue(
+                    "FAIL", "final_zero_publish_count",
+                    f"{entry['id']} final settle publish count does not match MCAP",
+                )
+            for topic in topics:
+                settle_coverage[topic] = _require_zero_range(
+                    epoch[topic], start_s=settle_start, end_s=settle_end,
+                    topic=topic, minimum_samples=2,
+                )
+        else:
+            settle_start = final_end
+            settle_end = final_end + FINAL_SETTLE_SEC
         nav_after = [sample for sample in nav if sample.stamp_s >= final_end - intent_gap]
         nav_zero = [sample for sample in nav_after if _is_zero_command(sample)]
         nav_leaks = [
@@ -2429,14 +2617,10 @@ def command_windows(
             end_s = float(schedule["end_sim_s"])
             coverage = {}
             for topic in topics:
-                selected = [sample for sample in epoch[topic] if start_s <= sample.stamp_s <= end_s]
-                if len(selected) < 2:
-                    raise _evidence_issue("AMBIGUOUS", "command_schedule_coverage", f"{topic} does not cover {entry['id']}")
-                gaps = [right.stamp_s - left.stamp_s for left, right in zip(selected, selected[1:])]
-                maximum_gap = max(gaps) if gaps else 0.0
-                if maximum_gap > MAX_SAMPLE_GAP_S:
-                    raise _evidence_issue("AMBIGUOUS", "command_stream_gap", f"{topic} schedule gap exceeds {MAX_SAMPLE_GAP_S} s")
-                coverage[topic] = {"count": len(selected), "maximum_gap_s": maximum_gap}
+                coverage[topic] = _require_command_coverage(
+                    epoch[topic], start_s=start_s, end_s=end_s, topic=topic,
+                    require_zero=entry["id"] == EXPECTED_STATIONARY["id"],
+                )
             identifier = str(entry["id"])
             if len(selected_schedules) > 1:
                 identifier = f"{identifier}[{schedule['segment_index']}]"
@@ -2459,6 +2643,9 @@ def command_windows(
                     "sim_zero_latency_s": latency,
                     "sim_zero_duration_s": zero_duration,
                     "sim_zero_maximum_gap_s": max(zero_gaps) if zero_gaps else 0.0,
+                    "receipt_start_sim_s": settle_start,
+                    "receipt_end_sim_s": settle_end,
+                    "chain_coverage": settle_coverage,
                 },
                 "capture_issues": list(capture_issues),
             })
@@ -2474,11 +2661,13 @@ def phase_window_metrics(
 ) -> dict[str, object]:
     """Validate all four IMU graph attributes and loop phase boundaries."""
 
-    rows = [
-        row for row in phase
-        if row.get("kind") == "loop"
-        and start_s <= float(row.get("simulation_time_after_app_s", math.inf)) <= end_s
-    ]
+    rows = []
+    for index, row in enumerate(phase):
+        if row.get("kind") != "loop":
+            continue
+        stamp_s = _phase_simulation_time(row, scope=f"phase row {index}")
+        if start_s <= stamp_s <= end_s:
+            rows.append(row)
     attributes = {
         key: {"valid_count": 0, "null_count": 0, "error_count": 0}
         for key in (
@@ -2679,6 +2868,19 @@ def run_analysis(
                 if key not in seen_capture_issues:
                     seen_capture_issues.add(key)
                     capture_issues.append(issue)
+        benchmark_schema_version = int(report.get("schema_version", 1))
+        if benchmark_schema_version < 2:
+            issue = {
+                "verdict": "AMBIGUOUS",
+                "code": "benchmark_schema_v1_capture_ambiguity",
+                "detail": (
+                    "schema-v1 metrics remain readable, but prospective schedule "
+                    "and final-settle capture receipts are unavailable"
+                ),
+            }
+            key = (issue["verdict"], issue["code"], issue["detail"])
+            if key not in seen_capture_issues:
+                capture_issues.append(issue)
         results = []
         for window in windows:
             start_s = float(window["start_s"])
@@ -2769,6 +2971,8 @@ def run_analysis(
         summary["performance_status"] = performance_status
         summary["regime_analysis_status"] = regime_result
         summary["scale_selection_authorized"] = bool(
+            benchmark_schema_version >= 2
+            and
             performance_status == "PASS"
             and regime_result == "PASS_CANDIDATE"
             and goal_mcap is not None

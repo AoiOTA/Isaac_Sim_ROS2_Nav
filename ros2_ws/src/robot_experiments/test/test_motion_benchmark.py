@@ -551,6 +551,10 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
     assert schedule[0]["completion"] == "COMPLETED"
     assert schedule[0]["truncated"] is False
     assert result["final_zero_publish_receipt"]["publish_count"] > 0
+    assert result["zero_command_count"] == (
+        schedule[0]["intent_publish_count"]
+        + result["final_zero_publish_receipt"]["publish_count"]
+    )
     assert (
         result["final_zero_publish_receipt"]["last_sim_s"]
         - result["final_zero_publish_receipt"]["first_sim_s"]

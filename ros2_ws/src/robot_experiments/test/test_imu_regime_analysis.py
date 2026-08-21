@@ -228,6 +228,16 @@ def test_phase_four_attribute_gate_distinguishes_ambiguous_and_fail():
     assert phase_window_metrics(crossing, start_s=1.0, end_s=1.2, reset_generation=1)["status"] == "FAIL"
 
 
+@pytest.mark.parametrize("value", ["bad", None, math.nan, math.inf, True])
+def test_phase_malformed_simulation_time_is_structured_evidence_error(value):
+    row = _phase_row(0)
+    row["simulation_time_after_app_s"] = value
+    with pytest.raises(EvidenceError) as raised:
+        phase_window_metrics([row], start_s=0.0, end_s=2.0)
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "phase_simulation_time_invalid"
+
+
 def _receipt(seed, generation):
     return {
         "requested_seed": seed, "actual_seed": seed,
@@ -332,8 +342,9 @@ def _session_a_command_streams(report):
         phase.append({"kind": "loop", "reset_generation": generation, "reset_generation_after_ground_truth": generation})
         start = base + 1.0
         for topic in topics:
-            streams[topic].append(CommandSample(base + 0.1, 0.0, 0.0, base + 0.1))
-            streams[topic].append(CommandSample(start - 0.1, 0.0, 0.0, start - 0.1))
+            for offset in (0.1, 0.3, 0.5, 0.7, 0.9):
+                stamp = base + offset
+                streams[topic].append(CommandSample(stamp, 0.0, 0.0, stamp))
         for command, duration in zip(entry_commands, entry_durations):
             count = math.ceil(duration / 0.05)
             for sample_index in range(count):
@@ -346,6 +357,128 @@ def _session_a_command_streams(report):
             for topic in topics:
                 streams[topic].append(CommandSample(stamp, 0.0, 0.0, stamp))
     return McapStreams(streams, provenance={}), phase
+
+
+def _schema2_report():
+    import copy
+
+    report = copy.deepcopy(_benchmark_report())
+    report["schema_version"] = 2
+    report["final_settle_sec"] = 0.8
+    entries = [report["stationary_reference"], *report["primitives"]]
+    commands = [((0.0, 0.0),), *EXPECTED_COMMANDS]
+    durations = [
+        (10.0,), (12.566,), (12.566,),
+        *((4.0,) for _ in range(6)), (2.5, 5.0, 2.5),
+    ]
+    for epoch_index, (entry, entry_commands, entry_durations) in enumerate(
+        zip(entries, commands, durations)
+    ):
+        cursor = epoch_index * 30.0 + 1.0
+        entry["segment_schedule"] = []
+        for segment_index, (command, duration) in enumerate(
+            zip(entry_commands, entry_durations)
+        ):
+            entry["segment_schedule"].append({
+                "segment_index": segment_index,
+                "start_sim_s": cursor,
+                "end_sim_s": cursor + duration,
+                "expected_duration_s": duration,
+                "command_linear_mps": command[0],
+                "command_angular_radps": command[1],
+                "intent_publish_count": math.ceil(duration * 20.0),
+                "completion": "COMPLETED",
+                "truncated": False,
+            })
+            cursor += duration
+        entry["final_zero_publish_receipt"] = {
+            "first_sim_s": cursor,
+            "last_sim_s": cursor + 0.8,
+            "publish_count": 16,
+            "requested_duration_s": 0.8,
+            "command_linear_mps": 0.0,
+            "command_angular_radps": 0.0,
+        }
+    return report
+
+
+def test_schema2_stationary_and_moving_windows_have_complete_chain_receipts():
+    report = _schema2_report()
+    streams, phase = _session_a_command_streams(report)
+    assert validate_benchmark_report(report) is report
+    windows = command_windows(phase, report, streams)
+    assert len(windows) == 12
+    stationary = windows[0]
+    assert stationary["id"] == "stationary_reference"
+    assert stationary["schedule_receipt"]["intent_publish_count"] == 200
+    assert all(
+        evidence["all_zero"]
+        and evidence["start_boundary_gap_s"] <= 0.25
+        and evidence["end_boundary_gap_s"] <= 0.25
+        for evidence in stationary["command_chain_coverage"].values()
+    )
+    assert all(
+        evidence["all_zero"]
+        for evidence in stationary["final_zero"]["chain_coverage"].values()
+    )
+
+
+@pytest.mark.parametrize("boundary", ["start", "end"])
+def test_schema2_moving_window_rejects_start_or_end_dropout(boundary):
+    report = _schema2_report()
+    streams, phase = _session_a_command_streams(report)
+    schedule = report["primitives"][0]["segment_schedule"][0]
+    start = schedule["start_sim_s"]
+    end = schedule["end_sim_s"]
+    if boundary == "start":
+        streams["/cmd_vel_sim"] = [
+            sample for sample in streams["/cmd_vel_sim"]
+            if not (start <= sample.stamp_s < start + 0.30)
+        ]
+    else:
+        streams["/cmd_vel_sim"] = [
+            sample for sample in streams["/cmd_vel_sim"]
+            if not (end - 0.30 < sample.stamp_s <= end)
+        ]
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(phase, report, streams)
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code in {"command_boundary_coverage", "command_stream_gap"}
+
+
+def test_schema2_hold_rejects_internal_dropout():
+    report = _schema2_report()
+    streams, phase = _session_a_command_streams(report)
+    streams["/cmd_vel"] = [
+        sample for sample in streams["/cmd_vel"]
+        if not (0.25 < sample.stamp_s < 0.65)
+    ]
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(phase, report, streams)
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code == "command_stream_gap"
+
+
+@pytest.mark.parametrize(
+    "topic", ["/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"]
+)
+def test_schema2_stationary_rejects_nonzero_on_every_command_stage(topic):
+    report = _schema2_report()
+    streams, phase = _session_a_command_streams(report)
+    samples = list(streams[topic])
+    index = next(
+        index for index, sample in enumerate(samples)
+        if 2.0 <= sample.stamp_s <= 2.1
+    )
+    sample = samples[index]
+    samples[index] = CommandSample(
+        sample.stamp_s, 0.01, 0.0, sample.recorded_s
+    )
+    streams[topic] = samples
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(phase, report, streams)
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code in {"intent_schedule_value", "command_zero_leak"}
 
 
 def test_mcap_intent_restores_one_cw_and_three_s_segments_despite_downstream_plateaus():
@@ -471,6 +604,9 @@ def test_schema2_schedule_receipts_are_required_and_truncation_fails_closed():
         entry["final_zero_publish_receipt"] = {
             "first_sim_s": cursor, "last_sim_s": cursor + 0.8,
             "publish_count": 16,
+            "requested_duration_s": 0.8,
+            "command_linear_mps": 0.0,
+            "command_angular_radps": 0.0,
         }
     assert validate_benchmark_report(report) is report
     stopped = copy.deepcopy(report)
@@ -479,6 +615,13 @@ def test_schema2_schedule_receipts_are_required_and_truncation_fails_closed():
     with pytest.raises(EvidenceError) as raised:
         validate_benchmark_report(stopped)
     assert raised.value.code == "benchmark_schedule_contract"
+    short_settle = copy.deepcopy(report)
+    short_settle["stationary_reference"]["final_zero_publish_receipt"][
+        "last_sim_s"
+    ] -= 0.4
+    with pytest.raises(EvidenceError) as raised:
+        validate_benchmark_report(short_settle)
+    assert raised.value.code == "benchmark_zero_receipt"
     report = _benchmark_report()
     report["primitives"][0]["sample_count"] = 0
     with pytest.raises(EvidenceError) as raised:
@@ -552,6 +695,88 @@ def _install_fake_mcap(monkeypatch, topic_types, records=()):
     monkeypatch.setitem(sys.modules, "rosbag2_py", rosbag)
     monkeypatch.setitem(sys.modules, "rclpy.serialization", serialization)
     monkeypatch.setitem(sys.modules, "rosidl_runtime_py.utilities", utilities)
+
+
+def _diagnostic_mcap_records(clock_values=(1.0, 2.0, 3.0)):
+    records = []
+    recorded_ns = 1_000_000_000
+
+    def stamp(value):
+        sec = int(value)
+        return SimpleNamespace(
+            sec=sec, nanosec=int(round((value - sec) * 1_000_000_000))
+        )
+
+    for index, clock_value in enumerate(clock_values):
+        header_stamp = stamp(float(index + 1))
+        records.append((
+            "/clock", SimpleNamespace(clock=stamp(clock_value)), recorded_ns
+        ))
+        recorded_ns += 1
+        if index == 0:
+            records.append(("/simulation/reset_event", SimpleNamespace(), recorded_ns))
+            recorded_ns += 1
+        imu = SimpleNamespace(
+            header=SimpleNamespace(stamp=header_stamp),
+            angular_velocity=SimpleNamespace(x=0.0, y=0.0, z=0.1),
+        )
+        odom = SimpleNamespace(
+            header=SimpleNamespace(stamp=header_stamp),
+            pose=SimpleNamespace(pose=SimpleNamespace(orientation=SimpleNamespace(
+                x=0.0, y=0.0, z=0.0, w=1.0
+            ))),
+        )
+        twist = SimpleNamespace(
+            linear=SimpleNamespace(x=0.0),
+            angular=SimpleNamespace(z=0.0),
+        )
+        for topic, message in (
+            ("/imu/data_raw", imu), ("/imu/data", imu),
+            ("/ground_truth/odom", odom),
+            ("/cmd_vel_nav", twist), ("/cmd_vel_smoothed", twist),
+            ("/cmd_vel", twist), ("/cmd_vel_sim", twist),
+        ):
+            records.append((topic, message, recorded_ns))
+            recorded_ns += 1
+    return records
+
+
+def test_mcap_clock_file_order_is_strict_and_command_duplicates_are_explicit(
+    monkeypatch, tmp_path
+):
+    records = _diagnostic_mcap_records()
+    duplicate = next(record for record in records if record[0] == "/cmd_vel")
+    records.insert(records.index(duplicate) + 1, duplicate)
+    _install_fake_mcap(monkeypatch, imu_analysis.EXPECTED_TOPIC_TYPES, records)
+    streams = load_mcap(tmp_path / "bag")
+    assert streams.provenance["clock_order_contract"] == (
+        "strict_positive_increasing_file_order"
+    )
+    assert streams.provenance["command_clock_duplicate_counts"]["/cmd_vel"] == 1
+
+
+def test_mcap_rejects_clock_backward_in_file_order(monkeypatch, tmp_path):
+    _install_fake_mcap(
+        monkeypatch, imu_analysis.EXPECTED_TOPIC_TYPES,
+        _diagnostic_mcap_records((1.0, 2.0, 1.5)),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_mcap(tmp_path / "bag")
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "mcap_clock_order"
+
+
+def test_mcap_rejects_command_receive_stamp_backward(monkeypatch, tmp_path):
+    records = _diagnostic_mcap_records()
+    indices = [index for index, record in enumerate(records) if record[0] == "/cmd_vel"]
+    first = records[indices[0]]
+    second = records[indices[1]]
+    records[indices[1]] = (second[0], second[1], first[2] - 1)
+    _install_fake_mcap(monkeypatch, imu_analysis.EXPECTED_TOPIC_TYPES, records)
+    with pytest.raises(EvidenceError) as raised:
+        load_mcap(tmp_path / "bag")
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "mcap_command_file_order"
 
 
 def test_mcap_exact_topic_types_fail_closed(monkeypatch, tmp_path):
@@ -650,6 +875,76 @@ def test_performance_failure_keeps_segment_metrics_but_never_authorizes_scale(mo
     assert all(item["raw_aligned_rmse_rad"] is not None for item in result["segments"])
     assert all(item["raw_aligned_p95_rad"] is not None for item in result["segments"])
     assert all(item["scale_interval_le_5deg"] for item in result["segments"])
+
+
+def test_schema1_retro_metrics_are_preserved_but_scale_is_never_authorized(
+    monkeypatch, tmp_path
+):
+    report = _benchmark_report()
+    benchmark = tmp_path / "benchmark.json"
+    benchmark.write_text(json.dumps(report), encoding="utf-8")
+    phase_path = tmp_path / "phase.jsonl"
+    phase_path.write_text('{}\n', encoding="utf-8")
+    goal_metadata = tmp_path / "goal.json"
+    goal_metadata.write_text('{}\n', encoding="utf-8")
+    raw, corrected, gt = _series(0.93)
+    streams = McapStreams({
+        "/imu/data_raw": raw,
+        "/imu/data": corrected,
+        "/ground_truth/odom": gt,
+    }, provenance={})
+    identifiers = [
+        "stationary_reference", *EXPECTED_PRIMITIVE_IDS[:-1],
+        "s_route[0]", "s_route[1]", "s_route[2]",
+    ]
+    commands = [
+        (0.0, 0.0), *[item[0] for item in EXPECTED_COMMANDS[:-1]],
+        *EXPECTED_COMMANDS[-1],
+    ]
+    windows = [{
+        "id": identifier, "generation": index + 1,
+        "linear": command[0], "angular": command[1],
+        "start_s": 0.0, "end_s": 10.0,
+        "expected_duration_s": 10.0,
+        "observed_command_duration_s": 10.0,
+        "duration_tolerance_s": 0.25,
+        "capture_issues": [],
+    } for index, (identifier, command) in enumerate(zip(identifiers, commands))]
+    monkeypatch.setattr(imu_analysis, "validate_phase_trace", lambda phase, resources: {})
+    monkeypatch.setattr(imu_analysis, "load_mcap", lambda path: streams)
+    monkeypatch.setattr(imu_analysis, "command_windows", lambda phase, report, streams: windows)
+    monkeypatch.setattr(imu_analysis, "phase_window_metrics", lambda *args, **kwargs: {"status": "OK"})
+    monkeypatch.setattr(imu_analysis, "load_goal_mcap", lambda *args, **kwargs: {})
+
+    def candidate_summary(results, **_kwargs):
+        return {
+            "verdict": "PASS_CANDIDATE",
+            "segments": list(results),
+            "bins": {},
+            "goal_identity_non_degrade_interval": [[0.9, 1.0]],
+            "global_scale_intersection": [[0.92, 0.94]],
+        }
+
+    monkeypatch.setattr(imu_analysis, "summarize", candidate_summary)
+    result = run_analysis(
+        mcap=tmp_path / "bag",
+        phase_jsonl=phase_path,
+        benchmark_report=benchmark,
+        goal_evaluator=goal_metadata,
+        goal_mcap=tmp_path / "goal_bag",
+        config_path=CONFIG,
+        spawn_poses_path=SPAWN,
+        obstacle_config_path=FEATURES,
+    )
+    assert len(result["segments"]) == 12
+    assert all(item["k_star"] is not None for item in result["segments"])
+    assert result["capture_contract_status"] == "AMBIGUOUS"
+    assert result["verdict"] == "AMBIGUOUS"
+    assert result["scale_selection_authorized"] is False
+    assert any(
+        issue["code"] == "benchmark_schema_v1_capture_ambiguity"
+        for issue in result["evidence_errors"]
+    )
 
 
 def _complete_phase_rows(duration_override=None, *, stationary_duration=10.0):

@@ -1669,3 +1669,34 @@
   ROS/Isaac/Nav2/navigation, visual evidence, engineering campaign, or formal
   qualification was run.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
+## 2026-08-22 — V6 IMU schema-2 capture-boundary amendment
+
+- Goal: close the schema-2 reviewer blockers in MotionBenchmark evidence and
+  the offline analyzer without changing motion playback, thresholds,
+  `yaw_scale=0.9294`, RF2O, route/reset/gate, or critic behavior.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `503cceb15a6517f3a0436a09817b594f009dfcf8`.
+- Changes: stationary intent count is limited to the main 10 s schedule and
+  final settle has an independent receipt; all command-chain schedules require
+  finite ordered start/end/internal coverage; stationary, reset HOLD, and final
+  settle require full-window all-zero evidence. MCAP `/clock` is strict in file
+  order; command duplicates are explicit while backward stamps fail. Schema-1
+  remains readable but is capture-ambiguous and can never authorize scale.
+  Malformed phase simulation time becomes structured evidence.
+- Deterministic coverage: schema-2 positive report/MCAP binding; moving start
+  and end dropout; HOLD dropout; nonzero injection at each of four stationary
+  command stages; schema-1 retained metrics/no-auth; clock and command order;
+  malformed/non-finite phase time; short final-settle receipt.
+- Validation: source-first focused **114 passed**; fresh-installed focused
+  **114 passed**; isolated build/install PASS at
+  `/tmp/v6_imu_schema2_final_build.d34e4i` and
+  `/tmp/v6_imu_schema2_final_install.UciJmK`, log
+  `/tmp/v6_imu_schema2_final_log.kNJ411`; installed analyzer import/help,
+  `py_compile`, and `git diff --check` PASS. Wider package result **546 passed,
+  1 unrelated path-sensitive frozen-reference failure**.
+- Verdict: **PASS (code/build/unit only)**. Existing Attempt 3 remains
+  FAIL/AMBIGUOUS/no-auth with metrics retained; it was not rerun or modified.
+  Attempt 4 remains **PENDING**. No ROS/Isaac/navigation/evidence/formal run.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
