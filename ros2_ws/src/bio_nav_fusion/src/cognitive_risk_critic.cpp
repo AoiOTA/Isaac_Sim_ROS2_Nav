@@ -209,10 +209,7 @@ std::string CognitiveRiskCritic::validateInputs(
     maximum_ood_probability, enforce_identity);
   if (!obstacle_reason.empty()) {return obstacle_reason;}
   const double prior_age = (now_ns - stampNs(prior->stamp)) * 1.0e-9;
-  const double direction_ttl = durationSeconds(prior->local_direction_ttl);
-  if (direction_ttl <= 0.0 || direction_ttl > 0.5 || prior_age < 0.0 ||
-    prior_age > std::min(direction_ttl, maximum_age_s))
-  {
+  if (prior_age < 0.0 || prior_age > maximum_age_s) {
     return "stale";
   }
   if (obstacles->schema_version != "bio_nav_cognitive_obstacles_v1" ||
@@ -223,7 +220,7 @@ std::string CognitiveRiskCritic::validateInputs(
     !obstacles->observation_valid ||
     !obstacles->trusted_write || obstacles->rejection_mask != 0U ||
     !prior->input_healthy || !prior->module2_healthy || !prior->trusted_write ||
-    !prior->context_trusted || prior->trust_rejection_mask != 0U)
+    prior->trust_rejection_mask != 0U)
   {
     return "unhealthy";
   }
@@ -265,8 +262,14 @@ std::string CognitiveRiskCritic::validateInputs(
 }
 
 std::string CognitiveRiskCritic::validateDirectionPrior(
-  const bio_nav_interfaces::msg::PlanningPrior & prior)
+  const bio_nav_interfaces::msg::PlanningPrior & prior, double prior_age_s)
 {
+  const double direction_ttl = durationSeconds(prior.local_direction_ttl);
+  if (direction_ttl <= 0.0 || direction_ttl > 0.5 || prior_age_s < 0.0 ||
+    prior_age_s > direction_ttl)
+  {
+    return "direction_stale";
+  }
   if (prior.local_direction_schema_version != "bio_nav_local_direction_prior_v1") {
     return "direction_schema";
   }
@@ -382,7 +385,8 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       item.confidence * item.reliability * (1.0 - item.ood_probability)});
   }
   std::array<double, 5> direction{};
-  const auto direction_reason = validateDirectionPrior(*prior);
+  const double prior_age_s = (now.nanoseconds() - stampNs(prior->stamp)) * 1.0e-9;
+  const auto direction_reason = validateDirectionPrior(*prior, prior_age_s);
   if (direction_reason.empty()) {
     std::copy(prior->local_direction_weights.begin(),
       prior->local_direction_weights.end(), direction.begin());
@@ -399,11 +403,22 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
         data.trajectories.yaws(index, step)});
     }
     data.costs(index) += static_cast<float>(trajectoryScore(
-        trajectory, samples, direction, robot_yaw, prior->novelty_probability,
-        prior->context_uncertainty, obstacle_weight_, direction_weight_,
+        trajectory, samples, direction, robot_yaw,
+        prior->context_trusted ? prior->novelty_probability : 0.0,
+        prior->context_trusted ? prior->context_uncertainty : 0.0,
+        obstacle_weight_, direction_weight_,
         novelty_weight_, uncertainty_weight_));
   }
-  publishStatus(prior->sequence, true, direction_reason);
+  std::string component_status = "obstacle_applied";
+  if (!prior->context_trusted) {
+    component_status +=
+      ";novelty_suppressed=context_untrusted"
+      ";uncertainty_suppressed=context_untrusted";
+  }
+  if (!direction_reason.empty()) {
+    component_status += ";direction_suppressed=" + direction_reason;
+  }
+  publishStatus(prior->sequence, true, component_status);
 }
 
 void CognitiveRiskCritic::publishStatus(

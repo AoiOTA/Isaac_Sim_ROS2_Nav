@@ -96,6 +96,14 @@ public:
     critic.obstacle_weight_ = 0.0F;
     critic.direction_weight_ = 1.0F;
   }
+
+  static void useAllComponents(CognitiveRiskCritic & critic)
+  {
+    critic.obstacle_weight_ = 1.0F;
+    critic.direction_weight_ = 1.0F;
+    critic.novelty_weight_ = 1.0F;
+    critic.uncertainty_weight_ = 1.0F;
+  }
 };
 
 }  // namespace bio_nav_fusion
@@ -425,6 +433,16 @@ bio_nav_interfaces::msg::PlanningPrior planningPriorFixture()
   prior.local_direction_module2_healthy = true;
   prior.local_direction_trusted_write = true;
   prior.local_direction_weights = {0.0, 1.0, 0.0, 0.0, 0.0};
+  return prior;
+}
+
+bio_nav_interfaces::msg::PlanningPrior productionV310PriorFixture()
+{
+  auto prior = planningPriorFixture();
+  prior.schema_version = "bio_nav_planning_prior_v310";
+  prior.context_trusted = false;
+  prior.local_direction_frame_id = "module2_canvas";
+  prior.local_direction_trusted_write = false;
   return prior;
 }
 
@@ -1001,6 +1019,85 @@ TEST(CognitiveRiskCritic, static_depth_revalidation_uses_fresh_validation_timeli
   EXPECT_EQ(critic_reason, layer_reason);
 }
 
+TEST(CognitiveRiskCritic, v310_applies_obstacles_and_suppresses_untrusted_components)
+{
+  using Critic = bio_nav_fusion::CognitiveRiskCritic;
+  auto costmap = makeCriticTestCostmap();
+  const int64_t validation_ns = costmap->now().nanoseconds() - 10000000LL;
+  const int64_t source_ns = validation_ns - 1000000000LL;
+  ASSERT_TRUE(addTransform(costmap, validation_ns, 0.0));
+
+  auto obstacles = staticRevalidatedObstacleFixture();
+  auto prior = productionV310PriorFixture();
+  retimeStatic(obstacles, prior, source_ns, validation_ns);
+  EXPECT_EQ(Critic::validateInputs(
+      &obstacles, &prior, costmap->now().nanoseconds(), 0.5, 0.2), "");
+  EXPECT_EQ(Critic::validateDirectionPrior(prior), "direction_frame");
+
+  Critic obstacle_only;
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(obstacle_only, costmap);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    obstacle_only,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  const auto obstacle_cost = scoreAt(obstacle_only, 1.0F, 0.0F, static_cast<float>(M_PI));
+  EXPECT_GT(obstacle_cost, 1.0F);
+
+  Critic production;
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(production, costmap);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::useAllComponents(production);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    production,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_FLOAT_EQ(
+    scoreAt(production, 1.0F, 0.0F, static_cast<float>(M_PI)), obstacle_cost);
+
+  prior.context_trusted = true;
+  Critic synthetic_context;
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(synthetic_context, costmap);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::useAllComponents(synthetic_context);
+  bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+    synthetic_context,
+    std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+    std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
+  EXPECT_NEAR(
+    scoreAt(synthetic_context, 1.0F, 0.0F, static_cast<float>(M_PI)),
+    obstacle_cost + prior.novelty_probability + prior.context_uncertainty,
+    1.0e-5F);
+}
+
+TEST(CognitiveRiskCritic, v310_basic_pair_still_rejects_stale_untrusted_and_mismatch)
+{
+  auto costmap = makeCriticTestCostmap();
+  const int64_t validation_ns = costmap->now().nanoseconds() - 10000000LL;
+  const int64_t source_ns = validation_ns - 1000000000LL;
+  ASSERT_TRUE(addTransform(costmap, validation_ns, 0.0));
+  auto obstacles = staticRevalidatedObstacleFixture();
+  auto prior = productionV310PriorFixture();
+  retimeStatic(obstacles, prior, source_ns, validation_ns);
+
+  const auto expect_zero = [&](const bio_nav_interfaces::msg::PlanningPrior & candidate) {
+      bio_nav_fusion::CognitiveRiskCritic critic;
+      bio_nav_fusion::CognitiveRiskCriticTestPeer::configure(critic, costmap);
+      bio_nav_fusion::CognitiveRiskCriticTestPeer::setInputs(
+        critic,
+        std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(obstacles),
+        std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(candidate));
+      EXPECT_FLOAT_EQ(scoreAt(critic, 1.0F, 0.0F), 0.0F);
+    };
+
+  auto stale = prior;
+  stale.stamp = stampFromNs(validation_ns - 1000000000LL);
+  expect_zero(stale);
+  auto untrusted = prior;
+  untrusted.trusted_write = false;
+  expect_zero(untrusted);
+  auto mismatch = prior;
+  mismatch.map_version = "other-map";
+  expect_zero(mismatch);
+}
+
 TEST(CognitiveRiskCritic, expired_static_validation_and_live_source_fail_open)
 {
   using Critic = bio_nav_fusion::CognitiveRiskCritic;
@@ -1160,7 +1257,7 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   ASSERT_TRUE(addTransform(costmap, refresh_ns, 0.0));
 
   auto fresh = obstacleFixture();
-  auto prior = planningPriorFixture();
+  auto prior = productionV310PriorFixture();
   retimeFresh(fresh, prior, source_ns);
   const Layer::Identity expected{
     fresh.reset_epoch, fresh.recurrent_session_id, fresh.map_version,
@@ -1245,7 +1342,7 @@ TEST(CognitiveRiskCritic, obstacle_callback_advances_before_prior_pairing_like_l
 
   auto newer = obstacleFixture();
   newer.sequence = 9;
-  auto newer_prior = planningPriorFixture();
+  auto newer_prior = productionV310PriorFixture();
   newer_prior.sequence = 9;
   newer_prior.local_direction_source_sequence = 9;
   retimeFresh(newer, newer_prior, newer_ns);
@@ -1259,7 +1356,7 @@ TEST(CognitiveRiskCritic, obstacle_callback_advances_before_prior_pairing_like_l
 
   auto lower = obstacleFixture();
   lower.sequence = 8;
-  auto lower_prior = planningPriorFixture();
+  auto lower_prior = productionV310PriorFixture();
   lower_prior.sequence = 8;
   lower_prior.local_direction_source_sequence = 8;
   retimeFresh(lower, lower_prior, lower_ns);
@@ -1295,7 +1392,7 @@ TEST(CognitiveRiskCritic, same_instance_rebinds_only_on_trusted_monotonic_reset_
   ASSERT_TRUE(addTransform(costmap, reset_ns, 0.0));
 
   auto old_obstacles = obstacleFixture();
-  auto old_prior = planningPriorFixture();
+  auto old_prior = productionV310PriorFixture();
   retimeFresh(old_obstacles, old_prior, old_ns);
 
   Critic critic;
@@ -1307,7 +1404,7 @@ TEST(CognitiveRiskCritic, same_instance_rebinds_only_on_trusted_monotonic_reset_
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
 
   auto reset_obstacles = obstacleFixture();
-  auto reset_prior = planningPriorFixture();
+  auto reset_prior = productionV310PriorFixture();
   reset_obstacles.reset_epoch = 4;
   reset_prior.reset_epoch = 4;
   reset_obstacles.recurrent_session_id = "session-reset";

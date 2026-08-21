@@ -49,7 +49,8 @@ public:
     bool enforce_identity, double maximum_age_s,
     double maximum_ood_probability);
   static std::string validateDirectionPrior(
-    const bio_nav_interfaces::msg::PlanningPrior & prior);
+    const bio_nav_interfaces::msg::PlanningPrior & prior,
+    double prior_age_s = 0.0);
 
 private:
   friend class CognitiveRiskCriticTestPeer;

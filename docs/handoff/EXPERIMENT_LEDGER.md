@@ -726,9 +726,10 @@
   atomically replacing the old state. Old epoch replay, arbitrary identity
   drift, and untrusted pairs remain rejected.
 - Validation: fresh allowed Integration interface + Module3 fusion build PASS
-  at `/tmp/bio_nav_module3_critic_admission.Bzf9rD`; focused package result 35
-  tests / 0 errors / 0 failures / 0 skipped; plugin loader 1/1 PASS; `git diff
-  --check` PASS. Callback tests cover newer-obstacle/lower-prior interleaving,
+  at `/tmp/bio_nav_module3_critic_admission.Bzf9rD`; focused equal-cost result
+  33/33 plus plugin loader 1/1, total 34 focused gtest cases (corrected from the
+  earlier erroneous value of 35); `git diff --check` PASS. Callback tests cover
+  newer-obstacle/lower-prior interleaving,
   duplicate/backward/source regression, first binding, same-instance trusted
   reset, old replay, changed map/route, and untrusted reset. Existing
   validation-time TF, LIVE, repeat-score, moving/rotating, and fail-open cases
@@ -738,5 +739,34 @@
   launched. Live stream ordering across reset remains unverified; obstacle-first
   reset delivery safely waits for a later obstacle publication after the new
   prior is present.
+- Handoff:
+  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
+
+## 2026-08-21 — V6 critic V3.10 component-trust contract repair
+
+- Goal/hypothesis: allow a trusted, matching static-revalidated obstacle pair
+  from the fixed Integration V3.10 runtime to add nonnegative MPPI cost while
+  keeping its intentionally diagnostic context and periodic local direction at
+  zero influence.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `1d977d7c822ef81d6139d082cdade373769bdb35`.
+- Changes: split basic pair admission from context and direction component
+  gates; `context_trusted=false` suppresses novelty/uncertainty without making
+  the pair unhealthy; only the existing strict direction validator enables
+  direction. Basic accepted pairs now support callback admission and monotonic
+  reset rebind. Applied status names `obstacle_applied` and every suppressed
+  component. No Integration/Module2 changes and no `GoalPlanningPrior`
+  subscription were added.
+- Validation: fresh allowed Integration interface + Module3 fusion build PASS
+  at `/tmp/bio_nav_module3_critic_component.gIA7MD`; focused equal-cost 35/35
+  and plugin loader 1/1 PASS, total 36 focused gtest cases; `git diff --check`
+  PASS. Production-shaped V3.10 tests cover context/direction suppression,
+  synthetic trusted-context enablement, stale/untrusted/identity mismatch,
+  both callback orders, monotonic reset rebind, and old-epoch replay rejection.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS graph, active
+  MPPI, Nav2, Isaac, navigation, visual evidence, engineering campaign, or
+  formal qualification was run. Goal-conditioned direction is still not
+  connected to the critic; live status and active-MPPI influence remain
+  unverified.
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
