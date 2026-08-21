@@ -544,8 +544,20 @@ def _pending_graph_transaction(requested_graph):
         LAST_KNOWN_GOOD=2, READY=1)
     coordinator.module2_enabled = False
     coordinator.requests = []
-    coordinator._request_graph_switch = lambda graph, reason, fallback: (
-        coordinator.requests.append((graph.graph_id, reason, fallback)))
+
+    def request_graph(graph, reason, **kwargs):
+        if coordinator.graph_transaction_generation is not None:
+            coordinator.graph_retry_key = coordinator._graph_retry_key_locked()
+            coordinator.graph_retry_due_steady_s = 0.0
+            coordinator.graph_retry_reason = reason
+            coordinator.graph_retry_kind = 'switch'
+            coordinator.graph_reassert_required = True
+            coordinator.graph_coherent = False
+            return
+        coordinator.requests.append(
+            (graph.graph_id, reason, kwargs['fallback']))
+
+    coordinator._request_graph_switch = request_graph
     return coordinator, transaction
 
 
@@ -922,6 +934,47 @@ def _insert_reset_hold(coordinator, generation=2):
                 getattr(coordinator, 'graph_generation', 0)) + 1
 
 
+def _complete_status_reset_for_graph_retry(coordinator, generation=2):
+    """Retire the old graph epoch and invoke status-owned reset completion."""
+
+    with coordinator._route_output_lock():
+        with coordinator._route_state_lock():
+            coordinator.reset_hold_barrier = True
+            coordinator.reset_intent_generation = generation
+            coordinator.reset_event_completed_generation = generation
+            coordinator.reset_generation += 1
+            coordinator.request_id += 1
+            coordinator.graph_generation += 1
+            coordinator.graph_switch_generation += 1
+            coordinator.pending_goal = None
+            coordinator.route_active = False
+            coordinator._set_desired_graph_locked(
+                coordinator.gvg_graph,
+                coordinator.gvg_support,
+                require_reassert=True,
+            )
+            coordinator.graph_coherent = False
+    coordinator._ensure_desired_graph(
+        'simulation reset requires Route Server GVG',
+        allow_reset_reassert=generation,
+    )
+
+
+def _start_inflight_graph_transaction(coordinator, kind):
+    if kind == 'cognitive':
+        graph = Graph('candidate:old', 5, 'map', 0.05, [], [])
+        coordinator._request_graph_switch(
+            graph, 'old cognitive switch', fallback=False)
+        return coordinator.set_graph_client.futures[0]
+    coordinator.pending_goal = None
+    coordinator.route_active = False
+    coordinator.pending_structural_map = _map(wall=True)
+    with coordinator._route_state_lock():
+        coordinator._refresh_structural_intent_locked()
+    coordinator._try_deferred_structural_rebuild()
+    return coordinator.set_graph_client.futures[0]
+
+
 def test_cognitive_export_error_crossing_hold_has_no_status_or_ack(monkeypatch):
     coordinator = _reassert_liveness_coordinator(monkeypatch)
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
@@ -1084,6 +1137,119 @@ def test_completion_owned_gvg_reassert_dispatches_while_hold_is_active(
     assert coordinator.graph_reassert_required is False
 
 
+@pytest.mark.parametrize('kind', ('cognitive', 'structural'))
+@pytest.mark.parametrize('old_success', (False, True))
+def test_reset_completion_retry_survives_inflight_graph_settle(
+    monkeypatch, kind, old_success,
+):
+    if kind == 'structural':
+        coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    else:
+        coordinator = _reassert_liveness_coordinator(monkeypatch)
+    old = _start_inflight_graph_transaction(coordinator, kind)
+
+    _complete_status_reset_for_graph_retry(coordinator, generation=2)
+
+    assert len(coordinator.set_graph_client.calls) == 1
+    assert coordinator.graph_retry_switch_context[5] == 2
+    assert coordinator.graph_retry_switch_context[7] == 2
+    assert coordinator.graph_retry_switch_context[8] == (
+        coordinator._graph_retry_key_locked())
+    old.finish(success=old_success)
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 2
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 2
+    coordinator.set_graph_client.futures[1].finish(success=True)
+
+    assert coordinator.graph.graph_id == 'physical'
+    assert coordinator.graph_coherent is True
+    assert coordinator.graph_retry_due_steady_s is None
+
+
+@pytest.mark.parametrize('kind', ('cognitive', 'structural'))
+def test_reset_completion_retry_survives_hung_and_late_success(
+    monkeypatch, kind,
+):
+    if kind == 'structural':
+        coordinator, _rebuilt = _structural_liveness_coordinator(monkeypatch)
+    else:
+        coordinator = _reassert_liveness_coordinator(monkeypatch)
+    old = _start_inflight_graph_transaction(coordinator, kind)
+    _complete_status_reset_for_graph_retry(coordinator, generation=2)
+
+    coordinator.steady_s = 12.0
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 2
+    coordinator.set_graph_client.futures[1].finish(success=True)
+    assert coordinator.graph_coherent is True
+
+    old.finish(success=True)
+    assert coordinator.graph_coherent is False
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 3
+    coordinator.set_graph_client.futures[2].finish(success=True)
+    coordinator._graph_reconciliation_tick()
+
+    assert len(coordinator.set_graph_client.calls) == 3
+    assert coordinator.graph.graph_id == 'physical'
+    assert coordinator.graph_coherent is True
+
+
+def test_reset_completion_merges_existing_same_key_retry_without_storm(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+    coordinator.set_graph_client.ready = False
+
+    coordinator._ensure_desired_graph(
+        'reset GVG first', allow_reset_reassert=2)
+    due = coordinator.graph_retry_due_steady_s
+    coordinator._ensure_desired_graph(
+        'reset GVG duplicate', allow_reset_reassert=2)
+
+    assert coordinator.graph_retry_due_steady_s == due
+    assert coordinator.graph_retry_switch_context[5] == 2
+    assert coordinator.set_graph_client.calls == []
+    coordinator.set_graph_client.ready = True
+    coordinator.steady_s = due
+    coordinator._graph_reconciliation_tick()
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 1
+
+
+def test_newer_reset_completion_replaces_old_retry_authority(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+    coordinator.set_graph_client.ready = False
+    coordinator._ensure_desired_graph(
+        'reset GVG generation 2', allow_reset_reassert=2)
+    old_context = coordinator.graph_retry_switch_context
+
+    coordinator.reset_generation += 1
+    coordinator.reset_intent_generation = 3
+    coordinator.reset_event_completed_generation = 3
+    coordinator.graph_reassert_required = True
+    coordinator._ensure_desired_graph(
+        'reset GVG generation 3', allow_reset_reassert=3)
+
+    assert coordinator.graph_retry_switch_context != old_context
+    assert coordinator.graph_retry_switch_context[5] == 3
+    assert coordinator.graph_retry_switch_context[7] == 2
+    coordinator.set_graph_client.ready = True
+    coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 1
+
+
 def test_same_generation_release_allows_fresh_graph_dispatch(monkeypatch):
     coordinator = _reassert_liveness_coordinator(monkeypatch)
     coordinator.reset_hold_barrier = True
@@ -1147,6 +1313,72 @@ def test_old_fallback_request_and_status_are_silent_after_hold(monkeypatch):
     assert coordinator.primary_fallback_used is False
     assert coordinator.set_graph_client.calls == []
     assert statuses == []
+
+
+@pytest.mark.parametrize('result_kind', ('rejected', 'exception'))
+def test_old_fallback_failure_callback_is_silent_after_hold(
+    monkeypatch, result_kind,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+    coordinator._request_graph_switch(
+        coordinator.gvg_graph, 'old fallback GVG', fallback=True)
+    old = coordinator.set_graph_client.futures[0]
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = None
+
+    if result_kind == 'exception':
+        old.finish(error=RuntimeError('old fallback failed'))
+    else:
+        old.finish(success=False)
+
+    assert statuses == []
+
+
+def test_completion_owned_current_failure_status_is_allowed_during_hold(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+
+    coordinator._ensure_desired_graph(
+        'reset GVG', allow_reset_reassert=2)
+    coordinator.set_graph_client.futures[0].finish(success=False)
+
+    assert len(statuses) == 1
+    assert 'cognitive graph fallback: reset GVG' in statuses[0][1]
+
+
+def test_old_stale_success_status_is_silent_after_reset_release(monkeypatch):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+    coordinator._request_graph_switch(
+        coordinator.gvg_graph, 'old fallback GVG', fallback=True)
+    old = coordinator.set_graph_client.futures[0]
+
+    _insert_reset_hold(coordinator, generation=2)
+    with coordinator._route_state_lock():
+        coordinator.reset_event_completed_generation = 2
+        coordinator.reset_hold_barrier = False
+        coordinator._set_desired_graph_locked(
+            coordinator.gvg_graph,
+            coordinator.gvg_support,
+            require_reassert=True,
+        )
+    old.finish(success=True)
+
+    assert statuses == []
+    assert coordinator.graph_coherent is False
 
 
 def test_reassert_service_unavailable_rejection_backoff_and_no_storm(monkeypatch):

@@ -1059,6 +1059,76 @@ class RouteCoordinator:
         self.graph_retry_kind = "switch"
         self.graph_retry_switch_context = None
 
+    def _graph_switch_context_is_current_reset_reassert_locked(
+        self, switch_context
+    ) -> bool:
+        """Recognize one completion-owned retry for the current reset/GVG."""
+
+        if switch_context is None or len(switch_context) < 9:
+            return False
+        (
+            _detail,
+            _fallback,
+            _feedback,
+            _candidate,
+            _validation,
+            reset_reassert,
+            expected_input,
+            expected_reset_generation,
+            desired_key,
+        ) = switch_context
+        graph = getattr(self, "desired_graph", getattr(self, "gvg_graph", None))
+        return bool(
+            graph is not None
+            and int(expected_reset_generation)
+            == int(getattr(self, "reset_generation", 0))
+            and desired_key == self._graph_retry_key_locked()
+            and expected_input == self._route_input_generation_locked()
+            and self._reset_reassert_is_current_locked(reset_reassert, graph)
+        )
+
+    def _merge_graph_retry_switch_context_locked(
+        self, key, switch_context
+    ):
+        """Keep the current reset-completion authority over ordinary callbacks."""
+
+        existing = (
+            getattr(self, "graph_retry_switch_context", None)
+            if getattr(self, "graph_retry_key", None) == key
+            else None
+        )
+        existing_is_reset = (
+            self._graph_switch_context_is_current_reset_reassert_locked(existing)
+        )
+        incoming_is_reset = (
+            self._graph_switch_context_is_current_reset_reassert_locked(
+                switch_context
+            )
+        )
+        if existing_is_reset and not incoming_is_reset:
+            return existing
+        if incoming_is_reset:
+            return switch_context
+        return existing if switch_context is None else switch_context
+
+    def _graph_switch_output_is_current_locked(
+        self, expected_input: RouteInputGeneration | None, graph, switch_context
+    ) -> bool:
+        """Fence callback output to its route epoch or current reset completion."""
+
+        if (
+            expected_input is not None
+            and self._route_input_is_current_locked(expected_input)
+        ):
+            return True
+        return bool(
+            self._graph_switch_context_is_current_reset_reassert_locked(
+                switch_context
+            )
+            and self._graph_identity(graph)
+            == self._graph_identity(getattr(self, "gvg_graph", graph))
+        )
+
     def _refresh_structural_intent_locked(
         self,
     ) -> StructuralRebuildIntent | None:
@@ -1132,6 +1202,11 @@ class RouteCoordinator:
     ) -> None:
         now_s = self._steady_now() if now_steady_s is None else float(now_steady_s)
         key = self._graph_retry_key_locked()
+        self.graph_reassert_required = True
+        self.graph_coherent = False
+        switch_context = self._merge_graph_retry_switch_context_locked(
+            key, switch_context
+        )
         if getattr(self, "graph_retry_key", None) != key:
             attempt = 0
         else:
@@ -1145,8 +1220,6 @@ class RouteCoordinator:
         self.graph_retry_reason = str(reason)
         self.graph_retry_kind = str(kind)
         self.graph_retry_switch_context = switch_context
-        self.graph_reassert_required = True
-        self.graph_coherent = False
 
     def _register_graph_transaction_future(
         self, generation: GraphSwitchGeneration, future, kind: str
@@ -1258,6 +1331,9 @@ class RouteCoordinator:
                     candidate,
                     validation,
                     reset_reassert,
+                    expected_input,
+                    _expected_reset_generation,
+                    _desired_key,
                 ) = switch_context
                 self._request_graph_switch(
                     graph,
@@ -1266,6 +1342,7 @@ class RouteCoordinator:
                     feedback=feedback,
                     candidate=candidate,
                     expected_validation=validation,
+                    expected_input=expected_input,
                     allow_reset_reassert=reset_reassert,
                 )
 
@@ -2036,10 +2113,6 @@ class RouteCoordinator:
         expected_input: RouteInputGeneration | None = None,
         allow_reset_reassert: int | None = None,
     ) -> None:
-        switch_context = (
-            str(detail), bool(fallback), feedback, candidate,
-            expected_validation, allow_reset_reassert,
-        )
         with self._route_state_lock():
             if expected_input is None:
                 expected_input = self._route_input_generation_locked()
@@ -2067,17 +2140,32 @@ class RouteCoordinator:
             ):
                 return
             self._set_desired_graph_locked(graph, support=None)
+            desired_key = self._graph_retry_key_locked()
+            switch_context = (
+                str(detail), bool(fallback), feedback, candidate,
+                expected_validation, allow_reset_reassert, expected_input,
+                invocation_reset_generation, desired_key,
+            )
             retry_waiting = (
                 getattr(self, "graph_retry_key", None)
-                == self._graph_retry_key_locked()
+                == desired_key
                 and getattr(self, "graph_retry_due_steady_s", None) is not None
             )
             if retry_waiting:
+                self.graph_retry_switch_context = (
+                    self._merge_graph_retry_switch_context_locked(
+                        desired_key, switch_context
+                    )
+                )
                 return
             if getattr(self, "graph_transaction_generation", None) is not None:
                 # Consume and compensate the in-flight request before starting
                 # another Route Server transaction.
-                self.graph_coherent = False
+                self._schedule_graph_retry_locked(
+                    detail,
+                    immediate=True,
+                    switch_context=switch_context,
+                )
                 return
             self.graph_coherent = False
             self.graph_switch_generation = int(
@@ -2255,13 +2343,14 @@ class RouteCoordinator:
                 future.add_done_callback(
                     lambda completed: self._finish_cognitive_graph_switch(
                         completed, graph, support, detail, fallback, generation,
-                        feedback, candidate,
+                        feedback, candidate, switch_context,
                     )
                 )
     def _finish_cognitive_graph_switch(
         self, future, graph, support, detail: str, fallback: bool,
         generation: GraphSwitchGeneration | None = None,
         feedback: CognitiveGraphFeedback | None = None, candidate=None,
+        switch_context=None,
     ) -> None:
         # Always consume a completed SetRouteGraph response: success changes
         # Route Server state even when reset/preemption made this callback stale.
@@ -2285,7 +2374,7 @@ class RouteCoordinator:
             )
             transaction_context = (
                 getattr(self, "graph_transaction_switch_context", None)
-                if transaction_matches else None
+                if transaction_matches else switch_context
             )
             self._clear_graph_transaction_future_locked(generation, future)
             if transaction_matches:
@@ -2317,6 +2406,12 @@ class RouteCoordinator:
                 and (
                     feedback is None
                     or not self._reset_barrier_is_held()
+                )
+            )
+            retain_reset_context = bool(
+                commit
+                and self._graph_switch_context_is_current_reset_reassert_locked(
+                    transaction_context
                 )
             )
             if commit:
@@ -2352,6 +2447,14 @@ class RouteCoordinator:
                 self.graph_coherent = True
                 self._clear_graph_retry_locked()
                 output_generation = self._route_input_generation_locked()
+                if retain_reset_context:
+                    self.graph_retry_key = self._graph_retry_key_locked()
+                    self.graph_retry_switch_context = (
+                        *transaction_context[:6],
+                        output_generation,
+                        int(getattr(self, "reset_generation", 0)),
+                        self.graph_retry_key,
+                    )
                 if self.pending_goal is not None:
                     cancel_handle = self.navigation_goal_handle
                     self.navigation_goal_handle = None
@@ -2391,29 +2494,38 @@ class RouteCoordinator:
             if not current_failure:
                 self._try_deferred_structural_rebuild()
                 return
+            publish_failure = False
             with self._route_output_lock():
                 with self._route_state_lock():
-                    if (
-                        feedback is not None
-                        and not self._route_input_is_current_locked(
-                            output_generation
-                        )
-                    ):
-                        return
-                    active_graph = self.graph
-                self._publish_structural_status(
-                    self.StructuralGraphStatus.LAST_KNOWN_GOOD,
-                    f"cognitive graph {'fallback' if fallback else 'rejected'}: {detail}",
-                )
-                if feedback is not None and (generation is None or generation_current):
-                    self._publish_graph_validation(
-                        replace(
-                            feedback,
-                            validated_graph_id=str(active_graph.graph_id),
-                            validated_graph_revision=int(active_graph.revision),
-                        ), accepted=False,
-                        reason=f"set_route_graph_rejected: {detail}",
+                    callback_input = (
+                        transaction_context[6]
+                        if transaction_context is not None
+                        and len(transaction_context) >= 9
+                        else output_generation
                     )
+                    publish_failure = self._graph_switch_output_is_current_locked(
+                        callback_input, graph, transaction_context
+                    )
+                    active_graph = self.graph if publish_failure else None
+                if publish_failure:
+                    self._publish_structural_status(
+                        self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                        f"cognitive graph {'fallback' if fallback else 'rejected'}: {detail}",
+                    )
+                    if feedback is not None and (
+                        generation is None or generation_current
+                    ):
+                        self._publish_graph_validation(
+                            replace(
+                                feedback,
+                                validated_graph_id=str(active_graph.graph_id),
+                                validated_graph_revision=int(active_graph.revision),
+                            ), accepted=False,
+                            reason=f"set_route_graph_rejected: {detail}",
+                        )
+            if not publish_failure:
+                self._try_deferred_structural_rebuild()
+                return
             if current_failure and not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once(
                     detail,
@@ -2429,7 +2541,15 @@ class RouteCoordinator:
         if not commit:
             with self._route_output_lock():
                 with self._route_state_lock():
-                    publish_stale = not self._reset_barrier_is_held()
+                    callback_input = (
+                        transaction_context[6]
+                        if transaction_context is not None
+                        and len(transaction_context) >= 9
+                        else output_generation
+                    )
+                    publish_stale = self._graph_switch_output_is_current_locked(
+                        callback_input, graph, transaction_context
+                    )
                 if publish_stale:
                     self._publish_structural_status(
                         self.StructuralGraphStatus.LAST_KNOWN_GOOD,
@@ -2503,15 +2623,6 @@ class RouteCoordinator:
                     and expected_input != self._route_input_generation_locked()
                 )
                 or (self._reset_barrier_is_held() and not reset_reassert)
-            ):
-                return
-            if getattr(self, "graph_transaction_generation", None) is not None:
-                self._schedule_graph_retry_locked(reason, immediate=True)
-                return
-            if (
-                getattr(self, "graph_retry_key", None)
-                == self._graph_retry_key_locked()
-                and getattr(self, "graph_retry_due_steady_s", None) is not None
             ):
                 return
             fallback = self._graph_identity(graph) == self._graph_identity(

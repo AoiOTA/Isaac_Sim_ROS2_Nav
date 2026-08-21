@@ -1434,3 +1434,36 @@
   closure remains pending; `yaw_scale=0.9294` and RF2O-off are unchanged.
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
+## 2026-08-22 — V6 reset-completion graph-retry authority
+
+- Goal: preserve the current completion-owned GVG reassert across an old
+  cognitive/structural graph transaction, same-key retry, timeout, or late
+  callback, while preventing old graph callbacks from emitting status into a
+  held or released fresh reset epoch.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `819e519484a1b837ca2817465edabe6cda6d9b41`.
+- Changes: retry context now binds completion token, route-input generation,
+  coordinator reset generation, and desired retry key; current completion
+  authority wins same-key merges and newer reset generations replace it;
+  successful held reassert retains refreshed authority for one late-success
+  compensation; failure/stale-success output uses the same final route-epoch
+  fence, with explicit current reset completion as the only HOLD exception.
+- Deterministic coverage: cognitive/structural old success and rejection,
+  timeout plus late success, existing same-key retry, newer reset invalidation,
+  duplicate no-storm, old fallback rejection/exception during HOLD, current
+  completion failure positive, stale success after release, and 100 repeated
+  runtime-edge HOLD crossings.
+- Validation: focused graph adapter **76 passed**; complete route package **159
+  passed, 1 skipped** (`pxr` unavailable); associated reset/gate/mode/
+  benchmark/reset-receipt/IMU/localization/EKF **203 passed**; fresh isolated
+  build/test PASS at `/tmp/v6_route_retry_build.4tnZkN` with install
+  `/tmp/v6_route_retry_install.tTUkd7` and log
+  `/tmp/v6_route_retry_log.8PfwFz`; colcon result **160 tests, 0 errors, 0
+  failures, 1 skipped**; changed-file `py_compile` and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
+  visual evidence, engineering campaign, or formal qualification was run.
+- Remaining risk/next: run the planned fresh active-reset live review to verify
+  actual executor/DDS ordering, exactly-once GVG compensation, zero old output
+  and command during HOLD, and fresh-goal recovery.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.

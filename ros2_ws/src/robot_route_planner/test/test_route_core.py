@@ -1533,14 +1533,14 @@ def _runtime_manager_for_hold_race() -> RuntimeEdgeManager:
     )
 
 
-def test_runtime_edge_77_observation_crossing_hold_is_discarded_for_40_rounds() -> None:
+def test_runtime_edge_77_observation_crossing_hold_is_discarded_for_100_rounds() -> None:
     message = SimpleNamespace(
         edge_id=77,
         observed_clear=False,
         planning_failed=True,
         occupied_ahead=True,
     )
-    for _round in range(40):
+    for _round in range(100):
         coordinator = _reset_route_coordinator(active=False)
         coordinator.runtime = _runtime_manager_for_hold_race()
         entered = threading.Barrier(2)

@@ -375,3 +375,44 @@ ordering, zero old-epoch output and command through HOLD, and fresh-goal recover
 - Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
   navigation, visual evidence, engineering campaign, or formal qualification
   was run. The fresh active-reset live rerun remains required.
+
+## Reset-completion graph-retry authority amendment
+
+- Start HEAD: `819e519484a1b837ca2817465edabe6cda6d9b41`; the prior HOLD dispatch,
+  route-retirement, reset-stop, benchmark, and IMU commits remain retained.
+- A retry switch context now binds its completion token to the captured
+  `RouteInputGeneration`, coordinator reset generation, and desired retry key.
+  When reset completion encounters an in-flight cognitive/structural graph
+  transaction or an existing same-key retry, that current completion-owned
+  context is merged instead of discarded. It outranks ordinary or stale
+  callback contexts for the same generation/key; a newer HOLD/reset replaces
+  it. Backoff and same-key duplicates remain no-storm.
+- A successful held GVG reassert retains a refreshed completion context so a
+  later old success that changes Route Server authority can schedule exactly
+  one compensating GVG reassert. Old success, rejection, exception, timeout,
+  and late settlement cannot clear the current completion context. Retry
+  dispatch reuses the captured route-input fence and token.
+- Graph-switch failure and stale-success status output now shares a final
+  route-input generation check. An old fallback rejection/exception is silent
+  after HOLD, and old stale success remains silent after release. Only an
+  explicitly current completion-owned GVG context may authorize failure output
+  during HOLD.
+- Deterministic coverage includes cognitive and structural in-flight success/
+  rejection, timeout plus late success, existing same-key retry, newer reset
+  invalidation, no-storm dispatch, old fallback rejection/exception, current
+  reset-completion failure, and old success after release. The runtime-edge
+  HOLD crossing race now repeats for 100 rounds.
+- Validation: focused graph adapter **76 passed**; complete source-first
+  `robot_route_planner` and fresh installed colcon test each **159 passed, 1
+  skipped** (existing optional `pxr` unavailable); associated reset/gate/mode/
+  benchmark/reset-receipt/IMU/localization/EKF set **203 passed**. Fresh
+  isolated package build/test used `/tmp/v6_route_retry_build.4tnZkN`, install
+  `/tmp/v6_route_retry_install.tTUkd7`, and log
+  `/tmp/v6_route_retry_log.8PfwFz`; `colcon test-result` reported **160 tests,
+  0 errors, 0 failures, 1 skipped**. Changed-file `py_compile` and
+  `git diff --check` passed.
+- Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+  navigation, visual evidence, engineering campaign, or formal qualification
+  was run. The planned fresh active-reset live rerun remains required to
+  verify executor/DDS ordering, observed GVG reconciliation, zero old-epoch
+  output/command through HOLD, and fresh-goal recovery.
