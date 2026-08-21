@@ -229,3 +229,68 @@ resume motion.
   navigation, visual evidence, engineering campaign, or formal qualification
   was run. Active reset plus live structural-change timing remains pending the
   planned runtime review.
+
+## Active-reset HOLD-intent amendment after live FAIL
+
+- Start HEAD: `b2523a812c1fad832b9aa87622e30b60b8681015`; all prior
+  reset-seed, ResetStopGate, benchmark STOP evidence, route concurrency, and
+  deferred-structural-rebuild work is retained.
+- Triggering evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_20260821T190834Z`.
+  The run is **ENGINEERING FAIL / NOT FORMAL**: StopGate entered generation-2
+  HOLD first; wheel reset followed by about 59 ms, but the old Nav2 action
+  terminal was not observed until about 186 ms and RouteCoordinator did not
+  finish its event-only retirement until about 602 ms. This amendment does not
+  reinterpret or promote that failed run.
+- RouteCoordinator now subscribes to the existing reliable/transient-local
+  `/simulation/reset_stop_gate/status` JSON. A strictly valid higher-generation
+  `held=true, reason=hold` is the reset-begin authority: it fences every old
+  route/action callback generation, retires tracker/prior/runtime/structural
+  and graph intent, cancels the captured action handle, and emits at most one
+  active-route Bool/JSON abort terminal with `reason=simulation_reset` and the
+  new reset epoch. A released startup snapshot only synchronizes baseline
+  generation and emits no terminal.
+- The same-generation `/simulation/reset_event` is completion, not a second
+  reset begin: it publishes the empty runtime snapshot and starts the existing
+  desired-GVG reconciliation without a second terminal or epoch bump. A goal
+  remains rejected while HOLD is active; same-generation release opens the
+  barrier only after completion. Missing completion stays fail closed. Exact
+  duplicates are idempotent; malformed, incoherent, backward, or conflicting
+  status remains held and is logged. The legacy event-only path is retained for
+  a coordinator fixture/process with no status-backed reset intent.
+- Route context/cost, DynamicEdges/ComputeRoute dispatch, canonical route,
+  progress/lookahead/goal-update, and NavigateToPose dispatch share the terminal
+  output lock at their final generation check. Therefore HOLD cannot retire a
+  request between its last check and an old-request publication or dispatch.
+  Runtime/structural/cognitive route inputs and timers are ignored while held.
+- Mapping, diagnostic, and R2C launch topology is unchanged; this patch neither
+  changes ResetServiceBridge event order nor adds a reset acknowledgement.
+  Reliable/transient-local status is the configured interface, not a claim of
+  formal DDS delivery or executor-order proof.
+
+Validation actually run:
+
+- Source-first/no-cache complete `robot_route_planner/test`: **132 passed,
+  1 skipped** (existing `pxr` import unavailable).
+- Associated source-first ResetStopGate, ActivationGate, mode/Nav profile, and
+  MotionBenchmark regression: **98 passed**; combined rerun: **230 passed,
+  1 skipped**.
+- Changed-file `py_compile` and `git diff --check`: PASS.
+- Fresh isolated `robot_route_planner` build: PASS at
+  `/tmp/v6_route_hold_build.HMD46a`, install
+  `/tmp/v6_route_hold_install.PohSre`, log
+  `/tmp/v6_route_hold_log.74aLob`. Fresh isolated `colcon test`: **133 tests,
+  0 errors, 0 failures, 1 skipped**, log
+  `/tmp/v6_route_hold_test_log.95Ce9m`.
+- Unit coverage includes startup released baseline, immediate active HOLD abort,
+  status/event/release idempotence, release-before-event fail-closed behavior,
+  no-event permanent HOLD, rejected goals, late accept cancellation, late result
+  silence, both HOLD/Nav-terminal lock orders, malformed/backward status, no old
+  timer/output, legacy event fallback, and a fresh post-release goal.
+
+Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+navigation, visual evidence, engineering campaign, or formal qualification was
+run for this amendment. The required next step is a fresh active-reset live
+rerun from the resulting commit; executor timing, cancellation completion,
+observed status/event order, HOLD displacement, and fresh-goal recovery remain
+runtime-pending.

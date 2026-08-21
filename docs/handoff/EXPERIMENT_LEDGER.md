@@ -750,6 +750,42 @@
   active-reset review before making an engineering-runtime claim.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
+## 2026-08-22 — V6 active-reset HOLD-intent repair
+
+- Goal/hypothesis: close the active-reset live failure where RouteCoordinator
+  retained the old request until the later Empty reset event; the existing
+  StopGate HOLD status should fence and retire route intent first.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `b2523a812c1fad832b9aa87622e30b60b8681015`.
+- Triggering evidence/result:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_20260821T190834Z`;
+  generation-2 HOLD preceded wheel reset by about 59 ms, old Nav terminal by
+  about 186 ms, and event-only RouteCoordinator completion by about 602 ms.
+  Original run remains **ENGINEERING FAIL / NOT FORMAL**.
+- Changes: RouteCoordinator consumes strict reliable/transient-local StopGate
+  status; higher HOLD performs one reset begin/active abort/cancellation and
+  fences old callback/output/dispatch state; same-generation Empty event only
+  completes runtime/GVG reset work; same-generation release opens the goal
+  barrier only after completion. Missing event, malformed/backward/conflicting
+  status, and early release stay fail closed. Startup released baseline and
+  legacy event-only behavior remain non-terminal/compatible respectively.
+- Commands/results: source-first complete route pytest **132 passed, 1
+  skipped** (`pxr` unavailable); associated gate/activation/mode/profile/
+  benchmark pytest **98 passed**; combined rerun **230 passed, 1 skipped**;
+  changed-file `py_compile` and `git diff --check` PASS. Fresh isolated package
+  build PASS at `/tmp/v6_route_hold_build.HMD46a` with install
+  `/tmp/v6_route_hold_install.PohSre` and log
+  `/tmp/v6_route_hold_log.74aLob`; isolated `colcon test` **133 tests, 0
+  errors, 0 failures, 1 skipped**, log
+  `/tmp/v6_route_hold_test_log.95Ce9m`.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation or
+  qualification run was launched. No DDS/executor/cancellation timing guarantee
+  is claimed from unit evidence.
+- Blocker/next: active-reset live rerun remains required to prove one abort at
+  HOLD, zero old-request output/motion through HOLD, same-generation completion
+  and release, and a successful fresh post-release goal.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 IMU duration, goal-MCAP, and installed-resource closure
 
 - Goal: close the remaining evidence-contract paths that could promote a

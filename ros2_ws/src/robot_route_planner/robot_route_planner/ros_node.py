@@ -135,6 +135,66 @@ def navigation_result_succeeded(wrapped) -> bool:
 
 
 @dataclass(frozen=True)
+class ResetStopGateStatus:
+    """One validated generation-fenced ResetStopGate state snapshot."""
+
+    generation: int
+    held: bool
+    eligible_generation: int | None
+    reason: str
+
+
+def parse_reset_stop_gate_status(payload: str) -> ResetStopGateStatus:
+    """Strictly decode the transient-local ResetStopGate status contract."""
+
+    try:
+        document = json.loads(payload)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise ValueError(f"invalid reset stop gate JSON: {error}") from error
+    if not isinstance(document, dict):
+        raise ValueError("reset stop gate status must be a JSON object")
+    if set(document) != {
+        "generation", "held", "eligible_generation", "reason"
+    }:
+        raise ValueError("reset stop gate status fields do not match contract")
+    generation = document.get("generation")
+    held = document.get("held")
+    eligible = document.get("eligible_generation")
+    reason = document.get("reason")
+    if (
+        isinstance(generation, bool)
+        or not isinstance(generation, int)
+        or generation < 0
+        or not isinstance(held, bool)
+        or not isinstance(reason, str)
+        or not reason
+        or (
+            eligible is not None
+            and (
+                isinstance(eligible, bool)
+                or not isinstance(eligible, int)
+                or eligible != generation
+            )
+        )
+    ):
+        raise ValueError("invalid reset stop gate status fields")
+    valid_state = (
+        (reason == "hold" and held and eligible is None)
+        or (reason == "reset_complete" and held and eligible == generation)
+        or (reason in {"initialized", "closed"} and held and eligible is None)
+        or (
+            reason.startswith("released:")
+            and len(reason) > len("released:")
+            and not held
+            and eligible is None
+        )
+    )
+    if not valid_state:
+        raise ValueError("incoherent reset stop gate status state")
+    return ResetStopGateStatus(generation, held, eligible, reason)
+
+
+@dataclass(frozen=True)
 class CostmapSnapshot:
     """Immutable geometry and values from one live Nav2 global costmap."""
 
@@ -490,6 +550,15 @@ class RouteCoordinator:
         self.graph_generation = 0
         self.graph_switch_generation = 0
         self.reset_generation = 0
+        # Navigation starts fail closed until the transient-local gate status
+        # establishes a released baseline.  A higher-generation HOLD retires
+        # route intent before the later Empty reset event can be delivered.
+        self.reset_status_generation: int | None = None
+        self.reset_status_snapshot: ResetStopGateStatus | None = None
+        self.reset_intent_generation: int | None = None
+        self.reset_event_completed_generation: int | None = None
+        self.reset_release_seen_generation: int | None = None
+        self.reset_hold_barrier = True
         self.structural_generation = 0
         self.desired_graph_generation = 0
         self.desired_graph = self.gvg_graph
@@ -730,6 +799,12 @@ class RouteCoordinator:
             self._on_reset_event,
             qos,
         )
+        node.create_subscription(
+            String,
+            "/simulation/reset_stop_gate/status",
+            self._on_reset_stop_gate_status,
+            qos_latched,
+        )
         if self.cognitive_graph_mode != "gvg":
             node.create_subscription(
                 CognitivePlaceGraphCandidate,
@@ -796,6 +871,11 @@ class RouteCoordinator:
             lock = threading.RLock()
             self._terminal_lock = lock
         return lock
+
+    def _reset_barrier_is_held(self) -> bool:
+        """Return whether route intent is fenced by ResetStopGate authority."""
+
+        return bool(getattr(self, "reset_hold_barrier", False))
 
     @staticmethod
     def _graph_identity(graph) -> tuple[str, int]:
@@ -1207,9 +1287,10 @@ class RouteCoordinator:
         self, generation: RouteCallbackGeneration | None
     ) -> bool:
         if generation is None:
-            return True
+            return not self._reset_barrier_is_held()
         return (
-            self.pending_goal is not None
+            not self._reset_barrier_is_held()
+            and self.pending_goal is not None
             and generation == self._route_callback_generation()
         )
 
@@ -1396,49 +1477,177 @@ class RouteCoordinator:
         if result_pub is not None:
             result_pub.publish(result)
 
-    def _on_reset_event(self, _message) -> None:
+    def _begin_simulation_reset_locked(self):
+        """Retire old intent and advance the reset epoch exactly once."""
+
+        identity = self.cognitive_graph_identity
+        was_active, old_request_id, _old_goal, old_handle = (
+            self._retire_active_route_for_reset()
+        )
+        self.reset_generation = int(getattr(self, "reset_generation", 0)) + 1
+        self.structural_generation = int(
+            getattr(self, "structural_generation", 0)
+        ) + 1
+        self.cognitive_graph_identity = CognitiveGraphIdentity(
+            identity.reset_epoch + 1,
+            '',
+            identity.map_version,
+            '',
+            0,
+            self.gvg_graph.graph_id,
+            self.gvg_graph.revision,
+            '',
+        )
+        self.cognitive_graph_last_sequence = 0
+        self.cognitive_graph_feedback_active = None
+        self.cognitive_graph_feedback_pending = None
+        self.cognitive_feedback_sequences = {}
+        self.cognitive_validation_terminal = set()
+        self.cognitive_outcome_terminal = set()
+        self.pending_reroute_outcome = None
+        self.cognitive_reroute_revision = 0
+        self.primary_fallback_used = False
+        self._set_desired_graph_locked(
+            self.gvg_graph,
+            getattr(self, "gvg_support", getattr(self, "support", None)),
+            require_reassert=True,
+        )
+        # Route Server authority is not coherent until completion dispatches
+        # the generation-fenced GVG reassertion.
+        self.graph_coherent = False
+        return (
+            was_active,
+            old_request_id,
+            old_handle,
+            int(self.cognitive_graph_identity.reset_epoch),
+        )
+
+    def _publish_reset_completion(
+        self, expected_generation: int | None
+    ) -> None:
+        """Publish fresh-epoch empty state and start GVG reconciliation."""
+
+        with self._route_output_lock():
+            if expected_generation is not None:
+                with self._route_state_lock():
+                    if (
+                        getattr(self, "reset_intent_generation", None)
+                        != expected_generation
+                        or getattr(
+                            self, "reset_event_completed_generation", None
+                        )
+                        != expected_generation
+                    ):
+                        return
+            try:
+                self._publish_runtime_states(graph=self.gvg_graph)
+            except Exception as error:
+                node = getattr(self, "node", None)
+                if node is not None:
+                    node.get_logger().warning(
+                        f"reset runtime-edge empty snapshot failed: {error}"
+                    )
+                if (
+                    hasattr(self, "StructuralGraphStatus")
+                    and hasattr(self, "status_pub")
+                ):
+                    self._publish_structural_status(
+                        self.StructuralGraphStatus.LAST_KNOWN_GOOD,
+                        f"reset runtime-edge empty snapshot failed: {error}",
+                    )
+            self._ensure_desired_graph(
+                "simulation reset requires Route Server GVG"
+            )
+
+    def _fail_closed_reset_status(self, detail: str) -> None:
+        with self._route_state_lock():
+            self.reset_hold_barrier = True
+        self.node.get_logger().error(
+            f"reset stop gate status rejected; route goals held: {detail}"
+        )
+
+    def _on_reset_stop_gate_status(self, message) -> None:
+        """Retire active route intent at HOLD, before reset completion arrives."""
+
+        try:
+            status = parse_reset_stop_gate_status(str(message.data))
+        except (AttributeError, ValueError) as error:
+            self._fail_closed_reset_status(str(error))
+            return
+
+        old_handle = None
+        terminal = None
+        failure = None
         with self._route_output_lock():
             with self._route_state_lock():
-                identity = self.cognitive_graph_identity
-                was_active, old_request_id, _old_goal, old_handle = (
-                    self._retire_active_route_for_reset()
-                )
-                self.reset_generation = int(
-                    getattr(self, "reset_generation", 0)
-                ) + 1
-                self.structural_generation = int(
-                    getattr(self, "structural_generation", 0)
-                ) + 1
-                self.cognitive_graph_identity = CognitiveGraphIdentity(
-                    identity.reset_epoch + 1,
-                    '',
-                    identity.map_version,
-                    '',
-                    0,
-                    self.gvg_graph.graph_id,
-                    self.gvg_graph.revision,
-                    '',
-                )
-                self.cognitive_graph_last_sequence = 0
-                self.cognitive_graph_feedback_active = None
-                self.cognitive_graph_feedback_pending = None
-                self.cognitive_feedback_sequences = {}
-                self.cognitive_validation_terminal = set()
-                self.cognitive_outcome_terminal = set()
-                self.pending_reroute_outcome = None
-                self.cognitive_reroute_revision = 0
-                self.primary_fallback_used = False
-                self._set_desired_graph_locked(
-                    self.gvg_graph,
-                    getattr(self, "gvg_support", getattr(self, "support", None)),
-                    require_reassert=True,
-                )
-                # A reset must reassert Route Server authority even when the local
-                # object already says GVG.  An older in-flight transaction keeps
-                # ownership until timeout/completion, then compensates.
-                self.graph_coherent = False
-                reset_epoch = int(self.cognitive_graph_identity.reset_epoch)
-            if was_active:
+                seen = getattr(self, "reset_status_generation", None)
+                previous = getattr(self, "reset_status_snapshot", None)
+                if seen is not None and status.generation < int(seen):
+                    self.reset_hold_barrier = True
+                    failure = (
+                        "backward generation "
+                        f"{status.generation} < {int(seen)}"
+                    )
+                elif seen is None and status.reason.startswith("released:"):
+                    # A transient-local released snapshot is the normal startup
+                    # baseline.  It carries no reset terminal of its own.
+                    self.reset_status_generation = status.generation
+                    self.reset_status_snapshot = status
+                    self.reset_hold_barrier = False
+                elif seen is None and status.reason in {"initialized", "closed"}:
+                    self.reset_status_generation = status.generation
+                    self.reset_status_snapshot = status
+                    self.reset_hold_barrier = True
+                elif seen is None or status.generation > int(seen):
+                    if status.reason != "hold":
+                        self.reset_status_generation = status.generation
+                        self.reset_status_snapshot = status
+                        self.reset_hold_barrier = True
+                        failure = (
+                            "higher generation did not begin with HOLD: "
+                            f"generation={status.generation}, reason={status.reason}"
+                        )
+                    else:
+                        self.reset_status_generation = status.generation
+                        self.reset_status_snapshot = status
+                        self.reset_intent_generation = status.generation
+                        self.reset_event_completed_generation = None
+                        self.reset_release_seen_generation = None
+                        self.reset_hold_barrier = True
+                        reset = self._begin_simulation_reset_locked()
+                        was_active, old_request_id, old_handle, reset_epoch = reset
+                        if was_active:
+                            terminal = (old_request_id, reset_epoch)
+                elif status == previous:
+                    # Reliable transient-local delivery may repeat the same
+                    # snapshot.  Exact duplicates are idempotent.
+                    pass
+                elif status.generation == int(seen):
+                    intent = getattr(self, "reset_intent_generation", None)
+                    if intent != status.generation:
+                        self.reset_hold_barrier = True
+                        failure = (
+                            "same-generation transition without reset HOLD: "
+                            f"generation={status.generation}, reason={status.reason}"
+                        )
+                    elif status.reason == "reset_complete":
+                        self.reset_status_snapshot = status
+                        self.reset_hold_barrier = True
+                    elif status.reason.startswith("released:"):
+                        self.reset_status_snapshot = status
+                        self.reset_release_seen_generation = status.generation
+                        self.reset_hold_barrier = (
+                            getattr(self, "reset_event_completed_generation", None)
+                            != status.generation
+                        )
+                    else:
+                        self.reset_hold_barrier = True
+                        failure = (
+                            "conflicting same-generation reset status: "
+                            f"generation={status.generation}, reason={status.reason}"
+                        )
+            if terminal is not None:
+                old_request_id, reset_epoch = terminal
                 self._publish_route_terminal_pair(
                     success=False,
                     request_id=old_request_id,
@@ -1447,22 +1656,62 @@ class RouteCoordinator:
                     reset_epoch=reset_epoch,
                 )
         self._cancel_navigation_handle(old_handle)
-        try:
-            self._publish_runtime_states(graph=self.gvg_graph)
-        except Exception as error:
-            node = getattr(self, "node", None)
-            if node is not None:
-                node.get_logger().warning(
-                    f"reset runtime-edge empty snapshot failed: {error}"
+        if failure is not None:
+            self.node.get_logger().error(
+                f"reset stop gate status rejected; route goals held: {failure}"
+            )
+
+    def _on_reset_event(self, _message) -> None:
+        old_handle = None
+        terminal = None
+        complete = False
+        completion_generation = None
+        with self._route_output_lock():
+            with self._route_state_lock():
+                intent = getattr(self, "reset_intent_generation", None)
+                completed = getattr(
+                    self, "reset_event_completed_generation", None
                 )
-            if hasattr(self, "StructuralGraphStatus") and hasattr(self, "status_pub"):
-                self._publish_structural_status(
-                    self.StructuralGraphStatus.LAST_KNOWN_GOOD,
-                    f"reset runtime-edge empty snapshot failed: {error}",
+                if intent is not None and completed != intent:
+                    # HOLD already performed the retirement and epoch bump.
+                    self.reset_event_completed_generation = intent
+                    self.reset_hold_barrier = (
+                        getattr(self, "reset_release_seen_generation", None)
+                        != intent
+                    )
+                    complete = True
+                    completion_generation = intent
+                elif intent is not None:
+                    # The Empty event has no generation field.  Once the
+                    # current status-backed intent is complete, any further
+                    # event before a higher HOLD is a duplicate even if the
+                    # same-generation release has already opened the barrier.
+                    return
+                else:
+                    # Legacy/no-status fallback retains the former event-only
+                    # behavior and does not require an unavailable release.
+                    reset = self._begin_simulation_reset_locked()
+                    was_active, old_request_id, old_handle, reset_epoch = reset
+                    self.reset_hold_barrier = False
+                    if was_active:
+                        terminal = (old_request_id, reset_epoch)
+                    complete = True
+            if terminal is not None:
+                old_request_id, reset_epoch = terminal
+                self._publish_route_terminal_pair(
+                    success=False,
+                    request_id=old_request_id,
+                    status="aborted",
+                    reason="simulation_reset",
+                    reset_epoch=reset_epoch,
                 )
-        self._ensure_desired_graph("simulation reset requires Route Server GVG")
+        self._cancel_navigation_handle(old_handle)
+        if complete:
+            self._publish_reset_completion(completion_generation)
 
     def _on_cognitive_graph(self, message) -> None:
+        if self._reset_barrier_is_held():
+            return
         if (
             self.cognitive_graph_mode in {"primary", "hybrid"}
             and not cognitive_graph_candidate_is_mature(message)
@@ -1997,7 +2246,8 @@ class RouteCoordinator:
     def _resume_pending_goal_after_graph_coherent(self) -> None:
         with self._route_state_lock():
             if (
-                self.pending_goal is None
+                self._reset_barrier_is_held()
+                or self.pending_goal is None
                 or not self._desired_graph_is_coherent_locked()
             ):
                 return
@@ -2065,7 +2315,7 @@ class RouteCoordinator:
         self._ensure_desired_graph(reason)
 
     def _region_tick(self) -> None:
-        if self.region_selector is None:
+        if self._reset_barrier_is_held() or self.region_selector is None:
             return
         current = self._current_xy()
         if current is None:
@@ -2242,6 +2492,11 @@ class RouteCoordinator:
         # Fence old action callbacks and remove its tracker before exposing the
         # new request to the prior/context path.
         with self._route_state_lock():
+            if self._reset_barrier_is_held():
+                self.node.get_logger().warning(
+                    "route goal rejected while simulation reset HOLD is active"
+                )
+                return
             was_preemption = bool(
                 getattr(self, "route_active", False)
                 or getattr(self, "pending_goal", None) is not None
@@ -2361,20 +2616,24 @@ class RouteCoordinator:
         return priors
 
     def _publish_route_context(self) -> None:
-        if self.pending_goal is None:
-            return
-        context = self.RouteContext()
-        context.header.stamp = self._now().to_msg()
-        context.header.frame_id = self.frame_id
-        context.request_id = self.request_id
-        context.graph_id = self.graph.graph_id
-        context.graph_revision = self.graph.revision
-        context.final_goal = self.pending_goal
-        context.module2_enabled = self.module2_enabled
-        self.context_pub.publish(context)
-        self.last_context_publish_ns = int(self._now().nanoseconds)
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if self._reset_barrier_is_held() or self.pending_goal is None:
+                    return
+                context = self.RouteContext()
+                context.header.stamp = self._now().to_msg()
+                context.header.frame_id = self.frame_id
+                context.request_id = self.request_id
+                context.graph_id = self.graph.graph_id
+                context.graph_revision = self.graph.revision
+                context.final_goal = self.pending_goal
+                context.module2_enabled = self.module2_enabled
+            self.context_pub.publish(context)
+            self.last_context_publish_ns = int(self._now().nanoseconds)
 
     def _on_priors(self, message) -> None:
+        if self._reset_barrier_is_held():
+            return
         now_ns = int(self._now().nanoseconds)
         stamp_ns = (
             int(message.header.stamp.sec) * 1_000_000_000
@@ -2459,7 +2718,8 @@ class RouteCoordinator:
 
     def _check_prior_timeout(self) -> None:
         if (
-            self.pending_goal is not None
+            not self._reset_barrier_is_held()
+            and self.pending_goal is not None
             and self.pending_deadline_ns is not None
             and int(self._now().nanoseconds) >= self.pending_deadline_ns
         ):
@@ -2482,7 +2742,8 @@ class RouteCoordinator:
     def _prepare_route(self, priors: dict[int, tuple[float, float]]) -> None:
         with self._route_state_lock():
             if (
-                self.pending_goal is None
+                self._reset_barrier_is_held()
+                or self.pending_goal is None
                 or not self._desired_graph_is_coherent_locked()
             ):
                 return
@@ -2569,21 +2830,22 @@ class RouteCoordinator:
                 adjustment.edgeid = int(support_id)
                 adjustment.cost = float(extra / max(1, len(support_ids)))
                 request.adjust_edges.append(adjustment)
-        with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if not self._route_callback_is_current(generation):
+                    return
+            self.route_edge_cost_pub.publish(cost_message)
+            if not self.dynamic_client.service_is_ready():
+                self.node.get_logger().warning("DynamicEdges service unavailable")
+                if self._primary_fallback_available():
+                    self._fallback_to_gvg_once(
+                        "DynamicEdges unavailable", generation
+                    )
                 return
-        self.route_edge_cost_pub.publish(cost_message)
-        if not self.dynamic_client.service_is_ready():
-            self.node.get_logger().warning("DynamicEdges service unavailable")
-            if self._primary_fallback_available():
-                self._fallback_to_gvg_once(
-                    "DynamicEdges unavailable", generation
-                )
-            return
-        with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
-                return
-        future = self.dynamic_client.call_async(request)
+            with self._route_state_lock():
+                if not self._route_callback_is_current(generation):
+                    return
+            future = self.dynamic_client.call_async(request)
         future.add_done_callback(
             lambda completed, start=start_node, goal=goal_node: self._after_edge_update(
                 completed, start, goal, generation
@@ -2633,14 +2895,15 @@ class RouteCoordinator:
             if fallback:
                 self._fallback_to_gvg_once(failure_detail, generation)
             return
-        self.node.get_logger().info(
-            f"edge update accepted for route request {self.request_id}: "
-            f"support {start_node}->{goal_node}"
-        )
-        with self._route_state_lock():
-            if not self._route_callback_is_current(generation):
-                return
-        future = self.route_client.send_goal_async(goal)
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if not self._route_callback_is_current(generation):
+                    return
+            self.node.get_logger().info(
+                f"edge update accepted for route request {self.request_id}: "
+                f"support {start_node}->{goal_node}"
+            )
+            future = self.route_client.send_goal_async(goal)
         future.add_done_callback(
             lambda completed: self._on_route_goal_handle(completed, generation)
         )
@@ -2746,16 +3009,21 @@ class RouteCoordinator:
                 self._fallback_to_gvg_once(failure, generation)
             return
         assert message is not None
-        self.route_pub.publish(message)
-        self.node.get_logger().info(
-            f"canonical route ready for request {message.request_id}: "
-            f"{len(message.edge_ids)} edges, cost {message.total_cost_m:.3f} m"
-        )
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if not self._route_callback_is_current(generation):
+                    return
+            self.route_pub.publish(message)
+            self.node.get_logger().info(
+                f"canonical route ready for request {message.request_id}: "
+                f"{len(message.edge_ids)} edges, cost {message.total_cost_m:.3f} m"
+            )
 
     def _publish_progress(self) -> None:
         with self._route_state_lock():
             if (
-                self.tracker is None
+                self._reset_barrier_is_held()
+                or self.tracker is None
                 or self.pending_goal is None
                 or not self._desired_graph_is_coherent_locked()
             ):
@@ -2827,31 +3095,40 @@ class RouteCoordinator:
                 and not self.navigation_goal_pending
                 and self.navigation_goal_handle is None
             )
-        if crossed is not None:
-            self._publish_crossed_edge_outcomes(*crossed)
-        self.progress_pub.publish(message)
-        self.lookahead_pub.publish(message.lookahead_goal)
-        self.goal_update_pub.publish(message.lookahead_goal)
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if (
+                    not self._route_callback_is_current(generation)
+                    or self.tracker is not tracker
+                ):
+                    return
+            if crossed is not None:
+                self._publish_crossed_edge_outcomes(*crossed)
+            self.progress_pub.publish(message)
+            self.lookahead_pub.publish(message.lookahead_goal)
+            self.goal_update_pub.publish(message.lookahead_goal)
         if start_navigation:
             self._start_navigation(message.lookahead_goal)
 
     def _start_navigation(self, first_lookahead) -> None:
         if not self.navigation_client.server_is_ready():
             return
-        with self._route_state_lock():
-            if (
-                self.pending_goal is None
-                or self.navigation_goal_pending
-                or self.navigation_goal_handle is not None
-                or not self._desired_graph_is_coherent_locked()
-            ):
-                return
-            goal = self.NavigateToPose.Goal()
-            goal.pose = first_lookahead
-            goal.behavior_tree = self.route_guided_bt_xml
-            self.navigation_goal_pending = True
-            generation = self._route_callback_generation()
-        future = self.navigation_client.send_goal_async(goal)
+        with self._route_output_lock():
+            with self._route_state_lock():
+                if (
+                    self._reset_barrier_is_held()
+                    or self.pending_goal is None
+                    or self.navigation_goal_pending
+                    or self.navigation_goal_handle is not None
+                    or not self._desired_graph_is_coherent_locked()
+                ):
+                    return
+                goal = self.NavigateToPose.Goal()
+                goal.pose = first_lookahead
+                goal.behavior_tree = self.route_guided_bt_xml
+                self.navigation_goal_pending = True
+                generation = self._route_callback_generation()
+            future = self.navigation_client.send_goal_async(goal)
         future.add_done_callback(
             lambda completed: self._on_navigation_goal_handle(completed, generation)
         )
@@ -3050,6 +3327,8 @@ class RouteCoordinator:
         )
 
     def _on_runtime_observation(self, message) -> None:
+        if self._reset_barrier_is_held():
+            return
         now_s = self._now().nanoseconds / 1.0e9
         edge_id = int(message.edge_id)
         previous = self.runtime.state(edge_id).state
@@ -3073,6 +3352,8 @@ class RouteCoordinator:
             self._prepare_route(self.latest_priors)
 
     def _runtime_tick(self) -> None:
+        if self._reset_barrier_is_held():
+            return
         now_ns = int(self._now().nanoseconds)
         if self.latest_priors_stamp_ns is not None:
             age_s = (now_ns - self.latest_priors_stamp_ns) / 1.0e9
@@ -3146,6 +3427,8 @@ class RouteCoordinator:
         return stamp
 
     def _on_structural_map(self, message) -> None:
+        if self._reset_barrier_is_held():
+            return
         values = np.asarray(message.data, dtype=np.int16).reshape(
             int(message.info.height), int(message.info.width)
         )

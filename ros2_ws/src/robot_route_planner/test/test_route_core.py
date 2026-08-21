@@ -17,6 +17,7 @@ from robot_route_planner.ros_node import (
     edge_prior_is_usable,
     footprint_is_free,
     navigation_result_succeeded,
+    parse_reset_stop_gate_status,
     populate_fresh_goal,
     select_live_feasible_lookahead,
     select_map_pose,
@@ -419,6 +420,15 @@ def _reset_route_coordinator(*, active=True, handle=None):
     coordinator.request_id = 41
     coordinator.graph_generation = 3
     coordinator.graph_switch_generation = 7
+    coordinator.reset_status_generation = 1
+    coordinator.reset_status_snapshot = parse_reset_stop_gate_status(
+        '{"eligible_generation":null,"generation":1,"held":false,'
+        '"reason":"released:activation_gate"}'
+    )
+    coordinator.reset_intent_generation = None
+    coordinator.reset_event_completed_generation = None
+    coordinator.reset_release_seen_generation = None
+    coordinator.reset_hold_barrier = False
     coordinator.graph = SimpleNamespace(graph_id='physical', revision=4)
     coordinator.gvg_graph = coordinator.graph
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
@@ -492,7 +502,10 @@ def _reset_route_coordinator(*, active=True, handle=None):
         coordinator.graph_reconciliations.append(reason)
     )
     coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
-        info=lambda _message: None, warning=lambda _message: None))
+        info=lambda _message: None,
+        warning=lambda _message: None,
+        error=lambda _message: None,
+    ))
     coordinator.StructuralGraphStatus = SimpleNamespace(
         LAST_KNOWN_GOOD=2, READY=1)
     coordinator.structural_statuses = []
@@ -502,6 +515,185 @@ def _reset_route_coordinator(*, active=True, handle=None):
     coordinator._fallback_to_gvg_once = lambda _reason: pytest.fail(
         'physical graph reset must not request fallback')
     return coordinator
+
+
+def _gate_status(generation, held, reason, eligible=None):
+    return SimpleNamespace(data=json.dumps({
+        'generation': generation,
+        'held': held,
+        'eligible_generation': eligible,
+        'reason': reason,
+    }))
+
+
+def test_reset_stop_gate_status_parser_rejects_malformed_or_incoherent_state() -> None:
+    valid = parse_reset_stop_gate_status(json.dumps({
+        'generation': 4,
+        'held': True,
+        'eligible_generation': None,
+        'reason': 'hold',
+    }))
+    assert valid.generation == 4
+    assert valid.held is True
+
+    for payload in (
+        'not-json',
+        '[]',
+        '{"generation":true,"held":true,"reason":"hold"}',
+        '{"generation":4,"held":false,"reason":"hold"}',
+        '{"generation":4,"held":true,"eligible_generation":3,'
+        '"reason":"reset_complete"}',
+        '{"generation":4,"held":false,"eligible_generation":4,'
+        '"reason":"released:activation_gate"}',
+    ):
+        with pytest.raises(ValueError):
+            parse_reset_stop_gate_status(payload)
+
+
+def test_hold_retires_active_route_before_event_and_same_generation_is_idempotent() -> None:
+    handle = _AcceptedHandle()
+    coordinator = _reset_route_coordinator(handle=handle)
+    hold = _gate_status(2, True, 'hold')
+
+    coordinator._on_reset_stop_gate_status(hold)
+
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.reset_intent_generation == 2
+    assert coordinator.request_id == 42
+    assert coordinator.cognitive_graph_identity.reset_epoch == 9
+    assert handle.cancel_calls == 1
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+    assert json.loads(coordinator.goal_result_pub.messages[0].data) == {
+        'request_id': 41,
+        'status': 'aborted',
+        'reason': 'simulation_reset',
+        'reset_epoch': 9,
+    }
+    assert coordinator.runtime_snapshots == []
+    assert coordinator.graph_reconciliations == []
+
+    coordinator._on_reset_stop_gate_status(hold)
+    coordinator._on_reset_event(None)
+    coordinator._on_reset_event(None)
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, True, 'reset_complete', eligible=2))
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.request_id == 42
+    assert len(coordinator.goal_result_pub.messages) == 1
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.graph_reconciliations == [
+        'simulation reset requires Route Server GVG']
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, False, 'released:activation_gate'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, False, 'released:activation_gate'))
+    assert coordinator.reset_hold_barrier is False
+    assert len(coordinator.goal_result_pub.messages) == 1
+
+    coordinator._on_reset_event(None)
+    assert coordinator.request_id == 42
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator.module2_enabled = False
+    prepared = []
+    coordinator._prepare_route = lambda priors: prepared.append(priors)
+    coordinator._publish_route_context = lambda: None
+    fresh_goal = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+        x=5.0, y=6.0)))
+    coordinator._on_goal(fresh_goal)
+    assert coordinator.pending_goal is fresh_goal
+    assert prepared == [{}]
+
+
+def test_startup_released_baseline_synchronizes_without_fake_terminal() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.reset_status_generation = None
+    coordinator.reset_status_snapshot = None
+    coordinator.reset_hold_barrier = True
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, False, 'released:activation_gate'))
+
+    assert coordinator.reset_status_generation == 7
+    assert coordinator.reset_hold_barrier is False
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+    assert coordinator.request_id == 41
+
+
+def test_hold_without_event_stays_fail_closed_and_rejects_new_goal() -> None:
+    coordinator = _reset_route_coordinator()
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    request_id = coordinator.request_id
+    goal = SimpleNamespace(pose=SimpleNamespace(position=SimpleNamespace(
+        x=5.0, y=6.0)))
+
+    coordinator._on_goal(goal)
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, False, 'released:activation_gate'))
+
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.request_id == request_id
+    assert coordinator.pending_goal is None
+    assert len(coordinator.goal_result_pub.messages) == 1
+
+
+def test_bad_or_backward_gate_status_cannot_open_newer_hold() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_reset_stop_gate_status(SimpleNamespace(data='not-json'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(1, False, 'released:activation_gate'))
+
+    assert coordinator.reset_status_generation == 2
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.goal_complete_pub.messages == []
+    assert coordinator.goal_result_pub.messages == []
+
+
+def test_hold_fences_late_acceptance_and_navigation_result() -> None:
+    coordinator = _reset_route_coordinator()
+    generation = coordinator._route_callback_generation()
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    late_handle = _AcceptedHandle()
+
+    coordinator._on_navigation_goal_handle(
+        SimpleNamespace(result=lambda: late_handle), generation)
+    coordinator._on_navigation_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(
+            status=5, result=SimpleNamespace(error_code=207))),
+        generation,
+    )
+
+    assert late_handle.cancel_calls == 1
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+    assert len(coordinator.goal_result_pub.messages) == 1
+
+
+def test_navigation_terminal_before_hold_is_not_followed_by_reset_abort() -> None:
+    coordinator = _reset_route_coordinator(handle=_AcceptedHandle())
+    coordinator.pending_structural_map = None
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_mode = 'gvg'
+    generation = coordinator._route_callback_generation()
+
+    coordinator._on_navigation_result(
+        SimpleNamespace(result=lambda: SimpleNamespace(
+            status=5, result=SimpleNamespace(error_code=207))),
+        generation,
+    )
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+    assert [json.loads(message.data) for message in coordinator.goal_result_pub.messages] == [{
+        'request_id': 41,
+        'status': 'failed',
+        'reason': 'navigate_to_pose_failed_error_207',
+        'reset_epoch': 8,
+    }]
 
 
 def test_active_reset_retires_state_cancels_once_and_publishes_one_terminal() -> None:
@@ -652,7 +844,10 @@ def test_reset_terminal_cannot_be_overtaken_by_old_navigation_rejection() -> Non
     callback_thread.start()
     assert old_publish_entered.wait(timeout=2.0)
     reset_thread = threading.Thread(
-        name='reset', target=coordinator._on_reset_event, args=(None,))
+        name='reset',
+        target=coordinator._on_reset_stop_gate_status,
+        args=(_gate_status(2, True, 'hold'),),
+    )
     reset_thread.start()
     reset_thread.join(timeout=0.05)
     assert reset_thread.is_alive()
@@ -696,7 +891,10 @@ def test_reset_wins_terminal_race_and_late_rejection_is_silent() -> None:
 
     coordinator._retire_active_route_for_reset = blocked_retire
     reset_thread = threading.Thread(
-        name='reset', target=coordinator._on_reset_event, args=(None,))
+        name='reset',
+        target=coordinator._on_reset_stop_gate_status,
+        args=(_gate_status(2, True, 'hold'),),
+    )
     reset_thread.start()
     assert reset_retired.wait(timeout=2.0)
     callback_thread = threading.Thread(
@@ -817,7 +1015,7 @@ def test_runtime_empty_snapshot_uses_requested_graph_identity() -> None:
 def test_post_reset_timers_and_route_callback_cannot_publish_old_request() -> None:
     coordinator = _reset_route_coordinator()
     generation = coordinator._route_callback_generation()
-    coordinator._on_reset_event(None)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
     coordinator._current_xy = lambda: pytest.fail('retired tracker was evaluated')
     coordinator._publish_progress()
     coordinator._publish_route_context()
