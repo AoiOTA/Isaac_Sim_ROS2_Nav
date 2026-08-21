@@ -684,3 +684,28 @@
   confirm zero cognitive cost.
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
+
+## 2026-08-21 — V6 critic revalidation TF/cursor blocker rework
+
+- Goal: fix reviewer blockers where static-revalidated points used an old
+  source-time TF and critic admission had no persistent ordering/identity
+  cursor.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `6a64e4a67cd866759e07ca3db2dfed77efa8153b`.
+- Changes: newly offered snapshots use the shared layer validator with a
+  mutex-protected compound cursor and bound identity; accepted snapshots remain
+  scoreable until their freshness/trust gates fail; TF lookup and point headers
+  use the accepted validation/effective stamp. LIVE validation remains exactly
+  source-time by contract. Physical safety and Costmap ownership are unchanged.
+- Validation: fresh allowed Integration interface + Module3 fusion build PASS
+  at `/tmp/bio_nav_module3_critic_rework_final.TIm4by`; focused package result 32
+  tests / 0 errors / 0 failures / 0 skipped; plugin loader 1/1 PASS; `git diff
+  --check` PASS. Score-level TF tests cover moving-frame static placement/yaw,
+  LIVE source/effective time, expired/missing/bad/OOD/untrusted zero cost,
+  repeat scoring, duplicate/backward validation, identity rejection, and
+  reset/rebind.
+- Verdict: **PASS (implementation/build/unit only)**. No active MPPI,
+  ROS/Nav2/Isaac, navigation, engineering evidence, or qualification run was
+  launched; live callback/TF timing remains unverified.
+- Handoff:
+  `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.

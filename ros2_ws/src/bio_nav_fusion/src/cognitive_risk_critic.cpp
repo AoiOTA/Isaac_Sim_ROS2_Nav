@@ -1,7 +1,5 @@
 #include "bio_nav_fusion/cognitive_risk_critic.hpp"
 
-#include "bio_nav_fusion/cognitive_obstacle_layer.hpp"
-
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -43,6 +41,13 @@ double wrap(double angle)
 
 void CognitiveRiskCritic::initialize()
 {
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    accepted_obstacles_.reset();
+    expected_ = CognitiveObstacleLayer::Identity{};
+    accepted_.reset();
+    identity_bound_ = false;
+  }
   auto getParam = parameters_handler_->getParamGetter(name_);
   getParam(mode_, "mode", mode_);
   getParam(obstacle_topic_, "obstacle_topic", obstacle_topic_);
@@ -106,10 +111,24 @@ std::string CognitiveRiskCritic::validateInputs(
     prior->reset_epoch, prior->recurrent_session_id, prior->map_version,
     prior->cognitive_tile_id, prior->tile_revision, prior->graph_revision,
     prior->model_id};
-  const auto obstacle_reason = CognitiveObstacleLayer::validateMessage(
-    *obstacles, now_ns, obstacle_identity,
-    CognitiveObstacleLayer::AcceptanceCursor{}, maximum_age_s,
+  return validateInputs(
+    obstacles, prior, now_ns, obstacle_identity,
+    CognitiveObstacleLayer::AcceptanceCursor{}, true, maximum_age_s,
     maximum_ood_probability);
+}
+
+std::string CognitiveRiskCritic::validateInputs(
+  const bio_nav_interfaces::msg::CognitiveObstacleArray * obstacles,
+  const bio_nav_interfaces::msg::PlanningPrior * prior, int64_t now_ns,
+  const CognitiveObstacleLayer::Identity & expected,
+  const CognitiveObstacleLayer::AcceptanceCursor & accepted,
+  bool enforce_identity, double maximum_age_s,
+  double maximum_ood_probability)
+{
+  if (!obstacles || !prior) {return "missing";}
+  const auto obstacle_reason = CognitiveObstacleLayer::validateMessage(
+    *obstacles, now_ns, expected, accepted, maximum_age_s,
+    maximum_ood_probability, enforce_identity);
   if (!obstacle_reason.empty()) {return obstacle_reason;}
   const double prior_age = (now_ns - stampNs(prior->stamp)) * 1.0e-9;
   const double direction_ttl = durationSeconds(prior->local_direction_ttl);
@@ -244,14 +263,31 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
   if (!enabled_ || mode_ != "active") {return;}
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior;
+  std::string reason;
+  const auto now = parent_.lock()->get_clock()->now();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     obstacles = obstacles_;
     prior = prior_;
+    const bool new_obstacle_snapshot = obstacles && obstacles != accepted_obstacles_;
+    const CognitiveObstacleLayer::AcceptanceCursor no_ordering_gate;
+    reason = validateInputs(
+      obstacles.get(), prior.get(), now.nanoseconds(), expected_,
+      new_obstacle_snapshot ? accepted_ : no_ordering_gate,
+      identity_bound_, maximum_age_s_, maximum_ood_probability_);
+    if (reason.empty() && new_obstacle_snapshot) {
+      if (!identity_bound_) {
+        expected_ = CognitiveObstacleLayer::Identity{
+          obstacles->reset_epoch, obstacles->recurrent_session_id,
+          obstacles->map_version, obstacles->cognitive_tile_id,
+          obstacles->tile_revision, obstacles->graph_revision,
+          obstacles->model_id};
+        identity_bound_ = true;
+      }
+      CognitiveObstacleLayer::recordAccepted(*obstacles, accepted_);
+      accepted_obstacles_ = obstacles;
+    }
   }
-  const auto reason = validateInputs(
-    obstacles.get(), prior.get(), parent_.lock()->get_clock()->now().nanoseconds(),
-    maximum_age_s_, maximum_ood_probability_);
   if (!reason.empty()) {
     publishStatus(prior ? prior->sequence : 0U, false, reason);
     return;
@@ -262,7 +298,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
   try {
     transform = costmap_ros_->getTfBuffer()->lookupTransform(
       costmap_ros_->getGlobalFrameID(), obstacles->header.frame_id,
-      rclcpp::Time(obstacles->header.stamp), tf2::durationFromSec(0.0));
+      rclcpp::Time(obstacles->validation_stamp), tf2::durationFromSec(0.0));
   } catch (const tf2::TransformException &) {
     publishStatus(prior->sequence, false, "tf");
     return;
@@ -271,6 +307,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
     geometry_msgs::msg::PointStamped local;
     geometry_msgs::msg::PointStamped global;
     local.header = obstacles->header;
+    local.header.stamp = obstacles->validation_stamp;
     local.point.x = item.pose_xy_m[0];
     local.point.y = item.pose_xy_m[1];
     tf2::doTransform(local, global, transform);

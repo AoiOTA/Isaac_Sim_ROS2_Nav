@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 
+#include "bio_nav_fusion/cognitive_obstacle_layer.hpp"
 #include "bio_nav_interfaces/msg/cognitive_obstacle_array.hpp"
 #include "bio_nav_interfaces/msg/planning_prior.hpp"
 #include "bio_nav_interfaces/msg/risk_layer_status.hpp"
@@ -40,10 +41,19 @@ public:
     const bio_nav_interfaces::msg::CognitiveObstacleArray * obstacles,
     const bio_nav_interfaces::msg::PlanningPrior * prior, int64_t now_ns,
     double maximum_age_s, double maximum_ood_probability);
+  static std::string validateInputs(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray * obstacles,
+    const bio_nav_interfaces::msg::PlanningPrior * prior, int64_t now_ns,
+    const CognitiveObstacleLayer::Identity & expected,
+    const CognitiveObstacleLayer::AcceptanceCursor & accepted,
+    bool enforce_identity, double maximum_age_s,
+    double maximum_ood_probability);
   static std::string validateDirectionPrior(
     const bio_nav_interfaces::msg::PlanningPrior & prior);
 
 private:
+  friend class CognitiveRiskCriticTestPeer;
+
   void obstacleCallback(
     const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message);
   void priorCallback(
@@ -52,7 +62,11 @@ private:
 
   std::mutex mutex_;
   bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr obstacles_;
+  bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr accepted_obstacles_;
   bio_nav_interfaces::msg::PlanningPrior::SharedPtr prior_;
+  CognitiveObstacleLayer::Identity expected_;
+  CognitiveObstacleLayer::AcceptanceCursor accepted_;
+  bool identity_bound_{false};
   std::string mode_{"off"};
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   std::string prior_topic_{"/bio_nav/module2/planning_prior"};
