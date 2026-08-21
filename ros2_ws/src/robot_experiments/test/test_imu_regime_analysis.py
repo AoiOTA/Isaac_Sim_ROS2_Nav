@@ -40,6 +40,13 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE_ROOT / "config/v6_imu_regime_diagnostic.yaml"
 SPAWN = PACKAGE_ROOT.parents[2] / "isaac_sim/configs/environments/v6_calibration_flat_20m.spawn.yaml"
 FEATURES = PACKAGE_ROOT.parents[2] / "isaac_sim/configs/experiments/v6_calibration_grid_features.yaml"
+ATTEMPT3_ROOT = Path(
+    "/mnt/nas_home/Bio_Nav_Data/experiments/runs/"
+    "v6_imu_regime_session_a_attempt3_20260821T220048Z"
+)
+ATTEMPT3_STORED = (
+    ATTEMPT3_ROOT / "analysis/smoother_schedule_v2/imu_regime_analysis.json"
+)
 
 
 def _series(scale: float, *, duplicate: bool = False):
@@ -455,8 +462,64 @@ def test_schema2_hold_rejects_internal_dropout():
     ]
     with pytest.raises(EvidenceError) as raised:
         command_windows(phase, report, streams)
-    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.verdict == "FAIL"
     assert raised.value.code == "command_stream_gap"
+
+
+@pytest.mark.parametrize(
+    "topic", ["/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"]
+)
+@pytest.mark.parametrize("defect", ["tail_leak", "tail_dropout"])
+def test_schema2_hold_audits_every_chain_through_first_schedule_start(topic, defect):
+    report = _schema2_report()
+    streams, phase = _session_a_command_streams(report)
+    first_start = report["stationary_reference"]["segment_schedule"][0]["start_sim_s"]
+    if defect == "tail_leak":
+        samples = list(streams[topic])
+        index = max(
+            index for index, sample in enumerate(samples)
+            if sample.stamp_s < first_start
+        )
+        sample = samples[index]
+        samples[index] = CommandSample(
+            sample.stamp_s, 0.01, 0.0, sample.recorded_s
+        )
+        streams[topic] = samples
+    else:
+        streams[topic] = [
+            sample for sample in streams[topic]
+            if not (first_start - 0.45 < sample.stamp_s < first_start)
+        ]
+
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(phase, report, streams)
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code in {
+        "command_zero_leak", "command_boundary_coverage", "command_stream_gap",
+    }
+
+
+def test_schema2_hold_receipt_ends_exclusively_at_first_schedule_start():
+    report = _schema2_report()
+    streams, phase = _session_a_command_streams(report)
+    windows = command_windows(phase, report, streams)
+    first_start = report["stationary_reference"]["segment_schedule"][0]["start_sim_s"]
+    stationary = windows[0]
+    # The schedule command at first_start is not part of HOLD, while the last
+    # pre-start zero must still cover that boundary within the same tolerance.
+    for evidence in stationary["reset_hold_chain_coverage"].values():
+        assert evidence["coverage_end_sim_s"] == first_start
+        assert evidence["end_exclusive"] is True
+        assert evidence["end_boundary_gap_s"] <= evidence["boundary_tolerance_s"]
+    # Exercise the private HOLD proof through its externally visible failure
+    # contract: a leak immediately before first_start cannot hide in a gap.
+    samples = list(streams["/cmd_vel_sim"])
+    samples.append(CommandSample(first_start - 0.01, 0.01, 0.0, first_start - 0.01))
+    streams["/cmd_vel_sim"] = sorted(samples, key=lambda sample: sample.recorded_s)
+    with pytest.raises(EvidenceError) as raised:
+        command_windows(phase, report, streams)
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "command_zero_leak"
 
 
 @pytest.mark.parametrize(
@@ -943,6 +1006,60 @@ def test_schema1_retro_metrics_are_preserved_but_scale_is_never_authorized(
     assert result["scale_selection_authorized"] is False
     assert any(
         issue["code"] == "benchmark_schema_v1_capture_ambiguity"
+        for issue in result["evidence_errors"]
+    )
+
+
+@pytest.mark.skipif(
+    not (
+        (ATTEMPT3_ROOT / "rosbag/flat20_motion/metadata.yaml").is_file()
+        and (ATTEMPT3_ROOT / "imu_regime_phase.jsonl").is_file()
+        and (ATTEMPT3_ROOT / "analysis/motion_report.json").is_file()
+        and ATTEMPT3_STORED.is_file()
+    ),
+    reason="local immutable Attempt 3 capture is unavailable",
+)
+def test_attempt3_schema1_real_capture_retains_all_stored_segment_metrics():
+    """Non-monkeypatched regression over the immutable Attempt 3 capture."""
+
+    result = run_analysis(
+        mcap=ATTEMPT3_ROOT / "rosbag/flat20_motion",
+        phase_jsonl=ATTEMPT3_ROOT / "imu_regime_phase.jsonl",
+        benchmark_report=ATTEMPT3_ROOT / "analysis/motion_report.json",
+        config_path=CONFIG,
+        spawn_poses_path=SPAWN,
+        obstacle_config_path=FEATURES,
+    )
+    stored = json.loads(ATTEMPT3_STORED.read_text(encoding="utf-8"))
+
+    assert result["performance_status"] == "FAIL"
+    assert result["verdict"] == "FAIL"
+    assert result["capture_contract_status"] == "AMBIGUOUS"
+    assert result["scale_selection_authorized"] is False
+    assert result["command_window_count"] == 12
+    assert len(result["segments"]) == len(stored["segments"]) == 12
+    assert [item["id"] for item in result["segments"]] == [
+        item["id"] for item in stored["segments"]
+    ]
+    for actual, expected in zip(result["segments"], stored["segments"]):
+        assert actual["k_star"] == pytest.approx(expected["k_star"])
+        assert actual["raw_endpoint_error_rad"] == pytest.approx(
+            expected["raw_endpoint_error_rad"]
+        )
+        assert actual["raw_aligned_rmse_rad"] == pytest.approx(
+            expected["raw_aligned_rmse_rad"]
+        )
+        assert actual["raw_aligned_p95_rad"] == pytest.approx(
+            expected["raw_aligned_p95_rad"]
+        )
+        assert actual["scale_interval_le_5deg"] == expected["scale_interval_le_5deg"]
+    assert result["global_scale_intersection"] == stored["global_scale_intersection"]
+    assert any(
+        issue["code"] == "benchmark_schema_v1_capture_ambiguity"
+        for issue in result["evidence_errors"]
+    )
+    assert any(
+        issue["code"] == "benchmark_schema_v1_command_coverage_ambiguity"
         for issue in result["evidence_errors"]
     )
 

@@ -483,3 +483,45 @@ qualification ran. Attempt 4 remains **PENDING** and must produce the first
 live schema-2 capture satisfying these boundary receipts. `yaw_scale=0.9294`,
 RF2O-off, playback commands/thresholds, route/reset/gate, and critic behavior
 are unchanged.
+
+## Schema-1 retrospective continuity and schema-2 HOLD-tail amendment
+
+- Amendment start HEAD:
+  `cc7debb38ad5fcf6676540ff1a828a9aa16f0f6e`.
+- Schema-1 captures still cannot authorize scale selection. Missing
+  boundary/gap proof introduced by the newer four-stage command-chain contract
+  is now recorded as
+  `benchmark_schema_v1_command_coverage_ambiguity` instead of terminating
+  before segment construction. Older, otherwise verifiable report schedules,
+  yaw streams, and phase rows remain usable for retrospective metrics while
+  `capture_contract_status=AMBIGUOUS` and
+  `scale_selection_authorized=false` remain mandatory.
+- Schema-2 reset HOLD coverage now extends to the first schedule start on all
+  four command stages. The schedule-start sample is the exclusive boundary;
+  the last pre-start zero must cover that boundary within the existing
+  tolerance. A nonzero HOLD-tail sample, missing boundary, or tail dropout is
+  `FAIL`, so the former `intent_gap` interval is no longer unaudited.
+- The immutable Attempt 3 MCAP/report/phase bundle was re-analyzed into a new
+  directory without modifying the prior output:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt3_20260821T220048Z/analysis/schema1_retro_hold_gap_20260822/imu_regime_analysis.json`.
+  It retains exactly 12 windows, all segment IDs and k-star values match the
+  stored `smoother_schedule_v2` output, and the intersection remains
+  `[0.9162,0.9417]`. The result remains **FAIL / NOT FORMAL** with
+  `performance_status=FAIL`, `capture_contract_status=AMBIGUOUS`, and
+  `scale_selection_authorized=false`.
+- Validation: source-first analyzer suite **102 passed**, including the real
+  Attempt 3 non-monkeypatched regression and adversarial four-stage HOLD-tail
+  leak/dropout cases. Fresh isolated `robot_experiments` build PASS at
+  `ros2_ws/build_imu_retro_hold.3bjyYU`, install
+  `ros2_ws/install_imu_retro_hold.hS83p9`, log
+  `ros2_ws/log_imu_retro_hold.Qtjinp`; fresh-installed analyzer `--help` and
+  the same **102 tests passed**. An initial `/tmp` build-base attempt failed
+  only because this package's existing symlink-data layout requires the build
+  base below `ros2_ws`; the workspace-local isolated build above passed.
+
+Verdict is **PASS (code/build/unit plus retrospective offline analysis)**.
+No Isaac, live ROS graph, navigation, new sensor capture, calibration
+selection, or formal qualification was run. Attempt 4 remains **PENDING** and
+must supply prospective schema-2 evidence. `yaw_scale=0.9294`, RF2O-off,
+playback commands/thresholds, active-reset/route/MotionBenchmark behavior, and
+critic behavior are unchanged.

@@ -2331,11 +2331,12 @@ def _epoch_samples(
 
 def _require_zero_range(
     samples: Sequence[CommandSample], *, start_s: float, end_s: float,
-    topic: str, minimum_samples: int = 1,
+    topic: str, minimum_samples: int = 1, end_exclusive: bool = False,
 ) -> dict[str, Any]:
     return _require_command_coverage(
         samples, start_s=start_s, end_s=end_s, topic=topic,
         minimum_samples=minimum_samples, require_zero=True,
+        end_exclusive=end_exclusive,
     )
 
 
@@ -2343,6 +2344,7 @@ def _require_command_coverage(
     samples: Sequence[CommandSample], *, start_s: float, end_s: float,
     topic: str, minimum_samples: int = 2, require_zero: bool = False,
     boundary_tolerance_s: float = COMMAND_BOUNDARY_TOLERANCE_S,
+    end_exclusive: bool = False,
 ) -> dict[str, Any]:
     """Require both boundaries, internal cadence, order, and finite values."""
 
@@ -2380,7 +2382,11 @@ def _require_command_coverage(
             )
         previous_stamp = sample.stamp_s
         previous_recorded = sample.recorded_s
-    selected = [sample for sample in samples if start_s <= sample.stamp_s <= end_s]
+    selected = [
+        sample for sample in samples
+        if start_s <= sample.stamp_s
+        and (sample.stamp_s < end_s if end_exclusive else sample.stamp_s <= end_s)
+    ]
     if len(selected) < minimum_samples:
         raise _evidence_issue(
             "AMBIGUOUS", "command_zero_coverage" if require_zero else "command_schedule_coverage",
@@ -2413,6 +2419,9 @@ def _require_command_coverage(
         "boundary_tolerance_s": boundary_tolerance_s,
         "maximum_gap_s": maximum_gap,
         "all_zero": all(_is_zero_command(sample) for sample in selected),
+        "coverage_start_sim_s": start_s,
+        "coverage_end_sim_s": end_s,
+        "end_exclusive": end_exclusive,
     }
 
 
@@ -2547,13 +2556,23 @@ def command_windows(
             search_after = end_s - boundary_tolerance
 
         first_start = float(selected_schedules[0]["start_sim_s"])
+        hold_coverage: dict[str, dict[str, Any]] = {}
         if schema_version >= 2:
             for topic in topics:
-                _require_zero_range(
-                    epoch[topic], start_s=reset.stamp_s,
-                    end_s=max(reset.stamp_s, first_start - intent_gap), topic=topic,
-                    minimum_samples=2,
-                )
+                try:
+                    hold_coverage[topic] = _require_zero_range(
+                        epoch[topic], start_s=reset.stamp_s,
+                        end_s=first_start, topic=topic, minimum_samples=2,
+                        end_exclusive=True,
+                    )
+                except EvidenceError as exc:
+                    # Schema 2 is a prospective capture contract.  A missing,
+                    # gapped, or leaking HOLD tail is therefore invalid
+                    # evidence, not a recoverable retroactive ambiguity.
+                    raise _evidence_issue(
+                        "FAIL", exc.code,
+                        f"{entry['id']} reset HOLD coverage invalid: {exc.detail}",
+                    ) from exc
         final_end = float(selected_schedules[-1]["end_sim_s"])
         settle_coverage: dict[str, dict[str, Any]] = {}
         if schema_version >= 2:
@@ -2617,10 +2636,29 @@ def command_windows(
             end_s = float(schedule["end_sim_s"])
             coverage = {}
             for topic in topics:
-                coverage[topic] = _require_command_coverage(
-                    epoch[topic], start_s=start_s, end_s=end_s, topic=topic,
-                    require_zero=entry["id"] == EXPECTED_STATIONARY["id"],
-                )
+                try:
+                    coverage[topic] = _require_command_coverage(
+                        epoch[topic], start_s=start_s, end_s=end_s, topic=topic,
+                        require_zero=entry["id"] == EXPECTED_STATIONARY["id"],
+                    )
+                except EvidenceError as exc:
+                    if schema_version >= 2 or exc.verdict != "AMBIGUOUS":
+                        raise
+                    issue = {
+                        "verdict": "AMBIGUOUS",
+                        "code": "benchmark_schema_v1_command_coverage_ambiguity",
+                        "detail": (
+                            f"{entry['id']}[{schedule['segment_index']}] {topic}: "
+                            f"{exc.code}: {exc.detail}"
+                        ),
+                    }
+                    capture_issues.append(issue)
+                    coverage[topic] = {
+                        "status": "AMBIGUOUS",
+                        "issue": issue,
+                        "coverage_start_sim_s": start_s,
+                        "coverage_end_sim_s": end_s,
+                    }
             identifier = str(entry["id"])
             if len(selected_schedules) > 1:
                 identifier = f"{identifier}[{schedule['segment_index']}]"
@@ -2636,6 +2674,7 @@ def command_windows(
                 "observed_command_duration_s": float(schedule["intent_last_sim_s"]) - float(schedule["intent_first_sim_s"]),
                 "duration_tolerance_s": float(schedule["boundary_tolerance_s"]),
                 "schedule_receipt": schedule,
+                "reset_hold_chain_coverage": hold_coverage,
                 "command_chain_coverage": coverage,
                 "final_zero": {
                     "nav_zero_count": len(nav_zero),

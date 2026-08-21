@@ -1734,3 +1734,31 @@
   navigation, reset, evidence collection, engineering campaign, or formal
   qualification was run.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — V6 IMU schema-1 retrospective continuity and schema-2 HOLD tail
+
+- Goal/hypothesis: retain metrics from immutable schema-1 Attempt 3 when only
+  the newer strict command-boundary proof is unavailable, while closing the
+  schema-2 reset-HOLD gap through the first schedule start.
+- Worktree/branch/start: permitted Module3 `cognitive-navigation` worktree,
+  `cc7debb38ad5fcf6676540ff1a828a9aa16f0f6e`.
+- Changed: `imu_regime_analysis.py`, its focused tests, this ledger, and
+  `V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`. No scale/config, reset/route,
+  MotionBenchmark playback, Integration, or Module2 file changed.
+- Result: schema-1 boundary/gap insufficiency is explicit capture ambiguity
+  and never authorizes scale; schema-2 four-stage HOLD-tail leak/dropout is
+  FAIL through an end-exclusive first-schedule boundary.
+- Attempt 3 retrospective evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt3_20260821T220048Z/analysis/schema1_retro_hold_gap_20260822/imu_regime_analysis.json`.
+  Result **FAIL / NOT FORMAL**: 12 windows, stored k-star/segment identity
+  preserved, performance FAIL, capture AMBIGUOUS, scale authorization false.
+- Validation: source-first **102 passed**; fresh isolated package build PASS at
+  `ros2_ws/build_imu_retro_hold.3bjyYU` / install
+  `ros2_ws/install_imu_retro_hold.hS83p9` / log
+  `ros2_ws/log_imu_retro_hold.Qtjinp`; fresh-installed analyzer `--help` and
+  **102 passed**. The first `/tmp` build-base attempt failed on the package's
+  pre-existing workspace-relative symlink-data layout; the correctly located
+  isolated build passed.
+- Verdict: **PASS (code/build/unit plus retrospective offline analysis)**.
+  Attempt 4 prospective schema-2 live capture remains **PENDING**;
+  `yaw_scale=0.9294` and RF2O-off are unchanged.
