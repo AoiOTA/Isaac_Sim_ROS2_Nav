@@ -1,6 +1,7 @@
 import json
 import math
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import numpy as np
@@ -350,7 +351,7 @@ def test_old_dynamic_edges_callback_generation_is_discarded() -> None:
 
     coordinator._after_edge_update(future, 1, 2, generation)
 
-    assert evaluated == []
+    assert evaluated == [True]
 
 
 @pytest.mark.parametrize('failure_kind', ('dynamic', 'route', 'navigation'))
@@ -406,6 +407,9 @@ class _AcceptedHandle:
 
     def cancel_goal_async(self):
         self.cancel_calls += 1
+
+    def get_result_async(self):
+        return SimpleNamespace(add_done_callback=lambda _callback: None)
 
 
 def _reset_route_coordinator(*, active=True, handle=None):
@@ -477,8 +481,24 @@ def _reset_route_coordinator(*, active=True, handle=None):
     coordinator.lookahead_pub = _CapturePublisher()
     coordinator.goal_update_pub = _CapturePublisher()
     coordinator.route_pub = _CapturePublisher()
+    coordinator.runtime_snapshots = []
+    coordinator._publish_runtime_states = lambda *, graph=None: (
+        coordinator.runtime_snapshots.append((
+            graph.graph_id, graph.revision, list(coordinator.runtime.edges)
+        ))
+    )
+    coordinator.graph_reconciliations = []
+    coordinator._ensure_desired_graph = lambda reason: (
+        coordinator.graph_reconciliations.append(reason)
+    )
     coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
         info=lambda _message: None, warning=lambda _message: None))
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator.structural_statuses = []
+    coordinator._publish_structural_status = lambda state, detail: (
+        coordinator.structural_statuses.append((state, detail))
+    )
     coordinator._fallback_to_gvg_once = lambda _reason: pytest.fail(
         'physical graph reset must not request fallback')
     return coordinator
@@ -513,6 +533,9 @@ def test_active_reset_retires_state_cancels_once_and_publishes_one_terminal() ->
     assert coordinator.cognitive_constraints_cache.invalidations == 1
     assert coordinator.region_selector.current is None
     assert coordinator.tf_buffer.clear_calls == 1
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.graph_reconciliations == [
+        'simulation reset requires Route Server GVG']
     assert handle.cancel_calls == 1
     assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
     assert len(coordinator.goal_result_pub.messages) == 1
@@ -527,6 +550,8 @@ def test_active_reset_retires_state_cancels_once_and_publishes_one_terminal() ->
     assert handle.cancel_calls == 1
     assert len(coordinator.goal_complete_pub.messages) == 1
     assert len(coordinator.goal_result_pub.messages) == 1
+    assert coordinator.runtime_snapshots == [
+        ('physical', 4, []), ('physical', 4, [])]
 
 
 def test_reset_pending_action_late_accept_is_cancelled_and_result_is_ignored() -> None:
@@ -547,9 +572,69 @@ def test_reset_pending_action_late_accept_is_cancelled_and_result_is_ignored() -
     result_calls = []
     coordinator._on_navigation_result(
         SimpleNamespace(result=lambda: result_calls.append(True)), generation)
-    assert result_calls == []
+    assert result_calls == [True]
     assert len(coordinator.goal_complete_pub.messages) == terminal_count
     assert len(coordinator.goal_result_pub.messages) == 1
+
+
+def test_reset_waits_for_navigation_handle_check_and_cancels_committed_handle() -> None:
+    coordinator = _reset_route_coordinator()
+    generation = coordinator._route_callback_generation()
+    handle = _AcceptedHandle()
+    check_entered = threading.Barrier(2)
+    release_check = threading.Event()
+    original_check = coordinator._route_callback_is_current
+
+    def blocked_check(token):
+        check_entered.wait(timeout=2.0)
+        assert release_check.wait(timeout=2.0)
+        return original_check(token)
+
+    coordinator._route_callback_is_current = blocked_check
+    callback_thread = threading.Thread(
+        target=coordinator._on_navigation_goal_handle,
+        args=(SimpleNamespace(result=lambda: handle), generation),
+    )
+    callback_thread.start()
+    check_entered.wait(timeout=2.0)
+    reset_thread = threading.Thread(target=coordinator._on_reset_event, args=(None,))
+    reset_thread.start()
+    reset_thread.join(timeout=0.05)
+    assert reset_thread.is_alive()
+    release_check.set()
+    callback_thread.join(timeout=2.0)
+    reset_thread.join(timeout=2.0)
+
+    assert not callback_thread.is_alive()
+    assert not reset_thread.is_alive()
+    assert handle.cancel_calls == 1
+    assert coordinator.navigation_goal_handle is None
+    assert [message.data for message in coordinator.goal_complete_pub.messages] == [False]
+
+
+def test_runtime_empty_snapshot_uses_requested_graph_identity() -> None:
+    class RuntimeArray:
+        def __init__(self):
+            self.header = SimpleNamespace(stamp=None, frame_id='')
+            self.graph_id = ''
+            self.graph_revision = 0
+            self.states = []
+
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.RuntimeEdgeStateArray = RuntimeArray
+    coordinator.frame_id = 'map'
+    coordinator.graph = SimpleNamespace(graph_id='stale-cognitive', revision=9)
+    coordinator.runtime = SimpleNamespace(edges={})
+    coordinator._now = lambda: SimpleNamespace(to_msg=lambda: 'stamp')
+    coordinator.runtime_pub = _CapturePublisher()
+    gvg = SimpleNamespace(graph_id='physical', revision=4)
+
+    coordinator._publish_runtime_states(graph=gvg)
+
+    message = coordinator.runtime_pub.messages[0]
+    assert message.graph_id == 'physical'
+    assert message.graph_revision == 4
+    assert message.states == []
 
 
 def test_post_reset_timers_and_route_callback_cannot_publish_old_request() -> None:
@@ -563,7 +648,7 @@ def test_post_reset_timers_and_route_callback_cannot_publish_old_request() -> No
     coordinator._on_route_result(
         SimpleNamespace(result=lambda: route_result_calls.append(True)), generation)
 
-    assert route_result_calls == []
+    assert route_result_calls == [True]
     assert coordinator.context_pub.messages == []
     assert coordinator.progress_pub.messages == []
     assert coordinator.lookahead_pub.messages == []
@@ -597,6 +682,11 @@ def test_new_goal_preemption_clears_old_tracker_before_context_and_can_restart()
     coordinator._on_goal(goal)
 
     assert handle.cancel_calls == 1
+    assert observed == []
+    assert coordinator.graph_reconciliations[-1] == (
+        'new goal requires Route Server GVG')
+    coordinator.graph_coherent = True
+    coordinator._resume_pending_goal_after_graph_coherent()
     assert observed == [(42, None, goal)]
     assert coordinator.route_active is True
     assert coordinator.navigation_goal_pending is False
@@ -611,6 +701,9 @@ def test_new_goal_preemption_clears_old_tracker_before_context_and_can_restart()
     coordinator._on_goal(fresh_goal)
     assert coordinator.pending_goal is fresh_goal
     assert coordinator.request_id == 44
+    assert prepared == []
+    coordinator.graph_coherent = True
+    coordinator._resume_pending_goal_after_graph_coherent()
     assert prepared == [{}]
 
 

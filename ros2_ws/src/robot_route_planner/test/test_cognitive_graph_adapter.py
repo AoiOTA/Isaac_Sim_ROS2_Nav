@@ -12,7 +12,11 @@ from robot_route_planner.cognitive_graph_adapter import (
 )
 from robot_route_planner.map_io import OccupancyMap
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
-from robot_route_planner.ros_node import GraphSwitchGeneration, RouteCoordinator
+from robot_route_planner.ros_node import (
+    GraphSwitchGeneration,
+    RouteCoordinator,
+    StructuralRebuildGeneration,
+)
 
 
 FOOTPRINT = {
@@ -401,8 +405,9 @@ def test_reset_clears_candidate_generation_state():
     coordinator.latest_priors_graph_revision = 5
     coordinator.cognitive_constraints_cache = SimpleNamespace(
         invalidate=lambda: None)
-    fallbacks = []
-    coordinator._fallback_to_gvg_once = lambda reason: fallbacks.append(reason)
+    reconciliations = []
+    coordinator._publish_runtime_states = lambda **_kwargs: None
+    coordinator._ensure_desired_graph = lambda reason: reconciliations.append(reason)
 
     coordinator._on_reset_event(None)
 
@@ -422,7 +427,7 @@ def test_reset_clears_candidate_generation_state():
     assert coordinator.cognitive_outcome_terminal == set()
     assert coordinator.pending_reroute_outcome is None
     assert coordinator.cognitive_reroute_revision == 0
-    assert fallbacks == ['simulation reset invalidated cognitive graph']
+    assert reconciliations == ['simulation reset requires Route Server GVG']
 
 
 def test_primary_fallback_is_single_and_whole_graph():
@@ -461,8 +466,6 @@ def test_set_route_graph_rejection_requests_one_whole_gvg_fallback():
 
     coordinator._finish_cognitive_graph_switch(
         rejected, coordinator.graph, None, 'selected rejected', False)
-    coordinator._finish_cognitive_graph_switch(
-        rejected, coordinator.graph, None, 'selected rejected again', False)
 
     assert switches == [('physical', 'selected rejected', True)]
 
@@ -473,6 +476,9 @@ def test_old_set_route_graph_callback_generation_is_discarded():
     coordinator.graph_generation = 4
     coordinator.graph_switch_generation = 7
     coordinator.cognitive_graph_switch_pending = True
+    coordinator.StructuralGraphStatus = SimpleNamespace(LAST_KNOWN_GOOD=2)
+    coordinator._publish_structural_status = lambda *_args: None
+    coordinator._primary_fallback_available = lambda: False
     old = GraphSwitchGeneration(7, 8, 4)
     evaluated = []
     future = SimpleNamespace(result=lambda: evaluated.append(True))
@@ -480,8 +486,111 @@ def test_old_set_route_graph_callback_generation_is_discarded():
     coordinator._finish_cognitive_graph_switch(
         future, _physical_graph(), None, 'old switch', False, old)
 
-    assert evaluated == []
-    assert coordinator.cognitive_graph_switch_pending is False
+    assert evaluated == [True]
+    assert coordinator.cognitive_graph_switch_pending is True
+
+
+def _pending_graph_transaction(requested_graph):
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    physical = _physical_graph()
+    physical_support = SimpleNamespace(geojson={'features': []})
+    coordinator.graph = physical
+    coordinator.support = physical_support
+    coordinator.gvg_graph = physical
+    coordinator.gvg_support = physical_support
+    coordinator.map = _map()
+    coordinator.request_id = 10
+    coordinator.graph_generation = 4
+    coordinator.graph_switch_generation = 7
+    coordinator.reset_generation = 0
+    coordinator.structural_generation = 3
+    coordinator.desired_graph_generation = 1
+    coordinator.desired_graph = requested_graph
+    coordinator.desired_support = SimpleNamespace(geojson={'features': []})
+    coordinator.graph_coherent = False
+    transaction = GraphSwitchGeneration(
+        7, None, 4, 0, 1, requested_graph.graph_id, requested_graph.revision)
+    coordinator.graph_transaction_generation = transaction
+    coordinator.cognitive_graph_switch_pending = True
+    coordinator.cognitive_graph_identity = _identity()
+    coordinator.cognitive_graph_last_sequence = 9
+    coordinator.cognitive_graph_feedback_active = None
+    coordinator.cognitive_graph_feedback_pending = None
+    coordinator.cognitive_feedback_sequences = {}
+    coordinator.cognitive_validation_terminal = set()
+    coordinator.cognitive_outcome_terminal = set()
+    coordinator.pending_reroute_outcome = None
+    coordinator.cognitive_reroute_revision = 0
+    coordinator.primary_fallback_used = False
+    coordinator.route_active = False
+    coordinator.pending_goal = None
+    coordinator.navigation_goal_pending = False
+    coordinator.navigation_goal_handle = None
+    coordinator.navigation_goal_targets_final = False
+    coordinator.navigation_failed = False
+    coordinator.runtime = SimpleNamespace(edges={})
+    coordinator.pending_structural_map = None
+    coordinator.cognitive_constraints_cache = SimpleNamespace(invalidate=lambda: None)
+    coordinator.region_selector = None
+    coordinator.tf_buffer = None
+    coordinator._publish_runtime_states = lambda **_kwargs: None
+    coordinator._publish_structural_status = lambda *_args: None
+    coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+        info=lambda *_args: None, warning=lambda *_args: None))
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    coordinator.module2_enabled = False
+    coordinator.requests = []
+    coordinator._request_graph_switch = lambda graph, reason, fallback: (
+        coordinator.requests.append((graph.graph_id, reason, fallback)))
+    return coordinator, transaction
+
+
+def test_reset_stale_cognitive_success_requests_gvg_compensation():
+    cognitive = Graph('cognitive', 5, 'map', 0.05, [], [])
+    coordinator, transaction = _pending_graph_transaction(cognitive)
+    support = SimpleNamespace(geojson={'features': []})
+    result_calls = []
+
+    coordinator._on_reset_event(None)
+    coordinator._finish_cognitive_graph_switch(
+        SimpleNamespace(result=lambda: (
+            result_calls.append(True) or SimpleNamespace(success=True))),
+        cognitive, support, 'late cognitive', False, transaction,
+    )
+
+    assert result_calls == [True]
+    assert coordinator.graph.graph_id == 'physical'
+    assert coordinator.graph_transaction_generation is None
+    assert coordinator.graph_coherent is False
+    assert coordinator.requests == [
+        ('physical', 'stale SetRouteGraph success', True)]
+
+
+def test_rebuild_reset_fresh_goal_late_success_does_not_commit_old_graph():
+    rebuilt = Graph('rebuilt', 5, 'map:structural', 0.05, [], [])
+    coordinator, transaction = _pending_graph_transaction(rebuilt)
+    old_map = coordinator.map
+    rebuilt_map = _map(wall=True)
+    support = SimpleNamespace(geojson={'features': []})
+    generation = StructuralRebuildGeneration(
+        10, 0, 3, 1, rebuilt.graph_id, rebuilt.revision)
+    goal = SimpleNamespace(pose=SimpleNamespace(
+        position=SimpleNamespace(x=1.0, y=2.0)))
+
+    coordinator._on_reset_event(None)
+    coordinator._on_goal(goal)
+    coordinator._finish_rebuild(
+        SimpleNamespace(result=lambda: SimpleNamespace(success=True)),
+        rebuilt, rebuilt_map, support, generation, transaction,
+    )
+
+    assert coordinator.graph.graph_id == 'physical'
+    assert coordinator.gvg_graph.graph_id == 'physical'
+    assert coordinator.map is old_map
+    assert coordinator.pending_goal is goal
+    assert coordinator.requests == [
+        ('physical', 'stale structural rebuild success', True)]
 
 
 def test_shadow_validation_ack_is_not_an_execution_outcome():

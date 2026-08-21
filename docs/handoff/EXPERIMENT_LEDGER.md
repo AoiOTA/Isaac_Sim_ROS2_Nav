@@ -744,6 +744,39 @@
   and successful fresh-goal restart.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
 
+## 2026-08-22 — V6 RouteCoordinator concurrency and graph-authority amendment
+
+- Goal/hypothesis: close the reset review blockers caused by multithreaded
+  generation-check/state-commit TOCTOU, stale successful `SetRouteGraph`
+  responses, stale structural rebuilds, and a missing empty transient runtime
+  snapshot, while retaining the original single-abort/no-fake-terminal route
+  retirement semantics.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `baa05f96061bb8084c71d258216fe0aa105568cc`, fixed-main ancestor
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Changes: shared `RLock` around route/action generation checks plus local
+  commits; stale accepted action-handle cancellation; desired-GVG authority on
+  reset/preemption; one serialized graph transaction with stale-response
+  consumption and compensation; request/reset/structural/desired tokens for
+  rebuild commit; fail-closed route preparation while graph state is
+  incoherent; explicit empty transient-local runtime-edge snapshot after reset.
+- Tests: deterministic `threading.Barrier` reset/callback interleaving; stale
+  cognitive success -> GVG compensation; rebuild -> reset -> fresh goal ->
+  late success; empty runtime snapshot identity; existing old-request,
+  terminal, preemption, and fresh-goal coverage.
+- Validation: source-first focused route/graph **73 passed**; complete route
+  package **97 passed, 1 skipped** (`pxr` unavailable); pure ActivationGate and
+  mode-contract **44 passed**; changed-file `py_compile` and `git diff --check`
+  PASS; fresh isolated build PASS and `colcon test` **98 tests, 0 errors,
+  0 failures, 1 skipped** at `/tmp/bionav_route_concurrency.j12692`.
+- Verdict: **PASS (review blockers closed in code/build/unit only)**. No ROS
+  graph, Isaac, Nav2, navigation, visual evidence, engineering campaign, or
+  formal qualification was run.
+- Remaining risk/next: live reset/action-server/DDS ordering, ActivationGate
+  cancel-all interaction, StopGate command behavior, and fresh-goal restart
+  remain pending an explicitly authorized live review.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
 ## 2026-08-22 — V6 reset seed receipt and final command ResetStopGate
 
 - Goal: close the CLI/startup/Trigger reset-seed divergence and remove Isaac's
