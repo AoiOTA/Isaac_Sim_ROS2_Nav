@@ -328,3 +328,28 @@
   **ENGINEERING_CAUSAL_NOT_RUN** for live evidence. No ROS/Isaac/Nav2,
   12-row campaign, causal result, visual result, or formal qualification ran.
 - Handoff: `docs/handoff/V6_LOW_OBSTACLE_CAUSAL_RUNNER_20260821.md`.
+
+## 2026-08-21 — V6 L0--L3 localization causal runner and true-kidnap skeleton
+
+- Goal: freeze the 60-row localization causal contract, add an absolute-map
+  passive evaluator, and provide a fail-closed physical kidnap primitive without
+  fabricating live or causal evidence.
+- Worktree / parent: Module3 `cognitive-navigation` at
+  `9a9725729972d58d40c1614038fc720cbd8dad1f`; delivered in the single commit
+  containing this ledger row.
+- Changes: new L0--L3 manifest/plan/evaluator/entrypoint/tests; S0/S3/W0 seeds
+  and counterbalanced order; S1/S2 preflight definitions; GT-free dispatcher;
+  absolute position/yaw error, convergence/lost/recovery/P95/wrong-reseed and
+  safety criteria; realistic-only explicitly armed one-shot
+  `/simulation/kidnap` Trigger with fresh stable zero-command guard and
+  pre/post articulation zeroing; minimal Isaac app wiring.
+- Validation: pycompile PASS; focused new + V6 formal/causal/reset pytest
+  `66 passed`; wrapper `bash -n` PASS; `git diff --check` PASS; isolated
+  `robot_experiments` build and installed 60-row manifest/plan/NOT_RUN checks
+  PASS at `/tmp/v6_localization_causal_build.61UoeJ`.
+- Result: **PASS (code-level contract only)**. Core 60 and preflights are
+  **ENGINEERING_CAUSAL_NOT_RUN**; no ROS/Isaac navigation, causal result, or
+  qualification was claimed.
+- Remaining: live Trigger/Kit behavior, route-idle adapter enforcement, actual
+  S1/S2 preflights, core 60 execution, passive evidence capture, and review.
+- Handoff: `docs/handoff/V6_LOCALIZATION_CAUSAL_RUNNER_20260821.md`.

@@ -1,0 +1,94 @@
+schema_version: bio_nav_v6_localization_causal_manifest_v1
+qualification: ENGINEERING_CAUSAL_NOT_RUN
+
+common_runtime:
+  scene_id: kujiale_0026_A_to_B_door_open
+  odometry_mode: estimated
+  cognitive_profile: M0
+  module2_planning_influence: false
+  cognitive_graph_mode: gvg
+  direct_rgbd_costmap_enabled: false
+  use_rviz: false
+  structure_tf_source: isaac
+  goal_id: G2
+  initial_physical_pose: long_route_start_g2
+  automatic_rescue_enabled: false
+
+arms:
+  L0:
+    integration_enabled: false
+    localization_profile: conventional
+    integration_mode: "off"
+    startup_initialpose_writes: 0
+    manual_rescue_allowed_after_lost: false
+  L1:
+    integration_enabled: true
+    localization_profile: estimated_shadow
+    integration_mode: shadow
+    startup_initialpose_writes: 0
+    manual_rescue_allowed_after_lost: false
+  L2:
+    integration_enabled: true
+    localization_profile: estimated_shadow
+    integration_mode: startup
+    startup_initialpose_writes: 1
+    manual_rescue_allowed_after_lost: false
+  L3:
+    integration_enabled: true
+    localization_profile: estimated_autonomy
+    integration_mode: active
+    startup_initialpose_writes: 1
+    manual_rescue_allowed_after_lost: true
+
+cases:
+  S0:
+    name: startup_convergence
+    seeds: [8701, 8702, 8703, 8704, 8705]
+    conventional_coarse_offset: {x_m: 1.0, y_m: -0.5, yaw_deg: 20.0}
+  S3:
+    name: true_kidnap_G2_to_physical_G5
+    seeds: [8731, 8732, 8733, 8734, 8735]
+    source_pose: long_route_start_g2
+    kidnap_pose: long_route_start_g5
+    reset_odom_ekf_amcl: false
+  W0:
+    name: healthy_amcl_wrong_reseed_guard
+    seeds: [8741, 8742, 8743, 8744, 8745]
+    manual_request: false
+    allowed_initialpose_writes: 0
+
+engineering_preflights:
+  - {case: S1, seed: 8711, arm: L2, purpose: startup_seed_path_preflight, counts_toward_core60: false}
+  - {case: S2, seed: 8721, arm: L3, purpose: kidnap_guard_and_manual_rescue_preflight, counts_toward_core60: false}
+
+capture:
+  dispatcher_topics:
+    - /odom
+    - /amcl_pose
+    - /initialpose
+    - /cmd_vel
+    - /plan
+    - /bio_nav/localization/status
+    - /bio_nav/localization/request_manual_rescue
+    - /simulation/localization_seeded
+  passive_evaluator_topics:
+    - /ground_truth/odom
+    - /simulation/collision
+    - /simulation/collision_diagnostics
+
+criteria:
+  synchronization_tolerance_s: 0.10
+  converged_position_error_m: 0.25
+  converged_yaw_error_deg: 10.0
+  convergence_hold_s: 2.0
+  lost_position_error_m: 0.75
+  lost_yaw_error_deg: 20.0
+  lost_hold_s: 1.0
+  l2_convergence_max_s: 5.0
+  l3_recovery_max_s: 8.0
+  required_successes_of_five: 4
+  improvement_fraction: 0.30
+  improvement_absolute_s: 2.0
+  zero_cmd_epsilon: 0.000001
+  wrong_reseed_allowed: 0
+  collisions_allowed: 0

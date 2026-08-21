@@ -492,6 +492,7 @@ def run(
     camera_graph_paths: tuple[str, ...] = ()
     node = None
     reset_bridge = None
+    kidnap_bridge = None
     appearance_manager = None
     paired_appearance_capture = None
     odom_phase_trace = None
@@ -1494,6 +1495,17 @@ def run(
                 SimulationManager.get_simulation_time()
             ),
         )
+        from isaac_sim.src.bridge.kidnap_service import KidnapServiceBridge
+
+        kidnap_bridge = KidnapServiceBridge(
+            node,
+            spawn_manager,
+            odometry_mode=config.simulation.odometry_mode,
+            simulation_time=lambda: float(
+                SimulationManager.get_simulation_time()
+            ),
+        )
+
         def dynamic_robot_state() -> dict[str, float]:
             """Robot state in map coordinates for the dynamic safety gate."""
             position, orientation = robot.get_world_pose()
@@ -2372,6 +2384,14 @@ def run(
             except Exception as exc:
                 print(
                     f"warning: failed to release Camera resources cleanly: {exc}",
+                    file=sys.stderr,
+                )
+        if kidnap_bridge is not None:
+            try:
+                kidnap_bridge.close()
+            except Exception as exc:
+                print(
+                    f"warning: failed to close kidnap bridge cleanly: {exc}",
                     file=sys.stderr,
                 )
         if reset_bridge is not None:
