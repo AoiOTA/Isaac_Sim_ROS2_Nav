@@ -1354,3 +1354,29 @@
   executor/DDS ordering, old-request silence and zero command through HOLD, and
   successful fresh-goal recovery.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
+## 2026-08-22 — V6 corrected IMU header-stamp authority
+
+- Goal: prevent corrected IMU bag-record time from silently replacing the
+  sensor header time used to derive the goal yaw-scale candidate.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `6e3deb2c777977e144e0c001bbaa2a504cbeafaf`.
+- Changes: raw IMU, corrected IMU, and GT now require positive message header
+  stamps for goal-MCAP evidence; corrected IMU no longer falls back to bag
+  time. Header order, attempt-window coverage, maximum gap, common grid, and
+  integration all use the header domain. No record/header skew threshold was
+  introduced.
+- Adversarial coverage: corrected zero/duplicate/backward/shifted-stale
+  headers and a valid `100 s` shifted, jittered bag-time case; existing
+  goal-attempt, reset-boundary, duration, terminal, gap, and installed-share
+  regressions remain passing.
+- Validation: source-first focused **52 passed**; fresh build/install PASS at
+  `/tmp/v6_imu_header_stamp.hHu18p`; fresh-installed focused **52 passed**;
+  installed import/entrypoint, changed-file `py_compile`, and
+  `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP capture,
+  navigation, calibration choice, or formal qualification was run. Live
+  regime closure remains pending; `yaw_scale=0.9294` and RF2O-off are
+  unchanged.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.

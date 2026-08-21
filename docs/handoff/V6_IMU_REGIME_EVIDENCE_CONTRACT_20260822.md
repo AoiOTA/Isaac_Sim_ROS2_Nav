@@ -208,3 +208,32 @@ Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP,
 navigation, calibration selection, or formal qualification was run; the live
 regime capture is still pending. Frozen `yaw_scale=0.9294` and RF2O-off are
 unchanged.
+
+## Corrected IMU header-stamp authority closure
+
+- Follow-up start HEAD:
+  `6e3deb2c777977e144e0c001bbaa2a504cbeafaf`.
+- `/imu/data_raw`, `/imu/data`, and `/ground_truth/odom` now always use their
+  message header stamps in goal-MCAP analysis. Corrected IMU can no longer
+  fall back to bag record time. Missing, zero, duplicate, and backward header
+  stamps fail closed.
+- Bag record time is not used for yaw-stream ordering, attempt-window
+  selection, maximum-gap checks, interpolation, or integration. A corrected
+  header stream that is ordered but does not cover the command-derived common
+  window remains `AMBIGUOUS` under the existing `0.25 s` coverage contract;
+  no record/header skew threshold was added.
+- Adversarial tests cover corrected zero, duplicate, backward, and shifted
+  stale headers, plus a valid raw/corrected/GT case whose sensor bag times are
+  shifted by `100 s` and jittered while authoritative headers remain valid.
+  Existing route-request, reset-equal boundary, command-duration, terminal,
+  gap, and installed-resource-share tests remain in the same focused suite.
+- Source-first focused tests: **52 passed**. Fresh build/install PASS at
+  `/tmp/v6_imu_header_stamp.hHu18p`; fresh-installed focused tests:
+  **52 passed**. Installed import resolves inside that prefix and the installed
+  `imu_regime_analysis --help`, changed-file `py_compile`, and
+  `git diff --check` pass.
+
+Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP
+capture, navigation, calibration selection, or formal qualification was run.
+The live regime capture remains pending; `yaw_scale=0.9294` and RF2O-off are
+unchanged.

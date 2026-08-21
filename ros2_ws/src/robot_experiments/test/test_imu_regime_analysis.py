@@ -580,7 +580,10 @@ def _goal_records(
     *, collision=False, completion=True, completions=None, raw_nonfinite=False,
     second_reset=False, duplicate_raw=False, raw_gap=False,
     corrected_gap=False, route_request=False, post_terminal_command=False,
-    extra_commands=(), sample_start=2.0, sample_count=11,
+    duplicate_corrected=False, backward_corrected=False,
+    zero_corrected=False, corrected_header_offset_s=0.0,
+    sensor_bag_time_offset_s=0.0, extra_commands=(), sample_start=2.0,
+    sample_count=11,
 ):
     def stamp(value):
         sec = int(value)
@@ -636,16 +639,29 @@ def _goal_records(
         for value, linear, angular in extra_commands
     )
     for index, value in enumerate(raw_times):
-        records.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), int(value * 1e9)))
-    for value in sample_times:
-        records.append(("/ground_truth/odom", odom(value, 0.5 * (value - 2.0)), int(value * 1e9)))
+        jitter = (0.03 if index % 2 else -0.03) if sensor_bag_time_offset_s else 0.0
+        recorded = value + sensor_bag_time_offset_s + jitter
+        records.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), int(recorded * 1e9)))
+    for index, value in enumerate(sample_times):
+        jitter = (0.02 if index % 2 else -0.02) if sensor_bag_time_offset_s else 0.0
+        recorded = value + sensor_bag_time_offset_s + jitter
+        records.append(("/ground_truth/odom", odom(value, 0.5 * (value - 2.0)), int(recorded * 1e9)))
         records.append(("/cmd_vel", twist(0.25, 0.4), int(value * 1e9)))
     corrected_times = (
         [value for value in sample_times if value < 2.4 or value > 2.9]
         if corrected_gap else sample_times
     )
-    for value in corrected_times:
-        records.append(("/imu/data", imu(value, 0.465), int(value * 1e9)))
+    corrected_header_times = [value + corrected_header_offset_s for value in corrected_times]
+    if duplicate_corrected:
+        corrected_header_times[2] = corrected_header_times[1]
+    if backward_corrected:
+        corrected_header_times[2] = corrected_header_times[1] - 0.05
+    if zero_corrected:
+        corrected_header_times[0] = 0.0
+    for index, (recorded_base, header_value) in enumerate(zip(corrected_times, corrected_header_times)):
+        jitter = (0.04 if index % 2 else -0.04) if sensor_bag_time_offset_s else 0.0
+        recorded = recorded_base + sensor_bag_time_offset_s + jitter
+        records.append(("/imu/data", imu(header_value, 0.465), int(recorded * 1e9)))
     records.extend([
         ("/simulation/collision", SimpleNamespace(data=collision), int(2.5e9)),
         ("/simulation/collision", SimpleNamespace(data=False), int(3.4e9)),
@@ -721,6 +737,45 @@ def test_goal_mcap_derives_arrays_and_ignores_manual_arrays(monkeypatch, tmp_pat
     assert result["stream_coverage"]["maximum_gap_s"]["raw"] == pytest.approx(0.1)
     assert result["stream_coverage"]["maximum_gap_s"]["ground_truth"] == pytest.approx(0.1)
     assert result["stream_coverage"]["common_coverage_fraction"] == pytest.approx(1.0)
+
+
+def test_goal_mcap_imu_headers_are_authoritative_over_jittered_bag_time(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch,
+        _goal_types(corrected=True),
+        _goal_records(sensor_bag_time_offset_s=100.0),
+    )
+    result = load_goal_mcap(bag, _goal_metadata(bag))
+    assert result["goal_window"]["common_t0_s"] == pytest.approx(2.0)
+    assert result["goal_window"]["common_t1_s"] == pytest.approx(3.0)
+    assert result["stream_coverage"]["maximum_gap_s"]["raw"] == pytest.approx(0.1)
+    assert result["stream_coverage"]["maximum_gap_s"]["corrected"] == pytest.approx(0.1)
+    assert result["corrected_integrated_yaw_rad"][-1] == pytest.approx(0.465)
+
+
+@pytest.mark.parametrize(
+    "record_options,expected_verdict,expected_code",
+    [
+        ({"zero_corrected": True}, "FAIL", "goal_stamp_invalid"),
+        ({"duplicate_corrected": True}, "FAIL", "goal_stamp_order"),
+        ({"backward_corrected": True}, "FAIL", "goal_stamp_order"),
+        ({"corrected_header_offset_s": -0.5}, "AMBIGUOUS", "goal_sample_gap"),
+    ],
+)
+def test_goal_mcap_rejects_invalid_or_stale_corrected_headers(
+    monkeypatch, tmp_path, record_options, expected_verdict, expected_code,
+):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch,
+        _goal_types(corrected=True),
+        _goal_records(**record_options),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag))
+    assert raised.value.verdict == expected_verdict
+    assert raised.value.code == expected_code
 
 
 def test_goal_mcap_binds_single_route_request_and_checks_metadata(monkeypatch, tmp_path):

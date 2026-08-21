@@ -1192,7 +1192,7 @@ def load_mcap(path: Path) -> McapStreams:
         message = deserialize_message(payload, message_types[topic])
         stamp = message.header.stamp
         stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
-        if not math.isfinite(stamp_s) or stamp_s < 0.0:
+        if not math.isfinite(stamp_s) or stamp_s <= 0.0:
             raise _evidence_issue("FAIL", "mcap_stamp_nonfinite", f"{topic} has an invalid header stamp")
         if topic == "/ground_truth/odom":
             q = message.pose.pose.orientation
@@ -1234,8 +1234,11 @@ def load_mcap(path: Path) -> McapStreams:
 
 def _record_stamp_s(message: Any, recorded_ns: Any, *, topic: str) -> float:
     stamp = None
-    if topic in {"/imu/data_raw", "/ground_truth/odom"}:
+    header_topics = {"/imu/data_raw", "/imu/data", "/ground_truth/odom"}
+    if topic in header_topics:
         stamp = getattr(getattr(message, "header", None), "stamp", None)
+        if stamp is None:
+            raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has no header stamp")
     elif topic == "/rosout":
         stamp = getattr(message, "stamp", None)
     if stamp is not None:
@@ -1257,6 +1260,8 @@ def _record_stamp_s(message: Any, recorded_ns: Any, *, topic: str) -> float:
         value = float(recorded_ns) * 1.0e-9
     if not math.isfinite(value) or value < 0.0:
         raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has a non-finite/negative stamp")
+    if topic in header_topics and value == 0.0:
+        raise _evidence_issue("FAIL", "goal_stamp_invalid", f"{topic} has a zero header stamp")
     return value
 
 
