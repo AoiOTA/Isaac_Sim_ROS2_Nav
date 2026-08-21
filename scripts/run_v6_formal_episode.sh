@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 
 usage() {
   echo "usage: $0 --pilot [--dispatch-pilot] MANIFEST [runner arguments...]" >&2
