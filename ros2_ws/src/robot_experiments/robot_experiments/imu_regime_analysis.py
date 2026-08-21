@@ -94,6 +94,10 @@ GOAL_TOPIC_TYPES = {
     "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
     "/rosout": "rcl_interfaces/msg/Log",
 }
+GOAL_OPTIONAL_TOPIC_TYPES = {
+    "/imu/data": "sensor_msgs/msg/Imu",
+    "/bio_nav/route_goal": "geometry_msgs/msg/PoseStamped",
+}
 RESOURCE_MANIFEST = "v6_imu_regime_resources.json"
 
 
@@ -641,6 +645,8 @@ def validate_goal_evidence(
         "collision_detected",
         "bag_verified",
         "goal_window",
+        "attempt_provenance",
+        "stream_coverage",
         "raw_integrated_yaw_rad",
         "ground_truth_relative_yaw_rad",
     }
@@ -691,6 +697,25 @@ def validate_goal_evidence(
     end_s = _finite(window.get("end_s"), name="goal_window.end_s")
     if end_s <= start_s:
         raise _evidence_issue("FAIL", "goal_window_invalid", "goal window is empty or reversed")
+    attempt = goal["attempt_provenance"]
+    if (
+        not isinstance(attempt, dict)
+        or attempt.get("terminal_count") != 1
+        or attempt.get("terminal_values") != [True]
+        or not isinstance(attempt.get("terminal_timestamps_s"), list)
+        or len(attempt["terminal_timestamps_s"]) != 1
+    ):
+        raise _evidence_issue("FAIL", "goal_attempt_invalid", "goal evidence is not bound to one successful terminal")
+    coverage = goal["stream_coverage"]
+    if not isinstance(coverage, dict) or coverage.get("maximum_allowed_gap_s") != MAX_SAMPLE_GAP_S:
+        raise _evidence_issue("FAIL", "goal_coverage_invalid", "goal stream coverage contract is invalid")
+    maximum_gaps = coverage.get("maximum_gap_s")
+    if not isinstance(maximum_gaps, dict) or not {"raw", "ground_truth"}.issubset(maximum_gaps):
+        raise _evidence_issue("FAIL", "goal_coverage_invalid", "goal stream gap evidence is incomplete")
+    for name, value in maximum_gaps.items():
+        gap = _finite(value, name=f"goal.stream_coverage.maximum_gap_s.{name}")
+        if gap > MAX_SAMPLE_GAP_S:
+            raise _evidence_issue("AMBIGUOUS", "goal_sample_gap", f"goal {name} stream gap exceeds {MAX_SAMPLE_GAP_S} s")
     raw = goal.get("raw_integrated_yaw_rad")
     gt = goal.get("ground_truth_relative_yaw_rad")
     if not isinstance(raw, list) or not isinstance(gt, list) or len(raw) != len(gt) or len(raw) < 3:
@@ -1289,6 +1314,69 @@ def _validate_goal_metadata(metadata: Any, goal_mcap: Path) -> dict[str, Any]:
     return metadata
 
 
+def _goal_request_identity(message: Any, recorded_s: float) -> dict[str, Any]:
+    """Return the bounded PoseStamped identity available in a goal MCAP."""
+
+    header = getattr(message, "header", None)
+    frame_id = getattr(header, "frame_id", None)
+    stamp = getattr(header, "stamp", None)
+    sec = getattr(stamp, "sec", None)
+    nanosec = getattr(stamp, "nanosec", None)
+    pose = getattr(message, "pose", None)
+    position = getattr(pose, "position", None)
+    orientation = getattr(pose, "orientation", None)
+    if (
+        not isinstance(frame_id, str) or not frame_id
+        or isinstance(sec, bool) or not isinstance(sec, int)
+        or isinstance(nanosec, bool) or not isinstance(nanosec, int)
+        or nanosec < 0 or nanosec >= 1_000_000_000
+    ):
+        raise _evidence_issue("FAIL", "goal_request_invalid", "route goal header identity is invalid")
+    try:
+        position_values = [float(getattr(position, key)) for key in ("x", "y", "z")]
+        orientation_values = [float(getattr(orientation, key)) for key in ("x", "y", "z", "w")]
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise _evidence_issue("FAIL", "goal_request_invalid", "route goal pose identity is invalid") from exc
+    if not all(math.isfinite(value) for value in (*position_values, *orientation_values)):
+        raise _evidence_issue("FAIL", "goal_request_invalid", "route goal pose identity is non-finite")
+    norm = math.sqrt(sum(value * value for value in orientation_values))
+    if abs(norm - 1.0) > 1.0e-3:
+        raise _evidence_issue("FAIL", "goal_request_invalid", f"route goal quaternion norm is {norm}")
+    return {
+        "recorded_s": recorded_s,
+        "header_stamp_s": float(sec) + float(nanosec) * 1.0e-9,
+        "frame_id": frame_id,
+        "position_m": position_values,
+        "orientation_xyzw": orientation_values,
+    }
+
+
+def _check_goal_request_metadata(observed: dict[str, Any], metadata: dict[str, Any]) -> None:
+    expected = metadata.get("route_goal_request")
+    if not isinstance(expected, dict):
+        raise _evidence_issue(
+            "AMBIGUOUS", "goal_request_metadata_missing",
+            "goal MCAP contains a route request but metadata has no route_goal_request identity",
+        )
+    if set(expected) != set(observed):
+        raise _evidence_issue("FAIL", "goal_request_mismatch", "route goal metadata identity fields mismatch")
+    for key in ("recorded_s", "header_stamp_s"):
+        if _finite(expected.get(key), name=f"goal.route_goal_request.{key}") != observed[key]:
+            raise _evidence_issue("FAIL", "goal_request_mismatch", f"route goal metadata {key} mismatch")
+    if expected.get("frame_id") != observed["frame_id"]:
+        raise _evidence_issue("FAIL", "goal_request_mismatch", "route goal metadata frame mismatch")
+    for key in ("position_m", "orientation_xyzw"):
+        values = expected.get(key)
+        if not isinstance(values, list) or len(values) != len(observed[key]):
+            raise _evidence_issue("FAIL", "goal_request_mismatch", f"route goal metadata {key} is invalid")
+        try:
+            numeric = [float(value) for value in values]
+        except (TypeError, ValueError) as exc:
+            raise _evidence_issue("FAIL", "goal_request_mismatch", f"route goal metadata {key} is invalid") from exc
+        if numeric != observed[key]:
+            raise _evidence_issue("FAIL", "goal_request_mismatch", f"route goal metadata {key} mismatch")
+
+
 def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     """Derive goal yaw arrays and all authority facts directly from one MCAP."""
 
@@ -1314,17 +1402,31 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         for topic, expected in GOAL_TOPIC_TYPES.items()
         if topic_types[topic] != expected
     }
+    wrong.update({
+        topic: {"expected": expected, "actual": topic_types[topic]}
+        for topic, expected in GOAL_OPTIONAL_TOPIC_TYPES.items()
+        if topic in topic_types and topic_types[topic] != expected
+    })
     if wrong:
         raise _evidence_issue("FAIL", "goal_mcap_topic_type", f"goal MCAP topic types mismatch: {wrong}")
-    message_types = {topic: get_message(topic_types[topic]) for topic in GOAL_TOPIC_TYPES}
+    selected_topic_types = {
+        **GOAL_TOPIC_TYPES,
+        **{
+            topic: expected for topic, expected in GOAL_OPTIONAL_TOPIC_TYPES.items()
+            if topic in topic_types
+        },
+    }
+    message_types = {topic: get_message(topic_types[topic]) for topic in selected_topic_types}
     raw: list[ScalarSample] = []
+    corrected: list[ScalarSample] = []
     gt: list[YawSample] = []
     commands: list[tuple[float, float, float]] = []
     reset_events: list[float] = []
     collisions: list[tuple[float, bool]] = []
     completions: list[tuple[float, bool]] = []
+    route_requests: list[tuple[float, dict[str, Any]]] = []
     receipt_logs: list[tuple[float, dict[str, Any]]] = []
-    topic_stamps: dict[str, list[float]] = {topic: [] for topic in GOAL_TOPIC_TYPES}
+    topic_stamps: dict[str, list[float]] = {topic: [] for topic in selected_topic_types}
     epoch_started = False
     while reader.has_next():
         topic, payload, recorded_ns = reader.read_next()
@@ -1343,7 +1445,7 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         if not epoch_started:
             continue
         topic_stamps[topic].append(stamp_s)
-        if topic == "/imu/data_raw":
+        if topic in {"/imu/data_raw", "/imu/data"}:
             angular = getattr(message, "angular_velocity", None)
             values = [getattr(angular, key, None) for key in ("x", "y", "z")]
             try:
@@ -1352,7 +1454,8 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
                 raise _evidence_issue("FAIL", "goal_imu_invalid", "goal raw IMU angular velocity is invalid") from exc
             if not all(math.isfinite(value) for value in numbers):
                 raise _evidence_issue("FAIL", "goal_imu_nonfinite", "goal raw IMU angular velocity is non-finite")
-            raw.append(ScalarSample(stamp_s, numbers[2]))
+            target = raw if topic == "/imu/data_raw" else corrected
+            target.append(ScalarSample(stamp_s, numbers[2]))
         elif topic == "/ground_truth/odom":
             orientation = getattr(getattr(getattr(message, "pose", None), "pose", None), "orientation", None)
             try:
@@ -1387,6 +1490,8 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
             if not isinstance(value, bool):
                 raise _evidence_issue("FAIL", "goal_outcome_type", "goal completion sample is not boolean")
             completions.append((stamp_s, value))
+        elif topic == "/bio_nav/route_goal":
+            route_requests.append((stamp_s, _goal_request_identity(message, stamp_s)))
         elif topic == "/rosout":
             receipt = _reset_receipt_from_log(message)
             if receipt is not None:
@@ -1408,19 +1513,59 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     ):
         raise _evidence_issue("FAIL", "goal_reset_mismatch", "goal MCAP reset receipt does not match metadata")
     reset_s = reset_events[0]
-    successful = [stamp for stamp, value in completions if value and stamp > reset_s]
-    if len(successful) != 1:
-        verdict = "AMBIGUOUS" if not successful else "FAIL"
-        raise _evidence_issue(verdict, "goal_outcome_count", "goal MCAP must contain exactly one fresh successful route completion")
-    completed_s = successful[0]
+    if len(completions) != 1:
+        verdict = "AMBIGUOUS" if not completions else "FAIL"
+        raise _evidence_issue(
+            verdict, "goal_outcome_count",
+            "goal MCAP must contain exactly one fresh route terminal; "
+            f"count={len(completions)}, timestamps_s={[stamp for stamp, _value in completions]}, "
+            f"values={[value for _stamp, value in completions]}",
+        )
+    completed_s, completed = completions[0]
+    if not completed:
+        raise _evidence_issue(
+            "FAIL", "goal_outcome_false",
+            f"the only fresh route terminal is false at {completed_s} s",
+        )
+    if not reset_s < completed_s:
+        raise _evidence_issue("FAIL", "goal_outcome_order", "route terminal does not follow the reset")
+    request_identity = None
+    request_s = reset_s
+    binding_source = "reset_terminal_single_command_attempt"
+    if route_requests:
+        if len(route_requests) != 1:
+            raise _evidence_issue(
+                "FAIL", "goal_request_count",
+                "goal MCAP must contain one fresh route request when that topic is recorded; "
+                f"count={len(route_requests)}, timestamps_s={[stamp for stamp, _identity in route_requests]}",
+            )
+        request_s, request_identity = route_requests[0]
+        if not reset_s < request_s < completed_s:
+            raise _evidence_issue("FAIL", "goal_request_order", "route goal request is outside the fresh terminal window")
+        _check_goal_request_metadata(request_identity, metadata)
+        binding_source = "route_goal_pose_stamped"
     collision_window = [value for stamp, value in collisions if reset_s <= stamp <= completed_s]
     if not collision_window:
         raise _evidence_issue("AMBIGUOUS", "goal_collision_missing", "goal MCAP has no collision samples in the goal epoch")
     if any(collision_window):
         raise _evidence_issue("FAIL", "goal_collision", "goal MCAP reports a collision")
+    abnormal_before = [
+        item for item in commands
+        if reset_s < item[0] < request_s
+        and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
+    ]
+    abnormal_after = [
+        item for item in commands
+        if item[0] >= completed_s
+        and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
+    ]
+    if abnormal_before:
+        raise _evidence_issue("FAIL", "goal_command_before_request", "nonzero command precedes the bound route request")
+    if abnormal_after:
+        raise _evidence_issue("FAIL", "goal_command_after_terminal", "nonzero command follows the route terminal")
     nonzero = [
         item for item in commands
-        if reset_s < item[0] < completed_s
+        if request_s <= item[0] < completed_s
         and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
     ]
     if len(nonzero) < 3:
@@ -1433,18 +1578,39 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     if command_gaps and max(command_gaps) > 1.0:
         raise _evidence_issue("AMBIGUOUS", "goal_command_gap", "goal MCAP nonzero command coverage has a gap above 1 s")
     raw_window = _window_scalar(raw, start_s, end_s)
+    corrected_window = _window_scalar(corrected, start_s, end_s) if "/imu/data" in selected_topic_types else []
     gt_window = _window_yaw(gt, start_s, end_s)
-    if len(raw_window) < 3 or len(gt_window) < 3:
+    if len(raw_window) < 3 or len(gt_window) < 3 or ("/imu/data" in selected_topic_types and len(corrected_window) < 3):
         raise _evidence_issue("AMBIGUOUS", "goal_samples_insufficient", "goal MCAP yaw streams do not cover the command window")
     quality = {"raw": _stamp_quality(raw_window), "ground_truth": _stamp_quality(gt_window)}
+    if "/imu/data" in selected_topic_types:
+        quality["corrected"] = _stamp_quality(corrected_window)
     if any(
         item["duplicate_count"] or item["backward_count"]
         or item["nonfinite_count"] or item["nonfinite_value_count"]
         for item in quality.values()
     ):
         raise _evidence_issue("FAIL", "goal_samples_invalid", "goal MCAP yaw stamps/values are invalid")
-    t0 = max(raw_window[0].stamp_s, gt_window[0].stamp_s)
-    t1 = min(raw_window[-1].stamp_s, gt_window[-1].stamp_s)
+    coverage_streams: dict[str, Sequence[ScalarSample | YawSample]] = {
+        "raw": raw_window, "ground_truth": gt_window,
+    }
+    if "/imu/data" in selected_topic_types:
+        coverage_streams["corrected"] = corrected_window
+    maximum_gaps = {name: _maximum_gap(samples) for name, samples in coverage_streams.items()}
+    t0 = max(samples[0].stamp_s for samples in coverage_streams.values())
+    t1 = min(samples[-1].stamp_s for samples in coverage_streams.values())
+    coverage_duration = t1 - t0
+    window_duration = end_s - start_s
+    if (
+        coverage_duration < MIN_WINDOW_DURATION_S
+        or t0 - start_s > MAX_SAMPLE_GAP_S
+        or end_s - t1 > MAX_SAMPLE_GAP_S
+        or any(gap is None or gap > MAX_SAMPLE_GAP_S for gap in maximum_gaps.values())
+    ):
+        raise _evidence_issue(
+            "AMBIGUOUS", "goal_sample_gap",
+            "goal yaw stream coverage is incomplete or contains a gap above 0.25 s",
+        )
     grid = sorted({
         t0, t1,
         *[item.stamp_s for item in raw_window if t0 <= item.stamp_s <= t1],
@@ -1453,12 +1619,21 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     raw_values = [_interpolate([item.stamp_s for item in raw_window], [item.value for item in raw_window], stamp) for stamp in grid]
     gt_unwrapped = _unwrap([item.yaw_rad for item in gt_window])
     gt_values = [_interpolate([item.stamp_s for item in gt_window], gt_unwrapped, stamp) for stamp in grid]
-    if len(grid) < 3 or any(value is None for value in (*raw_values, *gt_values)):
+    corrected_values = (
+        [_interpolate([item.stamp_s for item in corrected_window], [item.value for item in corrected_window], stamp) for stamp in grid]
+        if corrected_window else []
+    )
+    if len(grid) < 3 or any(value is None for value in (*raw_values, *gt_values, *corrected_values)):
         raise _evidence_issue("AMBIGUOUS", "goal_common_grid", "goal MCAP has no complete common yaw grid")
     _, integrated = _integral([
         ScalarSample(stamp, float(value)) for stamp, value in zip(grid, raw_values)
     ])
     relative_gt = [float(value) - float(gt_values[0]) for value in gt_values]
+    corrected_integrated = None
+    if corrected_values:
+        _, corrected_integrated = _integral([
+            ScalarSample(stamp, float(value)) for stamp, value in zip(grid, corrected_values)
+        ])
     derived = {
         "schema_version": 1,
         "source": "goal_mcap_derived",
@@ -1477,16 +1652,45 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
             "common_grid_count": len(grid),
             "nonzero_command_count": len(nonzero),
             "maximum_nonzero_command_gap_s": max(command_gaps) if command_gaps else None,
+            "binding_source": binding_source,
+        },
+        "attempt_provenance": {
+            "reset_event_s": reset_s,
+            "route_request_count": len(route_requests),
+            "route_request_timestamps_s": [stamp for stamp, _identity in route_requests],
+            "route_goal_request": request_identity,
+            "binding_source": binding_source,
+            "terminal_count": len(completions),
+            "terminal_timestamps_s": [stamp for stamp, _value in completions],
+            "terminal_values": [value for _stamp, value in completions],
+            "selected_terminal_s": completed_s,
+            "command_window_source": "first_to_last_nonzero_command",
+        },
+        "stream_coverage": {
+            "command_start_s": start_s,
+            "command_end_s": end_s,
+            "common_t0_s": t0,
+            "common_t1_s": t1,
+            "common_duration_s": coverage_duration,
+            "command_duration_s": window_duration,
+            "common_coverage_fraction": coverage_duration / window_duration,
+            "maximum_gap_s": maximum_gaps,
+            "maximum_allowed_gap_s": MAX_SAMPLE_GAP_S,
+            "interpolation": "linear_no_extrapolation",
         },
         "raw_integrated_yaw_rad": integrated,
+        "corrected_integrated_yaw_rad": corrected_integrated,
         "ground_truth_relative_yaw_rad": relative_gt,
         "mcap_provenance": {
             "path": str(path),
             "storage_id": "mcap",
-            "topic_types": {topic: topic_types[topic] for topic in GOAL_TOPIC_TYPES},
-            "topic_counts": {topic: len(topic_stamps[topic]) for topic in GOAL_TOPIC_TYPES},
+            "topic_types": {topic: topic_types[topic] for topic in selected_topic_types},
+            "topic_counts": {topic: len(topic_stamps[topic]) for topic in selected_topic_types},
             "reset_event_count": len(reset_events),
             "reset_receipt_log_count": len(receipt_logs),
+            "route_request_count": len(route_requests),
+            "terminal_count": len(completions),
+            "terminal_timestamps_s": [stamp for stamp, _value in completions],
         },
     }
     return validate_goal_evidence(derived, expected_mcap=path)

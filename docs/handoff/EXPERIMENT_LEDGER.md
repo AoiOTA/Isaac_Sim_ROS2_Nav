@@ -1281,3 +1281,24 @@
   active-reset plus live structural-change behavior remains for the planned
   runtime review.
 - Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
+## 2026-08-22 — V6 IMU single-attempt and stream-gap authority closure
+
+- Goal: prevent failed/retried goal commands and long IMU/GT dropouts from
+  being merged or interpolated into a successful yaw-scale candidate.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `1d717a87b0079d540678e5f48156e801ece3b570`.
+- Changes: require exactly one fresh successful route terminal; reject false or
+  multiple terminals and abnormal pre-request/post-terminal motion; bind an
+  optional single `PoseStamped` route request to evaluator metadata; record
+  terminal/request/window provenance; apply the diagnostic `0.25 s` maximum
+  gap and coverage gate to raw/GT and optional corrected IMU before common-grid
+  interpolation.
+- Validation: source-first focused **43 passed**; fresh isolated package build
+  PASS at `/tmp/v6_imu_goal_build.TYHcAO`; installed focused **43 passed**;
+  installed import/entrypoint, `py_compile`, and `git diff --check` PASS.
+- Verdict: **PASS (code/build/unit only)**. No Isaac, ROS graph, goal MCAP,
+  navigation, calibration selection, or formal qualification was run. Live
+  closure remains pending; frozen `yaw_scale=0.9294` and RF2O-off unchanged.
+- Handoff:
+  `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.

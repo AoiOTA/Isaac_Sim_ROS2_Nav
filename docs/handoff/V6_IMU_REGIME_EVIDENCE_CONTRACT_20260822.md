@@ -139,3 +139,42 @@ No Isaac, ROS graph, MotionBenchmark live run, MCAP capture, navigation goal,
 calibration choice, or formal qualification was performed. The frozen
 `yaw_scale=0.9294` and RF2O-off policy remain unchanged; live closure is still
 pending.
+
+## Single-attempt goal binding and dropout closure
+
+- Follow-up start HEAD:
+  `1d717a87b0079d540678e5f48156e801ece3b570`.
+- A post-reset goal bag now needs exactly one fresh
+  `/bio_nav/route_goal_complete` terminal and that terminal must be `true`.
+  A `false` terminal, `false -> true`, multiple `true` terminals, multiple
+  recorded route requests, nonzero command before a recorded request, or
+  nonzero command at/after the terminal cannot be merged into one successful
+  attempt.
+- When `/bio_nav/route_goal` is recorded, its `PoseStamped` record time,
+  header time/frame, position, and orientation must identify exactly one
+  request between reset and terminal and exactly match the evaluator metadata
+  `route_goal_request`. Without that optional topic, the bounded provenance is
+  explicitly `reset_terminal_single_command_attempt`; a greater-than-1-second
+  split in nonzero commands remains `AMBIGUOUS` rather than being bridged.
+- The result records terminal count/values/timestamps, route-request identity,
+  binding source, selected command window, and MCAP topic counts. Raw IMU and
+  GT, plus corrected IMU when `/imu/data` is present, must each cover the
+  command window with a maximum sample gap no greater than the same `0.25 s`
+  diagnostic limit. Larger or edge-truncated coverage is `AMBIGUOUS`; linear
+  interpolation is performed only after this gate. The result exposes every
+  stream's maximum gap and common coverage fraction.
+- Focused source-first tests: **43 passed**. They include a 0.1-second positive
+  fixture, one successful terminal, `false -> true`, multiple successful
+  terminals, a greater-than-0.5-second raw/corrected gap, request metadata
+  mismatch, and post-terminal motion.
+- Fresh isolated `robot_experiments` build: PASS at
+  `/tmp/v6_imu_goal_build.TYHcAO`, install
+  `/tmp/v6_imu_goal_install.2tt8zi`, log
+  `/tmp/v6_imu_goal_log.c9Pypu`. Installed-package focused tests: **43 passed**;
+  installed import identity and `ros2 run robot_experiments
+  imu_regime_analysis --help`: PASS. `py_compile` and `git diff --check`: PASS.
+
+Verdict remains **PASS (code/build/unit only)**. No Isaac, ROS graph, MCAP
+capture, navigation, scale selection, or qualification was run. Live capture
+must include the new terminal/coverage provenance before any yaw-scale
+decision; `yaw_scale=0.9294` and RF2O-off remain unchanged.

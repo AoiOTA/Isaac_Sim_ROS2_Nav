@@ -351,6 +351,14 @@ def test_goal_contract_rejects_nonfinite_and_requires_source():
         },
         "outcome": "SUCCEEDED", "collision_detected": False,
         "bag_verified": True, "goal_window": {"start_s": 1.0, "end_s": 2.0},
+        "attempt_provenance": {
+            "terminal_count": 1, "terminal_values": [True],
+            "terminal_timestamps_s": [2.1],
+        },
+        "stream_coverage": {
+            "maximum_allowed_gap_s": 0.25,
+            "maximum_gap_s": {"raw": 0.1, "ground_truth": 0.1},
+        },
         "raw_integrated_yaw_rad": [0.0, 0.5, 1.0],
         "ground_truth_relative_yaw_rad": [0.0, 0.49, 0.98],
     }
@@ -568,7 +576,11 @@ def test_installed_resource_manifest_resolves_real_share_layout(monkeypatch, tmp
     assert resources.identity["contract"] == "v6_imu_regime_flat20_v2"
 
 
-def _goal_records(*, collision=False, completion=True, raw_nonfinite=False, second_reset=False, duplicate_raw=False):
+def _goal_records(
+    *, collision=False, completion=True, completions=None, raw_nonfinite=False,
+    second_reset=False, duplicate_raw=False, raw_gap=False,
+    corrected_gap=False, route_request=False, post_terminal_command=False,
+):
     def stamp(value):
         sec = int(value)
         return SimpleNamespace(sec=sec, nanosec=int(round((value - sec) * 1e9)))
@@ -592,33 +604,61 @@ def _goal_records(*, collision=False, completion=True, raw_nonfinite=False, seco
             linear=SimpleNamespace(x=linear), angular=SimpleNamespace(z=angular)
         )
 
+    def goal():
+        return SimpleNamespace(
+            header=SimpleNamespace(stamp=stamp(1.75), frame_id="map"),
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=1.0, y=2.0, z=0.0),
+                orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+        )
+
     receipt = json.dumps({
         "pose": "goal", "seed": 42, "odometry": "realistic",
         "generation": 2, "case_id": "", "variant_id": "",
     }, separators=(",", ":"), sort_keys=True)
-    raw_times = (2.0, 2.5, 2.5 if duplicate_raw else 3.0)
+    sample_times = [2.0 + index * 0.1 for index in range(11)]
+    raw_times = list(sample_times)
+    if raw_gap:
+        raw_times = [value for value in raw_times if value < 2.4 or value > 2.9]
+    if duplicate_raw:
+        raw_times[2] = raw_times[1]
     records = [
         ("/simulation/reset_event", SimpleNamespace(), int(1.0e9)),
         ("/rosout", SimpleNamespace(stamp=stamp(1.1), msg=f"complete; reset_receipt={receipt}"), int(1.1e9)),
         ("/simulation/collision", SimpleNamespace(data=False), int(1.5e9)),
     ]
+    if route_request:
+        records.append(("/bio_nav/route_goal", goal(), int(1.8e9)))
     for index, value in enumerate(raw_times):
         records.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), int(value * 1e9)))
-    for value in (2.0, 2.5, 3.0):
+    for value in sample_times:
         records.append(("/ground_truth/odom", odom(value, 0.5 * (value - 2.0)), int(value * 1e9)))
         records.append(("/cmd_vel", twist(0.25, 0.4), int(value * 1e9)))
+    corrected_times = (
+        [value for value in sample_times if value < 2.4 or value > 2.9]
+        if corrected_gap else sample_times
+    )
+    for value in corrected_times:
+        records.append(("/imu/data", imu(value, 0.465), int(value * 1e9)))
     records.extend([
         ("/simulation/collision", SimpleNamespace(data=collision), int(2.5e9)),
         ("/simulation/collision", SimpleNamespace(data=False), int(3.4e9)),
-        ("/bio_nav/route_goal_complete", SimpleNamespace(data=completion), int(3.5e9)),
     ])
+    terminal_values = [(3.5, completion)] if completions is None else completions
+    records.extend(
+        ("/bio_nav/route_goal_complete", SimpleNamespace(data=value), int(stamp_s * 1e9))
+        for stamp_s, value in terminal_values
+    )
+    if post_terminal_command:
+        records.append(("/cmd_vel", twist(0.1, 0.1), int(3.6e9)))
     if second_reset:
         records.append(("/simulation/reset_event", SimpleNamespace(), int(1.2e9)))
     return records
 
 
-def _goal_types():
-    return {
+def _goal_types(*, corrected=False, route_request=False):
+    result = {
         "/imu/data_raw": "sensor_msgs/msg/Imu",
         "/ground_truth/odom": "nav_msgs/msg/Odometry",
         "/cmd_vel": "geometry_msgs/msg/Twist",
@@ -627,10 +667,15 @@ def _goal_types():
         "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
         "/rosout": "rcl_interfaces/msg/Log",
     }
+    if corrected:
+        result["/imu/data"] = "sensor_msgs/msg/Imu"
+    if route_request:
+        result["/bio_nav/route_goal"] = "geometry_msgs/msg/PoseStamped"
+    return result
 
 
-def _goal_metadata(path):
-    return {
+def _goal_metadata(path, *, route_request=False):
+    result = {
         "schema_version": 1, "source": "goal_mcap_outcome_metadata",
         "source_mcap": str(path.resolve()),
         "reset_receipt": {
@@ -642,6 +687,15 @@ def _goal_metadata(path):
         "raw_integrated_yaw_rad": [999.0],
         "ground_truth_relative_yaw_rad": [999.0],
     }
+    if route_request:
+        result["route_goal_request"] = {
+            "recorded_s": 1.8,
+            "header_stamp_s": 1.75,
+            "frame_id": "map",
+            "position_m": [1.0, 2.0, 0.0],
+            "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
+        }
+    return result
 
 
 def test_goal_mcap_derives_arrays_and_ignores_manual_arrays(monkeypatch, tmp_path):
@@ -655,6 +709,54 @@ def test_goal_mcap_derives_arrays_and_ignores_manual_arrays(monkeypatch, tmp_pat
     assert result["ground_truth_relative_yaw_rad"] != [999.0]
     assert result["goal_window"]["start_s"] == pytest.approx(2.0)
     assert result["goal_window"]["end_s"] == pytest.approx(3.0)
+    assert result["attempt_provenance"]["terminal_count"] == 1
+    assert result["attempt_provenance"]["terminal_values"] == [True]
+    assert result["attempt_provenance"]["terminal_timestamps_s"] == pytest.approx([3.5])
+    assert result["goal_window"]["binding_source"] == "reset_terminal_single_command_attempt"
+    assert result["stream_coverage"]["maximum_gap_s"]["raw"] == pytest.approx(0.1)
+    assert result["stream_coverage"]["maximum_gap_s"]["ground_truth"] == pytest.approx(0.1)
+    assert result["stream_coverage"]["common_coverage_fraction"] == pytest.approx(1.0)
+
+
+def test_goal_mcap_binds_single_route_request_and_checks_metadata(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(route_request=True),
+    )
+    result = load_goal_mcap(bag, _goal_metadata(bag, route_request=True))
+    assert result["attempt_provenance"]["route_request_count"] == 1
+    assert result["attempt_provenance"]["binding_source"] == "route_goal_pose_stamped"
+    assert result["attempt_provenance"]["route_goal_request"]["frame_id"] == "map"
+
+    metadata = _goal_metadata(bag, route_request=True)
+    metadata["route_goal_request"]["position_m"][0] = 9.0
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(route_request=True),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, metadata)
+    assert raised.value.code == "goal_request_mismatch"
+
+
+@pytest.mark.parametrize(
+    "record_options,topic_options,expected_code",
+    [
+        ({"corrected_gap": True}, {"corrected": True}, "goal_sample_gap"),
+        ({"post_terminal_command": True}, {}, "goal_command_after_terminal"),
+    ],
+)
+def test_goal_mcap_rejects_optional_stream_gap_and_post_terminal_motion(
+    monkeypatch, tmp_path, record_options, topic_options, expected_code,
+):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(**topic_options), _goal_records(**record_options)
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag))
+    assert raised.value.code == expected_code
 
 
 @pytest.mark.parametrize(
@@ -663,7 +765,10 @@ def test_goal_mcap_derives_arrays_and_ignores_manual_arrays(monkeypatch, tmp_pat
         ({"raw_nonfinite": True}, None, "FAIL", "goal_imu_nonfinite"),
         ({"collision": True}, None, "FAIL", "goal_collision"),
         ({"second_reset": True}, None, "FAIL", "goal_reset_count"),
-        ({"completion": False}, None, "AMBIGUOUS", "goal_outcome_count"),
+        ({"completion": False}, None, "FAIL", "goal_outcome_false"),
+        ({"completions": [(3.4, False), (3.5, True)]}, None, "FAIL", "goal_outcome_count"),
+        ({"completions": [(3.4, True), (3.5, True)]}, None, "FAIL", "goal_outcome_count"),
+        ({"raw_gap": True}, None, "AMBIGUOUS", "goal_sample_gap"),
         ({"duplicate_raw": True}, None, "FAIL", "goal_stamp_order"),
         ({}, ("outcome", "FAILED"), "FAIL", "goal_outcome_invalid"),
     ],
