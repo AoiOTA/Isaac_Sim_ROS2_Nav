@@ -23,22 +23,29 @@ SCHEMA_VERSION = "bio_nav_v6_single_episode_manifest_v1"
 NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
+PRE_RESET_NEGATIVE_WINDOW_S = 1.0
 
 # Runtime subscriptions are a reviewable firewall.  Keep Ground Truth in the
 # passive evaluator, never in this dispatcher.
 DISPATCH_SUBSCRIPTION_TOPICS = (
+    "/clock",
+    "/scan",
     "/odom",
     "/amcl_pose",
+    "/initialpose",
+    "/tf",
+    "/tf_static",
     "/map",
     "/simulation/reset_event",
-    "/simulation/localization_seeded",
     "/bio_nav/cognitive_map/constraints",
+    "/bio_nav/localization/candidates",
     "/bio_nav/navigation_graph",
     "/bio_nav/canonical_route",
     "/bio_nav/route_progress",
     "/bio_nav/route_goal_complete",
     "/bio_nav/route_goal_result",
     "/bio_nav/module2/cognitive_place_graph",
+    "/bio_nav/module2/planning_prior",
     "/bio_nav/module2/goal_planning_prior",
     "/bio_nav/module3/cognitive_graph_validation_ack",
     "/bio_nav/module3/cognitive_edge_outcome",
@@ -55,6 +62,7 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
 )
 
 CAPTURE_SCHEMA = {
+    "/bio_nav/module2/planning_prior": "PlanningPrior",
     "/bio_nav/module2/cognitive_place_graph": "CognitivePlaceGraphCandidate",
     "/bio_nav/module3/cognitive_graph_validation_ack": "CognitiveGraphValidationAck",
     "/bio_nav/navigation_graph": "NavigationGraph",
@@ -114,6 +122,7 @@ class Manifest:
     raw: Mapping[str, Any]
     scene_id: str
     category: str
+    localization_seed_source: str
     frozen: bool
     reset_pose: Mapping[str, Any]
     mission_legs: tuple[MissionLeg, ...]
@@ -179,6 +188,7 @@ def load_manifest(path: str | Path) -> Manifest:
         "structure_tf_source": "isaac",
         "ground_truth_policy": "evaluator_only",
         "direct_rgbd_costmap_enabled": False,
+        "localization_seed_source": "b5_cognitive",
     }
     for name, expected in expected_runtime.items():
         if runtime.get(name) != expected:
@@ -245,6 +255,7 @@ def load_manifest(path: str | Path) -> Manifest:
         raw=raw,
         scene_id=str(scene.get("id", "")),
         category=category,
+        localization_seed_source=str(runtime["localization_seed_source"]),
         frozen=frozen,
         reset_pose=reset_pose,
         mission_legs=tuple(mission_legs),
@@ -272,14 +283,20 @@ def authorize_manifest(manifest: Manifest, *, mode: str) -> str:
 class ReadinessFacts:
     reset_service_ready: bool = False
     reset_event_publisher_ready: bool = False
+    reset_subscriber_roster_ready: bool = False
     route_goal_subscriber_ready: bool = False
-    localization_publisher_ready: bool = False
+    candidate_publisher_ready: bool = False
+    initialpose_publisher_ready: bool = False
     bridge_prior_publisher_ready: bool = False
+    clock_seen: bool = False
+    scan_seen: bool = False
     map_seen: bool = False
     constraints_seen: bool = False
     navigation_graph_seen: bool = False
     estimated_odom_seen: bool = False
-    amcl_pose_seen: bool = False
+    bridge_diagnostic_ready: bool = False
+    b5_diagnostic_ready: bool = False
+    b5_waiting_for_reset: bool = False
 
     def missing(self) -> tuple[str, ...]:
         return tuple(name for name, value in vars(self).items() if not value)
@@ -294,9 +311,22 @@ class EpisodeGuard:
     reset_calls: int = 0
     reset_events: int = 0
     bridge_epoch_baseline: int | None = None
-    bridge_epoch_after_reset: int | None = None
+    bridge_session_baseline: str = ""
+    physical_epoch: int | None = None
+    physical_session: str = ""
+    bootstrap_epoch: int | None = None
+    bootstrap_session: str = ""
+    candidate_messages: int = 0
+    initialpose_messages: int = 0
+    amcl_messages: int = 0
+    prior_messages: int = 0
+    initialpose_stamp_ns: int | None = None
+    post_initialpose_amcl_seen: bool = False
+    startup_consensus_seen: bool = False
+    b5_recovery_confirmed: bool = False
     post_reset_prior_seen: bool = False
-    localization_seeded: bool = False
+    nav2_active: bool = False
+    tf_active: bool = False
     goal_publications: int = 0
     route_progress_messages: int = 0
     route_completion_messages: int = 0
@@ -310,16 +340,32 @@ class EpisodeGuard:
             self.state = "STOP"
             self.stop_reason = reason
 
-    def arm_reset(self, facts: ReadinessFacts, bridge_epoch: int | None) -> None:
+    def arm_reset(
+        self,
+        facts: ReadinessFacts,
+        bridge_epoch: int | None,
+        bridge_session: str,
+        *,
+        pre_reset_counts: Mapping[str, int],
+    ) -> None:
         missing = facts.missing()
         if missing:
             raise V6ContractError(f"reset readiness missing: {', '.join(missing)}")
-        if bridge_epoch is None:
-            raise V6ContractError("reset readiness missing bridge epoch baseline")
+        if bridge_epoch != 0:
+            raise V6ContractError("active B5 reset readiness requires bridge epoch 0")
+        if not bridge_session:
+            raise V6ContractError("reset readiness missing bridge session baseline")
+        required_zero = ("prior", "candidate", "initialpose", "amcl")
+        nonzero = [name for name in required_zero if int(pre_reset_counts.get(name, -1)) != 0]
+        if nonzero:
+            raise V6ContractError(
+                "active B5 epoch0 negative window violated: " + ",".join(nonzero)
+            )
         if self.reset_calls:
             self.stop("reset_retry_forbidden")
             raise V6ContractError(self.stop_reason)
         self.bridge_epoch_baseline = bridge_epoch
+        self.bridge_session_baseline = bridge_session
         self.state = "RESET_ARMED"
 
     def record_reset_call(self) -> None:
@@ -346,33 +392,161 @@ class EpisodeGuard:
             return
         if self.reset_calls != 1:
             self.stop("reset_event_without_call")
+            return
+        self.state = "WAITING_B5_PHYSICAL_EPOCH"
 
-    def record_prior(self, reset_epoch: int) -> None:
-        if self.bridge_epoch_baseline is None:
-            self.bridge_epoch_baseline = reset_epoch
-            return
-        if self.reset_calls != 1 or self.reset_events != 1:
-            return
-        expected = self.bridge_epoch_baseline + 1
-        if reset_epoch != expected:
-            self.stop(f"bridge_epoch_mismatch:{reset_epoch}!={expected}")
-            return
-        self.bridge_epoch_after_reset = reset_epoch
-        self.post_reset_prior_seen = True
-        if self.localization_seeded:
-            self.state = "GOAL_READY"
+    def record_candidate(self) -> None:
+        self.candidate_messages += 1
 
-    def record_localization_seeded(self) -> None:
+    def record_startup_consensus(self, passed: bool) -> None:
+        if not passed:
+            return
+        if self.reset_events != 1 or self.physical_epoch is None:
+            self.stop("startup_consensus_outside_physical_epoch")
+            return
+        self.startup_consensus_seen = True
+
+    def record_initialpose(self, stamp_ns: int) -> None:
+        self.initialpose_messages += 1
+        if self.initialpose_messages > 1:
+            self.stop("second_initialpose")
+            return
         if self.reset_events != 1:
-            self.stop("localization_seeded_outside_reset_epoch")
+            self.stop("initialpose_outside_reset_epoch")
             return
-        self.localization_seeded = True
-        if self.post_reset_prior_seen:
+        if stamp_ns <= 0:
+            self.stop("initialpose_stamp_invalid")
+            return
+        self.initialpose_stamp_ns = int(stamp_ns)
+        self.state = "WAITING_B5_CONFIRMATION"
+
+    def record_amcl(self, stamp_ns: int) -> None:
+        self.amcl_messages += 1
+        if self.initialpose_stamp_ns is None:
+            return
+        if stamp_ns <= self.initialpose_stamp_ns:
+            self.stop("amcl_not_strictly_newer_than_initialpose")
+            return
+        self.post_initialpose_amcl_seen = True
+        self._maybe_goal_ready()
+
+    def record_bridge(self, reset_epoch: int, recurrent_session_id: str, bootstrap_active: bool) -> None:
+        if self.bridge_epoch_baseline is None:
+            return
+        physical_expected = self.bridge_epoch_baseline + 1
+        bootstrap_expected = self.bridge_epoch_baseline + 2
+        if reset_epoch == physical_expected:
+            if not recurrent_session_id or recurrent_session_id == self.bridge_session_baseline:
+                self.stop("physical_epoch_session_not_rolled")
+                return
+            self.physical_epoch = reset_epoch
+            self.physical_session = recurrent_session_id
+            if not bootstrap_active:
+                self.stop("physical_epoch_bootstrap_not_active")
+            return
+        if reset_epoch == bootstrap_expected:
+            if self.physical_epoch != physical_expected:
+                self.stop("bootstrap_rollover_without_physical_epoch")
+                return
+            if self.initialpose_messages != 1:
+                self.stop("bootstrap_rollover_without_initialpose")
+                return
+            if (
+                not recurrent_session_id
+                or recurrent_session_id in {self.bridge_session_baseline, self.physical_session}
+            ):
+                self.stop("bootstrap_session_not_new")
+                return
+            if bootstrap_active:
+                self.stop("bootstrap_rollover_still_shadow")
+                return
+            self.bootstrap_epoch = reset_epoch
+            self.bootstrap_session = recurrent_session_id
+            self._maybe_goal_ready()
+            return
+        if reset_epoch > bootstrap_expected:
+            self.stop(f"bridge_epoch_mismatch:{reset_epoch}!={bootstrap_expected}")
+
+    def record_b5_diagnostic(
+        self, *, state: str, recovery_result: str, seed_confirmation: str
+    ) -> None:
+        if seed_confirmation in {"failed", "seed_confirmation_failed"}:
+            self.stop("b5_seed_confirmation_failed")
+            return
+        if recovery_result in {"timeout", "seed_confirmation_failed"}:
+            self.stop(f"b5_recovery_{recovery_result}")
+            return
+        self.b5_recovery_confirmed = (
+            state == "normal"
+            and recovery_result == "succeeded"
+            and seed_confirmation == "succeeded"
+        )
+        self._maybe_goal_ready()
+
+    def record_prior(
+        self,
+        reset_epoch: int,
+        recurrent_session_id: str,
+        *,
+        trusted_write: bool,
+        module2_healthy: bool,
+        observation_valid: bool,
+        input_healthy: bool,
+    ) -> None:
+        self.prior_messages += 1
+        if self.bootstrap_epoch is None:
+            return
+        if reset_epoch != self.bootstrap_epoch or recurrent_session_id != self.bootstrap_session:
+            self.stop("active_prior_generation_mismatch")
+            return
+        if not all((trusted_write, module2_healthy, observation_valid, input_healthy)):
+            self.stop("active_prior_not_trusted")
+            return
+        self.post_reset_prior_seen = True
+        self._maybe_goal_ready()
+
+    def record_navigation_ready(self, *, nav2_active: bool, tf_active: bool) -> None:
+        self.nav2_active = bool(nav2_active)
+        self.tf_active = bool(tf_active)
+        self._maybe_goal_ready()
+
+    def _maybe_goal_ready(self) -> None:
+        if self.state == "STOP":
+            return
+        if all(
+            (
+                self.reset_calls == 1,
+                self.reset_events == 1,
+                self.physical_epoch is not None,
+                self.startup_consensus_seen,
+                self.initialpose_messages == 1,
+                self.post_initialpose_amcl_seen,
+                self.b5_recovery_confirmed,
+                self.bootstrap_epoch is not None,
+                self.post_reset_prior_seen,
+                self.nav2_active,
+                self.tf_active,
+            )
+        ):
             self.state = "GOAL_READY"
 
     @property
     def goal_ready(self) -> bool:
         return self.state == "GOAL_READY" and not self.stop_reason
+
+    @property
+    def b5_bootstrap_ready(self) -> bool:
+        return bool(
+            not self.stop_reason
+            and self.reset_events == 1
+            and self.physical_epoch is not None
+            and self.startup_consensus_seen
+            and self.initialpose_messages == 1
+            and self.post_initialpose_amcl_seen
+            and self.b5_recovery_confirmed
+            and self.bootstrap_epoch is not None
+            and self.post_reset_prior_seen
+        )
 
     def record_goal_publication(self, goal_id: str | None = None) -> None:
         first_leg = self.goal_publications == 0
@@ -480,20 +654,25 @@ class V6FormalNode:
             CognitiveGraphValidationAck,
             CognitiveMapConstraints,
             CognitivePlaceGraphCandidate,
+            CognitiveLocalizationCandidateArray,
             GoalPlanningPrior,
             NavigationGraph,
+            PlanningPrior,
             RiskLayerStatus,
             RouteProgress,
         )
         from diagnostic_msgs.msg import DiagnosticArray
         from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped, Twist
         from nav_msgs.msg import OccupancyGrid, Odometry
+        from rosgraph_msgs.msg import Clock
         from rclpy.node import Node
         from rclpy.parameter import Parameter
         from rclpy.parameter_client import AsyncParameterClient
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
         from std_msgs.msg import Bool, Empty, String
         from std_srvs.srv import Trigger
+        from sensor_msgs.msg import LaserScan
+        from tf2_msgs.msg import TFMessage
 
         class _Node(Node):
             pass
@@ -508,7 +687,12 @@ class V6FormalNode:
             mission_leg_ids=tuple(item.goal_id for item in manifest.mission_legs)
         )
         self.facts = ReadinessFacts()
-        self.latest_prior_epoch: int | None = None
+        self.latest_bridge_epoch: int | None = None
+        self.latest_bridge_session = ""
+        self.pre_reset_counts = {name: 0 for name in ("prior", "candidate", "initialpose", "amcl")}
+        self.pre_reset_quiet_since: float | None = None
+        self.map_odom_tf_seen = False
+        self.odom_base_tf_seen = False
         self.canonical_route_count = 0
         self.collision = False
         self.route_goal_results: list[dict[str, Any]] = []
@@ -533,24 +717,33 @@ class V6FormalNode:
             PoseStamped, "/bio_nav/route_goal", reliable
         )
         self.reset_client = self.node.create_client(Trigger, "/simulation/reset")
+        self.nav2_active_client = self.node.create_client(
+            Trigger, "/lifecycle_manager_navigation/is_active"
+        )
         self.isaac_parameters = AsyncParameterClient(self.node, "/isaac_navigation_sim")
 
         def sub(message_type, topic, callback, qos=reliable):
             return self.node.create_subscription(message_type, topic, callback, qos)
 
         self.subscriptions = [
+            sub(Clock, "/clock", lambda m: self._fact("clock_seen", "/clock", m), sensor),
+            sub(LaserScan, "/scan", lambda m: self._fact("scan_seen", "/scan", m), sensor),
             sub(Odometry, "/odom", lambda m: self._fact("estimated_odom_seen", "/odom", m), sensor),
-            sub(PoseWithCovarianceStamped, "/amcl_pose", lambda m: self._fact("amcl_pose_seen", "/amcl_pose", m), reliable),
+            sub(PoseWithCovarianceStamped, "/amcl_pose", self._amcl_pose, reliable),
+            sub(PoseWithCovarianceStamped, "/initialpose", self._initialpose, reliable),
+            sub(TFMessage, "/tf", self._tf),
+            sub(TFMessage, "/tf_static", self._tf, latched),
             sub(OccupancyGrid, "/map", lambda m: self._fact("map_seen", "/map", m), latched),
             sub(Empty, "/simulation/reset_event", self._reset_event),
-            sub(Empty, "/simulation/localization_seeded", self._localization_seeded),
             sub(CognitiveMapConstraints, "/bio_nav/cognitive_map/constraints", lambda m: self._fact("constraints_seen", "/bio_nav/cognitive_map/constraints", m), latched),
+            sub(CognitiveLocalizationCandidateArray, "/bio_nav/localization/candidates", self._localization_candidates),
             sub(NavigationGraph, "/bio_nav/navigation_graph", lambda m: self._fact("navigation_graph_seen", "/bio_nav/navigation_graph", m), latched),
             sub(CanonicalRoute, "/bio_nav/canonical_route", self._canonical_route, latched),
             sub(RouteProgress, "/bio_nav/route_progress", self._route_progress),
             sub(Bool, "/bio_nav/route_goal_complete", self._route_complete),
             sub(String, "/bio_nav/route_goal_result", self._route_result),
             sub(CognitivePlaceGraphCandidate, "/bio_nav/module2/cognitive_place_graph", self._capture_callback("/bio_nav/module2/cognitive_place_graph"), latched),
+            sub(PlanningPrior, "/bio_nav/module2/planning_prior", self._planning_prior),
             sub(GoalPlanningPrior, "/bio_nav/module2/goal_planning_prior", self._goal_prior),
             sub(CognitiveGraphValidationAck, "/bio_nav/module3/cognitive_graph_validation_ack", self._capture_callback("/bio_nav/module3/cognitive_graph_validation_ack")),
             sub(CognitiveEdgeOutcome, "/bio_nav/module3/cognitive_edge_outcome", self._capture_callback("/bio_nav/module3/cognitive_edge_outcome")),
@@ -561,7 +754,7 @@ class V6FormalNode:
             sub(Twist, "/cmd_vel", self._capture_callback("/cmd_vel")),
             sub(Bool, "/simulation/collision", self._collision),
             sub(String, "/simulation/collision_diagnostics", self._capture_callback("/simulation/collision_diagnostics")),
-            sub(DiagnosticArray, "/diagnostics", self._capture_callback("/diagnostics")),
+            sub(DiagnosticArray, "/diagnostics", self._diagnostics),
             sub(String, "/experiment/obstacles/state", self._obstacle_state),
             sub(String, "/experiment/appearance/state", self._appearance_state, latched),
         ]
@@ -583,13 +776,92 @@ class V6FormalNode:
         self.guard.record_reset_event()
         self._capture("/simulation/reset_event", message)
 
-    def _localization_seeded(self, message: Any) -> None:
-        self.guard.record_localization_seeded()
-        self._capture("/simulation/localization_seeded", message)
+    @staticmethod
+    def _header_stamp_ns(message: Any) -> int:
+        stamp = message.header.stamp
+        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+
+    def _amcl_pose(self, message: Any) -> None:
+        self.pre_reset_counts["amcl"] += 1
+        if self.guard.reset_calls:
+            self.guard.record_amcl(self._header_stamp_ns(message))
+        self._capture("/amcl_pose", message)
+
+    def _initialpose(self, message: Any) -> None:
+        self.pre_reset_counts["initialpose"] += 1
+        if self.guard.reset_calls:
+            self.guard.record_initialpose(self._header_stamp_ns(message))
+        self._capture("/initialpose", message)
+
+    def _localization_candidates(self, message: Any) -> None:
+        self.pre_reset_counts["candidate"] += 1
+        if self.guard.reset_calls:
+            self.guard.record_candidate()
+        self._capture("/bio_nav/localization/candidates", message)
+
+    def _tf(self, message: Any) -> None:
+        for transform in message.transforms:
+            parent = str(transform.header.frame_id).lstrip("/")
+            child = str(transform.child_frame_id).lstrip("/")
+            self.map_odom_tf_seen |= parent == "map" and child == "odom"
+            self.odom_base_tf_seen |= parent == "odom" and child in {
+                "base_link", "base_footprint"
+            }
+
+    @staticmethod
+    def _diagnostic_values(status: Any) -> dict[str, str]:
+        return {str(item.key): str(item.value) for item in status.values}
+
+    def _diagnostics(self, message: Any) -> None:
+        for status in message.status:
+            values = self._diagnostic_values(status)
+            if status.name == "bio_nav_ros_bridge":
+                try:
+                    epoch = int(values.get("reset_epoch", ""))
+                except ValueError:
+                    continue
+                session = values.get("recurrent_session_id", "")
+                bootstrap_active = values.get("v6_shadow_bootstrap_active") == "True"
+                self.latest_bridge_epoch = epoch
+                self.latest_bridge_session = session
+                self.facts.bridge_diagnostic_ready = bool(session)
+                self.guard.record_bridge(epoch, session, bootstrap_active)
+            elif status.name == "bio_nav_localization_supervisor":
+                self.facts.b5_diagnostic_ready = True
+                generation = values.get("candidate_array_last_generation", "")
+                event_reason = values.get("candidate_array_last_event_reason", "")
+                self.facts.b5_waiting_for_reset = generation in {
+                    "not_received", "waiting_after_physical_reset"
+                } or event_reason in {
+                    "waiting_for_candidate_array", "waiting_after_physical_reset"
+                }
+                try:
+                    consensus_count = int(values.get("startup_consensus_count", "0"))
+                except ValueError:
+                    consensus_count = 0
+                if self.guard.reset_calls:
+                    self.guard.record_startup_consensus(consensus_count >= 2)
+                    self.guard.record_b5_diagnostic(
+                        state=values.get("state", ""),
+                        recovery_result=values.get("recovery_result", ""),
+                        seed_confirmation=values.get("seed_confirmation", ""),
+                    )
+        self._capture("/diagnostics", message)
+
+    def _planning_prior(self, message: Any) -> None:
+        self.pre_reset_counts["prior"] += 1
+        if self.guard.reset_calls:
+            self.guard.record_prior(
+                int(message.reset_epoch),
+                str(message.recurrent_session_id),
+                trusted_write=bool(message.trusted_write),
+                module2_healthy=bool(message.module2_healthy),
+                observation_valid=bool(message.observation_valid),
+                input_healthy=bool(message.input_healthy),
+            )
+        self._capture("/bio_nav/module2/planning_prior", message)
 
     def _goal_prior(self, message: Any) -> None:
-        self.latest_prior_epoch = int(message.reset_epoch)
-        self.guard.record_prior(self.latest_prior_epoch)
         self._capture("/bio_nav/module2/goal_planning_prior", message)
 
     def _canonical_route(self, message: Any) -> None:
@@ -646,15 +918,49 @@ class V6FormalNode:
         self.facts.reset_event_publisher_ready = (
             by_topic["/simulation/reset_event"].get_publisher_count() > 0
         )
-        self.facts.localization_publisher_ready = (
-            by_topic["/simulation/localization_seeded"].get_publisher_count() > 0
+        # Runner + Bridge + B5 supervisor must all be listening before the
+        # single reset is allowed to mutate the episode.
+        self.facts.reset_subscriber_roster_ready = (
+            self.node.count_subscribers("/simulation/reset_event") >= 3
+        )
+        self.facts.candidate_publisher_ready = (
+            by_topic["/bio_nav/localization/candidates"].get_publisher_count() > 0
+        )
+        self.facts.initialpose_publisher_ready = (
+            by_topic["/initialpose"].get_publisher_count() > 0
         )
         self.facts.bridge_prior_publisher_ready = (
-            by_topic["/bio_nav/module2/goal_planning_prior"].get_publisher_count() > 0
+            by_topic["/bio_nav/module2/planning_prior"].get_publisher_count() > 0
         )
         self.facts.route_goal_subscriber_ready = (
             self.route_goal_publisher.get_subscription_count() > 0
         )
+
+    def _pre_reset_ready(self) -> bool:
+        self._refresh_endpoint_facts()
+        if (
+            self.facts.missing()
+            or self.latest_bridge_epoch != 0
+            or not self.latest_bridge_session
+            or any(self.pre_reset_counts.values())
+        ):
+            self.pre_reset_quiet_since = None
+            return False
+        now = time.monotonic()
+        if self.pre_reset_quiet_since is None:
+            self.pre_reset_quiet_since = now
+            return False
+        return now - self.pre_reset_quiet_since >= PRE_RESET_NEGATIVE_WINDOW_S
+
+    def _nav2_is_active(self, timeout_sec: float) -> bool:
+        if not self.nav2_active_client.wait_for_service(timeout_sec=timeout_sec):
+            return False
+        Trigger = self._types["Trigger"]
+        future = self.nav2_active_client.call_async(Trigger.Request())
+        if not self._spin_until(future.done, timeout_sec):
+            return False
+        response = future.result()
+        return bool(response is not None and response.success is True)
 
     def _set_episode_parameters(self, timeout_sec: float) -> None:
         Parameter = self._types["Parameter"]
@@ -746,15 +1052,24 @@ class V6FormalNode:
             runtime_values=dict(self.manifest.raw["required_runtime_values"]),
         )
         ready = self._spin_until(
-            lambda: (self._refresh_endpoint_facts() is None)
-            and not self.facts.missing()
-            and self.latest_prior_epoch is not None,
+            self._pre_reset_ready,
             readiness_timeout_sec,
         )
         if not ready:
-            self.guard.stop("readiness_timeout:" + ",".join(self.facts.missing()))
+            if any(self.pre_reset_counts.values()):
+                detail = "epoch0_negative_window"
+            elif self.latest_bridge_epoch != 0 or not self.latest_bridge_session:
+                detail = "bridge_epoch0_baseline"
+            else:
+                detail = ",".join(self.facts.missing())
+            self.guard.stop("readiness_timeout:" + detail)
             return self.result()
-        self.guard.arm_reset(self.facts, self.latest_prior_epoch)
+        self.guard.arm_reset(
+            self.facts,
+            self.latest_bridge_epoch,
+            self.latest_bridge_session,
+            pre_reset_counts=self.pre_reset_counts,
+        )
         self._set_episode_parameters(reset_timeout_sec)
         if self.manifest.category == "appearance":
             expected_profile = self.episode.appearance_profile_id
@@ -776,10 +1091,20 @@ class V6FormalNode:
         self.guard.record_reset_response(response.success if response is not None else None)
         if self.guard.state == "STOP":
             return self.result()
-        if not self._spin_until(lambda: self.guard.goal_ready or self.guard.state == "STOP", reset_timeout_sec):
+        if not self._spin_until(
+            lambda: self.guard.b5_bootstrap_ready or self.guard.state == "STOP",
+            reset_timeout_sec,
+        ):
             self.guard.stop("post_reset_readiness_timeout")
             return self.result()
+        if self.guard.state == "STOP":
+            return self.result()
+        self.guard.record_navigation_ready(
+            nav2_active=self._nav2_is_active(reset_timeout_sec),
+            tf_active=self.map_odom_tf_seen and self.odom_base_tf_seen,
+        )
         if not self.guard.goal_ready:
+            self.guard.stop("nav2_or_tf_not_ready")
             return self.result()
 
         for index, leg in enumerate(self.manifest.mission_legs):

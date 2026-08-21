@@ -39,12 +39,26 @@ def ready_facts() -> ReadinessFacts:
 
 def ready_guard(*legs: str) -> EpisodeGuard:
     guard = EpisodeGuard(mission_leg_ids=legs)
-    guard.arm_reset(ready_facts(), 8)
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
     guard.record_reset_call()
     guard.record_reset_response(True)
     guard.record_reset_event()
-    guard.record_prior(9)
-    guard.record_localization_seeded()
+    guard.record_bridge(1, "session-1", True)
+    guard.record_startup_consensus(True)
+    guard.record_initialpose(100)
+    guard.record_amcl(101)
+    guard.record_b5_diagnostic(
+        state="normal", recovery_result="succeeded", seed_confirmation="succeeded"
+    )
+    guard.record_bridge(2, "session-2", False)
+    guard.record_prior(
+        2, "session-2", trusted_write=True, module2_healthy=True,
+        observation_valid=True, input_healthy=True,
+    )
+    guard.record_navigation_ready(nav2_active=True, tf_active=True)
     return guard
 
 
@@ -68,7 +82,10 @@ def test_dispatcher_uses_route_coordinator_primary_goal_not_nav_action():
 
 def test_reset_is_exactly_once_and_unknown_response_never_retries():
     guard = EpisodeGuard()
-    guard.arm_reset(ready_facts(), 8)
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
     guard.record_reset_call()
     guard.record_reset_response(None)
     assert guard.state == "STOP"
@@ -80,7 +97,10 @@ def test_reset_is_exactly_once_and_unknown_response_never_retries():
 
 def test_second_reset_event_is_immediate_stop():
     guard = EpisodeGuard()
-    guard.arm_reset(ready_facts(), 3)
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
     guard.record_reset_call()
     guard.record_reset_response(True)
     guard.record_reset_event()
@@ -114,17 +134,107 @@ def test_multileg_order_mismatch_stops_before_publish():
 
 def test_wrong_bridge_epoch_stops_before_goal():
     guard = EpisodeGuard()
-    guard.arm_reset(ready_facts(), 10)
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
     guard.record_reset_call()
     guard.record_reset_response(True)
     guard.record_reset_event()
-    guard.record_prior(12)
-    assert guard.stop_reason == "bridge_epoch_mismatch:12!=11"
+    guard.record_bridge(3, "session-3", False)
+    assert guard.stop_reason == "bridge_epoch_mismatch:3!=2"
+
+
+def test_active_b5_epoch0_readiness_requires_negative_window_not_prior_or_amcl():
+    guard = EpisodeGuard()
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
+    assert guard.state == "RESET_ARMED"
+
+
+@pytest.mark.parametrize("name", ["prior", "candidate", "initialpose", "amcl"])
+def test_active_b5_rejects_old_pre_reset_positive_preconditions(name):
+    counts = {"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0}
+    counts[name] = 1
+    with pytest.raises(V6ContractError, match="negative window violated"):
+        EpisodeGuard().arm_reset(
+            ready_facts(), 0, "session-0", pre_reset_counts=counts
+        )
+
+
+def test_b5_physical_epoch_seed_confirmation_bootstrap_rollover_sequence():
+    guard = ready_guard()
+    assert guard.physical_epoch == 1
+    assert guard.bootstrap_epoch == 2
+    assert guard.physical_session == "session-1"
+    assert guard.bootstrap_session == "session-2"
+    assert guard.goal_ready
+
+
+def test_b5_path_never_depends_on_isaac_localization_seeded():
+    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
+    assert "/simulation/localization_seeded" not in source
+
+
+def test_second_initialpose_and_non_newer_amcl_fail_closed():
+    guard = EpisodeGuard()
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
+    guard.record_reset_call(); guard.record_reset_response(True); guard.record_reset_event()
+    guard.record_bridge(1, "session-1", True)
+    guard.record_startup_consensus(True)
+    guard.record_initialpose(100)
+    guard.record_amcl(100)
+    assert guard.stop_reason == "amcl_not_strictly_newer_than_initialpose"
+
+    second = EpisodeGuard()
+    second.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+    )
+    second.record_reset_call(); second.record_reset_response(True); second.record_reset_event()
+    second.record_bridge(1, "session-1", True)
+    second.record_startup_consensus(True)
+    second.record_initialpose(100); second.record_initialpose(101)
+    assert second.stop_reason == "second_initialpose"
+
+
+@pytest.mark.parametrize(
+    "kwargs, reason",
+    [
+        ({"trusted_write": False, "module2_healthy": True, "observation_valid": True, "input_healthy": True}, "active_prior_not_trusted"),
+        ({"trusted_write": True, "module2_healthy": True, "observation_valid": True, "input_healthy": True}, "active_prior_generation_mismatch"),
+    ],
+)
+def test_wrong_active_prior_trust_or_session_stops(kwargs, reason):
+    guard = ready_guard()
+    guard.state = "WAITING_B5_CONFIRMATION"
+    guard.stop_reason = ""
+    guard.post_reset_prior_seen = False
+    session = "session-2" if reason == "active_prior_not_trusted" else "wrong-session"
+    guard.record_prior(2, session, **kwargs)
+    assert guard.stop_reason == reason
+
+
+def test_b5_confirmation_failure_and_timeout_stop_before_goal():
+    guard = EpisodeGuard()
+    guard.record_b5_diagnostic(
+        state="lost", recovery_result="seed_confirmation_failed", seed_confirmation="failed"
+    )
+    assert guard.stop_reason == "b5_seed_confirmation_failed"
+    waiting = EpisodeGuard(state="WAITING_B5_CONFIRMATION")
+    waiting.stop("post_reset_readiness_timeout")
+    assert not waiting.goal_ready
 
 
 @pytest.mark.parametrize("path", MANIFESTS.values())
 def test_all_manifests_are_complete_candidates_but_not_formally_frozen(path):
     manifest = load_manifest(path)
+    assert manifest.localization_seed_source == "b5_cognitive"
     assert len(manifest.episodes) == 20
     assert len(manifest.mission_legs) == 5
     assert manifest.frozen is False

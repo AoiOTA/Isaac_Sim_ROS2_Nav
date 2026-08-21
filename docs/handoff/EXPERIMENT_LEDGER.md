@@ -472,3 +472,24 @@
   replay, evidence campaign, or qualification was run.
 - Handoff:
   `docs/handoff/V6_FLAT_ESTIMATED_CALIBRATION_AMENDMENT_20260821.md`.
+
+## 2026-08-21 — V6 formal B5 cognitive bootstrap readiness
+
+- Goal: replace the formal runner's incorrect pre-reset AMCL/prior and
+  post-reset Isaac localization-seeded requirements with the active B5
+  cognitive bootstrap contract.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `6071afc9727aa5a397bd918e66a442e05ffb2ee9`.
+- Changes: all six final manifests select `b5_cognitive`; epoch-zero negative
+  readiness; exactly-once physical reset; Bridge epoch 1 -> B5 consensus,
+  initialpose, new AMCL and confirmation -> Bridge epoch 2/new session;
+  same-generation trusted PlanningPrior plus Nav2/TF before GOAL_READY; no
+  dependency on `/simulation/localization_seeded`.
+- Validation: changed Python compile PASS; focused formal `53 passed`;
+  formal/causal/calibration regression `90 passed`; isolated
+  `robot_experiments` build PASS at `/tmp/v6_formal_b5_build.5JYXDP`;
+  `git diff --check` PASS.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2,
+  engineering pilot, evidence, or qualification campaign was run.
+- Handoff:
+  `docs/handoff/V6_FORMAL_B5_READINESS_20260821.md`.

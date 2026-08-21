@@ -10,6 +10,7 @@ runtime:
   structure_tf_source: isaac
   ground_truth_policy: evaluator_only
   direct_rgbd_costmap_enabled: false
+  localization_seed_source: b5_cognitive
 required_runtime_values:
   scene_asset: /home/lyb/Rivermark/rivermark.usd
   occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/rivermark_selected.yaml
