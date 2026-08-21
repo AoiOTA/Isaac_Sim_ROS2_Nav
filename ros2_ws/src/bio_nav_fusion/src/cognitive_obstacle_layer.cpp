@@ -54,6 +54,8 @@ bool unit(double value)
   return std::isfinite(value) && value >= 0.0 && value <= 1.0;
 }
 
+constexpr int64_t kMaximumStaticSourceAgeNs = 5000000000LL;
+
 bool identityFieldsPresent(
   const bio_nav_interfaces::msg::CognitiveObstacleArray & message)
 {
@@ -213,7 +215,6 @@ std::string CognitiveObstacleLayer::validateMessage(
   const double ttl_s = durationSeconds(message.ttl);
   const double validation_ttl_s = durationSeconds(message.validation_ttl);
   const double validation_age_s = static_cast<double>(now_ns - validation_ns) * 1.0e-9;
-  constexpr int64_t kMaximumSourceAgeNs = 2000000000LL;
   constexpr int64_t kFutureToleranceNs = 50000000LL;
   if (message.schema_version != "bio_nav_cognitive_obstacles_v1") {return "schema";}
   if (message.header.frame_id != "base_link") {return "frame";}
@@ -223,7 +224,7 @@ std::string CognitiveObstacleLayer::validateMessage(
   {
     return "validation_time";
   }
-  if (!validNonnegativeDuration(message.source_age) || source_age_ns > kMaximumSourceAgeNs ||
+  if (!validNonnegativeDuration(message.source_age) ||
     validation_ns - source_ns != source_age_ns)
   {
     return "source_age";
@@ -263,6 +264,9 @@ std::string CognitiveObstacleLayer::validateMessage(
   } else if (message.validation_mode ==
     bio_nav_interfaces::msg::CognitiveObstacleArray::VALIDATION_STATIC_DEPTH_REVALIDATED)
   {
+    if (source_age_ns > kMaximumStaticSourceAgeNs) {
+      return "source_age";
+    }
     if (!validStamp(message.source_odom_stamp) ||
       !validStamp(message.validation_odom_stamp) || validation_odom_ns < source_odom_ns ||
       validation_odom_ns - source_odom_ns != source_age_ns ||

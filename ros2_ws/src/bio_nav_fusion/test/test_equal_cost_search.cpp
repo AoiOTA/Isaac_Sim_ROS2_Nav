@@ -274,6 +274,18 @@ bio_nav_interfaces::msg::CognitiveObstacleArray staticRevalidatedObstacleFixture
   return message;
 }
 
+bio_nav_interfaces::msg::CognitiveObstacleArray staticRevalidatedObstacleWithAge(
+  int32_t age_sec, uint32_t age_nanosec)
+{
+  auto message = staticRevalidatedObstacleFixture();
+  message.source_age.sec = age_sec;
+  message.source_age.nanosec = age_nanosec;
+  message.validation_stamp.sec = message.header.stamp.sec + age_sec;
+  message.validation_stamp.nanosec = age_nanosec;
+  message.validation_odom_stamp = message.validation_stamp;
+  return message;
+}
+
 bio_nav_interfaces::msg::PlanningPrior planningPriorFixture()
 {
   bio_nav_interfaces::msg::PlanningPrior prior;
@@ -405,7 +417,7 @@ TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timel
   EXPECT_EQ(
     CognitiveObstacleLayer::validateMessage(
       changed, 11100000000LL, identity, 6, 0.5, 0.2),
-    "source_age");
+    "");
 
   changed = message;
   changed.source_age.nanosec = 1U;
@@ -427,6 +439,53 @@ TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timel
     CognitiveObstacleLayer::validateMessage(
       changed, 11100000000LL, identity, 6, 0.5, 0.2),
     "odom_time");
+}
+
+TEST(CognitiveObstacleLayer, static_source_age_accepts_up_to_five_seconds_only)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  const CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+
+  const auto age_1_99 = staticRevalidatedObstacleWithAge(1, 990000000U);
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      age_1_99, 12090000000LL, identity, 6, 0.5, 0.2),
+    "");
+
+  const auto age_2_2 = staticRevalidatedObstacleWithAge(2, 200000000U);
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      age_2_2, 12300000000LL, identity, 6, 0.5, 0.2),
+    "");
+
+  const auto age_4_9 = staticRevalidatedObstacleWithAge(4, 900000000U);
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      age_4_9, 15000000000LL, identity, 6, 0.5, 0.2),
+    "");
+
+  const auto age_5_01 = staticRevalidatedObstacleWithAge(5, 10000000U);
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      age_5_01, 15110000000LL, identity, 6, 0.5, 0.2),
+    "source_age");
+}
+
+TEST(CognitiveObstacleLayer, fresh_source_age_remains_exactly_zero)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  const CognitiveObstacleLayer::Identity identity{
+    3, "session", "map", "tile", 2, 4, "model"};
+  auto message = obstacleFixture();
+  message.source_age.sec = 2;
+  message.source_age.nanosec = 200000000U;
+  message.validation_stamp.sec = 12;
+  message.validation_stamp.nanosec = 200000000U;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::validateMessage(
+      message, 12300000000LL, identity, 6, 0.5, 0.2),
+    "fresh_mismatch");
 }
 
 TEST(CognitiveObstacleLayer, fresh_accepts_zero_odom_and_rejects_nonzero_mismatch)

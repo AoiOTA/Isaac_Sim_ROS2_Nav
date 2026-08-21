@@ -638,3 +638,21 @@
   to be observed in the next authorized live campaign.
 - Handoff:
   `docs/handoff/V6_OBSTACLE_CONSUMER_IDENTITY_20260821.md`.
+
+## 2026-08-21 — V6 obstacle static source-age contract alignment
+
+- Goal: align Module3's static-depth-revalidated source-age cap with the
+  Integration producer's five-second static retention contract.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `b1e37922a1191c3634881138e5d304620ab3abc6`.
+- Changes: static revalidation accepts exact nonnegative source ages through
+  `5.0 s` and rejects `5.01 s` as `source_age`; FRESH remains exact-zero and
+  rejects `2.2 s` as `fresh_mismatch`. TTL/future/odom/depth/sequence/TF gates
+  are unchanged.
+- Validation: isolated `bio_nav_fusion` build PASS; package result `26 tests,
+  0 errors, 0 failures, 0 skipped`; `git diff --check` PASS. Build root:
+  `/tmp/v6_obstacle_static_source_age.RmMSTu`.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Nav2/Isaac or live
+  evidence was run; both live Costmap consumers still require observation.
+- Handoff:
+  `docs/handoff/V6_OBSTACLE_STATIC_SOURCE_AGE_20260821.md`.
