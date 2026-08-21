@@ -1,0 +1,68 @@
+schema_version: 1
+campaign_id: v6_estimated_calibration
+repeats: 3
+reset_seed_base: 6800
+execution:
+  reset_count_per_episode: 1
+  retry_count: 0
+  group_by_arm: true
+  reuse_single_isaac_session: true
+  reset_service: /simulation/reset
+  readiness_topics: [/clock, /odom, /tf]
+  dispatcher_topics: [/clock, /odom, /tf, /amcl_pose]
+  passive_evaluator_topics: [/odom, /amcl_pose, /ground_truth/odom]
+arms:
+  - id: "off"
+    launch_arguments:
+      odometry_source: wheel_imu
+      lidar_backend: "off"
+      lidar_odom_validated: false
+  - id: shadow
+    launch_arguments:
+      odometry_source: wheel_imu
+      lidar_backend: rf2o
+      lidar_odom_validated: false
+  - id: fused
+    requires_shadow_validation: true
+    launch_arguments:
+      odometry_source: wheel_imu_lidar
+      lidar_backend: rf2o
+      lidar_odom_validated: true
+indoor_primitives:
+  - id: straight_3m
+    segments:
+      - {duration_sec: 10.0, linear_x: 0.30, angular_z: 0.0}
+  - id: ccw_360
+    segments:
+      - {duration_sec: 12.566, linear_x: 0.0, angular_z: 0.50}
+  - id: cw_360
+    segments:
+      - {duration_sec: 12.566, linear_x: 0.0, angular_z: -0.50}
+  - id: s_route
+    segments:
+      - {duration_sec: 2.5, linear_x: 0.25, angular_z: 0.45}
+      - {duration_sec: 5.0, linear_x: 0.25, angular_z: -0.45}
+      - {duration_sec: 2.5, linear_x: 0.25, angular_z: 0.45}
+rivermark:
+  id: rivermark_static_start_to_g1
+  scenario: static
+  start: static_start
+  execution: nav2_route_goal
+  wrapper: current_occupancy_only_estimated
+  goal: {x: 1.521014, y: 131.813786, yaw_deg: 135.0}
+thresholds:
+  plan_reference:
+    straight_3m: {maximum_longitudinal_error_m: 0.10, maximum_lateral_error_m: 0.10}
+    rotation_360: {maximum_yaw_closure_deg: 5.0, maximum_position_error_m: 0.20}
+    s_route: {maximum_aligned_ate_p95_m: 0.15, maximum_aligned_yaw_p95_deg: 5.0}
+    rivermark: {maximum_amcl_absolute_ate_p95_m: 0.35, maximum_amcl_absolute_yaw_p95_deg: 8.0}
+  engineering_recommendation:
+    minimum_frequency_hz: 30.0
+    maximum_pose_step_m: 0.50
+    maximum_yaw_step_deg: 30.0
+    maximum_time_offset_ms: 100.0
+    minimum_scale: 0.90
+    maximum_scale: 1.10
+    fused_improvement_fraction: 0.05
+    fused_no_regression_fraction: 0.10
+    covariance_coverage_is_diagnostic_only: true

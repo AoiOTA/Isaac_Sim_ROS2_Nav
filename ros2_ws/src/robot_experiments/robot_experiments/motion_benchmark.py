@@ -1,4 +1,4 @@
-"""Execute repeatable skid-steer motion primitives against Ground Truth."""
+"""Execute repeatable skid-steer primitives using estimated-state readiness."""
 
 from __future__ import annotations
 
@@ -21,9 +21,11 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.parameter_client import AsyncParameterClient
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from rclpy.time import Time
 from rosgraph_msgs.msg import Clock
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
+from tf2_ros import Buffer, TransformException, TransformListener
 import yaml
 
 
@@ -272,7 +274,7 @@ def evaluate_motion_primitive(
 
     if not samples:
         raise MotionBenchmarkError(
-            f"primitive {primitive.identifier!r} has no Ground Truth samples"
+            f"primitive {primitive.identifier!r} has no estimated odometry samples"
         )
     steady: list[MotionSample] = []
     segment_metrics: list[dict[str, Any]] = []
@@ -462,7 +464,7 @@ def evaluate_motion_primitive(
 
 
 class MotionBenchmarkNode(Node):
-    """ROS adapter for deterministic primitive playback and Ground Truth capture."""
+    """ROS adapter for deterministic primitive playback and estimated capture."""
 
     def __init__(self, config: MotionConfig) -> None:
         super().__init__("motion_benchmark")
@@ -484,10 +486,10 @@ class MotionBenchmarkNode(Node):
             self._clock_callback,
             clock_qos,
         )
-        self._ground_truth_subscription = self.create_subscription(
+        self._odom_subscription = self.create_subscription(
             Odometry,
-            "/ground_truth/odom",
-            self._ground_truth_callback,
+            "/odom",
+            self._odom_callback,
             reliable,
         )
         self._collision_subscription = self.create_subscription(
@@ -500,7 +502,11 @@ class MotionBenchmarkNode(Node):
         self._isaac_parameters = AsyncParameterClient(
             self, "/isaac_navigation_sim"
         )
-        self._latest_ground_truth: MotionSample | None = None
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(
+            self._tf_buffer, self, spin_thread=False
+        )
+        self._latest_odometry: MotionSample | None = None
         self._clock_s: float | None = None
         self._samples: list[MotionSample] = []
         self._recording = False
@@ -515,7 +521,7 @@ class MotionBenchmarkNode(Node):
             message.clock.sec + message.clock.nanosec * 1.0e-9
         )
 
-    def _ground_truth_callback(self, message: Odometry) -> None:
+    def _odom_callback(self, message: Odometry) -> None:
         orientation = message.pose.pose.orientation
         yaw = math.atan2(
             2.0 * (
@@ -533,7 +539,7 @@ class MotionBenchmarkNode(Node):
             message.header.stamp.sec
             + message.header.stamp.nanosec * 1.0e-9
         )
-        previous = self._latest_ground_truth
+        previous = self._latest_odometry
         linear_speed = 0.0
         angular_speed = 0.0
         if previous is not None:
@@ -557,8 +563,8 @@ class MotionBenchmarkNode(Node):
             x=float(message.pose.pose.position.x),
             y=float(message.pose.pose.position.y),
             yaw=yaw,
-            # GroundTruthRecorder intentionally publishes pose-only Odometry.
-            # Derive body-frame planar velocity from consecutive GT poses.
+            # Derive body-frame velocity from consecutive estimated poses so
+            # the dispatcher never needs simulator ground truth.
             linear_speed=linear_speed,
             angular_speed=angular_speed,
             segment_index=self._segment_index,
@@ -566,7 +572,7 @@ class MotionBenchmarkNode(Node):
             command_linear=self._command_linear,
             command_angular=self._command_angular,
         )
-        self._latest_ground_truth = sample
+        self._latest_odometry = sample
         if self._recording:
             self._samples.append(sample)
 
@@ -619,6 +625,7 @@ class MotionBenchmarkNode(Node):
         if not self._reset_client.wait_for_service(timeout_sec=10.0):
             raise RuntimeError("/simulation/reset is unavailable")
         barrier = time.monotonic()
+        barrier_clock = self._clock_s
         reset_response = self._wait_future(
             self._reset_client.call_async(Trigger.Request()),
             30.0,
@@ -636,14 +643,15 @@ class MotionBenchmarkNode(Node):
         deadline = time.monotonic() + 15.0
         while time.monotonic() < deadline:
             self._spin_once(0.05)
-            sample = self._latest_ground_truth
+            sample = self._latest_odometry
             if (
                 sample is not None
                 and sample.received_at > barrier
-                and math.hypot(sample.x, sample.y) <= 0.05
-                and abs(sample.yaw) <= math.radians(3.0)
+                and self._clock_s is not None
+                and (barrier_clock is None or self._clock_s > barrier_clock)
                 and abs(sample.linear_speed) <= 0.02
                 and abs(sample.angular_speed) <= 0.05
+                and self._estimated_tf_ready()
             ):
                 if stable_since is None:
                     stable_since = time.monotonic()
@@ -654,7 +662,16 @@ class MotionBenchmarkNode(Node):
                     return
             else:
                 stable_since = None
-        raise TimeoutError("Ground Truth did not settle at the reset pose")
+        raise TimeoutError(
+            "estimated odometry/clock/odom->base_link TF did not settle after reset"
+        )
+
+    def _estimated_tf_ready(self) -> bool:
+        try:
+            self._tf_buffer.lookup_transform("odom", "base_link", Time())
+        except TransformException:
+            return False
+        return True
 
     def _play_segment(self, index: int, segment: MotionSegment) -> None:
         period = 1.0 / self._config.command_rate_hz

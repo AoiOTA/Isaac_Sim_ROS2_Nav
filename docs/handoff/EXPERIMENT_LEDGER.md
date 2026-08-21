@@ -396,3 +396,31 @@
   capture, or qualification was run.
 - Handoff:
   `docs/handoff/V6_RIVERMARK_OCCUPANCY_ONLY_BRINGUP_20260821.md`.
+
+## 2026-08-21 — V6 Estimated State calibration runner/evaluator
+
+- Goal: freeze a measurable 3 m/360/S/Rivermark RF2O off-shadow-fused matrix
+  and extend the passive evaluator without claiming that calibration ran.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `055bdeafd95d7335f7f8a07683ab759376174c7f`.
+- Matrix: exact 45 arm-grouped episodes (36 indoor primitives plus 9
+  Rivermark static-start-to-G1 routes), three repeats, one reset/zero retry.
+- Contracts: dispatcher has no GT subscription; reset readiness uses Trigger
+  success plus fresh `/clock`, estimated `/odom`, and `odom->base_link` TF;
+  passive evaluator alone reads `/ground_truth/odom`; fused is fail-closed on
+  15 shadow reports plus an explicit promotion flag.
+- Metrics: absolute/aligned ATE, fixed 1 s/1 m RPE, endpoints, scale, CW/CCW
+  bias, bounded time offset, stream health, covariance finite/symmetric/PSD,
+  diagnostic 2-sigma coverage and planar NEES; NIS explicitly unavailable.
+- Validation: changed Python compile PASS; focused calibration/metrics/motion/
+  package tests `59 passed`; exact 45-row manifest smoke PASS; isolated
+  `robot_experiments` build PASS at
+  `/tmp/v6_estimated_calibration_build.qNYxfL`; `git diff --check` PASS.
+  Full package collection was blocked by an unrelated stale external
+  Integration overlay missing `CanonicalRoute` and was not treated as a code
+  result.
+- Verdict: **PASS (implementation/build/unit only)**;
+  **CALIBRATION_NOT_RUN**. No ROS/Isaac/Nav2, tuning result, RF2O promotion, or
+  qualification is claimed.
+- Handoff:
+  `docs/handoff/V6_ESTIMATED_CALIBRATION_RUNNER_20260821.md`.

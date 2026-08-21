@@ -26,7 +26,11 @@ class EstimatedStateEvaluator(Node):
         super().__init__('estimated_state_evaluator')
         self.declare_parameter('output_dir', '')
         self.declare_parameter('max_time_delta_sec', 0.1)
+        self.declare_parameter('max_time_offset_sec', 0.2)
+        self.declare_parameter('time_offset_step_sec', 0.01)
         self.declare_parameter('report_period_sec', 5.0)
+        self.declare_parameter('episode_id', '')
+        self.declare_parameter('arm', '')
 
         output_dir = str(self.get_parameter('output_dir').value).strip()
         if not output_dir:
@@ -35,13 +39,25 @@ class EstimatedStateEvaluator(Node):
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
         max_delta_sec = float(self.get_parameter('max_time_delta_sec').value)
+        max_offset_sec = float(
+            self.get_parameter('max_time_offset_sec').value)
+        offset_step_sec = float(
+            self.get_parameter('time_offset_step_sec').value)
         report_period_sec = float(
             self.get_parameter('report_period_sec').value)
         if not math.isfinite(max_delta_sec) or max_delta_sec < 0.0:
             raise ValueError('max_time_delta_sec must be finite and non-negative')
+        if not math.isfinite(max_offset_sec) or max_offset_sec < 0.0:
+            raise ValueError('max_time_offset_sec must be finite and non-negative')
+        if not math.isfinite(offset_step_sec) or offset_step_sec <= 0.0:
+            raise ValueError('time_offset_step_sec must be finite and positive')
         if not math.isfinite(report_period_sec) or report_period_sec <= 0.0:
             raise ValueError('report_period_sec must be finite and positive')
         self._max_time_delta_ns = int(round(max_delta_sec * 1.0e9))
+        self._max_time_offset_ns = int(round(max_offset_sec * 1.0e9))
+        self._time_offset_step_ns = int(round(offset_step_sec * 1.0e9))
+        self._episode_id = str(self.get_parameter('episode_id').value)
+        self._arm = str(self.get_parameter('arm').value)
 
         self._odom_samples = []
         self._amcl_samples = []
@@ -91,17 +107,24 @@ class EstimatedStateEvaluator(Node):
                 self._odom_samples,
                 self._ground_truth_samples,
                 self._max_time_delta_ns,
+                max_time_offset_ns=self._max_time_offset_ns,
+                time_offset_step_ns=self._time_offset_step_ns,
             ),
             'amcl_pose': evaluate_trajectory(
                 self._amcl_samples,
                 self._ground_truth_samples,
                 self._max_time_delta_ns,
+                max_time_offset_ns=self._max_time_offset_ns,
+                time_offset_step_ns=self._time_offset_step_ns,
             ),
         }
         summary = {
-            'schema_version': 1,
+            'schema_version': 2,
             'generated_at_utc': datetime.now(timezone.utc).isoformat(),
             'evaluator_only_ground_truth': True,
+            'passive_evaluator': True,
+            'episode_id': self._episode_id,
+            'arm': self._arm,
             'ground_truth_topic': '/ground_truth/odom',
             'ground_truth': {
                 'input': stream_diagnostics(self._ground_truth_samples),
@@ -126,14 +149,25 @@ class EstimatedStateEvaluator(Node):
             'estimate_stamp_ns',
             'ground_truth_stamp_ns',
             'time_delta_ms',
+            'estimate_x_m',
+            'estimate_y_m',
+            'estimate_yaw_rad',
             'aligned_x_m',
             'aligned_y_m',
             'aligned_yaw_rad',
             'ground_truth_x_m',
             'ground_truth_y_m',
             'ground_truth_yaw_rad',
+            'absolute_ate_xy_m',
+            'absolute_ate_yaw_rad',
+            'aligned_ate_xy_m',
+            'aligned_ate_yaw_rad',
             'ate_xy_m',
             'ate_yaw_rad',
+            'covariance_2sigma_x_covered',
+            'covariance_2sigma_y_covered',
+            'covariance_2sigma_yaw_covered',
+            'planar_nees',
         ]
         with csv_temporary.open('w', newline='', encoding='utf-8') as stream:
             writer = csv.DictWriter(stream, fieldnames=fieldnames)
