@@ -135,6 +135,7 @@ class SimulationConfig:
     pacing_mode: str
     target_realtime_factor: float
     max_frames: int
+    stage_readiness_timeout_s: float
 
 
 @dataclass(frozen=True)
@@ -292,6 +293,7 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
         "pacing_mode",
         "target_realtime_factor",
         "max_frames",
+        "stage_readiness_timeout_s",
     }
     _expect_keys(data, allowed, "simulation")
     headless = _required(data, "headless", "simulation")
@@ -341,6 +343,12 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
             "simulation.target_realtime_factor",
         ),
         max_frames=max_frames,
+        stage_readiness_timeout_s=_positive_number(
+            _required(
+                data, "stage_readiness_timeout_s", "simulation"
+            ),
+            "simulation.stage_readiness_timeout_s",
+        ),
     )
 
 

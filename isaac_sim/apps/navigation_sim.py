@@ -104,6 +104,11 @@ def _parser() -> argparse.ArgumentParser:
         help="stop after N render updates (0 means unlimited)",
     )
     parser.add_argument(
+        "--stage-readiness-timeout-s",
+        type=float,
+        help="override the bounded Kit stage readiness timeout in seconds",
+    )
+    parser.add_argument(
         "--pacing-mode",
         choices=("realtime", "unbounded"),
         help="wall-clock pacing; unbounded must be selected explicitly",
@@ -290,6 +295,10 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
         if args.max_steps < 0:
             raise ValueError("--max-steps must be non-negative")
         os.environ["ISAAC_NAV__SIMULATION__MAX_FRAMES"] = str(args.max_steps)
+    if args.stage_readiness_timeout_s is not None:
+        os.environ["ISAAC_NAV__SIMULATION__STAGE_READINESS_TIMEOUT_S"] = str(
+            args.stage_readiness_timeout_s
+        )
     if args.third_person_camera is not None:
         os.environ["ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED"] = (
             "true" if args.third_person_camera else "false"
@@ -433,6 +442,10 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
         "renderer": config.simulation.renderer,
         "multi_gpu": False,
         "extra_args": [
+            "--/renderer/raytracingMotion/enabled=true",
+            "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
+            "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
+            "--/rtx/rendering/perSensorTickTlas=true",
             "--/rtx/hydra/supportMultiTickRate=true",
             (
                 "--/persistent/simulation/minFrameRate="
@@ -471,21 +484,7 @@ def run(
         # SimulationApp otherwise forwards this application's argparse flags
         # to Kit as if they were native settings.
         sys.argv = [sys.argv[0]]
-        app = SimulationApp(
-            {
-                "headless": config.simulation.headless,
-                "renderer": config.simulation.renderer,
-                # RTX LiDAR uses multi-tick 100 ms exposures.  Motion BVH must
-                # be enabled before Kit starts or a moving/rotating sensor
-                # produces frame-inconsistent accumulated point clouds.
-                "extra_args": [
-                    "--/renderer/raytracingMotion/enabled=true",
-                    "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
-                    "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
-                    "--/rtx/rendering/perSensorTickTlas=true",
-                ],
-            }
-        )
+        app = SimulationApp(_simulation_app_config(config))
     finally:
         sys.argv = original_argv
     runtime = None

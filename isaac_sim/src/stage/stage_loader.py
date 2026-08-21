@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 import time
 
@@ -10,7 +11,91 @@ class StageLoadError(RuntimeError):
     pass
 
 
-def create_or_open_project_stage(path: str | Path):
+_LOGGER = logging.getLogger(__name__)
+
+
+def wait_for_stable_context_stage(
+    context,
+    app,
+    path: str | Path,
+    timeout_s: float,
+    *,
+    monotonic=time.monotonic,
+    progress_interval_s: float = 30.0,
+):
+    """Wait for Kit's context stage, tolerating a blocking cold RTX update."""
+
+    path = Path(path).resolve()
+    start = monotonic()
+    deadline = start + float(timeout_s)
+    updates = 0
+    last_phase = "starting"
+    last_log = start - progress_interval_s
+    cold_hint = (
+        "first cold start may spend several minutes compiling RTX shaders/PSOs "
+        "and warming caches inside one app.update()"
+    )
+    while True:
+        candidate = context.get_stage()
+        candidate_path = ""
+        if candidate is None:
+            state = "stage=None"
+            phase = "missing"
+        else:
+            layer = candidate.GetRootLayer()
+            candidate_path = layer.realPath or layer.identifier
+            if not candidate_path:
+                state = "stage_path=empty"
+                phase = "missing-path"
+            elif candidate_path.startswith("anon:"):
+                state = "stage=anonymous"
+                phase = "anonymous"
+            elif Path(candidate_path).resolve() != path:
+                state = f"stage_path={candidate_path}"
+                phase = "path-mismatch"
+            else:
+                pending = context.get_stage_loading_status()[2]
+                if pending == 0:
+                    elapsed = monotonic() - start
+                    _LOGGER.info(
+                        "Kit stage ready after %.1fs and %d app updates",
+                        elapsed,
+                        updates,
+                    )
+                    return candidate
+                state = f"stage=matching loading={pending}"
+                phase = "loading"
+
+        now = monotonic()
+        elapsed = now - start
+        if phase != last_phase or now - last_log >= progress_interval_s:
+            _LOGGER.info(
+                "Waiting for Kit stage: elapsed=%.1fs deadline=%.1fs "
+                "updates=%d state=%s; %s",
+                elapsed,
+                float(timeout_s),
+                updates,
+                state,
+                cold_hint,
+            )
+            last_log = now
+            last_phase = phase
+        if now >= deadline:
+            raise StageLoadError(
+                "Kit stage readiness timeout: "
+                f"elapsed={elapsed:.1f}s deadline={float(timeout_s):.1f}s "
+                f"updates={updates} last_state={state}"
+            )
+
+        app.update()
+        updates += 1
+
+
+def create_or_open_project_stage(
+    path: str | Path,
+    *,
+    readiness_timeout_s: float = 420.0,
+):
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     if not path.exists():
@@ -30,36 +115,6 @@ def create_or_open_project_stage(path: str | Path):
             context = omni.usd.get_context()
             import omni.kit.app
 
-            def wait_for_stable_context_stage():
-                deadline = time.monotonic() + 15.0
-                stable = None
-                stable_updates = 0
-                while time.monotonic() < deadline:
-                    candidate = context.get_stage()
-                    candidate_path = ""
-                    if candidate is not None:
-                        layer = candidate.GetRootLayer()
-                        candidate_path = layer.realPath or layer.identifier
-                    matching = (
-                        candidate_path
-                        and not candidate_path.startswith("anon:")
-                        and Path(candidate_path).resolve() == path
-                        and context.get_stage_loading_status()[2] == 0
-                    )
-                    if matching:
-                        if candidate is stable:
-                            stable_updates += 1
-                        else:
-                            stable = candidate
-                            stable_updates = 1
-                        if stable_updates >= 5:
-                            return candidate
-                    else:
-                        stable = None
-                        stable_updates = 0
-                    omni.kit.app.get_app().update()
-                return None
-
             current = context.get_stage()
             current_path = ""
             if current is not None:
@@ -68,7 +123,12 @@ def create_or_open_project_stage(path: str | Path):
             if current_path and not current_path.startswith("anon:") and (
                 Path(current_path).resolve() == path
             ):
-                stage = wait_for_stable_context_stage()
+                stage = wait_for_stable_context_stage(
+                    context,
+                    omni.kit.app.get_app(),
+                    path,
+                    readiness_timeout_s,
+                )
             elif current is not None:
                 # SimulationApp starts with an anonymous context Stage.  Isaac
                 # 6 refuses to synchronously open the project stage while that
@@ -83,7 +143,12 @@ def create_or_open_project_stage(path: str | Path):
                 # context switches away from its anonymous startup Stage.
                 # Composing into that stale object passes local validation but
                 # leaves RTX/PhysX attached to a different, uncomposed Stage.
-                stage = wait_for_stable_context_stage()
+                stage = wait_for_stable_context_stage(
+                    context,
+                    omni.kit.app.get_app(),
+                    path,
+                    readiness_timeout_s,
+                )
             if stage is None:
                 raise StageLoadError(f"Kit context failed to open project stage {path}")
         except StageLoadError:

@@ -121,7 +121,10 @@ class SceneComposer:
         if robot_dependencies.unresolved:
             raise RuntimeError(f"robot asset has unresolved dependencies: {robot_dependencies.unresolved}")
 
-        stage = create_or_open_project_stage(config.environment.project_stage)
+        stage = create_or_open_project_stage(
+            config.environment.project_stage,
+            readiness_timeout_s=config.simulation.stage_readiness_timeout_s,
+        )
         from pxr import UsdGeom
 
         # A newly created root layer otherwise falls back to USD's centimeter

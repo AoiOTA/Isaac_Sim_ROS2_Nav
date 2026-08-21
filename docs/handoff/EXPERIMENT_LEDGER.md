@@ -228,3 +228,20 @@
 - Unrun: live ROS/TF/Costmap, Isaac, Nav2 navigation, evidence campaign, and
   formal qualification.
 - Handoff: `docs/handoff/V6_M3_OBSTACLE_VALIDATION_CONSUMER_20260821.md`.
+
+## 2026-08-21 — V6 Isaac cold stage-readiness timeout repair
+
+- Goal: tolerate multi-minute first-run RTX shader/PSO/cache compilation while
+  retaining a bounded Kit context-stage readiness failure.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `ff7ab2724aba4095a0f334f7c50ae79690aeaee8`.
+- Changes: required positive timeout config/env/CLI with 420-second default;
+  warm-ready immediate return; post-update readiness check before deadline;
+  30-second/phase-change cold-cache progress; actionable timeout diagnostics;
+  real SimulationApp path now reuses the single-GPU launch contract.
+- Validation: changed Python `py_compile` PASS; focused fake-clock/config/app
+  pytest `29 passed`; `git diff --check` PASS.
+- Verdict: **PASS (implementation and code-level tests only)**.
+- Unrun: Isaac, ROS, Nav2, navigation, evidence, and formal qualification.
+  Runtime cold-start confirmation remains for the next authorized retry.
+- Handoff: `docs/handoff/V6_ISAAC_COLD_STAGE_READINESS_20260821.md`.

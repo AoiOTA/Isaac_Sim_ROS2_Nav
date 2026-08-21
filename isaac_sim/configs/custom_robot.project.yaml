@@ -36,6 +36,8 @@ simulation:
   pacing_mode: realtime
   target_realtime_factor: 1.0
   max_frames: 0
+  # First-run RTX shader/PSO compilation can block a Kit update for minutes.
+  stage_readiness_timeout_s: 420
 
 spawn:
   poses_file: ${PROJECT_ROOT}/isaac_sim/configs/spawn_poses.yaml

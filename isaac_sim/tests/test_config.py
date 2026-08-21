@@ -37,6 +37,7 @@ def test_default_project_contract_loads_strictly():
     assert config.simulation.structure_tf_source == "isaac"
     assert config.simulation.pacing_mode == "realtime"
     assert config.simulation.target_realtime_factor == pytest.approx(1.0)
+    assert config.simulation.stage_readiness_timeout_s == pytest.approx(420.0)
     assert config.robot.default_prim == "jackal"
     assert config.third_person_camera.enabled is True
     assert config.third_person_camera.prim_name == "third_person_camera"
@@ -77,6 +78,7 @@ def test_nested_environment_overrides_are_typed():
             ISAAC_NAV__SIMULATION__PACING_MODE="unbounded",
             ISAAC_NAV__SIMULATION__TARGET_REALTIME_FACTOR="1.25",
             ISAAC_NAV__SIMULATION__RENDERING_HZ="30",
+            ISAAC_NAV__SIMULATION__STAGE_READINESS_TIMEOUT_S="12.5",
             ISAAC_NAV__ROS2__DOMAIN_ID="42",
             ISAAC_NAV__THIRD_PERSON_CAMERA__ENABLED="false",
             ISAAC_NAV__THIRD_PERSON_CAMERA__DISTANCE_M="4.75",
@@ -89,6 +91,7 @@ def test_nested_environment_overrides_are_typed():
     assert config.simulation.pacing_mode == "unbounded"
     assert config.simulation.target_realtime_factor == pytest.approx(1.25)
     assert config.simulation.rendering_hz == pytest.approx(30.0)
+    assert config.simulation.stage_readiness_timeout_s == pytest.approx(12.5)
     assert config.ros2.domain_id == 42
     assert config.third_person_camera.enabled is False
     assert config.third_person_camera.distance_m == pytest.approx(4.75)
@@ -139,6 +142,17 @@ def test_invalid_pacing_configuration_fails_before_kit(name, value, message):
         load_project_config(
             CONFIG,
             _environment(**{f"ISAAC_NAV__SIMULATION__{name}": value}),
+        )
+
+
+@pytest.mark.parametrize("value", ["0", "-1", ".inf", ".nan"])
+def test_invalid_stage_readiness_timeout_fails_before_kit(value):
+    with pytest.raises(ConfigError, match="stage_readiness_timeout_s.*positive"):
+        load_project_config(
+            CONFIG,
+            _environment(
+                ISAAC_NAV__SIMULATION__STAGE_READINESS_TIMEOUT_S=value
+            ),
         )
 
 

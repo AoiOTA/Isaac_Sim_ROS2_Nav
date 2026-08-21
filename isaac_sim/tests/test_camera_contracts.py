@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 
 import pytest
 import yaml
 
-from isaac_sim.apps.navigation_sim import _parser, _simulation_app_config
+from isaac_sim.apps.navigation_sim import (
+    _apply_cli_overrides,
+    _parser,
+    _simulation_app_config,
+    run,
+)
 from isaac_sim.graphs.camera_graph import (
     camera_graph_spec,
     validate_camera_ros_contract,
@@ -215,11 +223,54 @@ def test_camera_cli_accepts_only_named_profiles():
         parser.parse_args(["--camera-profile", "turbo"])
 
 
+def test_stage_readiness_cli_uses_typed_config_override(monkeypatch):
+    args = _parser().parse_args(
+        ["--stage-readiness-timeout-s", "135.5"]
+    )
+    monkeypatch.delenv(
+        "ISAAC_NAV__SIMULATION__STAGE_READINESS_TIMEOUT_S", raising=False
+    )
+
+    _apply_cli_overrides(args)
+
+    assert (
+        os.environ["ISAAC_NAV__SIMULATION__STAGE_READINESS_TIMEOUT_S"]
+        == "135.5"
+    )
+
+
 def test_simulation_app_enables_supported_multitick_sensor_settings_early():
     launch = _simulation_app_config(_config())
 
     assert launch["multi_gpu"] is False
     assert launch["extra_args"] == [
+        "--/renderer/raytracingMotion/enabled=true",
+        "--/renderer/raytracingMotion/enableHydraEngineMasking=true",
+        "--/renderer/raytracingMotion/enabledForHydraEngines=0,1,2,3",
+        "--/rtx/rendering/perSensorTickTlas=true",
         "--/rtx/hydra/supportMultiTickRate=true",
         "--/persistent/simulation/minFrameRate=60",
     ]
+
+
+def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
+    captured = {}
+
+    class StopAfterConstruction(RuntimeError):
+        pass
+
+    class FakeSimulationApp:
+        def __init__(self, launch):
+            captured.update(launch)
+            raise StopAfterConstruction
+
+    monkeypatch.setitem(
+        sys.modules,
+        "isaacsim",
+        SimpleNamespace(SimulationApp=FakeSimulationApp),
+    )
+    with pytest.raises(StopAfterConstruction):
+        run(_config(), None, None, None, None, "baseline")
+
+    assert captured["multi_gpu"] is False
+    assert captured == _simulation_app_config(_config())
