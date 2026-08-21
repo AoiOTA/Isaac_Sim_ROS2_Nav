@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import robot_route_planner.ros_node as ros_node_module
 
 from robot_route_planner.cognitive_graph_adapter import CognitiveGraphIdentity
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
@@ -498,7 +499,7 @@ def _reset_route_coordinator(*, active=True, handle=None):
         ))
     )
     coordinator.graph_reconciliations = []
-    coordinator._ensure_desired_graph = lambda reason: (
+    coordinator._ensure_desired_graph = lambda reason, **_kwargs: (
         coordinator.graph_reconciliations.append(reason)
     )
     coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
@@ -956,7 +957,8 @@ def test_old_compute_rejection_cannot_mark_fresh_goal_fallback() -> None:
     coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
         warning=lambda _message: None))
     reconciliations = []
-    coordinator._ensure_desired_graph = lambda reason: reconciliations.append(reason)
+    coordinator._ensure_desired_graph = (
+        lambda reason, **_kwargs: reconciliations.append(reason))
     generation = coordinator._route_callback_generation()
     fallback_entered = threading.Event()
     release_fallback = threading.Event()
@@ -1513,6 +1515,237 @@ def test_final_navigation_failure_publishes_one_bool_json_pair() -> None:
         'reason': 'navigate_to_pose_failed_error_207',
         'reset_epoch': 8,
     }]
+
+
+def _runtime_manager_for_hold_race() -> RuntimeEdgeManager:
+    return RuntimeEdgeManager(
+        {
+            'block_after_occupied_s': 0.0,
+            'block_after_consecutive_failures': 1,
+            'reopen_after_clear_s': 0.5,
+            'unknown_after_unobserved_s': 0.5,
+        },
+        {
+            'suspect_edge_penalty_m': 1.0,
+            'blocked_edge_penalty_m': 10.0,
+            'unknown_edge_penalty_m': 2.0,
+        },
+    )
+
+
+def test_runtime_edge_77_observation_crossing_hold_is_discarded_for_40_rounds() -> None:
+    message = SimpleNamespace(
+        edge_id=77,
+        observed_clear=False,
+        planning_failed=True,
+        occupied_ahead=True,
+    )
+    for _round in range(40):
+        coordinator = _reset_route_coordinator(active=False)
+        coordinator.runtime = _runtime_manager_for_hold_race()
+        entered = threading.Barrier(2)
+        release = threading.Event()
+
+        def blocked_now():
+            entered.wait(timeout=2.0)
+            assert release.wait(timeout=2.0)
+            return SimpleNamespace(nanoseconds=1_000_000_000)
+
+        coordinator._now = blocked_now
+        callback = threading.Thread(
+            target=coordinator._on_runtime_observation,
+            args=(message,),
+        )
+        callback.start()
+        entered.wait(timeout=2.0)
+        coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+        release.set()
+        callback.join(timeout=2.0)
+
+        assert not callback.is_alive()
+        assert 77 not in coordinator.runtime.edges
+        assert coordinator.runtime_snapshots == []
+
+
+def test_runtime_tick_crossing_hold_cannot_restore_cleared_edge() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.runtime = _runtime_manager_for_hold_race()
+    edge = coordinator.runtime.state(77)
+    edge.last_observed_s = 0.0
+    coordinator.defaults = {
+        'module2_edge_prior': {'active_refresh_period_s': 5.0},
+    }
+    coordinator.module2_enabled = False
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator.latest_priors_stamp_ns = None
+    entered = threading.Barrier(2)
+    release = threading.Event()
+
+    def blocked_now():
+        entered.wait(timeout=2.0)
+        assert release.wait(timeout=2.0)
+        return SimpleNamespace(nanoseconds=1_000_000_000)
+
+    coordinator._now = blocked_now
+    callback = threading.Thread(target=coordinator._runtime_tick)
+    callback.start()
+    entered.wait(timeout=2.0)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    release.set()
+    callback.join(timeout=2.0)
+
+    assert not callback.is_alive()
+    assert coordinator.runtime.edges == {}
+    assert coordinator.runtime_snapshots == []
+
+
+def test_prior_validation_crossing_hold_cannot_commit_latest_or_feedback(
+    monkeypatch,
+) -> None:
+    coordinator = _reset_route_coordinator(active=True)
+    graph = SimpleNamespace(
+        graph_id='test:gvg_v1', revision=3,
+        edges=[SimpleNamespace(id=7)],
+    )
+    coordinator.graph = graph
+    coordinator.gvg_graph = graph
+    coordinator.desired_graph = graph
+    coordinator.pending_deadline_ns = 6_500_000_000
+    coordinator.pending_prior_request_id = 41
+    coordinator.pending_prior_graph_id = graph.graph_id
+    coordinator.pending_prior_graph_revision = graph.revision
+    coordinator.pending_prior_started_ns = 5_500_000_000
+    coordinator.pending_prior_model_id = None
+    coordinator.latest_priors = {}
+    coordinator.latest_priors_stamp_ns = None
+    coordinator.latest_prior_model_id = None
+    coordinator.module2_prior_ttl_s = 2.0
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=6_000_000_000)
+    prepared = []
+    coordinator._prepare_route = lambda priors: prepared.append(priors)
+    entered = threading.Barrier(2)
+    release = threading.Event()
+    original = ros_node_module.edge_prior_is_usable
+
+    def blocked_validation(**kwargs):
+        entered.wait(timeout=2.0)
+        assert release.wait(timeout=2.0)
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        ros_node_module, 'edge_prior_is_usable', blocked_validation)
+    callback = threading.Thread(
+        target=coordinator._on_priors,
+        args=(_edge_prior_message(request_id=41, stamp_ns=5_800_000_000),),
+    )
+    callback.start()
+    entered.wait(timeout=2.0)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    release.set()
+    callback.join(timeout=2.0)
+
+    assert not callback.is_alive()
+    assert coordinator.latest_priors == {}
+    assert coordinator.pending_deadline_ns is None
+    assert prepared == []
+
+
+def test_structural_observation_crossing_hold_cannot_queue_or_rebuild(
+    monkeypatch,
+) -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    structural_map = OccupancyMap(
+        np.ones((8, 8), dtype=bool),
+        0.05,
+        (0.0, 0.0),
+        'map-v1',
+        Path('/tmp/map.yaml'),
+    )
+    settings = {
+        'ros_free_max_occupancy': 20,
+        'changed_area_m2': 0.0,
+        'stable_snapshot_count': 1,
+        'stable_for_s': 0.0,
+    }
+    coordinator.map = structural_map
+    coordinator.defaults = {'structural_updates': settings}
+    coordinator.structural_monitor = StructuralChangeMonitor(
+        structural_map.free, structural_map.resolution_m, settings)
+    coordinator.pending_structural_map = None
+    coordinator.pending_structural_intent = None
+    coordinator.structural_observation_generation = 0
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=1_000_000_000)
+    rebuilds = []
+    coordinator._try_deferred_structural_rebuild = (
+        lambda *args, **kwargs: rebuilds.append((args, kwargs)))
+    entered = threading.Barrier(2)
+    release = threading.Event()
+
+    def blocked_observe(self, free, now_s):
+        entered.wait(timeout=2.0)
+        assert release.wait(timeout=2.0)
+        self.last_candidate = np.asarray(free, dtype=bool).copy()
+        self.first_stable_s = float(now_s)
+        self.stable_count = 1
+        return True
+
+    monkeypatch.setattr(StructuralChangeMonitor, 'observe', blocked_observe)
+    message = SimpleNamespace(
+        data=np.zeros(64, dtype=np.int8),
+        info=SimpleNamespace(height=8, width=8),
+    )
+    callback = threading.Thread(
+        target=coordinator._on_structural_map,
+        args=(message,),
+    )
+    callback.start()
+    entered.wait(timeout=2.0)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    release.set()
+    callback.join(timeout=2.0)
+
+    assert not callback.is_alive()
+    assert coordinator.pending_structural_map is None
+    assert coordinator.pending_structural_intent is None
+    assert rebuilds == []
+
+
+def test_region_tick_crossing_hold_cannot_select_or_publish() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    entered = threading.Barrier(2)
+    release = threading.Event()
+    select_calls = []
+    constraint_calls = []
+
+    class Selector:
+        current = SimpleNamespace(region_id='old')
+        last_switch_s = 0.0
+
+        def select(self, xy, now_s):
+            select_calls.append((xy, now_s))
+            return SimpleNamespace(region_id='new')
+
+    coordinator.region_selector = Selector()
+
+    def blocked_xy():
+        entered.wait(timeout=2.0)
+        assert release.wait(timeout=2.0)
+        return (1.0, 2.0)
+
+    coordinator._current_xy = blocked_xy
+    coordinator._now = lambda: SimpleNamespace(nanoseconds=1_000_000_000)
+    coordinator._publish_cognitive_constraints = (
+        lambda: constraint_calls.append(True))
+    callback = threading.Thread(target=coordinator._region_tick)
+    callback.start()
+    entered.wait(timeout=2.0)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    release.set()
+    callback.join(timeout=2.0)
+
+    assert not callback.is_alive()
+    assert select_calls == []
+    assert constraint_calls == []
 
 
 def test_navigation_action_status_is_authoritative_over_error_detail() -> None:

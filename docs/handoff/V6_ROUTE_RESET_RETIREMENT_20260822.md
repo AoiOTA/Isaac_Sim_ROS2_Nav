@@ -294,3 +294,46 @@ run for this amendment. The required next step is a fresh active-reset live
 rerun from the resulting commit; executor timing, cancellation completion,
 observed status/event order, HOLD displacement, and fresh-goal recovery remain
 runtime-pending.
+
+## HOLD-crossing external-input fence amendment
+
+- Start HEAD: `600981e28616709e1937046e90e715f1a36f4d21`; the prior route-retirement,
+  reset-gate, benchmark evidence, and IMU evidence-contract commits are retained.
+- Added one immutable RouteCoordinator input token binding reset intent,
+  completion, route request, and physical-graph identity. Runtime observations,
+  runtime expiry, structural-map observation/rebuild, Module2 priors, cognitive
+  candidates, region selection, odometry/costmap context, and their timers now
+  capture this token under the shared state lock and revalidate it before any
+  reset-owned state commit. Output and dispatch paths keep the established
+  output-lock then state-lock final check.
+- Runtime edge mutation and its transient snapshot are atomic. DynamicEdges
+  cost construction snapshots `route_cost_view` under the state lock. A HOLD
+  crossing cannot recreate edge 77, publish a stale runtime snapshot, retain a
+  stale prior, queue/rebuild a structural candidate, select a region, or emit an
+  immature cognitive-graph status. Structural observation runs on a private
+  monitor snapshot and commits only if the observation generation and route
+  token are still current; no TF, publish, service, action, export, or graph
+  build runs under the state lock.
+- Same-generation completion/release, desired-GVG reassertion, deferred
+  structural coalescing, and exactly-once terminal behavior are unchanged.
+  Deterministic barriers cover the six crossing paths above; the runtime edge
+  race is repeated for 40 rounds.
+
+Validation actually run:
+
+- Deterministic HOLD-crossing subset: **6 passed**.
+- Complete source-first/no-cache `robot_route_planner/test`: **138 passed,
+  1 skipped**; the existing optional `pxr` import remains unavailable.
+- Risk-related ResetStopGate/ActivationGate/mode/MotionBenchmark/reset-receipt/
+  IMU/localization/EKF regression set: **174 passed**.
+- Changed-file `py_compile` and `git diff --check`: PASS.
+- Fresh isolated `robot_route_planner` build: PASS at
+  `/tmp/v6_route_hold_fence_build.bZ2EMi`, install
+  `/tmp/v6_route_hold_fence_install.mkbJi2`, log
+  `/tmp/v6_route_hold_fence_log.9otDEl`. Fresh `colcon test-result`: **139
+  tests, 0 errors, 0 failures, 1 skipped**.
+
+Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
+navigation, visual evidence, engineering campaign, or formal qualification was
+run. A fresh active-reset live rerun remains required to verify executor/DDS
+ordering, zero old-epoch output and command through HOLD, and fresh-goal recovery.

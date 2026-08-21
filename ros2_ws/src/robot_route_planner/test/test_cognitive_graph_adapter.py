@@ -409,7 +409,8 @@ def test_reset_clears_candidate_generation_state():
         invalidate=lambda: None)
     reconciliations = []
     coordinator._publish_runtime_states = lambda **_kwargs: None
-    coordinator._ensure_desired_graph = lambda reason: reconciliations.append(reason)
+    coordinator._ensure_desired_graph = (
+        lambda reason, **_kwargs: reconciliations.append(reason))
 
     coordinator._on_reset_event(None)
 
@@ -1380,6 +1381,46 @@ def test_immature_primary_candidate_retains_gvg_and_later_matures(shape):
     coordinator._on_cognitive_graph(_candidate(sequence=8))
     assert len(switches) == 1
     assert switches[0][2]['fallback'] is False
+
+
+def test_immature_cognitive_status_crossing_hold_is_silent(monkeypatch):
+    coordinator = _feedback_coordinator(graph_id='physical', revision=4)
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda state, detail: statuses.append((state, detail)))
+    entered = threading.Barrier(2)
+    release = threading.Event()
+
+    def blocked_maturity(_message):
+        entered.wait(timeout=2.0)
+        assert release.wait(timeout=2.0)
+        return False
+
+    monkeypatch.setattr(
+        ros_node_module,
+        'cognitive_graph_candidate_is_mature',
+        blocked_maturity,
+    )
+    callback = threading.Thread(
+        target=coordinator._on_cognitive_graph,
+        args=(_candidate(),),
+    )
+    callback.start()
+    entered.wait(timeout=2.0)
+    with coordinator._route_state_lock():
+        coordinator.reset_hold_barrier = True
+        coordinator.reset_intent_generation = 2
+        coordinator.reset_generation = 1
+        coordinator.request_id = 1
+    release.set()
+    callback.join(timeout=2.0)
+
+    assert not callback.is_alive()
+    assert statuses == []
+    assert coordinator.cognitive_graph_validation_pub.messages == []
 
 
 def test_set_route_graph_accepts_only_after_success_and_reject_does_not_bind():

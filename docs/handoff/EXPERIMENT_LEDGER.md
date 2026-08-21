@@ -1302,3 +1302,33 @@
   closure remains pending; frozen `yaw_scale=0.9294` and RF2O-off unchanged.
 - Handoff:
   `docs/handoff/V6_IMU_REGIME_EVIDENCE_CONTRACT_20260822.md`.
+
+## 2026-08-22 — V6 RouteCoordinator HOLD-crossing input fences
+
+- Goal: prevent a runtime, structural, prior, cognitive, region, costmap, or
+  timer callback admitted before reset HOLD from committing or publishing old-
+  epoch state after HOLD retirement or same-generation release.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `600981e28616709e1937046e90e715f1a36f4d21`.
+- Changes: immutable reset/route/graph input token; state-lock commit
+  revalidation; output-lock then state-lock final publication/dispatch check;
+  atomic runtime mutation/snapshot and locked runtime cost view; private
+  structural-monitor observation with generation-fenced commit; HOLD rejection
+  in deferred/rebuild/cognitive/prior/region/context paths. Existing reset
+  completion/release, GVG reassertion, deferred coalescing, and exactly-once
+  route terminal semantics remain.
+- Deterministic tests: runtime edge 77 crossing repeated for 40 rounds;
+  structural pending/rebuild, prior latest/pending, cognitive immature status,
+  runtime tick, and region tick crossings. Result: **6 passed**.
+- Validation: complete source-first route package **138 passed, 1 skipped**
+  (`pxr` unavailable); risk-related gate/mode/MotionBenchmark/reset/IMU/
+  localization/EKF set **174 passed**; changed-file `py_compile` and
+  `git diff --check` PASS; fresh isolated build PASS and `colcon test-result`
+  **139 tests, 0 errors, 0 failures, 1 skipped** at
+  `/tmp/v6_route_hold_fence_build.bZ2EMi`.
+- Verdict: **PASS (code/build/unit only)**. No ROS/Isaac/Nav2/navigation,
+  visual evidence, engineering campaign, or formal qualification was run.
+- Remaining risk/next: run the planned fresh active-reset live review to verify
+  executor/DDS ordering, old-request silence and zero command through HOLD, and
+  successful fresh-goal recovery.
+- Handoff: `docs/handoff/V6_ROUTE_RESET_RETIREMENT_20260822.md`.
