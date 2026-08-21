@@ -5,6 +5,7 @@ import numpy as np
 import pytest
 
 from robot_route_planner.cognitive_graph_adapter import (
+    CognitiveGraphFeedback,
     CognitiveGraphIdentity,
     build_hybrid_graph,
     validate_cognitive_graph_candidate,
@@ -20,6 +21,42 @@ FOOTPRINT = {
     'padded_inscribed_radius_m': 0.1,
     'sweep_sample_spacing_m': 0.05,
 }
+
+
+class _FeedbackMessage:
+    def __init__(self):
+        self.header = SimpleNamespace(stamp=None, frame_id='')
+
+
+class _Publisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
+
+
+def _feedback(graph_id='cognitive', revision=5):
+    return CognitiveGraphFeedback(
+        'session', 3, 7, 'candidate', 5, 1, graph_id, revision,
+        (('e0', '1'), ('e0', '2')),
+    )
+
+
+def _feedback_coordinator(*, graph_id='cognitive', revision=5):
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.frame_id = 'map'
+    coordinator.graph = SimpleNamespace(graph_id=graph_id, revision=revision)
+    coordinator._now = lambda: SimpleNamespace(to_msg=lambda: object())
+    coordinator.CognitiveGraphValidationAck = _FeedbackMessage
+    coordinator.CognitiveEdgeOutcome = _FeedbackMessage
+    coordinator.cognitive_graph_validation_pub = _Publisher()
+    coordinator.cognitive_edge_outcome_pub = _Publisher()
+    coordinator.cognitive_feedback_sequences = {}
+    coordinator.cognitive_validation_terminal = set()
+    coordinator.cognitive_outcome_terminal = set()
+    coordinator.cognitive_reroute_revision = 0
+    return coordinator
 
 
 def _point(x, y):
@@ -222,12 +259,18 @@ def test_first_invalid_candidate_does_not_bind_generation_identity():
     coordinator.cognitive_graph_last_sequence = 0
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
         3, '', 'map', '', 0, 'physical', 4, '')
+    coordinator.graph = _physical_graph()
     coordinator.map = _map()
     coordinator.defaults = {'footprint': FOOTPRINT}
     coordinator.StructuralGraphStatus = SimpleNamespace(
         LAST_KNOWN_GOOD=2, READY=1)
-    coordinator._now = lambda: SimpleNamespace(nanoseconds=10_100_000_000)
+    now = SimpleNamespace(
+        nanoseconds=10_100_000_000, to_msg=lambda: object())
+    coordinator._now = lambda: now
     coordinator._publish_structural_status = lambda *_args: None
+    coordinator.frame_id = 'map'
+    coordinator.CognitiveGraphValidationAck = _FeedbackMessage
+    coordinator.cognitive_graph_validation_pub = _Publisher()
     invalid = _candidate()
     invalid.source_physical_graph_revision = 99
 
@@ -236,6 +279,11 @@ def test_first_invalid_candidate_does_not_bind_generation_identity():
     assert coordinator.cognitive_graph_identity == CognitiveGraphIdentity(
         3, '', 'map', '', 0, 'physical', 4, '')
     assert coordinator.cognitive_graph_last_sequence == 0
+    ack = coordinator.cognitive_graph_validation_pub.messages[0]
+    assert ack.accepted is False
+    assert ack.validated_graph_id == 'physical'
+    assert ack.validated_graph_revision == 4
+    assert ack.validated_edge_id == ''
 
 
 def test_reset_clears_candidate_generation_state():
@@ -247,6 +295,13 @@ def test_reset_clears_candidate_generation_state():
     coordinator.graph_switch_generation = 7
     coordinator.cognitive_graph_switch_pending = True
     coordinator.cognitive_graph_last_sequence = 9
+    coordinator.cognitive_graph_feedback_active = _feedback()
+    coordinator.cognitive_graph_feedback_pending = _feedback()
+    coordinator.cognitive_feedback_sequences = {(7, 'outcome', 'e0'): 2}
+    coordinator.cognitive_validation_terminal = {(7, 'e0')}
+    coordinator.cognitive_outcome_terminal = {(7, '1')}
+    coordinator.pending_reroute_outcome = (_feedback(), '1', 'e0')
+    coordinator.cognitive_reroute_revision = 2
     coordinator.pending_deadline_ns = 1
     coordinator.pending_prior_request_id = 2
     coordinator.pending_prior_graph_id = 'cognitive'
@@ -276,6 +331,12 @@ def test_reset_clears_candidate_generation_state():
     assert coordinator.latest_priors == {}
     assert coordinator.graph_generation == 5
     assert coordinator.graph_switch_generation == 8
+    assert coordinator.cognitive_graph_feedback_active is None
+    assert coordinator.cognitive_feedback_sequences == {}
+    assert coordinator.cognitive_validation_terminal == set()
+    assert coordinator.cognitive_outcome_terminal == set()
+    assert coordinator.pending_reroute_outcome is None
+    assert coordinator.cognitive_reroute_revision == 0
     assert fallbacks == ['simulation reset invalidated cognitive graph']
 
 
@@ -336,3 +397,185 @@ def test_old_set_route_graph_callback_generation_is_discarded():
 
     assert evaluated == []
     assert coordinator.cognitive_graph_switch_pending is False
+
+
+def test_shadow_validation_ack_is_not_an_execution_outcome():
+    coordinator = _feedback_coordinator(graph_id='physical', revision=4)
+    coordinator.pending_goal = None
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_switch_pending = False
+    coordinator.cognitive_graph_mode = 'shadow'
+    coordinator.cognitive_graph_last_sequence = 0
+    coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+        3, '', 'map', '', 0, 'physical', 4, '')
+    coordinator.map = _map()
+    coordinator.defaults = {'footprint': FOOTPRINT}
+    coordinator.StructuralGraphStatus = SimpleNamespace(
+        LAST_KNOWN_GOOD=2, READY=1)
+    now = SimpleNamespace(nanoseconds=10_100_000_000, to_msg=lambda: object())
+    coordinator._now = lambda: now
+    coordinator._publish_structural_status = lambda *_args: None
+
+    coordinator._on_cognitive_graph(_candidate())
+
+    ack = coordinator.cognitive_graph_validation_pub.messages[0]
+    assert ack.accepted is True
+    assert ack.reason == 'physically_validated_shadow_not_selected'
+    assert ack.validated_graph_id == 'physical'
+    assert ack.validated_graph_revision == 4
+    assert ack.validated_edge_id == '1'
+    assert coordinator.cognitive_edge_outcome_pub.messages == []
+
+
+def test_set_route_graph_accepts_only_after_success_and_reject_does_not_bind():
+    graph = Graph('candidate:primary', 5, 'map', 0.05, [], [])
+    feedback = CognitiveGraphFeedback(
+        'session', 3, 7, 'candidate', 5, 1, graph.graph_id, graph.revision,
+        (('e0', '1'),),
+    )
+    candidate = SimpleNamespace(identity=_identity(), source_sequence=7)
+
+    def configured():
+        coordinator = _feedback_coordinator(
+            graph_id='physical', revision=4)
+        coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
+            3, '', 'map', '', 0, 'physical', 4, '')
+        coordinator.cognitive_graph_last_sequence = 0
+        coordinator.cognitive_graph_switch_pending = True
+        coordinator.graph_generation = 0
+        coordinator.pending_goal = None
+        coordinator.support_node_positions = {}
+        coordinator.cognitive_constraints_cache = SimpleNamespace(
+            invalidate=lambda: None)
+        coordinator._clear_latest_priors = lambda: None
+        coordinator._publish_graph = lambda: None
+        coordinator._publish_cognitive_constraints = lambda: None
+        coordinator._publish_structural_status = lambda *_args: None
+        coordinator.StructuralGraphStatus = SimpleNamespace(
+            LAST_KNOWN_GOOD=2, READY=1)
+        coordinator._primary_fallback_available = lambda: False
+        return coordinator
+
+    rejected = configured()
+    rejected._finish_cognitive_graph_switch(
+        SimpleNamespace(result=lambda: SimpleNamespace(success=False)),
+        graph, None, 'rejected', False, None, feedback, candidate,
+    )
+    assert rejected.cognitive_graph_identity.recurrent_session_id == ''
+    assert rejected.cognitive_graph_validation_pub.messages[0].accepted is False
+
+    accepted = configured()
+    support = SimpleNamespace(geojson={'features': []})
+    accepted._finish_cognitive_graph_switch(
+        SimpleNamespace(result=lambda: SimpleNamespace(success=True)),
+        graph, support, 'accepted', False, None, feedback, candidate,
+    )
+    assert accepted.cognitive_graph_identity == _identity()
+    assert accepted.cognitive_graph_last_sequence == 7
+    assert accepted.cognitive_graph_validation_pub.messages[0].accepted is True
+
+
+def test_edge_crossing_and_terminal_outcomes_are_published_once():
+    coordinator = _feedback_coordinator()
+    coordinator.cognitive_graph_feedback_active = _feedback()
+    coordinator.tracker = SimpleNamespace(
+        edge_index=1,
+        edges=[SimpleNamespace(id=1), SimpleNamespace(id=2)],
+    )
+
+    coordinator._publish_crossed_edge_outcomes(0, 1)
+    coordinator._publish_crossed_edge_outcomes(0, 1)
+    coordinator._publish_crossed_edge_outcomes(1, 1)
+
+    outcomes = coordinator.cognitive_edge_outcome_pub.messages
+    assert len(outcomes) == 1
+    assert outcomes[0].success is True
+    assert outcomes[0].reason == 'route_tracker_edge_crossed'
+
+
+def test_navigate_failure_is_once_and_no_edge_has_no_outcome():
+    coordinator = _feedback_coordinator()
+    coordinator.cognitive_graph_mode = 'shadow'
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_feedback_active = _feedback()
+    coordinator.tracker = SimpleNamespace(
+        edge_index=0, edges=[SimpleNamespace(id=1)])
+
+    coordinator._publish_navigation_edge_failure('navigate_failed')
+    coordinator._publish_navigation_edge_failure('navigate_failed')
+    assert len(coordinator.cognitive_edge_outcome_pub.messages) == 1
+    assert coordinator.cognitive_edge_outcome_pub.messages[0].failure is True
+
+    coordinator.tracker = None
+    coordinator._publish_navigation_edge_failure('dynamic_or_compute_without_route')
+    assert len(coordinator.cognitive_edge_outcome_pub.messages) == 1
+
+
+def test_lookahead_success_has_no_outcome_but_final_confirmed_does():
+    def configured(targets_final):
+        coordinator = _feedback_coordinator()
+        coordinator.cognitive_graph_mode = 'shadow'
+        coordinator.primary_fallback_used = False
+        coordinator.cognitive_graph_feedback_active = _feedback()
+        coordinator.tracker = SimpleNamespace(
+            edge_index=0, edges=[SimpleNamespace(id=1)])
+        coordinator.pending_goal = SimpleNamespace(
+            pose=SimpleNamespace(position=SimpleNamespace(x=1.0, y=2.0)))
+        coordinator.route_goal_completion_tolerance_m = 0.25
+        coordinator.navigation_goal_targets_final = targets_final
+        coordinator.navigation_goal_pending = True
+        coordinator.navigation_goal_handle = object()
+        coordinator.navigation_failed = False
+        coordinator._current_xy = lambda: (1.0, 2.0)
+        coordinator._finish_active_route = lambda: None
+        coordinator.goal_complete_pub = _Publisher()
+        coordinator.node = SimpleNamespace(get_logger=lambda: SimpleNamespace(
+            info=lambda *_args: None, warning=lambda *_args: None))
+        return coordinator
+
+    result = SimpleNamespace(result=lambda: SimpleNamespace(
+        status=4, result=SimpleNamespace(error_code=0)))
+    lookahead = configured(False)
+    lookahead._on_navigation_result(result)
+    assert lookahead.cognitive_edge_outcome_pub.messages == []
+
+    final = configured(True)
+    final._on_navigation_result(result)
+    outcomes = final.cognitive_edge_outcome_pub.messages
+    assert len(outcomes) == 1
+    assert outcomes[0].success is True
+    assert outcomes[0].reason == 'final_goal_distance_confirmed'
+
+
+def test_fallback_requested_and_applied_are_separate_monotonic_events():
+    coordinator = _feedback_coordinator()
+    coordinator.cognitive_graph_mode = 'primary'
+    coordinator.primary_fallback_used = False
+    coordinator.cognitive_graph_feedback_active = _feedback()
+    coordinator.tracker = SimpleNamespace(
+        edge_index=0, edges=[SimpleNamespace(id=1)])
+    coordinator._publish_navigation_edge_failure('navigate_failed')
+    first = coordinator.cognitive_edge_outcome_pub.messages[0]
+    assert first.reroute_applied is False
+
+    coordinator.cognitive_graph_switch_pending = True
+    coordinator.graph_generation = 0
+    coordinator.pending_goal = None
+    coordinator.cognitive_constraints_cache = SimpleNamespace(
+        invalidate=lambda: None)
+    coordinator._clear_latest_priors = lambda: None
+    coordinator._publish_graph = lambda: None
+    coordinator._publish_cognitive_constraints = lambda: None
+    coordinator._publish_structural_status = lambda *_args: None
+    coordinator.StructuralGraphStatus = SimpleNamespace(READY=1)
+    fallback_graph = Graph('physical', 4, 'map', 0.05, [], [])
+    support = SimpleNamespace(geojson={'features': []})
+    coordinator._finish_cognitive_graph_switch(
+        SimpleNamespace(result=lambda: SimpleNamespace(success=True)),
+        fallback_graph, support, 'fallback', True,
+    )
+
+    second = coordinator.cognitive_edge_outcome_pub.messages[1]
+    assert second.reroute_applied is True
+    assert second.reroute_revision == 1
+    assert second.event_sequence > first.event_sequence

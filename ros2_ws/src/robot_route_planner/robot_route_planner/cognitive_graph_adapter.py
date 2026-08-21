@@ -36,6 +36,67 @@ class ValidatedCognitiveGraph:
     value_sequence: int
 
 
+@dataclass(frozen=True)
+class CognitiveGraphFeedback:
+    """Candidate provenance plus concrete Module3 edge mappings."""
+
+    recurrent_session_id: str
+    reset_epoch: int
+    generation: int
+    candidate_graph_id: str
+    candidate_topology_revision: int
+    candidate_value_sequence: int
+    validated_graph_id: str
+    validated_graph_revision: int
+    edge_mappings: tuple[tuple[str, str], ...]
+
+    def candidate_edges(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(item[0] for item in self.edge_mappings))
+
+    def candidate_for_validated(self, edge_id: int | str) -> str | None:
+        wanted = str(edge_id)
+        for candidate, validated in self.edge_mappings:
+            if validated == wanted:
+                return candidate
+        return None
+
+    def first_validated(self, candidate_edge_id: str) -> str:
+        for candidate, validated in self.edge_mappings:
+            if candidate == candidate_edge_id:
+                return validated
+        return ''
+
+
+def cognitive_graph_feedback(message, graph: Graph | None = None) -> CognitiveGraphFeedback:
+    """Extract feedback identity without binding coordinator generation state."""
+
+    candidate_edges = tuple(dict.fromkeys(
+        str(edge.edge_id) for edge in message.edges if str(edge.edge_id)
+    ))
+    mappings: list[tuple[str, str]] = []
+    if graph is None:
+        mappings.extend((edge_id, '') for edge_id in candidate_edges)
+    else:
+        for edge in graph.edges:
+            external = str(edge.metadata.get('external_edge_id', ''))
+            if external:
+                mappings.append((external, str(edge.id)))
+        missing = set(candidate_edges) - {item[0] for item in mappings}
+        if missing:
+            raise ValueError('validated graph lost cognitive edge identity')
+    return CognitiveGraphFeedback(
+        recurrent_session_id=str(message.recurrent_session_id),
+        reset_epoch=int(message.reset_epoch),
+        generation=int(message.source_sequence),
+        candidate_graph_id=str(message.graph_id),
+        candidate_topology_revision=int(message.topology_revision),
+        candidate_value_sequence=int(message.value_sequence),
+        validated_graph_id='' if graph is None else str(graph.graph_id),
+        validated_graph_revision=0 if graph is None else int(graph.revision),
+        edge_mappings=tuple(mappings),
+    )
+
+
 def _stamp_ns(stamp) -> int:
     return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
@@ -385,8 +446,10 @@ def build_hybrid_graph(
 
 
 __all__ = [
+    'CognitiveGraphFeedback',
     'CognitiveGraphIdentity',
     'ValidatedCognitiveGraph',
     'build_hybrid_graph',
+    'cognitive_graph_feedback',
     'validate_cognitive_graph_candidate',
 ]

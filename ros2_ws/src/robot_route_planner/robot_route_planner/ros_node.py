@@ -16,8 +16,10 @@ from .cognitive_constraints import (
     occupancy_grid_version,
 )
 from .cognitive_graph_adapter import (
+    CognitiveGraphFeedback,
     CognitiveGraphIdentity,
     build_hybrid_graph,
+    cognitive_graph_feedback,
     validate_cognitive_graph_candidate,
 )
 from .feasibility import (
@@ -290,6 +292,8 @@ class RouteCoordinator:
     def __init__(self, node) -> None:
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
+            CognitiveEdgeOutcome,
+            CognitiveGraphValidationAck,
             CognitiveMapConstraints,
             CognitivePlaceGraphCandidate,
             CognitiveTransition,
@@ -419,6 +423,13 @@ class RouteCoordinator:
         self.gvg_support = self.support
         self.cognitive_graph_last_sequence = 0
         self.cognitive_graph_switch_pending = False
+        self.cognitive_graph_feedback_active: CognitiveGraphFeedback | None = None
+        self.cognitive_graph_feedback_pending: CognitiveGraphFeedback | None = None
+        self.cognitive_feedback_sequences: dict[tuple[int, str, str], int] = {}
+        self.cognitive_validation_terminal: set[tuple[int, str]] = set()
+        self.cognitive_outcome_terminal: set[tuple[int, str]] = set()
+        self.pending_reroute_outcome: tuple[CognitiveGraphFeedback, str, str] | None = None
+        self.cognitive_reroute_revision = 0
         self.graph_generation = 0
         self.graph_switch_generation = 0
         self.primary_fallback_used = False
@@ -519,6 +530,8 @@ class RouteCoordinator:
         self.RuntimeEdgeStateArray = RuntimeEdgeStateArray
         self.StructuralGraphStatus = StructuralGraphStatus
         self.CognitiveMapConstraints = CognitiveMapConstraints
+        self.CognitiveGraphValidationAck = CognitiveGraphValidationAck
+        self.CognitiveEdgeOutcome = CognitiveEdgeOutcome
         self.CognitivePlaceGraphCandidate = CognitivePlaceGraphCandidate
         self.CognitiveTransition = CognitiveTransition
         self.RouteEdgeCostArray = RouteEdgeCostArray
@@ -576,6 +589,16 @@ class RouteCoordinator:
             RouteEdgeCostArray,
             "/bio_nav/route_edge_costs",
             qos_latched,
+        )
+        self.cognitive_graph_validation_pub = node.create_publisher(
+            CognitiveGraphValidationAck,
+            "/bio_nav/module3/cognitive_graph_validation_ack",
+            qos,
+        )
+        self.cognitive_edge_outcome_pub = node.create_publisher(
+            CognitiveEdgeOutcome,
+            "/bio_nav/module3/cognitive_edge_outcome",
+            qos,
         )
         node.create_subscription(
             PoseStamped,
@@ -665,6 +688,133 @@ class RouteCoordinator:
     def _now(self):
         return self.node.get_clock().now()
 
+    def _feedback_sequence(
+        self, feedback: CognitiveGraphFeedback, kind: str, candidate_edge_id: str
+    ) -> int:
+        key = (feedback.generation, kind, candidate_edge_id)
+        sequences = getattr(self, "cognitive_feedback_sequences", {})
+        value = int(sequences.get(key, 0)) + 1
+        sequences[key] = value
+        self.cognitive_feedback_sequences = sequences
+        return value
+
+    def _populate_graph_feedback(
+        self, message, feedback: CognitiveGraphFeedback,
+        candidate_edge_id: str, validated_edge_id: str,
+    ) -> None:
+        message.header.stamp = self._now().to_msg()
+        message.header.frame_id = self.frame_id
+        message.recurrent_session_id = feedback.recurrent_session_id
+        message.reset_epoch = feedback.reset_epoch
+        message.generation = feedback.generation
+        message.candidate_graph_id = feedback.candidate_graph_id
+        message.candidate_topology_revision = feedback.candidate_topology_revision
+        message.candidate_value_sequence = feedback.candidate_value_sequence
+        message.candidate_edge_id = candidate_edge_id
+        message.validated_graph_id = feedback.validated_graph_id
+        message.validated_graph_revision = feedback.validated_graph_revision
+        message.validated_edge_id = validated_edge_id
+
+    def _publish_graph_validation(
+        self, feedback: CognitiveGraphFeedback, *, accepted: bool, reason: str
+    ) -> None:
+        terminal = getattr(self, "cognitive_validation_terminal", set())
+        for candidate_edge_id in feedback.candidate_edges():
+            key = (feedback.generation, candidate_edge_id)
+            if key in terminal:
+                continue
+            message = self.CognitiveGraphValidationAck()
+            validated_edge_id = (
+                feedback.first_validated(candidate_edge_id) if accepted else ''
+            )
+            self._populate_graph_feedback(
+                message, feedback, candidate_edge_id, validated_edge_id
+            )
+            message.event_sequence = self._feedback_sequence(
+                feedback, "validation", candidate_edge_id
+            )
+            message.accepted = bool(accepted)
+            message.reason = str(reason)
+            message.reroute_revision = 0
+            message.reroute_applied = False
+            self.cognitive_graph_validation_pub.publish(message)
+            terminal.add(key)
+        self.cognitive_validation_terminal = terminal
+
+    def _publish_edge_outcome(
+        self, feedback: CognitiveGraphFeedback, validated_edge_id: str,
+        candidate_edge_id: str, *, success: bool, reason: str,
+        reroute_applied: bool = False,
+    ) -> None:
+        terminal = getattr(self, "cognitive_outcome_terminal", set())
+        key = (feedback.generation, str(validated_edge_id))
+        if key in terminal and not reroute_applied:
+            return
+        message = self.CognitiveEdgeOutcome()
+        self._populate_graph_feedback(
+            message, feedback, candidate_edge_id, str(validated_edge_id)
+        )
+        message.event_sequence = self._feedback_sequence(
+            feedback, "outcome", candidate_edge_id
+        )
+        message.success = bool(success)
+        message.failure = not bool(success)
+        message.reason = str(reason)
+        message.reroute_revision = (
+            int(getattr(self, "cognitive_reroute_revision", 0))
+            if reroute_applied else 0
+        )
+        message.reroute_applied = bool(reroute_applied)
+        self.cognitive_edge_outcome_pub.publish(message)
+        terminal.add(key)
+        self.cognitive_outcome_terminal = terminal
+
+    def _cognitive_route_edge(
+        self, edge_index: int | None = None
+    ) -> tuple[CognitiveGraphFeedback, str, str] | None:
+        feedback = getattr(self, "cognitive_graph_feedback_active", None)
+        tracker = getattr(self, "tracker", None)
+        if feedback is None or tracker is None:
+            return None
+        if (
+            str(self.graph.graph_id) != feedback.validated_graph_id
+            or int(self.graph.revision) != feedback.validated_graph_revision
+        ):
+            return None
+        index = tracker.edge_index if edge_index is None else int(edge_index)
+        if index < 0 or index >= len(tracker.edges):
+            return None
+        validated_edge_id = str(tracker.edges[index].id)
+        candidate_edge_id = feedback.candidate_for_validated(validated_edge_id)
+        if candidate_edge_id is None:
+            return None
+        return feedback, validated_edge_id, candidate_edge_id
+
+    def _publish_navigation_edge_failure(self, reason: str) -> None:
+        edge = self._cognitive_route_edge()
+        if edge is None:
+            return
+        feedback, validated_edge_id, candidate_edge_id = edge
+        self._publish_edge_outcome(
+            feedback, validated_edge_id, candidate_edge_id,
+            success=False, reason=reason,
+        )
+        if self._primary_fallback_available():
+            self.pending_reroute_outcome = edge
+
+    def _publish_crossed_edge_outcomes(
+        self, previous_edge_index: int, current_edge_index: int
+    ) -> None:
+        for edge_index in range(int(previous_edge_index), int(current_edge_index)):
+            edge = self._cognitive_route_edge(edge_index)
+            if edge is None:
+                continue
+            feedback, validated_edge_id, candidate_edge_id = edge
+            self._publish_edge_outcome(
+                feedback, validated_edge_id, candidate_edge_id,
+                success=True, reason="route_tracker_edge_crossed",
+            )
+
     def _route_callback_generation(self) -> RouteCallbackGeneration:
         return RouteCallbackGeneration(
             int(self.request_id),
@@ -734,6 +884,13 @@ class RouteCoordinator:
             '',
         )
         self.cognitive_graph_last_sequence = 0
+        self.cognitive_graph_feedback_active = None
+        self.cognitive_graph_feedback_pending = None
+        self.cognitive_feedback_sequences = {}
+        self.cognitive_validation_terminal = set()
+        self.cognitive_outcome_terminal = set()
+        self.pending_reroute_outcome = None
+        self.cognitive_reroute_revision = 0
         self._clear_pending_prior_request()
         self._clear_latest_priors()
         self.cognitive_constraints_cache.invalidate()
@@ -742,16 +899,28 @@ class RouteCoordinator:
             self._fallback_to_gvg_once("simulation reset invalidated cognitive graph")
 
     def _on_cognitive_graph(self, message) -> None:
+        feedback = replace(
+            cognitive_graph_feedback(message),
+            validated_graph_id=str(self.graph.graph_id),
+            validated_graph_revision=int(self.graph.revision),
+        )
         if self.pending_goal is not None and self.primary_fallback_used:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "cognitive graph rejected: current goal is locked to GVG fallback",
+            )
+            self._publish_graph_validation(
+                feedback, accepted=False,
+                reason="current_goal_locked_to_gvg_fallback",
             )
             return
         if self.cognitive_graph_switch_pending:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 "cognitive graph rejected: SetRouteGraph switch already pending",
+            )
+            self._publish_graph_validation(
+                feedback, accepted=False, reason="set_route_graph_switch_pending"
             )
             return
         identity = self.cognitive_graph_identity
@@ -784,18 +953,32 @@ class RouteCoordinator:
                     occupancy=self.map,
                     footprint=self.defaults["footprint"],
                 )
+            feedback = cognitive_graph_feedback(message, selected)
         except Exception as error:
             self._publish_structural_status(
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"cognitive graph rejected: {error}",
             )
+            self._publish_graph_validation(
+                feedback, accepted=False,
+                reason=f"physical_validation_rejected: {error}",
+            )
             if self._primary_fallback_available():
                 self._fallback_to_gvg_once(f"candidate rejected: {error}")
             return
-        if bind_identity:
-            self.cognitive_graph_identity = candidate.identity
-        self.cognitive_graph_last_sequence = candidate.source_sequence
         if self.cognitive_graph_mode == "shadow":
+            if bind_identity:
+                self.cognitive_graph_identity = candidate.identity
+            self.cognitive_graph_last_sequence = candidate.source_sequence
+            feedback = replace(
+                feedback,
+                validated_graph_id=str(self.graph.graph_id),
+                validated_graph_revision=int(self.graph.revision),
+            )
+            self._publish_graph_validation(
+                feedback, accepted=True,
+                reason="physically_validated_shadow_not_selected",
+            )
             self._publish_structural_status(
                 self.StructuralGraphStatus.READY,
                 "cognitive graph accepted in shadow; GVG remains selected",
@@ -808,9 +991,14 @@ class RouteCoordinator:
             f"tile={candidate.identity.cognitive_tile_id}:"
             f"{candidate.identity.tile_revision}",
             fallback=False,
+            feedback=feedback,
+            candidate=candidate,
         )
 
-    def _request_graph_switch(self, graph, detail: str, *, fallback: bool) -> None:
+    def _request_graph_switch(
+        self, graph, detail: str, *, fallback: bool,
+        feedback: CognitiveGraphFeedback | None = None, candidate=None,
+    ) -> None:
         try:
             support = export_route_support_graph(
                 graph,
@@ -829,6 +1017,15 @@ class RouteCoordinator:
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"graph export rejected: {error}",
             )
+            if feedback is not None:
+                self._publish_graph_validation(
+                    replace(
+                        feedback,
+                        validated_graph_id=str(self.graph.graph_id),
+                        validated_graph_revision=int(self.graph.revision),
+                    ), accepted=False,
+                    reason=f"graph_export_rejected: {error}",
+                )
             if not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once(f"graph export rejected: {error}")
             return
@@ -838,10 +1035,19 @@ class RouteCoordinator:
                 "cognitive graph fallback: SetRouteGraph unavailable"
                 if fallback else "cognitive graph rejected: SetRouteGraph unavailable",
             )
+            if feedback is not None:
+                self._publish_graph_validation(
+                    replace(
+                        feedback,
+                        validated_graph_id=str(self.graph.graph_id),
+                        validated_graph_revision=int(self.graph.revision),
+                    ), accepted=False, reason="set_route_graph_unavailable"
+                )
             if not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once("SetRouteGraph unavailable")
             return
         self.cognitive_graph_switch_pending = True
+        self.cognitive_graph_feedback_pending = feedback
         self.graph_switch_generation = int(
             getattr(self, "graph_switch_generation", 0)
         ) + 1
@@ -855,13 +1061,15 @@ class RouteCoordinator:
         future = self.set_graph_client.call_async(request)
         future.add_done_callback(
             lambda completed: self._finish_cognitive_graph_switch(
-                completed, graph, support, detail, fallback, generation
+                completed, graph, support, detail, fallback, generation,
+                feedback, candidate,
             )
         )
 
     def _finish_cognitive_graph_switch(
         self, future, graph, support, detail: str, fallback: bool,
         generation: GraphSwitchGeneration | None = None,
+        feedback: CognitiveGraphFeedback | None = None, candidate=None,
     ) -> None:
         if not self._graph_switch_callback_is_current(generation):
             if (
@@ -870,8 +1078,10 @@ class RouteCoordinator:
                 == int(getattr(self, "graph_switch_generation", 0))
             ):
                 self.cognitive_graph_switch_pending = False
+                self.cognitive_graph_feedback_pending = None
             return
         self.cognitive_graph_switch_pending = False
+        self.cognitive_graph_feedback_pending = None
         try:
             response = future.result()
         except Exception as error:
@@ -882,6 +1092,15 @@ class RouteCoordinator:
                 self.StructuralGraphStatus.LAST_KNOWN_GOOD,
                 f"cognitive graph {'fallback' if fallback else 'rejected'}: {detail}",
             )
+            if feedback is not None:
+                self._publish_graph_validation(
+                    replace(
+                        feedback,
+                        validated_graph_id=str(self.graph.graph_id),
+                        validated_graph_revision=int(self.graph.revision),
+                    ), accepted=False,
+                    reason=f"set_route_graph_rejected: {detail}",
+                )
             if not fallback and self._primary_fallback_available():
                 self._fallback_to_gvg_once(detail)
             return
@@ -896,6 +1115,28 @@ class RouteCoordinator:
             if feature["geometry"]["type"] == "Point"
         }
         self._clear_latest_priors()
+        if not fallback and feedback is not None:
+            if candidate is not None:
+                self.cognitive_graph_identity = candidate.identity
+                self.cognitive_graph_last_sequence = candidate.source_sequence
+            self.cognitive_graph_feedback_active = feedback
+            self._publish_graph_validation(
+                feedback, accepted=True, reason="set_route_graph_accepted"
+            )
+        elif fallback:
+            pending = getattr(self, "pending_reroute_outcome", None)
+            if pending is not None:
+                previous_feedback, validated_edge_id, candidate_edge_id = pending
+                self.cognitive_reroute_revision = int(
+                    getattr(self, "cognitive_reroute_revision", 0)
+                ) + 1
+                self._publish_edge_outcome(
+                    previous_feedback, validated_edge_id, candidate_edge_id,
+                    success=False, reason="whole_gvg_reroute_applied",
+                    reroute_applied=True,
+                )
+            self.pending_reroute_outcome = None
+            self.cognitive_graph_feedback_active = None
         self.cognitive_constraints_cache.invalidate()
         self._publish_graph()
         self._publish_cognitive_constraints()
@@ -928,6 +1169,8 @@ class RouteCoordinator:
             )
             if getattr(self, "pending_goal", None) is not None:
                 self._prepare_route({})
+            self.pending_reroute_outcome = None
+            self.cognitive_graph_feedback_active = None
             return
         self._request_graph_switch(
             self.gvg_graph,
@@ -1111,6 +1354,7 @@ class RouteCoordinator:
 
     def _on_goal(self, goal) -> None:
         self.primary_fallback_used = False
+        self.pending_reroute_outcome = None
         if self.navigation_goal_handle is not None:
             self.navigation_goal_handle.cancel_goal_async()
         self.navigation_goal_handle = None
@@ -1558,7 +1802,12 @@ class RouteCoordinator:
         current = self._current_xy()
         if current is None:
             return
+        previous_edge_index = int(self.tracker.edge_index)
         progress = self.tracker.update(current)
+        if progress.edge_index > previous_edge_index:
+            self._publish_crossed_edge_outcomes(
+                previous_edge_index, progress.edge_index
+            )
         if (
             self.latest_global_costmap is not None
             and self.latest_global_costmap.frame_id == self.frame_id
@@ -1641,6 +1890,7 @@ class RouteCoordinator:
         self.navigation_goal_pending = False
         handle = future.result()
         if handle is None or not handle.accepted:
+            self._publish_navigation_edge_failure("navigate_to_pose_rejected")
             if (
                 self._primary_fallback_available()
             ):
@@ -1704,6 +1954,9 @@ class RouteCoordinator:
         elif (
             self._primary_fallback_available()
         ):
+            self._publish_navigation_edge_failure(
+                f"navigate_to_pose_failed_error_{result_code}"
+            )
             self.navigation_goal_pending = False
             self.navigation_goal_handle = None
             self.navigation_goal_targets_final = False
@@ -1713,6 +1966,18 @@ class RouteCoordinator:
                 f"NavigateToPose failed with error {result_code}"
             )
             return
+        if navigation_result_succeeded(wrapped):
+            edge = self._cognitive_route_edge()
+            if edge is not None:
+                feedback, validated_edge_id, candidate_edge_id = edge
+                self._publish_edge_outcome(
+                    feedback, validated_edge_id, candidate_edge_id,
+                    success=True, reason="final_goal_distance_confirmed",
+                )
+        else:
+            self._publish_navigation_edge_failure(
+                f"navigate_to_pose_failed_error_{result_code}"
+            )
         # Retire the completed leg before publishing its terminal event.  The
         # qualification runner can dispatch the next whole-house waypoint as
         # soon as it receives this Bool.  Clearing via a subscription to our

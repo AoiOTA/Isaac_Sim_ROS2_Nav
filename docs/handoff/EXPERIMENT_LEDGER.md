@@ -245,3 +245,35 @@
 - Unrun: Isaac, ROS, Nav2, navigation, evidence, and formal qualification.
   Runtime cold-start confirmation remains for the next authorized retry.
 - Handoff: `docs/handoff/V6_ISAAC_COLD_STAGE_READINESS_20260821.md`.
+
+## 2026-08-21 — V6 Module3 typed cognitive graph feedback
+
+- Goal: return physically grounded graph validation and concrete edge outcomes
+  to Integration without conflating `SetRouteGraph` acceptance, lookahead
+  completion, edge traversal, or fallback request/application.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `e328e27b4c4dcedc4748b59d39ec36bf38535152`.
+- Interface underlay: permitted Integration revision
+  `c1e411b6c579e4f07f72b9e768760ff1f13c2bb0`.
+- Changes: typed validation/outcome publishers; candidate-to-concrete edge
+  provenance; post-SetRouteGraph acceptance; RouteTracker crossing and final
+  distance-gated success; once-only failure; requested/applied GVG fallback;
+  reset and stale-callback cleanup.
+- Validation: owned pytest `46 passed`; isolated `robot_route_planner` build
+  PASS; package tests `71 tests, 0 errors, 0 failures, 1 skipped` (optional
+  `pxr`); `git diff --check` PASS. Temporary root:
+  `/tmp/v6_module3_graph_feedback.H2jtx5`.
+- Verdict: **PASS (implementation/build/unit only)**.
+- Unrun: live typed-event flow, ROS/Isaac/Nav2 navigation, causal Module2
+  update, evidence campaign, and formal qualification.
+- Handoff: `docs/handoff/V6_MODULE3_GRAPH_FEEDBACK_20260821.md`.
+
+## 2026-08-21 — V6 A7 estimated navigation reviewer smoke
+
+- Baseline: Module3 `e328e27b4c4dcedc4748b59d39ec36bf38535152`;
+  Integration `c1e411b6c579e4f07f72b9e768760ff1f13c2bb0`.
+- Evidence: `/tmp/v6_a7_estimated_isaac.Ikapdb`.
+- Result: G2 `34.8 s`; recovery `0`; collision `0`; remaining `0.071 m`;
+  EKF xy ATE RMSE `0.0689 m`; AMCL xy ATE RMSE `0.0629 m`.
+- Verdict: **PASS (engineering smoke only; not qualification)**.
+- Handoff: `docs/handoff/V6_A7_ESTIMATED_NAV_SMOKE_20260821.md`.
