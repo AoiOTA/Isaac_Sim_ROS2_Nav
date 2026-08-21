@@ -493,3 +493,24 @@
   engineering pilot, evidence, or qualification campaign was run.
 - Handoff:
   `docs/handoff/V6_FORMAL_B5_READINESS_20260821.md`.
+
+## 2026-08-21 — V6 core sensor single physics-step publication
+
+- Goal: stop Clock/JointState/IMU from receiving two bit-identical executions
+  for one simulation stamp before the EKF can double-fuse equal-stamp samples.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `d5cd8d9f89b06465e4080b5dee3378d25b29daf1`.
+- Changes: core sensor execution moved from `OnPlaybackTick` to exactly one
+  `OnPhysicsStep`; Clock and JointState execute directly once, while IMU uses
+  the ordered `physics step -> ReadIMU -> PublishIMU` chain. Topics, frames,
+  QoS, publisher counts, and independent RTX LiDAR playback semantics remain
+  unchanged.
+- Validation: changed Python compile PASS; focused graph contracts `6 passed`;
+  all static Isaac tests `184 passed, 11 skipped` (existing `pxr`-unavailable
+  stage-composition skips); `git diff --check` PASS.
+- Verdict: **PASS (implementation/static-test only)**. No Isaac/ROS/Nav2 was
+  launched, so live single-stamp publication remains to be confirmed. IMU
+  covariance is still zero/unspecified pending Estimated State calibration;
+  no covariance value was guessed here.
+- Handoff:
+  `docs/handoff/V6_CORE_SENSOR_PHYSICS_STEP_20260821.md`.

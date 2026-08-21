@@ -116,6 +116,38 @@ def test_control_sensor_and_ideal_odometry_specs_validate():
     ] == pytest.approx(6.5)
 
 
+def test_core_sensors_publish_once_per_physics_step():
+    spec = core_sensor_graph_spec(
+        _config(),
+        "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
+    )
+    spec.validate()
+    node_types = dict(spec.nodes)
+    assert node_types["OnPhysicsStep"] == "isaacsim.core.nodes.OnPhysicsStep"
+    assert list(node_types.values()).count("isaacsim.core.nodes.OnPhysicsStep") == 1
+    assert "OnPlaybackTick" not in node_types
+
+    connections = set(spec.connections)
+    assert len(connections) == len(spec.connections)
+    expected_exec_connections = {
+        ("OnPhysicsStep.outputs:step", "PublishClock.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "PublishJointState.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "ReadIMU.inputs:execIn"),
+        ("ReadIMU.outputs:execOut", "PublishIMU.inputs:execIn"),
+    }
+    exec_connections = {
+        connection
+        for connection in connections
+        if connection[1].endswith("inputs:execIn")
+    }
+    assert exec_connections == expected_exec_connections
+    for target in ("PublishClock", "PublishJointState", "ReadIMU", "PublishIMU"):
+        assert sum(
+            destination == f"{target}.inputs:execIn"
+            for _, destination in connections
+        ) == 1
+
+
 def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
     spec = structure_tf_graph_spec(_config())
     spec.validate()

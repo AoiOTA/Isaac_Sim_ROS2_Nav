@@ -11,7 +11,7 @@ def core_sensor_graph_spec(config: ProjectConfig, imu_prim: str) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
     nodes = (
-        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
         ("PublishClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
         ("PublishJointState", "isaacsim.ros2.bridge.ROS2PublishJointState"),
@@ -19,12 +19,12 @@ def core_sensor_graph_spec(config: ProjectConfig, imu_prim: str) -> GraphSpec:
         ("PublishIMU", "isaacsim.ros2.bridge.ROS2PublishImu"),
     )
     connections = (
-        ("OnPlaybackTick.outputs:tick", "PublishClock.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "PublishClock.inputs:execIn"),
         ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
-        ("OnPlaybackTick.outputs:tick", "PublishJointState.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "PublishJointState.inputs:execIn"),
         ("ReadSimTime.outputs:simulationTime", "PublishJointState.inputs:timeStamp"),
-        ("OnPlaybackTick.outputs:tick", "ReadIMU.inputs:execIn"),
-        ("OnPlaybackTick.outputs:tick", "PublishIMU.inputs:execIn"),
+        ("OnPhysicsStep.outputs:step", "ReadIMU.inputs:execIn"),
+        ("ReadIMU.outputs:execOut", "PublishIMU.inputs:execIn"),
         ("ReadIMU.outputs:linAcc", "PublishIMU.inputs:linearAcceleration"),
         ("ReadIMU.outputs:angVel", "PublishIMU.inputs:angularVelocity"),
         ("ReadIMU.outputs:orientation", "PublishIMU.inputs:orientation"),
