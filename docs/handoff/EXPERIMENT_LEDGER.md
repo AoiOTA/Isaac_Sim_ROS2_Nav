@@ -800,3 +800,33 @@
   influence remain unverified.
 - Handoff:
   `docs/handoff/V6_CRITIC_STATIC_REVALIDATION_FRESHNESS_20260821.md`.
+
+## 2026-08-21 — V6 official stationary fresh runtime
+
+- Goal: record the bounded fresh stationary runtime result without promoting
+  it to current-HEAD critic, moving-navigation, or formal-qualification proof.
+- Branch/worktree/base: `cognitive-navigation`; permitted Module3 worktree;
+  documentation preflight HEAD `25b97a12ff8c77f0e882cdce259209a7eaeb7374`.
+- Runtime provenance: immutable Module3 snapshot
+  `1d977d7c822ef81d6139d082cdade373769bdb35`, not the current authoring HEAD;
+  evidence root
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_stationary_static_authority_fresh_20260821T140713Z`.
+- Configuration/result: fresh 14-package Module3 build and asset check PASS;
+  `165.502708967 s` post-reset observation; unique reset/epoch rollover and
+  depth conservation had no regressions or violations; 518 trusted static
+  obstacle messages; global/local Costmap applied counts 284/1,431 with
+  raised/masked cells. Transient continuity gaps and rejections recovered.
+- Stationary safety/TF: nonzero command count 0, ground-truth displacement
+  `0.0 m`, collision count 0, maximum odometry displacement
+  `3.924656304988303e-9 m`; `map -> odom` 10 Hz and `odom -> base_link` 60 Hz
+  with zero stamp regressions; the GT firewall had no navigation subscriber.
+- Verdict: **ENGINEERING PASS (narrow stationary only)**;
+  **NOT FORMAL QUALIFICATION**.
+- Limits: zero goals/runners; critic applied count 0, so no active-critic claim;
+  `cognitive_graph_mode=gvg` was producer-only, with no graph application or
+  `PRIMARY`; the older runtime snapshot does not validate the current critic.
+  Two Integration helper children warned/exited 1 during commanded teardown
+  after the observation window.
+- Next: fresh current-HEAD, at-most-180-second, low-speed single-goal active-M3
+  pilot; any moving authority gap measured in seconds is **FAIL / STOP**.
+- Handoff: `docs/handoff/V6_OFFICIAL_STATIONARY_FRESH_20260821.md`.
