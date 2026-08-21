@@ -76,6 +76,10 @@ public:
     const bio_nav_interfaces::msg::CognitiveObstacle & obstacle,
     int maximum_soft_cost, double collision_min_height_m,
     double collision_max_height_m);
+  static std::string resolveConsumerId(
+    const std::string & node_fully_qualified_name,
+    const std::string & layer_name,
+    const std::string & override_id = "");
   static uint8_t mergeCellCost(
     const std::string & mode, uint8_t existing_cost, uint8_t offered_cost)
   {
@@ -105,6 +109,7 @@ private:
   bool identity_bound_{false};
   bool identity_parameters_configured_{false};
   std::string mode_{"off"};
+  std::string consumer_id_;
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   double maximum_age_s_{0.5};
   double maximum_ood_probability_{0.2};

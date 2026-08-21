@@ -347,6 +347,39 @@ TEST(CognitiveObstacleLayer, strict_gate_and_hard_threshold_are_fail_open)
     "identity");
 }
 
+TEST(CognitiveObstacleLayer, consumer_identity_distinguishes_fake_costmap_namespaces)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  const std::string layer = "cognitive_obstacle_layer";
+  const auto global = CognitiveObstacleLayer::resolveConsumerId(
+    "/global_costmap/global_costmap", layer);
+  const auto local = CognitiveObstacleLayer::resolveConsumerId(
+    "/local_costmap/local_costmap", layer);
+  EXPECT_EQ(global, "/global_costmap/global_costmap:cognitive_obstacle_layer");
+  EXPECT_EQ(local, "/local_costmap/local_costmap:cognitive_obstacle_layer");
+  EXPECT_NE(global, local);
+  EXPECT_EQ(
+    global,
+    CognitiveObstacleLayer::resolveConsumerId(
+      "/global_costmap/global_costmap", layer));
+}
+
+TEST(CognitiveObstacleLayer, consumer_identity_override_and_empty_fallback_are_stable)
+{
+  using bio_nav_fusion::CognitiveObstacleLayer;
+  EXPECT_EQ(
+    CognitiveObstacleLayer::resolveConsumerId(
+      "/global_costmap/global_costmap", "cognitive_obstacle_layer", "global"),
+    "global");
+  EXPECT_EQ(
+    CognitiveObstacleLayer::resolveConsumerId(
+      "/global_costmap/global_costmap", "cognitive_obstacle_layer", ""),
+    "/global_costmap/global_costmap:cognitive_obstacle_layer");
+  EXPECT_EQ(
+    CognitiveObstacleLayer::resolveConsumerId("", "", ""),
+    "/unknown_costmap:cognitive_obstacle_layer");
+}
+
 TEST(CognitiveObstacleLayer, static_depth_revalidation_requires_exact_dual_timeline)
 {
   using bio_nav_fusion::CognitiveObstacleLayer;

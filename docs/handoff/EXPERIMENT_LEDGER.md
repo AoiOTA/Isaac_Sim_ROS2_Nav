@@ -620,3 +620,21 @@
   and stale-cell clearing remain runtime validation work.
 - Handoff:
   `docs/handoff/V6_M3_OBSTACLE_VALIDATION_CONSUMER_20260821.md`.
+
+## 2026-08-21 — V6 obstacle status consumer identity
+
+- Goal: remove global/local CognitiveObstacleLayer ambiguity on the shared
+  absolute status topic while leaving Costmap behavior unchanged.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `dff45d0434638b9282bf6ea61811f09f638bb0cf`.
+- Changes: optional plugin-scoped `consumer_id`; otherwise deterministic
+  `<fully-qualified costmap node>:<layer name>` identity; every status uses the
+  resolved identity. Empty inputs have a stable explicit fallback.
+- Validation: isolated `bio_nav_fusion` build PASS; package result `26 tests, 0
+  errors, 0 failures, 0 skipped`; `git diff --check` PASS. Build root:
+  `/tmp/v6_obstacle_consumer_identity.mdIXgn`.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Nav2/Isaac or live
+  evidence was run; actual lifecycle node names and both consumer streams remain
+  to be observed in the next authorized live campaign.
+- Handoff:
+  `docs/handoff/V6_OBSTACLE_CONSUMER_IDENTITY_20260821.md`.

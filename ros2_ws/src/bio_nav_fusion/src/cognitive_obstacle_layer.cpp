@@ -94,6 +94,7 @@ void CognitiveObstacleLayer::onInitialize()
     };
   declare("enabled", true);
   declare("mode", mode_);
+  declare("consumer_id", std::string(""));
   declare("obstacle_topic", obstacle_topic_);
   declare("maximum_age_s", maximum_age_s_);
   declare("maximum_ood_probability", maximum_ood_probability_);
@@ -109,6 +110,10 @@ void CognitiveObstacleLayer::onInitialize()
   declare("expected_model_id", std::string(""));
   node->get_parameter(name_ + ".enabled", enabled_);
   node->get_parameter(name_ + ".mode", mode_);
+  std::string consumer_id_override;
+  node->get_parameter(name_ + ".consumer_id", consumer_id_override);
+  consumer_id_ = resolveConsumerId(
+    node->get_fully_qualified_name(), name_, consumer_id_override);
   node->get_parameter(name_ + ".obstacle_topic", obstacle_topic_);
   node->get_parameter(name_ + ".maximum_age_s", maximum_age_s_);
   node->get_parameter(
@@ -381,6 +386,21 @@ uint8_t CognitiveObstacleLayer::obstacleCost(
       1, std::clamp(maximum_soft_cost, 1, 80)));
 }
 
+std::string CognitiveObstacleLayer::resolveConsumerId(
+  const std::string & node_fully_qualified_name,
+  const std::string & layer_name,
+  const std::string & override_id)
+{
+  if (!override_id.empty()) {
+    return override_id;
+  }
+  const std::string node_id = node_fully_qualified_name.empty() ?
+    std::string("/unknown_costmap") : node_fully_qualified_name;
+  const std::string layer_id = layer_name.empty() ?
+    std::string("cognitive_obstacle_layer") : layer_name;
+  return node_id + ":" + layer_id;
+}
+
 void CognitiveObstacleLayer::obstacleCallback(
   const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message)
 {
@@ -551,7 +571,7 @@ void CognitiveObstacleLayer::publishStatus(
   if (!status_publisher_ || !status_publisher_->is_activated()) {return;}
   bio_nav_interfaces::msg::RiskLayerStatus status;
   status.stamp = clock_->now();
-  status.consumer = name_;
+  status.consumer = consumer_id_;
   status.mode = mode_;
   status.offered = true;
   status.applied = applied;
