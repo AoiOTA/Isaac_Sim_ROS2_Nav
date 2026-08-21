@@ -20,6 +20,86 @@ from robot_experiments.estimated_state_metrics import PoseSample
 from robot_experiments.estimated_state_metrics import stream_diagnostics
 
 
+class ImuYawAccumulator:
+    """Passively integrate one monotonic IMU yaw-rate stream."""
+
+    def __init__(self, topic):
+        self.topic = topic
+        self.samples = []
+        self.angular_velocity_z = []
+        self.angular_velocity_covariance_z = []
+        self.last_stamp_ns = None
+        self.last_angular_z = None
+        self.integrated_yaw = 0.0
+        self.rejected_nonfinite = 0
+        self.rejected_nonmonotonic = 0
+
+    def observe(self, message):
+        stamp_ns = _stamp_ns(message.header.stamp)
+        angular_z = float(message.angular_velocity.z)
+        covariance_z = float(message.angular_velocity_covariance[8])
+        if not math.isfinite(angular_z):
+            self.rejected_nonfinite += 1
+            return
+        if stamp_ns <= 0 or (
+            self.last_stamp_ns is not None and stamp_ns <= self.last_stamp_ns
+        ):
+            self.rejected_nonmonotonic += 1
+            return
+        if self.last_stamp_ns is not None:
+            delta_sec = (stamp_ns - self.last_stamp_ns) / 1.0e9
+            self.integrated_yaw += (
+                0.5 * (self.last_angular_z + angular_z) * delta_sec
+            )
+        self.last_stamp_ns = stamp_ns
+        self.last_angular_z = angular_z
+        self.angular_velocity_z.append(angular_z)
+        self.angular_velocity_covariance_z.append(covariance_z)
+        self.samples.append(PoseSample(
+            stamp_ns=stamp_ns,
+            x=0.0,
+            y=0.0,
+            yaw=self.integrated_yaw,
+            covariance=None,
+        ))
+
+    def diagnostics(self):
+        finite_covariances = [
+            value for value in self.angular_velocity_covariance_z
+            if math.isfinite(value)
+        ]
+        positive_covariances = [
+            value for value in finite_covariances if value > 0.0
+        ]
+        return {
+            'topic': self.topic,
+            'sample_count': len(self.samples),
+            'rejected_nonfinite': self.rejected_nonfinite,
+            'rejected_nonmonotonic': self.rejected_nonmonotonic,
+            'mean_angular_velocity_z_rad_s': (
+                sum(self.angular_velocity_z) / len(self.angular_velocity_z)
+                if self.angular_velocity_z else None
+            ),
+            'endpoint_integrated_yaw_rad': self.integrated_yaw,
+            'angular_velocity_z_covariance': {
+                'finite_fraction': (
+                    len(finite_covariances)
+                    / len(self.angular_velocity_covariance_z)
+                    if self.angular_velocity_covariance_z else None
+                ),
+                'positive_fraction': (
+                    len(positive_covariances)
+                    / len(self.angular_velocity_covariance_z)
+                    if self.angular_velocity_covariance_z else None
+                ),
+                'mean': (
+                    sum(finite_covariances) / len(finite_covariances)
+                    if finite_covariances else None
+                ),
+            },
+        }
+
+
 class EstimatedStateEvaluator(Node):
     """Observe estimates and evaluator-only GT without publishing state or TF."""
 
@@ -63,10 +143,8 @@ class EstimatedStateEvaluator(Node):
         self._odom_samples = []
         self._wheel_odom_samples = []
         self._lidar_odom_samples = []
-        self._imu_data_samples = []
-        self._imu_last_stamp_ns = None
-        self._imu_last_angular_z = None
-        self._imu_integrated_yaw = 0.0
+        self._imu_data_raw = ImuYawAccumulator('/imu/data_raw')
+        self._imu_data = ImuYawAccumulator('/imu/data')
         self._amcl_samples = []
         self._ground_truth_samples = []
         qos = QoSProfile(
@@ -81,6 +159,8 @@ class EstimatedStateEvaluator(Node):
             Odometry, '/wheel/odom', self._wheel_odom_callback, qos)
         self._lidar_odom_subscription = self.create_subscription(
             Odometry, '/lidar/odom', self._lidar_odom_callback, qos)
+        self._imu_data_raw_subscription = self.create_subscription(
+            Imu, '/imu/data_raw', self._imu_data_raw_callback, qos)
         self._imu_data_subscription = self.create_subscription(
             Imu, '/imu/data', self._imu_data_callback, qos)
         self._amcl_subscription = self.create_subscription(
@@ -107,29 +187,11 @@ class EstimatedStateEvaluator(Node):
     def _lidar_odom_callback(self, message):
         self._lidar_odom_samples.append(_odometry_sample(message))
 
+    def _imu_data_raw_callback(self, message):
+        self._imu_data_raw.observe(message)
+
     def _imu_data_callback(self, message):
-        stamp_ns = _stamp_ns(message.header.stamp)
-        angular_z = float(message.angular_velocity.z)
-        if (
-            self._imu_last_stamp_ns is not None
-            and stamp_ns > self._imu_last_stamp_ns
-            and math.isfinite(angular_z)
-            and math.isfinite(self._imu_last_angular_z)
-        ):
-            delta_sec = (stamp_ns - self._imu_last_stamp_ns) / 1.0e9
-            self._imu_integrated_yaw += (
-                0.5 * (self._imu_last_angular_z + angular_z) * delta_sec
-            )
-        if math.isfinite(angular_z):
-            self._imu_last_stamp_ns = stamp_ns
-            self._imu_last_angular_z = angular_z
-            self._imu_data_samples.append(PoseSample(
-                stamp_ns=stamp_ns,
-                x=0.0,
-                y=0.0,
-                yaw=self._imu_integrated_yaw,
-                covariance=None,
-            ))
+        self._imu_data.observe(message)
 
     def _amcl_callback(self, message):
         self._amcl_samples.append(PoseSample(
@@ -167,8 +229,15 @@ class EstimatedStateEvaluator(Node):
                 max_time_offset_ns=self._max_time_offset_ns,
                 time_offset_step_ns=self._time_offset_step_ns,
             ),
+            'imu_data_raw': evaluate_trajectory(
+                self._imu_data_raw.samples,
+                self._ground_truth_samples,
+                self._max_time_delta_ns,
+                max_time_offset_ns=self._max_time_offset_ns,
+                time_offset_step_ns=self._time_offset_step_ns,
+            ),
             'imu_data': evaluate_trajectory(
-                self._imu_data_samples,
+                self._imu_data.samples,
                 self._ground_truth_samples,
                 self._max_time_delta_ns,
                 max_time_offset_ns=self._max_time_offset_ns,
@@ -182,13 +251,18 @@ class EstimatedStateEvaluator(Node):
                 time_offset_step_ns=self._time_offset_step_ns,
             ),
         }
-        results['imu_data'].summary['valid_axes'] = ['yaw']
-        results['imu_data'].summary['xy_metrics_valid'] = False
-        results['imu_data'].summary['integration_method'] = (
-            'trapezoidal_raw_angular_velocity_z'
-        )
+        for name, accumulator in (
+            ('imu_data_raw', self._imu_data_raw),
+            ('imu_data', self._imu_data),
+        ):
+            results[name].summary['valid_axes'] = ['yaw']
+            results[name].summary['xy_metrics_valid'] = False
+            results[name].summary['integration_method'] = (
+                'trapezoidal_angular_velocity_z')
+            results[name].summary['imu_diagnostics'] = (
+                accumulator.diagnostics())
         summary = {
-            'schema_version': 3,
+            'schema_version': 4,
             'generated_at_utc': datetime.now(timezone.utc).isoformat(),
             'evaluator_only_ground_truth': True,
             'passive_evaluator': True,
@@ -198,7 +272,12 @@ class EstimatedStateEvaluator(Node):
             'stream_contracts': {
                 'wheel_odom': 'wheel pose scale and yaw against evaluator-only ground truth',
                 'lidar_odom': 'RF2O pose trajectory; never proxied by fused odom',
-                'imu_data': 'raw angular_velocity.z trapezoidal integration and yaw bias',
+                'imu_data_raw': (
+                    'auditable Isaac raw angular_velocity.z integration, '
+                    'yaw scale/bias and source covariance'),
+                'imu_data': (
+                    'EKF-bound corrected angular_velocity.z integration, '
+                    'yaw scale/bias and configured covariance'),
             },
             'ground_truth': {
                 'input': stream_diagnostics(self._ground_truth_samples),

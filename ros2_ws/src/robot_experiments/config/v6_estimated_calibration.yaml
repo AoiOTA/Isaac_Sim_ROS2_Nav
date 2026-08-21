@@ -10,7 +10,7 @@ execution:
   reset_service: /simulation/reset
   readiness_topics: [/clock, /odom, /tf]
   dispatcher_topics: [/clock, /odom, /tf, /amcl_pose]
-  passive_evaluator_topics: [/odom, /wheel/odom, /lidar/odom, /imu/data, /amcl_pose, /ground_truth/odom]
+  passive_evaluator_topics: [/odom, /wheel/odom, /lidar/odom, /imu/data_raw, /imu/data, /amcl_pose, /ground_truth/odom]
   dispatcher_result_file: dispatcher_result.json
   dispatcher_success_status: SUCCEEDED
   collision_field: collision_detected

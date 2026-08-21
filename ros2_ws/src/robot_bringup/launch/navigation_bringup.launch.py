@@ -31,6 +31,8 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'imu_calibration_params_file', default_value=''),
         DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
         DeclareLaunchArgument(
             'lidar_odometry_validated', default_value='false'),
@@ -96,6 +98,8 @@ def generate_launch_description():
                     'robot_description_file'),
                 'wheel_odometry_params_file': LaunchConfiguration(
                     'wheel_odometry_params_file'),
+                'imu_calibration_params_file': LaunchConfiguration(
+                    'imu_calibration_params_file'),
                 'ekf_profile': LaunchConfiguration('ekf_profile'),
                 'lidar_odometry_validated': LaunchConfiguration(
                     'lidar_odometry_validated'),

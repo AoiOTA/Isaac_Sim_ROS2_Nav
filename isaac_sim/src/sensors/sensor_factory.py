@@ -522,8 +522,10 @@ def _load_imu(path) -> dict[str, Any]:
     require_keys(data, allowed, context="imu config")
     if data["schema_version"] != 1 or data["enabled"] is not True:
         raise SensorConfigError("IMU must be enabled with schema_version 1")
-    if data["frame_id"] != "imu_link" or data["topic_name"] != "/imu/data":
-        raise SensorConfigError("IMU frame/topic contract is imu_link and /imu/data")
+    if data["frame_id"] != "imu_link" or data["topic_name"] != "/imu/data_raw":
+        raise SensorConfigError(
+            "IMU frame/topic contract is imu_link and /imu/data_raw"
+        )
     filters = data["filter_widths"]
     if not isinstance(filters, dict) or set(filters) != {"linear_acceleration", "angular_velocity", "orientation"}:
         raise SensorConfigError("IMU filter_widths must define all three filter sizes")

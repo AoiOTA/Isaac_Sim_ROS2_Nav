@@ -555,3 +555,25 @@
   once-per-physics-step Clock/JointState/IMU publication.
 - Handoff:
   `docs/handoff/V6_CORE_SENSOR_ONDEMAND_20260821.md`.
+
+## 2026-08-21 — V6 IMU raw/corrected calibration seam
+
+- Goal: retain raw IMU audit evidence while applying the flat-arena yaw-rate
+  scale before the EKF without changing GT, TF, control, or route ownership.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `af5c3d4b618edfb97936e85b00a7d489d45a98bb`.
+- Contract: Isaac `/imu/data_raw`; one bounded calibrator publishes EKF-bound
+  `/imu/data`; default `(raw_z - 0.0) * 0.9294`; yaw variance `1.0e-4`; exact
+  stamp/frame/orientation/linear acceleration/other covariance preservation;
+  duplicate/backward/non-finite fail closed; explicit identity rollback YAML.
+- Evaluator: raw and corrected IMU integrations, yaw scale/bias, and angular-z
+  covariance diagnostics remain separate; GT stays evaluator-only.
+- Validation: Python compile and focused `24 passed`; related source regression
+  `314 passed`; new-file flake8 PASS; isolated 16-package build PASS at
+  `/tmp/v6_imu_calibration_build.6H1KpP`; isolated tests odometry `37/37`,
+  bringup `224/224`, experiments `416/417`. The one experiments failure is an
+  existing checkout-sensitive frozen absolute-path comparison, not this seam.
+- Verdict: **PASS (implementation/build/unit only)**. No ROS/Isaac/Nav2 live
+  retest or calibration/PRIMARY/qualification run was performed.
+- Handoff:
+  `docs/handoff/V6_IMU_RAW_CORRECTED_CALIBRATION_20260821.md`.

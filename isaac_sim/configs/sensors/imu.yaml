@@ -2,7 +2,7 @@ schema_version: 1
 enabled: true
 sensor_prim: /World/Robots/Jackal/base_link/imu_link/imu_sensor
 frame_id: imu_link
-topic_name: /imu/data
+topic_name: /imu/data_raw
 publish_rate: 60.0
 read_gravity: true
 use_latest_data: false

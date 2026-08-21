@@ -23,12 +23,13 @@ SCHEMA_VERSION = 1
 ARM_ORDER = ("off", "shadow", "fused")
 PRIMITIVE_ORDER = ("straight_3m", "ccw_360", "cw_360", "s_route")
 PASSIVE_EVALUATOR_TOPICS = (
-    "/odom", "/wheel/odom", "/lidar/odom", "/imu/data",
+    "/odom", "/wheel/odom", "/lidar/odom", "/imu/data_raw", "/imu/data",
     "/amcl_pose", "/ground_truth/odom",
 )
 DISPATCHER_TOPICS = ("/clock", "/odom", "/tf", "/amcl_pose")
 RECORDED_ESTIMATE_STREAMS = (
-    "odom", "wheel_odom", "lidar_odom", "imu_data", "amcl_pose",
+    "odom", "wheel_odom", "lidar_odom", "imu_data_raw", "imu_data",
+    "amcl_pose",
 )
 STREAM_MINIMUM_FREQUENCY_HZ = {
     "odom": 30.0,

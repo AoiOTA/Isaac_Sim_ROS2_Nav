@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_odometry</name>
   <version>0.1.0</version>
-  <description>Four-wheel skid-steer odometry without TF publication.</description>
+  <description>Wheel odometry and bounded raw-to-corrected IMU calibration.</description>
   <maintainer email="liang_yibo@hdu.edu.cn">AoiOTA</maintainer>
   <license>Apache-2.0</license>
 

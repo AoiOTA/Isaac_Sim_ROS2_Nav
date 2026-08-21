@@ -3,9 +3,11 @@ from pathlib import Path
 
 import pytest
 
+from robot_experiments.estimated_state_evaluator import ImuYawAccumulator
 from robot_experiments.estimated_state_metrics import evaluate_trajectory
 from robot_experiments.estimated_state_metrics import PoseSample
 from robot_experiments.estimated_state_metrics import stream_diagnostics
+from sensor_msgs.msg import Imu
 
 
 def _sample(stamp_s, x, y, yaw, covariance=None):
@@ -115,6 +117,8 @@ def test_ros_adapter_is_evaluator_only_and_requires_explicit_output_dir():
     assert "Odometry, '/wheel/odom'" in source
     assert "Odometry, '/lidar/odom'" in source
     assert "'lidar_odom': evaluate_trajectory(" in source
+    assert "Imu, '/imu/data_raw'" in source
+    assert "'imu_data_raw': evaluate_trajectory(" in source
     assert "Imu, '/imu/data'" in source
     assert "'imu_data': evaluate_trajectory(" in source
     assert "'/amcl_pose'" in source
@@ -123,3 +127,27 @@ def test_ros_adapter_is_evaluator_only_and_requires_explicit_output_dir():
     assert 'create_publisher' not in source
     assert 'TransformBroadcaster' not in source
     assert 'estimated_state_evaluator =' in setup_source
+
+
+def test_raw_and_corrected_imu_accumulators_report_separate_rate_and_covariance():
+    raw = ImuYawAccumulator('/imu/data_raw')
+    corrected = ImuYawAccumulator('/imu/data')
+    for index in range(3):
+        for accumulator, rate, variance in (
+            (raw, 1.0, 0.0),
+            (corrected, 0.9294, 0.0001),
+        ):
+            message = Imu()
+            message.header.stamp.sec = index + 1
+            message.angular_velocity.z = rate
+            message.angular_velocity_covariance[8] = variance
+            accumulator.observe(message)
+
+    assert raw.samples[-1].yaw == pytest.approx(2.0)
+    assert corrected.samples[-1].yaw == pytest.approx(1.8588)
+    assert raw.diagnostics()['topic'] == '/imu/data_raw'
+    assert corrected.diagnostics()['topic'] == '/imu/data'
+    assert raw.diagnostics()['angular_velocity_z_covariance'][
+        'positive_fraction'] == 0.0
+    assert corrected.diagnostics()['angular_velocity_z_covariance'][
+        'positive_fraction'] == 1.0

@@ -21,11 +21,13 @@ setup(
     zip_safe=True,
     maintainer='AoiOTA',
     maintainer_email='liang_yibo@hdu.edu.cn',
-    description='Four-wheel skid-steer odometry without TF publication.',
+    description='Wheel odometry and bounded raw-to-corrected IMU calibration.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'imu_yaw_calibrator = '
+            'robot_odometry.imu_calibration_node:main',
             'wheel_odometry_node = robot_odometry.wheel_odometry_node:main',
         ],
     },

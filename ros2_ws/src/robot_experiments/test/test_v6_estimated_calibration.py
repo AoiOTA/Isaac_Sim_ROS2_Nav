@@ -111,6 +111,7 @@ def test_arm_arguments_and_ground_truth_firewall():
     assert "/ground_truth/odom" in episodes[0]["passive_evaluator_topics"]
     assert "/wheel/odom" in episodes[0]["passive_evaluator_topics"]
     assert "/lidar/odom" in episodes[0]["passive_evaluator_topics"]
+    assert "/imu/data_raw" in episodes[0]["passive_evaluator_topics"]
     assert "/imu/data" in episodes[0]["passive_evaluator_topics"]
 
 

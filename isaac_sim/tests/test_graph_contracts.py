@@ -150,6 +150,7 @@ def test_core_sensors_publish_once_per_physics_step():
             destination == f"{target}.inputs:execIn"
             for _, destination in connections
         ) == 1
+    assert dict(spec.values)["PublishIMU.inputs:topicName"] == "/imu/data_raw"
 
 
 def test_core_sensors_materialize_on_demand(monkeypatch):

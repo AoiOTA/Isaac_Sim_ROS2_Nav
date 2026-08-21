@@ -327,6 +327,30 @@ def _launch_setup(context):
         actions.append(perception)
 
     if selection.odometry_mode in {'realistic', 'estimated'}:
+        normalized_use_sim_time = str(use_sim_time).strip().lower()
+        if normalized_use_sim_time not in {'true', 'false'}:
+            raise RuntimeError('use_sim_time must be true or false')
+        requested_imu_calibration = LaunchConfiguration(
+            'imu_calibration_params_file').perform(context).strip()
+        imu_calibration_params_file = (
+            Path(requested_imu_calibration).expanduser()
+            if requested_imu_calibration
+            else odometry_share / 'config' / 'imu_calibration.yaml'
+        )
+        if not imu_calibration_params_file.is_file():
+            raise RuntimeError(
+                'IMU calibration params file does not exist: '
+                f'{imu_calibration_params_file}')
+        actions.append(Node(
+            package='robot_odometry',
+            executable='imu_yaw_calibrator',
+            name='imu_yaw_calibrator',
+            output='screen',
+            parameters=[
+                str(imu_calibration_params_file),
+                {'use_sim_time': normalized_use_sim_time == 'true'},
+            ],
+        ))
         actions.extend([
             _include(
                 'robot_odometry',
@@ -600,6 +624,12 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'imu_calibration_params_file',
+            default_value='',
+            description=(
+                'Raw-to-corrected IMU parameters; defaults to the '
+                'Isaac V6 calibrated profile')),
         DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
         DeclareLaunchArgument(
             'lidar_odometry_validated', default_value='false'),
