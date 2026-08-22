@@ -1369,7 +1369,7 @@ class MotionBenchmarkNode(Node):
         failures: list[str] = []
         if not self._samples:
             failures.append("no_estimated_odometry_samples")
-        if measured_duration + 0.05 < reference.duration_sec:
+        if measured_duration + 0.05 + 1.0e-9 < reference.duration_sec:
             failures.append("stationary_duration_short")
         if not math.isfinite(measured_duration):
             failures.append("stationary_duration_nonfinite")

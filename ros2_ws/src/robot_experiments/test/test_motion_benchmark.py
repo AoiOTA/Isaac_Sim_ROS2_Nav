@@ -658,6 +658,63 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
     assert published and set(published) == {(0.0, 0.0)}
 
 
+def test_stationary_reference_duration_boundary_is_not_float_brittle():
+    """A measured span exactly one tolerance short must not fail on float noise."""
+    import itertools
+
+    reference = StationaryReference("stationary_reference", 10.0, 8609)
+    receipt = {
+        "requested_seed": 8609, "actual_seed": 8609,
+        "generation": 4, "pose": "flat20_start",
+    }
+
+    def run_with_stamps(first_stamp):
+        node = SimpleNamespace(
+            _config=SimpleNamespace(
+                stationary_reference=reference,
+                command_rate_hz=20.0,
+                final_settle_sec=0.8,
+            ),
+            _samples=[], _collision_detected=False, _recording=False,
+            _segment_index=-1, _segment_started_at=0.0,
+            _command_linear=0.0, _command_angular=0.0,
+            _current_reset_receipt=None, _clock_s=0.0,
+            _publish=lambda linear, angular: None,
+            _assert_sim_clock_live=lambda: None,
+        )
+        stamps = itertools.chain(
+            [first_stamp, 10.0, 10.05, 10.8], itertools.repeat(11.0)
+        )
+
+        def spin(_timeout):
+            node._clock_s = next(stamps)
+            if node._recording and node._clock_s <= 10.0:
+                node._samples.append(MotionSample(
+                    received_at=node._clock_s, stamp_s=node._clock_s,
+                    x=0.0, y=0.0, yaw=0.0, linear_speed=0.0, angular_speed=0.0,
+                    segment_index=-1, segment_elapsed=node._clock_s,
+                    command_linear=0.0, command_angular=0.0,
+                ))
+
+        def reset(seed):
+            node._current_reset_receipt = receipt
+            return receipt
+
+        node._reset = reset
+        node._spin_once = spin
+        node._settle = MethodType(MotionBenchmarkNode._settle, node)
+        return MotionBenchmarkNode._stationary_reference(node)
+
+    # Live capture measured 10.0 - 0.05 - 5e-15, which the 0.05 s tolerance is
+    # meant to accept; without the epsilon guard float rounding fails it.
+    boundary = run_with_stamps(0.05 + 1.0e-14)
+    assert boundary["passed"] is True
+    assert boundary["measured_duration_sec"] < 10.0 - 0.05 + 1.0e-6
+    short = run_with_stamps(0.08)
+    assert short["passed"] is False
+    assert "stationary_duration_short" in short["failure_reasons"]
+
+
 def test_play_segment_records_immutable_truncated_schedule_on_stop(monkeypatch):
     published = []
     node = SimpleNamespace(
