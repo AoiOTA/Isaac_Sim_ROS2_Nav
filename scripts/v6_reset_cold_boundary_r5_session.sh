@@ -29,7 +29,7 @@ EPISODE_INDICES="${R5_EPISODE_INDICES:-0 1 2}"
 EPISODE_SEEDS="${R5_EPISODE_SEEDS:-7201 7202 7203}"
 READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
 RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
-NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-900}"
+NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-300}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M2="${SNAP}/m2_src"
@@ -238,6 +238,11 @@ cat > "${QOS_FILE}" <<'QOS'
   durability: volatile
   history: keep_last
   depth: 100
+/wheel/odom:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
 /scan:
   reliability: best_effort
   durability: volatile
@@ -357,7 +362,7 @@ for position in "${!index_rows[@]}"; do
   episode_result="${EPISODES_DIR}/episode_seed${seed}.result.json"
   episode_status=0
   _log_stage "episode_start" "seed=${seed} index=${index}"
-  timeout $((READINESS_TIMEOUT + RESET_TIMEOUT + NAVIGATION_TIMEOUT + 120)) \
+  timeout $((READINESS_TIMEOUT + RESET_TIMEOUT + 5 * NAVIGATION_TIMEOUT + 120)) \
     "${M3}/scripts/run_v6_formal_episode.sh" --pilot --dispatch-pilot \
     "${MANIFEST}" \
     --episode-index "${index}" \
