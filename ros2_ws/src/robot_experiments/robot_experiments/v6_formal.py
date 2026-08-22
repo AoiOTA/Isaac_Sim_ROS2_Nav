@@ -582,7 +582,8 @@ class EpisodeGuard:
             self.stop("active_prior_generation_mismatch")
             return
         if not all((trusted_write, module2_healthy, observation_valid, input_healthy)):
-            self.stop("active_prior_not_trusted")
+            # The bridge interleaves untrusted status priors with the trusted
+            # generation write; only the trusted one arms goal readiness.
             return
         self.post_reset_prior_seen = True
         self._maybe_goal_ready()

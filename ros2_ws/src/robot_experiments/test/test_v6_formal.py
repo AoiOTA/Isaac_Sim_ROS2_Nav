@@ -362,7 +362,6 @@ def test_initialpose_burst_and_scan_stamped_amcl_straddlers():
 @pytest.mark.parametrize(
     "kwargs, reason",
     [
-        ({"trusted_write": False, "module2_healthy": True, "observation_valid": True, "input_healthy": True}, "active_prior_not_trusted"),
         ({"trusted_write": True, "module2_healthy": True, "observation_valid": True, "input_healthy": True}, "active_prior_generation_mismatch"),
     ],
 )
@@ -371,9 +370,30 @@ def test_wrong_active_prior_trust_or_session_stops(kwargs, reason):
     guard.state = "WAITING_B5_CONFIRMATION"
     guard.stop_reason = ""
     guard.post_reset_prior_seen = False
-    session = "session-2" if reason == "active_prior_not_trusted" else "wrong-session"
+    session = "wrong-session"
     guard.record_prior(2, session, **kwargs)
     assert guard.stop_reason == reason
+
+
+def test_untrusted_intermediate_prior_is_skipped_not_a_stop():
+    guard = ready_guard()
+    guard.state = "WAITING_B5_CONFIRMATION"
+    guard.stop_reason = ""
+    guard.post_reset_prior_seen = False
+    guard.record_prior(
+        2, "session-2",
+        trusted_write=False, module2_healthy=False,
+        observation_valid=False, input_healthy=True,
+    )
+    assert guard.stop_reason == ""
+    assert not guard.post_reset_prior_seen
+    guard.record_prior(
+        2, "session-2",
+        trusted_write=True, module2_healthy=True,
+        observation_valid=True, input_healthy=True,
+    )
+    assert guard.stop_reason == ""
+    assert guard.post_reset_prior_seen
 
 
 def test_b5_confirmation_failure_and_timeout_stop_before_goal():
