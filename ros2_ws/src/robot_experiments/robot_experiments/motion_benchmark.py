@@ -1174,6 +1174,24 @@ class MotionBenchmarkNode(Node):
         ):
             self._stop("sim_clock_stalled_during_motion")
 
+    def _wait_fresh_clock_tick(self, reference_s: float) -> None:
+        """Spin until the sim clock advances strictly past *reference_s*.
+
+        Schedule windows are bound to the MCAP by exact publish count with
+        the schedule start stamp as the exclusive HOLD/schedule boundary.
+        Sampling the start stamp from an already-observed clock would allow
+        a pre-start zero intent to share that stamp and pollute the exact
+        count, so each schedule starts only after one fresh clock tick.
+        """
+        waiting_since = time.monotonic()
+        while self._clock_s is None or self._clock_s <= reference_s:
+            if (
+                time.monotonic() - waiting_since
+                > self._config.sim_clock_stall_timeout_sec
+            ):
+                self._stop("sim_clock_stalled_waiting_fresh_tick")
+            self._spin_once(0.01)
+
     def _play_segment(self, index: int, segment: MotionSegment) -> dict[str, Any]:
         period = 1.0 / self._config.command_rate_hz
         self._segment_index = index
@@ -1186,6 +1204,7 @@ class MotionBenchmarkNode(Node):
                 self._stop("sim_clock_missing_during_motion")
             self._spin_once(0.05)
         self._assert_sim_clock_live()
+        self._wait_fresh_clock_tick(self._clock_s)
         self._segment_started_at = self._clock_s
         self._command_linear = segment.linear_x
         self._command_angular = segment.angular_z
@@ -1284,6 +1303,7 @@ class MotionBenchmarkNode(Node):
             if self._clock_s is None:
                 self._stop("stationary_reference_clock_missing")
             assert self._clock_s is not None
+            self._wait_fresh_clock_tick(self._clock_s)
             start_s = self._clock_s
             self._segment_started_at = start_s
             deadline = start_s + reference.duration_sec

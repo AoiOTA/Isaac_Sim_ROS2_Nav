@@ -600,6 +600,7 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
             stationary_reference=reference,
             command_rate_hz=20.0,
             final_settle_sec=0.8,
+            sim_clock_stall_timeout_sec=0.50,
         ),
         _samples=[], _collision_detected=False, _recording=False,
         _segment_index=-1, _segment_started_at=0.0,
@@ -607,6 +608,9 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
         _current_reset_receipt=None, _clock_s=0.0,
         _publish=lambda linear, angular: published.append((linear, angular)),
         _assert_sim_clock_live=lambda: None,
+    )
+    node._wait_fresh_clock_tick = MethodType(
+        MotionBenchmarkNode._wait_fresh_clock_tick, node
     )
 
     def reset(seed):
@@ -637,8 +641,12 @@ def test_optional_stationary_reference_has_own_reset_zero_and_report():
     schedule = result["segment_schedule"]
     assert len(schedule) == 1
     assert schedule[0]["segment_index"] == 0
-    assert schedule[0]["start_sim_s"] == 0.0
-    assert 10.0 <= schedule[0]["end_sim_s"] <= 10.11
+    # The schedule start is sampled only after one fresh clock tick, so the
+    # scripted 0.1 s clock step moves it from 0.0 to 0.1.
+    assert schedule[0]["start_sim_s"] == pytest.approx(0.1)
+    # Float accumulation of the scripted 0.1 s steps may extend the window by
+    # one extra step past the 10.0 s deadline.
+    assert 10.0 <= schedule[0]["end_sim_s"] <= 10.21
     assert schedule[0]["expected_duration_s"] == 10.0
     assert schedule[0]["command_linear_mps"] == 0.0
     assert schedule[0]["command_angular_radps"] == 0.0
@@ -668,12 +676,13 @@ def test_stationary_reference_duration_boundary_is_not_float_brittle():
         "generation": 4, "pose": "flat20_start",
     }
 
-    def run_with_stamps(first_stamp):
+    def run_with_stamps(first_sample, last_sample):
         node = SimpleNamespace(
             _config=SimpleNamespace(
                 stationary_reference=reference,
                 command_rate_hz=20.0,
                 final_settle_sec=0.8,
+                sim_clock_stall_timeout_sec=0.50,
             ),
             _samples=[], _collision_detected=False, _recording=False,
             _segment_index=-1, _segment_started_at=0.0,
@@ -682,13 +691,17 @@ def test_stationary_reference_duration_boundary_is_not_float_brittle():
             _publish=lambda linear, angular: None,
             _assert_sim_clock_live=lambda: None,
         )
+        node._wait_fresh_clock_tick = MethodType(
+            MotionBenchmarkNode._wait_fresh_clock_tick, node
+        )
+        sample_stamps = {first_sample, last_sample}
         stamps = itertools.chain(
-            [first_stamp, 10.0, 10.05, 10.8], itertools.repeat(11.0)
+            [0.01, first_sample, last_sample, 10.02], itertools.repeat(11.0)
         )
 
         def spin(_timeout):
             node._clock_s = next(stamps)
-            if node._recording and node._clock_s <= 10.0:
+            if node._recording and node._clock_s in sample_stamps:
                 node._samples.append(MotionSample(
                     received_at=node._clock_s, stamp_s=node._clock_s,
                     x=0.0, y=0.0, yaw=0.0, linear_speed=0.0, angular_speed=0.0,
@@ -707,10 +720,10 @@ def test_stationary_reference_duration_boundary_is_not_float_brittle():
 
     # Live capture measured 10.0 - 0.05 - 5e-15, which the 0.05 s tolerance is
     # meant to accept; without the epsilon guard float rounding fails it.
-    boundary = run_with_stamps(0.05 + 1.0e-14)
+    boundary = run_with_stamps(0.05 + 1.0e-14, 10.0)
     assert boundary["passed"] is True
     assert boundary["measured_duration_sec"] < 10.0 - 0.05 + 1.0e-6
-    short = run_with_stamps(0.08)
+    short = run_with_stamps(0.08, 10.0)
     assert short["passed"] is False
     assert "stationary_duration_short" in short["failure_reasons"]
 
@@ -718,11 +731,14 @@ def test_stationary_reference_duration_boundary_is_not_float_brittle():
 def test_play_segment_records_immutable_truncated_schedule_on_stop(monkeypatch):
     published = []
     node = SimpleNamespace(
-        _config=SimpleNamespace(command_rate_hz=20.0),
+        _config=SimpleNamespace(command_rate_hz=20.0, sim_clock_stall_timeout_sec=0.50),
         _clock_s=1.0,
         _segment_schedule=[],
         _publish=lambda linear, angular: published.append((linear, angular)),
         _assert_sim_clock_live=lambda: None,
+    )
+    node._wait_fresh_clock_tick = MethodType(
+        MotionBenchmarkNode._wait_fresh_clock_tick, node
     )
     calls = [0]
 
@@ -743,7 +759,9 @@ def test_play_segment_records_immutable_truncated_schedule_on_stop(monkeypatch):
         )
     receipt = node._segment_schedule[0]
     assert receipt["segment_index"] == 0
-    assert receipt["start_sim_s"] == 1.0
+    # One scripted 0.05 s clock step is consumed by the fresh-tick wait before
+    # the schedule start is sampled.
+    assert receipt["start_sim_s"] == pytest.approx(1.05)
     assert receipt["end_sim_s"] == pytest.approx(1.15)
     assert receipt["expected_duration_s"] == 1.0
     assert receipt["command_linear_mps"] == 0.2
