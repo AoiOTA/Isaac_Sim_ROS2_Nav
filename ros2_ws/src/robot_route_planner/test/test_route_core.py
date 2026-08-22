@@ -695,6 +695,49 @@ def test_release_without_pending_reassert_commit_publishes_no_ready() -> None:
     assert coordinator.structural_statuses == []
 
 
+def _two_by_two_map_and_grid():
+    coordinator_map = SimpleNamespace(
+        free=np.zeros((2, 2), dtype=np.uint8),
+        resolution_m=1.0,
+        origin_xy_m=(0.0, 0.0),
+    )
+    grid = SimpleNamespace(
+        info=SimpleNamespace(
+            width=2,
+            height=2,
+            resolution=1.0,
+            origin=SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0)),
+        ),
+        data=[0, 0, 0, 0],
+    )
+    return coordinator_map, grid
+
+
+def test_release_replays_map_binding_deferred_during_hold() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator.map, grid = _two_by_two_map_and_grid()
+    coordinator.live_map_version = None
+    constraints_publications = []
+    coordinator._publish_cognitive_constraints = lambda: (
+        constraints_publications.append('constraints')
+    )
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_occupancy_map(grid)
+    assert coordinator.live_map_version is None
+    assert constraints_publications == []
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, True, 'reset_complete', eligible=2))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, False, 'released:activation_gate'))
+
+    assert coordinator.reset_hold_barrier is False
+    assert coordinator.live_map_version is not None
+    assert constraints_publications == ['constraints']
+
+
 def test_release_re_publishes_constraints_fenced_during_hold() -> None:
     coordinator = _reset_route_coordinator(active=False)
     constraints_publications = []

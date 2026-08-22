@@ -642,6 +642,9 @@ class RouteCoordinator:
         self.latest_pose_stamp_ns: int | None = None
         self.latest_global_costmap: CostmapSnapshot | None = None
         self.live_map_version: str | None = None
+        # Latest /map grid received while the reset barrier held; replayed
+        # once when the barrier opens.
+        self._deferred_occupancy_map = None
         self.cognitive_constraints_cache = CognitiveConstraintsCache()
         node.declare_parameter("cognitive_tile_cache_entries", 0)
         node.declare_parameter("cognitive_tile_cache_hits", 0)
@@ -1820,8 +1823,9 @@ class RouteCoordinator:
         reset_complete status, whichever arrives first.  Only the release of
         the completed generation opens the route barrier.  Anything outside
         that forward sequence keeps the barrier held (fail closed).  The
-        release that opens the barrier also re-publishes the map-bound
-        cognitive constraints, which HOLD may have fenced.
+        release that opens the barrier also refreshes the cognitive
+        constraints: a /map grid that arrived during HOLD is re-bound and
+        published then.
         """
 
         try:
@@ -1982,10 +1986,7 @@ class RouteCoordinator:
             if complete:
                 self._publish_reset_completion(status.generation)
             if barrier_opened:
-                # Outputs fenced during HOLD become publishable at the open:
-                # re-publish the map-bound cognitive constraints so the B5
-                # seeding chain is fed even when /map arrived while held.
-                self._publish_cognitive_constraints()
+                self._refresh_constraints_after_barrier_open()
             if ready_pending:
                 self._publish_structural_status(
                     self.StructuralGraphStatus.READY, "reset GVG reconciled"
@@ -2055,7 +2056,7 @@ class RouteCoordinator:
         if complete and not self._reset_barrier_is_held():
             # Gate-less open: the same post-HOLD constraint refresh as the
             # gate status release path.
-            self._publish_cognitive_constraints()
+            self._refresh_constraints_after_barrier_open()
         if failure is not None:
             self.node.get_logger().error(f"reset event held fail-closed: {failure}")
 
@@ -2898,6 +2899,9 @@ class RouteCoordinator:
 
         with self._route_state_lock():
             if self._reset_barrier_is_held():
+                # The map cannot be bound while HOLD fences outputs; defer
+                # the latest grid and replay the binding at barrier open.
+                self._deferred_occupancy_map = message
                 return
             input_generation = self._route_input_generation_locked()
             structural_map = self.map
@@ -2953,6 +2957,22 @@ class RouteCoordinator:
             self.node.get_logger().warning(
                 f"cognitive map rejected: {failure}"
             )
+
+    def _refresh_constraints_after_barrier_open(self) -> None:
+        """Feed the constraint chain when the reset barrier opens.
+
+        A latched /map delivered during HOLD is deferred instead of dropped;
+        replay its binding (which publishes on accept).  Without a deferred
+        grid, re-publish the constraints for the already-bound map.
+        """
+
+        with self._route_state_lock():
+            deferred = getattr(self, "_deferred_occupancy_map", None)
+            self._deferred_occupancy_map = None
+        if deferred is not None:
+            self._on_occupancy_map(deferred)
+        else:
+            self._publish_cognitive_constraints()
 
     def _publish_cognitive_constraints(
         self, *, expected_input: RouteInputGeneration | None = None
