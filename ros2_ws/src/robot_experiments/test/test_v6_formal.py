@@ -325,7 +325,7 @@ def test_b5_path_never_depends_on_isaac_localization_seeded():
     assert "/simulation/localization_seeded" not in source
 
 
-def test_initialpose_burst_and_non_newer_amcl_fail_closed():
+def test_initialpose_burst_and_scan_stamped_amcl_straddlers():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
@@ -335,8 +335,13 @@ def test_initialpose_burst_and_non_newer_amcl_fail_closed():
     guard.record_bridge(1, "session-1", True)
     guard.record_startup_consensus(True)
     guard.record_initialpose(100)
+    # AMCL stamps poses with the source scan time; samples straddling the
+    # seed are stale-stamped stragglers and are skipped, not violations.
     guard.record_amcl(100)
-    assert guard.stop_reason == "amcl_not_strictly_newer_than_initialpose"
+    assert guard.stop_reason == ""
+    assert not guard.post_initialpose_amcl_seen
+    guard.record_amcl(101)
+    assert guard.post_initialpose_amcl_seen
 
     # The reseed burst repeats the same calibrated pose inside the reset
     # epoch; repeats are accepted and the first seed stays the anchor.

@@ -505,7 +505,9 @@ class EpisodeGuard:
         if self.initialpose_stamp_ns is None:
             return
         if stamp_ns <= self.initialpose_stamp_ns:
-            self.stop("amcl_not_strictly_newer_than_initialpose")
+            # AMCL stamps poses with the source scan time, which lags the
+            # seed's publication stamp; straddling samples are stale-stamped
+            # and skipped, and B5 seed confirmation gates the seed itself.
             return
         self.post_initialpose_amcl_seen = True
         self._maybe_goal_ready()
