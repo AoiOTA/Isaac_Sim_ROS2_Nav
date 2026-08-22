@@ -605,6 +605,16 @@ def test_reset_owned_gid_rotation_must_persist_at_fresh_checkpoint():
     assert machine.stop_reason == "topology_changed:pre_fresh"
 
 
+def test_first_reset_owned_gid_rotation_at_fresh_checkpoint_is_rejected():
+    """A replacement first observed after the post-release fence is too late."""
+    old = _attempt7_snapshot()
+    new = _attempt7_snapshot("010fa6bfc4c415930100000000001604")
+    machine = ProbeMachine()
+    _topology_sequence(machine, old, old, old, new)
+    assert machine.stop_reason == "topology_changed:pre_fresh"
+    assert machine.topology_gid_rotations == []
+
+
 def test_topology_expected_identity_remains_exact():
     """Named publisher requirements remain fail-stop at every checkpoint."""
     snapshot = _attempt7_snapshot()

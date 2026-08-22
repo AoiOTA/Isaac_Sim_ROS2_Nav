@@ -273,3 +273,21 @@ Verdict: **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
 navigation, reset, evidence episode, engineering campaign, or formal
 qualification was launched.  Attempt8 remains **PENDING** and must use a fresh
 isolated runtime plus finalized bag.
+
+### Late-first GID-rotation checkpoint tightening
+
+The reset-owned replacement is now admissible only when first observed at
+`post_release`.  If `post_release` is still exactly the baseline snapshot,
+`pre_fresh` must also remain exactly baseline; a replacement first seen at
+`pre_fresh` is fail-stop.  If `post_release` contains the one admitted
+replacement, `pre_fresh` must remain exactly that rotated snapshot.  This
+removes the discrete-checkpoint gap without changing the one reset-owned
+endpoint exception itself.
+
+Source-first and clean fresh-installed focused tests each passed **55 tests**,
+including unchanged, post-release replacement, late-first replacement, and
+second-replacement cases.  Package-configured flake8, `py_compile`, and
+`git diff --check` passed.  The isolated `robot_experiments` build/install is
+at `/tmp/v6_probe_gid_checkpoint_clean.CnAEae`.  No ROS graph, Isaac, Nav2,
+navigation, reset, evidence episode, engineering campaign, or formal
+qualification was launched.  Attempt8 remains **PENDING**.

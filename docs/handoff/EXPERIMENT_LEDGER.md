@@ -1948,3 +1948,27 @@
 - Verdict: **PASS (code/build/unit only)**.  No live runtime was launched;
   Attempt8 remains **PENDING**.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Active-reset late-first GID-rotation checkpoint tightening
+
+- Goal: close the remaining discrete-checkpoint gap in the reset-owned
+  subscriber exception before Attempt8.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `41c6a02a90e2e2fa1ff8e1c040f078334388834c`.  Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Changed only `active_reset_probe.py`, its focused tests, this ledger, and
+  `V6_ACTIVE_RESET_PROBE_20260822.md`; no product, route, reset-gate, control,
+  obstacle, or IMU implementation changed.
+- Contract: the first reset-owned GID replacement is allowed only at
+  `post_release`.  Baseline at `post_release` requires exact baseline at
+  `pre_fresh`; an admitted post-release replacement requires exact persistence
+  of that rotated snapshot at `pre_fresh`.
+- Validation: source-first focused **55 passed** and clean fresh-installed
+  focused **55 passed**, including positive persistence and negative late-first
+  coverage.  Package-configured flake8, `py_compile`, `git diff --check`, clean
+  isolated build/install, installed import-path assertion and installed entry
+  point help passed.  Build root:
+  `/tmp/v6_probe_gid_checkpoint_clean.CnAEae`.
+- Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
+  or evidence campaign was run.  Attempt8 remains **PENDING**.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.

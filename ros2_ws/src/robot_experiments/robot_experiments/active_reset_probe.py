@@ -460,6 +460,10 @@ class ProbeMachine:
             if snapshot != previous:
                 self.stop(f"topology_changed:{label}", now)
             return
+        if label != "post_release":
+            if snapshot != self.topology_baseline:
+                self.stop(f"topology_changed:{label}", now)
+            return
         rotation, rotation_error = _reset_owned_gid_rotation(
             self.topology_baseline, snapshot, label
         )
