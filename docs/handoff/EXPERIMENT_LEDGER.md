@@ -1839,3 +1839,42 @@
   graph, Isaac, Nav2, navigation, reset, bag/evidence episode, engineering
   campaign, or formal qualification was run.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Attempt5 runtime-closure amendment
+
+- Goal: close three Attempt5 blockers before a fresh Attempt6:
+  executor-independent ResetStopGate HOLD coverage, reset-GVG READY liveness,
+  and the active-reset probe's true received-HOLD output boundary.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `5dc3b91e9922a12b45e63b135342350e5e847a33`. Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Immutable input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt5_20260822T001729Z`.
+  Attempt5 remains **ENGINEERING FAIL / STOP / NOT FORMAL**: output after
+  Trigger but before HOLD, no output at/after HOLD, 41 all-zero HOLD commands
+  with a 0.378262 s max gap, and no reset-era GVG READY.
+- ResetStopGate now uses one daemon wall-time 20 Hz zero heartbeat on the same
+  node/publisher. Publication locking excludes heartbeat from release/relay;
+  publish failure returns to observable HOLD; close bounded-joins before ROS
+  resource destruction.
+- RouteCoordinator publishes exactly one `READY/reset GVG reconciled` only
+  after same-generation release and coherent identical desired/local/GVG
+  authority with no transaction/retry/reassert pending. Late reassert success
+  owns the same publication; a new reset invalidates the token.
+- Probe records dispatch-to-HOLD output as `pre_hold_inflight_outputs`, fences
+  old output at received generation-2 HOLD, records dispatch-to-HOLD latency,
+  and STOPs if HOLD is missing or later than 0.5 s.
+- Validation: source-first focused **214 passed**; fresh-installed focused
+  **214 passed**. Wider result: **819 passed, 1 skipped**, plus one unrelated
+  frozen Rivermark absolute-path failure. Probe package-configured flake8,
+  changed-source `py_compile`, and `git diff --check` passed.
+- Fresh two-package build/install PASS:
+  `/tmp/v6_attempt5_closure_build.g7Sp4d`,
+  `/tmp/v6_attempt5_closure_install.a1hBg5`, and
+  `/tmp/v6_attempt5_closure_log.A2CV4w`; installed import and both entrypoint
+  help checks passed.
+- Verdict: **PASS (code/build/unit only)**. No live runtime was launched;
+  Attempt6 remains **PENDING**.
+- Handoffs: `V6_ACTIVE_RESET_PROBE_20260822.md`,
+  `V6_RESET_SEED_STOP_GATE_20260822.md`, and
+  `V6_ROUTE_RESET_RETIREMENT_20260822.md`.

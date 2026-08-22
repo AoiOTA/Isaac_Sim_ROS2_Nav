@@ -238,3 +238,31 @@ Required checks remain:
   graph, Nav2, navigation, visual evidence, engineering campaign, or formal
   qualification was run. Live reviewer closure remains **PENDING** under the
   unchanged reviewer-only checks above.
+
+## Attempt5 wall-heartbeat amendment
+
+- Start HEAD: `5dc3b91e9922a12b45e63b135342350e5e847a33`; fixed Module3
+  main remained `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Triggering evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt5_20260822T001729Z`.
+  Attempt5 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  Its finalized
+  bag had 41 all-zero `/cmd_vel_sim` HOLD samples but a 0.378262 s maximum
+  receive gap, above the 0.25 s coverage contract.
+- ResetStopGate no longer depends on a ROS executor timer for HOLD coverage.
+  One daemon wall-time thread publishes zero at the configured 20 Hz through
+  the existing ResetStopGate publisher, so node identity and publisher GID do
+  not multiply.  HOLD and held input callbacks publish zero immediately.
+- A publication lock serializes heartbeat, command relay, HOLD/completion, and
+  release.  Release leaves one final zero and stages status while live state is
+  still held, then atomically disables heartbeat publication before a later
+  input may relay.  No command is cached across the boundary.
+- Heartbeat or command publication exceptions retain HOLD, clear eligibility,
+  and expose a best-effort error status plus an in-process failure string.
+  `close()` marks HOLD, stops and bounded-joins the daemon, then publishes the
+  close boundary and destroys callback/subscription/publishers in order.
+- Deterministic tests block executor progress by never spinning it and still
+  observe continuous zero cadence; they cover release silence, fresh relay,
+  stale generation, command publish failure, close/join/resource order, and
+  idempotent close.
+- Validation is recorded in `V6_ACTIVE_RESET_PROBE_20260822.md`.  Verdict:
+  **PASS (code/build/unit only)**; fresh Attempt6 runtime remains **PENDING**.

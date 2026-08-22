@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -74,6 +75,8 @@ def test_release_status_publication_failure_leaves_live_gate_held():
     gate = SimpleNamespace(
         state=state,
         _lock=threading.RLock(),
+        _publish_lock=threading.RLock(),
+        _closed=False,
         publish_zero=lambda: published_zero.append(True),
         _publish_status=fail_status,
     )
@@ -91,6 +94,8 @@ def test_completion_status_publication_failure_does_not_make_gate_eligible():
     gate = SimpleNamespace(
         state=state,
         _lock=threading.RLock(),
+        _publish_lock=threading.RLock(),
+        _closed=False,
         publish_zero=lambda: None,
         _publish_status=lambda reason, state=None: (_ for _ in ()).throw(
             RuntimeError("completion status publisher failed")
@@ -101,6 +106,118 @@ def test_completion_status_publication_failure_does_not_make_gate_eligible():
 
     assert state.held
     assert state.eligible_generation is None
+
+
+class _HeartbeatPublisher:
+    def __init__(self):
+        self.messages = []
+        self.lock = threading.Lock()
+
+    def publish(self, message):
+        with self.lock:
+            self.messages.append((time.monotonic(), message))
+
+    def count(self):
+        with self.lock:
+            return len(self.messages)
+
+    def times(self):
+        with self.lock:
+            return [stamp for stamp, _message in self.messages]
+
+
+def _heartbeat_gate(*, period_s=0.02):
+    publisher = _HeartbeatPublisher()
+    destroyed = []
+    node = SimpleNamespace(
+        remove_on_set_parameters_callback=lambda callback: destroyed.append(
+            ("callback", callback)
+        ),
+        destroy_subscription=lambda subscription: destroyed.append(
+            ("subscription", subscription)
+        ),
+        destroy_publisher=lambda item: destroyed.append(("publisher", item)),
+    )
+    gate = ResetStopGate.__new__(ResetStopGate)
+    gate.node = node
+    gate.state = ResetStopGateState(generation=2, held=True)
+    gate._lock = threading.RLock()
+    gate._publish_lock = threading.RLock()
+    gate._heartbeat_stop = threading.Event()
+    gate._heartbeat_failure = None
+    gate._closed = False
+    gate._heartbeat_period_s = period_s
+    gate._Twist = SimpleNamespace
+    gate._publisher = publisher
+    gate._status_publisher = _HeartbeatPublisher()
+    gate._subscription = object()
+    gate._parameter_callback = object()
+    gate._String = lambda: SimpleNamespace(data="")
+    gate._heartbeat_thread = threading.Thread(
+        target=gate._zero_heartbeat, daemon=True
+    )
+    gate._heartbeat_thread.start()
+    return gate, publisher, destroyed
+
+
+def test_wall_heartbeat_runs_without_executor_spin_and_release_stops_zeros():
+    gate, publisher, _destroyed = _heartbeat_gate()
+    deadline = time.monotonic() + 0.25
+    while publisher.count() < 4 and time.monotonic() < deadline:
+        time.sleep(0.005)
+
+    times = publisher.times()
+    assert len(times) >= 4
+    assert max(b - a for a, b in zip(times, times[1:])) <= 0.08
+
+    gate.mark_reset_complete(2)
+    gate.release(2, source="test")
+    released_count = publisher.count()
+    time.sleep(0.08)
+    assert publisher.count() == released_count
+
+    message = SimpleNamespace(linear=SimpleNamespace(x=1.0))
+    gate._command_callback(message)
+    assert publisher.count() == released_count + 1
+    assert publisher.messages[-1][1] is message
+    gate.close()
+
+
+def test_heartbeat_stale_generation_close_and_resource_ordering():
+    gate, publisher, destroyed = _heartbeat_gate()
+    with pytest.raises(ResetStopGateError, match="release rejected"):
+        gate.release(1, source="stale")
+    assert gate.state.held is True
+
+    gate.close()
+    assert not gate._heartbeat_thread.is_alive()
+    closed_count = publisher.count()
+    time.sleep(0.05)
+    assert publisher.count() == closed_count
+    assert [kind for kind, _item in destroyed] == [
+        "callback", "subscription", "publisher", "publisher"
+    ]
+    gate.close()
+
+
+def test_relay_publish_exception_returns_gate_to_observable_hold():
+    gate, publisher, _destroyed = _heartbeat_gate()
+    gate.mark_reset_complete(2)
+    gate.release(2, source="test")
+    publish = publisher.publish
+
+    def fail_publish(_message):
+        raise RuntimeError("relay publish injected")
+
+    publisher.publish = fail_publish
+    with pytest.raises(RuntimeError, match="relay publish injected"):
+        gate._command_callback(SimpleNamespace())
+
+    assert gate.state.held is True
+    assert gate.state.eligible_generation is None
+    assert gate._heartbeat_failure.startswith("command:RuntimeError:")
+    publisher.publish = publish
+    gate.close()
 
 
 def test_navigation_profile_has_one_final_external_command_authority():

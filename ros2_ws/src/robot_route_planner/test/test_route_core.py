@@ -429,6 +429,7 @@ def _reset_route_coordinator(*, active=True, handle=None):
     coordinator.reset_intent_generation = None
     coordinator.reset_event_completed_generation = None
     coordinator.reset_release_seen_generation = None
+    coordinator.reset_gvg_ready_generation = None
     coordinator.reset_hold_barrier = False
     coordinator.graph = SimpleNamespace(graph_id='physical', revision=4)
     coordinator.gvg_graph = coordinator.graph
@@ -661,6 +662,48 @@ def test_hold_retires_active_route_before_event_and_same_generation_is_idempoten
     coordinator._on_goal(fresh_goal)
     assert coordinator.pending_goal is fresh_goal
     assert prepared == [{}]
+
+
+def test_release_publishes_one_ready_for_already_reconciled_reset_gvg() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, True, 'reset_complete', eligible=2))
+
+    # Model a successful completion-owned SetRouteGraph callback while HOLD
+    # is still active.  It must stay silent until the release barrier opens.
+    coordinator.graph = coordinator.gvg_graph
+    coordinator.desired_graph = coordinator.gvg_graph
+    coordinator.graph_coherent = True
+    coordinator.graph_reassert_required = False
+    coordinator.graph_transaction_generation = None
+    coordinator.graph_transaction_future = None
+    coordinator.graph_transaction_deadline_steady_s = None
+    coordinator.graph_transaction_kind = None
+    coordinator.graph_retry_due_steady_s = None
+    coordinator.cognitive_graph_switch_pending = False
+    assert coordinator.structural_statuses == []
+
+    released = _gate_status(2, False, 'released:activation_gate')
+    coordinator._on_reset_stop_gate_status(released)
+    coordinator._on_reset_stop_gate_status(released)
+
+    assert coordinator.structural_statuses == [
+        (coordinator.StructuralGraphStatus.READY, 'reset GVG reconciled')
+    ]
+    assert coordinator.reset_gvg_ready_generation == 2
+
+
+def test_release_never_claims_ready_with_pending_or_unavailable_reassert() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, True, 'reset_complete', eligible=2))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, False, 'released:activation_gate'))
+
+    assert coordinator.structural_statuses == []
+    assert coordinator.reset_gvg_ready_generation is None
 
 
 def test_startup_released_baseline_synchronizes_without_fake_terminal() -> None:

@@ -709,6 +709,7 @@ def test_reassert_transaction_is_reserved_before_export(monkeypatch):
     coordinator.graph_generation = 4
     coordinator.graph_switch_generation = 6
     coordinator.reset_generation = 1
+    coordinator.reset_gvg_ready_generation = None
     coordinator.graph_transaction_generation = None
     coordinator.graph_coherent = False
     coordinator.graph_reassert_required = True
@@ -1135,6 +1136,32 @@ def test_completion_owned_gvg_reassert_dispatches_while_hold_is_active(
     coordinator.set_graph_client.futures[0].finish(success=True)
     assert coordinator.graph_coherent is True
     assert coordinator.graph_reassert_required is False
+
+
+def test_completion_owned_gvg_reassert_publishes_ready_after_release(
+    monkeypatch,
+):
+    coordinator = _reassert_liveness_coordinator(monkeypatch)
+    coordinator.reset_hold_barrier = True
+    coordinator.reset_intent_generation = 2
+    coordinator.reset_event_completed_generation = 2
+    coordinator.reset_release_seen_generation = None
+    statuses = []
+    coordinator._publish_structural_status = (
+        lambda *args: statuses.append(args))
+
+    coordinator._ensure_desired_graph(
+        'reset GVG', allow_reset_reassert=2)
+    coordinator.reset_release_seen_generation = 2
+    coordinator.reset_hold_barrier = False
+    coordinator.set_graph_client.futures[0].finish(success=True)
+
+    assert coordinator.graph_coherent is True
+    assert coordinator.graph_reassert_required is False
+    assert statuses == [
+        (coordinator.StructuralGraphStatus.READY, 'reset GVG reconciled')
+    ]
+    assert coordinator.reset_gvg_ready_generation == 2
 
 
 @pytest.mark.parametrize('kind', ('cognitive', 'structural'))

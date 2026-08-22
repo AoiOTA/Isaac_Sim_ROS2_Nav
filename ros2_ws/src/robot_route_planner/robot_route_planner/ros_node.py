@@ -571,6 +571,7 @@ class RouteCoordinator:
         self.reset_intent_generation: int | None = None
         self.reset_event_completed_generation: int | None = None
         self.reset_release_seen_generation: int | None = None
+        self.reset_gvg_ready_generation: int | None = None
         # Empty is volatile while gate status is transient-local, so a
         # pristine late join can observe the two topics in either order.  Keep
         # one short-lived, unbound completion hint instead of irreversibly
@@ -1729,6 +1730,7 @@ class RouteCoordinator:
             self._retire_active_route_for_reset()
         )
         self.reset_generation = int(getattr(self, "reset_generation", 0)) + 1
+        self.reset_gvg_ready_generation = None
         self.structural_generation = int(
             getattr(self, "structural_generation", 0)
         ) + 1
@@ -1803,6 +1805,54 @@ class RouteCoordinator:
                 "simulation reset requires Route Server GVG",
                 allow_reset_reassert=expected_generation,
             )
+
+    def _publish_reset_gvg_ready_if_reconciled_under_output_lock(
+        self, generation: int
+    ) -> bool:
+        """Publish one READY after release and complete GVG reconciliation."""
+
+        with self._route_state_lock():
+            graph = getattr(self, "graph", None)
+            desired = getattr(self, "desired_graph", None)
+            gvg = getattr(self, "gvg_graph", None)
+            ready = bool(
+                graph is not None
+                and desired is not None
+                and gvg is not None
+                and int(generation)
+                == getattr(self, "reset_intent_generation", None)
+                == getattr(self, "reset_event_completed_generation", None)
+                == getattr(self, "reset_release_seen_generation", None)
+                and not self._reset_barrier_is_held()
+                and getattr(self, "reset_gvg_ready_generation", None)
+                != int(generation)
+                and self._graph_identity(graph)
+                == self._graph_identity(desired)
+                == self._graph_identity(gvg)
+                and bool(getattr(self, "graph_coherent", False))
+                and not bool(getattr(self, "graph_reassert_required", False))
+                and getattr(self, "graph_transaction_generation", None) is None
+                and getattr(self, "graph_transaction_future", None) is None
+                and getattr(
+                    self, "graph_transaction_deadline_steady_s", None
+                ) is None
+                and getattr(self, "graph_transaction_kind", None) is None
+                and getattr(self, "graph_retry_due_steady_s", None) is None
+                and not bool(
+                    getattr(self, "cognitive_graph_switch_pending", False)
+                )
+            )
+        if not ready:
+            return False
+        self._publish_structural_status(
+            self.StructuralGraphStatus.READY,
+            "reset GVG reconciled",
+        )
+        # The caller owns the output lock, so no newer reset can cross the
+        # publication/claim boundary.
+        with self._route_state_lock():
+            self.reset_gvg_ready_generation = int(generation)
+        return True
 
     def _fail_closed_reset_status(self, detail: str) -> None:
         with self._route_output_lock():
@@ -2224,6 +2274,10 @@ class RouteCoordinator:
                             self.reset_hold_barrier = False
             elif status_completion:
                 self._publish_reset_completion(status.generation)
+            if failure is None and status.reason.startswith("released:"):
+                self._publish_reset_gvg_ready_if_reconciled_under_output_lock(
+                    status.generation
+                )
         self._cancel_navigation_handle(old_handle)
         if failure is not None:
             self.node.get_logger().error(
@@ -2783,6 +2837,13 @@ class RouteCoordinator:
                     transaction_context
                 )
             )
+            reset_reassert_generation = (
+                int(transaction_context[5])
+                if retain_reset_context
+                and transaction_context is not None
+                and transaction_context[5] is not None
+                else None
+            )
             if commit:
                 self.graph = graph
                 self.support = support
@@ -2964,11 +3025,16 @@ class RouteCoordinator:
             self._publish_cognitive_constraints_if_input_current(
                 output_generation
             )
-            self._publish_structural_status(
-                self.StructuralGraphStatus.READY,
-                f"cognitive graph "
-                f"{'fallback applied' if fallback else 'applied'}: {detail}",
-            )
+            if reset_reassert_generation is not None:
+                self._publish_reset_gvg_ready_if_reconciled_under_output_lock(
+                    reset_reassert_generation
+                )
+            else:
+                self._publish_structural_status(
+                    self.StructuralGraphStatus.READY,
+                    f"cognitive graph "
+                    f"{'fallback applied' if fallback else 'applied'}: {detail}",
+                )
         self._cancel_navigation_handle(cancel_handle)
         if prepare_pending_goal:
             self._resume_pending_goal_after_graph_coherent()

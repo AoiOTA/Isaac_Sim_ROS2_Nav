@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 import json
 import math
 import threading
+import time
 from typing import Any
 
 
@@ -70,8 +71,6 @@ class ResetStopGate:
     ) -> None:
         from geometry_msgs.msg import Twist
         from rcl_interfaces.msg import SetParametersResult
-        from rclpy.clock import Clock
-        from rclpy.clock_type import ClockType
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -88,6 +87,11 @@ class ResetStopGate:
         self.node = node
         self.state = ResetStopGateState()
         self._lock = threading.RLock()
+        self._publish_lock = threading.RLock()
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_failure: str | None = None
+        self._closed = False
+        self._heartbeat_period_s = 1.0 / float(zero_rate_hz)
         self._Twist = Twist
         self._String = String
         self._SetParametersResult = SetParametersResult
@@ -115,12 +119,16 @@ class ResetStopGate:
         self._parameter_callback = node.add_on_set_parameters_callback(
             self._set_parameters_callback
         )
-        steady_clock = Clock(clock_type=ClockType.STEADY_TIME)
-        self._timer = node.create_timer(
-            1.0 / float(zero_rate_hz), self._zero_timer_callback, clock=steady_clock
+        self._heartbeat_thread = threading.Thread(
+            target=self._zero_heartbeat,
+            name="reset-stop-gate-zero-heartbeat",
+            daemon=True,
         )
-        self.publish_zero()
-        self._publish_status("initialized")
+        with self._publish_lock:
+            with self._lock:
+                self.publish_zero()
+                self._publish_status("initialized")
+        self._heartbeat_thread.start()
 
     @property
     def generation(self) -> int:
@@ -128,48 +136,105 @@ class ResetStopGate:
             return self.state.generation
 
     def hold(self) -> int:
-        with self._lock:
-            generation = self.state.hold()
-            self.publish_zero()
-            self._publish_status("hold")
-            return generation
+        with self._publish_lock:
+            with self._lock:
+                if self._closed:
+                    raise ResetStopGateError("reset stop gate is closed")
+                generation = self.state.hold()
+                self.publish_zero()
+                self._publish_status("hold")
+                return generation
 
     def mark_reset_complete(self, generation: int) -> None:
-        with self._lock:
-            staged = replace(self.state)
-            staged.mark_reset_complete(generation)
-            self.publish_zero()
-            self._publish_status("reset_complete", state=staged)
-            self.state.eligible_generation = staged.eligible_generation
+        with self._publish_lock:
+            with self._lock:
+                if self._closed:
+                    raise ResetStopGateError("reset stop gate is closed")
+                staged = replace(self.state)
+                staged.mark_reset_complete(generation)
+                self.publish_zero()
+                self._publish_status("reset_complete", state=staged)
+                self.state.eligible_generation = staged.eligible_generation
 
     def release(self, generation: int, *, source: str) -> None:
-        with self._lock:
-            # Publish the prospective released status while command handling
-            # is still locked and the live state is still HOLD.  A publisher
-            # failure therefore cannot leave the articulation gate open.
-            staged = replace(self.state)
-            staged.release(generation)
-            # Leave one explicit zero at the epoch boundary.  No cached input
-            # exists, so movement requires a fresh post-release command.
-            self.publish_zero()
-            self._publish_status(f"released:{source}", state=staged)
-            self.state.held = staged.held
-            self.state.eligible_generation = staged.eligible_generation
+        # The publication lock excludes the independent heartbeat through the
+        # final zero/status/commit boundary.  Once this method returns, no
+        # heartbeat zero can follow a fresh relayed command.
+        with self._publish_lock:
+            with self._lock:
+                if self._closed:
+                    raise ResetStopGateError("reset stop gate is closed")
+                # Publish the prospective released status while command
+                # handling is still locked and the live state is still HOLD.
+                # A publisher failure therefore cannot leave the gate open.
+                staged = replace(self.state)
+                staged.release(generation)
+                # Leave one explicit zero at the epoch boundary.  No cached
+                # input exists, so movement requires a fresh command.
+                self.publish_zero()
+                self._publish_status(f"released:{source}", state=staged)
+                self.state.held = staged.held
+                self.state.eligible_generation = staged.eligible_generation
 
     def publish_zero(self) -> None:
         self._publisher.publish(self._Twist())
 
     def _command_callback(self, message: Any) -> None:
-        with self._lock:
-            if self.state.held:
-                self.publish_zero()
-                return
-            self._publisher.publish(message)
+        with self._publish_lock:
+            with self._lock:
+                try:
+                    if self._closed or self.state.held:
+                        self.publish_zero()
+                        return
+                    self._publisher.publish(message)
+                except Exception as error:
+                    self._record_publish_failure_locked(
+                        error, source="command"
+                    )
+                    raise
 
-    def _zero_timer_callback(self) -> None:
-        with self._lock:
-            if self.state.held:
-                self.publish_zero()
+    def _record_publish_failure_locked(
+        self, error: Exception, *, source: str
+    ) -> None:
+        """Keep HOLD and expose a best-effort status after publish failure."""
+
+        self.state.held = True
+        self.state.eligible_generation = None
+        self._heartbeat_failure = (
+            f"{source}:{type(error).__name__}: {error}"
+        )
+        try:
+            self._publish_status(
+                f"{source}_publish_error:{type(error).__name__}:{error}"
+            )
+        except Exception:
+            # The retained in-process failure string remains inspectable even
+            # if the DDS status publisher is the failing resource.
+            pass
+
+    def _zero_heartbeat(self) -> None:
+        """Publish HOLD zeros from wall time, independent of ROS executor spin."""
+
+        deadline = time.monotonic() + self._heartbeat_period_s
+        while not self._heartbeat_stop.wait(
+            max(0.0, deadline - time.monotonic())
+        ):
+            now = time.monotonic()
+            with self._publish_lock:
+                with self._lock:
+                    if self._closed:
+                        return
+                    if self.state.held:
+                        try:
+                            self.publish_zero()
+                        except Exception as error:
+                            self._record_publish_failure_locked(
+                                error, source="heartbeat"
+                            )
+            deadline = max(
+                deadline + self._heartbeat_period_s,
+                now + self._heartbeat_period_s,
+            )
 
     def _set_parameters_callback(self, parameters: list[Any]) -> Any:
         requested = [
@@ -212,7 +277,30 @@ class ResetStopGate:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
             self.state.held = True
             self.state.eligible_generation = None
-            self.publish_zero()
-            self._publish_status("closed")
+            self._closed = True
+            self._heartbeat_stop.set()
+
+        # Stop and join before destroying any ROS resource the daemon uses.
+        self._heartbeat_thread.join(timeout=max(1.0, 4.0 * self._heartbeat_period_s))
+        heartbeat_alive = self._heartbeat_thread.is_alive()
+        with self._publish_lock:
+            with self._lock:
+                self.publish_zero()
+                self._publish_status(
+                    "closed" if not heartbeat_alive else "closed:heartbeat_join_timeout"
+                )
+
+        remove_callback = getattr(
+            self.node, "remove_on_set_parameters_callback", None
+        )
+        if remove_callback is not None:
+            remove_callback(self._parameter_callback)
+        self.node.destroy_subscription(self._subscription)
+        self.node.destroy_publisher(self._status_publisher)
+        self.node.destroy_publisher(self._publisher)
+        if heartbeat_alive:
+            raise ResetStopGateError("zero heartbeat did not stop before close timeout")

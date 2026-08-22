@@ -6,9 +6,11 @@ This amendment adds a single-process `active_reset_probe` runner for the next
 fresh active-reset attempt.  It replaces the split Attempt4 harness timing
 with one monotonic state machine and an atomically refreshed JSON receipt.
 
-This is **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
-navigation, reset, bag, visual review, engineering campaign, or formal
-qualification was run by this task.  Attempt5 remains **PENDING**.
+This is **PASS (code/build/unit only)**.  Attempt5 is retained as
+**ENGINEERING FAIL / STOP / NOT FORMAL**; this amendment does not rerun it.
+No ROS graph, Isaac, Nav2, navigation, reset, bag, visual review, engineering
+campaign, or formal qualification was run by this task.  Attempt6 remains
+**PENDING**.
 
 ## Attempt4 input
 
@@ -69,10 +71,13 @@ Key checks are (including the review-blocker amendment at Module3 start
 - require one old Bool `false` plus exact JSON
   `aborted/simulation_reset/reset_epoch=2` for the old request, one reset
   event, and an exact reset receipt;
-- from the earlier of Trigger dispatch or first HOLD until fresh publication,
-  any canonical route, progress, lookahead, goal-update/Navigate intent, or
-  other old route output is recorded with receive time/type/request identity
-  and immediately STOPs; this does not wait for the old terminal pair;
+- from Trigger dispatch until the received generation-2 HOLD, old route output
+  is recorded as `pre_hold_inflight_outputs` but is not misclassified as a
+  barrier violation.  Dispatch-to-HOLD receive latency must be no greater than
+  0.5 s or the probe STOPs.  From received HOLD until fresh publication, any
+  canonical route, progress, lookahead, goal-update/Navigate intent, or other
+  old route output is recorded with receive time/type/request identity and
+  immediately STOPs; this does not wait for the old terminal pair;
 - require one second without old route outputs, then publish fresh goal
   `(0.685, -3.975535, 1.570796327)` exactly once;
 - require a strictly newer request ID, the exact configured canonical edge
@@ -117,9 +122,43 @@ ros2 run robot_experiments active_reset_probe \
   --output "$evidence_root/probe/active_reset_probe.json"
 ```
 
-Do not reuse Attempt4 runtime state.  The next reviewer must start a fresh
-isolated episode, bag the contracted topics independently, and compare the
-probe JSON with the finalized bag before making an engineering-runtime claim.
+Do not reuse Attempt4 or Attempt5 runtime state.  The next reviewer must start
+a fresh isolated episode, bag the contracted topics independently, and compare
+the probe JSON with the finalized bag before making an engineering-runtime
+claim.
+
+## Attempt5 failure input and closure amendment
+
+The immutable input is:
+
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt5_20260822T001729Z`
+
+Attempt5 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  It dispatched the
+single Trigger 0.000621 s after `ACTIVE_READY`.  One old progress/lookahead/
+goal-update triplet arrived about 0.260 s after dispatch and about 0.012 s
+before the received generation-2 HOLD.  The old probe stopped at dispatch,
+but finalized-bag review found no route output at or after HOLD.  The probe now
+records that bounded pre-HOLD interval instead and makes the actual received
+HOLD the old-output fence, with a separate 0.5 s dispatch-to-HOLD deadline.
+
+Attempt5 also exposed two independent blockers now covered by source changes:
+
+- `/cmd_vel_sim` was all zero during HOLD, but its maximum receive gap was
+  0.378262 s.  ResetStopGate now uses a daemon wall-time zero heartbeat rather
+  than an executor timer, retaining the same node and publisher GID.  HOLD is
+  immediate, release excludes the heartbeat before relaying, and close stops
+  and joins the thread before destroying ROS resources.
+- the bag contained no reset-era GVG `READY`.  RouteCoordinator now publishes
+  exactly one `READY` with detail `reset GVG reconciled` after the same
+  generation is released and the desired/local/GVG graph is coherent with no
+  transaction, retry, or reassert pending.  A reassert completing after release
+  publishes from its callback; unavailable or pending service state cannot
+  claim READY.
+
+The Attempt5 exact seed 8601 receipt, one reset event, same-topic
+`hold -> reset_complete -> released:activation_gate`, old abort terminal pair,
+zero collision, and stable GT/EKF landing remain useful bounded evidence, but
+do not promote the stopped episode.  Attempt6 must be fresh.
 
 ## Deterministic validation
 
@@ -132,12 +171,17 @@ reset teleport versus post-landing drift/error, old-output silence, strict
 request/epoch/reason/edge identity, fresh success/failure, the four-chain full
 postzero contract, and atomic entrypoint STOP output.
 
-The final-contract amendment validated source-first **76 passed** (38 probe
-tests plus 38 retained package-contract tests), package-configured flake8,
-`py_compile`, and `git diff --check`. A fresh ordinary isolated build/install
-passed at `/tmp/v6_active_reset_final2_build.0JWgYE`, install
-`/tmp/v6_active_reset_final2_install.1vIoZW`, and log
-`/tmp/v6_active_reset_final2_log.kF2OrQ`. The same 76 tests imported the
-installed module (path asserted under that install), and both installed
-`ros2 run ... --help` and the direct console entry point passed. No ROS graph,
-Isaac, Nav2, navigation, reset or evidence episode was launched.
+The Attempt5 closure amendment validated source-first **214 passed** across
+ResetStopGate, active-reset probe, RouteCoordinator core, and cognitive graph
+adapter tests.  The same **214 passed** against the fresh install.  A wider
+source-first suite produced **819 passed, 1 skipped**, plus one unrelated
+path-sensitive Rivermark frozen-reference failure whose stored absolute path
+names an older worktree.  Package-configured probe flake8, `py_compile`, and
+`git diff --check` passed.  Fresh isolated build/install passed for
+`robot_route_planner` and `robot_experiments` at
+`/tmp/v6_attempt5_closure_build.g7Sp4d`, install
+`/tmp/v6_attempt5_closure_install.a1hBg5`, and log
+`/tmp/v6_attempt5_closure_log.A2CV4w`.  Installed import paths, `ros2 run ...
+active_reset_probe --help`, and the direct installed entry point passed.  No
+ROS graph, Isaac, Nav2, navigation, reset, or evidence episode was launched by
+this amendment.

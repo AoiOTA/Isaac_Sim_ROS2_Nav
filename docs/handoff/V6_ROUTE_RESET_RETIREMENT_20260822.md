@@ -555,3 +555,29 @@ ordering, zero old-epoch output and command through HOLD, and fresh-goal recover
 - Verdict: **PASS (code/build/unit only)**. No ROS graph, Isaac, Nav2,
   navigation, visual evidence, engineering campaign, or formal qualification
   was run. Active-reset live Attempt 3 remains **PENDING**.
+
+## Attempt5 reset-GVG READY amendment
+
+- Start HEAD: `5dc3b91e9922a12b45e63b135342350e5e847a33`; triggering evidence is
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt5_20260822T001729Z`.
+  Attempt5 remains **ENGINEERING FAIL / STOP / NOT FORMAL** and is not rerun.
+- The finalized bag contained the reset graph-set request but no reset-era
+  GVG `READY`.  A successful completion-owned reassert could commit while the
+  reset HOLD barrier was active; its callback correctly suppressed output, but
+  the later release had no path to publish the now-coherent state.
+- RouteCoordinator now tracks the generation whose reset GVG READY was
+  published.  On a legal same-generation release it publishes exactly one
+  `StructuralGraphStatus.READY` with detail `reset GVG reconciled` only when
+  desired graph, local graph, and GVG identities match, graph coherence is
+  true, and no graph transaction, retry deadline, reassert, or cognitive switch
+  is pending.
+- If reassert commits after release, the generation-fenced completion callback
+  publishes the same READY.  A newer reset invalidates the token.  Startup
+  released baselines, stale generations, service unavailable/retry state, and
+  incoherent graphs cannot fabricate READY.
+- Tests cover success committed during HOLD then release, duplicate release,
+  pending/unavailable reassert, and success completing after release.  The
+  wider reset/retry/concurrency suite remains passing as recorded in
+  `V6_ACTIVE_RESET_PROBE_20260822.md`.
+- Verdict: **PASS (code/build/unit only)**.  Fresh Attempt6 runtime remains
+  **PENDING**.

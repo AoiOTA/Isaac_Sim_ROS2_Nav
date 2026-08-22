@@ -158,6 +158,7 @@ class ProbeConfig:
     reset_odometry: str = "realistic"
     active_timeout_s: float = 6.0
     reset_call_max_delay_s: float = 0.5
+    hold_observation_max_delay_s: float = 0.5
     reset_timeout_s: float = 30.0
     quiet_s: float = 1.0
     fresh_timeout_s: float = 30.0
@@ -218,7 +219,10 @@ class ProbeMachine:
     fresh_bool_value: bool | None = None
     fresh_result_value: dict[str, Any] | None = None
     old_activity_after_terminal: int = 0
-    old_outputs_after_reset_boundary: list[dict[str, Any]] = field(
+    old_outputs_after_hold_boundary: list[dict[str, Any]] = field(
+        default_factory=list
+    )
+    pre_hold_inflight_outputs: list[dict[str, Any]] = field(
         default_factory=list
     )
     latest_odom_xy: tuple[float, float] | None = None
@@ -263,17 +267,11 @@ class ProbeMachine:
         self.stop(f"{event}_time_nonfinite", now)
         return False
 
-    def _reset_boundary(self) -> float | None:
-        boundaries = [
-            value for value in (
-                self.timestamps.get("reset_call"),
-                next((
-                    row["received_monotonic_s"] for row in self.gate_sequence
-                    if row["reason"] == "hold"
-                ), None),
-            ) if value is not None
-        ]
-        return min(boundaries) if boundaries else None
+    def _hold_boundary(self) -> float | None:
+        return next((
+            row["received_monotonic_s"] for row in self.gate_sequence
+            if row["reason"] == "hold"
+        ), None)
 
     def _reject_old_output(
         self,
@@ -283,8 +281,7 @@ class ProbeMachine:
         request_id: int | None = None,
         detail: dict[str, Any] | None = None,
     ) -> bool:
-        boundary = self._reset_boundary()
-        if boundary is None or self.counts["fresh_publish"] != 0:
+        if self.counts["fresh_publish"] != 0:
             return False
         row = {
             "type": kind,
@@ -292,8 +289,20 @@ class ProbeMachine:
             "request_id": request_id,
             "detail": dict(detail or {}),
         }
-        self.old_outputs_after_reset_boundary.append(row)
-        self.stop(f"old_output_after_reset_boundary:{kind}", now)
+        hold_boundary = self._hold_boundary()
+        dispatch_boundary = self.timestamps.get("reset_call")
+        if hold_boundary is None:
+            if dispatch_boundary is not None and now >= dispatch_boundary:
+                # Service dispatch and the received HOLD status are different
+                # callback boundaries.  Outputs in this bounded interval are
+                # observable in-flight work, not proof of post-HOLD leakage.
+                self.pre_hold_inflight_outputs.append(row)
+            return False
+        if now < hold_boundary:
+            self.pre_hold_inflight_outputs.append(row)
+            return False
+        self.old_outputs_after_hold_boundary.append(row)
+        self.stop(f"old_output_after_hold_boundary:{kind}", now)
         return True
 
     def endpoints_ready(self, now: float, detail: dict[str, Any]) -> None:
@@ -825,6 +834,21 @@ class ProbeMachine:
             self.stop("gate_status_received_time_not_increasing", now)
             return
         self.gate_sequence.append({**item, "received_monotonic_s": float(now)})
+        if reason == "hold":
+            dispatch = self.timestamps.get("reset_call")
+            latency = None if dispatch is None else float(now) - float(dispatch)
+            self._time("gate_hold", now)
+            self.reset_call_detail.update({
+                "hold_received_monotonic_s": float(now),
+                "dispatch_to_hold_s": latency,
+            })
+            if (
+                latency is None
+                or latency < 0.0
+                or latency > self.config.hold_observation_max_delay_s
+            ):
+                self.stop("gate_hold_after_reset_dispatch_too_late", now)
+                return
         if reason.startswith("released:"):
             self._validate_release_coverage(now)
             if self.phase == "STOP":
@@ -1070,7 +1094,13 @@ class ProbeMachine:
             if now - self.timestamps["old_published"] > self.config.active_timeout_s:
                 self.stop("active_ready_timeout", now)
         elif self.phase in {"OBSERVE_HOLD_ABORT", "WAIT_RELEASE"}:
-            if now - self.timestamps["reset_call"] > self.config.reset_timeout_s:
+            if (
+                self._hold_boundary() is None
+                and now - self.timestamps["reset_call"]
+                > self.config.hold_observation_max_delay_s
+            ):
+                self.stop("gate_hold_observation_timeout", now)
+            elif now - self.timestamps["reset_call"] > self.config.reset_timeout_s:
                 self.stop("reset_observation_timeout", now)
         elif self.phase == "QUIET":
             if now - self.timestamps["quiet_started"] >= self.config.quiet_s:
@@ -1162,7 +1192,8 @@ class ProbeMachine:
                 "terminal_bool": self.old_bool_value,
                 "result": self.old_result_value,
                 "activity_after_terminal": self.old_activity_after_terminal,
-                "outputs_after_reset_boundary": self.old_outputs_after_reset_boundary,
+                "pre_hold_inflight_outputs": self.pre_hold_inflight_outputs,
+                "outputs_after_hold_boundary": self.old_outputs_after_hold_boundary,
             },
             "reset": {
                 "receipt": self.reset_receipt,

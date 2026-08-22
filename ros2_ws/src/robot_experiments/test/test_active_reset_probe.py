@@ -260,7 +260,7 @@ def test_old_route_output_must_be_silent_for_quiet_window():
     """Old-epoch route output after its terminal pair is forbidden."""
     machine = _reset_to_quiet()
     machine.route_output("goal_update", 0.5)
-    assert machine.stop_reason == "old_output_after_reset_boundary:goal_update"
+    assert machine.stop_reason == "old_output_after_hold_boundary:goal_update"
 
 
 def test_fresh_failure_and_edge_mismatch_stop():
@@ -514,8 +514,8 @@ def test_nonfinite_receive_time_and_twist_are_not_zero():
 
 
 @pytest.mark.parametrize("kind", ("canonical", "progress", "lookahead", "navigate"))
-def test_every_old_output_stops_immediately_at_reset_boundary(kind):
-    """Any old route output after dispatch is recorded and stops immediately."""
+def test_pre_hold_outputs_are_recorded_as_inflight_then_post_hold_stops(kind):
+    """Dispatch-to-HOLD output is observable; the received HOLD is the fence."""
     machine = _active()
     machine.reset_call_started(0.13)
     if kind == "canonical":
@@ -526,11 +526,51 @@ def test_every_old_output_stops_immediately_at_reset_boundary(kind):
         machine.route_output("lookahead", 0.131)
     else:
         machine.navigate_intent(0.131)
-    assert machine.phase == "STOP"
-    assert machine.old_outputs_after_reset_boundary[-1]["received_monotonic_s"] == 0.131
-    assert machine.old_outputs_after_reset_boundary[-1]["type"] == (
+    assert machine.phase == "OBSERVE_HOLD_ABORT"
+    assert machine.pre_hold_inflight_outputs[-1]["received_monotonic_s"] == 0.131
+    assert machine.pre_hold_inflight_outputs[-1]["type"] == (
         "navigate_intent" if kind == "navigate" else kind
     )
+
+    machine.gate_status(_gate("hold", held=True), 0.14)
+    if kind == "canonical":
+        machine.canonical(2, [51, 52, 30], 0.141)
+    elif kind == "progress":
+        machine.progress(2, 0.141)
+    elif kind == "lookahead":
+        machine.route_output("lookahead", 0.141)
+    else:
+        machine.navigate_intent(0.141)
+    assert machine.phase == "STOP"
+    expected_kind = "navigate_intent" if kind == "navigate" else kind
+    assert machine.stop_reason == (
+        f"old_output_after_hold_boundary:{expected_kind}"
+    )
+    assert machine.old_outputs_after_hold_boundary[-1]["received_monotonic_s"] == 0.141
+    assert machine.old_outputs_after_hold_boundary[-1]["type"] == (
+        "navigate_intent" if kind == "navigate" else kind
+    )
+
+
+def test_dispatch_to_hold_latency_is_bounded_and_reported():
+    """HOLD must arrive within 0.5 s and expose both receive boundaries."""
+    machine = _active()
+    machine.reset_call_started(0.13)
+    machine.gate_status(_gate("hold", held=True), 0.63)
+    assert machine.phase == "OBSERVE_HOLD_ABORT"
+    assert machine.reset_call_detail["dispatch_to_hold_s"] == pytest.approx(0.5)
+    assert machine.timestamps["gate_hold"] == pytest.approx(0.63)
+
+    late = _active()
+    late.reset_call_started(0.13)
+    late.gate_status(_gate("hold", held=True), 0.631)
+    assert late.stop_reason == "gate_hold_after_reset_dispatch_too_late"
+    assert late.reset_call_detail["dispatch_to_hold_s"] == pytest.approx(0.501)
+
+    missing = _active()
+    missing.reset_call_started(0.13)
+    missing.tick(0.631)
+    assert missing.stop_reason == "gate_hold_observation_timeout"
 
 
 def test_gate_baseline_hidden_generation_and_exact_episode_sequence():
