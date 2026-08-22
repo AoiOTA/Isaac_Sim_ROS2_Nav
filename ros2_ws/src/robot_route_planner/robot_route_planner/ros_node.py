@@ -2965,7 +2965,6 @@ class RouteCoordinator:
         replay its binding (which publishes on accept).  Without a deferred
         grid, re-publish the constraints for the already-bound map.
         """
-
         with self._route_state_lock():
             deferred = getattr(self, "_deferred_occupancy_map", None)
             self._deferred_occupancy_map = None
