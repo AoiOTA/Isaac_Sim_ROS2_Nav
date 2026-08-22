@@ -24,7 +24,9 @@ COMMAND_TOPICS = (
     "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"
 )
 RUN_EXIT_PHASES = {"PROVISIONAL_COMPLETE", "STOP"}
-TOPOLOGY_CHECKPOINTS = ("prepublish", "pre_reset", "post_release", "pre_fresh")
+TOPOLOGY_CHECKPOINTS = (
+    "prepublish", "pre_reset", "post_release", "pre_fresh", "postzero_end"
+)
 DEFAULT_ROUTE_SUBSCRIBERS = (
     "/bio_nav_route_coordinator",
     "/rosbag2_recorder",
@@ -64,6 +66,32 @@ def _twist_values(message: Any) -> tuple[float, ...]:
     if not _all_finite(values):
         raise ValueError("twist_nonfinite")
     return values
+
+
+def _yaw_from_quaternion(
+    quaternion: tuple[float, float, float, float]
+) -> float:
+    """Return finite planar yaw from an already-validated quaternion."""
+    x, y, z, w = (float(value) for value in quaternion)
+    return math.atan2(
+        2.0 * (w * z + x * y),
+        1.0 - 2.0 * (y * y + z * z),
+    )
+
+
+def _unwrapped_yaw_span(samples: list[dict[str, Any]]) -> float | None:
+    """Return max-min yaw after shortest-arc incremental unwrapping."""
+    ordered = sorted(samples, key=lambda row: float(row["monotonic_s"]))
+    if not ordered:
+        return None
+    previous = float(ordered[0]["yaw_rad"])
+    unwrapped = [previous]
+    for sample in ordered[1:]:
+        current = float(sample["yaw_rad"])
+        delta = math.atan2(math.sin(current - previous), math.cos(current - previous))
+        unwrapped.append(unwrapped[-1] + delta)
+        previous = current
+    return max(unwrapped) - min(unwrapped)
 
 
 def _node_full_name(node_namespace: str, node_name: str) -> str:
@@ -226,6 +254,17 @@ def _position_coverage_summary(
     return summary
 
 
+def _postzero_ground_truth_summary(
+    samples: list[dict[str, Any]],
+    start: float | None,
+    end: float | None,
+    expected_xy: tuple[float, float],
+) -> dict[str, Any]:
+    summary = _position_coverage_summary(samples, start, end, expected_xy)
+    summary["yaw_unwrapped_span_rad"] = _unwrapped_yaw_span(samples)
+    return summary
+
+
 @dataclass(frozen=True)
 class ProbeConfig:
     """Thresholds and immutable identities for one active-reset episode."""
@@ -241,7 +280,9 @@ class ProbeConfig:
     reset_timeout_s: float = 30.0
     quiet_s: float = 1.0
     fresh_timeout_s: float = 30.0
-    postzero_s: float = 1.0
+    postzero_settle_s: float = 0.25
+    postzero_observe_s: float = 1.0
+    pre_result_zero_lookback_s: float = 0.25
     active_displacement_m: float = 0.10
     reset_stable_drift_m: float = 0.02
     reset_landing_xy: tuple[float, float] = (0.45, -5.35)
@@ -327,8 +368,24 @@ class ProbeMachine:
         default_factory=lambda: {"ground_truth": [], "odometry": []}
     )
     hold_collision_samples: list[dict[str, Any]] = field(default_factory=list)
+    latest_commands: dict[str, dict[str, Any] | None] = field(
+        default_factory=lambda: {topic: None for topic in COMMAND_TOPICS}
+    )
+    latest_nonzero_commands: dict[str, dict[str, Any] | None] = field(
+        default_factory=lambda: {topic: None for topic in COMMAND_TOPICS}
+    )
+    fresh_ground_truth_samples: list[dict[str, Any]] = field(default_factory=list)
     post_commands: dict[str, dict[str, Any]] = field(default_factory=lambda: {
-        topic: {"total": 0, "nonzero": 0, "last_zero": False, "samples": []}
+        topic: {
+            "total": 0,
+            "nonzero": 0,
+            "zero_count": 0,
+            "last_nonzero_monotonic_s": None,
+            "first_settled_zero_monotonic_s": None,
+            "settle_latency_s": None,
+            "last_observed": None,
+            "samples": [],
+        }
         for topic in COMMAND_TOPICS
     })
 
@@ -455,6 +512,17 @@ class ProbeMachine:
         if errors:
             self.stop(f"topology_contract_failed:{label}:{errors[0]}", now)
             return
+        if label == "postzero_end":
+            if self.phase != "CHECK_END_TOPOLOGY":
+                self.stop("postzero_end_topology_outside_contract", now)
+                return
+            previous = self.topology_checks[-2]["snapshot"]
+            if snapshot != previous:
+                self.stop("topology_changed:postzero_end", now)
+                return
+            self.timestamps["provisional_complete"] = float(now)
+            self.phase = "PROVISIONAL_COMPLETE"
+            return
         if self.topology_baseline is None:
             self.topology_baseline = snapshot
             return
@@ -500,6 +568,9 @@ class ProbeMachine:
             return
         self.counts["fresh_publish"] = 1
         self._time("fresh_published", now)
+        for topic in COMMAND_TOPICS:
+            self.latest_commands[topic] = None
+            self.latest_nonzero_commands[topic] = None
         self.phase = "WAIT_SUCCESS"
 
     def canonical(self, request_id: int, edge_ids: list[int], now: float) -> None:
@@ -613,6 +684,15 @@ class ProbeMachine:
         if topic not in COMMAND_TOPICS:
             self.stop("unknown_command_topic", now)
             return
+        sample = {
+            "monotonic_s": float(now),
+            "nonzero": bool(nonzero),
+            "finite": values is not None,
+            "twist": None if values is None else list(values),
+        }
+        self.latest_commands[topic] = sample
+        if nonzero:
+            self.latest_nonzero_commands[topic] = sample
         if topic == "/cmd_vel_sim" and self.phase == "WAIT_ACTIVE_READY" and nonzero:
             self.old_cmd_nonzero += 1
             self._maybe_active_ready(now)
@@ -629,15 +709,41 @@ class ProbeMachine:
         if self.phase == "PROVISIONAL_COMPLETE" and nonzero:
             self.stop(f"command_nonzero_after_provisional:{topic}", now)
             return
-        if self.phase == "POSTZERO":
-            row = self.post_commands[topic]
-            row["total"] += 1
-            row["nonzero"] += int(nonzero)
-            row["last_zero"] = not nonzero
-            row["samples"].append({
-                "monotonic_s": float(now), "nonzero": bool(nonzero),
-                "twist": None if values is None else list(values),
-            })
+        if "postzero_started" in self.timestamps:
+            self._consume_postzero_command(topic, sample)
+
+    def _consume_postzero_command(
+        self, topic: str, sample: dict[str, Any]
+    ) -> None:
+        """Apply the event-driven fresh-result command settling contract."""
+        if self.phase in RUN_EXIT_PHASES:
+            return
+        result_time = self.timestamps["postzero_started"]
+        now = float(sample["monotonic_s"])
+        row = self.post_commands[topic]
+        row["total"] += 1
+        row["nonzero"] += int(bool(sample["nonzero"]))
+        row["last_observed"] = dict(sample)
+        row["samples"].append(dict(sample))
+        if sample["nonzero"]:
+            row["last_nonzero_monotonic_s"] = now
+            if row["first_settled_zero_monotonic_s"] is not None:
+                self.stop(f"postzero_nonzero_after_settled_zero:{topic}", now)
+            elif now - result_time > self.config.postzero_settle_s:
+                self.stop(f"postzero_settle_timeout:{topic}", now)
+            return
+        if not sample["finite"]:
+            return
+        row["zero_count"] += 1
+        if row["first_settled_zero_monotonic_s"] is None:
+            latency = now - result_time
+            if latency < -self.config.pre_result_zero_lookback_s:
+                return
+            if latency > self.config.postzero_settle_s:
+                self.stop(f"postzero_zero_after_settle_deadline:{topic}", now)
+                return
+            row["first_settled_zero_monotonic_s"] = now
+            row["settle_latency_s"] = latency
 
     def _validate_pose_sample(
         self,
@@ -701,6 +807,11 @@ class ProbeMachine:
             return
         xy = (float(x), float(y))
         self.latest_gt_xy = xy
+        if self.counts["fresh_publish"] == 1:
+            self.fresh_ground_truth_samples.append({
+                "monotonic_s": float(now), "x": xy[0], "y": xy[1],
+                "yaw_rad": _yaw_from_quaternion(quaternion),
+            })
         self._capture_reset_position("ground_truth", xy, now)
         if self.old_start_xy is not None and self.counts["reset_call"] == 0:
             self.old_displacement_m = max(
@@ -1093,6 +1204,7 @@ class ProbeMachine:
             return
         if fresh:
             self.fresh_bool_value = bool(value)
+            self._time("fresh_terminal_bool", now)
             if not value:
                 self.stop("fresh_terminal_false", now)
                 return
@@ -1138,6 +1250,8 @@ class ProbeMachine:
             ):
                 self.stop("fresh_result_contract_mismatch", now)
                 return
+            self._time("fresh_terminal_result", now)
+            self._start_postzero_contract(now)
         else:
             if self.counts["reset_call"] == 0:
                 self.stop("old_terminal_before_reset", now)
@@ -1238,8 +1352,24 @@ class ProbeMachine:
                 self.stop("fresh_goal_error_exceeded", now)
                 return
             self.timestamps["fresh_success"] = float(now)
-            self.timestamps["postzero_started"] = float(now)
             self.phase = "POSTZERO"
+
+    def _start_postzero_contract(self, result_time: float) -> None:
+        """Seed each command tail from its rolling sample at fresh result."""
+        if "postzero_started" in self.timestamps:
+            return
+        self.timestamps["postzero_started"] = float(result_time)
+        lower = float(result_time) - self.config.pre_result_zero_lookback_s
+        for topic in COMMAND_TOPICS:
+            latest_nonzero = self.latest_nonzero_commands[topic]
+            if latest_nonzero is not None:
+                self.post_commands[topic]["last_nonzero_monotonic_s"] = float(
+                    latest_nonzero["monotonic_s"]
+                )
+            sample = self.latest_commands[topic]
+            if sample is None or float(sample["monotonic_s"]) < lower:
+                continue
+            self._consume_postzero_command(topic, sample)
 
     def tick(self, now: float) -> None:
         """Advance monotonic deadlines and quiet/postzero dwell states."""
@@ -1281,24 +1411,112 @@ class ProbeMachine:
             if now - self.timestamps["fresh_published"] > self.config.fresh_timeout_s:
                 self.stop("fresh_success_timeout", now)
         elif self.phase == "POSTZERO":
-            if now - self.timestamps["postzero_started"] >= self.config.postzero_s:
-                start = self.timestamps["postzero_started"]
-                end = start + self.config.postzero_s
-                invalid = []
-                for topic, row in self.post_commands.items():
-                    summary = _coverage_summary(row["samples"], start, end)
-                    errors = self._coverage_contract_errors(
-                        summary, require_zero_key="nonzero"
-                    )
-                    if errors or row["nonzero"] != 0 or not row["last_zero"]:
-                        invalid.append(topic)
-                if invalid:
-                    self.stop("postzero_contract_failed:" + ",".join(invalid), now)
-                elif self.collision:
-                    self.stop("physical_collision", now)
-                else:
-                    self.timestamps["provisional_complete"] = float(now)
-                    self.phase = "PROVISIONAL_COMPLETE"
+            self._advance_postzero(now)
+
+    def _advance_postzero(self, now: float) -> None:
+        """Advance settling, silence observation, and final topology handoff."""
+        result_time = self.timestamps["postzero_started"]
+        unsettled = [
+            topic for topic, row in self.post_commands.items()
+            if row["first_settled_zero_monotonic_s"] is None
+        ]
+        if unsettled:
+            if now - result_time > self.config.postzero_settle_s:
+                self.stop("postzero_settle_timeout:" + ",".join(unsettled), now)
+            return
+        observe_start = max(
+            float(row["first_settled_zero_monotonic_s"])
+            for row in self.post_commands.values()
+        )
+        self.timestamps.setdefault("postzero_observe_started", observe_start)
+        observe_end = observe_start + self.config.postzero_observe_s
+        if now < observe_end:
+            return
+
+        invalid: list[str] = []
+        for topic, row in self.post_commands.items():
+            last = row["last_observed"]
+            if (
+                last is None
+                or last["nonzero"]
+                or not last["finite"]
+                or row["first_settled_zero_monotonic_s"] is None
+            ):
+                invalid.append(topic)
+        if invalid:
+            self.stop("postzero_last_command_invalid:" + ",".join(invalid), now)
+            return
+
+        sim_zeros = sorted(
+            float(sample["monotonic_s"])
+            for sample in self.post_commands["/cmd_vel_sim"]["samples"]
+            if sample["finite"] and not sample["nonzero"]
+        )
+        sim_gaps = [
+            later - earlier for earlier, later in zip(sim_zeros, sim_zeros[1:])
+        ]
+        if len(sim_zeros) < 2 or not any(
+            0.0 < gap <= MAX_COVERAGE_GAP_S for gap in sim_gaps
+        ):
+            self.stop("postzero_cmd_vel_sim_zero_cadence_missing", now)
+            return
+
+        gt_samples = [
+            sample for sample in self.fresh_ground_truth_samples
+            if observe_start <= float(sample["monotonic_s"]) <= observe_end
+        ]
+        gt_summary = _postzero_ground_truth_summary(
+            gt_samples, observe_start, observe_end, self.config.fresh_goal_xy
+        )
+        gt_errors = self._coverage_contract_errors(gt_summary)
+        if gt_summary["span_m"] is None or (
+            gt_summary["span_m"] > self.config.reset_stable_drift_m
+        ):
+            gt_errors.append("span")
+        if (
+            gt_summary["yaw_unwrapped_span_rad"] is None
+            or gt_summary["yaw_unwrapped_span_rad"]
+            > self.config.reset_stable_drift_m
+        ):
+            gt_errors.append("yaw_span")
+        if gt_errors:
+            self.stop(
+                "postzero_ground_truth_coverage_failed:" + ",".join(gt_errors), now
+            )
+            return
+        if self.collision:
+            self.stop("physical_collision", now)
+            return
+        self.timestamps["postzero_observe_ended"] = float(observe_end)
+        self.phase = "CHECK_END_TOPOLOGY"
+
+    @staticmethod
+    def _postzero_command_document(
+        row: dict[str, Any], observe_end: float | None
+    ) -> dict[str, Any]:
+        last = row["last_observed"]
+        silence = (
+            None
+            if observe_end is None or last is None
+            else observe_end - float(last["monotonic_s"])
+        )
+        classification = None
+        if (
+            row["first_settled_zero_monotonic_s"] is not None
+            and last is not None
+            and last["finite"]
+            and not last["nonzero"]
+        ):
+            classification = (
+                "ZERO_THEN_SILENT"
+                if silence is not None and silence > MAX_COVERAGE_GAP_S
+                else "ZERO_CONTINUING"
+            )
+        return {
+            **row,
+            "silence_horizon_s": silence,
+            "termination_classification": classification,
+        }
 
     def document(
         self,
@@ -1326,9 +1544,10 @@ class ProbeMachine:
             key=lambda row: float(row["received_monotonic_s"]),
         )
         postzero_start = self.timestamps.get("postzero_started")
+        postzero_observe_start = self.timestamps.get("postzero_observe_started")
         postzero_end = (
-            None if postzero_start is None
-            else postzero_start + self.config.postzero_s
+            None if postzero_observe_start is None
+            else postzero_observe_start + self.config.postzero_observe_s
         )
         return {
             "schema": "bio_nav.active_reset_probe.v1",
@@ -1470,13 +1689,28 @@ class ProbeMachine:
             },
             "collision": self.collision,
             "postzero": {
-                topic: {
-                    **row,
-                    "coverage": _coverage_summary(
-                        row["samples"], postzero_start, postzero_end
-                    ),
-                }
-                for topic, row in self.post_commands.items()
+                "result_monotonic_s": postzero_start,
+                "observe_start_monotonic_s": postzero_observe_start,
+                "observe_end_monotonic_s": postzero_end,
+                "ground_truth": _postzero_ground_truth_summary(
+                    [
+                        sample for sample in self.fresh_ground_truth_samples
+                        if (
+                            postzero_observe_start is not None
+                            and postzero_end is not None
+                            and postzero_observe_start
+                            <= float(sample["monotonic_s"])
+                            <= postzero_end
+                        )
+                    ],
+                    postzero_observe_start,
+                    postzero_end,
+                    self.config.fresh_goal_xy,
+                ),
+                "commands": {
+                    topic: self._postzero_command_document(row, postzero_end)
+                    for topic, row in self.post_commands.items()
+                },
             },
         }
 
@@ -2018,6 +2252,8 @@ def _run_ros(args: argparse.Namespace) -> int:
                     return
                 self._publish_goal(self._fresh_goal)
                 self.machine.fresh_published(now)
+            elif self.machine.phase == "CHECK_END_TOPOLOGY":
+                self._check_topology("postzero_end")
 
         def _reset_done(self, future) -> None:
             now = time.monotonic()

@@ -2008,3 +2008,43 @@
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt9 remains **PENDING**.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Attempt9 latest-value actuator relay and postzero amendment
+
+- Goal: fix the stale `/cmd_vel` reader backlog proven by Attempt9 and replace
+  a continuous-heartbeat postzero assumption with a bounded event-driven
+  terminal-zero contract, without weakening actuator or physical-stop safety.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `22c7f5c75b46ad1cc0db69bd8c1d61f68b595c39`.  Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Immutable input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt9_20260822T023957Z`.
+  Attempt9 remains **ENGINEERING FAIL / STOP / NOT FORMAL**: upstream zeros
+  arrived by result +0.0455 s, but stale gate output remained nonzero through
+  +0.4006 s, first actuator zero was +0.5732 s, and post-terminal GT yaw moved
+  about 0.156 rad.
+- Product change: ResetStopGate's final `/cmd_vel` reader is reliable/volatile
+  `KEEP_LAST depth=1`, so the latest CollisionMonitor zero overwrites an
+  unprocessed stale train before Isaac's once-per-frame rclpy spin.  Output
+  publisher, wall HOLD heartbeat, generation fence, and unique command
+  authority are unchanged.  Callback teardown now retains the actual Jazzy
+  callback instead of the API's `None` return.
+- Probe change: each four-chain topic must produce finite zero in result +/-
+  0.25 s; a later nonzero STOPs.  One second of event-driven silence is legal
+  after zero, while `/cmd_vel_sim` still needs two reasonably spaced zeros,
+  GT needs continuous coverage with XY <=0.02 m and unwrapped yaw <=0.02 rad,
+  collision remains false, and end topology must be exactly stable.  JSON
+  records last-NZ/first-zero/settle/zero-count/silence/classification.
+- Validation: source ResetStopGate/reset-service **36 passed**; source probe
+  plus package contracts **104 passed**; source-first ActivationGate **14
+  passed**.  Fresh isolated `robot_experiments` build/install passed at
+  `/tmp/v6_attempt10_fix_build.vfIE1f`,
+  `/tmp/v6_attempt10_fix_install.dCXUjX`, and
+  `/tmp/v6_attempt10_fix_log.uE0yIV`; installed probe/package tests passed
+  **104 tests**, import-path and installed help checks passed.  Probe flake8,
+  changed-file `py_compile`, and `git diff --check` passed.
+- Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
+  or evidence campaign was run.  Attempt10 remains **PENDING** and must use a
+  fresh isolated runtime plus finalized bag.
+- Handoffs: `V6_RESET_SEED_STOP_GATE_20260822.md` and
+  `V6_ACTIVE_RESET_PROBE_20260822.md`.

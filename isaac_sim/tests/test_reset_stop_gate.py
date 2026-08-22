@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import threading
 import time
@@ -218,6 +219,107 @@ def test_relay_publish_exception_returns_gate_to_observable_hold():
     assert gate._heartbeat_failure.startswith("command:RuntimeError:")
     publisher.publish = publish
     gate.close()
+
+
+def test_command_reader_keep_last_one_overwrites_unspun_stale_train():
+    """A terminal zero replaces queued stale commands before Isaac spins."""
+    rclpy = pytest.importorskip("rclpy")
+    from geometry_msgs.msg import Twist
+    from rclpy.context import Context
+    from rclpy.executors import SingleThreadedExecutor
+    from rclpy.qos import (
+        DurabilityPolicy,
+        HistoryPolicy,
+        QoSCompatibility,
+        QoSProfile,
+        ReliabilityPolicy,
+        qos_check_compatible,
+    )
+
+    context = Context()
+    rclpy.init(context=context)
+    suffix = f"{os.getpid()}_{time.monotonic_ns()}"
+    input_topic = f"/test_reset_stop_gate_{suffix}/input"
+    output_topic = f"/test_reset_stop_gate_{suffix}/output"
+    gate_node = rclpy.create_node(f"reset_stop_gate_{suffix}", context=context)
+    source_node = rclpy.create_node(f"reset_stop_source_{suffix}", context=context)
+    sink_node = rclpy.create_node(f"reset_stop_sink_{suffix}", context=context)
+    offered = QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=10,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.VOLATILE,
+    )
+    observed = []
+    gate = None
+    gate_executor = SingleThreadedExecutor(context=context)
+    sink_executor = SingleThreadedExecutor(context=context)
+    gate_executor.add_node(gate_node)
+    sink_executor.add_node(sink_node)
+    try:
+        gate = ResetStopGate(
+            gate_node,
+            input_topic=input_topic,
+            output_topic=output_topic,
+            zero_rate_hz=20.0,
+        )
+        source = source_node.create_publisher(Twist, input_topic, offered)
+        sink_node.create_subscription(
+            Twist,
+            output_topic,
+            lambda message: observed.append(
+                (float(message.linear.x), float(message.angular.z))
+            ),
+            offered,
+        )
+        deadline = time.monotonic() + 2.0
+        while (
+            source_node.count_subscribers(input_topic) < 1
+            or gate_node.count_publishers(input_topic) < 1
+            or gate_node.count_subscribers(output_topic) < 1
+        ) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert source_node.count_subscribers(input_topic) == 1
+        command_qos = gate._subscription.qos_profile
+        assert command_qos.history == HistoryPolicy.KEEP_LAST
+        assert command_qos.depth == 1
+        assert command_qos.reliability == ReliabilityPolicy.RELIABLE
+        assert command_qos.durability == DurabilityPolicy.VOLATILE
+        compatibility, _reason = qos_check_compatible(
+            offered, command_qos
+        )
+        assert compatibility != QoSCompatibility.ERROR
+
+        gate.mark_reset_complete(0)
+        gate.release(0, source="test")
+        for _index in range(8):
+            sink_executor.spin_once(timeout_sec=0.01)
+        observed.clear()
+
+        nonzero = Twist()
+        nonzero.linear.x = 0.25
+        nonzero.angular.z = 0.4
+        for _index in range(32):
+            source.publish(nonzero)
+        source.publish(Twist())
+        # DDS receives while the app deliberately does not spin gate_node.
+        time.sleep(0.15)
+        for _index in range(8):
+            gate_executor.spin_once(timeout_sec=0.01)
+        for _index in range(8):
+            sink_executor.spin_once(timeout_sec=0.01)
+
+        assert observed
+        assert all(linear == 0.0 and angular == 0.0 for linear, angular in observed)
+    finally:
+        if gate is not None:
+            gate.close()
+        gate_executor.shutdown()
+        sink_executor.shutdown()
+        source_node.destroy_node()
+        sink_node.destroy_node()
+        gate_node.destroy_node()
+        rclpy.shutdown(context=context)
 
 
 def test_navigation_profile_has_one_final_external_command_authority():

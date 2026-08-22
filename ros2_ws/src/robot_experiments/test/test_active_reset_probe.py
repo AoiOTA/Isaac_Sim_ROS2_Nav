@@ -114,9 +114,36 @@ def _fresh_wait(machine=None):
     return machine
 
 
+ZERO_TWIST = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+NONZERO_TWIST = (0.1, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+
+def _stable_topology(machine):
+    snapshot = _attempt7_snapshot()
+    for index, label in enumerate(
+        ("prepublish", "pre_reset", "post_release", "pre_fresh")
+    ):
+        machine.topology_checked(label, snapshot, [], 0.01 * index)
+    return snapshot
+
+
+def _ground_truth_tail(machine, start, end, *, drift=0.0, yaw_rad=0.0):
+    stamp = start
+    while stamp <= end + 1.0e-9:
+        machine.ground_truth(
+            0.685 + drift,
+            -3.975535,
+            stamp,
+            quaternion=(0.0, 0.0, math.sin(yaw_rad * 0.5), math.cos(yaw_rad * 0.5)),
+        )
+        stamp += 0.1
+
+
 def _provisional(machine=None):
     machine = _fresh_wait(machine)
+    topology = _stable_topology(machine)
     machine.ground_truth(0.69, -3.98, 1.3)
+    machine.command("/cmd_vel_nav", False, 1.30, ZERO_TWIST)
     machine.terminal_bool(True, 1.31)
     machine.terminal_result(json.dumps({
         "request_id": 4,
@@ -124,10 +151,13 @@ def _provisional(machine=None):
         "reason": "final_goal_distance_confirmed",
         "reset_epoch": 2,
     }), 1.32)
-    for topic in COMMAND_TOPICS:
-        for stamp in (1.35, 1.55, 1.75, 1.95, 2.15, 2.32):
-            machine.command(topic, False, stamp)
-    machine.tick(2.33)
+    for topic in COMMAND_TOPICS[1:]:
+        machine.command(topic, False, 1.35, ZERO_TWIST)
+    machine.command("/cmd_vel_sim", False, 1.45, ZERO_TWIST)
+    _ground_truth_tail(machine, 1.35, 2.45)
+    machine.tick(2.36)
+    assert machine.phase == "CHECK_END_TOPOLOGY"
+    machine.topology_checked("postzero_end", topology, [], 2.37)
     assert machine.phase == "PROVISIONAL_COMPLETE"
     return machine
 
@@ -348,23 +378,12 @@ def test_fresh_edges_are_always_exact_even_when_cli_list_is_explicit():
 
 
 def test_fresh_success_then_four_chain_postzero_passes():
-    """A complete fresh success and four zero tails can pass."""
-    machine = _fresh_wait()
-    machine.ground_truth(0.69, -3.98, 1.3)
-    machine.terminal_bool(True, 1.31)
-    machine.terminal_result(json.dumps({
-        "request_id": 4,
-        "status": "succeeded",
-        "reason": "final_goal_distance_confirmed",
-        "reset_epoch": 2,
-    }), 1.32)
-    assert machine.phase == "POSTZERO"
-    for topic in COMMAND_TOPICS:
-        for stamp in (1.35, 1.55, 1.75, 1.95, 2.15, 2.32):
-            machine.command(topic, False, stamp)
-    machine.tick(2.33)
-    assert machine.phase == "PROVISIONAL_COMPLETE"
+    """Event-driven zero tails can be silent after each chain settles."""
+    machine = _provisional()
     assert machine.document()["verdict"] == "PROVISIONAL_PASS_REQUIRES_BAG_ORDER"
+    commands = machine.document()["postzero"]["commands"]
+    assert commands["/cmd_vel_nav"]["settle_latency_s"] == pytest.approx(-0.02)
+    assert commands["/cmd_vel_nav"]["silence_horizon_s"] > 1.0
 
 
 def test_postzero_nonzero_or_missing_chain_stops():
@@ -378,10 +397,123 @@ def test_postzero_nonzero_or_missing_chain_stops():
         "reset_epoch": 2,
     }), 1.32)
     for topic in COMMAND_TOPICS[:-1]:
-        machine.command(topic, topic == "/cmd_vel", 1.4)
+        machine.command(topic, False, 1.4, ZERO_TWIST)
     machine.tick(2.33)
     assert machine.phase == "STOP"
-    assert machine.stop_reason.startswith("postzero_contract_failed:")
+    assert machine.stop_reason.startswith("postzero_settle_timeout:")
+
+
+def test_postzero_late_zero_and_nonzero_after_settle_stop_immediately():
+    """A first zero after 0.25 s or any settled-chain rebound is terminal."""
+    late = _fresh_wait()
+    late.ground_truth(0.685, -3.975535, 1.3)
+    late.terminal_bool(True, 1.31)
+    late.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    for topic in COMMAND_TOPICS[:-1]:
+        late.command(topic, False, 1.35, ZERO_TWIST)
+    late.command("/cmd_vel_sim", False, 1.58, ZERO_TWIST)
+    assert late.stop_reason == (
+        "postzero_zero_after_settle_deadline:/cmd_vel_sim"
+    )
+
+    rebound = _fresh_wait()
+    rebound.ground_truth(0.685, -3.975535, 1.3)
+    rebound.terminal_bool(True, 1.31)
+    rebound.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    rebound.command("/cmd_vel_sim", False, 1.35, ZERO_TWIST)
+    rebound.command("/cmd_vel_sim", True, 1.40, NONZERO_TWIST)
+    assert rebound.stop_reason == (
+        "postzero_nonzero_after_settled_zero:/cmd_vel_sim"
+    )
+
+
+def test_postzero_stale_pre_result_zero_does_not_settle_chain():
+    """Only the final 0.25 s before result can seed a silent event stream."""
+    machine = _fresh_wait()
+    machine.command("/cmd_vel_nav", False, 1.0, ZERO_TWIST)
+    machine.ground_truth(0.685, -3.975535, 1.3)
+    machine.terminal_bool(True, 1.31)
+    machine.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    for topic in COMMAND_TOPICS[1:]:
+        machine.command(topic, False, 1.35, ZERO_TWIST)
+    machine.command("/cmd_vel_sim", False, 1.45, ZERO_TWIST)
+    machine.tick(1.58)
+    assert machine.stop_reason == "postzero_settle_timeout:/cmd_vel_nav"
+
+
+def test_attempt9_stale_sim_train_remains_fail_closed():
+    """Attempt9's +0.4006 s stale actuator relay exceeds the fixed bound."""
+    machine = _fresh_wait()
+    machine.command("/cmd_vel_nav", False, 1.2794, ZERO_TWIST)
+    machine.ground_truth(0.685, -3.975535, 1.3)
+    machine.terminal_bool(True, 1.31)
+    machine.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    machine.command("/cmd_vel_smoothed", False, 1.355, ZERO_TWIST)
+    machine.command("/cmd_vel", False, 1.365, ZERO_TWIST)
+    for stamp in (1.421, 1.597, 1.7206):
+        machine.command("/cmd_vel_sim", True, stamp, NONZERO_TWIST)
+    assert machine.stop_reason == "postzero_settle_timeout:/cmd_vel_sim"
+
+
+@pytest.mark.parametrize(
+    ("drift_xy", "yaw_rad", "expected_error"),
+    ((0.03, 0.0, "span"), (0.0, 0.156, "yaw_span")),
+)
+def test_postzero_ground_truth_xy_and_yaw_spans_are_bounded(
+    drift_xy, yaw_rad, expected_error
+):
+    """Attempt9-scale translation or 8.96 degree yaw motion remains STOP."""
+    machine = _fresh_wait()
+    machine.ground_truth(0.685, -3.975535, 1.3)
+    machine.terminal_bool(True, 1.31)
+    machine.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    for topic in COMMAND_TOPICS:
+        machine.command(topic, False, 1.35, ZERO_TWIST)
+    machine.command("/cmd_vel_sim", False, 1.45, ZERO_TWIST)
+    machine.ground_truth(0.685, -3.975535, 1.35)
+    _ground_truth_tail(
+        machine, 1.45, 2.45, drift=drift_xy, yaw_rad=yaw_rad
+    )
+    machine.tick(2.36)
+    assert machine.stop_reason.startswith("postzero_ground_truth_coverage_failed:")
+    assert expected_error in machine.stop_reason
+
+
+def test_postzero_end_topology_must_match_pre_fresh_exactly():
+    """Event-stream silence does not replace the final graph identity check."""
+    machine = _fresh_wait()
+    topology = _stable_topology(machine)
+    machine.ground_truth(0.685, -3.975535, 1.3)
+    machine.terminal_bool(True, 1.31)
+    machine.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    for topic in COMMAND_TOPICS:
+        machine.command(topic, False, 1.35, ZERO_TWIST)
+    machine.command("/cmd_vel_sim", False, 1.45, ZERO_TWIST)
+    _ground_truth_tail(machine, 1.35, 2.45)
+    machine.tick(2.36)
+    assert machine.phase == "CHECK_END_TOPOLOGY"
+    changed = json.loads(json.dumps(topology))
+    changed["topics"]["/cmd_vel"]["publishers"][0]["gid"] = "changed"
+    machine.topology_checked("postzero_end", changed, [], 2.37)
+    assert machine.stop_reason == "topology_changed:postzero_end"
 
 
 def _endpoint(node, gid, endpoint_type, topic_type="geometry_msgs/msg/Twist"):

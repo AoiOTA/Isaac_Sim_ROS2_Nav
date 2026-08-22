@@ -266,3 +266,46 @@ Required checks remain:
   idempotent close.
 - Validation is recorded in `V6_ACTIVE_RESET_PROBE_20260822.md`.  Verdict:
   **PASS (code/build/unit only)**; fresh Attempt6 runtime remains **PENDING**.
+
+## Attempt9 stale-reader backlog amendment
+
+- Start HEAD: `22c7f5c75b46ad1cc0db69bd8c1d61f68b595c39`; fixed Module3
+  main remained `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Immutable input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt9_20260822T023957Z`.
+  Attempt9 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  Nav2 had already
+  reported success and upstream `/cmd_vel_nav`, `/cmd_vel_smoothed`, and
+  `/cmd_vel` reached zero by -0.0406/+0.0352/+0.0455 s around the route result,
+  but `/cmd_vel_sim` still relayed nonzero commands through +0.4006 s and did
+  not first reach zero until +0.5732 s.  The stale actuator vectors match
+  approximately 0.44--0.52 s older `/cmd_vel` inputs.  Ground-truth yaw also
+  continued by about 0.156 rad after terminal success.
+- Root cause: Isaac services rclpy once per render frame.  ResetStopGate's
+  reliable `KEEP_LAST depth=10` `/cmd_vel` reader could therefore drain an
+  obsolete nonzero train after CollisionMonitor had already published its
+  terminal zero.  RouteCoordinator/Nav2 terminal ordering was not the cause.
+- Product fix: ResetStopGate's input reader is now explicit reliable/volatile
+  `KEEP_LAST depth=1`; its `/cmd_vel_sim` publisher remains reliable depth 10.
+  An unprocessed command is overwritten by the latest value, while the unique
+  publisher, HOLD wall heartbeat, generation fence, and no-cache release
+  semantics remain unchanged.  No executor-drain loop or settled-ack service
+  was added.  The Jazzy parameter-callback handle is retained explicitly so
+  `close()` removes the registered callback rather than `None`.
+- Deterministic in-process rclpy coverage creates 32 nonzero commands and a
+  final zero without spinning the gate node, then spins it repeatedly.  The
+  requested QoS is asserted as compatible reliable/volatile `KEEP_LAST
+  depth=1`, and the relay emits zero only; no stale train is observed.
+- Source validation: ResetStopGate plus reset-service tests **36 passed**;
+  active-reset probe plus retained package contracts **104 passed**;
+  ActivationGate source-first tests **14 passed**.  Fresh isolated
+  `robot_experiments` build/install passed at
+  `/tmp/v6_attempt10_fix_build.vfIE1f`,
+  `/tmp/v6_attempt10_fix_install.dCXUjX`, and
+  `/tmp/v6_attempt10_fix_log.uE0yIV`; installed probe/package tests also
+  passed **104 tests**, installed import resolved from that root, and the
+  installed entry-point help passed.
+- Verdict: **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
+  navigation, reset, evidence campaign, engineering run, or formal
+  qualification was launched.  Attempt10 is **PENDING** and must verify the
+  first `/cmd_vel_sim` zero within 0.25 s, no later nonzero, and bounded
+  post-terminal ground-truth XY/yaw motion.

@@ -340,3 +340,57 @@ Verdict: **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
 navigation, reset, evidence episode, engineering campaign, or formal
 qualification was launched by this amendment.  Attempt9 remains **PENDING**
 and must use a fresh isolated runtime plus finalized bag.
+
+## Attempt9 event-driven terminal-zero and actuator-backlog amendment
+
+The immutable input is:
+
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt9_20260822T023957Z`
+
+Attempt9 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  Its upstream
+event-driven streams did stop correctly: `/cmd_vel_nav` emitted its final zero
+0.0406 s before the route result, while `/cmd_vel_smoothed` and `/cmd_vel`
+first emitted zero 0.0352 s and 0.0455 s after it.  Requiring all four topics
+to publish a continuous one-second zero heartbeat was therefore the wrong
+observation model.  However, this does not promote Attempt9: `/cmd_vel_sim`
+relayed stale nonzero values through +0.4006 s, reached its first zero only at
++0.5732 s, and ground-truth yaw moved about 0.156 rad after terminal success.
+
+The revised fail-stop contract is event driven but bounded:
+
+- each command topic retains its rolling last finite sample for the fresh
+  route only;
+- every topic must have a finite zero in
+  `[result - 0.25 s, result + 0.25 s]`;
+- nonzero is allowed only before that topic's first settled zero and within
+  the same 0.25 s deadline; any nonzero after settled zero is immediate STOP;
+- after all four topics settle, the probe observes for at least 1.0 s from the
+  latest first-zero time.  Event topics may be `ZERO_THEN_SILENT`; their last
+  observed command must remain finite zero.  `/cmd_vel_sim` must supply at
+  least two zero samples with a positive gap no larger than 0.25 s;
+- ground truth must cover that full observation with callback gaps no larger
+  than 0.25 s, XY span no larger than 0.02 m, and unwrapped yaw span no larger
+  than 0.02 rad.  Collision remains false;
+- a final `postzero_end` graph snapshot must exactly equal `pre_fresh`,
+  including the already-admitted reset-owned GID state.
+
+JSON now records per topic last nonzero, first settled zero, settle latency,
+zero count, last observed sample, silence horizon, and
+`ZERO_THEN_SILENT`/`ZERO_CONTINUING` classification, plus ground-truth XY/yaw
+coverage and the final topology checkpoint.  Tests cover no zero, a late zero,
+stale pre-result zero, nonzero after settled zero, Attempt9's +0.4006 s stale
+actuator train, missing actuator zero cadence, topology change, XY drift, and
+the 0.156 rad yaw drift.
+
+Source-first probe plus package-contract tests passed **104 tests**; the same
+**104 tests** passed against the fresh install.  ResetStopGate/reset-service
+tests passed **36 tests**, ActivationGate tests passed **14 tests**, probe
+flake8/`py_compile`/`git diff --check` passed, and the fresh build/install roots
+are `/tmp/v6_attempt10_fix_build.vfIE1f`,
+`/tmp/v6_attempt10_fix_install.dCXUjX`, and
+`/tmp/v6_attempt10_fix_log.uE0yIV`.
+
+Verdict: **PASS (code/build/unit only)**.  Attempt10 remains **PENDING**; it
+requires a fresh isolated runtime and finalized bag.  If depth-one latest-value
+delivery still misses the 0.25 s actuator deadline, escalate to an explicit
+settled acknowledgment rather than widening this probe bound.

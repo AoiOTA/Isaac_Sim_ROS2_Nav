@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import json
 import math
 import threading
 import time
+from dataclasses import dataclass, replace
 from typing import Any
 
 
@@ -101,6 +101,16 @@ class ResetStopGate:
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        # Isaac advances rclpy only once per render frame.  A deeper reader
+        # cache can therefore replay CollisionMonitor commands that were
+        # superseded by a terminal zero before this callback is serviced.
+        # The final actuator gate needs the latest command, never a backlog.
+        command_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         status_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -112,13 +122,12 @@ class ResetStopGate:
             String, "/simulation/reset_stop_gate/status", status_qos
         )
         self._subscription = node.create_subscription(
-            Twist, input_topic, self._command_callback, reliable
+            Twist, input_topic, self._command_callback, command_qos
         )
         if not node.has_parameter(self.RELEASE_PARAMETER):
             node.declare_parameter(self.RELEASE_PARAMETER, -1)
-        self._parameter_callback = node.add_on_set_parameters_callback(
-            self._set_parameters_callback
-        )
+        self._parameter_callback = self._set_parameters_callback
+        node.add_on_set_parameters_callback(self._parameter_callback)
         self._heartbeat_thread = threading.Thread(
             target=self._zero_heartbeat,
             name="reset-stop-gate-zero-heartbeat",
