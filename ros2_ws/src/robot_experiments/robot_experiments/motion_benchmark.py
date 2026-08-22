@@ -46,6 +46,10 @@ DEFAULT_STAMP_COHERENCE_SEC = 0.50
 DEFAULT_SIM_CLOCK_STALL_TIMEOUT_SEC = 0.50
 MOTION_DISPATCH_TIMEOUT_SEC = 15.0
 COLLISION_MONITOR_QUERY_TIMEOUT_SEC = 2.0
+# Pre-settle zero-intent drain: covers the worst observed downstream
+# deceleration tail (~0.2 s at max_decel 3.5 rad/s^2 plus chain latency)
+# with margin, so the receipted final-settle window opens on a zero chain.
+SETTLE_DRAIN_SEC = 0.5
 
 
 @dataclass(frozen=True)
@@ -1250,6 +1254,22 @@ class MotionBenchmarkNode(Node):
                 self._stop("sim_clock_missing_during_settle")
             self._spin_once(0.05)
         self._assert_sim_clock_live()
+        # Drain the smoother/CollisionMonitor/reset-gate deceleration tail
+        # before the receipted settle window opens: the schema-2 capture
+        # contract requires every command stage to be all-zero across the
+        # receipt window, so zero intent is published for a fixed drain
+        # interval first and the receipt start is sampled only afterwards on
+        # a fresh clock tick (exact publish-count binding).
+        drain_until = self._clock_s + SETTLE_DRAIN_SEC
+        next_publish = time.monotonic()
+        while self._clock_s is None or self._clock_s < drain_until:
+            self._assert_sim_clock_live()
+            now = time.monotonic()
+            if now >= next_publish:
+                self._publish(0.0, 0.0)
+                next_publish += period
+            self._spin_once(0.01)
+        self._wait_fresh_clock_tick(self._clock_s)
         self._segment_started_at = self._clock_s
         self._command_linear = 0.0
         self._command_angular = 0.0

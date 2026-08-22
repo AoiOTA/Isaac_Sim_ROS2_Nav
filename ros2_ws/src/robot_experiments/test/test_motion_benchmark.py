@@ -695,8 +695,11 @@ def test_stationary_reference_duration_boundary_is_not_float_brittle():
             MotionBenchmarkNode._wait_fresh_clock_tick, node
         )
         sample_stamps = {first_sample, last_sample}
+        # 10.02 exits the stationary loop; 10.6/10.7 cross the 0.5 s settle
+        # drain and the fresh-tick wait; 11.x fills the receipted settle.
         stamps = itertools.chain(
-            [0.01, first_sample, last_sample, 10.02], itertools.repeat(11.0)
+            [0.01, first_sample, last_sample, 10.02, 10.6, 10.7, 11.0, 11.6],
+            itertools.repeat(12.5),
         )
 
         def spin(_timeout):

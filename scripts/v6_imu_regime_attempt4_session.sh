@@ -293,11 +293,15 @@ if [[ "${SESSION}" == flat20 ]]; then
     --params-file "${NAV_CONFIG}/nav2_stable.yaml" \
     -p use_sim_time:=true \
     -r cmd_vel:=/cmd_vel_nav
+  # Diagnostic-only override: keep the monitor republishing zeros through the
+  # 10 s stationary window and every settle window (default stop_pub_timeout
+  # 1.0 s would go silent and starve the schema-2 zero-coverage evidence).
   start_bg collision_monitor ros2 run nav2_collision_monitor collision_monitor \
     --ros-args \
     --params-file "${NAV_CONFIG}/nav2_params.yaml" \
     --params-file "${NAV_CONFIG}/nav2_stable.yaml" \
-    -p use_sim_time:=true
+    -p use_sim_time:=true \
+    -p stop_pub_timeout:=30.0
   sleep 6
   ros2 lifecycle set /velocity_smoother configure > "${PROV}/velocity_smoother_configure.txt" 2>&1
   ros2 lifecycle set /collision_monitor configure > "${PROV}/collision_monitor_configure.txt" 2>&1
