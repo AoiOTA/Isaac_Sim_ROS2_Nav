@@ -325,7 +325,7 @@ def test_b5_path_never_depends_on_isaac_localization_seeded():
     assert "/simulation/localization_seeded" not in source
 
 
-def test_second_initialpose_and_non_newer_amcl_fail_closed():
+def test_initialpose_burst_and_non_newer_amcl_fail_closed():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
@@ -338,6 +338,8 @@ def test_second_initialpose_and_non_newer_amcl_fail_closed():
     guard.record_amcl(100)
     assert guard.stop_reason == "amcl_not_strictly_newer_than_initialpose"
 
+    # The reseed burst repeats the same calibrated pose inside the reset
+    # epoch; repeats are accepted and the first seed stays the anchor.
     second = EpisodeGuard()
     second.arm_reset(
         ready_facts(), 0, "session-0",
@@ -347,7 +349,9 @@ def test_second_initialpose_and_non_newer_amcl_fail_closed():
     second.record_bridge(1, "session-1", True)
     second.record_startup_consensus(True)
     second.record_initialpose(100); second.record_initialpose(101)
-    assert second.stop_reason == "second_initialpose"
+    assert second.stop_reason == ""
+    assert second.initialpose_messages == 2
+    assert second.initialpose_stamp_ns == 100
 
 
 @pytest.mark.parametrize(

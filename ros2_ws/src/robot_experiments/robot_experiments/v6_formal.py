@@ -486,17 +486,19 @@ class EpisodeGuard:
 
     def record_initialpose(self, stamp_ns: int) -> None:
         self.initialpose_messages += 1
-        if self.initialpose_messages > 1:
-            self.stop("second_initialpose")
-            return
         if self.reset_events != 1:
             self.stop("initialpose_outside_reset_epoch")
             return
         if stamp_ns <= 0:
             self.stop("initialpose_stamp_invalid")
             return
-        self.initialpose_stamp_ns = int(stamp_ns)
-        self.state = "WAITING_B5_CONFIRMATION"
+        # The enrollment/reseed machinery republishes the same calibrated
+        # pose as a short burst (and the activation gate may request another
+        # reseed burst during recovery); the first seed of the generation is
+        # the freshness anchor and repeats within the epoch are accepted.
+        if self.initialpose_stamp_ns is None:
+            self.initialpose_stamp_ns = int(stamp_ns)
+            self.state = "WAITING_B5_CONFIRMATION"
 
     def record_amcl(self, stamp_ns: int) -> None:
         self.amcl_messages += 1
@@ -526,7 +528,7 @@ class EpisodeGuard:
             if self.physical_epoch != physical_expected:
                 self.stop("bootstrap_rollover_without_physical_epoch")
                 return
-            if self.initialpose_messages != 1:
+            if self.initialpose_messages < 1:
                 self.stop("bootstrap_rollover_without_initialpose")
                 return
             if (
@@ -597,7 +599,7 @@ class EpisodeGuard:
                 self.reset_events == 1,
                 self.physical_epoch is not None,
                 self.startup_consensus_seen,
-                self.initialpose_messages == 1,
+                self.initialpose_messages >= 1,
                 self.post_initialpose_amcl_seen,
                 self.b5_recovery_confirmed,
                 self.bootstrap_epoch is not None,
@@ -619,7 +621,7 @@ class EpisodeGuard:
             and self.reset_events == 1
             and self.physical_epoch is not None
             and self.startup_consensus_seen
-            and self.initialpose_messages == 1
+            and self.initialpose_messages >= 1
             and self.post_initialpose_amcl_seen
             and self.b5_recovery_confirmed
             and self.bootstrap_epoch is not None
