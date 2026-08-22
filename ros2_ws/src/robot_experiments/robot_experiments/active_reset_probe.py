@@ -240,10 +240,16 @@ def _position_coverage_summary(
     summary = _coverage_summary(samples, start, end)
     positions = [(float(row["x"]), float(row["y"])) for row in samples]
     anchor = positions[0] if positions else None
-    summary.update({
-        "span_m": None if anchor is None else max(
-            (math.dist(anchor, xy) for xy in positions), default=0.0
+    pairwise_span = max(
+        (
+            math.dist(first, second)
+            for index, first in enumerate(positions)
+            for second in positions[index + 1:]
         ),
+        default=0.0,
+    )
+    summary.update({
+        "span_m": None if anchor is None else pairwise_span,
         "landing_error_first_m": (
             None if anchor is None else math.dist(anchor, expected_xy)
         ),

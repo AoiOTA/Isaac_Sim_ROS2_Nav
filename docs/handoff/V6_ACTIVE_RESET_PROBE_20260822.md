@@ -394,3 +394,29 @@ Verdict: **PASS (code/build/unit only)**.  Attempt10 remains **PENDING**; it
 requires a fresh isolated runtime and finalized bag.  If depth-one latest-value
 delivery still misses the 0.25 s actuator deadline, escalate to an explicit
 settled acknowledgment rather than widening this probe bound.
+
+## Attempt10 pairwise XY-span amendment
+
+The probe's shared position-coverage summary now defines `span_m` as the exact
+maximum pairwise Euclidean separation between samples in the observation
+window.  The previous first-sample anchor could report only 0.019 m for a
+`+0.019 m -> -0.019 m` oscillation whose true peak-to-peak span is 0.038 m.
+The shared helper feeds reset ground-truth, reset odometry, and fresh-route
+postzero checks, so all three now use the same pairwise span semantics.  First
+and last reset-landing errors retain their existing meanings.
+
+Focused tests cover static samples, monotonic straight motion, the exact
+0.038 m pairwise result, and state-machine STOP for the oscillation.  Source
+probe plus package-contract tests passed **108 tests** (focused probe: **70
+tests**); the same **108 tests** passed against the fresh install.  Changed-file
+flake8, `py_compile`, `git diff --check`, installed import-path assertion,
+installed entry-point help, and a fresh isolated `robot_experiments` build
+passed.  Build/install/log roots are
+`/tmp/v6_probe_pairwise_build.j0Hfvn`,
+`/tmp/v6_probe_pairwise_install.mO2nop`, and
+`/tmp/v6_probe_pairwise_log.MWsXJn`.
+
+Verdict: **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
+navigation, reset, evidence episode, engineering campaign, or formal
+qualification was launched.  Attempt10 remains **PENDING** and requires a
+fresh isolated runtime plus finalized bag.

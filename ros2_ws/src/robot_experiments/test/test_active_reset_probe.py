@@ -14,6 +14,7 @@ from robot_experiments.active_reset_probe import (
     ProbeConfig,
     ProbeMachine,
     _arguments,
+    _position_coverage_summary,
     _twist_values,
     dispatch_reset_once,
     finalize_probe_output,
@@ -137,6 +138,36 @@ def _ground_truth_tail(machine, start, end, *, drift=0.0, yaw_rad=0.0):
             quaternion=(0.0, 0.0, math.sin(yaw_rad * 0.5), math.cos(yaw_rad * 0.5)),
         )
         stamp += 0.1
+
+
+@pytest.mark.parametrize(
+    ("points", "expected_span"),
+    (
+        (((1.0, 2.0), (1.0, 2.0), (1.0, 2.0)), 0.0),
+        (((0.0, 0.0), (0.006, 0.008), (0.012, 0.016)), 0.02),
+    ),
+)
+def test_position_coverage_span_accepts_static_and_straight_motion(
+    points, expected_span
+):
+    """Static and monotonic straight samples retain their expected span."""
+    samples = [
+        {"monotonic_s": index * 0.1, "x": x, "y": y}
+        for index, (x, y) in enumerate(points)
+    ]
+    summary = _position_coverage_summary(samples, 0.0, 0.2, points[0])
+    assert summary["span_m"] == pytest.approx(expected_span)
+
+
+def test_position_coverage_span_is_maximum_pairwise_distance():
+    """Position span is the exact maximum Euclidean sample separation."""
+    samples = [
+        {"monotonic_s": 0.0, "x": 0.019, "y": 0.0},
+        {"monotonic_s": 0.1, "x": 0.0, "y": 0.0},
+        {"monotonic_s": 0.2, "x": -0.019, "y": 0.0},
+    ]
+    summary = _position_coverage_summary(samples, 0.0, 0.2, (0.0, 0.0))
+    assert summary["span_m"] == pytest.approx(0.038)
 
 
 def _provisional(machine=None):
@@ -492,6 +523,32 @@ def test_postzero_ground_truth_xy_and_yaw_spans_are_bounded(
     machine.tick(2.36)
     assert machine.stop_reason.startswith("postzero_ground_truth_coverage_failed:")
     assert expected_error in machine.stop_reason
+
+
+def test_postzero_xy_oscillation_uses_pairwise_span_and_stops():
+    """A +/-0.019 m oscillation is 0.038 m peak-to-peak, not 0.019 m."""
+    machine = _fresh_wait()
+    machine.ground_truth(0.685, -3.975535, 1.3)
+    machine.terminal_bool(True, 1.31)
+    machine.terminal_result(json.dumps({
+        "request_id": 4, "status": "succeeded",
+        "reason": "final_goal_distance_confirmed", "reset_epoch": 2,
+    }), 1.32)
+    for topic in COMMAND_TOPICS:
+        machine.command(topic, False, 1.35, ZERO_TWIST)
+    machine.command("/cmd_vel_sim", False, 1.45, ZERO_TWIST)
+    for index in range(11):
+        machine.ground_truth(
+            0.685 + (0.019 if index % 2 == 0 else -0.019),
+            -3.975535,
+            1.35 + index * 0.1,
+        )
+    machine.tick(2.36)
+    assert machine.stop_reason.startswith("postzero_ground_truth_coverage_failed:")
+    assert "span" in machine.stop_reason
+    assert machine.document()["postzero"]["ground_truth"]["span_m"] == pytest.approx(
+        0.038
+    )
 
 
 def test_postzero_end_topology_must_match_pre_fresh_exactly():

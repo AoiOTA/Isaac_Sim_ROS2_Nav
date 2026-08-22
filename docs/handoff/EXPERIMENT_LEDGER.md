@@ -2048,3 +2048,31 @@
   fresh isolated runtime plus finalized bag.
 - Handoffs: `V6_RESET_SEED_STOP_GATE_20260822.md` and
   `V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Attempt10 pairwise XY-span amendment
+
+- Goal: close the active-reset probe's remaining XY-span blind spot without
+  changing reset, control, route, obstacle, or IMU product behavior.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `932662911beff74b434e54a8f3d5064f6c4e49ca`.  Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Changed only `active_reset_probe.py`, focused tests, this ledger, and
+  `V6_ACTIVE_RESET_PROBE_20260822.md`.  Position `span_m` is now the exact
+  maximum pairwise Euclidean distance in the window.  A `+0.019/-0.019 m`
+  oscillation therefore records 0.038 m and STOPs against the 0.02 m bound;
+  static and monotonic straight-motion cases retain the expected span.
+- Scope: the shared calculation is used consistently for reset ground-truth,
+  reset odometry, and fresh postzero coverage.  Landing-error calculations and
+  all thresholds are unchanged.
+- Validation: source probe plus package contracts **108 passed** (focused probe
+  **70 passed**); fresh-installed probe plus package contracts **108 passed**.
+  Changed-file flake8, `py_compile`, `git diff --check`, installed import path,
+  installed entry-point help, and fresh isolated `robot_experiments` build
+  passed.  Build/install/log roots:
+  `/tmp/v6_probe_pairwise_build.j0Hfvn`,
+  `/tmp/v6_probe_pairwise_install.mO2nop`, and
+  `/tmp/v6_probe_pairwise_log.MWsXJn`.
+- Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
+  or evidence campaign was run.  Attempt10 remains **PENDING** and must use a
+  fresh isolated runtime plus finalized bag.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
