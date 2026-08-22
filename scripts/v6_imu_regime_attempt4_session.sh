@@ -378,13 +378,11 @@ PYEOF
   sleep 2
 
   STAGE="benchmark"
-  set +e
+  benchmark_status=0
   timeout 900 ros2 run robot_experiments motion_benchmark \
     --config "${SHARE}/config/v6_imu_regime_diagnostic.yaml" \
     --output "${ANALYSIS}/motion_report.json" \
-    > "${LOGS}/motion_benchmark.log" 2>&1
-  benchmark_status=$?
-  set -e
+    > "${LOGS}/motion_benchmark.log" 2>&1 || benchmark_status=$?
   echo "${benchmark_status}" > "${PROV}/motion_benchmark_exit_status.txt"
   if [[ "${benchmark_status}" != 0 && "${benchmark_status}" != 2 ]]; then
     _stop "motion_benchmark exit ${benchmark_status}; see logs/motion_benchmark.log"
@@ -504,11 +502,9 @@ grep -q "Subscribed to topic '/rosout'" "${LOGS}/rosbag.log" || \
   _stop "goal recorder did not subscribe to /rosout; see logs/rosbag.log"
 
 STAGE="reset_and_goal"
-set +e
+reset_status=0
 ros2 service call /simulation/reset std_srvs/srv/Trigger '{}' \
-  > "${PROV}/reset_call.log" 2>&1
-reset_status=$?
-set -e
+  > "${PROV}/reset_call.log" 2>&1 || reset_status=$?
 echo "${reset_status}" > "${PROV}/reset_call_exit_status.txt"
 [[ "${reset_status}" == 0 ]] || _stop "reset service call failed"
 grep -q "success: True" "${PROV}/reset_call.log" || \
@@ -520,7 +516,7 @@ grep -q "\"seed\":${GOAL_SEED}" "${PROV}/reset_receipt.txt" || \
 start_bg safety_monitor python3 "${M3}/scripts/v6_imu_regime_attempt4_monitor.py" \
   --output "${LOGS}/safety_monitor.jsonl" \
   --summary "${ANALYSIS}/safety_monitor_summary_goal.json"
-set +e
+probe_status=0
 timeout 420 ros2 run robot_route_planner probe_closed_loop -- \
   --goal 0.80 4.80 -2.792526803 \
   --map "${M3}/data/maps/occupancy/warehouse_new.yaml" \
@@ -530,9 +526,7 @@ timeout 420 ros2 run robot_route_planner probe_closed_loop -- \
   --timeout 180 \
   --experiment-arm baseline \
   --query-id "G1_to_G2_estimated_M0_gvg_attempt4_seed${GOAL_SEED}" \
-  > "${LOGS}/probe.log" 2>&1
-probe_status=$?
-set -e
+  > "${LOGS}/probe.log" 2>&1 || probe_status=$?
 echo "${probe_status}" > "${PROV}/probe_exit_status.txt"
 [[ -s "${RUN_DIR}/probe/closed_loop.json" ]] || \
   _stop "probe produced no closed_loop.json (exit ${probe_status}); see logs/probe.log"
