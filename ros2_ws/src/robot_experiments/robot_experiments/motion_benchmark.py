@@ -1124,9 +1124,25 @@ class MotionBenchmarkNode(Node):
             )
 
         try:
+            # The schema-2 capture contract audits the post-reset HOLD window
+            # up to the first schedule start on every command stage.  Publish
+            # explicit zeros at the command rate while the dispatch barrier
+            # waits so that window has continuous zero evidence instead of an
+            # unaudited publishing gap.
+            hold_period = 1.0 / self._config.command_rate_hz
+            hold_next_publish = time.monotonic()
+
+            def spin_once_with_hold_zero(timeout: float = 0.05) -> None:
+                nonlocal hold_next_publish
+                now = time.monotonic()
+                if now >= hold_next_publish:
+                    self._publish(0.0, 0.0)
+                    hold_next_publish = now + hold_period
+                self._spin_once(timeout)
+
             wait_for_motion_dispatch_barrier(
                 dispatch_barrier,
-                spin_once=self._spin_once,
+                spin_once=spin_once_with_hold_zero,
                 snapshot=snapshot,
                 timeout_sec=MOTION_DISPATCH_TIMEOUT_SEC,
             )

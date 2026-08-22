@@ -474,6 +474,101 @@ def test_second_primitive_dispatch_stop_has_fresh_state_and_receipt(monkeypatch)
     assert report["reset_receipts"] == [receipt(41, 1), receipt(42, 2)]
 
 
+def test_motion_benchmark_reset_publishes_hold_zeros(monkeypatch):
+    """The post-reset dispatch barrier wait must emit command-rate zeros."""
+    import time as real_time
+
+    published = []
+    node = SimpleNamespace(
+        _config=SimpleNamespace(
+            primitives=(),
+            reset_seed=41,
+            spawn_pose_name="mapping_start",
+            command_rate_hz=20.0,
+            reset_settle_sec=0.60,
+            final_settle_sec=0.80,
+            steady_window_sec=0.20,
+            state_freshness_sec=0.25,
+            stamp_coherence_sec=0.50,
+            sim_clock_stall_timeout_sec=0.50,
+            thresholds=None,
+        ),
+        _reset_receipts=[],
+        _current_reset_receipt=None,
+        _gate_status=None,
+        _gate_status_error=None,
+        _collision_state_future=None,
+        _collision_monitor_active=True,
+        _collision_state_received_at=None,
+        _publish=lambda linear, angular: published.append((linear, angular)),
+        get_logger=lambda: SimpleNamespace(
+            info=lambda message: None,
+            error=lambda message: None,
+        ),
+    )
+    receipt_message = (
+        'reset complete; reset_receipt={"seed":41,"generation":7,'
+        '"pose":"mapping_start","odometry":"estimated",'
+        '"case_id":"","variant_id":""}'
+    )
+
+    class IsaacParameters:
+        @staticmethod
+        def wait_for_services(timeout_sec):
+            return True
+
+        @staticmethod
+        def set_parameters(parameters):
+            return SimpleNamespace(
+                results=[SimpleNamespace(successful=True)]
+            )
+
+    class ResetClient:
+        @staticmethod
+        def wait_for_service(timeout_sec):
+            return True
+
+        @staticmethod
+        def call_async(request):
+            return SimpleNamespace(success=True, message=receipt_message)
+
+    captured = {}
+
+    def fake_wait(barrier, **kwargs):
+        node._gate_status = _gate_status(
+            barrier.generation,
+            False,
+            barrier.reset_started_at + 0.01,
+        )
+        captured["spin_once"] = kwargs["spin_once"]
+
+    node._isaac_parameters = IsaacParameters()
+    node._reset_client = ResetClient()
+    node._wait_future = lambda future, timeout: future
+    node._spin_once = lambda timeout: None
+    node._query_collision_monitor_active = lambda: True
+    node._estimated_state_ready = lambda **kwargs: True
+    node._stop = MethodType(MotionBenchmarkNode._stop, node)
+    node._reset = MethodType(MotionBenchmarkNode._reset, node)
+    monkeypatch.setattr(
+        "robot_experiments.motion_benchmark.wait_for_motion_dispatch_barrier",
+        fake_wait,
+    )
+
+    receipt = node._reset(41)
+    assert receipt["generation"] == 7
+    spin_once = captured["spin_once"]
+    baseline = len(published)
+    spin_once(0.0)
+    assert len(published) == baseline + 1
+    spin_once(0.0)
+    assert len(published) == baseline + 1
+    real_time.sleep(1.0 / node._config.command_rate_hz + 0.02)
+    spin_once(0.0)
+    assert len(published) == baseline + 2
+    assert all(call == (0.0, 0.0) for call in published)
+
+
 def test_motion_benchmark_config_covers_required_primitives():
     config = load_motion_config(CONFIG)
     identifiers = {primitive.identifier for primitive in config.primitives}
