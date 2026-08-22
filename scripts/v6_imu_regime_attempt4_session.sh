@@ -164,8 +164,9 @@ wait_file() { # path timeout_sec
 STAGE="env"
 # Drop any pre-existing ROS overlay from the caller environment: the session
 # must resolve packages only from this snapshot (mirrors common.sh
-# reset_ros_overlay_environment).
+# reset_ros_overlay_environment, plus Python/library path pollution).
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH ROS_PACKAGE_PATH
+unset PYTHONPATH LD_LIBRARY_PATH
 source /opt/ros/jazzy/setup.bash
 # shellcheck disable=SC1090
 source "${I_INSTALL}/setup.bash"
