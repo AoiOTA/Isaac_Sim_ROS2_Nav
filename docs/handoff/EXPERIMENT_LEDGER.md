@@ -1735,6 +1735,48 @@
   qualification was run.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
 
+## 2026-08-22 — V6 active-reset probe final-contract amendment
+
+- Goal: close every independent review blocker on the `24136355` probe before
+  Attempt5, without changing route/reset/IMU/control behavior.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `24136355b632b3b8e9abc30c790ef939e4c9438b`. Final change is the
+  ledger-containing commit.
+- Changed: `active_reset_probe.py`, its focused tests, this ledger, and
+  `V6_ACTIVE_RESET_PROBE_20260822.md` only.
+- Data contract: the estimated stream is official `/odom`; GT and odometry
+  require normalized `map`/`odom` frames respectively. Position, quaternion,
+  source stamp, callback time, and all six Twist components are finite or
+  STOP. GT and odom reset landings remain map `(0.45,-5.35)` and odom `(0,0)`.
+- Reset/route contract: the retained baseline is exactly generation-1
+  released with no hidden higher generation. Generation 2 is exactly
+  `hold -> reset_complete -> released:*`; duplicates/extras/regression/
+  advance/conflict STOP through end-of-run monitoring. From actual Trigger
+  dispatch or first HOLD, any old canonical/progress/lookahead/Navigate intent
+  immediately STOPs and records receive time/type/request identity.
+- Dispatch/lifecycle: the 0.5 s delay uses a fresh steady timestamp after the
+  synchronous topology query and immediately before `call_async`, so a slow
+  query dispatches nothing. The machine ends at `PROVISIONAL_COMPLETE`; only
+  successful node destruction, ROS shutdown, and atomic file plus directory
+  fsync produce zero exit and final `PASS_REQUIRES_BAG`. Persistence/teardown
+  errors remain nonzero STOP and attempt a distinct emergency STOP receipt.
+- Deterministic coverage: NaN/Inf pose/Twist/time, wrong frame/topic constants,
+  immediate old outputs, hidden/duplicate/backward/extra gate generations,
+  slow dispatch/no call, provisional-to-final flow, write failure, and destroy/
+  shutdown failures, plus all retained active-reset and package contracts.
+- Validation: source-first **76 passed** (38 probe plus 38 retained package
+  contract); package-configured flake8, `py_compile`, and `git diff --check`
+  PASS. Fresh isolated build/install PASS at
+  `/tmp/v6_active_reset_final2_build.0JWgYE`, install
+  `/tmp/v6_active_reset_final2_install.1vIoZW`, log
+  `/tmp/v6_active_reset_final2_log.kF2OrQ`; installed-module path assertion and
+  the same **76 passed**. Installed `ros2 run ... --help` and direct console
+  entry point PASS.
+- Verdict: **PASS (code/build/unit only)**. Attempt5 remains **PENDING**. No ROS
+  graph, Isaac, Nav2, navigation, reset, bag/evidence episode, engineering
+  campaign, or formal qualification was run.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
 ## 2026-08-22 — V6 IMU schema-1 retrospective continuity and schema-2 HOLD tail
 
 - Goal/hypothesis: retain metrics from immutable schema-1 Attempt 3 when only

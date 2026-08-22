@@ -1,15 +1,23 @@
 """Deterministic tests for the active-reset probe state machine."""
 
 import json
+import math
+from types import SimpleNamespace
 
 import pytest
 
 import robot_experiments.active_reset_probe as probe_module
 from robot_experiments.active_reset_probe import (
     COMMAND_TOPICS,
+    GROUND_TRUTH_TOPIC,
+    ODOMETRY_TOPIC,
     ProbeConfig,
     ProbeMachine,
     _arguments,
+    _twist_values,
+    dispatch_reset_once,
+    finalize_probe_output,
+    teardown_ros_node,
     validate_topology_snapshot,
 )
 
@@ -36,6 +44,9 @@ def _receipt(*, seed=8601, generation=2, pose="long_route_start_g1", odometry="r
 
 def _armed(machine=None):
     machine = machine or ProbeMachine()
+    machine.gate_status(
+        _gate("released:startup", held=False, generation=1), -0.01
+    )
     machine.ground_truth(0.0, 0.0, 0.0)
     machine.endpoints_ready(0.0, {"ready": True})
     assert machine.phase == "PUBLISH_OLD_ONCE"
@@ -94,6 +105,24 @@ def _fresh_wait(machine=None):
     machine.fresh_published(1.22)
     machine.canonical(4, [51, 52], 1.23)
     machine.progress(4, 1.24)
+    return machine
+
+
+def _provisional(machine=None):
+    machine = _fresh_wait(machine)
+    machine.ground_truth(0.69, -3.98, 1.3)
+    machine.terminal_bool(True, 1.31)
+    machine.terminal_result(json.dumps({
+        "request_id": 4,
+        "status": "succeeded",
+        "reason": "final_goal_distance_confirmed",
+        "reset_epoch": 2,
+    }), 1.32)
+    for topic in COMMAND_TOPICS:
+        for stamp in (1.35, 1.55, 1.75, 1.95, 2.15, 2.32):
+            machine.command(topic, False, stamp)
+    machine.tick(2.33)
+    assert machine.phase == "PROVISIONAL_COMPLETE"
     return machine
 
 
@@ -231,7 +260,7 @@ def test_old_route_output_must_be_silent_for_quiet_window():
     """Old-epoch route output after its terminal pair is forbidden."""
     machine = _reset_to_quiet()
     machine.route_output("goal_update", 0.5)
-    assert machine.stop_reason == "old_route_output_not_quiet"
+    assert machine.stop_reason == "old_output_after_reset_boundary:goal_update"
 
 
 def test_fresh_failure_and_edge_mismatch_stop():
@@ -298,6 +327,7 @@ def test_duplicate_reset_event_and_failed_service_stop():
     machine.reset_call_started(0.13)
     machine.reset_response(False, "service unavailable", 0.14)
     assert machine.stop_reason == "reset_service_failed"
+    assert machine.reset_call_detail["status"] == "response_failed"
 
 
 def test_fresh_edges_are_always_exact_even_when_cli_list_is_explicit():
@@ -326,7 +356,7 @@ def test_fresh_success_then_four_chain_postzero_passes():
         for stamp in (1.35, 1.55, 1.75, 1.95, 2.15, 2.32):
             machine.command(topic, False, stamp)
     machine.tick(2.33)
-    assert machine.phase == "PASS"
+    assert machine.phase == "PROVISIONAL_COMPLETE"
     assert machine.document()["verdict"] == "PROVISIONAL_PASS_REQUIRES_BAG_ORDER"
 
 
@@ -418,3 +448,257 @@ def test_entrypoint_exception_writes_atomic_terminal_stop(tmp_path, monkeypatch)
     assert document["phase"] == "STOP"
     assert document["verdict"] == "STOP"
     assert document["stop_reason"] == "entrypoint_exception:RuntimeError:injected"
+
+
+@pytest.mark.parametrize(
+    ("source", "kwargs", "reason"),
+    (
+        ("ground_truth", {"x": math.nan, "y": 0.0}, "ground_truth_sample_nonfinite"),
+        ("odometry", {"x": 0.0, "y": math.inf}, "odometry_sample_nonfinite"),
+        (
+            "ground_truth",
+            {"x": 0.0, "y": 0.0, "quaternion": (0.0, 0.0, math.nan, 1.0)},
+            "ground_truth_sample_nonfinite",
+        ),
+        (
+            "odometry",
+            {"x": 0.0, "y": 0.0, "source_stamp_s": math.inf},
+            "odometry_sample_nonfinite",
+        ),
+    ),
+)
+def test_pose_nonfinite_values_stop(source, kwargs, reason):
+    """Every non-finite pose field is a terminal contract violation."""
+    machine = ProbeMachine()
+    getattr(machine, source)(now=0.0, **kwargs)
+    assert machine.phase == "STOP"
+    assert machine.stop_reason == reason
+
+
+def test_pose_frames_and_official_odom_topic_are_exact():
+    """Only the official topics and normalized map/odom frames are accepted."""
+    assert GROUND_TRUTH_TOPIC == "/ground_truth/odom"
+    assert ODOMETRY_TOPIC == "/odom"
+    machine = ProbeMachine()
+    machine.ground_truth(0.0, 0.0, 0.0, frame_id="/map")
+    machine.odometry(0.0, 0.0, 0.1, frame_id="/odom")
+    assert machine.pose_contract["ground_truth"]["normalized_frame"] == "map"
+    assert machine.pose_contract["odometry"]["normalized_frame"] == "odom"
+
+    wrong = ProbeMachine()
+    wrong.ground_truth(0.0, 0.0, 0.0, frame_id="odom")
+    assert wrong.stop_reason.startswith("ground_truth_frame_mismatch:")
+    wrong = ProbeMachine()
+    wrong.odometry(0.0, 0.0, 0.0, frame_id="map")
+    assert wrong.stop_reason.startswith("odometry_frame_mismatch:")
+
+
+def test_nonfinite_receive_time_and_twist_are_not_zero():
+    """NaN/Inf receive times or Twist fields cannot masquerade as zero."""
+    machine = ProbeMachine()
+    machine.ground_truth(0.0, 0.0, math.nan)
+    assert machine.stop_reason == "ground_truth_time_nonfinite"
+
+    vector = SimpleNamespace(
+        linear=SimpleNamespace(x=0.0, y=0.0, z=math.nan),
+        angular=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+    )
+    with pytest.raises(ValueError, match="twist_nonfinite"):
+        _twist_values(vector)
+    machine = ProbeMachine()
+    machine.command(
+        "/cmd_vel_sim", False, 0.0,
+        values=(0.0, 0.0, math.inf, 0.0, 0.0, 0.0),
+    )
+    assert machine.stop_reason == "twist_nonfinite:/cmd_vel_sim"
+
+
+@pytest.mark.parametrize("kind", ("canonical", "progress", "lookahead", "navigate"))
+def test_every_old_output_stops_immediately_at_reset_boundary(kind):
+    """Any old route output after dispatch is recorded and stops immediately."""
+    machine = _active()
+    machine.reset_call_started(0.13)
+    if kind == "canonical":
+        machine.canonical(2, [51, 52, 30], 0.131)
+    elif kind == "progress":
+        machine.progress(2, 0.131)
+    elif kind == "lookahead":
+        machine.route_output("lookahead", 0.131)
+    else:
+        machine.navigate_intent(0.131)
+    assert machine.phase == "STOP"
+    assert machine.old_outputs_after_reset_boundary[-1]["received_monotonic_s"] == 0.131
+    assert machine.old_outputs_after_reset_boundary[-1]["type"] == (
+        "navigate_intent" if kind == "navigate" else kind
+    )
+
+
+def test_gate_baseline_hidden_generation_and_exact_episode_sequence():
+    """The retained baseline and active generation are strict and contiguous."""
+    machine = ProbeMachine()
+    machine.gate_status(_gate("hold", held=True, generation=3), 0.0)
+    assert machine.stop_reason == "gate_generation_before_reset_call"
+
+    machine = ProbeMachine()
+    baseline = _gate("released:startup", held=False, generation=1)
+    machine.gate_status(baseline, 0.0)
+    machine.gate_status(baseline, 0.1)
+    assert machine.stop_reason == "gate_baseline_duplicate"
+
+    machine = _active()
+    machine.reset_call_started(0.13)
+    machine.gate_status(_gate("hold", held=True), 0.14)
+    machine.gate_status(_gate("reset_complete", held=True, eligible=2), 0.15)
+    # An older retained generation is not ignorable once dispatch has begun.
+    machine.gate_status(baseline, 0.16)
+    assert machine.stop_reason == "gate_generation_regressed_unexpectedly"
+
+
+def test_gate_extra_after_release_stops_even_after_provisional_completion():
+    """Gate monitoring remains fail-stop through provisional completion."""
+    machine = _provisional()
+    machine.gate_status(_gate("released:duplicate", held=False), 2.34)
+    assert machine.phase == "STOP"
+    assert machine.stop_reason == "gate_status_extra_after_release"
+
+    machine = _provisional()
+    machine.command("/cmd_vel_sim", True, 2.34)
+    assert machine.stop_reason == (
+        "command_nonzero_after_provisional:/cmd_vel_sim"
+    )
+
+
+def test_slow_topology_consumes_delay_and_prevents_trigger_dispatch():
+    """Synchronous topology latency is charged before call_async."""
+    machine = _active()
+    clock = {"now": 0.13}
+    calls = []
+
+    def topology():
+        clock["now"] = 0.621
+        return True
+
+    future = dispatch_reset_once(
+        machine,
+        check_topology=topology,
+        service_ready=lambda: True,
+        call_async=lambda: calls.append("called"),
+        done_callback=lambda _future: None,
+        monotonic=lambda: clock["now"],
+    )
+    assert future is None
+    assert calls == []
+    assert machine.stop_reason == "reset_call_after_active_ready_too_late"
+
+
+def test_normal_dispatch_records_actual_boundary_and_done_callback():
+    """A timely dispatch records the actual call boundary and callback."""
+    machine = _active()
+
+    class Future:
+        callback = None
+
+        def add_done_callback(self, callback):
+            self.callback = callback
+
+    future = Future()
+    result = dispatch_reset_once(
+        machine,
+        check_topology=lambda: True,
+        service_ready=lambda: True,
+        call_async=lambda: future,
+        done_callback=lambda _future: None,
+        monotonic=lambda: 0.13,
+    )
+    assert result is future
+    assert future.callback is not None
+    assert machine.timestamps["reset_call"] == 0.13
+
+    failed = _active()
+    dispatch_reset_once(
+        failed,
+        check_topology=lambda: True,
+        service_ready=lambda: True,
+        call_async=lambda: (_ for _ in ()).throw(RuntimeError("dispatch injected")),
+        done_callback=lambda _future: None,
+        monotonic=lambda: 0.13,
+    )
+    assert failed.stop_reason.startswith("reset_dispatch_exception:")
+    assert failed.reset_call_detail["status"] == "dispatch_exception"
+    assert failed.reset_call_detail["exception_type"] == "RuntimeError"
+
+
+def test_provisional_requires_teardown_and_final_atomic_receipt(tmp_path):
+    """Only completed teardown promotes provisional to PASS_REQUIRES_BAG."""
+    machine = _provisional()
+
+    class Node:
+        def __init__(self):
+            self.machine = machine
+
+        def destroy_node(self):
+            return None
+
+    ros = SimpleNamespace(shutdown=lambda: None)
+    lifecycle = teardown_ros_node(Node(), ros, monotonic=lambda: 3.0)
+    status, document = finalize_probe_output(
+        machine, tmp_path / "probe.json", lifecycle
+    )
+    assert status == 0
+    assert document["phase"] == "PROVISIONAL_COMPLETE"
+    assert document["finalized"] is True
+    assert document["verdict"] == "PASS_REQUIRES_BAG"
+    assert json.loads((tmp_path / "probe.json").read_text())["verdict"] == (
+        "PASS_REQUIRES_BAG"
+    )
+
+
+@pytest.mark.parametrize("failure", ("destroy", "shutdown"))
+def test_teardown_exception_forces_nonzero_final_stop(tmp_path, failure):
+    """Destroy or shutdown failures force a persisted nonzero STOP."""
+    machine = _provisional()
+
+    class Node:
+        def __init__(self):
+            self.machine = machine
+
+        def destroy_node(self):
+            if failure == "destroy":
+                raise RuntimeError("destroy injected")
+
+    def shutdown():
+        if failure == "shutdown":
+            raise RuntimeError("shutdown injected")
+
+    lifecycle = teardown_ros_node(
+        Node(), SimpleNamespace(shutdown=shutdown), monotonic=lambda: 3.0
+    )
+    status, document = finalize_probe_output(
+        machine, tmp_path / "probe.json", lifecycle
+    )
+    assert status == 20
+    assert document["phase"] == "STOP"
+    assert document["verdict"] == "STOP"
+
+
+def test_final_persist_exception_is_nonzero_and_writes_emergency_stop(tmp_path):
+    """A failed final write cannot return zero and emits emergency STOP."""
+    machine = _provisional()
+    output = tmp_path / "probe.json"
+
+    def fail(_path, _document):
+        raise OSError("write injected")
+
+    status, document = finalize_probe_output(
+        machine,
+        output,
+        {"node_destroyed": True, "rclpy_shutdown": True},
+        writer=fail,
+    )
+    assert status == 20
+    assert document["phase"] == "STOP"
+    assert document["stop_reason"].startswith("final_json_write_exception:")
+    assert json.loads(output.read_text())["verdict"] == "STOP"
+    assert json.loads(
+        (tmp_path / "probe.json.emergency-stop.json").read_text()
+    )["verdict"] == "STOP"

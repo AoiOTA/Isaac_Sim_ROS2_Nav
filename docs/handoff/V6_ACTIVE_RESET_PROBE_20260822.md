@@ -26,7 +26,7 @@ that evidence.
 
 The entry point `active_reset_probe` executes:
 
-`WAIT_ENDPOINTS -> PUBLISH_OLD_ONCE -> WAIT_ACTIVE_READY -> CALL_RESET_ONCE -> OBSERVE_HOLD_ABORT -> WAIT_RELEASE -> QUIET -> PUBLISH_FRESH_ONCE -> WAIT_SUCCESS -> POSTZERO`
+`WAIT_ENDPOINTS -> PUBLISH_OLD_ONCE -> WAIT_ACTIVE_READY -> CALL_RESET_ONCE -> OBSERVE_HOLD_ABORT -> WAIT_RELEASE -> QUIET -> PUBLISH_FRESH_ONCE -> WAIT_SUCCESS -> POSTZERO -> PROVISIONAL_COMPLETE`
 
 It fails closed to `STOP` and exits nonzero on the first contract violation.
 Wall deadlines use `time.monotonic()`; ROS time is used only for published
@@ -34,7 +34,7 @@ message stamps.  The route-goal publisher is reliable/volatile and remains
 alive for the whole process.
 
 Key checks are (including the review-blocker amendment at Module3 start
-`8825e606245df83d8bd755e84dff0730c9d11aa1`):
+`24136355b632b3b8e9abc30c790ef939e4c9438b`):
 
 - use endpoint-info APIs, not scalar counts, to require exactly one
   `/cmd_vel` publisher `/collision_monitor`, exactly one `/cmd_vel_sim`
@@ -44,16 +44,22 @@ Key checks are (including the review-blocker amendment at Module3 start
 - record node names, namespaces, GIDs and counts, then require the exact graph
   to remain unchanged at `prepublish`, `pre_reset`, `post_release`, and
   `pre_fresh` before any associated side effect;
-- wait for the Trigger service, all observed topic publishers, one GT and one
-  estimated-odometry sample, and retained generation-1 release;
+- wait for the Trigger service, all observed topic publishers, finite
+  `/ground_truth/odom` in normalized frame `map`, finite official `/odom` in
+  normalized frame `odom`, and exactly one retained generation-1 release.
+  Position, quaternion, source stamp, receive time, and every six-component
+  Twist must be finite; NaN/Inf is an immediate STOP, never a zero sample;
 - publish old G2 `(0.8, 4.8, -2.792526803)` exactly once;
 - within six seconds observe one new canonical request, matching progress,
   lookahead and goal-update, at least five nonzero `/cmd_vel_sim` messages,
   at least 0.10 m GT displacement, no collision, and no terminal;
-- call `/simulation/reset` exactly once within 0.5 s of `active_ready`;
+- synchronously recheck topology, then sample the actual dispatch monotonic
+  time immediately before `call_async`; call `/simulation/reset` exactly once
+  only when that time is within 0.5 s of `active_ready`;
 - strictly validate seed 8601, generation 2, pose `long_route_start_g1`, and
   odometry `realistic` from the reset receipt;
-- observe the same-topic, strictly increasing generation-2
+- reject any pre-dispatch generation above the sole generation-1 released
+  baseline, then observe the exact same-topic generation-2
   `hold -> reset_complete -> released:*` receive sequence. HOLD-to-release
   `/cmd_vel_sim` and collision, plus stable-to-release GT and EKF odometry,
   each require at least two samples, both edges within 0.25 s and no gap over
@@ -63,6 +69,10 @@ Key checks are (including the review-blocker amendment at Module3 start
 - require one old Bool `false` plus exact JSON
   `aborted/simulation_reset/reset_epoch=2` for the old request, one reset
   event, and an exact reset receipt;
+- from the earlier of Trigger dispatch or first HOLD until fresh publication,
+  any canonical route, progress, lookahead, goal-update/Navigate intent, or
+  other old route output is recorded with receive time/type/request identity
+  and immediately STOPs; this does not wait for the old terminal pair;
 - require one second without old route outputs, then publish fresh goal
   `(0.685, -3.975535, 1.570796327)` exactly once;
 - require a strictly newer request ID, the exact configured canonical edge
@@ -73,7 +83,12 @@ Key checks are (including the review-blocker amendment at Module3 start
   the four command-chain topics, both edges within 0.25 s, no gap over 0.25 s,
   and every sample zero.
 
-The output JSON is rewritten via `fsync` plus `os.replace` at a bounded 20 Hz
+Generation-2 duplicates, extras, regression, advance, or conflicts remain
+fail-stop after release and through a final 0.25 s provisional monitoring
+window. A nonzero command in that window also STOPs.
+
+The output JSON is rewritten via file and parent-directory `fsync` plus
+`os.replace` at a bounded 20 Hz
 and forced at every state transition.  Trigger dispatch happens before the
 state-transition write, so NAS latency is outside the 0.5 s boundary. It
 records phase/verdict/STOP reason, counts, exact request
@@ -82,11 +97,16 @@ IDs and routes, reset receipt and gate sequence, monotonic boundary times,
 post-stop command evidence. Endpoint, publish, service dispatch, done-callback,
 JSON-write, spin and teardown exceptions fail to an atomically retried terminal
 STOP document; publish-attempt counters are advanced before the side effect so
-an exception cannot cause a retry.
+an exception cannot cause a retry. The state machine can only reach
+`PROVISIONAL_COMPLETE`. Only after `destroy_node`, `rclpy.shutdown`, and a final
+atomic/fsynced JSON succeed does the process return zero with verdict
+`PASS_REQUIRES_BAG`. Persistence or teardown failure returns nonzero and makes
+best-effort writes to both the final STOP path and a distinct emergency STOP
+path.
 
-Callback monotonic times do **not** prove cross-topic source order. Even when
-all in-process contracts pass, the JSON verdict is therefore
-`PROVISIONAL_PASS_REQUIRES_BAG_ORDER`; it explicitly sets
+Callback monotonic times do **not** prove cross-topic source order. In-process
+completion is `PROVISIONAL_PASS_REQUIRES_BAG_ORDER`; after successful teardown
+and final persistence the verdict is `PASS_REQUIRES_BAG`. Both explicitly keep
 `engineering_pass=false`. Only an independent finalized-bag ordering analysis
 may promote the fresh Attempt5 episode to engineering PASS.
 
@@ -112,12 +132,12 @@ reset teleport versus post-landing drift/error, old-output silence, strict
 request/epoch/reason/edge identity, fresh success/failure, the four-chain full
 postzero contract, and atomic entrypoint STOP output.
 
-The review-blocker amendment validated source-first **58 passed** (20 probe
+The final-contract amendment validated source-first **76 passed** (38 probe
 tests plus 38 retained package-contract tests), package-configured flake8,
 `py_compile`, and `git diff --check`. A fresh ordinary isolated build/install
-passed at `/tmp/v6_active_reset_probe_fix_build.D38WEx`, install
-`/tmp/v6_active_reset_probe_fix_install.51b4zR`, and log
-`/tmp/v6_active_reset_probe_fix_log.ozbzdC`. The same 58 tests imported the
+passed at `/tmp/v6_active_reset_final2_build.0JWgYE`, install
+`/tmp/v6_active_reset_final2_install.1vIoZW`, and log
+`/tmp/v6_active_reset_final2_log.kF2OrQ`. The same 76 tests imported the
 installed module (path asserted under that install), and both installed
 `ros2 run ... --help` and the direct console entry point passed. No ROS graph,
 Isaac, Nav2, navigation, reset or evidence episode was launched.

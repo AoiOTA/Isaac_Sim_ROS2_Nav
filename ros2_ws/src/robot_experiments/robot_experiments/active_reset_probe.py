@@ -14,7 +14,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .reset_receipt import ResetReceiptError, parse_reset_receipt
 
@@ -22,13 +22,40 @@ from .reset_receipt import ResetReceiptError, parse_reset_receipt
 COMMAND_TOPICS = (
     "/cmd_vel_nav", "/cmd_vel_smoothed", "/cmd_vel", "/cmd_vel_sim"
 )
-TERMINAL_PHASES = {"PASS", "STOP"}
+RUN_EXIT_PHASES = {"PROVISIONAL_COMPLETE", "STOP"}
 TOPOLOGY_CHECKPOINTS = ("prepublish", "pre_reset", "post_release", "pre_fresh")
 DEFAULT_ROUTE_SUBSCRIBERS = (
     "/bio_nav_route_coordinator",
     "/rosbag2_recorder",
 )
 MAX_COVERAGE_GAP_S = 0.25
+PROVISIONAL_MONITOR_S = 0.25
+GROUND_TRUTH_TOPIC = "/ground_truth/odom"
+ODOMETRY_TOPIC = "/odom"
+
+
+def _normalized_frame(value: str) -> str:
+    """Normalize the one explicitly tolerated leading slash."""
+    frame = str(value)
+    return frame[1:] if frame.startswith("/") else frame
+
+
+def _all_finite(values: tuple[float, ...] | list[float]) -> bool:
+    try:
+        return all(math.isfinite(float(value)) for value in values)
+    except (TypeError, ValueError):
+        return False
+
+
+def _twist_values(message: Any) -> tuple[float, ...]:
+    values = (
+        float(message.linear.x), float(message.linear.y),
+        float(message.linear.z), float(message.angular.x),
+        float(message.angular.y), float(message.angular.z),
+    )
+    if not _all_finite(values):
+        raise ValueError("twist_nonfinite")
+    return values
 
 
 def _node_full_name(node_namespace: str, node_name: str) -> str:
@@ -179,8 +206,10 @@ class ProbeMachine:
     old_displacement_m: float = 0.0
     collision: bool = False
     reset_receipt: dict[str, Any] | None = None
+    reset_call_detail: dict[str, Any] = field(default_factory=dict)
     baseline_gate_released: bool = False
     gate_sequence: list[dict[str, Any]] = field(default_factory=list)
+    gate_observations: list[dict[str, Any]] = field(default_factory=list)
     reset_event_seen: bool = False
     reset_landing_xy: tuple[float, float] | None = None
     reset_stable_max_drift_m: float = 0.0
@@ -189,7 +218,22 @@ class ProbeMachine:
     fresh_bool_value: bool | None = None
     fresh_result_value: dict[str, Any] | None = None
     old_activity_after_terminal: int = 0
+    old_outputs_after_reset_boundary: list[dict[str, Any]] = field(
+        default_factory=list
+    )
     latest_odom_xy: tuple[float, float] | None = None
+    pose_contract: dict[str, dict[str, Any]] = field(default_factory=lambda: {
+        "ground_truth": {
+            "topic": GROUND_TRUTH_TOPIC, "expected_frame": "map", "count": 0,
+            "normalized_frame": None, "first_source_stamp_s": None,
+            "last_source_stamp_s": None,
+        },
+        "odometry": {
+            "topic": ODOMETRY_TOPIC, "expected_frame": "odom", "count": 0,
+            "normalized_frame": None, "first_source_stamp_s": None,
+            "last_source_stamp_s": None,
+        },
+    })
     hold_cmd_vel_sim_samples: list[dict[str, Any]] = field(default_factory=list)
     reset_position_samples: dict[str, list[dict[str, Any]]] = field(
         default_factory=lambda: {"ground_truth": [], "odometry": []}
@@ -204,14 +248,58 @@ class ProbeMachine:
         self.timestamps.setdefault(name, float(now))
 
     def stop(self, reason: str, now: float) -> None:
-        """Enter terminal STOP once while retaining the first reason."""
-        if self.phase not in TERMINAL_PHASES:
+        """Enter STOP once, including from provisional completion."""
+        safe_now = float(now) if _all_finite((now,)) else float(
+            max(self.timestamps.values(), default=0.0)
+        )
+        if self.phase != "STOP":
             self.stop_reason = reason
-            self._time("stop", now)
+            self._time("stop", safe_now)
             self.phase = "STOP"
+
+    def _valid_time(self, event: str, now: float) -> bool:
+        if _all_finite((now,)):
+            return True
+        self.stop(f"{event}_time_nonfinite", now)
+        return False
+
+    def _reset_boundary(self) -> float | None:
+        boundaries = [
+            value for value in (
+                self.timestamps.get("reset_call"),
+                next((
+                    row["received_monotonic_s"] for row in self.gate_sequence
+                    if row["reason"] == "hold"
+                ), None),
+            ) if value is not None
+        ]
+        return min(boundaries) if boundaries else None
+
+    def _reject_old_output(
+        self,
+        kind: str,
+        now: float,
+        *,
+        request_id: int | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> bool:
+        boundary = self._reset_boundary()
+        if boundary is None or self.counts["fresh_publish"] != 0:
+            return False
+        row = {
+            "type": kind,
+            "received_monotonic_s": float(now),
+            "request_id": request_id,
+            "detail": dict(detail or {}),
+        }
+        self.old_outputs_after_reset_boundary.append(row)
+        self.stop(f"old_output_after_reset_boundary:{kind}", now)
+        return True
 
     def endpoints_ready(self, now: float, detail: dict[str, Any]) -> None:
         """Accept a complete endpoint snapshot and arm old publication."""
+        if not self._valid_time("endpoints", now):
+            return
         if self.phase != "WAIT_ENDPOINTS":
             return
         self.endpoint_detail = dict(detail)
@@ -230,6 +318,8 @@ class ProbeMachine:
         now: float,
     ) -> None:
         """Record and compare one exact safety-critical ROS graph snapshot."""
+        if not self._valid_time(f"topology_{label}", now):
+            return
         expected_index = len(self.topology_checks)
         if label not in TOPOLOGY_CHECKPOINTS or (
             expected_index >= len(TOPOLOGY_CHECKPOINTS)
@@ -254,6 +344,8 @@ class ProbeMachine:
 
     def old_published(self, now: float) -> None:
         """Record the sole old-goal publication."""
+        if not self._valid_time("old_publish", now):
+            return
         if self.phase != "PUBLISH_OLD_ONCE" or self.counts["old_publish"]:
             self.stop("old_goal_publish_not_exactly_once", now)
             return
@@ -264,6 +356,8 @@ class ProbeMachine:
 
     def fresh_published(self, now: float) -> None:
         """Record the sole fresh-goal publication."""
+        if not self._valid_time("fresh_publish", now):
+            return
         if self.phase != "PUBLISH_FRESH_ONCE" or self.counts["fresh_publish"]:
             self.stop("fresh_goal_publish_not_exactly_once", now)
             return
@@ -273,10 +367,15 @@ class ProbeMachine:
 
     def canonical(self, request_id: int, edge_ids: list[int], now: float) -> None:
         """Consume a canonical-route observation."""
+        if not self._valid_time("canonical", now):
+            return
         self.counts["canonical"] += 1
         if self.counts["old_publish"] == 0:
             return
-        if self._quiet_old_outputs(now):
+        if self._reject_old_output(
+            "canonical", now, request_id=int(request_id),
+            detail={"edge_ids": [int(edge) for edge in edge_ids]},
+        ):
             return
         if self.counts["fresh_publish"] == 0:
             if self.old_request_id is None:
@@ -306,10 +405,12 @@ class ProbeMachine:
 
     def progress(self, request_id: int, now: float) -> None:
         """Consume a route-progress observation."""
+        if not self._valid_time("progress", now):
+            return
         self.counts["progress"] += 1
         if self.counts["old_publish"] == 0:
             return
-        if self._quiet_old_outputs(now):
+        if self._reject_old_output("progress", now, request_id=int(request_id)):
             return
         if self.counts["fresh_publish"] == 0:
             if self.old_request_id is not None and int(request_id) == self.old_request_id:
@@ -326,13 +427,15 @@ class ProbeMachine:
 
     def route_output(self, kind: str, now: float) -> None:
         """Consume lookahead or goal-update output."""
+        if not self._valid_time(kind, now):
+            return
         if kind not in {"lookahead", "goal_update"}:
             self.stop("unknown_route_output", now)
             return
         self.counts[kind] += 1
         if self.counts["old_publish"] == 0:
             return
-        if self._quiet_old_outputs(now):
+        if self._reject_old_output(kind, now):
             return
         if self.counts["fresh_publish"] == 0:
             if kind == "lookahead":
@@ -341,8 +444,35 @@ class ProbeMachine:
                 self.old_goal_update_seen = True
         self._maybe_active_ready(now)
 
-    def command(self, topic: str, nonzero: bool, now: float) -> None:
+    def navigate_intent(self, now: float) -> None:
+        """Consume the coordinator's `/goal_update` NavigateToPose intent."""
+        if not self._valid_time("navigate_intent", now):
+            return
+        self.counts["goal_update"] += 1
+        if self.counts["old_publish"] == 0:
+            return
+        if self._reject_old_output("navigate_intent", now):
+            return
+        if self.counts["fresh_publish"] == 0:
+            self.old_goal_update_seen = True
+        self._maybe_active_ready(now)
+
+    def command(
+        self,
+        topic: str,
+        nonzero: bool,
+        now: float,
+        values: tuple[float, ...] | None = None,
+    ) -> None:
         """Consume one command-chain sample."""
+        if not self._valid_time("command", now):
+            return
+        if values is not None and (len(values) != 6 or not _all_finite(values)):
+            self.stop(f"twist_nonfinite:{topic}", now)
+            return
+        if not isinstance(nonzero, bool):
+            self.stop(f"twist_nonzero_flag_invalid:{topic}", now)
+            return
         if topic not in COMMAND_TOPICS:
             self.stop("unknown_command_topic", now)
             return
@@ -353,22 +483,85 @@ class ProbeMachine:
         released = any(item["reason"].startswith("released:") for item in self.gate_sequence)
         if topic == "/cmd_vel_sim" and hold_seen and not released:
             self.hold_cmd_vel_sim_samples.append({
-                "monotonic_s": float(now), "nonzero": bool(nonzero)
+                "monotonic_s": float(now), "nonzero": bool(nonzero),
+                "twist": None if values is None else list(values),
             })
             if nonzero:
                 self.counts["hold_cmd_vel_sim_nonzero"] += 1
                 self.stop("hold_cmd_vel_sim_nonzero", now)
+        if self.phase == "PROVISIONAL_COMPLETE" and nonzero:
+            self.stop(f"command_nonzero_after_provisional:{topic}", now)
+            return
         if self.phase == "POSTZERO":
             row = self.post_commands[topic]
             row["total"] += 1
             row["nonzero"] += int(nonzero)
             row["last_zero"] = not nonzero
             row["samples"].append({
-                "monotonic_s": float(now), "nonzero": bool(nonzero)
+                "monotonic_s": float(now), "nonzero": bool(nonzero),
+                "twist": None if values is None else list(values),
             })
 
-    def ground_truth(self, x: float, y: float, now: float) -> None:
+    def _validate_pose_sample(
+        self,
+        source: str,
+        x: float,
+        y: float,
+        z: float,
+        quaternion: tuple[float, float, float, float],
+        frame_id: str,
+        source_stamp_s: float,
+        now: float,
+    ) -> bool:
+        if not self._valid_time(source, now):
+            return False
+        values = (x, y, z, *quaternion, source_stamp_s)
+        if len(quaternion) != 4 or not _all_finite(values):
+            self.stop(f"{source}_sample_nonfinite", now)
+            return False
+        normalized = _normalized_frame(frame_id)
+        contract = self.pose_contract[source]
+        if normalized != contract["expected_frame"]:
+            self.stop(
+                f"{source}_frame_mismatch:expected={contract['expected_frame']}:"
+                f"observed={normalized}",
+                now,
+            )
+            return False
+        contract["count"] += 1
+        contract["normalized_frame"] = normalized
+        contract["first_source_stamp_s"] = (
+            float(source_stamp_s)
+            if contract["first_source_stamp_s"] is None
+            else contract["first_source_stamp_s"]
+        )
+        contract["last_source_stamp_s"] = float(source_stamp_s)
+        contract["latest"] = {
+            "received_monotonic_s": float(now),
+            "source_stamp_s": float(source_stamp_s),
+            "position": [float(x), float(y), float(z)],
+            "quaternion": [float(value) for value in quaternion],
+            "frame_id": str(frame_id),
+            "normalized_frame": normalized,
+        }
+        return True
+
+    def ground_truth(
+        self,
+        x: float,
+        y: float,
+        now: float,
+        *,
+        z: float = 0.0,
+        quaternion: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        frame_id: str = "map",
+        source_stamp_s: float = 0.0,
+    ) -> None:
         """Consume one evaluator-only ground-truth position."""
+        if not self._validate_pose_sample(
+            "ground_truth", x, y, z, quaternion, frame_id, source_stamp_s, now
+        ):
+            return
         xy = (float(x), float(y))
         self.latest_gt_xy = xy
         self._capture_reset_position("ground_truth", xy, now)
@@ -400,8 +593,22 @@ class ProbeMachine:
                     self.stop("reset_landing_drift_exceeded", now)
             self._advance_reset_observation(now)
 
-    def odometry(self, x: float, y: float, now: float) -> None:
+    def odometry(
+        self,
+        x: float,
+        y: float,
+        now: float,
+        *,
+        z: float = 0.0,
+        quaternion: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 1.0),
+        frame_id: str = "odom",
+        source_stamp_s: float = 0.0,
+    ) -> None:
         """Consume estimated odometry for independent reset-stability coverage."""
+        if not self._validate_pose_sample(
+            "odometry", x, y, z, quaternion, frame_id, source_stamp_s, now
+        ):
+            return
         xy = (float(x), float(y))
         self.latest_odom_xy = xy
         self._capture_reset_position("odometry", xy, now)
@@ -421,6 +628,8 @@ class ProbeMachine:
 
     def collision_event(self, collided: bool, now: float) -> None:
         """Latch physical collision and fail immediately when true."""
+        if not self._valid_time("collision", now):
+            return
         reasons = [item["reason"] for item in self.gate_sequence]
         if (
             "hold" in reasons
@@ -453,23 +662,50 @@ class ProbeMachine:
 
     def reset_call_started(self, now: float) -> None:
         """Record the exactly-once Trigger dispatch boundary."""
+        if not self._valid_time("reset_call", now):
+            return
         if self.phase != "CALL_RESET_ONCE" or self.counts["reset_call"]:
             self.stop("reset_call_not_exactly_once", now)
             return
         active = self.timestamps.get("active_ready")
-        if active is None or now - active > self.config.reset_call_max_delay_s:
+        if not self.baseline_gate_released:
+            self.stop("reset_call_without_generation_1_release", now)
+            return
+        if (
+            active is None
+            or now < active
+            or now - active > self.config.reset_call_max_delay_s
+        ):
             self.stop("reset_call_after_active_ready_too_late", now)
             return
         self.counts["reset_call"] = 1
         self._time("reset_call", now)
+        self.reset_call_detail = {
+            "status": "dispatch_boundary_accepted",
+            "dispatch_monotonic_s": float(now),
+            "service_ready": True,
+        }
         self.phase = "OBSERVE_HOLD_ABORT"
 
     def reset_response(self, success: bool, message: str, now: float) -> None:
         """Validate the Trigger result and exact reset receipt."""
+        if not self._valid_time("reset_response", now):
+            return
         if self.counts["reset_call"] != 1 or self.reset_receipt is not None:
             self.stop("unexpected_reset_response", now)
             return
+        self.reset_call_detail.update({
+            "response_monotonic_s": float(now),
+            "response_success": bool(success),
+            "response_message": str(message),
+        })
         if not success:
+            self.reset_call_detail.update({
+                "status": "response_failed",
+                "response_monotonic_s": float(now),
+                "response_success": False,
+                "response_message": str(message),
+            })
             self.stop("reset_service_failed", now)
             return
         try:
@@ -477,6 +713,11 @@ class ProbeMachine:
                 message, requested_seed=self.config.reset_seed
             )
         except ResetReceiptError as exc:
+            self.reset_call_detail.update({
+                "status": "receipt_invalid",
+                "exception_type": type(exc).__name__,
+                "exception_message": str(exc),
+            })
             self.stop(f"reset_receipt_invalid:{exc}", now)
             return
         if (
@@ -484,14 +725,28 @@ class ProbeMachine:
             or receipt["pose"] != self.config.reset_pose
             or receipt["odometry"] != self.config.reset_odometry
         ):
+            self.reset_call_detail["status"] = "receipt_contract_mismatch"
             self.stop("reset_receipt_contract_mismatch", now)
             return
         self.reset_receipt = receipt
+        self.reset_call_detail.update({
+            "status": "response_valid",
+            "response_monotonic_s": float(now),
+            "response_success": True,
+            "response_message": str(message),
+        })
         self._time("reset_receipt", now)
         self._advance_reset_observation(now)
 
     def gate_status(self, payload: str, now: float) -> None:
         """Consume and order one ResetStopGate status document."""
+        if not self._valid_time("gate_status", now):
+            return
+        observation = {
+            "received_monotonic_s": float(now),
+            "payload": str(payload),
+        }
+        self.gate_observations.append(observation)
         try:
             item = json.loads(payload)
         except (TypeError, json.JSONDecodeError):
@@ -510,25 +765,39 @@ class ProbeMachine:
             isinstance(generation, bool)
             or not isinstance(generation, int)
             or not isinstance(held, bool)
+            or isinstance(eligible, bool)
+            or (eligible is not None and not isinstance(eligible, int))
             or not isinstance(reason, str)
         ):
             self.stop("gate_status_field_invalid", now)
             return
-        # Ignore the retained generation-1 released baseline.
-        if generation != self.config.reset_generation:
-            if (
-                self.counts["reset_call"] == 0
-                and generation == self.config.reset_generation - 1
+        observation["document"] = dict(item)
+        if self.counts["reset_call"] == 0:
+            expected_baseline = (
+                generation == self.config.reset_generation - 1
                 and not held
                 and eligible is None
                 and reason.startswith("released:")
-            ):
-                self.baseline_gate_released = True
-            if self.counts["reset_call"] and generation > self.config.reset_generation:
-                self.stop("gate_generation_advanced_unexpectedly", now)
+            )
+            if not expected_baseline:
+                if generation >= self.config.reset_generation:
+                    self.stop("gate_generation_before_reset_call", now)
+                else:
+                    self.stop("gate_baseline_sequence_invalid", now)
+                return
+            if self.baseline_gate_released:
+                self.stop("gate_baseline_duplicate", now)
+                return
+            self.baseline_gate_released = True
             return
-        if self.counts["reset_call"] == 0:
-            self.stop("new_gate_generation_before_reset_call", now)
+
+        if generation != self.config.reset_generation:
+            self.stop(
+                "gate_generation_advanced_unexpectedly"
+                if generation > self.config.reset_generation
+                else "gate_generation_regressed_unexpectedly",
+                now,
+            )
             return
         valid = (
             (reason == "hold" and held and eligible is None)
@@ -537,6 +806,9 @@ class ProbeMachine:
         )
         if not valid:
             self.stop("gate_status_incoherent", now)
+            return
+        if len(self.gate_sequence) >= 3:
+            self.stop("gate_status_extra_after_release", now)
             return
         expected_reason = (
             "hold" if not self.gate_sequence else
@@ -637,6 +909,8 @@ class ProbeMachine:
 
     def reset_event(self, now: float) -> None:
         """Consume the one reset event belonging to this Trigger call."""
+        if not self._valid_time("reset_event", now):
+            return
         # The official launch performs one startup reset before this probe is
         # armed.  Only the event after our exactly-once service call belongs
         # to the contract under test.
@@ -651,6 +925,8 @@ class ProbeMachine:
 
     def terminal_bool(self, value: bool, now: float) -> None:
         """Consume one old or fresh Bool terminal."""
+        if not self._valid_time("terminal_bool", now):
+            return
         if self.counts["old_publish"] == 0:
             return
         fresh = self.counts["fresh_publish"] == 1
@@ -679,6 +955,8 @@ class ProbeMachine:
 
     def terminal_result(self, payload: str, now: float) -> None:
         """Consume one old or fresh structured result terminal."""
+        if not self._valid_time("terminal_result", now):
+            return
         if self.counts["old_publish"] == 0:
             return
         try:
@@ -738,7 +1016,7 @@ class ProbeMachine:
 
     def _advance_reset_observation(self, now: float) -> None:
         if (
-            self.phase in TERMINAL_PHASES
+            self.phase in RUN_EXIT_PHASES
             or self.counts["reset_call"] == 0
             or self.counts["fresh_publish"] != 0
         ):
@@ -786,6 +1064,8 @@ class ProbeMachine:
 
     def tick(self, now: float) -> None:
         """Advance monotonic deadlines and quiet/postzero dwell states."""
+        if not self._valid_time("tick", now):
+            return
         if self.phase == "WAIT_ACTIVE_READY":
             if now - self.timestamps["old_published"] > self.config.active_timeout_s:
                 self.stop("active_ready_timeout", now)
@@ -815,10 +1095,15 @@ class ProbeMachine:
                 elif self.collision:
                     self.stop("physical_collision", now)
                 else:
-                    self.timestamps["pass"] = float(now)
-                    self.phase = "PASS"
+                    self.timestamps["provisional_complete"] = float(now)
+                    self.phase = "PROVISIONAL_COMPLETE"
 
-    def document(self) -> dict[str, Any]:
+    def document(
+        self,
+        *,
+        finalized: bool = False,
+        lifecycle: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Return the complete machine-readable evidence snapshot."""
         hold_time = next((
             row["received_monotonic_s"] for row in self.gate_sequence
@@ -840,9 +1125,15 @@ class ProbeMachine:
         return {
             "schema": "bio_nav.active_reset_probe.v1",
             "phase": self.phase,
-            "verdict": "PROVISIONAL_PASS_REQUIRES_BAG_ORDER" if self.phase == "PASS" else (
-                "STOP" if self.phase == "STOP" else "RUNNING"
+            "verdict": (
+                "PASS_REQUIRES_BAG"
+                if finalized and self.phase == "PROVISIONAL_COMPLETE"
+                else "PROVISIONAL_PASS_REQUIRES_BAG_ORDER"
+                if self.phase == "PROVISIONAL_COMPLETE"
+                else "STOP" if self.phase == "STOP" else "RUNNING"
             ),
+            "finalized": bool(finalized),
+            "lifecycle": dict(lifecycle or {}),
             "claim_boundary": {
                 "engineering_pass": False,
                 "requires_external_bag_order_analysis": True,
@@ -861,6 +1152,7 @@ class ProbeMachine:
             ),
             "counts": dict(self.counts),
             "endpoints": dict(self.endpoint_detail),
+            "pose_contract": self.pose_contract,
             "topology_checks": list(self.topology_checks),
             "old": {
                 "request_id": self.old_request_id,
@@ -870,10 +1162,13 @@ class ProbeMachine:
                 "terminal_bool": self.old_bool_value,
                 "result": self.old_result_value,
                 "activity_after_terminal": self.old_activity_after_terminal,
+                "outputs_after_reset_boundary": self.old_outputs_after_reset_boundary,
             },
             "reset": {
                 "receipt": self.reset_receipt,
+                "call": self.reset_call_detail,
                 "gate_sequence": self.gate_sequence,
+                "gate_observations": self.gate_observations,
                 "event_seen": self.reset_event_seen,
                 "landing_xy": self.reset_landing_xy,
                 "stable_max_drift_m": self.reset_stable_max_drift_m,
@@ -943,9 +1238,150 @@ def atomic_write_json(path: Path, document: dict[str, Any]) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
+
+
+def _emergency_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.emergency-stop.json")
+
+
+def _emergency_document(reason: str) -> dict[str, Any]:
+    return {
+        "schema": "bio_nav.active_reset_probe.v1",
+        "phase": "STOP",
+        "verdict": "STOP",
+        "finalized": False,
+        "stop_reason": reason,
+        "claim_boundary": {
+            "engineering_pass": False,
+            "requires_external_bag_order_analysis": True,
+        },
+    }
+
+
+def _best_effort_emergency_stop(path: Path, reason: str) -> dict[str, Any]:
+    """Try both the final path and a distinct emergency STOP receipt."""
+    document = _emergency_document(reason)
+    errors: list[str] = []
+    for target in (path, _emergency_path(path)):
+        try:
+            atomic_write_json(target, document)
+        except Exception as exc:  # pragma: no cover - filesystem dependent
+            errors.append(f"{target}:{type(exc).__name__}:{exc}")
+    if errors:
+        document["emergency_write_errors"] = errors
+    return document
+
+
+def dispatch_reset_once(
+    machine: ProbeMachine,
+    *,
+    check_topology: Callable[[], bool],
+    service_ready: Callable[[], bool],
+    call_async: Callable[[], Any],
+    done_callback: Callable[[Any], None],
+    monotonic: Callable[[], float] = time.monotonic,
+) -> Any | None:
+    """Perform the fenced Trigger dispatch at its actual monotonic boundary."""
+    if not check_topology():
+        return None
+    if not service_ready():
+        machine.reset_call_detail = {
+            "status": "service_unavailable_before_dispatch",
+            "service_ready": False,
+        }
+        machine.stop("reset_service_disappeared_before_call", monotonic())
+        return None
+    dispatch_now = monotonic()
+    machine.reset_call_started(dispatch_now)
+    if machine.phase == "STOP":
+        return None
+    try:
+        future = call_async()
+        future.add_done_callback(done_callback)
+        machine.reset_call_detail["status"] = "future_callback_registered"
+        return future
+    except Exception as exc:
+        machine.reset_call_detail.update({
+            "status": "dispatch_exception",
+            "exception_type": type(exc).__name__,
+            "exception_message": str(exc),
+        })
+        machine.stop(
+            f"reset_dispatch_exception:{type(exc).__name__}:{exc}", monotonic()
+        )
+        return None
+
+
+def teardown_ros_node(
+    node: Any,
+    rclpy_module: Any,
+    *,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> dict[str, bool]:
+    """Destroy and shutdown while converting either failure into STOP."""
+    lifecycle = {"node_destroyed": False, "rclpy_shutdown": False}
+    try:
+        result = node.destroy_node()
+        if result is False:
+            raise RuntimeError("destroy_node_returned_false")
+        lifecycle["node_destroyed"] = True
+    except Exception as exc:
+        node.machine.stop(
+            f"destroy_node_exception:{type(exc).__name__}:{exc}", monotonic()
+        )
+    try:
+        rclpy_module.shutdown()
+        lifecycle["rclpy_shutdown"] = True
+    except Exception as exc:
+        node.machine.stop(
+            f"shutdown_exception:{type(exc).__name__}:{exc}", monotonic()
+        )
+    return lifecycle
+
+
+def finalize_probe_output(
+    machine: ProbeMachine,
+    path: Path,
+    lifecycle: dict[str, bool],
+    *,
+    persistence_failed: bool = False,
+    writer: Callable[[Path, dict[str, Any]], None] | None = None,
+) -> tuple[int, dict[str, Any]]:
+    """Write the only final verdict after teardown and durable replacement."""
+    teardown_complete = all(lifecycle.values())
+    eligible = (
+        machine.phase == "PROVISIONAL_COMPLETE"
+        and teardown_complete
+        and not persistence_failed
+    )
+    if not eligible and machine.phase != "STOP":
+        machine.stop("finalization_contract_incomplete", time.monotonic())
+    document = machine.document(finalized=eligible, lifecycle=lifecycle)
+    try:
+        (writer or atomic_write_json)(path, document)
+    except Exception as exc:
+        machine.stop(
+            f"final_json_write_exception:{type(exc).__name__}:{exc}",
+            time.monotonic(),
+        )
+        document = machine.document(finalized=False, lifecycle=lifecycle)
+        emergency = _best_effort_emergency_stop(
+            path, machine.stop_reason or "final_json_write_exception"
+        )
+        if emergency.get("emergency_write_errors"):
+            document["emergency_write_errors"] = emergency[
+                "emergency_write_errors"
+            ]
+        return 20, document
+    return (0 if eligible else 20), document
 
 
 def _parse_edges(value: str) -> tuple[int, ...]:
@@ -1046,6 +1482,7 @@ def _run_ros(args: argparse.Namespace) -> int:
             self._endpoint_timeout = args.endpoint_timeout
             self._reset_future = None
             self._last_persist = -math.inf
+            self._persistence_failed = False
             self._goal_pub = self.create_publisher(PoseStamped, "/bio_nav/route_goal", reliable)
             self._reset_client = self.create_client(Trigger, "/simulation/reset")
             self.create_subscription(
@@ -1073,7 +1510,7 @@ def _run_ros(args: argparse.Namespace) -> int:
             self.create_subscription(
                 PoseStamped,
                 "/goal_update",
-                lambda _m: self._event(self.machine.route_output, "goal_update"),
+                lambda _m: self._event(self.machine.navigate_intent),
                 reliable,
             )
             self.create_subscription(
@@ -1090,22 +1527,14 @@ def _run_ros(args: argparse.Namespace) -> int:
             )
             self.create_subscription(
                 Odometry,
-                "/ground_truth/odom",
-                lambda m: self._event(
-                    self.machine.ground_truth,
-                    float(m.pose.pose.position.x),
-                    float(m.pose.pose.position.y),
-                ),
+                GROUND_TRUTH_TOPIC,
+                lambda m: self._pose_event("ground_truth", m),
                 best_effort,
             )
             self.create_subscription(
                 Odometry,
-                "/odometry/filtered",
-                lambda m: self._event(
-                    self.machine.odometry,
-                    float(m.pose.pose.position.x),
-                    float(m.pose.pose.position.y),
-                ),
+                ODOMETRY_TOPIC,
+                lambda m: self._pose_event("odometry", m),
                 best_effort,
             )
             self.create_subscription(
@@ -1132,19 +1561,55 @@ def _run_ros(args: argparse.Namespace) -> int:
                 self.create_subscription(
                     Twist,
                     topic,
-                    lambda m, t=topic: self._event(
-                        self.machine.command, t, _twist_nonzero(m)
-                    ),
+                    lambda m, t=topic: self._command_event(t, m),
                     best_effort,
                 )
             self.create_timer(0.02, self._tick)
             self._persist(force=True)
 
-        def _event(self, callback, *values) -> None:
+        def _pose_event(self, source: str, message) -> None:
+            pose = message.pose.pose
+            stamp = message.header.stamp
+            source_stamp_s = float(stamp.sec) + float(stamp.nanosec) * 1.0e-9
+            callback = (
+                self.machine.ground_truth
+                if source == "ground_truth" else self.machine.odometry
+            )
+            self._event(
+                callback,
+                float(pose.position.x),
+                float(pose.position.y),
+                z=float(pose.position.z),
+                quaternion=(
+                    float(pose.orientation.x), float(pose.orientation.y),
+                    float(pose.orientation.z), float(pose.orientation.w),
+                ),
+                frame_id=str(message.header.frame_id),
+                source_stamp_s=source_stamp_s,
+            )
+
+        def _command_event(self, topic: str, message) -> None:
+            try:
+                values = _twist_values(message)
+            except Exception as exc:
+                now = time.monotonic()
+                self.machine.stop(
+                    f"twist_callback_exception:{type(exc).__name__}:{exc}", now
+                )
+                self._persist(force=True)
+                return
+            self._event(
+                self.machine.command,
+                topic,
+                any(abs(value) > 1.0e-6 for value in values),
+                values=values,
+            )
+
+        def _event(self, callback, *values, **keywords) -> None:
             now = time.monotonic()
             previous = self.machine.phase
             try:
-                callback(*values, now)
+                callback(*values, now, **keywords)
                 self._drive(now)
             except Exception as exc:
                 self.machine.stop(
@@ -1152,30 +1617,29 @@ def _run_ros(args: argparse.Namespace) -> int:
                 )
             self._persist(force=self.machine.phase != previous)
 
-        def _persist(self, *, force: bool = False) -> None:
+        def _persist(self, *, force: bool = False) -> bool:
             now = time.monotonic()
             # Topic callbacks can exceed 200 Hz.  A bounded 20 Hz atomic
             # stream is continuously observable without making NAS fsync the
             # latency-critical active-ready -> Trigger path.
             if not force and now - self._last_persist < 0.05:
-                return
+                return True
             try:
                 atomic_write_json(args.output, self.machine.document())
             except Exception as exc:
+                self._persistence_failed = True
                 self.machine.stop(
                     f"json_write_exception:{type(exc).__name__}:{exc}", now
                 )
-                try:
-                    atomic_write_json(args.output, self.machine.document())
-                except Exception as terminal_exc:
-                    # The caller also prints the same terminal document.  This
-                    # field prevents a failed write from being mistaken for a
-                    # successful persistent receipt.
-                    self.machine.endpoint_detail["terminal_json_write_error"] = (
-                        f"{type(terminal_exc).__name__}:{terminal_exc}"
-                    )
-                    return
+                emergency = _best_effort_emergency_stop(
+                    args.output, self.machine.stop_reason or "json_write_exception"
+                )
+                self.machine.endpoint_detail["terminal_json_write_error"] = (
+                    emergency.get("emergency_write_errors", [])
+                )
+                return False
             self._last_persist = now
+            return True
 
         def _topology_snapshot(self) -> dict[str, Any]:
             topics: dict[str, Any] = {}
@@ -1198,12 +1662,14 @@ def _run_ros(args: argparse.Namespace) -> int:
                 }
             return {"topics": topics}
 
-        def _check_topology(self, label: str, now: float) -> bool:
+        def _check_topology(self, label: str) -> bool:
             snapshot = self._topology_snapshot()
             errors = validate_topology_snapshot(
                 snapshot, self._expected_subscribers
             )
-            self.machine.topology_checked(label, snapshot, errors, now)
+            self.machine.topology_checked(
+                label, snapshot, errors, time.monotonic()
+            )
             return self.machine.phase != "STOP"
 
         def _endpoints(self) -> dict[str, Any]:
@@ -1211,7 +1677,7 @@ def _run_ros(args: argparse.Namespace) -> int:
                 "/bio_nav/canonical_route", "/bio_nav/route_progress",
                 "/bio_nav/route_lookahead_goal", "/goal_update",
                 "/bio_nav/route_goal_complete", "/bio_nav/route_goal_result",
-                "/ground_truth/odom", "/odometry/filtered", "/simulation/collision",
+                GROUND_TRUTH_TOPIC, ODOMETRY_TOPIC, "/simulation/collision",
                 "/simulation/reset_stop_gate/status", "/simulation/reset_event",
                 *COMMAND_TOPICS,
             )
@@ -1265,30 +1731,30 @@ def _run_ros(args: argparse.Namespace) -> int:
         def _drive(self, now: float) -> None:
             """Execute state-owned exactly-once side effects immediately."""
             if self.machine.phase == "PUBLISH_OLD_ONCE":
-                if not self._check_topology("prepublish", now):
+                if not self._check_topology("prepublish"):
                     return
                 self.machine.counts["old_publish_attempt"] += 1
                 if self.machine.counts["old_publish_attempt"] != 1:
                     self.machine.stop("old_goal_publish_attempt_repeated", now)
                     return
                 self._publish_goal(self._old_goal)
-                self.machine.old_published(now)
+                self.machine.old_published(time.monotonic())
             elif self.machine.phase == "CALL_RESET_ONCE":
-                if not self._check_topology("pre_reset", now):
-                    return
-                if not self._reset_client.service_is_ready():
-                    self.machine.stop("reset_service_disappeared_before_call", now)
-                    return
-                self.machine.reset_call_started(now)
-                if self.machine.phase != "STOP":
-                    self._reset_future = self._reset_client.call_async(Trigger.Request())
-                    self._reset_future.add_done_callback(self._reset_done)
+                self._reset_future = dispatch_reset_once(
+                    self.machine,
+                    check_topology=lambda: self._check_topology("pre_reset"),
+                    service_ready=self._reset_client.service_is_ready,
+                    call_async=lambda: self._reset_client.call_async(
+                        Trigger.Request()
+                    ),
+                    done_callback=self._reset_done,
+                )
             elif self.machine.phase == "QUIET" and not any(
                 row["label"] == "post_release" for row in self.machine.topology_checks
             ):
-                self._check_topology("post_release", now)
+                self._check_topology("post_release")
             elif self.machine.phase == "PUBLISH_FRESH_ONCE":
-                if not self._check_topology("pre_fresh", now):
+                if not self._check_topology("pre_fresh"):
                     return
                 self.machine.counts["fresh_publish_attempt"] += 1
                 if self.machine.counts["fresh_publish_attempt"] != 1:
@@ -1299,6 +1765,7 @@ def _run_ros(args: argparse.Namespace) -> int:
 
         def _reset_done(self, future) -> None:
             now = time.monotonic()
+            self.machine.reset_call_detail["done_callback_monotonic_s"] = float(now)
             try:
                 self.machine.counts["reset_done_callback"] += 1
                 if self.machine.counts["reset_done_callback"] != 1:
@@ -1307,9 +1774,15 @@ def _run_ros(args: argparse.Namespace) -> int:
                     return
                 response = future.result()
             except Exception as exc:
+                self.machine.reset_call_detail.update({
+                    "status": "done_callback_exception",
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                })
                 self.machine.stop(f"reset_service_exception:{type(exc).__name__}:{exc}", now)
             else:
                 if response is None:
+                    self.machine.reset_call_detail["status"] = "response_missing"
                     self.machine.stop("reset_service_no_response", now)
                 else:
                     self.machine.reset_response(bool(response.success), str(response.message), now)
@@ -1321,19 +1794,19 @@ def _run_ros(args: argparse.Namespace) -> int:
                 )
             self._persist(force=True)
 
-    def _twist_nonzero(message) -> bool:
-        values = (
-            message.linear.x, message.linear.y, message.linear.z,
-            message.angular.x, message.angular.y, message.angular.z,
-        )
-        return any(abs(float(value)) > 1.0e-6 for value in values)
-
     node = None
     rclpy.init()
+    lifecycle = {"node_destroyed": False, "rclpy_shutdown": False}
     try:
         node = ActiveResetProbeNode()
-        while rclpy.ok() and node.machine.phase not in TERMINAL_PHASES:
+        while rclpy.ok() and node.machine.phase != "STOP":
             rclpy.spin_once(node, timeout_sec=0.1)
+            if node.machine.phase == "PROVISIONAL_COMPLETE" and (
+                time.monotonic()
+                - node.machine.timestamps["provisional_complete"]
+                >= PROVISIONAL_MONITOR_S
+            ):
+                break
     except Exception as exc:
         if node is None:
             raise
@@ -1342,26 +1815,18 @@ def _run_ros(args: argparse.Namespace) -> int:
         )
     finally:
         if node is not None:
-            try:
-                node.destroy_node()
-            except Exception as exc:
-                node.machine.stop(
-                    f"destroy_node_exception:{type(exc).__name__}:{exc}",
-                    time.monotonic(),
-                )
-        try:
+            lifecycle = teardown_ros_node(node, rclpy)
+        else:
             rclpy.shutdown()
-        except Exception as exc:
-            if node is None:
-                raise
-            node.machine.stop(
-                f"shutdown_exception:{type(exc).__name__}:{exc}", time.monotonic()
-            )
     assert node is not None
-    node._persist(force=True)
-    document = node.machine.document()
+    status, document = finalize_probe_output(
+        node.machine,
+        args.output,
+        lifecycle,
+        persistence_failed=node._persistence_failed,
+    )
     print(json.dumps(document, sort_keys=True))
-    return 0 if node.machine.phase == "PASS" else 20
+    return status
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1386,6 +1851,13 @@ def main(argv: list[str] | None = None) -> int:
             document["terminal_json_write_error"] = (
                 f"{type(write_exc).__name__}:{write_exc}"
             )
+            emergency = _best_effort_emergency_stop(
+                args.output, document["stop_reason"]
+            )
+            if emergency.get("emergency_write_errors"):
+                document["emergency_write_errors"] = emergency[
+                    "emergency_write_errors"
+                ]
         print(json.dumps(document, sort_keys=True))
         return 20
 
