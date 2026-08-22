@@ -2132,3 +2132,52 @@
   window, B5 baseline string equality, 0.10 m odom landing threshold, and
   the READY detail-string timing note — all listed in the handoff.
 - Handoff: `docs/handoff/V6_RESET_SIMPLIFICATION_20260822.md`.
+
+## 2026-08-22 — V6 IMU regime Attempt4: first live schema-2 capture
+
+- Goal: produce the first live schema-2 IMU-regime capture (locked flat20
+  runner + LiDAR preflight + stationary seed 8609 + primitives 8610..8618 +
+  0.8 s downstream zero receipts + MCAP/phase JSONL) plus the separately
+  provenance-bearing Kujiale Estimated goal, then the analysis verdict.
+- Branch/worktree: `cognitive-navigation`; permitted Module3 worktree.
+  Baselines verified: Integration `f23a7ec`, Module3 `22d6647`, Module2
+  `c8297a5`. Runtime from `git archive` snapshot
+  `/tmp/v6_imu_session_a_attempt4.IPZuzv`, isolated `*_attempt4` colcon trees
+  (Integration 2 + Module3 14 packages PASS), ROS_DOMAIN_ID 171, RViz off,
+  capture scale frozen `0.9294`, RF2O off, M0.
+- Code changes (committed): session driver/monitor/goal-metadata/audit
+  scripts under `scripts/`; `motion_benchmark.py` HOLD-window zero
+  publishing, fresh-clock-tick schedule starts, 0.5 s pre-settle drain, and a
+  stationary-duration float-epsilon fix; diagnostic-only collision monitor
+  `stop_pub_timeout:=30.0` overlay inside the driver (no shared nav config
+  changed). Focused suites 126 passed; snapshot full suite 567 passed + 1
+  known path-sensitive failure.
+- flat20 evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt4_20260822T065252Z`.
+  **capture_contract_status=PASS** (first live schema-2 capture; 12/12
+  windows OK, 10 consecutive reset receipts, zero collision, monitor pass).
+  **performance_status=FAIL** (arc_v005_ccw, arc_v010_cw/ccw, arc_v025_cw,
+  s_route below thresholds — same chain under-tracking as Attempt3).
+  Segment k*: spins 0.9292/0.9309, v0.05 0.9231/0.9496, v0.10
+  **0.9836/0.9749**, v0.25 0.9229/0.9182, S 0.9140/0.9209/0.9139; 12-window
+  <=5 deg intersection **[0.9207, 0.9420]** (contains frozen 0.9294).
+- Kujiale goal evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_imu_regime_session_a_attempt4_goal_20260822T071314Z`.
+  Route G1→G2 completed (44.92 s, 0.202 m, no collision); reset receipt seed
+  8619 == requested (Evidence-B seed debt fixed). Goal MCAP fails two
+  single-attempt binding fences deterministically: `goal_request_count`
+  (probe republishes the goal at 1 Hz until ack — 4 recorded requests) and
+  `goal_command_after_terminal` (one nonzero /cmd_vel at terminal+45 ms from
+  the smoother decel tail; the historical Evidence B bag shows the same +58 ms
+  tail, so this fence was never live-satisfiable).
+- Official analyzer outputs: `imu_regime_analysis_flat20_only.json`
+  (verdict FAIL via performance; capture PASS; regime AMBIGUOUS only due to
+  missing goal) and `imu_regime_analysis_full_contract.json` (verdict FAIL at
+  `goal_request_count`) in the flat20 run's `analysis/`.
+- Verdict: **FAIL / NOT FORMAL** — schema-2 capture pipeline now live-capable
+  and the flat20 regime intersection is measured, but no
+  PASS_CANDIDATE/CONFIRMED_NO_GLOBAL_CONSTANT promotion is possible through a
+  failed benchmark and an unbound goal attempt. Master decisions pending:
+  goal-binding contract vs probe/coordinator behavior, and arc/S tracking
+  performance vs thresholds. `yaw_scale=0.9294` and RF2O-off unchanged.
+- Handoff: `docs/handoff/V6_IMU_REGIME_ATTEMPT4_20260822.md`.
