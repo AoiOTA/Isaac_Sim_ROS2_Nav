@@ -6,10 +6,10 @@ This amendment adds a single-process `active_reset_probe` runner for the next
 fresh active-reset attempt.  It replaces the split Attempt4 harness timing
 with one monotonic state machine and an atomically refreshed JSON receipt.
 
-This is **PASS (code/build/unit only)**.  Attempt5 is retained as
-**ENGINEERING FAIL / STOP / NOT FORMAL**; this amendment does not rerun it.
+This is **PASS (code/build/unit only)**.  Attempts 5 and 6 are retained as
+**ENGINEERING FAIL / STOP / NOT FORMAL**; this amendment does not rerun them.
 No ROS graph, Isaac, Nav2, navigation, reset, bag, visual review, engineering
-campaign, or formal qualification was run by this task.  Attempt6 remains
+campaign, or formal qualification was run by this task.  Attempt7 remains
 **PENDING**.
 
 ## Attempt4 input
@@ -74,11 +74,17 @@ Key checks are (including the review-blocker amendment at Module3 start
 - from Trigger dispatch until the received generation-2 HOLD, old route output
   is recorded as `pre_hold_inflight_outputs` but is not misclassified as a
   barrier violation.  Dispatch-to-HOLD receive latency must be no greater than
-  0.5 s or the probe STOPs.  From received HOLD until fresh publication, any
-  canonical route, progress, lookahead, goal-update/Navigate intent, or other
-  old route output is recorded with receive time/type/request identity and
-  immediately STOPs; this does not wait for the old terminal pair;
-- require one second without old route outputs, then publish fresh goal
+  0.5 s or the probe STOPs.  From received HOLD until the exact old terminal
+  pair completes, canonical route, progress, lookahead, and goal-update/
+  Navigate intent are recorded as `post_hold_pre_retirement_inflight` with
+  counts, receive times, and available request IDs.  This bounded interval is
+  at most 0.25 s; a mismatched request ID, late output, late/missing terminal,
+  or wrong terminal pair STOPs;
+- establish the coordinator retirement fence only when the probe has received
+  both old Bool `false` and exact JSON
+  `aborted/simulation_reset/reset_epoch=2`.  Any old output after that fence
+  immediately STOPs.  Require one second of quiet from that received-pair
+  fence, then publish fresh goal
   `(0.685, -3.975535, 1.570796327)` exactly once;
 - require a strictly newer request ID, the exact configured canonical edge
   list (default `[51,52]`, with no support-equivalent escape), Bool `true`,
@@ -109,11 +115,12 @@ atomic/fsynced JSON succeed does the process return zero with verdict
 best-effort writes to both the final STOP path and a distinct emergency STOP
 path.
 
-Callback monotonic times do **not** prove cross-topic source order. In-process
+Callback monotonic times do **not** prove cross-topic source order, and the
+terminal-pair fence does not claim a DDS total order. In-process
 completion is `PROVISIONAL_PASS_REQUIRES_BAG_ORDER`; after successful teardown
 and final persistence the verdict is `PASS_REQUIRES_BAG`. Both explicitly keep
 `engineering_pass=false`. Only an independent finalized-bag ordering analysis
-may promote the fresh Attempt5 episode to engineering PASS.
+may promote the fresh Attempt7 episode to engineering PASS.
 
 Example operator invocation after a fresh archive build:
 
@@ -122,7 +129,7 @@ ros2 run robot_experiments active_reset_probe \
   --output "$evidence_root/probe/active_reset_probe.json"
 ```
 
-Do not reuse Attempt4 or Attempt5 runtime state.  The next reviewer must start
+Do not reuse any Attempt4/5/6 runtime state.  The next reviewer must start
 a fresh isolated episode, bag the contracted topics independently, and compare
 the probe JSON with the finalized bag before making an engineering-runtime
 claim.
@@ -160,6 +167,31 @@ The Attempt5 exact seed 8601 receipt, one reset event, same-topic
 zero collision, and stable GT/EKF landing remain useful bounded evidence, but
 do not promote the stopped episode.  Attempt6 must be fresh.
 
+## Attempt6 failure input and retirement-fence amendment
+
+The immutable input is:
+
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt6_20260822T010744Z`
+
+Attempt6 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  The probe called
+Trigger exactly once and received generation-2 HOLD 0.175794 s later.  The
+finalized bag then recorded the old request-2 progress/lookahead/goal-update
+triplet at about 0.0076 s after HOLD, followed by the matching Bool `false`
+and exact `aborted/simulation_reset/reset_epoch=2` JSON at about 0.0089 s.
+No old route output was recorded after that terminal pair.  The stopped run
+did not publish or test the fresh route.
+
+The triplet and HOLD came from different DDS writers.  Source locking and the
+bag are consistent with already-published cross-topic in-flight delivery, but
+cannot prove a total order.  The probe therefore uses the coordinator-owned
+old terminal pair as the retirement fence: the HOLD-to-pair interval is
+observable and bounded to 0.25 s, while any old output after pair completion
+is fail-stop.  This is an engineering observation contract, not a
+reinterpretation or promotion of Attempt6.
+
+Attempt7 must use a fresh isolated runtime and finalized bag.  It remains
+**PENDING**.
+
 ## Deterministic validation
 
 Pure state-machine coverage includes exact endpoint identities and graph-change
@@ -185,3 +217,15 @@ names an older worktree.  Package-configured probe flake8, `py_compile`, and
 active_reset_probe --help`, and the direct installed entry point passed.  No
 ROS graph, Isaac, Nav2, navigation, reset, or evidence episode was launched by
 this amendment.
+
+The Attempt6 retirement-fence amendment validated source-first **82 passed**
+(44 probe-state plus 38 retained package-contract tests) and the same
+**82 passed** against the fresh install.  Package-configured flake8,
+`py_compile`, and `git diff --check` passed.  A clean-environment isolated
+build/install passed for `robot_experiments` at
+`/tmp/v6_probe_retirement_final_build.iQHvBF`, install
+`/tmp/v6_probe_retirement_final_install.m5R4AB`, and log
+`/tmp/v6_probe_retirement_final_log.RRYMMs`.  The installed import path,
+`ros2 run ... active_reset_probe --help`, and direct installed tests passed.
+No ROS graph, Isaac, Nav2, navigation, reset, evidence episode, engineering
+campaign, or formal qualification was launched by this amendment.

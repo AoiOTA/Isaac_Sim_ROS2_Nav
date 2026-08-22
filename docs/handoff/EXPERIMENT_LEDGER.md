@@ -1878,3 +1878,37 @@
 - Handoffs: `V6_ACTIVE_RESET_PROBE_20260822.md`,
   `V6_RESET_SEED_STOP_GATE_20260822.md`, and
   `V6_ROUTE_RESET_RETIREMENT_20260822.md`.
+
+## 2026-08-22 — Attempt6 coordinator-retirement-fence amendment
+
+- Goal: admit only the bounded cross-topic old-route delivery observed between
+  received HOLD and the matching coordinator abort pair, while preserving a
+  strict old-output fence before fresh navigation.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `4d356a5abfe6d0f6a4c7e77018300ccb75056383`. Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Immutable input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt6_20260822T010744Z`.
+  Attempt6 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  Its finalized bag
+  recorded one old request-2 progress/lookahead/goal-update triplet about
+  0.0076 s after HOLD, the exact abort pair about 0.0089 s after HOLD, and no
+  old output after that pair.  Fresh navigation was not exercised.
+- Changed only the active-reset probe, focused tests, this ledger, and
+  `V6_ACTIVE_RESET_PROBE_20260822.md`.  No route, gate, IMU, control,
+  Integration, or Module2 implementation changed.
+- Contract: dispatch-to-HOLD remains at most 0.5 s.  HOLD-to-old Bool `false`
+  plus exact `aborted/simulation_reset/reset_epoch=2` JSON is at most 0.25 s.
+  Pre-pair route callbacks are recorded with type/time/available request ID;
+  wrong ID, deadline overrun, missing/wrong/duplicate terminal, or any output
+  after pair completion is fail-stop.  Quiet remains one second from the
+  pair-completion fence.  Callback order does not claim a cross-topic DDS
+  total order, and final success remains provisional plus finalized-bag review.
+- Validation: source-first and fresh-installed probe plus retained package
+  contract each **82 passed**; package-configured flake8, `py_compile`, and
+  `git diff --check` passed.  Clean isolated package build/install passed at
+  `/tmp/v6_probe_retirement_final_build.iQHvBF`,
+  `/tmp/v6_probe_retirement_final_install.m5R4AB`, and
+  `/tmp/v6_probe_retirement_final_log.RRYMMs`; installed import and help passed.
+- Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
+  or evidence campaign was run.  Attempt7 remains **PENDING**.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.

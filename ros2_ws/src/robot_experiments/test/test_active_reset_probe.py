@@ -73,6 +73,12 @@ def _reset_to_quiet(machine=None):
     machine.gate_status(_gate("hold", held=True), 0.14)
     machine.command("/cmd_vel_sim", False, 0.145)
     machine.collision_event(False, 0.145)
+    # Attempt6 observed one cross-topic in-flight publish triplet 7.6 ms after
+    # HOLD and before the matching abort pair.  It is bounded evidence, not the
+    # coordinator-owned retirement fence.
+    machine.progress(2, 0.147)
+    machine.route_output("lookahead", 0.148)
+    machine.navigate_intent(0.149)
     machine.reset_event(0.15)
     # This can be a large teleport from the old active pose.  The stable-drift
     # gate starts with the first sample after reset_complete, not before the
@@ -260,7 +266,7 @@ def test_old_route_output_must_be_silent_for_quiet_window():
     """Old-epoch route output after its terminal pair is forbidden."""
     machine = _reset_to_quiet()
     machine.route_output("goal_update", 0.5)
-    assert machine.stop_reason == "old_output_after_hold_boundary:goal_update"
+    assert machine.stop_reason == "old_output_after_retirement_fence:goal_update"
 
 
 def test_fresh_failure_and_edge_mismatch_stop():
@@ -286,6 +292,7 @@ def test_fresh_request_must_be_strictly_newer_and_terminals_bind_epoch_reason():
 
     machine = _active()
     machine.reset_call_started(0.13)
+    machine.gate_status(_gate("hold", held=True), 0.135)
     machine.terminal_result(json.dumps({
         "request_id": 2,
         "status": "aborted",
@@ -514,8 +521,8 @@ def test_nonfinite_receive_time_and_twist_are_not_zero():
 
 
 @pytest.mark.parametrize("kind", ("canonical", "progress", "lookahead", "navigate"))
-def test_pre_hold_outputs_are_recorded_as_inflight_then_post_hold_stops(kind):
-    """Dispatch-to-HOLD output is observable; the received HOLD is the fence."""
+def test_pre_hold_and_post_hold_pre_retirement_outputs_are_inflight(kind):
+    """HOLD starts a bounded interval; the exact terminal pair is the fence."""
     machine = _active()
     machine.reset_call_started(0.13)
     if kind == "canonical":
@@ -541,15 +548,115 @@ def test_pre_hold_outputs_are_recorded_as_inflight_then_post_hold_stops(kind):
         machine.route_output("lookahead", 0.141)
     else:
         machine.navigate_intent(0.141)
-    assert machine.phase == "STOP"
+    assert machine.phase == "OBSERVE_HOLD_ABORT"
     expected_kind = "navigate_intent" if kind == "navigate" else kind
-    assert machine.stop_reason == (
-        f"old_output_after_hold_boundary:{expected_kind}"
+    assert machine.post_hold_pre_retirement_inflight[-1][
+        "received_monotonic_s"
+    ] == 0.141
+    assert machine.post_hold_pre_retirement_inflight[-1]["type"] == expected_kind
+    assert machine.post_hold_pre_retirement_counts[expected_kind] == 1
+
+
+def test_attempt6_triplet_then_exact_terminal_pair_reaches_fresh_route():
+    """Attempt6's bounded triplet retires at the abort pair, then quiet passes."""
+    machine = _reset_to_quiet()
+    inflight = machine.document()["old"]["post_hold_pre_retirement_inflight"]
+    assert inflight["total"] == 3
+    assert inflight["counts_by_type"] == {
+        "progress": 1, "lookahead": 1, "navigate_intent": 1,
+    }
+    assert machine.timestamps["coordinator_retirement_fence"] == pytest.approx(0.20)
+    assert machine.document()["old"]["coordinator_retirement_fence"][
+        "hold_to_fence_s"
+    ] == pytest.approx(0.06)
+    machine.tick(1.20)
+    assert machine.phase == "PUBLISH_FRESH_ONCE"
+
+
+def test_output_after_terminal_pair_is_fail_stop():
+    """Any old callback after pair completion crosses the retirement fence."""
+    machine = _reset_to_quiet()
+    machine.progress(2, 0.201)
+    assert machine.stop_reason == "old_output_after_retirement_fence:progress"
+    assert machine.post_retirement_outputs[-1]["request_id"] == 2
+
+
+def test_old_terminal_pair_timeout_and_late_inflight_are_fail_stop():
+    """The HOLD-to-retirement interval cannot exceed 0.25 seconds."""
+    machine = _active()
+    machine.reset_call_started(0.13)
+    machine.gate_status(_gate("hold", held=True), 0.14)
+    machine.tick(0.391)
+    assert machine.stop_reason == "old_terminal_pair_timeout"
+
+    late = _active()
+    late.reset_call_started(0.13)
+    late.gate_status(_gate("hold", held=True), 0.14)
+    late.route_output("lookahead", 0.391)
+    assert late.stop_reason == (
+        "old_inflight_after_retirement_deadline:lookahead"
     )
-    assert machine.old_outputs_after_hold_boundary[-1]["received_monotonic_s"] == 0.141
-    assert machine.old_outputs_after_hold_boundary[-1]["type"] == (
-        "navigate_intent" if kind == "navigate" else kind
-    )
+
+
+def test_multiple_inflight_outputs_are_bounded_and_wrong_id_stops():
+    """Multiple callbacks are observable inside the window, never for another ID."""
+    machine = _active()
+    machine.reset_call_started(0.13)
+    machine.gate_status(_gate("hold", held=True), 0.14)
+    machine.progress(2, 0.15)
+    machine.progress(2, 0.20)
+    machine.canonical(2, [51, 52, 30], 0.30)
+    assert machine.phase == "OBSERVE_HOLD_ABORT"
+    assert machine.post_hold_pre_retirement_counts == {
+        "progress": 2, "canonical": 1,
+    }
+
+    wrong = _active()
+    wrong.reset_call_started(0.13)
+    wrong.gate_status(_gate("hold", held=True), 0.14)
+    wrong.progress(99, 0.15)
+    assert wrong.stop_reason == "old_inflight_request_id_mismatch:progress"
+
+
+def test_old_terminal_wrong_pair_late_pair_and_duplicate_stop():
+    """Abort pair identity, deadline, and exactly-once delivery are strict."""
+    wrong = _active()
+    wrong.reset_call_started(0.13)
+    wrong.gate_status(_gate("hold", held=True), 0.14)
+    wrong.terminal_bool(True, 0.15)
+    assert wrong.stop_reason == "old_terminal_true"
+
+    late = _active()
+    late.reset_call_started(0.13)
+    late.gate_status(_gate("hold", held=True), 0.14)
+    late.terminal_bool(False, 0.391)
+    assert late.stop_reason == "old_terminal_after_retirement_deadline:bool"
+
+    duplicate = _active()
+    duplicate.reset_call_started(0.13)
+    duplicate.gate_status(_gate("hold", held=True), 0.14)
+    duplicate.terminal_bool(False, 0.15)
+    duplicate.terminal_bool(False, 0.16)
+    assert duplicate.stop_reason == "duplicate_old_terminal_bool"
+
+    result_first = _active()
+    result_first.reset_call_started(0.13)
+    result_first.gate_status(_gate("hold", held=True), 0.14)
+    result_first.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.15)
+    result_first.terminal_bool(False, 0.16)
+    assert result_first.timestamps["coordinator_retirement_fence"] == 0.16
+    result_first.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.17)
+    assert result_first.stop_reason == "duplicate_or_invalid_old_result"
 
 
 def test_dispatch_to_hold_latency_is_bounded_and_reported():
