@@ -1912,3 +1912,39 @@
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt7 remains **PENDING**.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Attempt7 reset-owned subscriber GID-rotation amendment
+
+- Goal: admit only the reset-owned Isaac control-subscription GID replacement
+  observed in Attempt7, without weakening any other safety-critical topology
+  identity or functional command-coverage check.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `12b74ba84f76b921695c92b8fd4d31caded32284`.  Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Immutable input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt7_20260822T013726Z`.
+  Attempt7 remains **ENGINEERING FAIL / STOP / NOT FORMAL**: the probe stopped
+  at `post_release` after the exact
+  `/_World_Graphs_Control_SubscribeTwist` subscription GID changed from
+  `010fa6bfc4c415930100000000000604` to
+  `010fa6bfc4c415930100000000001604`; fresh navigation was not exercised.
+- Changed only `active_reset_probe.py`, focused tests, this ledger and
+  `V6_ACTIVE_RESET_PROBE_20260822.md`.  No route, reset-gate, IMU, control,
+  Integration, or Module2 implementation changed.
+- Contract: all semantic endpoints/GIDs are strict through `pre_reset`.
+  `post_release`/`pre_fresh` may contain only one exact reset-owned
+  `/cmd_vel_sim` subscription replacement, with stable node/name/namespace/
+  type/count, old GID absent, new GID unique, and no publisher or unrelated GID
+  delta.  The accepted replacement persists through `pre_fresh` and is recorded
+  under `topology_gid_rotations`.  Discrete snapshots do not prove absence of
+  instantaneous overlap; callback coverage remains an independent authority
+  check.
+- Validation: source-first focused **54 passed** and fresh-installed focused
+  **54 passed**.  Package-configured flake8, `py_compile`, `git diff --check`,
+  installed import path and entry-point help passed.  Fresh isolated package
+  build/install passed at `/tmp/v6_probe_gid_rotation_build.tQuspc`,
+  `/tmp/v6_probe_gid_rotation_install.NC1gLQ`, and
+  `/tmp/v6_probe_gid_rotation_log.pnCbdh`.
+- Verdict: **PASS (code/build/unit only)**.  No live runtime was launched;
+  Attempt8 remains **PENDING**.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.

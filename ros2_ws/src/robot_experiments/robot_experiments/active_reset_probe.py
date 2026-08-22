@@ -7,6 +7,7 @@ without a simulator.  The ROS adapter only translates topic/service events.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 import os
@@ -28,6 +29,13 @@ DEFAULT_ROUTE_SUBSCRIBERS = (
     "/bio_nav_route_coordinator",
     "/rosbag2_recorder",
 )
+RESET_OWNED_SUBSCRIBER = {
+    "node": "/_World_Graphs_Control_SubscribeTwist",
+    "node_name": "_World_Graphs_Control_SubscribeTwist",
+    "node_namespace": "/",
+    "topic_type": "geometry_msgs/msg/Twist",
+    "endpoint_type": "SUBSCRIPTION",
+}
 MAX_COVERAGE_GAP_S = 0.25
 PROVISIONAL_MONITOR_S = 0.25
 GROUND_TRUTH_TOPIC = "/ground_truth/odom"
@@ -75,6 +83,8 @@ def _endpoint_document(info: Any) -> dict[str, str]:
         "node": _node_full_name(info.node_namespace, info.node_name),
         "node_name": str(info.node_name),
         "node_namespace": str(info.node_namespace),
+        "topic_type": str(info.topic_type),
+        "endpoint_type": str(getattr(info.endpoint_type, "name", info.endpoint_type)),
         "gid": _gid_hex(info.endpoint_gid),
     }
 
@@ -104,7 +114,75 @@ def validate_topology_snapshot(
                 f"{topic}:{direction}:expected={sorted(expected)}:"
                 f"observed={list(observed)}"
             )
+    reset_owned = [
+        row for row in topics.get("/cmd_vel_sim", {}).get("subscriptions", [])
+        if row.get("node") == RESET_OWNED_SUBSCRIBER["node"]
+    ]
+    if len(reset_owned) != 1:
+        errors.append(
+            "/cmd_vel_sim:subscriptions:reset_owned_count:expected=1:"
+            f"observed={len(reset_owned)}"
+        )
+    elif any(
+        reset_owned[0].get(key) != value
+        for key, value in RESET_OWNED_SUBSCRIBER.items()
+    ):
+        errors.append(
+            "/cmd_vel_sim:subscriptions:reset_owned_identity:"
+            f"expected={RESET_OWNED_SUBSCRIBER}:observed={reset_owned[0]}"
+        )
     return errors
+
+
+def _reset_owned_gid_rotation(
+    baseline: dict[str, Any], snapshot: dict[str, Any], checkpoint: str
+) -> tuple[dict[str, str] | None, str | None]:
+    """Admit one reset-owned subscription GID replacement and no other delta."""
+    if snapshot == baseline:
+        return None, None
+    before_rows = baseline.get("topics", {}).get(
+        "/cmd_vel_sim", {}
+    ).get("subscriptions", [])
+    after_rows = snapshot.get("topics", {}).get(
+        "/cmd_vel_sim", {}
+    ).get("subscriptions", [])
+    before = [
+        row for row in before_rows
+        if row.get("node") == RESET_OWNED_SUBSCRIBER["node"]
+    ]
+    after = [
+        row for row in after_rows
+        if row.get("node") == RESET_OWNED_SUBSCRIBER["node"]
+    ]
+    if len(before) != 1 or len(after) != 1:
+        return None, "reset_owned_endpoint_count_changed"
+    if any(
+        before[0].get(key) != value or after[0].get(key) != value
+        for key, value in RESET_OWNED_SUBSCRIBER.items()
+    ):
+        return None, "reset_owned_endpoint_identity_changed"
+    old_gid = str(before[0].get("gid", ""))
+    new_gid = str(after[0].get("gid", ""))
+    if not old_gid or not new_gid or old_gid == new_gid:
+        return None, "topology_delta_is_not_gid_replacement"
+
+    normalized = copy.deepcopy(snapshot)
+    normalized_rows = normalized["topics"]["/cmd_vel_sim"]["subscriptions"]
+    normalized_target = [
+        row for row in normalized_rows
+        if row.get("node") == RESET_OWNED_SUBSCRIBER["node"]
+    ]
+    normalized_target[0]["gid"] = old_gid
+    if normalized != baseline:
+        return None, "topology_delta_exceeds_reset_owned_gid"
+    return {
+        "topic": "/cmd_vel_sim",
+        "direction": "subscriptions",
+        "node": RESET_OWNED_SUBSCRIBER["node"],
+        "old_gid": old_gid,
+        "new_gid": new_gid,
+        "checkpoint": checkpoint,
+    }, None
 
 
 def _coverage_summary(
@@ -194,6 +272,7 @@ class ProbeMachine:
     endpoint_detail: dict[str, Any] = field(default_factory=dict)
     topology_checks: list[dict[str, Any]] = field(default_factory=list)
     topology_baseline: dict[str, Any] | None = None
+    topology_gid_rotations: list[dict[str, str]] = field(default_factory=list)
     old_request_id: int | None = None
     fresh_request_id: int | None = None
     old_edges: list[int] = field(default_factory=list)
@@ -371,8 +450,23 @@ class ProbeMachine:
             return
         if self.topology_baseline is None:
             self.topology_baseline = snapshot
-        elif snapshot != self.topology_baseline:
-            self.stop(f"topology_changed:{label}", now)
+            return
+        if label == "pre_reset":
+            if snapshot != self.topology_baseline:
+                self.stop(f"topology_changed:{label}", now)
+            return
+        if self.topology_gid_rotations:
+            previous = self.topology_checks[-2]["snapshot"]
+            if snapshot != previous:
+                self.stop(f"topology_changed:{label}", now)
+            return
+        rotation, rotation_error = _reset_owned_gid_rotation(
+            self.topology_baseline, snapshot, label
+        )
+        if rotation_error:
+            self.stop(f"topology_changed:{label}:{rotation_error}", now)
+        elif rotation is not None:
+            self.topology_gid_rotations.append(rotation)
 
     def old_published(self, now: float) -> None:
         """Record the sole old-goal publication."""
@@ -1217,6 +1311,7 @@ class ProbeMachine:
                 "requires_external_bag_order_analysis": True,
                 "callback_times_are_receive_order_not_source_order": True,
                 "retirement_fence_does_not_claim_cross_topic_dds_total_order": True,
+                "topology_snapshots_do_not_prove_instantaneous_gid_overlap": True,
             },
             "stop_reason": self.stop_reason,
             "config": asdict(self.config),
@@ -1233,6 +1328,7 @@ class ProbeMachine:
             "endpoints": dict(self.endpoint_detail),
             "pose_contract": self.pose_contract,
             "topology_checks": list(self.topology_checks),
+            "topology_gid_rotations": list(self.topology_gid_rotations),
             "old": {
                 "request_id": self.old_request_id,
                 "edges": self.old_edges,

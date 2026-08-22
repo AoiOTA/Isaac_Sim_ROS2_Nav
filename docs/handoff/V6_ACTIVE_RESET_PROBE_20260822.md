@@ -229,3 +229,47 @@ build/install passed for `robot_experiments` at
 `ros2 run ... active_reset_probe --help`, and direct installed tests passed.
 No ROS graph, Isaac, Nav2, navigation, reset, evidence episode, engineering
 campaign, or formal qualification was launched by this amendment.
+
+## Attempt7 reset-owned subscriber GID-rotation amendment
+
+The immutable input is:
+
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt7_20260822T013726Z`
+
+Attempt7 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  Its `prepublish`
+and `pre_reset` topology snapshots were exactly stable.  At `post_release`,
+the sole `/cmd_vel_sim` subscription owned by
+`/_World_Graphs_Control_SubscribeTwist` retained its node name, namespace,
+topic type, endpoint type and count, but its GID changed from
+`010fa6bfc4c415930100000000000604` to
+`010fa6bfc4c415930100000000001604`.  The old probe treated that reset-owned
+replacement as an arbitrary topology change and stopped before publishing the
+fresh route.
+
+The probe now admits at most one such replacement after reset release.  Every
+semantic endpoint and GID remains strictly identical from `prepublish` through
+`pre_reset`.  At `post_release` or `pre_fresh`, the only allowed delta is one
+old GID disappearing and one new GID appearing for the exact reset-owned
+`geometry_msgs/msg/Twist` subscription; endpoint overlap, count changes,
+identity/type changes, publisher changes, unrelated GID changes, reversion, or
+a second rotation remain fail-stop.  Accepted changes are written to
+`topology_gid_rotations` with topic, direction, node, old/new GIDs and the
+checkpoint.  The `pre_fresh` snapshot must preserve the accepted replacement.
+
+This is a discrete graph-snapshot contract.  It does not prove that no
+instantaneous DDS endpoint overlap occurred between checkpoints.
+`/cmd_vel_sim` callback coverage and zero/nonzero behavior remain an independent
+functional authority check and are not inferred from topology identity.
+
+Source-first focused tests passed **54 tests**; the same **54 tests** passed
+against the fresh install.  Package-configured flake8, `py_compile`,
+`git diff --check`, installed import-path assertion and installed entry-point
+help passed.  Fresh isolated `robot_experiments` build/install passed at
+`/tmp/v6_probe_gid_rotation_build.tQuspc`,
+`/tmp/v6_probe_gid_rotation_install.NC1gLQ`, and
+`/tmp/v6_probe_gid_rotation_log.pnCbdh`.
+
+Verdict: **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
+navigation, reset, evidence episode, engineering campaign, or formal
+qualification was launched.  Attempt8 remains **PENDING** and must use a fresh
+isolated runtime plus finalized bag.

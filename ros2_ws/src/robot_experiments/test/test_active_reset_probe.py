@@ -384,48 +384,237 @@ def test_postzero_nonzero_or_missing_chain_stops():
     assert machine.stop_reason.startswith("postzero_contract_failed:")
 
 
-def _snapshot(*, route_subscribers=None, cmd_publisher="/collision_monitor"):
-    def endpoints(*names):
-        return [
-            {"node": name, "node_name": name.rsplit("/", 1)[-1],
-             "node_namespace": "/", "gid": f"gid-{index}"}
-            for index, name in enumerate(names)
-        ]
+def _endpoint(node, gid, endpoint_type, topic_type="geometry_msgs/msg/Twist"):
+    return {
+        "node": node,
+        "node_name": node.rsplit("/", 1)[-1],
+        "node_namespace": "/",
+        "topic_type": topic_type,
+        "endpoint_type": endpoint_type,
+        "gid": gid,
+    }
 
+
+def _topic(publishers, subscriptions):
+    return {
+        "publishers": publishers,
+        "subscriptions": subscriptions,
+        "publisher_count": len(publishers),
+        "subscription_count": len(subscriptions),
+    }
+
+
+def _attempt7_snapshot(
+    control_gid="010fa6bfc4c415930100000000000604",
+):
+    """Reproduce the exact semantic endpoint identities/GIDs from Attempt7."""
+    route_type = "geometry_msgs/msg/PoseStamped"
     return {"topics": {
-        "/cmd_vel": {
-            "publishers": endpoints(cmd_publisher), "subscriptions": [],
-        },
-        "/cmd_vel_sim": {
-            "publishers": endpoints("/isaac_navigation_sim"),
-            "subscriptions": [],
-        },
-        "/bio_nav/route_goal": {
-            "publishers": endpoints("/v6_active_reset_probe"),
-            "subscriptions": endpoints(*(
-                route_subscribers or
-                ("/bio_nav_route_coordinator", "/rosbag2_recorder")
-            )),
-        },
+        "/bio_nav/route_goal": _topic(
+            [_endpoint(
+                "/v6_active_reset_probe",
+                "010fa6bfafe159de0000000000001403",
+                "PUBLISHER",
+                route_type,
+            )],
+            [
+                _endpoint(
+                    "/bio_nav_route_coordinator",
+                    "010fa6bfa7cb13920000000000002204",
+                    "SUBSCRIPTION",
+                    route_type,
+                ),
+                _endpoint(
+                    "/rosbag2_recorder",
+                    "010fa6bfd0dc8c030000000000004804",
+                    "SUBSCRIPTION",
+                    route_type,
+                ),
+            ],
+        ),
+        "/cmd_vel": _topic(
+            [_endpoint(
+                "/collision_monitor",
+                "010fa6bfa6cbe97b0000000000002703",
+                "PUBLISHER",
+            )],
+            [
+                _endpoint(
+                    "/isaac_navigation_sim",
+                    "010fa6bfc4c415930000000000001604",
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/isaac_navigation_sim",
+                    "010fa6bfc4c415930000000000003204",
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/rosbag2_recorder",
+                    "010fa6bfd0dc8c030000000000002f04",
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/v6_active_reset_probe",
+                    "010fa6bfafe159de0000000000002404",
+                    "SUBSCRIPTION",
+                ),
+            ],
+        ),
+        "/cmd_vel_sim": _topic(
+            [_endpoint(
+                "/isaac_navigation_sim",
+                "010fa6bfc4c415930000000000001403",
+                "PUBLISHER",
+            )],
+            [
+                _endpoint(
+                    "/_World_Graphs_Control_SubscribeTwist",
+                    control_gid,
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/isaac_navigation_sim",
+                    "010fa6bfc4c415930000000000002104",
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/isaac_navigation_sim",
+                    "010fa6bfc4c415930000000000002204",
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/rosbag2_recorder",
+                    "010fa6bfd0dc8c030000000000003704",
+                    "SUBSCRIPTION",
+                ),
+                _endpoint(
+                    "/v6_active_reset_probe",
+                    "010fa6bfafe159de0000000000002504",
+                    "SUBSCRIPTION",
+                ),
+            ],
+        ),
     }}
 
 
-def test_topology_identity_is_exact_and_changes_stop_at_checkpoint():
-    """Counts without the expected identities cannot authorize a side effect."""
-    expected = ("/bio_nav_route_coordinator", "/rosbag2_recorder")
-    assert not validate_topology_snapshot(_snapshot(), expected)
-    errors = validate_topology_snapshot(
-        _snapshot(cmd_publisher="/unexpected_collision_monitor"), expected
+def _topology_sequence(machine, prepublish, pre_reset, post_release, pre_fresh):
+    for index, (label, snapshot) in enumerate(zip(
+        ("prepublish", "pre_reset", "post_release", "pre_fresh"),
+        (prepublish, pre_reset, post_release, pre_fresh),
+    )):
+        machine.topology_checked(
+            label,
+            snapshot,
+            validate_topology_snapshot(
+                snapshot,
+                ("/bio_nav_route_coordinator", "/rosbag2_recorder"),
+            ),
+            index * 0.1,
+        )
+
+
+def test_attempt7_reset_owned_gid_rotation_is_recorded_and_persists():
+    """The one Attempt7 reset-owned replacement is admitted and documented."""
+    old = _attempt7_snapshot()
+    new = _attempt7_snapshot("010fa6bfc4c415930100000000001604")
+    machine = ProbeMachine()
+    _topology_sequence(machine, old, old, new, new)
+    assert machine.stop_reason is None
+    assert machine.topology_gid_rotations == [{
+        "topic": "/cmd_vel_sim",
+        "direction": "subscriptions",
+        "node": "/_World_Graphs_Control_SubscribeTwist",
+        "old_gid": "010fa6bfc4c415930100000000000604",
+        "new_gid": "010fa6bfc4c415930100000000001604",
+        "checkpoint": "post_release",
+    }]
+    assert machine.document()["topology_gid_rotations"] == (
+        machine.topology_gid_rotations
     )
-    assert errors and "/cmd_vel:publishers" in errors[0]
+
+
+def test_same_gid_at_all_topology_checkpoints_passes_without_rotation():
+    """A reset that preserves the endpoint GID still satisfies the contract."""
+    snapshot = _attempt7_snapshot()
+    machine = ProbeMachine()
+    _topology_sequence(machine, snapshot, snapshot, snapshot, snapshot)
+    assert machine.stop_reason is None
+    assert machine.topology_gid_rotations == []
+
+
+@pytest.mark.parametrize(
+    "change",
+    (
+        "two_replacements", "count", "name", "type", "publisher_gid",
+        "other_gid",
+    ),
+)
+def test_only_one_reset_owned_subscriber_gid_replacement_is_admitted(change):
+    """Counts, identity, type, publishers and unrelated GIDs remain strict."""
+    baseline = _attempt7_snapshot()
+    changed = _attempt7_snapshot("010fa6bfc4c415930100000000001604")
+    rows = changed["topics"]["/cmd_vel_sim"]["subscriptions"]
+    if change == "two_replacements":
+        rows.append(_endpoint(
+            "/_World_Graphs_Control_SubscribeTwist",
+            "010fa6bfc4c415930100000000002604",
+            "SUBSCRIPTION",
+        ))
+        changed["topics"]["/cmd_vel_sim"]["subscription_count"] += 1
+    elif change == "count":
+        rows.pop()
+        changed["topics"]["/cmd_vel_sim"]["subscription_count"] -= 1
+    elif change == "name":
+        rows[0]["node"] = "/unexpected_SubscribeTwist"
+        rows[0]["node_name"] = "unexpected_SubscribeTwist"
+    elif change == "type":
+        rows[0]["topic_type"] = "geometry_msgs/msg/TwistStamped"
+    elif change == "publisher_gid":
+        changed["topics"]["/cmd_vel_sim"]["publishers"][0]["gid"] = "new-pub"
+    else:
+        rows[3]["gid"] = "new-recorder"
 
     machine = ProbeMachine()
-    baseline = _snapshot()
     machine.topology_checked("prepublish", baseline, [], 0.0)
     machine.topology_checked("pre_reset", baseline, [], 0.1)
-    changed = _snapshot(route_subscribers=("/bio_nav_route_coordinator",))
-    machine.topology_checked("post_release", changed, [], 0.2)
-    assert machine.stop_reason == "topology_changed:post_release"
+    errors = validate_topology_snapshot(
+        changed, ("/bio_nav_route_coordinator", "/rosbag2_recorder")
+    )
+    machine.topology_checked("post_release", changed, errors, 0.2)
+    assert machine.phase == "STOP"
+
+
+def test_reset_owned_gid_rotation_before_reset_is_rejected():
+    """No GID change is admitted between prepublish and pre-reset."""
+    baseline = _attempt7_snapshot()
+    changed = _attempt7_snapshot("010fa6bfc4c415930100000000001604")
+    machine = ProbeMachine()
+    machine.topology_checked("prepublish", baseline, [], 0.0)
+    machine.topology_checked("pre_reset", changed, [], 0.1)
+    assert machine.stop_reason == "topology_changed:pre_reset"
+
+
+def test_reset_owned_gid_rotation_must_persist_at_fresh_checkpoint():
+    """The accepted post-release endpoint cannot rotate again before fresh."""
+    old = _attempt7_snapshot()
+    new = _attempt7_snapshot("010fa6bfc4c415930100000000001604")
+    newer = _attempt7_snapshot("010fa6bfc4c415930100000000002604")
+    machine = ProbeMachine()
+    _topology_sequence(machine, old, old, new, newer)
+    assert machine.stop_reason == "topology_changed:pre_fresh"
+
+
+def test_topology_expected_identity_remains_exact():
+    """Named publisher requirements remain fail-stop at every checkpoint."""
+    snapshot = _attempt7_snapshot()
+    snapshot["topics"]["/cmd_vel"]["publishers"][0]["node"] = (
+        "/unexpected_collision_monitor"
+    )
+    errors = validate_topology_snapshot(
+        snapshot, ("/bio_nav_route_coordinator", "/rosbag2_recorder")
+    )
+    assert errors and "/cmd_vel:publishers" in errors[0]
 
 
 def test_cli_has_exact_identity_defaults_and_no_support_equivalent_escape(tmp_path):
