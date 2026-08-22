@@ -459,14 +459,16 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   use_teleop:=false \
   "project_root:=${M3}"
 nav_deadline=$((SECONDS + 420))
+nav_ready=0
 while (( SECONDS < nav_deadline )); do
   assert_alive navigation
   if ros2 topic list 2>/dev/null | grep -qx "/bio_nav/route_goal_complete"; then
+    nav_ready=1
     break
   fi
   sleep 5
 done
-ros2 topic list | grep -qx "/bio_nav/route_goal_complete" || \
+[[ "${nav_ready}" == 1 ]] || \
   _stop "navigation stack did not expose /bio_nav/route_goal_complete; see logs/navigation.log"
 
 STAGE="bridge"
