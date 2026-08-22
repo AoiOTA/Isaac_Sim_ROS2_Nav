@@ -179,7 +179,7 @@ set -u
 
 ROBOT_EXPERIMENTS_PREFIX="$(ros2 pkg prefix robot_experiments)"
 echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
-[[ "${ROBOT_EXPERIMENTS_PREFIX}" == "${M3_INSTALL}" ]] || \
+[[ "${ROBOT_EXPERIMENTS_PREFIX}" == "${M3_INSTALL}/robot_experiments" ]] || \
   _stop "robot_experiments resolves outside the snapshot install: ${ROBOT_EXPERIMENTS_PREFIX}"
 SHARE="${ROBOT_EXPERIMENTS_PREFIX}/share/robot_experiments"
 
