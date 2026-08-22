@@ -2242,3 +2242,91 @@
   `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_layout_single_obstacle_20260822T144924Z/`.
 - Verdict: **PASS (static contract only)**. Isaac/ROS/Nav2 runtime not started;
   closed-loop passability under estimated odometry must be shown by a live run.
+
+## 2026-08-22 — V6 Phase-1 R5 live #1: leg G1→G2 passes; runner state regression stops episode
+
+- Goal: first live run of the single-obstacle layout (`v6_low_box_solo`) under
+  the R5 session driver; verify the Phase-0 passability goal.
+- Snapshot `/tmp/v6_r5_phase1.OXoJdO2W`: module3 `f8782e5` (layout 6→1),
+  integration `9c94c82`, module2 `2925f80`; isolated `install_r5` builds PASS.
+- Run: `scripts/v6_reset_cold_boundary_r5_session.sh RUN_DIR SNAPSHOT_ROOT`,
+  ROS_DOMAIN_ID 173, seed 7201 (only episode; driver stops on first failure).
+- Result: leg G1→G2 physically succeeded, no collision — final GT error
+  0.161 m (tol 0.25), min box-center distance 0.75 m. Episode FAIL:
+  `route_completion_timeout:G2` — runner `_maybe_goal_ready()` regresses
+  NAVIGATING → GOAL_READY on the next prior/AMCL callback, so 176 route_progress
+  and the completion signal were captured but never counted; leg loop waited the
+  full 300 s. Boundary six invariants PASS (manual replication,
+  `analysis_boundary_invariants_manual.json`). Tooling bug found:
+  `scripts/v6_reset_boundary_check.py` crashes on bags with a recorded reset
+  event (float-unpack TypeError at :240). Module2 shadow: no discrete
+  `v6_low_box_solo` detection during the box pass; layer status 274×
+  applied=false.
+- Evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_reset_cold_boundary_r5_phase1_20260822T152936Z`
+  (`REVIEWER_NOTE.md`, bag `rosbag/r5_session`, `analysis_bag_phase1.json`,
+  `analysis_boundary_invariants_manual.json`, `analysis_cognitive_obstacles.json`,
+  `trajectory_overlay_phase1.png`).
+- Verdict: **PHASE 1 FAIL (runner contract defect)** — Phase-0 objective itself
+  validated (collision-free G1→G2 under estimated odometry).
+- Next: minimal `_maybe_goal_ready` guard + checker float fix, then rerun the
+  same session driver.
+
+## 2026-08-22 — V6 Phase-1 R5 live #2 (rerun): runner/checker fixes confirmed; G2→G3 collision
+
+- Goal: live-validate the runner state-machine fix and boundary-checker float
+  fix (module3 `6f4efef`).
+- Snapshot `/tmp/v6_r5_phase1_rerun.yL3KuU8p`: module3 `6f4efef`, integration
+  `9c94c82`, module2 `2925f80`; same R5 session driver, seed 7201, domain 173.
+- Result: runner fix confirmed — leg G2 completed and counted
+  (`completed_leg_ids=["G2"]`, progress 213 / completion 1 / results 2 vs 0/0/0
+  in live #1) and leg G3 dispatched; fixed checker ran end-to-end, six
+  invariants PASS (overall pass=false driven only by the real collision).
+  New blocker: leg G2→G3 collided with static `livingroom_595/cabinet_0003` at
+  map (-0.60, 3.17) (doorway corner, in static map) — AMCL–GT error 0.20–0.25 m
+  at contact plus insufficient clearance margin; Nav2 aborted error_104 after
+  ~3.5 s pushing. Module2 shadow baseline reproduced: no discrete
+  `v6_low_box_solo` detection during the box pass.
+- Evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_reset_cold_boundary_r5_phase1_rerun_20260822T173340Z`
+  (`REVIEWER_NOTE.md`, `analysis/boundary_checks.json`,
+  `analysis_module2_health_baseline.json`, `trajectory_overlay_phase1_rerun.png`).
+- Verdict: **PHASE 1 FAIL (navigation clearance margin under estimated
+  odometry)** — not the runner, not Phase-0 layout, not boundary invariants.
+- Next: widen v6 margin — committed as `fd01d0ac` (footprint_padding 0.03,
+  inflation_radius 0.55, v6 overlay only). Multi-episode same-stack re-arm
+  still unproven live.
+
+## 2026-08-22 — V6 Phase-1 R5 live #3 (all-fix): F1/F2 confirmed active; stationary bootstrap deadlock
+
+- Goal: live-verify the full fix stack — module3 `fd01d0ac` (layout + runner +
+  v6 margin), integration `c72ce867` (F1 remove 50× motion amplification + F2
+  adapter injection), module2 `4e38152a` (confidence decoupling).
+- Snapshot `/tmp/v6_r5_phase1_allfix.uVC8KVby`; same R5 session driver, seed
+  7201, domain 173.
+- Result: episode STOP `post_reset_readiness_timeout`, no goal published, robot
+  never moved (GT span 0.0 m, no collision). F1/F2 effects confirmed: post-reset
+  module1/module2/model_output unhealthy 152→4 vs previous run;
+  `cognitive_obstacle_layer/status` applied=true 2764 (epoch 2) — F2+4e38152a
+  chain now writes obstacles into the costmap. New blocker (root cause): with F1
+  the parked robot produces zero motion freshness (`stale_input` 832/1078), and
+  the stationary startup revalidation window is closed by the first post-reset
+  initialpose, so 1073/1078 planning priors age past the B4 candidate TTL → all
+  localization candidates rejected → readiness never satisfied (bootstrap
+  deadlock; readiness chain had implicitly depended on the 50× noise
+  amplification). Checker: six invariants PASS; the two false flags are
+  zero-goal window artifacts. Evidence gap recorded: the bag did not record
+  `/bio_nav/module2/cognitive_obstacles` and the runner status capture lacked
+  `raised_cell_count`, so the 2764 writes cannot be classified true vs false
+  positive — gap closed by `ffbd7ba` (session rosbag topic + runner capture
+  field) for the next live run.
+- Evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_reset_cold_boundary_r5_phase1_allfix_20260822T182350Z`
+  (`REVIEWER_NOTE.md`, `analysis/boundary_checks.json`,
+  `analysis_readiness_allfix.json`, `analysis_shadow_f1f2.json`,
+  `trajectory_overlay_phase1_allfix.png`).
+- Verdict: **PHASE 1 FAIL (F1 × B4 bootstrap interaction defect, integration
+  side)** — not the runner, not margin, not module2, not boundary invariants.
+- Next: integration fix in progress (keep the stationary revalidation window
+  open across the first initialpose, or a motion-independent B4 freshness
+  criterion); then rerun this driver — multi-episode re-arm still unproven.
