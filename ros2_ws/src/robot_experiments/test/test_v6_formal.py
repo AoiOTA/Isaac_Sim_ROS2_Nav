@@ -48,6 +48,7 @@ def ready_guard(*legs: str) -> EpisodeGuard:
     )
     guard.record_reset_call()
     guard.record_reset_response(True)
+    guard.record_reset_receipt_generation(1)
     guard.record_reset_event()
     guard.record_bridge(1, "session-1", True)
     guard.record_startup_consensus(True)
@@ -63,6 +64,37 @@ def ready_guard(*legs: str) -> EpisodeGuard:
         observation_valid=True, input_healthy=True,
     )
     guard.record_navigation_ready(nav2_active=True, tf_active=True)
+    guard.record_reset_gate_status(1, True)
+    guard.record_reset_gate_status(1, False)
+    return guard
+
+
+def gate_held_guard(*legs: str) -> EpisodeGuard:
+    """Full readiness chain except the ResetStopGate release (live R5 race)."""
+    guard = EpisodeGuard(mission_leg_ids=legs)
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
+    )
+    guard.record_reset_call()
+    guard.record_reset_response(True)
+    guard.record_reset_receipt_generation(1)
+    guard.record_reset_event()
+    guard.record_bridge(1, "session-1", True)
+    guard.record_startup_consensus(True)
+    guard.record_initialpose(100)
+    guard.record_amcl(101)
+    guard.record_bridge(2, "session-2", False)
+    guard.record_b5_diagnostic(
+        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
+        candidate_generation="epoch=2,session=session-2",
+    )
+    guard.record_prior(
+        2, "session-2", trusted_write=True, module2_healthy=True,
+        observation_valid=True, input_healthy=True,
+    )
+    guard.record_navigation_ready(nav2_active=True, tf_active=True)
+    guard.record_reset_gate_status(1, True)
     return guard
 
 
@@ -134,6 +166,52 @@ def test_multileg_order_mismatch_stops_before_publish():
     with pytest.raises(V6ContractError, match="mission_leg_order"):
         guard.record_goal_publication("G3")
     assert guard.goal_publications == 0
+
+
+def test_goal_waits_for_reset_gate_release_of_receipt_generation():
+    guard = gate_held_guard("G2")
+    assert not guard.reset_gate_released
+    assert not guard.goal_ready
+    guard.record_reset_gate_status(1, False)
+    assert guard.reset_gate_released
+    assert guard.goal_ready
+    guard.record_goal_publication("G2")
+    assert guard.state == "NAVIGATING"
+    # The latched fact is not regressed by duplicate gate traffic.
+    guard.record_reset_gate_status(1, False)
+    assert guard.state == "NAVIGATING"
+
+
+def test_goal_publication_refused_while_reset_gate_holds():
+    guard = gate_held_guard("G2")
+    with pytest.raises(V6ContractError, match="not_authorized"):
+        guard.record_goal_publication("G2")
+    assert guard.goal_publications == 0
+
+
+def test_stale_reset_gate_release_does_not_arm_goal_readiness():
+    guard = gate_held_guard("G2")
+    guard.record_reset_gate_status(0, False)  # pre-reset generation release
+    assert not guard.goal_ready
+    guard.record_reset_gate_status(7, False)  # unknown future generation
+    assert not guard.goal_ready
+    with pytest.raises(V6ContractError, match="not_authorized"):
+        guard.record_goal_publication("G2")
+    assert guard.goal_publications == 0
+
+
+def test_reset_gate_release_before_receipt_binding_is_not_lost():
+    guard = EpisodeGuard(mission_leg_ids=("G2",))
+    guard.arm_reset(
+        ready_facts(), 0, "session-0",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
+    )
+    guard.record_reset_call()
+    guard.record_reset_response(True)
+    guard.record_reset_gate_status(1, False)
+    assert not guard.reset_gate_released  # no receipt generation bound yet
+    guard.record_reset_receipt_generation(1)
+    assert guard.reset_gate_released
 
 
 def steady_state_streams(guard: EpisodeGuard) -> None:
@@ -308,6 +386,29 @@ def test_track_route_signal_counts_pre_reset_and_stops_stale_post_reset():
     node.guard.reset_calls = 1
     node._track_route_signal("route_goal_complete")
     assert node.guard.stop_reason == "stale_route_goal_complete_after_reset"
+
+
+def test_reset_gate_status_callback_scopes_to_reset_and_validates():
+    node = _bare_node()
+    released = SimpleNamespace(data=json.dumps({
+        "generation": 1,
+        "held": False,
+        "eligible_generation": None,
+        "reason": "released:activation_gate",
+    }))
+    node._reset_gate_status(released)
+    assert node.guard.reset_gate_released_generation is None  # pre-reset ignored
+    node.guard.reset_calls = 1
+    node._reset_gate_status(released)
+    assert node.guard.reset_gate_released_generation == 1
+    node._reset_gate_status(SimpleNamespace(data="not json"))
+    assert node.guard.stop_reason == "reset_gate_status_invalid"
+    node = _bare_node()
+    node.guard.reset_calls = 1
+    node._reset_gate_status(SimpleNamespace(data=json.dumps({
+        "generation": "1", "held": False,
+    })))
+    assert node.guard.stop_reason == "reset_gate_status_invalid"
 
 
 def test_post_reset_odom_landing_and_span_contract():

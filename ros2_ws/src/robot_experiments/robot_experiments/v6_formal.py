@@ -60,6 +60,7 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/tf_static",
     "/map",
     "/simulation/reset_event",
+    "/simulation/reset_stop_gate/status",
     "/bio_nav/cognitive_map/constraints",
     "/bio_nav/localization/candidates",
     "/bio_nav/navigation_graph",
@@ -383,6 +384,9 @@ class EpisodeGuard:
     enrollment/reseed machinery, not through the B5 supervisor, so the B5
     gate is a generation witness: the supervisor registered this reset and
     tracks the bootstrap generation, with any B5 failure still fail-closed.
+    Goal readiness additionally requires the ResetStopGate release of this
+    reset receipt's own generation: the route coordinator drops goals
+    published while its reset HOLD barrier is active, without retry.
     """
 
     state: str = "WAITING_READINESS"
@@ -406,6 +410,8 @@ class EpisodeGuard:
     post_reset_prior_seen: bool = False
     nav2_active: bool = False
     tf_active: bool = False
+    reset_gate_generation: int | None = None
+    reset_gate_released_generation: int | None = None
     goal_publications: int = 0
     route_progress_messages: int = 0
     route_completion_messages: int = 0
@@ -607,6 +613,18 @@ class EpisodeGuard:
         self.tf_active = bool(tf_active)
         self._maybe_goal_ready()
 
+    def record_reset_receipt_generation(self, generation: int) -> None:
+        """Bind goal readiness to this reset receipt's stop-gate generation."""
+        self.reset_gate_generation = int(generation)
+        self._maybe_goal_ready()
+
+    def record_reset_gate_status(self, generation: int, held: bool) -> None:
+        # Only the release of this reset's own gate generation arms the
+        # fact; a release latched from an earlier generation is stale.
+        if not held:
+            self.reset_gate_released_generation = int(generation)
+        self._maybe_goal_ready()
+
     def _maybe_goal_ready(self) -> None:
         if self.state == "STOP":
             return
@@ -627,9 +645,18 @@ class EpisodeGuard:
                 self.post_reset_prior_seen,
                 self.nav2_active,
                 self.tf_active,
+                self.reset_gate_released,
             )
         ):
             self.state = "GOAL_READY"
+
+    @property
+    def reset_gate_released(self) -> bool:
+        """The ResetStopGate released this reset receipt's own generation."""
+        return (
+            self.reset_gate_generation is not None
+            and self.reset_gate_released_generation == self.reset_gate_generation
+        )
 
     @property
     def goal_ready(self) -> bool:
@@ -842,6 +869,7 @@ class V6FormalNode:
             sub(TFMessage, "/tf_static", self._tf, latched),
             sub(OccupancyGrid, "/map", lambda m: self._fact("map_seen", "/map", m), latched),
             sub(Empty, "/simulation/reset_event", self._reset_event),
+            sub(String, "/simulation/reset_stop_gate/status", self._reset_gate_status, latched),
             sub(CognitiveMapConstraints, "/bio_nav/cognitive_map/constraints", lambda m: self._fact("constraints_seen", "/bio_nav/cognitive_map/constraints", m), latched),
             sub(CognitiveLocalizationCandidateArray, "/bio_nav/localization/candidates", self._localization_candidates),
             sub(NavigationGraph, "/bio_nav/navigation_graph", lambda m: self._fact("navigation_graph_seen", "/bio_nav/navigation_graph", m), latched),
@@ -914,6 +942,26 @@ class V6FormalNode:
     def _reset_event(self, message: Any) -> None:
         self.guard.record_reset_event()
         self._capture("/simulation/reset_event", message)
+
+    def _reset_gate_status(self, message: Any) -> None:
+        if self.guard.reset_calls:
+            try:
+                document = json.loads(str(message.data))
+                generation = document["generation"]
+                held = document["held"]
+                valid = (
+                    not isinstance(generation, bool)
+                    and isinstance(generation, int)
+                    and generation >= 0
+                    and isinstance(held, bool)
+                )
+            except (AttributeError, KeyError, TypeError, json.JSONDecodeError):
+                valid = False
+            if not valid:
+                self.guard.stop("reset_gate_status_invalid")
+                return
+            self.guard.record_reset_gate_status(generation, held)
+        self._capture("/simulation/reset_stop_gate/status", message)
 
     @staticmethod
     def _header_stamp_ns(message: Any) -> int:
@@ -1338,6 +1386,7 @@ class V6FormalNode:
             self._write("reset_receipt_rejected", detail=str(exc))
             return self.result()
         self._write("reset_receipt", **self.reset_receipt)
+        self.guard.record_reset_receipt_generation(int(self.reset_receipt["generation"]))
         if not self._spin_until(
             lambda: self.guard.b5_bootstrap_ready or self.guard.state == "STOP",
             reset_timeout_sec,
@@ -1353,8 +1402,19 @@ class V6FormalNode:
             nav2_active=self._nav2_is_active(reset_timeout_sec),
             tf_active=self.map_odom_tf_seen and self.odom_base_tf_seen,
         )
-        if not self.guard.goal_ready:
+        if not (self.guard.nav2_active and self.guard.tf_active):
             self.guard.stop("nav2_or_tf_not_ready")
+            return self.result()
+        # The route coordinator drops goals published while the ResetStopGate
+        # still holds this reset's generation, without retry; wait out the
+        # release instead of publishing the single goal into the HOLD.
+        if not self._spin_until(
+            lambda: self.guard.goal_ready or self.guard.state == "STOP",
+            reset_timeout_sec,
+        ):
+            self.guard.stop("reset_gate_release_timeout")
+            return self.result()
+        if self.guard.state == "STOP":
             return self.result()
 
         for index, leg in enumerate(self.manifest.mission_legs):
