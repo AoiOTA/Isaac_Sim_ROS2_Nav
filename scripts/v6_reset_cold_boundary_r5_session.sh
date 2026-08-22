@@ -1,0 +1,444 @@
+#!/usr/bin/env bash
+# V6 reset cold-boundary R5 — live multi-episode re-arm session driver.
+#
+# usage:
+#   v6_reset_cold_boundary_r5_session.sh RUN_DIR SNAPSHOT_ROOT
+#
+# One persistent Kujiale low-obstacle stack (module2 + Isaac + ROS/Nav2 M3 +
+# estimated_autonomy bridge), then three consecutive v6_formal_episode
+# engineering-pilot dispatches (episode indices 0/1/2 = seeds 7201/7202/7203
+# of the Kujiale static manifest), each on the same warm stack (Option A
+# in-place re-arm).  One session-long MCAP plus one runner JSONL and one
+# boundary-ownership probe per episode are written under RUN_DIR.
+#
+# The driver only orchestrates existing locked entry points; it changes no
+# runtime behavior.  Everything runs from the immutable SNAPSHOT_ROOT source
+# archive with its isolated build/install trees.
+
+set -Eeuo pipefail
+
+RUN_DIR="${1:-}"
+SNAP="${2:-}"
+if [[ -z "${RUN_DIR}" || -z "${SNAP}" ]]; then
+  echo "usage: $0 RUN_DIR SNAPSHOT_ROOT" >&2
+  exit 64
+fi
+
+DOMAIN_ID="${R5_DOMAIN_ID:-173}"
+EPISODE_INDICES="${R5_EPISODE_INDICES:-0 1 2}"
+EPISODE_SEEDS="${R5_EPISODE_SEEDS:-7201 7202 7203}"
+READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
+RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
+NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-900}"
+M3="${SNAP}/m3_src"
+I_SRC="${SNAP}/i_src"
+M2="${SNAP}/m2_src"
+M3_INSTALL="${M3}/ros2_ws/install_r5"
+I_INSTALL="${I_SRC}/ros2_ws/install_r5"
+LOGS="${RUN_DIR}/logs"
+PROV="${RUN_DIR}/provenance"
+EPISODES_DIR="${RUN_DIR}/episodes"
+LOCK_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_$(id -u)}"
+MANIFEST="${M3}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_static.yaml"
+
+export ROS_DOMAIN_ID="${DOMAIN_ID}"
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+export ISAAC_NAV_EXPECTED_DOMAIN_ID="${DOMAIN_ID}"
+export ROS_LOG_DIR="${SNAP}/ros_log"
+
+mkdir -p "${LOGS}" "${PROV}" "${EPISODES_DIR}"
+
+if [[ -e "${RUN_DIR}/STOP.md" || -e "${RUN_DIR}/driver_summary.json" ]]; then
+  echo "run directory already contains a terminal artifact; refusing to reuse it" >&2
+  exit 65
+fi
+
+declare -A CHILD_PGIDS=()
+STAGE="init"
+
+_log_stage() {
+  printf '{"stage":"%s","at":"%s","detail":"%s"}\n' \
+    "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${2:-}" >> "${PROV}/stages.jsonl"
+}
+
+_cleanup_children() {
+  local name pid
+  for name in "${!CHILD_PGIDS[@]}"; do
+    pid="${CHILD_PGIDS[$name]}"
+    kill -INT -- "-${pid}" 2>/dev/null || true
+  done
+  sleep 8
+  for name in "${!CHILD_PGIDS[@]}"; do
+    pid="${CHILD_PGIDS[$name]}"
+    kill -TERM -- "-${pid}" 2>/dev/null || true
+  done
+  sleep 4
+  for name in "${!CHILD_PGIDS[@]}"; do
+    pid="${CHILD_PGIDS[$name]}"
+    kill -KILL -- "-${pid}" 2>/dev/null || true
+  done
+}
+
+_stop() {
+  local reason="$1"
+  _log_stage "STOP" "${reason}"
+  _cleanup_children
+  {
+    echo "# V6 reset cold-boundary R5 — STOP"
+    echo
+    echo "- run_dir: ${RUN_DIR}"
+    echo "- domain: ${DOMAIN_ID}"
+    echo "- stage: ${STAGE}"
+    echo "- reason: ${reason}"
+    echo "- stopped_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "${RUN_DIR}/STOP.md"
+  exit 2
+}
+
+_on_err() {
+  _stop "driver error at line $1 during stage ${STAGE}; see ${LOGS}"
+}
+trap '_on_err ${LINENO}' ERR
+
+start_bg() { # name command...
+  local name="$1"; shift
+  setsid "$@" > "${LOGS}/${name}.log" 2>&1 &
+  local pid=$!
+  CHILD_PGIDS[$name]="${pid}"
+  echo "${pid}" > "${PROV}/${name}.pid"
+  _log_stage "start" "${name} pgid=${pid}"
+}
+
+stop_bg() { # name
+  local name="$1"
+  local pid="${CHILD_PGIDS[$name]:-}"
+  [[ -n "${pid}" ]] || return 0
+  kill -INT -- "-${pid}" 2>/dev/null || true
+  local waited=0
+  while kill -0 "${pid}" 2>/dev/null && (( waited < 90 )); do
+    sleep 2; waited=$((waited + 2))
+  done
+  kill -TERM -- "-${pid}" 2>/dev/null || true
+  sleep 3
+  kill -KILL -- "-${pid}" 2>/dev/null || true
+  unset 'CHILD_PGIDS[$name]'
+  _log_stage "stop" "${name}"
+}
+
+assert_alive() { # name
+  local pid="${CHILD_PGIDS[$1]:-}"
+  [[ -n "${pid}" ]] || _stop "$1 was never started"
+  if ! kill -0 "${pid}" 2>/dev/null; then
+    _stop "$1 exited unexpectedly; see ${LOGS}/$1.log"
+  fi
+}
+
+wait_service() { # service timeout_sec
+  local deadline=$((SECONDS + $2))
+  while (( SECONDS < deadline )); do
+    if ros2 service list 2>/dev/null | grep -qx "$1"; then return 0; fi
+    sleep 4
+  done
+  return 1
+}
+
+wait_topic() { # topic timeout_sec
+  local deadline=$((SECONDS + $2))
+  while (( SECONDS < deadline )); do
+    if timeout 10 ros2 topic echo "$1" --once --qos-reliability best_effort \
+        >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 4
+  done
+  return 1
+}
+
+wait_file() { # path timeout_sec
+  local deadline=$((SECONDS + $2))
+  while (( SECONDS < deadline )); do
+    [[ -e "$1" ]] && return 0
+    sleep 3
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------- env setup
+STAGE="env"
+# Drop any pre-existing ROS overlay from the caller environment: the session
+# must resolve packages only from this snapshot (mirrors common.sh
+# reset_ros_overlay_environment, plus Python/library path pollution).
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH ROS_PACKAGE_PATH
+unset PYTHONPATH LD_LIBRARY_PATH
+# ROS-generated setup scripts reference optional variables before defining
+# them, so nounset must be suspended while they are sourced.
+set +u
+source /opt/ros/jazzy/setup.bash
+# shellcheck disable=SC1090
+source "${I_INSTALL}/setup.bash"
+# shellcheck disable=SC1090
+source "${M3_INSTALL}/setup.bash"
+set -u
+
+ROBOT_EXPERIMENTS_PREFIX="$(ros2 pkg prefix robot_experiments)"
+echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
+[[ "${ROBOT_EXPERIMENTS_PREFIX}" == "${M3_INSTALL}/robot_experiments" ]] || \
+  _stop "robot_experiments resolves outside the snapshot install: ${ROBOT_EXPERIMENTS_PREFIX}"
+
+{
+  echo "run_dir=${RUN_DIR}"
+  echo "snapshot=${SNAP}"
+  echo "domain_id=${DOMAIN_ID}"
+  echo "rmw=${RMW_IMPLEMENTATION}"
+  echo "episode_indices=${EPISODE_INDICES}"
+  echo "episode_seeds=${EPISODE_SEEDS}"
+  echo "manifest=${MANIFEST}"
+  echo "yaw_scale=0.9294"
+  echo "rf2o=off"
+  echo "ekf_profile=wheel_imu"
+  echo "lidar_odometry_backend=off"
+  echo "cognitive_profile=M3"
+  echo "cognitive_graph_mode=gvg"
+  echo "bridge_profile=estimated_autonomy"
+  if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
+    cat "${SNAP}/SNAPSHOT_SHAS.txt"
+  fi
+} > "${PROV}/pins_and_run_contract.txt"
+
+if [[ -e "${LOCK_DIR}/isaac.lock" ]]; then
+  if ! flock -n "${LOCK_DIR}/isaac.lock" -c true 2>/dev/null; then
+    _stop "Isaac instance lock is held by another process"
+  fi
+fi
+
+QOS_FILE="${PROV}/rosbag_qos_overrides.yaml"
+cat > "${QOS_FILE}" <<'QOS'
+/clock:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/imu/data_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/imu/data:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/ground_truth/odom:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/odom:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/scan:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 50
+/scan_safety:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 50
+QOS
+
+# ---------------------------------------------------------------- module2
+STAGE="module2"
+mkdir -p "${SNAP}/runtime"
+pushd "${I_SRC}/module2_runtime/bio_nav_module2_server" > /dev/null
+start_bg module2 /home/lyb/miniconda3/envs/bionav-module2/bin/python -u server.py \
+  --runtime-version v310 \
+  --module2-root "${M2}" \
+  --bridge-source "${I_SRC}/ros2_ws/src/bio_nav_ros_bridge" \
+  --socket "${SNAP}/runtime/module2.sock" \
+  --device cuda
+popd > /dev/null
+wait_file "${SNAP}/runtime/module2.sock" 180 || _stop "module2 socket did not appear"
+
+# ---------------------------------------------------------------- isaac
+STAGE="isaac"
+start_bg isaac "${M3}/scripts/run_kujiale_4x20_isaac.sh" v6-low-obstacles --headless
+wait_topic /clock 600 || _stop "Kujiale /clock did not appear; see logs/isaac.log"
+assert_alive isaac
+wait_service /simulation/reset 300 || _stop "reset service did not appear"
+assert_alive isaac
+
+# ---------------------------------------------------------------- navigation
+STAGE="navigation_stack"
+start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
+  operation:=navigation \
+  odometry_mode:=estimated \
+  structure_tf_source:=isaac \
+  localization_profile:=kujiale \
+  nav2_profile:=v6_low_obstacle_isolation \
+  cognitive_profile:=M3 \
+  cognitive_graph_mode:=gvg \
+  initial_pose_source:=auto \
+  activation_startup_policy:=fail_closed \
+  activation_startup_timeout:=120.0 \
+  ekf_profile:=wheel_imu \
+  "imu_calibration_params_file:=${M3}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml" \
+  lidar_odometry_backend:=off \
+  lidar_odometry_validated:=false \
+  spawn_pose_name:=long_route_start_g1 \
+  "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml" \
+  "posegraph_file:=${M3}/data/maps/posegraphs/warehouse_new" \
+  "map_file:=${M3}/data/maps/occupancy/warehouse_new.yaml" \
+  interactive:=false \
+  use_rviz:=false \
+  use_teleop:=false \
+  "project_root:=${M3}"
+nav_deadline=$((SECONDS + 420))
+nav_ready=0
+while (( SECONDS < nav_deadline )); do
+  assert_alive navigation
+  if ros2 topic list 2>/dev/null | grep -qx "/bio_nav/route_goal_complete"; then
+    nav_ready=1
+    break
+  fi
+  sleep 5
+done
+[[ "${nav_ready}" == 1 ]] || \
+  _stop "navigation stack did not expose /bio_nav/route_goal_complete; see logs/navigation.log"
+
+# ---------------------------------------------------------------- bridge
+STAGE="bridge"
+start_bg bridge ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
+  startup_profile:=estimated_autonomy \
+  "socket_path:=${SNAP}/runtime/module2.sock" \
+  "audit_jsonl_path:=${LOGS}/bridge_audit.jsonl" \
+  use_sim_time:=true
+sleep 15
+assert_alive bridge
+
+# ---------------------------------------------------------------- recorder
+STAGE="record"
+start_bg rosbag ros2 bag record \
+  --storage mcap \
+  --node-name r5_session_recorder \
+  --qos-profile-overrides-path "${QOS_FILE}" \
+  -o "${RUN_DIR}/rosbag/r5_session" \
+  /clock /joint_states /imu/data_raw /imu/data /wheel/odom /odom /amcl_pose \
+  /initialpose /tf /tf_static /ground_truth/odom /simulation/reset_event \
+  /simulation/collision /simulation/collision_diagnostics \
+  /cmd_vel /cmd_vel_nav /cmd_vel_smoothed /cmd_vel_sim \
+  /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress \
+  /bio_nav/route_goal_complete /bio_nav/route_goal /bio_nav/route_goal_result \
+  /bio_nav/module2/planning_prior /bio_nav/module2/goal_planning_prior \
+  /bio_nav/localization/candidates /bio_nav/route_edge_costs \
+  /experiment/obstacles/state /plan /scan /diagnostics /rosout
+sleep 8
+grep -q "Subscribed to topic '/ground_truth/odom'" "${LOGS}/rosbag.log" || \
+  _stop "recorder did not subscribe to /ground_truth/odom; see logs/rosbag.log"
+grep -q "Subscribed to topic '/cmd_vel_sim'" "${LOGS}/rosbag.log" || \
+  _stop "recorder did not subscribe to /cmd_vel_sim; see logs/rosbag.log"
+grep -q "Subscribed to topic '/rosout'" "${LOGS}/rosbag.log" || \
+  _stop "recorder did not subscribe to /rosout; see logs/rosbag.log"
+
+# ---------------------------------------------------------------- episodes
+STAGE="episodes"
+read -r -a index_rows <<< "${EPISODE_INDICES}"
+read -r -a seed_rows <<< "${EPISODE_SEEDS}"
+[[ "${#index_rows[@]}" == "${#seed_rows[@]}" ]] || \
+  _stop "episode index/seed lists differ in length"
+episode_results=()
+for position in "${!index_rows[@]}"; do
+  index="${index_rows[$position]}"
+  seed="${seed_rows[$position]}"
+  episode_jsonl="${EPISODES_DIR}/episode_seed${seed}.jsonl"
+  episode_result="${EPISODES_DIR}/episode_seed${seed}.result.json"
+  episode_status=0
+  _log_stage "episode_start" "seed=${seed} index=${index}"
+  timeout $((READINESS_TIMEOUT + RESET_TIMEOUT + NAVIGATION_TIMEOUT + 120)) \
+    "${M3}/scripts/run_v6_formal_episode.sh" --pilot --dispatch-pilot \
+    "${MANIFEST}" \
+    --episode-index "${index}" \
+    --output-jsonl "${episode_jsonl}" \
+    --readiness-timeout-sec "${READINESS_TIMEOUT}" \
+    --reset-timeout-sec "${RESET_TIMEOUT}" \
+    --navigation-timeout-sec "${NAVIGATION_TIMEOUT}" \
+    > "${episode_result}" 2> "${LOGS}/episode_seed${seed}.stderr.log" \
+    || episode_status=$?
+  echo "${episode_status}" > "${PROV}/episode_seed${seed}.exit_status.txt"
+  _log_stage "episode_end" "seed=${seed} exit=${episode_status}"
+  assert_alive isaac
+  assert_alive navigation
+  assert_alive bridge
+
+  # Boundary ownership probe (invariant 5/6 cross-check while the stack is
+  # warm and the runner process is gone): exactly one publisher each on
+  # /odom, /cmd_vel, /cmd_vel_sim, /amcl_pose; /ground_truth/odom subscribed
+  # only by this session's recorder.
+  boundary_status=0
+  python3 - "${EPISODES_DIR}/boundary_seed${seed}.json" <<'PYEOF' || boundary_status=$?
+import json
+import sys
+import time
+
+import rclpy
+
+EXPECTED_PUBLISHERS = {
+    "/odom": 1,
+    "/cmd_vel": 1,
+    "/cmd_vel_sim": 1,
+    "/amcl_pose": 1,
+}
+rclpy.init()
+node = rclpy.create_node("r5_boundary_probe")
+max_publishers = {topic: 0 for topic in EXPECTED_PUBLISHERS}
+max_gt_subscribers = 0
+deadline = time.monotonic() + 20.0
+while time.monotonic() < deadline:
+    for topic in EXPECTED_PUBLISHERS:
+        max_publishers[topic] = max(max_publishers[topic], node.count_publishers(topic))
+    max_gt_subscribers = max(
+        max_gt_subscribers, node.count_subscribers("/ground_truth/odom")
+    )
+    time.sleep(0.5)
+result = {
+    "max_publishers": max_publishers,
+    "expected_publishers": EXPECTED_PUBLISHERS,
+    "ground_truth_odom_max_subscribers": max_gt_subscribers,
+    "publisher_ownership_pass": max_publishers == EXPECTED_PUBLISHERS,
+    "ground_truth_firewall_pass": max_gt_subscribers == 1,
+}
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump(result, stream, indent=2, sort_keys=True)
+    stream.write("\n")
+sys.exit(0 if (result["publisher_ownership_pass"] and result["ground_truth_firewall_pass"]) else 2)
+PYEOF
+  echo "${boundary_status}" > "${PROV}/boundary_seed${seed}.exit_status.txt"
+  episode_results+=("${seed}:${episode_status}:boundary=${boundary_status}")
+  if [[ "${episode_status}" != 0 ]]; then
+    _stop "episode seed ${seed} failed with exit ${episode_status}; evidence kept"
+  fi
+done
+
+# ---------------------------------------------------------------- finalize
+STAGE="finalize"
+stop_bg rosbag
+ros2 bag info "${RUN_DIR}/rosbag/r5_session" \
+  > "${PROV}/r5_session_bag_info.txt" 2>&1 || true
+_cleanup_children
+CHILD_PGIDS=()
+sleep 4
+ros2 node list > "${PROV}/node_list_postcleanup.txt" 2>&1 || true
+{
+  echo "{"
+  echo "  \"session\": \"r5_reset_cold_boundary\","
+  echo "  \"run_dir\": \"${RUN_DIR}\","
+  echo "  \"domain_id\": ${DOMAIN_ID},"
+  echo "  \"episode_results\": [$(printf '"%s", ' "${episode_results[@]}" | sed 's/, $//')],"
+  echo "  \"completed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
+  echo "}"
+} > "${RUN_DIR}/driver_summary.json"
+_log_stage "DONE" "r5 session complete"
+exit 0
