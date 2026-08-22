@@ -1288,10 +1288,12 @@ def test_flat20_spawn_origin_and_alias_are_exact(pose_name, tmp_path):
 def _goal_records(
     *, collision=False, completion=True, completions=None, raw_nonfinite=False,
     second_reset=False, duplicate_raw=False, raw_gap=False,
-    corrected_gap=False, route_request=False, post_terminal_command=False,
+    corrected_gap=False, route_request=False, route_request_extra=(),
+    route_request_distinct=False, post_terminal_command_at=None,
     duplicate_corrected=False, backward_corrected=False,
     zero_corrected=False, corrected_header_offset_s=0.0,
-    sensor_bag_time_offset_s=0.0, extra_commands=(), sample_start=2.0,
+    sensor_bag_time_offset_s=0.0, received_time_offset_s=0.0,
+    extra_commands=(), sample_start=2.0,
     sample_count=11,
 ):
     def stamp(value):
@@ -1319,7 +1321,9 @@ def _goal_records(
 
     def goal():
         return SimpleNamespace(
-            header=SimpleNamespace(stamp=stamp(1.75), frame_id="map"),
+            header=SimpleNamespace(
+                stamp=stamp(1.75 + received_time_offset_s), frame_id="map",
+            ),
             pose=SimpleNamespace(
                 position=SimpleNamespace(x=1.0, y=2.0, z=0.0),
                 orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
@@ -1336,26 +1340,39 @@ def _goal_records(
         raw_times = [value for value in raw_times if value < 2.4 or value > 2.9]
     if duplicate_raw:
         raw_times[2] = raw_times[1]
-    records = [
-        ("/simulation/reset_event", SimpleNamespace(), int(1.0e9)),
-        ("/rosout", SimpleNamespace(stamp=stamp(1.1), msg=f"complete; reset_receipt={receipt}"), int(1.1e9)),
-        ("/simulation/collision", SimpleNamespace(data=False), int(1.5e9)),
+
+    def received(value):
+        return int((value + received_time_offset_s) * 1e9)
+
+    # Every record carries its simulation time so the wrapper below can
+    # interleave /clock samples; bag received timestamps may live in a
+    # different (wall-clock) domain, exactly like a recorder without sim time.
+    timed = [
+        ("/simulation/reset_event", SimpleNamespace(), 1.0, received(1.0)),
+        ("/rosout", SimpleNamespace(stamp=stamp(1.1), msg=f"complete; reset_receipt={receipt}"), 1.1, received(1.1)),
+        ("/simulation/collision", SimpleNamespace(data=False), 1.5, received(1.5)),
     ]
     if route_request:
-        records.append(("/bio_nav/route_goal", goal(), int(1.8e9)))
-    records.extend(
-        ("/cmd_vel", twist(linear, angular), int(value * 1e9))
+        timed.append(("/bio_nav/route_goal", goal(), 1.8, received(1.8)))
+        for index, extra_s in enumerate(route_request_extra):
+            republish = goal()
+            republish.header.stamp = stamp(extra_s - 0.05 + received_time_offset_s)
+            if route_request_distinct and index == len(route_request_extra) - 1:
+                republish.pose.position.x = 9.0
+            timed.append(("/bio_nav/route_goal", republish, extra_s, received(extra_s)))
+    timed.extend(
+        ("/cmd_vel", twist(linear, angular), value, received(value))
         for value, linear, angular in extra_commands
     )
     for index, value in enumerate(raw_times):
         jitter = (0.03 if index % 2 else -0.03) if sensor_bag_time_offset_s else 0.0
         recorded = value + sensor_bag_time_offset_s + jitter
-        records.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), int(recorded * 1e9)))
+        timed.append(("/imu/data_raw", imu(value, math.nan if raw_nonfinite and index == 1 else 0.5), value, received(recorded)))
     for index, value in enumerate(sample_times):
         jitter = (0.02 if index % 2 else -0.02) if sensor_bag_time_offset_s else 0.0
         recorded = value + sensor_bag_time_offset_s + jitter
-        records.append(("/ground_truth/odom", odom(value, 0.5 * (value - 2.0)), int(recorded * 1e9)))
-        records.append(("/cmd_vel", twist(0.25, 0.4), int(value * 1e9)))
+        timed.append(("/ground_truth/odom", odom(value, 0.5 * (value - 2.0)), value, received(recorded)))
+        timed.append(("/cmd_vel", twist(0.25, 0.4), value, received(value)))
     corrected_times = (
         [value for value in sample_times if value < 2.4 or value > 2.9]
         if corrected_gap else sample_times
@@ -1370,20 +1387,33 @@ def _goal_records(
     for index, (recorded_base, header_value) in enumerate(zip(corrected_times, corrected_header_times)):
         jitter = (0.04 if index % 2 else -0.04) if sensor_bag_time_offset_s else 0.0
         recorded = recorded_base + sensor_bag_time_offset_s + jitter
-        records.append(("/imu/data", imu(header_value, 0.465), int(recorded * 1e9)))
-    records.extend([
-        ("/simulation/collision", SimpleNamespace(data=collision), int(2.5e9)),
-        ("/simulation/collision", SimpleNamespace(data=False), int(3.4e9)),
+        timed.append(("/imu/data", imu(header_value, 0.465), recorded_base, received(recorded)))
+    timed.extend([
+        ("/simulation/collision", SimpleNamespace(data=collision), 2.5, received(2.5)),
+        ("/simulation/collision", SimpleNamespace(data=False), 3.4, received(3.4)),
     ])
     terminal_values = [(3.5, completion)] if completions is None else completions
-    records.extend(
-        ("/bio_nav/route_goal_complete", SimpleNamespace(data=value), int(stamp_s * 1e9))
+    timed.extend(
+        ("/bio_nav/route_goal_complete", SimpleNamespace(data=value), stamp_s, received(stamp_s))
         for stamp_s, value in terminal_values
     )
-    if post_terminal_command:
-        records.append(("/cmd_vel", twist(0.1, 0.1), int(3.6e9)))
+    if post_terminal_command_at is not None:
+        timed.append(("/cmd_vel", twist(0.1, 0.1), post_terminal_command_at, received(post_terminal_command_at)))
     if second_reset:
-        records.append(("/simulation/reset_event", SimpleNamespace(), int(1.2e9)))
+        timed.append(("/simulation/reset_event", SimpleNamespace(), 1.2, received(1.2)))
+    # A real bag is time-ordered: each header-less event must find the /clock
+    # sample current at its own file position.  Sort by occurrence time
+    # (stable, so deliberate header duplicates/backward stamps keep their
+    # adversarial per-topic order) and emit a /clock sample whenever the
+    # simulation clock advances.
+    timed.sort(key=lambda record: record[2])
+    records = []
+    last_clock_s = None
+    for topic, message, sim_s, received_ns in timed:
+        if last_clock_s is None or sim_s > last_clock_s:
+            records.append(("/clock", SimpleNamespace(clock=stamp(sim_s)), received_ns))
+            last_clock_s = sim_s
+        records.append((topic, message, received_ns))
     return records
 
 
@@ -1392,6 +1422,7 @@ def _goal_types(*, corrected=False, route_request=False):
         "/imu/data_raw": "sensor_msgs/msg/Imu",
         "/ground_truth/odom": "nav_msgs/msg/Odometry",
         "/cmd_vel": "geometry_msgs/msg/Twist",
+        "/clock": "rosgraph_msgs/msg/Clock",
         "/simulation/reset_event": "std_msgs/msg/Empty",
         "/simulation/collision": "std_msgs/msg/Bool",
         "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
@@ -1404,7 +1435,7 @@ def _goal_types(*, corrected=False, route_request=False):
     return result
 
 
-def _goal_metadata(path, *, route_request=False):
+def _goal_metadata(path, *, route_request=False, received_time_offset_s=0.0):
     result = {
         "schema_version": 1, "source": "goal_mcap_outcome_metadata",
         "source_mcap": str(path.resolve()),
@@ -1418,9 +1449,15 @@ def _goal_metadata(path, *, route_request=False):
         "ground_truth_relative_yaw_rad": [999.0],
     }
     if route_request:
+        # Transcribe through the same integer/bag-stamp path as the analyzer
+        # so the identity cross-check compares identical fields.
+        recorded_ns = int((1.8 + received_time_offset_s) * 1e9)
+        header = 1.75 + received_time_offset_s
+        header_sec = int(header)
+        header_nanosec = int(round((header - header_sec) * 1e9))
         result["route_goal_request"] = {
-            "recorded_s": 1.8,
-            "header_stamp_s": 1.75,
+            "recorded_s": float(recorded_ns) * 1e-9,
+            "header_stamp_s": float(header_sec) + float(header_nanosec) * 1e-9,
             "frame_id": "map",
             "position_m": [1.0, 2.0, 0.0],
             "orientation_xyzw": [0.0, 0.0, 0.0, 1.0],
@@ -1468,6 +1505,8 @@ def _write_real_goal_mcap(path, records, topic_types):
         elif topic == "/cmd_vel":
             message.linear.x = float(source.linear.x)
             message.angular.z = float(source.angular.z)
+        elif topic == "/clock":
+            copy_stamp(message.clock, source.clock)
         elif topic in {"/simulation/collision", "/bio_nav/route_goal_complete"}:
             message.data = bool(source.data)
         elif topic == "/rosout":
@@ -1534,7 +1573,7 @@ def test_real_goal_mcap_file_order_preserves_headers_across_received_inversion(t
 
     assert result["mcap_provenance"]["read_order"] == "file"
     assert result["mcap_provenance"]["yaw_time_basis"] == "header_stamp_in_file_publish_order"
-    assert result["mcap_provenance"]["event_time_basis"] == "received_timestamp_sorted_after_collection"
+    assert result["mcap_provenance"]["event_time_basis"] == "latest_clock_at_mcap_publish_order"
     assert result["goal_window"]["start_s"] == pytest.approx(1.9)
     assert result["stream_coverage"]["maximum_gap_s"]["raw"] == pytest.approx(0.1)
 
@@ -1655,7 +1694,7 @@ def test_goal_mcap_without_request_accepts_first_nonzero_at_reset(monkeypatch, t
     "record_options,topic_options,expected_code",
     [
         ({"corrected_gap": True}, {"corrected": True}, "goal_sample_gap"),
-        ({"post_terminal_command": True}, {}, "goal_command_after_terminal"),
+        ({"post_terminal_command_at": 3.7}, {}, "goal_command_after_terminal"),
     ],
 )
 def test_goal_mcap_rejects_optional_stream_gap_and_post_terminal_motion(
@@ -1668,6 +1707,145 @@ def test_goal_mcap_rejects_optional_stream_gap_and_post_terminal_motion(
     with pytest.raises(EvidenceError) as raised:
         load_goal_mcap(bag, _goal_metadata(bag))
     assert raised.value.code == expected_code
+
+
+def test_goal_mcap_collapses_identical_route_request_republishes(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(
+            route_request=True,
+            route_request_extra=(2.8, 3.8, 4.8),
+            completions=[(5.5, True)],
+        ),
+    )
+    result = load_goal_mcap(bag, _goal_metadata(bag, route_request=True))
+    provenance = result["attempt_provenance"]
+    assert provenance["route_request_count"] == 4
+    assert provenance["route_request_logical_count"] == 1
+    assert provenance["route_request_timestamps_s"] == pytest.approx([1.8, 2.8, 3.8, 4.8])
+    assert provenance["binding_source"] == "route_goal_pose_stamped"
+    assert provenance["route_goal_request"]["recorded_s"] == pytest.approx(1.8)
+    assert provenance["route_goal_request"]["header_stamp_s"] == pytest.approx(1.75)
+    assert result["goal_window"]["start_s"] == pytest.approx(2.0)
+
+    metadata = _goal_metadata(bag, route_request=True)
+    metadata["route_goal_request"]["recorded_s"] = 2.8
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(
+            route_request=True,
+            route_request_extra=(2.8, 3.8, 4.8),
+            completions=[(5.5, True)],
+        ),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, metadata)
+    assert raised.value.code == "goal_request_mismatch"
+
+
+def test_goal_mcap_rejects_distinct_route_request_values(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(
+            route_request=True,
+            route_request_extra=(2.8,),
+            route_request_distinct=True,
+        ),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag, route_request=True))
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "goal_request_count"
+
+
+def test_goal_mcap_rejects_route_request_republish_after_terminal(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(route_request=True, route_request_extra=(3.8,)),
+    )
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag, route_request=True))
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "goal_request_order"
+
+
+@pytest.mark.parametrize("command_at,expected_delay", [(3.55, 0.05), (3.6, 0.1)])
+def test_goal_mcap_post_terminal_drain_within_grace_is_recorded(
+    monkeypatch, tmp_path, command_at, expected_delay,
+):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(),
+        _goal_records(post_terminal_command_at=command_at),
+    )
+    result = load_goal_mcap(bag, _goal_metadata(bag))
+    provenance = result["attempt_provenance"]
+    assert provenance["post_terminal_grace_s"] == pytest.approx(0.1)
+    assert provenance["post_terminal_nonzero_command_count"] == 1
+    assert provenance["post_terminal_max_delay_s"] == pytest.approx(expected_delay)
+    assert result["goal_window"]["end_s"] == pytest.approx(3.0)
+
+
+def test_goal_mcap_wall_clock_recorder_uses_clock_domain(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    _install_fake_mcap(
+        monkeypatch, _goal_types(route_request=True),
+        _goal_records(route_request=True, received_time_offset_s=1.0e9),
+    )
+    result = load_goal_mcap(
+        bag, _goal_metadata(bag, route_request=True, received_time_offset_s=1.0e9)
+    )
+    assert result["goal_window"]["start_s"] == pytest.approx(2.0)
+    assert result["goal_window"]["end_s"] == pytest.approx(3.0)
+    assert result["attempt_provenance"]["reset_event_s"] == pytest.approx(1.0)
+    assert result["attempt_provenance"]["binding_source"] == "route_goal_pose_stamped"
+    assert result["mcap_provenance"]["event_time_basis"] == "latest_clock_at_mcap_publish_order"
+    assert result["mcap_provenance"]["route_request_identity_time_basis"] == "bag_received_timestamp"
+
+
+def test_goal_mcap_requires_clock_topic(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    topic_types = _goal_types()
+    del topic_types["/clock"]
+    records = [record for record in _goal_records() if record[0] != "/clock"]
+    _install_fake_mcap(monkeypatch, topic_types, records)
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag))
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code == "goal_mcap_topics_missing"
+
+
+def test_goal_mcap_reset_before_first_clock_is_ambiguous(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    records = _goal_records()
+    first_clock = next(
+        index for index, record in enumerate(records) if record[0] == "/clock"
+    )
+    del records[first_clock]
+    _install_fake_mcap(monkeypatch, _goal_types(), records)
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag))
+    assert raised.value.verdict == "AMBIGUOUS"
+    assert raised.value.code == "goal_reset_clock_missing"
+
+
+def test_goal_mcap_rejects_backward_clock(monkeypatch, tmp_path):
+    bag = tmp_path / "goal"
+    records = _goal_records()
+    clock_indices = [
+        index for index, record in enumerate(records) if record[0] == "/clock"
+    ]
+    first, second = clock_indices[0], clock_indices[1]
+    topic, _message, received_ns = records[second]
+    records[second] = (topic, SimpleNamespace(clock=records[first][1].clock), received_ns)
+    _install_fake_mcap(monkeypatch, _goal_types(), records)
+    with pytest.raises(EvidenceError) as raised:
+        load_goal_mcap(bag, _goal_metadata(bag))
+    assert raised.value.verdict == "FAIL"
+    assert raised.value.code == "goal_clock_order"
 
 
 @pytest.mark.parametrize(

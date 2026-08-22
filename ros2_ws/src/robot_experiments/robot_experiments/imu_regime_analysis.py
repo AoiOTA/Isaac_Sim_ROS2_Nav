@@ -22,6 +22,12 @@ COMMAND_BOUNDARY_TOLERANCE_S = 0.25
 MIN_WINDOW_DURATION_S = 0.50
 FINAL_SETTLE_SEC = 0.80
 COMMAND_ZERO_EPS = 1.0e-12
+# The production smoother deceleration tail outlives the
+# NavToPose-result-driven route terminal by a bounded drain; the two live
+# observations are +45 ms (Attempt4) and +58 ms (historical Evidence B).
+# A nonzero /cmd_vel inside this post-terminal window is recorded evidence,
+# not a single-attempt violation.
+GOAL_POST_TERMINAL_GRACE_S = 0.10
 EXPECTED_PRIMITIVE_IDS = (
     "cw_360",
     "ccw_360",
@@ -171,6 +177,7 @@ GOAL_TOPIC_TYPES = {
     "/imu/data_raw": "sensor_msgs/msg/Imu",
     "/ground_truth/odom": "nav_msgs/msg/Odometry",
     "/cmd_vel": "geometry_msgs/msg/Twist",
+    "/clock": "rosgraph_msgs/msg/Clock",
     "/simulation/reset_event": "std_msgs/msg/Empty",
     "/simulation/collision": "std_msgs/msg/Bool",
     "/bio_nav/route_goal_complete": "std_msgs/msg/Bool",
@@ -1806,15 +1813,48 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     receipt_logs: list[tuple[float, dict[str, Any]]] = []
     topic_stamps: dict[str, list[float]] = {topic: [] for topic in selected_topic_types}
     epoch_started = False
+    # Header-less event topics cannot be compared with yaw header stamps
+    # directly: a wall-clock recorder stores received timestamps in a
+    # different domain.  Mirror the diagnostic reader: every event takes the
+    # latest /clock simulation value seen in file order as its stamp, while
+    # yaw streams keep header-stamp authority.  The route-request identity
+    # additionally transcribes the raw received timestamp so the evaluator
+    # metadata cross-check compares identical bag fields.
+    latest_clock_s: float | None = None
     while reader.has_next():
         topic, payload, recorded_ns = reader.read_next()
         if topic not in message_types:
             continue
         message = deserialize_message(payload, message_types[topic])
-        stamp_s = _record_stamp_s(message, recorded_ns, topic=topic)
+        # Header topics yield their header stamp here (header authority);
+        # every other topic yields the validated bag received timestamp.
+        record_stamp_s = _record_stamp_s(message, recorded_ns, topic=topic)
+        if topic == "/clock":
+            stamp = getattr(message, "clock", None)
+            sec = getattr(stamp, "sec", None)
+            nanosec = getattr(stamp, "nanosec", None)
+            if (
+                isinstance(sec, bool) or not isinstance(sec, int)
+                or isinstance(nanosec, bool) or not isinstance(nanosec, int)
+                or nanosec < 0 or nanosec >= 1_000_000_000
+            ):
+                raise _evidence_issue("FAIL", "goal_clock_invalid", "goal /clock value is invalid")
+            clock_value_s = float(sec) + float(nanosec) * 1.0e-9
+            if not math.isfinite(clock_value_s) or clock_value_s <= 0.0:
+                raise _evidence_issue("FAIL", "goal_clock_invalid", "goal /clock value is non-finite/non-positive")
+            if latest_clock_s is not None and clock_value_s <= latest_clock_s:
+                raise _evidence_issue(
+                    "FAIL", "goal_clock_order",
+                    "goal /clock is not strictly increasing in MCAP file order",
+                )
+            latest_clock_s = clock_value_s
+            topic_stamps[topic].append(record_stamp_s)
+            continue
         if topic == "/simulation/reset_event":
-            topic_stamps[topic].append(stamp_s)
-            reset_events.append(stamp_s)
+            if latest_clock_s is None:
+                raise _evidence_issue("AMBIGUOUS", "goal_reset_clock_missing", "reset event precedes the first /clock sample")
+            topic_stamps[topic].append(latest_clock_s)
+            reset_events.append(latest_clock_s)
             epoch_started = True
             continue
         # A recorder normally starts before the requested reset. Pre-reset
@@ -1822,6 +1862,12 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         # larger header stamps than the fresh epoch; never mix them.
         if not epoch_started:
             continue
+        if topic in {"/imu/data_raw", "/imu/data", "/ground_truth/odom"}:
+            stamp_s = record_stamp_s
+        else:
+            # The reset required a clock sample, so the simulation stamp is
+            # always available once the fresh epoch has started.
+            stamp_s = latest_clock_s
         topic_stamps[topic].append(stamp_s)
         if topic in {"/imu/data_raw", "/imu/data"}:
             angular = getattr(message, "angular_velocity", None)
@@ -1869,15 +1915,19 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
                 raise _evidence_issue("FAIL", "goal_outcome_type", "goal completion sample is not boolean")
             completions.append((stamp_s, value))
         elif topic == "/bio_nav/route_goal":
-            route_requests.append((stamp_s, _goal_request_identity(message, stamp_s)))
+            # The ordering stamp is the simulation clock value; the identity
+            # transcribes the raw bag received timestamp so the evaluator
+            # metadata cross-check compares identical bag fields.
+            route_requests.append((stamp_s, _goal_request_identity(message, record_stamp_s)))
         elif topic == "/rosout":
             receipt = _reset_receipt_from_log(message)
             if receipt is not None:
                 receipt_logs.append((stamp_s, receipt))
     # The yaw streams retain file/publish order so a duplicate or backward
-    # header cannot be hidden by sorting. Event topics instead use rosbag
-    # received timestamps and are explicitly ordered only after collection;
-    # received-time jitter must not reorder the yaw header evidence.
+    # header cannot be hidden by sorting.  Event topics are stamped by the
+    # latest /clock simulation value in file order and are explicitly ordered
+    # only after collection; received-time jitter must not reorder the yaw
+    # header evidence and a wall-clock recorder cannot split the domains.
     for topic in ("/imu/data_raw", "/imu/data", "/ground_truth/odom"):
         stamps = topic_stamps.get(topic, [])
         if any(right <= left for left, right in zip(stamps, stamps[1:])):
@@ -1921,16 +1971,32 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
     request_identity = None
     request_s = reset_s
     binding_source = "reset_terminal_single_command_attempt"
+    logical_request_count = 0
     if route_requests:
-        if len(route_requests) != 1:
+        # The production probe republishes the identical goal at 1 Hz until
+        # the route ack lands.  Records with an identical value identity
+        # (frame, position, orientation) are one logical request; only
+        # genuinely different request values are multiple attempts.
+        distinct_values = {
+            (
+                identity["frame_id"],
+                tuple(identity["position_m"]),
+                tuple(identity["orientation_xyzw"]),
+            )
+            for _stamp, identity in route_requests
+        }
+        logical_request_count = len(distinct_values)
+        if logical_request_count != 1:
             raise _evidence_issue(
                 "FAIL", "goal_request_count",
-                "goal MCAP must contain one fresh route request when that topic is recorded; "
-                f"count={len(route_requests)}, timestamps_s={[stamp for stamp, _identity in route_requests]}",
+                "goal MCAP must contain one logical route request when that topic is recorded; "
+                f"distinct_values={logical_request_count}, recorded={len(route_requests)}, "
+                f"timestamps_s={[stamp for stamp, _identity in route_requests]}",
             )
         request_s, request_identity = route_requests[0]
-        if not reset_s < request_s < completed_s:
-            raise _evidence_issue("FAIL", "goal_request_order", "route goal request is outside the fresh terminal window")
+        for stamp, _identity in route_requests:
+            if not reset_s < stamp < completed_s:
+                raise _evidence_issue("FAIL", "goal_request_order", "route goal request is outside the fresh terminal window")
         _check_goal_request_metadata(request_identity, metadata)
         binding_source = "route_goal_pose_stamped"
     collision_window = [value for stamp, value in collisions if reset_s <= stamp <= completed_s]
@@ -1953,15 +2019,27 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         if route_requests
         else []
     )
-    abnormal_after = [
+    post_terminal = [
         item for item in commands
         if item[0] >= completed_s
         and (abs(item[1]) > 1.0e-12 or abs(item[2]) > 1.0e-12)
     ]
+    post_terminal_drain = [
+        item for item in post_terminal
+        if item[0] - completed_s <= GOAL_POST_TERMINAL_GRACE_S + 1.0e-9
+    ]
+    abnormal_after = [
+        item for item in post_terminal
+        if item[0] - completed_s > GOAL_POST_TERMINAL_GRACE_S + 1.0e-9
+    ]
     if abnormal_before:
         raise _evidence_issue("FAIL", "goal_command_before_request", "nonzero command precedes the bound route request")
     if abnormal_after:
-        raise _evidence_issue("FAIL", "goal_command_after_terminal", "nonzero command follows the route terminal")
+        raise _evidence_issue(
+            "FAIL", "goal_command_after_terminal",
+            "nonzero command follows the route terminal beyond the bounded drain window; "
+            f"delays_s={[item[0] - completed_s for item in abnormal_after]}",
+        )
     nonzero = [
         item for item in commands
         if request_s <= item[0] < completed_s
@@ -2056,6 +2134,7 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
         "attempt_provenance": {
             "reset_event_s": reset_s,
             "route_request_count": len(route_requests),
+            "route_request_logical_count": logical_request_count,
             "route_request_timestamps_s": [stamp for stamp, _identity in route_requests],
             "route_goal_request": request_identity,
             "binding_source": binding_source,
@@ -2064,6 +2143,11 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
             "terminal_values": [value for _stamp, value in completions],
             "selected_terminal_s": completed_s,
             "command_window_source": "first_to_last_nonzero_command",
+            "post_terminal_grace_s": GOAL_POST_TERMINAL_GRACE_S,
+            "post_terminal_nonzero_command_count": len(post_terminal_drain),
+            "post_terminal_max_delay_s": (
+                max((item[0] - completed_s for item in post_terminal_drain), default=None)
+            ),
         },
         "stream_coverage": {
             "command_start_s": start_s,
@@ -2085,7 +2169,8 @@ def load_goal_mcap(path: Path, metadata: Any) -> dict[str, Any]:
             "storage_id": "mcap",
             "read_order": "file",
             "yaw_time_basis": "header_stamp_in_file_publish_order",
-            "event_time_basis": "received_timestamp_sorted_after_collection",
+            "event_time_basis": "latest_clock_at_mcap_publish_order",
+            "route_request_identity_time_basis": "bag_received_timestamp",
             "topic_types": {topic: topic_types[topic] for topic in selected_topic_types},
             "topic_counts": {topic: len(topic_stamps[topic]) for topic in selected_topic_types},
             "reset_event_count": len(reset_events),

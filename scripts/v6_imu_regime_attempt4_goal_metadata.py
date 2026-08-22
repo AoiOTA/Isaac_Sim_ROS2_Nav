@@ -124,10 +124,24 @@ def main():
             f"goal MCAP terminals are not exactly one success: {terminals}"
         )
     successful = [terminals[0][1]]
-    if len(route_requests) > 1:
-        return _fail(
-            f"goal MCAP has {len(route_requests)} route requests, expected at most 1"
-        )
+    if route_requests:
+        # The production probe republishes the identical goal at 1 Hz until
+        # the route ack lands; identical value identities (frame, position,
+        # orientation) collapse into one logical request bound to the first
+        # record.  Genuinely different request values cannot be transcribed.
+        distinct = {
+            (
+                request["frame_id"],
+                tuple(request["position_m"]),
+                tuple(request["orientation_xyzw"]),
+            )
+            for request in route_requests
+        }
+        if len(distinct) != 1:
+            return _fail(
+                f"goal MCAP has {len(distinct)} distinct route request values "
+                f"across {len(route_requests)} records, expected one logical request"
+            )
 
     metadata = {
         "schema_version": 1,
@@ -145,6 +159,7 @@ def main():
     }
     if route_requests:
         metadata["route_goal_request"] = route_requests[0]
+        metadata["route_request_recorded_count"] = len(route_requests)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
