@@ -162,6 +162,10 @@ wait_file() { # path timeout_sec
 
 # ---------------------------------------------------------------- env setup
 STAGE="env"
+# Drop any pre-existing ROS overlay from the caller environment: the session
+# must resolve packages only from this snapshot (mirrors common.sh
+# reset_ros_overlay_environment).
+unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH ROS_PACKAGE_PATH
 source /opt/ros/jazzy/setup.bash
 # shellcheck disable=SC1090
 source "${I_INSTALL}/setup.bash"
