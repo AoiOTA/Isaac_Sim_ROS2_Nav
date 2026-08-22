@@ -428,9 +428,11 @@ def _reset_route_coordinator(*, active=True, handle=None):
     )
     coordinator.reset_intent_generation = None
     coordinator.reset_event_completed_generation = None
-    coordinator.reset_release_seen_generation = None
-    coordinator.reset_gvg_ready_generation = None
+    # The event-driven tests below exercise the gate-less legacy reset path;
+    # the status handler flips this flag on the first strict status anyway.
+    coordinator.reset_status_authority_seen = False
     coordinator.reset_hold_barrier = False
+    coordinator.reset_ready_pending = False
     coordinator.graph = SimpleNamespace(graph_id='physical', revision=4)
     coordinator.gvg_graph = coordinator.graph
     coordinator.cognitive_graph_identity = CognitiveGraphIdentity(
@@ -540,13 +542,9 @@ def _startup_reset_route_coordinator():
     coordinator.reset_status_snapshot = None
     coordinator.reset_intent_generation = None
     coordinator.reset_event_completed_generation = None
-    coordinator.reset_release_seen_generation = None
-    coordinator.startup_reset_event_pending = False
-    coordinator.startup_reset_event_deadline_steady_s = None
-    coordinator.startup_reset_event_legacy_completed = False
-    coordinator.startup_reset_event_invalidated = False
-    coordinator.startup_reset_status_authority_seen = False
+    coordinator.reset_status_authority_seen = False
     coordinator.reset_hold_barrier = True
+    coordinator.reset_ready_pending = False
     coordinator.tracker = None
     coordinator.navigation_goal_pending = False
     coordinator.navigation_goal_handle = None
@@ -664,37 +662,28 @@ def test_hold_retires_active_route_before_event_and_same_generation_is_idempoten
     assert prepared == [{}]
 
 
-def test_release_publishes_one_ready_for_already_reconciled_reset_gvg() -> None:
+def test_release_publishes_deferred_ready_once_after_reassert_commit_in_hold() -> None:
     coordinator = _reset_route_coordinator(active=False)
     coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
     coordinator._on_reset_stop_gate_status(
         _gate_status(2, True, 'reset_complete', eligible=2))
 
-    # Model a successful completion-owned SetRouteGraph callback while HOLD
-    # is still active.  It must stay silent until the release barrier opens.
-    coordinator.graph = coordinator.gvg_graph
-    coordinator.desired_graph = coordinator.gvg_graph
+    # The completion-owned GVG reassert committed while HOLD fenced outputs.
     coordinator.graph_coherent = True
     coordinator.graph_reassert_required = False
-    coordinator.graph_transaction_generation = None
-    coordinator.graph_transaction_future = None
-    coordinator.graph_transaction_deadline_steady_s = None
-    coordinator.graph_transaction_kind = None
-    coordinator.graph_retry_due_steady_s = None
-    coordinator.cognitive_graph_switch_pending = False
-    assert coordinator.structural_statuses == []
+    coordinator.reset_ready_pending = True
 
     released = _gate_status(2, False, 'released:activation_gate')
     coordinator._on_reset_stop_gate_status(released)
     coordinator._on_reset_stop_gate_status(released)
 
+    assert coordinator.reset_hold_barrier is False
     assert coordinator.structural_statuses == [
         (coordinator.StructuralGraphStatus.READY, 'reset GVG reconciled')
     ]
-    assert coordinator.reset_gvg_ready_generation == 2
 
 
-def test_release_never_claims_ready_with_pending_or_unavailable_reassert() -> None:
+def test_release_without_pending_reassert_commit_publishes_no_ready() -> None:
     coordinator = _reset_route_coordinator(active=False)
     coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
     coordinator._on_reset_stop_gate_status(
@@ -702,8 +691,8 @@ def test_release_never_claims_ready_with_pending_or_unavailable_reassert() -> No
     coordinator._on_reset_stop_gate_status(
         _gate_status(2, False, 'released:activation_gate'))
 
+    assert coordinator.reset_hold_barrier is False
     assert coordinator.structural_statuses == []
-    assert coordinator.reset_gvg_ready_generation is None
 
 
 def test_startup_released_baseline_synchronizes_without_fake_terminal() -> None:
@@ -784,29 +773,48 @@ def test_startup_reset_complete_duplicate_is_idempotent_and_bad_followups_hold()
     assert coordinator.goal_result_pub.messages == []
 
 
-def test_first_reset_complete_with_active_route_state_remains_fail_closed() -> None:
-    coordinator = _reset_route_coordinator(active=True)
+def test_first_reset_complete_with_active_route_retires_once_and_stays_held() -> None:
+    handle = _AcceptedHandle()
+    coordinator = _reset_route_coordinator(active=True, handle=handle)
     coordinator.reset_status_generation = None
     coordinator.reset_status_snapshot = None
     coordinator.reset_hold_barrier = True
 
     coordinator._on_reset_stop_gate_status(
         _gate_status(7, True, 'reset_complete', eligible=7))
+
+    # The completed generation is authoritative reset evidence: the
+    # interrupted route is retired with exactly one abort terminal and the
+    # barrier stays held until the strict release arrives.
+    assert coordinator.reset_status_generation == 7
+    assert coordinator.reset_intent_generation == 7
+    assert coordinator.reset_event_completed_generation == 7
+    assert coordinator.reset_hold_barrier is True
+    assert coordinator.request_id == 42
+    assert handle.cancel_calls == 1
+    assert [
+        message.data for message in coordinator.goal_complete_pub.messages
+    ] == [False]
+    assert json.loads(coordinator.goal_result_pub.messages[0].data) == {
+        'request_id': 41,
+        'status': 'aborted',
+        'reason': 'simulation_reset',
+        'reset_epoch': 9,
+    }
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.graph_reconciliations == [
+        'simulation reset requires Route Server GVG']
+
+    coordinator._on_reset_event(None)  # duplicate of the completed generation
+    assert len(coordinator.goal_result_pub.messages) == 1
+
     coordinator._on_reset_stop_gate_status(
         _gate_status(7, False, 'released:activation_gate'))
-
-    assert coordinator.reset_status_generation == 7
-    assert coordinator.reset_intent_generation is None
-    assert coordinator.reset_event_completed_generation is None
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.request_id == 41
-    assert coordinator.runtime_snapshots == []
-    assert coordinator.graph_reconciliations == []
-    assert coordinator.goal_complete_pub.messages == []
-    assert coordinator.goal_result_pub.messages == []
+    assert coordinator.reset_hold_barrier is False
+    assert len(coordinator.goal_result_pub.messages) == 1
 
 
-def test_runtime_completion_without_hold_is_not_startup_baseline() -> None:
+def test_new_generation_completion_without_hold_retires_and_stays_held() -> None:
     coordinator = _startup_reset_route_coordinator()
     coordinator._on_reset_stop_gate_status(
         _gate_status(7, False, 'released:activation_gate'))
@@ -814,12 +822,19 @@ def test_runtime_completion_without_hold_is_not_startup_baseline() -> None:
     coordinator._on_reset_stop_gate_status(
         _gate_status(8, True, 'reset_complete', eligible=8))
 
+    # A newer completed generation is authoritative even when its HOLD was
+    # missed: retire once, publish completion, and keep the barrier held.
     assert coordinator.reset_status_generation == 8
-    assert coordinator.reset_intent_generation is None
-    assert coordinator.reset_event_completed_generation is None
+    assert coordinator.reset_intent_generation == 8
+    assert coordinator.reset_event_completed_generation == 8
     assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_generation == 0
-    assert coordinator.runtime_snapshots == []
+    assert coordinator.reset_generation == 1
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.goal_complete_pub.messages == []
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(8, False, 'released:activation_gate'))
+    assert coordinator.reset_hold_barrier is False
 
 
 def test_startup_completion_reconciliation_precedes_concurrent_release() -> None:
@@ -856,80 +871,9 @@ def test_startup_completion_reconciliation_precedes_concurrent_release() -> None
     assert not completion_thread.is_alive()
     assert not release_thread.is_alive()
     assert coordinator.reset_event_completed_generation == 7
-    assert coordinator.reset_release_seen_generation == 7
     assert coordinator.reset_hold_barrier is False
     assert coordinator.goal_complete_pub.messages == []
     assert coordinator.goal_result_pub.messages == []
-
-
-def test_startup_event_then_completion_and_release_merge_one_reset() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-
-    coordinator._on_reset_event(None)
-
-    assert coordinator.startup_reset_event_pending is True
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == []
-
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, True, 'reset_complete', eligible=7))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, False, 'released:activation_gate'))
-
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.reset_intent_generation == 7
-    assert coordinator.reset_event_completed_generation == 7
-    assert coordinator.reset_release_seen_generation == 7
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG']
-    assert coordinator.goal_complete_pub.messages == []
-    assert coordinator.goal_result_pub.messages == []
-
-
-def test_startup_event_then_late_hold_completion_release_merges_one_reset() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-
-    coordinator._on_reset_event(None)
-    coordinator._on_reset_stop_gate_status(_gate_status(7, True, 'hold'))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, True, 'reset_complete', eligible=7))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, False, 'released:activation_gate'))
-
-    assert coordinator.reset_intent_generation == 7
-    assert coordinator.reset_event_completed_generation == 7
-    assert coordinator.reset_release_seen_generation == 7
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG']
-
-
-def test_startup_completion_then_event_and_release_is_idempotent() -> None:
-    coordinator = _startup_reset_route_coordinator()
-
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, True, 'reset_complete', eligible=7))
-    coordinator._on_reset_event(None)
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, False, 'released:activation_gate'))
-
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG']
 
 
 def test_hold_completion_release_does_not_depend_on_empty_event() -> None:
@@ -943,7 +887,6 @@ def test_hold_completion_release_does_not_depend_on_empty_event() -> None:
 
     assert coordinator.reset_intent_generation == 2
     assert coordinator.reset_event_completed_generation == 2
-    assert coordinator.reset_release_seen_generation == 2
     assert coordinator.reset_hold_barrier is False
     assert coordinator.reset_generation == 1
     assert coordinator.request_id == 42
@@ -969,281 +912,8 @@ def test_hold_event_completion_release_publishes_baseline_once() -> None:
         'simulation reset requires Route Server GVG']
 
 
-def test_startup_event_then_released_snapshot_binds_missed_completion() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-
-    coordinator._on_reset_event(None)
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, False, 'released:activation_gate'))
-
-    assert coordinator.reset_intent_generation == 7
-    assert coordinator.reset_event_completed_generation == 7
-    assert coordinator.reset_release_seen_generation == 7
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG']
-
-
-def test_startup_event_only_resolves_as_legacy_after_bounded_grace() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-
-    coordinator._on_reset_event(None)
-    coordinator._startup_reset_event_tick(now_steady_s=10.49)
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.runtime_snapshots == []
-
-    coordinator._startup_reset_event_tick(now_steady_s=10.5)
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.startup_reset_event_legacy_completed is True
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.reset_generation == 1
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-
-
-def test_startup_event_malformed_status_retires_hint_and_timer_fail_closed() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-
-    coordinator._on_reset_event(None)
-    coordinator._on_reset_stop_gate_status(SimpleNamespace(data='not-json'))
-    coordinator._startup_reset_event_tick(now_steady_s=11.0)
-
-    assert coordinator.startup_reset_status_authority_seen is True
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.startup_reset_event_deadline_steady_s is None
-    assert coordinator.startup_reset_event_invalidated is True
-    assert coordinator.startup_reset_event_legacy_completed is False
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == []
-    assert coordinator.graph_reconciliations == []
-
-
-def test_startup_event_conflicting_baseline_retires_hint_fail_closed() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-
-    coordinator._on_reset_event(None)
-    coordinator._on_reset_stop_gate_status(_gate_status(7, True, 'initialized'))
-    coordinator._on_reset_stop_gate_status(_gate_status(7, True, 'closed'))
-    coordinator._startup_reset_event_tick(now_steady_s=11.0)
-
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.startup_reset_event_invalidated is True
-    assert coordinator.startup_reset_event_legacy_completed is False
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.runtime_snapshots == []
-
-
-@pytest.mark.parametrize('baseline_reason', ('initialized', 'closed'))
-@pytest.mark.parametrize('event_first', (False, True))
-def test_startup_authority_baseline_and_event_bind_later_hold_once(
-    baseline_reason, event_first,
-) -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-    baseline = _gate_status(7, True, baseline_reason)
-
-    if event_first:
-        coordinator._on_reset_event(None)
-        coordinator._on_reset_stop_gate_status(baseline)
-    else:
-        coordinator._on_reset_stop_gate_status(baseline)
-        coordinator._on_reset_event(None)
-
-    assert coordinator.startup_reset_event_pending is True
-    assert coordinator.startup_reset_event_deadline_steady_s is None
-    assert coordinator.startup_reset_status_authority_seen is True
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == []
-
-    coordinator._startup_reset_event_tick(now_steady_s=100.0)
-    coordinator._on_reset_stop_gate_status(_gate_status(8, True, 'hold'))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(8, True, 'reset_complete', eligible=8))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(8, False, 'released:activation_gate'))
-
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.reset_intent_generation == 8
-    assert coordinator.reset_event_completed_generation == 8
-    assert coordinator.reset_release_seen_generation == 8
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.reset_generation == 1
-    assert coordinator.request_id == 1
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG']
-
-
-def test_expired_startup_hint_cannot_bind_hold_before_timer_callback() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-    coordinator._on_reset_event(None)
-    coordinator._steady_now = lambda: 10.6
-
-    coordinator._on_reset_stop_gate_status(_gate_status(7, True, 'hold'))
-
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.reset_intent_generation == 7
-    assert coordinator.reset_event_completed_generation is None
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_generation == 2
-    assert coordinator.request_id == 2
-    assert coordinator.runtime_snapshots == []
-
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, True, 'reset_complete', eligible=7))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, False, 'released:activation_gate'))
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.runtime_snapshots == [('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG']
-
-
-def test_expired_startup_hint_cannot_be_revived_by_late_baseline() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-    coordinator._on_reset_event(None)
-    coordinator._steady_now = lambda: 10.6
-
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(7, True, 'initialized'))
-    coordinator._on_reset_stop_gate_status(_gate_status(8, True, 'hold'))
-
-    assert coordinator.startup_reset_event_pending is False
-    assert coordinator.reset_intent_generation == 8
-    assert coordinator.reset_event_completed_generation is None
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_generation == 2
-    assert coordinator.request_id == 2
-    assert coordinator.runtime_snapshots == []
-
-
-def test_startup_timer_and_initialized_status_are_linearized_both_orders() -> None:
-    status_first = _startup_reset_route_coordinator()
-    status_first._steady_now = lambda: 10.0
-    status_first._on_reset_event(None)
-    status_first._on_reset_stop_gate_status(
-        _gate_status(7, True, 'initialized'))
-    status_first._startup_reset_event_tick(now_steady_s=10.5)
-    assert status_first.reset_hold_barrier is True
-    assert status_first.startup_reset_event_pending is True
-    assert status_first.runtime_snapshots == []
-
-    timer_first = _startup_reset_route_coordinator()
-    timer_first._steady_now = lambda: 10.0
-    timer_first._on_reset_event(None)
-    timer_first._startup_reset_event_tick(now_steady_s=10.5)
-    timer_first._on_reset_stop_gate_status(
-        _gate_status(7, True, 'initialized'))
-    assert timer_first.reset_hold_barrier is True
-    assert timer_first.startup_reset_event_pending is False
-    assert timer_first.startup_reset_event_legacy_completed is True
-    assert timer_first.runtime_snapshots == [('physical', 4, [])]
-
-
-def test_new_strict_reset_does_not_merge_legacy_expired_startup_hint() -> None:
-    coordinator = _startup_reset_route_coordinator()
-    coordinator._steady_now = lambda: 10.0
-    coordinator._on_reset_event(None)
-    coordinator._startup_reset_event_tick(now_steady_s=10.5)
-
-    coordinator._on_reset_stop_gate_status(_gate_status(7, True, 'initialized'))
-    coordinator._on_reset_stop_gate_status(_gate_status(8, True, 'hold'))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(8, True, 'reset_complete', eligible=8))
-    coordinator._on_reset_stop_gate_status(
-        _gate_status(8, False, 'released:activation_gate'))
-
-    assert coordinator.reset_generation == 2
-    assert coordinator.request_id == 2
-    assert coordinator.reset_intent_generation == 8
-    assert coordinator.reset_event_completed_generation == 8
-    assert coordinator.reset_hold_barrier is False
-    assert coordinator.runtime_snapshots == [
-        ('physical', 4, []), ('physical', 4, [])]
-    assert coordinator.graph_reconciliations == [
-        'simulation reset requires Route Server GVG',
-        'simulation reset requires Route Server GVG',
-    ]
-
-
-def test_startup_baseline_event_callback_race_never_double_counts() -> None:
-    for _round in range(500):
-        coordinator = _startup_reset_route_coordinator()
-        coordinator._steady_now = lambda: 10.0
-        start = threading.Barrier(3)
-        event_thread = threading.Thread(target=lambda: (
-            start.wait(timeout=2.0), coordinator._on_reset_event(None)))
-        status_thread = threading.Thread(target=lambda: (
-            start.wait(timeout=2.0),
-            coordinator._on_reset_stop_gate_status(
-                _gate_status(7, True, 'initialized'))))
-        event_thread.start()
-        status_thread.start()
-        start.wait(timeout=2.0)
-        event_thread.join(timeout=2.0)
-        status_thread.join(timeout=2.0)
-
-        assert not event_thread.is_alive()
-        assert not status_thread.is_alive()
-        coordinator._on_reset_stop_gate_status(_gate_status(8, True, 'hold'))
-        coordinator._on_reset_stop_gate_status(
-            _gate_status(8, True, 'reset_complete', eligible=8))
-        coordinator._on_reset_stop_gate_status(
-            _gate_status(8, False, 'released:activation_gate'))
-        assert coordinator.reset_generation == 1
-        assert coordinator.request_id == 1
-        assert coordinator.reset_hold_barrier is False
-        assert coordinator.runtime_snapshots == [('physical', 4, [])]
-        assert coordinator.graph_reconciliations == [
-            'simulation reset requires Route Server GVG']
-
-
-def test_startup_event_and_completion_concurrency_always_releases_once() -> None:
-    for _round in range(500):
-        coordinator = _startup_reset_route_coordinator()
-        coordinator._steady_now = lambda: 10.0
-        start = threading.Barrier(3)
-
-        event_thread = threading.Thread(target=lambda: (
-            start.wait(timeout=2.0), coordinator._on_reset_event(None)))
-        completion_thread = threading.Thread(target=lambda: (
-            start.wait(timeout=2.0),
-            coordinator._on_reset_stop_gate_status(
-                _gate_status(7, True, 'reset_complete', eligible=7))))
-        event_thread.start()
-        completion_thread.start()
-        start.wait(timeout=2.0)
-        event_thread.join(timeout=2.0)
-        completion_thread.join(timeout=2.0)
-
-        assert not event_thread.is_alive()
-        assert not completion_thread.is_alive()
-        coordinator._on_reset_stop_gate_status(
-            _gate_status(7, False, 'released:activation_gate'))
-        assert coordinator.reset_hold_barrier is False
-        assert coordinator.reset_generation == 1
-        assert coordinator.request_id == 1
-        assert coordinator.runtime_snapshots == [('physical', 4, [])]
-        assert coordinator.graph_reconciliations == [
-            'simulation reset requires Route Server GVG']
-
-
 @pytest.mark.parametrize('final_reason', ('reset_complete', 'released'))
-def test_nonpristine_event_first_status_without_hold_stays_fail_closed(
-    final_reason,
-) -> None:
+def test_event_before_first_status_re_fences_on_late_status(final_reason) -> None:
     coordinator = _reset_route_coordinator(active=False)
     coordinator.reset_status_generation = None
     coordinator.reset_status_snapshot = None
@@ -1255,17 +925,34 @@ def test_nonpristine_event_first_status_without_hold_stays_fail_closed(
     )
 
     coordinator._on_reset_event(None)
-    coordinator._on_reset_stop_gate_status(status)
 
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_intent_generation is None
-    assert coordinator.reset_event_completed_generation is None
+    # No gate authority was ever seen: the Empty alone fences and completes
+    # the epoch (gate-less legacy path), and the barrier re-opens.
     assert coordinator.reset_generation == 1
     assert coordinator.request_id == 42
+    assert coordinator.reset_hold_barrier is False
     assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.goal_complete_pub.messages == []
+
+    coordinator._on_reset_stop_gate_status(status)
+
+    if final_reason == 'reset_complete':
+        # The late strict completion re-fences and retires once more; the
+        # second retire has no route left and publishes no terminal.
+        assert coordinator.reset_intent_generation == 7
+        assert coordinator.reset_event_completed_generation == 7
+        assert coordinator.reset_hold_barrier is True
+        assert coordinator.reset_generation == 2
+        assert coordinator.request_id == 43
+    else:
+        # A released baseline after the legacy event leaves the barrier open.
+        assert coordinator.reset_status_generation == 7
+        assert coordinator.reset_hold_barrier is False
+        assert coordinator.reset_generation == 1
+    assert coordinator.goal_result_pub.messages == []
 
 
-def test_nonpristine_completion_then_event_release_stays_fail_closed() -> None:
+def test_first_completion_then_event_and_release_synchronize_one_generation() -> None:
     coordinator = _reset_route_coordinator(active=False)
     coordinator.reset_status_generation = None
     coordinator.reset_status_snapshot = None
@@ -1277,11 +964,13 @@ def test_nonpristine_completion_then_event_release_stays_fail_closed() -> None:
     coordinator._on_reset_stop_gate_status(
         _gate_status(7, False, 'released:activation_gate'))
 
-    assert coordinator.reset_hold_barrier is True
-    assert coordinator.reset_intent_generation is None
-    assert coordinator.reset_event_completed_generation is None
+    assert coordinator.reset_intent_generation == 7
+    assert coordinator.reset_event_completed_generation == 7
     assert coordinator.reset_generation == 1
     assert coordinator.request_id == 42
+    assert coordinator.reset_hold_barrier is False
+    assert coordinator.runtime_snapshots == [('physical', 4, [])]
+    assert coordinator.goal_result_pub.messages == []
 
 
 def test_hold_without_event_stays_fail_closed_and_rejects_new_goal() -> None:

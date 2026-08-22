@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 import threading
 from types import SimpleNamespace
@@ -709,7 +710,6 @@ def test_reassert_transaction_is_reserved_before_export(monkeypatch):
     coordinator.graph_generation = 4
     coordinator.graph_switch_generation = 6
     coordinator.reset_generation = 1
-    coordinator.reset_gvg_ready_generation = None
     coordinator.graph_transaction_generation = None
     coordinator.graph_coherent = False
     coordinator.graph_reassert_required = True
@@ -1145,23 +1145,33 @@ def test_completion_owned_gvg_reassert_publishes_ready_after_release(
     coordinator.reset_hold_barrier = True
     coordinator.reset_intent_generation = 2
     coordinator.reset_event_completed_generation = 2
-    coordinator.reset_release_seen_generation = None
     statuses = []
     coordinator._publish_structural_status = (
         lambda *args: statuses.append(args))
 
     coordinator._ensure_desired_graph(
         'reset GVG', allow_reset_reassert=2)
-    coordinator.reset_release_seen_generation = 2
-    coordinator.reset_hold_barrier = False
     coordinator.set_graph_client.futures[0].finish(success=True)
 
+    # HOLD still fences the commit outputs; exactly one READY is deferred to
+    # the release of the completed generation.
     assert coordinator.graph_coherent is True
     assert coordinator.graph_reassert_required is False
+    assert statuses == []
+    assert coordinator.reset_ready_pending is True
+
+    coordinator.reset_status_generation = 2
+    coordinator._on_reset_stop_gate_status(SimpleNamespace(data=json.dumps({
+        'generation': 2,
+        'held': False,
+        'eligible_generation': None,
+        'reason': 'released:activation_gate',
+    })))
+
+    assert coordinator.reset_hold_barrier is False
     assert statuses == [
         (coordinator.StructuralGraphStatus.READY, 'reset GVG reconciled')
     ]
-    assert coordinator.reset_gvg_ready_generation == 2
 
 
 @pytest.mark.parametrize('kind', ('cognitive', 'structural'))
@@ -1214,7 +1224,15 @@ def test_reset_completion_retry_survives_hung_and_late_success(
 
     old.finish(success=True)
     assert coordinator.graph_coherent is False
+    # HOLD fences the compensating retry without consuming it; the release
+    # of the completed generation lets the same retry dispatch.
+    if kind == 'structural':
+        # The production reset retire drops the queued structural candidate.
+        coordinator.pending_structural_map = None
     coordinator.steady_s = coordinator.graph_retry_due_steady_s
+    coordinator._graph_reconciliation_tick()
+    assert len(coordinator.set_graph_client.calls) == 2
+    coordinator.reset_hold_barrier = False
     coordinator._graph_reconciliation_tick()
     assert len(coordinator.set_graph_client.calls) == 3
     coordinator.set_graph_client.futures[2].finish(success=True)

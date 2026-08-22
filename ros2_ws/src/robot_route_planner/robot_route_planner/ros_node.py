@@ -224,8 +224,6 @@ class CognitiveValidationGeneration:
 class RouteInputGeneration:
     """One reset/route/graph identity captured at external-input admission."""
 
-    reset_intent_generation: int | None
-    reset_event_completed_generation: int | None
     reset_generation: int
     request_id: int
     graph_generation: int
@@ -570,18 +568,12 @@ class RouteCoordinator:
         self.reset_status_snapshot: ResetStopGateStatus | None = None
         self.reset_intent_generation: int | None = None
         self.reset_event_completed_generation: int | None = None
-        self.reset_release_seen_generation: int | None = None
-        self.reset_gvg_ready_generation: int | None = None
-        # Empty is volatile while gate status is transient-local, so a
-        # pristine late join can observe the two topics in either order.  Keep
-        # one short-lived, unbound completion hint instead of irreversibly
-        # treating the first Empty as an unrelated legacy reset.
-        self.startup_reset_event_pending = False
-        self.startup_reset_event_deadline_steady_s: float | None = None
-        self.startup_reset_event_legacy_completed = False
-        self.startup_reset_event_invalidated = False
-        self.startup_reset_status_authority_seen = False
+        self.reset_status_authority_seen = False
         self.reset_hold_barrier = True
+        # Set when the completion-owned GVG reassert commits while HOLD still
+        # fences outputs; the release of that generation publishes the single
+        # READY for the reset cycle.
+        self.reset_ready_pending = False
         self.structural_generation = 0
         self.desired_graph_generation = 0
         self.desired_graph = self.gvg_graph
@@ -869,11 +861,6 @@ class RouteCoordinator:
             self._graph_reconciliation_tick,
             clock=self._graph_reconciliation_clock,
         )
-        node.create_timer(
-            0.1,
-            self._startup_reset_event_tick,
-            clock=self._graph_reconciliation_clock,
-        )
         self._publish_graph()
         self._publish_structural_status(StructuralGraphStatus.READY, "initial graph ready")
 
@@ -911,8 +898,6 @@ class RouteCoordinator:
 
         graph = getattr(self, "graph", None)
         return RouteInputGeneration(
-            getattr(self, "reset_intent_generation", None),
-            getattr(self, "reset_event_completed_generation", None),
             int(getattr(self, "reset_generation", 0)),
             int(getattr(self, "request_id", 0)),
             int(getattr(self, "graph_generation", 0)),
@@ -933,16 +918,18 @@ class RouteCoordinator:
     def _reset_reassert_is_current_locked(
         self, generation: int | None, graph
     ) -> bool:
-        """Authorize only the completion-owned GVG reassert during HOLD."""
+        """Authorize only the completion-owned GVG reassert during HOLD.
+
+        Only ``_publish_reset_completion`` passes a non-None token, so a
+        truthy token plus the reassert flag set by the reset begin is enough;
+        stale dispatches are still discarded by the route-input fence.
+        """
 
         if generation is None:
             return False
         gvg = getattr(self, "gvg_graph", None)
         return bool(
             gvg is not None
-            and int(generation)
-            == getattr(self, "reset_intent_generation", None)
-            == getattr(self, "reset_event_completed_generation", None)
             and bool(getattr(self, "graph_reassert_required", False))
             and self._graph_identity(graph) == self._graph_identity(gvg)
         )
@@ -1327,6 +1314,15 @@ class RouteCoordinator:
                     getattr(self, "graph_retry_reason", "graph reconciliation")
                 )
                 switch_context = getattr(self, "graph_retry_switch_context", None)
+                if (
+                    self._reset_barrier_is_held()
+                    and not self._graph_switch_context_is_current_reset_reassert_locked(
+                        switch_context
+                    )
+                ):
+                    # A switch retry without reset-completion authority is
+                    # not consumed; it waits for the release to dispatch.
+                    return
                 self.graph_retry_due_steady_s = None
                 if retry_kind != "structural":
                     graph = getattr(self, "desired_graph", self.gvg_graph)
@@ -1730,7 +1726,7 @@ class RouteCoordinator:
             self._retire_active_route_for_reset()
         )
         self.reset_generation = int(getattr(self, "reset_generation", 0)) + 1
-        self.reset_gvg_ready_generation = None
+        self.reset_ready_pending = False
         self.structural_generation = int(
             getattr(self, "structural_generation", 0)
         ) + 1
@@ -1806,256 +1802,25 @@ class RouteCoordinator:
                 allow_reset_reassert=expected_generation,
             )
 
-    def _publish_reset_gvg_ready_if_reconciled_under_output_lock(
-        self, generation: int
-    ) -> bool:
-        """Publish one READY after release and complete GVG reconciliation."""
-
-        with self._route_state_lock():
-            graph = getattr(self, "graph", None)
-            desired = getattr(self, "desired_graph", None)
-            gvg = getattr(self, "gvg_graph", None)
-            ready = bool(
-                graph is not None
-                and desired is not None
-                and gvg is not None
-                and int(generation)
-                == getattr(self, "reset_intent_generation", None)
-                == getattr(self, "reset_event_completed_generation", None)
-                == getattr(self, "reset_release_seen_generation", None)
-                and not self._reset_barrier_is_held()
-                and getattr(self, "reset_gvg_ready_generation", None)
-                != int(generation)
-                and self._graph_identity(graph)
-                == self._graph_identity(desired)
-                == self._graph_identity(gvg)
-                and bool(getattr(self, "graph_coherent", False))
-                and not bool(getattr(self, "graph_reassert_required", False))
-                and getattr(self, "graph_transaction_generation", None) is None
-                and getattr(self, "graph_transaction_future", None) is None
-                and getattr(
-                    self, "graph_transaction_deadline_steady_s", None
-                ) is None
-                and getattr(self, "graph_transaction_kind", None) is None
-                and getattr(self, "graph_retry_due_steady_s", None) is None
-                and not bool(
-                    getattr(self, "cognitive_graph_switch_pending", False)
-                )
-            )
-        if not ready:
-            return False
-        self._publish_structural_status(
-            self.StructuralGraphStatus.READY,
-            "reset GVG reconciled",
-        )
-        # The caller owns the output lock, so no newer reset can cross the
-        # publication/claim boundary.
-        with self._route_state_lock():
-            self.reset_gvg_ready_generation = int(generation)
-        return True
-
     def _fail_closed_reset_status(self, detail: str) -> None:
         with self._route_output_lock():
             with self._route_state_lock():
-                self.startup_reset_status_authority_seen = True
-                self._retire_startup_reset_event_locked(invalidated=True)
+                self.reset_status_authority_seen = True
                 self.reset_hold_barrier = True
         self.node.get_logger().error(
             f"reset stop gate status rejected; route goals held: {detail}"
         )
 
-    def _startup_reset_completion_is_safe_locked(
-        self, *, allow_status_baseline: bool = False
-    ) -> bool:
-        """Accept one late-join completion only before any route-era state."""
-
-        runtime = getattr(self, "runtime", None)
-        runtime_edges = {} if runtime is None else getattr(runtime, "edges", {})
-        desired = getattr(self, "desired_graph", None)
-        gvg = getattr(self, "gvg_graph", None)
-        status_generation = getattr(self, "reset_status_generation", None)
-        status_snapshot = getattr(self, "reset_status_snapshot", None)
-        no_status_authority = bool(
-            status_generation is None
-            and status_snapshot is None
-            and not getattr(
-                self, "startup_reset_status_authority_seen", False
-            )
-        )
-        normal_status_baseline = bool(
-            allow_status_baseline
-            and getattr(self, "startup_reset_status_authority_seen", False)
-            and status_generation is not None
-            and status_snapshot is not None
-            and status_snapshot.generation == int(status_generation)
-            and status_snapshot.reason in {"initialized", "closed"}
-        )
-        return bool(
-            (no_status_authority or normal_status_baseline)
-            and getattr(self, "reset_intent_generation", None) is None
-            and getattr(self, "reset_event_completed_generation", None) is None
-            and getattr(self, "reset_release_seen_generation", None) is None
-            and int(getattr(self, "reset_generation", 0)) == 0
-            and int(getattr(self, "request_id", 0)) == 0
-            and int(getattr(self, "graph_generation", 0)) == 0
-            and int(getattr(self, "graph_switch_generation", 0)) == 0
-            and int(getattr(self, "structural_generation", 0)) == 0
-            and int(getattr(self, "desired_graph_generation", 0)) == 0
-            and not bool(getattr(self, "route_active", False))
-            and getattr(self, "pending_goal", None) is None
-            and getattr(self, "tracker", None) is None
-            and not bool(getattr(self, "navigation_goal_pending", False))
-            and getattr(self, "navigation_goal_handle", None) is None
-            and not bool(getattr(self, "navigation_goal_targets_final", False))
-            and not bool(getattr(self, "navigation_failed", False))
-            and getattr(self, "pending_deadline_ns", None) is None
-            and getattr(self, "pending_prior_request_id", None) is None
-            and not bool(getattr(self, "latest_priors", {}))
-            and getattr(self, "latest_priors_stamp_ns", None) is None
-            and getattr(self, "latest_priors_request_id", None) is None
-            and int(getattr(self, "cognitive_graph_last_sequence", 0)) == 0
-            and getattr(self, "cognitive_graph_feedback_active", None) is None
-            and getattr(self, "cognitive_graph_feedback_pending", None) is None
-            and not bool(getattr(self, "pending_reroute_outcome", None))
-            and not bool(runtime_edges)
-            and getattr(self, "latest_pose_xy", None) is None
-            and getattr(self, "latest_global_costmap", None) is None
-            and getattr(self, "graph_transaction_generation", None) is None
-            and getattr(self, "graph_transaction_future", None) is None
-            and getattr(self, "graph_transaction_deadline_steady_s", None) is None
-            and getattr(self, "graph_transaction_kind", None) is None
-            and getattr(self, "graph_retry_key", None) is None
-            and getattr(self, "graph_retry_due_steady_s", None) is None
-            and not bool(getattr(self, "graph_reassert_required", False))
-            and bool(getattr(self, "graph_coherent", True))
-            and desired is not None
-            and gvg is not None
-            and self._graph_identity(desired) == self._graph_identity(gvg)
-            and getattr(self, "pending_structural_map", None) is None
-            and getattr(self, "pending_structural_intent", None) is None
-            and int(getattr(self, "structural_candidate_generation", 0)) == 0
-            and int(getattr(self, "structural_observation_generation", 0)) == 0
-            and not bool(getattr(self, "cognitive_graph_switch_pending", False))
-        )
-
-    def _retire_startup_reset_event_locked(
-        self, *, invalidated: bool
-    ) -> None:
-        """Retire an unbound Empty without publishing reset completion."""
-
-        self.startup_reset_event_pending = False
-        self.startup_reset_event_deadline_steady_s = None
-        self.startup_reset_event_legacy_completed = False
-        self.startup_reset_event_invalidated = bool(invalidated)
-
-    def _startup_reset_event_can_bind_locked(
-        self,
-        status: ResetStopGateStatus,
-        *,
-        now_steady_s: float | None = None,
-    ) -> bool:
-        """Return whether an unbound pristine Empty may adopt gate identity."""
-
-        if not getattr(self, "startup_reset_event_pending", False):
-            return False
-        deadline = getattr(self, "startup_reset_event_deadline_steady_s", None)
-        now_s = self._steady_now() if now_steady_s is None else float(now_steady_s)
-        if deadline is not None and now_s >= float(deadline):
-            # A status callback that loses the deadline race cannot revive the
-            # old unscoped Empty as a new strict generation.
-            self._retire_startup_reset_event_locked(invalidated=True)
-            self.reset_hold_barrier = True
-            return False
-
-        seen = getattr(self, "reset_status_generation", None)
-        previous = getattr(self, "reset_status_snapshot", None)
-        no_status_baseline = seen is None and previous is None
-        normal_status_baseline = bool(
-            seen is not None
-            and previous is not None
-            and previous.generation == int(seen)
-            and previous.reason in {"initialized", "closed"}
-            and status.reason == "hold"
-            and status.generation >= int(seen)
-        )
-        return bool(
-            not getattr(self, "startup_reset_event_legacy_completed", False)
-            and not getattr(self, "startup_reset_event_invalidated", False)
-            and (no_status_baseline or normal_status_baseline)
-            and getattr(self, "reset_intent_generation", None) is None
-            and getattr(self, "reset_event_completed_generation", None) is None
-            and getattr(self, "reset_release_seen_generation", None) is None
-            and int(getattr(self, "reset_generation", 0)) == 1
-            and int(getattr(self, "request_id", 0)) == 1
-            and int(getattr(self, "graph_generation", 0)) == 1
-            and int(getattr(self, "graph_switch_generation", 0)) == 1
-            and not bool(getattr(self, "route_active", False))
-            and getattr(self, "pending_goal", None) is None
-            and getattr(self, "tracker", None) is None
-            and not bool(getattr(self, "navigation_goal_pending", False))
-            and getattr(self, "navigation_goal_handle", None) is None
-            and getattr(self, "latest_pose_xy", None) is None
-            and getattr(self, "latest_global_costmap", None) is None
-            and getattr(self, "graph_transaction_generation", None) is None
-            and getattr(self, "graph_transaction_future", None) is None
-            and getattr(self, "graph_retry_due_steady_s", None) is None
-            and getattr(self, "pending_structural_map", None) is None
-            and getattr(self, "pending_structural_intent", None) is None
-            and not bool(getattr(self, "cognitive_graph_switch_pending", False))
-        )
-
-    def _bind_startup_reset_event_locked(
-        self, status: ResetStopGateStatus
-    ) -> None:
-        """Bind one pristine unscoped Empty to its strict gate generation."""
-
-        self.reset_status_generation = status.generation
-        self.reset_status_snapshot = status
-        self.reset_intent_generation = status.generation
-        self.reset_event_completed_generation = status.generation
-        self.reset_release_seen_generation = None
-        self.startup_reset_event_pending = False
-        self.startup_reset_event_deadline_steady_s = None
-        self.startup_reset_event_invalidated = False
-        self.startup_reset_event_legacy_completed = False
-        self.reset_hold_barrier = True
-
-    def _startup_reset_event_tick(
-        self, now_steady_s: float | None = None
-    ) -> None:
-        """Resolve an unbound startup Empty as legacy after a short grace."""
-
-        now_s = self._steady_now() if now_steady_s is None else float(now_steady_s)
-        complete = False
-        with self._route_output_lock():
-            with self._route_state_lock():
-                deadline = getattr(
-                    self, "startup_reset_event_deadline_steady_s", None
-                )
-                if (
-                    getattr(self, "startup_reset_event_pending", False)
-                    and deadline is not None
-                    and now_s >= float(deadline)
-                ):
-                    if getattr(
-                        self, "startup_reset_status_authority_seen", False
-                    ):
-                        self._retire_startup_reset_event_locked(
-                            invalidated=True
-                        )
-                        self.reset_hold_barrier = True
-                    else:
-                        self.startup_reset_event_pending = False
-                        self.startup_reset_event_deadline_steady_s = None
-                        self.startup_reset_event_legacy_completed = True
-                        self.startup_reset_event_invalidated = False
-                        self.reset_hold_barrier = False
-                        complete = True
-            if complete:
-                self._publish_reset_completion(None)
-
     def _on_reset_stop_gate_status(self, message) -> None:
-        """Retire active route intent at HOLD, before reset completion arrives."""
+        """Minimal hold/release tracking of the ResetStopGate authority.
+
+        A new gate generation must begin with HOLD; the HOLD retires all
+        route-era state exactly once.  Completion work runs once per
+        generation, from the volatile Empty event or the strict
+        reset_complete status, whichever arrives first.  Only the release of
+        the completed generation opens the route barrier.  Anything outside
+        that forward sequence keeps the barrier held (fail closed).
+        """
 
         try:
             status = parse_reset_stop_gate_status(str(message.data))
@@ -2065,156 +1830,83 @@ class RouteCoordinator:
 
         old_handle = None
         terminal = None
+        complete = False
         failure = None
-        startup_completion = False
-        startup_release = False
-        status_completion = False
+        ready_pending = False
         with self._route_output_lock():
             with self._route_state_lock():
+                self.reset_status_authority_seen = True
                 seen = getattr(self, "reset_status_generation", None)
                 previous = getattr(self, "reset_status_snapshot", None)
-                if (
-                    getattr(self, "startup_reset_event_pending", False)
-                    and status.reason in {"initialized", "closed"}
-                ):
-                    # A normal baseline proves that strict status authority is
-                    # present.  The Empty remains bindable to the later HOLD,
-                    # but it may never fall back to legacy auto-open.
-                    deadline = getattr(
-                        self, "startup_reset_event_deadline_steady_s", None
-                    )
-                    if (
-                        deadline is not None
-                        and self._steady_now() >= float(deadline)
-                    ):
-                        self._retire_startup_reset_event_locked(
-                            invalidated=True
-                        )
-                    else:
-                        self.startup_reset_event_deadline_steady_s = None
-                    self.reset_hold_barrier = True
+                new_generation = seen is None or status.generation > int(seen)
                 if seen is not None and status.generation < int(seen):
                     self.reset_hold_barrier = True
                     failure = (
                         "backward generation "
                         f"{status.generation} < {int(seen)}"
                     )
-                elif (
-                    seen is None
-                    and status.reason in {"hold", "reset_complete"}
-                    and self._startup_reset_event_can_bind_locked(status)
-                ):
-                    # The volatile Empty won the cross-topic race.  It already
-                    # advanced the pristine coordinator exactly once; attach
-                    # the strict generation and publish completion once.  A
-                    # late HOLD is safe too because Empty proves that physical
-                    # reset has already completed.
-                    self._bind_startup_reset_event_locked(status)
-                    startup_completion = True
-                elif (
-                    seen is None
-                    and status.reason.startswith("released:")
-                    and self._startup_reset_event_can_bind_locked(status)
-                ):
-                    # Depth-1 status may have advanced from completion to
-                    # release before this late join receives it.  Reconcile
-                    # while still held, then open the same generation.
-                    self._bind_startup_reset_event_locked(status)
-                    startup_completion = True
-                    startup_release = True
-                elif seen is None and status.reason.startswith("released:"):
-                    # A transient-local released snapshot is the normal startup
-                    # baseline.  It carries no reset terminal of its own.
-                    if (
-                        getattr(
-                            self, "startup_reset_event_legacy_completed", False
-                        )
-                        or getattr(
-                            self, "startup_reset_event_invalidated", False
-                        )
-                    ):
-                        self.reset_status_generation = status.generation
-                        self.reset_status_snapshot = status
-                        self.reset_hold_barrier = True
-                        failure = (
-                            "released generation followed an unbound legacy "
-                            f"reset event: generation={status.generation}"
-                        )
-                    else:
-                        self.reset_status_generation = status.generation
-                        self.reset_status_snapshot = status
-                        self.reset_hold_barrier = False
-                elif seen is None and status.reason in {"initialized", "closed"}:
+                elif status == previous:
+                    # Reliable transient-local delivery may repeat the same
+                    # snapshot.  Exact duplicates are idempotent.
+                    pass
+                elif new_generation and status.reason == "hold":
                     self.reset_status_generation = status.generation
                     self.reset_status_snapshot = status
+                    self.reset_intent_generation = status.generation
+                    self.reset_event_completed_generation = None
                     self.reset_hold_barrier = True
-                elif (
-                    status.reason == "hold"
-                    and self._startup_reset_event_can_bind_locked(status)
-                ):
-                    # The transient-local baseline arrived before or after the
-                    # volatile Empty.  HOLD now gives that already-completed
-                    # physical reset its strict identity without advancing the
-                    # route/reset epoch a second time.
-                    self._bind_startup_reset_event_locked(status)
-                    startup_completion = True
-                elif (
-                    seen is None
-                    and status.reason == "reset_complete"
-                    and self._startup_reset_completion_is_safe_locked()
-                ):
-                    # With transient-local depth 1, a coordinator that joins
-                    # after Isaac reset may see completion but not the earlier
-                    # HOLD.  Synchronize that already-complete generation only
-                    # while the coordinator is provably pristine.  This is not
-                    # a synthetic HOLD: there is no old route terminal or
-                    # navigation cancellation, and release remains mandatory.
+                    reset = self._begin_simulation_reset_locked()
+                    was_active, old_request_id, old_handle, reset_epoch = reset
+                    if was_active:
+                        terminal = (old_request_id, reset_epoch)
+                elif new_generation and status.reason == "reset_complete":
+                    # A late join may see completion as its first status:
+                    # synchronize the already-finished generation, retire any
+                    # interrupted route exactly once, and stay held until the
+                    # release of this generation arrives.
                     self.reset_status_generation = status.generation
                     self.reset_status_snapshot = status
                     self.reset_intent_generation = status.generation
                     self.reset_event_completed_generation = status.generation
-                    self.reset_release_seen_generation = None
                     self.reset_hold_barrier = True
                     reset = self._begin_simulation_reset_locked()
-                    _was_active, _old_request_id, old_handle, _reset_epoch = reset
-                    startup_completion = True
-                elif seen is None or status.generation > int(seen):
-                    if status.reason != "hold":
+                    was_active, old_request_id, old_handle, reset_epoch = reset
+                    if was_active:
+                        terminal = (old_request_id, reset_epoch)
+                    complete = True
+                elif new_generation and status.reason.startswith("released:"):
+                    if seen is None:
+                        # Startup baseline: no reset of our own to reconcile.
+                        self.reset_status_generation = status.generation
+                        self.reset_status_snapshot = status
+                        self.reset_hold_barrier = False
+                    else:
                         self.reset_status_generation = status.generation
                         self.reset_status_snapshot = status
                         self.reset_hold_barrier = True
                         failure = (
                             "higher generation did not begin with HOLD: "
-                            f"generation={status.generation}, reason={status.reason}"
+                            f"generation={status.generation}, "
+                            f"reason={status.reason}"
                         )
-                    else:
-                        self.reset_status_generation = status.generation
-                        self.reset_status_snapshot = status
-                        self.reset_intent_generation = status.generation
-                        self.reset_event_completed_generation = None
-                        self.reset_release_seen_generation = None
-                        self.startup_reset_event_pending = False
-                        self.startup_reset_event_deadline_steady_s = None
-                        self.startup_reset_event_legacy_completed = False
-                        self.startup_reset_event_invalidated = False
-                        self.reset_hold_barrier = True
-                        reset = self._begin_simulation_reset_locked()
-                        was_active, old_request_id, old_handle, reset_epoch = reset
-                        if was_active:
-                            terminal = (old_request_id, reset_epoch)
-                elif status == previous:
-                    # Reliable transient-local delivery may repeat the same
-                    # snapshot.  Exact duplicates are idempotent.
-                    pass
-                elif status.generation == int(seen):
-                    intent = getattr(self, "reset_intent_generation", None)
-                    if intent != status.generation:
+                elif new_generation:
+                    # initialized/closed baselines establish authority while
+                    # the barrier stays held.
+                    self.reset_status_generation = status.generation
+                    self.reset_status_snapshot = status
+                    self.reset_hold_barrier = True
+                elif status.reason == "reset_complete":
+                    if (
+                        getattr(self, "reset_intent_generation", None)
+                        != status.generation
+                    ):
                         self.reset_hold_barrier = True
                         failure = (
                             "same-generation transition without reset HOLD: "
-                            f"generation={status.generation}, reason={status.reason}"
+                            f"generation={status.generation}, "
+                            f"reason={status.reason}"
                         )
-                    elif status.reason == "reset_complete":
+                    else:
                         self.reset_status_snapshot = status
                         self.reset_hold_barrier = True
                         if (
@@ -2224,29 +1916,54 @@ class RouteCoordinator:
                             != status.generation
                         ):
                             # The volatile Empty may be absent for a late
-                            # subscriber.  The strict same-generation
+                            # subscriber; the strict same-generation
                             # completion status owns the completion work too.
                             self.reset_event_completed_generation = (
                                 status.generation
                             )
-                            status_completion = True
-                    elif status.reason.startswith("released:"):
-                        self.reset_status_snapshot = status
-                        self.reset_release_seen_generation = status.generation
-                        self.reset_hold_barrier = (
-                            getattr(self, "reset_event_completed_generation", None)
-                            != status.generation
-                        )
-                    else:
+                            complete = True
+                elif status.reason.startswith("released:"):
+                    if (
+                        getattr(self, "reset_intent_generation", None)
+                        != status.generation
+                    ):
                         self.reset_hold_barrier = True
                         failure = (
-                            "conflicting same-generation reset status: "
-                            f"generation={status.generation}, reason={status.reason}"
+                            "same-generation release without reset HOLD: "
+                            f"generation={status.generation}, "
+                            f"reason={status.reason}"
                         )
-                self.startup_reset_status_authority_seen = True
-                if failure is not None:
-                    self._retire_startup_reset_event_locked(invalidated=True)
+                    else:
+                        self.reset_status_snapshot = status
+                        # Only the release of a completed generation opens
+                        # the barrier; an early release keeps it held.
+                        self.reset_hold_barrier = (
+                            getattr(
+                                self, "reset_event_completed_generation", None
+                            )
+                            != status.generation
+                        )
+                        if (
+                            not self.reset_hold_barrier
+                            and getattr(self, "reset_ready_pending", False)
+                        ):
+                            self.reset_ready_pending = False
+                            # The deferred READY is only honest while the
+                            # reconciled graph is still coherent; otherwise
+                            # the eventual commit announces READY itself.
+                            ready_pending = bool(
+                                getattr(self, "graph_coherent", False)
+                                and not getattr(
+                                    self, "graph_reassert_required", False
+                                )
+                            )
+                else:
                     self.reset_hold_barrier = True
+                    failure = (
+                        "conflicting same-generation reset status: "
+                        f"generation={status.generation}, "
+                        f"reason={status.reason}"
+                    )
             if terminal is not None:
                 old_request_id, reset_epoch = terminal
                 self._publish_route_terminal_pair(
@@ -2256,27 +1973,11 @@ class RouteCoordinator:
                     reason="simulation_reset",
                     reset_epoch=reset_epoch,
                 )
-            if startup_completion:
-                # Keep completion reconciliation ordered before a concurrent
-                # same-generation release callback.
+            if complete:
                 self._publish_reset_completion(status.generation)
-                if startup_release:
-                    with self._route_state_lock():
-                        if (
-                            getattr(self, "reset_intent_generation", None)
-                            == status.generation
-                            and getattr(
-                                self, "reset_event_completed_generation", None
-                            )
-                            == status.generation
-                        ):
-                            self.reset_release_seen_generation = status.generation
-                            self.reset_hold_barrier = False
-            elif status_completion:
-                self._publish_reset_completion(status.generation)
-            if failure is None and status.reason.startswith("released:"):
-                self._publish_reset_gvg_ready_if_reconciled_under_output_lock(
-                    status.generation
+            if ready_pending:
+                self._publish_structural_status(
+                    self.StructuralGraphStatus.READY, "reset GVG reconciled"
                 )
         self._cancel_navigation_handle(old_handle)
         if failure is not None:
@@ -2285,10 +1986,23 @@ class RouteCoordinator:
             )
 
     def _on_reset_event(self, _message) -> None:
+        """Retire route state for one physical reset, exactly once.
+
+        The Empty event carries no generation.  When the gate already
+        announced a HOLD, the event only marks that intent complete and the
+        strict status sequence owns opening the barrier.  With no gate
+        authority at all (gate-less deployments), the event alone fences and
+        completes the epoch and the barrier re-opens immediately.  An event
+        with gate authority but no pending intent means the HOLD was lost:
+        retire once and stay held (fail closed) until the status stream
+        re-synchronizes.
+        """
+
         old_handle = None
         terminal = None
         complete = False
         completion_generation = None
+        failure = None
         with self._route_output_lock():
             with self._route_state_lock():
                 intent = getattr(self, "reset_intent_generation", None)
@@ -2298,59 +2012,23 @@ class RouteCoordinator:
                 if intent is not None and completed != intent:
                     # HOLD already performed the retirement and epoch bump.
                     self.reset_event_completed_generation = intent
-                    self.reset_hold_barrier = (
-                        getattr(self, "reset_release_seen_generation", None)
-                        != intent
-                    )
                     complete = True
                     completion_generation = intent
                 elif intent is not None:
-                    # The Empty event has no generation field.  Once the
-                    # current status-backed intent is complete, any further
-                    # event before a higher HOLD is a duplicate even if the
-                    # same-generation release has already opened the barrier.
-                    return
-                elif getattr(self, "startup_reset_event_pending", False):
-                    # Duplicate volatile delivery while the pristine event is
-                    # waiting briefly for transient-local generation identity.
-                    self.reset_hold_barrier = True
+                    # Duplicate delivery of an already-completed reset event.
                     return
                 else:
-                    startup_pending = self._startup_reset_completion_is_safe_locked(
-                        allow_status_baseline=True
-                    )
-                    status_authority_seen = getattr(
-                        self, "startup_reset_status_authority_seen", False
-                    )
                     reset = self._begin_simulation_reset_locked()
                     was_active, old_request_id, old_handle, reset_epoch = reset
-                    if startup_pending:
-                        # Give the transient-local status topic one bounded
-                        # chance to identify this already-observed completion.
-                        # The timer resolves event-only legacy deployments.
-                        self.startup_reset_event_pending = True
-                        self.startup_reset_event_deadline_steady_s = (
-                            None
-                            if status_authority_seen
-                            else self._steady_now() + 0.5
-                        )
-                        self.startup_reset_event_legacy_completed = False
-                        self.startup_reset_event_invalidated = False
-                        self.reset_hold_barrier = True
-                    elif status_authority_seen:
-                        # Once a status authority has appeared, an unscoped
-                        # Empty can never use the legacy completion/open path.
-                        self._retire_startup_reset_event_locked(
-                            invalidated=True
-                        )
-                        self.reset_hold_barrier = True
-                    else:
-                        self.startup_reset_event_legacy_completed = True
-                        self.startup_reset_event_invalidated = False
-                        self.reset_hold_barrier = False
                     if was_active:
                         terminal = (old_request_id, reset_epoch)
-                    complete = not startup_pending and not status_authority_seen
+                    if getattr(self, "reset_status_authority_seen", False):
+                        self.reset_hold_barrier = True
+                        failure = "reset event without a pending gate HOLD"
+                    else:
+                        # Gate-less deployment: the Empty alone is the fence.
+                        self.reset_hold_barrier = False
+                        complete = True
             if terminal is not None:
                 old_request_id, reset_epoch = terminal
                 self._publish_route_terminal_pair(
@@ -2363,6 +2041,8 @@ class RouteCoordinator:
         self._cancel_navigation_handle(old_handle)
         if complete:
             self._publish_reset_completion(completion_generation)
+        if failure is not None:
+            self.node.get_logger().error(f"reset event held fail-closed: {failure}")
 
     def _on_cognitive_graph(self, message) -> None:
         with self._route_state_lock():
@@ -2831,18 +2511,11 @@ class RouteCoordinator:
                     or not self._reset_barrier_is_held()
                 )
             )
-            retain_reset_context = bool(
+            commit_was_reset_reassert = bool(
                 commit
                 and self._graph_switch_context_is_current_reset_reassert_locked(
                     transaction_context
                 )
-            )
-            reset_reassert_generation = (
-                int(transaction_context[5])
-                if retain_reset_context
-                and transaction_context is not None
-                and transaction_context[5] is not None
-                else None
             )
             if commit:
                 self.graph = graph
@@ -2877,14 +2550,6 @@ class RouteCoordinator:
                 self.graph_coherent = True
                 self._clear_graph_retry_locked()
                 output_generation = self._route_input_generation_locked()
-                if retain_reset_context:
-                    self.graph_retry_key = self._graph_retry_key_locked()
-                    self.graph_retry_switch_context = (
-                        *transaction_context[:6],
-                        output_generation,
-                        int(getattr(self, "reset_generation", 0)),
-                        self.graph_retry_key,
-                    )
                 if self.pending_goal is not None:
                     cancel_handle = self.navigation_goal_handle
                     self.navigation_goal_handle = None
@@ -3011,6 +2676,11 @@ class RouteCoordinator:
         with self._route_output_lock():
             with self._route_state_lock():
                 if not self._route_input_is_current_locked(output_generation):
+                    if commit_was_reset_reassert:
+                        # The reassert committed while HOLD still fences
+                        # outputs; the release of this generation publishes
+                        # the single READY for the reset cycle.
+                        self.reset_ready_pending = True
                     return
             if fallback and pending_outcome is not None:
                 previous_feedback, validated_edge_id, candidate_edge_id = (
@@ -3025,16 +2695,11 @@ class RouteCoordinator:
             self._publish_cognitive_constraints_if_input_current(
                 output_generation
             )
-            if reset_reassert_generation is not None:
-                self._publish_reset_gvg_ready_if_reconciled_under_output_lock(
-                    reset_reassert_generation
-                )
-            else:
-                self._publish_structural_status(
-                    self.StructuralGraphStatus.READY,
-                    f"cognitive graph "
-                    f"{'fallback applied' if fallback else 'applied'}: {detail}",
-                )
+            self._publish_structural_status(
+                self.StructuralGraphStatus.READY,
+                f"cognitive graph "
+                f"{'fallback applied' if fallback else 'applied'}: {detail}",
+            )
         self._cancel_navigation_handle(cancel_handle)
         if prepare_pending_goal:
             self._resume_pending_goal_after_graph_coherent()
