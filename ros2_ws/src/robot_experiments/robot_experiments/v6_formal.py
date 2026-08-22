@@ -727,6 +727,7 @@ def _message_summary(message: Any) -> dict[str, Any]:
         "reason",
         "applied",
         "rejection_mask",
+        "raised_cell_count",
         "data",
     ):
         if hasattr(message, name):

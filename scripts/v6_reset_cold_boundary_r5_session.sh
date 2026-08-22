@@ -338,6 +338,7 @@ start_bg rosbag ros2 bag record \
   /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress \
   /bio_nav/route_goal_complete /bio_nav/route_goal /bio_nav/route_goal_result \
   /bio_nav/module2/planning_prior /bio_nav/module2/goal_planning_prior \
+  /bio_nav/module2/cognitive_obstacles \
   /bio_nav/localization/candidates /bio_nav/route_edge_costs \
   /experiment/obstacles/state /plan /scan /diagnostics /rosout
 sleep 8
@@ -347,6 +348,8 @@ grep -q "Subscribed to topic '/cmd_vel_sim'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /cmd_vel_sim; see logs/rosbag.log"
 grep -q "Subscribed to topic '/rosout'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /rosout; see logs/rosbag.log"
+grep -q "Subscribed to topic '/bio_nav/module2/cognitive_obstacles'" "${LOGS}/rosbag.log" || \
+  _stop "recorder did not subscribe to /bio_nav/module2/cognitive_obstacles; see logs/rosbag.log"
 
 # ---------------------------------------------------------------- episodes
 STAGE="episodes"
