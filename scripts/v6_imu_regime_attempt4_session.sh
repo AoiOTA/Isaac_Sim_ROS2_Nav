@@ -513,7 +513,7 @@ ros2 service call /simulation/reset std_srvs/srv/Trigger '{}' \
   > "${PROV}/reset_call.log" 2>&1 || reset_status=$?
 echo "${reset_status}" > "${PROV}/reset_call_exit_status.txt"
 [[ "${reset_status}" == 0 ]] || _stop "reset service call failed"
-grep -q "success: True" "${PROV}/reset_call.log" || \
+grep -q "success=True" "${PROV}/reset_call.log" || \
   _stop "reset transaction was not successful; see provenance/reset_call.log"
 grep -o 'reset_receipt={[^}]*}' "${PROV}/reset_call.log" \
   > "${PROV}/reset_receipt.txt" || _stop "reset receipt missing from response"
