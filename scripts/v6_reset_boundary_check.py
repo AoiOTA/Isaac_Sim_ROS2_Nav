@@ -236,8 +236,14 @@ def check_episode(seed, jsonl_path, boundary_path, series):
         "max_publishers": boundary.get("max_publishers"),
     }
 
-    # Exactly one reset event inside this episode window.
-    resets = _window(series["reset_event"], start_s, first_goal_s)
+    # Exactly one reset event inside this episode window. The reset_event
+    # series holds plain float stamps, not (stamp, ...) rows like _window
+    # expects, so filter it directly.
+    resets = [
+        stamp_s
+        for stamp_s in series["reset_event"]
+        if start_s <= stamp_s <= first_goal_s
+    ]
     checks["exactly_one_reset_event"] = {
         "pass": len(resets) == 1,
         "reset_events": len(resets),

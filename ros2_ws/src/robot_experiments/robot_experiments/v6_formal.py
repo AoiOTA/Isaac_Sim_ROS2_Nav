@@ -610,6 +610,11 @@ class EpisodeGuard:
     def _maybe_goal_ready(self) -> None:
         if self.state == "STOP":
             return
+        # The readiness facts stay latched once the episode advances past
+        # GOAL_READY, so the steady-state prior/AMCL/B5 stream would
+        # otherwise regress NAVIGATING/LEG_SUCCEEDED back to GOAL_READY.
+        if self.state in {"NAVIGATING", "LEG_SUCCEEDED", "SUCCEEDED", "FAILED"}:
+            return
         if all(
             (
                 self.reset_calls == 1,

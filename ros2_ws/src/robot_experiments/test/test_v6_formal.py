@@ -136,6 +136,46 @@ def test_multileg_order_mismatch_stops_before_publish():
     assert guard.goal_publications == 0
 
 
+def steady_state_streams(guard: EpisodeGuard) -> None:
+    """Trusted prior / AMCL / B5 traffic that keeps flowing during navigation."""
+    guard.record_prior(
+        2, "session-2", trusted_write=True, module2_healthy=True,
+        observation_valid=True, input_healthy=True,
+    )
+    guard.record_amcl(102)
+    guard.record_b5_diagnostic(
+        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
+        candidate_generation="epoch=2,session=session-2",
+    )
+
+
+def test_navigating_not_regressed_by_steady_state_streams():
+    guard = ready_guard("G2", "G3")
+    guard.record_goal_publication("G2")
+    assert guard.state == "NAVIGATING"
+    steady_state_streams(guard)
+    assert guard.state == "NAVIGATING"
+    guard.record_route_progress()
+    steady_state_streams(guard)
+    guard.record_route_completion(True)
+    assert guard.route_progress_messages == 1
+    assert guard.route_completion_messages == 1
+    assert guard.state == "LEG_SUCCEEDED"
+    assert guard.completed_leg_ids == ["G2"]
+
+
+def test_leg_succeeded_not_regressed_by_steady_state_streams():
+    guard = ready_guard("G2", "G3")
+    guard.record_goal_publication("G2")
+    guard.record_route_progress()
+    guard.record_route_completion(True)
+    assert guard.state == "LEG_SUCCEEDED"
+    steady_state_streams(guard)
+    assert guard.state == "LEG_SUCCEEDED"
+    guard.record_goal_publication("G3")
+    assert guard.state == "NAVIGATING"
+
+
 def test_wrong_bridge_epoch_stops_before_goal():
     guard = EpisodeGuard()
     guard.arm_reset(
