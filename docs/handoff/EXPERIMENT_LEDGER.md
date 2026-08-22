@@ -2181,3 +2181,64 @@
   goal-binding contract vs probe/coordinator behavior, and arc/S tracking
   performance vs thresholds. `yaw_scale=0.9294` and RF2O-off unchanged.
 - Handoff: `docs/handoff/V6_IMU_REGIME_ATTEMPT4_20260822.md`.
+
+## 2026-08-22 — V6 cold-boundary R5 live validation attempts 1–7 (stopped by user)
+
+- Goal: live-validate the simplified cold-episode-boundary reset machinery (R1–R4)
+  with 2–3 consecutive same-stack episodes; 6 minimal invariants per boundary.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree. R5 commits
+  `c1d4cde`, `a6b2cae`, `90219af`, `e49b74c`, `7f39ddf`, `6757daa`, `67ee113`,
+  `d5ac812`, `7e9417b` on top of the R-package commits. Fixed Module3 main pin
+  `22d66470c4b903349b2467dc876490bbebfc0083` verified unchanged.
+- Arc: attempts 1–6 each exposed one distinct bootstrap-path defect class
+  (HOLD-window map binding, enrollment reseed burst, AMCL straggler ordering,
+  untrusted-prior gating, B5 gate witness) and were minimally fixed; attempt 7
+  passed the reset/bootstrap gauntlet (receipt seed 7201 == requested, generation
+  2, exactly-once reset, GT firewall PASS, sole-publisher ownership PASS) and
+  reached actual navigation, ending `STOP/collision` with zero completed legs.
+- Result: **reset machinery engineering-usable; remaining blocker is
+  navigation-level (collision), owned by Phase 2**. Multi-episode consecutive
+  re-arm remains unproven live. Stopped by user decision after attempt 7.
+- User decision recorded: IMU regime investigation closed; `yaw_scale=0.9294`
+  frozen (pure-spin calibration; no single global constant exists across regimes
+  per schema-2 Attempt4 evidence); estimated-substrate non-degradation gate
+  lifted; project returns to the estimated-odom + localization + navigation main
+  line.
+- Evidence: `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_reset_cold_boundary_r5_20260822T095144Z`
+  through `..._20260822T115942Z` (7 sessions).
+- Handoff: `docs/handoff/V6_RESET_COLD_BOUNDARY_LIVE_20260822.md` (written by
+  master from NAS evidence and commit history after the R5 agent was stopped).
+
+## 2026-08-22 — V6 Kujiale low-obstacle layout 6 → 1 (v6_low_box_solo)
+
+- Goal: user decision 2026-08-22 — keep exactly one stationary low obstacle so
+  the estimated-odometry closed loop can pass; the box keeps the causal
+  condition (0.16 m tall: below the 0.333 m LiDAR plane and 0.218 m RGB-D
+  origin, overlapping the wheel/chassis band [0, 0.196] m) for later Module2
+  causal runs. Seed 7201 leg G1→G2 had collided with `v6_low_bar_north`.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; commit
+  recorded by the task handoff after submission.
+- Change: `v6_kujiale_low_obstacles_frozen.yaml` and its manifest now hold a
+  single box `v6_low_box_solo` (0.30×0.30×0.16 m, 5 kg, stationary) at
+  map (-1.150, -0.350, 0.08) / usd (4.050, 0.150, 0.08), central open hall.
+  Runner scenario `v6_kujiale_low_obstacles_static.yaml` static list updated.
+  `layout_id`/`revision`/`frozen_date` deliberately unchanged to avoid
+  re-touching the causal identity chain.
+- Geometry contract: `maximum_route_proximity_m` replaced by
+  `minimum_route_edge_clearance_m: 1.0` (measured 1.60–3.57 m on all five
+  segments); `minimum_open_bypass_side_m` relaxed 1.9 → 1.2 (measured best
+  side 3.41 m); pairwise-clearance field removed (single obstacle).
+  Edge distance to every goal ≥ 1.70 m. RGB-D forward visibility verified by
+  sampling: 15 route samples with free line of sight (G1→G2 ×10, G3→G4 ×5;
+  cos≥0.5, d≤3.5 m).
+- Commands: source pytest `isaac_sim/tests/test_v6_low_obstacle_layout.py`
+  (7 passed), `test_configuration.py` (55 passed), `test_v6_formal.py`
+  (64 passed, unchanged — it holds no obstacle-count assertions),
+  `robot_bringup/test_runtime_scripts.py` (33 passed); suite minus 8
+  ROS-env-blocked modules: 581 passed, 2 pre-existing failures
+  (rivermark frozen-JSON absolute paths from an old checkout; one rclpy
+  import) unrelated to this change.
+- Evidence: overlay + notes at
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_layout_single_obstacle_20260822T144924Z/`.
+- Verdict: **PASS (static contract only)**. Isaac/ROS/Nav2 runtime not started;
+  closed-loop passability under estimated odometry must be shown by a live run.

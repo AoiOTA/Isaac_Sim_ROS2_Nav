@@ -76,20 +76,6 @@ def _open_side_clearance(metadata, image, position, size, axis, direction):
     return 10.0
 
 
-def _rectangle_clearance(first, second):
-    dx = max(
-        abs(first.start[0] - second.start[0])
-        - (first.size[0] + second.size[0]) / 2.0,
-        0.0,
-    )
-    dy = max(
-        abs(first.start[1] - second.start[1])
-        - (first.size[1] + second.size[1]) / 2.0,
-        0.0,
-    )
-    return math.hypot(dx, dy)
-
-
 def _point_segment_distance(point, start, end):
     dx, dy = end[0] - start[0], end[1] - start[1]
     ratio = max(
@@ -102,6 +88,45 @@ def _point_segment_distance(point, start, end):
     )
     closest = (start[0] + ratio * dx, start[1] + ratio * dy)
     return math.dist(point[:2], closest)
+
+
+def _ccw(ax, ay, bx, by, cx, cy):
+    return (by - ay) * (cx - ax) - (bx - ax) * (cy - ay)
+
+
+def _segments_intersect(a, b, c, d):
+    d1 = _ccw(c[0], c[1], d[0], d[1], a[0], a[1])
+    d2 = _ccw(c[0], c[1], d[0], d[1], b[0], b[1])
+    d3 = _ccw(a[0], a[1], b[0], b[1], c[0], c[1])
+    d4 = _ccw(a[0], a[1], b[0], b[1], d[0], d[1])
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0))
+
+
+def _segment_rectangle_distance(start, end, position, size):
+    """Exact distance between a segment and an axis-aligned footprint."""
+    half_x, half_y = size[0] / 2.0, size[1] / 2.0
+    cx, cy = position[0], position[1]
+    corners = [
+        (cx - half_x, cy - half_y),
+        (cx + half_x, cy - half_y),
+        (cx + half_x, cy + half_y),
+        (cx - half_x, cy + half_y),
+    ]
+    for point in (start, end):
+        if abs(point[0] - cx) <= half_x and abs(point[1] - cy) <= half_y:
+            return 0.0
+    edges = list(zip(corners, corners[1:] + corners[:1]))
+    if any(_segments_intersect(start, end, edge[0], edge[1]) for edge in edges):
+        return 0.0
+    return min(
+        min(
+            _point_segment_distance(edge[0], start, end),
+            _point_segment_distance(edge[1], start, end),
+            _point_segment_distance(start, edge[0], edge[1]),
+            _point_segment_distance(end, edge[0], edge[1]),
+        )
+        for edge in edges
+    )
 
 
 def test_v6_layout_identity_is_frozen_and_separate_from_the_source_usd():
@@ -123,7 +148,8 @@ def test_v6_obstacles_are_default_off_unique_stationary_and_height_is_causal():
     ids = [item.obstacle_id for item in scenario.obstacles]
 
     assert scenario.enabled is False
-    assert len(ids) == len(set(ids)) == 6
+    assert len(ids) == len(set(ids)) == 1
+    assert ids == ["v6_low_box_solo"]
     assert all(item.mode == "stationary" for item in scenario.obstacles)
     assert all(item.start == item.end for item in scenario.obstacles)
     assert all(item.start[2] - item.size[2] / 2.0 == pytest.approx(0.0)
@@ -138,7 +164,7 @@ def test_v6_obstacles_are_default_off_unique_stationary_and_height_is_causal():
     )
 
 
-def test_v6_obstacles_are_on_free_map_with_safe_separation_and_open_bypass():
+def test_v6_obstacle_is_on_free_map_with_open_bypass():
     scenario = load_dynamic_scenario(OBSTACLE_CONFIG)
     manifest = _manifest()
     geometry = manifest["geometry_contract"]
@@ -157,22 +183,8 @@ def test_v6_obstacles_are_on_free_map_with_safe_separation_and_open_bypass():
         ]
         assert max(clearances) >= geometry["minimum_open_bypass_side_m"]
 
-    pairwise = [
-        _rectangle_clearance(first, second)
-        for index, first in enumerate(scenario.obstacles)
-        for second in scenario.obstacles[index + 1:]
-    ]
-    expected = (
-        geometry["robot_max_footprint_dimension_m"]
-        + 2.0 * geometry["lateral_safety_margin_each_side_m"]
-    )
-    assert geometry["minimum_pairwise_net_clearance_m"] == pytest.approx(
-        expected
-    )
-    assert min(pairwise) >= expected
 
-
-def test_v6_layout_stays_near_the_route_without_polluting_static_map_or_goals():
+def test_v6_layout_keeps_route_edge_clearance_without_polluting_static_map_or_goals():
     scenario = load_dynamic_scenario(OBSTACLE_CONFIG)
     manifest = _manifest()
     runner = yaml.safe_load(RUNNER_SCENARIO.read_text(encoding="utf-8"))[
@@ -183,11 +195,11 @@ def test_v6_layout_stays_near_the_route_without_polluting_static_map_or_goals():
     ]
     for obstacle in scenario.obstacles:
         distance = min(
-            _point_segment_distance(obstacle.start, start, end)
+            _segment_rectangle_distance(start, end, obstacle.start, obstacle.size)
             for start, end in zip(route, route[1:])
         )
-        assert distance <= manifest["geometry_contract"][
-            "maximum_route_proximity_m"
+        assert distance >= manifest["geometry_contract"][
+            "minimum_route_edge_clearance_m"
         ]
 
     map_yaml = (ROOT / "data/maps/occupancy/warehouse_new.yaml").read_text(

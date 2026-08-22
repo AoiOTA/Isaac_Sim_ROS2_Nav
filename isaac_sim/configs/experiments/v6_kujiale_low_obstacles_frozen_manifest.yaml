@@ -28,13 +28,7 @@ geometry_contract:
   wheel_vertical_extent_m: [0.0, 0.196]
   robot_max_footprint_dimension_m: 0.485
   lateral_safety_margin_each_side_m: 0.05
-  minimum_pairwise_net_clearance_m: 0.585
-  minimum_open_bypass_side_m: 1.9
-  maximum_route_proximity_m: 1.5
+  minimum_open_bypass_side_m: 1.2
+  minimum_route_edge_clearance_m: 1.0
 obstacles:
-  - {id: v6_low_box_west, map_position: [-0.853013, -0.961904, 0.08], usd_position: [3.753013, 0.761904, 0.08], size: [0.30, 0.30, 0.16]}
-  - {id: v6_low_box_center, map_position: [-2.135744, -0.876959, 0.08], usd_position: [5.035744, 0.676959, 0.08], size: [0.30, 0.30, 0.16]}
-  - {id: v6_low_box_east, map_position: [0.366563, 0.667950, 0.08], usd_position: [2.533437, -0.867950, 0.08], size: [0.30, 0.30, 0.16]}
-  - {id: v6_low_box_north, map_position: [0.126442, -0.579985, 0.08], usd_position: [2.773558, 0.379985, 0.08], size: [0.30, 0.30, 0.16]}
-  - {id: v6_low_bar_east, map_position: [1.300000, 0.033996, 0.08], usd_position: [1.600000, -0.233996, 0.08], size: [0.60, 0.30, 0.16]}
-  - {id: v6_low_bar_north, map_position: [-0.703143, 0.252652, 0.08], usd_position: [3.603143, -0.452652, 0.08], size: [0.60, 0.30, 0.16]}
+  - {id: v6_low_box_solo, map_position: [-1.150000, -0.350000, 0.08], usd_position: [4.050000, 0.150000, 0.08], size: [0.30, 0.30, 0.16]}

@@ -65,7 +65,9 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
     assert scenario.obstacles["layout_id"] == (
         "kujiale_v6_low_obstacles_frozen_r1_20260820"
     )
-    assert len(scenario.obstacles["static"]) == 6
+    assert [item["id"] for item in scenario.obstacles["static"]] == [
+        "v6_low_box_solo"
+    ]
     assert scenario.obstacle_trajectories == ()
 
 

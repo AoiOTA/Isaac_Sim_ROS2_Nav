@@ -12,6 +12,17 @@ Date: 2026-08-20
 
 ## Frozen layout
 
+> **Revision 2026-08-22 (user decision): layout reduced 6 → 1.** Only
+> `v6_low_box_solo` (0.30×0.30×0.16 m, 5 kg, stationary) remains, at
+> map (-1.150, -0.350, 0.08) / usd (4.050, 0.150, 0.08) in the central open
+> hall. New contract: edge clearance to every route segment ≥ 1.0 m
+> (measured ≥ 1.60 m), best open side ≥ 1.2 m (measured 3.41 m); the old
+> ≤1.5 m route-proximity and pairwise-clearance clauses no longer apply.
+> `layout_id`/`revision`/`frozen_date` are unchanged so the causal identity
+> chain (`v6_low_obstacle_causal`) is untouched. Overlay evidence:
+> `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_layout_single_obstacle_20260822T144924Z/`.
+> The r1 six-obstacle description below is kept for history.
+
 - Layout ID: `kujiale_v6_low_obstacles_frozen_r1_20260820`.
 - Files: `isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml` and `v6_kujiale_low_obstacles_frozen_manifest.yaml`.
 - The source Kujiale USD and `warehouse_new` map were not edited. The new schema-v2 obstacle file remains `enabled: false`; only the explicit V6 wrapper passes `--dynamic-obstacles` through the existing Isaac launcher.
