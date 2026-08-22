@@ -1972,3 +1972,39 @@
 - Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
   or evidence campaign was run.  Attempt8 remains **PENDING**.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Attempt8 cross-writer receive-order amendment
+
+- Goal: admit either legal reader receive order between generation-2 HOLD and
+  the exact old terminal pair without weakening the common retirement fence.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `a9373ce0a3829d128efc89e0a40122f16cd741b5`.  Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Immutable input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt8_20260822T021512Z`.
+  Attempt8 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  The probe reader
+  received Bool `false` before HOLD and stopped; the finalized bag reader
+  recorded HOLD 0.000870 s before Bool and 0.000926 s before the exact abort
+  JSON, with no old output at or after HOLD or pair completion.  Fresh route,
+  post-release topology and postzero were not tested.
+- Changed only `active_reset_probe.py`, its focused tests, this ledger and
+  `V6_ACTIVE_RESET_PROBE_20260822.md`; no product, route, reset-gate, control,
+  obstacle, or IMU implementation changed.
+- Contract: HOLD-first and exact-terminal-first are both buffered.  The fence
+  exists only after HOLD, Bool `false`, and exact old
+  `aborted/simulation_reset/reset_epoch=2` JSON all exist, with both
+  dispatch-to-HOLD and dispatch-to-pair at most 0.5 s and absolute receive skew
+  at most 0.25 s.  Fence/quiet time is `max(HOLD,pair completion)`.  Earlier
+  old output is recorded as cross-writer in-flight; output after the fence,
+  wrong identity/epoch/reason, duplicates, missing sides and timeouts STOP.
+  Gate order/coverage remains mandatory, and finalized-bag order remains the
+  external verdict boundary.
+- Validation: source-first focused **60 passed** and fresh-installed focused
+  **60 passed**; package-configured flake8, `py_compile`, `git diff --check`,
+  installed import path and entry-point help passed.  Fresh isolated build,
+  install and log roots are `/tmp/v6_probe_attempt9_build.hHQLhc`,
+  `/tmp/v6_probe_attempt9_install.wN2fwa`, and
+  `/tmp/v6_probe_attempt9_log.EOokYP`.
+- Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation/reset
+  or evidence campaign was run.  Attempt9 remains **PENDING**.
+- Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.

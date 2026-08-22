@@ -772,6 +772,82 @@ def test_attempt6_triplet_then_exact_terminal_pair_reaches_fresh_route():
     assert machine.phase == "PUBLISH_FRESH_ONCE"
 
 
+def test_attempt8_terminal_first_pair_then_hold_keeps_full_gate_contract():
+    """Attempt8 reader order is legal; HOLD still gates release and coverage."""
+    machine = _active()
+    machine.reset_call_started(0.13)
+    machine.terminal_bool(False, 0.135)
+    machine.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.136)
+    assert machine.phase == "OBSERVE_HOLD_ABORT"
+    assert "coordinator_retirement_fence" not in machine.timestamps
+
+    machine.progress(2, 0.137)
+    machine.gate_status(_gate("hold", held=True), 0.14)
+    assert machine.timestamps["coordinator_retirement_fence"] == pytest.approx(0.14)
+    assert machine.timestamps["quiet_started"] == pytest.approx(0.14)
+    assert machine.document()["old"]["coordinator_retirement_fence"][
+        "hold_pair_complete_receive_skew_s"
+    ] == pytest.approx(0.004)
+
+    machine.command("/cmd_vel_sim", False, 0.145)
+    machine.collision_event(False, 0.145)
+    machine.reset_event(0.15)
+    machine.ground_truth(0.45, -5.35, 0.16)
+    machine.gate_status(_gate("reset_complete", held=True, eligible=2), 0.18)
+    machine.ground_truth(0.45, -5.35, 0.185)
+    machine.odometry(0.0, 0.0, 0.185)
+    machine.reset_response(True, _receipt(), 0.21)
+    machine.ground_truth(0.455, -5.35, 0.215)
+    machine.odometry(0.005, 0.0, 0.215)
+    machine.command("/cmd_vel_sim", False, 0.215)
+    machine.collision_event(False, 0.215)
+    machine.gate_status(_gate("released:activation_gate", held=False), 0.22)
+
+    assert machine.phase == "QUIET"
+    assert [row["reason"] for row in machine.gate_sequence] == [
+        "hold", "reset_complete", "released:activation_gate",
+    ]
+    inflight = machine.document()["old"][
+        "cross_writer_inflight_outputs_before_fence"
+    ]
+    assert inflight["total"] == 1
+    assert inflight["outputs"][0]["type"] == "progress"
+
+
+@pytest.mark.parametrize("kind", ("canonical", "progress", "lookahead", "navigate"))
+def test_terminal_first_output_before_hold_is_cross_writer_inflight(kind):
+    """Old output between the pair and HOLD stays bounded before their fence."""
+    machine = _active()
+    machine.reset_call_started(0.13)
+    machine.terminal_bool(False, 0.135)
+    machine.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.136)
+    if kind == "canonical":
+        machine.canonical(2, [51, 52, 30], 0.137)
+    elif kind == "progress":
+        machine.progress(2, 0.137)
+    elif kind == "lookahead":
+        machine.route_output("lookahead", 0.137)
+    else:
+        machine.navigate_intent(0.137)
+    machine.gate_status(_gate("hold", held=True), 0.14)
+
+    assert machine.phase == "OBSERVE_HOLD_ABORT"
+    assert machine.timestamps["coordinator_retirement_fence"] == pytest.approx(0.14)
+    assert machine.pre_hold_inflight_outputs[-1]["type"] == (
+        "navigate_intent" if kind == "navigate" else kind
+    )
+
+
 def test_output_after_terminal_pair_is_fail_stop():
     """Any old callback after pair completion crosses the retirement fence."""
     machine = _reset_to_quiet()
@@ -780,13 +856,25 @@ def test_output_after_terminal_pair_is_fail_stop():
     assert machine.post_retirement_outputs[-1]["request_id"] == 2
 
 
-def test_old_terminal_pair_timeout_and_late_inflight_are_fail_stop():
-    """The HOLD-to-retirement interval cannot exceed 0.25 seconds."""
+def test_missing_hold_or_terminal_pair_and_late_inflight_are_fail_stop():
+    """Either missing side times out and HOLD-first output stays bounded."""
     machine = _active()
     machine.reset_call_started(0.13)
     machine.gate_status(_gate("hold", held=True), 0.14)
     machine.tick(0.391)
     assert machine.stop_reason == "old_terminal_pair_timeout"
+
+    terminal_only = _active()
+    terminal_only.reset_call_started(0.13)
+    terminal_only.terminal_bool(False, 0.14)
+    terminal_only.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.15)
+    terminal_only.tick(0.401)
+    assert terminal_only.stop_reason == "gate_hold_after_terminal_pair_timeout"
 
     late = _active()
     late.reset_call_started(0.13)
@@ -828,8 +916,50 @@ def test_old_terminal_wrong_pair_late_pair_and_duplicate_stop():
     late = _active()
     late.reset_call_started(0.13)
     late.gate_status(_gate("hold", held=True), 0.14)
-    late.terminal_bool(False, 0.391)
-    assert late.stop_reason == "old_terminal_after_retirement_deadline:bool"
+    late.terminal_bool(False, 0.390)
+    late.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.391)
+    assert late.stop_reason == "hold_terminal_pair_receive_skew_exceeded"
+
+    reverse_late = _active()
+    reverse_late.reset_call_started(0.13)
+    reverse_late.terminal_bool(False, 0.14)
+    reverse_late.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.15)
+    reverse_late.gate_status(_gate("hold", held=True), 0.401)
+    assert reverse_late.stop_reason == "hold_terminal_pair_receive_skew_exceeded"
+
+    dispatch_late = _active()
+    dispatch_late.reset_call_started(0.13)
+    dispatch_late.gate_status(_gate("hold", held=True), 0.62)
+    dispatch_late.terminal_bool(False, 0.625)
+    dispatch_late.terminal_result(json.dumps({
+        "request_id": 2,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.631)
+    assert dispatch_late.stop_reason == (
+        "old_terminal_pair_after_reset_dispatch_too_late"
+    )
+
+    wrong_terminal_first = _active()
+    wrong_terminal_first.reset_call_started(0.13)
+    wrong_terminal_first.terminal_result(json.dumps({
+        "request_id": 99,
+        "status": "aborted",
+        "reason": "simulation_reset",
+        "reset_epoch": 2,
+    }), 0.14)
+    assert wrong_terminal_first.stop_reason == "old_result_contract_mismatch"
 
     duplicate = _active()
     duplicate.reset_call_started(0.13)

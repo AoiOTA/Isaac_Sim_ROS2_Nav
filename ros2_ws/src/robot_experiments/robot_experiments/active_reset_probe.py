@@ -378,8 +378,15 @@ class ProbeMachine:
         if hold_boundary is None:
             if dispatch_boundary is not None and now >= dispatch_boundary:
                 # Service dispatch and the received HOLD status are different
-                # callback boundaries.  Outputs in this bounded interval are
-                # observable in-flight work, not proof of post-HOLD leakage.
+                # callback boundaries.  The exact old terminal pair can also
+                # reach this reader before HOLD.  Outputs before both sides
+                # establish their common fence are observable cross-writer
+                # in-flight work, not proof of post-fence leakage.
+                if request_id is not None and request_id != self.old_request_id:
+                    row["retirement_contract_error"] = "request_id_mismatch"
+                    self.pre_hold_inflight_outputs.append(row)
+                    self.stop(f"old_inflight_request_id_mismatch:{kind}", now)
+                    return True
                 self.pre_hold_inflight_outputs.append(row)
             return False
         if now < hold_boundary:
@@ -970,6 +977,9 @@ class ProbeMachine:
             ):
                 self.stop("gate_hold_after_reset_dispatch_too_late", now)
                 return
+            self._establish_retirement_fence()
+            if self.phase == "STOP":
+                return
         if reason.startswith("released:"):
             self._validate_release_coverage(now)
             if self.phase == "STOP":
@@ -1090,14 +1100,12 @@ class ProbeMachine:
             if self.counts["reset_call"] == 0:
                 self.stop("old_terminal_before_reset", now)
                 return
-            if not self._validate_old_terminal_boundary("bool", now):
-                return
             self.old_bool_value = bool(value)
             if value:
                 self.stop("old_terminal_true", now)
                 return
             self._time("old_terminal_bool", now)
-            self._establish_retirement_fence(now)
+            self._establish_retirement_fence()
         self._advance_reset_observation(now)
         self._maybe_fresh_success(now)
 
@@ -1134,8 +1142,6 @@ class ProbeMachine:
             if self.counts["reset_call"] == 0:
                 self.stop("old_terminal_before_reset", now)
                 return
-            if not self._validate_old_terminal_boundary("result", now):
-                return
             self.old_result_value = item
             if (
                 self.old_request_id is None
@@ -1147,37 +1153,47 @@ class ProbeMachine:
                 self.stop("old_result_contract_mismatch", now)
                 return
             self._time("old_terminal_result", now)
-            self._establish_retirement_fence(now)
+            self._establish_retirement_fence()
         self._advance_reset_observation(now)
         self._maybe_fresh_success(now)
 
     def _old_pair_complete(self) -> bool:
         return self.old_bool_value is False and self.old_result_value is not None
 
-    def _validate_old_terminal_boundary(self, kind: str, now: float) -> bool:
-        """Bind the coordinator retirement acknowledgment to received HOLD."""
-        hold = self._hold_boundary()
-        if hold is None:
-            self.stop(f"old_terminal_before_hold:{kind}", now)
-            return False
-        latency = float(now) - float(hold)
-        if latency < 0.0 or latency > self.config.old_retirement_max_delay_s:
-            self.stop(f"old_terminal_after_retirement_deadline:{kind}", now)
-            return False
-        return True
+    def _old_pair_complete_time(self) -> float | None:
+        if not self._old_pair_complete():
+            return None
+        return max(
+            self.timestamps["old_terminal_bool"],
+            self.timestamps["old_terminal_result"],
+        )
 
-    def _establish_retirement_fence(self, now: float) -> None:
-        """Fence old output when the exact old terminal pair is complete."""
+    def _establish_retirement_fence(self) -> None:
+        """Fence old output once HOLD and the exact terminal pair both exist."""
         if not self._old_pair_complete():
             return
         hold = self._hold_boundary()
         if hold is None:
-            self.stop("old_terminal_pair_without_hold", now)
             return
-        self._time("coordinator_retirement_fence", now)
-        self.timestamps["quiet_started"] = self.timestamps[
-            "coordinator_retirement_fence"
-        ]
+        pair_complete = self._old_pair_complete_time()
+        dispatch = self.timestamps.get("reset_call")
+        if pair_complete is None or dispatch is None:
+            self.stop("old_terminal_pair_without_reset_dispatch", hold)
+            return
+        dispatch_latency = float(pair_complete) - float(dispatch)
+        if (
+            dispatch_latency < 0.0
+            or dispatch_latency > self.config.hold_observation_max_delay_s
+        ):
+            self.stop("old_terminal_pair_after_reset_dispatch_too_late", pair_complete)
+            return
+        receive_skew = abs(float(hold) - float(pair_complete))
+        if receive_skew > self.config.old_retirement_max_delay_s:
+            self.stop("hold_terminal_pair_receive_skew_exceeded", max(hold, pair_complete))
+            return
+        fence = max(float(hold), float(pair_complete))
+        self._time("coordinator_retirement_fence", fence)
+        self.timestamps["quiet_started"] = fence
 
     def _advance_reset_observation(self, now: float) -> None:
         if (
@@ -1233,20 +1249,30 @@ class ProbeMachine:
             if now - self.timestamps["old_published"] > self.config.active_timeout_s:
                 self.stop("active_ready_timeout", now)
         elif self.phase in {"OBSERVE_HOLD_ABORT", "WAIT_RELEASE"}:
+            dispatch = self.timestamps["reset_call"]
+            hold = self._hold_boundary()
+            pair_complete = self._old_pair_complete_time()
             if (
-                self._hold_boundary() is None
-                and now - self.timestamps["reset_call"]
-                > self.config.hold_observation_max_delay_s
+                hold is None
+                and pair_complete is not None
+                and now - pair_complete > self.config.old_retirement_max_delay_s
+            ):
+                self.stop("gate_hold_after_terminal_pair_timeout", now)
+            elif (
+                hold is None
+                and now - dispatch > self.config.hold_observation_max_delay_s
             ):
                 self.stop("gate_hold_observation_timeout", now)
             elif (
-                self._hold_boundary() is not None
+                hold is not None
                 and "coordinator_retirement_fence" not in self.timestamps
-                and now - self._hold_boundary()
-                > self.config.old_retirement_max_delay_s
+                and (
+                    now - hold > self.config.old_retirement_max_delay_s
+                    or now - dispatch > self.config.hold_observation_max_delay_s
+                )
             ):
                 self.stop("old_terminal_pair_timeout", now)
-            elif now - self.timestamps["reset_call"] > self.config.reset_timeout_s:
+            elif now - dispatch > self.config.reset_timeout_s:
                 self.stop("reset_observation_timeout", now)
         elif self.phase == "QUIET":
             if now - self.timestamps["quiet_started"] >= self.config.quiet_s:
@@ -1293,6 +1319,12 @@ class ProbeMachine:
             row["received_monotonic_s"] for row in self.gate_sequence
             if row["reason"].startswith("released:")
         ), None)
+        pair_complete_time = self._old_pair_complete_time()
+        cross_writer_inflight = sorted(
+            self.pre_hold_inflight_outputs
+            + self.post_hold_pre_retirement_inflight,
+            key=lambda row: float(row["received_monotonic_s"]),
+        )
         postzero_start = self.timestamps.get("postzero_started")
         postzero_end = (
             None if postzero_start is None
@@ -1349,12 +1381,30 @@ class ProbeMachine:
                     "total": len(self.post_hold_pre_retirement_inflight),
                     "outputs": self.post_hold_pre_retirement_inflight,
                 },
+                "cross_writer_inflight_outputs_before_fence": {
+                    "total": len(cross_writer_inflight),
+                    "outputs": cross_writer_inflight,
+                },
                 "coordinator_retirement_fence": {
                     "established": (
                         "coordinator_retirement_fence" in self.timestamps
                     ),
                     "received_monotonic_s": self.timestamps.get(
                         "coordinator_retirement_fence"
+                    ),
+                    "pair_complete_received_monotonic_s": pair_complete_time,
+                    "dispatch_to_pair_complete_s": (
+                        None
+                        if (
+                            pair_complete_time is None
+                            or "reset_call" not in self.timestamps
+                        )
+                        else pair_complete_time - self.timestamps["reset_call"]
+                    ),
+                    "hold_pair_complete_receive_skew_s": (
+                        None
+                        if hold_time is None or pair_complete_time is None
+                        else abs(hold_time - pair_complete_time)
                     ),
                     "hold_to_fence_s": (
                         None
@@ -1366,7 +1416,7 @@ class ProbeMachine:
                         else self.timestamps["coordinator_retirement_fence"]
                         - hold_time
                     ),
-                    "basis": "exact_old_terminal_pair_receive_completion",
+                    "basis": "max_hold_and_exact_old_terminal_pair_receive",
                 },
                 "outputs_after_retirement_fence": self.post_retirement_outputs,
             },

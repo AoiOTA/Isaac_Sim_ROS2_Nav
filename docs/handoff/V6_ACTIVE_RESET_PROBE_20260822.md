@@ -291,3 +291,52 @@ second-replacement cases.  Package-configured flake8, `py_compile`, and
 at `/tmp/v6_probe_gid_checkpoint_clean.CnAEae`.  No ROS graph, Isaac, Nav2,
 navigation, reset, evidence episode, engineering campaign, or formal
 qualification was launched.  Attempt8 remains **PENDING**.
+
+## Attempt8 cross-writer receive-order amendment
+
+The immutable input is:
+
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_active_reset_live_attempt8_20260822T021512Z`
+
+Attempt8 remains **ENGINEERING FAIL / STOP / NOT FORMAL**.  The probe reader
+received the exact old Bool `false` terminal before it processed generation-2
+HOLD and stopped with `old_terminal_before_hold:bool`.  The finalized MCAP
+reader observed HOLD 0.000870 s before Bool and 0.000926 s before the exact
+abort JSON, with no old route output at or after HOLD or pair completion.  The
+two readers do not establish a cross-writer DDS total order.  Fresh navigation,
+post-release topology persistence, and full postzero therefore remain untested
+in that stopped episode.
+
+The probe now buffers and validates either side first.  It establishes the
+coordinator retirement fence only after all three observations exist: coherent
+generation-2 HOLD, Bool `false`, and exact
+`aborted/simulation_reset/reset_epoch=2` JSON for the old request.  The
+dispatch-to-HOLD and dispatch-to-pair-completion intervals must each be at most
+0.5 s, and the absolute HOLD/pair-completion receive skew must be at most
+0.25 s.  The fence and quiet-window start are the later of HOLD and pair
+completion.  Old outputs before that common fence are recorded as bounded
+cross-writer in-flight observations; any old output at or after the fence is
+fail-stop.  Wrong identity/epoch/reason, duplicates, a missing side, or any
+deadline violation remain fail-stop.
+
+This callback-order admission does not bypass the gate sequence or coverage
+contracts.  A terminal-first episode must still receive the exact
+`hold -> reset_complete -> released:*` sequence, complete zero
+`/cmd_vel_sim`, collision, GT and odometry coverage, and pass all later fresh
+and postzero checks.  Finalized-bag source/record order remains an external
+requirement before an engineering PASS can be assigned.
+
+Source-first and fresh-installed focused tests each passed **60 tests**.  They
+cover the Attempt6 HOLD-first triplet, Attempt8 terminal-first order, both
+missing-side timeouts, both receive-skew directions, dispatch-to-pair timing,
+outputs before and after the common fence, wrong contracts, and duplicates.
+Package-configured flake8, `py_compile`, `git diff --check`, installed import
+path and entry-point help passed.  Fresh isolated `robot_experiments`
+build/install passed at `/tmp/v6_probe_attempt9_build.hHQLhc`,
+`/tmp/v6_probe_attempt9_install.wN2fwa`, and
+`/tmp/v6_probe_attempt9_log.EOokYP`.
+
+Verdict: **PASS (code/build/unit only)**.  No ROS graph, Isaac, Nav2,
+navigation, reset, evidence episode, engineering campaign, or formal
+qualification was launched by this amendment.  Attempt9 remains **PENDING**
+and must use a fresh isolated runtime plus finalized bag.
