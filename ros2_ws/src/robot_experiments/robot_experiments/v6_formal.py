@@ -1005,7 +1005,6 @@ class V6FormalNode:
 
     def _track_route_signal(self, kind: str) -> None:
         """Route traffic is only legal after this runner's first goal."""
-
         if not self.guard.reset_calls:
             self.pre_reset_counts["route"] += 1
         elif not self.guard.goal_publications:
@@ -1068,7 +1067,6 @@ class V6FormalNode:
 
     def _b5_matches_bridge_baseline(self, generation: str) -> bool:
         """Warm-stack readiness: B5 is seeded in the discovered baseline."""
-
         if self.latest_bridge_epoch is None or not self.latest_bridge_session:
             return False
         fields = {}
@@ -1100,7 +1098,6 @@ class V6FormalNode:
 
     def _pre_reset_still(self) -> bool:
         """Cold boundary: zero commands and a bounded odom span in-window."""
-
         now = time.monotonic()
         horizon = now - PRE_RESET_NEGATIVE_WINDOW_S
         if any(nonzero for stamp, nonzero in self._cmd_window if stamp >= horizon):
@@ -1145,7 +1142,6 @@ class V6FormalNode:
 
     def _check_post_reset_odom(self) -> None:
         """Odometry must land at the re-zeroed origin and stay bounded."""
-
         samples = self.post_reset_odom_xy[1:]  # skip one straddling sample
         if len(samples) < 2:
             self.guard.stop("post_reset_odom_missing")

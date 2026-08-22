@@ -2076,3 +2076,59 @@
   or evidence campaign was run.  Attempt10 remains **PENDING** and must use a
   fresh isolated runtime plus finalized bag.
 - Handoff: `docs/handoff/V6_ACTIVE_RESET_PROBE_20260822.md`.
+
+## 2026-08-22 — Reset simplification work package R (code part R1–R4)
+
+- Goal: replace the active-reset state machine and probe with a cold episode
+  boundary protocol, minimal generation isolation, the ResetStopGate as the
+  physical stop authority, and hot (in-place, Option A) episode re-arm.
+- Branch/worktree/start: `cognitive-navigation`; permitted Module3 worktree;
+  `96549133f45e8f0abd80f48f1e5bdee012b81a5c`.  Fixed Module3 main remained
+  `22d66470c4b903349b2467dc876490bbebfc0083`.
+- Commits: `6484e73` (R3 coordinator), `a639270` (R1/R2/R4 runner + probe
+  retirement); docs commit follows.  Changed only
+  `robot_route_planner/robot_route_planner/ros_node.py`,
+  `robot_route_planner/test/test_route_core.py`,
+  `robot_route_planner/test/test_cognitive_graph_adapter.py`,
+  `robot_experiments/robot_experiments/v6_formal.py`,
+  `robot_experiments/robot_experiments/reset_receipt.py`,
+  `robot_experiments/robot_experiments/active_reset_probe.py` (deleted),
+  `robot_experiments/test/test_active_reset_probe.py` (deleted),
+  `robot_experiments/test/test_v6_formal.py`,
+  `robot_experiments/test/test_reset_receipt.py`,
+  `robot_experiments/setup.py`, this ledger, and
+  `V6_RESET_SIMPLIFICATION_20260822.md`.
+- R1: readiness now enforces the cold episode boundary — no pre-reset route
+  traffic, zero `/cmd_vel`/`/cmd_vel_sim` and bounded odom span in the 1.0 s
+  quiet window, sole-publisher ownership; violations fail-stop with explicit
+  blocker labels.  R2: the six minimal invariants (receipt match incl. new
+  pose check, post-reset odom landing/span, zero post-reset commands, no
+  stale route, GT firewall, sole publishers) are PASS/FAIL in the runner;
+  the 2364-line probe and its 1369-line test file are deleted.  R3: the
+  coordinator keeps input generation filtering, exactly-once retire with one
+  precise abort terminal, and fail-closed hold/release; the pristine binding
+  machine, 12-condition READY recheck, and release/GVG-ready ledgers are
+  removed (one `reset_ready_pending` flag defers READY to the release);
+  HOLD-fenced switch retries stay due and dispatch after release.  R4:
+  `arm_reset` accepts the current bridge epoch as baseline and requires
+  baseline+1/+2 epoch rollover; B5 readiness accepts a baseline-generation
+  seeded string; per-generation exactly-once semantics unchanged.
+- Validation: source-first at `5f0e088` — robot_route_planner **172 passed,
+  1 skipped** (optional `pxr`), robot_bringup **228 passed**,
+  robot_experiments **567 passed, 1 pre-existing worktree-path failure**
+  (`test_rivermark_reference_..._converges`, fails identically without these
+  changes).  Fresh-installed from isolated base identical.  Isolated colcon
+  build PASS: `ros2_ws/build_reset_simpl_QYUBBF`,
+  `install_reset_simpl_QYUBBF`, `log_reset_simpl_QYUBBF` (robot_bringup
+  against the worktree underlay).  Changed-file flake8
+  (`--max-line-length=99 --extend-ignore=A003,Q000`) adds no findings
+  (ros_node 51→46, v6_formal 56→55, reset_receipt 2→2); `py_compile` and
+  `git diff --check` PASS.  Metrics: probe removal -3733 lines; ros_node.py
+  4969→4634 (status handler 230→174, event handler 80→59, completion+READY
+  recheck 86→38, pristine machine 190→0, startup tick 35→0).
+- Verdict: **PASS (code/build/unit only)**.  No ROS/Isaac/Nav2/navigation or
+  live reset was run.  R5 (live verification) is pending; watch items:
+  warm-stack residual prior/candidate traffic vs the cumulative negative
+  window, B5 baseline string equality, 0.10 m odom landing threshold, and
+  the READY detail-string timing note — all listed in the handoff.
+- Handoff: `docs/handoff/V6_RESET_SIMPLIFICATION_20260822.md`.
