@@ -378,7 +378,11 @@ class EpisodeGuard:
     time (any epoch, not only 0) and requires the post-reset epochs to roll
     as baseline+1 (physical reset) and baseline+2 (bootstrap initialpose).
     Reset may only be armed with no active goal/route and a quiet stack;
-    one runner process drives exactly one reset and one episode.
+    one runner process drives exactly one reset and one episode.  The
+    estimated_autonomy composition seeds AMCL through the calibrated
+    enrollment/reseed machinery, not through the B5 supervisor, so the B5
+    gate is a generation witness: the supervisor registered this reset and
+    tracks the bootstrap generation, with any B5 failure still fail-closed.
     """
 
     state: str = "WAITING_READINESS"
@@ -398,7 +402,7 @@ class EpisodeGuard:
     initialpose_stamp_ns: int | None = None
     post_initialpose_amcl_seen: bool = False
     startup_consensus_seen: bool = False
-    b5_recovery_confirmed: bool = False
+    b5_generation_witnessed: bool = False
     post_reset_prior_seen: bool = False
     nav2_active: bool = False
     tf_active: bool = False
@@ -550,7 +554,12 @@ class EpisodeGuard:
             self.stop(f"bridge_epoch_mismatch:{reset_epoch}!={bootstrap_expected}")
 
     def record_b5_diagnostic(
-        self, *, state: str, recovery_result: str, seed_confirmation: str
+        self,
+        *,
+        state: str,
+        recovery_result: str,
+        seed_confirmation: str,
+        candidate_generation: str = "",
     ) -> None:
         if seed_confirmation in {"failed", "seed_confirmation_failed"}:
             self.stop("b5_seed_confirmation_failed")
@@ -558,11 +567,16 @@ class EpisodeGuard:
         if recovery_result in {"timeout", "seed_confirmation_failed"}:
             self.stop(f"b5_recovery_{recovery_result}")
             return
-        self.b5_recovery_confirmed = (
-            state == "normal"
-            and recovery_result == "succeeded"
-            and seed_confirmation == "succeeded"
-        )
+        if self.bootstrap_epoch is not None and self.bootstrap_session:
+            fields = {}
+            for item in candidate_generation.split(","):
+                key, _, value = item.partition("=")
+                fields[key.strip()] = value.strip()
+            # Latched: the candidate generation stream only moves forward.
+            self.b5_generation_witnessed |= bool(
+                fields.get("epoch") == str(self.bootstrap_epoch)
+                and fields.get("session") == self.bootstrap_session
+            )
         self._maybe_goal_ready()
 
     def record_prior(
@@ -601,10 +615,9 @@ class EpisodeGuard:
                 self.reset_calls == 1,
                 self.reset_events == 1,
                 self.physical_epoch is not None,
-                self.startup_consensus_seen,
                 self.initialpose_messages >= 1,
                 self.post_initialpose_amcl_seen,
-                self.b5_recovery_confirmed,
+                self.b5_generation_witnessed,
                 self.bootstrap_epoch is not None,
                 self.post_reset_prior_seen,
                 self.nav2_active,
@@ -623,10 +636,9 @@ class EpisodeGuard:
             not self.stop_reason
             and self.reset_events == 1
             and self.physical_epoch is not None
-            and self.startup_consensus_seen
             and self.initialpose_messages >= 1
             and self.post_initialpose_amcl_seen
-            and self.b5_recovery_confirmed
+            and self.b5_generation_witnessed
             and self.bootstrap_epoch is not None
             and self.post_reset_prior_seen
         )
@@ -969,6 +981,7 @@ class V6FormalNode:
                         state=values.get("state", ""),
                         recovery_result=values.get("recovery_result", ""),
                         seed_confirmation=values.get("seed_confirmation", ""),
+                        candidate_generation=generation,
                     )
         self._capture("/diagnostics", message)
 

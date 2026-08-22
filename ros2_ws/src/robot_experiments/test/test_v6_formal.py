@@ -53,10 +53,11 @@ def ready_guard(*legs: str) -> EpisodeGuard:
     guard.record_startup_consensus(True)
     guard.record_initialpose(100)
     guard.record_amcl(101)
-    guard.record_b5_diagnostic(
-        state="normal", recovery_result="succeeded", seed_confirmation="succeeded"
-    )
     guard.record_bridge(2, "session-2", False)
+    guard.record_b5_diagnostic(
+        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
+        candidate_generation="epoch=2,session=session-2",
+    )
     guard.record_prior(
         2, "session-2", trusted_write=True, module2_healthy=True,
         observation_valid=True, input_healthy=True,
@@ -186,11 +187,13 @@ def test_arm_reset_discovers_warm_baseline_and_rolls_epochs():
     guard.record_startup_consensus(True)
     guard.record_initialpose(100)
     guard.record_amcl(101)
-    guard.record_b5_diagnostic(
-        state="normal", recovery_result="succeeded", seed_confirmation="succeeded"
-    )
     guard.record_bridge(5, "session-5", False)
     assert guard.bootstrap_epoch == 5
+    guard.record_b5_diagnostic(
+        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
+        candidate_generation="epoch=5,session=session-5",
+    )
+    assert guard.b5_generation_witnessed
 
 
 def test_arm_reset_rejects_missing_epoch_or_active_goal():
