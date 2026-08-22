@@ -8,6 +8,7 @@ is reserved for the independent ``estimated_state_evaluator``/recorder.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import dataclass, field
 import json
 import math
@@ -29,6 +30,16 @@ NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
 PRE_RESET_NEGATIVE_WINDOW_S = 1.0
+# Cold episode boundary: reset is only armed after the stack is provably
+# idle and still.  The same 1.0 s quiet window doubles as the stillness
+# observation window.
+PRE_RESET_STILL_SPAN_M = 0.10
+COMMAND_ZERO_TOLERANCE = 1.0e-3
+# Post-reset odometry must land at the re-zeroed odom origin and stay
+# bounded until the first goal (no stale drive replay, no estimator jump).
+POST_RESET_ODOM_LANDING_M = 0.10
+POST_RESET_ODOM_SPAN_M = 0.10
+SOLE_PUBLISHER_TOPICS = ("/odom", "/cmd_vel", "/cmd_vel_sim", "/amcl_pose")
 FINAL_ESTIMATED_POLICY = {
     "ekf_profile": "wheel_imu",
     "lidar_odometry_backend": "off",
@@ -353,7 +364,7 @@ class ReadinessFacts:
     estimated_odom_seen: bool = False
     bridge_diagnostic_ready: bool = False
     b5_diagnostic_ready: bool = False
-    b5_waiting_for_reset: bool = False
+    b5_reset_ready: bool = False
 
     def missing(self) -> tuple[str, ...]:
         return tuple(name for name, value in vars(self).items() if not value)
@@ -361,7 +372,14 @@ class ReadinessFacts:
 
 @dataclass
 class EpisodeGuard:
-    """Pure exactly-once reset and PRIMARY RouteCoordinator state machine."""
+    """Cold-boundary exactly-once reset and RouteCoordinator state machine.
+
+    The runner discovers the current bridge epoch as its baseline at arm
+    time (any epoch, not only 0) and requires the post-reset epochs to roll
+    as baseline+1 (physical reset) and baseline+2 (bootstrap initialpose).
+    Reset may only be armed with no active goal/route and a quiet stack;
+    one runner process drives exactly one reset and one episode.
+    """
 
     state: str = "WAITING_READINESS"
     stop_reason: str = ""
@@ -408,16 +426,19 @@ class EpisodeGuard:
         missing = facts.missing()
         if missing:
             raise V6ContractError(f"reset readiness missing: {', '.join(missing)}")
-        if bridge_epoch != 0:
-            raise V6ContractError("active B5 reset readiness requires bridge epoch 0")
+        if bridge_epoch is None or bridge_epoch < 0:
+            raise V6ContractError("reset readiness missing bridge epoch baseline")
         if not bridge_session:
             raise V6ContractError("reset readiness missing bridge session baseline")
-        required_zero = ("prior", "candidate", "initialpose", "amcl")
+        required_zero = ("prior", "candidate", "initialpose", "route")
         nonzero = [name for name in required_zero if int(pre_reset_counts.get(name, -1)) != 0]
         if nonzero:
             raise V6ContractError(
-                "active B5 epoch0 negative window violated: " + ",".join(nonzero)
+                "active B5 pre-reset negative window violated: " + ",".join(nonzero)
             )
+        if self.goal_publications:
+            self.stop("reset_with_active_goal_forbidden")
+            raise V6ContractError(self.stop_reason)
         if self.reset_calls:
             self.stop("reset_retry_forbidden")
             raise V6ContractError(self.stop_reason)
@@ -746,8 +767,13 @@ class V6FormalNode:
         self.facts = ReadinessFacts()
         self.latest_bridge_epoch: int | None = None
         self.latest_bridge_session = ""
-        self.pre_reset_counts = {name: 0 for name in ("prior", "candidate", "initialpose", "amcl")}
+        self.pre_reset_counts = {
+            name: 0 for name in ("prior", "candidate", "initialpose", "route")
+        }
         self.pre_reset_quiet_since: float | None = None
+        self._cmd_window: deque[tuple[float, bool]] = deque()
+        self._odom_window: deque[tuple[float, float, float]] = deque()
+        self.post_reset_odom_xy: list[tuple[float, float]] = []
         self.map_odom_tf_seen = False
         self.odom_base_tf_seen = False
         self.canonical_route_count = 0
@@ -786,7 +812,7 @@ class V6FormalNode:
         self.subscriptions = [
             sub(Clock, "/clock", lambda m: self._fact("clock_seen", "/clock", m), sensor),
             sub(LaserScan, "/scan", lambda m: self._fact("scan_seen", "/scan", m), sensor),
-            sub(Odometry, "/odom", lambda m: self._fact("estimated_odom_seen", "/odom", m), sensor),
+            sub(Odometry, "/odom", self._odom, sensor),
             sub(PoseWithCovarianceStamped, "/amcl_pose", self._amcl_pose, reliable),
             sub(PoseWithCovarianceStamped, "/initialpose", self._initialpose, reliable),
             sub(TFMessage, "/tf", self._tf),
@@ -809,8 +835,8 @@ class V6FormalNode:
             sub(RiskLayerStatus, "/bio_nav/local_risk_layer/status", self._capture_callback("/bio_nav/local_risk_layer/status")),
             sub(RiskLayerStatus, "/bio_nav/cognitive_obstacle_layer/status", self._capture_callback("/bio_nav/cognitive_obstacle_layer/status")),
             sub(RiskLayerStatus, "/bio_nav/cognitive_risk_critic/status", self._capture_callback("/bio_nav/cognitive_risk_critic/status")),
-            sub(Twist, "/cmd_vel", self._capture_callback("/cmd_vel")),
-            sub(Twist, "/cmd_vel_sim", self._capture_callback("/cmd_vel_sim")),
+            sub(Twist, "/cmd_vel", lambda m: self._track_command("/cmd_vel", m)),
+            sub(Twist, "/cmd_vel_sim", lambda m: self._track_command("/cmd_vel_sim", m)),
             sub(Bool, "/simulation/collision", self._collision),
             sub(String, "/simulation/collision_diagnostics", self._capture_callback("/simulation/collision_diagnostics")),
             sub(DiagnosticArray, "/diagnostics", self._diagnostics),
@@ -831,6 +857,37 @@ class V6FormalNode:
         setattr(self.facts, name, True)
         self._capture(topic, message)
 
+    def _odom(self, message: Any) -> None:
+        self.facts.estimated_odom_seen = True
+        now = time.monotonic()
+        x = float(message.pose.pose.position.x)
+        y = float(message.pose.pose.position.y)
+        self._odom_window.append((now, x, y))
+        horizon = 4.0 * PRE_RESET_NEGATIVE_WINDOW_S
+        while self._odom_window and now - self._odom_window[0][0] > horizon:
+            self._odom_window.popleft()
+        if self.guard.reset_events == 1 and not self.guard.goal_publications:
+            self.post_reset_odom_xy.append((x, y))
+        self._capture("/odom", message)
+
+    def _track_command(self, topic: str, message: Any) -> None:
+        nonzero = any(
+            abs(float(value)) > COMMAND_ZERO_TOLERANCE
+            for value in (
+                message.linear.x,
+                message.linear.y,
+                message.angular.z,
+            )
+        )
+        now = time.monotonic()
+        self._cmd_window.append((now, nonzero))
+        horizon = 4.0 * PRE_RESET_NEGATIVE_WINDOW_S
+        while self._cmd_window and now - self._cmd_window[0][0] > horizon:
+            self._cmd_window.popleft()
+        if nonzero and self.guard.reset_calls and not self.guard.goal_publications:
+            self.guard.stop(f"post_reset_command_nonzero:{topic}")
+        self._capture(topic, message)
+
     def _reset_event(self, message: Any) -> None:
         self.guard.record_reset_event()
         self._capture("/simulation/reset_event", message)
@@ -841,7 +898,6 @@ class V6FormalNode:
         return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
 
     def _amcl_pose(self, message: Any) -> None:
-        self.pre_reset_counts["amcl"] += 1
         if self.guard.reset_calls:
             self.guard.record_amcl(self._header_stamp_ns(message))
         self._capture("/amcl_pose", message)
@@ -889,11 +945,15 @@ class V6FormalNode:
                 self.facts.b5_diagnostic_ready = True
                 generation = values.get("candidate_array_last_generation", "")
                 event_reason = values.get("candidate_array_last_event_reason", "")
-                self.facts.b5_waiting_for_reset = generation in {
-                    "not_received", "waiting_after_physical_reset"
-                } or event_reason in {
-                    "waiting_for_candidate_array", "waiting_after_physical_reset"
-                }
+                self.facts.b5_reset_ready = (
+                    generation in {
+                        "not_received", "waiting_after_physical_reset"
+                    }
+                    or event_reason in {
+                        "waiting_for_candidate_array", "waiting_after_physical_reset"
+                    }
+                    or self._b5_matches_bridge_baseline(generation)
+                )
                 try:
                     consensus_count = int(values.get("startup_consensus_count", "0"))
                 except ValueError:
@@ -928,17 +988,28 @@ class V6FormalNode:
         self._capture("/bio_nav/canonical_route", message)
 
     def _route_progress(self, message: Any) -> None:
+        self._track_route_signal("route_progress")
         self.guard.record_route_progress()
         self._capture("/bio_nav/route_progress", message)
 
     def _route_complete(self, message: Any) -> None:
+        self._track_route_signal("route_goal_complete")
         self.guard.record_route_completion(bool(message.data))
         self._capture("/bio_nav/route_goal_complete", message)
 
     def _route_result(self, message: Any) -> None:
+        self._track_route_signal("route_goal_result")
         row = self._json_message(message)
         self.route_goal_results.append(row)
         self._capture("/bio_nav/route_goal_result", message)
+
+    def _track_route_signal(self, kind: str) -> None:
+        """Route traffic is only legal after this runner's first goal."""
+
+        if not self.guard.reset_calls:
+            self.pre_reset_counts["route"] += 1
+        elif not self.guard.goal_publications:
+            self.guard.stop(f"stale_{kind}_after_reset")
 
     @staticmethod
     def _json_message(message: Any) -> dict[str, Any]:
@@ -995,14 +1066,103 @@ class V6FormalNode:
             self.route_goal_publisher.get_subscription_count() > 0
         )
 
+    def _b5_matches_bridge_baseline(self, generation: str) -> bool:
+        """Warm-stack readiness: B5 is seeded in the discovered baseline."""
+
+        if self.latest_bridge_epoch is None or not self.latest_bridge_session:
+            return False
+        fields = {}
+        for item in generation.split(","):
+            key, _, value = item.partition("=")
+            fields[key] = value
+        try:
+            epoch = int(fields.get("epoch", ""))
+        except ValueError:
+            return False
+        return bool(
+            epoch == self.latest_bridge_epoch
+            and fields.get("session", "") == self.latest_bridge_session
+        )
+
+    def _pre_reset_violations(self) -> tuple[str, ...]:
+        return tuple(
+            name
+            for name in ("prior", "candidate", "initialpose", "route")
+            if self.pre_reset_counts.get(name, 0)
+        )
+
+    def _publisher_ownership_violations(self) -> tuple[str, ...]:
+        return tuple(
+            f"{topic}={self.node.count_publishers(topic)}"
+            for topic in SOLE_PUBLISHER_TOPICS
+            if self.node.count_publishers(topic) != 1
+        )
+
+    def _pre_reset_still(self) -> bool:
+        """Cold boundary: zero commands and a bounded odom span in-window."""
+
+        now = time.monotonic()
+        horizon = now - PRE_RESET_NEGATIVE_WINDOW_S
+        if any(nonzero for stamp, nonzero in self._cmd_window if stamp >= horizon):
+            return False
+        window = [(x, y) for stamp, x, y in self._odom_window if stamp >= horizon]
+        if not window:
+            return False
+        xs = [point[0] for point in window]
+        ys = [point[1] for point in window]
+        return bool(
+            max(xs) - min(xs) <= PRE_RESET_STILL_SPAN_M
+            and max(ys) - min(ys) <= PRE_RESET_STILL_SPAN_M
+        )
+
+    def _readiness_blockers(self) -> str:
+        blockers: list[str] = []
+        missing = self.facts.missing()
+        if missing:
+            blockers.append("facts:" + ",".join(missing))
+        if self.latest_bridge_epoch is None or not self.latest_bridge_session:
+            blockers.append("bridge_epoch_baseline")
+        violations = self._pre_reset_violations()
+        if violations:
+            blockers.append("pre_reset_negative_window:" + ",".join(violations))
+        ownership = self._publisher_ownership_violations()
+        if ownership:
+            blockers.append("publisher_ownership:" + ",".join(ownership))
+        if not self._pre_reset_still():
+            blockers.append("pre_reset_not_still")
+        return ";".join(blockers)
+
+    def _assert_ground_truth_firewall(self) -> None:
+        offending = [
+            subscription.topic_name
+            for subscription in self.subscriptions
+            if subscription.topic_name.startswith(GT_PREFIX)
+        ]
+        if offending:
+            raise V6ContractError(
+                "dispatcher Ground Truth firewall violated: " + ",".join(offending)
+            )
+
+    def _check_post_reset_odom(self) -> None:
+        """Odometry must land at the re-zeroed origin and stay bounded."""
+
+        samples = self.post_reset_odom_xy[1:]  # skip one straddling sample
+        if len(samples) < 2:
+            self.guard.stop("post_reset_odom_missing")
+            return
+        landing = math.hypot(samples[0][0], samples[0][1])
+        if landing > POST_RESET_ODOM_LANDING_M:
+            self.guard.stop(f"post_reset_odom_landing:{landing:.3f}")
+            return
+        xs = [point[0] for point in samples]
+        ys = [point[1] for point in samples]
+        span = max(max(xs) - min(xs), max(ys) - min(ys))
+        if span > POST_RESET_ODOM_SPAN_M:
+            self.guard.stop(f"post_reset_odom_span:{span:.3f}")
+
     def _pre_reset_ready(self) -> bool:
         self._refresh_endpoint_facts()
-        if (
-            self.facts.missing()
-            or self.latest_bridge_epoch != 0
-            or not self.latest_bridge_session
-            or any(self.pre_reset_counts.values())
-        ):
+        if self._readiness_blockers():
             self.pre_reset_quiet_since = None
             return False
         now = time.monotonic()
@@ -1101,6 +1261,7 @@ class V6FormalNode:
         return True
 
     def run(self, *, readiness_timeout_sec: float, reset_timeout_sec: float, navigation_timeout_sec: float) -> dict[str, Any]:
+        self._assert_ground_truth_firewall()
         self._write(
             "episode_start",
             qualification=self.qualification,
@@ -1115,13 +1276,7 @@ class V6FormalNode:
             readiness_timeout_sec,
         )
         if not ready:
-            if any(self.pre_reset_counts.values()):
-                detail = "epoch0_negative_window"
-            elif self.latest_bridge_epoch != 0 or not self.latest_bridge_session:
-                detail = "bridge_epoch0_baseline"
-            else:
-                detail = ",".join(self.facts.missing())
-            self.guard.stop("readiness_timeout:" + detail)
+            self.guard.stop("readiness_timeout:" + (self._readiness_blockers() or "unknown"))
             return self.result()
         self.guard.arm_reset(
             self.facts,
@@ -1156,6 +1311,7 @@ class V6FormalNode:
                 requested_seed=self.episode.seed,
                 requested_case_id=self.episode.dynamic_case_id,
                 requested_variant_id=self.episode.variant_id,
+                requested_pose=self.episode.reset_pose_name,
             )
         except ResetReceiptError as exc:
             self.guard.stop(f"reset_receipt_mismatch:{exc}")
@@ -1168,6 +1324,9 @@ class V6FormalNode:
         ):
             self.guard.stop("post_reset_readiness_timeout")
             return self.result()
+        if self.guard.state == "STOP":
+            return self.result()
+        self._check_post_reset_odom()
         if self.guard.state == "STOP":
             return self.result()
         self.guard.record_navigation_ready(

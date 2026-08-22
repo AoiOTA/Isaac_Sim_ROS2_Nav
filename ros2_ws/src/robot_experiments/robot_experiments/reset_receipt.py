@@ -19,6 +19,7 @@ def parse_reset_receipt(
     requested_seed: int,
     requested_case_id: str = "",
     requested_variant_id: str = "",
+    requested_pose: str = "",
 ) -> dict[str, Any]:
     """Return complete provenance or fail closed on any request mismatch."""
 
@@ -75,6 +76,12 @@ def parse_reset_receipt(
         raise ResetReceiptError(
             "simulation reset receipt mismatch: "
             f"requested={expected}, actual={actual}, generation={generation}"
+        )
+    if requested_pose and payload["pose"] != requested_pose:
+        raise ResetReceiptError(
+            "simulation reset receipt pose mismatch: "
+            f"requested={requested_pose!r}, actual={payload['pose']!r}, "
+            f"generation={generation}"
         )
     return {
         "requested_seed": requested_seed,

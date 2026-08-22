@@ -36,6 +36,19 @@ def test_seed_mismatch_is_a_fail_closed_stop():
         )
 
 
+def test_pose_match_is_enforced_only_when_requested():
+    receipt = parse_reset_receipt(_message(8601, 1), requested_seed=8601)
+    assert receipt["pose"] == "mapping_start"
+    receipt = parse_reset_receipt(
+        _message(8601, 1), requested_seed=8601, requested_pose="mapping_start"
+    )
+    assert receipt["pose"] == "mapping_start"
+    with pytest.raises(ResetReceiptError, match="pose mismatch"):
+        parse_reset_receipt(
+            _message(8601, 1), requested_seed=8601, requested_pose="other_pose"
+        )
+
+
 def test_case_variant_and_full_response_are_preserved():
     message = _message(8601, 3, "crossing", "medium")
     receipt = parse_reset_receipt(

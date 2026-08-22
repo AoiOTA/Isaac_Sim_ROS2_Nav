@@ -1,6 +1,8 @@
-from collections import Counter
+from collections import Counter, deque
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -42,7 +44,7 @@ def ready_guard(*legs: str) -> EpisodeGuard:
     guard = EpisodeGuard(mission_leg_ids=legs)
     guard.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     guard.record_reset_call()
     guard.record_reset_response(True)
@@ -85,7 +87,7 @@ def test_reset_is_exactly_once_and_unknown_response_never_retries():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     guard.record_reset_call()
     guard.record_reset_response(None)
@@ -100,7 +102,7 @@ def test_second_reset_event_is_immediate_stop():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     guard.record_reset_call()
     guard.record_reset_response(True)
@@ -137,7 +139,7 @@ def test_wrong_bridge_epoch_stops_before_goal():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     guard.record_reset_call()
     guard.record_reset_response(True)
@@ -146,23 +148,167 @@ def test_wrong_bridge_epoch_stops_before_goal():
     assert guard.stop_reason == "bridge_epoch_mismatch:3!=2"
 
 
-def test_active_b5_epoch0_readiness_requires_negative_window_not_prior_or_amcl():
+def test_active_b5_readiness_requires_negative_window_not_prior_or_route():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     assert guard.state == "RESET_ARMED"
 
 
-@pytest.mark.parametrize("name", ["prior", "candidate", "initialpose", "amcl"])
+@pytest.mark.parametrize("name", ["prior", "candidate", "initialpose", "route"])
 def test_active_b5_rejects_old_pre_reset_positive_preconditions(name):
-    counts = {"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0}
+    counts = {"prior": 0, "candidate": 0, "initialpose": 0, "route": 0}
     counts[name] = 1
     with pytest.raises(V6ContractError, match="negative window violated"):
         EpisodeGuard().arm_reset(
             ready_facts(), 0, "session-0", pre_reset_counts=counts
         )
+
+
+def test_arm_reset_discovers_warm_baseline_and_rolls_epochs():
+    guard = EpisodeGuard()
+    guard.arm_reset(
+        ready_facts(), 3, "session-3",
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
+    )
+    assert guard.state == "RESET_ARMED"
+    assert guard.bridge_epoch_baseline == 3
+    guard.record_reset_call()
+    guard.record_reset_response(True)
+    guard.record_reset_event()
+    # Baseline diagnostics keep flowing and are ignored, not fatal.
+    guard.record_bridge(3, "session-3", False)
+    assert guard.stop_reason == ""
+    guard.record_bridge(4, "session-4", True)
+    assert guard.physical_epoch == 4
+    guard.record_startup_consensus(True)
+    guard.record_initialpose(100)
+    guard.record_amcl(101)
+    guard.record_b5_diagnostic(
+        state="normal", recovery_result="succeeded", seed_confirmation="succeeded"
+    )
+    guard.record_bridge(5, "session-5", False)
+    assert guard.bootstrap_epoch == 5
+
+
+def test_arm_reset_rejects_missing_epoch_or_active_goal():
+    with pytest.raises(V6ContractError, match="bridge epoch baseline"):
+        EpisodeGuard().arm_reset(
+            ready_facts(), None, "session-0",
+            pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
+        )
+    guard = EpisodeGuard()
+    guard.goal_publications = 1
+    with pytest.raises(V6ContractError, match="reset_with_active_goal_forbidden"):
+        guard.arm_reset(
+            ready_facts(), 0, "session-0",
+            pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
+        )
+
+
+def _bare_node():
+    node = V6FormalNode.__new__(V6FormalNode)
+    node.facts = ReadinessFacts()
+    node.latest_bridge_epoch = None
+    node.latest_bridge_session = ""
+    node.pre_reset_counts = {"prior": 0, "candidate": 0, "initialpose": 0, "route": 0}
+    node._cmd_window = deque()
+    node._odom_window = deque()
+    node.post_reset_odom_xy = []
+    node.guard = EpisodeGuard()
+    node._capture = lambda topic, message: None
+    return node
+
+
+def _twist(x=0.0, y=0.0, z=0.0):
+    return SimpleNamespace(
+        linear=SimpleNamespace(x=x, y=y), angular=SimpleNamespace(z=z)
+    )
+
+
+def test_pre_reset_still_requires_zero_commands_and_bounded_odom_span():
+    node = _bare_node()
+    now = time.monotonic()
+    assert not node._pre_reset_still()  # no odom evidence at all
+    node._odom_window.extend([
+        (now - 0.8, 1.0, 2.0), (now - 0.4, 1.02, 2.01), (now - 0.1, 1.01, 2.0),
+    ])
+    assert node._pre_reset_still()
+    node._cmd_window.append((now - 0.2, True))
+    assert not node._pre_reset_still()
+    node._cmd_window.clear()
+    node._cmd_window.append((now - 2.0, True))  # stale evidence expires
+    assert node._pre_reset_still()
+    node._odom_window.append((now - 0.1, 1.5, 2.0))
+    assert not node._pre_reset_still()
+
+
+def test_track_command_stops_on_post_reset_pre_goal_motion():
+    node = _bare_node()
+    node._track_command("/cmd_vel_sim", _twist(x=0.2))
+    assert node.guard.stop_reason == ""  # pre-reset commands only feed stillness
+    node.guard.reset_calls = 1
+    node._track_command("/cmd_vel_sim", _twist(x=0.2))
+    assert node.guard.stop_reason == "post_reset_command_nonzero:/cmd_vel_sim"
+    node.guard.goal_publications = 1
+    node._track_command("/cmd_vel_sim", _twist(x=0.2))  # own goal: motion legal
+    assert node.guard.stop_reason == "post_reset_command_nonzero:/cmd_vel_sim"
+
+
+def test_track_route_signal_counts_pre_reset_and_stops_stale_post_reset():
+    node = _bare_node()
+    node._track_route_signal("route_progress")
+    assert node.pre_reset_counts["route"] == 1
+    assert node.guard.stop_reason == ""
+    node.guard.reset_calls = 1
+    node._track_route_signal("route_goal_complete")
+    assert node.guard.stop_reason == "stale_route_goal_complete_after_reset"
+
+
+def test_post_reset_odom_landing_and_span_contract():
+    node = _bare_node()
+    node._check_post_reset_odom()
+    assert node.guard.stop_reason == "post_reset_odom_missing"
+
+    node = _bare_node()
+    # The first sample may straddle the reset boundary and is skipped.
+    node.post_reset_odom_xy = [(9.9, 9.9), (0.01, 0.0), (0.02, 0.01), (0.0, 0.01)]
+    node._check_post_reset_odom()
+    assert node.guard.stop_reason == ""
+
+    node = _bare_node()
+    node.post_reset_odom_xy = [(0.0, 0.0), (0.5, 0.0), (0.5, 0.0)]
+    node._check_post_reset_odom()
+    assert node.guard.stop_reason.startswith("post_reset_odom_landing:")
+
+    node = _bare_node()
+    node.post_reset_odom_xy = [(0.0, 0.0), (0.01, 0.0), (0.30, 0.0)]
+    node._check_post_reset_odom()
+    assert node.guard.stop_reason.startswith("post_reset_odom_span:")
+
+
+def test_b5_warm_baseline_matching_uses_bridge_epoch_and_session():
+    node = _bare_node()
+    assert not node._b5_matches_bridge_baseline("epoch=3,session=s3,map=v1")
+    node.latest_bridge_epoch = 3
+    node.latest_bridge_session = "s3"
+    assert node._b5_matches_bridge_baseline("epoch=3,session=s3,map=v1,tile=t@1,graph=2")
+    assert not node._b5_matches_bridge_baseline("epoch=4,session=s3")
+    assert not node._b5_matches_bridge_baseline("epoch=3,session=other")
+    assert not node._b5_matches_bridge_baseline("waiting_after_physical_reset")
+
+
+def test_publisher_ownership_requires_sole_command_and_pose_publishers():
+    node = _bare_node()
+    counts = {"/odom": 1, "/cmd_vel": 1, "/cmd_vel_sim": 1, "/amcl_pose": 1}
+    node.node = SimpleNamespace(count_publishers=lambda topic: counts[topic])
+    assert node._publisher_ownership_violations() == ()
+    counts["/cmd_vel_sim"] = 2
+    assert node._publisher_ownership_violations() == ("/cmd_vel_sim=2",)
+    counts["/cmd_vel_sim"] = 0
+    assert node._publisher_ownership_violations() == ("/cmd_vel_sim=0",)
 
 
 def test_b5_physical_epoch_seed_confirmation_bootstrap_rollover_sequence():
@@ -183,7 +329,7 @@ def test_second_initialpose_and_non_newer_amcl_fail_closed():
     guard = EpisodeGuard()
     guard.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     guard.record_reset_call(); guard.record_reset_response(True); guard.record_reset_event()
     guard.record_bridge(1, "session-1", True)
@@ -195,7 +341,7 @@ def test_second_initialpose_and_non_newer_amcl_fail_closed():
     second = EpisodeGuard()
     second.arm_reset(
         ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "amcl": 0},
+        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
     )
     second.record_reset_call(); second.record_reset_response(True); second.record_reset_event()
     second.record_bridge(1, "session-1", True)
