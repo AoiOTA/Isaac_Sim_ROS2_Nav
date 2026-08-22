@@ -33,12 +33,18 @@ local_costmap:
   local_costmap:
     ros__parameters:
       plugins: [obstacle_layer, cognitive_obstacle_layer, inflation_layer]
-      # V6 Phase-1 rerun (seed 7201): leg G2->G3 clipped the mapped
-      # door-corner cabinet_0003 at (-0.60, 3.17) with 0.20--0.25 m AMCL-GT
-      # error.  The base 0.40 m inflation / 0.005 m footprint padding leaves
-      # no room for that estimated-localization noise, so widen only this
-      # profile's margin.  cost_scaling_factor stays at the base 9.0.
-      footprint_padding: 0.03
+      # Margin reverted to the base 0.40 m inflation / 0.005 m footprint
+      # padding (fd01d0ac's 0.55 / 0.03 removed).  Offline bag analysis of
+      # the R5 live runs showed the widened inflation was the run#4 failure
+      # driver: MPPI forward cost rose ~4x and the reverse-start deadlocked
+      # in the G1 exit corridor (padding had no measurable effect).  The
+      # run#2 G2->G3 door-corner contact was localization-side: AMCL drift
+      # was 0.24--0.25 m at contact versus a 0.125 m door-zone absorbable
+      # limit (run#1 drift <=0.1 m passed on plan/route that were centered),
+      # so no feasible costmap margin can absorb it; drift is being
+      # addressed on the AMCL side (amcl_kujiale.yaml).  cost_scaling_factor
+      # stays at the base 9.0.
+      # Evidence: /mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_r5_margin_rootcause_20260822/
       depth_voxel_layer:
         enabled: false
       cognitive_obstacle_layer:
@@ -50,15 +56,13 @@ local_costmap:
         maximum_soft_cost: 80
         collision_min_height_m: 0.02
         collision_max_height_m: 0.45
-      inflation_layer:
-        inflation_radius: 0.55
 
 global_costmap:
   global_costmap:
     ros__parameters:
       plugins: [static_layer, obstacle_layer, cognitive_obstacle_layer, inflation_layer]
-      # Same estimated-localization margin as the local side.
-      footprint_padding: 0.03
+      # Base margin restored on the global side too; see the local_costmap
+      # comment above for the run#2/run#4 evidence.
       depth_voxel_layer:
         enabled: false
       cognitive_obstacle_layer:
@@ -70,5 +74,3 @@ global_costmap:
         maximum_soft_cost: 80
         collision_min_height_m: 0.02
         collision_max_height_m: 0.45
-      inflation_layer:
-        inflation_radius: 0.55
