@@ -167,11 +167,15 @@ STAGE="env"
 # reset_ros_overlay_environment, plus Python/library path pollution).
 unset AMENT_PREFIX_PATH COLCON_PREFIX_PATH CMAKE_PREFIX_PATH ROS_PACKAGE_PATH
 unset PYTHONPATH LD_LIBRARY_PATH
+# ROS-generated setup scripts reference optional variables before defining
+# them, so nounset must be suspended while they are sourced.
+set +u
 source /opt/ros/jazzy/setup.bash
 # shellcheck disable=SC1090
 source "${I_INSTALL}/setup.bash"
 # shellcheck disable=SC1090
 source "${M3_INSTALL}/setup.bash"
+set -u
 
 ROBOT_EXPERIMENTS_PREFIX="$(ros2 pkg prefix robot_experiments)"
 echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
