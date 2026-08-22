@@ -695,6 +695,56 @@ def test_release_without_pending_reassert_commit_publishes_no_ready() -> None:
     assert coordinator.structural_statuses == []
 
 
+def test_release_re_publishes_constraints_fenced_during_hold() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    constraints_publications = []
+    coordinator._publish_cognitive_constraints = lambda: (
+        constraints_publications.append('constraints')
+    )
+
+    coordinator._on_reset_stop_gate_status(_gate_status(2, True, 'hold'))
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, True, 'reset_complete', eligible=2))
+    assert constraints_publications == []
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(2, False, 'released:activation_gate'))
+    assert coordinator.reset_hold_barrier is False
+    assert constraints_publications == ['constraints']
+
+    # An exact duplicate release stays idempotent.
+    coordinator._on_reset_stop_gate_status(
+        coordinator.reset_status_snapshot)
+    assert constraints_publications == ['constraints']
+
+
+def test_startup_released_baseline_also_publishes_constraints() -> None:
+    coordinator = _startup_reset_route_coordinator()
+    constraints_publications = []
+    coordinator._publish_cognitive_constraints = lambda: (
+        constraints_publications.append('constraints')
+    )
+
+    coordinator._on_reset_stop_gate_status(
+        _gate_status(7, False, 'released:activation_gate'))
+
+    assert coordinator.reset_hold_barrier is False
+    assert constraints_publications == ['constraints']
+
+
+def test_gateless_reset_event_open_also_publishes_constraints() -> None:
+    coordinator = _reset_route_coordinator(active=False)
+    constraints_publications = []
+    coordinator._publish_cognitive_constraints = lambda: (
+        constraints_publications.append('constraints')
+    )
+
+    coordinator._on_reset_event(SimpleNamespace(data=''))
+
+    assert coordinator.reset_hold_barrier is False
+    assert constraints_publications == ['constraints']
+
+
 def test_startup_released_baseline_synchronizes_without_fake_terminal() -> None:
     coordinator = _reset_route_coordinator(active=False)
     coordinator.reset_status_generation = None

@@ -1819,7 +1819,9 @@ class RouteCoordinator:
         generation, from the volatile Empty event or the strict
         reset_complete status, whichever arrives first.  Only the release of
         the completed generation opens the route barrier.  Anything outside
-        that forward sequence keeps the barrier held (fail closed).
+        that forward sequence keeps the barrier held (fail closed).  The
+        release that opens the barrier also re-publishes the map-bound
+        cognitive constraints, which HOLD may have fenced.
         """
 
         try:
@@ -1833,6 +1835,7 @@ class RouteCoordinator:
         complete = False
         failure = None
         ready_pending = False
+        barrier_opened = False
         with self._route_output_lock():
             with self._route_state_lock():
                 self.reset_status_authority_seen = True
@@ -1880,6 +1883,7 @@ class RouteCoordinator:
                         self.reset_status_generation = status.generation
                         self.reset_status_snapshot = status
                         self.reset_hold_barrier = False
+                        barrier_opened = True
                     else:
                         self.reset_status_generation = status.generation
                         self.reset_status_snapshot = status
@@ -1943,6 +1947,8 @@ class RouteCoordinator:
                             )
                             != status.generation
                         )
+                        if not self.reset_hold_barrier:
+                            barrier_opened = True
                         if (
                             not self.reset_hold_barrier
                             and getattr(self, "reset_ready_pending", False)
@@ -1975,6 +1981,11 @@ class RouteCoordinator:
                 )
             if complete:
                 self._publish_reset_completion(status.generation)
+            if barrier_opened:
+                # Outputs fenced during HOLD become publishable at the open:
+                # re-publish the map-bound cognitive constraints so the B5
+                # seeding chain is fed even when /map arrived while held.
+                self._publish_cognitive_constraints()
             if ready_pending:
                 self._publish_structural_status(
                     self.StructuralGraphStatus.READY, "reset GVG reconciled"
@@ -2041,6 +2052,10 @@ class RouteCoordinator:
         self._cancel_navigation_handle(old_handle)
         if complete:
             self._publish_reset_completion(completion_generation)
+        if complete and not self._reset_barrier_is_held():
+            # Gate-less open: the same post-HOLD constraint refresh as the
+            # gate status release path.
+            self._publish_cognitive_constraints()
         if failure is not None:
             self.node.get_logger().error(f"reset event held fail-closed: {failure}")
 
@@ -2952,8 +2967,8 @@ class RouteCoordinator:
             )
             if not self._route_input_is_current_locked(input_generation):
                 return
-            live_map_version = self.live_map_version
-            selector = self.region_selector
+            live_map_version = getattr(self, "live_map_version", None)
+            selector = getattr(self, "region_selector", None)
             region = None if selector is None else selector.current
             if live_map_version is None or (selector is not None and region is None):
                 return
