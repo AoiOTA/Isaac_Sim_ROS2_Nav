@@ -33,6 +33,12 @@ local_costmap:
   local_costmap:
     ros__parameters:
       plugins: [obstacle_layer, cognitive_obstacle_layer, inflation_layer]
+      # V6 Phase-1 rerun (seed 7201): leg G2->G3 clipped the mapped
+      # door-corner cabinet_0003 at (-0.60, 3.17) with 0.20--0.25 m AMCL-GT
+      # error.  The base 0.40 m inflation / 0.005 m footprint padding leaves
+      # no room for that estimated-localization noise, so widen only this
+      # profile's margin.  cost_scaling_factor stays at the base 9.0.
+      footprint_padding: 0.03
       depth_voxel_layer:
         enabled: false
       cognitive_obstacle_layer:
@@ -44,11 +50,15 @@ local_costmap:
         maximum_soft_cost: 80
         collision_min_height_m: 0.02
         collision_max_height_m: 0.45
+      inflation_layer:
+        inflation_radius: 0.55
 
 global_costmap:
   global_costmap:
     ros__parameters:
       plugins: [static_layer, obstacle_layer, cognitive_obstacle_layer, inflation_layer]
+      # Same estimated-localization margin as the local side.
+      footprint_padding: 0.03
       depth_voxel_layer:
         enabled: false
       cognitive_obstacle_layer:
@@ -60,3 +70,5 @@ global_costmap:
         maximum_soft_cost: 80
         collision_min_height_m: 0.02
         collision_max_height_m: 0.45
+      inflation_layer:
+        inflation_radius: 0.55
