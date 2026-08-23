@@ -378,18 +378,12 @@ class FailingPublisher:
         raise RuntimeError("publisher rejected reset event")
 
 
-def test_timeout_failure_does_not_emit_reset_event_or_arm_initial_pose():
+def test_timeout_failure_does_not_emit_reset_event():
     events = []
-    cancelled = []
     bridge = SimpleNamespace(
         _active_transaction=None,
         _reset_event_publisher=FakePublisher(events),
         _EmptyMessage=lambda: object(),
-        _initial_pose_republisher=SimpleNamespace(
-            cancel=lambda: cancelled.append("cancel")
-        ),
-        _deferred_initial_pose_name="old",
-        _apply_initial_pose_policy=lambda: events.append("arm"),
     )
     transaction = _ResetTransaction(
         generation=9,
@@ -407,12 +401,10 @@ def test_timeout_failure_does_not_emit_reset_event_or_arm_initial_pose():
     assert transaction.finished
     assert transaction.timed_out
     assert events == []
-    assert cancelled == ["cancel"]
-    assert bridge._deferred_initial_pose_name is None
     assert transaction.timeout_timer.cancelled
 
 
-def test_successful_transaction_emits_event_before_initial_pose_policy():
+def test_successful_transaction_emits_only_reset_event():
     events = []
     bridge = SimpleNamespace(
         _active_transaction=None,
@@ -432,8 +424,7 @@ def test_successful_transaction_emits_event_before_initial_pose_policy():
     transaction.timeout_timer = FakeTimer()
     transaction.seal()
 
-    assert events == ["reset_event", "arm"]
-    assert bridge._deferred_initial_pose_name == "mapping_start"
+    assert events == ["reset_event"]
 
 
 class RecordingStopGate:
@@ -538,25 +529,16 @@ def test_navigation_success_remains_held_for_external_generation_release():
     ]
 
 
-@pytest.mark.parametrize("failure", ["reset_event", "initial_pose"])
-def test_critical_finalization_failure_keeps_non_navigation_gate_held(failure):
+def test_critical_finalization_failure_keeps_non_navigation_gate_held():
     events = []
     gate = RecordingStopGate(events)
     generation = gate.hold()
     bridge = _finalization_bridge(events, gate, external_release=False)
-    if failure == "reset_event":
-        bridge._reset_event_publisher = FailingPublisher()
-    else:
-        bridge._apply_initial_pose_policy = lambda: (_ for _ in ()).throw(
-            RuntimeError("initial pose policy failed")
-        )
+    bridge._reset_event_publisher = FailingPublisher()
     transaction = _ResetTransaction(
         generation=12,
         completion=FakeCompletion(),
         on_finished=lambda tx: ResetServiceBridge._finish_transaction(bridge, tx),
-        initial_pose_name=(
-            "mapping_start" if failure == "initial_pose" else None
-        ),
         stop_generation=generation,
     )
     bridge._active_transaction = transaction
@@ -661,7 +643,7 @@ def test_close_cancels_active_reset_without_emitting_epoch_event():
     assert transaction.finished
     assert transaction.timeout_timer.cancelled
     assert any("shutdown" in error for error in transaction.errors)
-    assert events == ["pose_cancel", "pose_cancel"]
+    assert events == []
     assert bridge._pending_futures == set()
 
 

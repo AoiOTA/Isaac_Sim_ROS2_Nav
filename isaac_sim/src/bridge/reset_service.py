@@ -97,12 +97,10 @@ class _ResetTransaction:
 
 
 class InitialPoseRepublisher:
-    """Publish reset poses only after a post-reset laser scan arrives.
+    """Legacy scan-gated seed scheduler retained only for unit compatibility.
 
-    SLAM Toolbox localizes an ``/initialpose`` request against its latest scan.
-    Publishing from the synchronous reset callback can therefore pair the new
-    robot pose with a scan captured before the teleport.  This scheduler gates
-    publication on scan header stamps newer than the reset-time barrier.
+    V6-GRID does not construct this helper or publish a global localization
+    seed from the reset bridge.
     """
 
     def __init__(
@@ -228,7 +226,6 @@ class ResetServiceBridge:
         external_recovery_release_required: bool = True,
         service_name: str = "/simulation/reset",
     ) -> None:
-        from geometry_msgs.msg import PoseWithCovarianceStamped
         from nav2_msgs.srv import ClearEntireCostmap
         from rclpy.callback_groups import ReentrantCallbackGroup
         from rclpy.clock import Clock
@@ -238,12 +235,10 @@ class ResetServiceBridge:
             HistoryPolicy,
             QoSProfile,
             ReliabilityPolicy,
-            qos_profile_sensor_data,
         )
         from rclpy.task import Future
         from robot_localization.srv import SetPose
-        from sensor_msgs.msg import LaserScan
-        from std_msgs.msg import Empty as EmptyMessage, String
+        from std_msgs.msg import Empty as EmptyMessage
         from std_srvs.srv import Empty, Trigger
 
         if navigation_mode not in {"mapping", "localization"}:
@@ -284,15 +279,10 @@ class ResetServiceBridge:
         self._transaction_generation = 0
         self._active_transaction: _ResetTransaction | None = None
         self._closed = False
-        self._initial_pose_source: str | None = None
-        self._deferred_initial_pose_name: str | None = None
-
-        self._PoseWithCovarianceStamped = PoseWithCovarianceStamped
         self._EmptyMessage = EmptyMessage
         self._EmptyService = Empty
         self._SetPose = SetPose
         self._ClearEntireCostmap = ClearEntireCostmap
-        self._String = String
 
         self._declare_parameter("reset_seed", default_reset_seed)
         # Selection is intentionally reset-scoped: a campaign can choose one
@@ -321,43 +311,8 @@ class ResetServiceBridge:
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        initial_pose_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=10,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.VOLATILE,
-        )
-        policy_qos = QoSProfile(
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1,
-            reliability=ReliabilityPolicy.RELIABLE,
-            durability=DurabilityPolicy.TRANSIENT_LOCAL,
-        )
         self._reset_event_publisher = node.create_publisher(
             EmptyMessage, "/simulation/reset_event", reliable
-        )
-        self._localization_seeded_publisher = node.create_publisher(
-            EmptyMessage, "/simulation/localization_seeded", reliable
-        )
-        self._initial_pose_publisher = node.create_publisher(
-            PoseWithCovarianceStamped, "/initialpose", initial_pose_qos
-        )
-        self._initial_pose_republisher = InitialPoseRepublisher(
-            self._publish_map_initial_pose_once
-        )
-        self._scan_subscription = node.create_subscription(
-            LaserScan,
-            "/scan",
-            self._scan_callback,
-            qos_profile_sensor_data,
-            callback_group=self._callback_group,
-        )
-        self._initial_pose_source_subscription = node.create_subscription(
-            String,
-            "/simulation/initial_pose_source",
-            self._initial_pose_source_callback,
-            policy_qos,
-            callback_group=self._callback_group,
         )
 
         self._wheel_reset_client = node.create_client(
@@ -472,8 +427,6 @@ class ResetServiceBridge:
                 "previous timed-out reset calls are still resolving; "
                 f"pending={len(self._pending_futures)}"
             )
-        self._initial_pose_republisher.cancel()
-        self._deferred_initial_pose_name = None
         self._transaction_generation += 1
         completion = self._Future(executor=self.node.executor)
         transaction = _ResetTransaction(
@@ -506,9 +459,6 @@ class ResetServiceBridge:
         if self._closed:
             return
         self._closed = True
-        self._initial_pose_republisher.cancel()
-        self._deferred_initial_pose_name = None
-
         transaction = self._active_transaction
         if transaction is not None and not transaction.finished:
             transaction.record_error(
@@ -586,20 +536,11 @@ class ResetServiceBridge:
             transaction.timeout_timer.cancel()
         try:
             if transaction.errors:
-                # A failed/expired transaction is not a valid recovery epoch.
-                # Do not arm an initial pose while stale reset calls may still
-                # mutate wheel/EKF/costmap state.
-                self._initial_pose_republisher.cancel()
-                self._deferred_initial_pose_name = None
                 return
 
             # This event is the recovery epoch boundary.  It must be emitted
             # only after every queued ROS reset future has resolved.
             self._reset_event_publisher.publish(self._EmptyMessage())
-            if transaction.initial_pose_name is not None:
-                self._deferred_initial_pose_name = transaction.initial_pose_name
-                self._apply_initial_pose_policy()
-
             # Keep the final command gate held until every safety-critical
             # finalization action above has succeeded.  Logging and the reset
             # service response are intentionally outside this boundary: they
@@ -691,72 +632,6 @@ class ResetServiceBridge:
             )
 
     def publish_map_initial_pose(self, pose_name: str) -> None:
-        """Defer a calibrated pose until the reset transaction is complete."""
+        """Ignore the retired global-pose hook in V6-GRID reset mode."""
 
-        transaction = self._active_transaction
-        if transaction is None:
-            raise ResetServiceError(
-                "initial pose requested outside ResetServiceBridge.start_reset()"
-            )
-        transaction.initial_pose_name = pose_name
-
-    def _initial_pose_source_callback(self, message: Any) -> None:
-        source = str(message.data).strip().lower()
-        if source not in {"auto", "rviz"}:
-            self.node.get_logger().error(
-                "ignoring invalid /simulation/initial_pose_source value "
-                f"{message.data!r}; expected auto or rviz"
-            )
-            return
-        changed = source != self._initial_pose_source
-        self._initial_pose_source = source
-        if changed:
-            self.node.get_logger().info(
-                f"initial pose source policy received: {source}"
-            )
-        self._apply_initial_pose_policy()
-
-    def _apply_initial_pose_policy(self) -> None:
-        if self._initial_pose_source == "rviz":
-            self._initial_pose_republisher.cancel()
-            self._deferred_initial_pose_name = None
-            return
-        if (
-            self._initial_pose_source != "auto"
-            or self._deferred_initial_pose_name is None
-        ):
-            return
-        pose_name = self._deferred_initial_pose_name
-        self._deferred_initial_pose_name = None
-        barrier = float(self._simulation_time())
-        self._initial_pose_republisher.schedule(
-            pose_name,
-            after_stamp_s=barrier,
-        )
-
-    def _scan_callback(self, message: Any) -> None:
-        stamp = message.header.stamp
-        stamp_s = stamp.sec + stamp.nanosec * 1.0e-9
-        clock_stamp_s = float(self._simulation_time())
-        self._initial_pose_republisher.observe_scan(
-            stamp_s,
-            clock_stamp_s=clock_stamp_s,
-        )
-
-    def _publish_map_initial_pose_once(self, pose_name: str) -> None:
-        map_pose = self.spawn_manager.get_map_pose(
-            pose_name, purpose="localization reset initial pose"
-        )
-        message = self._PoseWithCovarianceStamped()
-        message.header.stamp = self.node.get_clock().now().to_msg()
-        message.header.frame_id = "map"
-        message.pose.pose.position.x = map_pose.position[0]
-        message.pose.pose.position.y = map_pose.position[1]
-        yaw = math.radians(map_pose.yaw_deg)
-        message.pose.pose.orientation.z = math.sin(yaw * 0.5)
-        message.pose.pose.orientation.w = math.cos(yaw * 0.5)
-        message.pose.covariance[0] = map_pose.position_stddev_m**2
-        message.pose.covariance[7] = map_pose.position_stddev_m**2
-        message.pose.covariance[35] = math.radians(map_pose.yaw_stddev_deg) ** 2
-        self._initial_pose_publisher.publish(message)
-        self._localization_seeded_publisher.publish(self._EmptyMessage())
+        del pose_name

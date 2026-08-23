@@ -2557,3 +2557,31 @@
 - Remaining risk: actual transient status/TF timing and one-owner runtime
   behavior remain unverified. Conditional `bio_nav_fusion` buildability is
   explicitly unresolved; Phase 1 must use a profile with buildable plugins.
+
+## 2026-08-23 — V6-GRID Phase-1 canonical empty-room runner
+
+- Goal: replace the remaining B5/retired-localization/low-obstacle runner path
+  with the real Grid + stable + M0 full-house entry, without adding a wrapper
+  framework or starting a live campaign.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `ced458cda229464c2d0f11b06c432a108eab4592`; result is the single commit
+  containing `docs/handoff/V6_GRID_PHASE1_CANONICAL_RUNNER_20260823.md`.
+- Changed: `v6_formal` now gates G2 on a newer WAITING→ACCEPTED Grid generation,
+  matching ResetStopGate release, Nav2, and full TF. The only mission is reset
+  G1 then XY-only `G2→G3→G4→G5→G1`, with identity orientation as a protocol
+  placeholder. Static is Phase-1 enabled; dynamic/appearance retain later
+  intent but are dispatch-disabled. R5/Isaac/ROS entries fix Grid, stable, M0,
+  Module2 false, gvg, RF2O off, low obstacles off, dynamic actors off, and NAS
+  recording. The reset bridge no longer publishes a global localization seed.
+- Validation: focused runner/reset **45 passed**; V6 runtime scripts **8
+  passed, 25 deselected**; shell syntax, production retired-token grep,
+  E/F/I-focused lint, and `git diff --check` PASS. Isolated
+  `robot_experiments` build/install PASS at
+  `/tmp/v6_phase1_runner_build.SDLQp0`; installed CLI dry probe printed the
+  expected runtime and five legs.
+- Verdict: **PASS (code/test/build/dry-probe only)**. No Isaac Sim, ROS graph,
+  NITROS, Nav2 motion, visual evidence, or qualification was run.
+- Remaining: build fresh combined overlays; verify Integration launch
+  arguments, process/domain isolation, Grid status ordering/relocalize count,
+  one `map→odom` owner, and the actual empty-room five-leg loop. Stable remains
+  deliberate until current-IDL `bio_nav_fusion` buildability is proven.

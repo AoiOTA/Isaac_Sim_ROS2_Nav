@@ -4,9 +4,8 @@
 # usage:
 #   v6_reset_cold_boundary_r5_session.sh RUN_DIR SNAPSHOT_ROOT
 #
-# One persistent Kujiale low-obstacle stack (module2 + Isaac + ROS/Nav2 with
-# cognitive_profile=${V6_COGNITIVE_PROFILE:-M3} + estimated_autonomy bridge),
-# then three consecutive v6_formal_episode
+# One persistent Kujiale empty-room stack (Isaac + ROS/Nav2 + the Integration
+# Grid relocalization coordinator), then three consecutive v6_formal_episode
 # engineering-pilot dispatches (episode indices 0/1/2 = seeds 7201/7202/7203
 # of the Kujiale static manifest), each on the same warm stack (Option A
 # in-place re-arm).  One session-long MCAP plus one runner JSONL and one
@@ -31,16 +30,15 @@ EPISODE_SEEDS="${R5_EPISODE_SEEDS:-7201 7202 7203}"
 READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
 RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
 NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-300}"
-V6_COGNITIVE_PROFILE="${V6_COGNITIVE_PROFILE:-M3}"
-# Localization backend selector. Phase 1 mainline is frozen to odom_static
-# (former A/B arm B: no AMCL; fixed map->odom re-anchored per enrollment seed)
-# after the 2026-08-23 A/B decision — AMCL corridor 0/3 vs odom_static 3/3;
-# evidence: /mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_ab_g1g2_20260823/.
-# V6_LOCALIZATION_BACKEND=amcl remains available as the rollback/control arm.
-V6_LOCALIZATION_BACKEND="${V6_LOCALIZATION_BACKEND:-odom_static}"
+V6_COGNITIVE_PROFILE="${V6_COGNITIVE_PROFILE:-M0}"
+V6_LOCALIZATION_BACKEND="${V6_LOCALIZATION_BACKEND:-grid}"
+V6_NAV2_PROFILE="${V6_NAV2_PROFILE:-stable}"
+V6_MODULE2_ENABLED="${V6_MODULE2_ENABLED:-false}"
+V6_COGNITIVE_GRAPH_MODE="${V6_COGNITIVE_GRAPH_MODE:-gvg}"
+V6_LOW_OBSTACLES_ENABLED="${V6_LOW_OBSTACLES_ENABLED:-false}"
+V6_DYNAMIC_ACTORS_ENABLED="${V6_DYNAMIC_ACTORS_ENABLED:-false}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
-M2="${SNAP}/m2_src"
 M3_INSTALL="${M3}/ros2_ws/install_r5"
 I_INSTALL="${I_SRC}/ros2_ws/install_r5"
 LOGS="${RUN_DIR}/logs"
@@ -54,7 +52,31 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export ISAAC_NAV_EXPECTED_DOMAIN_ID="${DOMAIN_ID}"
 export ROS_LOG_DIR="${SNAP}/ros_log"
 
+[[ "${RUN_DIR}" == /mnt/nas_home/Bio_Nav_Data/* ]] || {
+  echo "RUN_DIR must be under /mnt/nas_home/Bio_Nav_Data" >&2
+  exit 64
+}
+
 mkdir -p "${LOGS}" "${PROV}" "${EPISODES_DIR}"
+[[ "${V6_COGNITIVE_PROFILE}" == M0 ]] || {
+  echo "Phase 1 requires V6_COGNITIVE_PROFILE=M0" >&2
+  exit 64
+}
+[[ "${V6_LOCALIZATION_BACKEND}" == grid ]] || {
+  echo "Phase 1 requires V6_LOCALIZATION_BACKEND=grid" >&2
+  exit 64
+}
+[[ "${V6_NAV2_PROFILE}" == stable ]] || {
+  echo "Phase 1 requires V6_NAV2_PROFILE=stable" >&2
+  exit 64
+}
+[[ "${V6_MODULE2_ENABLED}" == false \
+  && "${V6_COGNITIVE_GRAPH_MODE}" == gvg \
+  && "${V6_LOW_OBSTACLES_ENABLED}" == false \
+  && "${V6_DYNAMIC_ACTORS_ENABLED}" == false ]] || {
+  echo "Phase 1 requires module2=false, gvg, low-obstacles=false, dynamic-actors=false" >&2
+  exit 64
+}
 
 if [[ -e "${RUN_DIR}/STOP.md" || -e "${RUN_DIR}/driver_summary.json" ]]; then
   echo "run directory already contains a terminal artifact; refusing to reuse it" >&2
@@ -207,8 +229,12 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "lidar_odometry_backend=off"
   echo "cognitive_profile=${V6_COGNITIVE_PROFILE}"
   echo "localization_backend=${V6_LOCALIZATION_BACKEND}"
-  echo "cognitive_graph_mode=gvg"
-  echo "bridge_profile=estimated_autonomy"
+  echo "nav2_profile=${V6_NAV2_PROFILE}"
+  echo "module2_enabled=${V6_MODULE2_ENABLED}"
+  echo "cognitive_graph_mode=${V6_COGNITIVE_GRAPH_MODE}"
+  echo "low_obstacles_enabled=${V6_LOW_OBSTACLES_ENABLED}"
+  echo "dynamic_actors_enabled=${V6_DYNAMIC_ACTORS_ENABLED}"
+  echo "mission=G1->G2->G3->G4->G5->G1"
   if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
     cat "${SNAP}/SNAPSHOT_SHAS.txt"
   fi
@@ -264,22 +290,10 @@ cat > "${QOS_FILE}" <<'QOS'
   depth: 50
 QOS
 
-# ---------------------------------------------------------------- module2
-STAGE="module2"
-mkdir -p "${SNAP}/runtime"
-pushd "${I_SRC}/module2_runtime/bio_nav_module2_server" > /dev/null
-start_bg module2 /home/lyb/miniconda3/envs/bionav-module2/bin/python -u server.py \
-  --runtime-version v310 \
-  --module2-root "${M2}" \
-  --bridge-source "${I_SRC}/ros2_ws/src/bio_nav_ros_bridge" \
-  --socket "${SNAP}/runtime/module2.sock" \
-  --device cuda
-popd > /dev/null
-wait_file "${SNAP}/runtime/module2.sock" 180 || _stop "module2 socket did not appear"
-
 # ---------------------------------------------------------------- isaac
 STAGE="isaac"
-start_bg isaac "${M3}/scripts/run_kujiale_4x20_isaac.sh" v6-low-obstacles --headless
+start_bg isaac "${M3}/scripts/run_kujiale_4x20_isaac.sh" \
+  v6-phase1-empty-room --headless
 wait_topic /clock 600 || _stop "Kujiale /clock did not appear; see logs/isaac.log"
 assert_alive isaac
 wait_service /simulation/reset 300 || _stop "reset service did not appear"
@@ -291,12 +305,13 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   operation:=navigation \
   odometry_mode:=estimated \
   structure_tf_source:=isaac \
+  localization_map_contract:=occupancy_only \
   localization_profile:=kujiale \
   localization_owner:=${V6_LOCALIZATION_BACKEND} \
-  nav2_profile:=v6_low_obstacle_isolation \
+  nav2_profile:=${V6_NAV2_PROFILE} \
   cognitive_profile:=${V6_COGNITIVE_PROFILE} \
-  cognitive_graph_mode:=gvg \
-  initial_pose_source:=auto \
+  module2_enabled:=${V6_MODULE2_ENABLED} \
+  cognitive_graph_mode:=${V6_COGNITIVE_GRAPH_MODE} \
   activation_startup_policy:=fail_closed \
   activation_startup_timeout:=120.0 \
   ekf_profile:=wheel_imu \
@@ -305,7 +320,6 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   lidar_odometry_validated:=false \
   spawn_pose_name:=long_route_start_g1 \
   "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
-  "posegraph_file:=${M3}/data/maps/posegraphs/v6_kujiale_isaacgen_v1" \
   "map_file:=${M3}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
   "route_graph_file:=${M3}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
   interactive:=false \
@@ -328,8 +342,9 @@ done
 # ---------------------------------------------------------------- bridge
 STAGE="bridge"
 start_bg bridge ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
-  startup_profile:=estimated_autonomy \
-  "socket_path:=${SNAP}/runtime/module2.sock" \
+  startup_profile:=estimated_shadow \
+  localization_backend:=grid \
+  module2_enabled:=false \
   "audit_jsonl_path:=${LOGS}/bridge_audit.jsonl" \
   use_sim_time:=true
 sleep 15
@@ -342,16 +357,17 @@ start_bg rosbag ros2 bag record \
   --node-name r5_session_recorder \
   --qos-profile-overrides-path "${QOS_FILE}" \
   -o "${RUN_DIR}/rosbag/r5_session" \
-  /clock /joint_states /imu/data_raw /imu/data /wheel/odom /odom /amcl_pose \
-  /initialpose /tf /tf_static /ground_truth/odom /simulation/reset_event \
+  /clock /joint_states /imu/data_raw /imu/data /wheel/odom /odom \
+  /scan /flatscan /localization_result /bio_nav/localization/status \
+  /tf /tf_static /ground_truth/odom /simulation/reset_event \
   /simulation/collision /simulation/collision_diagnostics \
   /cmd_vel /cmd_vel_nav /cmd_vel_smoothed /cmd_vel_sim \
+  /plan /local_plan /planner_server/transition_event \
+  /controller_server/transition_event /velocity_smoother/transition_event \
+  /collision_monitor_state /scan_safety \
   /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress \
   /bio_nav/route_goal_complete /bio_nav/route_goal /bio_nav/route_goal_result \
-  /bio_nav/module2/planning_prior /bio_nav/module2/goal_planning_prior \
-  /bio_nav/module2/cognitive_obstacles \
-  /bio_nav/localization/candidates /bio_nav/route_edge_costs \
-  /experiment/obstacles/state /plan /scan /diagnostics /rosout
+  /bio_nav/route_edge_costs /diagnostics /rosout
 sleep 8
 grep -q "Subscribed to topic '/ground_truth/odom'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /ground_truth/odom; see logs/rosbag.log"
@@ -359,8 +375,11 @@ grep -q "Subscribed to topic '/cmd_vel_sim'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /cmd_vel_sim; see logs/rosbag.log"
 grep -q "Subscribed to topic '/rosout'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /rosout; see logs/rosbag.log"
-grep -q "Subscribed to topic '/bio_nav/module2/cognitive_obstacles'" "${LOGS}/rosbag.log" || \
-  _stop "recorder did not subscribe to /bio_nav/module2/cognitive_obstacles; see logs/rosbag.log"
+for required_topic in /flatscan /localization_result \
+    /bio_nav/localization/status /odom /tf /tf_static; do
+  grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
+    _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
+done
 
 # ---------------------------------------------------------------- episodes
 STAGE="episodes"
@@ -392,10 +411,7 @@ for position in "${!index_rows[@]}"; do
   assert_alive navigation
   assert_alive bridge
 
-  # Boundary ownership probe (invariant 5/6 cross-check while the stack is
-  # warm and the runner process is gone): exactly one publisher each on
-  # /odom, /cmd_vel, /cmd_vel_sim, /amcl_pose; /ground_truth/odom subscribed
-  # only by this session's recorder.
+  # Boundary ownership probe while the stack is warm and the runner is gone.
   boundary_status=0
   python3 - "${EPISODES_DIR}/boundary_seed${seed}.json" <<'PYEOF' || boundary_status=$?
 import json
@@ -408,7 +424,7 @@ EXPECTED_PUBLISHERS = {
     "/odom": 1,
     "/cmd_vel": 1,
     "/cmd_vel_sim": 1,
-    "/amcl_pose": 1,
+    "/bio_nav/localization/status": 1,
 }
 rclpy.init()
 node = rclpy.create_node("r5_boundary_probe")

@@ -22,3 +22,13 @@ def test_cli_seed_is_the_effective_startup_and_first_trigger_default():
 
 def test_scenario_seed_is_the_fallback_when_cli_omits_override():
     assert effective_reset_seed(None, 90210) == 90210
+
+
+def test_v6_grid_reset_bridge_has_no_global_pose_publication_path():
+    source = (ROOT / "isaac_sim/src/bridge/reset_service.py").read_text(
+        encoding="utf-8"
+    )
+    assert '"/initialpose"' not in source
+    assert '"/simulation/localization_seeded"' not in source
+    assert "_initial_pose_publisher" not in source
+    assert "_localization_seeded_publisher" not in source

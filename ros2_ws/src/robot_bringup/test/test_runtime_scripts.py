@@ -24,6 +24,9 @@ RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
 RUN_V6_LOW_OBSTACLES = (
     REPOSITORY_ROOT / 'scripts' / 'run_v6_kujiale_low_obstacles.sh')
+RUN_KUJIALE_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_kujiale_4x20_isaac.sh'
+RUN_V6_R5_SESSION = (
+    REPOSITORY_ROOT / 'scripts' / 'v6_reset_cold_boundary_r5_session.sh')
 RUN_V6_RIVERMARK = REPOSITORY_ROOT / 'scripts' / 'run_v6_rivermark.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
@@ -170,15 +173,14 @@ def test_common_requires_only_the_allowed_v6_integration_underlay():
         encoding='utf-8')
 
 
-def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
+def test_v6_wrapper_is_canonical_phase1_grid_entry():
     source = RUN_V6_LOW_OBSTACLES.read_text(encoding='utf-8')
-    assert 'run_ros_profile gvg fail_closed auto M3 final' in source
-    assert 'run_ros_profile gvg wait_for_seed rviz M1 rf2o-shadow' in source
-    assert 'C/shadow entrypoints fix cognitive_graph_mode=gvg' in source
-    assert '^(shadow|hybrid|primary)$' in source
-    assert ('run_ros_profile "${graph_mode}" fail_closed auto M3 final'
-            in source)
-    assert 'cognitive_graph_mode:="${graph_mode}"' in source
+    assert 'localization_owner:=grid' in source
+    assert 'nav2_profile:=stable' in source
+    assert 'cognitive_profile:=M0' in source
+    assert 'module2_enabled:=false' in source
+    assert 'cognitive_graph_mode:=gvg' in source
+    assert 'v6-phase1-empty-room' in source
 
 
 def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
@@ -191,22 +193,25 @@ def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
         f'''PROJECT_ROOT="{tmp_path}"
 require_file() {{ [[ -f "$1" ]]; }}
 die() {{ printf '%s\\n' "$*" >&2; return 1; }}
+source_ros() {{ :; }}
 ''',
         encoding='utf-8',
     )
     (tmp_path / 'ros2_ws' / 'src' / 'robot_experiments' / 'config'
-     / 'v6_kujiale_low_obstacles_static.yaml').touch()
-    fake_run_ros = scripts / 'run_ros.sh'
-    fake_run_ros.write_text(
+     / 'v6_final_kujiale_static.yaml').touch()
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
         '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n',
         encoding='utf-8',
     )
-    fake_run_ros.chmod(0o755)
+    fake_ros2.chmod(0o755)
 
     result = subprocess.run(
         [str(scripts / RUN_V6_LOW_OBSTACLES.name), *arguments],
         cwd=tmp_path,
-        env=_environment(),
+        env=_environment(PATH=f'{fake_bin}:{os.environ["PATH"]}'),
         text=True,
         capture_output=True,
         check=False,
@@ -215,35 +220,15 @@ die() {{ printf '%s\\n' "$*" >&2; return 1; }}
     return result.stdout.splitlines()
 
 
-def test_v6_shadow_argv_defaults_to_topic_only_rf2o_with_wheel_imu(tmp_path):
-    arguments = _v6_wrapper_argv(tmp_path, 'shadow')
+def test_v6_ros_argv_expands_phase1_grid_stable_m0_empty_room(tmp_path):
+    arguments = _v6_wrapper_argv(tmp_path, 'ros')
 
-    assert 'ekf_profile:=wheel_imu' in arguments
-    assert 'lidar_odometry_backend:=rf2o' in arguments
-    assert 'lidar_odometry_validated:=false' in arguments
-    assert 'odometry_mode:=estimated' in arguments
-
-
-def test_v6_shadow_trailing_odometry_overrides_remain_last(tmp_path):
-    arguments = _v6_wrapper_argv(
-        tmp_path,
-        'shadow',
-        'M2',
-        'ekf_profile:=wheel_imu_lidar',
-        'lidar_odometry_validated:=true',
-    )
-
-    assert 'cognitive_profile:=M2' in arguments
-    assert arguments.index('ekf_profile:=wheel_imu') < arguments.index(
-        'ekf_profile:=wheel_imu_lidar')
-    assert arguments.index('lidar_odometry_validated:=false') < (
-        arguments.index('lidar_odometry_validated:=true'))
-
-
-def test_v6_nonshadow_ros_argv_fixes_final_estimated_policy(tmp_path):
-    arguments = _v6_wrapper_argv(tmp_path, 'ros', 'M0')
-
+    assert arguments[:3] == ['launch', 'robot_bringup', 'ros_stack.launch.py']
+    assert 'localization_owner:=grid' in arguments
+    assert 'nav2_profile:=stable' in arguments
     assert 'cognitive_profile:=M0' in arguments
+    assert 'module2_enabled:=false' in arguments
+    assert 'cognitive_graph_mode:=gvg' in arguments
     assert 'ekf_profile:=wheel_imu' in arguments
     assert 'lidar_odometry_backend:=off' in arguments
     assert 'lidar_odometry_validated:=false' in arguments
@@ -252,13 +237,35 @@ def test_v6_nonshadow_ros_argv_fixes_final_estimated_policy(tmp_path):
                for argument in arguments)
 
 
-def test_v6_primary_argv_fixes_final_estimated_policy(tmp_path):
-    arguments = _v6_wrapper_argv(tmp_path, 'ros-d', 'primary')
+def test_v6_production_scripts_have_no_retired_localization_tokens():
+    for script in (RUN_V6_LOW_OBSTACLES, RUN_V6_R5_SESSION):
+        source = script.read_text(encoding='utf-8')
+        for token in ('/amcl_pose', '/initialpose', 'odom_static'):
+            assert token not in source
 
-    assert 'cognitive_graph_mode:=primary' in arguments
-    assert 'ekf_profile:=wheel_imu' in arguments
-    assert 'lidar_odometry_backend:=off' in arguments
-    assert 'lidar_odometry_validated:=false' in arguments
+
+def test_v6_r5_session_pins_phase1_and_records_grid_topics():
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    for contract in (
+        'V6_LOCALIZATION_BACKEND:-grid',
+        'V6_NAV2_PROFILE:-stable',
+        'V6_COGNITIVE_PROFILE:-M0',
+        'V6_MODULE2_ENABLED:-false',
+        'V6_COGNITIVE_GRAPH_MODE:-gvg',
+        'V6_LOW_OBSTACLES_ENABLED:-false',
+        'V6_DYNAMIC_ACTORS_ENABLED:-false',
+        'mission=G1->G2->G3->G4->G5->G1',
+        '/flatscan /localization_result /bio_nav/localization/status',
+    ):
+        assert contract in source
+    assert 'start_bg module2' not in source
+
+
+def test_v6_phase1_isaac_disables_dynamic_actors():
+    source = RUN_KUJIALE_ISAAC.read_text(encoding='utf-8')
+    assert 'v6-phase1-empty-room)' in source
+    assert 'dynamic_arguments=(--no-dynamic-obstacles)' in source
+    assert 'kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml' in source
 
 
 def _v6_rivermark_argv(

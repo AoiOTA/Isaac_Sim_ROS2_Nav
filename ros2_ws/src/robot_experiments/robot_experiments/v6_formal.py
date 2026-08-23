@@ -1,28 +1,25 @@
-"""V6 estimated-autonomy episode dispatcher and engineering pilot adapter.
+"""Dispatch one V6-GRID Phase-1 empty-room full-house episode.
 
-This module deliberately does not share the legacy experiment runner.  The
-dispatcher owns reset and RouteCoordinator goal sequencing only.  Ground Truth
-is reserved for the independent ``estimated_state_evaluator``/recorder.
+The dispatcher owns one physical reset and the five XY route goals. Global
+pose ownership stays with the Grid localizer and its TF manager. Ground Truth
+is reserved for the passive recorder/evaluator.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections import deque
-from dataclasses import dataclass, field
 import json
 import math
-from pathlib import Path
 import sys
 import time
+from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
-import yaml
+from robot_experiments.reset_receipt import ResetReceiptError, parse_reset_receipt
 
-from robot_experiments.reset_receipt import (
-    ResetReceiptError,
-    parse_reset_receipt,
-)
+import yaml
 
 
 SCHEMA_VERSION = "bio_nav_v6_single_episode_manifest_v1"
@@ -30,19 +27,12 @@ NOT_QUALIFIED = "NOT_QUALIFIED"
 ENGINEERING_PILOT = "ENGINEERING_PILOT"
 GT_PREFIX = "/" + "ground_truth/"
 PRE_RESET_NEGATIVE_WINDOW_S = 1.0
-# Cold episode boundary: reset is only armed after the stack is provably
-# idle and still.  The same 1.0 s quiet window doubles as the stillness
-# observation window.
 PRE_RESET_STILL_SPAN_M = 0.10
 COMMAND_ZERO_TOLERANCE = 1.0e-3
-# Post-reset odometry must land at the re-zeroed odom origin and stay
-# bounded until the first goal (no stale drive replay, no estimator jump).
 POST_RESET_ODOM_LANDING_M = 0.10
 POST_RESET_ODOM_SPAN_M = 0.10
-# Per-attempt budget of the post-reset Nav2/TF readiness poll; the overall
-# fail-closed budget stays the reset timeout.
 NAV2_PROBE_ATTEMPT_TIMEOUT_SEC = 5.0
-SOLE_PUBLISHER_TOPICS = ("/odom", "/cmd_vel", "/cmd_vel_sim", "/amcl_pose")
+FULL_HOUSE_LEGS = ("G2", "G3", "G4", "G5", "G1")
 FINAL_ESTIMATED_POLICY = {
     "ekf_profile": "wheel_imu",
     "lidar_odometry_backend": "off",
@@ -50,65 +40,65 @@ FINAL_ESTIMATED_POLICY = {
     "rf2o_decision": "not_validated_off",
     "imu_calibration_profile": "isaac_v6_calibrated",
 }
+PHASE1_RUNTIME = {
+    "phase": "phase1_empty_room",
+    "odometry_mode": "estimated",
+    "localization_backend": "grid",
+    "nav2_profile": "stable",
+    "cognitive_profile": "M0",
+    "module2_enabled": False,
+    "cognitive_graph_mode": "gvg",
+    "low_obstacles_enabled": False,
+    "dynamic_actors_enabled": False,
+    "structure_tf_source": "isaac",
+    "ground_truth_policy": "evaluator_only",
+    "direct_rgbd_costmap_enabled": False,
+}
+SOLE_PUBLISHER_TOPICS = ("/odom", "/cmd_vel", "/cmd_vel_sim")
 
-# Runtime subscriptions are a reviewable firewall.  Keep Ground Truth in the
-# passive evaluator, never in this dispatcher.
+# This is the complete dispatcher subscription firewall. Ground Truth stays
+# outside this process and is captured by the session recorder.
 DISPATCH_SUBSCRIPTION_TOPICS = (
     "/clock",
     "/scan",
+    "/flatscan",
+    "/localization_result",
+    "/bio_nav/localization/status",
     "/odom",
-    "/amcl_pose",
-    "/initialpose",
     "/tf",
     "/tf_static",
     "/map",
     "/simulation/reset_event",
     "/simulation/reset_stop_gate/status",
-    "/bio_nav/cognitive_map/constraints",
-    "/bio_nav/localization/candidates",
     "/bio_nav/navigation_graph",
     "/bio_nav/canonical_route",
     "/bio_nav/route_progress",
     "/bio_nav/route_goal_complete",
     "/bio_nav/route_goal_result",
-    "/bio_nav/module2/cognitive_place_graph",
-    "/bio_nav/module2/planning_prior",
-    "/bio_nav/module2/goal_planning_prior",
-    "/bio_nav/module3/cognitive_graph_validation_ack",
-    "/bio_nav/module3/cognitive_edge_outcome",
-    "/bio_nav/risk_layer/status",
-    "/bio_nav/local_risk_layer/status",
-    "/bio_nav/cognitive_obstacle_layer/status",
-    "/bio_nav/cognitive_risk_critic/status",
     "/cmd_vel",
+    "/cmd_vel_nav",
+    "/cmd_vel_smoothed",
     "/cmd_vel_sim",
     "/simulation/collision",
     "/simulation/collision_diagnostics",
     "/diagnostics",
-    "/experiment/obstacles/state",
-    "/experiment/appearance/state",
 )
 
 CAPTURE_SCHEMA = {
-    "/bio_nav/module2/planning_prior": "PlanningPrior",
-    "/bio_nav/module2/cognitive_place_graph": "CognitivePlaceGraphCandidate",
-    "/bio_nav/module3/cognitive_graph_validation_ack": "CognitiveGraphValidationAck",
+    "/flatscan": "FlatScan",
+    "/localization_result": "PoseWithCovarianceStamped",
+    "/bio_nav/localization/status": "DiagnosticArray",
+    "/odom": "Odometry",
     "/bio_nav/navigation_graph": "NavigationGraph",
     "/bio_nav/canonical_route": "CanonicalRoute",
     "/bio_nav/route_progress": "RouteProgress",
-    "/bio_nav/module2/goal_planning_prior": "GoalPlanningPrior",
-    "/bio_nav/risk_layer/status": "RiskLayerStatus",
-    "/bio_nav/local_risk_layer/status": "RiskLayerStatus",
-    "/bio_nav/cognitive_obstacle_layer/status": "RiskLayerStatus",
-    "/bio_nav/cognitive_risk_critic/status": "RiskLayerStatus",
-    "/bio_nav/module3/cognitive_edge_outcome": "CognitiveEdgeOutcome",
+    "/bio_nav/route_goal_result": "String",
     "/cmd_vel": "Twist",
+    "/cmd_vel_nav": "Twist",
+    "/cmd_vel_smoothed": "Twist",
     "/cmd_vel_sim": "Twist",
     "/simulation/collision": "Bool",
     "/simulation/collision_diagnostics": "String",
-    "/bio_nav/route_goal_result": "String",
-    "/experiment/obstacles/state": "String",
-    "/experiment/appearance/state": "String",
 }
 
 if any(topic.startswith(GT_PREFIX) for topic in DISPATCH_SUBSCRIPTION_TOPICS):
@@ -141,8 +131,6 @@ class MissionLeg:
     frame_id: str
     x: float
     y: float
-    yaw_deg: float
-    dynamic_trigger_group: str
 
 
 @dataclass(frozen=True)
@@ -151,7 +139,8 @@ class Manifest:
     raw: Mapping[str, Any]
     scene_id: str
     category: str
-    localization_seed_source: str
+    phase1_enabled: bool
+    scenario_intent: Mapping[str, Any]
     estimated_policy: Mapping[str, Any]
     frozen: bool
     reset_pose: Mapping[str, Any]
@@ -166,17 +155,6 @@ def _mapping(value: Any, path: str) -> Mapping[str, Any]:
     return value
 
 
-def _missing_required_values(raw: Mapping[str, Any]) -> tuple[str, ...]:
-    required = _mapping(raw.get("required_runtime_values"), "required_runtime_values")
-    missing: list[str] = []
-    for name, value in required.items():
-        if value is None and name == "posegraph_file" and required.get("posegraph_required") is False:
-            continue
-        if value is None or value == "":
-            missing.append(f"required_runtime_values.{name}")
-    return tuple(sorted(missing))
-
-
 def _finite_float(value: Any, path: str) -> float:
     if isinstance(value, bool):
         raise V6ContractError(f"{path} must be finite numeric")
@@ -187,6 +165,17 @@ def _finite_float(value: Any, path: str) -> float:
     if not math.isfinite(result):
         raise V6ContractError(f"{path} must be finite numeric")
     return result
+
+
+def _missing_required_values(raw: Mapping[str, Any]) -> tuple[str, ...]:
+    required = _mapping(raw.get("required_runtime_values"), "required_runtime_values")
+    return tuple(
+        sorted(
+            f"required_runtime_values.{name}"
+            for name, value in required.items()
+            if value is None or value == ""
+        )
+    )
 
 
 def _estimated_policy(runtime: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -212,80 +201,79 @@ def _estimated_policy_mismatches(manifest: Manifest) -> tuple[str, ...]:
     )
 
 
-def _pose(raw: Mapping[str, Any], path: str) -> tuple[str, float, float, float]:
-    frame_id = str(raw.get("frame_id", ""))
-    if frame_id != "map":
+def _map_pose(
+    raw: Mapping[str, Any], path: str, *, require_yaw: bool
+) -> tuple[float, float]:
+    if str(raw.get("frame_id", "")) != "map":
         raise V6ContractError(f"{path}.frame_id must be map")
-    return (
-        frame_id,
-        _finite_float(raw.get("x"), f"{path}.x"),
-        _finite_float(raw.get("y"), f"{path}.y"),
-        _finite_float(raw.get("yaw_deg"), f"{path}.yaw_deg"),
-    )
+    x = _finite_float(raw.get("x"), f"{path}.x")
+    y = _finite_float(raw.get("y"), f"{path}.y")
+    if require_yaw:
+        _finite_float(raw.get("yaw_deg"), f"{path}.yaw_deg")
+    elif "yaw" in raw or "yaw_deg" in raw:
+        raise V6ContractError(f"{path} must be XY-only")
+    return x, y
 
 
 def load_manifest(path: str | Path) -> Manifest:
     manifest_path = Path(path).expanduser().resolve()
-    raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    raw = _mapping(raw, "manifest")
+    raw = _mapping(
+        yaml.safe_load(manifest_path.read_text(encoding="utf-8")), "manifest"
+    )
     if raw.get("schema_version") != SCHEMA_VERSION:
         raise V6ContractError(f"schema_version must be {SCHEMA_VERSION}")
 
     runtime = _mapping(raw.get("runtime"), "runtime")
-    expected_runtime = {
-        "startup_profile": "estimated_autonomy",
-        "cognitive_mode": "active",
-        "causal_level": "L3",
-        "module_level": "M3",
-        "route_backend": "primary",
-        "structure_tf_source": "isaac",
-        "ground_truth_policy": "evaluator_only",
-        "direct_rgbd_costmap_enabled": False,
-        "localization_seed_source": "b5_cognitive",
-    }
-    for name, expected in expected_runtime.items():
+    for name, expected in PHASE1_RUNTIME.items():
         if runtime.get(name) != expected:
             raise V6ContractError(f"runtime.{name} must be {expected!r}")
 
     frozen = raw.get("scene_contract_frozen")
+    phase1_enabled = raw.get("phase1_enabled")
     if not isinstance(frozen, bool):
         raise V6ContractError("scene_contract_frozen must be boolean")
+    if not isinstance(phase1_enabled, bool):
+        raise V6ContractError("phase1_enabled must be boolean")
     scene = _mapping(raw.get("scene"), "scene")
     category = str(scene.get("category", ""))
     if category not in {"static", "dynamic", "appearance"}:
         raise V6ContractError("scene.category must be static, dynamic, or appearance")
+    scenario_intent = _mapping(raw.get("scenario_intent"), "scenario_intent")
+    if category != "static" and phase1_enabled:
+        raise V6ContractError("dynamic/appearance manifests cannot enable Phase 1")
 
     mission = _mapping(raw.get("mission"), "mission")
     reset_pose = _mapping(mission.get("reset_pose"), "mission.reset_pose")
-    _, reset_x, reset_y, _ = _pose(reset_pose, "mission.reset_pose")
-    mission_rows = mission.get("legs")
-    if not isinstance(mission_rows, list) or len(mission_rows) != 5:
+    reset_x, reset_y = _map_pose(
+        reset_pose, "mission.reset_pose", require_yaw=True
+    )
+    rows = mission.get("legs")
+    if not isinstance(rows, list) or len(rows) != len(FULL_HOUSE_LEGS):
         raise V6ContractError("mission.legs must contain exactly five rows")
     mission_legs: list[MissionLeg] = []
     previous_xy = (reset_x, reset_y)
-    seen_ids: set[str] = set()
-    for index, leg_value in enumerate(mission_rows):
-        leg = _mapping(leg_value, f"mission.legs[{index}]")
+    for index, row_value in enumerate(rows):
+        leg = _mapping(row_value, f"mission.legs[{index}]")
+        if set(leg) != {"id", "frame_id", "x", "y"}:
+            raise V6ContractError(
+                f"mission.legs[{index}] must contain only id/frame_id/x/y"
+            )
         goal_id = str(leg.get("id", ""))
-        if not goal_id or goal_id in seen_ids:
-            raise V6ContractError(f"mission.legs[{index}].id must be unique and non-empty")
-        frame_id, x, y, yaw_deg = _pose(leg, f"mission.legs[{index}]")
+        if goal_id != FULL_HOUSE_LEGS[index]:
+            raise V6ContractError(
+                f"mission.legs[{index}].id must be {FULL_HOUSE_LEGS[index]}"
+            )
+        x, y = _map_pose(leg, f"mission.legs[{index}]", require_yaw=False)
         if math.hypot(x - previous_xy[0], y - previous_xy[1]) <= 1.0e-6:
             raise V6ContractError(f"mission.legs[{index}] is a zero-distance goal")
-        trigger_group = str(leg.get("dynamic_trigger_group", ""))
-        if category != "dynamic" and trigger_group:
-            raise V6ContractError("static/appearance mission legs cannot trigger actors")
-        mission_legs.append(MissionLeg(goal_id, frame_id, x, y, yaw_deg, trigger_group))
-        seen_ids.add(goal_id)
+        mission_legs.append(MissionLeg(goal_id, "map", x, y))
         previous_xy = (x, y)
-    if category == "dynamic" and not any(row.dynamic_trigger_group for row in mission_legs):
-        raise V6ContractError("dynamic mission must declare trigger groups")
 
-    rows = raw.get("episodes")
-    if not isinstance(rows, list) or len(rows) != 20:
+    episode_rows = raw.get("episodes")
+    if not isinstance(episode_rows, list) or len(episode_rows) != 20:
         raise V6ContractError("episodes must contain exactly 20 rows")
     episodes: list[Episode] = []
-    for index, row_value in enumerate(rows):
+    for index, row_value in enumerate(episode_rows):
         row = _mapping(row_value, f"episodes[{index}]")
         seed = row.get("seed")
         if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
@@ -308,7 +296,8 @@ def load_manifest(path: str | Path) -> Manifest:
         raw=raw,
         scene_id=str(scene.get("id", "")),
         category=category,
-        localization_seed_source=str(runtime["localization_seed_source"]),
+        phase1_enabled=phase1_enabled,
+        scenario_intent=scenario_intent,
         estimated_policy=_estimated_policy(runtime),
         frozen=frozen,
         reset_pose=reset_pose,
@@ -324,7 +313,7 @@ def authorize_manifest(
     mode: str,
     allow_engineering_policy_override: bool = False,
 ) -> str:
-    """Return qualification label or fail before ROS/runtime mutation."""
+    """Return the evidence label without mutating a ROS graph."""
 
     if mode not in {"formal", "pilot"}:
         raise V6ContractError("mode must be formal or pilot")
@@ -332,16 +321,22 @@ def authorize_manifest(
     if mode == "formal":
         if allow_engineering_policy_override:
             raise V6ContractError("estimated policy override is pilot-only")
+        if not manifest.phase1_enabled:
+            raise V6ContractError("formal dispatch refused: Phase 1 is disabled")
         if mismatches:
             raise V6ContractError(
                 "formal dispatch refused: final Estimated policy mismatch: "
                 + ", ".join(mismatches)
             )
         if not manifest.frozen:
-            raise V6ContractError("formal dispatch refused: scene_contract_frozen is false")
+            raise V6ContractError(
+                "formal dispatch refused: scene_contract_frozen is false"
+            )
         if manifest.missing_required_values:
-            missing = ", ".join(manifest.missing_required_values)
-            raise V6ContractError(f"formal dispatch refused: missing {missing}")
+            raise V6ContractError(
+                "formal dispatch refused: missing "
+                + ", ".join(manifest.missing_required_values)
+            )
         return "FORMAL_ELIGIBLE"
     if mismatches and not allow_engineering_policy_override:
         raise V6ContractError(
@@ -357,18 +352,16 @@ class ReadinessFacts:
     reset_event_publisher_ready: bool = False
     reset_subscriber_roster_ready: bool = False
     route_goal_subscriber_ready: bool = False
-    candidate_publisher_ready: bool = False
-    initialpose_publisher_ready: bool = False
-    bridge_prior_publisher_ready: bool = False
+    flatscan_publisher_ready: bool = False
+    localization_result_publisher_ready: bool = False
+    localization_status_publisher_ready: bool = False
     clock_seen: bool = False
     scan_seen: bool = False
+    flatscan_seen: bool = False
     map_seen: bool = False
-    constraints_seen: bool = False
     navigation_graph_seen: bool = False
     estimated_odom_seen: bool = False
-    bridge_diagnostic_ready: bool = False
-    b5_diagnostic_ready: bool = False
-    b5_reset_ready: bool = False
+    localization_status_seen: bool = False
 
     def missing(self) -> tuple[str, ...]:
         return tuple(name for name, value in vars(self).items() if not value)
@@ -376,41 +369,16 @@ class ReadinessFacts:
 
 @dataclass
 class EpisodeGuard:
-    """Cold-boundary exactly-once reset and RouteCoordinator state machine.
-
-    The runner discovers the current bridge epoch as its baseline at arm
-    time (any epoch, not only 0) and requires the post-reset epochs to roll
-    as baseline+1 (physical reset) and baseline+2 (bootstrap initialpose).
-    Reset may only be armed with no active goal/route and a quiet stack;
-    one runner process drives exactly one reset and one episode.  The
-    estimated_autonomy composition seeds AMCL through the calibrated
-    enrollment/reseed machinery, not through the B5 supervisor, so the B5
-    gate is a generation witness: the supervisor registered this reset and
-    tracks the bootstrap generation, with any B5 failure still fail-closed.
-    Goal readiness additionally requires the ResetStopGate release of this
-    reset receipt's own generation: the route coordinator drops goals
-    published while its reset HOLD barrier is active, without retry.
-    """
+    """One reset, one new Grid generation, then five ordered XY goals."""
 
     state: str = "WAITING_READINESS"
     stop_reason: str = ""
     reset_calls: int = 0
     reset_events: int = 0
-    bridge_epoch_baseline: int | None = None
-    bridge_session_baseline: str = ""
-    physical_epoch: int | None = None
-    physical_session: str = ""
-    bootstrap_epoch: int | None = None
-    bootstrap_session: str = ""
-    candidate_messages: int = 0
-    initialpose_messages: int = 0
-    amcl_messages: int = 0
-    prior_messages: int = 0
-    initialpose_stamp_ns: int | None = None
-    post_initialpose_amcl_seen: bool = False
-    startup_consensus_seen: bool = False
-    b5_generation_witnessed: bool = False
-    post_reset_prior_seen: bool = False
+    localization_accepted_floor: int = 0
+    localization_generation: int | None = None
+    localization_waiting_seen: bool = False
+    localization_accepted: bool = False
     nav2_active: bool = False
     tf_active: bool = False
     reset_gate_generation: int | None = None
@@ -418,8 +386,7 @@ class EpisodeGuard:
     goal_publications: int = 0
     route_progress_messages: int = 0
     route_completion_messages: int = 0
-    route_succeeded: bool = False
-    mission_leg_ids: tuple[str, ...] = ()
+    mission_leg_ids: tuple[str, ...] = FULL_HOUSE_LEGS
     completed_leg_ids: list[str] = field(default_factory=list)
     current_leg_progress_messages: int = 0
 
@@ -431,32 +398,20 @@ class EpisodeGuard:
     def arm_reset(
         self,
         facts: ReadinessFacts,
-        bridge_epoch: int | None,
-        bridge_session: str,
         *,
-        pre_reset_counts: Mapping[str, int],
+        pre_reset_route_messages: int,
+        localization_accepted_floor: int,
     ) -> None:
         missing = facts.missing()
         if missing:
             raise V6ContractError(f"reset readiness missing: {', '.join(missing)}")
-        if bridge_epoch is None or bridge_epoch < 0:
-            raise V6ContractError("reset readiness missing bridge epoch baseline")
-        if not bridge_session:
-            raise V6ContractError("reset readiness missing bridge session baseline")
-        required_zero = ("prior", "candidate", "initialpose", "route")
-        nonzero = [name for name in required_zero if int(pre_reset_counts.get(name, -1)) != 0]
-        if nonzero:
-            raise V6ContractError(
-                "active B5 pre-reset negative window violated: " + ",".join(nonzero)
-            )
+        if pre_reset_route_messages:
+            raise V6ContractError("pre-reset route traffic violated cold boundary")
         if self.goal_publications:
-            self.stop("reset_with_active_goal_forbidden")
-            raise V6ContractError(self.stop_reason)
+            raise V6ContractError("reset_with_active_goal_forbidden")
         if self.reset_calls:
-            self.stop("reset_retry_forbidden")
-            raise V6ContractError(self.stop_reason)
-        self.bridge_epoch_baseline = bridge_epoch
-        self.bridge_session_baseline = bridge_session
+            raise V6ContractError("reset_retry_forbidden")
+        self.localization_accepted_floor = int(localization_accepted_floor)
         self.state = "RESET_ARMED"
 
     def record_reset_call(self) -> None:
@@ -473,143 +428,41 @@ class EpisodeGuard:
         if success is not True:
             self.stop("reset_response_unknown" if success is None else "reset_rejected")
             return
-        if not self.goal_ready:
-            self.state = "WAITING_RESET_EPOCH"
+        self.state = "WAITING_GRID_LOCALIZATION"
+        self._maybe_goal_ready()
 
     def record_reset_event(self) -> None:
         self.reset_events += 1
         if self.reset_events > 1:
             self.stop("second_reset_event")
-            return
-        if self.reset_calls != 1:
+        elif self.reset_calls != 1:
             self.stop("reset_event_without_call")
-            return
-        self.state = "WAITING_B5_PHYSICAL_EPOCH"
+        else:
+            self.state = "WAITING_GRID_LOCALIZATION"
 
-    def record_candidate(self) -> None:
-        self.candidate_messages += 1
-
-    def record_startup_consensus(self, passed: bool) -> None:
-        if not passed:
+    def record_localization_status(
+        self, generation: int, state: str, accepted: bool
+    ) -> None:
+        if not self.reset_calls or self.state == "STOP":
             return
-        if self.reset_events != 1 or self.physical_epoch is None:
-            self.stop("startup_consensus_outside_physical_epoch")
+        if generation <= self.localization_accepted_floor:
             return
-        self.startup_consensus_seen = True
-
-    def record_initialpose(self, stamp_ns: int) -> None:
-        self.initialpose_messages += 1
-        if self.reset_events != 1:
-            self.stop("initialpose_outside_reset_epoch")
+        if state in {"WAITING_FOR_SCAN", "WAITING_FOR_RESULT"}:
+            if self.localization_generation is None:
+                self.localization_generation = generation
+            if generation == self.localization_generation:
+                self.localization_waiting_seen = True
             return
-        if stamp_ns <= 0:
-            self.stop("initialpose_stamp_invalid")
+        if state == "REJECTED" and generation == self.localization_generation:
+            self.stop(f"grid_localization_rejected:{generation}")
             return
-        # The enrollment/reseed machinery republishes the same calibrated
-        # pose as a short burst (and the activation gate may request another
-        # reseed burst during recovery); the first seed of the generation is
-        # the freshness anchor and repeats within the epoch are accepted.
-        if self.initialpose_stamp_ns is None:
-            self.initialpose_stamp_ns = int(stamp_ns)
-            self.state = "WAITING_B5_CONFIRMATION"
-
-    def record_amcl(self, stamp_ns: int) -> None:
-        self.amcl_messages += 1
-        if self.initialpose_stamp_ns is None:
-            return
-        if stamp_ns <= self.initialpose_stamp_ns:
-            # AMCL stamps poses with the source scan time, which lags the
-            # seed's publication stamp; straddling samples are stale-stamped
-            # and skipped, and B5 seed confirmation gates the seed itself.
-            return
-        self.post_initialpose_amcl_seen = True
-        self._maybe_goal_ready()
-
-    def record_bridge(self, reset_epoch: int, recurrent_session_id: str, bootstrap_active: bool) -> None:
-        if self.bridge_epoch_baseline is None:
-            return
-        physical_expected = self.bridge_epoch_baseline + 1
-        bootstrap_expected = self.bridge_epoch_baseline + 2
-        if reset_epoch == physical_expected:
-            if not recurrent_session_id or recurrent_session_id == self.bridge_session_baseline:
-                self.stop("physical_epoch_session_not_rolled")
+        if state == "ACCEPTED" and accepted:
+            if not self.localization_waiting_seen:
                 return
-            self.physical_epoch = reset_epoch
-            self.physical_session = recurrent_session_id
-            if not bootstrap_active:
-                self.stop("physical_epoch_bootstrap_not_active")
-            return
-        if reset_epoch == bootstrap_expected:
-            if self.physical_epoch != physical_expected:
-                self.stop("bootstrap_rollover_without_physical_epoch")
+            if generation != self.localization_generation:
                 return
-            if self.initialpose_messages < 1:
-                self.stop("bootstrap_rollover_without_initialpose")
-                return
-            if (
-                not recurrent_session_id
-                or recurrent_session_id in {self.bridge_session_baseline, self.physical_session}
-            ):
-                self.stop("bootstrap_session_not_new")
-                return
-            if bootstrap_active:
-                self.stop("bootstrap_rollover_still_shadow")
-                return
-            self.bootstrap_epoch = reset_epoch
-            self.bootstrap_session = recurrent_session_id
+            self.localization_accepted = True
             self._maybe_goal_ready()
-            return
-        if reset_epoch > bootstrap_expected:
-            self.stop(f"bridge_epoch_mismatch:{reset_epoch}!={bootstrap_expected}")
-
-    def record_b5_diagnostic(
-        self,
-        *,
-        state: str,
-        recovery_result: str,
-        seed_confirmation: str,
-        candidate_generation: str = "",
-    ) -> None:
-        if seed_confirmation in {"failed", "seed_confirmation_failed"}:
-            self.stop("b5_seed_confirmation_failed")
-            return
-        if recovery_result in {"timeout", "seed_confirmation_failed"}:
-            self.stop(f"b5_recovery_{recovery_result}")
-            return
-        if self.bootstrap_epoch is not None and self.bootstrap_session:
-            fields = {}
-            for item in candidate_generation.split(","):
-                key, _, value = item.partition("=")
-                fields[key.strip()] = value.strip()
-            # Latched: the candidate generation stream only moves forward.
-            self.b5_generation_witnessed |= bool(
-                fields.get("epoch") == str(self.bootstrap_epoch)
-                and fields.get("session") == self.bootstrap_session
-            )
-        self._maybe_goal_ready()
-
-    def record_prior(
-        self,
-        reset_epoch: int,
-        recurrent_session_id: str,
-        *,
-        trusted_write: bool,
-        module2_healthy: bool,
-        observation_valid: bool,
-        input_healthy: bool,
-    ) -> None:
-        self.prior_messages += 1
-        if self.bootstrap_epoch is None:
-            return
-        if reset_epoch != self.bootstrap_epoch or recurrent_session_id != self.bootstrap_session:
-            self.stop("active_prior_generation_mismatch")
-            return
-        if not all((trusted_write, module2_healthy, observation_valid, input_healthy)):
-            # The bridge interleaves untrusted status priors with the trusted
-            # generation write; only the trusted one arms goal readiness.
-            return
-        self.post_reset_prior_seen = True
-        self._maybe_goal_ready()
 
     def record_navigation_ready(self, *, nav2_active: bool, tf_active: bool) -> None:
         self.nav2_active = bool(nav2_active)
@@ -617,35 +470,36 @@ class EpisodeGuard:
         self._maybe_goal_ready()
 
     def record_reset_receipt_generation(self, generation: int) -> None:
-        """Bind goal readiness to this reset receipt's stop-gate generation."""
         self.reset_gate_generation = int(generation)
         self._maybe_goal_ready()
 
     def record_reset_gate_status(self, generation: int, held: bool) -> None:
-        # Only the release of this reset's own gate generation arms the
-        # fact; a release latched from an earlier generation is stale.
         if not held:
             self.reset_gate_released_generation = int(generation)
         self._maybe_goal_ready()
 
+    @property
+    def reset_gate_released(self) -> bool:
+        return (
+            self.reset_gate_generation is not None
+            and self.reset_gate_released_generation == self.reset_gate_generation
+        )
+
     def _maybe_goal_ready(self) -> None:
-        if self.state == "STOP":
-            return
-        # The readiness facts stay latched once the episode advances past
-        # GOAL_READY, so the steady-state prior/AMCL/B5 stream would
-        # otherwise regress NAVIGATING/LEG_SUCCEEDED back to GOAL_READY.
-        if self.state in {"NAVIGATING", "LEG_SUCCEEDED", "SUCCEEDED", "FAILED"}:
+        if self.state in {
+            "STOP",
+            "NAVIGATING",
+            "LEG_SUCCEEDED",
+            "SUCCEEDED",
+            "FAILED",
+        }:
             return
         if all(
             (
                 self.reset_calls == 1,
                 self.reset_events == 1,
-                self.physical_epoch is not None,
-                self.initialpose_messages >= 1,
-                self.post_initialpose_amcl_seen,
-                self.b5_generation_witnessed,
-                self.bootstrap_epoch is not None,
-                self.post_reset_prior_seen,
+                self.localization_waiting_seen,
+                self.localization_accepted,
                 self.nav2_active,
                 self.tf_active,
                 self.reset_gate_released,
@@ -654,43 +508,23 @@ class EpisodeGuard:
             self.state = "GOAL_READY"
 
     @property
-    def reset_gate_released(self) -> bool:
-        """The ResetStopGate released this reset receipt's own generation."""
-        return (
-            self.reset_gate_generation is not None
-            and self.reset_gate_released_generation == self.reset_gate_generation
-        )
-
-    @property
     def goal_ready(self) -> bool:
         return self.state == "GOAL_READY" and not self.stop_reason
 
-    @property
-    def b5_bootstrap_ready(self) -> bool:
-        return bool(
-            not self.stop_reason
-            and self.reset_events == 1
-            and self.physical_epoch is not None
-            and self.initialpose_messages >= 1
-            and self.post_initialpose_amcl_seen
-            and self.b5_generation_witnessed
-            and self.bootstrap_epoch is not None
-            and self.post_reset_prior_seen
-        )
-
-    def record_goal_publication(self, goal_id: str | None = None) -> None:
+    def record_goal_publication(self, goal_id: str) -> None:
         first_leg = self.goal_publications == 0
-        if (first_leg and not self.goal_ready) or (not first_leg and self.state != "LEG_SUCCEEDED"):
+        if (first_leg and not self.goal_ready) or (
+            not first_leg and self.state != "LEG_SUCCEEDED"
+        ):
             self.stop("route_goal_publication_not_authorized")
             raise V6ContractError(self.stop_reason)
-        if self.goal_publications >= max(1, len(self.mission_leg_ids)):
+        if self.goal_publications >= len(self.mission_leg_ids):
             self.stop("extra_route_goal_publication")
             raise V6ContractError(self.stop_reason)
-        if self.mission_leg_ids:
-            expected = self.mission_leg_ids[self.goal_publications]
-            if goal_id != expected:
-                self.stop(f"mission_leg_order:{goal_id}!={expected}")
-                raise V6ContractError(self.stop_reason)
+        expected = self.mission_leg_ids[self.goal_publications]
+        if goal_id != expected:
+            self.stop(f"mission_leg_order:{goal_id}!={expected}")
+            raise V6ContractError(self.stop_reason)
         self.goal_publications += 1
         self.current_leg_progress_messages = 0
         self.state = "NAVIGATING"
@@ -704,60 +538,30 @@ class EpisodeGuard:
         if self.state != "NAVIGATING":
             return
         self.route_completion_messages += 1
-        self.route_succeeded = bool(succeeded)
         if not self.current_leg_progress_messages:
             self.stop("route_completed_without_progress")
         elif not succeeded:
             self.state = "FAILED"
         else:
-            if self.mission_leg_ids:
-                self.completed_leg_ids.append(
-                    self.mission_leg_ids[self.goal_publications - 1]
-                )
-            final_leg = self.goal_publications >= max(1, len(self.mission_leg_ids))
-            self.state = "SUCCEEDED" if final_leg else "LEG_SUCCEEDED"
-
-
-@dataclass
-class DynamicActionLedger:
-    """Claim each dynamic service action once; a failed claim is never retried."""
-
-    claimed: set[tuple[str, str]] = field(default_factory=set)
-    events: list[dict[str, Any]] = field(default_factory=list)
-
-    def claim(self, group: str, action: str) -> None:
-        if action not in {"trigger", "complete"}:
-            raise V6ContractError(f"unknown dynamic action {action}")
-        key = (group, action)
-        if key in self.claimed:
-            raise V6ContractError(f"dynamic action retry forbidden: {group}/{action}")
-        if action == "complete" and (group, "trigger") not in self.claimed:
-            raise V6ContractError(f"dynamic completion before trigger: {group}")
-        self.claimed.add(key)
-        self.events.append({"group": group, "action": action, "result": "claimed"})
-
-    def record(self, group: str, action: str, result: str, detail: str = "") -> None:
-        self.events.append(
-            {"group": group, "action": action, "result": result, "detail": detail}
-        )
+            self.completed_leg_ids.append(
+                self.mission_leg_ids[self.goal_publications - 1]
+            )
+            self.state = (
+                "SUCCEEDED"
+                if self.goal_publications == len(self.mission_leg_ids)
+                else "LEG_SUCCEEDED"
+            )
 
 
 def _message_summary(message: Any) -> dict[str, Any]:
     summary: dict[str, Any] = {"type": type(message).__name__}
     for name in (
-        "reset_epoch",
         "sequence",
-        "request_id",
         "graph_id",
         "revision",
-        "event_sequence",
         "accepted",
         "success",
-        "failure",
         "reason",
-        "applied",
-        "rejection_mask",
-        "raised_cell_count",
         "data",
     ):
         if hasattr(message, name):
@@ -768,7 +572,7 @@ def _message_summary(message: Any) -> dict[str, Any]:
 
 
 class V6FormalNode:
-    """Runtime adapter, imported lazily so manifest checks need no ROS graph."""
+    """ROS adapter for the canonical Phase-1 full-house episode."""
 
     def __init__(
         self,
@@ -781,15 +585,7 @@ class V6FormalNode:
         import rclpy
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
-            CognitiveEdgeOutcome,
-            CognitiveGraphValidationAck,
-            CognitiveMapConstraints,
-            CognitivePlaceGraphCandidate,
-            CognitiveLocalizationCandidateArray,
-            GoalPlanningPrior,
             NavigationGraph,
-            PlanningPrior,
-            RiskLayerStatus,
             RouteProgress,
         )
         from diagnostic_msgs.msg import DiagnosticArray
@@ -800,16 +596,20 @@ class V6FormalNode:
         from rclpy.parameter import Parameter
         from rclpy.parameter_client import AsyncParameterClient
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+        from rosidl_runtime_py.utilities import get_message
+        from sensor_msgs.msg import LaserScan
         from std_msgs.msg import Bool, Empty, String
         from std_srvs.srv import Trigger
-        from sensor_msgs.msg import LaserScan
         from tf2_msgs.msg import TFMessage
 
         class _Node(Node):
             pass
 
+        FlatScan = get_message(
+            "isaac_ros_pointcloud_interfaces/msg/FlatScan"
+        )
         self._rclpy = rclpy
-        self.node = _Node("bio_nav_v6_formal_single_episode")
+        self.node = _Node("bio_nav_v6_grid_phase1_episode")
         self.manifest = manifest
         self.episode = episode
         self.output_jsonl = output_jsonl
@@ -818,12 +618,9 @@ class V6FormalNode:
             mission_leg_ids=tuple(item.goal_id for item in manifest.mission_legs)
         )
         self.facts = ReadinessFacts()
-        self.latest_bridge_epoch: int | None = None
-        self.latest_bridge_session = ""
-        self.pre_reset_counts = {
-            name: 0 for name in ("prior", "candidate", "initialpose", "route")
-        }
+        self.pre_reset_route_messages = 0
         self.pre_reset_quiet_since: float | None = None
+        self.latest_accepted_localization_generation = 0
         self._cmd_window: deque[tuple[float, bool]] = deque()
         self._odom_window: deque[tuple[float, float, float]] = deque()
         self.post_reset_odom_xy: list[tuple[float, float]] = []
@@ -832,10 +629,6 @@ class V6FormalNode:
         self.canonical_route_count = 0
         self.collision = False
         self.route_goal_results: list[dict[str, Any]] = []
-        self.obstacle_state_messages: list[dict[str, Any]] = []
-        self.appearance_state: dict[str, Any] | None = None
-        self.dynamic_actions = DynamicActionLedger()
-        self.dynamic_clients: dict[tuple[str, str], Any] = {}
         self.reset_receipt: dict[str, Any] | None = None
         self._types = {
             "PoseStamped": PoseStamped,
@@ -857,45 +650,102 @@ class V6FormalNode:
         self.nav2_active_client = self.node.create_client(
             Trigger, "/lifecycle_manager_navigation/is_active"
         )
-        self.isaac_parameters = AsyncParameterClient(self.node, "/isaac_navigation_sim")
+        self.isaac_parameters = AsyncParameterClient(
+            self.node, "/isaac_navigation_sim"
+        )
 
         def sub(message_type, topic, callback, qos=reliable):
             return self.node.create_subscription(message_type, topic, callback, qos)
 
         self.subscriptions = [
-            sub(Clock, "/clock", lambda m: self._fact("clock_seen", "/clock", m), sensor),
-            sub(LaserScan, "/scan", lambda m: self._fact("scan_seen", "/scan", m), sensor),
+            sub(
+                Clock,
+                "/clock",
+                lambda m: self._fact("clock_seen", "/clock", m),
+                sensor,
+            ),
+            sub(
+                LaserScan,
+                "/scan",
+                lambda m: self._fact("scan_seen", "/scan", m),
+                sensor,
+            ),
+            sub(
+                FlatScan,
+                "/flatscan",
+                lambda m: self._fact("flatscan_seen", "/flatscan", m),
+            ),
+            sub(
+                PoseWithCovarianceStamped,
+                "/localization_result",
+                self._localization_result,
+            ),
+            sub(
+                DiagnosticArray,
+                "/bio_nav/localization/status",
+                self._localization_status,
+                latched,
+            ),
             sub(Odometry, "/odom", self._odom, sensor),
-            sub(PoseWithCovarianceStamped, "/amcl_pose", self._amcl_pose, reliable),
-            sub(PoseWithCovarianceStamped, "/initialpose", self._initialpose, reliable),
             sub(TFMessage, "/tf", self._tf),
             sub(TFMessage, "/tf_static", self._tf, latched),
-            sub(OccupancyGrid, "/map", lambda m: self._fact("map_seen", "/map", m), latched),
+            sub(
+                OccupancyGrid,
+                "/map",
+                lambda m: self._fact("map_seen", "/map", m),
+                latched,
+            ),
             sub(Empty, "/simulation/reset_event", self._reset_event),
-            sub(String, "/simulation/reset_stop_gate/status", self._reset_gate_status, latched),
-            sub(CognitiveMapConstraints, "/bio_nav/cognitive_map/constraints", lambda m: self._fact("constraints_seen", "/bio_nav/cognitive_map/constraints", m), latched),
-            sub(CognitiveLocalizationCandidateArray, "/bio_nav/localization/candidates", self._localization_candidates),
-            sub(NavigationGraph, "/bio_nav/navigation_graph", lambda m: self._fact("navigation_graph_seen", "/bio_nav/navigation_graph", m), latched),
-            sub(CanonicalRoute, "/bio_nav/canonical_route", self._canonical_route, latched),
+            sub(
+                String,
+                "/simulation/reset_stop_gate/status",
+                self._reset_gate_status,
+                latched,
+            ),
+            sub(
+                NavigationGraph,
+                "/bio_nav/navigation_graph",
+                lambda m: self._fact(
+                    "navigation_graph_seen", "/bio_nav/navigation_graph", m
+                ),
+                latched,
+            ),
+            sub(
+                CanonicalRoute,
+                "/bio_nav/canonical_route",
+                self._canonical_route,
+                latched,
+            ),
             sub(RouteProgress, "/bio_nav/route_progress", self._route_progress),
             sub(Bool, "/bio_nav/route_goal_complete", self._route_complete),
             sub(String, "/bio_nav/route_goal_result", self._route_result),
-            sub(CognitivePlaceGraphCandidate, "/bio_nav/module2/cognitive_place_graph", self._capture_callback("/bio_nav/module2/cognitive_place_graph"), latched),
-            sub(PlanningPrior, "/bio_nav/module2/planning_prior", self._planning_prior),
-            sub(GoalPlanningPrior, "/bio_nav/module2/goal_planning_prior", self._goal_prior),
-            sub(CognitiveGraphValidationAck, "/bio_nav/module3/cognitive_graph_validation_ack", self._capture_callback("/bio_nav/module3/cognitive_graph_validation_ack")),
-            sub(CognitiveEdgeOutcome, "/bio_nav/module3/cognitive_edge_outcome", self._capture_callback("/bio_nav/module3/cognitive_edge_outcome")),
-            sub(RiskLayerStatus, "/bio_nav/risk_layer/status", self._capture_callback("/bio_nav/risk_layer/status")),
-            sub(RiskLayerStatus, "/bio_nav/local_risk_layer/status", self._capture_callback("/bio_nav/local_risk_layer/status")),
-            sub(RiskLayerStatus, "/bio_nav/cognitive_obstacle_layer/status", self._capture_callback("/bio_nav/cognitive_obstacle_layer/status")),
-            sub(RiskLayerStatus, "/bio_nav/cognitive_risk_critic/status", self._capture_callback("/bio_nav/cognitive_risk_critic/status")),
             sub(Twist, "/cmd_vel", lambda m: self._track_command("/cmd_vel", m)),
-            sub(Twist, "/cmd_vel_sim", lambda m: self._track_command("/cmd_vel_sim", m)),
+            sub(
+                Twist,
+                "/cmd_vel_nav",
+                lambda m: self._track_command("/cmd_vel_nav", m),
+            ),
+            sub(
+                Twist,
+                "/cmd_vel_smoothed",
+                lambda m: self._track_command("/cmd_vel_smoothed", m),
+            ),
+            sub(
+                Twist,
+                "/cmd_vel_sim",
+                lambda m: self._track_command("/cmd_vel_sim", m),
+            ),
             sub(Bool, "/simulation/collision", self._collision),
-            sub(String, "/simulation/collision_diagnostics", self._capture_callback("/simulation/collision_diagnostics")),
-            sub(DiagnosticArray, "/diagnostics", self._diagnostics),
-            sub(String, "/experiment/obstacles/state", self._obstacle_state),
-            sub(String, "/experiment/appearance/state", self._appearance_state, latched),
+            sub(
+                String,
+                "/simulation/collision_diagnostics",
+                self._capture_callback("/simulation/collision_diagnostics"),
+            ),
+            sub(
+                DiagnosticArray,
+                "/diagnostics",
+                self._capture_callback("/diagnostics"),
+            ),
         ]
 
     def _write(self, event: str, **payload: Any) -> None:
@@ -917,8 +767,7 @@ class V6FormalNode:
         x = float(message.pose.pose.position.x)
         y = float(message.pose.pose.position.y)
         self._odom_window.append((now, x, y))
-        horizon = 4.0 * PRE_RESET_NEGATIVE_WINDOW_S
-        while self._odom_window and now - self._odom_window[0][0] > horizon:
+        while self._odom_window and now - self._odom_window[0][0] > 4.0:
             self._odom_window.popleft()
         if self.guard.reset_events == 1 and not self.guard.goal_publications:
             self.post_reset_odom_xy.append((x, y))
@@ -935,8 +784,7 @@ class V6FormalNode:
         )
         now = time.monotonic()
         self._cmd_window.append((now, nonzero))
-        horizon = 4.0 * PRE_RESET_NEGATIVE_WINDOW_S
-        while self._cmd_window and now - self._cmd_window[0][0] > horizon:
+        while self._cmd_window and now - self._cmd_window[0][0] > 4.0:
             self._cmd_window.popleft()
         if nonzero and self.guard.reset_calls and not self.guard.goal_publications:
             self.guard.stop(f"post_reset_command_nonzero:{topic}")
@@ -967,26 +815,31 @@ class V6FormalNode:
         self._capture("/simulation/reset_stop_gate/status", message)
 
     @staticmethod
-    def _header_stamp_ns(message: Any) -> int:
-        stamp = message.header.stamp
-        return int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+    def _diagnostic_values(status: Any) -> dict[str, str]:
+        return {str(item.key): str(item.value) for item in status.values}
 
-    def _amcl_pose(self, message: Any) -> None:
-        if self.guard.reset_calls:
-            self.guard.record_amcl(self._header_stamp_ns(message))
-        self._capture("/amcl_pose", message)
+    def _localization_status(self, message: Any) -> None:
+        for status in message.status:
+            if str(status.name) != "grid_localization":
+                continue
+            values = self._diagnostic_values(status)
+            try:
+                generation = int(values["generation"])
+            except (KeyError, ValueError):
+                self.guard.stop("grid_localization_status_invalid")
+                continue
+            state = values.get("state", "")
+            accepted = values.get("accepted", "").lower() == "true"
+            self.facts.localization_status_seen = True
+            if state == "ACCEPTED" and accepted:
+                self.latest_accepted_localization_generation = max(
+                    self.latest_accepted_localization_generation, generation
+                )
+            self.guard.record_localization_status(generation, state, accepted)
+        self._capture("/bio_nav/localization/status", message)
 
-    def _initialpose(self, message: Any) -> None:
-        self.pre_reset_counts["initialpose"] += 1
-        if self.guard.reset_calls:
-            self.guard.record_initialpose(self._header_stamp_ns(message))
-        self._capture("/initialpose", message)
-
-    def _localization_candidates(self, message: Any) -> None:
-        self.pre_reset_counts["candidate"] += 1
-        if self.guard.reset_calls:
-            self.guard.record_candidate()
-        self._capture("/bio_nav/localization/candidates", message)
+    def _localization_result(self, message: Any) -> None:
+        self._capture("/localization_result", message)
 
     def _tf(self, message: Any) -> None:
         for transform in message.transforms:
@@ -994,69 +847,9 @@ class V6FormalNode:
             child = str(transform.child_frame_id).lstrip("/")
             self.map_odom_tf_seen |= parent == "map" and child == "odom"
             self.odom_base_tf_seen |= parent == "odom" and child in {
-                "base_link", "base_footprint"
+                "base_link",
+                "base_footprint",
             }
-
-    @staticmethod
-    def _diagnostic_values(status: Any) -> dict[str, str]:
-        return {str(item.key): str(item.value) for item in status.values}
-
-    def _diagnostics(self, message: Any) -> None:
-        for status in message.status:
-            values = self._diagnostic_values(status)
-            if status.name == "bio_nav_ros_bridge":
-                try:
-                    epoch = int(values.get("reset_epoch", ""))
-                except ValueError:
-                    continue
-                session = values.get("recurrent_session_id", "")
-                bootstrap_active = values.get("v6_shadow_bootstrap_active") == "True"
-                self.latest_bridge_epoch = epoch
-                self.latest_bridge_session = session
-                self.facts.bridge_diagnostic_ready = bool(session)
-                self.guard.record_bridge(epoch, session, bootstrap_active)
-            elif status.name == "bio_nav_localization_supervisor":
-                self.facts.b5_diagnostic_ready = True
-                generation = values.get("candidate_array_last_generation", "")
-                event_reason = values.get("candidate_array_last_event_reason", "")
-                self.facts.b5_reset_ready = (
-                    generation in {
-                        "not_received", "waiting_after_physical_reset"
-                    }
-                    or event_reason in {
-                        "waiting_for_candidate_array", "waiting_after_physical_reset"
-                    }
-                    or self._b5_matches_bridge_baseline(generation)
-                )
-                try:
-                    consensus_count = int(values.get("startup_consensus_count", "0"))
-                except ValueError:
-                    consensus_count = 0
-                if self.guard.reset_calls:
-                    self.guard.record_startup_consensus(consensus_count >= 2)
-                    self.guard.record_b5_diagnostic(
-                        state=values.get("state", ""),
-                        recovery_result=values.get("recovery_result", ""),
-                        seed_confirmation=values.get("seed_confirmation", ""),
-                        candidate_generation=generation,
-                    )
-        self._capture("/diagnostics", message)
-
-    def _planning_prior(self, message: Any) -> None:
-        self.pre_reset_counts["prior"] += 1
-        if self.guard.reset_calls:
-            self.guard.record_prior(
-                int(message.reset_epoch),
-                str(message.recurrent_session_id),
-                trusted_write=bool(message.trusted_write),
-                module2_healthy=bool(message.module2_healthy),
-                observation_valid=bool(message.observation_valid),
-                input_healthy=bool(message.input_healthy),
-            )
-        self._capture("/bio_nav/module2/planning_prior", message)
-
-    def _goal_prior(self, message: Any) -> None:
-        self._capture("/bio_nav/module2/goal_planning_prior", message)
 
     def _canonical_route(self, message: Any) -> None:
         self.canonical_route_count += 1
@@ -1074,14 +867,12 @@ class V6FormalNode:
 
     def _route_result(self, message: Any) -> None:
         self._track_route_signal("route_goal_result")
-        row = self._json_message(message)
-        self.route_goal_results.append(row)
+        self.route_goal_results.append(self._json_message(message))
         self._capture("/bio_nav/route_goal_result", message)
 
     def _track_route_signal(self, kind: str) -> None:
-        """Route traffic is only legal after this runner's first goal."""
         if not self.guard.reset_calls:
-            self.pre_reset_counts["route"] += 1
+            self.pre_reset_route_messages += 1
         elif not self.guard.goal_publications:
             self.guard.stop(f"stale_{kind}_after_reset")
 
@@ -1092,15 +883,6 @@ class V6FormalNode:
         except (AttributeError, json.JSONDecodeError):
             return {"raw": str(getattr(message, "data", ""))}
         return value if isinstance(value, dict) else {"value": value}
-
-    def _obstacle_state(self, message: Any) -> None:
-        row = self._json_message(message)
-        self.obstacle_state_messages.append(row)
-        self._write("obstacle_state", state=row)
-
-    def _appearance_state(self, message: Any) -> None:
-        self.appearance_state = self._json_message(message)
-        self._write("appearance_state", state=self.appearance_state)
 
     def _collision(self, message: Any) -> None:
         self.collision = self.collision or bool(message.data)
@@ -1122,46 +904,20 @@ class V6FormalNode:
         self.facts.reset_event_publisher_ready = (
             by_topic["/simulation/reset_event"].get_publisher_count() > 0
         )
-        # Runner + Bridge + B5 supervisor must all be listening before the
-        # single reset is allowed to mutate the episode.
         self.facts.reset_subscriber_roster_ready = (
             self.node.count_subscribers("/simulation/reset_event") >= 3
-        )
-        self.facts.candidate_publisher_ready = (
-            by_topic["/bio_nav/localization/candidates"].get_publisher_count() > 0
-        )
-        self.facts.initialpose_publisher_ready = (
-            by_topic["/initialpose"].get_publisher_count() > 0
-        )
-        self.facts.bridge_prior_publisher_ready = (
-            by_topic["/bio_nav/module2/planning_prior"].get_publisher_count() > 0
         )
         self.facts.route_goal_subscriber_ready = (
             self.route_goal_publisher.get_subscription_count() > 0
         )
-
-    def _b5_matches_bridge_baseline(self, generation: str) -> bool:
-        """Warm-stack readiness: B5 is seeded in the discovered baseline."""
-        if self.latest_bridge_epoch is None or not self.latest_bridge_session:
-            return False
-        fields = {}
-        for item in generation.split(","):
-            key, _, value = item.partition("=")
-            fields[key] = value
-        try:
-            epoch = int(fields.get("epoch", ""))
-        except ValueError:
-            return False
-        return bool(
-            epoch == self.latest_bridge_epoch
-            and fields.get("session", "") == self.latest_bridge_session
+        self.facts.flatscan_publisher_ready = (
+            by_topic["/flatscan"].get_publisher_count() > 0
         )
-
-    def _pre_reset_violations(self) -> tuple[str, ...]:
-        return tuple(
-            name
-            for name in ("prior", "candidate", "initialpose", "route")
-            if self.pre_reset_counts.get(name, 0)
+        self.facts.localization_result_publisher_ready = (
+            by_topic["/localization_result"].get_publisher_count() > 0
+        )
+        self.facts.localization_status_publisher_ready = (
+            by_topic["/bio_nav/localization/status"].get_publisher_count() > 0
         )
 
     def _publisher_ownership_violations(self) -> tuple[str, ...]:
@@ -1172,31 +928,28 @@ class V6FormalNode:
         )
 
     def _pre_reset_still(self) -> bool:
-        """Cold boundary: zero commands and a bounded odom span in-window."""
         now = time.monotonic()
         horizon = now - PRE_RESET_NEGATIVE_WINDOW_S
         if any(nonzero for stamp, nonzero in self._cmd_window if stamp >= horizon):
             return False
-        window = [(x, y) for stamp, x, y in self._odom_window if stamp >= horizon]
+        window = [
+            (x, y) for stamp, x, y in self._odom_window if stamp >= horizon
+        ]
         if not window:
             return False
         xs = [point[0] for point in window]
         ys = [point[1] for point in window]
-        return bool(
+        return (
             max(xs) - min(xs) <= PRE_RESET_STILL_SPAN_M
             and max(ys) - min(ys) <= PRE_RESET_STILL_SPAN_M
         )
 
     def _readiness_blockers(self) -> str:
         blockers: list[str] = []
-        missing = self.facts.missing()
-        if missing:
-            blockers.append("facts:" + ",".join(missing))
-        if self.latest_bridge_epoch is None or not self.latest_bridge_session:
-            blockers.append("bridge_epoch_baseline")
-        violations = self._pre_reset_violations()
-        if violations:
-            blockers.append("pre_reset_negative_window:" + ",".join(violations))
+        if self.facts.missing():
+            blockers.append("facts:" + ",".join(self.facts.missing()))
+        if self.pre_reset_route_messages:
+            blockers.append("pre_reset_route_traffic")
         ownership = self._publisher_ownership_violations()
         if ownership:
             blockers.append("publisher_ownership:" + ",".join(ownership))
@@ -1204,20 +957,19 @@ class V6FormalNode:
             blockers.append("pre_reset_not_still")
         return ";".join(blockers)
 
-    def _assert_ground_truth_firewall(self) -> None:
-        offending = [
-            subscription.topic_name
-            for subscription in self.subscriptions
-            if subscription.topic_name.startswith(GT_PREFIX)
-        ]
-        if offending:
-            raise V6ContractError(
-                "dispatcher Ground Truth firewall violated: " + ",".join(offending)
-            )
+    def _pre_reset_ready(self) -> bool:
+        self._refresh_endpoint_facts()
+        if self._readiness_blockers():
+            self.pre_reset_quiet_since = None
+            return False
+        now = time.monotonic()
+        if self.pre_reset_quiet_since is None:
+            self.pre_reset_quiet_since = now
+            return False
+        return now - self.pre_reset_quiet_since >= PRE_RESET_NEGATIVE_WINDOW_S
 
     def _check_post_reset_odom(self) -> None:
-        """Odometry must land at the re-zeroed origin and stay bounded."""
-        samples = self.post_reset_odom_xy[1:]  # skip one straddling sample
+        samples = self.post_reset_odom_xy[1:]
         if len(samples) < 2:
             self.guard.stop("post_reset_odom_missing")
             return
@@ -1231,17 +983,6 @@ class V6FormalNode:
         if span > POST_RESET_ODOM_SPAN_M:
             self.guard.stop(f"post_reset_odom_span:{span:.3f}")
 
-    def _pre_reset_ready(self) -> bool:
-        self._refresh_endpoint_facts()
-        if self._readiness_blockers():
-            self.pre_reset_quiet_since = None
-            return False
-        now = time.monotonic()
-        if self.pre_reset_quiet_since is None:
-            self.pre_reset_quiet_since = now
-            return False
-        return now - self.pre_reset_quiet_since >= PRE_RESET_NEGATIVE_WINDOW_S
-
     def _nav2_is_active(self, timeout_sec: float) -> bool:
         if not self.nav2_active_client.wait_for_service(timeout_sec=timeout_sec):
             return False
@@ -1253,19 +994,12 @@ class V6FormalNode:
         return bool(response is not None and response.success is True)
 
     def _wait_nav2_and_tf_ready(self, timeout_sec: float) -> None:
-        """Poll the post-reset Nav2/TF probe until the reset budget expires.
-
-        The activation gate's post-reset time-jump recovery briefly pauses
-        Nav2; a one-shot probe landing inside the pause window failed closed
-        spuriously (live R5: episode aborted with nav2_or_tf_not_ready 6 s
-        after start, while the gate resumed ~3 s later).  Poll until both
-        facts hold; an exhausted budget still fails closed with the same
-        reason.
-        """
         deadline = time.monotonic() + timeout_sec
         while True:
             self.guard.record_navigation_ready(
-                nav2_active=self._nav2_is_active(NAV2_PROBE_ATTEMPT_TIMEOUT_SEC),
+                nav2_active=self._nav2_is_active(
+                    NAV2_PROBE_ATTEMPT_TIMEOUT_SEC
+                ),
                 tf_active=self.map_odom_tf_seen and self.odom_base_tf_seen,
             )
             if self.guard.nav2_active and self.guard.tf_active:
@@ -1282,16 +1016,16 @@ class V6FormalNode:
         params = [
             Parameter("reset_seed", value=self.episode.seed),
             Parameter("reset_pose_name", value=self.episode.reset_pose_name),
-            Parameter("dynamic_case_id", value=self.episode.dynamic_case_id),
-            Parameter("dynamic_variant_id", value=self.episode.variant_id),
+            Parameter("dynamic_case_id", value=""),
+            Parameter("dynamic_variant_id", value=""),
         ]
-        if self.episode.appearance_profile_id:
-            params.append(Parameter("appearance_profile_id", value=self.episode.appearance_profile_id))
         future = self.isaac_parameters.set_parameters(params)
         if not self._spin_until(future.done, timeout_sec):
             raise V6ContractError("setting episode parameters timed out")
         response = future.result()
-        if response is None or any(not result.successful for result in response.results):
+        if response is None or any(
+            not result.successful for result in response.results
+        ):
             raise V6ContractError("Isaac rejected episode parameters")
         self._write("episode_parameters_set", seed=self.episode.seed)
 
@@ -1302,92 +1036,46 @@ class V6FormalNode:
         message.header.stamp = self.node.get_clock().now().to_msg()
         message.pose.position.x = leg.x
         message.pose.position.y = leg.y
-        yaw = math.radians(leg.yaw_deg)
-        message.pose.orientation.z = math.sin(yaw / 2.0)
-        message.pose.orientation.w = math.cos(yaw / 2.0)
+        message.pose.orientation.w = 1.0
         return message
 
-    def _call_dynamic_action(self, group: str, action: str, timeout_sec: float) -> bool:
-        if not group:
-            return True
-        try:
-            self.dynamic_actions.claim(group, action)
-        except V6ContractError as exc:
-            self.guard.stop(str(exc))
-            return False
-        Trigger = self._types["Trigger"]
-        key = (group, action)
-        client = self.dynamic_clients.get(key)
-        if client is None:
-            client = self.node.create_client(
-                Trigger, f"/experiment/obstacles/{group}/{action}"
+    def run(
+        self,
+        *,
+        readiness_timeout_sec: float,
+        reset_timeout_sec: float,
+        navigation_timeout_sec: float,
+    ) -> dict[str, Any]:
+        if not self.manifest.phase1_enabled:
+            raise V6ContractError(
+                "Phase 1 dispatch is disabled for this scenario intent"
             )
-            self.dynamic_clients[key] = client
-        self._write("dynamic_action", group=group, action=action, phase="call")
-        if not client.wait_for_service(timeout_sec=timeout_sec):
-            reason = f"dynamic_{action}_service_unavailable:{group}"
-            self.dynamic_actions.record(group, action, "service_unavailable")
-            self.guard.stop(reason)
-            return False
-        future = client.call_async(Trigger.Request())
-        if not self._spin_until(future.done, timeout_sec):
-            reason = f"dynamic_{action}_timeout:{group}"
-            self.dynamic_actions.record(group, action, "timeout")
-            self.guard.stop(reason)
-            return False
-        response = future.result()
-        if response is None or response.success is not True:
-            detail = "no response" if response is None else str(response.message)
-            reason = f"dynamic_{action}_rejected:{group}:{detail}"
-            self.dynamic_actions.record(group, action, "rejected", detail)
-            self.guard.stop(reason)
-            return False
-        detail = str(response.message)
-        self.dynamic_actions.record(group, action, "accepted", detail)
-        self._write(
-            "dynamic_action",
-            group=group,
-            action=action,
-            phase="response",
-            success=True,
-            detail=detail,
-        )
-        return True
-
-    def run(self, *, readiness_timeout_sec: float, reset_timeout_sec: float, navigation_timeout_sec: float) -> dict[str, Any]:
-        self._assert_ground_truth_firewall()
         self._write(
             "episode_start",
             qualification=self.qualification,
-            formal_qualification=NOT_QUALIFIED if self.qualification == ENGINEERING_PILOT else "FORMAL_ELIGIBLE",
+            formal_qualification=(
+                NOT_QUALIFIED
+                if self.qualification == ENGINEERING_PILOT
+                else "FORMAL_ELIGIBLE"
+            ),
             manifest=str(self.manifest.path),
             seed=self.episode.seed,
-            scene_contract_frozen=self.manifest.frozen,
-            runtime_values=dict(self.manifest.raw["required_runtime_values"]),
+            runtime=dict(self.manifest.raw["runtime"]),
         )
-        ready = self._spin_until(
-            self._pre_reset_ready,
-            readiness_timeout_sec,
-        )
-        if not ready:
-            self.guard.stop("readiness_timeout:" + (self._readiness_blockers() or "unknown"))
+        if not self._spin_until(self._pre_reset_ready, readiness_timeout_sec):
+            self.guard.stop(
+                "readiness_timeout:"
+                + (self._readiness_blockers() or "unknown")
+            )
             return self.result()
         self.guard.arm_reset(
             self.facts,
-            self.latest_bridge_epoch,
-            self.latest_bridge_session,
-            pre_reset_counts=self.pre_reset_counts,
+            pre_reset_route_messages=self.pre_reset_route_messages,
+            localization_accepted_floor=(
+                self.latest_accepted_localization_generation
+            ),
         )
         self._set_episode_parameters(reset_timeout_sec)
-        if self.manifest.category == "appearance":
-            expected_profile = self.episode.appearance_profile_id
-            if not self._spin_until(
-                lambda: self.appearance_state is not None
-                and self.appearance_state.get("profile_id") == expected_profile,
-                reset_timeout_sec,
-            ):
-                self.guard.stop(f"appearance_profile_not_observed:{expected_profile}")
-                return self.result()
 
         Trigger = self._types["Trigger"]
         self.guard.record_reset_call()
@@ -1396,28 +1084,33 @@ class V6FormalNode:
             self.guard.record_reset_response(None)
             return self.result()
         response = future.result()
-        self.guard.record_reset_response(response.success if response is not None else None)
+        self.guard.record_reset_response(
+            response.success if response is not None else None
+        )
         if self.guard.state == "STOP":
             return self.result()
         try:
             self.reset_receipt = parse_reset_receipt(
                 response.message,
                 requested_seed=self.episode.seed,
-                requested_case_id=self.episode.dynamic_case_id,
-                requested_variant_id=self.episode.variant_id,
+                requested_case_id="",
+                requested_variant_id="",
                 requested_pose=self.episode.reset_pose_name,
             )
         except ResetReceiptError as exc:
             self.guard.stop(f"reset_receipt_mismatch:{exc}")
-            self._write("reset_receipt_rejected", detail=str(exc))
             return self.result()
         self._write("reset_receipt", **self.reset_receipt)
-        self.guard.record_reset_receipt_generation(int(self.reset_receipt["generation"]))
+        self.guard.record_reset_receipt_generation(
+            int(self.reset_receipt["generation"])
+        )
+
         if not self._spin_until(
-            lambda: self.guard.b5_bootstrap_ready or self.guard.state == "STOP",
+            lambda: self.guard.localization_accepted
+            or self.guard.state == "STOP",
             reset_timeout_sec,
         ):
-            self.guard.stop("post_reset_readiness_timeout")
+            self.guard.stop("grid_localization_acceptance_timeout")
             return self.result()
         if self.guard.state == "STOP":
             return self.result()
@@ -1425,16 +1118,13 @@ class V6FormalNode:
         if self.guard.state == "STOP":
             return self.result()
         self._wait_nav2_and_tf_ready(reset_timeout_sec)
-        if not (self.guard.nav2_active and self.guard.tf_active):
+        if self.guard.state == "STOP":
             return self.result()
-        # The route coordinator drops goals published while the ResetStopGate
-        # still holds this reset's generation, without retry; wait out the
-        # release instead of publishing the single goal into the HOLD.
         if not self._spin_until(
             lambda: self.guard.goal_ready or self.guard.state == "STOP",
             reset_timeout_sec,
         ):
-            self.guard.stop("reset_gate_release_timeout")
+            self.guard.stop("activation_gate_release_timeout")
             return self.result()
         if self.guard.state == "STOP":
             return self.result()
@@ -1442,13 +1132,6 @@ class V6FormalNode:
         for index, leg in enumerate(self.manifest.mission_legs):
             route_baseline = self.canonical_route_count
             result_baseline = len(self.route_goal_results)
-            triggered = False
-            if leg.dynamic_trigger_group:
-                triggered = self._call_dynamic_action(
-                    leg.dynamic_trigger_group, "trigger", reset_timeout_sec
-                )
-                if not triggered:
-                    break
             self.guard.record_goal_publication(leg.goal_id)
             self.route_goal_publisher.publish(self._goal_message(leg))
             self._write(
@@ -1456,26 +1139,27 @@ class V6FormalNode:
                 topic="/bio_nav/route_goal",
                 leg_id=leg.goal_id,
                 leg_index=index,
-                result_messages_before=result_baseline,
+                orientation_placeholder_w=1.0,
             )
             completed = self._spin_until(
-                lambda: self.guard.state in {"LEG_SUCCEEDED", "SUCCEEDED", "FAILED", "STOP"},
+                lambda: self.guard.state
+                in {"LEG_SUCCEEDED", "SUCCEEDED", "FAILED", "STOP"},
                 navigation_timeout_sec,
             )
             if not completed:
                 self.guard.stop(f"route_completion_timeout:{leg.goal_id}")
-            if triggered:
-                self._call_dynamic_action(
-                    leg.dynamic_trigger_group, "complete", reset_timeout_sec
-                )
             if self.canonical_route_count <= route_baseline:
                 self.guard.stop(f"canonical_route_missing:{leg.goal_id}")
             self._write(
                 "mission_leg_result",
                 leg_id=leg.goal_id,
                 state=self.guard.state,
-                route_progress_messages=self.guard.current_leg_progress_messages,
-                route_result_messages=len(self.route_goal_results) - result_baseline,
+                route_progress_messages=(
+                    self.guard.current_leg_progress_messages
+                ),
+                route_result_messages=(
+                    len(self.route_goal_results) - result_baseline
+                ),
             )
             if self.guard.state not in {"LEG_SUCCEEDED", "SUCCEEDED"}:
                 break
@@ -1493,53 +1177,18 @@ class V6FormalNode:
             "stop_reason": self.guard.stop_reason,
             "reset_calls": self.guard.reset_calls,
             "reset_events": self.guard.reset_events,
-            "reset_receipt": dict(getattr(self, "reset_receipt", None) or {}),
+            "reset_receipt": dict(self.reset_receipt or {}),
+            "localization_generation": self.guard.localization_generation,
+            "localization_accepted": self.guard.localization_accepted,
             "goal_publications": self.guard.goal_publications,
             "route_progress_messages": self.guard.route_progress_messages,
             "route_completion_messages": self.guard.route_completion_messages,
             "completed_leg_ids": list(self.guard.completed_leg_ids),
             "route_goal_results": list(self.route_goal_results),
-            "dynamic_actions": list(self.dynamic_actions.events),
-            "actor_states": self._actor_state_summary(),
-            "appearance": self._appearance_summary(),
             "collision": self.collision,
         }
         self._write("episode_result", **row)
         return row
-
-    def _actor_state_summary(self) -> dict[str, list[str]]:
-        summary: dict[str, set[str]] = {}
-        for snapshot in self.obstacle_state_messages:
-            obstacles = snapshot.get("obstacles", [])
-            if not isinstance(obstacles, list):
-                continue
-            for obstacle in obstacles:
-                if not isinstance(obstacle, Mapping):
-                    continue
-                obstacle_id = str(obstacle.get("id", ""))
-                state = str(obstacle.get("state", ""))
-                if obstacle_id and state:
-                    summary.setdefault(obstacle_id, set()).add(state)
-        return {name: sorted(states) for name, states in sorted(summary.items())}
-
-    def _appearance_summary(self) -> dict[str, Any]:
-        if self.appearance_state is None:
-            return {"observed": False}
-        counts = self.appearance_state.get("applied_counts", {})
-        return {
-            "observed": True,
-            "profile_id": self.appearance_state.get("profile_id"),
-            "light_intensity_scale": self.appearance_state.get("overrides", {}).get(
-                "light_intensity_scale"
-            ),
-            "material_hue_shift_deg": self.appearance_state.get("overrides", {}).get(
-                "material_hue_shift_deg"
-            ),
-            "lights_applied": counts.get("lights") if isinstance(counts, Mapping) else None,
-            "material_inputs_applied": (
-                counts.get("material_color_inputs") if isinstance(counts, Mapping) else None
-            ),
-        }
 
     def destroy(self) -> None:
         self.node.destroy_node()
@@ -1552,9 +1201,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pilot", action="store_true")
     parser.add_argument("--dispatch-pilot", action="store_true")
     parser.add_argument(
-        "--allow-engineering-estimated-policy-override",
-        action="store_true",
-        help="pilot-only; the result remains NOT_QUALIFIED",
+        "--allow-engineering-estimated-policy-override", action="store_true"
     )
     parser.add_argument("--allow-formal-dispatch", action="store_true")
     parser.add_argument("--output-jsonl")
@@ -1574,41 +1221,50 @@ def cli(argv: list[str] | None = None) -> int:
                 "--allow-engineering-estimated-policy-override requires --pilot"
             )
         manifest = load_manifest(args.manifest)
-        mode = "pilot" if args.pilot else "formal"
         qualification = authorize_manifest(
             manifest,
-            mode=mode,
+            mode="pilot" if args.pilot else "formal",
             allow_engineering_policy_override=(
                 args.allow_engineering_estimated_policy_override
             ),
         )
         if args.pilot and not args.dispatch_pilot:
-            print(json.dumps({
-                "qualification": ENGINEERING_PILOT,
-                "formal_qualification": qualification,
-                "dispatch": False,
-                "estimated_policy": dict(manifest.estimated_policy),
-                "engineering_estimated_policy_override": (
-                    args.allow_engineering_estimated_policy_override
-                ),
-                "scene_contract_frozen": manifest.frozen,
-                "missing_required_values": manifest.missing_required_values,
-            }, sort_keys=True))
+            print(
+                json.dumps(
+                    {
+                        "qualification": ENGINEERING_PILOT,
+                        "formal_qualification": qualification,
+                        "dispatch": False,
+                        "phase1_enabled": manifest.phase1_enabled,
+                        "runtime": dict(manifest.raw["runtime"]),
+                        "mission_leg_ids": [
+                            leg.goal_id for leg in manifest.mission_legs
+                        ],
+                    },
+                    sort_keys=True,
+                )
+            )
             return 0
+        if not manifest.phase1_enabled:
+            raise V6ContractError(
+                "Phase 1 dispatch is disabled for this scenario intent"
+            )
         if not args.pilot and not args.allow_formal_dispatch:
             raise V6ContractError("formal dispatch requires --allow-formal-dispatch")
         if args.output_jsonl is None:
-            kind = "pilot" if args.pilot else "formal"
-            raise V6ContractError(f"{kind} dispatch requires --output-jsonl")
+            raise V6ContractError("dispatch requires --output-jsonl")
         if not 0 <= args.episode_index < len(manifest.episodes):
             raise V6ContractError("episode-index out of range")
         import rclpy
+
         rclpy.init(args=None)
         adapter = V6FormalNode(
             manifest,
             manifest.episodes[args.episode_index],
             Path(args.output_jsonl).expanduser().resolve(),
-            qualification=ENGINEERING_PILOT if args.pilot else "FORMAL_ELIGIBLE",
+            qualification=(
+                ENGINEERING_PILOT if args.pilot else "FORMAL_ELIGIBLE"
+            ),
         )
         try:
             result = adapter.run(
