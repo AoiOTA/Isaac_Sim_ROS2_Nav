@@ -296,9 +296,10 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
   spawn_pose_name:=long_route_start_g1 \
-  "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.spawn.yaml" \
-  "posegraph_file:=${M3}/data/maps/posegraphs/warehouse_new" \
-  "map_file:=${M3}/data/maps/occupancy/warehouse_new.yaml" \
+  "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
+  "posegraph_file:=${M3}/data/maps/posegraphs/v6_kujiale_isaacgen_v1" \
+  "map_file:=${M3}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
+  "route_graph_file:=${M3}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
   interactive:=false \
   use_rviz:=false \
   use_teleop:=false \

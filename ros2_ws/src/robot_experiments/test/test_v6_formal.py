@@ -586,7 +586,9 @@ def test_candidate_assets_are_bound_and_only_unsupported_posegraph_is_null():
             assert values["posegraph_required"] is True
             assert not nulls
         assert values["occupancy_map"].endswith(
-            "warehouse_new.yaml" if name.startswith("kujiale") else "rivermark_selected.yaml"
+            "v6_kujiale_isaacgen_v1.yaml"
+            if name.startswith("kujiale")
+            else "rivermark_selected.yaml"
         )
 
 

@@ -26,7 +26,8 @@ def _manifest():
 
 
 def _map():
-    source = ROOT / "data/maps/occupancy/warehouse_new.yaml"
+    manifest = _manifest()
+    source = (MANIFEST.parent / manifest["occupancy_map"]).resolve()
     metadata = yaml.safe_load(source.read_text(encoding="utf-8"))
     image = np.asarray(
         Image.open(source.parent / metadata["image"]).convert("L")
@@ -202,11 +203,12 @@ def test_v6_layout_keeps_route_edge_clearance_without_polluting_static_map_or_go
             "minimum_route_edge_clearance_m"
         ]
 
-    map_yaml = (ROOT / "data/maps/occupancy/warehouse_new.yaml").read_text(
+    map_yaml = (MANIFEST.parent / manifest["occupancy_map"]).resolve().read_text(
         encoding="utf-8"
     )
     assert all(item.obstacle_id not in map_yaml for item in scenario.obstacles)
-    assert runner["map_version"] == runner["posegraph_version"] == "warehouse_new"
+    assert runner["map_version"] == runner["posegraph_version"] == \
+        "v6_kujiale_isaacgen_v1"
     assert runner["spawn_pose_name"] == "long_route_start_g1"
     assert runner["goal"]["position"] == [0.45, -5.35]
 

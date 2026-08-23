@@ -7,7 +7,7 @@ frozen_date: "2026-08-20"
 coordinate_frame: map
 source_usd: kujiale_0026_A_to_B_door_open.usd
 source_usd_mutated: false
-occupancy_map: ../../../data/maps/occupancy/warehouse_new.yaml
+occupancy_map: ../../../data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
 obstacle_config: v6_kujiale_low_obstacles_frozen.yaml
 activation_profile: v6-low-obstacles
 map_to_usd:

@@ -143,6 +143,44 @@ def test_repository_warehouse_new_bundle_and_auto_pose_are_exactly_bound():
     )
 
 
+def test_repository_v6_isaacgen_bundle_and_auto_pose_are_exactly_bound():
+    manifest_path = (
+        REPOSITORY_ROOT / "data/maps/manifests/v6_kujiale_isaacgen_v1.yaml"
+    )
+    manifest = load_map_manifest(manifest_path, project_root=REPOSITORY_ROOT)
+    assert manifest.map_version == "v6_kujiale_isaacgen_v1"
+    assert len(manifest.artifacts) == 4
+    assert manifest.calibration.calibrated is True
+    spawn_poses = (
+        REPOSITORY_ROOT
+        / "isaac_sim/configs/environments/"
+        "kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+    )
+    for pose_name in (
+        "mapping_start",
+        "long_route_start_g1",
+        "long_route_start_g2",
+        "long_route_start_g5",
+    ):
+        validate_initial_pose_contract(
+            manifest,
+            initial_pose_source="auto",
+            spawn_poses_file=spawn_poses,
+            spawn_pose_name=pose_name,
+        )
+    # The pose graph is a byte-identical reuse of warehouse_new: in navigation
+    # mode it is only a manifest/calibration binding, never deserialized.
+    new_posegraph = (
+        REPOSITORY_ROOT / "data/maps/posegraphs/v6_kujiale_isaacgen_v1.posegraph"
+    ).read_bytes()
+    old_posegraph = (
+        REPOSITORY_ROOT / "data/maps/posegraphs/warehouse_new.posegraph"
+    ).read_bytes()
+    assert hashlib.sha256(new_posegraph).hexdigest() == hashlib.sha256(
+        old_posegraph
+    ).hexdigest()
+
+
 def test_warehouse_v2_uncalibrated_auto_fails_fast_but_rviz_passes(tmp_path):
     manifest_path = _write_bundle(tmp_path)
     prefix = tmp_path / "data/maps/posegraphs/warehouse_v2"

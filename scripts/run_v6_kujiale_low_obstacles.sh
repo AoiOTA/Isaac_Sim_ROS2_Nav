@@ -65,6 +65,8 @@ run_ros_profile() {
     )
   fi
   export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
+  # V6 chain pins the Isaac-regenerated map bundle explicitly; run_ros.sh keeps
+  # its warehouse_new default for the historical flows.
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
     odometry_mode:=estimated localization_profile:=kujiale \
     nav2_profile:=v6_low_obstacle_isolation \
@@ -72,6 +74,10 @@ run_ros_profile() {
     cognitive_graph_mode:="${graph_mode}" \
     initial_pose_source:="${initial_pose_source}" \
     activation_startup_policy:="${activation_policy}" \
+    "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
+    "posegraph_file:=${PROJECT_ROOT}/data/maps/posegraphs/v6_kujiale_isaacgen_v1" \
+    "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
+    "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
     "${odometry_args[@]}" "$@"
 }
 

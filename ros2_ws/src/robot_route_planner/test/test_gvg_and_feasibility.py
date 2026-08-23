@@ -59,6 +59,31 @@ def test_real_warehouse_map_builds_deterministic_directed_graph() -> None:
     assert all((edge.to_node, edge.from_node) in reverse for edge in first.edges)
 
 
+def test_v6_isaacgen_map_builds_connected_graph_with_clear_edges() -> None:
+    repo = Path(__file__).resolve().parents[4]
+    occupancy = load_occupancy_map(
+        repo / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        unknown_is_occupied=True,
+    )
+    first = build_gvg(
+        occupancy, _settings(), _footprint_settings(), _route_cost_settings()
+    )
+    second = build_gvg(
+        occupancy, _settings(), _footprint_settings(), _route_cost_settings()
+    )
+    assert first.graph_id == "v6_kujiale_isaacgen_v1:gvg_v1"
+    assert [(node.id, node.position_xy) for node in first.nodes] == [
+        (node.id, node.position_xy) for node in second.nodes
+    ]
+    assert [(edge.id, edge.from_node, edge.to_node) for edge in first.edges] == [
+        (edge.id, edge.from_node, edge.to_node) for edge in second.edges
+    ]
+    # The regenerated map keeps the whole graph in one component and every
+    # edge at or above the padded inscribed clearance (0.215 + 0.005 m).
+    assert graph_diagnostics(first)["component_count"] == 1
+    assert min(edge.min_clearance_m for edge in first.edges) >= 0.22
+
+
 def test_feasible_unknown_and_disconnected_are_distinct() -> None:
     free = np.ones((80, 80), dtype=bool)
     free[[0, -1], :] = False

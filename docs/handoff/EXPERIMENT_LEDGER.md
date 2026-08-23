@@ -2355,3 +2355,38 @@
   （`robot_route_planner build_graph` CLI 现成）与 graph_id 迁移（涉 module2 先验）**。
 - Next: master 决策后按 REPORT.md §切换路径执行（文件/manifest/spawn/引用/测试清单
   已勘察齐全）。
+
+## 2026-08-23 — V6 新地图整体采用 + GVG 再生（master 决策执行）
+
+- Decision: master 裁定采用 `v6_kujiale_isaacgen_v1`（diff 干净、GT 一致、五腿连通）；
+  module2 graph_id 先验重登记明确不在本次范围（Phase 2/3；M1 shadow 下 edge prior
+  本就全部超时回退 geometry-only，graph_id 不匹配走既有 fail-open 丢弃路径，无功能回退）。
+- Bundle: `data/maps/occupancy/v6_kujiale_isaacgen_v1.{pgm,yaml}`（origin [-5.14,-6.52],
+  0.05 m, 154x248）、`data/maps/posegraphs/v6_kujiale_isaacgen_v1.{posegraph,data}`
+  （warehouse_new 字节拷贝——navigation 模式不反序列化，仅契约绑定）、
+  `data/maps/manifests/v6_kujiale_isaacgen_v1.yaml`（bundle ce1dfd19…，calibration 同
+  warehouse_new）、新 spawn `kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml`
+  （几何不变，版本/bundle 引用换新；warehouse_new spawn 原样保留）。
+  `load_map_manifest` + 4 个 pose 的 initial-pose 契约全部通过。
+- GVG: `robot_route_planner.cli`（build_graph）在新图上确定性再生 →
+  `ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.{geojson,
+  support_map.json,summary.json}`；graph_id `v6_kujiale_isaacgen_v1:gvg_v1` rev 1，
+  24 节点 / 48 有向边 / 310 support 边（FEASIBLE 30 / UNKNOWN 16 / INFEASIBLE 2）。
+  验证（gvg_regen_validation.json）：全部边净空 ≥0.224 m（lethal 0.22，无穿越真实占用）；
+  五腿 G1→G2→G3→G4→G5→G1 逐段 route 均存在（腿内最小边净空 0.25–0.40 m）；
+  五目标点 support 挂接全 FEASIBLE（G3 贴床兜位，首个可行挂接 1.896 m）。
+- 引用切换: `scripts/v6_reset_cold_boundary_r5_session.sh`、`scripts/v6_imu_regime_attempt4_session.sh`
+  （含 probe --map）、`v6_final_kujiale_{static,dynamic,appearance}.yaml`（occupancy_map/
+  posegraph_file/spawn_manifest/route_graph）、`v6_kujiale_low_obstacles_static.yaml`
+  （map/posegraph_version）、`v6_kujiale_low_obstacles_frozen_manifest.yaml`（occupancy_map）、
+  `run_v6_kujiale_low_obstacles.sh`（显式四参）。`run_ros.sh` 默认值与 launch 默认 graph
+  保持 warehouse_new（历史流不动）。
+- Tests: test_map_manifest（+新 bundle 用例）、test_v6_formal、test_v6_low_obstacle_layout、
+  test_gvg_and_feasibility（+新图连通/净空用例）；suites 257 passed。
+- Evidence: `/mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_kujiale_map_regen_20260823/`
+  （REPORT.md、diff_analysis.json、gvg_regen_validation.json、orientation_landmarks.json、
+  figures/）。
+- Verdict: **ADOPTED（工程采用）**。下一次 live run（Phase 1 第十次）以新地图+新 GVG+
+  AMCL round-2+M1 shadow 全量验证。
+- Next: live run 验证柜-桌走廊（0.63 m 净宽、瓶颈 0.30 m）AMCL round-2 表现；
+  Phase 2/3 再做 module2 侧新 graph_id 先验登记。

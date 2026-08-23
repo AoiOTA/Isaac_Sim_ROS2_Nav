@@ -4,8 +4,8 @@ scenario:
   id: v6_kujiale_low_obstacles_static
   type: static
   spawn_pose_name: long_route_start_g1
-  map_version: warehouse_new
-  posegraph_version: warehouse_new
+  map_version: v6_kujiale_isaacgen_v1
+  posegraph_version: v6_kujiale_isaacgen_v1
   configs:
     robot: ../../../../isaac_sim/configs/robots/jackal.yaml
     nav2: ../../robot_navigation/config/nav2_params.yaml
