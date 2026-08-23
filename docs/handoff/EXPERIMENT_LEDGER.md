@@ -2708,3 +2708,32 @@
 - Next: make the required Jackal USD reproducibly available from an authorized
   committed/snapshot source, then create another strict snapshot and rerun
   Phase 1B before any route goal.
+
+## 2026-08-24 — V6-GRID strict-snapshot Jackal asset materialization repair
+
+- Goal: repair only the ignored Jackal runtime dependency reproduced in
+  `v6_grid_phase1_20260823T165127Z`, without tracking NVIDIA binaries or adding
+  another importer.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `c5d7cb8d8989e9e8928fc5fd8f4ffb4b9b1c21`; result is the single commit
+  containing this entry.
+- Changed: the canonical session requires an explicit absolute operator-selected
+  `ISAAC_ASSET_ROOT`. Once per snapshot/session and before Isaac, it invokes the
+  existing archived `scripts/import_assets.sh`, then its existing `--check`
+  mode. Import and check failures stop before Kit. Asset root/status are
+  recorded in `run.yaml`, `logs/asset_materialization.log`, STOP, and the run
+  contract with `git_contains_runtime_asset_binaries=false`.
+- Focused validation: complete asset-path/import and runtime-script tests **43
+  passed**; `bash -n` passed. Fake temporary archived-importer tests cover the
+  full three-destination closure, missing root/source rejection, snapshot-only
+  writes, and idempotent rerun.
+- Actual-root pre-Kit probe: strict index-tree archive
+  `/tmp/v6_asset_prekit.LU45Nm` initially lacked the ignored files, then the
+  existing importer/check materialized both Jackal source layers and the third
+  configuration destination from
+  `/home/lyb/isaacsim_assets/Assets/Isaac/6.0`.
+  `dependency_report(jackal_nav.usda).unresolved` was empty; no Kit started.
+- Verdict: **PASS (code/test/pre-Kit asset inspection only)**. No Isaac Sim,
+  ROS graph, Phase 1B/1C, reset, navigation, visual evidence, engineering
+  success, or qualification was run. The previous live FAIL remains the latest
+  runtime result until a fresh combined snapshot is rerun.

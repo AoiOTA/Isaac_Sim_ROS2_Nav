@@ -128,3 +128,43 @@ R5_DOMAIN_ID=209 R5_EPISODE_INDICES=0 R5_EPISODE_SEEDS=7201 \
 
 Phase 1B must pass before the canonical dispatcher may send the five route
 goals; the repair itself does not satisfy that live dependency.
+
+## Strict-snapshot Jackal asset materialization amendment (2026-08-24)
+
+- Repaired only the next reproduced startup blocker from
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T165127Z`.
+  A canonical session now requires the operator to set an explicit absolute
+  `ISAAC_ASSET_ROOT`; there is no live-worktree fallback.
+- Before starting Isaac once per session, the driver calls the existing
+  archived `m3_src/scripts/import_assets.sh` with the archived Jackal manifest,
+  then calls its existing `--check` mode. Destinations therefore land only in
+  the selected snapshot. Repeating the session-side import is idempotent.
+- Missing/non-absolute roots, unavailable manifest sources, import failures,
+  and check failures stop before Kit. `run.yaml`, the materialization log,
+  STOP input, and the run contract record the selected root and status while
+  stating that the runtime binaries are not contained in Git.
+- Focused validation: asset-import plus complete runtime-script tests **43
+  passed**; involved shell syntax passed. A bounded strict index-tree archive
+  at `/tmp/v6_asset_prekit.LU45Nm` initially omitted both ignored source
+  layers, imported and checked all three manifest destinations from
+  `/home/lyb/isaacsim_assets/Assets/Isaac/6.0`, and reported
+  `dependency_report.unresolved=[]` for `jackal_nav.usda` (the allowed
+  `OmniPBR.mdl` diagnostic remained informational).
+- Boundary: code/test/pre-Kit asset inspection only. No Kit, Isaac Sim, ROS
+  graph, Phase 1B, reset, goal, navigation, visual evidence, engineering
+  success, or qualification was run or claimed.
+
+After building a fresh combined snapshot containing this amendment, the exact
+one-episode rerun is:
+
+```bash
+cd /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3
+RUN_DIR="/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_$(date -u +%Y%m%dT%H%M%SZ)"
+SNAPSHOT_ROOT="/absolute/path/to/fresh_combined_phase1_snapshot"
+ISAAC_ASSET_ROOT=/home/lyb/isaacsim_assets/Assets/Isaac/6.0 \
+R5_DOMAIN_ID=211 R5_EPISODE_INDICES=0 R5_EPISODE_SEEDS=7201 \
+  ./scripts/run_v6_kujiale_low_obstacles.sh session "${RUN_DIR}" "${SNAPSHOT_ROOT}"
+```
+
+The operator must confirm that the selected domain is empty. Phase 1B still
+must pass before any route goal is authorized.

@@ -161,6 +161,24 @@ def test_common_resolves_project_root_from_unrelated_temporary_directory(tmp_pat
     assert result.stdout == str(REPOSITORY_ROOT)
 
 
+def test_common_marks_default_asset_root_as_not_operator_selected(tmp_path):
+    defaulted = _run_bash(
+        f'source "{COMMON}"; printf "%s" "$ISAAC_ASSET_ROOT_DEFAULTED"',
+        cwd=tmp_path,
+        environment=_environment(ISAAC_ASSET_ROOT=''),
+    )
+    explicit = _run_bash(
+        f'source "{COMMON}"; printf "%s" "$ISAAC_ASSET_ROOT_DEFAULTED"',
+        cwd=tmp_path,
+        environment=_environment(ISAAC_ASSET_ROOT=str(tmp_path / 'assets')),
+    )
+
+    assert defaulted.returncode == 0, defaulted.stderr
+    assert defaulted.stdout == '1'
+    assert explicit.returncode == 0, explicit.stderr
+    assert explicit.stdout == '0'
+
+
 def test_common_requires_only_the_allowed_v6_integration_underlay():
     source = COMMON.read_text(encoding='utf-8')
     assert '/worktrees/cognitive-navigation/bio_nav_intergration' in source
@@ -408,15 +426,78 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'BIO_NAV_INTEGRATION_INSTALL="${I_INSTALL}"',
         'BIO_NAV_INTEGRATION_SETUP="${I_SETUP}"',
         'ISAAC_NAV_WORKSPACE_SETUP="${M3_LOCAL_SETUP}"',
+        'ISAAC_ASSET_ROOT must be set to an absolute authorized asset root',
+        'ASSET_MATERIALIZATION_STATUS="verified"',
+        '"${ASSET_IMPORTER}" --check',
+        'git_contains_runtime_asset_binaries=false',
         'required snapshot file not found:',
     ):
         assert contract in source
+    assert source.index('STAGE="asset_materialization"') < source.index(
+        'start_bg isaac')
+    assert source.count('cd "${M3}" && "${ASSET_IMPORTER}"') == 2
     assert 'start_bg module2' not in source
     bridge_arguments = source.split(
         '# ---------------------------------------------------------------- bridge', 1)[1].split(
             '# ---------------------------------------------------------------- recorder', 1)[0]
     assert 'runtime_profile:=estimated_m0' in bridge_arguments
     assert 'module2_enabled:=false' not in bridge_arguments
+
+
+@pytest.mark.parametrize(
+    ('asset_root', 'expected'),
+    [
+        (None, 'ISAAC_ASSET_ROOT must be set to an absolute authorized asset root'),
+        ('relative/assets', 'ISAAC_ASSET_ROOT must be absolute'),
+    ],
+)
+def test_v6_r5_session_rejects_missing_or_relative_asset_root_before_kit(
+        tmp_path, asset_root, expected):
+    snapshot = tmp_path / 'snapshot'
+    snapshot.mkdir()
+    environment = _environment()
+    environment.pop('ISAAC_ASSET_ROOT', None)
+    if asset_root is not None:
+        environment['ISAAC_ASSET_ROOT'] = asset_root
+
+    result = subprocess.run(
+        [str(RUN_V6_R5_SESSION), str(tmp_path / 'run'), str(snapshot)],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected in result.stderr
+    assert 'start_bg isaac' not in result.stdout
+
+
+def test_v6_session_wrapper_does_not_promote_common_asset_default_to_authorization(
+        tmp_path):
+    snapshot = tmp_path / 'snapshot'
+    snapshot.mkdir()
+    environment = _environment()
+    environment.pop('ISAAC_ASSET_ROOT', None)
+
+    result = subprocess.run(
+        [
+            str(RUN_V6_LOW_OBSTACLES),
+            'session',
+            str(tmp_path / 'run'),
+            str(snapshot),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert ('ISAAC_ASSET_ROOT must be set to an absolute authorized asset root'
+            in result.stderr)
 
 
 def test_v6_phase1_isaac_disables_dynamic_actors():

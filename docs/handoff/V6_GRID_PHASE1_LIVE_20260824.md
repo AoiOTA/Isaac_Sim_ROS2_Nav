@@ -107,3 +107,24 @@ reproducibly available from an authorized committed/snapshot source, then build
 another strict snapshot and rerun Phase 1B before any goal. This retry is an
 engineering live startup failure, not code-test success, navigation success, or
 formal qualification.
+
+## Asset-materialization repair status (2026-08-24)
+
+The canonical session now requires an operator-selected absolute
+`ISAAC_ASSET_ROOT` and invokes the existing manifest importer plus `--check`
+inside archived `m3_src` before starting Isaac. It neither copies from the live
+worktree nor versions the NVIDIA binaries. The selected root and verified
+materialization status are inputs to `run.yaml`, the materialization log, STOP,
+and the run contract.
+
+Focused tests reported **43 passed** and shell syntax passed. In a bounded
+strict archive at `/tmp/v6_asset_prekit.LU45Nm`, the local authorized Isaac Sim
+Assets 6.0 root materialized both omitted Jackal source layers plus the runtime
+configuration destination; the existing check passed and
+`dependency_report.unresolved=[]` for `jackal_nav.usda`.
+
+This is code/test/pre-Kit evidence only. The live verdict above remains FAIL;
+no Kit, Phase 1B, Phase 1C, reset, or route goal was run by this amendment. A
+fresh combined snapshot must be built and the canonical one-episode command in
+`V6_GRID_PHASE1_CANONICAL_RUNNER_20260823.md` rerun with
+`ISAAC_ASSET_ROOT=/home/lyb/isaacsim_assets/Assets/Isaac/6.0`.

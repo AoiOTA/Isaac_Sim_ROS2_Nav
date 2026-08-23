@@ -4,7 +4,12 @@ set -Eeuo pipefail
 
 export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export ISAAC_PYTHON="${ISAAC_PYTHON:-/home/lyb/miniconda3/envs/isaacsim/bin/python}"
-export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-/home/lyb/isaacsim_assets/Assets/Isaac/6.0}"
+if [[ -n "${ISAAC_ASSET_ROOT:-}" ]]; then
+  export ISAAC_ASSET_ROOT_DEFAULTED=0
+else
+  export ISAAC_ASSET_ROOT=/home/lyb/isaacsim_assets/Assets/Isaac/6.0
+  export ISAAC_ASSET_ROOT_DEFAULTED=1
+fi
 export ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
 export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"

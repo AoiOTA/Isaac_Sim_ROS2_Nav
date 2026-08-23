@@ -28,6 +28,21 @@ fi
   exit 66
 }
 SNAP="$(readlink -f -- "${SNAP_INPUT}")"
+ASSET_ROOT_INPUT="${ISAAC_ASSET_ROOT:-}"
+if [[ -z "${ASSET_ROOT_INPUT}" \
+    || "${ISAAC_ASSET_ROOT_DEFAULTED:-0}" == 1 ]]; then
+  echo "ISAAC_ASSET_ROOT must be set to an absolute authorized asset root" >&2
+  exit 64
+fi
+[[ "${ASSET_ROOT_INPUT}" == /* ]] || {
+  echo "ISAAC_ASSET_ROOT must be absolute: ${ASSET_ROOT_INPUT}" >&2
+  exit 64
+}
+[[ -d "${ASSET_ROOT_INPUT}" ]] || {
+  echo "ISAAC_ASSET_ROOT is not a directory: ${ASSET_ROOT_INPUT}" >&2
+  exit 66
+}
+ISAAC_ASSET_ROOT="$(readlink -f -- "${ASSET_ROOT_INPUT}")"
 
 DOMAIN_ID="${R5_DOMAIN_ID:-173}"
 EPISODE_INDICES="${R5_EPISODE_INDICES:-0 1 2}"
@@ -49,6 +64,8 @@ I_INSTALL="${I_SRC}/ros2_ws/install_r5"
 I_SETUP="${I_INSTALL}/setup.bash"
 M3_LOCAL_SETUP="${M3_INSTALL}/local_setup.bash"
 I_OBSTACLE_HEADER="${I_INSTALL}/bio_nav_interfaces/include/bio_nav_interfaces/bio_nav_interfaces/msg/detail/cognitive_obstacle_array__struct.hpp"
+ASSET_IMPORTER="${M3}/scripts/import_assets.sh"
+ASSET_MANIFEST="${M3}/isaac_sim/assets/robots/jackal/asset_manifest.json"
 LOGS="${RUN_DIR}/logs"
 PROV="${RUN_DIR}/provenance"
 EPISODES_DIR="${RUN_DIR}/episodes"
@@ -63,8 +80,11 @@ export BIO_NAV_INTEGRATION_ROOT="${I_SRC}"
 export BIO_NAV_INTEGRATION_INSTALL="${I_INSTALL}"
 export BIO_NAV_INTEGRATION_SETUP="${I_SETUP}"
 export ISAAC_NAV_WORKSPACE_SETUP="${M3_LOCAL_SETUP}"
+export ISAAC_ASSET_ROOT
 
 for snapshot_file in \
+    "${ASSET_IMPORTER}" \
+    "${ASSET_MANIFEST}" \
     "${I_SETUP}" \
     "${I_OBSTACLE_HEADER}" \
     "${M3_INSTALL}/setup.bash" \
@@ -116,6 +136,7 @@ _log_stage() {
 
 _cleanup_children() {
   local name pid
+  ((${#CHILD_PGIDS[@]})) || return 0
   for name in "${!CHILD_PGIDS[@]}"; do
     pid="${CHILD_PGIDS[$name]}"
     kill -INT -- "-${pid}" 2>/dev/null || true
@@ -143,6 +164,8 @@ _stop() {
     echo "- domain: ${DOMAIN_ID}"
     echo "- stage: ${STAGE}"
     echo "- reason: ${reason}"
+    echo "- isaac_asset_root: ${ISAAC_ASSET_ROOT}"
+    echo "- asset_materialization_status: ${ASSET_MATERIALIZATION_STATUS:-not_started}"
     echo "- stopped_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${RUN_DIR}/STOP.md"
   exit 2
@@ -152,6 +175,16 @@ _on_err() {
   _stop "driver error at line $1 during stage ${STAGE}; see ${LOGS}"
 }
 trap '_on_err ${LINENO}' ERR
+
+_write_run_metadata() {
+  cat > "${RUN_DIR}/run.yaml" <<EOF
+snapshot_root: ${SNAP}
+isaac_asset_root: ${ISAAC_ASSET_ROOT}
+asset_materialization_status: ${ASSET_MATERIALIZATION_STATUS}
+asset_manifest: isaac_sim/assets/robots/jackal/asset_manifest.json
+git_contains_runtime_asset_binaries: false
+EOF
+}
 
 start_bg() { # name command...
   local name="$1"; shift
@@ -216,6 +249,37 @@ wait_file() { # path timeout_sec
   return 1
 }
 
+# ---------------------------------------------------- snapshot asset closure
+STAGE="asset_materialization"
+ASSET_MATERIALIZATION_STATUS="pending"
+export ASSET_MATERIALIZATION_STATUS
+_write_run_metadata
+{
+  echo "isaac_asset_root=${ISAAC_ASSET_ROOT}"
+  echo "asset_manifest=${ASSET_MANIFEST}"
+  echo "status=importing"
+} > "${LOGS}/asset_materialization.log"
+if ! (cd "${M3}" && "${ASSET_IMPORTER}") \
+    >> "${LOGS}/asset_materialization.log" 2>&1; then
+  ASSET_MATERIALIZATION_STATUS="import_failed"
+  export ASSET_MATERIALIZATION_STATUS
+  _write_run_metadata
+  _stop "Jackal asset import failed; see ${LOGS}/asset_materialization.log"
+fi
+if ! (cd "${M3}" && "${ASSET_IMPORTER}" --check) \
+    >> "${LOGS}/asset_materialization.log" 2>&1; then
+  ASSET_MATERIALIZATION_STATUS="check_failed"
+  export ASSET_MATERIALIZATION_STATUS
+  _write_run_metadata
+  _stop "Jackal asset check failed; see ${LOGS}/asset_materialization.log"
+fi
+ASSET_MATERIALIZATION_STATUS="verified"
+export ASSET_MATERIALIZATION_STATUS
+echo "status=${ASSET_MATERIALIZATION_STATUS}" \
+  >> "${LOGS}/asset_materialization.log"
+_write_run_metadata
+_log_stage "asset_materialization" "verified in snapshot"
+
 # ---------------------------------------------------------------- env setup
 STAGE="env"
 # Drop any pre-existing ROS overlay from the caller environment: the session
@@ -245,6 +309,9 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "integration_install=${BIO_NAV_INTEGRATION_INSTALL}"
   echo "integration_setup=${BIO_NAV_INTEGRATION_SETUP}"
   echo "module3_workspace_setup=${ISAAC_NAV_WORKSPACE_SETUP}"
+  echo "isaac_asset_root=${ISAAC_ASSET_ROOT}"
+  echo "asset_materialization_status=${ASSET_MATERIALIZATION_STATUS}"
+  echo "git_contains_runtime_asset_binaries=false"
   echo "domain_id=${DOMAIN_ID}"
   echo "rmw=${RMW_IMPLEMENTATION}"
   echo "episode_indices=${EPISODE_INDICES}"
