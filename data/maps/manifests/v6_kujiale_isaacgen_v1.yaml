@@ -1,0 +1,76 @@
+schema_version: 1
+map_version: v6_kujiale_isaacgen_v1
+created_at: '2026-08-23'
+availability: repository_baseline
+artifact_policy: posegraph_in_git_lfs
+bundle_sha256: ce1dfd1996972aa54dba089962b273fe47d4a41914c1625f882087343cb7295b
+source:
+  environment_asset: kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  robot: jackal
+  spawn_pose_name: mapping_start
+  odometry_mode: n/a_physics_geometry_only
+  mapping_mode: isaacsim_asset_gen_omap_physx_generator
+  coverage: kujiale_room_navigation_area
+  generation_tool: isaac_sim/tools/rivermark_occupancy_generate.py
+  generation_height_band_m:
+  - 0.3
+  - 0.37
+  generation_note: Occupancy from PhysX collision geometry of the base static scene
+    only (no dynamic or experimental obstacles); z band aligned to the 0.333 m LiDAR
+    scan plane; USD->map frame via the calibrated 180-degree transform; orientation
+    landmark-validated against 56 USD object footprints.
+occupancy_grid:
+  resolution_m: 0.05
+  width_cells: 154
+  height_cells: 248
+  origin:
+  - -5.14
+  - -6.52
+  - 0.0
+  files:
+  - role: yaml
+    path: data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+    bytes: 145
+    sha256: c9dc85aa3f80107a5116eeb974688b35aac26f122f6c94d646e9360e99f97ce8
+  - role: image
+    path: data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm
+    bytes: 38207
+    sha256: 2e116d2bac23ef59dcf7156fa57a25e9ad43c2916fa56ebb02e09d9c5ff3fddc
+pose_graph:
+  prefix: data/maps/posegraphs/v6_kujiale_isaacgen_v1
+  files:
+  - role: posegraph
+    path: data/maps/posegraphs/v6_kujiale_isaacgen_v1.posegraph
+    bytes: 31890111
+    sha256: 06082ba4ac27bf2e083d477ab0660b91ab46841eb02a7dc42b6850ee8004a159
+  - role: data
+    path: data/maps/posegraphs/v6_kujiale_isaacgen_v1.data
+    bytes: 4325736
+    sha256: 1c466428190a54bbb3135216e71d01d9c93ac660ff86b4c089540fb9eefb64d2
+calibration:
+  calibrated: true
+  spawn_pose_profile: mapping_start
+  bundle_sha256: ce1dfd1996972aa54dba089962b273fe47d4a41914c1625f882087343cb7295b
+  calibrated_at: '2026-08-23'
+  calibration_method: carried_from_warehouse_new_ideal_mapping_anchor_plus_usd_landmark_footprint_verification
+  usd_base_position:
+  - 2.9
+  - -0.2
+  - 0.0635
+  usd_base_yaw_deg: 180.0
+  map_base_position:
+  - 0.0
+  - 0.0
+  map_base_yaw_deg: 0.0
+  position_stddev_m: 0.05
+  yaw_stddev_deg: 1.0
+notes:
+- The four artifacts are one indivisible map bundle.
+- The large .posegraph file is stored through Git LFS.
+- 'Pose graph files are byte-identical copies of warehouse_new: in navigation/localization
+  mode the posegraph is only a manifest/calibration binding, never deserialized by
+  a runtime node (ros_stack.launch.py passes it only to mapping mode).'
+- Occupancy regenerated 2026-08-23 from the actual USD collision geometry; replaces
+  warehouse_new for the V6 chain (phantom lip row removed, real furniture restored).
+- 'Calibration transform identical to warehouse_new: map->USD x=2.9-x_map, y=-0.2-y_map,
+  yaw offset 180 deg.'

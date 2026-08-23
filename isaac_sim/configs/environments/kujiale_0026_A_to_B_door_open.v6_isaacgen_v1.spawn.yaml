@@ -1,0 +1,72 @@
+schema_version: 1
+# V6 spawn poses for the v6_kujiale_isaacgen_v1 map bundle.  Geometry is
+# identical to kujiale_0026_A_to_B_door_open.spawn.yaml (the USD scene is
+# unchanged); only the map_version / map_bundle_sha256 references move to the
+# Isaac-regenerated occupancy map.  The warehouse_new spawn file stays
+# untouched so historical warehouse_new flows keep their exact binding.
+spawn_poses:
+  mapping_start:
+    usd:
+      # Open area in the living room, with more than 1.2 m clearance to the
+      # nearest low collision bounds. The base-link rest height matches Jackal.
+      position: [2.9, -0.2, 0.0635]
+      yaw_deg: 180.0
+    map:
+      # Same calibrated anchor as warehouse_new: the Isaac-regenerated map
+      # keeps the warehouse_new frame (origin [-5.14,-6.52], 0.05 m/cell), so
+      # map and odom still share the same origin and heading.
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      calibrated: true
+      map_version: v6_kujiale_isaacgen_v1
+      map_bundle_sha256: ce1dfd1996972aa54dba089962b273fe47d4a41914c1625f882087343cb7295b
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g1:
+    usd:
+      # Derived from mapping_start with the calibrated 180-degree map-to-USD
+      # transform.  This is G1 in the redesigned whole-home route, not a
+      # second map calibration.
+      position: [2.45, 5.15, 0.0635]
+      yaw_deg: 270.0
+    map:
+      position: [0.45, -5.35]
+      yaw_deg: 90.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: v6_kujiale_isaacgen_v1
+      map_bundle_sha256: ce1dfd1996972aa54dba089962b273fe47d4a41914c1625f882087343cb7295b
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g2:
+    usd:
+      # Derived through the same calibrated 180-degree map-to-USD transform
+      # as G1: USD = (2.9 - map_x, -0.2 - map_y), yaw = map_yaw + 180 deg.
+      # G2 lies in the open upper room and is used only for the focused
+      # G2->G3 experiment.
+      position: [2.10, -5.00, 0.0635]
+      yaw_deg: 20.0
+    map:
+      position: [0.80, 4.80]
+      yaw_deg: -160.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: v6_kujiale_isaacgen_v1
+      map_bundle_sha256: ce1dfd1996972aa54dba089962b273fe47d4a41914c1625f882087343cb7295b
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g5:
+    usd:
+      # Same calibrated transform as G1/G2. G5 is the open-room entry before
+      # the focused return-door interaction.
+      position: [5.10, 2.75, 0.0635]
+      yaw_deg: 138.0
+    map:
+      position: [-2.20, -2.95]
+      yaw_deg: -42.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: v6_kujiale_isaacgen_v1
+      map_bundle_sha256: ce1dfd1996972aa54dba089962b273fe47d4a41914c1625f882087343cb7295b
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0

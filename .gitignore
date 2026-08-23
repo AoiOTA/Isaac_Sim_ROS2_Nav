@@ -104,6 +104,8 @@ dist/
 !/data/maps/occupancy/warehouse_v2.pgm
 !/data/maps/occupancy/warehouse_new.yaml
 !/data/maps/occupancy/warehouse_new.pgm
+!/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+!/data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm
 
 /data/maps/posegraphs/*
 !/data/maps/posegraphs/.gitkeep
@@ -115,3 +117,5 @@ dist/
 !/data/maps/posegraphs/warehouse_v2.data
 !/data/maps/posegraphs/warehouse_new.posegraph
 !/data/maps/posegraphs/warehouse_new.data
+!/data/maps/posegraphs/v6_kujiale_isaacgen_v1.posegraph
+!/data/maps/posegraphs/v6_kujiale_isaacgen_v1.data
