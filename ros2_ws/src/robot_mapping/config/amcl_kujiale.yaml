@@ -16,18 +16,32 @@ amcl:
     # <=0.1 m passed the same leg).  Raise observation/update frequency on
     # the safe monotonic direction only: more beams per update and smaller
     # motion thresholds so filter updates fire more often in corridors.
-    # alpha1-4, the laser model and the particle counts stay untouched until
-    # the next evidence round.
     # Evidence: /mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_r5_margin_rootcause_20260822/
     max_beams: 120
     update_min_d: 0.05
     update_min_a: 0.05
-    alpha1: 0.20
-    alpha2: 0.20
-    alpha3: 0.20
-    alpha4: 0.20
+    # V6 R5 round-2 wrong-match suppression (2026-08-23): phase-1 live run#8
+    # still hit cabinet_0003 in the (-0.60,3.17) door zone on leg2 G2->G3
+    # with AMCL-GT error 0.276 m at contact, above the 0.125 m absorbable
+    # cap.  The error had converged to 0.06--0.08 m during the G2 stop and
+    # then diverged within ~5 s on the westbound wall-hugging door approach
+    # (AMCL biased north-east); round-1 above did not contain it.  Working
+    # hypothesis: not free drift (EKF odom RMSE ~0.09 m) but wrong scan
+    # matching pulling the filter off -- do_beamskip=true discards exactly
+    # the beams inconsistent with the map (the true door-corner cabinet
+    # returns), and alpha1-4=0.20 spreads particles too wide for the
+    # current EKF odom quality.  So trust EKF odom more (alpha1-4
+    # 0.20 -> 0.10) and keep all beams (do_beamskip -> false; the
+    # beam_skip_* thresholds are retained for reference but currently not
+    # in effect).  alpha5, laser_sigma_hit, laser_z_hit/z_rand, particle
+    # counts, update_min_* and laser_model_type stay untouched.
+    # Evidence: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_reset_cold_boundary_r5_phase1_m1shadow_20260823T011110Z/
+    alpha1: 0.10
+    alpha2: 0.10
+    alpha3: 0.10
+    alpha4: 0.10
     alpha5: 0.10
-    do_beamskip: true
+    do_beamskip: false
     beam_skip_distance: 0.5
     beam_skip_threshold: 0.3
     beam_skip_error_threshold: 0.9
