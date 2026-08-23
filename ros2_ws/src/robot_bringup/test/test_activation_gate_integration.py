@@ -3,15 +3,16 @@ import time
 
 from action_msgs.srv import CancelGoal
 from builtin_interfaces.msg import Time
+from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import TransformStamped
 from lifecycle_msgs.msg import State, Transition
 from lifecycle_msgs.srv import ChangeState, GetState
-from rcl_interfaces.msg import SetParametersResult
-from rcl_interfaces.srv import SetParameters
 from nav2_msgs.srv import ClearEntireCostmap
 from nav2_msgs.srv import ManageLifecycleNodes
 from nav_msgs.msg import OccupancyGrid, Odometry
 import pytest
+from rcl_interfaces.msg import SetParametersResult
+from rcl_interfaces.srv import SetParameters
 import rclpy
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -22,7 +23,6 @@ from robot_bringup.activation_gate import Nav2ActivationGate
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty, String
-from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 
 
@@ -50,6 +50,8 @@ class _LifecycleFixture(Node):
         self._stop_generation = 1
         self._stop_held = True
         self._stop_eligible = 1
+        self._localization_generation = 1
+        self._localization_wait_cycles = 0
 
         self._clock_publisher = self.create_publisher(Clock, '/clock', 10)
         self._scan = self.create_publisher(LaserScan, '/scan', 10)
@@ -70,6 +72,11 @@ class _LifecycleFixture(Node):
         )
         self._stop_status = self.create_publisher(
             String, '/simulation/reset_stop_gate/status', stop_status_qos)
+        self._localization_status = self.create_publisher(
+            DiagnosticArray,
+            '/bio_nav/localization/status',
+            stop_status_qos,
+        )
         self._tf = TransformBroadcaster(self)
 
         self._state_services = [
@@ -120,11 +127,6 @@ class _LifecycleFixture(Node):
             '/local_costmap/clear_entirely_local_costmap',
             self._clear_local,
         )
-        self._reseed = self.create_service(
-            Trigger,
-            '/initial_pose/reseed',
-            self._trigger_reseed,
-        )
         self._stop_release = self.create_service(
             SetParameters,
             '/isaac_navigation_sim/set_parameters',
@@ -144,6 +146,8 @@ class _LifecycleFixture(Node):
         self._stop_generation += 1
         self._stop_held = True
         self._stop_eligible = self._stop_generation
+        self._localization_generation += 1
+        self._localization_wait_cycles = 5
 
     def _release_stop_gate(self, request, response):
         successful = False
@@ -261,13 +265,6 @@ class _LifecycleFixture(Node):
         self.events.append('clear_local')
         return response
 
-    def _trigger_reseed(self, request, response):
-        del request
-        self.events.append('reseed')
-        response.success = True
-        response.message = 'reseeded'
-        return response
-
     def _publish_inputs(self):
         if self._rollback_next:
             self.sim_stamp = 0.1
@@ -316,6 +313,33 @@ class _LifecycleFixture(Node):
         })
         self._stop_status.publish(status)
 
+        localization = DiagnosticStatus()
+        localization.name = 'grid_localization'
+        if self._localization_wait_cycles > 0:
+            localization.level = DiagnosticStatus.WARN
+            localization_state = (
+                'WAITING_FOR_SCAN'
+                if self._localization_wait_cycles > 2
+                else 'WAITING_FOR_RESULT'
+            )
+            localization_accepted = 'false'
+            self._localization_wait_cycles -= 1
+        else:
+            localization.level = DiagnosticStatus.OK
+            localization_state = 'ACCEPTED'
+            localization_accepted = 'true'
+        localization.values = [
+            KeyValue(
+                key='generation',
+                value=str(self._localization_generation),
+            ),
+            KeyValue(key='state', value=localization_state),
+            KeyValue(key='accepted', value=localization_accepted),
+        ]
+        localization_array = DiagnosticArray()
+        localization_array.status = [localization]
+        self._localization_status.publish(localization_array)
+
 
 def _spin_until(executor, predicate, timeout):
     expires = time.monotonic() + timeout
@@ -347,7 +371,6 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
     max_attempts: 3
     retry_initial_backoff: 0.05
     retry_maximum_backoff: 0.10
-    initial_pose_source: auto
 """,
         encoding='utf-8',
     )
@@ -381,7 +404,6 @@ def test_gate_activates_once_then_recovers_in_order_after_epoch_change(
             'manager:PAUSE',
             'clear_global',
             'clear_local',
-            'reseed',
             'manager:RESUME',
         ]
         assert gate._tracker.epoch == 1
@@ -418,7 +440,6 @@ def test_gate_repairs_partial_resume_without_terminating(tmp_path):
     max_attempts: 3
     retry_initial_backoff: 0.05
     retry_maximum_backoff: 0.10
-    initial_pose_source: auto
 """,
         encoding='utf-8',
     )

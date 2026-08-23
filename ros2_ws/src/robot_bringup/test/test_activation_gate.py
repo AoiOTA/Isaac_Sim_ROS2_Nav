@@ -328,16 +328,15 @@ def test_required_recovery_failure_retries_then_fails_without_advancing():
     assert 'clear global costmap' in fatals[0]
 
 
-def test_shadow_wait_policy_keeps_gate_nonfatal_after_startup_timeout():
+def test_localization_wait_policy_keeps_gate_nonfatal_after_startup_timeout():
     logger = _Logger()
     fatals = []
     gate = SimpleNamespace(
         _started_at=10.0,
         _startup_timeout=5.0,
-        _startup_timeout_policy='wait_for_seed',
+        _startup_timeout_policy='wait_for_localization',
         _startup_timeout_reported=False,
-        _tracker=SimpleNamespace(
-            missing_requirements=lambda now: ['stable map->odom']),
+        _missing_readiness_requirements=lambda now: ['stable map->odom'],
         _last_failure='',
         _managed_nodes=['controller_server'],
         _set_fatal=fatals.append,
@@ -352,7 +351,7 @@ def test_shadow_wait_policy_keeps_gate_nonfatal_after_startup_timeout():
         'Nav2 activation gate timed out after 5.1s; '
         'missing=stable map->odom; last_failure=none; '
         "managed_nodes=['controller_server']; "
-        'startup_timeout_policy=wait_for_seed, continuing diagnostics '
+        'startup_timeout_policy=wait_for_localization, continuing diagnostics '
         'with Nav2 inactive',
     )]
 
@@ -364,8 +363,8 @@ def test_autonomy_policy_fails_closed_after_startup_timeout():
         _startup_timeout=5.0,
         _startup_timeout_policy='fail_closed',
         _startup_timeout_reported=False,
-        _tracker=SimpleNamespace(
-            missing_requirements=lambda now: ['initial pose seed']),
+        _missing_readiness_requirements=lambda now: [
+            'grid localization generation'],
         _last_failure='',
         _managed_nodes=['controller_server'],
         _set_fatal=fatals.append,
@@ -373,7 +372,7 @@ def test_autonomy_policy_fails_closed_after_startup_timeout():
 
     assert Nav2ActivationGate._handle_startup_timeout(gate, 15.1)
     assert len(fatals) == 1
-    assert 'missing=initial pose seed' in fatals[0]
+    assert 'missing=grid localization generation' in fatals[0]
 
 
 def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
@@ -387,18 +386,74 @@ def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
         'pause_query',
         'clear_global',
         'clear_local',
-        'reseed',
-        'waiting_readiness',
+        'waiting_localization',
         'resume_query',
     ):
         assert stage in source
     assert "CancelGoal, '/navigate_to_pose/_action/cancel_goal'" in source
     assert "'/global_costmap/clear_entirely_global_costmap'" in source
     assert "'/local_costmap/clear_entirely_local_costmap'" in source
+    assert "'/bio_nav/localization/status'" in source
+    assert "'/initial_pose/reseed'" not in source
     assert "self.declare_parameter('immutable_map_node', 'map_server')" in source
     assert 'Repairing immutable map lifecycle' in source
     assert 'except (KeyboardInterrupt, ExternalShutdownException):' in source
     assert 'if node is not None:\n            node.destroy_node()' in source
+
+
+def _localization_status(generation, state, accepted, *, level=1):
+    values = [
+        SimpleNamespace(key='generation', value=str(generation)),
+        SimpleNamespace(key='state', value=state),
+        SimpleNamespace(key='accepted', value=str(accepted).lower()),
+    ]
+    return SimpleNamespace(status=[SimpleNamespace(
+        name='grid_localization', level=level, values=values)])
+
+
+def test_warn_waiting_status_is_healthy_but_not_ready_until_accepted():
+    logger = _Logger()
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _localization_generation=0,
+        _localization_state='',
+        _localization_accepted_generation=0,
+        _localization_generation_floor=0,
+        _tracker=SimpleNamespace(missing_requirements=lambda now: []),
+        get_logger=lambda: logger,
+    )
+
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(1, 'WAITING_FOR_SCAN', False))
+    assert gate._localization_state == 'WAITING_FOR_SCAN'
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+    assert logger.messages == []
+
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(1, 'WAITING_FOR_RESULT', False))
+    assert gate._localization_state == 'WAITING_FOR_RESULT'
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(1, 'ACCEPTED', True, level=0))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == []
+
+
+def test_reset_floor_requires_a_new_accepted_localization_generation():
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _localization_generation=4,
+        _localization_state='ACCEPTED',
+        _localization_accepted_generation=4,
+        _localization_generation_floor=4,
+        _tracker=SimpleNamespace(missing_requirements=lambda now: []),
+        get_logger=lambda: _Logger(),
+    )
+
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'WAITING_FOR_RESULT', False))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'ACCEPTED', True))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == []
 
 
 def test_reset_stop_gate_status_tracks_current_release_generation():

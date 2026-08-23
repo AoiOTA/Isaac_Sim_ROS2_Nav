@@ -10,25 +10,25 @@ modes:
     odometry_mode: realistic
     structure_tf_source: isaac
     odom_to_base_publisher: robot_localization
-    map_to_odom_publisher: AMCL
+    map_to_odom_publisher: GridLocalizationTFManager
     structure_tf_publisher: Isaac Sim
   realistic_rsp:
     odometry_mode: realistic
     structure_tf_source: rsp
     odom_to_base_publisher: robot_localization
-    map_to_odom_publisher: AMCL
+    map_to_odom_publisher: GridLocalizationTFManager
     structure_tf_publisher: robot_state_publisher
   estimated_isaac:
     odometry_mode: estimated
     structure_tf_source: isaac
     odom_to_base_publisher: robot_localization
-    map_to_odom_publisher: AMCL
+    map_to_odom_publisher: GridLocalizationTFManager
     structure_tf_publisher: Isaac Sim
   estimated_rsp:
     odometry_mode: estimated
     structure_tf_source: rsp
     odom_to_base_publisher: robot_localization
-    map_to_odom_publisher: AMCL
+    map_to_odom_publisher: GridLocalizationTFManager
     structure_tf_publisher: robot_state_publisher
 
 operations:
@@ -42,13 +42,13 @@ operations:
     publishes_initialpose: true
     starts_nav2: false
   localization:
-    localization_backend: amcl
-    posegraph_required: true
+    localization_backend: grid
+    posegraph_required: false
     occupancy_map_required: true
     starts_nav2: false
   navigation:
-    localization_backend: amcl
-    posegraph_required: true
+    localization_backend: grid
+    posegraph_required: false
     occupancy_map_required: true
     starts_nav2: true
 
@@ -57,7 +57,7 @@ localization_map_contracts:
     posegraph_required: true
     occupancy_map_required: true
   occupancy_only:
-    localization_owner: amcl
+    localization_owner: grid
     posegraph_required: false
     occupancy_map_required: true
     route_graph_required: true

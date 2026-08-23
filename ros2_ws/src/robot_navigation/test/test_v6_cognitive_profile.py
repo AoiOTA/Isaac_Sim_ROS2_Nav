@@ -13,6 +13,7 @@ def test_c4_profile_routes_cognition_through_plugins_not_raw_depth():
     )
     controller = document['controller_server']['ros__parameters']['FollowPath']
     assert controller['critics'][-1] == 'CognitiveRiskCritic'
+    assert 'GoalAngleCritic' not in controller['critics']
     # Phase 1: cognitive chain neutralized to shadow while the module2-side
     # root cause of the run#7 G1 exit deadlock is fixed; restore 'active'
     # in Phase 2.  Evidence: v6_g1_exit_rootcause_20260823.
@@ -23,7 +24,8 @@ def test_c4_profile_routes_cognition_through_plugins_not_raw_depth():
         assert params['cognitive_obstacle_layer']['mode'] == 'shadow'
         assert params['cognitive_obstacle_layer'][
             'maximum_ood_probability'] == 0.2
-        assert params['depth_voxel_layer']['enabled'] is False
+        assert 'depth_voxel_layer' not in params
+        assert 'depth_stvl_layer' not in params
         assert all('stvl' not in plugin.lower() for plugin in params['plugins'])
 
 

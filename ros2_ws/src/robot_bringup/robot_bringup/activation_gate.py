@@ -7,6 +7,7 @@ import threading
 import time
 
 from action_msgs.srv import CancelGoal
+from diagnostic_msgs.msg import DiagnosticArray
 from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState, GetState
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
@@ -30,7 +31,6 @@ from robot_bringup.readiness import ReadinessConfig, ReadinessTracker
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import Empty, String
-from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformException, TransformListener
 
 
@@ -43,6 +43,7 @@ DEFAULT_MANAGED_NODES = [
     'collision_monitor',
     'bt_navigator',
 ]
+LOCALIZATION_STATUS_KEYS = ('generation', 'state', 'accepted')
 
 
 class Nav2ActivationGate(Node):
@@ -69,9 +70,6 @@ class Nav2ActivationGate(Node):
         )
         self.declare_parameter('managed_nodes', DEFAULT_MANAGED_NODES)
         self.declare_parameter('immutable_map_node', 'map_server')
-        self.declare_parameter('initial_pose_source', 'auto')
-        self.declare_parameter(
-            'initial_pose_reseed_service', '/initial_pose/reseed')
         self.declare_parameter(
             'reset_stop_gate_parameter_service',
             '/isaac_navigation_sim/set_parameters',
@@ -82,9 +80,10 @@ class Nav2ActivationGate(Node):
             self.get_parameter('startup_timeout_policy').value
         ).strip().lower()
         if self._startup_timeout_policy not in {
-                'fail_closed', 'wait_for_seed'}:
+                'fail_closed', 'wait_for_localization'}:
             raise ValueError(
-                'startup_timeout_policy must be fail_closed or wait_for_seed')
+                'startup_timeout_policy must be fail_closed or '
+                'wait_for_localization')
         self._recovery_timeout = self._positive_parameter(
             'recovery_timeout')
         self._recovery_service_timeout = self._positive_parameter(
@@ -127,11 +126,6 @@ class Nav2ActivationGate(Node):
         if self._immutable_map_node in self._managed_nodes:
             raise ValueError(
                 'immutable_map_node must be independent from managed_nodes')
-        self._initial_pose_source = str(
-            self.get_parameter('initial_pose_source').value)
-        if self._initial_pose_source not in {'auto', 'rviz'}:
-            raise ValueError('initial_pose_source must be auto or rviz')
-
         self._tracker = ReadinessTracker(readiness_config)
         self._started_at = time.monotonic()
         self._last_status_at = self._started_at
@@ -175,6 +169,10 @@ class Nav2ActivationGate(Node):
         self._stop_gate_held = True
         self._stop_gate_release_in_flight = False
         self._stop_gate_release_token = None
+        self._localization_generation = 0
+        self._localization_state = ''
+        self._localization_accepted_generation = 0
+        self._localization_generation_floor = 0
 
         best_effort = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -214,6 +212,12 @@ class Nav2ActivationGate(Node):
             self._stop_gate_status_callback,
             transient_local,
         )
+        self._localization_status_subscription = self.create_subscription(
+            DiagnosticArray,
+            '/bio_nav/localization/status',
+            self._localization_status_callback,
+            transient_local,
+        )
 
         self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -242,9 +246,6 @@ class Nav2ActivationGate(Node):
             ClearEntireCostmap,
             '/local_costmap/clear_entirely_local_costmap',
         )
-        reseed_service = str(
-            self.get_parameter('initial_pose_reseed_service').value)
-        self._reseed_client = self.create_client(Trigger, reseed_service)
         stop_gate_service = str(
             self.get_parameter('reset_stop_gate_parameter_service').value)
         self._stop_gate_release_client = self.create_client(
@@ -316,8 +317,57 @@ class Nav2ActivationGate(Node):
             self._stop_gate_eligible_generation = eligible
             self._stop_gate_held = held
 
+    def _localization_status_callback(self, message):
+        candidates = [
+            status for status in message.status
+            if status.name == 'grid_localization'
+        ]
+        if len(candidates) != 1:
+            self.get_logger().warning(
+                'ignoring localization status without exactly one '
+                'grid_localization entry')
+            return
+        values = candidates[0].values
+        keyed = {item.key: item.value for item in values}
+        if (len(keyed) != len(values)
+                or any(key not in keyed for key in LOCALIZATION_STATUS_KEYS)):
+            self.get_logger().warning(
+                'ignoring localization status with invalid fixed keys')
+            return
+        try:
+            generation = int(keyed['generation'])
+        except (TypeError, ValueError):
+            generation = 0
+        state = keyed['state'].strip().upper()
+        accepted_text = keyed['accepted'].strip().lower()
+        if (generation < 1 or accepted_text not in {'true', 'false'}):
+            self.get_logger().warning(
+                'ignoring localization status with invalid generation or '
+                'accepted value')
+            return
+        accepted = accepted_text == 'true'
+        if accepted != (state == 'ACCEPTED'):
+            self.get_logger().warning(
+                'ignoring localization status with inconsistent '
+                'state/accepted values')
+            return
+        with self._state_query_lock:
+            if generation < self._localization_generation:
+                return
+            if (generation == self._localization_accepted_generation
+                    and not accepted):
+                return
+            self._localization_generation = generation
+            self._localization_state = state
+            if accepted:
+                self._localization_accepted_generation = generation
+
     def _handle_epoch_event(self, event):
         with self._state_query_lock:
+            self._localization_generation_floor = max(
+                self._localization_generation_floor,
+                self._localization_accepted_generation,
+            )
             self.get_logger().warning(
                 f'Simulation time {event.kind} detected: '
                 f'{event.previous_stamp_s:.9f} -> {event.stamp_s:.9f}; '
@@ -373,7 +423,7 @@ class Nav2ActivationGate(Node):
         if now < self._next_attempt_at:
             return
 
-        missing = self._tracker.missing_requirements(now)
+        missing = self._missing_readiness_requirements(now)
         if 'latched /map' in missing:
             missing.extend(self._ensure_immutable_map_active(now))
         service_missing = self._missing_lifecycle_services()
@@ -389,31 +439,45 @@ class Nav2ActivationGate(Node):
         self._start_state_query('activation')
 
     def _handle_startup_timeout(self, now):
-        """Apply the explicit startup deadline policy.
+        """
+        Apply the explicit startup deadline policy.
 
-        ``wait_for_seed`` is an enrollment mode: readiness checks and their
-        diagnostics continue, but Nav2 remains inactive until every normal
-        requirement is satisfied. All other gate failures remain fatal.
+        ``wait_for_localization`` keeps readiness checks and diagnostics
+        running, but Nav2 remains inactive until every normal requirement is
+        satisfied. All other gate failures remain fatal.
         """
         elapsed = now - self._started_at
         if elapsed < self._startup_timeout:
             return False
-        missing = ', '.join(self._tracker.missing_requirements(now))
+        missing = ', '.join(self._missing_readiness_requirements(now))
         detail = (
             f'Nav2 activation gate timed out after {elapsed:.1f}s; '
             f'missing={missing or "none"}; '
             f'last_failure={self._last_failure or "none"}; '
             f'managed_nodes={self._managed_nodes}'
         )
-        if self._startup_timeout_policy == 'wait_for_seed':
+        if self._startup_timeout_policy == 'wait_for_localization':
             if not self._startup_timeout_reported:
                 self.get_logger().warning(
-                    f'{detail}; startup_timeout_policy=wait_for_seed, '
+                    f'{detail}; startup_timeout_policy=wait_for_localization, '
                     'continuing diagnostics with Nav2 inactive')
                 self._startup_timeout_reported = True
             return False
         self._set_fatal(detail)
         return True
+
+    def _missing_readiness_requirements(self, now):
+        missing = self._tracker.missing_requirements(now)
+        if (self._localization_accepted_generation
+                <= self._localization_generation_floor):
+            detail = (
+                f'generation>{self._localization_generation_floor}; '
+                f'latest={self._localization_generation} '
+                f'state={self._localization_state or "none"}'
+            )
+            missing.append(
+                '/bio_nav/localization/status ACCEPTED for ' + detail)
+        return missing
 
     def _ensure_immutable_map_active(self, now):
         """Repair a missed launch transition before waiting indefinitely on /map."""
@@ -1030,7 +1094,6 @@ class Nav2ActivationGate(Node):
 
     def _mark_active(self, *, recovered):
         """Release the current reset generation before declaring readiness."""
-
         if self._stop_gate_release_in_flight:
             return
         generation = self._stop_gate_generation
@@ -1128,8 +1191,8 @@ class Nav2ActivationGate(Node):
             self._set_recovery_stage('cancel_goal')
             self.get_logger().warning(
                 'Starting Nav2 time-jump recovery: cancel goal, pause '
-                'lifecycle, clear costmaps, reseed localization, wait for '
-                'fresh epoch data, then resume; '
+                'lifecycle, clear costmaps, wait for Integration-owned grid '
+                'relocalization and fresh epoch data, then resume; '
                 f'event={event.kind}, epoch={event.epoch}')
 
     def _invalidate_async_work(self):
@@ -1214,27 +1277,12 @@ class Nav2ActivationGate(Node):
                     self._local_clear_client,
                     ClearEntireCostmap.Request(),
                     'clear local costmap',
-                    'reseed',
+                    'waiting_localization',
                     now,
                     required=True,
                 )
-            elif stage == 'reseed':
-                if self._initial_pose_source == 'auto':
-                    self._call_recovery_service(
-                        self._reseed_client,
-                        Trigger.Request(),
-                        'request calibrated initial-pose reseed',
-                        'waiting_readiness',
-                        now,
-                        required=True,
-                    )
-                else:
-                    self.get_logger().warning(
-                        'initial_pose_source=rviz: waiting for a new RViz '
-                        '2D Pose Estimate in the current simulation epoch')
-                    self._set_recovery_stage('waiting_readiness')
-            elif stage == 'waiting_readiness':
-                missing = self._tracker.missing_requirements(now)
+            elif stage == 'waiting_localization':
+                missing = self._missing_readiness_requirements(now)
                 if missing:
                     self._log_waiting(now, [
                         'recovery ' + item for item in missing])

@@ -14,11 +14,11 @@ def generate_launch_description():
         / 'ros_stack.launch.py'
     )
     return LaunchDescription([
-        DeclareLaunchArgument('odometry_mode', default_value='ideal'),
+        DeclareLaunchArgument('odometry_mode', default_value='estimated'),
         DeclareLaunchArgument('structure_tf_source', default_value='isaac'),
         DeclareLaunchArgument('posegraph_file', default_value=''),
         DeclareLaunchArgument(
-            'localization_map_contract', default_value='posegraph_bundle'),
+            'localization_map_contract', default_value='occupancy_only'),
         DeclareLaunchArgument('localization_owner', default_value='auto'),
         DeclareLaunchArgument('route_graph_file', default_value=''),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
@@ -39,17 +39,7 @@ def generate_launch_description():
             'lidar_odometry_backend', default_value='off'),
         DeclareLaunchArgument(
             'lidar_odometry_params_file', default_value=''),
-        DeclareLaunchArgument(
-            'localization_profile', default_value='kujiale'),
-        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
-        DeclareLaunchArgument(
-            'spawn_poses_file',
-            default_value=EnvironmentVariable(
-                'ISAAC_NAV_SPAWN_POSES', default_value='')),
-        DeclareLaunchArgument(
-            'spawn_pose_name', default_value='mapping_start'),
-        DeclareLaunchArgument('initial_pose_source', default_value='auto'),
         DeclareLaunchArgument('interactive', default_value='true'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('rviz_config', default_value='auto'),
@@ -94,14 +84,7 @@ def generate_launch_description():
                     'lidar_odometry_backend'),
                 'lidar_odometry_params_file': LaunchConfiguration(
                     'lidar_odometry_params_file'),
-                'localization_profile': LaunchConfiguration(
-                    'localization_profile'),
-                'amcl_params_file': LaunchConfiguration('amcl_params_file'),
                 'nav2_params_file': LaunchConfiguration('nav2_params_file'),
-                'spawn_poses_file': LaunchConfiguration('spawn_poses_file'),
-                'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
-                'initial_pose_source': LaunchConfiguration(
-                    'initial_pose_source'),
                 'interactive': LaunchConfiguration('interactive'),
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'rviz_config': LaunchConfiguration('rviz_config'),

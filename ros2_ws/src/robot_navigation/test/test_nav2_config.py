@@ -58,32 +58,17 @@ def test_planner_controller_and_costmaps_are_strictly_two_dimensional():
     # Nav2 Jazzy declares these two parameters as integers.
     assert type(local['width']) is int
     assert type(local['height']) is int
-    assert local['plugins'] == [
-        'obstacle_layer', 'depth_voxel_layer', 'inflation_layer']
+    assert local['plugins'] == ['obstacle_layer', 'inflation_layer']
     assert global_costmap['plugins'] == [
-        'static_layer', 'obstacle_layer', 'depth_voxel_layer',
-        'inflation_layer']
-    voxel = local['depth_voxel_layer']
-    assert voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
-    # Costmap2D declares observation_sources as a string parameter, unlike the
-    # Collision Monitor's string-array parameter with the same name.
-    assert voxel['observation_sources'] == 'camera_depth'
-    assert voxel['camera_depth']['topic'] == '/camera/front/depth/points'
-    assert voxel['camera_depth']['sensor_frame'] == 'camera_front_optical_frame'
-    assert voxel['camera_depth']['data_type'] == 'PointCloud2'
-    assert voxel['camera_depth']['marking'] is True
-    assert voxel['camera_depth']['clearing'] is False
-    assert voxel['camera_depth']['min_obstacle_height'] == 0.05
-    assert voxel['camera_depth']['max_obstacle_height'] == 0.50
-    assert voxel['camera_depth']['obstacle_max_range'] == 2.0
-    assert voxel['camera_depth']['raytrace_max_range'] == 2.5
-    assert voxel['camera_depth']['observation_persistence'] == 1.0
-    assert voxel['camera_depth']['expected_update_rate'] == 0.0
-    assert voxel['combination_method'] == 1
-    global_voxel = global_costmap['depth_voxel_layer']
-    assert global_voxel['plugin'] == 'nav2_costmap_2d::VoxelLayer'
-    assert global_voxel['camera_depth']['clearing'] is True
-    assert global_voxel['camera_depth']['observation_persistence'] == 1.0
+        'static_layer', 'obstacle_layer', 'inflation_layer']
+    for costmap in (local, global_costmap):
+        assert 'depth_voxel_layer' not in costmap
+        assert 'depth_stvl_layer' not in costmap
+        assert all(
+            source.get('data_type') != 'PointCloud2'
+            for layer in costmap.values() if isinstance(layer, dict)
+            for source in layer.values() if isinstance(source, dict)
+        )
     assert local['obstacle_layer']['scan']['topic'] == '/scan_safety'
     assert local['obstacle_layer']['scan']['raytrace_min_range'] == 0.05
     assert local['obstacle_layer']['scan']['obstacle_min_range'] == 0.05
@@ -268,9 +253,8 @@ def test_dynamic_avoidance_overlay_preserves_validated_navigation_geometry():
     assert _params(_config(), 'behavior_server')['simulate_ahead_time'] == 0.0
     assert base_local['inflation_layer']['inflation_radius'] == 0.40
     assert 'near_collision_cost' not in base_controller['FollowPath']['CostCritic']
-    base_depth = base_local['depth_voxel_layer']
-    assert base_depth['plugin'] == 'nav2_costmap_2d::VoxelLayer'
-    assert base_depth['camera_depth']['marking'] is True
+    assert base_local['plugins'] == ['obstacle_layer', 'inflation_layer']
+    assert 'depth_voxel_layer' not in base_local
     dependencies = {
         item.text
         for item in ElementTree.parse(PACKAGE_ROOT / 'package.xml').getroot()
@@ -357,8 +341,11 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
 
     assert controller['enable_stamped_cmd_vel'] is False
     assert controller['controller_frequency'] == 10.0
+    assert controller['goal_checker']['plugin'] == \
+        'nav2_controller::PositionGoalChecker'
     assert controller['goal_checker']['xy_goal_tolerance'] == 0.20
-    assert controller['goal_checker']['yaw_goal_tolerance'] <= 0.174532925
+    assert 'yaw_goal_tolerance' not in controller['goal_checker']
+    assert 'GoalAngleCritic' not in controller['FollowPath']['critics']
     assert behavior['enable_stamped_cmd_vel'] is False
     assert smoother['enable_stamped_cmd_vel'] is False
     assert collision['enable_stamped_cmd_vel'] is False
@@ -379,6 +366,21 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in launch_source
     assert "package='nav2_velocity_smoother'" in launch_source
     assert "package='nav2_collision_monitor'" in launch_source
+
+
+def test_xy_only_goals_do_not_invent_rotation_shim_parameters():
+    config = _config()
+    controller = _params(config, 'controller_server')
+    planner = _params(config, 'planner_server')['GridBased']
+    launch_source = (
+        PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text()
+
+    assert controller['goal_checker']['plugin'] == \
+        'nav2_controller::PositionGoalChecker'
+    assert planner['use_final_approach_orientation'] is False
+    assert 'RotationShimController' not in launch_source
+    assert 'GoalAngleCritic' not in launch_source
+    assert 'rotate_to_goal_heading' not in controller['FollowPath']
 
 
 def test_mppi_terminal_reverse_limits_are_coherent():
@@ -480,12 +482,6 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
         assert inflation['inflation_radius'] <= 0.45
         assert inflation['cost_scaling_factor'] >= 6.0
 
-    voxel = local['depth_voxel_layer']
-    assert voxel['z_voxels'] == 16
-    # A front-only RGB-D camera must not turn every unobserved local column
-    # into a 2D unknown obstacle over currently free space.
-    assert voxel['unknown_threshold'] == voxel['z_voxels']
-
     assert planner['cost_travel_multiplier'] <= 1.5
     assert planner['tolerance'] == 0.10
     assert planner['tolerance'] < _params(config, 'controller_server')[
@@ -498,7 +494,8 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert controller['CostCritic']['cost_weight'] <= 2.5
     assert controller['CostCritic']['trajectory_point_step'] == 1
     assert controller['CostCritic']['collision_cost'] >= 1000000.0
-    assert controller['GoalAngleCritic']['threshold_to_consider'] == 0.20
+    assert 'GoalAngleCritic' not in controller['critics']
+    assert planner['use_final_approach_orientation'] is False
     assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30
 
 

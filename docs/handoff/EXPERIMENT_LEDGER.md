@@ -2506,3 +2506,30 @@
   vendor localizer, Nav2, or live TF run was started.
 - Remaining risk: live NITROS/QoS negotiation, delivery order, vendor result
   stamp echo, exact-stamp TF availability, and TF ownership are unverified.
+
+## 2026-08-23 — V6-GRID bringup and Nav2 production cutover
+
+- Goal: connect normal estimated localization/navigation bringup to the
+  existing Grid backend, remove Bringup reseed ownership, and freeze the
+  Phase-1 LiDAR-only XY-goal Nav2 profile.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `749ee7c3128c87d65560b40f5401231413f50bcc`; result is the single commit
+  containing `docs/handoff/V6_GRID_BRINGUP_NAV2_CUTOVER_20260823.md`.
+- Changed: non-Ideal `auto` localization owner is `grid`; normal wrappers use
+  `estimated + occupancy_only`; production launch no longer passes AMCL or
+  includes initial pose. ActivationGate only observes fixed-key Grid status
+  and TF, requires a newer accepted generation after reset, and never calls a
+  reseed/relocalize service. Nav2 uses PositionGoalChecker, no GoalAngleCritic,
+  LiDAR-only formal Costmaps, and OFF/shadow cognitive writes (M2/M3 active is
+  clamped to shadow during Phase 1).
+- Validation: source suite **252 passed, 10 skipped** (retired Attempt21 direct
+  depth contract); installed launch args show `estimated + occupancy_only +
+  auto`; isolated `/opt/ros/jazzy` build root
+  `/tmp/v6_grid_bringup_narrow.EXEMuz` built both owned packages; final colcon
+  result **270 tests, 0 errors, 0 failures, 10 skipped**; focused
+  flake8/pep257 and `git diff --check` PASS.
+- Verdict: **PASS (code/test/build only)**. No ROS graph, Isaac Sim, vendor
+  component, Nav2 motion, visual evidence, or qualification run was started.
+- Remaining risk/next: full-overlay launch and Phase 1B live smoke must verify
+  NITROS/status ordering, one Integration relocalize call per reset, one
+  `map->odom` owner, full TF, then the empty-house five-leg loop.

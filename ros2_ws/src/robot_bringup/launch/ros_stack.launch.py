@@ -13,7 +13,6 @@ from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
-import yaml
 
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
@@ -24,8 +23,8 @@ from robot_bringup.mode_contract import validate_mode
 from robot_bringup.mode_contract import validate_nav2_profile
 from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
-from robot_experiments.spawn_poses import load_spawn_pose
 from robot_localization_config.ekf_input_policy import validate_lidar_gate
+import yaml
 
 
 _TELEOP_SPEED_ARGUMENTS = (
@@ -51,8 +50,7 @@ def _write_cognitive_nav2_overlay(profile):
 
 
 def _write_activation_gate_runtime_overlay(
-        *, use_sim_time, initial_pose_source, startup_timeout,
-        startup_timeout_policy):
+        *, use_sim_time, startup_timeout, startup_timeout_policy):
     """Write runtime overrides under the gate's exact ROS node key."""
     normalized_use_sim_time = str(use_sim_time).strip().lower()
     if normalized_use_sim_time not in {'true', 'false'}:
@@ -66,7 +64,6 @@ def _write_activation_gate_runtime_overlay(
         'nav2_activation_gate': {
             'ros__parameters': {
                 'use_sim_time': normalized_use_sim_time == 'true',
-                'initial_pose_source': initial_pose_source,
                 'startup_timeout': normalized_startup_timeout,
                 'startup_timeout_policy': startup_timeout_policy,
             },
@@ -96,16 +93,20 @@ def _include(package, launch_file, arguments):
 
 
 def _launch_setup(context):
-    initial_pose_source = LaunchConfiguration(
-        'initial_pose_source').perform(context).strip().lower()
-    if initial_pose_source not in {'auto', 'rviz'}:
-        raise RuntimeError('initial_pose_source must be auto or rviz')
+    operation = LaunchConfiguration(
+        'operation').perform(context).strip().lower()
+    initial_pose_source = 'auto'
+    if operation in {'mapping', 'incremental_mapping'}:
+        initial_pose_source = LaunchConfiguration(
+            'initial_pose_source').perform(context).strip().lower()
+        if initial_pose_source not in {'auto', 'rviz'}:
+            raise RuntimeError('initial_pose_source must be auto or rviz')
     project_root_value = LaunchConfiguration(
         'project_root').perform(context).strip()
     spawn_poses_file = LaunchConfiguration(
         'spawn_poses_file').perform(context).strip()
     selection = validate_mode(
-        operation=LaunchConfiguration('operation').perform(context),
+        operation=operation,
         odometry_mode=LaunchConfiguration('odometry_mode').perform(context),
         structure_tf_source=LaunchConfiguration(
             'structure_tf_source').perform(context),
@@ -126,16 +127,6 @@ def _launch_setup(context):
         route_graph_file=LaunchConfiguration(
             'route_graph_file').perform(context),
     )
-    selected_spawn = None
-    if (selection.operation in {'localization', 'navigation'}
-            and initial_pose_source == 'auto'
-            and (selection.odometry_mode == 'ideal'
-                 or selection.localization_owner == 'odom_static')):
-        selected_spawn = load_spawn_pose(
-            spawn_poses_file,
-            LaunchConfiguration('spawn_pose_name').perform(context),
-            require_calibrated=True,
-        )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
     posegraph_calibration_value = LaunchConfiguration(
         'posegraph_calibration').perform(context).strip().lower()
@@ -145,7 +136,7 @@ def _launch_setup(context):
     if posegraph_calibration:
         raise RuntimeError(
             'posegraph_calibration is retired from localization bringup; '
-            'use mapping to rebuild maps and AMCL for estimated localization')
+            'use mapping to rebuild maps and V6-GRID for estimated localization')
     use_self_filter = LaunchConfiguration('use_self_filter').perform(context)
     if (selection.operation == 'incremental_mapping'
             and initial_pose_source != 'auto'):
@@ -165,7 +156,6 @@ def _launch_setup(context):
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
     odometry_share = Path(get_package_share_directory('robot_odometry'))
-    mapping_share = Path(get_package_share_directory('robot_mapping'))
     navigation_share = Path(get_package_share_directory('robot_navigation'))
     ekf_profile = LaunchConfiguration('ekf_profile').perform(context).strip()
     lidar_odometry_backend = LaunchConfiguration(
@@ -199,18 +189,6 @@ def _launch_setup(context):
         raise RuntimeError(
             'loaded EKF params reference LiDAR odometry and require '
             'lidar_odometry_backend=rf2o')
-    localization_profile = LaunchConfiguration(
-        'localization_profile').perform(context).strip().lower()
-    if localization_profile not in {'kujiale', 'rivermark'}:
-        raise RuntimeError(
-            'localization_profile must be kujiale or rivermark')
-    requested_amcl_params = LaunchConfiguration(
-        'amcl_params_file').perform(context).strip()
-    amcl_params_file = (
-        Path(requested_amcl_params).expanduser()
-        if requested_amcl_params
-        else mapping_share / 'config' / f'amcl_{localization_profile}.yaml'
-    )
     nav2_profile = validate_nav2_profile(
         LaunchConfiguration('nav2_profile').perform(context))
     bringup_share = Path(get_package_share_directory('robot_bringup'))
@@ -280,15 +258,16 @@ def _launch_setup(context):
         f'map_bundle={selection.map_bundle_sha256 or "none"}'
     ))]
 
-    actions.append(Node(
-        package='robot_bringup',
-        executable='initial_pose_policy',
-        name='initial_pose_policy',
-        output='screen',
-        parameters=[{
-            'initial_pose_source': initial_pose_source,
-        }],
-    ))
+    if selection.operation in {'mapping', 'incremental_mapping'}:
+        actions.append(Node(
+            package='robot_bringup',
+            executable='initial_pose_policy',
+            name='initial_pose_policy',
+            output='screen',
+            parameters=[{
+                'initial_pose_source': initial_pose_source,
+            }],
+        ))
 
     actions.append(_include(
         'robot_description',
@@ -428,35 +407,9 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'map_file': selection.occupancy_map_file,
                     'localization_backend': selection.localization_owner,
-                    'amcl_params_file': str(amcl_params_file),
-                    'map_to_odom_x': (
-                        str(selected_spawn.map.position[0])
-                        if selected_spawn is not None else '0.0'
-                    ),
-                    'map_to_odom_y': (
-                        str(selected_spawn.map.position[1])
-                        if selected_spawn is not None else '0.0'
-                    ),
-                    'map_to_odom_yaw_deg': (
-                        str(selected_spawn.map.yaw_deg)
-                        if selected_spawn is not None else '0.0'
-                    ),
                 },
             ),
         ])
-        if initial_pose_source == 'auto':
-            actions.append(_include(
-                'robot_experiments',
-                'initial_pose.launch.py',
-                {
-                    'spawn_poses_file': LaunchConfiguration(
-                        'spawn_poses_file').perform(context),
-                    'spawn_pose_name': LaunchConfiguration(
-                        'spawn_pose_name').perform(context),
-                    'wait_for_odom_to_base_tf': 'true',
-                    'stay_alive_for_reseed': 'true',
-                },
-            ))
 
     if selection.operation == 'navigation':
         navigation_arguments = {
@@ -500,7 +453,6 @@ def _launch_setup(context):
         )
         gate_runtime_overlay = _write_activation_gate_runtime_overlay(
             use_sim_time=use_sim_time,
-            initial_pose_source=initial_pose_source,
             startup_timeout=LaunchConfiguration(
                 'activation_startup_timeout').perform(context),
             startup_timeout_policy=LaunchConfiguration(
@@ -607,7 +559,7 @@ def generate_launch_description():
             description='posegraph_bundle or explicit AMCL occupancy_only'),
         DeclareLaunchArgument(
             'localization_owner', default_value='auto',
-            description='auto, ideal, or amcl'),
+            description='auto, ideal, or grid'),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
         # Keep the manifest explicit at the core-launch boundary so direct
@@ -639,9 +591,6 @@ def generate_launch_description():
             'lidar_odometry_backend', default_value='off'),
         DeclareLaunchArgument(
             'lidar_odometry_params_file', default_value=''),
-        DeclareLaunchArgument(
-            'localization_profile', default_value='kujiale'),
-        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument(
             'nav2_profile',
@@ -674,7 +623,7 @@ def generate_launch_description():
             description='bounded Nav2 activation readiness deadline'),
         DeclareLaunchArgument(
             'activation_startup_policy', default_value='fail_closed',
-            description='fail_closed or wait_for_seed'),
+            description='fail_closed or wait_for_localization'),
         DeclareLaunchArgument(
             'spawn_poses_file',
             default_value=EnvironmentVariable(
@@ -687,7 +636,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'initial_pose_source',
             default_value='auto',
-            description='auto or rviz (localization/navigation only)'),
+            description='auto or rviz (mapping only)'),
         DeclareLaunchArgument(
             'interactive',
             default_value='true',

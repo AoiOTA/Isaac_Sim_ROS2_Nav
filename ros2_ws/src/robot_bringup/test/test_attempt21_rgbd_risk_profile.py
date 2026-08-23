@@ -4,6 +4,16 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
+
+pytestmark = pytest.mark.skip(
+    reason=(
+        'Attempt21 direct RGB-D Costmap profiles are retired by the '
+        'V6-GRID LiDAR-only production Costmap contract'
+    )
+)
+
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 WORKSPACE_ROOT = PACKAGE_ROOT.parents[2]

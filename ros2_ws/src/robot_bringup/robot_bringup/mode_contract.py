@@ -17,7 +17,7 @@ ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 LOCALIZATION_MAP_CONTRACTS = frozenset({
     'posegraph_bundle', 'occupancy_only'})
-LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'amcl', 'odom_static'})
+LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'grid'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
     'v6_low_obstacle_isolation',
@@ -37,8 +37,8 @@ _COGNITIVE_PROFILE_CONTRACT = {
     'M3': ('active', 'active', True),
 }
 _A21_COGNITIVE_CRITICS = (
-    'ConstraintCritic', 'CostCritic', 'GoalCritic', 'GoalAngleCritic',
-    'PathAlignCritic', 'PathFollowCritic', 'PathAngleCritic',
+    'ConstraintCritic', 'CostCritic', 'GoalCritic', 'PathAlignCritic',
+    'PathFollowCritic', 'PathAngleCritic',
     'VelocityDeadbandCritic', 'CognitiveRiskCritic',
 )
 
@@ -135,14 +135,27 @@ def validate_cognitive_graph_mode(value):
 
 
 def cognitive_nav2_parameters(profile):
-    """Return the last-precedence exact-node parameters for M0--M3."""
+    """
+    Return the Phase-1 exact-node parameters for M0--M3.
+
+    Phase 1 may subscribe in shadow, but it must not let an M2/M3 selection
+    restore active cognitive writes before the base V6-GRID loop is closed.
+    """
+    obstacle_mode = (
+        'shadow' if profile.obstacle_layer_mode == 'active'
+        else profile.obstacle_layer_mode
+    )
+    critic_mode = (
+        'shadow' if profile.risk_critic_mode == 'active'
+        else profile.risk_critic_mode
+    )
     return {
         'controller_server': {
             'ros__parameters': {
                 'FollowPath': {
                     'critics': list(_A21_COGNITIVE_CRITICS),
                     'CognitiveRiskCritic': {
-                        'mode': profile.risk_critic_mode,
+                        'mode': critic_mode,
                     },
                 },
             },
@@ -151,7 +164,7 @@ def cognitive_nav2_parameters(profile):
             'local_costmap': {
                 'ros__parameters': {
                     'cognitive_obstacle_layer': {
-                        'mode': profile.obstacle_layer_mode,
+                        'mode': obstacle_mode,
                     },
                 },
             },
@@ -160,7 +173,7 @@ def cognitive_nav2_parameters(profile):
             'global_costmap': {
                 'ros__parameters': {
                     'cognitive_obstacle_layer': {
-                        'mode': profile.obstacle_layer_mode,
+                        'mode': obstacle_mode,
                     },
                 },
             },
@@ -190,7 +203,8 @@ def _positive_profile_integer(value, location):
 
 
 def validate_nav2_profile_params_file(path):
-    """Parse and validate an MPPI overlay before launch creates ROS nodes.
+    """
+    Parse and validate an MPPI overlay before launch creates ROS nodes.
 
     Nav2 1.3.12 aborts the controller process when the configured control
     period is longer than MPPI's model time step.  Keeping this check in the
@@ -352,21 +366,14 @@ def validate_mode(
 
     localization_operation = operation in {'localization', 'navigation'}
     expected_localization_owner = (
-        'ideal' if odometry_mode == 'ideal' else 'amcl')
+        'ideal' if odometry_mode == 'ideal' else 'grid')
     if localization_operation:
         resolved_localization_owner = (
             expected_localization_owner
             if requested_localization_owner == 'auto'
             else requested_localization_owner
         )
-        if resolved_localization_owner == 'odom_static':
-            # Dev A/B arm: fixed map->odom without AMCL scan corrections.
-            if odometry_mode == 'ideal':
-                raise ValueError(
-                    'localization_owner=odom_static conflicts with '
-                    'odometry_mode=ideal; ideal odometry already owns '
-                    'map->odom')
-        elif resolved_localization_owner != expected_localization_owner:
+        if resolved_localization_owner != expected_localization_owner:
             raise ValueError(
                 f'localization_owner={resolved_localization_owner} conflicts '
                 f'with odometry_mode={odometry_mode}; expected '
@@ -383,18 +390,22 @@ def validate_mode(
             raise ValueError(
                 'localization_map_contract=occupancy_only is valid only for '
                 'localization or navigation mode')
-        if resolved_localization_owner != 'amcl':
+        if resolved_localization_owner != 'grid':
             raise ValueError(
                 'localization_map_contract=occupancy_only requires '
-                'localization_owner=amcl')
+                'localization_owner=grid')
         if prefix:
             raise ValueError(
                 'posegraph_file must be empty for the occupancy_only '
                 'localization map contract')
-        if not route_graph:
+        if operation == 'navigation' and not route_graph:
             raise ValueError(
                 'route_graph_file is required for the occupancy_only '
                 'localization map contract')
+    elif resolved_localization_owner == 'grid':
+        raise ValueError(
+            'localization_owner=grid requires '
+            'localization_map_contract=occupancy_only')
 
     if operation == 'mapping' and prefix:
         raise ValueError(
@@ -423,7 +434,9 @@ def validate_mode(
         if check_posegraph_files and not Path(occupancy_map).is_file():
             raise ValueError(
                 f'occupancy map YAML does not exist: {occupancy_map}')
-        if (map_contract == 'occupancy_only' and check_posegraph_files
+        if (operation == 'navigation'
+                and map_contract == 'occupancy_only'
+                and check_posegraph_files
                 and not Path(route_graph).is_file()):
             raise ValueError(
                 f'route graph does not exist: {route_graph}')

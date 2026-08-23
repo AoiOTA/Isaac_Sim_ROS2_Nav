@@ -22,26 +22,22 @@ def _load_launch_module():
 class _ActivationGateParameterProbe(Node):
     def __init__(self):
         super().__init__('nav2_activation_gate')
-        self.declare_parameter('initial_pose_source', 'auto')
         self.declare_parameter('startup_timeout', 30.0)
         self.declare_parameter('startup_timeout_policy', 'fail_closed')
 
 
 @pytest.mark.parametrize(
-    ('use_sim_time', 'initial_pose_source', 'startup_timeout',
-     'startup_timeout_policy'),
+    ('use_sim_time', 'startup_timeout', 'startup_timeout_policy'),
     [
-        ('false', 'auto', '41.0', 'fail_closed'),
-        ('false', 'rviz', '7.5', 'wait_for_seed'),
+        ('false', '41.0', 'fail_closed'),
+        ('false', '7.5', 'wait_for_localization'),
     ],
 )
 def test_exact_node_runtime_overlay_wins_during_rclpy_parameter_parsing(
-        use_sim_time, initial_pose_source, startup_timeout,
-        startup_timeout_policy):
+        use_sim_time, startup_timeout, startup_timeout_policy):
     launch_module = _load_launch_module()
     overlay = launch_module._write_activation_gate_runtime_overlay(
         use_sim_time=use_sim_time,
-        initial_pose_source=initial_pose_source,
         startup_timeout=startup_timeout,
         startup_timeout_policy=startup_timeout_policy,
     )
@@ -55,8 +51,6 @@ def test_exact_node_runtime_overlay_wins_during_rclpy_parameter_parsing(
         node = _ActivationGateParameterProbe()
         assert node.get_parameter('use_sim_time').value is (
             use_sim_time == 'true')
-        assert node.get_parameter('initial_pose_source').value == \
-            initial_pose_source
         assert node.get_parameter('startup_timeout').value == \
             float(startup_timeout)
         assert node.get_parameter('startup_timeout_policy').value == \

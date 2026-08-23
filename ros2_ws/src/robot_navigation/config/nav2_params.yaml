@@ -46,15 +46,11 @@ controller_server:
       movement_time_allowance: 20.0
 
     goal_checker:
-      plugin: nav2_controller::SimpleGoalChecker
+      plugin: nav2_controller::PositionGoalChecker
       stateful: true
-      # Keep route progression independent from the report's 0.25 m GT gate,
-      # but do not require the final 1--2 cm that can trap a physical run in
-      # repeated recoveries. The 0.20 m Nav2 radius is a strict 5 cm margin
-      # inside the report gate and lets a visibly settled room goal dispatch
-      # the following waypoint.
+      # V6 route points are XY-only. PositionGoalChecker intentionally ignores
+      # the protocol orientation field and never adds a terminal yaw gate.
       xy_goal_tolerance: 0.20
-      yaw_goal_tolerance: 0.174532925
 
     FollowPath:
       plugin: nav2_mppi_controller::MPPIController
@@ -115,7 +111,6 @@ controller_server:
         - ConstraintCritic
         - CostCritic
         - GoalCritic
-        - GoalAngleCritic
         - PathAlignCritic
         - PathFollowCritic
         - PathAngleCritic
@@ -147,17 +142,6 @@ controller_server:
         cost_power: 1
         cost_weight: 4.5
         threshold_to_consider: 1.4
-
-      GoalAngleCritic:
-        enabled: true
-        cost_power: 1
-        cost_weight: 4.0
-        # The intermediate yaw intentionally faces the following leg, not
-        # necessarily the incoming leg. Do not rotate toward it one metre
-        # early: that leaves the robot facing away from its still-unreached
-        # position goal and forces a fragile reverse correction. Start final
-        # heading alignment only after the 0.20 m position gate is reached.
-        threshold_to_consider: 0.20
 
       # 窄通道内膨胀代价占比天然较高，仍保持 PathAlign 工作以避免左右摆动。
       PathAlignCritic:
@@ -227,7 +211,7 @@ local_costmap:
       # small numerical shell without consuming a narrow doorway twice.
       footprint_padding: 0.005
 
-      plugins: [obstacle_layer, depth_voxel_layer, inflation_layer]
+      plugins: [obstacle_layer, inflation_layer]
 
       obstacle_layer:
         plugin: nav2_costmap_2d::ObstacleLayer
@@ -250,53 +234,6 @@ local_costmap:
           raytrace_min_range: 0.05
           obstacle_max_range: 25.0
           obstacle_min_range: 0.05
-
-      # Keep RGB-D observations in an independent layer. This prevents the
-      # LiDAR clearing rays from clearing low obstacles marked by the camera.
-      depth_voxel_layer:
-        plugin: nav2_costmap_2d::VoxelLayer
-        enabled: true
-        footprint_clearing_enabled: true
-        combination_method: 1
-        publish_voxel_map: true
-        tf_filter_tolerance: 0.10
-
-        origin_z: 0.0
-        z_resolution: 0.05
-        z_voxels: 16
-        # A front-only camera leaves most columns unobserved at every frame.
-        # Do not project a fully unobserved 16-voxel column as NO_INFORMATION:
-        # it can overwrite a StaticLayer free cell beside/behind the robot and
-        # block the final lateral approach to a room goal. Observed depth
-        # returns still mark low obstacles normally.
-        unknown_threshold: 16
-        mark_threshold: 0
-        max_obstacle_height: 0.50
-
-        # Costmap2D observation_sources is declared as a string in Nav2 Jazzy;
-        # multiple sources, when needed, are separated by spaces.
-        observation_sources: camera_depth
-
-        camera_depth:
-          topic: /camera/front/depth/points
-          sensor_frame: camera_front_optical_frame
-          data_type: PointCloud2
-          transport_type: raw
-          marking: true
-          # Static low boxes may leave the front camera FOV while the robot
-          # turns around them. Keep their latest marking long enough for the
-          # controller to finish a bypass. Dynamic runs replace this layer
-          # with STVL in nav2_dynamic_avoidance.yaml.
-          clearing: false
-          min_obstacle_height: 0.05
-          max_obstacle_height: 0.50
-          obstacle_min_range: 0.05
-          obstacle_max_range: 2.0
-          raytrace_min_range: 0.05
-          raytrace_max_range: 2.5
-          observation_persistence: 1.0
-          expected_update_rate: 0.0
-          inf_is_valid: false
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
@@ -328,10 +265,7 @@ global_costmap:
       footprint: "[[0.255, 0.210], [0.255, -0.210], [-0.230, -0.210], [-0.230, 0.210]]"
       footprint_padding: 0.005
 
-      # Static low boxes are below the LiDAR plane, so the global planner must
-      # also see their RGB-D marking. Dynamic runs explicitly remove this
-      # layer in their STVL overlay to avoid retaining a moving actor trail.
-      plugins: [static_layer, obstacle_layer, depth_voxel_layer, inflation_layer]
+      plugins: [static_layer, obstacle_layer, inflation_layer]
 
       static_layer:
         plugin: nav2_costmap_2d::StaticLayer
@@ -354,37 +288,6 @@ global_costmap:
           raytrace_min_range: 0.40
           obstacle_max_range: 25.0
           obstacle_min_range: 0.40
-
-      depth_voxel_layer:
-        plugin: nav2_costmap_2d::VoxelLayer
-        enabled: true
-        footprint_clearing_enabled: true
-        combination_method: 1
-        publish_voxel_map: true
-        tf_filter_tolerance: 0.10
-        origin_z: 0.0
-        z_resolution: 0.05
-        z_voxels: 16
-        unknown_threshold: 16
-        mark_threshold: 0
-        max_obstacle_height: 0.50
-        observation_sources: camera_depth
-        camera_depth:
-          topic: /camera/front/depth/points
-          sensor_frame: camera_front_optical_frame
-          data_type: PointCloud2
-          transport_type: raw
-          marking: true
-          clearing: true
-          min_obstacle_height: 0.05
-          max_obstacle_height: 0.50
-          obstacle_min_range: 0.05
-          obstacle_max_range: 2.0
-          raytrace_min_range: 0.05
-          raytrace_max_range: 2.5
-          observation_persistence: 1.0
-          expected_update_rate: 0.0
-          inf_is_valid: false
 
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
@@ -421,6 +324,9 @@ planner_server:
       # Keep a preference for open space, but do not reject the only valid
       # route merely because both walls inflate the corridor centreline.
       cost_travel_multiplier: 1.2
+      # Together with PositionGoalChecker and no RotationShim controller,
+      # this is the valid V6 meaning of rotate_to_goal_heading=false. Do not
+      # declare the RotationShim-only parameter on MPPI.
       use_final_approach_orientation: false
 
       smoother:

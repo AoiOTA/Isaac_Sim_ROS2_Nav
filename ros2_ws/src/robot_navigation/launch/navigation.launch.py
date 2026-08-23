@@ -66,8 +66,8 @@ def _a21_nav2_parameters(defaults):
                 'vx_std': float(mppi['linear_velocity_std_mps']),
                 'critics': [
                     'ConstraintCritic', 'CostCritic', 'GoalCritic',
-                    'GoalAngleCritic', 'PathAlignCritic', 'PathFollowCritic',
-                    'PathAngleCritic', 'VelocityDeadbandCritic',
+                    'PathAlignCritic', 'PathFollowCritic', 'PathAngleCritic',
+                    'VelocityDeadbandCritic',
                 ],
                 'PathAlignCritic': {
                     'cost_weight': float(mppi['path_align_weight']),
