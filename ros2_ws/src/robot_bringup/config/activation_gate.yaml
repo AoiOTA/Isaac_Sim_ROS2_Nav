@@ -17,6 +17,8 @@ nav2_activation_gate:
     tf_stable_duration: 1.00
     tf_translation_tolerance: 0.05
     tf_yaw_tolerance: 0.0523598776
+    localization_tf_translation_tolerance: 0.01
+    localization_tf_yaw_tolerance: 0.01
     clock_jump_tolerance: 5.0
     max_attempts: 3
     retry_initial_backoff: 0.50

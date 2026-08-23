@@ -69,3 +69,32 @@ the narrow isolated base paths above.
   one `map->odom` publisher, and one Integration relocalize call per reset.
 - Run the authorized Phase 1B interface smoke, then the empty-house
   G1→G2→G3→G4→G5→G1 loop. This commit is not runtime or qualification evidence.
+
+## Phase-1 reviewer blocker amendment
+
+- Amendment base: `0475a680746039f74dbeb15d4c5f06c52530d79e`.
+- After every reset epoch, ActivationGate now requires an observed
+  `WAITING_FOR_SCAN` or `WAITING_FOR_RESULT` for a generation newer than the
+  accepted floor before `ACCEPTED` for that exact generation can arm the
+  gate. Late pre-reset, skipped-generation, stale, rejected, and malformed
+  statuses remain blocked. Integration remains the sole relocalize caller.
+- The matching `ACCEPTED` status must provide finite `correction_x_m`,
+  `correction_y_m`, and `correction_yaw_rad`. Gate compares them with the
+  actual planar `map->odom` transform before release. Translation and yaw
+  tolerances are independently configurable and default to `0.01` m/rad.
+  Status-before-TF and TF-before-status ordering both remain safe; an unchanged
+  correction value is allowed when the observed transform numerically matches.
+- Launch setup now treats M0 as authoritative: `module2_enabled=false` for
+  both `stable` and `v6_low_obstacle_isolation`, even if the launch argument is
+  `true`. M1/M2/M3 retain their existing stable-profile argument behavior and
+  low-obstacle profile contract. Phase-1 defaults remain `M0` plus `gvg`.
+- Validation: focused pure/launch tests **59 passed**; deterministic ROS gate
+  fixture **3 passed**; relevant source regression **261 passed, 10 skipped**;
+  clean narrow build/install/test at
+  `/tmp/v6_gate_m0_repair_clean.ipjnBD` built one package and produced **239
+  passed, 10 skipped, 0 failures**. `git diff --check` and implementation
+  pep257 passed. These are code/test/synthetic results only.
+- Remaining risk: no live graph verified the real transient-local status/TF
+  delivery timing. The conditional `bio_nav_fusion` build was not changed or
+  resolved; the actual Phase-1 runner must select a profile whose requested
+  plugins are buildable before the live smoke.

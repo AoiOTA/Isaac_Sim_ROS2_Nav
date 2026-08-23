@@ -2533,3 +2533,27 @@
 - Remaining risk/next: full-overlay launch and Phase 1B live smoke must verify
   NITROS/status ordering, one Integration relocalize call per reset, one
   `map->odom` owner, full TF, then the empty-house five-leg loop.
+
+## 2026-08-23 — Phase-1 reset gate and M0 launch blocker repair
+
+- Goal: close the two reviewer-reproduced Phase-1 blockers without changing
+  localization interfaces, relocalize ownership, Nav2 configuration, or
+  Module2 M1-M3 contracts.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `0475a680746039f74dbeb15d4c5f06c52530d79e`; result is the single commit
+  containing this entry.
+- Changed: reset epochs require WAITING observation before same-generation
+  ACCEPTED; accepted correction fields must match actual planar `map->odom`
+  within configurable 0.01 m/rad defaults. M0 launch setup always passes
+  `module2_enabled=false` for stable and low-obstacle profiles; default route
+  backend remains `gvg`; M1-M3 behavior is unchanged.
+- Validation: focused suite **59 passed**; ROS gate fixture **3 passed**;
+  relevant source regression **261 passed, 10 skipped**; clean isolated
+  `robot_bringup` build/test at `/tmp/v6_gate_m0_repair_clean.ipjnBD` **239
+  passed, 10 skipped, 0 failures**. No cache/bytecode was used for the final
+  isolated test.
+- Verdict: **PASS (code/test/synthetic only)**. No Isaac Sim, navigation,
+  evidence campaign, qualification, or live ROS graph was started.
+- Remaining risk: actual transient status/TF timing and one-owner runtime
+  behavior remain unverified. Conditional `bio_nav_fusion` buildability is
+  explicitly unresolved; Phase 1 must use a profile with buildable plugins.

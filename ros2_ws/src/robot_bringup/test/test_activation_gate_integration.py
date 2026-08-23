@@ -335,6 +335,9 @@ class _LifecycleFixture(Node):
             ),
             KeyValue(key='state', value=localization_state),
             KeyValue(key='accepted', value=localization_accepted),
+            KeyValue(key='correction_x_m', value='0.0'),
+            KeyValue(key='correction_y_m', value='0.0'),
+            KeyValue(key='correction_yaw_rad', value='0.0'),
         ]
         localization_array = DiagnosticArray()
         localization_array.status = [localization]

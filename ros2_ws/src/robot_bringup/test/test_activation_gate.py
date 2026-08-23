@@ -3,6 +3,7 @@ import threading
 from types import SimpleNamespace
 
 from nav2_msgs.srv import ManageLifecycleNodes
+import pytest
 
 from robot_bringup.activation_gate import Nav2ActivationGate
 from robot_bringup.lifecycle_policy import RetryPolicy
@@ -401,11 +402,15 @@ def test_gate_source_keeps_wall_timer_and_explicit_recovery_sequence():
     assert 'if node is not None:\n            node.destroy_node()' in source
 
 
-def _localization_status(generation, state, accepted, *, level=1):
+def _localization_status(
+        generation, state, accepted, *, level=1, correction=(0.0, 0.0, 0.0)):
     values = [
         SimpleNamespace(key='generation', value=str(generation)),
         SimpleNamespace(key='state', value=state),
         SimpleNamespace(key='accepted', value=str(accepted).lower()),
+        SimpleNamespace(key='correction_x_m', value=str(correction[0])),
+        SimpleNamespace(key='correction_y_m', value=str(correction[1])),
+        SimpleNamespace(key='correction_yaw_rad', value=str(correction[2])),
     ]
     return SimpleNamespace(status=[SimpleNamespace(
         name='grid_localization', level=level, values=values)])
@@ -419,9 +424,17 @@ def test_warn_waiting_status_is_healthy_but_not_ready_until_accepted():
         _localization_state='',
         _localization_accepted_generation=0,
         _localization_generation_floor=0,
+        _localization_requires_active_generation=False,
+        _localization_active_generation=None,
+        _localization_accepted_correction=None,
+        _map_to_odom_correction=(0.0, 0.0, 0.0),
+        _localization_tf_translation_tolerance=0.01,
+        _localization_tf_yaw_tolerance=0.01,
         _tracker=SimpleNamespace(missing_requirements=lambda now: []),
         get_logger=lambda: logger,
     )
+    gate._localization_correction_matches_transform = lambda: \
+        Nav2ActivationGate._localization_correction_matches_transform(gate)
 
     Nav2ActivationGate._localization_status_callback(
         gate, _localization_status(1, 'WAITING_FOR_SCAN', False))
@@ -444,16 +457,106 @@ def test_reset_floor_requires_a_new_accepted_localization_generation():
         _localization_state='ACCEPTED',
         _localization_accepted_generation=4,
         _localization_generation_floor=4,
+        _localization_requires_active_generation=True,
+        _localization_active_generation=None,
+        _localization_accepted_correction=None,
+        _map_to_odom_correction=(0.0, 0.0, 0.0),
+        _localization_tf_translation_tolerance=0.01,
+        _localization_tf_yaw_tolerance=0.01,
         _tracker=SimpleNamespace(missing_requirements=lambda now: []),
         get_logger=lambda: _Logger(),
     )
+    gate._localization_correction_matches_transform = lambda: \
+        Nav2ActivationGate._localization_correction_matches_transform(gate)
 
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(4, 'ACCEPTED', True))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'ACCEPTED', True))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
     Nav2ActivationGate._localization_status_callback(
         gate, _localization_status(5, 'WAITING_FOR_RESULT', False))
     assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
     Nav2ActivationGate._localization_status_callback(
         gate, _localization_status(5, 'ACCEPTED', True))
     assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == []
+
+
+def _reset_localization_gate(*, observed_correction=None):
+    gate = SimpleNamespace(
+        _state_query_lock=threading.RLock(),
+        _localization_generation=4,
+        _localization_state='ACCEPTED',
+        _localization_accepted_generation=4,
+        _localization_generation_floor=4,
+        _localization_requires_active_generation=True,
+        _localization_active_generation=None,
+        _localization_accepted_correction=None,
+        _map_to_odom_correction=observed_correction,
+        _localization_tf_translation_tolerance=0.01,
+        _localization_tf_yaw_tolerance=0.01,
+        _tracker=SimpleNamespace(missing_requirements=lambda now: []),
+        get_logger=lambda: _Logger(),
+    )
+    gate._localization_correction_matches_transform = lambda: \
+        Nav2ActivationGate._localization_correction_matches_transform(gate)
+    return gate
+
+
+def test_accepted_correction_must_match_actual_map_to_odom():
+    gate = _reset_localization_gate(observed_correction=(9.0, 0.0, 0.0))
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'WAITING_FOR_SCAN', False))
+    Nav2ActivationGate._localization_status_callback(
+        gate,
+        _localization_status(
+            5, 'ACCEPTED', True, correction=(1.0, 0.0, 0.0)),
+    )
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == [
+        'map->odom matching accepted localization correction']
+
+    gate._map_to_odom_correction = (1.0, 0.0, 0.0)
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == []
+
+
+@pytest.mark.parametrize('status_first', [False, True])
+def test_matching_status_and_transform_callback_ordering_is_safe(status_first):
+    correction = (1.0, -0.5, 0.2)
+    gate = _reset_localization_gate(
+        observed_correction=None if status_first else correction)
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'WAITING_FOR_RESULT', False))
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(
+            5, 'ACCEPTED', True, correction=correction))
+    if status_first:
+        assert Nav2ActivationGate._missing_readiness_requirements(
+            gate, 0.0)
+        gate._map_to_odom_correction = correction
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == []
+
+
+def test_same_correction_value_after_reset_is_safe():
+    correction = (1.25, -0.25, -0.1)
+    gate = _reset_localization_gate(observed_correction=correction)
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'WAITING_FOR_SCAN', False))
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(
+            5, 'ACCEPTED', True, correction=correction))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0) == []
+
+
+def test_rejected_active_generation_cannot_accept_without_new_waiting():
+    gate = _reset_localization_gate(observed_correction=(0.0, 0.0, 0.0))
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'WAITING_FOR_RESULT', False))
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'REJECTED', False))
+    Nav2ActivationGate._localization_status_callback(
+        gate, _localization_status(5, 'ACCEPTED', True))
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
 
 
 def test_reset_stop_gate_status_tracks_current_release_generation():

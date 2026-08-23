@@ -1,4 +1,6 @@
+import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from robot_bringup.mode_contract import cognitive_nav2_parameters
@@ -13,6 +15,15 @@ import yaml
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_core_launch():
+    launch_file = PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py'
+    spec = importlib.util.spec_from_file_location(
+        'robot_bringup_ros_stack_launch_for_modes', launch_file)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_nav2_profiles_are_bounded_and_normalized():
@@ -78,6 +89,47 @@ def test_m0_m3_contract_drives_final_nav2_modes_and_critic_list():
         for costmap in ('local_costmap', 'global_costmap'):
             assert final[costmap][costmap]['ros__parameters'][
                 'cognitive_obstacle_layer']['mode'] == expected_obstacle
+
+
+@pytest.mark.parametrize('nav2_profile', [
+    'stable',
+    'v6_low_obstacle_isolation',
+])
+def test_launch_setup_m0_always_disables_module2(nav2_profile):
+    launch_module = _load_core_launch()
+    profile = SimpleNamespace(name='M0', module2_enabled=False)
+    assert launch_module._resolve_module2_enabled(
+        nav2_profile=nav2_profile,
+        cognitive_profile=profile,
+        requested_value='true',
+    ) == 'false'
+
+
+def test_launch_setup_preserves_m1_m3_module2_resolution():
+    launch_module = _load_core_launch()
+    for name in ('M1', 'M2', 'M3'):
+        profile = SimpleNamespace(name=name, module2_enabled=True)
+        assert launch_module._resolve_module2_enabled(
+            nav2_profile='stable',
+            cognitive_profile=profile,
+            requested_value='true',
+        ) == 'true'
+        assert launch_module._resolve_module2_enabled(
+            nav2_profile='stable',
+            cognitive_profile=profile,
+            requested_value='false',
+        ) == 'false'
+        assert launch_module._resolve_module2_enabled(
+            nav2_profile='v6_low_obstacle_isolation',
+            cognitive_profile=profile,
+            requested_value='false',
+        ) == 'true'
+
+
+def test_phase1_default_m0_keeps_gvg_route_backend():
+    source = (PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+    assert "'cognitive_profile', default_value='M0'" in source
+    assert "'cognitive_graph_mode', default_value='gvg'" in source
 
 
 def test_graph_mode_is_an_independent_validated_experiment_axis():

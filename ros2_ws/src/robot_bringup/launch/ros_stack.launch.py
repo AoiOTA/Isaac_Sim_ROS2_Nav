@@ -76,6 +76,16 @@ def _write_activation_gate_runtime_overlay(
         return Path(stream.name)
 
 
+def _resolve_module2_enabled(
+        *, nav2_profile, cognitive_profile, requested_value):
+    """Keep the M0 no-Module2 contract authoritative at launch setup."""
+    if cognitive_profile.name == 'M0':
+        return 'false'
+    if nav2_profile == 'v6_low_obstacle_isolation':
+        return 'true' if cognitive_profile.module2_enabled else 'false'
+    return requested_value
+
+
 def _shutdown_if_gate_exited(context):
     """Stop the stack on gate failure without re-emitting global shutdown."""
     if context.is_shutdown:
@@ -208,10 +218,11 @@ def _launch_setup(context):
     if nav2_profile == 'v6_low_obstacle_isolation':
         cognitive_overlay_file = _write_cognitive_nav2_overlay(
             cognitive_profile)
-    module2_enabled = (
-        'true' if cognitive_profile.module2_enabled else 'false'
-    ) if nav2_profile == 'v6_low_obstacle_isolation' else (
-        LaunchConfiguration('module2_enabled').perform(context)
+    module2_enabled = _resolve_module2_enabled(
+        nav2_profile=nav2_profile,
+        cognitive_profile=cognitive_profile,
+        requested_value=LaunchConfiguration(
+            'module2_enabled').perform(context),
     )
     requested_nav2_overlay = LaunchConfiguration(
         'nav2_profile_params_file').perform(context).strip()

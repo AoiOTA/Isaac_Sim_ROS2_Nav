@@ -44,6 +44,12 @@ DEFAULT_MANAGED_NODES = [
     'bt_navigator',
 ]
 LOCALIZATION_STATUS_KEYS = ('generation', 'state', 'accepted')
+LOCALIZATION_CORRECTION_KEYS = (
+    'correction_x_m',
+    'correction_y_m',
+    'correction_yaw_rad',
+)
+LOCALIZATION_WAITING_STATES = ('WAITING_FOR_SCAN', 'WAITING_FOR_RESULT')
 
 
 class Nav2ActivationGate(Node):
@@ -60,6 +66,9 @@ class Nav2ActivationGate(Node):
         self.declare_parameter('tf_stable_duration', 1.00)
         self.declare_parameter('tf_translation_tolerance', 0.05)
         self.declare_parameter('tf_yaw_tolerance', 0.0523598776)
+        self.declare_parameter(
+            'localization_tf_translation_tolerance', 0.01)
+        self.declare_parameter('localization_tf_yaw_tolerance', 0.01)
         self.declare_parameter('clock_jump_tolerance', 5.0)
         self.declare_parameter('max_attempts', 3)
         self.declare_parameter('retry_initial_backoff', 0.50)
@@ -101,6 +110,11 @@ class Nav2ActivationGate(Node):
             clock_jump_tolerance=self._positive_parameter(
                 'clock_jump_tolerance'),
         )
+        self._localization_tf_translation_tolerance = \
+            self._positive_parameter(
+                'localization_tf_translation_tolerance')
+        self._localization_tf_yaw_tolerance = self._positive_parameter(
+            'localization_tf_yaw_tolerance')
         self._retry_policy = RetryPolicy(
             max_attempts=self._positive_integer_parameter('max_attempts'),
             initial_backoff=self._positive_parameter(
@@ -173,6 +187,10 @@ class Nav2ActivationGate(Node):
         self._localization_state = ''
         self._localization_accepted_generation = 0
         self._localization_generation_floor = 0
+        self._localization_requires_active_generation = False
+        self._localization_active_generation = None
+        self._localization_accepted_correction = None
+        self._map_to_odom_correction = None
 
         best_effort = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -351,16 +369,45 @@ class Nav2ActivationGate(Node):
                 'ignoring localization status with inconsistent '
                 'state/accepted values')
             return
+        correction = None
+        if accepted:
+            try:
+                correction = tuple(
+                    float(keyed[key]) for key in LOCALIZATION_CORRECTION_KEYS)
+            except (KeyError, TypeError, ValueError):
+                self.get_logger().warning(
+                    'ignoring accepted localization status with invalid '
+                    'correction fields')
+                return
+            if not all(math.isfinite(value) for value in correction):
+                self.get_logger().warning(
+                    'ignoring accepted localization status with non-finite '
+                    'correction fields')
+                return
         with self._state_query_lock:
             if generation < self._localization_generation:
                 return
-            if (generation == self._localization_accepted_generation
-                    and not accepted):
+            if generation == self._localization_accepted_generation:
                 return
+            if accepted:
+                if generation <= self._localization_generation_floor:
+                    return
+                if (self._localization_requires_active_generation
+                        and generation
+                        != self._localization_active_generation):
+                    return
+            elif state in LOCALIZATION_WAITING_STATES:
+                if generation <= self._localization_generation_floor:
+                    return
+                self._localization_active_generation = generation
+            elif generation == self._localization_active_generation:
+                self._localization_active_generation = None
             self._localization_generation = generation
             self._localization_state = state
             if accepted:
                 self._localization_accepted_generation = generation
+                self._localization_accepted_correction = correction
+                self._localization_requires_active_generation = False
 
     def _handle_epoch_event(self, event):
         with self._state_query_lock:
@@ -368,6 +415,10 @@ class Nav2ActivationGate(Node):
                 self._localization_generation_floor,
                 self._localization_accepted_generation,
             )
+            self._localization_requires_active_generation = True
+            self._localization_active_generation = None
+            self._localization_accepted_correction = None
+            self._map_to_odom_correction = None
             self.get_logger().warning(
                 f'Simulation time {event.kind} detected: '
                 f'{event.previous_stamp_s:.9f} -> {event.stamp_s:.9f}; '
@@ -477,7 +528,29 @@ class Nav2ActivationGate(Node):
             )
             missing.append(
                 '/bio_nav/localization/status ACCEPTED for ' + detail)
+        elif not self._localization_correction_matches_transform():
+            missing.append(
+                'map->odom matching accepted localization correction')
         return missing
+
+    def _localization_correction_matches_transform(self):
+        accepted = self._localization_accepted_correction
+        observed = self._map_to_odom_correction
+        if accepted is None or observed is None:
+            return False
+        translation_error = math.hypot(
+            accepted[0] - observed[0],
+            accepted[1] - observed[1],
+        )
+        yaw_error = abs(math.atan2(
+            math.sin(accepted[2] - observed[2]),
+            math.cos(accepted[2] - observed[2]),
+        ))
+        return (
+            translation_error
+            <= self._localization_tf_translation_tolerance
+            and yaw_error <= self._localization_tf_yaw_tolerance
+        )
 
     def _ensure_immutable_map_active(self, now):
         """Repair a missed launch transition before waiting indefinitely on /map."""
@@ -670,6 +743,12 @@ class Nav2ActivationGate(Node):
         stamp_s = stamp.sec + stamp.nanosec * 1.0e-9
         self._tracker.observe_transform(
             translation.x, translation.y, yaw, stamp_s, now)
+        with self._state_query_lock:
+            self._map_to_odom_correction = (
+                translation.x,
+                translation.y,
+                yaw,
+            )
 
     def _missing_lifecycle_services(self):
         missing = []
