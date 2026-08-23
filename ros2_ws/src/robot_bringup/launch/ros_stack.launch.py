@@ -350,6 +350,8 @@ def _launch_setup(context):
                     'use_sim_time': use_sim_time,
                     'wheel_odometry_params_file': (
                         runtime_files.wheel_odometry_params_file),
+                    'yaw_disagreement_guard_enabled': LaunchConfiguration(
+                        'yaw_disagreement_guard_enabled').perform(context),
                 },
             ),
             _include(
@@ -588,6 +590,10 @@ def generate_launch_description():
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'yaw_disagreement_guard_enabled',
+            default_value='false',
+            description='Opt in to the bounded wheel/IMU yaw guard'),
         DeclareLaunchArgument(
             'imu_calibration_params_file',
             default_value='',

@@ -14,6 +14,11 @@ DEFAULT_RIGHT_JOINTS = (
     'rear_right_wheel_joint',
 )
 
+_YAW_GUARD_CONFIRM_SAMPLES = 3
+_YAW_GUARD_CLEAR_SAMPLES = 3
+_YAW_GUARD_EXIT_RATIO = 0.2
+_YAW_GUARD_MAX_LINEAR_SPEED = 0.05
+
 
 @dataclass(frozen=True)
 class WheelOdometryConfig:
@@ -24,6 +29,9 @@ class WheelOdometryConfig:
     left_joint_names: Tuple[str, ...] = DEFAULT_LEFT_JOINTS
     right_joint_names: Tuple[str, ...] = DEFAULT_RIGHT_JOINTS
     max_integration_step: float = 0.25
+    yaw_disagreement_guard_enabled: bool = False
+    yaw_disagreement_entry_threshold: float = 0.10
+    yaw_disagreement_imu_timeout: float = 0.05
 
     def __post_init__(self):
         if not math.isfinite(self.wheel_radius) or self.wheel_radius <= 0.0:
@@ -33,6 +41,14 @@ class WheelOdometryConfig:
         if (not math.isfinite(self.max_integration_step)
                 or self.max_integration_step <= 0.0):
             raise ValueError('max_integration_step must be finite and positive')
+        if (not math.isfinite(self.yaw_disagreement_entry_threshold)
+                or self.yaw_disagreement_entry_threshold <= 0.0):
+            raise ValueError(
+                'yaw_disagreement_entry_threshold must be finite and positive')
+        if (not math.isfinite(self.yaw_disagreement_imu_timeout)
+                or self.yaw_disagreement_imu_timeout < 0.0):
+            raise ValueError(
+                'yaw_disagreement_imu_timeout must be finite and non-negative')
         all_joints = self.left_joint_names + self.right_joint_names
         if not self.left_joint_names or not self.right_joint_names:
             raise ValueError('both sides must contain at least one wheel joint')
@@ -62,11 +78,96 @@ class UpdateResult:
     sample: Optional[OdometrySample]
 
 
+class WheelYawDisagreementGuard:
+    """Bound forward wheel speed during confirmed wheel/IMU yaw conflicts."""
+
+    def __init__(self, *, enabled, entry_threshold, imu_timeout):
+        self.enabled = bool(enabled)
+        self.entry_threshold = float(entry_threshold)
+        self.imu_timeout = float(imu_timeout)
+        self.exit_threshold = _YAW_GUARD_EXIT_RATIO * self.entry_threshold
+        self.reset()
+
+    @property
+    def active(self):
+        """Return whether the confirmed disagreement state is active."""
+        return self._active
+
+    def reset(self):
+        """Clear confirmation and hysteresis state."""
+        self._active = False
+        self._entry_count = 0
+        self._clear_count = 0
+
+    def apply(
+        self,
+        linear_velocity,
+        wheel_angular_velocity,
+        joint_stamp_s,
+        imu_angular_velocity=None,
+        imu_stamp_s=None,
+    ):
+        """Apply the fixed candidate-C policy to one wheel sample."""
+        if not self.enabled:
+            return linear_velocity
+
+        imu_usable = (
+            imu_angular_velocity is not None
+            and imu_stamp_s is not None
+            and math.isfinite(imu_angular_velocity)
+            and math.isfinite(imu_stamp_s)
+            and imu_stamp_s <= joint_stamp_s
+            and joint_stamp_s - imu_stamp_s <= self.imu_timeout
+        )
+        signs_opposed = (
+            imu_usable
+            and wheel_angular_velocity * imu_angular_velocity < 0.0
+        )
+        entry = (
+            signs_opposed
+            and abs(wheel_angular_velocity) >= self.entry_threshold
+            and abs(imu_angular_velocity) >= self.entry_threshold
+        )
+
+        if not self._active:
+            self._entry_count = self._entry_count + 1 if entry else 0
+            if self._entry_count >= _YAW_GUARD_CONFIRM_SAMPLES:
+                self._active = True
+                self._clear_count = 0
+        else:
+            min_rate = min(
+                abs(wheel_angular_velocity),
+                abs(imu_angular_velocity),
+            ) if imu_usable else 0.0
+            clear = (
+                not imu_usable
+                or not signs_opposed
+                or min_rate <= self.exit_threshold
+            )
+            self._clear_count = self._clear_count + 1 if clear else 0
+            if self._clear_count >= _YAW_GUARD_CLEAR_SAMPLES:
+                self._active = False
+                self._entry_count = 0
+
+        # Missing, stale, future, or non-finite IMU is explicitly fail-open.
+        if not self._active or not imu_usable:
+            return linear_velocity
+        return math.copysign(
+            min(abs(linear_velocity), _YAW_GUARD_MAX_LINEAR_SPEED),
+            linear_velocity,
+        )
+
+
 class WheelOdometry:
     """Integrate four wheel velocities into a planar odometry estimate."""
 
     def __init__(self, config: WheelOdometryConfig):
         self.config = config
+        self._yaw_guard = WheelYawDisagreementGuard(
+            enabled=config.yaw_disagreement_guard_enabled,
+            entry_threshold=config.yaw_disagreement_entry_threshold,
+            imu_timeout=config.yaw_disagreement_imu_timeout,
+        )
         self.reset()
 
     @property
@@ -79,6 +180,11 @@ class WheelOdometry:
         """Return the last consumed timestamp, if any."""
         return self._last_stamp_s
 
+    @property
+    def yaw_disagreement_guard_active(self):
+        """Return the detector state for focused diagnostics and tests."""
+        return self._yaw_guard.active
+
     def reset(self, x=0.0, y=0.0, yaw=0.0, stamp_s=None):
         """Reset pose and timestamp without retaining a stale velocity."""
         values = (x, y, yaw)
@@ -90,12 +196,15 @@ class WheelOdometry:
         self._y = float(y)
         self._yaw = _normalize_angle(float(yaw))
         self._last_stamp_s = stamp_s
+        self._yaw_guard.reset()
 
     def update(
         self,
         names: Sequence[str],
         velocities: Sequence[float],
         stamp_s: float,
+        imu_angular_velocity: Optional[float] = None,
+        imu_stamp_s: Optional[float] = None,
     ) -> UpdateResult:
         """Consume a complete wheel sample and integrate it safely."""
         if not math.isfinite(stamp_s):
@@ -128,6 +237,13 @@ class WheelOdometry:
         angular = (
             self.config.wheel_radius * (right - left)
             / self.config.track_width
+        )
+        linear = self._yaw_guard.apply(
+            linear,
+            angular,
+            stamp_s,
+            imu_angular_velocity,
+            imu_stamp_s,
         )
 
         if self._last_stamp_s is None:

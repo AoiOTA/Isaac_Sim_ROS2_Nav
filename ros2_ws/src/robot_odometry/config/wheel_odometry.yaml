@@ -12,6 +12,10 @@ wheel_odometry:
       - rear_right_wheel_joint
     publish_rate: 50.0
     max_integration_step: 0.25
+    # Diagnostic candidate C. Keep OFF until a separate short live run.
+    yaw_disagreement_guard_enabled: false
+    yaw_disagreement_entry_threshold: 0.10
+    yaw_disagreement_imu_timeout: 0.05
     odom_frame: odom
     base_frame: base_link
     pose_covariance_diagonal: [0.0025, 0.0025, 1000000.0, 1000000.0, 1000000.0, 0.01]

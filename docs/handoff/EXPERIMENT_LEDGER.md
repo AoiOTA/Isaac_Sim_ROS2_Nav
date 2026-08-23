@@ -2805,3 +2805,34 @@
   and rerun only episode 0 / seed 7201 with the canonical asset root. STOP
   unless the single reset and complete new-generation
   Grid/correction/TF/ActivationGate/Nav2 chain precede G2.
+
+## 2026-08-24 — Default-OFF wheel yaw-disagreement guard candidate C
+
+- Goal: implement only the single-bag counterfactual candidate C for wheel
+  forward-speed bounding during confirmed wheel/corrected-IMU yaw-sign
+  disagreement, without promoting it into the canonical Phase-1 default.
+- Change: `robot_odometry` now has a default-OFF guard. Enabled entry is three
+  consecutive opposite-sign `|wz|>=0.10` samples with corrected IMU age
+  `0..0.05 s`; active signed `|vx|` is capped at `0.05 m/s`, raw wheel `wz`
+  remains unchanged, and three sign-agree/unusable/below-`0.02` samples clear.
+  Unusable IMU is fail-open per sample; reset clears detector/cache. The OFF
+  path creates no IMU subscription. A single bool launch override is threaded
+  through wheel odometry and `ros_stack`; canonical runners remain unchanged.
+- Validation: focused robot-odometry/EKF/launch tests **60 passed**; modified
+  Python lint **7 files clean**; isolated `/tmp` build **2 packages finished**.
+  Default-OFF installed-node inspection showed no IMU or TF endpoint.
+- Exact replay: initially empty domain 225, 1x replay of only clock, joint,
+  corrected IMU, and reset topics from exact failed MCAP. Actual enabled node
+  produced `4626/4626` unique ordered stamps and zero full-bag output mismatch
+  versus offline C. One 83-sample episode ran at
+  `56.666666666–58.033333333 s`; pivot absolute forward integral was
+  `0.14653831432307307 m` versus baseline `0.5206281441032308 m`; straight
+  scale was unchanged at `0.9982402680931219`; raw angular velocity and
+  baseline covariances were unchanged.
+- Evidence: `/tmp/yaw_guard_replay_exact_20260824T0437/replay_metrics.json`,
+  recorded output MCAP in the sibling `guard_output/`, and
+  `docs/handoff/V6_WHEEL_YAW_DISAGREEMENT_GUARD_20260824.md`.
+- Verdict: **PASS (code/unit/build/exact replay only), DEFAULT OFF**. No Isaac,
+  Nav2, controller, new navigation run, recurrence, engineering navigation
+  success, or formal qualification is claimed. A separate short live
+  diagnostic is still required before any promotion decision.

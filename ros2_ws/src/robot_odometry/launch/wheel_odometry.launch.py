@@ -14,6 +14,8 @@ def generate_launch_description():
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument(
             'wheel_odometry_params_file', default_value=str(default_config)),
+        DeclareLaunchArgument(
+            'yaw_disagreement_guard_enabled', default_value='false'),
         Node(
             package='robot_odometry',
             executable='wheel_odometry_node',
@@ -21,7 +23,11 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 LaunchConfiguration('wheel_odometry_params_file'),
-                {'use_sim_time': LaunchConfiguration('use_sim_time')},
+                {
+                    'use_sim_time': LaunchConfiguration('use_sim_time'),
+                    'yaw_disagreement_guard_enabled': LaunchConfiguration(
+                        'yaw_disagreement_guard_enabled'),
+                },
             ],
         ),
     ])

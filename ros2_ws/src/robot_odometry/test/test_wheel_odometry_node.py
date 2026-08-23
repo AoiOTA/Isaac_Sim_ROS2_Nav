@@ -1,5 +1,6 @@
 import inspect
 import math
+from pathlib import Path
 from types import MethodType, SimpleNamespace
 
 import pytest
@@ -7,7 +8,8 @@ from rclpy._rclpy_pybind11 import RCLError
 from robot_odometry.kinematics import WheelOdometry
 from robot_odometry.kinematics import WheelOdometryConfig
 from robot_odometry.wheel_odometry_node import WheelOdometryNode
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Imu, JointState
+import yaml
 
 
 NAMES = [
@@ -46,11 +48,13 @@ class _Context:
         return self.valid
 
 
-def _adapter():
+def _adapter(guard_enabled=False):
     publisher = _Publisher()
     logger = _Logger()
     adapter = SimpleNamespace(
-        _integrator=WheelOdometry(WheelOdometryConfig()),
+        _integrator=WheelOdometry(WheelOdometryConfig(
+            yaw_disagreement_guard_enabled=guard_enabled,
+        )),
         _odom_frame='odom',
         _base_frame='base_link',
         _pose_covariance=[0.0] * 36,
@@ -65,6 +69,7 @@ def _adapter():
         _warned_rejections=set(),
         _shutting_down=False,
         _shutdown_suppressed_callbacks=0,
+        _latest_imu_sample=None,
         context=_Context(),
         _odom_publisher=publisher,
         get_logger=lambda: logger,
@@ -74,6 +79,8 @@ def _adapter():
         WheelOdometryNode._record_stamp_event, adapter)
     adapter._warn_rejection = MethodType(
         WheelOdometryNode._warn_rejection, adapter)
+    adapter._reset_state = MethodType(
+        WheelOdometryNode._reset_state, adapter)
     return adapter, publisher
 
 
@@ -88,6 +95,14 @@ def _joint_state(stamp_ns, velocities=None, names=None):
 
 def _consume(adapter, message):
     WheelOdometryNode._joint_state_callback(adapter, message)
+
+
+def _imu(stamp_ns, angular_velocity):
+    message = Imu()
+    message.header.stamp.sec = stamp_ns // 1_000_000_000
+    message.header.stamp.nanosec = stamp_ns % 1_000_000_000
+    message.angular_velocity.z = angular_velocity
+    return message
 
 
 def test_input_stamp_drives_exactly_one_integration_and_output_stamp():
@@ -233,3 +248,54 @@ def test_backward_samples_remain_rejected_and_report_periodically():
     assert len(logger.warnings) == 2
     assert 'backward=1' in logger.warnings[0]
     assert 'backward=1000' in logger.warnings[1]
+
+
+def test_node_caches_corrected_imu_and_reset_clears_it_and_detector():
+    adapter, publisher = _adapter(guard_enabled=True)
+    left = (0.30 - 0.5 * 0.20 * 0.80) / 0.098
+    right = (0.30 + 0.5 * 0.20 * 0.80) / 0.098
+    velocities = [left, right, left, right]
+
+    for index in range(3):
+        stamp_ns = 8_000_000_000 + index * 20_000_000
+        WheelOdometryNode._imu_callback(
+            adapter, _imu(stamp_ns - 30_000_000, -0.20))
+        _consume(adapter, _joint_state(stamp_ns, velocities=velocities))
+
+    assert publisher.messages[-1].twist.twist.linear.x == pytest.approx(0.05)
+    assert adapter._integrator.yaw_disagreement_guard_active
+    adapter._reset_state()
+    assert adapter._latest_imu_sample is None
+    assert not adapter._integrator.yaw_disagreement_guard_active
+
+
+def test_default_config_has_no_imu_subscription_and_node_never_publishes_tf():
+    constructor = inspect.getsource(WheelOdometryNode.__init__)
+    assert 'self._imu_subscription = None' in constructor
+    assert 'if config.yaw_disagreement_guard_enabled:' in constructor
+    source = inspect.getsource(WheelOdometryNode)
+    assert 'TransformBroadcaster' not in source
+    assert 'create_publisher(TFMessage' not in source
+
+
+def test_config_and_launch_expose_only_one_default_off_boolean_override():
+    package_root = inspect.getfile(WheelOdometryNode).replace(
+        'robot_odometry/wheel_odometry_node.py', '')
+    config = Path(package_root) / 'config' / 'wheel_odometry.yaml'
+    launch = Path(package_root) / 'launch' / 'wheel_odometry.launch.py'
+    parameters = yaml.safe_load(config.read_text())[
+        'wheel_odometry']['ros__parameters']
+    guard_parameters = {
+        name: value for name, value in parameters.items()
+        if name.startswith('yaw_disagreement_')
+    }
+    assert guard_parameters == {
+        'yaw_disagreement_guard_enabled': False,
+        'yaw_disagreement_entry_threshold': 0.10,
+        'yaw_disagreement_imu_timeout': 0.05,
+    }
+    launch_source = launch.read_text()
+    assert launch_source.count(
+        "DeclareLaunchArgument(\n            'yaw_disagreement_guard_enabled'") == 1
+    assert "'yaw_disagreement_guard_enabled', default_value='false'" \
+        in launch_source

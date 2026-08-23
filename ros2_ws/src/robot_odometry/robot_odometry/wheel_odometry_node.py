@@ -8,13 +8,13 @@ from rclpy._rclpy_pybind11 import RCLError
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile
-from rclpy.qos import ReliabilityPolicy
+from rclpy.qos import qos_profile_sensor_data, ReliabilityPolicy
 from robot_odometry.kinematics import covariance_from_diagonal
 from robot_odometry.kinematics import DEFAULT_LEFT_JOINTS
 from robot_odometry.kinematics import DEFAULT_RIGHT_JOINTS
 from robot_odometry.kinematics import WheelOdometry
 from robot_odometry.kinematics import WheelOdometryConfig
-from sensor_msgs.msg import JointState
+from sensor_msgs.msg import Imu, JointState
 from std_msgs.msg import Empty as EmptyMessage
 from std_srvs.srv import Empty
 
@@ -30,6 +30,9 @@ class WheelOdometryNode(Node):
         self.declare_parameter('right_joint_names', list(DEFAULT_RIGHT_JOINTS))
         self.declare_parameter('publish_rate', 50.0)
         self.declare_parameter('max_integration_step', 0.25)
+        self.declare_parameter('yaw_disagreement_guard_enabled', False)
+        self.declare_parameter('yaw_disagreement_entry_threshold', 0.10)
+        self.declare_parameter('yaw_disagreement_imu_timeout', 0.05)
         self.declare_parameter('stamp_diagnostic_interval', 1000)
         self.declare_parameter('odom_frame', 'odom')
         self.declare_parameter('base_frame', 'base_link')
@@ -51,6 +54,14 @@ class WheelOdometryNode(Node):
                 self.get_parameter('right_joint_names').value),
             max_integration_step=float(
                 self.get_parameter('max_integration_step').value),
+            yaw_disagreement_guard_enabled=bool(
+                self.get_parameter(
+                    'yaw_disagreement_guard_enabled').value),
+            yaw_disagreement_entry_threshold=float(
+                self.get_parameter(
+                    'yaw_disagreement_entry_threshold').value),
+            yaw_disagreement_imu_timeout=float(
+                self.get_parameter('yaw_disagreement_imu_timeout').value),
         )
         self._integrator = WheelOdometry(config)
         self._odom_frame = str(self.get_parameter('odom_frame').value)
@@ -70,6 +81,7 @@ class WheelOdometryNode(Node):
         self._warned_rejections = set()
         self._shutting_down = False
         self._shutdown_suppressed_callbacks = 0
+        self._latest_imu_sample = None
 
         reliable_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -83,6 +95,14 @@ class WheelOdometryNode(Node):
             self._joint_state_callback,
             reliable_qos,
         )
+        self._imu_subscription = None
+        if config.yaw_disagreement_guard_enabled:
+            self._imu_subscription = self.create_subscription(
+                Imu,
+                '/imu/data',
+                self._imu_callback,
+                qos_profile_sensor_data,
+            )
         self._odom_publisher = self.create_publisher(
             Odometry, '/wheel/odom', reliable_qos)
         self._reset_service = self.create_service(
@@ -93,6 +113,24 @@ class WheelOdometryNode(Node):
             self._reset_event_callback,
             reliable_qos,
         )
+
+    def _imu_callback(self, message):
+        if self._shutting_down or not self.context.ok():
+            self._shutdown_suppressed_callbacks += 1
+            return
+        stamp_s = (
+            float(message.header.stamp.sec)
+            + float(message.header.stamp.nanosec) * 1.0e-9
+        )
+        if (
+            self._latest_imu_sample is None
+            or stamp_s >= self._latest_imu_sample[0]
+        ):
+            self._latest_imu_sample = (
+                stamp_s,
+                float(message.angular_velocity.z),
+            )
+
     def _joint_state_callback(self, message):
         if self._shutting_down or not self.context.ok():
             self._shutdown_suppressed_callbacks += 1
@@ -126,10 +164,16 @@ class WheelOdometryNode(Node):
             return
 
         self._last_joint_stamp_ns = stamp_ns
+        imu_stamp_s = None
+        imu_angular_velocity = None
+        if self._latest_imu_sample is not None:
+            imu_stamp_s, imu_angular_velocity = self._latest_imu_sample
         result = self._integrator.update(
             list(message.name),
             list(message.velocity),
             stamp_ns * 1.0e-9,
+            imu_angular_velocity=imu_angular_velocity,
+            imu_stamp_s=imu_stamp_s,
         )
         if not result.accepted:
             self._warn_rejection(result.reason)
@@ -197,6 +241,7 @@ class WheelOdometryNode(Node):
     def _reset_state(self):
         self._integrator.reset()
         self._last_joint_stamp_ns = None
+        self._latest_imu_sample = None
 
     def destroy_node(self):
         self._shutting_down = True
