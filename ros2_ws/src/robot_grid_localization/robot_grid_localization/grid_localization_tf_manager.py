@@ -8,6 +8,7 @@ from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
 import rclpy
 from rclpy.duration import Duration
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time
@@ -29,11 +30,23 @@ class GridLocalizationTFManager(Node):
     def __init__(self) -> None:
         super().__init__('grid_localization_tf_manager')
         self.declare_parameter('tf_lookup_timeout_s', 0.1)
+        self.declare_parameter('tf_broadcast_rate_hz', 20.0)
+        self.declare_parameter('pending_timeout_s', 10.0)
 
         self._gate = LocalizationGate()
         self._gate_lock = Lock()
+        self._latest_correction: Optional[RigidTransform] = None
         self._tf_timeout = Duration(
             seconds=float(self.get_parameter('tf_lookup_timeout_s').value))
+        tf_broadcast_rate_hz = float(
+            self.get_parameter('tf_broadcast_rate_hz').value)
+        pending_timeout_s = float(
+            self.get_parameter('pending_timeout_s').value)
+        if tf_broadcast_rate_hz <= 0.0:
+            raise ValueError('tf_broadcast_rate_hz must be positive')
+        if pending_timeout_s <= 0.0:
+            raise ValueError('pending_timeout_s must be positive')
+        self._pending_timeout_ns = int(pending_timeout_s * 1.0e9)
 
         latched_qos = QoSProfile(depth=1)
         latched_qos.reliability = ReliabilityPolicy.RELIABLE
@@ -61,8 +74,18 @@ class GridLocalizationTFManager(Node):
             Empty, '/trigger_grid_search_localization')
         self._relocalize_service = self.create_service(
             Trigger, '/bio_nav/relocalize', self._on_relocalize)
+        self._maintenance_timer = self.create_timer(
+            1.0 / tf_broadcast_rate_hz, self._on_maintenance_timer)
 
     def _on_relocalize(self, _request, response):
+        with self._gate_lock:
+            if self._gate.pending_generation is not None:
+                response.success = False
+                response.message = (
+                    f'localization request already pending; generation='
+                    f'{self._gate.pending_generation}')
+                return response
+
         if not self._grid_trigger_client.service_is_ready():
             response.success = False
             response.message = (
@@ -78,13 +101,6 @@ class GridLocalizationTFManager(Node):
         now = self.get_clock().now()
         with self._gate_lock:
             decision = self._gate.begin_trigger(now.nanoseconds)
-        if not decision.accepted:
-            response.success = False
-            response.message = (
-                f'localization request already pending; generation='
-                f'{decision.generation}')
-            self._publish_status(decision, 'REJECTED', None, now)
-            return response
 
         try:
             future = self._grid_trigger_client.call_async(Empty.Request())
@@ -119,6 +135,17 @@ class GridLocalizationTFManager(Node):
                 f'grid trigger proxy failed for generation={generation}: {exc}')
             self._publish_status(
                 decision, 'REJECTED', None, self.get_clock().now())
+
+    def _on_maintenance_timer(self) -> None:
+        now = self.get_clock().now()
+        with self._gate_lock:
+            timeout_decision = self._gate.expire_pending(
+                now.nanoseconds, self._pending_timeout_ns)
+        if timeout_decision is not None:
+            self._publish_status(
+                timeout_decision, 'REJECTED', None, now)
+        if self._latest_correction is not None:
+            self._broadcast_correction(self._latest_correction, now)
 
     @staticmethod
     def _pose_is_finite(message: PoseWithCovarianceStamped) -> bool:
@@ -190,8 +217,19 @@ class GridLocalizationTFManager(Node):
 
         correction = map_to_odom(
             self._pose_transform(message), self._tf_transform(odom_to_base))
+        self._latest_correction = correction
+        self._broadcast_correction(
+            correction, Time.from_msg(message.header.stamp))
+        self._broadcast_correction(correction, received_at)
+        self._pose_publisher.publish(message)
+        self._publish_status(
+            decision, 'ACCEPTED', correction, received_at)
+
+    def _broadcast_correction(
+            self, correction: RigidTransform, stamp: Time) -> None:
         transform = TransformStamped()
-        transform.header = message.header
+        transform.header.stamp = stamp.to_msg()
+        transform.header.frame_id = 'map'
         transform.child_frame_id = 'odom'
         transform.transform.translation.x = correction.x
         transform.transform.translation.y = correction.y
@@ -201,9 +239,6 @@ class GridLocalizationTFManager(Node):
         transform.transform.rotation.z = correction.qz
         transform.transform.rotation.w = correction.qw
         self._tf_broadcaster.sendTransform(transform)
-        self._pose_publisher.publish(message)
-        self._publish_status(
-            decision, 'ACCEPTED', correction, received_at)
 
     @staticmethod
     def _transform_is_finite(message: TransformStamped) -> bool:
@@ -254,8 +289,11 @@ class GridLocalizationTFManager(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = GridLocalizationTFManager()
+    executor = MultiThreadedExecutor(num_threads=2)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
+        executor.shutdown()
         node.destroy_node()
         rclpy.shutdown()

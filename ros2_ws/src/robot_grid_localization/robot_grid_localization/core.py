@@ -142,6 +142,18 @@ class LocalizationGate:
         self.pending_generation = None
         return decision
 
+    def expire_pending(
+            self,
+            now_ns: int,
+            timeout_ns: int
+    ) -> Optional[GateDecision]:
+        """Reject a pending generation once its trigger timeout has elapsed."""
+        if self.pending_generation is None:
+            return None
+        if now_ns - self.trigger_stamp_ns < timeout_ns:
+            return None
+        return self.reject_pending('localization_timeout')
+
     def classify_result(
             self,
             result_stamp_ns: int,
@@ -154,6 +166,9 @@ class LocalizationGate:
                 self.trigger_stamp_ns, result_stamp_ns)
         if result_stamp_ns <= 0:
             return self.reject_pending('invalid_result_stamp', result_stamp_ns)
+        if result_stamp_ns < self.trigger_stamp_ns:
+            return self.reject_pending(
+                'result_before_current_trigger', result_stamp_ns)
         if result_stamp_ns <= self.last_accepted_result_stamp_ns:
             return self.reject_pending('stale_result', result_stamp_ns)
         if not finite:

@@ -37,6 +37,8 @@ def test_trigger_generation_is_monotonic_and_only_one_is_pending():
     assert duplicate.accepted is False
     assert duplicate.reason == 'request_already_pending'
     assert duplicate.generation == 1
+    assert gate.pending_generation == 1
+    assert gate.trigger_stamp_ns == 100
 
     gate.classify_result(200, finite=True, has_same_stamp_tf=True)
     second = gate.begin_trigger(300)
@@ -69,7 +71,7 @@ def test_invalid_result_is_rejected_and_consumes_pending_generation(
     assert gate.pending_generation is None
 
 
-def test_stale_result_is_rejected_after_a_new_trigger():
+def test_result_older_than_current_trigger_is_rejected():
     gate = LocalizationGate()
     gate.begin_trigger(10)
     accepted = gate.classify_result(100, finite=True, has_same_stamp_tf=True)
@@ -77,7 +79,40 @@ def test_stale_result_is_rejected_after_a_new_trigger():
     gate.begin_trigger(200)
     stale = gate.classify_result(100, finite=True, has_same_stamp_tf=True)
     assert stale.accepted is False
-    assert stale.reason == 'stale_result'
+    assert stale.reason == 'result_before_current_trigger'
+
+
+def test_late_result_after_proxy_failure_cannot_enter_next_generation():
+    gate = LocalizationGate()
+    gate.begin_trigger(100)
+    gate.reject_pending('grid_trigger_proxy_error')
+    retry = gate.begin_trigger(300)
+    assert retry.generation == 2
+
+    late_first = gate.classify_result(
+        200, finite=True, has_same_stamp_tf=True)
+    assert late_first.accepted is False
+    assert late_first.reason == 'result_before_current_trigger'
+    assert gate.pending_generation is None
+
+
+def test_pending_timeout_is_terminal_and_allows_a_fresh_trigger():
+    gate = LocalizationGate()
+    gate.begin_trigger(100)
+    assert gate.expire_pending(1_099, 1_000) is None
+    timed_out = gate.expire_pending(1_100, 1_000)
+    assert timed_out is not None
+    assert timed_out.accepted is False
+    assert timed_out.reason == 'localization_timeout'
+    assert gate.pending_generation is None
+
+    retry = gate.begin_trigger(1_200)
+    assert retry.accepted is True
+    assert retry.generation == 2
+    late_first = gate.classify_result(
+        1_150, finite=True, has_same_stamp_tf=True)
+    assert late_first.accepted is False
+    assert late_first.reason == 'result_before_current_trigger'
 
 
 def test_accepted_status_has_the_frozen_keys_and_correction():

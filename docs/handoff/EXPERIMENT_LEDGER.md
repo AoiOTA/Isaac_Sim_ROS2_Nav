@@ -2446,3 +2446,31 @@
 - Next: fresh Integration/bringup coder consumes the three frozen public
   interfaces, removes old readiness/seed paths, waits for matching-generation
   `ACCEPTED`, and then a reviewer performs the first actual grid smoke.
+
+## 2026-08-23 — V6-GRID localization core blocker repair
+
+- Goal: close the post-review dynamic-TF, result-generation, timeout,
+  duplicate-trigger, and exact-stamp TF callback blockers without changing the
+  frozen ROS message/service interfaces.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; repair
+  base `1097f2ca0b15ae17d80d625b8c67d321ae69759b`; result is the single commit
+  containing this ledger entry.
+- Changed: only `robot_grid_localization`, this core handoff, and this ledger.
+  The latest accepted dynamic `map->odom` correction is sent immediately and
+  refreshed at current ROS time (default 20 Hz); exact-stamp TF handling uses a
+  two-thread executor. Pending generations require a result stamp at or after
+  their trigger, time out terminally after a configurable default 10 s, and can
+  then be retriggered. Duplicate Trigger calls fail without changing the active
+  generation's latched `WAITING` status.
+- Validation: four review probes **4/4 PASS**; source-focused suite **19
+  passed**; isolated `/opt/ros/jazzy` build/install/import PASS at
+  `/tmp/v6_grid_core_repair_final.jpybT7`; installed-package pytest **15
+  passed**; flake8/pep257/xmllint PASS.
+- Verdict: **PASS (code/test/build only)**. No ROS graph, Isaac Sim, vendor
+  Grid Localizer, Nav2, or live TF run was started; live behavior remains
+  **UNVERIFIED**.
+- Remaining risk: the vendor result carries no generation identifier, so the
+  fail-closed correlation is source-time based; a semantically old result with
+  a stamp at or after a newer trigger cannot be distinguished until the vendor
+  exposes a stronger correlation token. Live component/result timing and TF
+  ownership still require the authorized smoke stage.
