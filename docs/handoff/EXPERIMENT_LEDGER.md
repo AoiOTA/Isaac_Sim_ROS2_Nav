@@ -2474,3 +2474,35 @@
   a stamp at or after a newer trigger cannot be distinguished until the vendor
   exposes a stronger correlation token. Live component/result timing and TF
   ownership still require the authorized smoke stage.
+
+## 2026-08-23 — V6-GRID FlatScan source-stamp correlation repair
+
+- Goal: replace the service-trigger-time lower bound after confirming Isaac ROS
+  Occupancy Grid Localizer 4.5.0 localizes its cached `flatscan` immediately on
+  the Empty service, while `flatscan_localization` directly localizes its input
+  and the result retains that FlatScan header.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `48ed78d7982d6bde61e7f3c8afb69f2918ff5071`; result is the single commit
+  containing this entry.
+- Changed: only `robot_grid_localization`, the Grid core handoff, and this
+  ledger. `/bio_nav/relocalize` now opens `WAITING_FOR_SCAN`; the next valid
+  source stamp newer than the pre-trigger observed baseline is forwarded once,
+  unchanged, from `/flatscan` to `/flatscan_localization`. That exact stamp is
+  recorded as `expected_result_stamp_ns`; only an exact result can be accepted.
+  Other stamps neither consume pending nor publish a current-generation status.
+  The vendor Empty service is no longer called by the production manager.
+- Preserved: public Trigger/pose/status types and names, 20 Hz dynamic TF,
+  concurrent exact-stamp TF lookup, sole `map->odom` ownership, correction
+  formula, duplicate behavior, and retry after timeout. Timeouts now distinguish
+  `scan_timeout` from `result_timeout`.
+- QoS/type check: installed `isaac_ros_pointcloud_interfaces/msg/FlatScan`
+  Python type is available with a standard header; manager input/output use the
+  vendor v4.5 `DEFAULT` contract (reliable/volatile keep-last 10).
+- Validation: focused source suite **24 passed** (20 package + 4 unchanged
+  mapping checks); flake8/pep257/xmllint PASS; isolated build/install/import
+  PASS at `/tmp/v6_grid_stamp_repair.HMLzaL`; installed colcon tests **20
+  passed, 0 failures**.
+- Verdict: **PASS (code/test/build only)**. No full ROS graph, Isaac Sim,
+  vendor localizer, Nav2, or live TF run was started.
+- Remaining risk: live NITROS/QoS negotiation, delivery order, vendor result
+  stamp echo, exact-stamp TF availability, and TF ownership are unverified.

@@ -40,6 +40,8 @@ def test_trigger_generation_is_monotonic_and_only_one_is_pending():
     assert gate.pending_generation == 1
     assert gate.trigger_stamp_ns == 100
 
+    selected = gate.observe_scan(200)
+    assert selected.expected_result_stamp_ns == 200
     gate.classify_result(200, finite=True, has_same_stamp_tf=True)
     second = gate.begin_trigger(300)
     assert second.accepted is True
@@ -56,7 +58,6 @@ def test_result_before_trigger_is_rejected_without_pending_generation():
 @pytest.mark.parametrize(
     ('stamp', 'finite', 'has_tf', 'reason'),
     [
-        (0, True, True, 'invalid_result_stamp'),
         (100, False, True, 'non_finite_result'),
         (100, True, False, 'missing_same_stamp_odom_to_base'),
     ],
@@ -65,59 +66,92 @@ def test_invalid_result_is_rejected_and_consumes_pending_generation(
         stamp, finite, has_tf, reason):
     gate = LocalizationGate()
     gate.begin_trigger(10)
+    gate.observe_scan(stamp)
     decision = gate.classify_result(stamp, finite, has_tf)
     assert decision.accepted is False
     assert decision.reason == reason
     assert gate.pending_generation is None
 
 
-def test_result_older_than_current_trigger_is_rejected():
+def test_unexpected_result_does_not_consume_pending_then_exact_is_accepted():
     gate = LocalizationGate()
     gate.begin_trigger(10)
-    accepted = gate.classify_result(100, finite=True, has_same_stamp_tf=True)
+    gate.observe_scan(100)
+    unexpected = gate.classify_result(
+        99, finite=True, has_same_stamp_tf=True)
+    assert unexpected.accepted is False
+    assert unexpected.reason == 'unexpected_result_stamp'
+    assert unexpected.expected_result_stamp_ns == 100
+    assert gate.pending_generation == 1
+
+    accepted = gate.classify_result(
+        100, finite=True, has_same_stamp_tf=True)
     assert accepted.accepted is True
+
+
+def test_buffered_pretrigger_scan_is_not_selected():
+    gate = LocalizationGate()
+    assert gate.observe_scan(100) is None
     gate.begin_trigger(200)
-    stale = gate.classify_result(100, finite=True, has_same_stamp_tf=True)
-    assert stale.accepted is False
-    assert stale.reason == 'result_before_current_trigger'
+    assert gate.observe_scan(0) is None
+    assert gate.observe_scan(100) is None
+    assert gate.observe_scan(99) is None
+    selected = gate.observe_scan(101)
+    assert selected is not None
+    assert selected.expected_result_stamp_ns == 101
 
 
-def test_late_result_after_proxy_failure_cannot_enter_next_generation():
+def test_each_generation_selects_and_forwards_only_one_scan_stamp():
     gate = LocalizationGate()
     gate.begin_trigger(100)
-    gate.reject_pending('grid_trigger_proxy_error')
-    retry = gate.begin_trigger(300)
-    assert retry.generation == 2
+    first = gate.observe_scan(200)
+    second = gate.observe_scan(201)
+    assert first is not None
+    assert second is None
+    assert gate.expected_result_stamp_ns == 200
 
-    late_first = gate.classify_result(
+
+def test_result_before_scan_selection_does_not_consume_pending():
+    gate = LocalizationGate()
+    gate.begin_trigger(100)
+    result = gate.classify_result(
         200, finite=True, has_same_stamp_tf=True)
-    assert late_first.accepted is False
-    assert late_first.reason == 'result_before_current_trigger'
-    assert gate.pending_generation is None
+    assert result.accepted is False
+    assert result.reason == 'waiting_for_selected_scan'
+    assert gate.pending_generation == 1
 
 
-def test_pending_timeout_is_terminal_and_allows_a_fresh_trigger():
+def test_no_scan_timeout_is_terminal_and_allows_a_fresh_trigger():
     gate = LocalizationGate()
     gate.begin_trigger(100)
     assert gate.expire_pending(1_099, 1_000) is None
     timed_out = gate.expire_pending(1_100, 1_000)
     assert timed_out is not None
     assert timed_out.accepted is False
-    assert timed_out.reason == 'localization_timeout'
+    assert timed_out.reason == 'scan_timeout'
     assert gate.pending_generation is None
 
     retry = gate.begin_trigger(1_200)
     assert retry.accepted is True
     assert retry.generation == 2
-    late_first = gate.classify_result(
-        1_150, finite=True, has_same_stamp_tf=True)
-    assert late_first.accepted is False
-    assert late_first.reason == 'result_before_current_trigger'
+
+
+def test_no_result_timeout_clears_selected_stamp_and_allows_retry():
+    gate = LocalizationGate()
+    gate.begin_trigger(100)
+    gate.observe_scan(200)
+    timed_out = gate.expire_pending(1_100, 1_000)
+    assert timed_out.reason == 'result_timeout'
+    assert timed_out.expected_result_stamp_ns == 200
+    assert gate.pending_generation is None
+    assert gate.expected_result_stamp_ns == 0
+    assert gate.begin_trigger(1_200).generation == 2
 
 
 def test_accepted_status_has_the_frozen_keys_and_correction():
     gate = LocalizationGate()
     gate.begin_trigger(1_000_000_000)
+    gate.observe_scan(1_500_000_000)
     decision = gate.classify_result(
         1_500_000_000, finite=True, has_same_stamp_tf=True)
     correction = _yaw_transform(0.25, -0.5, 0.1)
@@ -127,6 +161,7 @@ def test_accepted_status_has_the_frozen_keys_and_correction():
     assert values['state'] == 'ACCEPTED'
     assert values['accepted'] == 'true'
     assert values['reason'] == 'accepted'
+    assert values['expected_result_stamp_ns'] == '1500000000'
     assert float(values['correction_x_m']) == pytest.approx(0.25)
     assert float(values['correction_y_m']) == pytest.approx(-0.5)
     assert float(values['correction_yaw_rad']) == pytest.approx(0.1)

@@ -25,6 +25,7 @@ class GateDecision:
     generation: int
     trigger_stamp_ns: int
     result_stamp_ns: int
+    expected_result_stamp_ns: int = 0
 
 
 def _quaternion(transform: RigidTransform) -> Tuple[float, float, float, float]:
@@ -115,13 +116,15 @@ def all_finite(values: Iterable[float]) -> bool:
 
 
 class LocalizationGate:
-    """One outstanding localization result per accepted trigger."""
+    """Correlate one post-trigger FlatScan and result per generation."""
 
     def __init__(self) -> None:
         self.generation = 0
         self.pending_generation: Optional[int] = None
         self.trigger_stamp_ns = 0
-        self.last_accepted_result_stamp_ns = 0
+        self.last_observed_scan_stamp_ns = 0
+        self.scan_stamp_at_trigger_ns = 0
+        self.expected_result_stamp_ns = 0
 
     def begin_trigger(self, trigger_stamp_ns: int) -> GateDecision:
         if self.pending_generation is not None:
@@ -131,15 +134,36 @@ class LocalizationGate:
         self.generation += 1
         self.pending_generation = self.generation
         self.trigger_stamp_ns = trigger_stamp_ns
+        self.scan_stamp_at_trigger_ns = self.last_observed_scan_stamp_ns
+        self.expected_result_stamp_ns = 0
         return GateDecision(
             True, 'trigger_accepted', self.generation,
             self.trigger_stamp_ns, 0)
 
+    def observe_scan(self, scan_stamp_ns: int) -> Optional[GateDecision]:
+        """Select exactly one valid FlatScan newer than the trigger baseline."""
+        if scan_stamp_ns > self.last_observed_scan_stamp_ns:
+            self.last_observed_scan_stamp_ns = scan_stamp_ns
+        if self.pending_generation is None:
+            return None
+        if self.expected_result_stamp_ns != 0:
+            return None
+        if scan_stamp_ns <= 0:
+            return None
+        if scan_stamp_ns <= self.scan_stamp_at_trigger_ns:
+            return None
+
+        self.expected_result_stamp_ns = scan_stamp_ns
+        return GateDecision(
+            True, 'scan_forwarded', self.generation,
+            self.trigger_stamp_ns, 0, self.expected_result_stamp_ns)
+
     def reject_pending(self, reason: str, result_stamp_ns: int = 0) -> GateDecision:
         decision = GateDecision(
             False, reason, self.generation, self.trigger_stamp_ns,
-            result_stamp_ns)
+            result_stamp_ns, self.expected_result_stamp_ns)
         self.pending_generation = None
+        self.expected_result_stamp_ns = 0
         return decision
 
     def expire_pending(
@@ -152,7 +176,29 @@ class LocalizationGate:
             return None
         if now_ns - self.trigger_stamp_ns < timeout_ns:
             return None
-        return self.reject_pending('localization_timeout')
+        reason = (
+            'scan_timeout'
+            if self.expected_result_stamp_ns == 0
+            else 'result_timeout')
+        return self.reject_pending(reason)
+
+    def result_stamp_decision(
+            self, result_stamp_ns: int) -> Optional[GateDecision]:
+        """Return a non-consuming decision unless this is the exact result."""
+        if self.pending_generation is None:
+            return GateDecision(
+                False, 'no_pending_generation', self.generation,
+                self.trigger_stamp_ns, result_stamp_ns)
+        if self.expected_result_stamp_ns == 0:
+            return GateDecision(
+                False, 'waiting_for_selected_scan', self.generation,
+                self.trigger_stamp_ns, result_stamp_ns)
+        if result_stamp_ns != self.expected_result_stamp_ns:
+            return GateDecision(
+                False, 'unexpected_result_stamp', self.generation,
+                self.trigger_stamp_ns, result_stamp_ns,
+                self.expected_result_stamp_ns)
+        return None
 
     def classify_result(
             self,
@@ -160,17 +206,9 @@ class LocalizationGate:
             finite: bool,
             has_same_stamp_tf: bool
     ) -> GateDecision:
-        if self.pending_generation is None:
-            return GateDecision(
-                False, 'no_pending_generation', self.generation,
-                self.trigger_stamp_ns, result_stamp_ns)
-        if result_stamp_ns <= 0:
-            return self.reject_pending('invalid_result_stamp', result_stamp_ns)
-        if result_stamp_ns < self.trigger_stamp_ns:
-            return self.reject_pending(
-                'result_before_current_trigger', result_stamp_ns)
-        if result_stamp_ns <= self.last_accepted_result_stamp_ns:
-            return self.reject_pending('stale_result', result_stamp_ns)
+        stamp_decision = self.result_stamp_decision(result_stamp_ns)
+        if stamp_decision is not None:
+            return stamp_decision
         if not finite:
             return self.reject_pending('non_finite_result', result_stamp_ns)
         if not has_same_stamp_tf:
@@ -179,9 +217,9 @@ class LocalizationGate:
 
         decision = GateDecision(
             True, 'accepted', self.generation, self.trigger_stamp_ns,
-            result_stamp_ns)
-        self.last_accepted_result_stamp_ns = result_stamp_ns
+            result_stamp_ns, self.expected_result_stamp_ns)
         self.pending_generation = None
+        self.expected_result_stamp_ns = 0
         return decision
 
 
@@ -191,6 +229,7 @@ STATUS_KEYS = (
     'accepted',
     'reason',
     'trigger_stamp_ns',
+    'expected_result_stamp_ns',
     'result_stamp_ns',
     'correction_x_m',
     'correction_y_m',
@@ -214,6 +253,7 @@ def status_values(
         'true' if decision.accepted and state == 'ACCEPTED' else 'false',
         decision.reason,
         str(decision.trigger_stamp_ns),
+        str(decision.expected_result_stamp_ns),
         str(decision.result_stamp_ns),
         f'{correction_x:.9f}',
         f'{correction_y:.9f}',

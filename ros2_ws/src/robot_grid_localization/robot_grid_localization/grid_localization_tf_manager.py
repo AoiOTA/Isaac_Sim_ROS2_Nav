@@ -6,6 +6,7 @@ from typing import Optional
 
 from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
 from geometry_msgs.msg import PoseWithCovarianceStamped, TransformStamped
+from isaac_ros_pointcloud_interfaces.msg import FlatScan
 import rclpy
 from rclpy.duration import Duration
 from rclpy.executors import MultiThreadedExecutor
@@ -20,7 +21,7 @@ from robot_grid_localization.core import (
     RigidTransform,
     status_values,
 )
-from std_srvs.srv import Empty, Trigger
+from std_srvs.srv import Trigger
 from tf2_ros import Buffer, TransformBroadcaster, TransformException, TransformListener
 
 
@@ -70,8 +71,18 @@ class GridLocalizationTFManager(Node):
             self._on_localization_result,
             10,
         )
-        self._grid_trigger_client = self.create_client(
-            Empty, '/trigger_grid_search_localization')
+        vendor_qos = QoSProfile(depth=10)
+        self._flat_scan_subscription = self.create_subscription(
+            FlatScan,
+            '/flatscan',
+            self._on_flat_scan,
+            vendor_qos,
+        )
+        self._flat_scan_trigger_publisher = self.create_publisher(
+            FlatScan,
+            '/flatscan_localization',
+            vendor_qos,
+        )
         self._relocalize_service = self.create_service(
             Trigger, '/bio_nav/relocalize', self._on_relocalize)
         self._maintenance_timer = self.create_timer(
@@ -85,56 +96,40 @@ class GridLocalizationTFManager(Node):
                     f'localization request already pending; generation='
                     f'{self._gate.pending_generation}')
                 return response
-
-        if not self._grid_trigger_client.service_is_ready():
-            response.success = False
-            response.message = (
-                f'grid localizer service unavailable; generation='
-                f'{self._gate.generation}')
-            self._publish_status(
-                GateDecision(
-                    False, 'grid_service_unavailable', self._gate.generation,
-                    self._gate.trigger_stamp_ns, 0),
-                'REJECTED', None, self.get_clock().now())
-            return response
-
-        now = self.get_clock().now()
-        with self._gate_lock:
+            now = self.get_clock().now()
             decision = self._gate.begin_trigger(now.nanoseconds)
-
-        try:
-            future = self._grid_trigger_client.call_async(Empty.Request())
-            generation = decision.generation
-            future.add_done_callback(
-                lambda completed: self._on_grid_trigger_done(
-                    completed, generation))
-        except Exception as exc:  # rclpy reports transport failure here.
-            with self._gate_lock:
-                failed = self._gate.reject_pending('grid_trigger_proxy_error')
-            response.success = False
-            response.message = (
-                f'failed to proxy grid localization trigger; generation='
-                f'{failed.generation}: {exc}')
-            self._publish_status(failed, 'REJECTED', None, now)
-            return response
+            self._publish_status(
+                decision, 'WAITING_FOR_SCAN', None, now)
 
         response.success = True
-        response.message = f'accepted grid localization trigger; generation={decision.generation}'
-        self._publish_status(decision, 'WAITING', None, now)
+        response.message = (
+            f'waiting for next FlatScan; generation={decision.generation}')
         return response
 
-    def _on_grid_trigger_done(self, future, generation: int) -> None:
+    def _on_flat_scan(self, message: FlatScan) -> None:
+        scan_stamp_ns = (
+            message.header.stamp.sec * 1_000_000_000
+            + message.header.stamp.nanosec)
+        now = self.get_clock().now()
+        with self._gate_lock:
+            decision = self._gate.observe_scan(scan_stamp_ns)
+            if decision is None:
+                return
+            self._publish_status(
+                decision, 'WAITING_FOR_RESULT', None, now)
+
         try:
-            future.result()
+            self._flat_scan_trigger_publisher.publish(message)
         except Exception as exc:
             with self._gate_lock:
-                if self._gate.pending_generation != generation:
+                if self._gate.pending_generation != decision.generation:
                     return
-                decision = self._gate.reject_pending('grid_trigger_proxy_error')
+                failed = self._gate.reject_pending('scan_forward_error')
             self.get_logger().error(
-                f'grid trigger proxy failed for generation={generation}: {exc}')
+                f'FlatScan forward failed for generation='
+                f'{decision.generation}: {exc}')
             self._publish_status(
-                decision, 'REJECTED', None, self.get_clock().now())
+                failed, 'REJECTED', None, self.get_clock().now())
 
     def _on_maintenance_timer(self) -> None:
         now = self.get_clock().now()
@@ -188,6 +183,23 @@ class GridLocalizationTFManager(Node):
         result_stamp_ns = (
             message.header.stamp.sec * 1_000_000_000
             + message.header.stamp.nanosec)
+
+        with self._gate_lock:
+            stamp_decision = self._gate.result_stamp_decision(result_stamp_ns)
+            if stamp_decision is not None:
+                still_pending = self._gate.pending_generation is not None
+                expected_stamp_ns = self._gate.expected_result_stamp_ns
+        if stamp_decision is not None:
+            if still_pending:
+                self.get_logger().debug(
+                    f'Ignoring localization result stamp={result_stamp_ns}; '
+                    f'expected={expected_stamp_ns}')
+            else:
+                self._publish_status(
+                    stamp_decision, 'REJECTED', None,
+                    self.get_clock().now())
+            return
+
         finite = self._pose_is_finite(message)
         odom_to_base = None
         if finite and result_stamp_ns > 0 and message.header.frame_id == 'map':
@@ -202,7 +214,8 @@ class GridLocalizationTFManager(Node):
                 odom_to_base = None
 
         with self._gate_lock:
-            if message.header.frame_id != 'map' and self._gate.pending_generation is not None:
+            if (message.header.frame_id != 'map'
+                    and self._gate.pending_generation is not None):
                 decision = self._gate.reject_pending(
                     'invalid_result_frame', result_stamp_ns)
             else:
