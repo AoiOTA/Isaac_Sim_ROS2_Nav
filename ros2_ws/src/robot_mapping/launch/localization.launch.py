@@ -1,18 +1,18 @@
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, LogInfo, OpaqueFunction
 from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import LifecycleNode, Node
+from launch_ros.actions import ComposableNodeContainer, LifecycleNode, Node
+from launch_ros.descriptions import ComposableNode
 
 
 def _launch_setup(context):
     backend = LaunchConfiguration(
         'localization_backend').perform(context).strip().lower()
-    if backend not in {'ideal', 'amcl', 'odom_static'}:
+    if backend not in {'ideal', 'grid'}:
         raise RuntimeError(
-            'localization_backend must be ideal, amcl, or odom_static')
+            'localization_backend must be grid or ideal')
     map_file = LaunchConfiguration('map_file').perform(context).strip()
     if not map_file:
         raise RuntimeError(
@@ -35,44 +35,56 @@ def _launch_setup(context):
         }],
     )]
 
-    if backend == 'amcl':
-        params_file = Path(
-            LaunchConfiguration('amcl_params_file').perform(context).strip()
-        ).expanduser()
-        if not params_file.is_file():
-            raise RuntimeError(f'AMCL params file does not exist: {params_file}')
+    if backend == 'grid':
         actions.extend([
             LogInfo(msg=(
-                'Estimated localization: AMCL is the sole map->odom owner')),
-            LifecycleNode(
-                package='nav2_amcl',
-                executable='amcl',
-                name='amcl',
+                'V6-GRID localization: GridLocalizationTFManager is the '
+                'sole map->odom owner')),
+            ComposableNodeContainer(
+                package='rclcpp_components',
+                executable='component_container_mt',
+                name='grid_localization_container',
                 namespace='',
                 output='screen',
-                sigterm_timeout='15.0',
-                parameters=[str(params_file), {'use_sim_time': use_sim_time}],
-                remappings=[('scan', '/scan'), ('map', '/map')],
+                composable_node_descriptions=[
+                    ComposableNode(
+                        package='isaac_ros_pointcloud_utils',
+                        plugin=(
+                            'nvidia::isaac_ros::pointcloud_utils::'
+                            'LaserScantoFlatScanNode'),
+                        name='laserscan_to_flatscan',
+                        parameters=[{'use_sim_time': use_sim_time}],
+                        remappings=[
+                            ('scan', '/scan'),
+                            ('flatscan', '/flatscan'),
+                        ],
+                    ),
+                    ComposableNode(
+                        package='isaac_ros_occupancy_grid_localizer',
+                        plugin=(
+                            'nvidia::isaac_ros::occupancy_grid_localizer::'
+                            'OccupancyGridLocalizerNode'),
+                        name='occupancy_grid_localizer',
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'loc_result_frame': 'map',
+                            'map_yaml_path': map_file,
+                        }],
+                        remappings=[
+                            ('flatscan', '/flatscan'),
+                            ('localization_result', '/localization_result'),
+                            ('trigger_grid_search_localization',
+                             '/trigger_grid_search_localization'),
+                        ],
+                    ),
+                ],
             ),
-        ])
-        node_names.append('amcl')
-    elif backend == 'odom_static':
-        actions.extend([
-            LogInfo(msg=(
-                'Odom-static dev backend (A/B arm B): fixed map->odom '
-                're-anchored per enrollment seed; AMCL is not started')),
             Node(
-                package='robot_bringup',
-                executable='odom_static_localization_tf',
-                name='odom_static_localization_tf',
+                package='robot_grid_localization',
+                executable='grid_localization_tf_manager',
+                name='grid_localization_tf_manager',
                 output='screen',
-                parameters=[{
-                    'use_sim_time': use_sim_time,
-                    'spawn_map_x': LaunchConfiguration('map_to_odom_x'),
-                    'spawn_map_y': LaunchConfiguration('map_to_odom_y'),
-                    'spawn_map_yaw_deg': LaunchConfiguration(
-                        'map_to_odom_yaw_deg'),
-                }],
+                parameters=[{'use_sim_time': use_sim_time}],
             ),
         ])
     else:
@@ -111,18 +123,12 @@ def _launch_setup(context):
 
 
 def generate_launch_description():
-    package_share = Path(get_package_share_directory('robot_mapping'))
     return LaunchDescription([
         DeclareLaunchArgument('use_sim_time', default_value='true'),
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument(
-            'localization_backend', default_value='amcl',
-            description=(
-                'ideal evaluator baseline, formal amcl backend, or '
-                'odom_static dev A/B backend (no AMCL)')),
-        DeclareLaunchArgument(
-            'amcl_params_file',
-            default_value=str(package_share / 'config' / 'amcl_kujiale.yaml')),
+            'localization_backend', default_value='grid',
+            description='V6-GRID production backend or ideal evaluator'),
         DeclareLaunchArgument('map_file', default_value=''),
         DeclareLaunchArgument('map_to_odom_x', default_value='0.0'),
         DeclareLaunchArgument('map_to_odom_y', default_value='0.0'),

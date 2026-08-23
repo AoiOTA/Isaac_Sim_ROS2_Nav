@@ -2412,3 +2412,37 @@
   （`ab_summary.json` + A1–A3/B1–B3 六次 run 目录）。
 - Verdict: **A/B DECIDED — odom_static 为 Phase 1 定位主线**。
 - Next: G2→G3 doorway 第一错误层离线诊断（B2 planner abort vs B3 碰撞）。
+
+## 2026-08-23 — V6-GRID localization core and public interface
+
+- Goal: replace the production Module3 localization launch with the installed
+  Isaac ROS 4.5.0 LaserScan→FlatScan→OccupancyGridLocalizer chain and add the
+  thin, generation-gated sole `map->odom` manager.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `ccbd54d1f800fcf6db073f22b52377a24b67a900`; result is the single commit
+  containing `docs/handoff/V6_GRID_LOCALIZATION_CORE_20260823.md`.
+- Change: new `robot_grid_localization` package; `robot_mapping` production
+  backend/default is now `grid`, passes one validated map YAML to both map
+  server and localizer, preserves `/localization_result`, and does not start or
+  select AMCL/odom_static. Manager accepts standard
+  `PoseWithCovarianceStamped`, proxies `/bio_nav/relocalize` to the installed
+  `std_srvs/Empty` service, gates one pending generation, requires finite data
+  and exact-stamp `odom->base_link`, then publishes accepted pose/status and
+  `T_map_odom=T_map_base*inverse(T_odom_base)`.
+- Frozen outputs: `/bio_nav/localization_pose`
+  (`geometry_msgs/PoseWithCovarianceStamped`) and
+  `/bio_nav/localization/status` (`diagnostic_msgs/DiagnosticArray`) are
+  reliable/transient-local keep-last 1. Fixed status keys and downstream
+  semantics are recorded in the handoff.
+- Validation: focused pytest **14 passed**; clean `/opt/ros/jazzy` isolated
+  build **2 packages passed**; new-package pytest **10 passed** and
+  flake8/pep257/xmllint PASS; mapping CTest **5/5 passed**. Generic mapping
+  `colcon test` wrapper was blocked before CTest by the pre-existing unselected
+  `robot_slam_solver` runtime hook, so direct CTest was used without expanding
+  scope.
+- Verdict: **PASS (code/test/build only)**. No ROS graph, Isaac Sim, NITROS,
+  Nav2, TF ownership, or live localization run was started; live result is
+  **UNVERIFIED**.
+- Next: fresh Integration/bringup coder consumes the three frozen public
+  interfaces, removes old readiness/seed paths, waits for matching-generation
+  `ACCEPTED`, and then a reviewer performs the first actual grid smoke.
