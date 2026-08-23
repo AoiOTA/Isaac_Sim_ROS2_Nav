@@ -4,8 +4,9 @@
 # usage:
 #   v6_reset_cold_boundary_r5_session.sh RUN_DIR SNAPSHOT_ROOT
 #
-# One persistent Kujiale low-obstacle stack (module2 + Isaac + ROS/Nav2 M3 +
-# estimated_autonomy bridge), then three consecutive v6_formal_episode
+# One persistent Kujiale low-obstacle stack (module2 + Isaac + ROS/Nav2 with
+# cognitive_profile=${V6_COGNITIVE_PROFILE:-M3} + estimated_autonomy bridge),
+# then three consecutive v6_formal_episode
 # engineering-pilot dispatches (episode indices 0/1/2 = seeds 7201/7202/7203
 # of the Kujiale static manifest), each on the same warm stack (Option A
 # in-place re-arm).  One session-long MCAP plus one runner JSONL and one
@@ -30,6 +31,7 @@ EPISODE_SEEDS="${R5_EPISODE_SEEDS:-7201 7202 7203}"
 READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
 RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
 NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-300}"
+V6_COGNITIVE_PROFILE="${V6_COGNITIVE_PROFILE:-M3}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M2="${SNAP}/m2_src"
@@ -197,7 +199,7 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "rf2o=off"
   echo "ekf_profile=wheel_imu"
   echo "lidar_odometry_backend=off"
-  echo "cognitive_profile=M3"
+  echo "cognitive_profile=${V6_COGNITIVE_PROFILE}"
   echo "cognitive_graph_mode=gvg"
   echo "bridge_profile=estimated_autonomy"
   if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
@@ -284,7 +286,7 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   structure_tf_source:=isaac \
   localization_profile:=kujiale \
   nav2_profile:=v6_low_obstacle_isolation \
-  cognitive_profile:=M3 \
+  cognitive_profile:=${V6_COGNITIVE_PROFILE} \
   cognitive_graph_mode:=gvg \
   initial_pose_source:=auto \
   activation_startup_policy:=fail_closed \
