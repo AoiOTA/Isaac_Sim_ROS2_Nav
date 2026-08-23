@@ -2674,3 +2674,37 @@
 - Next: build a fresh combined snapshot containing this commit, confirm an
   empty ROS domain, then rerun one episode (`R5_EPISODE_INDICES=0`,
   `R5_EPISODE_SEEDS=7201`). Phase 1B must pass before any five-leg dispatch.
+
+## 2026-08-24 — V6-GRID live retry stopped at ignored Jackal asset dependency
+
+- Goal: after the snapshot-underlay repair, run actual Phase 1B and only on its
+  PASS dispatch one engineering-pilot `G1 reset -> G2 -> G3 -> G4 -> G5 -> G1`
+  loop.
+- Pins: Module3 `a1232a3cc9f25e9a7ece5dcf64a3a4aa9456fcda`, Integration
+  `2578366c350fee741ca2e97cd846d5741b48eb68`, Module2 metadata-only
+  `c18bd9ea7c69b4cc44e4226a7e37d6e1b803de30`; fixed mains and expected
+  tracked-clean/untracked counts passed.
+- Snapshot: `/tmp/v6_phase1_combined_retry.5gqVsI`, made only with
+  `git archive HEAD` from the permitted Integration and Module3 worktrees.
+  Integration's 2 packages and Module3's explicit 13-package stable/M0 closure
+  built successfully; fusion and RF2O were excluded. Pre-Kit `common.sh`
+  validation resolved only `/opt`, snapshot Integration, and snapshot Module3.
+- Runtime: canonical session on confirmed-empty domain `210`, episode index
+  `0`, seed `7201`; NAS evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T165127Z/`.
+- Result: **FAIL at Isaac scene composition**. Kit completed startup, then
+  `SceneComposer` rejected unresolved dependency
+  `isaac_sim/assets/robots/jackal/source/jackal_original.usd` in the strict
+  snapshot. The file exists in the allowed live worktree but is untracked and
+  ignored by `source/.gitignore:2:*.usd`, so it is absent from `git archive`.
+  The reviewer did not copy it into the declared strict snapshot or retry.
+- Boundary: Phase 1B did not start; no sensor, EKF, FlatScan, Grid acceptance,
+  TF/Nav2, frequency/stamp/frame/QoS, correction/latency, or initial GT-error
+  evidence exists. Phase 1C was not authorized; no reset/goal, rosbag, motion
+  metric, or visual exists. This is an engineering live startup failure, not
+  navigation success or formal qualification.
+- Cleanup: only owned groups were stopped; domain 210 was empty afterward and
+  the unrelated domain-141 `odom_static` was preserved.
+- Next: make the required Jackal USD reproducibly available from an authorized
+  committed/snapshot source, then create another strict snapshot and rerun
+  Phase 1B before any route goal.

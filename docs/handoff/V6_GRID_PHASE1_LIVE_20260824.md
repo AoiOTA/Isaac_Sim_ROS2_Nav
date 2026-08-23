@@ -62,3 +62,48 @@ snapshot Integration install/root into the Isaac entrypoint while keeping the
 underlay validation fail closed. Then rebuild a fresh combined snapshot and
 rerun Phase 1B; only a passing interface smoke may dispatch the one-loop
 Phase 1C episode.
+
+## Retry after snapshot-underlay repair
+
+**FAIL at Isaac scene composition.** The underlay repair itself passed: fresh
+snapshot Integration and Module3 installs resolved exclusively from the
+snapshot, and Isaac reached `Simulation App Startup Complete`. The next actual
+first error layer was:
+
+```text
+RuntimeError: robot asset has unresolved dependencies: ('/tmp/v6_phase1_combined_retry.5gqVsI/m3_src/isaac_sim/assets/robots/jackal/source/jackal_original.usd',)
+```
+
+- Module3: `a1232a3cc9f25e9a7ece5dcf64a3a4aa9456fcda`
+- Integration: `2578366c350fee741ca2e97cd846d5741b48eb68`
+- Module2 metadata only: `c18bd9ea7c69b4cc44e4226a7e37d6e1b803de30`
+- Fresh strict snapshot: `/tmp/v6_phase1_combined_retry.5gqVsI`
+- Snapshot build: Integration **2 packages finished**; Module3 explicit
+  stable/M0 closure **13 packages finished**, excluding `bio_nav_fusion` and
+  `rf2o_laser_odometry`.
+- Pre-Kit validation: required Integration setup/IDL headers and both
+  Integration package prefixes were inside snapshot `i_src/install_r5`;
+  `robot_experiments` was inside snapshot `m3_src/install_r5`; overlay paths
+  were `/opt -> snapshot Integration -> snapshot Module3` with no live-worktree
+  prefix.
+- Runtime: domain `210`, episode index `0`, seed `7201`; evidence at
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T165127Z/`.
+
+The strict archive contains the tracked `source/.gitignore` but not the
+required USD. In the allowed live worktree the 1,179,416-byte USD exists but is
+untracked and ignored by `source/.gitignore:2:*.usd`. It was not copied into the
+strict snapshot. This is now the minimal reproducibility blocker for the
+committed-HEAD live path.
+
+Phase 1B did not start: no real sensor, EKF, FlatScan, Grid result/status,
+`map->odom`, TF, Nav2 lifecycle, frequency/stamp/frame/QoS, Grid
+latency/correction, or initial GT-error evidence exists. Phase 1C was not
+authorized; no reset or route goal was sent, so no rosbag, motion metric, or
+visual exists. Only the owned driver/Isaac groups were stopped; domain 210 was
+empty after cleanup and the unrelated domain-141 `odom_static` remained alive.
+
+Next: a fresh coder should make the required Jackal runtime dependency
+reproducibly available from an authorized committed/snapshot source, then build
+another strict snapshot and rerun Phase 1B before any goal. This retry is an
+engineering live startup failure, not code-test success, navigation success, or
+formal qualification.
