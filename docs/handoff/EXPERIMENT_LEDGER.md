@@ -2616,3 +2616,36 @@
 - Remaining: build the fresh combined Integration/Module3 overlay after the
   concurrent `estimated_m0` implementation lands, then verify the complete
   Grid/status/TF/navigation chain.
+
+## 2026-08-24 — V6-GRID first canonical live attempt stopped at Isaac startup
+
+- Goal: run Phase 1B on an actual empty Kujiale stack and, only after it
+  passed, one engineering-pilot `G1 reset → G2 → G3 → G4 → G5 → G1` loop.
+- Pins: Module3 `42a222bb088b3184d2a99399979bd1a6e3678db7`, Integration
+  `2578366c350fee741ca2e97cd846d5741b48eb68`, Module2 metadata-only
+  `c18bd9ea7c69b4cc44e4226a7e37d6e1b803de30`; all fixed mains and expected
+  tracked-clean/untracked counts passed before launch.
+- Runtime: canonical session, snapshot
+  `/tmp/v6_phase1_combined_repreflight.sOYIbk`, dedicated empty domain `209`,
+  one requested episode only (index 0 / seed 7201). The unrelated
+  `odom_static` remained alive on domain 141.
+- Result: **FAIL at Isaac startup**. Before Kit started, the snapshot Isaac
+  entrypoint required the live Integration worktree's
+  `ros2_ws/install/.../cognitive_obstacle_array__struct.hpp`, which does not
+  exist. The same header is present in the supplied snapshot
+  `i_src/ros2_ws/install_r5`, and the prescribed source order resolves the
+  interfaces package there.
+- First error layer: the session sources the immutable snapshot overlays, but
+  the canonical V6 wrapper exports a live-worktree `BIO_NAV_INTEGRATION_SETUP`
+  and the Isaac underlay validator accepts only that live-worktree root.
+- Evidence: `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T163229Z/`
+  (`logs/isaac.log`, `conclusion.md`, `STOP.md`, and `provenance/`).
+- Boundary: Isaac sensor topics, Phase 1B interface checks, reset, recorder,
+  and every route goal were **not run**. Phase 1C was therefore not authorized.
+  This is neither engineering success nor formal qualification.
+- Cleanup: only owned process groups were stopped; domain 209 was empty after
+  cleanup and the domain-141 process was preserved.
+- Next: a fresh coder must bind the canonical Isaac path to the supplied
+  snapshot Integration install while retaining fail-closed allowed-root
+  validation, then build a fresh combined snapshot and rerun Phase 1B before
+  any goal.
