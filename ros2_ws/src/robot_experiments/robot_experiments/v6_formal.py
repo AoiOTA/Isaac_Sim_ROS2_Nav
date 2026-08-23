@@ -39,6 +39,9 @@ COMMAND_ZERO_TOLERANCE = 1.0e-3
 # bounded until the first goal (no stale drive replay, no estimator jump).
 POST_RESET_ODOM_LANDING_M = 0.10
 POST_RESET_ODOM_SPAN_M = 0.10
+# Per-attempt budget of the post-reset Nav2/TF readiness poll; the overall
+# fail-closed budget stays the reset timeout.
+NAV2_PROBE_ATTEMPT_TIMEOUT_SEC = 5.0
 SOLE_PUBLISHER_TOPICS = ("/odom", "/cmd_vel", "/cmd_vel_sim", "/amcl_pose")
 FINAL_ESTIMATED_POLICY = {
     "ekf_profile": "wheel_imu",
@@ -1249,6 +1252,29 @@ class V6FormalNode:
         response = future.result()
         return bool(response is not None and response.success is True)
 
+    def _wait_nav2_and_tf_ready(self, timeout_sec: float) -> None:
+        """Poll the post-reset Nav2/TF probe until the reset budget expires.
+
+        The activation gate's post-reset time-jump recovery briefly pauses
+        Nav2; a one-shot probe landing inside the pause window failed closed
+        spuriously (live R5: episode aborted with nav2_or_tf_not_ready 6 s
+        after start, while the gate resumed ~3 s later).  Poll until both
+        facts hold; an exhausted budget still fails closed with the same
+        reason.
+        """
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            self.guard.record_navigation_ready(
+                nav2_active=self._nav2_is_active(NAV2_PROBE_ATTEMPT_TIMEOUT_SEC),
+                tf_active=self.map_odom_tf_seen and self.odom_base_tf_seen,
+            )
+            if self.guard.nav2_active and self.guard.tf_active:
+                return
+            if self.guard.state == "STOP" or time.monotonic() >= deadline:
+                self.guard.stop("nav2_or_tf_not_ready")
+                return
+            self._rclpy.spin_once(self.node, timeout_sec=0.5)
+
     def _set_episode_parameters(self, timeout_sec: float) -> None:
         Parameter = self._types["Parameter"]
         if not self.isaac_parameters.wait_for_services(timeout_sec=timeout_sec):
@@ -1398,12 +1424,8 @@ class V6FormalNode:
         self._check_post_reset_odom()
         if self.guard.state == "STOP":
             return self.result()
-        self.guard.record_navigation_ready(
-            nav2_active=self._nav2_is_active(reset_timeout_sec),
-            tf_active=self.map_odom_tf_seen and self.odom_base_tf_seen,
-        )
+        self._wait_nav2_and_tf_ready(reset_timeout_sec)
         if not (self.guard.nav2_active and self.guard.tf_active):
-            self.guard.stop("nav2_or_tf_not_ready")
             return self.result()
         # The route coordinator drops goals published while the ResetStopGate
         # still holds this reset's generation, without retry; wait out the

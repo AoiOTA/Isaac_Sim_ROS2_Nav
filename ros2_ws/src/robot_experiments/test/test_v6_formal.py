@@ -455,6 +455,59 @@ def test_publisher_ownership_requires_sole_command_and_pose_publishers():
     assert node._publisher_ownership_violations() == ("/cmd_vel_sim=0",)
 
 
+def _probe_node(nav2_results):
+    """Bare node with a scripted post-reset Nav2 is_active probe."""
+    node = _bare_node()
+    node.map_odom_tf_seen = True
+    node.odom_base_tf_seen = True
+    node.node = SimpleNamespace()
+    node._rclpy = SimpleNamespace(spin_once=lambda *args, **kwargs: None)
+    attempts = []
+
+    def fake_nav2_is_active(timeout_sec):
+        attempts.append(timeout_sec)
+        return nav2_results[min(len(attempts) - 1, len(nav2_results) - 1)]
+
+    node._nav2_is_active = fake_nav2_is_active
+    return node, attempts
+
+
+def test_nav2_tf_probe_polls_through_the_pause_window():
+    # Live R5 race: the first probe landed inside the activation gate's
+    # time-jump recovery pause and the episode died with nav2_or_tf_not_ready
+    # 6 s after start.  The poll must retry until Nav2 resumes.
+    node, attempts = _probe_node([False, False, True])
+    node._wait_nav2_and_tf_ready(30.0)
+    assert node.guard.state != "STOP"
+    assert node.guard.stop_reason == ""
+    assert node.guard.nav2_active and node.guard.tf_active
+    assert len(attempts) == 3
+
+
+def test_nav2_tf_probe_still_fails_closed_after_budget_exhausted():
+    # Negative control: a probe that never recovers must still fail closed
+    # with the same reason once the reset budget is exhausted.
+    node, attempts = _probe_node([False])
+    node._wait_nav2_and_tf_ready(0.2)
+    assert node.guard.state == "STOP"
+    assert node.guard.stop_reason == "nav2_or_tf_not_ready"
+    assert len(attempts) >= 1
+
+
+def test_nav2_tf_probe_missing_tf_fact_also_fails_closed():
+    node, _ = _probe_node([True])
+    node.map_odom_tf_seen = False
+    node._wait_nav2_and_tf_ready(0.2)
+    assert node.guard.stop_reason == "nav2_or_tf_not_ready"
+
+
+def test_nav2_tf_probe_preserves_an_earlier_stop_reason():
+    node, _ = _probe_node([False])
+    node.guard.stop("collision")
+    node._wait_nav2_and_tf_ready(30.0)
+    assert node.guard.stop_reason == "collision"
+
+
 def test_b5_physical_epoch_seed_confirmation_bootstrap_rollover_sequence():
     guard = ready_guard()
     assert guard.physical_epoch == 1
