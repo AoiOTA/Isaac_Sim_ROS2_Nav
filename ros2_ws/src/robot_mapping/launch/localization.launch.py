@@ -10,8 +10,9 @@ from launch_ros.actions import LifecycleNode, Node
 def _launch_setup(context):
     backend = LaunchConfiguration(
         'localization_backend').perform(context).strip().lower()
-    if backend not in {'ideal', 'amcl'}:
-        raise RuntimeError('localization_backend must be ideal or amcl')
+    if backend not in {'ideal', 'amcl', 'odom_static'}:
+        raise RuntimeError(
+            'localization_backend must be ideal, amcl, or odom_static')
     map_file = LaunchConfiguration('map_file').perform(context).strip()
     if not map_file:
         raise RuntimeError(
@@ -55,6 +56,25 @@ def _launch_setup(context):
             ),
         ])
         node_names.append('amcl')
+    elif backend == 'odom_static':
+        actions.extend([
+            LogInfo(msg=(
+                'Odom-static dev backend (A/B arm B): fixed map->odom '
+                're-anchored per enrollment seed; AMCL is not started')),
+            Node(
+                package='robot_bringup',
+                executable='odom_static_localization_tf',
+                name='odom_static_localization_tf',
+                output='screen',
+                parameters=[{
+                    'use_sim_time': use_sim_time,
+                    'spawn_map_x': LaunchConfiguration('map_to_odom_x'),
+                    'spawn_map_y': LaunchConfiguration('map_to_odom_y'),
+                    'spawn_map_yaw_deg': LaunchConfiguration(
+                        'map_to_odom_yaw_deg'),
+                }],
+            ),
+        ])
     else:
         actions.extend([
             LogInfo(msg=(
@@ -97,7 +117,9 @@ def generate_launch_description():
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument(
             'localization_backend', default_value='amcl',
-            description='ideal evaluator baseline or formal amcl backend'),
+            description=(
+                'ideal evaluator baseline, formal amcl backend, or '
+                'odom_static dev A/B backend (no AMCL)')),
         DeclareLaunchArgument(
             'amcl_params_file',
             default_value=str(package_share / 'config' / 'amcl_kujiale.yaml')),

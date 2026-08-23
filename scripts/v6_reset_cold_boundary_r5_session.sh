@@ -32,6 +32,9 @@ READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
 RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
 NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-300}"
 V6_COGNITIVE_PROFILE="${V6_COGNITIVE_PROFILE:-M3}"
+# A/B arm selector: amcl (default, arm A) or odom_static (arm B, no AMCL;
+# fixed map->odom re-anchored per enrollment seed).
+V6_LOCALIZATION_BACKEND="${V6_LOCALIZATION_BACKEND:-amcl}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M2="${SNAP}/m2_src"
@@ -200,6 +203,7 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "ekf_profile=wheel_imu"
   echo "lidar_odometry_backend=off"
   echo "cognitive_profile=${V6_COGNITIVE_PROFILE}"
+  echo "localization_backend=${V6_LOCALIZATION_BACKEND}"
   echo "cognitive_graph_mode=gvg"
   echo "bridge_profile=estimated_autonomy"
   if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
@@ -285,6 +289,7 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   odometry_mode:=estimated \
   structure_tf_source:=isaac \
   localization_profile:=kujiale \
+  localization_owner:=${V6_LOCALIZATION_BACKEND} \
   nav2_profile:=v6_low_obstacle_isolation \
   cognitive_profile:=${V6_COGNITIVE_PROFILE} \
   cognitive_graph_mode:=gvg \

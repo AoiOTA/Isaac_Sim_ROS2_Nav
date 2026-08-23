@@ -17,7 +17,7 @@ ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 LOCALIZATION_MAP_CONTRACTS = frozenset({
     'posegraph_bundle', 'occupancy_only'})
-LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'amcl'})
+LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'amcl', 'odom_static'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
     'v6_low_obstacle_isolation',
@@ -359,7 +359,14 @@ def validate_mode(
             if requested_localization_owner == 'auto'
             else requested_localization_owner
         )
-        if resolved_localization_owner != expected_localization_owner:
+        if resolved_localization_owner == 'odom_static':
+            # Dev A/B arm: fixed map->odom without AMCL scan corrections.
+            if odometry_mode == 'ideal':
+                raise ValueError(
+                    'localization_owner=odom_static conflicts with '
+                    'odometry_mode=ideal; ideal odometry already owns '
+                    'map->odom')
+        elif resolved_localization_owner != expected_localization_owner:
             raise ValueError(
                 f'localization_owner={resolved_localization_owner} conflicts '
                 f'with odometry_mode={odometry_mode}; expected '

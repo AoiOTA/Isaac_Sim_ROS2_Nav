@@ -254,6 +254,46 @@ def test_legacy_navigation_defaults_to_posegraph_bundle():
         )
 
 
+def test_odom_static_dev_backend_is_estimated_only():
+    selection = validate_mode(
+        'navigation',
+        'estimated',
+        'isaac',
+        posegraph_file='/tmp/v6_posegraph',
+        map_file='/tmp/v6_map.yaml',
+        check_posegraph_files=False,
+        localization_owner='odom_static',
+    )
+    assert selection.localization_owner == 'odom_static'
+
+    with pytest.raises(ValueError, match='conflicts with odometry_mode=ideal'):
+        validate_mode(
+            'navigation',
+            'ideal',
+            'isaac',
+            posegraph_file='/tmp/v6_posegraph',
+            map_file='/tmp/v6_map.yaml',
+            check_posegraph_files=False,
+            localization_owner='odom_static',
+        )
+
+
+def test_odom_static_does_not_relax_the_occupancy_only_amcl_contract(tmp_path):
+    occupancy_map = tmp_path / 'rivermark_selected.yaml'
+    occupancy_map.write_text('image: rivermark_selected.pgm\n')
+    route_graph = tmp_path / 'rivermark_selected.geojson'
+    route_graph.write_text('{"type": "FeatureCollection", "features": []}\n')
+
+    with pytest.raises(ValueError, match='requires localization_owner=amcl'):
+        validate_mode(
+            'navigation', 'estimated', 'isaac',
+            map_file=str(occupancy_map),
+            localization_map_contract='occupancy_only',
+            localization_owner='odom_static',
+            route_graph_file=str(route_graph),
+        )
+
+
 def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     document = yaml.safe_load(
         (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())

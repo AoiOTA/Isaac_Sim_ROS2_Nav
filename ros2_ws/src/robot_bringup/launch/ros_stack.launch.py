@@ -128,8 +128,9 @@ def _launch_setup(context):
     )
     selected_spawn = None
     if (selection.operation in {'localization', 'navigation'}
-            and selection.odometry_mode == 'ideal'
-            and initial_pose_source == 'auto'):
+            and initial_pose_source == 'auto'
+            and (selection.odometry_mode == 'ideal'
+                 or selection.localization_owner == 'odom_static')):
         selected_spawn = load_spawn_pose(
             spawn_poses_file,
             LaunchConfiguration('spawn_pose_name').perform(context),

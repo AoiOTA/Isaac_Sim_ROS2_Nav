@@ -35,7 +35,52 @@ def test_estimated_localization_uses_map_server_amcl_and_one_manager():
     assert "name='lifecycle_manager_localization'" in source
     assert "{'node_names': node_names}" in source
     assert "package='slam_toolbox'" not in source
-    assert "{'ideal', 'amcl'}" in source
+    assert "{'ideal', 'amcl', 'odom_static'}" in source
+
+
+def test_odom_static_backend_starts_alignment_node_without_amcl(tmp_path):
+    """Launch expansion: odom_static owns map->odom without AMCL."""
+    import importlib.util
+
+    from launch import LaunchContext
+    from launch_ros.actions import LifecycleNode, Node
+
+    spec = importlib.util.spec_from_file_location(
+        'test_localization_launch',
+        PACKAGE_ROOT / 'launch' / 'localization.launch.py')
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    map_file = tmp_path / 'map.yaml'
+    map_file.write_text('image: map.pgm\n')
+    context = LaunchContext()
+    context.launch_configurations.update({
+        'localization_backend': 'odom_static',
+        'map_file': str(map_file),
+        'use_sim_time': 'true',
+        'autostart': 'true',
+        'amcl_params_file': '',
+        'map_to_odom_x': '0.45',
+        'map_to_odom_y': '-5.35',
+        'map_to_odom_yaw_deg': '90.0',
+    })
+    actions = module._launch_setup(context)
+    nodes = {
+        (action.node_package, action.node_executable)
+        for action in actions
+        if isinstance(action, (Node, LifecycleNode))
+    }
+    assert nodes == {
+        ('nav2_map_server', 'map_server'),
+        ('robot_bringup', 'odom_static_localization_tf'),
+        ('nav2_lifecycle_manager', 'lifecycle_manager'),
+    }
+    executables = [
+        action.node_executable for action in actions
+        if isinstance(action, (Node, LifecycleNode))
+    ]
+    assert 'amcl' not in executables
 
 
 def test_amcl_profiles_are_scene_specific_initial_values_with_tf_ownership():
