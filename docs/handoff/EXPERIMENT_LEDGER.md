@@ -2737,3 +2737,42 @@
   ROS graph, Phase 1B/1C, reset, navigation, visual evidence, engineering
   success, or qualification was run. The previous live FAIL remains the latest
   runtime result until a fresh combined snapshot is rerun.
+
+## 2026-08-24 — V6-GRID asset-materialized live retry stopped before reset
+
+- Goal: use the repaired canonical asset path for actual Phase 1B and dispatch
+  one `G1 reset -> G2 -> G3 -> G4 -> G5 -> G1` engineering loop only after
+  Phase 1B passed.
+- Pins: Module3 `0df8f131b6226c622f8acbea2f214bfd4a2e75e3`, Integration
+  `2578366c350fee741ca2e97cd846d5741b48eb68`, Module2 metadata-only
+  `c18bd9ea7c69b4cc44e4226a7e37d6e1b803de30`; fixed mains, branch, tracked
+  cleanliness, and expected untracked top-level counts passed.
+- Snapshot/build: `/tmp/v6_phase1_combined_asset_live.w0TLP3`, made only from
+  the permitted two `git archive HEAD` sources. Integration 2 packages and
+  Module3's stable/M0 13-package closure built; fusion/RF2O were excluded.
+  Pre-Kit Integration IDL/package prefixes and all inspected overlay paths were
+  snapshot-only plus `/opt`.
+- Asset/Kit: canonical import and `--check` passed from explicit root
+  `/home/lyb/isaacsim_assets/Assets/Isaac/6.0`; all three manifest
+  destinations were verified inside the snapshot. Kit and the Kujiale scene
+  started, with real sensor, FlatScan, wheel/EKF odometry, and TF traffic.
+- Runtime: empty domain `211`, episode index `0`, seed `7201`; NAS evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T172000Z/`.
+- Result: **FAIL in Phase 1B before reset**. The Grid manager publishes no
+  startup status; its first status follows relocalize. The episode's pre-reset
+  readiness requires `localization_status_seen` before calling reset, while
+  reset is what causes Integration to call relocalize. The Nav2 activation
+  gate then reached its 120-second fail-closed deadline with
+  `latest=0 state=none` and shut down navigation.
+- Evidence boundary: 256.461-second/112,748-message MCAP; 4,353
+  `odom->base_link` transforms; zero Grid status, NVIDIA result, `map->odom`,
+  reset event, route goal, route progress, or true collision. Phase 1C was not
+  authorized and no spatial/path/costmap visual was meaningful. See
+  `logs/navigation.log`, `conclusion.md`, `STOP.md`, and
+  `review/phase1b_bag_metrics.json`.
+- Cleanup/claim: only owned groups stopped; domain 211 was empty afterward and
+  domain 141 was preserved. This is an engineering live interface failure, not
+  code-test success, navigation success, or formal qualification.
+- Next: minimally break the pre-reset status/reset dependency while retaining
+  post-reset WAITING/ACCEPTED, full TF, active Nav2, and reset-gate release
+  before G2; then rebuild a fresh strict snapshot and rerun Phase 1B.

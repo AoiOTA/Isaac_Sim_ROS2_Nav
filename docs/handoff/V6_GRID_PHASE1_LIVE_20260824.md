@@ -128,3 +128,50 @@ no Kit, Phase 1B, Phase 1C, reset, or route goal was run by this amendment. A
 fresh combined snapshot must be built and the canonical one-episode command in
 `V6_GRID_PHASE1_CANONICAL_RUNNER_20260823.md` rerun with
 `ISAAC_ASSET_ROOT=/home/lyb/isaacsim_assets/Assets/Isaac/6.0`.
+
+## Live retry after asset materialization (2026-08-24)
+
+**FAIL in Phase 1B before the first reset.** The asset repair itself passed in
+the canonical session: all three manifest destinations were imported and
+checked inside fresh strict snapshot
+`/tmp/v6_phase1_combined_asset_live.w0TLP3`. Kit reached
+`Simulation App Startup Complete`; the actual `/clock`, `/joint_states`, raw
+and corrected IMU, `/scan`, `/flatscan`, wheel odometry, EKF `/odom`, and
+`odom->base_link` streams were recorded.
+
+- Module3: `0df8f131b6226c622f8acbea2f214bfd4a2e75e3`
+- Integration: `2578366c350fee741ca2e97cd846d5741b48eb68`
+- Module2 metadata only: `c18bd9ea7c69b4cc44e4226a7e37d6e1b803de30`
+- Build: Integration 2 packages; Module3 stable/M0 13 packages, excluding
+  fusion and RF2O; strict overlay/IDL source-order check passed
+- Runtime: confirmed-empty domain `211`, episode index `0`, seed `7201`
+- Evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T172000Z/`
+
+The first error layer is a circular pre-reset startup dependency. The Grid TF
+manager creates the transient-local status publisher but emits its first
+status only after `/bio_nav/relocalize`. The episode dispatcher requires a
+status message in pre-reset readiness before it calls the physical reset; that
+reset is what drives Integration's relocalize call. No Grid request therefore
+started. The Nav2 activation gate, already running with the canonical
+120-second fail-closed policy, then exited with `latest=0 state=none` while
+waiting for an accepted Grid generation and `map->odom`.
+
+The 256.461-second MCAP contains 112,748 messages. It records 4,353
+`odom->base_link` transforms but zero Grid status, zero NVIDIA localization
+results, zero `map->odom`, zero reset events, and zero route goals. The episode
+result is `STOP`, with `reset_calls=0`, `localization_generation=null`, and
+`goal_publications=0`. Phase 1C was not authorized. No spatial/path/costmap
+failure visual exists because global localization and navigation never began;
+the decisive evidence is `logs/navigation.log`, the MCAP, and
+`review/phase1b_bag_metrics.json`.
+
+Only run-owned process groups were stopped. Domain 211 was empty after cleanup;
+the unrelated domain-141 `odom_static` remained alive. This is an engineering
+live interface failure, not code-test success, navigation success, or formal
+qualification.
+
+Next: a fresh coder should minimally break the pre-reset status/reset cycle
+while preserving post-reset WAITING/ACCEPTED, full-TF, Nav2-active, and reset
+gate requirements before G2. Then rebuild a fresh strict snapshot and rerun
+Phase 1B; no Phase 1C goal is authorized until it passes.
