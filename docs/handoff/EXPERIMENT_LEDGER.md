@@ -2330,3 +2330,28 @@
 - Next: integration fix in progress (keep the stationary revalidation window
   open across the first initialpose, or a motion-independent B4 freshness
   criterion); then rerun this driver — multi-episode re-arm still unproven.
+
+## 2026-08-23 — V6 Kujiale AMCL 地图重生成（Isaac omap）：diff 干净、五腿全通；采用暂停于 GVG 强耦合
+
+- Goal: 用 Isaac Occupancy Map Generator 从 Kujiale USD 实际碰撞几何重生成 AMCL
+  静态地图，消除 warehouse_new 幻影唇行（run#8 GT 穿图、run#9 AMCL 蠕行死锁）。
+- 工具: `isaac_sim/tools/rivermark_occupancy_generate.py` 最小参数化（显式 USD
+  窗口/整格裁剪/flip 输出帧/小场景种子）；修正 Generator buffer 列序认知
+  （列 = −x_usd 降序，地标 56 物体客观判定），修正后再生成与离线校验逐字节一致。
+- 参数: 0.05 m/cell；高度带 z∈[0.30,0.37] m（对齐 LiDAR 0.333 m 扫描面）；
+  输出 154×248 格、origin (-5.14,-6.52)，与 warehouse_new 逐格同构。
+- 结果: 唇行幻影消失（(-0.3,1.96) 全 free；残留占用为 table_0000 真实边缘）；
+  门宽一致（1.15–1.20 vs 旧 1.20–1.30 m）；cabinet_0003 对齐；6 历史低矮障碍区+solo
+  全新图 free；G1–G5 free；run#8/#9 GT 379 采样在新图 0 占用 0 未知；五腿 maximin
+  全连通、瓶颈 0.30–0.40 m（lethal 0.22）。
+- 耦合: posegraph 弱耦合（navigation 不加载，仅 manifest 契约绑定，可字节拷贝复用）。
+  **GVG geojson 强耦合**：nav2 route_server 运行时消费冻结图（/compute_route 在 v6
+  活路径）；22/78 canonical 边在新图跌破 0.22 m（edge 4/6/55/56 为 0，穿越真实
+  占用，edge 6 紧邻 G5）。按任务条款停止采用，未再生物件、未切换引用。
+- Evidence: `/mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_kujiale_map_regen_20260823/`
+  （REPORT.md、diff_analysis.json、orientation_landmarks.json、validated/ 候选图、
+  figures/ 顶视叠加+GT 轨迹+净空热力+diff overlay）。
+- Verdict: **地图本身 PASS（可采用）；链路切换 BLOCKED——待 master 决策 GVG 再生
+  （`robot_route_planner build_graph` CLI 现成）与 graph_id 迁移（涉 module2 先验）**。
+- Next: master 决策后按 REPORT.md §切换路径执行（文件/manifest/spawn/引用/测试清单
+  已勘察齐全）。

@@ -26,6 +26,25 @@ Run with the Isaac Sim python, e.g.::
 
 Stage loading and session-layer collider authoring reuse the audited
 ``rivermark_prepare.py`` helpers (imported, not modified).
+
+The default 80x80 m candidate window is Rivermark-specific.  Other stages
+(e.g. the Kujiale apartment) instead pass an explicit generation window in
+USD frame (``--bounds-*``), optionally trimmed by whole cells
+(``--crop-cells``) and re-emitted in a 180-degree-rotated map frame
+(``--flip-origin-x/--flip-origin-y`` define ``x_map = fx - x_usd``,
+``y_map = fy - y_usd``), e.g.::
+
+    "${ISAAC_PYTHON}" isaac_sim/tools/rivermark_occupancy_generate.py \
+        --headless --map-version v6_kujiale_isaacgen_v1 \
+        --usd /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd \
+        --bounds-min-x -0.66 --bounds-min-y -7.08 \
+        --bounds-max-x 9.04 --bounds-max-y 7.32 \
+        --crop-cells 20 20 20 20 \
+        --flip-origin-x 2.9 --flip-origin-y -0.2 \
+        --seed-x 2.9 --seed-y -0.2 --seed-ground-z 0.0 \
+        --mapping-height-m 0.30 \
+        --minimum-z-offset-m 0.0 --maximum-z-offset-m 0.07 \
+        --seed-offsets-m 0.3 0.0 -0.3 0.0 0.0 0.3 0.0 -0.3
 """
 
 from __future__ import annotations
@@ -100,6 +119,48 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--center-x", type=float, default=DEFAULT_SEED_X)
     parser.add_argument("--center-y", type=float, default=DEFAULT_SEED_Y)
+    parser.add_argument(
+        "--bounds-min-x",
+        type=float,
+        default=None,
+        help="explicit USD-frame generation window; all four --bounds-* "
+        "values override --window-m/--center-*",
+    )
+    parser.add_argument("--bounds-min-y", type=float, default=None)
+    parser.add_argument("--bounds-max-x", type=float, default=None)
+    parser.add_argument("--bounds-max-y", type=float, default=None)
+    parser.add_argument(
+        "--crop-cells",
+        type=int,
+        nargs=4,
+        metavar=("LEFT", "BOTTOM", "RIGHT", "TOP"),
+        default=None,
+        help="drop whole cells from the generated USD-frame grid before "
+        "writing outputs (order: left bottom right top)",
+    )
+    parser.add_argument(
+        "--flip-origin-x",
+        type=float,
+        default=None,
+        help="emit the map in a 180-degree-rotated frame: "
+        "x_map = FLIP_ORIGIN_X - x_usd (requires --flip-origin-y)",
+    )
+    parser.add_argument(
+        "--flip-origin-y",
+        type=float,
+        default=None,
+        help="emit the map in a 180-degree-rotated frame: "
+        "y_map = FLIP_ORIGIN_Y - y_usd (requires --flip-origin-x)",
+    )
+    parser.add_argument(
+        "--seed-offsets-m",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="DX_DY",
+        help="flat dx dy list of fallback flood-fill seeds; default: the "
+        "Rivermark 10-25 m offsets",
+    )
     parser.add_argument(
         "--min-free-fraction",
         type=float,
@@ -330,24 +391,62 @@ def run(args: argparse.Namespace) -> int:
         if not physics_scenes:
             UsdPhysics.Scene.Define(stage, "/World/BioNavOMapPhysicsScene")
             app.update()
-        if int(inventory["collision_prim_count"]) <= 0:
-            raise RuntimeError("Rivermark has no collision geometry")
-
         (
             session_collider_layer,
             session_collider_count,
             hidden_annotation_count,
         ) = _author_session_mesh_colliders(stage, app)
         del session_collider_layer
+        if (
+            int(inventory["collision_prim_count"]) <= 0
+            and session_collider_count <= 0
+        ):
+            raise RuntimeError("stage has no collision geometry")
 
-        # Proven production recipe: generate only the original 80x80 m
-        # candidate-A window (same as rivermark_prepare.py), never the full
-        # stage world bounds -- full-stage voxelization at 0.05 m/cell is what
-        # froze the workstation in earlier attempts.
-        half = 0.5 * float(args.window_m)
-        bounds_min = [float(args.center_x) - half, float(args.center_y) - half, 0.0]
-        bounds_max = [float(args.center_x) + half, float(args.center_y) + half, 0.0]
-        bounds_method, bounds_skipped = "candidate_window_80m", 0
+        explicit_bounds = (
+            args.bounds_min_x,
+            args.bounds_min_y,
+            args.bounds_max_x,
+            args.bounds_max_y,
+        )
+        if all(value is not None for value in explicit_bounds):
+            bounds_min = [
+                float(args.bounds_min_x),
+                float(args.bounds_min_y),
+                0.0,
+            ]
+            bounds_max = [
+                float(args.bounds_max_x),
+                float(args.bounds_max_y),
+                0.0,
+            ]
+            if (
+                bounds_max[0] <= bounds_min[0]
+                or bounds_max[1] <= bounds_min[1]
+            ):
+                raise ValueError("explicit --bounds-* window is empty")
+            bounds_method, bounds_skipped = "explicit_usd_bounds", 0
+        elif any(value is not None for value in explicit_bounds):
+            raise ValueError(
+                "explicit generation window requires all four --bounds-* values"
+            )
+        else:
+            # Proven production recipe: generate only the original 80x80 m
+            # candidate-A window (same as rivermark_prepare.py), never the full
+            # stage world bounds -- full-stage voxelization at 0.05 m/cell is
+            # what froze the workstation in earlier attempts.
+            half = 0.5 * float(args.window_m)
+            bounds_min = [
+                float(args.center_x) - half,
+                float(args.center_y) - half,
+                0.0,
+            ]
+            bounds_max = [
+                float(args.center_x) + half,
+                float(args.center_y) + half,
+                0.0,
+            ]
+            bounds_method, bounds_skipped = "candidate_window_80m", 0
 
         timeline = omni.timeline.get_timeline_interface()
         timeline.play()
@@ -359,9 +458,18 @@ def run(args: argparse.Namespace) -> int:
         generator.update_settings(float(args.resolution_m), 1.0, 0.0, 0.5)
         origin_z = float(args.seed_ground_z + args.mapping_height_m)
         seed = (float(args.seed_x), float(args.seed_y))
+        seed_offsets = SEED_OFFSETS_M
+        if args.seed_offsets_m is not None:
+            flat = [float(value) for value in args.seed_offsets_m]
+            if len(flat) % 2 != 0:
+                raise ValueError("--seed-offsets-m must be a flat dx dy list")
+            seed_offsets = tuple(
+                (flat[index], flat[index + 1])
+                for index in range(0, len(flat), 2)
+            )
         seeds = [seed] + [
             (float(args.seed_x + dx), float(args.seed_y + dy))
-            for dx, dy in SEED_OFFSETS_M
+            for dx, dy in seed_offsets
         ]
         raw = None
         selected_seed = None
@@ -395,6 +503,46 @@ def run(args: argparse.Namespace) -> int:
         if raw is None or selected_seed is None:
             raise RuntimeError("occupancy generation produced no seed trials")
 
+        resolution = float(args.resolution_m)
+        generated_bounds_min = list(bounds_min)
+        generated_bounds_max = list(bounds_max)
+        if args.crop_cells is not None:
+            left, bottom, right, top = (int(value) for value in args.crop_cells)
+            if min(left, bottom, right, top) < 0:
+                raise ValueError("--crop-cells values must be non-negative")
+            rows, columns = raw.shape
+            if left + right >= columns or bottom + top >= rows:
+                raise ValueError("--crop-cells removes the whole grid")
+            raw = raw[bottom : rows - top, left : columns - right]
+            bounds_min[0] += left * resolution
+            bounds_min[1] += bottom * resolution
+            bounds_max[0] -= right * resolution
+            bounds_max[1] -= top * resolution
+        flip = (args.flip_origin_x is not None) or (args.flip_origin_y is not None)
+        if flip and (
+            args.flip_origin_x is None or args.flip_origin_y is None
+        ):
+            raise ValueError(
+                "--flip-origin-x and --flip-origin-y must be given together"
+            )
+        if flip:
+            # 180-degree-rotated output frame: x_map = fx - x_usd and
+            # y_map = fy - y_usd.  Empirically the Generator buffer stores
+            # rows with ascending y_usd but columns with *descending* x_usd
+            # (validated 2026-08-23 against Kujiale USD landmark bounds:
+            # cabinet_0003 etc. fill their calibrated map-frame footprints
+            # only under this convention), so the descending USD columns
+            # already equal ascending map columns and only the rows must be
+            # reversed here.  The ROS row flip in _write_outputs then yields
+            # a pgm equal to the raw buffer.
+            raw = raw[::-1, :]
+            origin_xy = (
+                float(args.flip_origin_x) - bounds_max[0],
+                float(args.flip_origin_y) - bounds_max[1],
+            )
+        else:
+            origin_xy = (float(bounds_min[0]), float(bounds_min[1]))
+
         receipt = {
             "schema_version": 1,
             "classification": (
@@ -416,6 +564,17 @@ def run(args: argparse.Namespace) -> int:
             "world_bounds_max": bounds_max,
             "world_bounds_method": bounds_method,
             "world_bounds_skipped_prims": bounds_skipped,
+            "generated_bounds_min": generated_bounds_min,
+            "generated_bounds_max": generated_bounds_max,
+            "crop_cells": (
+                list(args.crop_cells) if args.crop_cells is not None else None
+            ),
+            "flip_origin_xy": (
+                [float(args.flip_origin_x), float(args.flip_origin_y)]
+                if flip
+                else None
+            ),
+            "output_frame": "map_flip_180" if flip else "usd",
             "occupancy_collision_mode": "visible_usd_meshes_in_session_layer",
             "session_collider_count": session_collider_count,
             "hidden_nonphysical_annotation_count": hidden_annotation_count,
@@ -423,8 +582,8 @@ def run(args: argparse.Namespace) -> int:
         summary = _write_outputs(
             paths,
             raw,
-            resolution_m=float(args.resolution_m),
-            origin_xy=(float(bounds_min[0]), float(bounds_min[1])),
+            resolution_m=resolution,
+            origin_xy=origin_xy,
             receipt=receipt,
         )
         print(json.dumps(summary, indent=2, sort_keys=True))
