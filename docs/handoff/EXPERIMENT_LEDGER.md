@@ -2836,3 +2836,33 @@
   Nav2, controller, new navigation run, recurrence, engineering navigation
   success, or formal qualification is claimed. A separate short live
   diagnostic is still required before any promotion decision.
+
+## 2026-08-24 — V6 Kujiale clearance layout R1 offline adoption
+
+- Goal: replace only the twice-observed marginal cabinet-table throat with a
+  rollback-safe scene/map/GVG identity, without weakening safety or editing
+  the supplied Kujiale USD.
+- Scene: new tracked `v6_kujiale_clearance_r1` USDA sublayers the exact
+  read-only original and moves only `table_0000` plus `tablecloth_0004` by
+  `-0.48 m` USD x. Existing `v6_kujiale_isaacgen_v1` artifacts are untouched.
+- Generation: existing Isaac collision OMap tool produced a 0.05 m,
+  154x248, origin `[-5.14,-6.52]` map; existing deterministic
+  `robot_route_planner` CLI produced `v6_kujiale_clearance_r1:gvg_v1` rev 1
+  with 25 nodes / 48 directed edges / one component.
+- Geometry: full assembly-cabinet gap `1.11025 m`, sofa gap `0.05340 m`, no
+  new 3D bbox overlap. Generated G1->G2 throat center clearance is
+  `0.52953 m` minimum and `0.55 m` median/maximum.
+- Route result: G1->G2->G3->G4->G5->G1 all connected; every leg passed the
+  exact directional footprint sweep and centerline wall-crossing check.
+  Visual: `/tmp/v6_kujiale_clearance_r1_validation_overlay.png`.
+- Canonical binding: Phase 1 remains Grid + stable + M0 + Module2 off + GVG +
+  RF2O off + XY-only, now selecting the overlay/new map/new GVG/new spawn;
+  dynamic/appearance remain disabled later-pilot metadata.
+- Validation: focused tests **93 passed**; USD composition direct probe,
+  deterministic GVG byte comparison, shell syntax, and `git diff --check`
+  passed.
+- Verdict: **PASS (offline generation/code/test/visual only)**. No live Isaac
+  navigation, ROS graph, engineering navigation success, or formal
+  qualification was run or claimed. See
+  `docs/handoff/V6_KUJIALE_CLEARANCE_R1_20260824.md` for commands and the exact
+  one-episode next-live entrypoint.

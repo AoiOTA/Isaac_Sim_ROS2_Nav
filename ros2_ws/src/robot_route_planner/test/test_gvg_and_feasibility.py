@@ -4,11 +4,17 @@ import math
 import cv2
 import numpy as np
 
-from robot_route_planner.feasibility import _polygon_is_free, classify_edge
+from robot_route_planner.feasibility import (
+    _polygon_is_free,
+    apply_footprint_feasibility,
+    classify_edge,
+)
 from robot_route_planner.diagnostics import count_simple_routes, graph_diagnostics
 from robot_route_planner.gvg import build_gvg
 from robot_route_planner.map_io import OccupancyMap, load_occupancy_map
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
+from robot_route_planner.ros_node import select_support_attachment
+from robot_route_planner.route_support import export_route_support_graph
 
 
 def _settings():
@@ -23,11 +29,23 @@ def _settings():
         "spur_clearance_ratio_of_inscribed": 1.25,
         "junction_merge_radius_cells": 1,
         "loop_anchor_min_separation_m": 0.50,
+        "route_support_spacing_m": 0.20,
+        "unknown_is_occupied": True,
     }
 
 
 def _footprint_settings():
-    return {"padded_inscribed_radius_m": 0.215}
+    return {
+        "polygon_m": [
+            [0.255, 0.21],
+            [0.255, -0.21],
+            [-0.23, -0.21],
+            [-0.23, 0.21],
+        ],
+        "padding_m": 0.005,
+        "padded_inscribed_radius_m": 0.215,
+        "sweep_sample_spacing_m": 0.025,
+    }
 
 
 def _route_cost_settings():
@@ -82,6 +100,68 @@ def test_v6_isaacgen_map_builds_connected_graph_with_clear_edges() -> None:
     # edge at or above the padded inscribed clearance (0.215 + 0.005 m).
     assert graph_diagnostics(first)["component_count"] == 1
     assert min(edge.min_clearance_m for edge in first.edges) >= 0.22
+
+
+def test_v6_clearance_map_builds_connected_five_leg_support_graph() -> None:
+    repo = Path(__file__).resolve().parents[4]
+    occupancy = load_occupancy_map(
+        repo / "data/maps/occupancy/v6_kujiale_clearance_r1.yaml",
+        unknown_is_occupied=True,
+    )
+    graph = build_gvg(
+        occupancy, _settings(), _footprint_settings(), _route_cost_settings()
+    )
+    apply_footprint_feasibility(graph, occupancy, _footprint_settings())
+    assert graph.graph_id == "v6_kujiale_clearance_r1:gvg_v1"
+    assert graph_diagnostics(graph)["component_count"] == 1
+    assert min(edge.min_clearance_m for edge in graph.edges) >= 0.22
+
+    support = export_route_support_graph(
+        graph, support_spacing_m=_settings()["route_support_spacing_m"]
+    )
+    positions = {
+        int(feature["properties"]["id"]): tuple(
+            feature["geometry"]["coordinates"]
+        )
+        for feature in support.geojson["features"]
+        if feature["geometry"]["type"] == "Point"
+    }
+    adjacency: dict[int, set[int]] = {}
+    for feature in support.geojson["features"]:
+        if feature["geometry"]["type"] != "MultiLineString":
+            continue
+        properties = feature["properties"]
+        adjacency.setdefault(int(properties["startid"]), set()).add(
+            int(properties["endid"])
+        )
+
+    goals = [
+        (0.45, -5.35),
+        (0.80, 4.80),
+        (-2.20, 3.25),
+        (-3.00, -0.45),
+        (-2.20, -2.95),
+        (0.45, -5.35),
+    ]
+    attachments = [
+        select_support_attachment(
+            occupancy,
+            positions,
+            point,
+            _footprint_settings(),
+            departing=index < len(goals) - 1,
+        )
+        for index, point in enumerate(goals)
+    ]
+    for start, goal in zip(attachments, attachments[1:]):
+        reachable = {start}
+        frontier = [start]
+        while frontier:
+            node = frontier.pop()
+            for following in adjacency.get(node, set()) - reachable:
+                reachable.add(following)
+                frontier.append(following)
+        assert goal in reachable
 
 
 def test_feasible_unknown_and_disconnected_are_distinct() -> None:

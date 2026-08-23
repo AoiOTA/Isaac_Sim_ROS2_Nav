@@ -66,6 +66,8 @@ M3_LOCAL_SETUP="${M3_INSTALL}/local_setup.bash"
 I_OBSTACLE_HEADER="${I_INSTALL}/bio_nav_interfaces/include/bio_nav_interfaces/bio_nav_interfaces/msg/detail/cognitive_obstacle_array__struct.hpp"
 ASSET_IMPORTER="${M3}/scripts/import_assets.sh"
 ASSET_MANIFEST="${M3}/isaac_sim/assets/robots/jackal/asset_manifest.json"
+KUJIALE_SOURCE_USD="/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"
+KUJIALE_ENVIRONMENT_ROOT="${M3}/isaac_sim/assets/environments/v6_kujiale_clearance_r1"
 LOGS="${RUN_DIR}/logs"
 PROV="${RUN_DIR}/provenance"
 EPISODES_DIR="${RUN_DIR}/episodes"
@@ -81,6 +83,7 @@ export BIO_NAV_INTEGRATION_INSTALL="${I_INSTALL}"
 export BIO_NAV_INTEGRATION_SETUP="${I_SETUP}"
 export ISAAC_NAV_WORKSPACE_SETUP="${M3_LOCAL_SETUP}"
 export ISAAC_ASSET_ROOT
+export KUJIALE_ENVIRONMENT_ROOT
 
 for snapshot_file in \
     "${ASSET_IMPORTER}" \
@@ -88,7 +91,9 @@ for snapshot_file in \
     "${I_SETUP}" \
     "${I_OBSTACLE_HEADER}" \
     "${M3_INSTALL}/setup.bash" \
-    "${M3_LOCAL_SETUP}"; do
+    "${M3_LOCAL_SETUP}" \
+    "${KUJIALE_SOURCE_USD}" \
+    "${KUJIALE_ENVIRONMENT_ROOT}/kujiale_0026_A_to_B_door_open.usd"; do
   [[ -f "${snapshot_file}" ]] || {
     echo "required snapshot file not found: ${snapshot_file}" >&2
     exit 66
@@ -165,6 +170,9 @@ _stop() {
     echo "- stage: ${STAGE}"
     echo "- reason: ${reason}"
     echo "- isaac_asset_root: ${ISAAC_ASSET_ROOT}"
+    echo "- kujiale_source_usd: ${KUJIALE_SOURCE_USD}"
+    echo "- kujiale_environment_root: ${KUJIALE_ENVIRONMENT_ROOT}"
+    echo "- layout_id: v6_kujiale_clearance_r1"
     echo "- asset_materialization_status: ${ASSET_MATERIALIZATION_STATUS:-not_started}"
     echo "- stopped_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "${RUN_DIR}/STOP.md"
@@ -180,6 +188,9 @@ _write_run_metadata() {
   cat > "${RUN_DIR}/run.yaml" <<EOF
 snapshot_root: ${SNAP}
 isaac_asset_root: ${ISAAC_ASSET_ROOT}
+kujiale_source_usd: ${KUJIALE_SOURCE_USD}
+kujiale_environment_root: ${KUJIALE_ENVIRONMENT_ROOT}
+layout_id: v6_kujiale_clearance_r1
 asset_materialization_status: ${ASSET_MATERIALIZATION_STATUS}
 asset_manifest: isaac_sim/assets/robots/jackal/asset_manifest.json
 git_contains_runtime_asset_binaries: false
@@ -256,6 +267,9 @@ export ASSET_MATERIALIZATION_STATUS
 _write_run_metadata
 {
   echo "isaac_asset_root=${ISAAC_ASSET_ROOT}"
+  echo "kujiale_source_usd=${KUJIALE_SOURCE_USD}"
+  echo "kujiale_environment_root=${KUJIALE_ENVIRONMENT_ROOT}"
+  echo "layout_id=v6_kujiale_clearance_r1"
   echo "asset_manifest=${ASSET_MANIFEST}"
   echo "status=importing"
 } > "${LOGS}/asset_materialization.log"
@@ -413,9 +427,9 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
   spawn_pose_name:=long_route_start_g1 \
-  "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
-  "map_file:=${M3}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
-  "route_graph_file:=${M3}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
+  "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml" \
+  "map_file:=${M3}/data/maps/occupancy/v6_kujiale_clearance_r1.yaml" \
+  "route_graph_file:=${M3}/ros2_ws/src/robot_route_planner/config/v6_kujiale_clearance_r1_gvg_v1.geojson" \
   interactive:=false \
   use_rviz:=false \
   use_teleop:=false \

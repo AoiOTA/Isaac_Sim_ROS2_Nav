@@ -83,6 +83,28 @@ def test_spawn_reset_zeros_all_robot_state_and_gates_map_pose():
         gated_manager.get_map_pose("mapping_start", purpose="test localization")
 
 
+def test_v6_clearance_spawn_identity_keeps_calibrated_map_frame():
+    poses = load_spawn_poses(
+        ROOT
+        / "isaac_sim/configs/environments/"
+        "kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml"
+    )
+    assert set(poses) == {
+        "mapping_start",
+        "long_route_start_g1",
+        "long_route_start_g2",
+        "long_route_start_g5",
+    }
+    assert all(
+        pose.map.map_version == "v6_kujiale_clearance_r1"
+        and pose.map.calibrated
+        for pose in poses.values()
+    )
+    assert poses["long_route_start_g1"].map.position == pytest.approx(
+        (0.45, -5.35)
+    )
+
+
 def test_reset_manager_executes_every_hook_in_fixed_order():
     robot = FakeRobot()
     spawn = SpawnPoseManager(

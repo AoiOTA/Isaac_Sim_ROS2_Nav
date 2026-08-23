@@ -54,6 +54,36 @@ def _config():
     )
 
 
+def test_v6_clearance_overlay_sublayers_original_and_only_moves_table_assembly():
+    from pxr import Usd
+
+    overlay = (
+        ROOT
+        / "isaac_sim/assets/environments/v6_kujiale_clearance_r1/"
+        "kujiale_0026_A_to_B_door_open.usd"
+    )
+    original = Path(
+        "/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/"
+        "kujiale_0026_A_to_B_door_open.usd"
+    )
+    stage = Usd.Stage.Open(str(overlay))
+    assert stage
+    assert stage.GetRootLayer().subLayerPaths == [str(original)]
+    expected = {
+        "table_0000": (2.0041237336013426, -2.1750932930423352, 0.24967317962656296),
+        "tablecloth_0004": (2.0198628175599715, -2.1598720865358247, 0.27163891742970103),
+    }
+    for name, translation in expected.items():
+        prim = stage.GetPrimAtPath(f"/Root/Meshes/livingroom_595/{name}")
+        assert tuple(prim.GetAttribute("xformOp:translate").Get()) == pytest.approx(
+            translation
+        )
+    source = overlay.read_text(encoding="utf-8")
+    assert source.count("xformOp:translate") == 2
+    assert "xformOp:scale" not in source
+    assert "xformOp:rotate" not in source
+
+
 def test_environment_is_sublayer_robot_is_reference_and_stage_is_not_saved():
     config = _config()
     before = hashlib.sha256(config.environment.project_stage.read_bytes()).hexdigest()

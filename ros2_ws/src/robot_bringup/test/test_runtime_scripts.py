@@ -347,6 +347,9 @@ def test_v6_wrapper_is_canonical_phase1_grid_entry():
     assert 'module2_enabled:=false' in source
     assert 'cognitive_graph_mode:=gvg' in source
     assert 'v6-phase1-empty-room' in source
+    assert 'v6_kujiale_clearance_r1.yaml' in source
+    assert 'v6_kujiale_clearance_r1_gvg_v1.geojson' in source
+    assert 'kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml' in source
 
 
 def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
@@ -430,6 +433,9 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'ASSET_MATERIALIZATION_STATUS="verified"',
         '"${ASSET_IMPORTER}" --check',
         'git_contains_runtime_asset_binaries=false',
+        'layout_id=v6_kujiale_clearance_r1',
+        'KUJIALE_ENVIRONMENT_ROOT="${M3}/isaac_sim/assets/environments/v6_kujiale_clearance_r1"',
+        'KUJIALE_SOURCE_USD="/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"',
         'required snapshot file not found:',
     ):
         assert contract in source
@@ -504,7 +510,10 @@ def test_v6_phase1_isaac_disables_dynamic_actors():
     source = RUN_KUJIALE_ISAAC.read_text(encoding='utf-8')
     assert 'v6-phase1-empty-room)' in source
     assert 'dynamic_arguments=(--no-dynamic-obstacles)' in source
-    assert 'kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml' in source
+    assert 'kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml' in source
+    assert 'isaac_sim/assets/environments/v6_kujiale_clearance_r1' in source
+    assert ('/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/'
+            'kujiale_0026_A_to_B_door_open.usd') in source
 
 
 def _v6_rivermark_argv(

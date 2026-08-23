@@ -53,9 +53,9 @@ case "${profile}" in
       lidar_odometry_backend:=off \
       lidar_odometry_validated:=false \
       spawn_pose_name:=long_route_start_g1 \
-      "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
-      "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
-      "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
+      "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml" \
+      "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_clearance_r1.yaml" \
+      "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_clearance_r1_gvg_v1.geojson" \
       interactive:=false \
       use_rviz:=false \
       use_teleop:=false \

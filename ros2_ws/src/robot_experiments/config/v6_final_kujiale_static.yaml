@@ -1,10 +1,11 @@
 schema_version: bio_nav_v6_single_episode_manifest_v1
 scene_contract_frozen: false
 phase1_enabled: true
-scene: {id: v6_final_kujiale_static, world: kujiale, category: static}
+scene: {id: v6_kujiale_clearance_r1, world: kujiale, category: static}
 scenario_intent:
   phase: phase1_empty_room
   purpose: grid_localization_full_house_baseline
+  layout_id: v6_kujiale_clearance_r1
   later_pilot: false
 runtime:
   phase: phase1_empty_room
@@ -25,11 +26,12 @@ runtime:
   rf2o_decision: not_validated_off
   imu_calibration_profile: isaac_v6_calibrated
 required_runtime_values:
-  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
-  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
-  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  scene_asset: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/assets/environments/v6_kujiale_clearance_r1/kujiale_0026_A_to_B_door_open.usd
+  source_scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/v6_kujiale_clearance_r1.yaml
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml
   reset_pose_name: long_route_start_g1
-  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_clearance_r1_gvg_v1.geojson
   navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_stable.yaml
 mission:
   reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}

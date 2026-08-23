@@ -106,6 +106,8 @@ dist/
 !/data/maps/occupancy/warehouse_new.pgm
 !/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
 !/data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm
+!/data/maps/occupancy/v6_kujiale_clearance_r1.yaml
+!/data/maps/occupancy/v6_kujiale_clearance_r1.pgm
 
 /data/maps/posegraphs/*
 !/data/maps/posegraphs/.gitkeep

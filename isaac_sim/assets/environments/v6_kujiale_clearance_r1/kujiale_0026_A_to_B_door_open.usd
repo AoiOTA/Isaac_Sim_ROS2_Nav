@@ -1,0 +1,29 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    subLayers = [
+        @/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd@
+    ]
+    upAxis = "Z"
+)
+
+# The external source layer stays read-only and is a required runtime input.
+over "Root"
+{
+    over "Meshes"
+    {
+        over "livingroom_595"
+        {
+            over "table_0000"
+            {
+                double3 xformOp:translate = (2.0041237336013426, -2.1750932930423352, 0.24967317962656296)
+            }
+
+            over "tablecloth_0004"
+            {
+                double3 xformOp:translate = (2.0198628175599715, -2.1598720865358247, 0.27163891742970103)
+            }
+        }
+    }
+}
