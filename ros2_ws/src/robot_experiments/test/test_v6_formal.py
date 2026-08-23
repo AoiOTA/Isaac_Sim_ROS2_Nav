@@ -55,8 +55,15 @@ def ready_guard() -> EpisodeGuard:
     guard.record_reset_receipt_generation(7)
     guard.record_localization_status(5, "WAITING_FOR_SCAN", False)
     guard.record_localization_status(5, "WAITING_FOR_RESULT", False)
-    guard.record_localization_status(5, "ACCEPTED", True)
-    guard.record_navigation_ready(nav2_active=True, tf_active=True)
+    guard.record_localization_status(
+        5, "ACCEPTED", True, correction_ready=True
+    )
+    guard.record_navigation_ready(
+        nav2_active=True,
+        tf_active=True,
+        route_ready=True,
+        publisher_ownership_ready=True,
+    )
     guard.record_reset_gate_status(7, False)
     assert guard.goal_ready
     return guard
@@ -90,17 +97,32 @@ def test_phase1_goal_waits_for_new_grid_generation_and_gate_release():
     guard.record_reset_event()
     guard.record_reset_response(True)
     guard.record_reset_receipt_generation(3)
-    guard.record_navigation_ready(nav2_active=True, tf_active=True)
+    guard.record_navigation_ready(
+        nav2_active=True,
+        tf_active=True,
+        route_ready=True,
+        publisher_ownership_ready=True,
+    )
     guard.record_reset_gate_status(3, False)
 
-    guard.record_localization_status(8, "ACCEPTED", True)
-    guard.record_localization_status(9, "ACCEPTED", True)
+    guard.record_localization_status(
+        8, "ACCEPTED", True, correction_ready=True
+    )
+    guard.record_localization_status(
+        9, "ACCEPTED", True, correction_ready=True
+    )
     assert not guard.goal_ready
     guard.record_localization_status(9, "WAITING_FOR_SCAN", False)
-    guard.record_localization_status(10, "ACCEPTED", True)
+    guard.record_localization_status(
+        10, "ACCEPTED", True, correction_ready=True
+    )
     assert not guard.goal_ready
     guard.record_localization_status(9, "WAITING_FOR_RESULT", False)
     guard.record_localization_status(9, "ACCEPTED", True)
+    assert not guard.goal_ready
+    guard.record_localization_status(
+        9, "ACCEPTED", True, correction_ready=True
+    )
     assert guard.goal_ready
     assert guard.localization_generation == 9
 
@@ -115,6 +137,12 @@ def test_grid_rejection_stops_before_goal():
     guard.record_reset_call()
     guard.record_reset_event()
     guard.record_localization_status(1, "WAITING_FOR_SCAN", False)
+    guard.record_navigation_ready(
+        nav2_active=True,
+        tf_active=True,
+        route_ready=True,
+        publisher_ownership_ready=True,
+    )
     guard.record_localization_status(1, "REJECTED", False)
     assert guard.stop_reason == "grid_localization_rejected:1"
 
@@ -131,6 +159,147 @@ def test_reset_is_exactly_once_and_unknown_response_stops():
     assert guard.stop_reason == "reset_response_unknown"
     with pytest.raises(V6ContractError, match="reset_retry_forbidden"):
         guard.record_reset_call()
+
+
+def test_pre_reset_readiness_uses_endpoints_without_status_or_route_sample():
+    class Endpoint:
+        def __init__(self, topic_name):
+            self.topic_name = topic_name
+
+        def get_publisher_count(self):
+            return 1
+
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.facts = ReadinessFacts(
+        clock_seen=True,
+        scan_seen=True,
+        flatscan_seen=True,
+        map_seen=True,
+        estimated_odom_seen=True,
+    )
+    adapter.reset_client = SimpleNamespace(service_is_ready=lambda: True)
+    adapter.relocalize_client = SimpleNamespace(service_is_ready=lambda: True)
+    adapter.route_goal_publisher = SimpleNamespace(
+        get_subscription_count=lambda: 0
+    )
+    adapter.node = SimpleNamespace(
+        count_subscribers=lambda topic: 3
+        if topic == "/simulation/reset_event"
+        else 0
+    )
+    adapter.subscriptions = [
+        Endpoint(topic)
+        for topic in (
+            "/simulation/reset_event",
+            "/flatscan",
+            "/localization_result",
+            "/bio_nav/localization/status",
+        )
+    ]
+    adapter._refresh_endpoint_facts()
+
+    assert not adapter.facts.localization_status_seen
+    assert not adapter.facts.navigation_graph_seen
+    assert not adapter.facts.route_goal_subscriber_ready
+    assert adapter.facts.missing() == ()
+
+    guard = EpisodeGuard()
+    guard.arm_reset(
+        adapter.facts,
+        pre_reset_route_messages=0,
+        localization_accepted_floor=0,
+    )
+    guard.record_reset_call()
+    assert guard.state == "RESET_IN_FLIGHT"
+    assert guard.reset_calls == 1
+
+
+def test_post_reset_status_tf_route_and_nav2_remain_required():
+    guard = EpisodeGuard()
+    guard.arm_reset(
+        ready_facts(),
+        pre_reset_route_messages=0,
+        localization_accepted_floor=4,
+    )
+    guard.record_reset_call()
+    guard.record_reset_event()
+    guard.record_reset_response(True)
+    guard.record_reset_receipt_generation(9)
+    guard.record_navigation_ready(
+        nav2_active=True,
+        tf_active=True,
+        route_ready=True,
+        publisher_ownership_ready=True,
+    )
+    guard.record_reset_gate_status(9, False)
+
+    assert not guard.goal_ready
+    with pytest.raises(V6ContractError, match="not_authorized"):
+        guard.record_goal_publication("G2")
+    assert guard.goal_publications == 0
+
+
+def test_grid_status_correction_stamp_must_match_and_be_finite():
+    values = {
+        "expected_result_stamp_ns": "123",
+        "result_stamp_ns": "123",
+        "correction_x_m": "0.25",
+        "correction_y_m": "-0.5",
+        "correction_yaw_rad": "0.1",
+    }
+    assert V6FormalNode._matching_correction_ready(values)
+    assert not V6FormalNode._matching_correction_ready(
+        values | {"result_stamp_ns": "124"}
+    )
+    assert not V6FormalNode._matching_correction_ready(
+        values | {"correction_x_m": "nan"}
+    )
+
+
+def test_accepted_generation_starts_a_fresh_post_accept_tf_epoch():
+    guard = EpisodeGuard()
+    guard.arm_reset(
+        ready_facts(),
+        pre_reset_route_messages=0,
+        localization_accepted_floor=0,
+    )
+    guard.record_reset_call()
+    guard.record_reset_event()
+    guard.record_localization_status(1, "WAITING_FOR_SCAN", False)
+
+    values = {
+        "generation": "1",
+        "state": "ACCEPTED",
+        "accepted": "true",
+        "expected_result_stamp_ns": "123",
+        "result_stamp_ns": "123",
+        "correction_x_m": "0.25",
+        "correction_y_m": "-0.5",
+        "correction_yaw_rad": "0.1",
+    }
+    status = SimpleNamespace(
+        name="grid_localization",
+        values=[
+            SimpleNamespace(key=key, value=value)
+            for key, value in values.items()
+        ],
+    )
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = guard
+    adapter.facts = ReadinessFacts()
+    adapter.latest_accepted_localization_generation = 0
+    adapter.map_odom_tf_seen = True
+    adapter.odom_base_tf_seen = True
+    adapter._capture = lambda *_args, **_kwargs: None
+    adapter._localization_status(SimpleNamespace(status=[status]))
+
+    assert guard.localization_accepted
+    assert not adapter.map_odom_tf_seen
+    assert not adapter.odom_base_tf_seen
+    assert not guard.nav2_active
+    assert not guard.tf_active
+    assert not guard.route_ready
+    assert not guard.publisher_ownership_ready
 
 
 def test_full_house_goals_publish_in_exact_order():

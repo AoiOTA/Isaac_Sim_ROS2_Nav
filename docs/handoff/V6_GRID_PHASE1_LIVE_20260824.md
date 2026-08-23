@@ -175,3 +175,27 @@ Next: a fresh coder should minimally break the pre-reset status/reset cycle
 while preserving post-reset WAITING/ACCEPTED, full-TF, Nav2-active, and reset
 gate requirements before G2. Then rebuild a fresh strict snapshot and rerun
 Phase 1B; no Phase 1C goal is authorized until it passes.
+
+## Startup-order repair status (2026-08-24)
+
+The reproduced cycle has a minimal code/test repair on the Module3
+`cognitive-navigation` branch. Pre-reset readiness no longer waits for a Grid
+status sample or route/Nav2 readiness; it does require the public
+`/bio_nav/relocalize` service endpoint without calling it. Exactly one reset
+then opens the post-reset epoch. G2 still requires a newer WAITING followed by
+same-generation ACCEPTED with matching finite correction, fresh post-accept
+full TF, matching ResetStopGate release, active Nav2, route endpoint, and sole
+publisher ownership. Stale ACCEPTED or TF state cannot release the goal gate.
+
+Focused V6 tests reported **33 passed, 28 deselected**. An isolated
+`robot_experiments` build, installed CLI dry probe, and installed-package
+single-reset/five-leg synthetic sequence passed under
+`/tmp/v6_reset_order_isolated.rwsJIm`. These are code/test/build/synthetic
+results only; the live FAIL above remains the latest runtime verdict.
+
+Next live boundary: build a fresh strict combined snapshot containing the
+repair, confirm domain 212 is empty, and run only episode index 0 / seed 7201
+with the existing canonical command and explicit Isaac asset root. Phase 1B
+passes only if the one reset now occurs and the complete new-generation
+Grid/correction/TF/ActivationGate/Nav2 chain is observed before G2. Otherwise
+STOP; no retry, fallback, or timeout increase is authorized.

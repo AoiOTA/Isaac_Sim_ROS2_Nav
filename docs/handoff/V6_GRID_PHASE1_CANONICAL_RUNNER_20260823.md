@@ -168,3 +168,50 @@ R5_DOMAIN_ID=211 R5_EPISODE_INDICES=0 R5_EPISODE_SEEDS=7201 \
 
 The operator must confirm that the selected domain is empty. Phase 1B still
 must pass before any route goal is authorized.
+
+## Pre-reset status/reset startup-order repair amendment (2026-08-24)
+
+- Repaired only the circular dependency reproduced in
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T172000Z`.
+  Pre-reset readiness now requires the reset service/event/subscriber closure,
+  real clock/scan/FlatScan/map/estimated-odom inputs, the Grid result/status
+  publisher endpoints, and existence of the public `/bio_nav/relocalize`
+  service. It does not require a status sample, `map->odom`, Nav2 activation,
+  a navigation graph, or a route-goal subscriber before reset.
+- The dispatcher creates a readiness-only relocalize client but never calls
+  it. Integration remains the sole relocalize caller. The existing one-reset
+  guard and no-retry behavior are unchanged, and the dispatcher records the
+  reset epoch boundary immediately before the one reset call.
+- G2 remains blocked after reset until a generation newer than the captured
+  accepted floor emits WAITING, then same-generation ACCEPTED with a finite
+  correction whose result stamp matches the requested result stamp. ACCEPTED
+  starts a new readiness epoch: fresh full TF, active Nav2, route endpoint,
+  sole-publisher checks, and matching ResetStopGate release are all required.
+  Stale pre-reset ACCEPTED/TF state cannot authorize a goal.
+- Validation: focused `v6_formal` plus V6 runtime-script tests **33 passed, 28
+  deselected**; isolated `/opt/ros/jazzy`-only `robot_experiments` build at
+  `/tmp/v6_reset_order_isolated.rwsJIm` finished **1 package**; the installed
+  CLI dry probe retained Grid/stable/M0/Module2-false and the exact five XY
+  legs. An installed-package synthetic sequence completed exactly one reset
+  and `G2, G3, G4, G5, G1` in order.
+- Boundary: code/test/build/synthetic evidence only. No Isaac Sim, live ROS
+  graph, relocalize call, Grid result, TF, Nav2 activation, route goal,
+  navigation, visual evidence, engineering success, or qualification was run
+  or claimed by this amendment.
+
+Build a fresh strict combined snapshot containing this commit. After confirming
+domain 212 is empty, rerun exactly one canonical episode:
+
+```bash
+cd /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3
+RUN_DIR="/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_$(date -u +%Y%m%dT%H%M%SZ)"
+SNAPSHOT_ROOT="/absolute/path/to/fresh_combined_phase1_snapshot"
+ISAAC_ASSET_ROOT=/home/lyb/isaacsim_assets/Assets/Isaac/6.0 \
+R5_DOMAIN_ID=212 R5_EPISODE_INDICES=0 R5_EPISODE_SEEDS=7201 \
+  ./scripts/run_v6_kujiale_low_obstacles.sh session "${RUN_DIR}" "${SNAPSHOT_ROOT}"
+```
+
+The live boundary is exact: one reset may proceed without a pre-reset status
+sample; then the new WAITING -> ACCEPTED/correction -> fresh full TF ->
+ActivationGate/Nav2/route readiness chain must pass before G2. Any missing or
+out-of-order element remains STOP; no timeout increase or fallback was added.

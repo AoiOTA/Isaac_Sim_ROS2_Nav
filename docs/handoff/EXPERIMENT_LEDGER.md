@@ -2776,3 +2776,32 @@
 - Next: minimally break the pre-reset status/reset dependency while retaining
   post-reset WAITING/ACCEPTED, full TF, active Nav2, and reset-gate release
   before G2; then rebuild a fresh strict snapshot and rerun Phase 1B.
+
+## 2026-08-24 — V6-GRID pre-reset status/reset cycle repair
+
+- Goal: repair only the actual startup-order blocker from
+  `v6_grid_phase1_20260823T172000Z`; no Grid manager, ActivationGate, Nav2
+  config, Integration, Module2, asset, map, runner-shell, or timeout change.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `5c7b90ed270c333e89168bad77d8ab08429e0128`; result is the single commit
+  containing this entry.
+- Changed: pre-reset readiness now admits reset from real sensor/estimated-odom
+  and reset/Grid endpoints without requiring a Grid status sample, Nav2, TF,
+  navigation graph, or route subscriber. The dispatcher checks but never calls
+  `/bio_nav/relocalize`; Integration remains its sole caller. Reset remains
+  exactly once. Post-reset G2 authorization still requires a newer WAITING ->
+  same-generation ACCEPTED with matching finite correction, a fresh
+  post-accept full-TF/Nav2/route/publisher epoch, and matching ResetStopGate
+  release. Stale ACCEPTED/TF state is rejected.
+- Validation: focused V6 formal/runtime tests **33 passed, 28 deselected**;
+  `/opt/ros/jazzy`-only isolated `robot_experiments` build at
+  `/tmp/v6_reset_order_isolated.rwsJIm` **1 package finished**; installed CLI
+  dry probe and installed-package one-reset/five-XY-leg synthetic sequence
+  passed. No cache or bytecode was used.
+- Verdict: **PASS (code/test/build/synthetic only)**. No Isaac Sim, live ROS
+  graph, relocalization, Phase 1B/1C, route goal, navigation, visual evidence,
+  engineering success, or qualification was run.
+- Next: build a fresh strict combined snapshot, confirm domain 212 is empty,
+  and rerun only episode 0 / seed 7201 with the canonical asset root. STOP
+  unless the single reset and complete new-generation
+  Grid/correction/TF/ActivationGate/Nav2 chain precede G2.

@@ -349,6 +349,7 @@ def authorize_manifest(
 @dataclass
 class ReadinessFacts:
     reset_service_ready: bool = False
+    relocalize_service_ready: bool = False
     reset_event_publisher_ready: bool = False
     reset_subscriber_roster_ready: bool = False
     route_goal_subscriber_ready: bool = False
@@ -364,7 +365,23 @@ class ReadinessFacts:
     localization_status_seen: bool = False
 
     def missing(self) -> tuple[str, ...]:
-        return tuple(name for name, value in vars(self).items() if not value)
+        required_before_reset = (
+            "reset_service_ready",
+            "relocalize_service_ready",
+            "reset_event_publisher_ready",
+            "reset_subscriber_roster_ready",
+            "flatscan_publisher_ready",
+            "localization_result_publisher_ready",
+            "localization_status_publisher_ready",
+            "clock_seen",
+            "scan_seen",
+            "flatscan_seen",
+            "map_seen",
+            "estimated_odom_seen",
+        )
+        return tuple(
+            name for name in required_before_reset if not getattr(self, name)
+        )
 
 
 @dataclass
@@ -379,8 +396,11 @@ class EpisodeGuard:
     localization_generation: int | None = None
     localization_waiting_seen: bool = False
     localization_accepted: bool = False
+    localization_correction_ready: bool = False
     nav2_active: bool = False
     tf_active: bool = False
+    route_ready: bool = False
+    publisher_ownership_ready: bool = False
     reset_gate_generation: int | None = None
     reset_gate_released_generation: int | None = None
     goal_publications: int = 0
@@ -441,7 +461,12 @@ class EpisodeGuard:
             self.state = "WAITING_GRID_LOCALIZATION"
 
     def record_localization_status(
-        self, generation: int, state: str, accepted: bool
+        self,
+        generation: int,
+        state: str,
+        accepted: bool,
+        *,
+        correction_ready: bool = False,
     ) -> None:
         if not self.reset_calls or self.state == "STOP":
             return
@@ -461,12 +486,24 @@ class EpisodeGuard:
                 return
             if generation != self.localization_generation:
                 return
+            if not correction_ready:
+                return
             self.localization_accepted = True
+            self.localization_correction_ready = True
             self._maybe_goal_ready()
 
-    def record_navigation_ready(self, *, nav2_active: bool, tf_active: bool) -> None:
+    def record_navigation_ready(
+        self,
+        *,
+        nav2_active: bool,
+        tf_active: bool,
+        route_ready: bool,
+        publisher_ownership_ready: bool,
+    ) -> None:
         self.nav2_active = bool(nav2_active)
         self.tf_active = bool(tf_active)
+        self.route_ready = bool(route_ready)
+        self.publisher_ownership_ready = bool(publisher_ownership_ready)
         self._maybe_goal_ready()
 
     def record_reset_receipt_generation(self, generation: int) -> None:
@@ -500,8 +537,11 @@ class EpisodeGuard:
                 self.reset_events == 1,
                 self.localization_waiting_seen,
                 self.localization_accepted,
+                self.localization_correction_ready,
                 self.nav2_active,
                 self.tf_active,
+                self.route_ready,
+                self.publisher_ownership_ready,
                 self.reset_gate_released,
             )
         ):
@@ -647,6 +687,9 @@ class V6FormalNode:
             PoseStamped, "/bio_nav/route_goal", reliable
         )
         self.reset_client = self.node.create_client(Trigger, "/simulation/reset")
+        self.relocalize_client = self.node.create_client(
+            Trigger, "/bio_nav/relocalize"
+        )
         self.nav2_active_client = self.node.create_client(
             Trigger, "/lifecycle_manager_navigation/is_active"
         )
@@ -835,8 +878,53 @@ class V6FormalNode:
                 self.latest_accepted_localization_generation = max(
                     self.latest_accepted_localization_generation, generation
                 )
-            self.guard.record_localization_status(generation, state, accepted)
+            correction_ready = self._matching_correction_ready(values)
+            was_accepted = self.guard.localization_accepted
+            if (
+                state == "ACCEPTED"
+                and accepted
+                and correction_ready
+                and not was_accepted
+            ):
+                # Start the post-accept readiness epoch before admitting the
+                # generation. Old TF/Nav2/route facts cannot make the guard
+                # momentarily GOAL_READY.
+                self.map_odom_tf_seen = False
+                self.odom_base_tf_seen = False
+                self.guard.record_navigation_ready(
+                    nav2_active=False,
+                    tf_active=False,
+                    route_ready=False,
+                    publisher_ownership_ready=False,
+                )
+            self.guard.record_localization_status(
+                generation,
+                state,
+                accepted,
+                correction_ready=correction_ready,
+            )
         self._capture("/bio_nav/localization/status", message)
+
+    @staticmethod
+    def _matching_correction_ready(values: Mapping[str, str]) -> bool:
+        try:
+            expected_stamp_ns = int(values["expected_result_stamp_ns"])
+            result_stamp_ns = int(values["result_stamp_ns"])
+            correction = tuple(
+                float(values[name])
+                for name in (
+                    "correction_x_m",
+                    "correction_y_m",
+                    "correction_yaw_rad",
+                )
+            )
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            expected_stamp_ns > 0
+            and result_stamp_ns == expected_stamp_ns
+            and all(math.isfinite(value) for value in correction)
+        )
 
     def _localization_result(self, message: Any) -> None:
         self._capture("/localization_result", message)
@@ -901,6 +989,9 @@ class V6FormalNode:
     def _refresh_endpoint_facts(self) -> None:
         by_topic = {sub.topic_name: sub for sub in self.subscriptions}
         self.facts.reset_service_ready = self.reset_client.service_is_ready()
+        self.facts.relocalize_service_ready = (
+            self.relocalize_client.service_is_ready()
+        )
         self.facts.reset_event_publisher_ready = (
             by_topic["/simulation/reset_event"].get_publisher_count() > 0
         )
@@ -950,7 +1041,11 @@ class V6FormalNode:
             blockers.append("facts:" + ",".join(self.facts.missing()))
         if self.pre_reset_route_messages:
             blockers.append("pre_reset_route_traffic")
-        ownership = self._publisher_ownership_violations()
+        ownership = tuple(
+            violation
+            for violation in self._publisher_ownership_violations()
+            if violation.startswith("/odom=")
+        )
         if ownership:
             blockers.append("publisher_ownership:" + ",".join(ownership))
         if not self._pre_reset_still():
@@ -1001,8 +1096,22 @@ class V6FormalNode:
                     NAV2_PROBE_ATTEMPT_TIMEOUT_SEC
                 ),
                 tf_active=self.map_odom_tf_seen and self.odom_base_tf_seen,
+                route_ready=(
+                    self.route_goal_publisher.get_subscription_count() > 0
+                    and self.facts.navigation_graph_seen
+                ),
+                publisher_ownership_ready=(
+                    not self._publisher_ownership_violations()
+                ),
             )
-            if self.guard.nav2_active and self.guard.tf_active:
+            if all(
+                (
+                    self.guard.nav2_active,
+                    self.guard.tf_active,
+                    self.guard.route_ready,
+                    self.guard.publisher_ownership_ready,
+                )
+            ):
                 return
             if self.guard.state == "STOP" or time.monotonic() >= deadline:
                 self.guard.stop("nav2_or_tf_not_ready")
@@ -1079,6 +1188,14 @@ class V6FormalNode:
 
         Trigger = self._types["Trigger"]
         self.guard.record_reset_call()
+        self.map_odom_tf_seen = False
+        self.odom_base_tf_seen = False
+        self._write(
+            "reset_epoch_started",
+            accepted_generation_floor=(
+                self.guard.localization_accepted_floor
+            ),
+        )
         future = self.reset_client.call_async(Trigger.Request())
         if not self._spin_until(future.done, reset_timeout_sec):
             self.guard.record_reset_response(None)
