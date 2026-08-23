@@ -2585,3 +2585,34 @@
   arguments, process/domain isolation, Grid status ordering/relocalize count,
   one `map→odom` owner, and the actual empty-room five-leg loop. Stable remains
   deliberate until current-IDL `bio_nav_fusion` buildability is proven.
+
+## 2026-08-23 — V6-GRID actual-launch map/QoS blocker repair
+
+- Goal: repair only the reproduced vendor map-constructor and `/scan` QoS
+  blockers, plus align the canonical session with Integration's agreed M0
+  runtime profile.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `990f3e2b1055d514f3662485c1a4009934c76e58`; result is the single commit
+  containing this entry.
+- Changed: Grid localizer parameters now begin with the resolved map YAML
+  parameter source and retain only minimal overrides; the LaserScan converter
+  uses official `input_qos=SENSOR_DATA`; the R5 Integration launch argument is
+  now `runtime_profile:=estimated_m0`. No Grid manager, Nav2, Integration, or
+  Module2 implementation changed.
+- Launch smoke: isolated installed vendor components on domains 186/187 loaded
+  `v6_kujiale_isaacgen_v1.pgm` at `0.05 m` with origin
+  `[-5.14, -6.52, 0.0]` and no constructor image failure. `/scan` publisher
+  and converter subscriber were both best-effort/volatile. One synthetic scan
+  produced a matching five-ray `/flatscan`; its publisher and Grid subscribers
+  were reliable/volatile. Logs: `/tmp/v6_map_qos_smoke.wpWho2`.
+- Validation: mapping tests **4 passed**; runner tests **4 passed**; `bash -n`
+  and `git diff --check` passed; clean `/opt/ros/jazzy` build/install at
+  `/tmp/v6_map_qos_repair_final.p23nr1`; installed mapping tests/linters
+  **15 passed, 0 failures**.
+- Verdict: **PASS (code/test/build/isolated launch smoke only)**. No Isaac Sim,
+  Nav2, full-overlay localization result/TF, five-leg navigation, evidence, or
+  qualification was run. A controlled-SIGINT-only existing manager
+  double-shutdown traceback was recorded but did not affect the probes.
+- Remaining: build the fresh combined Integration/Module3 overlay after the
+  concurrent `estimated_m0` implementation lands, then verify the complete
+  Grid/status/TF/navigation chain.

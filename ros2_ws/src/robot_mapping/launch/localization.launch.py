@@ -53,7 +53,10 @@ def _launch_setup(context):
                             'nvidia::isaac_ros::pointcloud_utils::'
                             'LaserScantoFlatScanNode'),
                         name='laserscan_to_flatscan',
-                        parameters=[{'use_sim_time': use_sim_time}],
+                        parameters=[{
+                            'use_sim_time': use_sim_time,
+                            'input_qos': 'SENSOR_DATA',
+                        }],
                         remappings=[
                             ('scan', '/scan'),
                             ('flatscan', '/flatscan'),
@@ -65,7 +68,7 @@ def _launch_setup(context):
                             'nvidia::isaac_ros::occupancy_grid_localizer::'
                             'OccupancyGridLocalizerNode'),
                         name='occupancy_grid_localizer',
-                        parameters=[{
+                        parameters=[map_file, {
                             'use_sim_time': use_sim_time,
                             'loc_result_frame': 'map',
                             'map_yaml_path': map_file,

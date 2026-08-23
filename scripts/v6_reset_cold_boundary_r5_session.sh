@@ -344,7 +344,7 @@ STAGE="bridge"
 start_bg bridge ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
   startup_profile:=estimated_shadow \
   localization_backend:=grid \
-  module2_enabled:=false \
+  runtime_profile:=estimated_m0 \
   "audit_jsonl_path:=${LOGS}/bridge_audit.jsonl" \
   use_sim_time:=true
 sleep 15

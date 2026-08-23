@@ -73,3 +73,19 @@ it starts, on its dedicated `ROS_DOMAIN_ID` (default 173).
   per reset, one `map->odom` publisher, and actual five-leg navigation.
 - Do not select `v6_low_obstacle_isolation` until `bio_nav_fusion` builds
   against the current IDL. Dynamic/appearance pilots remain disabled here.
+
+## Actual-launch blocker repair amendment (2026-08-23)
+
+- The R5 session now passes `runtime_profile:=estimated_m0` to the Integration
+  V6 launch, replacing only the former cosmetic Integration-side
+  `module2_enabled:=false` argument. Module3's own Phase-1 M0/Module2-false
+  launch contract is unchanged.
+- Direct runtime-script tests **4 passed** and `bash -n` passed. The matching
+  Integration profile implementation is concurrent and was not inspected or
+  launched here.
+- The same amendment also repaired the Module3 vendor map parameter source and
+  `/scan` subscriber QoS. Isolated vendor component loading, endpoint QoS, and
+  synthetic LaserScan-to-FlatScan delivery passed; see the Grid core handoff.
+- Remaining dependency: build a fresh combined Integration/Module3 overlay and
+  verify that `estimated_m0` is accepted together with Grid status ordering,
+  relocalize count, sole `map->odom` ownership, full TF, and five-leg motion.

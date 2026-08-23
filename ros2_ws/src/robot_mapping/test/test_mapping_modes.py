@@ -46,6 +46,7 @@ def test_grid_backend_expands_only_grid_localization_owners(tmp_path):
 
     from launch import LaunchContext
     from launch_ros.actions import ComposableNodeContainer, LifecycleNode, Node
+    from launch_ros.utilities import evaluate_parameters
 
     spec = importlib.util.spec_from_file_location(
         'test_localization_launch',
@@ -67,6 +68,23 @@ def test_grid_backend_expands_only_grid_localization_owners(tmp_path):
         'map_to_odom_yaw_deg': '90.0',
     })
     actions = module._launch_setup(context)
+    container = next(
+        action for action in actions
+        if isinstance(action, ComposableNodeContainer))
+    converter, localizer = (
+        container._ComposableNodeContainer__composable_node_descriptions)
+    assert evaluate_parameters(context, converter.parameters) == ({
+        'use_sim_time': True,
+        'input_qos': 'SENSOR_DATA',
+    },)
+    assert evaluate_parameters(context, localizer.parameters) == (
+        map_file,
+        {
+            'use_sim_time': True,
+            'loc_result_frame': 'map',
+            'map_yaml_path': str(map_file),
+        },
+    )
     nodes = {
         (action.node_package, action.node_executable)
         for action in actions

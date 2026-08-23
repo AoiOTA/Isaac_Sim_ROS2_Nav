@@ -259,6 +259,11 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
     ):
         assert contract in source
     assert 'start_bg module2' not in source
+    bridge_arguments = source.split(
+        '# ---------------------------------------------------------------- bridge', 1)[1].split(
+            '# ---------------------------------------------------------------- recorder', 1)[0]
+    assert 'runtime_profile:=estimated_m0' in bridge_arguments
+    assert 'module2_enabled:=false' not in bridge_arguments
 
 
 def test_v6_phase1_isaac_disables_dynamic_actors():
