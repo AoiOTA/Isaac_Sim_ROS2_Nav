@@ -1,0 +1,55 @@
+schema_version: 1
+# The assembly shift changes occupancy but not the calibrated map/USD frame
+# or any robot spawn. The hash binds the two occupancy-only map artifacts.
+spawn_poses:
+  mapping_start:
+    usd:
+      position: [2.9, -0.2, 0.0635]
+      yaw_deg: 180.0
+    map:
+      position: [0.0, 0.0]
+      yaw_deg: 0.0
+      calibrated: true
+      map_version: v6_kujiale_clearance_r2
+      map_bundle_sha256: 952eee8c41d8717ae82012031cf198a733a87c737e85764a3b5b6b644822df5d
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g1:
+    usd:
+      position: [2.45, 5.15, 0.0635]
+      yaw_deg: 270.0
+    map:
+      position: [0.45, -5.35]
+      yaw_deg: 90.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: v6_kujiale_clearance_r2
+      map_bundle_sha256: 952eee8c41d8717ae82012031cf198a733a87c737e85764a3b5b6b644822df5d
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g2:
+    usd:
+      position: [2.10, -5.00, 0.0635]
+      yaw_deg: 20.0
+    map:
+      position: [0.80, 4.80]
+      yaw_deg: -160.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: v6_kujiale_clearance_r2
+      map_bundle_sha256: 952eee8c41d8717ae82012031cf198a733a87c737e85764a3b5b6b644822df5d
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0
+  long_route_start_g5:
+    usd:
+      position: [5.10, 2.75, 0.0635]
+      yaw_deg: 138.0
+    map:
+      position: [-2.20, -2.95]
+      yaw_deg: -42.0
+      calibrated: true
+      derived_from_profile: mapping_start
+      map_version: v6_kujiale_clearance_r2
+      map_bundle_sha256: 952eee8c41d8717ae82012031cf198a733a87c737e85764a3b5b6b644822df5d
+      position_stddev_m: 0.05
+      yaw_stddev_deg: 1.0

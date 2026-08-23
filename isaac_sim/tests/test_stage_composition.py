@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import replace
 from pathlib import Path
 
@@ -82,6 +83,206 @@ def test_v6_clearance_overlay_sublayers_original_and_only_moves_table_assembly()
     assert source.count("xformOp:translate") == 2
     assert "xformOp:scale" not in source
     assert "xformOp:rotate" not in source
+
+
+def test_v6_clearance_r2_overlay_moves_exactly_the_complete_tabletop_assembly():
+    from pxr import Usd
+
+    overlay = (
+        ROOT
+        / "isaac_sim/assets/environments/v6_kujiale_clearance_r2/"
+        "kujiale_0026_A_to_B_door_open.usd"
+    )
+    original = Path(
+        "/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/"
+        "kujiale_0026_A_to_B_door_open.usd"
+    )
+    source_stage = Usd.Stage.Open(str(original))
+    stage = Usd.Stage.Open(str(overlay))
+    assert source_stage and stage
+    assert stage.GetRootLayer().subLayerPaths == [str(original)]
+    expected = {
+        "table_0000": (2.0041237336013427, -2.1750932930423352, 0.24967317962656296),
+        "tablecloth_0004": (2.0198628175599715, -2.1598720865358247, 0.27163891742970103),
+        "unknown_0001": (1.9756577602812007, -1.8249257531845893, 0.4947532147997468),
+        "ornament_0029": (1.9255963096535003, -2.59554650219126, 0.5549120619238086),
+        "vase_0001": (1.9319162291121375, -2.5477837096787264, 0.6588508647230051),
+        "flower_0001": (1.9311050112131274, -2.53364309680693, 0.861272300592272),
+        "menorah_0000": (2.0761237563256993, -1.7893150036117775, 0.6760087814241995),
+        "menorah_0001": (1.9403277101840360, -1.73751029891827, 0.7602051036670585),
+        "book_0000": (2.0755727424629202, -2.061899185203541, 0.5318285467247487),
+        "book_0001": (2.0745784912153167, -2.0625608444347336, 0.5699701778508819),
+    }
+    for name, translation in expected.items():
+        path = f"/Root/Meshes/livingroom_595/{name}"
+        source_translation = tuple(
+            source_stage.GetPrimAtPath(path).GetAttribute("xformOp:translate").Get()
+        )
+        composed_translation = tuple(
+            stage.GetPrimAtPath(path).GetAttribute("xformOp:translate").Get()
+        )
+        assert composed_translation == pytest.approx(translation)
+        assert composed_translation[0] - source_translation[0] == pytest.approx(-0.48)
+        assert composed_translation[1:] == pytest.approx(source_translation[1:])
+    source = overlay.read_text(encoding="utf-8")
+    assert source.count("xformOp:translate") == len(expected)
+    assert all(f'over "{name}"' in source for name in expected)
+    assert "xformOp:scale" not in source
+    assert "xformOp:rotate" not in source
+
+
+def _map_bbox(cache, stage, name):
+    path = name if name.startswith("/") else f"/Root/Meshes/livingroom_595/{name}"
+    prim = stage.GetPrimAtPath(path)
+    bounds = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+    lower = bounds.GetMin()
+    upper = bounds.GetMax()
+    return (
+        2.9 - upper[0],
+        -0.2 - upper[1],
+        lower[2],
+        2.9 - lower[0],
+        -0.2 - lower[1],
+        upper[2],
+    )
+
+
+def _bbox_union(boxes):
+    boxes = tuple(boxes)
+    return tuple(
+        min(box[index] for box in boxes) if index < 3 else max(box[index] for box in boxes)
+        for index in range(6)
+    )
+
+
+def _bbox_overlap(first, second):
+    return all(
+        max(first[index], second[index]) <= min(first[index + 3], second[index + 3])
+        for index in range(3)
+    )
+
+
+def _bbox_distance(first, second):
+    gaps = [
+        max(second[index] - first[index + 3], first[index] - second[index + 3], 0.0)
+        for index in range(3)
+    ]
+    return math.sqrt(sum(gap * gap for gap in gaps))
+
+
+def test_v6_clearance_r2_preserves_internal_overlaps_without_external_overlap():
+    from pxr import Usd, UsdGeom
+
+    stage = Usd.Stage.Open(
+        str(
+            ROOT
+            / "isaac_sim/assets/environments/v6_kujiale_clearance_r2/"
+            "kujiale_0026_A_to_B_door_open.usd"
+        )
+    )
+    assert stage
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    assembly = (
+        "table_0000", "tablecloth_0004", "unknown_0001", "ornament_0029",
+        "vase_0001", "flower_0001", "menorah_0000", "menorah_0001",
+        "book_0000", "book_0001",
+    )
+    boxes = {name: _map_bbox(cache, stage, name) for name in assembly}
+    overlaps = {
+        (first, second)
+        for index, first in enumerate(assembly)
+        for second in assembly[index + 1 :]
+        if _bbox_overlap(boxes[first], boxes[second])
+    }
+    assert overlaps == {
+        ("table_0000", "tablecloth_0004"),
+        ("table_0000", "unknown_0001"),
+        ("table_0000", "ornament_0029"),
+        ("table_0000", "menorah_0000"),
+        ("table_0000", "menorah_0001"),
+        ("tablecloth_0004", "unknown_0001"),
+        ("tablecloth_0004", "menorah_0000"),
+        ("tablecloth_0004", "menorah_0001"),
+        ("tablecloth_0004", "book_0000"),
+        ("unknown_0001", "menorah_0000"),
+        ("unknown_0001", "menorah_0001"),
+        ("unknown_0001", "book_0000"),
+        ("unknown_0001", "book_0001"),
+        ("ornament_0029", "vase_0001"),
+        ("vase_0001", "flower_0001"),
+        ("menorah_0000", "menorah_0001"),
+        ("menorah_0001", "book_0000"),
+        ("menorah_0001", "book_0001"),
+        ("book_0000", "book_0001"),
+    }
+    union = _bbox_union(boxes.values())
+    external = (
+        "cabinet_0003", "sofa_0001", "sofa_0000", "chandelier_0000",
+        "television_0000", "/Root/Meshes/wall/wall_0001",
+    )
+    assert all(
+        not _bbox_overlap(union, _map_bbox(cache, stage, name))
+        for name in external
+    )
+
+
+def test_v6_clearance_r2_recorded_contact_geometry_clears_moved_assembly():
+    from pxr import Usd, UsdGeom
+
+    r1_stage = Usd.Stage.Open(
+        str(
+            ROOT
+            / "isaac_sim/assets/environments/v6_kujiale_clearance_r1/"
+            "kujiale_0026_A_to_B_door_open.usd"
+        )
+    )
+    r2_stage = Usd.Stage.Open(
+        str(
+            ROOT
+            / "isaac_sim/assets/environments/v6_kujiale_clearance_r2/"
+            "kujiale_0026_A_to_B_door_open.usd"
+        )
+    )
+    assert r1_stage and r2_stage
+    r1_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    r2_cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+
+    estimated_xy = (-0.4502699768757241, 1.0617345961298046)
+    observed_error_xy = (0.43118995787853137, 0.03491199887141794)
+    gt_xy = tuple(a + b for a, b in zip(estimated_xy, observed_error_xy))
+    assert gt_xy == pytest.approx((-0.019080018997192756, 1.0966465950012225))
+    gt_yaw = 1.4040642002653048
+    local_xy = ((-0.235, -0.215), (-0.235, 0.215), (0.26, -0.215), (0.26, 0.215))
+    world_xy = [
+        (
+            gt_xy[0] + x * math.cos(gt_yaw) - y * math.sin(gt_yaw),
+            gt_xy[1] + x * math.sin(gt_yaw) + y * math.cos(gt_yaw),
+        )
+        for x, y in local_xy
+    ]
+    robot = (
+        min(point[0] for point in world_xy),
+        min(point[1] for point in world_xy),
+        -0.05,
+        max(point[0] for point in world_xy),
+        max(point[1] for point in world_xy),
+        0.55,
+    )
+    assembly = (
+        "table_0000", "tablecloth_0004", "unknown_0001", "ornament_0029",
+        "vase_0001", "flower_0001", "menorah_0000", "menorah_0001",
+        "book_0000", "book_0001",
+    )
+    moved_union = _bbox_union(
+        _map_bbox(r2_cache, r2_stage, name) for name in assembly
+    )
+    stale_unknown = _map_bbox(r1_cache, r1_stage, "unknown_0001")
+    moved_table = _map_bbox(r2_cache, r2_stage, "table_0000")
+    cabinet = _map_bbox(r2_cache, r2_stage, "cabinet_0003")
+    assert _bbox_overlap(robot, stale_unknown)
+    assert _bbox_distance(robot, moved_union) >= 0.05
+    assert not _bbox_overlap(robot, moved_table)
+    assert not _bbox_overlap(robot, cabinet)
 
 
 def test_environment_is_sublayer_robot_is_reference_and_stage_is_not_saved():

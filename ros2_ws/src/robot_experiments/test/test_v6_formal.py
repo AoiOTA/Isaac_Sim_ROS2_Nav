@@ -378,17 +378,17 @@ def test_only_static_manifest_enables_phase1_and_other_intents_are_preserved():
         "bright_cool",
     ]
     for manifest in (static, dynamic, appearance):
-        assert manifest.scenario_intent["layout_id"] == "v6_kujiale_clearance_r1"
+        assert manifest.scenario_intent["layout_id"] == "v6_kujiale_clearance_r2"
         required = manifest.raw["required_runtime_values"]
-        assert "v6_kujiale_clearance_r1" in required["scene_asset"]
+        assert "v6_kujiale_clearance_r2" in required["scene_asset"]
         assert required["source_scene_asset"].endswith(
             "/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"
         )
         assert required["occupancy_map"].endswith(
-            "/v6_kujiale_clearance_r1.yaml"
+            "/v6_kujiale_clearance_r2.yaml"
         )
         assert required["route_graph"].endswith(
-            "/v6_kujiale_clearance_r1_gvg_v1.geojson"
+            "/v6_kujiale_clearance_r2_gvg_v1.geojson"
         )
 
 

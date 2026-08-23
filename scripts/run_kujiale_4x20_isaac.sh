@@ -29,8 +29,8 @@ case "${mode}" in
   v6-phase1-empty-room)
     obstacle_config=""
     odometry_mode="realistic"
-    environment_root="${KUJIALE_ENVIRONMENT_ROOT:-${PROJECT_ROOT}/isaac_sim/assets/environments/v6_kujiale_clearance_r1}"
-    spawn_poses_file="${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r1.spawn.yaml"
+    environment_root="${KUJIALE_ENVIRONMENT_ROOT:-${PROJECT_ROOT}/isaac_sim/assets/environments/v6_kujiale_clearance_r2}"
+    spawn_poses_file="${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml"
     require_file "/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"
     dynamic_arguments=(--no-dynamic-obstacles)
     ;;

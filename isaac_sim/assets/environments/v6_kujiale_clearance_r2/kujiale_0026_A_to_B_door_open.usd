@@ -1,0 +1,69 @@
+#usda 1.0
+(
+    defaultPrim = "Root"
+    metersPerUnit = 1
+    subLayers = [
+        @/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd@
+    ]
+    upAxis = "Z"
+)
+
+# The external source layer stays read-only and is a required runtime input.
+over "Root"
+{
+    over "Meshes"
+    {
+        over "livingroom_595"
+        {
+            over "table_0000"
+            {
+                double3 xformOp:translate = (2.0041237336013427, -2.1750932930423352, 0.24967317962656296)
+            }
+
+            over "tablecloth_0004"
+            {
+                double3 xformOp:translate = (2.0198628175599715, -2.1598720865358247, 0.27163891742970103)
+            }
+
+            over "unknown_0001"
+            {
+                double3 xformOp:translate = (1.9756577602812007, -1.8249257531845893, 0.4947532147997468)
+            }
+
+            over "ornament_0029"
+            {
+                double3 xformOp:translate = (1.9255963096535003, -2.59554650219126, 0.5549120619238086)
+            }
+
+            over "vase_0001"
+            {
+                double3 xformOp:translate = (1.9319162291121375, -2.5477837096787264, 0.6588508647230051)
+            }
+
+            over "flower_0001"
+            {
+                double3 xformOp:translate = (1.9311050112131274, -2.53364309680693, 0.861272300592272)
+            }
+
+            over "menorah_0000"
+            {
+                double3 xformOp:translate = (2.0761237563256993, -1.7893150036117775, 0.6760087814241995)
+            }
+
+            over "menorah_0001"
+            {
+                double3 xformOp:translate = (1.940327710184036, -1.73751029891827, 0.7602051036670585)
+            }
+
+            over "book_0000"
+            {
+                double3 xformOp:translate = (2.0755727424629202, -2.061899185203541, 0.5318285467247487)
+            }
+
+            over "book_0001"
+            {
+                double3 xformOp:translate = (2.0745784912153167, -2.0625608444347336, 0.5699701778508819)
+            }
+        }
+    }
+}

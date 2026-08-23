@@ -2866,3 +2866,36 @@
   qualification was run or claimed. See
   `docs/handoff/V6_KUJIALE_CLEARANCE_R1_20260824.md` for commands and the exact
   one-episode next-live entrypoint.
+
+## 2026-08-24 — V6 Kujiale clearance layout R2 full-assembly amendment
+
+- Goal: repair only the R1 live collision with stale collision-enabled
+  `unknown_0001` by moving the complete ten-prim tabletop assembly together;
+  preserve R1/original rollback assets and all safety/estimator behavior.
+- Scene/map: new `v6_kujiale_clearance_r2` overlay moves exactly ten prims by
+  `-0.48 m` USD x. The unchanged collision OMap recipe produced a 0.05 m,
+  154x248 map at origin `[-5.14,-6.52]`, with occupied/free/unknown counts
+  `11090/17134/9968`. Seven high tabletop items remain outside the 2D OMap
+  slice but are physically moved in USD.
+- Composition: exact translations and only those ten overrides passed direct
+  PXR checks; 19 internal assembly bbox overlaps were preserved and no nearby
+  external 3D bbox overlap was introduced. The original USD was read-only and
+  unchanged.
+- Graph: deterministic `v6_kujiale_clearance_r2:gvg_v1` rev 1 has 25 nodes,
+  48 directed edges, 181 support nodes, 358 support edges, and one component.
+  All five legs are connected and footprint-sweep FEASIBLE. Actual G1→G2
+  throat center clearance is `0.529535 m` minimum and `0.55 m` median.
+- Recorded-contact regression: stale R1 `unknown_0001` collides; the moved
+  full assembly clears the conservative 3D robot AABB by `0.167380 m`, with no
+  moved-table or cabinet collision predicted.
+- Binding: canonical static Phase 1 now selects R2; Grid/stable/M0/Module2-off/
+  GVG/RF2O-off/XY-only and yaw guard default OFF are unchanged. Dynamic and
+  appearance remain disabled later-pilot metadata.
+- Validation: focused suite **95 passed, 15 system-Python PXR skips**; the four
+  PXR cases passed under Isaac Python; clean changed-package build **2 packages
+  finished**; installed CLI dry probe, shell syntax, byte-identical map/GVG
+  regeneration, and visual inspection passed.
+- Visual: `/tmp/v6_kujiale_clearance_r2_map_gvg_assembly.png`. Verdict:
+  **PASS (offline generation/code/test/build/visual only)**. No live navigation
+  or qualification was run; see
+  `docs/handoff/V6_KUJIALE_CLEARANCE_R2_20260824.md` for commands and next live.
