@@ -173,6 +173,154 @@ def test_common_requires_only_the_allowed_v6_integration_underlay():
         encoding='utf-8')
 
 
+def _fake_overlay_setup(
+        root: Path, label: str, *, valid_interfaces: bool = True) -> Path:
+    install = root / 'ros2_ws' / 'install_r5'
+    install.mkdir(parents=True)
+    setup_body = f'''#!/usr/bin/env bash
+export SOURCE_ORDER="${{SOURCE_ORDER:+${{SOURCE_ORDER}}->}}{label}"
+export AMENT_PREFIX_PATH="{install}/ament${{AMENT_PREFIX_PATH:+:${{AMENT_PREFIX_PATH}}}}"
+export CMAKE_PREFIX_PATH="{install}/cmake${{CMAKE_PREFIX_PATH:+:${{CMAKE_PREFIX_PATH}}}}"
+export LD_LIBRARY_PATH="{install}/lib${{LD_LIBRARY_PATH:+:${{LD_LIBRARY_PATH}}}}"
+export PYTHONPATH="{install}/python${{PYTHONPATH:+:${{PYTHONPATH}}}}"
+'''
+    for setup_name in ('setup.bash', 'local_setup.bash'):
+        (install / setup_name).write_text(setup_body, encoding='utf-8')
+
+    bridge_prefix = install / 'bio_nav_ros_bridge'
+    (bridge_prefix / 'share' / 'bio_nav_ros_bridge' / 'config').mkdir(
+        parents=True)
+    (bridge_prefix / 'share' / 'bio_nav_ros_bridge' / 'config'
+     / 'engineering_defaults.yaml').touch()
+    interfaces_prefix = install / 'bio_nav_interfaces'
+    include = (interfaces_prefix / 'include' / 'bio_nav_interfaces'
+               / 'bio_nav_interfaces' / 'msg')
+    (include / 'detail').mkdir(parents=True)
+    (include / 'local_risk_grid.hpp').touch()
+    (include / 'detail' / 'planning_prior__struct.hpp').write_text(
+        'local_direction_schema_version\n', encoding='utf-8')
+    if valid_interfaces:
+        (include / 'detail'
+         / 'cognitive_obstacle_array__struct.hpp').write_text(
+            'observation_valid\n', encoding='utf-8')
+    return install
+
+
+def _fake_snapshot_validation_environment(
+        tmp_path: Path, *, snapshot_valid: bool, live_valid: bool
+) -> tuple[dict[str, str], Path, Path, Path]:
+    live_root = tmp_path / 'fake_live'
+    snapshot_root = tmp_path / 'fake_snapshot' / 'i_src'
+    module3_root = tmp_path / 'fake_snapshot' / 'm3_src'
+    live_install = _fake_overlay_setup(
+        live_root, 'live', valid_interfaces=live_valid)
+    snapshot_install = _fake_overlay_setup(
+        snapshot_root, 'snapshot_i', valid_interfaces=snapshot_valid)
+    module3_install = _fake_overlay_setup(
+        module3_root, 'snapshot_m3', valid_interfaces=True)
+
+    live_marker = tmp_path / 'live_setup_was_read'
+    for setup_name in ('setup.bash', 'local_setup.bash'):
+        with (live_install / setup_name).open('a', encoding='utf-8') as stream:
+            stream.write(f'printf touched >"{live_marker}"\n')
+
+    ros_root = tmp_path / 'fake_ros'
+    ros_root.mkdir()
+    ros_setup = ros_root / 'setup.bash'
+    ros_setup.write_text(
+        f'''#!/usr/bin/env bash
+export ROS_DISTRO=jazzy
+export SOURCE_ORDER="${{SOURCE_ORDER:+${{SOURCE_ORDER}}->}}opt"
+export AMENT_PREFIX_PATH="{ros_root}/ament${{AMENT_PREFIX_PATH:+:${{AMENT_PREFIX_PATH}}}}"
+export CMAKE_PREFIX_PATH="{ros_root}/cmake${{CMAKE_PREFIX_PATH:+:${{CMAKE_PREFIX_PATH}}}}"
+export LD_LIBRARY_PATH="{ros_root}/lib${{LD_LIBRARY_PATH:+:${{LD_LIBRARY_PATH}}}}"
+export PYTHONPATH="{ros_root}/python${{PYTHONPATH:+:${{PYTHONPATH}}}}"
+''',
+        encoding='utf-8',
+    )
+    fastdds_profile = tmp_path / 'fastdds.xml'
+    fastdds_profile.touch()
+    fake_bin = tmp_path / 'bin'
+    fake_bin.mkdir()
+    fake_ros2 = fake_bin / 'ros2'
+    fake_ros2.write_text(
+        f'''#!/usr/bin/env bash
+case "$*" in
+  "pkg prefix bio_nav_ros_bridge")
+    printf '%s\\n' "{snapshot_install}/bio_nav_ros_bridge" ;;
+  "pkg prefix bio_nav_interfaces")
+    printf '%s\\n' "{snapshot_install}/bio_nav_interfaces" ;;
+  *) exit 2 ;;
+esac
+''',
+        encoding='utf-8',
+    )
+    fake_ros2.chmod(0o755)
+    environment = _environment(
+        PATH=f'{fake_bin}:{os.environ["PATH"]}',
+        ROS_SETUP=str(ros_setup),
+        ISAAC_NAV_FASTDDS_PROFILE=str(fastdds_profile),
+        ISAAC_NAV_REQUIRE_V6_INTEGRATION='1',
+        BIO_NAV_INTEGRATION_ROOT=str(snapshot_root),
+        BIO_NAV_INTEGRATION_INSTALL=str(snapshot_install),
+        BIO_NAV_INTEGRATION_SETUP=str(snapshot_install / 'setup.bash'),
+        ISAAC_NAV_WORKSPACE_SETUP=str(module3_install / 'local_setup.bash'),
+        AMENT_PREFIX_PATH=str(live_install / 'ament'),
+        CMAKE_PREFIX_PATH=str(live_install / 'cmake'),
+        LD_LIBRARY_PATH=str(live_install / 'lib'),
+        PYTHONPATH=str(live_install / 'python'),
+    )
+    return environment, snapshot_install, module3_install, live_marker
+
+
+def test_canonical_snapshot_underlay_replaces_live_overlay_in_exact_order(
+        tmp_path):
+    environment, snapshot_install, module3_install, live_marker = (
+        _fake_snapshot_validation_environment(
+            tmp_path, snapshot_valid=True, live_valid=False))
+    result = _run_bash(
+        f'''source "{COMMON}"
+source_ros
+printf 'ENV|%s|%s|%s|%s|%s' "$SOURCE_ORDER" \
+  "$AMENT_PREFIX_PATH" "$CMAKE_PREFIX_PATH" \
+  "$LD_LIBRARY_PATH" "$PYTHONPATH"
+''',
+        cwd=tmp_path,
+        environment=environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    emitted = result.stdout.split('ENV|', 1)[1]
+    fields = emitted.split('|')
+    assert fields[0] == 'opt->snapshot_i->snapshot_m3'
+    for value in fields[1:]:
+        assert str(snapshot_install) in value
+        assert str(module3_install) in value
+        assert 'fake_live' not in value
+    assert not live_marker.exists()
+
+
+def test_canonical_snapshot_rejects_missing_header_despite_valid_live_overlay(
+        tmp_path):
+    environment, snapshot_install, _, live_marker = (
+        _fake_snapshot_validation_environment(
+            tmp_path, snapshot_valid=False, live_valid=True))
+    result = _run_bash(
+        f'source "{COMMON}"; source_ros',
+        cwd=tmp_path,
+        environment=environment,
+    )
+
+    expected_header = (
+        snapshot_install / 'bio_nav_interfaces' / 'include'
+        / 'bio_nav_interfaces' / 'bio_nav_interfaces' / 'msg' / 'detail'
+        / 'cognitive_obstacle_array__struct.hpp')
+    assert result.returncode != 0
+    assert f'required file not found: {expected_header}' in result.stderr
+    assert 'fake_live' not in result.stderr
+    assert not live_marker.exists()
+
+
 def test_v6_wrapper_is_canonical_phase1_grid_entry():
     source = RUN_V6_LOW_OBSTACLES.read_text(encoding='utf-8')
     assert 'localization_owner:=grid' in source
@@ -256,6 +404,11 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'V6_DYNAMIC_ACTORS_ENABLED:-false',
         'mission=G1->G2->G3->G4->G5->G1',
         '/flatscan /localization_result /bio_nav/localization/status',
+        'BIO_NAV_INTEGRATION_ROOT="${I_SRC}"',
+        'BIO_NAV_INTEGRATION_INSTALL="${I_INSTALL}"',
+        'BIO_NAV_INTEGRATION_SETUP="${I_SETUP}"',
+        'ISAAC_NAV_WORKSPACE_SETUP="${M3_LOCAL_SETUP}"',
+        'required snapshot file not found:',
     ):
         assert contract in source
     assert 'start_bg module2' not in source

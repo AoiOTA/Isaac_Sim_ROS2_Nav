@@ -18,11 +18,16 @@
 set -Eeuo pipefail
 
 RUN_DIR="${1:-}"
-SNAP="${2:-}"
-if [[ -z "${RUN_DIR}" || -z "${SNAP}" ]]; then
+SNAP_INPUT="${2:-}"
+if [[ -z "${RUN_DIR}" || -z "${SNAP_INPUT}" ]]; then
   echo "usage: $0 RUN_DIR SNAPSHOT_ROOT" >&2
   exit 64
 fi
+[[ -d "${SNAP_INPUT}" ]] || {
+  echo "snapshot root not found: ${SNAP_INPUT}" >&2
+  exit 66
+}
+SNAP="$(readlink -f -- "${SNAP_INPUT}")"
 
 DOMAIN_ID="${R5_DOMAIN_ID:-173}"
 EPISODE_INDICES="${R5_EPISODE_INDICES:-0 1 2}"
@@ -41,6 +46,9 @@ M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M3_INSTALL="${M3}/ros2_ws/install_r5"
 I_INSTALL="${I_SRC}/ros2_ws/install_r5"
+I_SETUP="${I_INSTALL}/setup.bash"
+M3_LOCAL_SETUP="${M3_INSTALL}/local_setup.bash"
+I_OBSTACLE_HEADER="${I_INSTALL}/bio_nav_interfaces/include/bio_nav_interfaces/bio_nav_interfaces/msg/detail/cognitive_obstacle_array__struct.hpp"
 LOGS="${RUN_DIR}/logs"
 PROV="${RUN_DIR}/provenance"
 EPISODES_DIR="${RUN_DIR}/episodes"
@@ -51,6 +59,21 @@ export ROS_DOMAIN_ID="${DOMAIN_ID}"
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export ISAAC_NAV_EXPECTED_DOMAIN_ID="${DOMAIN_ID}"
 export ROS_LOG_DIR="${SNAP}/ros_log"
+export BIO_NAV_INTEGRATION_ROOT="${I_SRC}"
+export BIO_NAV_INTEGRATION_INSTALL="${I_INSTALL}"
+export BIO_NAV_INTEGRATION_SETUP="${I_SETUP}"
+export ISAAC_NAV_WORKSPACE_SETUP="${M3_LOCAL_SETUP}"
+
+for snapshot_file in \
+    "${I_SETUP}" \
+    "${I_OBSTACLE_HEADER}" \
+    "${M3_INSTALL}/setup.bash" \
+    "${M3_LOCAL_SETUP}"; do
+  [[ -f "${snapshot_file}" ]] || {
+    echo "required snapshot file not found: ${snapshot_file}" >&2
+    exit 66
+  }
+done
 
 [[ "${RUN_DIR}" == /mnt/nas_home/Bio_Nav_Data/* ]] || {
   echo "RUN_DIR must be under /mnt/nas_home/Bio_Nav_Data" >&2
@@ -218,6 +241,10 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
 {
   echo "run_dir=${RUN_DIR}"
   echo "snapshot=${SNAP}"
+  echo "integration_root=${BIO_NAV_INTEGRATION_ROOT}"
+  echo "integration_install=${BIO_NAV_INTEGRATION_INSTALL}"
+  echo "integration_setup=${BIO_NAV_INTEGRATION_SETUP}"
+  echo "module3_workspace_setup=${ISAAC_NAV_WORKSPACE_SETUP}"
   echo "domain_id=${DOMAIN_ID}"
   echo "rmw=${RMW_IMPLEMENTATION}"
   echo "episode_indices=${EPISODE_INDICES}"

@@ -89,3 +89,42 @@ it starts, on its dedicated `ROS_DOMAIN_ID` (default 173).
 - Remaining dependency: build a fresh combined Integration/Module3 overlay and
   verify that `estimated_m0` is accepted together with Grid status ordering,
   relocalize count, sole `map->odom` ownership, full TF, and five-leg motion.
+
+## Snapshot Integration underlay repair amendment (2026-08-24)
+
+- Repaired only the reproduced pre-Kit failure from
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_20260823T163229Z`.
+  A canonical session now resolves `SNAPSHOT_ROOT` once and exports that
+  snapshot's Integration source root, `install_r5`, setup file, and the
+  snapshot Module3 `local_setup.bash` to the Isaac entrypoint.
+- `common.sh` validates package prefixes and required IDL headers strictly
+  inside the selected Integration install. It clears inherited ROS, library,
+  Python, and C/C++ include overlay variables before sourcing
+  `/opt/ros/jazzy -> snapshot Integration -> snapshot Module3`; a snapshot
+  invocation cannot fall back to or mix in the live Integration worktree.
+  The live-worktree default remains for non-snapshot legacy invocations.
+- Deterministic fake-overlay tests cover a missing/stale live root with a valid
+  snapshot and the inverse case. They also assert exact source order, emitted
+  AMENT/CMAKE/LD/PYTHON paths, and that the fake live setup was not read.
+- Validation: focused new tests **2 passed**; complete runtime-script file
+  **35 passed**; five directly involved shell scripts passed `bash -n`.
+  A no-Kit probe using the preserved snapshot resolved both Integration
+  packages and every inspected overlay variable under snapshot `i_src`,
+  snapshot `m3_src`, and `/opt` only.
+- Boundary: this was code/test/pre-Kit shell validation only. No Isaac Sim,
+  ROS graph, Phase 1B interface smoke, reset, route goal, navigation evidence,
+  engineering success, or formal qualification was run or claimed.
+
+After building a fresh combined snapshot containing this commit, rerun exactly
+one episode with a confirmed-empty domain:
+
+```bash
+cd /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3
+RUN_DIR="/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_$(date -u +%Y%m%dT%H%M%SZ)"
+SNAPSHOT_ROOT="/absolute/path/to/fresh_combined_phase1_snapshot"
+R5_DOMAIN_ID=209 R5_EPISODE_INDICES=0 R5_EPISODE_SEEDS=7201 \
+  ./scripts/run_v6_kujiale_low_obstacles.sh session "${RUN_DIR}" "${SNAPSHOT_ROOT}"
+```
+
+Phase 1B must pass before the canonical dispatcher may send the five route
+goals; the repair itself does not satisfy that live dependency.

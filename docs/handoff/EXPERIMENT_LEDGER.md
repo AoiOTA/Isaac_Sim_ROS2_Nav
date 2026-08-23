@@ -2649,3 +2649,28 @@
   snapshot Integration install while retaining fail-closed allowed-root
   validation, then build a fresh combined snapshot and rerun Phase 1B before
   any goal.
+
+## 2026-08-24 — V6-GRID snapshot Integration underlay repair
+
+- Goal: repair only the canonical pre-Kit underlay failure recorded in
+  `v6_grid_phase1_20260823T163229Z`; no runner refactor or ROS package change.
+- Branch/worktree: `cognitive-navigation`, permitted Module3 worktree; base
+  `38884481b12d58ec6c01b3adc5161d951fce2e06`; result is the single commit
+  containing this entry.
+- Changed: the R5 session resolves and exports snapshot Integration
+  root/install/setup plus snapshot Module3 local setup. `common.sh` uses those
+  selected roots for package/header validation, clears inherited overlay
+  variables, and sources `/opt -> snapshot Integration -> snapshot Module3`.
+  Missing snapshot setup/header data fails before Kit without live fallback.
+- Tests: deterministic valid-snapshot/stale-live and missing-snapshot/valid-live
+  cases **2 passed**; complete runtime-script file **35 passed**; five involved
+  scripts passed `bash -n`.
+- Preserved-snapshot probe: current `common.sh` plus
+  `/tmp/v6_phase1_combined_repreflight.sOYIbk` resolved Integration bridge and
+  interfaces to snapshot `i_src/install_r5`; inspected AMENT/CMAKE/LD/PYTHON
+  paths contained only snapshot Module3, snapshot Integration, and `/opt`.
+- Verdict: **PASS (code/test/pre-Kit shell probe only)**. Isaac Sim, ROS graph,
+  Phase 1B, reset, route dispatch, navigation, and qualification were not run.
+- Next: build a fresh combined snapshot containing this commit, confirm an
+  empty ROS domain, then rerun one episode (`R5_EPISODE_INDICES=0`,
+  `R5_EPISODE_SEEDS=7201`). Phase 1B must pass before any five-leg dispatch.
