@@ -2390,3 +2390,25 @@
   AMCL round-2+M1 shadow 全量验证。
 - Next: live run 验证柜-桌走廊（0.63 m 净宽、瓶颈 0.30 m）AMCL round-2 表现；
   Phase 2/3 再做 module2 侧新 graph_id 先验登记。
+
+## 2026-08-23 — V6 Phase 1 定位 A/B 定案：主线冻结 odom_static（AMCL 0/3 vs odom_static 3/3）
+
+- Goal: G1→G2 走廊定位后端 A/B（arm A=amcl、arm B=odom_static，同一 r5 session
+  driver 经 `V6_LOCALIZATION_BACKEND` 切换，各 3 次 live run）裁定 Phase 1 定位主线。
+- Result: AMCL 0/3（A1/A2/A3 全部 SAFETY_STOP_DEADLOCK，corridor 样本 n=0/7/8，
+  有样本处 corridor p50 0.204–0.304 m）；odom_static 走廊段 3/3（B1/B2/B3 corridor
+  n=34/35/35，p50 0.0062/0.0565/0.0873 m），leg1（G1→G2 全腿）2/3 PASS
+  （B2/B3；B1 过走廊后 SAFETY_STOP_DEADLOCK @(-0.261,3.672)）。
+- Decision: Phase 1 定位主线冻结为 `odom_static + Wheel/IMU/EKF`；
+  `scripts/v6_reset_cold_boundary_r5_session.sh` 默认
+  `V6_LOCALIZATION_BACKEND=odom_static`，`=amcl` 保留为回滚/对照入口。
+  后端状态：AMCL 退为对照/回滚臂；RF2O 维持 off（未安装）；GridLocalizer 未引入本仓。
+- Warning（记录不修）: odom_static anchor jitter —— 每次 enrollment seed 重锚定
+  map->odom 的瞬时跳变，幅度小、不污染 corridor 指标。
+- Blocker: G2→G3 doorway —— B2 planner abort（`navigate_to_pose_failed_error_105`，
+  request_id=3）、B3 碰撞 @(-0.564,3.119)；两者均已完成 G2 腿，失败发生在 G2→G3 段，
+  与定位臂选择无关。
+- Evidence: `/mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_ab_g1g2_20260823/`
+  （`ab_summary.json` + A1–A3/B1–B3 六次 run 目录）。
+- Verdict: **A/B DECIDED — odom_static 为 Phase 1 定位主线**。
+- Next: G2→G3 doorway 第一错误层离线诊断（B2 planner abort vs B3 碰撞）。

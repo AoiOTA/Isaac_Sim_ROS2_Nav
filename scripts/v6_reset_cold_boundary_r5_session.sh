@@ -32,9 +32,12 @@ READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
 RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
 NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-300}"
 V6_COGNITIVE_PROFILE="${V6_COGNITIVE_PROFILE:-M3}"
-# A/B arm selector: amcl (default, arm A) or odom_static (arm B, no AMCL;
-# fixed map->odom re-anchored per enrollment seed).
-V6_LOCALIZATION_BACKEND="${V6_LOCALIZATION_BACKEND:-amcl}"
+# Localization backend selector. Phase 1 mainline is frozen to odom_static
+# (former A/B arm B: no AMCL; fixed map->odom re-anchored per enrollment seed)
+# after the 2026-08-23 A/B decision — AMCL corridor 0/3 vs odom_static 3/3;
+# evidence: /mnt/nas_home/Bio_Nav_Data/experiments/analysis/v6_ab_g1g2_20260823/.
+# V6_LOCALIZATION_BACKEND=amcl remains available as the rollback/control arm.
+V6_LOCALIZATION_BACKEND="${V6_LOCALIZATION_BACKEND:-odom_static}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M2="${SNAP}/m2_src"
