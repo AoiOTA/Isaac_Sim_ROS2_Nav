@@ -1,18 +1,17 @@
-#include "pointcloud_local_odometry/gicp_odometry.hpp"
+#include "pointcloud_local_odometry/ndt_odometry.hpp"
 
 #include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
-#include <vector>
 
 #include <pcl/filters/voxel_grid.h>
-#include <pcl/registration/gicp.h>
+#include <pcl/registration/ndt.h>
 
 namespace pointcloud_local_odometry
 {
 
-ScanToScanOdometry::ScanToScanOdometry(GicpConfig config)
+ScanToScanOdometry::ScanToScanOdometry(NdtConfig config)
 : config_(std::move(config))
 {
   if (!std::isfinite(config_.voxel_leaf_size) || config_.voxel_leaf_size <= 0.0) {
@@ -21,21 +20,19 @@ ScanToScanOdometry::ScanToScanOdometry(GicpConfig config)
   if (config_.min_points < 3U) {
     throw std::invalid_argument("min_points must be at least three");
   }
-  if (!std::isfinite(config_.max_correspondence_distance) ||
-    config_.max_correspondence_distance <= 0.0)
+  if (!std::isfinite(config_.resolution) || config_.resolution <= 0.0 ||
+    !std::isfinite(config_.step_size) || config_.step_size <= 0.0)
   {
-    throw std::invalid_argument("max_correspondence_distance must be finite and positive");
+    throw std::invalid_argument("NDT resolution and step_size must be finite and positive");
   }
   if (config_.max_iterations <= 0) {
     throw std::invalid_argument("max_iterations must be positive");
   }
   if (!std::isfinite(config_.transformation_epsilon) ||
     config_.transformation_epsilon <= 0.0 ||
-    !std::isfinite(config_.euclidean_fitness_epsilon) ||
-    config_.euclidean_fitness_epsilon <= 0.0 ||
     !std::isfinite(config_.max_fitness_score) || config_.max_fitness_score < 0.0)
   {
-    throw std::invalid_argument("GICP epsilon and fitness limits are invalid");
+    throw std::invalid_argument("NDT epsilon and fitness limits are invalid");
   }
 }
 
@@ -108,30 +105,30 @@ OdometryResult ScanToScanOdometry::process(
     return result;
   }
 
-  pcl::GeneralizedIterativeClosestPoint<Point, Point> gicp;
-  gicp.setMaxCorrespondenceDistance(config_.max_correspondence_distance);
-  gicp.setMaximumIterations(config_.max_iterations);
-  gicp.setTransformationEpsilon(config_.transformation_epsilon);
-  gicp.setEuclideanFitnessEpsilon(config_.euclidean_fitness_epsilon);
-  gicp.setInputSource(current_scan);
-  gicp.setInputTarget(previous_successful_scan_);
+  pcl::NormalDistributionsTransform<Point, Point> ndt;
+  ndt.setResolution(static_cast<float>(config_.resolution));
+  ndt.setStepSize(config_.step_size);
+  ndt.setMaximumIterations(config_.max_iterations);
+  ndt.setTransformationEpsilon(config_.transformation_epsilon);
+  ndt.setInputSource(current_scan);
+  ndt.setInputTarget(previous_successful_scan_);
 
   Cloud aligned;
   try {
-    gicp.align(aligned);
+    ndt.align(aligned);
   } catch (const std::exception &) {
-    result.reason = "gicp_exception";
+    result.reason = "ndt_exception";
     return result;
   }
 
-  result.converged = gicp.hasConverged();
+  result.converged = ndt.hasConverged();
   if (!result.converged) {
-    result.reason = "gicp_not_converged";
+    result.reason = "ndt_not_converged";
     return result;
   }
 
-  result.fitness = gicp.getFitnessScore();
-  const Eigen::Matrix4d transform = gicp.getFinalTransformation().cast<double>();
+  result.fitness = ndt.getFitnessScore();
+  const Eigen::Matrix4d transform = ndt.getFinalTransformation().cast<double>();
   if (!std::isfinite(result.fitness) || !transform.allFinite()) {
     result.reason = "nonfinite_result";
     return result;

@@ -1,5 +1,5 @@
-#ifndef POINTCLOUD_LOCAL_ODOMETRY__GICP_ODOMETRY_HPP_
-#define POINTCLOUD_LOCAL_ODOMETRY__GICP_ODOMETRY_HPP_
+#ifndef POINTCLOUD_LOCAL_ODOMETRY__NDT_ODOMETRY_HPP_
+#define POINTCLOUD_LOCAL_ODOMETRY__NDT_ODOMETRY_HPP_
 
 #include <cstddef>
 #include <limits>
@@ -12,14 +12,14 @@
 namespace pointcloud_local_odometry
 {
 
-struct GicpConfig
+struct NdtConfig
 {
   double voxel_leaf_size{0.15};
   std::size_t min_points{100U};
-  double max_correspondence_distance{1.0};
+  double resolution{0.5};
+  double step_size{0.1};
   int max_iterations{40};
-  double transformation_epsilon{1.0e-4};
-  double euclidean_fitness_epsilon{1.0e-4};
+  double transformation_epsilon{1.0e-3};
   double max_fitness_score{0.25};
 };
 
@@ -40,10 +40,10 @@ struct OdometryResult
 class ScanToScanOdometry
 {
 public:
-  using Point = pcl::PointXYZ;
+  using Point = pcl::PointXYZI;
   using Cloud = pcl::PointCloud<Point>;
 
-  explicit ScanToScanOdometry(GicpConfig config);
+  explicit ScanToScanOdometry(NdtConfig config);
 
   OdometryResult process(
     const Cloud::ConstPtr & raw_cloud,
@@ -58,11 +58,11 @@ private:
     const Cloud::ConstPtr & raw_cloud,
     OdometryResult & result) const;
 
-  GicpConfig config_;
+  NdtConfig config_;
   Cloud::Ptr previous_successful_scan_;
   Eigen::Isometry3d odom_base_{Eigen::Isometry3d::Identity()};
 };
 
 }  // namespace pointcloud_local_odometry
 
-#endif  // POINTCLOUD_LOCAL_ODOMETRY__GICP_ODOMETRY_HPP_
+#endif  // POINTCLOUD_LOCAL_ODOMETRY__NDT_ODOMETRY_HPP_

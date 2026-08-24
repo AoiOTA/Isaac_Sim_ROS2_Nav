@@ -24,7 +24,7 @@
 #include <tf2_ros/buffer.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
-#include "pointcloud_local_odometry/gicp_odometry.hpp"
+#include "pointcloud_local_odometry/ndt_odometry.hpp"
 
 namespace pointcloud_local_odometry
 {
@@ -69,35 +69,33 @@ Eigen::Isometry3d toEigen(const geometry_msgs::msg::Transform & transform)
 
 }  // namespace
 
-class GicpShadowNode : public rclcpp::Node
+class NdtLocalOdometryNode : public rclcpp::Node
 {
 public:
-  GicpShadowNode()
-  : Node("gicp_shadow_node"),
+  NdtLocalOdometryNode()
+  : Node("ndt_local_odometry_node"),
     tf_buffer_(get_clock()),
     tf_listener_(tf_buffer_)
   {
     input_topic_ = declare_parameter<std::string>("input_topic", "/lio/points_raw");
     odom_topic_ = declare_parameter<std::string>(
-      "odom_topic", "/local_odom/gicp_shadow");
+      "odom_topic", "/local_odom/ndt_shadow");
     status_topic_ = declare_parameter<std::string>(
-      "status_topic", "/local_odom/gicp_status");
+      "status_topic", "/local_odom/ndt_status");
     lidar_frame_ = declare_parameter<std::string>("lidar_frame", "lio_lidar_link");
     base_frame_ = declare_parameter<std::string>("base_frame", "base_link");
-    odom_frame_ = declare_parameter<std::string>("odom_frame", "gicp_odom_shadow");
+    odom_frame_ = declare_parameter<std::string>("odom_frame", "ndt_odom_shadow");
 
-    GicpConfig config;
+    NdtConfig config;
     config.voxel_leaf_size = declare_parameter<double>("voxel_leaf_size", 0.15);
     config.min_points = static_cast<std::size_t>(
       declare_parameter<int64_t>("min_points", 100));
-    config.max_correspondence_distance = declare_parameter<double>(
-      "max_correspondence_distance", 1.0);
+    config.resolution = declare_parameter<double>("resolution", 0.5);
+    config.step_size = declare_parameter<double>("step_size", 0.1);
     config.max_iterations = static_cast<int>(
       declare_parameter<int64_t>("max_iterations", 40));
     config.transformation_epsilon = declare_parameter<double>(
-      "transformation_epsilon", 1.0e-4);
-    config.euclidean_fitness_epsilon = declare_parameter<double>(
-      "euclidean_fitness_epsilon", 1.0e-4);
+      "transformation_epsilon", 1.0e-3);
     config.max_fitness_score = declare_parameter<double>("max_fitness_score", 0.25);
     pose_covariance_ = declare_parameter<std::vector<double>>(
       "pose_covariance_diagonal", {0.04, 0.04, 0.09, 0.09, 0.09, 0.04});
@@ -121,7 +119,7 @@ public:
     subscription_ = create_subscription<sensor_msgs::msg::PointCloud2>(
       input_topic_,
       rclcpp::SensorDataQoS(),
-      std::bind(&GicpShadowNode::cloudCallback, this, std::placeholders::_1));
+      std::bind(&NdtLocalOdometryNode::cloudCallback, this, std::placeholders::_1));
   }
 
 private:
@@ -143,8 +141,8 @@ private:
     status.level = state == "degraded" ?
       diagnostic_msgs::msg::DiagnosticStatus::WARN :
       diagnostic_msgs::msg::DiagnosticStatus::OK;
-    status.name = "pointcloud_local_odometry/gicp_shadow";
-    status.hardware_id = "gicp_shadow";
+    status.name = "pointcloud_local_odometry/ndt_shadow";
+    status.hardware_id = "ndt_shadow";
     status.message = state;
     status.values = {
       value("state", state),
@@ -266,7 +264,7 @@ private:
 int main(int argc, char ** argv)
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(std::make_shared<pointcloud_local_odometry::GicpShadowNode>());
+  rclcpp::spin(std::make_shared<pointcloud_local_odometry::NdtLocalOdometryNode>());
   rclcpp::shutdown();
   return 0;
 }

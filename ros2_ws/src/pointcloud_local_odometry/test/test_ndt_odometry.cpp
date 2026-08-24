@@ -7,27 +7,55 @@
 #include <gtest/gtest.h>
 #include <pcl/common/transforms.h>
 
-#include "pointcloud_local_odometry/gicp_odometry.hpp"
+#include "pointcloud_local_odometry/ndt_odometry.hpp"
 
 namespace
 {
 
-using pointcloud_local_odometry::GicpConfig;
+using pointcloud_local_odometry::NdtConfig;
 using pointcloud_local_odometry::ScanToScanOdometry;
 
 ScanToScanOdometry::Cloud::Ptr asymmetricCloud()
 {
   auto cloud = std::make_shared<ScanToScanOdometry::Cloud>();
-  for (int ix = 0; ix < 8; ++ix) {
-    for (int iy = 0; iy < 7; ++iy) {
-      for (int iz = 0; iz < 5; ++iz) {
-        ScanToScanOdometry::Point point;
-        point.x = static_cast<float>(0.17 * ix + 0.013 * std::sin(iy + 2.0 * iz));
-        point.y = static_cast<float>(0.19 * iy + 0.021 * std::cos(2.0 * ix + iz));
-        point.z = static_cast<float>(0.23 * iz + 0.017 * std::sin(ix + 3.0 * iy));
-        cloud->push_back(point);
+  for (int ix = 0; ix < 5; ++ix) {
+    for (int iy = 0; iy < 4; ++iy) {
+      for (int iz = 0; iz < 3; ++iz) {
+        for (int sx = -1; sx <= 1; ++sx) {
+          for (int sy : {-1, 1}) {
+            for (int sz : {-1, 1}) {
+              ScanToScanOdometry::Point point;
+              const double phase = 3.0 * ix + 5.0 * iy + 7.0 * iz + sx - sy + sz;
+              point.x = static_cast<float>(
+                0.21 + 0.61 * ix + 0.042 * sx + 0.004 * std::sin(phase));
+              point.y = static_cast<float>(
+                0.18 + 0.73 * iy + 0.047 * sy + 0.005 * std::cos(phase));
+              point.z = static_cast<float>(
+                0.23 + 0.83 * iz + 0.053 * sz + 0.003 * std::sin(2.0 * phase));
+              point.intensity = static_cast<float>(1 + 11 * ix + 7 * iy + 3 * iz);
+              cloud->push_back(point);
+            }
+          }
+        }
       }
     }
+  }
+  cloud->width = static_cast<std::uint32_t>(cloud->size());
+  cloud->height = 1U;
+  cloud->is_dense = true;
+  return cloud;
+}
+
+ScanToScanOdometry::Cloud::Ptr sparseCloud()
+{
+  auto cloud = std::make_shared<ScanToScanOdometry::Cloud>();
+  for (int index = 0; index < 120; ++index) {
+    ScanToScanOdometry::Point point;
+    point.x = static_cast<float>(0.7 * index);
+    point.y = static_cast<float>(0.9 * (index % 11));
+    point.z = static_cast<float>(1.1 * (index % 7));
+    point.intensity = static_cast<float>(index);
+    cloud->push_back(point);
   }
   cloud->width = static_cast<std::uint32_t>(cloud->size());
   cloud->height = 1U;
@@ -56,16 +84,16 @@ ScanToScanOdometry::Cloud::Ptr scanAtPose(
   return scan;
 }
 
-GicpConfig testConfig()
+NdtConfig testConfig()
 {
-  GicpConfig config;
-  config.voxel_leaf_size = 0.01;
+  NdtConfig config;
+  config.voxel_leaf_size = 0.02;
   config.min_points = 100U;
-  config.max_correspondence_distance = 0.8;
+  config.resolution = 0.4;
+  config.step_size = 0.15;
   config.max_iterations = 80;
-  config.transformation_epsilon = 1.0e-8;
-  config.euclidean_fitness_epsilon = 1.0e-8;
-  config.max_fitness_score = 0.01;
+  config.transformation_epsilon = 1.0e-6;
+  config.max_fitness_score = 0.02;
   return config;
 }
 
@@ -82,7 +110,7 @@ void expectTransformNear(
   EXPECT_LT(Eigen::AngleAxisd(delta).angle(), rotation_tolerance);
 }
 
-TEST(GicpOdometry, IdentityScanInitializesThenTracksIdentity)
+TEST(NdtOdometry, IdentityScanInitializesThenTracksIdentity)
 {
   ScanToScanOdometry odometry(testConfig());
   const auto cloud = asymmetricCloud();
@@ -96,29 +124,29 @@ TEST(GicpOdometry, IdentityScanInitializesThenTracksIdentity)
   EXPECT_TRUE(second.converged);
   EXPECT_EQ(second.reason, "tracking");
   expectTransformNear(
-    second.odom_base, Eigen::Isometry3d::Identity(), 1.0e-4, 1.0e-4);
+    second.odom_base, Eigen::Isometry3d::Identity(), 0.003, 0.001);
 }
 
-TEST(GicpOdometry, RecoversKnownXyzAndRpyWithCorrectSourceTargetDirection)
+TEST(NdtOdometry, RecoversKnownXyzAndRpyWithCorrectSourceTargetDirection)
 {
   ScanToScanOdometry odometry(testConfig());
   const auto reference = asymmetricCloud();
-  const Eigen::Isometry3d expected = motion(0.14, -0.07, 0.05, 0.035, -0.045, 0.11);
+  const Eigen::Isometry3d expected = motion(0.10, -0.06, 0.04, 0.025, -0.03, 0.07);
   ASSERT_TRUE(odometry.process(reference, Eigen::Isometry3d::Identity()).accepted);
 
   const auto result = odometry.process(
     scanAtPose(reference, expected), Eigen::Isometry3d::Identity());
   ASSERT_TRUE(result.accepted) << result.reason << " fitness=" << result.fitness;
-  expectTransformNear(result.relative_lidar, expected, 0.015, 0.015);
-  expectTransformNear(result.odom_base, expected, 0.015, 0.015);
+  expectTransformNear(result.relative_lidar, expected, 0.025, 0.025);
+  expectTransformNear(result.odom_base, expected, 0.025, 0.025);
 }
 
-TEST(GicpOdometry, AccumulatesTwoSuccessfulRelativeTransforms)
+TEST(NdtOdometry, AccumulatesTwoSuccessfulRelativeTransforms)
 {
   ScanToScanOdometry odometry(testConfig());
   const auto reference = asymmetricCloud();
-  const Eigen::Isometry3d first_pose = motion(0.10, -0.04, 0.03, 0.02, -0.03, 0.08);
-  const Eigen::Isometry3d second_relative = motion(0.08, 0.03, -0.01, -0.01, 0.025, -0.06);
+  const Eigen::Isometry3d first_pose = motion(0.10, -0.06, 0.04, 0.025, -0.03, 0.07);
+  const Eigen::Isometry3d second_relative = motion(0.10, -0.06, 0.04, 0.025, -0.03, 0.07);
   const Eigen::Isometry3d second_pose = first_pose * second_relative;
 
   ASSERT_TRUE(odometry.process(reference, Eigen::Isometry3d::Identity()).accepted);
@@ -128,10 +156,10 @@ TEST(GicpOdometry, AccumulatesTwoSuccessfulRelativeTransforms)
   const auto second = odometry.process(
     scanAtPose(reference, second_pose), Eigen::Isometry3d::Identity());
   ASSERT_TRUE(second.accepted) << second.reason;
-  expectTransformNear(second.odom_base, second_pose, 0.025, 0.02);
+  expectTransformNear(second.odom_base, second_pose, 0.05, 0.04);
 }
 
-TEST(GicpOdometry, ConjugatesLidarMotionIntoBaseFrame)
+TEST(NdtOdometry, ConjugatesLidarMotionIntoBaseFrame)
 {
   const Eigen::Isometry3d base_to_lidar = motion(
     0.12, -0.03, 0.33, 0.04, -0.02, 0.09);
@@ -144,7 +172,7 @@ TEST(GicpOdometry, ConjugatesLidarMotionIntoBaseFrame)
   expectTransformNear(observed, expected, 1.0e-12, 1.0e-12);
 }
 
-TEST(GicpOdometry, RejectsInsufficientAndNonfiniteClouds)
+TEST(NdtOdometry, RejectsInsufficientAndNonfiniteClouds)
 {
   ScanToScanOdometry odometry(testConfig());
   auto insufficient = std::make_shared<ScanToScanOdometry::Cloud>();
@@ -160,19 +188,18 @@ TEST(GicpOdometry, RejectsInsufficientAndNonfiniteClouds)
   EXPECT_EQ(invalid.reason, "nonfinite_points");
 }
 
-TEST(GicpOdometry, RejectsConvergedRegistrationAboveFitnessLimit)
+TEST(NdtOdometry, RejectsConvergedRegistrationAboveFitnessLimit)
 {
-  GicpConfig config = testConfig();
+  NdtConfig config = testConfig();
   config.max_fitness_score = 1.0e-12;
   ScanToScanOdometry odometry(config);
   const auto reference = asymmetricCloud();
   ASSERT_TRUE(odometry.process(reference, Eigen::Isometry3d::Identity()).accepted);
 
-  const auto expected = motion(0.08, -0.02, 0.01, 0.01, -0.015, 0.05);
-  auto deformed = scanAtPose(reference, expected);
+  auto deformed = scanAtPose(reference, motion(0.06, -0.02, 0.01, 0.01, -0.01, 0.04));
   for (std::size_t index = 0; index < deformed->size(); index += 3U) {
-    deformed->points[index].x += 0.003F;
-    deformed->points[index].z -= 0.002F;
+    deformed->points[index].x += 0.004F;
+    deformed->points[index].z -= 0.003F;
   }
   const auto result = odometry.process(deformed, Eigen::Isometry3d::Identity());
   ASSERT_TRUE(result.converged) << result.reason;
@@ -181,7 +208,20 @@ TEST(GicpOdometry, RejectsConvergedRegistrationAboveFitnessLimit)
   EXPECT_GT(result.fitness, config.max_fitness_score);
 }
 
-TEST(GicpOdometry, RejectedScanDoesNotReplacePreviousSuccessfulScan)
+TEST(NdtOdometry, RejectsNonconvergedRegistration)
+{
+  NdtConfig config = testConfig();
+  ScanToScanOdometry odometry(config);
+  const auto reference = sparseCloud();
+  ASSERT_TRUE(odometry.process(reference, Eigen::Isometry3d::Identity()).accepted);
+
+  const auto result = odometry.process(reference, Eigen::Isometry3d::Identity());
+  EXPECT_FALSE(result.accepted);
+  EXPECT_FALSE(result.converged);
+  EXPECT_EQ(result.reason, "ndt_not_converged");
+}
+
+TEST(NdtOdometry, RejectedScanDoesNotReplacePreviousSuccessfulScan)
 {
   ScanToScanOdometry odometry(testConfig());
   const auto reference = asymmetricCloud();
@@ -193,11 +233,11 @@ TEST(GicpOdometry, RejectedScanDoesNotReplacePreviousSuccessfulScan)
   ASSERT_FALSE(bad_result.accepted);
   ASSERT_EQ(bad_result.reason, "nonfinite_points");
 
-  const Eigen::Isometry3d expected = motion(0.09, 0.03, -0.02, 0.01, 0.02, -0.07);
+  const Eigen::Isometry3d expected = motion(0.10, -0.06, 0.04, 0.025, -0.03, 0.07);
   const auto recovered = odometry.process(
     scanAtPose(reference, expected), Eigen::Isometry3d::Identity());
   ASSERT_TRUE(recovered.accepted) << recovered.reason;
-  expectTransformNear(recovered.odom_base, expected, 0.015, 0.015);
+  expectTransformNear(recovered.odom_base, expected, 0.025, 0.025);
 }
 
 }  // namespace

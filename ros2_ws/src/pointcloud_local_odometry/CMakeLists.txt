@@ -21,22 +21,22 @@ find_package(sensor_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 
-add_library(gicp_odometry src/gicp_odometry.cpp)
-target_include_directories(gicp_odometry PUBLIC
+add_library(ndt_odometry src/ndt_odometry.cpp)
+target_include_directories(ndt_odometry PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
   ${PCL_INCLUDE_DIRS}
 )
-target_link_libraries(gicp_odometry
+target_link_libraries(ndt_odometry
   ${PCL_LIBRARIES}
   Eigen3::Eigen
 )
 
-add_executable(gicp_shadow_node src/gicp_shadow_node.cpp)
-target_include_directories(gicp_shadow_node PRIVATE
+add_executable(ndt_local_odometry_node src/ndt_local_odometry_node.cpp)
+target_include_directories(ndt_local_odometry_node PRIVATE
   ${PCL_INCLUDE_DIRS}
 )
-ament_target_dependencies(gicp_shadow_node
+ament_target_dependencies(ndt_local_odometry_node
   diagnostic_msgs
   geometry_msgs
   nav_msgs
@@ -46,21 +46,16 @@ ament_target_dependencies(gicp_shadow_node
   tf2
   tf2_ros
 )
-target_link_libraries(gicp_shadow_node
-  gicp_odometry
+target_link_libraries(ndt_local_odometry_node
+  ndt_odometry
   ${PCL_LIBRARIES}
   Eigen3::Eigen
 )
 
 install(TARGETS
-  gicp_odometry
-  gicp_shadow_node
-  EXPORT export_gicp_odometry
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
+  ndt_local_odometry_node
   RUNTIME DESTINATION lib/${PROJECT_NAME}
 )
-install(DIRECTORY include/ DESTINATION include)
 install(
   DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
@@ -68,18 +63,17 @@ install(
   PATTERN "*.pyc" EXCLUDE
 )
 
-ament_export_targets(export_gicp_odometry HAS_LIBRARY_TARGET)
-ament_export_include_directories(include)
-ament_export_dependencies(Eigen3 PCL)
-
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
 
-  ament_add_gtest(test_gicp_odometry test/test_gicp_odometry.cpp)
-  target_include_directories(test_gicp_odometry PRIVATE ${PCL_INCLUDE_DIRS})
-  target_link_libraries(test_gicp_odometry
-    gicp_odometry
+  ament_add_gtest(test_ndt_odometry test/test_ndt_odometry.cpp)
+  target_include_directories(test_ndt_odometry PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${PCL_INCLUDE_DIRS}
+  )
+  target_link_libraries(test_ndt_odometry
+    ndt_odometry
     ${PCL_LIBRARIES}
     Eigen3::Eigen
   )

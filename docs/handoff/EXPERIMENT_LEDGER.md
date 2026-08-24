@@ -3576,3 +3576,33 @@
   navigation, drift/latency calibration, Phase 1D, promotion, or qualification
   was run. Next is a fresh reviewer short replay/live shadow; see
   `V7_3_ALT1_GICP_LOCAL_ODOM_SHADOW_20260825.md`.
+
+## 2026-08-25 — V7.3 Alt-1 GICP STOP and NDT replacement
+
+- Exact GICP replay:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_gicp_replay_20260824T211335Z`.
+  Delivery was 2,031/2,031 and processing p50/p95/max was
+  `6.48/11.87/54.36 ms`, but active-EKF-relative XY error crossed 0.5/1/5 m
+  after `1.20/2.50/11.40 s` and reached `11.529 m` before the recorded source
+  collision: **ENGINEERING STOP**. Relative planar projection remained wrong
+  (`1.20/2.30/10.00 s` crossings, `12.409 m` endpoint error,
+  `93.145 deg` direction error), so planar GICP is also rejected.
+- Change: remove the GICP product implementation rather than add a backend
+  selector. The package now has only the default-OFF PCL NDT shadow products
+  `ndt_local_odometry_node`, `ndt_shadow.yaml`, and `ndt_shadow.launch.py`.
+  It publishes `/local_odom/ndt_shadow` and `/local_odom/ndt_status` in
+  `ndt_odom_shadow -> base_link`, with no TF output and no canonical consumer.
+- NDT retains the original finite/single-VoxelGrid, current-source to previous
+  successful-target, base/LiDAR conjugation, SE(3) accumulation, covariance,
+  status, and rejection semantics. Fixed parameters are voxel `0.15 m`,
+  minimum `100`, resolution `0.5 m`, step `0.1`, `40` iterations,
+  transformation epsilon `0.001`, and maximum fitness `0.25`.
+- Validation: clean `/opt/ros/jazzy` isolated build/test at
+  `/tmp/v73_alt1_ndt_final.7q1fdS` reported `13 tests, 0 errors, 0 failures,
+  0 skipped`; eight synthetic NDT GTests and three static contract tests
+  passed. Source-first/no-cache pytest, launch Python compile/show-args, and
+  diff checks passed. Only the known PCL FLANN `CMP0144` developer warning
+  remained.
+- Verdict: **NDT IMPLEMENTED / STATIC PASS ONLY; LIVE UNVERIFIED**. No replay,
+  Isaac, Nav2, navigation, Phase 1D, promotion, or qualification was run. Next
+  is the same bounded finalized-bag replay; keep NDT default OFF.

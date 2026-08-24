@@ -3,7 +3,7 @@
 <package format="3">
   <name>pointcloud_local_odometry</name>
   <version>0.1.0</version>
-  <description>Default-off PCL GICP scan-to-scan local odometry shadow.</description>
+  <description>Default-off PCL NDT scan-to-scan local odometry shadow.</description>
   <maintainer email="liang_yibo@hdu.edu.cn">AoiOTA</maintainer>
   <license>Apache-2.0</license>
 

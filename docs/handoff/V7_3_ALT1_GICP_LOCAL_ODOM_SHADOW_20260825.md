@@ -1,70 +1,59 @@
-# V7.3 Alt-1 GICP local-odometry shadow handoff (2026-08-25)
+# V7.3 Alt-1 local-odometry shadow handoff (2026-08-25)
 
-## Result and boundary
+## GICP terminal replay decision
 
-- Implementation commit: `9f959fb0a01d3fcc7f03d5906b69d1e8a8cd0aaf`.
-- Added only the independent C++ package `pointcloud_local_odometry`. Its
-  launch argument `enabled` defaults to `false`; it is not referenced by
-  bringup, canonical profiles, EKF, Grid, Nav2, Integration, or Module2.
-- This is an **IMPLEMENTED / STATIC PASS** result. No Isaac, ROS live, bag
-  replay, navigation, promotion, Phase 1D, or qualification run occurred.
+The original default-OFF GICP shadow reached 2,031/2,031 input/output delivery
+in the exact finalized-bag replay at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_gicp_replay_20260824T211335Z`.
+Processing p50/p95/max was 6.48/11.87/54.36 ms, but XY error relative to the
+same-run active EKF `/odom` crossed 0.5/1/5 m after only
+1.20/2.50/11.40 s of motion and reached 11.529 m before the recorded source
+collision. This is **ENGINEERING STOP**, despite delivery and load success.
 
-## Interface and algorithm
+Offline relative-increment planar projection did not rescue GICP: projected
+error crossed 0.5/1/5 m after 1.20/2.30/10.00 s and ended 12.409 m away with
+a 93.145 degree endpoint-direction error. The GICP implementation is therefore
+removed rather than retained behind a backend selector.
+
+## NDT replacement
+
+`pointcloud_local_odometry` now has one default-OFF PCL 1.14 NDT shadow:
 
 ```text
 /lio/points_raw  PointCloud2, SensorDataQoS, lio_lidar_link
-  -> finite check -> one fixed VoxelGrid -> PCL 1.14 GICP
-  -> /local_odom/gicp_shadow  Odometry
-       frame gicp_odom_shadow, child base_link, input stamp
-  -> /local_odom/gicp_status  DiagnosticArray
+  -> finite xyz check -> one VoxelGrid -> PCL NDT current(source)-to-previous(target)
+  -> /local_odom/ndt_shadow  Odometry
+       frame ndt_odom_shadow, child base_link, input stamp
+  -> /local_odom/ndt_status  DiagnosticArray
 ```
 
-GICP aligns the current source scan to the previous successful target scan and
-returns `T_prevL_currL`. The core converts it with the direct static
-`T_B_L` lookup as `T_B_L * T_prevL_currL * inverse(T_B_L)`, then accumulates
-from identity. The first valid scan publishes identity with `initializing`.
-Twist is unavailable and remains zero with `1e6` diagonal covariance; pose
-uses the conservative fixed diagonal in `config/gicp_shadow.yaml`. The node
-constructs no TF broadcaster and never subscribes to wheel, IMU, global-map,
-or evaluator-only pose inputs.
+The only executable/config/launch products are `ndt_local_odometry_node`,
+`config/ndt_shadow.yaml`, and `launch/ndt_shadow.launch.py`. The launch
+`enabled` argument defaults to false. There is one cloud subscription, a
+direct static `base_link <- lio_lidar_link` lookup, no TF broadcaster, and no
+wheel, IMU, map, GT, producer, adapter, bringup, profile, EKF, Grid, Nav2,
+Integration, or Module2 connection.
 
-Frame/stamp rollback, missing direct `base_link <- lio_lidar_link` lookup,
-insufficient/nonfinite points, GICP non-convergence, nonfinite output, and
-fitness above the fixed threshold produce `degraded` status without a new
-pose. Rejected scans do not replace the previous successful scan. Reset is
-only process restart; no service, retry, fallback, or additional state machine
-was added.
+The first valid scan publishes identity with `initializing`. Accepted NDT
+increments are conjugated into the base frame and accumulated in SE(3).
+Invalid/nonfinite/insufficient input, missing TF, non-convergence, nonfinite
+result, or fitness above the fixed threshold emits `degraded` without
+replacing the previous successful scan. Fixed initial shadow parameters are
+voxel 0.15 m, minimum 100 filtered points, NDT resolution 0.5 m, step 0.1,
+40 iterations, transformation epsilon 0.001, and maximum fitness 0.25.
 
-## Fixed configuration
+## Validation and next action
 
-- voxel leaf `0.15 m`, minimum filtered points `100`;
-- maximum correspondence `1.0 m`, iterations `40`;
-- transformation/Euclidean-fitness epsilon `1e-4`;
-- maximum accepted fitness `0.25`;
-- exact topics and frames are in `config/gicp_shadow.yaml`.
+Clean `/opt/ros/jazzy` isolated build/test at
+`/tmp/v73_alt1_ndt_final.7q1fdS` reported `13 tests, 0 errors, 0 failures,
+0 skipped`. Source-first no-cache pytest, launch Python
+compilation/show-args, and diff checks passed. Eight synthetic GTests cover
+identity, known xyz/rpy direction, two-step accumulation,
+base/LiDAR conjugation, insufficient/nonfinite input, fitness rejection,
+non-convergence, and rejected-scan retention. The only build stderr is PCL's
+non-blocking FLANN `CMP0144` developer warning.
 
-These are initial shadow values, not live-calibrated or promotion thresholds.
-
-## Static validation
-
-- Clean `/opt/ros/jazzy`-only isolated build at
-  `/tmp/v73_alt1_gicp_final.3GcMgH`: one package finished.
-- Isolated `colcon test-result`: `12 tests, 0 errors, 0 failures, 0 skipped`.
-  Seven GTests cover identity, known xyz/rpy direction, two-step accumulation,
-  base/LiDAR conjugation, insufficient/nonfinite input, fitness rejection, and
-  retention of the previous successful scan. Three Python contract cases
-  cover default OFF, exact topics/frames/config, SensorDataQoS, one input,
-  forbidden data dependencies, and absence of a TF broadcaster.
-- Source-first/no-cache contract pytest, launch Python compilation, and scoped
-  `git diff --check` passed. The only build stderr was PCL's non-blocking CMake
-  `CMP0144/FLANN_ROOT` developer warning.
-
-## Next bounded review and remaining risk
-
-A fresh reviewer should first use a short sensor replay or live shadow with
-the already validated OS1 adapter, after physical reset, and measure point
-count, convergence/fitness, processing time versus the 10 Hz input, direction,
-drift, jumps, covariance usefulness, and restart behavior. It must also
-observe that no GICP TF is emitted. Until then, this package remains default
-OFF and supplies no evidence for canonical `/odom`, Phase 1D, navigation, or
-formal qualification.
+Verdict: **NDT IMPLEMENTED / STATIC PASS ONLY; LIVE UNVERIFIED**. No replay,
+Isaac, Nav2, navigation, promotion, Phase 1D, or qualification was run. The
+unique next step is the same bounded finalized-bag replay with the NDT shadow;
+keep it default OFF until that geometry and runtime review succeeds.

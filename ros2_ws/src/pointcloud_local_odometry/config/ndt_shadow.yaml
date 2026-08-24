@@ -1,17 +1,17 @@
-gicp_shadow_node:
+ndt_local_odometry_node:
   ros__parameters:
     input_topic: /lio/points_raw
-    odom_topic: /local_odom/gicp_shadow
-    status_topic: /local_odom/gicp_status
+    odom_topic: /local_odom/ndt_shadow
+    status_topic: /local_odom/ndt_status
     lidar_frame: lio_lidar_link
     base_frame: base_link
-    odom_frame: gicp_odom_shadow
+    odom_frame: ndt_odom_shadow
     voxel_leaf_size: 0.15
     min_points: 100
-    max_correspondence_distance: 1.0
+    resolution: 0.5
+    step_size: 0.1
     max_iterations: 40
-    transformation_epsilon: 0.0001
-    euclidean_fitness_epsilon: 0.0001
+    transformation_epsilon: 0.001
     max_fitness_score: 0.25
     pose_covariance_diagonal: [0.04, 0.04, 0.09, 0.09, 0.09, 0.04]
     twist_covariance_diagonal: [1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0]
