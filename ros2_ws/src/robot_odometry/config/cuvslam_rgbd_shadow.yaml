@@ -5,7 +5,7 @@ visual_slam_shadow:
     num_cameras: 1
     min_num_images: 1
     depth_camera_id: 0
-    depth_scale_factor: 1.0
+    depth_scale_factor: 1000.0
     camera_optical_frames:
       - camera_front_optical_frame
     base_frame: base_link

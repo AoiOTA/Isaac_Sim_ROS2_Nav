@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_odometry</name>
   <version>0.1.0</version>
-  <description>Wheel odometry and bounded raw-to-corrected IMU calibration.</description>
+  <description>Wheel odometry, IMU calibration, and visual-depth conversion.</description>
   <maintainer email="liang_yibo@hdu.edu.cn">AoiOTA</maintainer>
   <license>Apache-2.0</license>
 
@@ -13,6 +13,7 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
   <exec_depend>rclcpp_components</exec_depend>
   <exec_depend>rf2o_laser_odometry</exec_depend>
   <exec_depend>rclpy</exec_depend>

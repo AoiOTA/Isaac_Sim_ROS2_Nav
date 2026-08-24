@@ -21,11 +21,13 @@ setup(
     zip_safe=True,
     maintainer='AoiOTA',
     maintainer_email='liang_yibo@hdu.edu.cn',
-    description='Wheel odometry and bounded raw-to-corrected IMU calibration.',
+    description='Wheel odometry, IMU calibration, and visual-depth conversion.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
+            'depth_float_to_uint16 = '
+            'robot_odometry.depth_float_to_uint16_node:main',
             'imu_yaw_calibrator = '
             'robot_odometry.imu_calibration_node:main',
             'wheel_odometry_node = robot_odometry.wheel_odometry_node:main',

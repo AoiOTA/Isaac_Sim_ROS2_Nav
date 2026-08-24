@@ -2951,3 +2951,32 @@
   navigation stopped before the boundary probe, zero nonzero `/cmd_vel_sim`
   after that stop boundary, both raw costmaps present, and collision retained
   over any late route success while unowned processes remain untouched.
+
+## 2026-08-24 — cuVSLAM 32FC1-to-16UC1 shadow repair
+
+- Goal/hypothesis: isolate the cuVSLAM15 FLOAT32 depth GPU path after valid
+  320x180 RGB8/32FC1 metre input, official-equivalent parameters, and mono8
+  input all reproduced CUDA `invalid argument(1)` with zero visual output.
+- Change: one fixed SensorData BestEffort queue-10 node converts contiguous
+  little-endian 32FC1 metres to header-preserving 16UC1 millimetres; invalids
+  become zero. cuVSLAM consumes the converted topic with scale 1000; all other
+  camera, tracking, TF, stamp, and sync settings are unchanged. Shadow remains
+  default OFF and isolated from EKF/navigation/control.
+- Canonical gate: explicit shadow enable now requires fresh finite visual odom
+  and healthy official status before the episode dispatcher; fatal status or
+  timeout stops before reset/goal. Camera recorder queues are depth 100 with a
+  512 MiB cache, raw+converted depth retention, and exact rosbag2 transport
+  loss log retention. The prior bag's 707/837 depth count was accompanied by
+  exactly 130 transport losses; it is not evidence of an 8.445 Hz publisher.
+- Exact replay: fresh empty domain 231, 30 seconds of the original failed
+  camera/TF/clock MCAP subset. Tracker initialized once; CUDA invalid argument
+  0; failed track 0; converted depth/visual odom/healthy status each 215;
+  fatal status 0; finite and strictly monotonic outputs; visual TF 0. Evidence:
+  `/tmp/v6_cuvslam_uint16_replay.rQgJAD`.
+- Validation: full `robot_odometry` plus runtime-script suite **108 passed**
+  (focused selection **16 passed**); isolated build **2 packages finished**;
+  Python lint/docstyle, shell syntax/compilation, and diff checks passed. The
+  installed launch/converter produced the replay result above.
+- Verdict: **REPLAY PASS, DEFAULT OFF, ONE R2 LIVE DIAGNOSTIC NEXT**. No Isaac,
+  reset, route goal, navigation, fusion, or formal qualification was run or
+  claimed by this amendment.

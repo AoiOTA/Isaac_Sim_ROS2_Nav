@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -28,6 +29,8 @@ RUN_V6_LOW_OBSTACLES = (
 RUN_KUJIALE_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_kujiale_4x20_isaac.sh'
 RUN_V6_R5_SESSION = (
     REPOSITORY_ROOT / 'scripts' / 'v6_reset_cold_boundary_r5_session.sh')
+VISUAL_SHADOW_GATE = (
+    REPOSITORY_ROOT / 'scripts' / 'v6_visual_shadow_pregoal_gate.py')
 RUN_V6_RIVERMARK = REPOSITORY_ROOT / 'scripts' / 'run_v6_rivermark.sh'
 SAVE_MAP = REPOSITORY_ROOT / 'scripts' / 'save_map.sh'
 SETUP_ROS_ENV = REPOSITORY_ROOT / 'scripts' / 'setup_ros_env.sh'
@@ -364,6 +367,67 @@ def test_ros_stack_visual_odometry_shadow_is_default_off_and_conditional():
     assert source.count("'visual_odometry.launch.py'") == 1
 
 
+def _load_visual_shadow_gate():
+    spec = importlib.util.spec_from_file_location(
+        'v6_visual_shadow_pregoal_gate', VISUAL_SHADOW_GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_visual_shadow_gate_passes_only_with_odom_and_healthy_status():
+    gate = _load_visual_shadow_gate()
+
+    assert gate.gate_exit_code(
+        valid_odometry=True,
+        healthy_status=True,
+        fatal_status=False,
+        timed_out=False,
+    ) == 0
+    assert gate.gate_exit_code(
+        valid_odometry=True,
+        healthy_status=False,
+        fatal_status=False,
+        timed_out=True,
+    ) == 2
+    assert gate.gate_exit_code(
+        valid_odometry=True,
+        healthy_status=True,
+        fatal_status=True,
+        timed_out=False,
+    ) == 2
+
+
+def test_visual_shadow_gate_validates_official_messages():
+    gate = _load_visual_shadow_gate()
+    odometry = gate.Odometry()
+    odometry.header.stamp.sec = 1
+    status = gate.VisualSlamStatus()
+    status.vo_state = 1
+
+    assert gate.odometry_is_fresh_and_finite(odometry)
+    assert gate.status_classification(status) == 'healthy'
+
+    odometry.pose.pose.position.x = float('nan')
+    status.vo_state = 2
+    assert not gate.odometry_is_fresh_and_finite(odometry)
+    assert gate.status_classification(status) == 'fatal'
+
+
+def test_visual_shadow_gate_failure_precedes_all_reset_and_goal_dispatch():
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    gate_start = source.index('STAGE="visual_shadow_pregoal"')
+    gate_failure = source.index(
+        'visual shadow pre-goal health gate failed', gate_start)
+    episodes = source.index('STAGE="episodes"', gate_failure)
+    guarded_prefix = source[gate_start:episodes]
+
+    assert gate_start < gate_failure < episodes
+    assert 'run_v6_formal_episode.sh' not in guarded_prefix
+    assert '/simulation/reset' not in guarded_prefix
+    assert '/bio_nav/route_goal' not in guarded_prefix
+
+
 def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
     scripts = tmp_path / 'scripts'
     (scripts / 'lib').mkdir(parents=True)
@@ -462,9 +526,15 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'visual_odometry_shadow_enabled:=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}',
         '/camera/front/image_raw',
         '/camera/front/depth/image_raw',
+        '/camera/front/depth/image_uint16',
         '/camera/front/camera_info',
         '/visual/odom_shadow',
         '/visual/status',
+        '--max-cache-size 536870912',
+        '--topics "${RECORD_TOPICS[@]}"',
+        'V6_VISUAL_ODOMETRY_WARMUP_SEC:-45',
+        'visual_shadow_pregoal.json',
+        'rosbag_transport_loss.log',
         '/local_costmap/costmap_raw',
         '/global_costmap/costmap_raw',
     ):
@@ -478,6 +548,28 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
             '# ---------------------------------------------------------------- recorder', 1)[0]
     assert 'runtime_profile:=estimated_m0' in bridge_arguments
     assert 'module2_enabled:=false' not in bridge_arguments
+
+
+def test_v6_r5_camera_recorder_uses_bounded_sensor_queues_and_cache():
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    qos_text = source.split("cat > \"${QOS_FILE}\" <<'QOS'", 1)[1].split(
+        '\nQOS', 1)[0]
+    profiles = yaml.safe_load(qos_text)
+
+    for topic in (
+        '/camera/front/image_raw',
+        '/camera/front/camera_info',
+        '/camera/front/depth/image_raw',
+        '/camera/front/depth/image_uint16',
+    ):
+        assert profiles[topic] == {
+            'reliability': 'best_effort',
+            'durability': 'volatile',
+            'history': 'keep_last',
+            'depth': 100,
+        }
+    assert '--max-cache-size 536870912' in source
+    assert 'Number of messages lost on the transport layer:' in source
 
 
 def test_v6_r5_failure_stops_owned_navigation_before_delayed_probe():

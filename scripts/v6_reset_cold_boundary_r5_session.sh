@@ -58,6 +58,7 @@ V6_COGNITIVE_GRAPH_MODE="${V6_COGNITIVE_GRAPH_MODE:-gvg}"
 V6_LOW_OBSTACLES_ENABLED="${V6_LOW_OBSTACLES_ENABLED:-false}"
 V6_DYNAMIC_ACTORS_ENABLED="${V6_DYNAMIC_ACTORS_ENABLED:-false}"
 V6_VISUAL_ODOMETRY_SHADOW_ENABLED="${V6_VISUAL_ODOMETRY_SHADOW_ENABLED:-false}"
+V6_VISUAL_ODOMETRY_WARMUP_SEC="${V6_VISUAL_ODOMETRY_WARMUP_SEC:-45}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M3_INSTALL="${M3}/ros2_ws/install_r5"
@@ -164,10 +165,22 @@ _cleanup_children() {
   done
 }
 
+_capture_rosbag_transport_loss() {
+  local source_log="${LOGS}/rosbag.log"
+  local retained_log="${PROV}/rosbag_transport_loss.log"
+  [[ -f "${source_log}" ]] || return 0
+  if ! grep -E "Number of messages lost on the transport layer:" \
+      "${source_log}" > "${retained_log}"; then
+    echo "No transport-layer loss warning reported by rosbag2 recorder." \
+      > "${retained_log}"
+  fi
+}
+
 _stop() {
   local reason="$1"
   _log_stage "STOP" "${reason}"
   _cleanup_children
+  _capture_rosbag_transport_loss
   {
     echo "# V6 reset cold-boundary R5 — STOP"
     echo
@@ -349,6 +362,7 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "low_obstacles_enabled=${V6_LOW_OBSTACLES_ENABLED}"
   echo "dynamic_actors_enabled=${V6_DYNAMIC_ACTORS_ENABLED}"
   echo "visual_odometry_shadow_enabled=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}"
+  echo "visual_odometry_warmup_sec=${V6_VISUAL_ODOMETRY_WARMUP_SEC}"
   echo "mission=G1->G2->G3->G4->G5->G1"
   if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
     cat "${SNAP}/SNAPSHOT_SHAS.txt"
@@ -397,17 +411,22 @@ cat > "${QOS_FILE}" <<'QOS'
   reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 10
+  depth: 100
 /camera/front/camera_info:
   reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 10
+  depth: 100
 /camera/front/depth/image_raw:
   reliability: best_effort
   durability: volatile
   history: keep_last
-  depth: 10
+  depth: 100
+/camera/front/depth/image_uint16:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
 /scan:
   reliability: best_effort
   durability: volatile
@@ -501,6 +520,7 @@ if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
   RECORD_TOPICS+=(
     /camera/front/image_raw
     /camera/front/depth/image_raw
+    /camera/front/depth/image_uint16
     /camera/front/camera_info
     /visual/odom_shadow
     /visual/status
@@ -510,8 +530,9 @@ start_bg rosbag ros2 bag record \
   --storage mcap \
   --node-name r5_session_recorder \
   --qos-profile-overrides-path "${QOS_FILE}" \
+  --max-cache-size 536870912 \
   -o "${RUN_DIR}/rosbag/r5_session" \
-  "${RECORD_TOPICS[@]}"
+  --topics "${RECORD_TOPICS[@]}"
 sleep 8
 grep -q "Subscribed to topic '/ground_truth/odom'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /ground_truth/odom; see logs/rosbag.log"
@@ -526,11 +547,24 @@ for required_topic in /flatscan /localization_result \
 done
 if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
   for required_topic in /camera/front/image_raw \
-      /camera/front/depth/image_raw /camera/front/camera_info \
+      /camera/front/depth/image_raw /camera/front/depth/image_uint16 \
+      /camera/front/camera_info \
       /visual/odom_shadow /visual/status; do
     grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
       _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
   done
+fi
+
+# A requested shadow is diagnostic-only, but a dead diagnostic must not let a
+# physical reset or route goal proceed silently.
+if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
+  STAGE="visual_shadow_pregoal"
+  if ! python3 "${M3}/scripts/v6_visual_shadow_pregoal_gate.py" \
+      --timeout-sec "${V6_VISUAL_ODOMETRY_WARMUP_SEC}" \
+      --output-json "${PROV}/visual_shadow_pregoal.json" \
+      > "${LOGS}/visual_shadow_pregoal.log" 2>&1; then
+    _stop "visual shadow pre-goal health gate failed; no reset or goal dispatched"
+  fi
 fi
 
 # ---------------------------------------------------------------- episodes
@@ -620,6 +654,7 @@ done
 # ---------------------------------------------------------------- finalize
 STAGE="finalize"
 stop_bg rosbag
+_capture_rosbag_transport_loss
 ros2 bag info "${RUN_DIR}/rosbag/r5_session" \
   > "${PROV}/r5_session_bag_info.txt" 2>&1 || true
 _cleanup_children

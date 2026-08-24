@@ -2,7 +2,7 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch_ros.actions import ComposableNodeContainer
+from launch_ros.actions import ComposableNodeContainer, Node
 from launch_ros.descriptions import ComposableNode
 
 
@@ -12,6 +12,12 @@ def generate_launch_description():
         / 'config'
         / 'cuvslam_rgbd_shadow.yaml'
     )
+    depth_converter = Node(
+        package='robot_odometry',
+        executable='depth_float_to_uint16',
+        name='depth_float_to_uint16',
+        output='screen',
+    )
     visual_slam = ComposableNode(
         package='isaac_ros_visual_slam',
         plugin='nvidia::isaac_ros::visual_slam::VisualSlamNode',
@@ -20,7 +26,7 @@ def generate_launch_description():
         remappings=[
             ('visual_slam/image_0', '/camera/front/image_raw'),
             ('visual_slam/camera_info_0', '/camera/front/camera_info'),
-            ('visual_slam/depth_0', '/camera/front/depth/image_raw'),
+            ('visual_slam/depth_0', '/camera/front/depth/image_uint16'),
             ('visual_slam/tracking/odometry', '/visual/odom_shadow'),
             ('visual_slam/status', '/visual/status'),
         ],
@@ -33,4 +39,4 @@ def generate_launch_description():
         composable_node_descriptions=[visual_slam],
         output='screen',
     )
-    return LaunchDescription([container])
+    return LaunchDescription([depth_converter, container])
