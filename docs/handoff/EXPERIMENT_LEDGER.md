@@ -3164,3 +3164,24 @@
 - Verdict: **AXIS_FIX_CONFIRMED_AND_KEEP_OFF**. Commit the input contract but
   do not promote. Next bounded task is the corrected-axis 476--479 s
   geometry/sensor-density collapse; no unrelated tuning.
+
+## 2026-08-24 — User-requested V6 goal stop
+
+- Stop boundary, not completion: pre-doc worktree HEADs were Integration
+  `2578366c350fee741ca2e97cd846d5741b48eb68`, Module3
+  `4c27b1c38c33c4aff88f1673a9387d0abb3a2309`, and Module2
+  `c18bd9ea7c69b4cc44e4226a7e37d6e1b803de30`; remote branches were already
+  synchronized. Global/project AGENTS were installed.
+- Phase 1A is complete and Phase 1B has live interface PASS evidence. Phase 1C
+  still fails at G2 from estimated x/y drift/collision; the R2 assembly repair
+  fixed independent geometry, not odometry. The safety runner now stops owned
+  navigation immediately and the latest failed run records both raw costmaps.
+- cuVSLAM uint16 is functional but no better than EKF in actual x/y
+  (**KEEP_SHADOW_OFF**). FAST-LIO/Ouster sensor, adapter, port, and +90-degree
+  axis contract work, but later geometry degenerates (**KEEP_OFF**). RF2O is
+  OFF; moving global Grid and yaw-guard promotion are REJECT/OFF.
+- Resume with exact-sync true stereo preflight then stereo+IMU cuVSLAM VIO
+  shadow, or a newly evidenced LIO geometry change; A/B the selected x/y in an
+  experimental EKF before G1-G2 and the full loop. Phases 2-5, formal
+  qualification, and 120 rounds remain undone. See
+  `V6_GOAL_STOP_20260824.md` for exact commits and NAS paths.
