@@ -3205,3 +3205,21 @@
   occurred. Reviewer still owes the bounded 30 s rates/stamps/drop/depth/
   CameraInfo/GPU/RTF check. See
   `V7_3_PHASE1A_STEREO_PRODUCER_20260824.md`.
+
+## 2026-08-24 — V7.3 Phase 1A UDP receive-buffer amendment
+
+- Input: live run `v73_phase1a_stereo_20260824T100039Z` was an
+  **ENGINEERING FAIL**: info was 20 Hz, but left/right RGB and depth were
+  18.68/19.34/13.53 Hz with a 0.4 s maximum depth gap; RTF was 0.9145 and GPU
+  load was 34.5%. Content/frame/calibration/TF checks passed.
+- Change: only the existing UDPv4 Fast DDS transport receive buffer was set to
+  4194304 bytes; builtin transports remain disabled. Camera graph, factory,
+  profile, QoS, tick, resolution, and publisher threading were not changed.
+- Boundary: cumulative `UdpRcvbufErrors` are not run-scoped, so UDP receive
+  loss remains a hypothesis. No live run occurred for this amendment. The next
+  run must apply the same profile through `ISAAC_NAV_FASTDDS_PROFILE`,
+  `FASTRTPS_DEFAULT_PROFILES_FILE`, and
+  `FASTDDS_DEFAULT_PROFILES_FILE` to both producer and subscriber, and capture
+  `/proc/net/snmp` `UdpRcvbufErrors` before/after.
+- Verdict: **CODE/STATIC ONLY; LIVE RECHECK REQUIRED**. See
+  `V7_3_PHASE1A_STEREO_PRODUCER_20260824.md`.

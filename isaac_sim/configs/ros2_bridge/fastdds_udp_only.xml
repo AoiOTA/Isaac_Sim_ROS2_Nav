@@ -10,6 +10,7 @@
     <transport_descriptor>
       <transport_id>isaac_nav_udp_v4</transport_id>
       <type>UDPv4</type>
+      <receiveBufferSize>4194304</receiveBufferSize>
     </transport_descriptor>
   </transport_descriptors>
   <participant profile_name="isaac_nav_udp_only" is_default_profile="true">

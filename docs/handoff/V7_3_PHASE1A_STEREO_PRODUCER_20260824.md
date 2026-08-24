@@ -99,3 +99,34 @@ Reviewer must measure actual rates, pairwise stamps, drop/transport-loss
 counts, depth encoding/alignment, frames, K/R/P matrices, baseline agreement,
 GPU load, and RTF. Do not claim actual 20 Hz, exact stamp equality,
 rectification, or `P_right[3]` until that run passes.
+
+## Live FAIL and UDP receive-buffer amendment
+
+The bounded live run at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1a_stereo_20260824T100039Z`
+is an **ENGINEERING FAIL**: CameraInfo ran at the configured 20 Hz, while
+left RGB, right RGB, and left depth measured 18.68, 19.34, and 13.53 Hz;
+depth gaps reached 0.4 s. RTF was 0.9145 and GPU load was 34.5%. Payload
+stamps were subsets of the CameraInfo time slots. The same deficit reproduced
+for NAS, memory, and per-topic capture, while frame, K/R/P, TF, and depth
+content checks passed.
+
+As one bounded hypothesis, the UDP-only Fast DDS transport now requests a
+4 MiB receive buffer. The camera graph, factory, profile, QoS, tick,
+resolution, and publisher thread are unchanged. Cumulative
+`UdpRcvbufErrors` were elevated, but they were not run-scoped, so this code
+change does **not** establish loopback UDP loss as the root cause and has no
+live PASS evidence.
+
+The next live review must export all three variables below for both the
+producer and subscriber processes, then record `/proc/net/snmp`
+`UdpRcvbufErrors` immediately before and after the bounded run:
+
+```bash
+export ISAAC_NAV_FASTDDS_PROFILE="$PWD/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml"
+export FASTRTPS_DEFAULT_PROFILES_FILE="$ISAAC_NAV_FASTDDS_PROFILE"
+export FASTDDS_DEFAULT_PROFILES_FILE="$ISAAC_NAV_FASTDDS_PROFILE"
+```
+
+Only the run-scoped counter delta together with the repeated topic rates and
+gaps can support or reject this transport-loss hypothesis.

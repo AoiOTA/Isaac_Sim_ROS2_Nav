@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -18,6 +19,9 @@ from isaac_sim.graphs.sensor_graph import lidar_graph_spec
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG = ROOT / "isaac_sim/configs/project.yaml"
 ASSET_ROOT = Path("/home/lyb/isaacsim_assets/Assets/Isaac/6.0")
+FASTDDS_UDP_PROFILE = (
+    ROOT / "isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml"
+)
 
 
 def _environment(**updates: str) -> dict[str, str]:
@@ -27,6 +31,33 @@ def _environment(**updates: str) -> dict[str, str]:
     }
     values.update(updates)
     return values
+
+
+def test_fastdds_udp_only_profile_uses_large_receive_buffer():
+    namespace = {"f": "http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles"}
+    root = ET.parse(FASTDDS_UDP_PROFILE).getroot()
+    udp_transports = [
+        descriptor
+        for descriptor in root.findall(
+            "f:transport_descriptors/f:transport_descriptor", namespace
+        )
+        if descriptor.findtext("f:type", namespaces=namespace) == "UDPv4"
+    ]
+
+    assert len(udp_transports) == 1
+    assert (
+        udp_transports[0].findtext(
+            "f:receiveBufferSize", namespaces=namespace
+        )
+        == "4194304"
+    )
+    assert (
+        root.findtext(
+            "f:participant/f:rtps/f:useBuiltinTransports",
+            namespaces=namespace,
+        )
+        == "false"
+    )
 
 
 def test_default_project_contract_loads_strictly():
