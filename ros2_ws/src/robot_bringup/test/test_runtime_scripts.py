@@ -22,6 +22,7 @@ RUN_RVIZ = REPOSITORY_ROOT / 'scripts' / 'run_rviz.sh'
 RUN_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_isaac.sh'
 RUN_TELEOP = REPOSITORY_ROOT / 'scripts' / 'run_teleop.sh'
 RUN_ROS = REPOSITORY_ROOT / 'scripts' / 'run_ros.sh'
+ROS_STACK_LAUNCH = PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py'
 RUN_V6_LOW_OBSTACLES = (
     REPOSITORY_ROOT / 'scripts' / 'run_v6_kujiale_low_obstacles.sh')
 RUN_KUJIALE_ISAAC = REPOSITORY_ROOT / 'scripts' / 'run_kujiale_4x20_isaac.sh'
@@ -352,6 +353,17 @@ def test_v6_wrapper_is_canonical_phase1_grid_entry():
     assert 'kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml' in source
 
 
+def test_ros_stack_visual_odometry_shadow_is_default_off_and_conditional():
+    source = ROS_STACK_LAUNCH.read_text(encoding='utf-8')
+
+    assert ('DeclareLaunchArgument(\n'
+            '            \'visual_odometry_shadow_enabled\',\n'
+            '            default_value=\'false\'' in source)
+    assert 'if visual_odometry_shadow_enabled:' in source
+    assert "'visual_odometry.launch.py'" in source
+    assert source.count("'visual_odometry.launch.py'") == 1
+
+
 def _v6_wrapper_argv(tmp_path: Path, *arguments: str) -> list[str]:
     scripts = tmp_path / 'scripts'
     (scripts / 'lib').mkdir(parents=True)
@@ -401,9 +413,18 @@ def test_v6_ros_argv_expands_phase1_grid_stable_m0_empty_room(tmp_path):
     assert 'ekf_profile:=wheel_imu' in arguments
     assert 'lidar_odometry_backend:=off' in arguments
     assert 'lidar_odometry_validated:=false' in arguments
+    assert 'visual_odometry_shadow_enabled:=false' in arguments
     assert any(argument.startswith('imu_calibration_params_file:=')
                and argument.endswith('/robot_odometry/config/imu_calibration.yaml')
                for argument in arguments)
+
+
+def test_v6_ros_argv_enables_only_the_explicit_visual_shadow(monkeypatch, tmp_path):
+    monkeypatch.setenv('V6_VISUAL_ODOMETRY_SHADOW_ENABLED', 'true')
+    arguments = _v6_wrapper_argv(tmp_path, 'ros')
+
+    assert arguments.count('visual_odometry_shadow_enabled:=true') == 1
+    assert not any('/visual/odom_shadow' in argument for argument in arguments)
 
 
 def test_v6_production_scripts_have_no_retired_localization_tokens():
@@ -423,6 +444,7 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'V6_COGNITIVE_GRAPH_MODE:-gvg',
         'V6_LOW_OBSTACLES_ENABLED:-false',
         'V6_DYNAMIC_ACTORS_ENABLED:-false',
+        'V6_VISUAL_ODOMETRY_SHADOW_ENABLED:-false',
         'mission=G1->G2->G3->G4->G5->G1',
         '/flatscan /localization_result /bio_nav/localization/status',
         'BIO_NAV_INTEGRATION_ROOT="${I_SRC}"',
@@ -437,6 +459,12 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'KUJIALE_ENVIRONMENT_ROOT="${M3}/isaac_sim/assets/environments/v6_kujiale_clearance_r2"',
         'KUJIALE_SOURCE_USD="/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"',
         'required snapshot file not found:',
+        'visual_odometry_shadow_enabled:=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}',
+        '/camera/front/image_raw',
+        '/camera/front/depth/image_raw',
+        '/camera/front/camera_info',
+        '/visual/odom_shadow',
+        '/visual/status',
     ):
         assert contract in source
     assert source.index('STAGE="asset_materialization"') < source.index(

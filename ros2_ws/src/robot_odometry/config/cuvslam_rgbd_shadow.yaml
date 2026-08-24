@@ -1,0 +1,24 @@
+visual_slam_shadow:
+  ros__parameters:
+    use_sim_time: true
+    tracking_mode: 2
+    num_cameras: 1
+    min_num_images: 1
+    depth_camera_id: 0
+    depth_scale_factor: 1.0
+    camera_optical_frames:
+      - camera_front_optical_frame
+    base_frame: base_link
+    odom_frame: visual_odom_shadow
+    map_frame: visual_map_shadow
+    enable_localization_n_mapping: false
+    enable_slam_visualization: false
+    enable_landmarks_view: false
+    enable_observations_view: false
+    rectified_images: false
+    image_qos: SENSOR_DATA
+    sync_matching_threshold_ms: 10.0
+    image_jitter_threshold_ms: 20.0
+    publish_map_to_odom_tf: false
+    publish_odom_to_base_tf: false
+    override_publishing_stamp: false

@@ -2899,3 +2899,28 @@
   **PASS (offline generation/code/test/build/visual only)**. No live navigation
   or qualification was run; see
   `docs/handoff/V6_KUJIALE_CLEARANCE_R2_20260824.md` for commands and next live.
+
+## 2026-08-24 — Default-OFF Isaac ROS cuVSLAM 4.5 RGB-D Shadow
+
+- Goal: add one passive visual-odometry diagnostic over the existing aligned
+  front RGB-D camera, without fusion, TF publication, planning, safety, or
+  control influence.
+- Change: `robot_odometry` now owns a cuVSLAM RGB-D component launch and exact
+  Shadow YAML. `ros_stack` includes it only when the single default-false
+  `visual_odometry_shadow_enabled` argument is true. The canonical R5 session
+  exposes `V6_VISUAL_ODOMETRY_SHADOW_ENABLED=false` by default and, when true,
+  adds RGB, depth, CameraInfo, `/visual/odom_shadow`, and `/visual/status` to
+  the existing recorder. Raw depth points are not duplicated.
+- Installed contract: Isaac ROS 4.5.0 VisualSlamNode, RGB-D mode 2, one camera,
+  SensorData QoS, `camera_front_optical_frame`, shadow-only map/odom frames,
+  localization/mapping and visualization disabled, both TF publishers false,
+  and output stamp override false. No IMU remap exists.
+- Validation: focused visual/runner tests **9 passed, 35 deselected**; complete
+  owned-package/runtime-script tests **97 passed**; isolated `/tmp` build **2
+  packages finished**; scoped Python lint, shell syntax, launch compilation,
+  and `git diff --check` passed. No Isaac/ROS live preflight or navigation was
+  run, so actual depth encoding/rate/synchronization and visual output remain
+  unverified.
+- Verdict: **PASS (code/static/unit only), DEFAULT OFF**. See
+  `docs/handoff/V6_CUVSLAM_RGBD_SHADOW_20260824.md` for the exact next R2
+  one-episode env and the bounded live STOP conditions.

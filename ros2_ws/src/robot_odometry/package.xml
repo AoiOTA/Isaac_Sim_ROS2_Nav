@@ -9,9 +9,11 @@
 
   <buildtool_depend>ament_python</buildtool_depend>
 
+  <exec_depend>isaac_ros_visual_slam</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>rclcpp_components</exec_depend>
   <exec_depend>rf2o_laser_odometry</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>

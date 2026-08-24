@@ -57,6 +57,7 @@ V6_MODULE2_ENABLED="${V6_MODULE2_ENABLED:-false}"
 V6_COGNITIVE_GRAPH_MODE="${V6_COGNITIVE_GRAPH_MODE:-gvg}"
 V6_LOW_OBSTACLES_ENABLED="${V6_LOW_OBSTACLES_ENABLED:-false}"
 V6_DYNAMIC_ACTORS_ENABLED="${V6_DYNAMIC_ACTORS_ENABLED:-false}"
+V6_VISUAL_ODOMETRY_SHADOW_ENABLED="${V6_VISUAL_ODOMETRY_SHADOW_ENABLED:-false}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
 M3_INSTALL="${M3}/ros2_ws/install_r5"
@@ -123,6 +124,11 @@ mkdir -p "${LOGS}" "${PROV}" "${EPISODES_DIR}"
   && "${V6_LOW_OBSTACLES_ENABLED}" == false \
   && "${V6_DYNAMIC_ACTORS_ENABLED}" == false ]] || {
   echo "Phase 1 requires module2=false, gvg, low-obstacles=false, dynamic-actors=false" >&2
+  exit 64
+}
+[[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == false \
+  || "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]] || {
+  echo "V6_VISUAL_ODOMETRY_SHADOW_ENABLED must be true or false" >&2
   exit 64
 }
 
@@ -342,6 +348,7 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "cognitive_graph_mode=${V6_COGNITIVE_GRAPH_MODE}"
   echo "low_obstacles_enabled=${V6_LOW_OBSTACLES_ENABLED}"
   echo "dynamic_actors_enabled=${V6_DYNAMIC_ACTORS_ENABLED}"
+  echo "visual_odometry_shadow_enabled=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}"
   echo "mission=G1->G2->G3->G4->G5->G1"
   if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
     cat "${SNAP}/SNAPSHOT_SHAS.txt"
@@ -386,6 +393,21 @@ cat > "${QOS_FILE}" <<'QOS'
   durability: volatile
   history: keep_last
   depth: 100
+/camera/front/image_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/camera/front/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
+/camera/front/depth/image_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 10
 /scan:
   reliability: best_effort
   durability: volatile
@@ -426,6 +448,7 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   "imu_calibration_params_file:=${M3}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml" \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
+  visual_odometry_shadow_enabled:=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED} \
   spawn_pose_name:=long_route_start_g1 \
   "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml" \
   "map_file:=${M3}/data/maps/occupancy/v6_kujiale_clearance_r2.yaml" \
@@ -460,22 +483,34 @@ assert_alive bridge
 
 # ---------------------------------------------------------------- recorder
 STAGE="record"
+RECORD_TOPICS=(
+  /clock /joint_states /imu/data_raw /imu/data /wheel/odom /odom
+  /scan /flatscan /localization_result /bio_nav/localization/status
+  /tf /tf_static /ground_truth/odom /simulation/reset_event
+  /simulation/collision /simulation/collision_diagnostics
+  /cmd_vel /cmd_vel_nav /cmd_vel_smoothed /cmd_vel_sim
+  /plan /local_plan /planner_server/transition_event
+  /controller_server/transition_event /velocity_smoother/transition_event
+  /collision_monitor_state /scan_safety
+  /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress
+  /bio_nav/route_goal_complete /bio_nav/route_goal /bio_nav/route_goal_result
+  /bio_nav/route_edge_costs /diagnostics /rosout
+)
+if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
+  RECORD_TOPICS+=(
+    /camera/front/image_raw
+    /camera/front/depth/image_raw
+    /camera/front/camera_info
+    /visual/odom_shadow
+    /visual/status
+  )
+fi
 start_bg rosbag ros2 bag record \
   --storage mcap \
   --node-name r5_session_recorder \
   --qos-profile-overrides-path "${QOS_FILE}" \
   -o "${RUN_DIR}/rosbag/r5_session" \
-  /clock /joint_states /imu/data_raw /imu/data /wheel/odom /odom \
-  /scan /flatscan /localization_result /bio_nav/localization/status \
-  /tf /tf_static /ground_truth/odom /simulation/reset_event \
-  /simulation/collision /simulation/collision_diagnostics \
-  /cmd_vel /cmd_vel_nav /cmd_vel_smoothed /cmd_vel_sim \
-  /plan /local_plan /planner_server/transition_event \
-  /controller_server/transition_event /velocity_smoother/transition_event \
-  /collision_monitor_state /scan_safety \
-  /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress \
-  /bio_nav/route_goal_complete /bio_nav/route_goal /bio_nav/route_goal_result \
-  /bio_nav/route_edge_costs /diagnostics /rosout
+  "${RECORD_TOPICS[@]}"
 sleep 8
 grep -q "Subscribed to topic '/ground_truth/odom'" "${LOGS}/rosbag.log" || \
   _stop "recorder did not subscribe to /ground_truth/odom; see logs/rosbag.log"
@@ -488,6 +523,14 @@ for required_topic in /flatscan /localization_result \
   grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
     _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
 done
+if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
+  for required_topic in /camera/front/image_raw \
+      /camera/front/depth/image_raw /camera/front/camera_info \
+      /visual/odom_shadow /visual/status; do
+    grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
+      _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
+  done
+fi
 
 # ---------------------------------------------------------------- episodes
 STAGE="episodes"

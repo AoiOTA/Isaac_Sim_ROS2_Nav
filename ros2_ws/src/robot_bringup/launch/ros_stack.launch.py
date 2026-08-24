@@ -167,6 +167,13 @@ def _launch_setup(context):
         raise RuntimeError(str(exc)) from exc
     odometry_share = Path(get_package_share_directory('robot_odometry'))
     navigation_share = Path(get_package_share_directory('robot_navigation'))
+    visual_odometry_shadow_value = LaunchConfiguration(
+        'visual_odometry_shadow_enabled').perform(context).strip().lower()
+    if visual_odometry_shadow_value not in {'true', 'false'}:
+        raise RuntimeError(
+            'visual_odometry_shadow_enabled must be true or false')
+    visual_odometry_shadow_enabled = (
+        visual_odometry_shadow_value == 'true')
     ekf_profile = LaunchConfiguration('ekf_profile').perform(context).strip()
     lidar_odometry_backend = LaunchConfiguration(
         'lidar_odometry_backend').perform(context).strip().lower()
@@ -262,6 +269,8 @@ def _launch_setup(context):
         f'cognitive_profile={cognitive_profile.name}, '
         f'module2_enabled={module2_enabled}, '
         f'cognitive_graph_mode={cognitive_graph_mode}, '
+        f'visual_odometry_shadow_enabled='
+        f'{str(visual_odometry_shadow_enabled).lower()}, '
         f'controller_frequency='
         f'{nav2_controller_profile.controller_frequency:g}Hz, '
         f'model_dt={nav2_controller_profile.model_dt:g}s, '
@@ -316,6 +325,13 @@ def _launch_setup(context):
         actions.append(TimerAction(period=1.5, actions=[perception]))
     else:
         actions.append(perception)
+
+    if visual_odometry_shadow_enabled:
+        actions.append(_include(
+            'robot_odometry',
+            'visual_odometry.launch.py',
+            {},
+        ))
 
     if selection.odometry_mode in {'realistic', 'estimated'}:
         normalized_use_sim_time = str(use_sim_time).strip().lower()
@@ -608,6 +624,12 @@ def generate_launch_description():
             'lidar_odometry_backend', default_value='off'),
         DeclareLaunchArgument(
             'lidar_odometry_params_file', default_value=''),
+        DeclareLaunchArgument(
+            'visual_odometry_shadow_enabled',
+            default_value='false',
+            description=(
+                'Start the isolated RGB-D cuVSLAM diagnostic shadow; '
+                'it never feeds EKF, TF, planning, or control')),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument(
             'nav2_profile',
