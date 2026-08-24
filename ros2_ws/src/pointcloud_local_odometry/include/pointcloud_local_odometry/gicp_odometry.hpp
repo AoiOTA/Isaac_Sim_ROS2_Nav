@@ -1,0 +1,68 @@
+#ifndef POINTCLOUD_LOCAL_ODOMETRY__GICP_ODOMETRY_HPP_
+#define POINTCLOUD_LOCAL_ODOMETRY__GICP_ODOMETRY_HPP_
+
+#include <cstddef>
+#include <limits>
+#include <string>
+
+#include <Eigen/Geometry>
+#include <pcl/point_cloud.h>
+#include <pcl/point_types.h>
+
+namespace pointcloud_local_odometry
+{
+
+struct GicpConfig
+{
+  double voxel_leaf_size{0.15};
+  std::size_t min_points{100U};
+  double max_correspondence_distance{1.0};
+  int max_iterations{40};
+  double transformation_epsilon{1.0e-4};
+  double euclidean_fitness_epsilon{1.0e-4};
+  double max_fitness_score{0.25};
+};
+
+struct OdometryResult
+{
+  bool accepted{false};
+  bool initializing{false};
+  bool converged{false};
+  std::size_t raw_points{0U};
+  std::size_t filtered_points{0U};
+  double fitness{std::numeric_limits<double>::quiet_NaN()};
+  std::string reason;
+  Eigen::Isometry3d relative_lidar{Eigen::Isometry3d::Identity()};
+  Eigen::Isometry3d relative_base{Eigen::Isometry3d::Identity()};
+  Eigen::Isometry3d odom_base{Eigen::Isometry3d::Identity()};
+};
+
+class ScanToScanOdometry
+{
+public:
+  using Point = pcl::PointXYZ;
+  using Cloud = pcl::PointCloud<Point>;
+
+  explicit ScanToScanOdometry(GicpConfig config);
+
+  OdometryResult process(
+    const Cloud::ConstPtr & raw_cloud,
+    const Eigen::Isometry3d & base_to_lidar);
+
+  static Eigen::Isometry3d conjugateToBase(
+    const Eigen::Isometry3d & base_to_lidar,
+    const Eigen::Isometry3d & previous_lidar_to_current_lidar);
+
+private:
+  Cloud::Ptr filterCloud(
+    const Cloud::ConstPtr & raw_cloud,
+    OdometryResult & result) const;
+
+  GicpConfig config_;
+  Cloud::Ptr previous_successful_scan_;
+  Eigen::Isometry3d odom_base_{Eigen::Isometry3d::Identity()};
+};
+
+}  // namespace pointcloud_local_odometry
+
+#endif  // POINTCLOUD_LOCAL_ODOMETRY__GICP_ODOMETRY_HPP_
