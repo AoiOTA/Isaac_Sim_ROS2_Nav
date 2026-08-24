@@ -614,6 +614,25 @@ def test_terminal_zero_bursts_while_cancel_future_is_delayed(monkeypatch):
     ]
 
 
+def test_production_types_register_constructible_terminal_zero_message(
+    monkeypatch,
+):
+    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
+    types_start = source.index("self._types = {")
+    types_end = source.index("}", types_start)
+    adapter, _clock, published, _events = _terminal_adapter(
+        monkeypatch,
+        cancel_done_after=0.0,
+        downstream_events=((0.05, False),),
+    )
+
+    assert '"Twist": Twist' in source[types_start:types_end]
+    assert adapter._types["Twist"] is _Twist
+    assert adapter._settle_terminal_zero()
+    assert published
+    assert all(x == 0.0 and z == 0.0 for _stamp, x, z in published)
+
+
 def test_terminal_zero_requires_downstream_zero_after_terminal_start(
     monkeypatch,
 ):

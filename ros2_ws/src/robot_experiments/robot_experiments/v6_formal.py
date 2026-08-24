@@ -749,6 +749,7 @@ class V6FormalNode:
         self._types = {
             "CancelGoal": CancelGoal,
             "PoseStamped": PoseStamped,
+            "Twist": Twist,
             "Trigger": Trigger,
             "Parameter": Parameter,
         }
