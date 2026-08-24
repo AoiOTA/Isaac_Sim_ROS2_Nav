@@ -10,12 +10,16 @@ from isaac_sim.graphs.odometry_graph import build_odometry_graph
 from isaac_sim.graphs.sensor_graph import build_sensor_graphs
 from isaac_sim.graphs.tf_graph import build_tf_graph
 from isaac_sim.src.config import ProjectConfig
+from isaac_sim.src.sensors.sensor_factory import (
+    _load_lidar,
+    resolve_lio_lidar_config,
+)
 
 
 @dataclass(frozen=True)
 class RosGraphHandles:
     control: object
-    sensors: tuple[object, object]
+    sensors: tuple[object, ...]
     tf: object | None
     odometry: object | None
     cameras: tuple[object, ...]
@@ -32,12 +36,24 @@ class RosGraphBuilder:
             odometry = None
         else:
             odometry = build_odometry_graph(self.config)
+        lio_config = None
+        lio_render_product_path = None
+        if self.sensors.lio_lidar is not None:
+            lidar_config = _load_lidar(self.config.files.lidar)
+            lio_config = resolve_lio_lidar_config(
+                lidar_config, self.sensors.lio_lidar.profile_name
+            )
+            lio_render_product_path = (
+                self.sensors.lio_lidar.render_product_path
+            )
         return RosGraphHandles(
             control=build_control_graph(self.config),
             sensors=build_sensor_graphs(
                 self.config,
                 self.sensors.imu_prim_path,
                 self.sensors.lidar_render_product_path,
+                lio_render_product_path,
+                lio_config,
             ),
             tf=(
                 build_tf_graph(self.config)

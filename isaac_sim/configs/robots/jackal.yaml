@@ -66,12 +66,21 @@ controller:
 frames:
   base: base_link
   lidar: lidar_link
+  lio_lidar: lio_lidar_link
   imu: imu_link
   camera: camera_link
 
 static_transforms:
   - parent: base_link
     child: lidar_link
+    translation: [0.120, 0.000, 0.333]
+    rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+
+  # Optional OS1-32 shares the measured physical LiDAR mount pose.  Keeping a
+  # distinct frame prevents its SENSOR-local cloud from being confused with
+  # the rotated 2D RPLIDAR ray generator under lidar_link.
+  - parent: base_link
+    child: lio_lidar_link
     translation: [0.120, 0.000, 0.333]
     rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
 

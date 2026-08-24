@@ -23,6 +23,7 @@ class SensorConfigError(RuntimeError):
 CAMERA_PROFILE_NAMES = (
     "off", "monitoring", "standard", "high_quality", "rgbd_navigation"
 )
+LIO_LIDAR_PROFILE_NAMES = ("off", "OS1_REV6_32ch10hz512res")
 _CAMERA_PROFILE_CONTRACT = {
     "off": (False, 0, 0, 0.0, False),
     "monitoring": (True, 640, 360, 15.0, False),
@@ -129,6 +130,15 @@ class CameraRuntime:
         self._render_product_released = True
 
 
+@dataclass(frozen=True)
+class LioLidarRuntime:
+    profile_name: str
+    sensor: object
+    sensor_prim_path: str
+    render_product: object
+    render_product_path: str
+
+
 @dataclass
 class SensorBundle:
     lidar: object
@@ -138,6 +148,7 @@ class SensorBundle:
     imu: object
     imu_prim_path: str
     cameras: tuple[CameraRuntime, ...]
+    lio_lidar: LioLidarRuntime | None = None
 
     def close_camera_resources(self) -> None:
         """Release render products, then remove dynamically authored Camera prims."""
@@ -463,6 +474,7 @@ def _load_lidar(path) -> dict[str, Any]:
         "motion_compensation",
         "type",
         "qos_profile",
+        "lio",
     }
     reject_unknown(data, allowed, context="lidar config")
     require_keys(data, allowed, context="lidar config")
@@ -501,7 +513,114 @@ def _load_lidar(path) -> dict[str, Any]:
             "RTX LiDAR render_product_resolution must be [1, 1] under "
             "the Isaac Sim 6.0 multi-tick contract"
         )
+
+    lio_keys = {
+        "default_profile",
+        "supported_profile",
+        "sensor_prim",
+        "config",
+        "variant",
+        "tick_rate",
+        "accumulate_outputs",
+        "render_product_resolution",
+        "channels",
+        "horizontal_resolution",
+        "range_m",
+        "topic_name",
+        "frame_id",
+        "output_frame",
+        "motion_compensation",
+        "type",
+        "qos_profile",
+        "output_intensity",
+        "output_timestamp",
+        "output_channel_id",
+    }
+    lio = _require_mapping(data["lio"], lio_keys, context="lidar.lio")
+    if (
+        lio["default_profile"] != "off"
+        or lio["supported_profile"] != "OS1_REV6_32ch10hz512res"
+        or lio["config"] != lio["supported_profile"]
+    ):
+        raise SensorConfigError(
+            "LIO LiDAR profiles must be default-off with the "
+            "OS1_REV6_32ch10hz512res opt-in"
+        )
+    if (
+        not isinstance(lio["sensor_prim"], str)
+        or not lio["sensor_prim"].startswith("/")
+        or str(PurePosixPath(lio["sensor_prim"]).parent).split("/")[-1]
+        != "lio_lidar_link"
+    ):
+        raise SensorConfigError(
+            "LIO LiDAR sensor_prim must be absolute under lio_lidar_link"
+        )
+    if lio["variant"] is not None:
+        raise SensorConfigError("OS1-32 LIO LiDAR variant must be null")
+    lio["tick_rate"] = require_number(
+        lio["tick_rate"], context="lidar.lio.tick_rate", positive=True
+    )
+    lio["render_product_resolution"] = require_vector(
+        lio["render_product_resolution"],
+        2,
+        context="lidar.lio.render_product_resolution",
+    )
+    lio["range_m"] = require_vector(
+        lio["range_m"], 2, context="lidar.lio.range_m"
+    )
+    if (
+        lio["tick_rate"] != 10.0
+        or tuple(lio["render_product_resolution"]) != (1.0, 1.0)
+        or lio["channels"] != 32
+        or lio["horizontal_resolution"] != 512
+        or tuple(lio["range_m"]) != (0.3, 120.0)
+    ):
+        raise SensorConfigError(
+            "OS1-32 LIO profile must be 32 channels, 10 Hz, 512 horizontal, "
+            "and 0.3-120 m"
+        )
+    if (
+        lio["topic_name"] != "/lio/points_raw_isaac"
+        or lio["frame_id"] != "lio_lidar_link"
+        or lio["output_frame"] != "SENSOR"
+        or lio["motion_compensation"] != "NONCOMPENSATED"
+        or lio["type"] != "point_cloud"
+        or lio["qos_profile"] != "sensor_data"
+    ):
+        raise SensorConfigError(
+            "LIO LiDAR must publish SENSOR/NONCOMPENSATED PointCloud2 on "
+            "/lio/points_raw_isaac in lio_lidar_link with SensorData QoS"
+        )
+    for key in (
+        "accumulate_outputs",
+        "output_intensity",
+        "output_timestamp",
+        "output_channel_id",
+    ):
+        if lio[key] is not True:
+            raise SensorConfigError(f"lidar.lio.{key} must be true")
     return data
+
+
+def resolve_lio_lidar_config(
+    lidar_config: dict[str, Any], requested_profile: str | None
+) -> dict[str, Any] | None:
+    """Resolve the only optional RTX LIO profile before Kit starts."""
+
+    lio = lidar_config["lio"]
+    profile = requested_profile or lio["default_profile"]
+    if profile not in LIO_LIDAR_PROFILE_NAMES:
+        raise SensorConfigError(
+            f"unknown LIO LiDAR profile {profile!r}; "
+            f"available={list(LIO_LIDAR_PROFILE_NAMES)}"
+        )
+    if profile == "off":
+        return None
+    if profile != lio["supported_profile"]:
+        raise SensorConfigError(f"unsupported LIO LiDAR profile {profile!r}")
+    resolved = dict(lio)
+    resolved["profile_name"] = profile
+    return resolved
 
 
 def _load_imu(path) -> dict[str, Any]:
@@ -616,9 +735,15 @@ def resolve_camera_selection(
 
 
 class SensorFactory:
-    def __init__(self, config: ProjectConfig, camera_profile: str | None = None):
+    def __init__(
+        self,
+        config: ProjectConfig,
+        camera_profile: str | None = None,
+        lio_lidar_profile: str | None = None,
+    ):
         self.config = config
         self.camera_profile = camera_profile
+        self.lio_lidar_profile = lio_lidar_profile
 
     def create_all(self) -> SensorBundle:
         """Create sensors after SimulationApp and required extensions are active."""
@@ -630,6 +755,9 @@ class SensorFactory:
             camera_config,
             self.camera_profile,
             headless=self.config.simulation.headless,
+        )
+        lio_config = resolve_lio_lidar_config(
+            lidar_config, self.lio_lidar_profile
         )
 
         import carb.settings
@@ -694,6 +822,62 @@ class SensorFactory:
         if not render_product_path:
             raise SensorConfigError("RTX LiDAR render product creation returned an empty path")
 
+        lio_runtime = None
+        if lio_config is not None:
+            lio_lidar = Lidar.create(
+                path=lio_config["sensor_prim"],
+                config=lio_config["config"],
+                variant=lio_config["variant"],
+                tick_rate=lio_config["tick_rate"],
+                accumulate_outputs=bool(lio_config["accumulate_outputs"]),
+                attributes={
+                    "omni:sensor:Core:outputFrameOfReference": lio_config[
+                        "output_frame"
+                    ],
+                    "omni:sensor:Core:outputMotionCompensationState": lio_config[
+                        "motion_compensation"
+                    ],
+                },
+            )
+            if len(lio_lidar.paths) != 1:
+                raise SensorConfigError(
+                    f"expected one LIO RTX LiDAR prim, got {list(lio_lidar.paths)}"
+                )
+            lio_prim_path = str(lio_lidar.paths[0])
+            lio_prim = lio_lidar.prims[0]
+            for attribute, expected in (
+                ("omni:sensor:Core:outputFrameOfReference", "SENSOR"),
+                (
+                    "omni:sensor:Core:outputMotionCompensationState",
+                    "NONCOMPENSATED",
+                ),
+            ):
+                observed = str(lio_prim.GetAttribute(attribute).Get())
+                if observed != expected:
+                    raise SensorConfigError(
+                        f"LIO LiDAR {lio_prim_path} {attribute} is {observed!r}, "
+                        f"expected {expected!r}"
+                    )
+            lio_render_product = rep.create.render_product(
+                lio_prim_path,
+                resolution=tuple(
+                    int(value)
+                    for value in lio_config["render_product_resolution"]
+                ),
+            )
+            lio_render_product_path = str(lio_render_product.path)
+            if not lio_render_product_path:
+                raise SensorConfigError(
+                    "LIO RTX LiDAR render product creation returned an empty path"
+                )
+            lio_runtime = LioLidarRuntime(
+                profile_name=lio_config["profile_name"],
+                sensor=lio_lidar,
+                sensor_prim_path=lio_prim_path,
+                render_product=lio_render_product,
+                render_product_path=lio_render_product_path,
+            )
+
         from isaacsim.sensors.experimental.physics import IMU
 
         filters = imu_config["filter_widths"]
@@ -716,6 +900,7 @@ class SensorFactory:
             imu=imu,
             imu_prim_path=imu_config["sensor_prim"],
             cameras=cameras,
+            lio_lidar=lio_runtime,
         )
 
     def _create_camera(self, selection: CameraSelection) -> CameraRuntime:

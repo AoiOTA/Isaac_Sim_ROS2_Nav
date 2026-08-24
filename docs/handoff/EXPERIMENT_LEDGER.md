@@ -3032,3 +3032,30 @@
   local map across teleport. No Isaac Ouster/adapter, valid LIO odometry,
   fusion, Grid/Nav2/control influence, live navigation, or qualification was
   produced. See `V6_FAST_LIO2_JAZZY_SHADOW_20260824.md`.
+
+## 2026-08-24 — Default-OFF Isaac OS1-32 producer and strict adapter
+
+- Goal: add only the sensor/adapter preflight path required by the committed
+  FAST-LIO2 shadow, without replacing the existing 2D RPLIDAR `/scan` or
+  starting/fusing LIO.
+- Producer: one default-off `off/OS1_REV6_32ch10hz512res` selection. Opt-in is
+  32 channels, 10 Hz, 512 horizontal, 0.3-120 m, SENSOR/NONCOMPENSATED on
+  `/lio/points_raw_isaac` in `lio_lidar_link`, with intensity, timestamp, and
+  channel ID metadata. Off creates no OS1 sensor, Render Product, or graph.
+- Adapter: SensorData QoS, no TF/deskew/sort; strictly requires finite XYZ,
+  uint32 `channel_id` in `0..31`, and absolute-ns `timestamp` as count-2
+  uint32. It publishes ordered `x/y/z/intensity/ring/t` on `/lio/points_raw`,
+  with relative uint32 ns `t` and first-point absolute header stamp.
+- Frames: identity rotations; base->LIO `[0.120,0,0.333]`, base->IMU
+  `[0.012,0.002,0.067]`, hence IMU->LIO `[0.108,-0.002,0.266]` m.
+- Validation: focused static/unit **28 passed**; isolated `/tmp` build finished
+  rf2o + robot_odometry; installed robot_odometry **73 passed**. No Isaac/ROS
+  live run was authorized for this task agent, so actual profile loading,
+  fields, points, rings, timestamps, cadence, orientation, and adapted output
+  remain unverified.
+- STOP risk: the installed OS1 asset authors channel IDs `1..32`; actual GMO
+  output must be measured. If the raw topic is not directly `0..31`, or fields
+  are absent/empty, stop rather than normalize or fabricate data.
+- Verdict: **PASS (implementation/build/unit only), DEFAULT OFF; SENSOR-ONLY
+  LIVE PREFLIGHT REQUIRED BEFORE FAST-LIO2**. See
+  `V6_ISAAC_OUSTER_ADAPTER_20260824.md`.

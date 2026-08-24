@@ -14,6 +14,7 @@ from isaac_sim.src.yaml_utils import load_mapping, require_vector
 
 _STRUCTURE_EDGES = (
     ("base_link", "lidar_link"),
+    ("base_link", "lio_lidar_link"),
     ("base_link", "imu_link"),
     ("base_link", "camera_link"),
     ("camera_link", "camera_front_link"),

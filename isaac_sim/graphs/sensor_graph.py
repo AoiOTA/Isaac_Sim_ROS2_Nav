@@ -89,8 +89,64 @@ def lidar_graph_spec(config: ProjectConfig, render_product_path: str) -> GraphSp
     return GraphSpec("/World/Graphs/Lidar", nodes, connections, values)
 
 
-def build_sensor_graphs(config: ProjectConfig, imu_prim: str, render_product_path: str):
-    return (
+def lio_lidar_graph_spec(
+    config: ProjectConfig,
+    render_product_path: str,
+    lio_config: dict[str, object],
+) -> GraphSpec:
+    """Publish the optional SENSOR-local OS1 cloud with required metadata."""
+
+    qos = load_qos_profiles(config.files.qos)
+    nodes = (
+        ("OnPlaybackTick", "omni.graph.action.OnPlaybackTick"),
+        ("PointCloudConfig", "isaacsim.ros2.bridge.ROS2RtxLidarPointCloudConfig"),
+        ("PointCloudPublisher", "isaacsim.ros2.bridge.ROS2RtxLidarHelper"),
+    )
+    connections = (
+        ("OnPlaybackTick.outputs:tick", "PointCloudPublisher.inputs:execIn"),
+        (
+            "PointCloudConfig.outputs:selectedMetadata",
+            "PointCloudPublisher.inputs:selectedMetadata",
+        ),
+    )
+    values = (
+        ("PointCloudConfig.inputs:outputIntensity", True),
+        ("PointCloudConfig.inputs:outputTimestamp", True),
+        ("PointCloudConfig.inputs:outputChannelId", True),
+        ("PointCloudPublisher.inputs:renderProductPath", render_product_path),
+        ("PointCloudPublisher.inputs:type", "point_cloud"),
+        ("PointCloudPublisher.inputs:topicName", lio_config["topic_name"]),
+        ("PointCloudPublisher.inputs:frameId", lio_config["frame_id"]),
+        ("PointCloudPublisher.inputs:nodeNamespace", config.ros2.namespace),
+        ("PointCloudPublisher.inputs:queueSize", 5),
+        ("PointCloudPublisher.inputs:qosProfile", qos["sensor_data"]),
+        ("PointCloudPublisher.inputs:useSystemTime", False),
+        ("PointCloudPublisher.inputs:resetSimulationTimeOnStop", False),
+    )
+    return GraphSpec("/World/Graphs/LioLidar", nodes, connections, values)
+
+
+def build_sensor_graphs(
+    config: ProjectConfig,
+    imu_prim: str,
+    render_product_path: str,
+    lio_render_product_path: str | None = None,
+    lio_config: dict[str, object] | None = None,
+):
+    graphs = [
         materialize_graph(core_sensor_graph_spec(config, imu_prim)),
         materialize_graph(lidar_graph_spec(config, render_product_path)),
-    )
+    ]
+    if lio_render_product_path is not None:
+        if lio_config is None:
+            raise ValueError(
+                "LIO LiDAR graph requires its resolved configuration"
+            )
+        graphs.append(
+            materialize_graph(
+                lio_lidar_graph_spec(
+                    config, lio_render_product_path, lio_config
+                )
+            )
+        )
+    return tuple(graphs)

@@ -27,7 +27,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
-from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
+from isaac_sim.graphs.sensor_graph import (
+    core_sensor_graph_spec,
+    lidar_graph_spec,
+    lio_lidar_graph_spec,
+)
 from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
 from isaac_sim.src.bridge.tf_ownership import expected_tf_owners
 from isaac_sim.src.config import (
@@ -52,10 +56,12 @@ from isaac_sim.src.robot.articulation_runtime import (
 )
 from isaac_sim.src.sensors.sensor_factory import (
     CAMERA_PROFILE_NAMES,
+    LIO_LIDAR_PROFILE_NAMES,
     _load_camera,
     _load_imu,
     _load_lidar,
     resolve_camera_selection,
+    resolve_lio_lidar_config,
 )
 from isaac_sim.src.stage.asset_validator import validate_robot_articulation
 from isaac_sim.src.stage.asset_validator import validate_sensor_frames
@@ -265,6 +271,14 @@ def _parser() -> argparse.ArgumentParser:
         help="front Camera publication profile selected before Isaac starts",
     )
     parser.add_argument(
+        "--lio-lidar-profile",
+        choices=LIO_LIDAR_PROFILE_NAMES,
+        help=(
+            "optional FAST-LIO2 input producer profile selected before Isaac "
+            "starts; defaults to the configured off profile"
+        ),
+    )
+    parser.add_argument(
         "--environment-usd",
         type=str,
         help=(
@@ -461,7 +475,8 @@ def _apply_cli_overrides(args: argparse.Namespace) -> None:
 def validate_configuration(
     config: ProjectConfig,
     camera_profile: str | None = None,
-) -> tuple[object, object, object]:
+    lio_lidar_profile: str | None = None,
+) -> tuple[object, object, object, object]:
     """Validate configuration without importing USD/Kit modules."""
 
     config.require_runtime_paths()
@@ -477,6 +492,7 @@ def validate_configuration(
         require_map_calibration(selected_pose, "map-frame Ground Truth publication")
 
     lidar = _load_lidar(config.files.lidar)
+    lio_config = resolve_lio_lidar_config(lidar, lio_lidar_profile)
     imu = _load_imu(config.files.imu)
     camera_selection = resolve_camera_selection(
         _load_camera(config.files.camera),
@@ -489,6 +505,12 @@ def validate_configuration(
         core_sensor_graph_spec(config, str(imu["sensor_prim"])),
         lidar_graph_spec(config, "/Render/ValidationProduct"),
     ]
+    if lio_config is not None:
+        specifications.append(
+            lio_lidar_graph_spec(
+                config, "/Render/LioValidationProduct", lio_config
+            )
+        )
     if config.simulation.structure_tf_source == "isaac":
         specifications.append(structure_tf_graph_spec(config))
     if config.simulation.odometry_mode == "ideal":
@@ -502,7 +524,7 @@ def validate_configuration(
         config.simulation.structure_tf_source,
     )
     dynamic_scenario = load_dynamic_scenario(config.files.dynamic_obstacles)
-    return selected_pose, dynamic_scenario, camera_selection
+    return selected_pose, dynamic_scenario, camera_selection, lio_config
 
 
 def validate_composed_stage(config: ProjectConfig, stage: object) -> None:
@@ -527,15 +549,18 @@ def validate_composed_stage(config: ProjectConfig, stage: object) -> None:
     validate_sensor_frames(stage, config.robot.base_link_prim)
 
 
-def validate_project(config: ProjectConfig) -> tuple[object, object, object]:
+def validate_project(config: ProjectConfig) -> tuple[object, object, object, object]:
     """Perform complete validation for the no-Kit ``--validate-only`` path."""
 
-    selected_pose, dynamic_scenario, camera_selection = validate_configuration(
-        config
-    )
+    (
+        selected_pose,
+        dynamic_scenario,
+        camera_selection,
+        lio_config,
+    ) = validate_configuration(config)
     stage = SceneComposer(config).compose(save=False)
     validate_composed_stage(config, stage)
-    return selected_pose, dynamic_scenario, camera_selection
+    return selected_pose, dynamic_scenario, camera_selection, lio_config
 
 
 def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
@@ -589,6 +614,7 @@ def run(
     r2d2_collision_bounds_config_path: Path | None = None,
     imu_regime_phase_trace_path: Path | None = None,
     imu_regime_diagnostic_config_path: Path = V6_IMU_REGIME_DIAGNOSTIC_CONFIG,
+    lio_config: object = None,
 ) -> None:
     configure_process_environment(config)
 
@@ -740,6 +766,11 @@ def run(
             "third_person_camera_enabled", camera_enabled, read_only
         )
         node.declare_parameter(
+            "lio_lidar_profile",
+            "off" if lio_config is None else lio_config["profile_name"],
+            read_only,
+        )
+        node.declare_parameter(
             "third_person_camera_prim_path",
             (
                 f"{config.robot.base_link_prim}/"
@@ -809,6 +840,9 @@ def run(
         sensors = SensorFactory(
             config,
             camera_profile=camera_selection.profile.name,
+            lio_lidar_profile=(
+                None if lio_config is None else lio_config["profile_name"]
+            ),
         ).create_all()
         if sensors.cameras:
             from isaac_sim.src.experiment.paired_appearance import (
@@ -2720,8 +2754,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             config, files=replace(config.files, dynamic_obstacles=obstacle_config)
         )
     configure_process_environment(config)
-    selected_pose, dynamic_scenario, camera_selection = validate_configuration(
-        config, args.camera_profile
+    (
+        selected_pose,
+        dynamic_scenario,
+        camera_selection,
+        lio_config,
+    ) = validate_configuration(
+        config, args.camera_profile, args.lio_lidar_profile
     )
     if args.dynamic_obstacles is not None:
         dynamic_scenario = replace(
@@ -2789,6 +2828,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             f"spawn={config.spawn.selected}, "
             f"dynamic_obstacles={dynamic_scenario.enabled}, "
             f"third_person_camera={config.third_person_camera.enabled}, "
+            f"lio_lidar={('off' if lio_config is None else lio_config['profile_name'])}, "
             f"{calibration})"
         )
         return 0
@@ -2817,6 +2857,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             else args.imu_regime_phase_trace.expanduser().resolve()
         ),
         args.imu_regime_diagnostic_config.expanduser().resolve(),
+        lio_config=lio_config,
     )
     return 0
 

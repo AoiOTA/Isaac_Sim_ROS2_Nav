@@ -61,6 +61,7 @@ def validate_sensor_frames(stage, base_link_prim: str) -> None:
 
     required = (
         f"{base_link_prim}/lidar_link",
+        f"{base_link_prim}/lio_lidar_link",
         f"{base_link_prim}/imu_link",
         f"{base_link_prim}/camera_link",
         f"{base_link_prim}/camera_link/camera_front_link/camera_front_optical_frame",

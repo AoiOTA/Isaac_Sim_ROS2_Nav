@@ -21,7 +21,7 @@ setup(
     zip_safe=True,
     maintainer='AoiOTA',
     maintainer_email='liang_yibo@hdu.edu.cn',
-    description='Wheel odometry, IMU calibration, and visual-depth conversion.',
+    description='Wheel odometry, IMU calibration, and sensor schema adapters.',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={
@@ -30,6 +30,8 @@ setup(
             'robot_odometry.depth_float_to_uint16_node:main',
             'imu_yaw_calibrator = '
             'robot_odometry.imu_calibration_node:main',
+            'ouster_pointcloud_adapter = '
+            'robot_odometry.ouster_pointcloud_adapter:main',
             'wheel_odometry_node = robot_odometry.wheel_odometry_node:main',
         ],
     },

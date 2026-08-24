@@ -3,7 +3,7 @@
 <package format="3">
   <name>robot_odometry</name>
   <version>0.1.0</version>
-  <description>Wheel odometry, IMU calibration, and visual-depth conversion.</description>
+  <description>Wheel odometry, IMU calibration, and sensor schema adapters.</description>
   <maintainer email="liang_yibo@hdu.edu.cn">AoiOTA</maintainer>
   <license>Apache-2.0</license>
 
