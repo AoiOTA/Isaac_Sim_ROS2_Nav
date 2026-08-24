@@ -21,7 +21,8 @@ class SensorConfigError(RuntimeError):
 
 
 CAMERA_PROFILE_NAMES = (
-    "off", "monitoring", "standard", "high_quality", "rgbd_navigation"
+    "off", "monitoring", "standard", "high_quality", "rgbd_navigation",
+    "stereo_vio",
 )
 LIO_LIDAR_PROFILE_NAMES = ("off", "OS1_REV6_32ch10hz512res")
 LIO_LIDAR_AUX_OUTPUT_LEVEL = "FULL"
@@ -31,6 +32,7 @@ _CAMERA_PROFILE_CONTRACT = {
     "standard": (True, 640, 480, 20.0, False),
     "high_quality": (True, 1280, 720, 30.0, False),
     "rgbd_navigation": (True, 320, 180, 10.0, True),
+    "stereo_vio": (True, 640, 360, 20.0, False),
 }
 
 
@@ -93,7 +95,13 @@ class CameraConfig:
 @dataclass(frozen=True)
 class CameraSelection:
     profile: CameraProfile
-    camera: CameraDefinition | None
+    cameras: tuple[CameraDefinition, ...]
+
+    @property
+    def camera(self) -> CameraDefinition | None:
+        """Compatibility view for callers that only need the first camera."""
+
+        return self.cameras[0] if self.cameras else None
 
 
 @dataclass
@@ -333,10 +341,18 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         encoding=False,
     )
     if not rgb.enabled or rgb.encoding != "rgb8":
-        raise SensorConfigError("front Camera RGB must be enabled with rgb8 encoding")
-    if not camera_info.enabled or not depth.enabled or not depth_points.enabled:
+        raise SensorConfigError("Camera RGB must be enabled with rgb8 encoding")
+    if not camera_info.enabled:
+        raise SensorConfigError("CameraInfo must be enabled")
+    expected_depth = {
+        "front": (True, True),
+        "left": (True, False),
+        "right": (False, False),
+    }[name]
+    if (depth.enabled, depth_points.enabled) != expected_depth:
         raise SensorConfigError(
-            "CameraInfo, raw depth, and depth points must be enabled"
+            f"camera {name} raw depth/depth-points enabled contract is "
+            f"{expected_depth}"
         )
     if len({rgb.qos_profile, camera_info.qos_profile, depth.qos_profile, depth_points.qos_profile}) != 1:
         raise SensorConfigError("Camera streams must use the same QoS profile")
@@ -373,14 +389,14 @@ def _load_camera_definition(name: str, value: Any) -> CameraDefinition:
         optics["projection"], context=f"camera.cameras.{name}.optics.projection"
     )
     if projection != "perspective":
-        raise SensorConfigError("front Camera projection must be perspective")
+        raise SensorConfigError("Camera projection must be perspective")
     vertical_aperture_mode = _require_string(
         optics["vertical_aperture_mode"],
         context=f"camera.cameras.{name}.optics.vertical_aperture_mode",
     )
     if vertical_aperture_mode != "match_profile_aspect_ratio":
         raise SensorConfigError(
-            "front Camera vertical aperture must match the selected profile "
+            "Camera vertical aperture must match the selected profile "
             "aspect ratio"
         )
 
@@ -733,9 +749,12 @@ def _load_camera(path) -> CameraConfig:
         for name in CAMERA_PROFILE_NAMES
     }
     raw_cameras = _require_mapping(
-        data["cameras"], {"front"}, context="camera.cameras"
+        data["cameras"], {"front", "left", "right"}, context="camera.cameras"
     )
-    cameras = {"front": _load_camera_definition("front", raw_cameras["front"])}
+    cameras = {
+        name: _load_camera_definition(name, raw_cameras[name])
+        for name in ("front", "left", "right")
+    }
     default_profile = _require_string(
         data["default_profile"], context="camera.default_profile"
     )
@@ -758,6 +777,34 @@ def _load_camera(path) -> CameraConfig:
         )
     if not front.enabled:
         raise SensorConfigError("primary front Camera must be enabled")
+    canonical_stereo = {
+        "left": (
+            "camera_left_link", "camera_left_optical_frame", "/camera/left"
+        ),
+        "right": (
+            "camera_right_link", "camera_right_optical_frame", "/camera/right"
+        ),
+    }
+    for name, expected in canonical_stereo.items():
+        camera = cameras[name]
+        observed = (camera.link_frame, camera.optical_frame, camera.node_namespace)
+        if observed != expected or not camera.enabled:
+            raise SensorConfigError(
+                f"canonical {name} Camera frame/namespace contract is {expected}"
+            )
+    left = cameras["left"]
+    right = cameras["right"]
+    stereo_imaging_contract = (
+        "clipping_range_m", "projection", "focal_length_mm",
+        "horizontal_aperture_mm", "vertical_aperture_mode",
+        "focus_distance_m", "exposure_enabled", "exposure_time_s",
+        "exposure_responsivity", "exposure_f_stop",
+    )
+    if any(
+        getattr(left, field) != getattr(right, field)
+        for field in stereo_imaging_contract
+    ):
+        raise SensorConfigError("left/right Camera optics and exposure must match")
     return CameraConfig(
         enabled=_require_bool(data["enabled"], context="camera.enabled"),
         default_profile=default_profile,
@@ -787,8 +834,13 @@ def resolve_camera_selection(
         raise SensorConfigError(
             f"camera profile {name!r} requested while camera.enabled=false"
         )
-    camera = config.cameras[config.primary_camera] if profile.enabled else None
-    return CameraSelection(profile=profile, camera=camera)
+    if not profile.enabled:
+        cameras: tuple[CameraDefinition, ...] = ()
+    elif profile.name == "stereo_vio":
+        cameras = (config.cameras["left"], config.cameras["right"])
+    else:
+        cameras = (config.cameras[config.primary_camera],)
+    return CameraSelection(profile=profile, cameras=cameras)
 
 
 class SensorFactory:
@@ -938,8 +990,11 @@ class SensorFactory:
         )
 
         cameras: tuple[CameraRuntime, ...] = ()
-        if camera_selection.camera is not None:
-            cameras = (self._create_camera(camera_selection),)
+        if camera_selection.cameras:
+            cameras = tuple(
+                self._create_camera(camera_selection, definition)
+                for definition in camera_selection.cameras
+            )
 
         return SensorBundle(
             lidar=lidar,
@@ -952,12 +1007,15 @@ class SensorFactory:
             lio_lidar=lio_runtime,
         )
 
-    def _create_camera(self, selection: CameraSelection) -> CameraRuntime:
+    def _create_camera(
+        self,
+        selection: CameraSelection,
+        definition: CameraDefinition,
+    ) -> CameraRuntime:
         """Author one RTX Camera and one owned Render Product for both ROS streams."""
 
-        if selection.camera is None or not selection.profile.enabled:
+        if definition not in selection.cameras or not selection.profile.enabled:
             raise SensorConfigError("cannot create a disabled Camera selection")
-        definition = selection.camera
         profile = selection.profile
         expected_prefix = f"{self.config.robot.runtime_prim_path}/"
         if not definition.sensor_prim.startswith(expected_prefix):
@@ -1056,7 +1114,7 @@ class SensorFactory:
                 definition.sensor_prim,
                 resolution=(profile.width, profile.height),
                 force_new=True,
-                name="CameraFront",
+                name=f"Camera{definition.name.title()}",
                 render_vars=["LdrColor"],
             )
             render_product_path = str(render_product.path)
@@ -1064,7 +1122,8 @@ class SensorFactory:
                 render_product_path
             ).IsValid():
                 raise SensorConfigError(
-                    "front Camera render product creation returned an invalid path"
+                    f"{definition.name} Camera render product creation returned "
+                    "an invalid path"
                 )
         except Exception:
             if render_product is not None:
@@ -1082,14 +1141,20 @@ class SensorFactory:
             camera_prim_path=definition.sensor_prim,
             render_product=render_product,
             render_product_path=render_product_path,
-            graph_path="/World/Graphs/ROS2CameraFront",
+            graph_path=(
+                "/World/Graphs/ROS2StereoCamera"
+                if profile.name == "stereo_vio"
+                else "/World/Graphs/ROS2CameraFront"
+            ),
             optical_frame=definition.optical_frame,
             node_namespace=definition.node_namespace,
             rgb=definition.rgb,
             camera_info=definition.camera_info,
             depth=definition.depth,
             depth_points=definition.depth_points,
-            depth_points_enabled=profile.depth_points_enabled,
+            depth_points_enabled=(
+                profile.depth_points_enabled and definition.depth_points.enabled
+            ),
             width=profile.width,
             height=profile.height,
             publish_rate_hz=profile.publish_rate_hz,

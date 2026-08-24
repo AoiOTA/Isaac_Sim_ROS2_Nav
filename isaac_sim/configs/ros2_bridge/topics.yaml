@@ -11,6 +11,11 @@ camera_front_image: /camera/front/image_raw
 camera_front_info: /camera/front/camera_info
 camera_front_depth: /camera/front/depth/image_raw
 camera_front_depth_points: /camera/front/depth/points
+camera_left_image: /camera/left/image_raw
+camera_left_info: /camera/left/camera_info
+camera_left_depth: /camera/left/depth/image_raw
+camera_right_image: /camera/right/image_raw
+camera_right_info: /camera/right/camera_info
 tf: /tf
 tf_static: /tf_static
 frames:
@@ -21,3 +26,7 @@ frames:
   imu: imu_link
   camera_front: camera_front_link
   camera_front_optical: camera_front_optical_frame
+  camera_left: camera_left_link
+  camera_left_optical: camera_left_optical_frame
+  camera_right: camera_right_link
+  camera_right_optical: camera_right_optical_frame

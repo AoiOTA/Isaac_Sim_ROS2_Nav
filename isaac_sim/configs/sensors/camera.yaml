@@ -31,6 +31,12 @@ profiles:
     height: 180
     publish_rate_hz: 10.0
     depth_points_enabled: true
+  stereo_vio:
+    enabled: true
+    width: 640
+    height: 360
+    publish_rate_hz: 20.0
+    depth_points_enabled: false
 
 cameras:
   front:
@@ -71,6 +77,98 @@ cameras:
       # The low RGB-D validation box starts lateral to the robot's initial
       # heading.  A ~105 degree horizontal FOV observes it while turning to
       # G1, before the local controller reaches the collision envelope.
+      focal_length_mm: 8.0
+      horizontal_aperture_mm: 21.0
+      vertical_aperture_mode: match_profile_aspect_ratio
+      focus_distance_m: 4.0
+    exposure:
+      enabled: true
+      time_s: 0.02
+      responsivity: 1.10267
+      f_stop: 5.0
+    rviz:
+      enabled: true
+      transport: raw
+      reliability: best_effort
+      queue_size: 2
+  left:
+    enabled: true
+    sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_left_link/camera_left_optical_frame/camera_left_sensor
+    link_frame: camera_left_link
+    optical_frame: camera_left_optical_frame
+    node_namespace: /camera/left
+    rgb:
+      enabled: true
+      topic_name: image_raw
+      encoding: rgb8
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    camera_info:
+      enabled: true
+      topic_name: camera_info
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    depth:
+      enabled: true
+      topic_name: depth/image_raw
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    depth_points:
+      enabled: false
+      topic_name: depth/points
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    clipping_range_m:
+      near: 0.05
+      far: 100.0
+    optics:
+      projection: perspective
+      focal_length_mm: 8.0
+      horizontal_aperture_mm: 21.0
+      vertical_aperture_mode: match_profile_aspect_ratio
+      focus_distance_m: 4.0
+    exposure:
+      enabled: true
+      time_s: 0.02
+      responsivity: 1.10267
+      f_stop: 5.0
+    rviz:
+      enabled: true
+      transport: raw
+      reliability: best_effort
+      queue_size: 2
+  right:
+    enabled: true
+    sensor_prim: /World/Robots/Jackal/base_link/camera_link/camera_right_link/camera_right_optical_frame/camera_right_sensor
+    link_frame: camera_right_link
+    optical_frame: camera_right_optical_frame
+    node_namespace: /camera/right
+    rgb:
+      enabled: true
+      topic_name: image_raw
+      encoding: rgb8
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    camera_info:
+      enabled: true
+      topic_name: camera_info
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    depth:
+      enabled: false
+      topic_name: depth/image_raw
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    depth_points:
+      enabled: false
+      topic_name: depth/points
+      qos_profile: camera_sensor_data
+      queue_size: 2
+    clipping_range_m:
+      near: 0.05
+      far: 100.0
+    optics:
+      projection: perspective
       focal_length_mm: 8.0
       horizontal_aperture_mm: 21.0
       vertical_aperture_mode: match_profile_aspect_ratio

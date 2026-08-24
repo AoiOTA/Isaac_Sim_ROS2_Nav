@@ -32,6 +32,11 @@ def load_topics(path: str | Path) -> dict[str, Any]:
         "camera_front_info",
         "camera_front_depth",
         "camera_front_depth_points",
+        "camera_left_image",
+        "camera_left_info",
+        "camera_left_depth",
+        "camera_right_image",
+        "camera_right_info",
         "tf",
         "tf_static",
         "frames",
@@ -45,10 +50,11 @@ def load_topics(path: str | Path) -> dict[str, Any]:
     frames = data["frames"]
     if not isinstance(frames, dict) or set(frames) != {
         "odom", "base", "lidar", "rtx_world", "imu", "camera_front",
-        "camera_front_optical"
+        "camera_front_optical", "camera_left", "camera_left_optical",
+        "camera_right", "camera_right_optical"
     }:
         raise ValueError(
-            "ROS frame contract must define odom/base/lidar/rtx_world/imu/camera_front/camera_front_optical"
+            "ROS frame contract must define the core and front/left/right Camera frames"
         )
     if any(not isinstance(value, str) or not value or value.startswith("/") for value in frames.values()):
         raise ValueError("ROS frame IDs must be non-empty relative names")

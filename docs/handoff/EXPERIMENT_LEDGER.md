@@ -3185,3 +3185,23 @@
   experimental EKF before G1-G2 and the full loop. Phases 2-5, formal
   qualification, and 120 rounds remain undone. See
   `V6_GOAL_STOP_20260824.md` for exact commits and NAS paths.
+
+## 2026-08-24 — V7.3 Phase 1A stereo producer implementation
+
+- Change: added opt-in `stereo_vio` at 640x360/configured 20 Hz. Explicit
+  selection creates only left/right RTX Cameras and independent Render
+  Products with identical optics/exposure. One shared-tick graph publishes
+  both RGB streams, left aligned depth from the left RGB Render Product, and
+  both CameraInfo messages through one paired helper. Right depth is absent.
+- ROS schema: `/camera/left/{image_raw,depth/image_raw,camera_info}` in
+  `camera_left_optical_frame`; `/camera/right/{image_raw,camera_info}` in
+  `camera_right_optical_frame`. Existing front topics and profile defaults are
+  unchanged.
+- Static result: source-first/no-cache camera plus graph focused tests
+  `21 passed`; Python compilation and diff check passed. The unchanged robot
+  transforms statically retain `+0.060/-0.060 m` and the paired-helper
+  `P_right[3] = -fx * 0.12` expectation.
+- Verdict: **CODE/STATIC PASS; LIVE UNVERIFIED**. No Isaac/ROS/VIO/Nav2 run
+  occurred. Reviewer still owes the bounded 30 s rates/stamps/drop/depth/
+  CameraInfo/GPU/RTF check. See
+  `V7_3_PHASE1A_STEREO_PRODUCER_20260824.md`.
