@@ -1,0 +1,9 @@
+imu_vio_calibrator:
+  ros__parameters:
+    use_sim_time: true
+    input_topic: /imu/vio_raw
+    output_topic: /imu/vio
+    yaw_scale: 0.9294
+    yaw_bias_rad_s: 0.0
+    yaw_variance: 0.0001
+    diagnostic_interval: 1000

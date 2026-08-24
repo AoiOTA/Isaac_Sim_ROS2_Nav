@@ -96,3 +96,4 @@ def test_motion_assist_remains_after_the_physics_sensor_step():
         and call_path(item.func) in {"app.update", "motion_assist.update", "ground_truth.update"}
     }
     assert calls["app.update"] < calls["motion_assist.update"] < calls["ground_truth.update"]
+    assert "physics_dt=1.0 / config.simulation.rendering_hz" in source

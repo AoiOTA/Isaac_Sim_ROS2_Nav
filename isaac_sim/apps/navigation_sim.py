@@ -499,10 +499,19 @@ def validate_configuration(
         camera_profile,
         headless=config.simulation.headless,
     )
+    physics_hz, rendering_hz = resolve_simulation_timing(
+        camera_selection.profile.name
+    )
     load_articulation_physics_config(config.files.robot)
     specifications = [
         control_graph_spec(config),
-        core_sensor_graph_spec(config, str(imu["sensor_prim"])),
+        core_sensor_graph_spec(
+            config,
+            str(imu["sensor_prim"]),
+            vio_imu_enabled=(camera_selection.profile.name == "stereo_vio"),
+            physics_hz=physics_hz,
+            legacy_imu_hz=float(imu["publish_rate"]),
+        ),
         lidar_graph_spec(config, "/Render/ValidationProduct"),
     ]
     if lio_config is not None:
@@ -574,7 +583,19 @@ def _enable_extensions(app: object, extension_ids: Sequence[str]) -> None:
     app.update()
 
 
+def resolve_simulation_timing(camera_profile: str) -> tuple[float, float]:
+    """Return the fixed physics/render cadence for one resolved Camera profile."""
+
+    if camera_profile == "stereo_vio":
+        return 120.0, 60.0
+    return 60.0, 60.0
+
+
 def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
+    min_frame_rate = int(round(min(
+        config.simulation.physics_hz,
+        config.simulation.rendering_hz,
+    )))
     return {
         "headless": config.simulation.headless,
         "renderer": config.simulation.renderer,
@@ -587,7 +608,7 @@ def _simulation_app_config(config: ProjectConfig) -> dict[str, object]:
             "--/rtx/hydra/supportMultiTickRate=true",
             (
                 "--/persistent/simulation/minFrameRate="
-                f"{int(round(config.simulation.physics_hz))}"
+                f"{min_frame_rate}"
             ),
         ],
     }
@@ -923,14 +944,16 @@ def run(
             node,
             robot,
             articulation_settings,
-            physics_dt=1.0 / config.simulation.physics_hz,
+            physics_dt=1.0 / config.simulation.rendering_hz,
             topic_name="/cmd_vel_sim",
             clock=lambda: float(SimulationManager.get_simulation_time()),
         )
 
         from isaac_sim.src.bridge.ros_graph_builder import RosGraphBuilder
 
-        graph_handles = RosGraphBuilder(config, sensors).build()
+        graph_handles = RosGraphBuilder(
+            config, sensors, camera_selection
+        ).build()
         graph_references: dict[str, object] = {"all": graph_handles}
         if graph_handles.odometry is not None:
             graph_references["odometry"] = graph_handles.odometry
@@ -2143,6 +2166,8 @@ def run(
             f"dynamic_config={config.files.dynamic_obstacles.name}, "
             f"ground_truth={config.ground_truth.enabled}, "
             f"camera={camera_selection.profile.name}, "
+            f"physics_hz={config.simulation.physics_hz:.1f}, "
+            f"rendering_hz={config.simulation.rendering_hz:.1f}, "
             f"appearance={appearance_manager.active_profile_id}, "
             f"pacing={config.simulation.pacing_mode}, "
             f"target_rtf={config.simulation.target_realtime_factor:.3f}, "
@@ -2761,6 +2786,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         lio_config,
     ) = validate_configuration(
         config, args.camera_profile, args.lio_lidar_profile
+    )
+    physics_hz, rendering_hz = resolve_simulation_timing(
+        camera_selection.profile.name
+    )
+    config = replace(
+        config,
+        simulation=replace(
+            config.simulation,
+            physics_hz=physics_hz,
+            rendering_hz=rendering_hz,
+        ),
     )
     if args.dynamic_obstacles is not None:
         dynamic_scenario = replace(

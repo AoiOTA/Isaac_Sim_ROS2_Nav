@@ -506,19 +506,25 @@ def test_three_source_lidar_fusion_requires_explicit_validation():
         assert "'lidar_odometry_validated': LaunchConfiguration(" in source
 
 
-def test_estimated_stack_has_one_raw_imu_calibrator_before_unchanged_ekf_input():
+def test_estimated_stack_keeps_legacy_imu_and_conditionally_adds_vio():
     launch_dir = PACKAGE_ROOT / 'launch'
     core_source = (launch_dir / 'ros_stack.launch.py').read_text()
     ekf_config = (
         PACKAGE_ROOT.parent / 'robot_localization_config' / 'config'
         / 'ekf_wheel_imu.yaml').read_text()
 
-    assert core_source.count("executable='imu_yaw_calibrator'") == 1
+    assert core_source.count("executable='imu_yaw_calibrator'") == 2
     assert core_source.index("executable='imu_yaw_calibrator'") < (
         core_source.index("'robot_localization_config',\n                'ekf.launch.py'"))
     assert "'imu_calibration_params_file'," in core_source
+    assert ("'vio_imu_enabled',\n            default_value='false'"
+            in core_source)
+    assert "if vio_imu_enabled:" in core_source
+    assert "name='imu_vio_calibrator'" in core_source
+    assert "imu_vio_calibration.yaml" in core_source
     assert "imu0: /imu/data" in ekf_config
     assert "/imu/data_raw" not in ekf_config
+    assert "/imu/vio" not in ekf_config
     for wrapper_name in ('navigation_bringup', 'localization_bringup'):
         wrapper = (launch_dir / f'{wrapper_name}.launch.py').read_text()
         assert "DeclareLaunchArgument(\n            'imu_calibration_params_file'" in wrapper

@@ -17,6 +17,8 @@ class ImuCalibrationNode(Node):
 
     def __init__(self):
         super().__init__('imu_yaw_calibrator')
+        self.declare_parameter('input_topic', '/imu/data_raw')
+        self.declare_parameter('output_topic', '/imu/data')
         self.declare_parameter('yaw_scale', 0.9294)
         self.declare_parameter('yaw_bias_rad_s', 0.0)
         self.declare_parameter('yaw_variance', 1.0e-4)
@@ -35,10 +37,13 @@ class ImuCalibrationNode(Node):
             raise ValueError('diagnostic_interval must be positive')
 
         self._publisher = self.create_publisher(
-            Imu, '/imu/data', qos_profile_sensor_data)
+            Imu,
+            str(self.get_parameter('output_topic').value),
+            qos_profile_sensor_data,
+        )
         self._subscription = self.create_subscription(
             Imu,
-            '/imu/data_raw',
+            str(self.get_parameter('input_topic').value),
             self._raw_callback,
             qos_profile_sensor_data,
         )

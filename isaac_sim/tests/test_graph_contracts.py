@@ -155,6 +155,95 @@ def test_core_sensors_publish_once_per_physics_step():
     assert dict(spec.values)["PublishIMU.inputs:topicName"] == "/imu/data_raw"
 
 
+def test_vio_imu_uses_one_reader_shared_data_and_two_legacy_gates():
+    spec = core_sensor_graph_spec(
+        _config(),
+        "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
+        vio_imu_enabled=True,
+        physics_hz=120.0,
+        legacy_imu_hz=60.0,
+    )
+    spec.validate()
+    nodes = dict(spec.nodes)
+    values = dict(spec.values)
+    connections = set(spec.connections)
+
+    assert list(nodes.values()).count(
+        "isaacsim.sensors.physics.IsaacReadIMU"
+    ) == 1
+    assert nodes["LegacyImuGate"] == (
+        "isaacsim.core.nodes.IsaacSimulationGate"
+    )
+    assert nodes["JointStateGate"] == (
+        "isaacsim.core.nodes.IsaacSimulationGate"
+    )
+    assert values["LegacyImuGate.inputs:step"] == 2
+    assert values["JointStateGate.inputs:step"] == 2
+    assert values["PublishIMU.inputs:topicName"] == "/imu/data_raw"
+    assert values["PublishVioIMU.inputs:topicName"] == "/imu/vio_raw"
+    assert values["PublishVioIMU.inputs:frameId"] == "imu_link"
+    assert values["PublishVioIMU.inputs:qosProfile"] == (
+        values["PublishIMU.inputs:qosProfile"]
+    )
+    assert (
+        "OnPhysicsStep.outputs:step",
+        "PublishClock.inputs:execIn",
+    ) in connections
+    assert not any(
+        target == "PublishClock.inputs:execIn" and "Gate" in source
+        for source, target in connections
+    )
+    assert (
+        "ReadIMU.outputs:execOut",
+        "PublishVioIMU.inputs:execIn",
+    ) in connections
+    assert (
+        "ReadIMU.outputs:execOut",
+        "LegacyImuGate.inputs:execIn",
+    ) in connections
+    assert (
+        "LegacyImuGate.outputs:execOut",
+        "PublishIMU.inputs:execIn",
+    ) in connections
+    assert (
+        "OnPhysicsStep.outputs:step",
+        "JointStateGate.inputs:execIn",
+    ) in connections
+    assert (
+        "JointStateGate.outputs:execOut",
+        "PublishJointState.inputs:execIn",
+    ) in connections
+    for output, input_name in (
+        ("linAcc", "linearAcceleration"),
+        ("angVel", "angularVelocity"),
+        ("orientation", "orientation"),
+        ("sensorTime", "timeStamp"),
+    ):
+        assert (
+            f"ReadIMU.outputs:{output}",
+            f"PublishIMU.inputs:{input_name}",
+        ) in connections
+        assert (
+            f"ReadIMU.outputs:{output}",
+            f"PublishVioIMU.inputs:{input_name}",
+        ) in connections
+
+
+@pytest.mark.parametrize(
+    ("physics_hz", "legacy_imu_hz"),
+    [(60.0, 60.0), (120.0, 50.0), (121.0, 60.0)],
+)
+def test_vio_imu_rejects_non_120_60_cadence(physics_hz, legacy_imu_hz):
+    with pytest.raises(ValueError, match="physics_hz=120"):
+        core_sensor_graph_spec(
+            _config(),
+            "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
+            vio_imu_enabled=True,
+            physics_hz=physics_hz,
+            legacy_imu_hz=legacy_imu_hz,
+        )
+
+
 def test_core_sensors_materialize_on_demand(monkeypatch):
     spec = core_sensor_graph_spec(
         _config(),
@@ -282,6 +371,7 @@ def test_topic_and_qos_contracts_are_absolute_and_encoded():
     topics = load_topics(ROOT / "isaac_sim/configs/ros2_bridge/topics.yaml")
     qos = load_qos_profiles(ROOT / "isaac_sim/configs/ros2_bridge/qos.yaml")
     assert topics["pointcloud"] == "/lidar/points_raw"
+    assert topics["imu_vio_raw"] == "/imu/vio_raw"
     assert topics["frames"]["base"] == "base_link"
     assert topics["frames"]["rtx_world"] == "rtx_world"
     assert '"reliability":"bestEffort"' in qos["sensor_data"]

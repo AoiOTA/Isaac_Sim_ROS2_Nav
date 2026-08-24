@@ -23,6 +23,7 @@ def load_topics(path: str | Path) -> dict[str, Any]:
         "clock",
         "pointcloud",
         "imu",
+        "imu_vio_raw",
         "joint_states",
         "odom",
         "cmd_vel",

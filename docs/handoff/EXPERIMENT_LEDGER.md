@@ -3243,3 +3243,21 @@
   because the earlier run had no run-scoped UDP counter and did not preserve
   its ad-hoc subscriber implementation. Keep 4 MiB and proceed to the planned
   stereo/VIO consumer smoke; do not change publisher threading.
+
+## 2026-08-24 — V7.3 Phase 1B 120 Hz VIO IMU implementation
+
+- Change: only explicit `stereo_vio` selects physics/render 120/60 Hz. One
+  Isaac IMU reader directly publishes `/imu/vio_raw`; step-2 gates retain
+  legacy `/imu/data_raw` and `/joint_states` at 60 Hz, while `/clock` remains
+  ungated. Other Camera profiles and the legacy graph retain 60/60 behavior.
+- ROS: IMU calibration endpoints are parameters with unchanged legacy
+  defaults. Default-false `vio_imu_enabled` conditionally starts a second
+  calibrator for `/imu/vio_raw -> /imu/vio`; the legacy calibrator and EKF
+  `/imu/data` input remain unchanged.
+- Validation: source-first/no-cache focused tests `87 passed`; isolated
+  target builds completed; isolated package tests reported `350 tests, 0
+  errors, 0 failures, 10 skipped`. No Isaac/ROS/cuVSLAM/Nav2/live run occurred.
+- Verdict: **CODE/STATIC/BUILD PASS; LIVE UNVERIFIED**. Actual 120/60/20 Hz
+  rates, stamps, gravity, yaw, RTF, and transport behavior require the next
+  bounded camera + IMU smoke on a fresh domain no higher than 232. See
+  `V7_3_PHASE1B_VIO_IMU_20260824.md`.

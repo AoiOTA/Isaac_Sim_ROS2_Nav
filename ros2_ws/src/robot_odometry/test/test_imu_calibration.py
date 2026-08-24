@@ -183,3 +183,48 @@ def test_calibrated_default_and_identity_rollback_profiles_are_explicit():
     assert identity['yaw_scale'] == pytest.approx(1.0)
     assert identity['yaw_bias_rad_s'] == calibrated['yaw_bias_rad_s']
     assert identity['yaw_variance'] == calibrated['yaw_variance']
+
+
+def test_node_topics_default_to_legacy_and_accept_parameter_endpoints():
+    source = (
+        PACKAGE_ROOT / 'robot_odometry' / 'imu_calibration_node.py'
+    ).read_text(encoding='utf-8')
+
+    assert "declare_parameter('input_topic', '/imu/data_raw')" in source
+    assert "declare_parameter('output_topic', '/imu/data')" in source
+    assert "str(self.get_parameter('input_topic').value)" in source
+    assert "str(self.get_parameter('output_topic').value)" in source
+    assert "Imu, '/imu/data_raw'" not in source
+    assert "Imu, '/imu/data'" not in source
+
+
+def test_vio_profile_reuses_legacy_calibration_with_separate_topics():
+    legacy = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'imu_calibration.yaml').read_text()
+    )['imu_yaw_calibrator']['ros__parameters']
+    vio = yaml.safe_load(
+        (PACKAGE_ROOT / 'config' / 'imu_vio_calibration.yaml').read_text()
+    )['imu_vio_calibrator']['ros__parameters']
+
+    assert vio['input_topic'] == '/imu/vio_raw'
+    assert vio['output_topic'] == '/imu/vio'
+    for key in (
+        'use_sim_time', 'yaw_scale', 'yaw_bias_rad_s', 'yaw_variance',
+        'diagnostic_interval',
+    ):
+        assert vio[key] == legacy[key]
+
+
+def test_two_calibrator_instances_keep_independent_stamp_state():
+    legacy, legacy_publisher, _ = _adapter()
+    vio, vio_publisher, _ = _adapter()
+
+    ImuCalibrationNode._raw_callback(legacy, _message(2_000_000_000))
+    ImuCalibrationNode._raw_callback(vio, _message(1_000_000_000))
+    ImuCalibrationNode._raw_callback(legacy, _message(1_500_000_000))
+    ImuCalibrationNode._raw_callback(vio, _message(1_500_000_000))
+
+    assert len(legacy_publisher.messages) == 1
+    assert len(vio_publisher.messages) == 2
+    assert legacy._calibration.counters['backward'] == 1
+    assert vio._calibration.counters['backward'] == 0

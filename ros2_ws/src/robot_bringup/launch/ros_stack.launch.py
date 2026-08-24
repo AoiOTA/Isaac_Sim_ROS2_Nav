@@ -138,6 +138,11 @@ def _launch_setup(context):
             'route_graph_file').perform(context),
     )
     use_sim_time = LaunchConfiguration('use_sim_time').perform(context)
+    vio_imu_enabled_value = LaunchConfiguration(
+        'vio_imu_enabled').perform(context).strip().lower()
+    if vio_imu_enabled_value not in {'true', 'false'}:
+        raise RuntimeError('vio_imu_enabled must be true or false')
+    vio_imu_enabled = vio_imu_enabled_value == 'true'
     posegraph_calibration_value = LaunchConfiguration(
         'posegraph_calibration').perform(context).strip().lower()
     if posegraph_calibration_value not in {'true', 'false'}:
@@ -358,6 +363,24 @@ def _launch_setup(context):
                 {'use_sim_time': normalized_use_sim_time == 'true'},
             ],
         ))
+        if vio_imu_enabled:
+            imu_vio_calibration_params_file = (
+                odometry_share / 'config' / 'imu_vio_calibration.yaml'
+            )
+            if not imu_vio_calibration_params_file.is_file():
+                raise RuntimeError(
+                    'VIO IMU calibration params file does not exist: '
+                    f'{imu_vio_calibration_params_file}')
+            actions.append(Node(
+                package='robot_odometry',
+                executable='imu_yaw_calibrator',
+                name='imu_vio_calibrator',
+                output='screen',
+                parameters=[
+                    str(imu_vio_calibration_params_file),
+                    {'use_sim_time': normalized_use_sim_time == 'true'},
+                ],
+            ))
         actions.extend([
             _include(
                 'robot_odometry',
@@ -616,6 +639,10 @@ def generate_launch_description():
             description=(
                 'Raw-to-corrected IMU parameters; defaults to the '
                 'Isaac V6 calibrated profile')),
+        DeclareLaunchArgument(
+            'vio_imu_enabled',
+            default_value='false',
+            description='Start the calibrated /imu/vio stream for stereo VIO'),
         DeclareLaunchArgument('ekf_profile', default_value='wheel_imu'),
         DeclareLaunchArgument(
             'lidar_odometry_validated', default_value='false'),

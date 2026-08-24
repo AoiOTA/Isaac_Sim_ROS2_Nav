@@ -11,6 +11,7 @@ from isaac_sim.graphs.sensor_graph import build_sensor_graphs
 from isaac_sim.graphs.tf_graph import build_tf_graph
 from isaac_sim.src.config import ProjectConfig
 from isaac_sim.src.sensors.sensor_factory import (
+    _load_imu,
     _load_lidar,
     resolve_lio_lidar_config,
 )
@@ -26,9 +27,10 @@ class RosGraphHandles:
 
 
 class RosGraphBuilder:
-    def __init__(self, config: ProjectConfig, sensors):
+    def __init__(self, config: ProjectConfig, sensors, camera_selection):
         self.config = config
         self.sensors = sensors
+        self.camera_selection = camera_selection
 
     def build(self) -> RosGraphHandles:
         if self.config.simulation.odometry_mode == "realistic":
@@ -46,6 +48,10 @@ class RosGraphBuilder:
             lio_render_product_path = (
                 self.sensors.lio_lidar.render_product_path
             )
+        imu_config = _load_imu(self.config.files.imu)
+        vio_imu_enabled = (
+            self.camera_selection.profile.name == "stereo_vio"
+        )
         return RosGraphHandles(
             control=build_control_graph(self.config),
             sensors=build_sensor_graphs(
@@ -54,6 +60,8 @@ class RosGraphBuilder:
                 self.sensors.lidar_render_product_path,
                 lio_render_product_path,
                 lio_config,
+                vio_imu_enabled=vio_imu_enabled,
+                legacy_imu_hz=float(imu_config["publish_rate"]),
             ),
             tf=(
                 build_tf_graph(self.config)

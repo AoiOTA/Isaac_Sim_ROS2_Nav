@@ -7,18 +7,25 @@ from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.src.config import ProjectConfig
 
 
-def core_sensor_graph_spec(config: ProjectConfig, imu_prim: str) -> GraphSpec:
+def core_sensor_graph_spec(
+    config: ProjectConfig,
+    imu_prim: str,
+    *,
+    vio_imu_enabled: bool = False,
+    physics_hz: float = 60.0,
+    legacy_imu_hz: float = 60.0,
+) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
-    nodes = (
+    nodes = [
         ("OnPhysicsStep", "isaacsim.core.nodes.OnPhysicsStep"),
         ("ReadSimTime", "isaacsim.core.nodes.IsaacReadSimulationTime"),
         ("PublishClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
         ("PublishJointState", "isaacsim.ros2.bridge.ROS2PublishJointState"),
         ("ReadIMU", "isaacsim.sensors.physics.IsaacReadIMU"),
         ("PublishIMU", "isaacsim.ros2.bridge.ROS2PublishImu"),
-    )
-    connections = (
+    ]
+    connections = [
         ("OnPhysicsStep.outputs:step", "PublishClock.inputs:execIn"),
         ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
         ("OnPhysicsStep.outputs:step", "PublishJointState.inputs:execIn"),
@@ -29,8 +36,8 @@ def core_sensor_graph_spec(config: ProjectConfig, imu_prim: str) -> GraphSpec:
         ("ReadIMU.outputs:angVel", "PublishIMU.inputs:angularVelocity"),
         ("ReadIMU.outputs:orientation", "PublishIMU.inputs:orientation"),
         ("ReadIMU.outputs:sensorTime", "PublishIMU.inputs:timeStamp"),
-    )
-    values = (
+    ]
+    values = [
         ("PublishClock.inputs:topicName", topics["clock"]),
         ("PublishClock.inputs:queueSize", 1),
         ("PublishClock.inputs:qosProfile", qos["clock"]),
@@ -47,12 +54,81 @@ def core_sensor_graph_spec(config: ProjectConfig, imu_prim: str) -> GraphSpec:
         ("PublishIMU.inputs:nodeNamespace", config.ros2.namespace),
         ("PublishIMU.inputs:queueSize", 5),
         ("PublishIMU.inputs:qosProfile", qos["sensor_data"]),
-    )
+    ]
+    if vio_imu_enabled:
+        if physics_hz <= 0.0 or legacy_imu_hz <= 0.0:
+            raise ValueError(
+                "VIO IMU requires physics_hz=120, legacy_imu_hz=60, "
+                "and an integer cadence of 2"
+            )
+        ratio = physics_hz / legacy_imu_hz
+        cadence = int(round(ratio))
+        if (
+            physics_hz != 120.0
+            or legacy_imu_hz != 60.0
+            or cadence != 2
+            or abs(ratio - cadence) > 1.0e-9
+        ):
+            raise ValueError(
+                "VIO IMU requires physics_hz=120, legacy_imu_hz=60, "
+                "and an integer cadence of 2"
+            )
+        nodes.extend((
+            ("LegacyImuGate", "isaacsim.core.nodes.IsaacSimulationGate"),
+            ("JointStateGate", "isaacsim.core.nodes.IsaacSimulationGate"),
+            ("PublishVioIMU", "isaacsim.ros2.bridge.ROS2PublishImu"),
+        ))
+        connections.remove((
+            "OnPhysicsStep.outputs:step",
+            "PublishJointState.inputs:execIn",
+        ))
+        connections.remove((
+            "ReadIMU.outputs:execOut",
+            "PublishIMU.inputs:execIn",
+        ))
+        connections.extend((
+            (
+                "OnPhysicsStep.outputs:step",
+                "JointStateGate.inputs:execIn",
+            ),
+            (
+                "JointStateGate.outputs:execOut",
+                "PublishJointState.inputs:execIn",
+            ),
+            ("ReadIMU.outputs:execOut", "LegacyImuGate.inputs:execIn"),
+            ("LegacyImuGate.outputs:execOut", "PublishIMU.inputs:execIn"),
+            ("ReadIMU.outputs:execOut", "PublishVioIMU.inputs:execIn"),
+            (
+                "ReadIMU.outputs:linAcc",
+                "PublishVioIMU.inputs:linearAcceleration",
+            ),
+            (
+                "ReadIMU.outputs:angVel",
+                "PublishVioIMU.inputs:angularVelocity",
+            ),
+            (
+                "ReadIMU.outputs:orientation",
+                "PublishVioIMU.inputs:orientation",
+            ),
+            (
+                "ReadIMU.outputs:sensorTime",
+                "PublishVioIMU.inputs:timeStamp",
+            ),
+        ))
+        values.extend((
+            ("LegacyImuGate.inputs:step", cadence),
+            ("JointStateGate.inputs:step", cadence),
+            ("PublishVioIMU.inputs:frameId", topics["frames"]["imu"]),
+            ("PublishVioIMU.inputs:topicName", topics["imu_vio_raw"]),
+            ("PublishVioIMU.inputs:nodeNamespace", config.ros2.namespace),
+            ("PublishVioIMU.inputs:queueSize", 5),
+            ("PublishVioIMU.inputs:qosProfile", qos["sensor_data"]),
+        ))
     return GraphSpec(
         "/World/Graphs/Sensors",
-        nodes,
-        connections,
-        values,
+        tuple(nodes),
+        tuple(connections),
+        tuple(values),
         on_demand=True,
     )
 
@@ -132,9 +208,18 @@ def build_sensor_graphs(
     render_product_path: str,
     lio_render_product_path: str | None = None,
     lio_config: dict[str, object] | None = None,
+    *,
+    vio_imu_enabled: bool = False,
+    legacy_imu_hz: float = 60.0,
 ):
     graphs = [
-        materialize_graph(core_sensor_graph_spec(config, imu_prim)),
+        materialize_graph(core_sensor_graph_spec(
+            config,
+            imu_prim,
+            vio_imu_enabled=vio_imu_enabled,
+            physics_hz=config.simulation.physics_hz,
+            legacy_imu_hz=legacy_imu_hz,
+        )),
         materialize_graph(lidar_graph_spec(config, render_product_path)),
     ]
     if lio_render_product_path is not None:

@@ -2,6 +2,7 @@ schema_version: 1
 clock: /clock
 pointcloud: /lidar/points_raw
 imu: /imu/data_raw
+imu_vio_raw: /imu/vio_raw
 joint_states: /joint_states
 odom: /odom
 cmd_vel: /cmd_vel_sim

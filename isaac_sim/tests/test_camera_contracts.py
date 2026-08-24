@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import os
 from pathlib import Path
 import sys
@@ -12,6 +13,7 @@ from isaac_sim.apps.navigation_sim import (
     _apply_cli_overrides,
     _parser,
     _simulation_app_config,
+    resolve_simulation_timing,
     run,
 )
 from isaac_sim.graphs.camera_graph import (
@@ -437,6 +439,29 @@ def test_simulation_app_enables_supported_multitick_sensor_settings_early():
         "--/rtx/hydra/supportMultiTickRate=true",
         "--/persistent/simulation/minFrameRate=60",
     ]
+
+
+def test_stereo_vio_alone_selects_120hz_physics_and_60hz_rendering():
+    for profile in CAMERA_PROFILE_NAMES:
+        expected = (120.0, 60.0) if profile == "stereo_vio" else (60.0, 60.0)
+        assert resolve_simulation_timing(profile) == expected
+
+
+def test_stereo_vio_min_frame_rate_remains_at_render_cadence():
+    config = _config()
+    physics_hz, rendering_hz = resolve_simulation_timing("stereo_vio")
+    config = replace(
+        config,
+        simulation=replace(
+            config.simulation,
+            physics_hz=physics_hz,
+            rendering_hz=rendering_hz,
+        ),
+    )
+
+    assert _simulation_app_config(config)["extra_args"][-1] == (
+        "--/persistent/simulation/minFrameRate=60"
+    )
 
 
 def test_run_passes_single_gpu_launch_contract_to_simulation_app(monkeypatch):
