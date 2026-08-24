@@ -3550,3 +3550,29 @@
   DEFERRED, NOT PROMOTED**. Phase 1D and Phase 2 are not authorized. Next is
   the canonical independent local-odom alternative lane; keep VIO isolated
   from canonical `/odom` and TF.
+
+## 2026-08-25 — V7.3 Alt-1 independent GICP local-odom shadow
+
+- Change: Module3 commit `9f959fb0a01d3fcc7f03d5906b69d1e8a8cd0aaf`
+  adds only the default-OFF `pointcloud_local_odometry` C++ package. PCL 1.14
+  GICP aligns `/lio/points_raw` current-to-previous successful scans, applies
+  the direct static `base_link <- lio_lidar_link` conjugation, and publishes
+  topic-only `/local_odom/gicp_shadow` plus diagnostic status. It has one
+  SensorDataQoS input, no TF broadcaster, and no wheel/IMU/global/evaluator
+  input or existing bringup/profile connection.
+- Failure semantics: invalid frame/stamp/TF/points, non-convergence, nonfinite
+  result, or excessive fitness publishes `degraded` only and retains the last
+  successful scan. First valid scan publishes identity/`initializing`; process
+  restart is the only reset.
+- Fixed config: voxel `0.15 m`, minimum `100`, correspondence `1.0 m`, `40`
+  iterations, both epsilons `1e-4`, maximum fitness `0.25`, conservative pose
+  covariance, and zero twist with `1e6` diagonal covariance.
+- Validation: clean `/opt/ros/jazzy` isolated build passed at
+  `/tmp/v73_alt1_gicp_final.3GcMgH`; isolated result was `12 tests, 0 errors,
+  0 failures, 0 skipped`. Source-first/no-cache static pytest, launch compile,
+  and diff check passed. PCL emitted only its non-blocking CMP0144 developer
+  warning.
+- Verdict: **IMPLEMENTED / STATIC PASS ONLY**. No ROS/Isaac live, replay,
+  navigation, drift/latency calibration, Phase 1D, promotion, or qualification
+  was run. Next is a fresh reviewer short replay/live shadow; see
+  `V7_3_ALT1_GICP_LOCAL_ODOM_SHADOW_20260825.md`.
