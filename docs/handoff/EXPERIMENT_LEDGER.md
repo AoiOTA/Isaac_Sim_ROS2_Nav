@@ -3500,3 +3500,27 @@
   one bounded human-triggered cancel live check for downstream zero and
   post-zero stability before teardown. Do not claim collision closure, VIO
   promotion, or Phase 1D.
+
+## 2026-08-25 — V7.3 Phase 1C terminal-zero live engineering closure
+
+- First live: the single run on Module3
+  `9fac3b855620a18e9e81eda0009d59f9ae4fb1d6` was **FAIL / INCOMPLETE**.
+  Production terminal settling raised `KeyError: 'Twist'` because `Twist` was
+  not registered; the focused fixture injected it directly and missed the
+  constructor path. NAS:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_terminal_zero_cancel_20260824T174858Z/conclusion.md`.
+- Fix: Module3 `8ac12dbcb363e48589a628ecb5aed47e050d7c59` registered the
+  production type and added constructor-backed coverage; focused tests passed
+  `39`, and the isolated build passed.
+- Final live: `v73_phase1c_terminal_zero_cancel_20260824T181235Z` sent exactly
+  one exact-UUID cancel for `5a6f52481a0f470280f65eedf8cd9521`, with
+  `all_goals=false`; return code was `0`, and collision remained false. Stable
+  downstream zero arrived terminal +`450.854 ms`, followed by `307.636 ms`
+  quiet. Confirmation preceded `episode_result` by `1.765 ms` and Nav2
+  teardown by `182.821 ms`. All four command levels ended at zero; post-zero
+  GT displacement was `2.278 mm` over `6.717 s`. `/cmd_vel_sim` retained its
+  sole owner `/isaac_navigation_sim` when present. NAS:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_terminal_zero_cancel_20260824T181235Z/conclusion.md`.
+- Verdict: **TERMINAL-ZERO ENGINEERING PASS ONLY; NOT FORMAL QUALIFICATION,
+  NOT VIO PROMOTION, AND NOT PHASE 1D AUTHORIZATION**. Return to the Phase 1C
+  VIO accuracy decision; collision closure is not claimed from this cancel.
