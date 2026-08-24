@@ -3,7 +3,11 @@
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import (
+    LaunchConfiguration,
+    PathJoinSubstitution,
+    PythonExpression,
+)
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -11,6 +15,11 @@ from launch_ros.substitutions import FindPackageShare
 def generate_launch_description():
     arguments = (
         ("enabled", "false", "Start the isolated FAST-LIO2 shadow"),
+        (
+            "planar_imu_enabled",
+            "false",
+            "Use the LIO-only planar IMU adapter",
+        ),
         ("use_sim_time", "true", "Use the ROS simulation clock"),
         ("input_cloud_topic", "/lio/points_raw", "Ouster PointCloud2 input"),
         ("input_imu_topic", "/imu/data", "IMU input"),
@@ -32,6 +41,24 @@ def generate_launch_description():
     config = PathJoinSubstitution(
         [FindPackageShare("fast_lio2_ros2"), "config", "ouster_shadow.yaml"]
     )
+    planar_imu_config = PathJoinSubstitution(
+        [FindPackageShare("robot_odometry"), "config", "planar_lio_imu.yaml"]
+    )
+    planar_imu = Node(
+        package="robot_odometry",
+        executable="planar_lio_imu_adapter",
+        name="planar_lio_imu_adapter",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("planar_imu_enabled")),
+        parameters=[planar_imu_config],
+    )
+    selected_imu_topic = PythonExpression([
+        "'/imu/lio' if '",
+        LaunchConfiguration("planar_imu_enabled"),
+        "'.lower() == 'true' else '",
+        LaunchConfiguration("input_imu_topic"),
+        "'",
+    ])
     node = Node(
         package="fast_lio2_ros2",
         executable="fastlio_mapping",
@@ -43,7 +70,7 @@ def generate_launch_description():
             {
                 "use_sim_time": LaunchConfiguration("use_sim_time"),
                 "common.lid_topic": LaunchConfiguration("input_cloud_topic"),
-                "common.imu_topic": LaunchConfiguration("input_imu_topic"),
+                "common.imu_topic": selected_imu_topic,
                 "common.odom_topic": LaunchConfiguration("output_odom_topic"),
                 "common.map_frame": LaunchConfiguration("map_frame"),
                 "common.body_frame": LaunchConfiguration("body_frame"),
@@ -62,4 +89,4 @@ def generate_launch_description():
             },
         ],
     )
-    return LaunchDescription([*declarations, node])
+    return LaunchDescription([*declarations, planar_imu, node])

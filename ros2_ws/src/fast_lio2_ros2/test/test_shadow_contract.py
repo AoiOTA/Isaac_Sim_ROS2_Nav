@@ -77,8 +77,26 @@ def test_launch_description_expands_and_is_default_off():
     }
     nodes = [entity for entity in description.entities if isinstance(entity, Node)]
     assert declarations["enabled"].default_value[0].text == "false"
+    assert declarations["planar_imu_enabled"].default_value[0].text == "false"
     assert declarations["publish_tf"].default_value[0].text == "false"
     assert declarations["input_cloud_topic"].default_value[0].text == "/lio/points_raw"
     assert declarations["output_odom_topic"].default_value[0].text == "/lio/odom_shadow"
-    assert len(nodes) == 1
-    assert nodes[0].condition is not None
+    assert len(nodes) == 2
+    assert all(node.condition is not None for node in nodes)
+
+
+def test_planar_imu_remap_is_explicit_and_diagnostics_are_bounded():
+    launch = _read("launch/shadow.launch.py")
+    assert '"\'/imu/lio\' if \'"' in launch
+    assert 'LaunchConfiguration("input_imu_topic")' in launch
+    assert 'package="robot_odometry"' in launch
+
+    source = _read("src/laserMapping.cpp")
+    assert "scan_begin=%.9f scan_end=%.9f" in source
+    assert "nearest_neighbor=%lu" in source
+    assert "plane_fit=%lu" in source
+    assert "residual=%lu" in source
+    assert "1000000000LL" in source
+    assert 'pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5' in source
+    assert 'esti_plane(pabcd, points_near, 0.1f)' in source
+    assert 'if (s > 0.9)' in source

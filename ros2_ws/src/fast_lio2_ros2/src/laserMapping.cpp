@@ -40,6 +40,7 @@
 #include <csignal>
 #include <chrono>
 #include <cmath>
+#include <algorithm>
 #include <unistd.h>
 #include <so3_math.h>
 #include <rclcpp/rclcpp.hpp>
@@ -659,10 +660,14 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     corr_normvect->clear(); 
     total_residual = 0.0; 
 
+    int nearest_neighbor_rejected = 0;
+    int plane_fit_rejected = 0;
+    int residual_rejected = 0;
+
     /** closest surface search and residual computation **/
     #ifdef MP_EN
         omp_set_num_threads(MP_PROC_NUM);
-        #pragma omp parallel for
+        #pragma omp parallel for reduction(+:nearest_neighbor_rejected,plane_fit_rejected,residual_rejected)
     #endif
     for (int i = 0; i < feats_down_size; i++)
     {
@@ -686,6 +691,10 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
             /** Find the closest surfaces in the map **/
             ikdtree.Nearest_Search(point_world, NUM_MATCH_POINTS, points_near, pointSearchSqDis);
             point_selected_surf[i] = points_near.size() < NUM_MATCH_POINTS ? false : pointSearchSqDis[NUM_MATCH_POINTS - 1] > 5 ? false : true;
+            if (!point_selected_surf[i])
+            {
+                nearest_neighbor_rejected++;
+            }
         }
 
         if (!point_selected_surf[i]) continue;
@@ -706,6 +715,14 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
                 normvec->points[i].intensity = pd2;
                 res_last[i] = abs(pd2);
             }
+            else
+            {
+                residual_rejected++;
+            }
+        }
+        else
+        {
+            plane_fit_rejected++;
         }
     }
     
@@ -725,8 +742,42 @@ void h_share_model(state_ikfom &s, esekfom::dyn_share_datastruct<double> &ekfom_
     if (effct_feat_num < 1)
     {
         ekfom_data.valid = false;
-        std::cerr << "No Effective Points!" << std::endl;
-        // ROS_WARN("No Effective Points! \n");
+        static std::mutex diagnostic_mutex;
+        static rclcpp::Clock diagnostic_clock(RCL_STEADY_TIME);
+        static int64_t last_diagnostic_ns = -1;
+        static uint64_t rejected_scans = 0;
+        static uint64_t rejected_points = 0;
+        static uint64_t nearest_total = 0;
+        static uint64_t plane_total = 0;
+        static uint64_t residual_total = 0;
+        static uint64_t unclassified_total = 0;
+        std::lock_guard<std::mutex> lock(diagnostic_mutex);
+        rejected_scans++;
+        rejected_points += static_cast<uint64_t>(feats_down_size);
+        nearest_total += static_cast<uint64_t>(nearest_neighbor_rejected);
+        plane_total += static_cast<uint64_t>(plane_fit_rejected);
+        residual_total += static_cast<uint64_t>(residual_rejected);
+        const int classified = nearest_neighbor_rejected + plane_fit_rejected + residual_rejected;
+        unclassified_total += static_cast<uint64_t>(std::max(0, feats_down_size - classified));
+        const int64_t now_ns = diagnostic_clock.now().nanoseconds();
+        if (last_diagnostic_ns < 0 || now_ns - last_diagnostic_ns >= 1000000000LL)
+        {
+            RCLCPP_WARN(
+                rclcpp::get_logger("fast_lio2_shadow"),
+                "No Effective Points: scan_begin=%.9f scan_end=%.9f "
+                "rejected_scans=%lu points=%lu nearest_neighbor=%lu "
+                "plane_fit=%lu residual=%lu unclassified=%lu",
+                Measures.lidar_beg_time, lidar_end_time,
+                static_cast<unsigned long>(rejected_scans),
+                static_cast<unsigned long>(rejected_points),
+                static_cast<unsigned long>(nearest_total),
+                static_cast<unsigned long>(plane_total),
+                static_cast<unsigned long>(residual_total),
+                static_cast<unsigned long>(unclassified_total));
+            last_diagnostic_ns = now_ns;
+            rejected_scans = rejected_points = nearest_total = 0;
+            plane_total = residual_total = unclassified_total = 0;
+        }
         return;
     }
 

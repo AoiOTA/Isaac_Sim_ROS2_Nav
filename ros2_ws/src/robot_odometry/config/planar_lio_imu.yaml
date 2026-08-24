@@ -1,0 +1,6 @@
+planar_lio_imu_adapter:
+  ros__parameters:
+    use_sim_time: true
+    input_topic: /imu/data
+    output_topic: /imu/lio
+    diagnostic_interval: 1000

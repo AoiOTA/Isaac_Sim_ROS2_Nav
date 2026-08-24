@@ -3102,3 +3102,30 @@
   this commit before any ring conversion or FAST-LIO2 start. STOP if
   `channel_id` is absent or not directly `0..31`; return the actual raw and
   adapted schemas/ranges for a separate decision.
+
+## 2026-08-24 — FAST-LIO2 planar IMU discrimination replay
+
+- Hypothesis: corrected IMU roll/pitch gyro noise caused the early FAST-LIO2
+  divergence. Added a default-off LIO-only `/imu/data` to `/imu/lio` adapter
+  that preserves the full message except exact angular x/y zeroing. FAST-LIO
+  selects it only with `planar_imu_enabled:=true`; EKF remains `/imu/data`.
+- Diagnostics: `No Effective Points` is now scan-timestamped and aggregates
+  unchanged nearest-neighbor, plane-fit, and residual rejection paths without
+  altering thresholds or state updates.
+- Exact isolated replay: original finalized MCAP, fresh domain 228, aligned
+  399.0 s bag offset, only `/lio/points_raw`, `/imu/data`, and `/clock`
+  replayed; only `/lio/odom_planar_shadow` recorded. No Isaac/Nav2/control.
+- Result: vs-EKF 0.5/1/5/100 m crossings were
+  1.572/2.572/10.672/16.572 s after motion versus baseline
+  1.472/2.472/10.772/16.672 s. Pre-collision endpoint error was 487.52 m XY
+  and 506.42 m 3D; route jumps P50/P95/max were 1.66/5.73/10.68 m. First
+  timestamped no-effective warning was scan 514.316 s, after collision, and
+  emitted buckets contained 166 invalid updates dominated by nearest-neighbor
+  rejection. Stationary drift was 0.070 m XY/+0.194 m Z.
+- Validation: isolated build finished; installed package tests **87 passed**;
+  focused adapter/remap/EKF tests **17 passed**; scoped lint/compilation/diff
+  checks passed.
+- Verdict: **PORT_ALGORITHM_BUG / KEEP_OFF**. The one-variable IMU hypothesis
+  failed; retain the coherent adapter/diagnostics as default-off experiment
+  tooling, inspect the port/core update path next, and do not fuse or promote.
+  See `V6_FAST_LIO2_PLANAR_IMU_REPLAY_20260824.md`.
