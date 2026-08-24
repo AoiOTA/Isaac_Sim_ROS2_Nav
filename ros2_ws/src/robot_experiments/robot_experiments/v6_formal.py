@@ -623,6 +623,7 @@ class V6FormalNode:
         qualification: str = "FORMAL_ELIGIBLE",
     ):
         import rclpy
+        from action_msgs.srv import CancelGoal
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
             NavigationGraph,
@@ -670,7 +671,10 @@ class V6FormalNode:
         self.collision = False
         self.route_goal_results: list[dict[str, Any]] = []
         self.reset_receipt: dict[str, Any] | None = None
+        self._terminal_cancel_requested = False
+        self._terminal_cancel_future = None
         self._types = {
+            "CancelGoal": CancelGoal,
             "PoseStamped": PoseStamped,
             "Trigger": Trigger,
             "Parameter": Parameter,
@@ -692,6 +696,9 @@ class V6FormalNode:
         )
         self.nav2_active_client = self.node.create_client(
             Trigger, "/lifecycle_manager_navigation/is_active"
+        )
+        self.navigate_cancel_client = self.node.create_client(
+            CancelGoal, "/navigate_to_pose/_action/cancel_goal"
         )
         self.isaac_parameters = AsyncParameterClient(
             self.node, "/isaac_navigation_sim"
@@ -951,6 +958,10 @@ class V6FormalNode:
     def _route_complete(self, message: Any) -> None:
         self._track_route_signal("route_goal_complete")
         self.guard.record_route_completion(bool(message.data))
+        if self.guard.state in {"FAILED", "STOP"}:
+            self._cancel_active_navigation_once(
+                self.guard.stop_reason or "route_failed"
+            )
         self._capture("/bio_nav/route_goal_complete", message)
 
     def _route_result(self, message: Any) -> None:
@@ -976,7 +987,21 @@ class V6FormalNode:
         self.collision = self.collision or bool(message.data)
         if message.data:
             self.guard.stop("collision")
+            self._cancel_active_navigation_once("collision")
         self._capture("/simulation/collision", message)
+
+    def _cancel_active_navigation_once(self, reason: str) -> None:
+        active_goal = (
+            self.guard.goal_publications > len(self.guard.completed_leg_ids)
+        )
+        if self._terminal_cancel_requested or not active_goal:
+            return
+        self._terminal_cancel_requested = True
+        CancelGoal = self._types["CancelGoal"]
+        self._terminal_cancel_future = self.navigate_cancel_client.call_async(
+            CancelGoal.Request()
+        )
+        self._write("terminal_navigation_cancel_requested", reason=reason)
 
     def _spin_until(self, predicate, timeout_sec: float) -> bool:
         deadline = time.monotonic() + timeout_sec
@@ -1283,6 +1308,10 @@ class V6FormalNode:
         return self.result()
 
     def result(self) -> dict[str, Any]:
+        if self.guard.state in {"FAILED", "STOP"}:
+            self._cancel_active_navigation_once(
+                self.guard.stop_reason or "route_failed"
+            )
         row = {
             "qualification": self.qualification,
             "formal_qualification": (

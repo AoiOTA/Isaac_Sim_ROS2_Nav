@@ -327,6 +327,45 @@ def test_route_completion_requires_progress():
     assert guard.stop_reason == "route_completed_without_progress"
 
 
+def test_collision_cancels_once_and_late_success_cannot_overwrite_terminal():
+    class CancelGoal:
+        class Request:
+            pass
+
+    class CancelClient:
+        def __init__(self):
+            self.requests = []
+
+        def call_async(self, request):
+            self.requests.append(request)
+            return SimpleNamespace(done=lambda: False)
+
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = ready_guard()
+    adapter.guard.record_goal_publication("G2")
+    adapter.collision = False
+    adapter.route_goal_results = []
+    adapter._terminal_cancel_requested = False
+    adapter._terminal_cancel_future = None
+    adapter._types = {"CancelGoal": CancelGoal}
+    adapter.navigate_cancel_client = CancelClient()
+    adapter._capture = lambda *_args, **_kwargs: None
+    events = []
+    adapter._write = lambda event, **payload: events.append((event, payload))
+
+    adapter._collision(SimpleNamespace(data=True))
+    adapter._route_result(SimpleNamespace(data=json.dumps({"status": "succeeded"})))
+    adapter._route_complete(SimpleNamespace(data=True))
+
+    assert adapter.guard.state == "STOP"
+    assert adapter.guard.stop_reason == "collision"
+    assert adapter.guard.completed_leg_ids == []
+    assert len(adapter.navigate_cancel_client.requests) == 1
+    assert events == [
+        ("terminal_navigation_cancel_requested", {"reason": "collision"})
+    ]
+
+
 def test_goal_message_uses_valid_identity_orientation_placeholder():
     class PoseStamped:
         def __init__(self):

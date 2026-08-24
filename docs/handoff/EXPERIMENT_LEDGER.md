@@ -2924,3 +2924,30 @@
 - Verdict: **PASS (code/static/unit only), DEFAULT OFF**. See
   `docs/handoff/V6_CUVSLAM_RGBD_SHADOW_20260824.md` for the exact next R2
   one-episode env and the bounded live STOP conditions.
+
+## 2026-08-24 — V6 R2 collision terminal-stop ordering repair
+
+- Goal: repair only the canonical runner safety-order blocker observed in
+  `v6_grid_phase1_clearance_r2_20260824T003034Z`; preserve the failed episode,
+  STOP evidence, and existing estimator/controller/safety settings.
+- Live input: Phase 1B passed, then G1→G2 collided 36.434 s after dispatch.
+  StopZone had triggered 2.214 s earlier and cleared. The bag retained 134
+  nonzero `/cmd_vel_sim` samples after collision plus a late route success
+  17.887 s later. The session's 20-second boundary probe preceded failure
+  cleanup, and neither raw local nor raw global costmap was recorded.
+- Change: an active-goal collision or other terminal failure requests the
+  dedicated-domain Nav2 action cancel once; collision remains terminal over
+  late completion. A nonzero episode exit now stops the session-owned
+  navigation PGID before the read-only boundary probe. Cleanup remains limited
+  to registered PGIDs, and the runner publishes no command. The recorder adds
+  `/local_costmap/costmap_raw` and `/global_costmap/costmap_raw` to its explicit
+  topic list.
+- Unchanged: odometry/EKF/Grid, controller, Nav2 and Collision Monitor config
+  and thresholds, R2 scene/map/GVG, Integration, Module2, and retry count.
+- Validation: direct formal/runtime tests **66 passed**; `bash -n` passed. No
+  ROS, Isaac, navigation, or qualification run was performed.
+- Verdict: **PASS (code/test only), LIVE SAFETY REVALIDATION REQUIRED**. The
+  next single R2 episode must show exactly one terminal cancel, owned
+  navigation stopped before the boundary probe, zero nonzero `/cmd_vel_sim`
+  after that stop boundary, both raw costmaps present, and collision retained
+  over any late route success while unowned processes remain untouched.

@@ -489,7 +489,8 @@ RECORD_TOPICS=(
   /tf /tf_static /ground_truth/odom /simulation/reset_event
   /simulation/collision /simulation/collision_diagnostics
   /cmd_vel /cmd_vel_nav /cmd_vel_smoothed /cmd_vel_sim
-  /plan /local_plan /planner_server/transition_event
+  /plan /local_plan /local_costmap/costmap_raw
+  /global_costmap/costmap_raw /planner_server/transition_event
   /controller_server/transition_event /velocity_smoother/transition_event
   /collision_monitor_state /scan_safety
   /bio_nav/navigation_graph /bio_nav/canonical_route /bio_nav/route_progress
@@ -558,11 +559,19 @@ for position in "${!index_rows[@]}"; do
     || episode_status=$?
   echo "${episode_status}" > "${PROV}/episode_seed${seed}.exit_status.txt"
   _log_stage "episode_end" "seed=${seed} exit=${episode_status}"
+  if [[ "${episode_status}" != 0 ]]; then
+    _log_stage "episode_terminal_stop" \
+      "seed=${seed} exit=${episode_status}; stopping owned navigation pgid"
+    stop_bg navigation
+  fi
   assert_alive isaac
-  assert_alive navigation
+  if [[ "${episode_status}" == 0 ]]; then
+    assert_alive navigation
+  fi
   assert_alive bridge
 
-  # Boundary ownership probe while the stack is warm and the runner is gone.
+  # Read-only boundary probe after any failed episode has already stopped the
+  # run-owned navigation process group and command chain.
   boundary_status=0
   python3 - "${EPISODES_DIR}/boundary_seed${seed}.json" <<'PYEOF' || boundary_status=$?
 import json

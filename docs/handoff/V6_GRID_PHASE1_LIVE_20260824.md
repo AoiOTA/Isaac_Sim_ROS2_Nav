@@ -199,3 +199,37 @@ with the existing canonical command and explicit Isaac asset root. Phase 1B
 passes only if the one reset now occurs and the complete new-generation
 Grid/correction/TF/ActivationGate/Nav2 chain is observed before G2. Otherwise
 STOP; no retry, fallback, or timeout increase is authorized.
+
+## R2 live collision and terminal-stop repair (2026-08-24)
+
+The next canonical R2 episode reached Phase 1C but **FAIL/STOP collided** with
+the fixed sofa on G1→G2. It is a single-episode engineering failure, not
+qualification.
+
+- Module3: `08f3337d7cf0901b5670ec22cfe8477c81af23f8`; domain `231`; index `0`;
+  seed `7201`; evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_clearance_r2_20260824T003034Z/`.
+- Phase 1B passed with one reset, Grid generation 1, WAITING_FOR_SCAN ->
+  WAITING_FOR_RESULT -> ACCEPTED, 0.133 s latency, and initial Grid-vs-GT
+  error 0.071 m / 1.75 degrees.
+- The collision occurred 36.434 s after G2 dispatch. Collision Monitor had
+  entered StopZone 2.214 s earlier, then cleared. After collision, the bag
+  retained 134 nonzero `/cmd_vel_sim` samples and a route success 17.887 s
+  later. The collision still owns the episode verdict and no leg completed.
+- The canonical script ran its 20-second boundary probe before checking the
+  nonzero episode exit and calling `_stop`; this delayed owned navigation
+  cleanup. The bag also omitted both raw costmaps, so collision-time costmap
+  state could not be reconstructed.
+
+The minimal code/test repair now makes the dispatcher request Nav2 action
+cancel exactly once on an active-goal collision/terminal failure, then makes
+the session stop its registered navigation PGID before the delayed read-only
+probe. Late success cannot overwrite the collision guard. The explicit
+recorder adds both raw costmaps. No estimator, controller, Collision Monitor,
+Nav2 threshold/config, R2 scene, map, or graph changed.
+
+Direct formal/runtime tests **66 passed** and shell syntax passed. No live run
+was performed for this amendment. The next R2 live safety assertion is exact:
+one terminal cancel, owned navigation stop before boundary probe, zero nonzero
+`/cmd_vel_sim` after that stop boundary, both raw costmaps present, collision
+retained over any late success, and domain 141/unowned processes preserved.

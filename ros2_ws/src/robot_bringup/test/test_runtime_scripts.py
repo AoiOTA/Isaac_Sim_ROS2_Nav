@@ -465,6 +465,8 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         '/camera/front/camera_info',
         '/visual/odom_shadow',
         '/visual/status',
+        '/local_costmap/costmap_raw',
+        '/global_costmap/costmap_raw',
     ):
         assert contract in source
     assert source.index('STAGE="asset_materialization"') < source.index(
@@ -476,6 +478,38 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
             '# ---------------------------------------------------------------- recorder', 1)[0]
     assert 'runtime_profile:=estimated_m0' in bridge_arguments
     assert 'module2_enabled:=false' not in bridge_arguments
+
+
+def test_v6_r5_failure_stops_owned_navigation_before_delayed_probe():
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    terminal = source.index('if [[ "${episode_status}" != 0 ]]')
+    owned_stop = source.index('stop_bg navigation', terminal)
+    delayed_probe = source.index('boundary_status=0', owned_stop)
+    failure_exit = source.index(
+        '_stop "episode seed ${seed} failed with exit ${episode_status}; '
+        'evidence kept"',
+        delayed_probe,
+    )
+
+    assert terminal < owned_stop < delayed_probe < failure_exit
+    stop_to_probe = source[owned_stop:delayed_probe]
+    assert 'ros2 topic pub' not in stop_to_probe
+    assert '/cmd_vel' not in stop_to_probe
+
+
+def test_v6_r5_cleanup_signals_only_registered_process_groups():
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    cleanup = source[
+        source.index('_cleanup_children()'):
+        source.index('\n_stop()', source.index('_cleanup_children()'))
+    ]
+
+    assert cleanup.count('kill -INT -- "-${pid}"') == 1
+    assert cleanup.count('kill -TERM -- "-${pid}"') == 1
+    assert cleanup.count('kill -KILL -- "-${pid}"') == 1
+    assert 'CHILD_PGIDS' in cleanup
+    assert 'pkill' not in source
+    assert 'killall' not in source
 
 
 @pytest.mark.parametrize(

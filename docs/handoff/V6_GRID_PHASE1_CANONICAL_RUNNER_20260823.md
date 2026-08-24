@@ -215,3 +215,34 @@ The live boundary is exact: one reset may proceed without a pre-reset status
 sample; then the new WAITING -> ACCEPTED/correction -> fresh full TF ->
 ActivationGate/Nav2/route readiness chain must pass before G2. Any missing or
 out-of-order element remains STOP; no timeout increase or fallback was added.
+
+## Terminal navigation stop-order amendment (2026-08-24)
+
+- The first R2 engineering episode at
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_clearance_r2_20260824T003034Z`
+  ended `STOP/collision` on G1→G2. Collision occurred 36.434 s after the goal;
+  134 nonzero `/cmd_vel_sim` samples continued afterward and a route success
+  arrived 17.887 s after collision. The session had delayed its owned-stack
+  cleanup by running the 20-second boundary probe before checking the failed
+  episode exit. No global or local raw costmap was recorded.
+- The dispatcher now sends one `CancelGoal` request to the dedicated-domain
+  `/navigate_to_pose` action when a collision or other active-goal terminal
+  failure occurs. Collision remains the terminal guard state; a late route
+  completion cannot append a completed leg or replace its reason.
+- The session now stops its registered navigation process group immediately
+  after a nonzero episode exit, before the read-only boundary probe. It does
+  not publish commands, use `pkill`, or signal any unregistered process. The
+  existing STOP artifact and failed episode row remain intact.
+- The recorder list now includes `/local_costmap/costmap_raw` and
+  `/global_costmap/costmap_raw`; it still uses an explicit topic list rather
+  than `-a`. Estimator, controller, Nav2, Collision Monitor, map, scene, and
+  safety thresholds are unchanged.
+- Validation: complete direct `v6_formal` and runtime-script tests **66
+  passed**; `bash -n` passed. This is code/test evidence only; no ROS, Isaac,
+  navigation, or qualification run was performed by the amendment.
+
+The next one-episode R2 live must retain `STOP/collision` if collision recurs,
+record exactly one terminal cancel before cleanup, show the owned navigation
+PGID stopped before the boundary probe, contain both raw costmap topics, and
+show zero nonzero `/cmd_vel_sim` samples after the terminal stop boundary. A
+late route success must not change the failed episode result.
