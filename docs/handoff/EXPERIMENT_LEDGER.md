@@ -3437,3 +3437,35 @@
   action is one fresh-domain (no higher than 232), seed-7201, `max_legs=1`
   stereo shadow episode. See
   `V7_3_PHASE1C_G1_G2_PILOT_RUNNER_20260824.md`.
+
+## 2026-08-24 — V7.3 Phase 1C seed-7201 G1-to-G2 shadow pilot
+
+- Run: one engineering leg on `cognitive-navigation`, Module3
+  `92563d75cd163fb3860fa8bdd7185c40228c9848`, seed 7201; evidence root
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_g1_g2_20260824T135835Z`.
+  G2 only was published, G3 was not published, action/runner state was
+  `SUCCEEDED`, and collision count was zero.
+- Reset/cadence: physical reset preceded official visual reset success in
+  `14.245 ms`; strict-new odom/status advanced `21.25 -> 21.30 s` and became
+  ready in `15.655 ms`, state 1. VIO was 20 Hz, max gap `50.000998 ms`, there
+  were zero gaps `>=150 ms`, and all 717 status samples were state 1.
+- Accuracy window: bag time
+  `1787579991033417850 -> 1787580047482525307 ns`. Evaluator-only GT completed
+  `0.331244 m` from G2, outside 0.25 m. Start-aligned SE(2) endpoint/max XY
+  errors were VIO `0.393677/0.445978 m` versus EKF
+  `0.214637/0.214637 m`; VIO endpoint yaw error was `0.009563 rad`. Frames:
+  GT `map -> ground_truth_base_link`, wheel/EKF `odom -> base_link`, VIO
+  `visual_odom_shadow -> base_link`. Route RTF `0.583269` is a warning.
+- Terminal/evidence: one small nonzero `/cmd_vel_sim` appeared completion
+  +`161.082 ms`, first explicit zero at +`313.349 ms`, then four/final-latched
+  zeros; GT moved `0.023999 m` after zero. The 3.09 GB MCAP has 151,133 readable
+  messages but no metadata/index because the runner force-killed rosbag after
+  its graceful timeout; treat this as an evidence warning, not product failure.
+  Owned resources were cleaned, domain 230 was empty, and preserved domain-141
+  PID 3600069 remained alive.
+- NAS indices: `conclusion.md`, `review/phase1c_g1_g2_metrics.json`, and
+  `figures/phase1c_g1_g2_trajectories.png` under the run root.
+- Verdict: **ENGINEERING ROUTE COMPLETION PASS / VIO PROMOTION FAIL; NOT
+  FORMAL QUALIFICATION; DO NOT ENTER PHASE 1D**. Next: bounded VIO accuracy RCA
+  at the calibration/extrinsic/estimator-scale first-error layer; keep shadow
+  isolated and do not cut over `/odom` or TF.

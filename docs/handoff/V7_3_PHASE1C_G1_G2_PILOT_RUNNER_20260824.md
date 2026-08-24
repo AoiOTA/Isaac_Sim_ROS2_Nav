@@ -75,3 +75,40 @@ R5_MAX_LEGS=1 \
 - Phase 1C route accuracy, pivot translation, collision outcome, RTF/GPU load,
   transport loss, and covariance quality remain unverified. This commit is not
   VIO promotion or formal qualification evidence.
+
+## Seed-7201 live pilot result
+
+- Evidence root:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_g1_g2_20260824T135835Z`.
+  The one-leg engineering pilot published G2 only, never published G3, ended
+  with action/runner state `SUCCEEDED`, and recorded zero collisions. Verdict:
+  **ENGINEERING ROUTE COMPLETION PASS / VIO PROMOTION FAIL**. This is not
+  formal qualification; do not cut over VIO or enter Phase 1D from this run.
+- After the seed-7201 physical reset, the official visual reset returned
+  `success=true` in `14.245 ms`. The odom/status floor was `21.25 s`; both
+  first accepted strictly-new stamps were `21.30 s`, ready in `15.655 ms`
+  with `vo_state=1`. Through completion, VIO was 20 Hz, max native gap was
+  `50.000998 ms`, there were zero gaps `>=150 ms`, and all 717 status
+  samples were state 1.
+- The bag-time comparison window was
+  `1787579991033417850 -> 1787580047482525307 ns`. Although the action
+  succeeded, evaluator-only GT ended `0.331244 m` from G2, outside 0.25 m.
+  Start-aligned SE(2) VIO endpoint/max XY error was
+  `0.393677/0.445978 m`, versus active EKF `0.214637/0.214637 m`; VIO
+  endpoint yaw error was `0.009563 rad`. Frames were GT
+  `map -> ground_truth_base_link`, wheel/EKF `odom -> base_link`, and VIO
+  `visual_odom_shadow -> base_link`. Route-window RTF `0.583269` remains a
+  performance warning.
+- Terminal settling was bounded but not instantaneous: one small nonzero
+  `/cmd_vel_sim` appeared completion +`161.082 ms`; the first explicit zero
+  was +`313.349 ms`; the following four commands and final latched command
+  were zero. GT moved `0.023999 m` after the first zero.
+- NAS indices: `conclusion.md`, `review/phase1c_g1_g2_metrics.json`, and
+  `figures/phase1c_g1_g2_trajectories.png`. The 3.09 GB MCAP contains 151,133
+  readable messages, but the runner force-killed rosbag after its graceful
+  timeout, leaving no metadata/index. This is an evidence warning, not a
+  product failure. Owned resources were cleaned, domain 230 was empty, and
+  preserved domain-141 PID 3600069 remained alive.
+- Next: keep the shadow isolated and perform a bounded accuracy RCA at the
+  calibration/extrinsic/estimator-scale first-error layer before considering
+  any single-variable rerun.
