@@ -30,14 +30,18 @@ qos_profile: sensor_data
 # OmniGraph.  The existing RPLIDAR_S2E configuration above is independent.
 lio:
   default_profile: "off"
-  supported_profile: OS1_REV6_32ch10hz512res
+  profiles:
+    OS1_REV6_32ch10hz512res:
+      variant: OS1_REV6_32ch10hz512res
+      channels: 32
+    OS1_REV6_128ch10hz512res:
+      variant: OS1_REV6_128ch10hz512res
+      channels: 128
   sensor_prim: /World/Robots/Jackal/base_link/lio_lidar_link/rtx_lidar
   config: OS1
-  variant: OS1_REV6_32ch10hz512res
   tick_rate: 10.0
   accumulate_outputs: true
   render_product_resolution: [1, 1]
-  channels: 32
   horizontal_resolution: 512
   range_m: [0.3, 120.0]
   topic_name: /lio/points_raw_isaac

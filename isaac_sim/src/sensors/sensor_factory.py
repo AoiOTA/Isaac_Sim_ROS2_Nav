@@ -24,7 +24,11 @@ CAMERA_PROFILE_NAMES = (
     "off", "monitoring", "standard", "high_quality", "rgbd_navigation",
     "stereo_vio",
 )
-LIO_LIDAR_PROFILE_NAMES = ("off", "OS1_REV6_32ch10hz512res")
+LIO_LIDAR_PROFILE_NAMES = (
+    "off",
+    "OS1_REV6_32ch10hz512res",
+    "OS1_REV6_128ch10hz512res",
+)
 LIO_LIDAR_AUX_OUTPUT_LEVEL = "FULL"
 _CAMERA_PROFILE_CONTRACT = {
     "off": (False, 0, 0, 0.0, False),
@@ -533,14 +537,12 @@ def _load_lidar(path) -> dict[str, Any]:
 
     lio_keys = {
         "default_profile",
-        "supported_profile",
+        "profiles",
         "sensor_prim",
         "config",
-        "variant",
         "tick_rate",
         "accumulate_outputs",
         "render_product_resolution",
-        "channels",
         "horizontal_resolution",
         "range_m",
         "topic_name",
@@ -554,22 +556,36 @@ def _load_lidar(path) -> dict[str, Any]:
         "output_channel_id",
     }
     lio = _require_mapping(data["lio"], lio_keys, context="lidar.lio")
-    if (
-        lio["default_profile"] != "off"
-        or lio["supported_profile"] != "OS1_REV6_32ch10hz512res"
-    ):
+    if lio["default_profile"] != "off":
         raise SensorConfigError(
-            "LIO LiDAR profiles must be default-off with the "
-            "OS1_REV6_32ch10hz512res opt-in"
+            "LIO LiDAR profiles must remain default-off"
         )
-    if (
-        lio["config"] != "OS1"
-        or lio["variant"] != "OS1_REV6_32ch10hz512res"
-    ):
+    profile_names = LIO_LIDAR_PROFILE_NAMES[1:]
+    profiles = _require_mapping(
+        lio["profiles"], set(profile_names), context="lidar.lio.profiles"
+    )
+    if tuple(profiles) != profile_names:
         raise SensorConfigError(
-            "OS1-32 LIO LiDAR requires Isaac config 'OS1' and variant "
-            "'OS1_REV6_32ch10hz512res'"
+            "LIO LiDAR profiles must preserve OS1-32 as the first explicit "
+            "selection, followed by OS1-128"
         )
+    expected_channels = {
+        "OS1_REV6_32ch10hz512res": 32,
+        "OS1_REV6_128ch10hz512res": 128,
+    }
+    for profile_name, channels in expected_channels.items():
+        profile = _require_mapping(
+            profiles[profile_name],
+            {"variant", "channels"},
+            context=f"lidar.lio.profiles.{profile_name}",
+        )
+        if profile["variant"] != profile_name or profile["channels"] != channels:
+            raise SensorConfigError(
+                f"LIO LiDAR profile {profile_name!r} must use its exact Isaac "
+                f"variant and {channels} channels"
+            )
+    if lio["config"] != "OS1":
+        raise SensorConfigError("LIO LiDAR profiles require Isaac config 'OS1'")
     if (
         not isinstance(lio["sensor_prim"], str)
         or not lio["sensor_prim"].startswith("/")
@@ -593,13 +609,11 @@ def _load_lidar(path) -> dict[str, Any]:
     if (
         lio["tick_rate"] != 10.0
         or tuple(lio["render_product_resolution"]) != (1.0, 1.0)
-        or lio["channels"] != 32
         or lio["horizontal_resolution"] != 512
         or tuple(lio["range_m"]) != (0.3, 120.0)
     ):
         raise SensorConfigError(
-            "OS1-32 LIO profile must be 32 channels, 10 Hz, 512 horizontal, "
-            "and 0.3-120 m"
+            "OS1 LIO profiles must be 10 Hz, 512 horizontal, and 0.3-120 m"
         )
     if (
         lio["topic_name"] != "/lio/points_raw_isaac"
@@ -638,9 +652,11 @@ def resolve_lio_lidar_config(
         )
     if profile == "off":
         return None
-    if profile != lio["supported_profile"]:
+    if profile not in lio["profiles"]:
         raise SensorConfigError(f"unsupported LIO LiDAR profile {profile!r}")
     resolved = dict(lio)
+    resolved.update(lio["profiles"][profile])
+    resolved.pop("profiles")
     resolved["profile_name"] = profile
     return resolved
 

@@ -3604,6 +3604,31 @@
   passed. Source-first/no-cache pytest, launch Python compile/show-args, and
   diff checks passed. Only the known PCL FLANN `CMP0144` developer warning
   remained.
-- Verdict: **NDT IMPLEMENTED / STATIC PASS ONLY; LIVE UNVERIFIED**. No replay,
-  Isaac, Nav2, navigation, Phase 1D, promotion, or qualification was run. Next
-  is the same bounded finalized-bag replay; keep NDT default OFF.
+- Implementation-time verdict: **NDT IMPLEMENTED / STATIC PASS ONLY**. The
+  then-pending bounded replay is recorded immediately below; NDT remained
+  default OFF throughout.
+
+## 2026-08-25 — V7.3 Alt-1 NDT32 STOP and OS1-128 static extension
+
+- NDT replay:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_ndt_replay_20260824T220508Z`.
+  Post-initialization delivery was 1,838/1,838 and processing p50/p95/max was
+  `3.715/7.262/23.030 ms`, but active-EKF-relative XY error crossed `0.5/1/5 m`
+  after `2.00/4.10/19.40 s`. At the recorded source collision the error was
+  `6.584 m`, direction error `50.65 deg`, path scale `0.682`, and relative z
+  `-0.815 m`: **NDT32 ENGINEERING STOP**. The reference is active EKF, not GT;
+  no Isaac/Nav2 live, final-zero qualification, promotion, or Phase 1D follows.
+- Sensor extension: Module3 adds the installed Isaac registry variant
+  `OS1_REV6_128ch10hz512res` as a second explicit 128-channel, 10 Hz,
+  512-horizontal selection. Default remains `off`; the existing explicit
+  OS1-32 selection remains first. Mount/frame/topic/QoS/PointCloud2 graph,
+  adapter, NDT, producer threading, canonical odom/TF, Nav2, Integration, and
+  Module2 are unchanged.
+- Validation: source-first/no-cache sensor/config tests passed `31`; unchanged
+  adapter tests passed `12`; Python compilation and diff checks passed. The
+  no-Kit explicit-128 validate-only path returned `validation: PASS` (with
+  existing unresolved `OmniPBR.mdl` USD warnings).
+- Verdict: **OS1-128 SENSOR EXTENSION STATIC READY ONLY**. No Kit/live run or
+  promotion was performed. Next is a fresh reviewer short Isaac fixed-motion
+  producer/adapter smoke, including observed 128-channel `channel_id` range;
+  the unchanged adapter's OS1-32 ring bound remains a live compatibility risk.

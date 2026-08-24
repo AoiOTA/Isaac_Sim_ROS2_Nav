@@ -44,7 +44,7 @@ replacing the previous successful scan. Fixed initial shadow parameters are
 voxel 0.15 m, minimum 100 filtered points, NDT resolution 0.5 m, step 0.1,
 40 iterations, transformation epsilon 0.001, and maximum fitness 0.25.
 
-## Validation and next action
+## NDT replay decision
 
 Clean `/opt/ros/jazzy` isolated build/test at
 `/tmp/v73_alt1_ndt_final.7q1fdS` reported `13 tests, 0 errors, 0 failures,
@@ -55,7 +55,34 @@ base/LiDAR conjugation, insufficient/nonfinite input, fitness rejection,
 non-convergence, and rejected-scan retention. The only build stderr is PCL's
 non-blocking FLANN `CMP0144` developer warning.
 
-Verdict: **NDT IMPLEMENTED / STATIC PASS ONLY; LIVE UNVERIFIED**. No replay,
-Isaac, Nav2, navigation, promotion, Phase 1D, or qualification was run. The
-unique next step is the same bounded finalized-bag replay with the NDT shadow;
-keep it default OFF until that geometry and runtime review succeeds.
+The targeted finalized-MCAP replay at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_ndt_replay_20260824T220508Z`
+then reached 1,838/1,838 post-initialization input/status/odom delivery with
+processing p50/p95/max `3.715/7.262/23.030 ms`, but failed geometry against the
+same-run active EKF sensitivity reference. XY difference crossed `0.5/1/5 m`
+after `2.00/4.10/19.40 s`; at the recorded source collision it was `6.584 m`,
+with `50.65 deg` endpoint-direction error, path scale `0.682`, and relative z
+`-0.815 m`. Verdict: **NDT32 ENGINEERING STOP**. Keep NDT default OFF; this is
+not GT, Isaac/Nav2 live evidence, promotion, Phase 1D, or qualification.
+
+## OS1-128 sensor extension
+
+The existing installed Isaac `OS1` registry contains the exact variant
+`OS1_REV6_128ch10hz512res`. Module3 now exposes that variant only as a second
+explicit `--lio-lidar-profile` choice. The safe producer default remains
+`off`, and the existing explicit OS1-32 choice remains first and unchanged.
+Both selections use the same physical mount, `lio_lidar_link`, raw topic
+`/lio/points_raw_isaac`, SensorData QoS, auxiliary PointCloud2 outputs, and
+strict `/lio/points_raw` adapter; only the registry variant and declared
+channel count differ. No producer thread, adapter, NDT parameter/code,
+canonical `/odom`/TF, Nav2, Integration, or Module2 change was made.
+
+Source-first/no-cache focused tests passed `31`; the unchanged adapter tests
+passed `12`; Python compilation and diff checks passed. The no-Kit
+`--validate-only --lio-lidar-profile OS1_REV6_128ch10hz512res` path returned
+`validation: PASS`. Verdict: **OS1-128 SENSOR EXTENSION STATIC READY ONLY**.
+No Kit, ROS/Isaac live, fixed-motion, navigation, promotion, Phase 1D, or
+qualification was run. The next step is a fresh reviewer short Isaac
+fixed-motion producer/adapter smoke. It must observe the actual 128-channel
+`channel_id` range because the unchanged adapter's established OS1-32 ring
+bound has not been runtime-validated with this variant.

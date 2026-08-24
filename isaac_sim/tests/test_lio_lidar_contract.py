@@ -10,6 +10,7 @@ from isaac_sim.apps.navigation_sim import _parser
 from isaac_sim.graphs.sensor_graph import lio_lidar_graph_spec
 from isaac_sim.src.config import load_project_config
 from isaac_sim.src.sensors.sensor_factory import (
+    LIO_LIDAR_PROFILE_NAMES,
     LIO_LIDAR_AUX_OUTPUT_LEVEL,
     SensorConfigError,
     _create_lio_lidar,
@@ -46,19 +47,38 @@ def test_existing_2d_rplidar_contract_is_unchanged_and_lio_defaults_off():
     assert lidar["frame_id"] == "rtx_world"
     assert lidar["output_frame"] == "WORLD"
     assert lidar["motion_compensation"] == "COMPENSATED"
+    assert lidar["lio"]["default_profile"] == "off"
+    assert tuple(lidar["lio"]["profiles"]) == LIO_LIDAR_PROFILE_NAMES[1:]
+    assert LIO_LIDAR_PROFILE_NAMES == (
+        "off",
+        "OS1_REV6_32ch10hz512res",
+        "OS1_REV6_128ch10hz512res",
+    )
     assert resolve_lio_lidar_config(lidar, None) is None
     assert _parser().parse_args([]).lio_lidar_profile is None
 
 
-def test_os1_profile_has_exact_sensor_local_noncompensated_contract():
+@pytest.mark.parametrize(
+    ("profile", "channels"),
+    [
+        ("OS1_REV6_32ch10hz512res", 32),
+        ("OS1_REV6_128ch10hz512res", 128),
+    ],
+)
+def test_os1_profiles_have_exact_sensor_local_noncompensated_contract(
+    profile, channels
+):
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
-    lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+    lio = resolve_lio_lidar_config(lidar, profile)
 
+    assert _parser().parse_args(
+        ["--lio-lidar-profile", profile]
+    ).lio_lidar_profile == profile
     assert lio is not None
-    assert lio["profile_name"] == "OS1_REV6_32ch10hz512res"
+    assert lio["profile_name"] == profile
     assert lio["config"] == "OS1"
-    assert lio["variant"] == "OS1_REV6_32ch10hz512res"
-    assert lio["channels"] == 32
+    assert lio["variant"] == profile
+    assert lio["channels"] == channels
     assert lio["tick_rate"] == 10.0
     assert lio["horizontal_resolution"] == 512
     assert lio["range_m"] == (0.3, 120.0)
@@ -82,15 +102,41 @@ def test_os1_profile_has_exact_sensor_local_noncompensated_contract():
     ]
 
 
+def test_os1_128_changes_only_profile_variant_and_channel_count():
+    lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
+    os1_32 = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+    os1_128 = resolve_lio_lidar_config(lidar, "OS1_REV6_128ch10hz512res")
+
+    assert os1_32 is not None
+    assert os1_128 is not None
+    differing = {
+        key for key in os1_32 if os1_32[key] != os1_128[key]
+    }
+    assert differing == {"profile_name", "variant", "channels"}
+    assert os1_128["sensor_prim"] == os1_32["sensor_prim"]
+    assert os1_128["topic_name"] == os1_32["topic_name"]
+    assert os1_128["frame_id"] == os1_32["frame_id"]
+
+
+def test_unknown_lio_profile_still_fails_before_kit():
+    lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
+
+    with pytest.raises(SensorConfigError, match="unknown LIO LiDAR profile"):
+        resolve_lio_lidar_config(lidar, "missing")
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["--lio-lidar-profile", "missing"])
+
+
 def _installed_lidar_registry():
     return runpy.run_path(str(INSTALLED_LIDAR_REGISTRY))[
         "SUPPORTED_LIDAR_CONFIGS"
     ]
 
 
-def test_os1_config_and_variant_resolve_in_installed_isaac_registry():
+@pytest.mark.parametrize("profile", LIO_LIDAR_PROFILE_NAMES[1:])
+def test_os1_config_and_variant_resolve_in_installed_isaac_registry(profile):
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
-    lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+    lio = resolve_lio_lidar_config(lidar, profile)
 
     assert lio is not None
     assert validate_lio_lidar_registry_selection(
@@ -133,9 +179,14 @@ def test_installed_lidar_create_accepts_full_aux_output_level():
     assert LIO_LIDAR_AUX_OUTPUT_LEVEL in ast.literal_eval(valid_levels)
 
 
-def test_lio_factory_passes_full_aux_config_and_variant_as_exact_arguments():
+@pytest.mark.parametrize(
+    "profile", LIO_LIDAR_PROFILE_NAMES[1:]
+)
+def test_lio_factory_passes_full_aux_config_and_variant_as_exact_arguments(
+    profile
+):
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
-    lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+    lio = resolve_lio_lidar_config(lidar, profile)
     calls = []
     sentinel = object()
 
@@ -153,7 +204,7 @@ def test_lio_factory_passes_full_aux_config_and_variant_as_exact_arguments():
         {
             "path": "/World/Robots/Jackal/base_link/lio_lidar_link/rtx_lidar",
             "config": "OS1",
-            "variant": "OS1_REV6_32ch10hz512res",
+            "variant": profile,
             "aux_output_level": "FULL",
             "tick_rate": 10.0,
             "accumulate_outputs": True,
@@ -188,12 +239,19 @@ def test_invalid_lio_registry_selection_fails_with_named_values(
         )
 
 
-def test_os1_asset_declares_the_committed_profile_geometry():
+@pytest.mark.parametrize(
+    ("profile", "channels"),
+    [
+        ("OS1_REV6_32ch10hz512res", 32),
+        ("OS1_REV6_128ch10hz512res", 128),
+    ],
+)
+def test_os1_assets_declare_the_committed_profile_geometry(profile, channels):
     asset = Path(
         "/home/lyb/isaacsim_assets/Assets/Isaac/6.0/Isaac/Sensors/"
-        "Ouster/OS1/OS1_REV6_32ch10hz512res.usda"
+        f"Ouster/OS1/{profile}.usda"
     ).read_text(encoding="utf-8")
-    assert "uint omni:sensor:Core:numberOfChannels = 32" in asset
+    assert f"uint omni:sensor:Core:numberOfChannels = {channels}" in asset
     assert "uint omni:sensor:Core:scanRateBaseHz = 10" in asset
     assert "uint omni:sensor:Core:patternFiringRateHz = 5120" in asset
     assert "float omni:sensor:Core:nearRangeM = 0.3" in asset
