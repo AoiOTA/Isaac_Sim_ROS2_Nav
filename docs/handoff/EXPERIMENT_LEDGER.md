@@ -3370,3 +3370,43 @@
   the committed 4 MiB Fast DDS profile for both producer and consumer, then
   measure tracker/IMU fusion, odom/status gaps, VIO TF absence, reset, RTF,
   and GPU. See `V7_3_PHASE1C_CUVSLAM_STEREO_IMU_SHADOW_20260824.md`.
+
+## 2026-08-24 — V7.3 Phase 1C first bounded cuVSLAM live
+
+- Run: Module3 `6b950b3d85a2eb24e52d2ec690cd1d19922da1fd`, domain
+  231, realistic Kujiale `stereo_vio`, 4 MiB UDP-only Fast DDS, two IMU
+  calibrators, wheel odometry, EKF, and direct cuVSLAM shadow only. Evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_cuvslam_20260824T125409Z`.
+  Nav2, Integration, Module2, goals, bags, and odom/TF cutover were absent.
+- Tracker reported VIO IMU fusion enabled and initialized successfully before
+  and after reset. The official `/visual_slam/reset` Reset service returned
+  `success=True` in 717 ms. The last pre-call odom/status stamp was 231.75 s;
+  first healthy post-response samples had the fresh 232.25 s stamp and arrived
+  about 11-12 ms after the response.
+- Odom/status each delivered 2284 finite, unique, monotonic samples at exactly
+  20 Hz. Simulation p95/max gaps were `50.0/50.000998 ms`; no gap reached
+  150 ms, no wall gap exceeded 0.5 s, and all 2284 statuses were state 1.
+  Maximum one-frame planar/yaw increments were `0.006402 m/0.013189 rad`.
+  Four camera streams had 2290 exactly equal stamps at 20 Hz; `/imu/vio` was
+  120.00002 Hz with mean/median 6.0004/6 samples per camera interval.
+- `/odom` remained EKF-only. cuVSLAM created TF publisher endpoints but no
+  observed TF or TF-static transform used `visual_odom_shadow` or
+  `visual_map_shadow`. Camera/IMU input QoS resolved BEST_EFFORT/VOLATILE;
+  visual output QoS resolved RELIABLE/VOLATILE.
+- Evidence caveat: the first BEST_EFFORT command publisher was QoS-incompatible
+  with Isaac and is excluded. One RELIABLE replacement captured full positive
+  and negative yaw with matching visual/wheel/EKF yaw signs and zero collision.
+  Only 1.89 wall seconds of straight remained in the observer; wheel/EKF
+  forward displacement was positive, but visual forward projection was
+  negative amid centimetre-scale drift, so no straight-direction or accuracy
+  claim is made. A separate zero cleanup observer received 100 zeros, no
+  nonzero command, zero collision, all status healthy, and near-zero final
+  movement.
+- RTF was `0.640646`; GPU was 45.68% mean/56% max and 6098 MiB max memory.
+  Host-wide UDP `InErrors/RcvbufErrors` increased 21/21 despite exact camera
+  pairing and no native visual gap. All owned groups stopped, domain 231 was
+  empty, locks were free, and domain-141 PID 3600069 remained alive.
+- Verdict: **PHASE 1C INITIAL ENGINEERING PASS WITH WARNINGS; NOT FORMAL AND
+  NOT VIO PROMOTION**. Proceed to one same-route G1-to-G2 shadow pilot for
+  pivot and route error; do not cut over canonical `/odom` or TF. Full details
+  are in `V7_3_PHASE1C_CUVSLAM_STEREO_IMU_SHADOW_20260824.md`.
