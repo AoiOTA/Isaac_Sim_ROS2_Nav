@@ -86,3 +86,41 @@ qualification was run. The next step is a fresh reviewer short Isaac
 fixed-motion producer/adapter smoke. It must observe the actual 128-channel
 `channel_id` range because the unchanged adapter's established OS1-32 ring
 bound has not been runtime-validated with this variant.
+
+## OS1-128 adapter ring-bound amendment
+
+The subsequent passive smoke at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_ndt_os1_128_smoke_20260824T225456Z`
+proved the OS1-128 producer contract in live Isaac: 80 raw frames were
+observed, and each of the first five complete frames had finite XYZ, the
+required schema, monotonic timestamps, and exactly 128 unique
+`channel_id` values spanning `0..127`. The unchanged adapter rejected all
+frames at its fixed `[0, 31]` bound, so adapted frames, NDT status, and NDT
+odometry all remained zero. Verdict: **PRODUCER ENGINEERING PASS / ADAPTER
+ENGINEERING STOP**. No NDT128 result exists.
+
+This amendment makes the adapter's strict upper bound an integer `max_ring`
+parameter. Its default remains `31`, preserving the complete OS1-32 contract.
+The adapter launch exposes the same default and forwards an explicitly typed
+integer; an OS1-128 passive smoke must opt in independently with
+`max_ring:=127`. Startup rejects values outside `0..255`, matching the output
+`UINT8 ring` representation. Accepted `channel_id` is copied unchanged to
+`ring`; there is no auto-detection, profile binding, truncation, remapping,
+filtering, fallback, or producer/NDT change.
+
+Source-first/no-cache adapter plus LiDAR-profile focused tests passed `33`.
+They cover default acceptance of every ring `0..31`, default rejection of 32
+and 127, explicit acceptance and unchanged schema/time for every ring
+`0..127`, invalid bounds, launch default/forwarding, and a cross-component
+32-channel-to-31 / 128-channel-to-127 contract read from `lidar_3d.yaml`.
+The isolated `/opt/ros/jazzy` build/test at
+`/tmp/v73_alt1_adapter_ring128.L3OepV` passed `91 tests, 0 errors, 0 failures,
+0 skipped`; Python compilation, launch `--show-args`, and diff checks passed.
+Verdict: **ADAPTER FIX STATIC PASS ONLY**. No ROS/Isaac/live run was performed
+for the amendment.
+
+Next is one fresh passive producer/adapter/NDT preflight using the explicit
+OS1-128 profile and `max_ring:=127`. Do not reset or move until adapted output
+has the full unchanged `ring 0..127` range and NDT emits identity/status
+without degradation. NDT128 geometry, cadence, and accuracy remain unassessed;
+this amendment is not promotion, Phase 1D authorization, or qualification.

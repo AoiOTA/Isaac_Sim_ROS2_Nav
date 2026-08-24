@@ -18,6 +18,8 @@ INPUT_TOPIC = "/lio/points_raw_isaac"
 OUTPUT_TOPIC = "/lio/points_raw"
 EXPECTED_FRAME = "lio_lidar_link"
 MAX_SCAN_DURATION_NS = 120_000_000
+DEFAULT_MAX_RING = 31
+MAX_UINT8_RING = 255
 
 
 class PointCloudContractError(ValueError):
@@ -32,6 +34,21 @@ _REQUIRED_FIELDS = {
     "channel_id": (PointField.UINT32, 1, "<u4"),
     "timestamp": (PointField.UINT32, 2, ("<u4", (2,))),
 }
+
+
+def _validate_max_ring(max_ring: int) -> int:
+    if isinstance(max_ring, bool) or not isinstance(
+        max_ring, (int, np.integer)
+    ):
+        raise PointCloudContractError(
+            "max_ring must be an integer in [0, 255]"
+        )
+    value = int(max_ring)
+    if value < 0 or value > MAX_UINT8_RING:
+        raise PointCloudContractError(
+            "max_ring must be an integer in [0, 255]"
+        )
+    return value
 
 
 def _raw_dtype(message: PointCloud2) -> np.dtype:
@@ -98,9 +115,11 @@ def convert_isaac_ouster_cloud(
     *,
     expected_frame: str = EXPECTED_FRAME,
     max_scan_duration_ns: int = MAX_SCAN_DURATION_NS,
+    max_ring: int = DEFAULT_MAX_RING,
 ) -> PointCloud2:
     """Convert one ordered raw scan without TF, sorting, or deskew."""
 
+    max_ring = _validate_max_ring(max_ring)
     if not expected_frame or message.header.frame_id != expected_frame:
         raise PointCloudContractError(
             f"raw frame_id must be {expected_frame!r}; "
@@ -141,11 +160,12 @@ def convert_isaac_ouster_cloud(
             )
 
     channels = points["channel_id"].astype(np.uint64, copy=False)
-    if np.any(channels > 31):
+    if np.any(channels > max_ring):
         observed_min = int(channels.min())
         observed_max = int(channels.max())
         raise PointCloudContractError(
-            "channel_id must be directly representable as ring in [0, 31]; "
+            "channel_id must be directly representable as ring in "
+            f"[0, {max_ring}]; "
             f"observed [{observed_min}, {observed_max}]"
         )
 
@@ -227,12 +247,16 @@ class OusterPointCloudAdapter(Node):
         self.declare_parameter("output_topic", OUTPUT_TOPIC)
         self.declare_parameter("expected_frame", EXPECTED_FRAME)
         self.declare_parameter("max_scan_duration_ns", MAX_SCAN_DURATION_NS)
+        self.declare_parameter("max_ring", DEFAULT_MAX_RING)
 
         input_topic = str(self.get_parameter("input_topic").value)
         output_topic = str(self.get_parameter("output_topic").value)
         self._expected_frame = str(self.get_parameter("expected_frame").value)
         self._max_scan_duration_ns = int(
             self.get_parameter("max_scan_duration_ns").value
+        )
+        self._max_ring = _validate_max_ring(
+            self.get_parameter("max_ring").value
         )
         qos = sensor_data_qos()
         self._publisher = self.create_publisher(PointCloud2, output_topic, qos)
@@ -246,6 +270,7 @@ class OusterPointCloudAdapter(Node):
                 message,
                 expected_frame=self._expected_frame,
                 max_scan_duration_ns=self._max_scan_duration_ns,
+                max_ring=self._max_ring,
             )
         except PointCloudContractError as exc:
             self.get_logger().error(f"rejecting raw Isaac Ouster cloud: {exc}")

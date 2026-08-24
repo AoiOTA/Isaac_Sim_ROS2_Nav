@@ -5,6 +5,7 @@ import struct
 from pathlib import Path
 
 import pytest
+import yaml
 from rclpy.qos import DurabilityPolicy, ReliabilityPolicy
 from sensor_msgs.msg import PointCloud2, PointField
 
@@ -16,6 +17,7 @@ from robot_odometry.ouster_pointcloud_adapter import (
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = PACKAGE_ROOT.parents[2]
 
 
 def _raw_cloud(
@@ -152,6 +154,64 @@ def test_ring_bounds_are_not_shifted_or_fabricated():
             _raw_cloud(channels=(1, 32), timestamps=(100, 200))
         )
 
+    with pytest.raises(PointCloudContractError, match=r"ring in \[0, 31\]"):
+        convert_isaac_ouster_cloud(
+            _raw_cloud(channels=(0, 127), timestamps=(100, 200))
+        )
+
+
+def test_default_ring_contract_accepts_every_ring_from_zero_through_31():
+    channels = tuple(range(32))
+    output = convert_isaac_ouster_cloud(
+        _raw_cloud(
+            channels=channels,
+            timestamps=tuple(1_000_000 + index for index in channels),
+        )
+    )
+
+    assert [point[4] for point in _unpack_output(output)] == list(channels)
+
+
+def test_explicit_127_preserves_full_ring_schema_and_time_contract():
+    channels = tuple(range(128))
+    first_timestamp = 2_000_000_000
+    output = convert_isaac_ouster_cloud(
+        _raw_cloud(
+            channels=channels,
+            timestamps=tuple(first_timestamp + index for index in channels),
+        ),
+        max_ring=127,
+    )
+    points = _unpack_output(output)
+
+    observed_fields = [
+        (field.name, field.datatype, field.count)
+        for field in output.fields
+    ]
+    assert observed_fields == [
+        ("x", PointField.FLOAT32, 1),
+        ("y", PointField.FLOAT32, 1),
+        ("z", PointField.FLOAT32, 1),
+        ("intensity", PointField.FLOAT32, 1),
+        ("ring", PointField.UINT8, 1),
+        ("t", PointField.UINT32, 1),
+    ]
+    assert output.point_step == 21
+    assert output.header.frame_id == "lio_lidar_link"
+    assert output.header.stamp.sec == 2
+    assert output.header.stamp.nanosec == 0
+    assert [point[4] for point in points] == list(channels)
+    assert len({point[4] for point in points}) == 128
+    assert [point[5] for point in points] == list(range(128))
+
+
+@pytest.mark.parametrize("max_ring", [-1, 256])
+def test_invalid_max_ring_is_rejected(max_ring):
+    with pytest.raises(
+        PointCloudContractError, match=r"integer in \[0, 255\]"
+    ):
+        convert_isaac_ouster_cloud(_raw_cloud(), max_ring=max_ring)
+
 
 def test_frame_finite_xyz_timestamp_order_and_duration_are_strict():
     with pytest.raises(PointCloudContractError, match="raw frame_id"):
@@ -197,4 +257,44 @@ def test_adapter_launch_is_default_off_with_exact_topics():
     assert 'DeclareLaunchArgument("enabled", default_value="false")' in source
     assert 'default_value="/lio/points_raw_isaac"' in source
     assert 'default_value="/lio/points_raw"' in source
+    assert 'DeclareLaunchArgument("max_ring", default_value="31")' in source
+    assert 'LaunchConfiguration("max_ring"), value_type=int' in source
     assert "IfCondition(enabled)" in source
+
+
+@pytest.mark.parametrize(
+    ("profile", "channels", "max_ring"),
+    [
+        ("OS1_REV6_32ch10hz512res", 32, 31),
+        ("OS1_REV6_128ch10hz512res", 128, 127),
+    ],
+)
+def test_lidar_profile_and_explicit_adapter_ring_contract_are_connected(
+    profile, channels, max_ring
+):
+    lidar = yaml.safe_load(
+        (REPO_ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    producer = lidar["lio"]["profiles"][profile]
+    launch_source = (
+        PACKAGE_ROOT / "launch/ouster_pointcloud_adapter.launch.py"
+    ).read_text(encoding="utf-8")
+
+    assert producer == {"variant": profile, "channels": channels}
+    assert channels == max_ring + 1
+    assert 'DeclareLaunchArgument("max_ring", default_value="31")' in (
+        launch_source
+    )
+    assert 'LaunchConfiguration("max_ring"), value_type=int' in launch_source
+
+    channel_ids = tuple(range(channels))
+    output = convert_isaac_ouster_cloud(
+        _raw_cloud(
+            channels=channel_ids,
+            timestamps=tuple(3_000_000 + index for index in channel_ids),
+        ),
+        max_ring=max_ring,
+    )
+    assert [point[4] for point in _unpack_output(output)] == list(channel_ids)

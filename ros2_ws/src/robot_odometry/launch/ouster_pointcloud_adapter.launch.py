@@ -5,6 +5,7 @@ from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -18,6 +19,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "expected_frame", default_value="lio_lidar_link"
         ),
+        DeclareLaunchArgument("max_ring", default_value="31"),
         Node(
             condition=IfCondition(enabled),
             package="robot_odometry",
@@ -29,6 +31,9 @@ def generate_launch_description() -> LaunchDescription:
                 "output_topic": LaunchConfiguration("output_topic"),
                 "expected_frame": LaunchConfiguration("expected_frame"),
                 "max_scan_duration_ns": 120_000_000,
+                "max_ring": ParameterValue(
+                    LaunchConfiguration("max_ring"), value_type=int
+                ),
                 "use_sim_time": True,
             }],
         ),

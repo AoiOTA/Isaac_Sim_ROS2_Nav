@@ -3632,3 +3632,31 @@
   promotion was performed. Next is a fresh reviewer short Isaac fixed-motion
   producer/adapter smoke, including observed 128-channel `channel_id` range;
   the unchanged adapter's OS1-32 ring bound remains a live compatibility risk.
+
+## 2026-08-25 — V7.3 Alt-1 OS1-128 adapter ring-bound amendment
+
+- Live input: the single passive smoke at
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_ndt_os1_128_smoke_20260824T225456Z`
+  proved the producer emitted 80 valid raw frames; each of the first five had
+  exactly 128 unique `channel_id` values spanning `0..127`. The fixed-31
+  adapter rejected every scan, leaving adapted/NDT status/NDT odometry counts
+  at zero: **PRODUCER ENGINEERING PASS / ADAPTER ENGINEERING STOP**. NDT128
+  was not assessed.
+- Change: the strict adapter now declares integer `max_ring`, default `31`.
+  Its launch exposes and forwards the same typed argument; OS1-128 must opt in
+  independently with `max_ring:=127`. Bounds outside `0..255` fail at startup.
+  Accepted channel IDs are copied unchanged to `UINT8 ring`; there is no
+  auto-detection, profile binding, truncation, remapping, filtering, or
+  fallback. Producer, NDT, canonical odom/TF, Nav2, Integration, and Module2
+  are unchanged.
+- Static validation: source-first/no-cache adapter plus sensor-profile tests
+  passed `33`; the cross-component case reads `lidar_3d.yaml` and verifies the
+  explicit OS1-32-to-31 / OS1-128-to-127 contract. Isolated
+  `/opt/ros/jazzy` build/test at `/tmp/v73_alt1_adapter_ring128.L3OepV` passed
+  `91 tests, 0 errors, 0 failures, 0 skipped`; Python compilation, launch
+  `--show-args`, and diff checks passed. No live process was started.
+- Verdict: **ADAPTER FIX STATIC PASS ONLY**. Next is one fresh passive
+  preflight with explicit OS1-128 plus `max_ring:=127`. No reset or motion is
+  allowed until adapted output proves unchanged full `ring 0..127` and NDT
+  emits non-degraded identity/status. Do not claim NDT128 pass, promotion,
+  Phase 1D authorization, or qualification.
