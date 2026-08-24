@@ -179,3 +179,30 @@ R5_MAX_LEGS=1 \
 - Verdict: **TERMINAL-ZERO ENGINEERING PASS ONLY**. This is not formal
   qualification, VIO promotion, collision closure, or Phase 1D authorization.
   Return to the remaining Phase 1C VIO accuracy decision.
+
+## Final mapping_start paired diagnostic and Phase 1C decision (2026-08-25)
+
+- Authoritative NAS root:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_paired_motion_mapping_start_20260824T202321Z`;
+  primary indices are `conclusion.md` and `paired_summary.json`.
+- The sequential mode-1 (stereo+IMU) and mode-0 (stereo-only) arms both ended
+  `profile_complete`, collision-free, and with a complete final-zero phase.
+  Realized GT motion was comparable: path `1.383402/1.384178 m`, ratio
+  `1.000561`.
+- Full-profile visual endpoint/max/p95 XY errors were
+  `0.036598/0.090372/0.071388 m` for mode 1 and
+  `0.117591/0.129877/0.117591 m` for mode 0. The frozen full-profile score was
+  therefore worse for mode 0 by `0.046202 m` (`1.647x`), but did not cross the
+  `0.05 m` significance floor. Mode 1 has a net numerical benefit, while the
+  pair identifies no credible single-variable repair.
+- Both arms retained 20 Hz visual odom/status, 321 state-1 samples, and a
+  `50.001 ms` maximum native gap. Profile RTF remained a warning
+  (`0.593420/0.590081` for mode 1/mode 0), together with the shared scene
+  material/texture and mesh-collision fallback diagnostics.
+- This paired open-space fixed-motion result is an **engineering diagnostic**,
+  not route evidence and not formal qualification. The earlier route/collision
+  STOP evidence remains valid and is not superseded by this pair.
+- Decision: **PHASE 1C VIO DEFERRED / NOT PROMOTED**. Phase 1D and Phase 2 are
+  not authorized. Keep VIO isolated from canonical `/odom` and TF; next move
+  to the canonical independent local-odom alternative lane rather than another
+  VIO parameter iteration.
