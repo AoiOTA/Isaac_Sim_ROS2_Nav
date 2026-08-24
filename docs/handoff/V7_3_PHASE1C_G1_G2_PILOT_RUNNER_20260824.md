@@ -112,3 +112,42 @@ R5_MAX_LEGS=1 \
 - Next: keep the shadow isolated and perform a bounded accuracy RCA at the
   calibration/extrinsic/estimator-scale first-error layer before considering
   any single-variable rerun.
+
+## Stereo-only STOP RCA and terminal-zero amendment (2026-08-25)
+
+- The initial stereo+IMU seed-7201 route remains an engineering route success
+  but a VIO promotion failure. Both later stereo-only routes stopped on true
+  collision: `v73_phase1c_stereo_only_20260824T150824Z` at the dining-room
+  chair and `v73_phase1c_stereo_only_jointdiag_20260824T164920Z` at the sofa.
+  Neither run promotes VIO or authorizes Phase 1D.
+- The corrected joint/MCAP probe supersedes the first stereo-only observer's
+  apparent collapsed-wheel diagnosis. In the dispatch-to-collision window,
+  joint-equivalent, wheel-odom, and GT paths were `8.941021`, `8.931083`, and
+  `8.813655 m`; the joint and wheel chain therefore passed this targeted
+  route check. The remaining product blocker was terminal stop behavior.
+- The targeted MCAP recorded no downstream `/cmd_vel_sim` zero after
+  collision: its last nonzero was collision +`299.246 ms`, the final command
+  was nonzero, and GT drifted `0.056858 m` after collision. `/cmd_vel_sim`
+  retained its expected sole publisher, `/isaac_navigation_sim`.
+- This amendment makes the episode node publish only upstream
+  `/cmd_vel_nav` reliable/volatile zeros at 20 Hz after an active-goal
+  failure. It continues spinning until cancel completes or the action is
+  terminal, observes a terminal-start-newer downstream `/cmd_vel_sim` zero,
+  and then sees a short window without a newer nonzero. The wait is bounded;
+  timeout remains STOP, records `terminal_zero_timeout`, and preserves the
+  collision/root reason. It does not publish `/cmd_vel` or `/cmd_vel_sim`,
+  and pre-goal STOP and success behavior do not acquire this wait.
+- Validation is code/static/build only: source-first/no-cache focused tests
+  passed `38`; an isolated `/tmp/v73_terminal_zero.Htj4jW` build of
+  `robot_experiments` passed, and its installed artifact passed the same 38
+  focused tests. Full package `colcon test` was not usable because unrelated
+  collection imported an external stale `bio_nav_interfaces` install without
+  `CanonicalRoute`; no overlay or Integration repair was made.
+- Authoritative NAS index:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_stereo_only_jointdiag_20260824T164920Z/mcap_targeted_conclusion.md`
+  and `review/mcap_targeted_metrics.json` below that run root. No MCAP bag
+  payload was read by this implementation amendment.
+- Verdict: **TERMINAL-ZERO CODE/FOCUSED-TEST PASS; LIVE UNVERIFIED**. Next is
+  one bounded human-triggered cancel live check proving downstream
+  `/cmd_vel_sim` zero and post-zero stability before teardown; do not claim
+  collision closure, VIO promotion, or Phase 1D yet.

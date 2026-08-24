@@ -3469,3 +3469,34 @@
   FORMAL QUALIFICATION; DO NOT ENTER PHASE 1D**. Next: bounded VIO accuracy RCA
   at the calibration/extrinsic/estimator-scale first-error layer; keep shadow
   isolated and do not cut over `/odom` or TF.
+
+## 2026-08-25 — V7.3 Phase 1C collision/cancel terminal-zero amendment
+
+- Sequence: the initial stereo+IMU seed-7201 route completed but failed VIO
+  promotion. The stereo-only runs
+  `v73_phase1c_stereo_only_20260824T150824Z` and
+  `v73_phase1c_stereo_only_jointdiag_20260824T164920Z` both collision-STOPPED;
+  neither authorizes Phase 1D.
+- Corrected targeted evidence: joint-equivalent/wheel/GT paths were
+  `8.941021/8.931083/8.813655 m`, so the joint and wheel chain passed the
+  route-window check. The MCAP instead found `/cmd_vel_sim` still nonzero at
+  collision +`299.246 ms`, no later downstream zero, and `0.056858 m` GT
+  drift. Its sole publisher remained `/isaac_navigation_sim`.
+- Change: active-goal failures now issue a bounded 20 Hz reliable/volatile
+  zero burst only on upstream `/cmd_vel_nav`, while spinning for cancel/action
+  terminal plus a terminal-newer downstream `/cmd_vel_sim` zero and a short
+  no-new-nonzero window. Timeout records `terminal_zero_timeout`, remains STOP,
+  and preserves the root reason. `/cmd_vel` and `/cmd_vel_sim` ownership is
+  unchanged; pre-goal STOP and success do not wait.
+- Validation: source-first/no-cache focused test `38 passed`; isolated
+  `robot_experiments` build and installed-artifact focused test `38 passed` at
+  `/tmp/v73_terminal_zero.Htj4jW`. Full package test collection hit an
+  unrelated external stale `bio_nav_interfaces` lacking `CanonicalRoute`; no
+  out-of-scope overlay repair was attempted. No ROS/Isaac/live run occurred.
+- NAS:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1c_stereo_only_jointdiag_20260824T164920Z/mcap_targeted_conclusion.md`
+  and `review/mcap_targeted_metrics.json`.
+- Verdict: **CODE/FOCUSED-TEST PASS; LIVE UNVERIFIED; STOP REMAINS**. Next is
+  one bounded human-triggered cancel live check for downstream zero and
+  post-zero stability before teardown. Do not claim collision closure, VIO
+  promotion, or Phase 1D.

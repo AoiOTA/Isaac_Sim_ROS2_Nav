@@ -654,6 +654,10 @@ def _message_summary(message: Any) -> dict[str, Any]:
 class V6FormalNode:
     """ROS adapter for the canonical Phase-1 full-house episode."""
 
+    TERMINAL_ZERO_TIMEOUT_SEC = 2.0
+    TERMINAL_ZERO_PERIOD_SEC = 0.05
+    TERMINAL_ZERO_QUIET_SEC = 0.30
+
     def __init__(
         self,
         manifest: Manifest,
@@ -728,6 +732,14 @@ class V6FormalNode:
         self.reset_receipt: dict[str, Any] | None = None
         self._terminal_cancel_requested = False
         self._terminal_cancel_future = None
+        self._terminal_started_monotonic: float | None = None
+        self._navigation_terminal_observed = False
+        self._terminal_zero_settled = False
+        self._terminal_zero_confirmed = False
+        self._terminal_zero_reason = "not_required"
+        self._cmd_vel_sim_last_receive_monotonic: float | None = None
+        self._cmd_vel_sim_last_zero_monotonic: float | None = None
+        self._cmd_vel_sim_last_nonzero_monotonic: float | None = None
         self.visual_odom_stamp_ns: int | None = None
         self.visual_odom_finite = False
         self.visual_status_stamp_ns: int | None = None
@@ -747,9 +759,17 @@ class V6FormalNode:
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         sensor = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
+        terminal_zero_qos = QoSProfile(
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
 
         self.route_goal_publisher = self.node.create_publisher(
             PoseStamped, "/bio_nav/route_goal", reliable
+        )
+        self.terminal_zero_publisher = self.node.create_publisher(
+            Twist, "/cmd_vel_nav", terminal_zero_qos
         )
         self.reset_client = self.node.create_client(Trigger, "/simulation/reset")
         self.relocalize_client = self.node.create_client(
@@ -918,6 +938,12 @@ class V6FormalNode:
             )
         )
         now = time.monotonic()
+        if topic == "/cmd_vel_sim":
+            self._cmd_vel_sim_last_receive_monotonic = now
+            if nonzero:
+                self._cmd_vel_sim_last_nonzero_monotonic = now
+            else:
+                self._cmd_vel_sim_last_zero_monotonic = now
         self._cmd_window.append((now, nonzero))
         while self._cmd_window and now - self._cmd_window[0][0] > 4.0:
             self._cmd_window.popleft()
@@ -1042,6 +1068,8 @@ class V6FormalNode:
 
     def _route_complete(self, message: Any) -> None:
         self._track_route_signal("route_goal_complete")
+        if self.guard.goal_publications > len(self.guard.completed_leg_ids):
+            self._navigation_terminal_observed = True
         self.guard.record_route_completion(bool(message.data))
         if self.guard.state in {"FAILED", "STOP"}:
             self._cancel_active_navigation_once(
@@ -1082,11 +1110,81 @@ class V6FormalNode:
         if self._terminal_cancel_requested or not active_goal:
             return
         self._terminal_cancel_requested = True
+        self._terminal_started_monotonic = time.monotonic()
+        self._terminal_zero_reason = "pending"
         CancelGoal = self._types["CancelGoal"]
         self._terminal_cancel_future = self.navigate_cancel_client.call_async(
             CancelGoal.Request()
         )
         self._write("terminal_navigation_cancel_requested", reason=reason)
+
+    def _settle_terminal_zero(self) -> bool:
+        if not self._terminal_cancel_requested:
+            return True
+        if self._terminal_zero_settled:
+            return self._terminal_zero_confirmed
+
+        terminal_start = self._terminal_started_monotonic
+        if terminal_start is None:
+            terminal_start = time.monotonic()
+            self._terminal_started_monotonic = terminal_start
+        deadline = terminal_start + self.TERMINAL_ZERO_TIMEOUT_SEC
+        next_publish = terminal_start
+        zero_candidate_since: float | None = None
+        Twist = self._types["Twist"]
+        zero = Twist()
+
+        while self._rclpy.ok() and time.monotonic() < deadline:
+            now = time.monotonic()
+            if now >= next_publish:
+                self.terminal_zero_publisher.publish(zero)
+                next_publish = now + self.TERMINAL_ZERO_PERIOD_SEC
+
+            self._rclpy.spin_once(
+                self.node,
+                timeout_sec=min(
+                    self.TERMINAL_ZERO_PERIOD_SEC,
+                    max(0.0, deadline - time.monotonic()),
+                ),
+            )
+            now = time.monotonic()
+            last_zero = self._cmd_vel_sim_last_zero_monotonic
+            last_nonzero = self._cmd_vel_sim_last_nonzero_monotonic
+            if (
+                last_zero is not None
+                and last_zero > terminal_start
+                and (last_nonzero is None or last_zero > last_nonzero)
+            ):
+                if zero_candidate_since is None:
+                    zero_candidate_since = last_zero
+            else:
+                zero_candidate_since = None
+
+            cancel_complete = bool(
+                self._terminal_cancel_future is not None
+                and self._terminal_cancel_future.done()
+            )
+            if (
+                (cancel_complete or self._navigation_terminal_observed)
+                and zero_candidate_since is not None
+                and now - zero_candidate_since >= self.TERMINAL_ZERO_QUIET_SEC
+            ):
+                self._terminal_zero_settled = True
+                self._terminal_zero_confirmed = True
+                self._terminal_zero_reason = "terminal_zero_confirmed"
+                self._write(
+                    "terminal_zero_confirmed",
+                    root_reason=self.guard.stop_reason,
+                )
+                return True
+
+        self._terminal_zero_settled = True
+        self._terminal_zero_reason = "terminal_zero_timeout"
+        self._write(
+            "terminal_zero_timeout",
+            root_reason=self.guard.stop_reason,
+        )
+        return False
 
     def _spin_until(self, predicate, timeout_sec: float) -> bool:
         deadline = time.monotonic() + timeout_sec
@@ -1471,6 +1569,7 @@ class V6FormalNode:
         for index, leg in enumerate(self.mission_legs):
             route_baseline = self.canonical_route_count
             result_baseline = len(self.route_goal_results)
+            self._navigation_terminal_observed = False
             self.guard.record_goal_publication(leg.goal_id)
             self.route_goal_publisher.publish(self._goal_message(leg))
             self._write(
@@ -1509,6 +1608,7 @@ class V6FormalNode:
             self._cancel_active_navigation_once(
                 self.guard.stop_reason or "route_failed"
             )
+            self._settle_terminal_zero()
         row = {
             "qualification": self.qualification,
             "formal_qualification": (
@@ -1529,6 +1629,8 @@ class V6FormalNode:
             "completed_leg_ids": list(self.guard.completed_leg_ids),
             "route_goal_results": list(self.route_goal_results),
             "collision": self.collision,
+            "terminal_zero_confirmed": self._terminal_zero_confirmed,
+            "terminal_zero_reason": self._terminal_zero_reason,
         }
         self._write("episode_result", **row)
         return row

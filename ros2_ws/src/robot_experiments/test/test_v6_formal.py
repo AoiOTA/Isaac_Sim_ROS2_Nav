@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import robot_experiments.v6_formal as v6_formal_module
 
 from robot_experiments.v6_formal import (
     CAPTURE_SCHEMA,
@@ -67,6 +68,85 @@ def ready_guard() -> EpisodeGuard:
     guard.record_reset_gate_status(7, False)
     assert guard.goal_ready
     return guard
+
+
+class _Twist:
+    def __init__(self, *, nonzero: bool = False):
+        self.linear = SimpleNamespace(
+            x=0.2 if nonzero else 0.0,
+            y=0.0,
+            z=0.0,
+        )
+        self.angular = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+
+
+def _terminal_adapter(
+    monkeypatch,
+    *,
+    cancel_done_after: float | None,
+    downstream_events: tuple[tuple[float, bool], ...],
+    timeout_sec: float = 0.7,
+):
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = ready_guard()
+    adapter.guard.record_goal_publication("G2")
+    adapter.guard.stop("collision")
+    adapter.qualification = ENGINEERING_PILOT
+    adapter.reset_receipt = {}
+    adapter.route_goal_results = []
+    adapter.collision = True
+    adapter._terminal_cancel_requested = True
+    adapter._terminal_started_monotonic = 10.0
+    adapter._navigation_terminal_observed = False
+    adapter._terminal_zero_settled = False
+    adapter._terminal_zero_confirmed = False
+    adapter._terminal_zero_reason = "pending"
+    adapter._terminal_cancel_future = SimpleNamespace(
+        done=lambda: (
+            cancel_done_after is not None
+            and clock.now >= 10.0 + cancel_done_after
+        )
+    )
+    adapter._cmd_vel_sim_last_receive_monotonic = None
+    adapter._cmd_vel_sim_last_zero_monotonic = None
+    adapter._cmd_vel_sim_last_nonzero_monotonic = None
+    adapter._cmd_window = deque()
+    adapter._types = {"Twist": _Twist}
+    adapter.node = SimpleNamespace()
+    adapter.TERMINAL_ZERO_TIMEOUT_SEC = timeout_sec
+    adapter.TERMINAL_ZERO_PERIOD_SEC = 0.05
+    adapter.TERMINAL_ZERO_QUIET_SEC = 0.15
+    adapter._capture = lambda *_args, **_kwargs: None
+
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(
+        v6_formal_module.time, "monotonic", lambda: clock.now
+    )
+    published_at = []
+    adapter.terminal_zero_publisher = SimpleNamespace(
+        publish=lambda message: published_at.append(
+            (clock.now, message.linear.x, message.angular.z)
+        )
+    )
+    recorded_events = []
+    adapter._write = lambda event, **payload: recorded_events.append(
+        (clock.now, event, payload)
+    )
+    pending = list(downstream_events)
+
+    def spin_once(_node, *, timeout_sec):
+        clock.now += timeout_sec
+        while pending and clock.now >= 10.0 + pending[0][0]:
+            _offset, nonzero = pending.pop(0)
+            adapter._track_command(
+                "/cmd_vel_sim", _Twist(nonzero=nonzero)
+            )
+
+    adapter._rclpy = SimpleNamespace(
+        ok=lambda: True,
+        spin_once=spin_once,
+    )
+    return adapter, clock, published_at, recorded_events
 
 
 def test_dispatcher_topic_firewall_and_grid_capture_contract():
@@ -511,10 +591,116 @@ def test_collision_cancels_once_and_late_success_cannot_overwrite_terminal():
     assert adapter.guard.state == "STOP"
     assert adapter.guard.stop_reason == "collision"
     assert adapter.guard.completed_leg_ids == []
+    assert adapter._navigation_terminal_observed
     assert len(adapter.navigate_cancel_client.requests) == 1
     assert events == [
         ("terminal_navigation_cancel_requested", {"reason": "collision"})
     ]
+
+
+def test_terminal_zero_bursts_while_cancel_future_is_delayed(monkeypatch):
+    adapter, clock, published, events = _terminal_adapter(
+        monkeypatch,
+        cancel_done_after=0.20,
+        downstream_events=((0.25, False),),
+    )
+
+    assert adapter._settle_terminal_zero()
+    assert len([stamp for stamp, _x, _z in published if stamp < 10.20]) >= 3
+    assert all(x == 0.0 and z == 0.0 for _stamp, x, z in published)
+    assert clock.now >= 10.40
+    assert [event for _stamp, event, _payload in events] == [
+        "terminal_zero_confirmed"
+    ]
+
+
+def test_terminal_zero_requires_downstream_zero_after_terminal_start(
+    monkeypatch,
+):
+    adapter, _clock, _published, events = _terminal_adapter(
+        monkeypatch,
+        cancel_done_after=0.0,
+        downstream_events=(),
+        timeout_sec=0.35,
+    )
+    adapter._cmd_vel_sim_last_receive_monotonic = 9.99
+    adapter._cmd_vel_sim_last_zero_monotonic = 9.99
+
+    assert not adapter._settle_terminal_zero()
+    assert not adapter._terminal_zero_confirmed
+    assert [event for _stamp, event, _payload in events] == [
+        "terminal_zero_timeout"
+    ]
+
+
+def test_terminal_zero_nonzero_after_zero_restarts_quiet_window(monkeypatch):
+    adapter, clock, _published, events = _terminal_adapter(
+        monkeypatch,
+        cancel_done_after=0.0,
+        downstream_events=(
+            (0.05, False),
+            (0.12, True),
+            (0.25, False),
+        ),
+    )
+
+    assert adapter._settle_terminal_zero()
+    assert clock.now >= 10.40
+    assert [event for _stamp, event, _payload in events] == [
+        "terminal_zero_confirmed"
+    ]
+
+
+def test_terminal_zero_accepts_observed_action_terminal(monkeypatch):
+    adapter, _clock, _published, events = _terminal_adapter(
+        monkeypatch,
+        cancel_done_after=None,
+        downstream_events=((0.05, False),),
+    )
+    adapter._navigation_terminal_observed = True
+
+    assert adapter._settle_terminal_zero()
+    assert [event for _stamp, event, _payload in events] == [
+        "terminal_zero_confirmed"
+    ]
+
+
+def test_terminal_zero_timeout_preserves_stop_root_reason(monkeypatch):
+    adapter, _clock, published, events = _terminal_adapter(
+        monkeypatch,
+        cancel_done_after=None,
+        downstream_events=((0.05, False),),
+        timeout_sec=0.30,
+    )
+
+    row = adapter.result()
+
+    assert published
+    assert row["state"] == "STOP"
+    assert row["stop_reason"] == "collision"
+    assert row["terminal_zero_confirmed"] is False
+    assert row["terminal_zero_reason"] == "terminal_zero_timeout"
+    assert [event for _stamp, event, _payload in events] == [
+        "terminal_zero_timeout",
+        "episode_result",
+    ]
+
+
+def test_terminal_zero_publisher_is_upstream_reliable_volatile_only():
+    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
+    qos_start = source.index("terminal_zero_qos = QoSProfile(")
+    publisher_start = source.index(
+        "self.terminal_zero_publisher = self.node.create_publisher("
+    )
+    publisher_end = source.index(")", publisher_start)
+
+    assert "ReliabilityPolicy.RELIABLE" in source[qos_start:publisher_start]
+    assert "DurabilityPolicy.VOLATILE" in source[qos_start:publisher_start]
+    assert 'Twist, "/cmd_vel_nav", terminal_zero_qos' in source[
+        publisher_start:publisher_end
+    ]
+    assert 'create_publisher(\n            Twist, "/cmd_vel"' not in source
+    assert 'create_publisher(\n            Twist, "/cmd_vel_sim"' not in source
 
 
 def test_goal_message_uses_valid_identity_orientation_placeholder():
