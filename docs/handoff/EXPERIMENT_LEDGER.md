@@ -3020,9 +3020,10 @@
   the entire launch OFF. Livox SDK/message and unused `pcl_ros` dependencies
   are absent; pose/covariance precede publication and unavailable zero twist is
   assigned large covariance.
-- Initial config: 10 Hz cloud, 0.3 m blind range, `ring+t` Ouster schema,
-  `[0.108,-0.002,0.266]`/identity fixed extrinsic, simulation time, and current
-  60 Hz IMU candidate. Axes and any need for 120/200 Hz IMU remain live tests.
+- Initial port config used a 10 Hz cloud, 0.3 m blind range, `ring+t` Ouster
+  schema, and `[0.108,-0.002,0.266]`/identity fixed extrinsic. The identity
+  rotation is superseded by the later measured +90 degree axis-contract fix;
+  see the axis-fix replay entry below.
 - Validation: clean `/opt/ros/jazzy` build at
   `/tmp/fast_lio2_jazzy_verified.24hWGJ` finished one package; 6 tests passed;
   installed launch arguments expanded. An empty-domain no-sensor initialization
@@ -3046,8 +3047,10 @@
   uint32 `channel_id` in `0..31`, and absolute-ns `timestamp` as count-2
   uint32. It publishes ordered `x/y/z/intensity/ring/t` on `/lio/points_raw`,
   with relative uint32 ns `t` and first-point absolute header stamp.
-- Frames: identity rotations; base->LIO `[0.120,0,0.333]`, base->IMU
-  `[0.012,0.002,0.067]`, hence IMU->LIO `[0.108,-0.002,0.266]` m.
+- Frames: published physical ROS rotations remain identity; base->LIO
+  `[0.120,0,0.333]`, base->IMU `[0.012,0.002,0.067]`, hence IMU->LIO
+  `[0.108,-0.002,0.266]` m. The later FAST-LIO-only +90 degree internal axis
+  conversion does not alter adapter XYZ or static TF.
 - Validation: focused static/unit **28 passed**; isolated `/tmp` build finished
   rf2o + robot_odometry; installed robot_odometry **73 passed**. No Isaac/ROS
   live run was authorized for this task agent, so actual profile loading,
@@ -3125,7 +3128,39 @@
 - Validation: isolated build finished; installed package tests **87 passed**;
   focused adapter/remap/EKF tests **17 passed**; scoped lint/compilation/diff
   checks passed.
-- Verdict: **PORT_ALGORITHM_BUG / KEEP_OFF**. The one-variable IMU hypothesis
-  failed; retain the coherent adapter/diagnostics as default-off experiment
-  tooling, inspect the port/core update path next, and do not fuse or promote.
+- Verdict: **SUPERSEDED ROOT-CAUSE LABEL / KEEP_OFF**. The one-variable IMU
+  hypothesis failed, but later RCA disproved the port/core attribution and
+  isolated a +90 degree Ouster SENSOR-to-IMU axis contract. Retain the planar
+  adapter only as default-off tooling; do not combine it with the axis fix.
   See `V6_FAST_LIO2_PLANAR_IMU_REPLAY_20260824.md`.
+
+## 2026-08-24 — FAST-LIO2 Ouster +90 degree axis fix and full replay
+
+- Change: `ouster_shadow.yaml` now owns the sole internal SENSOR-to-IMU basis
+  conversion, fixed R `[0,-1,0; 1,0,0; 0,0,1]`; translation remains
+  `[0.108,-0.002,0.266]`, estimation false. Adapter XYZ, published
+  `lio_lidar_link`, physical static TF, source identity fallback, and launch
+  remain unrotated; shadow/planar/TF defaults remain OFF.
+- Exact replay: clean isolated install, domain 220, original MCAP offset 399.0
+  s, only `/lio/points_raw`, canonical `/imu/data`, and `/clock`; only
+  `/lio/odom_axis_fixed_shadow` recorded. No planar IMU, Isaac, Nav2, fusion,
+  control, TF, or qualification process. Output: 1,662 messages at
+  `300.383810424--522.584176620` s, median 9.998 Hz.
+- Early confirmation: EKF-relative XY error at exact stamps
+  468.816213989/470.016213989 is 0.0300/0.0544 m versus identity
+  0.1581/0.7738 m; wheel-relative error is 0.0371/0.0709 m.
+- Full-route failure: EKF XY 0.5/1/5/100 m crossings occur
+  3.872/4.572/10.172/16.772 s after motion. At 476--479 s EKF XY error has
+  2.825 m median and reaches 9.636 m; motion 3D jump P50/P95/max is
+  1.579/5.891/11.632 m with 133 jumps over 1 m. Collision error is 520.82 m
+  XY/549.18 m 3D, and motion RMSE 194.19 m XY/204.49 m 3D is not better than
+  identity. First `No Effective Points` begins at 495.616213989 s, after
+  collision. Pre-motion 167.73 s drift is 0.1429 m XY/+0.1287 m z.
+- Validation: clean build finished rf2o, robot_odometry, and FAST-LIO; installed
+  FAST-LIO 7/7 and focused adapter 12/12 tests passed; exact rotation/T,
+  orthonormal/determinant/yaw, raw XYZ, fallback, launch/static-frame, TF/off
+  contracts and diff check passed. Artifacts:
+  `/tmp/fastlio_axis_fix_replay.qrEChE/full_replay`.
+- Verdict: **AXIS_FIX_CONFIRMED_AND_KEEP_OFF**. Commit the input contract but
+  do not promote. Next bounded task is the corrected-axis 476--479 s
+  geometry/sensor-density collapse; no unrelated tuning.

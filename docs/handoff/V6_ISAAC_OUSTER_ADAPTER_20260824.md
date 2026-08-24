@@ -1,5 +1,19 @@
 # V6 Isaac Ouster producer and FAST-LIO2 adapter handoff (2026-08-24)
 
+## FAST-LIO axis-contract amendment (2026-08-24)
+
+The adapter contract is unchanged: it publishes raw SENSOR XYZ without a
+coordinate transform in the physical ROS frame `lio_lidar_link`. FAST-LIO now
+owns the one required internal SENSOR-to-IMU basis conversion as
+`mapping.extrinsic_R=[0,-1,0; 1,0,0; 0,0,1]`. The physical static TF and frame
+ID remain unchanged. Never add the same yaw rotation to this adapter, its
+launch, URDF, or static TF; that would double-rotate FAST-LIO input.
+
+The exact full replay confirmed the early axis correction but not route
+stability. The producer, adapter, and FAST-LIO remain default OFF with no EKF,
+Nav2, safety, or control promotion. See
+`V6_FAST_LIO2_AXIS_FIX_REPLAY_20260824.md`.
+
 ## Result and boundary
 
 - Added one optional Isaac RTX LiDAR profile,
@@ -130,7 +144,7 @@ point's absolute sensor timestamp, and the frame remains `lio_lidar_link`.
 
 ## Frames and starting extrinsic
 
-All rotations are identity:
+Published ROS physical-frame rotations remain identity:
 
 ```text
 base_link -> lio_lidar_link  [0.120,  0.000, 0.333] m
@@ -138,9 +152,11 @@ base_link -> imu_link        [0.012,  0.002, 0.067] m
 imu_link  -> lio_lidar_link  [0.108, -0.002, 0.266] m
 ```
 
-The last translation matches the current FAST-LIO2 starting extrinsic. Axis
-orientation and time alignment are not calibration evidence and must be
-verified with live stationary/motion data before FAST-LIO2 use.
+The last translation matches the FAST-LIO2 fixed translation. Separately,
+FAST-LIO applies the single internal raw-SENSOR-to-IMU +90 degree yaw basis
+conversion in `ouster_shadow.yaml`; this does not alter the published ROS
+frame or static TF. Early direction is replay-verified, while time alignment,
+translation, and full-route stability are not promotion evidence.
 
 ## Validation completed
 

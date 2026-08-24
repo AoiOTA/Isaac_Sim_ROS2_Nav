@@ -41,6 +41,8 @@ def generate_launch_description():
     config = PathJoinSubstitution(
         [FindPackageShare("fast_lio2_ros2"), "config", "ouster_shadow.yaml"]
     )
+    # The SENSOR-to-IMU axis conversion lives only in ouster_shadow.yaml.
+    # Keep launch free of extrinsic or point-coordinate rotation overrides.
     planar_imu_config = PathJoinSubstitution(
         [FindPackageShare("robot_odometry"), "config", "planar_lio_imu.yaml"]
     )

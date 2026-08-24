@@ -2,10 +2,13 @@
 
 ## Verdict
 
-**PORT_ALGORITHM_BUG / KEEP_OFF.** Zeroing corrected IMU angular velocity x/y
-did not eliminate or materially delay FAST-LIO2's catastrophic motion
-divergence. This result rejects the single planar-IMU hypothesis; it does not
-identify the specific port/core defect.
+**SUPERSEDED ROOT-CAUSE LABEL / KEEP_OFF.** Zeroing corrected IMU angular
+velocity x/y did not eliminate or materially delay FAST-LIO2's catastrophic
+motion divergence, so this replay still rejects the single planar-IMU
+hypothesis. The original `PORT_ALGORITHM_BUG` attribution was later disproven:
+core RCA isolated an Ouster SENSOR-to-IMU +90 degree yaw input-contract error.
+The exact axis-fixed full replay confirmed the early correction but still
+diverged later; see `V6_FAST_LIO2_AXIS_FIX_REPLAY_20260824.md`.
 
 FAST-LIO2 remains default OFF, shadow-only, TF false, and excluded from EKF,
 Grid, Nav2, safety, and control. No fusion, navigation, Isaac, or qualification
@@ -85,6 +88,7 @@ Output diagnostics:
 - New Python files pass flake8; Python compilation and `git diff --check`
   pass. Existing PCL/Boost build warnings are unchanged and non-blocking.
 
-Next action: keep the adapter as default-off experimental tooling and inspect
-the port/core state/update path. Do not tune time, extrinsic, voxel, LiDAR,
-IMU calibration, or navigation from this result, and do not promote LIO.
+Next action is superseded: keep the planar adapter as default-off experimental
+tooling and investigate the bounded 476--479 s geometry/sensor-density collapse.
+Do not enable planar IMU together with the axis fix, tune unrelated parameters,
+or promote LIO.

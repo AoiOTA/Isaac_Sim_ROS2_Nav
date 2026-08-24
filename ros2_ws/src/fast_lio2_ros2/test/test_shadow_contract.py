@@ -1,3 +1,5 @@
+import math
+import re
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from xml.etree import ElementTree
@@ -11,6 +13,19 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 def _read(relative_path):
     return (PACKAGE_ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def _inline_yaml_numbers(config, key):
+    match = re.search(rf"{re.escape(key)}:\s*\[([^\]]+)\]", config)
+    assert match is not None
+    return [float(value.strip()) for value in match.group(1).split(",")]
+
+
+def _mat_vec(matrix, vector):
+    return [
+        sum(matrix[row * 3 + column] * vector[column] for column in range(3))
+        for row in range(3)
+    ]
 
 
 def test_pinned_gpl_source_and_dependencies():
@@ -55,12 +70,45 @@ def test_shadow_defaults_topics_frames_and_ordering():
     ):
         assert expected in config
 
+    rotation = _inline_yaml_numbers(config, "extrinsic_R")
+    translation = _inline_yaml_numbers(config, "extrinsic_T")
+    assert rotation == [0.0, -1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+    assert translation == [0.108, -0.002, 0.266]
+    assert (
+        "extrinsic_R: [0.0, -1.0, 0.0,\n"
+        "                    1.0,  0.0, 0.0,\n"
+        "                    0.0,  0.0, 1.0]"
+    ) in config
+
+    rows = [rotation[offset:offset + 3] for offset in range(0, 9, 3)]
+    gram = [
+        sum(rows[k][i] * rows[k][j] for k in range(3))
+        for i in range(3)
+        for j in range(3)
+    ]
+    determinant = (
+        rows[0][0] * (rows[1][1] * rows[2][2] - rows[1][2] * rows[2][1])
+        - rows[0][1] * (rows[1][0] * rows[2][2] - rows[1][2] * rows[2][0])
+        + rows[0][2] * (rows[1][0] * rows[2][1] - rows[1][1] * rows[2][0])
+    )
+    assert gram == [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+    assert determinant == 1.0
+    assert _mat_vec(rotation, [1.0, 0.0, 0.0]) == [0.0, 1.0, 0.0]
+    assert _mat_vec(rotation, [0.0, 1.0, 0.0]) == [-1.0, 0.0, 0.0]
+    assert math.atan2(rotation[3], rotation[0]) == math.pi / 2.0
+
     source = _read("src/laserMapping.cpp")
     odom_function = source[source.index("void publish_odometry"):source.index("void publish_path")]
     assert odom_function.index("pose.covariance") < odom_function.index("publish(odomAftMapped)")
     assert odom_function.index("twist.covariance") < odom_function.index("publish(odomAftMapped)")
     assert "if (tf_br)" in odom_function
     assert "if (publish_tf)" in source
+    identity_fallback = (
+        "vector<double>{1.0, 0.0, 0.0, 0.0, 1.0, 0.0, "
+        "0.0, 0.0, 1.0}"
+    )
+    assert source.count(identity_fallback) == 2
+    assert "vector<double>{0.0, -1.0" not in source
 
 
 def test_launch_description_expands_and_is_default_off():
@@ -83,6 +131,24 @@ def test_launch_description_expands_and_is_default_off():
     assert declarations["output_odom_topic"].default_value[0].text == "/lio/odom_shadow"
     assert len(nodes) == 2
     assert all(node.condition is not None for node in nodes)
+
+    launch = _read("launch/shadow.launch.py")
+    assert "mapping.extrinsic_R" not in launch
+    assert "mapping.extrinsic_T" not in launch
+    assert "static_transform_publisher" not in launch
+    assert "tf2_ros" not in launch
+
+    sensor_urdf = (
+        PACKAGE_ROOT.parent / "robot_description/urdf/jackal_sensors.xacro"
+    ).read_text(encoding="utf-8")
+    frame_call = re.search(
+        r'<xacro:fixed_frame\s+prefix="\$\{prefix\}" '
+        r'parent="base_link" child="lio_lidar_link"\s+([^>]*)/>',
+        sensor_urdf,
+    )
+    assert frame_call is not None
+    assert 'xyz="0.120 0.000 0.333"' in frame_call.group(1)
+    assert "rpy=" not in frame_call.group(1)
 
 
 def test_planar_imu_remap_is_explicit_and_diagnostics_are_bounded():

@@ -1,5 +1,21 @@
 # V6 FAST-LIO2 Jazzy PointCloud2 shadow handoff (2026-08-24)
 
+## Axis-contract amendment (2026-08-24)
+
+The initial identity rotation below has been superseded by the measured Ouster
+SENSOR-to-IMU axis contract. `config/ouster_shadow.yaml` now contains the sole
+algorithm conversion, fixed row-major LiDAR-to-IMU rotation
+`[0,-1,0; 1,0,0; 0,0,1]` (+90 degree yaw). Translation remains
+`[0.108,-0.002,0.266]` and online estimation remains false.
+
+The Ouster adapter still copies raw SENSOR XYZ unchanged, and the published
+`lio_lidar_link` plus physical static TF remain unchanged. Do not rotate the
+adapter output, launch parameters, URDF, or static TF as well; that would
+double-apply this internal FAST-LIO basis conversion. The exact full replay
+confirmed the early axis correction but later diverged, so FAST-LIO remains
+default OFF, TF false, and excluded from EKF/Nav2/control. See
+`V6_FAST_LIO2_AXIS_FIX_REPLAY_20260824.md`.
+
 ## Result and boundary
 
 - Added one independent `fast_lio2_ros2` package from audited Ericsii
@@ -52,9 +68,10 @@ covariance to mark it unavailable rather than precise.
 - Expected PointCloud2 fields are float32 `x/y/z/intensity`, uint8 `ring`, and
   uint32 `t`; `t` is interpreted as nanoseconds. Scan rate is 10 Hz and blind
   range is 0.3 m.
-- Initial LiDAR-to-body translation is `[0.108, -0.002, 0.266]`, rotation is
-  identity, and online extrinsic estimation is disabled. These axes have not
-  been verified against a real Isaac Ouster graph.
+- LiDAR-to-body translation is `[0.108, -0.002, 0.266]`; the fixed internal
+  SENSOR-to-IMU rotation is +90 degree yaw, and online extrinsic estimation is
+  disabled. The early motion direction is replay-verified, but full-route
+  stability is not established.
 - The existing 60 Hz corrected IMU is the initial shadow candidate. Promotion
   may require a 120 or 200 Hz IMU after measured initialization/deskew tests.
 
@@ -86,9 +103,9 @@ safe, directly testable reset API suitable for exposure here.
 1. There is no Isaac Ouster producer or adapter in this change. A later task
    must provide `/lio/points_raw` and prove the exact field types, timestamp
    unit/order, QoS, frame, scan lines, and 10 Hz cadence.
-2. LiDAR/IMU axes, timestamps, and the initial extrinsic must be checked with
-   real stationary and motion data; the current values are starting inputs,
-   not calibration evidence.
+2. The +90 degree axis basis is discrimination-replay verified, but the later
+   476--479 s geometry collapse remains unresolved. Translation, time
+   alignment, and full-route stability are not promoted calibration evidence.
 3. No valid LIO odometry was produced without sensors. Continuity, covariance,
    deskew, map reset, compute load, and drift remain live-unverified.
 4. Any EKF promotion is a separate A/B decision. This package must remain

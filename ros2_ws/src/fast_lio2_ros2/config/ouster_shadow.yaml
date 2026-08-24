@@ -40,10 +40,13 @@
       fov_degree: 360.0
       det_range: 150.0
       extrinsic_est_en: false
+      # The adapter preserves raw SENSOR XYZ. This is the single internal
+      # SENSOR-to-IMU axis-basis conversion; it does not change the published
+      # lio_lidar_link ROS frame or its physical static-TF contract.
       extrinsic_T: [0.108, -0.002, 0.266]
-      extrinsic_R: [1.0, 0.0, 0.0,
-                    0.0, 1.0, 0.0,
-                    0.0, 0.0, 1.0]
+      extrinsic_R: [0.0, -1.0, 0.0,
+                    1.0,  0.0, 0.0,
+                    0.0,  0.0, 1.0]
 
     publish:
       publish_tf: false

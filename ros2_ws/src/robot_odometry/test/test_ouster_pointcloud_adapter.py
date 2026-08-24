@@ -94,7 +94,11 @@ def test_exact_raw_schema_converts_fields_order_ring_and_relative_time():
     assert output.header.stamp.sec == 4
     assert output.header.stamp.nanosec == 294_967_290
     points = _unpack_output(output)
-    assert [point[0] for point in points] == [1.0, 2.0, 3.0]
+    assert [point[:3] for point in points] == [
+        (1.0, 2.0, 3.0),
+        (2.0, 3.0, 4.0),
+        (3.0, 4.0, 5.0),
+    ]
     assert [point[4] for point in points] == [0, 31, 7]
     assert [point[5] for point in points] == [0, 20, 100_000]
 
@@ -180,6 +184,8 @@ def test_adapter_uses_sensor_data_qos_and_has_no_tf_path():
     source = (
         PACKAGE_ROOT / "robot_odometry/ouster_pointcloud_adapter.py"
     ).read_text(encoding="utf-8")
+    assert 'for name in ("x", "y", "z", "intensity")' in source
+    assert "output_points[name] = points[name]" in source
     assert "tf2" not in source
     assert "Transform" not in source
 
