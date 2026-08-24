@@ -3223,3 +3223,23 @@
   `/proc/net/snmp` `UdpRcvbufErrors` before/after.
 - Verdict: **CODE/STATIC ONLY; LIVE RECHECK REQUIRED**. See
   `V7_3_PHASE1A_STEREO_PRODUCER_20260824.md`.
+
+## 2026-08-24 — V7.3 Phase 1A 4 MiB UDP-buffer live A/B
+
+- Run: Module3 `3e1d63ec92ba9722f25a0c2b7f27acc8fb1592cc`, camera-only
+  domain 230, same Kujiale scene/spawn/stereo profile, one valid 30.000 s
+  direct in-memory probe; no bag, VIO, Nav2, Integration, or Module2.
+- Result: all five topics delivered 506 unique stamps, all five stable stamp
+  sets were exactly equal, and every sim-stamp rate was 20.0 Hz. Maximum
+  payload stamp gap was 50.000998 ms (sub-microsecond numeric jitter, no
+  100 ms missing-frame gap); maximum wall receive gap was 90.59 ms. RTF was
+  0.84587; GPU was 40.75% mean/44% max.
+- UDP: immediate system-wide `/proc/net/snmp` bracketing gave
+  `RcvbufErrors=0`, `InErrors=0`, `NoPorts=0`, `SndbufErrors=0`, and
+  `MemErrors=0` deltas. Raw and summarized evidence is under
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1a_udp_buffer_20260824T103230Z`.
+- Verdict: **ENGINEERING LIVE PASS / BUFFER HYPOTHESIS SUPPORTED**. This A/B
+  removed the earlier RGB/depth stamp loss, but is not formal root-cause proof
+  because the earlier run had no run-scoped UDP counter and did not preserve
+  its ad-hoc subscriber implementation. Keep 4 MiB and proceed to the planned
+  stereo/VIO consumer smoke; do not change publisher threading.

@@ -130,3 +130,56 @@ export FASTDDS_DEFAULT_PROFILES_FILE="$ISAAC_NAV_FASTDDS_PROFILE"
 
 Only the run-scoped counter delta together with the repeated topic rates and
 gaps can support or reject this transport-loss hypothesis.
+
+## UDP receive-buffer 30 s live recheck
+
+The bounded camera-only A/B at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1a_udp_buffer_20260824T103230Z`
+is an **ENGINEERING LIVE PASS** on Module3
+`3e1d63ec92ba9722f25a0c2b7f27acc8fb1592cc`. All three fixed `main` refs
+matched the project boundary, the worktree was tracked-clean, domain 230 was
+empty, and Linux `net.core.rmem_max` was 4194304. Producer and subscriber both
+used the same absolute UDP-only profile through
+`ISAAC_NAV_FASTDDS_PROFILE`, `FASTRTPS_DEFAULT_PROFILES_FILE`, and
+`FASTDDS_DEFAULT_PROFILES_FILE`. No VIO, Nav2, Integration, Module2, or bag
+recorder ran.
+
+The valid 30.000 s direct probe used one rclpy process, BEST_EFFORT KEEP_LAST
+depth 100, and an eight-thread `MultiThreadedExecutor`; callbacks recorded only
+header stamp, monotonic receive time, and first-message schema. Every one of
+the five topics delivered 506 unique, strictly monotonic stamps over the same
+25.25 s simulation interval. All five stamp sets were exactly equal, so left
+RGB/right RGB and left RGB/depth/info were exact-stamp paired with zero missing
+slots. Every topic measured 20.0 Hz in simulation time. Maximum stamp gap was
+50.000998 ms: nine intervals per topic were numerically above 50 ms by no more
+than 0.998 us, but there were no 100 ms missing-frame gaps. Maximum wall
+receive gaps were 81.44 ms left RGB, 88.97 ms depth, 79.02 ms left info,
+90.59 ms right RGB, and 79.01 ms right info; none exceeded 100 ms. RTF was
+0.84587, above the 0.8 plan threshold. GPU utilization across 32 one-hertz
+samples was 40.75% mean and 44% maximum.
+
+Immediate `/proc/net/snmp` reads bracketed the valid probe. `RcvbufErrors`,
+`InErrors`, `NoPorts`, `SndbufErrors`, and `MemErrors` all had delta zero;
+`InDatagrams` increased by 33499 and `OutDatagrams` by 46698. `IgnoredMulti`
+increased by 31; it is a system-wide multicast counter, not evidence of camera
+payload loss. Raw snapshots and `udp_counter_delta.json` are in the run
+directory.
+
+Evidence integrity note: the first launch was rejected before Isaac by the
+existing non-default-domain guard and was corrected with
+`ISAAC_NAV_EXPECTED_DOMAIN_ID=230`. A later probe process exited before
+creating any subscription because its evidence-helper attribute conflicted
+with rclpy; it produced no experimental sample. After a producer-off 1 s
+subscriber self-test passed, master explicitly authorized the single valid
+replacement capture reported above. The invalid logs remain in the same run
+directory and are not included in the metrics.
+
+Compared with the earlier direct result of 510/369/547/528/547 messages and
+only 338 common stamps, the 4 MiB state removed the observed RGB/depth stamp
+loss in this bounded run and therefore supports keeping the receive-buffer
+change. It does not formally prove UDP receive-buffer exhaustion as the root
+cause: the earlier run lacked a run-scoped UDP counter and its ad-hoc direct
+subscriber implementation was not preserved. This is engineering live
+evidence, not formal qualification. Keep the 4 MiB setting and proceed to the
+next planned stereo/VIO consumer smoke; do not change
+`publish_with_queue_thread` based on this passing A/B.
