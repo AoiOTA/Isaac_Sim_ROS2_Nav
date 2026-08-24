@@ -15,9 +15,27 @@ manifest="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/v6_final_kujiale_
 require_file "${manifest}"
 export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
 visual_odometry_shadow_enabled="${V6_VISUAL_ODOMETRY_SHADOW_ENABLED:-false}"
+visual_odometry_shadow_profile="${V6_VISUAL_ODOMETRY_SHADOW_PROFILE:-rgbd}"
 [[ "${visual_odometry_shadow_enabled}" == false \
   || "${visual_odometry_shadow_enabled}" == true ]] || die \
   "V6_VISUAL_ODOMETRY_SHADOW_ENABLED must be true or false"
+[[ "${visual_odometry_shadow_profile}" == rgbd \
+  || "${visual_odometry_shadow_profile}" == stereo_imu ]] || die \
+  "V6_VISUAL_ODOMETRY_SHADOW_PROFILE must be rgbd or stereo_imu"
+[[ "${visual_odometry_shadow_enabled}" == true \
+  || "${visual_odometry_shadow_profile}" == rgbd ]] || die \
+  "V6_VISUAL_ODOMETRY_SHADOW_PROFILE=stereo_imu requires V6_VISUAL_ODOMETRY_SHADOW_ENABLED=true"
+
+isaac_visual_arguments=()
+ros_visual_arguments=()
+if [[ "${visual_odometry_shadow_enabled}" == true \
+    && "${visual_odometry_shadow_profile}" == stereo_imu ]]; then
+  isaac_visual_arguments=(--camera-profile stereo_vio)
+  ros_visual_arguments=(
+    visual_odometry_shadow_profile:=stereo_imu
+    vio_imu_enabled:=true
+  )
+fi
 
 reject_phase1_override() {
   local argument
@@ -26,7 +44,8 @@ reject_phase1_override() {
       localization_owner:=*|nav2_profile:=*|cognitive_profile:=*|\
       module2_enabled:=*|cognitive_graph_mode:=*|ekf_profile:=*|\
       lidar_odometry_backend:=*|lidar_odometry_validated:=*|\
-      visual_odometry_shadow_enabled:=*)
+      visual_odometry_shadow_enabled:=*|visual_odometry_shadow_profile:=*|\
+      vio_imu_enabled:=*)
         die "Phase 1 fixes grid+stable+M0+module2=false+gvg+RF2O-off; rejected override: ${argument}"
         ;;
     esac
@@ -36,7 +55,7 @@ reject_phase1_override() {
 case "${profile}" in
   isaac)
     exec "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" \
-      v6-phase1-empty-room "$@"
+      v6-phase1-empty-room "${isaac_visual_arguments[@]}" "$@"
     ;;
   ros)
     reject_phase1_override "$@"
@@ -58,6 +77,7 @@ case "${profile}" in
       lidar_odometry_backend:=off \
       lidar_odometry_validated:=false \
       visual_odometry_shadow_enabled:=${visual_odometry_shadow_enabled} \
+      "${ros_visual_arguments[@]}" \
       spawn_pose_name:=long_route_start_g1 \
       "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml" \
       "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_clearance_r2.yaml" \

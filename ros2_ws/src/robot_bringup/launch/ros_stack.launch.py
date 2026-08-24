@@ -179,6 +179,22 @@ def _launch_setup(context):
             'visual_odometry_shadow_enabled must be true or false')
     visual_odometry_shadow_enabled = (
         visual_odometry_shadow_value == 'true')
+    visual_odometry_shadow_profile = LaunchConfiguration(
+        'visual_odometry_shadow_profile').perform(context).strip().lower()
+    if visual_odometry_shadow_profile not in {'rgbd', 'stereo_imu'}:
+        raise RuntimeError(
+            'visual_odometry_shadow_profile must be rgbd or stereo_imu')
+    if (not visual_odometry_shadow_enabled
+            and visual_odometry_shadow_profile != 'rgbd'):
+        raise RuntimeError(
+            'visual_odometry_shadow_profile=stereo_imu requires '
+            'visual_odometry_shadow_enabled=true')
+    if (visual_odometry_shadow_enabled
+            and visual_odometry_shadow_profile == 'stereo_imu'
+            and not vio_imu_enabled):
+        raise RuntimeError(
+            'visual_odometry_shadow_profile=stereo_imu requires '
+            'vio_imu_enabled=true')
     ekf_profile = LaunchConfiguration('ekf_profile').perform(context).strip()
     lidar_odometry_backend = LaunchConfiguration(
         'lidar_odometry_backend').perform(context).strip().lower()
@@ -276,6 +292,7 @@ def _launch_setup(context):
         f'cognitive_graph_mode={cognitive_graph_mode}, '
         f'visual_odometry_shadow_enabled='
         f'{str(visual_odometry_shadow_enabled).lower()}, '
+        f'visual_odometry_shadow_profile={visual_odometry_shadow_profile}, '
         f'controller_frequency='
         f'{nav2_controller_profile.controller_frequency:g}Hz, '
         f'model_dt={nav2_controller_profile.model_dt:g}s, '
@@ -334,7 +351,11 @@ def _launch_setup(context):
     if visual_odometry_shadow_enabled:
         actions.append(_include(
             'robot_odometry',
-            'visual_odometry.launch.py',
+            (
+                'visual_odometry_stereo_imu_shadow.launch.py'
+                if visual_odometry_shadow_profile == 'stereo_imu'
+                else 'visual_odometry.launch.py'
+            ),
             {},
         ))
 
@@ -657,6 +678,10 @@ def generate_launch_description():
             description=(
                 'Start the isolated RGB-D cuVSLAM diagnostic shadow; '
                 'it never feeds EKF, TF, planning, or control')),
+        DeclareLaunchArgument(
+            'visual_odometry_shadow_profile',
+            default_value='rgbd',
+            description='rgbd or stereo_imu visual odometry shadow'),
         DeclareLaunchArgument('nav2_params_file', default_value=''),
         DeclareLaunchArgument(
             'nav2_profile',

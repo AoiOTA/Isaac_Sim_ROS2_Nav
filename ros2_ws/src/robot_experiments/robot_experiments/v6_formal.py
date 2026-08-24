@@ -55,6 +55,7 @@ PHASE1_RUNTIME = {
     "direct_rgbd_costmap_enabled": False,
 }
 SOLE_PUBLISHER_TOPICS = ("/odom", "/cmd_vel", "/cmd_vel_sim")
+VISUAL_SHADOW_PROFILES = ("off", "rgbd", "stereo_imu")
 
 # This is the complete dispatcher subscription firewall. Ground Truth stays
 # outside this process and is captured by the session recorder.
@@ -82,6 +83,8 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/simulation/collision",
     "/simulation/collision_diagnostics",
     "/diagnostics",
+    "/visual/odom_shadow",
+    "/visual/status",
 )
 
 CAPTURE_SCHEMA = {
@@ -114,6 +117,43 @@ def append_evidence_jsonl(path: Path, event: str, **payload: Any) -> None:
     row = {"event": event, "wall_time_ns": time.time_ns(), **payload}
     with path.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def _stamp_ns(message: Any) -> int:
+    return (
+        int(message.header.stamp.sec) * 1_000_000_000
+        + int(message.header.stamp.nanosec)
+    )
+
+
+def _visual_odometry_finite(message: Any) -> bool:
+    values = (
+        message.pose.pose.position.x,
+        message.pose.pose.position.y,
+        message.pose.pose.position.z,
+        message.pose.pose.orientation.x,
+        message.pose.pose.orientation.y,
+        message.pose.pose.orientation.z,
+        message.pose.pose.orientation.w,
+        message.twist.twist.linear.x,
+        message.twist.twist.linear.y,
+        message.twist.twist.linear.z,
+        message.twist.twist.angular.x,
+        message.twist.twist.angular.y,
+        message.twist.twist.angular.z,
+        *message.pose.covariance,
+        *message.twist.covariance,
+    )
+    return _stamp_ns(message) > 0 and all(math.isfinite(value) for value in values)
+
+
+def _visual_status_timings(message: Any) -> tuple[float, float, float, float]:
+    return (
+        float(message.node_callback_execution_time),
+        float(message.track_execution_time),
+        float(message.track_execution_time_mean),
+        float(message.track_execution_time_max),
+    )
 
 
 @dataclass(frozen=True)
@@ -621,6 +661,8 @@ class V6FormalNode:
         output_jsonl: Path,
         *,
         qualification: str = "FORMAL_ELIGIBLE",
+        visual_shadow_profile: str = "off",
+        max_legs: int = len(FULL_HOUSE_LEGS),
     ):
         import rclpy
         from action_msgs.srv import CancelGoal
@@ -655,8 +697,21 @@ class V6FormalNode:
         self.episode = episode
         self.output_jsonl = output_jsonl
         self.qualification = qualification
+        if visual_shadow_profile not in VISUAL_SHADOW_PROFILES:
+            raise V6ContractError(
+                "visual shadow profile must be off, rgbd, or stereo_imu"
+            )
+        if not 1 <= max_legs <= len(manifest.mission_legs):
+            raise V6ContractError("max_legs must be from 1 through 5")
+        if (
+            max_legs != len(manifest.mission_legs)
+            and qualification != ENGINEERING_PILOT
+        ):
+            raise V6ContractError("formal dispatch requires all five mission legs")
+        self.visual_shadow_profile = visual_shadow_profile
+        self.mission_legs = manifest.mission_legs[:max_legs]
         self.guard = EpisodeGuard(
-            mission_leg_ids=tuple(item.goal_id for item in manifest.mission_legs)
+            mission_leg_ids=tuple(item.goal_id for item in self.mission_legs)
         )
         self.facts = ReadinessFacts()
         self.pre_reset_route_messages = 0
@@ -673,6 +728,12 @@ class V6FormalNode:
         self.reset_receipt: dict[str, Any] | None = None
         self._terminal_cancel_requested = False
         self._terminal_cancel_future = None
+        self.visual_odom_stamp_ns: int | None = None
+        self.visual_odom_finite = False
+        self.visual_status_stamp_ns: int | None = None
+        self.visual_status_state: int | None = None
+        self.visual_status_timings: tuple[float, float, float, float] | None = None
+        self.visual_barrier_active = False
         self._types = {
             "CancelGoal": CancelGoal,
             "PoseStamped": PoseStamped,
@@ -797,6 +858,19 @@ class V6FormalNode:
                 self._capture_callback("/diagnostics"),
             ),
         ]
+        self.visual_reset_client = None
+        if self.visual_shadow_profile == "stereo_imu":
+            from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
+            from isaac_ros_visual_slam_interfaces.srv import Reset
+
+            self._types["VisualReset"] = Reset
+            self.visual_reset_client = self.node.create_client(
+                Reset, "/visual_slam/reset"
+            )
+            self.subscriptions.extend([
+                sub(Odometry, "/visual/odom_shadow", self._visual_odometry),
+                sub(VisualSlamStatus, "/visual/status", self._visual_status),
+            ])
 
     def _write(self, event: str, **payload: Any) -> None:
         append_evidence_jsonl(self.output_jsonl, event, **payload)
@@ -822,6 +896,17 @@ class V6FormalNode:
         if self.guard.reset_events == 1 and not self.guard.goal_publications:
             self.post_reset_odom_xy.append((x, y))
         self._capture("/odom", message)
+
+    def _visual_odometry(self, message: Any) -> None:
+        self.visual_odom_stamp_ns = _stamp_ns(message)
+        self.visual_odom_finite = _visual_odometry_finite(message)
+
+    def _visual_status(self, message: Any) -> None:
+        self.visual_status_stamp_ns = _stamp_ns(message)
+        self.visual_status_state = int(message.vo_state)
+        self.visual_status_timings = _visual_status_timings(message)
+        if self.visual_barrier_active and self.visual_status_state == 2:
+            self.guard.stop("visual_shadow_fatal_status")
 
     def _track_command(self, topic: str, message: Any) -> None:
         nonzero = any(
@@ -1010,6 +1095,113 @@ class V6FormalNode:
             if predicate():
                 return True
         return bool(predicate())
+
+    def _visual_post_reset_ready(
+        self, pre_odom_stamp_ns: int, pre_status_stamp_ns: int
+    ) -> bool:
+        return bool(
+            self.visual_odom_stamp_ns is not None
+            and self.visual_odom_stamp_ns > pre_odom_stamp_ns
+            and self.visual_odom_finite
+            and self.visual_status_stamp_ns is not None
+            and self.visual_status_stamp_ns > pre_status_stamp_ns
+            and self.visual_status_state == 1
+            and self.visual_status_timings is not None
+            and all(
+                math.isfinite(value) and value >= 0.0
+                for value in self.visual_status_timings
+            )
+        )
+
+    def _run_stereo_visual_reset_barrier(self, timeout_sec: float) -> bool:
+        pre_odom_stamp_ns = self.visual_odom_stamp_ns
+        pre_status_stamp_ns = self.visual_status_stamp_ns
+        self._write(
+            "visual_shadow_pre_reset_barrier",
+            pre_odom_stamp_ns=pre_odom_stamp_ns,
+            pre_status_stamp_ns=pre_status_stamp_ns,
+        )
+        if pre_odom_stamp_ns is None or pre_status_stamp_ns is None:
+            self.guard.stop("visual_shadow_pre_reset_sample_missing")
+            return False
+        if self.visual_status_state == 2:
+            self.guard.stop("visual_shadow_fatal_status")
+            return False
+
+        deadline = time.monotonic() + timeout_sec
+        self.visual_barrier_active = True
+        request_started = time.monotonic()
+        if not self._spin_until(
+            self.visual_reset_client.service_is_ready,
+            max(0.0, deadline - time.monotonic()),
+        ):
+            latency = time.monotonic() - request_started
+            self._write(
+                "visual_shadow_reset_response",
+                success=None,
+                wall_latency_sec=latency,
+                reason="service_missing",
+            )
+            self.guard.stop("visual_shadow_reset_service_missing")
+            return False
+
+        Reset = self._types["VisualReset"]
+        future = self.visual_reset_client.call_async(Reset.Request())
+        if not self._spin_until(
+            lambda: future.done() or self.guard.state == "STOP",
+            max(0.0, deadline - time.monotonic()),
+        ):
+            latency = time.monotonic() - request_started
+            self._write(
+                "visual_shadow_reset_response",
+                success=None,
+                wall_latency_sec=latency,
+                reason="timeout",
+            )
+            self.guard.stop("visual_shadow_reset_timeout")
+            return False
+        if self.guard.state == "STOP":
+            latency = time.monotonic() - request_started
+            self._write(
+                "visual_shadow_reset_response",
+                success=None,
+                wall_latency_sec=latency,
+                reason=self.guard.stop_reason,
+            )
+            return False
+        response = future.result()
+        success = response.success if response is not None else None
+        response_latency = time.monotonic() - request_started
+        self._write(
+            "visual_shadow_reset_response",
+            success=success,
+            wall_latency_sec=response_latency,
+        )
+        if success is not True:
+            self.guard.stop("visual_shadow_reset_rejected")
+            return False
+
+        if not self._spin_until(
+            lambda: self._visual_post_reset_ready(
+                pre_odom_stamp_ns, pre_status_stamp_ns
+            ) or self.guard.state == "STOP",
+            max(0.0, deadline - time.monotonic()),
+        ):
+            self.guard.stop("visual_shadow_post_reset_timeout")
+            return False
+        if self.guard.state == "STOP":
+            return False
+        self._write(
+            "visual_shadow_post_reset_ready",
+            pre_odom_stamp_ns=pre_odom_stamp_ns,
+            pre_status_stamp_ns=pre_status_stamp_ns,
+            post_odom_stamp_ns=self.visual_odom_stamp_ns,
+            post_status_stamp_ns=self.visual_status_stamp_ns,
+            vo_state=self.visual_status_state,
+            status_timings_sec=list(self.visual_status_timings or ()),
+            wall_latency_sec=time.monotonic() - request_started,
+        )
+        return True
 
     def _refresh_endpoint_facts(self) -> None:
         by_topic = {sub.topic_name: sub for sub in self.subscriptions}
@@ -1243,6 +1435,11 @@ class V6FormalNode:
             self.guard.stop(f"reset_receipt_mismatch:{exc}")
             return self.result()
         self._write("reset_receipt", **self.reset_receipt)
+        if (
+            self.visual_shadow_profile == "stereo_imu"
+            and not self._run_stereo_visual_reset_barrier(reset_timeout_sec)
+        ):
+            return self.result()
         self.guard.record_reset_receipt_generation(
             int(self.reset_receipt["generation"])
         )
@@ -1271,7 +1468,7 @@ class V6FormalNode:
         if self.guard.state == "STOP":
             return self.result()
 
-        for index, leg in enumerate(self.manifest.mission_legs):
+        for index, leg in enumerate(self.mission_legs):
             route_baseline = self.canonical_route_count
             result_baseline = len(self.route_goal_results)
             self.guard.record_goal_publication(leg.goal_id)
@@ -1354,6 +1551,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--readiness-timeout-sec", type=float, default=120.0)
     parser.add_argument("--reset-timeout-sec", type=float, default=120.0)
     parser.add_argument("--navigation-timeout-sec", type=float, default=900.0)
+    parser.add_argument(
+        "--visual-shadow-profile", choices=VISUAL_SHADOW_PROFILES, default="off"
+    )
+    parser.add_argument("--max-legs", type=int, default=len(FULL_HOUSE_LEGS))
     return parser
 
 
@@ -1365,6 +1566,14 @@ def cli(argv: list[str] | None = None) -> int:
         if args.allow_engineering_estimated_policy_override and not args.pilot:
             raise V6ContractError(
                 "--allow-engineering-estimated-policy-override requires --pilot"
+            )
+        if not 1 <= args.max_legs <= len(FULL_HOUSE_LEGS):
+            raise V6ContractError("--max-legs must be from 1 through 5")
+        if args.max_legs != len(FULL_HOUSE_LEGS) and not (
+            args.pilot and args.dispatch_pilot
+        ):
+            raise V6ContractError(
+                "--max-legs below 5 requires explicit engineering pilot dispatch"
             )
         manifest = load_manifest(args.manifest)
         qualification = authorize_manifest(
@@ -1384,7 +1593,7 @@ def cli(argv: list[str] | None = None) -> int:
                         "phase1_enabled": manifest.phase1_enabled,
                         "runtime": dict(manifest.raw["runtime"]),
                         "mission_leg_ids": [
-                            leg.goal_id for leg in manifest.mission_legs
+                            leg.goal_id for leg in manifest.mission_legs[:args.max_legs]
                         ],
                     },
                     sort_keys=True,
@@ -1411,6 +1620,8 @@ def cli(argv: list[str] | None = None) -> int:
             qualification=(
                 ENGINEERING_PILOT if args.pilot else "FORMAL_ELIGIBLE"
             ),
+            visual_shadow_profile=args.visual_shadow_profile,
+            max_legs=args.max_legs,
         )
         try:
             result = adapter.run(

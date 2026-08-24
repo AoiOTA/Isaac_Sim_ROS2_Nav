@@ -161,6 +161,142 @@ def test_reset_is_exactly_once_and_unknown_response_stops():
         guard.record_reset_call()
 
 
+def _visual_barrier_adapter():
+    class VisualReset:
+        class Request:
+            pass
+
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = EpisodeGuard()
+    adapter.visual_odom_stamp_ns = 100
+    adapter.visual_odom_finite = True
+    adapter.visual_status_stamp_ns = 100
+    adapter.visual_status_state = 1
+    adapter.visual_status_timings = (0.01, 0.01, 0.01, 0.02)
+    adapter.visual_barrier_active = False
+    adapter._types = {"VisualReset": VisualReset}
+    adapter.events = []
+    adapter._write = lambda event, **payload: adapter.events.append(
+        (event, payload)
+    )
+    return adapter
+
+
+def test_stereo_visual_reset_requires_strictly_newer_finite_healthy_samples():
+    adapter = _visual_barrier_adapter()
+
+    assert not adapter._visual_post_reset_ready(100, 100)
+    adapter.visual_odom_stamp_ns = 101
+    assert not adapter._visual_post_reset_ready(100, 100)
+    adapter.visual_status_stamp_ns = 99
+    assert not adapter._visual_post_reset_ready(100, 100)
+    adapter.visual_status_stamp_ns = 101
+    assert adapter._visual_post_reset_ready(100, 100)
+    adapter.visual_odom_finite = False
+    assert not adapter._visual_post_reset_ready(100, 100)
+    adapter.visual_odom_finite = True
+    adapter.visual_status_timings = (0.01, float("nan"), 0.01, 0.02)
+    assert not adapter._visual_post_reset_ready(100, 100)
+
+
+def test_stereo_visual_reset_barrier_orders_reset_response_and_post_ready():
+    adapter = _visual_barrier_adapter()
+    future = SimpleNamespace(
+        done=lambda: True,
+        result=lambda: SimpleNamespace(success=True),
+    )
+    adapter.visual_reset_client = SimpleNamespace(
+        service_is_ready=lambda: True,
+        call_async=lambda _request: future,
+    )
+    spin_calls = 0
+
+    def spin_until(predicate, _timeout):
+        nonlocal spin_calls
+        spin_calls += 1
+        if spin_calls == 3:
+            adapter.visual_odom_stamp_ns = 101
+            adapter.visual_status_stamp_ns = 101
+        return bool(predicate())
+
+    adapter._spin_until = spin_until
+
+    assert adapter._run_stereo_visual_reset_barrier(1.0)
+    assert [event for event, _payload in adapter.events] == [
+        "visual_shadow_pre_reset_barrier",
+        "visual_shadow_reset_response",
+        "visual_shadow_post_reset_ready",
+    ]
+    assert adapter.events[1][1]["success"] is True
+    assert adapter.events[2][1]["post_odom_stamp_ns"] == 101
+    assert not adapter.guard.stop_reason
+
+
+@pytest.mark.parametrize(
+    ("service_ready", "response", "expected_reason"),
+    [
+        (False, None, "visual_shadow_reset_service_missing"),
+        (True, False, "visual_shadow_reset_rejected"),
+    ],
+)
+def test_stereo_visual_reset_failure_stops_before_any_goal(
+    service_ready, response, expected_reason
+):
+    adapter = _visual_barrier_adapter()
+    future = SimpleNamespace(
+        done=lambda: True,
+        result=lambda: SimpleNamespace(success=response),
+    )
+    adapter.visual_reset_client = SimpleNamespace(
+        service_is_ready=lambda: service_ready,
+        call_async=lambda _request: future,
+    )
+    adapter._spin_until = lambda predicate, _timeout: bool(predicate())
+
+    assert not adapter._run_stereo_visual_reset_barrier(1.0)
+    assert adapter.guard.stop_reason == expected_reason
+    assert adapter.guard.goal_publications == 0
+
+
+def test_stereo_visual_reset_timeout_stops_before_any_goal():
+    adapter = _visual_barrier_adapter()
+    future = SimpleNamespace(done=lambda: False, result=lambda: None)
+    adapter.visual_reset_client = SimpleNamespace(
+        service_is_ready=lambda: True,
+        call_async=lambda _request: future,
+    )
+    spin_calls = 0
+
+    def spin_until(predicate, _timeout):
+        nonlocal spin_calls
+        spin_calls += 1
+        return bool(predicate()) if spin_calls == 1 else False
+
+    adapter._spin_until = spin_until
+
+    assert not adapter._run_stereo_visual_reset_barrier(1.0)
+    assert adapter.guard.stop_reason == "visual_shadow_reset_timeout"
+    assert adapter.guard.goal_publications == 0
+
+
+def test_stereo_visual_fatal_status_stops_before_goal():
+    adapter = _visual_barrier_adapter()
+    adapter.visual_barrier_active = True
+    status = SimpleNamespace(
+        header=SimpleNamespace(stamp=SimpleNamespace(sec=1, nanosec=0)),
+        vo_state=2,
+        node_callback_execution_time=0.0,
+        track_execution_time=0.0,
+        track_execution_time_mean=0.0,
+        track_execution_time_max=0.0,
+    )
+
+    adapter._visual_status(status)
+
+    assert adapter.guard.stop_reason == "visual_shadow_fatal_status"
+    assert adapter.guard.goal_publications == 0
+
+
 def test_pre_reset_readiness_uses_endpoints_without_status_or_route_sample():
     class Endpoint:
         def __init__(self, topic_name):
@@ -313,6 +449,21 @@ def test_full_house_goals_publish_in_exact_order():
     assert guard.completed_leg_ids == list(FULL_HOUSE_LEGS)
 
 
+def test_engineering_one_leg_guard_succeeds_at_g2_without_g3():
+    guard = ready_guard()
+    guard.mission_leg_ids = ("G2",)
+
+    guard.record_goal_publication("G2")
+    guard.record_route_progress()
+    guard.record_route_completion(True)
+
+    assert guard.state == "SUCCEEDED"
+    assert guard.goal_publications == 1
+    assert guard.completed_leg_ids == ["G2"]
+    with pytest.raises(V6ContractError, match="not_authorized"):
+        guard.record_goal_publication("G3")
+
+
 def test_goal_order_mismatch_stops_before_publish():
     guard = ready_guard()
     with pytest.raises(V6ContractError, match="mission_leg_order"):
@@ -460,6 +611,28 @@ def test_pilot_validation_prints_canonical_runtime_and_loop(capsys):
     assert row["runtime"]["cognitive_profile"] == "M0"
     assert row["runtime"]["module2_enabled"] is False
     assert row["mission_leg_ids"] == list(FULL_HOUSE_LEGS)
+
+
+def test_max_legs_below_five_requires_explicit_engineering_dispatch(
+    tmp_path, capsys
+):
+    common = ["--manifest", str(MANIFESTS["static"]), "--max-legs", "1"]
+
+    assert cli(common) == 2
+    assert "explicit engineering pilot dispatch" in capsys.readouterr().err
+    assert cli([*common, "--pilot"]) == 2
+    assert "explicit engineering pilot dispatch" in capsys.readouterr().err
+
+
+def test_physical_receipt_precedes_visual_barrier_and_g2_dispatch_in_source():
+    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
+
+    physical_receipt = source.index('self._write("reset_receipt"')
+    visual_reset = source.index(
+        "and not self._run_stereo_visual_reset_barrier", physical_receipt
+    )
+    goal_loop = source.index("for index, leg in enumerate(self.mission_legs)")
+    assert physical_receipt < visual_reset < goal_loop
 
 
 def test_manifest_rejects_waypoint_yaw(tmp_path):

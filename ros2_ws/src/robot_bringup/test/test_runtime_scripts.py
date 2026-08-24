@@ -366,6 +366,10 @@ def test_ros_stack_visual_odometry_shadow_is_default_off_and_conditional():
     assert 'if visual_odometry_shadow_enabled:' in source
     assert "'visual_odometry.launch.py'" in source
     assert source.count("'visual_odometry.launch.py'") == 1
+    assert ("'visual_odometry_stereo_imu_shadow.launch.py'" in source)
+    assert ("'visual_odometry_shadow_profile',\n"
+            "            default_value='rgbd'" in source)
+    assert 'visual_odometry_shadow_profile must be rgbd or stereo_imu' in source
 
 
 def _load_visual_shadow_gate():
@@ -445,6 +449,10 @@ source_ros() {{ :; }}
     )
     (tmp_path / 'ros2_ws' / 'src' / 'robot_experiments' / 'config'
      / 'v6_final_kujiale_static.yaml').touch()
+    fake_isaac = scripts / 'run_kujiale_4x20_isaac.sh'
+    fake_isaac.write_text(
+        '#!/usr/bin/env bash\nprintf "%s\\n" "$@"\n', encoding='utf-8')
+    fake_isaac.chmod(0o755)
     fake_bin = tmp_path / 'bin'
     fake_bin.mkdir()
     fake_ros2 = fake_bin / 'ros2'
@@ -489,7 +497,33 @@ def test_v6_ros_argv_enables_only_the_explicit_visual_shadow(monkeypatch, tmp_pa
     arguments = _v6_wrapper_argv(tmp_path, 'ros')
 
     assert arguments.count('visual_odometry_shadow_enabled:=true') == 1
+    assert 'visual_odometry_shadow_profile:=stereo_imu' not in arguments
+    assert 'vio_imu_enabled:=true' not in arguments
     assert not any('/visual/odom_shadow' in argument for argument in arguments)
+
+
+def test_v6_stereo_imu_profile_is_the_single_camera_and_vio_derivation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv('V6_VISUAL_ODOMETRY_SHADOW_ENABLED', 'true')
+    monkeypatch.setenv('V6_VISUAL_ODOMETRY_SHADOW_PROFILE', 'stereo_imu')
+
+    ros_arguments = _v6_wrapper_argv(tmp_path / 'ros', 'ros')
+    isaac_arguments = _v6_wrapper_argv(tmp_path / 'isaac', 'isaac')
+
+    assert ros_arguments.count('visual_odometry_shadow_enabled:=true') == 1
+    assert ros_arguments.count('visual_odometry_shadow_profile:=stereo_imu') == 1
+    assert ros_arguments.count('vio_imu_enabled:=true') == 1
+    assert isaac_arguments.count('--camera-profile') == 1
+    assert isaac_arguments.count('stereo_vio') == 1
+
+
+def test_v6_stereo_imu_profile_rejects_disabled_shadow(monkeypatch, tmp_path):
+    monkeypatch.setenv('V6_VISUAL_ODOMETRY_SHADOW_ENABLED', 'false')
+    monkeypatch.setenv('V6_VISUAL_ODOMETRY_SHADOW_PROFILE', 'stereo_imu')
+
+    with pytest.raises(AssertionError, match='requires .*ENABLED=true'):
+        _v6_wrapper_argv(tmp_path, 'ros')
 
 
 def test_v6_production_scripts_have_no_retired_localization_tokens():
@@ -510,6 +544,8 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'V6_LOW_OBSTACLES_ENABLED:-false',
         'V6_DYNAMIC_ACTORS_ENABLED:-false',
         'V6_VISUAL_ODOMETRY_SHADOW_ENABLED:-false',
+        'V6_VISUAL_ODOMETRY_SHADOW_PROFILE:-rgbd',
+        'R5_MAX_LEGS:-5',
         'mission=G1->G2->G3->G4->G5->G1',
         '/flatscan /localization_result /bio_nav/localization/status',
         'BIO_NAV_INTEGRATION_ROOT="${I_SRC}"',
@@ -525,12 +561,22 @@ def test_v6_r5_session_pins_phase1_and_records_grid_topics():
         'KUJIALE_SOURCE_USD="/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"',
         'required snapshot file not found:',
         'visual_odometry_shadow_enabled:=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}',
+        'visual_odometry_shadow_profile:=stereo_imu',
+        'vio_imu_enabled:=true',
         '/camera/front/image_raw',
         '/camera/front/depth/image_raw',
         '/camera/front/depth/image_uint16',
         '/camera/front/camera_info',
         '/visual/odom_shadow',
         '/visual/status',
+        '/camera/left/image_raw',
+        '/camera/left/camera_info',
+        '/camera/right/image_raw',
+        '/camera/right/camera_info',
+        '/imu/vio_raw',
+        '/imu/vio',
+        '--visual-shadow-profile "${FORMAL_VISUAL_PROFILE}"',
+        '--max-legs "${R5_MAX_LEGS}"',
         '--max-cache-size 536870912',
         '--topics "${RECORD_TOPICS[@]}"',
         'V6_VISUAL_ODOMETRY_WARMUP_SEC:-45',
@@ -571,6 +617,48 @@ def test_v6_r5_camera_recorder_uses_bounded_sensor_queues_and_cache():
         }
     assert '--max-cache-size 536870912' in source
     assert 'Number of messages lost on the transport layer:' in source
+
+    for topic in (
+        '/camera/left/image_raw',
+        '/camera/left/camera_info',
+        '/camera/right/image_raw',
+        '/camera/right/camera_info',
+        '/imu/vio_raw',
+        '/imu/vio',
+    ):
+        assert profiles[topic] == {
+            'reliability': 'best_effort',
+            'durability': 'volatile',
+            'history': 'keep_last',
+            'depth': 100,
+        }
+    for topic in ('/visual/odom_shadow', '/visual/status'):
+        assert profiles[topic] == {
+            'reliability': 'reliable',
+            'durability': 'volatile',
+            'history': 'keep_last',
+            'depth': 100,
+        }
+    assert '/camera/left/depth' not in source
+
+
+def test_v6_r5_stereo_recorder_asserts_all_inputs_and_scales_timeout_by_legs():
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    stereo_branch = source.split(
+        'elif [[ "${FORMAL_VISUAL_PROFILE}" == stereo_imu ]]', 1)[1]
+
+    for topic in (
+        '/camera/left/image_raw',
+        '/camera/left/camera_info',
+        '/camera/right/image_raw',
+        '/camera/right/camera_info',
+        '/imu/vio_raw',
+        '/imu/vio',
+        '/visual/odom_shadow',
+        '/visual/status',
+    ):
+        assert topic in stereo_branch
+    assert 'R5_MAX_LEGS * NAVIGATION_TIMEOUT' in source
 
 
 def test_v6_r5_failure_stops_owned_navigation_before_delayed_probe():

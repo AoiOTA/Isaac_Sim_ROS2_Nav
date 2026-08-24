@@ -50,6 +50,7 @@ EPISODE_SEEDS="${R5_EPISODE_SEEDS:-7201 7202 7203}"
 READINESS_TIMEOUT="${R5_READINESS_TIMEOUT_SEC:-240}"
 RESET_TIMEOUT="${R5_RESET_TIMEOUT_SEC:-240}"
 NAVIGATION_TIMEOUT="${R5_NAVIGATION_TIMEOUT_SEC:-300}"
+R5_MAX_LEGS="${R5_MAX_LEGS:-5}"
 V6_COGNITIVE_PROFILE="${V6_COGNITIVE_PROFILE:-M0}"
 V6_LOCALIZATION_BACKEND="${V6_LOCALIZATION_BACKEND:-grid}"
 V6_NAV2_PROFILE="${V6_NAV2_PROFILE:-stable}"
@@ -58,6 +59,7 @@ V6_COGNITIVE_GRAPH_MODE="${V6_COGNITIVE_GRAPH_MODE:-gvg}"
 V6_LOW_OBSTACLES_ENABLED="${V6_LOW_OBSTACLES_ENABLED:-false}"
 V6_DYNAMIC_ACTORS_ENABLED="${V6_DYNAMIC_ACTORS_ENABLED:-false}"
 V6_VISUAL_ODOMETRY_SHADOW_ENABLED="${V6_VISUAL_ODOMETRY_SHADOW_ENABLED:-false}"
+V6_VISUAL_ODOMETRY_SHADOW_PROFILE="${V6_VISUAL_ODOMETRY_SHADOW_PROFILE:-rgbd}"
 V6_VISUAL_ODOMETRY_WARMUP_SEC="${V6_VISUAL_ODOMETRY_WARMUP_SEC:-45}"
 M3="${SNAP}/m3_src"
 I_SRC="${SNAP}/i_src"
@@ -132,6 +134,34 @@ mkdir -p "${LOGS}" "${PROV}" "${EPISODES_DIR}"
   echo "V6_VISUAL_ODOMETRY_SHADOW_ENABLED must be true or false" >&2
   exit 64
 }
+[[ "${V6_VISUAL_ODOMETRY_SHADOW_PROFILE}" == rgbd \
+  || "${V6_VISUAL_ODOMETRY_SHADOW_PROFILE}" == stereo_imu ]] || {
+  echo "V6_VISUAL_ODOMETRY_SHADOW_PROFILE must be rgbd or stereo_imu" >&2
+  exit 64
+}
+[[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true \
+  || "${V6_VISUAL_ODOMETRY_SHADOW_PROFILE}" == rgbd ]] || {
+  echo "V6_VISUAL_ODOMETRY_SHADOW_PROFILE=stereo_imu requires V6_VISUAL_ODOMETRY_SHADOW_ENABLED=true" >&2
+  exit 64
+}
+[[ "${R5_MAX_LEGS}" =~ ^[1-5]$ ]] || {
+  echo "R5_MAX_LEGS must be an integer from 1 through 5" >&2
+  exit 64
+}
+
+ISAAC_VISUAL_ARGUMENTS=()
+ROS_VISUAL_ARGUMENTS=()
+FORMAL_VISUAL_PROFILE=off
+if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
+  FORMAL_VISUAL_PROFILE="${V6_VISUAL_ODOMETRY_SHADOW_PROFILE}"
+  if [[ "${V6_VISUAL_ODOMETRY_SHADOW_PROFILE}" == stereo_imu ]]; then
+    ISAAC_VISUAL_ARGUMENTS=(--camera-profile stereo_vio)
+    ROS_VISUAL_ARGUMENTS=(
+      visual_odometry_shadow_profile:=stereo_imu
+      vio_imu_enabled:=true
+    )
+  fi
+fi
 
 if [[ -e "${RUN_DIR}/STOP.md" || -e "${RUN_DIR}/driver_summary.json" ]]; then
   echo "run directory already contains a terminal artifact; refusing to reuse it" >&2
@@ -362,7 +392,9 @@ echo "${ROBOT_EXPERIMENTS_PREFIX}" > "${PROV}/robot_experiments_prefix.txt"
   echo "low_obstacles_enabled=${V6_LOW_OBSTACLES_ENABLED}"
   echo "dynamic_actors_enabled=${V6_DYNAMIC_ACTORS_ENABLED}"
   echo "visual_odometry_shadow_enabled=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}"
+  echo "visual_odometry_shadow_profile=${FORMAL_VISUAL_PROFILE}"
   echo "visual_odometry_warmup_sec=${V6_VISUAL_ODOMETRY_WARMUP_SEC}"
+  echo "max_legs=${R5_MAX_LEGS}"
   echo "mission=G1->G2->G3->G4->G5->G1"
   if [[ -f "${SNAP}/SNAPSHOT_SHAS.txt" ]]; then
     cat "${SNAP}/SNAPSHOT_SHAS.txt"
@@ -427,6 +459,46 @@ cat > "${QOS_FILE}" <<'QOS'
   durability: volatile
   history: keep_last
   depth: 100
+/camera/left/image_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/camera/left/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/camera/right/image_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/camera/right/camera_info:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/imu/vio_raw:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/imu/vio:
+  reliability: best_effort
+  durability: volatile
+  history: keep_last
+  depth: 100
+/visual/odom_shadow:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 100
+/visual/status:
+  reliability: reliable
+  durability: volatile
+  history: keep_last
+  depth: 100
 /scan:
   reliability: best_effort
   durability: volatile
@@ -442,7 +514,7 @@ QOS
 # ---------------------------------------------------------------- isaac
 STAGE="isaac"
 start_bg isaac "${M3}/scripts/run_kujiale_4x20_isaac.sh" \
-  v6-phase1-empty-room --headless
+  v6-phase1-empty-room "${ISAAC_VISUAL_ARGUMENTS[@]}" --headless
 wait_topic /clock 600 || _stop "Kujiale /clock did not appear; see logs/isaac.log"
 assert_alive isaac
 wait_service /simulation/reset 300 || _stop "reset service did not appear"
@@ -468,6 +540,7 @@ start_bg navigation ros2 launch robot_bringup ros_stack.launch.py \
   lidar_odometry_backend:=off \
   lidar_odometry_validated:=false \
   visual_odometry_shadow_enabled:=${V6_VISUAL_ODOMETRY_SHADOW_ENABLED} \
+  "${ROS_VISUAL_ARGUMENTS[@]}" \
   spawn_pose_name:=long_route_start_g1 \
   "spawn_poses_file:=${M3}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml" \
   "map_file:=${M3}/data/maps/occupancy/v6_kujiale_clearance_r2.yaml" \
@@ -516,12 +589,23 @@ RECORD_TOPICS=(
   /bio_nav/route_goal_complete /bio_nav/route_goal /bio_nav/route_goal_result
   /bio_nav/route_edge_costs /diagnostics /rosout
 )
-if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
+if [[ "${FORMAL_VISUAL_PROFILE}" == rgbd ]]; then
   RECORD_TOPICS+=(
     /camera/front/image_raw
     /camera/front/depth/image_raw
     /camera/front/depth/image_uint16
     /camera/front/camera_info
+    /visual/odom_shadow
+    /visual/status
+  )
+elif [[ "${FORMAL_VISUAL_PROFILE}" == stereo_imu ]]; then
+  RECORD_TOPICS+=(
+    /camera/left/image_raw
+    /camera/left/camera_info
+    /camera/right/image_raw
+    /camera/right/camera_info
+    /imu/vio_raw
+    /imu/vio
     /visual/odom_shadow
     /visual/status
   )
@@ -545,11 +629,18 @@ for required_topic in /flatscan /localization_result \
   grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
     _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
 done
-if [[ "${V6_VISUAL_ODOMETRY_SHADOW_ENABLED}" == true ]]; then
+if [[ "${FORMAL_VISUAL_PROFILE}" == rgbd ]]; then
   for required_topic in /camera/front/image_raw \
       /camera/front/depth/image_raw /camera/front/depth/image_uint16 \
       /camera/front/camera_info \
       /visual/odom_shadow /visual/status; do
+    grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
+      _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
+  done
+elif [[ "${FORMAL_VISUAL_PROFILE}" == stereo_imu ]]; then
+  for required_topic in /camera/left/image_raw /camera/left/camera_info \
+      /camera/right/image_raw /camera/right/camera_info \
+      /imu/vio_raw /imu/vio /visual/odom_shadow /visual/status; do
     grep -q "Subscribed to topic '${required_topic}'" "${LOGS}/rosbag.log" || \
       _stop "recorder did not subscribe to ${required_topic}; see logs/rosbag.log"
   done
@@ -581,11 +672,13 @@ for position in "${!index_rows[@]}"; do
   episode_result="${EPISODES_DIR}/episode_seed${seed}.result.json"
   episode_status=0
   _log_stage "episode_start" "seed=${seed} index=${index}"
-  timeout $((READINESS_TIMEOUT + RESET_TIMEOUT + 5 * NAVIGATION_TIMEOUT + 120)) \
+  timeout $((READINESS_TIMEOUT + 2 * RESET_TIMEOUT + R5_MAX_LEGS * NAVIGATION_TIMEOUT + 120)) \
     "${M3}/scripts/run_v6_formal_episode.sh" --pilot --dispatch-pilot \
     "${MANIFEST}" \
     --episode-index "${index}" \
     --output-jsonl "${episode_jsonl}" \
+    --visual-shadow-profile "${FORMAL_VISUAL_PROFILE}" \
+    --max-legs "${R5_MAX_LEGS}" \
     --readiness-timeout-sec "${READINESS_TIMEOUT}" \
     --reset-timeout-sec "${RESET_TIMEOUT}" \
     --navigation-timeout-sec "${NAVIGATION_TIMEOUT}" \

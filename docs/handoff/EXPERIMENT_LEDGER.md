@@ -3410,3 +3410,30 @@
   NOT VIO PROMOTION**. Proceed to one same-route G1-to-G2 shadow pilot for
   pivot and route error; do not cut over canonical `/odom` or TF. Full details
   are in `V7_3_PHASE1C_CUVSLAM_STEREO_IMU_SHADOW_20260824.md`.
+
+## 2026-08-24 — V7.3 Phase 1C G1-to-G2 pilot runner integration
+
+- Change: the canonical Module3 runner now selects the legacy RGB-D or the
+  existing stereo+IMU cuVSLAM shadow through one default-`rgbd` enum. The
+  stereo profile derives `stereo_vio`, `/imu/vio`, and the stereo launch; the
+  disabled and RGB-D launch selections remain unchanged.
+- Reset/dispatch: after every successful physical reset receipt, stereo mode
+  calls the official `/visual_slam/reset` service and requires strictly newer
+  finite odom plus healthy `vo_state=1` status before any Grid/Nav2/goal wait.
+  Service failure, timeout, fatal status, or a stale stamp stops with zero
+  goals. Explicit engineering pilots may slice the existing five-leg mission;
+  `max_legs=1` succeeds at G2 without publishing G3. Formal/default remains
+  five legs.
+- Recorder: the stereo branch records both image/CameraInfo pairs,
+  `/imu/vio_raw`, `/imu/vio`, and both visual outputs with the observed QoS;
+  left depth is excluded. Existing GT/odom/command/collision/plan/costmap
+  topics remain.
+- Validation: source-first/no-cache focused tests passed `32 + 53 + 10`;
+  shell syntax, Python compilation, and diff checks passed. An isolated build
+  completed `robot_experiments` and its three required local dependencies;
+  isolated `robot_bringup` stopped at its existing ten-package runtime
+  dependency closure, which was not expanded for this amendment.
+- Verdict: **CODE/STATIC/BUILD ONLY; LIVE UNVERIFIED; NOT FORMAL**. The next
+  action is one fresh-domain (no higher than 232), seed-7201, `max_legs=1`
+  stereo shadow episode. See
+  `V7_3_PHASE1C_G1_G2_PILOT_RUNNER_20260824.md`.
