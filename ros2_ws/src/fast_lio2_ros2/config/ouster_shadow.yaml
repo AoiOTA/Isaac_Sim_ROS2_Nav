@@ -1,0 +1,59 @@
+/**:
+  ros__parameters:
+    use_sim_time: true
+    feature_extract_enable: false
+    point_filter_num: 3
+    max_iteration: 3
+    filter_size_surf: 0.5
+    filter_size_map: 0.5
+    cube_side_length: 1000.0
+    runtime_pos_log_enable: false
+    map_file_path: ""
+
+    common:
+      lid_topic: /lio/points_raw
+      imu_topic: /imu/data
+      odom_topic: /lio/odom_shadow
+      registered_cloud_topic: /lio/cloud_registered_shadow
+      body_cloud_topic: /lio/cloud_registered_body_shadow
+      effect_cloud_topic: /lio/cloud_effected_shadow
+      map_cloud_topic: /lio/map_shadow
+      path_topic: /lio/path_shadow
+      map_save_service: /lio/save_map_shadow
+      map_frame: lio_map_shadow
+      body_frame: base_link
+      time_sync_en: false
+      time_offset_lidar_to_imu: 0.0
+
+    preprocess:
+      lidar_type: 3  # Ouster PointCloud2: x/y/z/intensity/ring plus uint32 t.
+      scan_line: 64
+      timestamp_unit: 3  # Nanoseconds; internally converted to milliseconds.
+      scan_rate: 10
+      blind: 0.3
+
+    mapping:
+      acc_cov: 0.1
+      gyr_cov: 0.1
+      b_acc_cov: 0.0001
+      b_gyr_cov: 0.0001
+      fov_degree: 360.0
+      det_range: 150.0
+      extrinsic_est_en: false
+      extrinsic_T: [0.108, -0.002, 0.266]
+      extrinsic_R: [1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
+
+    publish:
+      publish_tf: false
+      path_en: false
+      effect_map_en: false
+      map_en: false
+      scan_publish_en: false
+      dense_publish_en: false
+      scan_bodyframe_pub_en: false
+
+    pcd_save:
+      pcd_save_en: false
+      interval: -1

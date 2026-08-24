@@ -3008,3 +3008,27 @@
   No ROS/Isaac/navigation/qualification run. The task-named root
   `conclusion.md` was absent; the specified live metrics and boundary JSON were
   present.
+
+## 2026-08-24 — FAST-LIO2 Jazzy PointCloud2 odometry shadow port
+
+- Source: vendored Ericsii FAST_LIO_ROS2 `2fffc570a25d0df172720bac034fbdb6a13d2162`
+  plus ikd-Tree `e2e3f4e9d3b95a9e66b1ba83dc98d4a05ed8a3c4`, with verbatim GPL-2.0
+  license and exact origin/pin note. No binary/build artifact was imported.
+- Change: new independent `fast_lio2_ros2` package uses only standard Ouster
+  PointCloud2 and corrected IMU inputs, publishes `/lio/odom_shadow` in private
+  `lio_map_shadow -> base_link` frames, and defaults TF/path/cloud/map/PCD plus
+  the entire launch OFF. Livox SDK/message and unused `pcl_ros` dependencies
+  are absent; pose/covariance precede publication and unavailable zero twist is
+  assigned large covariance.
+- Initial config: 10 Hz cloud, 0.3 m blind range, `ring+t` Ouster schema,
+  `[0.108,-0.002,0.266]`/identity fixed extrinsic, simulation time, and current
+  60 Hz IMU candidate. Axes and any need for 120/200 Hz IMU remain live tests.
+- Validation: clean `/opt/ros/jazzy` build at
+  `/tmp/fast_lio2_jazzy_verified.24hWGJ` finished one package; 6 tests passed;
+  installed launch arguments expanded. An empty-domain no-sensor initialization
+  exposed only the two inputs, shadow odom, clock, and ROS internal topics, with
+  no TF/static TF or optional outputs.
+- Boundary: start after physical reset or restart per episode; do not carry the
+  local map across teleport. No Isaac Ouster/adapter, valid LIO odometry,
+  fusion, Grid/Nav2/control influence, live navigation, or qualification was
+  produced. See `V6_FAST_LIO2_JAZZY_SHADOW_20260824.md`.
