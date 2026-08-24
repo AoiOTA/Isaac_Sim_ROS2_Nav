@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import signal
@@ -587,6 +588,138 @@ def test_v6_r5_failure_stops_owned_navigation_before_delayed_probe():
     stop_to_probe = source[owned_stop:delayed_probe]
     assert 'ros2 topic pub' not in stop_to_probe
     assert '/cmd_vel' not in stop_to_probe
+    failure_verdict = source.index(
+        '_stop "episode seed ${seed} failed with exit ${episode_status}; '
+        'evidence kept"',
+        delayed_probe,
+    )
+    probe_failure = source.index(
+        '_stop "episode seed ${seed} boundary probe failed during '
+        '${probe_phase}"',
+        delayed_probe,
+    )
+    assert failure_verdict < probe_failure
+
+
+def _run_v6_r5_boundary_probe(
+        tmp_path, *, probe_phase, publishers, gt_subscribers):
+    source = RUN_V6_R5_SESSION.read_text(encoding='utf-8')
+    command = '"${probe_phase}" <<\'PYEOF\' || boundary_status=$?\n'
+    start = source.index(command) + len(command)
+    probe = source[start:source.index('\nPYEOF', start)]
+    probe = probe.replace(
+        'deadline = time.monotonic() + 20.0',
+        'deadline = time.monotonic() + 0.01',
+    ).replace('time.sleep(0.5)', 'time.sleep(0.001)')
+
+    fake_rclpy = tmp_path / 'rclpy.py'
+    fake_rclpy.write_text(
+        '''import json
+import os
+from types import SimpleNamespace
+
+PUBLISHERS = json.loads(os.environ["FAKE_PUBLISHERS"])
+GT_SUBSCRIBERS = int(os.environ["FAKE_GT_SUBSCRIBERS"])
+
+def init():
+    pass
+
+class Node:
+    def count_publishers(self, topic):
+        return PUBLISHERS.get(topic, 0)
+
+    def get_publishers_info_by_topic(self, topic):
+        return [
+            SimpleNamespace(node_namespace="/fake", node_name=f"publisher_{i}")
+            for i in range(PUBLISHERS.get(topic, 0))
+        ]
+
+    def count_subscribers(self, topic):
+        return GT_SUBSCRIBERS if topic == "/ground_truth/odom" else 0
+
+def create_node(_name):
+    return Node()
+''',
+        encoding='utf-8',
+    )
+    output = tmp_path / f'{probe_phase}.json'
+    environment = _environment(
+        PYTHONPATH=f'{tmp_path}:{os.environ.get("PYTHONPATH", "")}',
+        FAKE_PUBLISHERS=json.dumps(publishers),
+        FAKE_GT_SUBSCRIBERS=str(gt_subscribers),
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', probe, str(output), probe_phase],
+        cwd=tmp_path,
+        env=environment,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result, json.loads(output.read_text(encoding='utf-8'))
+
+
+def test_v6_r5_collision_boundary_accepts_stopped_navigation_publishers(
+        tmp_path):
+    publishers = {
+        '/odom': 0,
+        '/cmd_vel': 0,
+        '/cmd_vel_sim': 1,
+        '/bio_nav/localization/status': 0,
+    }
+    result, evidence = _run_v6_r5_boundary_probe(
+        tmp_path,
+        probe_phase='post_navigation_stop_failure',
+        publishers=publishers,
+        gt_subscribers=1,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert evidence['probe_phase'] == 'post_navigation_stop_failure'
+    assert evidence['expected_publishers'] == publishers
+    assert evidence['expected_publisher_nodes'] == publishers
+    assert evidence['publisher_ownership_pass'] is True
+    assert evidence['ground_truth_firewall_pass'] is True
+
+
+def test_v6_r5_success_boundary_retains_active_publisher_expectations(tmp_path):
+    publishers = {
+        '/odom': 1,
+        '/cmd_vel': 1,
+        '/cmd_vel_sim': 1,
+        '/bio_nav/localization/status': 1,
+    }
+    result, evidence = _run_v6_r5_boundary_probe(
+        tmp_path,
+        probe_phase='active_success_pre_stop',
+        publishers=publishers,
+        gt_subscribers=1,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert evidence['probe_phase'] == 'active_success_pre_stop'
+    assert evidence['expected_publishers'] == publishers
+    assert evidence['publisher_ownership_pass'] is True
+
+
+def test_v6_r5_failed_boundary_rejects_unexpected_navigation_publisher(
+        tmp_path):
+    result, evidence = _run_v6_r5_boundary_probe(
+        tmp_path,
+        probe_phase='post_navigation_stop_failure',
+        publishers={
+            '/odom': 1,
+            '/cmd_vel': 0,
+            '/cmd_vel_sim': 1,
+            '/bio_nav/localization/status': 0,
+        },
+        gt_subscribers=1,
+    )
+
+    assert result.returncode == 2
+    assert evidence['max_publishers']['/odom'] == 1
+    assert evidence['expected_publishers']['/odom'] == 0
+    assert evidence['publisher_ownership_pass'] is False
 
 
 def test_v6_r5_cleanup_signals_only_registered_process_groups():

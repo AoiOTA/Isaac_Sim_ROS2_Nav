@@ -246,3 +246,35 @@ record exactly one terminal cancel before cleanup, show the owned navigation
 PGID stopped before the boundary probe, contain both raw costmap topics, and
 show zero nonzero `/cmd_vel_sim` samples after the terminal stop boundary. A
 late route success must not change the failed episode result.
+
+## Failed-episode boundary probe semantics amendment (2026-08-24)
+
+- Latest live input:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_clearance_r2_cuvslam_fixed_20260824T012352Z`
+  on Module3 `a3c2d791423f5ab031d594d467cdd43fce97a3de`, domain 232,
+  episode index 0 / seed 7201. The episode remains
+  **FAIL/STOP collision on G1->G2** with no completed leg.
+- The immediate stop ordering is confirmed correct: one cancel was requested,
+  the registered navigation PGID stopped before the probe, and the bag contains
+  zero nonzero `/cmd_vel_sim` samples after that stop boundary. The old probe's
+  false result came only from comparing the post-stop graph against active
+  expectations: observed `/odom=0`, `/cmd_vel=0`, localization status `=0`,
+  `/cmd_vel_sim=1`, and GT subscribers `=1`, while it expected every publisher
+  to remain `1`.
+- The probe now has only the two phases already implied by session control.
+  `active_success_pre_stop` expects the four existing publisher/node counts to
+  remain `1`. `post_navigation_stop_failure` expects navigation-owned `/odom`,
+  `/cmd_vel`, and localization status publisher/node counts to be `0`, while
+  the run-owned Isaac `/cmd_vel_sim` publisher/node and recorder GT subscriber
+  remain `1`. The JSON records `probe_phase` and all expected counts.
+- A failed episode remains dominant regardless of probe PASS/FAIL. A successful
+  episode now also stops if its active boundary probe fails. Cleanup still
+  signals only registered process groups; no estimator, controller, Nav2,
+  Collision Monitor, scene, map, safety threshold, or runtime publisher changed.
+- Validation was shell syntax plus six focused tests covering stopped-failure
+  zeros PASS, active-success ones PASS, unexpected post-stop publisher FAIL,
+  collision dominance over late success, stop-before-probe ordering, and
+  registered-PGID-only cleanup. No ROS, Isaac, navigation, or qualification run
+  was performed. The task packet named `conclusion.md` under the latest evidence
+  root, but that file was absent; `review/live_metrics.json` and
+  `canonical_episode/episodes/boundary_seed7201.json` were present and used.

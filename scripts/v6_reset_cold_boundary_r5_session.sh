@@ -606,38 +606,72 @@ for position in "${!index_rows[@]}"; do
 
   # Read-only boundary probe after any failed episode has already stopped the
   # run-owned navigation process group and command chain.
+  if [[ "${episode_status}" == 0 ]]; then
+    probe_phase="active_success_pre_stop"
+  else
+    probe_phase="post_navigation_stop_failure"
+  fi
   boundary_status=0
-  python3 - "${EPISODES_DIR}/boundary_seed${seed}.json" <<'PYEOF' || boundary_status=$?
+  python3 - "${EPISODES_DIR}/boundary_seed${seed}.json" \
+    "${probe_phase}" <<'PYEOF' || boundary_status=$?
 import json
 import sys
 import time
 
 import rclpy
 
-EXPECTED_PUBLISHERS = {
-    "/odom": 1,
-    "/cmd_vel": 1,
-    "/cmd_vel_sim": 1,
-    "/bio_nav/localization/status": 1,
+PROBE_PHASE = sys.argv[2]
+EXPECTED_BY_PHASE = {
+    "active_success_pre_stop": {
+        "/odom": 1,
+        "/cmd_vel": 1,
+        "/cmd_vel_sim": 1,
+        "/bio_nav/localization/status": 1,
+    },
+    "post_navigation_stop_failure": {
+        "/odom": 0,
+        "/cmd_vel": 0,
+        "/cmd_vel_sim": 1,
+        "/bio_nav/localization/status": 0,
+    },
 }
+EXPECTED_PUBLISHERS = EXPECTED_BY_PHASE[PROBE_PHASE]
+EXPECTED_GT_SUBSCRIBERS = 1
 rclpy.init()
 node = rclpy.create_node("r5_boundary_probe")
 max_publishers = {topic: 0 for topic in EXPECTED_PUBLISHERS}
+publisher_nodes = {topic: set() for topic in EXPECTED_PUBLISHERS}
 max_gt_subscribers = 0
 deadline = time.monotonic() + 20.0
 while time.monotonic() < deadline:
     for topic in EXPECTED_PUBLISHERS:
         max_publishers[topic] = max(max_publishers[topic], node.count_publishers(topic))
+        publisher_nodes[topic].update(
+            f"{info.node_namespace.rstrip('/')}/{info.node_name}"
+            for info in node.get_publishers_info_by_topic(topic)
+        )
     max_gt_subscribers = max(
         max_gt_subscribers, node.count_subscribers("/ground_truth/odom")
     )
     time.sleep(0.5)
+max_publisher_nodes = {
+    topic: len(names) for topic, names in publisher_nodes.items()
+}
 result = {
+    "probe_phase": PROBE_PHASE,
     "max_publishers": max_publishers,
     "expected_publishers": EXPECTED_PUBLISHERS,
+    "max_publisher_nodes": max_publisher_nodes,
+    "expected_publisher_nodes": EXPECTED_PUBLISHERS,
     "ground_truth_odom_max_subscribers": max_gt_subscribers,
-    "publisher_ownership_pass": max_publishers == EXPECTED_PUBLISHERS,
-    "ground_truth_firewall_pass": max_gt_subscribers == 1,
+    "expected_ground_truth_odom_subscribers": EXPECTED_GT_SUBSCRIBERS,
+    "publisher_ownership_pass": (
+        max_publishers == EXPECTED_PUBLISHERS
+        and max_publisher_nodes == EXPECTED_PUBLISHERS
+    ),
+    "ground_truth_firewall_pass": (
+        max_gt_subscribers == EXPECTED_GT_SUBSCRIBERS
+    ),
 }
 with open(sys.argv[1], "w", encoding="utf-8") as stream:
     json.dump(result, stream, indent=2, sort_keys=True)
@@ -648,6 +682,9 @@ PYEOF
   episode_results+=("${seed}:${episode_status}:boundary=${boundary_status}")
   if [[ "${episode_status}" != 0 ]]; then
     _stop "episode seed ${seed} failed with exit ${episode_status}; evidence kept"
+  fi
+  if [[ "${boundary_status}" != 0 ]]; then
+    _stop "episode seed ${seed} boundary probe failed during ${probe_phase}"
   fi
 done
 

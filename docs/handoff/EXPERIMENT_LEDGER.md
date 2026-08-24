@@ -2980,3 +2980,31 @@
 - Verdict: **REPLAY PASS, DEFAULT OFF, ONE R2 LIVE DIAGNOSTIC NEXT**. No Isaac,
   reset, route goal, navigation, fusion, or formal qualification was run or
   claimed by this amendment.
+
+## 2026-08-24 — V6 R2 failed-episode boundary probe semantics repair
+
+- Input: exact live root
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_clearance_r2_cuvslam_fixed_20260824T012352Z`,
+  Module3 `a3c2d791423f5ab031d594d467cdd43fce97a3de`, domain 232,
+  episode index 0 / seed 7201. Navigation remains **FAIL/STOP collision
+  G1->G2**, no completed legs, not formal qualification.
+- Observation: the already-repaired ordering worked (one cancel, navigation
+  PGID stopped before probe, zero nonzero `/cmd_vel_sim` after that boundary,
+  raw costmaps present, unrelated domain preserved). The boundary probe alone
+  falsely failed because it expected active publishers after stopping the
+  navigation stack. Observed publisher counts were `/odom=0`, `/cmd_vel=0`,
+  `/cmd_vel_sim=1`, localization status `=0`; GT subscribers remained 1.
+- Change: record one of two explicit phases. `active_success_pre_stop` expects
+  publisher/publishing-node counts `1/1/1/1`; failed episodes record
+  `post_navigation_stop_failure` and expect `0/0/1/0`. Both expect one GT
+  subscriber. An unexpected post-stop navigation publisher fails the probe.
+  Episode failure remains dominant over the probe result and late success;
+  cleanup remains limited to registered PGIDs.
+- Scope: `scripts/v6_reset_cold_boundary_r5_session.sh`, its direct runtime
+  script tests, and canonical/live handoff records only. No estimator,
+  controller, safety, scene, map, or runtime configuration changed.
+- Validation: `bash -n` passed; six focused tests passed (state-aware probe
+  PASS/FAIL cases, collision dominance, stop ordering, and own-PGID cleanup).
+  No ROS/Isaac/navigation/qualification run. The task-named root
+  `conclusion.md` was absent; the specified live metrics and boundary JSON were
+  present.

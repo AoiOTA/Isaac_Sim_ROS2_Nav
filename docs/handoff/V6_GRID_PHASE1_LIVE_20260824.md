@@ -233,3 +233,29 @@ was performed for this amendment. The next R2 live safety assertion is exact:
 one terminal cancel, owned navigation stop before boundary probe, zero nonzero
 `/cmd_vel_sim` after that stop boundary, both raw costmaps present, collision
 retained over any late success, and domain 141/unowned processes preserved.
+
+## Latest R2 boundary-probe interpretation repair (2026-08-24)
+
+The latest evidence root is
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_grid_phase1_clearance_r2_cuvslam_fixed_20260824T012352Z`
+(Module3 `a3c2d791423f5ab031d594d467cdd43fce97a3de`, domain 232, index 0,
+seed 7201). It remains **FAIL/STOP collision G1->G2 / NOT FORMAL**. The live
+metrics confirm the prior safety-order repair: cancel request count 1, owned
+navigation stopped before the probe, zero nonzero `/cmd_vel_sim` after that
+boundary, both raw costmaps present, and the unrelated domain preserved.
+
+The boundary JSON's `publisher_ownership_pass=false` was an evidence-runner
+false negative. After the intentional navigation stop, `/odom`, `/cmd_vel`, and
+`/bio_nav/localization/status` correctly had zero publishers; the run-owned
+Isaac `/cmd_vel_sim` publisher and recorder GT subscriber correctly remained
+one. The probe now records `probe_phase=post_navigation_stop_failure` and
+expects counts `0/0/1/0` for those four topics, plus one GT subscriber. A
+successful episode retains the active pre-stop `1/1/1/1` expectations. Both
+publisher and publishing-node counts are checked and written to evidence.
+
+This is a runner/test/documentation correction only. Collision or another
+terminal episode failure still owns the verdict even if the post-stop probe
+passes, and late success cannot promote it. An unexpected navigation publisher
+after failed-stop is still probe FAIL. Focused tests passed 6/6 and `bash -n`
+passed; no live rerun occurred. The root-level `conclusion.md` named in the task
+packet was absent and was not reconstructed from another run.
