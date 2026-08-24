@@ -134,3 +134,63 @@ is a blocking load problem. Do not reintroduce a cadence counter first.
   short motion smoke above. This convergence is not a Phase 1B full PASS and
   is not formal qualification. No live run was performed for this code
   amendment.
+
+## Final short-motion engineering smoke
+
+- Run: Module3 `e1787c3019372b8ad2aff9ab858c6c2a2b26cbe8`, domain 232,
+  Kujiale `long_route_start_g1`, realistic `stereo_vio`, 120/60 Hz
+  physics/render, the committed 4 MiB UDP-only Fast DDS profile, and the two
+  calibrators plus wheel odometry and wheel/legacy-IMU EKF only. Evidence is
+  under
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_motion_20260824T121621Z`.
+  cuVSLAM, Nav2, Integration, Module2, bags, and goals were not started.
+- Observer integrity: the 1 s empty-domain lifecycle self-test exited 0. The
+  first 55 s stationary observer naturally ended before the command start, and
+  the commander's PID precheck therefore rejected that attempt before any
+  motion publication. The retained motion observer ran 55.001 s and fully
+  overlapped the explicit 10 s zero window, both 3 s yaw segments, and both
+  2 s intermediate zero windows. Tool scheduling limited straight overlap to
+  the first `1.299 s` of its 3 s command; final stop was checked separately by
+  a 5 s zero-only cleanup probe rather than by another motion run.
+- Commands: actual/requested counts matched at 20 Hz: zero 200, `+0.25 rad/s`
+  yaw 60, zero 40, `-0.25 rad/s` yaw 60, zero 40, `+0.15 m/s` straight 60,
+  and final zero 160. All 322 commander collision samples and all 562 main
+  observer collision samples were false.
+- Motion signs: positive yaw raw VIO/legacy gyro-z mean/peak were
+  `+0.002850/+0.049226 rad/s`; wheel and EKF yaw deltas were
+  `+0.025201/+0.005372 rad`. Negative yaw values were
+  `-0.001097/-0.043005 rad/s` and `-0.017048/-0.001958 rad`. Calibrated VIO
+  and legacy streams retained the same signs. The captured straight prefix
+  produced positive wheel/EKF mean linear-x
+  `0.003096/0.002963 m/s` and about `0.00263 m` planar displacement. This is
+  a direction/interface smoke, not motion realization or localization
+  qualification.
+- IMU/data: the two raw paths had the same 4222 stamps and payload fields.
+  Each raw/calibrated pair shared 4221 stamps; the sole unmatched raw sample
+  was the observer shutdown boundary. All common-field mismatch counters were
+  zero and calibrated gyro-z was exactly raw `* 0.9294` (maximum error 0).
+  Explicit stationary-window gravity was `9.810017 m/s^2` mean with
+  `0.004357 m/s^2` standard deviation on all four streams.
+- Cadence/transport: clock, both raw/calibrated IMU paths, joints, and wheel
+  odometry were 120 Hz; EKF `/odom` was `50.0024 Hz`; every stream was
+  strictly monotonic with no repeat/backtrack or long simulation gap. Each
+  camera topic was exactly 20 Hz and 703 five-way stamps paired exactly;
+  VIO/camera interval mean/median were `5.9986/6`. A final observer-shutdown
+  stamp reached four camera topics but not left depth; it did not create an
+  internal 100 ms gap. Host-wide UDP `InErrors` and `RcvbufErrors` deltas were
+  zero. Probe-window GPU utilization was 45.18% mean/52% max, memory 5484 MiB
+  max.
+- Ownership: every checked topic had one publisher; `/odom` was owned only by
+  `ekf_filter_node`. EKF subscribed to `/imu/data` and `/wheel/odom`, not the
+  VIO topics. Wheel odometry consumed `/joint_states`; raw and calibrated
+  legacy/VIO owners remained distinct as designed.
+- Stop/cleanup: the 5 s cleanup published 100 zeros and received 100 zero,
+  zero nonzero, and 52 false collision samples. Wheel/EKF planar movement was
+  `0.000328/0.000236 m`. All owned process groups stopped, domain 232 was
+  empty, shared/run locks were free, and preserved domain-141 PID 3600069
+  remained alive.
+- Verdict: **PHASE 1B ENGINEERING PASS WITH WARNINGS; NOT FORMAL
+  QUALIFICATION**. Warnings are RTF `0.64053` and only partial straight
+  overlap in the main observer. Phase 1C should start actual cuVSLAM only and
+  judge tracker/output cadence and gaps at this RTF before deciding whether
+  load is blocking.

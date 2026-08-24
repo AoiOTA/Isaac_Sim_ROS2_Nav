@@ -3310,3 +3310,42 @@
   No live run or formal qualification occurred for this amendment. Next is a
   short motion smoke, then Phase 1C consumer behavior rather than another
   custom cadence counter.
+
+## 2026-08-24 — V7.3 Phase 1B final short-motion smoke
+
+- Run: Module3 `e1787c3019372b8ad2aff9ab858c6c2a2b26cbe8`, domain 232,
+  realistic Kujiale `stereo_vio` at 120/60 Hz physics/render, with both IMU
+  calibrators, wheel odometry, and the wheel/legacy-IMU EKF. Evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_motion_20260824T121621Z`.
+  cuVSLAM, Nav2, Integration, Module2, goals, and bags were absent.
+- The valid 55.001 s motion observer fully overlapped the 10 s zero window,
+  both 3 s yaw commands, and both intermediate zero windows. Positive/negative
+  raw gyro-z means were `+0.002850/-0.001097 rad/s`; wheel yaw deltas were
+  `+0.025201/-0.017048 rad`, and EKF deltas were
+  `+0.005372/-0.001958 rad`. Thus raw/calibrated VIO and legacy IMU, wheel,
+  and EKF all agreed with command direction. Collision remained false.
+- The observer captured `1.299 s` of the 3 s straight command and saw positive
+  wheel/EKF mean linear-x `0.003096/0.002963 m/s`; no localization or motion
+  realization qualification is claimed. A separate 5 s zero-only cleanup
+  received 100/100 zero commands, zero nonzero commands, and 52/52 false
+  collision samples; wheel/EKF movement was only
+  `0.000328/0.000236 m`.
+- Both raw paths had 4222 equal stamps/payloads. Both calibrated paths matched
+  all 4221 common raw stamps with exact `0.9294` gyro-z scaling and zero field
+  mismatches; stationary gravity was `9.810017 +/- 0.004357 m/s^2`. Accepted
+  cadence passed: 120 Hz clock/IMU/joints/wheel, `50.0024 Hz` EKF odom, exact
+  20 Hz camera streams, and mean/median `5.9986/6` VIO samples per camera
+  interval. All streams were monotonic without repeats, backtracks, or long
+  simulation gaps.
+- Ownership passed: one publisher per checked topic, EKF-only `/odom`, and EKF
+  inputs only `/imu/data` plus `/wheel/odom`. Host-wide UDP `InErrors` and
+  `RcvbufErrors` deltas were zero. GPU was 45.18% mean/52% max and RTF was
+  `0.64053`.
+- Cleanup: all owned groups clear, domain 232 empty, locks free, and preserved
+  domain-141 PID 3600069 alive.
+- Verdict: **PHASE 1B ENGINEERING PASS WITH WARNINGS; NOT FORMAL
+  QUALIFICATION**. Warnings: RTF remains roughly 0.64, the main observer saw
+  only the straight prefix, and one final left-depth callback missed the
+  observer shutdown boundary after 703 exact five-way camera stamps. Proceed
+  to Phase 1C actual cuVSLAM tracker/output cadence and gap measurement; do not
+  add another cadence counter first.
