@@ -3587,8 +3587,9 @@
   collision: **ENGINEERING STOP**. Relative planar projection remained wrong
   (`1.20/2.30/10.00 s` crossings, `12.409 m` endpoint error,
   `93.145 deg` direction error), so planar GICP is also rejected.
-- Change: remove the GICP product implementation rather than add a backend
-  selector. The package now has only the default-OFF PCL NDT shadow products
+- Change: Module3 commit `1117bd6971edcd8fdffec7f8c1b61acad0e55dff`
+  removes the GICP product implementation rather than add a backend selector.
+  The package now has only the default-OFF PCL NDT shadow products
   `ndt_local_odometry_node`, `ndt_shadow.yaml`, and `ndt_shadow.launch.py`.
   It publishes `/local_odom/ndt_shadow` and `/local_odom/ndt_status` in
   `ndt_odom_shadow -> base_link`, with no TF output and no canonical consumer.

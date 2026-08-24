@@ -17,6 +17,8 @@ removed rather than retained behind a backend selector.
 
 ## NDT replacement
 
+Implementation commit: `1117bd6971edcd8fdffec7f8c1b61acad0e55dff`.
+
 `pointcloud_local_odometry` now has one default-OFF PCL 1.14 NDT shadow:
 
 ```text
