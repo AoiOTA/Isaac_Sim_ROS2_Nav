@@ -10,6 +10,11 @@ import yaml
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE_ROOT / 'config' / 'cuvslam_rgbd_shadow.yaml'
 LAUNCH = PACKAGE_ROOT / 'launch' / 'visual_odometry.launch.py'
+STEREO_IMU_CONFIG = (
+    PACKAGE_ROOT / 'config' / 'cuvslam_stereo_imu_shadow.yaml')
+STEREO_IMU_LAUNCH = (
+    PACKAGE_ROOT / 'launch'
+    / 'visual_odometry_stereo_imu_shadow.launch.py')
 
 
 def test_cuvslam_rgbd_shadow_parameters_are_isolated():
@@ -55,6 +60,92 @@ def test_visual_shadow_uses_one_aligned_rgbd_camera_and_explicit_outputs():
     ):
         assert contract in source
     assert 'visual_slam/imu' not in source
+
+
+def test_cuvslam_stereo_imu_shadow_parameters_are_exact_and_tf_free():
+    document = yaml.safe_load(STEREO_IMU_CONFIG.read_text(encoding='utf-8'))
+    parameters = document[
+        'visual_slam_stereo_imu_shadow']['ros__parameters']
+
+    assert parameters == {
+        'use_sim_time': True,
+        'tracking_mode': 1,
+        'num_cameras': 2,
+        'min_num_images': 2,
+        'rectified_images': True,
+        'camera_optical_frames': [
+            'camera_left_optical_frame',
+            'camera_right_optical_frame',
+        ],
+        'imu_frame': 'imu_link',
+        'base_frame': 'base_link',
+        'odom_frame': 'visual_odom_shadow',
+        'map_frame': 'visual_map_shadow',
+        'enable_localization_n_mapping': False,
+        'image_qos': 'SENSOR_DATA',
+        'imu_qos': 'SENSOR_DATA',
+        'publish_map_to_odom_tf': False,
+        'publish_odom_to_base_tf': False,
+        'override_publishing_stamp': False,
+        'enable_image_denoising': False,
+        'enable_slam_visualization': False,
+        'enable_landmarks_view': False,
+        'enable_observations_view': False,
+        'calibration_frequency': 120.0,
+        'sync_matching_threshold_ms': 10.0,
+        'image_jitter_threshold_ms': 50.0,
+        'imu_jitter_threshold_ms': 8.5,
+    }
+    for key in ('tracking_mode', 'num_cameras', 'min_num_images'):
+        assert type(parameters[key]) is int
+    for key in (
+        'calibration_frequency',
+        'sync_matching_threshold_ms',
+        'image_jitter_threshold_ms',
+        'imu_jitter_threshold_ms',
+    ):
+        assert type(parameters[key]) is float
+    for key in (
+        'use_sim_time',
+        'rectified_images',
+        'enable_localization_n_mapping',
+        'publish_map_to_odom_tf',
+        'publish_odom_to_base_tf',
+        'override_publishing_stamp',
+        'enable_image_denoising',
+        'enable_slam_visualization',
+        'enable_landmarks_view',
+        'enable_observations_view',
+    ):
+        assert type(parameters[key]) is bool
+    assert 'enable_imu_fusion' not in parameters
+    assert not any('depth' in key for key in parameters)
+
+
+def test_stereo_imu_shadow_direct_launch_has_exact_interfaces():
+    source = STEREO_IMU_LAUNCH.read_text(encoding='utf-8')
+    remappings = (
+        "('visual_slam/image_0', '/camera/left/image_raw')",
+        "('visual_slam/camera_info_0', '/camera/left/camera_info')",
+        "('visual_slam/image_1', '/camera/right/image_raw')",
+        "('visual_slam/camera_info_1', '/camera/right/camera_info')",
+        "('visual_slam/imu', '/imu/vio')",
+        "('visual_slam/tracking/odometry', '/visual/odom_shadow')",
+        "('visual_slam/status', '/visual/status')",
+    )
+
+    for contract in (
+        "plugin='nvidia::isaac_ros::visual_slam::VisualSlamNode'",
+        "name='visual_slam_stereo_imu_shadow'",
+        "name='visual_odometry_stereo_imu_shadow_container'",
+        "executable='component_container'",
+        *remappings,
+    ):
+        assert contract in source
+    assert source.count("('visual_slam/") == len(remappings)
+    assert 'depth_float_to_uint16' not in source
+    assert 'visual_slam/depth' not in source
+    assert 'isaac_ros_examples' not in source
 
 
 def _depth_message(values):
@@ -124,3 +215,10 @@ def test_installed_isaac_ros_45_visual_slam_component_is_discoverable():
     assert ('nvidia::isaac_ros::visual_slam::VisualSlamNode;'
             'lib/libvisual_slam_node.so') in component_resource.read_text(
                 encoding='utf-8')
+    reset_interfaces = (
+        prefix / 'share' / 'ament_index' / 'resource_index'
+        / 'rosidl_interfaces' / 'isaac_ros_visual_slam_interfaces'
+    )
+    assert 'srv/Reset.idl' in reset_interfaces.read_text(encoding='utf-8')
+    assert (prefix / 'share' / 'isaac_ros_visual_slam_interfaces'
+            / 'srv' / 'Reset.idl').is_file()

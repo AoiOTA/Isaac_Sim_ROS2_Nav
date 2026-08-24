@@ -1,0 +1,28 @@
+visual_slam_stereo_imu_shadow:
+  ros__parameters:
+    use_sim_time: true
+    tracking_mode: 1
+    num_cameras: 2
+    min_num_images: 2
+    rectified_images: true
+    camera_optical_frames:
+      - camera_left_optical_frame
+      - camera_right_optical_frame
+    imu_frame: imu_link
+    base_frame: base_link
+    odom_frame: visual_odom_shadow
+    map_frame: visual_map_shadow
+    enable_localization_n_mapping: false
+    image_qos: SENSOR_DATA
+    imu_qos: SENSOR_DATA
+    publish_map_to_odom_tf: false
+    publish_odom_to_base_tf: false
+    override_publishing_stamp: false
+    enable_image_denoising: false
+    enable_slam_visualization: false
+    enable_landmarks_view: false
+    enable_observations_view: false
+    calibration_frequency: 120.0
+    sync_matching_threshold_ms: 10.0
+    image_jitter_threshold_ms: 50.0
+    imu_jitter_threshold_ms: 8.5

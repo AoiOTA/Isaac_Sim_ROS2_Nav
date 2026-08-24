@@ -3349,3 +3349,24 @@
   observer shutdown boundary after 703 exact five-way camera stamps. Proceed
   to Phase 1C actual cuVSLAM tracker/output cadence and gap measurement; do not
   add another cadence counter first.
+
+## 2026-08-24 — V7.3 Phase 1C cuVSLAM stereo + IMU shadow implementation
+
+- Change: added an independently direct-launchable Visual SLAM 4.5.0
+  `tracking_mode=1` stereo + IMU component consuming the Phase1A left/right
+  image/CameraInfo topics and Phase1B `/imu/vio`. Outputs are isolated at
+  `/visual/odom_shadow` and `/visual/status`; both TF flags are false.
+- Boundary: the legacy RGB-D launch is unchanged. There is no depth converter,
+  `ros_stack`/runner/reset orchestration, canonical `/odom`, VioOdomAdapter,
+  Integration, or Module2 connection in this package.
+- Reset: installed interface discovery confirms
+  `isaac_ros_visual_slam_interfaces/srv/Reset`; the official endpoint is
+  `/visual_slam/reset`. Service presence and behavior are live-unverified.
+- Validation: source-first/no-cache focused contract test `10 passed`, Python
+  compilation passed, isolated `/tmp` `robot_odometry` build passed, and diff
+  check passed. No Isaac, ROS live, cuVSLAM tracker, or reset was run.
+- Verdict: **CODE/STATIC/BUILD ONLY; LIVE UNVERIFIED**. Retain the Phase1B RTF
+  `0.64053` warning. First live must use an empty domain no higher than 232 and
+  the committed 4 MiB Fast DDS profile for both producer and consumer, then
+  measure tracker/IMU fusion, odom/status gaps, VIO TF absence, reset, RTF,
+  and GPU. See `V7_3_PHASE1C_CUVSLAM_STEREO_IMU_SHADOW_20260824.md`.
