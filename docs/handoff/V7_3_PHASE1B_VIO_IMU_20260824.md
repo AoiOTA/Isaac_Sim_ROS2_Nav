@@ -3,16 +3,18 @@
 ## Result and boundary
 
 - Worktree: `/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3`
-  on `cognitive-navigation`, parent `bba3d3822d2cb443c9481606ba080f36743d64fc`.
+  on `cognitive-navigation`; this convergence amendment started from
+  `4232d43f1fed14aca1ebeda8c6a633763011c665`.
 - Explicit `stereo_vio` now selects 120 Hz physics and 60 Hz rendering. All
   other Camera profiles retain 60/60 Hz. SimulationApp `minFrameRate` remains
   60, motion assist advances once per render update with `dt=1/60`, and the
   ready line reports both rates.
 - The VIO graph has one physical IMU reader at the 120 Hz physics cadence.
-  `/imu/vio_raw` publishes directly from that reader. A render-cadence
-  `OnPlaybackTick` drives `/imu/data_raw` and `/joint_states`; `/clock` stays
-  on the physics tick. Both IMU publishers share linAcc, angVel, orientation,
-  sensorTime, frame `imu_link`, and SensorData QoS.
+  Its `execOut` drives both `/imu/vio_raw` and `/imu/data_raw`, while the same
+  physics step drives `/clock`, `/joint_states`, and the reader. Both IMU
+  publishers share linAcc, angVel, orientation, sensorTime, frame `imu_link`,
+  and SensorData QoS. The observed wheel input path therefore remains 120 Hz;
+  EKF `/odom` remains 50 Hz.
 - `ImuCalibrationNode` now parameterizes only its input/output topics while
   preserving calibration, stamp rejection/reset, copying, and covariance
   behavior. The default remains `/imu/data_raw -> /imu/data`.
@@ -57,23 +59,21 @@ An earlier broad `--packages-up-to` attempt at
 its external `bio_nav_interfaces` header was unavailable. Target packages had
 not been processed in that attempt; no source change was made for it.
 
-## Next bounded camera + IMU smoke
+## Next bounded motion smoke
 
-Use a freshly checked empty domain no higher than 232 (for example 231 if it
-is empty), keep the committed 4 MiB Fast DDS profile active for producer and
-subscriber, and start only:
+Use a freshly checked empty domain, keep the committed 4 MiB Fast DDS profile
+active for producer and subscriber, and run the shortest motion interval that
+actually overlaps the observer. Check that:
 
-1. Isaac with explicit `--camera-profile stereo_vio`;
-2. the estimated ROS core with `vio_imu_enabled:=true`;
-3. a bounded camera/IMU observer, without cuVSLAM or Nav2 first.
+1. both raw and calibrated IMU streams remain finite, monotonic, and aligned;
+2. nonzero angular velocity and wheel/joint motion are captured;
+3. `/odom` remains finite at 50 Hz and reacts consistently to the motion;
+4. the robot stops after the bounded command.
 
-Measure actual rates for `/clock`, `/imu/vio_raw`, `/imu/vio`,
-`/imu/data_raw`, `/imu/data`, `/joint_states`, and all five stereo topics.
-Check unique monotonic stamps, raw/calibrated one-to-one stamp preservation,
-VIO/legacy shared-sample alignment, gravity/frame/field invariants, yaw-scale
-behavior, camera pairing/drop gaps, RTF, GPU, and run-scoped UDP counters.
-Expected behavior is 120 Hz clock/VIO IMU, 60 Hz legacy IMU/joints, and 20 Hz
-stereo, but none of those rates is claimed until this smoke passes.
+The accepted stationary cadence is 120 Hz for clock, both IMU paths, joints,
+and wheel input; 20 Hz for stereo; and 50 Hz for EKF `/odom`. Phase 1C should
+use actual cuVSLAM tracker/gap behavior to decide whether the roughly 0.64 RTF
+is a blocking load problem. Do not reintroduce a cadence counter first.
 
 ## Cadence first-error amendment
 
@@ -98,3 +98,39 @@ stereo, but none of those rates is claimed until this smoke passes.
   reported `27 passed`; Python compilation passed. No live run was performed
   for this amendment. Actual 60/120 rates, strict legacy/VIO stamp-subset
   behavior, and RTF remain for the next same-stack cadence + RTF live run.
+
+## Cadence convergence decision (supersedes the 60 Hz target)
+
+- Simulation-gate run:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_camera_imu_20260824T111210Z/run_summary.json`
+  on `f90ff0ad` was an **ENGINEERING FAIL against the former 60 Hz
+  contract**. Clock, both IMU paths, joints, and wheel odometry were 120 Hz;
+  stereo was 20 Hz and EKF `/odom` was 50 Hz. RTF was `0.631315`.
+- Playback-tick run:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_cadence_fix_20260824T115711Z/run_summary.json`
+  on `4232d43f1fed14aca1ebeda8c6a633763011c665` failed the same former
+  contract. Clock was 120 Hz; raw/calibrated VIO and legacy IMU were
+  `119.99998` Hz; joints and wheel odometry were 120 Hz; stereo was 20 Hz;
+  EKF `/odom` was `50.0033` Hz. Overall RTF was `0.640761`.
+- Both runs retained the useful interface results: camera pairing, IMU shared
+  fields/calibration, stationary gravity, publisher ownership, and run-scoped
+  UDP receive-buffer counters passed. Both attempted native gate sources still
+  executed legacy publishers at physics cadence, so neither demonstrated a
+  real 60 Hz legacy path.
+- After the user asked why legacy inputs must be reduced to 60 Hz, master
+  explicitly accepted 120 Hz for clock, VIO IMU, legacy IMU, joint states,
+  and wheel input under `stereo_vio`. There is no observed consumer failure
+  that justifies a third custom counter. The graph therefore removes the
+  unused 60 Hz parameters, cadence validation, and playback-tick split. Other
+  profiles remain naturally 60 Hz because their physics/render timing stays
+  60/60.
+- `RTF >= 0.8` was a plan recommendation, not a hard boundary. The observed
+  roughly `0.64` RTF is retained as a warning; Phase 1C actual cuVSLAM
+  tracker/gap behavior determines whether load is blocking.
+- Convergence static validation passed: source-first/no-cache graph and camera
+  tests reported `24 passed`; changed Python compilation and diff check passed.
+- Neither live observer overlapped effective motion, so nonzero-motion IMU,
+  wheel, and odometry behavior is still unverified. The next action is the
+  short motion smoke above. This convergence is not a Phase 1B full PASS and
+  is not formal qualification. No live run was performed for this code
+  amendment.

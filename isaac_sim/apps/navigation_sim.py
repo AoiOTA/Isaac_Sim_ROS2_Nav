@@ -499,9 +499,6 @@ def validate_configuration(
         camera_profile,
         headless=config.simulation.headless,
     )
-    physics_hz, rendering_hz = resolve_simulation_timing(
-        camera_selection.profile.name
-    )
     load_articulation_physics_config(config.files.robot)
     specifications = [
         control_graph_spec(config),
@@ -509,8 +506,6 @@ def validate_configuration(
             config,
             str(imu["sensor_prim"]),
             vio_imu_enabled=(camera_selection.profile.name == "stereo_vio"),
-            physics_hz=physics_hz,
-            legacy_imu_hz=float(imu["publish_rate"]),
         ),
         lidar_graph_spec(config, "/Render/ValidationProduct"),
     ]

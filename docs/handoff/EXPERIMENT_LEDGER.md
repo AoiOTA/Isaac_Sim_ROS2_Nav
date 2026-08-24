@@ -3280,3 +3280,33 @@
 - Verdict: **CODE/STATIC PASS; LIVE RECHECK REQUIRED**. Next run is the same
   stack cadence + RTF check for actual 60/120 rates and strict legacy-stamp
   subset behavior; this amendment does not claim the live failure is fixed.
+
+## 2026-08-24 — V7.3 Phase 1B 120 Hz cadence convergence
+
+- Live inputs: simulation-gate run
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_camera_imu_20260824T111210Z/run_summary.json`
+  on `f90ff0ad` and playback-tick run
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_cadence_fix_20260824T115711Z/run_summary.json`
+  on `4232d43f1fed14aca1ebeda8c6a633763011c665` both failed only the former
+  60 Hz legacy cadence target. Their RTF values were `0.631315` and
+  `0.640761` respectively.
+- Observed stable cadence in both approaches was 120 Hz clock, VIO IMU,
+  legacy IMU, joints, and wheel input; 20 Hz stereo; and 50 Hz EKF `/odom`.
+  Camera pairing, IMU fields/calibration, stationary gravity, publisher
+  ownership, and run-scoped UDP receive-buffer counters passed.
+- Decision/change: after the user questioned the forced reduction, master
+  accepted the observed 120 Hz input cadence under `stereo_vio` and stopped
+  the gate pursuit. The VIO graph now has one `OnPhysicsStep`, one IMU reader,
+  shared data fields, and direct reader execution for both IMU publishers.
+  The unused legacy-rate parameters/validation and playback split were
+  removed. Other profiles retain their existing 60/60 physics/render timing.
+- Warning/boundary: `RTF >= 0.8` was a plan recommendation rather than a hard
+  gate, so roughly `0.64` is recorded as a warning for Phase 1C actual cuVSLAM
+  tracker/gap evaluation. Neither live probe overlapped effective motion;
+  short-motion IMU/wheel/odom behavior remains unverified.
+- Static validation: source-first/no-cache graph and camera tests `24 passed`;
+  changed Python compilation and diff check passed.
+- Verdict: **CADENCE CONTRACT CONVERGED; PHASE 1B FULL PASS NOT CLAIMED**.
+  No live run or formal qualification occurred for this amendment. Next is a
+  short motion smoke, then Phase 1C consumer behavior rather than another
+  custom cadence counter.

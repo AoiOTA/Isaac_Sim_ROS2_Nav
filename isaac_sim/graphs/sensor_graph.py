@@ -12,8 +12,6 @@ def core_sensor_graph_spec(
     imu_prim: str,
     *,
     vio_imu_enabled: bool = False,
-    physics_hz: float = 60.0,
-    legacy_imu_hz: float = 60.0,
 ) -> GraphSpec:
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
@@ -56,35 +54,8 @@ def core_sensor_graph_spec(
         ("PublishIMU.inputs:qosProfile", qos["sensor_data"]),
     ]
     if vio_imu_enabled:
-        if physics_hz <= 0.0 or legacy_imu_hz <= 0.0:
-            raise ValueError(
-                "VIO IMU requires physics_hz=120 and legacy_imu_hz=60"
-            )
-        if physics_hz != 120.0 or legacy_imu_hz != 60.0:
-            raise ValueError(
-                "VIO IMU requires physics_hz=120 and legacy_imu_hz=60"
-            )
-        nodes.extend((
-            ("LegacyPublishTick", "omni.graph.action.OnPlaybackTick"),
-            ("PublishVioIMU", "isaacsim.ros2.bridge.ROS2PublishImu"),
-        ))
-        connections.remove((
-            "OnPhysicsStep.outputs:step",
-            "PublishJointState.inputs:execIn",
-        ))
-        connections.remove((
-            "ReadIMU.outputs:execOut",
-            "PublishIMU.inputs:execIn",
-        ))
+        nodes.append(("PublishVioIMU", "isaacsim.ros2.bridge.ROS2PublishImu"))
         connections.extend((
-            (
-                "LegacyPublishTick.outputs:tick",
-                "PublishJointState.inputs:execIn",
-            ),
-            (
-                "LegacyPublishTick.outputs:tick",
-                "PublishIMU.inputs:execIn",
-            ),
             ("ReadIMU.outputs:execOut", "PublishVioIMU.inputs:execIn"),
             (
                 "ReadIMU.outputs:linAcc",
@@ -196,15 +167,12 @@ def build_sensor_graphs(
     lio_config: dict[str, object] | None = None,
     *,
     vio_imu_enabled: bool = False,
-    legacy_imu_hz: float = 60.0,
 ):
     graphs = [
         materialize_graph(core_sensor_graph_spec(
             config,
             imu_prim,
             vio_imu_enabled=vio_imu_enabled,
-            physics_hz=config.simulation.physics_hz,
-            legacy_imu_hz=legacy_imu_hz,
         )),
         materialize_graph(lidar_graph_spec(config, render_product_path)),
     ]

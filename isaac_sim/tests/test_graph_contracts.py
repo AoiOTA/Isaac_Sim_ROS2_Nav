@@ -155,13 +155,11 @@ def test_core_sensors_publish_once_per_physics_step():
     assert dict(spec.values)["PublishIMU.inputs:topicName"] == "/imu/data_raw"
 
 
-def test_vio_imu_uses_physics_for_vio_and_playback_tick_for_legacy():
+def test_vio_imu_uses_one_physics_path_for_both_raw_topics_and_joints():
     spec = core_sensor_graph_spec(
         _config(),
         "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
         vio_imu_enabled=True,
-        physics_hz=120.0,
-        legacy_imu_hz=60.0,
     )
     spec.validate()
     nodes = dict(spec.nodes)
@@ -172,9 +170,7 @@ def test_vio_imu_uses_physics_for_vio_and_playback_tick_for_legacy():
         "isaacsim.sensors.physics.IsaacReadIMU"
     ) == 1
     assert list(nodes.values()).count("isaacsim.core.nodes.OnPhysicsStep") == 1
-    assert list(nodes.values()).count("omni.graph.action.OnPlaybackTick") == 1
-    assert nodes["LegacyPublishTick"] == "omni.graph.action.OnPlaybackTick"
-    assert "isaacsim.core.nodes.IsaacSimulationGate" not in nodes.values()
+    assert "omni.graph.action.OnPlaybackTick" not in nodes.values()
     assert values["PublishIMU.inputs:topicName"] == "/imu/data_raw"
     assert values["PublishVioIMU.inputs:topicName"] == "/imu/vio_raw"
     assert values["PublishVioIMU.inputs:frameId"] == "imu_link"
@@ -190,19 +186,19 @@ def test_vio_imu_uses_physics_for_vio_and_playback_tick_for_legacy():
         "PublishVioIMU.inputs:execIn",
     ) in connections
     assert (
-        "LegacyPublishTick.outputs:tick",
+        "ReadIMU.outputs:execOut",
         "PublishIMU.inputs:execIn",
     ) in connections
     assert (
-        "LegacyPublishTick.outputs:tick",
+        "OnPhysicsStep.outputs:step",
         "PublishJointState.inputs:execIn",
     ) in connections
     expected_exec_sources = {
         "PublishClock": "OnPhysicsStep.outputs:step",
         "ReadIMU": "OnPhysicsStep.outputs:step",
         "PublishVioIMU": "ReadIMU.outputs:execOut",
-        "PublishIMU": "LegacyPublishTick.outputs:tick",
-        "PublishJointState": "LegacyPublishTick.outputs:tick",
+        "PublishIMU": "ReadIMU.outputs:execOut",
+        "PublishJointState": "OnPhysicsStep.outputs:step",
     }
     for target, expected_source in expected_exec_sources.items():
         sources = {
@@ -225,22 +221,6 @@ def test_vio_imu_uses_physics_for_vio_and_playback_tick_for_legacy():
             f"ReadIMU.outputs:{output}",
             f"PublishVioIMU.inputs:{input_name}",
         ) in connections
-
-
-@pytest.mark.parametrize(
-    ("physics_hz", "legacy_imu_hz"),
-    [(60.0, 60.0), (120.0, 50.0), (121.0, 60.0)],
-)
-def test_vio_imu_rejects_non_120_60_cadence(physics_hz, legacy_imu_hz):
-    with pytest.raises(ValueError, match="physics_hz=120"):
-        core_sensor_graph_spec(
-            _config(),
-            "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
-            vio_imu_enabled=True,
-            physics_hz=physics_hz,
-            legacy_imu_hz=legacy_imu_hz,
-        )
-
 
 def test_core_sensors_materialize_on_demand(monkeypatch):
     spec = core_sensor_graph_spec(
