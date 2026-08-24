@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 import runpy
 
@@ -9,6 +10,7 @@ from isaac_sim.apps.navigation_sim import _parser
 from isaac_sim.graphs.sensor_graph import lio_lidar_graph_spec
 from isaac_sim.src.config import load_project_config
 from isaac_sim.src.sensors.sensor_factory import (
+    LIO_LIDAR_AUX_OUTPUT_LEVEL,
     SensorConfigError,
     _create_lio_lidar,
     _load_lidar,
@@ -23,6 +25,7 @@ INSTALLED_LIDAR_REGISTRY = Path(
     "exts/isaacsim.sensors.experimental.rtx/isaacsim/sensors/experimental/"
     "rtx/impl/rtx_lidar_configs.py"
 )
+INSTALLED_LIDAR_API = INSTALLED_LIDAR_REGISTRY.with_name("lidar.py")
 
 
 def _config():
@@ -95,7 +98,42 @@ def test_os1_config_and_variant_resolve_in_installed_isaac_registry():
     ) == "/Isaac/Sensors/Ouster/OS1/OS1.usd"
 
 
-def test_lio_factory_passes_config_and_variant_as_separate_exact_arguments():
+def test_installed_lidar_create_accepts_full_aux_output_level():
+    module = ast.parse(INSTALLED_LIDAR_API.read_text(encoding="utf-8"))
+    lidar_class = next(
+        node
+        for node in module.body
+        if isinstance(node, ast.ClassDef) and node.name == "Lidar"
+    )
+    create = next(
+        node
+        for node in lidar_class.body
+        if isinstance(node, ast.FunctionDef) and node.name == "create"
+    )
+    keyword_defaults = dict(
+        zip(
+            (argument.arg for argument in create.args.kwonlyargs),
+            create.args.kw_defaults,
+            strict=True,
+        )
+    )
+    assert ast.literal_eval(keyword_defaults["aux_output_level"]) == "NONE"
+
+    valid_levels = next(
+        node.value
+        for node in lidar_class.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_VALID_AUX_OUTPUT_LEVELS"
+            for target in node.targets
+        )
+    )
+    assert LIO_LIDAR_AUX_OUTPUT_LEVEL == "FULL"
+    assert LIO_LIDAR_AUX_OUTPUT_LEVEL in ast.literal_eval(valid_levels)
+
+
+def test_lio_factory_passes_full_aux_config_and_variant_as_exact_arguments():
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
     lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
     calls = []
@@ -116,6 +154,7 @@ def test_lio_factory_passes_config_and_variant_as_separate_exact_arguments():
             "path": "/World/Robots/Jackal/base_link/lio_lidar_link/rtx_lidar",
             "config": "OS1",
             "variant": "OS1_REV6_32ch10hz512res",
+            "aux_output_level": "FULL",
             "tick_rate": 10.0,
             "accumulate_outputs": True,
             "attributes": {

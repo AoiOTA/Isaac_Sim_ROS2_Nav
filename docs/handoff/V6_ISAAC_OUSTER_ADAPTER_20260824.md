@@ -10,9 +10,10 @@
   PointCloud2-to-LaserScan/Nav2 `/scan` path is unchanged.
 - No FAST-LIO2 process, LIO output, EKF fusion, Nav2, route goal, navigation
   episode, evidence campaign, or qualification was run.
-- A bounded live Isaac/ROS preflight was not run by this task agent because
-  its execution instructions prohibited launching Isaac or ROS. Therefore
-  all actual scan metrics below remain explicitly unverified.
+- A later bounded sensor-only rerun produced non-empty OS1 clouds at 10 Hz,
+  but stopped before FAST-LIO2 because `channel_id` was absent. The auxiliary
+  output amendment below is code/static/unit only and requires a fresh live
+  sensor rerun before any ring-policy change or FAST-LIO2 start.
 
 ## Sensor-factory startup amendment
 
@@ -38,6 +39,36 @@ against the installed `SUPPORTED_LIDAR_CONFIGS` registry. Missing config or
 variant values fail with the requested names and available names; the call is
 not allowed to fall through to USD loading with a null or unknown variant.
 The existing RPLIDAR creation path and arguments are unchanged.
+
+## Auxiliary-output amendment
+
+The exact fresh-domain rerun at
+`/tmp/v6_ouster_sensor_rerun.mo2fNk` proved the OS1 producer starts and emits
+non-empty SENSOR/NONCOMPENSATED clouds. `capture2.log` recorded 24 raw clouds
+at a 10 Hz median stamp rate with roughly 14.9k points each, valid intensity,
+and an absolute count-2 `UINT32` timestamp spanning about 100 ms. The raw
+schema was only `x/y/z/intensity/timestamp`; `adapter2.log` therefore rejected
+every cloud because required `channel_id` was absent, and adapted count stayed
+zero. FAST-LIO2 was not started.
+
+Installed Isaac Sim 6.0.1 defines `Lidar.create(...,
+aux_output_level: str = "NONE", ...)` and accepts `NONE/BASIC/EXTRA/FULL`.
+The optional OS1 factory now passes the fixed value
+`aux_output_level="FULL"`, which requests the channel and timestamp auxiliary
+buffers used by the existing point-cloud graph. This is intentionally not a
+new YAML/profile option. The baseline RPLIDAR factory call is unchanged.
+
+Focused tests inspect the installed constructor source without starting Kit,
+require `FULL` to be an accepted keyword value, and check the exact OS1
+factory kwargs. Python compilation and scoped diff checks also pass. No Isaac,
+ROS, adapter, FAST-LIO2, navigation, or qualification process was started by
+this amendment coder.
+
+Reviewer next step remains one fresh-domain bounded sensor-only rerun from
+this commit. Inspect raw/adapted fields and values before changing ring
+conversion or starting FAST-LIO2. If `channel_id` is still absent or is not
+directly `0..31`, STOP and return the measured schema/range for a separate
+producer/consumer convention decision.
 
 ## Producer contract
 

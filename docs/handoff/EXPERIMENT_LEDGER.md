@@ -3081,3 +3081,24 @@
   after raw/adapted field, cadence, ring, timestamp, frame, and QoS inspection.
   Do not start FAST-LIO2 or navigation. This amendment removes only the
   pre-topic config/variant fatal; live cloud contents remain unverified.
+
+## 2026-08-24 — Isaac OS1 FULL auxiliary-output amendment
+
+- Input: exact sensor-only rerun `/tmp/v6_ouster_sensor_rerun.mo2fNk` started
+  the optional OS1 and captured 24 non-empty raw clouds at a 10 Hz median stamp
+  rate with about 14.9k points each. Raw fields were
+  `x/y/z/intensity/timestamp`; `channel_id` was absent, so the strict adapter
+  rejected every cloud and adapted count remained zero. FAST-LIO2 was not
+  started.
+- Change: only the optional OS1 `Lidar.create` call now passes the installed
+  Isaac 6.0.1 API's fixed `aux_output_level="FULL"`. The value is constant,
+  not a new profile option. RPLIDAR, graph outputs, adapter/ring policy,
+  FAST-LIO2, runner, frames, and extrinsics are unchanged.
+- Validation: focused tests inspect the installed constructor signature and
+  accepted auxiliary levels without starting Kit, and require the exact OS1
+  factory kwargs including `FULL`. Python compilation and scoped diff checks
+  passed. No Isaac/ROS live run occurred in this coder task.
+- Boundary: reviewer must rerun the same bounded sensor-only preflight from
+  this commit before any ring conversion or FAST-LIO2 start. STOP if
+  `channel_id` is absent or not directly `0..31`; return the actual raw and
+  adapted schemas/ranges for a separate decision.

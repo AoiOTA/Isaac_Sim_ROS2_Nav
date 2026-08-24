@@ -24,6 +24,7 @@ CAMERA_PROFILE_NAMES = (
     "off", "monitoring", "standard", "high_quality", "rgbd_navigation"
 )
 LIO_LIDAR_PROFILE_NAMES = ("off", "OS1_REV6_32ch10hz512res")
+LIO_LIDAR_AUX_OUTPUT_LEVEL = "FULL"
 _CAMERA_PROFILE_CONTRACT = {
     "off": (False, 0, 0, 0.0, False),
     "monitoring": (True, 640, 360, 15.0, False),
@@ -665,6 +666,7 @@ def _create_lio_lidar(
         path=lio_config["sensor_prim"],
         config=lio_config["config"],
         variant=lio_config["variant"],
+        aux_output_level=LIO_LIDAR_AUX_OUTPUT_LEVEL,
         tick_rate=lio_config["tick_rate"],
         accumulate_outputs=bool(lio_config["accumulate_outputs"]),
         attributes={
