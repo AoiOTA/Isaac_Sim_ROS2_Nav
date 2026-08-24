@@ -155,7 +155,7 @@ def test_core_sensors_publish_once_per_physics_step():
     assert dict(spec.values)["PublishIMU.inputs:topicName"] == "/imu/data_raw"
 
 
-def test_vio_imu_uses_one_reader_shared_data_and_two_legacy_gates():
+def test_vio_imu_uses_physics_for_vio_and_playback_tick_for_legacy():
     spec = core_sensor_graph_spec(
         _config(),
         "/World/Robots/Jackal/base_link/imu_link/imu_sensor",
@@ -171,14 +171,10 @@ def test_vio_imu_uses_one_reader_shared_data_and_two_legacy_gates():
     assert list(nodes.values()).count(
         "isaacsim.sensors.physics.IsaacReadIMU"
     ) == 1
-    assert nodes["LegacyImuGate"] == (
-        "isaacsim.core.nodes.IsaacSimulationGate"
-    )
-    assert nodes["JointStateGate"] == (
-        "isaacsim.core.nodes.IsaacSimulationGate"
-    )
-    assert values["LegacyImuGate.inputs:step"] == 2
-    assert values["JointStateGate.inputs:step"] == 2
+    assert list(nodes.values()).count("isaacsim.core.nodes.OnPhysicsStep") == 1
+    assert list(nodes.values()).count("omni.graph.action.OnPlaybackTick") == 1
+    assert nodes["LegacyPublishTick"] == "omni.graph.action.OnPlaybackTick"
+    assert "isaacsim.core.nodes.IsaacSimulationGate" not in nodes.values()
     assert values["PublishIMU.inputs:topicName"] == "/imu/data_raw"
     assert values["PublishVioIMU.inputs:topicName"] == "/imu/vio_raw"
     assert values["PublishVioIMU.inputs:frameId"] == "imu_link"
@@ -189,30 +185,32 @@ def test_vio_imu_uses_one_reader_shared_data_and_two_legacy_gates():
         "OnPhysicsStep.outputs:step",
         "PublishClock.inputs:execIn",
     ) in connections
-    assert not any(
-        target == "PublishClock.inputs:execIn" and "Gate" in source
-        for source, target in connections
-    )
     assert (
         "ReadIMU.outputs:execOut",
         "PublishVioIMU.inputs:execIn",
     ) in connections
     assert (
-        "ReadIMU.outputs:execOut",
-        "LegacyImuGate.inputs:execIn",
-    ) in connections
-    assert (
-        "LegacyImuGate.outputs:execOut",
+        "LegacyPublishTick.outputs:tick",
         "PublishIMU.inputs:execIn",
     ) in connections
     assert (
-        "OnPhysicsStep.outputs:step",
-        "JointStateGate.inputs:execIn",
-    ) in connections
-    assert (
-        "JointStateGate.outputs:execOut",
+        "LegacyPublishTick.outputs:tick",
         "PublishJointState.inputs:execIn",
     ) in connections
+    expected_exec_sources = {
+        "PublishClock": "OnPhysicsStep.outputs:step",
+        "ReadIMU": "OnPhysicsStep.outputs:step",
+        "PublishVioIMU": "ReadIMU.outputs:execOut",
+        "PublishIMU": "LegacyPublishTick.outputs:tick",
+        "PublishJointState": "LegacyPublishTick.outputs:tick",
+    }
+    for target, expected_source in expected_exec_sources.items():
+        sources = {
+            source
+            for source, destination in connections
+            if destination == f"{target}.inputs:execIn"
+        }
+        assert sources == {expected_source}
     for output, input_name in (
         ("linAcc", "linearAcceleration"),
         ("angVel", "angularVelocity"),

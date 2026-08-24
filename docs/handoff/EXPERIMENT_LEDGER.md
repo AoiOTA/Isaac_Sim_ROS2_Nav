@@ -3261,3 +3261,22 @@
   rates, stamps, gravity, yaw, RTF, and transport behavior require the next
   bounded camera + IMU smoke on a fresh domain no higher than 232. See
   `V7_3_PHASE1B_VIO_IMU_20260824.md`.
+
+## 2026-08-24 — V7.3 Phase 1B legacy cadence first-error amendment
+
+- Live input: `v73_phase1b_camera_imu_20260824T111210Z` was an
+  **ENGINEERING FAIL**. Clock/VIO 120 Hz, stereo 20 Hz, and odometry 50 Hz
+  passed, but legacy raw/calibrated IMU, joints, and wheel odometry were 120 Hz
+  instead of 60 Hz. RTF was `0.631315`; fields, gravity, stereo, and ownership
+  passed, with no motion/probe overlap.
+- RCA/change: an Isaac 6.0.1 headless probe delivered all 22 physics events
+  downstream for simulation-gate steps 0/1/2/3, so the gates did not decimate
+  this direct ON_DEMAND physics path. The VIO graph now uses one native
+  `OnPlaybackTick` as the sole exec source for legacy IMU and joints; clock,
+  IMU reading, and VIO publication remain on physics, with one shared reader.
+  The non-VIO 60/60 graph is unchanged.
+- Validation: source-first/no-cache graph + camera tests `27 passed`; Python
+  compilation passed. No live run occurred for this amendment.
+- Verdict: **CODE/STATIC PASS; LIVE RECHECK REQUIRED**. Next run is the same
+  stack cadence + RTF check for actual 60/120 rates and strict legacy-stamp
+  subset behavior; this amendment does not claim the live failure is fixed.

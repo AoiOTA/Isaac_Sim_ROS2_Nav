@@ -58,24 +58,14 @@ def core_sensor_graph_spec(
     if vio_imu_enabled:
         if physics_hz <= 0.0 or legacy_imu_hz <= 0.0:
             raise ValueError(
-                "VIO IMU requires physics_hz=120, legacy_imu_hz=60, "
-                "and an integer cadence of 2"
+                "VIO IMU requires physics_hz=120 and legacy_imu_hz=60"
             )
-        ratio = physics_hz / legacy_imu_hz
-        cadence = int(round(ratio))
-        if (
-            physics_hz != 120.0
-            or legacy_imu_hz != 60.0
-            or cadence != 2
-            or abs(ratio - cadence) > 1.0e-9
-        ):
+        if physics_hz != 120.0 or legacy_imu_hz != 60.0:
             raise ValueError(
-                "VIO IMU requires physics_hz=120, legacy_imu_hz=60, "
-                "and an integer cadence of 2"
+                "VIO IMU requires physics_hz=120 and legacy_imu_hz=60"
             )
         nodes.extend((
-            ("LegacyImuGate", "isaacsim.core.nodes.IsaacSimulationGate"),
-            ("JointStateGate", "isaacsim.core.nodes.IsaacSimulationGate"),
+            ("LegacyPublishTick", "omni.graph.action.OnPlaybackTick"),
             ("PublishVioIMU", "isaacsim.ros2.bridge.ROS2PublishImu"),
         ))
         connections.remove((
@@ -88,15 +78,13 @@ def core_sensor_graph_spec(
         ))
         connections.extend((
             (
-                "OnPhysicsStep.outputs:step",
-                "JointStateGate.inputs:execIn",
-            ),
-            (
-                "JointStateGate.outputs:execOut",
+                "LegacyPublishTick.outputs:tick",
                 "PublishJointState.inputs:execIn",
             ),
-            ("ReadIMU.outputs:execOut", "LegacyImuGate.inputs:execIn"),
-            ("LegacyImuGate.outputs:execOut", "PublishIMU.inputs:execIn"),
+            (
+                "LegacyPublishTick.outputs:tick",
+                "PublishIMU.inputs:execIn",
+            ),
             ("ReadIMU.outputs:execOut", "PublishVioIMU.inputs:execIn"),
             (
                 "ReadIMU.outputs:linAcc",
@@ -116,8 +104,6 @@ def core_sensor_graph_spec(
             ),
         ))
         values.extend((
-            ("LegacyImuGate.inputs:step", cadence),
-            ("JointStateGate.inputs:step", cadence),
             ("PublishVioIMU.inputs:frameId", topics["frames"]["imu"]),
             ("PublishVioIMU.inputs:topicName", topics["imu_vio_raw"]),
             ("PublishVioIMU.inputs:nodeNamespace", config.ros2.namespace),

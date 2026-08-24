@@ -9,10 +9,10 @@
   60, motion assist advances once per render update with `dt=1/60`, and the
   ready line reports both rates.
 - The VIO graph has one physical IMU reader at the 120 Hz physics cadence.
-  `/imu/vio_raw` publishes directly from that reader. Step-2 gates preserve
-  `/imu/data_raw` and `/joint_states` at 60 Hz; `/clock` stays ungated at
-  120 Hz. Both IMU publishers share linAcc, angVel, orientation, sensorTime,
-  frame `imu_link`, and SensorData QoS.
+  `/imu/vio_raw` publishes directly from that reader. A render-cadence
+  `OnPlaybackTick` drives `/imu/data_raw` and `/joint_states`; `/clock` stays
+  on the physics tick. Both IMU publishers share linAcc, angVel, orientation,
+  sensorTime, frame `imu_link`, and SensorData QoS.
 - `ImuCalibrationNode` now parameterizes only its input/output topics while
   preserving calibration, stamp rejection/reset, copying, and covariance
   behavior. The default remains `/imu/data_raw -> /imu/data`.
@@ -74,3 +74,27 @@ VIO/legacy shared-sample alignment, gravity/frame/field invariants, yaw-scale
 behavior, camera pairing/drop gaps, RTF, GPU, and run-scoped UDP counters.
 Expected behavior is 120 Hz clock/VIO IMU, 60 Hz legacy IMU/joints, and 20 Hz
 stereo, but none of those rates is claimed until this smoke passes.
+
+## Cadence first-error amendment
+
+- Live run
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_phase1b_camera_imu_20260824T111210Z/run_summary.json`
+  was an **ENGINEERING FAIL**: clock/VIO were 120 Hz, stereo was 20 Hz, and
+  odometry was 50 Hz, but legacy raw/calibrated IMU, joints, and wheel odometry
+  were all 120 Hz instead of 60 Hz. RTF was `0.631315`. Fields, gravity,
+  stereo, and ownership passed; the motion interval did not overlap the probe.
+- RCA: source inspection found no direct execution bypass and graph
+  materialization preserved the requested values/connections. In an Isaac
+  6.0.1 headless OGN probe, 22 physics events produced 22 downstream events
+  for `IsaacSimulationGate` step values 0, 1, 2, and 3. That gate therefore did
+  not decimate this direct `OnPhysicsStep` ON_DEMAND path.
+- Amendment: the VIO graph removes both simulation gates and their step values.
+  One native `omni.graph.action.OnPlaybackTick` is now the sole execution
+  source for legacy IMU and joint publication at the configured 60 Hz render
+  cadence. `/clock`, IMU reading, and VIO IMU remain on the 120 Hz physics
+  path; both IMU publishers still share the same reader data and timestamps.
+  The non-VIO 60/60 graph is unchanged.
+- Static validation passed: source-first/no-cache graph and camera tests
+  reported `27 passed`; Python compilation passed. No live run was performed
+  for this amendment. Actual 60/120 rates, strict legacy/VIO stamp-subset
+  behavior, and RTF remain for the next same-stack cadence + RTF live run.
