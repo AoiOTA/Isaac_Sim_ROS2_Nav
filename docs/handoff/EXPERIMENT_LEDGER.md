@@ -3059,3 +3059,25 @@
 - Verdict: **PASS (implementation/build/unit only), DEFAULT OFF; SENSOR-ONLY
   LIVE PREFLIGHT REQUIRED BEFORE FAST-LIO2**. See
   `V6_ISAAC_OUSTER_ADAPTER_20260824.md`.
+
+## 2026-08-24 — Isaac OS1 config/variant startup amendment
+
+- Input: sensor-only review log
+  `/tmp/v6_ouster_sensor_review.pqKSbr/isaac_domain230.log` stopped before ROS
+  topic creation. The installed API rejected
+  `config='OS1_REV6_32ch10hz512res', variant=None`; its registry contract is
+  `config='OS1', variant='OS1_REV6_32ch10hz512res'`.
+- Change: the stable `off/OS1_REV6_32ch10hz512res` user selection and default
+  OFF behavior are unchanged. The LIO YAML now carries the exact separate
+  Isaac config and variant, and the optional factory validates both names
+  against the installed registry before calling `Lidar.create`. The existing
+  RPLIDAR path, adapter/ring policy, FAST-LIO2, runner, frames, and extrinsics
+  were not changed.
+- Validation: focused config/factory/registry suite **27 passed**, including
+  actual installed registry resolution, exact factory arguments, named invalid
+  config/variant failures, and the unchanged RPLIDAR contract tests. Python
+  compilation and `git diff --check` passed. No Isaac/ROS live run occurred.
+- Boundary: repeat only the bounded fresh-domain sensor preflight and stop
+  after raw/adapted field, cadence, ring, timestamp, frame, and QoS inspection.
+  Do not start FAST-LIO2 or navigation. This amendment removes only the
+  pre-topic config/variant fatal; live cloud contents remain unverified.

@@ -32,8 +32,8 @@ lio:
   default_profile: "off"
   supported_profile: OS1_REV6_32ch10hz512res
   sensor_prim: /World/Robots/Jackal/base_link/lio_lidar_link/rtx_lidar
-  config: OS1_REV6_32ch10hz512res
-  variant: null
+  config: OS1
+  variant: OS1_REV6_32ch10hz512res
   tick_rate: 10.0
   accumulate_outputs: true
   render_product_resolution: [1, 1]

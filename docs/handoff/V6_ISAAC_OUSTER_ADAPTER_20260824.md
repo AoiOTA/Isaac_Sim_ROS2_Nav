@@ -14,6 +14,31 @@
   its execution instructions prohibited launching Isaac or ROS. Therefore
   all actual scan metrics below remain explicitly unverified.
 
+## Sensor-factory startup amendment
+
+The first sensor-only review stopped before topic creation. Exact log
+`/tmp/v6_ouster_sensor_review.pqKSbr/isaac_domain230.log` showed the producer
+calling the installed Isaac 6.0.1 API with the profile name as `config` and a
+null `variant`:
+
+```text
+ValueError: Lidar config 'OS1_REV6_32ch10hz512res' not found.
+```
+
+The stable user selection remains `OS1_REV6_32ch10hz512res` and remains
+default OFF. Its Isaac loader fields are now separate and exact:
+
+```text
+config   OS1
+variant  OS1_REV6_32ch10hz512res
+```
+
+Before the optional sensor is created, the factory resolves those two names
+against the installed `SUPPORTED_LIDAR_CONFIGS` registry. Missing config or
+variant values fail with the requested names and available names; the call is
+not allowed to fall through to USD loading with a null or unknown variant.
+The existing RPLIDAR creation path and arguments are unchanged.
+
 ## Producer contract
 
 The single producer selection is `--lio-lidar-profile`:
@@ -21,6 +46,7 @@ The single producer selection is `--lio-lidar-profile`:
 ```text
 default                           off
 opt-in                            OS1_REV6_32ch10hz512res
+Isaac config / variant            OS1 / OS1_REV6_32ch10hz512res
 channels / scan / horizontal      32 / 10 Hz / 512
 range                             0.3-120 m
 raw topic / frame                 /lio/points_raw_isaac / lio_lidar_link
@@ -92,6 +118,12 @@ verified with live stationary/motion data before FAST-LIO2 use.
 - Installed `robot_odometry` test result: **73 tests, 0 failures/errors/skips**.
 - Python compilation and scoped fatal-error lint passed; `git diff --check`
   is part of the final commit check.
+- Startup amendment: the focused config/factory/registry regression suite is
+  **27 passed**. It executes the installed Isaac 6.0.1 registry module without
+  starting Kit, resolves the exact OS1 entry, checks the exact `Lidar.create`
+  keyword arguments with a faithful factory double, and checks named failures
+  for an invalid config and variant. Python compilation and `git diff --check`
+  passed. No Isaac or ROS process was started by the amendment coder.
 - A broad non-Isaac/non-ROS Isaac test pass found and repaired one temporary
   `run()` signature regression. Two current-HEAD low-obstacle script/test
   mismatches remain unrelated and were not changed by this task.
@@ -116,6 +148,30 @@ The preflight must record:
    frame, field schema, point count, and SensorData QoS;
 5. stationary SENSOR-frame orientation sanity and continued unchanged `/scan`
    contract if its existing conversion process is present.
+
+Reviewer rerun boundary: use a fresh domain and an isolated install sourced
+from this commit. Start only the default-off adapter opt-in and the bounded
+Isaac producer (two terminals, same `review_domain`):
+
+```bash
+review_domain=231
+ROS_DOMAIN_ID="${review_domain}" ros2 launch robot_odometry \
+  ouster_pointcloud_adapter.launch.py enabled:=true
+
+review_domain=231
+ROS_DOMAIN_ID="${review_domain}" ./scripts/run_isaac.sh \
+  --headless \
+  --max-steps 1800 \
+  --camera-profile off \
+  --no-third-person-camera \
+  --no-dynamic-obstacles \
+  --lio-lidar-profile OS1_REV6_32ch10hz512res
+```
+
+The rerun ends after recording the raw/adapted sensor contract listed above.
+Do not start FAST-LIO2, Nav2, reset, a route goal, fusion, navigation, or any
+evidence/qualification campaign. The previous pre-topic config fatal must be
+absent and `/lio/points_raw_isaac` must exist before inspecting data fields.
 
 STOP without starting FAST-LIO2 if the asset/profile cannot load, the cloud is
 empty, required auxiliary fields are missing/wrongly typed, channel IDs are

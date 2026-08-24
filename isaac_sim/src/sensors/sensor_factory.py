@@ -540,11 +540,18 @@ def _load_lidar(path) -> dict[str, Any]:
     if (
         lio["default_profile"] != "off"
         or lio["supported_profile"] != "OS1_REV6_32ch10hz512res"
-        or lio["config"] != lio["supported_profile"]
     ):
         raise SensorConfigError(
             "LIO LiDAR profiles must be default-off with the "
             "OS1_REV6_32ch10hz512res opt-in"
+        )
+    if (
+        lio["config"] != "OS1"
+        or lio["variant"] != "OS1_REV6_32ch10hz512res"
+    ):
+        raise SensorConfigError(
+            "OS1-32 LIO LiDAR requires Isaac config 'OS1' and variant "
+            "'OS1_REV6_32ch10hz512res'"
         )
     if (
         not isinstance(lio["sensor_prim"], str)
@@ -555,8 +562,6 @@ def _load_lidar(path) -> dict[str, Any]:
         raise SensorConfigError(
             "LIO LiDAR sensor_prim must be absolute under lio_lidar_link"
         )
-    if lio["variant"] is not None:
-        raise SensorConfigError("OS1-32 LIO LiDAR variant must be null")
     lio["tick_rate"] = require_number(
         lio["tick_rate"], context="lidar.lio.tick_rate", positive=True
     )
@@ -621,6 +626,56 @@ def resolve_lio_lidar_config(
     resolved = dict(lio)
     resolved["profile_name"] = profile
     return resolved
+
+
+def validate_lio_lidar_registry_selection(
+    lio_config: dict[str, Any], registry: dict[str, Any]
+) -> str:
+    """Validate the configured Isaac config/variant against its runtime registry."""
+
+    config = lio_config["config"]
+    variant = lio_config["variant"]
+    matches = [
+        path for path in registry if PurePosixPath(path).stem == config
+    ]
+    if len(matches) != 1:
+        available = sorted(PurePosixPath(path).stem for path in registry)
+        raise SensorConfigError(
+            f"LIO LiDAR config {config!r} is not installed; "
+            f"available configs={available}"
+        )
+    asset_path = matches[0]
+    variants = registry[asset_path]
+    if not isinstance(variants, set) or variant not in variants:
+        available = sorted(variants) if isinstance(variants, set) else []
+        raise SensorConfigError(
+            f"LIO LiDAR variant {variant!r} is not installed for config "
+            f"{config!r}; available variants={available}"
+        )
+    return asset_path
+
+
+def _create_lio_lidar(
+    lidar_api: Any,
+    lio_config: dict[str, Any],
+    registry: dict[str, Any],
+) -> object:
+    validate_lio_lidar_registry_selection(lio_config, registry)
+    return lidar_api.create(
+        path=lio_config["sensor_prim"],
+        config=lio_config["config"],
+        variant=lio_config["variant"],
+        tick_rate=lio_config["tick_rate"],
+        accumulate_outputs=bool(lio_config["accumulate_outputs"]),
+        attributes={
+            "omni:sensor:Core:outputFrameOfReference": lio_config[
+                "output_frame"
+            ],
+            "omni:sensor:Core:outputMotionCompensationState": lio_config[
+                "motion_compensation"
+            ],
+        },
+    )
 
 
 def _load_imu(path) -> dict[str, Any]:
@@ -824,20 +879,12 @@ class SensorFactory:
 
         lio_runtime = None
         if lio_config is not None:
-            lio_lidar = Lidar.create(
-                path=lio_config["sensor_prim"],
-                config=lio_config["config"],
-                variant=lio_config["variant"],
-                tick_rate=lio_config["tick_rate"],
-                accumulate_outputs=bool(lio_config["accumulate_outputs"]),
-                attributes={
-                    "omni:sensor:Core:outputFrameOfReference": lio_config[
-                        "output_frame"
-                    ],
-                    "omni:sensor:Core:outputMotionCompensationState": lio_config[
-                        "motion_compensation"
-                    ],
-                },
+            from isaacsim.sensors.experimental.rtx.impl.rtx_lidar_configs import (
+                SUPPORTED_LIDAR_CONFIGS,
+            )
+
+            lio_lidar = _create_lio_lidar(
+                Lidar, lio_config, SUPPORTED_LIDAR_CONFIGS
             )
             if len(lio_lidar.paths) != 1:
                 raise SensorConfigError(

@@ -1,17 +1,28 @@
 from __future__ import annotations
 
 from pathlib import Path
+import runpy
+
+import pytest
 
 from isaac_sim.apps.navigation_sim import _parser
 from isaac_sim.graphs.sensor_graph import lio_lidar_graph_spec
 from isaac_sim.src.config import load_project_config
 from isaac_sim.src.sensors.sensor_factory import (
+    SensorConfigError,
+    _create_lio_lidar,
     _load_lidar,
     resolve_lio_lidar_config,
+    validate_lio_lidar_registry_selection,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
+INSTALLED_LIDAR_REGISTRY = Path(
+    "/home/lyb/miniconda3/envs/isaacsim/lib/python3.12/site-packages/isaacsim/"
+    "exts/isaacsim.sensors.experimental.rtx/isaacsim/sensors/experimental/"
+    "rtx/impl/rtx_lidar_configs.py"
+)
 
 
 def _config():
@@ -41,6 +52,9 @@ def test_os1_profile_has_exact_sensor_local_noncompensated_contract():
     lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
 
     assert lio is not None
+    assert lio["profile_name"] == "OS1_REV6_32ch10hz512res"
+    assert lio["config"] == "OS1"
+    assert lio["variant"] == "OS1_REV6_32ch10hz512res"
     assert lio["channels"] == 32
     assert lio["tick_rate"] == 10.0
     assert lio["horizontal_resolution"] == 512
@@ -63,6 +77,76 @@ def test_os1_profile_has_exact_sensor_local_noncompensated_contract():
     assert '"reliability":"bestEffort"' in values[
         "PointCloudPublisher.inputs:qosProfile"
     ]
+
+
+def _installed_lidar_registry():
+    return runpy.run_path(str(INSTALLED_LIDAR_REGISTRY))[
+        "SUPPORTED_LIDAR_CONFIGS"
+    ]
+
+
+def test_os1_config_and_variant_resolve_in_installed_isaac_registry():
+    lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
+    lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+
+    assert lio is not None
+    assert validate_lio_lidar_registry_selection(
+        lio, _installed_lidar_registry()
+    ) == "/Isaac/Sensors/Ouster/OS1/OS1.usd"
+
+
+def test_lio_factory_passes_config_and_variant_as_separate_exact_arguments():
+    lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
+    lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+    calls = []
+    sentinel = object()
+
+    class FakeLidar:
+        @staticmethod
+        def create(**kwargs):
+            calls.append(kwargs)
+            return sentinel
+
+    assert lio is not None
+    assert _create_lio_lidar(
+        FakeLidar, lio, _installed_lidar_registry()
+    ) is sentinel
+    assert calls == [
+        {
+            "path": "/World/Robots/Jackal/base_link/lio_lidar_link/rtx_lidar",
+            "config": "OS1",
+            "variant": "OS1_REV6_32ch10hz512res",
+            "tick_rate": 10.0,
+            "accumulate_outputs": True,
+            "attributes": {
+                "omni:sensor:Core:outputFrameOfReference": "SENSOR",
+                "omni:sensor:Core:outputMotionCompensationState": (
+                    "NONCOMPENSATED"
+                ),
+            },
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    ("config", "variant", "message"),
+    [
+        ("OS9", "OS1_REV6_32ch10hz512res", "config 'OS9' is not installed"),
+        ("OS1", "missing", "variant 'missing' is not installed for config 'OS1'"),
+    ],
+)
+def test_invalid_lio_registry_selection_fails_with_named_values(
+    config, variant, message
+):
+    lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
+    lio = resolve_lio_lidar_config(lidar, "OS1_REV6_32ch10hz512res")
+
+    assert lio is not None
+    invalid = dict(lio, config=config, variant=variant)
+    with pytest.raises(SensorConfigError, match=message):
+        validate_lio_lidar_registry_selection(
+            invalid, _installed_lidar_registry()
+        )
 
 
 def test_os1_asset_declares_the_committed_profile_geometry():
