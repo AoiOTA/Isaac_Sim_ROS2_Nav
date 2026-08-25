@@ -1,6 +1,5 @@
-from collections import Counter, deque
+from collections import deque
 import json
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,9 +8,9 @@ import robot_experiments.v6_formal as v6_formal_module
 import yaml
 
 from robot_experiments.v6_formal import (
-    CAPTURE_SCHEMA,
     DISPATCH_SUBSCRIPTION_TOPICS,
     DynamicActionLedger,
+    DynamicScheduleEntry,
     ENGINEERING_PILOT,
     EpisodeGuard,
     MissionLeg,
@@ -19,7 +18,6 @@ from robot_experiments.v6_formal import (
     ReadinessFacts,
     V6ContractError,
     V6FormalNode,
-    append_evidence_jsonl,
     authorize_manifest,
     cli,
     load_manifest,
@@ -27,873 +25,239 @@ from robot_experiments.v6_formal import (
 
 
 PACKAGE = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[4]
 CONFIG = PACKAGE / "config"
-MANIFESTS = {
-    "kujiale_static": CONFIG / "v6_final_kujiale_static.yaml",
-    "kujiale_dynamic": CONFIG / "v6_final_kujiale_dynamic.yaml",
-    "kujiale_appearance": CONFIG / "v6_final_kujiale_appearance.yaml",
-    "rivermark_static": CONFIG / "v6_final_rivermark_static.yaml",
-    "rivermark_dynamic": CONFIG / "v6_final_rivermark_dynamic.yaml",
-    "rivermark_appearance": CONFIG / "v6_final_rivermark_appearance.yaml",
-}
+MANIFEST = CONFIG / "v6_r3_phase2_kujiale_baseline.yaml"
+LEGACY_MANIFESTS = tuple(
+    CONFIG / f"v6_final_{world}_{category}.yaml"
+    for world in ("kujiale", "rivermark")
+    for category in ("static", "dynamic", "appearance")
+)
+
+
+def _raw() -> dict:
+    return yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
+
+
+def _write_manifest(tmp_path: Path, raw: dict) -> Path:
+    path = tmp_path / "manifest.yaml"
+    path.write_text(yaml.safe_dump(raw, sort_keys=False), encoding="utf-8")
+    return path
 
 
 def ready_facts() -> ReadinessFacts:
-    return ReadinessFacts(**{name: True for name in ReadinessFacts.__dataclass_fields__})
+    return ReadinessFacts(
+        **{name: True for name in ReadinessFacts.__dataclass_fields__}
+    )
 
 
 def ready_guard(*legs: str) -> EpisodeGuard:
     guard = EpisodeGuard(mission_leg_ids=legs)
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
+    guard.arm_reset(ready_facts())
     guard.record_reset_call()
     guard.record_reset_response(True)
     guard.record_reset_receipt_generation(1)
     guard.record_reset_event()
-    guard.record_bridge(1, "session-1", True)
-    guard.record_startup_consensus(True)
     guard.record_initialpose(100)
     guard.record_amcl(101)
-    guard.record_bridge(2, "session-2", False)
-    guard.record_b5_diagnostic(
-        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
-        candidate_generation="epoch=2,session=session-2",
-    )
-    guard.record_prior(
-        2, "session-2", trusted_write=True, module2_healthy=True,
-        observation_valid=True, input_healthy=True,
-    )
     guard.record_navigation_ready(nav2_active=True, tf_active=True)
-    guard.record_reset_gate_status(1, True)
     guard.record_reset_gate_status(1, False)
+    assert guard.goal_ready
     return guard
 
 
-class _Twist:
-    def __init__(self, *, nonzero: bool = False):
-        self.linear = SimpleNamespace(
-            x=0.2 if nonzero else 0.0,
-            y=0.0,
-            z=0.0,
-        )
-        self.angular = SimpleNamespace(x=0.0, y=0.0, z=0.0)
+def test_r3_phase2_manifest_is_the_only_dispatch_candidate():
+    manifest = load_manifest(MANIFEST)
 
-
-def _terminal_adapter(
-    monkeypatch,
-    *,
-    cancel_done_after: float | None,
-    downstream_events: tuple[tuple[float, bool], ...],
-    timeout_sec: float = 0.7,
-):
-    adapter = V6FormalNode.__new__(V6FormalNode)
-    adapter.guard = ready_guard("G2")
-    adapter.guard.record_goal_publication("G2")
-    adapter.guard.stop("collision")
-    adapter.collision = True
-    adapter._terminal_cancel_requested = True
-    adapter._terminal_started_monotonic = 10.0
-    adapter._navigation_terminal_observed = False
-    adapter._terminal_zero_settled = False
-    adapter._terminal_zero_confirmed = False
-    adapter._terminal_zero_reason = "pending"
-    adapter._terminal_cancel_future = SimpleNamespace(
-        done=lambda: (
-            cancel_done_after is not None
-            and clock.now >= 10.0 + cancel_done_after
-        )
-    )
-    adapter._cmd_vel_sim_last_receive_monotonic = None
-    adapter._cmd_vel_sim_last_zero_monotonic = None
-    adapter._cmd_vel_sim_last_nonzero_monotonic = None
-    adapter._cmd_window = deque()
-    adapter._types = {"Twist": _Twist}
-    adapter.node = SimpleNamespace()
-    adapter.TERMINAL_ZERO_TIMEOUT_SEC = timeout_sec
-    adapter.TERMINAL_ZERO_PERIOD_SEC = 0.05
-    adapter.TERMINAL_ZERO_QUIET_SEC = 0.15
-    adapter._capture = lambda *_args, **_kwargs: None
-
-    clock = SimpleNamespace(now=10.0)
-    monkeypatch.setattr(v6_formal_module.time, "monotonic", lambda: clock.now)
-    published_at = []
-    adapter.terminal_zero_publisher = SimpleNamespace(
-        publish=lambda message: published_at.append(
-            (clock.now, message.linear.x, message.angular.z)
-        )
-    )
-    recorded_events = []
-    adapter._write = lambda event, **payload: recorded_events.append(
-        (clock.now, event, payload)
-    )
-    pending = list(downstream_events)
-
-    def spin_once(_node, *, timeout_sec):
-        clock.now += timeout_sec
-        while pending and clock.now >= 10.0 + pending[0][0]:
-            _offset, nonzero = pending.pop(0)
-            adapter._track_command("/cmd_vel_sim", _Twist(nonzero=nonzero))
-
-    adapter._rclpy = SimpleNamespace(ok=lambda: True, spin_once=spin_once)
-    return adapter, clock, published_at, recorded_events
-
-
-def gate_held_guard(*legs: str) -> EpisodeGuard:
-    """Full readiness chain except the ResetStopGate release (live R5 race)."""
-    guard = EpisodeGuard(mission_leg_ids=legs)
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    guard.record_reset_call()
-    guard.record_reset_response(True)
-    guard.record_reset_receipt_generation(1)
-    guard.record_reset_event()
-    guard.record_bridge(1, "session-1", True)
-    guard.record_startup_consensus(True)
-    guard.record_initialpose(100)
-    guard.record_amcl(101)
-    guard.record_bridge(2, "session-2", False)
-    guard.record_b5_diagnostic(
-        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
-        candidate_generation="epoch=2,session=session-2",
-    )
-    guard.record_prior(
-        2, "session-2", trusted_write=True, module2_healthy=True,
-        observation_valid=True, input_healthy=True,
-    )
-    guard.record_navigation_ready(nav2_active=True, tf_active=True)
-    guard.record_reset_gate_status(1, True)
-    return guard
-
-
-def test_dispatcher_runtime_topic_firewall_is_zero_gt():
-    assert DISPATCH_SUBSCRIPTION_TOPICS
-    assert not [topic for topic in DISPATCH_SUBSCRIPTION_TOPICS if topic.startswith("/ground_truth/")]
-    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
-    assert "create_subscription" in source
-    assert '"/ground_truth/' not in source
-
-
-def test_dispatcher_uses_route_coordinator_primary_goal_not_nav_action():
-    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
-    assert 'PoseStamped, "/bio_nav/route_goal"' in source
-    assert '"/bio_nav/route_goal_complete"' in source
-    assert '"/bio_nav/route_goal_result"' in source
-    assert '"/bio_nav/route_progress"' in source
-    assert "NavigateToPose" not in source
-    assert '"/navigate_to_pose/_action/cancel_goal"' in source
-
-
-def test_reset_is_exactly_once_and_unknown_response_never_retries():
-    guard = EpisodeGuard()
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    guard.record_reset_call()
-    guard.record_reset_response(None)
-    assert guard.state == "STOP"
-    assert guard.stop_reason == "reset_response_unknown"
-    with pytest.raises(V6ContractError, match="reset_retry_forbidden"):
-        guard.record_reset_call()
-    assert guard.reset_calls == 1
-
-
-def test_second_reset_event_is_immediate_stop():
-    guard = EpisodeGuard()
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    guard.record_reset_call()
-    guard.record_reset_response(True)
-    guard.record_reset_event()
-    guard.record_reset_event()
-    assert guard.state == "STOP"
-    assert guard.stop_reason == "second_reset_event"
-
-
-def test_multileg_goals_publish_in_order_and_stop_on_failure():
-    guard = ready_guard("G2", "G3", "G4")
-    guard.record_goal_publication("G2")
-    guard.record_route_progress()
-    guard.record_route_completion(True)
-    assert guard.state == "LEG_SUCCEEDED"
-    guard.record_goal_publication("G3")
-    guard.record_route_progress()
-    guard.record_route_completion(False)
-    assert guard.state == "FAILED"
-    assert guard.completed_leg_ids == ["G2"]
-    with pytest.raises(V6ContractError, match="not_authorized"):
-        guard.record_goal_publication("G4")
-    assert guard.goal_publications == 2
-
-
-def test_collision_cancels_once_and_late_success_cannot_overwrite_terminal():
-    class CancelGoal:
-        class Request:
-            pass
-
-    class CancelClient:
-        def __init__(self):
-            self.requests = []
-
-        def call_async(self, request):
-            self.requests.append(request)
-            return SimpleNamespace(done=lambda: False)
-
-    adapter = V6FormalNode.__new__(V6FormalNode)
-    adapter.guard = ready_guard("G2")
-    adapter.guard.record_goal_publication("G2")
-    adapter.collision = False
-    adapter.route_goal_results = []
-    adapter._terminal_cancel_requested = False
-    adapter._terminal_cancel_future = None
-    adapter._terminal_started_monotonic = None
-    adapter._navigation_terminal_observed = False
-    adapter._terminal_zero_reason = "not_required"
-    adapter._types = {"CancelGoal": CancelGoal}
-    adapter.navigate_cancel_client = CancelClient()
-    adapter._capture = lambda *_args, **_kwargs: None
-    events = []
-    adapter._write = lambda event, **payload: events.append((event, payload))
-
-    adapter._collision(SimpleNamespace(data=True))
-    adapter._route_result(SimpleNamespace(data=json.dumps({"status": "succeeded"})))
-    adapter._route_complete(SimpleNamespace(data=True))
-
-    assert adapter.guard.state == "STOP"
-    assert adapter.guard.stop_reason == "collision"
-    assert adapter.guard.completed_leg_ids == []
-    assert adapter._navigation_terminal_observed
-    assert len(adapter.navigate_cancel_client.requests) == 1
-    assert events == [
-        ("terminal_navigation_cancel_requested", {"reason": "collision"})
+    assert manifest.scene_id == "v6_kujiale_clearance_r2"
+    assert [leg.goal_id for leg in manifest.mission_legs] == [
+        "G2", "G3", "G4", "G5", "G1"
     ]
-
-
-def test_terminal_zero_bursts_until_new_downstream_zero_is_quiet(monkeypatch):
-    adapter, clock, published, events = _terminal_adapter(
-        monkeypatch,
-        cancel_done_after=0.20,
-        downstream_events=((0.25, False),),
-    )
-
-    assert adapter._settle_terminal_zero()
-    assert len([stamp for stamp, _x, _z in published if stamp < 10.20]) >= 3
-    assert all(x == 0.0 and z == 0.0 for _stamp, x, z in published)
-    assert clock.now >= 10.40
-    assert [event for _stamp, event, _payload in events] == [
-        "terminal_zero_confirmed"
-    ]
-
-
-def test_terminal_zero_rejects_stale_downstream_zero(monkeypatch):
-    adapter, _clock, _published, events = _terminal_adapter(
-        monkeypatch,
-        cancel_done_after=0.0,
-        downstream_events=(),
-        timeout_sec=0.35,
-    )
-    adapter._cmd_vel_sim_last_receive_monotonic = 9.99
-    adapter._cmd_vel_sim_last_zero_monotonic = 9.99
-
-    assert not adapter._settle_terminal_zero()
-    assert not adapter._terminal_zero_confirmed
-    assert adapter.guard.stop_reason == "collision"
-    assert [event for _stamp, event, _payload in events] == [
-        "terminal_zero_timeout"
-    ]
-
-
-def test_terminal_zero_nonzero_after_zero_restarts_quiet_window(monkeypatch):
-    adapter, clock, _published, events = _terminal_adapter(
-        monkeypatch,
-        cancel_done_after=0.0,
-        downstream_events=((0.05, False), (0.12, True), (0.25, False)),
-    )
-
-    assert adapter._settle_terminal_zero()
-    assert clock.now >= 10.40
-    assert [event for _stamp, event, _payload in events] == [
-        "terminal_zero_confirmed"
-    ]
-
-
-def test_terminal_zero_publisher_is_depth_one_upstream_only():
-    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
-    qos_start = source.index("terminal_zero_qos = QoSProfile(")
-    publisher_start = source.index(
-        "self.terminal_zero_publisher = self.node.create_publisher("
-    )
-    publisher_end = source.index(")", publisher_start)
-
-    assert "depth=1" in source[qos_start:publisher_start]
-    assert "ReliabilityPolicy.RELIABLE" in source[qos_start:publisher_start]
-    assert "DurabilityPolicy.VOLATILE" in source[qos_start:publisher_start]
-    assert 'Twist, "/cmd_vel_nav", terminal_zero_qos' in source[
-        publisher_start:publisher_end
-    ]
-    assert 'create_publisher(\n            Twist, "/cmd_vel_sim"' not in source
-
-
-def test_multileg_order_mismatch_stops_before_publish():
-    guard = ready_guard("G2", "G3")
-    with pytest.raises(V6ContractError, match="mission_leg_order"):
-        guard.record_goal_publication("G3")
-    assert guard.goal_publications == 0
-
-
-def test_goal_waits_for_reset_gate_release_of_receipt_generation():
-    guard = gate_held_guard("G2")
-    assert not guard.reset_gate_released
-    assert not guard.goal_ready
-    guard.record_reset_gate_status(1, False)
-    assert guard.reset_gate_released
-    assert guard.goal_ready
-    guard.record_goal_publication("G2")
-    assert guard.state == "NAVIGATING"
-    # The latched fact is not regressed by duplicate gate traffic.
-    guard.record_reset_gate_status(1, False)
-    assert guard.state == "NAVIGATING"
-
-
-def test_goal_publication_refused_while_reset_gate_holds():
-    guard = gate_held_guard("G2")
-    with pytest.raises(V6ContractError, match="not_authorized"):
-        guard.record_goal_publication("G2")
-    assert guard.goal_publications == 0
-
-
-def test_stale_reset_gate_release_does_not_arm_goal_readiness():
-    guard = gate_held_guard("G2")
-    guard.record_reset_gate_status(0, False)  # pre-reset generation release
-    assert not guard.goal_ready
-    guard.record_reset_gate_status(7, False)  # unknown future generation
-    assert not guard.goal_ready
-    with pytest.raises(V6ContractError, match="not_authorized"):
-        guard.record_goal_publication("G2")
-    assert guard.goal_publications == 0
-
-
-def test_reset_gate_release_before_receipt_binding_is_not_lost():
-    guard = EpisodeGuard(mission_leg_ids=("G2",))
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    guard.record_reset_call()
-    guard.record_reset_response(True)
-    guard.record_reset_gate_status(1, False)
-    assert not guard.reset_gate_released  # no receipt generation bound yet
-    guard.record_reset_receipt_generation(1)
-    assert guard.reset_gate_released
-
-
-def steady_state_streams(guard: EpisodeGuard) -> None:
-    """Trusted prior / AMCL / B5 traffic that keeps flowing during navigation."""
-    guard.record_prior(
-        2, "session-2", trusted_write=True, module2_healthy=True,
-        observation_valid=True, input_healthy=True,
-    )
-    guard.record_amcl(102)
-    guard.record_b5_diagnostic(
-        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
-        candidate_generation="epoch=2,session=session-2",
-    )
-
-
-def test_navigating_not_regressed_by_steady_state_streams():
-    guard = ready_guard("G2", "G3")
-    guard.record_goal_publication("G2")
-    assert guard.state == "NAVIGATING"
-    steady_state_streams(guard)
-    assert guard.state == "NAVIGATING"
-    guard.record_route_progress()
-    steady_state_streams(guard)
-    guard.record_route_completion(True)
-    assert guard.route_progress_messages == 1
-    assert guard.route_completion_messages == 1
-    assert guard.state == "LEG_SUCCEEDED"
-    assert guard.completed_leg_ids == ["G2"]
-
-
-def test_leg_succeeded_not_regressed_by_steady_state_streams():
-    guard = ready_guard("G2", "G3")
-    guard.record_goal_publication("G2")
-    guard.record_route_progress()
-    guard.record_route_completion(True)
-    assert guard.state == "LEG_SUCCEEDED"
-    steady_state_streams(guard)
-    assert guard.state == "LEG_SUCCEEDED"
-    guard.record_goal_publication("G3")
-    assert guard.state == "NAVIGATING"
-
-
-def test_wrong_bridge_epoch_stops_before_goal():
-    guard = EpisodeGuard()
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    guard.record_reset_call()
-    guard.record_reset_response(True)
-    guard.record_reset_event()
-    guard.record_bridge(3, "session-3", False)
-    assert guard.stop_reason == "bridge_epoch_mismatch:3!=2"
-
-
-def test_active_b5_readiness_requires_negative_window_not_prior_or_route():
-    guard = EpisodeGuard()
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    assert guard.state == "RESET_ARMED"
-
-
-@pytest.mark.parametrize("name", ["prior", "candidate", "initialpose", "route"])
-def test_active_b5_rejects_old_pre_reset_positive_preconditions(name):
-    counts = {"prior": 0, "candidate": 0, "initialpose": 0, "route": 0}
-    counts[name] = 1
-    with pytest.raises(V6ContractError, match="negative window violated"):
-        EpisodeGuard().arm_reset(
-            ready_facts(), 0, "session-0", pre_reset_counts=counts
-        )
-
-
-def test_arm_reset_discovers_warm_baseline_and_rolls_epochs():
-    guard = EpisodeGuard()
-    guard.arm_reset(
-        ready_facts(), 3, "session-3",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    assert guard.state == "RESET_ARMED"
-    assert guard.bridge_epoch_baseline == 3
-    guard.record_reset_call()
-    guard.record_reset_response(True)
-    guard.record_reset_event()
-    # Baseline diagnostics keep flowing and are ignored, not fatal.
-    guard.record_bridge(3, "session-3", False)
-    assert guard.stop_reason == ""
-    guard.record_bridge(4, "session-4", True)
-    assert guard.physical_epoch == 4
-    guard.record_startup_consensus(True)
-    guard.record_initialpose(100)
-    guard.record_amcl(101)
-    guard.record_bridge(5, "session-5", False)
-    assert guard.bootstrap_epoch == 5
-    guard.record_b5_diagnostic(
-        state="normal", recovery_result="succeeded", seed_confirmation="succeeded",
-        candidate_generation="epoch=5,session=session-5",
-    )
-    assert guard.b5_generation_witnessed
-
-
-def test_arm_reset_rejects_missing_epoch_or_active_goal():
-    with pytest.raises(V6ContractError, match="bridge epoch baseline"):
-        EpisodeGuard().arm_reset(
-            ready_facts(), None, "session-0",
-            pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-        )
-    guard = EpisodeGuard()
-    guard.goal_publications = 1
-    with pytest.raises(V6ContractError, match="reset_with_active_goal_forbidden"):
-        guard.arm_reset(
-            ready_facts(), 0, "session-0",
-            pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-        )
-
-
-def _bare_node():
-    node = V6FormalNode.__new__(V6FormalNode)
-    node.facts = ReadinessFacts()
-    node.latest_bridge_epoch = None
-    node.latest_bridge_session = ""
-    node.pre_reset_counts = {"prior": 0, "candidate": 0, "initialpose": 0, "route": 0}
-    node._cmd_window = deque()
-    node._cmd_vel_sim_last_receive_monotonic = None
-    node._cmd_vel_sim_last_zero_monotonic = None
-    node._cmd_vel_sim_last_nonzero_monotonic = None
-    node._odom_window = deque()
-    node.post_reset_odom_xy = []
-    node.guard = EpisodeGuard()
-    node._capture = lambda topic, message: None
-    return node
-
-
-def _twist(x=0.0, y=0.0, z=0.0):
-    return SimpleNamespace(
-        linear=SimpleNamespace(x=x, y=y), angular=SimpleNamespace(z=z)
-    )
-
-
-def test_pre_reset_still_requires_zero_commands_and_bounded_odom_span():
-    node = _bare_node()
-    now = time.monotonic()
-    assert not node._pre_reset_still()  # no odom evidence at all
-    node._odom_window.extend([
-        (now - 0.8, 1.0, 2.0), (now - 0.4, 1.02, 2.01), (now - 0.1, 1.01, 2.0),
-    ])
-    assert node._pre_reset_still()
-    node._cmd_window.append((now - 0.2, True))
-    assert not node._pre_reset_still()
-    node._cmd_window.clear()
-    node._cmd_window.append((now - 2.0, True))  # stale evidence expires
-    assert node._pre_reset_still()
-    node._odom_window.append((now - 0.1, 1.5, 2.0))
-    assert not node._pre_reset_still()
-
-
-def test_track_command_stops_on_post_reset_pre_goal_motion():
-    node = _bare_node()
-    node._track_command("/cmd_vel_sim", _twist(x=0.2))
-    assert node.guard.stop_reason == ""  # pre-reset commands only feed stillness
-    node.guard.reset_calls = 1
-    node._track_command("/cmd_vel_sim", _twist(x=0.2))
-    assert node.guard.stop_reason == "post_reset_command_nonzero:/cmd_vel_sim"
-    node.guard.goal_publications = 1
-    node._track_command("/cmd_vel_sim", _twist(x=0.2))  # own goal: motion legal
-    assert node.guard.stop_reason == "post_reset_command_nonzero:/cmd_vel_sim"
-
-
-def test_track_route_signal_counts_pre_reset_and_stops_stale_post_reset():
-    node = _bare_node()
-    node._track_route_signal("route_progress")
-    assert node.pre_reset_counts["route"] == 1
-    assert node.guard.stop_reason == ""
-    node.guard.reset_calls = 1
-    node._track_route_signal("route_goal_complete")
-    assert node.guard.stop_reason == "stale_route_goal_complete_after_reset"
-
-
-def test_reset_gate_status_callback_scopes_to_reset_and_validates():
-    node = _bare_node()
-    released = SimpleNamespace(data=json.dumps({
-        "generation": 1,
-        "held": False,
-        "eligible_generation": None,
-        "reason": "released:activation_gate",
-    }))
-    node._reset_gate_status(released)
-    assert node.guard.reset_gate_released_generation is None  # pre-reset ignored
-    node.guard.reset_calls = 1
-    node._reset_gate_status(released)
-    assert node.guard.reset_gate_released_generation == 1
-    node._reset_gate_status(SimpleNamespace(data="not json"))
-    assert node.guard.stop_reason == "reset_gate_status_invalid"
-    node = _bare_node()
-    node.guard.reset_calls = 1
-    node._reset_gate_status(SimpleNamespace(data=json.dumps({
-        "generation": "1", "held": False,
-    })))
-    assert node.guard.stop_reason == "reset_gate_status_invalid"
-
-
-def test_post_reset_odom_landing_and_span_contract():
-    node = _bare_node()
-    node._check_post_reset_odom()
-    assert node.guard.stop_reason == "post_reset_odom_missing"
-
-    node = _bare_node()
-    # The first sample may straddle the reset boundary and is skipped.
-    node.post_reset_odom_xy = [(9.9, 9.9), (0.01, 0.0), (0.02, 0.01), (0.0, 0.01)]
-    node._check_post_reset_odom()
-    assert node.guard.stop_reason == ""
-
-    node = _bare_node()
-    node.post_reset_odom_xy = [(0.0, 0.0), (0.5, 0.0), (0.5, 0.0)]
-    node._check_post_reset_odom()
-    assert node.guard.stop_reason.startswith("post_reset_odom_landing:")
-
-    node = _bare_node()
-    node.post_reset_odom_xy = [(0.0, 0.0), (0.01, 0.0), (0.30, 0.0)]
-    node._check_post_reset_odom()
-    assert node.guard.stop_reason.startswith("post_reset_odom_span:")
-
-
-def test_b5_warm_baseline_matching_uses_bridge_epoch_and_session():
-    node = _bare_node()
-    assert not node._b5_matches_bridge_baseline("epoch=3,session=s3,map=v1")
-    node.latest_bridge_epoch = 3
-    node.latest_bridge_session = "s3"
-    assert node._b5_matches_bridge_baseline("epoch=3,session=s3,map=v1,tile=t@1,graph=2")
-    assert not node._b5_matches_bridge_baseline("epoch=4,session=s3")
-    assert not node._b5_matches_bridge_baseline("epoch=3,session=other")
-    assert not node._b5_matches_bridge_baseline("waiting_after_physical_reset")
-
-
-def test_publisher_ownership_requires_sole_command_and_pose_publishers():
-    node = _bare_node()
-    counts = {"/odom": 1, "/cmd_vel": 1, "/cmd_vel_sim": 1, "/amcl_pose": 1}
-    node.node = SimpleNamespace(count_publishers=lambda topic: counts[topic])
-    assert node._publisher_ownership_violations() == ()
-    counts["/cmd_vel_sim"] = 2
-    assert node._publisher_ownership_violations() == ("/cmd_vel_sim=2",)
-    counts["/cmd_vel_sim"] = 0
-    assert node._publisher_ownership_violations() == ("/cmd_vel_sim=0",)
-
-
-def _probe_node(nav2_results):
-    """Bare node with a scripted post-reset Nav2 is_active probe."""
-    node = _bare_node()
-    node.map_odom_tf_seen = True
-    node.odom_base_tf_seen = True
-    node.node = SimpleNamespace()
-    node._rclpy = SimpleNamespace(spin_once=lambda *args, **kwargs: None)
-    attempts = []
-
-    def fake_nav2_is_active(timeout_sec):
-        attempts.append(timeout_sec)
-        return nav2_results[min(len(attempts) - 1, len(nav2_results) - 1)]
-
-    node._nav2_is_active = fake_nav2_is_active
-    return node, attempts
-
-
-def test_nav2_tf_probe_polls_through_the_pause_window():
-    # Live R5 race: the first probe landed inside the activation gate's
-    # time-jump recovery pause and the episode died with nav2_or_tf_not_ready
-    # 6 s after start.  The poll must retry until Nav2 resumes.
-    node, attempts = _probe_node([False, False, True])
-    node._wait_nav2_and_tf_ready(30.0)
-    assert node.guard.state != "STOP"
-    assert node.guard.stop_reason == ""
-    assert node.guard.nav2_active and node.guard.tf_active
-    assert len(attempts) == 3
-
-
-def test_nav2_tf_probe_still_fails_closed_after_budget_exhausted():
-    # Negative control: a probe that never recovers must still fail closed
-    # with the same reason once the reset budget is exhausted.
-    node, attempts = _probe_node([False])
-    node._wait_nav2_and_tf_ready(0.2)
-    assert node.guard.state == "STOP"
-    assert node.guard.stop_reason == "nav2_or_tf_not_ready"
-    assert len(attempts) >= 1
-
-
-def test_nav2_tf_probe_missing_tf_fact_also_fails_closed():
-    node, _ = _probe_node([True])
-    node.map_odom_tf_seen = False
-    node._wait_nav2_and_tf_ready(0.2)
-    assert node.guard.stop_reason == "nav2_or_tf_not_ready"
-
-
-def test_nav2_tf_probe_preserves_an_earlier_stop_reason():
-    node, _ = _probe_node([False])
-    node.guard.stop("collision")
-    node._wait_nav2_and_tf_ready(30.0)
-    assert node.guard.stop_reason == "collision"
-
-
-def test_b5_physical_epoch_seed_confirmation_bootstrap_rollover_sequence():
-    guard = ready_guard()
-    assert guard.physical_epoch == 1
-    assert guard.bootstrap_epoch == 2
-    assert guard.physical_session == "session-1"
-    assert guard.bootstrap_session == "session-2"
-    assert guard.goal_ready
-
-
-def test_b5_path_never_depends_on_isaac_localization_seeded():
-    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
-    assert "/simulation/localization_seeded" not in source
-
-
-def test_initialpose_burst_and_scan_stamped_amcl_straddlers():
-    guard = EpisodeGuard()
-    guard.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    guard.record_reset_call(); guard.record_reset_response(True); guard.record_reset_event()
-    guard.record_bridge(1, "session-1", True)
-    guard.record_startup_consensus(True)
-    guard.record_initialpose(100)
-    # AMCL stamps poses with the source scan time; samples straddling the
-    # seed are stale-stamped stragglers and are skipped, not violations.
-    guard.record_amcl(100)
-    assert guard.stop_reason == ""
-    assert not guard.post_initialpose_amcl_seen
-    guard.record_amcl(101)
-    assert guard.post_initialpose_amcl_seen
-
-    # The reseed burst repeats the same calibrated pose inside the reset
-    # epoch; repeats are accepted and the first seed stays the anchor.
-    second = EpisodeGuard()
-    second.arm_reset(
-        ready_facts(), 0, "session-0",
-        pre_reset_counts={"prior": 0, "candidate": 0, "initialpose": 0, "route": 0},
-    )
-    second.record_reset_call(); second.record_reset_response(True); second.record_reset_event()
-    second.record_bridge(1, "session-1", True)
-    second.record_startup_consensus(True)
-    second.record_initialpose(100); second.record_initialpose(101)
-    assert second.stop_reason == ""
-    assert second.initialpose_messages == 2
-    assert second.initialpose_stamp_ns == 100
-
-
-@pytest.mark.parametrize(
-    "kwargs, reason",
-    [
-        ({"trusted_write": True, "module2_healthy": True, "observation_valid": True, "input_healthy": True}, "active_prior_generation_mismatch"),
-    ],
-)
-def test_wrong_active_prior_trust_or_session_stops(kwargs, reason):
-    guard = ready_guard()
-    guard.state = "WAITING_B5_CONFIRMATION"
-    guard.stop_reason = ""
-    guard.post_reset_prior_seen = False
-    session = "wrong-session"
-    guard.record_prior(2, session, **kwargs)
-    assert guard.stop_reason == reason
-
-
-def test_untrusted_intermediate_prior_is_skipped_not_a_stop():
-    guard = ready_guard()
-    guard.state = "WAITING_B5_CONFIRMATION"
-    guard.stop_reason = ""
-    guard.post_reset_prior_seen = False
-    guard.record_prior(
-        2, "session-2",
-        trusted_write=False, module2_healthy=False,
-        observation_valid=False, input_healthy=True,
-    )
-    assert guard.stop_reason == ""
-    assert not guard.post_reset_prior_seen
-    guard.record_prior(
-        2, "session-2",
-        trusted_write=True, module2_healthy=True,
-        observation_valid=True, input_healthy=True,
-    )
-    assert guard.stop_reason == ""
-    assert guard.post_reset_prior_seen
-
-
-def test_b5_confirmation_failure_and_timeout_stop_before_goal():
-    guard = EpisodeGuard()
-    guard.record_b5_diagnostic(
-        state="lost", recovery_result="seed_confirmation_failed", seed_confirmation="failed"
-    )
-    assert guard.stop_reason == "b5_seed_confirmation_failed"
-    waiting = EpisodeGuard(state="WAITING_B5_CONFIRMATION")
-    waiting.stop("post_reset_readiness_timeout")
-    assert not waiting.goal_ready
-
-
-@pytest.mark.parametrize("path", MANIFESTS.values())
-def test_all_manifests_are_complete_candidates_but_not_formally_frozen(path):
-    manifest = load_manifest(path)
-    assert manifest.localization_seed_source == "b5_cognitive"
-    assert len(manifest.episodes) == 20
-    assert len(manifest.mission_legs) == 5
-    assert manifest.frozen is False
-    assert manifest.missing_required_values == ()
-    assert manifest.estimated_policy == {
-        "ekf_profile": "wheel_imu",
-        "lidar_odometry_backend": "off",
-        "lidar_odometry_validated": False,
-        "rf2o_decision": "not_validated_off",
-        "imu_calibration_profile": "isaac_v6_calibrated",
+    assert manifest.dynamic_schedule == ()
+    assert manifest.runtime["canonical_odom"] == {
+        "topic": "/odom",
+        "owner": "isaac_compute_odometry",
+        "tf": "odom->base_link",
     }
-    with pytest.raises(V6ContractError, match="scene_contract_frozen is false"):
-        authorize_manifest(manifest, mode="formal")
+    assert manifest.runtime["global_localization"] == {
+        "pose_topic": "/amcl_pose",
+        "owner": "amcl",
+        "tf": "map->odom",
+    }
+    assert manifest.runtime["module1_odom"] == {
+        "topic": "/bio_nav/module1/odom",
+        "owner": "wheel_imu_ekf",
+        "publish_tf": False,
+    }
+    assert manifest.runtime["recovery_enabled"] is False
+    assert manifest.runtime["module2_navigation_write_enabled"] is False
+    assert manifest.runtime["cognitive_place_graph_enabled"] is False
+    assert manifest.runtime["route_backend"] == "gvg"
+    assert manifest.runtime["low_obstacles_enabled"] is False
+    assert manifest.runtime["dynamic_actors_enabled"] is False
+    assert manifest.runtime["goal_checker"] == "position_xy"
+
+    text = MANIFEST.read_text(encoding="utf-8")
+    for forbidden in ("B5", "M3", "primary", "rf2o"):
+        assert forbidden not in text
+
+
+@pytest.mark.parametrize("path", LEGACY_MANIFESTS)
+def test_legacy_campaign_manifests_are_rejected_by_r3_dispatcher(path):
+    with pytest.raises(V6ContractError, match="schema_version"):
+        load_manifest(path)
+
+
+def test_r3_phase2_is_pilot_only(capsys):
+    manifest = load_manifest(MANIFEST)
     assert authorize_manifest(manifest, mode="pilot") == NOT_QUALIFIED
+    with pytest.raises(V6ContractError, match="engineering pilot only"):
+        authorize_manifest(manifest, mode="formal")
+
+    assert cli(["--manifest", str(MANIFEST), "--pilot"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["qualification"] == ENGINEERING_PILOT
+    assert payload["formal_qualification"] == NOT_QUALIFIED
+    assert payload["dispatch"] is False
+
+    assert cli(["--manifest", str(MANIFEST)]) == 2
+    assert "engineering pilot only" in capsys.readouterr().err
 
 
-def test_candidate_assets_are_bound_and_only_unsupported_posegraph_is_null():
-    for name, path in MANIFESTS.items():
-        values = load_manifest(path).raw["required_runtime_values"]
-        nulls = {key for key, value in values.items() if value is None}
-        if name.startswith("rivermark"):
-            assert values["scene_asset"] == "/home/lyb/Rivermark/rivermark.usd"
-        else:
-            assert values["scene_asset"].endswith(
-                "/v6_kujiale_clearance_r2/kujiale_0026_A_to_B_door_open.usd"
-            )
-        assert values["posegraph_required"] is False
-        assert nulls == {"posegraph_file"}
-        assert values["occupancy_map"].endswith(
-            "v6_kujiale_clearance_r2.yaml"
-            if name.startswith("kujiale")
-            else "rivermark_selected.yaml"
-        )
-        assert "/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/" in \
-            values["occupancy_map"]
+def test_runtime_contract_rejects_nonbaseline_navigation_features(tmp_path):
+    for key, value in (
+        ("recovery_enabled", True),
+        ("module2_navigation_write_enabled", True),
+        ("cognitive_place_graph_enabled", True),
+        ("route_backend", "primary"),
+        ("low_obstacles_enabled", True),
+        ("dynamic_actors_enabled", True),
+    ):
+        raw = _raw()
+        raw["runtime"][key] = value
+        with pytest.raises(V6ContractError, match=f"runtime.{key}"):
+            load_manifest(_write_manifest(tmp_path, raw))
 
 
-@pytest.mark.parametrize(
-    "name, expected",
-    [
-        ("kujiale_static", ["G2", "G3", "G4", "G5", "G1"]),
-        ("kujiale_dynamic", ["G2", "G3", "G4", "G5", "G1"]),
-        ("kujiale_appearance", ["G2", "G3", "G4", "G5", "G1"]),
-        ("rivermark_static", ["G1", "G2", "G3", "G4", "G5"]),
-        ("rivermark_dynamic", ["G1", "G2", "G3", "G4", "G5"]),
-        ("rivermark_appearance", ["G1", "G2", "G3", "G4", "G5"]),
-    ],
-)
-def test_mission_is_full_ordered_route_not_final_only_shortcut(name, expected):
-    manifest = load_manifest(MANIFESTS[name])
-    assert [leg.goal_id for leg in manifest.mission_legs] == expected
-    reset = manifest.reset_pose
-    first = manifest.mission_legs[0]
-    assert (float(reset["x"]), float(reset["y"])) != (first.x, first.y)
-    assert all("goal" not in row for row in manifest.raw["episodes"])
-
-
-@pytest.mark.parametrize(
-    "name, first, last",
-    [
-        ("kujiale_static", 7201, 7220),
-        ("kujiale_dynamic", 7301, 7320),
-        ("kujiale_appearance", 7201, 7220),
-        ("rivermark_static", 19301, 19320),
-        ("rivermark_dynamic", 19401, 19420),
-        ("rivermark_appearance", 19501, 19520),
-    ],
-)
-def test_exact_seed_ranges(name, first, last):
-    assert [row.seed for row in load_manifest(MANIFESTS[name]).episodes] == list(range(first, last + 1))
-
-
-@pytest.mark.parametrize(
-    "name, case_id",
-    [
-        ("kujiale_dynamic", "full_route_three_stage"),
-        ("rivermark_dynamic", "full_route_four_stage"),
-    ],
-)
-def test_dynamic_cases_and_variants_remain_manifest_metadata(name, case_id):
-    manifest = load_manifest(MANIFESTS[name])
-    assert {row.dynamic_case_id for row in manifest.episodes} == {case_id}
-    assert Counter(row.variant_id for row in manifest.episodes) == {f"v{i}": 4 for i in range(1, 6)}
-
-
-@pytest.mark.parametrize("name", MANIFESTS)
-def test_all_mission_legs_are_strictly_xy_only(name):
-    manifest = load_manifest(MANIFESTS[name])
+def test_mission_legs_are_xy_only_and_schedule_is_separate(tmp_path):
+    manifest = load_manifest(MANIFEST)
     assert all(
         set(row) == {"id", "frame_id", "x", "y"}
         for row in manifest.raw["mission"]["legs"]
     )
 
-
-def test_manifest_rejects_yaw_or_actor_fields_on_route_legs(tmp_path):
-    raw = yaml.safe_load(MANIFESTS["kujiale_static"].read_text())
-    raw["mission"]["legs"][0]["yaw_deg"] = 90.0
-    path = tmp_path / "yaw_goal.yaml"
-    path.write_text(yaml.safe_dump(raw, sort_keys=False))
+    raw = _raw()
+    raw["mission"]["legs"][0]["yaw_deg"] = 45.0
     with pytest.raises(V6ContractError, match="only id/frame_id/x/y"):
-        load_manifest(path)
+        load_manifest(_write_manifest(tmp_path, raw))
 
 
-def test_goal_message_uses_identity_orientation_placeholder():
+@pytest.mark.parametrize(
+    "schedule, message",
+    [
+        ([{"leg_id": "missing", "group": "actor_a"}], "not a mission leg"),
+        (
+            [
+                {"leg_id": "G2", "group": "actor_a"},
+                {"leg_id": "G2", "group": "actor_b"},
+            ],
+            "must be unique",
+        ),
+        (
+            [
+                {"leg_id": "G2", "group": "actor_a"},
+                {"leg_id": "G3", "group": "actor_a"},
+            ],
+            "must be unique",
+        ),
+    ],
+)
+def test_dynamic_schedule_validates_leg_and_uniqueness(tmp_path, schedule, message):
+    raw = _raw()
+    raw["dynamic_schedule"] = schedule
+    with pytest.raises(V6ContractError, match=message):
+        load_manifest(_write_manifest(tmp_path, raw))
+
+
+def test_dynamic_schedule_parses_independently_from_xy_goals(tmp_path):
+    raw = _raw()
+    raw["dynamic_schedule"] = [{"leg_id": "G3", "group": "actor_a"}]
+    manifest = load_manifest(_write_manifest(tmp_path, raw))
+    assert manifest.dynamic_schedule == (DynamicScheduleEntry("G3", "actor_a"),)
+    assert not hasattr(manifest.mission_legs[1], "dynamic_trigger_group")
+
+
+def test_baseline_readiness_has_no_candidate_bridge_or_prior_dependency():
+    fields = set(ReadinessFacts.__dataclass_fields__)
+    assert fields == {
+        "reset_service_ready",
+        "reset_event_publisher_ready",
+        "reset_subscriber_roster_ready",
+        "route_goal_subscriber_ready",
+        "clock_seen",
+        "scan_seen",
+        "map_seen",
+        "navigation_graph_seen",
+        "estimated_odom_seen",
+    }
+    assert not any("module2" in topic for topic in DISPATCH_SUBSCRIPTION_TOPICS)
+    assert "/bio_nav/localization/candidates" not in DISPATCH_SUBSCRIPTION_TOPICS
+
+
+def test_goal_requires_fresh_initialpose_then_amcl_nav_tf_and_gate_release():
+    guard = EpisodeGuard(mission_leg_ids=("G2",))
+    guard.arm_reset(ready_facts())
+    guard.record_reset_call()
+    guard.record_reset_response(True)
+    guard.record_reset_receipt_generation(7)
+    guard.record_reset_event()
+    guard.record_amcl(99)
+    guard.record_navigation_ready(nav2_active=True, tf_active=True)
+    guard.record_reset_gate_status(7, False)
+    assert not guard.goal_ready
+
+    guard.record_initialpose(100)
+    guard.record_amcl(100)
+    assert not guard.goal_ready
+    guard.record_amcl(101)
+    assert guard.localization_ready
+    assert guard.goal_ready
+
+
+def test_stale_reset_gate_release_does_not_authorize_goal():
+    guard = EpisodeGuard(mission_leg_ids=("G2",))
+    guard.arm_reset(ready_facts())
+    guard.record_reset_call()
+    guard.record_reset_response(True)
+    guard.record_reset_event()
+    guard.record_initialpose(100)
+    guard.record_amcl(101)
+    guard.record_navigation_ready(nav2_active=True, tf_active=True)
+    guard.record_reset_receipt_generation(4)
+    guard.record_reset_gate_status(3, False)
+    assert not guard.goal_ready
+    guard.record_reset_gate_status(4, False)
+    assert guard.goal_ready
+
+
+def test_reset_is_exactly_once():
+    guard = EpisodeGuard()
+    guard.arm_reset(ready_facts())
+    guard.record_reset_call()
+    guard.record_reset_response(None)
+    assert guard.stop_reason == "reset_response_unknown"
+    with pytest.raises(V6ContractError, match="reset_retry_forbidden"):
+        guard.record_reset_call()
+
+
+def test_multileg_order_and_xy_goal_message():
+    guard = ready_guard("G2", "G3")
+    guard.record_goal_publication("G2")
+    guard.record_route_progress()
+    guard.record_route_completion(True)
+    with pytest.raises(V6ContractError, match="mission_leg_order"):
+        guard.record_goal_publication("G4")
+
     class PoseStamped:
         def __init__(self):
             self.header = SimpleNamespace(frame_id="", stamp=None)
@@ -909,170 +273,324 @@ def test_goal_message_uses_identity_orientation_placeholder():
             now=lambda: SimpleNamespace(to_msg=lambda: "stamp")
         )
     )
-
-    message = adapter._goal_message(MissionLeg("G2", "map", 1.0, 2.0))
-    assert (message.pose.position.x, message.pose.position.y) == (1.0, 2.0)
-    assert message.pose.orientation.z == 0.0
-    assert message.pose.orientation.w == 1.0
-
-
-@pytest.mark.parametrize("name", ["kujiale_appearance", "rivermark_appearance"])
-def test_appearance_profiles_are_four_profiles_five_each(name):
-    manifest = load_manifest(MANIFESTS[name])
-    assert Counter(row.appearance_profile_id for row in manifest.episodes) == {
-        "dim_warm": 5,
-        "dim_cool": 5,
-        "bright_warm": 5,
-        "bright_cool": 5,
-    }
-    assert manifest.raw["required_runtime_values"]["appearance_config"]
+    goal = adapter._goal_message(MissionLeg("G2", "map", 1.0, 2.0))
+    assert (goal.pose.position.x, goal.pose.position.y) == (1.0, 2.0)
+    assert goal.pose.orientation.z == 0.0
+    assert goal.pose.orientation.w == 1.0
 
 
-def test_appearance_physical_obstacle_binding_matches_audited_launches():
-    assert load_manifest(MANIFESTS["kujiale_appearance"]).raw[
-        "required_runtime_values"
-    ]["physical_obstacles_enabled"] is True
-    assert load_manifest(MANIFESTS["rivermark_appearance"]).raw[
-        "required_runtime_values"
-    ]["physical_obstacles_enabled"] is False
+def _mission_leg_adapter(*, spin_result: bool, route_success: bool):
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = ready_guard("G2")
+    adapter.canonical_route_count = 0
+    adapter.route_goal_results = []
+    adapter._navigation_terminal_observed = False
+    events = []
+    adapter._call_dynamic_action = lambda group, action, timeout: (
+        events.append((action, group)) or True
+    )
+    adapter._goal_message = lambda leg: f"goal:{leg.goal_id}"
+    adapter.route_goal_publisher = SimpleNamespace(
+        publish=lambda message: events.append(("publish", message))
+    )
+    adapter._write = lambda event, **payload: events.append((event, payload))
 
+    def spin_until(_predicate, _timeout):
+        if spin_result:
+            adapter.guard.record_route_progress()
+            adapter.guard.record_route_completion(route_success)
+            adapter.canonical_route_count += 1
+        return spin_result
 
-def test_dynamic_actions_are_trigger_then_complete_exactly_once_no_retry():
-    ledger = DynamicActionLedger()
-    ledger.claim("G2", "trigger")
-    ledger.record("G2", "trigger", "accepted", "armed")
-    ledger.claim("G2", "complete")
-    ledger.record("G2", "complete", "accepted", "retired")
-    assert [(row["action"], row["result"]) for row in ledger.events] == [
-        ("trigger", "claimed"), ("trigger", "accepted"),
-        ("complete", "claimed"), ("complete", "accepted"),
-    ]
-    with pytest.raises(V6ContractError, match="retry forbidden"):
-        ledger.claim("G2", "trigger")
-    with pytest.raises(V6ContractError, match="before trigger"):
-        DynamicActionLedger().claim("G3", "complete")
-
-
-def test_pilot_lint_reports_not_qualified_and_does_not_create_output(tmp_path, capsys):
-    output = tmp_path / "formal_ledger.jsonl"
-    assert cli(["--manifest", str(MANIFESTS["kujiale_static"]), "--pilot", "--output-jsonl", str(output)]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["qualification"] == ENGINEERING_PILOT
-    assert result["formal_qualification"] == NOT_QUALIFIED
-    assert result["dispatch"] is False
-    assert not output.exists()
-
-
-def test_dispatch_pilot_requires_pilot(capsys):
-    assert cli(["--manifest", str(MANIFESTS["kujiale_static"]), "--dispatch-pilot"]) == 2
-    assert "--dispatch-pilot requires --pilot" in capsys.readouterr().err
+    adapter._spin_until = spin_until
+    return adapter, events
 
 
 @pytest.mark.parametrize(
-    "policy",
-    [
-        {
-            "ekf_profile": "wheel_imu",
-            "lidar_odometry_backend": "rf2o",
-            "lidar_odometry_validated": False,
-            "rf2o_decision": "shadow",
-        },
-        {
-            "ekf_profile": "wheel_imu_lidar",
-            "lidar_odometry_backend": "rf2o",
-            "lidar_odometry_validated": True,
-            "rf2o_decision": "active_fused",
-        },
-    ],
+    "spin_result, route_success, expected_state",
+    [(True, True, "SUCCEEDED"), (True, False, "FAILED"), (False, False, "STOP")],
 )
-def test_formal_rejects_rf2o_shadow_or_fused_policy(tmp_path, policy):
-    raw = yaml.safe_load(MANIFESTS["kujiale_static"].read_text())
-    raw["runtime"].update(policy)
-    raw["scene_contract_frozen"] = True
-    path = tmp_path / "policy.yaml"
-    path.write_text(yaml.safe_dump(raw, sort_keys=False))
-
-    manifest = load_manifest(path)
-    with pytest.raises(V6ContractError, match="final Estimated policy mismatch"):
-        authorize_manifest(manifest, mode="formal")
-
-
-def test_engineering_policy_override_is_explicit_and_not_qualified(
-    tmp_path, capsys
+def test_dynamic_action_triggers_before_goal_and_completes_after_leg_terminal(
+    spin_result, route_success, expected_state
 ):
-    raw = yaml.safe_load(MANIFESTS["kujiale_static"].read_text())
-    raw["runtime"].update({
-        "lidar_odometry_backend": "rf2o",
-        "lidar_odometry_validated": False,
-        "rf2o_decision": "shadow",
-    })
-    path = tmp_path / "shadow.yaml"
-    path.write_text(yaml.safe_dump(raw, sort_keys=False))
-    manifest = load_manifest(path)
+    adapter, events = _mission_leg_adapter(
+        spin_result=spin_result, route_success=route_success
+    )
+    adapter._run_mission_leg(
+        index=0,
+        leg=MissionLeg("G2", "map", 1.0, 2.0),
+        dynamic_group="actor_a",
+        reset_timeout_sec=1.0,
+        navigation_timeout_sec=2.0,
+    )
 
-    with pytest.raises(V6ContractError, match="requires explicit engineering override"):
-        authorize_manifest(manifest, mode="pilot")
-    assert authorize_manifest(
-        manifest,
-        mode="pilot",
-        allow_engineering_policy_override=True,
-    ) == NOT_QUALIFIED
-
-    assert cli([
-        "--manifest", str(path), "--pilot",
-        "--allow-engineering-estimated-policy-override",
-    ]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert result["formal_qualification"] == NOT_QUALIFIED
-    assert result["engineering_estimated_policy_override"] is True
+    labels = [row[0] for row in events]
+    assert labels.index("trigger") < labels.index("publish")
+    assert labels.index("publish") < labels.index("complete")
+    assert adapter.guard.state == expected_state
 
 
-def test_evidence_jsonl_is_append_only_rows(tmp_path):
-    path = tmp_path / "pilot.jsonl"
-    append_evidence_jsonl(path, "route_goal_published", leg_id="G2")
-    append_evidence_jsonl(path, "dynamic_action", group="G2", phase="armed")
-    rows = [json.loads(line) for line in path.read_text().splitlines()]
-    assert [row["event"] for row in rows] == ["route_goal_published", "dynamic_action"]
-    assert all(row["wall_time_ns"] > 0 for row in rows)
+def test_dynamic_action_ledger_is_exactly_once():
+    ledger = DynamicActionLedger()
+    ledger.claim("actor_a", "trigger")
+    ledger.claim("actor_a", "complete")
+    with pytest.raises(V6ContractError, match="retry forbidden"):
+        ledger.claim("actor_a", "complete")
+    with pytest.raises(V6ContractError, match="completion before trigger"):
+        DynamicActionLedger().claim("actor_b", "complete")
 
 
-def test_appearance_summary_captures_profile_light_and_material_counts():
-    adapter = object.__new__(V6FormalNode)
-    adapter.appearance_state = {
-        "profile_id": "dim_warm",
-        "overrides": {"light_intensity_scale": 0.4, "material_hue_shift_deg": 35.0},
-        "applied_counts": {"lights": 3, "material_color_inputs": 7},
-    }
-    assert adapter._appearance_summary() == {
-        "observed": True,
-        "profile_id": "dim_warm",
-        "light_intensity_scale": 0.4,
-        "material_hue_shift_deg": 35.0,
-        "lights_applied": 3,
-        "material_inputs_applied": 7,
-    }
+class _Twist:
+    def __init__(self, *, nonzero: bool = False):
+        self.linear = SimpleNamespace(x=0.2 if nonzero else 0.0, y=0.0, z=0.0)
+        self.angular = SimpleNamespace(x=0.0, y=0.0, z=0.0)
 
 
-def test_cognitive_capture_schema_covers_causal_control_and_pilot_facts():
-    required = {
-        "/bio_nav/module2/cognitive_place_graph",
-        "/bio_nav/module3/cognitive_graph_validation_ack",
-        "/bio_nav/navigation_graph",
-        "/bio_nav/canonical_route",
-        "/bio_nav/route_progress",
-        "/bio_nav/module2/goal_planning_prior",
-        "/bio_nav/risk_layer/status",
-        "/bio_nav/cognitive_risk_critic/status",
-        "/bio_nav/module3/cognitive_edge_outcome",
-        "/cmd_vel",
-        "/simulation/collision",
-        "/simulation/collision_diagnostics",
-        "/experiment/obstacles/state",
-        "/experiment/appearance/state",
-    }
-    assert required <= CAPTURE_SCHEMA.keys()
+class _CancelGoal:
+    class Request:
+        pass
 
 
-def test_formal_dispatch_remains_fail_closed_while_candidates_unfrozen(capsys):
-    assert cli(["--manifest", str(MANIFESTS["kujiale_static"])]) == 2
-    assert "scene_contract_frozen is false" in capsys.readouterr().err
+def _terminal_adapter(
+    monkeypatch,
+    *,
+    state: str,
+    downstream_events: tuple[tuple[float, bool], ...],
+    cancel_done_after: float | None = 0.0,
+    timeout_sec: float = 0.65,
+):
+    clock = SimpleNamespace(now=10.0)
+    monkeypatch.setattr(v6_formal_module.time, "monotonic", lambda: clock.now)
+
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = ready_guard("G2")
+    adapter.guard.record_goal_publication("G2")
+    adapter.guard.record_route_progress()
+    if state == "SUCCEEDED":
+        adapter.guard.record_route_completion(True)
+    elif state == "FAILED":
+        adapter.guard.record_route_completion(False)
+    else:
+        adapter.guard.stop("collision")
+    adapter._terminal_cancel_requested = False
+    adapter._terminal_cancel_future = None
+    adapter._terminal_started_monotonic = None
+    adapter._navigation_terminal_observed = state in {"SUCCEEDED", "FAILED"}
+    adapter._terminal_zero_settled = False
+    adapter._terminal_zero_confirmed = False
+    adapter._terminal_zero_reason = "not_required"
+    adapter._cmd_vel_sim_last_receive_monotonic = None
+    adapter._cmd_vel_sim_last_nonzero_monotonic = None
+    adapter._cmd_vel_sim_zero_stamps = deque()
+    adapter._cmd_window = deque()
+    adapter._types = {"CancelGoal": _CancelGoal, "Twist": _Twist}
+    adapter.node = SimpleNamespace()
+    adapter.TERMINAL_ZERO_TIMEOUT_SEC = timeout_sec
+    adapter.TERMINAL_ZERO_PERIOD_SEC = 0.05
+    adapter.TERMINAL_ZERO_QUIET_SEC = 0.15
+    adapter.TERMINAL_ZERO_CADENCE_TOLERANCE_SEC = 0.10
+    adapter._capture = lambda *_args, **_kwargs: None
+
+    lifecycle = []
+    adapter.navigate_cancel_client = SimpleNamespace(
+        call_async=lambda request: (
+            lifecycle.append((clock.now, "cancel"))
+            or SimpleNamespace(
+                done=lambda: cancel_done_after is not None
+                and clock.now >= 10.0 + cancel_done_after
+            )
+        )
+    )
+    adapter.terminal_zero_publisher = SimpleNamespace(
+        publish=lambda message: lifecycle.append((clock.now, "zero_publish"))
+    )
+    adapter._write = lambda event, **payload: lifecycle.append((clock.now, event))
+    pending = list(downstream_events)
+
+    def spin_once(_node, *, timeout_sec):
+        clock.now += timeout_sec
+        while pending and clock.now >= 10.0 + pending[0][0]:
+            _offset, nonzero = pending.pop(0)
+            adapter._track_command("/cmd_vel_sim", _Twist(nonzero=nonzero))
+
+    adapter._rclpy = SimpleNamespace(ok=lambda: True, spin_once=spin_once)
+    return adapter, clock, lifecycle
+
+
+def test_success_terminal_settle_publishes_20hz_without_cancel(monkeypatch):
+    adapter, _clock, lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="SUCCEEDED",
+        downstream_events=((0.05, False), (0.20, False)),
+    )
+    adapter._start_terminal_settle(cancel_navigation=False, reason="SUCCEEDED")
+
+    assert adapter._settle_terminal_zero()
+    labels = [label for _stamp, label in lifecycle]
+    assert "cancel" not in labels
+    publish_stamps = [stamp for stamp, label in lifecycle if label == "zero_publish"]
+    assert len(publish_stamps) >= 4
+    assert all(
+        later - earlier == pytest.approx(0.05)
+        for earlier, later in zip(publish_stamps, publish_stamps[1:])
+    )
+
+
+@pytest.mark.parametrize(
+    "state, cancel_navigation",
+    [("SUCCEEDED", False), ("FAILED", True), ("STOP", True)],
+)
+def test_result_routes_every_terminal_state_through_zero_settle(
+    state, cancel_navigation
+):
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = EpisodeGuard(state=state, stop_reason="failure" if state != "SUCCEEDED" else "")
+    adapter.qualification = ENGINEERING_PILOT
+    adapter.reset_receipt = None
+    adapter.route_goal_results = []
+    adapter.dynamic_actions = DynamicActionLedger()
+    adapter.obstacle_state_messages = []
+    adapter.collision = False
+    adapter._terminal_zero_confirmed = True
+    adapter._terminal_zero_reason = "terminal_zero_confirmed"
+    calls = []
+    adapter._start_terminal_settle = lambda **kwargs: calls.append(
+        ("start", kwargs)
+    )
+    adapter._settle_terminal_zero = lambda: calls.append(("settle", {})) or True
+    adapter._write = lambda *_args, **_kwargs: None
+
+    result = adapter.result()
+
+    assert result["state"] == state
+    assert calls == [
+        (
+            "start",
+            {
+                "cancel_navigation": cancel_navigation,
+                "reason": "failure" if state != "SUCCEEDED" else "SUCCEEDED",
+            },
+        ),
+        ("settle", {}),
+    ]
+
+
+def test_success_terminal_settle_timeout_becomes_stop(monkeypatch):
+    adapter, _clock, _lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="SUCCEEDED",
+        downstream_events=((0.05, False),),
+        timeout_sec=0.35,
+    )
+    adapter._start_terminal_settle(cancel_navigation=False, reason="SUCCEEDED")
+
+    assert not adapter._settle_terminal_zero()
+    assert adapter.guard.state == "STOP"
+    assert adapter.guard.stop_reason == "terminal_zero_timeout_after_success"
+
+
+def test_failed_terminal_cancels_before_zero_settle(monkeypatch):
+    adapter, _clock, lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="FAILED",
+        downstream_events=((0.05, False), (0.20, False)),
+    )
+    adapter._start_terminal_settle(cancel_navigation=True, reason="route_failed")
+
+    assert adapter._settle_terminal_zero()
+    labels = [label for _stamp, label in lifecycle]
+    assert labels.index("cancel") < labels.index("zero_publish")
+
+
+def test_single_downstream_zero_plus_silence_never_passes(monkeypatch):
+    adapter, _clock, _lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="STOP",
+        downstream_events=((0.05, False),),
+        timeout_sec=0.35,
+    )
+    adapter._start_terminal_settle(cancel_navigation=True, reason="collision")
+    assert not adapter._settle_terminal_zero()
+    assert not adapter._terminal_zero_confirmed
+
+
+def test_repeated_downstream_zero_covers_quiet_window_and_passes(monkeypatch):
+    adapter, clock, _lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="STOP",
+        downstream_events=((0.05, False), (0.22, False)),
+    )
+    adapter._start_terminal_settle(cancel_navigation=True, reason="collision")
+    assert adapter._settle_terminal_zero()
+    assert clock.now <= 10.32
+
+
+def test_repeated_zero_then_silence_fails_latest_cadence_check(monkeypatch):
+    adapter, _clock, _lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="STOP",
+        downstream_events=((0.05, False), (0.22, False)),
+        cancel_done_after=0.45,
+        timeout_sec=0.60,
+    )
+    adapter._start_terminal_settle(cancel_navigation=True, reason="collision")
+    assert not adapter._settle_terminal_zero()
+
+
+def test_downstream_nonzero_resets_zero_window(monkeypatch):
+    adapter, clock, _lifecycle = _terminal_adapter(
+        monkeypatch,
+        state="STOP",
+        downstream_events=(
+            (0.05, False),
+            (0.15, False),
+            (0.18, True),
+            (0.30, False),
+            (0.48, False),
+        ),
+    )
+    adapter._start_terminal_settle(cancel_navigation=True, reason="collision")
+    assert adapter._settle_terminal_zero()
+    assert clock.now >= 10.48
+
+
+def test_command_observation_and_terminal_publish_qos_are_depth_one():
+    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
+    observation = source[
+        source.index("command_observation_qos = QoSProfile("):
+        source.index("terminal_zero_qos = QoSProfile(")
+    ]
+    assert "depth=1" in observation
+    assert "ReliabilityPolicy.RELIABLE" in observation
+    assert "DurabilityPolicy.VOLATILE" in observation
+    for topic in ("/cmd_vel", "/cmd_vel_nav", "/cmd_vel_sim"):
+        assert f'lambda m: self._track_command("{topic}", m), command_observation_qos' in source
+
+    terminal = source[
+        source.index("terminal_zero_qos = QoSProfile("):
+        source.index("self.reset_client =")
+    ]
+    assert "depth=1" in terminal
+    assert 'Twist, "/cmd_vel_nav", terminal_zero_qos' in terminal
+    assert 'create_publisher(\n            Twist, "/cmd_vel_sim"' not in source
+
+
+def test_reset_stop_gate_and_omnigraph_command_queues_remain_depth_one():
+    gate = (REPO / "isaac_sim/src/bridge/reset_stop_gate.py").read_text()
+    command_qos = gate[
+        gate.index("command_qos = QoSProfile("):
+        gate.index("status_qos = QoSProfile(")
+    ]
+    assert "HistoryPolicy.KEEP_LAST" in command_qos
+    assert "depth=1" in command_qos
+
+    graph = (REPO / "isaac_sim/graphs/control_graph.py").read_text()
+    assert '("SubscribeTwist.inputs:queueSize", 1)' in graph
+
+
+def test_dispatcher_ground_truth_firewall():
+    assert DISPATCH_SUBSCRIPTION_TOPICS
+    assert not [
+        topic for topic in DISPATCH_SUBSCRIPTION_TOPICS
+        if topic.startswith("/ground_truth/")
+    ]

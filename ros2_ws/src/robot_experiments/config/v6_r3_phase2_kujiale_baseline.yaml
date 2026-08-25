@@ -1,0 +1,34 @@
+schema_version: bio_nav_v6_r3_phase2_pilot_manifest_v1
+intended_use: engineering_pilot
+scene: {id: v6_kujiale_clearance_r2, world: kujiale, category: static}
+runtime:
+  canonical_odom: {topic: /odom, owner: isaac_compute_odometry, tf: odom->base_link}
+  global_localization: {pose_topic: /amcl_pose, owner: amcl, tf: map->odom}
+  module1_odom:
+    topic: /bio_nav/module1/odom
+    owner: wheel_imu_ekf
+    publish_tf: false
+  recovery_enabled: false
+  module2_navigation_write_enabled: false
+  cognitive_place_graph_enabled: false
+  route_backend: gvg
+  low_obstacles_enabled: false
+  dynamic_actors_enabled: false
+  goal_checker: position_xy
+assets:
+  scene_asset: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/assets/environments/v6_kujiale_clearance_r2/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/maps/occupancy/v6_kujiale_clearance_r2.yaml
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_clearance_r2_gvg_v1.geojson
+  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_params.yaml
+mission:
+  reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
+  legs:
+    - {id: G2, frame_id: map, x: 0.80, y: 4.80}
+    - {id: G3, frame_id: map, x: -2.20, y: 3.25}
+    - {id: G4, frame_id: map, x: -3.00, y: -0.45}
+    - {id: G5, frame_id: map, x: -2.20, y: -2.95}
+    - {id: G1, frame_id: map, x: 0.45, y: -5.35}
+dynamic_schedule: []
+episodes:
+  - {seed: 7301, variant_id: baseline, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
