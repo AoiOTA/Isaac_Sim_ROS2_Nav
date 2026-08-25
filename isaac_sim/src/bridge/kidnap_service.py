@@ -38,8 +38,10 @@ class KidnapController:
         zero_hold_s: float = 1.0,
         zero_speed_epsilon: float = 1.0e-6,
     ) -> None:
-        if odometry_mode not in {"ideal", "realistic"}:
-            raise KidnapServiceError("odometry_mode must be ideal or realistic")
+        if odometry_mode not in {"ideal", "realistic", "mixed"}:
+            raise KidnapServiceError(
+                "odometry_mode must be ideal, realistic, or mixed"
+            )
         for value, name, allow_zero in (
             (command_freshness_s, "command_freshness_s", False),
             (zero_hold_s, "zero_hold_s", True),

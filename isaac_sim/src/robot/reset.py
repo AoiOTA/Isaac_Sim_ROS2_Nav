@@ -48,8 +48,10 @@ class ResetRequest:
     def __post_init__(self) -> None:
         if self.navigation_mode not in {"mapping", "localization"}:
             raise ResetError("navigation_mode must be mapping or localization")
-        if self.odometry_mode not in {"ideal", "realistic"}:
-            raise ResetError("odometry_mode must be ideal or realistic")
+        if self.odometry_mode not in {"ideal", "realistic", "mixed"}:
+            raise ResetError(
+                "odometry_mode must be ideal, realistic, or mixed"
+            )
         if isinstance(self.random_seed, bool) or not isinstance(self.random_seed, int) or self.random_seed < 0:
             raise ResetError("random_seed must be a non-negative integer")
         if (

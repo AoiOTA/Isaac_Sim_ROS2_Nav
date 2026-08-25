@@ -18,6 +18,7 @@ import yaml
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
 from robot_bringup.mode_contract import cognitive_nav2_parameters
+from robot_bringup.mode_contract import resolve_ekf_profile
 from robot_bringup.mode_contract import validate_cognitive_graph_mode
 from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_mode
@@ -166,22 +167,28 @@ def _launch_setup(context):
     odometry_share = Path(get_package_share_directory('robot_odometry'))
     mapping_share = Path(get_package_share_directory('robot_mapping'))
     navigation_share = Path(get_package_share_directory('robot_navigation'))
-    ekf_profile = LaunchConfiguration('ekf_profile').perform(context).strip()
+    requested_ekf_profile = LaunchConfiguration(
+        'ekf_profile').perform(context).strip()
     lidar_odometry_backend = LaunchConfiguration(
         'lidar_odometry_backend').perform(context).strip().lower()
     lidar_validated_value = LaunchConfiguration(
         'lidar_odometry_validated').perform(context).strip().lower()
-    if ekf_profile not in {'wheel_imu', 'wheel_imu_lidar'}:
-        raise RuntimeError(
-            'ekf_profile must be wheel_imu or wheel_imu_lidar')
-    if lidar_odometry_backend not in {'off', 'rf2o'}:
-        raise RuntimeError('lidar_odometry_backend must be off or rf2o')
     if lidar_validated_value not in {'true', 'false'}:
         raise RuntimeError('lidar_odometry_validated must be true or false')
     localization_config_share = Path(
         get_package_share_directory('robot_localization_config'))
     requested_ekf_params = LaunchConfiguration(
         'ekf_params_file').perform(context).strip()
+    try:
+        ekf_profile = resolve_ekf_profile(
+            selection.odometry_mode,
+            requested_ekf_profile,
+            lidar_odometry_backend,
+            lidar_validated_value == 'true',
+            requested_ekf_params,
+        )
+    except ValueError as exc:
+        raise RuntimeError(f'invalid EKF profile contract: {exc}') from exc
     ekf_params_file = (
         Path(requested_ekf_params).expanduser()
         if requested_ekf_params
@@ -326,7 +333,7 @@ def _launch_setup(context):
     else:
         actions.append(perception)
 
-    if selection.odometry_mode in {'realistic', 'estimated'}:
+    if selection.odometry_mode in {'realistic', 'estimated', 'mixed'}:
         normalized_use_sim_time = str(use_sim_time).strip().lower()
         if normalized_use_sim_time not in {'true', 'false'}:
             raise RuntimeError('use_sim_time must be true or false')
@@ -351,17 +358,17 @@ def _launch_setup(context):
                 {'use_sim_time': normalized_use_sim_time == 'true'},
             ],
         ))
-        actions.extend([
-            _include(
-                'robot_odometry',
-                'wheel_odometry.launch.py',
-                {
-                    'use_sim_time': use_sim_time,
-                    'wheel_odometry_params_file': (
-                        runtime_files.wheel_odometry_params_file),
-                },
-            ),
-            _include(
+        actions.append(_include(
+            'robot_odometry',
+            'wheel_odometry.launch.py',
+            {
+                'use_sim_time': use_sim_time,
+                'wheel_odometry_params_file': (
+                    runtime_files.wheel_odometry_params_file),
+            },
+        ))
+        if selection.odometry_mode != 'mixed':
+            actions.append(_include(
                 'robot_odometry',
                 'lidar_odometry.launch.py',
                 {
@@ -370,18 +377,17 @@ def _launch_setup(context):
                     'lidar_odometry_params_file': LaunchConfiguration(
                         'lidar_odometry_params_file').perform(context),
                 },
-            ),
-            _include(
-                'robot_localization_config',
-                'ekf.launch.py',
-                {
-                    'use_sim_time': use_sim_time,
-                    'ekf_profile': ekf_profile,
-                    'lidar_odometry_validated': lidar_validated_value,
-                    'ekf_params_file': str(ekf_params_file),
-                },
-            ),
-        ])
+            ))
+        actions.append(_include(
+            'robot_localization_config',
+            'ekf.launch.py',
+            {
+                'use_sim_time': use_sim_time,
+                'ekf_profile': ekf_profile,
+                'lidar_odometry_validated': lidar_validated_value,
+                'ekf_params_file': str(ekf_params_file),
+            },
+        ))
 
     if selection.operation in {'mapping', 'incremental_mapping'}:
         actions.append(_include(
@@ -595,7 +601,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'odometry_mode',
             default_value='ideal',
-            description='ideal, realistic compatibility, or estimated'),
+            description=(
+                'ideal, realistic compatibility, estimated, or mixed '
+                'compute_amcl_dual_odom')),
         DeclareLaunchArgument(
             'structure_tf_source',
             default_value='isaac',

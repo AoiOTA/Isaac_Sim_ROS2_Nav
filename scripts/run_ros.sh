@@ -62,21 +62,41 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
   localization_owner="auto"
   route_graph_file=""
   posegraph_calibration="false"
+  structure_tf_source="isaac"
+  ekf_profile="wheel_imu"
+  ekf_params_file=""
+  lidar_odometry_backend="off"
+  lidar_odometry_validated="false"
   for argument in "${launch_args[@]}"; do
     case "${argument}" in
       posegraph_file:=*) posegraph_file="${argument#posegraph_file:=}" ;;
       map_file:=*) map_file="${argument#map_file:=}" ;;
       odometry_mode:=*) odometry_mode="${argument#odometry_mode:=}" ;;
+      structure_tf_source:=*) structure_tf_source="${argument#structure_tf_source:=}" ;;
       localization_map_contract:=*) localization_map_contract="${argument#localization_map_contract:=}" ;;
       localization_owner:=*) localization_owner="${argument#localization_owner:=}" ;;
       route_graph_file:=*) route_graph_file="${argument#route_graph_file:=}" ;;
       posegraph_calibration:=*) posegraph_calibration="${argument#posegraph_calibration:=}" ;;
+      ekf_profile:=*) ekf_profile="${argument#ekf_profile:=}" ;;
+      ekf_params_file:=*) ekf_params_file="${argument#ekf_params_file:=}" ;;
+      lidar_odometry_backend:=*) lidar_odometry_backend="${argument#lidar_odometry_backend:=}" ;;
+      lidar_odometry_validated:=*) lidar_odometry_validated="${argument#lidar_odometry_validated:=}" ;;
     esac
   done
   case "${odometry_mode}" in
-    ideal|realistic|estimated) ;;
-    *) die "odometry_mode must be ideal, realistic, or estimated" ;;
+    ideal|realistic|estimated|mixed) ;;
+    *) die "odometry_mode must be ideal, realistic, estimated, or mixed" ;;
   esac
+  if [[ "${odometry_mode}" == "mixed" ]]; then
+    [[ "${structure_tf_source}" == "isaac" ]] || die \
+      "mixed mode requires structure_tf_source=isaac"
+    [[ "${ekf_profile}" != "wheel_imu_lidar" \
+        && "${lidar_odometry_backend}" == "off" \
+        && "${lidar_odometry_validated}" == "false" ]] || die \
+      "mixed mode forbids LiDAR odometry and LiDAR EKF fusion"
+    [[ -z "${ekf_params_file}" ]] || die \
+      "mixed mode fixes ekf_params_file to ekf_module1_wheel_imu.yaml"
+  fi
   case "${localization_map_contract}" in
     posegraph_bundle|occupancy_only) ;;
     *) die "localization_map_contract must be posegraph_bundle or occupancy_only" ;;

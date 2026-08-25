@@ -27,7 +27,7 @@ class RosGraphBuilder:
         self.sensors = sensors
 
     def build(self) -> RosGraphHandles:
-        if self.config.simulation.odometry_mode == "realistic":
+        if self.config.simulation.odometry_mode not in {"ideal", "mixed"}:
             # Deliberately do not instantiate IsaacComputeOdometry or its TF publisher.
             odometry = None
         else:

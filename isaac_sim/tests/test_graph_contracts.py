@@ -7,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from isaac_sim.graphs.control_graph import control_graph_spec
+from isaac_sim.graphs import odometry_graph
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
@@ -276,6 +277,37 @@ def test_tf_ownership_requires_exactly_one_publisher():
     assert expected_tf_owners("estimated")["odom->base_link"] == (
         "robot_localization"
     )
+    mixed = expected_tf_owners("mixed")
+    assert mixed["odom->base_link"] == "isaac_compute_odometry"
+    assert mixed["map->odom"] == "amcl"
+    validate_tf_publishers(
+        "mixed", {key: [owner] for key, owner in mixed.items()}
+    )
+    with pytest.raises(TfOwnershipError, match="mixed odometry requires"):
+        expected_tf_owners("mixed", "rsp")
+
+
+def test_mixed_builds_the_compute_odometry_graph(monkeypatch):
+    mixed = _config("mixed")
+    spec = ideal_odometry_graph_spec(mixed)
+    spec.validate()
+    assert dict(spec.values)["PublishOdometry.inputs:topicName"] == "/odom"
+    assert dict(spec.values)["PublishOdomTF.inputs:parentFrameId"] == "odom"
+
+    built = object()
+    monkeypatch.setattr(
+        odometry_graph.IdealOdomPublisher,
+        "create",
+        classmethod(
+            lambda _cls, config, epoch=0: (
+                built, config.simulation.odometry_mode, epoch
+            )
+        ),
+    )
+    assert odometry_graph.build_odometry_graph(mixed, epoch=4) == (
+        built, "mixed", 4
+    )
+    assert odometry_graph.build_odometry_graph(_config("realistic")) is None
 
 
 def test_topic_and_qos_contracts_are_absolute_and_encoded():

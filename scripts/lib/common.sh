@@ -8,10 +8,10 @@ export ISAAC_ASSET_ROOT="${ISAAC_ASSET_ROOT:-/home/lyb/isaacsim_assets/Assets/Is
 export ROS_SETUP="${ROS_SETUP:-/opt/ros/jazzy/setup.bash}"
 export ISAAC_NAV_RUNTIME_DIR="${ISAAC_NAV_RUNTIME_DIR:-/tmp/isaac_sim_ros2_nav_${UID}}"
 export ISAAC_NAV_FASTDDS_PROFILE="${ISAAC_NAV_FASTDDS_PROFILE:-${PROJECT_ROOT}/isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml}"
-export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration/ros2_ws/install/setup.bash}"
+export BIO_NAV_INTEGRATION_SETUP="${BIO_NAV_INTEGRATION_SETUP:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration/ros2_ws/install/setup.bash}"
 
 readonly ISAAC_NAV_EXPECTED_ROS_DISTRO="jazzy"
-readonly BIO_NAV_ALLOWED_INTEGRATION_ROOT="/home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_intergration"
+readonly BIO_NAV_ALLOWED_INTEGRATION_ROOT="/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration"
 # Domain 42 remains the normal default.  Engineering runs may select another
 # domain to avoid an already-running ROS graph without stopping that graph.
 readonly ISAAC_NAV_EXPECTED_DOMAIN_ID="${ISAAC_NAV_EXPECTED_DOMAIN_ID:-42}"

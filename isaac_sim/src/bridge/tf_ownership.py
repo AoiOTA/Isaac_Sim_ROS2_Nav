@@ -1,4 +1,4 @@
-"""Pure TF publisher ownership contract for ideal and realistic modes."""
+"""Pure TF publisher ownership contract for supported odometry modes."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ def expected_tf_owners(
 ) -> dict[str, str]:
     if odometry_mode == "ideal":
         odom_owner = "isaac"
+    elif odometry_mode == "mixed":
+        odom_owner = "isaac_compute_odometry"
     elif odometry_mode in {"realistic", "estimated"}:
         odom_owner = "robot_localization"
     else:
@@ -20,9 +22,9 @@ def expected_tf_owners(
         raise TfOwnershipError(
             f"unknown structure TF source {structure_tf_source!r}"
         )
-    if odometry_mode == "ideal" and structure_tf_source == "rsp":
+    if odometry_mode in {"ideal", "mixed"} and structure_tf_source == "rsp":
         raise TfOwnershipError(
-            "ideal odometry requires Isaac-owned structure TF"
+            f"{odometry_mode} odometry requires Isaac-owned structure TF"
         )
     return {
         "map->odom": (

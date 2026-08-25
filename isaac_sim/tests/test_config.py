@@ -97,6 +97,24 @@ def test_nested_environment_overrides_are_typed():
     assert config.third_person_camera.distance_m == pytest.approx(4.75)
 
 
+def test_mixed_compute_amcl_mode_parses_only_with_isaac_structure_tf():
+    config = load_project_config(
+        CONFIG,
+        _environment(ISAAC_NAV__SIMULATION__ODOMETRY_MODE="mixed"),
+    )
+    assert config.simulation.odometry_mode == "mixed"
+    assert config.simulation.structure_tf_source == "isaac"
+
+    with pytest.raises(ConfigError, match="mixed odometry requires"):
+        load_project_config(
+            CONFIG,
+            _environment(
+                ISAAC_NAV__SIMULATION__ODOMETRY_MODE="mixed",
+                ISAAC_NAV__SIMULATION__STRUCTURE_TF_SOURCE="rsp",
+            ),
+        )
+
+
 def test_invalid_third_person_camera_settings_are_rejected():
     with pytest.raises(ConfigError, match="distance_m must be a positive"):
         load_project_config(

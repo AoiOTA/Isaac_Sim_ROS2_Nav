@@ -1,6 +1,6 @@
-"""Ideal Isaac odometry graph; intentionally absent in realistic mode.
+"""Isaac Compute Odometry graph for ideal and mixed modes.
 
-The ideal publisher is deliberately on-demand.  ``navigation_sim`` invokes it
+The Compute publisher is deliberately on-demand. ``navigation_sim`` invokes it
 once, after the loop's motion-assist write, so the published body twist is the
 one that causally applies to the following simulation interval.
 """
@@ -163,8 +163,10 @@ class IdealOdomPublisher:
 
 
 def ideal_odometry_graph_spec(config: ProjectConfig) -> GraphSpec:
-    if config.simulation.odometry_mode != "ideal":
-        raise ValueError("Isaac ideal odometry graph is forbidden in realistic mode")
+    if config.simulation.odometry_mode not in {"ideal", "mixed"}:
+        raise ValueError(
+            "Isaac Compute Odometry graph requires ideal or mixed mode"
+        )
     topics = load_topics(config.files.topics)
     qos = load_qos_profiles(config.files.qos)
     nodes = (
@@ -211,6 +213,6 @@ def ideal_odometry_graph_spec(config: ProjectConfig) -> GraphSpec:
 
 
 def build_odometry_graph(config: ProjectConfig, *, epoch: int = 0):
-    if config.simulation.odometry_mode == "realistic":
+    if config.simulation.odometry_mode not in {"ideal", "mixed"}:
         return None
     return IdealOdomPublisher.create(config, epoch=epoch)

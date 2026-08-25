@@ -41,6 +41,22 @@ def test_ekf_fuses_wheel_vx_and_imu_wz_without_skid_yaw_bias():
     assert params['imu0_remove_gravitational_acceleration'] is False
 
 
+def test_module1_profile_is_wheel_imu_only_and_never_publishes_tf():
+    params = _params('ekf_module1_wheel_imu.yaml')
+    assert params['frequency'] == 50.0
+    assert params['odom0'] == '/wheel/odom'
+    assert params['imu0'] == '/imu/data'
+    assert params['map_frame'] == 'map'
+    assert params['odom_frame'] == 'odom'
+    assert params['base_link_frame'] == 'base_link'
+    assert params['world_frame'] == 'odom'
+    assert params['publish_tf'] is False
+    assert not any(
+        key.startswith(('odom1', 'pose', 'twist'))
+        for key in params
+    )
+
+
 def test_three_source_profile_adds_only_differential_lidar_planar_pose():
     params = _params('ekf_wheel_imu_lidar.yaml')
     lidar_enabled = {
@@ -53,9 +69,12 @@ def test_three_source_profile_adds_only_differential_lidar_planar_pose():
 
 def test_ekf_launch_profiles_remap_the_single_filtered_output_to_odom():
     source = (PACKAGE_ROOT / 'launch' / 'ekf.launch.py').read_text()
-    assert "{'wheel_imu', 'wheel_imu_lidar'}" in source
+    assert "'module1_wheel_imu'" in source
     assert "f'ekf_{profile}.yaml'" in source
-    assert "('odometry/filtered', '/odom')" in source
+    assert "else '/odom'" in source
+    assert "('odometry/filtered', output_topic)" in source
+    assert "'/bio_nav/module1/odom'" in source
+    assert "name='ekf_filter_node'" in source
     assert "'lidar_odometry_validated', default_value='false'" in source
     assert 'validate_lidar_gate(' in source
 

@@ -30,6 +30,16 @@ modes:
     odom_to_base_publisher: robot_localization
     map_to_odom_publisher: AMCL
     structure_tf_publisher: robot_state_publisher
+  compute_amcl_dual_odom:
+    odometry_mode: mixed
+    structure_tf_source: isaac
+    odom_to_base_publisher: Isaac Compute Odometry
+    map_to_odom_publisher: AMCL
+    structure_tf_publisher: Isaac Sim
+    module1_odometry_topic: /bio_nav/module1/odom
+    module1_odometry_publisher: wheel_imu_ekf
+    module1_publish_tf: false
+    lidar_odometry_backend: 'off'
 
 operations:
   mapping:

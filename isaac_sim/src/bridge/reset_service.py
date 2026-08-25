@@ -248,8 +248,10 @@ class ResetServiceBridge:
 
         if navigation_mode not in {"mapping", "localization"}:
             raise ResetServiceError("navigation_mode must be mapping or localization")
-        if odometry_mode not in {"ideal", "realistic"}:
-            raise ResetServiceError("odometry_mode must be ideal or realistic")
+        if odometry_mode not in {"ideal", "realistic", "mixed"}:
+            raise ResetServiceError(
+                "odometry_mode must be ideal, realistic, or mixed"
+            )
         if not default_pose_name:
             raise ResetServiceError("default_pose_name must be non-empty")
         if (
@@ -662,11 +664,11 @@ class ResetServiceBridge:
         return True
 
     def reset_ros_odometry(self, odometry_mode: str) -> None:
-        """Notify local estimators and reset realistic-mode filter state."""
+        """Notify local estimators and reset their filter state."""
 
         if odometry_mode == "ideal":
             return
-        if odometry_mode != "realistic":
+        if odometry_mode not in {"realistic", "mixed"}:
             raise ResetServiceError(f"unknown odometry mode {odometry_mode!r}")
         self._queue_service_call(
             self._wheel_reset_client,

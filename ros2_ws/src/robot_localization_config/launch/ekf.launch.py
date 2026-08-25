@@ -12,9 +12,11 @@ def _launch_setup(context):
     package_share = Path(
         get_package_share_directory('robot_localization_config'))
     profile = LaunchConfiguration('ekf_profile').perform(context).strip()
-    if profile not in {'wheel_imu', 'wheel_imu_lidar'}:
+    if profile not in {
+            'wheel_imu', 'wheel_imu_lidar', 'module1_wheel_imu'}:
         raise RuntimeError(
-            'ekf_profile must be wheel_imu or wheel_imu_lidar')
+            'ekf_profile must be wheel_imu, wheel_imu_lidar, or '
+            'module1_wheel_imu')
     lidar_validated_value = LaunchConfiguration(
         'lidar_odometry_validated').perform(context).strip().lower()
     if lidar_validated_value not in {'true', 'false'}:
@@ -32,6 +34,11 @@ def _launch_setup(context):
             params_file, lidar_validated_value == 'true')
     except ValueError as exc:
         raise RuntimeError(f'invalid EKF input policy: {exc}') from exc
+    output_topic = (
+        '/bio_nav/module1/odom'
+        if profile == 'module1_wheel_imu'
+        else '/odom'
+    )
     return [Node(
         package='robot_localization',
         executable='ekf_node',
@@ -41,7 +48,7 @@ def _launch_setup(context):
             str(params_file),
             {'use_sim_time': LaunchConfiguration('use_sim_time')},
         ],
-        remappings=[('odometry/filtered', '/odom')],
+        remappings=[('odometry/filtered', output_topic)],
     )]
 
 

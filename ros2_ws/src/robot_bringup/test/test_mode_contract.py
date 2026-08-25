@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from robot_bringup.mode_contract import cognitive_nav2_parameters
 from robot_bringup.mode_contract import posegraph_prefix
+from robot_bringup.mode_contract import resolve_ekf_profile
 from robot_bringup.mode_contract import validate_cognitive_graph_mode
 from robot_bringup.mode_contract import validate_cognitive_profile
 from robot_bringup.mode_contract import validate_mode
@@ -108,10 +109,35 @@ def test_estimated_and_legacy_realistic_tf_ownership_modes_are_accepted():
         'mapping', 'realistic', 'rsp', check_posegraph_files=False)
     estimated_rsp = validate_mode(
         'mapping', 'estimated', 'rsp', check_posegraph_files=False)
+    mixed = validate_mode(
+        'mapping', 'mixed', 'isaac', check_posegraph_files=False)
     assert ideal.odometry_mode == 'ideal'
     assert realistic_isaac.structure_tf_source == 'isaac'
     assert realistic_rsp.structure_tf_source == 'rsp'
     assert estimated_rsp.odometry_mode == 'estimated'
+    assert mixed.odometry_mode == 'mixed'
+
+
+def test_mixed_rejects_rsp_and_lidar_odometry_or_fusion():
+    with pytest.raises(ValueError, match='mixed odometry is an Isaac-owned'):
+        validate_mode(
+            'mapping', 'mixed', 'rsp', check_posegraph_files=False)
+    assert resolve_ekf_profile(
+        'mixed', 'wheel_imu', 'off', False
+    ) == 'module1_wheel_imu'
+    assert resolve_ekf_profile(
+        'mixed', 'module1_wheel_imu', 'off', False
+    ) == 'module1_wheel_imu'
+    for profile, backend, validated in (
+            ('wheel_imu_lidar', 'off', False),
+            ('wheel_imu', 'rf2o', False),
+            ('wheel_imu', 'off', True)):
+        with pytest.raises(ValueError, match='forbids LiDAR'):
+            resolve_ekf_profile(
+                'mixed', profile, backend, validated)
+    with pytest.raises(ValueError, match='fixes ekf_params_file'):
+        resolve_ekf_profile(
+            'mixed', 'wheel_imu', 'off', False, '/tmp/custom.yaml')
 
 
 def test_invalid_choices_and_ideal_rsp_fail_fast():
@@ -259,7 +285,19 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
         (PACKAGE_ROOT / 'config' / 'modes.yaml').read_text())
     assert set(document['modes']) == {
         'ideal_isaac', 'realistic_isaac', 'realistic_rsp',
-        'estimated_isaac', 'estimated_rsp'}
+        'estimated_isaac', 'estimated_rsp', 'compute_amcl_dual_odom'}
+    mixed = document['modes']['compute_amcl_dual_odom']
+    assert mixed == {
+        'odometry_mode': 'mixed',
+        'structure_tf_source': 'isaac',
+        'odom_to_base_publisher': 'Isaac Compute Odometry',
+        'map_to_odom_publisher': 'AMCL',
+        'structure_tf_publisher': 'Isaac Sim',
+        'module1_odometry_topic': '/bio_nav/module1/odom',
+        'module1_odometry_publisher': 'wheel_imu_ekf',
+        'module1_publish_tf': False,
+        'lidar_odometry_backend': 'off',
+    }
     assert document['operations']['mapping']['publishes_initialpose'] is False
     assert document['operations']['incremental_mapping'][
         'posegraph_required'] is True
@@ -374,7 +412,7 @@ def test_occupancy_only_launch_uses_map_server_amcl_and_no_fake_posegraph():
     assert "'localization_backend': selection.localization_owner" \
         in core_source
     assert "'route_graph_file': selection.route_graph_file" in core_source
-    assert "selection.odometry_mode in {'realistic', 'estimated'}" \
+    assert "selection.odometry_mode in {'realistic', 'estimated', 'mixed'}" \
         in core_source
     assert "executable='map_server'" in mapping_source
     assert "if backend == 'amcl':" in mapping_source
@@ -438,7 +476,7 @@ def test_estimated_stack_has_one_raw_imu_calibrator_before_unchanged_ekf_input()
 
     assert core_source.count("executable='imu_yaw_calibrator'") == 1
     assert core_source.index("executable='imu_yaw_calibrator'") < (
-        core_source.index("'robot_localization_config',\n                'ekf.launch.py'"))
+        core_source.index("'robot_localization_config',\n            'ekf.launch.py'"))
     assert "'imu_calibration_params_file'," in core_source
     assert "imu0: /imu/data" in ekf_config
     assert "/imu/data_raw" not in ekf_config
@@ -446,6 +484,35 @@ def test_estimated_stack_has_one_raw_imu_calibrator_before_unchanged_ekf_input()
         wrapper = (launch_dir / f'{wrapper_name}.launch.py').read_text()
         assert "DeclareLaunchArgument(\n            'imu_calibration_params_file'" in wrapper
         assert "'imu_calibration_params_file': LaunchConfiguration(" in wrapper
+
+
+def test_mixed_stack_selects_amcl_and_dedicated_module1_ekf_without_lidar():
+    core_source = (
+        PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
+    mapping_source = (
+        PACKAGE_ROOT.parent / 'robot_mapping' / 'launch'
+        / 'localization.launch.py').read_text()
+    activation_source = (
+        PACKAGE_ROOT / 'robot_bringup' / 'activation_gate.py').read_text()
+    route_source = (
+        PACKAGE_ROOT.parent / 'robot_route_planner'
+        / 'robot_route_planner' / 'ros_node.py').read_text()
+    navigation_root = PACKAGE_ROOT.parent / 'robot_navigation'
+    navigation_source = '\n'.join(
+        path.read_text(encoding='utf-8')
+        for path in navigation_root.rglob('*')
+        if path.is_file() and path.suffix in {'.py', '.yaml', '.xml'}
+    )
+
+    assert 'ekf_profile = resolve_ekf_profile(' in core_source
+    assert "if selection.odometry_mode != 'mixed':" in core_source
+    assert "'localization_backend': selection.localization_owner" in core_source
+    assert "if backend == 'amcl':" in mapping_source
+    assert "Odometry, '/odom'" in activation_source
+    assert 'DEFAULT_ROUTE_ODOMETRY_TOPIC = "/odom"' in route_source
+    assert '/bio_nav/module1/odom' not in navigation_source
+    assert '/ground_truth/' not in activation_source
+    assert 'must not use ground-truth data' in route_source
 
 
 def test_incremental_and_localization_modes_include_initial_pose():

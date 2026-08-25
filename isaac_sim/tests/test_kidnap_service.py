@@ -58,6 +58,15 @@ def test_kidnap_rejects_ideal_unarmed_unknown_unsafe_and_stale():
     assert not controller.trigger("long_route_start_g5").success
     assert robot.calls == []
 
+    mixed, mixed_robot, mixed_time = _controller("mixed")
+    mixed.set_armed(True)
+    mixed.observe_cmd(0.0, 0.0, 0.0)
+    mixed_time["now"] = 1.0
+    result = mixed.trigger("long_route_start_g5")
+    assert not result.success
+    assert "odometry_mode must be realistic" in result.message
+    assert mixed_robot.calls == []
+
 
 def test_kidnap_is_one_shot_and_zeros_before_and_after_pose_without_reset_hooks():
     controller, robot, time = _controller()

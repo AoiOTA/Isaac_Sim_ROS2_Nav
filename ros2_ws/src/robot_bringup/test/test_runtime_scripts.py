@@ -160,7 +160,10 @@ def test_common_resolves_project_root_from_unrelated_temporary_directory(tmp_pat
 
 def test_common_requires_only_the_allowed_v6_integration_underlay():
     source = COMMON.read_text(encoding='utf-8')
-    assert '/worktrees/cognitive-navigation/bio_nav_intergration' in source
+    assert (
+        '/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration'
+        in source
+    )
     assert '/repos/' not in source
     assert 'validate_v6_integration_underlay' in source
     assert 'engineering_defaults.yaml' in source
@@ -803,3 +806,7 @@ def test_ros_launcher_defaults_navigation_to_warehouse_new_bundle():
     assert 'posegraph_file:=${posegraph_file}' in source
     assert 'map_file:=${map_file}' in source
     assert 'AMCL for estimated localization' in source
+    assert 'ideal|realistic|estimated|mixed' in source
+    assert 'mixed mode requires structure_tf_source=isaac' in source
+    assert 'mixed mode forbids LiDAR odometry and LiDAR EKF fusion' in source
+    assert 'mixed mode fixes ekf_params_file' in source

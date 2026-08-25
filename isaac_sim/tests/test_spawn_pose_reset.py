@@ -141,8 +141,69 @@ def test_reset_manager_executes_every_hook_in_fixed_order():
 
 
 def test_invalid_reset_request_is_rejected():
+    assert ResetRequest(
+        "mapping_start", "localization", "mixed", 0
+    ).odometry_mode == "mixed"
     with pytest.raises(ResetError, match="non-negative"):
         ResetRequest("mapping_start", "mapping", "ideal", -1)
+
+
+def test_mixed_reset_queues_wheel_and_module1_ekf_before_epoch_completion():
+    queued = []
+
+    class EmptyService:
+        class Request:
+            pass
+
+    class SetPose:
+        class Request:
+            def __init__(self):
+                pose = SimpleNamespace(
+                    pose=SimpleNamespace(
+                        pose=SimpleNamespace(
+                            orientation=SimpleNamespace(w=0.0)
+                        ),
+                        covariance=[0.0] * 36,
+                    ),
+                    header=SimpleNamespace(stamp=None, frame_id=""),
+                )
+                self.pose = pose
+
+    bridge = SimpleNamespace(
+        _wheel_reset_client=object(),
+        _ekf_set_pose_client=object(),
+        _EmptyService=EmptyService,
+        _SetPose=SetPose,
+        node=SimpleNamespace(
+            get_clock=lambda: SimpleNamespace(
+                now=lambda: SimpleNamespace(to_msg=lambda: "stamp")
+            )
+        ),
+        _queue_service_call=lambda client, request, label: queued.append(
+            (client, request, label)
+        ),
+    )
+
+    ResetServiceBridge.reset_ros_odometry(bridge, "mixed")
+
+    assert [label for _, _, label in queued] == ["wheel odometry", "EKF"]
+    set_pose = queued[1][1]
+    assert set_pose.pose.header.frame_id == "odom"
+    assert set_pose.pose.pose.pose.orientation.w == 1.0
+
+    app_source = (
+        ROOT / "isaac_sim/apps/navigation_sim.py"
+    ).read_text(encoding="utf-8")
+    reset_block = app_source[
+        app_source.index("        def reset_odometry(mode: str)"):
+        app_source.index("        def reset_ground_truth_path()")
+    ]
+    assert reset_block.index("reset_bridge.reset_ros_odometry(mode)") < (
+        reset_block.index("previous.retire()")
+    )
+    assert reset_block.index("previous.retire()") < reset_block.index(
+        "build_odometry_graph("
+    )
 
 
 def test_localization_reset_pose_is_immutable_manifest_bound_profile():

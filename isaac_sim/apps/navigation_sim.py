@@ -179,7 +179,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mode",
-        choices=("ideal", "realistic"),
+        choices=("ideal", "realistic", "mixed"),
         help="override simulation.odometry_mode",
     )
     parser.add_argument(
@@ -491,7 +491,7 @@ def validate_configuration(
     ]
     if config.simulation.structure_tf_source == "isaac":
         specifications.append(structure_tf_graph_spec(config))
-    if config.simulation.odometry_mode == "ideal":
+    if config.simulation.odometry_mode in {"ideal", "mixed"}:
         specifications.append(ideal_odometry_graph_spec(config))
     for specification in specifications:
         specification.validate()
@@ -1707,7 +1707,7 @@ def run(
                     f"reset requested odometry={mode}, running mode={config.simulation.odometry_mode}"
                 )
             reset_bridge.reset_ros_odometry(mode)
-            if mode == "ideal":
+            if mode in {"ideal", "mixed"}:
                 from isaac_sim.graphs.odometry_graph import build_odometry_graph
 
                 previous = graph_references.get("odometry")
@@ -2437,7 +2437,7 @@ def run(
                 )
             odom_publish = None
             should_publish_ideal_odom = (
-                config.simulation.odometry_mode == "ideal"
+                config.simulation.odometry_mode in {"ideal", "mixed"}
                 and r2c2_state is None
                 and r2c2a_state is None
                 and (r2c1_state is None or bool(r2c1_state["active"]))
@@ -2445,7 +2445,10 @@ def run(
             if should_publish_ideal_odom:
                 ideal_odom = graph_references.get("odometry")
                 if ideal_odom is None:
-                    raise RuntimeError("ideal odometry graph is unavailable after motion assist")
+                    raise RuntimeError(
+                        "Isaac Compute Odometry graph is unavailable after "
+                        "motion assist"
+                    )
                 if (
                     r2c1_state is not None
                     and r2c1_script is not None

@@ -13,7 +13,7 @@ from .map_manifest import validate_initial_pose_contract
 
 OPERATIONS = frozenset({
     'mapping', 'incremental_mapping', 'localization', 'navigation'})
-ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
+ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated', 'mixed'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 LOCALIZATION_MAP_CONTRACTS = frozenset({
     'posegraph_bundle', 'occupancy_only'})
@@ -30,6 +30,8 @@ NAV2_PROFILES = frozenset({
     'bio_nav_rgbd_risk_static_opt_in'})
 COGNITIVE_PROFILES = frozenset({'M0', 'M1', 'M2', 'M3'})
 COGNITIVE_GRAPH_MODES = frozenset({'gvg', 'shadow', 'hybrid', 'primary'})
+EKF_PROFILES = frozenset({
+    'wheel_imu', 'wheel_imu_lidar', 'module1_wheel_imu'})
 _COGNITIVE_PROFILE_CONTRACT = {
     'M0': ('off', 'off', False),
     'M1': ('shadow', 'shadow', True),
@@ -132,6 +134,30 @@ def validate_cognitive_graph_mode(value):
     mode = value.strip().lower()
     _require_choice('cognitive_graph_mode', mode, COGNITIVE_GRAPH_MODES)
     return mode
+
+
+def resolve_ekf_profile(
+        odometry_mode, requested_profile, lidar_odometry_backend,
+        lidar_odometry_validated, ekf_params_file=''):
+    """Select the fixed Module1 estimator and reject mixed LiDAR inputs."""
+    mode = odometry_mode.strip().lower()
+    profile = requested_profile.strip().lower()
+    backend = lidar_odometry_backend.strip().lower()
+    _require_choice('odometry_mode', mode, ODOMETRY_MODES)
+    _require_choice('ekf_profile', profile, EKF_PROFILES)
+    _require_choice('lidar_odometry_backend', backend, {'off', 'rf2o'})
+    if not isinstance(lidar_odometry_validated, bool):
+        raise ValueError('lidar_odometry_validated must be boolean')
+    if mode != 'mixed':
+        return profile
+    if profile == 'wheel_imu_lidar' or backend != 'off' \
+            or lidar_odometry_validated:
+        raise ValueError(
+            'mixed mode forbids LiDAR odometry and LiDAR EKF fusion')
+    if str(ekf_params_file).strip():
+        raise ValueError(
+            'mixed mode fixes ekf_params_file to ekf_module1_wheel_imu.yaml')
+    return 'module1_wheel_imu'
 
 
 def cognitive_nav2_parameters(profile):
@@ -345,9 +371,11 @@ def validate_mode(
         'localization_owner', requested_localization_owner,
         LOCALIZATION_OWNERS)
 
-    if odometry_mode == 'ideal' and structure_tf_source == 'rsp':
+    if odometry_mode in {'ideal', 'mixed'} \
+            and structure_tf_source == 'rsp':
         raise ValueError(
-            'ideal odometry is an Isaac-owned mode; structure_tf_source=rsp '
+            f'{odometry_mode} odometry is an Isaac-owned mode; '
+            'structure_tf_source=rsp '
             'is reserved for the realistic/standard ROS ownership mode')
 
     localization_operation = operation in {'localization', 'navigation'}

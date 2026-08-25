@@ -303,14 +303,16 @@ def _parse_simulation(raw: Any) -> SimulationConfig:
     if navigation_mode not in {"mapping", "localization"}:
         raise ConfigError("simulation.navigation_mode must be mapping or localization")
     odometry_mode = _required(data, "odometry_mode", "simulation")
-    if odometry_mode not in {"ideal", "realistic"}:
-        raise ConfigError("simulation.odometry_mode must be ideal or realistic")
+    if odometry_mode not in {"ideal", "realistic", "mixed"}:
+        raise ConfigError(
+            "simulation.odometry_mode must be ideal, realistic, or mixed"
+        )
     structure_tf_source = _required(data, "structure_tf_source", "simulation")
     if structure_tf_source not in {"isaac", "rsp"}:
         raise ConfigError("simulation.structure_tf_source must be isaac or rsp")
-    if odometry_mode == "ideal" and structure_tf_source == "rsp":
+    if odometry_mode in {"ideal", "mixed"} and structure_tf_source == "rsp":
         raise ConfigError(
-            "ideal odometry requires Isaac-owned structure TF; "
+            f"{odometry_mode} odometry requires Isaac-owned structure TF; "
             "structure_tf_source=rsp is valid only in realistic mode"
         )
     pacing_mode = _required(data, "pacing_mode", "simulation")

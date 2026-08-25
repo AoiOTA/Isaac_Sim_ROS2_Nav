@@ -83,3 +83,16 @@ def test_ideal_odom_trigger_fails_closed_for_stale_or_failed_graph():
     publisher.retire()
     with pytest.raises(IdealOdomPublishError, match="stale"):
         publisher.trigger(0)
+
+
+def test_mixed_navigation_rebuilds_per_epoch_and_triggers_once_per_loop():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "apps" / "navigation_sim.py"
+    ).read_text(encoding="utf-8")
+    assert 'if mode in {"ideal", "mixed"}:' in source
+    assert 'config.simulation.odometry_mode in {"ideal", "mixed"}' in source
+    assert "previous.retire()" in source
+    assert "odom_graph_epoch += 1" in source
+    assert "ideal_odom.trigger(frame)" in source
