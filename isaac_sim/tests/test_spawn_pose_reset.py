@@ -580,16 +580,37 @@ def _finalization_bridge(events, gate, *, external_release):
 
 
 class FakeResetClient:
-    def __init__(self, *, ready=True, future=None, queue_error=None):
+    def __init__(
+        self,
+        *,
+        ready=True,
+        future=None,
+        queue_error=None,
+        discovered_on_wait=False,
+        wait_error=None,
+    ):
         self.ready = ready
         self.future = future or FakeFuture()
         self.queue_error = queue_error
+        self.discovered_on_wait = discovered_on_wait
+        self.wait_error = wait_error
+        self.wait_calls = []
+        self.queue_count = 0
 
     def service_is_ready(self):
         return self.ready
 
+    def wait_for_service(self, *, timeout_sec):
+        self.wait_calls.append(timeout_sec)
+        if self.wait_error is not None:
+            raise self.wait_error
+        if self.discovered_on_wait:
+            self.ready = True
+        return self.ready
+
     def call_async(self, request):
         del request
+        self.queue_count += 1
         if self.queue_error is not None:
             raise self.queue_error
         return self.future
@@ -635,6 +656,8 @@ def _odometry_transaction_bridge(events, wheel_client, ekf_client):
     bridge._SetPose = ResetTestSetPose
     bridge._pending_futures = set()
     bridge._unavailable_warnings = set()
+    bridge._required_service_discovery_pending = True
+    bridge._transaction_timeout_sec = 1.5
     bridge._reset_stop_gate = gate
     bridge._external_recovery_release_required = False
     bridge._reset_event_publisher = FakePublisher(events)
@@ -659,6 +682,115 @@ def _odometry_transaction_bridge(events, wheel_client, ekf_client):
     transaction.timeout_timer = FakeTimer()
     bridge._active_transaction = transaction
     return bridge, transaction, gate
+
+
+def test_mixed_startup_waits_once_for_delayed_required_service_discovery():
+    events = []
+    wheel = FakeResetClient(ready=False, discovered_on_wait=True)
+    ekf = FakeResetClient(ready=False, discovered_on_wait=True)
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    wheel.future.complete()
+    ekf.future.complete()
+
+    assert wheel.wait_calls == [1.5]
+    assert ekf.wait_calls == [1.5]
+    assert wheel.queue_count == 1
+    assert ekf.queue_count == 1
+    assert transaction.errors == []
+    assert not gate.held
+
+
+@pytest.mark.parametrize("missing", ["wheel odometry", "EKF"])
+def test_mixed_startup_discovery_timeout_keeps_generation_held(missing):
+    events = []
+    wheel = FakeResetClient(ready=missing != "wheel odometry")
+    ekf = FakeResetClient(ready=missing != "EKF")
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    for client in (wheel, ekf):
+        if client.ready:
+            client.future.complete()
+
+    missing_client = wheel if missing == "wheel odometry" else ekf
+    assert missing_client.wait_calls == [1.5]
+    assert missing_client.queue_count == 0
+    assert transaction.errors == [
+        f"{missing}: required reset service is unavailable"
+    ]
+    assert gate.held
+    assert events == [("hold", 1)]
+
+
+def test_mixed_startup_discovery_wait_exception_keeps_generation_held():
+    events = []
+    wheel = FakeResetClient(
+        ready=False,
+        wait_error=RuntimeError("DDS discovery failed"),
+    )
+    ekf = FakeResetClient()
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    ekf.future.complete()
+
+    assert wheel.wait_calls == [1.5]
+    assert wheel.queue_count == 0
+    assert ekf.queue_count == 1
+    assert transaction.errors == [
+        "wheel odometry service discovery: RuntimeError: DDS discovery failed"
+    ]
+    assert gate.held
+    assert events == [("hold", 1)]
+
+
+def test_mixed_startup_ready_services_do_not_wait_and_queue_once():
+    events = []
+    wheel = FakeResetClient()
+    ekf = FakeResetClient()
+    bridge, transaction, _ = _odometry_transaction_bridge(events, wheel, ekf)
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    wheel.future.complete()
+    ekf.future.complete()
+
+    assert wheel.wait_calls == []
+    assert ekf.wait_calls == []
+    assert wheel.queue_count == 1
+    assert ekf.queue_count == 1
+
+
+def test_mixed_followup_reset_keeps_immediate_required_service_check():
+    events = []
+    wheel = FakeResetClient(ready=False, discovered_on_wait=True)
+    ekf = FakeResetClient()
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+    bridge._required_service_discovery_pending = False
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    ekf.future.complete()
+
+    assert wheel.wait_calls == []
+    assert wheel.queue_count == 0
+    assert transaction.errors == [
+        "wheel odometry: required reset service is unavailable"
+    ]
+    assert gate.held
 
 
 @pytest.mark.parametrize("missing", ["wheel odometry", "EKF"])
@@ -746,15 +878,19 @@ def test_mixed_reset_completes_only_after_wheel_and_ekf_succeed():
 
 def test_realistic_reset_keeps_unavailable_odometry_services_optional():
     events = []
+    wheel = FakeResetClient(ready=False, discovered_on_wait=True)
+    ekf = FakeResetClient(ready=False, discovered_on_wait=True)
     bridge, transaction, gate = _odometry_transaction_bridge(
         events,
-        FakeResetClient(ready=False),
-        FakeResetClient(ready=False),
+        wheel,
+        ekf,
     )
 
     bridge.reset_ros_odometry("realistic")
     transaction.seal()
 
+    assert wheel.wait_calls == []
+    assert ekf.wait_calls == []
     assert transaction.errors == []
     assert transaction.skipped == ["wheel odometry", "EKF"]
     assert not gate.held

@@ -292,6 +292,7 @@ class ResetServiceBridge:
         self._Future = Future
         self._transaction_generation = 0
         self._active_transaction: _ResetTransaction | None = None
+        self._required_service_discovery_pending = odometry_mode == "mixed"
         self._closed = False
         self._initial_pose_source: str | None = None
         self._deferred_initial_pose_name: str | None = None
@@ -682,6 +683,31 @@ class ResetServiceBridge:
         transaction.add_call(label, future)
         return True
 
+    def _wait_for_required_service_discovery(
+        self,
+        client: Any,
+        label: str,
+    ) -> bool:
+        """Wait once for startup DDS discovery without using simulation time."""
+
+        transaction = self._active_transaction
+        if transaction is None:
+            raise ResetServiceError(
+                f"{label} discovery requested outside "
+                "ResetServiceBridge.start_reset()"
+            )
+        try:
+            if client.service_is_ready():
+                return True
+            client.wait_for_service(timeout_sec=self._transaction_timeout_sec)
+        except Exception as exc:
+            self.node.get_logger().error(
+                f"failed while waiting for {label} reset service discovery: {exc}"
+            )
+            transaction.record_error(f"{label} service discovery", exc)
+            return False
+        return True
+
     def reset_ros_odometry(self, odometry_mode: str) -> None:
         """Notify local estimators and reset their filter state."""
 
@@ -689,12 +715,25 @@ class ResetServiceBridge:
             return
         if odometry_mode not in {"realistic", "mixed"}:
             raise ResetServiceError(f"unknown odometry mode {odometry_mode!r}")
-        self._queue_service_call(
-            self._wheel_reset_client,
-            self._EmptyService.Request(),
-            "wheel odometry",
-            required=odometry_mode == "mixed",
-        )
+        discovery_failed: set[str] = set()
+        if (
+            odometry_mode == "mixed"
+            and getattr(self, "_required_service_discovery_pending", False)
+        ):
+            self._required_service_discovery_pending = False
+            for label, client in (
+                ("wheel odometry", self._wheel_reset_client),
+                ("EKF", self._ekf_set_pose_client),
+            ):
+                if not self._wait_for_required_service_discovery(client, label):
+                    discovery_failed.add(label)
+        if "wheel odometry" not in discovery_failed:
+            self._queue_service_call(
+                self._wheel_reset_client,
+                self._EmptyService.Request(),
+                "wheel odometry",
+                required=odometry_mode == "mixed",
+            )
         request = self._SetPose.Request()
         request.pose.header.stamp = self.node.get_clock().now().to_msg()
         request.pose.header.frame_id = "odom"
@@ -702,12 +741,13 @@ class ResetServiceBridge:
         request.pose.pose.covariance[0] = 0.05**2
         request.pose.pose.covariance[7] = 0.05**2
         request.pose.pose.covariance[35] = math.radians(5.0) ** 2
-        self._queue_service_call(
-            self._ekf_set_pose_client,
-            request,
-            "EKF",
-            required=odometry_mode == "mixed",
-        )
+        if "EKF" not in discovery_failed:
+            self._queue_service_call(
+                self._ekf_set_pose_client,
+                request,
+                "EKF",
+                required=odometry_mode == "mixed",
+            )
 
     def clear_costmaps(self) -> None:
         for label, client in self._costmap_clients:
