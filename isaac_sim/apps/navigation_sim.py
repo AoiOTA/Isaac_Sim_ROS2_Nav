@@ -84,6 +84,9 @@ V6_IMU_REGIME_FEATURE_CONFIG = (
     / "isaac_sim/configs/experiments/v6_calibration_grid_features.yaml"
 ).resolve()
 
+# Float conversion noise only; this is not an extra simulation-frame allowance.
+CLOCK_FLOAT_EPSILON_SECONDS = 1e-9
+
 
 def _prime_isaac_ros_clock(
     *,
@@ -101,7 +104,7 @@ def _prime_isaac_ros_clock(
     initial_ros_time = float(ros_time())
     latest_sim_time = initial_sim_time
     latest_ros_time = initial_ros_time
-    lag_limit = math.nextafter(float(max_frame_lag_seconds), math.inf)
+    lag_limit = float(max_frame_lag_seconds) + CLOCK_FLOAT_EPSILON_SECONDS
 
     def failure(reason: str, updates: int) -> RuntimeError:
         return RuntimeError(
@@ -117,7 +120,10 @@ def _prime_isaac_ros_clock(
     if not math.isfinite(max_frame_lag_seconds) or max_frame_lag_seconds <= 0.0:
         raise failure("invalid frame lag tolerance", 0)
     initial_lag = initial_sim_time - initial_ros_time
-    if initial_ros_time > 0.0 and not 0.0 <= initial_lag <= lag_limit:
+    if (
+        initial_ros_time > 0.0
+        and not -CLOCK_FLOAT_EPSILON_SECONDS <= initial_lag <= lag_limit
+    ):
         raise failure("initial ROS clock is outside the Isaac epoch", 0)
 
     previous_ros_time = initial_ros_time
@@ -139,7 +145,7 @@ def _prime_isaac_ros_clock(
         if (
             latest_sim_time > initial_sim_time
             and latest_ros_time > initial_ros_time
-            and 0.0 <= current_lag <= lag_limit
+            and -CLOCK_FLOAT_EPSILON_SECONDS <= current_lag <= lag_limit
         ):
             return (
                 initial_sim_time,

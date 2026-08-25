@@ -187,6 +187,74 @@ def test_startup_clock_priming_accepts_one_publish_frame_lag():
     assert result == pytest.approx((0.0, 0.0, 0.02, 0.01))
 
 
+def test_startup_clock_priming_accepts_float_quantized_equal_times():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] = 0.15
+
+    def spin_once():
+        state["ros"] = 0.15000000000000002
+
+    result = _prime_isaac_ros_clock(
+        play_first_update=update,
+        app_update=update,
+        spin_once=spin_once,
+        simulation_time=lambda: state["simulation"],
+        ros_time=lambda: state["ros"],
+        max_frame_lag_seconds=0.01,
+        max_updates=1,
+    )
+
+    assert result == (0.0, 0.0, 0.15, 0.15000000000000002)
+
+
+def test_startup_clock_priming_rejects_ros_ahead_beyond_float_epsilon():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] = 0.15
+
+    def spin_once():
+        state["ros"] = 0.150000002
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"clock did not advance within one publish frame.*updates=1",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=update,
+            app_update=update,
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
+            max_frame_lag_seconds=0.01,
+            max_updates=1,
+        )
+
+
+def test_startup_clock_priming_accepts_float_quantized_upper_bound():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] = 0.15
+
+    def spin_once():
+        state["ros"] = 0.13999999999999999
+
+    result = _prime_isaac_ros_clock(
+        play_first_update=update,
+        app_update=update,
+        spin_once=spin_once,
+        simulation_time=lambda: state["simulation"],
+        ros_time=lambda: state["ros"],
+        max_frame_lag_seconds=0.01,
+        max_updates=1,
+    )
+
+    assert result == (0.0, 0.0, 0.15, 0.13999999999999999)
+
+
 def test_startup_clock_priming_rejects_more_than_one_publish_frame_lag():
     state = {"simulation": 0.0, "ros": 0.0}
     updates = []
