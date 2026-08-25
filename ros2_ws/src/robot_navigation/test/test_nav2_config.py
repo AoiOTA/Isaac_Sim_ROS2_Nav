@@ -357,8 +357,11 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
 
     assert controller['enable_stamped_cmd_vel'] is False
     assert controller['controller_frequency'] == 10.0
+    assert controller['goal_checker']['plugin'] == \
+        'nav2_controller::PositionGoalChecker'
     assert controller['goal_checker']['xy_goal_tolerance'] == 0.20
-    assert controller['goal_checker']['yaw_goal_tolerance'] <= 0.174532925
+    assert 'yaw_goal_tolerance' not in controller['goal_checker']
+    assert 'GoalAngleCritic' not in controller['FollowPath']['critics']
     assert behavior['enable_stamped_cmd_vel'] is False
     assert smoother['enable_stamped_cmd_vel'] is False
     assert collision['enable_stamped_cmd_vel'] is False
@@ -379,6 +382,21 @@ def test_jazzy_command_chain_uses_unstamped_twist_and_safety_timeouts():
     assert "remappings=[('cmd_vel', '/cmd_vel_nav')]" in launch_source
     assert "package='nav2_velocity_smoother'" in launch_source
     assert "package='nav2_collision_monitor'" in launch_source
+
+
+def test_xy_only_goals_do_not_invent_rotation_shim_parameters():
+    config = _config()
+    controller = _params(config, 'controller_server')
+    planner = _params(config, 'planner_server')['GridBased']
+    launch_source = (
+        PACKAGE_ROOT / 'launch' / 'navigation.launch.py').read_text()
+
+    assert controller['goal_checker']['plugin'] == \
+        'nav2_controller::PositionGoalChecker'
+    assert planner['use_final_approach_orientation'] is False
+    assert 'RotationShimController' not in launch_source
+    assert 'GoalAngleCritic' not in launch_source
+    assert 'rotate_to_goal_heading' not in controller['FollowPath']
 
 
 def test_mppi_terminal_reverse_limits_are_coherent():
@@ -498,7 +516,7 @@ def test_narrow_passage_profile_preserves_physical_collision_safety():
     assert controller['CostCritic']['cost_weight'] <= 2.5
     assert controller['CostCritic']['trajectory_point_step'] == 1
     assert controller['CostCritic']['collision_cost'] >= 1000000.0
-    assert controller['GoalAngleCritic']['threshold_to_consider'] == 0.20
+    assert 'GoalAngleCritic' not in controller
     assert controller['PathAlignCritic']['max_path_occupancy_ratio'] >= 0.30
 
 
@@ -649,6 +667,7 @@ def test_a21_runtime_overlay_keeps_grid_2d_default_and_lattice_explicit():
     assert planner['GridLattice']['plugin'] == (
         'nav2_smac_planner::SmacPlannerLattice')
     controller = parameters['controller']['FollowPath']
+    assert 'GoalAngleCritic' not in controller['critics']
     assert controller['critics'][-1] == 'VelocityDeadbandCritic'
     assert controller['VelocityDeadbandCritic'] == {
         'enabled': True,

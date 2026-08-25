@@ -44,6 +44,22 @@ from isaac_sim.src.visualization.third_person_camera import (  # noqa: E402
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def test_v6_clearance_r2_overlay_is_a_parseable_usd_layer():
+    from pxr import Usd
+
+    overlay = (
+        ROOT
+        / "isaac_sim/assets/environments/v6_kujiale_clearance_r2/"
+        "kujiale_0026_A_to_B_door_open.usd"
+    )
+    stage = Usd.Stage.Open(str(overlay))
+    assert stage
+    assert stage.GetRootLayer().subLayerPaths == [
+        "/home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/"
+        "kujiale_0026_A_to_B_door_open.usd"
+    ]
+
+
 def _config():
     return load_project_config(
         ROOT / "isaac_sim/configs/project.yaml",

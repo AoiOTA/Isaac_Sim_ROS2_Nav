@@ -1,6 +1,6 @@
 schema_version: bio_nav_v6_single_episode_manifest_v1
 scene_contract_frozen: false
-scene: {id: v6_final_kujiale_static, world: kujiale, category: static}
+scene: {id: v6_kujiale_clearance_r2, world: kujiale, category: static}
 runtime:
   startup_profile: estimated_autonomy
   cognitive_mode: active
@@ -17,25 +17,26 @@ runtime:
   rf2o_decision: not_validated_off
   imu_calibration_profile: isaac_v6_calibrated
 required_runtime_values:
-  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
-  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
-  posegraph_required: true
-  posegraph_file: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/maps/posegraphs/v6_kujiale_isaacgen_v1.posegraph
-  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  scene_asset: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/assets/environments/v6_kujiale_clearance_r2/kujiale_0026_A_to_B_door_open.usd
+  source_scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/maps/occupancy/v6_kujiale_clearance_r2.yaml
+  posegraph_required: false
+  posegraph_file: null
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml
   reset_pose_name: long_route_start_g1
-  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
-  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_params.yaml
-  frozen_obstacle_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
-  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_clearance_r2_gvg_v1.geojson
+  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_params.yaml
+  frozen_obstacle_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
+  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
   physical_obstacles_enabled: true
 mission:
   reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
   legs:
-    - {id: G2, frame_id: map, x: 0.80, y: 4.80, yaw_deg: -160.0}
-    - {id: G3, frame_id: map, x: -2.20, y: 3.25, yaw_deg: -105.0}
-    - {id: G4, frame_id: map, x: -3.00, y: -0.45, yaw_deg: -68.0}
-    - {id: G5, frame_id: map, x: -2.20, y: -2.95, yaw_deg: -42.0}
-    - {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
+    - {id: G2, frame_id: map, x: 0.80, y: 4.80}
+    - {id: G3, frame_id: map, x: -2.20, y: 3.25}
+    - {id: G4, frame_id: map, x: -3.00, y: -0.45}
+    - {id: G5, frame_id: map, x: -2.20, y: -2.95}
+    - {id: G1, frame_id: map, x: 0.45, y: -5.35}
 episodes:
   - {seed: 7201, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
   - {seed: 7202, variant_id: v1, reset_pose_name: long_route_start_g1, dynamic_case_id: static}

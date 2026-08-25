@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,38 @@ from isaac_sim.src.robot.spawn_pose_manager import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_v6_clearance_r2_spawn_identity_keeps_calibrated_map_frame():
+    poses = load_spawn_poses(
+        ROOT
+        / "isaac_sim/configs/environments/"
+        "kujiale_0026_A_to_B_door_open.v6_clearance_r2.spawn.yaml"
+    )
+    assert set(poses) == {
+        "mapping_start",
+        "long_route_start_g1",
+        "long_route_start_g2",
+        "long_route_start_g5",
+    }
+    assert all(
+        pose.map.map_version == "v6_kujiale_clearance_r2"
+        and pose.map.calibrated
+        for pose in poses.values()
+    )
+    assert poses["long_route_start_g1"].map.position == pytest.approx(
+        (0.45, -5.35)
+    )
+    digest = sha256()
+    for suffix in ("pgm", "yaml"):
+        digest.update(
+            (ROOT / f"data/maps/occupancy/v6_kujiale_clearance_r2.{suffix}")
+            .read_bytes()
+        )
+    assert all(
+        pose.map.map_bundle_sha256 == digest.hexdigest()
+        for pose in poses.values()
+    )
 
 
 @dataclass

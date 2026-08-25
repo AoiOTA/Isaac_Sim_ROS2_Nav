@@ -81,6 +81,7 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/bio_nav/cognitive_obstacle_layer/status",
     "/bio_nav/cognitive_risk_critic/status",
     "/cmd_vel",
+    "/cmd_vel_nav",
     "/cmd_vel_sim",
     "/simulation/collision",
     "/simulation/collision_diagnostics",
@@ -103,6 +104,7 @@ CAPTURE_SCHEMA = {
     "/bio_nav/cognitive_risk_critic/status": "RiskLayerStatus",
     "/bio_nav/module3/cognitive_edge_outcome": "CognitiveEdgeOutcome",
     "/cmd_vel": "Twist",
+    "/cmd_vel_nav": "Twist",
     "/cmd_vel_sim": "Twist",
     "/simulation/collision": "Bool",
     "/simulation/collision_diagnostics": "String",
@@ -141,8 +143,6 @@ class MissionLeg:
     frame_id: str
     x: float
     y: float
-    yaw_deg: float
-    dynamic_trigger_group: str
 
 
 @dataclass(frozen=True)
@@ -224,6 +224,19 @@ def _pose(raw: Mapping[str, Any], path: str) -> tuple[str, float, float, float]:
     )
 
 
+def _xy_goal(raw: Mapping[str, Any], path: str) -> tuple[str, float, float]:
+    if set(raw) != {"id", "frame_id", "x", "y"}:
+        raise V6ContractError(f"{path} must contain only id/frame_id/x/y")
+    frame_id = str(raw.get("frame_id", ""))
+    if frame_id != "map":
+        raise V6ContractError(f"{path}.frame_id must be map")
+    return (
+        frame_id,
+        _finite_float(raw.get("x"), f"{path}.x"),
+        _finite_float(raw.get("y"), f"{path}.y"),
+    )
+
+
 def load_manifest(path: str | Path) -> Manifest:
     manifest_path = Path(path).expanduser().resolve()
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
@@ -269,17 +282,12 @@ def load_manifest(path: str | Path) -> Manifest:
         goal_id = str(leg.get("id", ""))
         if not goal_id or goal_id in seen_ids:
             raise V6ContractError(f"mission.legs[{index}].id must be unique and non-empty")
-        frame_id, x, y, yaw_deg = _pose(leg, f"mission.legs[{index}]")
+        frame_id, x, y = _xy_goal(leg, f"mission.legs[{index}]")
         if math.hypot(x - previous_xy[0], y - previous_xy[1]) <= 1.0e-6:
             raise V6ContractError(f"mission.legs[{index}] is a zero-distance goal")
-        trigger_group = str(leg.get("dynamic_trigger_group", ""))
-        if category != "dynamic" and trigger_group:
-            raise V6ContractError("static/appearance mission legs cannot trigger actors")
-        mission_legs.append(MissionLeg(goal_id, frame_id, x, y, yaw_deg, trigger_group))
+        mission_legs.append(MissionLeg(goal_id, frame_id, x, y))
         seen_ids.add(goal_id)
         previous_xy = (x, y)
-    if category == "dynamic" and not any(row.dynamic_trigger_group for row in mission_legs):
-        raise V6ContractError("dynamic mission must declare trigger groups")
 
     rows = raw.get("episodes")
     if not isinstance(rows, list) or len(rows) != 20:
@@ -770,6 +778,10 @@ def _message_summary(message: Any) -> dict[str, Any]:
 class V6FormalNode:
     """Runtime adapter, imported lazily so manifest checks need no ROS graph."""
 
+    TERMINAL_ZERO_TIMEOUT_SEC = 2.0
+    TERMINAL_ZERO_PERIOD_SEC = 0.05
+    TERMINAL_ZERO_QUIET_SEC = 0.30
+
     def __init__(
         self,
         manifest: Manifest,
@@ -779,6 +791,7 @@ class V6FormalNode:
         qualification: str = "FORMAL_ELIGIBLE",
     ):
         import rclpy
+        from action_msgs.srv import CancelGoal
         from bio_nav_interfaces.msg import (
             CanonicalRoute,
             CognitiveEdgeOutcome,
@@ -837,8 +850,20 @@ class V6FormalNode:
         self.dynamic_actions = DynamicActionLedger()
         self.dynamic_clients: dict[tuple[str, str], Any] = {}
         self.reset_receipt: dict[str, Any] | None = None
+        self._terminal_cancel_requested = False
+        self._terminal_cancel_future = None
+        self._terminal_started_monotonic: float | None = None
+        self._navigation_terminal_observed = False
+        self._terminal_zero_settled = False
+        self._terminal_zero_confirmed = False
+        self._terminal_zero_reason = "not_required"
+        self._cmd_vel_sim_last_receive_monotonic: float | None = None
+        self._cmd_vel_sim_last_zero_monotonic: float | None = None
+        self._cmd_vel_sim_last_nonzero_monotonic: float | None = None
         self._types = {
+            "CancelGoal": CancelGoal,
             "PoseStamped": PoseStamped,
+            "Twist": Twist,
             "Trigger": Trigger,
             "Parameter": Parameter,
         }
@@ -849,13 +874,24 @@ class V6FormalNode:
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         sensor = QoSProfile(depth=5, reliability=ReliabilityPolicy.BEST_EFFORT)
+        terminal_zero_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
 
         self.route_goal_publisher = self.node.create_publisher(
             PoseStamped, "/bio_nav/route_goal", reliable
         )
+        self.terminal_zero_publisher = self.node.create_publisher(
+            Twist, "/cmd_vel_nav", terminal_zero_qos
+        )
         self.reset_client = self.node.create_client(Trigger, "/simulation/reset")
         self.nav2_active_client = self.node.create_client(
             Trigger, "/lifecycle_manager_navigation/is_active"
+        )
+        self.navigate_cancel_client = self.node.create_client(
+            CancelGoal, "/navigate_to_pose/_action/cancel_goal"
         )
         self.isaac_parameters = AsyncParameterClient(self.node, "/isaac_navigation_sim")
 
@@ -890,6 +926,7 @@ class V6FormalNode:
             sub(RiskLayerStatus, "/bio_nav/cognitive_obstacle_layer/status", self._capture_callback("/bio_nav/cognitive_obstacle_layer/status")),
             sub(RiskLayerStatus, "/bio_nav/cognitive_risk_critic/status", self._capture_callback("/bio_nav/cognitive_risk_critic/status")),
             sub(Twist, "/cmd_vel", lambda m: self._track_command("/cmd_vel", m)),
+            sub(Twist, "/cmd_vel_nav", lambda m: self._track_command("/cmd_vel_nav", m)),
             sub(Twist, "/cmd_vel_sim", lambda m: self._track_command("/cmd_vel_sim", m)),
             sub(Bool, "/simulation/collision", self._collision),
             sub(String, "/simulation/collision_diagnostics", self._capture_callback("/simulation/collision_diagnostics")),
@@ -934,6 +971,12 @@ class V6FormalNode:
             )
         )
         now = time.monotonic()
+        if topic == "/cmd_vel_sim":
+            self._cmd_vel_sim_last_receive_monotonic = now
+            if nonzero:
+                self._cmd_vel_sim_last_nonzero_monotonic = now
+            else:
+                self._cmd_vel_sim_last_zero_monotonic = now
         self._cmd_window.append((now, nonzero))
         horizon = 4.0 * PRE_RESET_NEGATIVE_WINDOW_S
         while self._cmd_window and now - self._cmd_window[0][0] > horizon:
@@ -1069,7 +1112,13 @@ class V6FormalNode:
 
     def _route_complete(self, message: Any) -> None:
         self._track_route_signal("route_goal_complete")
+        if self.guard.goal_publications > len(self.guard.completed_leg_ids):
+            self._navigation_terminal_observed = True
         self.guard.record_route_completion(bool(message.data))
+        if self.guard.state in {"FAILED", "STOP"}:
+            self._cancel_active_navigation_once(
+                self.guard.stop_reason or "route_failed"
+            )
         self._capture("/bio_nav/route_goal_complete", message)
 
     def _route_result(self, message: Any) -> None:
@@ -1106,7 +1155,88 @@ class V6FormalNode:
         self.collision = self.collision or bool(message.data)
         if message.data:
             self.guard.stop("collision")
+            self._cancel_active_navigation_once("collision")
         self._capture("/simulation/collision", message)
+
+    def _cancel_active_navigation_once(self, reason: str) -> None:
+        active_goal = self.guard.goal_publications > len(
+            self.guard.completed_leg_ids
+        )
+        if self._terminal_cancel_requested or not active_goal:
+            return
+        self._terminal_cancel_requested = True
+        self._terminal_started_monotonic = time.monotonic()
+        self._terminal_zero_reason = "pending"
+        CancelGoal = self._types["CancelGoal"]
+        self._terminal_cancel_future = self.navigate_cancel_client.call_async(
+            CancelGoal.Request()
+        )
+        self._write("terminal_navigation_cancel_requested", reason=reason)
+
+    def _settle_terminal_zero(self) -> bool:
+        if not self._terminal_cancel_requested:
+            return True
+        if self._terminal_zero_settled:
+            return self._terminal_zero_confirmed
+
+        terminal_start = self._terminal_started_monotonic
+        if terminal_start is None:
+            terminal_start = time.monotonic()
+            self._terminal_started_monotonic = terminal_start
+        deadline = terminal_start + self.TERMINAL_ZERO_TIMEOUT_SEC
+        next_publish = terminal_start
+        zero_candidate_since: float | None = None
+        Twist = self._types["Twist"]
+        zero = Twist()
+
+        while self._rclpy.ok() and time.monotonic() < deadline:
+            now = time.monotonic()
+            if now >= next_publish:
+                self.terminal_zero_publisher.publish(zero)
+                next_publish = now + self.TERMINAL_ZERO_PERIOD_SEC
+
+            self._rclpy.spin_once(
+                self.node,
+                timeout_sec=min(
+                    self.TERMINAL_ZERO_PERIOD_SEC,
+                    max(0.0, deadline - time.monotonic()),
+                ),
+            )
+            now = time.monotonic()
+            last_zero = self._cmd_vel_sim_last_zero_monotonic
+            last_nonzero = self._cmd_vel_sim_last_nonzero_monotonic
+            if (
+                last_zero is not None
+                and last_zero > terminal_start
+                and (last_nonzero is None or last_zero > last_nonzero)
+            ):
+                if zero_candidate_since is None:
+                    zero_candidate_since = last_zero
+            else:
+                zero_candidate_since = None
+
+            cancel_complete = bool(
+                self._terminal_cancel_future is not None
+                and self._terminal_cancel_future.done()
+            )
+            if (
+                (cancel_complete or self._navigation_terminal_observed)
+                and zero_candidate_since is not None
+                and now - zero_candidate_since >= self.TERMINAL_ZERO_QUIET_SEC
+            ):
+                self._terminal_zero_settled = True
+                self._terminal_zero_confirmed = True
+                self._terminal_zero_reason = "terminal_zero_confirmed"
+                self._write(
+                    "terminal_zero_confirmed",
+                    root_reason=self.guard.stop_reason,
+                )
+                return True
+
+        self._terminal_zero_settled = True
+        self._terminal_zero_reason = "terminal_zero_timeout"
+        self._write("terminal_zero_timeout", root_reason=self.guard.stop_reason)
+        return False
 
     def _spin_until(self, predicate, timeout_sec: float) -> bool:
         deadline = time.monotonic() + timeout_sec
@@ -1302,9 +1432,7 @@ class V6FormalNode:
         message.header.stamp = self.node.get_clock().now().to_msg()
         message.pose.position.x = leg.x
         message.pose.position.y = leg.y
-        yaw = math.radians(leg.yaw_deg)
-        message.pose.orientation.z = math.sin(yaw / 2.0)
-        message.pose.orientation.w = math.cos(yaw / 2.0)
+        message.pose.orientation.w = 1.0
         return message
 
     def _call_dynamic_action(self, group: str, action: str, timeout_sec: float) -> bool:
@@ -1442,13 +1570,7 @@ class V6FormalNode:
         for index, leg in enumerate(self.manifest.mission_legs):
             route_baseline = self.canonical_route_count
             result_baseline = len(self.route_goal_results)
-            triggered = False
-            if leg.dynamic_trigger_group:
-                triggered = self._call_dynamic_action(
-                    leg.dynamic_trigger_group, "trigger", reset_timeout_sec
-                )
-                if not triggered:
-                    break
+            self._navigation_terminal_observed = False
             self.guard.record_goal_publication(leg.goal_id)
             self.route_goal_publisher.publish(self._goal_message(leg))
             self._write(
@@ -1464,10 +1586,6 @@ class V6FormalNode:
             )
             if not completed:
                 self.guard.stop(f"route_completion_timeout:{leg.goal_id}")
-            if triggered:
-                self._call_dynamic_action(
-                    leg.dynamic_trigger_group, "complete", reset_timeout_sec
-                )
             if self.canonical_route_count <= route_baseline:
                 self.guard.stop(f"canonical_route_missing:{leg.goal_id}")
             self._write(
@@ -1482,6 +1600,11 @@ class V6FormalNode:
         return self.result()
 
     def result(self) -> dict[str, Any]:
+        if self.guard.state in {"FAILED", "STOP"}:
+            self._cancel_active_navigation_once(
+                self.guard.stop_reason or "route_failed"
+            )
+            self._settle_terminal_zero()
         row = {
             "qualification": self.qualification,
             "formal_qualification": (
@@ -1503,6 +1626,8 @@ class V6FormalNode:
             "actor_states": self._actor_state_summary(),
             "appearance": self._appearance_summary(),
             "collision": self.collision,
+            "terminal_zero_confirmed": self._terminal_zero_confirmed,
+            "terminal_zero_reason": self._terminal_zero_reason,
         }
         self._write("episode_result", **row)
         return row

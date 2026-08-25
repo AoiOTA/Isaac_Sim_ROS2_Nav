@@ -18,25 +18,25 @@ runtime:
   imu_calibration_profile: isaac_v6_calibrated
 required_runtime_values:
   scene_asset: /home/lyb/Rivermark/rivermark.usd
-  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/rivermark_selected.yaml
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/rivermark_selected.yaml
   posegraph_required: false
   posegraph_file: null
-  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/rivermark.spawn.yaml
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/rivermark.spawn.yaml
   reset_pose_name: rivermark_start
-  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/rivermark_selected.geojson
-  waypoint_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/rivermark_demo_goals.yaml
-  static_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/final_rivermark_static_obstacles.yaml
-  dynamic_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/final_rivermark_dynamic.yaml
-  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/cognitive-navigation/bio_nav_module3/data/rivermark_demo/final_rivermark_dynamic.yaml
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/rivermark_selected.geojson
+  waypoint_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/rivermark_demo_goals.yaml
+  static_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/final_rivermark_static_obstacles.yaml
+  dynamic_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/final_rivermark_dynamic.yaml
+  active_obstacle_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/rivermark_demo/final_rivermark_dynamic.yaml
   physical_obstacles_enabled: true
 mission:
   reset_pose: {id: rivermark_start, frame_id: map, x: 21.2068, y: 119.978, yaw_deg: 136.49593386440827}
   legs:
-    - {id: G1, frame_id: map, x: 1.521014, y: 131.813786, yaw_deg: 135.0}
-    - {id: G2, frame_id: map, x: -15.524852, y: 138.328084, yaw_deg: 90.5257523467108, dynamic_trigger_group: G2}
-    - {id: G3, frame_id: map, x: -23.4432, y: 158.46382, yaw_deg: 90.0, dynamic_trigger_group: G3}
-    - {id: G4, frame_id: map, x: -36.675295, y: 172.938296, yaw_deg: 138.17990203448392, dynamic_trigger_group: G4}
-    - {id: G5, frame_id: map, x: -42.6432, y: 180.578, yaw_deg: -98.13004614639033, dynamic_trigger_group: G5}
+    - {id: G1, frame_id: map, x: 1.521014, y: 131.813786}
+    - {id: G2, frame_id: map, x: -15.524852, y: 138.328084}
+    - {id: G3, frame_id: map, x: -23.4432, y: 158.46382}
+    - {id: G4, frame_id: map, x: -36.675295, y: 172.938296}
+    - {id: G5, frame_id: map, x: -42.6432, y: 180.578}
 episodes:
   - {seed: 19401, variant_id: v1, reset_pose_name: rivermark_start, dynamic_case_id: full_route_four_stage}
   - {seed: 19402, variant_id: v2, reset_pose_name: rivermark_start, dynamic_case_id: full_route_four_stage}
