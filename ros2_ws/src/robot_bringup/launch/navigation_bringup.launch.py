@@ -27,6 +27,7 @@ def generate_launch_description():
         DeclareLaunchArgument('localization_owner', default_value='auto'),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('map_manifest_file', default_value=''),
         DeclareLaunchArgument('robot_description_file', default_value=''),
         DeclareLaunchArgument(
@@ -62,6 +63,12 @@ def generate_launch_description():
         DeclareLaunchArgument('rviz_config', default_value='auto'),
         DeclareLaunchArgument('use_teleop', default_value='auto'),
         DeclareLaunchArgument(
+            'spawn_poses_file',
+            default_value=EnvironmentVariable(
+                'ISAAC_NAV_SPAWN_POSES', default_value='')),
+        DeclareLaunchArgument(
+            'spawn_pose_name', default_value='mapping_start'),
+        DeclareLaunchArgument(
             'project_root',
             default_value=EnvironmentVariable(
                 'PROJECT_ROOT', default_value='')),
@@ -82,6 +89,8 @@ def generate_launch_description():
                 'ceres_num_threads': LaunchConfiguration(
                     'ceres_num_threads'),
                 'map_file': LaunchConfiguration('map_file'),
+                'amcl_params_file': LaunchConfiguration(
+                    'amcl_params_file'),
                 'map_manifest_file': LaunchConfiguration(
                     'map_manifest_file'),
                 'robot_description_file': LaunchConfiguration(
@@ -120,6 +129,9 @@ def generate_launch_description():
                 'use_rviz': LaunchConfiguration('use_rviz'),
                 'rviz_config': LaunchConfiguration('rviz_config'),
                 'use_teleop': LaunchConfiguration('use_teleop'),
+                'spawn_poses_file': LaunchConfiguration(
+                    'spawn_poses_file'),
+                'spawn_pose_name': LaunchConfiguration('spawn_pose_name'),
                 'project_root': LaunchConfiguration('project_root'),
                 'use_self_filter': LaunchConfiguration('use_self_filter'),
                 'use_sim_time': LaunchConfiguration('use_sim_time'),

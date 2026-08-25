@@ -10,9 +10,9 @@ from launch_ros.descriptions import ComposableNode
 def _launch_setup(context):
     backend = LaunchConfiguration(
         'localization_backend').perform(context).strip().lower()
-    if backend not in {'ideal', 'grid'}:
+    if backend not in {'ideal', 'grid', 'amcl'}:
         raise RuntimeError(
-            'localization_backend must be grid or ideal')
+            'localization_backend must be grid, amcl, or ideal')
     map_file = LaunchConfiguration('map_file').perform(context).strip()
     if not map_file:
         raise RuntimeError(
@@ -90,6 +90,34 @@ def _launch_setup(context):
                 parameters=[{'use_sim_time': use_sim_time}],
             ),
         ])
+    elif backend == 'amcl':
+        amcl_params_file = LaunchConfiguration(
+            'amcl_params_file').perform(context).strip()
+        if not amcl_params_file:
+            raise RuntimeError(
+                'amcl_params_file is required for the amcl backend')
+        if not Path(amcl_params_file).is_file():
+            raise RuntimeError(
+                f'AMCL params YAML does not exist: {amcl_params_file}')
+        if Path(amcl_params_file).suffix not in {'.yaml', '.yml'}:
+            raise RuntimeError(
+                f'amcl_params_file must be a YAML file: {amcl_params_file}')
+        node_names.append('amcl')
+        actions.extend([
+            LogInfo(msg='AMCL localization: AMCL is the sole map->odom owner'),
+            LifecycleNode(
+                package='nav2_amcl',
+                executable='amcl',
+                name='amcl',
+                namespace='',
+                output='screen',
+                sigterm_timeout='15.0',
+                parameters=[
+                    amcl_params_file,
+                    {'use_sim_time': use_sim_time},
+                ],
+            ),
+        ])
     else:
         actions.extend([
             LogInfo(msg=(
@@ -131,8 +159,9 @@ def generate_launch_description():
         DeclareLaunchArgument('autostart', default_value='true'),
         DeclareLaunchArgument(
             'localization_backend', default_value='grid',
-            description='V6-GRID production backend or ideal evaluator'),
+            description='Grid or AMCL production backend, or ideal evaluator'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument('amcl_params_file', default_value=''),
         DeclareLaunchArgument('map_to_odom_x', default_value='0.0'),
         DeclareLaunchArgument('map_to_odom_y', default_value='0.0'),
         DeclareLaunchArgument('map_to_odom_yaw_deg', default_value='0.0'),

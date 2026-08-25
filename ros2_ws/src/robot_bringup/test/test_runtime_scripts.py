@@ -1433,3 +1433,11 @@ def test_ros_launcher_defaults_navigation_to_warehouse_new_bundle():
     assert 'posegraph_file:=${posegraph_file}' in source
     assert 'map_file:=${map_file}' in source
     assert 'AMCL for estimated localization' in source
+
+
+def test_ros_launcher_accepts_core_localization_owner_set():
+    source = RUN_ROS.read_text(encoding='utf-8')
+    assert 'auto|ideal|grid|amcl)' in source
+    assert 'localization_owner must be auto, ideal, grid, or amcl' in source
+    assert ('localization_map_contract=occupancy_only requires '
+            'localization_owner=grid or amcl') in source

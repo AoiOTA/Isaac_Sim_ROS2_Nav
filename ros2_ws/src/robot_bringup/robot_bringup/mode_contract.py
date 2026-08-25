@@ -17,7 +17,7 @@ ODOMETRY_MODES = frozenset({'ideal', 'realistic', 'estimated'})
 STRUCTURE_TF_SOURCES = frozenset({'isaac', 'rsp'})
 LOCALIZATION_MAP_CONTRACTS = frozenset({
     'posegraph_bundle', 'occupancy_only'})
-LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'grid'})
+LOCALIZATION_OWNERS = frozenset({'auto', 'ideal', 'grid', 'amcl'})
 NAV2_PROFILES = frozenset({
     'stable', 'performance', 'dynamic_avoidance', 'bio_nav_planning_only',
     'v6_low_obstacle_isolation',
@@ -373,7 +373,14 @@ def validate_mode(
             if requested_localization_owner == 'auto'
             else requested_localization_owner
         )
-        if resolved_localization_owner != expected_localization_owner:
+        if (resolved_localization_owner == 'amcl'
+                and odometry_mode not in {'realistic', 'estimated'}):
+            raise ValueError(
+                'localization_owner=amcl requires odometry_mode=realistic '
+                'or estimated')
+        if (resolved_localization_owner != 'amcl'
+                and resolved_localization_owner
+                != expected_localization_owner):
             raise ValueError(
                 f'localization_owner={resolved_localization_owner} conflicts '
                 f'with odometry_mode={odometry_mode}; expected '
@@ -390,10 +397,10 @@ def validate_mode(
             raise ValueError(
                 'localization_map_contract=occupancy_only is valid only for '
                 'localization or navigation mode')
-        if resolved_localization_owner != 'grid':
+        if resolved_localization_owner not in {'grid', 'amcl'}:
             raise ValueError(
                 'localization_map_contract=occupancy_only requires '
-                'localization_owner=grid')
+                'localization_owner=grid or amcl')
         if prefix:
             raise ValueError(
                 'posegraph_file must be empty for the occupancy_only '
@@ -402,9 +409,9 @@ def validate_mode(
             raise ValueError(
                 'route_graph_file is required for the occupancy_only '
                 'localization map contract')
-    elif resolved_localization_owner == 'grid':
+    elif resolved_localization_owner in {'grid', 'amcl'}:
         raise ValueError(
-            'localization_owner=grid requires '
+            f'localization_owner={resolved_localization_owner} requires '
             'localization_map_contract=occupancy_only')
 
     if operation == 'mapping' and prefix:

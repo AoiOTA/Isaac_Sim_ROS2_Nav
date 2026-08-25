@@ -57,7 +57,9 @@ localization_map_contracts:
     posegraph_required: true
     occupancy_map_required: true
   occupancy_only:
-    localization_owner: grid
+    localization_owners:
+      - grid
+      - amcl
     posegraph_required: false
     occupancy_map_required: true
     route_graph_required: true

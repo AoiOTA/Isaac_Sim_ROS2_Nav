@@ -258,6 +258,43 @@ def test_occupancy_only_accepts_grid_without_posegraph(tmp_path):
     assert selection.map_manifest_file == ''
 
 
+@pytest.mark.parametrize('odometry_mode', ['realistic', 'estimated'])
+def test_occupancy_only_accepts_explicit_amcl_without_posegraph(
+        tmp_path, odometry_mode):
+    occupancy_map = tmp_path / 'kujiale.yaml'
+    occupancy_map.write_text('image: kujiale.pgm\n')
+    route_graph = tmp_path / 'kujiale.geojson'
+    route_graph.write_text('{"type": "FeatureCollection", "features": []}\n')
+
+    selection = validate_mode(
+        'navigation',
+        odometry_mode,
+        'isaac',
+        map_file=str(occupancy_map),
+        localization_map_contract='occupancy_only',
+        localization_owner='amcl',
+        route_graph_file=str(route_graph),
+    )
+
+    assert selection.posegraph_prefix == ''
+    assert selection.localization_owner == 'amcl'
+
+
+def test_auto_owner_keeps_existing_grid_resolution(tmp_path):
+    occupancy_map = tmp_path / 'kujiale.yaml'
+    occupancy_map.write_text('image: kujiale.pgm\n')
+
+    selection = validate_mode(
+        'localization',
+        'estimated',
+        'isaac',
+        map_file=str(occupancy_map),
+        localization_map_contract='occupancy_only',
+    )
+
+    assert selection.localization_owner == 'grid'
+
+
 def test_occupancy_only_rejects_missing_assets_and_wrong_owner(tmp_path):
     occupancy_map = tmp_path / 'rivermark_selected.yaml'
     occupancy_map.write_text('image: rivermark_selected.pgm\n')
@@ -280,7 +317,8 @@ def test_occupancy_only_rejects_missing_assets_and_wrong_owner(tmp_path):
             localization_owner='grid',
             route_graph_file=str(tmp_path / 'missing.geojson'),
         )
-    with pytest.raises(ValueError, match='requires localization_owner=grid'):
+    with pytest.raises(
+            ValueError, match='requires localization_owner=grid or amcl'):
         validate_mode(
             'navigation', 'ideal', 'isaac',
             map_file=str(occupancy_map),
@@ -293,6 +331,23 @@ def test_occupancy_only_rejects_missing_assets_and_wrong_owner(tmp_path):
             map_file=str(occupancy_map),
             localization_map_contract='occupancy_only',
             localization_owner='ideal',
+            route_graph_file=str(route_graph),
+        )
+    with pytest.raises(ValueError, match='requires odometry_mode=realistic'):
+        validate_mode(
+            'navigation', 'ideal', 'isaac',
+            map_file=str(occupancy_map),
+            localization_map_contract='occupancy_only',
+            localization_owner='amcl',
+            route_graph_file=str(route_graph),
+        )
+    with pytest.raises(ValueError, match='requires.*occupancy_only'):
+        validate_mode(
+            'navigation', 'estimated', 'isaac',
+            posegraph_file='/tmp/legacy',
+            map_file=str(occupancy_map),
+            check_posegraph_files=False,
+            localization_owner='amcl',
             route_graph_file=str(route_graph),
         )
 
@@ -309,7 +364,7 @@ def test_legacy_navigation_defaults_to_posegraph_bundle():
         )
 
 
-@pytest.mark.parametrize('retired_owner', ['amcl', 'odom_static'])
+@pytest.mark.parametrize('retired_owner', ['odom_static'])
 def test_retired_localization_owners_are_rejected(retired_owner):
     with pytest.raises(ValueError, match='localization_owner must be one of'):
         validate_mode(
@@ -341,7 +396,7 @@ def test_documented_mode_matrix_has_no_duplicate_tf_owners():
     assert document['localization_map_contracts']['posegraph_bundle'][
         'posegraph_required'] is True
     assert document['localization_map_contracts']['occupancy_only'] == {
-        'localization_owner': 'grid',
+        'localization_owners': ['grid', 'amcl'],
         'posegraph_required': False,
         'occupancy_map_required': True,
         'route_graph_required': True,
@@ -430,7 +485,7 @@ def test_navigation_uses_activation_gate_instead_of_autostart():
         in bringup_source
 
 
-def test_normal_estimated_launch_uses_grid_backend_and_no_initial_pose():
+def test_normal_estimated_launch_keeps_grid_backend_by_default():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
     mapping_source = (
@@ -452,10 +507,9 @@ def test_normal_estimated_launch_uses_grid_backend_and_no_initial_pose():
     assert "if backend == 'grid':" in mapping_source
     assert "executable='grid_localization_tf_manager'" in mapping_source
     assert 'occupancy_grid_localizer' in mapping_source
-    assert 'amcl_params_file' not in core_source
-    assert core_source.count("'initial_pose.launch.py'") == 1
-    assert core_source.index("'initial_pose.launch.py'") < core_source.index(
-        "'robot_mapping',\n                'localization.launch.py'")
+    assert 'amcl_params_file' in core_source
+    assert "selection.localization_owner == 'amcl'" in core_source
+    assert core_source.count("'initial_pose.launch.py'") == 2
     assert 'fake_posegraph' not in core_source
     assert "'localization_map_contract': LaunchConfiguration(" \
         in navigation_source
@@ -531,7 +585,7 @@ def test_estimated_stack_keeps_legacy_imu_and_conditionally_adds_vio():
         assert "'imu_calibration_params_file': LaunchConfiguration(" in wrapper
 
 
-def test_only_incremental_mapping_includes_initial_pose():
+def test_incremental_mapping_and_explicit_amcl_include_initial_pose():
     core_source = (
         PACKAGE_ROOT / 'launch' / 'ros_stack.launch.py').read_text()
     mapping_start = core_source.index(
@@ -539,10 +593,28 @@ def test_only_incremental_mapping_includes_initial_pose():
     incremental_start = core_source.index(
         "if (selection.operation == 'incremental_mapping'", mapping_start)
     localization_start = core_source.index('    else:', incremental_start)
-    initial_pose = core_source.index("'initial_pose.launch.py'")
-    assert incremental_start < initial_pose < localization_start
+    first_initial_pose = core_source.index("'initial_pose.launch.py'")
+    second_initial_pose = core_source.index(
+        "'initial_pose.launch.py'", first_initial_pose + 1)
+    amcl_condition = core_source.index(
+        "if selection.localization_owner == 'amcl':")
+    assert incremental_start < first_initial_pose < localization_start
+    assert localization_start < amcl_condition < second_initial_pose
     assert "'spawn_poses_file'" in core_source
     assert "'spawn_pose_name'" in core_source
+
+
+def test_localization_wrappers_forward_amcl_and_initial_pose_inputs():
+    launch_dir = PACKAGE_ROOT / 'launch'
+    for operation in ('localization', 'navigation'):
+        source = (
+            launch_dir / f'{operation}_bringup.launch.py').read_text()
+        assert "DeclareLaunchArgument('amcl_params_file', default_value='')" \
+            in source
+        assert "'amcl_params_file': LaunchConfiguration(" in source
+        assert "'spawn_poses_file': LaunchConfiguration(" in source
+        assert "'spawn_pose_name': LaunchConfiguration('spawn_pose_name')" \
+            in source
 
 
 def test_posegraph_calibration_is_explicitly_retired_from_localization():

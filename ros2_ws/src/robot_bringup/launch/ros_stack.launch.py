@@ -230,6 +230,18 @@ def _launch_setup(context):
     nav2_profile = validate_nav2_profile(
         LaunchConfiguration('nav2_profile').perform(context))
     bringup_share = Path(get_package_share_directory('robot_bringup'))
+    mapping_share = Path(get_package_share_directory('robot_mapping'))
+    requested_amcl_params = LaunchConfiguration(
+        'amcl_params_file').perform(context).strip()
+    amcl_params_file = (
+        Path(requested_amcl_params).expanduser()
+        if requested_amcl_params
+        else mapping_share / 'config' / 'amcl_kujiale.yaml'
+    )
+    if (selection.localization_owner == 'amcl'
+            and not amcl_params_file.is_file()):
+        raise RuntimeError(
+            f'AMCL params file does not exist: {amcl_params_file}')
     try:
         cognitive_profile = validate_cognitive_profile(
             LaunchConfiguration('cognitive_profile').perform(context),
@@ -472,17 +484,27 @@ def _launch_setup(context):
                 },
             ))
     else:
-        actions.extend([
-            _include(
-                'robot_mapping',
-                'localization.launch.py',
+        actions.append(_include(
+            'robot_mapping',
+            'localization.launch.py',
+            {
+                'use_sim_time': use_sim_time,
+                'map_file': selection.occupancy_map_file,
+                'localization_backend': selection.localization_owner,
+                'amcl_params_file': str(amcl_params_file),
+            },
+        ))
+        if selection.localization_owner == 'amcl':
+            actions.append(_include(
+                'robot_experiments',
+                'initial_pose.launch.py',
                 {
-                    'use_sim_time': use_sim_time,
-                    'map_file': selection.occupancy_map_file,
-                    'localization_backend': selection.localization_owner,
+                    'spawn_poses_file': spawn_poses_file,
+                    'spawn_pose_name': LaunchConfiguration(
+                        'spawn_pose_name').perform(context),
+                    'wait_for_odom_to_base_tf': 'true',
                 },
-            ),
-        ])
+            ))
 
     if selection.operation == 'navigation':
         navigation_arguments = {
@@ -632,9 +654,15 @@ def generate_launch_description():
             description='posegraph_bundle or explicit AMCL occupancy_only'),
         DeclareLaunchArgument(
             'localization_owner', default_value='auto',
-            description='auto, ideal, or grid'),
+            description='auto, ideal, grid, or amcl'),
         DeclareLaunchArgument('ceres_num_threads', default_value='12'),
         DeclareLaunchArgument('map_file', default_value=''),
+        DeclareLaunchArgument(
+            'amcl_params_file',
+            default_value='',
+            description=(
+                'AMCL YAML; defaults to robot_mapping/config/'
+                'amcl_kujiale.yaml when localization_owner=amcl')),
         # Keep the manifest explicit at the core-launch boundary so direct
         # users get the same map-integrity validation as the wrapper launches.
         DeclareLaunchArgument(

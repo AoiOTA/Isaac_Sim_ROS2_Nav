@@ -82,16 +82,16 @@ if [[ "${operation}" == "localization" || "${operation}" == "navigation" ]]; the
     *) die "localization_map_contract must be posegraph_bundle or occupancy_only" ;;
   esac
   case "${localization_owner}" in
-    auto|ideal|amcl) ;;
-    *) die "localization_owner must be auto, ideal, or amcl" ;;
+    auto|ideal|grid|amcl) ;;
+    *) die "localization_owner must be auto, ideal, grid, or amcl" ;;
   esac
   if [[ "${localization_map_contract}" == "occupancy_only" ]]; then
     [[ -z "${posegraph_file}" ]] || die \
       "posegraph_file must be empty for localization_map_contract=occupancy_only"
     [[ "${localization_owner}" != "ideal" ]] || die \
-      "localization_map_contract=occupancy_only requires localization_owner=amcl"
+      "localization_map_contract=occupancy_only requires localization_owner=grid or amcl"
     [[ "${odometry_mode}" != "ideal" ]] || die \
-      "localization_map_contract=occupancy_only requires AMCL odometry ownership"
+      "localization_map_contract=occupancy_only requires realistic or estimated odometry"
     [[ -n "${map_file}" ]] || die \
       "map_file is required for localization_map_contract=occupancy_only"
     [[ -n "${route_graph_file}" ]] || die \
