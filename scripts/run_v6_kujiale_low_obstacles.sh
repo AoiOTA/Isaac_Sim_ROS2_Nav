@@ -57,6 +57,7 @@ run_ros_profile() {
   local odometry_defaults="$6"
   shift 6
   local cognitive_profile="${V6_COGNITIVE_PROFILE:-${default_cognitive_profile}}"
+  local -a localization_args=()
   local -a module1_args=()
   if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
     cognitive_profile="$1"
@@ -78,24 +79,38 @@ run_ros_profile() {
       lidar_odometry_validated:=false
     )
   fi
+  if [[ "${substrate_odometry_mode}" == "mixed" ]]; then
+    localization_args=(
+      structure_tf_source:=isaac
+      localization_map_contract:=occupancy_only
+      localization_owner:=amcl
+      "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+      "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"
+      "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson"
+    )
+  else
+    localization_args=(
+      structure_tf_source:=isaac
+      localization_map_contract:=posegraph_bundle
+      localization_owner:=auto
+      "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+      "posegraph_file:=${PROJECT_ROOT}/data/maps/posegraphs/v6_kujiale_isaacgen_v1"
+      "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"
+      "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson"
+    )
+  fi
   export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
   # Phase F callers pass the exact Phase-B mixed substrate; the legacy shadow
   # entrypoint keeps its estimated RF2O/wheel+IMU substrate.
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
     "odometry_mode:=${substrate_odometry_mode}" \
-    structure_tf_source:=isaac \
-    localization_map_contract:=occupancy_only \
-    localization_owner:=amcl \
     localization_profile:=kujiale \
     nav2_profile:=v6_low_obstacle_isolation \
     cognitive_profile:="${cognitive_profile}" \
     cognitive_graph_mode:="${graph_mode}" \
     initial_pose_source:="${initial_pose_source}" \
     activation_startup_policy:="${activation_policy}" \
-    "spawn_poses_file:=${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml" \
-    "posegraph_file:=${PROJECT_ROOT}/data/maps/posegraphs/v6_kujiale_isaacgen_v1" \
-    "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
-    "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
+    "${localization_args[@]}" \
     interactive:=false use_rviz:=false use_teleop:=false \
     "${module1_args[@]}" "$@"
 }

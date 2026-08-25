@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import struct
+import subprocess
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -998,6 +999,99 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "cognitive_graph_mode:=\"${graph_mode}\"" in wrapper
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
+
+
+def _run_low_obstacle_wrapper(tmp_path, *arguments):
+    root = PACKAGE.parents[2]
+    project = tmp_path / "project"
+    scripts = project / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy2(root / "scripts/run_v6_kujiale_low_obstacles.sh", scripts)
+    (scripts / "lib/common.sh").write_text(
+        """#!/usr/bin/env bash
+export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+die() { printf '%s\\n' "$*" >&2; exit 1; }
+require_file() { [[ -f "$1" ]] || die "missing: $1"; }
+""",
+        encoding="utf-8",
+    )
+    run_ros = scripts / "run_ros.sh"
+    run_ros.write_text(
+        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\"\n", encoding="utf-8"
+    )
+    run_ros.chmod(0o755)
+    scenario = (
+        project
+        / "ros2_ws/src/robot_experiments/config/v6_kujiale_low_obstacles_static.yaml"
+    )
+    scenario.parent.mkdir(parents=True)
+    scenario.touch()
+    env = os.environ.copy()
+    env.pop("V6_COGNITIVE_PROFILE", None)
+    result = subprocess.run(
+        [str(scripts / "run_v6_kujiale_low_obstacles.sh"), *arguments],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return project, result.stdout.splitlines()
+
+
+@pytest.mark.parametrize("arm", ["M0", "M1", "M2", "M3"])
+def test_phase_f_mixed_argv_uses_occupancy_map_without_posegraph(tmp_path, arm):
+    project, argv = _run_low_obstacle_wrapper(tmp_path, "ros", arm)
+    assert argv == [
+        "navigation",
+        "odometry_mode:=mixed",
+        "localization_profile:=kujiale",
+        "nav2_profile:=v6_low_obstacle_isolation",
+        f"cognitive_profile:={arm}",
+        "cognitive_graph_mode:=gvg",
+        "initial_pose_source:=auto",
+        "activation_startup_policy:=fail_closed",
+        "structure_tf_source:=isaac",
+        "localization_map_contract:=occupancy_only",
+        "localization_owner:=amcl",
+        f"spawn_poses_file:={project}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+        f"map_file:={project}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        f"route_graph_file:={project}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson",
+        "interactive:=false",
+        "use_rviz:=false",
+        "use_teleop:=false",
+        "ekf_profile:=wheel_imu",
+        f"imu_calibration_params_file:={project}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml",
+        "lidar_odometry_backend:=off",
+        "lidar_odometry_validated:=false",
+    ]
+    assert not any(argument.startswith("posegraph_file:=") for argument in argv)
+
+
+def test_legacy_shadow_argv_keeps_estimated_rf2o_posegraph_bundle(tmp_path):
+    project, argv = _run_low_obstacle_wrapper(tmp_path, "shadow")
+    assert argv == [
+        "navigation",
+        "odometry_mode:=estimated",
+        "localization_profile:=kujiale",
+        "nav2_profile:=v6_low_obstacle_isolation",
+        "cognitive_profile:=M1",
+        "cognitive_graph_mode:=gvg",
+        "initial_pose_source:=rviz",
+        "activation_startup_policy:=wait_for_seed",
+        "structure_tf_source:=isaac",
+        "localization_map_contract:=posegraph_bundle",
+        "localization_owner:=auto",
+        f"spawn_poses_file:={project}/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+        f"posegraph_file:={project}/data/maps/posegraphs/v6_kujiale_isaacgen_v1",
+        f"map_file:={project}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        f"route_graph_file:={project}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson",
+        "interactive:=false",
+        "use_rviz:=false",
+        "use_teleop:=false",
+        "ekf_profile:=wheel_imu",
+        "lidar_odometry_backend:=rf2o",
+        "lidar_odometry_validated:=false",
+    ]
 
 
 @pytest.mark.parametrize("command", ["manifest", "plan"])
