@@ -722,7 +722,7 @@ class Nav2ActivationGate(Node):
             stable = False
         self._amcl_tf_stamp_s = stamp_s
         self._amcl_tf_received_at = now
-        if not stable:
+        if not stable or self._amcl_tf_stable_since is None:
             self._amcl_tf_anchor = transform
             self._amcl_tf_stable_since = now
 

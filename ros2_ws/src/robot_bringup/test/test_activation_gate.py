@@ -696,6 +696,43 @@ def test_amcl_requires_ordered_pose_and_post_pose_stable_tf(monkeypatch):
         Nav2ActivationGate._missing_readiness_requirements(gate, now)
 
 
+def test_amcl_tf_stability_rearms_after_stale_gap():
+    gate = _amcl_gate()
+    gate._tracker = SimpleNamespace(missing_requirements=lambda now: [])
+    gate._amcl_initialpose_stamp_s = 10.0
+    gate._amcl_pose_stamp_s = 10.0
+
+    gate._amcl_pose_received_at = 1.0
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 10.0, 1.0)
+    gate._amcl_pose_received_at = 1.21
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 10.0, 1.21)
+    assert Nav2ActivationGate._missing_readiness_requirements(
+        gate, 1.21) == []
+
+    gate._amcl_pose_received_at = 1.72
+    assert 'stable map->odom after current-epoch /amcl_pose' in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 1.72)
+    assert gate._amcl_tf_stable_since is None
+
+    gate._amcl_pose_received_at = 1.73
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 10.0, 1.73)
+    assert gate._amcl_tf_stable_since == 1.73
+    assert 'stable map->odom after current-epoch /amcl_pose' in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 1.73)
+
+    gate._amcl_pose_received_at = 1.84
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.01, 0.0, 0.0, 10.0, 1.84)
+    gate._amcl_pose_received_at = 1.95
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.02, 0.0, 0.0, 10.0, 1.95)
+    assert Nav2ActivationGate._missing_readiness_requirements(
+        gate, 1.95) == []
+
+
 def test_reset_stop_gate_status_tracks_current_release_generation():
     fatals = []
     gate = SimpleNamespace(
