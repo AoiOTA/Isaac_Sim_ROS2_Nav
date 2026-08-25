@@ -3731,3 +3731,27 @@
 - Verdict: **COMMON-AXIS STATIC FIX ONLY**, not product/engineering PASS.
   Next is the same finalized-bag KISS corrected replay with exact +90 static
   TF, raw adapter XYZ, and FAST-LIO off, followed by the same geometry metrics.
+
+## 2026-08-25 — V7.3 local-odom evaluation final KISS decision and stop
+
+- Common-axis replay:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_kiss_icp_common_axis_replay_20260825T015934Z`.
+  The corrected `Rz(+90 deg)` replay removed the identity-TF direction disaster:
+  `0.5 m` crossing `10.514 s`, no `1/5 m` crossing, endpoint XY `0.828 m`,
+  direction `5.149 deg`. Residual scale `1.6258` and z/pitch error meant this
+  was a bounded replay authorization only, not promotion or qualification.
+- Final single OS1-128 live:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_kiss_os1_128_live_20260825T024523Z`.
+  Raw/adapted/KISS were `160/160/160` with exact adapter-to-KISS delivery and
+  RTF `0.648`. KISS GT endpoint/max/p95 XY was `0.469/0.494/0.486 m`, direction
+  `-12.633 deg`, but path was `5.270 m` versus GT `1.388 m` (scale `3.797`),
+  with z endpoint/max/p95 `0.152/0.599/0.563 m` and material pitch/yaw noise.
+  Wheel/EKF same-window endpoint errors were `0.0129/0.0283 m`.
+- Verdict: **ENGINEERING SMOKE COMPLETE / KISS LOCAL-ODOMETRY USABILITY STOP**.
+  No local odom was promoted; Phase 1D/2 and formal qualification remain
+  unauthorized/not run. User directed the work to stop after documentation;
+  no further development, replay, live run, navigation, or experiment follows.
+- Final documents:
+  [V7_3_LOCAL_ODOM_EVALUATION_HANDOFF_20260825.md](V7_3_LOCAL_ODOM_EVALUATION_HANDOFF_20260825.md)
+  and
+  [V7_3_ODOM_LOCALIZATION_ALGORITHM_ADAPTATION_REPORT_20260825.md](V7_3_ODOM_LOCALIZATION_ALGORITHM_ADAPTATION_REPORT_20260825.md).
