@@ -297,7 +297,7 @@ def test_explicit_profile_keeps_rgbd_topics_but_not_direct_costmap_input():
     )
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
     assert "--dynamic-obstacles" in wrapper
-    assert "odometry_mode:=mixed" in wrapper
+    assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "v6_low_obstacle_isolation" in wrapper
     assert "--camera-profile rgbd_navigation" in default_isaac
     static_branch, dynamic_branch = default_isaac.split("  dynamic)", 1)
@@ -325,4 +325,4 @@ def test_legacy_4x20_profile_is_unchanged_but_phase_f_uses_phase_b_mixed():
         encoding="utf-8"
     )
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
-    assert "odometry_mode:=mixed" in wrapper
+    assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper

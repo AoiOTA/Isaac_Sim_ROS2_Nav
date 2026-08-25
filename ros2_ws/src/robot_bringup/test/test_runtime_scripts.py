@@ -175,11 +175,12 @@ def test_common_requires_only_the_allowed_v6_integration_underlay():
 
 def test_v6_wrapper_separates_local_c_arms_from_explicit_d_graph_modes():
     source = RUN_V6_LOW_OBSTACLES.read_text(encoding='utf-8')
-    assert 'run_ros_profile gvg fail_closed auto M3 final' in source
-    assert 'run_ros_profile gvg wait_for_seed rviz M1 rf2o-shadow' in source
+    assert 'run_ros_profile gvg fail_closed auto M3 mixed final' in source
+    assert ('run_ros_profile gvg wait_for_seed rviz M1 estimated rf2o-shadow'
+            in source)
     assert 'C/shadow entrypoints fix cognitive_graph_mode=gvg' in source
     assert '^(shadow|hybrid|primary)$' in source
-    assert ('run_ros_profile "${graph_mode}" fail_closed auto M3 final'
+    assert ('run_ros_profile "${graph_mode}" fail_closed auto M3 mixed final'
             in source)
     assert 'cognitive_graph_mode:="${graph_mode}"' in source
 
@@ -225,6 +226,7 @@ def test_v6_shadow_argv_defaults_to_topic_only_rf2o_with_wheel_imu(tmp_path):
     assert 'lidar_odometry_backend:=rf2o' in arguments
     assert 'lidar_odometry_validated:=false' in arguments
     assert 'odometry_mode:=estimated' in arguments
+    assert 'odometry_mode:=mixed' not in arguments
 
 
 def test_v6_shadow_trailing_odometry_overrides_remain_last(tmp_path):
@@ -247,6 +249,8 @@ def test_v6_nonshadow_ros_argv_fixes_final_estimated_policy(tmp_path):
     arguments = _v6_wrapper_argv(tmp_path, 'ros', 'M0')
 
     assert 'cognitive_profile:=M0' in arguments
+    assert 'odometry_mode:=mixed' in arguments
+    assert 'odometry_mode:=estimated' not in arguments
     assert 'ekf_profile:=wheel_imu' in arguments
     assert 'lidar_odometry_backend:=off' in arguments
     assert 'lidar_odometry_validated:=false' in arguments
@@ -259,6 +263,8 @@ def test_v6_primary_argv_fixes_final_estimated_policy(tmp_path):
     arguments = _v6_wrapper_argv(tmp_path, 'ros-d', 'primary')
 
     assert 'cognitive_graph_mode:=primary' in arguments
+    assert 'odometry_mode:=mixed' in arguments
+    assert 'odometry_mode:=estimated' not in arguments
     assert 'ekf_profile:=wheel_imu' in arguments
     assert 'lidar_odometry_backend:=off' in arguments
     assert 'lidar_odometry_validated:=false' in arguments

@@ -475,7 +475,7 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "edge_prior" not in stack
     assert "cognitive_place_graph" not in stack
     assert "initialpose" not in stack
-    assert "odometry_mode:=mixed" in wrapper
+    assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "cognitive_graph_mode:=\"${graph_mode}\"" in wrapper
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
 

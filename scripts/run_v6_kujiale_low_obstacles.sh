@@ -53,8 +53,9 @@ run_ros_profile() {
   local activation_policy="$2"
   local initial_pose_source="$3"
   local default_cognitive_profile="$4"
-  local odometry_defaults="$5"
-  shift 5
+  local substrate_odometry_mode="$5"
+  local odometry_defaults="$6"
+  shift 6
   local cognitive_profile="${V6_COGNITIVE_PROFILE:-${default_cognitive_profile}}"
   local -a module1_args=()
   if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
@@ -78,10 +79,10 @@ run_ros_profile() {
     )
   fi
   export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
-  # Phase F keeps the exact Phase-B navigation substrate.  Only the M0--M3
-  # cognitive profile changes between arms.
+  # Phase F callers pass the exact Phase-B mixed substrate; the legacy shadow
+  # entrypoint keeps its estimated RF2O/wheel+IMU substrate.
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
-    odometry_mode:=mixed \
+    "odometry_mode:=${substrate_odometry_mode}" \
     structure_tf_source:=isaac \
     localization_map_contract:=occupancy_only \
     localization_owner:=amcl \
@@ -111,14 +112,14 @@ case "${profile}" in
   ros)
     # C experiment: only M0--M3 changes; the physical graph stays GVG.
     reject_graph_override "$@"
-    run_ros_profile gvg fail_closed auto M3 final "$@"
+    run_ros_profile gvg fail_closed auto M3 mixed final "$@"
     ;;
   shadow)
     # Reproducible zero-seed enrollment: retain the full localization stack,
     # keep the local Module2 arm shadow-only, and never activate Nav2 until a
     # valid RViz initial-pose seed satisfies the normal readiness contract.
     reject_graph_override "$@"
-    run_ros_profile gvg wait_for_seed rviz M1 rf2o-shadow "$@"
+    run_ros_profile gvg wait_for_seed rviz M1 estimated rf2o-shadow "$@"
     ;;
   ros-d)
     graph_mode="${1:-}"
@@ -128,7 +129,7 @@ case "${profile}" in
     if [[ "${graph_mode}" == "primary" ]]; then
       reject_final_estimated_policy_override "$@"
     fi
-    run_ros_profile "${graph_mode}" fail_closed auto M3 final "$@"
+    run_ros_profile "${graph_mode}" fail_closed auto M3 mixed final "$@"
     ;;
   runner)
     output_directory="${1:-${PROJECT_ROOT}/data/experiment_runs/v6_kujiale_low_obstacles}"
