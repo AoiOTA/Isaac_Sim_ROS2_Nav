@@ -141,12 +141,11 @@ source_ros() {
     # only this worktree's overlay and do not reintroduce a stale underlay.
     workspace_setup="${PROJECT_ROOT}/ros2_ws/install/local_setup.bash"
   fi
-  if [[ -f "${workspace_setup}" && ("${require_workspace}" == true \
-      || "${require_integration}" == false) ]]; then
+  if [[ -f "${workspace_setup}" ]]; then
     set +u
     # shellcheck disable=SC1091
     source "${workspace_setup}"
-  elif [[ "${require_workspace}" == true ]]; then
+  elif [[ "${require_workspace}" == true || "${require_integration}" == true ]]; then
     set -u
     die "ROS workspace is not built: ${workspace_setup}; run scripts/build_ros2.sh"
   fi

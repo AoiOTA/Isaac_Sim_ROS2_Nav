@@ -7,11 +7,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 usage() {
   cat <<'USAGE'
 usage: run_v6_r5_phase_b_kujiale.sh [--run-root PATH] [--domain ID]
-       isaac|ros|module1-shadow|bridge|record|runner|manifest [arguments...]
+       ros|isaac|module1-shadow|bridge|record|runner|manifest [arguments...]
 
-Run isaac, ros, module1-shadow, bridge, record, then runner in separate
-terminals. Module1 is observable shadow only; Nav2 remains M0/GVG and cannot
-consume Module2 output.
+Run the components in separate terminals in this order:
+  1. ros
+  2. isaac (waits for /wheel_odometry/reset and /set_pose before starting)
+  3. module1-shadow
+  4. bridge
+  5. record
+  6. runner
+
+Module1 is observable shadow only; Nav2 remains M0/GVG and cannot consume
+Module2 output. The manifest command validates the manifest without starting
+ROS, Isaac, recording, or navigation dispatch.
 USAGE
 }
 
@@ -33,6 +41,10 @@ while (($# > 0)); do
   esac
 done
 
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
 component="${1:-}"
 [[ -n "${component}" ]] || { usage >&2; exit 2; }
 shift
@@ -55,7 +67,57 @@ readonly SPAWN="${PROJECT_ROOT}/isaac_sim/configs/environments/kujiale_0026_A_to
 readonly GVG="${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson"
 readonly SHADOW_CONFIG="${BIO_NAV_MODULE1_SHADOW_CONFIG:-configs/kujiale_0026_module1_visual_shadow_v310.yaml}"
 readonly SHADOW_CONFIG_ABS="$([[ "${SHADOW_CONFIG}" = /* ]] && printf '%s' "${SHADOW_CONFIG}" || printf '%s/%s' "${MODULE2_ROOT}" "${SHADOW_CONFIG}")"
-readonly SOCKET_PATH="${BIO_NAV_PHASE_B_SOCKET_PATH:-${run_root}/runtime/module2.sock}"
+
+run_id="${BIO_NAV_PHASE_B_RUN_ID:-$(basename "${run_root%/}")}"
+run_id="${run_id//[^A-Za-z0-9_.-]/_}"
+[[ -n "${run_id}" ]] || die "Phase B run id must not be empty"
+if [[ -n "${BIO_NAV_PHASE_B_SOCKET_PATH:-}" ]]; then
+  socket_path="${BIO_NAV_PHASE_B_SOCKET_PATH}"
+else
+  if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    socket_runtime_root="${XDG_RUNTIME_DIR}/bio_nav_phase_b_${UID}"
+  else
+    socket_runtime_root="/tmp/bio_nav_phase_b_${UID}"
+  fi
+  socket_path="${socket_runtime_root}/domain_${domain_id}/${run_id}/module2.sock"
+fi
+[[ "${socket_path}" == /* ]] || die "Phase B socket path must be absolute: ${socket_path}"
+readonly SOCKET_PATH="${socket_path}"
+
+prepare_socket_directory() {
+  local socket_directory
+  socket_directory="$(dirname "${SOCKET_PATH}")"
+  if [[ -L "${socket_directory}" ]]; then
+    die "Phase B socket directory must not be a symlink: ${socket_directory}"
+  fi
+  mkdir -p -m 700 "${socket_directory}"
+  [[ -d "${socket_directory}" && ! -L "${socket_directory}" ]] \
+    || die "could not create a safe Phase B socket directory: ${socket_directory}"
+}
+
+wait_for_ros_reset_services() {
+  local timeout_sec deadline service service_type
+  local -a required_services missing
+  timeout_sec="${BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC:-120}"
+  [[ "${timeout_sec}" =~ ^[1-9][0-9]*$ ]] \
+    || die "BIO_NAV_PHASE_B_ROS_READY_TIMEOUT_SEC must be a positive integer"
+  required_services=(/wheel_odometry/reset /set_pose)
+  deadline=$((SECONDS + timeout_sec))
+  while true; do
+    missing=()
+    for service in "${required_services[@]}"; do
+      service_type="$(timeout 2 ros2 service type "${service}" 2>/dev/null || true)"
+      [[ -n "${service_type}" ]] || missing+=("${service}")
+    done
+    if ((${#missing[@]} == 0)); then
+      log_info "Phase B ROS reset services are ready; starting Isaac"
+      return 0
+    fi
+    ((SECONDS < deadline)) || die \
+      "Phase B ROS reset services not ready after ${timeout_sec}s: ${missing[*]}; start the ros component first"
+    sleep 1
+  done
+}
 
 require_file "${MANIFEST}"
 require_file "${ORIGINAL_USD}"
@@ -63,10 +125,11 @@ require_file "${MAP}"
 require_file "${SPAWN}"
 require_file "${GVG}"
 require_file "${SHADOW_CONFIG_ABS}"
-mkdir -p "${run_root}/runtime" "${run_root}/episodes" "${run_root}/rosbag"
 
 case "${component}" in
   isaac)
+    source_ros --require-integration-underlay
+    wait_for_ros_reset_services
     export ISAAC_NAV__GROUND_TRUTH__ENABLED=true
     exec "${SCRIPT_DIR}/run_isaac.sh" \
       --environment-usd "${ORIGINAL_USD}" \
@@ -101,6 +164,7 @@ case "${component}" in
       "$@"
     ;;
   module1-shadow)
+    prepare_socket_directory
     require_file "${INTEGRATION_ROOT}/scripts/run_module2_v310_server.sh"
     export BIO_NAV_MODULE2_V310_ROOT="${MODULE2_ROOT}"
     exec "${INTEGRATION_ROOT}/scripts/run_module2_v310_server.sh" \
@@ -111,6 +175,7 @@ case "${component}" in
     ;;
   bridge)
     source_ros --require-integration-underlay
+    prepare_socket_directory
     exec ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
       startup_profile:=estimated_shadow \
       "socket_path:=${SOCKET_PATH}" \
@@ -119,6 +184,7 @@ case "${component}" in
     ;;
   record)
     source_ros --require-integration-underlay
+    mkdir -p "${run_root}/rosbag"
     bag_path="${run_root}/rosbag/phase_b"
     [[ ! -e "${bag_path}" ]] || die "refusing to overwrite ${bag_path}"
     mapfile -t topics < <(
@@ -134,6 +200,7 @@ case "${component}" in
     ;;
   runner)
     source_ros --require-integration-underlay
+    mkdir -p "${run_root}/episodes"
     exec "${SCRIPT_DIR}/run_v6_formal_episode.sh" \
       --pilot --dispatch-pilot "${MANIFEST}" \
       --output-jsonl "${run_root}/episodes/phase_b.jsonl" \
