@@ -192,6 +192,11 @@ def build_cognitive_constraints(
         if fixed_scene_override_file is None or not str(fixed_scene_override_file).strip()
         else load_fixed_scene_reachable_override(fixed_scene_override_file)
     )
+    requested_tile_id = (
+        None if cognitive_tile_id is None else str(cognitive_tile_id).strip()
+    )
+    if cognitive_tile_id is not None and not requested_tile_id:
+        raise ValueError("cognitive_tile_id must be non-empty")
     transform = (
         fixed_scene.t_map_canvas
         if fixed_scene is not None and t_map_canvas is None
@@ -207,6 +212,10 @@ def build_cognitive_constraints(
         if not np.allclose(transform, fixed_scene.t_map_canvas, atol=1.0e-12):
             raise ValueError(
                 "fixed-scene T_map_canvas differs from the requested transform"
+            )
+        if requested_tile_id is not None and requested_tile_id != fixed_scene.map_id:
+            raise ValueError(
+                "fixed-scene cognitive_tile_id differs from canonical map_id"
             )
     centers_map = _canvas_to_map(_canvas_centers(), transform)
     polygon = np.asarray(footprint_settings["polygon_m"], dtype=np.float64)
@@ -260,15 +269,15 @@ def build_cognitive_constraints(
                 transitions.append((int(source), int(target)))
     transition_array = np.asarray(transitions, dtype=np.int64).reshape(-1, 2)
     confidence = 1.0 if reachable.any() and len(transition_array) else 0.0
-    if cognitive_tile_id is None:
+    if fixed_scene is not None and requested_tile_id is None:
+        tile_id = fixed_scene.map_id
+    elif requested_tile_id is None:
         tile_digest = hashlib.sha256()
         tile_digest.update(str(map_version).encode("utf-8"))
         tile_digest.update(transform.tobytes())
         tile_id = f"canvas16:{tile_digest.hexdigest()[:16]}"
     else:
-        tile_id = str(cognitive_tile_id).strip()
-        if not tile_id:
-            raise ValueError("cognitive_tile_id must be non-empty")
+        tile_id = requested_tile_id
     return CognitiveConstraints(
         map_version=str(map_version),
         cognitive_tile_id=tile_id,

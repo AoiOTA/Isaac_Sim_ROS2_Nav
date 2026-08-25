@@ -7,10 +7,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import robot_route_planner.ros_node as ros_node_module
+import yaml
 
+from robot_route_planner.cognitive_constraints import CognitiveConstraintsCache
 from robot_route_planner.cognitive_graph_adapter import CognitiveGraphIdentity
 from robot_route_planner.models import Edge, Graph, Node, NodeType, Traversability
-from robot_route_planner.map_io import OccupancyMap
+from robot_route_planner.map_io import OccupancyMap, load_occupancy_map
 from robot_route_planner.ros_node import (
     CostmapSnapshot,
     DEFAULT_ROUTE_ODOMETRY_TOPIC,
@@ -712,6 +714,96 @@ def _two_by_two_map_and_grid():
         data=[0, 0, 0, 0],
     )
     return coordinator_map, grid
+
+
+def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -> None:
+    repo = Path(__file__).resolve().parents[4]
+    override = (
+        repo.parent
+        / "bio_nav_module2/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+    scene = yaml.safe_load(override.read_text(encoding="utf-8"))["scene"]
+    occupancy = load_occupancy_map(
+        repo / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        unknown_is_occupied=True,
+    )
+
+    class CognitiveMapConstraintsMessage:
+        def __init__(self):
+            self.header = SimpleNamespace(stamp=None, frame_id="")
+            self.verified_transitions = []
+
+    class CognitiveTransitionMessage:
+        def __init__(self):
+            self.from_state = 0
+            self.to_state = 0
+
+    coordinator = RouteCoordinator.__new__(RouteCoordinator)
+    coordinator.reset_hold_barrier = False
+    coordinator.reset_generation = 0
+    coordinator.request_id = 0
+    coordinator.graph_generation = 0
+    coordinator.live_map_version = "occupancy-sha"
+    coordinator.region_selector = None
+    coordinator.map = occupancy
+    coordinator.graph = SimpleNamespace(
+        graph_id="v6_kujiale_isaacgen_v1:gvg_v1", revision=1
+    )
+    coordinator.defaults = {
+        "footprint": {
+            "polygon_m": [
+                [0.255, 0.210],
+                [0.255, -0.210],
+                [-0.230, -0.210],
+                [-0.230, 0.210],
+            ],
+            "padding_m": 0.005,
+            "padded_inscribed_radius_m": 0.215,
+            "sweep_sample_spacing_m": 0.025,
+        }
+    }
+    coordinator.cognitive_constraints_cache = CognitiveConstraintsCache()
+    coordinator.cognitive_constraints_override_file = str(override)
+    coordinator.frame_id = "map"
+    coordinator._now = lambda: SimpleNamespace(to_msg=lambda: object())
+    coordinator.CognitiveMapConstraints = CognitiveMapConstraintsMessage
+    coordinator.CognitiveTransition = CognitiveTransitionMessage
+    coordinator.cognitive_constraints_pub = _CapturePublisher()
+    coordinator._publish_cognitive_cache_parameters = lambda: None
+
+    coordinator._publish_cognitive_constraints()
+
+    assert len(coordinator.cognitive_constraints_pub.messages) == 1
+    message = coordinator.cognitive_constraints_pub.messages[0]
+    # Integration serializes these ROS fields as MAP_CONTEXT map_id and
+    # cognitive_tile_id; derive both from the production message, not a test ID.
+    header = {
+        "map_version": message.map_version,
+        "map_id": message.cognitive_tile_id,
+        "cognitive_tile_id": message.cognitive_tile_id,
+        "tile_revision": message.tile_revision,
+        "graph_revision": message.graph_revision,
+    }
+    buffers = {
+        "T_map_canvas": np.asarray(message.t_map_canvas).reshape(3, 3),
+        "valid_state_mask": np.asarray(message.reachable_state_mask, dtype=bool),
+        "verified_transitions": np.asarray(
+            [
+                (transition.from_state, transition.to_state)
+                for transition in message.verified_transitions
+            ],
+            dtype=np.int64,
+        ).reshape(-1, 2),
+    }
+    assert header["map_version"] == "occupancy-sha"
+    assert header["map_id"] == header["cognitive_tile_id"] == scene["map_id"]
+    assert header["tile_revision"] == header["graph_revision"] == 1
+    assert np.array_equal(buffers["T_map_canvas"], np.asarray(scene["T_map_canvas"]))
+    assert np.array_equal(
+        buffers["valid_state_mask"], np.asarray(scene["valid_state_mask"])
+    )
+    assert int(buffers["valid_state_mask"].sum()) == 51
+    assert buffers["verified_transitions"].shape[1] == 2
 
 
 def test_release_replays_map_binding_deferred_during_hold() -> None:

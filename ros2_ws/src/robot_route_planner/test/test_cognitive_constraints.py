@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from robot_route_planner.cognitive_constraints import (
     CognitiveConstraintsCache,
@@ -170,7 +171,9 @@ def test_kujiale_fixed_scene_override_uses_51_mask_and_physical_sweeps() -> None
     )
 
     assert int(default.reachable_state_mask.sum()) == 21
+    assert default.cognitive_tile_id.startswith("canvas16:")
     assert int(fixed_scene.reachable_state_mask.sum()) == 51
+    assert fixed_scene.cognitive_tile_id == "v6_kujiale_isaacgen_v1"
     assert np.array_equal(fixed_scene.t_map_canvas, np.eye(3))
     assert len(fixed_scene.verified_transitions) > 0
     for source, target in fixed_scene.verified_transitions:
@@ -192,3 +195,25 @@ def test_kujiale_fixed_scene_override_uses_51_mask_and_physical_sweeps() -> None
             padded_inscribed_radius_m=footprint["padded_inscribed_radius_m"],
             sweep_sample_spacing_m=footprint["sweep_sample_spacing_m"],
         ) == Traversability.FEASIBLE
+
+
+def test_fixed_scene_override_rejects_conflicting_explicit_tile_id() -> None:
+    repo = Path(__file__).resolve().parents[4]
+    occupancy = load_occupancy_map(
+        repo / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        unknown_is_occupied=True,
+    )
+    override = (
+        repo.parent
+        / "bio_nav_module2/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+
+    with pytest.raises(ValueError, match="canonical map_id"):
+        build_cognitive_constraints(
+            occupancy,
+            map_version="occupancy-sha",
+            graph_revision=1,
+            footprint_settings=_jackal_footprint(),
+            cognitive_tile_id="another-region",
+            fixed_scene_override_file=override,
+        )
