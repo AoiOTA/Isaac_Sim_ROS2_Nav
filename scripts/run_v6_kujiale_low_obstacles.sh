@@ -35,6 +35,19 @@ reject_final_estimated_policy_override() {
   done
 }
 
+reject_phase_f_substrate_override() {
+  local argument
+  for argument in "$@"; do
+    case "${argument}" in
+      odometry_mode:=*|structure_tf_source:=*|localization_map_contract:=*|\
+      localization_owner:=*|map_file:=*|spawn_poses_file:=*|\
+      route_graph_file:=*|module1_amcl_prior_enabled:=*)
+        die "Phase F fixes the Phase-B mixed/AMCL/GVG substrate; rejected override: ${argument}"
+        ;;
+    esac
+  done
+}
+
 run_ros_profile() {
   local graph_mode="$1"
   local activation_policy="$2"
@@ -43,21 +56,21 @@ run_ros_profile() {
   local odometry_defaults="$5"
   shift 5
   local cognitive_profile="${V6_COGNITIVE_PROFILE:-${default_cognitive_profile}}"
-  local -a odometry_args=()
+  local -a module1_args=()
   if [[ "${1:-}" =~ ^M[0-3]$ ]]; then
     cognitive_profile="$1"
     shift
   fi
+  reject_phase_f_substrate_override "$@"
   [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] || die \
     "V6 cognitive profile must be M0, M1, M2, or M3; got: ${cognitive_profile}"
   if [[ "${odometry_defaults}" == "rf2o-shadow" ]]; then
-    odometry_args=(
-      ekf_profile:=wheel_imu
-      lidar_odometry_backend:=rf2o
+    module1_args=(
+      ekf_profile:=wheel_imu lidar_odometry_backend:=rf2o
       lidar_odometry_validated:=false
     )
   elif [[ "${odometry_defaults}" == "final" ]]; then
-    odometry_args=(
+    module1_args=(
       ekf_profile:=wheel_imu
       imu_calibration_params_file:="${PROJECT_ROOT}/ros2_ws/src/robot_odometry/config/imu_calibration.yaml"
       lidar_odometry_backend:=off
@@ -65,10 +78,14 @@ run_ros_profile() {
     )
   fi
   export ISAAC_NAV_REQUIRE_V6_INTEGRATION=1
-  # V6 chain pins the Isaac-regenerated map bundle explicitly; run_ros.sh keeps
-  # its warehouse_new default for the historical flows.
+  # Phase F keeps the exact Phase-B navigation substrate.  Only the M0--M3
+  # cognitive profile changes between arms.
   exec "${SCRIPT_DIR}/run_ros.sh" navigation \
-    odometry_mode:=estimated localization_profile:=kujiale \
+    odometry_mode:=mixed \
+    structure_tf_source:=isaac \
+    localization_map_contract:=occupancy_only \
+    localization_owner:=amcl \
+    localization_profile:=kujiale \
     nav2_profile:=v6_low_obstacle_isolation \
     cognitive_profile:="${cognitive_profile}" \
     cognitive_graph_mode:="${graph_mode}" \
@@ -78,12 +95,18 @@ run_ros_profile() {
     "posegraph_file:=${PROJECT_ROOT}/data/maps/posegraphs/v6_kujiale_isaacgen_v1" \
     "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml" \
     "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson" \
-    "${odometry_args[@]}" "$@"
+    interactive:=false use_rviz:=false use_teleop:=false \
+    "${module1_args[@]}" "$@"
 }
 
 case "${profile}" in
   isaac)
-    exec "${SCRIPT_DIR}/run_kujiale_4x20_isaac.sh" v6-low-obstacles "$@"
+    # Reuse the Phase-B mixed Compute-Odom + AMCL launcher, then explicitly
+    # enable the frozen stationary low box.  The original USD is unchanged.
+    exec "${SCRIPT_DIR}/run_v6_r5_phase_b_kujiale.sh" isaac \
+      --dynamic-obstacle-config \
+      "${PROJECT_ROOT}/isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml" \
+      --dynamic-obstacles "$@"
     ;;
   ros)
     # C experiment: only M0--M3 changes; the physical graph stays GVG.

@@ -3,9 +3,10 @@ qualification: ENGINEERING_CAUSAL_NOT_RUN
 
 identity:
   scene_id: v6_kujiale_low_obstacles_static
-  obstacle_layout_id: kujiale_v6_low_obstacles_frozen_r1_20260820
+  obstacle_layout_id: kujiale_v6_low_obstacles_phase_f_r2_20260826
   scene_contract_frozen: true
   seed: 8601
+  ros_domain_id: 150
   start: {id: G1, reset_pose_name: long_route_start_g1}
   goal: {id: G2, frame_id: map, x: 0.80, y: 4.80, yaw_deg: -160.0}
   timeout_sec: 180.0
@@ -13,6 +14,16 @@ identity:
   graph_backend: gvg
   direct_rgbd_costmap_enabled: false
   exactly_once_reset: true
+  low_obstacles_enabled: true
+  dynamic_actors_enabled: false
+  module1_amcl_prior_enabled: false
+  cognitive_place_graph_enabled: false
+  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: ../../../../data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+  spawn_manifest: ../../../../isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  route_graph: ../../robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
+  obstacle_config: ../../../../isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
+  obstacle_manifest: ../../../../isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
 
 localization_contract:
   startup_profile: estimated_autonomy
@@ -34,7 +45,7 @@ arms:
   M0:
     module2_uds_enabled: false
     integration_bridge_enabled: false
-    integration_process_required: true
+    integration_process_required: false
     localization_contract: same_estimated_autonomy
     module3_mode: M0
     obstacle_layer_mode: "off"
@@ -83,11 +94,12 @@ capture:
     - /odom
     - /amcl_pose
     - /scan
-    - /camera/depth/image_rect_raw
-    - /bio_nav/cognitive_obstacles
+    - /camera/front/depth/image_raw
+    - /bio_nav/module2/cognitive_obstacles
     - /bio_nav/cognitive_obstacle_layer/status
     - /bio_nav/local_risk_layer/status
     - /bio_nav/cognitive_risk_critic/status
+    - /bio_nav/module2/planning_prior
     - /bio_nav/module2/goal_planning_prior
     - /global_costmap/costmap
     - /local_costmap/costmap
@@ -101,6 +113,9 @@ capture:
     - /ground_truth/odom
     - /simulation/collision
     - /simulation/collision_diagnostics
+  isolation_audit_topics:
+    - /bio_nav/module2/edge_priors
+    - /bio_nav/module2/cognitive_place_graph
   synchronized_sample_fields:
     - stamp_ns
     - frame_id

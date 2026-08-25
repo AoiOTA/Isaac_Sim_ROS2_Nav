@@ -1,9 +1,9 @@
 schema_version: 1
 kind: v6_kujiale_low_obstacle_layout
-layout_id: kujiale_v6_low_obstacles_frozen_r1_20260820
+layout_id: kujiale_v6_low_obstacles_phase_f_r2_20260826
 status: frozen
-revision: 1
-frozen_date: "2026-08-20"
+revision: 2
+frozen_date: "2026-08-26"
 coordinate_frame: map
 source_usd: kujiale_0026_A_to_B_door_open.usd
 source_usd_mutated: false
@@ -27,8 +27,21 @@ geometry_contract:
   obstacle_top_z_m: 0.16
   wheel_vertical_extent_m: [0.0, 0.196]
   robot_max_footprint_dimension_m: 0.485
+  robot_lateral_half_width_m: 0.2134
   lateral_safety_margin_each_side_m: 0.05
-  minimum_open_bypass_side_m: 1.2
-  minimum_route_edge_clearance_m: 1.0
+  minimum_open_bypass_side_m: 0.65
+causal_placement:
+  route: G1_to_G2
+  ground_truth_center_min_distance_m: 0.0136
+  compute_center_min_distance_m: 0.0126
+  padded_overlap_interval_sec: [19.17, 21.42]
+  initial_spawn_clearance_m: 4.622
+  static_boundary_clearance_m: 0.680
+  east_bypass_robot_center_x_m: -0.035
+  east_bypass_box_clearance_m: 0.0516
+  east_bypass_static_clearance_m: 0.234
+  rgbd_first_line_of_sight_sec: 6.97
+  rgbd_within_2m_sec: 13.72
+  lidar_plane_above_obstacle: true
 obstacles:
-  - {id: v6_low_box_solo, map_position: [-1.150000, -0.350000, 0.08], usd_position: [4.050000, 0.150000, 0.08], size: [0.30, 0.30, 0.16]}
+  - {id: v6_low_box_solo, map_position: [-0.450000, -0.350000, 0.08], usd_position: [3.350000, 0.150000, 0.08], size: [0.30, 0.30, 0.16]}

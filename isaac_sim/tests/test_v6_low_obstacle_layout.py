@@ -134,8 +134,8 @@ def test_v6_layout_identity_is_frozen_and_separate_from_the_source_usd():
     manifest = _manifest()
     assert manifest["status"] == "frozen"
     assert "draft" not in manifest["layout_id"]
-    assert manifest["revision"] == 1
-    assert manifest["frozen_date"] == "2026-08-20"
+    assert manifest["revision"] == 2
+    assert manifest["frozen_date"] == "2026-08-26"
     assert manifest["source_usd_mutated"] is False
     assert manifest["source_usd"] == "kujiale_0026_A_to_B_door_open.usd"
     assert manifest["activation_profile"] == "v6-low-obstacles"
@@ -185,23 +185,42 @@ def test_v6_obstacle_is_on_free_map_with_open_bypass():
         assert max(clearances) >= geometry["minimum_open_bypass_side_m"]
 
 
-def test_v6_layout_keeps_route_edge_clearance_without_polluting_static_map_or_goals():
+def test_v6_layout_challenges_g1_g2_and_keeps_measured_east_bypass():
     scenario = load_dynamic_scenario(OBSTACLE_CONFIG)
     manifest = _manifest()
     runner = yaml.safe_load(RUNNER_SCENARIO.read_text(encoding="utf-8"))[
         "scenario"
     ]
-    route = [(0.45, -5.35)] + [
-        tuple(item["position"]) for item in runner["route"]
+    obstacle = scenario.obstacles[0]
+    placement = manifest["causal_placement"]
+    assert obstacle.start[:2] == pytest.approx((-0.45, -0.35))
+    assert placement["route"] == "G1_to_G2"
+    assert placement["ground_truth_center_min_distance_m"] <= 0.02
+    assert placement["compute_center_min_distance_m"] <= 0.02
+    assert placement["padded_overlap_interval_sec"][1] > \
+        placement["padded_overlap_interval_sec"][0]
+    assert placement["initial_spawn_clearance_m"] > 4.0
+    assert placement["static_boundary_clearance_m"] >= 0.65
+    lateral_clearance = (
+        abs(placement["east_bypass_robot_center_x_m"] - obstacle.start[0])
+        - obstacle.size[0] / 2.0
+        - manifest["geometry_contract"]["robot_lateral_half_width_m"]
+    )
+    assert lateral_clearance == pytest.approx(
+        placement["east_bypass_box_clearance_m"], abs=1.0e-4
+    )
+    assert placement["east_bypass_static_clearance_m"] >= 0.20
+    metadata, image = _map()
+    robot_size = [
+        2.0 * manifest["geometry_contract"]["robot_lateral_half_width_m"],
+        manifest["geometry_contract"]["robot_max_footprint_dimension_m"],
     ]
-    for obstacle in scenario.obstacles:
-        distance = min(
-            _segment_rectangle_distance(start, end, obstacle.start, obstacle.size)
-            for start, end in zip(route, route[1:])
-        )
-        assert distance >= manifest["geometry_contract"][
-            "minimum_route_edge_clearance_m"
-        ]
+    assert _rectangle_is_free(
+        metadata,
+        image,
+        [placement["east_bypass_robot_center_x_m"], obstacle.start[1]],
+        robot_size,
+    )
 
     map_yaml = (MANIFEST.parent / manifest["occupancy_map"]).resolve().read_text(
         encoding="utf-8"
@@ -211,6 +230,18 @@ def test_v6_layout_keeps_route_edge_clearance_without_polluting_static_map_or_go
         "v6_kujiale_isaacgen_v1"
     assert runner["spawn_pose_name"] == "long_route_start_g1"
     assert runner["goal"]["position"] == [0.45, -5.35]
+
+
+def test_v6_box_is_depth_visible_but_below_scan_plane():
+    manifest = _manifest()
+    placement = manifest["causal_placement"]
+    sensors = manifest["sensors"]
+    geometry = manifest["geometry_contract"]
+    assert placement["rgbd_first_line_of_sight_sec"] < \
+        placement["rgbd_within_2m_sec"]
+    assert placement["lidar_plane_above_obstacle"] is True
+    assert geometry["obstacle_top_z_m"] < sensors["lidar_plane_z_m"]
+    assert geometry["obstacle_top_z_m"] < sensors["rgbd_origin_z_m"]
 
 
 def test_map_to_usd_manifest_matches_the_calibrated_180_degree_transform():
@@ -264,7 +295,9 @@ def test_explicit_profile_keeps_rgbd_topics_but_not_direct_costmap_input():
         "plugins: [static_layer, obstacle_layer, cognitive_obstacle_layer, inflation_layer]"
         in overlay
     )
-    assert "run_kujiale_4x20_isaac.sh\" v6-low-obstacles" in wrapper
+    assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
+    assert "--dynamic-obstacles" in wrapper
+    assert "odometry_mode:=mixed" in wrapper
     assert "v6_low_obstacle_isolation" in wrapper
     assert "--camera-profile rgbd_navigation" in default_isaac
     static_branch, dynamic_branch = default_isaac.split("  dynamic)", 1)
@@ -274,7 +307,7 @@ def test_explicit_profile_keeps_rgbd_topics_but_not_direct_costmap_input():
     assert "v6_kujiale_low_obstacles_frozen.yaml" in v6_branch
 
 
-def test_v6_isaac_profile_defaults_realistic_without_changing_legacy_modes():
+def test_legacy_4x20_profile_is_unchanged_but_phase_f_uses_phase_b_mixed():
     source = (
         ROOT / "scripts/run_kujiale_4x20_isaac.sh"
     ).read_text(encoding="utf-8")
@@ -288,3 +321,8 @@ def test_v6_isaac_profile_defaults_realistic_without_changing_legacy_modes():
     assert 'odometry_mode="realistic"' in v6_branch
     assert '--mode "${odometry_mode}"' in source
     assert source.index('--mode "${odometry_mode}"') < source.index('"$@"')
+    wrapper = (ROOT / "scripts/run_v6_kujiale_low_obstacles.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
+    assert "odometry_mode:=mixed" in wrapper

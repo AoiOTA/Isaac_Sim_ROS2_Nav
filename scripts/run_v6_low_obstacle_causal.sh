@@ -2,11 +2,11 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "usage: $0 manifest|plan|evaluate|run [arguments...]" >&2
+  echo "usage: $0 manifest|plan|evaluate|record-evidence|dispatch-episode|run [arguments...]" >&2
 }
 
 command_name="${1:-}"
-if [[ "$command_name" != "manifest" && "$command_name" != "plan" && "$command_name" != "evaluate" && "$command_name" != "run" ]]; then
+if [[ "$command_name" != "manifest" && "$command_name" != "plan" && "$command_name" != "evaluate" && "$command_name" != "record-evidence" && "$command_name" != "dispatch-episode" && "$command_name" != "run" ]]; then
   usage
   exit 2
 fi

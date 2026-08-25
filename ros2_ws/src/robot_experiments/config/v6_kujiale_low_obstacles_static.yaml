@@ -14,7 +14,7 @@ scenario:
   simulation: {physics_dt: 0.016666666666666666, rtf: 1.0}
   runs:
     matrix:
-      - {seed: 8601, case_id: static, variant_id: v6_frozen_r1, condition_id: v6_low_obstacles}
+      - {seed: 8601, case_id: static, variant_id: v6_phase_f_r2, condition_id: v6_low_obstacles}
     timeout_sec: 600.0
     leg_timeout_sec: 180.0
   goal: {frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
@@ -26,6 +26,6 @@ scenario:
     - {id: G1, frame_id: map, position: [0.45, -5.35], yaw_deg: 90.0, require_orientation: true}
   success: {position_tolerance_m: 0.25, orientation_tolerance_deg: 10.0, final_linear_speed_mps: 0.02, final_angular_speed_radps: 0.05, final_still_duration_sec: 1.0, final_still_timeout_sec: 20.0, require_safety_observations: true, minimum_ground_truth_path_length_m: 20.0, minimum_reverse_distance_m: 0.0, maximum_reverse_distance_fraction: 1.0, minimum_curved_distance_fraction: 0.0, maximum_stopped_time_fraction: 1.0}
   obstacles:
-    layout_id: kujiale_v6_low_obstacles_frozen_r1_20260820
+    layout_id: kujiale_v6_low_obstacles_phase_f_r2_20260826
     static: [{id: v6_low_box_solo}]
     trajectories: []
