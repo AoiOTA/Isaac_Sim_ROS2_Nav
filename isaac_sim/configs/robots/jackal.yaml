@@ -83,6 +83,9 @@ static_transforms:
     child: lio_lidar_link
     translation: [0.120, 0.000, 0.333]
     rotation_xyzw: [0.0, 0.0, 0.0, 1.0]
+    # StructureTF-only common SENSOR-axis correction.  Scene composition uses
+    # rotation_xyzw above, so the OS1 prim keeps its measured physical pose.
+    tf_rotation_override_xyzw: [0.0, 0.0, 0.7071067812, 0.7071067812]
 
   - parent: base_link
     child: imu_link

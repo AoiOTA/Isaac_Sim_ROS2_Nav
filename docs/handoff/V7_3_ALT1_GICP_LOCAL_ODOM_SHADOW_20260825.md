@@ -184,3 +184,46 @@ reviewer-owned bounded OS1-32 finalized-MCAP replay using exact source
 `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_fastlio2_ouster_g2_retry_20260824T035347Z/bag/fastlio_shadow`,
 rate `1.0`, offset `399.0 s`, and duration `250.0 s`, after external TF
 readiness. Do not promote unless its measured geometry provides new evidence.
+
+## Common LiDAR axis StructureTF static amendment
+
+Offline evidence at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_kiss_icp_replay_20260825T010237Z`
+supports one common `base_link -> lio_lidar_link` `Rz(+90 deg)` candidate. It
+reduced start-SE3 endpoint-direction error from `97.52/93.56/94.14 deg` to
+`7.50/3.59/4.20 deg` for KISS/GICP/NDT32 and delayed each backend's first
+0.5 m active-EKF-relative crossing. This was an offline counterfactual against
+estimated `/odom`, not a corrected replay, ground truth, live evidence, or a
+product PASS. Residual KISS scale/z/pitch, GICP non-planar, and NDT32
+scale/z/pitch blockers remain.
+
+The minimal implementation gives only the Isaac StructureTF publisher an
+optional `tf_rotation_override_xyzw`. The `lio_lidar_link` entry publishes
+xyzw `[0,0,0.7071067812,0.7071067812]` while retaining translation
+`[0.120,0,0.333]`. The physical `rotation_xyzw` remains identity, and
+`scene_composer` continues to author the existing OS1 prim pose from that
+physical field. A missing override retains the previous TF behavior. No
+adapter, sensor prim/profile, USDA, URDF/RSP source, KISS config/algorithm,
+canonical odometry/TF, EKF, Nav2, Integration, or Module2 change was made.
+Both OS1-32 and OS1-128 inherit the same `lio_lidar_link` StructureTF, and the
+adapter continues to copy raw SENSOR XYZ unchanged.
+
+FAST-LIO remains rejected/default OFF. Its unchanged
+`config/ouster_shadow.yaml` still owns an internal `Rz(+90 deg)` conversion;
+it must not be enabled with this StructureTF correction until a separate task
+chooses one owner and removes the duplicate from the other path. This
+amendment does not modify that rejected algorithm configuration. The RSP/URDF
+structure source also remains identity and is outside this Isaac-StructureTF
+candidate; do not use RSP for the corrected replay.
+
+Focused source tests passed `25` for LiDAR/StructureTF and `22` for the raw
+adapter/FAST-LIO contracts. No-Kit `mapping_start` validate-only checks passed
+for both `OS1_REV6_32ch10hz512res` and `OS1_REV6_128ch10hz512res`; the existing
+unresolved `OmniPBR.mdl` warnings remained non-blocking. Python compilation
+and final diff checks are recorded in the ledger.
+
+Verdict: **COMMON-AXIS STATIC FIX ONLY**. No replay, ROS graph, Isaac/Kit,
+navigation, promotion, Phase 1D, safety evidence, or qualification was run.
+Next is the same finalized-bag KISS replay with the exact corrected static TF,
+adapter XYZ raw, and FAST-LIO off; recompute direction/crossing/scale/z/rp
+metrics before any live run or acceptance decision.

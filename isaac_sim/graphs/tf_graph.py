@@ -37,8 +37,15 @@ def load_static_transforms(path: str | Path):
     result = []
     observed = []
     for index, transform in enumerate(transforms):
-        if not isinstance(transform, dict) or set(transform) != {
-                "parent", "child", "translation", "rotation_xyzw"}:
+        required_keys = {
+            "parent", "child", "translation", "rotation_xyzw"
+        }
+        allowed_keys = required_keys | {"tf_rotation_override_xyzw"}
+        if (
+            not isinstance(transform, dict)
+            or not required_keys.issubset(transform)
+            or not set(transform).issubset(allowed_keys)
+        ):
             raise ValueError(
                 f"robot.static_transforms[{index}] has an invalid schema")
         edge = (transform["parent"], transform["child"])
@@ -53,8 +60,26 @@ def load_static_transforms(path: str | Path):
         if not math.isclose(norm, 1.0, rel_tol=0.0, abs_tol=1e-6):
             raise ValueError(
                 f"robot.static_transforms[{index}] quaternion must be normalized")
+        tf_rotation = rotation
+        if "tf_rotation_override_xyzw" in transform:
+            tf_rotation = require_vector(
+                transform["tf_rotation_override_xyzw"], 4,
+                context=(
+                    f"robot.static_transforms[{index}]."
+                    "tf_rotation_override_xyzw"
+                ),
+            )
+        tf_norm = math.sqrt(sum(value * value for value in tf_rotation))
+        if not math.isclose(tf_norm, 1.0, rel_tol=0.0, abs_tol=1e-6):
+            raise ValueError(
+                f"robot.static_transforms[{index}] TF quaternion must be normalized")
         node_name = "StaticTF" + str(index)
-        result.append((node_name, *edge, list(translation), list(rotation)))
+        result.append((
+            node_name,
+            *edge,
+            list(translation),
+            list(tf_rotation),
+        ))
     if tuple(observed) != _STRUCTURE_EDGES:
         raise ValueError(
             "robot.static_transforms must preserve the documented TF tree; "

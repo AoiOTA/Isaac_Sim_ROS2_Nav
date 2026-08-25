@@ -3700,3 +3700,34 @@
   `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_fastlio2_ouster_g2_retry_20260824T035347Z/bag/fastlio_shadow`
   at rate `1.0`, offset `399.0 s`, duration `250.0 s`, after external TF
   readiness. This is not promotion or Phase 1D authorization.
+
+## 2026-08-25 — V7.3 common LiDAR axis StructureTF static fix
+
+- Offline sensitivity evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_kiss_icp_replay_20260825T010237Z`.
+  Applying one `Rz(+90 deg)` base-to-LiDAR counterfactual reduced start-SE3
+  endpoint-direction error from `97.52/93.56/94.14 deg` to
+  `7.50/3.59/4.20 deg` for KISS/GICP/NDT32 and delayed the 0.5 m crossing for
+  all three. The reference was same-run active EKF `/odom`, not GT; this is
+  offline sensitivity only, and residual scale/non-planar errors keep every
+  backend STOP verdict in force.
+- Change: only Isaac StructureTF reads the new optional
+  `tf_rotation_override_xyzw`. `base_link -> lio_lidar_link` now publishes
+  xyzw `[0,0,0.7071067812,0.7071067812]` at unchanged translation
+  `[0.120,0,0.333]`. The physical `rotation_xyzw` remains identity, so the OS1
+  prim/profile pose is unchanged; absent overrides preserve old behavior.
+  OS1-32/128 share this frame. Adapter XYZ remains raw, KISS base/frame and
+  upstream defaults remain unchanged, and no USDA/URDF/RSP, canonical odom/TF,
+  Nav2, Integration, or Module2 path changed.
+- FAST-LIO remains default OFF with its rejected config's internal +90 degree
+  owner unchanged. It cannot be enabled with this StructureTF fix until a
+  separate single-owner reconciliation prevents double application.
+- Validation: source-first/no-cache LiDAR/StructureTF tests `25 passed`; ROS
+  adapter/FAST-LIO source contracts `22 passed`; no-Kit `mapping_start`
+  validate-only checks passed for OS1-32 and OS1-128 with only the existing
+  unresolved `OmniPBR.mdl` warnings. Python compilation and `git diff --check`
+  passed. No replay, ROS graph, Isaac/Kit, live, navigation, or qualification
+  process ran.
+- Verdict: **COMMON-AXIS STATIC FIX ONLY**, not product/engineering PASS.
+  Next is the same finalized-bag KISS corrected replay with exact +90 static
+  TF, raw adapter XYZ, and FAST-LIO off, followed by the same geometry metrics.

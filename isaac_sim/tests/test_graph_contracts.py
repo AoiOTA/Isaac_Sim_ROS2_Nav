@@ -5,13 +5,18 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
+import yaml
 
 from isaac_sim.graphs.control_graph import control_graph_spec
 from isaac_sim.graphs.odometry_graph import ideal_odometry_graph_spec
 from isaac_sim.graphs.ros_contract import load_qos_profiles, load_topics
 from isaac_sim.graphs.sensor_graph import core_sensor_graph_spec, lidar_graph_spec
 from isaac_sim.graphs.spec import materialize_graph
-from isaac_sim.graphs.tf_graph import rtx_world_transform, structure_tf_graph_spec
+from isaac_sim.graphs.tf_graph import (
+    load_static_transforms,
+    rtx_world_transform,
+    structure_tf_graph_spec,
+)
 from isaac_sim.src.bridge.tf_ownership import (
     TfOwnershipError,
     expected_tf_owners,
@@ -299,6 +304,27 @@ def test_static_sensor_frames_use_raw_tf_and_no_world_frame():
     ]
     assert "world" not in frame_values
     assert "rtx_world" in frame_values
+
+
+def test_static_tf_rotation_override_is_optional_and_tf_only(tmp_path):
+    robot_path = ROOT / "isaac_sim/configs/robots/jackal.yaml"
+    robot = yaml.safe_load(robot_path.read_text(encoding="utf-8"))
+    configured = load_static_transforms(robot_path)
+    lio = next(item for item in configured if item[2] == "lio_lidar_link")
+    assert lio[3] == [0.120, 0.0, 0.333]
+    assert lio[4] == [0.0, 0.0, 0.7071067812, 0.7071067812]
+
+    physical = next(
+        item
+        for item in robot["static_transforms"]
+        if item["child"] == "lio_lidar_link"
+    )
+    physical.pop("tf_rotation_override_xyzw")
+    fallback_path = tmp_path / "robot_without_tf_override.yaml"
+    fallback_path.write_text(yaml.safe_dump(robot), encoding="utf-8")
+    fallback = load_static_transforms(fallback_path)
+    fallback_lio = next(item for item in fallback if item[2] == "lio_lidar_link")
+    assert fallback_lio[4] == [0.0, 0.0, 0.0, 1.0]
 
 
 def test_rtx_world_frame_is_the_inverse_selected_spawn_pose():

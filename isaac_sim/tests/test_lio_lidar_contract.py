@@ -8,6 +8,7 @@ import pytest
 
 from isaac_sim.apps.navigation_sim import _parser
 from isaac_sim.graphs.sensor_graph import lio_lidar_graph_spec
+from isaac_sim.graphs.tf_graph import structure_tf_graph_spec
 from isaac_sim.src.config import load_project_config
 from isaac_sim.src.sensors.sensor_factory import (
     LIO_LIDAR_PROFILE_NAMES,
@@ -258,7 +259,7 @@ def test_os1_assets_declare_the_committed_profile_geometry(profile, channels):
     assert "float omni:sensor:Core:farRangeM = 120" in asset
 
 
-def test_lio_mount_and_imu_extrinsics_are_explicit_and_identity_rotated():
+def test_lio_physical_mount_stays_identity_but_structure_tf_owns_axis_yaw():
     import yaml
 
     robot = yaml.safe_load(
@@ -272,6 +273,9 @@ def test_lio_mount_and_imu_extrinsics_are_explicit_and_identity_rotated():
     assert transforms["lio_lidar_link"]["rotation_xyzw"] == [
         0.0, 0.0, 0.0, 1.0
     ]
+    assert transforms["lio_lidar_link"]["tf_rotation_override_xyzw"] == [
+        0.0, 0.0, 0.7071067812, 0.7071067812
+    ]
     assert transforms["imu_link"]["rotation_xyzw"] == [0.0, 0.0, 0.0, 1.0]
     # IMU -> LiDAR, matching the initial FAST-LIO2 extrinsic convention.
     assert [
@@ -279,3 +283,71 @@ def test_lio_mount_and_imu_extrinsics_are_explicit_and_identity_rotated():
         - transforms["imu_link"]["translation"][axis]
         for axis in range(3)
     ] == [0.108, -0.002, 0.266]
+
+    values = dict(structure_tf_graph_spec(_config()).values)
+    assert values["StaticTF1.inputs:parentFrameId"] == "base_link"
+    assert values["StaticTF1.inputs:childFrameId"] == "lio_lidar_link"
+    assert values["StaticTF1.inputs:translation"] == [0.120, 0.0, 0.333]
+    assert values["StaticTF1.inputs:rotation"] == [
+        0.0, 0.0, 0.7071067812, 0.7071067812
+    ]
+
+
+def test_common_lidar_axis_change_leaves_sensor_adapter_kiss_and_fastlio_bounded():
+    import yaml
+
+    lidar = yaml.safe_load(
+        (ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml").read_text(
+            encoding="utf-8"
+        )
+    )["lio"]
+    assert lidar["default_profile"] == "off"
+    assert lidar["sensor_prim"] == (
+        "/World/Robots/Jackal/base_link/lio_lidar_link/rtx_lidar"
+    )
+    assert lidar["config"] == "OS1"
+    assert lidar["frame_id"] == "lio_lidar_link"
+    assert lidar["output_frame"] == "SENSOR"
+    assert lidar["motion_compensation"] == "NONCOMPENSATED"
+
+    scene_composer = (
+        ROOT / "isaac_sim/src/stage/scene_composer.py"
+    ).read_text(encoding="utf-8")
+    assert 'item.get("rotation_xyzw")' in scene_composer
+    assert "tf_rotation_override_xyzw" not in scene_composer
+
+    adapter = (
+        ROOT
+        / "ros2_ws/src/robot_odometry/robot_odometry/"
+        "ouster_pointcloud_adapter.py"
+    ).read_text(encoding="utf-8")
+    assert 'for name in ("x", "y", "z", "intensity")' in adapter
+    assert "output_points[name] = points[name]" in adapter
+    assert "tf2" not in adapter
+    assert "Transform" not in adapter
+
+    kiss = yaml.safe_load(
+        (
+            ROOT
+            / "ros2_ws/src/pointcloud_local_odometry/config/kiss_shadow.yaml"
+        ).read_text(encoding="utf-8")
+    )["kiss_icp_node"]["ros__parameters"]
+    assert kiss == {
+        "base_frame": "base_link",
+        "lidar_odom_frame": "kiss_odom_shadow",
+        "publish_odom_tf": False,
+        "publish_debug_clouds": False,
+        "data": {"deskew": True},
+    }
+
+    fast_lio = yaml.safe_load(
+        (
+            ROOT / "ros2_ws/src/fast_lio2_ros2/config/ouster_shadow.yaml"
+        ).read_text(encoding="utf-8")
+    )["/**"]["ros__parameters"]
+    assert fast_lio["mapping"]["extrinsic_R"] == [
+        0.0, -1.0, 0.0,
+        1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0,
+    ]
+    assert fast_lio["publish"]["publish_tf"] is False
