@@ -208,7 +208,6 @@ class Nav2ActivationGate(Node):
         self._amcl_initialpose_stamp_s = None
         self._amcl_initialpose_received_at = None
         self._amcl_pose_stamp_s = None
-        self._amcl_pose_received_at = None
         self._amcl_tf_stamp_s = None
         self._amcl_tf_received_at = None
         self._amcl_tf_anchor = None
@@ -494,7 +493,6 @@ class Nav2ActivationGate(Node):
             self._amcl_initialpose_stamp_s = stamp_s
             self._amcl_initialpose_received_at = time.monotonic()
             self._amcl_pose_stamp_s = None
-            self._amcl_pose_received_at = None
             self._clear_amcl_transform()
 
     def _amcl_pose_callback(self, message):
@@ -520,7 +518,6 @@ class Nav2ActivationGate(Node):
                 return
             first_pose_after_initialization = self._amcl_pose_stamp_s is None
             self._amcl_pose_stamp_s = stamp_s
-            self._amcl_pose_received_at = time.monotonic()
             if first_pose_after_initialization:
                 self._clear_amcl_transform()
 
@@ -529,7 +526,6 @@ class Nav2ActivationGate(Node):
         self._amcl_initialpose_stamp_s = None
         self._amcl_initialpose_received_at = None
         self._amcl_pose_stamp_s = None
-        self._amcl_pose_received_at = None
         self._clear_amcl_transform()
 
     def _clear_amcl_transform(self):
@@ -652,8 +648,8 @@ class Nav2ActivationGate(Node):
         if getattr(self, '_localization_backend', 'grid') == 'amcl':
             if self._amcl_initialpose_stamp_s is None:
                 missing.append('current-epoch /initialpose')
-            if not self._amcl_pose_is_fresh(now):
-                missing.append('fresh current-epoch /amcl_pose after /initialpose')
+            if not self._has_current_epoch_amcl_pose():
+                missing.append('current-epoch /amcl_pose after /initialpose')
             elif not self._amcl_transform_is_stable(now):
                 missing.append(
                     'stable map->odom after current-epoch /amcl_pose')
@@ -672,13 +668,12 @@ class Nav2ActivationGate(Node):
                 'map->odom matching accepted localization correction')
         return missing
 
-    def _amcl_pose_is_fresh(self, now):
+    def _has_current_epoch_amcl_pose(self):
         return (
-            self._amcl_pose_stamp_s is not None
-            and self._amcl_pose_received_at is not None
-            and 0.0 <= now - self._amcl_pose_received_at
-            <= self._freshness_timeout
-            and self._sample_is_current_epoch(self._amcl_pose_stamp_s)
+            self._amcl_initialpose_stamp_s is not None
+            and self._amcl_pose_stamp_s is not None
+            and self._amcl_pose_stamp_s >= self._amcl_initialpose_stamp_s
+            and self._amcl_pose_stamp_s >= self._amcl_epoch_clock_floor_s
         )
 
     def _amcl_transform_is_stable(self, now):

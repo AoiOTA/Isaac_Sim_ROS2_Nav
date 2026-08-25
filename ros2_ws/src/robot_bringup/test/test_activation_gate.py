@@ -59,7 +59,9 @@ def _pose_message(stamp_s, *, frame_id='map'):
     )
 
 
-def _amcl_gate(*, clock_stamp_s=10.0, clock_floor_s=9.5):
+def _amcl_gate(
+        *, clock_stamp_s=10.0, clock_floor_s=9.5,
+        tf_stable_duration=0.2):
     gate = SimpleNamespace(
         _localization_backend='amcl',
         _clock_stamp_s=clock_stamp_s,
@@ -68,12 +70,11 @@ def _amcl_gate(*, clock_stamp_s=10.0, clock_floor_s=9.5):
         _amcl_initialpose_stamp_s=None,
         _amcl_initialpose_received_at=None,
         _amcl_pose_stamp_s=None,
-        _amcl_pose_received_at=None,
         _amcl_tf_stamp_s=None,
         _amcl_tf_received_at=None,
         _amcl_tf_anchor=None,
         _amcl_tf_stable_since=None,
-        _amcl_tf_stable_duration=0.2,
+        _amcl_tf_stable_duration=tf_stable_duration,
         _amcl_tf_translation_tolerance=0.05,
         _amcl_tf_yaw_tolerance=0.05,
         _state_query_lock=threading.RLock(),
@@ -81,8 +82,8 @@ def _amcl_gate(*, clock_stamp_s=10.0, clock_floor_s=9.5):
     gate._pose_message_is_finite = Nav2ActivationGate._pose_message_is_finite
     gate._sample_is_current_epoch = lambda stamp_s: \
         Nav2ActivationGate._sample_is_current_epoch(gate, stamp_s)
-    gate._amcl_pose_is_fresh = lambda now: \
-        Nav2ActivationGate._amcl_pose_is_fresh(gate, now)
+    gate._has_current_epoch_amcl_pose = lambda: \
+        Nav2ActivationGate._has_current_epoch_amcl_pose(gate)
     gate._amcl_transform_is_stable = lambda now: \
         Nav2ActivationGate._amcl_transform_is_stable(gate, now)
     gate._clear_amcl_transform = lambda: \
@@ -641,7 +642,39 @@ def test_amcl_reset_clears_old_pose_and_tf_readiness():
     assert gate._amcl_tf_stamp_s is None
 
 
-def test_amcl_requires_ordered_pose_and_post_pose_stable_tf(monkeypatch):
+def test_amcl_requires_a_new_pose_after_initialpose_and_reset():
+    gate = _amcl_gate()
+    gate._tracker = SimpleNamespace(missing_requirements=lambda now: [])
+    missing_pose = 'current-epoch /amcl_pose after /initialpose'
+
+    assert missing_pose in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.0))
+    assert missing_pose in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.0))
+    assert missing_pose not in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+
+    gate._clock_stamp_s = 10.1
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.1))
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.0))
+    assert missing_pose in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+
+    Nav2ActivationGate._reset_amcl_readiness(gate, 10.2)
+    gate._clock_stamp_s = 10.2
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.2))
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.1))
+    assert missing_pose in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.2))
+    assert missing_pose not in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+
+
+def test_amcl_latches_single_pose_through_tf_stability_window(monkeypatch):
     now = 100.0
     monkeypatch.setattr(
         'robot_bringup.activation_gate.time.monotonic', lambda: now)
@@ -656,7 +689,7 @@ def test_amcl_requires_ordered_pose_and_post_pose_stable_tf(monkeypatch):
     tracker.mark_scan(10.0, now)
     tracker.mark_odom(10.0, now)
     tracker.mark_map()
-    gate = _amcl_gate()
+    gate = _amcl_gate(tf_stable_duration=1.0)
     gate._tracker = tracker
 
     Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.0))
@@ -670,28 +703,36 @@ def test_amcl_requires_ordered_pose_and_post_pose_stable_tf(monkeypatch):
     assert 'stable map->odom transform' in \
         Nav2ActivationGate._missing_readiness_requirements(gate, now)
 
-    now += 0.21
-    tracker.mark_clock(10.21, now)
-    tracker.mark_scan(10.21, now)
-    tracker.mark_odom(10.21, now)
-    tracker.observe_transform(0.0, 0.0, 0.0, 10.21, now)
-    gate._clock_stamp_s = 10.21
-    gate._amcl_pose_stamp_s = 10.21
-    gate._amcl_pose_received_at = now
+    now += 0.51
+    tracker.mark_clock(10.51, now)
+    tracker.mark_scan(10.51, now)
+    tracker.mark_odom(10.51, now)
+    tracker.observe_transform(0.0, 0.0, 0.0, 10.51, now)
+    gate._clock_stamp_s = 10.51
     Nav2ActivationGate._observe_amcl_transform(
-        gate, 0.0, 0.0, 0.0, 10.21, now)
+        gate, 0.0, 0.0, 0.0, 10.51, now)
+    missing = Nav2ActivationGate._missing_readiness_requirements(gate, now)
+    assert 'current-epoch /amcl_pose after /initialpose' not in missing
+    assert 'stable map->odom after current-epoch /amcl_pose' in missing
+
+    now += 0.50
+    tracker.mark_clock(11.01, now)
+    tracker.mark_scan(11.01, now)
+    tracker.mark_odom(11.01, now)
+    tracker.observe_transform(0.0, 0.0, 0.0, 11.01, now)
+    gate._clock_stamp_s = 11.01
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 11.01, now)
     assert Nav2ActivationGate._missing_readiness_requirements(gate, now) == []
 
     now += 0.01
-    tracker.mark_clock(10.22, now)
-    tracker.mark_scan(10.22, now)
-    tracker.mark_odom(10.22, now)
-    tracker.observe_transform(1.0, 0.0, 0.0, 10.22, now)
-    gate._clock_stamp_s = 10.22
-    gate._amcl_pose_stamp_s = 10.22
-    gate._amcl_pose_received_at = now
+    tracker.mark_clock(11.02, now)
+    tracker.mark_scan(11.02, now)
+    tracker.mark_odom(11.02, now)
+    tracker.observe_transform(1.0, 0.0, 0.0, 11.02, now)
+    gate._clock_stamp_s = 11.02
     Nav2ActivationGate._observe_amcl_transform(
-        gate, 1.0, 0.0, 0.0, 10.22, now)
+        gate, 1.0, 0.0, 0.0, 11.02, now)
     assert 'stable map->odom transform' in \
         Nav2ActivationGate._missing_readiness_requirements(gate, now)
 
@@ -702,31 +743,25 @@ def test_amcl_tf_stability_rearms_after_stale_gap():
     gate._amcl_initialpose_stamp_s = 10.0
     gate._amcl_pose_stamp_s = 10.0
 
-    gate._amcl_pose_received_at = 1.0
     Nav2ActivationGate._observe_amcl_transform(
         gate, 0.0, 0.0, 0.0, 10.0, 1.0)
-    gate._amcl_pose_received_at = 1.21
     Nav2ActivationGate._observe_amcl_transform(
         gate, 0.0, 0.0, 0.0, 10.0, 1.21)
     assert Nav2ActivationGate._missing_readiness_requirements(
         gate, 1.21) == []
 
-    gate._amcl_pose_received_at = 1.72
     assert 'stable map->odom after current-epoch /amcl_pose' in \
         Nav2ActivationGate._missing_readiness_requirements(gate, 1.72)
     assert gate._amcl_tf_stable_since is None
 
-    gate._amcl_pose_received_at = 1.73
     Nav2ActivationGate._observe_amcl_transform(
         gate, 0.0, 0.0, 0.0, 10.0, 1.73)
     assert gate._amcl_tf_stable_since == 1.73
     assert 'stable map->odom after current-epoch /amcl_pose' in \
         Nav2ActivationGate._missing_readiness_requirements(gate, 1.73)
 
-    gate._amcl_pose_received_at = 1.84
     Nav2ActivationGate._observe_amcl_transform(
         gate, 0.01, 0.0, 0.0, 10.0, 1.84)
-    gate._amcl_pose_received_at = 1.95
     Nav2ActivationGate._observe_amcl_transform(
         gate, 0.02, 0.0, 0.0, 10.0, 1.95)
     assert Nav2ActivationGate._missing_readiness_requirements(
