@@ -86,6 +86,26 @@ V6_IMU_REGIME_FEATURE_CONFIG = (
 
 # Float conversion noise only; this is not an extra simulation-frame allowance.
 CLOCK_FLOAT_EPSILON_SECONDS = 1e-9
+CLOCK_NANOSECONDS_PER_SECOND = 1_000_000_000
+
+
+def _clock_message_from_simulation_time(simulation_time_seconds: float):
+    """Convert the current Isaac epoch to an exact ROS Clock message."""
+
+    from builtin_interfaces.msg import Time
+    from rosgraph_msgs.msg import Clock
+
+    value = float(simulation_time_seconds)
+    if not math.isfinite(value) or value < 0.0:
+        raise RuntimeError(
+            "cannot publish invalid Isaac simulation time on /clock: "
+            f"{value}"
+        )
+    total_nanoseconds = int(value * CLOCK_NANOSECONDS_PER_SECOND)
+    seconds, nanoseconds = divmod(
+        total_nanoseconds, CLOCK_NANOSECONDS_PER_SECOND
+    )
+    return Clock(clock=Time(sec=seconds, nanosec=nanoseconds))
 
 
 def _prime_isaac_ros_clock(
@@ -95,10 +115,44 @@ def _prime_isaac_ros_clock(
     spin_once: Callable[[], None],
     simulation_time: Callable[[], float],
     ros_time: Callable[[], float],
+    publish_clock: Callable[[float], None],
+    destroy_clock: Callable[[], bool],
     max_frame_lag_seconds: float,
     max_updates: int = 5,
 ) -> tuple[float, float, float, float]:
-    """Start Isaac time and its ROS clock before startup reset service calls."""
+    """Bootstrap ROS time from Isaac, then retire the temporary publisher."""
+
+    try:
+        return _prime_isaac_ros_clock_until_aligned(
+            play_first_update=play_first_update,
+            app_update=app_update,
+            spin_once=spin_once,
+            simulation_time=simulation_time,
+            ros_time=ros_time,
+            publish_clock=publish_clock,
+            max_frame_lag_seconds=max_frame_lag_seconds,
+            max_updates=max_updates,
+        )
+    finally:
+        if not destroy_clock():
+            raise RuntimeError(
+                "failed to destroy bootstrap /clock publisher before "
+                "startup reset"
+            )
+
+
+def _prime_isaac_ros_clock_until_aligned(
+    *,
+    play_first_update: Callable[[], None],
+    app_update: Callable[[], None],
+    spin_once: Callable[[], None],
+    simulation_time: Callable[[], float],
+    ros_time: Callable[[], float],
+    publish_clock: Callable[[float], None],
+    max_frame_lag_seconds: float,
+    max_updates: int,
+) -> tuple[float, float, float, float]:
+    """Advance Isaac and publish its current epoch until ROS time aligns."""
 
     initial_sim_time = float(simulation_time())
     initial_ros_time = float(ros_time())
@@ -135,8 +189,9 @@ def _prime_isaac_ros_clock(
             play_first_update()
         else:
             app_update()
-        spin_once()
         latest_sim_time = float(simulation_time())
+        publish_clock(latest_sim_time)
+        spin_once()
         latest_ros_time = float(ros_time())
         if latest_ros_time < previous_ros_time:
             raise failure("ROS clock moved backwards", update_index + 1)
@@ -773,6 +828,8 @@ def run(
         from rcl_interfaces.msg import ParameterDescriptor
         from rclpy.node import Node
         from rclpy.parameter import Parameter
+        from rclpy.qos import qos_profile_sensor_data
+        from rosgraph_msgs.msg import Clock
 
         rclpy.init(args=[])
         rclpy_started = True
@@ -1810,10 +1867,15 @@ def run(
         reset_manager = ResetManager(runtime, spawn_manager, hooks)
         reset_bridge.bind(reset_manager)
         # ResetStopGate starts held.  Re-publish zero after the control graph
-        # exists, then let Isaac itself advance /clock before mixed-mode wheel
-        # and EKF startup service discovery.  No external clock publisher may
-        # establish a different epoch.
+        # exists, then briefly publish Isaac's current epoch from this same
+        # node before mixed-mode wheel and EKF startup service discovery.
+        # OmniGraph takes over after the bootstrap publisher is destroyed.
         reset_stop_gate.publish_zero()
+        bootstrap_clock_publisher = node.create_publisher(
+            Clock,
+            "/clock",
+            qos_profile_sensor_data,
+        )
         _prime_isaac_ros_clock(
             play_first_update=runtime.play,
             app_update=app.update,
@@ -1822,6 +1884,14 @@ def run(
                 SimulationManager.get_simulation_time()
             ),
             ros_time=lambda: node.get_clock().now().nanoseconds * 1.0e-9,
+            publish_clock=lambda current_sim_time: (
+                bootstrap_clock_publisher.publish(
+                    _clock_message_from_simulation_time(current_sim_time)
+                )
+            ),
+            destroy_clock=lambda: node.destroy_publisher(
+                bootstrap_clock_publisher
+            ),
             max_frame_lag_seconds=max(
                 1.0 / config.simulation.physics_hz,
                 1.0 / config.simulation.rendering_hz,

@@ -8,7 +8,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from isaac_sim.apps.navigation_sim import _prime_isaac_ros_clock
+from isaac_sim.apps.navigation_sim import (
+    _clock_message_from_simulation_time,
+    _prime_isaac_ros_clock,
+)
 from isaac_sim.src.bridge.reset_service import (
     InitialPoseRepublisher,
     ResetServiceBridge,
@@ -29,6 +32,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
     state = {"simulation": 0.0, "ros": 0.0}
     events = ["held", "zero"]
+    published = []
 
     def play_first_update():
         events.append("play_update")
@@ -40,8 +44,16 @@ def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
 
     def spin_once():
         events.append("spin")
-        if state["simulation"] >= 0.02:
-            state["ros"] = state["simulation"]
+        if published[-1] >= 0.02:
+            state["ros"] = published[-1]
+
+    def publish_clock(current_sim_time):
+        events.append("publish")
+        published.append(current_sim_time)
+
+    def destroy_clock():
+        events.append("destroy")
+        return True
 
     result = _prime_isaac_ros_clock(
         play_first_update=play_first_update,
@@ -50,26 +62,91 @@ def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
         simulation_time=lambda: state["simulation"],
         ros_time=lambda: state["ros"],
         max_frame_lag_seconds=0.01,
+        publish_clock=publish_clock,
+        destroy_clock=destroy_clock,
         max_updates=3,
     )
 
     assert result == pytest.approx((0.0, 0.0, 0.02, 0.02))
+    assert published == pytest.approx([0.01, 0.02])
     assert events == [
         "held",
         "zero",
         "play_update",
+        "publish",
         "spin",
         "app_update",
+        "publish",
         "spin",
+        "destroy",
     ]
     source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
         encoding="utf-8"
     )
     bind = source.index("reset_bridge.bind(reset_manager)")
     zero = source.index("reset_stop_gate.publish_zero()", bind)
-    prime = source.index("_prime_isaac_ros_clock(", zero)
+    publisher = source.index("node.create_publisher(", zero)
+    prime = source.index("_prime_isaac_ros_clock(", publisher)
+    destroy = source.index("destroy_clock=lambda", prime)
     startup = source.index("startup_reset = reset_bridge.start_reset(", prime)
-    assert bind < zero < prime < startup
+    assert bind < zero < publisher < prime < destroy < startup
+    assert '"/clock"' in source[publisher:prime]
+    assert "qos_profile_sensor_data" in source[publisher:prime]
+
+
+def test_bootstrap_clock_message_uses_monotonic_nanosecond_conversion():
+    values = [0.06666666666666667, 0.15]
+    messages = [_clock_message_from_simulation_time(value) for value in values]
+    nanoseconds = [
+        message.clock.sec * 1_000_000_000 + message.clock.nanosec
+        for message in messages
+    ]
+
+    assert nanoseconds == [66_666_666, 150_000_000]
+    assert nanoseconds == sorted(nanoseconds)
+    assert all(
+        abs(value - stamp * 1.0e-9) <= 1.0e-9
+        for value, stamp in zip(values, nanoseconds)
+    )
+
+
+def test_bootstrap_publisher_is_destroyed_when_publish_raises():
+    destroyed = []
+
+    with pytest.raises(RuntimeError, match="publish failed"):
+        _prime_isaac_ros_clock(
+            play_first_update=lambda: None,
+            app_update=lambda: None,
+            spin_once=lambda: None,
+            simulation_time=lambda: 0.01,
+            ros_time=lambda: 0.0,
+            max_frame_lag_seconds=0.01,
+            publish_clock=lambda _current_time: (_ for _ in ()).throw(
+                RuntimeError("publish failed")
+            ),
+            destroy_clock=lambda: destroyed.append(True) or True,
+            max_updates=1,
+        )
+
+    assert destroyed == [True]
+
+
+def test_bootstrap_publisher_destroy_failure_is_fail_stop():
+    with pytest.raises(
+        RuntimeError,
+        match="failed to destroy bootstrap /clock publisher",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=lambda: None,
+            app_update=lambda: None,
+            spin_once=lambda: None,
+            simulation_time=lambda: 0.01,
+            ros_time=lambda: 0.01,
+            max_frame_lag_seconds=0.01,
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: False,
+            max_updates=1,
+        )
 
 
 def test_startup_clock_priming_failure_is_bounded_and_fail_stop():
@@ -90,6 +167,8 @@ def test_startup_clock_priming_failure_is_bounded_and_fail_stop():
             spin_once=lambda: None,
             simulation_time=lambda: state["simulation"],
             ros_time=lambda: 0.0,
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: True,
             max_frame_lag_seconds=0.01,
             max_updates=3,
         )
@@ -120,6 +199,8 @@ def test_startup_clock_priming_rejects_stale_external_epoch():
             spin_once=spin_once,
             simulation_time=lambda: state["simulation"],
             ros_time=lambda: state["ros"],
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: True,
             max_frame_lag_seconds=0.01,
         )
 
@@ -137,6 +218,8 @@ def test_startup_clock_priming_rejects_initial_external_clock():
             spin_once=lambda: None,
             simulation_time=lambda: 0.0,
             ros_time=lambda: 123.0,
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: True,
             max_frame_lag_seconds=0.01,
         )
 
@@ -162,6 +245,8 @@ def test_startup_clock_priming_rejects_ros_clock_rollback():
             spin_once=spin_once,
             simulation_time=lambda: state["simulation"],
             ros_time=lambda: state["ros"],
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: True,
             max_frame_lag_seconds=0.01,
         )
 
@@ -181,6 +266,8 @@ def test_startup_clock_priming_accepts_one_publish_frame_lag():
         spin_once=spin_once,
         simulation_time=lambda: state["simulation"],
         ros_time=lambda: state["ros"],
+        publish_clock=lambda _current_time: None,
+        destroy_clock=lambda: True,
         max_frame_lag_seconds=0.01,
     )
 
@@ -202,6 +289,8 @@ def test_startup_clock_priming_accepts_float_quantized_equal_times():
         spin_once=spin_once,
         simulation_time=lambda: state["simulation"],
         ros_time=lambda: state["ros"],
+        publish_clock=lambda _current_time: None,
+        destroy_clock=lambda: True,
         max_frame_lag_seconds=0.01,
         max_updates=1,
     )
@@ -228,6 +317,8 @@ def test_startup_clock_priming_rejects_ros_ahead_beyond_float_epsilon():
             spin_once=spin_once,
             simulation_time=lambda: state["simulation"],
             ros_time=lambda: state["ros"],
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: True,
             max_frame_lag_seconds=0.01,
             max_updates=1,
         )
@@ -248,6 +339,8 @@ def test_startup_clock_priming_accepts_float_quantized_upper_bound():
         spin_once=spin_once,
         simulation_time=lambda: state["simulation"],
         ros_time=lambda: state["ros"],
+        publish_clock=lambda _current_time: None,
+        destroy_clock=lambda: True,
         max_frame_lag_seconds=0.01,
         max_updates=1,
     )
@@ -276,6 +369,8 @@ def test_startup_clock_priming_rejects_more_than_one_publish_frame_lag():
             spin_once=spin_once,
             simulation_time=lambda: state["simulation"],
             ros_time=lambda: state["ros"],
+            publish_clock=lambda _current_time: None,
+            destroy_clock=lambda: True,
             max_frame_lag_seconds=0.005,
         )
 
