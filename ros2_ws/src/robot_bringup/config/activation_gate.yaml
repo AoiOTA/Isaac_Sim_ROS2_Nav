@@ -10,6 +10,9 @@ nav2_activation_gate:
     # use wait_for_localization while Nav2 remains inactive until Grid
     # Localizer reports ACCEPTED for the current generation.
     startup_timeout_policy: fail_closed
+    # Grid remains the compatibility default; ros_stack overrides this from
+    # the resolved single map->odom owner for AMCL navigation.
+    localization_backend: grid
     recovery_timeout: 30.0
     recovery_service_timeout: 3.0
     check_period: 0.10

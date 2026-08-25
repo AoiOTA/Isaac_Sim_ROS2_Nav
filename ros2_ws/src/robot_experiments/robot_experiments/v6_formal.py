@@ -1,8 +1,8 @@
-"""Dispatch one V6-GRID Phase-1 empty-room full-house episode.
+"""Dispatch one backend-aware estimated-localization full-house episode.
 
 The dispatcher owns one physical reset and the five XY route goals. Global
-pose ownership stays with the Grid localizer and its TF manager. Ground Truth
-is reserved for the passive recorder/evaluator.
+pose ownership stays with the selected localizer and its TF manager. Ground
+Truth is reserved for the passive recorder/evaluator.
 """
 
 from __future__ import annotations
@@ -43,7 +43,6 @@ FINAL_ESTIMATED_POLICY = {
 PHASE1_RUNTIME = {
     "phase": "phase1_empty_room",
     "odometry_mode": "estimated",
-    "localization_backend": "grid",
     "nav2_profile": "stable",
     "cognitive_profile": "M0",
     "module2_enabled": False,
@@ -54,6 +53,7 @@ PHASE1_RUNTIME = {
     "ground_truth_policy": "evaluator_only",
     "direct_rgbd_costmap_enabled": False,
 }
+LOCALIZATION_BACKENDS = ("grid", "amcl")
 SOLE_PUBLISHER_TOPICS = ("/odom", "/cmd_vel", "/cmd_vel_sim")
 VISUAL_SHADOW_PROFILES = ("off", "rgbd", "stereo_imu")
 
@@ -87,10 +87,29 @@ DISPATCH_SUBSCRIPTION_TOPICS = (
     "/visual/status",
 )
 
+
+def dispatch_subscription_topics(localization_backend: str) -> tuple[str, ...]:
+    """Return the exact dispatcher inputs for the selected backend."""
+    if localization_backend not in LOCALIZATION_BACKENDS:
+        raise V6ContractError("localization_backend must be grid or amcl")
+    grid_only = {
+        "/flatscan",
+        "/localization_result",
+        "/bio_nav/localization/status",
+    }
+    common = tuple(
+        topic for topic in DISPATCH_SUBSCRIPTION_TOPICS if topic not in grid_only
+    )
+    if localization_backend == "grid":
+        return DISPATCH_SUBSCRIPTION_TOPICS
+    return common + ("/initialpose", "/amcl_pose")
+
 CAPTURE_SCHEMA = {
     "/flatscan": "FlatScan",
     "/localization_result": "PoseWithCovarianceStamped",
     "/bio_nav/localization/status": "DiagnosticArray",
+    "/initialpose": "PoseWithCovarianceStamped",
+    "/amcl_pose": "PoseWithCovarianceStamped",
     "/odom": "Odometry",
     "/bio_nav/navigation_graph": "NavigationGraph",
     "/bio_nav/canonical_route": "CanonicalRoute",
@@ -187,6 +206,7 @@ class Manifest:
     mission_legs: tuple[MissionLeg, ...]
     episodes: tuple[Episode, ...]
     missing_required_values: tuple[str, ...]
+    localization_backend: str = "grid"
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -267,6 +287,11 @@ def load_manifest(path: str | Path) -> Manifest:
     for name, expected in PHASE1_RUNTIME.items():
         if runtime.get(name) != expected:
             raise V6ContractError(f"runtime.{name} must be {expected!r}")
+    localization_backend = str(
+        runtime.get("localization_backend", "grid")
+    ).strip().lower()
+    if localization_backend not in LOCALIZATION_BACKENDS:
+        raise V6ContractError("runtime.localization_backend must be grid or amcl")
 
     frozen = raw.get("scene_contract_frozen")
     phase1_enabled = raw.get("phase1_enabled")
@@ -344,6 +369,7 @@ def load_manifest(path: str | Path) -> Manifest:
         mission_legs=tuple(mission_legs),
         episodes=tuple(episodes),
         missing_required_values=_missing_required_values(raw),
+        localization_backend=localization_backend,
     )
 
 
@@ -396,6 +422,8 @@ class ReadinessFacts:
     flatscan_publisher_ready: bool = False
     localization_result_publisher_ready: bool = False
     localization_status_publisher_ready: bool = False
+    initialpose_publisher_ready: bool = False
+    amcl_pose_publisher_ready: bool = False
     clock_seen: bool = False
     scan_seen: bool = False
     flatscan_seen: bool = False
@@ -404,21 +432,32 @@ class ReadinessFacts:
     estimated_odom_seen: bool = False
     localization_status_seen: bool = False
 
-    def missing(self) -> tuple[str, ...]:
-        required_before_reset = (
+    def missing(self, localization_backend: str = "grid") -> tuple[str, ...]:
+        common = (
             "reset_service_ready",
-            "relocalize_service_ready",
             "reset_event_publisher_ready",
             "reset_subscriber_roster_ready",
-            "flatscan_publisher_ready",
-            "localization_result_publisher_ready",
-            "localization_status_publisher_ready",
             "clock_seen",
             "scan_seen",
-            "flatscan_seen",
             "map_seen",
             "estimated_odom_seen",
         )
+        if localization_backend == "grid":
+            backend = (
+                "relocalize_service_ready",
+                "flatscan_publisher_ready",
+                "localization_result_publisher_ready",
+                "localization_status_publisher_ready",
+                "flatscan_seen",
+            )
+        elif localization_backend == "amcl":
+            backend = (
+                "initialpose_publisher_ready",
+                "amcl_pose_publisher_ready",
+            )
+        else:
+            raise V6ContractError("localization_backend must be grid or amcl")
+        required_before_reset = common + backend
         return tuple(
             name for name in required_before_reset if not getattr(self, name)
         )
@@ -426,7 +465,7 @@ class ReadinessFacts:
 
 @dataclass
 class EpisodeGuard:
-    """One reset, one new Grid generation, then five ordered XY goals."""
+    """One reset, one current localization epoch, then ordered XY goals."""
 
     state: str = "WAITING_READINESS"
     stop_reason: str = ""
@@ -437,6 +476,9 @@ class EpisodeGuard:
     localization_waiting_seen: bool = False
     localization_accepted: bool = False
     localization_correction_ready: bool = False
+    localization_backend: str = "grid"
+    initialpose_stamp_ns: int | None = None
+    amcl_pose_stamp_ns: int | None = None
     nav2_active: bool = False
     tf_active: bool = False
     route_ready: bool = False
@@ -462,7 +504,7 @@ class EpisodeGuard:
         pre_reset_route_messages: int,
         localization_accepted_floor: int,
     ) -> None:
-        missing = facts.missing()
+        missing = facts.missing(self.localization_backend)
         if missing:
             raise V6ContractError(f"reset readiness missing: {', '.join(missing)}")
         if pre_reset_route_messages:
@@ -488,7 +530,7 @@ class EpisodeGuard:
         if success is not True:
             self.stop("reset_response_unknown" if success is None else "reset_rejected")
             return
-        self.state = "WAITING_GRID_LOCALIZATION"
+        self.state = "WAITING_LOCALIZATION"
         self._maybe_goal_ready()
 
     def record_reset_event(self) -> None:
@@ -498,7 +540,7 @@ class EpisodeGuard:
         elif self.reset_calls != 1:
             self.stop("reset_event_without_call")
         else:
-            self.state = "WAITING_GRID_LOCALIZATION"
+            self.state = "WAITING_LOCALIZATION"
 
     def record_localization_status(
         self,
@@ -508,7 +550,11 @@ class EpisodeGuard:
         *,
         correction_ready: bool = False,
     ) -> None:
-        if not self.reset_calls or self.state == "STOP":
+        if (
+            self.localization_backend != "grid"
+            or not self.reset_calls
+            or self.state == "STOP"
+        ):
             return
         if generation <= self.localization_accepted_floor:
             return
@@ -531,6 +577,50 @@ class EpisodeGuard:
             self.localization_accepted = True
             self.localization_correction_ready = True
             self._maybe_goal_ready()
+
+    def reset_amcl_epoch(self) -> None:
+        if self.localization_backend != "amcl":
+            return
+        self.initialpose_stamp_ns = None
+        self.amcl_pose_stamp_ns = None
+        self.localization_accepted = False
+        self.localization_correction_ready = False
+
+    def record_initialpose(self, stamp_ns: int, *, clock_floor_ns: int) -> bool:
+        if (
+            self.localization_backend != "amcl"
+            or self.reset_calls != 1
+            or self.reset_events != 1
+            or stamp_ns <= 0
+            or stamp_ns < clock_floor_ns
+            or (
+                self.initialpose_stamp_ns is not None
+                and stamp_ns < self.initialpose_stamp_ns
+            )
+        ):
+            return False
+        self.initialpose_stamp_ns = stamp_ns
+        self.amcl_pose_stamp_ns = None
+        self.localization_accepted = False
+        self.localization_correction_ready = False
+        return True
+
+    def record_amcl_pose(self, stamp_ns: int) -> bool:
+        if (
+            self.localization_backend != "amcl"
+            or self.initialpose_stamp_ns is None
+            or stamp_ns < self.initialpose_stamp_ns
+            or (
+                self.amcl_pose_stamp_ns is not None
+                and stamp_ns < self.amcl_pose_stamp_ns
+            )
+        ):
+            return False
+        self.amcl_pose_stamp_ns = stamp_ns
+        self.localization_accepted = True
+        self.localization_correction_ready = True
+        self._maybe_goal_ready()
+        return True
 
     def record_navigation_ready(
         self,
@@ -571,13 +661,20 @@ class EpisodeGuard:
             "FAILED",
         }:
             return
+        localization_ready = (
+            self.localization_waiting_seen
+            and self.localization_accepted
+            and self.localization_correction_ready
+            if self.localization_backend == "grid"
+            else self.initialpose_stamp_ns is not None
+            and self.amcl_pose_stamp_ns is not None
+            and self.localization_accepted
+        )
         if all(
             (
                 self.reset_calls == 1,
                 self.reset_events == 1,
-                self.localization_waiting_seen,
-                self.localization_accepted,
-                self.localization_correction_ready,
+                localization_ready,
                 self.nav2_active,
                 self.tf_active,
                 self.route_ready,
@@ -692,12 +789,10 @@ class V6FormalNode:
         class _Node(Node):
             pass
 
-        FlatScan = get_message(
-            "isaac_ros_pointcloud_interfaces/msg/FlatScan"
-        )
         self._rclpy = rclpy
-        self.node = _Node("bio_nav_v6_grid_phase1_episode")
+        self.node = _Node("bio_nav_v6_localization_episode")
         self.manifest = manifest
+        self.localization_backend = manifest.localization_backend
         self.episode = episode
         self.output_jsonl = output_jsonl
         self.qualification = qualification
@@ -715,12 +810,15 @@ class V6FormalNode:
         self.visual_shadow_profile = visual_shadow_profile
         self.mission_legs = manifest.mission_legs[:max_legs]
         self.guard = EpisodeGuard(
+            localization_backend=self.localization_backend,
             mission_leg_ids=tuple(item.goal_id for item in self.mission_legs)
         )
         self.facts = ReadinessFacts()
         self.pre_reset_route_messages = 0
         self.pre_reset_quiet_since: float | None = None
         self.latest_accepted_localization_generation = 0
+        self.latest_clock_stamp_ns = 0
+        self.localization_clock_floor_ns = 0
         self._cmd_window: deque[tuple[float, bool]] = deque()
         self._odom_window: deque[tuple[float, float, float]] = deque()
         self.post_reset_odom_xy: list[tuple[float, float]] = []
@@ -773,8 +871,10 @@ class V6FormalNode:
             Twist, "/cmd_vel_nav", terminal_zero_qos
         )
         self.reset_client = self.node.create_client(Trigger, "/simulation/reset")
-        self.relocalize_client = self.node.create_client(
-            Trigger, "/bio_nav/relocalize"
+        self.relocalize_client = (
+            self.node.create_client(Trigger, "/bio_nav/relocalize")
+            if self.localization_backend == "grid"
+            else None
         )
         self.nav2_active_client = self.node.create_client(
             Trigger, "/lifecycle_manager_navigation/is_active"
@@ -793,7 +893,7 @@ class V6FormalNode:
             sub(
                 Clock,
                 "/clock",
-                lambda m: self._fact("clock_seen", "/clock", m),
+                self._clock,
                 sensor,
             ),
             sub(
@@ -801,22 +901,6 @@ class V6FormalNode:
                 "/scan",
                 lambda m: self._fact("scan_seen", "/scan", m),
                 sensor,
-            ),
-            sub(
-                FlatScan,
-                "/flatscan",
-                lambda m: self._fact("flatscan_seen", "/flatscan", m),
-            ),
-            sub(
-                PoseWithCovarianceStamped,
-                "/localization_result",
-                self._localization_result,
-            ),
-            sub(
-                DiagnosticArray,
-                "/bio_nav/localization/status",
-                self._localization_status,
-                latched,
             ),
             sub(Odometry, "/odom", self._odom, sensor),
             sub(TFMessage, "/tf", self._tf),
@@ -879,6 +963,41 @@ class V6FormalNode:
                 self._capture_callback("/diagnostics"),
             ),
         ]
+        if self.localization_backend == "grid":
+            FlatScan = get_message(
+                "isaac_ros_pointcloud_interfaces/msg/FlatScan"
+            )
+            self.subscriptions.extend([
+                sub(
+                    FlatScan,
+                    "/flatscan",
+                    lambda m: self._fact("flatscan_seen", "/flatscan", m),
+                ),
+                sub(
+                    PoseWithCovarianceStamped,
+                    "/localization_result",
+                    self._localization_result,
+                ),
+                sub(
+                    DiagnosticArray,
+                    "/bio_nav/localization/status",
+                    self._localization_status,
+                    latched,
+                ),
+            ])
+        else:
+            self.subscriptions.extend([
+                sub(
+                    PoseWithCovarianceStamped,
+                    "/initialpose",
+                    self._initialpose,
+                ),
+                sub(
+                    PoseWithCovarianceStamped,
+                    "/amcl_pose",
+                    self._amcl_pose,
+                ),
+            ])
         self.visual_reset_client = None
         if self.visual_shadow_profile == "stereo_imu":
             from isaac_ros_visual_slam_interfaces.msg import VisualSlamStatus
@@ -905,6 +1024,24 @@ class V6FormalNode:
     def _fact(self, name: str, topic: str, message: Any) -> None:
         setattr(self.facts, name, True)
         self._capture(topic, message)
+
+    def _clock(self, message: Any) -> None:
+        stamp_ns = (
+            int(message.clock.sec) * 1_000_000_000
+            + int(message.clock.nanosec)
+        )
+        if (
+            self.localization_backend == "amcl"
+            and self.guard.reset_calls == 1
+            and self.latest_clock_stamp_ns > 0
+            and stamp_ns < self.latest_clock_stamp_ns
+        ):
+            self.localization_clock_floor_ns = stamp_ns
+            self.guard.reset_amcl_epoch()
+            self.map_odom_tf_seen = False
+            self.odom_base_tf_seen = False
+        self.latest_clock_stamp_ns = stamp_ns
+        self._fact("clock_seen", "/clock", message)
 
     def _odom(self, message: Any) -> None:
         self.facts.estimated_odom_seen = True
@@ -954,6 +1091,9 @@ class V6FormalNode:
 
     def _reset_event(self, message: Any) -> None:
         self.guard.record_reset_event()
+        if self.localization_backend == "amcl":
+            self.localization_clock_floor_ns = self.latest_clock_stamp_ns
+            self.guard.reset_amcl_epoch()
         self._capture("/simulation/reset_event", message)
 
     def _reset_gate_status(self, message: Any) -> None:
@@ -1048,11 +1188,39 @@ class V6FormalNode:
     def _localization_result(self, message: Any) -> None:
         self._capture("/localization_result", message)
 
+    def _initialpose(self, message: Any) -> None:
+        self.guard.record_initialpose(
+            _stamp_ns(message),
+            clock_floor_ns=self.localization_clock_floor_ns,
+        )
+        self._capture("/initialpose", message)
+
+    def _amcl_pose(self, message: Any) -> None:
+        first_pose_after_initialization = self.guard.amcl_pose_stamp_ns is None
+        if (
+            self.guard.record_amcl_pose(_stamp_ns(message))
+            and first_pose_after_initialization
+        ):
+            # Old TF/Nav2 observations cannot complete the new AMCL epoch.
+            self.map_odom_tf_seen = False
+            self.odom_base_tf_seen = False
+            self.guard.record_navigation_ready(
+                nav2_active=False,
+                tf_active=False,
+                route_ready=False,
+                publisher_ownership_ready=False,
+            )
+        self._capture("/amcl_pose", message)
+
     def _tf(self, message: Any) -> None:
         for transform in message.transforms:
             parent = str(transform.header.frame_id).lstrip("/")
             child = str(transform.child_frame_id).lstrip("/")
-            self.map_odom_tf_seen |= parent == "map" and child == "odom"
+            map_odom = parent == "map" and child == "odom"
+            if self.localization_backend == "grid":
+                self.map_odom_tf_seen |= map_odom
+            elif self.guard.amcl_pose_stamp_ns is not None:
+                self.map_odom_tf_seen |= map_odom
             self.odom_base_tf_seen |= parent == "odom" and child in {
                 "base_link",
                 "base_footprint",
@@ -1305,9 +1473,10 @@ class V6FormalNode:
     def _refresh_endpoint_facts(self) -> None:
         by_topic = {sub.topic_name: sub for sub in self.subscriptions}
         self.facts.reset_service_ready = self.reset_client.service_is_ready()
-        self.facts.relocalize_service_ready = (
-            self.relocalize_client.service_is_ready()
-        )
+        if self.localization_backend == "grid":
+            self.facts.relocalize_service_ready = (
+                self.relocalize_client.service_is_ready()
+            )
         self.facts.reset_event_publisher_ready = (
             by_topic["/simulation/reset_event"].get_publisher_count() > 0
         )
@@ -1317,15 +1486,23 @@ class V6FormalNode:
         self.facts.route_goal_subscriber_ready = (
             self.route_goal_publisher.get_subscription_count() > 0
         )
-        self.facts.flatscan_publisher_ready = (
-            by_topic["/flatscan"].get_publisher_count() > 0
-        )
-        self.facts.localization_result_publisher_ready = (
-            by_topic["/localization_result"].get_publisher_count() > 0
-        )
-        self.facts.localization_status_publisher_ready = (
-            by_topic["/bio_nav/localization/status"].get_publisher_count() > 0
-        )
+        if self.localization_backend == "grid":
+            self.facts.flatscan_publisher_ready = (
+                by_topic["/flatscan"].get_publisher_count() > 0
+            )
+            self.facts.localization_result_publisher_ready = (
+                by_topic["/localization_result"].get_publisher_count() > 0
+            )
+            self.facts.localization_status_publisher_ready = (
+                by_topic["/bio_nav/localization/status"].get_publisher_count() > 0
+            )
+        else:
+            self.facts.initialpose_publisher_ready = (
+                by_topic["/initialpose"].get_publisher_count() > 0
+            )
+            self.facts.amcl_pose_publisher_ready = (
+                by_topic["/amcl_pose"].get_publisher_count() > 0
+            )
 
     def _publisher_ownership_violations(self) -> tuple[str, ...]:
         return tuple(
@@ -1353,8 +1530,9 @@ class V6FormalNode:
 
     def _readiness_blockers(self) -> str:
         blockers: list[str] = []
-        if self.facts.missing():
-            blockers.append("facts:" + ",".join(self.facts.missing()))
+        missing_facts = self.facts.missing(self.localization_backend)
+        if missing_facts:
+            blockers.append("facts:" + ",".join(missing_facts))
         if self.pre_reset_route_messages:
             blockers.append("pre_reset_route_traffic")
         ownership = tuple(
@@ -1508,6 +1686,7 @@ class V6FormalNode:
         self.odom_base_tf_seen = False
         self._write(
             "reset_epoch_started",
+            localization_backend=self.localization_backend,
             accepted_generation_floor=(
                 self.guard.localization_accepted_floor
             ),
@@ -1548,7 +1727,9 @@ class V6FormalNode:
             or self.guard.state == "STOP",
             reset_timeout_sec,
         ):
-            self.guard.stop("grid_localization_acceptance_timeout")
+            self.guard.stop(
+                f"{self.localization_backend}_localization_readiness_timeout"
+            )
             return self.result()
         if self.guard.state == "STOP":
             return self.result()
@@ -1622,8 +1803,11 @@ class V6FormalNode:
             "reset_calls": self.guard.reset_calls,
             "reset_events": self.guard.reset_events,
             "reset_receipt": dict(self.reset_receipt or {}),
+            "localization_backend": self.guard.localization_backend,
             "localization_generation": self.guard.localization_generation,
             "localization_accepted": self.guard.localization_accepted,
+            "initialpose_stamp_ns": self.guard.initialpose_stamp_ns,
+            "amcl_pose_stamp_ns": self.guard.amcl_pose_stamp_ns,
             "goal_publications": self.guard.goal_publications,
             "route_progress_messages": self.guard.route_progress_messages,
             "route_completion_messages": self.guard.route_completion_messages,

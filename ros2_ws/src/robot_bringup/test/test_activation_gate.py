@@ -7,6 +7,7 @@ import pytest
 
 from robot_bringup.activation_gate import Nav2ActivationGate
 from robot_bringup.lifecycle_policy import RetryPolicy
+from robot_bringup.readiness import ReadinessConfig, ReadinessTracker
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +36,58 @@ class _Future:
         if self._exception is not None:
             raise self._exception
         return self._response
+
+
+def _pose_message(stamp_s, *, frame_id='map'):
+    sec = int(stamp_s)
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(
+                sec=sec,
+                nanosec=int(round((stamp_s - sec) * 1.0e9)),
+            ),
+            frame_id=frame_id,
+        ),
+        pose=SimpleNamespace(
+            pose=SimpleNamespace(
+                position=SimpleNamespace(x=0.0, y=0.0, z=0.0),
+                orientation=SimpleNamespace(
+                    x=0.0, y=0.0, z=0.0, w=1.0),
+            ),
+            covariance=[0.0] * 36,
+        ),
+    )
+
+
+def _amcl_gate(*, clock_stamp_s=10.0, clock_floor_s=9.5):
+    gate = SimpleNamespace(
+        _localization_backend='amcl',
+        _clock_stamp_s=clock_stamp_s,
+        _freshness_timeout=0.5,
+        _amcl_epoch_clock_floor_s=clock_floor_s,
+        _amcl_initialpose_stamp_s=None,
+        _amcl_initialpose_received_at=None,
+        _amcl_pose_stamp_s=None,
+        _amcl_pose_received_at=None,
+        _amcl_tf_stamp_s=None,
+        _amcl_tf_received_at=None,
+        _amcl_tf_anchor=None,
+        _amcl_tf_stable_since=None,
+        _amcl_tf_stable_duration=0.2,
+        _amcl_tf_translation_tolerance=0.05,
+        _amcl_tf_yaw_tolerance=0.05,
+        _state_query_lock=threading.RLock(),
+    )
+    gate._pose_message_is_finite = Nav2ActivationGate._pose_message_is_finite
+    gate._sample_is_current_epoch = lambda stamp_s: \
+        Nav2ActivationGate._sample_is_current_epoch(gate, stamp_s)
+    gate._amcl_pose_is_fresh = lambda now: \
+        Nav2ActivationGate._amcl_pose_is_fresh(gate, now)
+    gate._amcl_transform_is_stable = lambda now: \
+        Nav2ActivationGate._amcl_transform_is_stable(gate, now)
+    gate._clear_amcl_transform = lambda: \
+        Nav2ActivationGate._clear_amcl_transform(gate)
+    return gate
 
 
 def _gate_harness():
@@ -557,6 +610,90 @@ def test_rejected_active_generation_cannot_accept_without_new_waiting():
     Nav2ActivationGate._localization_status_callback(
         gate, _localization_status(5, 'ACCEPTED', True))
     assert Nav2ActivationGate._missing_readiness_requirements(gate, 0.0)
+
+
+def test_amcl_rejects_stale_and_out_of_order_pose_samples():
+    gate = _amcl_gate()
+
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(9.0))
+    assert gate._amcl_initialpose_stamp_s is None
+
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.0))
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(9.9))
+    assert gate._amcl_initialpose_stamp_s == 10.0
+    assert gate._amcl_pose_stamp_s is None
+
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.0))
+    assert gate._amcl_pose_stamp_s == 10.0
+
+
+def test_amcl_reset_clears_old_pose_and_tf_readiness():
+    gate = _amcl_gate()
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.0))
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.0))
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 10.0, 1.0)
+
+    Nav2ActivationGate._reset_amcl_readiness(gate, 10.0)
+
+    assert gate._amcl_initialpose_stamp_s is None
+    assert gate._amcl_pose_stamp_s is None
+    assert gate._amcl_tf_stamp_s is None
+
+
+def test_amcl_requires_ordered_pose_and_post_pose_stable_tf(monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(
+        'robot_bringup.activation_gate.time.monotonic', lambda: now)
+    tracker = ReadinessTracker(ReadinessConfig(
+        freshness_timeout=0.5,
+        tf_stable_duration=0.2,
+        tf_translation_tolerance=0.05,
+        tf_yaw_tolerance=0.05,
+        clock_jump_tolerance=5.0,
+    ))
+    tracker.mark_clock(10.0, now)
+    tracker.mark_scan(10.0, now)
+    tracker.mark_odom(10.0, now)
+    tracker.mark_map()
+    gate = _amcl_gate()
+    gate._tracker = tracker
+
+    Nav2ActivationGate._initialpose_callback(gate, _pose_message(10.0))
+    Nav2ActivationGate._amcl_pose_callback(gate, _pose_message(10.0))
+    assert 'stable map->odom after current-epoch /amcl_pose' in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, now)
+
+    tracker.observe_transform(0.0, 0.0, 0.0, 10.0, now)
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 10.0, now)
+    assert 'stable map->odom transform' in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, now)
+
+    now += 0.21
+    tracker.mark_clock(10.21, now)
+    tracker.mark_scan(10.21, now)
+    tracker.mark_odom(10.21, now)
+    tracker.observe_transform(0.0, 0.0, 0.0, 10.21, now)
+    gate._clock_stamp_s = 10.21
+    gate._amcl_pose_stamp_s = 10.21
+    gate._amcl_pose_received_at = now
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 0.0, 0.0, 0.0, 10.21, now)
+    assert Nav2ActivationGate._missing_readiness_requirements(gate, now) == []
+
+    now += 0.01
+    tracker.mark_clock(10.22, now)
+    tracker.mark_scan(10.22, now)
+    tracker.mark_odom(10.22, now)
+    tracker.observe_transform(1.0, 0.0, 0.0, 10.22, now)
+    gate._clock_stamp_s = 10.22
+    gate._amcl_pose_stamp_s = 10.22
+    gate._amcl_pose_received_at = now
+    Nav2ActivationGate._observe_amcl_transform(
+        gate, 1.0, 0.0, 0.0, 10.22, now)
+    assert 'stable map->odom transform' in \
+        Nav2ActivationGate._missing_readiness_requirements(gate, now)
 
 
 def test_reset_stop_gate_status_tracks_current_release_generation():

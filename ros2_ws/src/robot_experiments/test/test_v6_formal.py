@@ -23,6 +23,7 @@ from robot_experiments.v6_formal import (
     append_evidence_jsonl,
     authorize_manifest,
     cli,
+    dispatch_subscription_topics,
     load_manifest,
 )
 
@@ -149,7 +150,7 @@ def _terminal_adapter(
     return adapter, clock, published_at, recorded_events
 
 
-def test_dispatcher_topic_firewall_and_grid_capture_contract():
+def test_dispatcher_topic_firewall_and_backend_capture_contract():
     assert not [
         topic
         for topic in DISPATCH_SUBSCRIPTION_TOPICS
@@ -161,9 +162,15 @@ def test_dispatcher_topic_firewall_and_grid_capture_contract():
         "/bio_nav/localization/status",
         "/odom",
     } <= set(CAPTURE_SCHEMA)
-    source = (PACKAGE / "robot_experiments" / "v6_formal.py").read_text()
-    for retired in ("/amcl_pose", "/initialpose", "odom_static"):
-        assert retired not in source
+    grid_topics = set(dispatch_subscription_topics("grid"))
+    amcl_topics = set(dispatch_subscription_topics("amcl"))
+    assert {"/flatscan", "/localization_result", "/bio_nav/localization/status"} \
+        <= grid_topics
+    assert {"/initialpose", "/amcl_pose"} <= amcl_topics
+    assert not {
+        "/flatscan", "/localization_result", "/bio_nav/localization/status"
+    } & amcl_topics
+    assert not any(topic.startswith("/ground_truth/") for topic in amcl_topics)
 
 
 def test_phase1_goal_waits_for_new_grid_generation_and_gate_release():
@@ -227,6 +234,49 @@ def test_grid_rejection_stops_before_goal():
     assert guard.stop_reason == "grid_localization_rejected:1"
 
 
+def test_amcl_guard_requires_current_ordered_initialpose_then_pose():
+    guard = EpisodeGuard(localization_backend="amcl")
+    guard.arm_reset(
+        ready_facts(),
+        pre_reset_route_messages=0,
+        localization_accepted_floor=0,
+    )
+    guard.record_reset_call()
+    guard.record_reset_event()
+    guard.record_reset_response(True)
+    guard.record_reset_receipt_generation(3)
+    guard.record_reset_gate_status(3, False)
+    guard.record_navigation_ready(
+        nav2_active=True,
+        tf_active=True,
+        route_ready=True,
+        publisher_ownership_ready=True,
+    )
+
+    assert not guard.record_initialpose(99, clock_floor_ns=100)
+    assert not guard.record_amcl_pose(101)
+    assert guard.record_initialpose(100, clock_floor_ns=100)
+    assert not guard.record_amcl_pose(99)
+    assert guard.record_amcl_pose(101)
+    assert guard.goal_ready
+
+
+def test_amcl_readiness_does_not_require_grid_endpoints_or_relocalize():
+    facts = ReadinessFacts(
+        reset_service_ready=True,
+        reset_event_publisher_ready=True,
+        reset_subscriber_roster_ready=True,
+        clock_seen=True,
+        scan_seen=True,
+        map_seen=True,
+        estimated_odom_seen=True,
+        initialpose_publisher_ready=True,
+        amcl_pose_publisher_ready=True,
+    )
+    assert facts.missing("amcl") == ()
+    assert "relocalize_service_ready" in facts.missing("grid")
+
+
 def test_reset_is_exactly_once_and_unknown_response_stops():
     guard = EpisodeGuard()
     guard.arm_reset(
@@ -247,6 +297,7 @@ def _visual_barrier_adapter():
             pass
 
     adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.localization_backend = "grid"
     adapter.guard = EpisodeGuard()
     adapter.visual_odom_stamp_ns = 100
     adapter.visual_odom_finite = True
@@ -386,6 +437,7 @@ def test_pre_reset_readiness_uses_endpoints_without_status_or_route_sample():
             return 1
 
     adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.localization_backend = "grid"
     adapter.facts = ReadinessFacts(
         clock_seen=True,
         scan_seen=True,
@@ -755,6 +807,23 @@ def test_kujiale_manifests_share_phase1_runtime_and_xy_loop(name):
     assert "yaw_deg" in manifest.reset_pose
     assert len(manifest.episodes) == 20
     assert manifest.missing_required_values == ()
+    assert authorize_manifest(manifest, mode="pilot") == NOT_QUALIFIED
+    assert manifest.localization_backend == "grid"
+
+
+def test_manifest_defaults_grid_and_accepts_amcl_pilot_fixture(tmp_path):
+    raw = yaml.safe_load(MANIFESTS["static"].read_text())
+    raw["runtime"].pop("localization_backend")
+    default_path = tmp_path / "default_grid.yaml"
+    default_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert load_manifest(default_path).localization_backend == "grid"
+
+    raw["runtime"]["localization_backend"] = "amcl"
+    raw["runtime"]["amcl_params_file"] = "robot_mapping/config/amcl_kujiale.yaml"
+    amcl_path = tmp_path / "amcl_pilot.yaml"
+    amcl_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    manifest = load_manifest(amcl_path)
+    assert manifest.localization_backend == "amcl"
     assert authorize_manifest(manifest, mode="pilot") == NOT_QUALIFIED
 
 

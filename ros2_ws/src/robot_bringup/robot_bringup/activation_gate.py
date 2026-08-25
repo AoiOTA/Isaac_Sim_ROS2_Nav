@@ -8,6 +8,7 @@ import time
 
 from action_msgs.srv import CancelGoal
 from diagnostic_msgs.msg import DiagnosticArray
+from geometry_msgs.msg import PoseWithCovarianceStamped
 from lifecycle_msgs.msg import Transition
 from lifecycle_msgs.srv import ChangeState, GetState
 from nav2_msgs.srv import ClearEntireCostmap, ManageLifecycleNodes
@@ -59,6 +60,7 @@ class Nav2ActivationGate(Node):
         super().__init__('nav2_activation_gate')
         self.declare_parameter('startup_timeout', 30.0)
         self.declare_parameter('startup_timeout_policy', 'fail_closed')
+        self.declare_parameter('localization_backend', 'grid')
         self.declare_parameter('recovery_timeout', 30.0)
         self.declare_parameter('recovery_service_timeout', 3.0)
         self.declare_parameter('check_period', 0.10)
@@ -85,6 +87,11 @@ class Nav2ActivationGate(Node):
         )
 
         self._startup_timeout = self._positive_parameter('startup_timeout')
+        self._localization_backend = str(
+            self.get_parameter('localization_backend').value
+        ).strip().lower()
+        if self._localization_backend not in {'grid', 'amcl'}:
+            raise ValueError('localization_backend must be grid or amcl')
         self._startup_timeout_policy = str(
             self.get_parameter('startup_timeout_policy').value
         ).strip().lower()
@@ -110,6 +117,11 @@ class Nav2ActivationGate(Node):
             clock_jump_tolerance=self._positive_parameter(
                 'clock_jump_tolerance'),
         )
+        self._freshness_timeout = readiness_config.freshness_timeout
+        self._amcl_tf_stable_duration = readiness_config.tf_stable_duration
+        self._amcl_tf_translation_tolerance = \
+            readiness_config.tf_translation_tolerance
+        self._amcl_tf_yaw_tolerance = readiness_config.tf_yaw_tolerance
         self._localization_tf_translation_tolerance = \
             self._positive_parameter(
                 'localization_tf_translation_tolerance')
@@ -191,6 +203,16 @@ class Nav2ActivationGate(Node):
         self._localization_active_generation = None
         self._localization_accepted_correction = None
         self._map_to_odom_correction = None
+        self._clock_stamp_s = None
+        self._amcl_epoch_clock_floor_s = 0.0
+        self._amcl_initialpose_stamp_s = None
+        self._amcl_initialpose_received_at = None
+        self._amcl_pose_stamp_s = None
+        self._amcl_pose_received_at = None
+        self._amcl_tf_stamp_s = None
+        self._amcl_tf_received_at = None
+        self._amcl_tf_anchor = None
+        self._amcl_tf_stable_since = None
 
         best_effort = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -230,12 +252,29 @@ class Nav2ActivationGate(Node):
             self._stop_gate_status_callback,
             transient_local,
         )
-        self._localization_status_subscription = self.create_subscription(
-            DiagnosticArray,
-            '/bio_nav/localization/status',
-            self._localization_status_callback,
-            transient_local,
-        )
+        self._localization_status_subscription = None
+        self._initialpose_subscription = None
+        self._amcl_pose_subscription = None
+        if self._localization_backend == 'grid':
+            self._localization_status_subscription = self.create_subscription(
+                DiagnosticArray,
+                '/bio_nav/localization/status',
+                self._localization_status_callback,
+                transient_local,
+            )
+        else:
+            self._initialpose_subscription = self.create_subscription(
+                PoseWithCovarianceStamped,
+                '/initialpose',
+                self._initialpose_callback,
+                reliable,
+            )
+            self._amcl_pose_subscription = self.create_subscription(
+                PoseWithCovarianceStamped,
+                '/amcl_pose',
+                self._amcl_pose_callback,
+                reliable,
+            )
 
         self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(self._tf_buffer, self)
@@ -292,6 +331,7 @@ class Nav2ActivationGate(Node):
 
     def _clock_callback(self, message):
         stamp_s = message.clock.sec + message.clock.nanosec * 1.0e-9
+        self._clock_stamp_s = stamp_s
         event = self._tracker.mark_clock(stamp_s, time.monotonic())
         if event is None:
             return
@@ -409,6 +449,95 @@ class Nav2ActivationGate(Node):
                 self._localization_accepted_correction = correction
                 self._localization_requires_active_generation = False
 
+    @staticmethod
+    def _pose_message_is_finite(message):
+        pose = message.pose.pose
+        values = (
+            pose.position.x,
+            pose.position.y,
+            pose.position.z,
+            pose.orientation.x,
+            pose.orientation.y,
+            pose.orientation.z,
+            pose.orientation.w,
+            *message.pose.covariance,
+        )
+        return all(math.isfinite(float(value)) for value in values)
+
+    def _sample_is_current_epoch(self, stamp_s):
+        return (
+            math.isfinite(stamp_s)
+            and stamp_s > 0.0
+            and self._clock_stamp_s is not None
+            and stamp_s >= self._amcl_epoch_clock_floor_s
+            and abs(self._clock_stamp_s - stamp_s)
+            <= self._freshness_timeout
+        )
+
+    def _initialpose_callback(self, message):
+        if self._localization_backend != 'amcl':
+            return
+        stamp = message.header.stamp
+        stamp_s = stamp.sec + stamp.nanosec * 1.0e-9
+        if (
+            str(message.header.frame_id).lstrip('/') != 'map'
+            or not self._sample_is_current_epoch(stamp_s)
+            or not self._pose_message_is_finite(message)
+        ):
+            return
+        with self._state_query_lock:
+            if (
+                self._amcl_initialpose_stamp_s is not None
+                and stamp_s < self._amcl_initialpose_stamp_s
+            ):
+                return
+            self._amcl_initialpose_stamp_s = stamp_s
+            self._amcl_initialpose_received_at = time.monotonic()
+            self._amcl_pose_stamp_s = None
+            self._amcl_pose_received_at = None
+            self._clear_amcl_transform()
+
+    def _amcl_pose_callback(self, message):
+        if self._localization_backend != 'amcl':
+            return
+        stamp = message.header.stamp
+        stamp_s = stamp.sec + stamp.nanosec * 1.0e-9
+        if (
+            str(message.header.frame_id).lstrip('/') != 'map'
+            or not self._sample_is_current_epoch(stamp_s)
+            or not self._pose_message_is_finite(message)
+        ):
+            return
+        with self._state_query_lock:
+            if (
+                self._amcl_initialpose_stamp_s is None
+                or stamp_s < self._amcl_initialpose_stamp_s
+                or (
+                    self._amcl_pose_stamp_s is not None
+                    and stamp_s < self._amcl_pose_stamp_s
+                )
+            ):
+                return
+            first_pose_after_initialization = self._amcl_pose_stamp_s is None
+            self._amcl_pose_stamp_s = stamp_s
+            self._amcl_pose_received_at = time.monotonic()
+            if first_pose_after_initialization:
+                self._clear_amcl_transform()
+
+    def _reset_amcl_readiness(self, clock_floor_s):
+        self._amcl_epoch_clock_floor_s = float(clock_floor_s)
+        self._amcl_initialpose_stamp_s = None
+        self._amcl_initialpose_received_at = None
+        self._amcl_pose_stamp_s = None
+        self._amcl_pose_received_at = None
+        self._clear_amcl_transform()
+
+    def _clear_amcl_transform(self):
+        self._amcl_tf_stamp_s = None
+        self._amcl_tf_received_at = None
+        self._amcl_tf_anchor = None
+        self._amcl_tf_stable_since = None
+
     def _handle_epoch_event(self, event):
         with self._state_query_lock:
             self._localization_generation_floor = max(
@@ -419,6 +548,7 @@ class Nav2ActivationGate(Node):
             self._localization_active_generation = None
             self._localization_accepted_correction = None
             self._map_to_odom_correction = None
+            self._reset_amcl_readiness(event.stamp_s)
             self.get_logger().warning(
                 f'Simulation time {event.kind} detected: '
                 f'{event.previous_stamp_s:.9f} -> {event.stamp_s:.9f}; '
@@ -519,6 +649,15 @@ class Nav2ActivationGate(Node):
 
     def _missing_readiness_requirements(self, now):
         missing = self._tracker.missing_requirements(now)
+        if getattr(self, '_localization_backend', 'grid') == 'amcl':
+            if self._amcl_initialpose_stamp_s is None:
+                missing.append('current-epoch /initialpose')
+            if not self._amcl_pose_is_fresh(now):
+                missing.append('fresh current-epoch /amcl_pose after /initialpose')
+            elif not self._amcl_transform_is_stable(now):
+                missing.append(
+                    'stable map->odom after current-epoch /amcl_pose')
+            return missing
         if (self._localization_accepted_generation
                 <= self._localization_generation_floor):
             detail = (
@@ -532,6 +671,60 @@ class Nav2ActivationGate(Node):
             missing.append(
                 'map->odom matching accepted localization correction')
         return missing
+
+    def _amcl_pose_is_fresh(self, now):
+        return (
+            self._amcl_pose_stamp_s is not None
+            and self._amcl_pose_received_at is not None
+            and 0.0 <= now - self._amcl_pose_received_at
+            <= self._freshness_timeout
+            and self._sample_is_current_epoch(self._amcl_pose_stamp_s)
+        )
+
+    def _amcl_transform_is_stable(self, now):
+        fresh = (
+            self._amcl_tf_stamp_s is not None
+            and self._amcl_tf_received_at is not None
+            and 0.0 <= now - self._amcl_tf_received_at
+            <= self._freshness_timeout
+            and self._sample_is_current_epoch(self._amcl_tf_stamp_s)
+        )
+        if not fresh:
+            self._amcl_tf_stable_since = None
+            return False
+        return (
+            self._amcl_tf_stable_since is not None
+            and now - self._amcl_tf_stable_since
+            >= self._amcl_tf_stable_duration
+        )
+
+    def _observe_amcl_transform(self, x, y, yaw, stamp_s, now):
+        if (
+            self._amcl_pose_stamp_s is None
+            or stamp_s < self._amcl_pose_stamp_s
+            or not self._sample_is_current_epoch(stamp_s)
+            or not all(math.isfinite(value) for value in (x, y, yaw))
+        ):
+            return
+        transform = (float(x), float(y), float(yaw))
+        if self._amcl_tf_anchor is not None:
+            anchor_x, anchor_y, anchor_yaw = self._amcl_tf_anchor
+            translation_error = math.hypot(x - anchor_x, y - anchor_y)
+            yaw_error = abs(math.atan2(
+                math.sin(yaw - anchor_yaw),
+                math.cos(yaw - anchor_yaw),
+            ))
+            stable = (
+                translation_error <= self._amcl_tf_translation_tolerance
+                and yaw_error <= self._amcl_tf_yaw_tolerance
+            )
+        else:
+            stable = False
+        self._amcl_tf_stamp_s = stamp_s
+        self._amcl_tf_received_at = now
+        if not stable:
+            self._amcl_tf_anchor = transform
+            self._amcl_tf_stable_since = now
 
     def _localization_correction_matches_transform(self):
         accepted = self._localization_accepted_correction
@@ -749,6 +942,14 @@ class Nav2ActivationGate(Node):
                 translation.y,
                 yaw,
             )
+            if self._localization_backend == 'amcl':
+                self._observe_amcl_transform(
+                    translation.x,
+                    translation.y,
+                    yaw,
+                    stamp_s,
+                    now,
+                )
 
     def _missing_lifecycle_services(self):
         missing = []
@@ -1270,8 +1471,9 @@ class Nav2ActivationGate(Node):
             self._set_recovery_stage('cancel_goal')
             self.get_logger().warning(
                 'Starting Nav2 time-jump recovery: cancel goal, pause '
-                'lifecycle, clear costmaps, wait for Integration-owned grid '
-                'relocalization and fresh epoch data, then resume; '
+                'lifecycle, clear costmaps, wait for current-epoch '
+                f'{self._localization_backend} localization and fresh data, '
+                'then resume; '
                 f'event={event.kind}, epoch={event.epoch}')
 
     def _invalidate_async_work(self):

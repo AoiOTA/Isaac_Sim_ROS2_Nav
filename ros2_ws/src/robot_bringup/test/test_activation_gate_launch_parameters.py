@@ -24,22 +24,26 @@ class _ActivationGateParameterProbe(Node):
         super().__init__('nav2_activation_gate')
         self.declare_parameter('startup_timeout', 30.0)
         self.declare_parameter('startup_timeout_policy', 'fail_closed')
+        self.declare_parameter('localization_backend', 'grid')
 
 
 @pytest.mark.parametrize(
-    ('use_sim_time', 'startup_timeout', 'startup_timeout_policy'),
+    ('use_sim_time', 'startup_timeout', 'startup_timeout_policy',
+     'localization_backend'),
     [
-        ('false', '41.0', 'fail_closed'),
-        ('false', '7.5', 'wait_for_localization'),
+        ('false', '41.0', 'fail_closed', 'grid'),
+        ('false', '7.5', 'wait_for_localization', 'amcl'),
     ],
 )
 def test_exact_node_runtime_overlay_wins_during_rclpy_parameter_parsing(
-        use_sim_time, startup_timeout, startup_timeout_policy):
+        use_sim_time, startup_timeout, startup_timeout_policy,
+        localization_backend):
     launch_module = _load_launch_module()
     overlay = launch_module._write_activation_gate_runtime_overlay(
         use_sim_time=use_sim_time,
         startup_timeout=startup_timeout,
         startup_timeout_policy=startup_timeout_policy,
+        localization_backend=localization_backend,
     )
     node = None
     try:
@@ -55,6 +59,8 @@ def test_exact_node_runtime_overlay_wins_during_rclpy_parameter_parsing(
             float(startup_timeout)
         assert node.get_parameter('startup_timeout_policy').value == \
             startup_timeout_policy
+        assert node.get_parameter('localization_backend').value == \
+            localization_backend
     finally:
         if node is not None:
             node.destroy_node()

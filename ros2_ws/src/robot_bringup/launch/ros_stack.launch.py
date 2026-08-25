@@ -50,7 +50,8 @@ def _write_cognitive_nav2_overlay(profile):
 
 
 def _write_activation_gate_runtime_overlay(
-        *, use_sim_time, startup_timeout, startup_timeout_policy):
+        *, use_sim_time, startup_timeout, startup_timeout_policy,
+        localization_backend):
     """Write runtime overrides under the gate's exact ROS node key."""
     normalized_use_sim_time = str(use_sim_time).strip().lower()
     if normalized_use_sim_time not in {'true', 'false'}:
@@ -66,6 +67,7 @@ def _write_activation_gate_runtime_overlay(
                 'use_sim_time': normalized_use_sim_time == 'true',
                 'startup_timeout': normalized_startup_timeout,
                 'startup_timeout_policy': startup_timeout_policy,
+                'localization_backend': localization_backend,
             },
         },
     }
@@ -552,6 +554,7 @@ def _launch_setup(context):
                 'activation_startup_timeout').perform(context),
             startup_timeout_policy=LaunchConfiguration(
                 'activation_startup_policy').perform(context),
+            localization_backend=selection.localization_owner,
         )
         activation_gate = Node(
             package='robot_bringup',
