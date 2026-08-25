@@ -44,6 +44,8 @@ def test_existing_2d_rplidar_contract_is_unchanged_and_lio_defaults_off():
     lidar = _load_lidar(ROOT / "isaac_sim/configs/sensors/lidar_3d.yaml")
 
     assert lidar["config"] == "RPLIDAR_S2E"
+    assert lidar["tick_rate"] == 10.0
+    assert lidar["accumulate_outputs"] is True
     assert lidar["topic_name"] == "/lidar/points_raw"
     assert lidar["frame_id"] == "rtx_world"
     assert lidar["output_frame"] == "WORLD"
