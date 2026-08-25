@@ -48,9 +48,16 @@ class _ResetTransaction:
             if self.finished:
                 return
             try:
-                done.result()
+                response = done.result()
             except Exception as exc:
                 self.errors.append(f"{label}: {type(exc).__name__}: {exc}")
+            else:
+                if getattr(response, "success", True) is False:
+                    message = str(getattr(response, "message", "")).strip()
+                    detail = "negative service response"
+                    if message:
+                        detail += f": {message}"
+                    self.errors.append(f"{label}: {detail}")
             self._pending -= 1
             self._finish_if_ready()
 
@@ -634,13 +641,25 @@ class ResetServiceBridge:
             raise ResetServiceError("reset stop gate is unavailable")
         self._reset_stop_gate.publish_zero()
 
-    def _queue_service_call(self, client: Any, request: Any, label: str) -> bool:
+    def _queue_service_call(
+        self,
+        client: Any,
+        request: Any,
+        label: str,
+        *,
+        required: bool = False,
+    ) -> bool:
         transaction = self._active_transaction
         if transaction is None:
             raise ResetServiceError(
                 f"{label} reset requested outside ResetServiceBridge.start_reset()"
             )
         if not client.service_is_ready():
+            if required:
+                message = "required reset service is unavailable"
+                self.node.get_logger().error(f"{label}: {message}")
+                transaction.record_error(label, message)
+                return False
             if label not in self._unavailable_warnings:
                 self.node.get_logger().warning(
                     f"{label} reset service is unavailable; continuing with reset event/recovery gate"
@@ -674,6 +693,7 @@ class ResetServiceBridge:
             self._wheel_reset_client,
             self._EmptyService.Request(),
             "wheel odometry",
+            required=odometry_mode == "mixed",
         )
         request = self._SetPose.Request()
         request.pose.header.stamp = self.node.get_clock().now().to_msg()
@@ -682,7 +702,12 @@ class ResetServiceBridge:
         request.pose.pose.covariance[0] = 0.05**2
         request.pose.pose.covariance[7] = 0.05**2
         request.pose.pose.covariance[35] = math.radians(5.0) ** 2
-        self._queue_service_call(self._ekf_set_pose_client, request, "EKF")
+        self._queue_service_call(
+            self._ekf_set_pose_client,
+            request,
+            "EKF",
+            required=odometry_mode == "mixed",
+        )
 
     def clear_costmaps(self) -> None:
         for label, client in self._costmap_clients:

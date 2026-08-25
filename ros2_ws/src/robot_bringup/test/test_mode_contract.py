@@ -118,7 +118,18 @@ def test_estimated_and_legacy_realistic_tf_ownership_modes_are_accepted():
     assert mixed.odometry_mode == 'mixed'
 
 
-def test_mixed_rejects_rsp_and_lidar_odometry_or_fusion():
+def test_ekf_profile_selection_is_bounded_by_all_odometry_modes():
+    for mode in ('ideal', 'realistic', 'estimated'):
+        assert resolve_ekf_profile(
+            mode, 'wheel_imu', 'off', False
+        ) == 'wheel_imu'
+        assert resolve_ekf_profile(
+            mode, 'wheel_imu_lidar', 'rf2o', True
+        ) == 'wheel_imu_lidar'
+        with pytest.raises(ValueError, match='requires mixed odometry mode'):
+            resolve_ekf_profile(
+                mode, 'module1_wheel_imu', 'off', False)
+
     with pytest.raises(ValueError, match='mixed odometry is an Isaac-owned'):
         validate_mode(
             'mapping', 'mixed', 'rsp', check_posegraph_files=False)

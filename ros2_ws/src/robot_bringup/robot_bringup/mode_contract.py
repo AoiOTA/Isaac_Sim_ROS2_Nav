@@ -149,6 +149,9 @@ def resolve_ekf_profile(
     if not isinstance(lidar_odometry_validated, bool):
         raise ValueError('lidar_odometry_validated must be boolean')
     if mode != 'mixed':
+        if profile == 'module1_wheel_imu':
+            raise ValueError(
+                'module1_wheel_imu EKF profile requires mixed odometry mode')
         return profile
     if profile == 'wheel_imu_lidar' or backend != 'off' \
             or lidar_odometry_validated:

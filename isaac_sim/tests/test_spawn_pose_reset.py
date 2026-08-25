@@ -179,14 +179,17 @@ def test_mixed_reset_queues_wheel_and_module1_ekf_before_epoch_completion():
                 now=lambda: SimpleNamespace(to_msg=lambda: "stamp")
             )
         ),
-        _queue_service_call=lambda client, request, label: queued.append(
-            (client, request, label)
+        _queue_service_call=lambda client, request, label, **kwargs: queued.append(
+            (client, request, label, kwargs)
         ),
     )
 
     ResetServiceBridge.reset_ros_odometry(bridge, "mixed")
 
-    assert [label for _, _, label in queued] == ["wheel odometry", "EKF"]
+    assert [label for _, _, label, _ in queued] == ["wheel odometry", "EKF"]
+    assert [kwargs for _, _, _, kwargs in queued] == [
+        {"required": True}, {"required": True}
+    ]
     set_pose = queued[1][1]
     assert set_pose.pose.header.frame_id == "odom"
     assert set_pose.pose.pose.pose.orientation.w == 1.0
@@ -360,9 +363,10 @@ def test_initial_pose_republisher_uses_clock_evidence_across_epoch_rollback():
 
 
 class FakeFuture:
-    def __init__(self):
+    def __init__(self, result=None):
         self._done = False
         self._error = None
+        self._result = object() if result is None else result
         self._callbacks = []
 
     def add_done_callback(self, callback):
@@ -374,7 +378,7 @@ class FakeFuture:
     def result(self):
         if self._error is not None:
             raise self._error
-        return object()
+        return self._result
 
     def complete(self, error=None):
         self._done = True
@@ -573,6 +577,193 @@ def _finalization_bridge(events, gate, *, external_release):
         _deferred_initial_pose_name=None,
         _apply_initial_pose_policy=lambda: None,
     )
+
+
+class FakeResetClient:
+    def __init__(self, *, ready=True, future=None, queue_error=None):
+        self.ready = ready
+        self.future = future or FakeFuture()
+        self.queue_error = queue_error
+
+    def service_is_ready(self):
+        return self.ready
+
+    def call_async(self, request):
+        del request
+        if self.queue_error is not None:
+            raise self.queue_error
+        return self.future
+
+
+class ResetTestLogger:
+    def __init__(self):
+        self.messages = []
+
+    def warning(self, message):
+        self.messages.append(("warning", message))
+
+    def error(self, message):
+        self.messages.append(("error", message))
+
+
+class ResetTestEmptyService:
+    class Request:
+        pass
+
+
+class ResetTestSetPose:
+    class Request:
+        def __init__(self):
+            self.pose = SimpleNamespace(
+                header=SimpleNamespace(stamp=None, frame_id=""),
+                pose=SimpleNamespace(
+                    pose=SimpleNamespace(
+                        orientation=SimpleNamespace(w=0.0)
+                    ),
+                    covariance=[0.0] * 36,
+                ),
+            )
+
+
+def _odometry_transaction_bridge(events, wheel_client, ekf_client):
+    gate = RecordingStopGate(events)
+    generation = gate.hold()
+    bridge = object.__new__(ResetServiceBridge)
+    bridge._wheel_reset_client = wheel_client
+    bridge._ekf_set_pose_client = ekf_client
+    bridge._EmptyService = ResetTestEmptyService
+    bridge._SetPose = ResetTestSetPose
+    bridge._pending_futures = set()
+    bridge._unavailable_warnings = set()
+    bridge._reset_stop_gate = gate
+    bridge._external_recovery_release_required = False
+    bridge._reset_event_publisher = FakePublisher(events)
+    bridge._EmptyMessage = lambda: object()
+    bridge._initial_pose_republisher = SimpleNamespace(cancel=lambda: None)
+    bridge._deferred_initial_pose_name = None
+    bridge._apply_initial_pose_policy = lambda: None
+    bridge.node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(to_msg=lambda: "stamp")
+        ),
+        get_logger=lambda: ResetTestLogger(),
+    )
+    transaction = _ResetTransaction(
+        generation=1,
+        completion=FakeCompletion(),
+        on_finished=lambda tx: ResetServiceBridge._finish_transaction(
+            bridge, tx
+        ),
+        stop_generation=generation,
+    )
+    transaction.timeout_timer = FakeTimer()
+    bridge._active_transaction = transaction
+    return bridge, transaction, gate
+
+
+@pytest.mark.parametrize("missing", ["wheel odometry", "EKF"])
+def test_mixed_reset_requires_both_odometry_services(missing):
+    events = []
+    wheel = FakeResetClient(ready=missing != "wheel odometry")
+    ekf = FakeResetClient(ready=missing != "EKF")
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    for client in (wheel, ekf):
+        if client.ready:
+            client.future.complete()
+
+    assert transaction.errors == [
+        f"{missing}: required reset service is unavailable"
+    ]
+    assert gate.held
+    assert gate.eligible is None
+    assert events == [("hold", 1)]
+
+
+@pytest.mark.parametrize("failure", ["queue", "future", "negative"])
+def test_mixed_reset_service_failure_keeps_generation_held(failure):
+    events = []
+    wheel = FakeResetClient()
+    if failure == "queue":
+        ekf = FakeResetClient(queue_error=RuntimeError("queue rejected"))
+    elif failure == "future":
+        ekf = FakeResetClient()
+    else:
+        ekf = FakeResetClient(
+            future=FakeFuture(
+                SimpleNamespace(success=False, message="set pose rejected")
+            )
+        )
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    wheel.future.complete()
+    if failure == "future":
+        ekf.future.complete(RuntimeError("set pose failed"))
+    elif failure == "negative":
+        ekf.future.complete()
+
+    assert transaction.errors
+    assert gate.held
+    assert gate.eligible is None
+    assert events == [("hold", 1)]
+
+
+def test_mixed_reset_completes_only_after_wheel_and_ekf_succeed():
+    events = []
+    wheel = FakeResetClient()
+    ekf = FakeResetClient()
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events, wheel, ekf
+    )
+
+    bridge.reset_ros_odometry("mixed")
+    transaction.seal()
+    wheel.future.complete()
+
+    assert not transaction.finished
+    assert events == [("hold", 1)]
+
+    ekf.future.complete()
+
+    assert transaction.finished
+    assert transaction.errors == []
+    assert not gate.held
+    assert events == [
+        ("hold", 1),
+        "reset_event",
+        ("complete", 1),
+        ("release", 1, "reset_transaction_complete"),
+    ]
+
+
+def test_realistic_reset_keeps_unavailable_odometry_services_optional():
+    events = []
+    bridge, transaction, gate = _odometry_transaction_bridge(
+        events,
+        FakeResetClient(ready=False),
+        FakeResetClient(ready=False),
+    )
+
+    bridge.reset_ros_odometry("realistic")
+    transaction.seal()
+
+    assert transaction.errors == []
+    assert transaction.skipped == ["wheel odometry", "EKF"]
+    assert not gate.held
+    assert events == [
+        ("hold", 1),
+        "reset_event",
+        ("complete", 1),
+        ("release", 1, "reset_transaction_complete"),
+    ]
 
 
 def test_non_navigation_success_auto_releases_same_generation():
