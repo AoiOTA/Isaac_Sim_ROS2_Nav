@@ -181,6 +181,22 @@ ros2 topic echo /scan_safety --once
 ./scripts/run_camera_view.sh
 ```
 
+### 5.1 固定 Kujiale 场景的 Module1 人工采集
+
+该入口只用于仿真场景 `kujiale_0026_A_to_B_door_open.usd` 的人工定位数据采集，不启动 Navigation 的 `controller_server` / `collision_monitor`，也不启动 Integration、Module2 或 CognitivePlaceGraph。先按第3.2节以 Localization 模式启动 Isaac，再启动估计定位与显式采集 Teleop：
+
+```bash
+# 终端 B：Localization + 受管人工采集 Teleop
+./scripts/run_ros.sh localization \
+  odometry_mode:=mixed \
+  use_teleop:=localization_collection
+
+# 终端 C：一个 bag 对应一个 episode；episode 可省略并自动生成唯一 ID
+./scripts/record_module1_kujiale_scene.sh --episode room1-pass1
+```
+
+在 Teleop 窗口使用 W/A/S/D（或方向键）控制，Space 立即停车，Q 退出；松键 `0.18 s` 后自动停车。每段尽量连续覆盖同一区域的位置与朝向；门口、转角、长走廊和相似走廊应分别多方向通过。结束一段时先在 Teleop 窗口按 Space，再在录包终端按 Ctrl+C。Reset 前必须结束当前 bag，Reset 后使用新的 episode，禁止覆盖已有目录。默认数据写入 `/mnt/nas_home/Bio_Nav_Data/experiments/pilots/module1_kujiale_scene_registration_20260825/raw_mcap`；该 bag 记录 GT 仅供离线标签/校准，不把 GT 接入在线 Module1。
+
 ## 6. 建图新版本
 
 建图不能与 Localization/Navigation 并行。只有修改场景、传感器、机器人或确实需要新地图时才执行：

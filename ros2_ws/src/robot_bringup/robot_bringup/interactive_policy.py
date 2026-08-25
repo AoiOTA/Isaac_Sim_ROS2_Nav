@@ -29,6 +29,7 @@ class InteractiveSelection:
     use_rviz: bool
     rviz_config: str
     use_teleop: bool
+    localization_collection: bool
 
 
 def parse_bool(value, name):
@@ -54,16 +55,25 @@ def resolve_interactive_selection(
             use_rviz=False,
             rviz_config='',
             use_teleop=False,
+            localization_collection=False,
         )
 
     rviz_enabled = parse_bool(use_rviz, 'use_rviz')
     teleop_value = str(use_teleop).strip().lower()
-    if teleop_value == 'auto':
+    localization_collection = teleop_value == 'localization_collection'
+    if localization_collection:
+        if operation != 'localization':
+            raise ValueError(
+                'use_teleop=localization_collection is simulation-only and '
+                'may only be used for manual localization data collection')
+        teleop_enabled = True
+    elif teleop_value == 'auto':
         teleop_enabled = operation in _MAPPING_OPERATIONS
     else:
         teleop_enabled = parse_bool(teleop_value, 'use_teleop')
 
-    if teleop_enabled and operation not in _MAPPING_OPERATIONS:
+    if (teleop_enabled and not localization_collection
+            and operation not in _MAPPING_OPERATIONS):
         raise ValueError(
             f'use_teleop=true is unsafe for {operation}; mapping teleop '
             'may only own /cmd_vel in mapping or incremental_mapping')
@@ -89,6 +99,7 @@ def resolve_interactive_selection(
         use_rviz=rviz_enabled,
         rviz_config=resolved_config,
         use_teleop=teleop_enabled,
+        localization_collection=localization_collection,
     )
 
 
@@ -100,13 +111,18 @@ def teleop_terminal_command(
     if any(not argument or '\x00' in argument for argument in arguments):
         raise ValueError('teleop terminal arguments must be non-empty strings')
     teleop_command = [run_teleop, *arguments]
+    title = (
+        'Isaac Nav Localization Collection Teleop'
+        if '--localization-collection' in arguments
+        else 'Isaac Nav Mapping Teleop'
+    )
     candidates = (
         (
             'gnome-terminal',
             lambda path: [
                 path,
                 '--wait',
-                '--title=Isaac Nav Mapping Teleop',
+                f'--title={title}',
                 '--',
                 *teleop_command,
             ],
@@ -116,7 +132,7 @@ def teleop_terminal_command(
             lambda path: [
                 path,
                 '-T',
-                'Isaac Nav Mapping Teleop',
+                title,
                 '-e',
                 *teleop_command,
             ],
@@ -127,7 +143,7 @@ def teleop_terminal_command(
                 path,
                 '--nofork',
                 '-p',
-                'tabtitle=Isaac Nav Mapping Teleop',
+                f'tabtitle={title}',
                 '-e',
                 *teleop_command,
             ],

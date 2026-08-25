@@ -53,7 +53,11 @@ def generate_launch_description():
         DeclareLaunchArgument('interactive', default_value='true'),
         DeclareLaunchArgument('use_rviz', default_value='true'),
         DeclareLaunchArgument('rviz_config', default_value='auto'),
-        DeclareLaunchArgument('use_teleop', default_value='auto'),
+        DeclareLaunchArgument(
+            'use_teleop', default_value='auto',
+            description=(
+                'use localization_collection only for simulation manual '
+                'localization data collection')),
         DeclareLaunchArgument(
             'project_root',
             default_value=EnvironmentVariable(

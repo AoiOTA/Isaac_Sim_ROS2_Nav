@@ -13,7 +13,6 @@ from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
-import yaml
 
 from robot_bringup.interactive_policy import resolve_interactive_selection
 from robot_bringup.interactive_policy import teleop_terminal_command
@@ -27,6 +26,7 @@ from robot_bringup.mode_contract import validate_nav2_profile_params_file
 from robot_bringup.mode_contract import validate_robot_runtime_files
 from robot_experiments.spawn_poses import load_spawn_pose
 from robot_localization_config.ekf_input_policy import validate_lidar_gate
+import yaml
 
 
 _TELEOP_SPEED_ARGUMENTS = (
@@ -275,6 +275,8 @@ def _launch_setup(context):
         f'localization_map_contract={selection.localization_map_contract}, '
         f'localization_owner={selection.localization_owner}, '
         f'rviz={interactive.use_rviz}, teleop={interactive.use_teleop}, '
+        f'localization_collection='
+        f'{interactive.localization_collection}, '
         f'nav2_profile={nav2_profile}, '
         f'cognitive_profile={cognitive_profile.name}, '
         f'module2_enabled={module2_enabled}, '
@@ -565,6 +567,8 @@ def _launch_setup(context):
                 raise RuntimeError(
                     f'Teleop terminal wrapper not found: {terminal_wrapper}')
             teleop_arguments = []
+            if interactive.localization_collection:
+                teleop_arguments.append('--localization-collection')
             for launch_name, parameter_name in _TELEOP_SPEED_ARGUMENTS:
                 value = LaunchConfiguration(launch_name).perform(
                     context).strip()
@@ -578,16 +582,26 @@ def _launch_setup(context):
                 )
             except ValueError as exc:
                 raise RuntimeError(str(exc)) from exc
+            if interactive.localization_collection:
+                teleop_log = (
+                    'Simulation-only manual localization collection Teleop '
+                    'is running in a separate terminal.\n'
+                    'Click the window titled "Isaac Nav Localization '
+                    'Collection Teleop"\n'
+                    'before pressing W/A/S/D or the arrow keys.'
+                )
+            else:
+                teleop_log = (
+                    'Mapping Teleop is running in a separate terminal.\n'
+                    'Click the window titled "Isaac Nav Mapping Teleop"\n'
+                    'before pressing W/A/S/D or the arrow keys.'
+                )
             actions.extend([
                 ExecuteProcess(
                     cmd=[str(terminal_wrapper), *terminal_command],
                     output='screen',
                 ),
-                LogInfo(msg=(
-                    'Mapping Teleop is running in a separate terminal.\n'
-                    'Click the window titled "Isaac Nav Mapping Teleop"\n'
-                    'before pressing W/A/S/D or the arrow keys.'
-                )),
+                LogInfo(msg=teleop_log),
             ])
     return actions
 
@@ -710,7 +724,9 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'use_teleop',
             default_value='auto',
-            description='auto, true, or false; only Mapping may enable it'),
+            description=(
+                'auto, true, false, or localization_collection; the last '
+                'is simulation-only manual localization data collection')),
         DeclareLaunchArgument('teleop_linear_speed', default_value='0.50'),
         DeclareLaunchArgument('teleop_angular_speed', default_value='0.80'),
         DeclareLaunchArgument(

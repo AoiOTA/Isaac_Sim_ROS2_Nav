@@ -44,6 +44,7 @@ def test_mapping_defaults_to_rviz_and_teleop(operation, tmp_path):
     assert selection.use_rviz is True
     assert selection.rviz_config.endswith('/rviz/mapping.rviz')
     assert selection.use_teleop is True
+    assert selection.localization_collection is False
 
 
 @pytest.mark.parametrize('operation', ['localization', 'navigation'])
@@ -59,6 +60,7 @@ def test_localization_and_navigation_never_auto_start_teleop(
     )
 
     assert selection.use_teleop is False
+    assert selection.localization_collection is False
     assert selection.rviz_config.endswith(f'/rviz/{operation}.rviz')
 
 
@@ -75,6 +77,7 @@ def test_headless_disables_both_processes_without_resolving_config(tmp_path):
     assert selection.use_rviz is False
     assert selection.rviz_config == ''
     assert selection.use_teleop is False
+    assert selection.localization_collection is False
 
 
 def test_navigation_rejects_explicit_mapping_teleop(tmp_path):
@@ -85,6 +88,45 @@ def test_navigation_rejects_explicit_mapping_teleop(tmp_path):
             use_rviz='false',
             rviz_config='auto',
             use_teleop='true',
+            robot_description_share=tmp_path,
+        )
+
+
+def test_localization_rejects_ordinary_explicit_teleop(tmp_path):
+    with pytest.raises(ValueError, match='unsafe for localization'):
+        resolve_interactive_selection(
+            operation='localization',
+            interactive='true',
+            use_rviz='false',
+            rviz_config='auto',
+            use_teleop='true',
+            robot_description_share=tmp_path,
+        )
+
+
+def test_localization_allows_explicit_collection_teleop(tmp_path):
+    selection = resolve_interactive_selection(
+        operation='localization',
+        interactive='true',
+        use_rviz='false',
+        rviz_config='auto',
+        use_teleop='localization_collection',
+        robot_description_share=tmp_path,
+    )
+
+    assert selection.use_teleop is True
+    assert selection.localization_collection is True
+
+
+@pytest.mark.parametrize('operation', ['mapping', 'incremental_mapping', 'navigation'])
+def test_collection_teleop_is_localization_only(operation, tmp_path):
+    with pytest.raises(ValueError, match='simulation-only'):
+        resolve_interactive_selection(
+            operation=operation,
+            interactive='true',
+            use_rviz='false',
+            rviz_config='auto',
+            use_teleop='localization_collection',
             robot_description_share=tmp_path,
         )
 
@@ -152,6 +194,24 @@ def test_teleop_terminal_forwards_speed_overrides_without_shell_parsing():
         '/project/scripts/run_teleop.sh',
         'linear_speed:=0.45',
         'angular_speed:=0.75',
+    ]
+
+
+def test_collection_teleop_gets_explicit_flag_and_title():
+    command = teleop_terminal_command(
+        '/project/scripts/run_teleop.sh',
+        arguments=('--localization-collection',),
+        find_executable=lambda name: (
+            '/usr/bin/gnome-terminal' if name == 'gnome-terminal' else None),
+    )
+
+    assert command == [
+        '/usr/bin/gnome-terminal',
+        '--wait',
+        '--title=Isaac Nav Localization Collection Teleop',
+        '--',
+        '/project/scripts/run_teleop.sh',
+        '--localization-collection',
     ]
 
 
