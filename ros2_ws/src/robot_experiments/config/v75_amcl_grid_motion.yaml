@@ -1,0 +1,42 @@
+# V7.5-R2 engineering-only structured-grid AMCL motion pilot.
+# These are diagnostic thresholds required by the existing runner schema, not
+# formal qualification gates.  The runner resets before every primitive and
+# publishes a final zero command after every primitive.
+schema_version: 1
+spawn_pose_name: q35_50_start
+reset_seed: 8750
+stationary_reference:
+  id: stationary_reference
+  duration_sec: 5.0
+  reset_seed: 8749
+command_rate_hz: 20.0
+reset_settle_sec: 0.6
+final_settle_sec: 1.0
+steady_window_sec: 0.35
+state_freshness_sec: 0.25
+stamp_coherence_sec: 0.50
+sim_clock_stall_timeout_sec: 0.50
+thresholds:
+  linear_mae_mps: 0.06
+  angular_mae_radps: 0.12
+  radius_relative_error_percent: 20.0
+  tracking_fraction: 0.85
+  transition_latency_sec: 0.45
+  overshoot_ratio: 1.25
+  wrong_direction_fraction: 0.05
+primitives:
+  # Travels 0.40 m, well inside the observed 1.789 m q35_50_start clearance.
+  - id: short_straight
+    segments:
+      - {duration_sec: 4.0, linear_x: 0.10, angular_z: 0.0}
+  # Full turns return to the initial heading without relying on another run.
+  - id: spin_left_360
+    segments:
+      - {duration_sec: 15.708, linear_x: 0.0, angular_z: 0.40}
+  - id: spin_right_360
+    segments:
+      - {duration_sec: 15.708, linear_x: 0.0, angular_z: -0.40}
+  # Radius 0.25 m, diameter 0.50 m; one segment returns near start and heading.
+  - id: small_circle_left_360
+    segments:
+      - {duration_sec: 15.708, linear_x: 0.10, angular_z: 0.40}

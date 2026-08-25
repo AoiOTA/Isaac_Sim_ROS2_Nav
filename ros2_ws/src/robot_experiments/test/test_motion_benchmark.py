@@ -28,6 +28,9 @@ from robot_experiments.motion_benchmark import (
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "config/motion_benchmark.yaml"
+V75_GRID_CONFIG = (
+    Path(__file__).resolve().parents[1] / "config/v75_amcl_grid_motion.yaml"
+)
 
 
 def test_motion_benchmark_is_upstream_of_final_command_authority():
@@ -586,6 +589,52 @@ def test_motion_benchmark_config_covers_required_primitives():
     } <= identifiers
     assert config.command_rate_hz >= 20.0
     assert config.stationary_reference is None
+
+
+def test_v75_amcl_grid_motion_is_bounded_and_self_contained():
+    config = load_motion_config(V75_GRID_CONFIG)
+    primitives = {
+        primitive.identifier: primitive for primitive in config.primitives
+    }
+
+    assert config.spawn_pose_name == "q35_50_start"
+    assert config.stationary_reference is not None
+    assert config.stationary_reference.duration_sec == 5.0
+    assert config.final_settle_sec == 1.0
+    assert set(primitives) == {
+        "short_straight",
+        "spin_left_360",
+        "spin_right_360",
+        "small_circle_left_360",
+    }
+
+    straight = primitives["short_straight"].segments
+    assert len(straight) == 1
+    assert straight[0].linear_x * straight[0].duration_sec == pytest.approx(0.40)
+    assert straight[0].angular_z == 0.0
+
+    for identifier, sign in (("spin_left_360", 1.0), ("spin_right_360", -1.0)):
+        segment = primitives[identifier].segments[0]
+        assert segment.linear_x == 0.0
+        assert math.copysign(1.0, segment.angular_z) == sign
+        assert abs(segment.angular_z) * segment.duration_sec == pytest.approx(
+            2.0 * math.pi, rel=1.0e-4
+        )
+
+    circle = primitives["small_circle_left_360"].segments
+    assert len(circle) == 1
+    assert circle[0].linear_x / circle[0].angular_z == pytest.approx(0.25)
+    assert circle[0].angular_z * circle[0].duration_sec == pytest.approx(
+        2.0 * math.pi, rel=1.0e-4
+    )
+
+    for primitive in config.primitives:
+        for segment in primitive.segments:
+            assert math.isfinite(segment.duration_sec)
+            assert math.isfinite(segment.linear_x)
+            assert math.isfinite(segment.angular_z)
+            assert abs(segment.linear_x) <= 0.10
+            assert abs(segment.angular_z) <= 0.40
 
 
 def test_optional_stationary_reference_has_own_reset_zero_and_report():
