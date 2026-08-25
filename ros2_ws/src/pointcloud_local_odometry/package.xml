@@ -3,30 +3,16 @@
 <package format="3">
   <name>pointcloud_local_odometry</name>
   <version>0.1.0</version>
-  <description>Default-off PCL NDT scan-to-scan local odometry shadow.</description>
+  <description>Default-off KISS-ICP local-odometry shadow launch owner.</description>
   <maintainer email="liang_yibo@hdu.edu.cn">AoiOTA</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
-  <depend>diagnostic_msgs</depend>
-  <depend>eigen</depend>
-  <depend>geometry_msgs</depend>
-  <depend>libpcl-all-dev</depend>
-  <depend>nav_msgs</depend>
-  <depend>pcl_conversions</depend>
-  <depend>rclcpp</depend>
-  <depend>sensor_msgs</depend>
-  <depend>tf2</depend>
-  <depend>tf2_ros</depend>
-
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>kiss_icp</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-
-  <test_depend>ament_cmake_gtest</test_depend>
-  <test_depend>ament_cmake_pytest</test_depend>
-  <test_depend>python3-pytest</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

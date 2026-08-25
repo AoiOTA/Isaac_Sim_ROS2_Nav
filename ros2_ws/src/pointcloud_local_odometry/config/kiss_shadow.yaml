@@ -1,0 +1,8 @@
+kiss_icp_node:
+  ros__parameters:
+    base_frame: base_link
+    lidar_odom_frame: kiss_odom_shadow
+    publish_odom_tf: false
+    publish_debug_clouds: false
+    data:
+      deskew: true
