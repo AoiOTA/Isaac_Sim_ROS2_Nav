@@ -18,7 +18,7 @@ from pathlib import Path
 import sys
 import time
 import traceback
-from typing import Sequence
+from typing import Callable, Sequence
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +83,45 @@ V6_IMU_REGIME_FEATURE_CONFIG = (
     PROJECT_ROOT
     / "isaac_sim/configs/experiments/v6_calibration_grid_features.yaml"
 ).resolve()
+
+
+def _prime_isaac_ros_clock(
+    *,
+    play_first_update: Callable[[], None],
+    app_update: Callable[[], None],
+    spin_once: Callable[[], None],
+    simulation_time: Callable[[], float],
+    ros_time: Callable[[], float],
+    max_updates: int = 5,
+) -> tuple[float, float]:
+    """Start Isaac time and its ROS clock before startup reset service calls."""
+
+    initial_sim_time = float(simulation_time())
+    latest_sim_time = initial_sim_time
+    latest_ros_time = float(ros_time())
+    for update_index in range(max_updates):
+        if update_index == 0:
+            # IsaacSimulationRuntime.play() resumes the timeline and performs
+            # the first app.update().  Subsequent bounded updates only give the
+            # in-process /clock sample time to reach rclpy.
+            play_first_update()
+        else:
+            app_update()
+        spin_once()
+        latest_sim_time = float(simulation_time())
+        latest_ros_time = float(ros_time())
+        if (
+            latest_sim_time > 0.0
+            and latest_sim_time > initial_sim_time
+            and latest_ros_time > 0.0
+        ):
+            return latest_sim_time, latest_ros_time
+    raise RuntimeError(
+        "Isaac ROS clock did not start before startup reset: "
+        f"initial_sim_time={initial_sim_time:.9f}, "
+        f"simulation_time={latest_sim_time:.9f}, "
+        f"ros_time={latest_ros_time:.9f}, updates={max_updates}"
+    )
 
 
 def imu_regime_trace_provenance(
@@ -1738,6 +1777,20 @@ def run(
         )
         reset_manager = ResetManager(runtime, spawn_manager, hooks)
         reset_bridge.bind(reset_manager)
+        # ResetStopGate starts held.  Re-publish zero after the control graph
+        # exists, then let Isaac itself advance /clock before mixed-mode wheel
+        # and EKF startup service discovery.  No external clock publisher may
+        # establish a different epoch.
+        reset_stop_gate.publish_zero()
+        _prime_isaac_ros_clock(
+            play_first_update=runtime.play,
+            app_update=app.update,
+            spin_once=lambda: rclpy.spin_once(node, timeout_sec=0.0),
+            simulation_time=lambda: float(
+                SimulationManager.get_simulation_time()
+            ),
+            ros_time=lambda: node.get_clock().now().nanoseconds * 1.0e-9,
+        )
         startup_reset = reset_bridge.start_reset(
             ResetRequest(
                 pose_name=config.spawn.selected,

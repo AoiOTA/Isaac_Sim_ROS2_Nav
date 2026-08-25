@@ -510,6 +510,19 @@ class ResetServiceBridge:
             transaction.seal()
         return transaction
 
+    def start_external_reset(
+        self, reset_request: ResetRequest
+    ) -> _ResetTransaction:
+        """Start an operator reset only when the active mode supports it."""
+
+        if self._configured_navigation_mode == "mapping":
+            raise ResetServiceError(
+                "mapping reset is disabled after startup; end the bag and SLAM "
+                "processes, then start a new mapping episode "
+                "(结束当前 bag 与 SLAM 进程，开启新的 mapping episode)"
+            )
+        return self.start_reset(reset_request)
+
     def close(self) -> None:
         """Cancel reset work before the owning ROS node/context is destroyed."""
 
@@ -546,7 +559,7 @@ class ResetServiceBridge:
             return response
         try:
             reset_request = self._read_request()
-            transaction = self.start_reset(reset_request)
+            transaction = self.start_external_reset(reset_request)
         except Exception as exc:
             response.success = False
             response.message = f"{type(exc).__name__}: {exc}"

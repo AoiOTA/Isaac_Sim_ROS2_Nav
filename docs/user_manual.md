@@ -214,6 +214,8 @@ ros2 topic echo /scan_safety --once
 
 Teleop 只属于 Mapping：W/A/S/D 或方向键控制，松键后 `0.18 s` 自动停车，Space 立即停车，Q 退出。保存地图：
 
+Mapping 的一次 Isaac + SLAM 启动就是一个完整 episode；运行中禁止调用 `/simulation/reset`。如需回到出生点，先结束当前 bag 与 SLAM 进程，再启动新的 Mapping episode，否则旧 pose graph 与新的机器人/odom epoch 会重叠成残影地图。Localization 模式仍保留原有 reset 语义。
+
 ```bash
 ./scripts/save_map.sh <新版本名>
 ```

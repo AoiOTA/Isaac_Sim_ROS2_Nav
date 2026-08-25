@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from isaac_sim.apps.navigation_sim import _prime_isaac_ros_clock
 from isaac_sim.src.bridge.reset_service import (
     InitialPoseRepublisher,
     ResetServiceBridge,
@@ -23,6 +24,75 @@ from isaac_sim.src.robot.spawn_pose_manager import (
 
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
+    state = {"simulation": 0.0, "ros": 0.0}
+    events = ["held", "zero"]
+
+    def play_first_update():
+        events.append("play_update")
+        state["simulation"] = 0.01
+
+    def app_update():
+        events.append("app_update")
+        state["simulation"] += 0.01
+
+    def spin_once():
+        events.append("spin")
+        if state["simulation"] >= 0.02:
+            state["ros"] = state["simulation"]
+
+    result = _prime_isaac_ros_clock(
+        play_first_update=play_first_update,
+        app_update=app_update,
+        spin_once=spin_once,
+        simulation_time=lambda: state["simulation"],
+        ros_time=lambda: state["ros"],
+        max_updates=3,
+    )
+
+    assert result == pytest.approx((0.02, 0.02))
+    assert events == [
+        "held",
+        "zero",
+        "play_update",
+        "spin",
+        "app_update",
+        "spin",
+    ]
+    source = (ROOT / "isaac_sim/apps/navigation_sim.py").read_text(
+        encoding="utf-8"
+    )
+    bind = source.index("reset_bridge.bind(reset_manager)")
+    zero = source.index("reset_stop_gate.publish_zero()", bind)
+    prime = source.index("_prime_isaac_ros_clock(", zero)
+    startup = source.index("startup_reset = reset_bridge.start_reset(", prime)
+    assert bind < zero < prime < startup
+
+
+def test_startup_clock_priming_failure_is_bounded_and_fail_stop():
+    state = {"simulation": 0.0}
+    updates = []
+
+    def advance(kind):
+        updates.append(kind)
+        state["simulation"] += 0.01
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Isaac ROS clock did not start.*updates=3",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=lambda: advance("play_update"),
+            app_update=lambda: advance("app_update"),
+            spin_once=lambda: None,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: 0.0,
+            max_updates=3,
+        )
+
+    assert updates == ["play_update", "app_update", "app_update"]
 
 
 def test_v6_clearance_r2_spawn_identity_keeps_calibrated_map_frame():
@@ -1086,7 +1156,7 @@ def test_close_cancels_active_reset_without_emitting_epoch_event():
     assert bridge._pending_futures == set()
 
 
-def test_startup_reset_returns_pending_transaction_without_blocking():
+def test_startup_mapping_reset_is_allowed_and_returns_pending_transaction():
     pending = FakeFuture()
     holder = {}
 
@@ -1177,6 +1247,75 @@ def test_repeated_reset_is_rejected_while_generation_is_active():
         )
 
 
+def test_external_mapping_reset_is_rejected_without_epoch_mutation():
+    events = []
+    bridge = SimpleNamespace(
+        _configured_navigation_mode="mapping",
+        _transaction_generation=7,
+        start_reset=lambda request: events.append(("reset", request)),
+    )
+
+    with pytest.raises(
+        ResetServiceError,
+        match="end the bag and SLAM processes.*new mapping episode",
+    ):
+        ResetServiceBridge.start_external_reset(
+            bridge,
+            ResetRequest("mapping_start", "mapping", "mixed", 0),
+        )
+
+    assert bridge._transaction_generation == 7
+    assert events == []
+
+
+def test_external_mapping_reset_service_returns_explicit_failure():
+    events = []
+    logger = ResetTestLogger()
+    request = ResetRequest("mapping_start", "mapping", "mixed", 0)
+    bridge = SimpleNamespace(
+        _manager=object(),
+        _configured_navigation_mode="mapping",
+        _transaction_generation=9,
+        _read_request=lambda: request,
+        start_reset=lambda value: events.append(("reset", value)),
+        node=SimpleNamespace(get_logger=lambda: logger),
+    )
+    bridge.start_external_reset = lambda value: (
+        ResetServiceBridge.start_external_reset(bridge, value)
+    )
+    response = SimpleNamespace(success=None, message="")
+
+    result = asyncio.run(
+        ResetServiceBridge._reset_callback(bridge, object(), response)
+    )
+
+    assert result is response
+    assert response.success is False
+    assert "end the bag and SLAM processes" in response.message
+    assert "new mapping episode" in response.message
+    assert bridge._transaction_generation == 9
+    assert events == []
+    assert logger.messages[-1][0] == "error"
+
+
+def test_external_localization_reset_keeps_existing_transaction_path():
+    request = ResetRequest(
+        "long_route_start_g1", "localization", "mixed", 0
+    )
+    transaction = object()
+    calls = []
+    bridge = SimpleNamespace(
+        _configured_navigation_mode="localization",
+        start_reset=lambda value: calls.append(value) or transaction,
+    )
+
+    assert (
+        ResetServiceBridge.start_external_reset(bridge, request)
+        is transaction
+    )
+    assert calls == [request]
+
+
 class AwaitMarker:
     def __init__(self, events):
         self.events = events
@@ -1205,7 +1344,9 @@ class FakeLogger:
 @pytest.mark.parametrize("errors", [[], ["EKF: failed"]])
 def test_reset_service_response_waits_for_transaction_completion(errors):
     events = []
-    request_value = ResetRequest("mapping_start", "mapping", "ideal", 0)
+    request_value = ResetRequest(
+        "long_route_start_g1", "localization", "ideal", 0
+    )
     transaction = SimpleNamespace(
         completion=AwaitMarker(events),
         errors=errors,
@@ -1215,7 +1356,7 @@ def test_reset_service_response_waits_for_transaction_completion(errors):
     bridge = SimpleNamespace(
         _manager=object(),
         _read_request=lambda: request_value,
-        start_reset=lambda request: transaction,
+        start_external_reset=lambda request: transaction,
         node=SimpleNamespace(get_logger=lambda: FakeLogger(events)),
     )
     response = SimpleNamespace(success=None, message="")
