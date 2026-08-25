@@ -49,10 +49,11 @@ def test_startup_primes_isaac_clock_under_zero_hold_before_reset():
         spin_once=spin_once,
         simulation_time=lambda: state["simulation"],
         ros_time=lambda: state["ros"],
+        max_frame_lag_seconds=0.01,
         max_updates=3,
     )
 
-    assert result == pytest.approx((0.02, 0.02))
+    assert result == pytest.approx((0.0, 0.0, 0.02, 0.02))
     assert events == [
         "held",
         "zero",
@@ -89,10 +90,128 @@ def test_startup_clock_priming_failure_is_bounded_and_fail_stop():
             spin_once=lambda: None,
             simulation_time=lambda: state["simulation"],
             ros_time=lambda: 0.0,
+            max_frame_lag_seconds=0.01,
             max_updates=3,
         )
 
     assert updates == ["play_update", "app_update", "app_update"]
+
+
+def test_startup_clock_priming_rejects_stale_external_epoch():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] += 0.01
+
+    def spin_once():
+        state["ros"] = 123.0
+
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"clock did not advance within one publish frame.*"
+            r"initial_sim_time=0\.000000000.*initial_ros_time=0\.000000000.*"
+            r"simulation_time=0\.050000000.*ros_time=123\.000000000.*updates=5"
+        ),
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=update,
+            app_update=update,
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
+            max_frame_lag_seconds=0.01,
+        )
+
+
+def test_startup_clock_priming_rejects_initial_external_clock():
+    updates = []
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"initial ROS clock is outside the Isaac epoch.*updates=0",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=lambda: updates.append("play_update"),
+            app_update=lambda: updates.append("app_update"),
+            spin_once=lambda: None,
+            simulation_time=lambda: 0.0,
+            ros_time=lambda: 123.0,
+            max_frame_lag_seconds=0.01,
+        )
+
+    assert updates == []
+
+
+def test_startup_clock_priming_rejects_ros_clock_rollback():
+    state = {"simulation": 1.0, "ros": 1.0}
+
+    def update():
+        state["simulation"] += 0.01
+
+    def spin_once():
+        state["ros"] = 0.5
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"ROS clock moved backwards.*updates=1",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=update,
+            app_update=update,
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
+            max_frame_lag_seconds=0.01,
+        )
+
+
+def test_startup_clock_priming_accepts_one_publish_frame_lag():
+    state = {"simulation": 0.0, "ros": 0.0}
+
+    def update():
+        state["simulation"] += 0.01
+
+    def spin_once():
+        state["ros"] = max(0.0, state["simulation"] - 0.01)
+
+    result = _prime_isaac_ros_clock(
+        play_first_update=update,
+        app_update=update,
+        spin_once=spin_once,
+        simulation_time=lambda: state["simulation"],
+        ros_time=lambda: state["ros"],
+        max_frame_lag_seconds=0.01,
+    )
+
+    assert result == pytest.approx((0.0, 0.0, 0.02, 0.01))
+
+
+def test_startup_clock_priming_rejects_more_than_one_publish_frame_lag():
+    state = {"simulation": 0.0, "ros": 0.0}
+    updates = []
+
+    def update(kind):
+        updates.append(kind)
+        state["simulation"] += 0.01
+
+    def spin_once():
+        state["ros"] += 0.001
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"clock did not advance within one publish frame.*updates=5",
+    ):
+        _prime_isaac_ros_clock(
+            play_first_update=lambda: update("play_update"),
+            app_update=lambda: update("app_update"),
+            spin_once=spin_once,
+            simulation_time=lambda: state["simulation"],
+            ros_time=lambda: state["ros"],
+            max_frame_lag_seconds=0.005,
+        )
+
+    assert updates == ["play_update"] + ["app_update"] * 4
 
 
 def test_v6_clearance_r2_spawn_identity_keeps_calibrated_map_frame():

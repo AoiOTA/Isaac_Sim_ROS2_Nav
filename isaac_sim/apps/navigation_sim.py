@@ -92,13 +92,35 @@ def _prime_isaac_ros_clock(
     spin_once: Callable[[], None],
     simulation_time: Callable[[], float],
     ros_time: Callable[[], float],
+    max_frame_lag_seconds: float,
     max_updates: int = 5,
-) -> tuple[float, float]:
+) -> tuple[float, float, float, float]:
     """Start Isaac time and its ROS clock before startup reset service calls."""
 
     initial_sim_time = float(simulation_time())
+    initial_ros_time = float(ros_time())
     latest_sim_time = initial_sim_time
-    latest_ros_time = float(ros_time())
+    latest_ros_time = initial_ros_time
+    lag_limit = math.nextafter(float(max_frame_lag_seconds), math.inf)
+
+    def failure(reason: str, updates: int) -> RuntimeError:
+        return RuntimeError(
+            "Isaac ROS clock did not start before startup reset: "
+            f"reason={reason}, initial_sim_time={initial_sim_time:.9f}, "
+            f"initial_ros_time={initial_ros_time:.9f}, "
+            f"simulation_time={latest_sim_time:.9f}, "
+            f"ros_time={latest_ros_time:.9f}, "
+            f"max_frame_lag_seconds={max_frame_lag_seconds:.9f}, "
+            f"updates={updates}"
+        )
+
+    if not math.isfinite(max_frame_lag_seconds) or max_frame_lag_seconds <= 0.0:
+        raise failure("invalid frame lag tolerance", 0)
+    initial_lag = initial_sim_time - initial_ros_time
+    if initial_ros_time > 0.0 and not 0.0 <= initial_lag <= lag_limit:
+        raise failure("initial ROS clock is outside the Isaac epoch", 0)
+
+    previous_ros_time = initial_ros_time
     for update_index in range(max_updates):
         if update_index == 0:
             # IsaacSimulationRuntime.play() resumes the timeline and performs
@@ -110,18 +132,22 @@ def _prime_isaac_ros_clock(
         spin_once()
         latest_sim_time = float(simulation_time())
         latest_ros_time = float(ros_time())
+        if latest_ros_time < previous_ros_time:
+            raise failure("ROS clock moved backwards", update_index + 1)
+        previous_ros_time = latest_ros_time
+        current_lag = latest_sim_time - latest_ros_time
         if (
-            latest_sim_time > 0.0
-            and latest_sim_time > initial_sim_time
-            and latest_ros_time > 0.0
+            latest_sim_time > initial_sim_time
+            and latest_ros_time > initial_ros_time
+            and 0.0 <= current_lag <= lag_limit
         ):
-            return latest_sim_time, latest_ros_time
-    raise RuntimeError(
-        "Isaac ROS clock did not start before startup reset: "
-        f"initial_sim_time={initial_sim_time:.9f}, "
-        f"simulation_time={latest_sim_time:.9f}, "
-        f"ros_time={latest_ros_time:.9f}, updates={max_updates}"
-    )
+            return (
+                initial_sim_time,
+                initial_ros_time,
+                latest_sim_time,
+                latest_ros_time,
+            )
+    raise failure("clock did not advance within one publish frame", max_updates)
 
 
 def imu_regime_trace_provenance(
@@ -1790,6 +1816,10 @@ def run(
                 SimulationManager.get_simulation_time()
             ),
             ros_time=lambda: node.get_clock().now().nanoseconds * 1.0e-9,
+            max_frame_lag_seconds=max(
+                1.0 / config.simulation.physics_hz,
+                1.0 / config.simulation.rendering_hz,
+            ),
         )
         startup_reset = reset_bridge.start_reset(
             ResetRequest(
