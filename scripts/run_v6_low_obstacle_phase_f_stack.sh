@@ -6,7 +6,41 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
+  echo "       $0 stop-producer --run-dir PATH" >&2
 }
+
+if [[ "${1:-}" == "stop-producer" ]]; then
+  shift
+  producer_run_dir=""
+  while (($#)); do
+    case "$1" in
+      --run-dir) producer_run_dir="${2:?--run-dir requires a path}"; shift 2 ;;
+      *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+  done
+  [[ "${producer_run_dir}" == /* ]] || { usage; exit 2; }
+  for name in integration_bridge module2_server; do
+    pid_file="${producer_run_dir}/${name}.pid"
+    [[ -f "${pid_file}" ]] || { echo "missing producer pid file: ${pid_file}" >&2; exit 1; }
+    read -r pid <"${pid_file}"
+    [[ "${pid}" =~ ^[0-9]+$ ]] || { echo "invalid producer pid: ${pid_file}" >&2; exit 1; }
+    kill -INT "${pid}" 2>/dev/null || true
+  done
+  for name in integration_bridge module2_server; do
+    pid_file="${producer_run_dir}/${name}.pid"
+    read -r pid <"${pid_file}"
+    for _ in {1..100}; do
+      kill -0 "${pid}" 2>/dev/null || break
+      sleep 0.05
+    done
+    if kill -0 "${pid}" 2>/dev/null; then
+      echo "producer did not stop: ${name} pid=${pid}" >&2
+      exit 1
+    fi
+    rm -f "${pid_file}"
+  done
+  exit 0
+fi
 
 arm="${1:-}"
 [[ "${arm}" =~ ^M[0-3]$ ]] || { usage; exit 2; }
@@ -60,13 +94,14 @@ shutdown() {
   for pid in "${child_pids[@]}"; do
     wait "${pid}" 2>/dev/null || true
   done
-  rm -f "${socket_path}"
+  rm -f "${socket_path}" "${run_dir}/module2_server.pid" "${run_dir}/integration_bridge.pid"
 }
 trap shutdown EXIT INT TERM
 
 "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
-child_pids+=("$!")
+module3_pid="$!"
+child_pids+=("${module3_pid}")
 
 if [[ "${arm}" != "M0" ]]; then
   if [[ "${arm}" == "M1" ]]; then
@@ -84,7 +119,9 @@ if [[ "${arm}" != "M0" ]]; then
       --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
       >"${run_dir}/module2_server.log" 2>&1 &
   fi
-  child_pids+=("$!")
+  module2_server_pid="$!"
+  child_pids+=("${module2_server_pid}")
+  printf '%s\n' "${module2_server_pid}" >"${run_dir}/module2_server.pid"
 
   source_ros --require-integration-underlay
   startup_profile="estimated_shadow"
@@ -94,11 +131,13 @@ if [[ "${arm}" != "M0" ]]; then
     socket_path:="${socket_path}" \
     use_sim_time:=true \
     >"${run_dir}/integration_bridge.log" 2>&1 &
-  child_pids+=("$!")
+  integration_bridge_pid="$!"
+  child_pids+=("${integration_bridge_pid}")
+  printf '%s\n' "${integration_bridge_pid}" >"${run_dir}/integration_bridge.pid"
 fi
 
 set +e
-wait -n "${child_pids[@]}"
+wait "${module3_pid}"
 status=$?
 set -e
 exit "${status}"

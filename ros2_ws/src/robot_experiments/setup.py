@@ -40,6 +40,41 @@ setup(
                 "v6_calibration_flat_20m.spawn.yaml",
             ),
         ),
+        (
+            f"share/{package_name}/phase_f_assets/data/maps/occupancy",
+            external_paths(
+                package_root.parents[2] / "data/maps/occupancy",
+                "v6_kujiale_isaacgen_v1.*",
+            ),
+        ),
+        (
+            f"share/{package_name}/phase_f_assets/isaac_sim/configs/environments",
+            external_paths(
+                package_root.parents[2] / "isaac_sim/configs/environments",
+                "kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+            ),
+        ),
+        (
+            f"share/{package_name}/phase_f_assets/isaac_sim/configs/experiments",
+            external_paths(
+                package_root.parents[2] / "isaac_sim/configs/experiments",
+                "v6_kujiale_low_obstacles_frozen*.yaml",
+            ),
+        ),
+        (
+            f"share/{package_name}/phase_f_assets/ros2_ws/src/robot_route_planner/config",
+            external_paths(
+                package_root.parent / "robot_route_planner/config",
+                "v6_kujiale_isaacgen_v1_gvg_v1.geojson",
+            ),
+        ),
+        (
+            f"share/{package_name}/phase_f_assets/ros2_ws/src/robot_navigation/config",
+            external_paths(
+                package_root.parent / "robot_navigation/config",
+                "nav2_v6_low_obstacle_isolation.yaml",
+            ),
+        ),
         (f"share/{package_name}/launch", source_paths("launch", "*.launch.py")),
     ],
     install_requires=["setuptools", "PyYAML"],

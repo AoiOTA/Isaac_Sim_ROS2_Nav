@@ -16,8 +16,10 @@ from pathlib import Path
 import shlex
 import signal
 import statistics
+import struct
 import subprocess
 import sys
+import time
 from typing import Any, Iterable, Mapping, Sequence
 
 import yaml
@@ -40,6 +42,9 @@ DISPATCHER_TOPICS = (
     "/amcl_pose",
     "/scan",
     "/camera/front/depth/image_raw",
+    "/camera/front/camera_info",
+    "/tf",
+    "/tf_static",
     "/bio_nav/module2/cognitive_obstacles",
     "/bio_nav/cognitive_obstacle_layer/status",
     "/bio_nav/local_risk_layer/status",
@@ -71,6 +76,8 @@ ISOLATION_AUDIT_TOPICS = (
 PILOT_ARMS = ("M0", "M1", "M2", "M3")
 DEFAULT_SYNC_TOLERANCE_NS = 100_000_000
 DEFAULT_SHUTDOWN_TIMEOUT_SEC = 20.0
+MODULE3_RESOURCE_PREFIX = "module3://"
+MODULE3_ROOT_ENV = "BIO_NAV_MODULE3_ROOT"
 
 if any(topic.startswith(GT_PREFIX) for topic in DISPATCHER_TOPICS):
     raise RuntimeError("V6 causal dispatcher Ground Truth firewall violated")
@@ -102,6 +109,7 @@ class RunContract:
 @dataclass(frozen=True)
 class CausalManifest:
     path: Path
+    module3_root: Path | None
     identity: Mapping[str, Any]
     localization_contract: Mapping[str, Any]
     freshness: Mapping[str, Any]
@@ -122,6 +130,7 @@ class AdapterTemplates:
     scene: str
     stack: str
     episode: str
+    producer_stop: str | None = None
 
 
 @dataclass(frozen=True)
@@ -132,7 +141,11 @@ class RecordedMessage:
 
 
 def exact_adapter_templates(manifest: CausalManifest) -> AdapterTemplates:
-    root = manifest.path.parents[4]
+    root = manifest.module3_root
+    if root is None:
+        raise CausalContractError(
+            f"exact adapters require {MODULE3_ROOT_ENV} when using an installed manifest"
+        )
     return AdapterTemplates(
         scene=(
             f"{root}/scripts/run_v6_r5_phase_b_kujiale.sh "
@@ -147,6 +160,10 @@ def exact_adapter_templates(manifest: CausalManifest) -> AdapterTemplates:
         episode=(
             f"{root}/scripts/run_v6_low_obstacle_causal.sh dispatch-episode "
             "--run-id {run_id} --output-jsonl {episode_jsonl}"
+        ),
+        producer_stop=(
+            f"{root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
+            "stop-producer --run-dir {run_dir}"
         ),
     )
 
@@ -211,8 +228,68 @@ def _bool(value: Any, name: str) -> bool:
     return value
 
 
+def _source_module3_root(manifest_path: Path) -> Path | None:
+    configured = os.environ.get(MODULE3_ROOT_ENV)
+    if configured:
+        root = Path(configured).expanduser().resolve()
+        if not (root / "ros2_ws/src/robot_experiments").is_dir():
+            raise CausalContractError(f"{MODULE3_ROOT_ENV} is not a Module3 source root: {root}")
+        return root
+    for parent in manifest_path.parents:
+        if (
+            (parent / "ros2_ws/src/robot_experiments").is_dir()
+            and (parent / "scripts/run_v6_low_obstacle_causal.sh").is_file()
+        ):
+            return parent
+    return None
+
+
+def _installed_package_share() -> Path | None:
+    try:
+        from ament_index_python.packages import get_package_share_directory
+    except ImportError:
+        return None
+    try:
+        return Path(get_package_share_directory("robot_experiments")).resolve()
+    except (LookupError, OSError):
+        return None
+
+
+def _resolve_phase_f_resource(
+    value: Any,
+    *,
+    manifest_path: Path,
+    module3_root: Path | None,
+) -> Path:
+    text = str(value or "")
+    if not text:
+        raise CausalContractError("Phase-F resource path must be configured")
+    if text.startswith(MODULE3_RESOURCE_PREFIX):
+        relative = Path(text[len(MODULE3_RESOURCE_PREFIX):])
+        if relative.is_absolute() or ".." in relative.parts:
+            raise CausalContractError(f"invalid {MODULE3_RESOURCE_PREFIX} resource: {text}")
+        candidates: list[Path] = []
+        if module3_root is not None:
+            candidates.append(module3_root / relative)
+        share = _installed_package_share()
+        if share is not None:
+            candidates.append(share / "phase_f_assets" / relative)
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate.resolve()
+        raise CausalContractError(f"Phase-F resource is unavailable: {text}")
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        candidate = manifest_path.parent / candidate
+    candidate = candidate.resolve()
+    if not candidate.is_file():
+        raise CausalContractError(f"Phase-F resource is unavailable: {candidate}")
+    return candidate
+
+
 def load_manifest(path: str | Path) -> CausalManifest:
     manifest_path = Path(path).expanduser().resolve()
+    module3_root = _source_module3_root(manifest_path)
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
     raw = _mapping(raw, "manifest")
     if raw.get("schema_version") != SCHEMA_VERSION:
@@ -261,16 +338,16 @@ def load_manifest(path: str | Path) -> CausalManifest:
             "/isaac_sim/configs/experiments/"
             "v6_kujiale_low_obstacles_frozen_manifest.yaml"
         ),
+        "navigation_overlay": (
+            "/ros2_ws/src/robot_navigation/config/"
+            "nav2_v6_low_obstacle_isolation.yaml"
+        ),
     }
     resolved_identity = dict(identity)
     for key, suffix in expected_asset_suffixes.items():
-        value = str(identity.get(key, ""))
-        if not value:
-            raise CausalContractError(f"identity.{key} must be configured")
-        candidate = Path(value).expanduser()
-        if not candidate.is_absolute():
-            candidate = manifest_path.parent / candidate
-        candidate = candidate.resolve()
+        candidate = _resolve_phase_f_resource(
+            identity.get(key), manifest_path=manifest_path, module3_root=module3_root
+        )
         if not str(candidate).endswith(suffix):
             raise CausalContractError(f"identity.{key} is not the frozen Phase-F asset")
         resolved_identity[key] = str(candidate)
@@ -355,11 +432,16 @@ def load_manifest(path: str | Path) -> CausalManifest:
     freshness = _mapping(raw.get("freshness"), "freshness")
     if float(freshness.get("typed_obstacle_ttl_sec", 0.0)) <= 0.0:
         raise CausalContractError("freshness.typed_obstacle_ttl_sec must be positive")
+    if float(freshness.get("post_producer_stop_observation_margin_sec", 0.0)) <= 0.0:
+        raise CausalContractError(
+            "freshness.post_producer_stop_observation_margin_sec must be positive"
+        )
     if freshness.get("stale_action") != "stop_and_fail_open":
         raise CausalContractError("freshness.stale_action must be stop_and_fail_open")
     criteria = _mapping(raw.get("criteria"), "criteria")
     return CausalManifest(
         path=manifest_path,
+        module3_root=module3_root,
         identity=identity,
         localization_contract=localization,
         freshness=freshness,
@@ -399,6 +481,10 @@ def _adapter_values(
         "M2": "obstacle_only",
         "M3": "obstacle_only",
     }[run.arm]
+    if manifest.module3_root is None:
+        module3_root = os.environ.get(MODULE3_ROOT_ENV, "")
+    else:
+        module3_root = str(manifest.module3_root)
     return {
         "run_id": run.run_id,
         "repeat": str(run.repeat),
@@ -411,13 +497,14 @@ def _adapter_values(
         "episode_result": str(run_dir / "episode_result.json"),
         "evidence_json": str(run_dir / f"{run.run_id}.json"),
         "causal_config": str(manifest.path),
-        "module3_root": str(manifest.path.parents[4]),
+        "module3_root": module3_root,
         "scene_asset": str(manifest.identity["scene_asset"]),
         "occupancy_map": str(manifest.identity["occupancy_map"]),
         "spawn_manifest": str(manifest.identity["spawn_manifest"]),
         "route_graph": str(manifest.identity["route_graph"]),
         "obstacle_config": str(manifest.identity["obstacle_config"]),
         "obstacle_manifest": str(manifest.identity["obstacle_manifest"]),
+        "navigation_overlay": str(manifest.identity["navigation_overlay"]),
         "cognitive_profile": run.arm,
         "module2_enabled": "true" if arm.module2_uds_enabled else "false",
         "module2_mode": "off" if run.arm == "M0" else (
@@ -559,7 +646,11 @@ def _load_frozen_obstacle(manifest: CausalManifest) -> dict[str, Any]:
     return {
         "id": str(row.get("id", "")),
         "center": [float(position[0]), float(position[1])],
-        "size": [float(size[0]), float(size[1])],
+        "size": [float(size[0]), float(size[1]), float(size[2])],
+        "z_bounds": [
+            float(geometry["obstacle_bottom_z_m"]),
+            float(geometry["obstacle_top_z_m"]),
+        ],
         "robot_radius_m": 0.5 * float(geometry["robot_max_footprint_dimension_m"]),
     }
 
@@ -623,6 +714,269 @@ def _scan_metrics(
         if abs(x - center[0]) <= half_x and abs(y - center[1]) <= half_y:
             hits += 1
     return len(valid), hits
+
+
+RigidTransform = tuple[
+    tuple[tuple[float, float, float], tuple[float, float, float], tuple[float, float, float]],
+    tuple[float, float, float],
+]
+
+
+def _identity_transform() -> RigidTransform:
+    return (
+        ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+        (0.0, 0.0, 0.0),
+    )
+
+
+def _rotate(rotation: Sequence[Sequence[float]], point: Sequence[float]) -> tuple[float, float, float]:
+    return tuple(
+        sum(float(rotation[row][column]) * float(point[column]) for column in range(3))
+        for row in range(3)
+    )  # type: ignore[return-value]
+
+
+def _compose_transform(outer: RigidTransform, inner: RigidTransform) -> RigidTransform:
+    outer_rotation, outer_translation = outer
+    inner_rotation, inner_translation = inner
+    rotation = tuple(
+        tuple(
+            sum(outer_rotation[row][index] * inner_rotation[index][column] for index in range(3))
+            for column in range(3)
+        )
+        for row in range(3)
+    )
+    rotated_translation = _rotate(outer_rotation, inner_translation)
+    translation = tuple(rotated_translation[index] + outer_translation[index] for index in range(3))
+    return rotation, translation  # type: ignore[return-value]
+
+
+def _inverse_transform(value: RigidTransform) -> RigidTransform:
+    rotation, translation = value
+    inverse_rotation = tuple(tuple(rotation[column][row] for column in range(3)) for row in range(3))
+    rotated = _rotate(inverse_rotation, translation)
+    return inverse_rotation, tuple(-item for item in rotated)  # type: ignore[return-value]
+
+
+def _apply_transform(value: RigidTransform, point: Sequence[float]) -> tuple[float, float, float]:
+    rotation, translation = value
+    rotated = _rotate(rotation, point)
+    return tuple(rotated[index] + translation[index] for index in range(3))  # type: ignore[return-value]
+
+
+def _transform_from_message(value: Any) -> RigidTransform | None:
+    transform = _field(value, "transform", value)
+    translation = _field(transform, "translation")
+    rotation = _field(transform, "rotation")
+    try:
+        tx = float(_field(translation, "x"))
+        ty = float(_field(translation, "y"))
+        tz = float(_field(translation, "z"))
+        qx = float(_field(rotation, "x"))
+        qy = float(_field(rotation, "y"))
+        qz = float(_field(rotation, "z"))
+        qw = float(_field(rotation, "w"))
+    except (TypeError, ValueError):
+        return None
+    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+    if not math.isfinite(norm) or norm <= 1.0e-12:
+        return None
+    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
+    matrix = (
+        (1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy - qz * qw), 2.0 * (qx * qz + qy * qw)),
+        (2.0 * (qx * qy + qz * qw), 1.0 - 2.0 * (qx * qx + qz * qz), 2.0 * (qy * qz - qx * qw)),
+        (2.0 * (qx * qz - qy * qw), 2.0 * (qy * qz + qx * qw), 1.0 - 2.0 * (qx * qx + qy * qy)),
+    )
+    if not all(math.isfinite(item) for row in matrix for item in row) or not all(
+        math.isfinite(item) for item in (tx, ty, tz)
+    ):
+        return None
+    return matrix, (tx, ty, tz)
+
+
+def _frame(value: Any) -> str:
+    return str(value or "").strip().lstrip("/")
+
+
+def _lookup_recorded_transform(
+    tf_records: Sequence[RecordedMessage],
+    tf_static_records: Sequence[RecordedMessage],
+    *,
+    target_frame: str,
+    source_frame: str,
+    stamp_ns: int,
+) -> RigidTransform | None:
+    """Resolve target_T_source from bagged TF without using passive GT."""
+
+    selected: dict[tuple[str, str], tuple[int, RigidTransform]] = {}
+    for records, is_static in ((tf_static_records, True), (tf_records, False)):
+        for record in records:
+            for raw in _field(record.message, "transforms", ()) or ():
+                parent = _frame(_field(raw, "header.frame_id"))
+                child = _frame(_field(raw, "child_frame_id"))
+                transform = _transform_from_message(raw)
+                if not parent or not child or transform is None:
+                    continue
+                transform_stamp = _time_ns(_field(raw, "header.stamp"))
+                if transform_stamp is None or transform_stamp <= 0:
+                    transform_stamp = _message_stamp_ns(record)
+                if is_static:
+                    age = 0
+                else:
+                    age = stamp_ns - transform_stamp
+                    if age < 0 or age > DEFAULT_SYNC_TOLERANCE_NS:
+                        continue
+                key = (parent, child)
+                if key not in selected or age < selected[key][0]:
+                    selected[key] = (age, transform)
+
+    graph: dict[str, list[tuple[str, RigidTransform]]] = {}
+    for (parent, child), (_, parent_from_child) in selected.items():
+        graph.setdefault(child, []).append((parent, parent_from_child))
+        graph.setdefault(parent, []).append((child, _inverse_transform(parent_from_child)))
+    source = _frame(source_frame)
+    target = _frame(target_frame)
+    if not source or not target:
+        return None
+    queue: list[tuple[str, RigidTransform]] = [(source, _identity_transform())]
+    visited = {source}
+    while queue:
+        current, current_from_source = queue.pop(0)
+        if current == target:
+            return current_from_source
+        for adjacent, adjacent_from_current in graph.get(current, ()):
+            if adjacent in visited:
+                continue
+            visited.add(adjacent)
+            queue.append((adjacent, _compose_transform(adjacent_from_current, current_from_source)))
+    return None
+
+
+def _decode_depth_pixels(
+    message: Any,
+    *,
+    stride: int,
+    maximum_depth_m: float,
+) -> tuple[list[tuple[int, int, float]], str | None]:
+    try:
+        width = int(_field(message, "width"))
+        height = int(_field(message, "height"))
+        step = int(_field(message, "step"))
+        data = bytes(_field(message, "data"))
+    except (TypeError, ValueError):
+        return [], "invalid_depth_layout"
+    encoding = str(_field(message, "encoding", "")).lower()
+    if encoding in {"32fc1", "32fc"}:
+        format_code, bytes_per_pixel, scale = "f", 4, 1.0
+    elif encoding in {"16uc1", "mono16"}:
+        format_code, bytes_per_pixel, scale = "H", 2, 0.001
+    else:
+        return [], "unsupported_depth_encoding"
+    if (
+        width <= 0 or height <= 0 or step < width * bytes_per_pixel
+        or len(data) < step * height or stride <= 0
+    ):
+        return [], "invalid_depth_layout"
+    prefix = ">" if bool(_field(message, "is_bigendian", False)) else "<"
+    pixels: list[tuple[int, int, float]] = []
+    try:
+        for v in range(0, height, stride):
+            for u in range(0, width, stride):
+                raw = struct.unpack_from(prefix + format_code, data, v * step + u * bytes_per_pixel)[0]
+                depth = float(raw) * scale
+                if math.isfinite(depth) and 0.0 < depth <= maximum_depth_m:
+                    pixels.append((u, v, depth))
+    except struct.error:
+        return [], "invalid_depth_layout"
+    return pixels, None
+
+
+def _project_depth_obstacle(
+    depth: RecordedMessage | None,
+    camera_info: RecordedMessage | None,
+    tf_records: Sequence[RecordedMessage],
+    tf_static_records: Sequence[RecordedMessage],
+    obstacle: Mapping[str, Any],
+    criteria: Mapping[str, Any],
+) -> dict[str, Any]:
+    if depth is None:
+        return {"valid": False, "reason": "depth_missing", "point_count": 0, "hit_count": 0, "footprints": []}
+    if camera_info is None:
+        return {"valid": False, "reason": "camera_info_missing", "point_count": 0, "hit_count": 0, "footprints": []}
+    depth_stamp = _message_stamp_ns(depth)
+    if abs(_message_stamp_ns(camera_info) - depth_stamp) > DEFAULT_SYNC_TOLERANCE_NS:
+        return {"valid": False, "reason": "camera_info_unsynchronized", "point_count": 0, "hit_count": 0, "footprints": []}
+    depth_frame = _frame(_field(depth.message, "header.frame_id"))
+    info_frame = _frame(_field(camera_info.message, "header.frame_id"))
+    if not depth_frame or not info_frame or depth_frame != info_frame:
+        return {"valid": False, "reason": "camera_frame_mismatch", "point_count": 0, "hit_count": 0, "footprints": []}
+    intrinsic = _field(camera_info.message, "k", ()) or ()
+    try:
+        if len(intrinsic) < 9:
+            raise ValueError
+        fx, cx, fy, cy = float(intrinsic[0]), float(intrinsic[2]), float(intrinsic[4]), float(intrinsic[5])
+    except (TypeError, ValueError):
+        return {"valid": False, "reason": "invalid_camera_intrinsics", "point_count": 0, "hit_count": 0, "footprints": []}
+    if not all(math.isfinite(value) for value in (fx, fy, cx, cy)) or fx <= 0.0 or fy <= 0.0:
+        return {"valid": False, "reason": "invalid_camera_intrinsics", "point_count": 0, "hit_count": 0, "footprints": []}
+    pixels, decode_error = _decode_depth_pixels(
+        depth.message,
+        stride=max(1, int(criteria.get("depth_subsample_stride", 4))),
+        maximum_depth_m=float(criteria.get("depth_max_range_m", 8.0)),
+    )
+    if decode_error is not None:
+        return {"valid": False, "reason": decode_error, "point_count": 0, "hit_count": 0, "footprints": []}
+    map_from_camera = _lookup_recorded_transform(
+        tf_records,
+        tf_static_records,
+        target_frame="map",
+        source_frame=depth_frame,
+        stamp_ns=depth_stamp,
+    )
+    if map_from_camera is None:
+        return {"valid": False, "reason": "map_camera_tf_missing", "point_count": len(pixels), "hit_count": 0, "footprints": []}
+    xy_tolerance = float(criteria.get("depth_obstacle_bounds_tolerance_m", 0.10))
+    z_tolerance = float(criteria.get("depth_low_z_tolerance_m", 0.05))
+    center = obstacle["center"]
+    half_x = 0.5 * float(obstacle["size"][0]) + xy_tolerance
+    half_y = 0.5 * float(obstacle["size"][1]) + xy_tolerance
+    lower_z = float(obstacle["z_bounds"][0]) - z_tolerance
+    upper_z = float(obstacle["z_bounds"][1]) + z_tolerance
+    hits: list[tuple[float, float, float]] = []
+    for u, v, depth_m in pixels:
+        camera_point = ((u - cx) * depth_m / fx, (v - cy) * depth_m / fy, depth_m)
+        point = _apply_transform(map_from_camera, camera_point)
+        if (
+            abs(point[0] - float(center[0])) <= half_x
+            and abs(point[1] - float(center[1])) <= half_y
+            and lower_z <= point[2] <= upper_z
+        ):
+            hits.append(point)
+    minimum_points = max(1, int(criteria.get("depth_min_obstacle_points", 1)))
+    if len(hits) < minimum_points:
+        return {
+            "valid": True,
+            "reason": "no_low_points_in_obstacle_bounds",
+            "point_count": len(pixels),
+            "hit_count": len(hits),
+            "footprints": [],
+        }
+    mins = [min(point[index] for point in hits) for index in range(3)]
+    maxs = [max(point[index] for point in hits) for index in range(3)]
+    footprint = {
+        "id": obstacle["id"],
+        "center": [(mins[index] + maxs[index]) * 0.5 for index in range(3)],
+        "size": [maxs[index] - mins[index] for index in range(3)],
+        "source": "projected_depth_points",
+        "point_count": len(hits),
+    }
+    return {
+        "valid": True,
+        "reason": "observed",
+        "point_count": len(pixels),
+        "hit_count": len(hits),
+        "footprints": [footprint],
+    }
 
 
 def _minimum_clearance(points: Sequence[Sequence[float]], obstacle: Mapping[str, Any]) -> float:
@@ -705,6 +1059,9 @@ def build_recorded_evidence(
     typed_records = by_topic.get("/bio_nav/module2/cognitive_obstacles", [])
     scan_records = by_topic.get("/scan", [])
     depth_records = by_topic.get("/camera/front/depth/image_raw", [])
+    camera_info_records = by_topic.get("/camera/front/camera_info", [])
+    tf_records = by_topic.get("/tf", [])
+    tf_static_records = by_topic.get("/tf_static", [])
     gt_records = by_topic.get("/ground_truth/odom", [])
     if typed_records:
         anchors = typed_records
@@ -721,32 +1078,54 @@ def build_recorded_evidence(
         stamp = _message_stamp_ns(anchor)
         scan = _nearest(scan_records, stamp)
         depth = _nearest(depth_records, stamp)
+        camera_info = _nearest(camera_info_records, _message_stamp_ns(depth)) if depth is not None else None
         typed = _nearest(typed_records, stamp)
         pose = _nearest(gt_records, stamp)
-        if scan is None or depth is None:
-            continue
-        if abs(_message_stamp_ns(scan) - stamp) > DEFAULT_SYNC_TOLERANCE_NS:
-            continue
-        if abs(_message_stamp_ns(depth) - stamp) > DEFAULT_SYNC_TOLERANCE_NS:
-            continue
+        depth_synchronized = depth is not None and abs(_message_stamp_ns(depth) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS
+        scan_synchronized = scan is not None and abs(_message_stamp_ns(scan) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS
+        if not depth_synchronized:
+            depth = None
+            camera_info = None
+        if not scan_synchronized:
+            scan = None
         scan_points, scan_hits = _scan_metrics(scan, pose, obstacle)
+        depth_observation = _project_depth_obstacle(
+            depth,
+            camera_info,
+            tf_records,
+            tf_static_records,
+            obstacle,
+            manifest.criteria,
+        )
         typed_values = []
         if typed is not None and abs(_message_stamp_ns(typed) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS:
             typed_values = _typed_obstacles(typed.message)
+        observed_centers = [
+            _footprint_center(value) for value in depth_observation["footprints"]
+        ]
+        for value in typed_values:
+            value["observed_spatial_error_m"] = (
+                min(
+                    math.dist((float(value["x"]), float(value["y"])), center)
+                    for center in observed_centers
+                )
+                if value["accepted"] and observed_centers else None
+            )
         samples.append({
             "stamp_ns": stamp,
             "frame_id": "map",
+            "scan_valid": scan_synchronized,
             "scan_point_count": scan_points,
             "scan_hits_in_obstacle_footprints": scan_hits,
-            "rgbd_obstacle_footprints": [{
-                "id": obstacle["id"],
-                "center": obstacle["center"],
-                "size": obstacle["size"],
-                "source": "frozen_scene_manifest_depth_synchronized",
-            }],
+            "depth_observation_valid": depth_observation["valid"],
+            "depth_observation_reason": depth_observation["reason"],
+            "depth_point_count": depth_observation["point_count"],
+            "depth_hits_in_obstacle_bounds": depth_observation["hit_count"],
+            "rgbd_obstacle_footprints": depth_observation["footprints"],
             "typed_obstacles": typed_values,
-            "depth_stamp_ns": _message_stamp_ns(depth),
-            "scan_stamp_ns": _message_stamp_ns(scan),
+            "depth_stamp_ns": _message_stamp_ns(depth) if depth is not None else None,
+            "camera_info_stamp_ns": _message_stamp_ns(camera_info) if camera_info is not None else None,
+            "scan_stamp_ns": _message_stamp_ns(scan) if scan is not None else None,
         })
 
     layer_records = by_topic.get("/bio_nav/cognitive_obstacle_layer/status", [])
@@ -766,33 +1145,73 @@ def build_recorded_evidence(
     ]
     max_age = max(message_ages + status_ages, default=0.0)
     ttl = float(manifest.freshness["typed_obstacle_ttl_sec"])
-    stale_applied_count = sum(
-        bool(_field(row.message, "applied", False))
-        and float(_field(row.message, "message_age_ms", 0.0)) * 1e-3 > ttl
-        for row in layer_records + critic_records
-    )
     typed_stamps = [_message_stamp_ns(row) for row in typed_records]
     cadence_hz = 0.0
     if len(typed_stamps) >= 2 and typed_stamps[-1] > typed_stamps[0]:
         cadence_hz = (len(typed_stamps) - 1) * 1.0e9 / (typed_stamps[-1] - typed_stamps[0])
-    expiry_ns = typed_stamps[-1] + int(ttl * 1.0e9) if typed_stamps else None
-    expired_layers = [row for row in layer_records if expiry_ns is not None and _message_stamp_ns(row) >= expiry_ns]
-    expired_critics = [row for row in critic_records if expiry_ns is not None and _message_stamp_ns(row) >= expiry_ns]
-    ttl_expiry_observed = bool(expired_layers or expired_critics)
-    expired_consumers = {
-        "global" if "global" in str(_field(row.message, "consumer", "")).lower()
-        else "local" if "local" in str(_field(row.message, "consumer", "")).lower()
-        else "unknown"
-        for row in expired_layers
-    }
-    ttl_expiry_zero_write = {"global", "local"}.issubset(expired_consumers) and all(
-        not bool(_field(row.message, "applied", False))
-        and int(_field(row.message, "raised_cell_count", 0)) == 0
-        for row in expired_layers
+    active_ttl = run.arm in {"M2", "M3"}
+    latest_typed: RecordedMessage | None = None
+    latest_validation_ns: int | None = None
+    latest_validation_ttl_ns: int | None = None
+    latest_sequence: int | None = None
+    for row in typed_records:
+        validation_ns = _time_ns(_field(row.message, "validation_stamp"))
+        validation_ttl_ns = _time_ns(_field(row.message, "validation_ttl"))
+        if validation_ns is None or validation_ttl_ns is None or validation_ttl_ns <= 0:
+            continue
+        if latest_validation_ns is None or validation_ns > latest_validation_ns:
+            latest_typed = row
+            latest_validation_ns = validation_ns
+            latest_validation_ttl_ns = validation_ttl_ns
+            latest_sequence = int(_field(row.message, "sequence", 0))
+    expiry_ns = None
+    if latest_typed is not None and latest_validation_ns is not None and latest_validation_ttl_ns is not None:
+        expiry_ns = latest_validation_ns + min(latest_validation_ttl_ns, int(ttl * 1.0e9))
+
+    def post_expiry(records: Sequence[RecordedMessage]) -> list[RecordedMessage]:
+        return [
+            row for row in records
+            if expiry_ns is not None
+            and latest_sequence is not None
+            and _message_stamp_ns(row) >= expiry_ns
+            and int(_field(row.message, "source_sequence", -1)) == latest_sequence
+        ]
+
+    expired_layers = post_expiry(layer_records)
+    expired_critics = post_expiry(critic_records)
+    stale_applied_count = sum(
+        bool(_field(row.message, "applied", False))
+        for row in (*expired_layers, *expired_critics)
     )
-    ttl_expiry_critic_not_applied = bool(expired_critics) and all(
-        not bool(_field(row.message, "applied", False)) for row in expired_critics
-    )
+
+    def layer_scope(row: RecordedMessage) -> str:
+        consumer = str(_field(row.message, "consumer", "")).lower()
+        if "global" in consumer:
+            return "global"
+        if "local" in consumer:
+            return "local"
+        return "unknown"
+
+    clear_layers = [
+        row for row in expired_layers
+        if "rejection_reason=validation_stale" in str(_field(row.message, "fallback_reason", ""))
+        and not bool(_field(row.message, "applied", False))
+        and int(_field(row.message, "raised_cell_count", -1)) == 0
+        and int(_field(row.message, "active_cell_count", -1)) == 0
+        and int(_field(row.message, "maximum_cost_increase", -1)) == 0
+    ]
+    clear_consumers = {layer_scope(row) for row in clear_layers}
+    ttl_expiry_zero_write = {"global", "local"}.issubset(clear_consumers) if active_ttl else None
+    clear_critics = [
+        row for row in expired_critics
+        if "obstacle_rejected=validation_stale" in str(_field(row.message, "fallback_reason", ""))
+        and not bool(_field(row.message, "applied", False))
+    ]
+    ttl_expiry_critic_not_applied = bool(clear_critics) if run.arm == "M3" else None
+    ttl_expiry_observed = (
+        bool(ttl_expiry_zero_write)
+        and (run.arm != "M3" or bool(ttl_expiry_critic_not_applied))
+    ) if active_ttl else None
 
     plans = [_path_points(row.message) for row in by_topic.get("/plan", [])]
     local_trajectory_records = by_topic.get("/optimal_trajectory", [])
@@ -856,11 +1275,18 @@ def build_recorded_evidence(
             "completion_messages": int(episode_result.get("route_completion_messages", 0)),
         },
         "freshness": {
+            "ttl_clear_applicability": (
+                "required_active_write" if active_ttl else "not_applicable_inactive"
+            ),
+            "ttl_source_sequence": latest_sequence if active_ttl else None,
+            "ttl_expiry_stamp_ns": expiry_ns if active_ttl else None,
             "max_typed_obstacle_age_sec": max_age,
             "stale_applied_count": stale_applied_count,
-            "stopped_before_dispatch": stale_applied_count == 0,
-            "layer_zero_write": stale_applied_count == 0,
-            "critic_not_applied": stale_applied_count == 0,
+            "stopped_before_dispatch": (
+                bool(ttl_expiry_observed) and stale_applied_count == 0
+            ) if active_ttl else None,
+            "layer_zero_write": ttl_expiry_zero_write,
+            "critic_not_applied": ttl_expiry_critic_not_applied,
             "ttl_expiry_observed": ttl_expiry_observed,
             "ttl_expiry_zero_write": ttl_expiry_zero_write,
             "ttl_expiry_critic_not_applied": ttl_expiry_critic_not_applied,
@@ -972,6 +1398,7 @@ def build_plan(
                 "route_graph": manifest.identity["route_graph"],
                 "obstacle_config": manifest.identity["obstacle_config"],
                 "obstacle_manifest": manifest.identity["obstacle_manifest"],
+                "navigation_overlay": manifest.identity["navigation_overlay"],
             },
             "reset_state_machine": (
                 "wait_readiness", "set_seed_8601", "one_reset_call",
@@ -995,6 +1422,10 @@ def build_plan(
                 "stack": render_adapter_command(adapters.stack, values),
                 "episode": render_adapter_command(adapters.episode, values),
             }
+            if adapters.producer_stop is not None:
+                row["commands"]["producer_stop"] = render_adapter_command(
+                    adapters.producer_stop, values
+                )
         rows.append(row)
     return {
         "qualification": QUALIFICATION,
@@ -1037,8 +1468,15 @@ def build_plan(
                 "{module3_root}/scripts/run_v6_low_obstacle_causal.sh "
                 "dispatch-episode --run-id {run_id} --output-jsonl {episode_jsonl}"
             ),
+            "producer_stop": (
+                "{module3_root}/scripts/run_v6_low_obstacle_phase_f_stack.sh "
+                "stop-producer --run-dir {run_dir}"
+            ),
         },
-        "ordered_shutdown": ("recorder", "episode", "stack", "scene"),
+        "ordered_shutdown": (
+            "episode", "module2_producer", "ttl_clear_observation",
+            "stack", "recorder", "scene",
+        ),
         "runs": rows,
     }
 
@@ -1278,7 +1716,11 @@ def run_campaign(
     campaign_env["ROS_DOMAIN_ID"] = str(manifest.identity["ros_domain_id"])
     campaign_env["ISAAC_NAV_EXPECTED_DOMAIN_ID"] = str(manifest.identity["ros_domain_id"])
     campaign_env.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
-    fastdds_profile = manifest.path.parents[4] / "isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml"
+    if manifest.module3_root is None:
+        raise CausalContractError(
+            f"run requires {MODULE3_ROOT_ENV} when using an installed manifest"
+        )
+    fastdds_profile = manifest.module3_root / "isaac_sim/configs/ros2_bridge/fastdds_udp_only.xml"
     campaign_env.setdefault("FASTRTPS_DEFAULT_PROFILES_FILE", str(fastdds_profile))
     campaign_env.setdefault("FASTDDS_DEFAULT_PROFILES_FILE", str(fastdds_profile))
     results: list[dict[str, Any]] = []
@@ -1316,11 +1758,38 @@ def run_campaign(
                 )
             status["episode_returncode"] = completed.returncode
             status["state"] = "EPISODE_FINISHED" if completed.returncode == 0 else "EPISODE_FAILED"
+            if run.arm in {"M2", "M3"}:
+                producer_stop = row["commands"].get("producer_stop")
+                if not producer_stop:
+                    raise CausalContractError("active arm requires producer_stop adapter")
+                with (run_dir / "producer_stop.log").open("w", encoding="utf-8") as stdout:
+                    stopped = subprocess.run(
+                        list(producer_stop),
+                        stdout=stdout,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        check=False,
+                        env=campaign_env,
+                    )
+                status["producer_stop_returncode"] = stopped.returncode
+                if stopped.returncode != 0:
+                    raise CausalContractError("Module2 producer stop adapter failed")
+                drain_sec = float(manifest.freshness["typed_obstacle_ttl_sec"]) + float(
+                    manifest.freshness["post_producer_stop_observation_margin_sec"]
+                )
+                status["ttl_observation_wait_sec"] = drain_sec
+                time.sleep(drain_sec)
+            else:
+                status["ttl_observation_wait_sec"] = None
         except (OSError, CausalContractError) as exc:
             status["state"] = "ADAPTER_FAILED"
             status["reason"] = str(exc)
         finally:
-            for process in reversed(managed):
+            by_name = {process.name: process for process in managed}
+            for name in ("stack", "recorder", "scene"):
+                process = by_name.get(name)
+                if process is None:
+                    continue
                 try:
                     status["shutdown"].append(_stop_process(process, shutdown_timeout_sec))
                 except OSError as exc:
@@ -1328,7 +1797,7 @@ def run_campaign(
 
         evidence_path = run_dir / f"{run.run_id}.json"
         try:
-            record_evidence_from_bag(
+            evidence = record_evidence_from_bag(
                 manifest,
                 run,
                 run_dir / "bag",
@@ -1337,6 +1806,18 @@ def run_campaign(
             )
             status["evidence_file"] = str(evidence_path)
             status["evidence_recorded"] = True
+            if run.arm in {"M2", "M3"}:
+                freshness = _mapping(evidence.get("freshness"), "freshness")
+                if (
+                    freshness.get("ttl_expiry_observed") is not True
+                    or freshness.get("ttl_expiry_zero_write") is not True
+                    or (
+                        run.arm == "M3"
+                        and freshness.get("ttl_expiry_critic_not_applied") is not True
+                    )
+                ):
+                    status["state"] = "TTL_CLEAR_FAILED"
+                    status["reason"] = "post-producer TTL clear was not observed"
         except (OSError, CausalContractError, RuntimeError, ValueError) as exc:
             status["evidence_recorded"] = False
             status["evidence_error"] = str(exc)
@@ -1430,13 +1911,47 @@ def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, in
         typed = sample.get("typed_obstacles")
         if not isinstance(footprints, list) or not isinstance(typed, list):
             raise CausalContractError(f"synchronized_samples[{index}] missing obstacle arrays")
+        depth_valid = sample.get("depth_observation_valid")
+        if not isinstance(depth_valid, bool):
+            raise CausalContractError(
+                f"synchronized_samples[{index}].depth_observation_valid invalid"
+            )
+        depth_reason = sample.get("depth_observation_reason")
+        if not isinstance(depth_reason, str) or not depth_reason:
+            raise CausalContractError(
+                f"synchronized_samples[{index}].depth_observation_reason invalid"
+            )
+        depth_points = sample.get("depth_point_count")
+        depth_hits = sample.get("depth_hits_in_obstacle_bounds")
+        if (
+            isinstance(depth_points, bool) or not isinstance(depth_points, int) or depth_points < 0
+            or isinstance(depth_hits, bool) or not isinstance(depth_hits, int) or depth_hits < 0
+        ):
+            raise CausalContractError(f"synchronized_samples[{index}] depth counts invalid")
+        if footprints and (not depth_valid or depth_hits <= 0):
+            raise CausalContractError(
+                f"synchronized_samples[{index}] footprint lacks real depth hits"
+            )
+        for footprint in footprints:
+            footprint_row = _mapping(footprint, "rgbd_obstacle_footprint")
+            if footprint_row.get("source") != "projected_depth_points":
+                raise CausalContractError(
+                    f"synchronized_samples[{index}] footprint source is not projected depth"
+                )
+            if int(footprint_row.get("point_count", 0)) <= 0:
+                raise CausalContractError(
+                    f"synchronized_samples[{index}] footprint point_count invalid"
+                )
         scan_points = sample.get("scan_point_count")
         scan_hits = sample.get("scan_hits_in_obstacle_footprints")
         if isinstance(scan_points, bool) or not isinstance(scan_points, int) or scan_points < 0:
             raise CausalContractError(f"synchronized_samples[{index}].scan_point_count invalid")
         if isinstance(scan_hits, bool) or not isinstance(scan_hits, int) or scan_hits < 0:
             raise CausalContractError(f"synchronized_samples[{index}].scan_hits_in_obstacle_footprints invalid")
-        if footprints and scan_hits == 0:
+        scan_valid = sample.get("scan_valid")
+        if not isinstance(scan_valid, bool):
+            raise CausalContractError(f"synchronized_samples[{index}].scan_valid invalid")
+        if footprints and scan_valid and scan_points > 0 and scan_hits == 0:
             invisible += 1
         centers = tuple(_footprint_center(item) for item in footprints)
         for obstacle_value in typed:
@@ -1445,7 +1960,25 @@ def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, in
                 continue
             total += 1
             point = (float(obstacle["x"]), float(obstacle["y"]))
-            if centers and min(math.dist(point, center) for center in centers) <= tolerance_m:
+            computed_error = min(
+                (math.dist(point, center) for center in centers), default=None
+            )
+            reported_error = obstacle.get("observed_spatial_error_m")
+            if computed_error is None:
+                if reported_error is not None:
+                    raise CausalContractError(
+                        f"synchronized_samples[{index}] spatial error lacks depth footprint"
+                    )
+            elif (
+                isinstance(reported_error, bool)
+                or not isinstance(reported_error, (int, float))
+                or not math.isfinite(float(reported_error))
+                or not math.isclose(float(reported_error), computed_error, abs_tol=1.0e-9)
+            ):
+                raise CausalContractError(
+                    f"synchronized_samples[{index}] spatial error is not observed geometry"
+                )
+            if computed_error is not None and computed_error <= tolerance_m:
                 matched += 1
     return synchronized, invisible, matched, total
 
@@ -1560,23 +2093,27 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             raise CausalContractError("typed obstacle validation evidence missing")
 
         freshness = _mapping(row["freshness"], "freshness")
+        expected_ttl_applicability = (
+            "required_active_write" if run.arm in {"M2", "M3"}
+            else "not_applicable_inactive"
+        )
+        if freshness.get("ttl_clear_applicability") != expected_ttl_applicability:
+            raise CausalContractError("TTL-clear applicability does not match arm")
         max_age = float(freshness.get("max_typed_obstacle_age_sec", 0.0))
         stale_applied = int(freshness.get("stale_applied_count", 0))
         if run.arm in {"M2", "M3"} and (
-            freshness.get("ttl_expiry_observed") is not True
+            not isinstance(freshness.get("ttl_source_sequence"), int)
+            or int(freshness.get("ttl_source_sequence", 0)) <= 0
+            or not isinstance(freshness.get("ttl_expiry_stamp_ns"), int)
+            or freshness.get("ttl_expiry_observed") is not True
             or freshness.get("ttl_expiry_zero_write") is not True
         ):
             raise CausalContractError("active arm lacks clean TTL-expiry evidence")
         if run.arm == "M3" and freshness.get("ttl_expiry_critic_not_applied") is not True:
             raise CausalContractError("M3 lacks critic TTL-expiry evidence")
         if stale_applied > 0:
-            fail_open = (
-                freshness.get("stopped_before_dispatch") is True
-                and freshness.get("layer_zero_write") is True
-                and freshness.get("critic_not_applied") is True
-            )
-            verdict = "STOP_FAIL_OPEN" if fail_open else "INVALID"
-            reasons = ("typed_obstacle_ttl_exceeded",) if fail_open else ("stale_input_not_fail_open",)
+            verdict = "INVALID"
+            reasons = ("stale_input_applied_after_expiry",)
         else:
             verdict, reasons = "VALID", ()
 
@@ -1832,7 +2369,9 @@ def build_parser() -> argparse.ArgumentParser:
     plan_parser.add_argument("--output-root", default="v6r5_module2_causal")
     plan_parser.add_argument("--pilot", action="store_true")
     plan_parser.add_argument("--exact-adapters", action="store_true")
-    for option in ("scene-adapter", "reset-adapter", "live-adapter"):
+    for option in (
+        "scene-adapter", "reset-adapter", "live-adapter", "producer-stop-adapter",
+    ):
         plan_parser.add_argument(f"--{option}")
     evaluate_parser = subparsers.add_parser("evaluate")
     evaluate_parser.add_argument("--config", required=True)
@@ -1844,6 +2383,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--scene-adapter")
     run_parser.add_argument("--reset-adapter", "--stack-adapter", dest="reset_adapter")
     run_parser.add_argument("--live-adapter", "--episode-adapter", dest="live_adapter")
+    run_parser.add_argument("--producer-stop-adapter")
     run_parser.add_argument("--exact-adapters", action="store_true")
     run_parser.add_argument("--output-root", required=True)
     run_parser.add_argument("--pilot", action="store_true")
@@ -1879,7 +2419,10 @@ def cli(argv: list[str] | None = None) -> int:
             }, args.output)
             return 0
         if args.command == "plan":
-            raw_adapters = (args.scene_adapter, args.reset_adapter, args.live_adapter)
+            raw_adapters = (
+                args.scene_adapter, args.reset_adapter, args.live_adapter,
+                args.producer_stop_adapter,
+            )
             supplied = [value is not None for value in raw_adapters]
             if args.exact_adapters and any(supplied):
                 raise CausalContractError("--exact-adapters cannot be combined with custom adapters")
@@ -1930,13 +2473,16 @@ def cli(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(result, sort_keys=True))
             return 0 if result.get("state") == "SUCCEEDED" else 2
-        raw_adapters = (args.scene_adapter, args.reset_adapter, args.live_adapter)
+        raw_adapters = (
+            args.scene_adapter, args.reset_adapter, args.live_adapter,
+            args.producer_stop_adapter,
+        )
         supplied = [value is not None for value in raw_adapters]
         if args.exact_adapters and any(supplied):
             raise CausalContractError("--exact-adapters cannot be combined with custom adapters")
         if not args.exact_adapters and not all(supplied):
             raise CausalContractError(
-                "run requires --exact-adapters or all scene/stack/episode adapters"
+                "run requires --exact-adapters or all scene/stack/episode/producer-stop adapters"
             )
         adapters = (
             exact_adapter_templates(manifest)

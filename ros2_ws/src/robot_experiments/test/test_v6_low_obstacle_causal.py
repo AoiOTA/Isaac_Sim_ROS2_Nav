@@ -1,7 +1,14 @@
 import json
+import os
 from pathlib import Path
+import shutil
+import struct
+from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
+
+import robot_experiments.v6_low_obstacle_causal as causal
 
 from robot_experiments.v6_low_obstacle_causal import (
     AdapterTemplates,
@@ -14,6 +21,7 @@ from robot_experiments.v6_low_obstacle_causal import (
     evaluate,
     exact_adapter_templates,
     load_manifest,
+    run_campaign,
 )
 
 
@@ -36,7 +44,10 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
     plan = _paths(run.arm)
     if m3_same_as_m2 and run.arm == "M3":
         plan = _paths("M2")
-    typed = [] if run.arm == "M0" else [{"x": 1.02, "y": 2.01, "accepted": True}]
+    typed = [] if run.arm == "M0" else [{
+        "x": 1.02, "y": 2.01, "accepted": True,
+        "observed_spatial_error_m": 0.022360679774997918,
+    }]
     clearance = {"M0": 0.20, "M1": 0.21, "M2": 0.46, "M3": 0.52}[run.arm]
     row = {
         "run_id": run.run_id,
@@ -68,21 +79,34 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             "localization_contract": "same_estimated_autonomy",
         },
         "freshness": {
+            "ttl_clear_applicability": (
+                "required_active_write" if run.arm in {"M2", "M3"}
+                else "not_applicable_inactive"
+            ),
+            "ttl_source_sequence": 7 if run.arm in {"M2", "M3"} else None,
+            "ttl_expiry_stamp_ns": 700000000 if run.arm in {"M2", "M3"} else None,
             "max_typed_obstacle_age_sec": 0.8 if stale else 0.1,
             "stale_applied_count": 1 if stale else 0,
-            "stopped_before_dispatch": stale,
-            "layer_zero_write": stale,
-            "critic_not_applied": stale,
-            "ttl_expiry_observed": run.arm in {"M2", "M3"},
-            "ttl_expiry_zero_write": run.arm in {"M2", "M3"},
-            "ttl_expiry_critic_not_applied": run.arm in {"M2", "M3"},
+            "stopped_before_dispatch": not stale if run.arm in {"M2", "M3"} else None,
+            "layer_zero_write": True if run.arm in {"M2", "M3"} else None,
+            "critic_not_applied": True if run.arm == "M3" else None,
+            "ttl_expiry_observed": True if run.arm in {"M2", "M3"} else None,
+            "ttl_expiry_zero_write": True if run.arm in {"M2", "M3"} else None,
+            "ttl_expiry_critic_not_applied": True if run.arm == "M3" else None,
         },
         "synchronized_samples": [{
             "stamp_ns": 123000000,
             "frame_id": "map",
+            "scan_valid": True,
             "scan_point_count": 50,
             "scan_hits_in_obstacle_footprints": 0,
-            "rgbd_obstacle_footprints": [{"center": [1.0, 2.0]}],
+            "depth_observation_valid": True,
+            "depth_observation_reason": "observed",
+            "depth_point_count": 20,
+            "depth_hits_in_obstacle_bounds": 4,
+            "rgbd_obstacle_footprints": [{
+                "center": [1.0, 2.0], "source": "projected_depth_points", "point_count": 4,
+            }],
             "typed_obstacles": typed,
         }],
         "obstacle_validation": typed,
@@ -216,6 +240,17 @@ def test_offline_causal_evaluator_passes_isolation_clearance_and_m3_local_effect
     assert len(summary.visualization_inputs) == 3
 
 
+def test_ttl_clear_is_explicitly_not_applicable_for_m0_and_m1(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    summary = evaluate(manifest, tmp_path)
+    assert all(result.verdict == "VALID" for result in summary.runs if result.arm in {"M0", "M1"})
+    for run in manifest.runs:
+        if run.arm in {"M0", "M1"}:
+            row = json.loads((tmp_path / f"{run.run_id}.json").read_text())
+            assert row["freshness"]["ttl_clear_applicability"] == "not_applicable_inactive"
+
+
 def test_m3_local_trajectory_without_separation_is_ambiguous(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest, m3_same_as_m2=True)
@@ -269,7 +304,7 @@ def test_positive_online_delta_is_reported_applied(tmp_path, reason):
     assert result.critic_participation == "online_applied"
 
 
-def test_ttl_expiry_is_stop_fail_open_and_never_causal_pass(tmp_path):
+def test_post_expiry_application_is_invalid_and_never_causal_pass(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
     run = manifest.runs[2]
@@ -278,7 +313,8 @@ def test_ttl_expiry_is_stop_fail_open_and_never_causal_pass(tmp_path):
     )
     summary = evaluate(manifest, tmp_path)
     result = next(item for item in summary.runs if item.run_id == run.run_id)
-    assert result.verdict == "STOP_FAIL_OPEN"
+    assert result.verdict == "INVALID"
+    assert result.reasons == ("stale_input_applied_after_expiry",)
     assert summary.verdict == "INVALID"
 
 
@@ -321,7 +357,24 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     run = manifest.runs[3]
     stamp = 2_000_000_000
     records = [
-        RecordedMessage("/camera/front/depth/image_raw", stamp, {"header": {"stamp": stamp}}),
+        RecordedMessage("/camera/front/depth/image_raw", stamp, {
+            "header": {"stamp": stamp, "frame_id": "camera_optical"},
+            "width": 8, "height": 8, "step": 32, "encoding": "32FC1",
+            "is_bigendian": False, "data": struct.pack("<64f", *([1.0] * 64)),
+        }),
+        RecordedMessage("/camera/front/camera_info", stamp, {
+            "header": {"stamp": stamp, "frame_id": "camera_optical"},
+            "width": 8, "height": 8,
+            "k": [100.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 1.0],
+        }),
+        RecordedMessage("/tf_static", stamp, {"transforms": [{
+            "header": {"stamp": stamp, "frame_id": "map"},
+            "child_frame_id": "camera_optical",
+            "transform": {
+                "translation": {"x": -0.45, "y": -0.35, "z": -0.92},
+                "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }]}),
         RecordedMessage("/scan", stamp, {
             "header": {"stamp": stamp},
             "scan_point_count": 80,
@@ -341,6 +394,9 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
             "trusted_write": True,
             "observation_valid": True,
             "source_age": {"sec": 0, "nanosec": 20_000_000},
+            "validation_stamp": {"sec": 2, "nanosec": 0},
+            "validation_ttl": {"sec": 0, "nanosec": 500_000_000},
+            "sequence": 7,
             "obstacles": [{
                 "id": "v6_low_box_solo",
                 "pose_xy_m": [-1.15, -0.35],
@@ -354,6 +410,9 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
             "trusted_write": True,
             "observation_valid": True,
             "source_age": {"sec": 0, "nanosec": 20_000_000},
+            "validation_stamp": {"sec": 2, "nanosec": 100_000_000},
+            "validation_ttl": {"sec": 0, "nanosec": 500_000_000},
+            "sequence": 8,
             "obstacles": [{
                 "id": "v6_low_box_solo", "pose_xy_m": [-0.45, -0.35],
                 "radius_m": 0.2, "confidence": 0.9,
@@ -362,29 +421,32 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
         RecordedMessage("/bio_nav/cognitive_obstacle_layer/status", stamp, {
             "consumer": "/global_costmap:layer", "raised_cell_count": 7,
             "active_cell_count": 7, "maximum_cost": 60, "applied": True,
-            "message_age_ms": 20.0,
+            "message_age_ms": 20.0, "source_sequence": 7,
         }),
         RecordedMessage("/bio_nav/cognitive_obstacle_layer/status", stamp, {
             "consumer": "/local_costmap:layer", "raised_cell_count": 5,
             "active_cell_count": 5, "maximum_cost": 55, "applied": True,
-            "message_age_ms": 20.0,
+            "message_age_ms": 20.0, "source_sequence": 7,
         }),
         RecordedMessage("/bio_nav/cognitive_risk_critic/status", stamp, {
             "applied": True, "fallback_reason": "cost_delta_applied=true;obstacle_applied=true",
-            "message_age_ms": 20.0,
+            "message_age_ms": 20.0, "source_sequence": 7,
         }),
         RecordedMessage("/bio_nav/cognitive_obstacle_layer/status", stamp + 700_000_000, {
             "consumer": "/global_costmap:layer", "raised_cell_count": 0,
-            "active_cell_count": 0, "maximum_cost": 0, "applied": False,
-            "message_age_ms": 700.0,
+            "active_cell_count": 0, "maximum_cost": 0, "maximum_cost_increase": 0,
+            "applied": False, "message_age_ms": 700.0, "source_sequence": 8,
+            "fallback_reason": "rejection_reason=validation_stale",
         }),
         RecordedMessage("/bio_nav/cognitive_obstacle_layer/status", stamp + 700_000_000, {
             "consumer": "/local_costmap:layer", "raised_cell_count": 0,
-            "active_cell_count": 0, "maximum_cost": 0, "applied": False,
-            "message_age_ms": 700.0,
+            "active_cell_count": 0, "maximum_cost": 0, "maximum_cost_increase": 0,
+            "applied": False, "message_age_ms": 700.0, "source_sequence": 8,
+            "fallback_reason": "rejection_reason=validation_stale",
         }),
         RecordedMessage("/bio_nav/cognitive_risk_critic/status", stamp + 700_000_000, {
-            "applied": False, "fallback_reason": "stale", "message_age_ms": 700.0,
+            "applied": False, "fallback_reason": "obstacle_rejected=validation_stale",
+            "message_age_ms": 700.0, "source_sequence": 8,
         }),
         RecordedMessage("/plan", stamp, {"poses": [[0.45, -5.35], [0.8, 4.8]]}),
         RecordedMessage("/optimal_trajectory", stamp, {"poses": [[0.0, 0.0], [-0.5, 0.2]]}),
@@ -415,7 +477,167 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     assert evidence["freshness"]["ttl_expiry_zero_write"] is True
     assert evidence["freshness"]["ttl_expiry_critic_not_applied"] is True
     assert evidence["synchronized_samples"][0]["scan_point_count"] == 80
+    assert evidence["synchronized_samples"][0]["depth_observation_valid"] is True
+    assert evidence["synchronized_samples"][0]["rgbd_obstacle_footprints"][0]["source"] == "projected_depth_points"
+    assert evidence["synchronized_samples"][0]["typed_obstacles"][0]["observed_spatial_error_m"] is not None
     assert evidence["passive"]["success"] is True
+
+
+def _depth_projection_inputs(depth_m=1.0, *, encoding="32FC1", with_tf=True):
+    stamp = 3_000_000_000
+    if encoding == "32FC1":
+        data = struct.pack("<64f", *([depth_m] * 64))
+        step = 32
+        bigendian = False
+    else:
+        data = struct.pack(">64H", *([int(depth_m * 1000.0)] * 64))
+        step = 16
+        bigendian = True
+    depth = RecordedMessage("/camera/front/depth/image_raw", stamp, {
+        "header": {"stamp": stamp, "frame_id": "camera_optical"},
+        "width": 8, "height": 8, "step": step, "encoding": encoding,
+        "is_bigendian": bigendian, "data": data,
+    })
+    info = RecordedMessage("/camera/front/camera_info", stamp, {
+        "header": {"stamp": stamp, "frame_id": "camera_optical"},
+        "width": 8, "height": 8,
+        "k": [100.0, 0.0, 0.0, 0.0, 100.0, 0.0, 0.0, 0.0, 1.0],
+    })
+    transforms = []
+    if with_tf:
+        transforms.append(RecordedMessage("/tf_static", stamp, {"transforms": [{
+            "header": {"stamp": stamp, "frame_id": "map"},
+            "child_frame_id": "camera_optical",
+            "transform": {
+                "translation": {"x": -0.45, "y": -0.35, "z": -0.92},
+                "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }]}))
+    return depth, info, transforms
+
+
+def test_depth_decoder_honors_row_padding_and_big_endian_millimeters():
+    padded = b"".join(
+        struct.pack("<2f", *row) + b"PAD!"
+        for row in ((1.0, 2.0), (3.0, 4.0))
+    )
+    pixels, error = causal._decode_depth_pixels({
+        "width": 2, "height": 2, "step": 12, "encoding": "32FC1",
+        "is_bigendian": False, "data": padded,
+    }, stride=1, maximum_depth_m=8.0)
+    assert error is None
+    assert [value for _, _, value in pixels] == [1.0, 2.0, 3.0, 4.0]
+    pixels, error = causal._decode_depth_pixels({
+        "width": 2, "height": 1, "step": 4, "encoding": "16UC1",
+        "is_bigendian": True, "data": struct.pack(">2H", 500, 1250),
+    }, stride=1, maximum_depth_m=8.0)
+    assert error is None
+    assert [value for _, _, value in pixels] == pytest.approx([0.5, 1.25])
+
+
+@pytest.mark.parametrize(
+    ("depth_m", "encoding", "with_tf", "expected_valid", "expected_hit"),
+    [
+        (1.0, "32FC1", True, True, True),
+        (1.0, "16UC1", True, True, True),
+        (2.0, "32FC1", True, True, False),
+        (1.0, "32FC1", False, False, False),
+    ],
+)
+def test_depth_footprint_requires_real_projected_points(
+    depth_m, encoding, with_tf, expected_valid, expected_hit
+):
+    manifest = load_manifest(CONFIG)
+    depth, info, transforms = _depth_projection_inputs(
+        depth_m, encoding=encoding, with_tf=with_tf
+    )
+    result = causal._project_depth_obstacle(
+        depth, info, [], transforms,
+        causal._load_frozen_obstacle(manifest), manifest.criteria,
+    )
+    assert result["valid"] is expected_valid
+    assert bool(result["footprints"]) is expected_hit
+    if expected_hit:
+        assert result["footprints"][0]["source"] == "projected_depth_points"
+        assert result["footprints"][0]["point_count"] >= 3
+
+
+def test_invalid_depth_or_future_tf_never_fabricates_a_hit():
+    manifest = load_manifest(CONFIG)
+    depth, info, _ = _depth_projection_inputs()
+    invalid_depth = RecordedMessage(depth.topic, depth.stamp_ns, {
+        **depth.message, "encoding": "8UC1",
+    })
+    invalid = causal._project_depth_obstacle(
+        invalid_depth, info, [], [],
+        causal._load_frozen_obstacle(manifest), manifest.criteria,
+    )
+    assert invalid["valid"] is False
+    assert invalid["footprints"] == []
+    future_tf = RecordedMessage("/tf", depth.stamp_ns + 1, {"transforms": [{
+        "header": {"stamp": depth.stamp_ns + 1, "frame_id": "map"},
+        "child_frame_id": "camera_optical",
+        "transform": {
+            "translation": {"x": -0.45, "y": -0.35, "z": -0.92},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        },
+    }]})
+    no_future = causal._project_depth_obstacle(
+        depth, info, [future_tf], [],
+        causal._load_frozen_obstacle(manifest), manifest.criteria,
+    )
+    assert no_future["valid"] is False
+    assert no_future["footprints"] == []
+
+
+def test_recorded_tf_chain_and_inverse_are_composed_at_depth_stamp():
+    stamp = 4_000_000_000
+    transforms = RecordedMessage("/tf_static", stamp, {"transforms": [
+        {
+            "header": {"stamp": stamp, "frame_id": "map"},
+            "child_frame_id": "base_link",
+            "transform": {
+                "translation": {"x": 1.0, "y": 2.0, "z": 0.0},
+                "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        },
+        {
+            "header": {"stamp": stamp, "frame_id": "base_link"},
+            "child_frame_id": "camera_optical",
+            "transform": {
+                "translation": {"x": 0.5, "y": 0.0, "z": 0.0},
+                "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        },
+    ]})
+    map_from_camera = causal._lookup_recorded_transform(
+        [], [transforms], target_frame="map", source_frame="camera_optical",
+        stamp_ns=stamp,
+    )
+    assert map_from_camera is not None
+    assert causal._apply_transform(map_from_camera, (0.0, 0.0, 0.0)) == pytest.approx(
+        (1.5, 2.0, 0.0)
+    )
+    camera_from_map = causal._lookup_recorded_transform(
+        [], [transforms], target_frame="camera_optical", source_frame="map",
+        stamp_ns=stamp,
+    )
+    assert camera_from_map is not None
+    assert causal._apply_transform(camera_from_map, (1.5, 2.0, 0.0)) == pytest.approx(
+        (0.0, 0.0, 0.0)
+    )
+
+
+def test_scan_invisibility_requires_an_independent_valid_scan(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = manifest.runs[0]
+    row = _evidence(manifest, run)
+    row["synchronized_samples"][0]["scan_valid"] = False
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.scan_invisible_rgbd_pairs == 0
 
 
 def test_plan_dispatch_requires_all_three_adapters_and_constructs_commands(tmp_path):
@@ -448,6 +670,110 @@ def test_plan_dispatch_requires_all_three_adapters_and_constructs_commands(tmp_p
         "run_v6_r5_phase_b_kujiale.sh"
     )
     assert exact["runs"][3]["commands"]["episode"][1] == "dispatch-episode"
+    assert exact["runs"][2]["commands"]["producer_stop"][1] == "stop-producer"
+
+
+def test_copy_installed_manifest_resolves_phase_f_assets_without_cwd(
+    tmp_path, monkeypatch
+):
+    root = PACKAGE.parents[2]
+    share = tmp_path / "prefix/share/robot_experiments"
+    (share / "config").mkdir(parents=True)
+    installed_config = share / "config/v6_kujiale_low_obstacle_causal.yaml"
+    shutil.copy2(CONFIG, installed_config)
+    resources = (
+        "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        "data/maps/occupancy/v6_kujiale_isaacgen_v1.pgm",
+        "isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml",
+        "isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml",
+        "isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml",
+        "ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson",
+        "ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml",
+    )
+    for relative in resources:
+        destination = share / "phase_f_assets" / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / relative, destination)
+    monkeypatch.delenv("BIO_NAV_MODULE3_ROOT", raising=False)
+    monkeypatch.setattr(causal, "_installed_package_share", lambda: share)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    manifest = load_manifest(installed_config)
+    assert manifest.module3_root is None
+    for key in (
+        "occupancy_map", "spawn_manifest", "route_graph", "obstacle_config",
+        "obstacle_manifest", "navigation_overlay",
+    ):
+        resolved = Path(manifest.identity[key])
+        assert resolved.is_file()
+        assert share in resolved.parents
+    plan = build_plan(manifest, pilot=True, output_root=tmp_path / "plan")
+    assert Path(plan["runs"][0]["setup"]["navigation_overlay"]).is_file()
+
+
+def _run_campaign_with_fake_processes(tmp_path, monkeypatch, *, clear):
+    manifest = load_manifest(CONFIG)
+    run = next(row for row in manifest.runs if row.arm == "M2")
+    manifest = replace(manifest, runs=(run,))
+    events = []
+
+    def fake_start(name, command, log_path, *, env=None):
+        events.append(("start", name))
+        return SimpleNamespace(name=name)
+
+    def fake_stop(process, timeout_sec):
+        events.append(("stop", process.name))
+        return {"name": process.name, "returncode": 0}
+
+    def fake_run(command, **kwargs):
+        events.append(("run", command[0]))
+        return SimpleNamespace(returncode=0)
+
+    def fake_sleep(duration):
+        events.append(("sleep", duration))
+
+    def fake_record(*args, **kwargs):
+        events.append(("record_evidence", None))
+        return {"freshness": {
+            "ttl_expiry_observed": clear,
+            "ttl_expiry_zero_write": clear,
+            "ttl_expiry_critic_not_applied": None,
+        }}
+
+    monkeypatch.setattr(causal, "_start_process", fake_start)
+    monkeypatch.setattr(causal, "_stop_process", fake_stop)
+    monkeypatch.setattr(causal.subprocess, "run", fake_run)
+    monkeypatch.setattr(causal.time, "sleep", fake_sleep)
+    monkeypatch.setattr(causal, "record_evidence_from_bag", fake_record)
+    adapters = AdapterTemplates("/scene", "/stack", "/episode", "/producer-stop")
+    summary = run_campaign(
+        manifest, adapters, tmp_path / "campaign", pilot=False,
+        shutdown_timeout_sec=0.1,
+    )
+    return summary, events
+
+
+def test_campaign_stops_producer_then_records_ttl_clear_before_stack_shutdown(
+    tmp_path, monkeypatch
+):
+    summary, events = _run_campaign_with_fake_processes(
+        tmp_path, monkeypatch, clear=True
+    )
+    assert summary["runs"][0]["state"] == "EPISODE_FINISHED"
+    assert events == [
+        ("start", "scene"), ("start", "stack"), ("start", "recorder"),
+        ("run", "/episode"), ("run", "/producer-stop"),
+        ("sleep", pytest.approx(1.5)),
+        ("stop", "stack"), ("stop", "recorder"), ("stop", "scene"),
+        ("record_evidence", None),
+    ]
+
+
+def test_campaign_missing_post_ttl_clear_is_a_failure(tmp_path, monkeypatch):
+    summary, _ = _run_campaign_with_fake_processes(tmp_path, monkeypatch, clear=False)
+    assert summary["runs"][0]["state"] == "TTL_CLEAR_FAILED"
+    assert summary["state"] == "FINISHED_WITH_FAILURES"
 
 
 def test_pilot_evaluator_uses_only_one_four_arm_repeat(tmp_path):
@@ -475,6 +801,10 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "edge_prior" not in stack
     assert "cognitive_place_graph" not in stack
     assert "initialpose" not in stack
+    assert '[[ "${1:-}" == "stop-producer" ]]' in stack
+    assert 'wait "${module3_pid}"' in stack
+    assert 'integration_bridge.pid' in stack
+    assert 'module2_server.pid' in stack
     assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "cognitive_graph_mode:=\"${graph_mode}\"" in wrapper
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper

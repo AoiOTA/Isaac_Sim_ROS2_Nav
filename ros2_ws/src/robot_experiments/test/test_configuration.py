@@ -63,12 +63,24 @@ def test_v6_low_obstacle_scenario_selects_only_the_frozen_layout():
         "v6_kujiale_low_obstacles_frozen.yaml"
     )
     assert scenario.obstacles["layout_id"] == (
-        "kujiale_v6_low_obstacles_frozen_r1_20260820"
+        "kujiale_v6_low_obstacles_phase_f_r2_20260826"
     )
+    assert scenario.run_matrix[0].variant_id == "v6_phase_f_r2"
     assert [item["id"] for item in scenario.obstacles["static"]] == [
         "v6_low_box_solo"
     ]
     assert scenario.obstacle_trajectories == ()
+    frozen = yaml.safe_load((
+        PACKAGE_ROOT.parents[2]
+        / "isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml"
+    ).read_text(encoding="utf-8"))
+    assert frozen["obstacles"] == [{
+        "id": "v6_low_box_solo", "mode": "stationary", "trigger_group": None,
+        "size": [0.30, 0.30, 0.16], "mass": 5.0,
+        "start": [-0.45, -0.35, 0.08], "end": [-0.45, -0.35, 0.08],
+        "speed": 0.0, "delay_sec": 0.0, "jitter_sec": 0.0,
+        "post_motion": "hold",
+    }]
 
 
 def test_dynamic_scenario_preserves_reproducible_trajectories():

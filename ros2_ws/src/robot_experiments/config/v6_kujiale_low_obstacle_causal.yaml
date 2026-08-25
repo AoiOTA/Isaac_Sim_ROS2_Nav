@@ -19,11 +19,12 @@ identity:
   module1_amcl_prior_enabled: false
   cognitive_place_graph_enabled: false
   scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
-  occupancy_map: ../../../../data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
-  spawn_manifest: ../../../../isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
-  route_graph: ../../robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
-  obstacle_config: ../../../../isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
-  obstacle_manifest: ../../../../isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
+  occupancy_map: module3://data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+  spawn_manifest: module3://isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  route_graph: module3://ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
+  obstacle_config: module3://isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen.yaml
+  obstacle_manifest: module3://isaac_sim/configs/experiments/v6_kujiale_low_obstacles_frozen_manifest.yaml
+  navigation_overlay: module3://ros2_ws/src/robot_navigation/config/nav2_v6_low_obstacle_isolation.yaml
 
 localization_contract:
   startup_profile: estimated_autonomy
@@ -38,6 +39,7 @@ freshness:
   typed_obstacle_ttl_sec: 0.5
   future_tolerance_sec: 0.05
   stale_action: stop_and_fail_open
+  post_producer_stop_observation_margin_sec: 1.0
   fail_open_requires_zero_layer_write: true
   fail_open_requires_critic_not_applied: true
 
@@ -95,6 +97,9 @@ capture:
     - /amcl_pose
     - /scan
     - /camera/front/depth/image_raw
+    - /camera/front/camera_info
+    - /tf
+    - /tf_static
     - /bio_nav/module2/cognitive_obstacles
     - /bio_nav/cognitive_obstacle_layer/status
     - /bio_nav/local_risk_layer/status
@@ -121,11 +126,21 @@ capture:
     - frame_id
     - scan_point_count
     - scan_hits_in_obstacle_footprints
+    - scan_valid
+    - depth_observation_valid
+    - depth_observation_reason
+    - depth_point_count
+    - depth_hits_in_obstacle_bounds
     - rgbd_obstacle_footprints
     - typed_obstacles
 
 criteria:
   typed_spatial_match_tolerance_m: 0.20
+  depth_subsample_stride: 4
+  depth_max_range_m: 8.0
+  depth_obstacle_bounds_tolerance_m: 0.10
+  depth_low_z_tolerance_m: 0.05
+  depth_min_obstacle_points: 3
   m1_m0_path_hausdorff_max_m: 0.15
   m1_m0_path_length_delta_max_fraction: 0.05
   active_clearance_gain_min_m: 0.20
