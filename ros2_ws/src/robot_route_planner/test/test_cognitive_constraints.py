@@ -8,7 +8,12 @@ import pytest
 from robot_route_planner.cognitive_constraints import (
     CognitiveConstraintsCache,
     build_cognitive_constraints,
+    cognitive_constraints_payload,
+    observed_adjacent_transition_report,
     occupancy_grid_version,
+)
+from robot_route_planner.cognitive_constraints_dump import (
+    dump_fixed_scene_constraints,
 )
 from robot_route_planner.feasibility import classify_edge
 from robot_route_planner.map_io import OccupancyMap, load_occupancy_map
@@ -171,22 +176,42 @@ def test_kujiale_fixed_scene_override_uses_51_mask_and_physical_sweeps() -> None
     )
 
     assert int(default.reachable_state_mask.sum()) == 21
+    assert len(default.verified_transitions) == 28
     assert default.cognitive_tile_id.startswith("canvas16:")
+    for (source, target), path in zip(
+        default.verified_transitions,
+        default.transition_witnesses_map_xy,
+        strict=True,
+    ):
+        source_row, source_column = divmod(int(source), 16)
+        target_row, target_column = divmod(int(target), 16)
+        assert np.allclose(
+            path,
+            (
+                (source_column - 7.5, source_row - 7.5),
+                (target_column - 7.5, target_row - 7.5),
+            ),
+        )
     assert int(fixed_scene.reachable_state_mask.sum()) == 51
     assert fixed_scene.cognitive_tile_id == "v6_kujiale_isaacgen_v1"
     assert np.array_equal(fixed_scene.t_map_canvas, np.eye(3))
-    assert len(fixed_scene.verified_transitions) > 0
-    for source, target in fixed_scene.verified_transitions:
+    assert len(fixed_scene.verified_transitions) == 132
+    assert fixed_scene.transition_witnesses_map_xy.shape == (132, 2, 2)
+    adjacency = {
+        int(state): set()
+        for state in np.flatnonzero(fixed_scene.reachable_state_mask)
+    }
+    for (source, target), path in zip(
+        fixed_scene.verified_transitions,
+        fixed_scene.transition_witnesses_map_xy,
+        strict=True,
+    ):
         assert fixed_scene.reachable_state_mask[source]
         assert fixed_scene.reachable_state_mask[target]
         source_row, source_column = divmod(int(source), 16)
         target_row, target_column = divmod(int(target), 16)
-        path = np.asarray(
-            (
-                (source_column - 7.5, source_row - 7.5),
-                (target_column - 7.5, target_row - 7.5),
-            )
-        )
+        assert abs(source_row - target_row) + abs(source_column - target_column) == 1
+        adjacency[int(source)].add(int(target))
         assert classify_edge(
             occupancy,
             path,
@@ -195,6 +220,78 @@ def test_kujiale_fixed_scene_override_uses_51_mask_and_physical_sweeps() -> None
             padded_inscribed_radius_m=footprint["padded_inscribed_radius_m"],
             sweep_sample_spacing_m=footprint["sweep_sample_spacing_m"],
         ) == Traversability.FEASIBLE
+    reached = {40}
+    queue = [40]
+    while queue:
+        state = queue.pop()
+        for target in adjacency[state]:
+            if target not in reached:
+                reached.add(target)
+                queue.append(target)
+    assert reached == set(adjacency)
+    assert {40, 200, 181, 117, 85}.issubset(reached)
+
+    repeated = build_cognitive_constraints(
+        occupancy,
+        map_version="live-map-version",
+        graph_revision=1,
+        footprint_settings=footprint,
+        fixed_scene_override_file=override,
+    )
+    assert np.array_equal(
+        repeated.verified_transitions, fixed_scene.verified_transitions
+    )
+    assert np.array_equal(
+        repeated.transition_witnesses_map_xy,
+        fixed_scene.transition_witnesses_map_xy,
+    )
+
+
+def test_fixed_scene_payload_and_gt_report_do_not_add_transitions(
+    tmp_path: Path,
+) -> None:
+    repo = Path(__file__).resolve().parents[4]
+    module2 = repo.parent / "bio_nav_module2"
+    enrollment = module2 / "configs/kujiale_0026_module1_enrollment_v310.yaml"
+    output = tmp_path / "constraints.json"
+    payload = dump_fixed_scene_constraints(
+        map_yaml=repo / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        scene_config=enrollment,
+        output=output,
+        include_witnesses=True,
+    )
+    assert output.is_file()
+    assert payload["map_id"] == "v6_kujiale_isaacgen_v1"
+    assert len(payload["valid_state_ids"]) == 51
+    assert len(payload["verified_transitions"]) == 132
+    assert len(payload["transition_witnesses_map_xy"]) == 132
+
+    occupancy = load_occupancy_map(
+        repo / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        unknown_is_occupied=True,
+    )
+    value = build_cognitive_constraints(
+        occupancy,
+        map_version="map-version",
+        graph_revision=1,
+        footprint_settings=_jackal_footprint(),
+        fixed_scene_override_file=enrollment,
+    )
+    transitions_before = value.verified_transitions.copy()
+    report = observed_adjacent_transition_report(
+        value,
+        np.asarray((40, 56, 72, 88, 104, 104)),
+        np.ones(6, dtype=bool),
+    )
+    assert report["observed_adjacent_occurrences"] == 4
+    assert report["missing_adjacent_occurrences"] == 1
+    assert report["missing_unique_transitions"] == [[88, 104]]
+    assert np.array_equal(value.verified_transitions, transitions_before)
+
+    direct_payload = cognitive_constraints_payload(
+        value, include_witnesses=False
+    )
+    assert "transition_witnesses_map_xy" not in direct_payload
 
 
 def test_fixed_scene_override_rejects_conflicting_explicit_tile_id() -> None:
