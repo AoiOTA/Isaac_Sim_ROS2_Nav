@@ -824,7 +824,20 @@ class V6FormalNode:
         self._capture(topic, message)
 
     def _reset_event(self, message: Any) -> None:
+        previous_reset_events = self.guard.reset_events
         self.guard.record_reset_event()
+        if (
+            previous_reset_events == 0
+            and self.guard.reset_events == 1
+            and not self.guard.stop_reason
+        ):
+            # TF observed before this accepted reset epoch cannot satisfy
+            # post-reset navigation readiness.  A duplicate or out-of-order
+            # reset event retains EpisodeGuard's existing STOP semantics and
+            # must not rewrite the current epoch's observations.
+            self.map_odom_tf_seen = False
+            self.odom_base_tf_seen = False
+            self.guard.tf_active = False
         self._capture("/simulation/reset_event", message)
 
     def _reset_gate_status(self, message: Any) -> None:

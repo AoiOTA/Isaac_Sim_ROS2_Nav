@@ -240,6 +240,97 @@ def test_stale_reset_gate_release_does_not_authorize_goal():
     assert guard.goal_ready
 
 
+def _tf_message(parent: str, child: str):
+    return SimpleNamespace(
+        transforms=[
+            SimpleNamespace(
+                header=SimpleNamespace(frame_id=parent),
+                child_frame_id=child,
+            )
+        ]
+    )
+
+
+def _stamped_pose(stamp_ns: int):
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(
+                sec=stamp_ns // 1_000_000_000,
+                nanosec=stamp_ns % 1_000_000_000,
+            )
+        )
+    )
+
+
+def _tf_epoch_adapter() -> V6FormalNode:
+    adapter = V6FormalNode.__new__(V6FormalNode)
+    adapter.guard = EpisodeGuard(mission_leg_ids=("G2",))
+    adapter.map_odom_tf_seen = False
+    adapter.odom_base_tf_seen = False
+    adapter._capture = lambda *_args, **_kwargs: None
+    return adapter
+
+
+def _record_adapter_navigation_ready(adapter: V6FormalNode) -> None:
+    adapter.guard.record_navigation_ready(
+        nav2_active=True,
+        tf_active=adapter.map_odom_tf_seen and adapter.odom_base_tf_seen,
+    )
+
+
+def test_reset_epoch_requires_both_tf_edges_to_be_observed_again():
+    adapter = _tf_epoch_adapter()
+    adapter._tf(_tf_message("map", "odom"))
+    adapter._tf(_tf_message("odom", "base_link"))
+    assert adapter.map_odom_tf_seen and adapter.odom_base_tf_seen
+
+    adapter.guard.arm_reset(ready_facts())
+    adapter.guard.record_reset_call()
+    adapter.guard.record_reset_response(True)
+    adapter._reset_gate_status(
+        SimpleNamespace(data='{"generation":7,"held":false}')
+    )
+    adapter._reset_event(SimpleNamespace())
+    adapter.guard.record_reset_receipt_generation(7)
+    adapter._initialpose(_stamped_pose(100))
+    adapter._amcl_pose(_stamped_pose(101))
+
+    _record_adapter_navigation_ready(adapter)
+    assert not adapter.guard.goal_ready
+    assert not adapter.guard.tf_active
+
+    adapter._tf(_tf_message("map", "odom"))
+    _record_adapter_navigation_ready(adapter)
+    assert not adapter.guard.goal_ready
+    assert not adapter.guard.tf_active
+
+    adapter._tf(_tf_message("odom", "base_footprint"))
+    _record_adapter_navigation_ready(adapter)
+    assert adapter.guard.tf_active
+    assert adapter.guard.goal_ready
+
+
+def test_invalid_reset_events_do_not_rewrite_tf_epoch_observations():
+    out_of_order = _tf_epoch_adapter()
+    out_of_order._tf(_tf_message("map", "odom"))
+    out_of_order._reset_event(SimpleNamespace())
+    assert out_of_order.guard.stop_reason == "reset_event_without_call"
+    assert out_of_order.map_odom_tf_seen
+
+    duplicate = _tf_epoch_adapter()
+    duplicate.guard.arm_reset(ready_facts())
+    duplicate.guard.record_reset_call()
+    duplicate.guard.record_reset_response(True)
+    duplicate._reset_event(SimpleNamespace())
+    duplicate._tf(_tf_message("map", "odom"))
+    duplicate._reset_event(SimpleNamespace())
+    assert duplicate.guard.stop_reason == "second_reset_event"
+    assert duplicate.map_odom_tf_seen
+    duplicate._tf(_tf_message("odom", "base_link"))
+    _record_adapter_navigation_ready(duplicate)
+    assert not duplicate.guard.goal_ready
+
+
 def test_reset_is_exactly_once():
     guard = EpisodeGuard()
     guard.arm_reset(ready_facts())
