@@ -229,6 +229,8 @@ def generate_launch_description():
     module2_prior_ttl_s = LaunchConfiguration('module2_prior_ttl_s')
     cognitive_graph_mode = LaunchConfiguration('cognitive_graph_mode')
     region_config_file = LaunchConfiguration('region_config_file')
+    cognitive_constraints_override_file = LaunchConfiguration(
+        'cognitive_constraints_override_file')
     region_switch_min_dwell_s = LaunchConfiguration(
         'region_switch_min_dwell_s')
     lifecycle_nodes = [
@@ -267,6 +269,8 @@ def generate_launch_description():
             'cognitive_graph_mode', default_value='gvg',
             description='gvg, shadow, hybrid, or primary'),
         DeclareLaunchArgument('region_config_file', default_value=''),
+        DeclareLaunchArgument(
+            'cognitive_constraints_override_file', default_value=''),
         DeclareLaunchArgument('region_switch_min_dwell_s', default_value='0.5'),
         # Preserve the qualified A21 values by default, but let an outdoor
         # caller bind a last-precedence controller envelope explicitly.
@@ -396,6 +400,8 @@ def generate_launch_description():
                 'module2_prior_ttl_s': module2_prior_ttl_s,
                 'cognitive_graph_mode': cognitive_graph_mode,
                 'region_config_file': region_config_file,
+                'cognitive_constraints_override_file': (
+                    cognitive_constraints_override_file),
                 'region_switch_min_dwell_s': region_switch_min_dwell_s,
                 'execute_navigation': execute_route_navigation,
                 'route_guided_bt_xml': str(route_guided_bt),

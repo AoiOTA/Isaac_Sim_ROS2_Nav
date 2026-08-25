@@ -481,6 +481,8 @@ def _launch_setup(context):
                 'module2_prior_ttl_s': LaunchConfiguration(
                     'module2_prior_ttl_s').perform(context),
                 'cognitive_graph_mode': cognitive_graph_mode,
+                'cognitive_constraints_override_file': LaunchConfiguration(
+                    'cognitive_constraints_override_file').perform(context),
                 'voxel_grid_topic': (
                     'stvl_voxel_grid'
                     if nav2_profile in {
@@ -690,6 +692,11 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'cognitive_graph_mode', default_value='gvg',
             description='gvg, shadow, hybrid, or primary'),
+        DeclareLaunchArgument(
+            'cognitive_constraints_override_file', default_value='',
+            description=(
+                'optional fixed-scene Module1 YAML providing the canonical '
+                '16x16 reachable mask and T_map_canvas')),
         DeclareLaunchArgument(
             'activation_startup_timeout', default_value='120.0',
             description='bounded Nav2 activation readiness deadline'),

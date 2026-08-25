@@ -9,7 +9,9 @@ from robot_route_planner.cognitive_constraints import (
     build_cognitive_constraints,
     occupancy_grid_version,
 )
-from robot_route_planner.map_io import OccupancyMap
+from robot_route_planner.feasibility import classify_edge
+from robot_route_planner.map_io import OccupancyMap, load_occupancy_map
+from robot_route_planner.models import Traversability
 
 
 def _footprint() -> dict:
@@ -23,6 +25,20 @@ def _footprint() -> dict:
         "padding_m": 0.02,
         "padded_inscribed_radius_m": 0.10,
         "sweep_sample_spacing_m": 0.05,
+    }
+
+
+def _jackal_footprint() -> dict:
+    return {
+        "polygon_m": [
+            [0.255, 0.210],
+            [0.255, -0.210],
+            [-0.230, -0.210],
+            [-0.230, 0.210],
+        ],
+        "padding_m": 0.005,
+        "padded_inscribed_radius_m": 0.215,
+        "sweep_sample_spacing_m": 0.025,
     }
 
 
@@ -125,3 +141,54 @@ def test_tile_cache_reuses_revision_bound_constraints_and_invalidates_values() -
     cache.invalidate()
     assert cache.get(key) is None
     assert (cache.hits, cache.misses, len(cache.values)) == (1, 2, 0)
+
+
+def test_kujiale_fixed_scene_override_uses_51_mask_and_physical_sweeps() -> None:
+    repo = Path(__file__).resolve().parents[4]
+    module2 = repo.parent / "bio_nav_module2"
+    override = (
+        module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+    occupancy = load_occupancy_map(
+        repo / "data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+        unknown_is_occupied=True,
+    )
+    footprint = _jackal_footprint()
+
+    default = build_cognitive_constraints(
+        occupancy,
+        map_version="live-map-version",
+        graph_revision=1,
+        footprint_settings=footprint,
+    )
+    fixed_scene = build_cognitive_constraints(
+        occupancy,
+        map_version="live-map-version",
+        graph_revision=1,
+        footprint_settings=footprint,
+        fixed_scene_override_file=override,
+    )
+
+    assert int(default.reachable_state_mask.sum()) == 21
+    assert int(fixed_scene.reachable_state_mask.sum()) == 51
+    assert np.array_equal(fixed_scene.t_map_canvas, np.eye(3))
+    assert len(fixed_scene.verified_transitions) > 0
+    for source, target in fixed_scene.verified_transitions:
+        assert fixed_scene.reachable_state_mask[source]
+        assert fixed_scene.reachable_state_mask[target]
+        source_row, source_column = divmod(int(source), 16)
+        target_row, target_column = divmod(int(target), 16)
+        path = np.asarray(
+            (
+                (source_column - 7.5, source_row - 7.5),
+                (target_column - 7.5, target_row - 7.5),
+            )
+        )
+        assert classify_edge(
+            occupancy,
+            path,
+            footprint_polygon_m=np.asarray(footprint["polygon_m"]),
+            footprint_padding_m=footprint["padding_m"],
+            padded_inscribed_radius_m=footprint["padded_inscribed_radius_m"],
+            sweep_sample_spacing_m=footprint["sweep_sample_spacing_m"],
+        ) == Traversability.FEASIBLE

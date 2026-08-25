@@ -28,6 +28,7 @@ PACKAGE = Path(__file__).resolve().parents[1]
 REPO = Path(__file__).resolve().parents[4]
 CONFIG = PACKAGE / "config"
 MANIFEST = CONFIG / "v6_r3_phase2_kujiale_baseline.yaml"
+PHASE_B_MANIFEST = CONFIG / "v6_r5_phase_b_kujiale_exact_baseline.yaml"
 LEGACY_MANIFESTS = tuple(
     CONFIG / f"v6_final_{world}_{category}.yaml"
     for world in ("kujiale", "rivermark")
@@ -100,6 +101,41 @@ def test_r3_phase2_manifest_is_the_only_dispatch_candidate():
     text = MANIFEST.read_text(encoding="utf-8")
     for forbidden in ("B5", "M3", "primary", "rf2o"):
         assert forbidden not in text
+
+
+def test_r5_phase_b_manifest_binds_original_scene_and_shadow_baseline():
+    manifest = load_manifest(PHASE_B_MANIFEST)
+
+    assert manifest.scene_id == "kujiale_0026_A_to_B_door_open"
+    assert manifest.runtime["cognitive_profile"] == "M0"
+    assert manifest.runtime["module1_mode"] == "shadow"
+    assert manifest.runtime["module2_navigation_write_enabled"] is False
+    assert manifest.runtime["cognitive_place_graph_enabled"] is False
+    assert manifest.runtime["route_backend"] == "gvg"
+    assert manifest.runtime["low_obstacles_enabled"] is False
+    assert manifest.runtime["dynamic_actors_enabled"] is False
+    assert manifest.assets["scene_asset"].endswith(
+        "/kujiale_0026/kujiale_0026_A_to_B_door_open.usd"
+    )
+    assert manifest.assets["occupancy_map"].endswith(
+        "/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"
+    )
+    assert manifest.assets["spawn_manifest"].endswith(
+        "/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+    )
+    assert manifest.assets["route_graph"].endswith(
+        "/v6_kujiale_isaacgen_v1_gvg_v1.geojson"
+    )
+    assert [leg.goal_id for leg in manifest.mission_legs] == [
+        "G2", "G3", "G4", "G5", "G1"
+    ]
+
+
+def test_r5_phase_b_rejects_nonexact_scene_asset(tmp_path):
+    raw = yaml.safe_load(PHASE_B_MANIFEST.read_text(encoding="utf-8"))
+    raw["assets"]["scene_asset"] = "/tmp/modified_scene.usd"
+    with pytest.raises(V6ContractError, match="accepted Phase B asset"):
+        load_manifest(_write_manifest(tmp_path, raw))
 
 
 @pytest.mark.parametrize("path", LEGACY_MANIFESTS)

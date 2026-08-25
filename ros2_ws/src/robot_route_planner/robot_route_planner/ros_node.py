@@ -462,6 +462,7 @@ class RouteCoordinator:
             ("odometry_max_age_s", 0.5),
             ("region_config_file", ""),
             ("region_switch_min_dwell_s", 0.5),
+            ("cognitive_constraints_override_file", ""),
             ("compute_route_action", "/compute_route"),
             ("navigate_to_pose_action", "/navigate_to_pose"),
             ("dynamic_edges_service", "/route_server/DynamicEdgesScorer/adjust_edges"),
@@ -646,6 +647,9 @@ class RouteCoordinator:
         # once when the barrier opens.
         self._deferred_occupancy_map = None
         self.cognitive_constraints_cache = CognitiveConstraintsCache()
+        self.cognitive_constraints_override_file = str(
+            node.get_parameter("cognitive_constraints_override_file").value
+        ).strip()
         node.declare_parameter("cognitive_tile_cache_entries", 0)
         node.declare_parameter("cognitive_tile_cache_hits", 0)
         node.declare_parameter("cognitive_tile_cache_misses", 0)
@@ -3018,6 +3022,9 @@ class RouteCoordinator:
                 stable_duration_s=0.0,
                 persistent_confirmed=True,
                 cognitive_tile_id=tile_id,
+                fixed_scene_override_file=(
+                    self.cognitive_constraints_override_file or None
+                ),
             )
         with self._route_output_lock():
             with self._route_state_lock():

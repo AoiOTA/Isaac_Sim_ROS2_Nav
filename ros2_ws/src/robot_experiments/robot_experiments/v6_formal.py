@@ -67,6 +67,23 @@ R3_PHASE2_RUNTIME = {
     "dynamic_actors_enabled": False,
     "goal_checker": "position_xy",
 }
+R5_PHASE_B_SCENE_ID = "kujiale_0026_A_to_B_door_open"
+R5_PHASE_B_RUNTIME = {
+    **R3_PHASE2_RUNTIME,
+    "cognitive_profile": "M0",
+    "module1_mode": "shadow",
+}
+R3_PHASE2_ASSET_KEYS = {
+    "scene_asset",
+    "occupancy_map",
+    "spawn_manifest",
+    "route_graph",
+    "navigation_config",
+}
+R5_PHASE_B_ASSET_KEYS = R3_PHASE2_ASSET_KEYS | {
+    "module1_shadow_config",
+    "module1_shadow_checkpoint",
+}
 
 # Runtime subscriptions are a reviewable firewall.  Keep Ground Truth in the
 # passive evaluator, never in this dispatcher.
@@ -211,6 +228,50 @@ def _xy_goal(raw: Mapping[str, Any], path: str) -> tuple[str, float, float]:
     )
 
 
+def _validate_phase_b_shadow_assets(assets: Mapping[str, Any]) -> None:
+    config_path = Path(str(assets["module1_shadow_config"])).expanduser().resolve()
+    checkpoint_path = Path(
+        str(assets["module1_shadow_checkpoint"])
+    ).expanduser().resolve()
+    try:
+        document = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise V6ContractError(
+            f"assets.module1_shadow_config is unreadable: {config_path}"
+        ) from exc
+    document = _mapping(document, "module1_shadow_config")
+    scene = _mapping(document.get("scene"), "module1_shadow_config.scene")
+    if scene.get("scene_id") != R5_PHASE_B_SCENE_ID:
+        raise V6ContractError("Module1 shadow scene_id differs from Phase B scene")
+    if scene.get("map_id") != "v6_kujiale_isaacgen_v1":
+        raise V6ContractError("Module1 shadow map_id must be v6_kujiale_isaacgen_v1")
+    transform = scene.get("T_map_canvas")
+    if transform != [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]:
+        raise V6ContractError("Module1 shadow T_map_canvas must be identity")
+    state_mask = scene.get("valid_state_mask")
+    state_ids = scene.get("valid_state_ids")
+    if (
+        not isinstance(state_mask, list)
+        or len(state_mask) != 256
+        or any(not isinstance(value, bool) for value in state_mask)
+        or sum(state_mask) != 51
+    ):
+        raise V6ContractError("Module1 shadow valid_state_mask must contain 51/256 states")
+    expected_ids = [index for index, enabled in enumerate(state_mask) if enabled]
+    if state_ids != expected_ids:
+        raise V6ContractError("Module1 shadow valid_state_ids disagree with mask")
+    configured_checkpoint = str(document.get("checkpoint", "")).strip()
+    if not configured_checkpoint:
+        raise V6ContractError("Module1 shadow checkpoint must be configured")
+    configured_path = Path(configured_checkpoint).expanduser()
+    if not configured_path.is_absolute():
+        configured_path = config_path.parent.parent / configured_path
+    if configured_path.resolve() != checkpoint_path:
+        raise V6ContractError(
+            "assets.module1_shadow_checkpoint differs from the shadow config"
+        )
+
+
 def load_manifest(path: str | Path) -> Manifest:
     manifest_path = Path(path).expanduser().resolve()
     raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
@@ -234,9 +295,23 @@ def load_manifest(path: str | Path) -> Manifest:
     if raw.get("intended_use") != "engineering_pilot":
         raise V6ContractError("intended_use must be engineering_pilot")
 
+    scene = _mapping(raw.get("scene"), "scene")
+    _require_exact_keys(scene, {"id", "world", "category"}, "scene")
+    scene_id = str(scene.get("id", ""))
+    category = str(scene.get("category", ""))
+    if scene_id not in {"v6_kujiale_clearance_r2", R5_PHASE_B_SCENE_ID}:
+        raise V6ContractError("scene.id is not an R3 Phase2 Kujiale scene")
+    if scene.get("world") != "kujiale" or category != "static":
+        raise V6ContractError("R3 Phase2 scene must be static Kujiale")
+
+    expected_runtime = (
+        R5_PHASE_B_RUNTIME
+        if scene_id == R5_PHASE_B_SCENE_ID
+        else R3_PHASE2_RUNTIME
+    )
     runtime = _mapping(raw.get("runtime"), "runtime")
-    _require_exact_keys(runtime, set(R3_PHASE2_RUNTIME), "runtime")
-    for name, expected in R3_PHASE2_RUNTIME.items():
+    _require_exact_keys(runtime, set(expected_runtime), "runtime")
+    for name, expected in expected_runtime.items():
         value = runtime.get(name)
         if isinstance(expected, Mapping):
             value = _mapping(value, f"runtime.{name}")
@@ -244,26 +319,33 @@ def load_manifest(path: str | Path) -> Manifest:
         if value != expected:
             raise V6ContractError(f"runtime.{name} must be {expected!r}")
 
-    scene = _mapping(raw.get("scene"), "scene")
-    _require_exact_keys(scene, {"id", "world", "category"}, "scene")
-    category = str(scene.get("category", ""))
-    if scene.get("id") != "v6_kujiale_clearance_r2":
-        raise V6ContractError("scene.id must be v6_kujiale_clearance_r2")
-    if scene.get("world") != "kujiale" or category != "static":
-        raise V6ContractError("R3 Phase2 scene must be static Kujiale")
-
     assets = _mapping(raw.get("assets"), "assets")
-    asset_keys = {
-        "scene_asset",
-        "occupancy_map",
-        "spawn_manifest",
-        "route_graph",
-        "navigation_config",
-    }
+    asset_keys = (
+        R5_PHASE_B_ASSET_KEYS
+        if scene_id == R5_PHASE_B_SCENE_ID
+        else R3_PHASE2_ASSET_KEYS
+    )
     _require_exact_keys(assets, asset_keys, "assets")
     for name, value in assets.items():
         if not isinstance(value, str) or not value:
             raise V6ContractError(f"assets.{name} must be a non-empty path")
+    if scene_id == R5_PHASE_B_SCENE_ID:
+        expected_suffixes = {
+            "scene_asset": "/kujiale_0026/kujiale_0026_A_to_B_door_open.usd",
+            "occupancy_map": "/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
+            "spawn_manifest": (
+                "/isaac_sim/configs/environments/"
+                "kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml"
+            ),
+            "route_graph": (
+                "/ros2_ws/src/robot_route_planner/config/"
+                "v6_kujiale_isaacgen_v1_gvg_v1.geojson"
+            ),
+        }
+        for name, suffix in expected_suffixes.items():
+            if not str(assets[name]).endswith(suffix):
+                raise V6ContractError(f"assets.{name} is not the accepted Phase B asset")
+        _validate_phase_b_shadow_assets(assets)
 
     mission = _mapping(raw.get("mission"), "mission")
     _require_exact_keys(mission, {"reset_pose", "legs"}, "mission")
@@ -347,7 +429,7 @@ def load_manifest(path: str | Path) -> Manifest:
     return Manifest(
         path=manifest_path,
         raw=raw,
-        scene_id=str(scene.get("id", "")),
+        scene_id=scene_id,
         category=category,
         runtime=runtime,
         assets={name: str(value) for name, value in assets.items()},
