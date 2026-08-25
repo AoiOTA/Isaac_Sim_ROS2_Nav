@@ -124,3 +124,63 @@ OS1-128 profile and `max_ring:=127`. Do not reset or move until adapted output
 has the full unchanged `ring 0..127` range and NDT emits identity/status
 without degradation. NDT128 geometry, cadence, and accuracy remain unassessed;
 this amendment is not promotion, Phase 1D authorization, or qualification.
+
+## NDT128 terminal decision
+
+The subsequent bounded OS1-128 capture at
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_ndt_os1_128_capture_first_20260825T002726Z`
+completed its 16 s engineering window with 160 raw, adapted, NDT status, and
+NDT odometry samples. The full `ring 0..127` contract remained valid, NDT
+reported tracking throughout the measured window, and processing p50/p95/max
+was `7.456/15.531/24.931 ms`.
+
+Geometry nevertheless failed the local-odometry objective. Against the
+start-aligned GT sensitivity reference, NDT XY error crossed `0.5/1.0 m` after
+`3.750/7.150 s`, reached `2.067 m`, and ended at `2.060 m`; endpoint-direction
+error was `-102.60 deg` and path scale was `1.866`. The same-window active EKF
+ended at `0.028 m` XY error. The run-level `ENGINEERING_SMOKE_COMPLETE` field
+therefore records capture completion only, not localization acceptance.
+Verdict: **NDT128 ENGINEERING STOP**. NDT is removed from the product surface;
+this is not promotion, Phase 1D, navigation evidence, or qualification. The
+specified run root contained `metrics/analysis.json` but no conclusion file
+when this amendment was written.
+
+## KISS-ICP offline vendor replacement
+
+Implementation commit: `d16d2a8b8315cad446cbbc294aa46c629ab0911b`.
+
+Module3 vendors official KISS-ICP `v1.3.0` at
+`b16835283aee62f7d5e2bdf6c1c3bb2930de74ff`. Its tag-pinned official
+dependencies are Sophus `1.24.6` at
+`d0b7315a0d90fc6143defa54596a3a95d9fa10ec` and robin-map `v1.4.0` at
+`4ec1bf19c6a96125ea22062f38c2cf5b958e448e`. Full required C++/ROS source and
+the two dependency archives are retained with their licenses and no Git
+metadata. The only upstream differences are three offline CMake edits: force
+the vendored header dependencies and replace their FetchContent URLs with
+local `SOURCE_DIR` paths. No algorithm or ROS node implementation changed.
+
+`pointcloud_local_odometry` is now only the default-OFF launch/config owner.
+It starts official `kiss_icp_node` with `/lio/points_raw` remapped to
+`pointcloud_topic` and `kiss/odometry` remapped to
+`/local_odom/kiss_shadow`. Fixed shadow integration is `base_link`,
+`kiss_odom_shadow`, `publish_odom_tf=false`, `publish_debug_clouds=false`, and
+`data.deskew=true`; all remaining KISS algorithm parameters retain upstream
+defaults. There is no backend selector, PCL/NDT/GICP implementation, health
+adapter, canonical odom/TF/Nav2 consumer, or wheel/IMU/map/GT subscription.
+Process restart is the reset boundary; runner-owned external TF readiness must
+be proven before replay input.
+
+Clean `/opt/ros/jazzy` build at `/tmp/v73_kiss_offline_build.R3x3Bb` passed for
+`kiss_icp` and `pointcloud_local_odometry` with
+`FETCHCONTENT_FULLY_DISCONNECTED=ON`. The upstream packages declare no tests
+in this build (`0 tests, 0 errors, 0 failures, 0 skipped`). Pin/license/source
+diff/static-product checks, Python compilation, single-package discovery, and
+launch `--show-args` passed. The only warning was the harmless unused
+FetchContent variable in the launch-only owner package.
+
+Verdict: **KISS VENDOR STATIC PASS ONLY**. No ROS/Isaac process, replay, live
+navigation, promotion, Phase 1D, or qualification was run. Next is one fresh
+reviewer-owned bounded OS1-32 finalized-MCAP replay using exact source
+`/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_fastlio2_ouster_g2_retry_20260824T035347Z/bag/fastlio_shadow`,
+rate `1.0`, offset `399.0 s`, and duration `250.0 s`, after external TF
+readiness. Do not promote unless its measured geometry provides new evidence.

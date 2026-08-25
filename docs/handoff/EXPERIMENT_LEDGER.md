@@ -3660,3 +3660,43 @@
   allowed until adapted output proves unchanged full `ring 0..127` and NDT
   emits non-degraded identity/status. Do not claim NDT128 pass, promotion,
   Phase 1D authorization, or qualification.
+
+## 2026-08-25 — V7.3 Alt-1 NDT128 STOP and KISS-ICP offline vendor
+
+- NDT128 evidence:
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v73_alt1_ndt_os1_128_capture_first_20260825T002726Z/metrics/analysis.json`.
+  Delivery/cadence and the full `ring 0..127` contract completed, with NDT
+  processing p50/p95/max `7.456/15.531/24.931 ms`. Start-aligned GT XY error
+  crossed `0.5/1.0 m` at `3.750/7.150 s`, reached `2.067 m`, and ended at
+  `2.060 m`; endpoint-direction error was `-102.60 deg` and path scale was
+  `1.866`. The active EKF same-window endpoint error was `0.028 m`.
+- NDT verdict: **NDT128 ENGINEERING STOP**. The metrics field
+  `ENGINEERING_SMOKE_COMPLETE` means capture completion, not product
+  acceptance. No promotion, Phase 1D, navigation result, or qualification
+  follows.
+- Change: Module3 commit `d16d2a8b8315cad446cbbc294aa46c629ab0911b`
+  vendors official KISS-ICP `v1.3.0`
+  (`b16835283aee62f7d5e2bdf6c1c3bb2930de74ff`), Sophus `1.24.6`
+  (`d0b7315a0d90fc6143defa54596a3a95d9fa10ec`), and robin-map `v1.4.0`
+  (`4ec1bf19c6a96125ea22062f38c2cf5b958e448e`) with licenses and no Git
+  metadata. Three CMake-only source-routing edits make the official core and
+  dependencies fully local; algorithm and ROS node sources are unchanged.
+- Product surface: `pointcloud_local_odometry` is only a default-OFF KISS
+  launch/config owner. It remaps `/lio/points_raw` into official
+  `pointcloud_topic` and `kiss/odometry` to `/local_odom/kiss_shadow`; uses
+  `base_link`, `kiss_odom_shadow`, `publish_odom_tf=false`,
+  `publish_debug_clouds=false`, and `data.deskew=true`; and retains all other
+  upstream algorithm defaults. NDT/GICP/PCL products and backend selection are
+  removed. Process restart resets state; external TF readiness remains runner
+  owned.
+- Static validation: clean `/opt/ros/jazzy` offline build at
+  `/tmp/v73_kiss_offline_build.R3x3Bb` passed both packages with
+  `FETCHCONTENT_FULLY_DISCONNECTED=ON`. Upstream declares no tests here
+  (`0 tests, 0 errors, 0 failures, 0 skipped`). Pin/license/archive-diff/static
+  contract, Python compilation, single `kiss_icp` discovery, and launch
+  `--show-args` passed. No ROS/Isaac/replay/live process ran.
+- Verdict: **KISS VENDOR STATIC PASS ONLY**. Next is a fresh reviewer-owned
+  bounded OS1-32 finalized-MCAP replay from
+  `/mnt/nas_home/Bio_Nav_Data/experiments/runs/v6_fastlio2_ouster_g2_retry_20260824T035347Z/bag/fastlio_shadow`
+  at rate `1.0`, offset `399.0 s`, duration `250.0 s`, after external TF
+  readiness. This is not promotion or Phase 1D authorization.
