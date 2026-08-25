@@ -187,6 +187,9 @@ class RunResult:
     success: bool
     reroute_direction: str
     critic_participation: str
+    critic_ttl_status: str
+    critic_post_expiry_applied: bool | None
+    critic_stale_active_probe: str
     evidence_file: str
 
 
@@ -1179,9 +1182,19 @@ def build_recorded_evidence(
 
     expired_layers = post_expiry(layer_records)
     expired_critics = post_expiry(critic_records)
-    stale_applied_count = sum(
+    critic_post_expiry_applied = any(
         bool(_field(row.message, "applied", False))
-        for row in (*expired_layers, *expired_critics)
+        or "cost_delta_applied=true" in str(_field(row.message, "fallback_reason", ""))
+        for row in expired_critics
+    ) if run.arm == "M3" else None
+    stale_applied_count = sum(
+        bool(_field(row.message, "applied", False)) for row in expired_layers
+    ) + (
+        sum(
+            bool(_field(row.message, "applied", False))
+            or "cost_delta_applied=true" in str(_field(row.message, "fallback_reason", ""))
+            for row in expired_critics
+        ) if run.arm == "M3" else 0
     )
 
     def layer_scope(row: RecordedMessage) -> str:
@@ -1205,13 +1218,28 @@ def build_recorded_evidence(
     clear_critics = [
         row for row in expired_critics
         if "obstacle_rejected=validation_stale" in str(_field(row.message, "fallback_reason", ""))
+        and "cost_delta_applied=true" not in str(_field(row.message, "fallback_reason", ""))
         and not bool(_field(row.message, "applied", False))
     ]
-    ttl_expiry_critic_not_applied = bool(clear_critics) if run.arm == "M3" else None
-    ttl_expiry_observed = (
-        bool(ttl_expiry_zero_write)
-        and (run.arm != "M3" or bool(ttl_expiry_critic_not_applied))
-    ) if active_ttl else None
+    if run.arm != "M3":
+        critic_ttl_status = None
+        ttl_expiry_critic_not_applied = None
+    elif not expired_critics:
+        critic_ttl_status = "N/A_NO_CONTROLLER_SCORING"
+        ttl_expiry_critic_not_applied = None
+    elif len(clear_critics) == len(expired_critics):
+        critic_ttl_status = "STALE_REJECTED"
+        ttl_expiry_critic_not_applied = True
+    elif critic_post_expiry_applied:
+        critic_ttl_status = "FAIL_POST_EXPIRY_APPLIED"
+        ttl_expiry_critic_not_applied = False
+    else:
+        critic_ttl_status = "FAIL_NOT_STALE_REJECTED"
+        ttl_expiry_critic_not_applied = False
+    # The nominal producer-stop drain proves the two costmap consumers clear.
+    # A controller which already terminated need not emit another critic score;
+    # absence of that callback is explicit N/A, not stale-rejection evidence.
+    ttl_expiry_observed = bool(ttl_expiry_zero_write) if active_ttl else None
 
     plans = [_path_points(row.message) for row in by_topic.get("/plan", [])]
     local_trajectory_records = by_topic.get("/optimal_trajectory", [])
@@ -1290,6 +1318,9 @@ def build_recorded_evidence(
             "ttl_expiry_observed": ttl_expiry_observed,
             "ttl_expiry_zero_write": ttl_expiry_zero_write,
             "ttl_expiry_critic_not_applied": ttl_expiry_critic_not_applied,
+            "critic_ttl_status": critic_ttl_status,
+            "critic_post_expiry_applied": critic_post_expiry_applied,
+            "critic_stale_active_probe": "NOT_RUN" if run.arm == "M3" else None,
         },
         "synchronized_samples": samples,
         "obstacle_validation": obstacle_validation,
@@ -1813,11 +1844,17 @@ def run_campaign(
                     or freshness.get("ttl_expiry_zero_write") is not True
                     or (
                         run.arm == "M3"
-                        and freshness.get("ttl_expiry_critic_not_applied") is not True
+                        and (
+                            freshness.get("critic_post_expiry_applied") is not False
+                            or freshness.get("critic_ttl_status") not in {
+                                "N/A_NO_CONTROLLER_SCORING", "STALE_REJECTED",
+                            }
+                            or freshness.get("critic_stale_active_probe") != "NOT_RUN"
+                        )
                     )
                 ):
                     status["state"] = "TTL_CLEAR_FAILED"
-                    status["reason"] = "post-producer TTL clear was not observed"
+                    status["reason"] = "post-producer TTL lifecycle was not clean"
         except (OSError, CausalContractError, RuntimeError, ValueError) as exc:
             status["evidence_recorded"] = False
             status["evidence_error"] = str(exc)
@@ -2109,9 +2146,24 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             or freshness.get("ttl_expiry_zero_write") is not True
         ):
             raise CausalContractError("active arm lacks clean TTL-expiry evidence")
-        if run.arm == "M3" and freshness.get("ttl_expiry_critic_not_applied") is not True:
-            raise CausalContractError("M3 lacks critic TTL-expiry evidence")
-        if stale_applied > 0:
+        if run.arm == "M3":
+            critic_ttl_status = freshness.get("critic_ttl_status")
+            critic_post_expiry_applied = _bool(
+                freshness.get("critic_post_expiry_applied"),
+                "freshness.critic_post_expiry_applied",
+            )
+            if freshness.get("critic_stale_active_probe") != "NOT_RUN":
+                raise CausalContractError("M3 critic stale active probe state is invalid")
+            if critic_post_expiry_applied or stale_applied > 0:
+                verdict = "INVALID"
+                reasons = ("stale_input_applied_after_expiry",)
+            elif critic_ttl_status not in {
+                "N/A_NO_CONTROLLER_SCORING", "STALE_REJECTED",
+            }:
+                raise CausalContractError("M3 post-expiry critic callback was not safely rejected")
+            else:
+                verdict, reasons = "VALID", ()
+        elif stale_applied > 0:
             verdict = "INVALID"
             reasons = ("stale_input_applied_after_expiry",)
         else:
@@ -2166,6 +2218,16 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             success=success,
             reroute_direction=path_direction(plan),
             critic_participation=critic_participation,
+            critic_ttl_status=str(
+                freshness.get("critic_ttl_status") or "NOT_APPLICABLE"
+            ),
+            critic_post_expiry_applied=(
+                freshness.get("critic_post_expiry_applied")
+                if run.arm == "M3" else None
+            ),
+            critic_stale_active_probe=str(
+                freshness.get("critic_stale_active_probe") or "NOT_APPLICABLE"
+            ),
             evidence_file=str(path),
         )
         return result, {"raw": row, "plan": plan, "local_trajectory": optimal_trajectory}
@@ -2188,6 +2250,9 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             success=False,
             reroute_direction="unknown",
             critic_participation="none",
+            critic_ttl_status="UNAVAILABLE",
+            critic_post_expiry_applied=None,
+            critic_stale_active_probe="UNAVAILABLE",
             evidence_file=str(path),
         ), {"raw": {}, "plan": (), "local_trajectory": ()}
 
@@ -2236,7 +2301,9 @@ def evaluate(
     evaluated: dict[tuple[int, str], tuple[RunResult, Mapping[str, Any]]] = {}
     ordered_results: list[RunResult] = []
     for run in selected_runs(manifest, pilot=pilot):
-        result, data = _evaluate_run(manifest, run, root / f"{run.run_id}.json")
+        nested_path = root / run.run_id / f"{run.run_id}.json"
+        evidence_path = nested_path if nested_path.is_file() else root / f"{run.run_id}.json"
+        result, data = _evaluate_run(manifest, run, evidence_path)
         ordered_results.append(result)
         evaluated[(run.repeat, run.arm)] = (result, data)
 

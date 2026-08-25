@@ -89,10 +89,15 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             "stale_applied_count": 1 if stale else 0,
             "stopped_before_dispatch": not stale if run.arm in {"M2", "M3"} else None,
             "layer_zero_write": True if run.arm in {"M2", "M3"} else None,
-            "critic_not_applied": True if run.arm == "M3" else None,
+            "critic_not_applied": None,
             "ttl_expiry_observed": True if run.arm in {"M2", "M3"} else None,
             "ttl_expiry_zero_write": True if run.arm in {"M2", "M3"} else None,
-            "ttl_expiry_critic_not_applied": True if run.arm == "M3" else None,
+            "ttl_expiry_critic_not_applied": None,
+            "critic_ttl_status": (
+                "N/A_NO_CONTROLLER_SCORING" if run.arm == "M3" else None
+            ),
+            "critic_post_expiry_applied": False if run.arm == "M3" else None,
+            "critic_stale_active_probe": "NOT_RUN" if run.arm == "M3" else None,
         },
         "synchronized_samples": [{
             "stamp_ns": 123000000,
@@ -240,6 +245,22 @@ def test_offline_causal_evaluator_passes_isolation_clearance_and_m3_local_effect
     assert len(summary.visualization_inputs) == 3
 
 
+def test_evaluator_consumes_campaign_nested_run_output_layout(tmp_path):
+    manifest = load_manifest(CONFIG)
+    for run in manifest.runs:
+        run_dir = tmp_path / run.run_id
+        run_dir.mkdir()
+        (run_dir / f"{run.run_id}.json").write_text(
+            json.dumps(_evidence(manifest, run)), encoding="utf-8"
+        )
+    summary = evaluate(manifest, tmp_path)
+    assert summary.verdict == "PASS_ENGINEERING_CAUSAL"
+    assert all(
+        Path(result.evidence_file).parent.name == result.run_id
+        for result in summary.runs
+    )
+
+
 def test_ttl_clear_is_explicitly_not_applicable_for_m0_and_m1(tmp_path):
     manifest = load_manifest(CONFIG)
     _write_evidence(tmp_path, manifest)
@@ -249,6 +270,79 @@ def test_ttl_clear_is_explicitly_not_applicable_for_m0_and_m1(tmp_path):
         if run.arm in {"M0", "M1"}:
             row = json.loads((tmp_path / f"{run.run_id}.json").read_text())
             assert row["freshness"]["ttl_clear_applicability"] == "not_applicable_inactive"
+
+
+def test_m3_nominal_ttl_accepts_no_post_expiry_controller_scoring(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    summary = evaluate(manifest, tmp_path)
+    results = [result for result in summary.runs if result.arm == "M3"]
+    assert all(result.verdict == "VALID" for result in results)
+    assert all(
+        result.critic_ttl_status == "N/A_NO_CONTROLLER_SCORING"
+        and result.critic_post_expiry_applied is False
+        and result.critic_stale_active_probe == "NOT_RUN"
+        for result in results
+    )
+    for run in manifest.runs:
+        if run.arm == "M3":
+            freshness = json.loads(
+                (tmp_path / f"{run.run_id}.json").read_text(encoding="utf-8")
+            )["freshness"]
+            assert freshness["ttl_expiry_zero_write"] is True
+            assert freshness["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
+            assert freshness["critic_post_expiry_applied"] is False
+            assert freshness["critic_stale_active_probe"] == "NOT_RUN"
+
+
+def test_m3_post_expiry_critic_application_is_invalid(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    row = _evidence(manifest, run)
+    row["freshness"].update({
+        "stale_applied_count": 1,
+        "critic_ttl_status": "FAIL_POST_EXPIRY_APPLIED",
+        "critic_post_expiry_applied": True,
+    })
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    assert result.reasons == ("stale_input_applied_after_expiry",)
+
+
+def test_m3_post_expiry_stale_rejected_callback_is_valid(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    row = _evidence(manifest, run)
+    row["freshness"].update({
+        "ttl_expiry_critic_not_applied": True,
+        "critic_ttl_status": "STALE_REJECTED",
+        "critic_post_expiry_applied": False,
+    })
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "VALID"
+
+
+def test_m3_missing_global_or_local_ttl_clear_is_invalid(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    row = _evidence(manifest, run)
+    row["freshness"].update({
+        "ttl_expiry_observed": False,
+        "ttl_expiry_zero_write": False,
+        "layer_zero_write": False,
+    })
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    assert "active arm lacks clean TTL-expiry evidence" in result.reasons
 
 
 def test_m3_local_trajectory_without_separation_is_ambiguous(tmp_path):
@@ -444,10 +538,6 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
             "applied": False, "message_age_ms": 700.0, "source_sequence": 8,
             "fallback_reason": "rejection_reason=validation_stale",
         }),
-        RecordedMessage("/bio_nav/cognitive_risk_critic/status", stamp + 700_000_000, {
-            "applied": False, "fallback_reason": "obstacle_rejected=validation_stale",
-            "message_age_ms": 700.0, "source_sequence": 8,
-        }),
         RecordedMessage("/plan", stamp, {"poses": [[0.45, -5.35], [0.8, 4.8]]}),
         RecordedMessage("/optimal_trajectory", stamp, {"poses": [[0.0, 0.0], [-0.5, 0.2]]}),
         RecordedMessage("/cmd_vel", stamp, {"linear": {"x": 0.2}, "angular": {"z": 0.1}}),
@@ -475,12 +565,112 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     assert evidence["critic"]["cost_delta_nonzero_count"] == 1
     assert evidence["freshness"]["ttl_expiry_observed"] is True
     assert evidence["freshness"]["ttl_expiry_zero_write"] is True
-    assert evidence["freshness"]["ttl_expiry_critic_not_applied"] is True
+    assert evidence["freshness"]["ttl_expiry_critic_not_applied"] is None
+    assert evidence["freshness"]["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
+    assert evidence["freshness"]["critic_post_expiry_applied"] is False
+    assert evidence["freshness"]["critic_stale_active_probe"] == "NOT_RUN"
     assert evidence["synchronized_samples"][0]["scan_point_count"] == 80
     assert evidence["synchronized_samples"][0]["depth_observation_valid"] is True
     assert evidence["synchronized_samples"][0]["rgbd_obstacle_footprints"][0]["source"] == "projected_depth_points"
     assert evidence["synchronized_samples"][0]["typed_obstacles"][0]["observed_spatial_error_m"] is not None
     assert evidence["passive"]["success"] is True
+
+
+def _m3_ttl_lifecycle_records(*, critic_reason=None, critic_applied=False, include_local=True):
+    stamp = 2_000_000_000
+    expiry_status_stamp = 2_600_000_000
+    records = [
+        RecordedMessage("/ground_truth/odom", stamp, {
+            "header": {"stamp": stamp},
+            "pose": {"pose": {"position": {"x": 0.0, "y": 0.0}}},
+        }),
+        RecordedMessage("/bio_nav/module2/cognitive_obstacles", stamp, {
+            "header": {"stamp": stamp},
+            "validation_stamp": {"sec": 2, "nanosec": 0},
+            "validation_ttl": {"sec": 0, "nanosec": 500_000_000},
+            "sequence": 7,
+            "obstacles": [],
+        }),
+    ]
+    for scope in (("global", "local") if include_local else ("global",)):
+        records.append(RecordedMessage(
+            "/bio_nav/cognitive_obstacle_layer/status", expiry_status_stamp, {
+                "header": {"stamp": expiry_status_stamp},
+                "consumer": f"/{scope}_costmap:layer",
+                "raised_cell_count": 0,
+                "active_cell_count": 0,
+                "maximum_cost_increase": 0,
+                "applied": False,
+                "source_sequence": 7,
+                "fallback_reason": "rejection_reason=validation_stale",
+            },
+        ))
+    if critic_reason is not None:
+        records.append(RecordedMessage(
+            "/bio_nav/cognitive_risk_critic/status", expiry_status_stamp, {
+                "header": {"stamp": expiry_status_stamp},
+                "applied": critic_applied,
+                "source_sequence": 7,
+                "fallback_reason": critic_reason,
+            },
+        ))
+    return records
+
+
+@pytest.mark.parametrize(
+    ("critic_reason", "critic_applied"),
+    [
+        ("cost_delta_applied=true;obstacle_applied=true", False),
+        ("obstacle_rejected=validation_stale", True),
+    ],
+)
+def test_recorder_marks_any_post_expiry_critic_application_invalid(
+    critic_reason, critic_applied
+):
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    evidence = build_recorded_evidence(
+        manifest,
+        run,
+        _m3_ttl_lifecycle_records(
+            critic_reason=critic_reason,
+            critic_applied=critic_applied,
+        ),
+        {},
+    )
+    assert evidence["freshness"]["critic_ttl_status"] == "FAIL_POST_EXPIRY_APPLIED"
+    assert evidence["freshness"]["critic_post_expiry_applied"] is True
+    assert evidence["freshness"]["stale_applied_count"] == 1
+
+
+def test_recorder_accepts_explicit_post_expiry_stale_critic_rejection():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    evidence = build_recorded_evidence(
+        manifest,
+        run,
+        _m3_ttl_lifecycle_records(
+            critic_reason="obstacle_rejected=validation_stale",
+        ),
+        {},
+    )
+    assert evidence["freshness"]["critic_ttl_status"] == "STALE_REJECTED"
+    assert evidence["freshness"]["critic_post_expiry_applied"] is False
+    assert evidence["freshness"]["ttl_expiry_critic_not_applied"] is True
+
+
+def test_recorder_requires_both_costmap_layers_to_clear_after_expiry():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M3")
+    evidence = build_recorded_evidence(
+        manifest,
+        run,
+        _m3_ttl_lifecycle_records(include_local=False),
+        {},
+    )
+    assert evidence["freshness"]["ttl_expiry_zero_write"] is False
+    assert evidence["freshness"]["ttl_expiry_observed"] is False
+    assert evidence["freshness"]["critic_ttl_status"] == "N/A_NO_CONTROLLER_SCORING"
 
 
 def _depth_projection_inputs(depth_m=1.0, *, encoding="32FC1", with_tf=True):
