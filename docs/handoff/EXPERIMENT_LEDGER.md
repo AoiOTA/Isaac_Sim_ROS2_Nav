@@ -3755,3 +3755,29 @@
   [V7_3_LOCAL_ODOM_EVALUATION_HANDOFF_20260825.md](V7_3_LOCAL_ODOM_EVALUATION_HANDOFF_20260825.md)
   and
   [V7_3_ODOM_LOCALIZATION_ALGORITHM_ADAPTATION_REPORT_20260825.md](V7_3_ODOM_LOCALIZATION_ALGORITHM_ADAPTATION_REPORT_20260825.md).
+
+## 2026-08-25 — V7.5-R2 AMCL engineering progress and user stop
+
+- Module3 implementation sequence: `0641d65` aligned RPLIDAR S2E to 10 Hz;
+  `3ad8d91` made AMCL the explicit occupancy-only owner; `b1222b7` added
+  backend-aware readiness; `24e48fe` rearmed stale TF stability; `fc2524f`
+  latched sparse current-epoch AMCL poses; `96f4908` added the structured-grid
+  motion pilot. Recorded static/build/review receipts passed; Phase 0 reached
+  engineering GO and Phase 2 reset-idle reached engineering PASS.
+- Phase 3A bare Grid basic-chain smoke passed but was
+  `SCENE_UNOBSERVABLE`. Attempt30 V3 `Q35_50` stationary/reset passed with
+  10 Hz 720-beam scans and near-zero seeded AMCL error. Its motion pilot passed
+  only short straight: **1/4, ENGINEERING FAIL**. Commands delivered the spin
+  request, but GT achieved only about 18% of a revolution and AMCL accumulated
+  material yaw/XY error.
+- Canonical flat20 delivered 98.751% of the requested two-second yaw, excluding
+  a common actuator/assist loss. Two subsequent V3 + mapping one-factor runs
+  were harness STOPs (pre-created bag directory; late volatile gate
+  subscription) and made no product determination. STOP/partial evidence was
+  retained and run-owned processes were cleaned.
+- User requested stop before the discriminator rerun. Next, if resumed: fresh
+  V3 + mapping-only two-second yaw with a pre-start transient-local gate probe
+  and no pre-created bag directory; do not tune AMCL, EKF, or IMU scale first.
+  Phase 4--7/full-house are not started; this is not formal qualification.
+- Authoritative progress and evidence pointers:
+  [V7_5_R2_AMCL_PROGRESS_20260825.md](V7_5_R2_AMCL_PROGRESS_20260825.md).
