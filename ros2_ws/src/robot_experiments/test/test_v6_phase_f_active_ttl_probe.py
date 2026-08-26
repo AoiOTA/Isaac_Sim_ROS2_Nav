@@ -704,13 +704,29 @@ def test_selected_m2_plan_contains_only_repeat1_m2_and_no_m3_command(tmp_path):
     assert "M3" not in json.dumps(plan)
 
 
+def test_selected_m3_plan_contains_only_repeat1_m3_and_no_m2_command(tmp_path):
+    manifest = load_manifest(CONFIG)
+    plan = build_probe_plan(
+        manifest,
+        tmp_path / "probe",
+        selected_arm="M3",
+    )
+
+    assert plan["selected_arm"] == "M3"
+    assert plan["qualification"] == "ENGINEERING_ONLY_NOT_FORMAL"
+    assert plan["mode"] == "M3_ACTIVE_CONTROLLER_TTL_PROBE"
+    assert [(row["arm"], row["repeat"]) for row in plan["runs"]] == [("M3", 1)]
+    assert plan["runs"][0]["critic_mode"] == "active"
+    assert "M2" not in json.dumps(plan)
+
+
 def test_invalid_selected_arm_is_rejected_by_cli_parser():
     with pytest.raises(SystemExit) as raised:
         probe_module.build_parser().parse_args([
             "plan",
             "--config", str(CONFIG),
             "--output-root", "/tmp/ttl-probe",
-            "--selected-arm", "M3",
+            "--selected-arm", "M1",
         ])
 
     assert raised.value.code == 2
@@ -773,7 +789,7 @@ def test_m2_failure_or_cleanup_failure_does_not_start_m3(
 
 @pytest.mark.parametrize(
     ("selected_arm", "expected_arms"),
-    [("M2", ["M2"]), (None, ["M2", "M3"])],
+    [("M2", ["M2"]), ("M3", ["M3"]), (None, ["M2", "M3"])],
 )
 def test_campaign_selection_preserves_default_and_selected_dispatch(
     tmp_path, monkeypatch, selected_arm, expected_arms

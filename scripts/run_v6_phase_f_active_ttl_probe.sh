@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 usage() {
-  echo "usage: $0 plan|run --output-root PATH [--selected-arm M2] [arguments...]" >&2
+  echo "usage: $0 plan|run --output-root PATH [--selected-arm {M2,M3}] [arguments...]" >&2
 }
 
 command_name="${1:-}"

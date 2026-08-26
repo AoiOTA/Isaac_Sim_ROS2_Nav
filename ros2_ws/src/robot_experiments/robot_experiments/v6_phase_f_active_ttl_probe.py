@@ -42,7 +42,7 @@ from .v6_low_obstacle_causal import (
 
 SCHEMA_VERSION = "bio_nav_v6_phase_f_active_ttl_probe_v1"
 ACTIVE_ARMS = ("M2", "M3")
-SELECTABLE_ARMS = ("M2",)
+SELECTABLE_ARMS = ACTIVE_ARMS
 QUALIFICATION = "ENGINEERING_ONLY_NOT_FORMAL"
 PASS_STATE = "PASS_ACTIVE_CONTROLLER_TTL"
 PROBE_NOT_ARMED = "PROBE_NOT_ARMED"
@@ -613,7 +613,7 @@ def _active_runs(
     if selected_arm is None:
         return rows
     if selected_arm not in SELECTABLE_ARMS:
-        raise CausalContractError("active TTL probe selected arm must be M2")
+        raise CausalContractError("active TTL probe selected arm must be M2 or M3")
     return tuple(run for run in rows if run.arm == selected_arm)
 
 
@@ -657,8 +657,8 @@ def build_probe_plan(
     return {
         "schema_version": SCHEMA_VERSION,
         "mode": (
-            "M2_ACTIVE_CONTROLLER_TTL_PROBE"
-            if selected_arm == "M2"
+            f"{selected_arm}_ACTIVE_CONTROLLER_TTL_PROBE"
+            if selected_arm is not None
             else "M2_M3_ACTIVE_CONTROLLER_TTL_PROBE"
         ),
         "selected_arm": selected_arm,
