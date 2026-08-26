@@ -1,0 +1,58 @@
+schema_version: bio_nav_module1_targeted_teaching_manifest_v1
+mode: module1_targeted_teaching
+intended_use: read_only_validation_capture
+scene:
+  id: kujiale_0026_A_to_B_door_open
+  revision: original_usd_20260717
+  world: kujiale
+  category: static
+runtime:
+  odometry_mode: mixed
+  canonical_odom: {topic: /odom, owner: isaac_compute_odometry, tf: odom->base_link}
+  global_localization: {pose_topic: /amcl_pose, owner: amcl, tf: map->odom}
+  module1_odom:
+    topic: /bio_nav/module1/odom
+    owner: wheel_imu_ekf
+    publish_tf: false
+  recovery_enabled: false
+  module2_enabled: false
+  module2_navigation_write_enabled: false
+  module2_effect_scope: "off"
+  cognitive_place_graph_enabled: false
+  route_backend: gvg
+  low_obstacles_enabled: false
+  dynamic_actors_enabled: false
+  goal_checker: position_xy
+  cognitive_profile: M0
+  module1_mode: teaching_capture
+  ground_truth_use: evaluator_only
+assets:
+  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
+  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_params.yaml
+  module1_scene_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2/configs/kujiale_0026_module1_enrollment_v310.yaml
+dataset:
+  route_id: T2
+  role: read_only_test
+  split: test
+  status: raw_until_audit
+  evaluation_read_only: true
+paired_appearance:
+  baseline_profile_id: baseline
+  variant_profile_id: bright_cool
+  same_stamp_required: true
+  simulation_time_advanced_during_capture: false
+mission:
+  reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
+  legs:
+    - {id: T2_S202, frame_id: map, x: 2.035, y: 4.905}
+    - {id: T2_S183, frame_id: map, x: -0.615, y: 3.505}
+    - {id: T2_S119, frame_id: map, x: -0.615, y: -0.745}
+    - {id: T2_S85, frame_id: map, x: -2.315, y: -2.695}
+    - {id: T2_S149, frame_id: map, x: -2.265, y: 1.355}
+    - {id: T2_G1_S40, frame_id: map, x: 0.45, y: -5.35}
+  best_effort_leg_ids: []
+episodes:
+  - {seed: 7912, variant_id: baseline, reset_pose_name: long_route_start_g1, dynamic_case_id: static}

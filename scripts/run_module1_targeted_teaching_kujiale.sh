@@ -8,14 +8,15 @@ usage() {
   cat <<'USAGE'
 usage: run_module1_targeted_teaching_kujiale.sh [--run-root PATH] [--domain ID]
        ros|isaac|collect [arguments...]
-       manifest|record|runner|episode en|sw|v1|t1 [arguments...]
-       collect-validation [arguments...]
+       manifest|record|runner|episode en|sw|v1|t1|v2|t2 [arguments...]
+       collect-validation|collect-validation-v2 [arguments...]
 
 Start `ros` and `isaac` in separate terminals, then run `collect` once.  The
 collect command records and dispatches EN followed by SW, with one MCAP bag and
 one exactly-once reset per episode.  `episode en|sw` runs only one route.
 `collect-validation` records the independent read-only V1 then T1 routes with
 the same one-reset/one-MCAP boundary.
+`collect-validation-v2` records the post-Run4b independent V2 then T2 routes.
 
 This is raw Module1 teaching capture: original USD, accepted static map/spawn/
 GVG, mixed odometry, M0 navigation, Module2/CPG/dynamic effects off.  GT is
@@ -69,7 +70,9 @@ normalize_route() {
     sw) printf 'sw\n' ;;
     v1) printf 'v1\n' ;;
     t1) printf 't1\n' ;;
-    *) die "route must be en, sw, v1, or t1" ;;
+    v2) printf 'v2\n' ;;
+    t2) printf 't2\n' ;;
+    *) die "route must be en, sw, v1, t1, v2, or t2" ;;
   esac
 }
 
@@ -86,6 +89,8 @@ episode_name() {
   case "${route}" in
     en|sw) printf '%s_A_base\n' "${route}" ;;
     v1|t1) printf '%s_read_only_test\n' "${route}" ;;
+    v2) printf 'v2_validation\n' ;;
+    t2) printf 't2_read_only_test\n' ;;
   esac
 }
 
@@ -202,6 +207,11 @@ case "${component}" in
     source_ros --require-integration-underlay
     run_episode v1 "$@"
     run_episode t1 "$@"
+    ;;
+  collect-validation-v2)
+    source_ros --require-integration-underlay
+    run_episode v2 "$@"
+    run_episode t2 "$@"
     ;;
   *)
     usage >&2

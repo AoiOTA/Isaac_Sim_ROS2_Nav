@@ -99,7 +99,9 @@ PAIRED_BASELINE_TOPIC = "/experiment/paired_appearance/baseline/image_raw"
 PAIRED_VARIANT_TOPIC = "/experiment/paired_appearance/variant/image_raw"
 PAIRED_STATE_TOPIC = "/experiment/paired_appearance/state"
 PAIRED_IMAGE_STREAMS = (PAIRED_BASELINE_TOPIC, PAIRED_VARIANT_TOPIC)
-PAIRED_APPEARANCE_PROFILES = frozenset({"dim_cool", "bright_warm"})
+PAIRED_APPEARANCE_PROFILES = frozenset(
+    {"dim_warm", "dim_cool", "bright_warm", "bright_cool"}
+)
 
 
 @dataclass(frozen=True)
@@ -354,13 +356,18 @@ def load_targeted_teaching_manifest(
             },
             "dataset",
         )
-        expected_identity = {
-            "validation": ("V1", "validation"),
-            "read_only_test": ("T1", "test"),
+        expected_routes = {
+            "validation": frozenset({"V1", "V2"}),
+            "read_only_test": frozenset({"T1", "T2"}),
         }[str(role)]
-        if (route_id, split) != expected_identity:
+        expected_split = {
+            "validation": "validation",
+            "read_only_test": "test",
+        }[str(role)]
+        if route_id not in expected_routes or split != expected_split:
             raise V6ContractError(
-                f"dataset role {role} must use route/split {expected_identity}"
+                f"dataset role {role} must use route in "
+                f"{sorted(expected_routes)} and split {expected_split}"
             )
         if dataset.get("evaluation_read_only") is not True:
             raise V6ContractError(
@@ -401,7 +408,8 @@ def load_targeted_teaching_manifest(
             )
         if paired.get("variant_profile_id") not in PAIRED_APPEARANCE_PROFILES:
             raise V6ContractError(
-                "paired_appearance.variant_profile_id must be dim_cool or bright_warm"
+                "paired_appearance.variant_profile_id must be an accepted "
+                "appearance profile"
             )
         if paired.get("same_stamp_required") is not True:
             raise V6ContractError("paired appearance images must require the same stamp")
