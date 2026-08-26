@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import statistics
 import sys
 from typing import Any, Mapping, Sequence
 
@@ -157,11 +158,14 @@ def load_experiment(path: str | Path) -> DynamicLowObstacleExperiment:
     criteria = dict(_mapping(raw.get("criteria"), "criteria"))
     for key in (
         "typed_spatial_match_tolerance_m", "minimum_actor_position_span_m",
-        "minimum_candidate_position_span_m", "old_position_clear_timeout_sec",
-        "spin_duration_max_sec",
+        "minimum_candidate_position_span_m", "spin_duration_max_sec",
     ):
         if float(criteria.get(key, 0.0)) <= 0.0:
             raise DynamicLowObstacleError(f"criteria.{key} must be positive")
+    if int(criteria.get("old_position_clear_max_costmap_samples", 0)) <= 0:
+        raise DynamicLowObstacleError(
+            "criteria.old_position_clear_max_costmap_samples must be positive"
+        )
     actor = {
         "id": actual["id"],
         "center": list(actual["start"][:2]),
@@ -408,24 +412,37 @@ def old_position_clearance(
         ("/global_costmap/costmap", "global"),
         ("/local_costmap/costmap", "local"),
     ):
-        rows = sorted(
-            (record for record in records if record.topic == topic),
-            key=causal._message_stamp_ns,
-        )
+        rows = sorted((
+            (causal._message_stamp_ns(record),
+             _costmap_max(record.message, start, size))
+            for record in records if record.topic == topic
+        ), key=lambda row: row[0])
+        valid_rows = [(stamp, value) for stamp, value in rows if value is not None]
         before = [
-            _costmap_max(row.message, start, size)
-            for row in rows if causal._message_stamp_ns(row) <= vacated_stamp
+            value for stamp, value in valid_rows if stamp <= vacated_stamp
         ]
-        clear_stamp = next((
-            causal._message_stamp_ns(row) for row in rows
-            if causal._message_stamp_ns(row) >= vacated_stamp
-            and (value := _costmap_max(row.message, start, size)) is not None
-            and value <= maximum_cost
+        after = [
+            (stamp, value) for stamp, value in valid_rows if stamp >= vacated_stamp
+        ]
+        clear = next((
+            (index, stamp) for index, (stamp, value) in enumerate(after, start=1)
+            if value <= maximum_cost
         ), None)
+        clear_sample_index, clear_stamp = clear if clear is not None else (None, None)
+        periods = [
+            (right[0] - left[0]) * 1.0e-9
+            for left, right in zip(valid_rows, valid_rows[1:])
+            if right[0] > left[0]
+        ]
         result["consumers"][name] = {
             "occupied_before_vacated": any(
                 value is not None and value > maximum_cost for value in before
             ),
+            "observed_update_period_sec": (
+                statistics.median(periods) if periods else None
+            ),
+            "post_vacated_sample_count": len(after),
+            "clear_sample_index": clear_sample_index,
             "clear_stamp_ns": clear_stamp,
             "clear_latency_sec": (
                 (clear_stamp - vacated_stamp) * 1.0e-9
@@ -443,7 +460,11 @@ def record_dynamic_evidence(
     output: str | Path,
 ) -> dict[str, Any]:
     manifest, run = _causal_manifest(experiment, arm_label)
-    records = list(causal.read_rosbag_records(bag_dir, topics=_rosbag_topics()))
+    records = list(causal.read_rosbag_records(
+        bag_dir,
+        topics=_rosbag_topics(),
+        latest_clock_topics=(DYNAMIC_STATE_TOPIC,),
+    ))
     timeline = actor_timeline(records, str(experiment.identity["actor_id"]))
     resolver = _actor_resolver(timeline, experiment.actor)
     episode_result = causal._episode_result_from_jsonl(
@@ -633,15 +654,21 @@ def evaluate_evidence(
             evidence.get("old_position_clearance"), "old_position_clearance"
         )
         consumers = _mapping(clearance.get("consumers"), "old_position_clearance.consumers")
+        sample_limit = int(
+            experiment.criteria["old_position_clear_max_costmap_samples"]
+        )
         for name in ("global", "local"):
             row = _mapping(consumers.get(name), f"old_position_clearance.{name}")
-            latency = row.get("clear_latency_sec")
+            clear_sample_index = row.get("clear_sample_index")
             if row.get("occupied_before_vacated") is not True:
                 reasons.append(f"{name}_old_position_never_observed_occupied")
-            elif latency is None or float(latency) > float(
-                experiment.criteria["old_position_clear_timeout_sec"]
+            elif (
+                clear_sample_index is None
+                or int(clear_sample_index) > sample_limit
             ):
-                reasons.append(f"{name}_old_position_not_cleared_in_time")
+                reasons.append(
+                    f"{name}_old_position_not_cleared_within_costmap_samples"
+                )
 
     action = _mapping(evidence.get("action"), "action")
     if action.get("terminal_zero_confirmed") is not True:

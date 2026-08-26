@@ -2028,6 +2028,7 @@ def read_rosbag_records(
     bag_dir: str | Path,
     *,
     topics: Sequence[str] | None = None,
+    latest_clock_topics: Sequence[str] = (),
 ) -> Iterable[RecordedMessage]:
     """Yield deserialized messages from an MCAP/rosbag2 directory."""
 
@@ -2047,17 +2048,52 @@ def read_rosbag_records(
         item.name: item.type for item in reader.get_all_topics_and_types()
     }
     selected = set(topics or type_by_topic)
+    clock_stamped = set(latest_clock_topics)
+    decoded = selected | ({"/clock"} if clock_stamped else set())
     message_types = {
         topic: get_message(type_name)
         for topic, type_name in type_by_topic.items()
-        if topic in selected
+        if topic in decoded
     }
-    while reader.has_next():
-        topic, data, stamp_ns = reader.read_next()
-        message_type = message_types.get(topic)
-        if message_type is None:
+
+    def deserialized_records() -> Iterable[RecordedMessage]:
+        while reader.has_next():
+            topic, data, stamp_ns = reader.read_next()
+            message_type = message_types.get(topic)
+            if message_type is None:
+                continue
+            yield RecordedMessage(
+                topic, int(stamp_ns), deserialize_message(data, message_type)
+            )
+
+    for record in _latest_clock_stamped_records(
+        deserialized_records(), clock_stamped
+    ):
+        if record.topic in selected:
+            yield record
+
+
+def _latest_clock_stamped_records(
+    records: Iterable[RecordedMessage],
+    topics: Sequence[str] | set[str],
+) -> Iterable[RecordedMessage]:
+    """Put selected header-less records on the bag's ordered simulation clock."""
+
+    selected = set(topics)
+    latest_clock_ns: int | None = None
+    for record in records:
+        if record.topic == "/clock":
+            clock_ns = _time_ns(_field(record.message, "clock"))
+            if clock_ns is not None and clock_ns >= 0:
+                latest_clock_ns = clock_ns
+            yield record
             continue
-        yield RecordedMessage(topic, int(stamp_ns), deserialize_message(data, message_type))
+        if record.topic in selected:
+            if latest_clock_ns is None:
+                continue
+            yield RecordedMessage(record.topic, latest_clock_ns, record.message)
+            continue
+        yield record
 
 
 def _episode_result_from_jsonl(path: Path) -> Mapping[str, Any]:
