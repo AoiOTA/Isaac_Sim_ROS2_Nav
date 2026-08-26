@@ -10,7 +10,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: run_v6_cognitive_graph_causal_stack.sh --arm G0|G1|G2|G3 \
   --domain ID --run-dir PATH --socket PATH [--obstacle-arm M3|M2] \
-  [--module2-root PATH] [--dry-run]
+  [--module2-root PATH] [--localization-supervisor-mode shadow|startup] \
+  [--dry-run]
 
 G0: GVG + route prior off       G1: graph shadow + route prior off
 G2: graph hybrid + prior on     G3: graph primary + prior on
@@ -25,6 +26,8 @@ socket_path=""
 obstacle_arm="M3"
 module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
+candidate_manifest="${integration_root}/ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
+localization_supervisor_mode="${BIO_NAV_PHASE_G_LOCALIZATION_SUPERVISOR_MODE:-shadow}"
 dry_run=false
 
 while (($#)); do
@@ -35,6 +38,10 @@ while (($#)); do
     --socket) socket_path="${2:?--socket requires a path}"; shift 2 ;;
     --obstacle-arm) obstacle_arm="${2:?--obstacle-arm requires M3 or M2}"; shift 2 ;;
     --module2-root) module2_root="${2:?--module2-root requires a path}"; shift 2 ;;
+    --localization-supervisor-mode)
+      localization_supervisor_mode="${2:?--localization-supervisor-mode requires shadow or startup}"
+      shift 2
+      ;;
     --dry-run) dry_run=true; shift ;;
     -h|--help) usage; exit 0 ;;
     *) usage; echo "unknown argument: $1" >&2; exit 2 ;;
@@ -44,6 +51,10 @@ done
 [[ "${arm}" =~ ^G[0-3]$ ]] || { usage; exit 2; }
 [[ "${obstacle_arm}" =~ ^M[23]$ ]] || {
   echo "obstacle-arm must be M3 or M2" >&2
+  exit 2
+}
+[[ "${localization_supervisor_mode}" =~ ^(shadow|startup)$ ]] || {
+  echo "localization-supervisor-mode must be shadow or startup" >&2
   exit 2
 }
 [[ "${domain_id}" =~ ^[0-9]+$ && "${domain_id}" -le 232 ]] || {
@@ -84,12 +95,13 @@ case "${arm}" in
 esac
 
 module3_command=(
+  env "V6_COGNITIVE_PROFILE=${obstacle_arm}"
   "${script_dir}/run_v6_kujiale_low_obstacles.sh"
 )
 if [[ "${graph_mode}" == "gvg" ]]; then
-  module3_command+=(ros "${obstacle_arm}")
+  module3_command+=(ros)
 else
-  module3_command+=(ros-d "${graph_mode}" "${obstacle_arm}")
+  module3_command+=(ros-d "${graph_mode}")
 fi
 module3_command+=("route_prior_enabled:=${route_prior_enabled}")
 
@@ -102,12 +114,8 @@ module2_command=(
 module2_command+=(
   --socket "${socket_path}"
   --module2-root "${module2_root}"
+  --candidate-manifest "${candidate_manifest}"
 )
-if [[ "${arm}" =~ ^G[01]$ ]]; then
-  module2_command+=(
-    --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml
-  )
-fi
 
 bridge_command=(
   ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py
@@ -115,6 +123,8 @@ bridge_command=(
   "cognitive_graph_mode:=${graph_mode}"
   "route_prior_enabled:=${route_prior_enabled}"
   "socket_path:=${socket_path}"
+  "localization_candidate_manifest:=${candidate_manifest}"
+  "localization_supervisor_mode:=${localization_supervisor_mode}"
   use_sim_time:=true
 )
 
@@ -125,6 +135,7 @@ if [[ "${dry_run}" == true ]]; then
   printf 'obstacle_arm=%s\n' "${obstacle_arm}"
   printf 'startup_profile=%s\n' "${startup_profile}"
   printf 'active_effect_scope=%s\n' "${active_effect_scope}"
+  printf 'localization_supervisor_mode=%s\n' "${localization_supervisor_mode}"
   printf 'module3:'; printf ' %q' "${module3_command[@]}"; printf '\n'
   printf 'module2:'; printf ' %q' "${module2_command[@]}"; printf '\n'
   printf 'bridge:'; printf ' %q' "${bridge_command[@]}"; printf '\n'
@@ -135,6 +146,7 @@ fi
 source "${script_dir}/lib/common.sh"
 require_directory "${integration_root}"
 require_file "${integration_root}/scripts/run_v6_module2_graph_causal_server.sh"
+require_file "${candidate_manifest}"
 [[ -n "${module2_root}" ]] || {
   echo "BIO_NAV_MODULE2_V310_ROOT or --module2-root is required" >&2
   exit 2

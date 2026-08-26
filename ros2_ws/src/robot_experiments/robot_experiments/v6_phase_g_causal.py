@@ -52,6 +52,8 @@ WARMUP_LOOP_COUNT = 2
 SCORING_LOOP_INDEX = 2
 LOOP_ROUTE_IDS = ("G2", "G3", "G4", "G5", "G1")
 OBSTACLE_ARMS = ("M3", "M2")
+PARETO_METRICS = ("path_length_m", "duration_s", "replans", "fallback_count")
+DEFAULT_SELECTION_THRESHOLDS = {metric: 0.0 for metric in PARETO_METRICS}
 GT_PREFIX = "/" + "ground_truth/"
 
 
@@ -85,6 +87,7 @@ class PhaseGConfig:
     no_reset_between_loops: bool
     default_obstacle_arm: str
     fallback_obstacle_arm: str
+    selection_thresholds: Mapping[str, float]
     dynamic_actor_metrics: Mapping[str, Any]
 
 
@@ -186,15 +189,23 @@ def load_config(path: str | Path) -> PhaseGConfig:
         experiment.get("selection_thresholds"),
         "experiment.selection_thresholds",
     )
-    if set(thresholds) != {
-        "path_length_m",
-        "duration_s",
-        "replans",
-        "fallback_count",
-    } or any(value is not None for value in thresholds.values()):
+    if set(thresholds) != set(PARETO_METRICS):
         raise PhaseGConfigError(
-            "selection thresholds must remain null; Phase G uses raw Pareto direction"
+            f"selection thresholds must be {sorted(PARETO_METRICS)}"
         )
+    selection_thresholds: dict[str, float] = {}
+    for metric in PARETO_METRICS:
+        value = thresholds[metric]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise PhaseGConfigError(
+                f"selection threshold {metric} must be a non-negative number"
+            )
+        threshold = float(value)
+        if not math.isfinite(threshold) or threshold < 0.0:
+            raise PhaseGConfigError(
+                f"selection threshold {metric} must be a non-negative number"
+            )
+        selection_thresholds[metric] = threshold
 
     dynamic = _mapping(raw.get("dynamic_actor_metrics"), "dynamic_actor_metrics")
     if set(dynamic) != {"enabled", "source_json_by_arm"}:
@@ -218,6 +229,7 @@ def load_config(path: str | Path) -> PhaseGConfig:
         no_reset_between_loops=True,
         default_obstacle_arm="M3",
         fallback_obstacle_arm="M2",
+        selection_thresholds=selection_thresholds,
         dynamic_actor_metrics=dict(dynamic),
     )
 
@@ -917,23 +929,34 @@ def result_is_eligible(result: Mapping[str, Any]) -> bool:
     )
 
 
-PARETO_METRICS = ("path_length_m", "duration_s", "replans", "fallback_count")
-
-
 def pareto_direction(
-    candidate: Mapping[str, Any], baseline: Mapping[str, Any]
+    candidate: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+    selection_thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
+    thresholds = dict(DEFAULT_SELECTION_THRESHOLDS)
+    if selection_thresholds is not None:
+        if set(selection_thresholds) != set(PARETO_METRICS):
+            raise PhaseGConfigError(
+                f"selection thresholds must be {sorted(PARETO_METRICS)}"
+            )
+        thresholds = {
+            metric: float(selection_thresholds[metric]) for metric in PARETO_METRICS
+        }
     candidate_score = _mapping(candidate.get("scoring"), "candidate.scoring")
     baseline_score = _mapping(baseline.get("scoring"), "baseline.scoring")
     directions: dict[str, str] = {}
+    improvements: dict[str, float | None] = {}
     for metric in PARETO_METRICS:
         left = candidate_score.get(metric)
         right = baseline_score.get(metric)
         if left is None or right is None:
             directions[metric] = "missing"
+            improvements[metric] = None
             continue
         left_value = float(left)
         right_value = float(right)
+        improvements[metric] = right_value - left_value
         if left_value < right_value:
             directions[metric] = "better"
         elif left_value > right_value:
@@ -948,16 +971,26 @@ def pareto_direction(
     mixed = comparable and any(value == "better" for value in directions.values()) and any(
         value == "worse" for value in directions.values()
     )
+    threshold_met = any(
+        improvement is not None
+        and improvement > 0.0
+        and improvement >= thresholds[metric]
+        for metric, improvement in improvements.items()
+    )
     return {
         "metrics": directions,
+        "improvements": improvements,
+        "selection_thresholds": thresholds,
         "comparable": comparable,
         "pareto_improves": bool(not_worse and strictly_better),
+        "net_benefit": bool(not_worse and threshold_met),
         "mixed_tradeoff": mixed,
     }
 
 
 def evaluate_group(
     results: Mapping[str, Mapping[str, Any]],
+    selection_thresholds: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     if set(results) != set(ARMS):
         raise PhaseGConfigError(f"results must contain exactly {ARMS}")
@@ -982,21 +1015,31 @@ def evaluate_group(
     obstacle_arm = next(iter(obstacle_arms))
     eligibility = {name: result_is_eligible(results[name]) for name in ARMS}
     comparisons = {
-        "G3_vs_G0": pareto_direction(results["G3"], results["G0"]),
-        "G2_vs_G0": pareto_direction(results["G2"], results["G0"]),
+        "G3_vs_G0": pareto_direction(
+            results["G3"], results["G0"], selection_thresholds
+        ),
+        "G2_vs_G0": pareto_direction(
+            results["G2"], results["G0"], selection_thresholds
+        ),
+    }
+    invalid_contrast = {
+        name: results[name].get("verdict") == "INVALID_NO_CAUSAL_CONTRAST"
+        for name in ARMS
     }
     selected = "GVG"
     verdict = "GVG_RETAINED"
-    if not all(eligibility.values()):
+    if any(invalid_contrast.values()):
+        verdict = "INVALID_NO_CAUSAL_CONTRAST"
+    elif not all(eligibility.values()):
         verdict = (
             "M3_GROUP_INCOMPLETE_TRY_WHOLE_GROUP_M2"
             if obstacle_arm == "M3"
             else "INVALID_INCOMPLETE_M2_GROUP"
         )
-    elif eligibility["G3"] and comparisons["G3_vs_G0"]["pareto_improves"]:
+    elif eligibility["G3"] and comparisons["G3_vs_G0"]["net_benefit"]:
         selected = "PRIMARY"
         verdict = "PRIMARY_CANDIDATE"
-    elif eligibility["G2"] and comparisons["G2_vs_G0"]["pareto_improves"]:
+    elif eligibility["G2"] and comparisons["G2_vs_G0"]["net_benefit"]:
         selected = "HYBRID"
         verdict = "HYBRID_CANDIDATE"
     elif any(
@@ -1014,9 +1057,12 @@ def evaluate_group(
         "pair_identity": dict(
             _mapping(results["G0"]["pair_identity"], "pair_identity")
         ),
-        "whole_group_m2_fallback_allowed": obstacle_arm == "M3",
+        "whole_group_m2_fallback_allowed": (
+            verdict == "M3_GROUP_INCOMPLETE_TRY_WHOLE_GROUP_M2"
+        ),
         "mixed_obstacle_arm_switch_forbidden": True,
         "eligibility": eligibility,
+        "invalid_contrast": invalid_contrast,
         "comparisons": comparisons,
         "shadow_control": {
             "arm": "G1",
@@ -1080,6 +1126,7 @@ def cli(argv: list[str] | None = None) -> int:
                         ],
                         "default_obstacle_arm": config.default_obstacle_arm,
                         "fallback_obstacle_arm": config.fallback_obstacle_arm,
+                        "selection_thresholds": dict(config.selection_thresholds),
                     },
                     sort_keys=True,
                 )
@@ -1106,7 +1153,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "evaluate":
             rows = _parse_arm_results(args.arm_result)
-            summary = evaluate_group(rows)
+            summary = evaluate_group(rows, config.selection_thresholds)
             encoded = json.dumps(summary, indent=2, sort_keys=True) + "\n"
             if args.output_json:
                 target = Path(args.output_json).expanduser().resolve()
@@ -1116,6 +1163,7 @@ def cli(argv: list[str] | None = None) -> int:
             return 0 if summary["verdict"] not in {
                 "M3_GROUP_INCOMPLETE_TRY_WHOLE_GROUP_M2",
                 "INVALID_INCOMPLETE_M2_GROUP",
+                "INVALID_NO_CAUSAL_CONTRAST",
             } else 2
 
         if args.arm is None or args.output_jsonl is None:

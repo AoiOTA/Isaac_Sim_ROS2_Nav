@@ -54,6 +54,7 @@ def test_graph_arms_have_one_exact_stack_contract(
         "obstacle_arm": "M3",
         "startup_profile": profile,
         "active_effect_scope": scope,
+        "localization_supervisor_mode": "shadow",
     }
     assert f"cognitive_graph_mode:={mode}" in argv
     assert f"route_prior_enabled:={route_prior}" in argv
@@ -61,14 +62,22 @@ def test_graph_arms_have_one_exact_stack_contract(
     assert f"--active-effect-scope {scope}" in argv
     assert f"--cognitive-graph-mode {mode}" in argv
     assert "stop-producer" not in argv
-    assert ("--shadow-config" in argv) is (arm in {"G0", "G1"})
+    assert "--shadow-config" not in argv
+    assert "--candidate-manifest" in argv
+    assert "kujiale_0026_run4_read_only_shadow_candidate.json" in argv
+    assert "localization_candidate_manifest:=" in argv
+    assert "localization_supervisor_mode:=shadow" in argv
 
 
 def test_obstacle_arm_is_held_m3_or_whole_group_m2_fallback(tmp_path):
     _values, m3 = _dry_run(tmp_path, "G3")
     values, m2 = _dry_run(tmp_path, "G3", obstacle_arm="M2")
-    assert " ros-d primary M3 route_prior_enabled:=true" in m3
-    assert " ros-d primary M2 route_prior_enabled:=true" in m2
+    assert "V6_COGNITIVE_PROFILE=M3" in m3
+    assert "V6_COGNITIVE_PROFILE=M2" in m2
+    assert " ros-d primary route_prior_enabled:=true" in m3
+    assert " ros-d primary route_prior_enabled:=true" in m2
+    assert " primary M3 " not in m3
+    assert " primary M2 " not in m2
     assert values["obstacle_arm"] == "M2"
 
 
@@ -104,6 +113,23 @@ def test_graph_stack_rejects_partial_or_out_of_contract_arms(tmp_path):
     )
     assert result.returncode == 2
     assert "M3 or M2" in result.stderr
+
+    result = subprocess.run(
+        [
+            str(STACK),
+            "--arm", "G0",
+            "--domain", "151",
+            "--run-dir", str(tmp_path / "run"),
+            "--socket", str(tmp_path / "module2.sock"),
+            "--localization-supervisor-mode", "active",
+            "--dry-run",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "shadow or startup" in result.stderr
 
 
 def test_new_axis_does_not_change_phase_f_or_legacy_defaults():

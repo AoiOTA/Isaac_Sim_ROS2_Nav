@@ -28,12 +28,13 @@ experiment:
   no_reset_between_loops: true
   default_obstacle_arm: M3
   fallback_obstacle_arm: M2
-  # The plan defines direction-only Pareto selection.  No hidden numeric gate.
+  # A candidate must be Pareto non-worse than G0 and improve at least one
+  # metric by its configured minimum.  Zero preserves strict raw improvement.
   selection_thresholds:
-    path_length_m: null
-    duration_s: null
-    replans: null
-    fallback_count: null
+    path_length_m: 0.0
+    duration_s: 0.0
+    replans: 0
+    fallback_count: 0
 
 # A later single-dynamic-actor campaign may point each arm at one small JSON
 # metrics file.  Phase G static runs keep explicit null placeholders.

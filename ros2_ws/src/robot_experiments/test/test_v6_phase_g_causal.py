@@ -85,6 +85,12 @@ def test_config_freezes_modes_route_loops_and_whole_group_fallback() -> None:
     assert config.reset_count == 1
     assert config.no_reset_between_loops is True
     assert (config.default_obstacle_arm, config.fallback_obstacle_arm) == ("M3", "M2")
+    assert config.selection_thresholds == {
+        "path_length_m": 0.0,
+        "duration_s": 0.0,
+        "replans": 0.0,
+        "fallback_count": 0.0,
+    }
 
 
 def test_timeline_is_two_warmups_then_one_scoring_loop() -> None:
@@ -274,6 +280,29 @@ def test_equal_candidate_is_not_an_improvement() -> None:
     assert direction["pareto_improves"] is False
     summary = evaluate_group(_group())
     assert summary["verdict"] == "GVG_RETAINED"
+
+
+def test_configured_threshold_can_keep_gvg_without_material_net_benefit() -> None:
+    rows = _group(G3=_result("G3", path=9.5, duration=99.0, replans=5))
+    thresholds = {
+        "path_length_m": 1.0,
+        "duration_s": 2.0,
+        "replans": 1.0,
+        "fallback_count": 1.0,
+    }
+    summary = evaluate_group(rows, thresholds)
+    assert summary["comparisons"]["G3_vs_G0"]["pareto_improves"] is True
+    assert summary["comparisons"]["G3_vs_G0"]["net_benefit"] is False
+    assert summary["selected_graph_mode"] == "GVG"
+
+
+def test_invalid_graph_contrast_is_not_treated_as_obstacle_fallback() -> None:
+    invalid = _result("G3", eligible=False)
+    invalid["verdict"] = "INVALID_NO_CAUSAL_CONTRAST"
+    summary = evaluate_group(_group(G3=invalid))
+    assert summary["verdict"] == "INVALID_NO_CAUSAL_CONTRAST"
+    assert summary["selected_graph_mode"] == "GVG"
+    assert summary["whole_group_m2_fallback_allowed"] is False
 
 
 def test_incomplete_m3_group_requests_only_whole_group_m2_fallback() -> None:
