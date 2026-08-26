@@ -35,6 +35,7 @@ from robot_experiments.v6_low_obstacle_causal import (
 
 PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE / "config" / "v6_kujiale_low_obstacle_causal.yaml"
+TEST_LIVE_MAP_VERSION = "4f8c2a1d" * 8
 
 
 def _paths(arm):
@@ -1138,16 +1139,67 @@ def test_campaign_cognitive_timeout_never_starts_recorder_or_episode(
     assert not any(event[0] == "run" for event in events)
 
 
-def _canonical_prior(*, trusted=False):
+def _canonical_prior(
+    *,
+    trusted=False,
+    map_version=TEST_LIVE_MAP_VERSION,
+    map_id=causal.KUJIALE_MAP_ID,
+):
     mask = [False] * 256
     for state_id in causal.KUJIALE_VALID_STATE_IDS:
         mask[state_id] = True
     return SimpleNamespace(
         schema_version="bio_nav_planning_prior_v310",
-        map_version=causal.KUJIALE_MAP_VERSION,
+        map_version=map_version,
+        cognitive_tile_id=map_id,
         t_map_canvas=list(causal.KUJIALE_T_MAP_CANVAS),
         valid_state_mask=mask,
         trusted_write=trusted,
+    )
+
+
+def _canonical_constraints(
+    *,
+    map_version=TEST_LIVE_MAP_VERSION,
+    map_id=causal.KUJIALE_MAP_ID,
+):
+    mask = [False] * 256
+    for state_id in causal.KUJIALE_VALID_STATE_IDS:
+        mask[state_id] = True
+    return SimpleNamespace(
+        map_version=map_version,
+        cognitive_tile_id=map_id,
+        t_map_canvas=list(causal.KUJIALE_T_MAP_CANVAS),
+        reachable_state_mask=mask,
+    )
+
+
+def test_cognitive_prior_accepts_distinct_semantic_map_id_and_live_version():
+    constraints = _canonical_constraints()
+    prior = _canonical_prior()
+    assert prior.map_version != prior.cognitive_tile_id
+    assert causal._canonical_constraints_error(constraints) is None
+    assert causal._canonical_prior_error(
+        prior,
+        "M2",
+        expected_map_version=constraints.map_version,
+    ) is None
+
+
+def test_cognitive_prior_rejects_version_or_tile_mismatch():
+    constraints = _canonical_constraints()
+    assert "live CognitiveMapConstraints" in causal._canonical_prior_error(
+        _canonical_prior(map_version="different-live-version"),
+        "M2",
+        expected_map_version=constraints.map_version,
+    )
+    assert "Kujiale map_id" in causal._canonical_prior_error(
+        _canonical_prior(map_id="different-scene"),
+        "M2",
+        expected_map_version=constraints.map_version,
+    )
+    assert "Kujiale map_id" in causal._canonical_constraints_error(
+        _canonical_constraints(map_id="different-scene")
     )
 
 
@@ -1174,13 +1226,25 @@ def test_cognitive_runtime_modes_are_arm_specific():
     }
 
 
+def test_cognitive_readiness_is_not_applicable_for_m0(tmp_path):
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M0")
+    assert causal._wait_for_cognitive_ready(
+        manifest, run, (), tmp_path / "unused.sock", timeout_sec=0.0
+    ) == {"ready": True, "applicability": "N/A_MODULE2_OFF"}
+
+
 def test_cognitive_readiness_waits_for_delayed_socket_and_canonical_prior(tmp_path):
     rclpy = pytest.importorskip("rclpy")
-    from bio_nav_interfaces.msg import PlanningPrior
+    from bio_nav_interfaces.msg import CognitiveMapConstraints, PlanningPrior
     from diagnostic_msgs.msg import DiagnosticArray, DiagnosticStatus, KeyValue
     from rclpy.context import Context
     from rclpy.executors import SingleThreadedExecutor
-    from rclpy.qos import QoSProfile, ReliabilityPolicy
+    from rclpy.qos import (
+        DurabilityPolicy,
+        QoSProfile,
+        ReliabilityPolicy,
+    )
 
     context = Context()
     rclpy.init(args=None, context=context)
@@ -1191,6 +1255,16 @@ def test_cognitive_readiness_waits_for_delayed_socket_and_canonical_prior(tmp_pa
     diagnostic_publisher = node.create_publisher(DiagnosticArray, "/diagnostics", qos)
     prior_publisher = node.create_publisher(
         PlanningPrior, "/bio_nav/module2/planning_prior", qos
+    )
+    constraints_qos = QoSProfile(
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+    constraints_publisher = node.create_publisher(
+        CognitiveMapConstraints,
+        "/bio_nav/cognitive_map/constraints",
+        constraints_qos,
     )
     executor = SingleThreadedExecutor(context=context)
     executor.add_node(node)
@@ -1220,13 +1294,20 @@ def test_cognitive_readiness_waits_for_delayed_socket_and_canonical_prior(tmp_pa
             ]
             diagnostic.status = [status]
             diagnostic_publisher.publish(diagnostic)
-            prior = PlanningPrior()
-            prior.schema_version = "bio_nav_planning_prior_v310"
-            prior.map_version = causal.KUJIALE_MAP_VERSION
-            prior.t_map_canvas = list(causal.KUJIALE_T_MAP_CANVAS)
+            constraints = CognitiveMapConstraints()
+            constraints.map_version = TEST_LIVE_MAP_VERSION
+            constraints.cognitive_tile_id = causal.KUJIALE_MAP_ID
+            constraints.t_map_canvas = list(causal.KUJIALE_T_MAP_CANVAS)
             mask = [False] * 256
             for state_id in causal.KUJIALE_VALID_STATE_IDS:
                 mask[state_id] = True
+            constraints.reachable_state_mask = mask
+            constraints_publisher.publish(constraints)
+            prior = PlanningPrior()
+            prior.schema_version = "bio_nav_planning_prior_v310"
+            prior.map_version = constraints.map_version
+            prior.cognitive_tile_id = causal.KUJIALE_MAP_ID
+            prior.t_map_canvas = list(causal.KUJIALE_T_MAP_CANVAS)
             prior.valid_state_mask = mask
             prior.trusted_write = False
             prior_publisher.publish(prior)
@@ -1241,6 +1322,8 @@ def test_cognitive_readiness_waits_for_delayed_socket_and_canonical_prior(tmp_pa
         )
         assert result["ready"] is True, result
         assert result["socket_listener"] is True
+        assert result["cognitive_constraints"]["map_id"] == causal.KUJIALE_MAP_ID
+        assert result["cognitive_constraints"]["map_version"] == TEST_LIVE_MAP_VERSION
         assert result["planning_prior"]["valid_state_count"] == 51
         assert time.monotonic() - started >= 0.15
     finally:

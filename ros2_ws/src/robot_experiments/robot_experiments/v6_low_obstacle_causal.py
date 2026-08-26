@@ -89,7 +89,7 @@ PHASE_F_RECORDED_CHILDREN = (
 )
 MODULE3_RESOURCE_PREFIX = "module3://"
 MODULE3_ROOT_ENV = "BIO_NAV_MODULE3_ROOT"
-KUJIALE_MAP_VERSION = "v6_kujiale_isaacgen_v1"
+KUJIALE_MAP_ID = "v6_kujiale_isaacgen_v1"
 KUJIALE_T_MAP_CANVAS = (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 KUJIALE_VALID_STATE_IDS = (
     39, 40, 56, 69, 70, 72, 84, 85, 86, 87, 88, 101, 102, 103, 104,
@@ -1882,11 +1882,41 @@ def _unix_socket_connects(path: Path) -> bool:
     return True
 
 
-def _canonical_prior_error(message: Any, arm: str) -> str | None:
+def _canonical_constraints_error(message: Any) -> str | None:
+    map_version = str(getattr(message, "map_version", "")).strip()
+    if not map_version:
+        return "CognitiveMapConstraints map_version is empty"
+    if str(getattr(message, "cognitive_tile_id", "")) != KUJIALE_MAP_ID:
+        return "CognitiveMapConstraints tile differs from the Kujiale map_id"
+    transform = tuple(float(value) for value in getattr(message, "t_map_canvas", ()))
+    if len(transform) != 9 or any(
+        not math.isclose(value, expected, abs_tol=1.0e-9)
+        for value, expected in zip(transform, KUJIALE_T_MAP_CANVAS)
+    ):
+        return "CognitiveMapConstraints T_map_canvas is not the canonical identity"
+    mask = tuple(bool(value) for value in getattr(message, "reachable_state_mask", ()))
+    if len(mask) != 256:
+        return "CognitiveMapConstraints reachable_state_mask does not contain 256 states"
+    if tuple(index for index, enabled in enumerate(mask) if enabled) != KUJIALE_VALID_STATE_IDS:
+        return "CognitiveMapConstraints mask differs from the canonical 51-state mask"
+    return None
+
+
+def _canonical_prior_error(
+    message: Any,
+    arm: str,
+    *,
+    expected_map_version: str | None = None,
+) -> str | None:
     if str(getattr(message, "schema_version", "")) != "bio_nav_planning_prior_v310":
         return "PlanningPrior schema is not V3.10"
-    if str(getattr(message, "map_version", "")) != KUJIALE_MAP_VERSION:
-        return "PlanningPrior map_version differs from Kujiale"
+    map_version = str(getattr(message, "map_version", "")).strip()
+    if not map_version:
+        return "PlanningPrior map_version is empty"
+    if str(getattr(message, "cognitive_tile_id", "")) != KUJIALE_MAP_ID:
+        return "PlanningPrior tile differs from the Kujiale map_id"
+    if expected_map_version is not None and map_version != expected_map_version:
+        return "PlanningPrior map_version differs from live CognitiveMapConstraints"
     transform = tuple(float(value) for value in getattr(message, "t_map_canvas", ()))
     if len(transform) != 9 or any(
         not math.isclose(value, expected, abs_tol=1.0e-9)
@@ -1942,13 +1972,13 @@ def _wait_for_cognitive_ready(
         raise CausalContractError("cognitive readiness timeout must be finite and positive")
     try:
         import rclpy
-        from bio_nav_interfaces.msg import PlanningPrior
+        from bio_nav_interfaces.msg import CognitiveMapConstraints, PlanningPrior
         from diagnostic_msgs.msg import DiagnosticArray
         from rcl_interfaces.msg import ParameterType
         from rcl_interfaces.srv import GetParameters
         from rclpy.context import Context
         from rclpy.executors import SingleThreadedExecutor
-        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
     except ImportError as exc:
         return {"ready": False, "reason": f"cognitive readiness probe unavailable: {exc}"}
 
@@ -1958,6 +1988,7 @@ def _wait_for_cognitive_ready(
     result: dict[str, Any] | None = None
     cleanup_errors: list[str] = []
     diagnostic: dict[str, Any] = {}
+    constraints: Any = None
     prior: Any = None
     parameters: dict[str, str] = {}
     parameter_future: Any = None
@@ -1991,11 +2022,26 @@ def _wait_for_cognitive_ready(
             nonlocal prior
             prior = message
 
+        def receive_constraints(message: Any) -> None:
+            nonlocal constraints
+            constraints = message
+
         diagnostic_subscription = node.create_subscription(
             DiagnosticArray, "/diagnostics", receive_diagnostics, qos
         )
         prior_subscription = node.create_subscription(
             PlanningPrior, "/bio_nav/module2/planning_prior", receive_prior, qos
+        )
+        constraints_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        constraints_subscription = node.create_subscription(
+            CognitiveMapConstraints,
+            "/bio_nav/cognitive_map/constraints",
+            receive_constraints,
+            constraints_qos,
         )
         parameter_client = node.create_client(
             GetParameters, "/bio_nav_ros_bridge/get_parameters"
@@ -2040,13 +2086,26 @@ def _wait_for_cognitive_ready(
                 and values.get("socket_connected", "").lower() == "true"
             )
             parameters_ready = parameters == expected_parameters
+            constraints_error = (
+                _canonical_constraints_error(constraints) if constraints is not None
+                else "CognitiveMapConstraints has not been observed"
+            )
+            constraints_map_version = (
+                str(constraints.map_version).strip()
+                if constraints_error is None else None
+            )
             prior_error = (
-                _canonical_prior_error(prior, run.arm) if prior is not None
+                _canonical_prior_error(
+                    prior,
+                    run.arm,
+                    expected_map_version=constraints_map_version,
+                ) if prior is not None
                 else "PlanningPrior has not been observed"
             )
             ready_now = (
                 listener and bridge_node and bridge_healthy
-                and parameters_ready and prior_error is None
+                and parameters_ready and constraints_error is None
+                and prior_error is None
             )
             now = time.monotonic()
             if ready_now:
@@ -2060,7 +2119,15 @@ def _wait_for_cognitive_ready(
                         "bridge_node": True,
                         "bridge_connected_healthy": True,
                         "runtime_parameters": dict(parameters),
+                        "cognitive_constraints": {
+                            "map_id": str(constraints.cognitive_tile_id),
+                            "map_version": constraints_map_version,
+                            "valid_state_count": sum(
+                                bool(value) for value in constraints.reachable_state_mask
+                            ),
+                        },
                         "planning_prior": {
+                            "map_id": str(prior.cognitive_tile_id),
                             "map_version": str(prior.map_version),
                             "valid_state_count": sum(bool(value) for value in prior.valid_state_mask),
                             "trusted_write": bool(prior.trusted_write),
@@ -2078,6 +2145,8 @@ def _wait_for_cognitive_ready(
                     missing.append("Bridge connected health")
                 if not parameters_ready:
                     missing.append("arm runtime parameters")
+                if constraints_error is not None:
+                    missing.append(constraints_error)
                 if prior_error is not None:
                     missing.append(prior_error)
                 last_reason = "waiting for " + ", ".join(missing)
@@ -2090,12 +2159,18 @@ def _wait_for_cognitive_ready(
                     "bridge_node": bridge_node,
                     "bridge_diagnostic": dict(diagnostic),
                     "runtime_parameters": dict(parameters),
+                    "cognitive_constraints_error": constraints_error,
                     "planning_prior_error": prior_error,
                 }
                 break
             executor.spin_once(timeout_sec=min(remaining, 0.10))
         # Keep explicit references until after the executor is stopped.
-        _ = (diagnostic_subscription, prior_subscription, parameter_client)
+        _ = (
+            diagnostic_subscription,
+            prior_subscription,
+            constraints_subscription,
+            parameter_client,
+        )
     except Exception as exc:
         result = {
             "ready": False,
