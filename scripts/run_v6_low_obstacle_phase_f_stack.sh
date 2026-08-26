@@ -336,6 +336,9 @@ done
 }
 export ISAAC_NAV_EXPECTED_DOMAIN_ID="${domain_id}"
 export ROS_DOMAIN_ID="${domain_id}"
+# shellcheck source=lib/v6_dynamic_startup.sh
+source "${script_dir}/lib/v6_dynamic_startup.sh"
+configure_v6_dynamic_integration_overlay
 # shellcheck source=lib/common.sh
 source "${script_dir}/lib/common.sh"
 
@@ -352,6 +355,8 @@ export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
 if [[ "${arm}" != "M0" ]]; then
   require_file "${integration_root}/scripts/run_module2_v310_server.sh"
   require_file "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh"
+  source_ros --require-integration-underlay
+  validate_v6_dynamic_integration_overlay
 fi
 mkdir -p "${run_dir}" "$(dirname "${socket_path}")"
 cleanup_exact_socket "${run_dir}" "${socket_path}"
@@ -559,7 +564,6 @@ if [[ "${arm}" != "M0" ]]; then
   register_child module2_server "${module2_server_pid}"
   exit_if_terminating
 
-  source_ros --require-integration-underlay
   startup_profile="estimated_shadow"
   [[ "${arm}" =~ ^M[23]$ ]] && startup_profile="module2_causal_obstacle_active"
   exit_if_terminating
