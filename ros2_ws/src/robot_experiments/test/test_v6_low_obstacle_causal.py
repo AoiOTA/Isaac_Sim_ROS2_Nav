@@ -1,5 +1,6 @@
 import json
 import fcntl
+import math
 import os
 from pathlib import Path
 import shutil
@@ -55,7 +56,8 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
     if m3_same_as_m2 and run.arm == "M3":
         plan = _paths("M2")
     typed = [] if run.arm == "M0" else [{
-        "x": 1.02, "y": 2.01, "accepted": True,
+        "id": "v6_low_box_solo", "x": -0.43, "y": -0.34,
+        "radius_m": 0.20, "accepted": True,
         "observed_spatial_error_m": 0.022360679774997918,
         "trusted_write": run.arm in {"M2", "M3"},
         "validation_mode": causal.VALIDATION_STATIC_DEPTH_REVALIDATED,
@@ -141,7 +143,13 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
             "depth_point_count": 20,
             "depth_hits_in_obstacle_bounds": 4,
             "rgbd_obstacle_footprints": [{
-                "center": [1.0, 2.0], "source": "projected_depth_points", "point_count": 4,
+                "id": "v6_low_box_solo",
+                "center": [-0.45, -0.35, 0.08],
+                "size": [0.30, 0.30, 0.16],
+                "rectangle": [-0.60, -0.50, -0.30, -0.20],
+                "source": causal.PHYSICAL_DEPTH_FOOTPRINT_SOURCE,
+                "point_count": 4,
+                "hit_count": 4,
             }],
             "typed_obstacles": typed,
         }],
@@ -242,6 +250,11 @@ def test_manifest_freezes_exact_twelve_counterbalanced_runs_and_identity():
     assert manifest.identity["module1_amcl_prior_enabled"] is False
     assert manifest.identity["cognitive_place_graph_enabled"] is False
     assert manifest.identity["scene_asset"].endswith("kujiale_0026_A_to_B_door_open.usd")
+    assert manifest.criteria["source_recall_min"] == 0.80
+    assert manifest.criteria["candidate_precision_min"] == 0.50
+    assert manifest.criteria["candidate_radius_max_m"] == 0.35
+    assert manifest.criteria["depth_obstacle_bounds_tolerance_m"] <= 0.02
+    assert manifest.criteria["depth_min_height_above_floor_m"] >= 0.02
 
 
 def test_m0_disables_uds_but_preserves_same_localization_contract():
@@ -291,6 +304,105 @@ def test_evaluator_pairs_scan_invisibility_and_typed_spatial_match(tmp_path):
         result.typed_spatial_matches == result.typed_spatial_total == 0
         for result in summary.runs if result.arm == "M0"
     )
+
+
+def test_one_visible_source_assigns_at_most_one_candidate_true_positive():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    sample = _evidence(manifest, run)["synchronized_samples"][0]
+    sample["typed_obstacles"].extend([
+        {
+            **sample["typed_obstacles"][0],
+            "id": "duplicate-box-candidate",
+            "x": -0.44,
+            "y": -0.36,
+            "observed_spatial_error_m": math.dist((-0.44, -0.36), (-0.45, -0.35)),
+        },
+        {
+            **sample["typed_obstacles"][0],
+            "id": "furniture-false-positive",
+            "x": 1.0,
+            "y": 2.0,
+            "observed_spatial_error_m": math.dist((1.0, 2.0), (-0.45, -0.35)),
+        },
+    ])
+    metrics = causal._scan_and_spatial_metrics(
+        [sample],
+        float(manifest.criteria["typed_spatial_match_tolerance_m"]),
+        physical_obstacle=causal._load_frozen_obstacle(manifest),
+    )
+    assert metrics["source_visible_count"] == 1
+    assert metrics["source_matched_count"] == 1
+    assert metrics["candidate_true_positive_count"] == 1
+    assert metrics["candidate_false_positive_count"] == 2
+    assert metrics["candidate_precision"] == pytest.approx(1.0 / 3.0)
+    assert len(metrics["best_center_errors_m"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("fault", "reason"),
+    [
+        ("recall", "source recall below engineering threshold"),
+        ("precision", "candidate precision below engineering threshold"),
+        ("radius", "candidate radius exceeds engineering threshold"),
+    ],
+)
+def test_active_spatial_semantics_gates_fail_closed(tmp_path, fault, reason):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+    row = _evidence(manifest, run)
+    sample = row["synchronized_samples"][0]
+    if fault == "recall":
+        missed = json.loads(json.dumps(sample))
+        missed["stamp_ns"] += 1
+        missed["typed_obstacles"] = []
+        row["synchronized_samples"].append(missed)
+    elif fault == "precision":
+        sample["typed_obstacles"].extend([
+            {
+                **sample["typed_obstacles"][0],
+                "id": f"false-positive-{index}",
+                "x": 1.0 + index,
+                "y": 2.0,
+                "observed_spatial_error_m": math.dist(
+                    (1.0 + index, 2.0), (-0.45, -0.35)
+                ),
+            }
+            for index in range(2)
+        ])
+    else:
+        sample["typed_obstacles"][0]["radius_m"] = 0.36
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "INVALID"
+    assert reason in result.reasons[0]
+
+
+def test_m1_reports_but_does_not_gate_candidate_precision(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    row = _evidence(manifest, run)
+    sample = row["synchronized_samples"][0]
+    sample["typed_obstacles"].extend([
+        {
+            **sample["typed_obstacles"][0],
+            "id": f"shadow-false-positive-{index}",
+            "x": 1.0 + index,
+            "y": 2.0,
+            "observed_spatial_error_m": math.dist(
+                (1.0 + index, 2.0), (-0.45, -0.35)
+            ),
+        }
+        for index in range(2)
+    ])
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "VALID"
+    assert result.candidate_precision == pytest.approx(1.0 / 3.0)
 
 
 def test_offline_causal_evaluator_passes_isolation_clearance_and_m3_local_effect(tmp_path):
@@ -712,9 +824,123 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
     assert evidence["sensor_counts"]["scan_message_count"] == 1
     assert evidence["synchronized_samples"][0]["scan_point_count"] == 80
     assert evidence["synchronized_samples"][0]["depth_observation_valid"] is True
-    assert evidence["synchronized_samples"][0]["rgbd_obstacle_footprints"][0]["source"] == "projected_depth_points"
+    assert evidence["synchronized_samples"][0]["rgbd_obstacle_footprints"][0]["source"] == (
+        causal.PHYSICAL_DEPTH_FOOTPRINT_SOURCE
+    )
     assert evidence["synchronized_samples"][0]["typed_obstacles"][0]["observed_spatial_error_m"] is not None
     assert evidence["passive"]["success"] is True
+
+
+def test_recorder_excludes_pre_reset_wrong_epoch_and_post_terminal_records():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M2")
+
+    def message(epoch, sequence):
+        return {
+            "header": {"stamp": 2_000_000_000, "frame_id": "map"},
+            "reset_epoch": epoch,
+            "module2_healthy": True,
+            "trusted_write": True,
+            "observation_valid": True,
+            "validation_stamp": {"sec": 2, "nanosec": 0},
+            "sequence": sequence,
+            "validation_mode": causal.VALIDATION_STATIC_DEPTH_REVALIDATED,
+            "validation_sensor_mask": causal.VALIDATION_SENSOR_DEPTH,
+            "obstacles": [{
+                "id": f"candidate-{sequence}",
+                "pose_xy_m": [-0.45, -0.35],
+                "radius_m": 0.2,
+                "confidence": 0.9,
+            }],
+        }
+
+    evidence = build_recorded_evidence(
+        manifest,
+        run,
+        [
+            RecordedMessage(
+                "/bio_nav/module2/cognitive_obstacles", 250, message(1, 1)
+            ),
+            RecordedMessage(
+                "/bio_nav/module2/cognitive_obstacles", 300, message(3, 2)
+            ),
+            RecordedMessage(
+                "/bio_nav/module2/cognitive_obstacles", 500, message(3, 3)
+            ),
+            RecordedMessage("/ground_truth/odom", 350, {
+                "pose": {"pose": {"position": {"x": -1.0, "y": -1.0}}},
+            }),
+        ],
+        {
+            "reset_receipt": {"generation": 2},
+            "_evidence_window": {"start_ns": 200, "end_ns": 400},
+        },
+    )
+    assert evidence["module2_health"]["message_count"] == 1
+    assert [row["id"] for row in evidence["obstacle_validation"]] == ["candidate-2"]
+    assert evidence["reset"]["target_reset_epoch"] == 3
+    assert evidence["reset"]["excluded_record_count"] == 2
+
+
+@pytest.mark.parametrize(("terminal_ns", "expected_end"), [(350, 350), (None, 400)])
+def test_episode_jsonl_bounds_evidence_by_reset_receipt_and_terminal_or_result(
+    tmp_path, terminal_ns, expected_end
+):
+    rows = [
+        {"event": "reset_receipt", "wall_time_ns": 200, "generation": 2},
+    ]
+    if terminal_ns is not None:
+        rows.append({"event": "terminal_zero_confirmed", "wall_time_ns": terminal_ns})
+    rows.append({
+        "event": "episode_result",
+        "wall_time_ns": 400,
+        "reset_receipt": {"generation": 2},
+    })
+    path = tmp_path / "episode.jsonl"
+    path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    result = causal._episode_result_from_jsonl(path)
+    assert result["_evidence_window"] == {
+        "start_ns": 200,
+        "end_ns": expected_end,
+        "end_event": (
+            "terminal_zero_confirmed" if terminal_ns is not None else "episode_result"
+        ),
+    }
+
+
+def test_m1_empty_startup_message_does_not_violate_shadow_geometry_semantics(tmp_path):
+    empty = RecordedMessage("/bio_nav/module2/cognitive_obstacles", 1, {
+        "trusted_write": False,
+        "rejection_mask": 0,
+        "obstacles": [],
+    })
+    nonempty_message = _typed_obstacle_message(
+        pose=[-0.45, -0.35], position_stddev=[0.05, 0.05]
+    )
+    nonempty_message.trusted_write = False
+    nonempty_message.rejection_mask = causal.SHADOW_REJECTION_UNTRUSTED
+    nonempty_message.validation_mode = causal.VALIDATION_STATIC_DEPTH_REVALIDATED
+    nonempty_message.validation_sensor_mask = causal.VALIDATION_SENSOR_DEPTH
+    summary = causal._m1_shadow_candidate_summary([
+        empty,
+        RecordedMessage("/bio_nav/module2/cognitive_obstacles", 2, nonempty_message),
+    ])
+    assert summary == {
+        "message_count": 2,
+        "nonempty_message_count": 1,
+        "static_depth_revalidated_geometry_count": 1,
+        "trusted_write_count": 0,
+        "shadow_rejection_count": 1,
+        "invalid_geometry_count": 0,
+    }
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    row = _evidence(manifest, run)
+    row["shadow_obstacle_candidate"] = summary
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    result = next(item for item in evaluate(manifest, tmp_path).runs if item.run_id == run.run_id)
+    assert result.verdict == "VALID"
 
 
 def _m3_ttl_lifecycle_records(*, critic_reason=None, critic_applied=False, include_local=True):
@@ -898,8 +1124,38 @@ def test_depth_footprint_requires_real_projected_points(
     assert result["valid"] is expected_valid
     assert bool(result["footprints"]) is expected_hit
     if expected_hit:
-        assert result["footprints"][0]["source"] == "projected_depth_points"
-        assert result["footprints"][0]["point_count"] >= 3
+        footprint = result["footprints"][0]
+        assert footprint["source"] == causal.PHYSICAL_DEPTH_FOOTPRINT_SOURCE
+        assert footprint["point_count"] == footprint["hit_count"] >= 3
+        assert footprint["center"][:2] == pytest.approx([-0.45, -0.35])
+        assert footprint["rectangle"] == pytest.approx([-0.60, -0.50, -0.30, -0.20])
+
+
+def test_ground_only_depth_points_do_not_prove_low_box_visibility():
+    manifest = load_manifest(CONFIG)
+    depth, info, _ = _depth_projection_inputs()
+    ground_transform = RecordedMessage("/tf_static", depth.stamp_ns, {
+        "transforms": [{
+            "header": {"stamp": depth.stamp_ns, "frame_id": "map"},
+            "child_frame_id": "camera_optical",
+            "transform": {
+                "translation": {"x": -0.45, "y": -0.35, "z": -1.0},
+                "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+            },
+        }],
+    })
+    result = causal._project_depth_obstacle(
+        depth,
+        info,
+        [],
+        [ground_transform],
+        causal._load_frozen_obstacle(manifest),
+        manifest.criteria,
+    )
+    assert result["valid"] is True
+    assert result["reason"] == "no_low_points_in_obstacle_bounds"
+    assert result["hit_count"] == 0
+    assert result["footprints"] == []
 
 
 def test_invalid_depth_or_future_tf_never_fabricates_a_hit():

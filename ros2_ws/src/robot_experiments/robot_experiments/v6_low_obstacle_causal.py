@@ -86,6 +86,7 @@ VALIDATION_STATIC_DEPTH_REVALIDATED = 2
 VALIDATION_SENSOR_DEPTH = 1
 MOTION_STATIC = 1
 SHADOW_REJECTION_UNTRUSTED = 4
+PHYSICAL_DEPTH_FOOTPRINT_SOURCE = "physical_low_box_aabb_depth_hits"
 PHASE_F_QOS_CONFIG = "v6_low_obstacle_phase_f_rosbag_qos.yaml"
 PHASE_F_RECORDED_CHILDREN = (
     "module3_ros",
@@ -203,6 +204,14 @@ class RunResult:
     scan_invisible_rgbd_pairs: int
     typed_spatial_matches: int
     typed_spatial_total: int
+    source_visible_count: int
+    source_matched_count: int
+    source_recall: float
+    candidate_true_positive_count: int
+    candidate_false_positive_count: int
+    candidate_precision: float
+    candidate_radius_max_m: float
+    best_center_errors_m: tuple[float, ...]
     path_length_m: float
     local_trajectory_length_m: float
     near_obstacle_speed_mps: float
@@ -466,6 +475,21 @@ def load_manifest(path: str | Path) -> CausalManifest:
     if freshness.get("stale_action") != "stop_and_fail_open":
         raise CausalContractError("freshness.stale_action must be stop_and_fail_open")
     criteria = _mapping(raw.get("criteria"), "criteria")
+    depth_xy_tolerance = float(criteria.get("depth_obstacle_bounds_tolerance_m", 0.02))
+    if not 0.0 <= depth_xy_tolerance <= 0.02:
+        raise CausalContractError(
+            "criteria.depth_obstacle_bounds_tolerance_m must be within [0, 0.02]"
+        )
+    if float(criteria.get("depth_min_height_above_floor_m", 0.0)) < 0.02:
+        raise CausalContractError(
+            "criteria.depth_min_height_above_floor_m must be at least 0.02"
+        )
+    for key in ("source_recall_min", "candidate_precision_min"):
+        value = float(criteria.get(key, -1.0))
+        if not 0.0 <= value <= 1.0:
+            raise CausalContractError(f"criteria.{key} must be within [0, 1]")
+    if float(criteria.get("candidate_radius_max_m", 0.0)) <= 0.0:
+        raise CausalContractError("criteria.candidate_radius_max_m must be positive")
     return CausalManifest(
         path=manifest_path,
         module3_root=module3_root,
@@ -873,11 +897,15 @@ def _m1_shadow_candidate_summary(
         except (TypeError, ValueError, OverflowError):
             rejection_mask = -1
         trusted_write_count += int(trusted_write)
-        shadow_rejection_count += int(
-            not trusted_write and rejection_mask == SHADOW_REJECTION_UNTRUSTED
-        )
         obstacles = _typed_obstacles(row.message)
         nonempty_message_count += int(bool(obstacles))
+        # A producer may emit one empty startup message before geometry is
+        # available.  Shadow semantics apply to messages carrying candidates;
+        # the empty startup message is neither a rejection nor invalid geometry.
+        if obstacles:
+            shadow_rejection_count += int(
+                not trusted_write and rejection_mask == SHADOW_REJECTION_UNTRUSTED
+            )
         for obstacle in obstacles:
             static_depth_revalidated = (
                 obstacle["validation_mode"] == VALIDATION_STATIC_DEPTH_REVALIDATED
@@ -1157,12 +1185,15 @@ def _project_depth_obstacle(
     )
     if map_from_camera is None:
         return {"valid": False, "reason": "map_camera_tf_missing", "point_count": len(pixels), "hit_count": 0, "footprints": []}
-    xy_tolerance = float(criteria.get("depth_obstacle_bounds_tolerance_m", 0.10))
+    xy_tolerance = float(criteria.get("depth_obstacle_bounds_tolerance_m", 0.02))
     z_tolerance = float(criteria.get("depth_low_z_tolerance_m", 0.05))
+    minimum_height_above_floor = float(
+        criteria.get("depth_min_height_above_floor_m", 0.02)
+    )
     center = obstacle["center"]
     half_x = 0.5 * float(obstacle["size"][0]) + xy_tolerance
     half_y = 0.5 * float(obstacle["size"][1]) + xy_tolerance
-    lower_z = float(obstacle["z_bounds"][0]) - z_tolerance
+    lower_z = float(obstacle["z_bounds"][0]) + minimum_height_above_floor
     upper_z = float(obstacle["z_bounds"][1]) + z_tolerance
     hits: list[tuple[float, float, float]] = []
     for u, v, depth_m in pixels:
@@ -1183,14 +1214,25 @@ def _project_depth_obstacle(
             "hit_count": len(hits),
             "footprints": [],
         }
-    mins = [min(point[index] for point in hits) for index in range(3)]
-    maxs = [max(point[index] for point in hits) for index in range(3)]
+    physical_half_x = 0.5 * float(obstacle["size"][0])
+    physical_half_y = 0.5 * float(obstacle["size"][1])
     footprint = {
         "id": obstacle["id"],
-        "center": [(mins[index] + maxs[index]) * 0.5 for index in range(3)],
-        "size": [maxs[index] - mins[index] for index in range(3)],
-        "source": "projected_depth_points",
+        "center": [
+            float(center[0]),
+            float(center[1]),
+            0.5 * (float(obstacle["z_bounds"][0]) + float(obstacle["z_bounds"][1])),
+        ],
+        "size": [float(value) for value in obstacle["size"]],
+        "rectangle": [
+            float(center[0]) - physical_half_x,
+            float(center[1]) - physical_half_y,
+            float(center[0]) + physical_half_x,
+            float(center[1]) + physical_half_y,
+        ],
+        "source": PHYSICAL_DEPTH_FOOTPRINT_SOURCE,
         "point_count": len(hits),
+        "hit_count": len(hits),
     }
     return {
         "valid": True,
@@ -1271,8 +1313,58 @@ def build_recorded_evidence(
 ) -> dict[str, Any]:
     """Reduce real recorded ROS messages into the existing causal evaluator JSON."""
 
+    reset_receipt = episode_result.get("reset_receipt", {})
+    explicit_target_epoch = episode_result.get("target_reset_epoch")
+    if isinstance(explicit_target_epoch, int) and not isinstance(explicit_target_epoch, bool):
+        target_reset_epoch = int(explicit_target_epoch)
+    elif (
+        isinstance(reset_receipt, Mapping)
+        and isinstance(reset_receipt.get("generation"), int)
+        and not isinstance(reset_receipt.get("generation"), bool)
+    ):
+        # Phase-F starts the cognitive stack after Isaac's startup reset.  The
+        # episode reset receipt generation is therefore the event which advances
+        # the already-initialized cognitive identity to its successor epoch.
+        target_reset_epoch = int(reset_receipt["generation"]) + 1
+    else:
+        target_reset_epoch = None
+    evidence_window = episode_result.get("_evidence_window", {})
+    window_start_ns = (
+        int(evidence_window["start_ns"])
+        if isinstance(evidence_window, Mapping)
+        and isinstance(evidence_window.get("start_ns"), int)
+        and not isinstance(evidence_window.get("start_ns"), bool)
+        else None
+    )
+    window_end_ns = (
+        int(evidence_window["end_ns"])
+        if isinstance(evidence_window, Mapping)
+        and isinstance(evidence_window.get("end_ns"), int)
+        and not isinstance(evidence_window.get("end_ns"), bool)
+        else None
+    )
+
+    def in_episode(record: RecordedMessage) -> bool:
+        if window_start_ns is not None and record.stamp_ns < window_start_ns:
+            return False
+        if window_end_ns is not None and record.stamp_ns > window_end_ns:
+            return False
+        message_epoch = _field(record.message, "reset_epoch")
+        if message_epoch is not None and target_reset_epoch is not None:
+            try:
+                return int(message_epoch) == target_reset_epoch
+            except (TypeError, ValueError, OverflowError):
+                return False
+        return True
+
     by_topic: dict[str, list[RecordedMessage]] = {}
+    excluded_record_count = 0
     for record in records:
+        # Static transforms are timeless context for proving a transform chain;
+        # they are not counted as episode observations.
+        if record.topic != "/tf_static" and not in_episode(record):
+            excluded_record_count += 1
+            continue
         by_topic.setdefault(record.topic, []).append(record)
     for values in by_topic.values():
         values.sort(key=_message_stamp_ns)
@@ -1549,6 +1641,10 @@ def build_recorded_evidence(
             "events": int(episode_result.get("reset_events", 0)),
             "goal_publications": int(episode_result.get("goal_publications", 0)),
             "localization_contract": "same_estimated_autonomy",
+            "target_reset_epoch": target_reset_epoch,
+            "evidence_window_start_ns": window_start_ns,
+            "evidence_window_end_ns": window_end_ns,
+            "excluded_record_count": excluded_record_count,
         },
         "action": {
             "state": str(episode_result.get("state", "UNKNOWN")),
@@ -1820,16 +1916,46 @@ def read_rosbag_records(
 
 
 def _episode_result_from_jsonl(path: Path) -> Mapping[str, Any]:
-    result: Mapping[str, Any] | None = None
+    result: dict[str, Any] | None = None
+    reset_receipt_ns: int | None = None
+    terminal_ns: int | None = None
+    result_ns: int | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if isinstance(row, Mapping) and row.get("event") == "episode_result":
-            result = row
+        if not isinstance(row, Mapping):
+            continue
+        event = row.get("event")
+        wall_time_ns = row.get("wall_time_ns")
+        valid_wall_time = (
+            isinstance(wall_time_ns, int)
+            and not isinstance(wall_time_ns, bool)
+            and wall_time_ns > 0
+        )
+        if event == "reset_receipt" and valid_wall_time:
+            reset_receipt_ns = int(wall_time_ns)
+        elif event == "terminal_zero_confirmed" and valid_wall_time:
+            terminal_ns = int(wall_time_ns)
+        elif event == "episode_result":
+            result = dict(row)
+            if valid_wall_time:
+                result_ns = int(wall_time_ns)
     if result is None:
         raise CausalContractError(f"episode_result event missing from {path}")
+    if reset_receipt_ns is None or result_ns is None:
+        raise CausalContractError(
+            f"reset_receipt/result evidence window missing from {path}"
+        )
+    end_ns = terminal_ns if terminal_ns is not None else result_ns
+    if end_ns < reset_receipt_ns:
+        raise CausalContractError(f"episode evidence window is reversed in {path}")
+    result["_evidence_window"] = {
+        "start_ns": reset_receipt_ns,
+        "end_ns": end_ns,
+        "end_event": "terminal_zero_confirmed" if terminal_ns is not None else "episode_result",
+    }
     return result
 
 
@@ -3175,15 +3301,42 @@ def _footprint_center(value: Any) -> tuple[float, float]:
     return float(row["x"]), float(row["y"])
 
 
+def _circle_matches_rectangle(
+    candidate: Mapping[str, Any],
+    rectangle: Sequence[float],
+    tolerance_m: float,
+) -> bool:
+    x = float(candidate["x"])
+    y = float(candidate["y"])
+    radius = float(candidate["radius_m"])
+    min_x, min_y, max_x, max_y = (float(value) for value in rectangle)
+    dx = max(min_x - x, 0.0, x - max_x)
+    dy = max(min_y - y, 0.0, y - max_y)
+    return math.hypot(dx, dy) <= radius + tolerance_m
+
+
 def _scan_and_spatial_metrics(
     samples: Any,
     tolerance_m: float,
     *,
+    physical_obstacle: Mapping[str, Any],
     validate_obstacles: bool = True,
-) -> tuple[int, int, int, int]:
+) -> dict[str, Any]:
     if not isinstance(samples, list) or not samples:
         raise CausalContractError("synchronized_samples must be a non-empty list")
-    synchronized = invisible = matched = total = valid_scan_samples = 0
+    synchronized = invisible = valid_scan_samples = 0
+    source_visible = source_matched = candidate_tp = candidate_fp = 0
+    best_center_errors: list[float] = []
+    candidate_radii: list[float] = []
+    center = tuple(float(value) for value in physical_obstacle["center"][:2])
+    half_x = 0.5 * float(physical_obstacle["size"][0])
+    half_y = 0.5 * float(physical_obstacle["size"][1])
+    rectangle = (
+        center[0] - half_x,
+        center[1] - half_y,
+        center[0] + half_x,
+        center[1] + half_y,
+    )
     for index, raw_sample in enumerate(samples):
         sample = _mapping(raw_sample, f"synchronized_samples[{index}]")
         stamp = sample.get("stamp_ns")
@@ -3235,26 +3388,48 @@ def _scan_and_spatial_metrics(
             )
         for footprint in footprints:
             footprint_row = _mapping(footprint, "rgbd_obstacle_footprint")
-            if footprint_row.get("source") != "projected_depth_points":
+            if footprint_row.get("source") != PHYSICAL_DEPTH_FOOTPRINT_SOURCE:
                 raise CausalContractError(
-                    f"synchronized_samples[{index}] footprint source is not projected depth"
+                    f"synchronized_samples[{index}] footprint source is not physical RGBD evidence"
                 )
-            if int(footprint_row.get("point_count", 0)) <= 0:
+            point_count = int(footprint_row.get("point_count", 0))
+            hit_count = int(footprint_row.get("hit_count", 0))
+            footprint_rectangle = footprint_row.get("rectangle")
+            if point_count <= 0 or hit_count != point_count:
                 raise CausalContractError(
-                    f"synchronized_samples[{index}] footprint point_count invalid"
+                    f"synchronized_samples[{index}] footprint real hit count invalid"
+                )
+            if (
+                not isinstance(footprint_rectangle, Sequence)
+                or isinstance(footprint_rectangle, (str, bytes))
+                or len(footprint_rectangle) != 4
+                or any(
+                    not math.isclose(float(actual), expected, abs_tol=1.0e-9)
+                    for actual, expected in zip(footprint_rectangle, rectangle)
+                )
+            ):
+                raise CausalContractError(
+                    f"synchronized_samples[{index}] footprint is not the physical box rectangle"
                 )
         if footprints and scan_valid and scan_points > 0 and scan_hits == 0:
             invisible += 1
-        centers = tuple(_footprint_center(item) for item in footprints)
+        visible = bool(footprints)
+        if visible:
+            source_visible += 1
+        accepted: list[Mapping[str, Any]] = []
         for obstacle_value in typed:
             obstacle = _mapping(obstacle_value, "typed_obstacle")
             if obstacle.get("accepted") is not True:
                 continue
-            total += 1
+            radius = _finite_float(obstacle.get("radius_m"), minimum=0.0)
+            if radius is None or radius <= 0.0:
+                raise CausalContractError(
+                    f"synchronized_samples[{index}] accepted candidate radius invalid"
+                )
+            candidate_radii.append(radius)
+            accepted.append(obstacle)
             point = (float(obstacle["x"]), float(obstacle["y"]))
-            computed_error = min(
-                (math.dist(point, center) for center in centers), default=None
-            )
+            computed_error = math.dist(point, center) if visible else None
             reported_error = obstacle.get("observed_spatial_error_m")
             if computed_error is None:
                 if reported_error is not None:
@@ -3270,11 +3445,41 @@ def _scan_and_spatial_metrics(
                 raise CausalContractError(
                     f"synchronized_samples[{index}] spatial error is not observed geometry"
                 )
-            if computed_error is not None and computed_error <= tolerance_m:
-                matched += 1
+        matching = [
+            obstacle for obstacle in accepted
+            if _circle_matches_rectangle(obstacle, rectangle, tolerance_m)
+        ]
+        if matching:
+            best = min(
+                matching,
+                key=lambda obstacle: math.dist(
+                    (float(obstacle["x"]), float(obstacle["y"])), center
+                ),
+            )
+            if visible:
+                source_matched += 1
+            candidate_tp += 1
+            candidate_fp += len(accepted) - 1
+            best_center_errors.append(math.dist(
+                (float(best["x"]), float(best["y"])), center
+            ))
+        else:
+            candidate_fp += len(accepted)
     if valid_scan_samples == 0:
         raise CausalContractError("no synchronized non-empty /scan sample was recorded")
-    return synchronized, invisible, matched, total
+    candidate_total = candidate_tp + candidate_fp
+    return {
+        "synchronized_frames": synchronized,
+        "scan_invisible_rgbd_pairs": invisible,
+        "source_visible_count": source_visible,
+        "source_matched_count": source_matched,
+        "source_recall": source_matched / source_visible if source_visible else 0.0,
+        "candidate_true_positive_count": candidate_tp,
+        "candidate_false_positive_count": candidate_fp,
+        "candidate_precision": candidate_tp / candidate_total if candidate_total else 0.0,
+        "candidate_radius_max_m": max(candidate_radii, default=0.0),
+        "best_center_errors_m": tuple(best_center_errors),
+    }
 
 
 REQUIRED_EVIDENCE_KEYS = (
@@ -3335,9 +3540,12 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         )
         if run.arm == "M1":
             shadow_messages = int(shadow_candidate.get("message_count", 0))
+            nonempty_shadow_messages = int(
+                shadow_candidate.get("nonempty_message_count", 0)
+            )
             if (
                 shadow_messages <= 0
-                or int(shadow_candidate.get("nonempty_message_count", 0)) <= 0
+                or nonempty_shadow_messages <= 0
                 or int(shadow_candidate.get(
                     "static_depth_revalidated_geometry_count", 0
                 )) <= 0
@@ -3348,7 +3556,7 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             if (
                 int(shadow_candidate.get("trusted_write_count", 0)) != 0
                 or int(shadow_candidate.get("shadow_rejection_count", 0))
-                != shadow_messages
+                != nonempty_shadow_messages
                 or int(shadow_candidate.get("invalid_geometry_count", 0)) != 0
             ):
                 raise CausalContractError(
@@ -3422,6 +3630,7 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
                 raise CausalContractError(f"costmaps.{key} missing")
 
         tolerance = float(manifest.criteria["typed_spatial_match_tolerance_m"])
+        physical_obstacle = _load_frozen_obstacle(manifest)
         sensor_counts = _mapping(row["sensor_counts"], "sensor_counts")
         scan_message_count = sensor_counts.get("scan_message_count")
         if (
@@ -3431,20 +3640,41 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         ):
             raise CausalContractError("/scan message count must be positive")
         active_obstacle_validation = run.arm in {"M1", "M2", "M3"}
-        synchronized, invisible, matches, spatial_total = _scan_and_spatial_metrics(
+        spatial = _scan_and_spatial_metrics(
             row["synchronized_samples"],
             tolerance,
+            physical_obstacle=physical_obstacle,
             validate_obstacles=active_obstacle_validation,
         )
-        if active_obstacle_validation and spatial_total == 0:
-            raise CausalContractError("typed obstacle spatial evidence missing")
-        if active_obstacle_validation and matches != spatial_total:
-            raise CausalContractError("typed obstacle spatial match failed")
+        spatial_gate_reasons: list[str] = []
+        if active_obstacle_validation and spatial["source_visible_count"] == 0:
+            if run.arm == "M1":
+                raise CausalContractError("physical low-box RGBD visibility evidence missing")
+            spatial_gate_reasons.append(
+                "physical low-box RGBD visibility evidence missing"
+            )
         validations = row["obstacle_validation"]
         if not isinstance(validations, list):
             raise CausalContractError("obstacle_validation must be a list")
         if active_obstacle_validation and not validations:
             raise CausalContractError("typed obstacle validation evidence missing")
+        if run.arm in {"M2", "M3"}:
+            if spatial["source_recall"] < float(manifest.criteria["source_recall_min"]):
+                spatial_gate_reasons.append(
+                    f"{run.arm} source recall below engineering threshold"
+                )
+            if spatial["candidate_precision"] < float(
+                manifest.criteria["candidate_precision_min"]
+            ):
+                spatial_gate_reasons.append(
+                    f"{run.arm} candidate precision below engineering threshold"
+                )
+            if spatial["candidate_radius_max_m"] > float(
+                manifest.criteria["candidate_radius_max_m"]
+            ):
+                spatial_gate_reasons.append(
+                    f"{run.arm} candidate radius exceeds engineering threshold"
+                )
 
         freshness = _mapping(row["freshness"], "freshness")
         expected_ttl_applicability = (
@@ -3466,7 +3696,10 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             raise CausalContractError(
                 "nominal M3 critic TTL status must defer to the separate active-controller probe"
             )
-        verdict, reasons = "VALID", ()
+        verdict, reasons = (
+            ("INVALID", tuple(spatial_gate_reasons))
+            if spatial_gate_reasons else ("VALID", ())
+        )
 
         plan = _points(row["plan"], "plan")
         optimal_trajectory = _points(row["optimal_trajectory"], "optimal_trajectory")
@@ -3481,7 +3714,7 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
         action = _mapping(row["action"], "action")
         terminal_zero = _bool(action.get("terminal_zero_confirmed"), "action.terminal_zero_confirmed")
         if not terminal_zero:
-            raise CausalContractError("terminal_zero_not_confirmed")
+            verdict, reasons = "INVALID", ("terminal_zero_not_confirmed", *reasons)
         if verdict == "VALID":
             if collision:
                 reasons = ("collision",)
@@ -3506,10 +3739,21 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             arm=run.arm,
             verdict=verdict,
             reasons=reasons,
-            synchronized_frames=synchronized,
-            scan_invisible_rgbd_pairs=invisible,
-            typed_spatial_matches=matches,
-            typed_spatial_total=spatial_total,
+            synchronized_frames=spatial["synchronized_frames"],
+            scan_invisible_rgbd_pairs=spatial["scan_invisible_rgbd_pairs"],
+            typed_spatial_matches=spatial["candidate_true_positive_count"],
+            typed_spatial_total=(
+                spatial["candidate_true_positive_count"]
+                + spatial["candidate_false_positive_count"]
+            ),
+            source_visible_count=spatial["source_visible_count"],
+            source_matched_count=spatial["source_matched_count"],
+            source_recall=spatial["source_recall"],
+            candidate_true_positive_count=spatial["candidate_true_positive_count"],
+            candidate_false_positive_count=spatial["candidate_false_positive_count"],
+            candidate_precision=spatial["candidate_precision"],
+            candidate_radius_max_m=spatial["candidate_radius_max_m"],
+            best_center_errors_m=spatial["best_center_errors_m"],
             path_length_m=path_length(plan),
             local_trajectory_length_m=path_length(optimal_trajectory),
             near_obstacle_speed_mps=float(critic.get("near_obstacle_speed_mps", 0.0)),
@@ -3542,6 +3786,14 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             scan_invisible_rgbd_pairs=0,
             typed_spatial_matches=0,
             typed_spatial_total=0,
+            source_visible_count=0,
+            source_matched_count=0,
+            source_recall=0.0,
+            candidate_true_positive_count=0,
+            candidate_false_positive_count=0,
+            candidate_precision=0.0,
+            candidate_radius_max_m=0.0,
+            best_center_errors_m=(),
             path_length_m=0.0,
             local_trajectory_length_m=0.0,
             near_obstacle_speed_mps=0.0,

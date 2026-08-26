@@ -138,9 +138,13 @@ criteria:
   typed_spatial_match_tolerance_m: 0.20
   depth_subsample_stride: 4
   depth_max_range_m: 8.0
-  depth_obstacle_bounds_tolerance_m: 0.10
+  depth_obstacle_bounds_tolerance_m: 0.02
   depth_low_z_tolerance_m: 0.05
+  depth_min_height_above_floor_m: 0.02
   depth_min_obstacle_points: 3
+  source_recall_min: 0.80
+  candidate_precision_min: 0.50
+  candidate_radius_max_m: 0.35
   m1_m0_path_hausdorff_max_m: 0.15
   m1_m0_path_length_delta_max_fraction: 0.05
   active_clearance_gain_min_m: 0.20
