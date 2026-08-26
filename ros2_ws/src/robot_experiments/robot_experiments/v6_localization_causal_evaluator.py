@@ -16,6 +16,32 @@ import statistics
 from typing import Any, Iterable, Mapping, Sequence
 
 
+PHASE_DE_EVENT_SCHEMA = "bio_nav_v6_phase_de_localization_event_v1"
+PHASE_DE_GT_SCHEMA = "bio_nav_v6_phase_de_localization_gt_v1"
+PHASE_DE_EVENTS = frozenset(
+    {
+        "episode_start",
+        "initialpose",
+        "fault_injected",
+        "pause_requested",
+        "pause_confirmed",
+        "prior_write",
+        "localization_ready",
+        "localization_recovered",
+        "goal_dispatched",
+        "goal_result",
+        "supervisor_diagnostic",
+        "estimated_pose",
+        "odom_pose",
+        "cmd_vel_sim",
+        "collision",
+        "module1_diagnostic",
+        "episode_end",
+    }
+)
+PHASE_DE_PAIRS = {"D": ("S0", "S1"), "E": ("R0", "R1")}
+
+
 class EvaluationError(RuntimeError):
     """Recorded evidence is missing or violates the frozen contract."""
 
@@ -374,3 +400,547 @@ def evaluate_campaign(manifest: Mapping[str, Any], evidence_dir: str | Path) -> 
             "L2_S3_median_s": l2_recovery_median,
         },
     }
+
+
+def load_phase_de_jsonl(path: str | Path, *, ground_truth: bool = False) -> list[Mapping[str, Any]]:
+    """Load one Phase D/E JSONL stream without mixing runtime and passive GT.
+
+    The live runner owns the runtime stream.  A passive extractor may later
+    create the Ground Truth stream from the recorded bag, but GT is never an
+    accepted runtime event.
+    """
+
+    source = Path(path).expanduser().resolve()
+    rows: list[Mapping[str, Any]] = []
+    for line_number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            row = _mapping(json.loads(line), f"{source}:{line_number}")
+        except json.JSONDecodeError as exc:
+            raise EvaluationError(f"{source}:{line_number} is not valid JSON: {exc}") from exc
+        expected_schema = PHASE_DE_GT_SCHEMA if ground_truth else PHASE_DE_EVENT_SCHEMA
+        if row.get("schema") != expected_schema:
+            raise EvaluationError(
+                f"{source}:{line_number} schema must be {expected_schema}"
+            )
+        event = str(row.get("event", ""))
+        if ground_truth:
+            if event != "ground_truth_pose":
+                raise EvaluationError(
+                    f"{source}:{line_number} passive GT event must be ground_truth_pose"
+                )
+        elif event not in PHASE_DE_EVENTS:
+            raise EvaluationError(f"{source}:{line_number} unknown runtime event {event!r}")
+        rows.append(row)
+    if not rows:
+        raise EvaluationError(f"{source} contains no Phase D/E events")
+    return rows
+
+
+def _contains_ground_truth(value: Any, *, key: str = "") -> bool:
+    lowered = key.lower()
+    if "ground_truth" in lowered or lowered in {"gt_pose", "gt_region", "gt_region_id"}:
+        return True
+    if isinstance(value, Mapping):
+        return any(_contains_ground_truth(item, key=str(name)) for name, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_ground_truth(item) for item in value)
+    return isinstance(value, str) and (
+        value.startswith("/ground_truth/") or value == "ground_truth_pose"
+    )
+
+
+def _event_stamp(row: Mapping[str, Any], name: str) -> float:
+    return _finite(row.get("stamp_s"), f"{name}.stamp_s")
+
+
+def _event_value(row: Mapping[str, Any], *names: str) -> Any:
+    values = row.get("values")
+    nested = values if isinstance(values, Mapping) else {}
+    for name in names:
+        if name in row:
+            return row[name]
+        if name in nested:
+            return nested[name]
+    return None
+
+
+def _numeric_summary(values: Sequence[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0, "min": None, "median": None, "p95": None, "max": None}
+    checked = [_finite(value, "metric") for value in values]
+    return {
+        "count": len(checked),
+        "min": min(checked),
+        "median": statistics.median(checked),
+        "p95": _p95(checked),
+        "max": max(checked),
+    }
+
+
+def _nearest_pose(
+    rows: Sequence[Mapping[str, Any]], stamp_s: float, tolerance_s: float
+) -> Mapping[str, Any] | None:
+    if not rows:
+        return None
+    nearest = min(rows, key=lambda row: abs(float(row["stamp_s"]) - stamp_s))
+    return nearest if abs(float(nearest["stamp_s"]) - stamp_s) <= tolerance_s else None
+
+
+def _pose_path_length(rows: Sequence[Mapping[str, Any]], name: str) -> float | None:
+    if not rows:
+        return None
+    total = 0.0
+    previous: tuple[float, float] | None = None
+    for index, row in enumerate(sorted(rows, key=lambda item: float(item["stamp_s"]))):
+        point = (
+            _finite(row.get("x"), f"{name}[{index}].x"),
+            _finite(row.get("y"), f"{name}[{index}].y"),
+        )
+        if previous is not None:
+            total += math.hypot(point[0] - previous[0], point[1] - previous[1])
+        previous = point
+    return total
+
+
+def _phase_de_identity(events: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    if not events:
+        raise EvaluationError("Phase D/E runtime events are required")
+    first = events[0]
+    identity = {
+        "run_id": str(first.get("run_id", "")),
+        "phase": str(first.get("phase", "")),
+        "arm": str(first.get("arm", "")),
+        "seed": first.get("seed"),
+    }
+    if not identity["run_id"]:
+        raise EvaluationError("runtime run_id is required")
+    if identity["phase"] not in PHASE_DE_PAIRS:
+        raise EvaluationError("runtime phase must be D or E")
+    if identity["arm"] not in PHASE_DE_PAIRS[identity["phase"]]:
+        raise EvaluationError(
+            f"runtime arm {identity['arm']!r} is invalid for Phase {identity['phase']}"
+        )
+    if isinstance(identity["seed"], bool) or not isinstance(identity["seed"], int):
+        raise EvaluationError("runtime seed must be an integer")
+    for index, row in enumerate(events):
+        if row.get("schema") != PHASE_DE_EVENT_SCHEMA:
+            raise EvaluationError(f"runtime[{index}] schema mismatch")
+        if str(row.get("event", "")) not in PHASE_DE_EVENTS:
+            raise EvaluationError(f"runtime[{index}] has an unknown event")
+        if _contains_ground_truth(row):
+            raise EvaluationError(f"runtime[{index}] violates the Ground Truth firewall")
+        for name, expected in identity.items():
+            if row.get(name) != expected:
+                raise EvaluationError(f"runtime[{index}].{name} identity mismatch")
+        _event_stamp(row, f"runtime[{index}]")
+    if sum(row["event"] == "episode_start" for row in events) != 1:
+        raise EvaluationError("runtime must contain exactly one episode_start")
+    if sum(row["event"] == "episode_end" for row in events) != 1:
+        raise EvaluationError("runtime must contain exactly one episode_end")
+    return identity
+
+
+def _phase_de_ground_truth(
+    rows: Sequence[Mapping[str, Any]], identity: Mapping[str, Any]
+) -> list[Mapping[str, Any]]:
+    if not rows:
+        raise EvaluationError("passive Ground Truth rows are required")
+    output: list[Mapping[str, Any]] = []
+    for index, row in enumerate(rows):
+        if row.get("schema") != PHASE_DE_GT_SCHEMA or row.get("event") != "ground_truth_pose":
+            raise EvaluationError(f"ground_truth[{index}] schema/event mismatch")
+        for name in ("run_id", "phase", "arm", "seed"):
+            if row.get(name) != identity[name]:
+                raise EvaluationError(f"ground_truth[{index}].{name} identity mismatch")
+        parsed = dict(row)
+        parsed["stamp_s"] = _event_stamp(row, f"ground_truth[{index}]")
+        parsed["x"] = _finite(row.get("x"), f"ground_truth[{index}].x")
+        parsed["y"] = _finite(row.get("y"), f"ground_truth[{index}].y")
+        parsed["yaw_deg"] = _finite(row.get("yaw_deg"), f"ground_truth[{index}].yaw_deg")
+        region = row.get("region_id")
+        if not isinstance(region, str) or not region:
+            raise EvaluationError(f"ground_truth[{index}].region_id is required")
+        output.append(parsed)
+    return sorted(output, key=lambda row: float(row["stamp_s"]))
+
+
+def _region_metrics(
+    module1: Sequence[Mapping[str, Any]],
+    ground_truth: Sequence[Mapping[str, Any]],
+    tolerance_s: float,
+) -> dict[str, Any]:
+    samples: list[dict[str, Any]] = []
+    for index, row in enumerate(sorted(module1, key=lambda item: float(item["stamp_s"]))):
+        stamp = _event_stamp(row, f"module1_diagnostic[{index}]")
+        predicted = _event_value(row, "region_id", "dominant_region_id")
+        if predicted is None:
+            continue
+        truth = _nearest_pose(ground_truth, stamp, tolerance_s)
+        if truth is None:
+            continue
+        samples.append(
+            {
+                "stamp_s": stamp,
+                "predicted": str(predicted),
+                "truth": str(truth["region_id"]),
+                "correct": str(predicted) == str(truth["region_id"]),
+                "x": float(truth["x"]),
+                "y": float(truth["y"]),
+            }
+        )
+    first_correct = next((sample for sample in samples if sample["correct"]), None)
+    wrong_duration = 0.0
+    wrong_distance = 0.0
+    for left, right in zip(samples, samples[1:]):
+        if left["correct"]:
+            continue
+        wrong_duration += max(0.0, right["stamp_s"] - left["stamp_s"])
+        wrong_distance += math.hypot(right["x"] - left["x"], right["y"] - left["y"])
+    return {
+        "matched_sample_count": len(samples),
+        "correct_sample_count": sum(sample["correct"] for sample in samples),
+        "first_correct_region_id": None if first_correct is None else first_correct["truth"],
+        "first_correct_region_time_s": None if first_correct is None else first_correct["stamp_s"],
+        "wrong_region_duration_s": wrong_duration,
+        "wrong_region_distance_m": wrong_distance,
+    }
+
+
+def _module1_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    aliases = {
+        "entropy": ("entropy", "place_entropy_normalized"),
+        "reliability": ("reliability", "visual_reliability"),
+        "ood_probability": ("ood_probability", "visual_ood_probability"),
+        "dominant_mass": ("dominant_mass", "dominant_mode_mass"),
+    }
+    output: dict[str, Any] = {"sample_count": len(rows)}
+    for output_name, names in aliases.items():
+        values = []
+        for row in rows:
+            value = _event_value(row, *names)
+            if value is not None:
+                values.append(_finite(value, f"module1_diagnostic.{output_name}"))
+        output[output_name] = _numeric_summary(values)
+
+    covariance_rows: list[list[float]] = []
+    for row in rows:
+        value = _event_value(row, "dominant_covariance_m2", "dominant_mode_covariance_m2")
+        if value is None:
+            continue
+        if not isinstance(value, (list, tuple)) or len(value) != 4:
+            raise EvaluationError("module1 dominant covariance must contain four values")
+        covariance_rows.append(
+            [_finite(item, "module1_diagnostic.dominant_covariance_m2") for item in value]
+        )
+    names = ("xx", "xy", "yx", "yy")
+    output["dominant_covariance_m2"] = {
+        "count": len(covariance_rows),
+        "component_median": {
+            name: (None if not covariance_rows else statistics.median(row[index] for row in covariance_rows))
+            for index, name in enumerate(names)
+        },
+        "trace": _numeric_summary([row[0] + row[3] for row in covariance_rows]),
+    }
+    return output
+
+
+def _first_stamp(rows: Sequence[Mapping[str, Any]], event: str) -> float | None:
+    matches = [_event_stamp(row, event) for row in rows if row["event"] == event]
+    return min(matches) if matches else None
+
+
+def _goal_success(row: Mapping[str, Any]) -> bool:
+    if isinstance(row.get("success"), bool):
+        return bool(row["success"])
+    return str(row.get("state", "")).upper() in {
+        "SUCCEEDED", "SUCCESS", "COMPLETE", "COMPLETED"
+    }
+
+
+def evaluate_phase_de_episode(
+    runtime_events: Sequence[Mapping[str, Any]],
+    ground_truth_rows: Sequence[Mapping[str, Any]],
+    *,
+    synchronization_tolerance_s: float = 0.15,
+) -> dict[str, Any]:
+    """Reduce one S0/S1/R0/R1 episode to raw engineering metrics."""
+
+    if synchronization_tolerance_s < 0.0:
+        raise EvaluationError("synchronization_tolerance_s must be non-negative")
+    identity = _phase_de_identity(runtime_events)
+    events = sorted(runtime_events, key=lambda row: float(row["stamp_s"]))
+    ground_truth = _phase_de_ground_truth(ground_truth_rows, identity)
+    by_event = {
+        name: [row for row in events if row["event"] == name] for name in PHASE_DE_EVENTS
+    }
+    start_s = _first_stamp(events, "episode_start")
+    end_s = _first_stamp(events, "episode_end")
+    assert start_s is not None and end_s is not None
+    if end_s < start_s:
+        raise EvaluationError("episode_end precedes episode_start")
+
+    estimated = by_event["estimated_pose"]
+    error_samples = absolute_error_samples(
+        estimated,
+        ground_truth,
+        synchronization_tolerance_s=synchronization_tolerance_s,
+    )
+    initialpose_sources: dict[str, int] = {}
+    for row in by_event["initialpose"]:
+        source = str(row.get("source", "unknown"))
+        initialpose_sources[source] = initialpose_sources.get(source, 0) + 1
+
+    supervisor_rows = [
+        {
+            "stamp_s": _event_stamp(row, "supervisor_diagnostic"),
+            "mode": row.get("mode"),
+            "state": row.get("state"),
+            "reason": row.get("reason"),
+            "result": row.get("result"),
+            "reset_attempts": row.get("reset_attempts"),
+        }
+        for row in by_event["supervisor_diagnostic"]
+    ]
+    goal_dispatch = by_event["goal_dispatched"]
+    goal_results = by_event["goal_result"]
+    dispatched_legs = [str(row.get("leg_id", "")) for row in goal_dispatch]
+    successful_legs = [str(row.get("leg_id", "")) for row in goal_results if _goal_success(row)]
+    route_start = min((_event_stamp(row, "goal_dispatched") for row in goal_dispatch), default=None)
+    route_end = max((_event_stamp(row, "goal_result") for row in goal_results), default=None)
+    episode_end = by_event["episode_end"][0]
+    completed = [str(value) for value in episode_end.get("completed_leg_ids", ())]
+    route_success = bool(dispatched_legs) and set(dispatched_legs).issubset(
+        set(successful_legs) | set(completed)
+    )
+
+    explicit_counts = [
+        int(row["count"])
+        for row in by_event["collision"]
+        if isinstance(row.get("count"), int) and not isinstance(row.get("count"), bool)
+    ]
+    collision_observed = any(bool(row.get("collision", True)) for row in by_event["collision"])
+    collision_observed = collision_observed or bool(episode_end.get("collision", False))
+    collision_count = max(explicit_counts, default=1 if collision_observed else 0)
+
+    pause_request_s = _first_stamp(events, "pause_requested")
+    pause_confirm_s = _first_stamp(events, "pause_confirmed")
+    pause_rows = by_event["pause_confirmed"]
+    zero_after_request = any(
+        bool(row.get("zero", False))
+        and (pause_request_s is None or _event_stamp(row, "cmd_vel_sim") >= pause_request_s)
+        for row in by_event["cmd_vel_sim"]
+    )
+    zero_confirmed = any(bool(row.get("cmd_vel_sim_zero", False)) for row in pause_rows)
+    stationary_confirmed = any(bool(row.get("stationary", False)) for row in pause_rows)
+
+    ready_s = _first_stamp(events, "localization_ready")
+    recovered_s = _first_stamp(events, "localization_recovered")
+    fault_s = _first_stamp(events, "fault_injected")
+    prior_s = _first_stamp(events, "prior_write")
+    initialpose_s = _first_stamp(events, "initialpose")
+    seed_s = fault_s if identity["phase"] == "E" else initialpose_s
+    time_to_ready = None if ready_s is None else ready_s - start_s
+    time_to_recover = (
+        None if recovered_s is None or fault_s is None else recovered_s - fault_s
+    )
+    if time_to_ready is not None and time_to_ready < 0.0:
+        raise EvaluationError("localization_ready precedes episode_start")
+    if time_to_recover is not None and time_to_recover < 0.0:
+        raise EvaluationError("localization_recovered precedes fault_injected")
+
+    module1_rows = by_event["module1_diagnostic"]
+    return {
+        **identity,
+        "fault": (
+            None
+            if not by_event["fault_injected"]
+            else by_event["fault_injected"][0].get("fault_id")
+        ),
+        "evaluation_kind": "ENGINEERING_RAW_METRICS_ONLY",
+        "formal_gate": False,
+        "ground_truth_policy": "separate_passive_offline_stream",
+        "timestamps_s": {
+            "episode_start": start_s,
+            "seed": seed_s,
+            "fault": fault_s,
+            "pause_requested": pause_request_s,
+            "pause_confirmed": pause_confirm_s,
+            "prior_write": prior_s,
+            "ready": ready_s,
+            "recovered": recovered_s,
+            "episode_end": end_s,
+            "goals": [
+                {
+                    "event": row["event"],
+                    "leg_id": row.get("leg_id"),
+                    "stamp_s": _event_stamp(row, row["event"]),
+                }
+                for row in sorted(
+                    goal_dispatch + goal_results,
+                    key=lambda item: float(item["stamp_s"]),
+                )
+            ],
+        },
+        "initialpose": {
+            "count": len(by_event["initialpose"]),
+            "by_source": initialpose_sources,
+            "events": [
+                {
+                    "stamp_s": _event_stamp(row, "initialpose"),
+                    "source": row.get("source", "unknown"),
+                    "count": row.get("count"),
+                }
+                for row in by_event["initialpose"]
+            ],
+        },
+        "prior_write_count": len(by_event["prior_write"]),
+        "supervisor_diagnostics": supervisor_rows,
+        "region": _region_metrics(module1_rows, ground_truth, synchronization_tolerance_s),
+        "localization": {
+            "time_to_ready_s": time_to_ready,
+            "time_to_recover_s": time_to_recover,
+            "gt_position_error_m": _numeric_summary(
+                [sample.position_error_m for sample in error_samples]
+            ),
+            "gt_yaw_error_deg": _numeric_summary(
+                [sample.yaw_error_deg for sample in error_samples]
+            ),
+        },
+        "route": {
+            "success": route_success,
+            "dispatched_leg_ids": dispatched_legs,
+            "successful_leg_ids": successful_legs,
+            "completed_leg_ids": completed,
+            "collision": collision_observed,
+            "collision_count": collision_count,
+            "path_length_m": _pose_path_length(by_event["odom_pose"], "odom_pose"),
+            "route_duration_s": (
+                None if route_start is None or route_end is None else route_end - route_start
+            ),
+            "episode_duration_s": end_s - start_s,
+        },
+        "pause": {
+            "latency_s": (
+                None
+                if pause_request_s is None or pause_confirm_s is None
+                else pause_confirm_s - pause_request_s
+            ),
+            "cmd_vel_sim_zero_confirmed": zero_confirmed and zero_after_request,
+            "stationary_confirmed": stationary_confirmed,
+        },
+        "module1": _module1_metrics(module1_rows),
+        "episode_end": {
+            "state": episode_end.get("state"),
+            "stop_reason": episode_end.get("stop_reason"),
+            "terminal_zero_confirmed": episode_end.get("terminal_zero_confirmed"),
+        },
+    }
+
+
+def _nested_number(value: Mapping[str, Any], path: str) -> float | None:
+    current: Any = value
+    for name in path.split("."):
+        if not isinstance(current, Mapping) or name not in current:
+            return None
+        current = current[name]
+    if current is None or isinstance(current, bool) or not isinstance(current, (int, float)):
+        return None
+    return float(current)
+
+
+def evaluate_phase_de_pair(
+    baseline_runtime: Sequence[Mapping[str, Any]],
+    experimental_runtime: Sequence[Mapping[str, Any]],
+    baseline_ground_truth: Sequence[Mapping[str, Any]],
+    experimental_ground_truth: Sequence[Mapping[str, Any]],
+    *,
+    synchronization_tolerance_s: float = 0.15,
+) -> dict[str, Any]:
+    """Return paired S0/S1 or R0/R1 raw metrics without a gate verdict."""
+
+    baseline = evaluate_phase_de_episode(
+        baseline_runtime,
+        baseline_ground_truth,
+        synchronization_tolerance_s=synchronization_tolerance_s,
+    )
+    experimental = evaluate_phase_de_episode(
+        experimental_runtime,
+        experimental_ground_truth,
+        synchronization_tolerance_s=synchronization_tolerance_s,
+    )
+    phase = baseline["phase"]
+    if experimental["phase"] != phase:
+        raise EvaluationError("paired episodes must belong to the same phase")
+    expected = PHASE_DE_PAIRS[phase]
+    if (baseline["arm"], experimental["arm"]) != expected:
+        raise EvaluationError(
+            f"Phase {phase} pair must be ordered {expected[0]}/{expected[1]}"
+        )
+    if baseline["seed"] != experimental["seed"]:
+        raise EvaluationError("paired episodes must use the same seed")
+    if baseline["fault"] != experimental["fault"]:
+        raise EvaluationError("paired episodes must use the same fault")
+
+    paths = (
+        "localization.time_to_ready_s",
+        "localization.time_to_recover_s",
+        "localization.gt_position_error_m.median",
+        "localization.gt_position_error_m.p95",
+        "localization.gt_yaw_error_deg.median",
+        "localization.gt_yaw_error_deg.p95",
+        "region.wrong_region_duration_s",
+        "region.wrong_region_distance_m",
+        "route.collision_count",
+        "route.path_length_m",
+        "route.route_duration_s",
+        "route.episode_duration_s",
+        "pause.latency_s",
+        "module1.entropy.median",
+        "module1.reliability.median",
+        "module1.ood_probability.median",
+        "module1.dominant_mass.median",
+        "module1.dominant_covariance_m2.trace.median",
+    )
+    paired: dict[str, Any] = {}
+    for path in paths:
+        left = _nested_number(baseline, path)
+        right = _nested_number(experimental, path)
+        paired[path] = {
+            "baseline": left,
+            "experimental": right,
+            "experimental_minus_baseline": (
+                None if left is None or right is None else right - left
+            ),
+        }
+    return {
+        "schema": "bio_nav_v6_phase_de_localization_pair_metrics_v1",
+        "phase": phase,
+        "arms": list(expected),
+        "seed": baseline["seed"],
+        "fault": baseline["fault"],
+        "evaluation_kind": "PAIRED_ENGINEERING_RAW_METRICS_ONLY",
+        "formal_gate": False,
+        "ground_truth_policy": "separate_passive_offline_stream",
+        "baseline": baseline,
+        "experimental": experimental,
+        "paired_metrics": paired,
+    }
+
+
+def evaluate_phase_de_pair_files(
+    baseline_runtime_path: str | Path,
+    experimental_runtime_path: str | Path,
+    baseline_ground_truth_path: str | Path,
+    experimental_ground_truth_path: str | Path,
+    *,
+    synchronization_tolerance_s: float = 0.15,
+) -> dict[str, Any]:
+    return evaluate_phase_de_pair(
+        load_phase_de_jsonl(baseline_runtime_path),
+        load_phase_de_jsonl(experimental_runtime_path),
+        load_phase_de_jsonl(baseline_ground_truth_path, ground_truth=True),
+        load_phase_de_jsonl(experimental_ground_truth_path, ground_truth=True),
+        synchronization_tolerance_s=synchronization_tolerance_s,
+    )
