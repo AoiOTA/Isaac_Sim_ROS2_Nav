@@ -1672,11 +1672,18 @@ wait "${nested_pid}"
         path.chmod(0o755)
     integration = tmp_path / "integration"
     integration.mkdir()
+    module2 = tmp_path / "module2"
+    constraints = (
+        module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+    constraints.parent.mkdir(parents=True)
+    constraints.touch()
     run_dir = tmp_path / "run"
     socket = tmp_path / "socket/module2.sock"
     env = os.environ.copy()
     env.update({
         "BIO_NAV_INTEGRATION_ROOT": str(integration),
+        "BIO_NAV_MODULE2_V310_ROOT": str(module2),
         "FAKE_NESTED_PID_FILE": str(nested_pid_file),
         "BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS": "10",
         "BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS": "10",
@@ -1872,6 +1879,16 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert '"${run_dir}/${name}.pgid"' in stack
     assert 'register_child integration_bridge "${integration_bridge_pid}"' in stack
     assert 'register_child module2_server "${module2_server_pid}"' in stack
+    assert 'module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"' in stack
+    assert 'export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"' in stack
+    assert "canonical_constraints_file" in stack
+    assert stack.index('require_file "${canonical_constraints_file}"') < stack.index(
+        'setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh"'
+    )
+    assert (
+        "/home/lyb/Workspace/Bio_Nav/worktrees/"
+        "v6-compute-amcl-dual-odom/bio_nav_module2"
+    ) not in stack
     assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "cognitive_graph_mode:=\"${graph_mode}\"" in wrapper
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper
@@ -1896,7 +1913,9 @@ def test_phase_f_recorder_uses_explicit_best_effort_sensor_qos(tmp_path):
     assert "/scan" in command
 
 
-def _run_low_obstacle_wrapper(tmp_path, *arguments):
+def _run_low_obstacle_wrapper(
+    tmp_path, *arguments, create_constraints=True, check=True
+):
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
     scripts = project / "scripts"
@@ -1907,6 +1926,7 @@ def _run_low_obstacle_wrapper(tmp_path, *arguments):
 export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 die() { printf '%s\\n' "$*" >&2; exit 1; }
 require_file() { [[ -f "$1" ]] || die "missing: $1"; }
+require_directory() { [[ -d "$1" ]] || die "missing directory: $1"; }
 """,
         encoding="utf-8",
     )
@@ -1921,21 +1941,32 @@ require_file() { [[ -f "$1" ]] || die "missing: $1"; }
     )
     scenario.parent.mkdir(parents=True)
     scenario.touch()
+    module2 = tmp_path / "installed_module2"
+    constraints = (
+        module2 / "configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    )
+    if create_constraints:
+        constraints.parent.mkdir(parents=True)
+        constraints.touch()
+    else:
+        module2.mkdir(parents=True)
     env = os.environ.copy()
     env.pop("V6_COGNITIVE_PROFILE", None)
+    env["BIO_NAV_MODULE2_V310_ROOT"] = str(module2)
     result = subprocess.run(
         [str(scripts / "run_v6_kujiale_low_obstacles.sh"), *arguments],
-        check=True,
+        check=check,
         capture_output=True,
         text=True,
         env=env,
     )
-    return project, result.stdout.splitlines()
+    return project, constraints, result
 
 
 @pytest.mark.parametrize("arm", ["M0", "M1", "M2", "M3"])
 def test_phase_f_mixed_argv_uses_occupancy_map_without_posegraph(tmp_path, arm):
-    project, argv = _run_low_obstacle_wrapper(tmp_path, "ros", arm)
+    project, constraints, result = _run_low_obstacle_wrapper(tmp_path, "ros", arm)
+    argv = result.stdout.splitlines()
     assert argv == [
         "navigation",
         "odometry_mode:=mixed",
@@ -1952,6 +1983,7 @@ def test_phase_f_mixed_argv_uses_occupancy_map_without_posegraph(tmp_path, arm):
         "spawn_pose_name:=long_route_start_g1",
         f"map_file:={project}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml",
         f"route_graph_file:={project}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson",
+        f"cognitive_constraints_override_file:={constraints}",
         "interactive:=false",
         "use_rviz:=false",
         "use_teleop:=false",
@@ -1964,7 +1996,8 @@ def test_phase_f_mixed_argv_uses_occupancy_map_without_posegraph(tmp_path, arm):
 
 
 def test_legacy_shadow_argv_keeps_estimated_rf2o_posegraph_bundle(tmp_path):
-    project, argv = _run_low_obstacle_wrapper(tmp_path, "shadow")
+    project, _constraints, result = _run_low_obstacle_wrapper(tmp_path, "shadow")
+    argv = result.stdout.splitlines()
     assert argv == [
         "navigation",
         "odometry_mode:=estimated",
@@ -1988,6 +2021,44 @@ def test_legacy_shadow_argv_keeps_estimated_rf2o_posegraph_bundle(tmp_path):
         "lidar_odometry_backend:=rf2o",
         "lidar_odometry_validated:=false",
     ]
+
+
+def test_phase_f_mixed_fails_before_ros_when_canonical_constraints_are_missing(
+    tmp_path,
+):
+    _project, constraints, result = _run_low_obstacle_wrapper(
+        tmp_path, "ros", "M0", create_constraints=False, check=False
+    )
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    assert f"missing: {constraints}" in result.stderr
+
+
+def test_phase_f_rejects_caller_map_context_override(tmp_path):
+    _project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path,
+        "ros",
+        "M2",
+        "cognitive_constraints_override_file:=/tmp/not-canonical.yaml",
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "rejected override: cognitive_constraints_override_file" in result.stderr
+
+
+def test_legacy_shadow_preserves_caller_map_context_argument(tmp_path):
+    override = "/tmp/legacy-shadow-constraints.yaml"
+    _project, _constraints, result = _run_low_obstacle_wrapper(
+        tmp_path,
+        "shadow",
+        f"cognitive_constraints_override_file:={override}",
+    )
+
+    assert result.stdout.splitlines()[-1] == (
+        f"cognitive_constraints_override_file:={override}"
+    )
 
 
 @pytest.mark.parametrize("command", ["manifest", "plan"])

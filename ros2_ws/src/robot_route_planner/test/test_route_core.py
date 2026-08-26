@@ -797,13 +797,15 @@ def test_fixed_scene_constraints_publish_canonical_map_id_for_shadow_payload() -
     }
     assert header["map_version"] == "occupancy-sha"
     assert header["map_id"] == header["cognitive_tile_id"] == scene["map_id"]
+    assert header["map_id"] == "v6_kujiale_isaacgen_v1"
+    assert not header["map_id"].startswith("canvas16:")
     assert header["tile_revision"] == header["graph_revision"] == 1
     assert np.array_equal(buffers["T_map_canvas"], np.asarray(scene["T_map_canvas"]))
     assert np.array_equal(
         buffers["valid_state_mask"], np.asarray(scene["valid_state_mask"])
     )
     assert int(buffers["valid_state_mask"].sum()) == 51
-    assert buffers["verified_transitions"].shape[1] == 2
+    assert buffers["verified_transitions"].shape == (132, 2)
 
 
 def test_release_replays_map_binding_deferred_during_hold() -> None:

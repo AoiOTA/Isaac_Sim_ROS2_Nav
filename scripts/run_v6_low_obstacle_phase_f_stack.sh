@@ -6,6 +6,7 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 usage() {
   echo "usage: $0 M0|M1|M2|M3 --domain ID --run-dir PATH --socket PATH [--module2-root PATH]" >&2
+  echo "       BIO_NAV_MODULE2_V310_ROOT or --module2-root must name the canonical Module2 root" >&2
   echo "       $0 stop-producer --run-dir PATH --socket PATH" >&2
 }
 
@@ -157,7 +158,7 @@ shift
 run_dir=""
 socket_path=""
 domain_id="${BIO_NAV_PHASE_F_DOMAIN_ID:-150}"
-module2_root="${BIO_NAV_MODULE2_V310_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2}"
+module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
 integration_root="${BIO_NAV_INTEGRATION_ROOT:-/home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_integration}"
 while (($#)); do
   case "$1" in
@@ -183,9 +184,16 @@ export ROS_DOMAIN_ID="${domain_id}"
 source "${script_dir}/lib/common.sh"
 
 require_directory "${integration_root}"
+[[ -n "${module2_root}" ]] || {
+  echo "BIO_NAV_MODULE2_V310_ROOT or --module2-root is required for the Phase-F map context" >&2
+  exit 2
+}
+require_directory "${module2_root}"
+module2_root="$(cd "${module2_root}" && pwd -P)"
+canonical_constraints_file="${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+require_file "${canonical_constraints_file}"
+export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
 if [[ "${arm}" != "M0" ]]; then
-  require_directory "${module2_root}"
-  require_file "${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
   require_file "${integration_root}/scripts/run_module2_v310_server.sh"
   require_file "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh"
 fi

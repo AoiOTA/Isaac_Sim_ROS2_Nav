@@ -67,8 +67,14 @@ run_ros_profile() {
   if [[ "${substrate_odometry_mode}" == "mixed" ]]; then
     local argument
     for argument in "$@"; do
-      [[ "${argument}" != spawn_pose_name:=* ]] || die \
-        "Phase F fixes the Phase-B G1 spawn; rejected override: ${argument}"
+      case "${argument}" in
+        spawn_pose_name:=*)
+          die "Phase F fixes the Phase-B G1 spawn; rejected override: ${argument}"
+          ;;
+        cognitive_constraints_override_file:=*)
+          die "Phase F fixes the canonical map context; rejected override: ${argument}"
+          ;;
+      esac
     done
   fi
   [[ "${cognitive_profile}" =~ ^M[0-3]$ ]] || die \
@@ -87,6 +93,14 @@ run_ros_profile() {
     )
   fi
   if [[ "${substrate_odometry_mode}" == "mixed" ]]; then
+    local module2_root="${BIO_NAV_MODULE2_V310_ROOT:-}"
+    local canonical_constraints_file
+    [[ -n "${module2_root}" ]] || die \
+      "BIO_NAV_MODULE2_V310_ROOT is required for the Phase-F map context"
+    require_directory "${module2_root}"
+    module2_root="$(cd "${module2_root}" && pwd -P)"
+    canonical_constraints_file="${module2_root}/configs/kujiale_0026_module1_visual_shadow_v310.yaml"
+    require_file "${canonical_constraints_file}"
     localization_args=(
       structure_tf_source:=isaac
       localization_map_contract:=occupancy_only
@@ -95,6 +109,7 @@ run_ros_profile() {
       spawn_pose_name:=long_route_start_g1
       "map_file:=${PROJECT_ROOT}/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml"
       "route_graph_file:=${PROJECT_ROOT}/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson"
+      "cognitive_constraints_override_file:=${canonical_constraints_file}"
     )
   else
     localization_args=(
