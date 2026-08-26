@@ -76,6 +76,14 @@ ISOLATION_AUDIT_TOPICS = (
 PILOT_ARMS = ("M0", "M1", "M2", "M3")
 DEFAULT_SYNC_TOLERANCE_NS = 100_000_000
 DEFAULT_SHUTDOWN_TIMEOUT_SEC = 20.0
+DEFAULT_CLEANUP_CONFIRM_TIMEOUT_SEC = 5.0
+DEFAULT_CLEANUP_QUIET_SEC = 0.25
+DEFAULT_CLEANUP_POLL_SEC = 0.05
+PHASE_F_RECORDED_CHILDREN = (
+    "module3_ros",
+    "module2_server",
+    "integration_bridge",
+)
 MODULE3_RESOURCE_PREFIX = "module3://"
 MODULE3_ROOT_ENV = "BIO_NAV_MODULE3_ROOT"
 
@@ -1678,6 +1686,7 @@ class _ManagedProcess:
     name: str
     process: subprocess.Popen[Any]
     stream: Any
+    identity_dir: Path | None = None
 
 
 def _startup_process_failure(managed: Sequence[_ManagedProcess]) -> str | None:
@@ -1705,6 +1714,7 @@ def _wait_for_startup_ready(
     try:
         import rclpy
         from rclpy.context import Context
+        from rclpy.executors import SingleThreadedExecutor
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -1717,12 +1727,17 @@ def _wait_for_startup_ready(
 
     context = Context()
     node = None
+    executor = None
     observed: dict[str, Any] = {}
+    result: dict[str, Any] | None = None
+    cleanup_errors: list[str] = []
     try:
         rclpy.init(args=None, context=context)
         node = rclpy.create_node(
             f"v6_phase_f_startup_probe_{os.getpid()}", context=context
         )
+        executor = SingleThreadedExecutor(context=context)
+        executor.add_node(node)
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=1,
@@ -1746,48 +1761,73 @@ def _wait_for_startup_ready(
         while True:
             failure = _startup_process_failure(managed)
             if failure is not None:
-                return {"ready": False, "reason": failure, "last_status": dict(observed)}
+                result = {"ready": False, "reason": failure, "last_status": dict(observed)}
+                break
             generation = observed.get("generation")
             held = observed.get("held")
             reason = str(observed.get("reason", ""))
             if generation == 1 and held is False and reason.startswith("released:"):
-                return {
+                result = {
                     "ready": True,
                     "generation": generation,
                     "held": held,
                     "reason": reason,
                 }
+                break
             if isinstance(generation, int) and not isinstance(generation, bool) and generation > 1:
-                return {
+                result = {
                     "ready": False,
                     "reason": f"unexpected startup reset generation {generation}",
                     "last_status": dict(observed),
                 }
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0.0:
-                return {
+                result = {
                     "ready": False,
                     "reason": "startup reset generation 1 was not released before timeout",
                     "last_status": dict(observed),
                 }
-            rclpy.spin_once(node, timeout_sec=min(remaining, 0.5))
+                break
+            executor.spin_once(timeout_sec=min(remaining, 0.5))
     except Exception as exc:
-        return {
+        result = {
             "ready": False,
             "reason": f"startup readiness probe failed: {type(exc).__name__}: {exc}",
             "last_status": dict(observed),
         }
     finally:
+        if executor is not None and node is not None:
+            try:
+                executor.remove_node(node)
+            except Exception as exc:
+                cleanup_errors.append(f"remove_node: {type(exc).__name__}: {exc}")
+        if executor is not None:
+            try:
+                executor.shutdown(timeout_sec=1.0)
+            except Exception as exc:
+                cleanup_errors.append(f"executor_shutdown: {type(exc).__name__}: {exc}")
         if node is not None:
             try:
                 node.destroy_node()
-            except Exception:
-                pass
+            except Exception as exc:
+                cleanup_errors.append(f"destroy_node: {type(exc).__name__}: {exc}")
         if context.ok():
             try:
-                rclpy.shutdown(context=context)
-            except Exception:
-                pass
+                context.shutdown()
+            except Exception as exc:
+                cleanup_errors.append(f"context_shutdown: {type(exc).__name__}: {exc}")
+    if cleanup_errors:
+        return {
+            "ready": False,
+            "reason": "startup readiness probe cleanup failed: " + "; ".join(cleanup_errors),
+            "last_status": dict(observed),
+        }
+    return result or {
+        "ready": False,
+        "reason": "startup readiness probe ended without a result",
+        "last_status": dict(observed),
+    }
 
 
 def _start_process(
@@ -1811,20 +1851,82 @@ def _start_process(
     except Exception:
         stream.close()
         raise
-    return _ManagedProcess(name, process, stream)
+    return _ManagedProcess(
+        name,
+        process,
+        stream,
+        log_path.parent if name == "stack" else None,
+    )
 
 
 def _stop_process(managed: _ManagedProcess, timeout_sec: float) -> dict[str, Any]:
+    """Stop one adapter, then sweep only its recorded process identities.
+
+    The adapter leader receives the first signal so its own ordered trap can
+    run.  After that leader exits, the bounded sweep repeatedly refreshes the
+    exact Phase-F pid/pgid records and known descendants.  This closes the
+    former one-snapshot race without using broad process-name matching.
+    """
+
     process = managed.process
-    groups = _managed_process_groups(process.pid)
+    root_pid = process.pid
+    tracked_pids = {root_pid}
+    tracked_groups = _managed_process_groups(root_pid)
     try:
-        if process.poll() is None or _running_process_groups(groups):
-            _signal_process_groups(groups, signal.SIGINT)
-            if not _wait_process_groups(groups, timeout_sec):
-                _signal_process_groups(groups, signal.SIGTERM)
-                if not _wait_process_groups(groups, 5.0):
-                    _signal_process_groups(groups, signal.SIGKILL)
-                    _wait_process_groups(groups, 5.0)
+        root_group = os.getpgid(root_pid)
+    except ProcessLookupError:
+        root_group = None
+    if root_group is not None and root_group > 1 and root_group != os.getpgrp():
+        tracked_groups.add(root_group)
+    try:
+        if process.poll() is None:
+            if root_group is not None:
+                _signal_process_groups((root_group,), signal.SIGINT)
+            try:
+                process.wait(timeout=max(0.0, timeout_sec))
+            except subprocess.TimeoutExpired:
+                if root_group is not None:
+                    _signal_process_groups((root_group,), signal.SIGTERM)
+                try:
+                    process.wait(timeout=min(5.0, max(0.25, timeout_sec)))
+                except subprocess.TimeoutExpired:
+                    if root_group is not None:
+                        _signal_process_groups((root_group,), signal.SIGKILL)
+                    try:
+                        process.wait(timeout=min(5.0, max(0.25, timeout_sec)))
+                    except subprocess.TimeoutExpired:
+                        pass
+
+        deadline = time.monotonic() + max(0.25, timeout_sec)
+        quiet_since: float | None = None
+        first_seen: dict[int, float] = {}
+        while True:
+            tracked_pids, tracked_groups, _files = _refresh_cleanup_targets(
+                managed.identity_dir,
+                tracked_pids,
+                tracked_groups,
+            )
+            running = _running_process_groups(tracked_groups)
+            now = time.monotonic()
+            if running:
+                quiet_since = None
+                for group in running:
+                    seen_at = first_seen.setdefault(group, now)
+                    age = now - seen_at
+                    requested_signal = (
+                        signal.SIGKILL if age >= 0.75
+                        else signal.SIGTERM if age >= 0.25
+                        else signal.SIGINT
+                    )
+                    _signal_process_groups((group,), requested_signal)
+            else:
+                if quiet_since is None:
+                    quiet_since = now
+                if now - quiet_since >= DEFAULT_CLEANUP_QUIET_SEC:
+                    break
+            if now >= deadline:
+                break
+            time.sleep(DEFAULT_CLEANUP_POLL_SEC)
         if process.poll() is None:
             try:
                 process.wait(timeout=1.0)
@@ -1832,12 +1934,19 @@ def _stop_process(managed: _ManagedProcess, timeout_sec: float) -> dict[str, Any
                 pass
     finally:
         managed.stream.close()
-    remaining = sorted(_running_process_groups(groups))
+    tracked_pids, tracked_groups, _files = _refresh_cleanup_targets(
+        managed.identity_dir,
+        tracked_pids,
+        tracked_groups,
+    )
+    remaining = sorted(_running_process_groups(tracked_groups))
     return {
         "name": managed.name,
+        "root_pid": root_pid,
         "returncode": process.returncode,
         "cleanup_ok": process.poll() is not None and not remaining,
-        "tracked_process_groups": sorted(groups),
+        "tracked_pids": sorted(tracked_pids),
+        "tracked_process_groups": sorted(tracked_groups),
         "remaining_process_groups": remaining,
     }
 
@@ -1874,6 +1983,87 @@ def _managed_process_groups(root_pid: int) -> set[int]:
         for group in (row[1],)
         if group > 1 and group != own_group
     }
+
+
+def _positive_int_file(path: Path) -> int | None:
+    try:
+        value = int(path.read_text(encoding="utf-8").strip())
+    except (FileNotFoundError, PermissionError, ValueError, OSError):
+        return None
+    return value if value > 1 else None
+
+
+def _recorded_cleanup_identities(
+    run_dir: Path | None,
+) -> tuple[set[int], set[int], set[Path]]:
+    """Read only the child identities written by the Phase-F stack adapter."""
+
+    pids: set[int] = set()
+    groups: set[int] = set()
+    files: set[Path] = set()
+    if run_dir is None:
+        return pids, groups, files
+    for name in PHASE_F_RECORDED_CHILDREN:
+        identity_path = run_dir / f"{name}.identity"
+        pid_path = run_dir / f"{name}.pid"
+        pgid_path = run_dir / f"{name}.pgid"
+        if identity_path.is_file():
+            files.add(identity_path)
+            try:
+                fields = identity_path.read_text(encoding="utf-8").split()
+                if len(fields) == 2:
+                    pid, group = (int(field) for field in fields)
+                    if pid > 1:
+                        pids.add(pid)
+                    if group > 1:
+                        groups.add(group)
+            except (PermissionError, ValueError, OSError):
+                pass
+        if pid_path.is_file():
+            files.add(pid_path)
+            if (pid := _positive_int_file(pid_path)) is not None:
+                pids.add(pid)
+        if pgid_path.is_file():
+            files.add(pgid_path)
+            if (group := _positive_int_file(pgid_path)) is not None:
+                groups.add(group)
+    return pids, groups, files
+
+
+def _descendants_from_table(
+    roots: Iterable[int],
+    table: Mapping[int, tuple[int, int, str]],
+) -> set[int]:
+    descendants = set(roots)
+    while True:
+        added = {
+            pid for pid, (parent, _group, _state) in table.items()
+            if parent in descendants and pid not in descendants
+        }
+        if not added:
+            return descendants
+        descendants.update(added)
+
+
+def _refresh_cleanup_targets(
+    run_dir: Path | None,
+    tracked_pids: Iterable[int],
+    tracked_groups: Iterable[int],
+) -> tuple[set[int], set[int], set[Path]]:
+    pids = set(tracked_pids)
+    groups = set(tracked_groups)
+    recorded_pids, recorded_groups, files = _recorded_cleanup_identities(run_dir)
+    pids.update(recorded_pids)
+    groups.update(recorded_groups)
+    table = _process_table()
+    pids.update(_descendants_from_table(pids, table))
+    for pid in pids:
+        row = table.get(pid)
+        if row is not None:
+            groups.add(row[1])
+    own_group = os.getpgrp()
+    groups = {group for group in groups if group > 1 and group != own_group}
+    return pids, groups, files
 
 
 def _running_process_groups(groups: Iterable[int]) -> set[int]:
@@ -1919,36 +2109,158 @@ def _confirm_arm_cleanup(
     module2_socket: Path,
     shutdown: Sequence[Mapping[str, Any]],
     env: Mapping[str, str],
+    *,
+    timeout_sec: float | None = None,
+    quiet_sec: float | None = None,
+    poll_sec: float = DEFAULT_CLEANUP_POLL_SEC,
 ) -> dict[str, Any]:
+    """Require a stable clean window before permitting the next arm.
+
+    Any late exact child identity, descendant group, socket, or runtime lock
+    resets the quiet window.  Newly discovered task-owned groups are stopped;
+    an unknown lock holder is never killed by name and therefore fails closed.
+    """
+
     runtime_dir = Path(
         env.get("ISAAC_NAV_RUNTIME_DIR", f"/tmp/isaac_sim_ros2_nav_{os.getuid()}")
     ).expanduser().resolve()
-    locks = {
-        name: _lock_is_free(runtime_dir / f"{name}.lock")
-        for name in ("ros", "isaac")
-    }
-    stale_runtime_files = sorted(
-        str(path)
-        for pattern in ("*.pid", "*.pgid")
-        for path in run_dir.glob(pattern)
+    timeout = (
+        float(env.get(
+            "BIO_NAV_PHASE_F_CLEANUP_CONFIRM_TIMEOUT_SEC",
+            DEFAULT_CLEANUP_CONFIRM_TIMEOUT_SEC,
+        ))
+        if timeout_sec is None else float(timeout_sec)
     )
-    process_cleanup_ok = all(
+    quiet = (
+        float(env.get("BIO_NAV_PHASE_F_CLEANUP_QUIET_SEC", DEFAULT_CLEANUP_QUIET_SEC))
+        if quiet_sec is None else float(quiet_sec)
+    )
+    if not all(math.isfinite(value) and value > 0.0 for value in (timeout, quiet, poll_sec)):
+        raise CausalContractError("cleanup timeout, quiet window, and poll interval must be positive")
+
+    relevant_rows = tuple(
+        row for row in shutdown if row.get("name") in {"scene", "stack", "recorder"}
+    )
+    legacy_processes_clean = all(
         row.get("cleanup_ok", row.get("returncode") is not None)
         and not row.get("remaining_process_groups")
-        for row in shutdown
-        if row.get("name") in {"scene", "stack", "recorder"}
+        for row in relevant_rows
     )
+    shutdown_rows_valid = all("error" not in row for row in relevant_rows)
+    root_pids = {
+        int(row["root_pid"])
+        for row in relevant_rows
+        if isinstance(row.get("root_pid"), int) and not isinstance(row.get("root_pid"), bool)
+    }
+    tracked_pids = set(root_pids)
+    tracked_groups = {
+        int(group)
+        for row in relevant_rows
+        for group in row.get("tracked_process_groups", ())
+        if isinstance(group, int) and not isinstance(group, bool) and group > 1
+    }
+    tracked_pids.update(
+        int(pid)
+        for row in relevant_rows
+        for pid in row.get("tracked_pids", ())
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1
+    )
+
+    deadline = time.monotonic() + timeout
+    quiet_since: float | None = None
+    first_seen: dict[int, float] = {}
+    attempts = 0
+    locks = {"ros": False, "isaac": False}
+    stale_runtime_files: list[str] = []
+    running: set[int] = set()
+    processes_dead = False
+    socket_absent = False
+    while True:
+        attempts += 1
+        tracked_pids, tracked_groups, identity_files = _refresh_cleanup_targets(
+            run_dir,
+            tracked_pids,
+            tracked_groups,
+        )
+        table = _process_table()
+        running = _running_process_groups(tracked_groups)
+        tracked_processes_dead = all(
+            pid not in table or table[pid][2] == "Z" for pid in tracked_pids
+        )
+        processes_dead = tracked_processes_dead and (
+            True if root_pids else legacy_processes_clean
+        )
+        locks = {
+            name: _lock_is_free(runtime_dir / f"{name}.lock")
+            for name in ("ros", "isaac")
+        }
+        stale_runtime_files = sorted(str(path) for path in identity_files if path.exists())
+        socket_absent = not module2_socket.exists()
+        now = time.monotonic()
+
+        if running:
+            for group in running:
+                seen_at = first_seen.setdefault(group, now)
+                age = now - seen_at
+                requested_signal = (
+                    signal.SIGKILL if age >= 0.75
+                    else signal.SIGTERM if age >= 0.25
+                    else signal.SIGINT
+                )
+                _signal_process_groups((group,), requested_signal)
+
+        groups_absent = not running
+        if groups_absent and processes_dead:
+            # These exact per-run identity files are no longer reusable once
+            # their recorded processes and groups are gone.
+            for path in identity_files:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            _recorded_pids, _recorded_groups, remaining_files = (
+                _recorded_cleanup_identities(run_dir)
+            )
+            stale_runtime_files = sorted(str(path) for path in remaining_files)
+
+        clean_now = (
+            shutdown_rows_valid
+            and groups_absent
+            and processes_dead
+            and all(locks.values())
+            and not stale_runtime_files
+            and socket_absent
+        )
+        if clean_now:
+            if quiet_since is None:
+                quiet_since = now
+            if now - quiet_since >= quiet:
+                break
+        else:
+            quiet_since = None
+        if now >= deadline:
+            break
+        time.sleep(poll_sec)
+
+    process_cleanup_ok = shutdown_rows_valid and processes_dead and not running
     result = {
         "ok": (
             process_cleanup_ok
             and all(locks.values())
             and not stale_runtime_files
-            and not module2_socket.exists()
+            and socket_absent
+            and quiet_since is not None
+            and time.monotonic() - quiet_since >= quiet
         ),
         "processes_clean": process_cleanup_ok,
         "locks_free": locks,
         "stale_runtime_files": stale_runtime_files,
-        "module2_socket_absent": not module2_socket.exists(),
+        "module2_socket_absent": socket_absent,
+        "tracked_pids": sorted(tracked_pids),
+        "tracked_process_groups": sorted(tracked_groups),
+        "remaining_process_groups": sorted(running),
+        "quiet_window_sec": quiet,
+        "attempts": attempts,
     }
     return result
 
@@ -2077,7 +2389,7 @@ def run_campaign(
                     status["shutdown"],
                     campaign_env,
                 )
-            except OSError as exc:
+            except (OSError, CausalContractError, ValueError) as exc:
                 cleanup = {"ok": False, "error": str(exc)}
             status["cleanup"] = cleanup
             if cleanup.get("ok") is not True:

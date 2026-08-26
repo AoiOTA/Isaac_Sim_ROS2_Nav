@@ -7,6 +7,8 @@ import signal
 import struct
 import subprocess
 import sys
+import textwrap
+import threading
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -1030,6 +1032,70 @@ def test_campaign_startup_timeout_never_starts_recorder_or_episode(
     ]
 
 
+def test_startup_probe_private_context_reaches_ready_without_global_executor():
+    rclpy = pytest.importorskip("rclpy")
+    from rclpy.context import Context
+    from rclpy.qos import (
+        DurabilityPolicy,
+        HistoryPolicy,
+        QoSProfile,
+        ReliabilityPolicy,
+    )
+    from std_msgs.msg import String
+
+    context = Context()
+    rclpy.init(args=None, context=context)
+    node = rclpy.create_node(
+        f"phase_f_startup_test_publisher_{os.getpid()}", context=context
+    )
+    qos = QoSProfile(
+        history=HistoryPolicy.KEEP_LAST,
+        depth=1,
+        reliability=ReliabilityPolicy.RELIABLE,
+        durability=DurabilityPolicy.TRANSIENT_LOCAL,
+    )
+    publisher = node.create_publisher(
+        String, "/simulation/reset_stop_gate/status", qos
+    )
+    stop = threading.Event()
+
+    def publish_ready() -> None:
+        message = String()
+        message.data = json.dumps({
+            "generation": 1,
+            "held": False,
+            "reason": "released:activation_gate",
+        })
+        while not stop.wait(0.02):
+            publisher.publish(message)
+
+    thread = threading.Thread(target=publish_ready, daemon=True)
+    thread.start()
+    try:
+        result = causal._wait_for_startup_ready([], 2.0)
+    finally:
+        stop.set()
+        thread.join(timeout=1.0)
+        node.destroy_node()
+        context.shutdown()
+    assert result == {
+        "ready": True,
+        "generation": 1,
+        "held": False,
+        "reason": "released:activation_gate",
+    }
+
+
+def test_startup_probe_private_context_timeout_is_not_executor_type_error():
+    pytest.importorskip("rclpy")
+    result = causal._wait_for_startup_ready([], 0.05)
+    assert result["ready"] is False
+    assert result["reason"] == (
+        "startup reset generation 1 was not released before timeout"
+    )
+    assert "TypeError" not in result["reason"]
+
+
 def test_campaign_missing_post_ttl_clear_is_a_failure(tmp_path, monkeypatch):
     summary, _ = _run_campaign_with_fake_processes(tmp_path, monkeypatch, clear=False)
     assert summary["runs"][0]["state"] == "TTL_CLEAR_FAILED"
@@ -1085,6 +1151,211 @@ def test_stop_process_cleans_a_nested_child_in_a_new_process_group(tmp_path):
             except (ProcessLookupError, PermissionError):
                 pass
         process.wait(timeout=5.0)
+
+
+def test_stop_process_rescans_late_recorded_group_and_lock(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    root_ready_file = tmp_path / "root.ready"
+    ready_file = tmp_path / "late.ready"
+    late_pid_file = tmp_path / "late.pid"
+    late_code = textwrap.dedent(
+        """
+        import fcntl
+        import os
+        from pathlib import Path
+        import signal
+        import sys
+        import time
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        stream = Path(os.environ["LATE_LOCK"]).open("a", encoding="utf-8")
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        Path(os.environ["LATE_READY"]).write_text("ready", encoding="utf-8")
+        time.sleep(300)
+        """
+    )
+    root_code = textwrap.dedent(
+        """
+        import os
+        from pathlib import Path
+        import signal
+        import subprocess
+        import sys
+        import time
+
+        def stop(*_args):
+            child = subprocess.Popen(
+                [sys.executable, "-c", os.environ["LATE_CODE"]],
+                start_new_session=True,
+                env=os.environ.copy(),
+            )
+            pgid = os.getpgid(child.pid)
+            run_dir = Path(os.environ["RUN_DIR"])
+            temporary = run_dir / ".module3_ros.identity.tmp"
+            temporary.write_text(f"{child.pid} {pgid}\\n", encoding="utf-8")
+            os.replace(temporary, run_dir / "module3_ros.identity")
+            (run_dir / "module3_ros.pid").write_text(str(child.pid), encoding="utf-8")
+            (run_dir / "module3_ros.pgid").write_text(str(pgid), encoding="utf-8")
+            Path(os.environ["LATE_PID_FILE"]).write_text(str(child.pid), encoding="utf-8")
+            raise SystemExit(0)
+
+        signal.signal(signal.SIGINT, stop)
+        signal.signal(signal.SIGTERM, stop)
+        Path(os.environ["ROOT_READY"]).write_text("ready", encoding="utf-8")
+        time.sleep(300)
+        """
+    )
+    env = os.environ.copy()
+    env.update({
+        "LATE_CODE": late_code,
+        "LATE_LOCK": str(runtime_dir / "ros.lock"),
+        "LATE_READY": str(ready_file),
+        "LATE_PID_FILE": str(late_pid_file),
+        "ROOT_READY": str(root_ready_file),
+        "RUN_DIR": str(tmp_path),
+    })
+    stream = (tmp_path / "late-tree.log").open("w", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-c", root_code],
+        stdout=stream,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 2.0
+        while not root_ready_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert root_ready_file.exists()
+        result = causal._stop_process(
+            causal._ManagedProcess("stack", process, stream, tmp_path), 1.5
+        )
+        assert late_pid_file.exists()
+        late_pid = int(late_pid_file.read_text(encoding="utf-8"))
+        assert ready_file.exists()
+        assert result["cleanup_ok"] is True
+        assert result["remaining_process_groups"] == []
+        assert not Path(f"/proc/{late_pid}").exists()
+        cleanup = causal._confirm_arm_cleanup(
+            tmp_path,
+            tmp_path / "module2.sock",
+            (result,),
+            {"ISAAC_NAV_RUNTIME_DIR": str(runtime_dir)},
+            timeout_sec=1.0,
+            quiet_sec=0.1,
+            poll_sec=0.02,
+        )
+        assert cleanup["ok"] is True
+        assert cleanup["locks_free"] == {"ros": True, "isaac": True}
+        assert cleanup["stale_runtime_files"] == []
+    finally:
+        if process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=5.0)
+
+
+def test_cleanup_quiet_window_resets_for_late_recorded_lock_holder(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    child_holder = []
+    ready = threading.Event()
+    code = textwrap.dedent(
+        """
+        import fcntl
+        import os
+        from pathlib import Path
+        import signal
+        import sys
+        import time
+
+        signal.signal(signal.SIGINT, lambda *_: sys.exit(0))
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+        stream = Path(os.environ["LATE_LOCK"]).open("a", encoding="utf-8")
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        Path(os.environ["LATE_READY"]).write_text("ready", encoding="utf-8")
+        time.sleep(300)
+        """
+    )
+    ready_path = tmp_path / "quiet-late.ready"
+
+    def launch_late() -> None:
+        time.sleep(0.06)
+        env = os.environ.copy()
+        env.update({
+            "LATE_LOCK": str(runtime_dir / "ros.lock"),
+            "LATE_READY": str(ready_path),
+        })
+        child = subprocess.Popen(
+            [sys.executable, "-c", code],
+            start_new_session=True,
+            env=env,
+        )
+        child_holder.append(child)
+        deadline = time.monotonic() + 2.0
+        while not ready_path.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        pgid = os.getpgid(child.pid)
+        temporary = tmp_path / ".module3_ros.identity.tmp"
+        temporary.write_text(f"{child.pid} {pgid}\n", encoding="utf-8")
+        os.replace(temporary, tmp_path / "module3_ros.identity")
+        ready.set()
+
+    launcher = threading.Thread(target=launch_late, daemon=True)
+    launcher.start()
+    started = time.monotonic()
+    try:
+        result = causal._confirm_arm_cleanup(
+            tmp_path,
+            tmp_path / "module2.sock",
+            ({"name": "stack", "returncode": 0, "cleanup_ok": True},),
+            {"ISAAC_NAV_RUNTIME_DIR": str(runtime_dir)},
+            timeout_sec=2.0,
+            quiet_sec=0.25,
+            poll_sec=0.02,
+        )
+        launcher.join(timeout=2.0)
+        assert ready.is_set()
+        assert result["ok"] is True
+        assert result["attempts"] > 5
+        assert time.monotonic() - started >= 0.25
+        assert causal._lock_is_free(runtime_dir / "ros.lock")
+        assert child_holder and child_holder[0].poll() is not None
+    finally:
+        for child in child_holder:
+            if child.poll() is None:
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            child.wait(timeout=5.0)
+
+
+def test_cleanup_timeout_fails_closed_for_unknown_lock_holder(tmp_path):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    lock = (runtime_dir / "ros.lock").open("a", encoding="utf-8")
+    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        result = causal._confirm_arm_cleanup(
+            tmp_path,
+            tmp_path / "module2.sock",
+            ({"name": "stack", "returncode": 0, "cleanup_ok": True},),
+            {"ISAAC_NAV_RUNTIME_DIR": str(runtime_dir)},
+            timeout_sec=0.15,
+            quiet_sec=0.05,
+            poll_sec=0.02,
+        )
+    finally:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        lock.close()
+    assert result["ok"] is False
+    assert result["locks_free"]["ros"] is False
 
 
 def test_phase_f_stack_trap_cleans_its_nested_new_process_group(tmp_path):
@@ -1307,6 +1578,9 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "setsid --wait --" in stack
     assert "descendant_groups" in stack
     assert 'kill "-${signal_name}" -- "-${pgid}"' in stack
+    assert '"${run_dir}/${name}.identity"' in stack
+    assert 'mv -f "${prefix}.identity.tmp"' in stack
+    assert stack.count("exit_if_terminating") >= 8
     assert '"${run_dir}/${name}.pgid"' in stack
     assert 'register_child integration_bridge "${integration_bridge_pid}"' in stack
     assert 'register_child module2_server "${module2_server_pid}"' in stack

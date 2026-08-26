@@ -33,17 +33,21 @@ wait_group_exit() {
 }
 
 stop_registered_group() {
-  local name="$1" directory="$2" pid_file pgid_file pid pgid
+  local name="$1" directory="$2" identity_file pid_file pgid_file pid pgid
   local int_checks="${BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS:-100}"
   local term_checks="${BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS:-100}"
+  identity_file="${directory}/${name}.identity"
   pid_file="${directory}/${name}.pid"
   pgid_file="${directory}/${name}.pgid"
-  [[ -f "${pid_file}" && -f "${pgid_file}" ]] || {
+  if [[ -f "${identity_file}" ]]; then
+    read -r pid pgid <"${identity_file}"
+  elif [[ -f "${pid_file}" && -f "${pgid_file}" ]]; then
+    read -r pid <"${pid_file}"
+    read -r pgid <"${pgid_file}"
+  else
     echo "missing producer process identity: ${name}" >&2
     return 1
-  }
-  read -r pid <"${pid_file}"
-  read -r pgid <"${pgid_file}"
+  fi
   [[ "${pid}" =~ ^[1-9][0-9]*$ && "${pgid}" =~ ^[1-9][0-9]*$ ]] || {
     echo "invalid producer process identity: ${name}" >&2
     return 1
@@ -60,7 +64,7 @@ stop_registered_group() {
     fi
   fi
   wait "${pid}" 2>/dev/null || true
-  rm -f "${pid_file}" "${pgid_file}"
+  rm -f "${identity_file}" "${pid_file}" "${pgid_file}"
 }
 
 if [[ "${1:-}" == "stop-producer" ]]; then
@@ -123,9 +127,20 @@ rm -f "${socket_path}"
 declare -a child_names=()
 declare -a child_pids=()
 declare -a child_pgids=()
+terminating=false
+termination_status=0
+
+request_shutdown() {
+  terminating=true
+  termination_status="$1"
+}
+
+exit_if_terminating() {
+  [[ "${terminating}" == false ]] || exit "${termination_status}"
+}
 
 register_child() {
-  local name="$1" pid="$2" pgid="" index
+  local name="$1" pid="$2" pgid="" index prefix
   for ((index=0; index<100; index++)); do
     pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
     [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && break
@@ -138,8 +153,13 @@ register_child() {
   child_names+=("${name}")
   child_pids+=("${pid}")
   child_pgids+=("${pgid}")
-  printf '%s\n' "${pid}" >"${run_dir}/${name}.pid"
-  printf '%s\n' "${pgid}" >"${run_dir}/${name}.pgid"
+  prefix="${run_dir}/.${name}.$$"
+  printf '%s %s\n' "${pid}" "${pgid}" >"${prefix}.identity.tmp"
+  mv -f "${prefix}.identity.tmp" "${run_dir}/${name}.identity"
+  printf '%s\n' "${pid}" >"${prefix}.pid.tmp"
+  mv -f "${prefix}.pid.tmp" "${run_dir}/${name}.pid"
+  printf '%s\n' "${pgid}" >"${prefix}.pgid.tmp"
+  mv -f "${prefix}.pgid.tmp" "${run_dir}/${name}.pgid"
 }
 
 descendant_groups() {
@@ -160,44 +180,66 @@ descendant_groups() {
 }
 
 shutdown() {
-  local original_status="$1" index pid pgid failed=false own_pgid
+  local original_status="$1" index pid pgid failed=false own_pgid phase check
+  local running quiet_checks=0
   local int_checks="${BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS:-100}"
   local term_checks="${BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS:-100}"
+  local quiet_target="${BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS:-5}"
   local -a tracked_groups=()
   local -A unique_groups=()
+  terminating=true
   trap - EXIT INT TERM HUP
   own_pgid="$(ps -o pgid= -p "$$" | tr -d '[:space:]')"
-  for index in "${!child_names[@]}"; do
-    # stop-producer removes these identity files only after the exact producer
-    # group is gone.  Do not retain a reusable numeric PGID past that point.
-    [[ -f "${run_dir}/${child_names[index]}.pid" ]] || continue
-    pid="${child_pids[index]}"
-    tracked_groups+=("${child_pgids[index]}")
-    while read -r pgid; do
-      [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && tracked_groups+=("${pgid}")
-    done < <(descendant_groups "${pid}")
-  done
-  for pgid in "${tracked_groups[@]}"; do
-    [[ "${pgid}" != "${own_pgid}" ]] && unique_groups["${pgid}"]=1
-  done
-  for pgid in "${!unique_groups[@]}"; do signal_group INT "${pgid}"; done
-  for pgid in "${!unique_groups[@]}"; do
-    if ! wait_group_exit "${pgid}" "${int_checks}"; then
-      signal_group TERM "${pgid}"
+
+  # Re-read only children registered by this stack.  A child which creates a
+  # new session while handling shutdown is picked up on the next descendant
+  # scan, and every discovered group remains tracked for the rest of cleanup.
+  for phase in INT TERM KILL; do
+    quiet_checks=0
+    if [[ "${phase}" == INT ]]; then
+      check_limit="${int_checks}"
+    elif [[ "${phase}" == TERM ]]; then
+      check_limit="${term_checks}"
+    else
+      check_limit=100
     fi
+    for ((check=0; check<check_limit; check++)); do
+      for index in "${!child_names[@]}"; do
+        [[ -f "${run_dir}/${child_names[index]}.identity" \
+          || -f "${run_dir}/${child_names[index]}.pid" ]] || continue
+        pid="${child_pids[index]}"
+        unique_groups["${child_pgids[index]}"]=1
+        while read -r pgid; do
+          [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && unique_groups["${pgid}"]=1
+        done < <(descendant_groups "${pid}")
+      done
+      running=false
+      for pgid in "${!unique_groups[@]}"; do
+        [[ "${pgid}" != "${own_pgid}" ]] || continue
+        if group_is_running "${pgid}"; then
+          running=true
+          signal_group "${phase}" "${pgid}"
+        fi
+      done
+      if [[ "${running}" == false ]]; then
+        ((quiet_checks+=1))
+        ((quiet_checks >= quiet_target)) && break
+      else
+        quiet_checks=0
+      fi
+      sleep 0.05
+    done
+    ((quiet_checks >= quiet_target)) && break
   done
   for pgid in "${!unique_groups[@]}"; do
-    if ! wait_group_exit "${pgid}" "${term_checks}"; then
-      signal_group KILL "${pgid}"
-    fi
-  done
-  for pgid in "${!unique_groups[@]}"; do
+    [[ "${pgid}" != "${own_pgid}" ]] || continue
     wait_group_exit "${pgid}" 100 || failed=true
   done
   for pid in "${child_pids[@]}"; do wait "${pid}" 2>/dev/null || true; done
   rm -f "${socket_path}"
   for index in "${!child_names[@]}"; do
-    rm -f "${run_dir}/${child_names[index]}.pid" "${run_dir}/${child_names[index]}.pgid"
+    rm -f "${run_dir}/${child_names[index]}.identity" \
+      "${run_dir}/${child_names[index]}.pid" "${run_dir}/${child_names[index]}.pgid"
   done
   if [[ "${failed}" == true ]]; then
     echo "Phase-F stack cleanup left a tracked process group alive" >&2
@@ -205,23 +247,28 @@ shutdown() {
   fi
   exit "${original_status}"
 }
-trap 'exit 130' INT
-trap 'exit 143' TERM HUP
+trap 'request_shutdown 130' INT
+trap 'request_shutdown 143' TERM
+trap 'request_shutdown 129' HUP
 trap 'shutdown $?' EXIT
 
+exit_if_terminating
 setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
 register_child module3_ros "${module3_pid}"
+exit_if_terminating
 
 if [[ "${arm}" != "M0" ]]; then
   if [[ "${arm}" == "M1" ]]; then
+    exit_if_terminating
     setsid --wait -- "${integration_root}/scripts/run_module2_v310_server.sh" \
       --module2-root "${module2_root}" \
       --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
       --socket "${socket_path}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   else
+    exit_if_terminating
     setsid --wait -- "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh" \
       --startup-profile module2_causal_obstacle_active \
       --active-effect-scope obstacle_only \
@@ -232,10 +279,12 @@ if [[ "${arm}" != "M0" ]]; then
   fi
   module2_server_pid="$!"
   register_child module2_server "${module2_server_pid}"
+  exit_if_terminating
 
   source_ros --require-integration-underlay
   startup_profile="estimated_shadow"
   [[ "${arm}" =~ ^M[23]$ ]] && startup_profile="module2_causal_obstacle_active"
+  exit_if_terminating
   setsid --wait -- ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
     startup_profile:="${startup_profile}" \
     socket_path:="${socket_path}" \
@@ -243,10 +292,14 @@ if [[ "${arm}" != "M0" ]]; then
     >"${run_dir}/integration_bridge.log" 2>&1 &
   integration_bridge_pid="$!"
   register_child integration_bridge "${integration_bridge_pid}"
+  exit_if_terminating
 fi
 
 set +e
 wait "${module3_pid}"
 status=$?
 set -e
+if [[ "${terminating}" == true ]]; then
+  exit "${termination_status}"
+fi
 exit "${status}"
