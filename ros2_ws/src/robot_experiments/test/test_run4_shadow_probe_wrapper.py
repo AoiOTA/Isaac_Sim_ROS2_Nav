@@ -1,6 +1,9 @@
+import os
 from pathlib import Path
+import shutil
 import subprocess
 
+import pytest
 import yaml
 
 
@@ -12,12 +15,24 @@ CONFIG = (
 )
 
 
+def _domain_clean_env() -> dict[str, str]:
+    env = os.environ.copy()
+    for name in (
+        "ROS_DOMAIN_ID",
+        "ISAAC_NAV_EXPECTED_DOMAIN_ID",
+        "BIO_NAV_RUN4_SHADOW_DOMAIN_ID",
+    ):
+        env.pop(name, None)
+    return env
+
+
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(WRAPPER), *args],
         check=True,
         capture_output=True,
         text=True,
+        env=_domain_clean_env(),
     )
 
 
@@ -68,6 +83,83 @@ def test_server_and_bridge_dry_run_pass_the_same_candidate_manifest(tmp_path):
     assert "localization_supervisor_mode:=shadow" in bridge_result.stdout
     assert f"localization_candidate_manifest:={manifest}" in bridge_result.stdout
     assert "extra_bridge_arg:=value" in bridge_result.stdout
+
+
+def test_bridge_uses_selected_domain_for_common_and_ros2(tmp_path):
+    project = tmp_path / "module3"
+    scripts = project / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy2(WRAPPER, scripts / WRAPPER.name)
+    (scripts / "lib/common.sh").write_text(
+        "#!/usr/bin/env bash\nsource_ros() { :; }\n",
+        encoding="utf-8",
+    )
+
+    integration = tmp_path / "integration"
+    manifest = (
+        integration
+        / "ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text("{}\n", encoding="utf-8")
+
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    ros2 = fake_bin / "ros2"
+    ros2.write_text(
+        "#!/usr/bin/env bash\n"
+        "printf '%s|%s|%s|%s\\n' \"$ROS_DOMAIN_ID\" "
+        "\"$ISAAC_NAV_EXPECTED_DOMAIN_ID\" "
+        "\"$BIO_NAV_RUN4_SHADOW_DOMAIN_ID\" \"$*\"\n",
+        encoding="utf-8",
+    )
+    ros2.chmod(0o755)
+
+    env = _domain_clean_env()
+    env["PATH"] = f"{fake_bin}:{env['PATH']}"
+    result = subprocess.run(
+        [
+            "bash",
+            str(scripts / WRAPPER.name),
+            "--domain",
+            "151",
+            "--integration-root",
+            str(integration),
+            "bridge",
+            "extra_bridge_arg:=value",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.stdout.startswith("151|151|151|launch bio_nav_ros_bridge ")
+    assert "startup_profile:=estimated_shadow" in result.stdout
+    assert "localization_supervisor_mode:=shadow" in result.stdout
+    assert "extra_bridge_arg:=value" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "variable",
+    [
+        "ROS_DOMAIN_ID",
+        "ISAAC_NAV_EXPECTED_DOMAIN_ID",
+        "BIO_NAV_RUN4_SHADOW_DOMAIN_ID",
+    ],
+)
+def test_wrapper_rejects_explicit_conflicting_domain(variable):
+    env = _domain_clean_env()
+    env[variable] = "42"
+    result = subprocess.run(
+        ["bash", str(WRAPPER), "--dry-run", "--domain", "151", "bridge"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == 2
+    assert f"{variable}=42 conflicts with selected domain 151" in result.stderr
 
 
 def test_bounded_recorder_contains_required_diagnostics_and_no_goal_topic(tmp_path):

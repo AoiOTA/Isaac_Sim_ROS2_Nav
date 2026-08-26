@@ -85,6 +85,20 @@ shift
   exit 2
 }
 
+for domain_variable in \
+  ROS_DOMAIN_ID \
+  ISAAC_NAV_EXPECTED_DOMAIN_ID \
+  BIO_NAV_RUN4_SHADOW_DOMAIN_ID; do
+  domain_value="${!domain_variable:-}"
+  if [[ -n "${domain_value}" && "${domain_value}" != "${domain_id}" ]]; then
+    echo "${domain_variable}=${domain_value} conflicts with selected domain ${domain_id}" >&2
+    exit 2
+  fi
+done
+export ROS_DOMAIN_ID="${domain_id}"
+export ISAAC_NAV_EXPECTED_DOMAIN_ID="${domain_id}"
+export BIO_NAV_RUN4_SHADOW_DOMAIN_ID="${domain_id}"
+
 candidate_manifest="${BIO_NAV_RUN4_CANDIDATE_MANIFEST:-${integration_root}/ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json}"
 probe_config="${BIO_NAV_RUN4_SHADOW_PROBE_CONFIG:-${default_probe_config}}"
 server_entry="${integration_root}/scripts/run_module2_v310_server.sh"
@@ -184,12 +198,10 @@ EOF
       mkdir -p -m 700 "$(dirname -- "${socket_path}")"
     fi
     export BIO_NAV_MODULE2_V310_ROOT="${module2_root}"
-    export ROS_DOMAIN_ID="${domain_id}"
     run_command "${server_command[@]}" "$@"
     ;;
   bridge)
     require_live_file "${candidate_manifest}"
-    export ROS_DOMAIN_ID="${domain_id}"
     if [[ "${dry_run}" == false ]]; then
       # shellcheck source=lib/common.sh
       source "${script_dir}/lib/common.sh"
@@ -198,7 +210,6 @@ EOF
     run_command "${bridge_command[@]}" "$@"
     ;;
   record)
-    export ROS_DOMAIN_ID="${domain_id}"
     if [[ "${dry_run}" == false ]]; then
       # shellcheck source=lib/common.sh
       source "${script_dir}/lib/common.sh"
