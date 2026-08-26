@@ -1,0 +1,53 @@
+schema_version: bio_nav_module1_targeted_teaching_manifest_v1
+mode: module1_targeted_teaching
+intended_use: raw_teaching_capture
+scene:
+  id: kujiale_0026_A_to_B_door_open
+  revision: original_usd_20260717
+  world: kujiale
+  category: static
+runtime:
+  odometry_mode: mixed
+  canonical_odom: {topic: /odom, owner: isaac_compute_odometry, tf: odom->base_link}
+  global_localization: {pose_topic: /amcl_pose, owner: amcl, tf: map->odom}
+  module1_odom:
+    topic: /bio_nav/module1/odom
+    owner: wheel_imu_ekf
+    publish_tf: false
+  recovery_enabled: false
+  module2_enabled: false
+  module2_navigation_write_enabled: false
+  module2_effect_scope: "off"
+  cognitive_place_graph_enabled: false
+  route_backend: gvg
+  low_obstacles_enabled: false
+  dynamic_actors_enabled: false
+  goal_checker: position_xy
+  cognitive_profile: M0
+  module1_mode: teaching_capture
+  ground_truth_use: evaluator_only
+assets:
+  scene_asset: /home/lyb/kujiale_usd_rooms_20260717/kujiale_0026/kujiale_0026_A_to_B_door_open.usd
+  occupancy_map: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/data/maps/occupancy/v6_kujiale_isaacgen_v1.yaml
+  spawn_manifest: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/isaac_sim/configs/environments/kujiale_0026_A_to_B_door_open.v6_isaacgen_v1.spawn.yaml
+  route_graph: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_route_planner/config/v6_kujiale_isaacgen_v1_gvg_v1.geojson
+  navigation_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module3/ros2_ws/src/robot_navigation/config/nav2_params.yaml
+  module1_scene_config: /home/lyb/Workspace/Bio_Nav/worktrees/v6-compute-amcl-dual-odom/bio_nav_module2/configs/kujiale_0026_module1_enrollment_v310.yaml
+dataset:
+  route_id: EN
+  role: train
+  split: A_base
+  status: raw_until_audit
+mission:
+  reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
+  legs:
+    - {id: EN_S122_NORTHBOUND, frame_id: map, x: 2.125, y: -0.525}
+    - {id: EN_S184, frame_id: map, x: 0.925, y: 3.975}
+    - {id: EN_S202, frame_id: map, x: 2.125, y: 4.875}
+    - {id: EN_S217, frame_id: map, x: 1.325, y: 5.375}
+    - {id: EN_S215, frame_id: map, x: -0.475, y: 5.375}
+    - {id: EN_S122_SOUTHBOUND, frame_id: map, x: 2.125, y: -0.525}
+    - {id: EN_S39, frame_id: map, x: -0.325, y: -5.375}
+  best_effort_leg_ids: [EN_S184]
+episodes:
+  - {seed: 7411, variant_id: baseline, reset_pose_name: long_route_start_g1, dynamic_case_id: static}

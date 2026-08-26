@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/common.sh"
 
 readonly DEFAULT_ROOT="/mnt/nas_home/Bio_Nav_Data/experiments/pilots/module1_kujiale_scene_registration_20260825/raw_mcap"
+readonly QOS_OVERRIDES="${PROJECT_ROOT}/ros2_ws/src/robot_experiments/config/module1_targeted_teaching_rosbag_qos.yaml"
 
 usage() {
   cat <<EOF
@@ -62,6 +63,7 @@ output_path="${root}/${episode_id}"
 
 source_ros --require-workspace
 require_command ros2
+require_file "${QOS_OVERRIDES}"
 
 topics=(
   /clock
@@ -97,5 +99,6 @@ exec ros2 bag record \
   --use-sim-time \
   --storage mcap \
   --storage-preset-profile zstd_fast \
+  --qos-profile-overrides-path "${QOS_OVERRIDES}" \
   --output "${output_path}" \
   "${topics[@]}"
