@@ -691,7 +691,8 @@ void CognitiveRiskCritic::publishStatus(
     std::isfinite(maximum_obstacle_cost_delta) && maximum_obstacle_cost_delta > 0.0 ?
     maximum_obstacle_cost_delta : 0.0;
   bio_nav_interfaces::msg::RiskLayerStatus status;
-  status.stamp = parent_.lock()->get_clock()->now();
+  const auto now = parent_.lock()->get_clock()->now();
+  status.stamp = now;
   status.consumer = name_;
   status.mode = mode_;
   status.offered = accepted_obstacles->sequence > 0;
@@ -702,6 +703,10 @@ void CognitiveRiskCritic::publishStatus(
   status.recurrent_session_id = accepted_obstacles->recurrent_session_id;
   status.reset_epoch = accepted_obstacles->reset_epoch;
   status.map_version = accepted_obstacles->map_version;
+  const double age_s = static_cast<double>(
+    now.nanoseconds() - stampNs(accepted_obstacles->validation_stamp)) * 1.0e-9;
+  status.message_age_ms = std::isfinite(age_s) ? age_s * 1000.0 :
+    std::numeric_limits<float>::infinity();
   std::ostringstream detail;
   detail << reason
          << ";maximum_obstacle_cost_delta="

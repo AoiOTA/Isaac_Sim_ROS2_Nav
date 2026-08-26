@@ -1680,6 +1680,11 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   EXPECT_EQ(accepted_status.reset_epoch, fresh.reset_epoch);
   EXPECT_EQ(accepted_status.recurrent_session_id, fresh.recurrent_session_id);
   EXPECT_EQ(accepted_status.map_version, fresh.map_version);
+  EXPECT_GT(accepted_status.message_age_ms, 0.0F);
+  EXPECT_NEAR(
+    rclcpp::Time(accepted_status.stamp).nanoseconds() -
+    static_cast<int64_t>(std::llround(accepted_status.message_age_ms * 1.0e6)),
+    rclcpp::Time(fresh.validation_stamp).nanoseconds(), 1000000LL);
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 7U);
   Layer::recordAccepted(fresh, layer_cursor);
@@ -1701,6 +1706,12 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
     std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(refresh),
     std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+  const auto refresh_status =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(critic);
+  EXPECT_NEAR(
+    rclcpp::Time(refresh_status.stamp).nanoseconds() -
+    static_cast<int64_t>(std::llround(refresh_status.message_age_ms * 1.0e6)),
+    rclcpp::Time(refresh.validation_stamp).nanoseconds(), 1000000LL);
   Layer::recordAccepted(refresh, layer_cursor);
 
   auto backward = refresh;
