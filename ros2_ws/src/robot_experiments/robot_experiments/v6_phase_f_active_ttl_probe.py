@@ -74,6 +74,7 @@ class ActiveTtlTimeline:
     arm: str
     margin_ns: int
     clock_ns: int = 0
+    goal_epoch: int = 0
     goal_started: bool = False
     action_active: bool = False
     collision: bool = False
@@ -85,9 +86,14 @@ class ActiveTtlTimeline:
     latest_validation_ttl_ns: int | None = None
     positive_layers: set[str] = field(default_factory=set)
     positive_critic: bool = False
+    trusted_sources: dict[int, tuple[int, int]] = field(default_factory=dict)
+    positive_layer_sources: dict[int, set[str]] = field(default_factory=dict)
+    positive_critic_sources: set[int] = field(default_factory=set)
     producer_stopped: bool = False
     active_at_dropout: bool = False
     armed_source_sequence: int | None = None
+    armed_validation_stamp_ns: int | None = None
+    armed_validation_ttl_ns: int | None = None
     expiry_target_ns: int | None = None
     clear_layers: set[str] = field(default_factory=set)
     critic_stale_rejected: bool = False
@@ -114,9 +120,22 @@ class ActiveTtlTimeline:
         self.clock_ns = value
 
     def start_goal(self) -> None:
+        # Readiness/reset spins can receive valid positive statuses before the
+        # route goal is published.  Start a fresh evidence epoch so only
+        # callbacks observed while this goal is active can arm the dropout.
+        self.goal_epoch += 1
+        self.trusted_typed_seen = False
+        self.latest_source_sequence = None
+        self.latest_validation_stamp_ns = None
+        self.latest_validation_ttl_ns = None
+        self.positive_layers.clear()
+        self.positive_critic = False
+        self.trusted_sources.clear()
+        self.positive_layer_sources.clear()
+        self.positive_critic_sources.clear()
         self.goal_started = True
         self.action_active = True
-        self._event("goal_started")
+        self._event("goal_started", goal_epoch=self.goal_epoch)
 
     def observe_terminal(self, reason: str, *, collision: bool = False) -> None:
         self.action_active = False
@@ -137,6 +156,8 @@ class ActiveTtlTimeline:
         observation_valid: bool,
         obstacle_count: int,
     ) -> None:
+        if not self.action_active or self.producer_stopped:
+            return
         if (
             not trusted_write
             or not healthy
@@ -153,6 +174,7 @@ class ActiveTtlTimeline:
         self.latest_source_sequence = sequence
         self.latest_validation_stamp_ns = validation_stamp
         self.latest_validation_ttl_ns = int(validation_ttl_ns)
+        self.trusted_sources[sequence] = (validation_stamp, int(validation_ttl_ns))
         self._event(
             "trusted_typed_obstacle",
             source_sequence=sequence,
@@ -163,8 +185,19 @@ class ActiveTtlTimeline:
     def _matches_armed_source(self, source_sequence: int) -> bool:
         return (
             self.armed_source_sequence is not None
-            and int(source_sequence) >= self.armed_source_sequence
+            and int(source_sequence) == self.armed_source_sequence
         )
+
+    def _coherent_positive_source(self) -> int | None:
+        for sequence in sorted(self.trusted_sources, reverse=True):
+            if not {"global", "local"}.issubset(
+                self.positive_layer_sources.get(sequence, set())
+            ):
+                continue
+            if self.arm == "M3" and sequence not in self.positive_critic_sources:
+                continue
+            return sequence
+        return None
 
     def observe_layer(
         self,
@@ -182,8 +215,11 @@ class ActiveTtlTimeline:
             return
         positive = bool(applied) and int(raised_cell_count) > 0
         if not self.producer_stopped:
-            if positive:
+            if self.action_active and positive:
                 self.positive_layers.add(scope)
+                self.positive_layer_sources.setdefault(
+                    int(source_sequence), set()
+                ).add(scope)
                 self._event(
                     "positive_layer_apply",
                     scope=scope,
@@ -193,6 +229,9 @@ class ActiveTtlTimeline:
             return
         if self.expiry_target_ns is None or self.clock_ns < self.expiry_target_ns:
             return
+        if bool(applied) or int(raised_cell_count) > 0 or int(maximum_cost_increase) > 0:
+            self.post_expiry_layer_applied = True
+            self.post_expiry_applied = True
         if not self._matches_armed_source(source_sequence):
             return
         stale = "validation_stale" in str(reason)
@@ -202,9 +241,6 @@ class ActiveTtlTimeline:
             and int(active_cell_count) == 0
             and int(maximum_cost_increase) == 0
         )
-        if bool(applied) or int(raised_cell_count) > 0 or int(maximum_cost_increase) > 0:
-            self.post_expiry_layer_applied = True
-            self.post_expiry_applied = True
         if stale and zero:
             self.clear_layers.add(scope)
             self._event(
@@ -224,19 +260,20 @@ class ActiveTtlTimeline:
         cost_delta_applied = "cost_delta_applied=true" in text
         positive = bool(applied) and cost_delta_applied
         if not self.producer_stopped:
-            if positive:
+            if self.action_active and positive:
                 self.positive_critic = True
+                self.positive_critic_sources.add(int(source_sequence))
                 self._event(
                     "positive_critic_apply", source_sequence=int(source_sequence)
                 )
             return
         if self.expiry_target_ns is None or self.clock_ns < self.expiry_target_ns:
             return
-        if not self._matches_armed_source(source_sequence):
-            return
         if bool(applied) or cost_delta_applied:
             self.post_expiry_critic_applied = True
             self.post_expiry_applied = True
+        if not self._matches_armed_source(source_sequence):
+            return
         stale = "validation_stale" in text
         no_delta = "cost_delta_applied=false" in text or not cost_delta_applied
         if stale and not bool(applied) and no_delta:
@@ -250,26 +287,24 @@ class ActiveTtlTimeline:
     def armed(self) -> bool:
         return bool(
             self.action_active
-            and self.trusted_typed_seen
-            and {"global", "local"}.issubset(self.positive_layers)
-            and (self.arm != "M3" or self.positive_critic)
+            and self._coherent_positive_source() is not None
         )
 
     def mark_producer_stopped(self) -> None:
         if not self.armed:
             raise CausalContractError("active TTL probe cannot stop producer before positive apply")
-        if (
-            self.latest_source_sequence is None
-            or self.latest_validation_stamp_ns is None
-            or self.latest_validation_ttl_ns is None
-        ):
+        source_sequence = self._coherent_positive_source()
+        if source_sequence is None:
             raise CausalContractError("active TTL probe lacks a trusted validation timeline")
+        validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_sequence]
         self.producer_stopped = True
         self.active_at_dropout = self.action_active
-        self.armed_source_sequence = self.latest_source_sequence
+        self.armed_source_sequence = source_sequence
+        self.armed_validation_stamp_ns = validation_stamp_ns
+        self.armed_validation_ttl_ns = validation_ttl_ns
         self.expiry_target_ns = (
-            self.latest_validation_stamp_ns
-            + self.latest_validation_ttl_ns
+            validation_stamp_ns
+            + validation_ttl_ns
             + self.margin_ns
         )
         self._event(
@@ -336,8 +371,8 @@ class ActiveTtlTimeline:
             "producer_stop_while_action_active": self.active_at_dropout,
             "sim_clock_ns": self.clock_ns,
             "armed_source_sequence": self.armed_source_sequence,
-            "validation_stamp_ns": self.latest_validation_stamp_ns,
-            "validation_ttl_ns": self.latest_validation_ttl_ns,
+            "validation_stamp_ns": self.armed_validation_stamp_ns,
+            "validation_ttl_ns": self.armed_validation_ttl_ns,
             "expiry_target_ns": self.expiry_target_ns,
             "positive_apply": {
                 "typed_trusted": self.trusted_typed_seen,
@@ -354,6 +389,7 @@ class ActiveTtlTimeline:
                 "applied_after_expiry": self.post_expiry_applied,
             },
             "action": {
+                "goal_epoch": self.goal_epoch,
                 "goal_started": self.goal_started,
                 "terminal_before_dropout": self.terminal_before_dropout,
                 "terminal_reason": self.terminal_reason,
@@ -407,21 +443,57 @@ def execute_probe_lifecycle(
 ) -> dict[str, Any]:
     """Execute the fixed adapter order; no retry or fallback is permitted."""
 
-    adapter.start_goal()
-    armed = adapter.wait_for_armed(arming_timeout_sec)
     timeout_reason = ""
-    if armed and adapter.timeline.action_active:
-        adapter.stop_producer()
-        adapter.wait_for_clear(probe_timeout_sec)
-    elif adapter.timeline.terminal_before_dropout:
-        timeout_reason = adapter.timeline.terminal_reason
-    else:
-        timeout_reason = "positive_apply_not_observed_before_arming_timeout"
-    if adapter.timeline.action_active:
-        adapter.cancel_goal_once("active_ttl_probe_complete")
-    adapter.timeline.mark_terminal_zero(adapter.confirm_terminal_zero())
+    lifecycle_error: Exception | None = None
+    cleanup_error: Exception | None = None
+    try:
+        adapter.start_goal()
+        armed = adapter.wait_for_armed(arming_timeout_sec)
+        if armed and adapter.timeline.action_active:
+            adapter.stop_producer()
+            adapter.wait_for_clear(probe_timeout_sec)
+        elif adapter.timeline.terminal_before_dropout:
+            timeout_reason = adapter.timeline.terminal_reason
+        else:
+            timeout_reason = "positive_apply_not_observed_before_arming_timeout"
+    except Exception as exc:
+        lifecycle_error = exc
+    finally:
+        # Once a goal was published, producer/clear failures must still leave
+        # exactly one cancellation attempt and a terminal-zero observation.
+        if (
+            adapter.timeline.goal_started
+            and adapter.timeline.cancel_count == 0
+            and (adapter.timeline.action_active or lifecycle_error is not None)
+        ):
+            try:
+                adapter.cancel_goal_once("active_ttl_probe_complete")
+            except Exception as exc:
+                cleanup_error = exc
+        try:
+            adapter.timeline.mark_terminal_zero(adapter.confirm_terminal_zero())
+        except Exception as exc:
+            if cleanup_error is None:
+                cleanup_error = exc
+
+    if lifecycle_error is not None:
+        raise lifecycle_error
+    if cleanup_error is not None:
+        raise cleanup_error
+    episode_result = dict(adapter.episode_result())
     payload = adapter.timeline.result(timeout_reason=timeout_reason)
-    payload["episode_result"] = dict(adapter.episode_result())
+    episode_state = str(episode_result.get("state", "")).upper()
+    stop_reason = str(episode_result.get("stop_reason", ""))
+    if bool(episode_result.get("collision", False)):
+        payload["state"] = "FAIL_EPISODE_COLLISION"
+        payload["reasons"] = ["collision_observed_during_terminal_settle"]
+    elif episode_state == "FAILED":
+        payload["state"] = "FAIL_EPISODE_NAVIGATION"
+        payload["reasons"] = [stop_reason or "navigation_failed"]
+    elif episode_state == "STOP" and stop_reason != "active_ttl_probe_complete":
+        payload["state"] = "FAIL_EPISODE_TERMINAL"
+        payload["reasons"] = [stop_reason or "unexpected_terminal_stop"]
+    payload["episode_result"] = episode_result
     return payload
 
 
@@ -890,7 +962,7 @@ def run_probe_campaign(
             json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         results.append(status)
-        if cleanup_failed:
+        if cleanup_failed or (run.arm == "M2" and status["state"] != PASS_STATE):
             break
     summary = {
         "schema_version": SCHEMA_VERSION,

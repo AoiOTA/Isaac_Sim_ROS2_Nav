@@ -1,7 +1,9 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from robot_experiments import v6_phase_f_active_ttl_probe as probe_module
 from robot_experiments.v6_low_obstacle_causal import CausalContractError, load_manifest
 from robot_experiments.v6_phase_f_active_ttl_probe import (
     ActiveTtlTimeline,
@@ -64,10 +66,14 @@ class FakeAdapter:
 
     def stop_producer(self):
         self.calls.append("stop_producer")
+        if self.scenario == "stop_exception":
+            raise CausalContractError("producer stop failed")
         self.timeline.mark_producer_stopped()
 
     def wait_for_clear(self, _timeout_sec):
         self.calls.append("wait_sim_time_clear")
+        if self.scenario == "clear_exception":
+            raise CausalContractError("clear wait failed")
         self.timeline.observe_clock(self.timeline.expiry_target_ns)
         if self.scenario == "terminal_during_probe":
             self.timeline.observe_terminal("goal_terminal_during_probe")
@@ -111,7 +117,20 @@ class FakeAdapter:
     def confirm_terminal_zero(self):
         self.calls.append("terminal_zero")
         confirmed = self.scenario != "no_terminal_zero"
-        self._episode = {"state": "STOP", "terminal_zero_confirmed": confirmed}
+        state = "FAILED" if self.scenario == "episode_failed" else "STOP"
+        stop_reason = (
+            "navigation_failed"
+            if self.scenario == "episode_failed"
+            else "unexpected_stop"
+            if self.scenario == "episode_unexpected_stop"
+            else "active_ttl_probe_complete"
+        )
+        self._episode = {
+            "state": state,
+            "stop_reason": stop_reason,
+            "collision": self.scenario == "late_collision",
+            "terminal_zero_confirmed": confirmed,
+        }
         return confirmed
 
     def episode_result(self):
@@ -153,6 +172,194 @@ def test_no_positive_apply_is_probe_not_armed_and_cancels_active_goal():
     assert result["state"] == PROBE_NOT_ARMED
     assert "stop_producer" not in adapter.calls
     assert adapter.calls[-2:] == ["cancel_goal_once", "terminal_zero"]
+
+
+def _observe_positive(timeline, sequence=7):
+    timeline.observe_typed(
+        source_sequence=sequence,
+        validation_stamp_ns=900_000_000,
+        validation_ttl_ns=500_000_000,
+        trusted_write=True,
+        healthy=True,
+        observation_valid=True,
+        obstacle_count=1,
+    )
+    for consumer in ("global", "local"):
+        timeline.observe_layer(
+            consumer=consumer,
+            source_sequence=sequence,
+            applied=True,
+            raised_cell_count=1,
+            active_cell_count=1,
+            maximum_cost_increase=1,
+            reason="",
+        )
+
+
+def test_pre_goal_positive_callbacks_do_not_arm_new_goal_epoch():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    _observe_positive(timeline)
+
+    timeline.start_goal()
+
+    assert timeline.goal_epoch == 1
+    assert timeline.trusted_typed_seen is False
+    assert timeline.positive_layers == set()
+    assert timeline.armed is False
+
+
+def test_post_goal_positive_callbacks_arm_current_goal_epoch():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.start_goal()
+
+    _observe_positive(timeline)
+
+    assert timeline.goal_epoch == 1
+    assert timeline.armed is True
+
+
+def test_positive_evidence_from_different_sources_cannot_arm():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.start_goal()
+    for sequence in (7, 8):
+        timeline.observe_typed(
+            source_sequence=sequence,
+            validation_stamp_ns=900_000_000,
+            validation_ttl_ns=500_000_000,
+            trusted_write=True,
+            healthy=True,
+            observation_valid=True,
+            obstacle_count=1,
+        )
+    timeline.observe_layer(
+        consumer="global",
+        source_sequence=7,
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+    timeline.observe_layer(
+        consumer="local",
+        source_sequence=8,
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+
+    assert timeline.armed is False
+
+
+def test_m3_critic_must_match_typed_and_layer_source():
+    timeline = ActiveTtlTimeline("M3", margin_ns=200_000_000)
+    timeline.start_goal()
+    _observe_positive(timeline, sequence=7)
+    timeline.observe_critic(
+        source_sequence=8,
+        applied=True,
+        reason="cost_delta_applied=true",
+    )
+    assert timeline.armed is False
+
+    timeline.observe_critic(
+        source_sequence=7,
+        applied=True,
+        reason="cost_delta_applied=true",
+    )
+    assert timeline.armed is True
+
+
+def test_post_stop_queued_source_cannot_replace_target_or_satisfy_clear():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.start_goal()
+    _observe_positive(timeline, sequence=7)
+    timeline.mark_producer_stopped()
+    target = (
+        timeline.armed_source_sequence,
+        timeline.armed_validation_stamp_ns,
+        timeline.armed_validation_ttl_ns,
+        timeline.expiry_target_ns,
+    )
+
+    timeline.observe_typed(
+        source_sequence=8,
+        validation_stamp_ns=1_500_000_000,
+        validation_ttl_ns=900_000_000,
+        trusted_write=True,
+        healthy=True,
+        observation_valid=True,
+        obstacle_count=1,
+    )
+    assert (
+        timeline.armed_source_sequence,
+        timeline.armed_validation_stamp_ns,
+        timeline.armed_validation_ttl_ns,
+        timeline.expiry_target_ns,
+    ) == target
+
+    timeline.observe_clock(timeline.expiry_target_ns)
+    for consumer in ("global", "local"):
+        timeline.observe_layer(
+            consumer=consumer,
+            source_sequence=8,
+            applied=False,
+            raised_cell_count=0,
+            active_cell_count=0,
+            maximum_cost_increase=0,
+            reason="validation_stale",
+        )
+    assert timeline.clear_layers == set()
+
+    for consumer in ("global", "local"):
+        timeline.observe_layer(
+            consumer=consumer,
+            source_sequence=7,
+            applied=False,
+            raised_cell_count=0,
+            active_cell_count=0,
+            maximum_cost_increase=0,
+            reason="validation_stale",
+        )
+    assert timeline.clear_complete is True
+
+
+def test_post_stop_queued_source_positive_after_expiry_fails_probe():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.start_goal()
+    _observe_positive(timeline, sequence=7)
+    timeline.mark_producer_stopped()
+    timeline.observe_clock(timeline.expiry_target_ns)
+
+    timeline.observe_layer(
+        consumer="global",
+        source_sequence=8,
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+
+    assert timeline.post_expiry_applied is True
+    assert timeline.clear_complete is False
+
+
+@pytest.mark.parametrize("scenario", ["stop_exception", "clear_exception"])
+def test_probe_exception_still_cancels_once_and_checks_terminal_zero(scenario):
+    adapter = FakeAdapter("M2", scenario)
+
+    with pytest.raises(CausalContractError):
+        execute_probe_lifecycle(
+            adapter, arming_timeout_sec=1.0, probe_timeout_sec=1.0
+        )
+
+    assert adapter.calls.count("cancel_goal_once") == 1
+    assert adapter.timeline.cancel_count == 1
+    assert adapter.calls[-1] == "terminal_zero"
+    assert adapter.timeline.terminal_zero_confirmed is True
 
 
 def test_collision_or_goal_terminal_before_dropout_is_failure():
@@ -212,6 +419,25 @@ def test_terminal_zero_is_required_after_single_cancel():
     assert result["action"]["cancel_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_state"),
+    [
+        ("late_collision", "FAIL_EPISODE_COLLISION"),
+        ("episode_failed", "FAIL_EPISODE_NAVIGATION"),
+        ("episode_unexpected_stop", "FAIL_EPISODE_TERMINAL"),
+    ],
+)
+def test_final_episode_failure_overrides_ttl_pass(scenario, expected_state):
+    result = execute_probe_lifecycle(
+        FakeAdapter("M2", scenario),
+        arming_timeout_sec=1.0,
+        probe_timeout_sec=1.0,
+    )
+
+    assert result["state"] == expected_state
+    assert result["state"] != PASS_STATE
+
+
 def test_sim_clock_controls_expiry_and_rejects_backward_jump():
     timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
     timeline.observe_clock(1_000_000_000)
@@ -267,3 +493,58 @@ def test_plan_is_m2_m3_only_and_keeps_exact_fixed_scene_contract(tmp_path):
         assert row["commands"]["scene"][0].endswith("run_v6_r5_phase_b_kujiale.sh")
         assert row["commands"]["stack"][1] == row["arm"]
         assert row["commands"]["producer_stop"][1] == "stop-producer"
+
+
+@pytest.mark.parametrize(
+    ("m2_state", "cleanup_ok"),
+    [("FAIL_MISSING_LAYER_CLEAR", True), (PASS_STATE, False)],
+)
+def test_m2_failure_or_cleanup_failure_does_not_start_m3(
+    tmp_path, monkeypatch, m2_state, cleanup_ok
+):
+    manifest = load_manifest(CONFIG)
+    dispatched = []
+
+    monkeypatch.setattr(
+        probe_module,
+        "_start_process",
+        lambda name, *_args, **_kwargs: SimpleNamespace(name=name),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_wait_for_startup_ready",
+        lambda *_args, **_kwargs: {"ready": True},
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_wait_for_cognitive_ready",
+        lambda *_args, **_kwargs: {"ready": True},
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_stop_process",
+        lambda process, _timeout: {"name": process.name, "stopped": True},
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "_confirm_arm_cleanup",
+        lambda *_args, **_kwargs: {"ok": cleanup_ok},
+    )
+
+    def fake_dispatch(_manifest, run, *_args, **_kwargs):
+        dispatched.append(run.arm)
+        return {"state": m2_state}
+
+    monkeypatch.setattr(probe_module, "dispatch_live_probe", fake_dispatch)
+
+    result = probe_module.run_probe_campaign(
+        manifest,
+        tmp_path / "campaign",
+        arming_timeout_sec=1.0,
+        probe_timeout_sec=1.0,
+        shutdown_timeout_sec=1.0,
+    )
+
+    assert result["state"] == "FAILED"
+    assert dispatched == ["M2"]
+    assert [row["arm"] for row in result["runs"]] == ["M2"]
