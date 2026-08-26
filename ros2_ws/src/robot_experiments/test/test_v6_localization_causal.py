@@ -701,7 +701,7 @@ def test_r1_mode2_gate_requires_post_request_revalidation_and_advanced_floors():
         "candidate_array_received_count": 10,
         "candidate_array_accepted_count": 8,
         "candidate_array_last_sequence": 20,
-        "publish_count": 0,
+        "candidate_array_publish_count": 0,
     }
     adapter._last_supervisor = {
         "candidate_validation": "recovery_stationary_revalidated",
@@ -713,7 +713,7 @@ def test_r1_mode2_gate_requires_post_request_revalidation_and_advanced_floors():
         "candidate_array_last_structural_rejection": "",
         "candidate_array_last_state_machine_decision_reason": "manual_rescue",
         "candidate_array_last_event_reason": "manual_rescue",
-        "publish_count": "1",
+        "candidate_array_publish_count": "1",
     }
 
     assert adapter._post_request_mode2_candidate()
@@ -738,7 +738,7 @@ def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_
         "reason": "amcl_covariance_lost",
         "recovery_result": "observed",
         "reset_attempts": "0",
-        "publish_count": "0",
+        "candidate_array_publish_count": "0",
         "candidate_validation": "cached",
         "candidate_array_last_validation_stamp_ns": "4000",
         "candidate_array_received_count": "10",
@@ -776,7 +776,7 @@ def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_
                     "manual_rescue"
                 ),
                 "candidate_array_last_event_reason": "manual_rescue",
-                "publish_count": "1",
+                "candidate_array_publish_count": "1",
             }
         )
 
@@ -795,7 +795,7 @@ def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_
     assert request["request_stamp_ns"] == 6_000
     assert request["fault_stamp_ns"] == 5_000
     assert request["diagnostic_floors"]["candidate_array_last_sequence"] == 20
-    assert request["diagnostic_floors"]["publish_count"] == 0
+    assert request["diagnostic_floors"]["candidate_array_publish_count"] == 0
 
 
 def test_r1_cached_pre_request_candidate_cannot_satisfy_mode2_and_times_out():
@@ -816,7 +816,7 @@ def test_r1_cached_pre_request_candidate_cannot_satisfy_mode2_and_times_out():
         "reason": "amcl_covariance_lost",
         "recovery_result": "observed",
         "reset_attempts": "0",
-        "publish_count": "0",
+        "candidate_array_publish_count": "0",
         "candidate_validation": "cached",
         "candidate_array_last_validation_stamp_ns": "4000",
         "candidate_array_received_count": "10",

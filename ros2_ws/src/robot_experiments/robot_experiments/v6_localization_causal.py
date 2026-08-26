@@ -76,7 +76,7 @@ PHASE_E_MODE2_RECOVERY = {
     "candidate_event_reason": "manual_rescue",
     "candidate_decision_reason": "manual_rescue",
     "expected_supervisor_initialpose_increment": 1,
-    "expected_publish_count_increment": 1,
+    "expected_candidate_array_publish_count_increment": 1,
 }
 PHASE_D_STARTUP_INITIALPOSE = {
     "S0": {
@@ -1070,7 +1070,7 @@ class LocalizationCausalNode(V6FormalNode):
                 "candidate_array_received_count",
                 "candidate_array_accepted_count",
                 "candidate_array_last_sequence",
-                "publish_count",
+                "candidate_array_publish_count",
             )
         }
 
@@ -1094,7 +1094,8 @@ class LocalizationCausalNode(V6FormalNode):
                 values, "candidate_array_last_candidate_count"
             )
             > 0
-            and values.get("candidate_array_last_structural_rejection", "") == ""
+            and "candidate_array_last_structural_rejection" in values
+            and values["candidate_array_last_structural_rejection"] == ""
             and values.get(
                 "candidate_array_last_state_machine_decision_reason", ""
             )
@@ -1103,8 +1104,8 @@ class LocalizationCausalNode(V6FormalNode):
             == "manual_rescue"
             and values.get("candidate_validation", "")
             == "recovery_stationary_revalidated"
-            and self._diagnostic_int(values, "publish_count")
-            == baseline["publish_count"] + 1
+            and self._diagnostic_int(values, "candidate_array_publish_count")
+            == baseline["candidate_array_publish_count"] + 1
         )
 
     def _fault(self) -> None:
@@ -1116,7 +1117,9 @@ class LocalizationCausalNode(V6FormalNode):
             or self._diagnostic_int(self._last_supervisor, "reset_attempts") != 0
             or (
                 self.arm == "R1"
-                and self._diagnostic_int(self._last_supervisor, "publish_count")
+                and self._diagnostic_int(
+                    self._last_supervisor, "candidate_array_publish_count"
+                )
                 != 0
             )
             or self._last_supervisor.get("state", "").upper() != "NORMAL"
@@ -1269,7 +1272,9 @@ class LocalizationCausalNode(V6FormalNode):
                 self._supervisor_initialpose_count != 0
                 or self._diagnostic_int(self._last_supervisor, "reset_attempts")
                 != 0
-                or self._diagnostic_int(self._last_supervisor, "publish_count")
+                or self._diagnostic_int(
+                    self._last_supervisor, "candidate_array_publish_count"
+                )
                 != 0
             ):
                 self.guard.stop("pre_request_supervisor_write_forbidden")

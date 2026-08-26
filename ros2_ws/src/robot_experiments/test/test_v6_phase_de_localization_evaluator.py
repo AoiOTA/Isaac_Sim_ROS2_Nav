@@ -134,7 +134,7 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                     mode="active" if arm == "R1" else "shadow",
                     state="NORMAL", reason="amcl_healthy", result="observed",
                     reset_attempts=0,
-                    values={"publish_count": "0"},
+                    values={"candidate_array_publish_count": "0"},
                 ),
                 _event(phase, arm, seed, "goal_dispatched", 1.2, leg_id="G2"),
                 _event(
@@ -186,7 +186,7 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                             "candidate_array_received_count": 10,
                             "candidate_array_accepted_count": 8,
                             "candidate_array_last_sequence": 20,
-                            "publish_count": 0,
+                            "candidate_array_publish_count": 0,
                         },
                     ),
                     _event(
@@ -239,10 +239,10 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                                     "manual_rescue"
                                 ),
                                 "candidate_array_last_event_reason": "manual_rescue",
-                                "publish_count": "1",
+                                "candidate_array_publish_count": "1",
                             }
                             if arm == "R1"
-                            else {"publish_count": "0"}
+                            else {"candidate_array_publish_count": "0"}
                         ),
                     ),
                 ]
@@ -393,13 +393,13 @@ def test_phase_e_pair_reports_fault_pause_recovery_and_supervisor_diagnostics():
             "candidate_array_received_count": 10,
             "candidate_array_accepted_count": 8,
             "candidate_array_last_sequence": 20,
-            "publish_count": 0,
+            "candidate_array_publish_count": 0,
         },
         "validation_stamp_ns": 3_000_000_000,
         "candidate_validation": "recovery_stationary_revalidated",
         "candidate_event_reason": "manual_rescue",
         "candidate_decision_reason": "manual_rescue",
-        "publish_count": 1,
+        "candidate_array_publish_count": 1,
     }
     assert result["baseline"]["recovery_requests"] == {
         "fault_service": 1,
@@ -414,6 +414,80 @@ def test_phase_e_pair_reports_fault_pause_recovery_and_supervisor_diagnostics():
     assert result["paired_metrics"]["localization.time_to_recover_s"][
         "experimental_minus_baseline"
     ] == pytest.approx(-1.0)
+
+
+def test_phase_e_pair_records_safe_recovery_failures_without_requiring_g3():
+    def failed_episode(arm, *, result):
+        runtime, truth = _episode(
+            "E", arm, ready_s=1.0, recover_s=5.0 if arm == "R0" else 4.0
+        )
+        failed = []
+        for row in runtime:
+            if row["event"] in {"goal_dispatched", "goal_result"} and row.get(
+                "leg_id"
+            ) in {"G3", "G4", "G5", "G1"}:
+                continue
+            if row["event"] == "localization_recovered":
+                if arm == "R1":
+                    continue
+                failed.append(
+                    dict(
+                        row,
+                        success=False,
+                        state="LOST",
+                        reason="manual_seed_rejected",
+                        result=result,
+                    )
+                )
+            elif row["event"] == "supervisor_diagnostic" and row.get(
+                "state"
+            ) == "RECOVERED":
+                failed.append(
+                    dict(
+                        row,
+                        state="LOST",
+                        reason="manual_seed_rejected",
+                        result=result,
+                    )
+                )
+            elif row["event"] == "episode_end":
+                failed.append(
+                    dict(
+                        row,
+                        state="STOP",
+                        stop_reason="localization_recovery_timeout",
+                        completed_leg_ids=["G2"],
+                    )
+                )
+            else:
+                failed.append(row)
+        return failed, truth
+
+    r0, r0_gt = failed_episode("R0", result="amcl_recovery_timeout")
+    r1, r1_gt = failed_episode("R1", result="seed_confirmation_failed")
+    result = evaluate_phase_de_pair(r0, r1, r0_gt, r1_gt)
+
+    assert result["formal_gate"] is False
+    assert result["baseline"]["route"]["success"] is False
+    assert result["experimental"]["route"]["success"] is False
+    assert result["baseline"]["recovery"]["outcome"] == "RECOVERY_FAILED"
+    assert result["experimental"]["recovery"] == {
+        "outcome": "RECOVERY_FAILED",
+        "event_observed": False,
+        "success": False,
+        "state": "LOST",
+        "reason": "manual_seed_rejected",
+        "result": "seed_confirmation_failed",
+        "stop_reason": "localization_recovery_timeout",
+        "continuation_required": False,
+        "missing_continuation_leg_ids": ["G3", "G4", "G5", "G1"],
+    }
+    assert result["experimental"]["localization"]["time_to_recover_s"] is None
+    assert result["paired_metrics"]["localization.time_to_recover_s"] == {
+        "baseline": None,
+        "experimental": None,
+        "experimental_minus_baseline": None,
+    }
 
 
 def test_phase_e_cached_pre_request_candidate_cannot_replace_mode2_receipt():
@@ -432,7 +506,7 @@ def test_phase_e_cached_pre_request_candidate_cannot_replace_mode2_receipt():
                     "no_authorized_rescue_request"
                 ),
                 candidate_array_last_event_reason="no_authorized_rescue_request",
-                publish_count="0",
+                candidate_array_publish_count="0",
             )
             bad.append(dict(row, values=values))
         else:

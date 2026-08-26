@@ -811,15 +811,17 @@ def _phase_e_mode2_recovery(
         "candidate_array_received_count",
         "candidate_array_accepted_count",
         "candidate_array_last_sequence",
-        "publish_count",
+        "candidate_array_publish_count",
     }
     if set(floors) != expected_floors or any(
         isinstance(value, bool) or not isinstance(value, int)
         for value in floors.values()
     ):
         raise EvaluationError("R1 manual request diagnostic floors changed")
-    if floors["publish_count"] != 0:
-        raise EvaluationError("R1 pre-request publish_count must be zero")
+    if floors["candidate_array_publish_count"] != 0:
+        raise EvaluationError(
+            "R1 pre-request candidate_array_publish_count must be zero"
+        )
 
     request_event_stamp = _event_stamp(request, "manual_rescue_requested")
     for row in diagnostics:
@@ -831,8 +833,8 @@ def _phase_e_mode2_recovery(
         if (
             values.get("candidate_validation")
             != "recovery_stationary_revalidated"
-            or values.get("candidate_array_last_structural_rejection", "")
-            != ""
+            or "candidate_array_last_structural_rejection" not in values
+            or values["candidate_array_last_structural_rejection"] != ""
             or values.get(
                 "candidate_array_last_state_machine_decision_reason"
             )
@@ -856,8 +858,8 @@ def _phase_e_mode2_recovery(
                 values, "candidate_array_last_candidate_count"
             )
             <= 0
-            or _diagnostic_integer(values, "publish_count")
-            != floors["publish_count"] + 1
+            or _diagnostic_integer(values, "candidate_array_publish_count")
+            != floors["candidate_array_publish_count"] + 1
         ):
             continue
         return {
@@ -872,7 +874,9 @@ def _phase_e_mode2_recovery(
             "candidate_decision_reason": values[
                 "candidate_array_last_state_machine_decision_reason"
             ],
-            "publish_count": _diagnostic_integer(values, "publish_count"),
+            "candidate_array_publish_count": _diagnostic_integer(
+                values, "candidate_array_publish_count"
+            ),
         }
     raise EvaluationError("R1 post-request mode2 recovery diagnostic missing")
 
@@ -940,6 +944,8 @@ def evaluate_phase_de_episode(
     fault_outcome = None
     fault_discriminability = None
     mode2_recovery = None
+    phase_e_recovery = None
+    r1_request = None
     if identity["phase"] == "E":
         if len(fault_rows) != 1:
             raise EvaluationError("Phase E requires exactly one fault event")
@@ -1009,15 +1015,16 @@ def evaluate_phase_de_episode(
             )
             if (
                 pre_fault.get("reset_attempts") != 0
-                or _diagnostic_integer(pre_fault_values, "publish_count") != 0
+                or _diagnostic_integer(
+                    pre_fault_values, "candidate_array_publish_count"
+                ) != 0
             ):
                 raise EvaluationError(
-                    "R1 pre-fault attempts and publish_count must be zero"
+                    "R1 pre-fault attempts and candidate_array_publish_count "
+                    "must be zero"
                 )
             request = manual_requests[0]
-            mode2_recovery = _phase_e_mode2_recovery(
-                request, by_event["supervisor_diagnostic"]
-            )
+            r1_request = request
             supervisor_initialpose = next(
                 row
                 for row in by_event["initialpose"]
@@ -1046,15 +1053,92 @@ def evaluate_phase_de_episode(
         if fault_outcome == "INVALID_NOT_DISCRIMINATIVE":
             route_success = False
         if fault_outcome == "FAULT_DISCRIMINATIVE":
-            if not g3_dispatch or min(
-                _event_stamp(row, "goal_dispatched") for row in g3_dispatch
-            ) <= fault_stamp:
-                raise EvaluationError("Phase E requires fault before G3")
             if any(
-                _event_stamp(row, "manual_rescue_requested") <= fault_stamp
+                _event_stamp(row, "manual_rescue_requested") < fault_stamp
                 for row in manual_requests
             ):
                 raise EvaluationError("manual rescue precedes fault evidence")
+            recovery_rows = by_event["localization_recovered"]
+            if len(recovery_rows) > 1:
+                raise EvaluationError(
+                    "Phase E permits at most one localization_recovered event"
+                )
+            recovery_row = recovery_rows[0] if recovery_rows else None
+            recovery_success = (
+                recovery_row is not None and recovery_row.get("success") is True
+            )
+            if recovery_row is not None and not isinstance(
+                recovery_row.get("success"), bool
+            ):
+                raise EvaluationError(
+                    "Phase E localization_recovered success must be boolean"
+                )
+            continuation = ("G3", "G4", "G5", "G1")
+            missing_continuation = [
+                leg_id for leg_id in continuation if leg_id not in dispatched_legs
+            ]
+            if recovery_success:
+                if identity["arm"] == "R1":
+                    assert r1_request is not None
+                    mode2_recovery = _phase_e_mode2_recovery(
+                        r1_request, by_event["supervisor_diagnostic"]
+                    )
+                if missing_continuation:
+                    raise EvaluationError(
+                        "Phase E recovered episode requires G3-G1 continuation"
+                    )
+                if min(
+                    _event_stamp(row, "goal_dispatched") for row in g3_dispatch
+                ) <= fault_stamp:
+                    raise EvaluationError("Phase E requires fault before G3")
+            else:
+                if any(leg_id in dispatched_legs for leg_id in continuation):
+                    raise EvaluationError(
+                        "Phase E recovery failure must stop before G3"
+                    )
+                if (
+                    episode_end.get("state") != "STOP"
+                    or episode_end.get("terminal_zero_confirmed") is not True
+                    or not episode_end.get("stop_reason")
+                ):
+                    raise EvaluationError(
+                        "Phase E recovery failure requires safe terminal STOP"
+                    )
+                route_success = False
+            recovery_source = recovery_row
+            if recovery_source is None and r1_request is not None:
+                post_request_diagnostics = [
+                    row
+                    for row in by_event["supervisor_diagnostic"]
+                    if _event_stamp(row, "supervisor_diagnostic")
+                    >= _event_stamp(r1_request, "manual_rescue_requested")
+                ]
+                if post_request_diagnostics:
+                    recovery_source = max(
+                        post_request_diagnostics,
+                        key=lambda row: _event_stamp(
+                            row, "supervisor_diagnostic"
+                        ),
+                    )
+            phase_e_recovery = {
+                "outcome": (
+                    "RECOVERED" if recovery_success else "RECOVERY_FAILED"
+                ),
+                "event_observed": recovery_row is not None,
+                "success": recovery_success,
+                "state": (
+                    None if recovery_source is None else recovery_source.get("state")
+                ),
+                "reason": (
+                    None if recovery_source is None else recovery_source.get("reason")
+                ),
+                "result": (
+                    None if recovery_source is None else recovery_source.get("result")
+                ),
+                "stop_reason": episode_end.get("stop_reason"),
+                "continuation_required": recovery_success,
+                "missing_continuation_leg_ids": missing_continuation,
+            }
 
     explicit_counts = [
         int(row["count"])
@@ -1077,7 +1161,14 @@ def evaluate_phase_de_episode(
     stationary_confirmed = any(bool(row.get("stationary", False)) for row in pause_rows)
 
     ready_s = _first_stamp(events, "localization_ready")
-    recovered_s = _first_stamp(events, "localization_recovered")
+    recovered_s = min(
+        (
+            _event_stamp(row, "localization_recovered")
+            for row in by_event["localization_recovered"]
+            if row.get("success") is True
+        ),
+        default=None,
+    )
     fault_s = _first_stamp(events, "fault_injected")
     prior_s = _first_stamp(events, "prior_write")
     initialpose_s = _first_stamp(events, "initialpose")
@@ -1105,6 +1196,7 @@ def evaluate_phase_de_episode(
         "fault_outcome": fault_outcome,
         "fault_discriminability": fault_discriminability,
         "mode2_recovery": mode2_recovery,
+        "recovery": phase_e_recovery,
         "evaluation_kind": "ENGINEERING_RAW_METRICS_ONLY",
         "formal_gate": False,
         "ground_truth_policy": "separate_passive_offline_stream",
