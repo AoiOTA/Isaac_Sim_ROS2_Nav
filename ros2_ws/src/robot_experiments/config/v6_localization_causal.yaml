@@ -26,10 +26,26 @@ phase_d_run4_candidate:
     S1: {source: supervisor, seed_kind: cognitive_prior,
          expected_total_count: 1, expected_supervisor_count: 1}
 
+phase_e_run4_candidate:
+  integration_manifest: ros2_ws/src/bio_nav_ros_bridge/config/kujiale_0026_run4_read_only_shadow_candidate.json
+  status: READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY
+  recovery_qualification: NOT_ACTIVE_RECOVERY_QUALIFIED
+  allowed_supervisor_modes: [shadow, startup]
+  model_id: kujiale_0026_visual_heads_run4_v310
+  checkpoint: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_kujiale_run4_20260826T112503Z/checkpoints/kujiale_0026_visual_heads_run4_v310.pt
+  checkpoint_sha256: 80f0b104c68899f1865a4369f091a16631ed8f178b895c84b8d072cbe10a7821
+  posterior_pregate_config: /mnt/nas_home/Bio_Nav_Data/experiments/runs/v6r5_module1_v2b_validation_20260826T133516Z/derived_v310_read_only/posterior_pregate_v2/posterior_region_pregate_config_v1.json
+  posterior_pregate_config_sha256: 72d5ba175b97ae12d55881d0f7ad73e025b5971d23bae9857c6da76fc532d1da
+  manual_recovery_experiment:
+    status: ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY
+    allowed_supervisor_modes: [active]
+    requires_explicit_request: true
+    auto_rescue_enabled: false
+
 arms:
   S0: {phase: D, supervisor_mode: shadow, recovery: none}
   S1: {phase: D, supervisor_mode: startup, recovery: none}
-  R0: {phase: E, supervisor_mode: shadow, recovery: global_localization}
+  R0: {phase: E, supervisor_mode: shadow, recovery: amcl_no_cognitive_write}
   R1: {phase: E, supervisor_mode: active, recovery: supervisor_manual_rescue}
 
 seeds: {S0: 8810, S1: 8810, R0: 8820, R1: 8820}
@@ -45,12 +61,9 @@ route:
 
 fault:
   id: F2
-  leg_id: G3
-  min_arc_length_m: 1.0
+  kind: amcl_global_localization_particle_spread
+  service: /reinitialize_global_localization
   stationary_hold_s: 1.0
-  wrong_region_seed:
-    {x: -2.20, y: -2.95, yaw_deg: -42.0,
-     xy_variance_m2: 0.04, yaw_variance_rad2: 0.0304617420}
 
 recovery:
   timeout_s: 45.0

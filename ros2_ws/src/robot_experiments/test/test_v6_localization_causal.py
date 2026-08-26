@@ -14,6 +14,7 @@ from robot_experiments.v6_localization_causal import (
     CONFIG_SCHEMA,
     EVENT_SCHEMA,
     PHASE_D_STARTUP_INITIALPOSE,
+    PHASE_E_MANUAL_RECOVERY_EXPERIMENT,
     RUN4_CANDIDATE_STATUS,
     STARTUP_AMCL_POSES_REQUIRED,
     LocalizationCausalNode,
@@ -41,13 +42,8 @@ def test_config_freezes_only_four_single_round_arms_and_held_constants():
     assert tuple(config.seeds) == ARMS
     assert config.route_ids == ("G2", "G3", "G4", "G5", "G1")
     assert config.fault_id == "F2"
-    assert config.fault_leg_id == "G3"
-    assert config.fault_min_arc_length_m == pytest.approx(1.0)
-    assert (
-        config.wrong_region_seed.x,
-        config.wrong_region_seed.y,
-        config.wrong_region_seed.yaw_deg,
-    ) == pytest.approx((-2.20, -2.95, -42.0))
+    assert config.fault_kind == "amcl_global_localization_particle_spread"
+    assert config.fault_service == "/reinitialize_global_localization"
     assert config.seeds["S0"] == config.seeds["S1"]
     assert config.seeds["R0"] == config.seeds["R1"]
     assert config.phase_d_run4_candidate["status"] == RUN4_CANDIDATE_STATUS
@@ -63,6 +59,9 @@ def test_config_freezes_only_four_single_round_arms_and_held_constants():
     assert config.phase_d_run4_candidate["startup_initialpose"] == (
         PHASE_D_STARTUP_INITIALPOSE
     )
+    assert config.phase_e_run4_candidate["manual_recovery_experiment"] == (
+        PHASE_E_MANUAL_RECOVERY_EXPERIMENT
+    )
 
 
 def test_plan_has_no_old_s3_r2_or_60_run_matrix():
@@ -74,12 +73,12 @@ def test_plan_has_no_old_s3_r2_or_60_run_matrix():
     assert len(plan["runs"]) == 4
     assert not {"S3", "R2"} & {row["arm"] for row in plan["runs"]}
     assert "core_run_count" not in plan
-    assert plan["phase_e_run4_candidate_enabled"] is False
+    assert plan["phase_e_run4_candidate_enabled"] is True
     by_arm = {row["arm"]: row for row in plan["runs"]}
     assert by_arm["S0"]["run4_candidate_enabled"] is True
     assert by_arm["S1"]["run4_candidate_enabled"] is True
-    assert by_arm["R0"]["run4_candidate_enabled"] is False
-    assert by_arm["R1"]["run4_candidate_enabled"] is False
+    assert by_arm["R0"]["run4_candidate_enabled"] is True
+    assert by_arm["R1"]["run4_candidate_enabled"] is True
     assert by_arm["S0"]["expected_startup_initialpose"] == {
         "source": "runner",
         "seed_kind": "broad_initialpose",
@@ -92,8 +91,13 @@ def test_plan_has_no_old_s3_r2_or_60_run_matrix():
         "expected_total_count": 1,
         "expected_supervisor_count": 1,
     }
-    assert by_arm["R0"]["expected_startup_initialpose"] is None
-    assert by_arm["R1"]["expected_startup_initialpose"] is None
+    for arm in ("R0", "R1"):
+        assert by_arm[arm]["expected_startup_initialpose"] == {
+            "source": "runner",
+            "seed_kind": "broad_initialpose",
+            "expected_total_count": 1,
+            "expected_supervisor_count": 0,
+        }
 
 
 def test_config_rejects_non_startup_run4_candidate_status(tmp_path):
@@ -116,6 +120,7 @@ def _write_candidate_manifest(
                 "recovery_qualification": "NOT_ACTIVE_RECOVERY_QUALIFIED",
                 "default_enabled": False,
                 "allowed_supervisor_modes": ["shadow", "startup"],
+                "manual_recovery_experiment": PHASE_E_MANUAL_RECOVERY_EXPERIMENT,
             }
         ),
         encoding="utf-8",
@@ -289,6 +294,7 @@ def test_phase_d_stationary_readiness_requests_only_missing_amcl_poses():
     adapter._types = {"EmptyService": EmptyService}
     adapter.guard = SimpleNamespace(state="READY", stop=lambda _reason: None)
     adapter._amcl_count = 8  # the observed post-seed pose above baseline 7
+    adapter._nomotion_request_count = 0
     calls = []
 
     class Client:
@@ -319,6 +325,7 @@ def test_phase_d_stationary_readiness_fails_closed_when_nomotion_unavailable():
     adapter._types = {"EmptyService": EmptyService}
     adapter.guard = SimpleNamespace(state="READY", stop=stops.append)
     adapter._amcl_count = 1
+    adapter._nomotion_request_count = 0
     adapter.nomotion_update_client = SimpleNamespace(
         wait_for_service=lambda **_kwargs: False
     )
@@ -412,15 +419,25 @@ def test_localization_event_fails_closed_if_sim_time_authority_is_lost(tmp_path)
         adapter._event("estimated_pose", x=0.45, y=-5.35)
 
 
-def test_r0_r1_argv_keep_old_path_without_run4_candidate(tmp_path):
-    r0 = _run_wrapper(tmp_path, "R0", "module1")
-    r1 = _run_wrapper(tmp_path, "R1", "bridge")
-    assert r0.returncode == 0
-    assert r1.returncode == 0
-    assert "module1-shadow" in r0.stdout
-    assert "localization_supervisor_mode:=active" in r1.stdout
-    assert "candidate-manifest" not in r0.stdout
-    assert "localization_candidate_manifest" not in r1.stdout
+def test_r0_r1_share_run4_server_manifest_with_shadow_and_manual_active(tmp_path):
+    outputs = {
+        (arm, component): _run_wrapper(tmp_path, arm, component)
+        for arm in ("R0", "R1")
+        for component in ("module1", "bridge")
+    }
+    assert all(result.returncode == 0 for result in outputs.values())
+    manifest = tmp_path / (
+        "integration/ros2_ws/src/bio_nav_ros_bridge/config/"
+        "kujiale_0026_run4_read_only_shadow_candidate.json"
+    )
+    for arm in ("R0", "R1"):
+        assert f"--candidate-manifest {manifest}" in outputs[(arm, "module1")].stdout
+        assert (
+            f"localization_candidate_manifest:={manifest}"
+            in outputs[(arm, "bridge")].stdout
+        )
+    assert "localization_supervisor_mode:=shadow" in outputs[("R0", "bridge")].stdout
+    assert "localization_supervisor_mode:=active" in outputs[("R1", "bridge")].stdout
 
 
 def test_wrapper_fails_closed_when_run4_manifest_is_not_startup_allowed(tmp_path):
@@ -441,20 +458,20 @@ def test_phase_d_actions_are_one_ordinary_full_route():
 def test_phase_e_actions_put_only_f2_after_g2_then_continue_from_g3():
     config = load_config(CONFIG)
     for arm, method in (
-        ("R0", "global_localization"),
+        ("R0", "amcl_no_cognitive_write"),
         ("R1", "supervisor_manual_rescue"),
     ):
         actions = route_actions(config, arm)
         assert actions[0] == {"action": "goal", "leg_id": "G2"}
         assert actions[1] == {
-            "action": "fault_leg",
-            "leg_id": "G3",
+            "action": "fault",
             "fault_id": "F2",
-            "min_arc_length_m": 1.0,
+            "kind": "amcl_global_localization_particle_spread",
+            "service": "/reinitialize_global_localization",
         }
         assert actions[2] == {"action": "recover", "method": method}
         assert [row["leg_id"] for row in actions[3:]] == ["G3", "G4", "G5", "G1"]
-        assert sum(row["action"] == "fault_leg" for row in actions) == 1
+        assert sum(row["action"] == "fault" for row in actions) == 1
 
 
 class _FakeAdapter:
@@ -510,44 +527,147 @@ def test_planning_prior_uses_dominant_mode_fields_directly():
     ]
 
 
-def test_fault_preview_cancel_binds_zero_settle_to_completed_cancel_future():
-    class Response:
-        return_code = 0
-
-    class Future:
-        def done(self):
-            return True
-
-        def result(self):
-            return Response()
-
-    future = Future()
-
-    class Client:
-        def wait_for_service(self, timeout_sec):
-            return timeout_sec == 2.0
-
-        def call_async(self, request):
-            return future
-
-    class CancelGoal:
+def test_fault_calls_jazzy_service_once_then_requires_post_response_amcl_not_cloud():
+    class EmptyService:
         class Request:
             pass
 
+    calls = []
+    events = []
+    stops = []
     adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
     adapter.config = load_config(CONFIG)
-    adapter._fault_arc_length_m = 1.0
-    adapter.navigate_cancel_client = Client()
-    adapter._types = {"CancelGoal": CancelGoal}
-    adapter._event = lambda *_args, **_kwargs: None
-    adapter._start_terminal_settle = lambda **_kwargs: None
-    adapter._settle_terminal_zero = lambda: True
-    adapter._terminal_cancel_requested = False
-    adapter._terminal_cancel_future = None
-    adapter._fault_cancel_future = None
-    assert adapter._cancel_fault_preview("F2") == (True, True)
-    assert adapter._terminal_cancel_requested is True
-    assert adapter._terminal_cancel_future is future
+    adapter._types = {"EmptyService": EmptyService}
+    adapter.guard = SimpleNamespace(
+        state="LEG_SUCCEEDED",
+        goal_publications=1,
+        completed_leg_ids=["G2"],
+        stop=stops.append,
+    )
+    adapter._supervisor_initialpose_count = 0
+    adapter._last_supervisor = {
+        "state": "NORMAL",
+        "reason": "amcl_healthy",
+        "reset_attempts": "0",
+    }
+    adapter._last_cmd_zero = True
+    adapter._cmd_vel_sim_zero_since = 0.0
+    adapter._fault_service_request_count = 0
+    adapter._amcl_count = 3
+    adapter._particle_cloud_count = 4
+    adapter._event = lambda event, **payload: events.append((event, payload))
+    adapter.node = SimpleNamespace(
+        get_clock=lambda: SimpleNamespace(
+            now=lambda: SimpleNamespace(nanoseconds=5_000_000_000)
+        )
+    )
+    future = SimpleNamespace(done=lambda: True, result=lambda: object())
+
+    class Client:
+        def wait_for_service(self, timeout_sec):
+            return timeout_sec == 10.0
+
+        def call_async(self, _request):
+            calls.append("call")
+            return future
+
+    adapter.reinitialize_global_localization_client = Client()
+    spins = 0
+
+    def spin_until(predicate, _timeout):
+        nonlocal spins
+        spins += 1
+        if spins == 3:
+            adapter._amcl_count += 1
+            adapter._first_post_fault_amcl_covariance = (1.0, 1.0, 1.0)
+        elif spins == 4:
+            adapter._last_supervisor.update(
+                state="LOST", reason="amcl_covariance_lost"
+            )
+        return bool(predicate())
+
+    adapter._spin_until = spin_until
+    adapter._fault()
+
+    assert calls == ["call"]
+    assert stops == []
+    fault = next(payload for event, payload in events if event == "fault_injected")
+    assert fault["kind"] == "amcl_global_localization_particle_spread"
+    assert fault["service"] == "/reinitialize_global_localization"
+    assert fault["first_post_fault_particle_cloud_observed"] is False
+    assert fault["outcome"] == "FAULT_DISCRIMINATIVE"
+
+
+def test_r1_fresh_candidate_gate_uses_exact_post_fault_supervisor_diagnostics():
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter._fault_stamp_ns = 5_000
+    adapter._fault_candidate_baseline = {
+        "candidate_array_last_validation_stamp_ns": 4_000,
+        "candidate_array_received_count": 10,
+        "candidate_array_accepted_count": 8,
+        "candidate_array_last_sequence": 20,
+    }
+    adapter._last_supervisor = {
+        "state": "LOST",
+        "reason": "amcl_covariance_lost",
+        "candidate_validation": "fresh",
+        "candidate_identity": "run4:21",
+        "candidate_array_last_validation_stamp_ns": "6000",
+        "candidate_array_received_count": "11",
+        "candidate_array_accepted_count": "9",
+        "candidate_array_last_sequence": "21",
+        "candidate_array_last_candidate_count": "2",
+        "candidate_array_last_structural_rejection": "",
+        "candidate_array_last_state_machine_decision_reason": (
+            "no_authorized_rescue_request"
+        ),
+        "candidate_array_last_event_reason": "no_authorized_rescue_request",
+    }
+
+    assert adapter._fresh_post_fault_validated_candidate()
+    adapter._last_supervisor["candidate_validation"] = "cached"
+    assert not adapter._fresh_post_fault_validated_candidate()
+
+
+def test_r1_recovery_publishes_one_manual_topic_request_and_gets_one_supervisor_seed():
+    class Empty:
+        pass
+
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.config = load_config(CONFIG)
+    adapter._types = {"Empty": Empty}
+    adapter.guard = SimpleNamespace(state="LEG_SUCCEEDED", stop=pytest.fail)
+    adapter._manual_rescue_count = 0
+    adapter._supervisor_initialpose_count = 0
+    adapter._amcl_count = 3
+    adapter._last_amcl_covariance = (0.1, 0.1, 0.1)
+    adapter._last_supervisor = {
+        "state": "RECOVERED",
+        "reason": "manual_seed_confirmed",
+        "recovery_result": "seed_confirmed",
+    }
+    adapter._fault_service_request_count = 1
+    adapter._nomotion_request_count = 0
+    adapter._fault_observation_active = True
+    adapter._fresh_post_fault_validated_candidate = lambda: True
+    events = []
+    adapter._event = lambda event, **payload: events.append((event, payload))
+
+    def publish(_message):
+        adapter._supervisor_initialpose_count += 1
+        adapter._amcl_count += STARTUP_AMCL_POSES_REQUIRED
+
+    adapter.manual_rescue_publisher = SimpleNamespace(publish=publish)
+    adapter._spin_until = lambda predicate, _timeout: bool(predicate())
+
+    adapter._recover("supervisor_manual_rescue")
+
+    assert adapter._manual_rescue_count == 1
+    assert adapter._supervisor_initialpose_count == 1
+    assert [event for event, _ in events] == [
+        "manual_rescue_requested",
+        "localization_recovered",
+    ]
 
 
 def test_event_schema_is_small_gt_free_and_has_evaluator_fields():
@@ -557,6 +677,8 @@ def test_event_schema_is_small_gt_free_and_has_evaluator_fields():
         "episode_start",
         "initialpose",
         "fault_injected",
+        "particle_cloud",
+        "manual_rescue_requested",
         "pause_requested",
         "pause_confirmed",
         "prior_write",
@@ -577,18 +699,18 @@ def test_event_schema_is_small_gt_free_and_has_evaluator_fields():
     assert not _contains_ground_truth({"passive_evaluator_only": True})
 
 
-def test_invalid_fault_pose_or_arc_is_rejected(tmp_path):
+def test_invalid_fault_service_or_kind_is_rejected(tmp_path):
     raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
-    raw["fault"]["min_arc_length_m"] = 0.99
+    raw["fault"]["service"] = "/global_localization"
     path = tmp_path / "bad.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    with pytest.raises(LocalizationConfigError, match=">= 1.0"):
+    with pytest.raises(LocalizationConfigError, match="reinitialize_global_localization"):
         load_config(path)
 
-    raw["fault"]["min_arc_length_m"] = 1.0
-    raw["fault"]["wrong_region_seed"]["x"] = -2.19
+    raw["fault"]["service"] = "/reinitialize_global_localization"
+    raw["fault"]["kind"] = "wrong_region_initialpose"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
-    with pytest.raises(LocalizationConfigError, match="G5"):
+    with pytest.raises(LocalizationConfigError, match="particle spread"):
         load_config(path)
 
 

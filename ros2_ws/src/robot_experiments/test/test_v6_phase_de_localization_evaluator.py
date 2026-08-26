@@ -58,47 +58,84 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
         events.append(
             _event(phase, arm, seed, "initialpose", 0.6, source=source, count=1)
         )
+        events.extend(
+            [
+                _event(phase, arm, seed, "localization_ready", ready_s, ready=True),
+                _event(
+                    phase,
+                    arm,
+                    seed,
+                    "supervisor_diagnostic",
+                    ready_s,
+                    mode="startup" if arm == "S1" else "shadow",
+                    state="READY",
+                    reason="candidate_accepted" if arm == "S1" else "amcl_ready",
+                    result="applied" if arm == "S1" else "observed",
+                    reset_attempts=0,
+                ),
+                _event(phase, arm, seed, "goal_dispatched", 4.0, leg_id="G1_G2"),
+                _event(
+                    phase, arm, seed, "goal_result", 7.0,
+                    leg_id="G1_G2", state="SUCCEEDED"
+                ),
+            ]
+        )
     else:
         events.extend(
             [
+                _event(
+                    phase, arm, seed, "initialpose", 0.4,
+                    source="runner", count=1
+                ),
+                _event(phase, arm, seed, "localization_ready", ready_s, ready=True),
+                _event(
+                    phase, arm, seed, "supervisor_diagnostic", 1.1,
+                    mode="active" if arm == "R1" else "shadow",
+                    state="NORMAL", reason="amcl_healthy", result="observed",
+                    reset_attempts=0,
+                ),
+                _event(phase, arm, seed, "goal_dispatched", 1.2, leg_id="G2"),
+                _event(
+                    phase, arm, seed, "goal_result", 1.8,
+                    leg_id="G2", state="SUCCEEDED"
+                ),
+                _event(phase, arm, seed, "pause_requested", 1.9),
+                _event(
+                    phase, arm, seed, "cmd_vel_sim", 2.0, zero=True,
+                    linear_x=0.0, linear_y=0.0, angular_z=0.0,
+                ),
+                _event(
+                    phase, arm, seed, "pause_confirmed", 2.1,
+                    cmd_vel_sim_zero=True, stationary=True,
+                ),
+                _event(
+                    phase, arm, seed, "particle_cloud", 2.15,
+                    count=1, particle_count=2000, post_fault=True,
+                ),
                 _event(
                     phase,
                     arm,
                     seed,
                     "fault_injected",
-                    2.0,
-                    fault_id="F2",
-                    arc_length_m=1.0,
-                    x=-2.2,
-                    y=-2.95,
-                    yaw_deg=-42.0,
-                ),
-                _event(phase, arm, seed, "pause_requested", 2.1),
-                _event(
-                    phase,
-                    arm,
-                    seed,
-                    "cmd_vel_sim",
                     2.2,
-                    zero=True,
-                    linear_x=0.0,
-                    linear_y=0.0,
-                    angular_z=0.0,
-                ),
-                _event(
-                    phase,
-                    arm,
-                    seed,
-                    "pause_confirmed",
-                    2.3,
-                    cmd_vel_sim_zero=True,
-                    stationary=True,
+                    fault_id="F2",
+                    kind="amcl_global_localization_particle_spread",
+                    service="/reinitialize_global_localization",
+                    service_request_count=1,
+                    service_response_observed=True,
+                    first_post_fault_amcl_pose_observed=True,
+                    outcome="FAULT_DISCRIMINATIVE",
                 ),
             ]
         )
         if arm == "R1":
             events.extend(
                 [
+                    _event(
+                        phase, arm, seed, "manual_rescue_requested", 2.7,
+                        count=1,
+                        purpose="ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY",
+                    ),
                     _event(
                         phase,
                         arm,
@@ -115,42 +152,40 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
                         "initialpose",
                         2.9,
                         source="supervisor",
-                        count=1,
+                        count=2,
                     ),
                 ]
             )
         if recover_s is not None:
-            events.append(
-                _event(
-                    phase,
-                    arm,
-                    seed,
-                    "localization_recovered",
-                    recover_s,
-                    success=True,
-                )
+            events.extend(
+                [
+                    _event(
+                        phase, arm, seed, "localization_recovered", recover_s,
+                        success=True,
+                    ),
+                    _event(
+                        phase, arm, seed, "supervisor_diagnostic", recover_s,
+                        mode="active" if arm == "R1" else "shadow",
+                        state="RECOVERED", reason="candidate_accepted",
+                        result="applied" if arm == "R1" else "observed",
+                        reset_attempts=1 if arm == "R1" else 0,
+                    ),
+                ]
             )
-    events.extend(
-        [
-            _event(phase, arm, seed, "localization_ready", ready_s, ready=True),
-            _event(
-                phase,
-                arm,
-                seed,
-                "supervisor_diagnostic",
-                ready_s,
-                mode="startup" if arm == "S1" else "active" if arm == "R1" else "shadow",
-                state="READY" if phase == "D" else "RECOVERED",
-                reason="candidate_accepted" if arm in {"S1", "R1"} else "amcl_ready",
-                result="applied" if arm in {"S1", "R1"} else "observed",
-                reset_attempts=0,
-            ),
-            _event(phase, arm, seed, "goal_dispatched", 4.0, leg_id="G1_G2"),
-            _event(
-                phase, arm, seed, "goal_result", 7.0, leg_id="G1_G2", state="SUCCEEDED"
-            ),
-        ]
-    )
+            for index, leg_id in enumerate(("G3", "G4", "G5", "G1")):
+                dispatch_s = recover_s + 0.1 + 0.5 * index
+                events.extend(
+                    [
+                        _event(
+                            phase, arm, seed, "goal_dispatched", dispatch_s,
+                            leg_id=leg_id,
+                        ),
+                        _event(
+                            phase, arm, seed, "goal_result", dispatch_s + 0.4,
+                            leg_id=leg_id, state="SUCCEEDED",
+                        ),
+                    ]
+                )
     for stamp, x in ((1.0, 0.0), (2.0, 0.1), (3.0, 0.2), (4.0, 0.3)):
         events.extend(
             [
@@ -203,7 +238,16 @@ def _episode(phase, arm, seed=9001, *, ready_s=2.0, recover_s=None):
             stop_reason="route_complete",
             collision=False,
             terminal_zero_confirmed=True,
-            completed_leg_ids=["G1_G2"],
+            completed_leg_ids=(
+                ["G1_G2"] if phase == "D"
+                else ["G2", "G3", "G4", "G5", "G1"]
+            ),
+            fault_service_request_count=1 if phase == "E" else 0,
+            nomotion_request_count=1 if phase == "E" and arm == "R0" else 0,
+            manual_rescue_count=1 if phase == "E" and arm == "R1" else 0,
+            supervisor_initialpose_count=(
+                1 if phase == "E" and arm == "R1" else 0
+            ),
         )
     )
     truth = [_gt(phase, arm, seed, stamp, x=x) for stamp, x in ((1.0, 0.0), (2.0, 0.1), (3.0, 0.2), (4.0, 0.3))]
@@ -244,19 +288,94 @@ def test_phase_e_pair_reports_fault_pause_recovery_and_supervisor_diagnostics():
     result = evaluate_phase_de_pair(r0, r1, r0_gt, r1_gt)
 
     assert result["fault"] == "F2"
-    assert result["experimental"]["timestamps_s"]["seed"] == 2.0
-    assert result["baseline"]["localization"]["time_to_recover_s"] == 3.0
-    assert result["experimental"]["localization"]["time_to_recover_s"] == 2.0
+    assert result["baseline"]["fault_kind"] == (
+        "amcl_global_localization_particle_spread"
+    )
+    assert result["experimental"]["timestamps_s"]["seed"] == 2.2
+    assert result["baseline"]["localization"]["time_to_recover_s"] == pytest.approx(2.8)
+    assert result["experimental"]["localization"]["time_to_recover_s"] == pytest.approx(1.8)
     assert result["experimental"]["pause"] == {
         "latency_s": pytest.approx(0.2),
         "cmd_vel_sim_zero_confirmed": True,
         "stationary_confirmed": True,
     }
     assert result["experimental"]["timestamps_s"]["prior_write"] == 2.8
-    assert result["experimental"]["supervisor_diagnostics"][0]["result"] == "applied"
+    assert result["experimental"]["supervisor_diagnostics"][-1]["result"] == "applied"
+    assert result["baseline"]["recovery_requests"] == {
+        "fault_service": 1,
+        "nomotion": 1,
+        "manual": 0,
+    }
+    assert result["experimental"]["recovery_requests"] == {
+        "fault_service": 1,
+        "nomotion": 0,
+        "manual": 1,
+    }
     assert result["paired_metrics"]["localization.time_to_recover_s"][
         "experimental_minus_baseline"
-    ] == -1.0
+    ] == pytest.approx(-1.0)
+
+
+def test_phase_e_invalid_fault_stops_without_rescue_or_g3_and_stays_raw_only():
+    runtime, truth = _episode("E", "R1", ready_s=1.0, recover_s=4.0)
+    removed = {
+        "manual_rescue_requested",
+        "prior_write",
+        "localization_recovered",
+    }
+    runtime = [
+        row for row in runtime
+        if row["event"] not in removed
+        and not (row["event"] == "initialpose" and row.get("source") == "supervisor")
+        and not (row["event"] in {"goal_dispatched", "goal_result"}
+                 and row.get("leg_id") in {"G3", "G4", "G5", "G1"})
+    ]
+    runtime = [
+        dict(
+            row,
+            outcome="INVALID_FAULT_NOT_DISCRIMINATIVE",
+            supervisor_lost_observed=False,
+        )
+        if row["event"] == "fault_injected"
+        else dict(
+            row,
+            state="STOP",
+            stop_reason="INVALID_FAULT_NOT_DISCRIMINATIVE",
+            completed_leg_ids=["G2"],
+            manual_rescue_count=0,
+            supervisor_initialpose_count=0,
+        )
+        if row["event"] == "episode_end"
+        else row
+        for row in runtime
+    ]
+    result = evaluate_phase_de_episode(runtime, truth)
+
+    assert result["fault_outcome"] == "INVALID_FAULT_NOT_DISCRIMINATIVE"
+    assert result["recovery_requests"]["manual"] == 0
+    assert result["initialpose"]["by_source"] == {"runner": 1}
+    assert result["route"]["success"] is False
+    assert result["formal_gate"] is False
+    assert result["evaluation_kind"] == "ENGINEERING_RAW_METRICS_ONLY"
+
+
+def test_phase_e_evaluator_requires_completed_g2_before_fault_and_fault_before_g3():
+    runtime, truth = _episode("E", "R0", ready_s=1.0, recover_s=5.0)
+    bad = [
+        dict(row, stamp_s=1.7) if row["event"] == "fault_injected" else row
+        for row in runtime
+    ]
+    with pytest.raises(EvaluationError, match="completed G2 before fault"):
+        evaluate_phase_de_episode(bad, truth)
+
+    bad = [
+        dict(row, stamp_s=2.1)
+        if row["event"] == "goal_dispatched" and row.get("leg_id") == "G3"
+        else row
+        for row in runtime
+    ]
+    with pytest.raises(EvaluationError, match="fault before G3"):
+        evaluate_phase_de_episode(bad, truth)
 
 
 def test_runtime_ground_truth_firewall_and_pair_identity_are_fail_closed():

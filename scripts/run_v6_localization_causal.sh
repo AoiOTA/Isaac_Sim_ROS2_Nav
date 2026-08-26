@@ -17,11 +17,11 @@ Start one live component per terminal in this order:
 
 S0: broad frozen runner initialpose + supervisor shadow
 S1: no runner seed + supervisor startup
-R0: F2 + global_localization
-R1: F2 + supervisor active + one explicit manual rescue
+R0: completed G2 + AMCL particle spread + supervisor shadow
+R1: identical fault + supervisor active + one explicit manual rescue topic action
 
-S0/S1 use the same Run4 startup-only candidate. R0/R1 keep the Phase B
-Module1 path and never receive the Run4 candidate manifest.
+All arms use the same Run4 candidate server/manifest. R0 uses its top-level
+shadow permission; R1 uses the nested explicit-manual-purpose permission.
 
 Module2 navigation effect, CPG, low obstacles, and dynamic actors stay off.
 Ground Truth is recorded only for the independent passive evaluator.
@@ -122,7 +122,18 @@ if payload.get("recovery_qualification") != "NOT_ACTIVE_RECOVERY_QUALIFIED":
 if payload.get("default_enabled") is not False:
     raise SystemExit("Run4 candidate manifest must remain default-disabled")
 allowed = payload.get("allowed_supervisor_modes")
-if allowed != ["shadow", "startup"] or mode not in allowed:
+if allowed != ["shadow", "startup"]:
+    raise SystemExit("Run4 candidate top-level modes changed")
+manual = payload.get("manual_recovery_experiment")
+expected_manual = {
+    "status": "ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY",
+    "allowed_supervisor_modes": ["active"],
+    "requires_explicit_request": True,
+    "auto_rescue_enabled": False,
+}
+if manual != expected_manual:
+    raise SystemExit("Run4 candidate manual recovery experiment block changed")
+if mode not in allowed and mode not in manual["allowed_supervisor_modes"]:
     raise SystemExit(f"Run4 candidate does not allow supervisor mode {mode}")
 PY
 }
@@ -151,37 +162,27 @@ case "${component}" in
       activation_startup_policy:=wait_for_seed "$@"
     ;;
   module1)
-    if [[ "${arm}" =~ ^S[01]$ ]]; then
-      require_run4_candidate_manifest "${supervisor_mode}"
-      if [[ "${dry_run}" == false ]]; then
-        [[ -x "${server_entry}" ]] || {
-          echo "Run4 candidate server is missing: ${server_entry}" >&2
-          exit 2
-        }
-        mkdir -p -m 700 "$(dirname -- "${socket_path}")"
-      fi
-      run_command "${server_entry}" \
-        --module2-root "${module2_root}" \
-        --candidate-manifest "${candidate_manifest}" \
-        --socket "${socket_path}" \
-        --device "${BIO_NAV_PHASE_DE_DEVICE:-cuda}" "$@"
-    else
-      run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
-        module1-shadow "$@"
+    require_run4_candidate_manifest "${supervisor_mode}"
+    if [[ "${dry_run}" == false ]]; then
+      [[ -x "${server_entry}" ]] || {
+        echo "Run4 candidate server is missing: ${server_entry}" >&2
+        exit 2
+      }
+      mkdir -p -m 700 "$(dirname -- "${socket_path}")"
     fi
+    run_command "${server_entry}" \
+      --module2-root "${module2_root}" \
+      --candidate-manifest "${candidate_manifest}" \
+      --socket "${socket_path}" \
+      --device "${BIO_NAV_PHASE_DE_DEVICE:-cuda}" "$@"
     ;;
   bridge)
     # The Integration launch owns the mode contract.  estimated_shadow keeps
     # Module2/CPG navigation effects off while selecting only B5 behavior.
-    if [[ "${arm}" =~ ^S[01]$ ]]; then
-      require_run4_candidate_manifest "${supervisor_mode}"
-      run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
-        bridge localization_supervisor_mode:="${supervisor_mode}" \
-        "localization_candidate_manifest:=${candidate_manifest}" "$@"
-    else
-      run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
-        bridge localization_supervisor_mode:="${supervisor_mode}" "$@"
-    fi
+    require_run4_candidate_manifest "${supervisor_mode}"
+    run_command "${phase_b_entry}" --run-root "${run_root}" --domain "${domain_id}" \
+      bridge localization_supervisor_mode:="${supervisor_mode}" \
+      "localization_candidate_manifest:=${candidate_manifest}" "$@"
     ;;
   record)
     source "${script_dir}/lib/common.sh"
@@ -197,7 +198,7 @@ case "${component}" in
     )
     run_command ros2 bag record --use-sim-time --storage mcap \
       --storage-preset-profile zstd_fast --output "${bag_path}" \
-      "${topics[@]}" /initialpose /diagnostics \
+      "${topics[@]}" /initialpose /particle_cloud /diagnostics \
       /bio_nav/localization/request_manual_rescue "$@"
     ;;
   runner)

@@ -25,6 +25,8 @@ PHASE_DE_EVENTS = frozenset(
         "episode_start",
         "initialpose",
         "fault_injected",
+        "particle_cloud",
+        "manual_rescue_requested",
         "pause_requested",
         "pause_confirmed",
         "prior_write",
@@ -714,6 +716,8 @@ def evaluate_phase_de_episode(
         source = str(row.get("source", "unknown"))
         initialpose_sources[source] = initialpose_sources.get(source, 0) + 1
 
+    manual_requests = by_event["manual_rescue_requested"]
+
     supervisor_rows = [
         {
             "stamp_s": _event_stamp(row, "supervisor_diagnostic"),
@@ -736,6 +740,87 @@ def evaluate_phase_de_episode(
     route_success = bool(dispatched_legs) and set(dispatched_legs).issubset(
         set(successful_legs) | set(completed)
     )
+
+    fault_rows = by_event["fault_injected"]
+    fault_outcome = None
+    if identity["phase"] == "E":
+        if len(fault_rows) != 1:
+            raise EvaluationError("Phase E requires exactly one fault event")
+        fault_row = fault_rows[0]
+        if (
+            fault_row.get("fault_id") != "F2"
+            or fault_row.get("kind")
+            != "amcl_global_localization_particle_spread"
+            or fault_row.get("service")
+            != "/reinitialize_global_localization"
+            or fault_row.get("service_request_count") != 1
+            or fault_row.get("service_response_observed") is not True
+            or fault_row.get("first_post_fault_amcl_pose_observed") is not True
+        ):
+            raise EvaluationError("Phase E particle-spread fault contract changed")
+        fault_outcome = str(fault_row.get("outcome", ""))
+        if fault_outcome not in {
+            "FAULT_DISCRIMINATIVE",
+            "INVALID_FAULT_NOT_DISCRIMINATIVE",
+        }:
+            raise EvaluationError("Phase E fault outcome is invalid")
+        g2_results = [
+            row for row in goal_results
+            if row.get("leg_id") == "G2" and _goal_success(row)
+        ]
+        g3_dispatch = [
+            row for row in goal_dispatch if row.get("leg_id") == "G3"
+        ]
+        fault_stamp = _event_stamp(fault_row, "fault_injected")
+        if not g2_results or max(
+            _event_stamp(row, "goal_result") for row in g2_results
+        ) >= fault_stamp:
+            raise EvaluationError("Phase E requires completed G2 before fault")
+
+        runner_count = initialpose_sources.get("runner", 0)
+        supervisor_count = initialpose_sources.get("supervisor", 0)
+        unknown_count = sum(
+            count
+            for source, count in initialpose_sources.items()
+            if source not in {"runner", "supervisor"}
+        )
+        if runner_count != 1 or unknown_count:
+            raise EvaluationError("Phase E runner initialpose ownership changed")
+        if identity["arm"] == "R0":
+            if supervisor_count != 0 or manual_requests:
+                raise EvaluationError("R0 cognitive write ownership changed")
+        elif fault_outcome == "FAULT_DISCRIMINATIVE":
+            if supervisor_count != 1 or len(manual_requests) != 1:
+                raise EvaluationError("R1 manual rescue ownership changed")
+        elif supervisor_count != 0 or manual_requests or g3_dispatch:
+            raise EvaluationError(
+                "invalid fault must stop before rescue and G3"
+            )
+        if (
+            episode_end.get("fault_service_request_count") != 1
+            or episode_end.get("manual_rescue_count") != len(manual_requests)
+            or episode_end.get("supervisor_initialpose_count")
+            != supervisor_count
+        ):
+            raise EvaluationError("Phase E request count ledger changed")
+        if (
+            fault_outcome == "INVALID_FAULT_NOT_DISCRIMINATIVE"
+            and episode_end.get("stop_reason")
+            != "INVALID_FAULT_NOT_DISCRIMINATIVE"
+        ):
+            raise EvaluationError("invalid fault STOP reason changed")
+        if fault_outcome == "INVALID_FAULT_NOT_DISCRIMINATIVE":
+            route_success = False
+        if fault_outcome == "FAULT_DISCRIMINATIVE":
+            if not g3_dispatch or min(
+                _event_stamp(row, "goal_dispatched") for row in g3_dispatch
+            ) <= fault_stamp:
+                raise EvaluationError("Phase E requires fault before G3")
+            if any(
+                _event_stamp(row, "manual_rescue_requested") <= fault_stamp
+                for row in manual_requests
+            ):
+                raise EvaluationError("manual rescue precedes fault evidence")
 
     explicit_counts = [
         int(row["count"])
@@ -780,6 +865,10 @@ def evaluate_phase_de_episode(
             if not by_event["fault_injected"]
             else by_event["fault_injected"][0].get("fault_id")
         ),
+        "fault_kind": (
+            None if not fault_rows else fault_rows[0].get("kind")
+        ),
+        "fault_outcome": fault_outcome,
         "evaluation_kind": "ENGINEERING_RAW_METRICS_ONLY",
         "formal_gate": False,
         "ground_truth_policy": "separate_passive_offline_stream",
@@ -816,6 +905,11 @@ def evaluate_phase_de_episode(
                 }
                 for row in by_event["initialpose"]
             ],
+        },
+        "recovery_requests": {
+            "fault_service": int(episode_end.get("fault_service_request_count", 0)),
+            "nomotion": int(episode_end.get("nomotion_request_count", 0)),
+            "manual": len(manual_requests),
         },
         "prior_write_count": len(by_event["prior_write"]),
         "supervisor_diagnostics": supervisor_rows,
@@ -904,6 +998,8 @@ def evaluate_phase_de_pair(
         raise EvaluationError("paired episodes must use the same seed")
     if baseline["fault"] != experimental["fault"]:
         raise EvaluationError("paired episodes must use the same fault")
+    if baseline["fault_kind"] != experimental["fault_kind"]:
+        raise EvaluationError("paired episodes must use the same fault kind")
 
     paths = (
         "localization.time_to_ready_s",

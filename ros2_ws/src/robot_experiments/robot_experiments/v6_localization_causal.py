@@ -6,8 +6,8 @@ four localization arms required by the current plan:
 
 * D/S0 -- one frozen broad runner ``/initialpose`` with supervisor shadow;
 * D/S1 -- no runner seed, supervisor ``startup`` owns the first prior write;
-* E/R0 -- AMCL ``/global_localization`` recovery;
-* E/R1 -- supervisor ``active`` recovery after one explicit manual request.
+* E/R0 -- AMCL particle-spread fault with supervisor shadow;
+* E/R1 -- the same fault followed by one explicit manual supervisor request.
 
 Ground Truth is never subscribed here.  The independent evaluator owns the
 passive Ground-Truth stream.
@@ -54,13 +54,19 @@ SUPERVISOR_MODE_BY_ARM = {
 RECOVERY_BY_ARM = {
     "S0": "none",
     "S1": "none",
-    "R0": "global_localization",
+    "R0": "amcl_no_cognitive_write",
     "R1": "supervisor_manual_rescue",
 }
 STARTUP_AMCL_POSES_REQUIRED = 3
 RUN4_CANDIDATE_STATUS = "READ_ONLY_CAUSAL_CANDIDATE_STARTUP_ONLY"
 RUN4_RECOVERY_QUALIFICATION = "NOT_ACTIVE_RECOVERY_QUALIFIED"
 RUN4_ALLOWED_SUPERVISOR_MODES = ("shadow", "startup")
+PHASE_E_MANUAL_RECOVERY_EXPERIMENT = {
+    "status": "ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY",
+    "allowed_supervisor_modes": ["active"],
+    "requires_explicit_request": True,
+    "auto_rescue_enabled": False,
+}
 PHASE_D_STARTUP_INITIALPOSE = {
     "S0": {
         "source": "runner",
@@ -80,6 +86,8 @@ ALLOWED_EVENTS = frozenset(
         "episode_start",
         "initialpose",
         "fault_injected",
+        "particle_cloud",
+        "manual_rescue_requested",
         "pause_requested",
         "pause_confirmed",
         "prior_write",
@@ -149,13 +157,13 @@ class LocalizationConfig:
     path: Path
     phase_b_manifest: Path
     phase_d_run4_candidate: Mapping[str, Any]
+    phase_e_run4_candidate: Mapping[str, Any]
     seeds: Mapping[str, int]
     broad_seed: SeedPose
-    wrong_region_seed: SeedPose
     route_ids: tuple[str, ...]
     fault_id: str
-    fault_leg_id: str
-    fault_min_arc_length_m: float
+    fault_kind: str
+    fault_service: str
     stationary_hold_s: float
     recovery_timeout_s: float
     recovered_xy_variance_m2: float
@@ -198,6 +206,7 @@ def load_config(path: str | Path) -> LocalizationConfig:
         "phase_b_manifest",
         "held_constants",
         "phase_d_run4_candidate",
+        "phase_e_run4_candidate",
         "arms",
         "seeds",
         "startup",
@@ -289,6 +298,30 @@ def load_config(path: str | Path) -> LocalizationConfig:
             "Phase D startup initialpose source/count contract changed"
         )
 
+    phase_e_candidate = _mapping(
+        raw.get("phase_e_run4_candidate"), "phase_e_run4_candidate"
+    )
+    phase_e_candidate_keys = candidate_keys - {"startup_initialpose"} | {
+        "manual_recovery_experiment"
+    }
+    if set(phase_e_candidate) != phase_e_candidate_keys:
+        raise LocalizationConfigError(
+            "phase_e_run4_candidate keys changed"
+        )
+    for name in candidate_keys - {"startup_initialpose"}:
+        if phase_e_candidate.get(name) != candidate.get(name):
+            raise LocalizationConfigError(
+                f"Phase E Run4 candidate {name} must match Phase D"
+            )
+    manual_experiment = _mapping(
+        phase_e_candidate.get("manual_recovery_experiment"),
+        "phase_e_run4_candidate.manual_recovery_experiment",
+    )
+    if dict(manual_experiment) != PHASE_E_MANUAL_RECOVERY_EXPERIMENT:
+        raise LocalizationConfigError(
+            "Phase E manual recovery experiment block changed"
+        )
+
     arms = _mapping(raw.get("arms"), "arms")
     if set(arms) != set(ARMS):
         raise LocalizationConfigError(f"arms must be exactly {list(ARMS)}")
@@ -332,26 +365,24 @@ def load_config(path: str | Path) -> LocalizationConfig:
     fault = _mapping(raw.get("fault"), "fault")
     if set(fault) != {
         "id",
-        "leg_id",
-        "min_arc_length_m",
+        "kind",
+        "service",
         "stationary_hold_s",
-        "wrong_region_seed",
     }:
         raise LocalizationConfigError("fault keys changed")
-    if fault.get("id") != "F2" or fault.get("leg_id") != "G3":
-        raise LocalizationConfigError("the only supported fault is F2 on G2->G3")
-    min_arc = _finite(fault["min_arc_length_m"], "fault.min_arc_length_m")
-    if min_arc < 1.0:
-        raise LocalizationConfigError("fault.min_arc_length_m must be >= 1.0")
+    if fault.get("id") != "F2":
+        raise LocalizationConfigError("the only supported fault id is F2")
+    if fault.get("kind") != "amcl_global_localization_particle_spread":
+        raise LocalizationConfigError("F2 must use AMCL global particle spread")
+    if fault.get("service") != "/reinitialize_global_localization":
+        raise LocalizationConfigError(
+            "F2 must use /reinitialize_global_localization"
+        )
     stationary_hold = _finite(
         fault["stationary_hold_s"], "fault.stationary_hold_s"
     )
     if stationary_hold <= 0.0:
         raise LocalizationConfigError("fault.stationary_hold_s must be positive")
-    wrong_seed = _seed_pose(fault["wrong_region_seed"], "fault.wrong_region_seed")
-    if (wrong_seed.x, wrong_seed.y, wrong_seed.yaw_deg) != (-2.20, -2.95, -42.0):
-        raise LocalizationConfigError("F2 wrong-region seed must be G5 (-2.20,-2.95,-42deg)")
-
     recovery = _mapping(raw.get("recovery"), "recovery")
     if set(recovery) != {
         "timeout_s",
@@ -374,13 +405,13 @@ def load_config(path: str | Path) -> LocalizationConfig:
         path=config_path,
         phase_b_manifest=base_path,
         phase_d_run4_candidate=dict(candidate),
+        phase_e_run4_candidate=dict(phase_e_candidate),
         seeds=seeds,
         broad_seed=broad_seed,
-        wrong_region_seed=wrong_seed,
         route_ids=("G2", "G3", "G4", "G5", "G1"),
         fault_id="F2",
-        fault_leg_id="G3",
-        fault_min_arc_length_m=min_arc,
+        fault_kind="amcl_global_localization_particle_spread",
+        fault_service="/reinitialize_global_localization",
         stationary_hold_s=stationary_hold,
         recovery_timeout_s=recovery_timeout,
         recovered_xy_variance_m2=max_xy,
@@ -398,10 +429,10 @@ def route_actions(config: LocalizationConfig, arm: str) -> tuple[dict[str, Any],
     return (
         {"action": "goal", "leg_id": "G2"},
         {
-            "action": "fault_leg",
-            "leg_id": "G3",
+            "action": "fault",
             "fault_id": config.fault_id,
-            "min_arc_length_m": config.fault_min_arc_length_m,
+            "kind": config.fault_kind,
+            "service": config.fault_service,
         },
         {"action": "recover", "method": RECOVERY_BY_ARM[arm]},
         {"action": "goal", "leg_id": "G3"},
@@ -424,11 +455,16 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
                 "startup": startup,
                 "supervisor_mode": SUPERVISOR_MODE_BY_ARM[arm],
                 "recovery": RECOVERY_BY_ARM[arm],
-                "run4_candidate_enabled": PHASE_BY_ARM[arm] == "D",
+                "run4_candidate_enabled": True,
                 "expected_startup_initialpose": (
                     PHASE_D_STARTUP_INITIALPOSE[arm]
                     if PHASE_BY_ARM[arm] == "D"
-                    else None
+                    else {
+                        "source": "runner",
+                        "seed_kind": "broad_initialpose",
+                        "expected_total_count": 1,
+                        "expected_supervisor_count": 0,
+                    }
                 ),
                 "actions": list(route_actions(config, arm)),
             }
@@ -440,7 +476,8 @@ def build_plan(config: LocalizationConfig) -> dict[str, Any]:
         "formal_qualification": NOT_QUALIFIED,
         "ground_truth_policy": "passive_evaluator_only",
         "phase_d_run4_candidate": dict(config.phase_d_run4_candidate),
-        "phase_e_run4_candidate_enabled": False,
+        "phase_e_run4_candidate": dict(config.phase_e_run4_candidate),
+        "phase_e_run4_candidate_enabled": True,
         "single_round_arm_count": 4,
         "runs": rows,
     }
@@ -504,16 +541,23 @@ class LocalizationCausalNode(V6FormalNode):
         self.run_id = run_id
         self._initialpose_source_queue: deque[tuple[int, str, str]] = deque()
         self._initialpose_count = 0
+        self._supervisor_initialpose_count = 0
         self._manual_rescue_count = 0
+        self._fault_service_request_count = 0
+        self._nomotion_request_count = 0
         self._prior_write_count = 0
         self._amcl_count = 0
+        self._particle_cloud_count = 0
         self._last_amcl_covariance: tuple[float, float, float] | None = None
+        self._first_post_fault_amcl_covariance: tuple[float, float, float] | None = None
+        self._fault_observation_active = False
+        self._fault_amcl_baseline = 0
+        self._fault_particle_baseline = 0
+        self._fault_stamp_ns = 0
+        self._fault_candidate_baseline: dict[str, int] = {}
         self._last_supervisor: dict[str, str] = {}
         self._last_cmd_zero: bool | None = None
         self._cmd_vel_sim_zero_since: float | None = None
-        self._fault_preview_active = False
-        self._fault_arc_length_m = 0.0
-        self._fault_cancel_future = None
         self._event_stream_started = False
         super().__init__(
             manifest,
@@ -525,9 +569,10 @@ class LocalizationCausalNode(V6FormalNode):
         from bio_nav_interfaces.msg import PlanningPrior
         from diagnostic_msgs.msg import DiagnosticArray
         from geometry_msgs.msg import PoseWithCovarianceStamped
+        from nav2_msgs.msg import ParticleCloud
         from rcl_interfaces.msg import SetParametersResult
         from rclpy.clock import ClockType
-        from rclpy.qos import QoSProfile, ReliabilityPolicy
+        from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
         from rclpy.parameter import Parameter
         from std_msgs.msg import Empty
         from std_srvs.srv import Empty as EmptyService
@@ -563,8 +608,8 @@ class LocalizationCausalNode(V6FormalNode):
         self.manual_rescue_publisher = self.node.create_publisher(
             Empty, "/bio_nav/localization/request_manual_rescue", reliable
         )
-        self.global_localization_client = self.node.create_client(
-            EmptyService, "/global_localization"
+        self.reinitialize_global_localization_client = self.node.create_client(
+            EmptyService, "/reinitialize_global_localization"
         )
         self.nomotion_update_client = self.node.create_client(
             EmptyService, "/request_nomotion_update"
@@ -579,6 +624,12 @@ class LocalizationCausalNode(V6FormalNode):
                     "/bio_nav/module2/planning_prior",
                     self._planning_prior,
                     reliable,
+                ),
+                self.node.create_subscription(
+                    ParticleCloud,
+                    "/particle_cloud",
+                    self._particle_cloud,
+                    qos_profile_sensor_data,
                 ),
             ]
         )
@@ -675,6 +726,12 @@ class LocalizationCausalNode(V6FormalNode):
         self._last_amcl_covariance = (
             covariance[0], covariance[7], covariance[35]
         )
+        post_fault = bool(
+            self._fault_observation_active
+            and self._amcl_count > self._fault_amcl_baseline
+        )
+        if post_fault and self._first_post_fault_amcl_covariance is None:
+            self._first_post_fault_amcl_covariance = self._last_amcl_covariance
         pose = message.pose.pose
         self._event(
             "estimated_pose",
@@ -682,6 +739,19 @@ class LocalizationCausalNode(V6FormalNode):
             y=float(pose.position.y),
             yaw_deg=_yaw_deg(pose.orientation),
             covariance_xy_yaw=[covariance[0], covariance[7], covariance[35]],
+            post_fault=post_fault,
+        )
+
+    def _particle_cloud(self, message: Any) -> None:
+        self._particle_cloud_count += 1
+        self._event(
+            "particle_cloud",
+            count=self._particle_cloud_count,
+            particle_count=len(message.particles),
+            post_fault=bool(
+                self._fault_observation_active
+                and self._particle_cloud_count > self._fault_particle_baseline
+            ),
         )
 
     def _initialpose(self, message: Any) -> None:
@@ -714,6 +784,7 @@ class LocalizationCausalNode(V6FormalNode):
             yaw_deg=_yaw_deg(pose.orientation),
         )
         if source == "supervisor":
+            self._supervisor_initialpose_count += 1
             self._prior_write_count += 1
             self._event(
                 "prior_write", source="supervisor", count=self._prior_write_count
@@ -754,26 +825,6 @@ class LocalizationCausalNode(V6FormalNode):
                 collision=bool(message.data),
                 count=1 if self.collision else 0,
             )
-
-    def _route_progress(self, message: Any) -> None:
-        if self._fault_preview_active:
-            self._fault_arc_length_m = max(
-                self._fault_arc_length_m, float(message.arc_length_m)
-            )
-            return
-        super()._route_progress(message)
-
-    def _route_complete(self, message: Any) -> None:
-        if self._fault_preview_active:
-            if not bool(message.data):
-                self._navigation_terminal_observed = True
-            return
-        super()._route_complete(message)
-
-    def _route_result(self, message: Any) -> None:
-        if self._fault_preview_active:
-            return
-        super()._route_result(message)
 
     @staticmethod
     def _diagnostic_values(status: Any) -> dict[str, str]:
@@ -853,14 +904,29 @@ class LocalizationCausalNode(V6FormalNode):
             return False
         return True
 
+    def _call_nomotion_update(self, timeout_s: float) -> bool:
+        self._nomotion_request_count += 1
+        return self._call_empty_service(
+            self.nomotion_update_client,
+            "/request_nomotion_update",
+            timeout_s,
+        )
+
+    def _covariance_recovered(
+        self, covariance: tuple[float, float, float] | None
+    ) -> bool:
+        return bool(
+            covariance is not None
+            and max(covariance[0], covariance[1])
+            <= self.config.recovered_xy_variance_m2
+            and covariance[2] <= self.config.recovered_yaw_variance_rad2
+        )
+
     def _amcl_recovered(self, baseline_count: int) -> bool:
         covariance = self._last_amcl_covariance
         return bool(
             self._amcl_count >= baseline_count + STARTUP_AMCL_POSES_REQUIRED
-            and covariance is not None
-            and max(covariance[0], covariance[1])
-            <= self.config.recovered_xy_variance_m2
-            and covariance[2] <= self.config.recovered_yaw_variance_rad2
+            and self._covariance_recovered(covariance)
         )
 
     def _request_stationary_amcl_updates(
@@ -876,11 +942,7 @@ class LocalizationCausalNode(V6FormalNode):
             and requests < STARTUP_AMCL_POSES_REQUIRED
         ):
             previous_count = self._amcl_count
-            if not self._call_empty_service(
-                self.nomotion_update_client,
-                "/request_nomotion_update",
-                request_timeout_s,
-            ):
+            if not self._call_nomotion_update(request_timeout_s):
                 return False
             requests += 1
             observed = self._spin_until(
@@ -903,67 +965,76 @@ class LocalizationCausalNode(V6FormalNode):
             "succeeded", "success", "seed_confirmed"
         }
 
-    def _cancel_fault_preview(self, reason: str) -> tuple[bool, bool]:
-        """Cancel the unregistered preview goal and await cancel plus zero."""
+    @staticmethod
+    def _diagnostic_int(values: Mapping[str, str], name: str) -> int:
+        try:
+            return int(values.get(name, "0") or 0)
+        except ValueError:
+            return -1
 
+    def _candidate_snapshot(self) -> dict[str, int]:
+        return {
+            name: self._diagnostic_int(self._last_supervisor, name)
+            for name in (
+                "candidate_array_last_validation_stamp_ns",
+                "candidate_array_received_count",
+                "candidate_array_accepted_count",
+                "candidate_array_last_sequence",
+            )
+        }
+
+    def _fresh_post_fault_validated_candidate(self) -> bool:
+        values = self._last_supervisor
+        baseline = self._fault_candidate_baseline
+        return bool(
+            self._diagnostic_int(
+                values, "candidate_array_last_validation_stamp_ns"
+            )
+            > self._fault_stamp_ns
+            and self._diagnostic_int(values, "candidate_array_received_count")
+            > baseline["candidate_array_received_count"]
+            and self._diagnostic_int(values, "candidate_array_accepted_count")
+            > baseline["candidate_array_accepted_count"]
+            and self._diagnostic_int(values, "candidate_array_last_sequence")
+            > baseline["candidate_array_last_sequence"]
+            and self._diagnostic_int(
+                values, "candidate_array_last_candidate_count"
+            )
+            > 0
+            and values.get("candidate_array_last_structural_rejection", "") == ""
+            and values.get(
+                "candidate_array_last_state_machine_decision_reason", ""
+            )
+            == "no_authorized_rescue_request"
+            and values.get("candidate_array_last_event_reason", "")
+            == "no_authorized_rescue_request"
+            and values.get("candidate_validation", "") == "fresh"
+            and str(values.get("candidate_identity", "")).strip()
+            and values.get("state", "").upper() == "LOST"
+            and "covariance" in values.get("reason", "").lower()
+        )
+
+    def _fault(self) -> None:
+        if self._fault_service_request_count:
+            self.guard.stop("F2_fault_service_retry_forbidden")
+            return
+        if (
+            self._supervisor_initialpose_count != 0
+            or self._diagnostic_int(self._last_supervisor, "reset_attempts") != 0
+            or self._last_supervisor.get("state", "").upper() != "NORMAL"
+            or self._last_supervisor.get("reason", "") != "amcl_healthy"
+        ):
+            self.guard.stop("pre_fault_supervisor_state_invalid")
+            return
+        no_active_goal = self.guard.goal_publications == len(
+            self.guard.completed_leg_ids
+        )
         self._event(
             "pause_requested",
-            reason=reason,
+            reason="post_G2_fault_boundary",
             fault_id=self.config.fault_id,
-            leg_id=self.config.fault_leg_id,
-            arc_length_m=self._fault_arc_length_m,
+            active_goal=not no_active_goal,
         )
-        self._start_terminal_settle(cancel_navigation=False, reason=reason)
-        if not self.navigate_cancel_client.wait_for_service(timeout_sec=2.0):
-            return False, self._settle_terminal_zero()
-        CancelGoal = self._types["CancelGoal"]
-        future = self.navigate_cancel_client.call_async(CancelGoal.Request())
-        self._fault_cancel_future = future
-        # The preview goal intentionally bypasses EpisodeGuard so it can be
-        # redispatched after recovery.  Bind the inherited zero-settle wait to
-        # this explicit cancel future instead of letting it assume no goal.
-        self._terminal_cancel_requested = True
-        self._terminal_cancel_future = future
-        zero_confirmed = self._settle_terminal_zero()
-        if not future.done():
-            return False, zero_confirmed
-        response = future.result()
-        cancel_confirmed = bool(
-            response is not None and int(response.return_code) == 0
-        )
-        return cancel_confirmed, zero_confirmed
-
-    def _fault_leg(self, leg: MissionLeg, timeout_s: float) -> None:
-        self._fault_preview_active = True
-        self._fault_arc_length_m = 0.0
-        self._navigation_terminal_observed = False
-        # Do not create an untracked active goal unless its cancel endpoint is
-        # already present.  Every later exit funnels through explicit cancel.
-        if not self.navigate_cancel_client.wait_for_service(timeout_sec=2.0):
-            self.guard.stop("F2_cancel_service_unavailable")
-            self._fault_preview_active = False
-            return
-        self.route_goal_publisher.publish(self._goal_message(leg))
-        self._event(
-            "goal_dispatched",
-            leg_id=leg.goal_id,
-            leg_index=1,
-            preview_for_fault=True,
-        )
-        reached = self._spin_until(
-            lambda: self._fault_arc_length_m >= self.config.fault_min_arc_length_m
-            or self.collision,
-            timeout_s,
-        )
-        if not reached or self.collision:
-            self._cancel_fault_preview(
-                "fault_arc_timeout" if not reached else "collision_before_fault"
-            )
-            self.guard.stop("fault_arc_timeout" if not reached else "collision_before_fault")
-            self._fault_preview_active = False
-            return
-
-        cancel_confirmed, zero_confirmed = self._cancel_fault_preview("F2")
         stationary = self._spin_until(
             lambda: self._cmd_vel_sim_zero_since is not None
             and time.monotonic() - self._cmd_vel_sim_zero_since
@@ -973,54 +1044,117 @@ class LocalizationCausalNode(V6FormalNode):
         self._event(
             "pause_confirmed",
             fault_id=self.config.fault_id,
-            cancel_confirmed=cancel_confirmed,
-            cmd_vel_sim_zero=zero_confirmed,
+            no_active_goal=no_active_goal,
+            cmd_vel_sim_zero=self._last_cmd_zero is True,
             stationary=stationary,
         )
-        if not (cancel_confirmed and zero_confirmed and stationary):
-            self.guard.stop("F2_cancel_or_pause_not_confirmed")
-            self._fault_preview_active = False
+        if not (no_active_goal and self._last_cmd_zero is True and stationary):
+            self.guard.stop("F2_stationary_boundary_not_confirmed")
             return
 
-        baseline = self._initialpose_count
-        self._publish_seed(self.config.wrong_region_seed, "wrong_region")
+        self._fault_candidate_baseline = self._candidate_snapshot()
+        self._fault_service_request_count = 1
+        if not self._call_empty_service(
+            self.reinitialize_global_localization_client,
+            self.config.fault_service,
+            min(10.0, self.config.recovery_timeout_s),
+        ):
+            return
+        # Fence observations after the successful service future. Particle
+        # cloud is best-effort corroboration; AMCL pose is the required sample.
+        self._fault_stamp_ns = int(self.node.get_clock().now().nanoseconds)
+        self._fault_amcl_baseline = self._amcl_count
+        self._fault_particle_baseline = self._particle_cloud_count
+        self._first_post_fault_amcl_covariance = None
+        self._fault_observation_active = True
         observed = self._spin_until(
-            lambda: self._initialpose_count > baseline,
-            self.TERMINAL_ZERO_TIMEOUT_SEC,
+            lambda: self._amcl_count > self._fault_amcl_baseline
+            or self.guard.state == "STOP",
+            min(10.0, self.config.recovery_timeout_s),
+        )
+        if not observed or self.guard.state == "STOP":
+            self.guard.stop("F2_first_post_fault_evidence_timeout")
+            return
+        lost_observed = False
+        if not self._covariance_recovered(self._first_post_fault_amcl_covariance):
+            lost_observed = self._spin_until(
+                lambda: (
+                    self._last_supervisor.get("state", "").upper() == "LOST"
+                    and self._last_supervisor.get("reason", "")
+                    == "amcl_covariance_lost"
+                )
+                or self.guard.state == "STOP",
+                self.config.recovery_timeout_s,
+            )
+        fault_outcome = (
+            "FAULT_DISCRIMINATIVE"
+            if lost_observed
+            else "INVALID_FAULT_NOT_DISCRIMINATIVE"
         )
         self._event(
             "fault_injected",
             fault_id=self.config.fault_id,
-            arc_length_m=self._fault_arc_length_m,
-            x=self.config.wrong_region_seed.x,
-            y=self.config.wrong_region_seed.y,
-            yaw_deg=self.config.wrong_region_seed.yaw_deg,
+            kind=self.config.fault_kind,
+            service=self.config.fault_service,
+            service_request_count=self._fault_service_request_count,
+            service_response_observed=True,
+            first_post_fault_particle_cloud_observed=(
+                self._particle_cloud_count > self._fault_particle_baseline
+            ),
+            first_post_fault_amcl_pose_observed=True,
+            first_post_fault_covariance_xy_yaw=list(
+                self._first_post_fault_amcl_covariance or ()
+            ),
+            outcome=fault_outcome,
+            supervisor_lost_observed=lost_observed,
         )
-        if not observed:
-            self.guard.stop("F2_initialpose_not_observed")
+        if fault_outcome == "INVALID_FAULT_NOT_DISCRIMINATIVE":
+            self.guard.stop(fault_outcome)
 
     def _recover(self, method: str) -> None:
         baseline = self._amcl_count
-        if method == "global_localization":
-            if not self._call_empty_service(
-                self.global_localization_client,
-                "/global_localization",
-                min(10.0, self.config.recovery_timeout_s),
-            ):
+        if method == "amcl_no_cognitive_write":
+            if self._supervisor_initialpose_count:
+                self.guard.stop("R0_supervisor_initialpose_forbidden")
                 return
-            # F2 is injected only after the robot is confirmed stationary, so
-            # explicitly ask AMCL to consume the current scan once rather than
-            # requiring unsafe motion to trigger its first global update.
-            if not self._call_empty_service(
-                self.nomotion_update_client,
-                "/request_nomotion_update",
+            if not self._call_nomotion_update(
                 min(10.0, self.config.recovery_timeout_s),
             ):
                 return
         elif method == "supervisor_manual_rescue":
+            candidate_ready = self._spin_until(
+                lambda: self._fresh_post_fault_validated_candidate()
+                or self.guard.state == "STOP",
+                self.config.recovery_timeout_s,
+            )
+            if not candidate_ready or not self._fresh_post_fault_validated_candidate():
+                self.guard.stop("post_fault_validated_candidate_timeout")
+                return
+            if self._manual_rescue_count:
+                self.guard.stop("manual_rescue_retry_forbidden")
+                return
+            supervisor_initialpose_baseline = self._supervisor_initialpose_count
             Empty = self._types["Empty"]
             self.manual_rescue_publisher.publish(Empty())
             self._manual_rescue_count += 1
+            self._event(
+                "manual_rescue_requested",
+                count=self._manual_rescue_count,
+                purpose="ENGINEERING_EXPLICIT_MANUAL_RECOVERY_ONLY",
+            )
+            initialpose_observed = self._spin_until(
+                lambda: self._supervisor_initialpose_count
+                > supervisor_initialpose_baseline
+                or self.guard.state == "STOP",
+                min(10.0, self.config.recovery_timeout_s),
+            )
+            if (
+                not initialpose_observed
+                or self._supervisor_initialpose_count
+                != supervisor_initialpose_baseline + 1
+            ):
+                self.guard.stop("supervisor_initialpose_count_not_exactly_one")
+                return
         else:
             self.guard.stop(f"unsupported_recovery:{method}")
             return
@@ -1030,6 +1164,15 @@ class LocalizationCausalNode(V6FormalNode):
             and (method != "supervisor_manual_rescue" or self._supervisor_recovered()),
             self.config.recovery_timeout_s,
         )
+        if method == "amcl_no_cognitive_write" and self._supervisor_initialpose_count:
+            self.guard.stop("R0_supervisor_initialpose_forbidden")
+            return
+        if (
+            method == "supervisor_manual_rescue"
+            and self._supervisor_initialpose_count != 1
+        ):
+            self.guard.stop("supervisor_initialpose_count_not_exactly_one")
+            return
         self._event(
             "localization_recovered",
             success=recovered,
@@ -1037,25 +1180,14 @@ class LocalizationCausalNode(V6FormalNode):
             state=self._last_supervisor.get("state", ""),
             reason=self._last_supervisor.get("reason", ""),
             result=self._last_supervisor.get("recovery_result", ""),
+            fault_service_request_count=self._fault_service_request_count,
+            nomotion_request_count=self._nomotion_request_count,
+            manual_rescue_count=self._manual_rescue_count,
         )
         if not recovered:
             self.guard.stop(f"localization_recovery_timeout:{method}")
-            self._fault_preview_active = False
             return
-        # Ignore the expected canceled-leg terminal traffic throughout the
-        # recovery window; only the post-recovery G3 redispatch belongs to the
-        # ordinary EpisodeGuard sequence.
-        self._fault_preview_active = False
-        # F2 used terminal-zero only as a bounded pause.  Rearm it so the
-        # ordinary final boundary is checked after continued navigation.
-        self._terminal_started_monotonic = None
-        self._terminal_cancel_requested = False
-        self._terminal_cancel_future = None
-        self._terminal_zero_settled = False
-        self._terminal_zero_confirmed = False
-        self._terminal_zero_reason = "not_required"
-        self._cmd_vel_sim_zero_stamps.clear()
-        self._navigation_terminal_observed = False
+        self._fault_observation_active = False
 
     def perform_action(self, action: Mapping[str, Any]) -> None:
         if self.guard.state in {"STOP", "FAILED"}:
@@ -1071,8 +1203,8 @@ class LocalizationCausalNode(V6FormalNode):
                 reset_timeout_sec=10.0,
                 navigation_timeout_sec=self._navigation_timeout_sec,
             )
-        elif kind == "fault_leg":
-            self._fault_leg(by_id[str(action["leg_id"])], self._navigation_timeout_sec)
+        elif kind == "fault":
+            self._fault()
         elif kind == "recover":
             self._recover(str(action["method"]))
         else:
@@ -1141,23 +1273,22 @@ class LocalizationCausalNode(V6FormalNode):
             baseline_amcl_count = self._amcl_count
             baseline_initialpose_count = self._initialpose_count
             self._publish_seed(self.config.broad_seed, "broad_initialpose")
-        if self.phase == "D":
-            seed_observed = self._spin_until(
-                lambda: self._initialpose_count > baseline_initialpose_count
-                or self.guard.state == "STOP",
-                reset_timeout_sec,
-            )
-            if (
-                not seed_observed
-                or self.guard.state == "STOP"
-                or self._initialpose_count <= baseline_initialpose_count
-            ):
-                self.guard.stop("startup_initialpose_timeout")
-                return False
-            if not self._request_stationary_amcl_updates(
-                baseline_amcl_count, reset_timeout_sec
-            ):
-                return False
+        seed_observed = self._spin_until(
+            lambda: self._initialpose_count > baseline_initialpose_count
+            or self.guard.state == "STOP",
+            reset_timeout_sec,
+        )
+        if (
+            not seed_observed
+            or self.guard.state == "STOP"
+            or self._initialpose_count <= baseline_initialpose_count
+        ):
+            self.guard.stop("startup_initialpose_timeout")
+            return False
+        if not self._request_stationary_amcl_updates(
+            baseline_amcl_count, reset_timeout_sec
+        ):
+            return False
         localized = self._spin_until(
             lambda: (
                 self.guard.localization_ready
@@ -1218,6 +1349,9 @@ class LocalizationCausalNode(V6FormalNode):
             terminal_zero_confirmed=result["terminal_zero_confirmed"],
             initialpose_count=self._initialpose_count,
             manual_rescue_count=self._manual_rescue_count,
+            supervisor_initialpose_count=self._supervisor_initialpose_count,
+            fault_service_request_count=self._fault_service_request_count,
+            nomotion_request_count=self._nomotion_request_count,
             completed_leg_ids=result["completed_leg_ids"],
         )
         return result
@@ -1247,6 +1381,7 @@ def cli(argv: Sequence[str] | None = None) -> int:
                 "event_schema": EVENT_SCHEMA,
                 "phase_b_manifest": str(config.phase_b_manifest),
                 "phase_d_run4_candidate": dict(config.phase_d_run4_candidate),
+                "phase_e_run4_candidate": dict(config.phase_e_run4_candidate),
                 "arms": list(ARMS),
                 "qualification": QUALIFICATION,
                 "formal_qualification": NOT_QUALIFIED,
