@@ -188,6 +188,15 @@ def test_fake_active_ttl_timeline_passes_and_preserves_adapter_order(arm):
     assert result["evaluator_fields"]["ttl_recurrent_session_id"] == "session"
     assert result["evaluator_fields"]["ttl_map_version"] == "map"
     assert result["evaluator_fields"]["ttl_source_sequence"] == 7
+    assert set(result["per_consumer"]) == (
+        {"global", "local", "critic"} if arm == "M3" else {"global", "local"}
+    )
+    assert result["evaluator_fields"]["ttl_per_consumer"] == result["per_consumer"]
+    assert all(
+        row["source"]["source_sequence"] == 7
+        and row["clear"]["observed"] is True
+        for row in result["per_consumer"].values()
+    )
     assert adapter.calls == [
         "start_goal",
         "wait_for_armed",
@@ -241,6 +250,54 @@ def _observe_positive(
         obstacle_count=1,
     )
     for consumer in ("global", "local"):
+        timeline.observe_layer(
+            consumer=consumer,
+            **identity,
+            status_stamp_ns=status_stamp_ns,
+            message_age_ms=_age_ms(status_stamp_ns, validation_stamp_ns),
+            applied=True,
+            raised_cell_count=1,
+            active_cell_count=1,
+            maximum_cost_increase=1,
+            reason="",
+        )
+
+
+def _observe_consumer_positive(
+    timeline,
+    consumer,
+    sequence,
+    *,
+    validation_stamp_ns,
+    validation_ttl_ns=500_000_000,
+    status_stamp_ns=None,
+    epoch=3,
+    session="session",
+    map_version="map",
+):
+    identity = _identity(
+        sequence, epoch=epoch, session=session, map_version=map_version
+    )
+    if status_stamp_ns is None:
+        status_stamp_ns = validation_stamp_ns + 100_000_000
+    timeline.observe_typed(
+        **identity,
+        validation_stamp_ns=validation_stamp_ns,
+        validation_ttl_ns=validation_ttl_ns,
+        trusted_write=True,
+        healthy=True,
+        observation_valid=True,
+        obstacle_count=1,
+    )
+    if consumer == "critic":
+        timeline.observe_critic(
+            **identity,
+            status_stamp_ns=status_stamp_ns,
+            message_age_ms=_age_ms(status_stamp_ns, validation_stamp_ns),
+            applied=True,
+            reason="cost_delta_applied=true",
+        )
+    else:
         timeline.observe_layer(
             consumer=consumer,
             **identity,
@@ -331,7 +388,7 @@ def test_delayed_dds_callbacks_use_fresh_producer_status_stamp(arm):
 
 
 @pytest.mark.parametrize("arm", ["M2", "M3"])
-def test_same_sequence_new_validation_revision_cannot_splice_old_positive(arm):
+def test_new_typed_revision_does_not_invalidate_completed_consumer_revisions(arm):
     timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
     timeline.observe_clock(1_000_000_000)
     timeline.start_goal()
@@ -355,7 +412,7 @@ def test_same_sequence_new_validation_revision_cannot_splice_old_positive(arm):
         observation_valid=True,
         obstacle_count=1,
     )
-    assert timeline.armed is False
+    assert timeline.armed is True
 
     for consumer in ("global", "local"):
         timeline.observe_layer(
@@ -370,7 +427,7 @@ def test_same_sequence_new_validation_revision_cannot_splice_old_positive(arm):
             reason="",
         )
     if arm == "M3":
-        assert timeline.armed is False
+        assert timeline.armed is True
         timeline.observe_critic(
             **_identity(7),
             status_stamp_ns=1_200_000_000,
@@ -383,9 +440,13 @@ def test_same_sequence_new_validation_revision_cannot_splice_old_positive(arm):
     assert timeline.armed_source_identity is None
     timeline.mark_producer_stopped()
     assert timeline.armed_source_identity.validation_stamp_ns == 1_100_000_000
+    assert timeline.armed_sources["global"].validation_stamp_ns == 1_100_000_000
+    assert timeline.armed_sources["local"].validation_stamp_ns == 1_100_000_000
+    if arm == "M3":
+        assert timeline.armed_sources["critic"].validation_stamp_ns == 1_100_000_000
 
 
-def test_newer_trusted_sequence_pending_blocks_old_coherent_source():
+def test_newer_typed_sequence_pending_does_not_block_completed_sources():
     timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
     timeline.observe_clock(1_000_000_000)
     timeline.start_goal()
@@ -401,7 +462,7 @@ def test_newer_trusted_sequence_pending_blocks_old_coherent_source():
         observation_valid=True,
         obstacle_count=1,
     )
-    assert timeline.armed is False
+    assert timeline.armed is True
 
 
 def test_positive_status_produced_after_raw_ttl_cannot_arm():
@@ -490,7 +551,7 @@ def test_raw_ttl_clear_must_survive_observation_margin(arm):
     assert timeline.clear_complete is True
 
 
-def test_positive_evidence_from_different_sources_cannot_arm():
+def test_positive_evidence_from_async_revisions_in_same_stream_can_arm():
     timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
     timeline.start_goal()
     for sequence in (7, 8):
@@ -526,7 +587,135 @@ def test_positive_evidence_from_different_sources_cannot_arm():
         reason="",
     )
 
+    assert timeline.armed is True
+    timeline.mark_producer_stopped()
+    assert timeline.armed_sources["global"].source_sequence == 7
+    assert timeline.armed_sources["local"].source_sequence == 8
+
+
+def test_pilot22_m3_async_consumer_revisions_arm_and_clear_independently():
+    timeline = ActiveTtlTimeline("M3", margin_ns=200_000_000)
+    timeline.observe_clock(1_000_000_000)
+    timeline.start_goal()
+    revisions = {
+        "global": (21, 900_000_000),
+        "local": (22, 950_000_000),
+        "critic": (23, 1_000_000_000),
+    }
+    for consumer, (sequence, validation_stamp_ns) in revisions.items():
+        _observe_consumer_positive(
+            timeline,
+            consumer,
+            sequence,
+            validation_stamp_ns=validation_stamp_ns,
+        )
+
+    assert timeline.armed is True
+    timeline.begin_producer_stop()
+    timeline.mark_producer_stopped()
+    assert {
+        consumer: identity.source_sequence
+        for consumer, identity in timeline.armed_sources.items()
+    } == {"global": 21, "local": 22, "critic": 23}
+    assert timeline.ttl_expiry_ns_by_consumer == {
+        "global": 1_400_000_000,
+        "local": 1_450_000_000,
+        "critic": 1_500_000_000,
+    }
+
+    for consumer, (sequence, validation_stamp_ns) in revisions.items():
+        expiry_ns = timeline.ttl_expiry_ns_by_consumer[consumer]
+        identity = _identity(sequence)
+        if consumer == "critic":
+            timeline.observe_critic(
+                **identity,
+                status_stamp_ns=expiry_ns,
+                message_age_ms=_age_ms(expiry_ns, validation_stamp_ns),
+                applied=False,
+                reason="cost_delta_applied=false;obstacle_rejected=validation_stale",
+            )
+        else:
+            timeline.observe_layer(
+                consumer=consumer,
+                **identity,
+                status_stamp_ns=expiry_ns,
+                message_age_ms=_age_ms(expiry_ns, validation_stamp_ns),
+                applied=False,
+                raised_cell_count=0,
+                active_cell_count=0,
+                maximum_cost_increase=0,
+                reason="rejection_reason=validation_stale",
+            )
+    timeline.observe_clock(max(timeline.observation_end_ns_by_consumer.values()))
+    assert timeline.clear_complete is True
+    timeline.mark_cancel()
+    timeline.mark_terminal_zero(True)
+    result = timeline.result()
+    assert result["state"] == PASS_STATE
+    assert all(
+        row["clear"]["observed"] is True
+        for row in result["per_consumer"].values()
+    )
+
+
+def test_m3_cannot_arm_when_one_required_consumer_revision_is_expired():
+    timeline = ActiveTtlTimeline("M3", margin_ns=200_000_000)
+    timeline.observe_clock(1_000_000_000)
+    timeline.start_goal()
+    _observe_consumer_positive(
+        timeline, "global", 21, validation_stamp_ns=900_000_000
+    )
+    _observe_consumer_positive(
+        timeline, "local", 22, validation_stamp_ns=900_000_000
+    )
+    _observe_consumer_positive(
+        timeline,
+        "critic",
+        23,
+        validation_stamp_ns=900_000_000,
+        validation_ttl_ns=300_000_000,
+    )
+
     assert timeline.armed is False
+
+
+def test_async_revisions_from_different_sessions_cannot_be_spliced():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.observe_clock(1_000_000_000)
+    timeline.start_goal()
+    _observe_consumer_positive(
+        timeline,
+        "global",
+        21,
+        validation_stamp_ns=900_000_000,
+        session="session-a",
+    )
+    _observe_consumer_positive(
+        timeline,
+        "local",
+        22,
+        validation_stamp_ns=900_000_000,
+        session="session-b",
+    )
+
+    assert timeline.armed is False
+
+
+def test_m2_arms_and_reports_exactly_two_consumer_scopes():
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.observe_clock(1_000_000_000)
+    timeline.start_goal()
+    _observe_consumer_positive(
+        timeline, "global", 21, validation_stamp_ns=900_000_000
+    )
+    _observe_consumer_positive(
+        timeline, "local", 22, validation_stamp_ns=950_000_000
+    )
+
+    assert timeline.armed is True
+    timeline.mark_producer_stopped()
+    assert set(timeline.armed_sources) == {"global", "local"}
+    assert set(timeline.result()["per_consumer"]) == {"global", "local"}
 
 
 @pytest.mark.parametrize(
@@ -919,7 +1108,7 @@ def test_stop_complete_arms_latest_inflight_pilot21_revision(arm):
 
 
 @pytest.mark.parametrize("arm", ["M2", "M3"])
-def test_inflight_old_revision_status_cannot_complete_latest_revision(arm):
+def test_stop_complete_freezes_latest_fresh_revision_per_consumer(arm):
     timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
     timeline.observe_clock(25_600_000_000)
     timeline.start_goal()
@@ -981,12 +1170,12 @@ def test_inflight_old_revision_status_cannot_complete_latest_revision(arm):
     )
     timeline.observe_clock(26_083_000_000)
 
-    with pytest.raises(
-        CausalContractError,
-        match=probe_module.HARNESS_NO_FRESH_REVISION_AT_DROPOUT,
-    ):
-        timeline.mark_producer_stopped()
-    assert timeline.armed_source_identity is None
+    timeline.mark_producer_stopped()
+    assert timeline.armed_source_identity.source_sequence == 118
+    assert timeline.armed_sources["global"].source_sequence == 118
+    assert timeline.armed_sources["local"].source_sequence == 115
+    if arm == "M3":
+        assert timeline.armed_sources["critic"].source_sequence == 118
     assert timeline.post_stop_identity_changed is False
     assert timeline.post_expiry_applied is False
 

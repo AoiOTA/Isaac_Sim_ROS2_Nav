@@ -41,7 +41,7 @@ from .v6_low_obstacle_causal import (
 )
 
 
-SCHEMA_VERSION = "bio_nav_v6_phase_f_active_ttl_probe_v1"
+SCHEMA_VERSION = "bio_nav_v6_phase_f_active_ttl_probe_v2"
 ACTIVE_ARMS = ("M2", "M3")
 SELECTABLE_ARMS = ACTIVE_ARMS
 QUALIFICATION = "ENGINEERING_ONLY_NOT_FORMAL"
@@ -164,6 +164,9 @@ class ActiveTtlTimeline:
     armed_validation_ttl_ns: int | None = None
     ttl_expiry_ns: int | None = None
     observation_end_ns: int | None = None
+    armed_sources: dict[str, TtlSourceIdentity] = field(default_factory=dict)
+    ttl_expiry_ns_by_consumer: dict[str, int] = field(default_factory=dict)
+    observation_end_ns_by_consumer: dict[str, int] = field(default_factory=dict)
     clear_layers: set[str] = field(default_factory=set)
     clear_layer_status_stamps_ns: dict[str, int] = field(default_factory=dict)
     critic_stale_rejected: bool = False
@@ -173,6 +176,7 @@ class ActiveTtlTimeline:
     post_expiry_layer_applied: bool = False
     post_expiry_critic_applied: bool = False
     post_expiry_applied: bool = False
+    post_expiry_applied_consumers: set[str] = field(default_factory=set)
     cancel_count: int = 0
     terminal_zero_confirmed: bool = False
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -215,6 +219,9 @@ class ActiveTtlTimeline:
         self.armed_validation_ttl_ns = None
         self.ttl_expiry_ns = None
         self.observation_end_ns = None
+        self.armed_sources.clear()
+        self.ttl_expiry_ns_by_consumer.clear()
+        self.observation_end_ns_by_consumer.clear()
         self.clear_layers.clear()
         self.clear_layer_status_stamps_ns.clear()
         self.critic_stale_rejected = False
@@ -224,6 +231,7 @@ class ActiveTtlTimeline:
         self.post_expiry_layer_applied = False
         self.post_expiry_critic_applied = False
         self.post_expiry_applied = False
+        self.post_expiry_applied_consumers.clear()
         self.goal_started = True
         self.action_active = True
         self._event("goal_started", goal_epoch=self.goal_epoch)
@@ -279,11 +287,10 @@ class ActiveTtlTimeline:
             identity.map_version,
         )
         revision = (identity.source_sequence, identity.validation_stamp_ns)
-        latest_revision = self.latest_source_revisions.get(stream)
-        if latest_revision is not None and revision < latest_revision:
-            return
         self.trusted_typed_seen = True
-        self.latest_source_revisions[stream] = revision
+        latest_revision = self.latest_source_revisions.get(stream)
+        if latest_revision is None or revision >= latest_revision:
+            self.latest_source_revisions[stream] = revision
         self.latest_validation_stamp_ns = validation_stamp
         self.latest_validation_ttl_ns = int(validation_ttl_ns)
         self.trusted_sources[identity] = (validation_stamp, int(validation_ttl_ns))
@@ -378,57 +385,99 @@ class ActiveTtlTimeline:
                 observed_stamp,
             )
 
-    def _matches_armed_source(self, identity: TtlSourceIdentity) -> bool:
-        return bool(
-            self.armed_source_identity is not None
-            and self._same_revision(self.armed_source_identity, identity)
+    @property
+    def required_consumers(self) -> tuple[str, ...]:
+        return ("global", "local", "critic") if self.arm == "M3" else (
+            "global", "local"
         )
 
-    def _coherent_positive_source(
+    @staticmethod
+    def _stream(identity: TtlSourceIdentity) -> tuple[int, str, str]:
+        return (
+            identity.reset_epoch,
+            identity.recurrent_session_id,
+            identity.map_version,
+        )
+
+    def _positive_status_stamp(
+        self,
+        consumer: str,
+        identity: TtlSourceIdentity,
+    ) -> int | None:
+        if consumer == "critic":
+            return self.positive_critic_sources.get(identity)
+        return self.positive_layer_sources.get(identity, {}).get(consumer)
+
+    def _matches_armed_source(
+        self,
+        consumer: str,
+        identity: TtlSourceIdentity,
+    ) -> bool:
+        armed = self.armed_sources.get(consumer)
+        return bool(
+            armed is not None
+            and self._same_revision(armed, identity)
+        )
+
+    def _coherent_positive_sources(
         self,
         *,
         required_guard_ns: int = MIN_STOP_GUARD_NS,
-    ) -> TtlSourceIdentity | None:
-        candidates: list[TtlSourceIdentity] = []
-        for identity, (validation_stamp_ns, validation_ttl_ns) in (
-            self.trusted_sources.items()
-        ):
-            stream = (
-                identity.reset_epoch,
-                identity.recurrent_session_id,
-                identity.map_version,
-            )
-            if self.latest_source_revisions.get(stream) != (
-                identity.source_sequence,
-                identity.validation_stamp_ns,
-            ):
-                continue
-            layer_stamps = self.positive_layer_sources.get(identity, {})
-            if not {"global", "local"}.issubset(layer_stamps):
-                continue
-            status_stamps = [layer_stamps["global"], layer_stamps["local"]]
-            if self.arm == "M3":
-                critic_stamp = self.positive_critic_sources.get(identity)
-                if critic_stamp is None:
-                    continue
-                status_stamps.append(critic_stamp)
-            ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
-            if any(stamp > ttl_expiry_ns for stamp in status_stamps):
-                continue
-            if self.clock_ns + int(required_guard_ns) > ttl_expiry_ns:
-                continue
-            candidates.append(identity)
-        if not candidates:
+    ) -> dict[str, TtlSourceIdentity] | None:
+        streams = {self._stream(identity) for identity in self.trusted_sources}
+        bundles: list[dict[str, TtlSourceIdentity]] = []
+        for stream in streams:
+            bundle: dict[str, TtlSourceIdentity] = {}
+            for consumer in self.required_consumers:
+                complete = []
+                for identity, (validation_stamp_ns, validation_ttl_ns) in (
+                    self.trusted_sources.items()
+                ):
+                    if self._stream(identity) != stream:
+                        continue
+                    status_stamp_ns = self._positive_status_stamp(consumer, identity)
+                    if status_stamp_ns is None:
+                        continue
+                    ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
+                    if status_stamp_ns > ttl_expiry_ns:
+                        continue
+                    complete.append(identity)
+                if not complete:
+                    break
+                latest = max(
+                    complete,
+                    key=lambda identity: (
+                        identity.source_sequence,
+                        identity.validation_stamp_ns,
+                        self._positive_status_stamp(consumer, identity) or 0,
+                    ),
+                )
+                validation_stamp_ns, validation_ttl_ns = self.trusted_sources[latest]
+                if (
+                    self.clock_ns + int(required_guard_ns)
+                    >= validation_stamp_ns + validation_ttl_ns
+                ):
+                    break
+                bundle[consumer] = latest
+            if len(bundle) == len(self.required_consumers):
+                bundles.append(bundle)
+        if not bundles:
             return None
         return max(
-            candidates,
-            key=lambda identity: (
-                self.trusted_sources[identity][0],
-                identity.source_sequence,
-                identity.validation_stamp_ns,
-                identity.reset_epoch,
-                identity.recurrent_session_id,
-                identity.map_version,
+            bundles,
+            key=lambda bundle: (
+                max(
+                    self._positive_status_stamp(consumer, bundle[consumer]) or 0
+                    for consumer in self.required_consumers
+                ),
+                tuple(
+                    (
+                        bundle[consumer].source_sequence,
+                        bundle[consumer].validation_stamp_ns,
+                    )
+                    for consumer in self.required_consumers
+                ),
+                self._stream(bundle["global"]),
             ),
         )
 
@@ -451,6 +500,26 @@ class ActiveTtlTimeline:
         }
         self.post_stop_identity_changes.append(change)
         self._event("post_stop_identity_changed", **change)
+
+    def _source_payload(
+        self,
+        identity: TtlSourceIdentity,
+        consumer: str | None = None,
+    ) -> dict[str, Any]:
+        validation_stamp_ns, validation_ttl_ns = self.trusted_sources[identity]
+        return {
+            "reset_epoch": identity.reset_epoch,
+            "recurrent_session_id": identity.recurrent_session_id,
+            "map_version": identity.map_version,
+            "source_sequence": identity.source_sequence,
+            "validation_stamp_ns": identity.validation_stamp_ns,
+            "validation_ttl_ns": validation_ttl_ns,
+            "positive_status_stamp_ns": (
+                self._positive_status_stamp(consumer, identity)
+                if consumer is not None else None
+            ),
+            "ttl_expiry_ns": validation_stamp_ns + validation_ttl_ns,
+        }
 
     def observe_layer(
         self,
@@ -507,11 +576,12 @@ class ActiveTtlTimeline:
             or int(active_cell_count) > 0
             or int(maximum_cost_increase) > 0
         )
-        if not self._matches_armed_source(identity):
+        ttl_expiry_ns = self.ttl_expiry_ns_by_consumer.get(scope)
+        if not self._matches_armed_source(scope, identity):
             if (
                 self.producer_stopped
-                and self.ttl_expiry_ns is not None
-                and status_stamp >= self.ttl_expiry_ns
+                and ttl_expiry_ns is not None
+                and status_stamp >= ttl_expiry_ns
                 and actual_applied
             ):
                 self._record_post_stop_identity_change(
@@ -520,11 +590,12 @@ class ActiveTtlTimeline:
                     status_stamp_ns=status_stamp,
                 )
             return
-        if self.ttl_expiry_ns is None or status_stamp < self.ttl_expiry_ns:
+        if ttl_expiry_ns is None or status_stamp < ttl_expiry_ns:
             return
         if actual_applied:
             self.post_expiry_layer_applied = True
             self.post_expiry_applied = True
+            self.post_expiry_applied_consumers.add(scope)
             self._event(
                 "post_expiry_layer_applied",
                 scope=scope,
@@ -602,11 +673,12 @@ class ActiveTtlTimeline:
                 )
             return
         actual_applied = bool(bool(applied) or cost_delta_applied)
-        if not self._matches_armed_source(identity):
+        ttl_expiry_ns = self.ttl_expiry_ns_by_consumer.get("critic")
+        if not self._matches_armed_source("critic", identity):
             if (
                 self.producer_stopped
-                and self.ttl_expiry_ns is not None
-                and status_stamp >= self.ttl_expiry_ns
+                and ttl_expiry_ns is not None
+                and status_stamp >= ttl_expiry_ns
                 and actual_applied
             ):
                 self._record_post_stop_identity_change(
@@ -615,11 +687,12 @@ class ActiveTtlTimeline:
                     status_stamp_ns=status_stamp,
                 )
             return
-        if self.ttl_expiry_ns is None or status_stamp < self.ttl_expiry_ns:
+        if ttl_expiry_ns is None or status_stamp < ttl_expiry_ns:
             return
         if actual_applied:
             self.post_expiry_critic_applied = True
             self.post_expiry_applied = True
+            self.post_expiry_applied_consumers.add("critic")
             self._event(
                 "post_expiry_critic_applied",
                 reset_epoch=identity.reset_epoch,
@@ -649,7 +722,7 @@ class ActiveTtlTimeline:
         return bool(
             self.action_active
             and not self.producer_stop_intent
-            and self._coherent_positive_source() is not None
+            and self._coherent_positive_sources() is not None
         )
 
     def begin_producer_stop(self) -> None:
@@ -659,25 +732,17 @@ class ActiveTtlTimeline:
             raise CausalContractError(
                 "active TTL probe cannot stop producer without a fresh coherent source"
             )
-        source_identity = self._coherent_positive_source()
-        if source_identity is None:
+        sources = self._coherent_positive_sources()
+        if sources is None:
             raise CausalContractError("active TTL probe lacks a trusted validation timeline")
-        validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_identity]
-        ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
-        if self.clock_ns + MIN_STOP_GUARD_NS > ttl_expiry_ns:
-            raise CausalContractError(
-                "active TTL probe source expired before producer stop intent"
-            )
         self.producer_stop_intent = True
         self.active_at_dropout = self.action_active
         self._event(
             "producer_stop_intent",
-            precondition_reset_epoch=source_identity.reset_epoch,
-            precondition_recurrent_session_id=source_identity.recurrent_session_id,
-            precondition_map_version=source_identity.map_version,
-            precondition_source_sequence=source_identity.source_sequence,
-            precondition_source_validation_stamp_ns=source_identity.validation_stamp_ns,
-            precondition_ttl_expiry_ns=ttl_expiry_ns,
+            precondition_sources={
+                consumer: self._source_payload(identity, consumer)
+                for consumer, identity in sources.items()
+            },
             action_active=self.active_at_dropout,
         )
 
@@ -688,22 +753,33 @@ class ActiveTtlTimeline:
             raise CausalContractError("active TTL probe attempted duplicate producer stop")
         if self.producer_stop_failed_reason:
             raise CausalContractError("active TTL probe cannot complete failed producer stop")
-        source_identity = self._coherent_positive_source(
+        sources = self._coherent_positive_sources(
             required_guard_ns=STOP_COMPLETE_EXPIRY_GUARD_NS,
         )
-        if source_identity is None:
+        if sources is None:
             self._event(
                 "producer_stopped_without_fresh_revision",
                 reason=HARNESS_NO_FRESH_REVISION_AT_DROPOUT,
             )
             raise CausalContractError(HARNESS_NO_FRESH_REVISION_AT_DROPOUT)
+        self.armed_sources = dict(sources)
+        self.ttl_expiry_ns_by_consumer = {
+            consumer: self.trusted_sources[identity][0]
+            + self.trusted_sources[identity][1]
+            for consumer, identity in sources.items()
+        }
+        self.observation_end_ns_by_consumer = {
+            consumer: ttl_expiry_ns + self.margin_ns
+            for consumer, ttl_expiry_ns in self.ttl_expiry_ns_by_consumer.items()
+        }
+        # Preserve legacy scalar fields using global as a deterministic primary.
+        source_identity = self.armed_sources["global"]
         validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_identity]
-        ttl_expiry_ns = validation_stamp_ns + validation_ttl_ns
         self.armed_source_identity = source_identity
         self.armed_validation_stamp_ns = validation_stamp_ns
         self.armed_validation_ttl_ns = validation_ttl_ns
-        self.ttl_expiry_ns = ttl_expiry_ns
-        self.observation_end_ns = ttl_expiry_ns + self.margin_ns
+        self.ttl_expiry_ns = self.ttl_expiry_ns_by_consumer["global"]
+        self.observation_end_ns = self.observation_end_ns_by_consumer["global"]
         self.producer_stopped = True
         self._event(
             "producer_stopped",
@@ -714,6 +790,14 @@ class ActiveTtlTimeline:
             source_validation_stamp_ns=source_identity.validation_stamp_ns,
             ttl_expiry_ns=self.ttl_expiry_ns,
             observation_end_ns=self.observation_end_ns,
+            armed_sources={
+                consumer: self._source_payload(identity, consumer)
+                for consumer, identity in self.armed_sources.items()
+            },
+            ttl_expiry_ns_by_consumer=dict(self.ttl_expiry_ns_by_consumer),
+            observation_end_ns_by_consumer=dict(
+                self.observation_end_ns_by_consumer
+            ),
         )
 
     def mark_producer_stop_failed(self, reason: str) -> None:
@@ -726,8 +810,12 @@ class ActiveTtlTimeline:
     def clear_complete(self) -> bool:
         return bool(
             self.producer_stopped
-            and self.observation_end_ns is not None
-            and self.clock_ns >= self.observation_end_ns
+            and len(self.observation_end_ns_by_consumer)
+            == len(self.required_consumers)
+            and all(
+                self.clock_ns >= self.observation_end_ns_by_consumer[consumer]
+                for consumer in self.required_consumers
+            )
             and {"global", "local"}.issubset(self.clear_layers)
             and (self.arm != "M3" or self.critic_stale_rejected)
             and not self.post_stop_identity_changed
@@ -744,6 +832,40 @@ class ActiveTtlTimeline:
         self._event("terminal_zero", confirmed=self.terminal_zero_confirmed)
 
     def result(self, *, timeout_reason: str = "") -> dict[str, Any]:
+        per_consumer: dict[str, dict[str, Any]] = {}
+        for consumer in self.required_consumers:
+            identity = self.armed_sources.get(consumer)
+            clear_observed = (
+                self.critic_stale_rejected
+                if consumer == "critic"
+                else consumer in self.clear_layers
+            )
+            clear_status_stamp_ns = (
+                self.critic_stale_status_stamp_ns
+                if consumer == "critic"
+                else self.clear_layer_status_stamps_ns.get(consumer)
+            )
+            per_consumer[consumer] = {
+                "source": (
+                    self._source_payload(identity, consumer)
+                    if identity is not None else None
+                ),
+                "ttl_expiry_ns": self.ttl_expiry_ns_by_consumer.get(consumer),
+                "observation_end_ns": self.observation_end_ns_by_consumer.get(
+                    consumer
+                ),
+                "clear": {
+                    "observed": clear_observed,
+                    "status_stamp_ns": clear_status_stamp_ns,
+                    "applied_after_expiry": (
+                        consumer in self.post_expiry_applied_consumers
+                    ),
+                    "identity_changed": any(
+                        change["consumer"] == consumer
+                        for change in self.post_stop_identity_changes
+                    ),
+                },
+            }
         reasons: list[str] = []
         if self.terminal_before_dropout:
             state = "FAIL_EARLY_TERMINAL"
@@ -812,6 +934,17 @@ class ActiveTtlTimeline:
             "expiry_target_ns": self.ttl_expiry_ns,
             "ttl_expiry_ns": self.ttl_expiry_ns,
             "observation_end_ns": self.observation_end_ns,
+            "armed_sources": {
+                consumer: self._source_payload(identity, consumer)
+                for consumer, identity in self.armed_sources.items()
+            },
+            "ttl_expiry_ns_by_consumer": dict(
+                self.ttl_expiry_ns_by_consumer
+            ),
+            "observation_end_ns_by_consumer": dict(
+                self.observation_end_ns_by_consumer
+            ),
+            "per_consumer": per_consumer,
             "positive_apply": {
                 "typed_trusted": self.trusted_typed_seen,
                 "global_layer": "global" in self.positive_layers,
@@ -874,6 +1007,7 @@ class ActiveTtlTimeline:
                 ),
                 "ttl_expiry_stamp_ns": self.ttl_expiry_ns,
                 "ttl_observation_end_stamp_ns": self.observation_end_ns,
+                "ttl_per_consumer": per_consumer,
                 "ttl_expiry_observed": self.clear_complete,
                 "ttl_expiry_zero_write": (
                     {"global", "local"}.issubset(self.clear_layers)
