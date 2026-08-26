@@ -2,19 +2,21 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from robot_experiments.v6_localization_causal import (
+    ALLOWED_EVENTS,
     ARMS,
-    CORE_CASES,
-    COUNTERBALANCED_ORDERS,
-    DISPATCHER_TOPICS,
+    CONFIG_SCHEMA,
+    EVENT_SCHEMA,
+    LocalizationCausalNode,
+    LocalizationConfigError,
+    _contains_ground_truth,
     build_plan,
     cli,
-    load_manifest,
-)
-from robot_experiments.v6_localization_causal_evaluator import (
-    absolute_error_samples,
-    evaluate_campaign,
+    execute_route_actions,
+    load_config,
+    route_actions,
 )
 
 
@@ -22,143 +24,211 @@ PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE / "config" / "v6_localization_causal.yaml"
 
 
-def test_manifest_expands_exact_core60_with_counterbalanced_orders():
-    manifest = load_manifest(CONFIG)
-    runs = manifest["core_runs"]
-    assert len(runs) == 60
-    assert len({run["run_id"] for run in runs}) == 60
-    for case in CORE_CASES:
-        rows = [run for run in runs if run["case"] == case]
-        assert len(rows) == 20
-        assert {arm: sum(run["arm"] == arm for run in rows) for arm in ARMS} == {
-            arm: 5 for arm in ARMS
-        }
-        for repeat, order in enumerate(COUNTERBALANCED_ORDERS, start=1):
-            assert tuple(run["arm"] for run in rows if run["repeat"] == repeat) == order
-    assert {row["case"] for row in manifest["engineering_preflight_runs"]} == {"S1", "S2"}
-    assert not any(row["counts_toward_core60"] for row in manifest["engineering_preflight_runs"])
+def test_config_freezes_only_four_single_round_arms_and_held_constants():
+    config = load_config(CONFIG)
+    assert tuple(config.seeds) == ARMS
+    assert config.route_ids == ("G2", "G3", "G4", "G5", "G1")
+    assert config.fault_id == "F2"
+    assert config.fault_leg_id == "G3"
+    assert config.fault_min_arc_length_m == pytest.approx(1.0)
+    assert (
+        config.wrong_region_seed.x,
+        config.wrong_region_seed.y,
+        config.wrong_region_seed.yaw_deg,
+    ) == pytest.approx((-2.20, -2.95, -42.0))
+    assert config.seeds["S0"] == config.seeds["S1"]
+    assert config.seeds["R0"] == config.seeds["R1"]
 
 
-def test_arms_and_all_common_runtime_axes_are_frozen():
-    manifest = load_manifest(CONFIG)
-    common = manifest["common_runtime"]
-    assert common == {
-        "scene_id": "kujiale_0026_A_to_B_door_open",
-        "odometry_mode": "estimated",
-        "cognitive_profile": "M0",
-        "module2_planning_influence": False,
-        "cognitive_graph_mode": "gvg",
-        "direct_rgbd_costmap_enabled": False,
-        "use_rviz": False,
-        "structure_tf_source": "isaac",
-        "goal_id": "G2",
-        "initial_physical_pose": "long_route_start_g2",
-        "automatic_rescue_enabled": False,
-    }
-    assert manifest["arms"]["L0"]["integration_enabled"] is False
-    assert manifest["arms"]["L1"]["startup_initialpose_writes"] == 0
-    assert manifest["arms"]["L2"]["startup_initialpose_writes"] == 1
-    assert manifest["arms"]["L3"]["manual_rescue_allowed_after_lost"] is True
+def test_plan_has_no_old_s3_r2_or_60_run_matrix():
+    plan = build_plan(load_config(CONFIG))
+    assert plan["schema_version"] == CONFIG_SCHEMA
+    assert plan["event_schema"] == EVENT_SCHEMA
+    assert plan["single_round_arm_count"] == 4
+    assert [row["arm"] for row in plan["runs"]] == list(ARMS)
+    assert len(plan["runs"]) == 4
+    assert not {"S3", "R2"} & {row["arm"] for row in plan["runs"]}
+    assert "core_run_count" not in plan
 
 
-def test_dispatcher_is_gt_free_and_s3_is_one_shot_manual_only_for_l3():
-    manifest = load_manifest(CONFIG)
-    assert not [topic for topic in DISPATCHER_TOPICS if topic.startswith("/ground_truth/")]
-    plan = build_plan(manifest)
-    assert plan["core_run_count"] == 60
-    for row in plan["runs"]:
-        assert not [topic for topic in row["dispatcher_topics"] if topic.startswith("/ground_truth/")]
-        if row["case"] != "S3":
-            continue
-        trigger = [step for step in row["steps"] if step["action"] == "call_trigger_once"]
-        assert len(trigger) == 1 and trigger[0]["retry"] is False
-        rescue = [step for step in row["steps"] if step["action"] == "request_manual_rescue_once_after_lost"]
-        assert len(rescue) == (1 if row["arm"] == "L3" else 0)
-
-
-def test_absolute_error_has_no_first_frame_alignment():
-    errors = absolute_error_samples(
-        [
-            {"stamp_s": 0.0, "x": 1.0, "y": 0.0, "yaw_deg": 20.0},
-            {"stamp_s": 1.0, "x": 1.0, "y": 0.0, "yaw_deg": 20.0},
-        ],
-        [
-            {"stamp_s": 0.0, "x": 0.0, "y": 0.0, "yaw_deg": 0.0},
-            {"stamp_s": 1.0, "x": 0.0, "y": 0.0, "yaw_deg": 0.0},
-        ],
-    )
-    assert [row.position_error_m for row in errors] == pytest.approx([1.0, 1.0])
-    assert [row.yaw_error_deg for row in errors] == pytest.approx([20.0, 20.0])
-
-
-def _evidence(run):
-    case = run["case"]
-    arm = run["arm"]
-    samples = []
-    truth = []
-    for stamp in range(0, 15):
-        if case == "S0":
-            converge_at = 8 if arm in {"L0", "L1"} else 4
-            error = 1.0 if stamp < converge_at else 0.1
-        elif case == "S3":
-            recover_at = 5 if arm == "L3" else 9 if arm == "L2" else 12
-            error = 0.1 if stamp == 0 or stamp >= recover_at else 1.0
-        else:
-            error = 0.1
-        samples.append({"stamp_s": stamp, "x": error, "y": 0.0, "yaw_deg": 0.0})
-        truth.append({"stamp_s": stamp, "x": 0.0, "y": 0.0, "yaw_deg": 0.0})
-    initialpose = []
-    expected = run["expected"]
-    if expected["total_initialpose_writes"]:
-        source = "integration" if expected["integration_initialpose_writes"] else "runner"
-        initialpose = [{"stamp_s": 1.0, "source": source}]
-    rescues = (
-        [{"stamp_s": 1.0, "source": "runner_explicit"}]
-        if expected["manual_rescue_requests"] else []
-    )
-    return {
-        "run_id": run["run_id"],
-        "arm": arm,
-        "case": case,
-        "seed": run["seed"],
-        "kidnap_trigger_stamp_s": 0.0 if case == "S3" else None,
-        "kidnap_service_calls": 1 if case == "S3" else 0,
-        "dispatcher": {
-            "topics": list(DISPATCHER_TOPICS),
-            "estimated_map_poses": samples,
-            "initialpose_events": initialpose,
-            "manual_rescue_events": rescues,
-            "pause_intervals": [{"start_s": 0.0, "end_s": 0.5}] if case == "S3" else [],
-            "cmd_vel": [{"stamp_s": 0.25, "linear_x": 0.0, "angular_z": 0.0}],
-            "publisher_owners": {"/odom": "robot_localization", "map->odom": "amcl"},
-            "integration_activity": {
-                "mode": run["expected"]["integration_mode"],
-                "initialpose_writes": run["expected"]["integration_initialpose_writes"],
-                "pose_correction_writes": 0 if arm == "L1" else run["expected"]["integration_initialpose_writes"],
-            },
-        },
-        "passive_evaluator": {
-            "ground_truth_map_poses": truth,
-            "collision_count": 0,
-        },
-    }
-
-
-def test_synthetic_contract_exercises_convergence_lost_recovery_and_wrong_reseed(tmp_path):
-    manifest = load_manifest(CONFIG)
-    for run in manifest["core_runs"]:
-        (tmp_path / f"{run['run_id']}.json").write_text(
-            json.dumps(_evidence(run)), encoding="utf-8"
+def test_phase_d_actions_are_one_ordinary_full_route():
+    config = load_config(CONFIG)
+    for arm in ("S0", "S1"):
+        assert route_actions(config, arm) == tuple(
+            {"action": "goal", "leg_id": leg}
+            for leg in ("G2", "G3", "G4", "G5", "G1")
         )
-    result = evaluate_campaign(manifest, tmp_path)
-    assert result["verdict"] == "PASS_CRITERIA"
-    assert result["aggregate"]["L2_S0_fast_convergence"] == 5
-    assert result["aggregate"]["L3_S3_fast_recovery"] == 5
-    assert not [row for row in result["results"] if row["case"] == "W0" and row["initialpose_count"]]
 
 
-def test_run_without_adapter_is_explicit_not_run(capsys):
-    assert cli(["run", "--config", str(CONFIG)]) == 2
-    output = json.loads(capsys.readouterr().out)
-    assert output["state"] == "NOT_RUN"
-    assert output["qualification"] == "ENGINEERING_CAUSAL_NOT_RUN"
+def test_phase_e_actions_put_only_f2_after_g2_then_continue_from_g3():
+    config = load_config(CONFIG)
+    for arm, method in (
+        ("R0", "global_localization"),
+        ("R1", "supervisor_manual_rescue"),
+    ):
+        actions = route_actions(config, arm)
+        assert actions[0] == {"action": "goal", "leg_id": "G2"}
+        assert actions[1] == {
+            "action": "fault_leg",
+            "leg_id": "G3",
+            "fault_id": "F2",
+            "min_arc_length_m": 1.0,
+        }
+        assert actions[2] == {"action": "recover", "method": method}
+        assert [row["leg_id"] for row in actions[3:]] == ["G3", "G4", "G5", "G1"]
+        assert sum(row["action"] == "fault_leg" for row in actions) == 1
+
+
+class _FakeAdapter:
+    def __init__(self):
+        self.actions = []
+
+    def perform_action(self, action):
+        self.actions.append(dict(action))
+
+
+def test_fake_adapter_executes_frozen_actions_in_order():
+    config = load_config(CONFIG)
+    fake = _FakeAdapter()
+    expected = route_actions(config, "R1")
+    execute_route_actions(fake, expected)
+    assert fake.actions == list(expected)
+
+
+def test_planning_prior_uses_dominant_mode_fields_directly():
+    class Message:
+        dominant_mode_root_state_id = 184
+        dominant_mode_mass = 0.72
+        dominant_mode_covariance_m2 = [0.1, 0.01, 0.01, 0.2]
+        place_entropy_normalized = 0.3
+        visual_reliability = 0.9
+        visual_ood_probability = 0.05
+
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    events = []
+    adapter._event = lambda event, **payload: events.append((event, payload))
+    adapter._planning_prior(Message())
+    assert events == [
+        (
+            "module1_diagnostic",
+            {
+                "name": "planning_prior",
+                "region_id": 184,
+                "entropy": 0.3,
+                "reliability": 0.9,
+                "ood_probability": 0.05,
+                "dominant_mass": 0.72,
+                "dominant_covariance_m2": [0.1, 0.01, 0.01, 0.2],
+                "values": {
+                    "region_id": 184,
+                    "entropy": 0.3,
+                    "reliability": 0.9,
+                    "ood_probability": 0.05,
+                    "dominant_mass": 0.72,
+                    "dominant_covariance_m2": [0.1, 0.01, 0.01, 0.2],
+                },
+            },
+        )
+    ]
+
+
+def test_fault_preview_cancel_binds_zero_settle_to_completed_cancel_future():
+    class Response:
+        return_code = 0
+
+    class Future:
+        def done(self):
+            return True
+
+        def result(self):
+            return Response()
+
+    future = Future()
+
+    class Client:
+        def wait_for_service(self, timeout_sec):
+            return timeout_sec == 2.0
+
+        def call_async(self, request):
+            return future
+
+    class CancelGoal:
+        class Request:
+            pass
+
+    adapter = LocalizationCausalNode.__new__(LocalizationCausalNode)
+    adapter.config = load_config(CONFIG)
+    adapter._fault_arc_length_m = 1.0
+    adapter.navigate_cancel_client = Client()
+    adapter._types = {"CancelGoal": CancelGoal}
+    adapter._event = lambda *_args, **_kwargs: None
+    adapter._start_terminal_settle = lambda **_kwargs: None
+    adapter._settle_terminal_zero = lambda: True
+    adapter._terminal_cancel_requested = False
+    adapter._terminal_cancel_future = None
+    adapter._fault_cancel_future = None
+    assert adapter._cancel_fault_preview("F2") == (True, True)
+    assert adapter._terminal_cancel_requested is True
+    assert adapter._terminal_cancel_future is future
+
+
+def test_event_schema_is_small_gt_free_and_has_evaluator_fields():
+    assert "ground_truth_pose" not in ALLOWED_EVENTS
+    assert not [event for event in ALLOWED_EVENTS if "ground_truth" in event]
+    assert {
+        "episode_start",
+        "initialpose",
+        "fault_injected",
+        "pause_requested",
+        "pause_confirmed",
+        "prior_write",
+        "localization_ready",
+        "localization_recovered",
+        "goal_dispatched",
+        "goal_result",
+        "supervisor_diagnostic",
+        "estimated_pose",
+        "odom_pose",
+        "cmd_vel_sim",
+        "collision",
+        "module1_diagnostic",
+        "episode_end",
+    } == ALLOWED_EVENTS
+    assert _contains_ground_truth({"nested": {"ground_truth_pose": {}}})
+    assert _contains_ground_truth({"source": "/ground_truth/odom"})
+    assert not _contains_ground_truth({"passive_evaluator_only": True})
+
+
+def test_invalid_fault_pose_or_arc_is_rejected(tmp_path):
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    raw["fault"]["min_arc_length_m"] = 0.99
+    path = tmp_path / "bad.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(LocalizationConfigError, match=">= 1.0"):
+        load_config(path)
+
+    raw["fault"]["min_arc_length_m"] = 1.0
+    raw["fault"]["wrong_region_seed"]["x"] = -2.19
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(LocalizationConfigError, match="G5"):
+        load_config(path)
+
+
+def test_paired_arms_must_keep_the_same_seed(tmp_path):
+    raw = yaml.safe_load(CONFIG.read_text(encoding="utf-8"))
+    raw["seeds"]["S1"] += 1
+    path = tmp_path / "unpaired.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    with pytest.raises(LocalizationConfigError, match="paired"):
+        load_config(path)
+
+
+def test_cli_config_and_plan_are_non_live(capsys):
+    assert cli(["config", "--config", str(CONFIG)]) == 0
+    config_output = json.loads(capsys.readouterr().out)
+    assert config_output["arms"] == list(ARMS)
+    assert config_output["formal_qualification"] == "NOT_QUALIFIED"
+
+    assert cli(["plan", "--config", str(CONFIG)]) == 0
+    plan_output = json.loads(capsys.readouterr().out)
+    assert len(plan_output["runs"]) == 4
