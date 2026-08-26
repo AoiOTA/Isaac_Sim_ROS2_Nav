@@ -274,7 +274,7 @@ def test_post_goal_positive_callbacks_arm_current_goal_epoch():
 @pytest.mark.parametrize("arm", ["M2", "M3"])
 def test_delayed_dds_callbacks_use_fresh_producer_status_stamp(arm):
     timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
-    timeline.observe_clock(1_300_000_000)
+    timeline.observe_clock(1_100_000_000)
     timeline.start_goal()
     _observe_positive(
         timeline,
@@ -297,7 +297,7 @@ def test_delayed_dds_callbacks_use_fresh_producer_status_stamp(arm):
         if event["event"].startswith("positive_")
     ]
     assert positive_events
-    assert all(event["clock_ns"] == 1_300_000_000 for event in positive_events)
+    assert all(event["clock_ns"] == 1_100_000_000 for event in positive_events)
     assert all(event["status_stamp_ns"] == 1_000_000_000 for event in positive_events)
 
     timeline.mark_producer_stopped()
@@ -428,6 +428,7 @@ def test_expired_coherent_source_is_skipped_and_newer_fresh_source_selected():
 
 
 def test_producer_stop_requires_guard_before_raw_ttl_expiry():
+    assert probe_module.MIN_STOP_GUARD_NS == 250_000_000
     timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
     timeline.observe_clock(
         1_400_000_000 - probe_module.MIN_STOP_GUARD_NS + 1

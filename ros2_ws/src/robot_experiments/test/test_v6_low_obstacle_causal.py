@@ -2760,7 +2760,9 @@ def _phase_f_pid_is_running(pid: int) -> bool:
     return stat.is_file() and stat.read_text(encoding="utf-8").split()[2] != "Z"
 
 
-def _start_fake_phase_f_stack(tmp_path: Path) -> SimpleNamespace:
+def _start_fake_phase_f_stack(
+    tmp_path: Path, *, producer_ignores_term: bool = False
+) -> SimpleNamespace:
     root = PACKAGE.parents[2]
     project = tmp_path / "project"
     scripts = project / "scripts"
@@ -2781,7 +2783,10 @@ source_ros() { :; }
 mkdir -p "${ISAAC_NAV_RUNTIME_DIR}"
 exec 9>"${ISAAC_NAV_RUNTIME_DIR}/ros.lock"
 flock -n 9
-trap 'exit 0' INT TERM HUP
+log_signal() { printf '%s\n' "module3:$1" >>"${FAKE_SIGNAL_LOG}"; }
+trap 'log_signal INT; exit 0' INT
+trap 'log_signal TERM; exit 0' TERM
+trap 'log_signal HUP; exit 0' HUP
 while :; do
   printf '%s\n' "$(date +%s%N)" >>"${FAKE_MODULE3_HEARTBEAT}"
   sleep 0.02
@@ -2794,10 +2799,25 @@ done
     integration_scripts.mkdir(parents=True)
     socket_server = tmp_path / "socket_server.py"
     socket_server.write_text(
-        """import socket
+        """import os
+import signal
+import socket
 import sys
 import time
 
+def record(name):
+    with open(os.environ["FAKE_SIGNAL_LOG"], "a", encoding="utf-8") as stream:
+        stream.write(f"module2:{name}\\n")
+
+def stop(signum, _frame):
+    name = signal.Signals(signum).name.removeprefix("SIG")
+    record(name)
+    if not (name == "TERM" and os.environ.get("FAKE_PRODUCER_IGNORE_TERM") == "1"):
+        raise SystemExit(0)
+
+signal.signal(signal.SIGINT, stop)
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGHUP, stop)
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(sys.argv[1])
 server.listen(1)
@@ -2827,7 +2847,14 @@ exec python3 "${FAKE_SOCKET_SERVER}" "${socket_path}"
     fake_bin.mkdir()
     (fake_bin / "ros2").write_text(
         """#!/usr/bin/env bash
-trap 'exit 0' INT TERM HUP
+log_signal() { printf '%s\n' "bridge:$1" >>"${FAKE_SIGNAL_LOG}"; }
+trap 'log_signal INT; exit 0' INT
+if [[ "${FAKE_PRODUCER_IGNORE_TERM:-0}" == 1 ]]; then
+  trap 'log_signal TERM' TERM
+else
+  trap 'log_signal TERM; exit 0' TERM
+fi
+trap 'log_signal HUP; exit 0' HUP
 while :; do sleep 0.05; done
 """,
         encoding="utf-8",
@@ -2858,12 +2885,15 @@ wait "$!"
     run_dir = tmp_path / "run"
     socket_path = tmp_path / "socket/module2.sock"
     runtime_dir = tmp_path / "runtime"
+    signal_log = tmp_path / "signals.log"
     env = os.environ.copy()
     env.update({
         "PATH": f"{fake_bin}:{env['PATH']}",
         "BIO_NAV_INTEGRATION_ROOT": str(integration),
         "BIO_NAV_MODULE2_V310_ROOT": str(module2),
         "FAKE_MODULE3_HEARTBEAT": str(heartbeat),
+        "FAKE_SIGNAL_LOG": str(signal_log),
+        "FAKE_PRODUCER_IGNORE_TERM": "1" if producer_ignores_term else "0",
         "FAKE_SOCKET_SERVER": str(socket_server),
         "FAKE_SETSID_DELAY_SEC": "0.08",
         "ISAAC_NAV_RUNTIME_DIR": str(runtime_dir),
@@ -2906,6 +2936,7 @@ wait "$!"
         socket=socket_path,
         runtime_dir=runtime_dir,
         heartbeat=heartbeat,
+        signal_log=signal_log,
         env=env,
     )
 
@@ -2932,6 +2963,7 @@ def test_phase_f_producer_stop_survives_nested_setsid_registration_race(tmp_path
             assert pgid != stack_pgid
 
         before = len(fake.heartbeat.read_text(encoding="utf-8").splitlines())
+        stop_started = time.monotonic()
         stopped = subprocess.run(
             [
                 str(fake.script), "stop-producer", "--run-dir",
@@ -2943,10 +2975,12 @@ def test_phase_f_producer_stop_survives_nested_setsid_registration_race(tmp_path
             timeout=10.0,
             check=False,
         )
+        stop_elapsed = time.monotonic() - stop_started
         assert stopped.returncode == 0, stopped.stderr
-        # The Phase-F obstacle TTL is 0.5 s; the ROS/Nav2 consumer must remain
-        # live beyond it after only the producer and bridge are stopped.
-        time.sleep(0.65)
+        assert stop_elapsed < 0.5
+        # The raw TTL is 0.5 s and the configured observation margin is 1.0 s.
+        # The ROS/Nav2 consumer must remain live across that complete window.
+        time.sleep(1.55)
         after = len(fake.heartbeat.read_text(encoding="utf-8").splitlines())
         assert after > before
         assert fake.process.poll() is None
@@ -2967,6 +3001,42 @@ def test_phase_f_producer_stop_survives_nested_setsid_registration_race(tmp_path
     assert not list(fake.run_dir.glob("*.pid"))
     assert not list(fake.run_dir.glob("*.pgid"))
     assert causal._lock_is_free(fake.runtime_dir / "ros.lock")
+
+
+def test_phase_f_fast_producer_stop_kills_term_resistant_groups(tmp_path):
+    fake = _start_fake_phase_f_stack(tmp_path, producer_ignores_term=True)
+    identities = {
+        name: _phase_f_identity(fake.run_dir, name)
+        for name in ("module2_server", "integration_bridge")
+    }
+    try:
+        started = time.monotonic()
+        stopped = subprocess.run(
+            [
+                str(fake.script), "stop-producer", "--run-dir",
+                str(fake.run_dir), "--socket", str(fake.socket),
+            ],
+            env=fake.env,
+            text=True,
+            capture_output=True,
+            timeout=2.0,
+            check=False,
+        )
+        elapsed = time.monotonic() - started
+        assert stopped.returncode == 0, stopped.stderr
+        assert elapsed < 0.5
+        signals = fake.signal_log.read_text(encoding="utf-8").splitlines()
+        assert "module2:TERM" in signals
+        assert "bridge:TERM" in signals
+        assert "module2:INT" not in signals
+        assert "bridge:INT" not in signals
+        assert all(
+            not _phase_f_pid_is_running(pid) for pid, _pgid in identities.values()
+        )
+        assert not fake.socket.exists()
+        assert fake.process.poll() is None
+    finally:
+        _stop_fake_phase_f_stack(fake)
 
 
 def test_phase_f_producer_stop_rejects_consumer_process_group(tmp_path):
@@ -3019,6 +3089,8 @@ def test_phase_f_normal_trap_shutdown_cleans_all_registered_groups(tmp_path):
         for name in ("module3_ros", "module2_server", "integration_bridge")
     }
     _stop_fake_phase_f_stack(fake)
+    signals = fake.signal_log.read_text(encoding="utf-8").splitlines()
+    assert "module2:INT" in signals
     assert all(not _phase_f_pid_is_running(pid) for pid, _pgid in identities.values())
     assert not list(fake.run_dir.glob("*.identity"))
     assert not list(fake.run_dir.glob("*.pid"))

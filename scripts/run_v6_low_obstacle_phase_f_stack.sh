@@ -18,6 +18,19 @@ group_is_running() {
   '
 }
 
+any_group_is_running() {
+  ps -eo pgid=,stat= | awk '
+    BEGIN {
+      for (index = 1; index < ARGC; index++) {
+        wanted[ARGV[index]] = 1
+        delete ARGV[index]
+      }
+    }
+    $1 in wanted && $2 !~ /^Z/ { found = 1; exit }
+    END { exit !found }
+  ' "$@"
+}
+
 signal_group() {
   local signal_name="$1" pgid="$2"
   group_is_running "${pgid}" || return 0
@@ -127,7 +140,8 @@ module2_recorded_process_running() {
 
 cleanup_exact_socket() {
   local directory="$1" path="$2" check
-  local quiet_checks="${BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS:-5}"
+  local quiet_checks="${3:-${BIO_NAV_PHASE_F_CLEANUP_QUIET_CHECKS:-5}}"
+  local quiet_sleep_sec="${4:-0.05}"
   if module2_recorded_process_running "${directory}"; then
     echo "refusing socket cleanup while recorded Module2/Bridge process is active: ${path}" >&2
     return 1
@@ -143,38 +157,56 @@ cleanup_exact_socket() {
       echo "Module2 socket reappeared during cleanup quiet window: ${path}" >&2
       return 1
     fi
-    sleep 0.05
+    sleep "${quiet_sleep_sec}"
   done
 }
 
-stop_registered_group() {
-  local name="$1" directory="$2" identity_file pid_file pgid_file pid pgid
-  local int_checks="${BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS:-100}"
-  local term_checks="${BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS:-100}"
-  identity_file="${directory}/${name}.identity"
-  pid_file="${directory}/${name}.pid"
-  pgid_file="${directory}/${name}.pgid"
-  if ! read_recorded_identity "${name}" "${directory}" pid pgid; then
-    echo "missing producer process identity: ${name}" >&2
-    return 1
-  fi
-  if ! recorded_identity_is_running "${pid}" "${pgid}"; then
-    echo "producer process identity is not running: ${name} pid=${pid} pgid=${pgid}" >&2
-    return 1
-  fi
-  signal_group INT "${pgid}"
-  if ! wait_group_exit "${pgid}" "${int_checks}"; then
-    signal_group TERM "${pgid}"
-    if ! wait_group_exit "${pgid}" "${term_checks}"; then
-      signal_group KILL "${pgid}"
-      wait_group_exit "${pgid}" 100 || {
-        echo "producer process group did not stop: ${name} pgid=${pgid}" >&2
-        return 1
-      }
+fast_stop_registered_groups() {
+  local directory="$1" name pid pgid check
+  local term_checks=10
+  local kill_checks=10
+  local -a names=(integration_bridge module2_server)
+  local -a pgids=()
+
+  # Fault injection is deliberately abrupt.  Resolve both isolated producer
+  # groups first, then signal them back-to-back so their shared TERM grace
+  # window cannot consume the obstacle TTL serially.
+  for name in "${names[@]}"; do
+    if ! read_recorded_identity "${name}" "${directory}" pid pgid; then
+      echo "missing producer process identity: ${name}" >&2
+      return 1
     fi
-  fi
-  wait "${pid}" 2>/dev/null || true
-  rm -f "${identity_file}" "${pid_file}" "${pgid_file}"
+    if ! recorded_identity_is_running "${pid}" "${pgid}"; then
+      echo "producer process identity is not running: ${name} pid=${pid} pgid=${pgid}" >&2
+      return 1
+    fi
+    pgids+=("${pgid}")
+  done
+  for pgid in "${pgids[@]}"; do
+    kill -TERM -- "-${pgid}" 2>/dev/null || true
+  done
+
+  for ((check=0; check<term_checks; check++)); do
+    any_group_is_running "${pgids[@]}" || break
+    sleep 0.02
+  done
+  for pgid in "${pgids[@]}"; do
+    if group_is_running "${pgid}"; then
+      kill -KILL -- "-${pgid}" 2>/dev/null || true
+    fi
+  done
+  for ((check=0; check<kill_checks; check++)); do
+    any_group_is_running "${pgids[@]}" || break
+    sleep 0.01
+  done
+  any_group_is_running "${pgids[@]}" && {
+    echo "producer process groups did not stop: ${pgids[*]}" >&2
+    return 1
+  }
+  for name in "${names[@]}"; do
+    rm -f "${directory}/${name}.identity" \
+      "${directory}/${name}.pid" "${directory}/${name}.pgid"
+  done
 }
 
 validate_producer_stop_isolation() {
@@ -258,10 +290,8 @@ if [[ "${1:-}" == "stop-producer" ]]; then
   done
   [[ "${producer_run_dir}" == /* && "${producer_socket}" == /* ]] || { usage; exit 2; }
   validate_producer_stop_isolation "${producer_run_dir}" || exit 1
-  for name in integration_bridge module2_server; do
-    stop_registered_group "${name}" "${producer_run_dir}" || exit 1
-  done
-  cleanup_exact_socket "${producer_run_dir}" "${producer_socket}" || exit 1
+  fast_stop_registered_groups "${producer_run_dir}" || exit 1
+  cleanup_exact_socket "${producer_run_dir}" "${producer_socket}" 2 0.02 || exit 1
   verify_consumer_after_producer_stop "${producer_run_dir}" || {
     echo "producer-stop terminated the Phase-F stack or Module3 ROS consumer" >&2
     exit 1
