@@ -1,9 +1,13 @@
 import json
+import fcntl
 import os
 from pathlib import Path
 import shutil
+import signal
 import struct
 import subprocess
+import sys
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -559,6 +563,8 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
         "terminal_zero_confirmed": True,
     }
     evidence = build_recorded_evidence(manifest, run, records, episode_result)
+    assert evidence["reset"]["calls"] == 1
+    assert evidence["reset"]["events"] == 1
     assert evidence["module2_health"]["trusted_write_count"] == 2
     assert evidence["module2_health"]["candidate_cadence_hz"] == pytest.approx(10.0)
     assert evidence["layer"]["global"]["cells"] == 7
@@ -781,6 +787,35 @@ def test_invalid_depth_or_future_tf_never_fabricates_a_hit():
     assert no_future["footprints"] == []
 
 
+def test_camera_info_numpy_intrinsics_are_accepted_and_invalid_arrays_fail_closed():
+    numpy = pytest.importorskip("numpy")
+    manifest = load_manifest(CONFIG)
+    depth, info, transforms = _depth_projection_inputs()
+    numpy_info = RecordedMessage(info.topic, info.stamp_ns, {
+        **info.message,
+        "k": numpy.asarray(info.message["k"], dtype=numpy.float64),
+    })
+    observed = causal._project_depth_obstacle(
+        depth, numpy_info, [], transforms,
+        causal._load_frozen_obstacle(manifest), manifest.criteria,
+    )
+    assert observed["valid"] is True
+    assert observed["reason"] == "observed"
+
+    for invalid_k in (None, numpy.asarray([100.0, 0.0]), numpy.asarray(1.0)):
+        invalid_info = RecordedMessage(info.topic, info.stamp_ns, {
+            **info.message,
+            "k": invalid_k,
+        })
+        rejected = causal._project_depth_obstacle(
+            depth, invalid_info, [], transforms,
+            causal._load_frozen_obstacle(manifest), manifest.criteria,
+        )
+        assert rejected["valid"] is False
+        assert rejected["reason"] == "invalid_camera_intrinsics"
+        assert rejected["footprints"] == []
+
+
 def test_recorded_tf_chain_and_inverse_are_composed_at_depth_stamp():
     stamp = 4_000_000_000
     transforms = RecordedMessage("/tf_static", stamp, {"transforms": [
@@ -903,7 +938,9 @@ def test_copy_installed_manifest_resolves_phase_f_assets_without_cwd(
     assert Path(plan["runs"][0]["setup"]["navigation_overlay"]).is_file()
 
 
-def _run_campaign_with_fake_processes(tmp_path, monkeypatch, *, clear):
+def _run_campaign_with_fake_processes(
+    tmp_path, monkeypatch, *, clear, startup_ready=True
+):
     manifest = load_manifest(CONFIG)
     run = next(row for row in manifest.runs if row.arm == "M2")
     manifest = replace(manifest, runs=(run,))
@@ -916,6 +953,19 @@ def _run_campaign_with_fake_processes(tmp_path, monkeypatch, *, clear):
     def fake_stop(process, timeout_sec):
         events.append(("stop", process.name))
         return {"name": process.name, "returncode": 0}
+
+    def fake_wait(managed, timeout_sec):
+        events.append(("startup_reset_event_before_episode", 1))
+        return {
+            "ready": startup_ready,
+            "generation": 1,
+            "held": not startup_ready,
+            "reason": "released:activation_gate" if startup_ready else "timeout",
+        }
+
+    def fake_cleanup(run_dir, socket, shutdown, env):
+        events.append(("cleanup", None))
+        return {"ok": True}
 
     def fake_run(command, **kwargs):
         events.append(("run", command[0]))
@@ -934,6 +984,8 @@ def _run_campaign_with_fake_processes(tmp_path, monkeypatch, *, clear):
 
     monkeypatch.setattr(causal, "_start_process", fake_start)
     monkeypatch.setattr(causal, "_stop_process", fake_stop)
+    monkeypatch.setattr(causal, "_wait_for_startup_ready", fake_wait)
+    monkeypatch.setattr(causal, "_confirm_arm_cleanup", fake_cleanup)
     monkeypatch.setattr(causal.subprocess, "run", fake_run)
     monkeypatch.setattr(causal.time, "sleep", fake_sleep)
     monkeypatch.setattr(causal, "record_evidence_from_bag", fake_record)
@@ -953,17 +1005,275 @@ def test_campaign_stops_producer_then_records_ttl_clear_before_stack_shutdown(
     )
     assert summary["runs"][0]["state"] == "EPISODE_FINISHED"
     assert events == [
-        ("start", "scene"), ("start", "stack"), ("start", "recorder"),
+        ("start", "scene"), ("start", "stack"),
+        ("startup_reset_event_before_episode", 1), ("start", "recorder"),
         ("run", "/episode"), ("run", "/producer-stop"),
         ("sleep", pytest.approx(1.5)),
         ("stop", "stack"), ("stop", "recorder"), ("stop", "scene"),
+        ("cleanup", None),
         ("record_evidence", None),
+    ]
+
+
+def test_campaign_startup_timeout_never_starts_recorder_or_episode(
+    tmp_path, monkeypatch
+):
+    summary, events = _run_campaign_with_fake_processes(
+        tmp_path, monkeypatch, clear=True, startup_ready=False
+    )
+    assert summary["runs"][0]["state"] == "STARTUP_NOT_READY"
+    assert ("start", "recorder") not in events
+    assert not any(event[0] == "run" for event in events)
+    assert events[:3] == [
+        ("start", "scene"), ("start", "stack"),
+        ("startup_reset_event_before_episode", 1),
     ]
 
 
 def test_campaign_missing_post_ttl_clear_is_a_failure(tmp_path, monkeypatch):
     summary, _ = _run_campaign_with_fake_processes(tmp_path, monkeypatch, clear=False)
     assert summary["runs"][0]["state"] == "TTL_CLEAR_FAILED"
+    assert summary["state"] == "FINISHED_WITH_FAILURES"
+
+
+def test_stop_process_cleans_a_nested_child_in_a_new_process_group(tmp_path):
+    nested_pid_file = tmp_path / "nested.pid"
+    nested_code = (
+        "import signal,sys,time; "
+        "signal.signal(signal.SIGINT, lambda *_: sys.exit(0)); "
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+        "time.sleep(300)"
+    )
+    root_code = (
+        "import os,pathlib,signal,subprocess,sys,time; "
+        "child=subprocess.Popen([sys.executable,'-c',os.environ['NESTED_CODE']],"
+        "start_new_session=True); "
+        "pathlib.Path(os.environ['NESTED_PID_FILE']).write_text(str(child.pid)); "
+        "signal.signal(signal.SIGINT, lambda *_: sys.exit(0)); "
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+        "time.sleep(300)"
+    )
+    env = os.environ.copy()
+    env["NESTED_CODE"] = nested_code
+    env["NESTED_PID_FILE"] = str(nested_pid_file)
+    stream = (tmp_path / "tree.log").open("w", encoding="utf-8")
+    process = subprocess.Popen(
+        [sys.executable, "-c", root_code],
+        stdout=stream,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+        text=True,
+    )
+    deadline = time.monotonic() + 5.0
+    while not nested_pid_file.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert nested_pid_file.exists()
+    nested_pid = int(nested_pid_file.read_text(encoding="utf-8"))
+    try:
+        result = causal._stop_process(
+            causal._ManagedProcess("nested", process, stream), 1.0
+        )
+        assert result["cleanup_ok"] is True
+        assert result["remaining_process_groups"] == []
+        assert process.poll() is not None
+        assert not Path(f"/proc/{nested_pid}").exists()
+    finally:
+        for pid in (process.pid, nested_pid):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        process.wait(timeout=5.0)
+
+
+def test_phase_f_stack_trap_cleans_its_nested_new_process_group(tmp_path):
+    root = PACKAGE.parents[2]
+    project = tmp_path / "project"
+    scripts = project / "scripts"
+    (scripts / "lib").mkdir(parents=True)
+    shutil.copy2(root / "scripts/run_v6_low_obstacle_phase_f_stack.sh", scripts)
+    (scripts / "lib/common.sh").write_text(
+        """#!/usr/bin/env bash
+export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+require_directory() { [[ -d "$1" ]]; }
+require_file() { [[ -f "$1" ]]; }
+source_ros() { :; }
+""",
+        encoding="utf-8",
+    )
+    nested_pid_file = tmp_path / "stack_nested.pid"
+    (scripts / "run_v6_kujiale_low_obstacles.sh").write_text(
+        """#!/usr/bin/env bash
+setsid --wait -- python3 -c 'import signal,sys,time; signal.signal(signal.SIGINT, lambda *_: sys.exit(0)); signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); time.sleep(300)' &
+nested_pid="$!"
+printf '%s\n' "${nested_pid}" >"${FAKE_NESTED_PID_FILE}"
+trap 'exit 0' INT TERM
+wait "${nested_pid}"
+""",
+        encoding="utf-8",
+    )
+    for path in (
+        scripts / "run_v6_low_obstacle_phase_f_stack.sh",
+        scripts / "run_v6_kujiale_low_obstacles.sh",
+    ):
+        path.chmod(0o755)
+    integration = tmp_path / "integration"
+    integration.mkdir()
+    run_dir = tmp_path / "run"
+    socket = tmp_path / "socket/module2.sock"
+    env = os.environ.copy()
+    env.update({
+        "BIO_NAV_INTEGRATION_ROOT": str(integration),
+        "FAKE_NESTED_PID_FILE": str(nested_pid_file),
+        "BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS": "10",
+        "BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS": "10",
+    })
+    process = subprocess.Popen(
+        [
+            str(scripts / "run_v6_low_obstacle_phase_f_stack.sh"),
+            "M0", "--domain", "150", "--run-dir", str(run_dir),
+            "--socket", str(socket),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=env,
+    )
+    deadline = time.monotonic() + 5.0
+    while (
+        (not nested_pid_file.exists() or not (run_dir / "module3_ros.pgid").exists())
+        and time.monotonic() < deadline
+    ):
+        time.sleep(0.01)
+    assert nested_pid_file.exists()
+    nested_pid = int(nested_pid_file.read_text(encoding="utf-8"))
+    try:
+        os.killpg(process.pid, signal.SIGINT)
+        process.wait(timeout=10.0)
+        assert not Path(f"/proc/{nested_pid}").exists()
+        assert not list(run_dir.glob("*.pid"))
+        assert not list(run_dir.glob("*.pgid"))
+        assert not socket.exists()
+    finally:
+        for pid in (process.pid, nested_pid):
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+        if process.poll() is None:
+            process.wait(timeout=5.0)
+
+
+def test_campaign_releases_ros_and_isaac_locks_before_arm_two(
+    tmp_path, monkeypatch
+):
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    monkeypatch.setenv("ISAAC_NAV_RUNTIME_DIR", str(runtime_dir))
+    manifest = load_manifest(CONFIG)
+    manifest = replace(manifest, runs=manifest.runs[:2])
+    held = {}
+    scene_starts = 0
+
+    def fake_start(name, command, log_path, *, env=None):
+        nonlocal scene_starts
+        if name == "scene":
+            if scene_starts:
+                assert causal._lock_is_free(runtime_dir / "isaac.lock")
+                assert causal._lock_is_free(runtime_dir / "ros.lock")
+            scene_starts += 1
+        if name in {"scene", "stack"}:
+            component = "isaac" if name == "scene" else "ros"
+            stream = (runtime_dir / f"{component}.lock").open("a", encoding="utf-8")
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held[name] = stream
+        return SimpleNamespace(name=name)
+
+    def fake_stop(process, timeout_sec):
+        stream = held.pop(process.name, None)
+        if stream is not None:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            stream.close()
+        return {
+            "name": process.name,
+            "returncode": 0,
+            "cleanup_ok": True,
+            "remaining_process_groups": [],
+        }
+
+    monkeypatch.setattr(causal, "_start_process", fake_start)
+    monkeypatch.setattr(causal, "_stop_process", fake_stop)
+    monkeypatch.setattr(
+        causal, "_wait_for_startup_ready",
+        lambda managed, timeout: {
+            "ready": True, "generation": 1, "held": False,
+            "reason": "released:activation_gate",
+        },
+    )
+    monkeypatch.setattr(
+        causal.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(
+        causal, "record_evidence_from_bag", lambda *args, **kwargs: {"freshness": {}}
+    )
+    summary = run_campaign(
+        manifest,
+        AdapterTemplates("/scene", "/stack", "/episode", "/producer-stop"),
+        tmp_path / "campaign",
+        pilot=False,
+        shutdown_timeout_sec=0.1,
+    )
+    assert scene_starts == 2
+    assert [row["state"] for row in summary["runs"]] == [
+        "EPISODE_FINISHED", "EPISODE_FINISHED",
+    ]
+    assert causal._lock_is_free(runtime_dir / "isaac.lock")
+    assert causal._lock_is_free(runtime_dir / "ros.lock")
+
+
+def test_arm_cleanup_failure_aborts_before_the_next_arm(tmp_path, monkeypatch):
+    manifest = load_manifest(CONFIG)
+    manifest = replace(manifest, runs=manifest.runs[:2])
+    starts = []
+
+    def fake_start(name, command, log_path, *, env=None):
+        starts.append(name)
+        return SimpleNamespace(name=name)
+
+    monkeypatch.setattr(causal, "_start_process", fake_start)
+    monkeypatch.setattr(
+        causal, "_stop_process",
+        lambda process, timeout: {"name": process.name, "returncode": 0},
+    )
+    monkeypatch.setattr(
+        causal, "_wait_for_startup_ready",
+        lambda managed, timeout: {
+            "ready": True, "generation": 1, "held": False,
+            "reason": "released:activation_gate",
+        },
+    )
+    monkeypatch.setattr(
+        causal, "_confirm_arm_cleanup",
+        lambda *args, **kwargs: {"ok": False, "locks_free": {"ros": False}},
+    )
+    monkeypatch.setattr(
+        causal.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0)
+    )
+    monkeypatch.setattr(
+        causal, "record_evidence_from_bag", lambda *args, **kwargs: {"freshness": {}}
+    )
+    summary = run_campaign(
+        manifest,
+        AdapterTemplates("/scene", "/stack", "/episode", "/producer-stop"),
+        tmp_path / "campaign",
+        pilot=False,
+        shutdown_timeout_sec=0.1,
+    )
+    assert starts == ["scene", "stack", "recorder"]
+    assert len(summary["runs"]) == 1
+    assert summary["runs"][0]["state"] == "ARM_CLEANUP_FAILED"
     assert summary["state"] == "FINISHED_WITH_FAILURES"
 
 
@@ -994,8 +1304,12 @@ def test_exact_stack_adapter_maps_profiles_and_keeps_phase_f_isolation():
     assert "initialpose" not in stack
     assert '[[ "${1:-}" == "stop-producer" ]]' in stack
     assert 'wait "${module3_pid}"' in stack
-    assert 'integration_bridge.pid' in stack
-    assert 'module2_server.pid' in stack
+    assert "setsid --wait --" in stack
+    assert "descendant_groups" in stack
+    assert 'kill "-${signal_name}" -- "-${pgid}"' in stack
+    assert '"${run_dir}/${name}.pgid"' in stack
+    assert 'register_child integration_bridge "${integration_bridge_pid}"' in stack
+    assert 'register_child module2_server "${module2_server_pid}"' in stack
     assert "run_ros_profile gvg fail_closed auto M3 mixed final" in wrapper
     assert "cognitive_graph_mode:=\"${graph_mode}\"" in wrapper
     assert "run_v6_r5_phase_b_kujiale.sh\" isaac" in wrapper

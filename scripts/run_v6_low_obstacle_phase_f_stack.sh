@@ -9,6 +9,60 @@ usage() {
   echo "       $0 stop-producer --run-dir PATH" >&2
 }
 
+group_is_running() {
+  local pgid="$1"
+  ps -eo pgid=,stat= | awk -v group="${pgid}" '
+    $1 == group && $2 !~ /^Z/ { found = 1 }
+    END { exit !found }
+  '
+}
+
+signal_group() {
+  local signal_name="$1" pgid="$2"
+  group_is_running "${pgid}" || return 0
+  kill "-${signal_name}" -- "-${pgid}" 2>/dev/null || true
+}
+
+wait_group_exit() {
+  local pgid="$1" attempts="$2" index
+  for ((index=0; index<attempts; index++)); do
+    group_is_running "${pgid}" || return 0
+    sleep 0.05
+  done
+  ! group_is_running "${pgid}"
+}
+
+stop_registered_group() {
+  local name="$1" directory="$2" pid_file pgid_file pid pgid
+  local int_checks="${BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS:-100}"
+  local term_checks="${BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS:-100}"
+  pid_file="${directory}/${name}.pid"
+  pgid_file="${directory}/${name}.pgid"
+  [[ -f "${pid_file}" && -f "${pgid_file}" ]] || {
+    echo "missing producer process identity: ${name}" >&2
+    return 1
+  }
+  read -r pid <"${pid_file}"
+  read -r pgid <"${pgid_file}"
+  [[ "${pid}" =~ ^[1-9][0-9]*$ && "${pgid}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "invalid producer process identity: ${name}" >&2
+    return 1
+  }
+  signal_group INT "${pgid}"
+  if ! wait_group_exit "${pgid}" "${int_checks}"; then
+    signal_group TERM "${pgid}"
+    if ! wait_group_exit "${pgid}" "${term_checks}"; then
+      signal_group KILL "${pgid}"
+      wait_group_exit "${pgid}" 100 || {
+        echo "producer process group did not stop: ${name} pgid=${pgid}" >&2
+        return 1
+      }
+    fi
+  fi
+  wait "${pid}" 2>/dev/null || true
+  rm -f "${pid_file}" "${pgid_file}"
+}
+
 if [[ "${1:-}" == "stop-producer" ]]; then
   shift
   producer_run_dir=""
@@ -20,24 +74,7 @@ if [[ "${1:-}" == "stop-producer" ]]; then
   done
   [[ "${producer_run_dir}" == /* ]] || { usage; exit 2; }
   for name in integration_bridge module2_server; do
-    pid_file="${producer_run_dir}/${name}.pid"
-    [[ -f "${pid_file}" ]] || { echo "missing producer pid file: ${pid_file}" >&2; exit 1; }
-    read -r pid <"${pid_file}"
-    [[ "${pid}" =~ ^[0-9]+$ ]] || { echo "invalid producer pid: ${pid_file}" >&2; exit 1; }
-    kill -INT "${pid}" 2>/dev/null || true
-  done
-  for name in integration_bridge module2_server; do
-    pid_file="${producer_run_dir}/${name}.pid"
-    read -r pid <"${pid_file}"
-    for _ in {1..100}; do
-      kill -0 "${pid}" 2>/dev/null || break
-      sleep 0.05
-    done
-    if kill -0 "${pid}" 2>/dev/null; then
-      echo "producer did not stop: ${name} pid=${pid}" >&2
-      exit 1
-    fi
-    rm -f "${pid_file}"
+    stop_registered_group "${name}" "${producer_run_dir}" || exit 1
   done
   exit 0
 fi
@@ -83,35 +120,109 @@ fi
 mkdir -p "${run_dir}" "$(dirname "${socket_path}")"
 rm -f "${socket_path}"
 
+declare -a child_names=()
 declare -a child_pids=()
-shutdown() {
-  local index pid
-  trap - EXIT INT TERM
-  for ((index=${#child_pids[@]}-1; index>=0; --index)); do
-    pid="${child_pids[index]}"
-    kill -INT "${pid}" 2>/dev/null || true
-  done
-  for pid in "${child_pids[@]}"; do
-    wait "${pid}" 2>/dev/null || true
-  done
-  rm -f "${socket_path}" "${run_dir}/module2_server.pid" "${run_dir}/integration_bridge.pid"
-}
-trap shutdown EXIT INT TERM
+declare -a child_pgids=()
 
-"${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
+register_child() {
+  local name="$1" pid="$2" pgid="" index
+  for ((index=0; index<100; index++)); do
+    pgid="$(ps -o pgid= -p "${pid}" 2>/dev/null | tr -d '[:space:]')"
+    [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && break
+    sleep 0.01
+  done
+  [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "could not identify process group for ${name} pid=${pid}" >&2
+    return 1
+  }
+  child_names+=("${name}")
+  child_pids+=("${pid}")
+  child_pgids+=("${pgid}")
+  printf '%s\n' "${pid}" >"${run_dir}/${name}.pid"
+  printf '%s\n' "${pgid}" >"${run_dir}/${name}.pgid"
+}
+
+descendant_groups() {
+  local root_pid="$1" current child pgid
+  local -a queue=("${root_pid}")
+  local -A seen=(["${root_pid}"]=1)
+  while ((${#queue[@]})); do
+    current="${queue[0]}"
+    queue=("${queue[@]:1}")
+    while read -r child; do
+      [[ "${child}" =~ ^[1-9][0-9]*$ && -z "${seen[${child}]:-}" ]] || continue
+      seen["${child}"]=1
+      queue+=("${child}")
+      pgid="$(ps -o pgid= -p "${child}" 2>/dev/null | tr -d '[:space:]')"
+      [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && printf '%s\n' "${pgid}"
+    done < <(ps -o pid= --ppid "${current}" 2>/dev/null || true)
+  done
+}
+
+shutdown() {
+  local original_status="$1" index pid pgid failed=false own_pgid
+  local int_checks="${BIO_NAV_PHASE_F_CLEANUP_INT_CHECKS:-100}"
+  local term_checks="${BIO_NAV_PHASE_F_CLEANUP_TERM_CHECKS:-100}"
+  local -a tracked_groups=()
+  local -A unique_groups=()
+  trap - EXIT INT TERM HUP
+  own_pgid="$(ps -o pgid= -p "$$" | tr -d '[:space:]')"
+  for index in "${!child_names[@]}"; do
+    # stop-producer removes these identity files only after the exact producer
+    # group is gone.  Do not retain a reusable numeric PGID past that point.
+    [[ -f "${run_dir}/${child_names[index]}.pid" ]] || continue
+    pid="${child_pids[index]}"
+    tracked_groups+=("${child_pgids[index]}")
+    while read -r pgid; do
+      [[ "${pgid}" =~ ^[1-9][0-9]*$ ]] && tracked_groups+=("${pgid}")
+    done < <(descendant_groups "${pid}")
+  done
+  for pgid in "${tracked_groups[@]}"; do
+    [[ "${pgid}" != "${own_pgid}" ]] && unique_groups["${pgid}"]=1
+  done
+  for pgid in "${!unique_groups[@]}"; do signal_group INT "${pgid}"; done
+  for pgid in "${!unique_groups[@]}"; do
+    if ! wait_group_exit "${pgid}" "${int_checks}"; then
+      signal_group TERM "${pgid}"
+    fi
+  done
+  for pgid in "${!unique_groups[@]}"; do
+    if ! wait_group_exit "${pgid}" "${term_checks}"; then
+      signal_group KILL "${pgid}"
+    fi
+  done
+  for pgid in "${!unique_groups[@]}"; do
+    wait_group_exit "${pgid}" 100 || failed=true
+  done
+  for pid in "${child_pids[@]}"; do wait "${pid}" 2>/dev/null || true; done
+  rm -f "${socket_path}"
+  for index in "${!child_names[@]}"; do
+    rm -f "${run_dir}/${child_names[index]}.pid" "${run_dir}/${child_names[index]}.pgid"
+  done
+  if [[ "${failed}" == true ]]; then
+    echo "Phase-F stack cleanup left a tracked process group alive" >&2
+    exit 1
+  fi
+  exit "${original_status}"
+}
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+trap 'shutdown $?' EXIT
+
+setsid --wait -- "${script_dir}/run_v6_kujiale_low_obstacles.sh" ros "${arm}" \
   >"${run_dir}/module3_ros.log" 2>&1 &
 module3_pid="$!"
-child_pids+=("${module3_pid}")
+register_child module3_ros "${module3_pid}"
 
 if [[ "${arm}" != "M0" ]]; then
   if [[ "${arm}" == "M1" ]]; then
-    "${integration_root}/scripts/run_module2_v310_server.sh" \
+    setsid --wait -- "${integration_root}/scripts/run_module2_v310_server.sh" \
       --module2-root "${module2_root}" \
       --shadow-config configs/kujiale_0026_module1_visual_shadow_v310.yaml \
       --socket "${socket_path}" \
       >"${run_dir}/module2_server.log" 2>&1 &
   else
-    "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh" \
+    setsid --wait -- "${integration_root}/scripts/run_v6_module2_causal_obstacle_server.sh" \
       --startup-profile module2_causal_obstacle_active \
       --active-effect-scope obstacle_only \
       --socket "${socket_path}" \
@@ -120,20 +231,18 @@ if [[ "${arm}" != "M0" ]]; then
       >"${run_dir}/module2_server.log" 2>&1 &
   fi
   module2_server_pid="$!"
-  child_pids+=("${module2_server_pid}")
-  printf '%s\n' "${module2_server_pid}" >"${run_dir}/module2_server.pid"
+  register_child module2_server "${module2_server_pid}"
 
   source_ros --require-integration-underlay
   startup_profile="estimated_shadow"
   [[ "${arm}" =~ ^M[23]$ ]] && startup_profile="module2_causal_obstacle_active"
-  ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
+  setsid --wait -- ros2 launch bio_nav_ros_bridge v6_cognitive_navigation.launch.py \
     startup_profile:="${startup_profile}" \
     socket_path:="${socket_path}" \
     use_sim_time:=true \
     >"${run_dir}/integration_bridge.log" 2>&1 &
   integration_bridge_pid="$!"
-  child_pids+=("${integration_bridge_pid}")
-  printf '%s\n' "${integration_bridge_pid}" >"${run_dir}/integration_bridge.pid"
+  register_child integration_bridge "${integration_bridge_pid}"
 fi
 
 set +e

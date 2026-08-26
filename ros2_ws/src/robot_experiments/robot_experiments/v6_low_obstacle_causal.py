@@ -913,7 +913,9 @@ def _project_depth_obstacle(
     info_frame = _frame(_field(camera_info.message, "header.frame_id"))
     if not depth_frame or not info_frame or depth_frame != info_frame:
         return {"valid": False, "reason": "camera_frame_mismatch", "point_count": 0, "hit_count": 0, "footprints": []}
-    intrinsic = _field(camera_info.message, "k", ()) or ()
+    intrinsic = _field(camera_info.message, "k")
+    if intrinsic is None:
+        return {"valid": False, "reason": "invalid_camera_intrinsics", "point_count": 0, "hit_count": 0, "footprints": []}
     try:
         if len(intrinsic) < 9:
             raise ValueError
@@ -1678,6 +1680,116 @@ class _ManagedProcess:
     stream: Any
 
 
+def _startup_process_failure(managed: Sequence[_ManagedProcess]) -> str | None:
+    for item in managed:
+        returncode = item.process.poll()
+        if returncode is not None:
+            return f"{item.name} exited before startup readiness (returncode={returncode})"
+    return None
+
+
+def _wait_for_startup_ready(
+    managed: Sequence[_ManagedProcess],
+    timeout_sec: float,
+) -> dict[str, Any]:
+    """Wait for the completed and released Isaac-owned startup reset epoch.
+
+    The reset-stop status is transient-local, so a subscriber created after
+    the startup event observes the current gate state without replaying the
+    startup reset event into the formal episode guard.  Generation one is the
+    Isaac startup reset; generation two is reserved for the dispatcher.
+    """
+
+    if not math.isfinite(timeout_sec) or timeout_sec <= 0.0:
+        raise CausalContractError("startup readiness timeout must be finite and positive")
+    try:
+        import rclpy
+        from rclpy.context import Context
+        from rclpy.qos import (
+            DurabilityPolicy,
+            HistoryPolicy,
+            QoSProfile,
+            ReliabilityPolicy,
+        )
+        from std_msgs.msg import String
+    except ImportError as exc:
+        return {"ready": False, "reason": f"ROS startup probe unavailable: {exc}"}
+
+    context = Context()
+    node = None
+    observed: dict[str, Any] = {}
+    try:
+        rclpy.init(args=None, context=context)
+        node = rclpy.create_node(
+            f"v6_phase_f_startup_probe_{os.getpid()}", context=context
+        )
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
+        def receive(message: Any) -> None:
+            try:
+                value = json.loads(message.data)
+            except (AttributeError, json.JSONDecodeError, TypeError):
+                return
+            if isinstance(value, Mapping):
+                observed.clear()
+                observed.update(value)
+
+        subscription = node.create_subscription(
+            String, "/simulation/reset_stop_gate/status", receive, qos
+        )
+        deadline = time.monotonic() + timeout_sec
+        while True:
+            failure = _startup_process_failure(managed)
+            if failure is not None:
+                return {"ready": False, "reason": failure, "last_status": dict(observed)}
+            generation = observed.get("generation")
+            held = observed.get("held")
+            reason = str(observed.get("reason", ""))
+            if generation == 1 and held is False and reason.startswith("released:"):
+                return {
+                    "ready": True,
+                    "generation": generation,
+                    "held": held,
+                    "reason": reason,
+                }
+            if isinstance(generation, int) and not isinstance(generation, bool) and generation > 1:
+                return {
+                    "ready": False,
+                    "reason": f"unexpected startup reset generation {generation}",
+                    "last_status": dict(observed),
+                }
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                return {
+                    "ready": False,
+                    "reason": "startup reset generation 1 was not released before timeout",
+                    "last_status": dict(observed),
+                }
+            rclpy.spin_once(node, timeout_sec=min(remaining, 0.5))
+    except Exception as exc:
+        return {
+            "ready": False,
+            "reason": f"startup readiness probe failed: {type(exc).__name__}: {exc}",
+            "last_status": dict(observed),
+        }
+    finally:
+        if node is not None:
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+        if context.ok():
+            try:
+                rclpy.shutdown(context=context)
+            except Exception:
+                pass
+
+
 def _start_process(
     name: str,
     command: Sequence[str],
@@ -1704,19 +1816,141 @@ def _start_process(
 
 def _stop_process(managed: _ManagedProcess, timeout_sec: float) -> dict[str, Any]:
     process = managed.process
-    if process.poll() is None:
-        try:
-            os.killpg(process.pid, signal.SIGINT)
-            process.wait(timeout=timeout_sec)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGTERM)
+    groups = _managed_process_groups(process.pid)
+    try:
+        if process.poll() is None or _running_process_groups(groups):
+            _signal_process_groups(groups, signal.SIGINT)
+            if not _wait_process_groups(groups, timeout_sec):
+                _signal_process_groups(groups, signal.SIGTERM)
+                if not _wait_process_groups(groups, 5.0):
+                    _signal_process_groups(groups, signal.SIGKILL)
+                    _wait_process_groups(groups, 5.0)
+        if process.poll() is None:
             try:
-                process.wait(timeout=5.0)
+                process.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-                process.wait(timeout=5.0)
-    managed.stream.close()
-    return {"name": managed.name, "returncode": process.returncode}
+                pass
+    finally:
+        managed.stream.close()
+    remaining = sorted(_running_process_groups(groups))
+    return {
+        "name": managed.name,
+        "returncode": process.returncode,
+        "cleanup_ok": process.poll() is not None and not remaining,
+        "tracked_process_groups": sorted(groups),
+        "remaining_process_groups": remaining,
+    }
+
+
+def _process_table() -> dict[int, tuple[int, int, str]]:
+    table: dict[int, tuple[int, int, str]] = {}
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "stat").read_text(encoding="utf-8")
+            tail = raw[raw.rindex(")") + 2:].split()
+            table[int(entry.name)] = (int(tail[1]), int(tail[2]), tail[0])
+        except (FileNotFoundError, PermissionError, ValueError, IndexError):
+            continue
+    return table
+
+
+def _managed_process_groups(root_pid: int) -> set[int]:
+    table = _process_table()
+    descendants = {root_pid}
+    while True:
+        added = {
+            pid for pid, (parent, _group, _state) in table.items()
+            if parent in descendants and pid not in descendants
+        }
+        if not added:
+            break
+        descendants.update(added)
+    own_group = os.getpgrp()
+    return {
+        group for pid in descendants
+        if (row := table.get(pid)) is not None
+        for group in (row[1],)
+        if group > 1 and group != own_group
+    }
+
+
+def _running_process_groups(groups: Iterable[int]) -> set[int]:
+    selected = set(groups)
+    return {
+        group for _pid, (_parent, group, state) in _process_table().items()
+        if group in selected and state != "Z"
+    }
+
+
+def _signal_process_groups(groups: Iterable[int], signal_number: int) -> None:
+    for group in sorted(set(groups), reverse=True):
+        try:
+            os.killpg(group, signal_number)
+        except ProcessLookupError:
+            continue
+
+
+def _wait_process_groups(groups: Iterable[int], timeout_sec: float) -> bool:
+    deadline = time.monotonic() + max(0.0, timeout_sec)
+    while _running_process_groups(groups):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def _lock_is_free(path: Path) -> bool:
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return False
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    return True
+
+
+def _confirm_arm_cleanup(
+    run_dir: Path,
+    module2_socket: Path,
+    shutdown: Sequence[Mapping[str, Any]],
+    env: Mapping[str, str],
+) -> dict[str, Any]:
+    runtime_dir = Path(
+        env.get("ISAAC_NAV_RUNTIME_DIR", f"/tmp/isaac_sim_ros2_nav_{os.getuid()}")
+    ).expanduser().resolve()
+    locks = {
+        name: _lock_is_free(runtime_dir / f"{name}.lock")
+        for name in ("ros", "isaac")
+    }
+    stale_runtime_files = sorted(
+        str(path)
+        for pattern in ("*.pid", "*.pgid")
+        for path in run_dir.glob(pattern)
+    )
+    process_cleanup_ok = all(
+        row.get("cleanup_ok", row.get("returncode") is not None)
+        and not row.get("remaining_process_groups")
+        for row in shutdown
+        if row.get("name") in {"scene", "stack", "recorder"}
+    )
+    result = {
+        "ok": (
+            process_cleanup_ok
+            and all(locks.values())
+            and not stale_runtime_files
+            and not module2_socket.exists()
+        ),
+        "processes_clean": process_cleanup_ok,
+        "locks_free": locks,
+        "stale_runtime_files": stale_runtime_files,
+        "module2_socket_absent": not module2_socket.exists(),
+    }
+    return result
 
 
 def _rosbag_command(bag_dir: Path) -> tuple[str, ...]:
@@ -1735,7 +1969,7 @@ def run_campaign(
     pilot: bool,
     shutdown_timeout_sec: float = DEFAULT_SHUTDOWN_TIMEOUT_SEC,
 ) -> dict[str, Any]:
-    """Run ordered independent episodes; retain every failure and continue."""
+    """Run ordered independent episodes; stop if an arm cannot be cleaned."""
 
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -1768,6 +2002,7 @@ def run_campaign(
             "commands": row["commands"],
             "shutdown": [],
         }
+        cleanup_failed = False
         try:
             managed.append(_start_process(
                 "scene", row["commands"]["scene"], run_dir / "scene.log", env=campaign_env
@@ -1775,45 +2010,55 @@ def run_campaign(
             managed.append(_start_process(
                 "stack", row["commands"]["stack"], run_dir / "stack.log", env=campaign_env
             ))
-            managed.append(_start_process(
-                "recorder", _rosbag_command(run_dir / "bag"), run_dir / "recorder.log", env=campaign_env
-            ))
-            with (run_dir / "episode.stdout.log").open("w", encoding="utf-8") as stdout:
-                completed = subprocess.run(
-                    list(row["commands"]["episode"]),
-                    stdout=stdout,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    check=False,
-                    env=campaign_env,
-                )
-            status["episode_returncode"] = completed.returncode
-            status["state"] = "EPISODE_FINISHED" if completed.returncode == 0 else "EPISODE_FAILED"
-            if run.arm in {"M2", "M3"}:
-                producer_stop = row["commands"].get("producer_stop")
-                if not producer_stop:
-                    raise CausalContractError("active arm requires producer_stop adapter")
-                with (run_dir / "producer_stop.log").open("w", encoding="utf-8") as stdout:
-                    stopped = subprocess.run(
-                        list(producer_stop),
+            startup = _wait_for_startup_ready(
+                managed,
+                float(manifest.identity["timeout_sec"]),
+            )
+            status["startup"] = startup
+            if startup.get("ready") is not True:
+                status["state"] = "STARTUP_NOT_READY"
+                status["reason"] = str(startup.get("reason", "startup readiness failed"))
+            else:
+                managed.append(_start_process(
+                    "recorder", _rosbag_command(run_dir / "bag"), run_dir / "recorder.log", env=campaign_env
+                ))
+                with (run_dir / "episode.stdout.log").open("w", encoding="utf-8") as stdout:
+                    completed = subprocess.run(
+                        list(row["commands"]["episode"]),
                         stdout=stdout,
                         stderr=subprocess.STDOUT,
                         text=True,
                         check=False,
                         env=campaign_env,
                     )
-                status["producer_stop_returncode"] = stopped.returncode
-                if stopped.returncode != 0:
-                    raise CausalContractError("Module2 producer stop adapter failed")
-                drain_sec = float(manifest.freshness["typed_obstacle_ttl_sec"]) + float(
-                    manifest.freshness["post_producer_stop_observation_margin_sec"]
-                )
-                status["ttl_observation_wait_sec"] = drain_sec
-                time.sleep(drain_sec)
-            else:
-                status["ttl_observation_wait_sec"] = None
+                status["episode_returncode"] = completed.returncode
+                status["state"] = "EPISODE_FINISHED" if completed.returncode == 0 else "EPISODE_FAILED"
+                if run.arm in {"M2", "M3"}:
+                    producer_stop = row["commands"].get("producer_stop")
+                    if not producer_stop:
+                        raise CausalContractError("active arm requires producer_stop adapter")
+                    with (run_dir / "producer_stop.log").open("w", encoding="utf-8") as stdout:
+                        stopped = subprocess.run(
+                            list(producer_stop),
+                            stdout=stdout,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            check=False,
+                            env=campaign_env,
+                        )
+                    status["producer_stop_returncode"] = stopped.returncode
+                    if stopped.returncode != 0:
+                        raise CausalContractError("Module2 producer stop adapter failed")
+                    drain_sec = float(manifest.freshness["typed_obstacle_ttl_sec"]) + float(
+                        manifest.freshness["post_producer_stop_observation_margin_sec"]
+                    )
+                    status["ttl_observation_wait_sec"] = drain_sec
+                    time.sleep(drain_sec)
+                else:
+                    status["ttl_observation_wait_sec"] = None
         except (OSError, CausalContractError) as exc:
-            status["state"] = "ADAPTER_FAILED"
+            if status["state"] != "STARTUP_NOT_READY":
+                status["state"] = "ADAPTER_FAILED"
             status["reason"] = str(exc)
         finally:
             by_name = {process.name: process for process in managed}
@@ -1825,6 +2070,21 @@ def run_campaign(
                     status["shutdown"].append(_stop_process(process, shutdown_timeout_sec))
                 except OSError as exc:
                     status["shutdown"].append({"name": process.name, "error": str(exc)})
+            try:
+                cleanup = _confirm_arm_cleanup(
+                    run_dir,
+                    Path(row["setup"]["module2_socket"]),
+                    status["shutdown"],
+                    campaign_env,
+                )
+            except OSError as exc:
+                cleanup = {"ok": False, "error": str(exc)}
+            status["cleanup"] = cleanup
+            if cleanup.get("ok") is not True:
+                cleanup_failed = True
+                status["state_before_cleanup"] = status["state"]
+                status["state"] = "ARM_CLEANUP_FAILED"
+                status["reason"] = "arm children or runtime locks remained after shutdown"
 
         evidence_path = run_dir / f"{run.run_id}.json"
         try:
@@ -1864,6 +2124,8 @@ def run_campaign(
             json.dumps(status, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         results.append(status)
+        if cleanup_failed:
+            break
 
     summary = {
         "qualification": RUN_QUALIFICATION,
