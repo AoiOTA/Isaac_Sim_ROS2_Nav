@@ -47,7 +47,7 @@ paired_appearance:
 mission:
   reset_pose: {id: G1, frame_id: map, x: 0.45, y: -5.35, yaw_deg: 90.0}
   legs:
-    - {id: V2_S84, frame_id: map, x: -3.565, y: -2.745}
+    - {id: V2_S84, frame_id: map, x: -3.475, y: -2.475}
     - {id: V2_S147, frame_id: map, x: -4.315, y: 1.005}
     - {id: V2_S118, frame_id: map, x: -1.915, y: -0.395}
     - {id: V2_S167, frame_id: map, x: -0.315, y: 2.905}
@@ -55,4 +55,4 @@ mission:
     - {id: V2_G1_S40, frame_id: map, x: 0.45, y: -5.35}
   best_effort_leg_ids: []
 episodes:
-  - {seed: 7911, variant_id: baseline, reset_pose_name: long_route_start_g1, dynamic_case_id: static}
+  - {seed: 7913, variant_id: baseline, reset_pose_name: long_route_start_g1, dynamic_case_id: static}

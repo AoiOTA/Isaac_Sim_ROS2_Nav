@@ -3,6 +3,7 @@ import math
 from pathlib import Path
 import subprocess
 
+import cv2
 import numpy as np
 import pytest
 import yaml
@@ -126,9 +127,12 @@ def test_post_run4b_manifests_are_new_read_only_splits_with_strict_routes():
         "status": "raw_until_audit",
         "evaluation_read_only": True,
     }
-    assert (v2.episode.seed, t2.episode.seed) == (7911, 7912)
+    assert (v2.episode.seed, t2.episode.seed) == (7913, 7912)
     assert v2.paired_appearance["variant_profile_id"] == "dim_warm"
     assert t2.paired_appearance["variant_profile_id"] == "bright_cool"
+    assert (v2.mission_legs[0].x, v2.mission_legs[0].y) == pytest.approx(
+        (-3.475, -2.475)
+    )
     assert [state_id_for_map_xy(leg.x, leg.y) for leg in v2.mission_legs] == [
         84,
         147,
@@ -199,6 +203,22 @@ def test_post_run4b_routes_have_feasible_unique_canonical_gvg_connectors():
         "padded_inscribed_radius_m": 0.215,
         "sweep_sample_spacing_m": 0.025,
     }
+    v2_s84 = load_targeted_teaching_manifest(V2).mission_legs[0]
+    v2_s84_pixel = occupancy.world_to_pixel(v2_s84.x, v2_s84.y)
+    static_clearance_m = (
+        cv2.distanceTransform(
+            np.where(occupancy.free, 255, 0).astype(np.uint8),
+            cv2.DIST_L2,
+            cv2.DIST_MASK_PRECISE,
+        )[v2_s84_pixel]
+        * occupancy.resolution_m
+    )
+    assert static_clearance_m == pytest.approx(math.sqrt(0.1), abs=1e-6)
+    assert static_clearance_m > footprint["padded_inscribed_radius_m"]
+    assert math.dist(
+        (v2_s84.x, v2_s84.y),
+        (-3.387832736968995, -2.5402230739593485),
+    ) < 0.20
 
     route_pairs: dict[str, tuple[tuple[int, int], ...]] = {}
     for manifest in (
