@@ -15,6 +15,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 import robot_experiments.v6_low_obstacle_causal as causal
 
@@ -53,7 +54,7 @@ def _evidence(manifest, run, *, stale=False, omit=None, m3_same_as_m2=False):
     plan = _paths(run.arm)
     if m3_same_as_m2 and run.arm == "M3":
         plan = _paths("M2")
-    typed = [] if run.arm == "M0" else [{
+    typed = [] if run.arm not in {"M2", "M3"} else [{
         "x": 1.02, "y": 2.01, "accepted": True,
         "observed_spatial_error_m": 0.022360679774997918,
     }]
@@ -237,10 +238,17 @@ def test_evaluator_pairs_scan_invisibility_and_typed_spatial_match(tmp_path):
     _write_evidence(tmp_path, manifest)
     summary = evaluate(manifest, tmp_path)
     assert all(result.synchronized_frames == 1 for result in summary.runs)
-    assert all(result.scan_invisible_rgbd_pairs == 1 for result in summary.runs)
+    assert all(
+        result.scan_invisible_rgbd_pairs == (1 if result.arm in {"M2", "M3"} else 0)
+        for result in summary.runs
+    )
     assert all(
         result.typed_spatial_matches == result.typed_spatial_total == 1
-        for result in summary.runs if result.arm != "M0"
+        for result in summary.runs if result.arm in {"M2", "M3"}
+    )
+    assert all(
+        result.typed_spatial_matches == result.typed_spatial_total == 0
+        for result in summary.runs if result.arm in {"M0", "M1"}
     )
 
 
@@ -555,7 +563,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
             },
         }]}),
         RecordedMessage("/scan", stamp, {
-            "header": {"stamp": stamp},
+            "header": {"stamp": stamp, "frame_id": "map"},
             "scan_point_count": 80,
             "scan_hits_in_obstacle_footprints": 0,
         }),
@@ -568,7 +576,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
             "pose": {"pose": {"position": {"x": 0.0, "y": 0.0}}},
         }),
         RecordedMessage("/bio_nav/module2/cognitive_obstacles", stamp, {
-            "header": {"stamp": stamp},
+            "header": {"stamp": stamp, "frame_id": "map"},
             "module2_healthy": True,
             "trusted_write": True,
             "observation_valid": True,
@@ -584,7 +592,7 @@ def test_recorder_reduces_synthetic_messages_to_required_real_fields():
             }],
         }),
         RecordedMessage("/bio_nav/module2/cognitive_obstacles", stamp + 100_000_000, {
-            "header": {"stamp": stamp + 100_000_000},
+            "header": {"stamp": stamp + 100_000_000, "frame_id": "map"},
             "module2_healthy": True,
             "trusted_write": True,
             "observation_valid": True,
@@ -895,6 +903,181 @@ def test_camera_info_numpy_intrinsics_are_accepted_and_invalid_arrays_fail_close
         assert rejected["valid"] is False
         assert rejected["reason"] == "invalid_camera_intrinsics"
         assert rejected["footprints"] == []
+
+
+def _typed_obstacle_message(*, pose, position_stddev):
+    return SimpleNamespace(
+        input_healthy=True,
+        module2_healthy=True,
+        observation_valid=True,
+        trusted_write=True,
+        obstacles=[SimpleNamespace(
+            id="v6_low_box_solo",
+            class_id="unknown_low_obstacle",
+            pose_xy_m=pose,
+            radius_m=0.2,
+            height_m=0.15,
+            confidence=0.9,
+            reliability=0.8,
+            ood_probability=0.1,
+            position_stddev_m=position_stddev,
+            count=3,
+        )],
+    )
+
+
+def test_typed_obstacles_accept_real_ndarray_and_match_list_and_array():
+    from array import array
+
+    numpy = pytest.importorskip("numpy")
+    expected = [{
+        "id": "v6_low_box_solo",
+        "x": -0.45,
+        "y": -0.35,
+        "radius_m": 0.2,
+        "confidence": 0.9,
+        "accepted": True,
+        "trusted_write": True,
+    }]
+    variants = (
+        ([-0.45, -0.35], [0.05, 0.06]),
+        (
+            numpy.asarray([-0.45, -0.35], dtype=numpy.float64),
+            numpy.asarray([0.05, 0.06], dtype=numpy.float64),
+        ),
+        (array("d", [-0.45, -0.35]), array("d", [0.05, 0.06])),
+    )
+    for pose, position_stddev in variants:
+        assert causal._typed_obstacles(_typed_obstacle_message(
+            pose=pose, position_stddev=position_stddev,
+        )) == expected
+
+
+def test_typed_obstacles_invalid_arrays_and_nonfinite_values_fail_closed():
+    numpy = pytest.importorskip("numpy")
+    invalid_arrays = (
+        (numpy.asarray(1.0), numpy.asarray([0.05, 0.06])),
+        (numpy.asarray([-0.45]), numpy.asarray([0.05, 0.06])),
+        (numpy.asarray([-0.45, numpy.nan]), numpy.asarray([0.05, 0.06])),
+        (numpy.asarray([-0.45, -0.35]), numpy.asarray([0.05])),
+        (numpy.asarray([-0.45, -0.35]), numpy.asarray([0.05, numpy.inf])),
+        (numpy.asarray([-0.45, -0.35]), numpy.asarray([0.05, -0.01])),
+    )
+    for pose, position_stddev in invalid_arrays:
+        assert causal._typed_obstacles(_typed_obstacle_message(
+            pose=pose, position_stddev=position_stddev,
+        )) == []
+
+    for field_name, invalid_value in (
+        ("radius_m", 0.0),
+        ("radius_m", numpy.nan),
+        ("height_m", numpy.inf),
+        ("confidence", 1.1),
+        ("confidence", numpy.nan),
+        ("reliability", -0.1),
+        ("ood_probability", numpy.inf),
+        ("count", 0),
+    ):
+        message = _typed_obstacle_message(
+            pose=numpy.asarray([-0.45, -0.35]),
+            position_stddev=numpy.asarray([0.05, 0.06]),
+        )
+        setattr(message.obstacles[0], field_name, invalid_value)
+        assert causal._typed_obstacles(message) == []
+
+
+def test_typed_obstacles_transform_source_frame_at_validation_stamp():
+    numpy = pytest.importorskip("numpy")
+    stamp = 2_000_000_000
+    message = _typed_obstacle_message(
+        pose=numpy.asarray([0.0, 0.0]),
+        position_stddev=numpy.asarray([0.05, 0.06]),
+    )
+    message.header = SimpleNamespace(frame_id="base_link")
+    message.validation_stamp = SimpleNamespace(sec=2, nanosec=0)
+    transform = RecordedMessage("/tf", stamp, {"transforms": [{
+        "header": {"stamp": stamp, "frame_id": "map"},
+        "child_frame_id": "base_link",
+        "transform": {
+            "translation": {"x": -0.45, "y": -0.35, "z": 0.0},
+            "rotation": {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0},
+        },
+    }]})
+    observed = causal._typed_obstacles(
+        message,
+        tf_records=[transform],
+        target_frame="map",
+    )
+    assert [(row["x"], row["y"]) for row in observed] == [(-0.45, -0.35)]
+    assert causal._typed_obstacles(message, target_frame="map") == []
+
+
+def test_m1_health_is_reduced_from_planning_prior_not_typed_obstacles():
+    manifest = load_manifest(CONFIG)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    stamp = 2_000_000_000
+    records = [
+        RecordedMessage("/bio_nav/module2/planning_prior", stamp + offset, {
+            "module2_healthy": healthy,
+            "observation_valid": healthy,
+            "trusted_write": False,
+        })
+        for offset, healthy in ((0, True), (100_000_000, True), (200_000_000, False))
+    ]
+    records.append(RecordedMessage("/ground_truth/odom", stamp, {
+        "pose": {"pose": {"position": {"x": -1.0, "y": -1.0}}},
+    }))
+    evidence = build_recorded_evidence(manifest, run, records, {
+        "state": "SUCCEEDED",
+        "reset_calls": 1,
+        "reset_events": 1,
+        "goal_publications": 1,
+        "terminal_zero_confirmed": True,
+    })
+    assert evidence["module2_uds_connected"] is True
+    assert evidence["module2_health"] == {
+        "message_count": 3,
+        "healthy_count": 2,
+        "trusted_write_count": 0,
+        "observation_valid_count": 2,
+        "candidate_cadence_hz": pytest.approx(10.0),
+        "scope": "low_obstacle_only",
+    }
+    assert evidence["obstacle_validation"] == []
+    assert evidence["planning_prior"][0]["module2_healthy"] is True
+
+
+def test_m1_evaluator_does_not_require_typed_or_depth_validation(tmp_path):
+    manifest = load_manifest(CONFIG)
+    _write_evidence(tmp_path, manifest)
+    run = next(item for item in manifest.runs if item.arm == "M1")
+    row = _evidence(manifest, run)
+    row["synchronized_samples"][0].update({
+        "depth_observation_valid": "not_applicable",
+        "depth_observation_reason": None,
+        "depth_point_count": None,
+        "depth_hits_in_obstacle_bounds": None,
+        "rgbd_obstacle_footprints": [],
+        "typed_obstacles": [],
+    })
+    row["obstacle_validation"] = []
+    (tmp_path / f"{run.run_id}.json").write_text(json.dumps(row), encoding="utf-8")
+    summary = evaluate(manifest, tmp_path)
+    result = next(item for item in summary.runs if item.run_id == run.run_id)
+    assert result.verdict == "VALID"
+    assert result.typed_spatial_total == 0
+
+
+def test_phase_f_qos_records_transient_local_tf_static():
+    document = yaml.safe_load(
+        (PACKAGE / "config" / causal.PHASE_F_QOS_CONFIG).read_text(encoding="utf-8")
+    )
+    assert document["/tf_static"] == {
+        "history": "keep_last",
+        "depth": 1,
+        "reliability": "reliable",
+        "durability": "transient_local",
+    }
 
 
 def test_recorded_tf_chain_and_inverse_are_composed_at_depth_stamp():

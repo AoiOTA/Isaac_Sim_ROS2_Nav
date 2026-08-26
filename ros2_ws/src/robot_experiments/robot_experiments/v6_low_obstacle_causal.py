@@ -677,27 +677,161 @@ def _load_frozen_obstacle(manifest: CausalManifest) -> dict[str, Any]:
     }
 
 
-def _typed_obstacles(message: Any) -> list[dict[str, Any]]:
+def _finite_flat_floats(
+    value: Any,
+    *,
+    minimum_length: int | None = None,
+    exact_length: int | None = None,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> tuple[float, ...] | None:
+    """Flatten list/array-like numeric fields without depending on NumPy."""
+
+    if value is None or isinstance(value, (str, bytes, bytearray, Mapping)):
+        return None
+    if hasattr(value, "tolist"):
+        try:
+            value = value.tolist()
+        except (TypeError, ValueError):
+            return None
+
+    flattened: list[float] = []
+
+    def append(raw: Any) -> bool:
+        if isinstance(raw, (str, bytes, bytearray, Mapping)):
+            return False
+        if isinstance(raw, Iterable):
+            try:
+                items = list(raw)
+            except (TypeError, ValueError):
+                return False
+            return all(append(item) for item in items)
+        try:
+            number = float(raw)
+        except (TypeError, ValueError):
+            return False
+        if not math.isfinite(number):
+            return False
+        if minimum is not None and number < minimum:
+            return False
+        if maximum is not None and number > maximum:
+            return False
+        flattened.append(number)
+        return True
+
+    if not append(value):
+        return None
+    if exact_length is not None and len(flattened) != exact_length:
+        return None
+    if minimum_length is not None and len(flattened) < minimum_length:
+        return None
+    return tuple(flattened)
+
+
+def _finite_float(
+    value: Any,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(result):
+        return None
+    if minimum is not None and result < minimum:
+        return None
+    if maximum is not None and result > maximum:
+        return None
+    return result
+
+
+def _typed_obstacles(
+    message: Any,
+    *,
+    tf_records: Sequence[RecordedMessage] = (),
+    tf_static_records: Sequence[RecordedMessage] = (),
+    target_frame: str | None = None,
+) -> list[dict[str, Any]]:
     accepted = bool(
         _field(message, "input_healthy", True)
         and _field(message, "module2_healthy", False)
         and _field(message, "observation_valid", False)
     )
     trusted_write = bool(_field(message, "trusted_write", False))
+    transform: RigidTransform | None = None
+    if target_frame is not None:
+        source_frame = _frame(_field(message, "header.frame_id"))
+        requested_frame = _frame(target_frame)
+        if not source_frame or not requested_frame:
+            return []
+        if source_frame != requested_frame:
+            validation_stamp_ns = _time_ns(_field(message, "validation_stamp"))
+            if validation_stamp_ns is None or validation_stamp_ns <= 0:
+                return []
+            transform = _lookup_recorded_transform(
+                tf_records,
+                tf_static_records,
+                target_frame=requested_frame,
+                source_frame=source_frame,
+                stamp_ns=validation_stamp_ns,
+            )
+            if transform is None:
+                return []
     result: list[dict[str, Any]] = []
     for obstacle in _field(message, "obstacles", ()) or ():
-        pose = _field(obstacle, "pose_xy_m")
-        if not isinstance(pose, Sequence) or len(pose) < 2:
+        pose = _finite_flat_floats(_field(obstacle, "pose_xy_m"), minimum_length=2)
+        radius = _finite_float(_field(obstacle, "radius_m"), minimum=0.0)
+        confidence = _finite_float(_field(obstacle, "confidence"), minimum=0.0, maximum=1.0)
+        obstacle_id = str(_field(obstacle, "id", ""))
+        if pose is None or radius is None or radius <= 0.0 or confidence is None or not obstacle_id:
             continue
-        result.append({
-            "id": str(_field(obstacle, "id", "")),
-            "x": float(pose[0]),
-            "y": float(pose[1]),
-            "radius_m": float(_field(obstacle, "radius_m", 0.0)),
-            "confidence": float(_field(obstacle, "confidence", 0.0)),
-            "accepted": accepted,
-            "trusted_write": trusted_write,
-        })
+
+        # Fixed-size ROS arrays decode as NumPy arrays in rosbag2_py on Jazzy.
+        # Validate optional message-contract fields when present, while retaining
+        # compatibility with the small dictionary fixtures used by offline tests.
+        position_stddev = _field(obstacle, "position_stddev_m")
+        if position_stddev is not None and _finite_flat_floats(
+            position_stddev, exact_length=2, minimum=0.0
+        ) is None:
+            continue
+        for field_name in ("height_m",):
+            field_value = _field(obstacle, field_name)
+            if field_value is not None and _finite_float(field_value, minimum=0.0) is None:
+                break
+        else:
+            for field_name in ("reliability", "ood_probability"):
+                field_value = _field(obstacle, field_name)
+                if field_value is not None and _finite_float(
+                    field_value, minimum=0.0, maximum=1.0
+                ) is None:
+                    break
+            else:
+                count = _field(obstacle, "count")
+                if count is not None:
+                    try:
+                        if int(count) <= 0:
+                            continue
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                class_id = _field(obstacle, "class_id")
+                if class_id is not None and str(class_id) != "unknown_low_obstacle":
+                    continue
+                x, y = pose[0], pose[1]
+                if transform is not None:
+                    x, y, _ = _apply_transform(transform, (x, y, 0.0))
+                    if not math.isfinite(x) or not math.isfinite(y):
+                        continue
+                result.append({
+                    "id": obstacle_id,
+                    "x": x,
+                    "y": y,
+                    "radius_m": radius,
+                    "confidence": confidence,
+                    "accepted": accepted,
+                    "trusted_write": trusted_write,
+                })
     return result
 
 
@@ -1087,6 +1221,12 @@ def build_recorded_evidence(
     tf_records = by_topic.get("/tf", [])
     tf_static_records = by_topic.get("/tf_static", [])
     gt_records = by_topic.get("/ground_truth/odom", [])
+    planning_prior_records = [
+        row
+        for topic in ("/bio_nav/module2/planning_prior", "/bio_nav/module2/goal_planning_prior")
+        for row in by_topic.get(topic, [])
+    ]
+    planning_prior_records.sort(key=_message_stamp_ns)
     if typed_records:
         anchors = typed_records
     else:
@@ -1123,7 +1263,12 @@ def build_recorded_evidence(
         )
         typed_values = []
         if typed is not None and abs(_message_stamp_ns(typed) - stamp) <= DEFAULT_SYNC_TOLERANCE_NS:
-            typed_values = _typed_obstacles(typed.message)
+            typed_values = _typed_obstacles(
+                typed.message,
+                tf_records=tf_records,
+                tf_static_records=tf_static_records,
+                target_frame="map",
+            )
         observed_centers = [
             _footprint_center(value) for value in depth_observation["footprints"]
         ]
@@ -1169,10 +1314,6 @@ def build_recorded_evidence(
     ]
     max_age = max(message_ages + status_ages, default=0.0)
     ttl = float(manifest.freshness["typed_obstacle_ttl_sec"])
-    typed_stamps = [_message_stamp_ns(row) for row in typed_records]
-    cadence_hz = 0.0
-    if len(typed_stamps) >= 2 and typed_stamps[-1] > typed_stamps[0]:
-        cadence_hz = (len(typed_stamps) - 1) * 1.0e9 / (typed_stamps[-1] - typed_stamps[0])
     active_ttl = run.arm in {"M2", "M3"}
     latest_typed: RecordedMessage | None = None
     latest_validation_ns: int | None = None
@@ -1278,14 +1419,37 @@ def build_recorded_evidence(
             "angular_z": float(_field(row.message, "angular.z", 0.0)),
         })
 
-    obstacle_messages = [_typed_obstacles(row.message) for row in typed_records]
+    obstacle_messages = [
+        _typed_obstacles(
+            row.message,
+            tf_records=tf_records,
+            tf_static_records=tf_static_records,
+            target_frame="map",
+        )
+        for row in typed_records
+    ]
     obstacle_validation = [item for values in obstacle_messages for item in values if item["accepted"]]
+    health_records = planning_prior_records if run.arm == "M1" else typed_records
+    health_stamps = [_message_stamp_ns(row) for row in health_records]
+    health_cadence_hz = 0.0
+    if len(health_stamps) >= 2 and health_stamps[-1] > health_stamps[0]:
+        health_cadence_hz = (
+            (len(health_stamps) - 1) * 1.0e9 / (health_stamps[-1] - health_stamps[0])
+        )
     module2_health = {
-        "message_count": len(typed_records),
-        "healthy_count": sum(bool(_field(row.message, "module2_healthy", False)) for row in typed_records),
-        "trusted_write_count": sum(bool(_field(row.message, "trusted_write", False)) for row in typed_records),
-        "observation_valid_count": sum(bool(_field(row.message, "observation_valid", False)) for row in typed_records),
-        "candidate_cadence_hz": cadence_hz,
+        "message_count": len(health_records),
+        "healthy_count": sum(
+            bool(_field(row.message, "module2_healthy", False))
+            and bool(_field(row.message, "observation_valid", False))
+            for row in health_records
+        ),
+        "trusted_write_count": sum(
+            bool(_field(row.message, "trusted_write", False)) for row in health_records
+        ),
+        "observation_valid_count": sum(
+            bool(_field(row.message, "observation_valid", False)) for row in health_records
+        ),
+        "candidate_cadence_hz": health_cadence_hz,
         "scope": "low_obstacle_only",
     }
     isolation_counts = {topic: len(by_topic.get(topic, [])) for topic in ISOLATION_AUDIT_TOPICS}
@@ -1298,7 +1462,7 @@ def build_recorded_evidence(
         "repeat": run.repeat,
         "arm": run.arm,
         "identity": dict(manifest.identity),
-        "module2_uds_connected": bool(typed_records) if run.arm != "M0" else False,
+        "module2_uds_connected": bool(health_records) if run.arm != "M0" else False,
         "module2_health": module2_health,
         "isolation": {
             "module1_amcl_prior_enabled": False,
@@ -1365,11 +1529,12 @@ def build_recorded_evidence(
             "near_obstacle_speed_mps": _near_obstacle_speed(command_records, gt_records, obstacle),
             "offline_reconstructed_scores": [],
         },
-        "planning_prior": [
-            {"stamp_ns": _message_stamp_ns(row), "healthy": bool(_field(row.message, "healthy", False))}
-            for topic in ("/bio_nav/module2/planning_prior", "/bio_nav/module2/goal_planning_prior")
-            for row in by_topic.get(topic, [])
-        ],
+        "planning_prior": [{
+            "stamp_ns": _message_stamp_ns(row),
+            "module2_healthy": bool(_field(row.message, "module2_healthy", False)),
+            "observation_valid": bool(_field(row.message, "observation_valid", False)),
+            "trusted_write": bool(_field(row.message, "trusted_write", False)),
+        } for row in planning_prior_records],
         "costmaps": {
             "global": {"recorded": bool(by_topic.get("/global_costmap/costmap"))},
             "local": {"recorded": bool(by_topic.get("/local_costmap/costmap"))},
@@ -2940,7 +3105,12 @@ def _footprint_center(value: Any) -> tuple[float, float]:
     return float(row["x"]), float(row["y"])
 
 
-def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, int, int, int]:
+def _scan_and_spatial_metrics(
+    samples: Any,
+    tolerance_m: float,
+    *,
+    validate_obstacles: bool = True,
+) -> tuple[int, int, int, int]:
     if not isinstance(samples, list) or not samples:
         raise CausalContractError("synchronized_samples must be a non-empty list")
     synchronized = invisible = matched = total = valid_scan_samples = 0
@@ -2955,6 +3125,23 @@ def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, in
         typed = sample.get("typed_obstacles")
         if not isinstance(footprints, list) or not isinstance(typed, list):
             raise CausalContractError(f"synchronized_samples[{index}] missing obstacle arrays")
+        scan_points = sample.get("scan_point_count")
+        scan_hits = sample.get("scan_hits_in_obstacle_footprints")
+        if isinstance(scan_points, bool) or not isinstance(scan_points, int) or scan_points < 0:
+            raise CausalContractError(f"synchronized_samples[{index}].scan_point_count invalid")
+        if isinstance(scan_hits, bool) or not isinstance(scan_hits, int) or scan_hits < 0:
+            raise CausalContractError(f"synchronized_samples[{index}].scan_hits_in_obstacle_footprints invalid")
+        scan_valid = sample.get("scan_valid")
+        if not isinstance(scan_valid, bool):
+            raise CausalContractError(f"synchronized_samples[{index}].scan_valid invalid")
+        if scan_hits != 0:
+            raise CausalContractError(
+                f"synchronized_samples[{index}] low-obstacle scan hit count must be zero"
+            )
+        if scan_valid and scan_points > 0:
+            valid_scan_samples += 1
+        if not validate_obstacles:
+            continue
         depth_valid = sample.get("depth_observation_valid")
         if not isinstance(depth_valid, bool):
             raise CausalContractError(
@@ -2986,21 +3173,6 @@ def _scan_and_spatial_metrics(samples: Any, tolerance_m: float) -> tuple[int, in
                 raise CausalContractError(
                     f"synchronized_samples[{index}] footprint point_count invalid"
                 )
-        scan_points = sample.get("scan_point_count")
-        scan_hits = sample.get("scan_hits_in_obstacle_footprints")
-        if isinstance(scan_points, bool) or not isinstance(scan_points, int) or scan_points < 0:
-            raise CausalContractError(f"synchronized_samples[{index}].scan_point_count invalid")
-        if isinstance(scan_hits, bool) or not isinstance(scan_hits, int) or scan_hits < 0:
-            raise CausalContractError(f"synchronized_samples[{index}].scan_hits_in_obstacle_footprints invalid")
-        scan_valid = sample.get("scan_valid")
-        if not isinstance(scan_valid, bool):
-            raise CausalContractError(f"synchronized_samples[{index}].scan_valid invalid")
-        if scan_hits != 0:
-            raise CausalContractError(
-                f"synchronized_samples[{index}] low-obstacle scan hit count must be zero"
-            )
-        if scan_valid and scan_points > 0:
-            valid_scan_samples += 1
         if footprints and scan_valid and scan_points > 0 and scan_hits == 0:
             invisible += 1
         centers = tuple(_footprint_center(item) for item in footprints)
@@ -3139,17 +3311,20 @@ def _evaluate_run(manifest: CausalManifest, run: RunContract, path: Path) -> tup
             or scan_message_count <= 0
         ):
             raise CausalContractError("/scan message count must be positive")
+        active_obstacle_validation = run.arm in {"M2", "M3"}
         synchronized, invisible, matches, spatial_total = _scan_and_spatial_metrics(
-            row["synchronized_samples"], tolerance
+            row["synchronized_samples"],
+            tolerance,
+            validate_obstacles=active_obstacle_validation,
         )
-        if run.arm != "M0" and spatial_total == 0:
+        if active_obstacle_validation and spatial_total == 0:
             raise CausalContractError("typed obstacle spatial evidence missing")
-        if run.arm != "M0" and matches != spatial_total:
+        if active_obstacle_validation and matches != spatial_total:
             raise CausalContractError("typed obstacle spatial match failed")
         validations = row["obstacle_validation"]
         if not isinstance(validations, list):
             raise CausalContractError("obstacle_validation must be a list")
-        if run.arm != "M0" and not validations:
+        if active_obstacle_validation and not validations:
             raise CausalContractError("typed obstacle validation evidence missing")
 
         freshness = _mapping(row["freshness"], "freshness")
