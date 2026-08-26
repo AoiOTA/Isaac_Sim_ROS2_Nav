@@ -53,6 +53,42 @@ DEFAULT_SHUTDOWN_TIMEOUT_SEC = 20.0
 FAST_PRODUCER_DROPOUT_GUARD_NS = 250_000_000
 MIN_STOP_GUARD_NS = FAST_PRODUCER_DROPOUT_GUARD_NS
 REVISION_MATCH_TOLERANCE_NS = 1_000_000
+PARENT_DOMAIN_ENV_NAMES = (
+    "ROS_DOMAIN_ID",
+    "ISAAC_NAV_EXPECTED_DOMAIN_ID",
+    "BIO_NAV_PHASE_F_DOMAIN_ID",
+)
+
+
+def _validate_parent_domain_contract(
+    manifest: CausalManifest,
+    environ: Mapping[str, str],
+) -> None:
+    expected = int(manifest.identity["ros_domain_id"])
+    raw_values = {
+        name: environ.get(name)
+        for name in PARENT_DOMAIN_ENV_NAMES
+    }
+    parsed_values: dict[str, int] = {}
+    for name, raw_value in raw_values.items():
+        if raw_value is None:
+            continue
+        try:
+            parsed_values[name] = int(raw_value)
+        except ValueError:
+            continue
+    if (
+        len(parsed_values) == len(PARENT_DOMAIN_ENV_NAMES)
+        and all(value == expected for value in parsed_values.values())
+    ):
+        return
+    rendered = "; ".join(
+        f"{name}={raw_values[name] if raw_values[name] is not None else '<missing>'}"
+        for name in PARENT_DOMAIN_ENV_NAMES
+    )
+    raise CausalContractError(
+        f"Phase-F parent ROS domain contract violation: expected {expected}; {rendered}"
+    )
 
 
 def _time_ns(value: Any) -> int | None:
@@ -1335,6 +1371,7 @@ def run_probe_campaign(
     shutdown_timeout_sec: float,
     selected_arm: str | None = None,
 ) -> dict[str, Any]:
+    _validate_parent_domain_contract(manifest, os.environ)
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     plan = build_probe_plan(manifest, root, selected_arm=selected_arm)
@@ -1345,6 +1382,7 @@ def run_probe_campaign(
     domain = str(manifest.identity["ros_domain_id"])
     env["ROS_DOMAIN_ID"] = domain
     env["ISAAC_NAV_EXPECTED_DOMAIN_ID"] = domain
+    env["BIO_NAV_PHASE_F_DOMAIN_ID"] = domain
     env.setdefault("RMW_IMPLEMENTATION", "rmw_fastrtps_cpp")
     results: list[dict[str, Any]] = []
     for row in plan["runs"]:

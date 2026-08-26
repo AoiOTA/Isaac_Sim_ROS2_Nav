@@ -36,6 +36,11 @@ def _age_ms(status_stamp_ns, validation_stamp_ns=900_000_000):
     return (int(status_stamp_ns) - int(validation_stamp_ns)) / 1_000_000.0
 
 
+def _set_parent_domain(monkeypatch, value):
+    for name in probe_module.PARENT_DOMAIN_ENV_NAMES:
+        monkeypatch.setenv(name, value)
+
+
 class FakeAdapter:
     def __init__(self, arm, scenario="pass"):
         self.timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
@@ -1158,6 +1163,7 @@ def test_m2_failure_or_cleanup_failure_does_not_start_m3(
 ):
     manifest = load_manifest(CONFIG)
     dispatched = []
+    _set_parent_domain(monkeypatch, "150")
 
     monkeypatch.setattr(
         probe_module,
@@ -1213,6 +1219,7 @@ def test_campaign_selection_preserves_default_and_selected_dispatch(
 ):
     manifest = load_manifest(CONFIG)
     dispatched = []
+    _set_parent_domain(monkeypatch, "150")
 
     monkeypatch.setattr(
         probe_module,
@@ -1260,3 +1267,58 @@ def test_campaign_selection_preserves_default_and_selected_dispatch(
     assert result["qualification"] == "ENGINEERING_ONLY_NOT_FORMAL"
     assert dispatched == expected_arms
     assert [row["arm"] for row in result["runs"]] == expected_arms
+
+
+def test_parent_domain_mismatch_fails_before_artifacts_or_adapter_dispatch(
+    tmp_path, monkeypatch
+):
+    manifest = load_manifest(CONFIG)
+    output_root = tmp_path / "campaign"
+    _set_parent_domain(monkeypatch, "42")
+    dispatched = []
+    monkeypatch.setattr(
+        probe_module,
+        "dispatch_live_probe",
+        lambda *_args, **_kwargs: dispatched.append(True),
+    )
+
+    with pytest.raises(CausalContractError) as raised:
+        probe_module.run_probe_campaign(
+            manifest,
+            output_root,
+            arming_timeout_sec=1.0,
+            probe_timeout_sec=1.0,
+            shutdown_timeout_sec=1.0,
+            selected_arm="M3",
+        )
+
+    assert str(raised.value) == (
+        "Phase-F parent ROS domain contract violation: expected 150; "
+        "ROS_DOMAIN_ID=42; ISAAC_NAV_EXPECTED_DOMAIN_ID=42; "
+        "BIO_NAV_PHASE_F_DOMAIN_ID=42"
+    )
+    assert dispatched == []
+    assert not output_root.exists()
+
+
+def test_missing_parent_domain_fails_before_artifact_creation(tmp_path, monkeypatch):
+    manifest = load_manifest(CONFIG)
+    output_root = tmp_path / "campaign"
+    for name in probe_module.PARENT_DOMAIN_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+    with pytest.raises(CausalContractError) as raised:
+        probe_module.run_probe_campaign(
+            manifest,
+            output_root,
+            arming_timeout_sec=1.0,
+            probe_timeout_sec=1.0,
+            shutdown_timeout_sec=1.0,
+        )
+
+    assert str(raised.value) == (
+        "Phase-F parent ROS domain contract violation: expected 150; "
+        "ROS_DOMAIN_ID=<missing>; ISAAC_NAV_EXPECTED_DOMAIN_ID=<missing>; "
+        "BIO_NAV_PHASE_F_DOMAIN_ID=<missing>"
+    )
+    assert not output_root.exists()
