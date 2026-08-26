@@ -1305,6 +1305,28 @@ def _minimum_clearance(points: Sequence[Sequence[float]], obstacle: Mapping[str,
     return min(clearances)
 
 
+def _minimum_dynamic_clearance(
+    gt_records: Sequence[RecordedMessage],
+    obstacle_at_stamp: Callable[[int], Mapping[str, Any] | None],
+) -> float:
+    clearances: list[float] = []
+    for record in gt_records:
+        point = _odom_point(record.message)
+        obstacle = obstacle_at_stamp(_message_stamp_ns(record))
+        if point is None or obstacle is None:
+            continue
+        center = obstacle["center"]
+        half_x = 0.5 * float(obstacle["size"][0])
+        half_y = 0.5 * float(obstacle["size"][1])
+        radius = float(obstacle["robot_radius_m"])
+        dx = max(abs(point[0] - center[0]) - half_x, 0.0)
+        dy = max(abs(point[1] - center[1]) - half_y, 0.0)
+        clearances.append(max(0.0, math.hypot(dx, dy) - radius))
+    if not clearances:
+        raise CausalContractError("dynamic obstacle/GT overlap is missing")
+    return min(clearances)
+
+
 def _near_obstacle_speed(
     command_records: Sequence[RecordedMessage],
     gt_records: Sequence[RecordedMessage],
@@ -1318,6 +1340,24 @@ def _near_obstacle_speed(
         if point is None or math.dist(point, center) > 1.5:
             continue
         speeds.append(abs(float(_field(command.message, "linear.x", 0.0))))
+    return statistics.fmean(speeds) if speeds else 0.0
+
+
+def _near_dynamic_obstacle_speed(
+    command_records: Sequence[RecordedMessage],
+    gt_records: Sequence[RecordedMessage],
+    obstacle_at_stamp: Callable[[int], Mapping[str, Any] | None],
+) -> float:
+    speeds: list[float] = []
+    for command in command_records:
+        stamp_ns = _message_stamp_ns(command)
+        pose = _nearest(gt_records, stamp_ns)
+        obstacle = obstacle_at_stamp(stamp_ns)
+        point = _odom_point(pose.message) if pose is not None else None
+        if point is None or obstacle is None:
+            continue
+        if math.dist(point, obstacle["center"]) <= 1.5:
+            speeds.append(abs(float(_field(command.message, "linear.x", 0.0))))
     return statistics.fmean(speeds) if speeds else 0.0
 
 
@@ -1357,8 +1397,17 @@ def build_recorded_evidence(
     run: RunContract,
     records: Iterable[RecordedMessage],
     episode_result: Mapping[str, Any],
+    *,
+    physical_obstacle: Mapping[str, Any] | None = None,
+    obstacle_at_stamp: Callable[[int], Mapping[str, Any] | None] | None = None,
+    dynamic_actors_enabled: bool = False,
 ) -> dict[str, Any]:
-    """Reduce real recorded ROS messages into the existing causal evaluator JSON."""
+    """Reduce recorded ROS messages into the causal evaluator JSON.
+
+    ``obstacle_at_stamp`` is the only dynamic specialization: callers may
+    provide the physical actor AABB for each synchronized stamp.  The Phase-F
+    static path keeps using its frozen obstacle unchanged.
+    """
 
     reset_receipt = episode_result.get("reset_receipt", {})
     explicit_target_epoch = episode_result.get("target_reset_epoch")
@@ -1416,7 +1465,7 @@ def build_recorded_evidence(
     for values in by_topic.values():
         values.sort(key=_message_stamp_ns)
 
-    obstacle = _load_frozen_obstacle(manifest)
+    obstacle = dict(physical_obstacle or _load_frozen_obstacle(manifest))
     typed_records = by_topic.get("/bio_nav/module2/cognitive_obstacles", [])
     scan_records = by_topic.get("/scan", [])
     depth_records = by_topic.get("/camera/front/depth/image_raw", [])
@@ -1461,15 +1510,30 @@ def build_recorded_evidence(
             camera_info = None
         if not scan_synchronized:
             scan = None
-        scan_points, scan_hits = _scan_metrics(scan, pose, obstacle)
-        depth_observation = _project_depth_obstacle(
-            depth,
-            camera_info,
-            tf_records,
-            tf_static_records,
-            obstacle,
-            manifest.criteria,
+        stamped_obstacle = (
+            obstacle_at_stamp(stamp) if obstacle_at_stamp is not None else obstacle
         )
+        if stamped_obstacle is None:
+            scan_points, _ = _scan_metrics(scan, pose, obstacle)
+            scan_hits = 0
+            depth_observation = {
+                "valid": False,
+                "reason": "physical_actor_not_visible",
+                "point_count": 0,
+                "hit_count": 0,
+                "footprints": [],
+            }
+        else:
+            stamped_obstacle = dict(stamped_obstacle)
+            scan_points, scan_hits = _scan_metrics(scan, pose, stamped_obstacle)
+            depth_observation = _project_depth_obstacle(
+                depth,
+                camera_info,
+                tf_records,
+                tf_static_records,
+                stamped_obstacle,
+                manifest.criteria,
+            )
         typed_values = []
         if typed is not None and (
             anchor_is_typed
@@ -1507,6 +1571,7 @@ def build_recorded_evidence(
             "depth_stamp_ns": _message_stamp_ns(depth) if depth is not None else None,
             "camera_info_stamp_ns": _message_stamp_ns(camera_info) if camera_info is not None else None,
             "scan_stamp_ns": _message_stamp_ns(scan) if scan is not None else None,
+            "physical_obstacle": stamped_obstacle,
         })
 
     layer_records = by_topic.get("/bio_nav/cognitive_obstacle_layer/status", [])
@@ -1619,7 +1684,21 @@ def build_recorded_evidence(
     local_trajectory_records = by_topic.get("/optimal_trajectory", [])
     local_trajectories = [_path_points(row.message) for row in local_trajectory_records]
     plan = max((item for item in plans if item), key=len, default=[])
-    optimal = _near_obstacle_trajectory(local_trajectory_records, gt_records, obstacle)
+    if obstacle_at_stamp is None:
+        optimal = _near_obstacle_trajectory(local_trajectory_records, gt_records, obstacle)
+    else:
+        dynamic_trajectories: list[tuple[float, list[list[float]]]] = []
+        for record in local_trajectory_records:
+            path = _path_points(record.message)
+            pose = _nearest(gt_records, _message_stamp_ns(record))
+            actor = obstacle_at_stamp(_message_stamp_ns(record))
+            point = _odom_point(pose.message) if pose is not None else None
+            if path and point is not None and actor is not None:
+                dynamic_trajectories.append(
+                    (math.dist(point, actor["center"]), path)
+                )
+        optimal = min(dynamic_trajectories, key=lambda item: item[0])[1] \
+            if dynamic_trajectories else []
     odom = [point for row in by_topic.get("/odom", []) if (point := _odom_point(row.message)) is not None]
     gt = [point for row in gt_records if (point := _odom_point(row.message)) is not None]
     commands = []
@@ -1680,7 +1759,7 @@ def build_recorded_evidence(
         "isolation": {
             "module1_amcl_prior_enabled": False,
             "cognitive_place_graph_enabled": False,
-            "dynamic_actors_enabled": False,
+            "dynamic_actors_enabled": dynamic_actors_enabled,
             "unexpected_topic_counts": isolation_counts,
         },
         "reset": {
@@ -1749,7 +1828,13 @@ def build_recorded_evidence(
             "status_count": len(critic_records),
             "applied_count": len(critic_applied),
             "cost_delta_nonzero_count": sum("cost_delta_applied=true" in reason for reason in critic_reasons),
-            "near_obstacle_speed_mps": _near_obstacle_speed(command_records, gt_records, obstacle),
+            "near_obstacle_speed_mps": (
+                _near_obstacle_speed(command_records, gt_records, obstacle)
+                if obstacle_at_stamp is None
+                else _near_dynamic_obstacle_speed(
+                    command_records, gt_records, obstacle_at_stamp
+                )
+            ),
             "offline_reconstructed_scores": [],
         },
         "planning_prior": [{
@@ -1768,7 +1853,11 @@ def build_recorded_evidence(
         "cmd_vel": commands,
         "passive": {
             "ground_truth_odom": gt,
-            "minimum_clearance_m": _minimum_clearance(gt, obstacle),
+            "minimum_clearance_m": (
+                _minimum_clearance(gt, obstacle)
+                if obstacle_at_stamp is None
+                else _minimum_dynamic_clearance(gt_records, obstacle_at_stamp)
+            ),
             "collision": collision,
             "success": success,
         },
@@ -1781,8 +1870,17 @@ def build_recorded_evidence(
             "global_plan_updates": len(plans),
             "local_trajectory_updates": len(local_trajectories),
             "nonzero_command_count": sum(abs(item["linear_x"]) > 1.0e-6 or abs(item["angular_z"]) > 1.0e-6 for item in commands),
-            "near_obstacle_speed_mps": _near_obstacle_speed(command_records, gt_records, obstacle),
-            "dynamic_risk_exposure": "not_applicable_dynamic_actors_off",
+            "near_obstacle_speed_mps": (
+                _near_obstacle_speed(command_records, gt_records, obstacle)
+                if obstacle_at_stamp is None
+                else _near_dynamic_obstacle_speed(
+                    command_records, gt_records, obstacle_at_stamp
+                )
+            ),
+            "dynamic_risk_exposure": (
+                "recorded_actor_aabb_per_stamp"
+                if dynamic_actors_enabled else "not_applicable_dynamic_actors_off"
+            ),
             "false_positive_deadlock": bool(
                 episode_result.get("state") != "SUCCEEDED" and not obstacle_validation
             ),
@@ -2041,6 +2139,7 @@ def dispatch_episode(
     """Reuse the existing V6 formal reset/route/terminal-zero node for one arm."""
 
     from robot_experiments.v6_formal import (
+        DynamicScheduleEntry,
         ENGINEERING_PILOT,
         Episode,
         Manifest,
@@ -2049,6 +2148,14 @@ def dispatch_episode(
     )
 
     arm = manifest.arms[run.arm]
+    dynamic_actors_enabled = manifest.identity.get("dynamic_actors_enabled") is True
+    dynamic_group = str(manifest.identity.get("trigger_group", ""))
+    dynamic_case_id = str(manifest.identity.get("dynamic_case_id", "static"))
+    dynamic_variant_id = str(
+        manifest.identity.get("dynamic_variant_id", "v6_phase_f_r2")
+    )
+    if dynamic_actors_enabled and not dynamic_group:
+        raise CausalContractError("dynamic experiment requires identity.trigger_group")
     runtime = {
         "canonical_odom": {"topic": "/odom", "owner": "isaac_compute_odometry", "tf": "odom->base_link"},
         "global_localization": {"pose_topic": "/amcl_pose", "owner": "amcl", "tf": "map->odom"},
@@ -2064,7 +2171,7 @@ def dispatch_episode(
         "cognitive_place_graph_enabled": False,
         "route_backend": "gvg",
         "low_obstacles_enabled": True,
-        "dynamic_actors_enabled": False,
+        "dynamic_actors_enabled": dynamic_actors_enabled,
         "goal_checker": "position_xy",
         "cognitive_profile": run.arm,
         "obstacle_layer_mode": arm.obstacle_layer_mode,
@@ -2074,7 +2181,7 @@ def dispatch_episode(
         path=manifest.path,
         raw={},
         scene_id="kujiale_0026_A_to_B_door_open",
-        category="static",
+        category="dynamic" if dynamic_actors_enabled else "static",
         runtime=runtime,
         assets={
             "scene_asset": str(manifest.identity["scene_asset"]),
@@ -2086,15 +2193,18 @@ def dispatch_episode(
         },
         reset_pose={"id": "G1", "frame_id": "map", "x": 0.45, "y": -5.35, "yaw_deg": 90.0},
         mission_legs=(MissionLeg("G2", "map", 0.80, 4.80),),
-        dynamic_schedule=(),
+        dynamic_schedule=(
+            (DynamicScheduleEntry("G2", dynamic_group),)
+            if dynamic_actors_enabled else ()
+        ),
         episodes=(),
     )
     episode = Episode(
         seed=int(manifest.identity["seed"]),
-        variant_id="v6_phase_f_r2",
+        variant_id=dynamic_variant_id,
         appearance_profile_id=None,
         reset_pose_name="long_route_start_g1",
-        dynamic_case_id="static",
+        dynamic_case_id=dynamic_case_id,
     )
     import rclpy
     rclpy.init(args=None)
@@ -3112,17 +3222,26 @@ def _rosbag_command(manifest: CausalManifest, bag_dir: Path) -> tuple[str, ...]:
 
 def run_campaign(
     manifest: CausalManifest,
-    adapters: AdapterTemplates,
+    adapters: AdapterTemplates | None,
     output_root: str | Path,
     *,
     pilot: bool,
     shutdown_timeout_sec: float = DEFAULT_SHUTDOWN_TIMEOUT_SEC,
+    prepared_plan: Mapping[str, Any] | None = None,
+    recorder_command: Callable[[CausalManifest, Path], tuple[str, ...]] | None = None,
+    evidence_recorder: Callable[
+        [CausalManifest, RunContract, Path, Path, Path], dict[str, Any]
+    ] | None = None,
+    stop_producer_after_episode: bool = True,
+    classify_baseline_collision: bool = True,
 ) -> dict[str, Any]:
     """Run ordered independent episodes; stop if an arm cannot be cleaned."""
 
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
-    plan = build_plan(manifest, adapters=adapters, pilot=pilot, output_root=root)
+    plan = dict(prepared_plan) if prepared_plan is not None else build_plan(
+        manifest, adapters=adapters, pilot=pilot, output_root=root
+    )
     existing = [row["run_directory"] for row in plan["runs"] if Path(row["run_directory"]).exists()]
     if existing:
         raise CausalContractError("refusing to overwrite run directories: " + ",".join(existing))
@@ -3183,7 +3302,13 @@ def run_campaign(
                     )
                 else:
                     managed.append(_start_process(
-                        "recorder", _rosbag_command(manifest, run_dir / "bag"), run_dir / "recorder.log", env=campaign_env
+                        "recorder",
+                        (
+                            recorder_command(manifest, run_dir / "bag")
+                            if recorder_command is not None
+                            else _rosbag_command(manifest, run_dir / "bag")
+                        ),
+                        run_dir / "recorder.log", env=campaign_env
                     ))
                     with (run_dir / "episode.stdout.log").open("w", encoding="utf-8") as stdout:
                         completed = subprocess.run(
@@ -3196,7 +3321,7 @@ def run_campaign(
                         )
                     status["episode_returncode"] = completed.returncode
                     status["state"] = "EPISODE_FINISHED" if completed.returncode == 0 else "EPISODE_FAILED"
-                    if run.arm in {"M2", "M3"}:
+                    if run.arm in {"M2", "M3"} and stop_producer_after_episode:
                         producer_stop = row["commands"].get("producer_stop")
                         if not producer_stop:
                             raise CausalContractError("active arm requires producer_stop adapter")
@@ -3251,17 +3376,22 @@ def run_campaign(
 
         evidence_path = run_dir / f"{run.run_id}.json"
         try:
-            evidence = record_evidence_from_bag(
-                manifest,
-                run,
-                run_dir / "bag",
-                run_dir / "episode.jsonl",
-                evidence_path,
+            evidence = (
+                evidence_recorder(
+                    manifest, run, run_dir / "bag",
+                    run_dir / "episode.jsonl", evidence_path,
+                )
+                if evidence_recorder is not None
+                else record_evidence_from_bag(
+                    manifest, run, run_dir / "bag",
+                    run_dir / "episode.jsonl", evidence_path,
+                )
             )
             status["evidence_file"] = str(evidence_path)
             status["evidence_recorded"] = True
             if (
-                run.arm in {"M0", "M1"}
+                classify_baseline_collision
+                and run.arm in {"M0", "M1"}
                 and status.get("state") == "EPISODE_FAILED"
                 and status.get("episode_returncode") == 2
                 and status.get("cleanup", {}).get("ok") is True
@@ -3397,17 +3527,23 @@ def _scan_and_spatial_metrics(
     source_visible = source_matched = candidate_tp = candidate_fp = 0
     best_center_errors: list[float] = []
     candidate_radii: list[float] = []
-    center = tuple(float(value) for value in physical_obstacle["center"][:2])
-    half_x = 0.5 * float(physical_obstacle["size"][0])
-    half_y = 0.5 * float(physical_obstacle["size"][1])
-    rectangle = (
-        center[0] - half_x,
-        center[1] - half_y,
-        center[0] + half_x,
-        center[1] + half_y,
-    )
     for index, raw_sample in enumerate(samples):
         sample = _mapping(raw_sample, f"synchronized_samples[{index}]")
+        sample_obstacle = sample.get("physical_obstacle")
+        if sample_obstacle is None:
+            sample_obstacle = physical_obstacle
+        sample_obstacle = _mapping(
+            sample_obstacle, f"synchronized_samples[{index}].physical_obstacle"
+        )
+        center = tuple(float(value) for value in sample_obstacle["center"][:2])
+        half_x = 0.5 * float(sample_obstacle["size"][0])
+        half_y = 0.5 * float(sample_obstacle["size"][1])
+        rectangle = (
+            center[0] - half_x,
+            center[1] - half_y,
+            center[0] + half_x,
+            center[1] + half_y,
+        )
         stamp = sample.get("stamp_ns")
         frame = sample.get("frame_id")
         if isinstance(stamp, bool) or not isinstance(stamp, int) or stamp < 0 or not isinstance(frame, str) or not frame:

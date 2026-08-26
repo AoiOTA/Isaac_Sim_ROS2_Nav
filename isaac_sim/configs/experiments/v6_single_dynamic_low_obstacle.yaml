@@ -1,0 +1,32 @@
+# One low dynamic obstacle for the pre-Phase-G Module2/M3 causal check.
+# Coordinates are authored in map so DynamicObstacleManager applies the same
+# calibrated map->USD transform as the Phase-F scene.  The corresponding USD
+# endpoints are (4.15, 0.15, 0.08) -> (3.35, 0.15, 0.08).
+schema_version: 4
+seed: 8601
+enabled: false
+coordinate_frame: map
+spawn_pose_name: long_route_start_g1
+safety: {guard_clearance_m: 0.14, min_clearance_m: 0.10}
+cases:
+  single_dynamic_low_box:
+    trigger_group: G2
+    gate:
+      axis: y
+      threshold: -2.60
+      direction: positive
+      min_speed_mps: 0.20
+      x_range: [0.30, 0.80]
+    obstacle:
+      id: v6_dynamic_low_box_solo
+      size: [0.30, 0.30, 0.16]
+      mass: 4.0
+      waypoints:
+        - [-1.25, -0.35, 0.08]
+        - [-0.45, -0.35, 0.08]
+      speed: 0.25
+      max_acceleration: 0.50
+      post_motion: park
+    variants:
+      v1: {seed: 8601, start_delay_sec: 0.0}
+case_sets: {}
