@@ -67,6 +67,14 @@ def _consumer_scope(consumer: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class TtlSourceIdentity:
+    reset_epoch: int
+    recurrent_session_id: str
+    map_version: str
+    source_sequence: int
+
+
 @dataclass
 class ActiveTtlTimeline:
     """Pure simulation-time state used by both the live adapter and tests."""
@@ -81,17 +89,23 @@ class ActiveTtlTimeline:
     terminal_reason: str = ""
     terminal_before_dropout: bool = False
     trusted_typed_seen: bool = False
-    latest_source_sequence: int | None = None
+    latest_source_sequences: dict[tuple[int, str, str], int] = field(
+        default_factory=dict
+    )
     latest_validation_stamp_ns: int | None = None
     latest_validation_ttl_ns: int | None = None
     positive_layers: set[str] = field(default_factory=set)
     positive_critic: bool = False
-    trusted_sources: dict[int, tuple[int, int]] = field(default_factory=dict)
-    positive_layer_sources: dict[int, set[str]] = field(default_factory=dict)
-    positive_critic_sources: set[int] = field(default_factory=set)
+    trusted_sources: dict[TtlSourceIdentity, tuple[int, int]] = field(
+        default_factory=dict
+    )
+    positive_layer_sources: dict[TtlSourceIdentity, set[str]] = field(
+        default_factory=dict
+    )
+    positive_critic_sources: set[TtlSourceIdentity] = field(default_factory=set)
     producer_stopped: bool = False
     active_at_dropout: bool = False
-    armed_source_sequence: int | None = None
+    armed_source_identity: TtlSourceIdentity | None = None
     armed_validation_stamp_ns: int | None = None
     armed_validation_ttl_ns: int | None = None
     expiry_target_ns: int | None = None
@@ -125,7 +139,7 @@ class ActiveTtlTimeline:
         # callbacks observed while this goal is active can arm the dropout.
         self.goal_epoch += 1
         self.trusted_typed_seen = False
-        self.latest_source_sequence = None
+        self.latest_source_sequences.clear()
         self.latest_validation_stamp_ns = None
         self.latest_validation_ttl_ns = None
         self.positive_layers.clear()
@@ -148,6 +162,9 @@ class ActiveTtlTimeline:
     def observe_typed(
         self,
         *,
+        reset_epoch: int,
+        recurrent_session_id: str,
+        map_version: str,
         source_sequence: int,
         validation_stamp_ns: int,
         validation_ttl_ns: int,
@@ -166,43 +183,74 @@ class ActiveTtlTimeline:
             or int(validation_ttl_ns) <= 0
         ):
             return
-        sequence = int(source_sequence)
-        validation_stamp = int(validation_stamp_ns)
-        if self.latest_source_sequence is not None and sequence < self.latest_source_sequence:
+        identity = TtlSourceIdentity(
+            int(reset_epoch), str(recurrent_session_id), str(map_version),
+            int(source_sequence),
+        )
+        if (
+            identity.reset_epoch <= 0
+            or not identity.recurrent_session_id
+            or not identity.map_version
+            or identity.source_sequence <= 0
+        ):
             return
+        stream = (
+            identity.reset_epoch,
+            identity.recurrent_session_id,
+            identity.map_version,
+        )
+        latest_sequence = self.latest_source_sequences.get(stream)
+        if latest_sequence is not None and identity.source_sequence < latest_sequence:
+            return
+        validation_stamp = int(validation_stamp_ns)
         self.trusted_typed_seen = True
-        self.latest_source_sequence = sequence
+        self.latest_source_sequences[stream] = identity.source_sequence
         self.latest_validation_stamp_ns = validation_stamp
         self.latest_validation_ttl_ns = int(validation_ttl_ns)
-        self.trusted_sources[sequence] = (validation_stamp, int(validation_ttl_ns))
+        self.trusted_sources[identity] = (validation_stamp, int(validation_ttl_ns))
         self._event(
             "trusted_typed_obstacle",
-            source_sequence=sequence,
+            reset_epoch=identity.reset_epoch,
+            recurrent_session_id=identity.recurrent_session_id,
+            map_version=identity.map_version,
+            source_sequence=identity.source_sequence,
             validation_stamp_ns=validation_stamp,
             validation_ttl_ns=int(validation_ttl_ns),
         )
 
-    def _matches_armed_source(self, source_sequence: int) -> bool:
-        return (
-            self.armed_source_sequence is not None
-            and int(source_sequence) == self.armed_source_sequence
+    @staticmethod
+    def _identity(
+        reset_epoch: int,
+        recurrent_session_id: str,
+        map_version: str,
+        source_sequence: int,
+    ) -> TtlSourceIdentity:
+        return TtlSourceIdentity(
+            int(reset_epoch), str(recurrent_session_id), str(map_version),
+            int(source_sequence),
         )
 
-    def _coherent_positive_source(self) -> int | None:
-        for sequence in sorted(self.trusted_sources, reverse=True):
+    def _matches_armed_source(self, identity: TtlSourceIdentity) -> bool:
+        return self.armed_source_identity == identity
+
+    def _coherent_positive_source(self) -> TtlSourceIdentity | None:
+        for identity in reversed(self.trusted_sources):
             if not {"global", "local"}.issubset(
-                self.positive_layer_sources.get(sequence, set())
+                self.positive_layer_sources.get(identity, set())
             ):
                 continue
-            if self.arm == "M3" and sequence not in self.positive_critic_sources:
+            if self.arm == "M3" and identity not in self.positive_critic_sources:
                 continue
-            return sequence
+            return identity
         return None
 
     def observe_layer(
         self,
         *,
         consumer: str,
+        reset_epoch: int,
+        recurrent_session_id: str,
+        map_version: str,
         source_sequence: int,
         applied: bool,
         raised_cell_count: int,
@@ -213,17 +261,23 @@ class ActiveTtlTimeline:
         scope = _consumer_scope(consumer)
         if scope is None:
             return
+        identity = self._identity(
+            reset_epoch, recurrent_session_id, map_version, source_sequence
+        )
         positive = bool(applied) and int(raised_cell_count) > 0
         if not self.producer_stopped:
             if self.action_active and positive:
                 self.positive_layers.add(scope)
                 self.positive_layer_sources.setdefault(
-                    int(source_sequence), set()
+                    identity, set()
                 ).add(scope)
                 self._event(
                     "positive_layer_apply",
                     scope=scope,
-                    source_sequence=int(source_sequence),
+                    reset_epoch=identity.reset_epoch,
+                    recurrent_session_id=identity.recurrent_session_id,
+                    map_version=identity.map_version,
+                    source_sequence=identity.source_sequence,
                     raised_cell_count=int(raised_cell_count),
                 )
             return
@@ -232,7 +286,7 @@ class ActiveTtlTimeline:
         if bool(applied) or int(raised_cell_count) > 0 or int(maximum_cost_increase) > 0:
             self.post_expiry_layer_applied = True
             self.post_expiry_applied = True
-        if not self._matches_armed_source(source_sequence):
+        if not self._matches_armed_source(identity):
             return
         stale = "validation_stale" in str(reason)
         zero = (
@@ -246,25 +300,38 @@ class ActiveTtlTimeline:
             self._event(
                 "post_expiry_layer_clear",
                 scope=scope,
-                source_sequence=int(source_sequence),
+                reset_epoch=identity.reset_epoch,
+                recurrent_session_id=identity.recurrent_session_id,
+                map_version=identity.map_version,
+                source_sequence=identity.source_sequence,
             )
 
     def observe_critic(
         self,
         *,
+        reset_epoch: int,
+        recurrent_session_id: str,
+        map_version: str,
         source_sequence: int,
         applied: bool,
         reason: str,
     ) -> None:
         text = str(reason)
+        identity = self._identity(
+            reset_epoch, recurrent_session_id, map_version, source_sequence
+        )
         cost_delta_applied = "cost_delta_applied=true" in text
         positive = bool(applied) and cost_delta_applied
         if not self.producer_stopped:
             if self.action_active and positive:
                 self.positive_critic = True
-                self.positive_critic_sources.add(int(source_sequence))
+                self.positive_critic_sources.add(identity)
                 self._event(
-                    "positive_critic_apply", source_sequence=int(source_sequence)
+                    "positive_critic_apply",
+                    reset_epoch=identity.reset_epoch,
+                    recurrent_session_id=identity.recurrent_session_id,
+                    map_version=identity.map_version,
+                    source_sequence=identity.source_sequence,
                 )
             return
         if self.expiry_target_ns is None or self.clock_ns < self.expiry_target_ns:
@@ -272,7 +339,7 @@ class ActiveTtlTimeline:
         if bool(applied) or cost_delta_applied:
             self.post_expiry_critic_applied = True
             self.post_expiry_applied = True
-        if not self._matches_armed_source(source_sequence):
+        if not self._matches_armed_source(identity):
             return
         stale = "validation_stale" in text
         no_delta = "cost_delta_applied=false" in text or not cost_delta_applied
@@ -280,7 +347,10 @@ class ActiveTtlTimeline:
             self.critic_stale_rejected = True
             self._event(
                 "post_expiry_critic_stale_rejected",
-                source_sequence=int(source_sequence),
+                reset_epoch=identity.reset_epoch,
+                recurrent_session_id=identity.recurrent_session_id,
+                map_version=identity.map_version,
+                source_sequence=identity.source_sequence,
             )
 
     @property
@@ -293,13 +363,13 @@ class ActiveTtlTimeline:
     def mark_producer_stopped(self) -> None:
         if not self.armed:
             raise CausalContractError("active TTL probe cannot stop producer before positive apply")
-        source_sequence = self._coherent_positive_source()
-        if source_sequence is None:
+        source_identity = self._coherent_positive_source()
+        if source_identity is None:
             raise CausalContractError("active TTL probe lacks a trusted validation timeline")
-        validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_sequence]
+        validation_stamp_ns, validation_ttl_ns = self.trusted_sources[source_identity]
         self.producer_stopped = True
         self.active_at_dropout = self.action_active
-        self.armed_source_sequence = source_sequence
+        self.armed_source_identity = source_identity
         self.armed_validation_stamp_ns = validation_stamp_ns
         self.armed_validation_ttl_ns = validation_ttl_ns
         self.expiry_target_ns = (
@@ -309,7 +379,10 @@ class ActiveTtlTimeline:
         )
         self._event(
             "producer_stopped",
-            source_sequence=self.armed_source_sequence,
+            reset_epoch=source_identity.reset_epoch,
+            recurrent_session_id=source_identity.recurrent_session_id,
+            map_version=source_identity.map_version,
+            source_sequence=source_identity.source_sequence,
             expiry_target_ns=self.expiry_target_ns,
             action_active=self.active_at_dropout,
         )
@@ -370,7 +443,22 @@ class ActiveTtlTimeline:
             "probe_armed": self.producer_stopped,
             "producer_stop_while_action_active": self.active_at_dropout,
             "sim_clock_ns": self.clock_ns,
-            "armed_source_sequence": self.armed_source_sequence,
+            "armed_reset_epoch": (
+                self.armed_source_identity.reset_epoch
+                if self.armed_source_identity else None
+            ),
+            "armed_recurrent_session_id": (
+                self.armed_source_identity.recurrent_session_id
+                if self.armed_source_identity else None
+            ),
+            "armed_map_version": (
+                self.armed_source_identity.map_version
+                if self.armed_source_identity else None
+            ),
+            "armed_source_sequence": (
+                self.armed_source_identity.source_sequence
+                if self.armed_source_identity else None
+            ),
             "validation_stamp_ns": self.armed_validation_stamp_ns,
             "validation_ttl_ns": self.armed_validation_ttl_ns,
             "expiry_target_ns": self.expiry_target_ns,
@@ -403,7 +491,22 @@ class ActiveTtlTimeline:
                     "N/A_SEPARATE_ACTIVE_CONTROLLER_PROBE"
                 ),
                 "active_controller_ttl_probe": state,
-                "ttl_source_sequence": self.armed_source_sequence,
+                "ttl_reset_epoch": (
+                    self.armed_source_identity.reset_epoch
+                    if self.armed_source_identity else None
+                ),
+                "ttl_recurrent_session_id": (
+                    self.armed_source_identity.recurrent_session_id
+                    if self.armed_source_identity else None
+                ),
+                "ttl_map_version": (
+                    self.armed_source_identity.map_version
+                    if self.armed_source_identity else None
+                ),
+                "ttl_source_sequence": (
+                    self.armed_source_identity.source_sequence
+                    if self.armed_source_identity else None
+                ),
                 "ttl_expiry_stamp_ns": self.expiry_target_ns,
                 "ttl_expiry_observed": self.clear_complete,
                 "ttl_expiry_zero_write": (
@@ -650,6 +753,9 @@ class _LiveProbeAdapter:
             if validation_stamp is None or validation_ttl is None:
                 return
             self.timeline.observe_typed(
+                reset_epoch=int(message.reset_epoch),
+                recurrent_session_id=str(message.recurrent_session_id),
+                map_version=str(message.map_version),
                 source_sequence=int(message.sequence),
                 validation_stamp_ns=validation_stamp,
                 validation_ttl_ns=validation_ttl,
@@ -662,6 +768,9 @@ class _LiveProbeAdapter:
         def layer(message: Any) -> None:
             self.timeline.observe_layer(
                 consumer=str(message.consumer),
+                reset_epoch=int(message.reset_epoch),
+                recurrent_session_id=str(message.recurrent_session_id),
+                map_version=str(message.map_version),
                 source_sequence=int(message.source_sequence),
                 applied=bool(message.applied),
                 raised_cell_count=int(message.raised_cell_count),
@@ -672,6 +781,9 @@ class _LiveProbeAdapter:
 
         def critic(message: Any) -> None:
             self.timeline.observe_critic(
+                reset_epoch=int(message.reset_epoch),
+                recurrent_session_id=str(message.recurrent_session_id),
+                map_version=str(message.map_version),
                 source_sequence=int(message.source_sequence),
                 applied=bool(message.applied),
                 reason=str(message.fallback_reason),

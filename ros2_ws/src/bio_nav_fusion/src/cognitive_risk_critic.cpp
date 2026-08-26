@@ -124,6 +124,7 @@ void CognitiveRiskCritic::initialize()
     last_status_sequence_ = 0;
     last_status_applied_ = false;
     last_status_reason_.clear();
+    last_status_ = bio_nav_interfaces::msg::RiskLayerStatus{};
   }
   auto getParam = parameters_handler_->getParamGetter(name_);
   getParam(mode_, "mode", mode_);
@@ -166,6 +167,7 @@ void CognitiveRiskCritic::obstacleCallback(
 {
   const auto now_ns = parent_.lock()->get_clock()->now().nanoseconds();
   std::string reason;
+  bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr accepted_obstacles;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const bool reset_rebind_candidate = identity_bound_ &&
@@ -221,11 +223,12 @@ void CognitiveRiskCritic::obstacleCallback(
       last_rejected_offer_ = RejectedOffer{
         message->sequence, message->reset_epoch,
         message->recurrent_session_id, reason, true};
+      accepted_obstacles = obstacles_;
     }
   }
-  if (!reason.empty()) {
+  if (!reason.empty() && accepted_obstacles) {
     publishStatus(
-      message->sequence, false,
+      accepted_obstacles, false,
       "offer_rejected=" + reason +
       ";offer_reset_epoch=" + std::to_string(message->reset_epoch) +
       ";offer_session=" + message->recurrent_session_id);
@@ -235,6 +238,7 @@ void CognitiveRiskCritic::obstacleCallback(
 void CognitiveRiskCritic::priorCallback(
   const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message)
 {
+  bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr accepted_obstacles;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     prior_ = message;
@@ -267,9 +271,10 @@ void CognitiveRiskCritic::priorCallback(
         route_identity_ = candidate_identity;
       }
     }
+    accepted_obstacles = obstacles_;
   }
-  if (mode_ == "shadow") {
-    publishStatus(message->sequence, false, "shadow");
+  if (mode_ == "shadow" && accepted_obstacles) {
+    publishStatus(accepted_obstacles, false, "shadow");
   }
 }
 
@@ -498,7 +503,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
     maximum_age_s_, maximum_ood_probability_, true) : "obstacle_missing";
   if (!reason.empty()) {
     publishStatus(
-      obstacles ? obstacles->sequence : 0U, false,
+      obstacles, false,
       "obstacle_rejected=" + reason);
     return;
   }
@@ -510,7 +515,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       costmap_ros_->getGlobalFrameID(), obstacles->header.frame_id,
       rclcpp::Time(obstacles->validation_stamp), tf2::durationFromSec(0.0));
   } catch (const tf2::TransformException &) {
-    publishStatus(obstacles->sequence, false, "obstacle_rejected=tf");
+    publishStatus(obstacles, false, "obstacle_rejected=tf");
     return;
   }
   for (const auto & item : obstacles->obstacles) {
@@ -617,7 +622,7 @@ void CognitiveRiskCritic::score(mppi::CriticData & data)
       ";latest_rejected_offer_reason=" + rejected_offer.reason;
   }
   publishStatus(
-    obstacles->sequence, applied, status_reason);
+    obstacles, applied, status_reason);
 }
 
 std::string CognitiveRiskCritic::appliedStatus(
@@ -662,25 +667,31 @@ std::string CognitiveRiskCritic::appliedStatus(
 }
 
 void CognitiveRiskCritic::publishStatus(
-  uint64_t sequence, bool applied, const std::string & reason)
+  const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr & accepted_obstacles,
+  bool applied, const std::string & reason)
 {
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    last_status_sequence_ = sequence;
-    last_status_applied_ = applied;
-    last_status_reason_ = reason;
-  }
-  if (!status_publisher_) {return;}
+  if (!accepted_obstacles) {return;}
   bio_nav_interfaces::msg::RiskLayerStatus status;
   status.stamp = parent_.lock()->get_clock()->now();
   status.consumer = name_;
   status.mode = mode_;
-  status.offered = sequence > 0;
+  status.offered = accepted_obstacles->sequence > 0;
   status.applied = applied;
   status.rejected = !applied && reason != "" && reason != "shadow" &&
     reason != "offered" && reason.find("zero_cost_delta") == std::string::npos;
-  status.source_sequence = sequence;
+  status.source_sequence = accepted_obstacles->sequence;
+  status.recurrent_session_id = accepted_obstacles->recurrent_session_id;
+  status.reset_epoch = accepted_obstacles->reset_epoch;
+  status.map_version = accepted_obstacles->map_version;
   status.fallback_reason = reason;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    last_status_sequence_ = status.source_sequence;
+    last_status_applied_ = applied;
+    last_status_reason_ = reason;
+    last_status_ = status;
+  }
+  if (!status_publisher_) {return;}
   status_publisher_->publish(status);
 }
 

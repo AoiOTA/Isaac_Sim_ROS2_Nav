@@ -18,6 +18,15 @@ PACKAGE = Path(__file__).resolve().parents[1]
 CONFIG = PACKAGE / "config" / "v6_kujiale_low_obstacle_causal.yaml"
 
 
+def _identity(sequence=7, *, epoch=3, session="session", map_version="map"):
+    return {
+        "reset_epoch": epoch,
+        "recurrent_session_id": session,
+        "map_version": map_version,
+        "source_sequence": sequence,
+    }
+
+
 class FakeAdapter:
     def __init__(self, arm, scenario="pass"):
         self.timeline = ActiveTtlTimeline(arm, margin_ns=200_000_000)
@@ -38,7 +47,7 @@ class FakeAdapter:
         if self.scenario == "noapply":
             return False
         self.timeline.observe_typed(
-            source_sequence=7,
+            **_identity(),
             validation_stamp_ns=900_000_000,
             validation_ttl_ns=500_000_000,
             trusted_write=True,
@@ -49,7 +58,7 @@ class FakeAdapter:
         for consumer in ("/global_costmap:cognitive", "/local_costmap:cognitive"):
             self.timeline.observe_layer(
                 consumer=consumer,
-                source_sequence=7,
+                **_identity(),
                 applied=True,
                 raised_cell_count=4,
                 active_cell_count=4,
@@ -58,7 +67,7 @@ class FakeAdapter:
             )
         if self.timeline.arm == "M3":
             self.timeline.observe_critic(
-                source_sequence=7,
+                **_identity(),
                 applied=True,
                 reason="cost_delta_applied=true;obstacle_applied=true",
             )
@@ -81,7 +90,7 @@ class FakeAdapter:
         if self.scenario == "postexpiry_applied":
             self.timeline.observe_layer(
                 consumer="/global_costmap:cognitive",
-                source_sequence=7,
+                **_identity(),
                 applied=True,
                 raised_cell_count=2,
                 active_cell_count=2,
@@ -95,7 +104,7 @@ class FakeAdapter:
         for consumer in consumers:
             self.timeline.observe_layer(
                 consumer=consumer,
-                source_sequence=7,
+                **_identity(),
                 applied=False,
                 raised_cell_count=0,
                 active_cell_count=0,
@@ -104,7 +113,7 @@ class FakeAdapter:
             )
         if self.timeline.arm == "M3" and self.scenario != "missing_critic":
             self.timeline.observe_critic(
-                source_sequence=7,
+                **_identity(),
                 applied=False,
                 reason="cost_delta_applied=false;obstacle_rejected=validation_stale",
             )
@@ -149,6 +158,10 @@ def test_fake_active_ttl_timeline_passes_and_preserves_adapter_order(arm):
         "N/A_SEPARATE_ACTIVE_CONTROLLER_PROBE"
     )
     assert result["evaluator_fields"]["ttl_expiry_zero_write"] is True
+    assert result["evaluator_fields"]["ttl_reset_epoch"] == 3
+    assert result["evaluator_fields"]["ttl_recurrent_session_id"] == "session"
+    assert result["evaluator_fields"]["ttl_map_version"] == "map"
+    assert result["evaluator_fields"]["ttl_source_sequence"] == 7
     assert adapter.calls == [
         "start_goal",
         "wait_for_armed",
@@ -174,9 +187,14 @@ def test_no_positive_apply_is_probe_not_armed_and_cancels_active_goal():
     assert adapter.calls[-2:] == ["cancel_goal_once", "terminal_zero"]
 
 
-def _observe_positive(timeline, sequence=7):
+def _observe_positive(
+    timeline, sequence=7, *, epoch=3, session="session", map_version="map"
+):
+    identity = _identity(
+        sequence, epoch=epoch, session=session, map_version=map_version
+    )
     timeline.observe_typed(
-        source_sequence=sequence,
+        **identity,
         validation_stamp_ns=900_000_000,
         validation_ttl_ns=500_000_000,
         trusted_write=True,
@@ -187,7 +205,7 @@ def _observe_positive(timeline, sequence=7):
     for consumer in ("global", "local"):
         timeline.observe_layer(
             consumer=consumer,
-            source_sequence=sequence,
+            **identity,
             applied=True,
             raised_cell_count=1,
             active_cell_count=1,
@@ -223,7 +241,7 @@ def test_positive_evidence_from_different_sources_cannot_arm():
     timeline.start_goal()
     for sequence in (7, 8):
         timeline.observe_typed(
-            source_sequence=sequence,
+            **_identity(sequence),
             validation_stamp_ns=900_000_000,
             validation_ttl_ns=500_000_000,
             trusted_write=True,
@@ -233,7 +251,7 @@ def test_positive_evidence_from_different_sources_cannot_arm():
         )
     timeline.observe_layer(
         consumer="global",
-        source_sequence=7,
+        **_identity(7),
         applied=True,
         raised_cell_count=1,
         active_cell_count=1,
@@ -242,7 +260,49 @@ def test_positive_evidence_from_different_sources_cannot_arm():
     )
     timeline.observe_layer(
         consumer="local",
-        source_sequence=8,
+        **_identity(8),
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+
+    assert timeline.armed is False
+
+
+@pytest.mark.parametrize(
+    "other_identity",
+    [
+        _identity(7, session="other-session"),
+        _identity(7, epoch=4),
+        _identity(7, map_version="other-map"),
+    ],
+)
+def test_same_sequence_cross_identity_layer_cannot_arm(other_identity):
+    timeline = ActiveTtlTimeline("M2", margin_ns=200_000_000)
+    timeline.start_goal()
+    timeline.observe_typed(
+        **_identity(7),
+        validation_stamp_ns=900_000_000,
+        validation_ttl_ns=500_000_000,
+        trusted_write=True,
+        healthy=True,
+        observation_valid=True,
+        obstacle_count=1,
+    )
+    timeline.observe_layer(
+        consumer="global",
+        **_identity(7),
+        applied=True,
+        raised_cell_count=1,
+        active_cell_count=1,
+        maximum_cost_increase=1,
+        reason="",
+    )
+    timeline.observe_layer(
+        consumer="local",
+        **other_identity,
         applied=True,
         raised_cell_count=1,
         active_cell_count=1,
@@ -258,14 +318,14 @@ def test_m3_critic_must_match_typed_and_layer_source():
     timeline.start_goal()
     _observe_positive(timeline, sequence=7)
     timeline.observe_critic(
-        source_sequence=8,
+        **_identity(7, session="other-session"),
         applied=True,
         reason="cost_delta_applied=true",
     )
     assert timeline.armed is False
 
     timeline.observe_critic(
-        source_sequence=7,
+        **_identity(7),
         applied=True,
         reason="cost_delta_applied=true",
     )
@@ -278,14 +338,14 @@ def test_post_stop_queued_source_cannot_replace_target_or_satisfy_clear():
     _observe_positive(timeline, sequence=7)
     timeline.mark_producer_stopped()
     target = (
-        timeline.armed_source_sequence,
+        timeline.armed_source_identity,
         timeline.armed_validation_stamp_ns,
         timeline.armed_validation_ttl_ns,
         timeline.expiry_target_ns,
     )
 
     timeline.observe_typed(
-        source_sequence=8,
+        **_identity(7, epoch=4, session="queued-session"),
         validation_stamp_ns=1_500_000_000,
         validation_ttl_ns=900_000_000,
         trusted_write=True,
@@ -294,7 +354,7 @@ def test_post_stop_queued_source_cannot_replace_target_or_satisfy_clear():
         obstacle_count=1,
     )
     assert (
-        timeline.armed_source_sequence,
+        timeline.armed_source_identity,
         timeline.armed_validation_stamp_ns,
         timeline.armed_validation_ttl_ns,
         timeline.expiry_target_ns,
@@ -304,7 +364,7 @@ def test_post_stop_queued_source_cannot_replace_target_or_satisfy_clear():
     for consumer in ("global", "local"):
         timeline.observe_layer(
             consumer=consumer,
-            source_sequence=8,
+            **_identity(7, epoch=4, session="queued-session"),
             applied=False,
             raised_cell_count=0,
             active_cell_count=0,
@@ -316,13 +376,55 @@ def test_post_stop_queued_source_cannot_replace_target_or_satisfy_clear():
     for consumer in ("global", "local"):
         timeline.observe_layer(
             consumer=consumer,
-            source_sequence=7,
+            **_identity(7),
             applied=False,
             raised_cell_count=0,
             active_cell_count=0,
             maximum_cost_increase=0,
             reason="validation_stale",
         )
+    assert timeline.clear_complete is True
+
+
+def test_post_stop_cross_identity_critic_cannot_satisfy_clear():
+    timeline = ActiveTtlTimeline("M3", margin_ns=200_000_000)
+    timeline.start_goal()
+    _observe_positive(timeline)
+    timeline.observe_critic(
+        **_identity(7),
+        applied=True,
+        reason="cost_delta_applied=true",
+    )
+    timeline.mark_producer_stopped()
+    frozen_identity = timeline.armed_source_identity
+    frozen_expiry = timeline.expiry_target_ns
+    timeline.observe_clock(frozen_expiry)
+    for consumer in ("global", "local"):
+        timeline.observe_layer(
+            consumer=consumer,
+            **_identity(7),
+            applied=False,
+            raised_cell_count=0,
+            active_cell_count=0,
+            maximum_cost_increase=0,
+            reason="validation_stale",
+        )
+    timeline.observe_critic(
+        **_identity(7, epoch=4, session="other-session"),
+        applied=False,
+        reason="cost_delta_applied=false;obstacle_rejected=validation_stale",
+    )
+
+    assert timeline.armed_source_identity == frozen_identity
+    assert timeline.expiry_target_ns == frozen_expiry
+    assert timeline.critic_stale_rejected is False
+    assert timeline.clear_complete is False
+
+    timeline.observe_critic(
+        **_identity(7),
+        applied=False,
+        reason="cost_delta_applied=false;obstacle_rejected=validation_stale",
+    )
     assert timeline.clear_complete is True
 
 
@@ -335,7 +437,7 @@ def test_post_stop_queued_source_positive_after_expiry_fails_probe():
 
     timeline.observe_layer(
         consumer="global",
-        source_sequence=8,
+        **_identity(8),
         applied=True,
         raised_cell_count=1,
         active_cell_count=1,
@@ -443,7 +545,7 @@ def test_sim_clock_controls_expiry_and_rejects_backward_jump():
     timeline.observe_clock(1_000_000_000)
     timeline.start_goal()
     timeline.observe_typed(
-        source_sequence=7,
+        **_identity(7),
         validation_stamp_ns=900_000_000,
         validation_ttl_ns=500_000_000,
         trusted_write=True,
@@ -454,7 +556,7 @@ def test_sim_clock_controls_expiry_and_rejects_backward_jump():
     for consumer in ("global", "local"):
         timeline.observe_layer(
             consumer=consumer,
-            source_sequence=7,
+            **_identity(7),
             applied=True,
             raised_cell_count=1,
             active_cell_count=1,
@@ -465,7 +567,7 @@ def test_sim_clock_controls_expiry_and_rejects_backward_jump():
     timeline.observe_clock(timeline.expiry_target_ns - 1)
     timeline.observe_layer(
         consumer="global",
-        source_sequence=7,
+        **_identity(7),
         applied=False,
         raised_cell_count=0,
         active_cell_count=0,

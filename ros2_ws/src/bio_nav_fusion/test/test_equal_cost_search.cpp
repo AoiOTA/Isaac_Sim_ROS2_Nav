@@ -51,6 +51,7 @@ public:
     critic.last_status_sequence_ = 0;
     critic.last_status_applied_ = false;
     critic.last_status_reason_.clear();
+    critic.last_status_ = bio_nav_interfaces::msg::RiskLayerStatus{};
   }
 
   static void setInputs(
@@ -171,6 +172,13 @@ public:
   {
     std::lock_guard<std::mutex> lock(critic.mutex_);
     return critic.last_status_reason_;
+  }
+
+  static bio_nav_interfaces::msg::RiskLayerStatus lastStatus(
+    CognitiveRiskCritic & critic)
+  {
+    std::lock_guard<std::mutex> lock(critic.mutex_);
+    return critic.last_status_;
   }
 };
 
@@ -1367,6 +1375,12 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
     std::make_shared<bio_nav_interfaces::msg::PlanningPrior>(prior));
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+  const auto accepted_status =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(critic);
+  EXPECT_EQ(accepted_status.source_sequence, fresh.sequence);
+  EXPECT_EQ(accepted_status.reset_epoch, fresh.reset_epoch);
+  EXPECT_EQ(accepted_status.recurrent_session_id, fresh.recurrent_session_id);
+  EXPECT_EQ(accepted_status.map_version, fresh.map_version);
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 7U);
   Layer::recordAccepted(fresh, layer_cursor);
@@ -1423,6 +1437,17 @@ TEST(CognitiveRiskCritic, callback_admission_matches_layer_and_preserves_last_ac
   bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(changed));
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).map_version, "map");
+  const auto rejection_status =
+    bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(critic);
+  EXPECT_FALSE(rejection_status.applied);
+  EXPECT_TRUE(rejection_status.rejected);
+  EXPECT_EQ(rejection_status.source_sequence, fresh.sequence);
+  EXPECT_EQ(rejection_status.reset_epoch, fresh.reset_epoch);
+  EXPECT_EQ(rejection_status.recurrent_session_id, fresh.recurrent_session_id);
+  EXPECT_EQ(rejection_status.map_version, fresh.map_version);
+  EXPECT_NE(
+    rejection_status.fallback_reason.find("offer_reset_epoch=3"),
+    std::string::npos);
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
   const auto rejected = bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic);
   EXPECT_TRUE(rejected.valid);
@@ -1611,6 +1636,14 @@ TEST(CognitiveRiskCritic, obstacle_only_reset_rebinds_without_route_context)
     "session-reset");
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::cursor(critic).source_sequence, 1U);
   EXPECT_GT(scoreAt(critic, 1.0F, 0.0F), 1.0F);
+  const auto expect_accepted_status_identity = [&]() {
+      const auto status = bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatus(critic);
+      EXPECT_EQ(status.source_sequence, reset_obstacles.sequence);
+      EXPECT_EQ(status.reset_epoch, reset_obstacles.reset_epoch);
+      EXPECT_EQ(status.recurrent_session_id, reset_obstacles.recurrent_session_id);
+      EXPECT_EQ(status.map_version, reset_obstacles.map_version);
+    };
+  expect_accepted_status_identity();
   EXPECT_TRUE(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusApplied(critic));
   EXPECT_NE(
     bio_nav_fusion::CognitiveRiskCriticTestPeer::lastStatusReason(critic).find(
@@ -1621,6 +1654,7 @@ TEST(CognitiveRiskCritic, obstacle_only_reset_rebinds_without_route_context)
   bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(replay));
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).reason, "sequence");
+  expect_accepted_status_identity();
 
   auto old_epoch = old_obstacles;
   old_epoch.sequence = 10;
@@ -1628,6 +1662,7 @@ TEST(CognitiveRiskCritic, obstacle_only_reset_rebinds_without_route_context)
   bio_nav_fusion::CognitiveRiskCriticTestPeer::offerObstacle(
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(old_epoch));
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).reason, "identity");
+  expect_accepted_status_identity();
 
   auto mismatched = reset_obstacles;
   mismatched.reset_epoch = 5;
@@ -1639,6 +1674,7 @@ TEST(CognitiveRiskCritic, obstacle_only_reset_rebinds_without_route_context)
     critic, std::make_shared<bio_nav_interfaces::msg::CognitiveObstacleArray>(mismatched));
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).reason, "identity");
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  expect_accepted_status_identity();
 
   auto future = reset_obstacles;
   future.reset_epoch = 5;
@@ -1650,6 +1686,7 @@ TEST(CognitiveRiskCritic, obstacle_only_reset_rebinds_without_route_context)
   EXPECT_EQ(
     bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).reason,
     "validation_stale");
+  expect_accepted_status_identity();
 
   auto stale = reset_obstacles;
   stale.reset_epoch = 5;
@@ -1662,6 +1699,7 @@ TEST(CognitiveRiskCritic, obstacle_only_reset_rebinds_without_route_context)
     bio_nav_fusion::CognitiveRiskCriticTestPeer::lastRejected(critic).reason,
     "validation_stale");
   EXPECT_EQ(bio_nav_fusion::CognitiveRiskCriticTestPeer::identity(critic).reset_epoch, 4U);
+  expect_accepted_status_identity();
 }
 
 TEST(CognitiveRiskCritic, any_non_obstacle_weight_keeps_route_context_reset_gate)

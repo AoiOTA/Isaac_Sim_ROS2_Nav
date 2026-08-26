@@ -82,7 +82,9 @@ private:
     const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr message);
   void priorCallback(
     const bio_nav_interfaces::msg::PlanningPrior::SharedPtr message);
-  void publishStatus(uint64_t sequence, bool applied, const std::string & reason);
+  void publishStatus(
+    const bio_nav_interfaces::msg::CognitiveObstacleArray::SharedPtr & accepted_obstacles,
+    bool applied, const std::string & reason);
   static std::string appliedStatus(
     const std::string & prior_reason, const std::string & context_reason,
     const std::string & direction_reason, bool obstacle_applied,
@@ -110,6 +112,7 @@ private:
   uint64_t last_status_sequence_{0};
   bool last_status_applied_{false};
   std::string last_status_reason_;
+  bio_nav_interfaces::msg::RiskLayerStatus last_status_;
   std::string mode_{"off"};
   std::string obstacle_topic_{"/bio_nav/module2/cognitive_obstacles"};
   std::string prior_topic_{"/bio_nav/module2/planning_prior"};
