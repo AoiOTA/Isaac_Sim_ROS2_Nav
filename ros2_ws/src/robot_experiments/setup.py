@@ -108,6 +108,7 @@ setup(
             "v6_estimated_calibration = robot_experiments.v6_estimated_calibration:main",
             "v6_formal_episode = robot_experiments.v6_formal:main",
             "v6_low_obstacle_causal = robot_experiments.v6_low_obstacle_causal:main",
+            "v6_phase_f_active_ttl_probe = robot_experiments.v6_phase_f_active_ttl_probe:main",
             "v6_localization_causal = robot_experiments.v6_localization_causal:main",
             "imu_regime_analysis = robot_experiments.imu_regime_analysis:main",
             "v6_imu_lidar_preflight = robot_experiments.v6_imu_lidar_preflight:main",
